@@ -1,0 +1,23 @@
+OS_TYPE = $(shell uname -s | \
+  awk '{ split($$1,a,"_"); printf("%s", a[1]);  }')
+
+CFLAGS += -I$(CG_ROOT) -I/usr/local/include/gc -g -Wno-deprecated
+
+LIBS = -lm -lgc -lpcre
+
+ifeq ($(OS_TYPE),Linux)
+  LIBS += -ldl -lrt
+endif
+
+CC = g++
+
+ifdef OPTIMIZE
+  CFLAGS += -O3 
+endif
+
+ifdef DEBUG
+  CFLAGS += -g
+endif
+
+all: $(CG_FILES)
+	@$(CC) $(CFLAGS) $(LDFLAGS) -o $(CG_TARGET) $(CG_FILES) $(LIBS)

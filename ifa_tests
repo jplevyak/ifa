@@ -1,0 +1,35 @@
+#!/bin/tcsh 
+
+#setenv VALGRIND 'valgrind --tool=memcheck --leak-check=yes --show-reachable=yes'
+setenv VALGRIND ''
+
+cd tests
+set failed = 0
+foreach t (*.v)
+  if (-e $t.flags) then
+    set flags = `cat $t.flags`
+  else
+    set flags = 
+  endif
+  $VALGRIND ../ifa -D.. $flags $t >! $t.out
+  echo $t:r >> $t.out
+  $t:r >> $t.out
+  if ($?WINDIR) then
+    rm $t:r.exe
+  else
+    rm $t:r
+  endif
+  diff $t.out $t.check
+  if ($?) then
+    echo $t "******** FAILED ********"
+    set failed = `expr $failed + 1`
+  else
+    echo $t "PASSED"
+  endif
+end
+echo "---------------------------------------"
+if (! $failed) then
+  echo "ALL tests PASSED"
+else
+  echo "********" $failed "test(s) FAILED *********"
+endif
