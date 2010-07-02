@@ -4,16 +4,16 @@ BUILD
 
   1. plib
 
-     git co git://github.com/jplevyak/plib.git
+     git clone git://github.com/jplevyak/plib.git
 
      This must be parallel to the ifa directory
 
 
   2. dparser
    
-     git co git://dparser.git.sourceforge.net/gitroot/dparser/dparser
+     git clone git://dparser.git.sourceforge.net/gitroot/dparser/dparser
 
-     This just needs to be installed.
+     This just need to build and install this
 
 
   3. the Boehm GC:
