@@ -1,0 +1,21 @@
+BUILD
+
+  You need to pull some other software
+
+  1. plib
+
+     git co git://github.com/jplevyak/plib.git
+
+     This must be parallel to the ifa directory
+
+
+  2. dparser
+   
+     git co git://dparser.git.sourceforge.net/gitroot/dparser/dparser
+
+     This just needs to be installed.
+
+
+  3. the Boehm GC:
+
+     yum install gc-devel
