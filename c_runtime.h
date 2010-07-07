@@ -171,21 +171,34 @@ static inline int _CG_float_printf(double d, bool ln) {
 #define _CG_list_data(_l) (&_CG_list_to_struct(_l)->data[0])
 #define _CG_prim_len(_c, _l) ((_l)?_CG_list_len(_l):0)
 #define _CG_ptr_to_list(_l) ((_CG_list)(((char*)(_l))+SIZEOF_LIST_HEADER))
-static inline _CG_list _CG_to_list(_CG_list l) { return _CG_list_ptr(l); }
+static inline _CG_list _CG_to_list(_CG_list l) { return l; }
 
 static inline _CG_list _CG_list_add_internal(_CG_list l1, _CG_list l2, uint32 size1, uint32 size2) {
   uint32 s1 = _CG_prim_len(0,l1), s2 = _CG_prim_len(0,l2);
-  if (!(s1 + s2)) return 0;
   uint32 size = size1 ? size1 : size2;
-  _CG_list x = _CG_ptr_to_list((_CG_list)MALLOC(size * s1 * s2 + SIZEOF_LIST_HEADER));
-  _CG_list_len(x) = s1 + s2;
-  _CG_list_total_len(0,x) = s1 + s2;
-  _CG_list_ptr(x) = x;
+  _CG_list x = (_CG_list)MALLOC(size * s1 * s2);
   if (s1)
     memcpy(x, _CG_list_ptr(l1), s1 * size);
   if (s2)
     memcpy(((char*)x) + s1 * size, _CG_list_ptr(l2), s2 * size);
-  return x;
+  _CG_list_len(l1) = s1 + s2;
+  _CG_list_total_len(0,l1) = s1 + s2;
+  _CG_list_ptr(l1) = x;
+  return l1;
+}
+
+static inline _CG_list _CG_list_resize_internal(_CG_list l1, uint32 size1, uint32 new_len) {
+  uint32 s1 = _CG_prim_len(0,l1);
+  _CG_list x = new_len ? (_CG_list)MALLOC(size1 * new_len) : 0;
+  uint32 y = s1 < new_len ? s1 : new_len;
+  if (y)
+    memcpy(x, _CG_list_ptr(l1), s1 * size1);
+  if (new_len > s1)
+    memset(((char*)x) + s1 * size1, 0, (new_len - s1) * size1);
+  _CG_list_len(l1) = new_len;
+  _CG_list_total_len(0,l1) = new_len;
+  _CG_list_ptr(l1) = x;
+  return l1;
 }
 
 static inline _CG_list _CG_list_mult_internal(_CG_list l1, uint32 l, uint32 size) {
@@ -274,6 +287,7 @@ static inline void *_CG_prim_tuple_list_internal(uint s, uint n) {
 #define _CG_prim_list(_e, _n) _CG_prim_tuple_list_internal(sizeof(_e), _n)
 #define _CG_prim_tuple(_c, _n) (_c)GC_MALLOC(sizeof(*((_c)0)))
 #define _CG_list_add(_l1, _l2, _s1, _s2) (_CG_list_add_internal(_CG_to_list(_l1), _CG_to_list(_l2), _s1, _s2))
+#define _CG_list_resize(_l1, _s1, _new_len) (_CG_list_resize_internal(_CG_to_list(_l1), _s1, _new_len))
 #define _CG_list_mult(_l1, _l, _s) (_CG_list_mult_internal(_CG_to_list(_l1), _l, _s))
 #define _CG_list_getslice(_l, _s, _lower, _upper) (_CG_list_getslice_internal(_CG_to_list(_l), _s, _lower, _upper))
 #define _CG_list_setslice(_l1, _s, _lower, _upper, _l2) (_CG_list_setslice_internal(_l1, _s, _lower, _upper, _CG_to_list(_l2)))

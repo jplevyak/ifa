@@ -1618,8 +1618,15 @@ structural_assignment(CreationSet *new_cs, CreationSet *cs, PNode *p, EntrySet *
   AVar *elem = get_element_avar(cs);
   if (elem)
     flow_vars(elem, get_element_avar(new_cs));
-  if (mix) {
+  if (mix && new_cs->sym->element) {
     fill_tvals(es->fun, p, new_cs->vars.n);
+    for (int i = 0; i < new_cs->vars.n; i++) {
+      AVar *tval = make_AVar(p->tvals[i], es);
+      flow_vars(new_cs->vars[i], tval);
+      set_container(tval, result);
+      flow_vars(tval, get_element_avar(new_cs));
+    }
+    fill_tvals(es->fun, p, cs->vars.n);
     for (int i = 0; i < new_cs->vars.n; i++) {
       AVar *tval = make_AVar(p->tvals[i], es);
       flow_vars(new_cs->vars[i], tval);
@@ -1971,6 +1978,8 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
         AType *rtype = bottom_type;
         forv_CreationSet(cs, *t->out) {
           AVar *elem = get_element_avar(cs);
+          if (elem)
+            elem->arg_of_send.add(result);
           if ((elem && elem->out != bottom_type) || sym_string->specializers.set_in(cs->sym))
             rtype = type_union(rtype, size_type);
           else
