@@ -1,23 +1,6 @@
 /* -*-Mode: c++;-*-
-   Copyright (c) 2003-2008 John Plevyak, All Rights Reserved
+   Copyright (c) 2003-2010 John Plevyak, All Rights Reserved
 */
-#include <assert.h>
-#include <stdarg.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <limits.h>
-#include <sys/types.h>
-#include <sys/mman.h>
-#include <sys/uio.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <time.h>
-#include <sys/time.h>
-#include <sys/stat.h>
-#include <dirent.h>
-#include <ctype.h>
-#include <string.h>
-#include <inttypes.h>
 #include "plib.h"
 
 static FILE *fp = 0;
