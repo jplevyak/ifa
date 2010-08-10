@@ -1182,7 +1182,7 @@ vector_elems(int rank, PNode *p, AVar *ae, AVar *elem, AVar *container, int n = 
   }
   set_container(e, container);
   if (rank > 0) {
-    forv_CreationSet(cs, *e->out) if (cs) {
+    forv_CreationSet(cs, e->out->sorted) {
       if (cs->sym != sym_tuple)
         flow_vars(e, elem);
       else {
@@ -1360,7 +1360,7 @@ record_arg(PNode *pn, CreationSet *cs, AVar *a, Sym *s, AEdge *e, MPosition &p) 
   AType *t = type_intersection(a->out, e->match->formal_filters.get(cp));
   e->initial_types.put(cp, t->type);
   if (s->is_pattern) {
-    forv_CreationSet(cs, *t) {
+    forv_CreationSet(cs, t->sorted) {
       assert(s->has.n == cs->vars.n);
       p.push(1);
       for (int i = 0; i < s->has.n; i++) {
@@ -1414,7 +1414,7 @@ all_applications(PNode *p, EntrySet *es, AVar *a0, Vec<AVar *> &args, Vec<cchar 
   if (!visibility_point) visibility_point = p;
   int incomplete = -2;
   a0->arg_of_send.add(make_AVar(p->lvals[0], es));
-  forv_CreationSet(cs, *a0->out) if (cs)
+  forv_CreationSet(cs, a0->out->sorted)
     switch (application(p, es, a0, cs, args, names, is_closure, partial, visibility_point, closures)) {
       case -1: if (incomplete < 0) incomplete = -1; break;
       case 0: if (incomplete < 0) incomplete = 0; break;
@@ -1535,7 +1535,7 @@ destruct(Var **lvals, int nlvals, AVar *r, Sym *t, AVar *result, int &tvars) {
   EntrySet *es = (EntrySet*)result->contour;
   r->arg_of_send.add(result);
   if (t->has.n) {
-    forv_CreationSet(cs, *r->out) if (cs) {
+    forv_CreationSet(cs, r->out->sorted) {
       AVar *violation = 0;
       int r_tuple = sym_tuple->specializers.set_in(cs->sym->type) != 0;
       int t_tuple = sym_tuple->specializers.set_in(t) != 0;
@@ -1740,8 +1740,8 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
         AVar *a1 = make_AVar(p->rvals[1], es);
         AVar *a2 = make_AVar(p->rvals[2], es);
         Sym *s;
-        forv_CreationSet(cs1, *a1->out)
-          forv_CreationSet(cs2, *a2->out)
+        forv_CreationSet(cs1, a1->out->sorted)
+          forv_CreationSet(cs2, a2->out->sorted)
             if (cs1->sym->is_meta_type && cs2->sym->is_meta_type && 
                 (s = meta_apply(cs1->sym->meta_type, cs2->sym->meta_type)))
               update_gen(result, make_abstract_type(s));
@@ -1790,7 +1790,7 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
         AVar *tval = make_AVar(p->tvals[0], es);
         flow_vars(val, tval);
         set_container(tval, vec);
-        forv_CreationSet(cs, *vec->out) if (cs) {
+        forv_CreationSet(cs, vec->out->sorted) {
           if (sym_string->specializers.set_in(cs->sym)) {
             AType *d = type_diff(sym_char->abstract_type, val->out);
             if (d != bottom_type)
@@ -1830,12 +1830,12 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
         Vec<AVar*> methods;
         set_container(result, obj);
         bool partial = p->code->partial != Partial_NEVER;
-        forv_CreationSet(sel, *selector->out) if (sel) {
+        forv_CreationSet(sel, selector->out->sorted) {
           cchar *symbol = sel->sym->name; 
           if (!symbol) symbol = sel->sym->constant;
           if (!symbol) symbol = sel->sym->imm.v_string;
           assert(symbol);
-          forv_CreationSet(cs, *obj->out) if (cs) {
+          forv_CreationSet(cs, obj->out->sorted) {
             AVar *iv = cs->var_map.get(symbol);
             if (iv) {
               iv->arg_of_send.add(result);
@@ -1877,12 +1877,12 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
         AVar *tval = make_AVar(p->tvals[0], es);
         flow_vars(val, tval);
         set_container(tval, obj);
-        forv_CreationSet(sel, *selector->out) if (sel) {
+        forv_CreationSet(sel, selector->out->sorted) {
           cchar *symbol = sel->sym->name; 
           if (!symbol) symbol = sel->sym->constant;
           if (!symbol) symbol = sel->sym->imm.v_string;
           assert(symbol);
-          forv_CreationSet(cs, *obj->out) if (cs) {
+          forv_CreationSet(cs, obj->out->sorted) {
             AVar *iv = cs->var_map.get(symbol);
             if (iv)
               flow_vars(tval, iv);
@@ -1894,7 +1894,7 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
       case P_prim_assign: {
         AVar *lhs = make_AVar(p->rvals[1], es);
         AVar *rhs = make_AVar(p->rvals[3], es);
-        forv_CreationSet(cs, *lhs->out) if (cs) {
+        forv_CreationSet(cs, lhs->out->sorted) {
           if (cs->sym == sym_ref) {
             assert(cs->vars.n);
             AVar *av = cs->vars[0];
@@ -1912,7 +1912,7 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
       case P_prim_deref: {
         AVar *ref = make_AVar(p->rvals[2], es);
         set_container(result, ref);
-        forv_CreationSet(cs, *ref->out) if (cs) {
+        forv_CreationSet(cs, ref->out->sorted) {
           AVar *av = cs->vars[0];
           flow_vars(av, result);
         }
@@ -1920,13 +1920,13 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
       }
       case P_prim_new: {
         AVar *thing = make_AVar(p->rvals[p->rvals.n-1], es);
-        forv_CreationSet(cs, *thing->out) if (cs)
+        forv_CreationSet(cs, thing->out->sorted)
           creation_point(result, cs->sym->meta_type); // recover original type
         break;
       }
       case P_prim_clone: {
         AVar *thing = make_AVar(p->rvals[p->rvals.n-1], es);
-        forv_CreationSet(cs, *thing->out) if (cs) {
+        forv_CreationSet(cs, thing->out->sorted) {
           CreationSet *new_cs = creation_point(result, cs->sym);
           structural_assignment(new_cs, cs, p, es);
         }
@@ -1935,10 +1935,10 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
       case P_prim_merge: {
         AVar *thing1 = make_AVar(p->rvals[p->rvals.n-2], es);
         AVar *thing2 = make_AVar(p->rvals[p->rvals.n-1], es);
-        forv_CreationSet(cs, *thing1->out) if (cs) {
+        forv_CreationSet(cs, thing1->out->sorted) {
           CreationSet *new_cs = creation_point(result, cs->sym);
           structural_assignment(new_cs, cs, p, es, true);
-          forv_CreationSet(cs2, *thing2->out) if (cs2) {
+          forv_CreationSet(cs2, thing2->out->sorted) {
             if (cs->sym == cs2->sym)
               structural_assignment(new_cs, cs2, p, es, true);
           }
@@ -1948,8 +1948,8 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
       case P_prim_merge_in: {
         AVar *thing1 = make_AVar(p->rvals[p->rvals.n-2], es);
         AVar *thing2 = make_AVar(p->rvals[p->rvals.n-1], es);
-        forv_CreationSet(cs, *thing1->out) if (cs) {
-          forv_CreationSet(cs2, *thing2->out) if (cs2) {
+        forv_CreationSet(cs, thing1->out->sorted) {
+          forv_CreationSet(cs2, thing2->out->sorted) {
             if (cs->sym == cs2->sym)
               structural_assignment(cs, cs2, p, es, true, true);
           }
@@ -1962,7 +1962,7 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
         Sym *s = p->rvals[1]->sym;
         AVar *rhs = make_AVar(p->rvals[2], es);
         Vec<CreationSet *> css;
-        forv_CreationSet(cs, *rhs->out)
+        forv_CreationSet(cs, rhs->out->sorted)
           if (cs->sym->type == p->rvals[1]->sym)
             css.set_add(cs);
         if (css.n)
@@ -1974,7 +1974,7 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
       case P_prim_len: {
         AVar *t = make_AVar(p->rvals[2], es);
         AType *rtype = bottom_type;
-        forv_CreationSet(cs, *t->out) {
+        forv_CreationSet(cs, t->out->sorted) {
           AVar *elem = get_element_avar(cs);
           if (elem)
             elem->arg_of_send.add(result);
@@ -1989,7 +1989,7 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
       case P_prim_sizeof: {
         AVar *t = make_AVar(p->rvals[2], es);
         AType *rtype = bottom_type;
-        forv_CreationSet(cs, *t->out) {
+        forv_CreationSet(cs, t->out->sorted) {
           if (cs->sym->size)
             rtype = type_union(rtype, make_size_constant_type(cs->sym->size));
           else
@@ -2001,10 +2001,10 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
       case P_prim_sizeof_element: {
         AVar *t = make_AVar(p->rvals[2], es);
         AType *rtype = bottom_type;
-        forv_CreationSet(cs, *t->out) {
+        forv_CreationSet(cs, t->out->sorted) {
           AVar *elem = get_element_avar(cs);
           if (elem) {
-            forv_CreationSet(cs2, *elem->out) {
+            forv_CreationSet(cs2, elem->out->sorted) {
               if (cs2->sym->size)
                 rtype = type_union(rtype, make_size_constant_type(cs2->sym->size));
               else
@@ -2108,7 +2108,7 @@ analyze_edge(AEdge *e_arg) {
       AType *es_filter = ee->to->filters.get(p);
       AType *filter = es_filter ? type_intersection(edge_filter, es_filter) : edge_filter;
       flow_var_type_permit(filtered, filter);
-      forv_CreationSet(cs, *filter) if (cs) 
+      forv_CreationSet(cs, filter->sorted)
         cs->ess.set_add(ee->to);
       flow_vars(actual, filtered);
       flow_vars(filtered, formal);
@@ -2556,7 +2556,7 @@ show_violations(FA *fa, FILE *fp) {
           fprintf(fp, "unresolved member '%s'", v->av->out->v[0]->sym->name);
         else {
           fprintf(fp, "unresolved member\n");
-          forv_CreationSet(selector, *v->av->out)
+          forv_CreationSet(selector, v->av->out->sorted)
             fprintf(fp, "  selector '%s'\n", selector->sym->name);
         }
         if (v->type->n == 1)
@@ -2564,7 +2564,7 @@ show_violations(FA *fa, FILE *fp) {
                   "<anonymous>");
         else {
           fprintf(fp, "  classes\n");
-          forv_CreationSet(cs, *v->type)
+          forv_CreationSet(cs, v->type->sorted)
             fprintf(fp, "  class '%s'\n", cs->sym->name);
         }
         break;

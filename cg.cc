@@ -340,8 +340,11 @@ write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
           fprintf(fp, ";\n");
         }
       } else {
-        fprintf(fp, "%s = ((%s)%s)->e%s;\n", n->lvals[0]->cg_string, 
-                t->cg_string, n->rvals[o]->cg_string, n->rvals[o+1]->sym->constant);
+        if (fruntime_errors && t->type_kind == Type_RECORD && !t->has.n)
+          fputs("assert(!\"runtime error: bad getter\");\n", fp);
+        else
+          fprintf(fp, "%s = ((%s)%s)->e%s;\n", n->lvals[0]->cg_string, 
+                  t->cg_string, n->rvals[o]->cg_string, n->rvals[o+1]->sym->constant);
       }
       break;
     }
