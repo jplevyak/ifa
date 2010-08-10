@@ -20,9 +20,7 @@
 
 /* runtime options 
 */
-int print_call_depth = 2;
-int fanalysis_errors = 0;
-int fgraph_pass_contours = 0;
+bool fgraph_pass_contours = false;
 
 int analysis_pass = 0;
 
@@ -2391,7 +2389,7 @@ compar_edge_id(const void *aa, const void *bb) {
 static void
 show_call_tree(FILE *fp, PNode *p, EntrySet *es, int depth = 0) {
   depth++;
-  if (depth > print_call_depth || !p->code)
+  if (depth > fa->print_call_depth || !p->code)
     return;
   if (depth > 1 && p->code->filename() && p->code->line() > 0) {
     for (int x = 0; x < depth; x++)
@@ -2517,8 +2515,12 @@ show_violations(FA *fa, FILE *fp) {
       CreationSet *cs = (CreationSet*)v->av->contour;
       fprintf(fp, "%s:%d: class %s:: ", 
               cs->sym->filename(), cs->sym->source_line(), cs->sym->name);     
-    } else
-      fprintf(fp, "error: ");
+    } else {
+      if (fruntime_errors)
+        fprintf(fp, "warning: ");
+      else
+        fprintf(fp, "error: ");
+    }
     switch (v->kind) {
       default: assert(0);
       case ATypeViolation_PRIMITIVE_ARGUMENT:
@@ -2539,7 +2541,7 @@ show_violations(FA *fa, FILE *fp) {
         }
         break;
       case ATypeViolation_DISPATCH_AMBIGUITY:
-        fprintf(fp, "error: ambiguous call '%s'", v->av->var->sym->name);
+        fprintf(fp, "%s: ambiguous call '%s'", fruntime_errors ? "warning" : "error", v->av->var->sym->name);
         if (ifa_verbose)
           fprintf(fp, " send:%d", v->send->var->sym->id);
         fprintf(fp, "\n");
@@ -2810,6 +2812,29 @@ collect_var_type_violations() {
       forv_AVar(av, cs->vars) {
         if (av->out == bottom_type)
           type_violation(ATypeViolation_NOTYPE, av, av->out, 0, 0);
+      }
+    }
+  }
+}
+
+static void
+convert_NOTYPE_to_void() {
+  if (!fa->css_set.set_in(void_type->v[0])) {
+    fa->css_set.set_add(void_type->v[0]);       
+    fa->css.add(void_type->v[0]);       
+  }
+  forv_EntrySet(es, fa->ess) {
+    forv_Var(v, es->fun->fa_all_Vars) {
+      AVar *av = make_AVar(v, es);
+      if (!av->var->is_internal && av->out == bottom_type && !is_Sym_OUT(av->var->sym))
+        av->out = void_type;
+    }
+  }
+  if (fa->no_unused_instance_variables) {
+    forv_CreationSet(cs, fa->css) {
+      forv_AVar(av, cs->vars) {
+        if (av->out == bottom_type)
+          av->out = void_type;
       }
     }
   }
@@ -4078,10 +4103,11 @@ FA::analyze(Fun *top) {
   } while (extend_analysis());
   set_void_lub_types_to_void();
   remove_unused_closures();
-  if (fanalysis_errors)
-    if1->callback->report_analysis_errors(type_violations);
+  if1->callback->report_analysis_errors(type_violations);
   show_violations(fa, stderr);
-  return type_violations.n ? -1 : 0;
+  if (fruntime_errors)
+    convert_NOTYPE_to_void();
+  return (!fruntime_errors && type_violations.n) ? -1 : 0;
 }
 
 static Var *

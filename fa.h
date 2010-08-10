@@ -292,14 +292,15 @@ class FA : public gc { public:
   Vec<CreationSet *> css, css_set;
   Vec<AVar *> global_avars;
 
+  int print_call_depth;
   bool permit_boxing;
   bool no_unused_instance_variables;
   int tuple_index_base;
   int num_constants_per_variable;
 
   FA(PDB *apdb) : pdb(apdb), cdb(0), patterns(0), top_edge(0),
-    permit_boxing(0), no_unused_instance_variables(0), tuple_index_base(0),
-    num_constants_per_variable(1) {}
+                  print_call_depth(2), permit_boxing(0), no_unused_instance_variables(0), 
+                  tuple_index_base(0), num_constants_per_variable(1) {}
 
   int analyze(Fun *f);
   int concretize();

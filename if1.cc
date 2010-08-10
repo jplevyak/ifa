@@ -21,7 +21,8 @@ cchar *code_string[] = { "SUB", "MOVE", "SEND", "IF", "LABEL", "GOTO", "SEQ", "C
 static int mark_sym_live(Sym *s);
 
 IF1 *if1 = 0;
-int fdce_if1 = 1;
+bool fdce_if1 = true;
+bool fruntime_errors = false;
 
 IF1::IF1() {
  memset(this, 0, sizeof *this); 

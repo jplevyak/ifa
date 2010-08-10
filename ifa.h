@@ -84,10 +84,9 @@ extern int graph_type;
 void ifa_graph(cchar *fn);
 void ifa_html(cchar *fn, char *mktree_dir);
 
-extern int print_call_depth;
-extern int fanalysis_errors;
-extern int fgraph_pass_contours;
-extern int fdce_if1;
+extern bool fgraph_pass_contours;
+extern bool fdce_if1;
+extern bool fruntime_errors;
 
 #include "ifadefs.h"
 

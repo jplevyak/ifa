@@ -259,7 +259,10 @@ write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
             goto Lgetter_found;
           }
         }
-        fail("getter not resolved");
+        if (!fruntime_errors)
+          fail("getter not resolved");
+        else
+          fputs("  assert(!\"runtime error: getter not resolved\");\n", fp);
       Lgetter_found:;
       }
       break;
@@ -482,8 +485,11 @@ write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
 static Fun *
 get_target_fun(PNode *n, Fun *f) {
   Vec<Fun *> *fns = f->calls.get(n);
-  if (!fns || fns->n != 1)
-   fail("unable to resolve to a single function at call site");
+  if (!fns || fns->n != 1) {
+    if (!fruntime_errors)
+      fail("unable to resolve to a single function at call site");
+    return 0;
+  }
   return fns->v[0];
 }
 
@@ -582,12 +588,12 @@ write_send_arg(FILE *fp, Fun *f, PNode *n, MPosition *p, int &wrote_one) {
 static void
 write_send(FILE *fp, FA *fa, Fun *f, PNode *n) {
   fputs("  ", fp);
-  if (n->lvals.n) {
-    assert(n->lvals.n == 1);
-    if (n->lvals[0]->cg_string)
-      fprintf(fp, "%s = ", n->lvals[0]->cg_string);
-  }
   if (n->prim) {
+    if (n->lvals.n) {
+      assert(n->lvals.n == 1);
+      if (n->lvals[0]->cg_string)
+        fprintf(fp, "%s = ", n->lvals[0]->cg_string);
+    }
     fprintf(fp, "_CG_%s(", n->prim->name);
     int comma = 0;
     for (int i = 1; i < n->rvals.n; i++) {
@@ -601,15 +607,24 @@ write_send(FILE *fp, FA *fa, Fun *f, PNode *n) {
     fputs(");\n", fp);
   } else {
     Fun *target = get_target_fun(n, f);
-    fputs(target->cg_string, fp);
-    fputs("(", fp);
-    int wrote_one = 0;
-    forv_MPosition(p, target->positional_arg_positions) {
-      Var *av = target->args.get(p);
-      if (!av->live) continue;
-      write_send_arg(fp, target, n, p, wrote_one);
+    if (target) {
+      if (n->lvals.n) {
+        assert(n->lvals.n == 1);
+        if (n->lvals[0]->cg_string)
+          fprintf(fp, "%s = ", n->lvals[0]->cg_string);
+      }
+      fputs(target->cg_string, fp);
+      fputs("(", fp);
+      int wrote_one = 0;
+      forv_MPosition(p, target->positional_arg_positions) {
+        Var *av = target->args.get(p);
+        if (!av->live) continue;
+        write_send_arg(fp, target, n, p, wrote_one);
+      }
+      fputs(");\n", fp);
+    } else {
+      fputs("assert(!\"runtime error: matching function not found\");\n", fp);
     }
-    fputs(");\n", fp);
   }
 }
 
