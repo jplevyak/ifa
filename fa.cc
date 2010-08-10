@@ -3388,6 +3388,7 @@ clear_avar(AVar *av) {
   av->forward.clear();
   av->arg_of_send.clear();
   av->mark_map = 0;
+  av->live = 0;
   if (av->lvalue)
     clear_avar(av->lvalue);
 }
