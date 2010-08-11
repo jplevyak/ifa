@@ -578,13 +578,13 @@ fold_result(Immediate *im1, Immediate *im2, Immediate *imm) {
   return;
 }
 
-void
+int
 fold_constant(int op, Immediate *aim1, Immediate *aim2, Immediate *imm) {
   Immediate im1(*aim1), im2, coerce;
   if (aim2)
     im2 = *aim2;
   switch (op) {
-    default: fail("fold constant op not supported"); break;
+    default: return -1;
     case P_prim_mult:
     case P_prim_div:
     case P_prim_mod:
@@ -657,6 +657,7 @@ fold_constant(int op, Immediate *aim1, Immediate *aim2, Immediate *imm) {
     case P_prim_lnot: DO_FOLD1(!); break;
     case P_prim_pow: DO_FOLDF(pow); break;
   }
+  return 0;
 }
 
 void

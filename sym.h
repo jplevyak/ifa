@@ -178,6 +178,7 @@ void convert_constant_to_immediate(Sym *sym);
 int compar_syms(const void *ai, const void *aj); // for use with qsort
 Sym *size_constant(int n);
 Sym *int32_constant(int n);
+Sym *imm_constant(Immediate &imm, Sym *t);
 void pp(Sym *);
 
 #endif

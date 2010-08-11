@@ -310,7 +310,7 @@ static inline void *_CG_prim_tuple_list_internal(uint s, uint n) {
 #define _CG_prim_or(_a, _op, _b) ((_a) | (_b))
 #define _CG_prim_lor(_a, _op, _b) ((_a) || (_b))
 #define _CG_prim_land(_a, _op, _b) ((_a) && (_b))
-#define _CG_prim_lnot(_op, _a) (~(_a))
+#define _CG_prim_lnot(_op, _a) (!(_a))
 #define _CG_prim_less(_a, _op, _b) ((_a) < (_b))
 #define _CG_prim_lessorequal(_a, _op, _b) ((_a) <= (_b))
 #define _CG_prim_greater(_a, _op, _b) ((_a) > (_b))

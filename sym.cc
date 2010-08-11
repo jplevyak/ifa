@@ -392,6 +392,13 @@ size_constant(int n) {
   return int_constant_internal(if1, n, sym_size);
 }
 
+Sym *
+imm_constant(Immediate &imm, Sym *t) {
+  char str[256];
+  sprint_imm(str, imm);
+  return if1_const(if1, t, str, &imm);
+}
+
 void
 pp(Sym *s) {
   printf("(SYM %d ", s->id);

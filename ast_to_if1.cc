@@ -1967,7 +1967,7 @@ fold_constant(IF1 *i, ParseAST *ast) {
     return;
   assert(!ast->sym);
   ast->sym = new_sym(i, ast->scope);
-  fold_constant(ast->prim->index, &ast->sym->imm, &a->imm, b ? &b->imm : 0);
+  fold_constant(ast->prim->index, &a->imm, b ? &b->imm : 0, &ast->sym->imm);
 }
 
 int

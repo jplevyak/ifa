@@ -31,6 +31,8 @@ AType *void_type = 0;
 AType *top_type = 0;
 AType *any_type = 0;
 AType *bool_type = 0;
+AType *true_type = 0;
+AType *false_type = 0;
 AType *size_type = 0;
 AType *anyint_type = 0;
 AType *anynum_kind = 0;
@@ -1275,9 +1277,11 @@ add_send_constraints(EntrySet *es) {
           ii = -p->prim->nrets -1; // last
         switch (p->prim->ret_types[ii]) {
           case PRIM_TYPE_ANY: break;
-          case PRIM_TYPE_BOOL: update_gen(make_AVar(p->lvals[i], es), bool_type); break;
-          case PRIM_TYPE_STRING: update_gen(make_AVar(p->lvals[i], es), string_type); break;
-          case PRIM_TYPE_SIZE: update_gen(make_AVar(p->lvals[i], es), size_type); break;
+          case PRIM_TYPE_STRING: 
+            update_gen(make_AVar(p->lvals[i], es), string_type); break;
+          case PRIM_TYPE_SIZE:
+            update_gen(make_AVar(p->lvals[i], es), size_type); break;
+          case PRIM_TYPE_BOOL:
           case PRIM_TYPE_ANY_NUM_AB:
           case PRIM_TYPE_ANY_NUM_A:
           case PRIM_TYPE_ANY_NUM_B:
@@ -1610,6 +1614,13 @@ make_size_constant_type(int n) {
   return make_abstract_type(t);
 }
 
+AType *
+make_constant(Immediate &imm, Sym *t) {
+  Sym *c = imm_constant(imm, t);
+  build_type_hierarchy();
+  return make_abstract_type(c);
+}
+
 static void
 structural_assignment(CreationSet *new_cs, CreationSet *cs, PNode *p, EntrySet *es, bool merge = false, bool mix = false) {
   AVar *result = p->lvals.n ? make_AVar(p->lvals[0], es) : 0;
@@ -1698,9 +1709,11 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
       if (i - 1 < n - 1) iarg++;
     }
     for (int i = 0; i < p->lvals.n; i++) {
-      // connect the flows, but prevent values to pass
+      // connect the flows, but prevent values from passing
       // so that splitting can attribute causality
-      if (p->prim->ret_types[i] == PRIM_TYPE_ANY_NUM_AB) {
+      if ((p->prim->ret_types[i] == PRIM_TYPE_ANY_NUM_AB ||
+           p->prim->ret_types[i] == PRIM_TYPE_ANY_NUM_A ||
+           p->prim->ret_types[i] == PRIM_TYPE_BOOL) && n == 3) {
         AVar *res = make_AVar(p->lvals[i], es);
         fill_tvals(es->fun, p, p->lvals.n);
         AVar *t = make_AVar(p->tvals[i], es);
@@ -1708,15 +1721,39 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
         flow_vars(a, t);
         flow_vars(b, t);
         flow_vars(t, res);
-        update_in(res, type_num_fold(p->prim, a->out, b->out));
-      } else if (p->prim->ret_types[i] == PRIM_TYPE_ANY_NUM_A) {
+        // can we fold this?
+        if (a->out && b->out && a->out->n && b->out->n) {
+          AType *nt = p->prim->ret_types[i] == PRIM_TYPE_BOOL ? bool_type : type_num_fold(p->prim, a->out, b->out);
+          if (a->out->n == 1 && b->out->n == 1 && 
+              a->out->v[0]->sym->imm.const_kind && b->out->v[0]->sym->imm.const_kind) 
+          {
+            Immediate imm;
+            if (!fold_constant(p->prim->index, &a->out->v[0]->sym->imm, &b->out->v[0]->sym->imm, &imm))
+              update_in(res, make_constant(imm, nt->v[0]->sym));
+            else
+              update_in(res, nt);
+          } else
+            update_in(res, nt);
+        }
+      } else if ((p->prim->ret_types[i] == PRIM_TYPE_ANY_NUM_A ||
+                  p->prim->ret_types[i] == PRIM_TYPE_BOOL) && n == 2) {
         AVar *res = make_AVar(p->lvals[i], es);
         fill_tvals(es->fun, p, p->lvals.n);
         AVar *t = make_AVar(p->tvals[i], es);
         flow_var_type_permit(t, bottom_type);
         flow_vars(a, t);
         flow_vars(t, res);
-        update_in(res, type_num_fold(p->prim, a->out, a->out));
+        if (a->out && a->out->n) {
+          AType *nt = p->prim->ret_types[i] == PRIM_TYPE_BOOL ? bool_type : type_num_fold(p->prim, a->out, a->out);
+          if (a->out->n == 1 && a->out->v[0]->sym->imm.const_kind) {
+            Immediate imm;
+            if (!fold_constant(p->prim->index, &a->out->v[0]->sym->imm, 0, &imm))
+              update_in(res, make_constant(imm, nt->v[0]->sym));
+            else
+              update_in(res, nt);
+          } else
+            update_in(res, nt);
+        }
       }
     }
     AVar *result = p->lvals.n ? make_AVar(p->lvals[0], es) : 0;
@@ -2899,6 +2936,8 @@ initialize() {
   any_type = make_abstract_type(sym_any);
   top_type = type_union(any_type, void_type);
   bool_type = make_abstract_type(sym_bool);
+  true_type = make_abstract_type(sym_true);
+  false_type = make_abstract_type(sym_false);
   size_type = make_abstract_type(sym_size);
   symbol_type = make_abstract_type(sym_symbol);
   string_type = make_abstract_type(sym_string);
@@ -3208,7 +3247,8 @@ split_entry_set(AVar *av, int fsetters, int fmark, int fdynamic) {
   Vec<AEdge *> all_edges, do_edges, stay_edges;
   PendingAEdgeEntrySetsMap pending_es_backedge_map;
   forv_AEdge(ee, es->edges) if (ee)
-    all_edges.add(ee);
+    if (ee->args.n)
+      all_edges.add(ee);
   qsort_by_id(all_edges);
   int nedges = 0, non_rec_edges = 0;
   forv_AEdge(ee, all_edges) if (ee) {
