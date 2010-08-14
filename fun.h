@@ -70,6 +70,7 @@ class Fun : public gc {
   Vec<Var *> fa_all_Vars;
   Vec<PNode *> fa_all_PNodes;
   Vec<PNode *> fa_move_PNodes;
+  Vec<PNode *> fa_if_PNodes;
   Vec<PNode *> fa_phi_PNodes;
   Vec<PNode *> fa_phy_PNodes;
   Vec<PNode *> fa_send_PNodes;

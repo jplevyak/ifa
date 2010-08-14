@@ -93,6 +93,7 @@ class EntrySet : public gc { public:
   Fun                                   *fun;
   int                                   id;
   uint                                  dfs_color : 2;
+  uint                                  in_es_worklist : 1;
   Map<MPosition*,AVar*>                 args;
   Vec<AVar *>                           rets;
   Map<MPosition *, AType *>             filters;
@@ -104,9 +105,11 @@ class EntrySet : public gc { public:
   Vec<AEdge *>                          backedges;
   Vec<AEdge *>                          es_cs_backedges;
   Vec<CreationSet *>                    cs_backedges;
+  Vec<PNode *>                          live_pnodes;
   EntrySet                              *split;
   PendingAEdgeEntrySetsMap              pending_es_backedge_map;
   Vec<EntrySet *>                       *equiv;         // clone.cpp
+  LINK(EntrySet,                        es_worklist_link);
 
   EntrySet(Fun *af);
 };
@@ -176,10 +179,12 @@ class AVar : public gc { public:
   MatchCache                    *match_cache;
   Sym                           *type;
   int                           ivar_offset;
-  uint                          in_send_worklist:1;
-  uint                          contour_is_entry_set:1;
-  uint                          is_lvalue:1;
-  uint                          live:1;
+  uint                          in_send_worklist : 1;
+  uint                          contour_is_entry_set : 1;
+  uint                          is_lvalue : 1;
+  uint                          live : 1;
+  uint                          fa_live : 1;
+  uint                          is_if_arg : 1;
   Accum<AVar *>                 arg_of_send;
   LINK(AVar,                    send_worklist_link);
 
@@ -396,6 +401,8 @@ extern AType *unknown_type;
 extern AType *top_type;
 extern AType *any_type;
 extern AType *bool_type;
+extern AType *true_type;
+extern AType *false_type;
 extern AType *size_type;
 extern AType *anyint_type;
 extern AType *anynum_kind;

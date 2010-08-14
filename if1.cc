@@ -43,7 +43,7 @@ if1_register_sym(IF1 *p, Sym *sy, cchar *name) {
 }
 
 Sym *
-if1_const(IF1 *p, Sym *type, cchar *constant, Immediate *imm) {
+if1_const(IF1 *p, Sym *type, cchar *constant, Immediate *imm, Sym *asym) {
   assert(type);
   Immediate t;
   if (!imm)
@@ -66,9 +66,10 @@ if1_const(IF1 *p, Sym *type, cchar *constant, Immediate *imm) {
     type = unalias_type(type);
   if (sym) {
     assert(sym->type == type);
+    assert(!asym || asym == sym);
     return sym;
   }
-  sym = new_Sym();
+  sym = asym ? asym : new_Sym();
   sym->is_constant = 1;
   sym->constant = c;
   sym->type = type;

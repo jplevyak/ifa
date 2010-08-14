@@ -20,6 +20,7 @@ class PNode : public gc { public:
   Code *code;
   int id;
   uint live : 1;
+  uint fa_live : 1;
   Vec<Var *> lvals; // variables this node assigns
   Vec<Var *> rvals; // variables this node reads
   Vec<Var *> tvals; // temporary variables used by this node

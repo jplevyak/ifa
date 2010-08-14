@@ -504,6 +504,8 @@ simple_move(FILE *fp, Var *lhs, Var *rhs) {
     return;
   if (!lhs->cg_string || !rhs->cg_string)
     return;
+  if (rhs->type == sym_void->type || lhs->type == sym_void->type)
+    return;
   if (!rhs->sym->fun) {
     ASSERT(rhs->cg_string);
     if (rhs->type != lhs->type)
@@ -650,7 +652,7 @@ static void do_phi_nodes(FILE *fp, PNode *n, int isucc) {
 
 static void
 write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done) {
-  if (n->live)
+  if (n->live && n->fa_live)
     switch (n->code->kind) {
       case Code_LABEL:
         fprintf(fp, " L%d:;\n", n->code->label[0]->id);
@@ -672,22 +674,34 @@ write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done) {
     }
   switch (n->code->kind) {
     case Code_IF:
-      if (n->live) {
-        fprintf(fp, "  if (%s) {\n", n->rvals[0]->cg_string);
-        do_phy_nodes(fp, n, 0);
-        do_phi_nodes(fp, n, 0);
-        if (done.set_add(n->cfg_succ[0]))
-          write_c_pnode(fp, fa, f, n->cfg_succ[0], done);
-        else
-          fprintf(fp, "  goto L%d;\n", n->code->label[0]->id);
-        fprintf(fp, "  } else {\n");
-        do_phy_nodes(fp, n, 1);
-        do_phi_nodes(fp, n, 1);
-        if (done.set_add(n->cfg_succ[1]))
-          write_c_pnode(fp, fa, f, n->cfg_succ[1], done);
-        else
-          fprintf(fp, "  goto L%d;\n", n->code->label[1]->id);
-        fputs("  }\n", fp);
+      if (n->live && n->fa_live) {
+        if (n->rvals[0]->sym == true_type->v[0]->sym) {
+          do_phy_nodes(fp, n, 0);
+          do_phi_nodes(fp, n, 0);
+          if (done.set_add(n->cfg_succ[0]))
+            write_c_pnode(fp, fa, f, n->cfg_succ[0], done);
+        } else if (n->rvals[0]->sym == false_type->v[0]->sym) {
+          do_phy_nodes(fp, n, 1);
+          do_phi_nodes(fp, n, 1);
+          if (done.set_add(n->cfg_succ[1]))
+            write_c_pnode(fp, fa, f, n->cfg_succ[1], done);
+        } else {
+          fprintf(fp, "  if (%s) {\n", n->rvals[0]->cg_string);
+          do_phy_nodes(fp, n, 0);
+          do_phi_nodes(fp, n, 0);
+          if (done.set_add(n->cfg_succ[0]))
+            write_c_pnode(fp, fa, f, n->cfg_succ[0], done);
+          else
+            fprintf(fp, "  goto L%d;\n", n->code->label[0]->id);
+          fprintf(fp, "  } else {\n");
+          do_phy_nodes(fp, n, 1);
+          do_phi_nodes(fp, n, 1);
+          if (done.set_add(n->cfg_succ[1]))
+            write_c_pnode(fp, fa, f, n->cfg_succ[1], done);
+          else
+            fprintf(fp, "  goto L%d;\n", n->code->label[1]->id);
+          fputs("  }\n", fp);
+        }
       } else {
         do_phy_nodes(fp, n, 0);
         do_phi_nodes(fp, n, 0);
@@ -695,11 +709,11 @@ write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done) {
       break;
     case Code_GOTO:
       do_phi_nodes(fp, n, 0);
-      if (n->live)
+      if (n->live && n->fa_live)
         fprintf(fp, "  goto L%d;\n", n->code->label[0]->id);
       break;
     case Code_SEND:
-      if (!n->live && n->prim && n->prim->index == P_prim_reply)
+      if ((!n->live || !n->fa_live) && n->prim && n->prim->index == P_prim_reply)
         fprintf(fp, "  return 0;\n");
       else
         do_phi_nodes(fp, n, 0);
@@ -714,7 +728,8 @@ write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done) {
       write_c_pnode(fp, fa, f, p, done);
       extra_goto = 0;
     }
-  if (extra_goto && (n->cfg_succ[0]->live)) {
+  //if (n->live && n->fa_live)
+  if (extra_goto && n->cfg_succ[0]->live && n->cfg_succ[0]->fa_live) {
     assert(n->cfg_succ[0]->code->kind == Code_LABEL);
     fprintf(fp, "  goto L%d;\n", n->cfg_succ[0]->code->label[0]->id);
   }

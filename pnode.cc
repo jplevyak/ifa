@@ -8,7 +8,7 @@
 
 static int pnode_id = 1;
 
-PNode::PNode() : code(0), live(0), mark(0), prim(0), creates(0),
+PNode::PNode() : code(0), live(0), fa_live(0), mark(0), prim(0), creates(0),
                  execution_frequency(0.0), false_branch_frequency(0.0) 
 {
   id = pnode_id++;

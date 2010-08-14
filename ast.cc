@@ -216,19 +216,14 @@ void init_default_builtin_types() {
   new_builtin_unique_object(sym_unknown, "unknown", sym_unknown_type);
   sym_unknown_type->is_unique_type = 1;
 
-  if (!sym_true) {
-    Immediate imm;
-    imm.v_bool = 1;
-    sym_true = if1_const(if1, sym_bool, "true", &imm);
-    sym_true->name = sym_true->constant;
-  }
+  Immediate imm;
+  imm.v_bool = 1;
+  sym_true = if1_const(if1, sym_bool, "true", &imm, sym_true);
+  sym_true->name = sym_true->constant;
   if1_set_builtin(if1, sym_true, "true");
-  if (!sym_false) {
-    Immediate imm;
-    imm.v_bool = 0;
-    sym_false = if1_const(if1, sym_bool, "false", &imm);
-    sym_false->name = sym_false->constant;
-  }
+  imm.v_bool = 0;
+  sym_false = if1_const(if1, sym_bool, "false", &imm, sym_false);
+  sym_false->name = sym_false->constant;
   if1_set_builtin(if1, sym_false, "false");
 }
 

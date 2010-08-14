@@ -188,6 +188,9 @@ mark_initial_dead_and_alive(FA *fa, int init = 0) {
     f->live = init;
     forv_Var(v, f->fa_all_Vars) {
       v->live = init;
+      for (int i = 0; i < v->avars.n; i++) 
+        if (v->avars[i].key)
+          v->avars[i].value->live = false;
       if (v->type) { // mark all instance variables not live
         forv_CreationSet(cs, v->type->creators) if (cs) {
           forv_AVar(iv, cs->vars)

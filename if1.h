@@ -38,7 +38,7 @@ class IF1 : public gc {
 };
 
 Sym     *if1_register_sym(IF1 *p, Sym *, cchar *name = 0);
-Sym     *if1_const(IF1 *p, Sym *typ, cchar *value, Immediate *imm = 0);
+Sym     *if1_const(IF1 *p, Sym *typ, cchar *value, Immediate *imm = 0, Sym *asym = 0);
 Sym     *if1_make_symbol(IF1 *p, cchar *name, cchar *end = 0);
 void    if1_set_builtin(IF1 *p, Sym *s, cchar *name, cchar *end = 0);
 Sym     *if1_get_builtin(IF1 *p, cchar *name, cchar *end = 0);

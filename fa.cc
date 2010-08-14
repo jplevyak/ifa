@@ -58,6 +58,7 @@ static ChainHash<ATypeViolation *, ATypeViolationHashFuns> type_violation_hash;
 
 static Que(AEdge, edge_worklist_link) edge_worklist;
 static Que(AVar, send_worklist_link) send_worklist;
+static Que(EntrySet, es_worklist_link) es_worklist;
 static Vec<EntrySet *> entry_set_done;
 static Vec<ATypeViolation *> type_violations;
 
@@ -76,7 +77,7 @@ AVar::AVar(Var *v, void *acontour) :
   var(v), contour(acontour), lvalue(0), gen(0), in(bottom_type), out(bottom_type), 
   restrict(0), container(0), setters(0), setter_class(0), mark_map(0),
   cs_map(0), match_cache(0), type(0), ivar_offset(0), in_send_worklist(0), contour_is_entry_set(0), 
-  is_lvalue(0), live(0)
+  is_lvalue(0), live(0), fa_live(0), is_if_arg(0)
 {
   id = avar_id++;
 }
@@ -143,7 +144,7 @@ CreationSet::CreationSet(CreationSet *cs) : dfs_color(DFS_white), added_element_
   sym->creators.add(this);
 }
 
-EntrySet::EntrySet(Fun *af) : fun(af), dfs_color(DFS_white), split(0), equiv(0) {
+EntrySet::EntrySet(Fun *af) : fun(af), dfs_color(DFS_white), in_es_worklist(0), split(0), equiv(0) {
   id = entry_set_id++;
 }
 
@@ -212,6 +213,13 @@ update_in(AVar *v, AType *t) {
         if (!vv->in_send_worklist) {
           vv->in_send_worklist = 1;
           send_worklist.enqueue(vv);
+        }
+      }
+      if (v->is_if_arg) {
+        EntrySet *es = (EntrySet*)v->contour;
+        if (!es->in_es_worklist) {
+          es->in_es_worklist = 1;
+          es_worklist.enqueue(es);
         }
       }
       forv_AVar(vv, v->forward) if (vv)
@@ -1088,12 +1096,6 @@ add_var_constraint(AVar *av, Sym *s) {
   }
 }
 
-static void
-add_var_constraints(EntrySet *es) {
-  forv_Var(v, es->fun->fa_Vars)
-    add_var_constraint(make_AVar(v, es));
-}
-
 AVar *
 get_element_avar(CreationSet *cs) {
   if (!cs->sym->element)
@@ -1266,77 +1268,51 @@ make_period_closure(AVar *result, AVar *a, Vec<AVar *> &args) {
 // for send nodes, add simple constraints which do not depend 
 // on the computed types (compare to add_send_edgse_pnodes)
 static void
-add_send_constraints(EntrySet *es) {
-  forv_PNode(p, es->fun->fa_send_PNodes) {
-    if (p->prim) {
-      int start = 1;
-      // return constraints
-      for (int i = 0; i < p->lvals.n; i++) {
-        int ii = i;
-        if (p->prim->nrets < 0 || p->prim->nrets <= i)
-          ii = -p->prim->nrets -1; // last
-        switch (p->prim->ret_types[ii]) {
-          case PRIM_TYPE_ANY: break;
-          case PRIM_TYPE_STRING: 
-            update_gen(make_AVar(p->lvals[i], es), string_type); break;
-          case PRIM_TYPE_SIZE:
-            update_gen(make_AVar(p->lvals[i], es), size_type); break;
-          case PRIM_TYPE_BOOL:
-          case PRIM_TYPE_ANY_NUM_AB:
-          case PRIM_TYPE_ANY_NUM_A:
-          case PRIM_TYPE_ANY_NUM_B:
-          case PRIM_TYPE_A: {
-            for (int j = start; j < p->rvals.n; j++)
-              if (j - start != p->prim->pos) {
-                AVar *av = make_AVar(p->rvals[j], es), *res = make_AVar(p->lvals.v[0], es);
-                av->arg_of_send.add(res);
-              }
-            break;
-          }
-          default: assert(!"case"); break;
-        }
-      }
-      // specifics
-      switch (p->prim->index) {
-        default: break;
-        case P_prim_reply:
-          fill_rets(es, p->rvals.n - 3);
-          for (int i = 3; i < p->rvals.n; i++) {
-            AVar *r = make_AVar(p->rvals[i], es);
-            flow_vars(r, es->rets[i - 3]);
-          }
+add_send_constraints(PNode *p, EntrySet *es) {
+  if (p->prim) {
+    int start = 1;
+    // return constraints
+    for (int i = 0; i < p->lvals.n; i++) {
+      int ii = i;
+      if (p->prim->nrets < 0 || p->prim->nrets <= i)
+        ii = -p->prim->nrets -1; // last
+      switch (p->prim->ret_types[ii]) {
+        case PRIM_TYPE_ANY: break;
+        case PRIM_TYPE_STRING: 
+          update_gen(make_AVar(p->lvals[i], es), string_type); break;
+        case PRIM_TYPE_SIZE:
+          update_gen(make_AVar(p->lvals[i], es), size_type); break;
+        case PRIM_TYPE_BOOL:
+        case PRIM_TYPE_ANY_NUM_AB:
+        case PRIM_TYPE_ANY_NUM_A:
+        case PRIM_TYPE_ANY_NUM_B:
+        case PRIM_TYPE_A: {
+          for (int j = start; j < p->rvals.n; j++)
+            if (j - start != p->prim->pos) {
+              AVar *av = make_AVar(p->rvals[j], es), *res = make_AVar(p->lvals.v[0], es);
+              av->arg_of_send.add(res);
+            }
           break;
-        case P_prim_tuple: prim_make(p, es, sym_tuple); break;
-        case P_prim_list: prim_make(p, es, sym_list); break;
-        case P_prim_vector: prim_make_vector(p, es); break;
-        case P_prim_continuation: prim_make(p, es, sym_continuation); break;
-        case P_prim_set: prim_make(p, es, sym_set); break;
-        case P_prim_ref: prim_make(p, es, sym_ref, 3, 1); break;
+        }
+        default: assert(!"case"); break;
       }
     }
-  }
-}
-
-static void
-add_move_constraints(EntrySet *es) {
-  Fun *f = es->fun;
-  forv_PNode(p, f->fa_phi_PNodes) {
-    AVar *vv = make_AVar(p->lvals[0], es);
-    forv_Var(v, p->rvals)
-      flow_vars(make_AVar(v, es), vv);
-  }
-  forv_PNode(p, f->fa_phy_PNodes) {
-    AVar *vv = make_AVar(p->rvals[0], es);
-    forv_Var(v, p->lvals)
-      flow_vars(vv, make_AVar(v, es));
-  }
-  forv_PNode(p, f->fa_move_PNodes) {
-    for (int i = 0; i < p->rvals.n; i++) {
-      AVar *lhs = make_AVar(p->lvals[i], es), *rhs = make_AVar(p->rvals.v[i], es);
-      if (lhs->lvalue && rhs->lvalue)
-        flow_vars(rhs, lhs);
-      else
-        flow_vars_assign(rhs, lhs);
+    // specifics
+    switch (p->prim->index) {
+      default: break;
+      case P_prim_reply:
+        fill_rets(es, p->rvals.n - 3);
+        for (int i = 3; i < p->rvals.n; i++) {
+          AVar *r = make_AVar(p->rvals[i], es);
+          flow_vars(r, es->rets[i - 3]);
+        }
+        break;
+      case P_prim_tuple: prim_make(p, es, sym_tuple); break;
+      case P_prim_list: prim_make(p, es, sym_list); break;
+      case P_prim_vector: prim_make_vector(p, es); break;
+      case P_prim_continuation: prim_make(p, es, sym_continuation); break;
+      case P_prim_set: prim_make(p, es, sym_set); break;
+      case P_prim_ref: prim_make(p, es, sym_ref, 3, 1); break;
     }
   }
 }
@@ -2061,9 +2037,78 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
 }
 
 static void
-add_send_edges(AEdge *e) {
-  forv_PNode(p, e->match->fun->fa_send_PNodes)
-    add_send_edges_pnode(p, e->to);
+add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
+  es->live_pnodes.set_add(p);
+  forv_PNode(n, p->phi) {
+    AVar *vv = make_AVar(n->lvals[0], es);
+    forv_Var(v, n->rvals)
+      flow_vars(make_AVar(v, es), vv);
+  }
+  forv_Var(v, p->rvals) 
+    make_AVar(v, es)->fa_live = 1;
+  switch (p->code->kind) {
+    default: break;
+    case Code_SEND:
+      add_send_constraints(p, es);
+      add_send_edges_pnode(p, es);
+      break;
+    case Code_MOVE:
+      for (int i = 0; i < p->rvals.n; i++) {
+        AVar *lhs = make_AVar(p->lvals[i], es), *rhs = make_AVar(p->rvals.v[i], es);
+        if (lhs->lvalue && rhs->lvalue)
+          flow_vars(rhs, lhs);
+        else
+          flow_vars_assign(rhs, lhs);
+      }
+      break;
+    case Code_IF: {
+      AVar *cond = make_AVar(p->rvals.v[0], es);
+      AType *t = cond->out;
+      if (t == bottom_type)
+        return;
+      AType *b = type_intersection(t, bool_type);
+      AType *e = type_diff(t, b);
+      if (e != bottom_type)
+        type_violation(ATypeViolation_PRIMITIVE_ARGUMENT, cond, e, 0); 
+      if (type_intersection(b, bool_type) == bool_type)
+        break;
+      if (type_intersection(b, true_type) != bottom_type) {
+        forv_PNode(n, p->phy) {
+          AVar *vv = make_AVar(n->rvals[0], es);
+          flow_vars(vv, make_AVar(n->lvals.v[0], es));
+        }
+        PNode *n = p->cfg_succ[0];
+        if (done.set_add(n))
+          add_pnode_constraints(n, es, done);
+      }
+      if (type_intersection(b, false_type) != bottom_type) {
+        forv_PNode(n, p->phy) {
+          AVar *vv = make_AVar(n->rvals[0], es);
+          flow_vars(vv, make_AVar(n->lvals.v[1], es));
+        }
+        PNode *n = p->cfg_succ[1];
+        if (done.set_add(n))
+          add_pnode_constraints(n, es, done);
+      }
+      return;
+    }
+  }
+  forv_PNode(n, p->phy) {
+    AVar *vv = make_AVar(n->rvals[0], es);
+    forv_Var(v, n->lvals)
+      flow_vars(vv, make_AVar(v, es));
+  }
+  forv_PNode(n, p->cfg_succ)
+    if (done.set_add(n))
+      add_pnode_constraints(n, es, done);
+}
+
+static void
+add_es_constraints(EntrySet *es) {
+  forv_Var(v, es->fun->fa_Vars)
+    add_var_constraint(make_AVar(v, es));
+  Vec<PNode *> done;
+  add_pnode_constraints(es->fun->entry, es, done);
 }
 
 static inline int
@@ -2086,6 +2131,8 @@ collect_Vars_PNodes(Fun *f) {
   forv_PNode(p, f->fa_all_PNodes) {
     if (p->code->kind == Code_MOVE)
       f->fa_move_PNodes.add(p);
+    if (p->code->kind == Code_IF)
+      f->fa_if_PNodes.add(p);
     f->fa_phi_PNodes.append(p->phi);
     f->fa_phy_PNodes.append(p->phy);
     if (p->code->kind == Code_SEND) {
@@ -2169,10 +2216,9 @@ analyze_edge(AEdge *e_arg) {
       entry_set_done.set_add(ee->to);
       if (!ee->match->fun->fa_collected)
         collect_Vars_PNodes(ee->match->fun);
-      add_var_constraints(ee->to);
-      add_move_constraints(ee->to);
-      add_send_constraints(ee->to);
-      add_send_edges(ee);
+      forv_PNode(p, ee->match->fun->fa_if_PNodes)
+        make_AVar(p->rvals[0], ee->to)->is_if_arg = 1;
+      add_es_constraints(ee->to);
     }
   LskipEdge:;
   }
@@ -2762,6 +2808,7 @@ collect_argument_type_violations() {
       Vec<EntrySet *> ess;
       f->ess.set_intersection(fa->ess_set, ess);
       forv_EntrySet(from, ess) if (from) {
+        if (!from->live_pnodes.set_in(p)) continue;
         Vec<AEdge *> *m = from->out_edge_map.get(p);
         if (!m) {
           if (p->code->partial == Partial_NEVER) {
@@ -2824,7 +2871,7 @@ collect_var_type_violations() {
   forv_EntrySet(es, fa->ess) {
     forv_Var(v, es->fun->fa_all_Vars) {
       AVar *av = make_AVar(v, es);
-      if (!av->var->is_internal && av->out == bottom_type && !is_Sym_OUT(av->var->sym))
+      if (av->fa_live && !av->var->is_internal && av->out == bottom_type && !is_Sym_OUT(av->var->sym))
         type_violation(ATypeViolation_NOTYPE, av, av->out, 0, 0);
     }
   }
@@ -2847,7 +2894,7 @@ collect_var_type_violations() {
   if (fa->no_unused_instance_variables) {
     forv_CreationSet(cs, fa->css) {
       forv_AVar(av, cs->vars) {
-        if (av->out == bottom_type)
+        if (av->fa_live && av->out == bottom_type)
           type_violation(ATypeViolation_NOTYPE, av, av->out, 0, 0);
       }
     }
@@ -2936,8 +2983,11 @@ initialize() {
   any_type = make_abstract_type(sym_any);
   top_type = type_union(any_type, void_type);
   bool_type = make_abstract_type(sym_bool);
-  true_type = make_abstract_type(sym_true);
-  false_type = make_abstract_type(sym_false);
+  Immediate imm;
+  imm.v_bool = 1;
+  true_type = make_abstract_type(if1_const(if1, sym_bool, "true", &imm));
+  imm.v_bool = 0;
+  false_type = make_abstract_type(if1_const(if1, sym_bool, "false", &imm));
   size_type = make_abstract_type(sym_size);
   symbol_type = make_abstract_type(sym_symbol);
   string_type = make_abstract_type(sym_string);
@@ -3428,7 +3478,7 @@ clear_avar(AVar *av) {
   av->forward.clear();
   av->arg_of_send.clear();
   av->mark_map = 0;
-  av->live = 0;
+  av->fa_live = 0;
   if (av->lvalue)
     clear_avar(av->lvalue);
 }
@@ -3458,6 +3508,7 @@ clear_es(EntrySet *es) {
   es->backedges.clear();
   es->cs_backedges.clear();
   es->creates.clear();
+  es->live_pnodes.clear();
 }
 
 static void
@@ -4138,6 +4189,10 @@ FA::analyze(Fun *top) {
       while (AVar *send = send_worklist.pop()) {
         send->in_send_worklist = 0;
         add_send_edges_pnode(send->var->def, (EntrySet*)send->contour);
+      }
+      while (EntrySet *es = es_worklist.pop()) {
+        es->in_es_worklist = 0;
+        add_es_constraints(es);
       }
     }
     complete_pass();

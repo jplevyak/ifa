@@ -1011,6 +1011,11 @@ static void
 fixup_clone_ess(Fun *f, Vec<EntrySet *> *ess) {
   f->ess.copy(*ess);
   forv_EntrySet(es, f->ess) if (es) {
+    forv_PNode(p, es->live_pnodes) if (p) {
+      if (f->nmap)
+        p = f->nmap->get(p);
+      p->fa_live = 1;
+    }
     forv_AEdge(ee, es->edges) if (ee)
       ee->fun = f;
     es->fun = f;
