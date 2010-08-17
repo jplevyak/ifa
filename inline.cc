@@ -178,7 +178,8 @@ inline_single_sends(FA *fa) {
   Map<Fun *, PNode *> single_send;
   forv_Fun(f, fa->funs) { // find single prim send functions
     PNode *p = f->entry, *s = 0;
-    while (p != f->exit && (!p->code || p->code->kind == Code_MOVE || !p->live)) p = p->cfg_succ[0];
+    while (p != f->exit && (!p->code || p->code->kind == Code_MOVE || (!p->live && p->cfg_succ.n == 1))) 
+      p = p->cfg_succ[0];
     if (p == f->exit || p->code->kind != Code_SEND || !p->prim || f->calls.get(p)) continue;
     forv_Var(v, p->rvals) {
       Sym *fs = first_var(v)->sym;
