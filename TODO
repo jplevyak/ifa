@@ -1,0 +1,2 @@
+fix inlining with globals on rhs which are specialized by the call (dispatch)
+mark as dead functions which inlined at all call sites
