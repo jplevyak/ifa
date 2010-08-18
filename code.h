@@ -45,6 +45,22 @@ class Code : public gc {
   PNode         *pn;    // used by cfg.cpp
 
   Code(Code_kind k = Code_SUB) { memset(this, 0, sizeof *this); kind = k; }
+  Code(Code &c) {
+    kind = c.kind;
+    rvals.copy(c.rvals);
+    lvals.copy(c.lvals);
+    names.copy(c.names);
+    label[0] = c.label[0];
+    label[1] = c.label[1];
+    sub.copy(c.sub);
+    ast = c.ast;
+    prim = c.prim;
+    partial = c.partial;
+    live = c.live;
+    flattened = c.flattened;
+    cont = c.cont;
+    pn = c.pn;
+  }
   int is_group() { return kind == Code_SUB || kind == Code_SEQ || kind == Code_CONC; }
 };
 #define forv_Code(_c, _v) forv_Vec(Code, _c, _v)

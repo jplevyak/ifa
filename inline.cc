@@ -174,46 +174,139 @@ sub_constants(PNode *p) {
 }
 
 static int
+reaching_def(Var *v, PNode *p) {
+  Accum<Var*> vars;
+  vars.add(v);
+  forv_Var(v, vars.asvec) {
+    if (v->def == p) return 1;
+    if (v->def && v->def->code->kind == Code_MOVE)
+      forv_Var(x, v->def->rvals) vars.add(x);
+  }
+  return 0;
+}
+
+static int
+reaching_var(Var *v, Var *vv) {
+  Accum<Var*> vars;
+  vars.add(v);
+  forv_Var(v, vars.asvec) {
+    if (v == vv) return 1;
+    if (v->def && v->def->code->kind == Code_MOVE)
+      forv_Var(x, v->def->rvals) vars.add(x);
+  }
+  return 0;
+}
+
+static void
+insert_move_before(PNode *p, Var *rhs, Var *lhs) {
+  PNode *n = new PNode(new Code(Code_MOVE));
+  forv_PNode(x, p->cfg_pred)
+    x->cfg_succ[x->cfg_succ.index(p)] = n;
+  n->cfg_pred.copy(p->cfg_pred);
+  p->cfg_pred[0] = n;
+  p->cfg_pred.n = 1;
+  n->cfg_succ.add(p);
+  n->lvals.add(lhs);
+  n->rvals.add(rhs);
+  n->live = 1;
+  n->fa_live = 1;
+}
+
+static void
+inline_single_pnode(Fun *f, PNode *p, Fun *fn, PNode *s) {
+  Vec<Var *> rvals;
+  rvals.move(p->rvals);
+  p->prim = s->prim;
+  f->calls.put(p, fn->calls.get(s));
+  forv_Var(v, s->rvals) {
+    Sym *fs = first_var(v)->sym;
+    int i = fn->sym->has.index(fs);
+    if (i >= 0) {
+      if (rvals[i]->type == v->type || rvals[i]->type->type_kind != Type_SUM)
+        p->rvals.add(rvals[i]);
+      else {
+        Var *vv = new_live_Var(rvals[i]->sym);
+        vv->type = v->type;
+        vv->avars = v->avars;
+        insert_move_before(p, rvals[i], vv);
+        p->rvals.add(vv);
+      }
+    } else
+      p->rvals.add(new_live_Var(v->sym));
+  }
+}
+
+static void
+convert_to_move(PNode *p, int i) {
+  p->code = new Code(*p->code);
+  p->code->kind = Code_MOVE;
+  p->rvals[0] = p->rvals[i];
+  p->rvals.n = 1;
+}
+
+static int
 inline_single_sends(FA *fa) {
   Map<Fun *, PNode *> single_send;
+  Map<Fun *, int> identity_send;
   forv_Fun(f, fa->funs) { // find single prim send functions
-    PNode *p = f->entry, *s = 0;
-    while (p != f->exit && (!p->code || p->code->kind == Code_MOVE || (!p->live && p->cfg_succ.n == 1))) 
-      p = p->cfg_succ[0];
+    PNode *p = 0, *reply = 0; 
+    forv_PNode(n, f->fa_all_PNodes) {
+      if (!n->code || n->code->kind == Code_MOVE || !n->live)
+        continue;
+      if (n->prim == prim_reply) {
+        if (!reply) {
+          reply = n;
+          continue;
+        } else {
+          p = f->exit; // bail
+          break;
+        }
+      }
+      if (n->code->kind == Code_SEND && is_closure_create(n))
+        continue;
+      if (!p)
+        p = n;
+      else {
+        p = f->exit; // bail
+        break;
+      }
+    }
+    if (!p) {
+      // check for identity function
+      if (reply) {
+        for (int i = 0; i < f->sym->has.n; i++) {
+          //if (f->sym->self == f->sym->has.v[i])
+          //continue;
+          if (reaching_var(reply->rvals[reply->rvals.n-1], f->sym->has[i]->var)) {
+            identity_send.put(f, i + 1); // offset by 1 to avoid collision with empty (0)
+            continue;
+          }
+        }
+      }
+      continue;
+    }
     if (p == f->exit || p->code->kind != Code_SEND || !p->prim || f->calls.get(p)) continue;
     forv_Var(v, p->rvals) {
       Sym *fs = first_var(v)->sym;
       if (!((fs && (f->sym->has.index(fs) >= 0)) || v->sym->is_constant || v->sym->is_symbol)) goto Lskip;
     }
-    s = p;
-    p = p->cfg_succ[0];
-    while (p != f->exit && p->code->kind != Code_SEND && p->code->kind != Code_IF) p = p->cfg_succ[0];
-    if (p != f->exit) continue;
-    single_send.put(f, s);
+    if (reply && !reaching_def(reply->rvals[reply->rvals.n-1], p)) continue;
+    single_send.put(f, p);
     Lskip:;
   }
   forv_Fun(f, fa->funs) {
     forv_PNode(p, f->fa_all_PNodes) {
+      Vec<Fun *> *calls = f->calls.get(p);
       if (p->code && p->code->kind == Code_SEND && !is_closure_call(p)) {
         // inline single send functions
-        Vec<Fun *> *calls = f->calls.get(p);
         if (calls && calls->n == 1) {
           Fun *fn = calls->v[0];
           PNode *s = single_send.get(fn);
-          if (s) {
-            Vec<Var *> rvals;
-            rvals.move(p->rvals);
-            p->prim = s->prim;
-            f->calls.put(p, fn->calls.get(s));
-            forv_Var(v, s->rvals) {
-              Sym *fs = first_var(v)->sym;
-              int i = fn->sym->has.index(fs);
-              if (i >= 0)
-                p->rvals.add(rvals[i]);
-              else
-                p->rvals.add(new_live_Var(v->sym));
-            }
-          }
+          if (s) 
+            inline_single_pnode(f, p, fn, s);
+          int i = identity_send.get(fn);
+          if (i)
+            convert_to_move(p, i-1);
         }
       } else {
         PNode *c = simple_closure_call(p);
@@ -231,6 +324,15 @@ inline_single_sends(FA *fa) {
           }
           for (int i = 1; i < rvals.n; i++)
             p->rvals.add(rvals[i]);
+          if (calls && calls->n == 1) {
+            Fun *fn = calls->v[0];
+            PNode *s = single_send.get(fn);
+            if (s) 
+              inline_single_pnode(f, p, fn, s);
+            int i = identity_send.get(fn);
+            if (i)
+              convert_to_move(p, i-1);
+          }
         }
       }
       sub_constants(p);

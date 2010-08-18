@@ -18,6 +18,7 @@ Var::copy() {
   Var *v = new Var(sym);
   v->type = type;
   v->def = def;
+  v->uses.copy(uses);
   v->is_internal = is_internal;
   v->avars.copy(avars);
   return v;

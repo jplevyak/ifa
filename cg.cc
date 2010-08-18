@@ -234,10 +234,16 @@ write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
     }
     case P_prim_period: {
       cchar *t = c_type(n->lvals[0]);
+      cchar *symbol = 0;
       Vec<Sym *> symbols;
       symbol_info(n->rvals[3], symbols);
-      assert(symbols.n == 1);
-      cchar *symbol = symbols[0]->name;
+      if (symbols.n == 1)
+        symbol = symbols[0]->name;
+      else if (n->rvals[3]->sym->is_symbol)
+        symbol = n->rvals[3]->sym->name;
+      else {  
+        assert(!"selector");
+      }
       Sym *obj = n->rvals[1]->type;
       if (obj->type_kind == Type_SUM)
         obj = obj->has[0];
@@ -323,7 +329,8 @@ write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       Sym *t = n->rvals[o]->type;
       if (t->type_kind != Type_RECORD || !n->rvals[o+1]->sym->constant) {
         Sym *e = n->lvals[0]->type;
-        fprintf(fp, "%s = ", n->lvals[0]->cg_string);
+        if (n->lvals[0]->live)
+          fprintf(fp, "%s = ", n->lvals[0]->cg_string);
         if (sym_string->specializers.set_in(t))
           fprintf(fp, "_CG_char_from_string(%s,%s);\n", n->rvals[o]->cg_string, n->rvals[o+1]->cg_string);
         else {
