@@ -120,7 +120,7 @@ void init_default_builtin_types() {
   new_builtin_global_variable(sym_new_object, "new_object");
 
   new_builtin_primitive_type(sym_symbol, "symbol");
-  new_builtin_lub_type(sym_any, "any", 0, 0);
+  new_builtin_lub_type(sym_any, "any", 0, NULL);
   new_builtin_primitive_type(sym_module, "module");
   new_builtin_primitive_type(sym_function, "function");
   new_builtin_primitive_type(sym_closure, "closure");
@@ -159,11 +159,11 @@ void init_default_builtin_types() {
   new_builtin_primitive_type(sym_complex128, "complex128");
 
   new_builtin_lub_type(sym_anyint, "anyint", 0, sym_int8, sym_uint8, sym_int16, sym_uint16,
-                       sym_int32, sym_uint32, sym_int64, sym_uint64, 0);
+                       sym_int32, sym_uint32, sym_int64, sym_uint64, NULL);
 
-  new_builtin_lub_type(sym_anyfloat, "anyfloat", 0, sym_float32, sym_float64, sym_float128, 0);
-  new_builtin_lub_type(sym_anycomplex, "anycomplex", 0, sym_complex32, sym_complex64, sym_complex128, 0);
-  new_builtin_lub_type(sym_anynum, "anynum", 0, sym_anyint, sym_anyfloat, sym_anycomplex, 0);
+  new_builtin_lub_type(sym_anyfloat, "anyfloat", 0, sym_float32, sym_float64, sym_float128, NULL);
+  new_builtin_lub_type(sym_anycomplex, "anycomplex", 0, sym_complex32, sym_complex64, sym_complex128, NULL);
+  new_builtin_lub_type(sym_anynum, "anynum", 0, sym_anyint, sym_anyfloat, sym_anycomplex, NULL);
 
   new_builtin_primitive_type(sym_string, "string");
 
