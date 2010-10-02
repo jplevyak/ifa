@@ -22,6 +22,7 @@ BasicSym::BasicSym(void) :
   asymbol(NULL),
   nesting_depth(0),
   cg_string(NULL),
+  llvm_value(NULL),
   is_builtin(0),
   is_read_only(0),
   is_constant(0),
@@ -77,7 +78,8 @@ Sym::Sym() :
   constant_type(NULL),
 #endif
   element(NULL),
-  temp(NULL)
+  temp(NULL),
+  llvm_type(NULL)
 {}
 
 cchar *

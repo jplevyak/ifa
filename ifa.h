@@ -23,6 +23,7 @@ class MPosition;
 class IFASymbol : public gc {
  public:
   virtual cchar *pathname() = 0;
+  virtual int column() { return 0; }
   virtual int line() = 0; // source line number (0 if none)
   virtual int source_line() = 0; // user source line (0 if builtin/system)
   virtual IFASymbol *copy() = 0;
@@ -42,6 +43,7 @@ class IFAAST : public gc {
   Vec<PNode *> pnodes;
 
   virtual cchar *pathname() = 0;
+  virtual int column() { return 0; }
   virtual int line() = 0;
   virtual int source_line() = 0;
   virtual Sym *symbol() = 0;

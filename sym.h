@@ -21,6 +21,7 @@ class LabelMap;
 class Sym;
 class IFAAST;
 class IFASymbol;
+namespace llvm { class Value; class Type; }
 
 enum Type_kind {
   Type_NONE,            // Sym is not a type
@@ -63,6 +64,7 @@ class BasicSym : public gc {
   IFASymbol             *asymbol;               // front end interface object
   int                   nesting_depth;          // nested function depth (or LOCALLY_NESTED)
   cchar                 *cg_string;             // used by cg.cpp
+  llvm::Value           *llvm_value;
 
   unsigned int          is_builtin:1;           // Sym is builtin to the compiler
   unsigned int          is_read_only:1;         // Sym is read only
@@ -102,7 +104,7 @@ class BasicSym : public gc {
   unsigned int          dispatch_types_built:1;
   unsigned int          type_live:1;
 
-  BasicSym(void);
+  BasicSym();
 };
 
 class Sym : public BasicSym {
@@ -149,11 +151,14 @@ class Sym : public BasicSym {
   Vec<Sym *>            dispatch_types;         // used by fa.cpp, pattern.cpp  *type*
 
   void                  *temp;                  // algorithmic temp             *type*
+  const llvm::Type      *llvm_type;
 
-  Sym(void);
+  Sym();
+
   Sym *                 scalar_type();          // scalar inheritted from or NULL
   Sym *                 coerce_to(Sym *);
   cchar                 *pathname();
+  int                   column();
   int                   line();
   int                   source_line();          // squelch line numbers builtins
   cchar                 *filename();

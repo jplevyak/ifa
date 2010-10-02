@@ -598,7 +598,7 @@ write_send_arg(FILE *fp, Fun *f, PNode *n, MPosition *p, int &wrote_one) {
 }
 
 static void
-write_send(FILE *fp, FA *fa, Fun *f, PNode *n) {
+write_send(FILE *fp, Fun *f, PNode *n) {
   fputs("  ", fp);
   if (n->prim) {
     if (n->lvals.n) {
@@ -672,7 +672,7 @@ write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done) {
         if (n->prim)
           if (write_c_prim(fp, fa, f, n))
             break;
-        write_send(fp, fa, f, n);
+        write_send(fp, f, n);
         break;
       case Code_IF:
       case Code_GOTO:
@@ -735,7 +735,6 @@ write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done) {
       write_c_pnode(fp, fa, f, p, done);
       extra_goto = 0;
     }
-  //if (n->live && n->fa_live)
   if (extra_goto && n->cfg_succ[0]->live && n->cfg_succ[0]->fa_live) {
     assert(n->cfg_succ[0]->code->kind == Code_LABEL);
     fprintf(fp, "  goto L%d;\n", n->cfg_succ[0]->code->label[0]->id);
@@ -805,12 +804,7 @@ write_c(FILE *fp, FA *fa, Fun *f, Vec<Var *> *globals = 0) {
       if (!v->sym->is_fun && v->sym->fun && !v->sym->type_kind && v->cg_string)
         fprintf(fp, "  %s = %s;\n", v->cg_string, v->sym->fun->cg_string);
   write_c_args(fp, f);
-  // rebuild cfg_pred_index
-  forv_PNode(n, f->fa_all_PNodes) {
-    n->cfg_pred_index.clear();
-    for (int i = 0; i < n->cfg_pred.n; i++)
-      n->cfg_pred_index.put(n->cfg_pred[i], i);
-  }
+  rebuild_cfg_pred_index(f);
   Vec<PNode *> done;
   done.set_add(f->entry);
   write_c_pnode(fp, fa, f, f->entry, done);
@@ -853,37 +847,8 @@ build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
     if (f->sym->var)
       globals.set_add(f->sym->var);
   }
-  // collect all syms
   Vec<Sym *> allsyms;
-  forv_Fun(f, fa->funs) {
-    if (!f->live)
-      continue;
-    Vec<Var *> vars;
-    f->collect_Vars(vars);
-    forv_Var(v, vars) {
-      if ((v->live && !v->sym->is_local && v->sym->nesting_depth != f->sym->nesting_depth + 1) || v->sym->is_symbol || v->sym->is_fun)
-        globals.set_add(v);
-      if (v->type && v->live)
-        allsyms.set_add(v->type);
-    }
-  }
-  // collect type has syms
-  int again = 1;
-  while (again) {
-    again = 0;
-    Vec<Sym *> loopsyms;
-    loopsyms.copy(allsyms);
-    for (int i = 0; i < loopsyms.n; i++) 
-      if (loopsyms[i] && loopsyms.v[i]->type_kind) {
-        forv_Sym(s, loopsyms[i]->has) {
-          again = allsyms.set_add(s) || again;
-          if (s->var && s->var->type)
-            again = allsyms.set_add(s->var->type) || again;
-        }
-      }
-  }
-  allsyms.set_to_vec();
-  globals.set_to_vec();
+  collect_types_and_globals(fa, allsyms, globals);
   // assign creation sets C type strings
   if (allsyms.n)
     fputs("/*\n Type Declarations\n*/\n\n", fp);

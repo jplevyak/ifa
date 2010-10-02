@@ -36,6 +36,8 @@ void Fun::init_fun() {
   size = -1;    
   live = 0;
   cg_string = 0;
+  cg_structural_string = 0;
+  llvm = 0;
 }
 
 static void
@@ -307,5 +309,13 @@ Fun::line() {
 int
 Fun::source_line() {
   return ast->source_line();
+}
+
+void rebuild_cfg_pred_index(Fun *f) {
+  forv_PNode(n, f->fa_all_PNodes) {
+    n->cfg_pred_index.clear();
+    for (int i = 0; i < n->cfg_pred.n; i++)
+      n->cfg_pred_index.put(n->cfg_pred[i], i);
+  }
 }
 

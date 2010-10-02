@@ -21,8 +21,6 @@
 #define BAD_NAME ((char*)-1)
 #define BAD_AST ((IFAAST*)-1)
 
-static FA *fa = 0;
-
 static void
 initialize() {
   forv_Fun(f, fa->funs)
@@ -1177,7 +1175,6 @@ log_test_fa(FA *fa) {
 
 int
 clone(FA *afa) {
-  ::fa = afa;
   initialize();
   determine_layouts();
   determine_clones();

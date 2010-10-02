@@ -351,6 +351,7 @@ void return_nil_transfer_function(PNode *pn, EntrySet *es);
 void return_int_transfer_function(PNode *pn, EntrySet *es);
 void return_string_transfer_function(PNode *pn, EntrySet *es);
 AType *make_size_constant_type(int n);
+void collect_types_and_globals(FA *fa, Vec<Sym *> &typesyms, Vec<Var *> &globalsyms);
 
 
 template<class C> void
@@ -394,6 +395,8 @@ qsort_by_id(Vec<C *> &v) {
   if (v.n > 1)
     qsort_by_id(&v[0], v.end());
 }
+
+extern FA *fa;
 
 extern AType *bottom_type;
 extern AType *void_type;

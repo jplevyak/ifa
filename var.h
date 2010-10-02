@@ -1,5 +1,5 @@
 /* -*-Mode: c++;-*-
-   Copyright (c) 2003-2009 John Plevyak, All Rights Reserved
+   Copyright (c) 2003-2010 John Plevyak, All Rights Reserved
 */
 #ifndef _var_H_
 #define _var_H_
@@ -11,6 +11,8 @@ class Sym;
 class PNode;
 class SSUVar;
 class CreationSet;
+namespace llvm { class Value; class Type; }
+
 typedef MapElem<void *, AVar *> AVarMapElem;
 typedef Map<void *, AVar*> AVarMap;
 typedef Map<Var *, Var*> VarMap;
@@ -32,6 +34,8 @@ class Var : public gc {
   unsigned int          is_formal:1;
   unsigned int          live:1;
   cchar                 *cg_string; // used by cg.cpp
+  llvm::Value           *llvm_value;
+  const llvm::Type      *llvm_type;
   
   // Temporary Space
   union {

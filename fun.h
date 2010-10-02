@@ -23,6 +23,7 @@ class PromotionCache;
 class GenericCache;
 class OrderCache;
 class DefaultCache;
+namespace llvm { class Function; }
 
 #define FUN_COLLECT_VARS_NO_PHY        0x01
 #define FUN_COLLECT_VARS_NO_TVALS      0x02
@@ -122,6 +123,9 @@ class Fun : public gc {
   uint live:1;
   char *cg_string;
   char *cg_structural_string;
+
+  // llvm
+  llvm::Function *llvm;
   
   cchar *pathname();
   cchar *filename();
@@ -143,5 +147,6 @@ class Fun : public gc {
 #define forv_Fun(_f, _v) forv_Vec(Fun, _f, _v)
 
 int compar_funs(const void *ai, const void *aj);
+void rebuild_cfg_pred_index(Fun *);
 
 #endif

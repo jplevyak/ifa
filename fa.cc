@@ -47,7 +47,7 @@ static int aedge_id = 1;
 static int creation_set_id = 1;
 static int entry_set_id = 1;
 
-static FA *fa = 0;
+FA *fa = 0;
 static Timer pass_timer, match_timer, extend_timer;
 
 static ChainHash<AType *, ATypeChainHashFns> cannonical_atypes;
@@ -4320,6 +4320,39 @@ void
 return_string_transfer_function(PNode *pn, EntrySet *es) {
   AVar *result = make_AVar(pn->lvals[0], es);
   update_gen(result, make_abstract_type(sym_string));
+}
+
+void collect_types_and_globals(FA *fa, Vec<Sym *> &typesyms, Vec<Var *> &globals) {
+  // collect all syms
+  forv_Fun(f, fa->funs) {
+    if (!f->live)
+      continue;
+    Vec<Var *> vars;
+    f->collect_Vars(vars);
+    forv_Var(v, vars) {
+      if ((v->live && !v->sym->is_local && v->sym->nesting_depth != f->sym->nesting_depth + 1) || v->sym->is_symbol || v->sym->is_fun)
+        globals.set_add(v);
+      if (v->type && v->live)
+        typesyms.set_add(v->type);
+    }
+  }
+  // collect type has syms
+  int again = 1;
+  while (again) {
+    again = 0;
+    Vec<Sym *> loopsyms;
+    loopsyms.copy(typesyms);
+    for (int i = 0; i < loopsyms.n; i++) 
+      if (loopsyms[i] && loopsyms.v[i]->type_kind) {
+        forv_Sym(s, loopsyms[i]->has) {
+          again = typesyms.set_add(s) || again;
+          if (s->var && s->var->type)
+            again = typesyms.set_add(s->var->type) || again;
+        }
+      }
+  }
+  typesyms.set_to_vec();
+  globals.set_to_vec();
 }
 
 // to be called from the debugger
