@@ -52,7 +52,7 @@ INSTALL_LIBRARIES = $(LIBRARY)
 #INCLUDES =
 MANPAGES = ifa.1
 
-CLEAN_FILES += *.cat tests/*.check tests/*.c
+CLEAN_FILES += *.cat tests/*.out tests/*.c
 
 ifeq ($(OS_TYPE),CYGWIN)
 EXECUTABLES = $(EXECUTABLE_FILES:%=%.exe)
