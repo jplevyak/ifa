@@ -24,7 +24,9 @@ else
 LIBS += -L../plib -lplib -ldparse
 endif
 ifneq ($(OS_TYPE),CYGWIN)
+ifneq ($(OS_TYPE),Darwin)
   LIBS += -lrt
+endif
 endif
 
 AUX_FILES = $(MODULE)/index.html $(MODULE)/manual.html $(MODULE)/faq.html $(MODULE)/ifa.1 $(MODULE)/ifa.cat

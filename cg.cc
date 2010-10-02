@@ -66,7 +66,7 @@ write_c_fun_proto(FILE *fp, Fun *f, int type = 0) {
 
 static void
 write_c_type(FILE *fp, Var *v) {
-  fprintf(fp, c_type(v));
+  fprintf(fp, "%s", c_type(v));
 }
 
 static int
@@ -103,9 +103,9 @@ cg_writeln(FILE *fp, Vec<Var *> &vars, int ln) {
              vars[i]->type == sym_uint32)
       fprintf(fp, "printf(\"%%u%s\", %s);\n", sln, vars[i]->cg_string);
     else if (vars[i]->type == sym_int64)
-      fprintf(fp, "printf(\"%%lld%s\", %s);\n", sln, vars[i]->cg_string);
+      fprintf(fp, "printf(\"%%lld%s\", (long long int)%s);\n", sln, vars[i]->cg_string);
     else if (vars[i]->type == sym_uint64)
-      fprintf(fp, "printf(\"%%llu%s\", %s);\n", sln, vars[i]->cg_string);
+      fprintf(fp, "printf(\"%%llu%s\", (unsigned long long int)%s);\n", sln, vars[i]->cg_string);
     else if (vars[i]->type == sym_float32 ||
              vars[i]->type == sym_float64 ||
              vars[i]->type == sym_float128)
