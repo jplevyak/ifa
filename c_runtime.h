@@ -215,7 +215,7 @@ static inline _CG_list _CG_list_mult_internal(_CG_list l1, uint32 l, uint32 size
   return x;
 }
 
-static inline _CG_list _CG_list_getslice_internal(_CG_list v, uint32 size, int32 l, int32 h) {
+static inline _CG_list _CG_list_getslice_internal(_CG_list v, uint32 size, int32 l, int32 h, int32 s) {
   uint32 len = _CG_prim_len(0,v);
   if (l > len) l = len;
   if (l < 0) { 
@@ -228,13 +228,19 @@ static inline _CG_list _CG_list_getslice_internal(_CG_list v, uint32 size, int32
     if (h < 0) h = 0;
   }
   if (l > h) h = l; 
-  int s = h - l;
-  _CG_list x = _CG_ptr_to_list((_CG_list)MALLOC(size * s + SIZEOF_LIST_HEADER));
-  _CG_list_len(x) = s;
-  _CG_list_total_len(0,x) = s;
+  int n = h - l;
+  n = n / s;
+  _CG_list x = _CG_ptr_to_list((_CG_list)MALLOC(size * n + SIZEOF_LIST_HEADER));
+  _CG_list_len(x) = n;
+  _CG_list_total_len(0,x) = n;
   _CG_list_ptr(x) = x;
-  if (s)
-    memcpy(x, ((char*)_CG_list_ptr(v)) + l * size, s * size);
+  if (n) {
+    if (s == 1)
+      memcpy(x, ((char*)_CG_list_ptr(v)) + l * size, n * size);
+    else
+      for (int i = 0; i < n; i++)
+        memcpy(((char*)x) + i * size, ((char*)_CG_list_ptr(v)) + (l + i) * size, size);
+  }
   return x;
 }
 
@@ -291,7 +297,7 @@ static inline void *_CG_prim_tuple_list_internal(uint s, uint n) {
 #define _CG_list_add(_l1, _l2, _s1, _s2) (_CG_list_add_internal(_CG_to_list(_l1), _CG_to_list(_l2), _s1, _s2))
 #define _CG_list_resize(_l1, _s1, _new_len) (_CG_list_resize_internal(_CG_to_list(_l1), _s1, _new_len))
 #define _CG_list_mult(_l1, _l, _s) (_CG_list_mult_internal(_CG_to_list(_l1), _l, _s))
-#define _CG_list_getslice(_l, _s, _lower, _upper) (_CG_list_getslice_internal(_CG_to_list(_l), _s, _lower, _upper))
+#define _CG_list_getslice(_l, _s, _lower, _upper, _step) (_CG_list_getslice_internal(_CG_to_list(_l), _s, _lower, _upper, _step))
 #define _CG_list_setslice(_l1, _s, _lower, _upper, _l2) (_CG_list_setslice_internal(_l1, _s, _lower, _upper, _CG_to_list(_l2)))
 #define _CG_prim_coerce(_t, _v) ((_t)_v)
 #define _CG_prim_closure(_c) (_c)GC_MALLOC(sizeof(*((_c)0)))

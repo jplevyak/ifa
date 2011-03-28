@@ -829,7 +829,7 @@ edge_constant_compatible_with_entry_set(AEdge *e, EntrySet *es) {
     if (av->var->sym->clone_for_constants) {
       AType css;
       av->out->set_disjunction(*e->args.get(p)->out, css);
-      forv_CreationSet(cs, css)
+      forv_CreationSet(cs, css) if (cs)
         if (cs->sym->constant)
           return 0;
     }
