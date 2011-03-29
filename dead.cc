@@ -27,20 +27,23 @@ static int mark_live_again = 0;
 static void
 print_dead(FA *fa) {
   int ndead_pnodes = 0, ndead_vars = 0;
+  int nlive_pnodes = 0, nlive_vars = 0;
   forv_Fun(f, fa->funs) {
     forv_PNode(p, f->fa_all_PNodes)
       if (!p->live) {
         ndead_pnodes++;
         printf("PNode %d DEAD\n", p->id);
-      }
+      } else nlive_pnodes++;
     forv_Var(v, f->fa_all_Vars)
       if (!v->live) {
         ndead_vars++;
         printf("Var %d:%d %s DEAD\n", v->sym->id, v->id, v->sym->name ? v->sym->name : "");
-      }
+      } else nlive_vars++;
   }
   printf("%d PNodes DEAD\n", ndead_pnodes);
   printf("%d Vars DEAD\n", ndead_vars);
+  printf("%d PNodes LIVE\n", nlive_pnodes);
+  printf("%d Vars LIVE\n", nlive_vars);
 }
 
 static void
