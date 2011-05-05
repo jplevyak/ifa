@@ -1286,6 +1286,7 @@ add_send_constraints(PNode *p, EntrySet *es) {
         case PRIM_TYPE_ANY_NUM_AB:
         case PRIM_TYPE_ANY_NUM_A:
         case PRIM_TYPE_ANY_NUM_B:
+        case PRIM_TYPE_ANY_INT_A:
         case PRIM_TYPE_A: {
           for (int j = start; j < p->rvals.n; j++)
             if (j - start != p->prim->pos) {
@@ -1689,6 +1690,7 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
       // so that splitting can attribute causality
       if ((p->prim->ret_types[i] == PRIM_TYPE_ANY_NUM_AB ||
            p->prim->ret_types[i] == PRIM_TYPE_ANY_NUM_A ||
+           p->prim->ret_types[i] == PRIM_TYPE_ANY_INT_A ||
            p->prim->ret_types[i] == PRIM_TYPE_BOOL) && n == 3) {
         AVar *res = make_AVar(p->lvals[i], es);
         fill_tvals(es->fun, p, p->lvals.n);
@@ -1712,6 +1714,7 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
             update_in(res, nt);
         }
       } else if ((p->prim->ret_types[i] == PRIM_TYPE_ANY_NUM_A ||
+                  p->prim->ret_types[i] == PRIM_TYPE_ANY_INT_A ||
                   p->prim->ret_types[i] == PRIM_TYPE_BOOL) && n == 2) {
         AVar *res = make_AVar(p->lvals[i], es);
         fill_tvals(es->fun, p, p->lvals.n);

@@ -311,6 +311,7 @@ static inline void *_CG_prim_tuple_list_internal(uint s, uint n) {
 #define _CG_prim_rsh(_a, _op, _b) ((_a) >> (_b))
 #define _CG_prim_lsh(_a, _op, _b) ((_a) << (_b))
 #define _CG_prim_mult(_a, _op, _b) ((_a) * (_b))
+#define _CG_prim_mod(_a, _op, _b) ((_a) % (_b))
 #define _CG_prim_pow(_a, _op, _b) (pow((_a),(_b)))
 #define _CG_prim_div(_a, _op, _b) ((_a) / (_b))
 #define _CG_prim_and(_a, _op, _b) ((_a) & (_b))
@@ -336,3 +337,15 @@ static inline void *_CG_prim_tuple_list_internal(uint s, uint n) {
   _r->e0 = _f;                                  \
   _r->e1 = _a;                                  \
 } while (0)
+static inline char* _CG_chr(int x) {
+  unsigned char *s = (unsigned char*)MALLOC(2);
+  s[0] = x;
+  s[1] = 0;
+  return (char*)s;
+}
+static inline int _CG_ord(char *x) {
+  if (x)
+    return *(unsigned char*)x;
+  else
+    return 0;
+}
