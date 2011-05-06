@@ -94,7 +94,7 @@ void prim_init(Primitives *p, IF1 *if1) {
   p->prims.add(prim_div);
   p->prim_map[1][1].put(n, prim_div);
   static PrimType prim_mod_arg_types[] = {PRIM_TYPE_ANY_INT_A, PRIM_TYPE_ANY_INT_B};
-  static PrimType prim_mod_ret_types[] = {PRIM_TYPE_A};
+  static PrimType prim_mod_ret_types[] = {PRIM_TYPE_ANY_INT_A};
   prim_mod = new Prim(6, "%", "prim_mod", 3, 1, 1, prim_mod_arg_types, prim_mod_ret_types, 0);
   n = (char*)if1->strings.put((char*)"%");
   p->prims.add(prim_mod);
