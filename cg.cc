@@ -960,7 +960,8 @@ void
 c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
   Vec<Var *> globals;
   int index = 0;
-  fprintf(fp, "#include \"c_runtime.h\"\n\n");
+  if (!if1->callback->c_codegen_pre_file(fp))
+    fprintf(fp, "#include \"c_runtime.h\"\n\n");
   if (build_type_strings(fp, fa, globals) < 0)
     fail("unable to generate C code: no unique typing");
   if (globals.n)
