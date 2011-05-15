@@ -42,7 +42,8 @@ Prim *Primitives::find(int nargs, Sym *f, Sym *a1, Sym *a2) {
   } else if (f == sym_primitive) {
     assert(a1->is_symbol);
     prim = prim_map[0][0].get(a1->name);
-    if (!prim) prim = prim_primitive;
+    if (!prim)
+      prim = prim_primitive;
   }
   return prim;
 }

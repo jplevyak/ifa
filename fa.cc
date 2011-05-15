@@ -1948,6 +1948,32 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
         }
         break;
       }
+      case P_prim_isinstance: {
+        AVar *thing1 = make_AVar(p->rvals[p->rvals.n-2], es); // instance
+        AVar *thing2 = make_AVar(p->rvals[p->rvals.n-1], es); // type
+        AType *rtype = bottom_type;
+        forv_CreationSet(cs1, thing1->out->sorted)
+          forv_CreationSet(cs2, thing2->out->sorted)
+            if (cs2->sym->meta_type && cs2->sym->meta_type->implementors.in(cs1->sym->type))
+              rtype = type_union(rtype, true_type);
+            else
+              rtype = type_union(rtype, false_type);
+        update_gen(result, rtype);
+        break;
+      }
+      case P_prim_issubclass: {
+        AVar *thing1 = make_AVar(p->rvals[p->rvals.n-2], es);
+        AVar *thing2 = make_AVar(p->rvals[p->rvals.n-1], es);
+        AType *rtype = bottom_type;
+        forv_CreationSet(cs1, thing1->out->sorted)
+          forv_CreationSet(cs2, thing2->out->sorted)
+            if (cs2->sym->type->implementors.in(cs1->sym->type))
+              rtype = type_union(rtype, true_type);
+            else
+              rtype = type_union(rtype, false_type);
+        update_gen(result, rtype);
+        break;
+      }
       case P_prim_merge: {
         AVar *thing1 = make_AVar(p->rvals[p->rvals.n-2], es);
         AVar *thing2 = make_AVar(p->rvals[p->rvals.n-1], es);

@@ -320,7 +320,8 @@ Sym::inherits_add(Sym *s) {
 
 void
 Sym::must_implement_and_specialize(Sym *s) {
-  assert(!must_implement && !must_specialize);
+  assert((!must_implement || must_implement == s) && 
+         (!must_specialize || must_specialize == s));
   must_implement = s;
   must_specialize = s;
 }
