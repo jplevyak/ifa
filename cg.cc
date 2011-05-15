@@ -608,7 +608,10 @@ write_send(FILE *fp, Fun *f, PNode *n) {
     }
     fprintf(fp, "_CG_%s(", n->prim->name);
     int comma = 0;
-    for (int i = 1; i < n->rvals.n; i++) {
+    int start = 1;
+    if (n->rvals[0]->sym == sym_primitive)
+      start = 2;
+    for (int i = start; i < n->rvals.n; i++) {
       if (n->rvals[i]->cg_string) {
         if (comma) fprintf(fp, ", ");
         comma = 1;

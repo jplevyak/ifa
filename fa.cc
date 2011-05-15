@@ -1083,6 +1083,7 @@ add_var_constraint(AVar *av, Sym *s) {
   if (!s)
     s = av->var->sym;
   assert(s->type_kind != Type_VARIABLE);
+  s = unalias_type(s);
   if (s->type && !s->is_pattern) {
     if (s->is_external && 
         (s->type->num_kind || s->type == sym_string || s->type->is_system_type))
@@ -2000,9 +2001,9 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
         break;
       }
       case P_prim_coerce: {
-        assert(p->rvals[1]->sym->abstract_type);
-        Sym *s = p->rvals[1]->sym;
-        AVar *rhs = make_AVar(p->rvals[2], es);
+        Sym *s = p->rvals[p->rvals.n-2]->sym;
+        assert(s->abstract_type);
+        AVar *rhs = make_AVar(p->rvals[p->rvals.n-1], es);
         Vec<CreationSet *> css;
         forv_CreationSet(cs, rhs->out->sorted)
           if (cs->sym->type == p->rvals[1]->sym)
