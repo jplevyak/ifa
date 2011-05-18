@@ -264,9 +264,6 @@ Fun::copy(int copy_ast, VarMap *var_map) {
   context.fmap = f->fmap;
   context.fmap->put(this, f);
   f->ast = (ast && copy_ast)? ast->copy_tree(&context) : 0;
-  Sym *new_sym = context.smap.get(sym);
-  if (new_sym)
-    f->sym = new_sym;
   if1_write_log();
   return f;
 }

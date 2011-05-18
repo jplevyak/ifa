@@ -1202,14 +1202,18 @@ vector_elems(int rank, PNode *p, AVar *ae, AVar *elem, AVar *container, int n = 
 
 static void
 prim_make_vector(PNode *p, EntrySet *es) {
+  int base = p->rvals[0]->sym == sym_primitive ? 4 : 3;
   AVar *container = make_AVar(p->lvals[0], es);
-  CreationSet *cs = creation_point(container, sym_vector);
+  AVar *vector = make_AVar(p->rvals[base-2], es);
+  AVar *element_type = make_AVar(p->rvals[base-1], es);
+  CreationSet *cs = creation_point(container, vector->var->sym->meta_type);
   AVar *elem = get_element_avar(cs);
-  if (p->rvals.n > 2) {
+  update_gen(elem, element_type->var->sym->meta_type->abstract_type);
+  if (p->rvals.n > base) {
     int rank = 0;
-    p->rvals[2]->sym->imm_int(&rank);
-    for (int i = 0; i < p->rvals.n - 3; i++) {
-      Var *v = p->rvals[2 + i];
+    p->rvals[base]->sym->imm_int(&rank);
+    for (int i = 0; i < p->rvals.n - (base + 1); i++) {
+      Var *v = p->rvals[base + i];
       AVar *av = make_AVar(v, es);
       vector_elems(rank, p, av, elem, container);
     }
