@@ -329,8 +329,8 @@ write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       Sym *t = n->rvals[o]->type;
       Sym *e = n->lvals[0]->type;
       if (t->is_vector) {
-        fprintf(fp, "%s = ((%s)%s).v[%s];\n", n->lvals[0]->cg_string,
-                e->cg_string, n->rvals[o]->cg_string, n->rvals[o]->cg_string);
+        fprintf(fp, "%s = %s->v[%s];\n", n->lvals[0]->cg_string,
+                n->rvals[o]->cg_string, n->rvals[o+1]->cg_string);
       } else if (t->type_kind != Type_RECORD || !n->rvals[o+1]->sym->constant) {
         if (n->lvals[0]->live)
           fprintf(fp, "%s = ", n->lvals[0]->cg_string);
@@ -361,7 +361,11 @@ write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
     case P_prim_set_index_object: {
       fputs("  ", fp);
       Sym *t = n->rvals[o]->type;
-      if (t->type_kind != Type_RECORD || !n->rvals[o+1]->sym->constant) {
+      if (t->is_vector) {
+        fprintf(fp, "%s->v[%s] = %s;\n",
+                n->rvals[o]->cg_string, n->rvals[o+1]->cg_string,
+                n->rvals[n->rvals.n-1]->cg_string);
+      } else if (t->type_kind != Type_RECORD || !n->rvals[o+1]->sym->constant) {
         fprintf(fp, "((%s", n->lvals[0]->type->cg_string);
         for (int i = o+1; i < n->rvals.n-1; i++) fprintf(fp, "*");
         if (t->type_kind == Type_RECORD)
