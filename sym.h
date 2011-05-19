@@ -92,6 +92,7 @@ class BasicSym : public gc {
   unsigned int          is_union_type:1;        // Sym is a union
 
   unsigned int          is_structure:1;         // Sym is a structure (C compatibility)
+  unsigned int          is_vector:1;            // Homogenous type (->element only)
 
   unsigned int          fun_returns_value:1;    // used by analysis.cpp
   unsigned int          live:1;                 // used by if1.cpp

@@ -327,8 +327,11 @@ write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       fputs("  ", fp);
       assert(n->lvals.n == 1);
       Sym *t = n->rvals[o]->type;
-      if (t->type_kind != Type_RECORD || !n->rvals[o+1]->sym->constant) {
-        Sym *e = n->lvals[0]->type;
+      Sym *e = n->lvals[0]->type;
+      if (t->is_vector) {
+        fprintf(fp, "%s = ((%s)%s).v[%s];\n", n->lvals[0]->cg_string,
+                e->cg_string, n->rvals[o]->cg_string, n->rvals[o]->cg_string);
+      } else if (t->type_kind != Type_RECORD || !n->rvals[o+1]->sym->constant) {
         if (n->lvals[0]->live)
           fprintf(fp, "%s = ", n->lvals[0]->cg_string);
         if (sym_string->specializers.set_in(t))
@@ -612,12 +615,12 @@ write_send(FILE *fp, Fun *f, PNode *n) {
     if (n->rvals[0]->sym == sym_primitive)
       start = 2;
     for (int i = start; i < n->rvals.n; i++) {
-      if (n->rvals[i]->cg_string) {
-        if (comma) fprintf(fp, ", ");
-        comma = 1;
-        fputs(n->rvals[i]->cg_string, fp);
-      } else
-        assert(0);
+      cchar *s = n->rvals[i]->cg_string;
+      if (!s) s = n->rvals[i]->sym->cg_string;
+      assert(s);
+      if (comma) fprintf(fp, ", ");
+      comma = 1;
+      fputs(s, fp);
     }
     fputs(");\n", fp);
   } else {
@@ -945,6 +948,11 @@ build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
               fputs("\n", fp);
             }
           }
+          if (s->is_vector) {
+            fputs("  ", fp);
+            fputs(c_type(s->element), fp);
+            fprintf(fp, " v[0];");
+          }
           fprintf(fp, "};\n");
         }
       }
@@ -973,44 +981,45 @@ c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
     if (v->sym->is_fun)
       v->cg_string = v->sym->fun->cg_string;
   forv_Var(v, globals) {
+    Sym *s = unalias_type(v->sym);
     if (!v->live)
       continue;
     if (v->type == sym_nil_type) {
       v->cg_string = "NULL";
       continue;
     }
-    if (v->sym->imm.const_kind != IF1_NUM_KIND_NONE && v->sym->imm.const_kind != IF1_CONST_KIND_STRING) {
-      char s[100];
-      sprint_imm(s, v->sym->imm);
-      v->cg_string = dupstr(s);
-    } else if (v->sym->constant) {
+    if (s->imm.const_kind != IF1_NUM_KIND_NONE && s->imm.const_kind != IF1_CONST_KIND_STRING) {
+      char ss[100];
+      sprint_imm(ss, s->imm);
+      v->cg_string = dupstr(ss);
+    } else if (s->constant) {
       if (v->type == sym_string) {
-        char *x =  escape_string(v->sym->constant);
+        char *x =  escape_string(s->constant);
         v->cg_string = (char*)MALLOC(strlen(x) + 20);
         STRCPYZ(v->cg_string, "_CG_String(");
         STRCAT(v->cg_string, x);
         STRCAT(v->cg_string, ")");
       } else
-        v->cg_string = v->sym->constant;
-    } else if (v->sym->is_symbol) {
-      char s[100];
-      sprintf(s, "_CG_Symbol(%d, \"%s\")", v->sym->id, v->sym->name);
-      v->cg_string = dupstr(s);
-    } else if (v->sym->is_fun) {
-    } else if (!v->sym->type_kind || v->sym->type_kind == Type_RECORD) {
-      char s[100];
-      if (v->sym->name)
-        sprintf(s, "/* %s %d */ g%d", v->sym->name, v->sym->id, index++);
+        v->cg_string = s->constant;
+    } else if (s->is_symbol) {
+      char ss[100];
+      sprintf(ss, "_CG_Symbol(%d, \"%s\")", s->id, s->name);
+      v->cg_string = dupstr(ss);
+    } else if (s->is_fun) {
+    } else if (!s->type_kind || s->type_kind == Type_RECORD) {
+      char ss[100];
+      if (s->name)
+        sprintf(ss, "/* %s %d */ g%d", s->name, s->id, index++);
       else
-        sprintf(s, "/* %d */ g%d", v->sym->id, index++);
-      v->cg_string = dupstr(s);
+        sprintf(ss, "/* %d */ g%d", s->id, index++);
+      v->cg_string = dupstrs(ss);
       write_c_type(fp, v);
       fputs(" ", fp);
       fputs(v->cg_string, fp);
       fputs(";\n", fp);
     } else {
       index++;
-      v->cg_string = dupstr(v->sym->name);
+      v->cg_string = dupstr(s->name);
     }
   }
   fputs("\n/*\n Functions\n*/\n", fp);

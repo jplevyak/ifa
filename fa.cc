@@ -1794,11 +1794,13 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
             bool is_const = get_obj_index(index, &i, cs->vars.n);
             if (cs->sym->element)
               flow_vars(get_element_avar(cs), result);
-            if (is_const)
-              flow_vars(cs->vars[i], result);
-            else
-              forv_AVar(av, cs->vars)
-                flow_vars(av, result);
+            if (!cs->sym->is_vector) {
+              if (is_const)
+                flow_vars(cs->vars[i], result);
+              else
+                forv_AVar(av, cs->vars)
+                  flow_vars(av, result);
+            }
           }
         }
         break;
@@ -1819,7 +1821,10 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
           } else {
             int i;
             bool is_const = get_obj_index(index, &i, cs->vars.n);
-            if (is_const)
+            if (cs->sym->is_vector) {
+              if (cs->sym->element)
+                flow_vars(tval, get_element_avar(cs));
+            } else if (is_const)
               flow_vars(tval, cs->vars[i]);
             else {
               if (cs->sym->element)
@@ -2005,7 +2010,7 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
         break;
       }
       case P_prim_coerce: {
-        Sym *s = p->rvals[p->rvals.n-2]->sym;
+        Sym *s = unalias_type(p->rvals[p->rvals.n-2]->sym);
         assert(s->abstract_type);
         AVar *rhs = make_AVar(p->rvals[p->rvals.n-1], es);
         Vec<CreationSet *> css;
