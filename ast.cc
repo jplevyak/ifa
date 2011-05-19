@@ -100,6 +100,7 @@ static void init_builtin_symbols() {
   new_builtin_symbol(sym_len, "len");
   new_builtin_symbol(sym_new, "new");
   new_builtin_symbol(sym_clone, "clone");
+  new_builtin_symbol(sym_clone_vector, "clone_vector");
   new_builtin_symbol(sym_index_object, "index_object");
   new_builtin_symbol(sym_set_index_object, "set_index_object");
   new_builtin_symbol(sym_operator, "__operator", "operator");

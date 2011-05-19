@@ -411,12 +411,16 @@ write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         fprintf(fp, "_CG_prim_len(%s,%s);\n", n->rvals[o-1]->cg_string, n->rvals[o]->cg_string);
       break;
     }
+    case P_prim_clone_vector:
     case P_prim_clone: {
       fputs("  ", fp);
       assert(n->lvals.n == 1);
       if (n->lvals[0]->cg_string)
         fprintf(fp, "%s = ", n->lvals[0]->cg_string);
-      fprintf(fp, "(%s)_CG_prim_clone(", n->lvals[0]->type->cg_string);
+      if (n->prim->index == P_prim_clone)
+        fprintf(fp, "(%s)_CG_prim_clone(", n->lvals[0]->type->cg_string);
+      else
+        fprintf(fp, "(%s)_CG_prim_clone_vector(", n->lvals[0]->type->cg_string);
       for (int i = 2; i < n->rvals.n; i++) {
         if (i > 2) fprintf(fp, ", ");
         fputs(n->rvals[i]->cg_string, fp);

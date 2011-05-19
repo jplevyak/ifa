@@ -1950,8 +1950,9 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
           creation_point(result, cs->sym->meta_type); // recover original type
         break;
       }
+      case P_prim_clone_vector:
       case P_prim_clone: {
-        AVar *thing = make_AVar(p->rvals[p->rvals.n-1], es);
+        AVar *thing = make_AVar(p->rvals[o], es);
         forv_CreationSet(cs, thing->out->sorted) {
           CreationSet *new_cs = creation_point(result, cs->sym);
           structural_assignment(new_cs, cs, p, es);
