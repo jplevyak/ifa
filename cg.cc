@@ -472,9 +472,9 @@ write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       cchar *name = n->rvals[1]->sym->name;
       if (!name) 
         name = n->rvals[1]->sym->constant;
-      if (!strcmp("write", name))
+      if (!strcmp("print", name))
         cg_writeln(fp, n->rvals, 0);
-      else if (!strcmp("writeln", name) || (!strcmp("print", name)))
+      else if (!strcmp("println", name))
         cg_writeln(fp, n->rvals, 1);
       else {
         RegisteredPrim *p = prim_get(name);

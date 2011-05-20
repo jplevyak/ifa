@@ -29,7 +29,7 @@ cchar *AST_name[] = {
 cchar *cannonical_class = 0;
 cchar *cannonical_self = 0;
 Sym *operator_symbol = 0;
-Sym *print_symbol = 0;
+Sym *println_symbol = 0;
 
 void
 PCallbacks::new_SUM_type(Sym *s) {
@@ -1948,7 +1948,7 @@ finalize_symbols(IF1 *i) {
 
 static void
 add_primitive_transfer_functions() {
-  prim_reg(print_symbol->name, return_int_transfer_function, 0)->is_visible = 1;
+  prim_reg(println_symbol->name, return_int_transfer_function, 0)->is_visible = 1;
 }
 
 static void
@@ -1996,7 +1996,7 @@ ast_gen_if1(IF1 *i, Vec<ParseAST *> &av) {
   cannonical_class = if1_cannonicalize_string(i, "class");
   cannonical_self = if1_cannonicalize_string(i, "self");
   operator_symbol = if1_make_symbol(if1, "operator");
-  print_symbol = if1_make_symbol(if1, "print");
+  println_symbol = if1_make_symbol(if1, "println");
   forv_ParseAST(a, av)
     build_builtin_syms(i, a);
 #define S(_n) assert(sym_##_n);

@@ -139,4 +139,4 @@ vector::self(a:anyint) : #__index_object self a;
 
 // generic printing
 
-print a : #__primitive #print a;
+print a : #__primitive #println a;
