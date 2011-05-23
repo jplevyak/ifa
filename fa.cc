@@ -1603,33 +1603,41 @@ make_constant(Immediate &imm, Sym *t) {
   return make_abstract_type(c);
 }
 
+// merge adds the vars in cs but not in new_cs to new_cs.
+// mix causes the vars from cs and new_cs to also flow to new_cs->element
 static void
 structural_assignment(CreationSet *new_cs, CreationSet *cs, PNode *p, EntrySet *es, bool merge = false, bool mix = false) {
   AVar *result = p->lvals.n ? make_AVar(p->lvals[0], es) : 0;
   AVar *elem = get_element_avar(cs);
-  if (elem)
-    flow_vars(elem, get_element_avar(new_cs));
+  int o = elem ? 1 : 0;
+  if (elem && new_cs->sym->element) {
+    fill_tvals(es->fun, p, 1);
+    AVar *tval = make_AVar(p->tvals[0], es);
+    flow_vars(elem, tval);
+    set_container(tval, result);
+    flow_vars(tval, get_element_avar(new_cs));
+  }
   if (mix && new_cs->sym->element) {
-    fill_tvals(es->fun, p, new_cs->vars.n);
+    fill_tvals(es->fun, p, o + new_cs->vars.n);
     for (int i = 0; i < new_cs->vars.n; i++) {
-      AVar *tval = make_AVar(p->tvals[i], es);
+      AVar *tval = make_AVar(p->tvals[o + i], es);
       flow_vars(new_cs->vars[i], tval);
       set_container(tval, result);
       flow_vars(tval, get_element_avar(new_cs));
     }
-    fill_tvals(es->fun, p, cs->vars.n);
-    for (int i = 0; i < new_cs->vars.n; i++) {
-      AVar *tval = make_AVar(p->tvals[i], es);
-      flow_vars(new_cs->vars[i], tval);
+    fill_tvals(es->fun, p, o + cs->vars.n);
+    for (int i = 0; i < cs->vars.n; i++) {
+      AVar *tval = make_AVar(p->tvals[o + i], es);
+      flow_vars(cs->vars[i], tval);
       set_container(tval, result);
       flow_vars(tval, get_element_avar(new_cs));
     }
   }
-  fill_tvals(es->fun, p, cs->sym->has.n);
+  fill_tvals(es->fun, p, o + cs->sym->has.n);
   for (int i = 0; i < cs->sym->has.n; i++) {
     Sym *h = cs->sym->has[i];
     AVar *iv = unique_AVar(h->var, cs);
-    AVar *tval = make_AVar(p->tvals[i], es);
+    AVar *tval = make_AVar(p->tvals[o + i], es);
     flow_vars(iv, tval);
     set_container(tval, result);
     AVar *niv = unique_AVar(h->var, new_cs);
@@ -1638,8 +1646,8 @@ structural_assignment(CreationSet *new_cs, CreationSet *cs, PNode *p, EntrySet *
       flow_vars(tval, get_element_avar(new_cs));
   }
   for (int i = cs->sym->has.n; i < cs->vars.n; i++) {
-    fill_tvals(es->fun, p, cs->vars.n);
-    AVar *tval = make_AVar(p->tvals[i], es);
+    fill_tvals(es->fun, p, o + cs->vars.n);
+    AVar *tval = make_AVar(p->tvals[o + i], es);
     flow_vars(cs->vars[i], tval);
     set_container(tval, result);
     if (!merge) {
@@ -2313,22 +2321,47 @@ show_sym_name(Sym *s, FILE *fp) {
 }
 
 static void
-show_type(Vec<CreationSet *> &t, FILE *fp) {
-  Vec<Sym *> type;
-  forv_CreationSet(cs, t) if (cs) {
-    Sym *s = cs->sym;
-    if (!ifa_verbose)
-      s = s->type;
-    type.set_add(s);
+show_type(Vec<CreationSet *> &t, FILE *fp, int verbose = ifa_verbose) {
+  if (verbose < 3) {
+    Vec<Sym *> type;
+    forv_CreationSet(cs, t) if (cs) {
+      Sym *s = cs->sym;
+      if (!ifa_verbose)
+        s = s->type;
+      type.set_add(s);
+    }
+    type.set_to_vec();
+    qsort_by_id(type);
+    if (type.n > 1)
+      fprintf(fp, "( ");
+    forv_Sym(s, type) if (s) {
+      show_sym_name(s, fp);
+      fprintf(fp, " ");
+    }
+    if (type.n > 1)
+      fprintf(fp, ") ");
+  } else {
+    fprintf(fp, "( ");
+    forv_CreationSet(cs, t) if (cs) {
+      show_sym_name(cs->sym, fp);
+      fprintf(fp, " ");
+      if (cs->vars.n)
+        fprintf(fp, "[ ");
+      forv_AVar(av, cs->vars) {
+        show_sym_name(av->var->sym, fp); 
+        fprintf(fp, ":");
+        show_type(*av->out, fp, verbose - 1);
+        fprintf(fp, " ");
+      }
+      if (cs->added_element_var && get_element_avar(cs)->out) {
+        fprintf(fp, " *elements*:");
+        show_type(*get_element_avar(cs)->out, fp, verbose - 1);
+      }
+      if (cs->vars.n)
+        fprintf(fp, " ] ");
+    }
+    fprintf(fp, ") ");
   }
-  type.set_to_vec();
-  qsort_by_id(type);
-  fprintf(fp, "( ");
-  forv_Sym(s, type) if (s) {
-    show_sym_name(s, fp);
-    fprintf(fp, " ");
-  }
-  fprintf(fp, ") ");
 }
 
 static void
@@ -2376,11 +2409,17 @@ show_fun(Fun *f, FILE *fp) {
 }
 
 static void
-show_atype(AType &t, FILE *fp) {
+show_atype(AType &t, FILE *fp, int level) {
   fprintf(fp, "( ");
   forv_CreationSet(cs, t.sorted) if (cs) {
     show_sym_name(cs->sym, fp);
     fprintf(fp, " id:%d ", cs->id);
+    if (level > 0) {
+      forv_AVar(av, cs->vars) {
+        show_sym_name(av->var->sym, fp); 
+        show_atype(*av->out, fp, level - 1);
+      }
+    }
   }
   fprintf(fp, ") ");
 }
@@ -2403,7 +2442,8 @@ fa_print_backward(AVar *v, FILE *fp = 0) {
         fprintf(fp, "VAR %p\n", v->var);
     } else
       fprintf(fp, "AVAR %p\n", v);
-    show_atype(*v->out, fp); fprintf(fp, "\n");
+    int verbose = ifa_verbose < 3 ? 0 : ifa_verbose - 3;
+    show_atype(*v->out, fp, verbose); fprintf(fp, "\n");
     forv_AVar(vv, v->backward) if (vv) {
       if (!done.set_in(vv)) {
         todo.add(vv);
@@ -3216,6 +3256,8 @@ collect_type_confluences(Vec<AVar *> &confluences) {
       if (!av->contour_is_entry_set && av->contour != GLOBAL_CONTOUR)
         collect_type_confluence(av, confluences);
     }
+    if (cs->added_element_var)
+      collect_type_confluence(get_element_avar(cs), confluences);
   }
   confluences.set_to_vec();
   qsort_by_id(confluences);
