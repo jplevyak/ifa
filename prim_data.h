@@ -117,4 +117,8 @@ extern Prim *prim_sizeof;
 #define P_prim_sizeof 55
 extern Prim *prim_sizeof_element;
 #define P_prim_sizeof_element 56
+extern Prim *prim_typeof;
+#define P_prim_typeof 57
+extern Prim *prim_typeof_element;
+#define P_prim_typeof_element 58
 #endif

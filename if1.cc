@@ -1053,5 +1053,7 @@ if1_set_primitive_types(IF1 *if1) {
   }
 }
 
-
+void pp(Code *code) {
+  print_code(stdout, code, 0, 0);
+}
 

@@ -57,6 +57,8 @@ Prim *prim_type_assert = 0;
 Prim *prim_len = 0;
 Prim *prim_sizeof = 0;
 Prim *prim_sizeof_element = 0;
+Prim *prim_typeof = 0;
+Prim *prim_typeof_element = 0;
 
 void prim_init(Primitives *p, IF1 *if1) {
   char *n;
@@ -402,4 +404,16 @@ void prim_init(Primitives *p, IF1 *if1) {
   n = (char*)if1->strings.put((char*)"sizeof_element");
   p->prims.add(prim_sizeof_element);
   p->prim_map[0][0].put(n, prim_sizeof_element);
+  static PrimType prim_typeof_arg_types[] = {PRIM_TYPE_ANY};
+  static PrimType prim_typeof_ret_types[] = {PRIM_TYPE_ANY};
+  prim_typeof = new Prim(57, "typeof", "prim_typeof", 2, 0, 1, prim_typeof_arg_types, prim_typeof_ret_types, 0);
+  n = (char*)if1->strings.put((char*)"typeof");
+  p->prims.add(prim_typeof);
+  p->prim_map[0][0].put(n, prim_typeof);
+  static PrimType prim_typeof_element_arg_types[] = {PRIM_TYPE_ANY};
+  static PrimType prim_typeof_element_ret_types[] = {PRIM_TYPE_ANY};
+  prim_typeof_element = new Prim(58, "typeof_element", "prim_typeof_element", 2, 0, 1, prim_typeof_element_arg_types, prim_typeof_element_ret_types, 0);
+  n = (char*)if1->strings.put((char*)"typeof_element");
+  p->prims.add(prim_typeof_element);
+  p->prim_map[0][0].put(n, prim_typeof_element);
 }
