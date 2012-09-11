@@ -2076,6 +2076,26 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
         update_gen(result, rtype);
         break;
       }
+      case P_prim_typeof: {
+        AVar *t = make_AVar(p->rvals[2], es);
+        AType *rtype = bottom_type;
+        forv_CreationSet(cs, t->out->sorted)
+          rtype = type_union(rtype, make_abstract_type(cs->sym->meta_type));
+        update_gen(result, rtype);
+        break;
+      }
+      case P_prim_typeof_element: {
+        AVar *t = make_AVar(p->rvals[2], es);
+        AType *rtype = bottom_type;
+        forv_CreationSet(cs, t->out->sorted) {
+          AVar *elem = get_element_avar(cs);
+          if (elem)
+            forv_CreationSet(cs2, elem->out->sorted)
+              rtype = type_union(rtype, make_abstract_type(cs2->sym->meta_type));
+        }
+        update_gen(result, rtype);
+        break;
+      }
       case P_prim_cast: {
         assert(!"implemented");
         break;

@@ -75,4 +75,5 @@ prim_type_assert "type_assert" 3 0 {PRIM_TYPE_ANY, PRIM_TYPE_ANY} {PRIM_TYPE_ANY
 prim_len "len" 2 0 {PRIM_TYPE_ANY} {PRIM_TYPE_ANY};
 prim_sizeof "sizeof" 2 0 {PRIM_TYPE_ANY} {PRIM_TYPE_ANY};
 prim_sizeof_element "sizeof_element" 2 0 {PRIM_TYPE_ANY} {PRIM_TYPE_SIZE};
-
+prim_typeof "typeof" 2 0 {PRIM_TYPE_ANY} {PRIM_TYPE_ANY};
+prim_typeof_element "typeof_element" 2 0 {PRIM_TYPE_ANY} {PRIM_TYPE_ANY};
