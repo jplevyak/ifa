@@ -41,7 +41,6 @@ show_error(cchar *str, Var *v, ...) {
 char *
 get_file_line(cchar *filename, int lineno) {
   static char *last_filename = 0;
-  static char *last_buf = 0;
   static Vec<char *> last_lines;
 
   if (!last_filename || strcmp(filename, last_filename)) {
@@ -50,7 +49,6 @@ get_file_line(cchar *filename, int lineno) {
     if (buf_read(filename, &new_buf, &len) < 0)
       return 0;
     last_filename = dupstr(filename);
-    last_buf = new_buf;
     char *b = new_buf;
     last_lines.clear();
     last_lines.add(b);
