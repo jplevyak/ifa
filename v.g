@@ -411,37 +411,37 @@ binary_operator
   ;
 
 pre_operator
-  : '++'         $unary_op_right 9800
-  | '--'         $unary_op_right 9800
-  | '+'          $unary_op_right 9800
-  | '-'          $unary_op_right 9800
-  | '~'          $unary_op_right 9800
-  | '!'          $unary_op_right 9800
-  | '*'          $unary_op_right 9800
-  | '&'          $unary_op_right 9800
-  | '(' type ')' $unary_op_right 9800
-  | 'sizeof'     $unary_op_right 9900
+  : '++'         $unary_op_right 5800
+  | '--'         $unary_op_right 5800
+  | '+'          $unary_op_right 5800
+  | '-'          $unary_op_right 5800
+  | '~'          $unary_op_right 5800
+  | '!'          $unary_op_right 5800
+  | '*'          $unary_op_right 5800
+  | '&'          $unary_op_right 5800
+  | '(' type ')' $unary_op_right 5800
+  | 'sizeof'     $unary_op_right 5900
   ;
 
 post_operator
-  : '--'         $unary_op_left 9800
-  | '++'         $unary_op_left 9800
-  | '{' expression '}' $unary_op_left 9850
+  : '--'         $unary_op_left 5800
+  | '++'         $unary_op_left 5800
+  | '{' expression '}' $unary_op_left 5850
     [ if (d_ws_before(${parser}, &$n0) != $n0.start_loc.s) ${reject}; ]
     { $0.ast = symbol_AST($g->i, &$n0); }
-  | '{' '}' object $unary_op_left 9850
+  | '{' '}' object $unary_op_left 5850
     [ if (d_ws_before(${parser}, &$n0) != $n0.start_loc.s) ${reject}; ]
     { $0.ast = symbol_AST($g->i, &$n0); }
-  | '(' expression ')' $unary_op_left 9850
+  | '(' expression ')' $unary_op_left 5850
     [ if (d_ws_before(${parser}, &$n0) != $n0.start_loc.s) ${reject}; ]
     { $0.ast = symbol_AST($g->i, &$n0); }
-  | '(' ')' null $unary_op_left 9850
+  | '(' ')' null $unary_op_left 5850
     [ if (d_ws_before(${parser}, &$n0) != $n0.start_loc.s) ${reject}; ]
     { $0.ast = symbol_AST($g->i, &$n0); }
-  | '[' expression ']' $unary_op_left 9850
+  | '[' expression ']' $unary_op_left 5850
     [ if (d_ws_before(${parser}, &$n0) != $n0.start_loc.s) ${reject}; ]
     { $0.ast = symbol_AST($g->i, &$n0); }
-  | '[' ']' null $unary_op_left 9850
+  | '[' ']' null $unary_op_left 5850
     [ if (d_ws_before(${parser}, &$n0) != $n0.start_loc.s) ${reject}; ]
     { $0.ast = symbol_AST($g->i, &$n0); }
   ;

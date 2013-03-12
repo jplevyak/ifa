@@ -16,6 +16,7 @@ static char log_flags[512] = "";
 static int do_unit_tests = 0;
 
 extern int d_debug_level;
+extern int d_verbose_level;
 
 static void help(ArgumentState *arg_state, char *arg_unused);
 static void copyright(ArgumentState *arg_state, char *arg_unused);
@@ -26,11 +27,13 @@ static ArgumentDescription arg_desc[] = {
  {"graph", 'G', "Write Program Graphs", "T", &fgraph, "IFA_GRAPH", NULL},
  {"graph-format", ' ', "GraphViz = 0, VCG = 1", "I", &fgraph_vcg, "IFA_GRAPH_FORMAT", NULL},
  {"test", ' ', "Unit Test", "F", &do_unit_tests, "IFA_TEST", NULL},
- {"log-dir", ' ', "Log Directory", "P", log_dir, "CHPL_LOG_DIR", NULL},
+ {"log-dir", ' ', "Log Directory", "S512", log_dir, "CHPL_LOG_DIR", NULL},
  {"log", 'l', "Debug Logging Flags", "S512", log_flags, "CHPL_LOG_FLAGS", log_flags_arg},
  {"debug", 'd', "Debug", "+", &ifa_debug, "IFA_DEBUG", NULL},
  {"verbose", 'v', "Verbose", "+", &ifa_verbose, "IFA_VERBOSE", NULL},
  {"ddebug", ' ', "DParser Debug Level", "+", &d_debug_level, "IFA_D_DEBUG_LEVEL", NULL},
+ {"ddverbose", ' ', "DParser Verbose Level (prelude)", "+", &d_verbose_level, 
+  "IFA_PARSER_VERBOSE_PRELUDE", NULL},
  {"dverbose", ' ', "DParser Verbose Level (except prelude)", "+", &parser_verbose_non_prelude, 
   "IFA_PARSER_VERBOSE_NON_PRELUDE", NULL},
  {"copyright", ' ', "Show Copyright", NULL, NULL, NULL, copyright},
