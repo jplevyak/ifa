@@ -46,6 +46,7 @@ BasicSym::BasicSym(void) :
   is_system_type(0),
   is_union_type(0),
   is_structure(0),
+  is_vector(0),
   fun_returns_value(0),
   live(0),
   type_kind(0),
