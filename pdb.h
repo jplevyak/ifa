@@ -7,7 +7,7 @@
 class FA;
 class Fun;
 class IF1;
-class LoopGraph;
+struct LoopGraph;
 
 // Program Database, stores the set of all functions
 

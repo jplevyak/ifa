@@ -66,6 +66,8 @@ initialize() {
     if (!funs_set.set_in(f))
       f->ess.clear();
   }
+  fa->ess.clear();
+  fa->ess.append(fa->ess_set);
   forv_Sym(s, fa->pdb->if1->allsyms) {
     if (s->creators.n) {
       Vec<CreationSet*> creators;

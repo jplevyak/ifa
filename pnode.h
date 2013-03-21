@@ -6,8 +6,8 @@
 
 class Code;
 class Prim;
-class Dom;
-class LoopNode;
+struct Dom;
+struct LoopNode;
 class Fun;
 class MPosition;
 class Sym;

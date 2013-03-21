@@ -213,8 +213,8 @@ if1_goto(IF1 *p, Code **c, Label *label) {
 
 Label *
 if1_alloc_label(IF1 *p) {
-  Label *l = (Label *)MALLOC(sizeof(struct Label));
-  memset(l, 0, sizeof(struct Label));
+  Label *l = (Label *)MALLOC(sizeof(class Label));
+  memset(l, 0, sizeof(class Label));
   l->id = p->alllabels.n;
   p->alllabels.add(l);
   return l;

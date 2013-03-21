@@ -7,9 +7,9 @@
 class PDB;
 class ESet;
 class AVar;
-class LoopGraph;
-class LoopNode;
-class Dom;
+struct LoopGraph;
+struct LoopNode;
+struct Dom;
 class CDB_EntrySet;
 class MPosition;
 class EntrySet;

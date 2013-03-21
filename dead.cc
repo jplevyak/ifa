@@ -28,22 +28,28 @@ static void
 print_dead(FA *fa) {
   int ndead_pnodes = 0, ndead_vars = 0;
   int nlive_pnodes = 0, nlive_vars = 0;
+  char lfn[512];
+  strcpy(lfn, fa->fn);
+  strcat(lfn, ".dead_log");
+  FILE *fp = fopen(lfn, "w");
+  fa_dump_types(fa, fp);
   forv_Fun(f, fa->funs) {
     forv_PNode(p, f->fa_all_PNodes)
       if (!p->live) {
         ndead_pnodes++;
-        printf("PNode %d DEAD\n", p->id);
+        fprintf(fp, "PNode %d %s:%d DEAD\n", p->id, p->code->filename(), p->code->line());
       } else nlive_pnodes++;
     forv_Var(v, f->fa_all_Vars)
       if (!v->live) {
         ndead_vars++;
-        printf("Var %d:%d %s DEAD\n", v->sym->id, v->id, v->sym->name ? v->sym->name : "");
+        fprintf(fp, "Var %d:%d %s %s:%d DEAD\n", v->sym->id, v->id, v->sym->name ? v->sym->name : "", v->sym->filename(), v->sym->line());
       } else nlive_vars++;
   }
-  printf("%d PNodes DEAD\n", ndead_pnodes);
-  printf("%d Vars DEAD\n", ndead_vars);
-  printf("%d PNodes LIVE\n", nlive_pnodes);
-  printf("%d Vars LIVE\n", nlive_vars);
+  fprintf(fp, "%d PNodes DEAD\n", ndead_pnodes);
+  fprintf(fp, "%d Vars DEAD\n", ndead_vars);
+  fprintf(fp, "%d PNodes LIVE\n", nlive_pnodes);
+  fprintf(fp, "%d Vars LIVE\n", nlive_vars);
+  fclose(fp);
 }
 
 static void
@@ -179,8 +185,10 @@ mark_live_pnodes(FA *fa) {
         p->live = 1;
         f->live = 1;
         mark_live_again = 1;
-      } else
+      } else if (!f->live) {
         f->live = 1;
+        mark_live_again = 1;
+      }
     }
   }
 }

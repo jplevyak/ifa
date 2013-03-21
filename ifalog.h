@@ -34,7 +34,7 @@
   specifies AST log level 2 and IF1 log level 1
  */
 
-class ArgumentState;
+struct ArgumentState;
 
 #define LOG_AST         'a'
 #define LOG_IF1         'i'

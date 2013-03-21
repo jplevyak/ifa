@@ -64,7 +64,7 @@ IFA = ifa
 MAKE_PRIMS = make_prims
 endif
 
-ALL_SRCS = $(IFA_SRCS) $(LIB_SRCS)
+DEPEND_SRCS = $(IFA_DEPEND_SRCS) $(LIB_SRCS)
 
 defaulttarget: $(EXECUTABLES) $(LIBRARY) ifa.cat
 

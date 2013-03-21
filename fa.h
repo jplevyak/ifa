@@ -352,7 +352,7 @@ void return_int_transfer_function(PNode *pn, EntrySet *es);
 void return_string_transfer_function(PNode *pn, EntrySet *es);
 AType *make_size_constant_type(int n);
 void collect_types_and_globals(FA *fa, Vec<Sym *> &typesyms, Vec<Var *> &globalsyms);
-
+void fa_dump_types(FA *fa, FILE *fp);
 
 template<class C> void
 qsort_by_id(C **left, C **right) {

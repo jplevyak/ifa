@@ -1580,9 +1580,8 @@ pre_gen_bottom_up(ParseAST *ast) {
           if (!a->in_tuple) {
             if (a->rank + 1 > rank)
               rank = a->rank + 1;
-          } else
-            if (a->rank > rank)
-              rank = a->rank;
+          } else if (a->rank > rank)
+            rank = a->rank;
         ast->rank = rank;
       }
       break;
