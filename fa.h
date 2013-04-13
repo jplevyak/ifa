@@ -183,7 +183,7 @@ class AVar : public gc { public:
   uint                          contour_is_entry_set : 1;
   uint                          is_lvalue : 1;
   uint                          live : 1;
-  uint                          fa_live : 1;
+  uint                          live_arg : 1;
   uint                          is_if_arg : 1;
   Accum<AVar *>                 arg_of_send;
   LINK(AVar,                    send_worklist_link);
@@ -320,6 +320,8 @@ Sym *type_info(IFAAST *a, Sym *s = 0);
 void call_info(Fun *f, IFAAST *a, Vec<Fun *> &funs);
 int constant_info(IFAAST *a, Vec<Sym *> &constants, Sym *s);
 int constant_info(Var *v, Vec<Sym *> &constants);
+Sym *constant(Var *v);
+Sym *constant(AVar *av);
 int symbol_info(Var *v, Vec<Sym *> &symbols);
 AType *make_AType(CreationSet *cs);
 AType *make_AType(Vec<CreationSet *> &css);

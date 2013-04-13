@@ -1110,16 +1110,16 @@ clone_functions() {
         if (f->nmap)
           pnode = f->nmap->get(pnode);
         Vec<AEdge *> *m = es->out_edge_map[i].value;
-        Vec<Fun *> *vf = f->calls.get(pnode);
-        if (!vf)
-          f->calls.put(pnode, (vf = new Vec<Fun *>));
-        if (m)
+        if (m) {
+          Vec<Fun *> *vf = f->calls.get(pnode);
+          if (!vf)
+            f->calls.put(pnode, (vf = new Vec<Fun *>));
           forv_AEdge(ee, *m)
             if (used_edges.set_in(ee))
               vf->set_add(ee->to->fun);
-        // rebuild out_edge_map
-        if (m)
+          // rebuild out_edge_map
           new_out_edge_map.put(pnode, m);
+        }
       }
     }
     es->out_edge_map.move(new_out_edge_map);

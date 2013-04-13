@@ -1,5 +1,5 @@
 /* -*-Mode: c++;-*-
-   Copyright (c) 2003-2010 John Plevyak, All Rights Reserved
+   Copyright (c) 2003-2013 John Plevyak, All Rights Reserved
 */
 #include "ifadefs.h"
 #include "fa.h"
@@ -159,13 +159,11 @@ new_live_Var(Sym *s) {
 
 static void
 sub_constants(PNode *p) {
-  // sub constants
   Vec<Var *> rvals;
   rvals.move(p->rvals);
   forv_Var(v, rvals) {
-    Vec<Sym *> consts;
-    if (constant_info(v, consts) == 1) 
-      p->rvals.add(new_live_Var(consts[0]));
+    if (Sym *c = constant(v))
+      p->rvals.add(new_live_Var(c));
     else
       p->rvals.add(v);
   }
@@ -198,18 +196,25 @@ reaching_var(Var *v, Var *vv) {
 }
 
 static void
-insert_move_before(PNode *p, Var *rhs, Var *lhs) {
+insert_move_before(Fun *f, PNode *p, Var *rhs, Var *lhs) {
+  check_invariants(f);
   PNode *n = new PNode(new Code(Code_MOVE));
   forv_PNode(x, p->cfg_pred)
     x->cfg_succ[x->cfg_succ.index(p)] = n;
   n->cfg_pred.copy(p->cfg_pred);
-  p->cfg_pred[0] = n;
-  p->cfg_pred.n = 1;
+  if (f->entry == p) {
+    f->entry = n;
+    p->cfg_pred.add(n);
+  } else {
+    p->cfg_pred[0] = n;
+    p->cfg_pred.n = 1;
+  }
   n->cfg_succ.add(p);
   n->lvals.add(lhs);
   n->rvals.add(rhs);
   n->live = 1;
   n->fa_live = 1;
+  check_invariants(f);
 }
 
 static void
@@ -219,21 +224,34 @@ inline_single_pnode(Fun *f, PNode *p, Fun *fn, PNode *s) {
   p->prim = s->prim;
   f->calls.put(p, fn->calls.get(s));
   forv_Var(v, s->rvals) {
+    if (v->constant) {
+      p->rvals.add(new_live_Var(v->constant));
+      continue;
+    }
     Sym *fs = first_var(v)->sym;
     int i = fn->sym->has.index(fs);
-    if (i >= 0) {
-      if (rvals[i]->type == v->type || rvals[i]->type->type_kind != Type_SUM)
-        p->rvals.add(rvals[i]);
-      else {
-        Var *vv = new_live_Var(rvals[i]->sym);
+    assert(i >= 0);
+    if (rvals[i]->constant) {
+      p->rvals.add(new_live_Var(rvals[i]->constant));
+      continue;
+    }
+    if (rvals[i]->type == v->type) {
+      p->rvals.add(rvals[i]);
+    } else {
+      Var *vv = new_live_Var(rvals[i]->sym);
+      if (rvals[i]->type->type_kind != Type_SUM) {
+        vv->type = rvals[i]->type;
+        vv->avars = rvals[i]->avars;
+      } else {
+        assert(v->type->type_kind != Type_SUM);
         vv->type = v->type;
         vv->avars = v->avars;
-        insert_move_before(p, rvals[i], vv);
-        p->rvals.add(vv);
       }
-    } else
-      p->rvals.add(new_live_Var(v->sym));
+      insert_move_before(f, p, rvals[i], vv);
+      p->rvals.add(vv);
+    }
   }
+  check_invariants(f);
 }
 
 static void
@@ -249,10 +267,12 @@ inline_single_sends(FA *fa) {
   Map<Fun *, PNode *> single_send;
   Map<Fun *, int> identity_send;
   forv_Fun(f, fa->funs) { // find single prim send functions
+    assert(f->live);
     PNode *p = 0, *reply = 0; 
     forv_PNode(n, f->fa_all_PNodes) {
       if (!n->code || n->code->kind == Code_MOVE || !n->live)
         continue;
+      // forv_Var(v, n->rvals) { assert(v->live || v->constant); }
       if (n->prim == prim_reply) {
         if (!reply) {
           reply = n;
@@ -295,7 +315,10 @@ inline_single_sends(FA *fa) {
     Lskip:;
   }
   forv_Fun(f, fa->funs) {
-    forv_PNode(p, f->fa_all_PNodes) {
+    assert(f->live);
+    forv_PNode(p, f->fa_all_PNodes) { if (!p->live)
+        continue;
+      // forv_Var(v, p->rvals) { assert(v->live || v->constant); }
       Vec<Fun *> *calls = f->calls.get(p);
       if (p->code && p->code->kind == Code_SEND && !is_closure_call(p)) {
         // inline single send functions
@@ -335,8 +358,13 @@ inline_single_sends(FA *fa) {
           }
         }
       }
-      sub_constants(p);
     }
+    f->collect_Vars(f->fa_all_Vars, &f->fa_all_PNodes);
+  }
+  forv_Fun(f, fa->funs) {
+    forv_PNode(p, f->fa_all_PNodes)
+      if (p->live)
+        sub_constants(p);
     f->collect_Vars(f->fa_all_Vars, &f->fa_all_PNodes);
   }
   return 0;

@@ -33,6 +33,7 @@ class Var : public gc {
   unsigned int          is_filtered:1;
   unsigned int          is_formal:1;
   unsigned int          live:1;
+  Sym                   *constant;  // valid after dead code elimination
   cchar                 *cg_string; // used by cg.cpp
   llvm::Value           *llvm_value;
   const llvm::Type      *llvm_type;

@@ -1,5 +1,5 @@
 /* -*-Mode: c++;-*-
-   Copyright (c) 2004-2010 John Plevyak, All Rights Reserved
+   Copyright (c) 2004-2013 John Plevyak, All Rights Reserved
 */
 #include "ifadefs.h"
 #include "fail.h"
@@ -62,11 +62,8 @@ mark_live_avar(AVar *av) {
   if (av->var->def)
     av->var->def->live = 1;
   forv_AVar(aav, av->backward) if (aav) {
-    if (!aav->live) {
-      Vec<Sym *> consts;
-      if (constant_info(aav->var, consts) != 1)
-        mark_live_avar(aav);
-    }
+    if (!aav->live && !constant(aav))
+      mark_live_avar(aav);
   }
 }
 
@@ -76,29 +73,32 @@ mark_live_avars(FA *fa) {
     forv_PNode(p, f->fa_all_PNodes) {
       // if a pnode is live, and it is not a function call, it's inputs (rvals) must be live
       if (p->live && !f->calls.get(p)) {
-        forv_Var(v, p->rvals) {
-          Vec<Sym *> consts;
-          if (constant_info(v, consts) != 1) {
+        forv_Var(v, p->rvals)
+          if (!v->constant) {
             form_AVarMapElem(x, v->avars) {
               AVar *av = x->value;
-              if (!av->live) 
+              if (!av->live)
                 mark_live_avar(av);
             }
           }
-        }
       }
     }
     forv_Var(v, f->fa_all_Vars) {
-      form_AVarMapElem(x, v->avars) {
-        // if an instance variable is live, then the containing object must be live
-        AVar *av = x->value;
-        if (!av->live) {
-          forv_CreationSet(cs, *av->out) if (cs) {
-            forv_AVar(iv, cs->vars) {
-              if (iv->live && !av->live)
-                mark_live_avar(av);
+      if (!v->constant) {
+        form_AVarMapElem(x, v->avars) {
+          // if an instance variable is live, then the containing object must be live
+          AVar *av = x->value;
+          if (!av->live) {
+            forv_CreationSet(cs, *av->out) if (cs) {
+              forv_AVar(iv, cs->vars) {
+                if (iv->live) {
+                  mark_live_avar(av);
+                  goto Lbreak2;
+                }
+              }
             }
           }
+         Lbreak2:;
         }
       }
     }
@@ -198,6 +198,7 @@ mark_initial_dead_and_alive(FA *fa, int init = 0) {
   forv_Fun(f, fa->funs) {
     f->live = init;
     forv_Var(v, f->fa_all_Vars) {
+      v->constant = constant(v);
       v->live = init;
       for (int i = 0; i < v->avars.n; i++) 
         if (v->avars[i].key)
@@ -271,6 +272,10 @@ mark_live_funs(FA *fa) {
       }
     }
   }
+  Vec<Fun*> funs(fa->funs, Vec<Fun*>::MOVE);
+  forv_Fun(f, funs)
+    if (f->live)
+      fa->funs.add(f);
 }
 
 /*

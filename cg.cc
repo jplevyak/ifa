@@ -298,7 +298,7 @@ write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       break;
     }
     case P_prim_apply: {
-      assert(0);
+      assert(!"unimplemented");
       fputs("  ", fp);
       int incomplete = 0; //n->lvals.n && n->lvals[0]->type->var && n->lvals.v[0]->type->var->def == n;
       if (incomplete) {
@@ -390,7 +390,6 @@ write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       fputs("  ", fp);
       assert(n->lvals.n == 1);
       fprintf(fp, "%s = ", n->lvals[0]->cg_string);
-      assert(n->rvals[n->rvals.n-1]->type->is_meta_type);
       fprintf(fp, "_CG_prim_new(%s);\n", n->lvals[0]->type->cg_string);
       break;
     }
@@ -407,10 +406,12 @@ write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       Sym *t = n->rvals[o]->type;
       if (sym_string->specializers.set_in(t))
         fprintf(fp, "_CG_string_len(%s);\n", n->rvals[o]->cg_string);
-      else
+      else {
+        assert(n->rvals[o]->cg_string);
         fprintf(fp, "_CG_prim_len(%s,%s);\n", n->rvals[o-1]->cg_string, n->rvals[o]->cg_string);
+      }
       break;
-    }
+                     }
     case P_prim_clone_vector:
     case P_prim_clone: {
       fputs("  ", fp);
@@ -969,7 +970,7 @@ build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
   if (allsyms.n)
     fputs("\n/*\n Builtin Functions\n*/\n\n", fp);
   forv_Sym(s, allsyms) {
-    if (s->type_kind == Type_RECORD && s->creators[0]->sym == sym_list && homogeneous_tuple(s) && s->has.n)
+    if (s->type_kind == Type_RECORD && s->creators.n && s->creators[0]->sym == sym_list && homogeneous_tuple(s) && s->has.n)
       fprintf(fp, "_CG_TUPLE_TO_LIST_FUN(%d, %d);\n", s->id, s->has.n);
   }
   return 0;

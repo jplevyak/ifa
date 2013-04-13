@@ -77,7 +77,7 @@ AVar::AVar(Var *v, void *acontour) :
   var(v), contour(acontour), lvalue(0), gen(0), in(bottom_type), out(bottom_type), 
   restrict(0), container(0), setters(0), setter_class(0), mark_map(0),
   cs_map(0), match_cache(0), type(0), ivar_offset(0), in_send_worklist(0), contour_is_entry_set(0), 
-  is_lvalue(0), live(0), fa_live(0), is_if_arg(0)
+  is_lvalue(0), live(0), live_arg(0), is_if_arg(0)
 {
   id = avar_id++;
 }
@@ -2113,7 +2113,7 @@ add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
       flow_vars(make_AVar(v, es), vv);
   }
   forv_Var(v, p->rvals) 
-    make_AVar(v, es)->fa_live = 1;
+    make_AVar(v, es)->live_arg = 1;
   switch (p->code->kind) {
     default: break;
     case Code_SEND:
@@ -2971,7 +2971,7 @@ collect_var_type_violations() {
   forv_EntrySet(es, fa->ess) {
     forv_Var(v, es->fun->fa_all_Vars) {
       AVar *av = make_AVar(v, es);
-      if (av->fa_live && !av->var->is_internal && av->out == bottom_type && !is_Sym_OUT(av->var->sym))
+      if (av->live_arg && !av->var->is_internal && av->out == bottom_type && !is_Sym_OUT(av->var->sym))
         type_violation(ATypeViolation_NOTYPE, av, av->out, 0, 0);
     }
   }
@@ -2994,7 +2994,7 @@ collect_var_type_violations() {
   if (fa->no_unused_instance_variables) {
     forv_CreationSet(cs, fa->css) {
       forv_AVar(av, cs->vars) {
-        if (av->fa_live && av->out == bottom_type)
+        if (av->live_arg && av->out == bottom_type)
           type_violation(ATypeViolation_NOTYPE, av, av->out, 0, 0);
       }
     }
@@ -3580,7 +3580,7 @@ clear_avar(AVar *av) {
   av->forward.clear();
   av->arg_of_send.clear();
   av->mark_map = 0;
-  av->fa_live = 0;
+  av->live_arg = 0;
   if (av->lvalue)
     clear_avar(av->lvalue);
 }
@@ -4374,6 +4374,39 @@ constant_info(Var *v, Vec<Sym *> &constants) {
   }
   constants.set_to_vec();
   return constants.n;
+}
+
+Sym *constant(Sym *s) {
+  if (s->constant || s->is_symbol || s->is_fun || s->type_kind)
+    return s;
+  return NULL;
+}
+
+Sym *constant(Var *v) {
+  if (Sym *c = constant(v->sym))
+    return c;
+  Sym *c = NULL;
+  for (int i = 0; i < v->avars.n; i++) if (v->avars[i].key) {
+    Sym *cc = constant(v->avars[i].value);
+    if (!cc || (c && c != cc))
+      return NULL;
+    else
+      c = cc;
+  }
+  return c;
+}
+
+Sym *constant(AVar *av) {
+  Sym *c = NULL;
+  forv_CreationSet(cs, *av->out) if (cs) {
+    if (cs->sym->constant || cs->sym->is_meta_type) {
+      if (c && c != cs->sym)
+        return NULL;
+      c = cs->sym;
+    } else
+      return NULL;
+  }
+  return c;
 }
 
 // Given an IFAAST node and a Sym, find the set of

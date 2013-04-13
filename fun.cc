@@ -77,6 +77,7 @@ Fun::Fun(Sym *asym) {
   build_ssu();
   build_uses(this);
   setup_ast();
+  check_invariants(this);
 }
 
 Fun::Fun() {
@@ -314,5 +315,29 @@ void rebuild_cfg_pred_index(Fun *f) {
     for (int i = 0; i < n->cfg_pred.n; i++)
       n->cfg_pred_index.put(n->cfg_pred[i], i);
   }
+}
+
+void check_invariants(Fun *f) {
+#ifndef DEBUG
+  if (!f->entry)
+    return;
+  Accum<PNode *> nodes;
+  nodes.add(f->exit);
+  forv_PNode(p, nodes.asvec)
+    forv_PNode(n, p->cfg_pred)
+      nodes.add(n);
+  forv_PNode(p, nodes.asvec) {
+    forv_PNode(n, p->cfg_pred)
+      assert(n->cfg_succ.in(p));
+    forv_PNode(n, p->cfg_succ)
+      assert(n->cfg_pred.in(p));
+  }
+  Accum<PNode *> forward_nodes;
+  forward_nodes.add(f->entry);
+  forv_PNode(p, nodes.asvec)
+    forv_PNode(n, p->cfg_succ)
+      forward_nodes.add(n);
+  assert(!nodes.asset.some_disjunction(forward_nodes.asset));
+#endif
 }
 

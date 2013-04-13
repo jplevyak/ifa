@@ -59,6 +59,7 @@ ifa_html(cchar *fn, char *mktree_dir) {
 
 int
 ifa_optimize() {
+  mark_live_funs(fa);
   if (simple_inlining(pdb->fa) < 0) return -1;
   mark_live_types(pdb->fa);
   mark_live_funs(pdb->fa);

@@ -147,6 +147,7 @@ class Fun : public gc {
 #define forv_Fun(_f, _v) forv_Vec(Fun, _f, _v)
 
 int compar_funs(const void *ai, const void *aj);
+void check_invariants(Fun *);
 void rebuild_cfg_pred_index(Fun *);
 
 #endif
