@@ -260,8 +260,8 @@ write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         for (int i = 0; i < obj->has.n; i++) {
           if (symbol == obj->has[i]->name) {
             assert(n->lvals[0]->cg_string);
-            fprintf(fp, "  %s = ((%s)%s)->e%d;\n", n->lvals[0]->cg_string, 
-                    obj->cg_string, n->rvals[1]->cg_string, i);
+            fprintf(fp, "  %s = (%s)((%s)%s)->e%d;\n", n->lvals[0]->cg_string, 
+                 t, obj->cg_string, n->rvals[1]->cg_string, i);
             goto Lgetter_found;
           }
         }

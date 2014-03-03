@@ -2971,7 +2971,7 @@ collect_var_type_violations() {
   forv_EntrySet(es, fa->ess) {
     forv_Var(v, es->fun->fa_all_Vars) {
       AVar *av = make_AVar(v, es);
-      if (av->live_arg && !av->var->is_internal && av->out == bottom_type && !is_Sym_OUT(av->var->sym))
+      if (av->live_arg && !av->var->sym->is_fake && !av->var->is_internal && av->out == bottom_type && !is_Sym_OUT(av->var->sym))
         type_violation(ATypeViolation_NOTYPE, av, av->out, 0, 0);
     }
   }
