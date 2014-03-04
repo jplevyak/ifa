@@ -286,8 +286,8 @@ write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         obj = obj->has[0];
       for (int i = 0; i < obj->has.n; i++) {
         if (symbol == obj->has[i]->name) {
-          fprintf(fp, "  ((%s)%s)->e%d = %s;\n", 
-                  obj->cg_string, n->rvals[1]->cg_string, i, c_rhs(n->rvals.v[4]));
+          fprintf(fp, "  ((%s)%s)->e%d = (%s)%s;\n", 
+                  obj->cg_string, n->rvals[1]->cg_string, i, c_type(obj->has[i]), c_rhs(n->rvals.v[4]));
           if (n->lvals[0]->live)
             fprintf(fp, "  %s = ((%s)%s);\n", n->lvals[0]->cg_string, obj->cg_string, n->rvals[1]->cg_string);
           goto Lsetter_found;
