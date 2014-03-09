@@ -458,7 +458,7 @@ type_cannonicalize(AType *t) {
       consts++;
       nonconsts.set_add(base_cs);
     } else { 
-      if (!cs->sym->is_unique_type)
+      if (!cs->sym->is_unique_type)  // e.g. nil, void, or unknown
         nonconsts.set_add(cs);
       else
         nulls = 1;
@@ -3882,7 +3882,9 @@ split_ess_setters(Vec<AVar *> &confluences) {
   forv_AVar(av, confluences) {
     if (av->contour_is_entry_set) {
       if (!av->is_lvalue) {
-        if (is_return_value(av))
+  //      This proved overly conservative for pyc.sf.net as one edge carried None which was
+  //      overwritten by a setter such that the confluence occured within the constructor.
+  //      if (is_return_value(av))
           analyze_again |= split_entry_set(av, SPLIT_SETTER, SPLIT_VALUE, SPLIT_EDGES);
       } else {
         AVar *aav = unique_AVar(av->var, av->contour);
