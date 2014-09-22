@@ -109,7 +109,7 @@ sprint_imm(char *str, Immediate &imm) {
         case IF1_INT_TYPE_32:
           res = sprintf(str, "%u", imm.v_uint32); break;
         case IF1_INT_TYPE_64:
-          res = sprintf(str, "%llu", imm.v_uint64); break;
+          res = sprintf(str, "%lu", imm.v_uint64); break;
         default: assert(!"case");
       }
       break;
@@ -125,7 +125,7 @@ sprint_imm(char *str, Immediate &imm) {
         case IF1_INT_TYPE_32:
           res = sprintf(str, "%d", imm.v_int32); break;
         case IF1_INT_TYPE_64:
-          res = sprintf(str, "%lld", imm.v_int64); break;
+          res = sprintf(str, "%ld", imm.v_int64); break;
         default: assert(!"case");
       }
       break;
@@ -174,7 +174,7 @@ fprint_imm(FILE *fp, Immediate &imm) {
         case IF1_INT_TYPE_32:
           res = fprintf(fp, "%u", imm.v_uint32); break;
         case IF1_INT_TYPE_64:
-          res = fprintf(fp, "%llu", imm.v_uint64); break;
+          res = fprintf(fp, "%lu", imm.v_uint64); break;
         default: assert(!"case");
       }
       break;
@@ -190,7 +190,7 @@ fprint_imm(FILE *fp, Immediate &imm) {
         case IF1_INT_TYPE_32:
           res = fprintf(fp, "%d", imm.v_int32); break;
         case IF1_INT_TYPE_64:
-          res = fprintf(fp, "%lld", imm.v_int64); break;
+          res = fprintf(fp, "%ld", imm.v_int64); break;
         default: assert(!"case");
       }
       break;
@@ -718,11 +718,11 @@ convert_string_to_immediate(cchar *str, Immediate *imm) {
     case IF1_NUM_KIND_FLOAT:
       switch (imm->num_index) {
         case IF1_FLOAT_TYPE_32:
-          imm->v_float32 = atof( str); break;
+          imm->v_float32 = atof(str); break;
         case IF1_FLOAT_TYPE_64:
-          imm->v_float64 = atof( str); break;
+          imm->v_float64 = atof(str); break;
         case IF1_FLOAT_TYPE_128:
-          imm->v_float128 = atof( str); break;
+          imm->v_float128 = atof(str); break;
         default: assert(!"case");
       }
       break;
