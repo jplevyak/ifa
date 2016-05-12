@@ -6,7 +6,7 @@
 
 class FA;
 
-int frequency_estimation(FA *fa);               // static estimates in place of profiling
+int frequency_estimation(FA *fa);  // static estimates in place of profiling
 int simple_inlining(FA *fa);
 
 #endif

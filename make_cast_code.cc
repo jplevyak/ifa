@@ -6,7 +6,6 @@
 #define IFA_EXTERN_INIT(_x) = _x
 #include "num.h"
 
-
 /*
 To be used to build the body of the function:
 
@@ -14,11 +13,10 @@ void coerce_immediate(from, to);
 
 Compile with:
 
-g++ -I../include make_cast_code.cpp 
+g++ -I../include make_cast_code.cpp
 */
 
-int
-main() {
+int main() {
   FILE *fp = fopen("cast_code.cc", "w");
   fprintf(fp, "switch (to->const_kind) {\n");
   fprintf(fp, "default: assert(!\"case\"); break;\n");
@@ -42,13 +40,11 @@ main() {
             } else {
               if (tt == IF1_NUM_KIND_UINT && tn == IF1_INT_TYPE_1)
                 fprintf(fp, "to->v_%s = (%s)!!from->v_%s; break;\n",
-                        num_kind_string[tt][tn],
-                        num_kind_string[tt][tn],
+                        num_kind_string[tt][tn], num_kind_string[tt][tn],
                         num_kind_string[st][sn]);
               else
                 fprintf(fp, "to->v_%s = (%s)from->v_%s; break;\n",
-                        num_kind_string[tt][tn],
-                        num_kind_string[tt][tn],
+                        num_kind_string[tt][tn], num_kind_string[tt][tn],
                         num_kind_string[st][sn]);
             }
           }
@@ -61,6 +57,3 @@ main() {
   }
   fprintf(fp, "}\n");
 }
-
-
-    

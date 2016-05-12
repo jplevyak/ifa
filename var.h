@@ -11,33 +11,36 @@ class Sym;
 class PNode;
 class SSUVar;
 class CreationSet;
-namespace llvm { class Value; class Type; }
+namespace llvm {
+class Value;
+class Type;
+}
 
 typedef MapElem<void *, AVar *> AVarMapElem;
-typedef Map<void *, AVar*> AVarMap;
-typedef Map<Var *, Var*> VarMap;
+typedef Map<void *, AVar *> AVarMap;
+typedef Map<Var *, Var *> VarMap;
 
 extern int var_id;
 
 class Var : public gc {
  public:
-  Sym                   *sym;
-  int                   id;
-  Sym                   *type;
-  int                   mark;   // used by ssu.cpp
-  PNode                 *def;
-  Vec<PNode *>          uses;
-  AVarMap               avars;  // used by fa.cpp
-  CreationSet           *as_CreationSet; // used by fa.cpp
-  unsigned int          is_internal:1;
-  unsigned int          is_filtered:1;
-  unsigned int          is_formal:1;
-  unsigned int          live:1;
-  Sym                   *constant;  // valid after dead code elimination
-  cchar                 *cg_string; // used by cg.cpp
-  llvm::Value           *llvm_value;
-  const llvm::Type      *llvm_type;
-  
+  Sym *sym;
+  int id;
+  Sym *type;
+  int mark;  // used by ssu.cpp
+  PNode *def;
+  Vec<PNode *> uses;
+  AVarMap avars;                // used by fa.cpp
+  CreationSet *as_CreationSet;  // used by fa.cpp
+  unsigned int is_internal : 1;
+  unsigned int is_filtered : 1;
+  unsigned int is_formal : 1;
+  unsigned int live : 1;
+  Sym *constant;     // valid after dead code elimination
+  cchar *cg_string;  // used by cg.cpp
+  llvm::Value *llvm_value;
+  const llvm::Type *llvm_type;
+
   // Temporary Space
   union {
     SSUVar *ssu;

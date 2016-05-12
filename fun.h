@@ -23,14 +23,16 @@ class PromotionCache;
 class GenericCache;
 class OrderCache;
 class DefaultCache;
-namespace llvm { class Function; }
+namespace llvm {
+class Function;
+}
 
-#define FUN_COLLECT_VARS_NO_PHY        0x01
-#define FUN_COLLECT_VARS_NO_TVALS      0x02
+#define FUN_COLLECT_VARS_NO_PHY 0x01
+#define FUN_COLLECT_VARS_NO_TVALS 0x02
 
 class CallPoint : public gc {
  public:
-  Fun   *fun;
+  Fun *fun;
   PNode *pnode;
   CallPoint(Fun *afun, PNode *apnode) : fun(afun), pnode(apnode) {}
 };
@@ -44,8 +46,8 @@ class Fun : public gc {
   Sym *sym;
   IFAAST *ast;
   Fun *nested_in;
-  Vec<Fun*> nested;
-  
+  Vec<Fun *> nested;
+
   // pnode
   PNode *entry;
   PNode *exit;
@@ -53,9 +55,9 @@ class Fun : public gc {
   uint is_generic : 1;
   uint is_external : 1;
   uint is_varargs : 1;
-  uint is_eager : 1;   // will evaulate for Partial_OK
-  uint is_lazy : 1;    // will not match Partial_NEVER
-  
+  uint is_eager : 1;  // will evaulate for Partial_OK
+  uint is_lazy : 1;   // will not match Partial_NEVER
+
   // cdb
   int prof_id;
   Vec<int> prof_ess;
@@ -64,8 +66,8 @@ class Fun : public gc {
   // fa
   uint fa_collected : 1;
   uint clone_for_constants : 1;
-  uint split_unique : 1; // must be split uniquely for each caller
-  uint split_eager : 1; // split eagerly for different argument types
+  uint split_unique : 1;  // must be split uniquely for each caller
+  uint split_eager : 1;   // split eagerly for different argument types
   Vec<EntrySet *> ess;
   Vec<Var *> fa_Vars;
   Vec<Var *> fa_all_Vars;
@@ -80,8 +82,8 @@ class Fun : public gc {
   Vec<MPosition *> arg_positions;
   Vec<MPosition *> positional_arg_positions;
   Map<MPosition *, MPosition *> named_to_positional;
-  Map<MPosition*, Sym*> arg_syms;
-  Map<MPosition *, Var*> args;
+  Map<MPosition *, Sym *> arg_syms;
+  Map<MPosition *, Var *> args;
   Vec<Var *> rets;
   Vec<MPosition *> out_positions;
   Map<MPosition *, IFAAST *> default_args;
@@ -91,15 +93,15 @@ class Fun : public gc {
   GenericCache *generic_cache;
   OrderCache *order_cache;
   DefaultCache *default_cache;
-  
+
   // clone
   Vec<EntrySet *> called_ess;
   Vec<EntrySet *> called_by_ess;
   Vec<CreationSet *> called_css;
   Vec<Vec<EntrySet *> *> equiv_sets;
-  Map<PNode *, PNode*> *nmap;
-  Map<Var *, Var*> *vmap;
-  Map<Fun *, Fun*> *fmap;
+  Map<PNode *, PNode *> *nmap;
+  Map<Var *, Var *> *vmap;
+  Map<Fun *, Fun *> *fmap;
 
   // clone typings and call graph
   Map<PNode *, Vec<Fun *> *> calls;
@@ -114,24 +116,24 @@ class Fun : public gc {
   LoopGraph *loops;
   LoopNode *loop_node;
   Dom *dom;
-  
+
   // inline
   float execution_frequency;
   int size;
-  
+
   // cg
-  uint live:1;
+  uint live : 1;
   char *cg_string;
   char *cg_structural_string;
 
   // llvm
   llvm::Function *llvm;
-  
+
   cchar *pathname();
   cchar *filename();
   int line();
   int source_line();
-  
+
   void collect_PNodes(Vec<PNode *> &v);
   void collect_Vars(Vec<Var *> &v, Vec<PNode *> *vv = 0, int flags = 0);
 

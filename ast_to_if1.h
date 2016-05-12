@@ -7,11 +7,11 @@
 #include <stdio.h>
 
 #include "ast.h"
+#include "builtin.h"
+#include "ifa.h"
 #include "map.h"
 #include "scope.h"
-#include "builtin.h"
 #include "sym.h"
-#include "ifa.h"
 
 // C++'s manditory heap'o forward declarations
 struct D_ParseNode;
@@ -25,7 +25,7 @@ class PNode;
 class Fun;
 
 class PCallbacks : public IFACallbacks {
-public:
+ public:
   void finalize_functions();
   void new_SUM_type(Sym *);
   Sym *new_Sym(cchar *name = 0);
@@ -45,19 +45,19 @@ enum Intent { Intent_const, Intent_in, Intent_out, Intent_inout };
 class ParseAST : public IFAAST {
  public:
   AST_kind kind;
-  unsigned int scope_kind:2; // Scope_kind from scope.h
-  unsigned int constructor:2;
-  unsigned int intent:2;
-  unsigned int def_ident_label:1;
-  unsigned int op_index:1;
-  unsigned int in_tuple:1;
-  unsigned int in_apply:1;
-  unsigned int is_assign:1;
-  unsigned int is_simple_assign:1;
-  unsigned int is_ref:1;
-  unsigned int is_application:1;
-  unsigned int is_comma:1;
-  unsigned int is_inc_dec:1;
+  unsigned int scope_kind : 2;  // Scope_kind from scope.h
+  unsigned int constructor : 2;
+  unsigned int intent : 2;
+  unsigned int def_ident_label : 1;
+  unsigned int op_index : 1;
+  unsigned int in_tuple : 1;
+  unsigned int in_apply : 1;
+  unsigned int is_assign : 1;
+  unsigned int is_simple_assign : 1;
+  unsigned int is_ref : 1;
+  unsigned int is_application : 1;
+  unsigned int is_comma : 1;
+  unsigned int is_inc_dec : 1;
   unsigned int rank;
   ParseAST *parent;
   Vec<ParseAST *> children;
@@ -72,11 +72,11 @@ class ParseAST : public IFAAST {
   Scope *scope;
   cchar *constant_type;
   Sym *container;
-  Label *label[2];      // before and after for loops (continue,break)
-  Code  *code;
-  Sym   *rval;
+  Label *label[2];  // before and after for loops (continue,break)
+  Code *code;
+  Sym *rval;
 
-  ParseAST *last() { return children[children.n-1]; }
+  ParseAST *last() { return children[children.n - 1]; }
   void add(ParseAST *a);
   void add(D_ParseNode *pn);
   void add_below(D_ParseNode *pn);
@@ -84,9 +84,9 @@ class ParseAST : public IFAAST {
   void set_location_and_add(D_ParseNode *pn);
   ParseAST *get(AST_kind k);
 
-  Sym *symbol() { return rval ? rval : sym; } 
-  IFAAST *copy_tree(ASTCopyContext* context);
-  IFAAST *copy_node(ASTCopyContext* context);
+  Sym *symbol() { return rval ? rval : sym; }
+  IFAAST *copy_tree(ASTCopyContext *context);
+  IFAAST *copy_node(ASTCopyContext *context);
 
   cchar *pathname();
   int line();

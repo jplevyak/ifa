@@ -36,11 +36,11 @@
 
 struct ArgumentState;
 
-#define LOG_AST         'a'
-#define LOG_IF1         'i'
-#define LOG_TEST_FA     'F'
-#define LOG_DISPATCH    'd'
-#define LOG_SPLITTING   's'
+#define LOG_AST 'a'
+#define LOG_IF1 'i'
+#define LOG_TEST_FA 'F'
+#define LOG_DISPATCH 'd'
+#define LOG_SPLITTING 's'
 
 EXTERN char log_dir[FILENAME_MAX] EXTERN_INIT("./log");
 EXTERN char log_tag[256];
@@ -53,6 +53,5 @@ void log_flags_arg(ArgumentState *arg_state, char *arg);
 FILE *log_fp(int log);
 int log(int log, cchar *str, ...);
 int log_level(int log, int level, cchar *str, ...);
-
 
 #endif

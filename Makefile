@@ -81,13 +81,13 @@ deinstall:
 	rm $(INSTALL_LIBRARIES:%=$(PREFIX)/lib/%)
 
 $(IFA): $(IFA_OBJS) $(LIB_OBJS) $(LIBRARIES)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS) 
+	$(CXX) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
 
 $(LIBRARY): $(LIB_OBJS)
 	ar $(AR_FLAGS) $@ $^
 
 $(MAKE_PRIMS): make_prims.cc
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS) 
+	$(CXX) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
 
 ifa.cat: ifa.1
 	rm -f ifa.cat
@@ -99,6 +99,6 @@ ifa.cat: ifa.1
 main.o: LICENSE.i COPYRIGHT.i
 
 ifa_version.o: Makefile ifa_version.cc
-	$(CC) $(CFLAGS) $(VERSIONCFLAGS) -c ifa_version.cc
+	$(CXX) $(CFLAGS) $(VERSIONCFLAGS) -c ifa_version.cc
 
 -include .depend

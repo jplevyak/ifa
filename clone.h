@@ -16,5 +16,4 @@ void log_test_fa(FA *fa);
 Sym *to_basic_type(Sym *);
 Sym *concrete_type_set_to_type(Vec<Sym *> &t);
 
-
 #endif

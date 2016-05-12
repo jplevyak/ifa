@@ -1,35 +1,30 @@
 /* -*-Mode: c++;-*-
    Copyright (c) 2004-2008 John Plevyak, All Rights Reserved
 */
-#include "ifadefs.h"
 #include "ast.h"
-#include "sym.h"
 #include "builtin.h"
-#include "if1.h"
-#include "pattern.h"
 #include "fa.h"
+#include "if1.h"
+#include "ifadefs.h"
+#include "pattern.h"
+#include "sym.h"
 
 static int type_hierarchy_built = 0;
 static int finalized_types = 0;
 
-void
-new_module(Sym *&sym, Sym *fun) {
-  if (!sym)
-    sym = new_Sym();
+void new_module(Sym *&sym, Sym *fun) {
+  if (!sym) sym = new_Sym();
   sym->type = sym_module;
   sym->is_module = 1;
   sym->init = fun;
 }
 
-void
-new_builtin_symbol(Sym *&sym, cchar *name, cchar *builtin_name) {
-  if (!sym)
-    sym = if1_make_symbol(if1, name);
+void new_builtin_symbol(Sym *&sym, cchar *name, cchar *builtin_name) {
+  if (!sym) sym = if1_make_symbol(if1, name);
   if1_set_builtin(if1, sym, builtin_name ? builtin_name : name);
 }
 
-void
-new_builtin_primitive_type(Sym *&sym, cchar *name, cchar *builtin_name)  {
+void new_builtin_primitive_type(Sym *&sym, cchar *name, cchar *builtin_name) {
   name = if1_cannonicalize_string(if1, name);
   if (!sym) {
     sym = new_Sym(name);
@@ -38,8 +33,8 @@ new_builtin_primitive_type(Sym *&sym, cchar *name, cchar *builtin_name)  {
   if1_set_builtin(if1, sym, builtin_name ? builtin_name : name);
 }
 
-void
-new_builtin_alias_type(Sym *&sym, cchar *name, Sym *alias, cchar *builtin_name) {
+void new_builtin_alias_type(Sym *&sym, cchar *name, Sym *alias,
+                            cchar *builtin_name) {
   if (!sym) {
     sym = new_Sym(name);
     sym->type_kind = Type_ALIAS;
@@ -48,8 +43,7 @@ new_builtin_alias_type(Sym *&sym, cchar *name, Sym *alias, cchar *builtin_name) 
   if1_set_builtin(if1, sym, builtin_name ? builtin_name : name);
 }
 
-void 
-new_builtin_global_variable(Sym *&sym, cchar *name, cchar *builtin_name) {
+void new_builtin_global_variable(Sym *&sym, cchar *name, cchar *builtin_name) {
   if (!sym) {
     sym = new_Sym(name);
     sym->nesting_depth = 0;
@@ -57,8 +51,8 @@ new_builtin_global_variable(Sym *&sym, cchar *name, cchar *builtin_name) {
   if1_set_builtin(if1, sym, builtin_name ? builtin_name : name);
 }
 
-void
-new_builtin_unique_object(Sym *&sym, cchar *name, Sym *sym_type, cchar *builtin_name) {
+void new_builtin_unique_object(Sym *&sym, cchar *name, Sym *sym_type,
+                               cchar *builtin_name) {
   bool predefined = !!sym;
   new_builtin_global_variable(sym, name, builtin_name);
   if (!predefined) {
@@ -68,8 +62,7 @@ new_builtin_unique_object(Sym *&sym, cchar *name, Sym *sym_type, cchar *builtin_
   }
 }
 
-void
-new_builtin_lub_type(Sym *&sym, cchar *name, cchar *builtin_name, ...)  {
+void new_builtin_lub_type(Sym *&sym, cchar *name, cchar *builtin_name, ...) {
   bool predefined = !!sym;
   if (!sym) {
     sym = new_Sym(name);
@@ -81,11 +74,9 @@ new_builtin_lub_type(Sym *&sym, cchar *name, cchar *builtin_name, ...)  {
     va_start(ap, builtin_name);
     Sym *s = 0;
     do {
-      if ((s = va_arg(ap, Sym*)))
-        sym->has.add(s);
+      if ((s = va_arg(ap, Sym *))) sym->has.add(s);
     } while (s);
-    forv_Sym(ss, sym->has)
-      ss->inherits_add(sym);
+    forv_Sym(ss, sym->has) ss->inherits_add(sym);
   }
 }
 
@@ -95,7 +86,8 @@ static void init_builtin_symbols() {
   new_builtin_symbol(sym_make_tuple, "make_tuple");
   new_builtin_symbol(sym_make_vector, "make_vector");
   new_builtin_symbol(sym_make_list, "make_list");
-  new_builtin_symbol(sym_make_continuation, "__make_continuation", "make_continuation");
+  new_builtin_symbol(sym_make_continuation, "__make_continuation",
+                     "make_continuation");
   new_builtin_symbol(sym_make_set, "make_set");
   new_builtin_symbol(sym_len, "len");
   new_builtin_symbol(sym_new, "new");
@@ -141,12 +133,12 @@ void init_default_builtin_types() {
   sym_object->type_kind = Type_RECORD;
   new_builtin_primitive_type(sym_bool, "bool");
 
-  new_builtin_primitive_type(sym_int8,   "int8");
-  new_builtin_primitive_type(sym_int16,  "int16");
-  new_builtin_primitive_type(sym_int32,  "int32");
-  new_builtin_primitive_type(sym_int64,  "int64");
+  new_builtin_primitive_type(sym_int8, "int8");
+  new_builtin_primitive_type(sym_int16, "int16");
+  new_builtin_primitive_type(sym_int32, "int32");
+  new_builtin_primitive_type(sym_int64, "int64");
 
-  new_builtin_primitive_type(sym_uint8,  "uint8");
+  new_builtin_primitive_type(sym_uint8, "uint8");
   new_builtin_primitive_type(sym_uint16, "uint16");
   new_builtin_primitive_type(sym_uint32, "uint32");
   new_builtin_primitive_type(sym_uint64, "uint64");
@@ -159,17 +151,21 @@ void init_default_builtin_types() {
   new_builtin_primitive_type(sym_complex64, "complex64");
   new_builtin_primitive_type(sym_complex128, "complex128");
 
-  new_builtin_lub_type(sym_anyint, "anyint", 0, sym_int8, sym_uint8, sym_int16, sym_uint16,
-                       sym_int32, sym_uint32, sym_int64, sym_uint64, NULL);
+  new_builtin_lub_type(sym_anyint, "anyint", 0, sym_int8, sym_uint8, sym_int16,
+                       sym_uint16, sym_int32, sym_uint32, sym_int64, sym_uint64,
+                       NULL);
 
-  new_builtin_lub_type(sym_anyfloat, "anyfloat", 0, sym_float32, sym_float64, sym_float128, NULL);
-  new_builtin_lub_type(sym_anycomplex, "anycomplex", 0, sym_complex32, sym_complex64, sym_complex128, NULL);
-  new_builtin_lub_type(sym_anynum, "anynum", 0, sym_anyint, sym_anyfloat, sym_anycomplex, NULL);
+  new_builtin_lub_type(sym_anyfloat, "anyfloat", 0, sym_float32, sym_float64,
+                       sym_float128, NULL);
+  new_builtin_lub_type(sym_anycomplex, "anycomplex", 0, sym_complex32,
+                       sym_complex64, sym_complex128, NULL);
+  new_builtin_lub_type(sym_anynum, "anynum", 0, sym_anyint, sym_anyfloat,
+                       sym_anycomplex, NULL);
 
   new_builtin_primitive_type(sym_string, "string");
 
   if1_set_primitive_types(if1);
-  
+
   new_builtin_alias_type(sym_char, "char", sym_uint8);
   new_builtin_alias_type(sym_uint, "uint", sym_uint64);
   new_builtin_alias_type(sym_int, "int", sym_int64);
@@ -257,59 +253,48 @@ void unalias_sym(Sym *s) {
     for (int x = 0; x < s->implements.n; x++)
       s->implements[x] = unalias_type(s->implements.v[x]);
   }
-  if (s->must_specialize)
-    s->must_specialize = unalias_type(s->must_specialize);
-  if (s->must_implement)
-    s->must_implement = unalias_type(s->must_implement);
+  if (s->must_specialize) s->must_specialize = unalias_type(s->must_specialize);
+  if (s->must_implement) s->must_implement = unalias_type(s->must_implement);
   s->type = unalias_type(s->type);
   s->in = unalias_type(s->in);
 }
 
-static void
-implement(Sym *s, Sym *ss, Accum<Sym *> &types) {
-  if (!ss->implements.in(s))
-    ss->implements.add(s);
+static void implement(Sym *s, Sym *ss, Accum<Sym *> &types) {
+  if (!ss->implements.in(s)) ss->implements.add(s);
   s->implementors.set_add(ss);
   types.add(s);
   types.add(ss);
 }
 
-static void
-specialize(Sym *s, Sym *ss, Accum<Sym *> &types) {
+static void specialize(Sym *s, Sym *ss, Accum<Sym *> &types) {
   assert(s != ss);
-  if (!ss->specializes.in(s))
-    ss->specializes.add(s);
+  if (!ss->specializes.in(s)) ss->specializes.add(s);
   s->specializers.set_add(ss);
   types.add(s);
   types.add(ss);
 }
 
-static void
-implement_and_specialize(Sym *s, Sym *ss, Accum<Sym *> &types) {
+static void implement_and_specialize(Sym *s, Sym *ss, Accum<Sym *> &types) {
   implement(s, ss, types);
   specialize(s, ss, types);
 }
 
-static int
-related(Sym *x, Sym *y) {
-  return (x == y || 
-          x->instantiates == y ||
-          y->instantiates == x ||
+static int related(Sym *x, Sym *y) {
+  return (x == y || x->instantiates == y || y->instantiates == x ||
           (x->instantiates && x->instantiates == y->instantiates));
 }
 
-#define E(_x) ((Vec<const void *>*)(_x)->temp)
+#define E(_x) ((Vec<const void *> *)(_x)->temp)
 
-static void 
-compute_single_structural_type_hierarchy(Vec<Sym *> types, int is_union) {
-  Vec<Vec<Sym *>*> by_size;
+static void compute_single_structural_type_hierarchy(Vec<Sym *> types,
+                                                     int is_union) {
+  Vec<Vec<Sym *> *> by_size;
   // collect by size & build set of elements
   forv_Sym(s, types) {
     by_size.fill(s->has.n + 1);
-    if (!by_size[s->has.n])
-      by_size[s->has.n] = new Vec<Sym *>;
+    if (!by_size[s->has.n]) by_size[s->has.n] = new Vec<Sym *>;
     by_size[s->has.n]->add(s);
-    s->temp = (void*)new Vec<void *>;
+    s->temp = (void *)new Vec<void *>;
     for (int i = 0; i < s->has.n; i++) {
       if (s->has[i]->name)
         E(s)->set_add(s->has[i]->name);
@@ -323,21 +308,21 @@ compute_single_structural_type_hierarchy(Vec<Sym *> types, int is_union) {
       forv_Sym(s, *by_size[i]) {
         for (int j = i; j < by_size.n; j++) {
           if (by_size[j]) forv_Sym(ss, *by_size.v[j]) {
-            if (!related(s, ss)) {
-              if (!E(s)->some_difference(*E(ss))) {
-                for (int ii = 0; ii < s->has.n; ii++)
-                  for (int jj = 0; jj < ss->has.n; jj++)
-                    if (s->has[ii]->name == ss->has.v[jj]->name &&
-                        s->has[ii]->type != ss->has.v[jj]->type)
-                      goto Lskip;
-                if (!is_union)
-                  s->specializers.set_add(ss);
-                else
-                  ss->specializers.set_add(s);
-              Lskip:;
+              if (!related(s, ss)) {
+                if (!E(s)->some_difference(*E(ss))) {
+                  for (int ii = 0; ii < s->has.n; ii++)
+                    for (int jj = 0; jj < ss->has.n; jj++)
+                      if (s->has[ii]->name == ss->has.v[jj]->name &&
+                          s->has[ii]->type != ss->has.v[jj]->type)
+                        goto Lskip;
+                  if (!is_union)
+                    s->specializers.set_add(ss);
+                  else
+                    ss->specializers.set_add(s);
+                Lskip:;
+                }
               }
             }
-          }
         }
       }
     }
@@ -346,19 +331,16 @@ compute_single_structural_type_hierarchy(Vec<Sym *> types, int is_union) {
   if (by_size.n && by_size[0]) {
     forv_Sym(s, *by_size[0]) {
       forv_Sym(ss, types) {
-        if (!related(s, ss))
-          s->specializers.set_add(ss);
+        if (!related(s, ss)) s->specializers.set_add(ss);
       }
     }
   }
   // clear temp storage
-  forv_Sym(s, types)
-    s->temp = 0;
+  forv_Sym(s, types) s->temp = 0;
 }
 #undef E
 
-static void 
-compute_structural_type_hierarchy(Accum<Sym *> types) {
+static void compute_structural_type_hierarchy(Accum<Sym *> types) {
   Vec<Sym *> record_types, union_types;
   forv_Sym(s, types.asvec) if (s) {
     if (s->type_kind == Type_RECORD && s->is_value_type) {
@@ -372,18 +354,14 @@ compute_structural_type_hierarchy(Accum<Sym *> types) {
   compute_single_structural_type_hierarchy(union_types, 1);
 }
 
-static void
-add_implementor(Sym *s, Sym *ss) {
+static void add_implementor(Sym *s, Sym *ss) {
   if (ss->implementors.set_add(s))
-    forv_Sym(x, ss->implements)
-      add_implementor(s, x);
+    forv_Sym(x, ss->implements) add_implementor(s, x);
 }
 
-static void
-add_specializer(Sym *s, Sym *ss) {
+static void add_specializer(Sym *s, Sym *ss) {
   if (ss->specializers.set_add(s))
-    forv_Sym(x, ss->specializes)
-      add_specializer(s, x);
+    forv_Sym(x, ss->specializes) add_specializer(s, x);
 }
 
 /*
@@ -396,43 +374,32 @@ add_specializer(Sym *s, Sym *ss) {
 typedef Vec<Sym *> VSym;
 
 static Sym *candidate(Sym *c, Vec<VSym *> &todo) {
-  forv_Vec(VSym, y, todo)
-    if (y->index(c) > 0)
-      return 0;
+  forv_Vec(VSym, y, todo) if (y->index(c) > 0) return 0;
   return c;
 }
 
-static void merge(Vec<Sym *> &rdone, Vec<VSym*> &todo) {
-  forv_Vec(VSym, x, todo)
-    if (x->n) goto Lnotdone;
+static void merge(Vec<Sym *> &rdone, Vec<VSym *> &todo) {
+  forv_Vec(VSym, x, todo) if (x->n) goto Lnotdone;
   rdone.reverse();
   return;
 Lnotdone:;
   Sym *c = 0;
-  forv_Vec(VSym, y, todo)
-    if (y->n && (c = candidate(y->v[0], todo)))
-      break;
+  forv_Vec(VSym, y, todo) if (y->n && (c = candidate(y->v[0], todo))) break;
   if (c) {
-    forv_Vec(VSym, y, todo)
-      if (y->n && y->v[0] == c) 
-        y->remove_index(0);
-    if (!rdone.in(c))
-      rdone.insert(0, c);
+    forv_Vec(VSym, y, todo) if (y->n && y->v[0] == c) y->remove_index(0);
+    if (!rdone.in(c)) rdone.insert(0, c);
     merge(rdone, todo);
   } else
     fail("inconsistent precedence graph in C3 linearization");
 }
 
-static void
-c3_linearization(Sym *c) {
-  if (c->dispatch_types_built)
-    return;
+static void c3_linearization(Sym *c) {
+  if (c->dispatch_types_built) return;
   c->dispatch_types_built = 1;
   c->dispatch_types.clear();
-  if (!c->specializes.n)
-    return;
-  Vec<Sym*> rdone;
-  Vec<Vec<Sym*>*> todo;
+  if (!c->specializes.n) return;
+  Vec<Sym *> rdone;
+  Vec<Vec<Sym *> *> todo;
   rdone.add(c);
   forv_Sym(x, c->specializes) {
     c3_linearization(x);
@@ -443,8 +410,7 @@ c3_linearization(Sym *c) {
   c->dispatch_types.move(rdone);
 }
 
-void
-build_type_hierarchy(int compute_structural_value_hierarchy) {
+void build_type_hierarchy(int compute_structural_value_hierarchy) {
   Accum<Sym *> types, meta_types;
   Vec<Sym *> new_types;
   for (int x = type_hierarchy_built; x < if1->allsyms.n; x++) {
@@ -459,16 +425,14 @@ build_type_hierarchy(int compute_structural_value_hierarchy) {
       s->type = sym_symbol;
       s->meta_type = s;
     }
-    if (s->is_fun)
-      implement_and_specialize(sym_function, s, types);
+    if (s->is_fun) implement_and_specialize(sym_function, s, types);
     if (s->is_constant || s->is_symbol || s->is_fun)
       s->must_implement_and_specialize(s);
-    
-    forv_Sym(ss, s->implements)
-      implement(ss, s, types);
-    forv_Sym(ss, s->specializes)
-      specialize(ss, s, types);
-    // functions implement and specializes of the initial symbol in their pattern
+
+    forv_Sym(ss, s->implements) implement(ss, s, types);
+    forv_Sym(ss, s->specializes) specialize(ss, s, types);
+    // functions implement and specializes of the initial symbol in their
+    // pattern
     // which may be a constant or a constant constrainted variable
     // this permits overloading of selectors with multiple functions
     if (s->is_fun && s->has.n) {
@@ -478,34 +442,33 @@ build_type_hierarchy(int compute_structural_value_hierarchy) {
       else if (a->must_specialize && a->must_specialize->is_symbol)
         implement_and_specialize(a->must_specialize, s, types);
     }
-    if (s->instantiates) 
-      implement_and_specialize(s->instantiates, s, types);
+    if (s->instantiates) implement_and_specialize(s->instantiates, s, types);
   }
   qsort_by_id(types.asvec);
-  forv_Sym(s, new_types)
-    s->must_implement_and_specialize(s);
+  forv_Sym(s, new_types) s->must_implement_and_specialize(s);
   forv_Sym(s, types.asvec) if (s) {
     s->implementors.set_add(s);
     s->specializers.set_add(s);
   }
   // compute structural type hierarchy
-  if (compute_structural_value_hierarchy) 
+  if (compute_structural_value_hierarchy)
     compute_structural_type_hierarchy(types);
   // map subtyping and subclassing to meta_types
   forv_Sym(s, types.asvec) if (!s->is_meta_type) {
     forv_Sym(ss, s->implementors) if (ss && s->meta_type != ss->meta_type)
-      implement(s->meta_type, ss->meta_type, meta_types);
-    forv_Sym(ss, s->specializers) if (s != sym_any && ss && s->meta_type != ss->meta_type)
-      specialize(s->meta_type, ss->meta_type, meta_types);
+        implement(s->meta_type, ss->meta_type, meta_types);
+    forv_Sym(ss, s->specializers) if (s != sym_any && ss &&
+                                      s->meta_type != ss->meta_type)
+        specialize(s->meta_type, ss->meta_type, meta_types);
   }
-    
+
   forv_Sym(s, types.asvec) if (s) {
     if (!s->is_system_type) {
       if (s->is_meta_type)
         implement_and_specialize(sym_anytype, s, types);
       else if (s->is_value_type)
         implement_and_specialize(sym_value, s, types);
-      else 
+      else
         implement_and_specialize(sym_any, s, types);
     }
   }
@@ -516,11 +479,8 @@ build_type_hierarchy(int compute_structural_value_hierarchy) {
   types.asvec.append(types.asset);
   // build implementors/specializers
   forv_Sym(s, new_types) {
-    forv_Sym(x, s->implements)
-      forv_Sym(y, x->implements)
-        add_implementor(s, y);
-    forv_Sym(x, s->specializes)
-      forv_Sym(y, x->specializes)
+    forv_Sym(x, s->implements) forv_Sym(y, x->implements) add_implementor(s, y);
+    forv_Sym(x, s->specializes) forv_Sym(y, x->specializes)
         add_specializer(s, y);
   }
   // linearize classes for dispatch
@@ -529,32 +489,27 @@ build_type_hierarchy(int compute_structural_value_hierarchy) {
   type_hierarchy_built = if1->allsyms.n;
 }
 
-static void
-collect_includes(Sym *s, Vec<Sym *> &include_set, Vec<Sym *> &includes, Vec<Sym *> &in_includes) {
+static void collect_includes(Sym *s, Vec<Sym *> &include_set,
+                             Vec<Sym *> &includes, Vec<Sym *> &in_includes) {
   if (!include_set.in(s) && in_includes.set_add(s)) {
     forv_Sym(ss, s->includes)
-      collect_includes(ss, include_set, includes, in_includes);
-    if (include_set.set_add(s))
-      includes.add(s);
+        collect_includes(ss, include_set, includes, in_includes);
+    if (include_set.set_add(s)) includes.add(s);
   }
 }
 
-static void
-collect_include_vars(Sym *s, Sym *in = 0) {
+static void collect_include_vars(Sym *s, Sym *in = 0) {
   Vec<Sym *> saved;
   if (!in)
     saved.move(s->has);
   else
     in->has.append(s->has);
-  forv_Sym(ss, s->includes)
-    if (ss->type_kind == Type_RECORD)
+  forv_Sym(ss, s->includes) if (ss->type_kind == Type_RECORD)
       collect_include_vars(ss, in ? in : s);
-  if (!in)
-    s->has.append(saved);
+  if (!in) s->has.append(saved);
 }
 
-static void
-include_instance_variables(IF1 *i) {
+static void include_instance_variables(IF1 *i) {
   Vec<Sym *> include_set, includes;
   for (int x = finalized_types; x < i->allsyms.n; x++) {
     Sym *s = i->allsyms[x];
@@ -563,62 +518,49 @@ include_instance_variables(IF1 *i) {
       collect_includes(s, include_set, includes, in_includes);
   }
   forv_Sym(s, includes) {
-    if (s->id < finalized_types)
-      continue;
-    if (s->includes.n)
-      collect_include_vars(s);
+    if (s->id < finalized_types) continue;
+    if (s->includes.n) collect_include_vars(s);
   }
 }
 
-static void
-set_value_for_value_classes(IF1 *i) {
+static void set_value_for_value_classes(IF1 *i) {
   sym_value->is_value_type = 1;
   sym_anynum->is_value_type = 1;
   Vec<Sym *> implementers;
   for (int x = finalized_types; x < i->allsyms.n; x++) {
     Sym *s = i->allsyms[x];
-    if (s->type_kind && s->implements.n)
-      implementers.add(s);
-  }     
+    if (s->type_kind && s->implements.n) implementers.add(s);
+  }
   int changed = 1;
   while (changed) {
     changed = 0;
     for (int x = finalized_types; x < i->allsyms.n; x++) {
       Sym *s = i->allsyms[x];
-      forv_Sym(ss, s->implements)
-        if (ss->is_value_type && !s->is_value_type) { 
-          changed = 1;
-          s->is_value_type = 1;
-        }
+      forv_Sym(ss, s->implements) if (ss->is_value_type && !s->is_value_type) {
+        changed = 1;
+        s->is_value_type = 1;
+      }
     }
   }
 }
 
-static void
-compute_isa(IF1 *i) {
+static void compute_isa(IF1 *i) {
   for (int x = finalized_types; x < i->allsyms.n; x++) {
     Sym *s = i->allsyms[x];
     // compute closure of has for Type_SUM
     if (s->type_kind == Type_SUM) {
       Accum<Sym *> acc;
-      forv_Sym(ss, s->has)
-        acc.add(ss);
+      forv_Sym(ss, s->has) acc.add(ss);
       forv_Sym(ss, acc.asvec) {
-        if (ss->type_kind == Type_SUM)
-          forv_Sym(sss, ss->has)
-            acc.add(sss);
+        if (ss->type_kind == Type_SUM) forv_Sym(sss, ss->has) acc.add(sss);
       }
-      forv_Sym(ss, acc.asvec)
-        if (ss->type_kind != Type_SUM) 
-          s->isa.set_add(ss);
+      forv_Sym(ss, acc.asvec) if (ss->type_kind != Type_SUM) s->isa.set_add(ss);
     }
   }
 }
 
-void
-make_meta_type(Sym *s) {
-  if (!s->meta_type)
-    s->meta_type = new_Sym();
+void make_meta_type(Sym *s) {
+  if (!s->meta_type) s->meta_type = new_Sym();
   if (s->is_constant && !s->meta_type) {
     s->meta_type = s->type->meta_type;
     return;
@@ -632,25 +574,20 @@ make_meta_type(Sym *s) {
   s->meta_type->type_kind = Type_PRIMITIVE;
 }
 
-static void
-set_type_and_meta_type(IF1 *i) {
+static void set_type_and_meta_type(IF1 *i) {
   for (int x = finalized_types; x < i->allsyms.n; x++) {
     Sym *s = i->allsyms[x];
-    if (s->type_kind != Type_NONE)
-      s->type = s;
+    if (s->type_kind != Type_NONE) s->type = s;
     if (s->type_kind) {
-      if (!s->meta_type)
-        make_meta_type(s);
+      if (!s->meta_type) make_meta_type(s);
     }
   }
 }
 
-static void
-compute_type_size(Sym *s) {
+static void compute_type_size(Sym *s) {
   if (s->type_kind || s->is_constant || s->is_symbol) {
     Sym *type = s->type;
-    if (!type) 
-      return; // wait till after finalize_symbols
+    if (!type) return;  // wait till after finalize_symbols
     if (type->is_symbol || type->type_kind == Type_TAGGED) {
       type = unalias_type(sym_int);
       s->size = if1_numeric_size(if1, type);
@@ -665,20 +602,17 @@ compute_type_size(Sym *s) {
   }
 }
 
-static void
-compute_type_sizes(IF1 *i) {
+static void compute_type_sizes(IF1 *i) {
   for (int x = finalized_types; x < i->allsyms.n; x++)
     compute_type_size(i->allsyms[x]);
 }
 
-static void
-unalias_syms(IF1 *i) {
+static void unalias_syms(IF1 *i) {
   for (int x = finalized_types; x < i->allsyms.n; x++)
     unalias_sym(i->allsyms[x]);
 }
 
-static void
-fixup_nesting_depth(IF1 *i) {
+static void fixup_nesting_depth(IF1 *i) {
   for (int x = finalized_types; x < i->allsyms.n; x++) {
     Sym *s = i->allsyms[x];
     if (s->is_constant || s->is_symbol)
@@ -689,14 +623,12 @@ fixup_nesting_depth(IF1 *i) {
   }
 }
 
-void
-finalize_types(IF1 *i, int import_included_ivars) {
+void finalize_types(IF1 *i, int import_included_ivars) {
 #define S(_n) assert(sym_##_n);
 #include "builtin_symbols.h"
 #undef S
   unalias_syms(i);
-  if (import_included_ivars)
-    include_instance_variables(i);
+  if (import_included_ivars) include_instance_variables(i);
 #define S(_n) sym_##_n = unalias_type(sym_##_n);
 #include "builtin_symbols.h"
 #undef S
@@ -707,5 +639,3 @@ finalize_types(IF1 *i, int import_included_ivars) {
   compute_type_sizes(i);
   finalized_types = i->allsyms.n;
 }
-
-

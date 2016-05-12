@@ -5,15 +5,15 @@
 #define _fa_H_
 
 #include <sys/types.h>
-#include "ifadefs.h"
-#include "sym.h"
 #include "code.h"
+#include "ifadefs.h"
 #include "prim.h"
+#include "sym.h"
 
-#define DEFAULT_NUM_CONSTANTS_PER_VARIABLE      1
-#define IFA_PASS_LIMIT                          100
+#define DEFAULT_NUM_CONSTANTS_PER_VARIABLE 1
+#define IFA_PASS_LIMIT 100
 
-#define GLOBAL_CONTOUR ((void*)1)
+#define GLOBAL_CONTOUR ((void *)1)
 
 class Prim;
 class RegisteredPrim;
@@ -40,10 +40,11 @@ typedef BlockHash<AEdge *, PointerHashFns> EdgeHash;
 typedef Vec<CreationSet *> VecCreationSet;
 typedef Vec<Vec<CreationSet *> *> CSSS;
 
-class AType : public Vec<CreationSet *> { public:
-  uint                  hash;
-  AType                 *type;          // not including values (constants)
-  Vec<CreationSet *>    sorted;
+class AType : public Vec<CreationSet *> {
+ public:
+  uint hash;
+  AType *type;  // not including values (constants)
+  Vec<CreationSet *> sorted;
   Map<AType *, AType *> union_map;
   Map<AType *, AType *> intersection_map;
   Map<AType *, AType *> diff_map;
@@ -56,102 +57,110 @@ class AType : public Vec<CreationSet *> { public:
 };
 #define forv_AType(_p, _v) forv_Vec(AType, _p, _v)
 
-class AEdge : public gc {public:
-  int                    id;
-  EntrySet               *from, *to;
-  PNode                  *pnode;
-  Map<MPosition*,AVar*>  args;
-  Map<MPosition*,AVar*>  filtered_args;
-  Map<MPosition*,AType*> initial_types;
-  Vec<AVar *>            rets;
-  Fun                    *fun;
-  Match                  *match;
-  uint                   in_edge_worklist : 1;
-  uint                   es_backedge : 1;
-  uint                   es_cs_backedge : 1;
-  LINK(AEdge,            edge_worklist_link);
+class AEdge : public gc {
+ public:
+  int id;
+  EntrySet *from, *to;
+  PNode *pnode;
+  Map<MPosition *, AVar *> args;
+  Map<MPosition *, AVar *> filtered_args;
+  Map<MPosition *, AType *> initial_types;
+  Vec<AVar *> rets;
+  Fun *fun;
+  Match *match;
+  uint in_edge_worklist : 1;
+  uint es_backedge : 1;
+  uint es_cs_backedge : 1;
+  LINK(AEdge, edge_worklist_link);
 
   AEdge();
 };
 #define forv_AEdge(_p, _v) forv_Vec(AEdge, _p, _v)
 
-class PendingMapHash { public:
-  static uint hash(AEdge *e) { 
-    return (uint)((uintptr_t)e->fun + (13 * (uintptr_t)e->pnode) + (100003 * (uintptr_t)e->from));
+class PendingMapHash {
+ public:
+  static uint hash(AEdge *e) {
+    return (uint)((uintptr_t)e->fun + (13 * (uintptr_t)e->pnode) +
+                  (100003 * (uintptr_t)e->from));
   }
   static int equal(AEdge *a, AEdge *b) {
     return (a->fun == b->fun) && (a->pnode == b->pnode) && (a->from == b->from);
   }
 };
 
-typedef HashMap<AEdge *, PendingMapHash, Vec<EntrySet *> *> PendingAEdgeEntrySetsMap;
+typedef HashMap<AEdge *, PendingMapHash, Vec<EntrySet *> *>
+    PendingAEdgeEntrySetsMap;
 typedef MapElem<AEdge *, Vec<EntrySet *> *> MapElemAEdgeEntrySets;
 
 enum { DFS_white = 0, DFS_grey, DFS_black };
 
-class EntrySet : public gc { public:
-  Fun                                   *fun;
-  int                                   id;
-  uint                                  dfs_color : 2;
-  uint                                  in_es_worklist : 1;
-  Map<MPosition*,AVar*>                 args;
-  Vec<AVar *>                           rets;
-  Map<MPosition *, AType *>             filters;
-  EdgeHash                              edges;
-  EdgeMap                               out_edge_map;
-  Vec<CreationSet *>                    creates;
-  Vec<EntrySet *>                       display;
-  Vec<AEdge *>                          out_edges;
-  Vec<AEdge *>                          backedges;
-  Vec<AEdge *>                          es_cs_backedges;
-  Vec<CreationSet *>                    cs_backedges;
-  Vec<PNode *>                          live_pnodes;
-  EntrySet                              *split;
-  PendingAEdgeEntrySetsMap              pending_es_backedge_map;
-  Vec<EntrySet *>                       *equiv;         // clone.cpp
-  LINK(EntrySet,                        es_worklist_link);
+class EntrySet : public gc {
+ public:
+  Fun *fun;
+  int id;
+  uint dfs_color : 2;
+  uint in_es_worklist : 1;
+  Map<MPosition *, AVar *> args;
+  Vec<AVar *> rets;
+  Map<MPosition *, AType *> filters;
+  EdgeHash edges;
+  EdgeMap out_edge_map;
+  Vec<CreationSet *> creates;
+  Vec<EntrySet *> display;
+  Vec<AEdge *> out_edges;
+  Vec<AEdge *> backedges;
+  Vec<AEdge *> es_cs_backedges;
+  Vec<CreationSet *> cs_backedges;
+  Vec<PNode *> live_pnodes;
+  EntrySet *split;
+  PendingAEdgeEntrySetsMap pending_es_backedge_map;
+  Vec<EntrySet *> *equiv;  // clone.cpp
+  LINK(EntrySet, es_worklist_link);
 
   EntrySet(Fun *af);
 };
 #define forv_EntrySet(_p, _v) forv_Vec(EntrySet, _p, _v)
 
-class CreationSet : public gc { public:
-  Sym                   *sym;
-  int                   id;
-  uint                  dfs_color : 2;
-  uint                  clone_for_constants : 1;
-  uint                  added_element_var : 1;
-  uint                  closure_used : 1;
-  uint                  tuple_able : 1;
-  Vec<AVar *>           defs;
-  AType                 *atype;         // the type that this creation set belongs to
-  Vec<AVar *>           vars;
-  Map<cchar *, AVar *>  var_map;
-  Vec<EntrySet *>       ess;            // entry sets restricted by this creation set
-  Vec<EntrySet *>       es_backedges;   // entry sets restricted by this creation set
-  CreationSet           *split;         // creation set this one was split from
-  Vec<CreationSet *>    *equiv;         // used by clone.cpp & fa.cpp
-  Vec<CreationSet *>    not_equiv;      // used by clone.cpp
-  Sym                   *type;          // used by clone.cpp & fa.capp
+class CreationSet : public gc {
+ public:
+  Sym *sym;
+  int id;
+  uint dfs_color : 2;
+  uint clone_for_constants : 1;
+  uint added_element_var : 1;
+  uint closure_used : 1;
+  uint tuple_able : 1;
+  Vec<AVar *> defs;
+  AType *atype;  // the type that this creation set belongs to
+  Vec<AVar *> vars;
+  Map<cchar *, AVar *> var_map;
+  Vec<EntrySet *> ess;           // entry sets restricted by this creation set
+  Vec<EntrySet *> es_backedges;  // entry sets restricted by this creation set
+  CreationSet *split;            // creation set this one was split from
+  Vec<CreationSet *> *equiv;     // used by clone.cpp & fa.cpp
+  Vec<CreationSet *> not_equiv;  // used by clone.cpp
+  Sym *type;                     // used by clone.cpp & fa.capp
 
   CreationSet(Sym *s);
   CreationSet(CreationSet *cs);
 };
 #define forv_CreationSet(_p, _v) forv_Vec(CreationSet, _p, _v)
 
-class SettersClasses : public Vec<Setters *> { public:
-  uint                                  hash;
-  Vec<Setters *>                        sorted;
+class SettersClasses : public Vec<Setters *> {
+ public:
+  uint hash;
+  Vec<Setters *> sorted;
 };
 #define forv_SettersClasses(_p, _v) forv_Vec(SettersClasses, _p, _v)
 
-class Setters : public Vec<AVar *> { public:
-  uint                  hash;
-  Vec<AVar *>           sorted;
-  SettersClasses        *eq_classes;
-  Map<AVar *, Setters*> add_map;
+class Setters : public Vec<AVar *> {
+ public:
+  uint hash;
+  Vec<AVar *> sorted;
+  SettersClasses *eq_classes;
+  Map<AVar *, Setters *> add_map;
 
-  Setters() : hash(0), eq_classes(0) { }
+  Setters() : hash(0), eq_classes(0) {}
 };
 #define forv_Setters(_p, _v) forv_Vec(Setters, _p, _v)
 
@@ -160,74 +169,72 @@ typedef Map<void *, int> MarkMap;
 typedef Map<Sym *, CreationSet *> CSMap;
 typedef MapElem<Sym *, CreationSet *> CSMapElem;
 
-class AVar : public gc { public:
-  Var                           *var;
-  int                           id;
-  void                          *contour;
-  Vec<AVar *>                   forward;
-  Vec<AVar *>                   backward;
-  AVar                          *lvalue;
-  AType                         *gen;
-  AType                         *in;
-  AType                         *out;
-  AType                         *restrict;
-  AVar                          *container;
-  Setters                       *setters;
-  Setters                       *setter_class;
-  MarkMap                       *mark_map;
-  CSMap                         *cs_map;
-  MatchCache                    *match_cache;
-  Sym                           *type;
-  int                           ivar_offset;
-  uint                          in_send_worklist : 1;
-  uint                          contour_is_entry_set : 1;
-  uint                          is_lvalue : 1;
-  uint                          live : 1;
-  uint                          live_arg : 1;
-  uint                          is_if_arg : 1;
-  Accum<AVar *>                 arg_of_send;
-  LINK(AVar,                    send_worklist_link);
+class AVar : public gc {
+ public:
+  Var *var;
+  int id;
+  void *contour;
+  Vec<AVar *> forward;
+  Vec<AVar *> backward;
+  AVar *lvalue;
+  AType *gen;
+  AType *in;
+  AType *out;
+  AType *restrict;
+  AVar *container;
+  Setters *setters;
+  Setters *setter_class;
+  MarkMap *mark_map;
+  CSMap *cs_map;
+  MatchCache *match_cache;
+  Sym *type;
+  int ivar_offset;
+  uint in_send_worklist : 1;
+  uint contour_is_entry_set : 1;
+  uint is_lvalue : 1;
+  uint live : 1;
+  uint live_arg : 1;
+  uint is_if_arg : 1;
+  Accum<AVar *> arg_of_send;
+  LINK(AVar, send_worklist_link);
 
   AVar(Var *v, void *acontour);
 };
 #define forv_AVar(_p, _v) forv_Vec(AVar, _p, _v)
 
-typedef Map<MPosition*, AVar *> MapMPositionAVar;
+typedef Map<MPosition *, AVar *> MapMPositionAVar;
 typedef MapElem<MPosition *, AVar *> MapMPositionAVarElem;
 #define form_MPositionAVar(_p, _v) form_Map(MapMPositionAVarElem, _p, _v)
 
-class ATypeChainHashFns { public:
+class ATypeChainHashFns {
+ public:
   static uint hash(AType *a) { return a->hash; }
   static int equal(AType *a, AType *b) {
-    if (a->sorted.n != b->sorted.n)
-      return 0;
+    if (a->sorted.n != b->sorted.n) return 0;
     for (int i = 0; i < a->sorted.n; i++)
-      if (a->sorted[i] != b->sorted[i])
-        return 0;
+      if (a->sorted[i] != b->sorted[i]) return 0;
     return 1;
   }
 };
 
-class SettersHashFns { public:
+class SettersHashFns {
+ public:
   static uint hash(Setters *a) { return a->hash; }
   static int equal(Setters *a, Setters *b) {
-    if (a->sorted.n != b->sorted.n)
-      return 0;
+    if (a->sorted.n != b->sorted.n) return 0;
     for (int i = 0; i < a->sorted.n; i++)
-      if (a->sorted[i] != b->sorted[i])
-        return 0;
+      if (a->sorted[i] != b->sorted[i]) return 0;
     return 1;
   }
 };
 
-class SettersClassesHashFns { public:
+class SettersClassesHashFns {
+ public:
   static uint hash(SettersClasses *a) { return a->hash; }
   static int equal(SettersClasses *a, SettersClasses *b) {
-    if (a->sorted.n != b->sorted.n)
-      return 0;
+    if (a->sorted.n != b->sorted.n) return 0;
     for (int i = 0; i < a->sorted.n; i++)
-      if (a->sorted[i] != b->sorted[i])
-        return 0;
+      if (a->sorted[i] != b->sorted[i]) return 0;
     return 1;
   }
 };
@@ -242,57 +249,64 @@ enum ATypeViolation_kind {
   ATypeViolation_BOXING,
   ATypeViolation_CLOSURE_RECURSION
 };
-  
-class ATypeViolation : public gc { public:
+
+class ATypeViolation : public gc {
+ public:
   ATypeViolation_kind kind;
   AVar *av;
   AVar *send;
   AType *type;
   Vec<Fun *> *funs;
 
-  ATypeViolation(ATypeViolation_kind akind, AVar *aav, AVar *asend) 
-    : kind(akind), av(aav), send(asend), type(0), funs(0) {}
+  ATypeViolation(ATypeViolation_kind akind, AVar *aav, AVar *asend)
+      : kind(akind), av(aav), send(asend), type(0), funs(0) {}
 };
 #define forv_ATypeViolation(_p, _v) forv_Vec(ATypeViolation, _p, _v)
 
-class ATypeViolationHashFuns { public:
-  static uint hash(ATypeViolation *x) { 
-    return (uint)((uint)x->kind + (13 * (uintptr_t)x->av) + (100003 * (uintptr_t)x->send));
+class ATypeViolationHashFuns {
+ public:
+  static uint hash(ATypeViolation *x) {
+    return (uint)((uint)x->kind + (13 * (uintptr_t)x->av) +
+                  (100003 * (uintptr_t)x->send));
   }
   static int equal(ATypeViolation *x, ATypeViolation *y) {
     return x->kind == y->kind && x->av == y->av && x->send == y->send;
   }
 };
 
-class ATypeFold : public gc { public:
+class ATypeFold : public gc {
+ public:
   Prim *p;
   AType *a;
   AType *b;
   AType *result;
 
-  ATypeFold(Prim *ap, AType *aa, AType *ab, AType *aresult = 0) : p(ap), a(aa), b(ab), result(aresult) {}
+  ATypeFold(Prim *ap, AType *aa, AType *ab, AType *aresult = 0)
+      : p(ap), a(aa), b(ab), result(aresult) {}
 };
 #define forv_ATypeFold(_p, _v) forv_Vec(ATypeFold, _p, _v)
 
 class ATypeFoldChainHashFns {
  public:
-  static uint hash(ATypeFold *x) { 
-    return (uint)((uintptr_t)x->p + (1009 * (uintptr_t)x->a) + (100003 * (uintptr_t)x->b));
+  static uint hash(ATypeFold *x) {
+    return (uint)((uintptr_t)x->p + (1009 * (uintptr_t)x->a) +
+                  (100003 * (uintptr_t)x->b));
   }
   static int equal(ATypeFold *x, ATypeFold *y) {
     return x->p == y->p && x->a == y->a && x->b == y->b;
   }
 };
 
-class FA : public gc { public:
+class FA : public gc {
+ public:
   PDB *pdb;
   CDB *cdb;
   cchar *fn;
   Patterns *patterns;
   Vec<Fun *> funs;
   AEdge *top_edge;
-  Vec<EntrySet *> ess;          // all used entry sets as array
-  Vec<EntrySet *> ess_set;      // all used entry sets as set
+  Vec<EntrySet *> ess;      // all used entry sets as array
+  Vec<EntrySet *> ess_set;  // all used entry sets as set
   Vec<Sym *> basic_types;
   Vec<CreationSet *> css, css_set;
   Vec<AVar *> global_avars;
@@ -303,14 +317,22 @@ class FA : public gc { public:
   int tuple_index_base;
   int num_constants_per_variable;
 
-  FA(PDB *apdb) : pdb(apdb), cdb(0), patterns(0), top_edge(0),
-                  print_call_depth(2), permit_boxing(0), no_unused_instance_variables(0), 
-                  tuple_index_base(0), num_constants_per_variable(1) {}
+  FA(PDB *apdb)
+      : pdb(apdb),
+        cdb(0),
+        patterns(0),
+        top_edge(0),
+        print_call_depth(2),
+        permit_boxing(0),
+        no_unused_instance_variables(0),
+        tuple_index_base(0),
+        num_constants_per_variable(1) {}
 
   int analyze(Fun *f);
   int concretize();
 
-  RegisteredPrim *register_primitive(cchar *name, PrimitiveTransferFunctionPtr ptr);
+  RegisteredPrim *register_primitive(cchar *name,
+                                     PrimitiveTransferFunctionPtr ptr);
 };
 
 AVar *make_AVar(Var *, EntrySet *);
@@ -333,32 +355,33 @@ void flow_vars(AVar *v, AVar *vv);
 void flow_var_type_permit(AVar *v, AType *t);
 CreationSet *creation_point(AVar *v, Sym *s, int nvars = -1);
 void prim_make(PNode *p, EntrySet *es, Sym *kind, int start = 2, int ref = 0);
-void type_violation(ATypeViolation_kind akind, AVar *av, AType *type, AVar *send,
-                    Vec<Fun *> *funs = NULL);
+void type_violation(ATypeViolation_kind akind, AVar *av, AType *type,
+                    AVar *send, Vec<Fun *> *funs = NULL);
 AType *type_cannonicalize(AType *t);
 AType *type_diff(AType *, AType *);
 AType *type_intersection(AType *, AType *);
 AType *type_union(AType *a, AType *b);
 void log_var_types(Var *, Fun *);
 void set_container(AVar *av, AVar *container);
-AVar * unique_AVar(Var *v, void *contour);
+AVar *unique_AVar(Var *v, void *contour);
 AVar *unique_AVar(Var *v, EntrySet *es);
 void qsort_pointers(void **left, void **right);
 void initialize_Sym_for_fa(Sym *s);
-int function_dispatch(PNode *p, EntrySet *es, AVar *a0, CreationSet *s, 
-                      Vec<AVar *> &args, Vec<char *> &names,
-                      int is_closure, Partial_kind partial, PNode *visibility_point = 0);
+int function_dispatch(PNode *p, EntrySet *es, AVar *a0, CreationSet *s,
+                      Vec<AVar *> &args, Vec<char *> &names, int is_closure,
+                      Partial_kind partial, PNode *visibility_point = 0);
 void add_var_constraint(AVar *av, Sym *s = 0);
 void return_nil_transfer_function(PNode *pn, EntrySet *es);
 void return_int_transfer_function(PNode *pn, EntrySet *es);
 void return_string_transfer_function(PNode *pn, EntrySet *es);
 AType *make_size_constant_type(int n);
-void collect_types_and_globals(FA *fa, Vec<Sym *> &typesyms, Vec<Var *> &globalsyms);
+void collect_types_and_globals(FA *fa, Vec<Sym *> &typesyms,
+                               Vec<Var *> &globalsyms);
 void fa_dump_types(FA *fa, FILE *fp);
 
-template<class C> void
-qsort_by_id(C **left, C **right) {
- Lagain:
+template <class C>
+void qsort_by_id(C **left, C **right) {
+Lagain:
   if (right - left < 5) {
     for (C **y = right - 1; y > left; y--) {
       for (C **x = left; x < y; x++) {
@@ -370,7 +393,7 @@ qsort_by_id(C **left, C **right) {
       }
     }
   } else {
-    C  **i = left + 1, **j = right - 1;
+    C **i = left + 1, **j = right - 1;
     C *x = *left;
     for (;;) {
       while (x->id < (*j)->id) j--;
@@ -379,7 +402,8 @@ qsort_by_id(C **left, C **right) {
       C *t = *i;
       *i = *j;
       *j = t;
-      i++; j--;
+      i++;
+      j--;
     }
     if (j == right - 1) {
       *left = *(right - 1);
@@ -392,10 +416,9 @@ qsort_by_id(C **left, C **right) {
   }
 }
 
-template<class C> void
-qsort_by_id(Vec<C *> &v) {
-  if (v.n > 1)
-    qsort_by_id(&v[0], v.end());
+template <class C>
+void qsort_by_id(Vec<C *> &v) {
+  if (v.n > 1) qsort_by_id(&v[0], v.end());
 }
 
 extern FA *fa;

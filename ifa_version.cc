@@ -3,10 +3,7 @@
 */
 #include "ifadefs.h"
 
-void
-ifa_version(char *v) {
+void ifa_version(char *v) {
   v += sprintf(v, "%d.%d", MAJOR_VERSION, MINOR_VERSION);
-  if (strcmp("",BUILD_VERSION))
-    v += sprintf(v, ".%s", BUILD_VERSION);
+  if (strcmp("", BUILD_VERSION)) v += sprintf(v, ".%s", BUILD_VERSION);
 }
-

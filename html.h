@@ -15,7 +15,7 @@ void dump_html(FA *pdb, cchar *fn, char *mktree_dir);
 void dump_sym_name(FILE *fp, Sym *s);
 void dump_fun_list(FILE *fp, Vec<Fun *> &funs);
 
-void dump_index_header(FILE* f);
-void dump_index_footer(FILE* f);
+void dump_index_header(FILE *f);
+void dump_index_footer(FILE *f);
 
 #endif

@@ -15,8 +15,10 @@ struct Dom : public gc {
   Vec<Dom *> children, bucket, front;
   Intervals intervals;
 
-  int is_dominated_by(Dom *n) // this is dominated by n
-    { return intervals.in(n->dfs); }
+  int is_dominated_by(Dom *n)  // this is dominated by n
+  {
+    return intervals.in(n->dfs);
+  }
 
   Dom(void *n);
 };
@@ -27,4 +29,3 @@ void build_cfg_dominators(Fun *f);
 void build_call_dominators(FA *fa);
 
 #endif
-

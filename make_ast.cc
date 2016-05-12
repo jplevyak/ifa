@@ -2,24 +2,21 @@
    Copyright (c) 2003-2008 John Plevyak, All Rights Reserved
 */
 #include "ifadefs.h"
-#include "ast_to_if1.h"
-#include "parse.h"
 #include "parse_structs.h"
 #include "make_ast.h"
+#include "ast_to_if1.h"
+#include "parse.h"
 
-cchar *
-constant_type(D_ParseNode &pn, D_Symbol *d_symbols) {
+cchar *constant_type(D_ParseNode &pn, D_Symbol *d_symbols) {
   D_ParseNode *child = d_get_child(&pn, 0);
-  while (d_symbols[child->symbol].kind != D_SYMBOL_REGEX && 
+  while (d_symbols[child->symbol].kind != D_SYMBOL_REGEX &&
          d_symbols[child->symbol].kind != D_SYMBOL_NTERM)
     child = d_get_child(child, 0);
   return d_symbols[child->symbol].name;
 }
 
-ParseAST *
-loop_AST(D_ParseNode &loop, D_ParseNode &cond, D_ParseNode *before, 
-         D_ParseNode *after, D_ParseNode &body) 
-{
+ParseAST *loop_AST(D_ParseNode &loop, D_ParseNode &cond, D_ParseNode *before,
+                   D_ParseNode *after, D_ParseNode &body) {
   ParseAST *b = body.user.ast;
   if (after) {
     b = new_AST(AST_block);
@@ -35,35 +32,31 @@ loop_AST(D_ParseNode &loop, D_ParseNode &cond, D_ParseNode *before,
   }
   ParseAST *c = new_AST(AST_loop_cond);
   c->set_location_and_add(&cond);
-  if (before != &body)
-    l->add(c);
+  if (before != &body) l->add(c);
   l->add(b);
-  if (before == &body)
-    l->add(c);
+  if (before == &body) l->add(c);
   return a;
 }
 
-ParseAST *
-symbol_AST(IF1 *if1, D_ParseNode *pn) {
-  ParseAST *a = new_AST(AST_const, pn); 
+ParseAST *symbol_AST(IF1 *if1, D_ParseNode *pn) {
+  ParseAST *a = new_AST(AST_const, pn);
   cchar *s;
   int l = pn->end - pn->start_loc.s;
   if (!l)
     s = "#^^";
   else {
-    char *ss = (char*)MALLOC(l + 2);
-    memcpy(ss+1, pn->start_loc.s, l);
+    char *ss = (char *)MALLOC(l + 2);
+    memcpy(ss + 1, pn->start_loc.s, l);
     ss[0] = '#';
-    ss[l+1] = 0;
+    ss[l + 1] = 0;
     s = ss;
   }
-  a->string = (char*)if1_cannonicalize_string(if1, s);
-  //a->constant_type = "symbol";
+  a->string = (char *)if1_cannonicalize_string(if1, s);
+  // a->constant_type = "symbol";
   return a;
 }
 
-static
-int dig_add_ast(ParseAST *op, D_ParseNode *pn) {
+static int dig_add_ast(ParseAST *op, D_ParseNode *pn) {
   int n = 0;
   for (int i = 0; i < d_get_number_of_children(pn); i++) {
     D_ParseNode *c = d_get_child(pn, i);
@@ -76,8 +69,7 @@ int dig_add_ast(ParseAST *op, D_ParseNode *pn) {
   return n;
 }
 
-ParseAST *
-op_AST(IF1 *if1, D_ParseNode &pn) {
+ParseAST *op_AST(IF1 *if1, D_ParseNode &pn) {
   ParseAST *op = new_AST(AST_op);
   op->set_location(&pn);
   int n = d_get_number_of_children(&pn);
@@ -87,10 +79,8 @@ op_AST(IF1 *if1, D_ParseNode &pn) {
       op->add(c->user.ast);
     else {
       op->op_index = i;
-      if (!dig_add_ast(op, c))
-        op->add(symbol_AST(if1, c));
+      if (!dig_add_ast(op, c)) op->add(symbol_AST(if1, c));
     }
   }
   return op;
 }
-

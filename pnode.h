@@ -16,17 +16,18 @@ class Sym;
 
 // Program node
 
-class PNode : public gc { public:
+class PNode : public gc {
+ public:
   Code *code;
   int id;
   uint live : 1;
   uint fa_live : 1;
-  Vec<Var *> lvals; // variables this node assigns
-  Vec<Var *> rvals; // variables this node reads
-  Vec<Var *> tvals; // temporary variables used by this node
+  Vec<Var *> lvals;  // variables this node assigns
+  Vec<Var *> rvals;  // variables this node reads
+  Vec<Var *> tvals;  // temporary variables used by this node
 
-  // Control-Flow Graph (CFG): cfg.cpp, ssu.cpp 
-  int mark; // ssu.c
+  // Control-Flow Graph (CFG): cfg.cpp, ssu.cpp
+  int mark;  // ssu.c
   Vec<PNode *> cfg_succ;
   Vec<PNode *> cfg_pred;
 #ifdef CONC_IMPLEMENTED
@@ -35,23 +36,23 @@ class PNode : public gc { public:
 #endif
 
   // Single-Static Value Functions
-  Vec<PNode *> phi; // MOVE nodes that logically follow this node
-  Vec<PNode *> phy; // MOVE nodes that logically precede this node
+  Vec<PNode *> phi;  // MOVE nodes that logically follow this node
+  Vec<PNode *> phy;  // MOVE nodes that logically precede this node
 
-  Prim *prim; // primitive
+  Prim *prim;  // primitive
 
   // Temporary Space
   union {
-    LoopNode *loop_node; // loop.cpp
-    BlockHash<Var *, PointerHashFns> *live_vars; // ssu.cpp
+    LoopNode *loop_node;                          // loop.cpp
+    BlockHash<Var *, PointerHashFns> *live_vars;  // ssu.cpp
   };
-  Map<PNode *, int> cfg_pred_index; // cg.cpp
-  Dom *dom, *rdom; // dominators and reverse dominators dom.cpp 
+  Map<PNode *, int> cfg_pred_index;  // cg.cpp
+  Dom *dom, *rdom;  // dominators and reverse dominators dom.cpp
 
-  Vec<Sym *> *creates; // cloning
+  Vec<Sym *> *creates;  // cloning
 
   float execution_frequency;
-  float false_branch_frequency; // inline.cpp
+  float false_branch_frequency;  // inline.cpp
 
   PNode(Code *c);
   PNode();
@@ -66,4 +67,3 @@ typedef Map<PNode *, VecPNode> MapPNVecPN;
 void pp(PNode *);
 
 #endif
-

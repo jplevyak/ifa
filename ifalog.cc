@@ -6,24 +6,21 @@ static char save_dir[FILENAME_MAX];
 static FILE *log_FILE[128];
 
 void init_logs() {
-  if (log_dir[strlen(log_dir)-1] != '/') 
-    strcat(log_dir, "/");
+  if (log_dir[strlen(log_dir) - 1] != '/') strcat(log_dir, "/");
   mkdir(log_dir, 0xFFF);
   strcpy(save_dir, log_dir);
   strcat(save_dir, "save/");
   mkdir(save_dir, 0xFFF);
 }
 
-void 
-log_flags_arg(ArgumentState *arg_state, char *arg) {
+void log_flags_arg(ArgumentState *arg_state, char *arg) {
   while (*arg) {
     log_tag[((uint8)*arg)]++;
     arg++;
   }
 }
 
-FILE *
-log_fp(int log) {
+FILE *log_fp(int log) {
   if (!log_FILE[log]) {
     char save_p[FILENAME_MAX], orig_p[FILENAME_MAX];
     strcpy(save_p, save_dir);
@@ -37,32 +34,25 @@ log_fp(int log) {
   return log_FILE[log];
 }
 
-static int
-logit(int log, cchar *str, va_list ap) {
-  if (!log_FILE[log])
-    log_fp(log);
+static int logit(int log, cchar *str, va_list ap) {
+  if (!log_FILE[log]) log_fp(log);
   return vfprintf(log_FILE[log], str, ap);
 }
 
-int 
-log_level(int log, int log_level, cchar *str, ...) {
+int log_level(int log, int log_level, cchar *str, ...) {
   va_list ap;
   va_start(ap, str);
-  if (!logging_level(log, log_level))
-    return 0;
+  if (!logging_level(log, log_level)) return 0;
   int res = logit(log, str, ap);
   va_end(ap);
   return res;
 }
 
-int 
-log(int log, cchar *str, ...) {
+int log(int log, cchar *str, ...) {
   va_list ap;
   va_start(ap, str);
-  if (!logging(log))
-    return 0;
+  if (!logging(log)) return 0;
   int res = logit(log, str, ap);
   va_end(ap);
   return res;
 }
-
