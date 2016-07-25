@@ -30,7 +30,7 @@ endif
 endif
 
 AUX_FILES = $(MODULE)/index.html $(MODULE)/manual.html $(MODULE)/faq.html $(MODULE)/ifa.1 $(MODULE)/ifa.cat
-TAR_FILES = $(AUX_FILES) $(TEST_FILES) 
+TAR_FILES = $(AUX_FILES) $(TEST_FILES)
 
 LIB_SRCS = ast.cc builtin.cc cdb.cc cfg.cc cg.cc clone.cc dead.cc dom.cc fa.cc \
 	fail.cc fun.cc graph.cc html.cc if1.cc ifa.cc inline.cc \
@@ -39,7 +39,7 @@ LIB_SRCS = ast.cc builtin.cc cdb.cc cfg.cc cg.cc clone.cc dead.cc dom.cc fa.cc \
 LIB_OBJS = $(LIB_SRCS:%.cc=%.o)
 
 IFA_DEPEND_SRCS = main.cc parse.cc scope.cc make_ast.cc ast_to_if1.cc
-IFA_SRCS = $(IFA_DEPEND_SRCS) v.g.d_parser.cc python.g.d_parser.cc 
+IFA_SRCS = $(IFA_DEPEND_SRCS) v.g.d_parser.cc python.g.d_parser.cc
 IFA_OBJS = $(IFA_SRCS:%.cc=%.o)
 
 EXECUTABLE_FILES = ifa
