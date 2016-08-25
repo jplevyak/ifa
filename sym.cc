@@ -8,7 +8,7 @@
 #include "builtin.h"
 
 cchar *type_kind_string[] = {
-  "NONE", "UNKNOWN", "SUM", "RECORD", "VECTOR", "FUN", "REF", "ENUM", "PRIMITIVE", "APPLICATION", "VARIABLE", "ALIAS"};
+  "NONE", "UNKNOWN", "SUM", "RECORD", "FUN", "REF", "TAGGED", "PRIMITIVE", "APPLICATION", "VARIABLE", "ALIAS"};
 
 BasicSym::BasicSym(void) :
   name(NULL),
