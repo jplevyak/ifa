@@ -37,7 +37,7 @@ class Var : public gc {
   cchar                 *cg_string; // used by cg.cpp
   llvm::Value           *llvm_value;
   const llvm::Type      *llvm_type;
-  
+
   // Temporary Space
   union {
     SSUVar *ssu;

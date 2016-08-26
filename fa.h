@@ -133,6 +133,7 @@ class CreationSet : public gc { public:
   Vec<CreationSet *>    *equiv;         // used by clone.cpp & fa.cpp
   Vec<CreationSet *>    not_equiv;      // used by clone.cpp
   Sym                   *type;          // used by clone.cpp & fa.capp
+  Vec<cchar *>          unknown_vars;
 
   CreationSet(Sym *s);
   CreationSet(CreationSet *cs);
@@ -242,7 +243,7 @@ enum ATypeViolation_kind {
   ATypeViolation_BOXING,
   ATypeViolation_CLOSURE_RECURSION
 };
-  
+
 class ATypeViolation : public gc { public:
   ATypeViolation_kind kind;
   AVar *av;
@@ -250,13 +251,13 @@ class ATypeViolation : public gc { public:
   AType *type;
   Vec<Fun *> *funs;
 
-  ATypeViolation(ATypeViolation_kind akind, AVar *aav, AVar *asend) 
+  ATypeViolation(ATypeViolation_kind akind, AVar *aav, AVar *asend)
     : kind(akind), av(aav), send(asend), type(0), funs(0) {}
 };
 #define forv_ATypeViolation(_p, _v) forv_Vec(ATypeViolation, _p, _v)
 
 class ATypeViolationHashFuns { public:
-  static uint hash(ATypeViolation *x) { 
+  static uint hash(ATypeViolation *x) {
     return (uint)((uint)x->kind + (13 * (uintptr_t)x->av) + (100003 * (uintptr_t)x->send));
   }
   static int equal(ATypeViolation *x, ATypeViolation *y) {
@@ -276,7 +277,7 @@ class ATypeFold : public gc { public:
 
 class ATypeFoldChainHashFns {
  public:
-  static uint hash(ATypeFold *x) { 
+  static uint hash(ATypeFold *x) {
     return (uint)((uintptr_t)x->p + (1009 * (uintptr_t)x->a) + (100003 * (uintptr_t)x->b));
   }
   static int equal(ATypeFold *x, ATypeFold *y) {

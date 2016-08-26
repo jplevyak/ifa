@@ -18,7 +18,7 @@
 #include "fail.h"
 #include "timer.h"
 
-/* runtime options 
+/* runtime options
 */
 bool fgraph_pass_contours = false;
 
@@ -62,21 +62,21 @@ static Que(EntrySet, es_worklist_link) es_worklist;
 static Vec<EntrySet *> entry_set_done;
 static Vec<ATypeViolation *> type_violations;
 
-static int application(PNode *p, EntrySet *es, AVar *fun, CreationSet *s, 
+static int application(PNode *p, EntrySet *es, AVar *fun, CreationSet *s,
                        Vec<AVar *> &args, Vec<cchar *> &names,
-                       int is_closure, Partial_kind partial, 
+                       int is_closure, Partial_kind partial,
                        PNode *visibility_point, Vec<CreationSet*> *closures);
 
-AEdge::AEdge() : 
-  from(0), to(0), pnode(0), fun(0), match(0), in_edge_worklist(0) 
+AEdge::AEdge() :
+  from(0), to(0), pnode(0), fun(0), match(0), in_edge_worklist(0)
 {
   id = aedge_id++;
 }
 
-AVar::AVar(Var *v, void *acontour) : 
-  var(v), contour(acontour), lvalue(0), gen(0), in(bottom_type), out(bottom_type), 
+AVar::AVar(Var *v, void *acontour) :
+  var(v), contour(acontour), lvalue(0), gen(0), in(bottom_type), out(bottom_type),
   restrict(0), container(0), setters(0), setter_class(0), mark_map(0),
-  cs_map(0), match_cache(0), type(0), ivar_offset(0), in_send_worklist(0), contour_is_entry_set(0), 
+  cs_map(0), match_cache(0), type(0), ivar_offset(0), in_send_worklist(0), contour_is_entry_set(0),
   is_lvalue(0), live(0), live_arg(0), is_if_arg(0)
 {
   id = avar_id++;
@@ -120,7 +120,7 @@ unique_AVar(Var *v, EntrySet *es) {
   return av;
 }
 
-CreationSet::CreationSet(Sym *s) : sym(s), dfs_color(DFS_white), clone_for_constants(0), 
+CreationSet::CreationSet(Sym *s) : sym(s), dfs_color(DFS_white), clone_for_constants(0),
                                    added_element_var(0), closure_used(0), tuple_able(0),
                                    atype(0), equiv(0), type(0)
 {
@@ -129,7 +129,7 @@ CreationSet::CreationSet(Sym *s) : sym(s), dfs_color(DFS_white), clone_for_const
 
 CreationSet::CreationSet(CreationSet *cs) : dfs_color(DFS_white), added_element_var(0),
                                             closure_used(0), tuple_able(0), atype(0),
-                                            equiv(0), type(0) 
+                                            equiv(0), type(0)
 {
   sym = cs->sym;
   id = creation_set_id++;
@@ -161,8 +161,8 @@ make_AVar(Var *v, EntrySet *es) {
 }
 
 static inline AVar *
-make_AVar(Var *v, AEdge *e) { 
-  return make_AVar(v, e->to); 
+make_AVar(Var *v, AEdge *e) {
+  return make_AVar(v, e->to);
 }
 
 AType *
@@ -411,8 +411,8 @@ qsort_pointers(void **left, void **right) {
           void *t = x[0];
           x[0] = x[1];
           x[1] = t;
-        } 
-      } 
+        }
+      }
     }
   } else {
     void  **i = left + 1, **j = right - 1, *x = *left;
@@ -457,7 +457,7 @@ type_cannonicalize(AType *t) {
       }
       consts++;
       nonconsts.set_add(base_cs);
-    } else { 
+    } else {
       if (!cs->sym->is_unique_type)  // e.g. nil, void, or unknown
         nonconsts.set_add(cs);
       else
@@ -523,7 +523,7 @@ type_union(AType *a, AType *b) {
 
 static inline int
 subsumed_by(Sym *a, Sym *b) {
-  return (a == b) || a->type == b || 
+  return (a == b) || a->type == b ||
     ((b->type_kind == Type_SUM || a->is_symbol || a->is_fun) && b->specializers.set_in(a->type));
 }
 
@@ -621,7 +621,7 @@ fill_rets(EntrySet *es, int n) {
     }
 }
 
-static int 
+static int
 same_eq_classes(Setters *s, Setters *ss) {
   if (s == ss)
     return 1;
@@ -656,7 +656,7 @@ edge_nest_compatible_with_entry_set(AEdge *e, EntrySet *es) {
   return 1;
 }
 
-static int 
+static int
 different_marked_args(AVar *a1, AVar *a2, int offset, AVar *basis = 0) {
   Vec<void *> marks1, marks2;
   AVar *basis1 = basis ? basis : a2;
@@ -760,7 +760,7 @@ edge_type_compatible_with_entry_set(AEdge *e, EntrySet *es, int fmark = 0) {
     }
   } else {
     forv_AEdge(ee, es->edges) if (ee) {
-      if (!ee->args.n)  
+      if (!ee->args.n)
         continue;
       if (!edge_type_compatible_with_edge(e, ee, es, fmark))
         return 0;
@@ -769,7 +769,7 @@ edge_type_compatible_with_entry_set(AEdge *e, EntrySet *es, int fmark = 0) {
   return 1;
 }
 
-static int 
+static int
 sset_compatible(AVar *av1, AVar *av2) {
   if (!same_eq_classes(av1->setters, av2->setters))
     return 0;
@@ -813,7 +813,7 @@ edge_sset_compatible_with_entry_set(AEdge *e, EntrySet *es) {
         return 0;
   } else {
     forv_AEdge(ee, es->edges) if (ee) {
-      if (!ee->args.n)  
+      if (!ee->args.n)
         continue;
       if (!edge_sset_compatible_with_edge(e, ee))
         return 0;
@@ -924,13 +924,13 @@ entry_set_compatibility(AEdge *e, EntrySet *es) {
     return 0;
   switch (edge_type_compatible_with_entry_set(e, es)) {
     case 1: break;
-    case 0: 
+    case 0:
 #if 0
       // eager splitting doesn't help
       if (analysis_pass == 0 && !initial_compatibility(e, es))
         return 0;
 #endif
-      val -= 4; 
+      val -= 4;
       break;
     case -1: return 0;
   }
@@ -985,7 +985,7 @@ check_edge(AEdge *e, EntrySet *es) {
     if (filter) {
       if (es_filter)
         filter = type_intersection(filter, es_filter);
-    } else 
+    } else
       filter = es_filter;
     if (filter && type_intersection(x->value->out, filter) == bottom_type)
       return 0;
@@ -1031,9 +1031,9 @@ check_es_db(AEdge *e, Vec<AEdge *> &ees) {
   return 0;
 }
 
-static void 
+static void
 make_entry_set(AEdge *e, Vec<AEdge *> &edges, EntrySet *split = 0, EntrySet *preference = 0) {
-  if (e->to) { 
+  if (e->to) {
     edges.add(e);
     return;
   }
@@ -1074,8 +1074,8 @@ flow_var_type_permit(AVar *v, AType *t) {
 }
 
 static inline void
-flow_var_type_permit(AVar *v, Sym *s) { 
-  flow_var_type_permit(v, make_abstract_type(s)); 
+flow_var_type_permit(AVar *v, Sym *s) {
+  flow_var_type_permit(v, make_abstract_type(s));
 }
 
 void
@@ -1085,12 +1085,12 @@ add_var_constraint(AVar *av, Sym *s) {
   assert(s->type_kind != Type_VARIABLE);
   s = unalias_type(s);
   if (s->type && !s->is_pattern) {
-    if (s->is_external && 
+    if (s->is_external &&
         (s->type->num_kind || s->type == sym_string || s->type->is_system_type))
       update_gen(av, s->type->abstract_type);
     if (s->is_constant) // for constants, the abstract type is the concrete type
       update_gen(av, make_abstract_type(s));
-    if (s->is_symbol || s->is_fun) 
+    if (s->is_symbol || s->is_fun)
       update_gen(av, make_abstract_type(s));
     if (s->type_kind != Type_NONE)
       update_gen(av, make_abstract_type(s->meta_type));
@@ -1270,7 +1270,7 @@ make_period_closure(AVar *result, AVar *a, Vec<AVar *> &args) {
     make_closure_var(args[i], es, cs, result, add, i+1);
 }
 
-// for send nodes, add simple constraints which do not depend 
+// for send nodes, add simple constraints which do not depend
 // on the computed types (compare to add_send_edgse_pnodes)
 static void
 add_send_constraints(PNode *p, EntrySet *es) {
@@ -1283,7 +1283,7 @@ add_send_constraints(PNode *p, EntrySet *es) {
         ii = -p->prim->nrets -1; // last
       switch (p->prim->ret_types[ii]) {
         case PRIM_TYPE_ANY: break;
-        case PRIM_TYPE_STRING: 
+        case PRIM_TYPE_STRING:
           update_gen(make_AVar(p->lvals[i], es), string_type); break;
         case PRIM_TYPE_SIZE:
           update_gen(make_AVar(p->lvals[i], es), size_type); break;
@@ -1394,8 +1394,8 @@ make_AEdges(Match *m, PNode *p, EntrySet *from, Vec<AVar *> &args) {
 // returns 1 if any are partial, 0 if some matched and -1 if none matched
 static int
 all_applications(PNode *p, EntrySet *es, AVar *a0, Vec<AVar *> &args, Vec<cchar *> &names,
-                 int is_closure, Partial_kind partial, 
-                 PNode *visibility_point = 0, Vec<CreationSet *> *closures = 0) 
+                 int is_closure, Partial_kind partial,
+                 PNode *visibility_point = 0, Vec<CreationSet *> *closures = 0)
 {
   if (!visibility_point) visibility_point = p;
   int incomplete = -2;
@@ -1410,10 +1410,10 @@ all_applications(PNode *p, EntrySet *es, AVar *a0, Vec<AVar *> &args, Vec<cchar 
 }
 
 static int
-partial_application(PNode *p, EntrySet *es, CreationSet *cs, 
+partial_application(PNode *p, EntrySet *es, CreationSet *cs,
                     Vec<AVar *> &args, Vec<cchar *> &names,
                     Partial_kind partial, PNode *visibility_point,
-                    Vec<CreationSet *> *closures) 
+                    Vec<CreationSet *> *closures)
 {
   AVar *result = make_AVar(p->lvals[0], es);
   assert(result->var->def == p);
@@ -1449,9 +1449,9 @@ partial_application(PNode *p, EntrySet *es, CreationSet *cs,
 }
 
 int
-function_dispatch(PNode *p, EntrySet *es, AVar *a0, CreationSet *s, 
+function_dispatch(PNode *p, EntrySet *es, AVar *a0, CreationSet *s,
                   Vec<AVar *> &args, Vec<cchar *> &names,
-                  int is_closure, Partial_kind partial, PNode *visibility_point) 
+                  int is_closure, Partial_kind partial, PNode *visibility_point)
 {
   if (!visibility_point) visibility_point = p;
   Vec<AVar *> a;
@@ -1466,7 +1466,7 @@ function_dispatch(PNode *p, EntrySet *es, AVar *a0, CreationSet *s,
     forv_Match(m, matches) {
       if (!m->is_partial && partial != Partial_ALWAYS)
         make_AEdges(m, p, es, a);
-      else 
+      else
         partial_result = 1;
     }
   }
@@ -1475,10 +1475,10 @@ function_dispatch(PNode *p, EntrySet *es, AVar *a0, CreationSet *s,
 }
 
 static int
-application(PNode *p, EntrySet *es, AVar *a0, CreationSet *cs, 
-            Vec<AVar *> &args, Vec<cchar *> &names, 
+application(PNode *p, EntrySet *es, AVar *a0, CreationSet *cs,
+            Vec<AVar *> &args, Vec<cchar *> &names,
             int is_closure, Partial_kind partial, PNode *visibility_point,
-            Vec<CreationSet *> *closures) 
+            Vec<CreationSet *> *closures)
 {
   if (sym_closure->implementors.set_in(cs->sym) && cs->defs.n)
     return partial_application(p, es, cs, args, names, partial, visibility_point, closures);
@@ -1686,9 +1686,9 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
       AVar *arg = make_AVar(p->rvals[i], es);
       // record violations
       if (type_diff(arg->out, p->prim->args[iarg]) != bottom_type)
-        type_violation(ATypeViolation_PRIMITIVE_ARGUMENT, arg, 
-                       type_diff(arg->out, p->prim->args[iarg]), 
-                       make_AVar(p->lvals[0], es)); 
+        type_violation(ATypeViolation_PRIMITIVE_ARGUMENT, arg,
+                       type_diff(arg->out, p->prim->args[iarg]),
+                       make_AVar(p->lvals[0], es));
       switch (p->prim->arg_types[iarg]) {
         default: break;
         case PRIM_TYPE_ANY_NUM_A: a = arg; break;
@@ -1715,8 +1715,8 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
         // can we fold this?
         if (a->out && b->out && a->out->n && b->out->n) {
           AType *nt = p->prim->ret_types[i] == PRIM_TYPE_BOOL ? bool_type : type_num_fold(p->prim, a->out, b->out);
-          if (a->out->n == 1 && b->out->n == 1 && 
-              a->out->v[0]->sym->imm.const_kind && b->out->v[0]->sym->imm.const_kind) 
+          if (a->out->n == 1 && b->out->n == 1 &&
+              a->out->v[0]->sym->imm.const_kind && b->out->v[0]->sym->imm.const_kind)
           {
             Immediate imm;
             if (!fold_constant(p->prim->index, &a->out->v[0]->sym->imm, &b->out->v[0]->sym->imm, &imm))
@@ -1771,7 +1771,7 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
         Sym *s;
         forv_CreationSet(cs1, a1->out->sorted)
           forv_CreationSet(cs2, a2->out->sorted)
-            if (cs1->sym->is_meta_type && cs2->sym->is_meta_type && 
+            if (cs1->sym->is_meta_type && cs2->sym->is_meta_type &&
                 (s = meta_apply(cs1->sym->meta_type, cs2->sym->meta_type)))
               update_gen(result, make_abstract_type(s));
             else
@@ -1837,7 +1837,7 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
             else {
               if (cs->sym->element)
                 flow_vars(tval, get_element_avar(cs));
-              for (int i = 0; i < cs->vars.n; i++) 
+              for (int i = 0; i < cs->vars.n; i++)
                 flow_vars(tval, cs->vars[i]);
             }
           }
@@ -1865,7 +1865,7 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
         set_container(result, obj);
         bool partial = p->code->partial != Partial_NEVER;
         forv_CreationSet(sel, selector->out->sorted) {
-          cchar *symbol = sel->sym->name; 
+          cchar *symbol = sel->sym->name;
           if (!symbol) symbol = sel->sym->constant;
           if (!symbol) symbol = sel->sym->imm.v_string;
           assert(symbol);
@@ -1892,7 +1892,7 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
           if (all_applications(p, es, x, args, names, 0, (Partial_kind)p->code->partial) > 0)
             make_period_closure(result, x, args);
         }
-        {       
+        {
           Vec<AVar *> args;
           Vec<cchar *> names;
           names.add(0);
@@ -1912,7 +1912,7 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
         flow_vars(val, tval);
         set_container(tval, obj);
         forv_CreationSet(sel, selector->out->sorted) {
-          cchar *symbol = sel->sym->name; 
+          cchar *symbol = sel->sym->name;
           if (!symbol) symbol = sel->sym->constant;
           if (!symbol) symbol = sel->sym->imm.v_string;
           assert(symbol);
@@ -1920,6 +1920,8 @@ add_send_edges_pnode(PNode *p, EntrySet *es) {
             AVar *iv = cs->var_map.get(symbol);
             if (iv)
               flow_vars(tval, iv);
+            else
+              cs->unknown_vars.add(symbol);
           }
         }
         flow_vars(val, result);
@@ -2112,7 +2114,7 @@ add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
     forv_Var(v, n->rvals)
       flow_vars(make_AVar(v, es), vv);
   }
-  forv_Var(v, p->rvals) 
+  forv_Var(v, p->rvals)
     make_AVar(v, es)->live_arg = 1;
   switch (p->code->kind) {
     default: break;
@@ -2137,7 +2139,7 @@ add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
       AType *b = type_intersection(t, bool_type);
       AType *e = type_diff(t, b);
       if (e != bottom_type)
-        type_violation(ATypeViolation_PRIMITIVE_ARGUMENT, cond, e, 0); 
+        type_violation(ATypeViolation_PRIMITIVE_ARGUMENT, cond, e, 0);
       if (type_intersection(b, bool_type) == bool_type)
         break;
       if (type_intersection(b, true_type) != bottom_type) {
@@ -2180,7 +2182,7 @@ add_es_constraints(EntrySet *es) {
 }
 
 static inline int
-is_fa_Var(Var *v) { 
+is_fa_Var(Var *v) {
   return v->sym->type || v->sym->aspect || v->sym->is_constant || v->sym->is_symbol;
 }
 
@@ -2241,7 +2243,7 @@ analyze_edge(AEdge *e_arg) {
       if (filter) {
         if (es_filter)
           filter = type_intersection(filter, es_filter);
-      } else 
+      } else
         filter = es_filter;
       if (filter && type_intersection(x->value->out, filter) == bottom_type)
         goto LskipEdge;
@@ -2368,7 +2370,7 @@ show_type(Vec<CreationSet *> &t, FILE *fp, int verbose = ifa_verbose) {
       if (cs->vars.n)
         fprintf(fp, "[ ");
       forv_AVar(av, cs->vars) {
-        show_sym_name(av->var->sym, fp); 
+        show_sym_name(av->var->sym, fp);
         fprintf(fp, ":");
         show_type(*av->out, fp, verbose - 1);
         fprintf(fp, " ");
@@ -2402,7 +2404,7 @@ show_sym(Sym *s, FILE *fp) {
     fprintf(fp, "_");
   if (s->type && s->type->name)
     fprintf(fp, " = %s", s->type->name);
-  else if (s->must_implement && 
+  else if (s->must_implement &&
            s->must_implement == s->must_specialize) {
     fprintf(fp, " : ");
     show_sym_name(s->must_implement, fp);
@@ -2436,7 +2438,7 @@ show_atype(AType &t, FILE *fp, int level) {
     fprintf(fp, " id:%d ", cs->id);
     if (level > 0) {
       forv_AVar(av, cs->vars) {
-        show_sym_name(av->var->sym, fp); 
+        show_sym_name(av->var->sym, fp);
         show_atype(*av->out, fp, level - 1);
       }
     }
@@ -2689,15 +2691,15 @@ show_violations(FA *fa, FILE *fp) {
   qsort(vv.v, vv.n, sizeof(vv[0]), compar_tv);
   forv_ATypeViolation(v, vv) if (v) {
     if (v->send && v->send->var->def->code->source_line() > 0)
-      fprintf(fp, "%s:%d: ", v->send->var->def->code->filename(), 
+      fprintf(fp, "%s:%d: ", v->send->var->def->code->filename(),
               v->send->var->def->code->source_line());
     else if (v->av->var->sym->ast && v->av->var->sym->source_line() > 0)
-      fprintf(fp, "%s:%d: ", v->av->var->sym->filename(), 
+      fprintf(fp, "%s:%d: ", v->av->var->sym->filename(),
               v->av->var->sym->source_line());
     else if (!v->av->contour_is_entry_set && v->av->contour != GLOBAL_CONTOUR) {
       CreationSet *cs = (CreationSet*)v->av->contour;
-      fprintf(fp, "%s:%d: class %s:: ", 
-              cs->sym->filename(), cs->sym->source_line(), cs->sym->name);     
+      fprintf(fp, "%s:%d: class %s:: ",
+              cs->sym->filename(), cs->sym->source_line(), cs->sym->name);
     } else {
       if (fruntime_errors)
         fprintf(fp, "warning: ");
@@ -2743,7 +2745,7 @@ show_violations(FA *fa, FILE *fp) {
             fprintf(fp, "  selector '%s'\n", selector->sym->name);
         }
         if (v->type->n == 1)
-          fprintf(fp, "  class '%s'\n", v->type->v[0]->sym->name ? v->type->v[0]->sym->name : 
+          fprintf(fp, "  class '%s'\n", v->type->v[0]->sym->name ? v->type->v[0]->sym->name :
                   "<anonymous>");
         else {
           fprintf(fp, "  classes\n");
@@ -2789,7 +2791,7 @@ static cchar *fn(cchar *s) {
     return "<none>";
   cchar *filename = strrchr(s, '/');
   if (filename)
-    return filename + 1;        
+    return filename + 1;
   return s;
 }
 
@@ -2861,7 +2863,7 @@ collect_results() {
         fa->css_set.set_union(*av->out);
     }
   }
-  forv_CreationSet(cs, fa->css_set) if (cs) 
+  forv_CreationSet(cs, fa->css_set) if (cs)
     fa->css.add(cs);
   qsort_by_id(fa->css);
   // print results
@@ -2914,7 +2916,7 @@ collect_argument_type_violations() {
           if (p->code->partial == Partial_NEVER) {
             forv_Var(v, p->rvals) {
               AVar *av = make_AVar(v, from);
-              type_violation(ATypeViolation_SEND_ARGUMENT, av, av->out, 
+              type_violation(ATypeViolation_SEND_ARGUMENT, av, av->out,
                              make_AVar(p->lvals[0], from));
             }
           }
@@ -2980,13 +2982,13 @@ collect_var_type_violations() {
     forv_EntrySet(es, fa->ess) {
       forv_Var(v, es->fun->fa_all_Vars) {
         AVar *av = make_AVar(v, es);
-        if (mixed_basics(av)) 
+        if (mixed_basics(av))
           type_violation(ATypeViolation_BOXING, av, av->out, 0, 0);
       }
     }
     forv_CreationSet(cs, fa->css) {
       forv_AVar(av, cs->vars) {
-        if (mixed_basics(av)) 
+        if (mixed_basics(av))
           type_violation(ATypeViolation_BOXING, av, av->out, 0, 0);
       }
     }
@@ -3004,8 +3006,8 @@ collect_var_type_violations() {
 static void
 convert_NOTYPE_to_void() {
   if (!fa->css_set.set_in(void_type->v[0])) {
-    fa->css_set.set_add(void_type->v[0]);       
-    fa->css.add(void_type->v[0]);       
+    fa->css_set.set_add(void_type->v[0]);
+    fa->css.add(void_type->v[0]);
   }
   forv_EntrySet(es, fa->ess) {
     forv_Var(v, es->fun->fa_all_Vars) {
@@ -3024,7 +3026,7 @@ convert_NOTYPE_to_void() {
   }
 }
 
-void 
+void
 initialize_Sym_for_fa(Sym *s) {
   if (s->is_symbol || s->is_fun || s->type_kind)
     s->abstract_type = make_abstract_type(s);
@@ -3182,7 +3184,7 @@ mark_es_cs_backedges(EntrySet *es, Accum<EntrySet *> &ess, Accum<CreationSet *> 
   es->dfs_color = DFS_black;
 }
 
-// recursion amongst EntrySets and the CreationSets 
+// recursion amongst EntrySets and the CreationSets
 // created within them, and the EntrySets "created"
 // (as in restricted) by those CreationSets
 static void
@@ -3282,7 +3284,7 @@ collect_type_confluences(Vec<AVar *> &confluences) {
   confluences.set_to_vec();
   qsort_by_id(confluences);
   forv_AVar(x, confluences)
-    log(LOG_SPLITTING, "type confluence %s %d\n", 
+    log(LOG_SPLITTING, "type confluence %s %d\n",
         x->var->sym->name ? x->var->sym->name : "", x->var->sym->id);
 }
 
@@ -3309,8 +3311,8 @@ static void
 record_backedges(AEdge *e, EntrySet *es, PendingAEdgeEntrySetsMap &up_map) {
   form_Map(MapElemAEdgeEntrySets, m, up_map) {
     if (m->key->from == es)
-      map_set_add(e->to->pending_es_backedge_map, 
-                  new_AEdge(m->key->fun, m->key->pnode, e->to), 
+      map_set_add(e->to->pending_es_backedge_map,
+                  new_AEdge(m->key->fun, m->key->pnode, e->to),
                   m->value);
     else
       map_set_add(e->to->pending_es_backedge_map, m->key, m->value);
@@ -3379,8 +3381,8 @@ split_edges(AVar *av, int fsetters, int fmark) {
     }
     if (ee->to != old) {
       again = 1;
-      log(LOG_SPLITTING, "DISPATCH ES %d:%d, %s %d -> %d\n", 
-          ee->from->id, ee->pnode->lvals[0]->sym->id, 
+      log(LOG_SPLITTING, "DISPATCH ES %d:%d, %s %d -> %d\n",
+          ee->from->id, ee->pnode->lvals[0]->sym->id,
           es->fun->sym->name ? es->fun->sym->name : "", es->fun->sym->id,
           old->id, ee->to->id);
     }
@@ -3404,7 +3406,7 @@ split_entry_set(AVar *av, int fsetters, int fmark, int fdynamic) {
   qsort_by_id(all_edges);
   int nedges = 0, non_rec_edges = 0;
   forv_AEdge(ee, all_edges) if (ee) {
-    if (!ee->from) 
+    if (!ee->from)
       continue;
     nedges++;
     pending_es_backedge_map.map_union(ee->from->pending_es_backedge_map);
@@ -3438,7 +3440,7 @@ split_entry_set(AVar *av, int fsetters, int fmark, int fdynamic) {
     else
       do_edges.add(e);
   }
-  if (non_rec_edges == 1 && nedges != do_edges.n) 
+  if (non_rec_edges == 1 && nedges != do_edges.n)
     return 0;
   int split = 0;
   while (do_edges.n) {
@@ -3470,7 +3472,7 @@ split_entry_set(AVar *av, int fsetters, int fmark, int fdynamic) {
       if (x->to != es) {
         record_backedges(x, es, pending_es_backedge_map);
         split = 1;
-        log(LOG_SPLITTING, "SPLIT ES %d %s%s%s %d from %d -> %d\n", 
+        log(LOG_SPLITTING, "SPLIT ES %d %s%s%s %d from %d -> %d\n",
             es->id,
             fsetters ? "setters " : "",
             fmark ? "marks " : "",
@@ -3500,7 +3502,7 @@ build_type_mark(AVar *av, CreationSet *cs, int mark = 1) {
     build_type_mark(y, cs, mark + 1);
 }
 
-// To handle recursion, mark value*AVar distances from the nearest 
+// To handle recursion, mark value*AVar distances from the nearest
 // AVar generating the value.  Dataflow is considered to be only
 // from lower to higher distances for the purpose of splitting.
 static void
@@ -3548,11 +3550,11 @@ build_setter_marks(AVar *av, Accum<AVar *> &acc) {
   // collect all contributing nodes
   acc.add(av);
   forv_AVar(x, acc.asvec)
-    forv_AVar(y, x->forward) 
+    forv_AVar(y, x->forward)
       if (y && y->setters && y->setters->some_intersection(*av->setters))
         acc.add(y);
   forv_AVar(x, acc.asvec)
-    forv_AVar(y, x->backward) 
+    forv_AVar(y, x->backward)
       if (y && y->setters && y->setters->some_intersection(*av->setters))
         acc.add(y);
   // mark them
@@ -3615,14 +3617,15 @@ clear_es(EntrySet *es) {
 
 static void
 clear_cs(CreationSet *cs) {
-  cs->defs.clear();      
-  cs->ess.clear();      
+  cs->defs.clear();
+  cs->ess.clear();
   cs->es_backedges.clear();
   forv_AVar(v, cs->vars)
     clear_avar(v);
   if (cs->added_element_var)
     clear_avar(get_element_avar(cs));
   cs->closure_used = 0;
+  cs->unknown_vars.clear();
 }
 
 static void
@@ -3635,11 +3638,11 @@ foreach_var(void (*pfn)(Var*)) {
       pfn(v);
 }
 
-struct ClearVarFn { static void F(Var *v) { 
-  clear_var(v); 
+struct ClearVarFn { static void F(Var *v) {
+  clear_var(v);
 } };
 
-static void 
+static void
 clear_results() {
   foreach_var(clear_var);
   forv_CreationSet(cs, fa->css)
@@ -3788,10 +3791,10 @@ compute_setters(AVar *av, Accum<AVar *> &avs, int akind = AKIND_TYPE) {
     // group
     for (int i = 0; i < ss.n; i++) {
       forv_AVar(a, *ss[i]) if (a) {
-        if ((akind == AKIND_TYPE && 
-             (!a->out->type->n || !x->out->type->n || a->out->type == x->out->type)) || 
+        if ((akind == AKIND_TYPE &&
+             (!a->out->type->n || !x->out->type->n || a->out->type == x->out->type)) ||
             (akind == AKIND_SETTER && same_eq_classes(a->setters, x->setters)) ||
-            (akind == AKIND_MARK && !different_marked_args(x, a, 1))) 
+            (akind == AKIND_MARK && !different_marked_args(x, a, 1)))
         {
           ss[i]->set_add(x);
           goto Ldone;
@@ -3812,8 +3815,8 @@ compute_setters(AVar *av, Accum<AVar *> &avs, int akind = AKIND_TYPE) {
 }
 
 static void
-collect_setter_confluences(Accum<AVar *> &avs, 
-                           Vec<AVar *> &setter_confluences, Vec<AVar *> &setter_starters) 
+collect_setter_confluences(Accum<AVar *> &avs,
+                           Vec<AVar *> &setter_confluences, Vec<AVar *> &setter_starters)
 {
   forv_AVar(av, avs.asvec) {
     if (av->setters) {
@@ -3909,7 +3912,7 @@ split_css(Vec<AVar *> &starters) {
     Vec<AVar *> starter_set, save;
     forv_AVar(av, starters)
       if (av->cs_map->get(cs->sym) == cs)
-        starter_set.add(av);    
+        starter_set.add(av);
     while (starter_set.n > 1) {
       AVar *av = starter_set[0];
       Vec<AVar *> compatible_set;
@@ -3932,7 +3935,7 @@ split_css(Vec<AVar *> &starters) {
         new_cs->split = cs;
         analyze_again = 1;
         log(LOG_SPLITTING, "SPLIT CS %d %s %d -> %d\n", cs->id,
-            cs->sym->name ? cs->sym->name : "", cs->sym->id, 
+            cs->sym->name ? cs->sym->name : "", cs->sym->id,
             new_cs->id);
       }
     }
@@ -4129,9 +4132,9 @@ split_for_violations(Vec<ATypeViolation *> &violations) {
 
 static void
 clear_splits() {
-  forv_EntrySet(es, fa->ess) 
+  forv_EntrySet(es, fa->ess)
     es->split = 0;
-  forv_CreationSet(cs, fa->css) 
+  forv_CreationSet(cs, fa->css)
     cs->split = 0;
 }
 
@@ -4171,7 +4174,7 @@ extend_analysis() {
   // 2) split EntrySets based on type using marks
   if (!analyze_again)
     analyze_again = split_ess_for_mark_type(confluences);
-  // 3) split based on setters of type 
+  // 3) split based on setters of type
   if (!analyze_again) {
     Accum<AVar *> avs;
     forv_AVar(av, confluences)
@@ -4209,8 +4212,8 @@ extend_analysis() {
   ++analysis_pass;
   if (ifa_verbose) {
     double flow = pass_timer.time - extend_timer.time - match_timer.time;
-    printf("PASS %d COMPLETE: %f seconds, %f flow (%d%%), %f match (%d%%), %f extend (%d%%)\n", 
-           analysis_pass, pass_timer.time, 
+    printf("PASS %d COMPLETE: %f seconds, %f flow (%d%%), %f match (%d%%), %f extend (%d%%)\n",
+           analysis_pass, pass_timer.time,
            flow, (int)(flow*100.0/pass_timer.time),
            match_timer.time, (int)(match_timer.time*100.0/pass_timer.time),
            extend_timer.time, (int)(extend_timer.time*100.0/pass_timer.time));
@@ -4221,8 +4224,8 @@ extend_analysis() {
   log(LOG_SPLITTING, "======== pass %d ========\n", analysis_pass);
   if (!analyze_again && ifa_verbose) {
     double flow = pass_timer.accumulator[0] - extend_timer.accumulator[0] - match_timer.accumulator[0];
-    printf("COMPLETE: %f seconds, %f flow (%d%%), %f match (%d%%) cached (%d%%), %f extend (%d%%)\n", 
-           pass_timer.accumulator[0], 
+    printf("COMPLETE: %f seconds, %f flow (%d%%), %f match (%d%%) cached (%d%%), %f extend (%d%%)\n",
+           pass_timer.accumulator[0],
            flow, (int)(flow*100.0/pass_timer.accumulator[0]),
            match_timer.accumulator[0], (int)(match_timer.accumulator[0]*100.0/pass_timer.accumulator[0]),
            (int)(((double)pattern_match_hits / (double)pattern_match_complete) * 100.0),
@@ -4231,8 +4234,8 @@ extend_analysis() {
   return analyze_again;
 }
 
-static void 
-set_void_lub_types_to_void(Var *v) { 
+static void
+set_void_lub_types_to_void(Var *v) {
   CreationSet *s = void_type->v[0];
   for (int i = 0; i < v->avars.n; i++) if (v->avars[i].key) {
     AVar *av = v->avars[i].value;
@@ -4246,8 +4249,8 @@ set_void_lub_types_to_void() {
   foreach_var(set_void_lub_types_to_void);
 }
 
-static void 
-remove_unused_closures(Var *v) { 
+static void
+remove_unused_closures(Var *v) {
   for (int i = 0; i < v->avars.n; i++) if (v->avars[i].key) {
     AVar *av = v->avars[i].value;
     forv_CreationSet(cs, av->out->sorted)
@@ -4300,7 +4303,7 @@ FA::analyze(Fun *top) {
       }
     }
     complete_pass();
-  } while (extend_analysis());
+  } while (extend_analysis() || if1->callback->reanalyze(type_violations));
   set_void_lub_types_to_void();
   remove_unused_closures();
   if1->callback->report_analysis_errors(type_violations);
@@ -4354,7 +4357,7 @@ call_info(Fun *f, IFAAST *a, Vec<Fun *> &funs) {
     Vec<Fun *> *ff = f->calls.get(n);
     if (ff)
       funs.set_union(*ff);
-  }     
+  }
   funs.set_to_vec();
 }
 
@@ -4479,7 +4482,7 @@ void collect_types_and_globals(FA *fa, Vec<Sym *> &typesyms, Vec<Var *> &globals
     again = 0;
     Vec<Sym *> loopsyms;
     loopsyms.copy(typesyms);
-    for (int i = 0; i < loopsyms.n; i++) 
+    for (int i = 0; i < loopsyms.n; i++)
       if (loopsyms[i] && loopsyms.v[i]->type_kind) {
         forv_Sym(s, loopsyms[i]->has) {
           again = typesyms.set_add(s) || again;

@@ -72,6 +72,7 @@ public:
   virtual Fun* coercion_wrapper(Fun *, Map<MPosition *, Sym *> &substitutions) { return 0; }
   virtual Fun* default_wrapper(Fun *, Vec<MPosition *> &defaults) { return 0; }
   virtual Fun* instantiate_generic(Fun *, Map<Sym *, Sym*> &substitutions) { return 0; }
+  virtual bool reanalyze(Vec<ATypeViolation*> &type_violations) { return false; }
   virtual void report_analysis_errors(Vec<ATypeViolation*> &type_violations) { }
   virtual bool c_codegen_pre_file(FILE *fp) { return false; }
 };
