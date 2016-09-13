@@ -723,8 +723,10 @@ static int edge_type_compatible_with_entry_set(AEdge *e, EntrySet *es,
     }
   } else {
     forv_AEdge(ee, es->edges) if (ee) {
-      if (!ee->args.n) continue;
-      if (!edge_type_compatible_with_edge(e, ee, es, fmark)) return 0;
+      if (!ee->args.n)
+        continue;
+      if (!edge_type_compatible_with_edge(e, ee, es, fmark))
+        return 0;
     }
   }
   return 1;
@@ -1705,7 +1707,7 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
         Sym *s;
         forv_CreationSet(cs1, a1->out->sorted)
           forv_CreationSet(cs2, a2->out->sorted)
-            if (cs1->sym->is_meta_type && cs2->sym->is_meta_type && 
+            if (cs1->sym->is_meta_type && cs2->sym->is_meta_type &&
                 (s = meta_apply(cs1->sym->meta_type, cs2->sym->meta_type)))
               update_gen(result, make_abstract_type(s));
             else
@@ -1851,7 +1853,10 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
           assert(symbol);
           forv_CreationSet(cs, obj->out->sorted) {
             AVar *iv = cs->var_map.get(symbol);
-            if (iv) flow_vars(tval, iv);
+            if (iv)
+              flow_vars(tval, iv);
+            else
+              cs->unknown_vars.add(symbol);
           }
         }
         flow_vars(val, result);
@@ -3434,6 +3439,7 @@ static void clear_cs(CreationSet *cs) {
   forv_AVar(v, cs->vars) clear_avar(v);
   if (cs->added_element_var) clear_avar(get_element_avar(cs));
   cs->closure_used = 0;
+  cs->unknown_vars.clear();
 }
 
 static void foreach_var(void (*pfn)(Var *)) {
@@ -3573,10 +3579,10 @@ static int compute_setters(AVar *av, Accum<AVar *> &avs,
     // group
     for (int i = 0; i < ss.n; i++) {
       forv_AVar(a, *ss[i]) if (a) {
-        if ((akind == AKIND_TYPE && 
-             (!a->out->type->n || !x->out->type->n || a->out->type == x->out->type)) || 
+        if ((akind == AKIND_TYPE &&
+             (!a->out->type->n || !x->out->type->n || a->out->type == x->out->type)) ||
             (akind == AKIND_SETTER && same_eq_classes(a->setters, x->setters)) ||
-            (akind == AKIND_MARK && !different_marked_args(x, a, 1))) 
+            (akind == AKIND_MARK && !different_marked_args(x, a, 1)))
         {
           ss[i]->set_add(x);
           goto Ldone;
@@ -4049,7 +4055,7 @@ int FA::analyze(Fun *top) {
       }
     }
     complete_pass();
-  } while (extend_analysis());
+  } while (extend_analysis() || if1->callback->reanalyze(type_violations));
   set_void_lub_types_to_void();
   remove_unused_closures();
   if1->callback->report_analysis_errors(type_violations);

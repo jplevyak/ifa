@@ -140,6 +140,7 @@ class CreationSet : public gc {
   Vec<CreationSet *> *equiv;     // used by clone.cpp & fa.cpp
   Vec<CreationSet *> not_equiv;  // used by clone.cpp
   Sym *type;                     // used by clone.cpp & fa.capp
+  Vec<cchar *> unknown_vars;
 
   CreationSet(Sym *s);
   CreationSet(CreationSet *cs);
