@@ -394,6 +394,8 @@ static Sym *int_constant_internal(IF1 *i, int n, Sym *t) {
 
 Sym *int32_constant(int n) { return int_constant_internal(if1, n, sym_int32); }
 
+Sym *int64_constant(int n) { return int_constant_internal(if1, n, sym_int64); }
+
 Sym *size_constant(int n) { return int_constant_internal(if1, n, sym_size); }
 
 Sym *imm_constant(Immediate &imm, Sym *t) {
