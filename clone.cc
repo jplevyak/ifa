@@ -22,15 +22,11 @@
 #define BAD_AST ((IFAAST *)-1)
 
 static void initialize() {
-  forv_Fun(f, fa->funs) forv_Var(
-      v,
-      f->fa_all_Vars) for (int i = 0; i < v->avars.n;
-                           i++) if (v->avars[i].value) if (v->avars[i].key &&
-                                                           v->avars.v[i]
-                                                                   .value
-                                                                   ->contour ==
-                                                               GLOBAL_CONTOUR)
-      fa->global_avars.set_add(v->avars[i].value);
+  forv_Fun(f, fa->funs) forv_Var( v, f->fa_all_Vars)
+    for (int i = 0; i < v->avars.n; i++)
+      if (v->avars[i].value && v->avars[i].key &&
+          v->avars.v[i].value->contour == GLOBAL_CONTOUR)
+        fa->global_avars.set_add(v->avars[i].value);
   fa->global_avars.set_to_vec();
   forv_CreationSet(cs, fa->css) {
     cs->equiv = new Vec<CreationSet *>();
