@@ -1064,9 +1064,10 @@ static void make_kind(PNode *p, EntrySet *es, Sym *kind, AVar *container,
   }
 }
 
-void prim_make(PNode *p, EntrySet *es, Sym *kind, int start, int ref) {
-  assert(!ref);  // unimplemented
+void prim_make_constraints(PNode *p, EntrySet *es) {
   AVar *container = make_AVar(p->lvals[0], es);
+  Sym *kind = p->rvals[2]->sym;
+  int start = 3;
   int l = p->rvals.n - start;
   fill_tvals(es->fun, p, l);
   make_kind(p, es, kind, container, &p->rvals, 0, start, 0, l);
@@ -1109,7 +1110,7 @@ static void vector_elems(int rank, PNode *p, AVar *ae, AVar *elem,
     flow_vars(e, elem);
 }
 
-static void prim_make_vector(PNode *p, EntrySet *es) {
+static void prim_make_vector_constraints(PNode *p, EntrySet *es) {
   int base = p->rvals[0]->sym == sym_primitive ? 4 : 3;
   AVar *container = make_AVar(p->lvals[0], es);
   AVar *vector = make_AVar(p->rvals[base - 2], es);
@@ -1226,23 +1227,11 @@ static void add_send_constraints(PNode *p, EntrySet *es) {
           flow_vars(r, es->rets[i - 3]);
         }
         break;
-      case P_prim_tuple:
-        prim_make(p, es, sym_tuple);
-        break;
-      case P_prim_list:
-        prim_make(p, es, sym_list);
+      case P_prim_make:
+        prim_make_constraints(p, es);
         break;
       case P_prim_vector:
-        prim_make_vector(p, es);
-        break;
-      case P_prim_continuation:
-        prim_make(p, es, sym_continuation);
-        break;
-      case P_prim_set:
-        prim_make(p, es, sym_set);
-        break;
-      case P_prim_ref:
-        prim_make(p, es, sym_ref, 3, 1);
+        prim_make_vector_constraints(p, es);
         break;
     }
   }
@@ -1725,7 +1714,7 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
         break;
       }
       case P_prim_vector:
-        prim_make_vector(p, es);
+        prim_make_vector_constraints(p, es);
         break;
       case P_prim_index_object: {
         AVar *vec = make_AVar(p->rvals[o], es);

@@ -197,42 +197,41 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       fprintf(fp, "  return %s;\n", c_rhs(n->rvals[3]));
       break;
     }
-    case P_prim_tuple: {
-    Ltuple:
-      fputs("  ", fp);
-      cchar *t = c_type(n->lvals[0]);
-      int voidish =
-          n->rvals.n < 3 && n->lvals[0]->type->element->type == sym_void;
-      fprintf(fp, "%s = _CG_prim_tuple%s(%s, %d);\n", n->lvals[0]->cg_string,
-              listish_tuple ? "_list" : "", voidish ? "int*" : t,
-              n->rvals.n - 2);
-      for (int i = 2; i < n->rvals.n; i++)
-        fprintf(fp, "  %s->e%d = %s;\n", n->lvals[0]->cg_string, i - 2,
-                n->rvals.v[i]->cg_string);
-      break;
-    }
-    case P_prim_vector:
-    case P_prim_list: {
-      Sym *t = n->lvals.v[0]->type, *e = t->element->type;
-      if (t->type_kind == Type_RECORD) {
-        listish_tuple = true;
-        goto Ltuple;
+    case P_prim_make:
+      if (sym_tuple->specializers.set_in(n->rvals[2]->sym)) {
+Ltuple:
+        fputs("  ", fp);
+        cchar *t = c_type(n->lvals[0]);
+        int voidish =
+            n->rvals.n < 4 && n->lvals[0]->type->element->type == sym_void;
+        fprintf(fp, "%s = _CG_prim_tuple%s(%s, %d);\n", n->lvals[0]->cg_string,
+                listish_tuple ? "_list" : "", voidish ? "int*" : t,
+                n->rvals.n - 2);
+        for (int i = 3; i < n->rvals.n; i++)
+          fprintf(fp, "  %s->e%d = %s;\n", n->lvals[0]->cg_string, i - 3,
+                  n->rvals.v[i]->cg_string);
+      } else if (sym_list->specializers.set_in(n->rvals[2]->sym) ||
+                 n->rvals[2]->sym->is_vector) {
+        Sym *t = n->lvals.v[0]->type, *e = t->element->type;
+        if (t->type_kind == Type_RECORD) {
+          listish_tuple = true;
+          goto Ltuple;
+        }
+        fputs("  ", fp);
+        assert(n->lvals.n == 1);
+        e = e ? e : sym_void_type;
+        assert(n->lvals[0]->cg_string);
+        fprintf(fp, "%s = ", n->lvals[0]->cg_string);
+        fprintf(fp, "(_CG_list)_CG_prim_list(%s,%d);\n", e->cg_string,
+                n->rvals.n - 3);
+        for (int i = 3; i < n->rvals.n; i++) {
+          fprintf(fp, "  ((%s*)(_CG_list_ptr(%s)))[%d] = ", e->cg_string,
+                  n->lvals[0]->cg_string, i - 3);
+          fputs(n->rvals[i]->cg_string, fp);
+          fprintf(fp, ";\n");
+        }
       }
-      fputs("  ", fp);
-      assert(n->lvals.n == 1);
-      e = e ? e : sym_void_type;
-      assert(n->lvals[0]->cg_string);
-      fprintf(fp, "%s = ", n->lvals[0]->cg_string);
-      fprintf(fp, "(_CG_list)_CG_prim_list(%s,%d);\n", e->cg_string,
-              n->rvals.n - 2);
-      for (int i = 2; i < n->rvals.n; i++) {
-        fprintf(fp, "  ((%s*)(_CG_list_ptr(%s)))[%d] = ", e->cg_string,
-                n->lvals[0]->cg_string, i - 2);
-        fputs(n->rvals[i]->cg_string, fp);
-        fprintf(fp, ";\n");
-      }
       break;
-    }
     case P_prim_period: {
       cchar *t = c_type(n->lvals[0]);
       cchar *symbol = 0;

@@ -83,12 +83,8 @@ void new_builtin_lub_type(Sym *&sym, cchar *name, cchar *builtin_name, ...) {
 static void init_builtin_symbols() {
   new_builtin_symbol(sym_primitive, "__primitive", "primitive");
   new_builtin_symbol(sym_reply, "reply");
-  new_builtin_symbol(sym_make_tuple, "make_tuple");
+  new_builtin_symbol(sym_make, "make");
   new_builtin_symbol(sym_make_vector, "make_vector");
-  new_builtin_symbol(sym_make_list, "make_list");
-  new_builtin_symbol(sym_make_continuation, "__make_continuation",
-                     "make_continuation");
-  new_builtin_symbol(sym_make_set, "make_set");
   new_builtin_symbol(sym_len, "len");
   new_builtin_symbol(sym_new, "new");
   new_builtin_symbol(sym_clone, "clone");

@@ -355,7 +355,7 @@ void update_in(AVar *v, AType *t);
 void flow_vars(AVar *v, AVar *vv);
 void flow_var_type_permit(AVar *v, AType *t);
 CreationSet *creation_point(AVar *v, Sym *s, int nvars = -1);
-void prim_make(PNode *p, EntrySet *es, Sym *kind, int start = 2, int ref = 0);
+void prim_make_constraints(PNode *p, EntrySet *es);
 void type_violation(ATypeViolation_kind akind, AVar *av, AType *type,
                     AVar *send, Vec<Fun *> *funs = NULL);
 AType *type_cannonicalize(AType *t);

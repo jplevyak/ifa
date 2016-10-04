@@ -1256,20 +1256,25 @@ static void gen_comma_op(IF1 *i, ParseAST *ast, ParseAST *a0, ParseAST *a1) {
   Code *send = if1_send1(i, c);
   send->ast = ast;
   Sym *constructor = 0;
+  Sym *make_type = 0;
   switch (ast->constructor) {
     case Make_TUPLE:
-      constructor = sym_make_tuple;
+      constructor = sym_make;
+      make_type = sym_tuple;
+      break;
+    case Make_SET:
+      constructor = sym_make;
+      make_type = sym_set;
       break;
     case Make_VECTOR:
       constructor = sym_make_vector;
-      break;
-    case Make_SET:
-      constructor = sym_make_set;
       break;
   }
   if1_add_send_arg(i, send, constructor);
   if (ast->constructor == Make_VECTOR)
     if1_add_send_arg(i, send, int32_constant(ast->rank));
+  else
+    if1_add_send_arg(i, send, make_type);
   forv_Sym(a, args) if1_add_send_arg(i, send, a);
   if1_add_send_result(i, send, ast->rval);
 }
@@ -1324,13 +1329,13 @@ static void gen_op(IF1 *i, ParseAST *ast) {
       res = new_sym(i, ast->scope);
     }
     if (binary)
-      send = if1_send(i, c, 5, 1, sym_primitive, sym_make_tuple, aa0,
+      send = if1_send(i, c, 6, 1, sym_primitive, sym_make, sym_tuple, aa0,
                       ast->children[ast->op_index]->rval, aa1, args);
     else if (a0)
-      send = if1_send(i, c, 4, 1, sym_primitive, sym_make_tuple, aa0,
+      send = if1_send(i, c, 5, 1, sym_primitive, sym_make, sym_tuple, aa0,
                       ast->children[ast->op_index]->rval, args);
     else
-      send = if1_send(i, c, 4, 1, sym_primitive, sym_make_tuple,
+      send = if1_send(i, c, 5, 1, sym_primitive, sym_make, sym_tuple,
                       ast->children[ast->op_index]->rval, aa1, args);
     send->ast = ast;
     send = if1_send(i, c, 2, 1, operator_symbol, args, res);
@@ -1368,7 +1373,6 @@ static void gen_if(IF1 *i, ParseAST *ast, int is_expr) {
 }
 
 static void gen_constructor(IF1 *i, ParseAST *ast) {
-  Sym *constructor;
   Vec<Sym *> args;
   forv_ParseAST(a, ast->children) {
     if (a->kind != AST_qualified_ident || a->rval->is_constant ||
@@ -1385,21 +1389,29 @@ static void gen_constructor(IF1 *i, ParseAST *ast) {
   Code *send = if1_send1(i, &ast->code);
   send->ast = ast;
   ast->rval = new_sym(i, ast->scope);
+  Sym *constructor = 0;
+  Sym *make_type = 0;
   switch (ast->kind) {
     default:
       assert(!"bad case");
       break;
     case AST_object:
-      if (!ast->children.n)
-        constructor = sym_make_set;
-      else
-        constructor = sym_make_tuple;
+      if (!ast->children.n) {
+        constructor = sym_make;
+        make_type = sym_set;
+      } else {
+        constructor = sym_make;
+        make_type = sym_tuple;
+      }
       break;
     case AST_list:
-      if (!ast->children.n)
-        constructor = sym_make_tuple;
-      else
-        constructor = sym_make_list;
+      if (!ast->children.n) {
+        constructor = sym_make;
+        make_type = sym_tuple;
+      } else {
+        constructor = sym_make;
+        make_type = sym_list;
+      }
       break;
     case AST_vector:
       constructor = sym_make_vector;
@@ -1409,6 +1421,8 @@ static void gen_constructor(IF1 *i, ParseAST *ast) {
   if1_add_send_arg(i, send, constructor);
   if (ast->kind == AST_vector)
     if1_add_send_arg(i, send, int32_constant(ast->rank));
+  else
+    if1_add_send_arg(i, send, make_type);
   for (int x = 0; x < args.n; x++) if1_add_send_arg(i, send, args[x]);
   if (ast->kind == AST_index && ast->children.n < 3)
     if1_add_send_arg(i, send, int32_constant(1));
@@ -1510,8 +1524,8 @@ static int pre_gen_bottom_up(ParseAST *ast) {
 static void gen_assign(IF1 *i, ParseAST *ast, ParseAST *val, Sym *in,
                        Sym *out) {
   Sym *args = new_sym(i, ast->scope);
-  Code *send = if1_send(i, &ast->code, 4, 1, sym_make_tuple, in, sym_assign,
-                        val->rval, args);
+  Code *send = if1_send(i, &ast->code, 5, 1, sym_make, sym_tuple, in,
+                        sym_assign, val->rval, args);
   send->ast = ast;
   send = if1_send(i, &ast->code, 2, 1, operator_symbol, args, out);
   send->ast = ast;
