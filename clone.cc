@@ -529,14 +529,14 @@ static int compute_member_types(Vec<CreationSet *> *eqcss) {
   int start = orig_sym->element ? -1 : 0;
   for (int i = start; i < n; i++) {
     Sym *&ss = (i < 0 ? sym->element : sym->has[i]);
+    ss = ss ? ss->clone() : new_Sym();
+    Vec<Sym *> t;
     forv_CreationSet(cs, *eqcss) if (cs) {
-      ss = ss ? ss->clone() : new_Sym();
       AVar *av = i < 0 ? get_element_avar(cs) : cs->vars[i];
-      Vec<Sym *> t;
       forv_CreationSet(x, *av->out->type) if (x)
           t.set_add(to_concrete_type(x->type ? x->type : x->sym));
-      if (!(ss->type = concrete_type_set_to_type(t))) return -1;
     }
+    if (!(ss->type = concrete_type_set_to_type(t))) return -1;
   }
   return 0;
 }
