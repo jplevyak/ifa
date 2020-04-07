@@ -67,6 +67,6 @@ char *get_file_line(cchar *filename, int lineno) {
 
 int myassert(cchar *file, int line, cchar *str) {
   printf("assert %s:%d: %s\n", file, line, str);
-  *(int *)0 = 1;
+  abort();
   return 0;
 }

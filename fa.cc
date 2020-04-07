@@ -181,8 +181,6 @@ AVar *make_AVar(Var *v, EntrySet *es) {
   return unique_AVar(v, GLOBAL_CONTOUR);
 }
 
-static inline AVar *make_AVar(Var *v, AEdge *e) { return make_AVar(v, e->to); }
-
 AType *make_AType(CreationSet *cs) {
   if (cs->atype) return cs->atype;
   return cs->atype = type_cannonicalize(new AType(cs));
@@ -990,10 +988,6 @@ void flow_var_type_permit(AVar *v, AType *t) {
     }
     forv_AVar(vv, v->forward) if (vv) update_in(vv, v->out);
   }
-}
-
-static inline void flow_var_type_permit(AVar *v, Sym *s) {
-  flow_var_type_permit(v, make_abstract_type(s));
 }
 
 void add_var_constraint(AVar *av, Sym *s) {
