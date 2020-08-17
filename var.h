@@ -39,7 +39,7 @@ class Var : public gc {
   Sym                   *constant;  // valid after dead code elimination
   cchar                 *cg_string; // used by cg.cpp
   llvm::Value           *llvm_value;
-  const llvm::Type      *llvm_type;
+  llvm::Type            *llvm_type;
 
   // Temporary Space
   union {

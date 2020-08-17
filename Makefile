@@ -18,8 +18,10 @@ MAJOR=0
 MINOR=5
 
 CFLAGS += -I../plib
+# CFLAGS += -flto=thin
+LDFLAGS += -L/usr/local/lib -fuse-ld=lld
 ifdef USE_GC
-LIBS += -L../plib -lplib_gc -ldparse_gc -lgc
+LIBS += -L../plib -lplib_gc -ldparse_gc -lgc -pthread
 else
 LIBS += -L../plib -lplib -ldparse
 endif
@@ -28,6 +30,9 @@ ifneq ($(OS_TYPE),Darwin)
   LIBS += -lrt
 endif
 endif
+
+CXX ?= clang++
+AR = llvm-ar
 
 AUX_FILES = $(MODULE)/index.html $(MODULE)/manual.html $(MODULE)/faq.html $(MODULE)/ifa.1 $(MODULE)/ifa.cat
 TAR_FILES = $(AUX_FILES) $(TEST_FILES)
@@ -84,7 +89,7 @@ $(IFA): $(IFA_OBJS) $(LIB_OBJS) $(LIBRARIES)
 	$(CXX) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
 
 $(LIBRARY): $(LIB_OBJS)
-	ar $(AR_FLAGS) $@ $^
+	$(AR) $(AR_FLAGS) $@ $^
 
 $(MAKE_PRIMS): make_prims.cc
 	$(CXX) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)

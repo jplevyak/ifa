@@ -1,7 +1,4 @@
 /* -*-Mode: c++;-*-
-=======
-    return (uint)((uintptr_t)x->p + (1009 * (uintptr_t)x->a) + (100003 * (uintptr_t)x->b));
->>>>>>> d766ba834819a61b46b8c97534e59bd8ebd185dc
    Copyright (c) 2004-2008 John Plevyak, All Rights Reserved
 
    Public interface classes and functions for Iterative Flow Analysis (IFA)

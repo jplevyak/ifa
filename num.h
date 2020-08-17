@@ -65,8 +65,9 @@ class Immediate : public gc {
     cchar *v_string;
   };
 
-  int64 int_value(void);
-  uint64 uint_value(void);
+  int64 int_value();
+  uint64 uint_value();
+  int int_size();
 
   void set_int(int64 l, IF1_int_type int_type = IF1_INT_TYPE_64) {
     const_kind = IF1_NUM_KIND_INT;
@@ -160,7 +161,7 @@ class Immediate : public gc {
   Immediate(const Immediate &im);
 };
 
-inline int64 Immediate::int_value(void) {
+inline int64 Immediate::int_value() {
   int64 val;
   switch (num_index) {
     case IF1_INT_TYPE_8:
@@ -181,7 +182,7 @@ inline int64 Immediate::int_value(void) {
   return val;
 }
 
-inline uint64 Immediate::uint_value(void) {
+inline uint64 Immediate::uint_value() {
   uint64 val;
   switch (num_index) {
     case IF1_INT_TYPE_1:
@@ -203,6 +204,18 @@ inline uint64 Immediate::uint_value(void) {
       assert(!"unknown uint size");
   }
   return val;
+}
+
+inline int Immediate::int_size() {
+  switch (num_index) {
+    case IF1_INT_TYPE_1: return 1;
+    case IF1_INT_TYPE_8: return 8;
+    case IF1_INT_TYPE_16: return 16;
+    case IF1_INT_TYPE_32: return 32;
+    case IF1_INT_TYPE_64: return 64;
+    default:
+      assert(!"unknown uint size");
+  }
 }
 
 class ImmHashFns {

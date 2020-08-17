@@ -156,7 +156,7 @@ class Sym : public BasicSym {
   Vec<Sym *> dispatch_types;  // used by fa.cpp, pattern.cpp  *type*
 
   void *temp;  // algorithmic temp             *type*
-  const llvm::Type *llvm_type;
+  llvm::Type *llvm_type;
 
   Sym();
 

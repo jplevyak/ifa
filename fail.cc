@@ -28,11 +28,9 @@ int show_error(cchar *str, Var *v, ...) {
   va_list ap;
   va_start(ap, v);
   if (v->sym->ast)
-    snprintf(nstr, 1023, "%s:%d: %s\n", v->sym->pathname(), v->sym->line(),
-             str);
+    snprintf(nstr, 1023, "%s:%d: %s\n", v->sym->pathname(), v->sym->line(), str);
   else if (v->def && v->def->code && v->def->code->ast)
-    snprintf(nstr, 1023, "%s:%d: %s\n", v->def->code->pathname(),
-             v->def->code->line(), str);
+    snprintf(nstr, 1023, "%s:%d: %s\n", v->def->code->pathname(), v->def->code->line(), str);
   else
     snprintf(nstr, 1023, "error: %s\n", str);
   vfprintf(stderr, nstr, ap);
@@ -67,6 +65,6 @@ char *get_file_line(cchar *filename, int lineno) {
 
 int myassert(cchar *file, int line, cchar *str) {
   printf("assert %s:%d: %s\n", file, line, str);
-  *(int *)0 = 1;
+  abort();
   return 0;
 }
