@@ -7,12 +7,7 @@
 class Sym;
 
 // must match the corresponding D_SCOPE_XXX if the DParser is used
-enum Scope_kind {
-  Scope_INHERIT,
-  Scope_RECURSIVE,
-  Scope_PARALLEL,
-  Scope_SEQUENTIAL
-};
+enum Scope_kind { Scope_INHERIT, Scope_RECURSIVE, Scope_PARALLEL, Scope_SEQUENTIAL };
 
 class Scope : public gc {
  public:

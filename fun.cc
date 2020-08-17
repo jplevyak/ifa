@@ -43,8 +43,7 @@ void Fun::init_fun() {
 
 static void build_uses(PNode *n, int flags = 0) {
   forv_Var(v, n->rvals) v->uses.add(n);
-  if (!(flags & FUN_COLLECT_VARS_NO_TVALS))
-    forv_Var(v, n->tvals) v->uses.add(n);
+  if (!(flags & FUN_COLLECT_VARS_NO_TVALS)) forv_Var(v, n->tvals) v->uses.add(n);
   forv_PNode(p, n->phi) build_uses(p);
   if (!(flags & FUN_COLLECT_VARS_NO_PHY)) forv_PNode(p, n->phy) build_uses(p);
 }
@@ -98,8 +97,7 @@ void Fun::collect_PNodes(Vec<PNode *> &v) {
   if (!entry) return;
   v.add(exit);
   sv.set_add(exit);
-  for (int i = 0; i < v.n; i++)
-    forv_PNode(p, v[i]->cfg_pred) if (p) if (sv.set_add(p)) v.add(p);
+  for (int i = 0; i < v.n; i++) forv_PNode(p, v[i]->cfg_pred) if (p) if (sv.set_add(p)) v.add(p);
 }
 
 static void collect_Vars_PNode(PNode *n, Accum<Var *> &vars, int flags = 0) {
@@ -107,8 +105,7 @@ static void collect_Vars_PNode(PNode *n, Accum<Var *> &vars, int flags = 0) {
   forv_Var(v, n->lvals) vars.add(v);
   if (!(flags & FUN_COLLECT_VARS_NO_TVALS)) forv_Var(v, n->tvals) vars.add(v);
   forv_PNode(p, n->phi) collect_Vars_PNode(p, vars);
-  if (!(flags & FUN_COLLECT_VARS_NO_PHY))
-    forv_PNode(p, n->phy) collect_Vars_PNode(p, vars);
+  if (!(flags & FUN_COLLECT_VARS_NO_PHY)) forv_PNode(p, n->phy) collect_Vars_PNode(p, vars);
 }
 
 void Fun::collect_Vars(Vec<Var *> &avars, Vec<PNode *> *nodes, int flags) {
@@ -191,10 +188,8 @@ Fun *Fun::copy(int copy_ast, VarMap *var_map) {
     }
   }
   forv_PNode(n, nodes) {
-    for (int i = 0; i < n->cfg_succ.n; i++)
-      n->cfg_succ[i] = f->nmap->get(n->cfg_succ.v[i]);
-    for (int i = 0; i < n->cfg_pred.n; i++)
-      n->cfg_pred[i] = f->nmap->get(n->cfg_pred.v[i]);
+    for (int i = 0; i < n->cfg_succ.n; i++) n->cfg_succ[i] = f->nmap->get(n->cfg_succ.v[i]);
+    for (int i = 0; i < n->cfg_pred.n; i++) n->cfg_pred[i] = f->nmap->get(n->cfg_pred.v[i]);
   }
   f->arg_syms.copy(arg_syms);
   f->arg_positions.copy(arg_positions);
@@ -210,12 +205,10 @@ Fun *Fun::copy(int copy_ast, VarMap *var_map) {
     if (f->vmap->v[i].key) {
       f->vmap->v[i].value->def = f->nmap->get(f->vmap->v[i].value->def);
       for (int j = 0; j < f->vmap->v[i].value->uses.n; j++)
-        f->vmap->v[i].value->uses[j] =
-            f->nmap->get(f->vmap->v[i].value->uses[j]);
+        f->vmap->v[i].value->uses[j] = f->nmap->get(f->vmap->v[i].value->uses[j]);
     }
   f->fa_all_PNodes.copy(fa_all_PNodes);
-  for (int i = 0; i < f->fa_all_PNodes.n; i++)
-    f->fa_all_PNodes[i] = f->nmap->get(f->fa_all_PNodes.v[i]);
+  for (int i = 0; i < f->fa_all_PNodes.n; i++) f->fa_all_PNodes[i] = f->nmap->get(f->fa_all_PNodes.v[i]);
   f->fa_all_Vars.copy(fa_all_Vars);
   for (int i = 0; i < f->fa_all_Vars.n; i++) {
     Var *v = f->vmap->get(f->fa_all_Vars[i]);
@@ -238,8 +231,7 @@ void Fun::calls_funs(Vec<Fun *> &calls_funs) {
   calls_funs.clear();
   Vec<Vec<Fun *> *> calls_funs_vecs;
   calls.get_values(calls_funs_vecs);
-  for (int i = 0; i < calls_funs_vecs.n; i++)
-    calls_funs.set_union(*calls_funs_vecs[i]);
+  for (int i = 0; i < calls_funs_vecs.n; i++) calls_funs.set_union(*calls_funs_vecs[i]);
   calls_funs.set_to_vec();
 }
 
@@ -267,8 +259,7 @@ int Fun::source_line() { return ast->source_line(); }
 void rebuild_cfg_pred_index(Fun *f) {
   forv_PNode(n, f->fa_all_PNodes) {
     n->cfg_pred_index.clear();
-    for (int i = 0; i < n->cfg_pred.n; i++)
-      n->cfg_pred_index.put(n->cfg_pred[i], i);
+    for (int i = 0; i < n->cfg_pred.n; i++) n->cfg_pred_index.put(n->cfg_pred[i], i);
   }
 }
 

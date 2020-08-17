@@ -22,11 +22,10 @@
 #define BAD_AST ((IFAAST *)-1)
 
 static void initialize() {
-  forv_Fun(f, fa->funs) forv_Var( v, f->fa_all_Vars)
-    for (int i = 0; i < v->avars.n; i++)
-      if (v->avars[i].value && v->avars[i].key &&
-          v->avars.v[i].value->contour == GLOBAL_CONTOUR)
-        fa->global_avars.set_add(v->avars[i].value);
+  forv_Fun(f, fa->funs) forv_Var(v, f->fa_all_Vars) for (int i = 0; i < v->avars.n;
+                                                         i++) if (v->avars[i].value && v->avars[i].key &&
+                                                                  v->avars.v[i].value->contour == GLOBAL_CONTOUR)
+      fa->global_avars.set_add(v->avars[i].value);
   fa->global_avars.set_to_vec();
   forv_CreationSet(cs, fa->css) {
     cs->equiv = new Vec<CreationSet *>();
@@ -68,8 +67,7 @@ static void initialize() {
     if (s->creators.n) {
       Vec<CreationSet *> creators;
       creators.move(s->creators);
-      forv_CreationSet(cs, creators) if (fa->css_set.set_in(cs))
-          s->creators.add(cs);
+      forv_CreationSet(cs, creators) if (fa->css_set.set_in(cs)) s->creators.add(cs);
     }
   }
 }
@@ -135,9 +133,7 @@ Sym *basic_type(FA *fa, AType *t, Sym *fail) {
 static int equivalent_es_vars(Var *v, EntrySet *a, EntrySet *b) {
   AVar *va = make_AVar(v, a), *vb = make_AVar(v, b);
   if (va != vb) {
-    if (basic_type(fa, va->out, (Sym *)-1) !=
-        basic_type(fa, vb->out, (Sym *)-2))
-      return 0;
+    if (basic_type(fa, va->out, (Sym *)-1) != basic_type(fa, vb->out, (Sym *)-2)) return 0;
   }
   return 1;
 }
@@ -166,8 +162,7 @@ static int prim_period_offset(PNode *p, EntrySet *es) {
     forv_CreationSet(cs, *obj->out) if (cs) {
       AVar *iv = cs->var_map.get(symbol);
       if (iv) {
-        if (offset >= 0 && offset != iv->ivar_offset)
-          fail("missmatched offsets");
+        if (offset >= 0 && offset != iv->ivar_offset) fail("missmatched offsets");
         offset = iv->ivar_offset;
       }
     }
@@ -259,16 +254,12 @@ class AEDGE_FN {
 
 class CS_SYM_FN {
  public:
-  static int equivalent(CreationSet *a, CreationSet *b) {
-    return a->sym == b->sym;
-  }
+  static int equivalent(CreationSet *a, CreationSet *b) { return a->sym == b->sym; }
 };
 
 class CS_EQ_FN {
  public:
-  static int equivalent(CreationSet *a, CreationSet *b) {
-    return a->sym == b->sym && !a->not_equiv.set_in(b);
-  }
+  static int equivalent(CreationSet *a, CreationSet *b) { return a->sym == b->sym && !a->not_equiv.set_in(b); }
 };
 
 // C++'s answer to higher order functions: YUCK
@@ -313,8 +304,7 @@ static void sets_by_f_transitive(Vec<C *> &aset, Vec<Vec<C *> *> &asetset) {
   }
 }
 
-static void collect_ess_from_css(Vec<CreationSet *> &css,
-                                 Vec<EntrySet *> &ess) {
+static void collect_ess_from_css(Vec<CreationSet *> &css, Vec<EntrySet *> &ess) {
   Vec<CreationSet *> todo_css;
   todo_css.copy(css);
   todo_css.set_to_vec();
@@ -343,8 +333,7 @@ static void determine_basic_clones(Vec<Vec<CreationSet *> *> &css_sets_by_sym) {
       if (!css_sets_by_sym[i]->v[j]) continue;
       for (int k = 0; k < j; k++) {
         if (!css_sets_by_sym[i]->v[k]) continue;
-        CreationSet *cs1 = css_sets_by_sym[i]->v[j],
-                    *cs2 = css_sets_by_sym.v[i]->v[k];
+        CreationSet *cs1 = css_sets_by_sym[i]->v[j], *cs2 = css_sets_by_sym.v[i]->v[k];
         // both have elements or not
         if (!!cs1->sym->element != !!cs2->sym->element) {
           make_not_equiv(cs1, cs2);
@@ -367,18 +356,14 @@ static void determine_basic_clones(Vec<Vec<CreationSet *> *> &css_sets_by_sym) {
             av2 = cs2->vars[v];
           }
           // ?? trigger only when one is empty
-          if (MERGE_UNIONS && cs1->sym->is_union_type &&
-              (av1->out->n == 0 || av2->out->n == 0))
-            continue;
+          if (MERGE_UNIONS && cs1->sym->is_union_type && (av1->out->n == 0 || av2->out->n == 0)) continue;
           // if the boxing or basic type is different
-          if (basic_type(fa, av1->out, (Sym *)-1) !=
-              basic_type(fa, av2->out, (Sym *)-2)) {
+          if (basic_type(fa, av1->out, (Sym *)-1) != basic_type(fa, av2->out, (Sym *)-2)) {
             make_not_equiv(cs1, cs2);
             continue;
           }
           // if we are cloning for constants and the constants are different
-          if (av1->var->sym->clone_for_constants &&
-              av1->out->constants() != av2->out->constants()) {
+          if (av1->var->sym->clone_for_constants && av1->out->constants() != av2->out->constants()) {
             make_not_equiv(cs1, cs2);
             continue;
           }
@@ -402,8 +387,7 @@ static void determine_layouts() {
       forv_CreationSet(x, *iv->out->type) if (x) {
         if (size && x->sym->size != size) fail("mismatched field sizes");
         size = x->sym->size;
-        if (alignment && x->sym->alignment != alignment)
-          fail("mismatched field alignments");
+        if (alignment && x->sym->alignment != alignment) fail("mismatched field alignments");
         alignment = x->sym->alignment;
       }
       if (alignment) offset = (offset + alignment - 1) & ~(alignment - 1);
@@ -434,12 +418,9 @@ static void determine_clones() {
       changed_ess.set_to_vec();
       last_changed_ess.move(changed_ess);
       forv_Fun(f, fa->funs) {
-        if (f->ess.some_intersection(last_changed_ess) ||
-            f->called_ess.some_intersection(last_changed_ess) ||
-            f->called_by_ess.some_intersection(last_changed_ess) ||
-            f->called_css.some_intersection(last_changed_css) ||
-            f->ess.some_intersection(last_changed_css_ess) ||
-            f->called_ess.some_intersection(last_changed_css_ess)) {
+        if (f->ess.some_intersection(last_changed_ess) || f->called_ess.some_intersection(last_changed_ess) ||
+            f->called_by_ess.some_intersection(last_changed_ess) || f->called_css.some_intersection(last_changed_css) ||
+            f->ess.some_intersection(last_changed_css_ess) || f->called_ess.some_intersection(last_changed_css_ess)) {
           sets_by_f<EntrySet, ES_FN>(f->ess, f->equiv_sets);
           forv_EntrySet(es, f->ess) if (es) {
             Vec<EntrySet *> *myset = NULL;
@@ -468,8 +449,7 @@ static void determine_clones() {
           for (int j = 0; j < edge_sets[i]->n; j++)
             for (int k = 0; k < j; k++) {
               AEdge *e1 = edge_sets[i]->v[j], *e2 = edge_sets.v[i]->v[k];
-              if (e1 && e2 && e1->match->fun == e2->match->fun &&
-                  e1->to->equiv != e2->to->equiv) {
+              if (e1 && e2 && e1->match->fun == e2->match->fun && e1->to->equiv != e2->to->equiv) {
                 forv_MPosition(p, e1->match->fun->positional_arg_positions) {
                   Vec<CreationSet *> d1, d2;
                   AVar *a1 = e1->args.get(p), *a2 = e2->args.get(p);
@@ -533,8 +513,7 @@ static int compute_member_types(Vec<CreationSet *> *eqcss) {
     Vec<Sym *> t;
     forv_CreationSet(cs, *eqcss) if (cs) {
       AVar *av = i < 0 ? get_element_avar(cs) : cs->vars[i];
-      forv_CreationSet(x, *av->out->type) if (x)
-          t.set_add(to_concrete_type(x->type ? x->type : x->sym));
+      forv_CreationSet(x, *av->out->type) if (x) t.set_add(to_concrete_type(x->type ? x->type : x->sym));
     }
     if (!(ss->type = concrete_type_set_to_type(t))) return -1;
   }
@@ -661,8 +640,7 @@ static int define_concrete_types(CSSS &css_sets) {
         }
         if (name && name != BAD_NAME) s->name = name;
         if (ast && ast != BAD_AST) s->ast = ast;
-      } else if (sym->type_kind == Type_PRIMITIVE ||
-                 sym->type_kind == Type_TAGGED || sym->is_fun) {
+      } else if (sym->type_kind == Type_PRIMITIVE || sym->type_kind == Type_TAGGED || sym->is_fun) {
         AVar *elem = get_element_avar(eqcss->first_in_set());
         Sym *s = sym;
         if (elem && elem->out != bottom_type) {
@@ -788,8 +766,7 @@ static int concretize_var_type(Var *v) {
     if (!v->avars[i].key) continue;
     if (v->avars[i].value->cs_map && v->def) {
       if (!v->def->creates) v->def->creates = new Vec<Sym *>;
-      form_Map(CSMapElem, x, *v->avars[i].value->cs_map)
-          v->def->creates->set_add(x->value->type);
+      form_Map(CSMapElem, x, *v->avars[i].value->cs_map) v->def->creates->set_add(x->value->type);
     }
   }
   int ret = 0;
@@ -884,9 +861,7 @@ static void fixup_var(Var *v, Fun *f, Vec<EntrySet *> *ess) {
 }
 
 static void fixup_clone_vars(Fun *f, Vec<EntrySet *> *ess) {
-  forv_Var(
-      v, f->fa_all_Vars) if (v->sym->nesting_depth == f->sym->nesting_depth + 1)
-      fixup_var(v, f, ess);
+  forv_Var(v, f->fa_all_Vars) if (v->sym->nesting_depth == f->sym->nesting_depth + 1) fixup_var(v, f, ess);
   else if (v->sym->nesting_depth) {
     if (!v->sym->is_fun)  // these aren't fixed up... probably should be, but
                           // they are constants
@@ -894,8 +869,7 @@ static void fixup_clone_vars(Fun *f, Vec<EntrySet *> *ess) {
         AVarMap avs;
         for (int i = 0; i < v->avars.n; i++) {
           EntrySet *x = (EntrySet *)v->avars[i].key;
-          if (x && es->display[v->sym->nesting_depth - 1] == x)
-            avs.put(x, v->avars[i].value);
+          if (x && es->display[v->sym->nesting_depth - 1] == x) avs.put(x, v->avars[i].value);
           v->avars.v[i].value->var = v;
         }
         v->avars.move(avs);
@@ -1000,8 +974,7 @@ static int clone_functions() {
         if (m) {
           Vec<Fun *> *vf = f->calls.get(pnode);
           if (!vf) f->calls.put(pnode, (vf = new Vec<Fun *>));
-          forv_AEdge(ee, *m) if (used_edges.set_in(ee))
-              vf->set_add(ee->to->fun);
+          forv_AEdge(ee, *m) if (used_edges.set_in(ee)) vf->set_add(ee->to->fun);
           // rebuild out_edge_map
           new_out_edge_map.put(pnode, m);
         }
@@ -1010,15 +983,12 @@ static int clone_functions() {
     es->out_edge_map.move(new_out_edge_map);
   }
   // convert Fun::calls to vectors
-  forv_Fun(f, fa->funs) for (int i = 0; i < f->calls.n;
-                             i++) if (f->calls[i].key) f->calls[i]
-      .value->set_to_vec();
+  forv_Fun(f, fa->funs) for (int i = 0; i < f->calls.n; i++) if (f->calls[i].key) f->calls[i].value->set_to_vec();
   // invert Fun::calls to generated Fun::called
   forv_Fun(f, fa->funs) {
     for (int i = 0; i < f->calls.n; i++)
       if (f->calls[i].key) {
-        forv_Fun(ff, *f->calls[i].value)
-            ff->called.add(new CallPoint(f, f->calls[i].key));
+        forv_Fun(ff, *f->calls[i].value) ff->called.add(new CallPoint(f, f->calls[i].key));
       }
   }
   return 0;
@@ -1029,15 +999,12 @@ void log_test_fa(FA *fa) {
   forv_Fun(f, fa->funs) {
     if (f->sym->source_line() > 0) {
       ALOG(test, fa)
-      ("function %s %s:%d\n", f->sym->name ? f->sym->name : "<anonymous>",
-       f->sym->filename(), f->sym->source_line());
+      ("function %s %s:%d\n", f->sym->name ? f->sym->name : "<anonymous>", f->sym->filename(), f->sym->source_line());
       forv_CallPoint(cp, f->called) {
         Fun *ff = cp->fun;
-        if (cp->pnode->code->line() > 0 && ff->source_line() > 0)
-          ALOG(test, fa)
-          (" called from %d in %s at %s:%d\n", cp->pnode->code->source_line(),
-           ff->sym->name ? ff->sym->name : "<anonymous>", ff->filename(),
-           ff->source_line());
+        if (cp->pnode->code->line() > 0 && ff->source_line() > 0) ALOG(test, fa)
+        (" called from %d in %s at %s:%d\n", cp->pnode->code->source_line(),
+         ff->sym->name ? ff->sym->name : "<anonymous>", ff->filename(), ff->source_line());
       }
     }
     forv_Var(v, f->fa_all_Vars) {
@@ -1053,8 +1020,7 @@ void log_test_fa(FA *fa) {
   gvars.set_to_vec();
   qsort_by_id(gvars);
   ALOG(test, fa)("globals\n");
-  forv_Var(v, gvars) if ((!v->sym->is_constant || !v->sym->constant) &&
-                         !v->sym->is_symbol && !v->sym->type_kind &&
+  forv_Var(v, gvars) if ((!v->sym->is_constant || !v->sym->constant) && !v->sym->is_symbol && !v->sym->type_kind &&
                          !v->sym->is_fun) log_var_types(v, 0);
 }
 

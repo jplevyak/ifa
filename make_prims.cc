@@ -78,24 +78,20 @@ void declare_data(Vec<Line *> &lines) {
   }
 }
 
-void define_data(Vec<Line *> &lines) {
-  forv_Line(l, lines) fprintf(fp, "Prim *%s = 0;\n", l->name);
-}
+void define_data(Vec<Line *> &lines) { forv_Line(l, lines) fprintf(fp, "Prim *%s = 0;\n", l->name); }
 
 void build_data(Vec<Line *> &lines) {
   forv_Line(l, lines) {
     int nargs = 0;
     char *rets = l->nres;
     if (!rets) rets = (char *)"1";
-    fprintf(fp, "  static PrimType %s_arg_types[] = %s;\n", l->name,
-            l->argtypes);
-    fprintf(fp, "  static PrimType %s_ret_types[] = %s;\n", l->name,
-            l->rettypes);
+    fprintf(fp, "  static PrimType %s_arg_types[] = %s;\n", l->name, l->argtypes);
+    fprintf(fp, "  static PrimType %s_ret_types[] = %s;\n", l->name, l->rettypes);
     fprintf(fp,
             "  %s = new Prim(%d, %s, \"%s\", %s, %s, %s, %s_arg_types, "
             "%s_ret_types, %s);\n",
-            l->name, l->index, l->string, l->name, l->nargs, l->pos, rets,
-            l->name, l->name, l->options ? "PRIM_NON_FUNCTIONAL" : "0");
+            l->name, l->index, l->string, l->name, l->nargs, l->pos, rets, l->name, l->name,
+            l->options ? "PRIM_NON_FUNCTIONAL" : "0");
     fprintf(fp, "  n = (char*)if1->strings.put((char*)%s);\n", l->string);
     nargs = atoi(l->nargs);
     nargs -= 2;

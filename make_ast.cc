@@ -9,14 +9,12 @@
 
 cchar *constant_type(D_ParseNode &pn, D_Symbol *d_symbols) {
   D_ParseNode *child = d_get_child(&pn, 0);
-  while (d_symbols[child->symbol].kind != D_SYMBOL_REGEX &&
-         d_symbols[child->symbol].kind != D_SYMBOL_NTERM)
+  while (d_symbols[child->symbol].kind != D_SYMBOL_REGEX && d_symbols[child->symbol].kind != D_SYMBOL_NTERM)
     child = d_get_child(child, 0);
   return d_symbols[child->symbol].name;
 }
 
-ParseAST *loop_AST(D_ParseNode &loop, D_ParseNode &cond, D_ParseNode *before,
-                   D_ParseNode *after, D_ParseNode &body) {
+ParseAST *loop_AST(D_ParseNode &loop, D_ParseNode &cond, D_ParseNode *before, D_ParseNode *after, D_ParseNode &body) {
   ParseAST *b = body.user.ast;
   if (after) {
     b = new_AST(AST_block);

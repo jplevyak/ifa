@@ -17,8 +17,7 @@ static void build_pn_cfg(IF1 *if1, Code *code, Code *cont, Code *conc_cont);
 // build CFG
 void Fun::build_cfg() {
   if (ifa_verbose > 2) if1_dump(stdout, sym->code);
-  if (!sym || !sym->code || (sym->code->is_group() && !sym->code->sub.n))
-    return;
+  if (!sym || !sym->code || (sym->code->is_group() && !sym->code->sub.n)) return;
   resolve_labels(sym->code);
   build_pn_cfg(pdb->if1, sym->code, NULL, NULL);
   entry = sym->code->pn;
@@ -30,8 +29,7 @@ static void remove_unreachable(Fun *f, Vec<PNode *> &nodes) {
   Accum<PNode *> v;
   if (!f->entry) return;
   v.add(f->entry);
-  for (int i = 0; i < v.asvec.n; i++)
-    forv_PNode(p, v.asvec[i]->cfg_succ) if (p) v.add(p);
+  for (int i = 0; i < v.asvec.n; i++) forv_PNode(p, v.asvec[i]->cfg_succ) if (p) v.add(p);
   Vec<PNode *> unreachable;
   forv_PNode(n, nodes) if (!v.asset.set_in(n)) unreachable.add(n);
   forv_PNode(n, unreachable) forv_PNode(s, n->cfg_succ) s->cfg_pred.remove(n);
@@ -99,8 +97,7 @@ static void build_pn_cfg(IF1 *if1, Code *code, Code *cont, Code *conc_cont) {
     Code *new_conc_cont = NULL;
 #endif
     for (Code **cc = code->sub.v; cc < code->sub.end(); cc++) {
-      Code *new_cont =
-          (cc + 1 < code->sub.end()) ? get_cont(cc[1], cont) : cont;
+      Code *new_cont = (cc + 1 < code->sub.end()) ? get_cont(cc[1], cont) : cont;
       build_pn_cfg(if1, *cc, new_cont, new_conc_cont);
     }
     if (code->sub.n) code->pn = code->sub[0]->pn;

@@ -47,7 +47,7 @@ class PNode : public gc {
     BlockHash<Var *, PointerHashFns> *live_vars;  // ssu.cpp
   };
   Map<PNode *, int> cfg_pred_index;  // cg.cpp
-  Dom *dom, *rdom;  // dominators and reverse dominators dom.cpp
+  Dom *dom, *rdom;                   // dominators and reverse dominators dom.cpp
 
   Vec<Sym *> *creates;  // cloning
 

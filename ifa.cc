@@ -45,9 +45,7 @@ int ifa_analyze(cchar *fn) {
 
 void ifa_graph(cchar *fn) { graph(pdb->fa, fn); }
 
-void ifa_html(cchar *fn, char *mktree_dir) {
-  dump_html(pdb->fa, fn, mktree_dir);
-}
+void ifa_html(cchar *fn, char *mktree_dir) { dump_html(pdb->fa, fn, mktree_dir); }
 
 int ifa_optimize() {
   mark_live_funs(fa);

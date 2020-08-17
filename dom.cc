@@ -16,15 +16,7 @@
 
 #define VNULL (vertex[0])
 
-Dom::Dom(void *n)
-    : node(n),
-      semi(-1),
-      size(1),
-      label(0),
-      parent(0),
-      child(0),
-      ancestor(0),
-      idom(0) {}
+Dom::Dom(void *n) : node(n), semi(-1), size(1), label(0), parent(0), child(0), ancestor(0), idom(0) {}
 
 static int df_traversal(Dom *d, uint n, Vec<Dom *> &vertex) {
   d->semi = ++n;
@@ -104,15 +96,13 @@ static void find_dominators(Vec<Dom *> &vertex) {
 }
 
 static void make_dominator_tree(Vec<Dom *> &vertex) {
-  forv_Dom(x, vertex) if (x != VNULL && x->idom != VNULL)
-      x->idom->children.add(x);
+  forv_Dom(x, vertex) if (x != VNULL && x->idom != VNULL) x->idom->children.add(x);
 }
 
 static void find_dominator_frontier_internal(Dom *n) {
   forv_Dom(x, n->children) find_dominator_frontier_internal(x);
   forv_Dom(x, n->succ) if (x->idom != n) n->front.set_add(x);
-  forv_Dom(x, n->children) forv_Dom(y, x->front) if (y) if (y->idom != n)
-      n->front.set_add(y);
+  forv_Dom(x, n->children) forv_Dom(y, x->front) if (y) if (y->idom != n) n->front.set_add(y);
 }
 
 static void find_dominator_frontier(Dom *n, Vec<Dom *> &vertex) {

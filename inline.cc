@@ -32,12 +32,10 @@ static void local_loop_frequency_estimation(LoopNode *l, float f) {
 }
 
 static void local_frequency_estimation(Fun *f) {
-  if (f->loops->loops)
-    local_loop_frequency_estimation(f->loops->loops, LOOP_FREQUENCY);
+  if (f->loops->loops) local_loop_frequency_estimation(f->loops->loops, LOOP_FREQUENCY);
   Vec<PNode *> nodes;
   f->collect_PNodes(nodes);
-  forv_PNode(n, nodes) if (n->execution_frequency < 1.0)
-      n->execution_frequency = 1.0;
+  forv_PNode(n, nodes) if (n->execution_frequency < 1.0) n->execution_frequency = 1.0;
 }
 
 static void global_loop_frequency_estimation(LoopNode *l, float f) {
@@ -51,10 +49,8 @@ static void global_loop_frequency_estimation(LoopNode *l, float f) {
 }
 
 static void global_frequency_estimation(FA *fa) {
-  if (fa->pdb->loops->loops)
-    global_loop_frequency_estimation(fa->pdb->loops->loops, LOOP_FREQUENCY);
-  forv_Fun(f, fa->funs) if (f->execution_frequency < 1.0)
-      f->execution_frequency = 1.0;
+  if (fa->pdb->loops->loops) global_loop_frequency_estimation(fa->pdb->loops->loops, LOOP_FREQUENCY);
+  forv_Fun(f, fa->funs) if (f->execution_frequency < 1.0) f->execution_frequency = 1.0;
   Vec<Fun *> funs, fset;
   dfs_order(fa->pdb->if1->top->fun, funs, fset);
   // propagate down the call tree
@@ -79,13 +75,9 @@ int frequency_estimation(FA *fa) {
   return 0;
 }
 
-static int is_closure_create(PNode *n) {
-  return (n->lvals[0]->type->type_kind == Type_FUN && n->creates);
-}
+static int is_closure_create(PNode *n) { return (n->lvals[0]->type->type_kind == Type_FUN && n->creates); }
 
-static int is_period_prim(PNode *n) {
-  return (n->prim && n->prim->index == P_prim_period);
-}
+static int is_period_prim(PNode *n) { return (n->prim && n->prim->index == P_prim_period); }
 
 static int is_closure_call(PNode *n) {
   if (n->code->kind != Code_SEND) return 0;
@@ -123,8 +115,7 @@ static int is_simple_closure_create(PNode *n, bool verify_other) {
 }
 
 static Var *first_var(Var *v) {  // does not move through PHI/PHY
-  while (v->def && v->def->code && v->def->code->kind == Code_MOVE)
-    v = v->def->rvals[0];
+  while (v->def && v->def->code && v->def->code->kind == Code_MOVE) v = v->def->rvals[0];
   return v;
 }
 
@@ -153,8 +144,7 @@ static int reaching_def(Var *v, PNode *p) {
   vars.add(v);
   forv_Var(v, vars.asvec) {
     if (v->def == p) return 1;
-    if (v->def && v->def->code->kind == Code_MOVE)
-      forv_Var(x, v->def->rvals) vars.add(x);
+    if (v->def && v->def->code->kind == Code_MOVE) forv_Var(x, v->def->rvals) vars.add(x);
   }
   return 0;
 }
@@ -164,8 +154,7 @@ static int reaching_var(Var *v, Var *vv) {
   vars.add(v);
   forv_Var(v, vars.asvec) {
     if (v == vv) return 1;
-    if (v->def && v->def->code->kind == Code_MOVE)
-      forv_Var(x, v->def->rvals) vars.add(x);
+    if (v->def && v->def->code->kind == Code_MOVE) forv_Var(x, v->def->rvals) vars.add(x);
   }
   return 0;
 }
@@ -265,24 +254,18 @@ static int inline_single_sends(FA *fa) {
         for (int i = 0; i < f->sym->has.n; i++) {
           // if (f->sym->self == f->sym->has.v[i])
           // continue;
-          if (reaching_var(reply->rvals[reply->rvals.n - 1],
-                           f->sym->has[i]->var)) {
-            identity_send.put(
-                f, i + 1);  // offset by 1 to avoid collision with empty (0)
+          if (reaching_var(reply->rvals[reply->rvals.n - 1], f->sym->has[i]->var)) {
+            identity_send.put(f, i + 1);  // offset by 1 to avoid collision with empty (0)
             continue;
           }
         }
       }
       continue;
     }
-    if (p == f->exit || p->code->kind != Code_SEND || !p->prim ||
-        f->calls.get(p))
-      continue;
+    if (p == f->exit || p->code->kind != Code_SEND || !p->prim || f->calls.get(p)) continue;
     forv_Var(v, p->rvals) {
       Sym *fs = first_var(v)->sym;
-      if (!((fs && (f->sym->has.index(fs) >= 0)) || v->sym->is_constant ||
-            v->sym->is_symbol))
-        goto Lskip;
+      if (!((fs && (f->sym->has.index(fs) >= 0)) || v->sym->is_constant || v->sym->is_symbol)) goto Lskip;
     }
     if (reply && !reaching_def(reply->rvals[reply->rvals.n - 1], p)) continue;
     single_send.put(f, p);

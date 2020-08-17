@@ -11,17 +11,7 @@ class Prim;
 class PNode;
 class Sym;
 
-enum Code_kind {
-  Code_SUB = 0,
-  Code_MOVE,
-  Code_SEND,
-  Code_IF,
-  Code_LABEL,
-  Code_GOTO,
-  Code_SEQ,
-  Code_CONC,
-  Code_NOP
-};
+enum Code_kind { Code_SUB = 0, Code_MOVE, Code_SEND, Code_IF, Code_LABEL, Code_GOTO, Code_SEQ, Code_CONC, Code_NOP };
 
 enum Partial_kind { Partial_OK = 0, Partial_NEVER = 1, Partial_ALWAYS = 2 };
 
@@ -71,9 +61,7 @@ class Code : public gc {
     cont = c.cont;
     pn = c.pn;
   }
-  int is_group() {
-    return kind == Code_SUB || kind == Code_SEQ || kind == Code_CONC;
-  }
+  int is_group() { return kind == Code_SUB || kind == Code_SEQ || kind == Code_CONC; }
 };
 #define forv_Code(_c, _v) forv_Vec(Code, _c, _v)
 

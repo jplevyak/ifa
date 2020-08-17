@@ -7,9 +7,8 @@
 #include "if1.h"
 #include "ifadefs.h"
 
-cchar *type_kind_string[] = {"NONE",      "UNKNOWN",     "SUM",      "RECORD",
-                             "VECTOR",    "FUN",         "REF",      "ENUM",
-                             "PRIMITIVE", "APPLICATION", "VARIABLE", "ALIAS"};
+cchar *type_kind_string[] = {"NONE", "UNKNOWN", "SUM",       "RECORD",      "VECTOR",   "FUN",
+                             "REF",  "ENUM",    "PRIMITIVE", "APPLICATION", "VARIABLE", "ALIAS"};
 
 BasicSym::BasicSym(void)
     : name(NULL),
@@ -337,8 +336,7 @@ void Sym::inherits_add(Sym *s) {
 }
 
 void Sym::must_implement_and_specialize(Sym *s) {
-  assert((!must_implement || must_implement == s) &&
-         (!must_specialize || must_specialize == s));
+  assert((!must_implement || must_implement == s) && (!must_specialize || must_specialize == s));
   must_implement = s;
   must_specialize = s;
 }

@@ -49,9 +49,7 @@ class IFAAST : public gc {
   virtual int line() = 0;
   virtual int source_line() = 0;
   virtual Sym *symbol() = 0;
-  virtual Vec<Fun *> *visible_functions(Sym *arg0) {
-    return NULL;
-  }  // NULL == ALL
+  virtual Vec<Fun *> *visible_functions(Sym *arg0) { return NULL; }  // NULL == ALL
   virtual IFAAST *copy_tree(ASTCopyContext *context) = 0;
   virtual IFAAST *copy_node(ASTCopyContext *context) = 0;
   virtual void html(FILE *fp, Fun *f) {}
@@ -68,31 +66,16 @@ class IFACallbacks : public gc {
   virtual void finalize_functions() {}
   virtual Sym *new_Sym(cchar *name) = 0;  // { return (new IFASymbol)->sym; }
   virtual Sym *make_LUB_type(Sym *s) { return s; }
-  virtual int formal_to_generic(Sym *s, Sym **ret_generic,
-                                int *ret_bind_to_value) {
-    return false;
-  }
-  virtual Sym *instantiate(Sym *, Map<Sym *, Sym *> &substitutions) {
-    return 0;
-  }
-  virtual Fun *order_wrapper(Fun *,
-                             Map<MPosition *, MPosition *> &substitutions) {
-    return 0;
-  }
+  virtual int formal_to_generic(Sym *s, Sym **ret_generic, int *ret_bind_to_value) { return false; }
+  virtual Sym *instantiate(Sym *, Map<Sym *, Sym *> &substitutions) { return 0; }
+  virtual Fun *order_wrapper(Fun *, Map<MPosition *, MPosition *> &substitutions) { return 0; }
   virtual Sym *promote(Fun *, Sym *, Sym *, Sym *) { return NULL; }
-  virtual Fun *promotion_wrapper(Fun *,
-                                 Map<MPosition *, Sym *> &substitutions) {
-    return 0;
-  }
+  virtual Fun *promotion_wrapper(Fun *, Map<MPosition *, Sym *> &substitutions) { return 0; }
   virtual Sym *coerce(Sym *actual, Sym *formal) { return NULL; }
-  virtual Fun *coercion_wrapper(Fun *, Map<MPosition *, Sym *> &substitutions) {
-    return 0;
-  }
+  virtual Fun *coercion_wrapper(Fun *, Map<MPosition *, Sym *> &substitutions) { return 0; }
   virtual Fun *default_wrapper(Fun *, Vec<MPosition *> &defaults) { return 0; }
-  virtual Fun *instantiate_generic(Fun *, Map<Sym *, Sym *> &substitutions) {
-    return 0;
-  }
-  virtual bool reanalyze(Vec<ATypeViolation*> &type_violations) { return false; }
+  virtual Fun *instantiate_generic(Fun *, Map<Sym *, Sym *> &substitutions) { return 0; }
+  virtual bool reanalyze(Vec<ATypeViolation *> &type_violations) { return false; }
   virtual void report_analysis_errors(Vec<ATypeViolation *> &type_violations) {}
   virtual bool c_codegen_pre_file(FILE *fp) { return false; }
 };

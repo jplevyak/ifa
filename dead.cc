@@ -35,14 +35,12 @@ static void print_dead(FA *fa) {
   forv_Fun(f, fa->funs) {
     forv_PNode(p, f->fa_all_PNodes) if (!p->live) {
       ndead_pnodes++;
-      fprintf(fp, "PNode %d %s:%d DEAD\n", p->id, p->code->filename(),
-              p->code->line());
+      fprintf(fp, "PNode %d %s:%d DEAD\n", p->id, p->code->filename(), p->code->line());
     }
     else nlive_pnodes++;
     forv_Var(v, f->fa_all_Vars) if (!v->live) {
       ndead_vars++;
-      fprintf(fp, "Var %d:%d %s %s:%d DEAD\n", v->sym->id, v->id,
-              v->sym->name ? v->sym->name : "", v->sym->filename(),
+      fprintf(fp, "Var %d:%d %s %s:%d DEAD\n", v->sym->id, v->id, v->sym->name ? v->sym->name : "", v->sym->filename(),
               v->sym->line());
     }
     else nlive_vars++;
@@ -120,14 +118,12 @@ static void mark_live_pnodes(FA *fa) {
             default:
               break;
             case Code_LABEL:
-              if (p->cfg_pred.n != 1)
-                forv_PNode(x, p->cfg_pred) if (x->live) goto Live;
+              if (p->cfg_pred.n != 1) forv_PNode(x, p->cfg_pred) if (x->live) goto Live;
               break;
             case Code_GOTO:
               if (p->cfg_succ[0]->cfg_pred.n != 1)
                 forv_PNode(x, f->fa_all_PNodes)  // potentially expensive
-                    if (x->live || x == f->exit) if (p->dom->is_dominated_by(
-                                                         x->dom)) goto Live;
+                    if (x->live || x == f->exit) if (p->dom->is_dominated_by(x->dom)) goto Live;
               break;
             case Code_SEND:
               if (p->prim) {
@@ -154,8 +150,7 @@ static void mark_live_pnodes(FA *fa) {
             case Code_IF:
               forv_PNode(x, f->fa_all_PNodes)  // potentially expensive
                   if (x->live) if (x->dom->is_dominated_by(p->dom))
-                      forv_PNode(s, p->cfg_succ) if (!x->dom->is_dominated_by(
-                                                         s->dom)) goto Live;
+                      forv_PNode(s, p->cfg_succ) if (!x->dom->is_dominated_by(s->dom)) goto Live;
               break;
           }
         continue;  // handle fall through non-live
@@ -180,15 +175,12 @@ static void mark_initial_dead_and_alive(FA *fa, int init = 0) {
       for (int i = 0; i < v->avars.n; i++)
         if (v->avars[i].key) v->avars[i].value->live = false;
       if (v->type) {  // mark all instance variables not live
-        forv_CreationSet(cs, v->type->creators) if (cs) {
-          forv_AVar(iv, cs->vars) iv->var->live = init;
-        }
+        forv_CreationSet(cs, v->type->creators) if (cs) { forv_AVar(iv, cs->vars) iv->var->live = init; }
       }
     }
     forv_PNode(p, f->fa_all_PNodes) {
       p->live = init;
-      if (p->code && p->code->kind == Code_SEND && p->prim &&
-          p->prim->index == P_prim_primitive) {
+      if (p->code && p->code->kind == Code_SEND && p->prim && p->prim->index == P_prim_primitive) {
         cchar *name = p->code->rvals[1]->name;
         RegisteredPrim *rp = prim_get(name);
         if (rp && rp->is_visible) p->live = 1;
@@ -201,8 +193,7 @@ void mark_live_types(FA *fa) {
   forv_CreationSet(cs, fa->css) cs->type->type_live = 0;
   forv_CreationSet(cs, fa->css) if (cs->type && cs->type->creators.n) {
     forv_CreationSet(x, cs->type->creators) {
-      forv_AVar(av, x->defs) if (av) if (av->var->live && !cs->type->type_live)
-          cs->type->type_live = 1;
+      forv_AVar(av, x->defs) if (av) if (av->var->live && !cs->type->type_live) cs->type->type_live = 1;
     }
   }
 }

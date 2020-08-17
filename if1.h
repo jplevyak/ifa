@@ -16,13 +16,11 @@ extern cchar *builtin_strings[];
 
 class IF1 : public gc {
  public:
-  StringChainHash<> strings;     // unique strings
-  Map<cchar *, Sym *> symbols;   // language level symbols
-  Map<cchar *, Sym *> builtins;  // symbols builtin to the compiler
-  Map<Sym *, cchar *>
-      builtins_names;  // names of symbols builtin to the compiler
-  HashMap<Immediate *, ImmHashFns, Sym *>
-      constants;  // unique constants (by string)
+  StringChainHash<> strings;                          // unique strings
+  Map<cchar *, Sym *> symbols;                        // language level symbols
+  Map<cchar *, Sym *> builtins;                       // symbols builtin to the compiler
+  Map<Sym *, cchar *> builtins_names;                 // names of symbols builtin to the compiler
+  HashMap<Immediate *, ImmHashFns, Sym *> constants;  // unique constants (by string)
   Vec<Sym *> allsyms;
   Vec<Label *> alllabels;
   Vec<Sym *> allclosures;
@@ -40,8 +38,7 @@ class IF1 : public gc {
 };
 
 Sym *if1_register_sym(IF1 *p, Sym *, cchar *name = 0);
-Sym *if1_const(IF1 *p, Sym *typ, cchar *value, Immediate *imm = 0,
-               Sym *asym = 0);
+Sym *if1_const(IF1 *p, Sym *typ, cchar *value, Immediate *imm = 0, Sym *asym = 0);
 Sym *if1_make_symbol(IF1 *p, cchar *name, cchar *end = 0);
 void if1_set_builtin(IF1 *p, Sym *s, cchar *name, cchar *end = 0);
 Sym *if1_get_builtin(IF1 *p, cchar *name, cchar *end = 0);
@@ -63,12 +60,10 @@ Code *if1_if_goto(IF1 *p, Code **t, Sym *ifcond, IFAAST *ast = 0);
 void if1_set_goto(IF1 *p, Code *go, Label *label);
 void if1_if_label_true(IF1 *p, Code *ifcode, Label *l, IFAAST *ast = 0);
 void if1_if_label_false(IF1 *p, Code *ifcode, Label *l, IFAAST *ast = 0);
-Code *if1_if(IF1 *p, Code **t, Code *ifcond, Sym *ifcond_var, Code *ifif,
-             Sym *if_var, Code *ifthen, Sym *then_var, Sym *result,
-             IFAAST *ast = 0);
-Code *if1_loop(IF1 *p, Code **t, Label *cont, Label *brk, Sym *cond_var,
-               Code *before, Code *cond, Code *after, Code *body,
-               IFAAST *ast = 0);
+Code *if1_if(IF1 *p, Code **t, Code *ifcond, Sym *ifcond_var, Code *ifif, Sym *if_var, Code *ifthen, Sym *then_var,
+             Sym *result, IFAAST *ast = 0);
+Code *if1_loop(IF1 *p, Code **t, Label *cont, Label *brk, Sym *cond_var, Code *before, Code *cond, Code *after,
+               Code *body, IFAAST *ast = 0);
 Sym *if1_closure(IF1 *p, Sym *f, Code *c, int nargs, Sym **args);
 
 void if1_set_int_type(IF1 *p, Sym *t, int signd, int size);
@@ -94,9 +89,7 @@ int is_functional(IF1 *p, Code *code);
 
 extern IF1 *if1;
 
-static inline Sym *new_Sym(cchar *name = 0) {
-  return if1->callback->new_Sym(name);
-}
+static inline Sym *new_Sym(cchar *name = 0) { return if1->callback->new_Sym(name); }
 
 void print_syms(FILE *fp, Vec<Sym *> *syms);
 void print_code(FILE *fp, Code *code, int indent, int lf = 1);

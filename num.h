@@ -7,18 +7,9 @@
 #include "ifadefs.h"
 #include "prim_data.h"
 
-enum IF1_num_kind {
-  IF1_NUM_KIND_NONE,
-  IF1_NUM_KIND_UINT,
-  IF1_NUM_KIND_INT,
-  IF1_NUM_KIND_FLOAT,
-  IF1_NUM_KIND_COMPLEX
-};
+enum IF1_num_kind { IF1_NUM_KIND_NONE, IF1_NUM_KIND_UINT, IF1_NUM_KIND_INT, IF1_NUM_KIND_FLOAT, IF1_NUM_KIND_COMPLEX };
 
-enum IF1_const_kind {
-  IF1_CONST_KIND_STRING = IF1_NUM_KIND_COMPLEX + 1,
-  IF1_CONST_KIND_SYMBOL
-};
+enum IF1_const_kind { IF1_CONST_KIND_STRING = IF1_NUM_KIND_COMPLEX + 1, IF1_CONST_KIND_SYMBOL };
 
 enum IF1_int_type {
   IF1_INT_TYPE_1,
@@ -208,11 +199,16 @@ inline uint64 Immediate::uint_value() {
 
 inline int Immediate::int_size() {
   switch (num_index) {
-    case IF1_INT_TYPE_1: return 1;
-    case IF1_INT_TYPE_8: return 8;
-    case IF1_INT_TYPE_16: return 16;
-    case IF1_INT_TYPE_32: return 32;
-    case IF1_INT_TYPE_64: return 64;
+    case IF1_INT_TYPE_1:
+      return 1;
+    case IF1_INT_TYPE_8:
+      return 8;
+    case IF1_INT_TYPE_16:
+      return 16;
+    case IF1_INT_TYPE_32:
+      return 32;
+    case IF1_INT_TYPE_64:
+      return 64;
     default:
       assert(!"unknown uint size");
   }
@@ -234,13 +230,12 @@ EXTERN int int_type_precision[5] EXTERN_INIT(CPP_IS_LAME);
 EXTERN int float_type_precision[8] EXTERN_INIT(CPP_IS_LAME);
 #undef CPP_IS_LAME
 
-#define CPP_IS_LAME                                               \
-  {                                                               \
-    {0, 0, 0, 0, 0, 0, 0, 0},                                     \
-        {"bool", "uint8", "uint16", "uint32", "uint64", 0, 0, 0}, \
-        {"bool", "int8", "int16", "int32", "int64", 0, 0, 0}, {   \
-      0, "float32", 0, "float64", 0, 0, 0, "float128"             \
-    }                                                             \
+#define CPP_IS_LAME                                                                     \
+  {                                                                                     \
+    {0, 0, 0, 0, 0, 0, 0, 0}, {"bool", "uint8", "uint16", "uint32", "uint64", 0, 0, 0}, \
+        {"bool", "int8", "int16", "int32", "int64", 0, 0, 0}, {                         \
+      0, "float32", 0, "float64", 0, 0, 0, "float128"                                   \
+    }                                                                                   \
   }
 EXTERN cchar *num_kind_string[4][8] EXTERN_INIT(CPP_IS_LAME);
 #undef CPP_IS_LAME
@@ -250,9 +245,7 @@ inline Immediate &Immediate::operator=(const Immediate &imm) {
   return *this;
 }
 
-inline Immediate::Immediate(const Immediate &imm) {
-  memcpy(this, &imm, sizeof(imm));
-}
+inline Immediate::Immediate(const Immediate &imm) { memcpy(this, &imm, sizeof(imm)); }
 
 inline Immediate::Immediate() { memset(this, 0, sizeof(*this)); }
 
@@ -263,9 +256,7 @@ inline unsigned int ImmHashFns::hash(Immediate *imm) {
   return h;
 }
 
-inline int ImmHashFns::equal(Immediate *imm1, Immediate *imm2) {
-  return !memcmp(imm1, imm2, sizeof(*imm1));
-}
+inline int ImmHashFns::equal(Immediate *imm1, Immediate *imm2) { return !memcmp(imm1, imm2, sizeof(*imm1)); }
 
 int fprint_imm(FILE *fp, Immediate &imm);
 int sprint_imm(char *s, Immediate &imm);

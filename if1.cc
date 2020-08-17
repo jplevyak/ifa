@@ -17,8 +17,7 @@ cchar *builtin_strings[] = {
 #undef S
     0};
 
-cchar *code_string[] = {"SUB",  "MOVE", "SEND", "IF", "LABEL",
-                        "GOTO", "SEQ",  "CONC", "NOP"};
+cchar *code_string[] = {"SUB", "MOVE", "SEND", "IF", "LABEL", "GOTO", "SEQ", "CONC", "NOP"};
 
 static int mark_sym_live(Sym *s);
 
@@ -93,8 +92,7 @@ Sym *if1_make_symbol(IF1 *p, cchar *name, cchar *end) {
 static void if1_set_symbols_type(IF1 *p) {
   for (int i = 0; i < p->symbols.n; i++)
     if (p->symbols[i].value)
-      if (!p->symbols[i].value->implements.in(sym_symbol))
-        p->symbols[i].value->inherits_add(sym_symbol);
+      if (!p->symbols[i].value->implements.in(sym_symbol)) p->symbols[i].value->inherits_add(sym_symbol);
 }
 
 void if1_set_builtin(IF1 *p, Sym *s, cchar *name, cchar *end) {
@@ -304,8 +302,8 @@ void if1_if_label_false(IF1 *p, Code *ifcode, Label *label, IFAAST *ast) {
   ifcode->ast = ast;
 }
 
-Code *if1_if(IF1 *p, Code **c, Code *ifcond, Sym *ifcondvar, Code *ifif,
-             Sym *if_var, Code *ifelse, Sym *else_var, Sym *r, IFAAST *ast) {
+Code *if1_if(IF1 *p, Code **c, Code *ifcond, Sym *ifcondvar, Code *ifif, Sym *if_var, Code *ifelse, Sym *else_var,
+             Sym *r, IFAAST *ast) {
   Code *if_code, *if_goto;
   if1_gen(p, c, ifcond);
   if_code = if1_if_goto(p, c, ifcondvar, ast);
@@ -325,8 +323,8 @@ Code *if1_if(IF1 *p, Code **c, Code *ifcond, Sym *ifcondvar, Code *ifif,
   return if_code;
 }
 
-Code *if1_loop(IF1 *p, Code **t, Label *cont, Label *brk, Sym *cond_var,
-               Code *before, Code *cond, Code *after, Code *body, IFAAST *ast) {
+Code *if1_loop(IF1 *p, Code **t, Label *cont, Label *brk, Sym *cond_var, Code *before, Code *cond, Code *after,
+               Code *body, IFAAST *ast) {
   Code *if_goto;
   int do_while = before == body;
 
@@ -389,8 +387,7 @@ static int mark_sym_live(Sym *s) {
     }
     if (s->must_specialize) mark_sym_live(s->must_specialize);
     if (s->must_implement) mark_sym_live(s->must_implement);
-    if (s->is_fun || s->is_pattern || s->type_kind)
-      forv_Sym(ss, s->has) mark_sym_live(ss);
+    if (s->is_fun || s->is_pattern || s->type_kind) forv_Sym(ss, s->has) mark_sym_live(ss);
     return 1;
   }
   return 0;
@@ -444,8 +441,7 @@ static int mark_code_live(IF1 *p, Code *code, int &code_live) {
     case Code_SEND:
       break;
     default:
-      for (int i = 0; i < code->sub.n; i++)
-        changed |= mark_code_live(p, code->sub[i], code_live);
+      for (int i = 0; i < code->sub.n; i++) changed |= mark_code_live(p, code->sub[i], code_live);
       break;
   }
   return changed;
@@ -466,15 +462,12 @@ static int mark_live(IF1 *p, Code *code) {
         break;
       case Code_SEND:
         if (!code->lvals.n || code->lvals[0]->live || !is_functional(p, code)) {
-          for (int i = 0; i < code->rvals.n; i++)
-            changed |= mark_sym_live(code->rvals[i]);
-          for (int i = 0; i < code->lvals.n; i++)
-            changed |= mark_sym_live(code->lvals[i]);
+          for (int i = 0; i < code->rvals.n; i++) changed |= mark_sym_live(code->rvals[i]);
+          for (int i = 0; i < code->lvals.n; i++) changed |= mark_sym_live(code->lvals[i]);
         }
         break;
       default:
-        for (int i = 0; i < code->sub.n; i++)
-          changed |= mark_live(p, code->sub[i]);
+        for (int i = 0; i < code->sub.n; i++) changed |= mark_live(p, code->sub[i]);
         break;
     }
   }
@@ -502,15 +495,13 @@ static cchar *SPACES = "                                        ";
 
 #define SP(_fp, _n) fputs(&SPACES[40 - (_n)], _fp)
 
-static cchar *Code_kind_string[] = {"SUB",  "MOVE", "SEND", "IF", "LABEL",
-                                    "GOTO", "SEQ",  "CONC", "NOP"};
+static cchar *Code_kind_string[] = {"SUB", "MOVE", "SEND", "IF", "LABEL", "GOTO", "SEQ", "CONC", "NOP"};
 
 void print_code(FILE *fp, Code *code, int indent, int lf) {
   if (indent > 40) indent = 40;
   switch (code->kind) {
     case Code_SUB:
-      for (int i = 0; i < code->sub.n; i++)
-        print_code(fp, code->sub[i], indent, i < code->sub.n - 1 ? 1 : lf);
+      for (int i = 0; i < code->sub.n; i++) print_code(fp, code->sub[i], indent, i < code->sub.n - 1 ? 1 : lf);
       break;
     case Code_MOVE:
       if (code->live) {
@@ -559,8 +550,7 @@ void print_code(FILE *fp, Code *code, int indent, int lf) {
     case Code_CONC:
       SP(fp, indent);
       fprintf(fp, "(%s\n", Code_kind_string[code->kind]);
-      for (int i = 0; i < code->sub.n; i++)
-        print_code(fp, code->sub[i], indent + 1, i < code->sub.n - 1 ? 1 : 0);
+      for (int i = 0; i < code->sub.n; i++) print_code(fp, code->sub[i], indent + 1, i < code->sub.n - 1 ? 1 : 0);
       fputs(")", fp);
       break;
     case Code_NOP:
@@ -578,8 +568,7 @@ void print_syms(FILE *fp, Vec<Sym *> *syms, int start = 0) {
     fputs("(SYMBOL ", fp);
     if1_dump_sym(fp, s);
     if (s->nesting_depth) fprintf(fp, " :NESTING_DEPTH %d", s->nesting_depth);
-    if (s->type_kind)
-      fprintf(fp, " :TYPE_KIND %s", type_kind_string[s->type_kind]);
+    if (s->type_kind) fprintf(fp, " :TYPE_KIND %s", type_kind_string[s->type_kind]);
     if (s->type) {
       fputs(" :TYPE ", fp);
       if1_dump_sym(fp, s->type);
@@ -670,8 +659,7 @@ static void if1_simple_dead_code_elimination(IF1 *p) {
   for (int i = 0; i < p->allclosures.n; i++) {
     mark_sym_live(p->allclosures[i]);
     if (p->allclosures[i]->ret) mark_sym_live(p->allclosures[i]->ret);
-    for (int j = 0; j < p->allclosures[i]->has.n; j++)
-      mark_sym_live(p->allclosures[i]->has.v[j]);
+    for (int j = 0; j < p->allclosures[i]->has.n; j++) mark_sym_live(p->allclosures[i]->has.v[j]);
   }
   for (int i = 0; i < p->allclosures.n; i++)
     if (p->allclosures[i]->code) {
@@ -683,8 +671,7 @@ static void if1_simple_dead_code_elimination(IF1 *p) {
   while (again) {
     again = 0;
     for (int i = 0; i < p->allclosures.n; i++)
-      if (p->allclosures[i]->code)
-        again |= mark_live(p, p->allclosures[i]->code);
+      if (p->allclosures[i]->code) again |= mark_live(p, p->allclosures[i]->code);
   }
   for (int i = 0; i < p->allclosures.n; i++) {
     if (p->allclosures[i]->code) mark_dead(p, p->allclosures[i]->code);
@@ -735,23 +722,19 @@ static void if1_fixup_nesting_internal(Code *code, Sym *f) {
     case Code_MOVE:
     case Code_SEND:
       for (int i = 0; i < code->lvals.n; i++)
-        if (code->lvals[i]->nesting_depth == LOCALLY_NESTED)
-          code->lvals[i]->nesting_depth = f->nesting_depth + 1;
+        if (code->lvals[i]->nesting_depth == LOCALLY_NESTED) code->lvals[i]->nesting_depth = f->nesting_depth + 1;
       for (int i = 0; i < code->rvals.n; i++)
-        if (code->rvals[i]->nesting_depth == LOCALLY_NESTED)
-          code->rvals[i]->nesting_depth = f->nesting_depth + 1;
+        if (code->rvals[i]->nesting_depth == LOCALLY_NESTED) code->rvals[i]->nesting_depth = f->nesting_depth + 1;
       break;
     default:
-      for (int i = 0; i < code->sub.n; i++)
-        if1_fixup_nesting_internal(code->sub[i], f);
+      for (int i = 0; i < code->sub.n; i++) if1_fixup_nesting_internal(code->sub[i], f);
       break;
   }
 }
 
 static void if1_fixup_nesting(Code *code, Sym *f) {
   for (int i = 0; i < f->has.n; i++)
-    if (f->has[i]->nesting_depth == LOCALLY_NESTED)
-      f->has[i]->nesting_depth = f->nesting_depth + 1;
+    if (f->has[i]->nesting_depth == LOCALLY_NESTED) f->has[i]->nesting_depth = f->nesting_depth + 1;
   if1_fixup_nesting_internal(code, f);
 }
 
@@ -761,8 +744,7 @@ static void find_primitives(Primitives *prim, Code *c) {
 }
 
 static void find_primitives(IF1 *p) {
-  for (int i = 0; i < p->allclosures.n; i++)
-    find_primitives(p->primitives, p->allclosures[i]->code);
+  for (int i = 0; i < p->allclosures.n; i++) find_primitives(p->primitives, p->allclosures[i]->code);
 }
 
 void if1_finalize(IF1 *p) {
@@ -847,8 +829,7 @@ void if1_dump_code(FILE *fp, Code *code, int indent) {
       fprintf(fp, " %d %d)\n", code->label[0]->id, code->label[1]->id);
       break;
     case Code_LABEL:
-      fprintf(fp, "(LABEL %d%s)\n", code->label[0]->id,
-              !code->live ? " :DEAD" : "");
+      fprintf(fp, "(LABEL %d%s)\n", code->label[0]->id, !code->live ? " :DEAD" : "");
       break;
     case Code_GOTO:
       fprintf(fp, "(GOTO %d)\n", code->label[0]->id);
@@ -857,8 +838,7 @@ void if1_dump_code(FILE *fp, Code *code, int indent) {
     case Code_SEQ:
     case Code_CONC:
       fprintf(fp, "(%s\n", Code_kind_string[code->kind]);
-      for (int i = 0; i < code->sub.n; i++)
-        if1_dump_code(fp, code->sub[i], indent + 1);
+      for (int i = 0; i < code->sub.n; i++) if1_dump_code(fp, code->sub[i], indent + 1);
       SP(fp, indent);
       fputs(")\n", fp);
       break;
@@ -896,19 +876,14 @@ int Code::source_line() {
   return 0;
 }
 
-static cchar *int_type_names[IF1_INT_TYPE_NUM][2] = {{"bool", "bool"},
-                                                     {"uint8", "int8"},
-                                                     {"uint16", "int16"},
-                                                     {"uint32", "int32"},
-                                                     {"uint64", "int64"}};
-static cchar *float_type_names[IF1_FLOAT_TYPE_NUM] = {
-    NULL, "float32", NULL, "float64", NULL, NULL, NULL, "float128"};
+static cchar *int_type_names[IF1_INT_TYPE_NUM][2] = {
+    {"bool", "bool"}, {"uint8", "int8"}, {"uint16", "int16"}, {"uint32", "int32"}, {"uint64", "int64"}};
+static cchar *float_type_names[IF1_FLOAT_TYPE_NUM] = {NULL, "float32", NULL, "float64", NULL, NULL, NULL, "float128"};
 static cchar *complex_type_names[IF1_FLOAT_TYPE_NUM] = {
     NULL, "complex32", NULL, "complex64", NULL, NULL, NULL,
     // "complex128"
 };
-static int float_type_sizes[IF1_FLOAT_TYPE_NUM] = {16, 32, 48,  64,
-                                                   80, 96, 112, 128};
+static int float_type_sizes[IF1_FLOAT_TYPE_NUM] = {16, 32, 48, 64, 80, 96, 112, 128};
 
 void if1_set_primitive_types(IF1 *if1) {
   if1_set_symbols_type(if1);

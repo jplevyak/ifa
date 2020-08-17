@@ -39,12 +39,10 @@ int main() {
               fprintf(fp, "assert(!\"case\"); break;\n");
             } else {
               if (tt == IF1_NUM_KIND_UINT && tn == IF1_INT_TYPE_1)
-                fprintf(fp, "to->v_%s = (%s)!!from->v_%s; break;\n",
-                        num_kind_string[tt][tn], num_kind_string[tt][tn],
+                fprintf(fp, "to->v_%s = (%s)!!from->v_%s; break;\n", num_kind_string[tt][tn], num_kind_string[tt][tn],
                         num_kind_string[st][sn]);
               else
-                fprintf(fp, "to->v_%s = (%s)from->v_%s; break;\n",
-                        num_kind_string[tt][tn], num_kind_string[tt][tn],
+                fprintf(fp, "to->v_%s = (%s)from->v_%s; break;\n", num_kind_string[tt][tn], num_kind_string[tt][tn],
                         num_kind_string[st][sn]);
             }
           }

@@ -80,16 +80,12 @@ class AEdge : public gc {
 class PendingMapHash {
  public:
   static uint hash(AEdge *e) {
-    return (uint)((uintptr_t)e->fun + (13 * (uintptr_t)e->pnode) +
-                  (100003 * (uintptr_t)e->from));
+    return (uint)((uintptr_t)e->fun + (13 * (uintptr_t)e->pnode) + (100003 * (uintptr_t)e->from));
   }
-  static int equal(AEdge *a, AEdge *b) {
-    return (a->fun == b->fun) && (a->pnode == b->pnode) && (a->from == b->from);
-  }
+  static int equal(AEdge *a, AEdge *b) { return (a->fun == b->fun) && (a->pnode == b->pnode) && (a->from == b->from); }
 };
 
-typedef HashMap<AEdge *, PendingMapHash, Vec<EntrySet *> *>
-    PendingAEdgeEntrySetsMap;
+typedef HashMap<AEdge *, PendingMapHash, Vec<EntrySet *> *> PendingAEdgeEntrySetsMap;
 typedef MapElem<AEdge *, Vec<EntrySet *> *> MapElemAEdgeEntrySets;
 
 enum { DFS_white = 0, DFS_grey, DFS_black };
@@ -267,8 +263,7 @@ class ATypeViolation : public gc {
 class ATypeViolationHashFuns {
  public:
   static uint hash(ATypeViolation *x) {
-    return (uint)((uint)x->kind + (13 * (uintptr_t)x->av) +
-                  (100003 * (uintptr_t)x->send));
+    return (uint)((uint)x->kind + (13 * (uintptr_t)x->av) + (100003 * (uintptr_t)x->send));
   }
   static int equal(ATypeViolation *x, ATypeViolation *y) {
     return x->kind == y->kind && x->av == y->av && x->send == y->send;
@@ -282,20 +277,16 @@ class ATypeFold : public gc {
   AType *b;
   AType *result;
 
-  ATypeFold(Prim *ap, AType *aa, AType *ab, AType *aresult = 0)
-      : p(ap), a(aa), b(ab), result(aresult) {}
+  ATypeFold(Prim *ap, AType *aa, AType *ab, AType *aresult = 0) : p(ap), a(aa), b(ab), result(aresult) {}
 };
 #define forv_ATypeFold(_p, _v) forv_Vec(ATypeFold, _p, _v)
 
 class ATypeFoldChainHashFns {
  public:
   static uint hash(ATypeFold *x) {
-    return (uint)((uintptr_t)x->p + (1009 * (uintptr_t)x->a) +
-                  (100003 * (uintptr_t)x->b));
+    return (uint)((uintptr_t)x->p + (1009 * (uintptr_t)x->a) + (100003 * (uintptr_t)x->b));
   }
-  static int equal(ATypeFold *x, ATypeFold *y) {
-    return x->p == y->p && x->a == y->a && x->b == y->b;
-  }
+  static int equal(ATypeFold *x, ATypeFold *y) { return x->p == y->p && x->a == y->a && x->b == y->b; }
 };
 
 class FA : public gc {
@@ -332,8 +323,7 @@ class FA : public gc {
   int analyze(Fun *f);
   int concretize();
 
-  RegisteredPrim *register_primitive(cchar *name,
-                                     PrimitiveTransferFunctionPtr ptr);
+  RegisteredPrim *register_primitive(cchar *name, PrimitiveTransferFunctionPtr ptr);
 };
 
 AVar *make_AVar(Var *, EntrySet *);
@@ -356,8 +346,7 @@ void flow_vars(AVar *v, AVar *vv);
 void flow_var_type_permit(AVar *v, AType *t);
 CreationSet *creation_point(AVar *v, Sym *s, int nvars = -1);
 void prim_make_constraints(PNode *p, EntrySet *es);
-void type_violation(ATypeViolation_kind akind, AVar *av, AType *type,
-                    AVar *send, Vec<Fun *> *funs = NULL);
+void type_violation(ATypeViolation_kind akind, AVar *av, AType *type, AVar *send, Vec<Fun *> *funs = NULL);
 AType *type_cannonicalize(AType *t);
 AType *type_diff(AType *, AType *);
 AType *type_intersection(AType *, AType *);
@@ -368,16 +357,14 @@ AVar *unique_AVar(Var *v, void *contour);
 AVar *unique_AVar(Var *v, EntrySet *es);
 void qsort_pointers(void **left, void **right);
 void initialize_Sym_for_fa(Sym *s);
-int function_dispatch(PNode *p, EntrySet *es, AVar *a0, CreationSet *s,
-                      Vec<AVar *> &args, Vec<char *> &names, int is_closure,
-                      Partial_kind partial, PNode *visibility_point = 0);
+int function_dispatch(PNode *p, EntrySet *es, AVar *a0, CreationSet *s, Vec<AVar *> &args, Vec<char *> &names,
+                      int is_closure, Partial_kind partial, PNode *visibility_point = 0);
 void add_var_constraint(AVar *av, Sym *s = 0);
 void return_nil_transfer_function(PNode *pn, EntrySet *es);
 void return_int_transfer_function(PNode *pn, EntrySet *es);
 void return_string_transfer_function(PNode *pn, EntrySet *es);
 AType *make_size_constant_type(int n);
-void collect_types_and_globals(FA *fa, Vec<Sym *> &typesyms,
-                               Vec<Var *> &globalsyms);
+void collect_types_and_globals(FA *fa, Vec<Sym *> &typesyms, Vec<Var *> &globalsyms);
 void fa_dump_types(FA *fa, FILE *fp);
 
 template <class C>

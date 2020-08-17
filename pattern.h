@@ -78,8 +78,7 @@ class MPositionHashFuns : public gc {
  public:
   static uint hash(MPosition *x) {
     uint h = 1;
-    for (int i = 0; i < x->pos.n; i++)
-      h += ((uintptr_t)x->pos[i]) * open_hash_primes[i];
+    for (int i = 0; i < x->pos.n; i++) h += ((uintptr_t)x->pos[i]) * open_hash_primes[i];
     if (!h) h = 1;
     return h;
   }
@@ -135,11 +134,9 @@ typedef MapElem<MPosition *, Sym *> MapMPositionSym;
 void build_patterns(FA *fa);
 void add_patterns(FA *fa, Fun *f);
 void build_arg_positions(FA *fa);
-int positional_to_named(PNode *pn, CreationSet *cs, MPosition &p,
-                        MPosition *result_p);
-int pattern_match(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send,
-                  int is_closure, Partial_kind partial, PNode *visibility_point,
-                  Vec<Match *> &matches);
+int positional_to_named(PNode *pn, CreationSet *cs, MPosition &p, MPosition *result_p);
+int pattern_match(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_closure, Partial_kind partial,
+                  PNode *visibility_point, Vec<Match *> &matches);
 MPosition *cannonicalize_mposition(MPosition &p);
 MPosition *build_arg_positions(Fun *f, MPosition *up = 0);
 

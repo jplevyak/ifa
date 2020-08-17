@@ -24,7 +24,7 @@ class IFASymbol;
 namespace llvm {
 class Value;
 class Type;
-}
+}  // namespace llvm
 
 enum Type_kind {
   Type_NONE,         // Sym is not a type
@@ -71,23 +71,21 @@ class BasicSym : public gc {
   unsigned int is_lvalue : 1;       // Sym is an lvalue
   unsigned int is_local : 1;        // Sym is local (can be converted into SSU)
   unsigned int is_default_arg : 1;  // Sym is a default argument
-  unsigned int
-      is_exact_match : 1;        // must_specialize/implement is must_BE_EXACT
-  unsigned int is_module : 1;    // Sym is a module
-  unsigned int is_fun : 1;       // Sym is a function
-  unsigned int is_symbol : 1;    // Sym is a user level symbol
-  unsigned int is_pattern : 1;   // Sym is a pattern
-  unsigned int is_rest : 1;      // Sym is a rest (vararg) parameter
-  unsigned int is_generic : 1;   // Sym is a generic parameter
-  unsigned int is_external : 1;  // Sym is "external", so constraints are type
-  unsigned int is_this : 1;      // Sym is "this" (member function "target")
-  unsigned int is_fake : 1;      // Sym not necessary at run time
+  unsigned int is_exact_match : 1;  // must_specialize/implement is must_BE_EXACT
+  unsigned int is_module : 1;       // Sym is a module
+  unsigned int is_fun : 1;          // Sym is a function
+  unsigned int is_symbol : 1;       // Sym is a user level symbol
+  unsigned int is_pattern : 1;      // Sym is a pattern
+  unsigned int is_rest : 1;         // Sym is a rest (vararg) parameter
+  unsigned int is_generic : 1;      // Sym is a generic parameter
+  unsigned int is_external : 1;     // Sym is "external", so constraints are type
+  unsigned int is_this : 1;         // Sym is "this" (member function "target")
+  unsigned int is_fake : 1;         // Sym not necessary at run time
 
   unsigned int intent : 2;  // Sym is "in", "inout", or "out"
 
-  unsigned int is_meta_type : 1;  // Sym is class of class
-  unsigned int
-      is_unique_type : 1;  // Sym is a type with a unique (single) member (nil)
+  unsigned int is_meta_type : 1;    // Sym is class of class
+  unsigned int is_unique_type : 1;  // Sym is a type with a unique (single) member (nil)
   unsigned int is_value_type : 1;   // Sym is a value type
   unsigned int is_system_type : 1;  // Sym is a system type (don't add it to the
                                     // hiearchy)
@@ -116,7 +114,7 @@ class Sym : public BasicSym {
   cchar *constant;  // string representing constant value
   Immediate imm;    // constant and folded constant immediate values
 
-  unsigned int size;  // size as immediate (i.e. references == sizeof(void*))
+  unsigned int size;       // size as immediate (i.e. references == sizeof(void*))
   unsigned int alignment;  // alignment as immediate (i.e. references ==
                            // __alignof__(void*))
 

@@ -12,8 +12,7 @@
 
 extern int d_verbose_level;
 
-void no_preprocessor_whitespace(D_Parser *p, d_loc_t *loc,
-                                void **p_user_globals);
+void no_preprocessor_whitespace(D_Parser *p, d_loc_t *loc, void **p_user_globals);
 
 struct FrontEnd {
   cchar *extension;
@@ -31,10 +30,8 @@ extern D_Symbol d_symbols_python[];
 extern int python_user_size, python_globals_size;
 
 FrontEnd langs[] = {
-    {"v", &parser_tables_v, no_preprocessor_whitespace, &v_user_size,
-     &v_globals_size},
-    {"py", &parser_tables_python, NULL, &python_user_size,
-     &python_globals_size},
+    {"v", &parser_tables_v, no_preprocessor_whitespace, &v_user_size, &v_globals_size},
+    {"py", &parser_tables_python, NULL, &python_user_size, &python_globals_size},
 };
 
 static char _wspace[256] = {
@@ -44,8 +41,7 @@ static char _wspace[256] = {
 
 #define wspace(_x) (_wspace[(unsigned char)_x])
 
-void no_preprocessor_whitespace(D_Parser *p, d_loc_t *loc,
-                                void **p_user_globals) {
+void no_preprocessor_whitespace(D_Parser *p, d_loc_t *loc, void **p_user_globals) {
   int rec = 0;
   char *s = loc->s, *scol;
 
@@ -155,8 +151,7 @@ static int load_one(cchar *fn) {
   av.add(a);
   {
     int save_parser_verbose = d_verbose_level;
-    if (parser_verbose_non_prelude)
-      d_verbose_level = parser_verbose_non_prelude;
+    if (parser_verbose_non_prelude) d_verbose_level = parser_verbose_non_prelude;
     if (!(a = load_file(fn, &langs[l]))) return -1;
     if (parser_verbose_non_prelude) d_verbose_level = save_parser_verbose;
   }

@@ -33,8 +33,7 @@ static int read_cdb_function(FA *fa, FILE *fp) {
 static int read_cdb_entry_set(FA *fa, FILE *fp) {
   char id[1024];
   int esid, ncsids, nedges;
-  if (fscanf(fp, "%1023s %d %d %d", id, &esid, &ncsids, &nedges) != 4)
-    return -1;
+  if (fscanf(fp, "%1023s %d %d %d", id, &esid, &ncsids, &nedges) != 4) return -1;
   id[1023] = 0;
   Fun *f = fa->cdb->funid.get(id);
   if (!f) return 0;  // function disappeared
