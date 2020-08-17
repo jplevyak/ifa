@@ -56,7 +56,7 @@ static void short_copyright() {
 }
 
 static void help(ArgumentState *arg_state, char *arg_unused) {
-  char ver[30];
+  char ver[100];
   ifa_version(ver);
   fprintf(stderr, "IFA Version %s ", ver);
   short_copyright();
