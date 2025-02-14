@@ -1134,7 +1134,7 @@ static void gen_fun(IF1 *i, ParseAST *ast) {
   c->ast = ast;
   int n = ast->children.n - 2;
   ParseAST **args = &ast->children[1];
-  Sym *as[n + 2];
+  Sym **as = (Sym**)alloca(sizeof(Sym*) * (n + 2));
   int iarg = 0;
   if (fn->name != cannonical_class && fn->name != cannonical_self) {
     as[iarg] = new_sym(i, fn->scope);

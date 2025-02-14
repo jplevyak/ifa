@@ -3888,12 +3888,12 @@ Sym *constant(Sym *s) {
   return NULL;
 }
 
-Sym *constant(Var *v) {
+Sym *get_constant(Var *v) {
   if (Sym *c = constant(v->sym)) return c;
   Sym *c = NULL;
   for (int i = 0; i < v->avars.n; i++)
     if (v->avars[i].key) {
-      Sym *cc = constant(v->avars[i].value);
+      Sym *cc = get_constant(v->avars[i].value);
       if (!cc || (c && c != cc))
         return NULL;
       else
@@ -3902,7 +3902,7 @@ Sym *constant(Var *v) {
   return c;
 }
 
-Sym *constant(AVar *av) {
+Sym *get_constant(AVar *av) {
   Sym *c = NULL;
   forv_CreationSet(cs, *av->out) if (cs) {
     if (cs->sym->constant || cs->sym->is_meta_type) {

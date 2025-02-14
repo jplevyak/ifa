@@ -11,6 +11,10 @@ class Prim;
 class PNode;
 class Sym;
 
+namespace llvm {
+  class BasicBlock;
+}
+
 enum Code_kind { Code_SUB = 0, Code_MOVE, Code_SEND, Code_IF, Code_LABEL, Code_GOTO, Code_SEQ, Code_CONC, Code_NOP };
 
 enum Partial_kind { Partial_OK = 0, Partial_NEVER = 1, Partial_ALWAYS = 2 };
@@ -42,7 +46,7 @@ class Code : public gc {
   PNode *pn;   // used by cfg.cpp
 
   Code(Code_kind k = Code_SUB) {
-    memset(this, 0, sizeof *this);
+    memset((void*)this, 0, sizeof *this);
     kind = k;
   }
   Code(Code &c) {
@@ -69,9 +73,12 @@ class Label : public gc {
  public:
   int id;
   unsigned int live : 1;
-  Code *code;  // used by fun.cpp
+  union {
+    Code *code;  // used by cfg.cc
+    llvm::BasicBlock *bb;  // used by llvm.cc
+  };
 
-  Label() { memset(this, 0, sizeof *this); }
+  Label() { memset((void*)this, 0, sizeof *this); }
 };
 
 #endif

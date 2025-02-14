@@ -13,7 +13,7 @@ foreach t (*.v)
   endif
   $VALGRIND ../ifa -D.. $flags $t >! $t.out
   echo $t:r >> $t.out
-  $t:r >> $t.out
+  ./$t:r >> $t.out
   if ($?WINDIR) then
     rm $t:r.exe
   else

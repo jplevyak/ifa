@@ -138,13 +138,13 @@ class Immediate : public gc {
     return *this;
   }
   Immediate(bool b) {
-    memset(this, 0, sizeof(*this));
+    memset((void*)this, 0, sizeof(*this));
     const_kind = IF1_NUM_KIND_UINT;
     num_index = IF1_INT_TYPE_1;
     v_bool = b;
   }
   Immediate(char *s) {
-    memset(this, 0, sizeof(*this));
+    memset((void*)this, 0, sizeof(*this));
     const_kind = IF1_CONST_KIND_STRING;
     v_string = s;
   }
@@ -241,13 +241,13 @@ EXTERN cchar *num_kind_string[4][8] EXTERN_INIT(CPP_IS_LAME);
 #undef CPP_IS_LAME
 
 inline Immediate &Immediate::operator=(const Immediate &imm) {
-  memcpy(this, &imm, sizeof(imm));
+  memcpy((void*)this, &imm, sizeof(imm));
   return *this;
 }
 
-inline Immediate::Immediate(const Immediate &imm) { memcpy(this, &imm, sizeof(imm)); }
+inline Immediate::Immediate(const Immediate &imm) { memcpy((void*)this, &imm, sizeof(imm)); }
 
-inline Immediate::Immediate() { memset(this, 0, sizeof(*this)); }
+inline Immediate::Immediate() { memset((void*)this, 0, sizeof(*this)); }
 
 inline unsigned int ImmHashFns::hash(Immediate *imm) {
   unsigned int h = 0;

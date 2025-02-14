@@ -59,7 +59,7 @@ static void mark_live_avar(AVar *av) {
   mark_live_again = 1;
   if (av->var->def) av->var->def->live = 1;
   forv_AVar(aav, av->backward) if (aav) {
-    if (!aav->live && !constant(aav)) mark_live_avar(aav);
+    if (!aav->live && !get_constant(aav)) mark_live_avar(aav);
   }
 }
 
@@ -170,7 +170,7 @@ static void mark_initial_dead_and_alive(FA *fa, int init = 0) {
   forv_Fun(f, fa->funs) {
     f->live = init;
     forv_Var(v, f->fa_all_Vars) {
-      v->constant = constant(v);
+      v->constant = get_constant(v);
       v->live = init;
       for (int i = 0; i < v->avars.n; i++)
         if (v->avars[i].key) v->avars[i].value->live = false;

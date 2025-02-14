@@ -170,7 +170,7 @@ static inline char *_CG_prim_primitive_to_string(int i) {
   return r;
 }
 
-static inline int _CG_float_printf(double d, bool ln) {
+static inline void _CG_float_printf(double d, bool ln) {
   char *s = _CG_prim_primitive_to_string(d);
   fputs(s, stdout);
   if (ln) fputs("\n", stdout);

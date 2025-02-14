@@ -60,7 +60,7 @@ static void print_ssu(Fun *f, Vec<PNode *> nodes) {
       phy += n->phy.n;
     }
     printf("%d phi nodes\n", phi);
-    printf("%d phy nodes\n", phi);
+    printf("%d phy nodes\n", phy);
   }
   if (ifa_verbose > 3) print_renamed(f);
 }

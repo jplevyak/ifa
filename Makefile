@@ -19,7 +19,8 @@ MINOR=5
 
 CFLAGS += -I../plib
 # CFLAGS += -flto=thin
-LDFLAGS += -L/usr/local/lib -fuse-ld=lld
+#LDFLAGS += -L/usr/local/lib -fuse-ld=lld
+LDFLAGS += -L/usr/local/lib
 ifdef USE_GC
 LIBS += -L../plib -lplib_gc -ldparse_gc -lgc -pthread
 else

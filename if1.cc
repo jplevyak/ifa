@@ -26,7 +26,7 @@ bool fdce_if1 = true;
 bool fruntime_errors = false;
 
 IF1::IF1() {
-  memset(this, 0, sizeof *this);
+  memset((void*)this, 0, sizeof *this);
   primitives = new Primitives(this);
   pointer_size = sizeof(void *);
   pointer_alignment = __alignof__(void *);

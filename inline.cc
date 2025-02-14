@@ -130,7 +130,7 @@ static void sub_constants(PNode *p) {
   Vec<Var *> rvals;
   rvals.move(p->rvals);
   forv_Var(v, rvals) {
-    if (Sym *c = constant(v))
+    if (Sym *c = get_constant(v))
       p->rvals.add(new_live_Var(c));
     else
       p->rvals.add(v);
