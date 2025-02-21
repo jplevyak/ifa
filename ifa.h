@@ -89,7 +89,8 @@ void ifa_compile(cchar *fn);
 enum GraphType { GraphViz, VCG };
 extern int graph_type;
 void ifa_graph(cchar *fn);
-void ifa_html(cchar *fn, char *mktree_dir);
+void ifa_html(cchar *fn, cchar *mktree_dir);
+void ifa_code(cchar *fn);
 
 extern bool fgraph_pass_contours;
 extern bool fdce_if1;

@@ -19,7 +19,7 @@
 // #define INCLUDE_PARENT_TYPES 1
 // #define GLOBAL_SYMBOLS 1
 
-static void dump_header(FILE *fp, cchar *fn, char *mktree_dir) {
+static void dump_header(FILE *fp, cchar *fn, cchar *mktree_dir) {
   fprintf(fp, "<HTML>\n");
   fprintf(fp, "<HEAD>\n");
   fprintf(fp, "<TITLE> Program Dump for %s </TITLE>\n", fn);
@@ -297,7 +297,7 @@ static void dump_symbols(FILE *fp, FA *fa) {
 #endif
 }
 
-void dump_html(FA *fa, cchar *fn, char *mktree_dir) {
+void dump_html(FA *fa, cchar *fn, cchar *mktree_dir) {
   char hfn[512];
   sprintf(hfn, "%s.html", fn);
   FILE *fp = fopen(hfn, "w");

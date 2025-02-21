@@ -12,6 +12,7 @@ static const char *ifa_config_filenames = "~/.ifalib,ifa.init";
 static int fhtml = 0;
 static int fgraph = 0;
 static int fgraph_vcg = 0;
+static int fcode = 0;
 static char log_flags[512] = "";
 static int do_unit_tests = 0;
 
@@ -24,6 +25,7 @@ static void copyright(ArgumentState *arg_state, char *arg_unused);
 static ArgumentDescription arg_desc[] = {
     {"system_directory", 'D', "System Directory", "S511", system_dir, "IFA_SYSTEM_DIRECTORY", NULL},
     {"html", 't', "Write Program in HTML", "T", &fhtml, "IFA_HTML", NULL},
+    {"code", 'c', "Write Program in Core Code", "T", &fcode, "IFA_CODE", NULL},
     {"graph", 'G', "Write Program Graphs", "T", &fgraph, "IFA_GRAPH", NULL},
     {"graph-format", ' ', "GraphViz = 0, VCG = 1", "I", &fgraph_vcg, "IFA_GRAPH_FORMAT", NULL},
     {"test", ' ', "Unit Test", "F", &do_unit_tests, "IFA_TEST", NULL},
@@ -72,6 +74,10 @@ int main(int argc, char *argv[]) {
   init_config();
   if (fhtml || log_flags[0]) init_logs();
   if (do_unit_tests) _exit(UnitTest::run_all());
-  for (int i = 0; i < arg_state.nfile_arguments; i++) compile_one_file(arg_state.file_argument[i]);
+  for (int i = 0; i < arg_state.nfile_arguments; i++) {
+    compile_one_file(arg_state.file_argument[i]);
+    if (fhtml) ifa_html(arg_state.file_argument[i], ".");
+    if (fcode) ifa_code(arg_state.file_argument[i]);
+  }
   return 0;
 }

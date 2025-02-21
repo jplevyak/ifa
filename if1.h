@@ -80,6 +80,8 @@ void if1_write_log();
 void if1_finalize(IF1 *p);
 void if1_set_primitive_types(IF1 *if1);
 
+void if1_code(FILE *fp);
+
 // debugging
 void if1_dump(FILE *fp, Code *c);
 void if1_dump_code(FILE *fp, Code *code, int indent);
