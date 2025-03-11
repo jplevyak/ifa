@@ -22,7 +22,6 @@ typedef struct ParseNode {
 
 typedef struct Globals {
   IF1 *i;
-  D_Scope *parallel_scope;
   int errors;
 } Globals;
 

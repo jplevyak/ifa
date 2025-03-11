@@ -67,6 +67,10 @@ unterminated_statement
   | def_function unterminated_statement $right 1000
     { $$.ast = new_AST(AST_def_fun, &$n);
       $$.ast->scope_kind = Scope_RECURSIVE; }
+  | def_ident ':' expression {
+      $$.ast = new_AST(AST_def_ident, &$n);
+      $$.ast->def_ident_label = 1;
+    }
   | control_flow
   | type_statement
   | 'var' def_ident_var_list $right 5100
@@ -105,7 +109,7 @@ def_type_parameter_list : '(' (def_type_parameter (',' def_type_parameter)*)? ')
 def_type_parameter
   : ident
     { $$.ast = new_AST(AST_def_type_param, &$n); }
-  | ident ':' type $binary_left 700
+  | ident ':' type
     { $$.ast = new_AST(AST_def_type_param, &$n); }
   ;
 
@@ -179,10 +183,6 @@ expression
          $g->i, ${child 1, 0, 1}->start_loc.s+1, ${child 1, 0, 1}->end-1);
    }
   | qualified_ident
-  | def_ident ':' expression $right 5100 {
-      $$.ast = new_AST(AST_def_ident, &$n);
-      $$.ast->def_ident_label = 1;
-    }
   | 'let' let_list ('in' expression)? $right 5100 {
       if ($#2)
         $$.ast = new_AST(AST_scope, &$n);
@@ -199,7 +199,7 @@ expression
     { $$.ast = op_AST($g->i, $n); }
   | expression ('.' $name "op period" | '->' $name "op arrow") symbol_ident $left 9900
     { $$.ast = op_AST($g->i, $n); }
-  | identifier ':=' expression  $left 8600
+  | identifier ':=' expression $right 8600
     {
       $$.ast = $2.ast;
       $$.ast->arg_name = if1_cannonicalize_string($g->i, $n0.start_loc.s, $n0.end);
@@ -368,7 +368,7 @@ control_flow
     { $$.ast = loop_AST($n0, $n2, 0, 0, $n4); }
   | 'do' unterminated_statement 'while' expression $right 2300
     { $$.ast = loop_AST($n0, $n3, &$n1, 0, $n1); }
-  | 'for' '(' expression? ';' expression? ';' expression? ')' unterminated_statement $right 2400
+  | 'for' '(' unterminated_statement? ';' expression? ';' expression? ')' unterminated_statement $right 2400
     { $$.ast = loop_AST($n0, $n4, &$n2, &$n6, $n8); }
   ;
 

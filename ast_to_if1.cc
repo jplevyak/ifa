@@ -540,6 +540,8 @@ static void build_builtin_syms(IF1 *i, ParseAST *ast) {
         ast->sym->ast = ast;
         set_builtin(i, ast->sym, ast->builtin);
         break;
+      case AST_pattern:
+        break;
       default:
         assert(!"bad case");
     }
