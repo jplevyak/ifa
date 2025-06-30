@@ -21,6 +21,15 @@ CFLAGS += -I../plib
 # CFLAGS += -flto=thin
 #LDFLAGS += -L/usr/local/lib -fuse-ld=lld
 LDFLAGS += -L/usr/local/lib
+
+# LLVM Configuration
+LLVM_CXXFLAGS = $(shell llvm-config --cxxflags)
+LLVM_LDFLAGS = $(shell llvm-config --ldflags --libs core irreader executionengine mcjit native target CodeGen AsmPrinter AsmParser | sed 's/-NDEBUG //')
+# Removed -NDEBUG as DEBUG=1 is often set. LLVM_CXXFLAGS usually includes appropriate -DNDEBUG or not.
+
+CFLAGS += $(LLVM_CXXFLAGS)
+LDFLAGS_EXEC = $(LDFLAGS) $(LLVM_LDFLAGS) # LDFLAGS for executables needing LLVM libs
+
 ifdef USE_GC
 LIBS += -L../plib -lplib_gc -ldparse_gc -lgc -pthread
 else
@@ -38,13 +47,13 @@ AR = llvm-ar
 AUX_FILES = $(MODULE)/index.html $(MODULE)/manual.html $(MODULE)/faq.html $(MODULE)/ifa.1 $(MODULE)/ifa.cat
 TAR_FILES = $(AUX_FILES) $(TEST_FILES)
 
-LIB_SRCS = ast.cc builtin.cc cdb.cc cfg.cc cg.cc clone.cc dead.cc dom.cc fa.cc \
+LIB_SRCS = ast.cc builtin.cc cdb.cc cfg.cc cg.cc llvm.cc clone.cc dead.cc dom.cc fa.cc \
 	fail.cc fun.cc graph.cc html.cc if1.cc ifa.cc inline.cc \
 	ifalog.cc loop.cc num.cc pattern.cc pdb.cc pnode.cc prim.cc prim_data.cc \
 	main.cc ssu.cc sym.cc var.cc ifa_version.cc
 LIB_OBJS = $(LIB_SRCS:%.cc=%.o)
 
-IFA_DEPEND_SRCS = main.cc parse.cc scope.cc make_ast.cc ast_to_if1.cc
+IFA_DEPEND_SRCS = main.cc parse.cc scope.cc make_ast.cc ast_to_if1.cc cg.cc llvm.cc
 IFA_SRCS = $(IFA_DEPEND_SRCS) v.g.d_parser.cc python.g.d_parser.cc
 IFA_OBJS = $(IFA_SRCS:%.cc=%.o)
 
@@ -87,7 +96,7 @@ deinstall:
 	rm $(INSTALL_LIBRARIES:%=$(PREFIX)/lib/%)
 
 $(IFA): $(IFA_OBJS) $(LIB_OBJS) $(LIBRARIES)
-	$(CXX) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
+	$(CXX) $(CFLAGS) $(LDFLAGS_EXEC) -o $@ $^ $(LIBS)
 
 $(LIBRARY): $(LIB_OBJS)
 	$(AR) $(AR_FLAGS) $@ $^

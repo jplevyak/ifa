@@ -78,7 +78,8 @@ Sym::Sym()
 #endif
       element(NULL),
       temp(NULL),
-      llvm_type(NULL) {
+      llvm_type(NULL),
+      llvm_type_di_cache(NULL) {
 }
 
 cchar *Sym::pathname() {

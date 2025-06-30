@@ -155,6 +155,7 @@ class Sym : public BasicSym {
 
   void *temp;  // algorithmic temp             *type*
   llvm::Type *llvm_type;
+  llvm::DIType *llvm_type_di_cache; // Cache for debug information type
 
   Sym();
 
