@@ -6,6 +6,7 @@
 #include "fun.h" // For Fun
 #include "fa.h"  // For FA
 #include "fail.h" // For fail
+#include "pattern.h" // For MPosition
 
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -18,12 +19,22 @@
 #include "llvm/MC/TargetRegistry.h" // Required for TargetRegistry
 #include <memory> // For std::unique_ptr
 #include <string> // For std::string
+#include <map>    // For std::map
+#include <vector>
+#include <set>      // For std::set
+
+// Helper macros if not defined
+#ifndef forv_MPosition
+#define forv_MPosition(_p, _v) forv_Vec(MPosition, _p, _v)
+#endif
 
 // Global LLVM variables
 static std::unique_ptr<llvm::LLVMContext> TheContext;
 static std::unique_ptr<llvm::Module> TheModule;
 static std::unique_ptr<llvm::IRBuilder<>> Builder;
 static std::unique_ptr<llvm::DIBuilder> DBuilder; // For Debug Info
+static llvm::DICompileUnit *CU = nullptr;
+static llvm::DIFile *UnitFile = nullptr;
 
 static void llvm_codegen_initialize(FA *fa) {
   // Initialize LLVM components
@@ -56,6 +67,15 @@ static void llvm_codegen_initialize(FA *fa) {
 
 // Forward declaration
 static llvm::Type *getLLVMType(Sym *sym);
+static llvm::DIType *getLLVMDIType(Sym *sym, llvm::DIFile *di_file);
+
+static std::string getTypeName(llvm::Type *Ty) {
+    if (!Ty) return "null";
+    std::string str;
+    llvm::raw_string_ostream rso(str);
+    Ty->print(rso);
+    return rso.str();
+}
 
 // Helper to convert IF1 numeric types to LLVM IntegerType or FloatingPointType
 static llvm::Type *mapNumericType(Sym *sym) {
@@ -119,7 +139,7 @@ static llvm::Type *getLLVMType(Sym *sym) {
     // Represent string as char* or a custom struct {i8*, i64} for length
     // For now, let's use i8* (pointer to char)
     // This might need adjustment based on runtime string representation
-    type = llvm::Type::getInt8PtrTy(*TheContext);
+    type = llvm::PointerType::getUnqual(*TheContext);
   } else if (unaliased_sym->num_kind != IF1_NUM_KIND_NONE) {
     type = mapNumericType(unaliased_sym);
   } else {
@@ -299,7 +319,7 @@ static llvm::Type *getLLVMType(Sym *sym) {
             // This is a placeholder and needs a proper strategy for sum types.
             // For now, let's use a pointer to i8 as a very generic type.
             fprintf(stderr, "Warning: SUM type %s mapped to i8*. Needs proper handling.\\n", unaliased_sym->name ? unaliased_sym->name : "unnamed_sum");
-            type = llvm::Type::getInt8PtrTy(*TheContext);
+            type = llvm::PointerType::getUnqual(*TheContext);
         }
         break;
       case Type_UNKNOWN:
@@ -325,6 +345,49 @@ static llvm::Type *getLLVMType(Sym *sym) {
   }
   return type;
 }
+
+// Basic implementation of getLLVMDIType for Debug Info
+static llvm::DIType *getLLVMDIType(Sym *sym, llvm::DIFile *di_file) {
+    if (!sym || !DBuilder) return nullptr;
+    if (sym->llvm_type_di_cache) return sym->llvm_type_di_cache;
+
+    // TODO: Implement proper type mapping for Debug Info
+    // This is a minimal implementation to satisfy the linker and provide basic type info.
+    
+    llvm::DIType *di_type = nullptr;
+    uint64_t size_in_bits = 0; // Default
+    unsigned encoding = llvm::dwarf::DW_ATE_unsigned;
+
+    if (sym->num_kind == IF1_NUM_KIND_INT) {
+         size_in_bits = 32; // Placeholder
+         encoding = llvm::dwarf::DW_ATE_signed;
+         di_type = DBuilder->createBasicType(sym->name ? sym->name : "int", size_in_bits, encoding);
+    } else if (sym->num_kind == IF1_NUM_KIND_FLOAT) {
+         size_in_bits = 64; // Placeholder
+         encoding = llvm::dwarf::DW_ATE_float;
+         di_type = DBuilder->createBasicType(sym->name ? sym->name : "float", size_in_bits, encoding);
+    } else {
+         // Fallback for other types -> treat as void* or similar
+         di_type = DBuilder->createUnspecifiedType(sym->name ? sym->name : "unknown_type");
+    }
+
+    sym->llvm_type_di_cache = di_type;
+    return di_type;
+}
+
+static llvm::DISubroutineType *createFunctionDIType(Fun *ifa_fun, llvm::DIFile *di_file) {
+    if (!DBuilder) return nullptr;
+    // Minimal implementation: Assume void() or similar for now
+    // TODO: Build actual elements array with return type and arg types
+    llvm::SmallVector<llvm::Metadata *, 8> EltTys;
+    // Return type first (null for void)
+    EltTys.push_back(nullptr); 
+    
+    return DBuilder->createSubroutineType(DBuilder->getOrCreateTypeArray(EltTys));
+}
+
+// Forward Declaration
+static void translateFunctionBody(Fun *ifa_fun);
 
 // Helper to get or create string constants as global variables
 static llvm::Constant *getOrCreateLLVMStringConstant(const std::string &str) {
@@ -457,7 +520,9 @@ static void createGlobalVariables(FA *fa) {
     // The `globals` vector in `cg.cc` is populated by `build_type_strings` which calls `collect_types_and_globals`.
     // `collect_types_and_globals` iterates `fa->vars`.
 
-    forv_Var(var, fa->vars) { // fa->vars seems to contain all relevant variables including globals
+    forv_Sym(sym_iter, fa->pdb->if1->allsyms) { // Iterate all symbols to find globals
+        Var *var = sym_iter->var;
+        if (!var) continue;
         if (!var || !var->sym) continue;
         Sym* sym = var->sym;
 
@@ -609,8 +674,8 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun) {
     fname = full_path.substr(last_slash + 1);
   }
   TheModule->setSourceFileName(fname); // Set source file name on the Module
-  llvm::DIFile *UnitFile = DBuilder->createFile(fname, dir);
-  llvm::DICompileUnit *CU = DBuilder->createCompileUnit(
+  UnitFile = DBuilder->createFile(fname, dir);
+  CU = DBuilder->createCompileUnit(
       llvm::dwarf::DW_LANG_C, UnitFile, "ifa-compiler", 0 /*isOptimized*/, "" /*flags*/, 0 /*RV*/);
 
   // Create Global Variables
@@ -815,8 +880,7 @@ static llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
     unsigned line_num = ifa_fun->line(); // Get line number from Fun
 
     // Create DIType for function
-    llvm::DISubroutineType *di_func_type = DBuilder->createSubroutineType(
-        createFunctionDIType(ifa_fun, di_file));
+    llvm::DISubroutineType *di_func_type = createFunctionDIType(ifa_fun, di_file);
 
     llvm::DISubprogram *sp = DBuilder->createFunction(
         CU,                                // Scope (Compile Unit)
@@ -853,20 +917,23 @@ static llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
         if (arg_var && arg_var->live && arg_var->llvm_value) {
             llvm::DIType *arg_di_type = getLLVMDIType(arg_var->type, di_file);
             if (arg_di_type && entry_bb_for_arg_dbg) { // Only if we have a block to insert into
-                DILocalVariable *dil_arg = DBuilder->createParameterVariable(
-                    sp,                                 // Scope (the function's DISubprogram)
-                    arg_var->sym->name ? arg_var->sym->name : ("arg" + std::to_string(current_arg_idx)), // Name
-                    current_arg_idx + 1,                // Arg No (1-based)
-                    di_file,                            // File
-                    ifa_fun->line(),                    // Line (function start line for args)
-                    arg_di_type,                        // Type
-                    true                                // AlwaysPreserve (for arguments)
-                );
-                DBuilder->insertDeclare(
-                    arg_var->llvm_value, dil_arg, DBuilder->createExpression(),
-                    llvm::DebugLoc::get(ifa_fun->line(), 0, sp), // Location of the declare
-                    Builder->GetInsertBlock()); // Insert in the current block (should be entry)
-            }
+            llvm::Argument *llvm_argument = static_cast<llvm::Argument*>(arg_var->llvm_value);
+            llvm::DILocalVariable *dil_arg = DBuilder->createParameterVariable(
+                sp, arg_var->sym->name ? arg_var->sym->name : "arg",
+                current_arg_idx + 1, // ArgNo
+                UnitFile,
+                ifa_fun->line(),
+                getLLVMDIType(arg_var->type, UnitFile),
+                true // Always preserve
+            );
+            
+            DBuilder->insertDeclare(
+                llvm_argument,
+                dil_arg,
+                DBuilder->createExpression(),
+                llvm::DILocation::get(*TheContext, ifa_fun->line(), 0, sp), // Location of the declare
+                Builder->GetInsertBlock()
+            );
             current_arg_idx++;
         }
     }
@@ -904,6 +971,7 @@ static llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
   }
 
   return llvm_func;
+}
 }
 
 
@@ -953,10 +1021,12 @@ static void translateFunctionBody(Fun *ifa_fun) {
     if (ifa_fun->entry->code && ifa_fun->entry->code->kind == Code_LABEL && ifa_fun->entry->code->label[0]) {
          llvm::BasicBlock* entry_bb = getLLVMBasicBlock(ifa_fun->entry->code->label[0], llvm_func);
          // Move this block to the beginning of the function if it's not already the first one.
+         // If the auto-created entry block by LLVM is empty and not our target, we can remove it.
+         // However, it's safer to just ensure our real entry block is properly linked.
+         // For now, translatePNode for the entry node will handle setting the insert point.
          if (entry_bb != &llvm_func->getEntryBlock() && llvm_func->getEntryBlock().empty()) {
-             // If the auto-created entry block by LLVM is empty and not our target, we can remove it.
-             // However, it's safer to just ensure our real entry block is properly linked.
-             // For now, translatePNode for the entry node will handle setting the insert point.
+             // This means llvm_func->getEntryBlock() was the one created by Function::Create.
+             // We need to ensure our actual IF1 entry point PNode starts filling *its* corresponding BB.
          } else if (entry_bb != &llvm_func->getEntryBlock()) {
             // This means llvm_func->getEntryBlock() was the one created by Function::Create.
             // We need to ensure our actual IF1 entry point PNode starts filling *its* corresponding BB.
@@ -991,18 +1061,21 @@ static void translateFunctionBody(Fun *ifa_fun) {
                     unsigned var_line = v->sym->line() ? v->sym->line() : func_start_line; // Prefer var's own line
 
                     if (var_di_type) {
-                        DILocalVariable *dil_var = DBuilder->createAutoVariable(
-                            llvm_func->getSubprogram(),         // Scope
-                            v->sym->name ? v->sym->name : "auto_var", // Name
-                            di_file_for_locals,                 // File
-                            var_line,                           // Line
-                            var_di_type,                        // Type
-                            true                                // AlwaysPreserve
+                        llvm::DILocalVariable *dil_var = DBuilder->createAutoVariable(
+                            llvm_func->getSubprogram(), // Scope
+                            v->sym->name ? v->sym->name : "var",
+                            UnitFile,
+                            var_line,
+                            getLLVMDIType(v->type, UnitFile)
                         );
+
                         DBuilder->insertDeclare(
-                            alloca_inst, dil_var, DBuilder->createExpression(),
-                            llvm::DebugLoc::get(var_line, 0, llvm_func->getSubprogram()),
-                            Builder->GetInsertBlock()); // Insert in entry block where alloca is
+                             alloca_inst,
+                             dil_var,
+                             DBuilder->createExpression(),
+                             llvm::DILocation::get(*TheContext, var_line, 0, llvm_func->getSubprogram()),
+                             Builder->GetInsertBlock()
+                        );
                     }
                 }
 
@@ -1137,7 +1210,7 @@ static void translatePNode(PNode *pn, Fun *ifa_fun) {
     // TODO: Get correct line/col from PNode or its AST
     unsigned line = pn->code->line() ? pn->code->line() : ifa_fun->line();
     unsigned col = 0; // TODO: Get column info
-    Builder->SetCurrentDebugLocation(llvm::DebugLoc::get(line, col, llvm_func->getSubprogram()));
+    Builder->SetCurrentDebugLocation(llvm::DILocation::get(*TheContext, line, col, llvm_func->getSubprogram()));
 
     switch (pn->code->kind) {
         case Code_LABEL: {
@@ -1278,227 +1351,10 @@ static void translatePNode(PNode *pn, Fun *ifa_fun) {
 }
 
 
-// Helper for creating DISubroutineType (used in createFunction)
-static llvm::DITypeRefArray createFunctionDIType(Fun *ifa_fun, llvm::DIFile *di_file) {
-    std::vector<llvm::Metadata *> el_types;
-
-    // Return Type
-    llvm::DIType *ret_di_type;
-    if (ifa_fun->rets.n == 1 && ifa_fun->rets[0] && ifa_fun->rets[0]->type) {
-        ret_di_type = getLLVMDIType(ifa_fun->rets[0]->type, di_file);
-    } else {
-        ret_di_type = getLLVMDIType(sym_void_type, di_file); // Assuming sym_void_type is global
-    }
-    el_types.push_back(ret_di_type);
-
-    // Argument Types
-    forv_MPosition(p, ifa_fun->positional_arg_positions) {
-        Var *arg_var = ifa_fun->args.get(p);
-        if (arg_var && arg_var->live && arg_var->type) {
-            el_types.push_back(getLLVMDIType(arg_var->type, di_file));
-        }
-    }
-    return DBuilder->getOrCreateTypeArray(el_types);
-}
-
-// Helper to get/create DIType for a Sym type (recursive)
-// This is a simplified version and needs to be expanded for all types (structs, pointers, etc.)
-static llvm::DIType *getLLVMDIType(Sym *sym, llvm::DIFile *di_file) {
-    if (!sym) return DBuilder->createUnspecifiedType("void_ptr_di"); // Or some error/placeholder
-    if (sym->llvm_type_di_cache) return sym->llvm_type_di_cache; // Cache lookup
-
-    Sym* unaliased = unalias_type(sym);
-    if (unaliased->llvm_type_di_cache) { // Check cache on unaliased version
-        sym->llvm_type_di_cache = unaliased->llvm_type_di_cache;
-        return sym->llvm_type_di_cache;
-    }
-
-    llvm::Type *llvm_type = getLLVMType(unaliased); // Ensure LLVM type is created first
-    if (!llvm_type) {
-        fail("Cannot create DIType: LLVM type for Sym %s is null", unaliased->name);
-        return DBuilder->createUnspecifiedType("error_di_type");
-    }
-
-    llvm::DIType *di_type = nullptr;
-
-    if (llvm_type->isVoidTy()) {
-        di_type = nullptr; // No DIType for void return in DISubroutineType, but basic type can be created
-                           // For variables/members of void type, this might be different.
-                           // Let's use a basic unspecified type for void if it's not for function return.
-                           // However, DISubroutineType expects nullptr for void returns.
-                           // For now, let's assume this function is called for var/field types.
-        // di_type = DBuilder->createBasicType("void", 0, llvm::dwarf::DW_ATE_address); // size 0, encoding address for void*
-    } else if (llvm_type->isIntegerTy()) {
-        std::string name = "";
-        unsigned encoding = llvm::dwarf::DW_ATE_signed;
-        if (unaliased->num_kind == IF1_NUM_KIND_UINT) encoding = llvm::dwarf::DW_ATE_unsigned;
-        if (unaliased->num_kind == IF1_NUM_KIND_INT && unaliased->num_index == IF1_INT_TYPE_1) { // bool
-             name = "bool"; encoding = llvm::dwarf::DW_ATE_boolean;
-        } else if (unaliased->name) {
-            name = unaliased->name;
-        } else { // fallback names
-            if (encoding == llvm::dwarf::DW_ATE_signed) name = "int" + std::to_string(llvm_type->getIntegerBitWidth());
-            else if (encoding == llvm::dwarf::DW_ATE_unsigned) name = "uint" + std::to_string(llvm_type->getIntegerBitWidth());
-            else name = "i" + std::to_string(llvm_type->getIntegerBitWidth());
-        }
-        di_type = DBuilder->createBasicType(name, llvm_type->getPrimitiveSizeInBits(), encoding);
-    } else if (llvm_type->isFloatingPointTy()) {
-        std::string name = unaliased->name ? unaliased->name : ("fp" + std::to_string(llvm_type->getPrimitiveSizeInBits()));
-        di_type = DBuilder->createBasicType(name, llvm_type->getPrimitiveSizeInBits(), llvm::dwarf::DW_ATE_float);
-    } else if (llvm_type->isPointerTy()) {
-        llvm::PointerType *pt = llvm::cast<llvm::PointerType>(llvm_type);
-        Sym* element_sym = nullptr;
-        // Try to find original element Sym. This is a bit heuristic.
-        if (unaliased->type_kind == Type_REF && unaliased->element) element_sym = unaliased->element->type;
-        else if (unaliased == sym_string) element_sym = sym_int8; // char for string
-        // else it could be an array decay or other pointer.
-
-        llvm::DIType *pointee_type;
-        if (element_sym) {
-            pointee_type = getLLVMDIType(element_sym, di_file);
-        } else {
-             // If we don't know the pointee IF1 type, create an unspecified one.
-             // Or if it's a pointer to a struct not yet fully defined.
-            if (pt->getPointeeType()->isStructTy() && pt->getPointeeType()->getStructName().startswith("struct.anon")) {
-                 pointee_type = DBuilder->createUnspecifiedType(pt->getPointeeType()->getStructName().str());
-            } else {
-                 pointee_type = DBuilder->createUnspecifiedType("void_di"); // Generic pointer
-            }
-        }
-        di_type = DBuilder->createPointerType(pointee_type, llvm::DataLayout(TheModule.get()).getPointerSizeInBits());
-    } else if (llvm_type->isStructTy()) {
-        llvm::StructType *st = llvm::cast<llvm::StructType>(llvm_type);
-        // Handle forward declaration for recursive types
-        di_type = DBuilder->createReplaceableCompositeType(
-            llvm::dwarf::DW_TAG_structure_type,
-            st->hasName() ? st->getName().str() : (unaliased->name ? unaliased->name : ""),
-            CU, di_file, 0); // line 0 for now
-
-        unaliased->llvm_type_di_cache = di_type; // Cache immediately for recursion
-
-        std::vector<llvm::Metadata *> elements;
-        unsigned current_offset = 0;
-        const llvm::DataLayout &dl = TheModule->getDataLayout();
-
-        for (int i = 0; i < unaliased->has.n; ++i) {
-            Sym *field_sym_decl = unaliased->has[i]; // This is the declaration of the field (e.g. 'x' in struct S {int x;})
-            Sym *field_type_sym = field_sym_decl->type; // This is the type of the field (e.g. 'int')
-
-            if (!field_type_sym) {
-                fail("Field %s of struct %s has no type for DIType creation", field_sym_decl->name, unaliased->name);
-                continue;
-            }
-
-            llvm::Type* field_llvm_ty = getLLVMType(field_type_sym);
-            if (!field_llvm_ty) {
-                 fail("Cannot get LLVM type for field %s of struct %s for DIType creation", field_sym_decl->name, unaliased->name);
-                 continue;
-            }
-
-            llvm::DIType *field_di_type = getLLVMDIType(field_type_sym, di_file);
-            if (!field_di_type) {
-                 fail("Cannot get DIType for field %s of struct %s", field_sym_decl->name, unaliased->name);
-                 continue;
-            }
-
-            elements.push_back(DBuilder->createMemberType(
-                di_type, // Scope (the struct type itself)
-                field_sym_decl->name ? field_sym_decl->name : ("field" + std::to_string(i)), // Name
-                di_file, // File
-                0,       // Line number (TODO: get from Sym)
-                field_di_type->getSizeInBits(), // Size in bits
-                dl.getABITypeAlign(field_llvm_ty).value() * 8, // Alignment in bits
-                current_offset, // Offset in bits
-                llvm::DINode::FlagZero, // Flags
-                field_di_type // Type
-            ));
-            current_offset += field_llvm_ty->isSized() ? dl.getTypeAllocSizeInBits(field_llvm_ty) : 0;
-            // This offset calculation might need refinement for packed structs or complex layouts.
-        }
-        llvm::DINodeArray el_array = DBuilder->getOrCreateArray(elements);
-        DBuilder->replaceArrays(llvm::cast<llvm::DICompositeType>(di_type), el_array);
-        // The size of the struct itself
-        llvm::cast<llvm::DICompositeType>(di_type)->setSizeInBits(dl.getTypeAllocSizeInBits(st));
-
-    } else if (llvm_type->isArrayTy()) {
-        // TODO: Handle array types
-        // llvm::ArrayType *at = llvm::cast<llvm::ArrayType>(llvm_type);
-        // llvm::DIType *element_di_type = getLLVMDIType(unaliased->element->type, di_file);
-        // llvm::SmallVector<llvm::Metadata *, 1> subscripts;
-        // subscripts.push_back(DBuilder->getOrCreateSubrange(0, at->getNumElements() -1 ));
-        // di_type = DBuilder->createArrayType(at->getNumElements() * element_di_type->getSizeInBits(),
-        //                                 TheModule->getDataLayout().getABITypeAlignment(element_di_type) * 8,
-        //                                 element_di_type, DBuilder->getOrCreateArray(subscripts));
-        fail("DIType for ArrayType not fully implemented for %s", unaliased->name);
-        di_type = DBuilder->createUnspecifiedType(unaliased->name ? unaliased->name : "array_type_di");
-    }
-    // TODO: Vector types, Function types (as DITypes for variables)
-
-    if (!di_type) {
-        fprintf(stderr, "Warning: Could not create DIType for Sym %s (LLVM Type: %s), using unspecified.\n",
-                unaliased->name ? unaliased->name : "unnamed",
-                (llvm_type && !llvm_type->isVoidTy()) ? llvm_type->print().c_str() : "void/unknown");
-        di_type = DBuilder->createUnspecifiedType(unaliased->name ? unaliased->name : "unknown_di_type");
-    }
-
-    sym->llvm_type_di_cache = di_type;
-    if (unaliased != sym) unaliased->llvm_type_di_cache = di_type;
-    return di_type;
-}
-
-
-void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun) {
-  llvm_codegen_initialize(fa);
-
-  if (!fa) {
-    fail("FA object is null in llvm_codegen_print_ir");
-    return;
-  }
-  if (!main_fun) {
-    fail("Main function is null in llvm_codegen_print_ir");
-    return;
-  }
-
-  // Create DIBuilder Compile Unit
-  cchar* src_filename = fa->pdb->if1->filename ? fa->pdb->if1->filename : "unknown.ifa";
-  cchar* directory = "."; // This should be improved to get actual directory
-  // It's better to use TheModule->getSourceFileName() if set, or derive from input
-  llvm::DIFile *UnitFile = DBuilder->createFile(filename, directory);
-  TheModule->setSourceFileName(filename); // Also set it on the module
-
-  llvm::DICompileUnit *CU = DBuilder->createCompileUnit(
-      llvm::dwarf::DW_LANG_C, UnitFile, "ifa-compiler", 0 /*isOptimized*/, "" /*flags*/, 0 /*RV*/);
-
-  // Finalize debug information AFTER all debug metadata is created
-  // DBuilder->finalize(); // Moved to after IR generation
-
-  // --- Main IR Generation would happen here ---
-
-  // Finalize DI builder after all IR and debug info is generated
-  DBuilder->finalize();
-
-  // Verify the module
-  std::string error_str;
-  llvm::raw_string_ostream rso(error_str);
-  if (llvm::verifyModule(*TheModule, &rso)) {
-    fail("LLVM module verification failed: %s", rso.str().c_str());
-    if (fp != stderr) { // Print to file as well if it's not stderr
-        fprintf(fp, "; LLVM module verification failed: %s\\n", rso.str().c_str());
-    }
-    return;
-  }
-
-  // Print the module to the file
-  std::string ir_string;
-  llvm::raw_string_ostream ir_rso(ir_string);
-  TheModule->print(ir_rso, nullptr);
-  fprintf(fp, "%s", ir_rso.str().c_str());
-}
-
 void llvm_codegen_write_ir(FA *fa, Fun *main, cchar *input_filename) {
   char fn[512];
   strncpy(fn, input_filename, sizeof(fn) - 1);
-  fn[sizeof(fn)-1] = '\\0';
+  fn[sizeof(fn)-1] = '\0';
   char *dot = strrchr(fn, '.');
   if (dot) {
     strcpy(dot, ".ll"); // Replace extension with .ll
@@ -1523,14 +1379,14 @@ int llvm_codegen_compile(cchar *input_filename) {
 
   // Construct .ll filename from input_filename (e.g., test.ifa -> test.ll)
   strncpy(ll_file, input_filename, sizeof(ll_file) - 1);
-  ll_file[sizeof(ll_file)-1] = '\\0';
+  ll_file[sizeof(ll_file)-1] = '\0';
   char *dot_ll = strrchr(ll_file, '.');
   if (dot_ll) strcpy(dot_ll, ".ll");
   else strcat(ll_file, ".ll");
 
   // Construct .o filename from input_filename (e.g., test.ifa -> test.o)
   strncpy(obj_file, input_filename, sizeof(obj_file) - 1);
-  obj_file[sizeof(obj_file)-1] = '\\0';
+  obj_file[sizeof(obj_file)-1] = '\0';
   char *dot_o = strrchr(obj_file, '.');
   if (dot_o) strcpy(dot_o, ".o");
   else strcat(obj_file, ".o");
@@ -1563,3 +1419,4 @@ int llvm_codegen_compile(cchar *input_filename) {
   // This should be part of the Makefile logic.
   return 0;
 }
+

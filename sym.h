@@ -24,6 +24,7 @@ class IFASymbol;
 namespace llvm {
 class Value;
 class Type;
+class DIType;
 }  // namespace llvm
 
 enum Type_kind {

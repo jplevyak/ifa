@@ -33,6 +33,7 @@ class IF1 : public gc {
   int pointer_size;       // defaults to sizeof(void *)
   int pointer_alignment;  // defaults to __alignof__(void *)
   Partial_kind partial_default;
+  cchar *filename;
 
   IF1();
 };

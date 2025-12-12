@@ -1,35 +1,50 @@
-#!/bin/tcsh 
+#!/bin/bash
 
-#setenv VALGRIND 'valgrind --tool=memcheck --leak-check=yes --show-reachable=yes'
-setenv VALGRIND ''
+#export VALGRIND='valgrind --tool=memcheck --leak-check=yes --show-reachable=yes'
+export VALGRIND=''
 
-cd tests
-set failed = 0
-foreach t (*.v)
-  if (-e $t.flags) then
-    set flags = `cat $t.flags`
+cd tests || exit 1
+failed=0
+
+for t in *.v; do
+  if [ -e "${t}.flags" ]; then
+    flags=$(cat "${t}.flags")
   else
-    set flags = 
-  endif
-  $VALGRIND ../ifa -D.. $flags $t >! $t.out
-  echo $t:r >> $t.out
-  ./$t:r >> $t.out
-  if ($?WINDIR) then
-    rm $t:r.exe
+    flags=""
+  fi
+
+  base="${t%.*}"
+
+  # Run ifa
+  # shellcheck disable=SC2086
+  $VALGRIND ../ifa -D.. $flags "$t" > "${t}.out"
+
+  # Append basename
+  echo "$base" >> "${t}.out"
+
+  # Run the compiled binary
+  ./"$base" >> "${t}.out"
+
+  # Cleanup
+  if [ -n "$WINDIR" ]; then
+    rm -f "${base}.exe"
   else
-    rm $t:r
-  endif
-  diff $t.out $t.check
-  if ($?) then
-    echo $t "******** FAILED ********"
-    set failed = `expr $failed + 1`
+    rm -f "$base"
+  fi
+
+  # Diff
+  diff "${t}.out" "${t}.check"
+  if [ $? -ne 0 ]; then
+    echo "$t ******** FAILED ********"
+    failed=$((failed + 1))
   else
-    echo $t "PASSED"
-  endif
-end
+    echo "$t PASSED"
+  fi
+done
+
 echo "---------------------------------------"
-if (! $failed) then
+if [ "$failed" -eq 0 ]; then
   echo "ALL tests PASSED"
 else
-  echo "********" $failed "test(s) FAILED *********"
-endif
+  echo "******** $failed test(s) FAILED *********"
+fi
