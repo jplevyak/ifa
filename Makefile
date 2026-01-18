@@ -30,6 +30,37 @@ LLVM_LDFLAGS = $(shell llvm-config --ldflags --libs core irreader executionengin
 CFLAGS += $(LLVM_CXXFLAGS)
 LDFLAGS_EXEC = $(LDFLAGS) $(LLVM_LDFLAGS) # LDFLAGS for executables needing LLVM libs
 
+# Objects for ifa-llvm (No GC)
+NOGC_DIR = nogc
+$(shell mkdir -p $(NOGC_DIR))
+
+LLVM_BACKEND_SRCS = sym.cc var.cc fun.cc if1.cc prim.cc prim_data.cc pnode.cc cfg.cc dom.cc \
+                    dead.cc clone.cc llvm.cpp ir_deserialize.cc llvm_main.cpp fa.cc pdb.cc \
+                    graph.cc builtin.cc num.cc ssu.cc \
+                    ast.cc html.cc ifalog.cc ifa.cc inline.cc loop.cc pattern.cc
+
+LLVM_BACKEND_OBJS = $(addprefix $(NOGC_DIR)/, $(LLVM_BACKEND_SRCS:.cc=.o))
+LLVM_BACKEND_OBJS := $(LLVM_BACKEND_OBJS:.cpp=.o)
+
+# Override flags: remove -DUSE_GC, add -I., -I../plib, -I../dparser
+NOGC_CXXFLAGS = $(filter-out -DUSE_GC, $(CFLAGS)) -I. -I../plib -I../dparser
+
+# Compile rules
+$(NOGC_DIR)/%.o: %.cc
+	$(CXX) $(NOGC_CXXFLAGS) -c -o $@ $<
+
+$(NOGC_DIR)/%.o: %.cpp
+	$(CXX) $(NOGC_CXXFLAGS) -c -o $@ $<
+
+# Link with nogc libs
+LIBS_NOGC = -L../plib -lplib_nogc -L. -ldparse_nogc -lrt -lpthread -lm
+
+ifa-llvm: $(LLVM_BACKEND_OBJS)
+	$(CXX) $(NOGC_CXXFLAGS) -o $@ $(filter-out nogc/fail.o, $(LLVM_BACKEND_OBJS)) $(LLVM_LDFLAGS) $(LIBS_NOGC)
+
+clean_llvm:
+	rm -rf $(NOGC_DIR) ifa-llvm
+
 ifdef USE_GC
 LIBS += -L../plib -lplib_gc -ldparse_gc -lgc -pthread
 else
@@ -41,6 +72,16 @@ ifneq ($(OS_TYPE),Darwin)
 endif
 endif
 
+OBJS = main.o parse.o scope.o make_ast.o ast_to_if1.o cg.o llvm.o ir_serialize.o $(PARSER_OBJS) \
+       ast.o builtin.o cdb.o cfg.o clone.o dead.o dom.o fa.o fail.o fun.o \
+       graph.o html.o if1.o ifa.o inline.o ifalog.o loop.o num.o pattern.o \
+       pdb.o pnode.o prim.o prim_data.o ssu.o sym.o var.o ifa_version.o
+
+OBJS_LIB = ast.o builtin.o cdb.o cfg.o cg.o llvm.o ir_serialize.o clone.o dead.o dom.o fa.o \
+           fail.o fun.o graph.o html.o if1.o ifa.o inline.o ifalog.o loop.o \
+           num.o pattern.o pdb.o pnode.o prim.o prim_data.o main.o ssu.o \
+           sym.o var.o ifa_version.o
+
 CXX ?= clang++
 AR = llvm-ar
 
@@ -50,14 +91,15 @@ TAR_FILES = $(AUX_FILES) $(TEST_FILES)
 LIB_SRCS = ast.cc builtin.cc cdb.cc cfg.cc cg.cc llvm.cc clone.cc dead.cc dom.cc fa.cc \
 	fail.cc fun.cc graph.cc html.cc if1.cc ifa.cc inline.cc \
 	ifalog.cc loop.cc num.cc pattern.cc pdb.cc pnode.cc prim.cc prim_data.cc \
+	ir_serialize.cc \
 	main.cc ssu.cc sym.cc var.cc ifa_version.cc
 LIB_OBJS = $(LIB_SRCS:%.cc=%.o)
 
-IFA_DEPEND_SRCS = main.cc parse.cc scope.cc make_ast.cc ast_to_if1.cc cg.cc llvm.cc
+IFA_DEPEND_SRCS = main.cc parse.cc scope.cc make_ast.cc ast_to_if1.cc cg.cc llvm.cc ir_serialize.cc
 IFA_SRCS = $(IFA_DEPEND_SRCS) v.g.d_parser.cc python.g.d_parser.cc
 IFA_OBJS = $(IFA_SRCS:%.cc=%.o)
 
-EXECUTABLE_FILES = ifa
+EXECUTABLE_FILES = ifa ifa-llvm
 ifdef USE_GC
 LIBRARY = libifa_gc.a
 else
@@ -117,3 +159,14 @@ ifa_version.o: Makefile ifa_version.cc
 	$(CXX) $(CFLAGS) $(VERSIONCFLAGS) -c ifa_version.cc
 
 -include .depend
+
+# Test target for LLVM backend
+test_llvm: ifa ifa-llvm
+	@echo "Testing LLVM backend..."
+	IFA_LLVM=1 ./ifa test_llvm.v
+	clang test_llvm.o -o test_llvm
+	@echo "Running test_llvm..."
+	./test_llvm
+	@echo "Test passed!"
+
+.PHONY: test_llvm

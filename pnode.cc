@@ -26,7 +26,7 @@ PNode::PNode(Code *c)
       live(0),
       fa_live(0),
       mark(0),
-      prim(0),
+      prim(c->prim),
       creates(0),
       execution_frequency(0.0),
       false_branch_frequency(0.0) {

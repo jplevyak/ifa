@@ -38,8 +38,14 @@ int ifa_analyze(cchar *fn) {
   if (clone(fa) < 0) return -1;
   forv_Fun(f, fa->funs) build_cfg_dominators(f);
   if (mark_live_code(fa) < 0) return -1;
+  
+  fprintf(stderr, "DEBUG: FA Funs after analysis:\n");
+  forv_Fun(f, fa->funs) {
+      fprintf(stderr, "  Fun %s (live=%d)\n", f->sym->name, f->live);
+  }
+
   if (get_int_config("alog.test.fa") > 0) log_test_fa(fa);
-  frequency_estimation(fa);
+  // frequency_estimation(fa);
   return 0;
 }
 
