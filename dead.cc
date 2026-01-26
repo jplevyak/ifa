@@ -76,6 +76,15 @@ static void mark_live_avars(FA *fa) {
           }
         }
       }
+      // if a pnode is a live function call, its arguments must be live too
+      if (p->live && f->calls.get(p)) {
+        forv_Var(v, p->rvals) if (!v->constant) {
+          form_AVarMapElem(x, v->avars) {
+            AVar *av = x->value;
+            if (!av->live) mark_live_avar(av);
+          }
+        }
+      }
     }
     forv_Var(v, f->fa_all_Vars) {
       if (!v->constant) {
