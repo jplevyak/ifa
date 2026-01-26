@@ -35,12 +35,12 @@ NOGC_DIR = nogc
 $(shell mkdir -p $(NOGC_DIR))
 
 LLVM_BACKEND_SRCS = sym.cc var.cc fun.cc if1.cc prim.cc prim_data.cc pnode.cc cfg.cc dom.cc \
-                    dead.cc clone.cc llvm.cpp ir_deserialize.cc llvm_main.cpp fa.cc pdb.cc \
+                    dead.cc clone.cc llvm.cc ir_deserialize.cc llvm_main.cc fa.cc pdb.cc \
                     graph.cc builtin.cc num.cc ssu.cc \
                     ast.cc html.cc ifalog.cc ifa.cc inline.cc loop.cc pattern.cc
 
 LLVM_BACKEND_OBJS = $(addprefix $(NOGC_DIR)/, $(LLVM_BACKEND_SRCS:.cc=.o))
-LLVM_BACKEND_OBJS := $(LLVM_BACKEND_OBJS:.cpp=.o)
+LLVM_BACKEND_OBJS := $(LLVM_BACKEND_OBJS:.cc=.o)
 
 # Override flags: remove -DUSE_GC, add -I., -I../plib, -I../dparser
 NOGC_CXXFLAGS = $(filter-out -DUSE_GC, $(CFLAGS)) -I. -I../plib -I../dparser
@@ -49,7 +49,7 @@ NOGC_CXXFLAGS = $(filter-out -DUSE_GC, $(CFLAGS)) -I. -I../plib -I../dparser
 $(NOGC_DIR)/%.o: %.cc
 	$(CXX) $(NOGC_CXXFLAGS) -c -o $@ $<
 
-$(NOGC_DIR)/%.o: %.cpp
+$(NOGC_DIR)/%.o: %.cc
 	$(CXX) $(NOGC_CXXFLAGS) -c -o $@ $<
 
 # Link with nogc libs

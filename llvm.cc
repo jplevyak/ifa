@@ -381,13 +381,14 @@ static llvm::Type *getLLVMType(Sym *sym) {
         }
         if (!success) return nullptr;
 
+#if 0
+         bool is_var_arg = false;
         // TODO: Handle varargs if unaliased_sym->is_varargs or similar flag exists
-        bool is_var_arg = false; // Placeholder
         if (unaliased_sym->fun && unaliased_sym->fun->is_varargs) {
             is_var_arg = true;
         }
+#endif
         
-        llvm::FunctionType *fun_type = llvm::FunctionType::get(return_llvm_type, arg_llvm_types, is_var_arg);
         // Function type in LLVM is the signature. 
         // Variables of function type are pointers to functions.
         type = llvm::PointerType::getUnqual(*TheContext); // All function values are pointers
@@ -528,20 +529,6 @@ static llvm::DIType *getLLVMDIType(Sym *sym, llvm::DIFile *di_file) {
 
     sym->llvm_type_di_cache = di_type;
     return di_type;
-}
-
-static llvm::DISubroutineType *createFunctionDIType(Fun *ifa_fun, llvm::DIFile *di_file) {
-    fprintf(stderr, "DEBUG: createFunctionDIType entry\n");
-    if (!DBuilder) return nullptr;
-    // Minimal implementation: Assume void() or similar for now
-    // TODO: Build actual elements array with return type and arg types
-    llvm::SmallVector<llvm::Metadata *, 8> EltTys;
-    // Return type first (null for void)
-    EltTys.push_back(nullptr); 
-    
-    llvm::DISubroutineType *ty = DBuilder->createSubroutineType(DBuilder->getOrCreateTypeArray(EltTys));
-    fprintf(stderr, "DEBUG: createFunctionDIType exit\n");
-    return ty;
 }
 
 // Forward Declaration
@@ -1143,13 +1130,9 @@ static void translateFunctionBody(Fun *ifa_fun) {
         fprintf(stderr, "DEBUG: Collected %d Vars\n", ifa_fun->fa_all_Vars.n);
     }
 
-    int pn_counter = 0;
     forv_PNode(pn, pnodes) {
-        // fprintf(stderr, "DEBUG: Checking PNode %d. code=%p\n", pn_counter++, pn->code);
         if (pn->code) {
-             // fprintf(stderr, "DEBUG: PNode code kind=%d\n", pn->code->kind);
              if (pn->code->kind == Code_LABEL) {
-                 // fprintf(stderr, "DEBUG: PNode is LABEL. label[0]=%p\n", pn->code->label[0]);
                  if (pn->code->label[0]) {
                      getLLVMBasicBlock(pn->code->label[0], llvm_func);
                  }
@@ -1643,7 +1626,6 @@ static void translatePNode(PNode *pn, Fun *ifa_fun) {
                         cond_llvm_val, llvm::Constant::getNullValue(cond_llvm_val->getType()), "ifcond.tobool");
                 }
 
-                llvm::BasicBlock *cur_bb = Builder->GetInsertBlock();
                 llvm::BasicBlock *if_true_bb = llvm::BasicBlock::Create(*TheContext, "if.true", llvm_func);
                 llvm::BasicBlock *if_false_bb = llvm::BasicBlock::Create(*TheContext, "if.false", llvm_func);
 
