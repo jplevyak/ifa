@@ -269,17 +269,23 @@ void deserialize_ir(const char *filename, FA *fa) {
             // Add to FA?
             if (fa) {
                 Fun *fun = f->fun;
-                        fun = new Fun(f);
-                        DEBUG_LOG("Deserialized NEW Fun: %p '%s' (id %d)\n", fun, f->name, sid);
-                        fa->pdb->add(fun);
-                        fa->funs.add(fun); // Add to fa->funs so iterators find it
-                
-                // Only build CFG if not already done (or just always do it if it's the main definition?)
-                // Forward refs created bare wrappers. We need to fill content.
-                if (!fun->entry) {
-                     fun->build_cfg();  // Rebuild PNodes and CFG from Code
-                     if (fun->entry) fun->live = 1; // Mark live if CFG built
+                if (!fun) {
+                    // Not a forward reference, create new
+                    fun = new Fun(f);
+                    DEBUG_LOG("Deserialized NEW Fun: %p '%s' (id %d)\n", fun, f->name, sid);
+                    fa->pdb->add(fun);
+                    fa->funs.add(fun); // Add to fa->funs so iterators find it
+                } else {
+                    // This was a forward reference, need to build CFG now
+                    DEBUG_LOG("Filling forward ref Fun: %p '%s' (id %d)\n", fun, f->name, sid);
+                    fun->ast = f->ast;
+                    fun->build_cfg();
+                    fun->build_ssu();
+                    fun->setup_ast();
                 }
+
+                // Mark as live since only live functions are serialized
+                fun->live = 1;
                 
                 int n_args;
                 fscanf(fp, " %d", &n_args);
@@ -348,8 +354,10 @@ void deserialize_ir(const char *filename, FA *fa) {
                                  tsym->fun = target_fun;
                                  DEBUG_LOG("Calls map %p found LINKED ref to '%s' %p\n", fun, tsym->name, target_fun);
                              } else {
-                                 // Forward reference. Create shell.
-                                 target_fun = new Fun(tsym);
+                                 // Forward reference. Create shell without building CFG.
+                                 target_fun = new Fun();  // Use empty constructor
+                                 target_fun->sym = tsym;
+                                 tsym->fun = target_fun;
                                  if (tsym->name) {
                                      fun_by_name[tsym->name] = target_fun;
                                      DEBUG_LOG("Added forward ref '%s' to map\n", tsym->name);

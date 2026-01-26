@@ -24,6 +24,8 @@ int c_codegen_compile(const char*) { return 0; }
 #include "ir_serialize.h"
 #include "llvm.h"
 #include "fa.h"
+#include "dead.h"
+#include "dom.h"
 
 int main(int argc, char **argv) {
 
@@ -47,12 +49,33 @@ int main(int argc, char **argv) {
     // If backend uses `sym_string` directly -> crash.
     // We should fix global pointers after deserialization.
     
+    fprintf(stderr, "DEBUG: Creating PDB and FA\n");
     PDB *pdb = new PDB(if1);
     FA *fa = new FA(pdb);
     pdb->fa = fa;
-    
+
+    fprintf(stderr, "DEBUG: Deserializing IR from %s\n", argv[1]);
     deserialize_ir(argv[1], fa);
-    
+    fprintf(stderr, "DEBUG: Deserialization complete, %d functions\n", fa->funs.n);
+
+    // Mark live code - this sets live flags on PNodes and Vars
+    fprintf(stderr, "DEBUG: Building CFG dominators\n");
+    forv_Fun(f, fa->funs) {
+        fprintf(stderr, "DEBUG: build_cfg_dominators for %s (id %d), entry=%p\n",
+                f->sym->name ? f->sym->name : "<unnamed>", f->sym->id, f->entry);
+        if (f->entry) build_cfg_dominators(f);
+    }
+    fprintf(stderr, "DEBUG: Marking live code and functions\n");
+    fprintf(stderr, "DEBUG: if1->top = %p (%s, id %d), top->fun = %p\n",
+            if1->top, if1->top ? if1->top->name : "<null>",
+            if1->top ? if1->top->id : -1,
+            if1->top ? if1->top->fun : NULL);
+    mark_live_code(fa);
+    mark_live_funs(fa);
+    fprintf(stderr, "DEBUG: Live marking complete\n");
+    fprintf(stderr, "DEBUG: After marking, top->fun->live = %d\n",
+            if1->top && if1->top->fun ? if1->top->fun->live : -1);
+
     // Fixup global symbols if possible
     // Iterate all syms, if name matches "string", set sym_string?
     for (int i = 0; i < if1->allsyms.n; i++) {
