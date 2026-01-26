@@ -921,12 +921,11 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
     fputs("\n/*\n Global Variables\n*/\n\n", fp);
   }
   forv_Var(v, globals) if (v->sym->is_fun) v->cg_string = v->sym->fun->cg_string;
-  // Track which symbol IDs have been output to avoid duplicates
-  Vec<Sym *> seen_symbols;
-  Vec<cchar *> symid_cg_strings;
   forv_Var(v, globals) {
     Sym *s = unalias_type(v->sym);
     if (!v->live) continue;
+    // Skip type definitions - they're handled in the Type Definitions section
+    if (s->type_kind) continue;
     if (v->type == sym_nil_type) {
       v->cg_string = "NULL";
       continue;
@@ -945,41 +944,21 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
       } else
         v->cg_string = s->constant;
     } else if (s->is_symbol) {
-      if (ifa_verbose > 2) fprintf(stderr, "Symbol global: %s (id=%d)\n", s->name ? s->name : "<unnamed>", s->id);
       char ss[100];
       sprintf(ss, "_CG_Symbol(%d, \"%s\")", s->id, s->name);
       v->cg_string = dupstr(ss);
     } else if (s->is_fun) {
-    } else if (!s->type_kind || s->type_kind == Type_RECORD) {
-      // Check if we've already created a global for this symbol
-      int seen_idx = -1;
-      for (int i = 0; i < seen_symbols.n; i++) {
-        if (seen_symbols[i] == s) {
-          seen_idx = i;
-          break;
-        }
-      }
-      if (seen_idx >= 0) {
-        // Reuse the existing cg_string - no need to output again
-        v->cg_string = (char *)symid_cg_strings[seen_idx];
-      } else {
-        // Create new global and output it
-        char ss[100];
-        if (s->name)
-          sprintf(ss, "/* %s %d */ g%d", s->name, s->id, index++);
-        else
-          sprintf(ss, "/* %d */ g%d", s->id, index++);
-        v->cg_string = dupstrs(ss);
-        seen_symbols.add(s);
-        symid_cg_strings.add(v->cg_string);
-        write_c_type(fp, v);
-        fputs(" ", fp);
-        fputs(v->cg_string, fp);
-        fputs(";\n", fp);
-      }
     } else {
-      index++;
-      v->cg_string = dupstr(s->name);
+      char ss[100];
+      if (s->name)
+        sprintf(ss, "/* %s %d */ g%d", s->name, s->id, index++);
+      else
+        sprintf(ss, "/* %d */ g%d", s->id, index++);
+      v->cg_string = dupstrs(ss);
+      write_c_type(fp, v);
+      fputs(" ", fp);
+      fputs(v->cg_string, fp);
+      fputs(";\n", fp);
     }
   }
   fputs("\n/*\n Functions\n*/\n", fp);
