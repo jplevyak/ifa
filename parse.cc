@@ -160,44 +160,18 @@ static int load_one(cchar *fn) {
   return 0;
 }
 
-#include "ir_serialize.h"
 #include "llvm.h"
 
 int compile_one_file(cchar *fn) {
   ifa_init(new PCallbacks);
   if (load_one(fn) < 0) return -1;
   if (ifa_analyze(fn) < 0) return -1;
-  // The original conditional optimization block is removed.
-  // ifa_optimize is now called unconditionally.
-  // Assuming 'fa' refers to 'pdb->fa' as used later in serialize_ir.
   if (ifa_optimize() < 0) return -1;
-  
+
   if (getenv("IFA_LLVM")) {
-      char ir_fn[1024];
-      strncpy(ir_fn, fn, sizeof(ir_fn)-4);
-      char *dot = strrchr(ir_fn, '.');
-      if(dot) strcpy(dot, ".ir");
-      else strcat(ir_fn, ".ir");
-      
-      serialize_ir(ir_fn, if1, pdb->fa);
-      
-      // Invoke backend
-      char cmd[2048];
-      // Assume ifa-llvm is in same dir or path. For now try ./ifa-llvm
-      snprintf(cmd, sizeof(cmd), "./ifa-llvm %s", ir_fn);
-      int ret = system(cmd);
-      if (ret != 0) {
-          fprintf(stderr, "ifa-llvm failed with code %d\n", ret);
-          return -1;
-      }
-      // llvm_codegen_compile(fn); // Backend handles compilation now? Or backend just produces .ll?
-      // If backend produces .ll, we still need to compile it to .o
-      // Let's assume backend produces .ll file (fn.ll)
-      // Then we can run clang/llc here or let backend do it.
-      // Better if ifa-llvm does IR -> .ll, and this process does .ll -> .o if convenient
-      // But llvm_codegen_compile uses system() calls anyway.
-      
-      llvm_codegen_compile(fn); 
+      // Call LLVM backend directly - no serialization needed!
+      llvm_codegen_write_ir(pdb->fa, if1->top->fun, fn);
+      llvm_codegen_compile(fn);
   } else {
       ifa_cg(fn);
       ifa_compile(fn);
