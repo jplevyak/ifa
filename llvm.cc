@@ -156,6 +156,79 @@ static llvm::Constant *getLLVMConstant(Var *var);
 // Reverse Call Graph for Constant Recovery
 static std::map<Fun*, std::vector<PNode*>> reverse_call_graph;
 
+// Forward declaration for get_target_fun
+static Fun *get_target_fun(PNode *n, Fun *f);
+
+// Discover all reachable functions by walking the call graph from main
+// This ensures all functions are known before liveness analysis
+static void discover_all_reachable_functions(FA *fa, Fun *main_fun, Vec<Fun*> &all_funs) {
+    if (!fa || !main_fun) return;
+
+    fprintf(stderr, "DEBUG: discover_all_reachable_functions starting from %s\n",
+            main_fun->sym->name ? main_fun->sym->name : "(null)");
+
+    std::set<Fun*> visited;
+    std::vector<Fun*> worklist;
+
+    // Start with main
+    if (main_fun->live && main_fun->entry) {
+        worklist.push_back(main_fun);
+        visited.insert(main_fun);
+    }
+
+    // Add all functions already in fa->funs (only if live)
+    int fun_idx = 0;
+    forv_Fun(f, fa->funs) {
+        if (f) {
+            fprintf(stderr, "DEBUG:   fa->funs[%d]: %s (id %d) live=%d\n",
+                    fun_idx, f->sym->name ? f->sym->name : "(null)",
+                    f->sym->id, f->live);
+            if (f->live) {
+                if (visited.find(f) == visited.end()) {
+                    worklist.push_back(f);
+                    visited.insert(f);
+                }
+            }
+        }
+        fun_idx++;
+    }
+
+    // Walk the call graph
+    while (!worklist.empty()) {
+        Fun *current = worklist.back();
+        worklist.pop_back();
+
+        // Add to all_funs
+        all_funs.set_add(current);
+
+        fprintf(stderr, "DEBUG: Discovered function %s (id %d), calls.n=%d\n",
+                current->sym->name ? current->sym->name : "(null)",
+                current->sym->id, current->calls.n);
+
+        // Walk through all call sites in this function
+        for (int k = 0; k < current->calls.n; k++) {
+            if (current->calls.v[k].key) {
+                PNode *call_pnode = (PNode*)current->calls.v[k].key;
+                Vec<Fun*> *targets = current->calls.v[k].value;
+
+                if (targets) {
+                    forv_Fun(target_fun, *targets) {
+                        if (target_fun && visited.find(target_fun) == visited.end()) {
+                            fprintf(stderr, "DEBUG:   Found call to %s (id %d)\n",
+                                    target_fun->sym->name ? target_fun->sym->name : "(null)",
+                                    target_fun->sym->id);
+                            worklist.push_back(target_fun);
+                            visited.insert(target_fun);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fprintf(stderr, "DEBUG: discover_all_reachable_functions found %d functions\n", all_funs.n);
+}
+
 static void build_reverse_call_graph(FA *fa) {
     reverse_call_graph.clear();
     forv_Fun(f, fa->funs) {
@@ -843,9 +916,99 @@ static llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module);
  * @param fa Flow analysis context
  * @param main_fun The entry point function
  */
+static cchar *num_string(Sym *s) {
+  switch (s->num_kind) {
+    default: assert(!"case");
+    case IF1_NUM_KIND_UINT:
+      switch (s->num_index) {
+        case IF1_INT_TYPE_1: return "_CG_bool";
+        case IF1_INT_TYPE_8: return "_CG_uint8";
+        case IF1_INT_TYPE_16: return "_CG_uint16";
+        case IF1_INT_TYPE_32: return "_CG_uint32";
+        case IF1_INT_TYPE_64: return "_CG_uint64";
+        default: assert(!"case");
+      }
+      break;
+    case IF1_NUM_KIND_INT:
+      switch (s->num_index) {
+        case IF1_INT_TYPE_1: return "_CG_bool";
+        case IF1_INT_TYPE_8: return "_CG_int8";
+        case IF1_INT_TYPE_16: return "_CG_int16";
+        case IF1_INT_TYPE_32: return "_CG_int32";
+        case IF1_INT_TYPE_64: return "_CG_int64";
+        default: assert(!"case");
+      }
+      break;
+    case IF1_NUM_KIND_FLOAT:
+      switch (s->num_index) {
+        case IF1_FLOAT_TYPE_32: return "_CG_float32";
+        case IF1_FLOAT_TYPE_64: return "_CG_float64";
+        case IF1_FLOAT_TYPE_128: return "_CG_float128";
+        default: assert(!"case");
+      }
+      break;
+  }
+  return 0;
+}
+
+static void llvm_build_type_strings(FA *fa) {
+  #define S(_n) if1_get_builtin(fa->pdb->if1, #_n)->cg_string = "_CG_" #_n;
+  #include "builtin_symbols.h"
+  #undef S
+  int f_index = 0;
+  forv_Fun(f, fa->funs) {
+    if (!f->live) continue;
+    char s[100];
+    if (f->sym->name) {
+      if (f->sym->has.n > 1 && f->sym->has[1]->must_specialize)
+        sprintf(s, "_CG_f_%d_%d", f->sym->id, f_index);
+      else
+        sprintf(s, "_CG_f_%d_%d", f->sym->id, f_index);
+    } else
+      sprintf(s, "_CG_f_%d_%d", f->sym->id, f_index);
+    f->cg_string = dupstr(s);
+    sprintf(s, "_CG_pf%d", f_index);
+    f->cg_structural_string = dupstr(s);
+    f->sym->cg_string = f->cg_structural_string;
+    f_index++;
+  }
+  Vec<Var *> globals;
+  Vec<Sym *> allsyms;
+  collect_types_and_globals(fa, allsyms, globals);
+  forv_Sym(s, allsyms) {
+    if (s->num_kind) s->cg_string = num_string(s);
+    else if (s->is_symbol) { s->cg_string = "_CG_symbol"; }
+    else {
+      if (!s->cg_string) {
+        switch (s->type_kind) {
+          default: s->cg_string = dupstr("_CG_any"); break;
+          case Type_FUN: if (s->fun) break;
+          case Type_RECORD: {
+            if (s->has.n) {
+              char ss[100]; sprintf(ss, "_CG_ps%d", s->id);
+              s->cg_string = dupstr(ss);
+            } else s->cg_string = "_CG_void";
+            break;
+          }
+        }
+      }
+    }
+  }
+  forv_Sym(s, allsyms) {
+    if (s->fun) s->cg_string = s->fun->cg_structural_string;
+    else if (s->is_symbol) s->cg_string = sym_symbol->cg_string;
+    if (s->type_kind == Type_SUM && s->has.n == 2) {
+      if (s->has[0] == sym_nil_type) s->cg_string = s->has[1]->cg_string;
+      else if (s->has[1] == sym_nil_type) s->cg_string = s->has[0]->cg_string;
+    }
+  }
+}
+
+
 void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun) {
   fprintf(stderr, "DEBUG: llvm_codegen_print_ir started\n");
   llvm_codegen_initialize(fa);
+  llvm_build_type_strings(fa);
   if (!fa) {
     fail("FA object is null in llvm_codegen_print_ir");
     return;
@@ -882,25 +1045,30 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun) {
   // For now, iterate fa->funs then ensure main_fun is included if not already.
 
   Vec<Fun *> all_funs;
-  if (fa->funs.n > 0) {
-      forv_Fun(f, fa->funs) {
-          fprintf(stderr, "DEBUG: Checking Fun %p %s (id %d): live=%d, entry=%p\n", 
-                  f, f->sym->name, f->sym->id, f->live, f->entry);
-          if (f) { 
-              all_funs.set_add(f);
-          }
-      }
-  }
+
+  fprintf(stderr, "DEBUG: fa->funs.n = %d before discovery\n", fa->funs.n);
+
+  // Discover all reachable functions before translation
+  // This ensures they all have proper liveness analysis
+  discover_all_reachable_functions(fa, main_fun, all_funs);
+
+  fprintf(stderr, "DEBUG: all_funs.n = %d after discovery\n", all_funs.n);
+
+  // Build reverse call graph for constant recovery
   build_reverse_call_graph(fa);
-  if (main_fun && main_fun->live && main_fun->entry) {
-      all_funs.set_add(main_fun);
-   }
-   all_funs_global = &all_funs;
+
+  all_funs_global = &all_funs;
   
   // First pass: Create all function declarations (signatures only)
+  // Only process live functions (like C backend does)
   forv_Fun(f, all_funs) {
     if (!f) {
         fprintf(stderr, "DEBUG: Found NULL fun in all_funs\n");
+        continue;
+    }
+    if (!f->live) {
+        fprintf(stderr, "DEBUG: Skipping non-live function %s (id %d)\n",
+                f->sym->name ? f->sym->name : "(null)", f->sym->id);
         continue;
     }
     fprintf(stderr, "DEBUG: createFunction for %d\n", f->sym->id);
@@ -910,7 +1078,7 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun) {
   // Second pass: Translate all function bodies
   // (This is now done separately to ensure all functions are declared before any body is translated)
   forv_Fun(f, all_funs) {
-    if (!f || !f->llvm || f->is_external || !f->entry) {
+    if (!f || !f->live || !f->llvm || f->is_external || !f->entry) {
         continue;
     }
     fprintf(stderr, "DEBUG: translateFunctionBody for %s (id %d)\n", f->sym->name, f->sym->id);
@@ -987,14 +1155,13 @@ static llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
           (ifa_fun->rets.n > 0 && ifa_fun->rets[0] ? ifa_fun->rets[0]->type : nullptr));
 
   if (ifa_fun->rets.n == 1 && ifa_fun->rets[0]) {
-      if (ifa_fun->rets.n > 0 && ifa_fun->rets[0] && ifa_fun->rets[0]->type) {
-          llvm_ret_type = getLLVMType(ifa_fun->rets[0]->type);
-      } else {
-          // Fallback for null type (e.g. void var)
-          fprintf(stderr, "DEBUG: Return var has null type, assuming void.\n");
+      Var *ret_var = ifa_fun->rets[0];
+      if (!ret_var->type || !ret_var->type->cg_string) {
           llvm_ret_type = llvm::Type::getVoidTy(*TheContext);
+      } else {
+          llvm_ret_type = getLLVMType(ret_var->type);
       }
-  } else if (ifa_fun->rets.n == 0) { 
+  } else if (ifa_fun->rets.n == 0) {
     llvm_ret_type = llvm::Type::getVoidTy(*TheContext);
   } else {
       fprintf(stderr, "DEBUG: Unsupported ret count %d\n", ifa_fun->rets.n);
@@ -1030,6 +1197,11 @@ static llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
             arg_var ? arg_var->live : -1,
             arg_var && arg_var->sym && arg_var->sym->name ? arg_var->sym->name : "(null)");
     if (arg_var && arg_var->live) {
+      // Skip function-typed parameters (self-referential or function symbols)
+      if (arg_var->type && arg_var->type->is_fun) {
+        fprintf(stderr, "DEBUG:   Skipping function-typed formal %d\n", i);
+        continue;  // Skip this arg - can't pass functions as values
+      }
       live_args.push_back(arg_var);
     }
   }
@@ -1423,6 +1595,22 @@ static llvm::Value* getLLVMValue(Var *var, Fun *ifa_fun) {
         llvm::Value *val = var->llvm_value;
         llvm::Function *this_func = ifa_fun->llvm;
 
+        fprintf(stderr, "DEBUG: getLLVMValue found cached llvm_value for var %s (id %d)\n",
+                var->sym ? var->sym->name : "(null)", var->id);
+        // Check what kind of value this is
+        if (llvm::isa<llvm::GlobalVariable>(val)) {
+            fprintf(stderr, "DEBUG:   It's a GlobalVariable (pointer to value)\n");
+        } else if (llvm::isa<llvm::AllocaInst>(val)) {
+            fprintf(stderr, "DEBUG:   It's an AllocaInst (pointer to value)\n");
+        } else if (llvm::isa<llvm::Instruction>(val)) {
+            fprintf(stderr, "DEBUG:   It's an Instruction (direct value)\n");
+        } else if (llvm::isa<llvm::Argument>(val)) {
+            fprintf(stderr, "DEBUG:   It's an Argument (direct value)\n");
+        } else if (llvm::isa<llvm::Constant>(val)) {
+            fprintf(stderr, "DEBUG:   It's a Constant\n");
+        }
+
+
         bool scope_mismatch = false;
         if (llvm::isa<llvm::Instruction>(val)) {
              llvm::Function *val_func = llvm::cast<llvm::Instruction>(val)->getFunction();
@@ -1448,12 +1636,17 @@ static llvm::Value* getLLVMValue(Var *var, Fun *ifa_fun) {
             // Stale value, clear it and fall through to reload
             var->llvm_value = nullptr; 
         } else {
-            // If it's an AllocaInst (local variable), we need to load it.
+            // If it's an AllocaInst or GlobalVariable (pointers), we need to load them.
             // If it's an SSA value (Argument or Instruction result), we use it directly.
             if (llvm::isa<llvm::AllocaInst>(var->llvm_value)) {
                 llvm::AllocaInst *ai = llvm::cast<llvm::AllocaInst>(var->llvm_value);
                 llvm::Type *load_type = ai->getAllocatedType();
                 return Builder->CreateLoad(load_type, var->llvm_value, var->sym->name ? (std::string(var->sym->name) + ".load") : "");
+            }
+            if (llvm::isa<llvm::GlobalVariable>(var->llvm_value)) {
+                llvm::GlobalVariable *gv = llvm::cast<llvm::GlobalVariable>(var->llvm_value);
+                llvm::Type *load_type = gv->getValueType();
+                return Builder->CreateLoad(load_type, var->llvm_value, var->sym && var->sym->name ? (std::string(var->sym->name) + ".load") : "global.load");
             }
             return var->llvm_value;
         }
@@ -1773,10 +1966,14 @@ static void write_send(Fun *f, PNode *n) {
             (void*)target, (void*)callee);
 
     if (!callee) {
-         // Function wasn't created yet - create it now
-         fprintf(stderr, "DEBUG: Target function %s (id %d) not created yet, creating now...\n",
+         // This should not happen if call graph discovery worked correctly
+         // But keep as a safety fallback
+         fprintf(stderr, "WARNING: Target function %s (id %d) not discovered during call graph walk!\n",
                  target->sym->name ? target->sym->name : "unnamed",
                  target->sym->id);
+         fprintf(stderr, "WARNING: This indicates the function was not reachable during discovery.\n");
+         fprintf(stderr, "WARNING: Creating it on-demand, but liveness info may be incomplete.\n");
+
          callee = createFunction(target, TheModule.get());
          if (!callee) {
              fail("Failed to create target function %s (id %d)",
@@ -1857,7 +2054,7 @@ static void write_send(Fun *f, PNode *n) {
     if(sp) call->setDebugLoc(llvm::DILocation::get(*TheContext, line_num, 0, sp));
     
     // Result assignment
-    if (n->lvals.n == 1) {
+    if (n->lvals.n == 1 && !callee->getReturnType()->isVoidTy()) {
          Var *res_var = n->lvals[0];
          llvm::Value *dest_ptr = res_var->llvm_value;
          if (dest_ptr && (llvm::isa<llvm::AllocaInst>(dest_ptr) || llvm::isa<llvm::GlobalVariable>(dest_ptr))) {
@@ -1880,6 +2077,14 @@ static void translatePNode(PNode *pn, Fun *ifa_fun) {
         fprintf(stderr, "DEBUG: translatePNode: pn->code is NULL, skipping pn=%p\n", (void*)pn);
         return;
     }
+
+    // Skip dead code - match C backend behavior (cg.cc:639)
+    if (!pn->live || !pn->fa_live) {
+        fprintf(stderr, "DEBUG: Skipping non-live PNode pn=%p (live=%d, fa_live=%d)\n",
+                (void*)pn, pn->live, pn->fa_live);
+        return;
+    }
+
     int code_kind = pn->code->kind;
     // Sanity check code_kind - valid values should be < 100
     if (code_kind < 0 || code_kind > 100) {
@@ -2393,6 +2598,13 @@ static int write_llvm_prim(Fun *ifa_fun, PNode *n) {
 
                  llvm::Value* ret_llvm_val = getLLVMValue(ret_val_var, ifa_fun);
                  if (ret_llvm_val) {
+                     std::string ret_type_str, expected_type_str;
+                     llvm::raw_string_ostream ret_os(ret_type_str), exp_os(expected_type_str);
+                     ret_llvm_val->getType()->print(ret_os);
+                     llvm_func->getReturnType()->print(exp_os);
+                     fprintf(stderr, "DEBUG: prim_reply return value type: %s, expected: %s\n",
+                             ret_os.str().c_str(), exp_os.str().c_str());
+
                      if (ret_llvm_val->getType() == llvm_func->getReturnType()) {
                         Builder->CreateRet(ret_llvm_val);
                      } else {
