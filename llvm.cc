@@ -777,38 +777,17 @@ static void createGlobalVariables(FA *fa) {
     // and their `var` field would be the Var representation.
     // Or, if `FA` populates a specific list of global Vars, use that.
     // For now, let's iterate allsyms and check if their `var` is a global.
-    // This is a guess; a more direct list of global Vars from FA would be better.
-
-    // A more direct way as seen in cg.cc `c_codegen_print_c` is to iterate `fa->funs`
-    // and for each `f->sym->var` if it exists, it's a global (representing the function itself).
-    // And also `collect_types_and_globals` which finds other globals.
-    // Let's simulate part of `collect_types_and_globals` or use a similar approach.
-    // The `globals` vector in `cg.cc` is populated by `build_type_strings` which calls `collect_types_and_globals`.
-    // `collect_types_and_globals` iterates `fa->vars`.
-
-    forv_Sym(sym_iter, fa->pdb->if1->allsyms) { // Iterate all symbols to find globals
+    // Iterate allsyms to find globals (parallels cg.cc's collect_types_and_globals)
+    forv_Sym(sym_iter, fa->pdb->if1->allsyms) {
         Var *var = sym_iter->var;
         if (!var) continue;
         if (!var || !var->sym) continue;
         Sym* sym = var->sym;
 
-        // What defines a global var?
-        // - Not local to a function (sym->is_local = false)
-        // - Not an argument (var->is_formal = false)
-        // - Has a type and is live
-        // - Is not a function itself (sym->is_fun is for the symbol, var->type->type_kind != Type_FUN)
-        // cg.cc's `c_codegen_print_c` iterates a `globals` Vec. We need to populate such a list.
-        // For now, let's assume a Var is global if it's in fa->vars and not clearly local/arg.
-        // This is a simplification. A proper mechanism from FA to list globals is needed.
-
-        // A simple heuristic: if a var's symbol is not local and it's not a function type,
-        // it might be a global data variable.
-        // Also skip if the symbol itself is a function (sym->is_fun)
-        // Also skip temporary variables without names - they should be computed locally
+        // Skip unnamed temporaries - they should be computed locally, not created as globals
         if (sym->is_local || var->is_formal || !var->type || var->type->type_kind == Type_FUN || sym->is_fun || !sym->name) {
             continue;
         }
-        // Skip if it's already processed (e.g. function pointers might be handled by function creation)
         if (var->llvm_value) continue;
 
         llvm::Type *gvar_llvm_type = getLLVMType(var->type);
@@ -1146,27 +1125,24 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun) {
   fprintf(fp, "%s", ir_rso.str().c_str());
 }
 
-// --- Function Generation ---
 static llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
   if (!ifa_fun) {
     fail("Null Fun provided to createFunction");
     return nullptr;
   }
   fprintf(stderr, "DEBUG: createFunction entry for %s (id %d)\n", ifa_fun->sym->name, ifa_fun->sym->id);
-  
-  if (ifa_fun->llvm) { // Already created
-    return ifa_fun->llvm;
-  }
+
+  if (ifa_fun->llvm) return ifa_fun->llvm;
   if (!ifa_fun->sym) {
     fail("Fun %p has no symbol associated.", (void*)ifa_fun);
     return nullptr;
   }
 
-  // 1. Determine FunctionType
+  // Determine return type
   fprintf(stderr, "DEBUG: createFunction step 1: determine ret type for %d rets\n", ifa_fun->rets.n);
   llvm::Type *llvm_ret_type;
-  fprintf(stderr, "DEBUG: check rets: n=%d, rets[0]=%p, rets[0]->type=%p\n", 
-          ifa_fun->rets.n, 
+  fprintf(stderr, "DEBUG: check rets: n=%d, rets[0]=%p, rets[0]->type=%p\n",
+          ifa_fun->rets.n,
           (ifa_fun->rets.n > 0 ? ifa_fun->rets[0] : nullptr),
           (ifa_fun->rets.n > 0 && ifa_fun->rets[0] ? ifa_fun->rets[0]->type : nullptr));
 
@@ -1181,8 +1157,6 @@ static llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
     llvm_ret_type = llvm::Type::getVoidTy(*TheContext);
   } else {
       fprintf(stderr, "DEBUG: Unsupported ret count %d\n", ifa_fun->rets.n);
-    // TODO: Handle multiple return values if the language supports them
-    // (e.g., by returning a struct). For now, assume single or void.
     fail("Function %s has %d return values, unsupported. Assumed void or single.", ifa_fun->sym->name, ifa_fun->rets.n);
     llvm_ret_type = llvm::Type::getVoidTy(*TheContext);
   }
@@ -1191,14 +1165,11 @@ static llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
       return nullptr;
   }
 
-
-  // 2. Arguments - match what ir_serialize.cc did
+  // Build argument list (parallels cg.cc's write_c_fun_proto at cg.cc:31-60)
   fprintf(stderr, "DEBUG: createFunction step 2: args\n");
   std::vector<llvm::Type *> llvm_arg_types;
   std::vector<Var *> live_args;
 
-  // Build list of live formal parameters (match cg.cc's write_c_fun_proto logic)
-  // Use f->sym->has.n to get the actual formal parameter count
   fprintf(stderr, "DEBUG: Function %s has %d formal parameters (sym->has.n)\n",
           ifa_fun->sym->name, ifa_fun->sym->has.n);
 
@@ -1213,10 +1184,9 @@ static llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
             arg_var ? arg_var->live : -1,
             arg_var && arg_var->sym && arg_var->sym->name ? arg_var->sym->name : "(null)");
     if (arg_var && arg_var->live) {
-      // Skip function-typed parameters (self-referential or function symbols)
       if (arg_var->type && arg_var->type->is_fun) {
         fprintf(stderr, "DEBUG:   Skipping function-typed formal %d\n", i);
-        continue;  // Skip this arg - can't pass functions as values
+        continue;
       }
       live_args.push_back(arg_var);
     }
@@ -1388,31 +1358,18 @@ static void translateFunctionBody(Fun *ifa_fun) {
     if (ifa_fun->entry->code && ifa_fun->entry->code->kind == Code_LABEL && ifa_fun->entry->code->label[0]) {
          llvm::BasicBlock* entry_bb = getLLVMBasicBlock(ifa_fun->entry->code->label[0], llvm_func);
          if (entry_bb != &llvm_func->getEntryBlock() && llvm_func->getEntryBlock().empty()) {
-             // If the auto-created entry block is empty and unused, we could use our label block as entry.
-             // But LLVM Function::Create already made one.
-             // We can insert a branch from llvm entry to our label block.
+             // LLVM auto-creates an entry block - branch from it to our labeled entry
              Builder->SetInsertPoint(&llvm_func->getEntryBlock());
              Builder->CreateBr(entry_bb);
          } else if (entry_bb != &llvm_func->getEntryBlock()) {
-            // We need to ensure our actual IF1 entry point PNode starts filling *its* corresponding BB.
-            // If llvm entry block is not empty (e.g. debug info), branch to real entry.
              Builder->SetInsertPoint(&llvm_func->getEntryBlock());
              if (llvm_func->getEntryBlock().getTerminator() == nullptr) {
                 Builder->CreateBr(entry_bb);
              }
          }
-    } else if (ifa_fun->entry->code && ifa_fun->entry->code->kind != Code_LABEL) {
-        // Entry PNode is not a label itself. Use the default entry block.
-        // This case needs careful handling. If the first PNode isn't a label,
-        // its instructions go into the llvm_func->getEntryBlock().
-        // We might need a way to associate this entry PNode with that block.
-        // For now, translatePNode will handle setting the builder insert point.
     }
 
-
-    // Allocate local variables (Vars that are Sym_LOCAL and not args)
-    // This is a common strategy for mutable local variables.
-    // SSA values will be directly represented by llvm::Value* from instructions.
+    // Allocate local variables using AllocaInst (for mutable locals)
 
 
     fprintf(stderr, "DEBUG: Setting Builder InsertPoint to EntryBlock\n");
@@ -1435,7 +1392,8 @@ static void translateFunctionBody(Fun *ifa_fun) {
     unsigned func_start_line = llvm_func->getSubprogram() ? llvm_func->getSubprogram()->getLine() : 0;
 
     fprintf(stderr, "DEBUG: Starting local vars loop\n");
-    // Map from symbol to alloca, to ensure we only create one alloca per symbol
+    // Multiple Vars can share the same Sym (e.g., loop variable 'i' appears multiple times)
+    // Create only one alloca per Sym to avoid duplicate allocations
     std::map<Sym*, llvm::AllocaInst*> sym_to_alloca;
     int var_loop_idx = 0;
     forv_Var(v, ifa_fun->fa_all_Vars) { // Or a more specific list of locals
@@ -1457,11 +1415,9 @@ static void translateFunctionBody(Fun *ifa_fun) {
         }
         fflush(stderr);
 
-        // Check if we've already created an alloca for this symbol
         if (v && v->sym && v->sym->is_local && !v->is_formal) {
             auto it = sym_to_alloca.find(v->sym);
             if (it != sym_to_alloca.end()) {
-                // Reuse existing alloca for this symbol
                 v->llvm_value = it->second;
                 v->llvm_type = it->second->getAllocatedType();
                 fprintf(stderr, "DEBUG: Reusing existing alloca for var %s (id %d)\n", v->sym->name ? v->sym->name : "(null)", v->sym->id);
@@ -1469,7 +1425,7 @@ static void translateFunctionBody(Fun *ifa_fun) {
             }
         }
 
-        if (v && v->sym && v->sym->is_local && !v->is_formal && !v->llvm_value) { // Not an argument and not yet mapped
+        if (v && v->sym && v->sym->is_local && !v->is_formal && !v->llvm_value) {
             llvm::Type *var_llvm_type = nullptr;
             if (!v->type) {
                 fprintf(stderr, "DEBUG: Defaulting local var %s (id %d) with null type to i64\n", v->sym->name, v->sym->id);
@@ -1481,8 +1437,7 @@ static void translateFunctionBody(Fun *ifa_fun) {
             if (var_llvm_type && !var_llvm_type->isVoidTy()) {
                 llvm::AllocaInst *alloca_inst = Builder->CreateAlloca(var_llvm_type, nullptr, v->sym->name ? v->sym->name : "local_var");
                 v->llvm_value = alloca_inst;
-                v->llvm_type = var_llvm_type; // Cache its LLVM type
-                // Add to map so other Vars with same symbol can reuse it
+                v->llvm_type = var_llvm_type;
                 sym_to_alloca[v->sym] = alloca_inst;
 
                 // Add debug info for this local variable
@@ -1734,8 +1689,7 @@ static llvm::Value* getLLVMValue(Var *var, Fun *ifa_fun) {
                     arg_type->isPointerTy() ? 1 : 0,
                     arg_type->isStructTy() ? 1 : 0);
 
-            // In LLVM 18 with opaque pointers, we can't check pointer element type directly
-            // Just take the first pointer argument as the tuple
+            // LLVM 18 uses opaque pointers - take first pointer/struct as tuple
             if (arg_type->isPointerTy() || arg_type->isStructTy()) {
                 tuple_arg = &arg;
                 fprintf(stderr, "DEBUG: Found tuple_arg (LLVM Argument)\n");
@@ -1746,7 +1700,6 @@ static llvm::Value* getLLVMValue(Var *var, Fun *ifa_fun) {
         if (tuple_arg) {
             fprintf(stderr, "DEBUG: Looking for tuple formal variable to get struct type\n");
 
-            // Find the tuple formal variable - it should be the one whose llvm_value is tuple_arg
             Var *tuple_formal_var = nullptr;
             forv_Var(fv, ifa_fun->fa_all_Vars) {
                 if (fv && fv->is_formal && fv->llvm_value == tuple_arg) {
@@ -1758,7 +1711,6 @@ static llvm::Value* getLLVMValue(Var *var, Fun *ifa_fun) {
                 }
             }
 
-            // If not found by llvm_value, look for first formal that's not is_local and has a struct/tuple type
             if (!tuple_formal_var) {
                 forv_Var(fv, ifa_fun->fa_all_Vars) {
                     if (fv && fv->is_formal && !fv->sym->is_local && fv->type &&
@@ -1774,31 +1726,24 @@ static llvm::Value* getLLVMValue(Var *var, Fun *ifa_fun) {
 
             if (!tuple_formal_var || !tuple_formal_var->type) {
                 fprintf(stderr, "WARNING: Could not find tuple formal variable for field extraction\n");
-                // Fall through to error
             } else {
-                // Get the tuple struct type
                 llvm::Type *tuple_struct_type = getLLVMType(tuple_formal_var->type);
                 if (!tuple_struct_type || !tuple_struct_type->isStructTy()) {
                     fprintf(stderr, "WARNING: Tuple formal variable has invalid struct type\n");
-                    // Fall through to error
                 } else {
-                    // Find the MPosition for this variable to get the correct field index
-                    // Following cg.cc:715-725 and write_arg_position (cg.cc:542-550)
+                    // Use MPosition to determine field index (not sequential counting!)
+                    // Tuple operators like (a, +, b) have field indices 0, 1, 2, but + is not a formal.
+                    // Parallels cg.cc:542-550 (write_arg_position) and cg.cc:715-725 (write_c_args)
                     int formal_idx = -1;
                     MPosition *found_pos = nullptr;
 
-                    // Search through positional_arg_positions to find this variable
                     forv_MPosition(p, ifa_fun->positional_arg_positions) {
                         Var *formal_var = ifa_fun->args.get(p);
                         if (formal_var == var) {
                             found_pos = p;
-                            // For nested positions (p->pos.n > 1), the field index is from pos[1]
-                            // Like cg.cc:548: fprintf(fp, "->e%d", (int)Position2int(p->pos[i]) - 1)
+                            // Field index from pos[1] for nested positions (see cg.cc:548)
                             if (p->pos.n > 1 && is_intPosition(p->pos[1])) {
                                 formal_idx = (int)Position2int(p->pos[1]) - 1;
-                            } else if (p->pos.n == 1) {
-                                // Top-level argument, not a tuple field
-                                formal_idx = -1;  // Should not happen for tuple field formals
                             }
                             break;
                         }
@@ -1807,12 +1752,10 @@ static llvm::Value* getLLVMValue(Var *var, Fun *ifa_fun) {
                     if (formal_idx < 0 || !found_pos) {
                         fprintf(stderr, "WARNING: Could not find MPosition or field index for var %s (formal_idx=%d, found_pos=%p)\n",
                                 var->sym->name ? var->sym->name : "(null)", formal_idx, (void*)found_pos);
-                        // Fall through to error
                     } else {
                         fprintf(stderr, "DEBUG: Extracting field %d from tuple argument for var %s (MPos.n=%d)\n",
                                 formal_idx, var->sym->name ? var->sym->name : "(null)", found_pos->pos.n);
 
-                        // Extract the field from the tuple using GEP
                         llvm::Value *field_ptr = Builder->CreateStructGEP(
                             tuple_struct_type,
                             tuple_arg,
@@ -1820,7 +1763,6 @@ static llvm::Value* getLLVMValue(Var *var, Fun *ifa_fun) {
                             var->sym->name ? (std::string(var->sym->name) + ".ptr") : "field.ptr"
                         );
 
-                        // Load the field value
                         llvm::Type *field_type = getLLVMType(var->type);
                         llvm::Value *field_val = Builder->CreateLoad(
                             field_type,
@@ -1828,7 +1770,6 @@ static llvm::Value* getLLVMValue(Var *var, Fun *ifa_fun) {
                             var->sym->name ? (std::string(var->sym->name) + ".val") : "field.val"
                         );
 
-                        // Cache the value
                         var->llvm_value = field_val;
                         return field_val;
                     }
@@ -2025,10 +1966,9 @@ static void write_send(Fun *f, PNode *n) {
     fprintf(stderr, "DEBUG: write_send building args. callee expects %d args, call has %d rvals\n",
             (int)callee->arg_size(), n->rvals.n);
 
-    // Build arguments using positional_arg_positions (matching C backend logic in cg.cc:612-616)
-    // This properly maps formal parameters to actual arguments at the call site
+    // Map call site arguments to formal parameters (parallels cg.cc:612-616)
     unsigned arg_idx = 0;
-    Var *v0 = n->rvals[0];  // Target function variable
+    Var *v0 = n->rvals[0];
     forv_MPosition(p, target->positional_arg_positions) {
         Var *formal_arg = target->args.get(p);
 
@@ -2130,11 +2070,11 @@ static void translatePNode(PNode *pn, Fun *ifa_fun) {
         return;
     }
 
-    // Check liveness - skip dead code but still process CFG (like C backend at cg.cc:639 and 657)
-    // Special case: for Code_MOVE at function entry, use fa_live alone since dead.cc may not mark loop inits as live
+    // Liveness check (parallels cg.cc:639, 657)
+    // Special case: dead.cc doesn't mark loop initializations as live, but they are fa_live
     bool is_live;
     if (code_kind == Code_MOVE && pn == ifa_fun->entry) {
-        is_live = pn->fa_live;  // Loop initializations need fa_live check
+        is_live = pn->fa_live;
     } else {
         is_live = pn->live && pn->fa_live;
     }
@@ -2190,7 +2130,7 @@ static void translatePNode(PNode *pn, Fun *ifa_fun) {
              if (pn->code->label[0]) {
                 llvm::BasicBlock *bb = getLLVMBasicBlock(pn->code->label[0], llvm_func);
                 llvm::BasicBlock *current_bb = Builder->GetInsertBlock();
-                // Only create a branch if we're not already in the target block
+                // Avoid creating self-loop branches (br label %X inside %X)
                 if (current_bb && current_bb != bb && !current_bb->getTerminator()) {
                     Builder->CreateBr(bb);
                 }
@@ -2232,8 +2172,7 @@ static void translatePNode(PNode *pn, Fun *ifa_fun) {
                 fflush(stderr);
                 llvm::Value* cond_llvm_val = getLLVMValue(cond_var, ifa_fun);
                 if (!cond_llvm_val) {
-                    // Condition variable has no value - dead code elimination removed the computation
-                    // Use constant true (assume true branch is the live one)
+                    // Dead code eliminated condition - assume true branch
                     fprintf(stderr, "DEBUG: Code_IF condition var has no llvm_value, using constant true\n");
                     cond_llvm_val = llvm::ConstantInt::getTrue(*TheContext);
                 }
@@ -2262,18 +2201,16 @@ static void translatePNode(PNode *pn, Fun *ifa_fun) {
 
                 if (!true_bb || !false_bb) { fail("Code_IF targets missing"); return; }
 
-                // Check if condition is a constant (dead code elimination result)
+                // Handle constant-folded conditions (from dead code elimination)
                 if (llvm::ConstantInt *const_cond = llvm::dyn_cast<llvm::ConstantInt>(cond_llvm_val)) {
-                    // Constant condition - treat as unconditional branch (like C's if (0) or if (1))
+                    // Branch to taken target only (matches C backend handling of if(0) / if(1))
                     bool cond_value = const_cond->isOne();
                     llvm::BasicBlock *target_bb = cond_value ? true_bb : false_bb;
                     fprintf(stderr, "DEBUG: Code_IF has constant condition: %s, branching to %s\n",
                             cond_value ? "true" : "false",
                             target_bb->getName().str().c_str());
 
-                    // Create unconditional branch to the taken target
                     Builder->CreateBr(target_bb);
-                    // Set insertion point to the target for subsequent code
                     Builder->SetInsertPoint(target_bb);
                 } else {
                     // Dynamic condition - generate both branches
