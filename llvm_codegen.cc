@@ -238,6 +238,46 @@ llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
 
     llvm_func->setSubprogram(sp);
     fprintf(stderr, "DEBUG: Created DISubprogram for %s at line %u\n", func_name.c_str(), line_num);
+
+    // Create debug info for ALL source-level function parameters
+    // This includes parameters that were optimized away
+    MPosition p2;
+    p2.push(1);
+    unsigned live_arg_idx = 0;
+    for (int i = 0; i < ifa_fun->sym->has.n; i++) {
+      MPosition *cp2 = cannonicalize_mposition(p2);
+      p2.inc();
+      Var *arg_var = ifa_fun->args.get(cp2);
+
+      if (arg_var && arg_var->sym && arg_var->type && !arg_var->type->is_fun) {
+        llvm::DIType *arg_di_type = getLLVMDIType(arg_var->type, UnitFile);
+
+        if (arg_di_type) {
+          unsigned arg_line = arg_var->sym->source_line() ? arg_var->sym->source_line() : line_num;
+          llvm::DILocalVariable *param_var = DBuilder->createParameterVariable(
+            sp,                                                  // Scope
+            arg_var->sym->name ? arg_var->sym->name : "arg",    // Name
+            i + 1,                                               // Arg number (1-based)
+            UnitFile,                                            // File
+            arg_line,                                            // Line
+            arg_di_type,                                         // Type
+            true                                                 // AlwaysPreserve
+          );
+
+          // Store the debug variable info
+          arg_var->llvm_debug_var = param_var;
+
+          // Track if this is a live arg (has actual LLVM parameter)
+          bool is_live = arg_var->live;
+          fprintf(stderr, "DEBUG: Created DIParameter for arg %d: %s (live=%d)\n", i,
+                  arg_var->sym->name ? arg_var->sym->name : "(unnamed)", is_live);
+
+          if (is_live) {
+            live_arg_idx++;
+          }
+        }
+      }
+    }
   }
 
   // Note: Function body translation is done in a separate pass after all functions are created
@@ -431,6 +471,41 @@ void translateFunctionBody(Fun *ifa_fun) {
         }
     }
     fprintf(stderr, "DEBUG: Finished local vars loop\n");
+
+    // Emit debug info for function parameters
+    // This must be done after allocas are created, at the beginning of the function
+    if (DBuilder && llvm_func->getSubprogram()) {
+        MPosition p;
+        p.push(1);
+        for (int i = 0; i < ifa_fun->sym->has.n; i++) {
+            MPosition *cp = cannonicalize_mposition(p);
+            p.inc();
+            Var *arg_var = ifa_fun->args.get(cp);
+
+            if (arg_var && arg_var->llvm_debug_var) {
+                unsigned arg_line = arg_var->sym->source_line() ? arg_var->sym->source_line() : func_start_line;
+                llvm::DILocation *debug_loc = llvm::DILocation::get(*TheContext, arg_line, 0, llvm_func->getSubprogram());
+
+                if (arg_var->llvm_value) {
+                    // Parameter has a value (live parameter)
+                    DBuilder->insertDbgValueIntrinsic(
+                        arg_var->llvm_value,                    // Value
+                        arg_var->llvm_debug_var,                // Variable
+                        DBuilder->createExpression(),           // Expression
+                        debug_loc,                              // Location
+                        Builder->GetInsertBlock()               // Insert at current position
+                    );
+                    fprintf(stderr, "DEBUG: Emitted dbg.value for parameter %s\n",
+                            arg_var->sym->name ? arg_var->sym->name : "(unnamed)");
+                } else {
+                    // Parameter was optimized away
+                    // Don't emit a value - debugger will show it as "<optimized out>"
+                    fprintf(stderr, "DEBUG: Parameter %s is optimized out (no debug value emitted)\n",
+                            arg_var->sym->name ? arg_var->sym->name : "(unnamed)");
+                }
+            }
+        }
+    }
 
     // Now translate PNodes in order
     // A more robust way would be to iterate over basic blocks in some order (e.g., RPO)

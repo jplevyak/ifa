@@ -14,6 +14,7 @@ class CreationSet;
 namespace llvm {
 class Value;
 class Type;
+class DILocalVariable;
 }  // namespace llvm
 
 typedef MapElem<void *, AVar *> AVarMapElem;
@@ -40,6 +41,7 @@ class Var : public gc {
   cchar *cg_string;  // used by cg.cpp
   llvm::Value *llvm_value;
   llvm::Type *llvm_type;
+  llvm::DILocalVariable *llvm_debug_var;  // Debug info variable
 
   // Temporary Space
   union {
