@@ -190,9 +190,13 @@ llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
     // Get source location info
     unsigned line_num = 0;
     if (ifa_fun->sym && ifa_fun->sym->ast) {
-      line_num = ifa_fun->sym->ast->line();
+      line_num = ifa_fun->sym->ast->source_line();  // Use source_line() to get actual source line, not generated code
+      fprintf(stderr, "DEBUG: Function %s: ast->line()=%d, ast->source_line()=%d\n",
+              ifa_fun->sym->name, ifa_fun->sym->ast->line(), line_num);
     } else if (ifa_fun->entry && ifa_fun->entry->code) {
-      line_num = ifa_fun->entry->code->line();
+      line_num = ifa_fun->entry->code->source_line();  // Use source_line() instead of line()
+      fprintf(stderr, "DEBUG: Function %s: code->line()=%d, code->source_line()=%d\n",
+              ifa_fun->sym->name, ifa_fun->entry->code->line(), line_num);
     }
 
     // Create DISubroutineType
@@ -376,7 +380,7 @@ void translateFunctionBody(Fun *ifa_fun) {
                 // Add debug info for this local variable
                 if (DBuilder && llvm_func->getSubprogram() && di_file_for_locals) {
                     llvm::DIType *var_di_type = getLLVMDIType(v->type, di_file_for_locals);
-                    unsigned var_line = v->sym->line() ? v->sym->line() : func_start_line; // Prefer var's own line
+                    unsigned var_line = v->sym->source_line() ? v->sym->source_line() : func_start_line; // Prefer var's own line
 
                     if (var_di_type) {
                         llvm::DILocalVariable *dil_var = DBuilder->createAutoVariable(
@@ -576,9 +580,9 @@ void translatePNode(PNode *pn, Fun *ifa_fun) {
     }
 
     // Set current debug location
-    unsigned line = pn->code->line();
+    unsigned line = pn->code->source_line();  // Use source_line() to get actual source line
     if (line == 0 && ifa_fun->ast) {
-        line = ifa_fun->line();
+        line = ifa_fun->source_line();  // Use source_line() here too
     }
     unsigned col = 0; 
     llvm::DISubprogram *sp = llvm_func->getSubprogram();

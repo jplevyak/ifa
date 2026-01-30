@@ -971,7 +971,7 @@ void llvm_build_type_strings(FA *fa) {
   }
 }
 
-void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun) {
+void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filename) {
   fprintf(stderr, "DEBUG: llvm_codegen_print_ir started\n");
   llvm_codegen_initialize(fa);
   llvm_build_type_strings(fa);
@@ -985,7 +985,8 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun) {
   }
 
   // Create DIBuilder Compile Unit
-  cchar* src_filename = fa->pdb->if1->filename ? fa->pdb->if1->filename : "unknown.ifa";
+  // Use the input_filename passed in, which has the actual source file path
+  cchar* src_filename = input_filename ? input_filename : (fa->pdb->if1->filename ? fa->pdb->if1->filename : "unknown.ifa");
   // Basic path handling, might need improvement for complex paths
   std::string full_path = src_filename;
   std::string dir = ".";
@@ -1394,7 +1395,7 @@ void llvm_codegen_write_ir(FA *fa, Fun *main, cchar *input_filename) {
     fail("Unable to open file %s for writing LLVM IR", fn);
     return;
   }
-  llvm_codegen_print_ir(fp, fa, main);
+  llvm_codegen_print_ir(fp, fa, main, input_filename);
   fclose(fp);
   fprintf(stderr, "LLVM IR written to %s\n", fn);
 }
