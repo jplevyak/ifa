@@ -185,9 +185,56 @@ llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
        fprintf(stderr, "DEBUG: Entry Block Created: %p\n", entry_bb);
   }
 
+  // Create Debug Info for this function
+  if (DBuilder && UnitFile) {
+    // Get source location info
+    unsigned line_num = 0;
+    if (ifa_fun->sym && ifa_fun->sym->ast) {
+      line_num = ifa_fun->sym->ast->line();
+    } else if (ifa_fun->entry && ifa_fun->entry->code) {
+      line_num = ifa_fun->entry->code->line();
+    }
 
-  // Debug Info Logic Removed
+    // Create DISubroutineType
+    llvm::SmallVector<llvm::Metadata *, 8> di_param_types;
 
+    // Return type
+    if (ifa_fun->rets.n == 1 && ifa_fun->rets[0] && ifa_fun->rets[0]->type) {
+      llvm::DIType *di_ret_type = getLLVMDIType(ifa_fun->rets[0]->type, UnitFile);
+      di_param_types.push_back(di_ret_type);
+    } else {
+      di_param_types.push_back(nullptr); // void return
+    }
+
+    // Parameter types
+    for (Var *arg_var : live_args) {
+      if (arg_var && arg_var->type) {
+        llvm::DIType *di_arg_type = getLLVMDIType(arg_var->type, UnitFile);
+        di_param_types.push_back(di_arg_type);
+      } else {
+        di_param_types.push_back(nullptr);
+      }
+    }
+
+    llvm::DISubroutineType *di_func_type = DBuilder->createSubroutineType(
+      DBuilder->getOrCreateTypeArray(di_param_types));
+
+    // Create DISubprogram
+    llvm::DISubprogram *sp = DBuilder->createFunction(
+      UnitFile,                           // Scope
+      func_name,                          // Name
+      llvm_func->getName(),               // Linkage name
+      UnitFile,                           // File
+      line_num,                           // Line number
+      di_func_type,                       // Type
+      line_num,                           // ScopeLine
+      llvm::DINode::FlagPrototyped,       // Flags
+      llvm::DISubprogram::SPFlagDefinition // SPFlags
+    );
+
+    llvm_func->setSubprogram(sp);
+    fprintf(stderr, "DEBUG: Created DISubprogram for %s at line %u\n", func_name.c_str(), line_num);
+  }
 
   // Note: Function body translation is done in a separate pass after all functions are created
   // This ensures all function declarations exist before any body tries to call them
@@ -268,7 +315,10 @@ void translateFunctionBody(Fun *ifa_fun) {
         return;
     }
     Builder->SetInsertPoint(&llvm_func->getEntryBlock(), llvm_func->getEntryBlock().begin()); // Allocas at the top
-    
+
+    // Clear debug location before allocating locals to avoid wrong subprogram references
+    Builder->SetCurrentDebugLocation(llvm::DebugLoc());
+
     fprintf(stderr, "DEBUG: InsertPoint set. Getting subprogram for locals...\n");
     llvm::DIFile* di_file_for_locals = llvm_func->getSubprogram() ? llvm_func->getSubprogram()->getFile() : nullptr;
     fprintf(stderr, "DEBUG: Got subprogram components\n");

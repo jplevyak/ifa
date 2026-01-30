@@ -60,8 +60,7 @@ static void llvm_codegen_initialize(FA *fa) {
   cchar* mod_id = fa && fa->pdb && fa->pdb->if1 && fa->pdb->if1->filename ? fa->pdb->if1->filename : "ifa_output";
   TheModule = std::make_unique<llvm::Module>(mod_id, *TheContext);
   Builder = std::make_unique<llvm::IRBuilder<>>(*TheContext);
-  // DBuilder = std::make_unique<llvm::DIBuilder>(*TheModule);
-  DBuilder = nullptr;
+  DBuilder = std::make_unique<llvm::DIBuilder>(*TheModule);
 
   // Set target triple for the module
   std::string TargetTriple = llvm::sys::getDefaultTargetTriple();
@@ -1001,6 +1000,9 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun) {
       UnitFile = DBuilder->createFile(fname, dir);
       CU = DBuilder->createCompileUnit(
           llvm::dwarf::DW_LANG_C, UnitFile, "ifa-compiler", 0 /*isOptimized*/, "" /*flags*/, 0 /*RV*/);
+
+      // Add debug info version to module
+      TheModule->addModuleFlag(llvm::Module::Warning, "Debug Info Version", llvm::DEBUG_METADATA_VERSION);
   }
 
   // Create Global Variables
@@ -1088,6 +1090,11 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun) {
         }
     }
     // Continue despite verification failure (non-fatal fail allows this)
+  }
+
+  // Finalize debug info
+  if (DBuilder) {
+    DBuilder->finalize();
   }
 
   // Print the module to the file
@@ -1389,7 +1396,7 @@ void llvm_codegen_write_ir(FA *fa, Fun *main, cchar *input_filename) {
   }
   llvm_codegen_print_ir(fp, fa, main);
   fclose(fp);
-  fprintf(stderr, "LLVM IR written to %s\\n", fn);
+  fprintf(stderr, "LLVM IR written to %s\n", fn);
 }
 
 int llvm_codegen_compile(cchar *input_filename) {
@@ -1417,38 +1424,17 @@ int llvm_codegen_compile(cchar *input_filename) {
   // If TheModule is null, this path is problematic.
   // A robust solution would pass FA* and Fun* here too, or ensure state.
 
-  // Compile LLVM IR to assembly first, then assemble to object file
-  // This two-step process ensures proper PIC relocations
-  char asm_file[512];
-  strncpy(asm_file, input_filename, sizeof(asm_file) - 3);
-  asm_file[sizeof(asm_file)-3] = '\0';
-  char *dot_s = strrchr(asm_file, '.');
-  if (dot_s) strcpy(dot_s, ".s");
-  else strcat(asm_file, ".s");
-
-  // Step 1: LLVM IR to assembly
-  sprintf(cmd, "llc -relocation-model=pic %s -o %s", ll_file, asm_file);
+  // Compile LLVM IR directly to object file using clang
+  // This handles debug info directives properly
+  sprintf(cmd, "clang -c -fPIC %s -o %s", ll_file, obj_file);
   int res = system(cmd);
 
   if (res != 0) {
-    fprintf(stderr, "llc command failed or not found for %s, trying clang...\\n", ll_file);
-    sprintf(cmd, "clang -c -fPIC %s -o %s", ll_file, obj_file);
-    res = system(cmd);
-    if (res != 0) {
-      fail("LLVM IR compilation failed for %s using clang.", ll_file);
-      return res;
-    }
-  } else {
-    // Step 2: Assemble to object file
-    sprintf(cmd, "as %s -o %s", asm_file, obj_file);
-    res = system(cmd);
-    if (res != 0) {
-      fail("Assembly failed for %s", asm_file);
-      return res;
-    }
+    fail("LLVM IR compilation failed for %s using clang.", ll_file);
+    return res;
   }
 
-  fprintf(stderr, "LLVM IR from %s compiled to %s\\n", ll_file, obj_file);
+  fprintf(stderr, "LLVM IR from %s compiled to %s\n", ll_file, obj_file);
 
   // Step 3: Link the object file to create executable
   char exe_file[512];
@@ -1466,7 +1452,7 @@ int llvm_codegen_compile(cchar *input_filename) {
     return res;
   }
 
-  fprintf(stderr, "Executable %s created successfully\\n", exe_file);
+  fprintf(stderr, "Executable %s created successfully\n", exe_file);
   return 0;
 }
 
