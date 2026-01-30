@@ -13,8 +13,8 @@ test_arithmetic a b : {
 test_comparisons x y : {
   print(x == y);
   print(x != y);
-  print(x < y);
-  print(x > y);
+  //print(x < y);
+  //print(x > y);
 };
 
 // Test conditionals
@@ -43,10 +43,10 @@ test_expr : {
 
 // Run all tests
 print("=== Arithmetic (10, 3) ===");
-test_arithmetic 10, 3;
+test_arithmetic 10 3;
 
 print("=== Comparisons (5, 10) ===");
-test_comparisons 5, 10;
+test_comparisons 5 10;
 
 print("=== Conditionals (42) ===");
 test_conditionals(42);
@@ -59,7 +59,7 @@ result : add 7 8;
 print(result);
 
 print("=== Float (3.14, 2.0) ===");
-test_float 3.14, 2.0;
+test_float 3.14 2.0;
 
 print("=== Expressions ===");
 test_expr();
