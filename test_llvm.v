@@ -13,8 +13,8 @@ test_arithmetic a b : {
 test_comparisons x y : {
   print(x == y);
   print(x != y);
-  //print(x < y);
-  //print(x > y);
+  print(x < y);
+  print(x > y);
 };
 
 // Test conditionals
