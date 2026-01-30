@@ -617,11 +617,56 @@ llvm::DIType *getLLVMDIType(Sym *sym, llvm::DIFile *di_file) {
 
 // Forward Declaration
 
+// Helper to unescape a string literal (remove quotes and process escape sequences)
+static std::string unescapeStringLiteral(const char *s) {
+    std::string result;
+    size_t len = strlen(s);
+
+    // Skip leading quote if present
+    size_t i = 0;
+    if (len > 0 && s[0] == '"') {
+        i = 1;
+        len--; // Also skip trailing quote
+    }
+
+    // Process characters until the trailing quote
+    while (i < len && s[i] != '"') {
+        if (s[i] == '\\' && i + 1 < len) {
+            // Handle escape sequences
+            i++;
+            switch (s[i]) {
+                case 'n': result += '\n'; break;
+                case 't': result += '\t'; break;
+                case 'r': result += '\r'; break;
+                case 'b': result += '\b'; break;
+                case 'f': result += '\f'; break;
+                case 'v': result += '\v'; break;
+                case 'a': result += '\a'; break;
+                case '\\': result += '\\'; break;
+                case '\"': result += '\"'; break;
+                case '\'': result += '\''; break;
+                case '0': result += '\0'; break;
+                // Could add octal and hex sequences here if needed
+                default:
+                    // Unknown escape, just include the character
+                    result += s[i];
+                    break;
+            }
+        } else {
+            result += s[i];
+        }
+        i++;
+    }
+
+    return result;
+}
+
 // Helper to get or create string constants as global variables
 static llvm::Constant *getOrCreateLLVMStringConstant(const std::string &str) {
     // Check if already exists
     // This simple caching might need to be more robust, e.g., per-module manager
     static std::map<std::string, llvm::Constant *> string_constants_map;
+
     if (string_constants_map.count(str)) {
         return string_constants_map[str];
     }
@@ -675,8 +720,9 @@ llvm::Constant *getLLVMConstant(Var *var) {
     if (sym->is_constant && sym->constant) { // String constants defined in IF1
         if (var->type == sym_string) {
              // cg.cc uses: _CG_String("escaped_string")
-             // Here, we create a global string constant and return a pointer to it.
-            return getOrCreateLLVMStringConstant(sym->constant);
+             // For LLVM, we need to unescape the string literal (remove quotes and process escapes)
+            std::string unescaped = unescapeStringLiteral(sym->constant);
+            return getOrCreateLLVMStringConstant(unescaped);
         }
         // For other types, IF1 might store numeric constants as strings.
         // We need to parse them based on llvm_type.

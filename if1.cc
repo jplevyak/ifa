@@ -57,6 +57,11 @@ Sym *if1_const(IF1 *p, Sym *type, cchar *constant, Immediate *imm, Sym *asym) {
       assert(!"bad const");
   }
   cchar *c = if1_cannonicalize_string(p, constant);
+  // For strings and symbols, set the v_string field to the cannonicalized string
+  // so that the hash and equality functions work correctly
+  if (imm->const_kind == IF1_CONST_KIND_STRING || imm->const_kind == IF1_CONST_KIND_SYMBOL) {
+    imm->v_string = c;
+  }
   Sym *sym = p->constants.get(imm);
   if (type) type = unalias_type(type);
   if (sym) {
