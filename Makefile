@@ -41,12 +41,12 @@ ifneq ($(OS_TYPE),Darwin)
 endif
 endif
 
-OBJS = main.o parse.o scope.o make_ast.o ast_to_if1.o cg.o llvm.o ir_serialize.o $(PARSER_OBJS) \
+OBJS = main.o parse.o scope.o make_ast.o ast_to_if1.o cg.o llvm.o llvm_codegen.o llvm_primitives.o ir_serialize.o $(PARSER_OBJS) \
        ast.o builtin.o cdb.o cfg.o clone.o dead.o dom.o fa.o fail.o fun.o \
        graph.o html.o if1.o ifa.o inline.o ifalog.o loop.o num.o pattern.o \
        pdb.o pnode.o prim.o prim_data.o ssu.o sym.o var.o ifa_version.o
 
-OBJS_LIB = ast.o builtin.o cdb.o cfg.o cg.o llvm.o clone.o dead.o dom.o fa.o \
+OBJS_LIB = ast.o builtin.o cdb.o cfg.o cg.o llvm.o llvm_codegen.o llvm_primitives.o clone.o dead.o dom.o fa.o \
            fail.o fun.o graph.o html.o if1.o ifa.o inline.o ifalog.o loop.o \
            num.o pattern.o pdb.o pnode.o prim.o prim_data.o main.o ssu.o \
            sym.o var.o ifa_version.o
@@ -57,13 +57,13 @@ AR = llvm-ar
 AUX_FILES = $(MODULE)/index.html $(MODULE)/manual.html $(MODULE)/faq.html $(MODULE)/ifa.1 $(MODULE)/ifa.cat
 TAR_FILES = $(AUX_FILES) $(TEST_FILES)
 
-LIB_SRCS = ast.cc builtin.cc cdb.cc cfg.cc cg.cc llvm.cc clone.cc dead.cc dom.cc fa.cc \
+LIB_SRCS = ast.cc builtin.cc cdb.cc cfg.cc cg.cc llvm.cc llvm_codegen.cc llvm_primitives.cc clone.cc dead.cc dom.cc fa.cc \
 	fail.cc fun.cc graph.cc html.cc if1.cc ifa.cc inline.cc \
 	ifalog.cc loop.cc num.cc pattern.cc pdb.cc pnode.cc prim.cc prim_data.cc \
 	main.cc ssu.cc sym.cc var.cc ifa_version.cc
 LIB_OBJS = $(LIB_SRCS:%.cc=%.o)
 
-IFA_DEPEND_SRCS = main.cc parse.cc scope.cc make_ast.cc ast_to_if1.cc cg.cc llvm.cc
+IFA_DEPEND_SRCS = main.cc parse.cc scope.cc make_ast.cc ast_to_if1.cc cg.cc llvm.cc llvm_codegen.cc llvm_primitives.cc
 IFA_SRCS = $(IFA_DEPEND_SRCS) v.g.d_parser.cc python.g.d_parser.cc
 IFA_OBJS = $(IFA_SRCS:%.cc=%.o)
 
