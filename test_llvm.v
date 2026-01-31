@@ -52,7 +52,7 @@ print("=== Conditionals (42) ===");
 test_conditionals(42);
 
 print("=== Loop (0 to 2) ===");
-test_loop(3);
+test_loop 3;
 
 print("=== Function add(7, 8) ===");
 result : add 7 8;

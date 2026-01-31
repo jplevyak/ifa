@@ -205,7 +205,6 @@ static void discover_all_reachable_functions(FA *fa, Fun *main_fun, Vec<Fun*> &a
         // Walk through all call sites in this function
         for (int k = 0; k < current->calls.n; k++) {
             if (current->calls.v[k].key) {
-                PNode *call_pnode = (PNode*)current->calls.v[k].key;
                 Vec<Fun*> *targets = current->calls.v[k].value;
 
                 if (targets) {

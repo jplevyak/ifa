@@ -243,7 +243,6 @@ llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
     // This includes parameters that were optimized away
     MPosition p2;
     p2.push(1);
-    unsigned live_arg_idx = 0;
     for (int i = 0; i < ifa_fun->sym->has.n; i++) {
       MPosition *cp2 = cannonicalize_mposition(p2);
       p2.inc();
@@ -271,10 +270,6 @@ llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
           bool is_live = arg_var->live;
           fprintf(stderr, "DEBUG: Created DIParameter for arg %d: %s (live=%d)\n", i,
                   arg_var->sym->name ? arg_var->sym->name : "(unnamed)", is_live);
-
-          if (is_live) {
-            live_arg_idx++;
-          }
         }
       }
     }
