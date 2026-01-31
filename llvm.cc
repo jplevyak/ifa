@@ -1123,6 +1123,24 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
   // Finalize DI builder after all IR and debug info is generated
   if (DBuilder) DBuilder->finalize();
 
+  // Debug: Check for unterminated blocks before verification
+  fprintf(stderr, "DEBUG: Pre-verification check for unterminated blocks:\n");
+  for (llvm::Function &F : *TheModule) {
+    for (llvm::BasicBlock &BB : F) {
+      if (!BB.getTerminator()) {
+        fprintf(stderr, "DEBUG: WARNING: Function %s has unterminated block %s (size=%zu)\n",
+                F.getName().str().c_str(), BB.getName().str().c_str(), BB.size());
+        fprintf(stderr, "DEBUG: Block instructions:\n");
+        int idx = 0;
+        for (llvm::Instruction &I : BB) {
+          fprintf(stderr, "DEBUG:   [%d] ", idx++);
+          I.print(llvm::errs());
+          fprintf(stderr, "\n");
+        }
+      }
+    }
+  }
+
   // Verify the module
   std::string error_str;
   llvm::raw_string_ostream rso(error_str);
@@ -1373,8 +1391,14 @@ llvm::Value* getLLVMValue(Var *var, Fun *ifa_fun) {
                 }
             }
         } else {
-            fprintf(stderr, "WARNING: No tuple argument found for var %s\n",
+            fprintf(stderr, "WARNING: No tuple argument found for var %s (function has 0 args, likely unspecialized template)\n",
                     var->sym->name ? var->sym->name : "(null)");
+            // Return undef value for unspecialized templates with no arguments
+            llvm::Type *var_type = getLLVMType(var->type);
+            if (var_type) {
+                return llvm::UndefValue::get(var_type);
+            }
+            return nullptr;
         }
     }
 

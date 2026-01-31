@@ -104,7 +104,21 @@ void write_send(Fun *f, PNode *n) {
              fprintf(stderr, "DEBUG: Translating body for on-demand created function %s (id %d)\n",
                      target->sym->name ? target->sym->name : "unnamed",
                      target->sym->id);
+
+             // CRITICAL: Save the current Builder insert point before translating the on-demand function
+             // Otherwise, after translating the callee, the Builder will still point to the callee's block,
+             // causing subsequent instructions to be added to the wrong function
+             llvm::BasicBlock *saved_bb = Builder->GetInsertBlock();
+             llvm::BasicBlock::iterator saved_ip = Builder->GetInsertPoint();
+
              translateFunctionBody(target);
+
+             // Restore the insert point to continue translating the calling function
+             if (saved_bb) {
+                 Builder->SetInsertPoint(saved_bb, saved_ip);
+                 fprintf(stderr, "DEBUG: Restored Builder insert point to calling function after translating %s\n",
+                         target->sym->name ? target->sym->name : "unnamed");
+             }
          }
     }
 
