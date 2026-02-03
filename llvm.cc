@@ -727,6 +727,12 @@ llvm::Constant *getLLVMConstant(Var *var) {
         // For other types, IF1 might store numeric constants as strings.
         // We need to parse them based on llvm_type.
         if (llvm_type->isIntegerTy()) {
+            // Special case for boolean strings "true" and "false"
+            if (strcmp(sym->constant, "true") == 0) {
+                return llvm::ConstantInt::get(llvm_type, 1, false);
+            } else if (strcmp(sym->constant, "false") == 0) {
+                return llvm::ConstantInt::get(llvm_type, 0, false);
+            }
             long long val = strtoll(sym->constant, nullptr, 0); // Auto-detect base
             return llvm::ConstantInt::get(llvm_type, val, true /*isSigned*/); // Assume signed for strtoll
         } else if (llvm_type->isFloatingPointTy()) {
@@ -1272,14 +1278,7 @@ llvm::Value* getLLVMValue(Var *var, Fun *ifa_fun) {
 
     // Handle constants (literals)
     if (var->sym && (var->sym->is_constant || var->sym->imm.const_kind != IF1_NUM_KIND_NONE || var->type == sym_nil_type)) {
-        fprintf(stderr, "DEBUG: getLLVMValue treating as constant. is_constant=%d, const_kind=%d, name=%s\n",
-                var->sym->is_constant ? 1 : 0, var->sym->imm.const_kind, var->sym->name ? var->sym->name : "(null)");
         llvm::Constant *const_val = getLLVMConstant(var);
-        if (const_val) {
-            fprintf(stderr, "DEBUG: getLLVMConstant returned: ");
-            const_val->print(llvm::errs());
-            fprintf(stderr, "\n");
-        }
         return const_val;
     }
 

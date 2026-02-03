@@ -652,12 +652,18 @@ void translateFunctionBody(Fun *ifa_fun) {
 
 
 static void simple_move(Var *lhs, Var *rhs, Fun *ifa_fun) {
+    // Early returns matching C backend's simple_move (cg.cc:497-501)
+    if (!lhs->live) return;  // Skip if LHS not live
+    if (!rhs->type || !lhs->type) return;  // Skip if no types
+    if (rhs->type == sym_void->type || lhs->type == sym_void->type) return;  // Skip void types
+
     llvm::Value *val = getLLVMValue(rhs, ifa_fun);
-    if (val) {
-        setLLVMValue(lhs, val, ifa_fun);
-    } else {
-        fail("Could not get LLVM value for RHS of MOVE/PHI: %s", rhs->sym->name);
+    if (!val) {
+        // RHS doesn't have an LLVM value yet (might be dead code or forward reference)
+        // C backend would skip this with: if (!rhs->cg_string) return;
+        return;
     }
+    setLLVMValue(lhs, val, ifa_fun);
 }
 
 static void do_phy_nodes(PNode *n, int isucc, Fun *ifa_fun) {
@@ -698,19 +704,11 @@ void translatePNode(PNode *pn, Fun *ifa_fun) {
         return;
     }
 
-    // Liveness check (parallels cg.cc:639, 657)
-    // Special case: dead.cc doesn't mark loop initializations as live, but they are fa_live
-    // Also, comparison operators without MOVE instructions may be incorrectly marked as non-live
-    // Trust fa_live for SEND operations that produce values, and for entry MOVE
-    bool is_live;
-    if (code_kind == Code_MOVE && pn == ifa_fun->entry) {
-        is_live = pn->fa_live;
-    } else if (code_kind == Code_SEND && pn->lvals.n > 0) {
-        // SEND with lvals produces a value - trust fa_live if it says it's live
-        is_live = pn->fa_live;
-    } else {
-        is_live = pn->live && pn->fa_live;
-    }
+    // Liveness check
+    // Trust FA analysis (fa_live) - it's more accurate than dead.cc's live flag
+    // The C backend checks both live && fa_live, but LLVM backend needs fa_live
+    // to ensure control flow targets (labels) and value-producing operations are generated
+    bool is_live = pn->fa_live;
     if (!is_live) {
         fprintf(stderr, "DEBUG: Skipping non-live PNode pn=%p (live=%d, fa_live=%d), code_kind=%d, lvals.n=%d",
                 (void*)pn, pn->live, pn->fa_live, code_kind, pn->lvals.n);
