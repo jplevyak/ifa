@@ -702,12 +702,8 @@ llvm::Constant *getLLVMConstant(Var *var) {
     }
     Sym *sym = var->sym;
 
-    fprintf(stderr, "DEBUG: getLLVMConstant entry. sym->name=%s, id=%d, is_constant=%d, const_kind=%d\n",
-            sym->name ? sym->name : "(null)", sym->id, sym->is_constant, sym->imm.const_kind);
-
     // Check if llvm_value is already a constant (e.g. from a global variable)
     if (var->llvm_value && llvm::isa<llvm::Constant>(var->llvm_value)) {
-        fprintf(stderr, "DEBUG: Returning cached constant from llvm_value\n");
         return llvm::cast<llvm::Constant>(var->llvm_value);
     }
 
@@ -717,7 +713,39 @@ llvm::Constant *getLLVMConstant(Var *var) {
         return nullptr;
     }
 
-    if (sym->is_constant && sym->constant) { // String constants defined in IF1
+    // Match cg.cc:934-938 order: check sym->imm FIRST, then sym->constant
+    // This ensures numeric immediates (including booleans) are handled before string parsing
+    if (sym->imm.const_kind != IF1_NUM_KIND_NONE) { // Numeric immediates
+        Immediate imm = sym->imm;
+        if (llvm_type->isIntegerTy()) {
+            uint64_t val = 0;
+            bool is_signed = (imm.const_kind == IF1_NUM_KIND_INT);
+            switch (imm.num_index) {
+                case IF1_INT_TYPE_1:
+                    val = imm.v_bool;
+                    break;
+                case IF1_INT_TYPE_8:  val = is_signed ? (uint64_t)(int64_t)imm.v_int8 : imm.v_uint8; break;
+                case IF1_INT_TYPE_16: val = is_signed ? (uint64_t)(int64_t)imm.v_int16 : imm.v_uint16; break;
+                case IF1_INT_TYPE_32: val = is_signed ? (uint64_t)(int64_t)imm.v_int32 : imm.v_uint32; break;
+                case IF1_INT_TYPE_64: val = imm.v_uint64; break; // v_int64 is same bits as v_uint64
+                default: fail("Unhandled immediate integer type index %d for %s", imm.num_index, sym->name); return nullptr;
+            }
+            return llvm::ConstantInt::get(llvm_type, val, is_signed);
+        } else if (llvm_type->isFloatingPointTy()) {
+            double val = 0.0;
+            switch (imm.num_index) {
+                case IF1_FLOAT_TYPE_32: val = imm.v_float32; break;
+                case IF1_FLOAT_TYPE_64: val = imm.v_float64; break;
+                case IF1_FLOAT_TYPE_128: // LLVM APFloat for 128-bit
+                    fail("FP128 immediate not yet handled for %s", sym->name); return nullptr; // TODO
+                default: fail("Unhandled immediate float type index %d for %s", imm.num_index, sym->name); return nullptr;
+            }
+            return llvm::ConstantFP::get(llvm_type, val);
+        } else {
+            fail("Immediate constant for non-numeric type for %s", sym->name);
+            return nullptr;
+        }
+    } else if (sym->is_constant && sym->constant) { // String constants (checked after imm)
         if (var->type == sym_string) {
              // cg.cc uses: _CG_String("escaped_string")
              // For LLVM, we need to unescape the string literal (remove quotes and process escapes)
@@ -727,14 +755,8 @@ llvm::Constant *getLLVMConstant(Var *var) {
         // For other types, IF1 might store numeric constants as strings.
         // We need to parse them based on llvm_type.
         if (llvm_type->isIntegerTy()) {
-            // Special case for boolean strings "true" and "false"
-            if (strcmp(sym->constant, "true") == 0) {
-                return llvm::ConstantInt::get(llvm_type, 1, false);
-            } else if (strcmp(sym->constant, "false") == 0) {
-                return llvm::ConstantInt::get(llvm_type, 0, false);
-            }
             long long val = strtoll(sym->constant, nullptr, 0); // Auto-detect base
-            return llvm::ConstantInt::get(llvm_type, val, true /*isSigned*/); // Assume signed for strtoll
+            return llvm::ConstantInt::get(llvm_type, val, true /*isSigned*/);
         } else if (llvm_type->isFloatingPointTy()) {
             double val = strtod(sym->constant, nullptr);
             return llvm::ConstantFP::get(llvm_type, val);
@@ -755,39 +777,6 @@ llvm::Constant *getLLVMConstant(Var *var) {
             return nullptr;
         } else {
             fail("Unhandled string constant for non-string, non-numeric type: %s for var %s", sym->constant, sym->name);
-            return nullptr;
-        }
-    } else if (sym->imm.const_kind != IF1_NUM_KIND_NONE) { // Numeric immediates
-        Immediate imm = sym->imm;
-        fprintf(stderr, "DEBUG: getLLVMConstant numeric immediate. num_index=%d, const_kind=%d\n",
-                sym->num_index, sym->imm.const_kind);
-        if (llvm_type->isIntegerTy()) {
-            uint64_t val = 0;
-            bool is_signed = (sym->num_kind == IF1_NUM_KIND_INT);
-            switch (sym->num_index) {
-                case IF1_INT_TYPE_1:
-                    val = imm.v_bool;
-                    fprintf(stderr, "DEBUG: IF1_INT_TYPE_1 (bool): v_bool=%d\n", imm.v_bool);
-                    break;
-                case IF1_INT_TYPE_8:  val = is_signed ? (uint64_t)(int64_t)imm.v_int8 : imm.v_uint8; break;
-                case IF1_INT_TYPE_16: val = is_signed ? (uint64_t)(int64_t)imm.v_int16 : imm.v_uint16; break;
-                case IF1_INT_TYPE_32: val = is_signed ? (uint64_t)(int64_t)imm.v_int32 : imm.v_uint32; break;
-                case IF1_INT_TYPE_64: val = imm.v_uint64; break; // v_int64 is same bits as v_uint64
-                default: fail("Unhandled immediate integer type index %d for %s", sym->num_index, sym->name); return nullptr;
-            }
-            return llvm::ConstantInt::get(llvm_type, val, is_signed);
-        } else if (llvm_type->isFloatingPointTy()) {
-            double val = 0.0;
-            switch (sym->num_index) {
-                case IF1_FLOAT_TYPE_32: val = imm.v_float32; break;
-                case IF1_FLOAT_TYPE_64: val = imm.v_float64; break;
-                case IF1_FLOAT_TYPE_128: // LLVM APFloat for 128-bit
-                    fail("FP128 immediate not yet handled for %s", sym->name); return nullptr; // TODO
-                default: fail("Unhandled immediate float type index %d for %s", sym->num_index, sym->name); return nullptr;
-            }
-            return llvm::ConstantFP::get(llvm_type, val);
-        } else {
-            fail("Immediate constant for non-numeric type for %s", sym->name);
             return nullptr;
         }
     } else if (var->type == sym_nil_type) { // Handle nil constants
