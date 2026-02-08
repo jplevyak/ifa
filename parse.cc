@@ -144,7 +144,7 @@ static int load_one(cchar *fn) {
     if (langs[l].extension && !strcmp(ext + 1, langs[l].extension)) break;
   if (l >= (int)numberof(langs)) fail("unknown extension '%s'", fn);
 
-  sprintf(tmpfn, "%s/prelude", system_dir);
+  snprintf(tmpfn, sizeof(tmpfn), "%s/prelude", system_dir);
   strcat(tmpfn, ".");
   strcat(tmpfn, langs[l].extension);
   if (!(a = load_file(tmpfn, &langs[l]))) return -1;
@@ -169,12 +169,12 @@ int compile_one_file(cchar *fn) {
   if (ifa_optimize() < 0) return -1;
 
   if (getenv("IFA_LLVM")) {
-      // Call LLVM backend directly - no serialization needed!
-      llvm_codegen_write_ir(pdb->fa, if1->top->fun, fn);
-      llvm_codegen_compile(fn);
+    // Call LLVM backend directly - no serialization needed!
+    llvm_codegen_write_ir(pdb->fa, if1->top->fun, fn);
+    llvm_codegen_compile(fn);
   } else {
-      ifa_cg(fn);
-      ifa_compile(fn);
+    ifa_cg(fn);
+    ifa_compile(fn);
   }
   return 0;
 }
