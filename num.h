@@ -138,13 +138,13 @@ class Immediate : public gc {
     return *this;
   }
   Immediate(bool b) {
-    memset((void*)this, 0, sizeof(*this));
+    memset((void *)this, 0, sizeof(*this));
     const_kind = IF1_NUM_KIND_UINT;
     num_index = IF1_INT_TYPE_1;
     v_bool = b;
   }
   Immediate(char *s) {
-    memset((void*)this, 0, sizeof(*this));
+    memset((void *)this, 0, sizeof(*this));
     const_kind = IF1_CONST_KIND_STRING;
     v_string = s;
   }
@@ -220,34 +220,30 @@ class ImmHashFns {
   static int equal(Immediate *, Immediate *);
 };
 
-#define CPP_IS_LAME \
-  { 1, 8, 16, 32, 64 }
+#define CPP_IS_LAME {1, 8, 16, 32, 64}
 EXTERN int int_type_precision[5] EXTERN_INIT(CPP_IS_LAME);
 #undef CPP_IS_LAME
 
-#define CPP_IS_LAME \
-  { 16, 32, 48, 64, 80, 96, 112, 128 }
+#define CPP_IS_LAME {16, 32, 48, 64, 80, 96, 112, 128}
 EXTERN int float_type_precision[8] EXTERN_INIT(CPP_IS_LAME);
 #undef CPP_IS_LAME
 
-#define CPP_IS_LAME                                                                     \
-  {                                                                                     \
-    {0, 0, 0, 0, 0, 0, 0, 0}, {"bool", "uint8", "uint16", "uint32", "uint64", 0, 0, 0}, \
-        {"bool", "int8", "int16", "int32", "int64", 0, 0, 0}, {                         \
-      0, "float32", 0, "float64", 0, 0, 0, "float128"                                   \
-    }                                                                                   \
-  }
+#define CPP_IS_LAME                                          \
+  {{0, 0, 0, 0, 0, 0, 0, 0},                                 \
+   {"bool", "uint8", "uint16", "uint32", "uint64", 0, 0, 0}, \
+   {"bool", "int8", "int16", "int32", "int64", 0, 0, 0},     \
+   {0, "float32", 0, "float64", 0, 0, 0, "float128"}}
 EXTERN cchar *num_kind_string[4][8] EXTERN_INIT(CPP_IS_LAME);
 #undef CPP_IS_LAME
 
 inline Immediate &Immediate::operator=(const Immediate &imm) {
-  memcpy((void*)this, &imm, sizeof(imm));
+  memcpy((void *)this, &imm, sizeof(imm));
   return *this;
 }
 
-inline Immediate::Immediate(const Immediate &imm) { memcpy((void*)this, &imm, sizeof(imm)); }
+inline Immediate::Immediate(const Immediate &imm) { memcpy((void *)this, &imm, sizeof(imm)); }
 
-inline Immediate::Immediate() { memset((void*)this, 0, sizeof(*this)); }
+inline Immediate::Immediate() { memset((void *)this, 0, sizeof(*this)); }
 
 inline unsigned int ImmHashFns::hash(Immediate *imm) {
   unsigned int h = 0;
@@ -259,8 +255,8 @@ inline unsigned int ImmHashFns::hash(Immediate *imm) {
 inline int ImmHashFns::equal(Immediate *imm1, Immediate *imm2) { return !memcmp(imm1, imm2, sizeof(*imm1)); }
 
 int fprint_imm(FILE *fp, Immediate &imm);
-int sprint_imm(char *s, Immediate &imm);
-int sprint_imm(char *str, char *control_string, Immediate &imm);
+int sprint_imm(char *s, size_t size, Immediate &imm);
+int sprint_imm(char *str, size_t size, char *control_string, Immediate &imm);
 void coerce_immediate(Immediate *from, Immediate *to);
 void fold_result(Immediate *imm1, Immediate *imm2, Immediate *imm);
 int fold_constant(int op, Immediate *im1, Immediate *im2, Immediate *imm);

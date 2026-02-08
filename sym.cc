@@ -259,7 +259,7 @@ int if1_numeric_size(IF1 *p, Sym *t) {
     _t b;                \
   }
 
-#define ALIGNOF(_t) ((int)(intptr_t) & (((struct AlignOf##_t *)0)->b))
+#define ALIGNOF(_t) ((int)(intptr_t)&(((struct AlignOf##_t *)0)->b))
 
 MAKE_ALIGNOF(bool);
 MAKE_ALIGNOF(uint8);
@@ -386,7 +386,7 @@ static Sym *int_constant_internal(IF1 *i, int n, Sym *t) {
     return if1_const(i, t, c, &imm);
   } else {
     char str[100];
-    sprintf(str, "%d", n);
+    snprintf(str, sizeof(str), "%d", n);
     return if1_const(i, t, str, &imm);
   }
 }
@@ -399,7 +399,7 @@ Sym *size_constant(int n) { return int_constant_internal(if1, n, sym_size); }
 
 Sym *imm_constant(Immediate &imm, Sym *t) {
   char str[256];
-  sprint_imm(str, imm);
+  sprint_imm(str, sizeof(str), imm);
   return if1_const(if1, t, str, &imm);
 }
 

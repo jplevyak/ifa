@@ -25,7 +25,7 @@ FILE *log_fp(int log) {
     char save_p[FILENAME_MAX], orig_p[FILENAME_MAX];
     strcpy(save_p, save_dir);
     char *fn = &save_p[strlen(save_p)];
-    sprintf(fn, "log.%c", (char)log);
+    snprintf(fn, sizeof(save_p) - strlen(save_p), "log.%c", (char)log);
     strcpy(orig_p, log_dir);
     strcat(orig_p, fn);
     rename(orig_p, save_p);

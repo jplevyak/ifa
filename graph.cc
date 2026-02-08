@@ -148,7 +148,7 @@ static void strcat_sym_node(char *s, Sym *sy) {
     strcat(s, sy->name);
   else {
     char id[80];
-    sprintf(id, "_%d", sy->id);
+    snprintf(id, sizeof(id), "_%d", sy->id);
     strcat(s, id);
   }
 }
@@ -170,20 +170,24 @@ static void graph_pnode_node(FILE *fp, PNode *pn, int options = 0) {
   }
   if (options & G_DOM) {
     for (int i = 0; i < pn->dom->intervals.n; i += 2) {
-      sprintf(title + strlen(title), "[%d %d]", pn->dom->intervals[i], pn->dom->intervals.v[i + 1]);
+      snprintf(title + strlen(title), sizeof(title) - strlen(title), "[%d %d]", pn->dom->intervals[i],
+               pn->dom->intervals.v[i + 1]);
     }
   }
   if (options & G_LOOP) {
-    sprintf(title + strlen(title), "C(%d %d)", pn->loop_node->pre_dfs, pn->loop_node->post_dfs);
-    sprintf(title + strlen(title), "D(%d %d)", pn->loop_node->pre_dom, pn->loop_node->post_dom);
+    snprintf(title + strlen(title), sizeof(title) - strlen(title), "C(%d %d)", pn->loop_node->pre_dfs,
+             pn->loop_node->post_dfs);
+    snprintf(title + strlen(title), sizeof(title) - strlen(title), "D(%d %d)", pn->loop_node->pre_dom,
+             pn->loop_node->post_dom);
   }
-  if (fgraph_frequencies) sprintf(title + strlen(title), "freq(%f)", pn->execution_frequency);
+  if (fgraph_frequencies)
+    snprintf(title + strlen(title), sizeof(title) - strlen(title), "freq(%f)", pn->execution_frequency);
   graph_node(fp, pn, title);
 }
 
 static void graph_loop_node(FILE *fp, LoopNode *n) {
   char title[256] = "";
-  sprintf(title, "%d-%d", n->pre_dom, n->post_dom);
+  snprintf(title, sizeof(title), "%d-%d", n->pre_dom, n->post_dom);
   graph_node(fp, n, title);
 }
 
@@ -250,7 +254,7 @@ static void graph_var_node(FILE *fp, Var *v, int options = 0) {
       strcat(id, " {");
       forv_Sym(s, consts) {
         strcat(id, " ");
-        sprint_imm(id + strlen(id), s->imm);
+        sprint_imm(id + strlen(id), sizeof(id) - strlen(id), s->imm);
       }
       strcat(id, " }");
     }
@@ -300,7 +304,7 @@ static void graph_ssu(Vec<Fun *> &funs, cchar *fn) {
 
 static void graph_avar_node(FILE *fp, AVar *av) {
   char label[80];
-  sprintf(label, "%s_%d", av->var->sym->name ? av->var->sym->name : "", av->var->sym->id);
+  snprintf(label, sizeof(label), "%s_%d", av->var->sym->name ? av->var->sym->name : "", av->var->sym->id);
   Vec<Sym *> consts;
   forv_CreationSet(cs, *av->out) if (cs) {
     if (cs->sym->constant)
@@ -315,7 +319,7 @@ static void graph_avar_node(FILE *fp, AVar *av) {
     strcat(label, " {");
     forv_Sym(s, consts) {
       strcat(label, " ");
-      sprint_imm(label + strlen(label), s->imm);
+      sprint_imm(label + strlen(label), sizeof(label) - strlen(label), s->imm);
     }
     strcat(label, " }");
   }
@@ -347,20 +351,20 @@ static void graph_avars(FA *fa, cchar *fn) {
 
 static void graph_es_node(FILE *fp, EntrySet *es) {
   char label[80];
-  sprintf(label, "%d:%s_%d", es->id, es->fun->sym->name ? es->fun->sym->name : "", es->fun->sym->id);
+  snprintf(label, sizeof(label), "%d:%s_%d", es->id, es->fun->sym->name ? es->fun->sym->name : "", es->fun->sym->id);
   graph_node(fp, es, label, G_BLUE | G_BOX);
 }
 
 static void graph_cs_node(FILE *fp, CreationSet *cs) {
   char label[80];
   if (cs->sym->is_constant)
-    sprint_imm(label, cs->sym->imm);
+    sprint_imm(label, sizeof(label), cs->sym->imm);
   else
-    sprintf(label, "%d:%s_%d", cs->id, cs->sym->name ? cs->sym->name : (cs->sym->constant ? cs->sym->constant : ""),
-            cs->sym->id);
+    snprintf(label, sizeof(label), "%d:%s_%d", cs->id,
+             cs->sym->name ? cs->sym->name : (cs->sym->constant ? cs->sym->constant : ""), cs->sym->id);
   graph_node(fp, cs, label, G_RED | G_ELLIPSE);
   forv_AVar(ivar, cs->vars) {
-    sprintf(label, "%s_%d", ivar->var->sym->name ? ivar->var->sym->name : "", ivar->var->sym->id);
+    snprintf(label, sizeof(label), "%s_%d", ivar->var->sym->name ? ivar->var->sym->name : "", ivar->var->sym->id);
     graph_node(fp, ivar, label, G_ORANGE | G_TRIANGLE);
     graph_edge(fp, cs, ivar, G_ORANGE);
   }
@@ -406,7 +410,8 @@ static void graph_fun_node(FILE *fp, Fun *f) {
         strcat_pattern(title, a->sym);
     }
   }
-  if (fgraph_frequencies) sprintf(title + strlen(title), "freq(%f)", f->execution_frequency);
+  if (fgraph_frequencies)
+    snprintf(title + strlen(title), sizeof(title) - strlen(title), "freq(%f)", f->execution_frequency);
   graph_node(fp, f, title);
 }
 
@@ -458,7 +463,7 @@ static void graph_abstract_types(FA *fa, cchar *fn) {
       if (s->name)
         strcpy(pname, s->name);
       else
-        sprintf(pname, "%d", s->id);
+        snprintf(pname, sizeof(name) - (pname - name), "%d", s->id);
       pname += strlen(pname);
     } else if (s->fun) {
       pname += strlen(pname);
@@ -467,7 +472,7 @@ static void graph_abstract_types(FA *fa, cchar *fn) {
       else
         strcpy(pname, "<anonymous>");
       pname += strlen(pname);
-      sprintf(pname, "%s:%d ", s->fun->filename(), s->fun->line());
+      snprintf(pname, sizeof(name) - (pname - name), "%s:%d ", s->fun->filename(), s->fun->line());
       pname += strlen(pname);
     } else if (s->name) {
       strcpy(pname, s->name);

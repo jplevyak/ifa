@@ -2558,7 +2558,7 @@ void log_var_types(Var *v, Fun *f) {
       log(LOG_TEST_FA, "\"%s\" ", s->constant);
     else if (s->is_constant) {
       char c[128];
-      sprint_imm(c, s->imm);
+      sprint_imm(c, sizeof(c), s->imm);
       log(LOG_TEST_FA, "\"%s\" ", c);
     }
     if (s->source_line()) log(LOG_TEST_FA, "(%s:%d) ", fn(s->filename()), s->source_line());
@@ -2593,7 +2593,7 @@ static void collect_results() {
   if (fgraph_pass_contours) {
     char fn[2048];
     strcpy(fn, fa->fn);
-    sprintf(fn + strlen(fn), ".%d", analysis_pass);
+    snprintf(fn + strlen(fn), sizeof(fn) - strlen(fn), ".%d", analysis_pass);
     graph_contours(fa, fn);
   }
 }

@@ -299,7 +299,7 @@ static void dump_symbols(FILE *fp, FA *fa) {
 
 void dump_html(FA *fa, cchar *fn, cchar *mktree_dir) {
   char hfn[512];
-  sprintf(hfn, "%s.html", fn);
+  snprintf(hfn, sizeof(hfn), "%s.html", fn);
   FILE *fp = fopen(hfn, "w");
   dump_header(fp, fn, mktree_dir);
   dump_symbols(fp, fa);

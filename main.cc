@@ -59,7 +59,7 @@ static void short_copyright() {
 
 static void help(ArgumentState *arg_state, char *arg_unused) {
   char ver[100];
-  ifa_version(ver);
+  ifa_version(ver, sizeof(ver));
   fprintf(stderr, "IFA Version %s ", ver);
   short_copyright();
   usage(arg_state, arg_unused);
