@@ -389,7 +389,7 @@ llvm::Type *getLLVMType(Sym *sym) {
               // This implies the actual data structure (length, capacity) is managed by runtime calls.
               // A more complete representation would be a specific struct type e.g. _CG_list_struct
               // For now, ElementType*
-              type = llvm::PointerType::getUnqual(element_llvm_type);
+              type = llvm::PointerType::getUnqual(*TheContext);
               // Alternative: create a struct like { T* data, size_t length }
               // std::vector<llvm::Type*> list_fields = {
               //   llvm::PointerType::getUnqual(element_llvm_type), // data
@@ -510,7 +510,7 @@ llvm::Type *getLLVMType(Sym *sym) {
         if (unaliased_sym->element && unaliased_sym->element->type) {
           llvm::Type *element_type = getLLVMType(unaliased_sym->element->type);
           if (element_type) {
-            type = llvm::PointerType::getUnqual(element_type);
+            type = llvm::PointerType::getUnqual(*TheContext);
           } else {
             fail("Could not get LLVM type for pointee of REF type %s",
                  unaliased_sym->name ? unaliased_sym->name : "unnamed_ref");
