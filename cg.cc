@@ -570,6 +570,7 @@ static void write_send_arg(FILE *fp, Fun *f, PNode *n, MPosition *p, int &wrote_
     fputs(c_rhs(v), fp);
   } else {
 #if 0
+    // These are inside tuples: potentially we could unwrap the tuple and pass the arguments directly.
     fputs(c_rhs(v), fp);
     for (int i = 1; i < p->pos.n; i++) 
       if (is_intPosition(p->pos[i])) {

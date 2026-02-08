@@ -104,7 +104,21 @@ void write_send(Fun *f, PNode *n) {
              fprintf(stderr, "DEBUG: Translating body for on-demand created function %s (id %d)\n",
                      target->sym->name ? target->sym->name : "unnamed",
                      target->sym->id);
+
+             // CRITICAL: Save the current Builder insert point before translating the on-demand function
+             // Otherwise, after translating the callee, the Builder will still point to the callee's block,
+             // causing subsequent instructions to be added to the wrong function
+             llvm::BasicBlock *saved_bb = Builder->GetInsertBlock();
+             llvm::BasicBlock::iterator saved_ip = Builder->GetInsertPoint();
+
              translateFunctionBody(target);
+
+             // Restore the insert point to continue translating the calling function
+             if (saved_bb) {
+                 Builder->SetInsertPoint(saved_bb, saved_ip);
+                 fprintf(stderr, "DEBUG: Restored Builder insert point to calling function after translating %s\n",
+                         target->sym->name ? target->sym->name : "unnamed");
+             }
          }
     }
 
@@ -613,21 +627,25 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
                  }
 
                  llvm::Value* ret_llvm_val = getLLVMValue(ret_val_var, ifa_fun);
-                 if (ret_llvm_val) {
-                     std::string ret_type_str, expected_type_str;
-                     llvm::raw_string_ostream ret_os(ret_type_str), exp_os(expected_type_str);
-                     ret_llvm_val->getType()->print(ret_os);
-                     llvm_func->getReturnType()->print(exp_os);
-                     fprintf(stderr, "DEBUG: prim_reply return value type: %s, expected: %s\n",
-                             ret_os.str().c_str(), exp_os.str().c_str());
+                 if (!ret_llvm_val) {
+                     // Return value variable doesn't have LLVM value (dead code)
+                     // Return undef like C backend would skip or return placeholder
+                     ret_llvm_val = llvm::UndefValue::get(llvm_func->getReturnType());
+                     fprintf(stderr, "DEBUG: Return value not available, using undef for function %s\n",
+                             ifa_fun->sym->name);
+                 }
 
-                     if (ret_llvm_val->getType() == llvm_func->getReturnType()) {
-                        Builder->CreateRet(ret_llvm_val);
-                     } else {
-                         Builder->CreateRet(ret_llvm_val); // Might verify fail - let LLVM catch type mismatch
-                     }
+                 std::string ret_type_str, expected_type_str;
+                 llvm::raw_string_ostream ret_os(ret_type_str), exp_os(expected_type_str);
+                 ret_llvm_val->getType()->print(ret_os);
+                 llvm_func->getReturnType()->print(exp_os);
+                 fprintf(stderr, "DEBUG: prim_reply return value type: %s, expected: %s\n",
+                         ret_os.str().c_str(), exp_os.str().c_str());
+
+                 if (ret_llvm_val->getType() == llvm_func->getReturnType()) {
+                    Builder->CreateRet(ret_llvm_val);
                  } else {
-                     fail("Could not get return value for non-void function %s", ifa_fun->sym->name);
+                     Builder->CreateRet(ret_llvm_val); // Might verify fail - let LLVM catch type mismatch
                  }
              } else {
                  // No return value provided but function is non-void

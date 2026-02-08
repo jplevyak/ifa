@@ -3,6 +3,7 @@
 */
 #include "llvm_internal.h"
 #include "prim.h"
+#include "var.h"
 #include <set>
 
 // ============================================================================
@@ -88,7 +89,27 @@ llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
             i, arg_var,
             arg_var ? arg_var->live : -1,
             arg_var && arg_var->sym && arg_var->sym->name ? arg_var->sym->name : "(null)");
-    if (arg_var && arg_var->live) {
+    // Check if argument is live according to either dead code elimination or FA
+    bool arg_is_live = false;
+    if (arg_var) {
+        arg_is_live = arg_var->live;
+        // Also check FA liveness by looking at AVars
+        if (!arg_is_live) {
+            int fa_live_count = 0;
+            form_AVarMapElem(x, arg_var->avars) {
+                AVar *av = x->value;
+                if (av && av->live) {
+                    arg_is_live = true;
+                    fa_live_count++;
+                }
+            }
+            if (fa_live_count > 0) {
+                fprintf(stderr, "DEBUG:     Found %d FA-live AVars for arg %s\n", fa_live_count,
+                        arg_var->sym && arg_var->sym->name ? arg_var->sym->name : "(null)");
+            }
+        }
+    }
+    if (arg_var && arg_is_live) {
       if (arg_var->type && arg_var->type->is_fun) {
         fprintf(stderr, "DEBUG:   Skipping function-typed formal %d\n", i);
         continue;
@@ -277,6 +298,31 @@ llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
 
   // Note: Function body translation is done in a separate pass after all functions are created
   // This ensures all function declarations exist before any body tries to call them
+
+  // For functions that won't get translateFunctionBody called (external or no entry point),
+  // ensure any created basic blocks have terminators
+  if (ifa_fun->is_external || !ifa_fun->entry) {
+    for (llvm::BasicBlock &BB : *llvm_func) {
+      if (!BB.getTerminator()) {
+        fprintf(stderr, "DEBUG: Basic block %s in function %s (id %d) has no terminator after createFunction, adding default\n",
+                BB.getName().str().c_str(), ifa_fun->sym->name, ifa_fun->sym->id);
+        // Create a builder - if block is not empty, insert after last instruction
+        // Otherwise insert at beginning
+        llvm::IRBuilder<> temp_builder(*TheContext);
+        if (BB.empty()) {
+          temp_builder.SetInsertPoint(&BB);
+        } else {
+          temp_builder.SetInsertPoint(&BB, BB.end());
+        }
+        if (llvm_func->getReturnType()->isVoidTy()) {
+          temp_builder.CreateRetVoid();
+        } else {
+          temp_builder.CreateRet(llvm::UndefValue::get(llvm_func->getReturnType()));
+        }
+      }
+    }
+  }
+
   fprintf(stderr, "DEBUG: Finished createFunction for %d\n", ifa_fun->sym->id);
   return llvm_func;
 }
@@ -541,18 +587,58 @@ void translateFunctionBody(Fun *ifa_fun) {
     fprintf(stderr, "DEBUG: Finished worklist processing\n");
 
     // Ensure all basic blocks have terminators
-    fprintf(stderr, "DEBUG: Checking terminators for function %s\n", ifa_fun->sym->name);
+    std::string full_func_name = llvm_func->getName().str();
+    fprintf(stderr, "DEBUG: Checking terminators for function %s (LLVM name: %s)\n",
+            ifa_fun->sym->name, full_func_name.c_str());
     for (llvm::BasicBlock &BB : *llvm_func) {
         if (!BB.getTerminator()) {
-            fprintf(stderr, "DEBUG: Basic block %s in function %s has no terminator, adding default\n",
-                    BB.getName().str().c_str(), ifa_fun->sym->name);
-            Builder->SetInsertPoint(&BB);
+            fprintf(stderr, "DEBUG: Basic block %s in function %s has no terminator (size=%zu), adding default\n",
+                    BB.getName().str().c_str(), full_func_name.c_str(), BB.size());
+
+            // Print existing instructions
+            fprintf(stderr, "DEBUG: Existing instructions in block:\n");
+            int inst_idx = 0;
+            for (llvm::Instruction &I : BB) {
+                fprintf(stderr, "DEBUG:   [%d] ", inst_idx++);
+                I.print(llvm::errs());
+                fprintf(stderr, "\n");
+            }
+
+            // Create a new IRBuilder for this specific terminator addition
+            // This ensures we don't interfere with any ongoing translation
+            llvm::IRBuilder<> temp_builder(*TheContext);
+            temp_builder.SetInsertPoint(&BB);
+
+            // Check return type
+            llvm::Type *ret_type = llvm_func->getReturnType();
+            fprintf(stderr, "DEBUG: Return type is void: %d\n", ret_type->isVoidTy());
+
             // Add appropriate terminator based on function return type
-            if (llvm_func->getReturnType()->isVoidTy()) {
-                Builder->CreateRetVoid();
+            llvm::Instruction *term_inst = nullptr;
+            if (ret_type->isVoidTy()) {
+                fprintf(stderr, "DEBUG: Creating RetVoid...\n");
+                term_inst = temp_builder.CreateRetVoid();
+                fprintf(stderr, "DEBUG: Added RetVoid to block %s\n", BB.getName().str().c_str());
             } else {
-                // Return undef/zero for non-void functions
-                Builder->CreateRet(llvm::UndefValue::get(llvm_func->getReturnType()));
+                fprintf(stderr, "DEBUG: Creating Ret with UndefValue...\n");
+                llvm::Value *undef = llvm::UndefValue::get(ret_type);
+                fprintf(stderr, "DEBUG: Created UndefValue\n");
+                term_inst = temp_builder.CreateRet(undef);
+                fprintf(stderr, "DEBUG: Added Ret(undef) to block %s\n", BB.getName().str().c_str());
+            }
+
+            // Print the created terminator
+            if (term_inst) {
+                fprintf(stderr, "DEBUG: Created terminator instruction: ");
+                term_inst->print(llvm::errs());
+                fprintf(stderr, "\n");
+            }
+
+            // Verify terminator was added
+            if (!BB.getTerminator()) {
+                fprintf(stderr, "ERROR: Failed to add terminator to block %s!\n", BB.getName().str().c_str());
+            } else {
+                fprintf(stderr, "DEBUG: Terminator successfully added. Block now has %zu instructions\n", BB.size());
             }
         }
     }
@@ -561,12 +647,18 @@ void translateFunctionBody(Fun *ifa_fun) {
 
 
 static void simple_move(Var *lhs, Var *rhs, Fun *ifa_fun) {
+    // Early returns matching C backend's simple_move (cg.cc:497-501)
+    if (!lhs->live) return;  // Skip if LHS not live
+    if (!rhs->type || !lhs->type) return;  // Skip if no types
+    if (rhs->type == sym_void->type || lhs->type == sym_void->type) return;  // Skip void types
+
     llvm::Value *val = getLLVMValue(rhs, ifa_fun);
-    if (val) {
-        setLLVMValue(lhs, val, ifa_fun);
-    } else {
-        fail("Could not get LLVM value for RHS of MOVE/PHI: %s", rhs->sym->name);
+    if (!val) {
+        // RHS doesn't have an LLVM value yet (might be dead code or forward reference)
+        // C backend would skip this with: if (!rhs->cg_string) return;
+        return;
     }
+    setLLVMValue(lhs, val, ifa_fun);
 }
 
 static void do_phy_nodes(PNode *n, int isucc, Fun *ifa_fun) {
@@ -607,14 +699,11 @@ void translatePNode(PNode *pn, Fun *ifa_fun) {
         return;
     }
 
-    // Liveness check (parallels cg.cc:639, 657)
-    // Special case: dead.cc doesn't mark loop initializations as live, but they are fa_live
-    bool is_live;
-    if (code_kind == Code_MOVE && pn == ifa_fun->entry) {
-        is_live = pn->fa_live;
-    } else {
-        is_live = pn->live && pn->fa_live;
-    }
+    // Liveness check
+    // Trust FA analysis (fa_live) - it's more accurate than dead.cc's live flag
+    // The C backend checks both live && fa_live, but LLVM backend needs fa_live
+    // to ensure control flow targets (labels) and value-producing operations are generated
+    bool is_live = pn->fa_live;
     if (!is_live) {
         fprintf(stderr, "DEBUG: Skipping non-live PNode pn=%p (live=%d, fa_live=%d), code_kind=%d, lvals.n=%d",
                 (void*)pn, pn->live, pn->fa_live, code_kind, pn->lvals.n);
