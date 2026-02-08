@@ -1565,7 +1565,7 @@ int llvm_codegen_compile(cchar *input_filename) {
   if (dot_exe) *dot_exe = '\0';  // Remove extension to get executable name
 
   // Link with necessary libraries (matching Makefile.cg)
-  snprintf(cmd, sizeof(cmd), "clang %s -o %s -lgc -lm -lpcre -ldl -lrt", obj_file, exe_file);
+  snprintf(cmd, sizeof(cmd), "clang %s -o %s -lm", obj_file, exe_file);
   res = system(cmd);
 
   if (res != 0) {
