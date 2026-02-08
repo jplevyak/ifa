@@ -1,13 +1,15 @@
 OS_TYPE = $(shell uname -s | \
   awk '{ split($$1,a,"_"); printf("%s", a[1]);  }')
 
-CFLAGS += -I$(CG_ROOT) -I/usr/local/include/gc -g -Wno-deprecated
+CFLAGS += -I$(CG_ROOT) -I/usr/local/include/gc -I/opt/homebrew/include -g -Wno-deprecated
 
 LIBS = -lm -lgc -lpcre
 
 ifeq ($(OS_TYPE),Linux)
   LIBS += -ldl -lrt
 endif
+
+LDFLAGS += -L/opt/homebrew/lib
 
 CC = g++
 

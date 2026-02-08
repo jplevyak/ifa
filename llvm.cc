@@ -66,7 +66,7 @@ static void llvm_codegen_initialize(FA *fa) {
 
   // Set target triple for the module
   std::string TargetTriple = llvm::sys::getDefaultTargetTriple();
-  TheModule->setTargetTriple(TargetTriple);
+  TheModule->setTargetTriple(llvm::Triple(TargetTriple));
 
   // Enable PIC for position-independent code generation
   TheModule->setPICLevel(llvm::PICLevel::BigPIC);
@@ -809,8 +809,8 @@ llvm::Constant *getLLVMConstant(Var *var) {
     // For other types, IF1 might store numeric constants as strings.
     // We need to parse them based on llvm_type.
     if (llvm_type->isIntegerTy()) {
-      long long val = strtoll(sym->constant, nullptr, 0);  // Auto-detect base
-      return llvm::ConstantInt::get(llvm_type, val, true /*isSigned*/);
+      long long val = strtoll(sym->constant, nullptr, 0);                // Auto-detect base
+      return llvm::ConstantInt::get(llvm_type, val, true /*isSigned*/);  // Assume signed for strtoll
     } else if (llvm_type->isFloatingPointTy()) {
       double val = strtod(sym->constant, nullptr);
       return llvm::ConstantFP::get(llvm_type, val);
@@ -1037,13 +1037,13 @@ void llvm_build_type_strings(FA *fa) {
     char s[100];
     if (f->sym->name) {
       if (f->sym->has.n > 1 && f->sym->has[1]->must_specialize)
-        sprintf(s, "_CG_f_%d_%d", f->sym->id, f_index);
+        snprintf(s, sizeof(s), "_CG_f_%d_%d", f->sym->id, f_index);
       else
-        sprintf(s, "_CG_f_%d_%d", f->sym->id, f_index);
+        snprintf(s, sizeof(s), "_CG_f_%d_%d", f->sym->id, f_index);
     } else
-      sprintf(s, "_CG_f_%d_%d", f->sym->id, f_index);
+      snprintf(s, sizeof(s), "_CG_f_%d_%d", f->sym->id, f_index);
     f->cg_string = dupstr(s);
-    sprintf(s, "_CG_pf%d", f_index);
+    snprintf(s, sizeof(s), "_CG_pf%d", f_index);
     f->cg_structural_string = dupstr(s);
     f->sym->cg_string = f->cg_structural_string;
     f_index++;
@@ -1067,7 +1067,7 @@ void llvm_build_type_strings(FA *fa) {
           case Type_RECORD: {
             if (s->has.n) {
               char ss[100];
-              sprintf(ss, "_CG_ps%d", s->id);
+              snprintf(ss, sizeof(ss), "_CG_ps%d", s->id);
               s->cg_string = dupstr(ss);
             } else
               s->cg_string = "_CG_void";
@@ -1561,7 +1561,7 @@ int llvm_codegen_compile(cchar *input_filename) {
 
   // Compile LLVM IR directly to object file using clang
   // This handles debug info directives properly
-  sprintf(cmd, "clang -c -fPIC %s -o %s", ll_file, obj_file);
+  snprintf(cmd, sizeof(cmd), "clang -c -fPIC %s -o %s", ll_file, obj_file);
   int res = system(cmd);
 
   if (res != 0) {
@@ -1579,7 +1579,7 @@ int llvm_codegen_compile(cchar *input_filename) {
   if (dot_exe) *dot_exe = '\0';  // Remove extension to get executable name
 
   // Link with necessary libraries (matching Makefile.cg)
-  sprintf(cmd, "clang %s -o %s -lgc -lm -lpcre -ldl -lrt", obj_file, exe_file);
+  snprintf(cmd, sizeof(cmd), "clang %s -o %s -lm", obj_file, exe_file);
   res = system(cmd);
 
   if (res != 0) {

@@ -22,7 +22,7 @@ typedef struct {
   float128 i;
 } complex128;
 
-void ifa_version(char *);
+void ifa_version(char *, int size);
 
 EXTERN char system_dir[512] EXTERN_INIT(".");
 EXTERN int parser_verbose_non_prelude EXTERN_INIT(0);

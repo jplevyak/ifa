@@ -6,27 +6,28 @@
 #include "num.h"
 #include "math.h"
 
-static int sprint_float_val(char *str, double val) {
-  int numchars = sprintf(str, "%g", val);
+static int sprint_float_val(char *str, size_t size, double val) {
+  int numchars = snprintf(str, size, "%g", val);
   if (strchr(str, '.') == NULL && strchr(str, 'e') == NULL) {
-    strcat(str, ".0");
-    return numchars + 2;
-  } else {
-    return numchars;
+    if ((size_t)numchars + 2 < size) {
+      strcat(str, ".0");
+      return numchars + 2;
+    }
   }
-}
-
-static int sprint_complex_val(char *str, double real, double imm) {
-  int numchars = 0;
-  numchars += sprintf(str + numchars, "(");
-  numchars += sprint_float_val(str + numchars, real);
-  numchars += sprintf(str + numchars, ",");
-  numchars += sprint_float_val(str + numchars, imm);
-  numchars += sprintf(str + numchars, ")");
   return numchars;
 }
 
-int sprint_imm(char *str, cchar *control_string, Immediate &imm) {
+static int sprint_complex_val(char *str, size_t size, double real, double imm) {
+  int numchars = 0;
+  numchars += snprintf(str + numchars, size - numchars, "(");
+  numchars += sprint_float_val(str + numchars, size - numchars, real);
+  numchars += snprintf(str + numchars, size - numchars, ",");
+  numchars += sprint_float_val(str + numchars, size - numchars, imm);
+  numchars += snprintf(str + numchars, size - numchars, ")");
+  return numchars;
+}
+
+int sprint_imm(char *str, size_t size, char *control_string, Immediate &imm) {
   int res = -1;
   switch (imm.const_kind) {
     case IF1_NUM_KIND_NONE:
@@ -34,19 +35,19 @@ int sprint_imm(char *str, cchar *control_string, Immediate &imm) {
     case IF1_NUM_KIND_UINT: {
       switch (imm.num_index) {
         case IF1_INT_TYPE_1:
-          res = sprintf(str, control_string, imm.v_bool);
+          res = snprintf(str, size, control_string, imm.v_bool);
           break;
         case IF1_INT_TYPE_8:
-          res = sprintf(str, control_string, imm.v_uint8);
+          res = snprintf(str, size, control_string, imm.v_uint8);
           break;
         case IF1_INT_TYPE_16:
-          res = sprintf(str, control_string, imm.v_uint16);
+          res = snprintf(str, size, control_string, imm.v_uint16);
           break;
         case IF1_INT_TYPE_32:
-          res = sprintf(str, control_string, imm.v_uint32);
+          res = snprintf(str, size, control_string, imm.v_uint32);
           break;
         case IF1_INT_TYPE_64:
-          res = sprintf(str, control_string, imm.v_uint64);
+          res = snprintf(str, size, control_string, imm.v_uint64);
           break;
         default:
           assert(!"case");
@@ -56,19 +57,19 @@ int sprint_imm(char *str, cchar *control_string, Immediate &imm) {
     case IF1_NUM_KIND_INT: {
       switch (imm.num_index) {
         case IF1_INT_TYPE_1:
-          res = sprintf(str, control_string, imm.v_bool);
+          res = snprintf(str, size, control_string, imm.v_bool);
           break;
         case IF1_INT_TYPE_8:
-          res = sprintf(str, control_string, imm.v_int8);
+          res = snprintf(str, size, control_string, imm.v_int8);
           break;
         case IF1_INT_TYPE_16:
-          res = sprintf(str, control_string, imm.v_int16);
+          res = snprintf(str, size, control_string, imm.v_int16);
           break;
         case IF1_INT_TYPE_32:
-          res = sprintf(str, control_string, imm.v_int32);
+          res = snprintf(str, size, control_string, imm.v_int32);
           break;
         case IF1_INT_TYPE_64:
-          res = sprintf(str, control_string, imm.v_int64);
+          res = snprintf(str, size, control_string, imm.v_int64);
           break;
         default:
           assert(!"case");
@@ -78,13 +79,13 @@ int sprint_imm(char *str, cchar *control_string, Immediate &imm) {
     case IF1_NUM_KIND_FLOAT:
       switch (imm.num_index) {
         case IF1_FLOAT_TYPE_32:
-          res = sprintf(str, control_string, imm.v_float32);
+          res = snprintf(str, size, control_string, imm.v_float32);
           break;
         case IF1_FLOAT_TYPE_64:
-          res = sprintf(str, control_string, imm.v_float64);
+          res = snprintf(str, size, control_string, imm.v_float64);
           break;
         case IF1_FLOAT_TYPE_128:
-          res = sprintf(str, control_string, imm.v_float128);
+          res = snprintf(str, size, control_string, imm.v_float128);
           break;
         default:
           assert(!"case");
@@ -93,24 +94,24 @@ int sprint_imm(char *str, cchar *control_string, Immediate &imm) {
     case IF1_NUM_KIND_COMPLEX:
       switch (imm.num_index) {
         case IF1_FLOAT_TYPE_32:
-          res = sprintf(str, control_string, imm.v_complex32.r, imm.v_complex32.i);
+          res = snprintf(str, size, control_string, imm.v_complex32.r, imm.v_complex32.i);
           break;
         case IF1_FLOAT_TYPE_64:
-          res = sprintf(str, control_string, imm.v_complex64.r, imm.v_complex64.i);
+          res = snprintf(str, size, control_string, imm.v_complex64.r, imm.v_complex64.i);
           break;
         default:
           assert(!"case");
       }
       break;
     case IF1_CONST_KIND_STRING:
-      res = sprintf(str, control_string, imm.v_string);
+      res = snprintf(str, size, control_string, imm.v_string);
       break;
       break;
   }
   return res;
 }
 
-int sprint_imm(char *str, Immediate &imm) {
+int sprint_imm(char *str, size_t size, Immediate &imm) {
   int res = -1;
   switch (imm.const_kind) {
     case IF1_NUM_KIND_NONE:
@@ -118,19 +119,19 @@ int sprint_imm(char *str, Immediate &imm) {
     case IF1_NUM_KIND_UINT: {
       switch (imm.num_index) {
         case IF1_INT_TYPE_1:
-          res = sprintf(str, "%u", imm.v_bool);
+          res = snprintf(str, size, "%u", imm.v_bool);
           break;
         case IF1_INT_TYPE_8:
-          res = sprintf(str, "%u", imm.v_uint8);
+          res = snprintf(str, size, "%u", imm.v_uint8);
           break;
         case IF1_INT_TYPE_16:
-          res = sprintf(str, "%u", imm.v_uint16);
+          res = snprintf(str, size, "%u", imm.v_uint16);
           break;
         case IF1_INT_TYPE_32:
-          res = sprintf(str, "%u", imm.v_uint32);
+          res = snprintf(str, size, "%u", imm.v_uint32);
           break;
         case IF1_INT_TYPE_64:
-          res = sprintf(str, "%lu", imm.v_uint64);
+          res = snprintf(str, size, "%llu", (unsigned long long)imm.v_uint64);
           break;
         default:
           assert(!"case");
@@ -140,19 +141,19 @@ int sprint_imm(char *str, Immediate &imm) {
     case IF1_NUM_KIND_INT: {
       switch (imm.num_index) {
         case IF1_INT_TYPE_1:
-          res = sprintf(str, "%d", imm.v_bool);
+          res = snprintf(str, size, "%d", imm.v_bool);
           break;
         case IF1_INT_TYPE_8:
-          res = sprintf(str, "%d", imm.v_int8);
+          res = snprintf(str, size, "%d", imm.v_int8);
           break;
         case IF1_INT_TYPE_16:
-          res = sprintf(str, "%d", imm.v_int16);
+          res = snprintf(str, size, "%d", imm.v_int16);
           break;
         case IF1_INT_TYPE_32:
-          res = sprintf(str, "%d", imm.v_int32);
+          res = snprintf(str, size, "%d", imm.v_int32);
           break;
         case IF1_INT_TYPE_64:
-          res = sprintf(str, "%ld", imm.v_int64);
+          res = snprintf(str, size, "%lld", (long long)imm.v_int64);
           break;
         default:
           assert(!"case");
@@ -162,13 +163,13 @@ int sprint_imm(char *str, Immediate &imm) {
     case IF1_NUM_KIND_FLOAT:
       switch (imm.num_index) {
         case IF1_FLOAT_TYPE_32:
-          res = sprint_float_val(str, imm.v_float32);
+          res = sprint_float_val(str, size, imm.v_float32);
           break;
         case IF1_FLOAT_TYPE_64:
-          res = sprint_float_val(str, imm.v_float64);
+          res = sprint_float_val(str, size, imm.v_float64);
           break;
         case IF1_FLOAT_TYPE_128:
-          res = sprint_float_val(str, imm.v_float128);
+          res = sprint_float_val(str, size, imm.v_float128);
           break;
         default:
           assert(!"case");
@@ -177,17 +178,17 @@ int sprint_imm(char *str, Immediate &imm) {
     case IF1_NUM_KIND_COMPLEX:
       switch (imm.num_index) {
         case IF1_FLOAT_TYPE_32:
-          res = sprint_complex_val(str, imm.v_complex32.r, imm.v_complex32.i);
+          res = sprint_complex_val(str, size, imm.v_complex32.r, imm.v_complex32.i);
           break;
         case IF1_FLOAT_TYPE_64:
-          res = sprint_complex_val(str, imm.v_complex64.r, imm.v_complex64.i);
+          res = sprint_complex_val(str, size, imm.v_complex64.r, imm.v_complex64.i);
           break;
         default:
           assert(!"case");
       }
       break;
     case IF1_CONST_KIND_STRING:
-      res = sprintf(str, "%s", imm.v_string);
+      res = snprintf(str, size, "%s", imm.v_string);
       break;
       break;
   }
@@ -214,7 +215,7 @@ int fprint_imm(FILE *fp, Immediate &imm) {
           res = fprintf(fp, "%u", imm.v_uint32);
           break;
         case IF1_INT_TYPE_64:
-          res = fprintf(fp, "%lu", imm.v_uint64);
+          res = fprintf(fp, "%llu", (unsigned long long)imm.v_uint64);
           break;
         default:
           assert(!"case");
@@ -236,7 +237,7 @@ int fprint_imm(FILE *fp, Immediate &imm) {
           res = fprintf(fp, "%d", imm.v_int32);
           break;
         case IF1_INT_TYPE_64:
-          res = fprintf(fp, "%ld", imm.v_int64);
+          res = fprintf(fp, "%lld", (long long)imm.v_int64);
           break;
         default:
           assert(!"case");
@@ -247,14 +248,14 @@ int fprint_imm(FILE *fp, Immediate &imm) {
       char str[80];
       switch (imm.num_index) {
         case IF1_FLOAT_TYPE_32:
-          res = sprint_float_val(str, imm.v_float32);
+          res = sprint_float_val(str, sizeof(str), imm.v_float32);
           break;
         case IF1_FLOAT_TYPE_64: {
-          res = sprint_float_val(str, imm.v_float64);
+          res = sprint_float_val(str, sizeof(str), imm.v_float64);
           break;
         }
         case IF1_FLOAT_TYPE_128: {
-          res = sprint_float_val(str, imm.v_float128);
+          res = sprint_float_val(str, sizeof(str), imm.v_float128);
           break;
         }
         default:
@@ -266,13 +267,13 @@ int fprint_imm(FILE *fp, Immediate &imm) {
       switch (imm.num_index) {
         case IF1_FLOAT_TYPE_32: {
           char str[80];
-          res = sprint_complex_val(str, imm.v_complex32.r, imm.v_complex32.i);
+          res = sprint_complex_val(str, sizeof(str), imm.v_complex32.r, imm.v_complex32.i);
           fputs(str, fp);
           break;
         }
         case IF1_FLOAT_TYPE_64: {
           char str[80];
-          res = sprint_complex_val(str, imm.v_complex64.r, imm.v_complex64.i);
+          res = sprint_complex_val(str, sizeof(str), imm.v_complex64.r, imm.v_complex64.i);
           fputs(str, fp);
           break;
         }

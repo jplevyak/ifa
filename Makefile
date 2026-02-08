@@ -17,10 +17,10 @@ include ../plib/Makefile
 MAJOR=0
 MINOR=5
 
-CFLAGS += -I../plib
+CFLAGS += -I../plib -I/opt/homebrew/include
 # CFLAGS += -flto=thin
 #LDFLAGS += -L/usr/local/lib -fuse-ld=lld
-LDFLAGS += -L/usr/local/lib
+LDFLAGS += -L/usr/local/lib -L/opt/homebrew/lib
 
 # LLVM Configuration
 LLVM_CXXFLAGS = $(shell llvm-config --cxxflags)

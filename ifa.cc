@@ -49,7 +49,7 @@ void ifa_html(cchar *fn, cchar *mktree_dir) { dump_html(pdb->fa, fn, mktree_dir)
 
 void ifa_code(cchar *fn) {
   char hfn[512];
-  sprintf(hfn, "%s.code", fn);
+  snprintf(hfn, sizeof(hfn), "%s.code", fn);
   FILE *fp = fopen(hfn, "w");
   if1_write(fp, pdb->if1, 0);
 }

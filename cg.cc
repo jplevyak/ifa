@@ -167,7 +167,7 @@ static cchar *c_rhs(Var *v) {
       return v->cg_string;
   } else {
     char s[100];
-    sprintf(s, "((_CG_function*)%s)", v->cg_string);
+    snprintf(s, sizeof(s), "((_CG_function*)%s)", v->cg_string);
     return dupstr(s);
   }
 }
@@ -516,7 +516,7 @@ static int write_c_fun_arg(FILE *fp, Fun *f, char *s, char *e, Sym *sym, int i, 
     assert(0);
     for (int i = 0; i < sym->type->has.n; i++) {
       if (i) fprintf(fp, ", ");
-      sprintf(e, "->e%d", i);
+      snprintf(e, 4096 - (e - s), "->e%d", i);
       write_c_fun_arg(fp, f, s, s + strlen(s), sym->has[i], i, wrote_one);
       fputs(s, fp);
     }
@@ -527,7 +527,7 @@ static int write_c_fun_arg(FILE *fp, Fun *f, char *s, char *e, Sym *sym, int i, 
     if (f)
       fprintf(fp, "((_CG_function)&%s)", f->cg_string);
     else {
-      sprintf(e, "->e%d", i);
+      snprintf(e, 4096 - (e - s), "->e%d", i);
       fputs(s, fp);
     }
   }
@@ -556,7 +556,7 @@ static void write_send_arg(FILE *fp, Fun *f, PNode *n, MPosition *p, int &wrote_
   if (is_closure_var(v0)) {
     if (i < v0->type->has.n) {
       char ss[4096];
-      sprintf(ss, "(%s)%s", c_type(f->args.get(p)), v0->cg_string);
+      snprintf(ss, sizeof(ss), "(%s)%s", c_type(f->args.get(p)), v0->cg_string);
       char *ee = ss + strlen(ss);
       write_c_fun_arg(fp, f, ss, ee, v0->type->has[i], i, wrote_one);
       return;
@@ -747,7 +747,7 @@ static void write_c(FILE *fp, FA *fa, Fun *f, Vec<Var *> *globals = 0) {
   forv_Var(v, vars) if (!v->is_internal && !v->sym->is_fake) {
     if (!v->cg_string && v->live && !v->sym->is_symbol && v->type != sym_continuation) {
       char s[100];
-      sprintf(s, "t%d", index++);
+      snprintf(s, sizeof(s), "t%d", index++);
       v->cg_string = dupstr(s);
       defs.add(v);
     }
@@ -795,13 +795,14 @@ static int build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
     char s[100];
     if (f->sym->name) {
       if (f->sym->has.n > 1 && f->sym->has[1]->must_specialize)
-        sprintf(s, "_CG_f_%d_%d/*%s::%s*/", f->sym->id, f_index, f->sym->has[1]->must_specialize->name, f->sym->name);
+        snprintf(s, sizeof(s), "_CG_f_%d_%d/*%s::%s*/", f->sym->id, f_index, f->sym->has[1]->must_specialize->name,
+                 f->sym->name);
       else
-        sprintf(s, "_CG_f_%d_%d/*%s*/", f->sym->id, f_index, f->sym->name);
+        snprintf(s, sizeof(s), "_CG_f_%d_%d/*%s*/", f->sym->id, f_index, f->sym->name);
     } else
-      sprintf(s, "_CG_f_%d_%d", f->sym->id, f_index);
+      snprintf(s, sizeof(s), "_CG_f_%d_%d", f->sym->id, f_index);
     f->cg_string = dupstr(s);
-    sprintf(s, "_CG_pf%d", f_index);
+    snprintf(s, sizeof(s), "_CG_pf%d", f_index);
     f->cg_structural_string = dupstr(s);
     f->sym->cg_string = f->cg_structural_string;
     f_index++;
@@ -832,7 +833,7 @@ static int build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
               char ss[100];
               fprintf(fp, "/* %s */ struct _CG_s%d; ", s->name ? s->name : "", s->id);
               fprintf(fp, "typedef struct _CG_s%d *_CG_ps%d;\n", s->id, s->id);
-              sprintf(ss, "_CG_ps%d", s->id);
+              snprintf(ss, sizeof(ss), "_CG_ps%d", s->id);
               s->cg_string = dupstr(ss);
             } else
               s->cg_string = "_CG_void";
@@ -933,7 +934,7 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
     }
     if (s->imm.const_kind != IF1_NUM_KIND_NONE && s->imm.const_kind != IF1_CONST_KIND_STRING) {
       char ss[100];
-      sprint_imm(ss, s->imm);
+      sprint_imm(ss, sizeof(ss), s->imm);
       v->cg_string = dupstr(ss);
     } else if (s->constant) {
       if (v->type == sym_string) {
@@ -946,15 +947,15 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
         v->cg_string = s->constant;
     } else if (s->is_symbol) {
       char ss[100];
-      sprintf(ss, "_CG_Symbol(%d, \"%s\")", s->id, s->name);
+      snprintf(ss, sizeof(ss), "_CG_Symbol(%d, \"%s\")", s->id, s->name);
       v->cg_string = dupstr(ss);
     } else if (s->is_fun) {
     } else {
       char ss[100];
       if (s->name)
-        sprintf(ss, "/* %s %d */ g%d", s->name, s->id, index++);
+        snprintf(ss, sizeof(ss), "/* %s %d */ g%d", s->name, s->id, index++);
       else
-        sprintf(ss, "/* %d */ g%d", s->id, index++);
+        snprintf(ss, sizeof(ss), "/* %d */ g%d", s->id, index++);
       v->cg_string = dupstrs(ss);
       write_c_type(fp, v);
       fputs(" ", fp);
@@ -987,10 +988,10 @@ int c_codegen_compile(cchar *filename) {
   char target[512], s[1024];
   strcpy(target, filename);
   *strrchr(target, '.') = 0;
-  sprintf(s,
-          "make --no-print-directory -f %s/Makefile.cg CG_ROOT=%s CG_TARGET=%s "
-          "CG_FILES=%s.c %s %s",
-          system_dir, system_dir, target, filename, codegen_optimize ? "OPTIMIZE=1" : "",
-          codegen_debug ? "DEBUG=1" : "");
+  snprintf(s, sizeof(s),
+           "make --no-print-directory -f %s/Makefile.cg CG_ROOT=%s CG_TARGET=%s "
+           "CG_FILES=%s.c %s %s",
+           system_dir, system_dir, target, filename, codegen_optimize ? "OPTIMIZE=1" : "",
+           codegen_debug ? "DEBUG=1" : "");
   return system(s);
 }
