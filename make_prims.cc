@@ -1,14 +1,30 @@
 /* -*-Mode: c++;-*-
    Copyright (c) 2003-2010 John Plevyak, All Rights Reserved
 */
-#include "plib.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <vector>
+#include <stdint.h>
+
+using namespace std;
 
 static FILE *fp = 0;
 static FILE *hfp = 0;
 
+char *dupstr(const char *s, const char *e) {
+  int l = e - s;
+  char *p = (char *)malloc(l + 1);
+  memcpy(p, s, l);
+  p[l] = 0;
+  return p;
+}
+
 char *catstr(char *s, char *ss) {
   int l = strlen(s) + strlen(ss) + 1;
-  char *x = (char *)MALLOC(l + 1);
+  char *x = (char *)malloc(l + 1);
   strcpy(x, s);
   strcat(x, ss);
   return x;
@@ -25,7 +41,6 @@ struct Line {
   char *options;
   int index;
 };
-#define forv_Line(_x, _y) forv_Vec(Line, _x, _y)
 
 #define EOF_TOK ((char *)(intptr_t)-1)
 
@@ -49,7 +64,7 @@ char *get(charp &p, int optnum = 0) {
   return dupstr(s, p);
 }
 
-void get_lines(char *b, Vec<Line *> &lines) {
+void get_lines(char *b, vector<Line *> &lines) {
   int index = 0;
   while (1) {
     Line *l = new Line;
@@ -59,7 +74,10 @@ void get_lines(char *b, Vec<Line *> &lines) {
       if (*b != '/') break;
       while (*b && *b != '\n') b++;
     } while (*b);
-    if ((l->name = get(b)) == EOF_TOK) return;
+    if ((l->name = get(b)) == EOF_TOK) {
+      delete l;
+      return;
+    }
     if ((l->string = get(b)) == EOF_TOK) return;
     if ((l->nargs = get(b)) == EOF_TOK) return;
     if ((l->pos = get(b)) == EOF_TOK) return;
@@ -67,21 +85,23 @@ void get_lines(char *b, Vec<Line *> &lines) {
     if ((l->argtypes = get(b)) == EOF_TOK) return;
     if ((l->rettypes = get(b)) == EOF_TOK) return;
     if ((l->options = get(b)) == EOF_TOK) return;
-    lines.add(l);
+    lines.push_back(l);
   }
 }
 
-void declare_data(Vec<Line *> &lines) {
-  forv_Line(l, lines) {
+void declare_data(vector<Line *> &lines) {
+  for (auto l : lines) {
     fprintf(hfp, "extern Prim *%s;\n", l->name);
     fprintf(hfp, "#define P_%s %d\n", l->name, l->index);
   }
 }
 
-void define_data(Vec<Line *> &lines) { forv_Line(l, lines) fprintf(fp, "Prim *%s = 0;\n", l->name); }
+void define_data(vector<Line *> &lines) {
+  for (auto l : lines) fprintf(fp, "Prim *%s = 0;\n", l->name);
+}
 
-void build_data(Vec<Line *> &lines) {
-  forv_Line(l, lines) {
+void build_data(vector<Line *> &lines) {
+  for (auto l : lines) {
     int nargs = 0;
     char *rets = l->nres;
     if (!rets) rets = (char *)"1";
@@ -101,18 +121,40 @@ void build_data(Vec<Line *> &lines) {
   }
 }
 
+int buf_read(const char *fn, char **buf, int *len) {
+  FILE *f = fopen(fn, "r");
+  if (!f) return -1;
+  fseek(f, 0, SEEK_END);
+  *len = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  *buf = (char *)malloc(*len + 1);
+  if (!*buf) {
+    fclose(f);
+    return -1;
+  }
+  int r = fread(*buf, 1, *len, f);
+  if (r < 0) {
+    fclose(f);
+    return -1;
+  }
+  (*len) = r;
+  (*buf)[*len] = 0;
+  fclose(f);
+  return *len;
+}
+
 int main(int argc, char *argv[]) {
   int i = 1, len = 0;
   char *buf = NULL;
-  Vec<Line *> lines;
-  cchar *fn = 0;
+  vector<Line *> lines;
+  const char *fn = 0;
   if (argc < 2)
     fn = "prim_data.dat";
   else
     fn = argv[1];
 
   if (argc < 1 || buf_read(fn, &buf, &len) < 0) {
-    printf("unable to read file '%s' %d", argv[i], argc);
+    printf("unable to read file '%s' %d\n", argv[i], argc);
     exit(-1);
   }
   get_lines(buf, lines);
