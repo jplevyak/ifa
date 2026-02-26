@@ -2,7 +2,6 @@
 
 all: defaulttarget
 
-USE_PLIB=1
 MODULE=ifa
 DEBUG=1
 #OPTIMIZE=1
@@ -12,15 +11,85 @@ USE_GC=1
 #VALGRIND=1
 TEST_EXEC=ifa_tests
 
-include ../plib/Makefile
+CXX ?= clang++
+AR ?= llvm-ar
+PREFIX ?= /usr/local
+
+OS_TYPE = $(shell uname -s | \
+  awk '{ split($$1,a,"_"); printf("%s", a[1]);  }')
+OS_VERSION = $(shell uname -r | \
+  awk '{ split($$1,a,"."); sub("V","",a[1]); \
+  printf("%d%d%d",a[1],a[2],a[3]); }')
+ARCH = $(shell uname -m)
+ifeq ($(ARCH),i386)
+  ARCH = x86
+endif
+ifeq ($(ARCH),i486)
+  ARCH = x86
+endif
+ifeq ($(ARCH),i586)
+  ARCH = x86
+endif
+ifeq ($(ARCH),i686)
+  ARCH = x86
+endif
+
+ifeq ($(OS_TYPE),Darwin)
+  AR_FLAGS = crvs
+else
+  AR_FLAGS = crv
+endif
 
 MAJOR=0
 MINOR=5
 
-CFLAGS += -I../plib -I/opt/homebrew/include
-# CFLAGS += -flto=thin
-#LDFLAGS += -L/usr/local/lib -fuse-ld=lld
+BUILD_VERSION = $(shell git show-ref 2> /dev/null | head -1 | cut -d ' ' -f 1)
+ifeq ($(BUILD_VERSION),)
+  BUILD_VERSION = $(shell cat BUILD_VERSION 2>/dev/null)
+endif
+VERSIONCFLAGS += -DMAJOR_VERSION=$(MAJOR) -DMINOR_VERSION=$(MINOR) -DBUILD_VERSION=\"$(BUILD_VERSION)\"
+
+CFLAGS += -Wall -std=c++23
+ifdef DEBUG
+CFLAGS += -g -DDEBUG=1
+endif
+ifdef OPTIMIZE
+CFLAGS += -O3 -march=native
+endif
+ifdef PROFILE
+CFLAGS += -pg
+endif
+ifdef VALGRIND
+CFLAGS += -DVALGRIND_TEST
+endif
+
+CFLAGS += -Iplib -I/opt/homebrew/include
 LDFLAGS += -L/usr/local/lib -L/opt/homebrew/lib
+
+# GC configuration
+ifeq ($(OS_TYPE),Darwin)
+GC_CFLAGS += -I/usr/local/include
+ifneq ($(wildcard /opt/homebrew/include),)
+  GC_CFLAGS += -I/opt/homebrew/include
+endif
+ifneq ($(wildcard /opt/homebrew/lib),)
+  LDFLAGS += -L/opt/homebrew/lib
+endif
+else
+GC_CFLAGS += -I/usr/local/include
+LIBS += -lrt -lpthread
+endif
+
+ifdef USE_GC
+CFLAGS += -DUSE_GC $(GC_CFLAGS)
+LIBS += -lgc -lgccpp
+endif
+ifdef LEAK_DETECT
+CFLAGS += -DLEAK_DETECT $(GC_CFLAGS)
+LIBS += -lleak
+endif
+
+CPPFLAGS += $(CFLAGS)
 
 # LLVM Configuration
 LLVM_CXXFLAGS = $(shell llvm-config --cxxflags)
@@ -30,32 +99,16 @@ LLVM_LDFLAGS = $(shell llvm-config --ldflags --libs core irreader executionengin
 CFLAGS += $(LLVM_CXXFLAGS)
 LDFLAGS_EXEC = $(LDFLAGS) $(LLVM_LDFLAGS) # LDFLAGS for executables needing LLVM libs
 
-ifdef USE_GC
-LIBS += -L../plib -lplib_gc -ldparse_gc -lgc -pthread
-else
-LIBS += -L../plib -lplib -ldparse
-endif
+LIBS += -ldparse_gc -lm
 ifneq ($(OS_TYPE),CYGWIN)
 ifneq ($(OS_TYPE),Darwin)
   LIBS += -lrt
 endif
 endif
 
-OBJS = main.o parse.o scope.o make_ast.o ast_to_if1.o cg.o llvm.o llvm_codegen.o llvm_primitives.o ir_serialize.o $(PARSER_OBJS) \
-       ast.o builtin.o cdb.o cfg.o clone.o dead.o dom.o fa.o fail.o fun.o \
-       graph.o html.o if1.o ifa.o inline.o ifalog.o loop.o num.o pattern.o \
-       pdb.o pnode.o prim.o prim_data.o ssu.o sym.o var.o ifa_version.o
-
-OBJS_LIB = ast.o builtin.o cdb.o cfg.o cg.o llvm.o llvm_codegen.o llvm_primitives.o clone.o dead.o dom.o fa.o \
-           fail.o fun.o graph.o html.o if1.o ifa.o inline.o ifalog.o loop.o \
-           num.o pattern.o pdb.o pnode.o prim.o prim_data.o main.o ssu.o \
-           sym.o var.o ifa_version.o
-
-CXX ?= clang++
-AR = llvm-ar
-
-AUX_FILES = $(MODULE)/index.html $(MODULE)/manual.html $(MODULE)/faq.html $(MODULE)/ifa.1 $(MODULE)/ifa.cat
-TAR_FILES = $(AUX_FILES) $(TEST_FILES)
+PLIB_SRCS = plib/arg.cc plib/config.cc plib/misc.cc plib/service.cc \
+            plib/vec.cc plib/unit.cc plib/log.cc
+PLIB_OBJS = $(PLIB_SRCS:%.cc=%.o)
 
 LIB_SRCS = ast.cc builtin.cc cdb.cc cfg.cc cg.cc llvm.cc llvm_codegen.cc llvm_primitives.cc clone.cc dead.cc dom.cc fa.cc \
 	fail.cc fun.cc graph.cc html.cc if1.cc ifa.cc inline.cc \
@@ -74,8 +127,10 @@ else
 LIBRARY = libifa.a
 endif
 INSTALL_LIBRARIES = $(LIBRARY)
-#INCLUDES =
 MANPAGES = ifa.1
+
+AUX_FILES = $(MODULE)/index.html $(MODULE)/manual.html $(MODULE)/faq.html $(MODULE)/ifa.1 $(MODULE)/ifa.cat
+TAR_FILES = $(AUX_FILES)
 
 CLEAN_FILES += *.cat tests/*.out tests/*.c
 
@@ -96,19 +151,17 @@ defaulttarget: $(EXECUTABLES) $(LIBRARY) ifa.cat
 install:
 	cp $(EXECUTABLES) $(PREFIX)/bin
 	cp $(MANPAGES) $(PREFIX)/man/man1
-	cp $(INCLUDES) $(PREFIX)/include
 	cp $(INSTALL_LIBRARIES) $(PREFIX)/lib
 
 deinstall:
 	rm $(EXECUTABLES:%=$(PREFIX)/bin/%)
 	rm $(MANPAGES:%=$(PREFIX)/man/man1/%)
-	rm $(INCLUDES:%=$(PREFIX)/include/%)
 	rm $(INSTALL_LIBRARIES:%=$(PREFIX)/lib/%)
 
-$(IFA): $(IFA_OBJS) $(LIB_OBJS) $(LIBRARIES)
+$(IFA): $(IFA_OBJS) $(LIB_OBJS) $(PLIB_OBJS)
 	$(CXX) $(CFLAGS) $(LDFLAGS_EXEC) -o $@ $^ $(LIBS)
 
-$(LIBRARY): $(LIB_OBJS)
+$(LIBRARY): $(LIB_OBJS) $(PLIB_OBJS)
 	$(AR) $(AR_FLAGS) $@ $^
 
 $(MAKE_PRIMS): make_prims.cc
@@ -116,15 +169,32 @@ $(MAKE_PRIMS): make_prims.cc
 
 ifa.cat: ifa.1
 	rm -f ifa.cat
-	nroff -man ifa.1 | sed -e 's/.//g' > ifa.cat
+	nroff -man ifa.1 | sed -e 's/.//g' > ifa.cat
 
 %.g.d_parser.cc: %.g
 	make_dparser -v -Xcc -I $<
+
+LICENSE.i: LICENSE
+	rm -f LICENSE.i
+	cat $< | sed s/\"/\\\\\"/g | sed s/\^/\"/g | sed s/$$/\\\\n\"/g | sed 's/%/%%/g' > $@
+
+COPYRIGHT.i: LICENSE
+	rm -f COPYRIGHT.i
+	head -1 LICENSE | sed s/\"/\\\\\"/g | sed s/\^/\"/g | sed s/$$/\\\\n\"/g > $@
 
 main.o: LICENSE.i COPYRIGHT.i
 
 ifa_version.o: Makefile ifa_version.cc
 	$(CXX) $(CFLAGS) $(VERSIONCFLAGS) -c ifa_version.cc
+
+clean:
+	\rm -f *.o plib/*.o core *.core *.gmon $(EXECUTABLES) $(CLEAN_FILES) LICENSE.i COPYRIGHT.i
+
+realclean: clean
+	\rm -f *.a *.orig *.rej
+
+depend:
+	./mkdep $(CFLAGS) $(DEPEND_SRCS)
 
 -include .depend
 
@@ -137,4 +207,4 @@ test_llvm: ifa
 	./test_llvm
 	@echo "Test passed!"
 
-.PHONY: test_llvm
+.PHONY: test_llvm clean realclean depend install deinstall
