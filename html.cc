@@ -253,7 +253,7 @@ static void dump_symbols(FILE *fp, FA *fa) {
 
   // collect globals
   for (Sym *s : syms) if (s) if (s->name && !s->is_constant && !s->is_fun && !s->is_symbol && !has_no_out_edges(s) &&
-                               !s->type_kind != Type_NONE && !s->is_local) globals.set_add(s);
+                               s->type_kind != Type_NONE && !s->is_local) globals.set_add(s);
   globals.set_to_vec();
 
   // others

@@ -12,7 +12,6 @@ class PDB : public gc {
  public:
   IF1 *if1;
   FA *fa;
-  Map<char *, Sym *> global_map;
   Vec<Fun *> funs;
   LoopGraph *loops;
 
