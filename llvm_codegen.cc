@@ -1,6 +1,3 @@
-/* -*-Mode: c++;-*-
-   Copyright (c) 2023 John Plevyak, All Rights Reserved
-*/
 #include "llvm_internal.h"
 #include "prim.h"
 #include "var.h"

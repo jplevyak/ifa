@@ -1,6 +1,3 @@
-/* -*-Mode: c++;-*-
-   Copyright (c) 2023 John Plevyak, All Rights Reserved
-*/
 #ifndef _llvm_h_
 #define _llvm_h_
 

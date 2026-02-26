@@ -1,8 +1,3 @@
-/* -*-Mode: c++;-*-
-   Copyright (c) 2003-2008 John Plevyak, All Rights Reserved
-*/
-/* -*-Mode: c++;-*-
- */
 
 #ifndef _make_ast_H
 #define _make_ast_H

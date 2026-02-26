@@ -1,6 +1,3 @@
-/* -*-Mode: c++;-*-
-   Copyright (c) 2004-2009 John Plevyak, All Rights Reserved
-*/
 #include "ast.h"
 #include "builtin.h"
 #include "fa.h"

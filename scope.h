@@ -1,6 +1,3 @@
-/* -*-Mode: c++;-*-
-   Copyright (c) 2003-2008 John Plevyak, All Rights Reserved
-*/
 #ifndef _scope_h_
 #define _scope_h_
 

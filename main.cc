@@ -1,6 +1,3 @@
-/* -*-Mode: c++;-*-
-   Copyright (c) 2003-2008 John Plevyak, All Rights Reserved
-*/
 #define EXTERN
 #include "ifa_version.h"
 #include "ifadefs.h"

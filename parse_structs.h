@@ -1,6 +1,3 @@
-/* -*-Mode: c++;-*-
-   Copyright (c) 2003-2008 John Plevyak, All Rights Reserved
-*/
 struct D_Sym;
 struct D_Scope;
 

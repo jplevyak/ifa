@@ -1,6 +1,3 @@
-/* -*-Mode: c++;-*-
-   Copyright (c) 2003-2008 John Plevyak, All Rights Reserved
-*/
 #include <stdio.h>
 #define IFA_EXTERN
 #define IFA_EXTERN_INIT(_x) = _x

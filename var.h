@@ -1,6 +1,3 @@
-/* -*-Mode: c++;-*-
-   Copyright (c) 2003-2010 John Plevyak, All Rights Reserved
-*/
 #ifndef _var_H_
 #define _var_H_
 

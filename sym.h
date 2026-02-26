@@ -1,6 +1,3 @@
-/* -*-Mode: c++;-*-
-   Copyright (c) 2003-2009 John Plevyak, All Rights Reserved
-*/
 #ifndef _sym_h_
 #define _sym_h_
 

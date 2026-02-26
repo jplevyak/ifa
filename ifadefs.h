@@ -1,6 +1,3 @@
-/* -*-Mode: c++;-*-
-   Copyright (c) 2003-2008 John Plevyak, All Rights Reserved
-*/
 #ifndef _ifadefs_H_
 #define _ifadefs_H_
 

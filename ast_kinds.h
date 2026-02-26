@@ -1,6 +1,3 @@
-/* -*-Mode: c++;-*-
-   Copyright (c) 2004-2008 John Plevyak, All Rights Reserved
-*/
 // module
 S(in_module)
 S(use_module)

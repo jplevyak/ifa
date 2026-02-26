@@ -1,6 +1,3 @@
-/* -*-Mode: c++;-*-
-   Copyright (c) 2004-2008 John Plevyak, All Rights Reserved
-*/
 #ifndef _fa_H_
 #define _fa_H_
 

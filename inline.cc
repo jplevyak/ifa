@@ -1,6 +1,3 @@
-/* -*-Mode: c++;-*-
-   Copyright (c) 2003-2013 John Plevyak, All Rights Reserved
-*/
 #include "inline.h"
 #include "clone.h"
 #include "fa.h"

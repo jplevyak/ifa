@@ -1,6 +1,3 @@
-/* -*-Mode: c++;-*-
-   Copyright (c) 1994-2008 John Plevyak, All Rights Reserved
-*/
 #ifndef _fail_H_
 #define _fail_H_
 

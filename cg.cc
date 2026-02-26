@@ -1,6 +1,3 @@
-/* -*-Mode: c++;-*-
-   Copyright (c) 2003-2010 John Plevyak, All Rights Reserved
-*/
 #include <ctype.h>
 
 #include "ifadefs.h"

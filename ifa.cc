@@ -1,6 +1,3 @@
-/* -*-Mode: c++;-*-
-   Copyright (c) 1992-2008 John Plevyak, All Rights Reserved
-*/
 #include "ifa.h"
 #include "ast.h"
 #include "cg.h"

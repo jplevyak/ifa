@@ -1,21 +1,3 @@
-/* -*-Mode: c++;-*-
-   Copyright (c) 2003-2008 John Plevyak, All Rights Reserved
-
-  Static Single Use Form
-    - from the Illinois Concert Compiler circa 1992
-    - new implementation circa 2008
-
-  References
-    Ron Cytron, Jeanne Ferrante, Barry K. Rosen, Mark N. Wegman, and F. Kenneth
-  Zadeck.
-    Efficiently computing static single assignment form and the control
-  dependence graph.
-    ACM Transactions on Programming Languages and Systems, 13(4):451-490, Oct
-  1991.
-
-    Jeremy Singer, Static Program Analysis Based on Virtual Register Renaming,
-    University of Cambridge Technical report, UCAM-CL-TR-660, Feb 2006.
-*/
 #include "ifadefs.h"
 
 #include "ssu.h"

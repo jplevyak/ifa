@@ -1,6 +1,3 @@
-/* -*-Mode: c++;-*-
-   Copyright (c) 2002-2008 John Plevyak, All Rights Reserved
-*/
 #include "ifadefs.h"
 
 void ifa_version(char *v, int size) {
