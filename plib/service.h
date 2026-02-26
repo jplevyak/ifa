@@ -22,6 +22,5 @@ class Service {
   static void reinit_all();
   static void stop_all();
 };
-#define forv_Service(_x, _v) forv_Vec(Service, _x, _v)
 
 #endif

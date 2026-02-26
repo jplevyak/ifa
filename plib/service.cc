@@ -20,10 +20,10 @@ Service::Service(int apriority) {
 void Service::start_all() {
   for (Service *s = registered; s; s = s->next) services.add(s);
   qsort(&services.v[0], services.n, sizeof(services.v[0]), compar_service);
-  forv_Service(s, services) s->init();
-  forv_Service(s, services) s->start();
+  for (Service *s : services) s->init();
+  for (Service *s : services) s->start();
 }
 
-void Service::stop_all() { forv_Service(s, services) s->stop(); }
+void Service::stop_all() { for (Service *s : services) s->stop(); }
 
-void Service::reinit_all() { forv_Service(s, services) s->reinit(); }
+void Service::reinit_all() { for (Service *s : services) s->reinit(); }

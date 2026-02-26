@@ -73,7 +73,7 @@ static void callback_dynamic(char *name) {
   if (d) {
     char *v = config.get(name);
     if (v) {
-      forv_Vec(DynamicFn, dd, *d) dd->fn(dd->data, v);
+      for (DynamicFn *dd : *d) dd->fn(dd->data, v);
     }
   }
 }
