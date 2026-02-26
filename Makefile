@@ -209,5 +209,6 @@ test_llvm: ifa
 
 test: ifa
 	./ifa --test
+	./ifa_tests
 
 .PHONY: test test_llvm clean realclean depend install deinstall
