@@ -107,7 +107,7 @@ endif
 endif
 
 PLIB_SRCS = plib/arg.cc plib/config.cc plib/misc.cc plib/service.cc \
-            plib/vec.cc plib/unit.cc plib/log.cc
+            plib/vec.cc plib/vec_test.cc plib/unit.cc plib/log.cc
 PLIB_OBJS = $(PLIB_SRCS:%.cc=%.o)
 
 LIB_SRCS = ast.cc builtin.cc cdb.cc cfg.cc cg.cc llvm.cc llvm_codegen.cc llvm_primitives.cc clone.cc dead.cc dom.cc fa.cc \
@@ -207,4 +207,7 @@ test_llvm: ifa
 	./test_llvm
 	@echo "Test passed!"
 
-.PHONY: test_llvm clean realclean depend install deinstall
+test: ifa
+	./ifa --test
+
+.PHONY: test test_llvm clean realclean depend install deinstall

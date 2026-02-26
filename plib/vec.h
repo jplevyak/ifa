@@ -256,7 +256,7 @@ void Vec<C, A, S>::set_remove(C a) {
   Vec<C, A, S> tmp;
   tmp.move(*this);
   for (C *c = tmp.v; c < tmp.v + tmp.n; c++)
-    if (*c != a) set_add(a);
+    if (*c != a) set_add(*c);
 }
 
 template <class C, class A, int S>

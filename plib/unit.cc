@@ -27,6 +27,7 @@ int UnitTest::run_all() {
       printf("FAILED %s\n", s->name);
     }
   printf("UnitTest: %d PASSED %d FAILED, %s\n", passed, failed, !failed ? "SUCCESS" : "FAILURE");
+  fflush(stdout);
   return failed;
 }
 
