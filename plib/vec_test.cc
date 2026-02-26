@@ -705,6 +705,83 @@ static int set_is_vec_is_set() {
 UNIT_TEST_FUN(set_is_vec_is_set);
 
 // ---------------------------------------------------------------------------
+// Range-based for: basic iteration over a vector (all n elements)
+// ---------------------------------------------------------------------------
+static int vec_range_for_basic() {
+  Vec<int> v;
+  for (int i = 1; i <= 5; i++) v.add(i);
+  int sum = 0;
+  for (int x : v) sum += x;
+  CHECK(sum == 15);  // 1+2+3+4+5
+  return 0;
+}
+UNIT_TEST_FUN(vec_range_for_basic);
+
+// ---------------------------------------------------------------------------
+// Range-based for: elements are references — modifications are reflected
+// ---------------------------------------------------------------------------
+static int vec_range_for_modify() {
+  Vec<int> v;
+  for (int i = 1; i <= 4; i++) v.add(i);
+  for (int &x : v) x *= 2;
+  CHECK(v.v[0] == 2 && v.v[1] == 4 && v.v[2] == 6 && v.v[3] == 8);
+  return 0;
+}
+UNIT_TEST_FUN(vec_range_for_modify);
+
+// ---------------------------------------------------------------------------
+// Range-based for: empty vector — loop body never executes
+// ---------------------------------------------------------------------------
+static int vec_range_for_empty() {
+  Vec<int> v;
+  int count = 0;
+  for (int x : v) { (void)x; count++; }
+  CHECK(count == 0);
+  return 0;
+}
+UNIT_TEST_FUN(vec_range_for_empty);
+
+// ---------------------------------------------------------------------------
+// Range-based for: const Vec<int>
+// ---------------------------------------------------------------------------
+static int vec_range_for_const() {
+  Vec<int> v;
+  for (int i = 1; i <= 3; i++) v.add(i);
+  const Vec<int> &cv = v;
+  int sum = 0;
+  for (int x : cv) sum += x;
+  CHECK(sum == 6);
+  return 0;
+}
+UNIT_TEST_FUN(vec_range_for_const);
+
+// ---------------------------------------------------------------------------
+// values(): skips null/zero elements — useful in set (hash) mode
+// ---------------------------------------------------------------------------
+static int vec_values_range() {
+  // In set (hash) mode n is the table size; null slots are hash holes.
+  Vec<void *> s;
+  for (int i = 1; i <= 8; i++) s.set_add(ip(i));
+  CHECK(s.is_set());
+  CHECK(s.n > 8);   // hash table is larger than element count
+
+  int count = 0;
+  Vec<void *> seen;
+  for (void *p : s.values()) { seen.add(p); count++; }
+  CHECK(count == 8);
+  for (int i = 1; i <= 8; i++) CHECK(seen.in(ip(i)) != nullptr);
+
+  // values() on a plain vector skips zero entries.
+  Vec<int> v;
+  v.add(1); v.add(0); v.add(3); v.add(0); v.add(5);
+  int sum = 0, cnt = 0;
+  for (int x : v.values()) { sum += x; cnt++; }
+  CHECK(cnt == 3 && sum == 9);  // 1+3+5, zeros skipped
+  return 0;
+}
+UNIT_TEST_FUN(vec_values_range);
+
+// ---------------------------------------------------------------------------
 // Accum: unique insertion-ordered accumulation
 // ---------------------------------------------------------------------------
 static int accum_test() {

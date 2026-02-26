@@ -82,6 +82,7 @@ class Vec : public gc {
   void push(C a) { insert(0, a); }
   void reverse();
   void reserve(int n);
+  C *begin() const { return v; }
   C *end() const { return v + n; }
   C &first() const { return v[0]; }
   C &last() const { return v[n - 1]; }
@@ -92,6 +93,24 @@ class Vec : public gc {
   bool is_vec() const { return !i || i >= n; }
   bool is_set() const { return !is_vec(); }
   int length() const { return n; }
+
+  // Iterator that skips null/zero elements.  Useful when Vec is in set (hash)
+  // mode where null slots are hash table holes, or to skip stored zero values.
+  struct ValuesIterator {
+    C *ptr, *end_ptr;
+    void skip_nulls() { while (ptr < end_ptr && !*ptr) ++ptr; }
+    ValuesIterator(C *p, C *e) : ptr(p), end_ptr(e) { skip_nulls(); }
+    C &operator*() const { return *ptr; }
+    ValuesIterator &operator++() { ++ptr; skip_nulls(); return *this; }
+    bool operator!=(const ValuesIterator &o) const { return ptr != o.ptr; }
+  };
+  struct ValuesRange {
+    C *beg, *end_ptr;
+    ValuesIterator begin() const { return ValuesIterator(beg, end_ptr); }
+    ValuesIterator end() const { return ValuesIterator(end_ptr, end_ptr); }
+  };
+  ValuesRange values() const { return ValuesRange{v, v + n}; }
+
   int write(int fd);
   int read(int fd);
   void qsort(bool (*lt)(C, C));
@@ -110,16 +129,6 @@ class Vec : public gc {
   if ((_v).n)                                                                                \
     for (_c *qq__##_p = (_c *)0, *_p = (_v).v[0];                                            \
          ((intptr_t)(qq__##_p) < (_v).length()) && ((_p = (_v).v[(intptr_t)qq__##_p]) || 1); \
-         qq__##_p = (_c *)(((intptr_t)qq__##_p) + 1))
-#define for_Vec(_c, _p, _v)                                                                  \
-  if ((_v).n)                                                                                \
-    for (_c *qq__##_p = (_c *)0, _p = (_v).v[0];                                             \
-         ((intptr_t)(qq__##_p) < (_v).length()) && ((_p = (_v).v[(intptr_t)qq__##_p]) || 1); \
-         qq__##_p = (_c *)(((intptr_t)qq__##_p) + 1))
-#define forvp_Vec(_c, _p, _v)                                                                 \
-  if ((_v).n)                                                                                 \
-    for (_c *qq__##_p = (_c *)0, *_p = &(_v).v[0];                                            \
-         ((intptr_t)(qq__##_p) < (_v).length()) && ((_p = &(_v).v[(intptr_t)qq__##_p]) || 1); \
          qq__##_p = (_c *)(((intptr_t)qq__##_p) + 1))
 
 template <class C, class A = DefaultAlloc, int S = VEC_INTEGRAL_SHIFT_DEFAULT>
