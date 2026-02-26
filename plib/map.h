@@ -178,6 +178,7 @@ class NBlockHash : public gc {
   C *v;
   C e[N];
 
+  C *begin() { return first(); }
   C *end() { return last(); }
   int length() { return N * n; }
   C *first();

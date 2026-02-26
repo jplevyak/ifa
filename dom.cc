@@ -19,7 +19,7 @@ static int df_traversal(Dom *d, uint n, Vec<Dom *> &vertex) {
   d->semi = ++n;
   d->label = d;
   vertex.add(d);
-  forv_Dom(dd, d->succ) {
+  for (Dom *dd : d->succ) {
     if (dd->semi < 0) {
       dd->parent = d;
       n = df_traversal(dd, n, vertex);
@@ -69,7 +69,7 @@ static void df_link(Dom *v, Dom *w, Vec<Dom *> &vertex) {
 }
 
 static void compute_semi(Dom *w, Vec<Dom *> &vertex) {
-  forv_Dom(v, w->pred) {
+  for (Dom *v : w->pred) {
     int semiu = df_eval(v, vertex)->semi;
     if (semiu < w->semi) w->semi = semiu;
   }
@@ -93,18 +93,18 @@ static void find_dominators(Vec<Dom *> &vertex) {
 }
 
 static void make_dominator_tree(Vec<Dom *> &vertex) {
-  forv_Dom(x, vertex) if (x != VNULL && x->idom != VNULL) x->idom->children.add(x);
+  for (Dom *x : vertex) if (x != VNULL && x->idom != VNULL) x->idom->children.add(x);
 }
 
 static void find_dominator_frontier_internal(Dom *n) {
-  forv_Dom(x, n->children) find_dominator_frontier_internal(x);
-  forv_Dom(x, n->succ) if (x->idom != n) n->front.set_add(x);
-  forv_Dom(x, n->children) forv_Dom(y, x->front) if (y) if (y->idom != n) n->front.set_add(y);
+  for (Dom *x : n->children) find_dominator_frontier_internal(x);
+  for (Dom *x : n->succ) if (x->idom != n) n->front.set_add(x);
+  for (Dom *x : n->children) for (Dom *y : x->front) if (y) if (y->idom != n) n->front.set_add(y);
 }
 
 static void find_dominator_frontier(Dom *n, Vec<Dom *> &vertex) {
   find_dominator_frontier_internal(n);
-  forv_Dom(x, vertex) if (x != VNULL) x->front.set_to_vec();
+  for (Dom *x : vertex) if (x != VNULL) x->front.set_to_vec();
 }
 
 static void dom_replace(Dom *d, void *a, void *b) {
@@ -117,14 +117,14 @@ static void dom_replace(Dom *d, void *a, void *b) {
 
 static int dom_dfs(Dom *d, int n = 0) {
   d->dfs = ++n;
-  forv_Dom(x, d->children) n = dom_dfs(x, n);
+  for (Dom *x : d->children) n = dom_dfs(x, n);
   return n;
 }
 
 static void dom_build_intervals(Dom *d) {
   if (d->idom) d->intervals.copy(d->idom->intervals);
   d->intervals.insert(d->dfs);
-  forv_Dom(x, d->children) dom_build_intervals(x);
+  for (Dom *x : d->children) dom_build_intervals(x);
 }
 
 static void make_dom_intervals(Dom *d) {
@@ -138,27 +138,27 @@ void build_dominators(Dom *d) {
   vertex[0]->semi = 0;
   vertex[0]->size = 0;
   df_traversal(d, 0, vertex);
-  forv_Dom(x, vertex) dom_replace(x, (void *)0, (void *)VNULL);
+  for (Dom *x : vertex) dom_replace(x, (void *)0, (void *)VNULL);
   find_dominators(vertex);
   make_dominator_tree(vertex);
   find_dominator_frontier(d, vertex);
-  forv_Dom(x, vertex) dom_replace(x, (void *)VNULL, (void *)0);
+  for (Dom *x : vertex) dom_replace(x, (void *)VNULL, (void *)0);
   make_dom_intervals(d);
 }
 
 void build_cfg_dominators(Fun *f) {
   Vec<PNode *> pnodes;
   f->collect_PNodes(pnodes);
-  forv_PNode(p, pnodes) {
+  for (PNode *p : pnodes) {
     p->dom = new Dom(p);
     p->rdom = new Dom(p);
   }
-  forv_PNode(p, pnodes) {
-    forv_PNode(pp, p->cfg_pred) {
+  for (PNode *p : pnodes) {
+    for (PNode *pp : p->cfg_pred) {
       p->dom->pred.add(pp->dom);
       p->rdom->succ.add(pp->rdom);
     }
-    forv_PNode(pp, p->cfg_succ) {
+    for (PNode *pp : p->cfg_succ) {
       p->dom->succ.add(pp->dom);
       p->rdom->pred.add(pp->rdom);
     }
@@ -168,13 +168,13 @@ void build_cfg_dominators(Fun *f) {
 }
 
 void build_call_dominators(FA *fa) {
-  forv_Fun(f, fa->funs) f->dom = new Dom(f);
-  forv_Fun(f, fa->funs) {
+  for (Fun *f : fa->funs) f->dom = new Dom(f);
+  for (Fun *f : fa->funs) {
     Vec<Fun *> calls;
     f->calls_funs(calls);
-    forv_Fun(ff, calls) f->dom->succ.add(ff->dom);
+    for (Fun *ff : calls) f->dom->succ.add(ff->dom);
     f->called_by_funs(calls);
-    forv_Fun(ff, calls) f->dom->pred.add(ff->dom);
+    for (Fun *ff : calls) f->dom->pred.add(ff->dom);
   }
   build_dominators(if1->top->fun->dom);
 }

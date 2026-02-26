@@ -39,16 +39,16 @@ void Fun::init_fun() {
 }
 
 static void build_uses(PNode *n, int flags = 0) {
-  forv_Var(v, n->rvals) v->uses.add(n);
-  if (!(flags & FUN_COLLECT_VARS_NO_TVALS)) forv_Var(v, n->tvals) v->uses.add(n);
-  forv_PNode(p, n->phi) build_uses(p);
-  if (!(flags & FUN_COLLECT_VARS_NO_PHY)) forv_PNode(p, n->phy) build_uses(p);
+  for (Var *v : n->rvals) v->uses.add(n);
+  if (!(flags & FUN_COLLECT_VARS_NO_TVALS)) for (Var *v : n->tvals) v->uses.add(n);
+  for (PNode *p : n->phi) build_uses(p);
+  if (!(flags & FUN_COLLECT_VARS_NO_PHY)) for (PNode *p : n->phy) build_uses(p);
 }
 
 static void build_uses(Fun *f) {
   Vec<PNode *> nodes;
   f->collect_PNodes(nodes);
-  forv_PNode(p, nodes) build_uses(p);
+  for (PNode *p : nodes) build_uses(p);
 }
 
 Fun::Fun(Sym *asym) {
@@ -83,7 +83,7 @@ int compar_funs(const void *ai, const void *aj) {
 void Fun::setup_ast() {
   Vec<PNode *> nodes;
   collect_PNodes(nodes);
-  forv_PNode(n, nodes) {
+  for (PNode *n : nodes) {
     if (n->code && n->code->ast) n->code->ast->pnodes.add(n);
   }
   nodes.clear();
@@ -94,15 +94,15 @@ void Fun::collect_PNodes(Vec<PNode *> &v) {
   if (!entry) return;
   v.add(exit);
   sv.set_add(exit);
-  for (int i = 0; i < v.n; i++) forv_PNode(p, v[i]->cfg_pred) if (p) if (sv.set_add(p)) v.add(p);
+  for (int i = 0; i < v.n; i++) for (PNode *p : v[i]->cfg_pred) if (p) if (sv.set_add(p)) v.add(p);
 }
 
 static void collect_Vars_PNode(PNode *n, Accum<Var *> &vars, int flags = 0) {
-  forv_Var(v, n->rvals) vars.add(v);
-  forv_Var(v, n->lvals) vars.add(v);
-  if (!(flags & FUN_COLLECT_VARS_NO_TVALS)) forv_Var(v, n->tvals) vars.add(v);
-  forv_PNode(p, n->phi) collect_Vars_PNode(p, vars);
-  if (!(flags & FUN_COLLECT_VARS_NO_PHY)) forv_PNode(p, n->phy) collect_Vars_PNode(p, vars);
+  for (Var *v : n->rvals) vars.add(v);
+  for (Var *v : n->lvals) vars.add(v);
+  if (!(flags & FUN_COLLECT_VARS_NO_TVALS)) for (Var *v : n->tvals) vars.add(v);
+  for (PNode *p : n->phi) collect_Vars_PNode(p, vars);
+  if (!(flags & FUN_COLLECT_VARS_NO_PHY)) for (PNode *p : n->phy) collect_Vars_PNode(p, vars);
 }
 
 void Fun::collect_Vars(Vec<Var *> &avars, Vec<PNode *> *nodes, int flags) {
@@ -116,10 +116,10 @@ void Fun::collect_Vars(Vec<Var *> &avars, Vec<PNode *> *nodes, int flags) {
   nodes->add(exit);
   for (int i = 0; i < nodes->n; i++) {
     collect_Vars_PNode(nodes->v[i], vars, flags);
-    forv_PNode(p, nodes->v[i]->cfg_pred) if (sv.set_add(p)) nodes->add(p);
+    for (PNode *p : nodes->v[i]->cfg_pred) if (sv.set_add(p)) nodes->add(p);
   }
-  forv_MPosition(p, positional_arg_positions) vars.add(args.get(p));
-  forv_Var(v, rets) vars.add(v);
+  for (MPosition *p : positional_arg_positions) vars.add(args.get(p));
+  for (Var *v : rets) vars.add(v);
   avars.copy(vars.asvec);
 }
 
@@ -165,7 +165,7 @@ Fun *Fun::copy(int copy_ast, VarMap *var_map) {
   Vec<PNode *> nodes;
 
   collect_Vars(fa_all_Vars, &fa_all_PNodes);
-  forv_PNode(n, fa_all_PNodes) {
+  for (PNode *n : fa_all_PNodes) {
     PNode *p = copy_pnode(n, f);
     nodes.add(p);
     f->nmap->put(n, p);
@@ -184,14 +184,14 @@ Fun *Fun::copy(int copy_ast, VarMap *var_map) {
       p->phy[i] = pp;
     }
   }
-  forv_PNode(n, nodes) {
+  for (PNode *n : nodes) {
     for (int i = 0; i < n->cfg_succ.n; i++) n->cfg_succ[i] = f->nmap->get(n->cfg_succ.v[i]);
     for (int i = 0; i < n->cfg_pred.n; i++) n->cfg_pred[i] = f->nmap->get(n->cfg_pred.v[i]);
   }
   f->arg_syms.copy(arg_syms);
   f->arg_positions.copy(arg_positions);
   f->positional_arg_positions.copy(positional_arg_positions);
-  forv_MPosition(p, f->positional_arg_positions) {
+  for (MPosition *p : f->positional_arg_positions) {
     Var *v = args.get(p);
     copy_var(&v, f);
     f->args.put(p, v);
@@ -234,7 +234,7 @@ void Fun::calls_funs(Vec<Fun *> &calls_funs) {
 
 void Fun::called_by_funs(Vec<Fun *> &called_by) {
   called_by.clear();
-  forv_CallPoint(c, called) called_by.set_add(c->fun);
+  for (CallPoint *c : called) called_by.set_add(c->fun);
   called_by.set_to_vec();
 }
 
@@ -254,7 +254,7 @@ int Fun::line() { return ast->line(); }
 int Fun::source_line() { return ast->source_line(); }
 
 void rebuild_cfg_pred_index(Fun *f) {
-  forv_PNode(n, f->fa_all_PNodes) {
+  for (PNode *n : f->fa_all_PNodes) {
     n->cfg_pred_index.clear();
     for (int i = 0; i < n->cfg_pred.n; i++) n->cfg_pred_index.put(n->cfg_pred[i], i);
   }
@@ -265,14 +265,14 @@ void check_invariants(Fun *f) {
   if (!f->entry) return;
   Accum<PNode *> nodes;
   nodes.add(f->exit);
-  forv_PNode(p, nodes.asvec) forv_PNode(n, p->cfg_pred) nodes.add(n);
-  forv_PNode(p, nodes.asvec) {
-    forv_PNode(n, p->cfg_pred) assert(n->cfg_succ.in(p));
-    forv_PNode(n, p->cfg_succ) assert(n->cfg_pred.in(p));
+  for (PNode *p : nodes.asvec) for (PNode *n : p->cfg_pred) nodes.add(n);
+  for (PNode *p : nodes.asvec) {
+    for (PNode *n : p->cfg_pred) assert(n->cfg_succ.in(p));
+    for (PNode *n : p->cfg_succ) assert(n->cfg_pred.in(p));
   }
   Accum<PNode *> forward_nodes;
   forward_nodes.add(f->entry);
-  forv_PNode(p, nodes.asvec) forv_PNode(n, p->cfg_succ) forward_nodes.add(n);
+  for (PNode *p : nodes.asvec) for (PNode *n : p->cfg_succ) forward_nodes.add(n);
   assert(!nodes.asset.some_disjunction(forward_nodes.asset));
 #endif
 }

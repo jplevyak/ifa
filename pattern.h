@@ -63,7 +63,6 @@ class MPosition : public gc {
   MPosition() : cp(0), up(0), next(0), down(0) {}
   MPosition(MPosition &p);
 };
-#define forv_MPosition(_p, _v) forv_Vec(MPosition, _p, _v)
 
 inline int MPosition::prefix_to_last(MPosition &p) {
   if (pos.n != p.pos.n + 1) return 0;
@@ -116,7 +115,6 @@ class Match : public gc {
     visibility_points.copy(m.visibility_points);
   }
 };
-#define forv_Match(_p, _v) forv_Vec(Match, _p, _v)
 
 typedef Map<MPosition *, AType *> MapMPositionAType;
 typedef MapElem<MPosition *, AType *> MapMPositionATypeElem;

@@ -50,7 +50,6 @@ class IFAAST : public gc {
   virtual void html(FILE *fp, Fun *f) {}
   virtual void graph(FILE *fp) {}  // calling graph_node/graph_edge in graph.h
 };
-#define forv_IFAAST(_x, _v) forv_Vec(IFAAST, _x, _v)
 
 /*
   Interface for callbacks from the analysis core to the front end specific

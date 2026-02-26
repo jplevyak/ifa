@@ -54,7 +54,6 @@ class PNode : public gc {
   PNode(Code *c);
   PNode();
 };
-#define forv_PNode(_p, _v) forv_Vec(PNode, _p, _v)
 
 int compar_pnodes(const void *ai, const void *aj);
 

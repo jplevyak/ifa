@@ -19,7 +19,6 @@ class CDB_EntrySet : public gc {
 
   CDB_EntrySet(int aes_id) : es_id(aes_id) {}
 };
-#define forv_CDB_EntrySet(_p, _v) forv_Vec(CDB_EntrySet, _p, _v)
 
 class CDB_CreationSet : public gc {
  public:
@@ -29,7 +28,6 @@ class CDB_CreationSet : public gc {
 
   CDB_CreationSet(int acs_id) : cs_id(acs_id) {}
 };
-#define forv_CDB_CreationSet(_p, _v) forv_Vec(CDB_CreationSet, _p, _v)
 
 class CDB : public gc {
  public:

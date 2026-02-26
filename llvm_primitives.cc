@@ -23,7 +23,7 @@ Fun *get_target_fun(PNode *n, Fun *f) {
                 called_var->sym->name ? called_var->sym->name : "unnamed", called_var->sym->id);
         if (all_funs_global) {
           fprintf(stderr, "DEBUG: Searching %d functions in all_funs_global\n", all_funs_global->n);
-          forv_Fun(fx, *all_funs_global) {
+          for (Fun *fx : *all_funs_global) {
             if (!fx) {
               fprintf(stderr, "DEBUG: Skipping null fun in all_funs_global\n");
               continue;
@@ -34,7 +34,7 @@ Fun *get_target_fun(PNode *n, Fun *f) {
             }
           }
           // Name match fallback (risky but trying it if sym IDs don't align for some reason)
-          forv_Fun(fx, *all_funs_global) {
+          for (Fun *fx : *all_funs_global) {
             if (!fx) continue;
             if (fx->sym && fx->sym->name && called_var->sym->name &&
                 strcmp(fx->sym->name, called_var->sym->name) == 0) {
@@ -120,7 +120,7 @@ void write_send(Fun *f, PNode *n) {
   // Map call site arguments to formal parameters (parallels cg.cc:612-616)
   unsigned arg_idx = 0;
   Var *v0 = n->rvals[0];
-  forv_MPosition(p, target->positional_arg_positions) {
+  for (MPosition *p : target->positional_arg_positions) {
     Var *formal_arg = target->args.get(p);
 
     fprintf(stderr, "DEBUG:   formal %d (MPos[0]=%d): formal_arg=%p, live=%d\n", arg_idx,

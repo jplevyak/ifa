@@ -178,7 +178,6 @@ class Sym : public BasicSym {
   int imm_int(int *);
 };
 
-#define forv_Sym(_c, _v) forv_Vec(Sym, _c, _v)
 
 Sym *unalias_type(Sym *s);
 void convert_constant_to_immediate(Sym *sym);

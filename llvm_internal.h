@@ -23,11 +23,6 @@ extern llvm::DICompileUnit *CU;
 extern llvm::DIFile *UnitFile;
 extern Vec<Fun*> *all_funs_global;
 
-// Helper macros
-#ifndef forv_MPosition
-#define forv_MPosition(_p, _v) forv_Vec(MPosition, _p, _v)
-#endif
-
 // ============================================================================
 // Type System (llvm.cc)
 // ============================================================================

@@ -20,7 +20,6 @@ struct LoopNode : public gc {
   int dom_ancestor(LoopNode *);
   LoopNode(int i, void *n = 0);
 };
-#define forv_LoopNode(_p, _v) forv_Vec(LoopNode, _p, _v)
 
 struct LoopGraph : public gc {
   LoopNode *loops;

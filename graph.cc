@@ -136,7 +136,7 @@ static int compar_fun_ids(const void *ai, const void *aj) {
 
 static void graph_ast(Vec<Fun *> &funs, cchar *fn) {
   FILE *fp = graph_start(fn, "ast", "Abstract Syntax Tree");
-  forv_Fun(f, funs) f->ast->graph(fp);
+  for (Fun *f : funs) f->ast->graph(fp);
   graph_end(fp);
 }
 
@@ -153,7 +153,7 @@ static void strcat_sym_node(char *s, Sym *sy) {
 static void graph_pnode_node(FILE *fp, PNode *pn, int options = 0) {
   char title[256] = "";
   if (pn->lvals.n) {
-    forv_Var(v, pn->lvals) {
+    for (Var *v : pn->lvals) {
       strcat_sym_node(title, v->sym);
       strcat(title, " ");
     }
@@ -161,7 +161,7 @@ static void graph_pnode_node(FILE *fp, PNode *pn, int options = 0) {
   }
   int kind = pn->code ? pn->code->kind : Code_MOVE;
   strcat(title, code_string[kind]);
-  forv_Var(v, pn->rvals) {
+  for (Var *v : pn->rvals) {
     strcat(title, " ");
     strcat_sym_node(title, v->sym);
   }
@@ -188,11 +188,11 @@ static void graph_loop_node(FILE *fp, LoopNode *n) {
   graph_node(fp, n, title);
 }
 
-static void graph_pnode_cfg_edges(FILE *fp, PNode *pn) { forv_PNode(ppn, pn->cfg_succ) graph_edge(fp, pn, ppn); }
+static void graph_pnode_cfg_edges(FILE *fp, PNode *pn) { for (PNode *ppn : pn->cfg_succ) graph_edge(fp, pn, ppn); }
 
 static void graph_loop_edges(FILE *fp, LoopNode *n) {
-  forv_LoopNode(nn, n->children) graph_edge(fp, n->node ? n->node : n, nn->node ? nn->node : nn, G_BLUE);
-  forv_LoopNode(nn, n->loops) graph_edge(fp, n->node ? n->node : n, nn->node ? nn->node : nn, G_RED);
+  for (LoopNode *nn : n->children) graph_edge(fp, n->node ? n->node : n, nn->node ? nn->node : nn, G_BLUE);
+  for (LoopNode *nn : n->loops) graph_edge(fp, n->node ? n->node : n, nn->node ? nn->node : nn, G_RED);
 }
 
 static void graph_pnode_dom_edges(FILE *fp, PNode *pn) {
@@ -200,28 +200,28 @@ static void graph_pnode_dom_edges(FILE *fp, PNode *pn) {
 }
 
 static void graph_phi_phy_edges(FILE *fp, PNode *pn) {
-  forv_PNode(ppn, pn->phi) graph_edge(fp, pn, ppn, G_RED);
-  forv_PNode(ppn, pn->phy) graph_edge(fp, pn, ppn, G_RED);
+  for (PNode *ppn : pn->phi) graph_edge(fp, pn, ppn, G_RED);
+  for (PNode *ppn : pn->phy) graph_edge(fp, pn, ppn, G_RED);
 }
 
 static void graph_cfg(Vec<Fun *> &funs, cchar *fn) {
   FILE *fp = graph_start(fn, "cfg", "Control Flow Graph");
-  forv_Fun(f, funs) {
+  for (Fun *f : funs) {
     Vec<PNode *> pnodes;
     f->collect_PNodes(pnodes);
-    forv_PNode(p, pnodes) graph_pnode_node(fp, p);
-    forv_PNode(p, pnodes) graph_pnode_cfg_edges(fp, p);
+    for (PNode *p : pnodes) graph_pnode_node(fp, p);
+    for (PNode *p : pnodes) graph_pnode_cfg_edges(fp, p);
   }
   graph_end(fp);
 }
 
 static void graph_dom(Vec<Fun *> &funs, cchar *fn) {
   FILE *fp = graph_start(fn, "dom", "Dominators Graph");
-  forv_Fun(f, funs) {
+  for (Fun *f : funs) {
     Vec<PNode *> pnodes;
     f->collect_PNodes(pnodes);
-    forv_PNode(p, pnodes) graph_pnode_node(fp, p, G_DOM);
-    forv_PNode(p, pnodes) {
+    for (PNode *p : pnodes) graph_pnode_node(fp, p, G_DOM);
+    for (PNode *p : pnodes) {
       graph_pnode_cfg_edges(fp, p);
       graph_pnode_dom_edges(fp, p);
     }
@@ -231,10 +231,10 @@ static void graph_dom(Vec<Fun *> &funs, cchar *fn) {
 
 static void graph_loops(Vec<Fun *> &funs, cchar *fn) {
   FILE *fp = graph_start(fn, "loops", "Loop Nests Graph");
-  forv_Fun(f, funs) if (f->loops->loops) {
-    forv_LoopNode(p, f->loops->nodes) if (p->node) graph_pnode_node(fp, (PNode *)p->node, G_LOOP);
+  for (Fun *f : funs) if (f->loops->loops) {
+    for (LoopNode *p : f->loops->nodes) if (p->node) graph_pnode_node(fp, (PNode *)p->node, G_LOOP);
     else graph_loop_node(fp, p);
-    forv_LoopNode(p, f->loops->nodes) {
+    for (LoopNode *p : f->loops->nodes) {
       if (p->node) graph_pnode_cfg_edges(fp, (PNode *)p->node);
       graph_loop_edges(fp, p);
     }
@@ -249,7 +249,7 @@ static void graph_var_node(FILE *fp, Var *v, int options = 0) {
     Vec<Sym *> consts;
     if (constant_info(v, consts)) {
       strcat(id, " {");
-      forv_Sym(s, consts) {
+      for (Sym *s : consts) {
         strcat(id, " ");
         sprint_imm(id + strlen(id), sizeof(id) - strlen(id), s->imm);
       }
@@ -267,30 +267,30 @@ static int graph_it(Var *v) {
 }
 
 static void graph_pnode_var_edges(FILE *fp, PNode *pn) {
-  forv_Var(v, pn->lvals) if (graph_it(v)) graph_edge(fp, pn, v, G_BLUE);
-  forv_Var(v, pn->rvals) if (graph_it(v)) graph_edge(fp, v, pn, G_BLUE);
+  for (Var *v : pn->lvals) if (graph_it(v)) graph_edge(fp, pn, v, G_BLUE);
+  for (Var *v : pn->rvals) if (graph_it(v)) graph_edge(fp, v, pn, G_BLUE);
   if (!pn->code || pn->code->kind == Code_MOVE) {
-    forv_Var(a, pn->rvals) forv_Var(b, pn->lvals) if (graph_it(a) && graph_it(b)) graph_edge(fp, a, b, G_GREEN);
+    for (Var *a : pn->rvals) for (Var *b : pn->lvals) if (graph_it(a) && graph_it(b)) graph_edge(fp, a, b, G_GREEN);
   }
 }
 
 static void graph_ssu(Vec<Fun *> &funs, cchar *fn) {
   FILE *fp = graph_start(fn, "ssu", "Single-Static Use");
   Vec<Var *> vdone;
-  forv_Fun(f, funs) {
+  for (Fun *f : funs) {
     Vec<PNode *> pnodes;
     Vec<Var *> vars;
     f->collect_Vars(vars, &pnodes);
-    forv_PNode(p, pnodes) {
+    for (PNode *p : pnodes) {
       pnodes.append(p->phi);
       pnodes.append(p->phy);
     }
-    forv_PNode(p, pnodes) graph_pnode_node(fp, p);
-    forv_Var(v, vars) {
+    for (PNode *p : pnodes) graph_pnode_node(fp, p);
+    for (Var *v : vars) {
       if (graph_it(v))
         if (vdone.set_add(v)) graph_var_node(fp, v);
     }
-    forv_PNode(p, pnodes) {
+    for (PNode *p : pnodes) {
       graph_pnode_var_edges(fp, p);
       graph_pnode_cfg_edges(fp, p);
       graph_phi_phy_edges(fp, p);
@@ -303,7 +303,7 @@ static void graph_avar_node(FILE *fp, AVar *av) {
   char label[80];
   snprintf(label, sizeof(label), "%s_%d", av->var->sym->name ? av->var->sym->name : "", av->var->sym->id);
   Vec<Sym *> consts;
-  forv_CreationSet(cs, *av->out) if (cs) {
+  for (CreationSet *cs : *av->out) if (cs) {
     if (cs->sym->constant)
       consts.set_add(cs->sym);
     else {
@@ -314,7 +314,7 @@ static void graph_avar_node(FILE *fp, AVar *av) {
   consts.set_to_vec();
   if (consts.n) {
     strcat(label, " {");
-    forv_Sym(s, consts) {
+    for (Sym *s : consts) {
       strcat(label, " ");
       sprint_imm(label + strlen(label), sizeof(label) - strlen(label), s->imm);
     }
@@ -326,23 +326,23 @@ static void graph_avar_node(FILE *fp, AVar *av) {
 static void graph_avars(FA *fa, cchar *fn) {
   FILE *fp = graph_start(fn, "avars", "Analysis Variables");
   Vec<AVar *> todo, todo_set;
-  forv_EntrySet(es, fa->ess) {
-    forv_Var(v, es->fun->fa_all_Vars) {
+  for (EntrySet *es : fa->ess) {
+    for (Var *v : es->fun->fa_all_Vars) {
       AVar *av = make_AVar(v, es);
       todo_set.set_add(av);
     }
   }
   todo.copy(todo_set);
   todo.set_to_vec();
-  forv_AVar(av, todo) {
-    forv_AVar(avv, av->forward) if (avv) if (todo_set.set_add(avv)) todo.add(avv);
-    forv_AVar(avv, av->backward) if (avv) if (todo_set.set_add(avv)) todo.add(avv);
+  for (AVar *av : todo) {
+    for (AVar *avv : av->forward) if (avv) if (todo_set.set_add(avv)) todo.add(avv);
+    for (AVar *avv : av->backward) if (avv) if (todo_set.set_add(avv)) todo.add(avv);
   }
-  forv_AVar(av, todo) {
+  for (AVar *av : todo) {
     if (!av->forward.n && !av->backward.n) continue;
     graph_avar_node(fp, av);
   }
-  forv_AVar(av, todo) if (av) { forv_AVar(avv, av->forward) if (avv) graph_edge(fp, av, avv); }
+  for (AVar *av : todo) if (av) { for (AVar *avv : av->forward) if (avv) graph_edge(fp, av, avv); }
   graph_end(fp);
 }
 
@@ -360,7 +360,7 @@ static void graph_cs_node(FILE *fp, CreationSet *cs) {
     snprintf(label, sizeof(label), "%d:%s_%d", cs->id,
              cs->sym->name ? cs->sym->name : (cs->sym->constant ? cs->sym->constant : ""), cs->sym->id);
   graph_node(fp, cs, label, G_RED | G_ELLIPSE);
-  forv_AVar(ivar, cs->vars) {
+  for (AVar *ivar : cs->vars) {
     snprintf(label, sizeof(label), "%s_%d", ivar->var->sym->name ? ivar->var->sym->name : "", ivar->var->sym->id);
     graph_node(fp, ivar, label, G_ORANGE | G_TRIANGLE);
     graph_edge(fp, cs, ivar, G_ORANGE);
@@ -372,23 +372,23 @@ static void graph_cs_node(FILE *fp, CreationSet *cs) {
 void graph_contours(FA *fa, cchar *fn) {
   FILE *fp = graph_start(fn, "contours", "Analysis Contours");
   Vec<CreationSet *> css_set;
-  forv_CreationSet(cs, fa->css) if (cs->sym != sym_continuation && !cs->sym->is_symbol) css_set.set_add(NORM_CS(cs));
-  forv_EntrySet(es, fa->ess) graph_es_node(fp, es);
-  forv_CreationSet(cs, css_set) if (cs) graph_cs_node(fp, cs);
-  forv_EntrySet(es, fa->ess) forv_AEdge(e, es->out_edges) if (e && fa->ess_set.in(e->from) && fa->ess_set.in(e->to))
+  for (CreationSet *cs : fa->css) if (cs->sym != sym_continuation && !cs->sym->is_symbol) css_set.set_add(NORM_CS(cs));
+  for (EntrySet *es : fa->ess) graph_es_node(fp, es);
+  for (CreationSet *cs : css_set) if (cs) graph_cs_node(fp, cs);
+  for (EntrySet *es : fa->ess) for (AEdge *e : es->out_edges) if (e && fa->ess_set.in(e->from) && fa->ess_set.in(e->to))
       graph_edge(fp, e->from, e->to, G_BLUE);
-  forv_EntrySet(es, fa->ess) forv_CreationSet(cs, es->creates) if (cs) if (css_set.in(NORM_CS(cs)))
+  for (EntrySet *es : fa->ess) for (CreationSet *cs : es->creates) if (cs) if (css_set.in(NORM_CS(cs)))
       graph_edge(fp, es, NORM_CS(cs), G_PURPLE);
-  forv_CreationSet(cs, css_set) if (cs) forv_EntrySet(es, cs->ess) if (es) if (fa->ess_set.in(es))
+  for (CreationSet *cs : css_set) if (cs) for (EntrySet *es : cs->ess) if (es) if (fa->ess_set.in(es))
       graph_edge(fp, es, NORM_CS(cs), G_GREEN);
-  forv_CreationSet(cs, css_set) if (cs) forv_AVar(ivar, cs->vars)
-      forv_CreationSet(x, ivar->out->sorted) if (x) if (css_set.in(NORM_CS(x))) graph_edge(fp, ivar, NORM_CS(x), G_RED);
+  for (CreationSet *cs : css_set) if (cs) for (AVar *ivar : cs->vars)
+      for (CreationSet *x : ivar->out->sorted) if (x) if (css_set.in(NORM_CS(x))) graph_edge(fp, ivar, NORM_CS(x), G_RED);
   graph_end(fp);
 }
 
 static void strcat_pattern(char *title, Sym *s) {
   strcat(title, "(");
-  forv_Sym(a, s->has) {
+  for (Sym *a : s->has) {
     strcat(title, " ");
     strcat_sym_node(title, a);
   }
@@ -398,7 +398,7 @@ static void strcat_pattern(char *title, Sym *s) {
 static void graph_fun_node(FILE *fp, Fun *f) {
   char title[256] = "";
   strcat_sym_node(title, f->sym);
-  forv_MPosition(p, f->arg_positions) {
+  for (MPosition *p : f->arg_positions) {
     if (Var *a = f->args.get(p)) {
       strcat(title, " ");
       if (!a->sym->is_pattern)
@@ -416,24 +416,24 @@ static void graph_call(FILE *fp, Fun *f, Fun *ff) { graph_edge(fp, f, ff); }
 
 static void graph_calls(FA *fa, cchar *fn) {
   FILE *fp = graph_start(fn, "calls", "Call Graph");
-  forv_Fun(f, fa->funs) graph_fun_node(fp, f);
-  forv_Fun(f, fa->funs) {
+  for (Fun *f : fa->funs) graph_fun_node(fp, f);
+  for (Fun *f : fa->funs) {
     Vec<Fun *> calls;
     f->calls_funs(calls);
-    forv_Fun(ff, calls) graph_call(fp, f, ff);
+    for (Fun *ff : calls) graph_call(fp, f, ff);
   }
   graph_end(fp);
 }
 
 static void graph_rec(FA *fa, cchar *fn) {
   FILE *fp = graph_start(fn, "rec", "Recursion (Interprocedural Loops)");
-  forv_LoopNode(n, fa->pdb->loops->nodes) if (n->node) graph_fun_node(fp, (Fun *)n->node);
+  for (LoopNode *n : fa->pdb->loops->nodes) if (n->node) graph_fun_node(fp, (Fun *)n->node);
   else graph_loop_node(fp, n);
-  forv_LoopNode(n, fa->pdb->loops->nodes) if (n->node) {
+  for (LoopNode *n : fa->pdb->loops->nodes) if (n->node) {
     Fun *f = (Fun *)n->node;
     Vec<Fun *> calls;
     f->calls_funs(calls);
-    forv_Fun(ff, calls) graph_call(fp, f, ff);
+    for (Fun *ff : calls) graph_call(fp, f, ff);
   }
   else graph_loop_edges(fp, n);
   graph_end(fp);
@@ -443,8 +443,8 @@ static void graph_abstract_types(FA *fa, cchar *fn) {
   FILE *fp = graph_start(fn, "at", "Abstract Types");
   Vec<Sym *> syms;
   syms.set_union(fa->patterns->types);
-  forv_Sym(s, fa->patterns->types) if (s) syms.set_union(s->implementors);
-  forv_Sym(s, syms) if (s && s->live && !s->constant) {
+  for (Sym *s : fa->patterns->types) if (s) syms.set_union(s->implementors);
+  for (Sym *s : syms) if (s && s->live && !s->constant) {
     char name[256], *pname = name;
     strcpy(pname, type_kind_string[s->type_kind]);
     pname += strlen(pname);
@@ -480,7 +480,7 @@ static void graph_abstract_types(FA *fa, cchar *fn) {
     }
     graph_node(fp, s, name);
   }
-  forv_Sym(s, syms) if (s && s->live && !s->constant) forv_Sym(ss, s->implements) if (ss && ss->live && !ss->constant)
+  for (Sym *s : syms) if (s && s->live && !s->constant) for (Sym *ss : s->implements) if (ss && ss->live && !ss->constant)
       graph_edge(fp, s, ss);
   graph_end(fp);
 }
@@ -492,7 +492,7 @@ void graph(FA *fa, cchar *fn) {
   if (!graph_fun[0])
     funs.move(tfuns);
   else {
-    forv_Fun(f, tfuns) if (f->sym->name && !strcmp(f->sym->name, graph_fun)) funs.add(f);
+    for (Fun *f : tfuns) if (f->sym->name && !strcmp(f->sym->name, graph_fun)) funs.add(f);
   }
   graph_ast(funs, fn);
   graph_cfg(funs, fn);

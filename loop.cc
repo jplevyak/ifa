@@ -28,7 +28,7 @@ int LoopNode::dfs_ancestor(LoopNode *x) { return x->pre_dfs <= pre_dfs && x->pos
 int LoopNode::dom_ancestor(LoopNode *x) { return x->pre_dom <= pre_dom && x->post_dom > post_dom; }
 
 static void collapse(LoopGraph *g, Vec<LoopNode *> &body, LoopNode *header) {
-  forv_LoopNode(z, body) if (z) {
+  for (LoopNode *z : body) if (z) {
     z->parent = header;
     g->unify(z, header);
     if (header->pre_dfs < 0) {
@@ -66,7 +66,7 @@ static void find_loop(LoopGraph *g, LoopNode *header, Vec<LoopNode *> &worklist)
     body.set_add(y);
     b.add(y);
     y->processed = 1;
-    forv_LoopNode(z, y->pred) {
+    for (LoopNode *z : y->pred) {
       LoopNode *zr = g->find(z);
       if (!zr->dfs_ancestor(header))
         zr->loops.add(rep);
@@ -84,7 +84,7 @@ static void dfs_number(LoopNode *p, int &pre, int &post, int level, Vec<Vec<Loop
   if (!levels[level]) levels[level] = new Vec<LoopNode *>;
   levels[level]->add(p);
   p->pre_dfs = pre++;
-  forv_LoopNode(pp, p->succ) {
+  for (LoopNode *pp : p->succ) {
     if (pp->pre_dfs < 0) dfs_number(pp, pre, post, level + 1, levels);
   }
   p->post_dfs = post++;
@@ -92,7 +92,7 @@ static void dfs_number(LoopNode *p, int &pre, int &post, int level, Vec<Vec<Loop
 
 static void dom_number(LoopNode *p, int &pre, int &post) {
   p->pre_dom = pre++;
-  forv_LoopNode(pp, p->dom_children) {
+  for (LoopNode *pp : p->dom_children) {
     if (pp->pre_dom < 0) dom_number(pp, pre, post);
   }
   p->post_dom = post++;
@@ -105,18 +105,18 @@ void find_loops(LoopGraph *g) {
   if (g->nodes.n) {
     g->uf.size(g->nodes.n * 3);
     for (int i = g->levels.n - 1; i >= 0; i--) {
-      forv_LoopNode(x, *g->levels[i]) {
+      for (LoopNode *x : *g->levels[i]) {
         Vec<LoopNode *> worklist;
-        forv_LoopNode(y, x->pred) {
+        for (LoopNode *y : x->pred) {
           if (y->dfs_ancestor(x) && y->dom_ancestor(x)) worklist.add(y);
           if (x == y) self_loop(g, x);
         }
         if (worklist.n) find_loop(g, x, worklist);
       }
-      forv_LoopNode(x, *g->levels[i]) {
+      for (LoopNode *x : *g->levels[i]) {
         if (!x->processed) {
           Vec<LoopNode *> worklist;
-          forv_LoopNode(y, x->pred) {
+          for (LoopNode *y : x->pred) {
             if (y->dfs_ancestor(x) && !y->dom_ancestor(x)) worklist.add(y);
           }
           if (worklist.n) find_loop(g, x, worklist);
@@ -126,21 +126,21 @@ void find_loops(LoopGraph *g) {
     g->loops = g->nodes[g->nodes.n - 1];
     if (g->loops->node) g->loops = 0;
   }
-  forv_LoopNode(n, g->nodes) if (n->parent) n->parent->children.add(n);
+  for (LoopNode *n : g->nodes) if (n->parent) n->parent->children.add(n);
 }
 
 void find_local_loops(FA *fa, Fun *f) {
   Vec<PNode *> nodes;
   f->collect_PNodes(nodes);
   LoopGraph *g = f->loops = new LoopGraph;
-  forv_PNode(n, nodes) {
+  for (PNode *n : nodes) {
     n->loop_node = new LoopNode(g->nodes.n, n);
     g->nodes.add(n->loop_node);
   }
-  forv_PNode(n, nodes) {
-    forv_PNode(nn, n->cfg_succ) n->loop_node->succ.add(nn->loop_node);
-    forv_PNode(nn, n->cfg_pred) n->loop_node->pred.add(nn->loop_node);
-    forv_Dom(nn, n->dom->children) n->loop_node->dom_children.add(((PNode *)nn->node)->loop_node);
+  for (PNode *n : nodes) {
+    for (PNode *nn : n->cfg_succ) n->loop_node->succ.add(nn->loop_node);
+    for (PNode *nn : n->cfg_pred) n->loop_node->pred.add(nn->loop_node);
+    for (Dom *nn : n->dom->children) n->loop_node->dom_children.add(((PNode *)nn->node)->loop_node);
   }
   g->entry = f->entry->loop_node;
   find_loops(g);
@@ -148,24 +148,24 @@ void find_local_loops(FA *fa, Fun *f) {
 
 void find_recursive_loops(FA *fa) {
   LoopGraph *g = fa->pdb->loops = new LoopGraph;
-  forv_Fun(f, fa->funs) {
+  for (Fun *f : fa->funs) {
     f->loop_node = new LoopNode(g->nodes.n, f);
     g->nodes.add(f->loop_node);
   }
   build_call_dominators(fa);
-  forv_Fun(f, fa->funs) {
+  for (Fun *f : fa->funs) {
     Vec<Fun *> calls;
     f->calls_funs(calls);
-    forv_Fun(ff, calls) f->loop_node->succ.add(ff->loop_node);
+    for (Fun *ff : calls) f->loop_node->succ.add(ff->loop_node);
     f->called_by_funs(calls);
-    forv_Fun(ff, calls) f->loop_node->pred.add(ff->loop_node);
-    forv_Dom(ff, f->dom->children) f->loop_node->dom_children.add(((Fun *)ff->node)->loop_node);
+    for (Fun *ff : calls) f->loop_node->pred.add(ff->loop_node);
+    for (Dom *ff : f->dom->children) f->loop_node->dom_children.add(((Fun *)ff->node)->loop_node);
   }
   g->entry = fa->pdb->if1->top->fun->loop_node;
   find_loops(g);
 }
 
 void find_all_loops(FA *fa) {
-  forv_Fun(f, fa->funs) find_local_loops(fa, f);
+  for (Fun *f : fa->funs) find_local_loops(fa, f);
   find_recursive_loops(fa);
 }

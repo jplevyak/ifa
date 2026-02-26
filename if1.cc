@@ -127,7 +127,7 @@ Code *if1_nop(IF1 *p, Code **c) {
 static void
 traverse(Code *c) {
   if (c->is_group()) {
-    forv_Code(cc, c->sub)
+    for (Code *cc : c->sub)
       traverse(cc);
   }
 }
@@ -383,13 +383,13 @@ static int mark_sym_live(Sym *s) {
     if (s->type) mark_sym_live(s->type);
     if (s->in) mark_sym_live(s->in);
     if (s->type_kind) {
-      forv_Sym(ss, s->implements) mark_sym_live(ss);
-      forv_Sym(ss, s->specializes) mark_sym_live(ss);
-      forv_Sym(ss, s->includes) mark_sym_live(ss);
+      for (Sym *ss : s->implements) mark_sym_live(ss);
+      for (Sym *ss : s->specializes) mark_sym_live(ss);
+      for (Sym *ss : s->includes) mark_sym_live(ss);
     }
     if (s->must_specialize) mark_sym_live(s->must_specialize);
     if (s->must_implement) mark_sym_live(s->must_implement);
-    if (s->is_fun || s->is_pattern || s->type_kind) forv_Sym(ss, s->has) mark_sym_live(ss);
+    if (s->is_fun || s->is_pattern || s->type_kind) for (Sym *ss : s->has) mark_sym_live(ss);
     return 1;
   }
   return 0;
@@ -742,7 +742,7 @@ static void if1_fixup_nesting(Code *code, Sym *f) {
 
 static void find_primitives(Primitives *prim, Code *c) {
   c->prim = prim->find(c);
-  forv_Code(cc, c->sub) find_primitives(prim, cc);
+  for (Code *cc : c->sub) find_primitives(prim, cc);
 }
 
 static void find_primitives(IF1 *p) {
@@ -755,7 +755,7 @@ void if1_finalize(IF1 *p) {
   if (fdce_if1)
     if1_simple_dead_code_elimination(p);
   else
-    forv_Sym(s, p->allsyms) s->live = 1;
+    for (Sym *s : p->allsyms) s->live = 1;
   for (int i = 0; i < p->allclosures.n; i++) {
     Sym *f = p->allclosures[i];
     if (f->code) {

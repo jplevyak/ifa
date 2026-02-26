@@ -74,7 +74,6 @@ class Prim : public gc {
   Prim(int aindex, cchar *astring, cchar *aname, int anargs, int apos, int anrets, PrimType *aarg_types,
        PrimType *aret_types, int options);
 };
-#define forv_Prim(_c, _v) forv_Vec(Prim, _c, _v)
 
 void prim_init(Primitives *p, IF1 *if1);
 RegisteredPrim *prim_reg(cchar *name, PrimitiveTransferFunctionPtr ptrfn, PrimitiveCGPtr pcgfn = 0);

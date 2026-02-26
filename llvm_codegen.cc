@@ -344,7 +344,7 @@ void translateFunctionBody(Fun *ifa_fun) {
     fprintf(stderr, "DEBUG: Collected %d Vars\n", ifa_fun->fa_all_Vars.n);
   }
 
-  forv_PNode(pn, pnodes) {
+  for (PNode *pn : pnodes) {
     if (pn->code) {
       if (pn->code->kind == Code_LABEL) {
         if (pn->code->label[0]) {
@@ -405,7 +405,7 @@ void translateFunctionBody(Fun *ifa_fun) {
   // Create only one alloca per Sym to avoid duplicate allocations
   std::map<Sym *, llvm::AllocaInst *> sym_to_alloca;
   int var_loop_idx = 0;
-  forv_Var(v, ifa_fun->fa_all_Vars) {  // Or a more specific list of locals
+  for (Var *v : ifa_fun->fa_all_Vars) {  // Or a more specific list of locals
     fprintf(stderr, "DEBUG: Loop idx %d, v=%p", var_loop_idx++, v);
     if (v && v->sym) {
       fprintf(stderr, ", sym=%s (id=%d), is_local=%d, is_formal=%d, has_llvm_value=%d",
@@ -558,7 +558,7 @@ void translateFunctionBody(Fun *ifa_fun) {
     // Add successors to worklist - ALWAYS add cfg_succ like C backend does (cg.cc:657-689)
     // C backend traverses CFG regardless of whether node is live
     if (current_pn->cfg_succ.n > 0) {
-      forv_PNode(succ_pn, current_pn->cfg_succ) {
+      for (PNode *succ_pn : current_pn->cfg_succ) {
         if (succ_pn && visited_pnodes.find(succ_pn) == visited_pnodes.end()) {
           worklist.push_back(succ_pn);
           visited_pnodes.insert(succ_pn);
@@ -643,7 +643,7 @@ static void simple_move(Var *lhs, Var *rhs, Fun *ifa_fun) {
 }
 
 static void do_phy_nodes(PNode *n, int isucc, Fun *ifa_fun) {
-  forv_PNode(p, n->phy) {
+  for (PNode *p : n->phy) {
     if (p->lvals.n > isucc && p->rvals.n > 0) {  // Safety check
       simple_move(p->lvals[isucc], p->rvals[0], ifa_fun);
     }
@@ -656,7 +656,7 @@ static void do_phi_nodes(PNode *n, int isucc, Fun *ifa_fun) {
     if (succ->phi.n) {
       // Find predecessor index
       int pred_idx = succ->cfg_pred_index.get(n);
-      forv_PNode(pp, succ->phi) {
+      for (PNode *pp : succ->phi) {
         if (pp->rvals.n > pred_idx) {
           simple_move(pp->lvals[0], pp->rvals[pred_idx], ifa_fun);
         }

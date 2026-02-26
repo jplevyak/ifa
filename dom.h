@@ -19,7 +19,6 @@ struct Dom : public gc {
 
   Dom(void *n);
 };
-#define forv_Dom(_p, _v) forv_Vec(Dom, _p, _v)
 
 void build_dominators(Dom *g);
 void build_cfg_dominators(Fun *f);

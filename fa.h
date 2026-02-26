@@ -52,7 +52,6 @@ class AType : public Vec<CreationSet *> {
 
   AType *constants();
 };
-#define forv_AType(_p, _v) forv_Vec(AType, _p, _v)
 
 class AEdge : public gc {
  public:
@@ -72,7 +71,6 @@ class AEdge : public gc {
 
   AEdge();
 };
-#define forv_AEdge(_p, _v) forv_Vec(AEdge, _p, _v)
 
 class PendingMapHash {
  public:
@@ -112,7 +110,6 @@ class EntrySet : public gc {
 
   EntrySet(Fun *af);
 };
-#define forv_EntrySet(_p, _v) forv_Vec(EntrySet, _p, _v)
 
 class CreationSet : public gc {
  public:
@@ -138,14 +135,12 @@ class CreationSet : public gc {
   CreationSet(Sym *s);
   CreationSet(CreationSet *cs);
 };
-#define forv_CreationSet(_p, _v) forv_Vec(CreationSet, _p, _v)
 
 class SettersClasses : public Vec<Setters *> {
  public:
   uint hash;
   Vec<Setters *> sorted;
 };
-#define forv_SettersClasses(_p, _v) forv_Vec(SettersClasses, _p, _v)
 
 class Setters : public Vec<AVar *> {
  public:
@@ -156,7 +151,6 @@ class Setters : public Vec<AVar *> {
 
   Setters() : hash(0), eq_classes(0) {}
 };
-#define forv_Setters(_p, _v) forv_Vec(Setters, _p, _v)
 
 typedef MapElem<void *, int> MarkElem;
 typedef Map<void *, int> MarkMap;
@@ -194,7 +188,6 @@ class AVar : public gc {
 
   AVar(Var *v, void *acontour);
 };
-#define forv_AVar(_p, _v) forv_Vec(AVar, _p, _v)
 
 typedef Map<MPosition *, AVar *> MapMPositionAVar;
 typedef MapElem<MPosition *, AVar *> MapMPositionAVarElem;
@@ -255,7 +248,6 @@ class ATypeViolation : public gc {
   ATypeViolation(ATypeViolation_kind akind, AVar *aav, AVar *asend)
       : kind(akind), av(aav), send(asend), type(0), funs(0) {}
 };
-#define forv_ATypeViolation(_p, _v) forv_Vec(ATypeViolation, _p, _v)
 
 class ATypeViolationHashFuns {
  public:
@@ -276,7 +268,6 @@ class ATypeFold : public gc {
 
   ATypeFold(Prim *ap, AType *aa, AType *ab, AType *aresult = 0) : p(ap), a(aa), b(ab), result(aresult) {}
 };
-#define forv_ATypeFold(_p, _v) forv_Vec(ATypeFold, _p, _v)
 
 class ATypeFoldChainHashFns {
  public:

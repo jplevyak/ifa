@@ -26,10 +26,10 @@ static void remove_unreachable(Fun *f, Vec<PNode *> &nodes) {
   Accum<PNode *> v;
   if (!f->entry) return;
   v.add(f->entry);
-  for (int i = 0; i < v.asvec.n; i++) forv_PNode(p, v.asvec[i]->cfg_succ) if (p) v.add(p);
+  for (int i = 0; i < v.asvec.n; i++) for (PNode *p : v.asvec[i]->cfg_succ) if (p) v.add(p);
   Vec<PNode *> unreachable;
-  forv_PNode(n, nodes) if (!v.asset.set_in(n)) unreachable.add(n);
-  forv_PNode(n, unreachable) forv_PNode(s, n->cfg_succ) s->cfg_pred.remove(n);
+  for (PNode *n : nodes) if (!v.asset.set_in(n)) unreachable.add(n);
+  for (PNode *n : unreachable) for (PNode *s : n->cfg_succ) s->cfg_pred.remove(n);
 }
 
 static void finalize_cfg(Fun *f) {
@@ -37,7 +37,7 @@ static void finalize_cfg(Fun *f) {
   f->collect_PNodes(nodes);
   remove_unreachable(f, nodes);
   if (ifa_verbose > 2) printf("%d cfg nodes\n", nodes.n);
-  forv_PNode(p, nodes) {
+  for (PNode *p : nodes) {
     p->cfg_pred.set_to_vec();
 #ifdef CONC_IMPLEMENTED
     p->conc_pred.set_to_vec();
@@ -47,7 +47,7 @@ static void finalize_cfg(Fun *f) {
 
 static void resolve_labels(Code *code) {
   if (code->kind == Code_LABEL) code->label[0]->code = code;
-  forv_Code(c, code->sub) resolve_labels(c);
+  for (Code *c : code->sub) resolve_labels(c);
 }
 
 static inline PNode *build_PNode(Code *code) {
@@ -69,7 +69,7 @@ static void build_pn_cfg(IF1 *if1, Code *code, Code *cont, Code *conc_cont) {
 
 #ifdef CONC_IMPLEMENTED
     get_conservative_conc_dependence_succ(pn->conc_succ, code, data_cont);
-    forv_PNode(x, pn->conc_succ) x->conc_pred.set_add(pn);
+    for (PNode *x : pn->conc_succ) x->conc_pred.set_add(pn);
 #else
     (void)conc_cont;
 #endif
@@ -86,7 +86,7 @@ static void build_pn_cfg(IF1 *if1, Code *code, Code *cont, Code *conc_cont) {
         if (cont) pn->cfg_succ.add(build_PNode(cont));
         break;
     }
-    forv_PNode(p, pn->cfg_succ) p->cfg_pred.set_add(pn);
+    for (PNode *p : pn->cfg_succ) p->cfg_pred.set_add(pn);
   } else {
 #ifdef CONC_IMPLEMENTED
     Code *new_conc_cont = get_conc_cont(code, conc_cont);

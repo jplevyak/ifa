@@ -37,6 +37,5 @@ class Scope : public gc {
   Vec<Scope *> dynamic;
   Vec<Sym *> dynamic_container;
 };
-#define forv_Scope(_x, _v) forv_Vec(Scope, _x, _v)
 
 #endif

@@ -27,8 +27,8 @@ PNode::PNode(Code *c)
       creates(0),
       execution_frequency(0.0),
       false_branch_frequency(0.0) {
-  forv_Sym(s, c->rvals) rvals.add(s->var ? s->var : (s->var = new Var(s)));
-  forv_Sym(s, c->lvals) lvals.add(s->var ? s->var : (s->var = new Var(s)));
+  for (Sym *s : c->rvals) rvals.add(s->var ? s->var : (s->var = new Var(s)));
+  for (Sym *s : c->lvals) lvals.add(s->var ? s->var : (s->var = new Var(s)));
   id = pnode_id++;
 }
 
@@ -43,7 +43,7 @@ void pp(PNode *p) {
   printf("%s ", code_string[p->code->kind]);
   if (p->lvals.n) {
     printf("\n  (lvals %d ", p->lvals.n);
-    forv_Var(v, p->lvals) {
+    for (Var *v : p->lvals) {
       pp(v);
       printf(" ");
     }
@@ -51,7 +51,7 @@ void pp(PNode *p) {
   }
   if (p->rvals.n) {
     printf("\n  (rvals %d ", p->rvals.n);
-    forv_Var(v, p->rvals) {
+    for (Var *v : p->rvals) {
       pp(v);
       printf(" ");
     }
@@ -59,7 +59,7 @@ void pp(PNode *p) {
   }
   if (p->tvals.n) {
     printf("\n  (tvals %d ", p->tvals.n);
-    forv_Var(v, p->tvals) {
+    for (Var *v : p->tvals) {
       pp(v);
       printf(" ");
     }

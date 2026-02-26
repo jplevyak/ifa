@@ -86,7 +86,7 @@ static void dump_sub_sym(FILE *fp, Sym *ss, cchar *title) {
 static void dump_sym_list(FILE *fp, Sym *s, Vec<Sym *> &l, cchar *title, sym_pred_fn fn = 0) {
   if (l.n) {
     Vec<Sym *> v;
-    forv_Sym(ss, l) if (ss && ss != s && (!fn || !fn(ss))) v.add(ss);
+    for (Sym *ss : l) if (ss && ss != s && (!fn || !fn(ss))) v.add(ss);
     if (v.n) {
       dump_sub_sym(fp, v[0], title);
       for (int i = 1; i < v.n; i++) dump_sym_sym(fp, v[i], 1);
@@ -142,7 +142,7 @@ static void dump_var_type(FILE *fp, Var *v, int &wrote_one) {
   Vec<Sym *> consts;
   if (constant_info(v, consts)) {
     fprintf(fp, " constants {");
-    forv_Sym(s, consts) {
+    for (Sym *s : consts) {
       fprintf(fp, " ");
       fprint_imm(fp, s->imm);
     }
@@ -157,7 +157,7 @@ static void dump_var_type_list(FILE *fp, Vec<Var *> &vars) {
 
 static void dump_var_type_marg_positions(FILE *fp, Vec<MPosition *> &arg_positions, Map<MPosition *, Var *> &vars) {
   int wrote_one = 0;
-  forv_MPosition(p, arg_positions) {
+  for (MPosition *p : arg_positions) {
     Var *v = vars.get(p);
     if (v->live) dump_var_type(fp, v, wrote_one);
   }
@@ -181,7 +181,7 @@ static void dump_functions(FILE *fp, Vec<Sym *> funs) {
   fprintf(fp,
           "<H1><A NAME=\"CONCRETE_FUNCTIONS\">Concrete Functions "
           "(Clones/Instantiations)</A></H1>\n\n");
-  forv_Sym(fs, funs) {
+  for (Sym *fs : funs) {
     Fun *f = fs->fun;
     const char *name = f->sym->name ? f->sym->name : ANON;
     const char *sname = f->sym->in ? f->sym->in->name : "";
@@ -204,12 +204,12 @@ static void dump_functions(FILE *fp, Vec<Sym *> funs) {
     dump_fun_list(fp, funs);
     fprintf(fp, "<TR><TD><TD>Called by<TD>\n");
     funs.clear();
-    forv_CallPoint(cp, f->called) funs.set_add(cp->fun);
+    for (CallPoint *cp : f->called) funs.set_add(cp->fun);
     funs.set_to_vec();
     dump_fun_list(fp, funs);
     Vec<Var *> all_vars, vars;
     f->collect_Vars(all_vars);
-    forv_Var(v, all_vars) if (v->sym->name && v->live && v->type && v->type->name && !v->sym->is_fun &&
+    for (Var *v : all_vars) if (v->sym->name && v->live && v->type && v->type->name && !v->sym->is_fun &&
                               !v->sym->is_symbol && !v->sym->is_constant && v->sym->type_kind == Type_NONE) vars.add(v);
     if (vars.n) {
       fprintf(fp, "<TR><TD<TD>Variables<TD>%s : %s<TD>\n", vars[0]->sym->name, vars[0]->type->name);
@@ -239,21 +239,20 @@ static void dump_functions(FILE *fp, Vec<Sym *> funs) {
 static void dump_symbols(FILE *fp, FA *fa) {
   Vec<Sym *> syms, concrete_types, funs, globals, other, tmp;
   // collect concrete types
-  forv_CreationSet(
-      cs, fa->css) if (cs->type && !cs->type->is_symbol && !cs->type->is_fun && cs->type->type_kind != Type_PRIMITIVE &&
+  for (CreationSet *cs : fa->css) if (cs->type && !cs->type->is_symbol && !cs->type->is_fun && cs->type->type_kind != Type_PRIMITIVE &&
                        (cs->type->type_kind != Type_RECORD || (cs->type->creators.n && cs->type->type_live)))
       concrete_types.set_add(cs->type);
   concrete_types.set_to_vec();
 
-  forv_EntrySet(es, fa->ess) if (es->fun->live) funs.set_add(es->fun->sym);
+  for (EntrySet *es : fa->ess) if (es->fun->live) funs.set_add(es->fun->sym);
   funs.set_to_vec();
 
   // all live symbols
   syms.clear();
-  forv_Fun(f, fa->funs) forv_Var(v, f->fa_all_Vars) if (v->live) syms.set_add(v->sym);
+  for (Fun *f : fa->funs) for (Var *v : f->fa_all_Vars) if (v->live) syms.set_add(v->sym);
 
   // collect globals
-  forv_Sym(s, syms) if (s) if (s->name && !s->is_constant && !s->is_fun && !s->is_symbol && !has_no_out_edges(s) &&
+  for (Sym *s : syms) if (s) if (s->name && !s->is_constant && !s->is_fun && !s->is_symbol && !has_no_out_edges(s) &&
                                !s->type_kind != Type_NONE && !s->is_local) globals.set_add(s);
   globals.set_to_vec();
 
@@ -270,7 +269,7 @@ static void dump_symbols(FILE *fp, FA *fa) {
   fprintf(fp,
           "<H1><A NAME=\"CONCRETE_TYPES\">Concrete Types "
           "(Clones/Instantiations)</A></H1>\n\n");
-  forv_Sym(t, concrete_types) if (!is_internal_type(t)) dump_sym(fp, t);
+  for (Sym *t : concrete_types) if (!is_internal_type(t)) dump_sym(fp, t);
   fprintf(fp, "\n");
 
   // Functions
@@ -279,17 +278,17 @@ static void dump_symbols(FILE *fp, FA *fa) {
 #if FUNCTION_SYMBOLS
   // Function Symbols
   fprintf(fp, "<H1><A NAME=\"FUNCTION_SYMBOLS\">Function Symbols</A></H1>\n\n");
-  forv_Sym(t, funs) dump_sym(fp, t);
+  for (Sym *t : funs) dump_sym(fp, t);
   fprintf(fp, "\n");
 #endif
   // Globals Symbols
   fprintf(fp, "<H1><A NAME=\"GLOBALS\">Global/Module Symbols</A></H1>\n\n");
-  forv_Sym(t, globals) dump_sym(fp, t);
+  for (Sym *t : globals) dump_sym(fp, t);
   fprintf(fp, "\n");
 #ifdef LOCAL_SYMBOLS
   // Other Symbols
   fprintf(fp, "<H1><A NAME=\"SYMBOLS\">Local Symbols</A></H1>\n\n");
-  forv_Sym(t, other) if (!is_internal_type(t)) dump_sym(fp, t);
+  for (Sym *t : other) if (!is_internal_type(t)) dump_sym(fp, t);
   fprintf(fp, "\n");
 #endif
 }

@@ -64,7 +64,6 @@ class Code : public gc {
   }
   int is_group() { return kind == Code_SUB || kind == Code_SEQ || kind == Code_CONC; }
 };
-#define forv_Code(_c, _v) forv_Vec(Code, _c, _v)
 
 class Label : public gc {
  public:

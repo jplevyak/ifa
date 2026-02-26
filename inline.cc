@@ -16,11 +16,11 @@ static void dfs_order(Fun *f, Vec<Fun *> &funs, Vec<Fun *> &fset) {
   funs.add(f);
   Vec<Fun *> calls_funs;
   f->calls_funs(calls_funs);
-  forv_Fun(ff, calls_funs) dfs_order(ff, funs, fset);
+  for (Fun *ff : calls_funs) dfs_order(ff, funs, fset);
 }
 
 static void local_loop_frequency_estimation(LoopNode *l, float f) {
-  forv_LoopNode(n, l->children) {
+  for (LoopNode *n : l->children) {
     if (n->node)
       ((PNode *)n->node)->execution_frequency = f;
     else
@@ -32,11 +32,11 @@ static void local_frequency_estimation(Fun *f) {
   if (f->loops->loops) local_loop_frequency_estimation(f->loops->loops, LOOP_FREQUENCY);
   Vec<PNode *> nodes;
   f->collect_PNodes(nodes);
-  forv_PNode(n, nodes) if (n->execution_frequency < 1.0) n->execution_frequency = 1.0;
+  for (PNode *n : nodes) if (n->execution_frequency < 1.0) n->execution_frequency = 1.0;
 }
 
 static void global_loop_frequency_estimation(LoopNode *l, float f) {
-  forv_LoopNode(n, l->children) {
+  for (LoopNode *n : l->children) {
     assert(n != l);
     if (n->node)
       ((Fun *)n->node)->execution_frequency = f;
@@ -47,17 +47,17 @@ static void global_loop_frequency_estimation(LoopNode *l, float f) {
 
 static void global_frequency_estimation(FA *fa) {
   if (fa->pdb->loops->loops) global_loop_frequency_estimation(fa->pdb->loops->loops, LOOP_FREQUENCY);
-  forv_Fun(f, fa->funs) if (f->execution_frequency < 1.0) f->execution_frequency = 1.0;
+  for (Fun *f : fa->funs) if (f->execution_frequency < 1.0) f->execution_frequency = 1.0;
   Vec<Fun *> funs, fset;
   dfs_order(fa->pdb->if1->top->fun, funs, fset);
   // propagate down the call tree
-  forv_Fun(f, funs) {
+  for (Fun *f : funs) {
     float freq = f->execution_frequency;
     Vec<PNode *> nodes;
     f->collect_PNodes(nodes);
-    forv_PNode(n, nodes) n->execution_frequency *= freq;
+    for (PNode *n : nodes) n->execution_frequency *= freq;
     f->execution_frequency = 0;
-    forv_CallPoint(c, f->called) {
+    for (CallPoint *c : f->called) {
       if (c->fun != f && f->loop_node->dfs_ancestor(c->fun->loop_node))
         f->execution_frequency += freq * c->pnode->execution_frequency;
     }
@@ -67,7 +67,7 @@ static void global_frequency_estimation(FA *fa) {
 
 int frequency_estimation(FA *fa) {
   find_all_loops(fa);
-  forv_Fun(f, fa->funs) local_frequency_estimation(f);
+  for (Fun *f : fa->funs) local_frequency_estimation(f);
   global_frequency_estimation(fa);
   return 0;
 }
@@ -126,22 +126,22 @@ static Var *new_live_Var(Sym *s) {
 static void sub_constants(PNode *p) {
   Vec<Var *> rvals;
   rvals.move(p->rvals);
-  forv_Var(v, rvals) {
+  for (Var *v : rvals) {
     if (Sym *c = get_constant(v))
       p->rvals.add(new_live_Var(c));
     else
       p->rvals.add(v);
   }
-  forv_PNode(n, p->phi) sub_constants(n);
-  forv_PNode(n, p->phy) sub_constants(n);
+  for (PNode *n : p->phi) sub_constants(n);
+  for (PNode *n : p->phy) sub_constants(n);
 }
 
 static int reaching_def(Var *v, PNode *p) {
   Accum<Var *> vars;
   vars.add(v);
-  forv_Var(v, vars.asvec) {
+  for (Var *v : vars.asvec) {
     if (v->def == p) return 1;
-    if (v->def && v->def->code->kind == Code_MOVE) forv_Var(x, v->def->rvals) vars.add(x);
+    if (v->def && v->def->code->kind == Code_MOVE) for (Var *x : v->def->rvals) vars.add(x);
   }
   return 0;
 }
@@ -149,9 +149,9 @@ static int reaching_def(Var *v, PNode *p) {
 static int reaching_var(Var *v, Var *vv) {
   Accum<Var *> vars;
   vars.add(v);
-  forv_Var(v, vars.asvec) {
+  for (Var *v : vars.asvec) {
     if (v == vv) return 1;
-    if (v->def && v->def->code->kind == Code_MOVE) forv_Var(x, v->def->rvals) vars.add(x);
+    if (v->def && v->def->code->kind == Code_MOVE) for (Var *x : v->def->rvals) vars.add(x);
   }
   return 0;
 }
@@ -159,7 +159,7 @@ static int reaching_var(Var *v, Var *vv) {
 static void insert_move_before(Fun *f, PNode *p, Var *rhs, Var *lhs) {
   check_invariants(f);
   PNode *n = new PNode(new Code(Code_MOVE));
-  forv_PNode(x, p->cfg_pred) x->cfg_succ[x->cfg_succ.index(p)] = n;
+  for (PNode *x : p->cfg_pred) x->cfg_succ[x->cfg_succ.index(p)] = n;
   n->cfg_pred.copy(p->cfg_pred);
   if (f->entry == p) {
     f->entry = n;
@@ -181,7 +181,7 @@ static void inline_single_pnode(Fun *f, PNode *p, Fun *fn, PNode *s) {
   rvals.move(p->rvals);
   p->prim = s->prim;
   f->calls.put(p, fn->calls.get(s));
-  forv_Var(v, s->rvals) {
+  for (Var *v : s->rvals) {
     if (v->constant) {
       p->rvals.add(new_live_Var(v->constant));
       continue;
@@ -222,12 +222,12 @@ static void convert_to_move(PNode *p, int i) {
 static int inline_single_sends(FA *fa) {
   Map<Fun *, PNode *> single_send;
   Map<Fun *, int> identity_send;
-  forv_Fun(f, fa->funs) {  // find single prim send functions
+  for (Fun *f : fa->funs) {  // find single prim send functions
     assert(f->live);
     PNode *p = 0, *reply = 0;
-    forv_PNode(n, f->fa_all_PNodes) {
+    for (PNode *n : f->fa_all_PNodes) {
       if (!n->code || n->code->kind == Code_MOVE || !n->live) continue;
-      // forv_Var(v, n->rvals) { assert(v->live || v->constant); }
+      // for (Var *v : n->rvals) { assert(v->live || v->constant); }
       if (n->prim == prim_reply) {
         if (!reply) {
           reply = n;
@@ -260,7 +260,7 @@ static int inline_single_sends(FA *fa) {
       continue;
     }
     if (p == f->exit || p->code->kind != Code_SEND || !p->prim || f->calls.get(p)) continue;
-    forv_Var(v, p->rvals) {
+    for (Var *v : p->rvals) {
       Sym *fs = first_var(v)->sym;
       if (!((fs && (f->sym->has.index(fs) >= 0)) || v->sym->is_constant || v->sym->is_symbol)) goto Lskip;
     }
@@ -268,11 +268,11 @@ static int inline_single_sends(FA *fa) {
     single_send.put(f, p);
   Lskip:;
   }
-  forv_Fun(f, fa->funs) {
+  for (Fun *f : fa->funs) {
     assert(f->live);
-    forv_PNode(p, f->fa_all_PNodes) {
+    for (PNode *p : f->fa_all_PNodes) {
       if (!p->live) continue;
-      // forv_Var(v, p->rvals) { assert(v->live || v->constant); }
+      // for (Var *v : p->rvals) { assert(v->live || v->constant); }
       Vec<Fun *> *calls = f->calls.get(p);
       if (p->code && p->code->kind == Code_SEND && !is_closure_call(p)) {
         // inline single send functions
@@ -294,7 +294,7 @@ static int inline_single_sends(FA *fa) {
             p->rvals.add(c->rvals.v[3]);
             p->rvals.add(c->rvals.v[1]);
           } else {
-            forv_Var(v, c->rvals) p->rvals.add(v);
+            for (Var *v : c->rvals) p->rvals.add(v);
           }
           for (int i = 1; i < rvals.n; i++) p->rvals.add(rvals[i]);
           if (calls && calls->n == 1) {
@@ -309,8 +309,8 @@ static int inline_single_sends(FA *fa) {
     }
     f->collect_Vars(f->fa_all_Vars, &f->fa_all_PNodes);
   }
-  forv_Fun(f, fa->funs) {
-    forv_PNode(p, f->fa_all_PNodes) if (p->live) sub_constants(p);
+  for (Fun *f : fa->funs) {
+    for (PNode *p : f->fa_all_PNodes) if (p->live) sub_constants(p);
     f->collect_Vars(f->fa_all_Vars, &f->fa_all_PNodes);
   }
   return 0;

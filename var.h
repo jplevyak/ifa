@@ -48,7 +48,6 @@ class Var : public gc {
   Var *copy();
   Var(Sym *s);
 };
-#define forv_Var(_p, _v) forv_Vec(Var, _p, _v)
 #define form_AVarMapElem(_p, _v) form_Map(AVarMapElem, _p, _v)
 
 void pp(Var *);

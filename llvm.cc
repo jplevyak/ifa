@@ -182,7 +182,7 @@ static void discover_all_reachable_functions(FA *fa, Fun *main_fun, Vec<Fun *> &
 
   // Add all functions already in fa->funs (only if live)
   int fun_idx = 0;
-  forv_Fun(f, fa->funs) {
+  for (Fun *f : fa->funs) {
     if (f) {
       fprintf(stderr, "DEBUG:   fa->funs[%d]: %s (id %d) live=%d\n", fun_idx, f->sym->name ? f->sym->name : "(null)",
               f->sym->id, f->live);
@@ -213,7 +213,7 @@ static void discover_all_reachable_functions(FA *fa, Fun *main_fun, Vec<Fun *> &
         Vec<Fun *> *targets = current->calls.v[k].value;
 
         if (targets) {
-          forv_Fun(target_fun, *targets) {
+          for (Fun *target_fun : *targets) {
             if (target_fun && visited.find(target_fun) == visited.end()) {
               fprintf(stderr, "DEBUG:   Found call to %s (id %d)\n",
                       target_fun->sym->name ? target_fun->sym->name : "(null)", target_fun->sym->id);
@@ -231,7 +231,7 @@ static void discover_all_reachable_functions(FA *fa, Fun *main_fun, Vec<Fun *> &
 
 static void build_reverse_call_graph(FA *fa) {
   reverse_call_graph.clear();
-  forv_Fun(f, fa->funs) {
+  for (Fun *f : fa->funs) {
     if (!f->live) continue;
     for (int k = 0; k < f->calls.n; k++) {
       if (f->calls.v[k].key) {
@@ -862,7 +862,7 @@ static void createGlobalVariables(FA *fa) {
   // Or, if `FA` populates a specific list of global Vars, use that.
   // For now, let's iterate allsyms and check if their `var` is a global.
   // Iterate allsyms to find globals (parallels cg.cc's collect_types_and_globals)
-  forv_Sym(sym_iter, fa->pdb->if1->allsyms) {
+  for (Sym *sym_iter : fa->pdb->if1->allsyms) {
     Var *var = sym_iter->var;
     if (!var) continue;
     if (!var || !var->sym) continue;
@@ -1029,7 +1029,7 @@ void llvm_build_type_strings(FA *fa) {
 #include "builtin_symbols.h"
 #undef S
   int f_index = 0;
-  forv_Fun(f, fa->funs) {
+  for (Fun *f : fa->funs) {
     if (!f->live) continue;
     char s[100];
     if (f->sym->name) {
@@ -1048,7 +1048,7 @@ void llvm_build_type_strings(FA *fa) {
   Vec<Var *> globals;
   Vec<Sym *> allsyms;
   collect_types_and_globals(fa, allsyms, globals);
-  forv_Sym(s, allsyms) {
+  for (Sym *s : allsyms) {
     if (s->num_kind)
       s->cg_string = num_string(s);
     else if (s->is_symbol) {
@@ -1074,7 +1074,7 @@ void llvm_build_type_strings(FA *fa) {
       }
     }
   }
-  forv_Sym(s, allsyms) {
+  for (Sym *s : allsyms) {
     if (s->fun)
       s->cg_string = s->fun->cg_structural_string;
     else if (s->is_symbol)
@@ -1149,7 +1149,7 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
 
   // First pass: Create all function declarations (signatures only)
   // Only process live functions (like C backend does)
-  forv_Fun(f, all_funs) {
+  for (Fun *f : all_funs) {
     if (!f) {
       fprintf(stderr, "DEBUG: Found NULL fun in all_funs\n");
       continue;
@@ -1165,7 +1165,7 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
 
   // Second pass: Translate all function bodies
   // (This is now done separately to ensure all functions are declared before any body is translated)
-  forv_Fun(f, all_funs) {
+  for (Fun *f : all_funs) {
     if (!f || !f->live || !f->llvm || f->is_external || !f->entry) {
       continue;
     }
@@ -1316,7 +1316,7 @@ llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun) {
     // Find the function by symbol
     llvm::Function *func = nullptr;
     if (all_funs_global) {
-      forv_Fun(fx, *all_funs_global) {
+      for (Fun *fx : *all_funs_global) {
         if (fx && fx->sym == var->sym && fx->llvm) {
           func = fx->llvm;
           break;
@@ -1381,7 +1381,7 @@ llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun) {
       fprintf(stderr, "DEBUG: Looking for tuple formal variable to get struct type\n");
 
       Var *tuple_formal_var = nullptr;
-      forv_Var(fv, ifa_fun->fa_all_Vars) {
+      for (Var *fv : ifa_fun->fa_all_Vars) {
         if (fv && fv->is_formal && fv->llvm_value == tuple_arg) {
           tuple_formal_var = fv;
           fprintf(stderr, "DEBUG: Found tuple formal var by llvm_value match: sym=%s (id=%d)\n",
@@ -1391,7 +1391,7 @@ llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun) {
       }
 
       if (!tuple_formal_var) {
-        forv_Var(fv, ifa_fun->fa_all_Vars) {
+        for (Var *fv : ifa_fun->fa_all_Vars) {
           if (fv && fv->is_formal && !fv->sym->is_local && fv->type && fv->type->type_kind == Type_RECORD) {
             tuple_formal_var = fv;
             fprintf(stderr, "DEBUG: Found tuple formal var by type: sym=%s (id=%d)\n",
@@ -1414,7 +1414,7 @@ llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun) {
           int formal_idx = -1;
           MPosition *found_pos = nullptr;
 
-          forv_MPosition(p, ifa_fun->positional_arg_positions) {
+          for (MPosition *p : ifa_fun->positional_arg_positions) {
             Var *formal_var = ifa_fun->args.get(p);
             if (formal_var == var) {
               found_pos = p;

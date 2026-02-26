@@ -94,7 +94,6 @@ class ParseAST : public IFAAST {
 
   ParseAST(AST_kind k, D_ParseNode *pn = 0);
 };
-#define forv_ParseAST(_x, _v) forv_Vec(ParseAST, _x, _v)
 
 ParseAST *new_AST(AST_kind k, D_ParseNode *pn = 0);
 Sym *new_sym(IF1 *i, Scope *scope = 0, cchar *s = 0, Sym *sym = 0);

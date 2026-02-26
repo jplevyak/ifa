@@ -138,7 +138,7 @@ static void dump_ast_tree(FILE *fp, Fun *f, ParseAST *a, int indent = 0) {
     Vec<Sym *> consts;
     if (constant_info(a, consts, s)) {
       fprintf(fp, " constants {");
-      forv_Sym(s, consts) {
+      for (Sym *s : consts) {
         fprintf(fp, " ");
         fprint_imm(fp, s->imm);
       }
@@ -156,7 +156,7 @@ static void dump_ast_tree(FILE *fp, Fun *f, ParseAST *a, int indent = 0) {
   if (a->children.n) {
     for (int i = 0; i < indent; i++) putc(' ', fp);
     fprintf(fp, "<UL>\n");
-    forv_ParseAST(aa, a->children) dump_ast_tree(fp, f, aa, indent + 1);
+    for (ParseAST *aa : a->children) dump_ast_tree(fp, f, aa, indent + 1);
     for (int i = 0; i < indent; i++) putc(' ', fp);
     fprintf(fp, "</UL>\n");
   }
@@ -188,11 +188,11 @@ static int graph_it(ParseAST *a) {
 
 static void graph_ast_nodes(FILE *fp, ParseAST *a) {
   graph_node(fp, a, AST_name[a->kind]);
-  forv_ParseAST(aa, a->children) if (graph_it(aa)) graph_ast_nodes(fp, aa);
+  for (ParseAST *aa : a->children) if (graph_it(aa)) graph_ast_nodes(fp, aa);
 }
 
 static void graph_ast_edges(FILE *fp, ParseAST *a) {
-  forv_ParseAST(aa, a->children) if (graph_it(aa)) {
+  for (ParseAST *aa : a->children) if (graph_it(aa)) {
     graph_edge(fp, a, aa);
     graph_ast_edges(fp, aa);
   }
@@ -390,7 +390,7 @@ void ast_pp(ParseAST *a) { ast_print_recursive(stdout, a, 0); }
 
 void ast_print_recursive(FILE *fp, ParseAST *a, int indent) {
   ast_print(fp, a, indent);
-  forv_ParseAST(aa, a->children) ast_print_recursive(fp, aa, indent + 1);
+  for (ParseAST *aa : a->children) ast_print_recursive(fp, aa, indent + 1);
 }
 
 void ast_write(ParseAST *a, char *filename) {
@@ -544,7 +544,7 @@ static void build_builtin_syms(IF1 *i, ParseAST *ast) {
         assert(!"bad case");
     }
   }
-  forv_ParseAST(a, ast->children) build_builtin_syms(i, a);
+  for (ParseAST *a : ast->children) build_builtin_syms(i, a);
 }
 
 static void build_constant_syms(IF1 *i, ParseAST *ast) {
@@ -556,7 +556,7 @@ static void build_constant_syms(IF1 *i, ParseAST *ast) {
     default:
       break;
   }
-  forv_ParseAST(a, ast->children) build_constant_syms(i, a);
+  for (ParseAST *a : ast->children) build_constant_syms(i, a);
 }
 
 static Type_kind ast_to_type(ParseAST *ast) {
@@ -677,7 +677,7 @@ static int define_types(IF1 *i, ParseAST *ast, Vec<ParseAST *> &funs, Scope *sco
         break;
     }
   }
-  forv_ParseAST(a, ast->children) {
+  for (ParseAST *a : ast->children) {
     if (define_types(i, a, funs, scope) < 0) return -1;
     if (a->kind == AST_in_module) scope = a->sym->scope;
   }
@@ -704,7 +704,7 @@ static int resolve_parameterized_type(IF1 *i, ParseAST *ast) {
 
 static void set_scope_recursive(ParseAST *ast, Scope *scope) {
   ast->scope = scope;
-  forv_ParseAST(a, ast->children) set_scope_recursive(a, scope);
+  for (ParseAST *a : ast->children) set_scope_recursive(a, scope);
 }
 
 static int scope_pattern(IF1 *i, ParseAST *ast, Scope *scope) {
@@ -717,7 +717,7 @@ static int scope_pattern(IF1 *i, ParseAST *ast, Scope *scope) {
       else
         ast->sym->must_implement_and_specialize(sym_tuple);
       ast->sym->ast = ast;
-      forv_ParseAST(a, ast->children) if (a != ptype) {
+      for (ParseAST *a : ast->children) if (a != ptype) {
         if (scope_pattern(i, a, scope) < 0) return -1;
         assert(a->sym);
         ast->sym->has.add(a->sym);
@@ -801,7 +801,7 @@ static int define_function(IF1 *i, ParseAST *ast) {
 }
 
 static int scope_inherits(ParseAST *ast, Sym *sym) {
-  forv_ParseAST(a, ast->children) {
+  for (ParseAST *a : ast->children) {
     if (a->kind == AST_includes || a->kind == AST_inherits) {
       if (!(a->sym = checked_ast_qualified_ident_sym(a->get(AST_qualified_ident)))) return -1;
       sym->scope->add_dynamic(a->sym->scope);
@@ -811,7 +811,7 @@ static int scope_inherits(ParseAST *ast, Sym *sym) {
 }
 
 static int scope_constraints(ParseAST *ast, Sym *sym) {
-  forv_ParseAST(a, ast->children) {
+  for (ParseAST *a : ast->children) {
     if (a->kind == AST_must_specialize) {
       if (!(a->sym = checked_ast_qualified_ident_sym(a->get(AST_qualified_ident)))) return -1;
       assert(!sym->must_specialize);
@@ -861,7 +861,7 @@ static int resolve_types_and_define_recursive_functions(IF1 *i, ParseAST *ast, i
         return 0;  // defer
       case AST_with: {
         ParseAST *with_scope = ast->get(AST_with_scope);
-        forv_ParseAST(a, with_scope->children) {
+        for (ParseAST *a : with_scope->children) {
           if (!a->sym)
             if (!checked_ast_qualified_ident_sym(a)) return -1;
           if (!a->sym->must_specialize) show_error("with without declared type", ast);
@@ -872,7 +872,7 @@ static int resolve_types_and_define_recursive_functions(IF1 *i, ParseAST *ast, i
       default:
         break;
     }
-  forv_ParseAST(a, ast->children) if (resolve_types_and_define_recursive_functions(i, a) < 0) return -1;
+  for (ParseAST *a : ast->children) if (resolve_types_and_define_recursive_functions(i, a) < 0) return -1;
   return 0;
 }
 
@@ -897,7 +897,7 @@ static int scope_idpattern(IF1 *i, ParseAST *ast, Scope *scope) {
       else
         ast->sym->must_implement_and_specialize(sym_tuple);
       ast->sym->ast = ast;
-      forv_ParseAST(a, ast->children) if (a != ptype) {
+      for (ParseAST *a : ast->children) if (a != ptype) {
         if (a->kind == AST_must_implement) {
           assert(!ast->sym->must_implement);
           if (resolve_parameterized_type(i, a) < 0) return -1;
@@ -943,7 +943,7 @@ static int variables_and_nonrecursive_functions(IF1 *i, ParseAST *ast, int skip 
       default:
         break;
     }
-  forv_ParseAST(a, ast->children) if (variables_and_nonrecursive_functions(i, a) < 0) return -1;
+  for (ParseAST *a : ast->children) if (variables_and_nonrecursive_functions(i, a) < 0) return -1;
   return 0;
 }
 
@@ -954,7 +954,7 @@ static int build_scopes(IF1 *i, ParseAST *ast, Scope *scope) {
   while (1) {
     Vec<ParseAST *> last_funs;
     last_funs.move(funs);
-    forv_ParseAST(a, last_funs) {
+    for (ParseAST *a : last_funs) {
       int fun = a->kind == AST_def_fun;
       scope = fun ? a->sym->scope : a->scope;
       if (define_types(i, a, funs, scope, fun) < 0) return -1;
@@ -967,7 +967,7 @@ static int build_scopes(IF1 *i, ParseAST *ast, Scope *scope) {
 }
 
 static int build_types(IF1 *i, ParseAST *ast) {
-  forv_ParseAST(a, ast->children) if (build_types(i, a) < 0) return -1;
+  for (ParseAST *a : ast->children) if (build_types(i, a) < 0) return -1;
   switch (ast->kind) {
     case AST_type_param:
       ast->sym = ast->children[0]->sym;
@@ -978,7 +978,7 @@ static int build_types(IF1 *i, ParseAST *ast) {
     case AST_tagged_type:
     case AST_type_application:
     case AST_record_type:
-      forv_ParseAST(a, ast->children) if (a->sym) {
+      for (ParseAST *a : ast->children) if (a->sym) {
         switch (a->kind) {
           case AST_type_param:
             ast->sym->has.add(a->sym);
@@ -1002,7 +1002,7 @@ static int build_types(IF1 *i, ParseAST *ast) {
       }
       break;
     case AST_sum_type:
-      forv_ParseAST(a, ast->children) if (a->sym) a->sym->inherits_add(ast->sym);
+      for (ParseAST *a : ast->children) if (a->sym) a->sym->inherits_add(ast->sym);
       break;
     case AST_def_type: {
       ParseAST *last = ast->last();
@@ -1015,7 +1015,7 @@ static int build_types(IF1 *i, ParseAST *ast) {
       break;
     }
     case AST_must_implement:
-      forv_ParseAST(a, ast->children) if (!ast->sym) ast->sym = a->sym;
+      for (ParseAST *a : ast->children) if (!ast->sym) ast->sym = a->sym;
       break;
     default:
       break;
@@ -1024,7 +1024,7 @@ static int build_types(IF1 *i, ParseAST *ast) {
 }
 
 static int unalias_types(IF1 *i, ParseAST *ast) {
-  forv_ParseAST(a, ast->children) if (unalias_types(i, a) < 0) return -1;
+  for (ParseAST *a : ast->children) if (unalias_types(i, a) < 0) return -1;
   if (ast->sym && !ast->sym->must_implement) {
     Sym *s = unalias_type(ast->sym);
     if (s != ast->sym) {
@@ -1040,7 +1040,7 @@ static int set_scope_kind(IF1 *i, ParseAST *ast, int scope_kind) {
     ast->scope_kind = scope_kind;
   else
     scope_kind = ast->scope_kind;
-  forv_ParseAST(a, ast->children) if (set_scope_kind(i, a, scope_kind) < 0) return -1;
+  for (ParseAST *a : ast->children) if (set_scope_kind(i, a, scope_kind) < 0) return -1;
   return 0;
 }
 
@@ -1067,7 +1067,7 @@ static int define_labels(IF1 *i, ParseAST *ast, LabelMap *labelmap) {
     default:
       break;
   }
-  forv_ParseAST(a, ast->children) if (define_labels(i, a, labelmap) < 0) return -1;
+  for (ParseAST *a : ast->children) if (define_labels(i, a, labelmap) < 0) return -1;
   return 0;
 }
 
@@ -1109,14 +1109,13 @@ static int resolve_labels(IF1 *i, ParseAST *ast, LabelMap *labelmap, Label *brea
         ast->children[0]->in_apply = 1;
       break;
     case AST_scope:
-      forv_ParseAST(a, ast->children) a->constructor =
+      for (ParseAST *a : ast->children) a->constructor =
           a->scope->kind == Scope_PARALLEL ? Make_VECTOR : (a->scope->kind == Scope_SEQUENTIAL ? Make_TUPLE : Make_SET);
       break;
     default:
       break;
   }
-  forv_ParseAST(
-      a, ast->children) if (resolve_labels(i, a, labelmap, break_label, continue_label, return_label) < 0) return -1;
+  for (ParseAST *a : ast->children) if (resolve_labels(i, a, labelmap, break_label, continue_label, return_label) < 0) return -1;
   return 0;
 }
 
@@ -1181,7 +1180,7 @@ static int get_apply_args(IF1 *i, Code **c, ParseAST *ast, Vec<Sym *> &args, Vec
 
 static void gen_new(IF1 *i, ParseAST *ast) {
   Code **c = &ast->code;
-  forv_ParseAST(a, ast->children) if1_gen(i, c, a->code);
+  for (ParseAST *a : ast->children) if1_gen(i, c, a->code);
   ast->rval = new_sym(i, ast->scope);
   Code *send = if1_send(i, c, 2, 1, sym_new, ast->last()->rval, ast->rval);
   send->ast = ast;
@@ -1215,7 +1214,7 @@ static void gen_comma_op(IF1 *i, ParseAST *ast, ParseAST *a0, ParseAST *a1) {
     if1_add_send_arg(i, send, int32_constant(ast->rank));
   else
     if1_add_send_arg(i, send, make_type);
-  forv_Sym(a, args) if1_add_send_arg(i, send, a);
+  for (Sym *a : args) if1_add_send_arg(i, send, a);
   if1_add_send_result(i, send, ast->rval);
 }
 
@@ -1309,7 +1308,7 @@ static void gen_if(IF1 *i, ParseAST *ast, int is_expr) {
 
 static void gen_constructor(IF1 *i, ParseAST *ast) {
   Vec<Sym *> args;
-  forv_ParseAST(a, ast->children) {
+  for (ParseAST *a : ast->children) {
     if (a->kind != AST_qualified_ident || a->rval->is_constant || a->rval->is_symbol) {
       if1_gen(i, &ast->code, a->code);
       args.add(a->rval);
@@ -1403,16 +1402,16 @@ static int pre_gen_top_down(IF1 *i, ParseAST *ast, Sym *container_scope, Sym *co
       }
       break;
   }
-  forv_ParseAST(a, ast->children) if (pre_gen_top_down(i, a, container_scope, container) < 0) return -1;
+  for (ParseAST *a : ast->children) if (pre_gen_top_down(i, a, container_scope, container) < 0) return -1;
   return 0;
 }
 
 static int pre_gen_bottom_up(ParseAST *ast) {
-  forv_ParseAST(a, ast->children) if (pre_gen_bottom_up(a) < 0) return -1;
+  for (ParseAST *a : ast->children) if (pre_gen_bottom_up(a) < 0) return -1;
   switch (ast->kind) {
     case AST_vector: {
       uint rank = 0;
-      forv_ParseAST(a, ast->children) if (a->rank > rank) rank = a->rank;
+      for (ParseAST *a : ast->children) if (a->rank > rank) rank = a->rank;
       if (ast->children.n > 1)
         ast->rank = rank + 1;
       else
@@ -1433,7 +1432,7 @@ static int pre_gen_bottom_up(ParseAST *ast) {
       ast->is_comma = op[0] == ',';
       if (ast->is_comma) {
         uint rank = 1;
-        forv_ParseAST(a, ast->children) if (!a->in_tuple) {
+        for (ParseAST *a : ast->children) if (!a->in_tuple) {
           if (a->rank + 1 > rank) rank = a->rank + 1;
         }
         else if (a->rank > rank) rank = a->rank;
@@ -1540,7 +1539,7 @@ static void gen_type(IF1 *i, ParseAST *ast) {
     // build __init function
     Sym *fn = ast->sym->init;
     Code *body = NULL, *c;
-    forv_Sym(s, ast->sym->includes) {
+    for (Sym *s : ast->sym->includes) {
       Sym *tself = new_sym(i, fn->scope);
       tself->aspect = s;
       if1_move(i, &body, ast->sym->init->self, tself, ast);
@@ -1565,7 +1564,7 @@ static void gen_type(IF1 *i, ParseAST *ast) {
 
 static int gen_if1(IF1 *i, ParseAST *ast) {
   // bottom's up
-  forv_ParseAST(a, ast->children) if (gen_if1(i, a) < 0) return -1;
+  for (ParseAST *a : ast->children) if (gen_if1(i, a) < 0) return -1;
   switch (ast->kind) {
     case AST_def_type:
       gen_type(i, ast);
@@ -1601,7 +1600,7 @@ static int gen_if1(IF1 *i, ParseAST *ast) {
       break;
     case AST_scope:
     case AST_block:
-      forv_ParseAST(a, ast->children) if1_gen(i, &ast->code, a->code);
+      for (ParseAST *a : ast->children) if1_gen(i, &ast->code, a->code);
       if (ast->children.n) ast->rval = ast->last()->rval;
       break;
     case AST_loop:
@@ -1641,14 +1640,14 @@ static int gen_if1(IF1 *i, ParseAST *ast) {
           ast->code = ast->children[0]->code;
         ast->rval = ast->children[0]->rval;
       } else
-        forv_ParseAST(a, ast->children) if1_gen(i, &ast->code, a->code);
+        for (ParseAST *a : ast->children) if1_gen(i, &ast->code, a->code);
       break;
   }
   return 0;
 }
 
 static Sym *collect_module_init(IF1 *i, ParseAST *ast, Sym *mod) {
-  forv_ParseAST(a, ast->children) switch (a->kind) {
+  for (ParseAST *a : ast->children) switch (a->kind) {
     case AST_in_module:
       mod = a->sym->init;
       break;
@@ -1674,7 +1673,7 @@ static int build_functions(IF1 *i, ParseAST *ast, Sym *mod) {
 }
 
 static void build_modules(IF1 *i) {
-  forv_Sym(s, i->allsyms) {
+  for (Sym *s : i->allsyms) {
     if (s->is_module) {
       Sym *fn = s->init;
       fn->ret = sym_void;
@@ -1732,7 +1731,7 @@ static void build_init(IF1 *i) {
   Sym *rval = 0;
   Code *body = 0;
   ParseAST *ast = new_AST(AST_block);
-  forv_Sym(s, i->allsyms) if (s->is_module) {
+  for (Sym *s : i->allsyms) if (s->is_module) {
     rval = new_sym(i, fn->scope);
     Code *send = if1_send(i, &body, 1, 1, s->init, rval);
     ParseAST *a = ast_call(i, 1, s->init);
@@ -1750,24 +1749,24 @@ static void build_init(IF1 *i) {
 
 static void finalize_sym(Sym *f, Sym *s) {
   if (s->in == f) s->nesting_depth = f->nesting_depth + 1;
-  if (s->is_pattern) forv_Sym(ss, s->has) finalize_sym(f, ss);
+  if (s->is_pattern) for (Sym *ss : s->has) finalize_sym(f, ss);
 }
 
 static void finalize_fun_symbols(Sym *f, Code *code) {
-  forv_Sym(s, code->lvals) finalize_sym(f, s);
-  forv_Sym(s, code->rvals) finalize_sym(f, s);
-  forv_Code(c, code->sub) finalize_fun_symbols(f, c);
+  for (Sym *s : code->lvals) finalize_sym(f, s);
+  for (Sym *s : code->rvals) finalize_sym(f, s);
+  for (Code *c : code->sub) finalize_fun_symbols(f, c);
 }
 
 static void finalize_symbols(IF1 *i) {
-  forv_Sym(f, i->allclosures) {
+  for (Sym *f : i->allclosures) {
     finalize_fun_symbols(f, f->code);
-    forv_Sym(s, f->has) finalize_sym(f, s);
+    for (Sym *s : f->has) finalize_sym(f, s);
     if (f->self) finalize_sym(f, f->self);
     finalize_sym(f, f->ret);
     finalize_sym(f, f->cont);
   }
-  forv_Sym(s, i->allsyms) {
+  for (Sym *s : i->allsyms) {
     if (s->is_constant || s->is_symbol)
       s->nesting_depth = 0;
     else if (!s->in || s->in->is_module || s->type_kind)
@@ -1798,7 +1797,7 @@ static void fold_constant(IF1 *i, ParseAST *ast) {
 }
 
 int ast_constant_fold(IF1 *i, ParseAST *ast) {
-  forv_ParseAST(a, ast->children) if (ast_constant_fold(i, a) < 0) return -1;
+  for (ParseAST *a : ast->children) if (ast_constant_fold(i, a) < 0) return -1;
   switch (ast->kind) {
     case AST_const:
       ast->sym->convert_constant_string_to_immediate();
@@ -1821,21 +1820,21 @@ int ast_gen_if1(IF1 *i, Vec<ParseAST *> &av) {
   operator_symbol = if1_make_symbol(if1, "operator");
   print_symbol = if1_make_symbol(if1, "print");
   println_symbol = if1_make_symbol(if1, "println");
-  forv_ParseAST(a, av) build_builtin_syms(i, a);
+  for (ParseAST *a : av) build_builtin_syms(i, a);
 #define S(_n) assert(sym_##_n);
 #include "builtin_symbols.h"
 #undef S
   if1_set_primitive_types(i);
-  forv_ParseAST(a, av) build_constant_syms(i, a);
+  for (ParseAST *a : av) build_constant_syms(i, a);
   make_module(i, sym_system->name, global, sym_system);
   Sym *user_mod = in_module(i, if1_cannonicalize_string(i, "user"), global);
   Scope *scope = user_mod->scope;
-  forv_ParseAST(a, av) if (build_scopes(i, a, scope) < 0) return -1;
-  forv_ParseAST(a, av) if (build_types(i, a) < 0) return -1;
-  forv_ParseAST(a, av) if (unalias_types(i, a) < 0) return -1;
+  for (ParseAST *a : av) if (build_scopes(i, a, scope) < 0) return -1;
+  for (ParseAST *a : av) if (build_types(i, a) < 0) return -1;
+  for (ParseAST *a : av) if (unalias_types(i, a) < 0) return -1;
   finalize_types(i);
-  forv_ParseAST(a, av) if (ast_constant_fold(i, a) < 0) return -1;
-  forv_ParseAST(a, av) if (build_functions(i, a, user_mod) < 0) return -1;
+  for (ParseAST *a : av) if (ast_constant_fold(i, a) < 0) return -1;
+  for (ParseAST *a : av) if (build_functions(i, a, user_mod) < 0) return -1;
   build_modules(i);
   build_init(i);
   finalize_symbols(i);
@@ -1873,5 +1872,5 @@ int ast_gen_if1(IF1 *i, Vec<ParseAST *> &av) {
 
 void PCallbacks::finalize_functions() {
   sym_new_object->fun->split_unique = 1;
-  forv_Fun(fun, pdb->funs) fun->is_eager = 1;
+  for (Fun *fun : pdb->funs) fun->is_eager = 1;
 }

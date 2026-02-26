@@ -33,7 +33,6 @@ class CallPoint : public gc {
   PNode *pnode;
   CallPoint(Fun *afun, PNode *apnode) : fun(afun), pnode(apnode) {}
 };
-#define forv_CallPoint(_c, _v) forv_Vec(CallPoint, _c, _v)
 
 // Functions
 
@@ -143,7 +142,6 @@ class Fun : public gc {
   Fun();
   Fun *copy(int copy_ast = 1, Map<Var *, Var *> *var_map = 0);
 };
-#define forv_Fun(_f, _v) forv_Vec(Fun, _f, _v)
 
 int compar_funs(const void *ai, const void *aj);
 void check_invariants(Fun *);

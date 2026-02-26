@@ -607,7 +607,7 @@ static void write_send(FILE *fp, Fun *f, PNode *n) {
       fputs(target->cg_string, fp);
       fputs("(", fp);
       int wrote_one = 0;
-      forv_MPosition(p, target->positional_arg_positions) {
+      for (MPosition *p : target->positional_arg_positions) {
         Var *av = target->args.get(p);
         if (!av->live) continue;
         write_send_arg(fp, target, n, p, wrote_one);
@@ -620,7 +620,7 @@ static void write_send(FILE *fp, Fun *f, PNode *n) {
 }
 
 static void do_phy_nodes(FILE *fp, PNode *n, int isucc) {
-  forv_PNode(p, n->phy) simple_move(fp, p->lvals[isucc], p->rvals.v[0]);
+  for (PNode *p : n->phy) simple_move(fp, p->lvals[isucc], p->rvals.v[0]);
 }
 
 static void do_phi_nodes(FILE *fp, PNode *n, int isucc) {
@@ -628,7 +628,7 @@ static void do_phi_nodes(FILE *fp, PNode *n, int isucc) {
     PNode *succ = n->cfg_succ[isucc];
     if (succ->phi.n) {
       int i = succ->cfg_pred_index.get(n);
-      forv_PNode(pp, succ->phi) simple_move(fp, pp->lvals[0], pp->rvals.v[i]);
+      for (PNode *pp : succ->phi) simple_move(fp, pp->lvals[0], pp->rvals.v[i]);
     }
   }
 }
@@ -700,7 +700,7 @@ static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done
       break;
   }
   int extra_goto = n->cfg_succ.n == 1 && n->code->kind != Code_GOTO && n->code->kind != Code_LABEL;
-  forv_PNode(p, n->cfg_succ) if (done.set_add(p)) {
+  for (PNode *p : n->cfg_succ) if (done.set_add(p)) {
     write_c_pnode(fp, fa, f, p, done);
     extra_goto = 0;
   }
@@ -711,7 +711,7 @@ static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done
 }
 
 static void write_c_args(FILE *fp, Fun *f) {
-  forv_MPosition(p, f->positional_arg_positions) {
+  for (MPosition *p : f->positional_arg_positions) {
     Var *v = f->args.get(p);
     Sym *s = v->sym;
     if (v->cg_string && !s->is_symbol && !s->is_fun && v->live) {
@@ -740,8 +740,8 @@ static void write_c(FILE *fp, FA *fa, Fun *f, Vec<Var *> *globals = 0) {
   int index = 0;
   Vec<Var *> vars, defs;
   f->collect_Vars(vars, 0, FUN_COLLECT_VARS_NO_TVALS);
-  forv_Var(v, vars) if (v->sym->is_local || v->sym->is_fake) v->cg_string = 0;
-  forv_Var(v, vars) if (!v->is_internal && !v->sym->is_fake) {
+  for (Var *v : vars) if (v->sym->is_local || v->sym->is_fake) v->cg_string = 0;
+  for (Var *v : vars) if (!v->is_internal && !v->sym->is_fake) {
     if (!v->cg_string && v->live && !v->sym->is_symbol && v->type != sym_continuation) {
       char s[100];
       snprintf(s, sizeof(s), "t%d", index++);
@@ -751,7 +751,7 @@ static void write_c(FILE *fp, FA *fa, Fun *f, Vec<Var *> *globals = 0) {
   }
   defs.qsort(lt_type_id);
   Sym *last_t = (Sym *)-1;
-  forv_Var(v, defs) {
+  for (Var *v : defs) {
     if (v->type != last_t) {
       if (last_t != (Sym *)-1) fprintf(fp, ";\n");
       fputs("  ", fp);
@@ -763,7 +763,7 @@ static void write_c(FILE *fp, FA *fa, Fun *f, Vec<Var *> *globals = 0) {
   }
   if (defs.n) fprintf(fp, ";\n\n");
   if (globals)
-    forv_Var(v, *globals) if (!v->sym->is_fun && v->sym->fun && !v->sym->type_kind && v->cg_string)
+    for (Var *v : *globals) if (!v->sym->is_fun && v->sym->fun && !v->sym->type_kind && v->cg_string)
         fprintf(fp, "  %s = %s;\n", v->cg_string, v->sym->fun->cg_string);
   write_c_args(fp, f);
   rebuild_cfg_pred_index(f);
@@ -787,7 +787,7 @@ static int build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
 #undef S
   // assign functions a C type string
   int f_index = 0;
-  forv_Fun(f, fa->funs) {
+  for (Fun *f : fa->funs) {
     if (!f->live) continue;
     char s[100];
     if (f->sym->name) {
@@ -809,7 +809,7 @@ static int build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
   collect_types_and_globals(fa, allsyms, globals);
   // assign creation sets C type strings
   if (allsyms.n) fputs("/*\n Type Declarations\n*/\n\n", fp);
-  forv_Sym(s, allsyms) {
+  for (Sym *s : allsyms) {
     if (s->num_kind)
       s->cg_string = num_string(s);
     else if (s->is_symbol) {
@@ -841,7 +841,7 @@ static int build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
     }
   }
   // resolve types
-  forv_Sym(s, allsyms) {
+  for (Sym *s : allsyms) {
     if (s->fun)
       s->cg_string = s->fun->cg_structural_string;
     else if (s->is_symbol)
@@ -856,7 +856,7 @@ static int build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
   if (allsyms.n) fputs("\n", fp);
   // define function types and prototypes
   Vec<Fun *> live_funs;
-  forv_Fun(f, fa->funs) {
+  for (Fun *f : fa->funs) {
     if (!f->live) continue;
     live_funs.add(f);
   }
@@ -866,14 +866,14 @@ static int build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
     for (int i = 1; i < live_funs.n; i++) fprintf(fp, ", %s", live_funs[i]->cg_structural_string);
     fprintf(fp, ";\n");
   }
-  forv_Fun(f, live_funs) {
+  for (Fun *f : live_funs) {
     write_c_fun_proto(fp, f);
     fputs(";\n", fp);
   }
   if (live_funs.n) fputs("\n", fp);
   // define structs
   if (allsyms.n) fputs("/*\n Type Definitions\n*/\n\n", fp);
-  forv_Sym(s, allsyms) {
+  for (Sym *s : allsyms) {
     switch (s->type_kind) {
       default:
         break;
@@ -903,7 +903,7 @@ static int build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
     }
   }
   if (allsyms.n) fputs("\n/*\n Builtin Functions\n*/\n\n", fp);
-  forv_Sym(s, allsyms) {
+  for (Sym *s : allsyms) {
     if (s->type_kind == Type_RECORD && s->creators.n && s->creators[0]->sym == sym_list && homogeneous_tuple(s) &&
         s->has.n)
       fprintf(fp, "_CG_TUPLE_TO_LIST_FUN(%d, %d);\n", s->id, s->has.n);
@@ -919,8 +919,8 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
   if (globals.n) {
     fputs("\n/*\n Global Variables\n*/\n\n", fp);
   }
-  forv_Var(v, globals) if (v->sym->is_fun) v->cg_string = v->sym->fun->cg_string;
-  forv_Var(v, globals) {
+  for (Var *v : globals) if (v->sym->is_fun) v->cg_string = v->sym->fun->cg_string;
+  for (Var *v : globals) {
     Sym *s = unalias_type(v->sym);
     if (!v->live) continue;
     // Skip type definitions - they're handled in the Type Definitions section
@@ -961,7 +961,7 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
     }
   }
   fputs("\n/*\n Functions\n*/\n", fp);
-  forv_Fun(f, fa->funs) if (f != init && !f->is_external) write_c(fp, fa, f);
+  for (Fun *f : fa->funs) if (f != init && !f->is_external) write_c(fp, fa, f);
   write_c(fp, fa, init, &globals);
   fprintf(fp,
           "\nint main(int argc, char *argv[]) { (void)argc; (void) argv;\n"

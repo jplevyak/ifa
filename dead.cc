@@ -29,13 +29,13 @@ static void print_dead(FA *fa) {
   strcat(lfn, ".dead_log");
   FILE *fp = fopen(lfn, "w");
   fa_dump_types(fa, fp);
-  forv_Fun(f, fa->funs) {
-    forv_PNode(p, f->fa_all_PNodes) if (!p->live) {
+  for (Fun *f : fa->funs) {
+    for (PNode *p : f->fa_all_PNodes) if (!p->live) {
       ndead_pnodes++;
       fprintf(fp, "PNode %d %s:%d DEAD\n", p->id, p->code->filename(), p->code->line());
     }
     else nlive_pnodes++;
-    forv_Var(v, f->fa_all_Vars) if (!v->live) {
+    for (Var *v : f->fa_all_Vars) if (!v->live) {
       ndead_vars++;
       fprintf(fp, "Var %d:%d %s %s:%d DEAD\n", v->sym->id, v->id, v->sym->name ? v->sym->name : "", v->sym->filename(),
               v->sym->line());
@@ -55,18 +55,18 @@ static void mark_live_avar(AVar *av) {
   av->var->live = 1;
   mark_live_again = 1;
   if (av->var->def) av->var->def->live = 1;
-  forv_AVar(aav, av->backward) if (aav) {
+  for (AVar *aav : av->backward) if (aav) {
     if (!aav->live && !get_constant(aav)) mark_live_avar(aav);
   }
 }
 
 static void mark_live_avars(FA *fa) {
-  forv_Fun(f, fa->funs) {
-    forv_PNode(p, f->fa_all_PNodes) {
+  for (Fun *f : fa->funs) {
+    for (PNode *p : f->fa_all_PNodes) {
       // if a pnode is live, and it is not a function call, it's inputs (rvals)
       // must be live
       if (p->live && !f->calls.get(p)) {
-        forv_Var(v, p->rvals) if (!v->constant) {
+        for (Var *v : p->rvals) if (!v->constant) {
           form_AVarMapElem(x, v->avars) {
             AVar *av = x->value;
             if (!av->live) mark_live_avar(av);
@@ -75,7 +75,7 @@ static void mark_live_avars(FA *fa) {
       }
       // if a pnode is a live function call, its arguments must be live too
       if (p->live && f->calls.get(p)) {
-        forv_Var(v, p->rvals) if (!v->constant) {
+        for (Var *v : p->rvals) if (!v->constant) {
           form_AVarMapElem(x, v->avars) {
             AVar *av = x->value;
             if (!av->live) mark_live_avar(av);
@@ -83,15 +83,15 @@ static void mark_live_avars(FA *fa) {
         }
       }
     }
-    forv_Var(v, f->fa_all_Vars) {
+    for (Var *v : f->fa_all_Vars) {
       if (!v->constant) {
         form_AVarMapElem(x, v->avars) {
           // if an instance variable is live, then the containing object must be
           // live
           AVar *av = x->value;
           if (!av->live) {
-            forv_CreationSet(cs, *av->out) if (cs) {
-              forv_AVar(iv, cs->vars) {
+            for (CreationSet *cs : *av->out) if (cs) {
+              for (AVar *iv : cs->vars) {
                 if (iv->live) {
                   mark_live_avar(av);
                   goto Lbreak2;
@@ -108,7 +108,7 @@ static void mark_live_avars(FA *fa) {
 
 static bool forward_live(Var *v, int dist = 2) {
   if (dist < 0) return false;
-  form_AVarMapElem(x, v->avars) forv_AVar(av, x->value->forward) if (av) {
+  form_AVarMapElem(x, v->avars) for (AVar *av : x->value->forward) if (av) {
     if (av->live) return true;
     if (forward_live(av->var, dist - 1)) return true;
   }
@@ -116,19 +116,19 @@ static bool forward_live(Var *v, int dist = 2) {
 }
 
 static void mark_live_pnodes(FA *fa) {
-  forv_Fun(f, fa->funs) {
-    forv_PNode(p, f->fa_all_PNodes) {
+  for (Fun *f : fa->funs) {
+    for (PNode *p : f->fa_all_PNodes) {
       if (!p->live) {
-        forv_Var(v, p->lvals) if (v->live) goto Live;
+        for (Var *v : p->lvals) if (v->live) goto Live;
         if (p->code) switch (p->code->kind) {
             default:
               break;
             case Code_LABEL:
-              if (p->cfg_pred.n != 1) forv_PNode(x, p->cfg_pred) if (x->live) goto Live;
+              if (p->cfg_pred.n != 1) for (PNode *x : p->cfg_pred) if (x->live) goto Live;
               break;
             case Code_GOTO:
               if (p->cfg_succ[0]->cfg_pred.n != 1)
-                forv_PNode(x, f->fa_all_PNodes)  // potentially expensive
+                for (PNode *x : f->fa_all_PNodes)  // potentially expensive
                     if (x->live || x == f->exit) if (p->dom->is_dominated_by(x->dom)) goto Live;
               break;
             case Code_SEND:
@@ -137,7 +137,7 @@ static void mark_live_pnodes(FA *fa) {
                   default:
                     break;
                   case P_prim_reply:
-                    forv_Var(v, f->rets) if (v->live) goto Live;
+                    for (Var *v : f->rets) if (v->live) goto Live;
                     break;
                   case P_prim_setter: {
                     if (forward_live(p->tvals.v[0])) goto Live;
@@ -150,13 +150,13 @@ static void mark_live_pnodes(FA *fa) {
                 }
               } else {
                 Vec<Fun *> *calls = f->calls.get(p);
-                if (calls) forv_Fun(x, *calls) if (x->live) goto Live;
+                if (calls) for (Fun *x : *calls) if (x->live) goto Live;
               }
               break;
             case Code_IF:
-              forv_PNode(x, f->fa_all_PNodes)  // potentially expensive
+              for (PNode *x : f->fa_all_PNodes)  // potentially expensive
                   if (x->live) if (x->dom->is_dominated_by(p->dom))
-                      forv_PNode(s, p->cfg_succ) if (!x->dom->is_dominated_by(s->dom)) goto Live;
+                      for (PNode *s : p->cfg_succ) if (!x->dom->is_dominated_by(s->dom)) goto Live;
               break;
           }
         continue;  // handle fall through non-live
@@ -173,18 +173,18 @@ static void mark_live_pnodes(FA *fa) {
 }
 
 static void mark_initial_dead_and_alive(FA *fa, int init = 0) {
-  forv_Fun(f, fa->funs) {
+  for (Fun *f : fa->funs) {
     f->live = init;
-    forv_Var(v, f->fa_all_Vars) {
+    for (Var *v : f->fa_all_Vars) {
       v->constant = get_constant(v);
       v->live = init;
       for (int i = 0; i < v->avars.n; i++)
         if (v->avars[i].key) v->avars[i].value->live = false;
       if (v->type) {  // mark all instance variables not live
-        forv_CreationSet(cs, v->type->creators) if (cs) { forv_AVar(iv, cs->vars) iv->var->live = init; }
+        for (CreationSet *cs : v->type->creators) if (cs) { for (AVar *iv : cs->vars) iv->var->live = init; }
       }
     }
-    forv_PNode(p, f->fa_all_PNodes) {
+    for (PNode *p : f->fa_all_PNodes) {
       p->live = init;
       if (p->code && p->code->kind == Code_SEND && p->prim && p->prim->index == P_prim_primitive) {
         cchar *name = p->code->rvals[1]->name;
@@ -196,10 +196,10 @@ static void mark_initial_dead_and_alive(FA *fa, int init = 0) {
 }
 
 void mark_live_types(FA *fa) {
-  forv_CreationSet(cs, fa->css) cs->type->type_live = 0;
-  forv_CreationSet(cs, fa->css) if (cs->type && cs->type->creators.n) {
-    forv_CreationSet(x, cs->type->creators) {
-      forv_AVar(av, x->defs) if (av) if (av->var->live && !cs->type->type_live) cs->type->type_live = 1;
+  for (CreationSet *cs : fa->css) cs->type->type_live = 0;
+  for (CreationSet *cs : fa->css) if (cs->type && cs->type->creators.n) {
+    for (CreationSet *x : cs->type->creators) {
+      for (AVar *av : x->defs) if (av) if (av->var->live && !cs->type->type_live) cs->type->type_live = 1;
     }
   }
 }
@@ -217,16 +217,16 @@ int mark_live_code(FA *fa) {
 }
 
 void mark_live_funs(FA *fa) {
-  forv_Fun(f, fa->funs) f->live = 0;
+  for (Fun *f : fa->funs) f->live = 0;
   if1->top->fun->live = 1;
   int changed = 1;
   while (changed) {
     changed = 0;
-    forv_Fun(f, fa->funs) {
+    for (Fun *f : fa->funs) {
       if (f->live) {
-        forv_PNode(p, f->fa_all_PNodes) if (p->live) {
+        for (PNode *p : f->fa_all_PNodes) if (p->live) {
           Vec<Fun *> *fns = f->calls.get(p);
-          if (fns) forv_Fun(x, *fns) if (!x->live) {
+          if (fns) for (Fun *x : *fns) if (!x->live) {
               x->live = 1;
               changed = 1;
             }
@@ -235,7 +235,7 @@ void mark_live_funs(FA *fa) {
     }
   }
   Vec<Fun *> funs(fa->funs, Vec<Fun *>::MOVE);
-  forv_Fun(f, funs) if (f->live) fa->funs.add(f);
+  for (Fun *f : funs) if (f->live) fa->funs.add(f);
 }
 
 /*
@@ -245,22 +245,22 @@ void mark_live_funs(FA *fa) {
 #if 0
 static void 
 mark_live_vars(FA *fa) {
-  forv_Fun(f, fa->funs) {
-    forv_PNode(p, f->fa_all_PNodes) {
+  for (Fun *f : fa->funs) {
+    for (PNode *p : f->fa_all_PNodes) {
       // if a pnode is live, it's inputs (rvals) must be live
       if (p->live) {
-        forv_Var(v, p->rvals) {
+        for (Var *v : p->rvals) {
           if (!v->live) {
             v->live = 1;
             mark_live_again = 1;
           }
         }
     }
-    forv_Var(v, f->fa_all_Vars) {
+    for (Var *v : f->fa_all_Vars) {
       // if an instance variable is live, then the containing object must be live
       if (!v->live && v->type)
-        forv_CreationSet(cs, v->type->creators) if (cs) {
-          forv_AVar(iv, cs->vars) {
+        for (CreationSet *cs : v->type->creators) if (cs) {
+          for (AVar *iv : cs->vars) {
             if (iv->var->live) {
               v->live = 1;
               mark_live_again = 1;
@@ -274,10 +274,10 @@ mark_live_vars(FA *fa) {
 
 static void
 mark_types_live(FA *fa) {
-  forv_CreationSet(cs, fa->css)
+  for (CreationSet *cs : fa->css)
     if (cs->type && cs->type->creators.n) {
-      forv_CreationSet(x, cs->type->creators) {
-        forv_AVar(av, x->defs) if (av)
+      for (CreationSet *x : cs->type->creators) {
+        for (AVar *av : x->defs) if (av)
           if (av->var->live)
             cs->type->type_live = 1;
       }
@@ -286,18 +286,18 @@ mark_types_live(FA *fa) {
 
 static void 
 mark_initial_dead_and_alive(FA *fa, int init = 0) {
-  forv_Fun(f, fa->funs) {
+  for (Fun *f : fa->funs) {
     f->live = init;
-    forv_Var(v, f->fa_all_Vars) {
+    for (Var *v : f->fa_all_Vars) {
       v->live = INIT;
       if (v->type) { // mark all instance variables not live
-        forv_CreationSet(cs, v->type->creators) if (cs) {
-          forv_AVar(iv, cs->vars)
+        for (CreationSet *cs : v->type->creators) if (cs) {
+          for (AVar *iv : cs->vars)
             iv->var->live = init;
         }
       }
     }
-    forv_PNode(p, f->fa_all_PNodes) {
+    for (PNode *p : f->fa_all_PNodes) {
       p->live = init;
       if (p->code && p->code->kind == Code_SEND && p->prim && p->prim->index == P_prim_primitive) {
         cchar *name = p->code->rvals[1]->name;
@@ -307,7 +307,7 @@ mark_initial_dead_and_alive(FA *fa, int init = 0) {
       }
     }
   }
-  forv_CreationSet(cs, fa->css)
+  for (CreationSet *cs : fa->css)
     cs->type->type_live = init;
 }
 
