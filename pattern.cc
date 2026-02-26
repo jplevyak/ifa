@@ -632,7 +632,7 @@ class DefaultCacheHashFns {
  public:
   static unsigned int hash(Vec<MPosition *> *a) {
     unsigned int h = 0, x = 0;
-    for (MPosition *p : *a) h += open_hash_primes[x++ % 256] * (uintptr_t)a;
+    for (MPosition *p : *a) h += open_hash_primes[x++ % 256] * (uintptr_t)p;
     return h;
   }
   static int equal(Vec<MPosition *> *a, Vec<MPosition *> *b) {

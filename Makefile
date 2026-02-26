@@ -49,7 +49,7 @@ ifeq ($(BUILD_VERSION),)
 endif
 VERSIONCFLAGS += -DMAJOR_VERSION=$(MAJOR) -DMINOR_VERSION=$(MINOR) -DBUILD_VERSION=\"$(BUILD_VERSION)\"
 
-CFLAGS += -Wall -std=c++23
+CFLAGS += -Wall
 ifdef DEBUG
 CFLAGS += -g -DDEBUG=1
 endif
@@ -89,8 +89,6 @@ CFLAGS += -DLEAK_DETECT $(GC_CFLAGS)
 LIBS += -lleak
 endif
 
-CPPFLAGS += $(CFLAGS)
-
 # LLVM Configuration
 LLVM_CXXFLAGS = $(shell llvm-config --cxxflags)
 LLVM_LDFLAGS = $(shell llvm-config --ldflags --libs core irreader executionengine mcjit native target CodeGen AsmPrinter AsmParser | sed 's/-NDEBUG //')
@@ -98,6 +96,9 @@ LLVM_LDFLAGS = $(shell llvm-config --ldflags --libs core irreader executionengin
 
 CFLAGS += $(LLVM_CXXFLAGS)
 LDFLAGS_EXEC = $(LDFLAGS) $(LLVM_LDFLAGS) # LDFLAGS for executables needing LLVM libs
+
+CFLAGS += -std=c++23
+CPPFLAGS += $(CFLAGS)
 
 LIBS += -ldparse_gc -lm
 ifneq ($(OS_TYPE),CYGWIN)
