@@ -139,7 +139,11 @@ static void sub_constants(PNode *p) {
 static int reaching_def(Var *v, PNode *p) {
   Accum<Var *> vars;
   vars.add(v);
-  for (Var *v : vars.asvec) {
+  // Must use index-based loop: vars.add() inside the loop appends to vars.asvec,
+  // growing the worklist. Range-for captures end once and misses new elements;
+  // it also produces dangling iterators if asvec reallocates its buffer.
+  for (int i = 0; i < vars.asvec.n; i++) {
+    Var *v = vars.asvec.v[i];
     if (v->def == p) return 1;
     if (v->def && v->def->code->kind == Code_MOVE) for (Var *x : v->def->rvals) vars.add(x);
   }
@@ -149,7 +153,11 @@ static int reaching_def(Var *v, PNode *p) {
 static int reaching_var(Var *v, Var *vv) {
   Accum<Var *> vars;
   vars.add(v);
-  for (Var *v : vars.asvec) {
+  // Must use index-based loop: vars.add() inside the loop appends to vars.asvec,
+  // growing the worklist. Range-for captures end once and misses new elements;
+  // it also produces dangling iterators if asvec reallocates its buffer.
+  for (int i = 0; i < vars.asvec.n; i++) {
+    Var *v = vars.asvec.v[i];
     if (v == vv) return 1;
     if (v->def && v->def->code->kind == Code_MOVE) for (Var *x : v->def->rvals) vars.add(x);
   }

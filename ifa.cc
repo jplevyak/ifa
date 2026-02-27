@@ -36,7 +36,7 @@ int ifa_analyze(cchar *fn) {
   for (Fun *f : fa->funs) build_cfg_dominators(f);
   if (mark_live_code(fa) < 0) return -1;
   if (get_int_config("alog.test.fa") > 0) log_test_fa(fa);
-  // frequency_estimation(fa);
+  frequency_estimation(fa);
   return 0;
 }
 

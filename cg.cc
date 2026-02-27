@@ -923,8 +923,6 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
   for (Var *v : globals) {
     Sym *s = unalias_type(v->sym);
     if (!v->live) continue;
-    // Skip type definitions - they're handled in the Type Definitions section
-    if (s->type_kind) continue;
     if (v->type == sym_nil_type) {
       v->cg_string = "NULL";
       continue;
@@ -947,7 +945,7 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
       snprintf(ss, sizeof(ss), "_CG_Symbol(%d, \"%s\")", s->id, s->name);
       v->cg_string = dupstr(ss);
     } else if (s->is_fun) {
-    } else {
+    } else if (!s->type_kind || s->type_kind == Type_RECORD) {
       char ss[100];
       if (s->name)
         snprintf(ss, sizeof(ss), "/* %s %d */ g%d", s->name, s->id, index++);
@@ -958,6 +956,9 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
       fputs(" ", fp);
       fputs(v->cg_string, fp);
       fputs(";\n", fp);
+    } else {
+      index++;
+      v->cg_string = dupstr(s->name);
     }
   }
   fputs("\n/*\n Functions\n*/\n", fp);
