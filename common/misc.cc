@@ -2,7 +2,7 @@
 #include <net/if.h>
 #include <signal.h>
 #include <sys/ioctl.h>
-#include "plib.h"
+#include "common.h"
 
 int buf_read(int fd, char **buf, int *len) {
   struct stat sb;

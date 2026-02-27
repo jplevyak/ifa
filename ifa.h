@@ -1,7 +1,7 @@
 #ifndef _ifa_H_
 #define _ifa_H_
 
-#include "plib.h"
+#include "common.h"
 
 class Sym;
 class Match;

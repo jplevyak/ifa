@@ -1,7 +1,7 @@
 #ifndef _ifadefs_H_
 #define _ifadefs_H_
 
-#include "plib.h"
+#include "common.h"
 
 typedef float float32;
 typedef double float64;

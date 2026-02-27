@@ -63,7 +63,7 @@ ifdef VALGRIND
 CFLAGS += -DVALGRIND_TEST
 endif
 
-CFLAGS += -Iplib -I/opt/homebrew/include
+CFLAGS += -Icommon -I/opt/homebrew/include
 LDFLAGS += -L/usr/local/lib -L/opt/homebrew/lib
 
 # GC configuration
@@ -107,8 +107,8 @@ ifneq ($(OS_TYPE),Darwin)
 endif
 endif
 
-PLIB_SRCS = plib/arg.cc plib/config.cc plib/misc.cc plib/service.cc \
-            plib/vec.cc plib/vec_test.cc plib/unit.cc plib/log.cc
+PLIB_SRCS = common/arg.cc common/config.cc common/misc.cc common/service.cc \
+            common/vec.cc common/vec_test.cc common/unit.cc common/log.cc
 PLIB_OBJS = $(PLIB_SRCS:%.cc=%.o)
 
 LIB_SRCS = ast.cc builtin.cc cdb.cc cfg.cc cg.cc llvm.cc llvm_codegen.cc llvm_primitives.cc clone.cc dead.cc dom.cc fa.cc \
@@ -189,7 +189,7 @@ ifa_version.o: Makefile ifa_version.cc
 	$(CXX) $(CFLAGS) $(VERSIONCFLAGS) -c ifa_version.cc
 
 clean:
-	\rm -f *.o plib/*.o core *.core *.gmon $(EXECUTABLES) $(CLEAN_FILES) LICENSE.i COPYRIGHT.i
+	\rm -f *.o common/*.o core *.core *.gmon $(EXECUTABLES) $(CLEAN_FILES) LICENSE.i COPYRIGHT.i
 
 realclean: clean
 	\rm -f *.a *.orig *.rej

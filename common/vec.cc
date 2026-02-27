@@ -1,7 +1,7 @@
 
 /* UnionFind after Tarjan */
 
-#include "plib.h"
+#include "common.h"
 
 uintptr_t prime2[] = {1,
                       3,
