@@ -1,6 +1,6 @@
 
-#ifndef _plib_H_
-#define _plib_H_
+#ifndef _ifa_common_common_H_
+#define _ifa_common_common
 
 #ifdef LEAK_DETECT
 #define GC_DEBUG

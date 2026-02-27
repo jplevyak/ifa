@@ -5,7 +5,7 @@
 #define DYNAMIC_CONFIG 1
 #define SET_CONFIG 2
 
-EXTERN char config_filenames[1024] EXTERN_INIT("~/.plibrc,plib.init");
+EXTERN char config_filenames[1024] EXTERN_INIT("~/.ifarc,ifa.init");
 
 // -1 for not found
 int int64_config(int dyn, int64 *pint, int64 def, cchar *n1, cchar *n2 = 0, cchar *n3 = 0);

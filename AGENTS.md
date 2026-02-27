@@ -4,7 +4,7 @@ This file provides guidance to AI Agents when working with code in this reposito
 
 ## Build
 
-Prerequisites: Boehm GC, PCRE, [dparser](https://github.com/jplevyak/dparser) (built with `D_USE_GC=1`), and [plib](https://github.com/jplevyak/plib) at `../plib` (built with `USE_GC=1`).
+Prerequisites: Boehm GC, PCRE, and [dparser](https://github.com/jplevyak/dparser) (built with `D_USE_GC=1`).
 
 ```bash
 make              # Build ifa executable, libifa_gc.a, and ifa.cat man page

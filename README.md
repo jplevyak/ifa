@@ -19,13 +19,6 @@ BUILD
         git clone https://github.com/jplevyak/dparser.git
         (cd dparser; sudo make install D_USE_GC=1)
 
-  3. plib
-
-     This is expected to exist in ../plib.
-
-        git clone https://github.com/jplevyak/plib.git
-        (cd plib; make USE_GC=1)
-
   4. ifa
 
      This is expected to exist in ../ifa.
