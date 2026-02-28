@@ -1,6 +1,5 @@
 #include "ast.h"
 #include "builtin.h"
-#include "fa.h"
 #include "if1.h"
 #include "ifadefs.h"
 #include "pattern.h"

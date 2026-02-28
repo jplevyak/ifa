@@ -1,7 +1,7 @@
 OS_TYPE = $(shell uname -s | \
   awk '{ split($$1,a,"_"); printf("%s", a[1]);  }')
 
-CFLAGS += -I$(CG_ROOT) -I/usr/local/include/gc -I/opt/homebrew/include -g -Wno-deprecated
+CFLAGS += -I$(CG_ROOT) -I$(CG_ROOT)/common -I/usr/local/include/gc -I/opt/homebrew/include -g -Wno-deprecated
 
 LIBS = -lm -lgc -lpcre
 

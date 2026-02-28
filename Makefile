@@ -63,7 +63,7 @@ ifdef VALGRIND
 CFLAGS += -DVALGRIND_TEST
 endif
 
-CFLAGS += -I. -Icommon -Ioptimize -Icodegen -Ianalysis -I/opt/homebrew/include
+CFLAGS += -I. -Icommon -Iif1 -Ifrontend -Ioptimize -Icodegen -Ianalysis -I/opt/homebrew/include
 LDFLAGS += -L/usr/local/lib -L/opt/homebrew/lib
 
 # GC configuration
@@ -112,16 +112,17 @@ PLIB_SRCS = common/arg.cc common/config.cc common/misc.cc common/service.cc \
             common/fail.cc common/html.cc common/ifa_version.cc
 PLIB_OBJS = $(PLIB_SRCS:%.cc=%.o)
 
-LIB_SRCS = ast.cc builtin.cc fun.cc if1.cc ifa.cc \
-	num.cc pattern.cc pnode.cc prim.cc prim_data.cc \
-	main.cc sym.cc var.cc \
+LIB_SRCS = ifa.cc main.cc \
+	if1/ast.cc if1/builtin.cc if1/fun.cc if1/if1.cc if1/num.cc if1/pattern.cc \
+	if1/pnode.cc if1/prim.cc if1/prim_data.cc if1/sym.cc if1/var.cc \
 	analysis/fa.cc analysis/cdb.cc analysis/pdb.cc analysis/graph.cc analysis/clone.cc analysis/ifalog.cc \
 	codegen/cg.cc codegen/llvm.cc codegen/llvm_codegen.cc codegen/llvm_primitives.cc \
 	optimize/cfg.cc optimize/dead.cc optimize/dom.cc optimize/inline.cc optimize/loop.cc optimize/ssu.cc
 LIB_OBJS = $(LIB_SRCS:%.cc=%.o)
 
-IFA_DEPEND_SRCS = main.cc parse.cc scope.cc make_ast.cc ast_to_if1.cc codegen/cg.cc codegen/llvm.cc codegen/llvm_codegen.cc codegen/llvm_primitives.cc
-IFA_SRCS = $(IFA_DEPEND_SRCS) v.g.d_parser.cc python.g.d_parser.cc
+IFA_DEPEND_SRCS = main.cc frontend/parse.cc frontend/scope.cc frontend/make_ast.cc frontend/ast_to_if1.cc \
+	codegen/cg.cc codegen/llvm.cc codegen/llvm_codegen.cc codegen/llvm_primitives.cc
+IFA_SRCS = $(IFA_DEPEND_SRCS) frontend/v.g.d_parser.cc frontend/python.g.d_parser.cc
 IFA_OBJS = $(IFA_SRCS:%.cc=%.o)
 
 EXECUTABLE_FILES = ifa
@@ -136,7 +137,7 @@ MANPAGES = ifa.1
 AUX_FILES = $(MODULE)/index.html $(MODULE)/manual.html $(MODULE)/faq.html $(MODULE)/ifa.1 $(MODULE)/ifa.cat
 TAR_FILES = $(AUX_FILES)
 
-CLEAN_FILES += *.cat tests/*.out tests/*.c
+CLEAN_FILES += *.cat tests/*.out tests/*.c frontend/*.d_parser.cc frontend/*.d_parser.h
 
 ifeq ($(OS_TYPE),CYGWIN)
 EXECUTABLES = $(EXECUTABLE_FILES:%=%.exe)
@@ -175,6 +176,12 @@ ifa.cat: ifa.1
 	rm -f ifa.cat
 	nroff -man ifa.1 | sed -e 's/.//g' > ifa.cat
 
+frontend/v.g.d_parser.cc: frontend/v.g frontend/c.g
+	(cd frontend && make_dparser -v -Xcc -I v.g)
+
+frontend/python.g.d_parser.cc: frontend/python.g
+	(cd frontend && make_dparser -v -Xcc -I python.g)
+
 %.g.d_parser.cc: %.g
 	make_dparser -v -Xcc -I $<
 
@@ -192,7 +199,7 @@ common/ifa_version.o: Makefile common/ifa_version.cc
 	$(CXX) $(CFLAGS) $(VERSIONCFLAGS) -c common/ifa_version.cc -o common/ifa_version.o
 
 clean:
-	\rm -f *.o common/*.o optimize/*.o codegen/*.o analysis/*.o core *.core *.gmon $(EXECUTABLES) $(CLEAN_FILES) LICENSE.i COPYRIGHT.i
+	\rm -f *.o common/*.o if1/*.o frontend/*.o optimize/*.o codegen/*.o analysis/*.o core *.core *.gmon $(EXECUTABLES) $(CLEAN_FILES) LICENSE.i COPYRIGHT.i
 
 realclean: clean
 	\rm -f *.a *.orig *.rej
