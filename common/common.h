@@ -1,6 +1,6 @@
 
 #ifndef _ifa_common_common_H_
-#define _ifa_common_common
+#define _ifa_common_common_H_
 
 #ifdef LEAK_DETECT
 #define GC_DEBUG

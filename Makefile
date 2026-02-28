@@ -63,7 +63,7 @@ ifdef VALGRIND
 CFLAGS += -DVALGRIND_TEST
 endif
 
-CFLAGS += -Icommon -I/opt/homebrew/include
+CFLAGS += -I. -Icommon -Ioptimize -Icodegen -Ianalysis -I/opt/homebrew/include
 LDFLAGS += -L/usr/local/lib -L/opt/homebrew/lib
 
 # GC configuration
@@ -108,16 +108,19 @@ endif
 endif
 
 PLIB_SRCS = common/arg.cc common/config.cc common/misc.cc common/service.cc \
-            common/vec.cc common/vec_test.cc common/unit.cc common/log.cc
+            common/vec.cc common/vec_test.cc common/unit.cc common/log.cc \
+            common/fail.cc common/html.cc common/ifa_version.cc
 PLIB_OBJS = $(PLIB_SRCS:%.cc=%.o)
 
-LIB_SRCS = ast.cc builtin.cc cdb.cc cfg.cc cg.cc llvm.cc llvm_codegen.cc llvm_primitives.cc clone.cc dead.cc dom.cc fa.cc \
-	fail.cc fun.cc graph.cc html.cc if1.cc ifa.cc inline.cc \
-	ifalog.cc loop.cc num.cc pattern.cc pdb.cc pnode.cc prim.cc prim_data.cc \
-	main.cc ssu.cc sym.cc var.cc ifa_version.cc
+LIB_SRCS = ast.cc builtin.cc fun.cc if1.cc ifa.cc \
+	num.cc pattern.cc pnode.cc prim.cc prim_data.cc \
+	main.cc sym.cc var.cc \
+	analysis/fa.cc analysis/cdb.cc analysis/pdb.cc analysis/graph.cc analysis/clone.cc analysis/ifalog.cc \
+	codegen/cg.cc codegen/llvm.cc codegen/llvm_codegen.cc codegen/llvm_primitives.cc \
+	optimize/cfg.cc optimize/dead.cc optimize/dom.cc optimize/inline.cc optimize/loop.cc optimize/ssu.cc
 LIB_OBJS = $(LIB_SRCS:%.cc=%.o)
 
-IFA_DEPEND_SRCS = main.cc parse.cc scope.cc make_ast.cc ast_to_if1.cc cg.cc llvm.cc llvm_codegen.cc llvm_primitives.cc
+IFA_DEPEND_SRCS = main.cc parse.cc scope.cc make_ast.cc ast_to_if1.cc codegen/cg.cc codegen/llvm.cc codegen/llvm_codegen.cc codegen/llvm_primitives.cc
 IFA_SRCS = $(IFA_DEPEND_SRCS) v.g.d_parser.cc python.g.d_parser.cc
 IFA_OBJS = $(IFA_SRCS:%.cc=%.o)
 
@@ -165,7 +168,7 @@ $(IFA): $(IFA_OBJS) $(LIB_OBJS) $(PLIB_OBJS)
 $(LIBRARY): $(LIB_OBJS) $(PLIB_OBJS)
 	$(AR) $(AR_FLAGS) $@ $^
 
-$(MAKE_PRIMS): make_prims.cc
+$(MAKE_PRIMS): codegen/make_prims.cc
 	$(CXX) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
 
 ifa.cat: ifa.1
@@ -185,11 +188,11 @@ COPYRIGHT.i: LICENSE
 
 main.o: LICENSE.i COPYRIGHT.i
 
-ifa_version.o: Makefile ifa_version.cc
-	$(CXX) $(CFLAGS) $(VERSIONCFLAGS) -c ifa_version.cc
+common/ifa_version.o: Makefile common/ifa_version.cc
+	$(CXX) $(CFLAGS) $(VERSIONCFLAGS) -c common/ifa_version.cc -o common/ifa_version.o
 
 clean:
-	\rm -f *.o common/*.o core *.core *.gmon $(EXECUTABLES) $(CLEAN_FILES) LICENSE.i COPYRIGHT.i
+	\rm -f *.o common/*.o optimize/*.o codegen/*.o analysis/*.o core *.core *.gmon $(EXECUTABLES) $(CLEAN_FILES) LICENSE.i COPYRIGHT.i
 
 realclean: clean
 	\rm -f *.a *.orig *.rej
