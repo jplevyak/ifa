@@ -1,3 +1,4 @@
+#pragma once
 struct D_Sym;
 struct D_Scope;
 
@@ -6,7 +7,7 @@ class Sym;
 class ParseAST;
 
 typedef struct ParseSym {
-  uint type_id : 1;
+  unsigned type_id : 1;
   D_Sym *sym;
   D_Scope *scope;
 } ParseSym;
