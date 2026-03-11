@@ -49,7 +49,7 @@ ifeq ($(BUILD_VERSION),)
 endif
 VERSIONCFLAGS += -DMAJOR_VERSION=$(MAJOR) -DMINOR_VERSION=$(MINOR) -DBUILD_VERSION=\"$(BUILD_VERSION)\"
 
-CFLAGS += -Wall
+CFLAGS += -MMD -MP -Wall
 ifdef DEBUG
 CFLAGS += -g -DDEBUG=1
 endif
@@ -137,7 +137,8 @@ MANPAGES = ifa.1
 AUX_FILES = $(MODULE)/index.html $(MODULE)/manual.html $(MODULE)/faq.html $(MODULE)/ifa.1 $(MODULE)/ifa.cat
 TAR_FILES = $(AUX_FILES)
 
-CLEAN_FILES += *.cat tests/*.out tests/*.c frontend/*.d_parser.cc frontend/*.d_parser.h
+CLEAN_FILES += *.cat tests/*.out tests/*.c frontend/*.d_parser.cc frontend/*.d_parser.h \
+	$(PLIB_OBJS:.o=.d) $(LIB_OBJS:.o=.d) $(IFA_OBJS:.o=.d)
 
 ifeq ($(OS_TYPE),CYGWIN)
 EXECUTABLES = $(EXECUTABLE_FILES:%=%.exe)
@@ -204,10 +205,7 @@ clean:
 realclean: clean
 	\rm -f *.a *.orig *.rej
 
-depend:
-	./mkdep $(CFLAGS) $(DEPEND_SRCS)
-
--include .depend
+-include $(PLIB_OBJS:.o=.d) $(LIB_OBJS:.o=.d) $(IFA_OBJS:.o=.d)
 
 # Test target for LLVM backend
 test_llvm: ifa
@@ -222,4 +220,4 @@ test: ifa
 	./ifa --test
 	./ifa_tests
 
-.PHONY: test test_llvm clean realclean depend install deinstall
+.PHONY: test test_llvm clean realclean install deinstall
