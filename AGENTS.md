@@ -36,7 +36,7 @@ IFA_LLVM=1 ./ifa <file.v>  # Use the LLVM backend (produces .o via LLVM)
 ./ifa -d / -v              # Debug / verbose mode
 ```
 
-Key environment variables: `IFA_SYSTEM_DIRECTORY`, `IFA_LLVM`, `IFA_HTML`, `IFA_GRAPH`, `IFA_LOG_FLAGS`, `CHPL_LOG_DIR`.
+Key environment variables: `IFA_SYSTEM_DIRECTORY`, `IFA_LLVM`, `IFA_HTML`, `IFA_GRAPH`, `IFA_LOG_FLAGS`, `IFA_LOG_DIR`.
 
 ## Architecture
 
