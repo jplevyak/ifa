@@ -699,14 +699,14 @@ static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done
       do_phi_nodes(fp, n, 0);
       break;
   }
-  int extra_goto = n->cfg_succ.n == 1 && n->code->kind != Code_GOTO && n->code->kind != Code_LABEL;
+  int extra_goto = n->cfg_succ.n == 1 && n->code->kind != Code_GOTO;
   for (PNode *p : n->cfg_succ) if (done.set_add(p)) {
     write_c_pnode(fp, fa, f, p, done);
     extra_goto = 0;
   }
   if (extra_goto && n->cfg_succ[0]->live && n->cfg_succ[0]->fa_live) {
-    assert(n->cfg_succ[0]->code->kind == Code_LABEL);
-    fprintf(fp, "  goto L%d;\n", n->cfg_succ[0]->code->label[0]->id);
+    if (n->cfg_succ[0]->code->kind == Code_LABEL)
+      fprintf(fp, "  goto L%d;\n", n->cfg_succ[0]->code->label[0]->id);
   }
 }
 
