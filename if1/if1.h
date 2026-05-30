@@ -76,6 +76,7 @@ void if1_write(FILE *fp, IF1 *p, int start = 0);
 void if1_write_log();
 
 void if1_finalize(IF1 *p);
+void if1_simple_dead_code_elimination(IF1 *p);
 void if1_set_primitive_types(IF1 *if1);
 
 void if1_code(FILE *fp);

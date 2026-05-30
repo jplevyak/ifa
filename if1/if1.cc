@@ -653,7 +653,10 @@ void print_syms(FILE *fp, Vec<Sym *> *syms, int start = 0) {
   }
 }
 
-static void if1_simple_dead_code_elimination(IF1 *p) {
+void if1_simple_dead_code_elimination(IF1 *p) {
+  for (int i = 0; i < p->allsyms.n; i++) {
+    p->allsyms[i]->live = 0;
+  }
   for (int i = 0; i < p->allsyms.n; i++) {
     Sym *s = p->allsyms[i];
     if (!s->nesting_depth || s->asymbol) mark_sym_live(s);

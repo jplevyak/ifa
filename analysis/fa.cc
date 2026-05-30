@@ -16,9 +16,13 @@
 #include "timer.h"
 #include "var.h"
 
+#define DEBUG_PRINT(...) printf(__VA_ARGS__)
+//#define DEBUG_PRINT(...) ((void)0)
+
 /* runtime options
  */
 bool fgraph_pass_contours = false;
+int write_code_exit = 0;
 
 int analysis_pass = 0;
 
@@ -2967,8 +2971,16 @@ static void collect_type_confluences(Vec<AVar *> &confluences) {
   }
   confluences.set_to_vec();
   qsort_by_id(confluences);
-  for (AVar *x : confluences)
-      log(LOG_SPLITTING, "type confluence %s %d\n", x->var->sym->name ? x->var->sym->name : "", x->var->sym->id);
+  for (AVar *x : confluences) {
+      log(LOG_SPLITTING, "type confluence %s %d ", x->var->sym->name ? x->var->sym->name : "", x->var->sym->id);
+      for (CreationSet *cs : x->in->sorted) {
+        if (cs->sym)
+           log(LOG_SPLITTING, "%s ", cs->sym->name ? cs->sym->name : "");
+        else
+            log(LOG_SPLITTING, "(%d) ", cs->id);
+      }
+     log(LOG_SPLITTING, "\n");
+  }
 }
 
 static void collect_es_marked_confluences(Vec<AVar *> &confluences, Accum<AVar *> &acc, int fsetters) {
@@ -3702,14 +3714,18 @@ static int extend_analysis() {
   // 1) split EntrySets based on type using AVar::out
   collect_type_confluences(confluences);
   analyze_again = split_ess_for_type(confluences, SPLIT_EDGES);
+  DEBUG_PRINT("split_ess_for_type %d\n", analyze_again);
   // 2) split EntrySets based on type using marks
   if (!analyze_again) analyze_again = split_ess_for_mark_type(confluences);
+  DEBUG_PRINT("split_ess_for_mark_type %d\n", analyze_again);
   // 3) split based on setters of type
   if (!analyze_again) {
     Accum<AVar *> avs;
     for (AVar *av : confluences) compute_setters(av, avs, AKIND_TYPE);
     if (split_for_setters(avs, analyze_again)) analyze_again = 1;
+    DEBUG_PRINT("split_for_setters %d\n", analyze_again);
     if (!analyze_again) analyze_again = split_for_setters_of_setters(confluences);
+    DEBUG_PRINT("split_for_setters_of_setters %d\n", analyze_again);
   }
   // 4) split based on setters of type using marks
   if (!analyze_again) {
@@ -3721,13 +3737,16 @@ static int extend_analysis() {
       Accum<AVar *> avs;
       for (AVar *av : marked_confluences) compute_setters(av, avs, AKIND_MARK);
       if (split_for_setters(avs, analyze_again)) analyze_again = 1;
+      DEBUG_PRINT("split_for_setters with marks %d\n", analyze_again);
       if (!analyze_again) analyze_again = split_for_setters_of_setters(confluences);
+      DEBUG_PRINT("split_for_setters_of_setters with marks %d\n", analyze_again);
     }
   }
   if (!analyze_again)
     // 5) split AEdges(s) and EntrySet(s) for violations based on type using
     // dynamic dispatch
     analyze_again = split_for_violations(type_violations);
+  DEBUG_PRINT("split_for_violations %d\n", analyze_again);
   extend_timer.stop();
   if (analysis_pass > IFA_PASS_LIMIT) analyze_again = 0;
   if (analyze_again) clear_results();
@@ -3741,6 +3760,11 @@ static int extend_analysis() {
         analysis_pass, pass_timer.time, flow, (int)(flow * 100.0 / pass_timer.time), match_timer.time,
         (int)(match_timer.time * 100.0 / pass_timer.time), extend_timer.time,
         (int)(extend_timer.time * 100.0 / pass_timer.time));
+  }
+  if (write_code_exit == analysis_pass) {
+    if1_simple_dead_code_elimination(fa->pdb->if1);
+    ifa_code("if1");
+    exit(1);
   }
   match_timer.accumulate();
   extend_timer.accumulate();

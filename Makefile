@@ -137,18 +137,21 @@ MANPAGES = ifa.1
 AUX_FILES = $(MODULE)/index.html $(MODULE)/manual.html $(MODULE)/faq.html $(MODULE)/ifa.1 $(MODULE)/ifa.cat
 TAR_FILES = $(AUX_FILES)
 
-CLEAN_FILES += *.cat tests/*.out tests/*.c frontend/*.d_parser.cc frontend/*.d_parser.h \
-	$(PLIB_OBJS:.o=.d) $(LIB_OBJS:.o=.d) $(IFA_OBJS:.o=.d)
-
 ifeq ($(OS_TYPE),CYGWIN)
 EXECUTABLES = $(EXECUTABLE_FILES:%=%.exe)
 IFA = ifa.exe
 MAKE_PRIMS = make_prims.exe
+MAKE_CAST_CODE = make_cast_code.exe
 else
 EXECUTABLES = $(EXECUTABLE_FILES)
 IFA = ifa
 MAKE_PRIMS = make_prims
+MAKE_CAST_CODE = make_cast_code
 endif
+
+CLEAN_FILES += *.cat tests/*.out tests/*.c frontend/*.d_parser.cc frontend/*.d_parser.h \
+	$(MAKE_CAST_CODE) \
+	$(PLIB_OBJS:.o=.d) $(LIB_OBJS:.o=.d) $(IFA_OBJS:.o=.d)
 
 DEPEND_SRCS = $(IFA_DEPEND_SRCS) $(LIB_SRCS)
 
@@ -172,6 +175,12 @@ $(LIBRARY): $(LIB_OBJS) $(PLIB_OBJS)
 
 $(MAKE_PRIMS): codegen/make_prims.cc
 	$(CXX) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
+
+$(MAKE_CAST_CODE): if1/make_cast_code.cc
+	$(CXX) -std=c++23 -o $@ $^
+
+if1/cast_code.cc if1/check_cast.cc: $(MAKE_CAST_CODE)
+	(cd if1 && ../$(MAKE_CAST_CODE))
 
 ifa.cat: ifa.1
 	rm -f ifa.cat

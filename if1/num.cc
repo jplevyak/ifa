@@ -290,6 +290,10 @@ void coerce_immediate(Immediate *from, Immediate *to) {
 #include "cast_code.cc"
 }
 
+bool check_coerce_immediate(Immediate *from, Immediate *to) {
+#include "check_cast.cc"
+}
+
 #define DO_FOLD(_op)                                           \
   switch (imm->const_kind) {                                   \
     case IF1_NUM_KIND_NONE:                                    \
