@@ -16,8 +16,9 @@
 #include "timer.h"
 #include "var.h"
 
-#define DEBUG_PRINT(...) printf(__VA_ARGS__)
-//#define DEBUG_PRINT(...) ((void)0)
+// Gate splitter-progress prints on `ifa_debug` (set via `-d`) so default
+// runs are silent and tests can diff stdout cleanly.
+#define DEBUG_PRINT(...) do { if (ifa_debug) printf(__VA_ARGS__); } while (0)
 
 /* runtime options
  */
