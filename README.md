@@ -1,3 +1,7 @@
+IFA — Iterative Flow Analysis library
+
+For per-subsystem documentation, see [INDEX.md](INDEX.md).
+
 BUILD
 
   You need to pull some other software
