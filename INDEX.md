@@ -88,6 +88,14 @@ frontend see [../PIPELINE.md](../PIPELINE.md).
   [CODEGEN_LLVM.md](CODEGEN_LLVM.md). The previous IR-serialization
   format described here is no longer in the tree.
 
+## Testing
+
+- [TESTING.md](TESTING.md) — Master plan for the IF1-level test
+  infrastructure: parser for `.ir` files, per-phase normalized
+  output formats, test runner. Sub-files under
+  [testing/](testing/) cover format spec, runner, refactorings,
+  and per-phase plans.
+
 ## Operator / build docs
 
 - [AGENTS.md](AGENTS.md) — Build / test / architecture overview
