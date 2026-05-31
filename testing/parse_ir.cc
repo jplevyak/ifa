@@ -312,12 +312,6 @@ static bool at_keyword(Lex &L, cchar *kw) {
   return strcmp(L.t.text, kw) == 0;
 }
 
-static bool consume_keyword(Lex &L, cchar *kw) {
-  if (!at_keyword(L, kw)) return false;
-  next_token(L);
-  return true;
-}
-
 // ---------------------------------------------------------------------------
 // Sym creation / lookup
 // ---------------------------------------------------------------------------

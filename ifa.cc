@@ -48,7 +48,8 @@ void ifa_code(cchar *fn) {
   char hfn[512];
   snprintf(hfn, sizeof(hfn), "%s.code", fn);
   FILE *fp = fopen(hfn, "w");
-  if1_write(fp, pdb->if1, 0);
+  if1_write(fp, pdb->if1);
+  fclose(fp);
 }
 
 int ifa_optimize() {

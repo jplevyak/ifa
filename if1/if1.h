@@ -72,7 +72,7 @@ int if1_numeric_alignment(IF1 *p, Sym *t);
 cchar *if1_cannonicalize_string(IF1 *p, cchar *start, cchar *end = 0);
 void if1_finalize_closure(IF1 *p, Sym *c);
 
-void if1_write(FILE *fp, IF1 *p, int start = 0);
+void if1_write(FILE *fp, IF1 *p);
 void if1_write_log();
 
 void if1_finalize(IF1 *p);
@@ -92,8 +92,6 @@ extern IF1 *if1;
 
 static inline Sym *new_Sym(cchar *name = 0) { return if1->callback->new_Sym(name); }
 
-void print_syms(FILE *fp, Vec<Sym *> *syms);
-void print_code(FILE *fp, Code *code, int indent, int lf = 1);
 void pp(Code *code);
 
 #endif

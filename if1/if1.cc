@@ -7,6 +7,7 @@
 #include "log.h"
 #include "prim.h"
 #include "sym.h"
+#include "testing/write_ir.h"
 
 cchar *builtin_strings[] = {
 #define S(_x) #_x,
@@ -497,162 +498,6 @@ static cchar *SPACES = "                                        ";
 
 #define SP(_fp, _n) fputs(&SPACES[40 - (_n)], _fp)
 
-static cchar *Code_kind_string[] = {"SUB", "MOVE", "SEND", "IF", "LABEL", "GOTO", "SEQ", "CONC", "NOP"};
-
-void print_code(FILE *fp, Code *code, int indent, int lf) {
-  if (indent > 40) indent = 40;
-  switch (code->kind) {
-    case Code_SUB:
-      for (int i = 0; i < code->sub.n; i++) print_code(fp, code->sub[i], indent, i < code->sub.n - 1 ? 1 : lf);
-      break;
-    case Code_MOVE:
-      if (code->live) {
-        SP(fp, indent);
-        fputs("(MOVE ", fp);
-        if1_dump_sym(fp, code->rvals[0]);
-        fputs(" ", fp);
-        if1_dump_sym(fp, code->lvals[0]);
-        fputs(")", fp);
-      }
-      break;
-    case Code_SEND:
-      SP(fp, indent);
-      fputs("(SEND", fp);
-      if (code->lvals.n) {
-        fputs(" (FUTURE ", fp);
-        for (int i = 0; i < code->lvals.n; i++) {
-          if1_dump_sym(fp, code->lvals[i]);
-          if (i < code->lvals.n - 1) fputs(" ", fp);
-        }
-        fputs(")", fp);
-      }
-      for (int i = 0; i < code->rvals.n; i++) {
-        fputs(" ", fp);
-        if1_dump_sym(fp, code->rvals[i]);
-      }
-      fputs(")", fp);
-      break;
-    case Code_IF:
-      SP(fp, indent);
-      fputs("(IF ", fp);
-      if1_dump_sym(fp, code->rvals[0]);
-      fprintf(fp, " %d %d)", code->label[0]->id, code->label[1]->id);
-      break;
-    case Code_LABEL:
-      if (code->live) {
-        SP(fp, indent);
-        fprintf(fp, "(LABEL %d)", code->label[0]->id);
-      }
-      break;
-    case Code_GOTO:
-      SP(fp, indent);
-      fprintf(fp, "(GOTO %d)", code->label[0]->id);
-      break;
-    case Code_SEQ:
-    case Code_CONC:
-      SP(fp, indent);
-      fprintf(fp, "(%s\n", Code_kind_string[code->kind]);
-      for (int i = 0; i < code->sub.n; i++) print_code(fp, code->sub[i], indent + 1, i < code->sub.n - 1 ? 1 : 0);
-      fputs(")", fp);
-      break;
-    case Code_NOP:
-      SP(fp, indent);
-      fputs("(NOP)", fp);
-      break;
-  }
-  if (code->kind != Code_SUB && lf) fputs("\n", fp);
-}
-
-void print_syms(FILE *fp, Vec<Sym *> *syms, int start = 0) {
-  for (int i = start; i < syms->n; i++) {
-    Sym *s = syms->v[i];
-    if (!s->live) continue;
-    fputs("(SYMBOL ", fp);
-    if1_dump_sym(fp, s);
-    if (s->nesting_depth) fprintf(fp, " :NESTING_DEPTH %d", s->nesting_depth);
-    if (s->type_kind) fprintf(fp, " :TYPE_KIND %s", type_kind_string[s->type_kind]);
-    if (s->type) {
-      fputs(" :TYPE ", fp);
-      if1_dump_sym(fp, s->type);
-    }
-    if (s->must_specialize) {
-      fputs(" :MUST_SPECIALIZE ", fp);
-      if1_dump_sym(fp, s->must_specialize);
-    }
-    if (s->must_implement) {
-      fputs(" :MUST_IMPLEMENT ", fp);
-      if1_dump_sym(fp, s->must_implement);
-    }
-    if (s->is_constant) {
-      if (s->type && s->constant)
-        fprintf(fp, " :CONSTANT %s", (char *)s->constant);
-      else {
-        fprintf(fp, " :CONSTANT ");
-        fprint_imm(fp, s->imm);
-      }
-    }
-    if (s->aspect) {
-      fputs(" :ASPECT ", fp);
-      if1_dump_sym(fp, s->aspect);
-    }
-    if (s->in) {
-      fputs(" :IN ", fp);
-      if1_dump_sym(fp, s->in);
-    }
-    if (s->has.n) {
-      fputs(" :HAS (", fp);
-      for (int j = 0; j < s->has.n; j++) {
-        if (j) fprintf(fp, " ");
-        if1_dump_sym(fp, s->has[j]);
-      }
-      fputs(")", fp);
-    }
-    if (s->implements.n) {
-      fputs(" :IMPLEMENTS (", fp);
-      for (int j = 0; j < s->implements.n; j++) {
-        if (j) fprintf(fp, " ");
-        if1_dump_sym(fp, s->implements[j]);
-      }
-      fputs(")", fp);
-    }
-    if (s->specializes.n) {
-      fputs(" :SPECIALZES (", fp);
-      for (int j = 0; j < s->specializes.n; j++) {
-        if (j) fprintf(fp, " ");
-        if1_dump_sym(fp, s->specializes[j]);
-      }
-      fputs(")", fp);
-    }
-    if (s->includes.n) {
-      fputs(" :INCLUDES (", fp);
-      for (int j = 0; j < s->includes.n; j++) {
-        if (j) fprintf(fp, " ");
-        if1_dump_sym(fp, s->includes[j]);
-      }
-      fputs(")", fp);
-    }
-    if (s->ret) {
-      fputs(" :RET ", fp);
-      if1_dump_sym(fp, s->ret);
-    }
-    if (s->cont) {
-      fputs(" :CONT ", fp);
-      if1_dump_sym(fp, s->cont);
-    }
-    if (s->is_local) fputs(" :LOCAL true", fp);
-    if (s->is_constant) fputs(" :IS_CONSTANT true", fp);
-    if (s->is_external) fputs(" :EXTERNAL true", fp);
-    if (s->is_meta_type) fputs(" :META_TYPE true", fp);
-    if (s->is_value_type) fputs(" :VALUE_TYPE true", fp);
-    if (s->is_system_type) fputs(" :SYSTEM_TYPE true", fp);
-    if (s->code) {
-      fputs(" :CODE\n", fp);
-      print_code(fp, s->code, 1, 0);
-    }
-    fputs(")\n", fp);
-  }
-}
-
 void if1_simple_dead_code_elimination(IF1 *p) {
   for (int i = 0; i < p->allsyms.n; i++) {
     p->allsyms[i]->live = 0;
@@ -784,15 +629,13 @@ void if1_finalize_closure(IF1 *p, Sym *c) {
   if1_fixup_nesting(c->code, c);
 }
 
-void if1_write(FILE *fp, IF1 *p, int start) {
-  print_syms(fp, &p->allsyms, start);
+void if1_write(FILE *fp, IF1 *p) {
+  write_ir(fp, p);
   fflush(fp);
 }
 
 void if1_write_log() {
-  static int start = 0;
-  if (get_int_config("alog.test.if1") > 0) if1_write(alog.fp, if1, start);
-  start = if1->allsyms.n;
+  if (get_int_config("alog.test.if1") > 0) if1_write(alog.fp, if1);
 }
 
 cchar *if1_cannonicalize_string(IF1 *p, cchar *s, cchar *e) {
@@ -842,7 +685,7 @@ void if1_dump_code(FILE *fp, Code *code, int indent) {
     case Code_SUB:
     case Code_SEQ:
     case Code_CONC:
-      fprintf(fp, "(%s\n", Code_kind_string[code->kind]);
+      fprintf(fp, "(%s\n", code_string[code->kind]);
       for (int i = 0; i < code->sub.n; i++) if1_dump_code(fp, code->sub[i], indent + 1);
       SP(fp, indent);
       fputs(")\n", fp);
@@ -917,4 +760,4 @@ void if1_set_primitive_types(IF1 *if1) {
   }
 }
 
-void pp(Code *code) { print_code(stdout, code, 0, 0); }
+void pp(Code *code) { if1_dump_code(stdout, code, 0); }
