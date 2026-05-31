@@ -272,10 +272,13 @@ Not in v1, but the harness should leave room:
 
 ## 13. Status checklist
 
-- [ ] `ifa/testing/parse_ir.{cc,h}` exists and round-trips a fixture
-- [ ] `ifa/testing/write_ir.{cc,h}` exists
+- [x] `ifa/testing/parse_ir.{cc,h}` exists and round-trips a fixture
+      (`run_smoke`, `run_roundtrip`, `run_rich_roundtrip` in
+      `roundtrip_test.cc`; all pass via `ifa --test`)
+- [x] `ifa/testing/write_ir.{cc,h}` exists
 - [ ] `ifa/testing/ifa_test_main.cc` parses CLI, walks fixtures
-- [ ] `ifa/testing/test_callbacks.{cc,h}` exists
+- [ ] `ifa/testing/test_callbacks.{cc,h}` exists (currently inline
+      in `roundtrip_test.cc` as `IRCallbacks`)
 - [ ] First phase (finalize) prints + diffs golden
 - [ ] `make test-ir` wired into Makefile
 - [ ] Tests directory `ifa/tests/ir/` created with at least one

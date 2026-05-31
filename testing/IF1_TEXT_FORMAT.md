@@ -190,13 +190,19 @@ Each form is a separate line for diff readability.
 ### 4.2 Send
 
 ```
-(send :prim %f %a1 %a2 => %r1 %r2)
-(send :prim @sym_operator %lhs @sym_add %rhs => %result)
-(send :keyword %f %a1 :kw %a2 => %r)   ; with keyword arg
+(send %f %a1 %a2 => %r1 %r2)
+(send @sym_operator %lhs @sym_add %rhs => %result)
 ```
 
-`:prim` indicates this SEND should resolve to a `Prim *` via
-`Primitives::find`. Without it, the SEND is a user-function call.
+The `=>` separates rvals from lvals. No marker distinguishes
+primitive sends from user-function sends — that resolution
+happens automatically at `if1_finalize` time via
+`Primitives::find`, based on what's in the rvals (`sym_operator`,
+`sym_primitive`).
+
+Keyword arguments are not yet supported in v1. They'll likely use
+a `:kw <value>` syntax interleaved with positional args once
+needed.
 
 ### 4.3 Control flow
 
@@ -211,71 +217,56 @@ allocates a fresh `Label *` per name.
 
 ### 4.4 Higher-level constructors
 
-These are convenience wrappers around `if1_if` / `if1_loop` builders
-([IR.md](../IR.md) §4.1). They emit the full label/goto skeleton.
-
-```
-(if-then-else %cond
-  :then ((move %a %result))
-  :else ((move %b %result)))
-
-(loop :cond %cond_var
-  :before ((move %0 %cond_var))
-  :body ((send :prim @next %iter => %cond_var))
-  :continue %cont_label
-  :break %break_label)
-```
-
-Bodies are inline lists. Continue/break labels are optional names; if
-omitted, anonymous labels are generated.
+**Not in v1.** Authored bodies use explicit `(label)` / `(goto)` /
+`(if)` forms. The `(if-then-else)` and `(loop)` convenience
+wrappers from `if1_if` / `if1_loop` ([IR.md](../IR.md) §4.1) are
+deferred until a test needs them.
 
 ### 4.5 Group nodes
 
-Usually emitted by builders. Direct authoring:
-
-```
-(seq
-  (move %a %b)
-  (move %b %c))
-
-(sub ...)     ; uncommon; the default body is SUB
-```
+`(seq ...)` is recognised and produces a `Code_SEQ` group via
+`if1_seq`. Direct authoring of `Code_SUB` / `Code_CONC` is not
+exposed — the body of a `(fun ... :body ...)` is implicitly a
+`SUB` group.
 
 ---
 
 ## 5. Full example
 
 A complete `.ir` file. Test: a single-function add that returns
-`a + b`.
+`a + b`. Builtins like `@int32` and `@sym_add` are looked up via
+`if1_get_builtin`; the test harness is responsible for registering
+them before parsing (most are set up by `ifa_init` →
+`init_builtin_symbols`).
 
 ```
 ;; tests/ir/finalize/simple_add.ir
 ;; Exercises: SEND resolves to prim_add at if1_finalize.
 
-(import @int32 as %int)
-
-(sym %a :type %int :is-local)
-(sym %b :type %int :is-local)
-(sym %r :type %int :is-local)
+(sym %a :type @int32 :is-local)
+(sym %b :type @int32 :is-local)
+(sym %r :type @int32 :is-local)
 (sym %cont)
-(sym %ret :type %int)
+(sym %ret :type @int32)
 
 (fun %add
   :args (%a %b)
   :rets (%r)
+  :cont %cont
   :body
-    (send :prim @sym_operator %a @sym_add %b => %r)
-    (send :prim @sym_primitive @sym_reply %cont %r))
+    (send @sym_operator %a @sym_add %b => %r)
+    (send @sym_primitive @sym_reply %cont %r))
 
 (entry %add)
 ```
 
 The parser:
 1. Creates `Sym` objects for `%a`, `%b`, `%r`, `%cont`, `%ret`,
-   `%add` (each via `if1_register_sym`).
-2. Sets `%a->type = sym_int32`, etc.
+   `%add` (each via `new_Sym(name)`, which routes through the
+   frontend's `IFACallbacks::new_Sym`).
+2. Sets `%a->type = sym_int32`, etc., via `:type` resolution.
 3. Records `%add->is_fun = 1`, `%add->has = [%a, %b]`,
-   `%add->ret = %ret`, `%add->cont = %cont`.
+   `%add->ret = %r`, `%add->cont = %cont`.
 4. Builds a `Code` tree for the body via `if1_send` / `if1_move`.
 5. Calls `if1_closure(if1, sym_add, code, 2, &args[0])` to register
    as a closure.
@@ -288,7 +279,7 @@ built it.
 
 ## 6. Parser implementation
 
-Location: `ifa/testing/parse_ir.{cc,h}` (new files).
+Location: `ifa/testing/parse_ir.{cc,h}`.
 
 Public API:
 
@@ -306,44 +297,67 @@ int parse_ir_string(cchar *source, cchar *fake_filename);
 // Look up a symbolic name (for tests that need to reference syms
 // after parsing). Returns NULL if not found.
 Sym *parse_ir_lookup(cchar *name);
+
+// Reset the parser's user-sym table. Call between parses if you
+// reuse `if1`.
+void parse_ir_reset();
 ```
 
 ### 6.1 Parser approach
 
-Hand-rolled recursive-descent. Reuse the `if1_*` builders from
-[IR.md](../IR.md) §4.1 — the parser is a thin layer that translates
-`.ir` forms into `if1_*` calls.
+Hand-rolled lexer + recursive-descent parser. Reuses the `if1_*`
+builders from [IR.md](../IR.md) §4.1 — the parser is a thin layer
+that translates `.ir` forms into `if1_*` calls.
 
 DParser was considered (already in the build) but:
 - adds a build dependency to the test infra;
-- s-expression grammar is trivial enough that ~300 lines of C++
-  suffices;
+- s-expression grammar is trivial enough that ~500 lines of C++
+  suffice;
 - error messages are easier to control with a hand-rolled parser.
 
 ### 6.2 Symbol table
 
-Single hash map `name → Sym *`. Two-pass:
-1. **Declaration pass:** create empty Sym objects for every
-   `(sym NAME ...)`, `(type NAME ...)`, `(fun NAME ...)`. Records
-   in the name map.
-2. **Resolution pass:** fill in fields (`type`, `has`, `body`, etc.)
-   using the name map. Forward references resolve here.
+Single hash map `name → Sym *` (`g_user_syms` in `parse_ir.cc`).
+The parser uses **lazy creation with backpatching**: when it
+encounters a `%name` reference, it either looks up an existing
+Sym or creates a placeholder. When the declaration is later seen,
+the placeholder's attributes get filled in.
 
-Builtins (`@name`) are resolved by lookup in `if1->builtins`. Symbol
-atoms (`#name`) are auto-created via `if1_make_symbol`.
+This achieves the same result as a two-pass design but with a
+single forward scan. The trade-off: a typo like `%foo` (no
+`(sym %foo ...)` decl anywhere) creates an empty placeholder
+silently. Tests catch this either via `parse_ir_lookup` checks
+or by the write/round-trip cycle producing odd output.
 
-### 6.3 Error handling
+Builtins (`@name`) are resolved by `if1_get_builtin(if1, name)`;
+unknown builtins are an error. Symbol atoms (`#name`) are
+auto-created via `if1_make_symbol`.
 
-Errors are reported with `file:line:col: message`. Examples:
+### 6.3 Lexer specifics
 
+The lexer recognises:
+- `(`, `)` — list delimiters.
+- `%name`, `@name`, `#name`, `:name` — sigil-prefixed identifiers.
+- `"..."` with `\n`, `\t`, `\r`, `\\`, `\"`, `\0` escapes.
+- Integer (`42`, `-7`) and float (`3.14`, `-.5`) literals.
+- Barewords (identifiers without a sigil — `RECORD`, `true`,
+  `as`, `IN`).
+- The two-character token `=>` (used as the rvals/lvals separator
+  in `(send ...)`).
+- `;` to end of line — comment.
+
+### 6.4 Error handling
+
+Errors are reported with `file:line:col: message`. The parser
+sets an error count and returns -1; the caller decides whether to
+proceed.
+
+Examples:
 ```
-foo.ir:5:12: unknown symbol %unrl (did you mean %url?)
-foo.ir:8:1: type RECORD requires :has
-foo.ir:12:9: forward reference %later resolved to no declaration
+foo.ir:5:12: unknown attribute :unkown
+foo.ir:8:1:  expected '(' to open declaration
+foo.ir:12:9: unknown builtin @no_such_sym
 ```
-
-No `fail()` — the parser sets a global error count and returns -1;
-the caller decides what to do.
 
 ---
 
@@ -399,12 +413,20 @@ post-CFG, else in Code-tree DFS order.
 
 ## 8. Round-trip test
 
-A bootstrapping test: `tests/ir/format/roundtrip.ir` is read,
-written, re-read, and the second in-memory state is compared to the
-first. Differences are bugs in either the parser or writer.
+A bootstrapping test: parse a sample, write, re-parse, write again,
+compare the two written outputs byte-for-byte. Differences are bugs
+in either the parser or the writer.
 
-Implemented in `ifa/testing/roundtrip_test.cc`, registered with the
-`UnitTest` framework so `ifa --test` exercises it.
+Implemented in `ifa/testing/roundtrip_test.cc`. Three cases land in
+the `UnitTest` framework so `ifa --test` exercises them:
+
+- `run_smoke` — bare-minimum parse (`(sym %x) (entry %x)`).
+- `run_roundtrip` — small fun with `(send)` + `(label)`.
+- `run_rich_roundtrip` — types with `:has`, immediates of every
+  kind (int / float / string / bool), `(if)`/`(goto)` control
+  flow, mixed `(label)`s.
+
+Current status: all three pass.
 
 ---
 
@@ -429,16 +451,19 @@ breaking existing files. Reserved sigils (`%`, `@`, `#`, `:`,
 
 ---
 
-## 10. Open design questions
+## 10. Design decisions (resolved for v1)
 
-1. Should `:has` accept inline syms (e.g. `:has (sym %x :type @int))`
-   to flatten test files, or always require pre-declared refs?
-   *Tentative:* require pre-declared. Easier to reason about.
-2. Should the format support multi-module tests (one `.ir` per
-   module)? *Tentative:* not in v1. Real multi-module testing
-   goes through the existing pyc suite.
-3. Should the writer emit comments documenting the test's intent?
-   *Tentative:* no — comments belong in the input file, not the
-   written output.
+1. **Inline syms inside `:has`?** No — always require pre-declared
+   refs. A sym must be introduced by `(sym ...)`, `(type ...)`, or
+   `(fun ...)` before it can be referenced. Forward references are
+   still allowed (the parser does a two-pass resolve over a single
+   file), but the *declaration* must exist somewhere in the file.
+2. **Multi-module tests?** Not in v1. One `.ir` = one IF1 state.
+   Real multi-module testing goes through the existing pyc
+   end-to-end suite.
+3. **Writer emits comments?** No. The writer produces machine
+   output that the parser can re-read; comments are for hand-
+   written input files only. (The writer may emit `;;` banner
+   lines before sections for readability; the lexer skips them.)
 
-Decisions should land in this file before the parser is coded.
+These decisions land in v1. Revisit only with concrete need.

@@ -117,7 +117,8 @@ LIB_SRCS = ifa.cc main.cc \
 	if1/pnode.cc if1/prim.cc if1/prim_data.cc if1/sym.cc if1/var.cc \
 	analysis/fa.cc analysis/cdb.cc analysis/pdb.cc analysis/graph.cc analysis/clone.cc analysis/ifalog.cc \
 	codegen/cg.cc codegen/llvm.cc codegen/llvm_codegen.cc codegen/llvm_primitives.cc \
-	optimize/cfg.cc optimize/dead.cc optimize/dom.cc optimize/inline.cc optimize/loop.cc optimize/ssu.cc
+	optimize/cfg.cc optimize/dead.cc optimize/dom.cc optimize/inline.cc optimize/loop.cc optimize/ssu.cc \
+	testing/parse_ir.cc testing/write_ir.cc testing/roundtrip_test.cc
 LIB_OBJS = $(LIB_SRCS:%.cc=%.o)
 
 IFA_DEPEND_SRCS = main.cc frontend/parse.cc frontend/scope.cc frontend/make_ast.cc frontend/ast_to_if1.cc \

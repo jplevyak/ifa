@@ -135,11 +135,12 @@ Update this table as each item lands.
 
 | Item | Owner | Status | Notes |
 |---|---|---|---|
-| `testing/IF1_TEXT_FORMAT.md` | — | drafted | needs review |
+| `testing/IF1_TEXT_FORMAT.md` | — | landed | v1 spec; open questions resolved |
 | `testing/TEST_RUNNER.md` | — | drafted | needs review |
 | `testing/REFACTORING.md` | — | drafted | needs review |
-| Parser implementation | — | TODO | see IF1_TEXT_FORMAT.md §6 |
-| Writer implementation | — | TODO | see IF1_TEXT_FORMAT.md §7 |
+| Parser implementation | — | DONE | `ifa/testing/parse_ir.{cc,h}` |
+| Writer implementation | — | DONE | `ifa/testing/write_ir.{cc,h}` |
+| Round-trip test | — | DONE | `ifa/testing/roundtrip_test.cc`; 3 cases pass via `ifa --test` |
 | `ifa-test` binary | — | TODO | see TEST_RUNNER.md §2 |
 | Phase 01: if1_finalize | — | TODO | [phases/01](testing/phases/01_if1_finalize.md) |
 | Phase 02: CFG + SSU | — | TODO | [phases/02](testing/phases/02_cfg_ssu.md) |
