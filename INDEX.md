@@ -96,6 +96,13 @@ frontend see [../PIPELINE.md](../PIPELINE.md).
   [testing/](testing/) cover format spec, runner, refactorings,
   and per-phase plans.
 
+## Issues
+
+- [issues/README.md](issues/README.md) — Open work items for the
+  library. Numbered markdown files (`NNN-short-slug.md`); each
+  documents symptom, root cause, proposed fix, and what fixing it
+  unblocks.
+
 ## Operator / build docs
 
 - [AGENTS.md](AGENTS.md) — Build / test / architecture overview
