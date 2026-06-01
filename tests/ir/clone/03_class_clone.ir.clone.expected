@@ -1,0 +1,38 @@
+;; phase: clone
+
+(summary fa_rc=0 clone_rc=0 funs=3 css=16 ess=3)
+
+(cs-equiv
+  class[.] members=1 type=symbol
+  class[.=] members=1 type=symbol
+  class[Point] members=1 type=Point
+  class[Point] members=1 type=Point
+  class[Point] members=1 type=Point
+  class[__main__] members=1 type=__main__
+  class[__operator] members=1 type=symbol
+  class[__primitive] members=1 type=symbol
+  class[continuation] members=1 type=continuation
+  class[k_f] members=1 type=float64
+  class[k_i] members=1 type=int32
+  class[new] members=1 type=symbol
+  class[nil_type] members=1 type=nil_type
+  class[px] members=1 type=symbol
+  class[read_x] members=1 type=read_x
+  class[reply] members=1 type=symbol
+)
+
+(es-equiv
+  fun __main__ ess=1 equiv-classes=1
+  fun read_x ess=1 equiv-classes=1
+  fun read_x ess=1 equiv-classes=1
+)
+
+(call-graph
+  fun __main__
+    pnode-send → read_x
+    pnode-send → read_x
+)
+
+(new-funs
+  (none)
+)

@@ -1,0 +1,30 @@
+;; phase: clone
+
+(summary fa_rc=0 clone_rc=0 funs=3 css=8 ess=3)
+
+(cs-equiv
+  class[__main__] members=1 type=__main__
+  class[__primitive] members=1 type=symbol
+  class[continuation] members=1 type=continuation
+  class[id] members=1 type=id
+  class[k_f] members=1 type=float64
+  class[k_i] members=1 type=int32
+  class[nil_type] members=1 type=nil_type
+  class[reply] members=1 type=symbol
+)
+
+(es-equiv
+  fun __main__ ess=1 equiv-classes=1
+  fun id ess=1 equiv-classes=1
+  fun id ess=1 equiv-classes=1
+)
+
+(call-graph
+  fun __main__
+    pnode-send → id
+    pnode-send → id
+)
+
+(new-funs
+  (none)
+)
