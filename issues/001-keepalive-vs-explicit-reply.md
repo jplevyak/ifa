@@ -87,17 +87,77 @@ the crash:
 kp_result->nesting_depth = LOCALLY_NESTED;
 ```
 
-But it also defeats the keepalive's purpose. Per-ES processing
-doesn't back-propagate liveness across the splice the way the
-global pass did, so DCE marks all user code dead again — visible as
-`dce/01_baseline.ir.dce.expected` regressing to
-`pnodes=0/N vars=0/N` (the "skeleton-only" state we had before the
-keepalive existed).
+But it also defeats the keepalive's purpose: the keepalive PNode
+gets dropped from `fa_all_PNodes` before FA even runs, so the
+FA-level DCE has nothing to anchor user-code liveness to.
+`dce/01_baseline` regresses to the pre-keepalive skeleton
+(`pnodes=0/N vars=0/N`, funs=1).
 
-Tested empirically; the trade-off is locked in
-`ifa/testing/fa_setup.cc` with a comment, and `ac62d25` documents
-the decision to keep the global-`kp_result` form despite the
-crash-on-explicit-reply.
+The actual mechanism (traced by instrumenting
+`mark_initial_dead_and_alive`): when the LOCALLY_NESTED variant
+runs, `__main__`'s `fa_all_PNodes` shows only the user SEND and
+the synthetic reply — not the keepalive. The keepalive Code was
+pruned earlier, in `if1_simple_dead_code_elimination`
+(`ifa/if1/if1.cc:501`, called from `if1_finalize_dce`) — i.e. at
+the *Sym-level* live pass, before FA::analyze runs.
+
+The chain in `if1.cc`:
+
+1. **Seed live roots** (line 505-508):
+   ```c
+   for (Sym *s : p->allsyms)
+     if (!s->nesting_depth || s->asymbol) mark_sym_live(s);
+   ```
+   Globals (`nesting_depth == 0`) are the live root set. With
+   LOCALLY_NESTED (-1, becoming 1 after fixup), `kp_result` is
+   **not** a live root.
+
+2. **Propagate** `mark_live(p, code)` (line 453-478). For
+   `Code_SEND` (line 466-471):
+   ```c
+   if (!code->lvals.n || code->lvals[0]->live || !is_functional(p, code)) {
+     for (Sym *r : code->rvals) mark_sym_live(r);
+     for (Sym *l : code->lvals) mark_sym_live(l);
+   }
+   ```
+   For the keepalive: `lvals[0]` is `kp_result` (`Var->live = 0`
+   from step 1); `is_functional` returns `1` because the
+   `RegisteredPrim` ctor defaults `is_functional(1)` and we never
+   change it. All three conditions false → no propagation.
+
+3. **Sweep** `mark_dead(p, code)` (line 480-495). For `Code_SEND`
+   (line 488-490):
+   ```c
+   if (is_functional(p, code) && !code->lvals[0]->live)
+     code->live = 0;
+   ```
+   Both conditions true → **the keepalive Code is marked dead.**
+
+4. When `Fun::build_cfg` runs later (during the printer's setup
+   loop), dead Code is skipped — the keepalive never gets a PNode
+   in `fa_all_PNodes`. The FA-level DCE in `ifa/optimize/dead.cc`
+   then has nothing to mark initially-live via `is_visible`, so
+   user-code back-propagation never gets seeded.
+
+In the global-`kp_result` case, step 1 fires: kp_result has
+`nesting_depth == 0` so it's a live root, which keeps the keepalive
+Code live through the Sym-level DCE, which keeps the PNode in
+`fa_all_PNodes`, which lets `mark_initial_dead_and_alive` set its
+`p->live = 1` via the `is_visible` check. Back-propagation works.
+
+So the two DCE passes are stacked: `if1_simple_dead_code_elimination`
+(Sym-level, IR-level pruning) gates whether the keepalive PNode
+even exists for `mark_live_code` (FA-level, AVar/PNode liveness) to
+look at. Hand-wave of "per-ES processing doesn't propagate liveness"
+was wrong; the real issue is "Sym-level DCE removes the keepalive
+before FA-level DCE gets a chance."
+
+A possible workaround that keeps `kp_result` LOCALLY_NESTED:
+register the keepalive prim with `is_functional = 0` (so step 3's
+sweep skips it). That would be a one-line `rp->is_functional = 0;`
+addition next to `rp->is_visible = 1;`. Verify the crash actually
+goes away in that configuration and the dce goldens stay sane —
+the proposed-fix section below remains the more principled answer.
 
 ## Proposed fix: capture the user ret via an intermediate move
 
