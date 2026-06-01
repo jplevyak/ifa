@@ -21,18 +21,7 @@
 #include <stdarg.h>
 #include <sstream>
 
-// Debug logging
-#ifndef LLVM_DEBUG
-#define LLVM_DEBUG 0
-#endif
-
-#if LLVM_DEBUG
-#define DEBUG_LOG(...) fprintf(stderr, "DEBUG: " __VA_ARGS__)
-#else
-#define DEBUG_LOG(...) \
-  do {                 \
-  } while (0)
-#endif
+// DEBUG_LOG moved to llvm_internal.h; runtime-gated on ifa_debug.
 
 // ============================================================================
 // Global LLVM State (definitions)
@@ -168,7 +157,7 @@ static std::map<Fun *, std::vector<PNode *>> reverse_call_graph;
 static void discover_all_reachable_functions(FA *fa, Fun *main_fun, Vec<Fun *> &all_funs) {
   if (!fa || !main_fun) return;
 
-  fprintf(stderr, "DEBUG: discover_all_reachable_functions starting from %s\n",
+  DEBUG_LOG("discover_all_reachable_functions starting from %s\n",
           main_fun->sym->name ? main_fun->sym->name : "(null)");
 
   std::set<Fun *> visited;
@@ -184,7 +173,7 @@ static void discover_all_reachable_functions(FA *fa, Fun *main_fun, Vec<Fun *> &
   int fun_idx = 0;
   for (Fun *f : fa->funs) {
     if (f) {
-      fprintf(stderr, "DEBUG:   fa->funs[%d]: %s (id %d) live=%d\n", fun_idx, f->sym->name ? f->sym->name : "(null)",
+      DEBUG_LOG("  fa->funs[%d]: %s (id %d) live=%d\n", fun_idx, f->sym->name ? f->sym->name : "(null)",
               f->sym->id, f->live);
       if (f->live) {
         if (visited.find(f) == visited.end()) {
@@ -204,7 +193,7 @@ static void discover_all_reachable_functions(FA *fa, Fun *main_fun, Vec<Fun *> &
     // Add to all_funs
     all_funs.set_add(current);
 
-    fprintf(stderr, "DEBUG: Discovered function %s (id %d), calls.n=%d\n",
+    DEBUG_LOG("Discovered function %s (id %d), calls.n=%d\n",
             current->sym->name ? current->sym->name : "(null)", current->sym->id, current->calls.n);
 
     // Walk through all call sites in this function
@@ -215,7 +204,7 @@ static void discover_all_reachable_functions(FA *fa, Fun *main_fun, Vec<Fun *> &
         if (targets) {
           for (Fun *target_fun : *targets) {
             if (target_fun && visited.find(target_fun) == visited.end()) {
-              fprintf(stderr, "DEBUG:   Found call to %s (id %d)\n",
+              DEBUG_LOG("  Found call to %s (id %d)\n",
                       target_fun->sym->name ? target_fun->sym->name : "(null)", target_fun->sym->id);
               worklist.push_back(target_fun);
               visited.insert(target_fun);
@@ -226,7 +215,7 @@ static void discover_all_reachable_functions(FA *fa, Fun *main_fun, Vec<Fun *> &
     }
   }
 
-  fprintf(stderr, "DEBUG: discover_all_reachable_functions found %d functions\n", all_funs.n);
+  DEBUG_LOG("discover_all_reachable_functions found %d functions\n", all_funs.n);
 }
 
 static void build_reverse_call_graph(FA *fa) {
@@ -283,7 +272,7 @@ static llvm::Value *recover_constant_arg(Var *var, Fun *ifa_fun) {
     bool is_const = s->is_constant || s->num_kind != IF1_NUM_KIND_NONE;
     if (!is_const) {
       // Not constant?
-      fprintf(stderr, "DEBUG: Recovery: caller passes non-constant %s\n", s->name);
+      DEBUG_LOG("Recovery: caller passes non-constant %s\n", s->name);
       return nullptr;
     }
 
@@ -296,7 +285,7 @@ static llvm::Value *recover_constant_arg(Var *var, Fun *ifa_fun) {
   }
 
   if (consistent_sym) {
-    fprintf(stderr, "DEBUG: Recovered constant %s for arg %s\n", consistent_sym->name ? consistent_sym->name : "?",
+    DEBUG_LOG("Recovered constant %s for arg %s\n", consistent_sym->name ? consistent_sym->name : "?",
             var->sym->name);
     // Create a heap-allocated Var to wrap the Sym (using GC)
     // Stack allocation would create dangling pointers
@@ -316,13 +305,13 @@ static llvm::Value *recover_constant_arg(Var *var, Fun *ifa_fun) {
  * @return The corresponding LLVM type, or nullptr on failure
  */
 llvm::Type *getLLVMType(Sym *sym) {
-  fprintf(stderr, "DEBUG: getLLVMType %p\n", (void *)sym);
+  DEBUG_LOG("getLLVMType %p\n", (void *)sym);
   if (!sym) {
     // fail("Null Sym provided to getLLVMType");
     fprintf(stderr, "WARNING: getLLVMType(nil), returning VoidTy as fallback\n");
     return llvm::Type::getVoidTy(*TheContext);
   }
-  fprintf(stderr, "DEBUG: getLLVMType %s kind %d is_fun %d\n", sym->name ? sym->name : "unnamed", sym->type_kind,
+  DEBUG_LOG("getLLVMType %s kind %d is_fun %d\n", sym->name ? sym->name : "unnamed", sym->type_kind,
           sym->is_fun);
 
   // Check if this is a function symbol (not a type) - this should NOT happen
@@ -1089,7 +1078,7 @@ void llvm_build_type_strings(FA *fa) {
 }
 
 void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filename) {
-  fprintf(stderr, "DEBUG: llvm_codegen_print_ir started\n");
+  DEBUG_LOG("llvm_codegen_print_ir started\n");
   llvm_codegen_initialize(fa);
   llvm_build_type_strings(fa);
   if (!fa) {
@@ -1134,13 +1123,13 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
 
   Vec<Fun *> all_funs;
 
-  fprintf(stderr, "DEBUG: fa->funs.n = %d before discovery\n", fa->funs.n);
+  DEBUG_LOG("fa->funs.n = %d before discovery\n", fa->funs.n);
 
   // Discover all reachable functions before translation
   // This ensures they all have proper liveness analysis
   discover_all_reachable_functions(fa, main_fun, all_funs);
 
-  fprintf(stderr, "DEBUG: all_funs.n = %d after discovery\n", all_funs.n);
+  DEBUG_LOG("all_funs.n = %d after discovery\n", all_funs.n);
 
   // Build reverse call graph for constant recovery
   build_reverse_call_graph(fa);
@@ -1151,15 +1140,15 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
   // Only process live functions (like C backend does)
   for (Fun *f : all_funs) {
     if (!f) {
-      fprintf(stderr, "DEBUG: Found NULL fun in all_funs\n");
+      DEBUG_LOG("Found NULL fun in all_funs\n");
       continue;
     }
     if (!f->live) {
-      fprintf(stderr, "DEBUG: Skipping non-live function %s (id %d)\n", f->sym->name ? f->sym->name : "(null)",
+      DEBUG_LOG("Skipping non-live function %s (id %d)\n", f->sym->name ? f->sym->name : "(null)",
               f->sym->id);
       continue;
     }
-    fprintf(stderr, "DEBUG: createFunction for %d\n", f->sym->id);
+    DEBUG_LOG("createFunction for %d\n", f->sym->id);
     createFunction(f, TheModule.get());
   }
 
@@ -1169,7 +1158,7 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
     if (!f || !f->live || !f->llvm || f->is_external || !f->entry) {
       continue;
     }
-    fprintf(stderr, "DEBUG: translateFunctionBody for %s (id %d)\n", f->sym->name, f->sym->id);
+    DEBUG_LOG("translateFunctionBody for %s (id %d)\n", f->sym->name, f->sym->id);
     translateFunctionBody(f);
   }
 
@@ -1196,16 +1185,16 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
   if (DBuilder) DBuilder->finalize();
 
   // Debug: Check for unterminated blocks before verification
-  fprintf(stderr, "DEBUG: Pre-verification check for unterminated blocks:\n");
+  DEBUG_LOG("Pre-verification check for unterminated blocks:\n");
   for (llvm::Function &F : *TheModule) {
     for (llvm::BasicBlock &BB : F) {
       if (!BB.getTerminator()) {
-        fprintf(stderr, "DEBUG: WARNING: Function %s has unterminated block %s (size=%zu)\n", F.getName().str().c_str(),
+        DEBUG_LOG("WARNING: Function %s has unterminated block %s (size=%zu)\n", F.getName().str().c_str(),
                 BB.getName().str().c_str(), BB.size());
-        fprintf(stderr, "DEBUG: Block instructions:\n");
+        DEBUG_LOG("Block instructions:\n");
         int idx = 0;
         for (llvm::Instruction &I : BB) {
-          fprintf(stderr, "DEBUG:   [%d] ", idx++);
+          DEBUG_LOG("  [%d] ", idx++);
           I.print(llvm::errs());
           fprintf(stderr, "\n");
         }
@@ -1245,31 +1234,31 @@ llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun) {
     fail("Null Var provided to getLLVMValue");
     return nullptr;
   }
-  fprintf(stderr, "DEBUG: getLLVMValue var=%p, sym=%s, type=%p\n", var, var->sym ? var->sym->name : "null", var->type);
+  DEBUG_LOG("getLLVMValue var=%p, sym=%s, type=%p\n", var, var->sym ? var->sym->name : "null", var->type);
   if (var->llvm_value) {
     llvm::Value *val = var->llvm_value;
     llvm::Function *this_func = ifa_fun->llvm;
 
-    fprintf(stderr, "DEBUG: getLLVMValue found cached llvm_value for var %s (id %d)\n",
+    DEBUG_LOG("getLLVMValue found cached llvm_value for var %s (id %d)\n",
             var->sym ? var->sym->name : "(null)", var->id);
     // Check what kind of value this is
     if (llvm::isa<llvm::GlobalVariable>(val)) {
-      fprintf(stderr, "DEBUG:   It's a GlobalVariable (pointer to value)\n");
+      DEBUG_LOG("  It's a GlobalVariable (pointer to value)\n");
     } else if (llvm::isa<llvm::AllocaInst>(val)) {
-      fprintf(stderr, "DEBUG:   It's an AllocaInst (pointer to value)\n");
+      DEBUG_LOG("  It's an AllocaInst (pointer to value)\n");
     } else if (llvm::isa<llvm::Instruction>(val)) {
-      fprintf(stderr, "DEBUG:   It's an Instruction (direct value)\n");
+      DEBUG_LOG("  It's an Instruction (direct value)\n");
     } else if (llvm::isa<llvm::Argument>(val)) {
-      fprintf(stderr, "DEBUG:   It's an Argument (direct value)\n");
+      DEBUG_LOG("  It's an Argument (direct value)\n");
     } else if (llvm::isa<llvm::Constant>(val)) {
-      fprintf(stderr, "DEBUG:   It's a Constant\n");
+      DEBUG_LOG("  It's a Constant\n");
     }
 
     bool scope_mismatch = false;
     if (llvm::isa<llvm::Instruction>(val)) {
       llvm::Function *val_func = llvm::cast<llvm::Instruction>(val)->getFunction();
       if (val_func != this_func) {
-        fprintf(stderr, "DEBUG: Scope mismatch for var %s (id %d). Val func: %s, Current func: %s. Clearing cache.\n",
+        DEBUG_LOG("Scope mismatch for var %s (id %d). Val func: %s, Current func: %s. Clearing cache.\n",
                 var->sym->name, var->id, val_func ? val_func->getName().str().c_str() : "null",
                 this_func ? this_func->getName().str().c_str() : "null");
         scope_mismatch = true;
@@ -1311,7 +1300,7 @@ llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun) {
   // Handle global variables or constants if not mapped through allocas
   // Handle function symbols - return the function pointer
   if (var->sym && var->sym->is_fun) {
-    fprintf(stderr, "DEBUG: getLLVMValue for function symbol %s (id=%d)\n", var->sym->name ? var->sym->name : "unnamed",
+    DEBUG_LOG("getLLVMValue for function symbol %s (id=%d)\n", var->sym->name ? var->sym->name : "unnamed",
             var->sym->id);
     // Find the function by symbol
     llvm::Function *func = nullptr;
@@ -1336,7 +1325,7 @@ llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun) {
 
   // Handle symbols (like operator symbols: '<', '+', etc.)
   if (var->sym && var->sym->is_symbol) {
-    fprintf(stderr, "DEBUG: getLLVMValue for symbol %s (id=%d)\n", var->sym->name ? var->sym->name : "unnamed",
+    DEBUG_LOG("getLLVMValue for symbol %s (id=%d)\n", var->sym->name ? var->sym->name : "unnamed",
             var->sym->id);
     // Symbols are represented as integers in the C backend (id)
     // Return the symbol ID as a constant integer
@@ -1353,7 +1342,7 @@ llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun) {
   // Handle tuple field formals: variables marked as both is_local and is_formal
   // These need to be extracted from the tuple argument
   if (var->sym && var->sym->is_local && var->is_formal) {
-    fprintf(stderr, "DEBUG: Variable %s (id=%d) is both local and formal - needs tuple extraction\n",
+    DEBUG_LOG("Variable %s (id=%d) is both local and formal - needs tuple extraction\n",
             var->sym->name ? var->sym->name : "(null)", var->sym->id);
 
     // The tuple argument should be in the function's arguments
@@ -1361,30 +1350,30 @@ llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun) {
     llvm::Function *llvm_func = ifa_fun->llvm;
     llvm::Argument *tuple_arg = nullptr;
 
-    fprintf(stderr, "DEBUG: Function %s has %ld arguments\n", ifa_fun->sym->name ? ifa_fun->sym->name : "(null)",
+    DEBUG_LOG("Function %s has %ld arguments\n", ifa_fun->sym->name ? ifa_fun->sym->name : "(null)",
             llvm_func->arg_size());
 
     for (llvm::Argument &arg : llvm_func->args()) {
       llvm::Type *arg_type = arg.getType();
-      fprintf(stderr, "DEBUG:   Arg type: isPointer=%d, isStruct=%d\n", arg_type->isPointerTy() ? 1 : 0,
+      DEBUG_LOG("  Arg type: isPointer=%d, isStruct=%d\n", arg_type->isPointerTy() ? 1 : 0,
               arg_type->isStructTy() ? 1 : 0);
 
       // LLVM 18 uses opaque pointers - take first pointer/struct as tuple
       if (arg_type->isPointerTy() || arg_type->isStructTy()) {
         tuple_arg = &arg;
-        fprintf(stderr, "DEBUG: Found tuple_arg (LLVM Argument)\n");
+        DEBUG_LOG("Found tuple_arg (LLVM Argument)\n");
         break;
       }
     }
 
     if (tuple_arg) {
-      fprintf(stderr, "DEBUG: Looking for tuple formal variable to get struct type\n");
+      DEBUG_LOG("Looking for tuple formal variable to get struct type\n");
 
       Var *tuple_formal_var = nullptr;
       for (Var *fv : ifa_fun->fa_all_Vars) {
         if (fv && fv->is_formal && fv->llvm_value == tuple_arg) {
           tuple_formal_var = fv;
-          fprintf(stderr, "DEBUG: Found tuple formal var by llvm_value match: sym=%s (id=%d)\n",
+          DEBUG_LOG("Found tuple formal var by llvm_value match: sym=%s (id=%d)\n",
                   fv->sym ? fv->sym->name : "(null)", fv->sym ? fv->sym->id : -1);
           break;
         }
@@ -1394,7 +1383,7 @@ llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun) {
         for (Var *fv : ifa_fun->fa_all_Vars) {
           if (fv && fv->is_formal && !fv->sym->is_local && fv->type && fv->type->type_kind == Type_RECORD) {
             tuple_formal_var = fv;
-            fprintf(stderr, "DEBUG: Found tuple formal var by type: sym=%s (id=%d)\n",
+            DEBUG_LOG("Found tuple formal var by type: sym=%s (id=%d)\n",
                     fv->sym ? fv->sym->name : "(null)", fv->sym ? fv->sym->id : -1);
             break;
           }
@@ -1431,7 +1420,7 @@ llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun) {
                     "WARNING: Could not find MPosition or field index for var %s (formal_idx=%d, found_pos=%p)\n",
                     var->sym->name ? var->sym->name : "(null)", formal_idx, (void *)found_pos);
           } else {
-            fprintf(stderr, "DEBUG: Extracting field %d from tuple argument for var %s (MPos.n=%d)\n", formal_idx,
+            DEBUG_LOG("Extracting field %d from tuple argument for var %s (MPos.n=%d)\n", formal_idx,
                     var->sym->name ? var->sym->name : "(null)", found_pos->pos.n);
 
             llvm::Value *field_ptr =
@@ -1469,7 +1458,7 @@ llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun) {
       // If not found, fail or return null
     } else {
       // Null name global?
-      fprintf(stderr, "DEBUG: Global Sym has no name. id=%d\n", var->sym->id);
+      DEBUG_LOG("Global Sym has no name. id=%d\n", var->sym->id);
       return nullptr;  // Will trigger fail in caller
     }
   }

@@ -33,7 +33,7 @@ llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
     fail("Null Fun provided to createFunction");
     return nullptr;
   }
-  fprintf(stderr, "DEBUG: createFunction entry for %s (id %d)\n", ifa_fun->sym->name, ifa_fun->sym->id);
+  DEBUG_LOG("createFunction entry for %s (id %d)\n", ifa_fun->sym->name, ifa_fun->sym->id);
 
   if (ifa_fun->llvm) return ifa_fun->llvm;
   if (!ifa_fun->sym) {
@@ -42,9 +42,9 @@ llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
   }
 
   // Determine return type
-  fprintf(stderr, "DEBUG: createFunction step 1: determine ret type for %d rets\n", ifa_fun->rets.n);
+  DEBUG_LOG("createFunction step 1: determine ret type for %d rets\n", ifa_fun->rets.n);
   llvm::Type *llvm_ret_type;
-  fprintf(stderr, "DEBUG: check rets: n=%d, rets[0]=%p, rets[0]->type=%p\n", ifa_fun->rets.n,
+  DEBUG_LOG("check rets: n=%d, rets[0]=%p, rets[0]->type=%p\n", ifa_fun->rets.n,
           (ifa_fun->rets.n > 0 ? ifa_fun->rets[0] : nullptr),
           (ifa_fun->rets.n > 0 && ifa_fun->rets[0] ? ifa_fun->rets[0]->type : nullptr));
 
@@ -58,7 +58,7 @@ llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
   } else if (ifa_fun->rets.n == 0) {
     llvm_ret_type = llvm::Type::getVoidTy(*TheContext);
   } else {
-    fprintf(stderr, "DEBUG: Unsupported ret count %d\n", ifa_fun->rets.n);
+    DEBUG_LOG("Unsupported ret count %d\n", ifa_fun->rets.n);
     fail("Function %s has %d return values, unsupported. Assumed void or single.", ifa_fun->sym->name, ifa_fun->rets.n);
     llvm_ret_type = llvm::Type::getVoidTy(*TheContext);
   }
@@ -68,11 +68,11 @@ llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
   }
 
   // Build argument list (parallels cg.cc's write_c_fun_proto at cg.cc:31-60)
-  fprintf(stderr, "DEBUG: createFunction step 2: args\n");
+  DEBUG_LOG("createFunction step 2: args\n");
   std::vector<llvm::Type *> llvm_arg_types;
   std::vector<Var *> live_args;
 
-  fprintf(stderr, "DEBUG: Function %s has %d formal parameters (sym->has.n)\n", ifa_fun->sym->name,
+  DEBUG_LOG("Function %s has %d formal parameters (sym->has.n)\n", ifa_fun->sym->name,
           ifa_fun->sym->has.n);
 
   MPosition p;
@@ -81,7 +81,7 @@ llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
     MPosition *cp = cannonicalize_mposition(p);
     p.inc();
     Var *arg_var = ifa_fun->args.get(cp);
-    fprintf(stderr, "DEBUG:   formal %d: arg_var=%p, live=%d, sym=%s\n", i, arg_var, arg_var ? arg_var->live : -1,
+    DEBUG_LOG("  formal %d: arg_var=%p, live=%d, sym=%s\n", i, arg_var, arg_var ? arg_var->live : -1,
             arg_var && arg_var->sym && arg_var->sym->name ? arg_var->sym->name : "(null)");
     // Check if argument is live according to either dead code elimination or FA
     bool arg_is_live = false;
@@ -98,25 +98,25 @@ llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
           }
         }
         if (fa_live_count > 0) {
-          fprintf(stderr, "DEBUG:     Found %d FA-live AVars for arg %s\n", fa_live_count,
+          DEBUG_LOG("    Found %d FA-live AVars for arg %s\n", fa_live_count,
                   arg_var->sym && arg_var->sym->name ? arg_var->sym->name : "(null)");
         }
       }
     }
     if (arg_var && arg_is_live) {
       if (arg_var->type && arg_var->type->is_fun) {
-        fprintf(stderr, "DEBUG:   Skipping function-typed formal %d\n", i);
+        DEBUG_LOG("  Skipping function-typed formal %d\n", i);
         continue;
       }
       live_args.push_back(arg_var);
     }
   }
 
-  fprintf(stderr, "DEBUG: Found %zu live args for %s\n", live_args.size(), ifa_fun->sym->name);
+  DEBUG_LOG("Found %zu live args for %s\n", live_args.size(), ifa_fun->sym->name);
 
   // Now create LLVM types for live args
   for (Var *arg_var : live_args) {
-    fprintf(stderr, "DEBUG: processing live arg %p (id %d, sym=%s)\n", arg_var, arg_var->id,
+    DEBUG_LOG("processing live arg %p (id %d, sym=%s)\n", arg_var, arg_var->id,
             arg_var->sym && arg_var->sym->name ? arg_var->sym->name : "(null)");
 
     llvm::Type *arg_llvm_type = nullptr;
@@ -126,7 +126,7 @@ llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
       // For struct/tuple types, function arguments should be pointers
       // (matching the C backend convention)
       if (arg_llvm_type && arg_llvm_type->isStructTy() && arg_var->type->type_kind == Type_RECORD) {
-        fprintf(stderr, "DEBUG: Wrapping struct arg type in pointer for arg %s\n",
+        DEBUG_LOG("Wrapping struct arg type in pointer for arg %s\n",
                 arg_var->sym && arg_var->sym->name ? arg_var->sym->name : "(unnamed)");
         arg_llvm_type = llvm::PointerType::getUnqual(*TheContext);
       }
@@ -143,11 +143,11 @@ llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
     }
   }
 
-  fprintf(stderr, "DEBUG: createFunction step 3: FunctionType::get\n");
+  DEBUG_LOG("createFunction step 3: FunctionType::get\n");
   llvm::FunctionType *func_type = llvm::FunctionType::get(llvm_ret_type, llvm_arg_types, ifa_fun->is_varargs);
 
   // 3. Create llvm::Function
-  fprintf(stderr, "DEBUG: createFunction step 4: Function::Create\n");
+  DEBUG_LOG("createFunction step 4: Function::Create\n");
   std::string func_name = (ifa_fun->sym->name ? ifa_fun->sym->name : "func") + std::to_string(ifa_fun->id);
   if (ifa_fun->cg_string && strncmp(ifa_fun->cg_string, "_CG_", 4) == 0) {
     func_name = ifa_fun->cg_string;
@@ -164,17 +164,17 @@ llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
   } else {
     linkage = llvm::Function::InternalLinkage;
   }
-  fprintf(stderr, "DEBUG: Linkage Fixed: entry=%p -> %d\n", ifa_fun->entry, (int)linkage);
+  DEBUG_LOG("Linkage Fixed: entry=%p -> %d\n", ifa_fun->entry, (int)linkage);
 
-  fprintf(stderr, "DEBUG: func_name='%s', module=%p, func_type=%p, varargs=%d, linkage=%d\n", func_name.c_str(), module,
+  DEBUG_LOG("func_name='%s', module=%p, func_type=%p, varargs=%d, linkage=%d\n", func_name.c_str(), module,
           func_type, ifa_fun->is_varargs, (int)linkage);
 
   llvm::Function *llvm_func = llvm::Function::Create(func_type, linkage, func_name, module);
-  fprintf(stderr, "DEBUG: Function created %p\n", llvm_func);
+  DEBUG_LOG("Function created %p\n", llvm_func);
   ifa_fun->llvm = llvm_func;  // Store it
 
   // 3. Set argument names and store llvm::Argument in Var::llvm_value
-  fprintf(stderr, "DEBUG: Setting arg names for %zu live args\n", live_args.size());
+  DEBUG_LOG("Setting arg names for %zu live args\n", live_args.size());
   for (unsigned i = 0; i < live_args.size() && i < llvm_func->arg_size(); ++i) {
     llvm::Argument *llvm_arg = llvm_func->getArg(i);
     Var *arg_var = live_args[i];
@@ -183,20 +183,20 @@ llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
       llvm_arg->setName(arg_var->sym->name);
     }
     arg_var->llvm_value = llvm_arg;
-    fprintf(stderr, "DEBUG: Mapped arg %d: %s\n", i,
+    DEBUG_LOG("Mapped arg %d: %s\n", i,
             arg_var->sym && arg_var->sym->name ? arg_var->sym->name : "(unnamed)");
   }
-  fprintf(stderr, "DEBUG: Finished mapping arguments\n");
+  DEBUG_LOG("Finished mapping arguments\n");
 
-  fprintf(stderr, "DEBUG: Starting Entry Block creation. Entry=%p, External=%d\n", ifa_fun->entry,
+  DEBUG_LOG("Starting Entry Block creation. Entry=%p, External=%d\n", ifa_fun->entry,
           ifa_fun->is_external);
-  fprintf(stderr, "DEBUG: TheContext=%p, llvm_func=%p\n", TheContext.get(), llvm_func);
+  DEBUG_LOG("TheContext=%p, llvm_func=%p\n", TheContext.get(), llvm_func);
   if (!TheContext) fail("TheContext is null");
   if (!llvm_func) fail("llvm_func is null");
 
   if (!ifa_fun->is_external && ifa_fun->entry) {
     llvm::BasicBlock *entry_bb = llvm::BasicBlock::Create(*TheContext, "entry", llvm_func);
-    fprintf(stderr, "DEBUG: Entry Block Created: %p\n", entry_bb);
+    DEBUG_LOG("Entry Block Created: %p\n", entry_bb);
   }
 
   // Create Debug Info for this function
@@ -205,11 +205,11 @@ llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
     unsigned line_num = 0;
     if (ifa_fun->sym && ifa_fun->sym->ast) {
       line_num = ifa_fun->sym->ast->source_line();  // Use source_line() to get actual source line, not generated code
-      fprintf(stderr, "DEBUG: Function %s: ast->line()=%d, ast->source_line()=%d\n", ifa_fun->sym->name,
+      DEBUG_LOG("Function %s: ast->line()=%d, ast->source_line()=%d\n", ifa_fun->sym->name,
               ifa_fun->sym->ast->line(), line_num);
     } else if (ifa_fun->entry && ifa_fun->entry->code) {
       line_num = ifa_fun->entry->code->source_line();  // Use source_line() instead of line()
-      fprintf(stderr, "DEBUG: Function %s: code->line()=%d, code->source_line()=%d\n", ifa_fun->sym->name,
+      DEBUG_LOG("Function %s: code->line()=%d, code->source_line()=%d\n", ifa_fun->sym->name,
               ifa_fun->entry->code->line(), line_num);
     }
 
@@ -250,7 +250,7 @@ llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
     );
 
     llvm_func->setSubprogram(sp);
-    fprintf(stderr, "DEBUG: Created DISubprogram for %s at line %u\n", func_name.c_str(), line_num);
+    DEBUG_LOG("Created DISubprogram for %s at line %u\n", func_name.c_str(), line_num);
 
     // Create debug info for ALL source-level function parameters
     // This includes parameters that were optimized away
@@ -281,7 +281,7 @@ llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
 
           // Track if this is a live arg (has actual LLVM parameter)
           bool is_live = arg_var->live;
-          fprintf(stderr, "DEBUG: Created DIParameter for arg %d: %s (live=%d)\n", i,
+          DEBUG_LOG("Created DIParameter for arg %d: %s (live=%d)\n", i,
                   arg_var->sym->name ? arg_var->sym->name : "(unnamed)", is_live);
         }
       }
@@ -316,13 +316,13 @@ llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
     }
   }
 
-  fprintf(stderr, "DEBUG: Finished createFunction for %d\n", ifa_fun->sym->id);
+  DEBUG_LOG("Finished createFunction for %d\n", ifa_fun->sym->id);
   return llvm_func;
 }
 
 // --- PNode Translation ---
 void translateFunctionBody(Fun *ifa_fun) {
-  fprintf(stderr, "DEBUG: translateFunctionBody entry for %s (id %d)\n", ifa_fun->sym->name, ifa_fun->id);
+  DEBUG_LOG("translateFunctionBody entry for %s (id %d)\n", ifa_fun->sym->name, ifa_fun->id);
   if (!ifa_fun || !ifa_fun->llvm || !ifa_fun->entry) {
     fail("Invalid function or missing LLVM function/entry PNode for translateFunctionBody");
     return;
@@ -336,12 +336,12 @@ void translateFunctionBody(Fun *ifa_fun) {
   // This helps with forward branches.
   Vec<PNode *> pnodes;
   ifa_fun->collect_PNodes(pnodes);  // Assumes this collects all relevant PNodes
-  fprintf(stderr, "DEBUG: Collected %d PNodes\n", pnodes.n);
+  DEBUG_LOG("Collected %d PNodes\n", pnodes.n);
 
   if (ifa_fun->fa_all_Vars.n == 0) {
-    fprintf(stderr, "DEBUG: fa_all_Vars empty, collecting vars...\n");
+    DEBUG_LOG("fa_all_Vars empty, collecting vars...\n");
     ifa_fun->collect_Vars(ifa_fun->fa_all_Vars);
-    fprintf(stderr, "DEBUG: Collected %d Vars\n", ifa_fun->fa_all_Vars.n);
+    DEBUG_LOG("Collected %d Vars\n", ifa_fun->fa_all_Vars.n);
   }
 
   for (PNode *pn : pnodes) {
@@ -354,12 +354,12 @@ void translateFunctionBody(Fun *ifa_fun) {
     }
   }
 
-  fprintf(stderr, "DEBUG: Done labels loop. Checking entry code...\n");
+  DEBUG_LOG("Done labels loop. Checking entry code...\n");
   // Ensure entry block is correctly mapped if it's from a label
   if (ifa_fun->entry->code) {
-    fprintf(stderr, "DEBUG: Entry code kind=%d\n", ifa_fun->entry->code->kind);
+    DEBUG_LOG("Entry code kind=%d\n", ifa_fun->entry->code->kind);
   } else {
-    fprintf(stderr, "DEBUG: Entry code is NULL\n");
+    DEBUG_LOG("Entry code is NULL\n");
   }
 
   if (ifa_fun->entry->code && ifa_fun->entry->code->kind == Code_LABEL && ifa_fun->entry->code->label[0]) {
@@ -378,11 +378,11 @@ void translateFunctionBody(Fun *ifa_fun) {
 
   // Allocate local variables using AllocaInst (for mutable locals)
 
-  fprintf(stderr, "DEBUG: Setting Builder InsertPoint to EntryBlock\n");
+  DEBUG_LOG("Setting Builder InsertPoint to EntryBlock\n");
   if (llvm_func->getEntryBlock().empty()) {
-    fprintf(stderr, "DEBUG: EntryBlock is empty, setting to beginning\n");
+    DEBUG_LOG("EntryBlock is empty, setting to beginning\n");
   } else {
-    fprintf(stderr, "DEBUG: EntryBlock not empty, setting to beginning\n");
+    DEBUG_LOG("EntryBlock not empty, setting to beginning\n");
   }
 
   // Check Builder
@@ -395,18 +395,18 @@ void translateFunctionBody(Fun *ifa_fun) {
   // Clear debug location before allocating locals to avoid wrong subprogram references
   Builder->SetCurrentDebugLocation(llvm::DebugLoc());
 
-  fprintf(stderr, "DEBUG: InsertPoint set. Getting subprogram for locals...\n");
+  DEBUG_LOG("InsertPoint set. Getting subprogram for locals...\n");
   llvm::DIFile *di_file_for_locals = llvm_func->getSubprogram() ? llvm_func->getSubprogram()->getFile() : nullptr;
-  fprintf(stderr, "DEBUG: Got subprogram components\n");
+  DEBUG_LOG("Got subprogram components\n");
   unsigned func_start_line = llvm_func->getSubprogram() ? llvm_func->getSubprogram()->getLine() : 0;
 
-  fprintf(stderr, "DEBUG: Starting local vars loop\n");
+  DEBUG_LOG("Starting local vars loop\n");
   // Multiple Vars can share the same Sym (e.g., loop variable 'i' appears multiple times)
   // Create only one alloca per Sym to avoid duplicate allocations
   std::map<Sym *, llvm::AllocaInst *> sym_to_alloca;
   int var_loop_idx = 0;
   for (Var *v : ifa_fun->fa_all_Vars) {  // Or a more specific list of locals
-    fprintf(stderr, "DEBUG: Loop idx %d, v=%p", var_loop_idx++, v);
+    DEBUG_LOG("Loop idx %d, v=%p", var_loop_idx++, v);
     if (v && v->sym) {
       fprintf(stderr, ", sym=%s (id=%d), is_local=%d, is_formal=%d, has_llvm_value=%d",
               v->sym->name ? v->sym->name : "(null)", v->sym->id, v->sym->is_local ? 1 : 0, v->is_formal ? 1 : 0,
@@ -426,7 +426,7 @@ void translateFunctionBody(Fun *ifa_fun) {
       if (it != sym_to_alloca.end()) {
         v->llvm_value = it->second;
         v->llvm_type = it->second->getAllocatedType();
-        fprintf(stderr, "DEBUG: Reusing existing alloca for var %s (id %d)\n", v->sym->name ? v->sym->name : "(null)",
+        DEBUG_LOG("Reusing existing alloca for var %s (id %d)\n", v->sym->name ? v->sym->name : "(null)",
                 v->sym->id);
         continue;
       }
@@ -435,7 +435,7 @@ void translateFunctionBody(Fun *ifa_fun) {
     if (v && v->sym && v->sym->is_local && !v->is_formal && !v->llvm_value) {
       llvm::Type *var_llvm_type = nullptr;
       if (!v->type) {
-        fprintf(stderr, "DEBUG: Defaulting local var %s (id %d) with null type to i64\n", v->sym->name, v->sym->id);
+        DEBUG_LOG("Defaulting local var %s (id %d) with null type to i64\n", v->sym->name, v->sym->id);
         var_llvm_type = llvm::Type::getInt64Ty(*TheContext);
       } else {
         var_llvm_type = getLLVMType(v->type);
@@ -471,7 +471,7 @@ void translateFunctionBody(Fun *ifa_fun) {
       // Handle tuple field parameters: variables marked as both is_local and is_formal
       // These are fields that need to be extracted from the tuple argument
       // For now, extract them from the corresponding function argument
-      fprintf(stderr, "DEBUG: Handling tuple field formal: %s (id=%d)\n", v->sym->name ? v->sym->name : "(null)",
+      DEBUG_LOG("Handling tuple field formal: %s (id=%d)\n", v->sym->name ? v->sym->name : "(null)",
               v->sym->id);
 
       // Find the tuple argument this field belongs to
@@ -489,12 +489,12 @@ void translateFunctionBody(Fun *ifa_fun) {
         // For now, let's create a placeholder that we'll fix later
         // We need more info about field mapping
 
-        fprintf(stderr, "DEBUG: Tuple field formal needs extraction from tuple arg\n");
+        DEBUG_LOG("Tuple field formal needs extraction from tuple arg\n");
         // TODO: Need to determine field index and extract
       }
     }
   }
-  fprintf(stderr, "DEBUG: Finished local vars loop\n");
+  DEBUG_LOG("Finished local vars loop\n");
 
   // Emit debug info for function parameters
   // This must be done after allocas are created, at the beginning of the function
@@ -518,12 +518,12 @@ void translateFunctionBody(Fun *ifa_fun) {
                                             debug_loc,                     // Location
                                             Builder->GetInsertBlock()      // Insert at current position
           );
-          fprintf(stderr, "DEBUG: Emitted dbg.value for parameter %s\n",
+          DEBUG_LOG("Emitted dbg.value for parameter %s\n",
                   arg_var->sym->name ? arg_var->sym->name : "(unnamed)");
         } else {
           // Parameter was optimized away
           // Don't emit a value - debugger will show it as "<optimized out>"
-          fprintf(stderr, "DEBUG: Parameter %s is optimized out (no debug value emitted)\n",
+          DEBUG_LOG("Parameter %s is optimized out (no debug value emitted)\n",
                   arg_var->sym->name ? arg_var->sym->name : "(unnamed)");
         }
       }
@@ -540,17 +540,17 @@ void translateFunctionBody(Fun *ifa_fun) {
   if (ifa_fun->entry) {
     worklist.push_back(ifa_fun->entry);
     visited_pnodes.insert(ifa_fun->entry);
-    fprintf(stderr, "DEBUG: Starting worklist with entry PNode %p\n", (void *)ifa_fun->entry);
+    DEBUG_LOG("Starting worklist with entry PNode %p\n", (void *)ifa_fun->entry);
   } else {
-    fprintf(stderr, "DEBUG: WARNING: ifa_fun->entry is NULL, worklist will be empty!\n");
+    DEBUG_LOG("WARNING: ifa_fun->entry is NULL, worklist will be empty!\n");
   }
-  fprintf(stderr, "DEBUG: Starting worklist with %zu items\n", worklist.size());
+  DEBUG_LOG("Starting worklist with %zu items\n", worklist.size());
 
   unsigned worklist_idx = 0;
   while (worklist_idx < worklist.size()) {
     PNode *current_pn = worklist[worklist_idx++];
     if (!current_pn) {
-      fprintf(stderr, "DEBUG: Null PNode in worklist, skipping\n");
+      DEBUG_LOG("Null PNode in worklist, skipping\n");
       continue;
     }
     translatePNode(current_pn, ifa_fun);
@@ -566,22 +566,22 @@ void translateFunctionBody(Fun *ifa_fun) {
       }
     }
   }
-  fprintf(stderr, "DEBUG: Finished worklist processing\n");
+  DEBUG_LOG("Finished worklist processing\n");
 
   // Ensure all basic blocks have terminators
   std::string full_func_name = llvm_func->getName().str();
-  fprintf(stderr, "DEBUG: Checking terminators for function %s (LLVM name: %s)\n", ifa_fun->sym->name,
+  DEBUG_LOG("Checking terminators for function %s (LLVM name: %s)\n", ifa_fun->sym->name,
           full_func_name.c_str());
   for (llvm::BasicBlock &BB : *llvm_func) {
     if (!BB.getTerminator()) {
-      fprintf(stderr, "DEBUG: Basic block %s in function %s has no terminator (size=%zu), adding default\n",
+      DEBUG_LOG("Basic block %s in function %s has no terminator (size=%zu), adding default\n",
               BB.getName().str().c_str(), full_func_name.c_str(), BB.size());
 
       // Print existing instructions
-      fprintf(stderr, "DEBUG: Existing instructions in block:\n");
+      DEBUG_LOG("Existing instructions in block:\n");
       int inst_idx = 0;
       for (llvm::Instruction &I : BB) {
-        fprintf(stderr, "DEBUG:   [%d] ", inst_idx++);
+        DEBUG_LOG("  [%d] ", inst_idx++);
         I.print(llvm::errs());
         fprintf(stderr, "\n");
       }
@@ -593,25 +593,25 @@ void translateFunctionBody(Fun *ifa_fun) {
 
       // Check return type
       llvm::Type *ret_type = llvm_func->getReturnType();
-      fprintf(stderr, "DEBUG: Return type is void: %d\n", ret_type->isVoidTy());
+      DEBUG_LOG("Return type is void: %d\n", ret_type->isVoidTy());
 
       // Add appropriate terminator based on function return type
       llvm::Instruction *term_inst = nullptr;
       if (ret_type->isVoidTy()) {
-        fprintf(stderr, "DEBUG: Creating RetVoid...\n");
+        DEBUG_LOG("Creating RetVoid...\n");
         term_inst = temp_builder.CreateRetVoid();
-        fprintf(stderr, "DEBUG: Added RetVoid to block %s\n", BB.getName().str().c_str());
+        DEBUG_LOG("Added RetVoid to block %s\n", BB.getName().str().c_str());
       } else {
-        fprintf(stderr, "DEBUG: Creating Ret with UndefValue...\n");
+        DEBUG_LOG("Creating Ret with UndefValue...\n");
         llvm::Value *undef = llvm::UndefValue::get(ret_type);
-        fprintf(stderr, "DEBUG: Created UndefValue\n");
+        DEBUG_LOG("Created UndefValue\n");
         term_inst = temp_builder.CreateRet(undef);
-        fprintf(stderr, "DEBUG: Added Ret(undef) to block %s\n", BB.getName().str().c_str());
+        DEBUG_LOG("Added Ret(undef) to block %s\n", BB.getName().str().c_str());
       }
 
       // Print the created terminator
       if (term_inst) {
-        fprintf(stderr, "DEBUG: Created terminator instruction: ");
+        DEBUG_LOG("Created terminator instruction: ");
         term_inst->print(llvm::errs());
         fprintf(stderr, "\n");
       }
@@ -620,11 +620,11 @@ void translateFunctionBody(Fun *ifa_fun) {
       if (!BB.getTerminator()) {
         fprintf(stderr, "ERROR: Failed to add terminator to block %s!\n", BB.getName().str().c_str());
       } else {
-        fprintf(stderr, "DEBUG: Terminator successfully added. Block now has %zu instructions\n", BB.size());
+        DEBUG_LOG("Terminator successfully added. Block now has %zu instructions\n", BB.size());
       }
     }
   }
-  fprintf(stderr, "DEBUG: Finished translateFunctionBody for %s\n", ifa_fun->sym->name);
+  DEBUG_LOG("Finished translateFunctionBody for %s\n", ifa_fun->sym->name);
 }
 
 static void simple_move(Var *lhs, Var *rhs, Fun *ifa_fun) {
@@ -668,7 +668,7 @@ static void do_phi_nodes(PNode *n, int isucc, Fun *ifa_fun) {
 void translatePNode(PNode *pn, Fun *ifa_fun) {
   if (!pn) return;
   if (!pn->code) {
-    fprintf(stderr, "DEBUG: translatePNode: pn->code is NULL, skipping pn=%p\n", (void *)pn);
+    DEBUG_LOG("translatePNode: pn->code is NULL, skipping pn=%p\n", (void *)pn);
     return;
   }
 
@@ -685,7 +685,7 @@ void translatePNode(PNode *pn, Fun *ifa_fun) {
   // to ensure control flow targets (labels) and value-producing operations are generated
   bool is_live = pn->fa_live;
   if (!is_live) {
-    fprintf(stderr, "DEBUG: Skipping non-live PNode pn=%p (live=%d, fa_live=%d), code_kind=%d, lvals.n=%d", (void *)pn,
+    DEBUG_LOG("Skipping non-live PNode pn=%p (live=%d, fa_live=%d), code_kind=%d, lvals.n=%d", (void *)pn,
             pn->live, pn->fa_live, code_kind, pn->lvals.n);
     if (pn->lvals.n > 0 && pn->lvals[0]) {
       fprintf(stderr, ", lval[0] id=%d", pn->lvals[0]->id);
@@ -695,7 +695,7 @@ void translatePNode(PNode *pn, Fun *ifa_fun) {
     return;  // For now, still return - we'll fix CFG traversal in worklist instead
   }
 
-  fprintf(stderr, "DEBUG: translatePNode entry. pn=%p, code_kind=%d, line=%d\n", (void *)pn, code_kind,
+  DEBUG_LOG("translatePNode entry. pn=%p, code_kind=%d, line=%d\n", (void *)pn, code_kind,
           pn->code->line());
   fflush(stderr);
   if (!ifa_fun || !ifa_fun->llvm) {
@@ -709,11 +709,11 @@ void translatePNode(PNode *pn, Fun *ifa_fun) {
   if (code_kind != Code_LABEL) {
     llvm::BasicBlock *current_bb = Builder->GetInsertBlock();
     if (!current_bb) {
-      fprintf(stderr, "DEBUG: No insert point set, skipping pn=%p, code_kind=%d\n", (void *)pn, code_kind);
+      DEBUG_LOG("No insert point set, skipping pn=%p, code_kind=%d\n", (void *)pn, code_kind);
       return;
     }
     if (current_bb->getTerminator()) {
-      fprintf(stderr, "DEBUG: Current block already has terminator, skipping pn=%p, code_kind=%d, block_name=%s\n",
+      DEBUG_LOG("Current block already has terminator, skipping pn=%p, code_kind=%d, block_name=%s\n",
               (void *)pn, code_kind, current_bb->getName().str().c_str());
       return;
     }
@@ -774,16 +774,16 @@ void translatePNode(PNode *pn, Fun *ifa_fun) {
     case Code_IF: {
       if (pn->rvals.n > 0) {
         Var *cond_var = pn->rvals[0];
-        fprintf(stderr, "DEBUG: Code_IF condition var=%p, sym=%s, id=%d\n", (void *)cond_var,
+        DEBUG_LOG("Code_IF condition var=%p, sym=%s, id=%d\n", (void *)cond_var,
                 cond_var->sym ? cond_var->sym->name : "(null)", cond_var->id);
         fflush(stderr);
         llvm::Value *cond_llvm_val = getLLVMValue(cond_var, ifa_fun);
         if (!cond_llvm_val) {
           // Dead code eliminated condition - assume true branch
-          fprintf(stderr, "DEBUG: Code_IF condition var has no llvm_value, using constant true\n");
+          DEBUG_LOG("Code_IF condition var has no llvm_value, using constant true\n");
           cond_llvm_val = llvm::ConstantInt::getTrue(*TheContext);
         }
-        fprintf(stderr, "DEBUG: Code_IF got llvm_val=%p, type=%s\n", (void *)cond_llvm_val,
+        DEBUG_LOG("Code_IF got llvm_val=%p, type=%s\n", (void *)cond_llvm_val,
                 cond_llvm_val->getType()->isIntegerTy() ? "int" : "other");
         cond_llvm_val->print(llvm::errs());
         fprintf(stderr, "\n");
@@ -799,11 +799,11 @@ void translatePNode(PNode *pn, Fun *ifa_fun) {
         llvm::BasicBlock *false_bb = nullptr;
         if (pn->code->label[0]) {
           true_bb = getLLVMBasicBlock(pn->code->label[0], llvm_func);
-          fprintf(stderr, "DEBUG: Code_IF true branch target: label_%d\n", pn->code->label[0]->id);
+          DEBUG_LOG("Code_IF true branch target: label_%d\n", pn->code->label[0]->id);
         }
         if (pn->code->label[1]) {
           false_bb = getLLVMBasicBlock(pn->code->label[1], llvm_func);
-          fprintf(stderr, "DEBUG: Code_IF false branch target: label_%d\n", pn->code->label[1]->id);
+          DEBUG_LOG("Code_IF false branch target: label_%d\n", pn->code->label[1]->id);
         }
 
         if (!true_bb || !false_bb) {
@@ -816,7 +816,7 @@ void translatePNode(PNode *pn, Fun *ifa_fun) {
           // Branch to taken target only (matches C backend handling of if(0) / if(1))
           bool cond_value = const_cond->isOne();
           llvm::BasicBlock *target_bb = cond_value ? true_bb : false_bb;
-          fprintf(stderr, "DEBUG: Code_IF has constant condition: %s, branching to %s\n", cond_value ? "true" : "false",
+          DEBUG_LOG("Code_IF has constant condition: %s, branching to %s\n", cond_value ? "true" : "false",
                   target_bb->getName().str().c_str());
 
           Builder->CreateBr(target_bb);
@@ -846,16 +846,16 @@ void translatePNode(PNode *pn, Fun *ifa_fun) {
       break;
     }
     case Code_SEND: {
-      fprintf(stderr, "DEBUG: Processing Code_SEND. prim=%p\n", pn->prim);
+      DEBUG_LOG("Processing Code_SEND. prim=%p\n", pn->prim);
       fflush(stderr);
       if (pn->prim) {
         if (!write_llvm_prim(ifa_fun, pn)) {
-          fprintf(stderr, "DEBUG: write_llvm_prim returned false, calling write_send as fallback\n");
+          DEBUG_LOG("write_llvm_prim returned false, calling write_send as fallback\n");
           // Primitive not handled, try generic function call
           write_send(ifa_fun, pn);
         }
       } else {
-        fprintf(stderr, "DEBUG: Calling write_send\n");
+        DEBUG_LOG("Calling write_send\n");
         write_send(ifa_fun, pn);
       }
       break;

@@ -12,24 +12,24 @@ Fun *get_target_fun(PNode *n, Fun *f) {
   if (!fns || fns->n != 1) {
     if (1) {  // TODO: Check runtime error flags
       // For debugging, print what we found
-      fprintf(stderr, "DEBUG: get_target_fun failed for PNode %p. fns=%p, fns->n=%d\n", n, fns, fns ? fns->n : 0);
+      DEBUG_LOG("get_target_fun failed for PNode %p. fns=%p, fns->n=%d\n", n, fns, fns ? fns->n : 0);
     }
 
     // Fallback: Check n->rvals[0]
     if (n->rvals.n > 0) {
       Var *called_var = n->rvals[0];
       if (called_var && called_var->sym) {
-        fprintf(stderr, "DEBUG: Attempting fallback for symbol %s (id %d)\n",
+        DEBUG_LOG("Attempting fallback for symbol %s (id %d)\n",
                 called_var->sym->name ? called_var->sym->name : "unnamed", called_var->sym->id);
         if (all_funs_global) {
-          fprintf(stderr, "DEBUG: Searching %d functions in all_funs_global\n", all_funs_global->n);
+          DEBUG_LOG("Searching %d functions in all_funs_global\n", all_funs_global->n);
           for (Fun *fx : *all_funs_global) {
             if (!fx) {
-              fprintf(stderr, "DEBUG: Skipping null fun in all_funs_global\n");
+              DEBUG_LOG("Skipping null fun in all_funs_global\n");
               continue;
             }
             if (fx->sym && fx->sym == called_var->sym) {
-              fprintf(stderr, "DEBUG: Found fallback target fun: %s\n", fx->sym->name ? fx->sym->name : "unnamed");
+              DEBUG_LOG("Found fallback target fun: %s\n", fx->sym->name ? fx->sym->name : "unnamed");
               return fx;
             }
           }
@@ -38,13 +38,13 @@ Fun *get_target_fun(PNode *n, Fun *f) {
             if (!fx) continue;
             if (fx->sym && fx->sym->name && called_var->sym->name &&
                 strcmp(fx->sym->name, called_var->sym->name) == 0) {
-              fprintf(stderr, "DEBUG: Found fallback target fun by NAME: %s\n", fx->sym->name);
+              DEBUG_LOG("Found fallback target fun by NAME: %s\n", fx->sym->name);
               return fx;
             }
           }
-          fprintf(stderr, "DEBUG: Fallback search complete, no match found\n");
+          DEBUG_LOG("Fallback search complete, no match found\n");
         } else {
-          fprintf(stderr, "DEBUG: all_funs_global is NULL\n");
+          DEBUG_LOG("all_funs_global is NULL\n");
         }
       }
     }
@@ -73,7 +73,7 @@ void write_send(Fun *f, PNode *n) {
   }
 
   llvm::Function *callee = target->llvm;
-  fprintf(stderr, "DEBUG: write_send target %s (Fun %p), llvm=%p\n", target->sym->name ? target->sym->name : "unnamed",
+  DEBUG_LOG("write_send target %s (Fun %p), llvm=%p\n", target->sym->name ? target->sym->name : "unnamed",
           (void *)target, (void *)callee);
 
   if (!callee) {
@@ -93,7 +93,7 @@ void write_send(Fun *f, PNode *n) {
 
     // Translate the function body immediately for on-demand created functions
     if (!target->is_external && target->entry) {
-      fprintf(stderr, "DEBUG: Translating body for on-demand created function %s (id %d)\n",
+      DEBUG_LOG("Translating body for on-demand created function %s (id %d)\n",
               target->sym->name ? target->sym->name : "unnamed", target->sym->id);
 
       // CRITICAL: Save the current Builder insert point before translating the on-demand function
@@ -107,14 +107,14 @@ void write_send(Fun *f, PNode *n) {
       // Restore the insert point to continue translating the calling function
       if (saved_bb) {
         Builder->SetInsertPoint(saved_bb, saved_ip);
-        fprintf(stderr, "DEBUG: Restored Builder insert point to calling function after translating %s\n",
+        DEBUG_LOG("Restored Builder insert point to calling function after translating %s\n",
                 target->sym->name ? target->sym->name : "unnamed");
       }
     }
   }
 
   std::vector<llvm::Value *> args;
-  fprintf(stderr, "DEBUG: write_send building args. callee expects %d args, call has %d rvals\n",
+  DEBUG_LOG("write_send building args. callee expects %d args, call has %d rvals\n",
           (int)callee->arg_size(), n->rvals.n);
 
   // Map call site arguments to formal parameters (parallels cg.cc:612-616)
@@ -123,25 +123,25 @@ void write_send(Fun *f, PNode *n) {
   for (MPosition *p : target->positional_arg_positions) {
     Var *formal_arg = target->args.get(p);
 
-    fprintf(stderr, "DEBUG:   formal %d (MPos[0]=%d): formal_arg=%p, live=%d\n", arg_idx,
+    DEBUG_LOG("  formal %d (MPos[0]=%d): formal_arg=%p, live=%d\n", arg_idx,
             p->pos.n > 0 ? (int)Position2int(p->pos[0]) : -1, (void *)formal_arg, formal_arg ? formal_arg->live : -1);
 
     if (!formal_arg || !formal_arg->live) {
-      fprintf(stderr, "DEBUG:     Skipping non-live formal\n");
+      DEBUG_LOG("    Skipping non-live formal\n");
       continue;
     }
 
     // Skip nested positions (tuple fields) - only handle top-level arguments
     // This matches cg.cc:567 check: if (p->pos.n <= 1)
     if (p->pos.n > 1) {
-      fprintf(stderr, "DEBUG:     Skipping nested position (pos.n=%d)\n", p->pos.n);
+      DEBUG_LOG("    Skipping nested position (pos.n=%d)\n", p->pos.n);
       continue;
     }
 
     // Get actual argument from call site using MPosition
     // This logic matches write_send_arg in cg.cc:553-580
     int i = Position2int(p->pos[0]) - 1;  // Convert MPosition to rvals index
-    fprintf(stderr, "DEBUG:     MPosition calculation: pos[0]=%d -> i=%d\n", (int)Position2int(p->pos[0]), i);
+    DEBUG_LOG("    MPosition calculation: pos[0]=%d -> i=%d\n", (int)Position2int(p->pos[0]), i);
 
     // Handle closure variables if needed (from cg.cc:556-565)
     if (is_closure_var(v0)) {
@@ -158,7 +158,7 @@ void write_send(Fun *f, PNode *n) {
     }
 
     if (actual_arg) {
-      fprintf(stderr, "DEBUG: Arg %d: rval[%d] sym=%s (id=%d)\n", arg_idx, i,
+      DEBUG_LOG("Arg %d: rval[%d] sym=%s (id=%d)\n", arg_idx, i,
               actual_arg->sym && actual_arg->sym->name ? actual_arg->sym->name : "(null)",
               actual_arg->sym ? actual_arg->sym->id : -1);
       llvm::Value *val = getLLVMValue(actual_arg, f);
@@ -179,7 +179,7 @@ void write_send(Fun *f, PNode *n) {
     arg_idx++;
   }
 
-  fprintf(stderr, "DEBUG: Created %zu args for call to %s\n", args.size(), target->sym->name);
+  DEBUG_LOG("Created %zu args for call to %s\n", args.size(), target->sym->name);
 
   llvm::CallInst *call = Builder->CreateCall(callee, args);
   // Set debug location
@@ -203,13 +203,13 @@ void write_send(Fun *f, PNode *n) {
 
 int write_llvm_prim(Fun *ifa_fun, PNode *n) {
   if (!n->prim) return 0;
-  fprintf(stderr, "DEBUG: write_llvm_prim entry. prim index=%d, name=%s\n", n->prim->index, n->prim->name);
+  DEBUG_LOG("write_llvm_prim entry. prim index=%d, name=%s\n", n->prim->index, n->prim->name);
   fflush(stderr);
 
   // Debug: print all rvals
-  fprintf(stderr, "DEBUG: rvals.n=%d\n", n->rvals.n);
+  DEBUG_LOG("rvals.n=%d\n", n->rvals.n);
   for (int i = 0; i < n->rvals.n; i++) {
-    fprintf(stderr, "DEBUG: rvals[%d]: sym=%s (id=%d), is_fun=%d\n", i,
+    DEBUG_LOG("rvals[%d]: sym=%s (id=%d), is_fun=%d\n", i,
             n->rvals[i]->sym && n->rvals[i]->sym->name ? n->rvals[i]->sym->name : "(null)",
             n->rvals[i]->sym ? n->rvals[i]->sym->id : -1, n->rvals[i]->sym ? n->rvals[i]->sym->is_fun : -1);
   }
@@ -219,7 +219,7 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
       (n->rvals.n > 0 && n->rvals[0]->sym && n->rvals[0]->sym->name && strcmp(n->rvals[0]->sym->name, "primitive") == 0)
           ? 2
           : 1;
-  fprintf(stderr, "DEBUG: offset o=%d\n", o);
+  DEBUG_LOG("offset o=%d\n", o);
   fflush(stderr);
   // "primitive" symbol logic from cg.cc: (n->rvals.v[0]->sym == sym_primitive) ? 2 : 1;
   // We don't have sym_primitive available globally? It's in builtin.h, but check name "primitive".
@@ -401,17 +401,17 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
 
       // Initialize fields
       // rvals: 0=prim, 1="make", 2=type, 3...=elements
-      fprintf(stderr, "DEBUG: P_prim_make: initializing %d fields\n", n->rvals.n - 3);
+      DEBUG_LOG("P_prim_make: initializing %d fields\n", n->rvals.n - 3);
       for (int i = 3; i < n->rvals.n; i++) {
         int field_idx = i - 3;
         Var *field_val_var = n->rvals[i];
-        fprintf(stderr, "DEBUG: P_prim_make: field %d, var=%p, sym=%s (id=%d), is_fun=%d\n", field_idx,
+        DEBUG_LOG("P_prim_make: field %d, var=%p, sym=%s (id=%d), is_fun=%d\n", field_idx,
                 (void *)field_val_var,
                 field_val_var->sym && field_val_var->sym->name ? field_val_var->sym->name : "(null)",
                 field_val_var->sym ? field_val_var->sym->id : -1, field_val_var->sym ? field_val_var->sym->is_fun : -1);
         // Skip function symbols - they're not field values
         if (field_val_var->sym && field_val_var->sym->is_fun) {
-          fprintf(stderr, "DEBUG: P_prim_make: skipping function symbol %s\n",
+          DEBUG_LOG("P_prim_make: skipping function symbol %s\n",
                   field_val_var->sym->name ? field_val_var->sym->name : "unnamed");
           continue;
         }
@@ -500,13 +500,13 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
       if (!name) name = name_var->sym->constant;
       if (!name) return 0;
 
-      fprintf(stderr, "DEBUG: P_prim_primitive: name='%s', rvals.n=%d\n", name, n->rvals.n);
+      DEBUG_LOG("P_prim_primitive: name='%s', rvals.n=%d\n", name, n->rvals.n);
       llvm::Module *TheModule = ifa_fun->llvm->getParent();
 
-      fprintf(stderr, "DEBUG: P_prim_primitive: checking if name='%s' is print/println\n", name);
+      DEBUG_LOG("P_prim_primitive: checking if name='%s' is print/println\n", name);
 
       if (strcmp(name, "print") == 0 || strcmp(name, "println") == 0) {
-        fprintf(stderr, "DEBUG: P_prim_primitive: handling print/println\n");
+        DEBUG_LOG("P_prim_primitive: handling print/println\n");
         // Declare printf
         llvm::FunctionCallee printfFunc = TheModule->getOrInsertFunction(
             "printf", llvm::FunctionType::get(llvm::IntegerType::getInt32Ty(*TheContext),
@@ -519,16 +519,16 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
         args.push_back(nullptr);  // Placeholder for format string
 
         bool is_println = (strcmp(name, "println") == 0);
-        fprintf(stderr, "DEBUG: P_prim_primitive print: processing %d args starting at index 2\n", n->rvals.n - 2);
+        DEBUG_LOG("P_prim_primitive print: processing %d args starting at index 2\n", n->rvals.n - 2);
 
         for (int i = 2; i < n->rvals.n; i++) {
           Var *arg = n->rvals[i];
-          fprintf(stderr, "DEBUG:   print arg %d: type=%p, sym=%s\n", i - 2, (void *)arg->type,
+          DEBUG_LOG("  print arg %d: type=%p, sym=%s\n", i - 2, (void *)arg->type,
                   arg->type && arg->type->name ? arg->type->name : "(null)");
 
           llvm::Value *val = getLLVMValue(arg, ifa_fun);
           if (!val) {
-            fprintf(stderr, "DEBUG:   WARNING: getLLVMValue returned NULL for arg %d\n", i - 2);
+            DEBUG_LOG("  WARNING: getLLVMValue returned NULL for arg %d\n", i - 2);
             continue;
           }
 
@@ -557,7 +557,7 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
           } else if (arg->type == sym_string) {
             fmt_str += doln ? "%s\n" : "%s";
           } else {
-            fprintf(stderr, "DEBUG:   WARNING: unsupported type for arg %d\n", i - 2);
+            DEBUG_LOG("  WARNING: unsupported type for arg %d\n", i - 2);
             fmt_str += doln ? "<unsupported type>\n" : "<unsupported type>";
           }
           args.push_back(val);
@@ -614,14 +614,14 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
           // Return value variable doesn't have LLVM value (dead code)
           // Return undef like C backend would skip or return placeholder
           ret_llvm_val = llvm::UndefValue::get(llvm_func->getReturnType());
-          fprintf(stderr, "DEBUG: Return value not available, using undef for function %s\n", ifa_fun->sym->name);
+          DEBUG_LOG("Return value not available, using undef for function %s\n", ifa_fun->sym->name);
         }
 
         std::string ret_type_str, expected_type_str;
         llvm::raw_string_ostream ret_os(ret_type_str), exp_os(expected_type_str);
         ret_llvm_val->getType()->print(ret_os);
         llvm_func->getReturnType()->print(exp_os);
-        fprintf(stderr, "DEBUG: prim_reply return value type: %s, expected: %s\n", ret_os.str().c_str(),
+        DEBUG_LOG("prim_reply return value type: %s, expected: %s\n", ret_os.str().c_str(),
                 exp_os.str().c_str());
 
         if (ret_llvm_val->getType() == llvm_func->getReturnType()) {

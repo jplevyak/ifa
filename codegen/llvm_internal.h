@@ -85,4 +85,9 @@ int is_closure_var(Var *v);
 // Get target function from a call PNode
 Fun *get_target_fun(PNode *n, Fun *f);
 
+// Diagnostic prints from the LLVM backend. Gated on `ifa_debug`
+// (settable via `-d` / `-d -d` / ifa_debug = N) so default runs
+// are silent and golden-file tests can diff stdout/stderr cleanly.
+#define DEBUG_LOG(...) do { if (ifa_debug) fprintf(stderr, "DEBUG: " __VA_ARGS__); } while (0)
+
 #endif // _llvm_internal_H_
