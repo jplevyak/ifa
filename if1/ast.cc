@@ -464,10 +464,24 @@ void build_type_hierarchy(int compute_structural_value_hierarchy) {
   types.asset.set_union(meta_types.asset);
   types.asvec.clear();
   types.asvec.append(types.asset);
-  // build implementors/specializers
+  // build implementors/specializers (transitive closure)
   for (Sym *s : new_types) {
     for (Sym *x : s->implements) for (Sym *y : x->implements) add_implementor(s, y);
     for (Sym *x : s->specializes) for (Sym *y : x->specializes) add_specializer(s, y);
+  }
+  // Also run the closure for constants/symbols/funs added since last
+  // call. They didn't get into `new_types` (which is gated on
+  // type_kind) but their implements/specializes still need to propagate
+  // up the type chain — e.g., a constant %k1 :type @int32 must end up
+  // in sym_any->specializers (via the int32→anyint→anynum→any chain),
+  // not just sym_int32->specializers. Without this, pattern_match
+  // can't match a typed-constant arg against a sym_any-typed formal.
+  for (int x = type_hierarchy_built; x < if1->allsyms.n; x++) {
+    Sym *s = if1->allsyms[x];
+    if (s->type_kind) continue;  // already handled via new_types
+    if (!s->is_constant && !s->is_symbol && !s->is_fun) continue;
+    for (Sym *xx : s->implements) for (Sym *y : xx->implements) add_implementor(s, y);
+    for (Sym *xx : s->specializes) for (Sym *y : xx->specializes) add_specializer(s, y);
   }
   // linearize classes for dispatch
   for (int x = type_hierarchy_built; x < if1->allsyms.n; x++) c3_linearization(if1->allsyms[x]);

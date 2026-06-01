@@ -1,0 +1,42 @@
+;; 05_call.ir — top SENDs to %add with two int32 constants.
+;;
+;; Status: pattern_match WILL now match %add (after the ast.cc
+;; build_type_hierarchy fix that propagates constants up the type
+;; chain to sym_any->specializers). However, with the matched dispatch
+;; FA's make_closure() assertion trips: the SEND's positional
+;; layout doesn't follow pyc's "closure_sym appears as its own first
+;; formal" convention, and that mismatch confuses make_closure. So
+;; the fixture is still locked at "1 EntrySet only" — registering
+;; %add as a Fun but not actually invoking it from @__main__.
+;;
+;; A future fixture that fully exercises closure-call dispatch should
+;; either: (a) declare %add with %add itself as the first formal arg
+;; AND make the parser handle the closure-receiver convention without
+;; tripping make_closure, or (b) use a per-call calling convention
+;; that doesn't go through make_closure (e.g., a primitive-form SEND).
+
+(sym %k1 :is-constant :immediate (int32 1))
+(sym %k2 :is-constant :immediate (int32 2))
+
+(sym %a :is-local)
+(sym %b :is-local)
+(sym %ar :is-local)
+(sym %acont)
+
+(fun %add
+  :args (%a %b)
+  :rets (%ar)
+  :cont %acont
+  :body
+    (move %a %ar))
+
+(sym %r :is-local)
+(sym %tcont)
+
+(fun %top
+  :rets (%r)
+  :cont %tcont
+  :body
+    (send %add %k1 %k2 => %r))
+
+(entry %top)

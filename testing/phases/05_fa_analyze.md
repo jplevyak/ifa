@@ -246,6 +246,25 @@ NULL `code` on a registered closure (the per-Code variant already did;
 the IF1-wide pass needed the same check). This is a real bug fix that
 also helps any future frontend that produces no-body placeholders.
 
+### Constant → sym_any specializer chain (ifa fix)
+
+`build_type_hierarchy` in `if1/ast.cc` did transitive
+implementor/specializer closure only over `new_types` (Syms with
+`type_kind != 0`). Constants/symbols/funs were skipped, so a
+typed-constant like `(int32 1)` ended up in `sym_int32->specializers`
+but not in `sym_any->specializers` (because the closure didn't walk
+their `implements`/`specializes` chain).
+
+That meant `pattern_match_arg` couldn't match a typed-constant actual
+against a sym_any-typed formal: `sym_any->specializers.set_in(%k1)`
+returned 0 even though %k1 transitively specializes sym_any.
+
+Fixed by adding a second loop that runs the same transitive closure
+for constants/symbols/funs added since the last call. Production
+pyc never tripped this because its frontend builds dispatch tables
+differently and the issue only surfaces when a typed constant flows
+into an untyped formal.
+
 ### Typed constants via :immediate
 
 The runner now supports a `Phase::pre_parse` hook (called between
