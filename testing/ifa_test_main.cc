@@ -24,6 +24,7 @@
 #include "sym.h"
 #include "testing/parse_ir.h"
 #include "ast.h"
+#include "testing/fa_setup.h"
 #include "testing/print_argpos.h"
 #include "testing/print_cfg.h"
 #include "testing/print_dom.h"
@@ -74,29 +75,12 @@ static void phase_patterns_run(IF1 *p) {
   init_default_builtin_types();
   if1_finalize(p);
 }
-// FA::analyze depends on the full sym_* table (sym_any, sym_void_type,
-// sym_bool, sym_int*, sym_float*, etc.) which init_default_builtin_types
-// allocates. The V/Python frontends additionally create sym___main__
-// (a global referenced unconditionally by make_top_edge). finalize_types
-// then wires up sym->type/meta_type for every type Sym — without it,
-// AType canonicalization deref's a NULL type pointer.
-//
-// We skip if1_finalize_set_top so the entry decl from the .ir fixture
-// (parsed into if1->top) survives — finalize_set_top would clobber it
-// with sym___main__, which is just a placeholder receiver of the top
-// AEdge. All Fun construction + the FA::analyze call itself happen
-// inside the printer.
-static void phase_fa_run(IF1 *p) {
-  init_default_builtin_types();
-  new_builtin_global_variable(sym___main__, "__main__");
-  // pyc/V order: finalize_types runs FIRST (it populates meta_type
-  // for primitive type Syms), then build_type_hierarchy can use that.
-  finalize_types(p);
-  build_type_hierarchy();
-  if1_finalize_bind_prims(p);
-  if1_finalize_dce(p);
-  if1_finalize_flatten_and_fixup_nesting(p);
-}
+// fa_setup_environment does init_default_builtin_types, synthesizes
+// sym___main__ as a stub closure (so its abstract_type gets populated
+// during FA setup), runs finalize_types + build_type_hierarchy, then
+// the if1_finalize sub-phases (including set_top which now points
+// if1->top at sym___main__). After this, FA::analyze can run.
+static void phase_fa_run(IF1 *p) { fa_setup_environment(p); }
 
 static Phase phases[] = {
     {"finalize", phase_finalize_run, print_finalize_normalized},

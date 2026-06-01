@@ -189,43 +189,53 @@ per test.
 
 ## 7. Acceptance
 
-- [~] Init-only printer compiles, runs the **setup chain** (not the
-      analysis loop), and locks in 2 fixtures. The actual
-      `FA::analyze()` call is **not yet invoked** because the test
-      harness doesn't fully wire up `sym___main__->var->abstract_type`
-      (a trivial fixture asserts in `update_in` on the top edge).
-      Resolving this is a separate piece of work — likely a small
-      helper in `ifa/testing/` that initializes `sym___main__` the way
-      the V/Python frontend does (giving it a Var and abstract_type),
-      so `make_top_edge` finds usable state. Until then this phase
-      is a regression check on the pre-analysis setup
-      (`init_default_builtin_types` → `finalize_types` →
-      `build_type_hierarchy` → `if1_finalize_{bind_prims,dce,flatten}`).
-- [ ] Converge printer + splitter tests — blocked on the same setup.
-- [ ] All edge-case tests — blocked.
-- [x] Run-twice determinism — verified for fa-init setup: running
-      `ifa-test --phase fa-init` twice produces identical output.
-- [ ] `pass-counts` / `history` blocks — blocked.
-- [ ] Splitter-stage coverage — blocked.
+- [x] Init-only printer compiles and runs `FA::analyze()` to
+      completion on 2 fixtures.
+- [ ] Converge printer + splitter tests — blocked on driving user
+      code from `sym___main__` (see "User code is registered but not
+      analyzed" below).
+- [ ] All edge-case tests — same blocker.
+- [x] Run-twice determinism — verified: `ifa-test --phase fa-init`
+      twice produces byte-identical output.
+- [ ] `pass-counts` / `history` blocks — needs FA timer instrumentation
+      that's deterministic.
+- [ ] Splitter-stage coverage — needs interesting user code reachable
+      from the top edge.
 
-### Setup-chain crashes encountered (recorded for future work)
+### How the harness boots FA
 
-While building the fa-init plumbing the harness hit three real
-ordering issues in the FA boot path that pyc-the-frontend hides:
+`fa_setup_environment` (`ifa/testing/fa_setup.{cc,h}`) does what the
+pyc/V frontend does in `build_environment` + `build_init`, but without
+needing the frontend:
 
-1. **`if1_finalize_set_top` clobbers `if1->top`** with `sym___main__`,
-   throwing away the entry chosen by the .ir fixture. Worked around
-   by skipping that sub-step and calling `bind_prims`/`dce`/`flatten`
-   directly. A cleaner fix is to make `set_top` a no-op when
-   `if1->top` is already set.
-2. **`finalize_types` asserts every `sym_*` from `builtin_symbols.h`
-   is non-null** — `sym___main__` is created only by the V/Python
-   frontend. The test harness now creates it as a plain global
-   variable before calling `finalize_types`.
-3. **`build_type_hierarchy` must run AFTER `finalize_types`** (so
-   primitive types have their `meta_type` set), not before — the
-   pyc frontend invocation order is the correct reference.
+1. `init_default_builtin_types()` — populate `sym_any`, `sym_bool`,
+   `sym_int*`, `sym_float*`, etc. (`ast.cc:112`).
+2. `new_builtin_global_variable(sym___main__, "__main__")` — register
+   the global so `finalize_types`' per-builtin-sym assert passes.
+3. **Synthesize `sym___main__` as a stub closure** — a single `(send
+   primitive reply cont ret)` body wrapped via `if1_closure`. This is
+   exactly what `python_ifa_main.cc:build_init()` does. The crucial
+   side effect: `if1_closure` sets `sym___main__->is_fun = 1`, which
+   makes `initialize_Sym_for_fa` give it an `abstract_type` — without
+   that, `make_top_edge` crashes in `update_in` (which is what the
+   earlier "deferred" state was blocked on).
+4. `finalize_types(p)` — populate `meta_type` on primitive type Syms.
+5. `build_type_hierarchy()` — must run **after** `finalize_types`, not
+   before, or the meta-type implements/specializes loop hits
+   `s->meta_type == NULL`.
+6. `if1_finalize_{set_top,bind_prims,dce,flatten_and_fixup_nesting}` —
+   `set_top` now safely points `if1->top` at `sym___main__`.
 
-The `FA::analyze` deferral above is the fourth such issue, but
-because it crashes deep in the AType propagation loop rather than
-during setup, working around it requires a more invasive helper.
+### User code is registered but not analyzed
+
+The .ir fixture's `(entry %x)` declares a user closure that does get a
+`Fun` and is added to `pdb->funs`, but `sym___main__`'s body never
+calls it. So FA only analyzes the synthetic main: one EntrySet, 5
+CreationSets (the basic constants the reply primitive touches), 4
+incoming edges to the top.
+
+To exercise user code, `fa_setup_environment` would need to splice the
+user entry's body into `sym___main__`'s body (the pyc convention —
+the user's module-level code IS `sym___main__`'s body) or emit a
+calling SEND form. Both require knowing the calling convention for a
+test-friendly entry; deferred.

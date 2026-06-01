@@ -1,23 +1,21 @@
 ;; phase: fa-init
 
-;; FA::analyze() is not yet invoked by the test harness — see
-;; ifa/testing/phases/05_fa_analyze.md §7. This printer locks in
-;; pre-analysis state (post-finalize, post-build_type_hierarchy)
-;; so any change to that setup is observable.
-
-(closures
-  %f args=1 ret=r fun=set
-  %g args=1 ret=r fun=set
+(summary
+  rc:              0
+  entry-sets:      1
+  creation-sets:   5
+  global-avars:    0
+  funs:            1
+  basic-types:     0
 )
 
-(pdb funs=2)
+(entry-sets
+  @__main__ args=1 rets=1 edges=4 creates=0
+)
 
-(syms-classification
-  total:     125
-  constants: 2
-  symbols:   21
-  funs:      2
-  types:     88
-  has-meta:  113
+(closures-registered
+  @__main__ args=1 fun=set
+  %f args=1 fun=set
+  %g args=1 fun=set
 )
 

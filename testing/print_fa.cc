@@ -32,18 +32,15 @@ static int compar_es_by_fun_then_id(const void *a, const void *b) {
   return (ea->id > eb->id) - (ea->id < eb->id);
 }
 
-// NOTE: fa-init is currently a *setup-only* phase. Running the full
-// FA::analyze loop requires more environment setup than the test
-// harness currently provides (sym___main__ needs to be wired into a
-// Fun, abstract_type needs to be set on the right Syms, etc.) and a
-// trivial fixture asserts in update_in() because the top-edge AVar
-// has a NULL abstract_type. See phases/05_fa_analyze.md §7. For now
-// this printer verifies that the pre-analysis setup chain
-// (init_default_builtin_types → finalize_types → build_type_hierarchy
-// → if1_finalize_*) runs cleanly and reports the resulting IF1 state.
+// fa-init runs one analysis pass on the (sym___main__-rooted) test
+// program and prints summary state. The user's `(entry %x)` from the
+// .ir is not actually called from sym___main__ — it's just registered
+// as a closure — so most fixtures only exercise sym___main__'s own
+// trivial reply body. Driving user code from sym___main__ is a
+// follow-on.
 void print_fa_normalized(FILE *fp, IF1 *p) {
-  // Build Funs and register with PDB so a future FA::analyze pass
-  // would see them.
+  // Build Funs for every closure (including the synthetic
+  // sym___main__) and register with PDB.
   Vec<Sym *> closures;
   for (Sym *c : p->allclosures) if (c->code) closures.add(c);
   if (closures.n > 1)
@@ -58,42 +55,45 @@ void print_fa_normalized(FILE *fp, IF1 *p) {
 
   NameAssigner na;
   na.assign_all(p);
-
   fputs(";; phase: fa-init\n\n", fp);
-  fputs(";; FA::analyze() is not yet invoked by the test harness — see\n", fp);
-  fputs(";; ifa/testing/phases/05_fa_analyze.md §7. This printer locks in\n", fp);
-  fputs(";; pre-analysis state (post-finalize, post-build_type_hierarchy)\n", fp);
-  fputs(";; so any change to that setup is observable.\n\n", fp);
 
-  fputs("(closures\n", fp);
+  int rc = -2;
+  if (if1->top && if1->top->fun) {
+    rc = pdb->fa->analyze(if1->top->fun);
+  }
+  FA *fa = pdb->fa;
+
+  fputs("(summary\n", fp);
+  fprintf(fp, "  rc:              %d\n", rc);
+  fprintf(fp, "  entry-sets:      %d\n", fa->ess.n);
+  fprintf(fp, "  creation-sets:   %d\n", fa->css.n);
+  fprintf(fp, "  global-avars:    %d\n", fa->global_avars.n);
+  fprintf(fp, "  funs:            %d\n", fa->funs.n);
+  fprintf(fp, "  basic-types:     %d\n", fa->basic_types.n);
+  fputs(")\n\n", fp);
+
+  // Per-EntrySet summary, sorted by (fun name, id).
+  Vec<EntrySet *> ess;
+  for (EntrySet *es : fa->ess) ess.add(es);
+  if (ess.n > 1) qsort(ess.v, ess.n, sizeof(EntrySet *), compar_es_by_fun_then_id);
+  fputs("(entry-sets\n", fp);
+  for (EntrySet *es : ess) {
+    fputs("  ", fp);
+    if (es->fun && es->fun->sym) na.print_ref(fp, es->fun->sym);
+    else fputs("?", fp);
+    fprintf(fp, " args=%d rets=%d edges=%d creates=%d\n",
+            es->args.n, es->rets.n, es->edges.length(), es->creates.n);
+  }
+  if (ess.n == 0) fputs("  (none)\n", fp);
+  fputs(")\n\n", fp);
+
+  // Closure registration summary — what's in the PDB.
+  fputs("(closures-registered\n", fp);
   for (Sym *c : closures) {
     fputs("  ", fp);
     na.print_ref(fp, c);
-    fprintf(fp, " args=%d ret=%s fun=%s\n",
-            c->has.n,
-            c->ret && c->ret->name ? c->ret->name : "?",
-            c->fun ? "set" : "null");
+    fprintf(fp, " args=%d fun=%s\n", c->has.n, c->fun ? "set" : "null");
   }
   if (closures.n == 0) fputs("  (none)\n", fp);
-  fputs(")\n\n", fp);
-
-  fprintf(fp, "(pdb funs=%d)\n\n", pdb->funs.n);
-
-  // Count syms by interesting buckets.
-  int constants = 0, symbols = 0, funs = 0, types = 0, has_meta = 0;
-  for (Sym *s : p->allsyms) {
-    if (s->is_constant) constants++;
-    if (s->is_symbol) symbols++;
-    if (s->is_fun) funs++;
-    if (s->type_kind) types++;
-    if (s->meta_type) has_meta++;
-  }
-  fputs("(syms-classification\n", fp);
-  fprintf(fp, "  total:     %d\n", p->allsyms.n);
-  fprintf(fp, "  constants: %d\n", constants);
-  fprintf(fp, "  symbols:   %d\n", symbols);
-  fprintf(fp, "  funs:      %d\n", funs);
-  fprintf(fp, "  types:     %d\n", types);
-  fprintf(fp, "  has-meta:  %d\n", has_meta);
   fputs(")\n\n", fp);
 }
