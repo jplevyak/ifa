@@ -1,0 +1,18 @@
+;; 01_single.ir — one function with two positional args. Expected:
+;; two MType entries — one keyed on each arg's dispatch_type (which
+;; defaults to @any for untyped local args). Both report pos[1] /
+;; pos[2] holding %f, plus pos[1] holds %f itself (closure dispatch).
+
+(sym %a :is-local)
+(sym %b :is-local)
+(sym %r :is-local)
+(sym %cont)
+
+(fun %f
+  :args (%a %b)
+  :rets (%r)
+  :cont %cont
+  :body
+    (send %a %b => %r))
+
+(entry %f)

@@ -1,0 +1,26 @@
+;; 02_two_funs.ir — two functions with overlapping arity. Both register
+;; at pos[1]/pos[2] under @any; the dispatch index records all matching
+;; funs per (type, position) pair.
+
+(sym %a :is-local)
+(sym %b :is-local)
+(sym %r1 :is-local)
+(sym %r2 :is-local)
+(sym %cont1)
+(sym %cont2)
+
+(fun %add
+  :args (%a %b)
+  :rets (%r1)
+  :cont %cont1
+  :body
+    (send %a %b => %r1))
+
+(fun %mul
+  :args (%a %b)
+  :rets (%r2)
+  :cont %cont2
+  :body
+    (send %a %b => %r2))
+
+(entry %add)

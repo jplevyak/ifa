@@ -23,10 +23,13 @@
 #include "pdb.h"
 #include "sym.h"
 #include "testing/parse_ir.h"
+#include "ast.h"
+#include "testing/print_argpos.h"
 #include "testing/print_cfg.h"
 #include "testing/print_dom.h"
 #include "testing/print_finalize.h"
 #include "testing/print_loops.h"
+#include "testing/print_patterns.h"
 #include "testing/print_ssu.h"
 #include "testing/test_callbacks.h"
 #include "testing/write_ir.h"
@@ -61,6 +64,15 @@ static void phase_cfg_run(IF1 *p) { if1_finalize(p); }
 static void phase_ssu_run(IF1 *p) { if1_finalize(p); }
 static void phase_dom_run(IF1 *p) { if1_finalize(p); }
 static void phase_loops_run(IF1 *p) { if1_finalize(p); }
+static void phase_argpos_run(IF1 *p) { if1_finalize(p); }
+// build_patterns calls dispatch_type() which falls back to sym_any
+// (a global initialized by init_default_builtin_types) for untyped
+// args. The V/Python frontends call it during build_environment;
+// here we call it ourselves so the patterns phase can stand alone.
+static void phase_patterns_run(IF1 *p) {
+  init_default_builtin_types();
+  if1_finalize(p);
+}
 
 static Phase phases[] = {
     {"finalize", phase_finalize_run, print_finalize_normalized},
@@ -68,8 +80,10 @@ static Phase phases[] = {
     {"ssu",      phase_ssu_run,      print_ssu_normalized},
     {"dom",      phase_dom_run,      print_dom_normalized},
     {"loops",    phase_loops_run,    print_loops_normalized},
-    // Future phases: patterns, fa-init, fa-converge, clone, dce,
-    // freq, inline, codegen-c, codegen-llvm.
+    {"argpos",   phase_argpos_run,   print_argpos_normalized},
+    {"patterns", phase_patterns_run, print_patterns_normalized},
+    // Future phases: dispatch (pattern_match traces), fa-init,
+    // fa-converge, clone, dce, freq, inline, codegen-c, codegen-llvm.
     // See ifa/testing/phases/00_INDEX.md.
     {0, 0, 0},
 };

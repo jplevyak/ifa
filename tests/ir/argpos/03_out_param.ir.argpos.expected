@@ -1,0 +1,11 @@
+;; phase: argpos
+
+;; Fun %storeb
+(positions %storeb
+  pos["a"] -> %a :alias-of pos[1]
+  pos["b"] -> %b :out :alias-of pos[2]
+  pos[1] -> %a :positional
+  pos[2] -> %b :out :positional
+  rets: %r
+)
+

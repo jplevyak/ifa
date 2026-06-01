@@ -1,0 +1,9 @@
+;; phase: argpos
+
+;; Fun %identity
+(positions %identity
+  pos["x"] -> %x :alias-of pos[1]
+  pos[1] -> %x :positional
+  rets: %r
+)
+

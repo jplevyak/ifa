@@ -1,0 +1,14 @@
+;; phase: patterns
+
+(mtype @any
+  pos["a"]: %f
+  pos["b"]: %f
+  pos[1]: %f
+  pos[2]: %f
+)
+
+(mtype %f
+  pos["f"]: %f
+  pos[1]: %f
+)
+

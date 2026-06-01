@@ -170,9 +170,24 @@ that wraps the args/names/etc. passed to `pattern_match`.
 
 ## 7. Acceptance
 
-- [ ] arg-positions printer + 7 tests pass.
-- [ ] patterns printer + 5 tests pass.
-- [ ] dispatch printer + 8 tests pass.
+- [x] arg-positions printer compiles and runs
+      (`testing/print_argpos.{cc,h}`; phase name `argpos`).
+- [x] patterns printer compiles and runs
+      (`testing/print_patterns.{cc,h}`; phase name `patterns`).
+      Initializes builtin types itself (`init_default_builtin_types`)
+      so untyped args' `dispatch_type()` fallback to `sym_any` is safe
+      without running the V/Python frontend.
+- [ ] dispatch printer — deferred until phase 05 (needs AVar `out`
+      types, which only exist after FA init).
+- [~] arg-positions tests: 3 of 7 fixtures land
+      (`01_single`, `02_multi`, `03_out_param`). Remaining:
+      `named_arg`, `pattern_destructure`, `defaults`, `rest_param`
+      (need `.ir` grammar support for `:default` / `:is-rest`).
+- [~] patterns tests: 2 of 5 fixtures land (`01_single`, `02_two_funs`).
+      Remaining: `selector_dispatch`, `inherited_method`,
+      `must_specialize` — need richer Sym hierarchies in `.ir`
+      (specializes/implements edges, `:must_specialize`).
 - [ ] Adding a new Fun via `add_patterns(fa, f)` clears
-      `sym_match_cache` as expected.
-- [ ] Dispatch traces are stable across runs of the same fixture.
+      `sym_match_cache` as expected — TODO.
+- [ ] Dispatch traces are stable across runs of the same fixture —
+      deferred with the dispatch phase.

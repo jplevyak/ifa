@@ -1,0 +1,18 @@
+;; 01_single.ir — one positional arg.
+;;
+;; Expected: pos[1,1] -> %x (single argument). The outer pos[i] dimension
+;; is the call-site index; the inner [j] is intra-arg destructuring
+;; (1 for simple non-pattern args).
+
+(sym %x :is-local)
+(sym %r :is-local)
+(sym %cont)
+
+(fun %identity
+  :args (%x)
+  :rets (%r)
+  :cont %cont
+  :body
+    (move %x %r))
+
+(entry %identity)

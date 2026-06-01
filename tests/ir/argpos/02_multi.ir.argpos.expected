@@ -1,0 +1,13 @@
+;; phase: argpos
+
+;; Fun %triple
+(positions %triple
+  pos["a"] -> %a :alias-of pos[1]
+  pos["b"] -> %b :alias-of pos[2]
+  pos["c"] -> %c :alias-of pos[3]
+  pos[1] -> %a :positional
+  pos[2] -> %b :positional
+  pos[3] -> %c :positional
+  rets: %r
+)
+
