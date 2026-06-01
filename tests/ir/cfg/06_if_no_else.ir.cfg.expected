@@ -1,0 +1,15 @@
+;; phase: cfg
+
+;; Fun %maybe
+(fun %maybe
+  entry:  %p0
+  exit:   %p3
+  pnodes: 4
+)
+(pnodes %maybe
+  %p0  IF    %cond  succ:[%p1 %p3]
+  %p1  LABEL  succ:[%p2]  pred:[%p0]
+  %p2  MOVE  %x -> %r  succ:[%p3]  pred:[%p1]
+  %p3  LABEL  pred:[%p0 %p2]
+)
+

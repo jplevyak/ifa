@@ -1,0 +1,23 @@
+;; 11_if_join_phi.ir — local %r written in both branches → expected to
+;; get a phi node at the join label %L_join, merging the two defs.
+
+(sym %cond :is-local)
+(sym %x :is-local)
+(sym %y :is-local)
+(sym %r :is-local)
+(sym %cont)
+
+(fun %pick
+  :args (%cond %x %y)
+  :rets (%r)
+  :cont %cont
+  :body
+    (if %cond %L_t %L_f)
+    (label %L_t)
+    (move %x %r)
+    (goto %L_join)
+    (label %L_f)
+    (move %y %r)
+    (label %L_join))
+
+(entry %pick)

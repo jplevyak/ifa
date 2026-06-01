@@ -1,0 +1,25 @@
+;; 13_loop_phi.ir — local %r updated in a loop body → phi at loop header.
+;;
+;; While-shape: cond test at L_top, body updates %r, back-edge to L_top.
+;; SSU should insert a phi for %r at L_top merging the entry def and the
+;; back-edge def from the body.
+
+(sym %cond :is-local)
+(sym %x :is-local)
+(sym %r :is-local)
+(sym %cont)
+
+(fun %accum
+  :args (%cond %x)
+  :rets (%r)
+  :cont %cont
+  :body
+    (move %x %r)
+    (label %L_top)
+    (if %cond %L_body %L_end)
+    (label %L_body)
+    (move %x %r)
+    (goto %L_top)
+    (label %L_end))
+
+(entry %accum)

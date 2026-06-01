@@ -120,7 +120,7 @@ LIB_SRCS = ifa.cc main.cc \
 	optimize/cfg.cc optimize/dead.cc optimize/dom.cc optimize/inline.cc optimize/loop.cc optimize/ssu.cc \
 	testing/parse_ir.cc testing/write_ir.cc testing/test_callbacks.cc \
 	testing/printer_util.cc \
-	testing/print_finalize.cc testing/print_cfg.cc \
+	testing/print_finalize.cc testing/print_cfg.cc testing/print_ssu.cc \
 	testing/roundtrip_test.cc
 LIB_OBJS = $(LIB_SRCS:%.cc=%.o)
 

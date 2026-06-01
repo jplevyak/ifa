@@ -1,0 +1,27 @@
+;; phase: ssu
+
+;; Fun %pick
+(phi
+  (none)
+)
+
+(phy
+  %p0:
+    [0] lvals=[%y_v1 %y_v2] rvals=[%y]
+    [1] lvals=[%x_v1 %x_v2] rvals=[%x]
+)
+
+(rename
+  %y -> %y(def ?) %y_v1(def p0) %y_v2(def p0)
+  %x -> %x(def ?) %x_v1(def p0) %x_v2(def p0)
+  %r -> %r(def p2) %r_v1(def p6)
+)
+
+(live-vars
+  %p0: %cond %x %y
+  %p1: %x
+  %p2: %x
+  %p5: %y
+  %p6: %y
+)
+

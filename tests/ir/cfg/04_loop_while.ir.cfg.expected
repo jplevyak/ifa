@@ -1,0 +1,17 @@
+;; phase: cfg
+
+;; Fun %while
+(fun %while
+  entry:  %p0
+  exit:   %p5
+  pnodes: 6
+)
+(pnodes %while
+  %p0  LABEL  succ:[%p1]  pred:[%p4]
+  %p1  IF    %cond  succ:[%p2 %p5]  pred:[%p0]
+  %p2  LABEL  succ:[%p3]  pred:[%p1]
+  %p3  MOVE  %i -> %r  succ:[%p4]  pred:[%p2]
+  %p4  GOTO   succ:[%p0]  pred:[%p3]
+  %p5  LABEL  pred:[%p1]
+)
+

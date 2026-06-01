@@ -156,12 +156,18 @@ from entry with deterministic successor ordering.
 
 - [x] CFG printer compiles and runs
       (`testing/print_cfg.{cc,h}` + shared `testing/printer_util.{cc,h}`).
-- [ ] SSU printer compiles and runs.
-- [~] CFG tests pass — 3 of the 8 fixtures landed
-      (`01_linear`, `02_if_else`, `03_multi_pred_label`); the rest
-      (`if_no_else`, `loop_while`, `loop_do_while`,
-      `unreachable_after_goto`, `nested_groups`) are TODO.
-- [ ] All 8 SSU tests pass.
+- [x] SSU printer compiles and runs
+      (`testing/print_ssu.{cc,h}`; per-PNode phi/phy lists, rename map
+      grouping Vars by source Sym, sorted live-vars).
+- [~] CFG tests pass — 6 of 8 fixtures land
+      (`01_linear`, `02_if_else`, `03_multi_pred_label`,
+      `04_loop_while`, `05_unreachable_after_goto`, `06_if_no_else`).
+      Remaining: `loop_do_while`, `nested_groups` (the latter needs
+      `.ir` support for SEQ/CONC grouping forms).
+- [~] SSU tests pass — 3 of 8 fixtures land
+      (`10_simple_local`, `11_if_join_phi`, `13_loop_phi`).
+      Remaining: `if_one_branch_phi`, `nested_if_phi`, `rename_chain`,
+      `phy_split`, `non_local_no_ssu`.
 - [x] PNode names are stable across runs — DFS pre-order from
       `entry`, using `cfg_succ` (true-before-false for IF).
 - [x] CFG-only Fun construction (no phi/phy) verified: the printer

@@ -25,6 +25,7 @@
 #include "testing/parse_ir.h"
 #include "testing/print_cfg.h"
 #include "testing/print_finalize.h"
+#include "testing/print_ssu.h"
 #include "testing/test_callbacks.h"
 #include "testing/write_ir.h"
 
@@ -51,14 +52,16 @@ struct Phase {
 
 static void phase_finalize_run(IF1 *p) { if1_finalize(p); }
 
-// `cfg` runs finalize then leaves Fun construction to the printer
-// (which builds each closure with FUN_BUILD_CFG_ONLY).
+// `cfg` and `ssu` both run finalize first; their printers build the
+// per-closure Funs themselves with the appropriate FUN_BUILD_* flags.
 static void phase_cfg_run(IF1 *p) { if1_finalize(p); }
+static void phase_ssu_run(IF1 *p) { if1_finalize(p); }
 
 static Phase phases[] = {
     {"finalize", phase_finalize_run, print_finalize_normalized},
     {"cfg",      phase_cfg_run,      print_cfg_normalized},
-    // Future phases: ssu, dom, loops, patterns, fa-init, fa-converge,
+    {"ssu",      phase_ssu_run,      print_ssu_normalized},
+    // Future phases: dom, loops, patterns, fa-init, fa-converge,
     // clone, dce, freq, inline, codegen-c, codegen-llvm.
     // See ifa/testing/phases/00_INDEX.md.
     {0, 0, 0},

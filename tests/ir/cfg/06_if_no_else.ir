@@ -1,0 +1,23 @@
+;; 06_if_no_else.ir — IF where the "else" target is the join label
+;; itself, so the false branch is empty and falls through.
+;;
+;; Expected: the IF has two cfg_succs (true label, then L_after).
+;; L_after has two cfg_preds (the true branch's fall-through and the
+;; IF's direct false edge).
+
+(sym %cond :is-local)
+(sym %x :is-local)
+(sym %r :is-local)
+(sym %cont)
+
+(fun %maybe
+  :args (%cond %x)
+  :rets (%r)
+  :cont %cont
+  :body
+    (if %cond %L_t %L_after)
+    (label %L_t)
+    (move %x %r)
+    (label %L_after))
+
+(entry %maybe)

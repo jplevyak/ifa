@@ -1,0 +1,23 @@
+;; 05_unreachable_after_goto.ir — code after an unconditional GOTO is
+;; never reachable from the entry and must be dropped by finalize_cfg's
+;; remove_unreachable.
+;;
+;; Expected: the MOVE between `goto %L_end` and `label %L_end` does not
+;; appear in the printed CFG (no PNode for it, no cfg_preds reference it).
+
+(sym %x :is-local)
+(sym %y :is-local)
+(sym %r :is-local)
+(sym %cont)
+
+(fun %skipper
+  :args (%x %y)
+  :rets (%r)
+  :cont %cont
+  :body
+    (move %x %r)
+    (goto %L_end)
+    (move %y %r)        ;; unreachable — must be pruned
+    (label %L_end))
+
+(entry %skipper)

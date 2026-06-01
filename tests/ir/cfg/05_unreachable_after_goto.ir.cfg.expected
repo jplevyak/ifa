@@ -1,0 +1,14 @@
+;; phase: cfg
+
+;; Fun %skipper
+(fun %skipper
+  entry:  %p0
+  exit:   %p2
+  pnodes: 3
+)
+(pnodes %skipper
+  %p0  MOVE  %x -> %r  succ:[%p1]
+  %p1  GOTO   succ:[%p2]  pred:[%p0]
+  %p2  LABEL  pred:[%p1]
+)
+

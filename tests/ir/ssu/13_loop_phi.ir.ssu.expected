@@ -1,0 +1,28 @@
+;; phase: ssu
+
+;; Fun %accum
+(phi
+  (none)
+)
+
+(phy
+  %p2:
+    [0] lvals=[%cond_v1 %cond_v2] rvals=[%cond]
+    [1] lvals=[%x_v1 %x_v2] rvals=[%x]
+)
+
+(rename
+  %x -> %x(def ?) %x_v1(def p2) %x_v2(def p2)
+  %r -> %r(def p0) %r_v1(def p4)
+  %cond -> %cond(def ?) %cond_v1(def p2) %cond_v2(def p2)
+)
+
+(live-vars
+  %p0: %cond %x
+  %p1: %cond %x
+  %p2: %cond %x
+  %p3: %cond %x
+  %p4: %cond %x
+  %p5: %cond %x
+)
+

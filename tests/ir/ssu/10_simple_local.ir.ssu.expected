@@ -1,0 +1,19 @@
+;; phase: ssu
+
+;; Fun %id
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+  %p0: %a
+)
+

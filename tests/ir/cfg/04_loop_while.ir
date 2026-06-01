@@ -1,0 +1,29 @@
+;; 04_loop_while.ir — while-style loop expressed via if/goto/label.
+;;
+;; Shape:
+;;   L_top:  if cond → L_body else L_end
+;;   L_body: ...
+;;           goto L_top    ; back-edge → L_top.cfg_pred gets two entries
+;;   L_end:
+;;
+;; Expected: the LABEL for L_top has two cfg_preds (entry fall-through
+;; and the back-edge from the body's GOTO).
+
+(sym %cond :is-local)
+(sym %i :is-local)
+(sym %r :is-local)
+(sym %cont)
+
+(fun %while
+  :args (%cond %i)
+  :rets (%r)
+  :cont %cont
+  :body
+    (label %L_top)
+    (if %cond %L_body %L_end)
+    (label %L_body)
+    (move %i %r)
+    (goto %L_top)
+    (label %L_end))
+
+(entry %while)

@@ -1,0 +1,17 @@
+;; 10_simple_local.ir — single local Var written then read, no branches.
+;;
+;; Expected: SSU rename produces no splits (single def, single use).
+;; No phi/phy nodes inserted.
+
+(sym %a :is-local)
+(sym %r :is-local)
+(sym %cont)
+
+(fun %id
+  :args (%a)
+  :rets (%r)
+  :cont %cont
+  :body
+    (move %a %r))
+
+(entry %id)
