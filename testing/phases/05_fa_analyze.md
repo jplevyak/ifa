@@ -189,12 +189,43 @@ per test.
 
 ## 7. Acceptance
 
-- [ ] Init-only printer + 6 tests pass.
-- [ ] Converge printer + 6 splitter tests pass.
-- [ ] All 6 edge-case tests pass.
-- [ ] Run-twice determinism: the same fixture run twice produces
-      byte-identical output.
-- [ ] `pass-counts` and `history` blocks are stable (with time
-      stripped).
-- [ ] Coverage report: the splitter's 5 stages each have at least
-      one test that exercises them in `extend_analysis`.
+- [~] Init-only printer compiles, runs the **setup chain** (not the
+      analysis loop), and locks in 2 fixtures. The actual
+      `FA::analyze()` call is **not yet invoked** because the test
+      harness doesn't fully wire up `sym___main__->var->abstract_type`
+      (a trivial fixture asserts in `update_in` on the top edge).
+      Resolving this is a separate piece of work — likely a small
+      helper in `ifa/testing/` that initializes `sym___main__` the way
+      the V/Python frontend does (giving it a Var and abstract_type),
+      so `make_top_edge` finds usable state. Until then this phase
+      is a regression check on the pre-analysis setup
+      (`init_default_builtin_types` → `finalize_types` →
+      `build_type_hierarchy` → `if1_finalize_{bind_prims,dce,flatten}`).
+- [ ] Converge printer + splitter tests — blocked on the same setup.
+- [ ] All edge-case tests — blocked.
+- [x] Run-twice determinism — verified for fa-init setup: running
+      `ifa-test --phase fa-init` twice produces identical output.
+- [ ] `pass-counts` / `history` blocks — blocked.
+- [ ] Splitter-stage coverage — blocked.
+
+### Setup-chain crashes encountered (recorded for future work)
+
+While building the fa-init plumbing the harness hit three real
+ordering issues in the FA boot path that pyc-the-frontend hides:
+
+1. **`if1_finalize_set_top` clobbers `if1->top`** with `sym___main__`,
+   throwing away the entry chosen by the .ir fixture. Worked around
+   by skipping that sub-step and calling `bind_prims`/`dce`/`flatten`
+   directly. A cleaner fix is to make `set_top` a no-op when
+   `if1->top` is already set.
+2. **`finalize_types` asserts every `sym_*` from `builtin_symbols.h`
+   is non-null** — `sym___main__` is created only by the V/Python
+   frontend. The test harness now creates it as a plain global
+   variable before calling `finalize_types`.
+3. **`build_type_hierarchy` must run AFTER `finalize_types`** (so
+   primitive types have their `meta_type` set), not before — the
+   pyc frontend invocation order is the correct reference.
+
+The `FA::analyze` deferral above is the fourth such issue, but
+because it crashes deep in the AType propagation loop rather than
+during setup, working around it requires a more invasive helper.

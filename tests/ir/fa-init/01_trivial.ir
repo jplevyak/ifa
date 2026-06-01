@@ -1,0 +1,17 @@
+;; 01_trivial.ir — single top-level closure with no body work.
+;;
+;; FA::analyze should build one entry-set for %top with no creation-sets
+;; (no SENDs to spawn allocations) and no type violations. This is the
+;; smallest fixture that exercises FA setup + a single analysis pass.
+
+(sym %x :is-local)
+(sym %r :is-local)
+(sym %cont)
+
+(fun %top
+  :rets (%r)
+  :cont %cont
+  :body
+    (move %x %r))
+
+(entry %top)

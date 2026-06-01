@@ -1,0 +1,23 @@
+;; 02_two_funs.ir — two closures sharing arg/ret names. The fa-init
+;; setup chain should produce 2 Funs in the PDB and stable Sym counts.
+
+(sym %a :is-local)
+(sym %b :is-local)
+(sym %r :is-local)
+(sym %cont)
+
+(fun %f
+  :args (%a)
+  :rets (%r)
+  :cont %cont
+  :body
+    (move %a %r))
+
+(fun %g
+  :args (%b)
+  :rets (%r)
+  :cont %cont
+  :body
+    (move %b %r))
+
+(entry %f)
