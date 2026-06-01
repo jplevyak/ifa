@@ -163,11 +163,30 @@ normaliser.
 
 ## 7. Acceptance
 
-- [ ] C printer + 15 tests pass.
-- [ ] LLVM printer + 7 tests pass.
-- [ ] No DEBUG noise on stderr during test runs.
-- [ ] Normaliser handles host-specific LLVM differences gracefully.
-- [ ] The "extra goto" regression test (#15) catches the project
-      memory bug if a future CFG change re-introduces it.
-- [ ] The verifyModule test (#25) is a smoke test: any
-      LLVM-malformed output fails this gate.
+- [x] C printer landed (`testing/print_codegen.{cc,h}` → `codegen-c`
+      phase). Runs the full ifa pipeline (analyze → clone →
+      build_cfg_dominators → mark_live_code → frequency_estimation
+      → mark_live_funs → simple_inlining → mark_live_types →
+      mark_live_funs), then captures `c_codegen_print_c`'s output
+      into a memstream, strips the `#include "c_runtime.h"`
+      prologue, and emits the rest verbatim.
+- [~] C tests: 2 of 15 (`01_baseline` is the empty-body case,
+      `02_call` exercises a typed-int32 call). Caveat: the synthetic
+      `sym___main__` body wires `reply` to `sym_nil`, so most user
+      computation gets marked dead by mark_live_funs and elided
+      from the C output. The goldens lock the honest "monomorphized,
+      DCE'd, emit just the live skeleton" outcome.
+- [ ] LLVM printer — not landed. Pre-requisite was the DEBUG_PRINT
+      audit (REFACTORING.md §6); ifa-side that landed in `49dda85`
+      so the LLVM backend is no longer noisy by default. The
+      remaining work is wiring `llvm_codegen_print_ir` into a
+      printer + a normaliser for host-specific text variations.
+- [x] No DEBUG noise on stderr during test runs (across all 48
+      phase fixtures).
+- [ ] Normaliser handles host-specific LLVM differences — N/A
+      until LLVM printer.
+- [ ] "extra goto" regression — would need a fixture where a CFG
+      with a non-trivial succ-to-LABEL path produces an emission
+      that requires the explicit `goto LN`. Doable but needs the
+      user body to survive DCE.
+- [ ] verifyModule — N/A until LLVM printer.

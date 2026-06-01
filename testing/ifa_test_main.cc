@@ -28,6 +28,7 @@
 #include "testing/print_argpos.h"
 #include "testing/print_cfg.h"
 #include "testing/print_clone.h"
+#include "testing/print_codegen.h"
 #include "testing/print_dce.h"
 #include "testing/print_dispatch.h"
 #include "testing/print_dom.h"
@@ -97,6 +98,9 @@ static void phase_clone_run(IF1 *p) { fa_setup_environment(p); }
 // mark_live_* (and frequency_estimation for freq) before dumping.
 static void phase_dce_run(IF1 *p) { fa_setup_environment(p); }
 static void phase_freq_run(IF1 *p) { fa_setup_environment(p); }
+// `codegen-c` — the printer runs the full ifa_analyze + ifa_optimize
+// pipeline and then captures c_codegen_print_c output.
+static void phase_codegen_c_run(IF1 *p) { fa_setup_environment(p); }
 
 static Phase phases[] = {
     {"finalize", 0,                       phase_finalize_run, print_finalize_normalized},
@@ -111,7 +115,8 @@ static Phase phases[] = {
     {"clone",    pre_parse_builtin_types, phase_clone_run,    print_clone_normalized},
     {"dce",      pre_parse_builtin_types, phase_dce_run,      print_dce_normalized},
     {"freq",     pre_parse_builtin_types, phase_freq_run,     print_freq_normalized},
-    // Future phases: fa-converge, inline, codegen-c, codegen-llvm.
+    {"codegen-c", pre_parse_builtin_types, phase_codegen_c_run, print_codegen_c_normalized},
+    // Future phases: fa-converge, inline, codegen-llvm.
     // See ifa/testing/phases/00_INDEX.md.
     {0, 0, 0, 0},
 };
