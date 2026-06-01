@@ -1,0 +1,15 @@
+;; 03_typed.ir — uses int32 constants directly. Expected: at least the
+;; constant creation-sets show up in FA state; %x flowing %k1 into %r
+;; should make %r's AType include the int32 const.
+
+(sym %k1 :is-constant :immediate (int32 42))
+(sym %r :is-local)
+(sym %cont)
+
+(fun %top
+  :rets (%r)
+  :cont %cont
+  :body
+    (move %k1 %r))
+
+(entry %top)

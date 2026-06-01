@@ -1,0 +1,18 @@
+;; 04_typed_send.ir — typed-constant SEND. The body sends two int32
+;; constants, exercising FA's send-dispatch logic on real types.
+;;
+;; Expected: rc=0 (no type violation), more creation-sets than the
+;; trivial typed fixture because the SEND introduces send-result AVars.
+
+(sym %k1 :is-constant :immediate (int32 1))
+(sym %k2 :is-constant :immediate (int32 2))
+(sym %r :is-local)
+(sym %cont)
+
+(fun %top
+  :rets (%r)
+  :cont %cont
+  :body
+    (send %k1 %k2 => %r))
+
+(entry %top)

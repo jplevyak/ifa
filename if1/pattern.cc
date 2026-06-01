@@ -1281,14 +1281,19 @@ static void find_visible_functions(Vec<AVar *> &args, PNode *visibility_point, V
     *visible_functions = new Vec<Fun *>;
     return;
   } else {
+    // NULL ast → IFAAST::visible_functions default behavior (return
+    // NULL, meaning "all funs are visible"). The test harness's .ir
+    // fixtures don't construct AST nodes; without this guard, FA
+    // crashes the moment dispatch is attempted from a typed SEND.
+    IFAAST *vp_ast = visibility_point->code ? visibility_point->code->ast : NULL;
     if (aarg0->out->n == 1) {
-      visible = visibility_point->code->ast->visible_functions(aarg0->out->v[0]->sym);
+      visible = vp_ast ? vp_ast->visible_functions(aarg0->out->v[0]->sym) : NULL;
     } else {
       for (CreationSet *cs : aarg0->out->sorted) {
         if (cs->sym->fun)
           function_values.set_add(cs->sym->fun);
         else {
-          Vec<Fun *> *v = visibility_point->code->ast->visible_functions(cs->sym);
+          Vec<Fun *> *v = vp_ast ? vp_ast->visible_functions(cs->sym) : NULL;
           if (v) {
             if (!*visible_functions) *visible_functions = new Vec<Fun *>;
             (*visible_functions)->set_union(*v);

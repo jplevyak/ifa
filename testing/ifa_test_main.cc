@@ -50,10 +50,14 @@
 
 struct Phase {
   cchar *name;
-  // run_phase(): execute pipeline steps appropriate for this phase
-  // (assumes earlier phases have already run).
+  // pre_parse (optional): called after ifa_init() but BEFORE parsing
+  // the fixture. Use this to register builtin Syms the .ir text needs
+  // to be able to reference (e.g., @int32) — init_default_builtin_types.
+  void (*pre_parse)(IF1 *p);
+  // run: pipeline steps assuming the IF1 is parsed and earlier phases
+  // have run.
   void (*run)(IF1 *p);
-  // print_phase(): emit the normalized output for golden compare.
+  // print: emit the normalized output for golden compare.
   void (*print)(FILE *fp, IF1 *p);
 };
 
@@ -67,33 +71,31 @@ static void phase_ssu_run(IF1 *p) { if1_finalize(p); }
 static void phase_dom_run(IF1 *p) { if1_finalize(p); }
 static void phase_loops_run(IF1 *p) { if1_finalize(p); }
 static void phase_argpos_run(IF1 *p) { if1_finalize(p); }
-// build_patterns calls dispatch_type() which falls back to sym_any
-// (a global initialized by init_default_builtin_types) for untyped
-// args. The V/Python frontends call it during build_environment;
-// here we call it ourselves so the patterns phase can stand alone.
-static void phase_patterns_run(IF1 *p) {
-  init_default_builtin_types();
-  if1_finalize(p);
-}
-// fa_setup_environment does init_default_builtin_types, synthesizes
-// sym___main__ as a stub closure (so its abstract_type gets populated
-// during FA setup), runs finalize_types + build_type_hierarchy, then
-// the if1_finalize sub-phases (including set_top which now points
-// if1->top at sym___main__). After this, FA::analyze can run.
+// pre_parse helper used by patterns and fa-init: registers the
+// default builtin type Syms (sym_int32 / sym_float64 / etc.) so the
+// .ir fixture can reference them via @int32-style refs.
+static void pre_parse_builtin_types(IF1 *) { init_default_builtin_types(); }
+
+static void phase_patterns_run(IF1 *p) { if1_finalize(p); }
+// fa_setup_environment synthesizes sym___main__ as a stub closure,
+// splices the .ir's `(entry %x)` body into it, then runs
+// finalize_types + build_type_hierarchy + if1_finalize sub-phases.
+// init_default_builtin_types was already run via pre_parse so .ir
+// `@int32` refs resolve.
 static void phase_fa_run(IF1 *p) { fa_setup_environment(p); }
 
 static Phase phases[] = {
-    {"finalize", phase_finalize_run, print_finalize_normalized},
-    {"cfg",      phase_cfg_run,      print_cfg_normalized},
-    {"ssu",      phase_ssu_run,      print_ssu_normalized},
-    {"dom",      phase_dom_run,      print_dom_normalized},
-    {"loops",    phase_loops_run,    print_loops_normalized},
-    {"argpos",   phase_argpos_run,   print_argpos_normalized},
-    {"patterns", phase_patterns_run, print_patterns_normalized},
-    {"fa-init",  phase_fa_run,       print_fa_normalized},
+    {"finalize", 0,                       phase_finalize_run, print_finalize_normalized},
+    {"cfg",      0,                       phase_cfg_run,      print_cfg_normalized},
+    {"ssu",      0,                       phase_ssu_run,      print_ssu_normalized},
+    {"dom",      0,                       phase_dom_run,      print_dom_normalized},
+    {"loops",    0,                       phase_loops_run,    print_loops_normalized},
+    {"argpos",   0,                       phase_argpos_run,   print_argpos_normalized},
+    {"patterns", pre_parse_builtin_types, phase_patterns_run, print_patterns_normalized},
+    {"fa-init",  pre_parse_builtin_types, phase_fa_run,       print_fa_normalized},
     // Future phases: fa-converge, clone, dce, freq, inline,
     // codegen-c, codegen-llvm. See ifa/testing/phases/00_INDEX.md.
-    {0, 0, 0},
+    {0, 0, 0, 0},
 };
 
 static Phase *find_phase(cchar *name) {
@@ -248,6 +250,8 @@ static int run_one(Fixture &f, Phase *phase, int &out_failed) {
   ifa_reset();
   ifa_init(new IRCallbacks);
   parse_ir_reset();
+
+  if (phase->pre_parse) phase->pre_parse(if1);
 
   if (parse_ir_file(f.path) != 0) {
     fprintf(stderr, "%s%sFAIL%s  %s  (parse)\n", col_R, "", col_N, name);

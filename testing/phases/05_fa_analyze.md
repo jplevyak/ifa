@@ -246,11 +246,30 @@ NULL `code` on a registered closure (the per-Code variant already did;
 the IF1-wide pass needed the same check). This is a real bug fix that
 also helps any future frontend that produces no-body placeholders.
 
-### Why fixtures still show identical EntrySet counts
+### Typed constants via :immediate
 
-Both current fa-init fixtures end with `rc: -1` and one EntrySet
-because the user locals carry no `:type`, so FA flags a NOTYPE
-violation. To produce richer FA state (multiple ESes, splitter
-firing) a fixture needs typed args — that means the `.ir` parser
-growing the ability to reference builtin types (`:type @int32`),
-or the runner exposing typed argument bindings. Deferred.
+The runner now supports a `Phase::pre_parse` hook (called between
+`ifa_init` and `parse_ir_file`). Both `patterns` and `fa-init`
+register `init_default_builtin_types` there, so `.ir` fixtures can
+refer to builtin type Syms — `@int32`, `@float64`, `@bool`, etc. —
+during parsing.
+
+`parse_immediate` now wires the constant Sym's `type`/`meta_type`/
+`implements`/`specializes` fields and registers it in
+`if1->constants`, matching what `if1_const` does in production. The
+result: a constant like `(sym %k1 :is-constant :immediate (int32 42))`
+seeds FA with a proper int32 type instead of bottom_type, so NOTYPE
+no longer fires for that AVar.
+
+Fixtures `03_typed` (typed MOVE) and `04_typed_send` (typed SEND) now
+run FA to `rc: 0` with progressively more CreationSets, showing that
+flow analysis is actually walking typed user code.
+
+Bug fix to enable `04_typed_send`: `find_visible_functions` in
+`pattern.cc` dereferenced `visibility_point->code->ast`
+unconditionally. The test harness's `.ir` fixtures produce PNodes
+with no AST nodes (no frontend to construct them), so dispatch
+crashed the moment a typed SEND was attempted. Added a NULL-ast
+guard that falls back to the documented IFAAST default
+(`visible_functions(...) → NULL` meaning "all funs visible"). This
+also benefits any future tool that constructs IF1 directly.

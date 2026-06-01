@@ -402,6 +402,22 @@ static int parse_type_kind_word(Lex &L) {
 // Parse `(int32 42)` / `(float64 3.14)` / `(bool true)` / `(string "...")`
 // / `(symbol "...")`. Caller has already consumed the opening (
 // and the next token is the kind bareword. Consumes through the closing ).
+// Wire up the type/meta_type/implements/specializes fields the way
+// if1_const does. Without these, FA reports the constant as NOTYPE
+// because make_AVar can't find a base type to seed its AType from.
+// `type_sym` may be NULL (e.g. for bool today) — then the immediate is
+// still set up but the constant isn't fully type-linked.
+static void register_const_sym(Sym *target, Sym *type_sym) {
+  target->is_constant = 1;
+  if (type_sym) {
+    target->type = type_sym;
+    target->meta_type = target;
+    if (!target->implements.in(type_sym)) target->implements.add(type_sym);
+    if (!target->specializes.in(type_sym)) target->specializes.add(type_sym);
+    if1->constants.put(&target->imm, target);
+  }
+}
+
 static void parse_immediate(Lex &L, Sym *target) {
   if (L.t.kind != TOK_BAREWORD) {
     parse_err(L, "expected immediate kind (int32, float64, bool, ...)");
@@ -410,12 +426,13 @@ static void parse_immediate(Lex &L, Sym *target) {
   cchar *kind = L.t.text;
   next_token(L);
   Immediate &imm = target->imm;
-  target->is_constant = 1;
+  Sym *type_sym = 0;
   if (!strcmp(kind, "bool")) {
     if (L.t.kind != TOK_BAREWORD) { parse_err(L, "expected true/false"); }
     else {
       imm.set_bool(!strcmp(L.t.text, "true"));
       next_token(L);
+      type_sym = if1_get_builtin(if1, "bool");
     }
   } else if (!strncmp(kind, "int", 3)) {
     int width = atoi(kind + 3);
@@ -429,6 +446,7 @@ static void parse_immediate(Lex &L, Sym *target) {
     }
     if (L.t.kind != TOK_INT) { parse_err(L, "expected integer"); }
     else { imm.set_int(L.t.ival, it); next_token(L); }
+    type_sym = if1_get_builtin(if1, kind);
   } else if (!strncmp(kind, "uint", 4)) {
     int width = atoi(kind + 4);
     IF1_int_type it = IF1_INT_TYPE_64;
@@ -441,6 +459,7 @@ static void parse_immediate(Lex &L, Sym *target) {
     }
     if (L.t.kind != TOK_INT) { parse_err(L, "expected integer"); }
     else { imm.set_uint(L.t.ival, it); next_token(L); }
+    type_sym = if1_get_builtin(if1, kind);
   } else if (!strncmp(kind, "float", 5)) {
     int width = atoi(kind + 5);
     IF1_float_type ft = IF1_FLOAT_TYPE_64;
@@ -456,6 +475,7 @@ static void parse_immediate(Lex &L, Sym *target) {
     else parse_err(L, "expected float");
     imm.set_float(v, ft);
     next_token(L);
+    type_sym = if1_get_builtin(if1, kind);
   } else if (!strcmp(kind, "string")) {
     if (L.t.kind != TOK_STRING) { parse_err(L, "expected string literal"); }
     else {
@@ -463,6 +483,7 @@ static void parse_immediate(Lex &L, Sym *target) {
       imm.v_string = L.t.text;
       target->constant = L.t.text;
       next_token(L);
+      type_sym = if1_get_builtin(if1, "string");
     }
   } else if (!strcmp(kind, "symbol")) {
     if (L.t.kind != TOK_STRING) { parse_err(L, "expected string literal"); }
@@ -471,11 +492,13 @@ static void parse_immediate(Lex &L, Sym *target) {
       imm.v_string = L.t.text;
       target->constant = L.t.text;
       next_token(L);
+      type_sym = if1_get_builtin(if1, "symbol");
     }
   } else {
     parse_err(L, "unknown immediate kind '%s'", kind);
   }
   expect(L, TOK_RPAREN, "')' to close immediate");
+  register_const_sym(target, type_sym);
 }
 
 // Parse a parenthesised list of refs, returning a fresh Vec.
