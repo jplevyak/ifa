@@ -251,6 +251,15 @@ static int run_one(Fixture &f, Phase *phase, int &out_failed) {
   ifa_init(new IRCallbacks);
   parse_ir_reset();
 
+  // Match the production frontend default. With Partial_OK, every
+  // SEND constructed by the .ir parser is treated as a partial
+  // application by FA — `covers_formals` sets m->is_partial=1 even
+  // when the call is full, which routes the dispatch into
+  // make_closure() and trips its `contour_is_entry_set` assertion
+  // on the SEND's result. Partial_NEVER says "this SEND is a full
+  // call; don't form a closure," which is what test fixtures want.
+  if1->partial_default = Partial_NEVER;
+
   if (phase->pre_parse) phase->pre_parse(if1);
 
   if (parse_ir_file(f.path) != 0) {

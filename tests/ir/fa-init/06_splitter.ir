@@ -1,0 +1,42 @@
+;; 06_splitter.ir — same %add called with int32 args at one site and
+;; float64 args at another.
+;;
+;; Observed: FA produces 2 EntrySets (one each for @__main__ and %add)
+;; and reports BOXING violations on %a, %b, %ar (each merges
+;; int32 ∪ float64). The splitter does NOT fire to specialize %add
+;; into separate int32 and float64 versions. This may be a property
+;; of the algorithm when the receiver itself is unambiguous (single
+;; dispatch target) — the type-confluence/violation stages don't see a
+;; reason to split. Locked in the golden so any behavior change is
+;; observable; if the splitter starts firing here, the .expected
+;; needs updating and that's worth understanding.
+
+(sym %i1 :is-constant :immediate (int32 1))
+(sym %i2 :is-constant :immediate (int32 2))
+(sym %f1 :is-constant :immediate (float64 3.0))
+(sym %f2 :is-constant :immediate (float64 4.0))
+
+(sym %a :is-local)
+(sym %b :is-local)
+(sym %ar :is-local)
+(sym %acont)
+
+(fun %add
+  :args (%add %a %b)
+  :rets (%ar)
+  :cont %acont
+  :body
+    (move %a %ar))
+
+(sym %r1 :is-local)
+(sym %r2 :is-local)
+(sym %tcont)
+
+(fun %top
+  :rets (%r1)
+  :cont %tcont
+  :body
+    (send %add %i1 %i2 => %r1)
+    (send %add %f1 %f2 => %r2))
+
+(entry %top)

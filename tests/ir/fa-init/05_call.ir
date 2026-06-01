@@ -1,19 +1,15 @@
 ;; 05_call.ir — top SENDs to %add with two int32 constants.
 ;;
-;; Status: pattern_match WILL now match %add (after the ast.cc
-;; build_type_hierarchy fix that propagates constants up the type
-;; chain to sym_any->specializers). However, with the matched dispatch
-;; FA's make_closure() assertion trips: the SEND's positional
-;; layout doesn't follow pyc's "closure_sym appears as its own first
-;; formal" convention, and that mismatch confuses make_closure. So
-;; the fixture is still locked at "1 EntrySet only" — registering
-;; %add as a Fun but not actually invoking it from @__main__.
+;; Closure-receiver convention: %add takes itself as its own first
+;; formal arg (matches pyc's `if1_closure(if1, fn, code, 1, &fn)`).
+;; The SEND's rval[0] is the receiver, which lines up with formal
+;; pos[1] = %add.
 ;;
-;; A future fixture that fully exercises closure-call dispatch should
-;; either: (a) declare %add with %add itself as the first formal arg
-;; AND make the parser handle the closure-receiver convention without
-;; tripping make_closure, or (b) use a per-call calling convention
-;; that doesn't go through make_closure (e.g., a primitive-form SEND).
+;; Expected: FA produces two EntrySets — @__main__ AND %add — because
+;; the SEND actually dispatches into %add. The run_one harness sets
+;; partial_default = Partial_NEVER, otherwise the dispatch would be
+;; routed into make_closure() (partial application path) and trip
+;; its `contour_is_entry_set` assertion.
 
 (sym %k1 :is-constant :immediate (int32 1))
 (sym %k2 :is-constant :immediate (int32 2))
@@ -24,7 +20,7 @@
 (sym %acont)
 
 (fun %add
-  :args (%a %b)
+  :args (%add %a %b)
   :rets (%ar)
   :cont %acont
   :body

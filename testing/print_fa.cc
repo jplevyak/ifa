@@ -57,6 +57,11 @@ void print_fa_normalized(FILE *fp, IF1 *p) {
     if (!c->var) c->var = new Var(c);
     for (Sym *a : c->has) if (!a->var) a->var = new Var(a);
     if (c->ret && !c->ret->var) c->ret->var = new Var(c->ret);
+    // analyze_edge() at fa.cc:2097 dereferences fun->sym->cont->var
+    // when a call edge to this fun is analyzed — without a Var here,
+    // a real closure dispatch into this Fun segfaults the moment FA
+    // tries to thread the continuation.
+    if (c->cont && !c->cont->var) c->cont->var = new Var(c->cont);
     pdb->add(f);
   }
 

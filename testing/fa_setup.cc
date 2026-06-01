@@ -34,6 +34,11 @@ static Sym *build_synthetic_main() {
   fn->cont = new_Sym();
   fn->ret = sym_nil;
 
+  // Give cont a Var up front — fa.cc:2097 derefs fun->sym->cont->var
+  // on every call edge analyzed, so without this the FA crashes the
+  // moment any non-top closure is dispatched.
+  if (!fn->cont->var) fn->cont->var = new Var(fn->cont);
+
   Sym *user_entry = if1->top;
   if (user_entry == sym___main__) user_entry = 0;  // no real splice needed
 

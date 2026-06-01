@@ -1,7 +1,7 @@
 ;; phase: fa-init
 
 (summary
-  rc:              0
+  rc:              -1
   entry-sets:      1
   creation-sets:   7
   global-avars:    0
