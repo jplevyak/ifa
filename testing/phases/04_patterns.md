@@ -177,8 +177,19 @@ that wraps the args/names/etc. passed to `pattern_match`.
       Initializes builtin types itself (`init_default_builtin_types`)
       so untyped args' `dispatch_type()` fallback to `sym_any` is safe
       without running the V/Python frontend.
-- [ ] dispatch printer — deferred until phase 05 (needs AVar `out`
-      types, which only exist after FA init).
+- [x] dispatch printer (`testing/print_dispatch.{cc,h}`,
+      registered as `dispatch` phase). Reuses `fa_setup_environment`
+      to drive a full FA::analyze, then walks each ES's
+      `out_edge_map` to report which user Fun each SEND PNode
+      dispatched to, with the actual→formal type filter per
+      MPosition. Three fixtures land:
+      - `01_simple` — single int32 call → one outgoing edge.
+      - `02_polymorphic` — same fun called with int32 and float64
+        produces two outgoing edges to two ES specializations
+        (visible monomorphization).
+      - `03_classes` — alloc + setter + period; primitive sends
+        have no out-edges (they don't dispatch into a user Fun),
+        so the ES shows `(no out edges)` honestly.
 - [~] arg-positions tests: 3 of 7 fixtures land
       (`01_single`, `02_multi`, `03_out_param`). Remaining:
       `named_arg`, `pattern_destructure`, `defaults`, `rest_param`

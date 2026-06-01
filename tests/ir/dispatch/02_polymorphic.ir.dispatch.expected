@@ -1,0 +1,21 @@
+;; phase: dispatch
+
+(summary rc=0 ess=3 edges=12)
+
+(es @__main__#0
+  send id k_i => r1
+    → %id#0
+      args→ [1]:{id} [2]:{int32}
+  send id k_f => r2
+    → %id#1
+      args→ [1]:{id} [2]:{float64}
+)
+
+(es %id#0
+  (no out edges)
+)
+
+(es %id#1
+  (no out edges)
+)
+

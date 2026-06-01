@@ -1,0 +1,8 @@
+;; phase: dispatch
+
+(summary rc=0 ess=1 edges=4)
+
+(es @__main__#0
+  (no out edges)
+)
+
