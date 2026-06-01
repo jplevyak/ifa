@@ -283,17 +283,19 @@ not needed until incremental compilation (CDB) is revived.
 
 ## Status checklist
 
-- [ ] §1 Per-FA worklists — needed by **phase 05** (`fa-init`)
-- [ ] §2 Singleton reset — needed by **test runner** (any phase)
-- [ ] §3 Deterministic IDs — needed by **all phases** (without it,
-      printers can't avoid IDs)
-- [ ] §4 Split `Fun::Fun` — needed by **phase 02** (cfg, ssu)
-- [ ] §5 Finalize sub-phases — needed by **phase 01** (finalize)
-- [ ] §6 DEBUG_PRINT audit — needed by **phase 08** (codegen-llvm)
+- [~] §1 Per-FA worklists — **subsumed by §2** (`fa_reset` clears
+      worklists; the architectural move isn't needed for test
+      isolation). Revisit if multi-threaded analysis ever lands.
+- [x] §2 Singleton reset — `ifa_reset()` lands in commit 1400f83
+- [x] §3 Deterministic IDs — ID counters reset by `fa_reset()`
+- [x] §4 Split `Fun::Fun` — `FUN_BUILD_*` flags + overload in 085c803
+- [x] §5 Finalize sub-phases — `if1_finalize_*` entry points in 2aabc2f
+- [x] §6 DEBUG_PRINT audit — LLVM backend gated on `ifa_debug` in 49dda85
 - [ ] §7 Phase printers — needed by **each phase** (its own item)
 - [ ] §8 CloneState — needed by **phase 06** (clone)
 - [ ] §9 Pure dispatch helpers — *nice to have*, **phase 04**
 - [ ] §10 On-disk format — deferred
 
-The first three (§1, §2, §3) are blockers for any test. They should
-land together as part of M2 (test runner build-out).
+The blockers (§1–§6) all landed together. Remaining items (§7–§9)
+are per-phase work that travels with the phase implementation; §10
+is deferred indefinitely.

@@ -150,9 +150,12 @@ Update this table as each item lands.
 | Phase 06: clone | — | TODO | [phases/06](testing/phases/06_clone.md) |
 | Phase 07: DCE + inline | — | TODO | [phases/07](testing/phases/07_dce_optimize.md) |
 | Phase 08: codegen | — | TODO | [phases/08](testing/phases/08_codegen.md) |
-| Refactor: per-`FA` worklists | — | TODO | [REFACTORING.md](testing/REFACTORING.md) §3 |
-| Refactor: deterministic IDs | — | TODO | [REFACTORING.md](testing/REFACTORING.md) §4 |
-| Refactor: split `Fun(Sym*)` | — | TODO | [REFACTORING.md](testing/REFACTORING.md) §5 |
+| Refactor: per-`FA` worklists | — | SUBSUMED | by `ifa_reset()` (1400f83) |
+| Refactor: singleton reset | — | DONE | `ifa_reset()` (1400f83) |
+| Refactor: deterministic IDs | — | DONE | ID counters reset in `fa_reset()` (1400f83) |
+| Refactor: split `Fun(Sym*)` | — | DONE | `FUN_BUILD_*` flags (085c803) |
+| Refactor: finalize sub-phases | — | DONE | `if1_finalize_*` (2aabc2f) |
+| Refactor: DEBUG audit (LLVM) | — | DONE | `DEBUG_LOG` runtime-gated (49dda85) |
 
 ---
 
