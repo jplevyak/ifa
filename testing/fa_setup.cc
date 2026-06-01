@@ -83,12 +83,19 @@ static Sym *build_synthetic_main() {
       RegisteredPrim *rp = prim_reg(kp_name, test_keepalive_transfer);
       rp->is_visible = 1;
     }
-    // Single-result form. The result Sym is created with type =
-    // sym_nil_type so:
-    //   - if1_simple_dead_code_elimination's `is_functional &&
-    //     !lvals[0]->live` deref has a valid Var, and
-    //   - simple_inlining's `is_closure_create()` finds a non-null
-    //     type on the result Var.
+    // Single-result form. The result Sym is created with:
+    //   - type = sym_nil_type so if1_simple_dead_code_elimination's
+    //     `is_functional && !lvals[0]->live` deref has a valid Var,
+    //     and simple_inlining's `is_closure_create()` finds a
+    //     non-null type on the result Var.
+    //
+    // kp_result intentionally stays at nesting_depth=0 (global). The
+    // keepalive SEND ends up being processed in GLOBAL_CONTOUR by
+    // FA's worklist — which works fine when user code is simple, but
+    // crashes make_AVar if a downstream PNode has rvals with
+    // nesting_depth>0 routed through the same SEND. Fixtures that
+    // hit this (e.g. a user fun with its own explicit reply) are not
+    // yet supported.
     Sym *kp_result = new_Sym();
     kp_result->type = sym_nil_type;
     if1_send(if1, &code, 3, 1, sym_primitive, kp_sym, user_entry->ret, kp_result);
