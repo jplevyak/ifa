@@ -223,6 +223,17 @@ per test.
       need classes with mutable fields — pure functions don't get
       there.
 
+      `10_class_instance.ir` is a smoke test that the `.ir` parser
+      handles `(type %Foo :kind RECORD :has (...))` and that
+      `:must-specialize %UserType` resolves to user-defined classes.
+      It does NOT exercise setter-based splitting because there's no
+      allocator in the test harness — `new_object` is just a global
+      Sym, not a primitive-bound function. Wiring up a stub `__new`
+      via `prim_reg("__new", transfer)` would let an .ir `(send
+      @primitive @__new <ClassSym> => obj)` actually create a CS at
+      the call site, which is the prerequisite for the next layer
+      (setter/getter via `(send @operator obj .= field val)`).
+
 ### How the harness boots FA
 
 `fa_setup_environment` (`ifa/testing/fa_setup.{cc,h}`) does what the
