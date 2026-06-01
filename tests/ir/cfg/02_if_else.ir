@@ -1,0 +1,25 @@
+;; 02_if_else.ir — if/then/else with a join label.
+;;
+;; Expected: %p0 is the IF with two successors (true label before false),
+;; both branches lead to %L_join which has two cfg_preds.
+
+(sym %cond :is-local)
+(sym %x :is-local)
+(sym %y :is-local)
+(sym %r :is-local)
+(sym %cont)
+
+(fun %branch
+  :args (%cond %x %y)
+  :rets (%r)
+  :cont %cont
+  :body
+    (if %cond %L_t %L_f)
+    (label %L_t)
+    (move %x %r)
+    (goto %L_join)
+    (label %L_f)
+    (move %y %r)
+    (label %L_join))
+
+(entry %branch)

@@ -7,109 +7,12 @@
 #include "if1.h"
 #include "num.h"
 #include "sym.h"
+#include "testing/printer_util.h"
 #include "testing/write_ir.h"
 
 #include <ctype.h>
 #include <stdarg.h>
 #include <string.h>
-
-// ---------------------------------------------------------------------------
-// Name assignment
-// ---------------------------------------------------------------------------
-//
-// Every Sym gets a print-time name. Strategy:
-//   - Builtin Syms (in if1->builtins_names) → "@<name>"
-//   - is_symbol Syms with a name              → "#<name>"
-//   - is_constant Syms                        → "%c<id>" (per-constant)
-//   - Other Syms with a name                  → "%<name>" (de-duplicated)
-//   - Otherwise                               → "%t<id>"
-
-struct NameAssigner {
-  Map<Sym *, cchar *> name_of;
-  Map<cchar *, int> name_counts;  // for de-duplication of human names
-
-  cchar *make_unique(cchar *base) {
-    int c = name_counts.get(base);
-    name_counts.put(base, c + 1);
-    if (c == 0) return base;
-    char buf[256];
-    snprintf(buf, sizeof(buf), "%s_%d", base, c);
-    return if1_cannonicalize_string(if1, buf);
-  }
-
-  void assign_all(IF1 *p) {
-    // Per-category counters so naming is independent of Sym::id (which
-    // varies with whether builtins were registered first).
-    int const_n = 0, anon_n = 0;
-    for (Sym *s : p->allsyms) {
-      if (name_of.get(s)) continue;
-      cchar *bname = p->builtins_names.get(s);
-      if (bname) {
-        name_of.put(s, bname);
-        continue;
-      }
-      if (s->is_symbol && s->name) {
-        name_of.put(s, s->name);
-        continue;
-      }
-      if (s->is_constant) {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "c%d", const_n++);
-        name_of.put(s, if1_cannonicalize_string(if1, buf));
-        continue;
-      }
-      if (s->name) {
-        name_of.put(s, make_unique(s->name));
-      } else {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "t%d", anon_n++);
-        name_of.put(s, if1_cannonicalize_string(if1, buf));
-      }
-    }
-  }
-
-  // Print a reference to `s` in the appropriate sigil.
-  void print_ref(FILE *fp, Sym *s) {
-    if (!s) { fputs("%%nil", fp); return; }
-    cchar *n = name_of.get(s);
-    if (!n) { fprintf(fp, "%%unknown_%d", s->id); return; }
-    char sigil = '%';
-    if (if1->builtins_names.get(s)) sigil = '@';
-    else if (s->is_symbol) sigil = '#';
-    fprintf(fp, "%c%s", sigil, n);
-  }
-};
-
-// ---------------------------------------------------------------------------
-// Labels — per-function naming
-// ---------------------------------------------------------------------------
-
-struct LabelNames {
-  Map<Label *, cchar *> names;
-
-  // Assign names L0, L1, ... in DFS order through `code`.
-  void assign(Code *root) {
-    int counter = 0;
-    walk(root, counter);
-  }
-  void walk(Code *c, int &counter) {
-    if (!c) return;
-    if (c->kind == Code_LABEL && c->label[0] && !names.get(c->label[0])) {
-      char buf[32];
-      snprintf(buf, sizeof(buf), "L%d", counter++);
-      names.put(c->label[0], if1_cannonicalize_string(if1, buf));
-    }
-    for (Code *sub : c->sub) walk(sub, counter);
-  }
-
-  cchar *get(Label *l) {
-    cchar *n = names.get(l);
-    if (n) return n;
-    char buf[32];
-    snprintf(buf, sizeof(buf), "L_ext%d", l->id);
-    return if1_cannonicalize_string(if1, buf);
-  }
-};
 
 // ---------------------------------------------------------------------------
 // Per-section writers

@@ -1,0 +1,24 @@
+;; 03_multi_pred_label.ir — a LABEL with two distinct predecessors.
+;;
+;; Both the IF's true branch and the unconditional GOTO from the false
+;; branch land at %L_join, so its PNode should report two cfg_preds.
+
+(sym %cond :is-local)
+(sym %x :is-local)
+(sym %r :is-local)
+(sym %cont)
+
+(fun %join
+  :args (%cond %x)
+  :rets (%r)
+  :cont %cont
+  :body
+    (if %cond %L_t %L_f)
+    (label %L_t)
+    (move %x %r)
+    (goto %L_join)
+    (label %L_f)
+    (goto %L_join)
+    (label %L_join))
+
+(entry %join)

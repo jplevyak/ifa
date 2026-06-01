@@ -119,7 +119,9 @@ LIB_SRCS = ifa.cc main.cc \
 	codegen/cg.cc codegen/llvm.cc codegen/llvm_codegen.cc codegen/llvm_primitives.cc \
 	optimize/cfg.cc optimize/dead.cc optimize/dom.cc optimize/inline.cc optimize/loop.cc optimize/ssu.cc \
 	testing/parse_ir.cc testing/write_ir.cc testing/test_callbacks.cc \
-	testing/print_finalize.cc testing/roundtrip_test.cc
+	testing/printer_util.cc \
+	testing/print_finalize.cc testing/print_cfg.cc \
+	testing/roundtrip_test.cc
 LIB_OBJS = $(LIB_SRCS:%.cc=%.o)
 
 IFA_DEPEND_SRCS = main.cc frontend/parse.cc frontend/scope.cc frontend/make_ast.cc frontend/ast_to_if1.cc \
@@ -234,14 +236,22 @@ test_llvm: ifa
 	./test_llvm
 	@echo "Test passed!"
 
+# ifa-test runs one --phase at a time. The driver loop here iterates
+# every registered phase so a single `make test-ir` covers them all.
 test: ifa ifa-test
 	./ifa --test
-	./ifa-test
+	$(MAKE) test-ir
 
 test-ir: ifa-test
-	./ifa-test
+	@set -e; for phase in `./ifa-test --list-phases`; do \
+	  echo "=== ifa-test --phase $$phase ==="; \
+	  ./ifa-test --phase $$phase; \
+	done
 
 test-ir-rebless: ifa-test
-	./ifa-test --rebless
+	@set -e; for phase in `./ifa-test --list-phases`; do \
+	  echo "=== ifa-test --phase $$phase --rebless ==="; \
+	  ./ifa-test --phase $$phase --rebless; \
+	done
 
 .PHONY: test test-ir test-ir-rebless test_llvm clean realclean install deinstall

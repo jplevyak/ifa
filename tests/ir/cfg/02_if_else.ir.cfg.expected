@@ -1,0 +1,18 @@
+;; phase: cfg
+
+;; Fun %branch
+(fun %branch
+  entry:  %p0
+  exit:   %p4
+  pnodes: 7
+)
+(pnodes %branch
+  %p0  IF    %cond  succ:[%p1 %p5]
+  %p1  LABEL  succ:[%p2]  pred:[%p0]
+  %p2  MOVE  %x -> %r  succ:[%p3]  pred:[%p1]
+  %p3  GOTO   succ:[%p4]  pred:[%p2]
+  %p4  LABEL  pred:[%p3 %p6]
+  %p5  LABEL  succ:[%p6]  pred:[%p0]
+  %p6  MOVE  %y -> %r  succ:[%p4]  pred:[%p5]
+)
+

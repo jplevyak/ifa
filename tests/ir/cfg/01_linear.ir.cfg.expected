@@ -1,0 +1,13 @@
+;; phase: cfg
+
+;; Fun %add
+(fun %add
+  entry:  %p0
+  exit:   %p1
+  pnodes: 2
+)
+(pnodes %add
+  %p0  MOVE  %a -> %r  succ:[%p1]
+  %p1  SEND  - %a %b -> %r  pred:[%p0]
+)
+

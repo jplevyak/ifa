@@ -1,0 +1,20 @@
+;; 01_linear.ir — straight-line MOVE/SEND with no branches.
+;;
+;; Expected: build_cfg produces a linear chain of PNodes; each PNode has
+;; one cfg_succ and one cfg_pred (except entry/exit). DFS from entry
+;; visits them in source order, so p0..pN map 1:1 to the body.
+
+(sym %a :is-local)
+(sym %b :is-local)
+(sym %r :is-local)
+(sym %cont)
+
+(fun %add
+  :args (%a %b)
+  :rets (%r)
+  :cont %cont
+  :body
+    (move %a %r)
+    (send %a %b => %r))
+
+(entry %add)
