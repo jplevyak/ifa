@@ -106,6 +106,15 @@ static void log_dispatch_funs(Matcher &matcher, Vec<Fun *> &funs);
 static ChainHash<MPosition *, MPositionHashFuns> cannonical_mposition;
 static Map<Sym *, Map<MPosition *, Vec<Fun *> *> *> sym_match_cache;
 
+// Reset pattern.cc module-level state. Called by ifa_reset().
+void pattern_reset() {
+  cannonical_mposition.clear();
+  sym_match_cache.clear();
+  pattern_match_hits = 0;
+  pattern_match_complete = 0;
+  pattern_matches = 0;
+}
+
 Match *PMatch::cache_copy() {
   Match *m = new Match(fun);
   m->formal_filters.copy(formal_filters);

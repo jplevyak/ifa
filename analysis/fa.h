@@ -314,6 +314,9 @@ class FA : public gc {
   RegisteredPrim *register_primitive(cchar *name, PrimitiveTransferFunctionPtr ptr);
 };
 
+// Clear all module-level analysis state. Called by ifa_reset().
+void fa_reset();
+
 AVar *make_AVar(Var *, EntrySet *);
 AVar *get_element_avar(CreationSet *);
 Sym *coerce_num(Sym *, Sym *);

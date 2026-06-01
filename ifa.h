@@ -75,6 +75,13 @@ class IFACallbacks : public gc {
 };
 
 void ifa_init(IFACallbacks *callbacks);
+// Tear down all process-wide IFA state so the next ifa_init() starts
+// fresh. Lets a single process run multiple isolated analyses
+// (primarily for the test harness). Discards the current IF1/PDB/FA,
+// clears canonicalization tables and worklists in fa.cc, resets
+// pattern.cc and ast.cc state, and nulls all sym_* global pointers
+// (`init_ast` will recreate them on the next init).
+void ifa_reset();
 int ifa_analyze(cchar *fn);
 int ifa_optimize();
 void ifa_cg(cchar *fn);

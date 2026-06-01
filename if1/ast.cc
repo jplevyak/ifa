@@ -8,6 +8,17 @@
 static int type_hierarchy_built = 0;
 static int finalized_types = 0;
 
+// Reset ast.cc module-level state plus the global builtin-Sym pointers.
+// Called by ifa_reset() so the next init_ast() re-creates them on the
+// fresh IF1.
+void ast_reset() {
+  type_hierarchy_built = 0;
+  finalized_types = 0;
+#define S(_n) sym_##_n = NULL;
+#include "builtin_symbols.h"
+#undef S
+}
+
 void new_module(Sym *&sym, Sym *fun) {
   if (!sym) sym = new_Sym();
   sym->type = sym_module;

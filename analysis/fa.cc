@@ -68,6 +68,33 @@ static Vec<ATypeViolation *> type_violations;
 static int application(PNode *p, EntrySet *es, AVar *fun, CreationSet *s, Vec<AVar *> &args, Vec<cchar *> &names,
                        int is_closure, Partial_kind partial, PNode *visibility_point, Vec<CreationSet *> *closures);
 
+// Reset all module-level analysis state. Called by ifa_reset() so test
+// runners can use a fresh IF1 without stale ATypes, worklists, or IDs
+// from a prior run leaking in.
+void fa_reset() {
+  analysis_pass = 0;
+  bottom_type = nil_type = unknown_type = void_type = top_type = any_type = NULL;
+  bool_type = true_type = false_type = size_type = NULL;
+  anyint_type = anynum_kind = symbol_type = string_type = tuple_type = NULL;
+  anytype_type = function_type = NULL;
+  avar_id = aedge_id = creation_set_id = entry_set_id = 1;
+  fa = NULL;
+  pass_timer.reset();    match_timer.reset();    extend_timer.reset();
+  memset(pass_timer.accumulator,   0, sizeof(pass_timer.accumulator));
+  memset(match_timer.accumulator,  0, sizeof(match_timer.accumulator));
+  memset(extend_timer.accumulator, 0, sizeof(extend_timer.accumulator));
+  cannonical_atypes.clear();
+  cannonical_setters.clear();
+  cannonical_setters_classes.clear();
+  type_fold_cache.clear();
+  type_violation_hash.clear();
+  edge_worklist.clear();
+  send_worklist.clear();
+  es_worklist.clear();
+  entry_set_done.clear();
+  type_violations.clear();
+}
+
 AEdge::AEdge() : from(0), to(0), pnode(0), fun(0), match(0), in_edge_worklist(0) { id = aedge_id++; }
 
 AVar::AVar(Var *v, void *acontour)

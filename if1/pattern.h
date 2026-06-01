@@ -129,6 +129,9 @@ typedef MapElem<MPosition *, Sym *> MapMPositionSym;
 void build_patterns(FA *fa);
 void add_patterns(FA *fa, Fun *f);
 void build_arg_positions(FA *fa);
+
+// Clear pattern.cc module-level state. Called by ifa_reset().
+void pattern_reset();
 int positional_to_named(PNode *pn, CreationSet *cs, MPosition &p, MPosition *result_p);
 int pattern_match(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_closure, Partial_kind partial,
                   PNode *visibility_point, Vec<Match *> &matches);

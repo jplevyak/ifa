@@ -21,6 +21,8 @@ class ASTCopyContext : public gc {
 };
 
 void init_ast(IFACallbacks *callbacks);  // called by ifa_init
+// Reset ast.cc state + null all sym_* global pointers. Called by ifa_reset().
+void ast_reset();
 void init_default_builtin_types();       // will not overwrite/modify pre-set builtin
                                          // types
 void finalize_types(IF1 *, int import_included_ivars = true);

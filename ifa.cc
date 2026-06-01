@@ -12,12 +12,24 @@
 #include "ifadefs.h"
 #include "optimize/inline.h"
 #include "log.h"
+#include "pattern.h"
 #include "pdb.h"
 
 void ifa_init(IFACallbacks *callbacks) {
   new IF1;
   new PDB(if1);
   init_ast(callbacks);
+}
+
+void ifa_reset() {
+  // Per-subsystem state. Order matters where one resetter touches
+  // pointers held by another (e.g., fa_reset clears AType globals which
+  // reference Sym globals that ast_reset nulls).
+  fa_reset();
+  pattern_reset();
+  ast_reset();
+  if1 = NULL;
+  pdb = NULL;
 }
 
 int ifa_analyze(cchar *fn) {

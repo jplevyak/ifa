@@ -8,6 +8,7 @@
 
 #include "ast.h"
 #include "code.h"
+#include "ifa.h"
 #include "if1.h"
 #include "pdb.h"
 #include "sym.h"
@@ -58,9 +59,8 @@ static int slurp_to_string(FILE *fp, char *buf, int cap) {
 
 static int run_roundtrip() {
   // Fresh state per test.
-  new IF1();
-  new PDB(if1);
-  init_ast(new IRCallbacks);
+  ifa_reset();
+  ifa_init(new IRCallbacks);
   parse_ir_reset();
 
   cchar *src = sample_ir();
@@ -102,9 +102,8 @@ static int run_roundtrip() {
   }
 
   // Re-parse into a fresh IF1.
-  new IF1();
-  new PDB(if1);
-  init_ast(new IRCallbacks);
+  ifa_reset();
+  ifa_init(new IRCallbacks);
   parse_ir_reset();
 
   rc = parse_ir_string(first_out, "roundtrip.ir");
@@ -132,9 +131,8 @@ static int run_roundtrip() {
 
 // Minimal smoke test: bare-bones parse with no IF1 features touched.
 static int run_smoke() {
-  new IF1();
-  new PDB(if1);
-  init_ast(new IRCallbacks);
+  ifa_reset();
+  ifa_init(new IRCallbacks);
   parse_ir_reset();
   int rc = parse_ir_string("(sym %x)\n(entry %x)\n", "smoke.ir");
   if (rc != 0) return 1;
@@ -179,9 +177,8 @@ static cchar *rich_ir() {
 }
 
 static int run_rich_roundtrip() {
-  new IF1();
-  new PDB(if1);
-  init_ast(new IRCallbacks);
+  ifa_reset();
+  ifa_init(new IRCallbacks);
   parse_ir_reset();
 
   if (parse_ir_string(rich_ir(), "rich.ir") != 0) {
@@ -195,9 +192,8 @@ static int run_rich_roundtrip() {
   int n1 = slurp_to_string(fp1, first_out, sizeof(first_out));
   fclose(fp1);
 
-  new IF1();
-  new PDB(if1);
-  init_ast(new IRCallbacks);
+  ifa_reset();
+  ifa_init(new IRCallbacks);
   parse_ir_reset();
 
   if (parse_ir_string(first_out, "rich-rt.ir") != 0) {
