@@ -1,0 +1,44 @@
+;; 16_two_fields.ir — a class with two distinct fields written with
+;; different types at allocation. Reader reads BOTH fields. Confirms
+;; that field-AVar flow is independent per field, and that the
+;; setter-based splitter handles multi-field classes without
+;; over-splitting.
+;;
+;; Expected: rc=0, creates=1, one or two %read ESes (depending on
+;; whether the splitter specializes; both fields are written with
+;; consistent types within one allocation site, so no split needed).
+
+(type %Pair :kind RECORD :has (%fa %fb))
+(sym %fa :in %Pair)
+(sym %fb :in %Pair)
+
+(sym %k_i :is-constant :immediate (int32 1))
+(sym %k_f :is-constant :immediate (float64 2.5))
+
+(sym %p :is-local)
+(sym %ra :is-local)
+(sym %rb :is-local)
+(sym %rcont)
+(fun %read_both
+  :args (%read_both %p)
+  :rets (%ra)
+  :cont %rcont
+  :body
+    (send @operator %p @period #fa => %ra)
+    (send @operator %p @period #fb => %rb))
+
+(sym %obj :is-local)
+(sym %sa :is-local)
+(sym %sb :is-local)
+(sym %rt :is-local)
+(sym %tcont)
+(fun %top
+  :rets (%rt)
+  :cont %tcont
+  :body
+    (send @primitive @new %Pair => %obj)
+    (send @operator %obj @setter #fa %k_i => %sa)
+    (send @operator %obj @setter #fb %k_f => %sb)
+    (send %read_both %obj => %rt))
+
+(entry %top)

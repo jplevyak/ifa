@@ -1,0 +1,30 @@
+;; 14_recursive.ir — a self-recursive function. The splitter must
+;; NOT specialize into infinitely many ESes — IFA's recursion limits
+;; keep this bounded.
+;;
+;; Body: %loop calls itself, passing its arg through. Single ES for
+;; %loop suffices (no type variation on input).
+;;
+;; Expected: entry-sets=2 (@__main__ + 1 ES for %loop), rc=0.
+
+(sym %k :is-constant :immediate (int32 7))
+
+(sym %x :is-local)
+(sym %r :is-local)
+(sym %lcont)
+(fun %loop
+  :args (%loop %x)
+  :rets (%r)
+  :cont %lcont
+  :body
+    (send %loop %x => %r))
+
+(sym %tr :is-local)
+(sym %tcont)
+(fun %top
+  :rets (%tr)
+  :cont %tcont
+  :body
+    (send %loop %k => %tr))
+
+(entry %top)

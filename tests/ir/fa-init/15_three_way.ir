@@ -1,0 +1,33 @@
+;; 15_three_way.ir — call same %id from three sites with three
+;; different concrete types: int32, float64, and string. The splitter
+;; should produce three specializations of %id.
+;;
+;; Expected: entry-sets=4 (@__main__ + 3 %id ESes), rc=0.
+
+(sym %k_i :is-constant :immediate (int32 1))
+(sym %k_f :is-constant :immediate (float64 2.5))
+(sym %k_s :is-constant :immediate (string "hi"))
+
+(sym %x :is-local)
+(sym %r :is-local)
+(sym %icont)
+(fun %id
+  :args (%id %x)
+  :rets (%r)
+  :cont %icont
+  :body
+    (move %x %r))
+
+(sym %r1 :is-local)
+(sym %r2 :is-local)
+(sym %r3 :is-local)
+(sym %tcont)
+(fun %top
+  :rets (%r1)
+  :cont %tcont
+  :body
+    (send %id %k_i => %r1)
+    (send %id %k_f => %r2)
+    (send %id %k_s => %r3))
+
+(entry %top)
