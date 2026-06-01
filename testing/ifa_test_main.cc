@@ -28,6 +28,7 @@
 #include "testing/print_argpos.h"
 #include "testing/print_cfg.h"
 #include "testing/print_clone.h"
+#include "testing/print_dce.h"
 #include "testing/print_dispatch.h"
 #include "testing/print_dom.h"
 #include "testing/print_fa.h"
@@ -92,6 +93,10 @@ static void phase_dispatch_run(IF1 *p) { fa_setup_environment(p); }
 // FA::analyze, so post-clone state (cs->equiv, fun->equiv_sets,
 // fun->calls) is observable.
 static void phase_clone_run(IF1 *p) { fa_setup_environment(p); }
+// `dce` / `freq` — both run fa_setup; their printers run clone +
+// mark_live_* (and frequency_estimation for freq) before dumping.
+static void phase_dce_run(IF1 *p) { fa_setup_environment(p); }
+static void phase_freq_run(IF1 *p) { fa_setup_environment(p); }
 
 static Phase phases[] = {
     {"finalize", 0,                       phase_finalize_run, print_finalize_normalized},
@@ -104,8 +109,10 @@ static Phase phases[] = {
     {"fa-init",  pre_parse_builtin_types, phase_fa_run,       print_fa_normalized},
     {"dispatch", pre_parse_builtin_types, phase_dispatch_run, print_dispatch_normalized},
     {"clone",    pre_parse_builtin_types, phase_clone_run,    print_clone_normalized},
-    // Future phases: fa-converge, dce, freq, inline, codegen-c,
-    // codegen-llvm. See ifa/testing/phases/00_INDEX.md.
+    {"dce",      pre_parse_builtin_types, phase_dce_run,      print_dce_normalized},
+    {"freq",     pre_parse_builtin_types, phase_freq_run,     print_freq_normalized},
+    // Future phases: fa-converge, inline, codegen-c, codegen-llvm.
+    // See ifa/testing/phases/00_INDEX.md.
     {0, 0, 0, 0},
 };
 

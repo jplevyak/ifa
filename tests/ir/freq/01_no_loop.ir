@@ -1,0 +1,22 @@
+;; 01_no_loop.ir — linear body, no loops. All freq values should be
+;; baseline (1.0) — no loop-frequency multiplier.
+
+(sym %k :is-constant :immediate (int32 1))
+
+(sym %a :is-local)
+(sym %ar :is-local)
+(sym %acont)
+(fun %id
+  :args (%id %a)
+  :rets (%ar)
+  :cont %acont
+  :body (move %a %ar))
+
+(sym %r :is-local)
+(sym %tcont)
+(fun %top
+  :rets (%r)
+  :cont %tcont
+  :body (send %id %k => %r))
+
+(entry %top)

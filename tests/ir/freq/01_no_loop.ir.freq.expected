@@ -1,0 +1,13 @@
+;; phase: freq
+
+(summary fa_rc=0 clone_rc=0 funs=2)
+
+(freq-funs
+  __main__ 1
+  id 1
+)
+
+(freq-pnode-peaks
+  __main__ peak=1
+  id peak=1
+)
