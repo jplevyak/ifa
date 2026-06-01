@@ -193,22 +193,24 @@ per test.
       completion on 6 fixtures, including a real closure call
       (`05_call.ir` → 2 EntrySets: @__main__ and %add) and a
       two-site multi-call (`06_splitter.ir`).
-- [ ] Converge printer + splitter tests — `06_splitter.ir` calls
-      the same %add from int32 and float64 sites. The splitter does
-      NOT fire to specialize %add into two ESes; it merges them
-      into one and reports BOXING violations. Why this happens
-      (algorithm specifics) is worth investigating but not done yet.
-      Golden locked in as a regression marker.
-- [ ] All edge-case tests — partly unblocked: closure dispatch now
-      works when the closure-receiver convention is followed in the
-      .ir.
+- [x] Splitter actually splits. `06_splitter.ir` calls the same %add
+      from int32 and float64 sites; FA specializes %add into two
+      EntrySets, one per concrete arg type, with rc=0. The fix was
+      not in FA itself but in the .ir parser: `:is-local` Syms now
+      get `nesting_depth = LOCALLY_NESTED` so
+      `if1_finalize_flatten_and_fixup_nesting` promotes them to the
+      owning closure's depth+1. Without that, `make_AVar` routed
+      formals to GLOBAL_CONTOUR (since their default nesting_depth=0
+      looked like a global) and `split_ess_for_type` skipped them
+      because their AVar's `contour_is_entry_set` was false.
+- [ ] All edge-case tests — partly unblocked.
 - [x] Run-twice determinism — verified.
 - [ ] `pass-counts` / `history` blocks — needs FA timer
       instrumentation that's deterministic.
-- [~] Splitter-stage coverage — stages 1 (type-confluence) and 5
-      (violation-driven) are reachable via `06_splitter`, but
-      neither actually splits there. Needs more fixtures + FA
-      investigation.
+- [x] Splitter-stage coverage — stage 1 (type-confluence via
+      `split_ess_for_type`) is exercised by `06_splitter`. Other
+      stages (mark-based, setter-based, violation-driven) still need
+      fixtures.
 
 ### How the harness boots FA
 

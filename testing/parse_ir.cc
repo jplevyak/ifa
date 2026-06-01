@@ -528,6 +528,12 @@ static void parse_sym_attrs(Lex &L, Sym *s) {
       s->aspect = parse_ref(L);
     } else if (!strcmp(kw, "is-local")) {
       s->is_local = 1;
+      // Match pyc convention: locals start as LOCALLY_NESTED (-1) so
+      // if1_finalize_flatten_and_fixup_nesting promotes them to their
+      // owning closure's depth+1. Without this, FA treats them as
+      // globals (nesting_depth=0 → make_AVar routes to GLOBAL_CONTOUR),
+      // which makes the splitter skip them.
+      if (s->nesting_depth == 0) s->nesting_depth = LOCALLY_NESTED;
     } else if (!strcmp(kw, "is-fun")) {
       s->is_fun = 1;
     } else if (!strcmp(kw, "is-constant")) {

@@ -1,15 +1,9 @@
 ;; 06_splitter.ir — same %add called with int32 args at one site and
-;; float64 args at another.
+;; float64 args at another. The FA splitter specializes %add into two
+;; EntrySets (one per concrete arg-type contour) so that the int32
+;; path and the float64 path are analyzed separately.
 ;;
-;; Observed: FA produces 2 EntrySets (one each for @__main__ and %add)
-;; and reports BOXING violations on %a, %b, %ar (each merges
-;; int32 ∪ float64). The splitter does NOT fire to specialize %add
-;; into separate int32 and float64 versions. This may be a property
-;; of the algorithm when the receiver itself is unambiguous (single
-;; dispatch target) — the type-confluence/violation stages don't see a
-;; reason to split. Locked in the golden so any behavior change is
-;; observable; if the splitter starts firing here, the .expected
-;; needs updating and that's worth understanding.
+;; Expected: entry-sets=3 (@__main__ + 2 for %add), funs=2, rc=0.
 
 (sym %i1 :is-constant :immediate (int32 1))
 (sym %i2 :is-constant :immediate (int32 2))

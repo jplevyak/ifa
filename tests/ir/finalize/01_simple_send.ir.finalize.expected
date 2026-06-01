@@ -12,13 +12,13 @@
 
 ;; full state:
 ;; syms
-(sym %a :is-local)
-(sym %b :is-local)
-(sym %r :is-local)
+(sym %a :is-local :nesting-depth 1)
+(sym %b :is-local :nesting-depth 1)
+(sym %r :is-local :nesting-depth 1)
 (sym %cont)
 (sym %ret)
-(sym %u :is-local)
-(sym %v :is-local)
+(sym %u :is-local :nesting-depth 1)
+(sym %v :is-local :nesting-depth 1)
 (sym %dead_cont)
 
 ;; funs
