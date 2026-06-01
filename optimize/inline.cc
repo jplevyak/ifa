@@ -11,6 +11,28 @@
 
 #define LOOP_FREQUENCY 10.0
 
+// ---------------------------------------------------------------------------
+// Inline-event sidecar
+// ---------------------------------------------------------------------------
+
+static bool inline_events_enabled = false;
+static Vec<InlineEvent *> inline_events_storage;
+
+void inline_events_enable() { inline_events_enabled = true; }
+void inline_events_disable() { inline_events_enabled = false; }
+void inline_events_reset() { inline_events_storage.clear(); }
+const Vec<InlineEvent *> &inline_events_get() { return inline_events_storage; }
+
+static void record_inline_event(InlineEventKind k, Fun *caller, PNode *pnode, Fun *callee) {
+  if (!inline_events_enabled) return;
+  InlineEvent *e = new InlineEvent;
+  e->kind = k;
+  e->caller = caller;
+  e->pnode = pnode;
+  e->callee = callee;
+  inline_events_storage.add(e);
+}
+
 static void dfs_order(Fun *f, Vec<Fun *> &funs, Vec<Fun *> &fset) {
   if (!fset.set_add(f)) return;
   funs.add(f);
@@ -295,9 +317,15 @@ static int inline_single_sends(FA *fa) {
         if (calls && calls->n == 1) {
           Fun *fn = calls->v[0];
           PNode *s = single_send.get(fn);
-          if (s) inline_single_pnode(f, p, fn, s);
+          if (s) {
+            inline_single_pnode(f, p, fn, s);
+            record_inline_event(INLINE_SINGLE_SEND, f, p, fn);
+          }
           int i = identity_send.get(fn);
-          if (i) convert_to_move(p, i - 1);
+          if (i) {
+            convert_to_move(p, i - 1);
+            record_inline_event(INLINE_IDENTITY, f, p, fn);
+          }
         }
       } else {
         PNode *c = simple_closure_call(p);
@@ -313,12 +341,19 @@ static int inline_single_sends(FA *fa) {
             for (Var *v : c->rvals) p->rvals.add(v);
           }
           for (int i = 1; i < rvals.n; i++) p->rvals.add(rvals[i]);
+          record_inline_event(INLINE_CLOSURE, f, p, 0);
           if (calls && calls->n == 1) {
             Fun *fn = calls->v[0];
             PNode *s = single_send.get(fn);
-            if (s) inline_single_pnode(f, p, fn, s);
+            if (s) {
+              inline_single_pnode(f, p, fn, s);
+              record_inline_event(INLINE_SINGLE_SEND, f, p, fn);
+            }
             int i = identity_send.get(fn);
-            if (i) convert_to_move(p, i - 1);
+            if (i) {
+              convert_to_move(p, i - 1);
+              record_inline_event(INLINE_IDENTITY, f, p, fn);
+            }
           }
         }
       }

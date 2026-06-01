@@ -34,6 +34,7 @@
 #include "testing/print_dom.h"
 #include "testing/print_fa.h"
 #include "testing/print_finalize.h"
+#include "testing/print_inline.h"
 #include "testing/print_loops.h"
 #include "testing/print_patterns.h"
 #include "testing/print_ssu.h"
@@ -101,6 +102,9 @@ static void phase_freq_run(IF1 *p) { fa_setup_environment(p); }
 // `codegen-c` — the printer runs the full ifa_analyze + ifa_optimize
 // pipeline and then captures c_codegen_print_c output.
 static void phase_codegen_c_run(IF1 *p) { fa_setup_environment(p); }
+// `inline` — enables the InlineEvent sidecar around simple_inlining
+// to record per-call-site inliner actions.
+static void phase_inline_run(IF1 *p) { fa_setup_environment(p); }
 
 static Phase phases[] = {
     {"finalize", 0,                       phase_finalize_run, print_finalize_normalized},
@@ -116,7 +120,8 @@ static Phase phases[] = {
     {"dce",      pre_parse_builtin_types, phase_dce_run,      print_dce_normalized},
     {"freq",     pre_parse_builtin_types, phase_freq_run,     print_freq_normalized},
     {"codegen-c", pre_parse_builtin_types, phase_codegen_c_run, print_codegen_c_normalized},
-    // Future phases: fa-converge, inline, codegen-llvm.
+    {"inline",    pre_parse_builtin_types, phase_inline_run,    print_inline_normalized},
+    // Future phases: fa-converge, codegen-llvm.
     // See ifa/testing/phases/00_INDEX.md.
     {0, 0, 0, 0},
 };

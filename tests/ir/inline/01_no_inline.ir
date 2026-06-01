@@ -1,0 +1,25 @@
+;; 01_no_inline.ir — single typed-int32 call. There's no closure-call
+;; collapse to perform (the receiver is fixed at compile time) and no
+;; identity-fn opportunity. Locks in zero inline events.
+
+(sym %k1 :is-constant :immediate (int32 1))
+(sym %k2 :is-constant :immediate (int32 2))
+
+(sym %a :is-local)
+(sym %b :is-local)
+(sym %ar :is-local)
+(sym %acont)
+(fun %add
+  :args (%add %a %b)
+  :rets (%ar)
+  :cont %acont
+  :body (move %a %ar))
+
+(sym %r :is-local)
+(sym %tcont)
+(fun %top
+  :rets (%r)
+  :cont %tcont
+  :body (send %add %k1 %k2 => %r))
+
+(entry %top)

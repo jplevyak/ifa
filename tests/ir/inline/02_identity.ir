@@ -1,0 +1,30 @@
+;; 02_identity.ir — %id is shaped as an identity function (body
+;; just moves arg into ret). simple_inlining's identity-detection
+;; checks for a reply in the fun's body whose arg reaches an arg.
+;; The .ir fixtures don't currently add an explicit reply per user
+;; fun (only sym___main__ gets a reply, via fa_setup), so this
+;; fixture exercises the inliner WITHOUT a per-fun reply: zero
+;; events. Documented to track when a future change (auto-appended
+;; user-fun replies) flips this to fire INLINE_IDENTITY.
+
+(sym %k :is-constant :immediate (int32 7))
+
+(sym %a :is-local)
+(sym %r :is-local)
+(sym %icont)
+(fun %id
+  :args (%id %a)
+  :rets (%r)
+  :cont %icont
+  :body
+    (move %a %r))
+
+(sym %tr :is-local)
+(sym %tcont)
+(fun %top
+  :rets (%tr)
+  :cont %tcont
+  :body
+    (send %id %k => %tr))
+
+(entry %top)

@@ -1,0 +1,7 @@
+;; phase: inline
+
+(summary fa_rc=-1 clone_rc=0 funs=2 events=0)
+
+(events
+  (none)
+)

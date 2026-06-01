@@ -193,19 +193,31 @@ the printer can only diff before/after, which is harder.
       leave dangling `Fun::calls` for `build_call_dominators` to
       deref). Runs `frequency_estimation` and prints per-Fun freq
       + per-Fun peak PNode freq.
-- [ ] Inline printer — not landed. The inliner mutates in place;
-      §6 calls for an `InlineEvent` sidecar for the printer to read.
-      Deferred until that refactor.
-- [~] DCE tests: 2 of 8 (`01_baseline`, `02_unused_fun`). Caveat:
-      the test harness's synthetic main wires `reply` to `sym_nil`
-      rather than the user entry's return value, so user code ends
-      up marked dead by `mark_live_code` (no reachable side-effect
-      consumes its result). The goldens lock this honest outcome —
-      a future fa_setup change that threads ret through reply would
-      flip many PNodes to live.
+- [x] Inline printer landed (`testing/print_inline.{cc,h}` →
+      `inline` phase). The §6 sidecar refactor landed in
+      `ifa/optimize/inline.{cc,h}`: an `InlineEvent` struct +
+      `inline_events_{enable,disable,reset,get}` API. The printer
+      enables event collection around the `simple_inlining` call,
+      runs the full ifa pipeline, then dumps the recorded events
+      sorted by (caller, callee, kind, pnode).
+      Three event kinds tracked: `single-send` (call site replaced
+      with the callee's single body SEND), `identity` (caller's
+      SEND converted to a MOVE because the callee is an identity
+      function), `closure-collapse` (closure-create + immediate
+      call collapsed into a direct call).
+      Production builds skip all bookkeeping because
+      `inline_events_enabled` defaults to false.
+- [~] DCE tests: 2 of 8 (`01_baseline`, `02_unused_fun`). The
+      synthetic keepalive (introduced in commit 087b127) keeps user
+      code alive, so the dce goldens now show real per-fun live
+      PNode counts instead of all-zero "skeleton" output.
 - [~] Freq tests: 2 of 5 (`01_no_loop`, `02_simple_loop`). The
       loop-body PNode peak is 10.0, matching `LOOP_FREQUENCY`.
-- [~] Inline tests: 0 of 8 (printer not landed).
+- [~] Inline tests: 2 fixtures landed (`01_no_inline` shows zero
+      events for a simple direct call; `02_identity` shows zero
+      events because the .ir parser doesn't auto-append a reply per
+      user fun, and the identity-detector requires one). When the
+      fixture format grows reply-emission, expect events>0 here.
 - [x] DCE idempotence — the runner's per-fixture `ifa_reset` +
       `ifa_init` makes "same input, same output" the default; both
       `dce` fixtures' goldens are byte-stable across reruns.
