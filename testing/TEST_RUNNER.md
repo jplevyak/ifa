@@ -276,12 +276,19 @@ Not in v1, but the harness should leave room:
       (`run_smoke`, `run_roundtrip`, `run_rich_roundtrip` in
       `roundtrip_test.cc`; all pass via `ifa --test`)
 - [x] `ifa/testing/write_ir.{cc,h}` exists
-- [ ] `ifa/testing/ifa_test_main.cc` parses CLI, walks fixtures
-- [ ] `ifa/testing/test_callbacks.{cc,h}` exists (currently inline
-      in `roundtrip_test.cc` as `IRCallbacks`)
-- [ ] First phase (finalize) prints + diffs golden
-- [ ] `make test-ir` wired into Makefile
-- [ ] Tests directory `ifa/tests/ir/` created with at least one
-      passing test
-- [ ] `--rebless` works
-- [ ] Wire into root `make test`
+- [x] `ifa/testing/test_callbacks.{cc,h}` — `IRCallbacks` extracted
+      so the test runner and `roundtrip_test.cc` share one definition
+- [x] `ifa/testing/print_finalize.{cc,h}` — first phase printer
+      (emits `(prim-bound …)`, `(live …)`, then `write_ir` dump)
+- [x] `ifa/testing/ifa_test_main.cc` — CLI runner (`--phase`,
+      `--list-phases`, `--rebless`, `--bail`, `-v`, positional pattern)
+- [x] First phase (finalize) prints + diffs golden
+- [x] `make test-ir` wired into `ifa/Makefile` (builds `ifa-test`,
+      runs it; also `make test-ir-rebless` for updating goldens)
+- [x] Tests directory `ifa/tests/ir/finalize/` with passing fixture
+      `01_simple_send.ir` + `.finalize.expected`
+- [x] `--rebless` works (generates `.expected` from the printer output)
+- [x] Root `make test` runs unit → ir → e2e in sequence (via
+      `make test-ir` → recurses into `ifa/`)
+- [ ] Additional fixtures per phase (cfg, ssu, fa, clone, codegen) —
+      see `ifa/testing/phases/00_INDEX.md` for the per-phase work

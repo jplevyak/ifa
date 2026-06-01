@@ -14,21 +14,12 @@
 #include "sym.h"
 #include "unit.h"
 #include "testing/parse_ir.h"
+#include "testing/test_callbacks.h"
 #include "testing/write_ir.h"
 
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
-
-// Minimal callbacks suitable for testing — no frontend semantics.
-class IRCallbacks : public IFACallbacks {
- public:
-  Sym *new_Sym(cchar *name) override {
-    Sym *s = new Sym();
-    if1_register_sym(if1, s, name);
-    return s;
-  }
-};
 
 // Make a small fixture .ir source. Mirrors the worked example in
 // IF1_TEXT_FORMAT.md §5.

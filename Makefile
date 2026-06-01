@@ -118,7 +118,8 @@ LIB_SRCS = ifa.cc main.cc \
 	analysis/fa.cc analysis/cdb.cc analysis/pdb.cc analysis/graph.cc analysis/clone.cc analysis/ifalog.cc \
 	codegen/cg.cc codegen/llvm.cc codegen/llvm_codegen.cc codegen/llvm_primitives.cc \
 	optimize/cfg.cc optimize/dead.cc optimize/dom.cc optimize/inline.cc optimize/loop.cc optimize/ssu.cc \
-	testing/parse_ir.cc testing/write_ir.cc testing/roundtrip_test.cc
+	testing/parse_ir.cc testing/write_ir.cc testing/test_callbacks.cc \
+	testing/print_finalize.cc testing/roundtrip_test.cc
 LIB_OBJS = $(LIB_SRCS:%.cc=%.o)
 
 IFA_DEPEND_SRCS = main.cc frontend/parse.cc frontend/scope.cc frontend/make_ast.cc frontend/ast_to_if1.cc \
@@ -126,7 +127,7 @@ IFA_DEPEND_SRCS = main.cc frontend/parse.cc frontend/scope.cc frontend/make_ast.
 IFA_SRCS = $(IFA_DEPEND_SRCS) frontend/v.g.d_parser.cc frontend/python.g.d_parser.cc
 IFA_OBJS = $(IFA_SRCS:%.cc=%.o)
 
-EXECUTABLE_FILES = ifa
+EXECUTABLE_FILES = ifa ifa-test
 ifdef USE_GC
 LIBRARY = libifa_gc.a
 else
@@ -170,6 +171,13 @@ deinstall:
 
 $(IFA): $(IFA_OBJS) $(LIB_OBJS) $(PLIB_OBJS)
 	$(CXX) $(CFLAGS) $(LDFLAGS_EXEC) -o $@ $^ $(LIBS)
+
+# IF1-level test harness. Links against the static library so the
+# archive can skip main.o (ifa_test_main.o provides its own main) and
+# also skip frontend objects pulled in by ifa.cc that we don't need.
+IFA_TEST_OBJS = testing/ifa_test_main.o
+ifa-test: $(IFA_TEST_OBJS) $(LIBRARY)
+	$(CXX) $(CFLAGS) $(LDFLAGS_EXEC) -o $@ $(IFA_TEST_OBJS) $(LIBRARY) $(LIBS)
 
 $(LIBRARY): $(LIB_OBJS) $(PLIB_OBJS)
 	$(AR) $(AR_FLAGS) $@ $^
@@ -226,8 +234,14 @@ test_llvm: ifa
 	./test_llvm
 	@echo "Test passed!"
 
-test: ifa
+test: ifa ifa-test
 	./ifa --test
-	./ifa_tests
+	./ifa-test
 
-.PHONY: test test_llvm clean realclean install deinstall
+test-ir: ifa-test
+	./ifa-test
+
+test-ir-rebless: ifa-test
+	./ifa-test --rebless
+
+.PHONY: test test-ir test-ir-rebless test_llvm clean realclean install deinstall
