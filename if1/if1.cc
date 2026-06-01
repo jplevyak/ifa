@@ -594,7 +594,8 @@ static void find_primitives(Primitives *prim, Code *c) {
 }
 
 static void find_primitives(IF1 *p) {
-  for (int i = 0; i < p->allclosures.n; i++) find_primitives(p->primitives, p->allclosures[i]->code);
+  for (int i = 0; i < p->allclosures.n; i++)
+    if (p->allclosures[i]->code) find_primitives(p->primitives, p->allclosures[i]->code);
 }
 
 // Individual finalize steps, exposed so tests can introspect IF1 state

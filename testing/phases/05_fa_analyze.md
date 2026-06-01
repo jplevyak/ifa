@@ -190,11 +190,11 @@ per test.
 ## 7. Acceptance
 
 - [x] Init-only printer compiles and runs `FA::analyze()` to
-      completion on 2 fixtures.
-- [ ] Converge printer + splitter tests — blocked on driving user
-      code from `sym___main__` (see "User code is registered but not
-      analyzed" below).
-- [ ] All edge-case tests — same blocker.
+      completion on 2 fixtures. The user entry's body is now spliced
+      into `sym___main__`, so FA actually traverses fixture code.
+- [ ] Converge printer + splitter tests — needs typed args (see
+      "Why fixtures still show identical EntrySet counts" below).
+- [ ] All edge-case tests — same dependency.
 - [x] Run-twice determinism — verified: `ifa-test --phase fa-init`
       twice produces byte-identical output.
 - [ ] `pass-counts` / `history` blocks — needs FA timer instrumentation
@@ -226,16 +226,31 @@ needing the frontend:
 6. `if1_finalize_{set_top,bind_prims,dce,flatten_and_fixup_nesting}` —
    `set_top` now safely points `if1->top` at `sym___main__`.
 
-### User code is registered but not analyzed
+### User code splice
 
-The .ir fixture's `(entry %x)` declares a user closure that does get a
-`Fun` and is added to `pdb->funs`, but `sym___main__`'s body never
-calls it. So FA only analyzes the synthetic main: one EntrySet, 5
-CreationSets (the basic constants the reply primitive touches), 4
-incoming edges to the top.
+`fa_setup_environment` splices the user entry's Code tree into
+`sym___main__`'s body (via `if1_conc`), mirroring the pyc convention
+where the user's module-level code IS `sym___main__`'s body. The
+user_entry's `code` pointer is then cleared so the subsequent
+`if1_finalize_flatten_and_fixup_nesting` and `find_primitives` passes
+don't iterate the same Code tree twice (which would trip
+`!c->flattened`).
 
-To exercise user code, `fa_setup_environment` would need to splice the
-user entry's body into `sym___main__`'s body (the pyc convention —
-the user's module-level code IS `sym___main__`'s body) or emit a
-calling SEND form. Both require knowing the calling convention for a
-test-friendly entry; deferred.
+Side-effect on the harness: the printer skips
+`new Fun(user_entry, FUN_BUILD_ALL)` for the spliced closure (a Code
+tree can't host two distinct CFGs), and `closures-registered` marks it
+as `(spliced into @__main__)`.
+
+Side-effect on ifa: `find_primitives(IF1*)` now guards against a
+NULL `code` on a registered closure (the per-Code variant already did;
+the IF1-wide pass needed the same check). This is a real bug fix that
+also helps any future frontend that produces no-body placeholders.
+
+### Why fixtures still show identical EntrySet counts
+
+Both current fa-init fixtures end with `rc: -1` and one EntrySet
+because the user locals carry no `:type`, so FA flags a NOTYPE
+violation. To produce richer FA state (multiple ESes, splitter
+firing) a fixture needs typed args — that means the `.ir` parser
+growing the ability to reference builtin types (`:type @int32`),
+or the runner exposing typed argument bindings. Deferred.

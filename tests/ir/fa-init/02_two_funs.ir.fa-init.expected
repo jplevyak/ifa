@@ -1,7 +1,7 @@
 ;; phase: fa-init
 
 (summary
-  rc:              0
+  rc:              -1
   entry-sets:      1
   creation-sets:   5
   global-avars:    0
@@ -15,7 +15,7 @@
 
 (closures-registered
   @__main__ args=1 fun=set
-  %f args=1 fun=set
+  %f args=1 (spliced into @__main__)
   %g args=1 fun=set
 )
 

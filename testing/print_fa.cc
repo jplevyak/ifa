@@ -10,6 +10,7 @@
 #include "pnode.h"
 #include "sym.h"
 #include "var.h"
+#include "testing/fa_setup.h"
 #include "testing/print_fa.h"
 #include "testing/printer_util.h"
 
@@ -40,12 +41,18 @@ static int compar_es_by_fun_then_id(const void *a, const void *b) {
 // follow-on.
 void print_fa_normalized(FILE *fp, IF1 *p) {
   // Build Funs for every closure (including the synthetic
-  // sym___main__) and register with PDB.
+  // sym___main__). Sort by name first. Skip the spliced user entry
+  // when building Funs — its Code tree is now a sub-tree of
+  // sym___main__'s code, and building a CFG on it twice corrupts the
+  // per-Code pn back-link. We still keep it in the printed list so
+  // the golden shows it was registered.
   Vec<Sym *> closures;
-  for (Sym *c : p->allclosures) if (c->code) closures.add(c);
+  for (Sym *c : p->allclosures) closures.add(c);
   if (closures.n > 1)
     qsort(closures.v, closures.n, sizeof(Sym *), compar_closure_by_name);
   for (Sym *c : closures) {
+    if (c == fa_setup_user_entry) continue;
+    if (!c->code) continue;
     Fun *f = new Fun(c, FUN_BUILD_ALL);
     if (!c->var) c->var = new Var(c);
     for (Sym *a : c->has) if (!a->var) a->var = new Var(a);
@@ -87,12 +94,17 @@ void print_fa_normalized(FILE *fp, IF1 *p) {
   if (ess.n == 0) fputs("  (none)\n", fp);
   fputs(")\n\n", fp);
 
-  // Closure registration summary — what's in the PDB.
+  // Closure registration summary — what's in the PDB. Mark the
+  // spliced user entry with `(spliced)`; it's reachable from
+  // sym___main__'s body but doesn't have its own Fun.
   fputs("(closures-registered\n", fp);
   for (Sym *c : closures) {
     fputs("  ", fp);
     na.print_ref(fp, c);
-    fprintf(fp, " args=%d fun=%s\n", c->has.n, c->fun ? "set" : "null");
+    if (c == fa_setup_user_entry)
+      fprintf(fp, " args=%d (spliced into @__main__)\n", c->has.n);
+    else
+      fprintf(fp, " args=%d fun=%s\n", c->has.n, c->fun ? "set" : "null");
   }
   if (closures.n == 0) fputs("  (none)\n", fp);
   fputs(")\n\n", fp);

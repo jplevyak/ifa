@@ -1,8 +1,9 @@
-;; 01_trivial.ir — single top-level closure with no body work.
+;; 01_trivial.ir — single top-level closure, body is one MOVE.
 ;;
-;; FA::analyze should build one entry-set for %top with no creation-sets
-;; (no SENDs to spawn allocations) and no type violations. This is the
-;; smallest fixture that exercises FA setup + a single analysis pass.
+;; After fa_setup splices %top's body into @__main__, FA traverses the
+;; MOVE. The fixture's locals (%x, %r) carry no :type, so FA reports
+;; a NOTYPE violation on stderr and returns rc=-1. That's the right
+;; "successful negative" result for typeless input.
 
 (sym %x :is-local)
 (sym %r :is-local)

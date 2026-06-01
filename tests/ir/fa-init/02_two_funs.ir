@@ -1,5 +1,6 @@
-;; 02_two_funs.ir — two closures sharing arg/ret names. The fa-init
-;; setup chain should produce 2 Funs in the PDB and stable Sym counts.
+;; 02_two_funs.ir — two declared closures. The entry (%f) is spliced
+;; into @__main__; %g is registered with its own Fun in pdb->funs but
+;; never reached from the top, so it doesn't appear as an EntrySet.
 
 (sym %a :is-local)
 (sym %b :is-local)
