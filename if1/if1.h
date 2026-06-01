@@ -76,6 +76,13 @@ void if1_write(FILE *fp, IF1 *p);
 void if1_write_log();
 
 void if1_finalize(IF1 *p);
+// Sub-steps of if1_finalize, exposed for the test harness so the
+// IF1 state can be inspected between bind-prims and DCE. Production
+// callers should keep using if1_finalize(), which is the composition.
+void if1_finalize_set_top(IF1 *p);
+void if1_finalize_bind_prims(IF1 *p);
+void if1_finalize_dce(IF1 *p);
+void if1_finalize_flatten_and_fixup_nesting(IF1 *p);
 void if1_simple_dead_code_elimination(IF1 *p);
 void if1_set_primitive_types(IF1 *if1);
 

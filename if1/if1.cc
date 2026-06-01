@@ -597,13 +597,17 @@ static void find_primitives(IF1 *p) {
   for (int i = 0; i < p->allclosures.n; i++) find_primitives(p->primitives, p->allclosures[i]->code);
 }
 
-void if1_finalize(IF1 *p) {
-  p->top = sym___main__;
-  find_primitives(p);
+// Individual finalize steps, exposed so tests can introspect IF1 state
+// between them (e.g., post-prim-binding pre-DCE).
+void if1_finalize_set_top(IF1 *p) { p->top = sym___main__; }
+void if1_finalize_bind_prims(IF1 *p) { find_primitives(p); }
+void if1_finalize_dce(IF1 *p) {
   if (fdce_if1)
     if1_simple_dead_code_elimination(p);
   else
     for (Sym *s : p->allsyms) s->live = 1;
+}
+void if1_finalize_flatten_and_fixup_nesting(IF1 *p) {
   for (int i = 0; i < p->allclosures.n; i++) {
     Sym *f = p->allclosures[i];
     if (f->code) {
@@ -611,6 +615,14 @@ void if1_finalize(IF1 *p) {
       if1_fixup_nesting(f->code, f);
     }
   }
+}
+
+// Default: run every step (matches historical behavior).
+void if1_finalize(IF1 *p) {
+  if1_finalize_set_top(p);
+  if1_finalize_bind_prims(p);
+  if1_finalize_dce(p);
+  if1_finalize_flatten_and_fixup_nesting(p);
 }
 
 void if1_finalize_closure(IF1 *p, Sym *c) {
