@@ -72,7 +72,15 @@ int frequency_estimation(FA *fa) {
   return 0;
 }
 
-static int is_closure_create(PNode *n) { return (n->lvals[0]->type->type_kind == Type_FUN && n->creates); }
+static int is_closure_create(PNode *n) {
+  // n->lvals can be empty for 0-result primitive sends and the Var's
+  // type can be unset for vars no analysis path touched — both happen
+  // legitimately for synthetic test-harness primitives. Treat either
+  // as "not a closure create".
+  if (n->lvals.n == 0) return 0;
+  if (!n->lvals[0]->type) return 0;
+  return (n->lvals[0]->type->type_kind == Type_FUN && n->creates);
+}
 
 static int is_period_prim(PNode *n) { return (n->prim && n->prim->index == P_prim_period); }
 

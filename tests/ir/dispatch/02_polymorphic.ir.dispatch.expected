@@ -1,6 +1,6 @@
 ;; phase: dispatch
 
-(summary rc=0 ess=3 edges=12)
+(summary rc=-1 ess=3 edges=12)
 
 (es @__main__#0
   send id k_i => r1

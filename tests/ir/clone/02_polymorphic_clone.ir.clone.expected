@@ -1,10 +1,11 @@
 ;; phase: clone
 
-(summary fa_rc=0 clone_rc=0 funs=3 css=8 ess=3)
+(summary fa_rc=-1 clone_rc=0 funs=3 css=9 ess=3)
 
 (cs-equiv
   class[__main__] members=1 type=__main__
   class[__primitive] members=1 type=symbol
+  class[__test_keepalive] members=1 type=symbol
   class[continuation] members=1 type=continuation
   class[id] members=1 type=id
   class[k_f] members=1 type=float64

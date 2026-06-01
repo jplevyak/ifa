@@ -1,6 +1,6 @@
 ;; phase: freq
 
-(summary fa_rc=0 clone_rc=0 funs=2)
+(summary fa_rc=-1 clone_rc=0 funs=2)
 
 (freq-funs
   __main__ 1
