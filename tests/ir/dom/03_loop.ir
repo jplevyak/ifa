@@ -1,0 +1,25 @@
+;; 03_loop.ir — while-shaped loop. The loop header (L_top) dominates
+;; everything in its body and the exit.
+;;
+;; Expected: L_top's idom is the entry MOVE (its only non-back-edge
+;; predecessor). The body PNodes have L_top in their idom chain. The
+;; loop exit (L_end) is dominated by the IF, not by the body.
+
+(sym %cond :is-local)
+(sym %x :is-local)
+(sym %r :is-local)
+(sym %cont)
+
+(fun %loop
+  :args (%cond %x)
+  :rets (%r)
+  :cont %cont
+  :body
+    (label %L_top)
+    (if %cond %L_body %L_end)
+    (label %L_body)
+    (move %x %r)
+    (goto %L_top)
+    (label %L_end))
+
+(entry %loop)

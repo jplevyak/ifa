@@ -1,0 +1,25 @@
+;; 02_if_join.ir — IF + join. The join label's idom must be the IF,
+;; not either branch (no branch dominates the join).
+;;
+;; Expected: dom-frontier of each branch PNode includes the join label.
+
+(sym %cond :is-local)
+(sym %x :is-local)
+(sym %y :is-local)
+(sym %r :is-local)
+(sym %cont)
+
+(fun %branch
+  :args (%cond %x %y)
+  :rets (%r)
+  :cont %cont
+  :body
+    (if %cond %L_t %L_f)
+    (label %L_t)
+    (move %x %r)
+    (goto %L_join)
+    (label %L_f)
+    (move %y %r)
+    (label %L_join))
+
+(entry %branch)

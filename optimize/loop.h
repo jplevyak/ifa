@@ -2,6 +2,7 @@
 #define _loop_H_
 
 class FA;
+class Fun;
 
 struct LoopNode : public gc {
   int index;
@@ -35,7 +36,10 @@ struct LoopGraph : public gc {
 };
 
 void find_loops(LoopGraph *g);
-void find_local_loops(FA *f);
+// Per-Fun local-loop detection. `fa` is currently unused (the
+// implementation reads only Fun state); callers from inside FA pass
+// theirs, tests may pass NULL.
+void find_local_loops(FA *fa, Fun *f);
 void find_recursive_loops(FA *f);
 void find_all_loops(FA *fa);
 

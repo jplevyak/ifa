@@ -24,7 +24,9 @@
 #include "sym.h"
 #include "testing/parse_ir.h"
 #include "testing/print_cfg.h"
+#include "testing/print_dom.h"
 #include "testing/print_finalize.h"
+#include "testing/print_loops.h"
 #include "testing/print_ssu.h"
 #include "testing/test_callbacks.h"
 #include "testing/write_ir.h"
@@ -52,17 +54,22 @@ struct Phase {
 
 static void phase_finalize_run(IF1 *p) { if1_finalize(p); }
 
-// `cfg` and `ssu` both run finalize first; their printers build the
-// per-closure Funs themselves with the appropriate FUN_BUILD_* flags.
+// `cfg`, `ssu`, and `dom` all run finalize first; their printers build
+// the per-closure Funs themselves with the appropriate FUN_BUILD_*
+// flags (and, for `dom`, call build_cfg_dominators).
 static void phase_cfg_run(IF1 *p) { if1_finalize(p); }
 static void phase_ssu_run(IF1 *p) { if1_finalize(p); }
+static void phase_dom_run(IF1 *p) { if1_finalize(p); }
+static void phase_loops_run(IF1 *p) { if1_finalize(p); }
 
 static Phase phases[] = {
     {"finalize", phase_finalize_run, print_finalize_normalized},
     {"cfg",      phase_cfg_run,      print_cfg_normalized},
     {"ssu",      phase_ssu_run,      print_ssu_normalized},
-    // Future phases: dom, loops, patterns, fa-init, fa-converge,
-    // clone, dce, freq, inline, codegen-c, codegen-llvm.
+    {"dom",      phase_dom_run,      print_dom_normalized},
+    {"loops",    phase_loops_run,    print_loops_normalized},
+    // Future phases: patterns, fa-init, fa-converge, clone, dce,
+    // freq, inline, codegen-c, codegen-llvm.
     // See ifa/testing/phases/00_INDEX.md.
     {0, 0, 0},
 };

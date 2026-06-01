@@ -1,0 +1,21 @@
+;; 02_single_loop.ir — one while-loop. Expected: exactly one LoopNode
+;; containing the body PNodes (L_top, IF, L_body, MOVE, GOTO).
+
+(sym %cond :is-local)
+(sym %x :is-local)
+(sym %r :is-local)
+(sym %cont)
+
+(fun %single
+  :args (%cond %x)
+  :rets (%r)
+  :cont %cont
+  :body
+    (label %L_top)
+    (if %cond %L_body %L_end)
+    (label %L_body)
+    (move %x %r)
+    (goto %L_top)
+    (label %L_end))
+
+(entry %single)

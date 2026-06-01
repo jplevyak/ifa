@@ -1,0 +1,16 @@
+;; 01_no_loop.ir — straight-line body, find_local_loops finds nothing.
+;;
+;; Expected: (loops) block contains (none).
+
+(sym %x :is-local)
+(sym %r :is-local)
+(sym %cont)
+
+(fun %noloop
+  :args (%x)
+  :rets (%r)
+  :cont %cont
+  :body
+    (move %x %r))
+
+(entry %noloop)

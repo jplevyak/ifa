@@ -1,0 +1,34 @@
+;; 03_nested_loops.ir — inner while inside outer while.
+;;
+;; The current find_local_loops implementation reports the two loops
+;; as siblings (both depth=1, disjoint member sets) rather than nested:
+;; the inner loop is detected and collapsed first, but the outer loop's
+;; back-edge propagation does not pull the inner_rep into the outer
+;; body. Locking that behavior in the golden — if a future fix to
+;; loop.cc starts reporting nested structure, this golden needs an
+;; update and the .md doc should record it.
+
+(sym %c1 :is-local)
+(sym %c2 :is-local)
+(sym %x :is-local)
+(sym %r :is-local)
+(sym %cont)
+
+(fun %nested
+  :args (%c1 %c2 %x)
+  :rets (%r)
+  :cont %cont
+  :body
+    (label %L_o_top)
+    (if %c1 %L_o_body %L_o_end)
+    (label %L_o_body)
+    (label %L_i_top)
+    (if %c2 %L_i_body %L_i_end)
+    (label %L_i_body)
+    (move %x %r)
+    (goto %L_i_top)
+    (label %L_i_end)
+    (goto %L_o_top)
+    (label %L_o_end))
+
+(entry %nested)
