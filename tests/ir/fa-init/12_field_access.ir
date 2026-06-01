@@ -1,0 +1,32 @@
+;; 12_field_access.ir — alloc + setter + getter on the same field.
+;;
+;; SEND forms:
+;;   (send @primitive @new <Class> => obj)      — alloc
+;;   (send @operator obj @setter #field val => r1)  — obj.field = val
+;;   (send @operator obj @period #field => r2)      — r2 = obj.field
+;;
+;; The setter's prim_setter transfer function flows val's type into
+;; the field's per-CS AVar (via cs->var_map[name]). The period's
+;; prim_period transfer function flows that AVar back out to r2. So
+;; r2's type ends up being val's type (int32 here).
+
+(type %Point :kind RECORD :has (%px %py))
+(sym %px :in %Point)
+(sym %py :in %Point)
+
+(sym %k :is-constant :immediate (int32 42))
+
+(sym %obj :is-local)
+(sym %r1 :is-local)
+(sym %r2 :is-local)
+(sym %tcont)
+
+(fun %top
+  :rets (%r2)
+  :cont %tcont
+  :body
+    (send @primitive @new %Point => %obj)
+    (send @operator %obj @setter #px %k => %r1)
+    (send @operator %obj @period #px => %r2))
+
+(entry %top)

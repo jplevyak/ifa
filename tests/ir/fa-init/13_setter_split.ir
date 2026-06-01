@@ -1,0 +1,50 @@
+;; 13_setter_split.ir — two %Point allocations, each with a
+;; different-typed value written into the same field. A single
+;; %read_x function reads the field. If the setter-based splitter
+;; fires, %read_x specializes per allocation site.
+;;
+;; Convention: %read_x has itself as its first formal (closure
+;; receiver convention). The .ir send `(send %read_x %a => %ra)` puts
+;; the receiver at rval[0], matching pos[1] = %read_x.
+;;
+;; Expected: creates=2 on @__main__'s ES (one CS per allocation),
+;; entry-sets >= 4 (@__main__ + at least two %read_x specializations
+;; if the splitter fires).
+
+(type %Point :kind RECORD :has (%px))
+(sym %px :in %Point)
+
+(sym %k_i :is-constant :immediate (int32 1))
+(sym %k_f :is-constant :immediate (float64 2.5))
+
+;; Reader.
+(sym %p :is-local)
+(sym %r_read :is-local)
+(sym %rcont)
+(fun %read_x
+  :args (%read_x %p)
+  :rets (%r_read)
+  :cont %rcont
+  :body
+    (send @operator %p @period #px => %r_read))
+
+;; Two allocations, two setters, two read_x calls.
+(sym %a :is-local)
+(sym %b :is-local)
+(sym %sa :is-local)
+(sym %sb :is-local)
+(sym %ra :is-local)
+(sym %rb :is-local)
+(sym %tcont)
+(fun %top
+  :rets (%ra)
+  :cont %tcont
+  :body
+    (send @primitive @new %Point => %a)
+    (send @operator %a @setter #px %k_i => %sa)
+    (send @primitive @new %Point => %b)
+    (send @operator %b @setter #px %k_f => %sb)
+    (send %read_x %a => %ra)
+    (send %read_x %b => %rb))
+
+(entry %top)

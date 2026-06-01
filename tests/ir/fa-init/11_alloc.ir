@@ -1,0 +1,24 @@
+;; 11_alloc.ir — minimum allocation. A single SEND through @primitive
+;; @new instantiates a %Point and FA tracks it as one CreationSet at
+;; this call site (creates=1 on the top EntrySet).
+;;
+;; No frontend wiring required: prim_new is registered by
+;; prim_init() and its transfer function is the P_prim_new case in
+;; fa.cc — together they take the class arg (whose abstract_type is
+;; the class meta-type's CS) and call creation_point() to allocate
+;; a fresh CS for the class.
+
+(type %Point :kind RECORD :has (%px %py))
+(sym %px :in %Point)
+(sym %py :in %Point)
+
+(sym %obj :is-local)
+(sym %tcont)
+
+(fun %top
+  :rets (%obj)
+  :cont %tcont
+  :body
+    (send @primitive @new %Point => %obj))
+
+(entry %top)

@@ -216,23 +216,26 @@ per test.
 - [x] Run-twice determinism — verified.
 - [ ] `pass-counts` / `history` blocks — needs FA timer
       instrumentation that's deterministic.
-- [~] Splitter-stage coverage — stage 1 (type-confluence) actually
-      fires; stages 2 (mark-based) and 5 (violation-driven) reach
-      their entry points but don't produce splits without richer
-      input (allocations / instance-vars). Stages 3-4 (setter-based)
-      need classes with mutable fields — pure functions don't get
-      there.
+- [x] Splitter-stage coverage — multiple stages now fire across the
+      fa-init fixtures. Stage 1 (type-confluence) via `06_splitter`
+      and `09_cascade`. Splitting on **allocation-site origin** via
+      `13_setter_split.ir` — two %Point allocations write different
+      types into the same field; the reader specializes per site
+      (`entry-sets=3`, `creates=2`).
+      Stage 5 (violation-driven) is reachable via `08_violation` but
+      can't resolve without a viable alternative.
 
-      `10_class_instance.ir` is a smoke test that the `.ir` parser
-      handles `(type %Foo :kind RECORD :has (...))` and that
-      `:must-specialize %UserType` resolves to user-defined classes.
-      It does NOT exercise setter-based splitting because there's no
-      allocator in the test harness — `new_object` is just a global
-      Sym, not a primitive-bound function. Wiring up a stub `__new`
-      via `prim_reg("__new", transfer)` would let an .ir `(send
-      @primitive @__new <ClassSym> => obj)` actually create a CS at
-      the call site, which is the prerequisite for the next layer
-      (setter/getter via `(send @operator obj .= field val)`).
+      `11_alloc.ir`, `12_field_access.ir`, and `13_setter_split.ir`
+      are the class-instance fixtures. There turned out to be no
+      `__new` primitive to wire up: `prim_new`, `prim_period`, and
+      `prim_setter` are all registered automatically by
+      `Primitives::Primitives(IF1*)` and their transfer functions
+      live in `fa.cc` as the `P_prim_new` / `P_prim_period` /
+      `P_prim_setter` cases. Spell them from `.ir` directly:
+      `(send @primitive @new <Class> => obj)`,
+      `(send @operator obj @setter #field val)`,
+      `(send @operator obj @period #field)`. See `NEW.md` for the
+      investigation record that found this.
 
 ### How the harness boots FA
 

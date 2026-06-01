@@ -1,0 +1,20 @@
+;; phase: fa-init
+
+(summary
+  rc:              0
+  entry-sets:      1
+  creation-sets:   8
+  global-avars:    0
+  funs:            1
+  basic-types:     0
+)
+
+(entry-sets
+  @__main__ args=1 rets=1 edges=4 creates=1
+)
+
+(closures-registered
+  @__main__ args=1 fun=set
+  %top args=0 (spliced into @__main__)
+)
+
