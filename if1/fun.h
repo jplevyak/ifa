@@ -27,6 +27,20 @@ class Function;
 #define FUN_COLLECT_VARS_NO_PHY 0x01
 #define FUN_COLLECT_VARS_NO_TVALS 0x02
 
+// Bitmask for `Fun::Fun(Sym *, int flags)`. The default-constructed
+// `Fun(Sym *)` runs every phase (FUN_BUILD_ALL) — matches the historical
+// behavior. Tests can request CFG-only or CFG+SSU-only Funs by passing
+// a subset, eg. `new Fun(s, FUN_BUILD_CFG_ONLY)`.
+#define FUN_BUILD_CFG       0x01  // build_cfg
+#define FUN_BUILD_SSU       0x02  // build_ssu (implies + requires CFG)
+#define FUN_BUILD_USES      0x04  // build_uses
+#define FUN_BUILD_AST       0x08  // setup_ast back-pointers
+#define FUN_BUILD_CHECK     0x10  // check_invariants
+#define FUN_BUILD_ALL       (FUN_BUILD_CFG | FUN_BUILD_SSU | FUN_BUILD_USES \
+                             | FUN_BUILD_AST | FUN_BUILD_CHECK)
+#define FUN_BUILD_CFG_ONLY  FUN_BUILD_CFG
+#define FUN_BUILD_CFG_SSU   (FUN_BUILD_CFG | FUN_BUILD_SSU)
+
 class CallPoint : public gc {
  public:
   Fun *fun;
@@ -138,7 +152,8 @@ class Fun : public gc {
   void setup_ast();
   void init_fun();
 
-  Fun(Sym *afn);
+  Fun(Sym *afn);                 // default: builds everything
+  Fun(Sym *afn, int build_flags); // tests: build subset
   Fun();
   Fun *copy(int copy_ast = 1, Map<Var *, Var *> *var_map = 0);
 };

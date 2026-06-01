@@ -51,7 +51,7 @@ static void build_uses(Fun *f) {
   for (PNode *p : nodes) build_uses(p);
 }
 
-Fun::Fun(Sym *asym) {
+Fun::Fun(Sym *asym, int build_flags) {
   sym = asym;
   asym->fun = this;
   ast = sym->ast;
@@ -62,12 +62,14 @@ Fun::Fun(Sym *asym) {
     else
       printf("function %d\n", asym->id);
   }
-  build_cfg();
-  build_ssu();
-  build_uses(this);
-  setup_ast();
-  check_invariants(this);
+  if (build_flags & FUN_BUILD_CFG)    build_cfg();
+  if (build_flags & FUN_BUILD_SSU)    build_ssu();
+  if (build_flags & FUN_BUILD_USES)   build_uses(this);
+  if (build_flags & FUN_BUILD_AST)    setup_ast();
+  if (build_flags & FUN_BUILD_CHECK)  check_invariants(this);
 }
+
+Fun::Fun(Sym *asym) : Fun(asym, FUN_BUILD_ALL) {}
 
 Fun::Fun() {
   sym = NULL;
