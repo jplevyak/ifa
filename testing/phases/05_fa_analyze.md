@@ -190,27 +190,38 @@ per test.
 ## 7. Acceptance
 
 - [x] Init-only printer compiles and runs `FA::analyze()` to
-      completion on 6 fixtures, including a real closure call
-      (`05_call.ir` → 2 EntrySets: @__main__ and %add) and a
-      two-site multi-call (`06_splitter.ir`).
-- [x] Splitter actually splits. `06_splitter.ir` calls the same %add
-      from int32 and float64 sites; FA specializes %add into two
-      EntrySets, one per concrete arg type, with rc=0. The fix was
-      not in FA itself but in the .ir parser: `:is-local` Syms now
-      get `nesting_depth = LOCALLY_NESTED` so
+      completion on 9 fixtures.
+- [x] Splitter actually splits. Four splitter-exercising fixtures:
+      - `06_splitter` — same %add called from int32 and float64
+        sites → 2 specialized %add ESes (stage 1, type-confluence).
+      - `07_typed_formal` — %add's formals constrained via
+        `:must-specialize @int32`; typed call matches cleanly.
+      - `08_violation` — %add typed int32, called with float64 too;
+        the unmatchable call yields a NOTYPE violation (stage 5
+        couldn't resolve it without a viable alternative).
+      - `09_cascade` — two-hop dispatch `%top → %fwd → %add` with
+        int32 and float64 contexts; FA cascades the split through
+        both intermediaries → 5 EntrySets total. This is
+        end-to-end IFA monomorphization on a real call graph.
+
+      The unblocking fix was in the .ir parser, not FA: `:is-local`
+      Syms now get `nesting_depth = LOCALLY_NESTED` so
       `if1_finalize_flatten_and_fixup_nesting` promotes them to the
       owning closure's depth+1. Without that, `make_AVar` routed
-      formals to GLOBAL_CONTOUR (since their default nesting_depth=0
-      looked like a global) and `split_ess_for_type` skipped them
-      because their AVar's `contour_is_entry_set` was false.
+      formals to GLOBAL_CONTOUR and `split_ess_for_type` skipped
+      them because their AVar's `contour_is_entry_set` was false.
+      Also added `:must-specialize` parsing — pre-existed in Sym
+      but the .ir grammar had no syntax for it.
 - [ ] All edge-case tests — partly unblocked.
 - [x] Run-twice determinism — verified.
 - [ ] `pass-counts` / `history` blocks — needs FA timer
       instrumentation that's deterministic.
-- [x] Splitter-stage coverage — stage 1 (type-confluence via
-      `split_ess_for_type`) is exercised by `06_splitter`. Other
-      stages (mark-based, setter-based, violation-driven) still need
-      fixtures.
+- [~] Splitter-stage coverage — stage 1 (type-confluence) actually
+      fires; stages 2 (mark-based) and 5 (violation-driven) reach
+      their entry points but don't produce splits without richer
+      input (allocations / instance-vars). Stages 3-4 (setter-based)
+      need classes with mutable fields — pure functions don't get
+      there.
 
 ### How the harness boots FA
 

@@ -1,0 +1,33 @@
+;; 07_typed_formal.ir — %add's formal args are constrained to @int32
+;; via :must-specialize. The caller passes typed int32 constants, so
+;; dispatch matches cleanly. This exercises that :must-specialize is
+;; honored by the matcher and that typed-formal dispatch produces a
+;; specialized EntrySet.
+;;
+;; Expected: entry-sets=2 (@__main__ + %add), rc=0.
+
+(sym %k1 :is-constant :immediate (int32 1))
+(sym %k2 :is-constant :immediate (int32 2))
+
+(sym %a :is-local :must-specialize @int32)
+(sym %b :is-local :must-specialize @int32)
+(sym %ar :is-local)
+(sym %acont)
+
+(fun %add
+  :args (%add %a %b)
+  :rets (%ar)
+  :cont %acont
+  :body
+    (move %a %ar))
+
+(sym %r :is-local)
+(sym %tcont)
+
+(fun %top
+  :rets (%r)
+  :cont %tcont
+  :body
+    (send %add %k1 %k2 => %r))
+
+(entry %top)

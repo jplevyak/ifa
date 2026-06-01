@@ -526,6 +526,11 @@ static void parse_sym_attrs(Lex &L, Sym *s) {
       s->in = parse_ref(L);
     } else if (!strcmp(kw, "aspect")) {
       s->aspect = parse_ref(L);
+    } else if (!strcmp(kw, "must-specialize")) {
+      // dispatch_type() only constrains a formal to a type when
+      // must_specialize is set. Without this attribute there's no
+      // way for .ir to express a typed formal that affects dispatch.
+      s->must_specialize = parse_ref(L);
     } else if (!strcmp(kw, "is-local")) {
       s->is_local = 1;
       // Match pyc convention: locals start as LOCALLY_NESTED (-1) so

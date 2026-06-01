@@ -1,0 +1,46 @@
+;; 09_cascade.ir — two-hop dispatch: %top calls %fwd which calls %add.
+;; Both %fwd and %add are called with int32 at one site and float64
+;; at another, so both should specialize.
+;;
+;; Expected: entry-sets=5 — @__main__ + 2 for %fwd + 2 for %add.
+
+(sym %k_i :is-constant :immediate (int32 1))
+(sym %k_j :is-constant :immediate (int32 2))
+(sym %k_f :is-constant :immediate (float64 1.5))
+(sym %k_g :is-constant :immediate (float64 2.5))
+
+;; %add: bottom of the call chain.
+(sym %a :is-local)
+(sym %b :is-local)
+(sym %ar :is-local)
+(sym %acont)
+(fun %add
+  :args (%add %a %b)
+  :rets (%ar)
+  :cont %acont
+  :body
+    (move %a %ar))
+
+;; %fwd: forwards its args to %add.
+(sym %x :is-local)
+(sym %y :is-local)
+(sym %fr :is-local)
+(sym %fcont)
+(fun %fwd
+  :args (%fwd %x %y)
+  :rets (%fr)
+  :cont %fcont
+  :body
+    (send %add %x %y => %fr))
+
+(sym %r1 :is-local)
+(sym %r2 :is-local)
+(sym %tcont)
+(fun %top
+  :rets (%r1)
+  :cont %tcont
+  :body
+    (send %fwd %k_i %k_j => %r1)
+    (send %fwd %k_f %k_g => %r2))
+
+(entry %top)

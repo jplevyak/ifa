@@ -63,6 +63,10 @@ static Sym *build_synthetic_main() {
 Sym *fa_setup_user_entry = 0;
 
 void fa_setup_environment(IF1 *p) {
+  if (getenv("IFA_TEST_FA_DEBUG")) {
+    ifa_debug = 1;
+    ifa_verbose = 3;
+  }
   init_default_builtin_types();
   new_builtin_global_variable(sym___main__, "__main__");
   fa_setup_user_entry = build_synthetic_main();
