@@ -157,30 +157,50 @@ This matches how `.ir` fixtures already work.
 
 ## 4. Sequenced plan
 
-### Step 1 — Recon on V's test suite
+### Step 1 — Recon on V's test suite ✅ DONE
 
-Cheapest possible fact-gathering. Run V's existing test programs
-through the `FAPassEvent` sidecar (same shell loop pattern used in
-issue 003's pyc recon). Tally which splitter stages each V test
-hits. Three possible outcomes:
+Ran V's three test programs (`for1.v`, `for2.v`, `literal.v`)
+through the `FAPassEvent` sidecar.
 
-a. **V tests cover stages pyc doesn't.** Those V programs are
-   load-bearing. Need to either translate their shapes to synthetic
-   fixtures OR keep V around minimally as a coverage source.
-b. **V tests don't add coverage.** V can be deleted with no loss to
-   IFA test coverage. The 5 unused stages are either dead code,
-   pyc-shape-specific, or pyc-emission-blocked. Builds case for
-   stage-deletion or for synthetic-coverage as the only path.
-c. **V tests partially overlap.** Identify the unique patterns,
-   port them to synthetic shapes, then delete V.
+| V test | passes | stages fired |
+|--------|--------|--------------|
+| `for1.v` | 0 | none |
+| `for2.v` | 1 | type=1 |
+| `literal.v` | 1 | type=1 |
 
-Time estimate: ~30 minutes (build, run, tally).
+**Outcome (b): V adds zero stage coverage beyond what pyc already
+provides.** The `type` stage is already hit by ~30 pyc tests. V's
+test suite doesn't reach `mark-type`, `setter`,
+`setter-of-setter`, `mark-setter`, `mark-setter-of-setter`, or
+`violation` — same as pyc's gap.
+
+Conclusion: the 5 uncovered stages are **not** V-specific. They're
+genuinely under-tested across both frontends. V can be deleted
+with no IFA-test-coverage loss; synthetic shape generation
+(Step 3) is the only path to covering the remaining stages.
 
 ### Step 2 — Decide V's fate
 
-Based on Step 1's outcome. If (b), file a separate issue proposing
-V deletion and the 5-stage-dead-code audit. If (a) or (c), proceed
-to Step 3 with concrete shape requirements from V tests.
+**Decision: delete V** (outcome (b) from Step 1).
+
+V provides no IFA-test-coverage value. Its three test programs all
+fall within pyc's `type`-stage coverage. The 5 unused stages are
+not V-specific. Keeping V around as a "second frontend for
+validation" is the only remaining argument and is weak: V isn't
+maintained, its lowering has its own quirks (the
+`nesting_depth=0` reset escape hatch was already removed via
+issue 005), and a second frontend that produces a strict subset of
+the shapes the primary frontend produces doesn't add architectural
+robustness.
+
+Concrete V-deletion work (separate commits for bisectability):
+- `ifa/frontend/v.g`, `ifa/frontend/v.g.d_parser.{cc,d}`
+- `ifa/frontend/ast_to_if1.cc` shrinks to whatever's pyc-shared.
+- `ifa/frontend/scope.cc`, `ifa/frontend/make_ast.cc`,
+  `ifa/frontend/parse.cc` reviewed for V-only paths.
+- `ifa/tests/*.v` deleted.
+- `make test_llvm` target dropped.
+- Doc updates in `ARCHITECTURE.md`, `FRONTEND.md`, `LLVM.md`.
 
 ### Step 3 — Build the IR generator
 

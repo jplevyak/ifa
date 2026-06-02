@@ -16,7 +16,7 @@ For the overall plan see [../../TESTING.md](../../TESTING.md).
 | 06 | [06_clone.md](06_clone.md) | `clone(fa)` | [CLONE.md](../../CLONE.md) | TODO | — |
 | 07 | [07_dce_optimize.md](07_dce_optimize.md) | `mark_live_*`, `simple_inlining`, `frequency_estimation` | [OPTIMIZE.md](../../OPTIMIZE.md) | TODO | — |
 | 08 | [08_codegen.md](08_codegen.md) | `c_codegen_print_c`, `llvm_codegen_print_ir` | [CODEGEN_C.md](../../CODEGEN_C.md), [CODEGEN_LLVM.md](../../CODEGEN_LLVM.md) | TODO | — |
-| 09 | [09_synthetic_coverage.md](09_synthetic_coverage.md) | Synthetic IR generator for splitter-stage coverage; V deletion plan | [IFA.md](../../IFA.md), [issues/003](../../issues/003-fa-converge-determinism.md) | Step 1 in progress | — |
+| 09 | [09_synthetic_coverage.md](09_synthetic_coverage.md) | Synthetic IR generator for splitter-stage coverage; V deletion plan | [IFA.md](../../IFA.md), [issues/003](../../issues/003-fa-converge-determinism.md) | Step 1 done; V deletable per recon | — |
 
 ## Standard structure of each phase doc
 
