@@ -52,6 +52,12 @@ that:
   hatches (pyc `asymbol`, V `nesting_depth=0`, ifa-test keepalive)
   all become removable. In-progress; flag + nonfunctional cleanup
   landed, default flip + escape-hatch removal pending.
+- [006-simple-inlining-multi-send-chain.md](006-simple-inlining-multi-send-chain.md) —
+  `simple_inlining` misses straight-line multi-SEND wrappers like
+  `def add_one(self): return self.v + 1`. Extending the single-SEND
+  pattern matcher to a chain matcher would catch the most common
+  method-wrapper shape in pyc-emitted IR. Stays within the "simple"
+  boundary (no iteration, no cost model).
 
 ## When to file an issue here vs fix it now
 
