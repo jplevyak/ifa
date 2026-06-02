@@ -21,7 +21,7 @@ static int mark_sym_live(Sym *s);
 
 IF1 *if1 = 0;
 bool fdce_if1 = true;
-bool fdce_if1_speculative = true;  // see comment in ifa.h
+bool fdce_if1_speculative = false;  // see comment in ifa.h
 bool fruntime_errors = false;
 
 IF1::IF1() {
