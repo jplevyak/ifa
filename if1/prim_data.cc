@@ -358,16 +358,11 @@ void prim_init(Primitives *p, IF1 *if1) {
   static PrimType prim_destruct_arg_types[] = {PRIM_TYPE_ANY};
   static PrimType prim_destruct_ret_types[] = {PRIM_TYPE_ANY};
   // prim_destruct is tuple/record unpacking (one SEND, multiple lvals,
-  // one per element — see cg.cc:destruct_prim). It has no intrinsic side
-  // effect. PRIM_NON_FUNCTIONAL here is a Sym-level mark_dead workaround:
-  // that pass checks only `lvals[0]->live`, so a multi-lval SEND with
-  // dead lvals[0] but live lvals[1+] would be incorrectly killed. Marking
-  // nonfunctional forces is_functional() to return 0, sidestepping the
-  // kill. FA-level mark_live_pnodes iterates all lvals correctly and
-  // doesn't need this. Once fdce_if1_speculative defaults to false, this
-  // flag can be dropped (the bug it works around no longer fires).
-  prim_destruct = new Prim(46, "destruct", "prim_destruct", 2, 0, 1, prim_destruct_arg_types, prim_destruct_ret_types,
-                           PRIM_NON_FUNCTIONAL);
+  // one per element — see cg.cc:destruct_prim). No intrinsic side
+  // effect. Previously PRIM_NON_FUNCTIONAL to work around the
+  // speculative Sym-level mark_dead checking only lvals[0]; that pass
+  // was retired in issue 005, so the workaround flag goes too.
+  prim_destruct = new Prim(46, "destruct", "prim_destruct", 2, 0, 1, prim_destruct_arg_types, prim_destruct_ret_types, 0);
   n = (char *)if1->strings.put((char *)"destruct");
   p->prims.add(prim_destruct);
   p->prim_map[0][0].put(n, prim_destruct);
