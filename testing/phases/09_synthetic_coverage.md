@@ -157,6 +157,20 @@ This matches how `.ir` fixtures already work.
 
 ## 4. Sequenced plan
 
+### Phase A — Inventory ✅ DONE
+
+Three companion documents:
+- [09a_frontend_inventory.md](09a_frontend_inventory.md) —
+  what's in `ifa/frontend/` (43k LOC, all V-only; deletion grouped
+  for sequencing).
+- [09b_ast_to_if1_patterns.md](09b_ast_to_if1_patterns.md) —
+  the lowering patterns V's `ast_to_if1.cc` demonstrates,
+  cataloged by AST shape → IF1 recipe. Reference material for the
+  generator API design.
+- [09c_splitter_triggers.md](09c_splitter_triggers.md) —
+  for each of 7 splitter stages, the precondition + IF1 shape
+  needed to trigger it. Coverage targets for the generator.
+
 ### Step 1 — Recon on V's test suite ✅ DONE
 
 Ran V's three test programs (`for1.v`, `for2.v`, `literal.v`)
