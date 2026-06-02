@@ -325,6 +325,47 @@ commit.
 **Total effort: ~9-12 days.** Spread across commits, each
 independently bisectable.
 
+## 6.5. Design caveat: end-of-pass stages and "wrapping"
+
+The named splitter stages in `extend_analysis` are the
+**fallback** paths for confluences that the per-pass work
+(worklist drain, type propagation, edge merging) couldn't resolve.
+The simpler the shape, the more likely the confluence gets
+absorbed before the named stage runs.
+
+Two known absorption mechanisms:
+
+- **ES-level**: `find_best_entry_sets` (`fa.cc:881-933`)
+  merges call edges into the best-compatible existing ES.
+  Type-incompatible edges still merge (val -= 4), which creates
+  the type confluence that stage 1 then splits. For stage N>1 to
+  fire, the confluence must not be resolvable by stage 1's
+  splits of that ES — typically achieved by routing polymorphism
+  through an intermediate generic function so the confluence
+  lands on a non-eager formal where local info isn't sufficient.
+- **CS-level**: CreationSets get split eagerly too, by mechanisms
+  in the allocation/setter paths. Same risk as ES merging:
+  shapes targeting mark-type / setter-compound stages may need
+  to wrap CS construction (e.g., allocate via intermediate funs,
+  not directly in main) to prevent eager CS splitting from
+  pre-empting the end-of-pass stage.
+
+**Empirical-first approach.** Each Phase C step (7.3 onward)
+builds its target shape, runs `fa-converge`, and checks whether
+the intended stage fires. If it doesn't:
+1. Add a layer of indirection (wrap the call through a generic
+   function for ES cases; wrap allocation through a constructor
+   for CS cases).
+2. Re-run; iterate.
+3. Once the stage fires, lock the golden and document the
+   wrapping pattern in `IR_GENERATOR.md` for future shapes.
+
+If a stage proves unreachable despite reasonable wrapping
+attempts (say 2-3 iterations), file as dead-code candidate.
+
+This caveat replaces speculative shape design with measurement.
+The shape sketches in §2-§3 are starting points, not final forms.
+
 ## 7. Risk + mitigations
 
 | Risk | Mitigation |
