@@ -1,12 +1,25 @@
 # Issue 001: Keepalive crashes when user fun has explicit reply
 
-**Status:** open
+**Status:** subsumed by [005](005-retire-speculative-sym-level-dce.md).
 **Found:** while wiring up the `inline` phase test fixtures.
 **Affects:** `ifa/testing/fa_setup.cc`, `ifa/analysis/fa.cc`.
-**Related commits:** `087b127` (keepalive added), `ac62d25` (docs trade-off).
+**Related commits:** `087b127` (keepalive added), `ac62d25` (docs trade-off),
+`e6952b8` (corrected the mechanism analysis below — Sym-level DCE, not
+per-ES FA propagation, is what kills the LOCALLY_NESTED variant).
 **Workaround:** don't put `(send @primitive @reply …)` in user funs in
 `.ir` fixtures; let `fa_setup` provide the only reply in
 `sym___main__`. Costs us higher-coverage `inline` goldens.
+
+## Supersession
+
+Issue [005](005-retire-speculative-sym-level-dce.md) retires the
+speculative Sym-level DCE that necessitates the keepalive in the
+first place. When 005's step 2b lands (remove the keepalive from
+`fa_setup.cc`), this issue closes automatically — the crash mode
+(FA's `make_AVar` in `GLOBAL_CONTOUR` on a non-global rval) goes
+away because there's no global-contour SEND fan-in point left. The
+proposed-fix section below is preserved as a record of the
+investigation, but is *not* the path forward.
 
 ## Symptom
 

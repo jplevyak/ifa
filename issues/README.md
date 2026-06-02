@@ -32,8 +32,9 @@ that:
 
 - [001-keepalive-vs-explicit-reply.md](001-keepalive-vs-explicit-reply.md) —
   the test-harness keepalive SEND crashes FA when a `.ir` user fun
-  has its own `(send @primitive @reply …)`. Blocks higher-coverage
-  inline-phase goldens.
+  has its own `(send @primitive @reply …)`. **Subsumed by 005**
+  (which retires the keepalive entirely); kept for the investigation
+  trail.
 - [002-codegen-llvm-normalizer.md](002-codegen-llvm-normalizer.md) —
   no `codegen-llvm` test phase; needs a line-by-line normalizer
   for host-specific LLVM-IR text variation.
@@ -45,6 +46,12 @@ that:
   `find_local_loops` reports nested loops as siblings, breaking
   the loop-tree-walking frequency estimator. Real algorithm bug
   with a golden lock.
+- [005-retire-speculative-sym-level-dce.md](005-retire-speculative-sym-level-dce.md) —
+  retire `if1_simple_dead_code_elimination`'s speculative SEND/MOVE
+  kills in favor of FA-level `mark_live_code`. Frontend escape
+  hatches (pyc `asymbol`, V `nesting_depth=0`, ifa-test keepalive)
+  all become removable. In-progress; flag + nonfunctional cleanup
+  landed, default flip + escape-hatch removal pending.
 
 ## When to file an issue here vs fix it now
 
