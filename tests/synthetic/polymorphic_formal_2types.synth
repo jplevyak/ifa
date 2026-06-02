@@ -1,0 +1,7 @@
+;; polymorphic_formal_2types.synth — mirrors 02_splitter.ir.
+;; f(a, b) → a; called once with int32 args, once with float64 args.
+;; FA type stage must split f's ES on the formal type confluence.
+
+shape: polymorphic_formal
+n_types: 2
+n_per_type: 1

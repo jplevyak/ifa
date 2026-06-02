@@ -1,0 +1,7 @@
+;; polymorphic_formal_3types_2each.synth — three element types,
+;; two call sites per type. Exercises the type stage at higher
+;; complexity than 02_splitter (which has 2 types, 1 site each).
+
+shape: polymorphic_formal
+n_types: 3
+n_per_type: 2

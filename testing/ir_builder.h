@@ -212,6 +212,18 @@ Sym *local(cchar *name = nullptr);
 // Create a fresh symbol Sym (for dispatch tags / field names).
 Sym *symbol(cchar *name);
 
+// Constant Syms — fully wired (is_constant, type, meta_type,
+// implements/specializes, registered in if1->constants) so FA sees
+// them as typed values. Mirrors what parse_ir.cc's register_const_sym
+// does for .ir fixtures.
+//
+// Requires init_default_builtin_types() to have been called (the
+// fa-init / fa-converge etc. phases handle this via pre_parse).
+Sym *const_int32(int v);
+Sym *const_int64(long long v);
+Sym *const_float64(double v);
+Sym *const_string(cchar *s);
+
 }  // namespace ir
 
 #endif  // IFA_TESTING_IR_BUILDER_H

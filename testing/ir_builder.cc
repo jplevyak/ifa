@@ -7,8 +7,11 @@
 #include "builtin.h"
 #include "code.h"
 #include "if1.h"
+#include "num.h"
 #include "sym.h"
 #include "testing/ir_builder.h"
+
+#include <string.h>
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -226,6 +229,47 @@ Sym *local(cchar *name) {
 Sym *symbol(cchar *name) {
   Sym *s = if1_make_symbol(if1, name);
   return s;
+}
+
+// Internal: wire up a constant Sym with the same fields parse_ir.cc's
+// register_const_sym sets. Without these, FA reports NOTYPE because
+// make_AVar can't seed an AType.
+static Sym *register_const(Sym *target, Sym *type_sym) {
+  target->is_constant = 1;
+  if (type_sym) {
+    target->type = type_sym;
+    target->meta_type = target;
+    if (!target->implements.in(type_sym)) target->implements.add(type_sym);
+    if (!target->specializes.in(type_sym)) target->specializes.add(type_sym);
+    if1->constants.put(&target->imm, target);
+  }
+  return target;
+}
+
+Sym *const_int32(int v) {
+  Sym *s = new_Sym();
+  s->imm.set_int(v, IF1_INT_TYPE_32);
+  return register_const(s, if1_get_builtin(if1, "int32"));
+}
+
+Sym *const_int64(long long v) {
+  Sym *s = new_Sym();
+  s->imm.set_int(v, IF1_INT_TYPE_64);
+  return register_const(s, if1_get_builtin(if1, "int64"));
+}
+
+Sym *const_float64(double v) {
+  Sym *s = new_Sym();
+  s->imm.set_float(v, IF1_FLOAT_TYPE_64);
+  return register_const(s, if1_get_builtin(if1, "float64"));
+}
+
+Sym *const_string(cchar *str) {
+  Sym *s = new_Sym();
+  s->imm.const_kind = IF1_CONST_KIND_STRING;
+  s->imm.v_string = if1_cannonicalize_string(if1, str);
+  s->constant = s->imm.v_string;
+  return register_const(s, if1_get_builtin(if1, "string"));
 }
 
 }  // namespace ir

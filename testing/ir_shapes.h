@@ -41,6 +41,16 @@ int param(const ParamMap &m, cchar *name, int fallback = 0);
 // No parameters.
 void noop_main(const ParamMap &);
 
+// polymorphic_formal: a closure `f(a, b)` returning its first arg.
+// Main calls f with constants of `n_types` distinct types
+// (cycling through int32, float64, int64), `n_per_type` calls
+// each type. Stresses the FA type-stage splitter — f's formals
+// see a type confluence; extend_analysis must split f's ES.
+//
+// Params: n_types (1-3), n_per_type (>=1). With (2, 1) this
+// matches the shape of 02_splitter.ir.
+void polymorphic_formal(const ParamMap &);
+
 }  // namespace IRShape
 
 #endif  // IFA_TESTING_IR_SHAPES_H
