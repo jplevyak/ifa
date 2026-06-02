@@ -34,11 +34,57 @@ borrowed from `fa-init`):
 - `04_setter_split`: 1 pass, 1 type split.
 - `05_violation`: zero events (FA returns -1).
 
-Current fixture set only exercises the `type` stage. Adding fixtures
-that exercise setter / mark-setter / violation stages is a useful
-follow-up (would give "splitter-stage coverage gate" referenced in
-the original plan), but the infrastructure to record and check those
-stages is now in place.
+Current fixture set only exercises the `type` stage.
+
+## Empirical stage-coverage recon (Option A)
+
+To inform what additional fixtures are worth writing, ran the pyc
+test suite (73 tests excluding the hang-prone `dict_methods.py`)
+with `fa_events_enable()` on, dumping a per-test stage summary.
+Results:
+
+| Stage | # pyc tests that trigger | Examples |
+|-------|--------------------------|----------|
+| `type` | ~30 | basic arithmetic, classes, slicing, etc. |
+| `setter` | **4** | `pyc_declare.py`, `list_comprehension.py`, `list_multiply.py`, `builtins.py` |
+| `mark-type` | 0 | — |
+| `setter-of-setter` | 0 | — |
+| `mark-setter` | 0 | — |
+| `mark-setter-of-setter` | 0 | — |
+| `violation` | 0 | — |
+
+Total: 33/73 tests trigger any splitter stage; 40/73 converge in
+one pass (FA returns 0 with no splits, or returns -1 / fails earlier).
+
+**Implications for fixture strategy:**
+
+- **Type stage**: heavily covered. Current 5 fixtures plus the
+  whole pyc test suite. Done.
+- **Setter stage**: pyc programs do hit it. The simplest trigger
+  is the 4-line `list_multiply.py` (`x = [' '] * 3`). Reverse-
+  engineering its IR into a minimal .ir fixture is the next
+  concrete addition. Until then, "setter stage works" is
+  implicitly tested by the 4 pyc programs.
+- **The other 5 stages don't fire in any pyc test.** This means:
+  - Writing contrived .ir fixtures for them is a "construct a
+    pathological input that exercises this path" exercise rather
+    than "lock real behavior."
+  - They likely correspond to patterns the V frontend produces
+    (V being slated for replacement), or to orthogonal robustness
+    for input shapes pyc doesn't currently emit.
+  - Could be dead code — if no current frontend triggers them,
+    their behavior is unobservable.
+
+**Recommended follow-ups (none blocking):**
+1. Add a `06_list_multiply_setter` fa-converge fixture by
+   reverse-engineering `list_multiply.py`. Locks one setter-stage
+   golden.
+2. Audit whether `mark-type`, `setter-of-setter`, `mark-setter`,
+   `mark-setter-of-setter`, `violation` are reachable from any
+   currently-active frontend. If not, propose deletion (they'd be
+   dead code) — separate issue.
+3. If V is kept long enough, run the same recon on the V test
+   suite to see if it exercises any of the unused stages.
 
 ## Symptom
 
