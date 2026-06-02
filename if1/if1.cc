@@ -21,7 +21,6 @@ static int mark_sym_live(Sym *s);
 
 IF1 *if1 = 0;
 bool fdce_if1 = true;
-bool fdce_if1_speculative = false;  // see comment in ifa.h
 bool fruntime_errors = false;
 
 IF1::IF1() {
@@ -478,20 +477,12 @@ static int mark_live(IF1 *p, Code *code) {
   return changed;
 }
 
+// Structural-only dead-code marking. Speculative SEND/MOVE kills were
+// retired (issue 005); FA-level mark_live_code is the authoritative
+// data-flow DCE. This pass only prunes labels with no live incoming
+// edge.
 static void mark_dead(IF1 *p, Code *code) {
-  switch (code->kind) {
-    case Code_LABEL:
-      if (!code->label[0]->live) code->live = 0;
-      break;
-    case Code_MOVE:
-      if (fdce_if1_speculative && !code->lvals[0]->live) code->live = 0;
-      break;
-    case Code_SEND:
-      if (fdce_if1_speculative && is_functional(p, code) && !code->lvals[0]->live) code->live = 0;
-      break;
-    default:
-      break;
-  }
+  if (code->kind == Code_LABEL && !code->label[0]->live) code->live = 0;
   for (int i = 0; i < code->sub.n; i++) mark_dead(p, code->sub[i]);
 }
 

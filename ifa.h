@@ -95,14 +95,6 @@ void ifa_code(cchar *fn);
 
 extern bool fgraph_pass_contours;
 extern bool fdce_if1;
-// Speculative Sym-level DCE: kill SENDs whose lvals look dead and MOVEs to
-// dead lvals. Relies on the Sym-level seed loop catching every observable
-// Sym, which forces frontends to invent escape hatches (pyc's asymbol, V's
-// nesting_depth=0, the test harness's keepalive primitive). When false,
-// Sym-level DCE only prunes truly syntactic dead code (unreachable
-// labels); the FA-level mark_live_code does the real liveness work using
-// is_visible / nonfunctional primitive metadata as its root set.
-extern bool fdce_if1_speculative;
 extern bool fruntime_errors;
 
 #include "ifadefs.h"
