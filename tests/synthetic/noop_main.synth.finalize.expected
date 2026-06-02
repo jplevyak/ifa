@@ -1,0 +1,26 @@
+;; phase: finalize
+
+(prim-bound
+  in %top:
+    send[1] = prim_reply
+)
+
+(live
+  syms:     25 live, 0 dead
+  closures: 1 live (of 1 total)
+)
+
+;; full state:
+;; syms
+(sym %t0)
+(sym %t1)
+
+;; funs
+(fun %top
+  :args (#top)
+  :rets (%t1)
+  :cont %t0
+  :body
+  (send @primitive @reply %t0 %t1)
+)
+

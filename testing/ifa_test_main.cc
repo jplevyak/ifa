@@ -32,6 +32,7 @@
 #include "testing/print_dce.h"
 #include "testing/print_dispatch.h"
 #include "testing/print_dom.h"
+#include "testing/ir_shapes.h"
 #include "testing/print_fa.h"
 #include "testing/print_fa_converge.h"
 #include "testing/print_finalize.h"
@@ -210,9 +211,12 @@ static int parse_args(int argc, char **argv) {
 // Fixture discovery
 // ---------------------------------------------------------------------------
 
+enum FixtureKind { FIXTURE_IR, FIXTURE_SYNTH };
+
 struct Fixture {
-  cchar *path;     // tests/ir/<phase>/<file>.ir
-  cchar *expected; // tests/ir/<phase>/<file>.<phase>.expected
+  FixtureKind kind;
+  cchar *path;     // tests/ir/<phase>/<file>.ir or tests/synthetic/<file>.synth
+  cchar *expected; // <path>.<phase>.expected
 };
 
 static int compar_fixture(const void *a, const void *b) {
@@ -234,12 +238,100 @@ static void scan_fixtures(cchar *root, cchar *phase, Vec<Fixture> &out) {
     char exp[1024];
     snprintf(exp, sizeof(exp), "%s.%s.expected", path, phase);
     Fixture f;
+    f.kind = FIXTURE_IR;
     f.path = dupstr(path);
     f.expected = dupstr(exp);
     out.add(f);
   }
   closedir(d);
   if (out.n > 1) qsort(out.v, out.n, sizeof(Fixture), compar_fixture);
+}
+
+// Synthetic fixtures live in <root>/../synthetic/*.synth (i.e. side-
+// by-side with the per-phase ir/ dirs, not nested under them — the
+// same .synth runs against every applicable phase).
+static void scan_synth_fixtures(cchar *root, cchar *phase, Vec<Fixture> &out) {
+  // root is e.g. "tests/ir"; synthetic dir is sibling "tests/synthetic".
+  char dir[1024];
+  cchar *slash = strrchr(root, '/');
+  if (slash) {
+    int pl = (int)(slash - root);
+    snprintf(dir, sizeof(dir), "%.*s/synthetic", pl, root);
+  } else {
+    snprintf(dir, sizeof(dir), "synthetic");
+  }
+  DIR *d = opendir(dir);
+  if (!d) return;
+  struct dirent *de;
+  int n_before = out.n;
+  while ((de = readdir(d))) {
+    cchar *n = de->d_name;
+    int nl = strlen(n);
+    if (nl < 7 || strcmp(n + nl - 6, ".synth") != 0) continue;
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s", dir, n);
+    char exp[1024];
+    snprintf(exp, sizeof(exp), "%s.%s.expected", path, phase);
+    Fixture f;
+    f.kind = FIXTURE_SYNTH;
+    f.path = dupstr(path);
+    f.expected = dupstr(exp);
+    out.add(f);
+  }
+  closedir(d);
+  if (out.n - n_before > 1) qsort(out.v + n_before, out.n - n_before,
+                                  sizeof(Fixture), compar_fixture);
+}
+
+static char *slurp(cchar *path, int *plen);
+
+// .synth file format: one `key: value` per line; `;;` comments;
+// `shape: <name>` is required, everything else is shape-specific
+// int params (parsed as decimal). Returns 0 on success.
+static int parse_synth(cchar *path, cchar *&shape_name,
+                       IRShape::ParamMap &params) {
+  int len = 0;
+  char *buf = slurp(path, &len);
+  if (!buf) {
+    fprintf(stderr, "ifa-test: cannot read %s\n", path);
+    return -1;
+  }
+  cchar *p = buf;
+  shape_name = nullptr;
+  while (*p) {
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == ';' || *p == '\n' || *p == 0) {
+      while (*p && *p != '\n') p++;
+      if (*p) p++;
+      continue;
+    }
+    cchar *kstart = p;
+    while (*p && *p != ':' && *p != '\n') p++;
+    if (*p != ':') { p++; continue; }
+    int kn = (int)(p - kstart);
+    p++;  // skip ':'
+    while (*p == ' ' || *p == '\t') p++;
+    cchar *vstart = p;
+    while (*p && *p != '\n') p++;
+    int vn = (int)(p - vstart);
+    while (vn > 0 && (vstart[vn - 1] == ' ' || vstart[vn - 1] == '\t')) vn--;
+    if (*p) p++;
+    char key[64], val[128];
+    if (kn >= (int)sizeof(key) || vn >= (int)sizeof(val)) continue;
+    memcpy(key, kstart, kn); key[kn] = 0;
+    memcpy(val, vstart, vn); val[vn] = 0;
+    if (!strcmp(key, "shape")) {
+      shape_name = dupstr(val);
+    } else {
+      params[std::string(key)] = atoi(val);
+    }
+  }
+  // buf is GC_MALLOC'd via plib's MALLOC; no free() needed.
+  if (!shape_name) {
+    fprintf(stderr, "ifa-test: %s missing 'shape:' line\n", path);
+    return -1;
+  }
+  return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -249,7 +341,7 @@ static void scan_fixtures(cchar *root, cchar *phase, Vec<Fixture> &out) {
 // Color helpers (TTY-aware).
 static cchar *col_R = "", *col_G = "", *col_Y = "", *col_N = "";
 
-static char *slurp(cchar *path, int *plen = 0) {
+static char *slurp(cchar *path, int *plen) {
   FILE *fp = fopen(path, "rb");
   if (!fp) return 0;
   fseek(fp, 0, SEEK_END);
@@ -279,6 +371,17 @@ static cchar *short_name(cchar *path, cchar *root) {
 
 static int run_one(Fixture &f, Phase *phase, int &out_failed) {
   cchar *name = short_name(f.path, opt_fixtures_root);
+  // For .synth fixtures, root is sibling tests/synthetic — strip
+  // from there too.
+  if (f.kind == FIXTURE_SYNTH) {
+    cchar *slash = strrchr(opt_fixtures_root, '/');
+    if (slash) {
+      char synth_root[1024];
+      snprintf(synth_root, sizeof(synth_root), "%.*s/synthetic",
+               (int)(slash - opt_fixtures_root), opt_fixtures_root);
+      name = short_name(f.path, synth_root);
+    }
+  }
 
   ifa_reset();
   ifa_init(new IRCallbacks);
@@ -295,10 +398,28 @@ static int run_one(Fixture &f, Phase *phase, int &out_failed) {
 
   if (phase->pre_parse) phase->pre_parse(if1);
 
-  if (parse_ir_file(f.path) != 0) {
-    fprintf(stderr, "%s%sFAIL%s  %s  (parse)\n", col_R, "", col_N, name);
-    out_failed++;
-    return -1;
+  if (f.kind == FIXTURE_IR) {
+    if (parse_ir_file(f.path) != 0) {
+      fprintf(stderr, "%s%sFAIL%s  %s  (parse)\n", col_R, "", col_N, name);
+      out_failed++;
+      return -1;
+    }
+  } else {
+    // FIXTURE_SYNTH: parse .synth config, dispatch to IRShape.
+    cchar *shape_name = nullptr;
+    IRShape::ParamMap params;
+    if (parse_synth(f.path, shape_name, params) != 0) {
+      out_failed++;
+      return -1;
+    }
+    IRShape::ShapeFn fn = IRShape::lookup(shape_name);
+    if (!fn) {
+      fprintf(stderr, "%sFAIL%s    %s  (unknown shape '%s')\n",
+              col_R, col_N, name, shape_name);
+      out_failed++;
+      return -1;
+    }
+    fn(params);
   }
 
   // Run the requested phase.
@@ -327,6 +448,14 @@ static int run_one(Fixture &f, Phase *phase, int &out_failed) {
   int exp_len = 0;
   char *exp_buf = slurp(f.expected, &exp_len);
   if (!exp_buf) {
+    // For .synth fixtures, a missing expected means the fixture
+    // doesn't claim coverage for this phase — silently skip.
+    // .ir fixtures (which live under a per-phase dir) ARE expected
+    // to have a golden; a missing one is a real bug.
+    if (f.kind == FIXTURE_SYNTH) {
+      free(got_buf);
+      return 1;  // signal "skip" (not failure, not pass)
+    }
     fprintf(stderr, "%sMISSING%s  %s  (no %s — use --rebless to create)\n",
             col_Y, col_N, name, f.expected);
     out_failed++;
@@ -379,17 +508,23 @@ int main(int argc, char **argv) {
 
   Vec<Fixture> fixtures;
   scan_fixtures(opt_fixtures_root, phase->name, fixtures);
+  scan_synth_fixtures(opt_fixtures_root, phase->name, fixtures);
   if (fixtures.n == 0) {
     fprintf(stderr, "ifa-test: no fixtures found under %s/%s/\n", opt_fixtures_root, phase->name);
     return 1;
   }
 
-  int total = 0, failed = 0;
+  int total = 0, failed = 0, skipped = 0;
   for (Fixture &f : fixtures) {
     if (opt_pattern[0] && !strstr(f.path, opt_pattern)) continue;
-    total++;
     int before = failed;
-    run_one(f, phase, failed);
+    int rc = run_one(f, phase, failed);
+    if (rc == 1) {
+      // .synth fixture without a golden for this phase — silent skip.
+      skipped++;
+      continue;
+    }
+    total++;
     if (opt_bail && failed > before) break;
   }
 
@@ -398,6 +533,7 @@ int main(int argc, char **argv) {
   printf("  passed:  %d\n", total - failed);
   printf("  failed:  %d\n", failed);
   printf("  total:   %d\n", total);
+  if (skipped) printf("  skipped: %d  (synth fixtures with no golden for this phase)\n", skipped);
 
   return failed ? 1 : 0;
 }

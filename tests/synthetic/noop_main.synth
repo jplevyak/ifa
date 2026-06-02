@@ -1,0 +1,6 @@
+;; noop_main.synth — smoke test for the synth runner.
+;; Builds a single closure that does nothing but reply. Validates
+;; the runner can discover, parse, dispatch, and golden-diff a
+;; .synth fixture end-to-end.
+
+shape: noop_main
