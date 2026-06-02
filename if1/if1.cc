@@ -494,9 +494,15 @@ void if1_simple_dead_code_elimination(IF1 *p) {
   for (int i = 0; i < p->allsyms.n; i++) {
     p->allsyms[i]->live = 0;
   }
+  // Seed live roots: globals (nesting_depth == 0). The historical
+  // `|| s->asymbol` clause was a frontend escape hatch that let
+  // pyc's local-temp Syms survive the speculative SEND/MOVE kills;
+  // those kills were retired in issue 005, so the clause is no
+  // longer load-bearing. asymbol stays as a back-pointer for source-
+  // location reporting (sym.cc:pathname/line/source_line/clone).
   for (int i = 0; i < p->allsyms.n; i++) {
     Sym *s = p->allsyms[i];
-    if (!s->nesting_depth || s->asymbol) mark_sym_live(s);
+    if (!s->nesting_depth) mark_sym_live(s);
   }
   for (int i = 0; i < p->allclosures.n; i++) {
     mark_sym_live(p->allclosures[i]);
