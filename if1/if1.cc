@@ -21,6 +21,7 @@ static int mark_sym_live(Sym *s);
 
 IF1 *if1 = 0;
 bool fdce_if1 = true;
+bool fdce_if1_speculative = true;  // see comment in ifa.h
 bool fruntime_errors = false;
 
 IF1::IF1() {
@@ -483,10 +484,10 @@ static void mark_dead(IF1 *p, Code *code) {
       if (!code->label[0]->live) code->live = 0;
       break;
     case Code_MOVE:
-      if (!code->lvals[0]->live) code->live = 0;
+      if (fdce_if1_speculative && !code->lvals[0]->live) code->live = 0;
       break;
     case Code_SEND:
-      if (is_functional(p, code) && !code->lvals[0]->live) code->live = 0;
+      if (fdce_if1_speculative && is_functional(p, code) && !code->lvals[0]->live) code->live = 0;
       break;
     default:
       break;
