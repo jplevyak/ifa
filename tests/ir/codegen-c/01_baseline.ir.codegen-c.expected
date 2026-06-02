@@ -1,13 +1,8 @@
 ;; phase: codegen-c
 
-(summary fa_rc=0 clone_rc=0 funs=1 bytes=503)
+(summary fa_rc=0 clone_rc=0 funs=1 bytes=338)
 
 ;; c-output (#include line stripped):
-
-/*
- Type Declarations
-*/
-
 
 /*
  Function Prototypes
@@ -15,15 +10,6 @@
 
 typedef _CG_function _CG_pf0;
 _CG_nil_type _CG_f_81_0/*__main__*/();
-
-/*
- Type Definitions
-*/
-
-
-/*
- Builtin Functions
-*/
 
 
 /*
@@ -36,12 +22,7 @@ _CG_nil_type _CG_f_81_0/*__main__*/();
 */
 
 _CG_nil_type _CG_f_81_0/*__main__*/() {
-  _CG_int32 t0, t1;
-
-  t1 = 42;
-  t0 = t1;
   return 0;
-  _CG_prim_primitive___test_keepalive(t0);
 }
 
 int main(int argc, char *argv[]) { (void)argc; (void) argv;

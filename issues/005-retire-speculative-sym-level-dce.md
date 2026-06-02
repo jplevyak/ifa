@@ -125,14 +125,18 @@ green. (Both already confirmed at flag=false in #72 / `74139ab`.)
 Each removable independently because none of them was actually
 load-bearing for correctness once the speculative kills are off.
 
-a) **pyc `asymbol` blanket-setting.** Remove `s->sym->asymbol = s;`
+a) **pyc `asymbol` blanket-setting.** ~~Remove `s->sym->asymbol = s;`
 from `python_ifa_sym.cc:7` (and the matching line in `:21`
-`PycSymbol::copy`). The `asymbol` field stays — it's still used by
-`if1/sym.cc` for `pathname()` / `line()` / `source_line()` / `clone()`
-when set — but pyc should set it only for Syms that need source-loc
-reporting, not blanket-on-everything. **Audit first:** verify nothing
-in pyc downstream code paths reads `asymbol` expecting it always-set
-(e.g., codegen, debug output).
+`PycSymbol::copy`).~~ **Skipped — audit revealed structural
+dependency.** `scope_sym` (`python_ifa_build_syms.cc:57-60`) casts
+`sym->asymbol` to `PycSymbol*` to populate the scope map. The
+blanket setting is load-bearing for pyc's scope resolution, not
+just for DCE. Removing it would require changing the
+`scope_stack`'s value type from `PycSymbol*` to `Sym*` (or
+introducing a separate Sym→PycSymbol lookup map) — out of scope
+for this issue. The asymbol field stays blanket-set as a
+frontend-internal convention. Step 5 (below) handles the DCE
+side independently.
 
 b) **ifa-test keepalive.** Remove the `__test_keepalive` registration
 and SEND emission in `ifa/testing/fa_setup.cc:75-102`. Without

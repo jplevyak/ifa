@@ -1,6 +1,6 @@
 ;; phase: codegen-c
 
-(summary fa_rc=-1 clone_rc=0 funs=2 bytes=514)
+(summary fa_rc=0 clone_rc=0 funs=1 bytes=338)
 
 ;; c-output (#include line stripped):
 
@@ -8,9 +8,8 @@
  Function Prototypes
 */
 
-typedef _CG_function _CG_pf0, _CG_pf1;
-_CG_void _CG_f_82_0/*add*/();
-_CG_nil_type _CG_f_86_1/*__main__*/();
+typedef _CG_function _CG_pf0;
+_CG_nil_type _CG_f_86_0/*__main__*/();
 
 
 /*
@@ -22,21 +21,12 @@ _CG_nil_type _CG_f_86_1/*__main__*/();
  Functions
 */
 
-_CG_void _CG_f_82_0/*add*/() {
-  _CG_void t0;
-
-}
-
-_CG_nil_type _CG_f_86_1/*__main__*/() {
-  _CG_void t0;
-
-  t0 = _CG_f_82_0/*add*/();
+_CG_nil_type _CG_f_86_0/*__main__*/() {
   return 0;
-  _CG_prim_primitive___test_keepalive(t0);
 }
 
 int main(int argc, char *argv[]) { (void)argc; (void) argv;
   MEM_INIT();
-  _CG_f_86_1/*__main__*/();
+  _CG_f_86_0/*__main__*/();
   return 0;
 }

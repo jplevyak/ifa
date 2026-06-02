@@ -29,10 +29,6 @@
 // Returns the user-entry Sym if one was spliced in (the caller will
 // skip building a separate Fun for it — same Code tree can't be
 // shared between two Funs' CFGs), else nullptr.
-// No-op transfer function used for the `__test_keepalive` primitive
-// below — FA's add_send_edges_pnode does its standard arg-type
-// processing on it; we don't need any extra effect.
-static void test_keepalive_transfer(PNode *, EntrySet *) {}
 
 static Sym *build_synthetic_main() {
   if (sym___main__->code) return 0;  // already built (rerun protection)
@@ -61,45 +57,6 @@ static Sym *build_synthetic_main() {
     user_entry->code = 0;
   }
   if1_send(if1, &code, 4, 0, sym_primitive, sym_reply, fn->cont, fn->ret);
-
-  // Visibility hook: register a stub primitive `__test_keepalive` and
-  // emit a SEND that "consumes" the user entry's return value. The
-  // primitive is marked is_visible=1 so mark_initial_dead_and_alive
-  // (dead.cc:180) sets the SEND's PNode->live=1, which then back-
-  // propagates through mark_live_avars / mark_live_pnodes to keep the
-  // user's computation alive through DCE.
-  //
-  // Without this hook every user fixture's code is dead-stripped
-  // because the synthetic reply uses sym_nil (a constant), not any
-  // computed value.
-  if (user_entry && user_entry->ret) {
-    cchar *kp_name = if1_cannonicalize_string(if1, "__test_keepalive");
-    Sym *kp_sym = if1_get_builtin(if1, kp_name);
-    if (!kp_sym) {
-      kp_sym = if1_make_symbol(if1, kp_name);
-      if1_set_builtin(if1, kp_sym, kp_name);
-    }
-    if (!prim_get(kp_name)) {
-      RegisteredPrim *rp = prim_reg(kp_name, test_keepalive_transfer);
-      rp->is_visible = 1;
-    }
-    // Single-result form. The result Sym is created with:
-    //   - type = sym_nil_type so if1_simple_dead_code_elimination's
-    //     `is_functional && !lvals[0]->live` deref has a valid Var,
-    //     and simple_inlining's `is_closure_create()` finds a
-    //     non-null type on the result Var.
-    //
-    // kp_result intentionally stays at nesting_depth=0 (global). The
-    // keepalive SEND ends up being processed in GLOBAL_CONTOUR by
-    // FA's worklist — which works fine when user code is simple, but
-    // crashes make_AVar if a downstream PNode has rvals with
-    // nesting_depth>0 routed through the same SEND. Fixtures that
-    // hit this (e.g. a user fun with its own explicit reply) are not
-    // yet supported.
-    Sym *kp_result = new_Sym();
-    kp_result->type = sym_nil_type;
-    if1_send(if1, &code, 3, 1, sym_primitive, kp_sym, user_entry->ret, kp_result);
-  }
 
   if1_closure(if1, fn, code, 1, &fn);
   return user_entry;

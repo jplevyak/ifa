@@ -1,9 +1,9 @@
 ;; phase: fa-init
 
 (summary
-  rc:              -1
+  rc:              0
   entry-sets:      3
-  creation-sets:   11
+  creation-sets:   10
   global-avars:    0
   funs:            2
   basic-types:     0

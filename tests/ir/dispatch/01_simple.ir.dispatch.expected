@@ -1,6 +1,6 @@
 ;; phase: dispatch
 
-(summary rc=-1 ess=2 edges=8)
+(summary rc=0 ess=2 edges=8)
 
 (es @__main__#0
   send add k1 k2 => r
