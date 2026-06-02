@@ -33,6 +33,7 @@
 #include "testing/print_dispatch.h"
 #include "testing/print_dom.h"
 #include "testing/print_fa.h"
+#include "testing/print_fa_converge.h"
 #include "testing/print_finalize.h"
 #include "testing/print_inline.h"
 #include "testing/print_loops.h"
@@ -105,6 +106,9 @@ static void phase_codegen_c_run(IF1 *p) { fa_setup_environment(p); }
 // `inline` — enables the InlineEvent sidecar around simple_inlining
 // to record per-call-site inliner actions.
 static void phase_inline_run(IF1 *p) { fa_setup_environment(p); }
+// `fa-converge` — enables the FAPassEvent sidecar around FA::analyze
+// to record per-pass splitter stage events.
+static void phase_fa_converge_run(IF1 *p) { fa_setup_environment(p); }
 
 static Phase phases[] = {
     {"finalize", 0,                       phase_finalize_run, print_finalize_normalized},
@@ -121,7 +125,8 @@ static Phase phases[] = {
     {"freq",     pre_parse_builtin_types, phase_freq_run,     print_freq_normalized},
     {"codegen-c", pre_parse_builtin_types, phase_codegen_c_run, print_codegen_c_normalized},
     {"inline",    pre_parse_builtin_types, phase_inline_run,    print_inline_normalized},
-    // Future phases: fa-converge, codegen-llvm.
+    {"fa-converge", pre_parse_builtin_types, phase_fa_converge_run, print_fa_converge_normalized},
+    // Future phases: codegen-llvm.
     // See ifa/testing/phases/00_INDEX.md.
     {0, 0, 0, 0},
 };

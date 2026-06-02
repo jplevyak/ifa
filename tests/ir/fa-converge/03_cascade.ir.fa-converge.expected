@@ -1,0 +1,13 @@
+;; phase: fa-converge
+
+(pass-counts
+  rc:                0
+  total-passes:      2
+  events:            2
+  splits[type]: 2
+)
+
+(history
+  pass 1 type splits=1 ess=3→3 css=13→13 violations=7→7
+  pass 2 type splits=1 ess=4→4 css=13→13 violations=3→3
+)

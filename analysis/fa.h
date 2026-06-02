@@ -317,6 +317,38 @@ class FA : public gc {
 // Clear all module-level analysis state. Called by ifa_reset().
 void fa_reset();
 
+// ---------------------------------------------------------------------------
+// FA-pass-event sidecar (issue 003)
+// ---------------------------------------------------------------------------
+// Records which splitter stage fired on which pass, plus before/after
+// counts of ess / css / type_violations. Mirrors the InlineEvent
+// pattern in ifa/optimize/inline.h — events are only recorded when
+// fa_events_enable() has been called; production pays nothing.
+
+enum FAPassStage {
+  FA_STAGE_TYPE_CONFLUENCE,  // split_ess_for_type
+  FA_STAGE_MARK_TYPE,        // split_ess_for_mark_type
+  FA_STAGE_SETTER,           // split_for_setters (type-based)
+  FA_STAGE_SETTER_OF_SETTER, // split_for_setters_of_setters (type-based)
+  FA_STAGE_MARK_SETTER,      // split_for_setters with marks
+  FA_STAGE_MARK_SETTER_OF_SETTER, // split_for_setters_of_setters with marks
+  FA_STAGE_VIOLATION,        // split_for_violations
+};
+
+struct FAPassEvent {
+  int pass;                  // 1-indexed analysis_pass at time of record
+  FAPassStage stage;
+  int splits;                // value returned by the split_* function
+  int ess_before, ess_after;
+  int css_before, css_after;
+  int violations_before, violations_after;
+};
+
+void fa_events_enable();
+void fa_events_disable();
+void fa_events_reset();
+const Vec<FAPassEvent *> &fa_events_get();
+
 AVar *make_AVar(Var *, EntrySet *);
 AVar *get_element_avar(CreationSet *);
 Sym *coerce_num(Sym *, Sym *);

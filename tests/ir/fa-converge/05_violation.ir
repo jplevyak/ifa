@@ -1,0 +1,34 @@
+;; 08_violation.ir — %add takes int32 (must-specialize), but caller
+;; passes int32 at one site and float64 at another. The float64 call
+;; doesn't match %add's typed formal, producing a type violation that
+;; the stage-5 splitter (`split_for_violations`) tries to resolve.
+;;
+;; What gets locked in: rc, ES count, and CS count after FA settles.
+
+(sym %k_i :is-constant :immediate (int32 7))
+(sym %k_f :is-constant :immediate (float64 1.5))
+
+(sym %a :is-local :must-specialize @int32)
+(sym %b :is-local :must-specialize @int32)
+(sym %ar :is-local)
+(sym %acont)
+
+(fun %add
+  :args (%add %a %b)
+  :rets (%ar)
+  :cont %acont
+  :body
+    (move %a %ar))
+
+(sym %r1 :is-local)
+(sym %r2 :is-local)
+(sym %tcont)
+
+(fun %top
+  :rets (%r1)
+  :cont %tcont
+  :body
+    (send %add %k_i %k_i => %r1)
+    (send %add %k_f %k_f => %r2))
+
+(entry %top)

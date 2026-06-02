@@ -1,11 +1,44 @@
 # Issue 003: fa-converge needs deterministic instrumentation
 
-**Status:** open (deferred from phase 05)
+**Status:** closed. FAPassEvent sidecar + fa-converge phase printer
+landed; five fixtures lock pass counts and per-pass stage events.
 **Affects:** `ifa/analysis/fa.cc:FA::analyze`, `ifa/testing/`.
 **Related:** `ifa/testing/phases/05_fa_analyze.md` §3.2.
-**Workaround:** the `fa-init` phase covers one-pass FA state; the
-`fa-converge` analog (which would lock in pass counts, splitter
-outcomes per pass, and convergence behavior) doesn't exist yet.
+
+## Resolution
+
+Added in `ifa/analysis/fa.{h,cc}`:
+- `enum FAPassStage` (7 stages — type, mark-type, setter,
+  setter-of-setter, mark-setter, mark-setter-of-setter, violation).
+- `struct FAPassEvent` with pass index, stage, splits, and
+  before/after counts of ess / css / type_violations.
+- `fa_events_enable() / disable() / reset() / get()` API.
+- `record_fa_event(...)` helper called from each split_* path in
+  `extend_analysis`; gated on the enable flag so production pays
+  nothing.
+
+Added `ifa/testing/print_fa_converge.{cc,h}` — runs FA::analyze with
+the sidecar enabled, then prints:
+- A `(pass-counts ...)` block: rc, total-passes, event-count, and
+  per-stage split totals.
+- A `(history ...)` block: one line per recorded event, with the
+  pass index, stage, splits, and before→after counts.
+
+Wired into `ifa_test_main.cc` as the `fa-converge` phase.
+
+Five fixtures landed under `ifa/tests/ir/fa-converge/` (mostly
+borrowed from `fa-init`):
+- `01_monomorphic`: zero events (FA returns -1 immediately).
+- `02_splitter`: 1 pass, 1 type split.
+- `03_cascade`: 2 passes, 2 type splits.
+- `04_setter_split`: 1 pass, 1 type split.
+- `05_violation`: zero events (FA returns -1).
+
+Current fixture set only exercises the `type` stage. Adding fixtures
+that exercise setter / mark-setter / violation stages is a useful
+follow-up (would give "splitter-stage coverage gate" referenced in
+the original plan), but the infrastructure to record and check those
+stages is now in place.
 
 ## Symptom
 

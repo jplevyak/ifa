@@ -1,0 +1,18 @@
+;; 01_trivial.ir — single top-level closure, body is one MOVE.
+;;
+;; After fa_setup splices %top's body into @__main__, FA traverses the
+;; MOVE. The fixture's locals (%x, %r) carry no :type, so FA reports
+;; a NOTYPE violation on stderr and returns rc=-1. That's the right
+;; "successful negative" result for typeless input.
+
+(sym %x :is-local)
+(sym %r :is-local)
+(sym %cont)
+
+(fun %top
+  :rets (%r)
+  :cont %cont
+  :body
+    (move %x %r))
+
+(entry %top)

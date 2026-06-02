@@ -39,9 +39,11 @@ that:
   no `codegen-llvm` test phase; needs a line-by-line normalizer
   for host-specific LLVM-IR text variation.
 - [003-fa-converge-determinism.md](003-fa-converge-determinism.md) —
-  `fa-converge` phase needs a per-pass event sidecar (mirroring
-  `InlineEvent`) so pass counts and per-stage splits can be
-  golden-tested.
+  `fa-converge` phase needed a per-pass event sidecar (mirroring
+  `InlineEvent`) so pass counts and per-stage splits could be
+  golden-tested. **Closed:** FAPassEvent sidecar + printer + 5
+  fixtures landed. Follow-up: add fixtures that exercise setter /
+  mark-setter / violation stages (current set only covers `type`).
 - [004-find-local-loops-siblings.md](004-find-local-loops-siblings.md) —
   `find_local_loops` reported nested loops as siblings, breaking
   the loop-tree-walking frequency estimator. **Closed:** two-part

@@ -95,6 +95,33 @@ void fa_reset() {
   type_violations.clear();
 }
 
+// ---------------------------------------------------------------------------
+// FA-pass-event sidecar (issue 003). Disabled by default; production
+// pays nothing. Mirrors InlineEvent in ifa/optimize/inline.cc.
+// ---------------------------------------------------------------------------
+static bool fa_events_enabled = false;
+static Vec<FAPassEvent *> fa_events_storage;
+
+void fa_events_enable() { fa_events_enabled = true; }
+void fa_events_disable() { fa_events_enabled = false; }
+void fa_events_reset() { fa_events_storage.clear(); }
+const Vec<FAPassEvent *> &fa_events_get() { return fa_events_storage; }
+
+static void record_fa_event(FAPassStage stage, int splits, int ess_before, int css_before, int viol_before) {
+  if (!fa_events_enabled) return;
+  FAPassEvent *e = new FAPassEvent;
+  e->pass = analysis_pass + 1;  // extend_analysis hasn't incremented yet
+  e->stage = stage;
+  e->splits = splits;
+  e->ess_before = ess_before;
+  e->ess_after = fa->ess.n;
+  e->css_before = css_before;
+  e->css_after = fa->css.n;
+  e->violations_before = viol_before;
+  e->violations_after = type_violations.n;
+  fa_events_storage.add(e);
+}
+
 AEdge::AEdge() : from(0), to(0), pnode(0), fun(0), match(0), in_edge_worklist(0) { id = aedge_id++; }
 
 AVar::AVar(Var *v, void *acontour)
@@ -3738,21 +3765,35 @@ static int extend_analysis() {
   compute_recursive_entry_sets();
   compute_recursive_entry_creation_sets();
   clear_splits();
+  // Snapshots taken before each split_* call so the sidecar can record
+  // the delta this stage produced. See fa_events_storage / record_fa_event.
+  int ess0 = fa->ess.n, css0 = fa->css.n, viol0 = type_violations.n;
   Vec<AVar *> confluences;
   // 1) split EntrySets based on type using AVar::out
   collect_type_confluences(confluences);
   analyze_again = split_ess_for_type(confluences, SPLIT_EDGES);
   DEBUG_PRINT("split_ess_for_type %d\n", analyze_again);
+  if (analyze_again) record_fa_event(FA_STAGE_TYPE_CONFLUENCE, analyze_again, ess0, css0, viol0);
   // 2) split EntrySets based on type using marks
-  if (!analyze_again) analyze_again = split_ess_for_mark_type(confluences);
+  if (!analyze_again) {
+    ess0 = fa->ess.n, css0 = fa->css.n, viol0 = type_violations.n;
+    analyze_again = split_ess_for_mark_type(confluences);
+    if (analyze_again) record_fa_event(FA_STAGE_MARK_TYPE, analyze_again, ess0, css0, viol0);
+  }
   DEBUG_PRINT("split_ess_for_mark_type %d\n", analyze_again);
   // 3) split based on setters of type
   if (!analyze_again) {
     Accum<AVar *> avs;
     for (AVar *av : confluences) compute_setters(av, avs, AKIND_TYPE);
+    ess0 = fa->ess.n, css0 = fa->css.n, viol0 = type_violations.n;
     if (split_for_setters(avs, analyze_again)) analyze_again = 1;
+    if (analyze_again) record_fa_event(FA_STAGE_SETTER, analyze_again, ess0, css0, viol0);
     DEBUG_PRINT("split_for_setters %d\n", analyze_again);
-    if (!analyze_again) analyze_again = split_for_setters_of_setters(confluences);
+    if (!analyze_again) {
+      ess0 = fa->ess.n, css0 = fa->css.n, viol0 = type_violations.n;
+      analyze_again = split_for_setters_of_setters(confluences);
+      if (analyze_again) record_fa_event(FA_STAGE_SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
+    }
     DEBUG_PRINT("split_for_setters_of_setters %d\n", analyze_again);
   }
   // 4) split based on setters of type using marks
@@ -3764,16 +3805,25 @@ static int extend_analysis() {
       collect_cs_marked_confluences(marked_confluences);
       Accum<AVar *> avs;
       for (AVar *av : marked_confluences) compute_setters(av, avs, AKIND_MARK);
+      ess0 = fa->ess.n, css0 = fa->css.n, viol0 = type_violations.n;
       if (split_for_setters(avs, analyze_again)) analyze_again = 1;
+      if (analyze_again) record_fa_event(FA_STAGE_MARK_SETTER, analyze_again, ess0, css0, viol0);
       DEBUG_PRINT("split_for_setters with marks %d\n", analyze_again);
-      if (!analyze_again) analyze_again = split_for_setters_of_setters(confluences);
+      if (!analyze_again) {
+        ess0 = fa->ess.n, css0 = fa->css.n, viol0 = type_violations.n;
+        analyze_again = split_for_setters_of_setters(confluences);
+        if (analyze_again) record_fa_event(FA_STAGE_MARK_SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
+      }
       DEBUG_PRINT("split_for_setters_of_setters with marks %d\n", analyze_again);
     }
   }
-  if (!analyze_again)
+  if (!analyze_again) {
     // 5) split AEdges(s) and EntrySet(s) for violations based on type using
     // dynamic dispatch
+    ess0 = fa->ess.n, css0 = fa->css.n, viol0 = type_violations.n;
     analyze_again = split_for_violations(type_violations);
+    if (analyze_again) record_fa_event(FA_STAGE_VIOLATION, analyze_again, ess0, css0, viol0);
+  }
   DEBUG_PRINT("split_for_violations %d\n", analyze_again);
   extend_timer.stop();
   if (analysis_pass > IFA_PASS_LIMIT) analyze_again = 0;

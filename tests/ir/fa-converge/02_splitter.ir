@@ -1,0 +1,36 @@
+;; 06_splitter.ir — same %add called with int32 args at one site and
+;; float64 args at another. The FA splitter specializes %add into two
+;; EntrySets (one per concrete arg-type contour) so that the int32
+;; path and the float64 path are analyzed separately.
+;;
+;; Expected: entry-sets=3 (@__main__ + 2 for %add), funs=2, rc=0.
+
+(sym %i1 :is-constant :immediate (int32 1))
+(sym %i2 :is-constant :immediate (int32 2))
+(sym %f1 :is-constant :immediate (float64 3.0))
+(sym %f2 :is-constant :immediate (float64 4.0))
+
+(sym %a :is-local)
+(sym %b :is-local)
+(sym %ar :is-local)
+(sym %acont)
+
+(fun %add
+  :args (%add %a %b)
+  :rets (%ar)
+  :cont %acont
+  :body
+    (move %a %ar))
+
+(sym %r1 :is-local)
+(sym %r2 :is-local)
+(sym %tcont)
+
+(fun %top
+  :rets (%r1)
+  :cont %tcont
+  :body
+    (send %add %i1 %i2 => %r1)
+    (send %add %f1 %f2 => %r2))
+
+(entry %top)
