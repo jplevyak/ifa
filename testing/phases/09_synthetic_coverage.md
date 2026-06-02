@@ -254,6 +254,64 @@ Update [IFA.md](../../IFA.md) and the splitter section with a
 `IRShape::*` for each. Future contributors don't have to
 re-derive the trigger preconditions.
 
+### Phase D — Promote builders to library-level (post-Phase C)
+
+The Layer 2 builders in `ifa/testing/ir_builder.{h,cc}` are
+designed for testing but are genuinely reusable infrastructure:
+any IFA frontend would benefit from a C++ ergonomic API over
+`if1_*`. Pyc's `python_ifa_build_if1.cc` (1249 LOC of `if1_send`
+/ `if1_closure` boilerplate) is a target consumer.
+
+The 09d three-layer split lines up with the promotion:
+**L2 is reusable, L3 is test-specific.** Phase C builds both in
+`ifa/testing/`; Phase D moves L2 to a library-level home after
+the synthetic shapes have validated the API.
+
+**Why staged rather than starting library-level:**
+- Test-driven design produces a tighter, more composable API
+  than designing for "what frontends might want" upfront.
+- Pyc's lowering has its own patterns (PycSymbol, scope_sym,
+  pyda-path lowering) that may not map cleanly to a generic
+  builder. Promotion after Phase C lets us validate against an
+  actual consumer rather than guess.
+- The synthetic shapes are the builder's de-facto test suite —
+  promotion happens when they're stable and the API is known to
+  cover real construction patterns.
+
+**Sub-steps:**
+
+D.1 **Move L2 to `ifa/if1/ir_builder.{h,cc}`.** Same library as
+    the `if1_*` primitives it wraps; conceptually "ergonomic API
+    for the IF1 IR" belongs with the IR. Update `LIB_SRCS` so
+    `libifa_gc.a` exports it. Update synthetic shape `#include`
+    paths.
+
+D.2 **Document the builder API in `ifa/IR_BUILDER.md`** (or add a
+    section to `IFA.md`). Pyc's lowering is a target consumer —
+    write the doc for that audience, not for tests. Cross-link
+    from `ARCHITECTURE.md`'s frontend-author section.
+
+D.3 **Pyc adoption** (separate task / PR). Migrate
+    `python_ifa_build_if1.cc` to use the builder, incrementally
+    per construction pattern (method-call lowering first, then
+    field-access, then constructors). Measure LOC reduction;
+    verify pyc test suite stays green at each step. Probably
+    1-2 weeks of focused work.
+
+D.4 **Future-frontend documentation** (optional, much later).
+    If/when a new IFA frontend is built, the builder + its docs
+    are the documented entry point. No further promotion needed.
+
+Effort: D.1+D.2 ~1 day. D.3 1-2 weeks (its own engineering
+project, not on Phase C critical path). D.4 deferred.
+
+**Why this lands as Phase D, not a Phase C step**: D doesn't
+unblock splitter-stage coverage — Phase C does that. D is about
+architectural cleanup and frontend-consumer convenience.
+Decoupling means Phase C can land complete without D, and D can
+be scheduled independently based on whether pyc's lowering
+becomes a maintenance bottleneck.
+
 ## 5. Test cases (initial seed)
 
 These mirror what the issue 003 plan would have asked for, but
@@ -284,7 +342,7 @@ None new. Uses:
 
 ## 7. Acceptance
 
-- [ ] V test recon completed (Step 1) and outcome documented.
+- [x] V test recon completed (Step 1) and outcome documented.
 - [ ] V either deleted (Step 5) or its unique coverage captured in
       synthetic shapes (Step 4).
 - [ ] `ifa/testing/ir_builder.{h,cc}` lands with at least the
@@ -294,6 +352,13 @@ None new. Uses:
       isn't dead code, with golden output locked.
 - [ ] No remaining frontend dependency in IFA's test suite (`make
       test-ir` runs without pyc).
+- [ ] (Phase D) L2 builders promoted to `ifa/if1/ir_builder.{h,cc}`
+      and exported from `libifa_gc.a`.
+- [ ] (Phase D) `ifa/IR_BUILDER.md` documents the API for
+      frontend authors.
+- [ ] (Phase D — separate PR) Pyc's `python_ifa_build_if1.cc`
+      adopts the builder for at least one construction-pattern
+      class; measured LOC reduction recorded.
 
 ## 8. Open questions
 
