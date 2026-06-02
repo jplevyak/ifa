@@ -76,15 +76,64 @@ one pass (FA returns 0 with no splits, or returns -1 / fails earlier).
     their behavior is unobservable.
 
 **Recommended follow-ups (none blocking):**
-1. Add a `06_list_multiply_setter` fa-converge fixture by
-   reverse-engineering `list_multiply.py`. Locks one setter-stage
-   golden.
+1. ~~Add a `06_list_multiply_setter` fa-converge fixture by
+   reverse-engineering `list_multiply.py`.~~ **Attempted, abandoned
+   as not worth the cost** — see "Reverse-engineering attempt" below.
 2. Audit whether `mark-type`, `setter-of-setter`, `mark-setter`,
    `mark-setter-of-setter`, `violation` are reachable from any
    currently-active frontend. If not, propose deletion (they'd be
    dead code) — separate issue.
 3. If V is kept long enough, run the same recon on the V test
    suite to see if it exercises any of the unused stages.
+
+## Reverse-engineering attempt (`list_multiply.py` → .ir)
+
+To produce an explicit setter-stage fixture, instrumented
+`split_for_setters` to log its trigger shape on real pyc inputs.
+
+`split_for_setters` has three inner stages:
+```c
+if (split_ess_setters(setter_confluences)) return 1;
+if (split_ess_setters_marks(setter_confluences)) return 1;
+if (analyze_again) return 1;
+if (split_css(setter_starters)) return 1;
+```
+
+For `list_multiply.py`, the trigger is **the third path
+(`split_css`), not the first two**. `setter_confluences` is empty;
+`setter_starters` is non-empty. The starter AVars are *unnamed
+internal temps* with no `sym->name`, no `sym->in`, no `container`
+(via the obvious accessor — likely a deeper container relationship
+through the AVar's `cs_map`).
+
+`split_css`'s trigger is AVars with:
+- `av->setters` non-null (multiple write sources).
+- `av->cs_map` populated (the AVar represents a per-CreationSet
+  instance variable).
+- For some setter, `s->container->out` intersects with the AVar's
+  cs_map.
+
+This corresponds to pyc's list runtime: the list's *element vector*
+is a CS-mapped AVar, and list multiplication writes different-typed
+values into it via setter SENDs against the vector.
+
+Reproducing this in a hand-written `.ir`:
+- 13_setter_split's `@setter`/`@period` against a `RECORD` field
+  doesn't trigger `split_css` — that's `split_ess_setters` (the
+  *first* inner path), which the type stage absorbs first.
+- A faithful list_multiply minimization needs `@vector` primitives,
+  element-vector AVars, and the container/cs_map plumbing that pyc's
+  list lowering sets up. That's several hours of trial-and-error
+  with limited regression value over what the 4 pyc tests already
+  cover.
+
+**Conclusion:** keep the four pyc tests
+(`list_multiply.py`, `list_comprehension.py`, `list_multiply.py`,
+`builtins.py`, `pyc_declare.py`) as the implicit setter-stage
+canary. A regression in `split_css` would manifest as one of those
+producing wrong output. Adding an explicit `.ir` fixture is
+possible but not high-value; defer until / unless someone changes
+`split_css` and wants direct phase-level coverage.
 
 ## Symptom
 
