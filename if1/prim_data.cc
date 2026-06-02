@@ -68,8 +68,14 @@ void prim_init(Primitives *p, IF1 *if1) {
   p->prim_map[0][0].put(n, prim_operator);
   static PrimType prim_period_arg_types[] = {PRIM_TYPE_ANY, PRIM_TYPE_ANY};
   static PrimType prim_period_ret_types[] = {PRIM_TYPE_ANY};
-  prim_period =
-      new Prim(1, ".", "prim_period", 3, 1, 1, prim_period_arg_types, prim_period_ret_types, PRIM_NON_FUNCTIONAL);
+  // prim_period is a pure read (or an unobservable closure-field write
+  // during closure-create). IFA lowers computed-attribute semantics —
+  // __getattr__ / property descriptors — to method calls, so raw
+  // prim_period never carries an untracked side effect. Marking it
+  // PRIM_NON_FUNCTIONAL would over-conserve at the Sym-level pass while
+  // FA-level mark_live_pnodes correctly kills unused field reads /
+  // closure allocations via lval-liveness.
+  prim_period = new Prim(1, ".", "prim_period", 3, 1, 1, prim_period_arg_types, prim_period_ret_types, 0);
   n = (char *)if1->strings.put((char *)".");
   p->prims.add(prim_period);
   p->prim_map[1][1].put(n, prim_period);
