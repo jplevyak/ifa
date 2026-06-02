@@ -171,6 +171,13 @@ Three companion documents:
   for each of 7 splitter stages, the precondition + IF1 shape
   needed to trigger it. Coverage targets for the generator.
 
+### Phase B — Design ✅ DONE
+
+- [09d_generator_design.md](09d_generator_design.md) —
+  three-layer API (raw `if1_*` + `CodeBuilder` + `IRShape`
+  generators), `.synth` fixture format, runner integration plan,
+  10-step implementation order with effort estimates.
+
 ### Step 1 — Recon on V's test suite ✅ DONE
 
 Ran V's three test programs (`for1.v`, `for2.v`, `literal.v`)
