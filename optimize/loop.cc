@@ -43,6 +43,19 @@ static void collapse(LoopGraph *g, Vec<LoopNode *> &body, LoopNode *header) {
       if (header->post_dom < z->post_dom) header->post_dom = z->post_dom;
     }
   }
+  // Inherit entry preds: any pred of a body member that resolves to a
+  // node outside the body becomes a pred of the new REP. Without this,
+  // outer-level find_loop walks would short-circuit at this REP and
+  // miss outer-loop body members reachable only through the inner
+  // header's external entry. Pairs with the walk-up-to-REP fix in
+  // find_loop (issue 004).
+  for (LoopNode *z : body) if (z) {
+    for (LoopNode *zp : z->pred) {
+      LoopNode *zpr = zp;
+      while (zpr->parent) zpr = zpr->parent;
+      if (zpr != header && !body.set_in(zpr)) header->pred.set_add(zpr);
+    }
+  }
 }
 
 static void self_loop(LoopGraph *g, LoopNode *header) {
@@ -68,6 +81,15 @@ static void find_loop(LoopGraph *g, LoopNode *header, Vec<LoopNode *> &worklist)
     y->processed = 1;
     for (LoopNode *z : y->pred) {
       LoopNode *zr = g->find(z);
+      // If zr is already contained in a previously-discovered loop,
+      // its `parent` chain leads to that loop's REP. Walk to the
+      // outermost-yet-unparented REP and use that, rather than the
+      // raw PNode that union-find happened to land on. Without this,
+      // nested loops collapse as siblings: the union-find rep of an
+      // inner-body PNode is some other inner-body PNode (lowest index),
+      // not the inner REP, so the outer collapse never sees the REP
+      // and never sets inner_REP->parent = outer_REP. Issue 004.
+      while (zr->parent) zr = zr->parent;
       if (!zr->dfs_ancestor(header))
         zr->loops.add(rep);
       else if (!body.set_in(zr) && !zr->in_worklist) {

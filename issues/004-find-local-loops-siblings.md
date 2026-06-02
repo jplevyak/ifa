@@ -1,14 +1,34 @@
 # Issue 004: `find_local_loops` reports nested loops as siblings
 
-**Status:** open (caught by phase 03 testing; locked in golden)
+**Status:** closed (fix in `find_loop` + `collapse`, plus a new
+`freq/03_nested_loops.ir` fixture showing inner-body peak = 100).
 **Affects:** `ifa/optimize/loop.cc:find_loops`,
 `ifa/optimize/loop.cc:find_local_loops`.
 **Related:** `ifa/testing/phases/03_dom_loops.md` §7,
 `ifa/tests/ir/loops/03_nested_loops.ir`, commit `34a7efb`.
-**Workaround:** the `loops` phase printer reports whatever
-`g->nodes` produces; the `03_nested_loops` golden locks the current
-(arguably wrong) sibling layout so any algorithm fix will be
-visible.
+
+## Resolution
+
+Two coupled fixes in `loop.cc`:
+
+1. **`find_loop`'s worklist walk** walks `zr->parent` chain up to
+   the outermost-unparented REP before checking ancestry or adding
+   to body. Without this, the union-find's `find()` returns
+   whichever body PNode became the root of the equivalence class
+   (lowest index), not the REP we built — so the outer collapse
+   never saw the inner REP and never set its parent.
+
+2. **`collapse`** now inherits entry preds: any pred of a body
+   member that walks to a node outside body becomes a pred of the
+   new REP. Without this, the outer-level walk short-circuits at
+   the inner REP and misses outer-body PNodes reachable only
+   through the inner header's external entry (e.g. `L_o_body` in
+   the test fixture).
+
+Verified with `loops/03_nested_loops.ir` (now shows nested tree
+with l0 outer containing l1 inner at depth 2) and the new
+`freq/03_nested_loops.ir` (inner-body peak frequency = 100 =
+`LOOP_FREQUENCY^2`, exactly what the plan-doc test #12 wanted).
 
 ## Symptom
 

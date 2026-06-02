@@ -1,22 +1,18 @@
 ;; 03_nested_loops.ir — inner while inside outer while.
-;;
-;; Locks the nested loop-tree shape: l0 (outer, depth=1) containing
-;; l1 (inner, depth=2). Pre-issue-004 this fixture reported the two
-;; loops as siblings; the find_loop walk-up-to-REP fix plus the
-;; collapse entry-pred-inheritance fix together produce the correct
-;; nested tree. See ifa/issues/004-find-local-loops-siblings.md
-;; (closed).
+;; Companion to loops/03_nested_loops.ir. With the loop-tree fix
+;; (issue 004), the inner body PNodes should be in a depth-2 loop
+;; and receive peak execution_frequency = LOOP_FREQUENCY^2 = 100.
 
 (sym %c1 :is-local)
 (sym %c2 :is-local)
 (sym %x :is-local)
 (sym %r :is-local)
-(sym %cont)
+(sym %tcont)
 
-(fun %nested
+(fun %top
   :args (%c1 %c2 %x)
   :rets (%r)
-  :cont %cont
+  :cont %tcont
   :body
     (label %L_o_top)
     (if %c1 %L_o_body %L_o_end)
@@ -30,4 +26,4 @@
     (goto %L_o_top)
     (label %L_o_end))
 
-(entry %nested)
+(entry %top)

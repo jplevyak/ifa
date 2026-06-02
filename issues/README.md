@@ -43,9 +43,11 @@ that:
   `InlineEvent`) so pass counts and per-stage splits can be
   golden-tested.
 - [004-find-local-loops-siblings.md](004-find-local-loops-siblings.md) —
-  `find_local_loops` reports nested loops as siblings, breaking
-  the loop-tree-walking frequency estimator. Real algorithm bug
-  with a golden lock.
+  `find_local_loops` reported nested loops as siblings, breaking
+  the loop-tree-walking frequency estimator. **Closed:** two-part
+  fix in `find_loop` (walk-up-to-REP) and `collapse` (inherit
+  entry preds). New `freq/03_nested_loops.ir` golden locks the
+  inner-body peak frequency at 100 = `LOOP_FREQUENCY^2`.
 - [005-retire-speculative-sym-level-dce.md](005-retire-speculative-sym-level-dce.md) —
   retire `if1_simple_dead_code_elimination`'s speculative SEND/MOVE
   kills in favor of FA-level `mark_live_code`. **Closed:** all six
