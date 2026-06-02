@@ -1,11 +1,13 @@
 # Issue 001: Keepalive crashes when user fun has explicit reply
 
-**Status:** subsumed by [005](005-retire-speculative-sym-level-dce.md).
+**Status:** closed by `f2fc2d2` (keepalive removed). The crash mode
+no longer exists by construction.
 **Found:** while wiring up the `inline` phase test fixtures.
 **Affects:** `ifa/testing/fa_setup.cc`, `ifa/analysis/fa.cc`.
 **Related commits:** `087b127` (keepalive added), `ac62d25` (docs trade-off),
 `e6952b8` (corrected the mechanism analysis below — Sym-level DCE, not
-per-ES FA propagation, is what kills the LOCALLY_NESTED variant).
+per-ES FA propagation, is what kills the LOCALLY_NESTED variant),
+`f2fc2d2` (keepalive removed as part of issue 005 step 2b).
 **Workaround:** don't put `(send @primitive @reply …)` in user funs in
 `.ir` fixtures; let `fa_setup` provide the only reply in
 `sym___main__`. Costs us higher-coverage `inline` goldens.

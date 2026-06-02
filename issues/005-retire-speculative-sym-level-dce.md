@@ -1,15 +1,21 @@
 # Issue 005: retire speculative Sym-level DCE
 
-**Status:** in-progress (flag + nonfunctional-flag corrections landed;
-default flip and escape-hatch removal pending).
+**Status:** closed. All six steps landed. Pyc's `asymbol` blanket-
+setting kept (audit revealed structural dependency in `scope_sym`);
+that's a separate cleanup tracked outside this issue.
 **Affects:** `ifa/if1/if1.cc` (`if1_simple_dead_code_elimination`),
 `ifa/if1/prim_data.cc` (nonfunctional flags), pyc frontend
 (`python_ifa_sym.cc`'s `new_PycSymbol`), ifa test harness
 (`ifa/testing/fa_setup.cc`'s keepalive).
 **Related:** [001-keepalive-vs-explicit-reply.md](001-keepalive-vs-explicit-reply.md)
-(subsumed — the keepalive crash disappears once this lands).
+(closed by 005 step 2b — keepalive removed, crash mode gone by
+construction).
 **Commits landed:** `74139ab` (flag), `39e3eb2` (drop `PRIM_NON_FUNCTIONAL`
-from `prim_period`), `afa5750` (clarify `prim_destruct`'s flag).
+from `prim_period`), `afa5750` (clarify `prim_destruct`'s flag),
+`4a7cefe` (step 1: flip default), `f2fc2d2` (step 2b: remove
+keepalive), `d480b79` (step 3: delete gated branches + flag),
+`e6b8004` (step 4: drop `prim_destruct`'s flag), `faf6e76`
+(step 5: drop asymbol clause from seed loop).
 
 ## Symptom
 

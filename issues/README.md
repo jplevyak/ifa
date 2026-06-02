@@ -32,8 +32,8 @@ that:
 
 - [001-keepalive-vs-explicit-reply.md](001-keepalive-vs-explicit-reply.md) —
   the test-harness keepalive SEND crashes FA when a `.ir` user fun
-  has its own `(send @primitive @reply …)`. **Subsumed by 005**
-  (which retires the keepalive entirely); kept for the investigation
+  has its own `(send @primitive @reply …)`. **Closed by `f2fc2d2`**
+  (keepalive removed as part of 005); kept for the investigation
   trail.
 - [002-codegen-llvm-normalizer.md](002-codegen-llvm-normalizer.md) —
   no `codegen-llvm` test phase; needs a line-by-line normalizer
@@ -48,10 +48,10 @@ that:
   with a golden lock.
 - [005-retire-speculative-sym-level-dce.md](005-retire-speculative-sym-level-dce.md) —
   retire `if1_simple_dead_code_elimination`'s speculative SEND/MOVE
-  kills in favor of FA-level `mark_live_code`. Frontend escape
-  hatches (pyc `asymbol`, V `nesting_depth=0`, ifa-test keepalive)
-  all become removable. In-progress; flag + nonfunctional cleanup
-  landed, default flip + escape-hatch removal pending.
+  kills in favor of FA-level `mark_live_code`. **Closed:** all six
+  steps landed. Sym-level pass now does structural label-pruning
+  only. Pyc's `asymbol` blanket-set kept (load-bearing for scope
+  resolution — separate cleanup).
 - [006-simple-inlining-multi-send-chain.md](006-simple-inlining-multi-send-chain.md) —
   `simple_inlining` misses straight-line multi-SEND wrappers like
   `def add_one(self): return self.v + 1`. Extending the single-SEND
