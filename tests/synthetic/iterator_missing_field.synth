@@ -1,0 +1,6 @@
+;; iterator_missing_field.synth — V holds records of types A or B
+;; with disjoint fields. Reader iterates and reads e.fa — missing
+;; on B. Targets the violation stage via iterator-mediated
+;; dispatch.
+
+shape: iterator_missing_field

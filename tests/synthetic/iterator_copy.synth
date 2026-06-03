@@ -1,0 +1,5 @@
+;; iterator_copy.synth — extend vector_iterator with a destination
+;; vector. Reads via iterator, writes via set_index_object. Targets
+;; setter-of-setter (chained setter via the iterator dispatch).
+
+shape: iterator_copy

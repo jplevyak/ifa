@@ -115,13 +115,33 @@ Iteration attempts so far:
    reads `self.vec[self.pos]`, and consumer `consume(v)` that
    builds an It bound to v and calls next(it). Main allocates two
    V's with distinct-typed elements, calls consume on each.
-   Result: 3-pass converge with `type=2, setter=1`. Pattern
-   matches pyc's list-runtime behavior (alternating type+setter
-   splits).
-   This confirms split_css is reachable in synthetic IR — needed
-   the full iterator-pattern stack (method dispatch with
-   must_specialize on receiver, instance fields capturing the
-   container, polymorphic indexing through self-stored state).
+   Result: 3-pass converge with `type=2, setter=1`.
+
+8. **`iterator_copy`** (variant): adds a destination vector;
+   `copy(src, dst)` reads via iterator and writes via
+   set_index_object. Same outcome: `type=2, setter=1`. Targeted
+   setter-of-setter but the chain didn't extend deep enough.
+
+9. **`iterator_missing_field`** (variant): iterator yields
+   elements that may or may not have a field. `consume(v)` reads
+   `e.fa` — exists on A, missing on B; main allocates V's holding
+   A and B respectively. Same outcome: `type=2, setter=1`. FA
+   records `violations=2` but the violation stage never runs
+   because setter makes progress first.
+
+10. **`nested_iterator`** (attempted): two-level vector iteration
+    (V holding V's). Hit a clone-phase assertion
+    ("mismatched field sizes") — V's element type would need to
+    be both V (outer) and primitive (inner), structurally
+    incompatible. Removed; not useful as a coverage tool either
+    (didn't fire setter-of-setter).
+
+The retry round demonstrates: **setter is reachable via several
+iterator-pattern variants, but the remaining post-type stages
+(mark-type, setter-of-setter, mark-setter, mark-setter-of-setter,
+violation) all stay blocked.** The iterator pattern absorbs
+polymorphism via setter; deeper cascades would require structural
+patterns that the analysis hasn't yet been engineered to expose.
 
 ## Hypotheses (untested)
 
@@ -204,8 +224,14 @@ d. **The violation stage specifically requires a shape that
   splitter stage" finding.
 - `ifa/tests/synthetic/vector_iterator.synth` — **type=2,
   setter=1** across 3 passes. The first synthetic shape to fire
-  any post-type stage. Confirms split_css is reachable
-  synthetically given the iterator pattern.
+  any post-type stage.
+- `ifa/tests/synthetic/iterator_copy.synth` — **type=2,
+  setter=1**. Iterator + dst write; targeted setter-of-setter,
+  absorbed by setter.
+- `ifa/tests/synthetic/iterator_missing_field.synth` —
+  **type=2, setter=1**, with violations=2 recorded. Iterator
+  yielding records of disjoint types; targeted violation,
+  absorbed by setter.
 
 If someone fixes any post-type stage (e.g., by changing the
 splitter cascade or by writing a shape that actually triggers

@@ -67,6 +67,25 @@ void polymorphic_formal(const ParamMap &);
 // setter/mark-type).
 void same_type_dispatch(const ParamMap &);
 
+// iterator_copy: copy elements between two vectors via two
+// iterators. Builds on the vector_iterator breakthrough — tries
+// to extend to setter-of-setter by chaining: read from src
+// iterator → write to dst via set_index_object. Polymorphism
+// flows src CSes → element AVar → dst element AVar.
+//
+// Targets setter-of-setter (the cascade form of setter).
+void iterator_copy(const ParamMap &);
+
+// iterator_missing_field: iterator yields elements that may or may
+// not have a particular field. Builds the vector_iterator pattern
+// but with V's elements being records of disjoint types (A has
+// field fa, B has field fb). Reader accesses .fa on each yielded
+// element — fails for B-element vectors.
+//
+// Targets the violation stage by routing the type-violation through
+// the iterator-mediated dispatch chain.
+void iterator_missing_field(const ParamMap &);
+
 // vector_iterator: mirrors pyc's list-runtime iterator pattern.
 // A vector type V, an iterator record It with `vec` + `pos`
 // fields, an iterator `next` method that reads self.vec and

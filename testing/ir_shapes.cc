@@ -73,6 +73,110 @@ void same_type_dispatch(const ParamMap &m) {
   if1->top = top;
 }
 
+void iterator_copy(const ParamMap & /*m*/) {
+  // Same V + It as vector_iterator; add a `next` method.
+  Sym *V = RecordBuilder("V").vector().build();
+  Sym *It = RecordBuilder("It").field("vec").field("pos").build();
+
+  // next(self: It) → element via vec_get(self.vec, self.pos).
+  ClosureBuilder next_cb("next_tmp");
+  Sym *next_self = next_cb.method("next", It);
+  Sym *next_fn = next_cb.body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+    Sym *vec = ir::get_field(cb, next_self, "vec", "vec_v");
+    Sym *pos = ir::get_field(cb, next_self, "pos", "pos_v");
+    Sym *elt = ir::vec_get(cb, vec, pos, "elt");
+    cb.move(elt, ret);
+    cb.reply(cont, ret);
+  });
+  Sym *next_sym = if1_make_symbol(if1, "next");
+
+  // copy(src, dst): make an It bound to src, read element via
+  // next(it), write to dst[0]. The chain: src CS varies →
+  // it.vec → vec_get target (per-src-CS element AVar) → dst's
+  // element AVar via set_index_object.
+  Sym *src_arg = ir::local("src");
+  Sym *dst_arg = ir::local("dst");
+  Sym *copy = ClosureBuilder("copy")
+      .arg(src_arg).arg(dst_arg)
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        Sym *it = ir::new_instance(cb, It, "it");
+        ir::set_field(cb, it, "vec", src_arg);
+        ir::set_field(cb, it, "pos", ir::const_int32(0));
+        Sym *e = cb.send_method(next_sym, it, {}, ir::local("e"));
+        ir::vec_set(cb, dst_arg, ir::const_int32(0), e);
+        cb.reply(cont, ret);
+      });
+
+  Sym *top = ClosureBuilder("top")
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        Sym *v1 = ir::new_instance(cb, V);
+        ir::vec_set(cb, v1, ir::const_int32(0), ir::const_int32(10));
+        Sym *v2 = ir::new_instance(cb, V);
+        ir::vec_set(cb, v2, ir::const_int32(0), ir::const_float64(2.5));
+        Sym *dst = ir::new_instance(cb, V);
+        cb.send_method(copy, v1, {dst});
+        cb.send_method(copy, v2, {dst});
+        cb.reply(cont, ret);
+      });
+  if1->top = top;
+  (void)next_fn;
+}
+
+void iterator_missing_field(const ParamMap & /*m*/) {
+  // V (vector type) whose elements are records of types A or B
+  // with DISJOINT fields. Reader iterates v and reads e.fa —
+  // exists on A, missing on B.
+  Sym *A = RecordBuilder("A").field("fa").build();
+  Sym *B = RecordBuilder("B").field("fb").build();
+  Sym *V = RecordBuilder("V").vector().build();
+  Sym *It = RecordBuilder("It").field("vec").field("pos").build();
+
+  ClosureBuilder next_cb("next_tmp");
+  Sym *next_self = next_cb.method("next", It);
+  Sym *next_fn = next_cb.body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+    Sym *vec = ir::get_field(cb, next_self, "vec", "vec_v");
+    Sym *pos = ir::get_field(cb, next_self, "pos", "pos_v");
+    Sym *elt = ir::vec_get(cb, vec, pos, "elt");
+    cb.move(elt, ret);
+    cb.reply(cont, ret);
+  });
+  Sym *next_sym = if1_make_symbol(if1, "next");
+
+  // consume(v): iterate, read .fa on the yielded element.
+  // For B-element vectors, fa is missing → violation.
+  Sym *v_arg = ir::local("v");
+  Sym *consume = ClosureBuilder("consume")
+      .arg(v_arg)
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        Sym *it = ir::new_instance(cb, It, "it");
+        ir::set_field(cb, it, "vec", v_arg);
+        ir::set_field(cb, it, "pos", ir::const_int32(0));
+        Sym *e = cb.send_method(next_sym, it, {}, ir::local("e"));
+        Sym *v = ir::get_field(cb, e, "fa", "v");
+        cb.move(v, ret);
+        cb.reply(cont, ret);
+      });
+
+  Sym *top = ClosureBuilder("top")
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        Sym *v1 = ir::new_instance(cb, V);
+        Sym *a = ir::new_instance(cb, A);
+        ir::set_field(cb, a, "fa", ir::const_int32(1));
+        ir::vec_set(cb, v1, ir::const_int32(0), a);
+
+        Sym *v2 = ir::new_instance(cb, V);
+        Sym *b = ir::new_instance(cb, B);
+        ir::set_field(cb, b, "fb", ir::const_int32(2));
+        ir::vec_set(cb, v2, ir::const_int32(0), b);
+
+        cb.send_method(consume, v1, {});  // ok
+        cb.send_method(consume, v2, {});  // violation: B has no fa
+        cb.reply(cont, ret);
+      });
+  if1->top = top;
+  (void)next_fn;
+}
+
 void vector_iterator(const ParamMap & /*m*/) {
   // V: vector type; It: iterator with vec + pos fields.
   Sym *V = RecordBuilder("V").vector().build();
@@ -364,6 +468,8 @@ static Entry kRegistry[] = {
     {"missing_field_dispatch", missing_field_dispatch},
     {"vector_element_polymorphism", vector_element_polymorphism},
     {"vector_iterator", vector_iterator},
+    {"iterator_copy", iterator_copy},
+    {"iterator_missing_field", iterator_missing_field},
     {nullptr, nullptr},
 };
 
