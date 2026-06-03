@@ -263,6 +263,56 @@ Sym *vec_get(CodeBuilder &cb, Sym *vec, Sym *index, cchar *result_name) {
   return result;
 }
 
+VectorMethods install_subscript_methods(Sym *V) {
+  VectorMethods m;
+
+  // __getitem__(self: V, i): return self[i] (via the underlying
+  // prim_index_object). The method body is one primitive call,
+  // but it's wrapped in a dispatch that the splitter CAN fork
+  // per receiver CS — each V-CS gets its own __getitem__ ES, and
+  // each ES's prim call sees only that CS's element AVar.
+  {
+    ClosureBuilder cb_g("__getitem__tmp");
+    Sym *self = cb_g.method("__getitem__", V);
+    Sym *i_arg = ir::local("i");
+    cb_g.arg(i_arg);
+    cb_g.body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+      Sym *e = vec_get(cb, self, i_arg, "e");
+      cb.move(e, ret);
+      cb.reply(cont, ret);
+    });
+  }
+  m.getitem_sym = if1_make_symbol(if1, "__getitem__");
+
+  // __setitem__(self: V, i, val): self[i] = val
+  {
+    ClosureBuilder cb_s("__setitem__tmp");
+    Sym *self = cb_s.method("__setitem__", V);
+    Sym *i_arg = ir::local("i");
+    Sym *v_arg = ir::local("val");
+    cb_s.arg(i_arg).arg(v_arg);
+    cb_s.body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+      vec_set(cb, self, i_arg, v_arg);
+      cb.reply(cont, ret);
+    });
+  }
+  m.setitem_sym = if1_make_symbol(if1, "__setitem__");
+
+  return m;
+}
+
+Sym *call_getitem(CodeBuilder &cb, const VectorMethods &methods, Sym *vec,
+                  Sym *index, cchar *result_name) {
+  Sym *result = local(result_name);
+  return cb.send_method(methods.getitem_sym, vec, {index}, result);
+}
+
+void call_setitem(CodeBuilder &cb, const VectorMethods &methods, Sym *vec,
+                  Sym *index, Sym *val) {
+  Sym *dead = local();
+  cb.send_method(methods.setitem_sym, vec, {index, val}, dead);
+}
+
 Sym *local(cchar *name) {
   Sym *s = new_Sym(name);
   s->is_local = 1;

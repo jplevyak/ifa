@@ -2,10 +2,11 @@
 
 (pass-counts
   rc:                -1
-  total-passes:      0
-  events:            0
+  total-passes:      1
+  events:            1
+  splits[type]: 1
 )
 
 (history
-  (no events — converged in one pass)
+  pass 1 type splits=1 ess=3→3 css=21→21 violations=13→13
 )

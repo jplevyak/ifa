@@ -73,6 +73,55 @@ void same_type_dispatch(const ParamMap &m) {
   if1->top = top;
 }
 
+void nested_iterator(const ParamMap & /*m*/) {
+  // Two-level vector iteration via DISTINCT outer and inner types.
+  // The original (now-deleted) version reused one V at both levels
+  // and tripped clone's "mismatched field sizes" because the
+  // type union became {int32, float64, V}. With separate types
+  // and method dispatch through __getitem__, each level's
+  // element type stays clean.
+  Sym *V_inner = RecordBuilder("V_inner").vector().build();
+  Sym *V_outer = RecordBuilder("V_outer").vector(V_inner).build();
+  auto inner_methods = ir::install_subscript_methods(V_inner);
+  auto outer_methods = ir::install_subscript_methods(V_outer);
+
+  // consume_outer(vv): vv.__getitem__(0).__getitem__(0). Two
+  // levels of method-dispatched indexing.
+  Sym *vv_arg = ir::local("vv");
+  Sym *consume_outer = ClosureBuilder("consume_outer")
+      .arg(vv_arg)
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        Sym *zero = ir::const_int32(0);
+        Sym *inner_v = ir::call_getitem(cb, outer_methods, vv_arg, zero,
+                                        "inner_v");
+        Sym *e = ir::call_getitem(cb, inner_methods, inner_v, zero, "e");
+        cb.move(e, ret);
+        cb.reply(cont, ret);
+      });
+
+  Sym *top = ClosureBuilder("top")
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        Sym *zero = ir::const_int32(0);
+
+        Sym *inner1 = ir::new_instance(cb, V_inner);
+        ir::call_setitem(cb, inner_methods, inner1, zero,
+                         ir::const_int32(10));
+        Sym *outer1 = ir::new_instance(cb, V_outer);
+        ir::call_setitem(cb, outer_methods, outer1, zero, inner1);
+
+        Sym *inner2 = ir::new_instance(cb, V_inner);
+        ir::call_setitem(cb, inner_methods, inner2, zero,
+                         ir::const_float64(2.5));
+        Sym *outer2 = ir::new_instance(cb, V_outer);
+        ir::call_setitem(cb, outer_methods, outer2, zero, inner2);
+
+        cb.send_method(consume_outer, outer1, {});
+        cb.send_method(consume_outer, outer2, {});
+        cb.reply(cont, ret);
+      });
+  if1->top = top;
+}
+
 void iterator_copy(const ParamMap & /*m*/) {
   // Same V + It as vector_iterator; add a `next` method.
   Sym *V = RecordBuilder("V").vector().build();
@@ -243,15 +292,14 @@ void vector_element_polymorphism(const ParamMap &m) {
   if (n_writes < 2) n_writes = 2;
   if (n_writes > 3) n_writes = 3;
 
-  // Vector type V — is_vector=1, element=fresh Sym.
+  // Vector type V with __getitem__/__setitem__ methods. The
+  // method-dispatch path gives the splitter per-CS specialization
+  // opportunity — see PRIMITIVES.md §13.12.
   Sym *V = RecordBuilder("V").vector().build();
+  auto methods = ir::install_subscript_methods(V);
 
   // Write n_writes distinct-typed values into the SAME vector CS,
-  // then read back. The element AVar for that CS sees a per-CS
-  // type confluence (multiple types within one creation set) —
-  // pyc's list runtime creates the same shape via list iteration.
-  // Stage 1 can't split the CS (single allocation site), so the
-  // residual confluence should fall to setter/mark stages.
+  // then read back. All indexing now goes through method dispatch.
   Sym *top = ClosureBuilder("top")
       .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
         Sym *v = ir::new_instance(cb, V);
@@ -263,10 +311,9 @@ void vector_element_polymorphism(const ParamMap &m) {
             case 1: val = ir::const_float64(2.5); break;
             case 2: val = ir::const_int64(99); break;
           }
-          ir::vec_set(cb, v, idx, val);
+          ir::call_setitem(cb, methods, v, idx, val);
         }
-        // Read element 0 back — sees the per-CS polymorphic element.
-        Sym *r = ir::vec_get(cb, v, ir::const_int32(0), "r");
+        Sym *r = ir::call_getitem(cb, methods, v, ir::const_int32(0), "r");
         cb.move(r, ret);
         cb.reply(cont, ret);
       });
@@ -470,6 +517,7 @@ static Entry kRegistry[] = {
     {"vector_iterator", vector_iterator},
     {"iterator_copy", iterator_copy},
     {"iterator_missing_field", iterator_missing_field},
+    {"nested_iterator", nested_iterator},
     {nullptr, nullptr},
 };
 

@@ -67,6 +67,14 @@ void polymorphic_formal(const ParamMap &);
 // setter/mark-type).
 void same_type_dispatch(const ParamMap &);
 
+// nested_iterator: V (outer vector) holds inner V's. Re-attempted
+// with method dispatch through __getitem__/__setitem__ rather than
+// raw primitives — per PRIMITIVES.md §13.12, the method-dispatch
+// path gives the splitter per-CS specialization opportunity that
+// primitive-direct doesn't, which avoids the clone-phase
+// "mismatched field sizes" failure the raw-primitive version hit.
+void nested_iterator(const ParamMap &);
+
 // iterator_copy: copy elements between two vectors via two
 // iterators. Builds on the vector_iterator breakthrough — tries
 // to extend to setter-of-setter by chaining: read from src

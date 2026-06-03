@@ -228,12 +228,41 @@ Sym *call_fn(CodeBuilder &cb, Sym *fn, std::initializer_list<Sym *> args,
 // Vector element write: (send sym_primitive sym_set_index_object
 // vec index val => _). For vector-shaped CSes, this writes val
 // into the CS's element AVar (the entry point for split_css).
+//
+// NOTE: this is the raw-primitive form. It does NOT get per-CS
+// specialization (see PRIMITIVES.md §13.12). For shapes where
+// the splitter must distinguish element types per V CS,
+// install_subscript_methods() + call_getitem()/call_setitem()
+// is the right choice.
 void vec_set(CodeBuilder &cb, Sym *vec, Sym *index, Sym *val);
 
 // Vector element read: (send sym_primitive sym_index_object
 // vec index => result). Returns the result Sym.
+// Same primitive-vs-method caveat as vec_set.
 Sym *vec_get(CodeBuilder &cb, Sym *vec, Sym *index,
              cchar *result_name = nullptr);
+
+// Attach __getitem__ and __setitem__ methods to vector type `V`.
+// Each method's body is one primitive call wrapped in
+// per-receiver-CS specializable dispatch. Returns the two
+// method-symbol Syms (getitem_sym, setitem_sym) suitable for
+// call_getitem/call_setitem call-site emission, or for direct
+// send_method use.
+struct VectorMethods {
+  Sym *getitem_sym;  // pass to call_getitem (or directly to send_method)
+  Sym *setitem_sym;
+};
+VectorMethods install_subscript_methods(Sym *V);
+
+// Method-dispatch indexing: v.__getitem__(i) → result.
+// The dispatch resolves per-receiver-CS, letting the splitter
+// specialize each list-CS's __getitem__ independently.
+Sym *call_getitem(CodeBuilder &cb, const VectorMethods &methods, Sym *vec,
+                  Sym *index, cchar *result_name = nullptr);
+
+// Method-dispatch assignment: v.__setitem__(i, val).
+void call_setitem(CodeBuilder &cb, const VectorMethods &methods, Sym *vec,
+                  Sym *index, Sym *val);
 
 // Create a fresh local Sym (nesting_depth = LOCALLY_NESTED so the
 // finalize pass adjusts it to fn_depth + 1).

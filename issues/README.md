@@ -63,14 +63,14 @@ that:
   method-wrapper shape in pyc-emitted IR. Stays within the "simple"
   boundary (no iteration, no cost model).
 - [007-mark-type-stage-coverage.md](007-mark-type-stage-coverage.md) —
-  post-type splitter stages coverage. **Partial:** setter stage
-  now reachable via the `vector_iterator` synthetic shape (Phase
-  09 C 7.7). Remaining gaps: `mark-type`, `setter-of-setter`,
-  `mark-setter`, `mark-setter-of-setter`, `violation`. The
-  iterator-pattern breakthrough suggests these may also be
-  reachable with the right shape — worth retrying with the new
-  builder primitives (method dispatch, must_specialize) before
-  declaring dead code.
+  post-type splitter stages coverage. **Partial:** setter and
+  violation stages now reachable via synthetic shapes (Phase 09
+  C 7.7 + follow-on). Remaining gaps: `mark-type`,
+  `setter-of-setter`, `mark-setter`, `mark-setter-of-setter`.
+  The breakthroughs (vector_iterator for setter; nested_iterator
+  for violation) used the method-dispatch pattern over raw
+  primitives (see PRIMITIVES §13.12). Worth retrying the
+  mark-* and setter-of-setter targets with the same approach.
 
 ## When to file an issue here vs fix it now
 

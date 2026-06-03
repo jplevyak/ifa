@@ -1,9 +1,9 @@
 # Issue 007: post-type splitter stages not triggered by any shape
 
-**Status:** partial — setter stage NOW reachable via the
-`vector_iterator` synthetic shape (Phase 09 C 7.7). Remaining
-gaps: `mark-type`, `setter-of-setter`, `mark-setter`,
-`mark-setter-of-setter`, `violation`.
+**Status:** partial — `setter` and `violation` stages now
+reachable via synthetic shapes (Phase 09 C 7.7 + follow-on).
+Remaining gaps: `mark-type`, `setter-of-setter`, `mark-setter`,
+`mark-setter-of-setter`.
 **Affects:** `ifa/analysis/fa.cc:split_ess_for_mark_type`,
 `split_for_setters_of_setters`, and the mark-based variants;
 `IFA.md` splitter section.
@@ -129,12 +129,29 @@ Iteration attempts so far:
    records `violations=2` but the violation stage never runs
    because setter makes progress first.
 
-10. **`nested_iterator`** (attempted): two-level vector iteration
-    (V holding V's). Hit a clone-phase assertion
-    ("mismatched field sizes") — V's element type would need to
-    be both V (outer) and primitive (inner), structurally
-    incompatible. Removed; not useful as a coverage tool either
-    (didn't fire setter-of-setter).
+10. **`nested_iterator`** (attempted, first version): two-level
+    vector iteration (single V type holding V's). Hit a clone-
+    phase assertion ("mismatched field sizes") AND used raw
+    primitive indexing. Removed.
+
+11. **Documentation pass** (PRIMITIVES.md §13.12): identified
+    that raw `prim_index_object` doesn't get per-call ES
+    specialization, while method dispatch through
+    `__getitem__` does. The "primitives don't split" finding
+    explains why the iterator shapes worked at all (the method
+    dispatch on `next` was the splitter handle) and why the
+    inline-primitive shapes (`vector_polymorphic_writes`) didn't.
+
+12. **`vector_polymorphic_writes`** (re-attempted with method
+    dispatch via `install_subscript_methods` helper): 1 event
+    (`splits[type]=1`), up from 0 — fix confirmed.
+
+13. **`nested_iterator`** (re-attempted with method dispatch +
+    distinct outer/inner vector types): 🎯 **Violation stage
+    fires.** Three-pass converge with `type=2, violation=1`.
+    Second post-type stage to be reached synthetically. Clone
+    phase no longer trips (distinct types avoid the type-union
+    collision).
 
 The retry round demonstrates: **setter is reachable via several
 iterator-pattern variants, but the remaining post-type stages
@@ -219,9 +236,11 @@ d. **The violation stage specifically requires a shape that
   `splits[type]=1`, with `violations=2` recorded but the
   violation stage never runs.
 - `ifa/tests/synthetic/vector_polymorphic_writes_2.synth` —
-  0 events; FA converges in one pass. Locks the "primitive
-  vec_set + vec_get without iterator pattern doesn't fire any
-  splitter stage" finding.
+  **type=1** (was 0 events before the method-dispatch fix).
+- `ifa/tests/synthetic/nested_iterator.synth` (re-introduced) —
+  **type=2, violation=1**. Two-level vector iteration via
+  method dispatch. Confirms violation stage is synthetically
+  reachable.
 - `ifa/tests/synthetic/vector_iterator.synth` — **type=2,
   setter=1** across 3 passes. The first synthetic shape to fire
   any post-type stage.
