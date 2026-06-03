@@ -73,6 +73,67 @@ void same_type_dispatch(const ParamMap &m) {
   if1->top = top;
 }
 
+void vector_iterator(const ParamMap & /*m*/) {
+  // V: vector type; It: iterator with vec + pos fields.
+  Sym *V = RecordBuilder("V").vector().build();
+  Sym *It = RecordBuilder("It").field("vec").field("pos").build();
+
+  // next(self: It) → element. Method dispatched via the "next"
+  // symbol; FA matches based on the symbol Sym at rval[0] and
+  // the receiver type at rval[1] (constrained via must_specialize
+  // on the formal[1] self Sym).
+  Sym *self_arg = nullptr;
+  Sym *next_method = ClosureBuilder("next_impl")
+      .body([](CodeBuilder &cb, Sym *cont, Sym *ret) { cb.reply(cont, ret); });
+  // Build a SEPARATE closure as the actual method, using method().
+  ClosureBuilder next_cb("next_tmp");
+  self_arg = next_cb.method("next", It);
+  Sym *next = next_cb.body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+    Sym *vec = ir::get_field(cb, self_arg, "vec", "vec_v");
+    Sym *pos = ir::get_field(cb, self_arg, "pos", "pos_v");
+    Sym *elt = ir::vec_get(cb, vec, pos, "elt");
+    cb.move(elt, ret);
+    cb.reply(cont, ret);
+  });
+  (void)next_method;  // discard the placeholder
+
+  // Symbol Sym used at every "next(it)" call site.
+  Sym *next_sym = if1_make_symbol(if1, "next");
+
+  // consume(v) builds an It bound to v, calls next(it). v is
+  // type-uniform V (across CSes) so stage 1 has no formal
+  // confluence on consume's args. The polymorphism propagates:
+  // v (CS varies) → it.vec (CS varies) → vec_get target (poly
+  // element AVar per V's CS) → next's return (poly result).
+  Sym *v_arg = ir::local("v");
+  Sym *consume = ClosureBuilder("consume")
+      .arg(v_arg)
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        Sym *it = ir::new_instance(cb, It, "it");
+        ir::set_field(cb, it, "vec", v_arg);
+        ir::set_field(cb, it, "pos", ir::const_int32(0));
+        Sym *e = cb.send_method(next_sym, it, {}, ir::local("e"));
+        cb.move(e, ret);
+        cb.reply(cont, ret);
+      });
+
+  // Main: two V allocations with distinct-typed element writes,
+  // then consume() each. The dispatch chain at consume's call
+  // site is polymorphic in V's CS provenance.
+  Sym *top = ClosureBuilder("top")
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        Sym *v1 = ir::new_instance(cb, V);
+        ir::vec_set(cb, v1, ir::const_int32(0), ir::const_int32(10));
+        Sym *v2 = ir::new_instance(cb, V);
+        ir::vec_set(cb, v2, ir::const_int32(0), ir::const_float64(2.5));
+        cb.send_method(consume, v1, {});
+        cb.send_method(consume, v2, {});
+        cb.reply(cont, ret);
+      });
+  if1->top = top;
+  (void)next;
+}
+
 void vector_element_polymorphism(const ParamMap &m) {
   int n_writes = param(m, "n_writes", 2);
   if (n_writes < 2) n_writes = 2;
@@ -302,6 +363,7 @@ static Entry kRegistry[] = {
     {"setter_chain", setter_chain},
     {"missing_field_dispatch", missing_field_dispatch},
     {"vector_element_polymorphism", vector_element_polymorphism},
+    {"vector_iterator", vector_iterator},
     {nullptr, nullptr},
 };
 

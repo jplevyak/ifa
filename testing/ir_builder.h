@@ -137,6 +137,15 @@ class ClosureBuilder {
   // Set the closure's self (receiver) sym, for method-shape funs.
   ClosureBuilder &self(Sym *s);
 
+  // Mark this closure as a method named `method_name` on receiver
+  // type `recv_type`. The first formal (created internally) is
+  // a method-symbol placeholder constrained via
+  // must_implement_and_specialize to the method's symbol Sym, and
+  // self() is set up with must_specialize on recv_type. Returns
+  // the self Sym so the body can reference it. After method(),
+  // .arg(...) adds positional formals beyond self.
+  Sym *method(cchar *method_name, Sym *recv_type);
+
   // Build the body and finalize via if1_closure.
   // Returns the fn Sym (also accessible later via fn()).
   Sym *body(std::function<void(CodeBuilder &cb, Sym *cont, Sym *ret)> emit);

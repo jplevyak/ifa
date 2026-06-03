@@ -142,6 +142,21 @@ ClosureBuilder &ClosureBuilder::self(Sym *s) {
   return *this;
 }
 
+Sym *ClosureBuilder::method(cchar *method_name, Sym *recv_type) {
+  // Per V's gen_fun convention: first formal is a fresh sym
+  // constrained to the method-symbol; second formal is self
+  // constrained to the receiver type. Rename the fn to match the
+  // method name so the dispatch tag (if1_make_symbol(fn_name) in
+  // body()) lines up with the call-site's symbol.
+  fn_->name = if1_cannonicalize_string(if1, method_name);
+  // Self sym, constrained to recv_type via must_specialize.
+  Sym *self_sym = ir::local("self");
+  self_sym->must_implement_and_specialize(recv_type);
+  self_ = self_sym;
+  fn_->self = self_sym;
+  return self_sym;
+}
+
 Sym *ClosureBuilder::body(
     std::function<void(CodeBuilder &cb, Sym *cont, Sym *ret)> emit) {
   CodeBuilder cb;

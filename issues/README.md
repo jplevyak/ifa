@@ -63,12 +63,14 @@ that:
   method-wrapper shape in pyc-emitted IR. Stays within the "simple"
   boundary (no iteration, no cost model).
 - [007-mark-type-stage-coverage.md](007-mark-type-stage-coverage.md) —
-  the post-type splitter stages (`mark-type`, `setter-of-setter`,
-  `mark-setter`, `mark-setter-of-setter`) aren't triggered by any
-  pyc test, V test, or synthetic shape attempted. Same root cause:
-  every shape produces at least one stage-1-qualifying confluence
-  that pre-empts the later stages. Either there's a shape pattern
-  not yet tried, or these are dead code.
+  post-type splitter stages coverage. **Partial:** setter stage
+  now reachable via the `vector_iterator` synthetic shape (Phase
+  09 C 7.7). Remaining gaps: `mark-type`, `setter-of-setter`,
+  `mark-setter`, `mark-setter-of-setter`, `violation`. The
+  iterator-pattern breakthrough suggests these may also be
+  reachable with the right shape — worth retrying with the new
+  builder primitives (method dispatch, must_specialize) before
+  declaring dead code.
 
 ## When to file an issue here vs fix it now
 

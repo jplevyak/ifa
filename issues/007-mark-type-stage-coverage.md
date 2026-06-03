@@ -1,7 +1,9 @@
 # Issue 007: post-type splitter stages not triggered by any shape
 
-**Status:** open (empirical gap surfaced during Phase 09 C 7.4,
-C 7.5, and C 7.6).
+**Status:** partial — setter stage NOW reachable via the
+`vector_iterator` synthetic shape (Phase 09 C 7.7). Remaining
+gaps: `mark-type`, `setter-of-setter`, `mark-setter`,
+`mark-setter-of-setter`, `violation`.
 **Affects:** `ifa/analysis/fa.cc:split_ess_for_mark_type`,
 `split_for_setters_of_setters`, and the mark-based variants;
 `IFA.md` splitter section.
@@ -100,21 +102,26 @@ Iteration attempts so far:
    formal sees a confluence — the violation stage never runs.
 
 6. **`vector_element_polymorphism`** (targeting setter via
-   split_css, the path pyc list runtime hits). Two iterations:
+   split_css). Two iterations:
    a. Multiple V instances each with a different-typed value
       written, polymorphic reader. Type-absorbed.
    b. Single V with multiple different-typed writes (within-CS
       element polymorphism). Zero events — FA converges in
       one pass.
-   The pyc list runtime triggers split_css via the polymorphic
-   `__list_iter__` class — a stored iterator instance whose
-   `__next__` dispatches polymorphically through the element type.
-   Reproducing that in synthetic IR requires not just vector
-   primitives but a full iterator-pattern record type, beyond the
-   single-shape budget for this step. Pyc's 4 test programs that
-   exercise split_css (`list_multiply`, `list_comprehension`,
-   `builtins`, `pyc_declare`) are the implicit regression
-   coverage for now.
+
+7. **`vector_iterator`** (Phase C 7.7 follow-up — full iterator
+   pattern). 🎯 **Setter stage fires.** The shape: vector type V,
+   iterator record `It {vec, pos}`, method `next(self: It)` that
+   reads `self.vec[self.pos]`, and consumer `consume(v)` that
+   builds an It bound to v and calls next(it). Main allocates two
+   V's with distinct-typed elements, calls consume on each.
+   Result: 3-pass converge with `type=2, setter=1`. Pattern
+   matches pyc's list-runtime behavior (alternating type+setter
+   splits).
+   This confirms split_css is reachable in synthetic IR — needed
+   the full iterator-pattern stack (method dispatch with
+   must_specialize on receiver, instance fields capturing the
+   container, polymorphic indexing through self-stored state).
 
 ## Hypotheses (untested)
 
@@ -195,6 +202,10 @@ d. **The violation stage specifically requires a shape that
   0 events; FA converges in one pass. Locks the "primitive
   vec_set + vec_get without iterator pattern doesn't fire any
   splitter stage" finding.
+- `ifa/tests/synthetic/vector_iterator.synth` — **type=2,
+  setter=1** across 3 passes. The first synthetic shape to fire
+  any post-type stage. Confirms split_css is reachable
+  synthetically given the iterator pattern.
 
 If someone fixes any post-type stage (e.g., by changing the
 splitter cascade or by writing a shape that actually triggers

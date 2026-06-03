@@ -67,6 +67,19 @@ void polymorphic_formal(const ParamMap &);
 // setter/mark-type).
 void same_type_dispatch(const ParamMap &);
 
+// vector_iterator: mirrors pyc's list-runtime iterator pattern.
+// A vector type V, an iterator record It with `vec` + `pos`
+// fields, an iterator `next` method that reads self.vec and
+// indexes into it. Main allocates two V's with different-typed
+// elements; for each, builds an It bound to that V and calls
+// next(it). The polymorphism lives in V's per-CS element AVar
+// AND propagates through It's vec field — exactly the split_css
+// trigger pattern pyc programs hit.
+//
+// This is the "real" split_css attempt — see issue 007 for the
+// background and previous absorbed iterations.
+void vector_iterator(const ParamMap &);
+
 // vector_element_polymorphism: targets split_css — the only
 // post-type splitter path pyc programs reach in practice (via
 // list runtime). A vector-marked type V; n_allocs instances

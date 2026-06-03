@@ -1,0 +1,11 @@
+;; vector_iterator.synth — pyc-list-runtime-shaped iterator
+;; pattern. V is a vector type; It is an iterator record with
+;; vec+pos fields. next(self) method reads self.vec[self.pos].
+;; consume(v) builds an It bound to v, calls next(it). Main
+;; allocates two V's with different-typed elements; consume each.
+;;
+;; The polymorphism propagates v (CS varies) → it.vec → vec_get
+;; result. This is the closest synthetic analogue to pyc's
+;; __list_iter__.__next__ that triggers split_css.
+
+shape: vector_iterator
