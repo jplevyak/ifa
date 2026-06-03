@@ -73,6 +73,37 @@ void same_type_dispatch(const ParamMap &m) {
   if1->top = top;
 }
 
+void missing_field_dispatch(const ParamMap & /*m*/) {
+  // Two record types with DISJOINT field sets.
+  Sym *A = RecordBuilder("A").field("fa").build();
+  Sym *B = RecordBuilder("B").field("fb").build();
+
+  // Reader reads field `fa` — exists on A but NOT on B. When
+  // called with a B receiver, FA records a type violation.
+  Sym *x_arg = ir::local("x");
+  Sym *read_fa = ClosureBuilder("read_fa")
+      .arg(x_arg)
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        Sym *v = ir::get_field(cb, x_arg, "fa", "v");
+        cb.move(v, ret);
+        cb.reply(cont, ret);
+      });
+
+  // Main: allocate an A and a B; populate fields; call read_fa
+  // on each. The B call should produce a missing-field violation.
+  Sym *top = ClosureBuilder("top")
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        Sym *a = ir::new_instance(cb, A);
+        ir::set_field(cb, a, "fa", ir::const_int32(1));
+        Sym *b = ir::new_instance(cb, B);
+        ir::set_field(cb, b, "fb", ir::const_int32(2));
+        cb.send_method(read_fa, a, {});
+        cb.send_method(read_fa, b, {});  // violation: B has no fa
+        cb.reply(cont, ret);
+      });
+  if1->top = top;
+}
+
 void setter_chain(const ParamMap &m) {
   int n_types = param(m, "n_types", 2);
   if (n_types < 1) n_types = 1;
@@ -234,6 +265,7 @@ static Entry kRegistry[] = {
     {"same_type_dispatch", same_type_dispatch},
     {"stored_fn_dispatch", stored_fn_dispatch},
     {"setter_chain", setter_chain},
+    {"missing_field_dispatch", missing_field_dispatch},
     {nullptr, nullptr},
 };
 

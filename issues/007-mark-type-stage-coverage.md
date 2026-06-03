@@ -1,7 +1,7 @@
 # Issue 007: post-type splitter stages not triggered by any shape
 
-**Status:** open (empirical gap surfaced during Phase 09 C 7.4
-and C 7.5).
+**Status:** open (empirical gap surfaced during Phase 09 C 7.4,
+C 7.5, and C 7.6).
 **Affects:** `ifa/analysis/fa.cc:split_ess_for_mark_type`,
 `split_for_setters_of_setters`, and the mark-based variants;
 `IFA.md` splitter section.
@@ -92,24 +92,38 @@ Iteration attempts so far:
    uniform R1/R2 type but the polymorphism in r1.a feeds a derived
    AVar that stage 1 catches).
 
+5. **`missing_field_dispatch`** (targeting violation): two record
+   types A, B with DISJOINT fields. Polymorphic reader reads field
+   `fa` (exists on A, missing on B). Main calls reader with both
+   instances. FA records the violation (violations=2 in the
+   golden) but the type stage fires first because the reader's
+   formal sees a confluence — the violation stage never runs.
+
 ## Hypotheses (untested)
 
-a. **The mark machinery genuinely requires a shape where stage 1
-   has no qualifying confluence anywhere in the program.** That
-   may be hard to construct in any IFA-source language; could be
-   why no frontend triggers it.
+a. **The post-type stages genuinely require a shape where
+   stage 1 has no qualifying confluence anywhere in the program.**
+   That may be hard to construct in any IFA-source language;
+   could be why no frontend triggers them.
 
-b. **Mark-type is reachable only after `propagate_type_marks` /
-   `build_type_marks` populates `mark_map`s.** Maybe the empty
-   mark_map path in `split_with_type_marks` (line ~3470) returns 0
-   even for legitimate cases, suppressing the stage. Worth tracing
-   what `split_with_type_marks` actually does when called on the
-   confluences our shapes produce.
+b. **The post-type stages are reachable only via specific
+   mark/setter propagation paths** that need particular runtime
+   metadata not produced by current frontends. E.g., `mark_map`
+   may need to be populated by something nothing currently calls.
 
-c. **Mark-type is dead code** — a transitional pass left from a
-   previous splitter design that's now superseded by the
-   subsequent setter / violation stages. The fact that no
-   currently-active workload hits it would support this.
+c. **Some or all of the post-type stages are dead code** —
+   transitional passes left from previous splitter designs that
+   are now superseded. The fact that no currently-active workload
+   hits any of them would support this.
+
+d. **The violation stage specifically requires a shape that
+   produces a violation AND has stage-1-unsplittable polymorphism
+   simultaneously.** Hard to construct because a polymorphic-
+   receiver shape almost always gives stage 1 a confluence to
+   bite on. Splitting via SPLIT_DYNAMIC (the violation stage's
+   path) might apply where SPLIT_EDGES (stage 1's path) can't —
+   but engineering a shape that lands in the gap requires reading
+   `split_edges` vs `split_entry_set` in detail.
 
 ## Verification plan
 
@@ -157,6 +171,9 @@ c. **Mark-type is dead code** — a transitional pass left from a
 - `ifa/tests/synthetic/same_type_dispatch_2.synth` — `splits[type]=1`.
 - `ifa/tests/synthetic/stored_fn_dispatch_2.synth` — `splits[type]=1`.
 - `ifa/tests/synthetic/setter_chain_2types.synth` — `splits[type]=1`.
+- `ifa/tests/synthetic/missing_field_dispatch.synth` —
+  `splits[type]=1`, with `violations=2` recorded but the
+  violation stage never runs.
 
 If someone fixes any post-type stage (e.g., by changing the
 splitter cascade or by writing a shape that actually triggers

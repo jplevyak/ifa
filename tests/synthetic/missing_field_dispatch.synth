@@ -1,0 +1,8 @@
+;; missing_field_dispatch.synth — A and B with disjoint fields;
+;; reader reads field that's only in A. Call with both A and B
+;; instances → violation on the B path.
+;;
+;; Targets violation stage per 09c. Per 09d's eager-absorption
+;; caveat, earlier stages may absorb.
+
+shape: missing_field_dispatch

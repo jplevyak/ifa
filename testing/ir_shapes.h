@@ -67,6 +67,21 @@ void polymorphic_formal(const ParamMap &);
 // setter/mark-type).
 void same_type_dispatch(const ParamMap &);
 
+// missing_field_dispatch: two record types with disjoint fields.
+// A polymorphic reader reads a field that exists in one type
+// but not the other → type violation on the missing-field path.
+//
+// Per 09c's sketch for the violation stage: when the call site is
+// polymorphic and the dispatch fails for some receiver types,
+// splitting the caller specializes each context to a single type
+// and resolves the violation.
+//
+// Whether the violation stage actually fires (vs the type stage
+// splitting the reader's formal first) is what the golden documents.
+//
+// Params: none (always builds two types A, B with one field each).
+void missing_field_dispatch(const ParamMap &);
+
 // setter_chain: cascading setter writes where field A's value
 // becomes field B's setter input. Two RECORD types R1 and R2 in
 // a chain `r1.a → v → r2.b`. Done twice with distinct types
