@@ -73,6 +73,52 @@ void same_type_dispatch(const ParamMap &m) {
   if1->top = top;
 }
 
+void setter_chain(const ParamMap &m) {
+  int n_types = param(m, "n_types", 2);
+  if (n_types < 1) n_types = 1;
+  if (n_types > 3) n_types = 3;
+
+  Sym *R1 = RecordBuilder("R1").field("a").build();
+  Sym *R2 = RecordBuilder("R2").field("b").build();
+
+  // chain(r1, r2): v = r1.a; r2.b = v
+  // The polymorphism lives in the CSes of r1/r2 — r1.a's value
+  // type varies by CS. chain's formals are uniformly typed
+  // (R1, R2) so type stage doesn't split on them, but the read
+  // r1.a sees mixed types at the CS-contour level.
+  Sym *r1_arg = ir::local("r1");
+  Sym *r2_arg = ir::local("r2");
+  Sym *chain = ClosureBuilder("chain")
+      .arg(r1_arg).arg(r2_arg)
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        Sym *v = ir::get_field(cb, r1_arg, "a", "v");
+        ir::set_field(cb, r2_arg, "b", v);
+        cb.reply(cont, ret);
+      });
+
+  // Main: per type variant, allocate r1+r2, populate r1.a with
+  // a typed value, then call chain(r1, r2). The setter-of-setter
+  // target is the cascade r1.a → v → r2.b inside chain, fed by
+  // distinct-typed CSes from different call sites.
+  Sym *top = ClosureBuilder("top")
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        for (int t = 0; t < n_types; t++) {
+          Sym *val = nullptr;
+          switch (t) {
+            case 0: val = ir::const_int32(1); break;
+            case 1: val = ir::const_float64(2.5); break;
+            case 2: val = ir::const_int64(99); break;
+          }
+          Sym *r1 = ir::new_instance(cb, R1);
+          Sym *r2 = ir::new_instance(cb, R2);
+          ir::set_field(cb, r1, "a", val);
+          cb.send_method(chain, r1, {r2_arg ? r2 : r2});  // call chain(r1, r2)
+        }
+        cb.reply(cont, ret);
+      });
+  if1->top = top;
+}
+
 void stored_fn_dispatch(const ParamMap &m) {
   int n_allocs = param(m, "n_allocs", 2);
   if (n_allocs < 2) n_allocs = 2;
@@ -187,6 +233,7 @@ static Entry kRegistry[] = {
     {"polymorphic_formal", polymorphic_formal},
     {"same_type_dispatch", same_type_dispatch},
     {"stored_fn_dispatch", stored_fn_dispatch},
+    {"setter_chain", setter_chain},
     {nullptr, nullptr},
 };
 

@@ -67,6 +67,18 @@ void polymorphic_formal(const ParamMap &);
 // setter/mark-type).
 void same_type_dispatch(const ParamMap &);
 
+// setter_chain: cascading setter writes where field A's value
+// becomes field B's setter input. Two RECORD types R1 and R2 in
+// a chain `r1.a → v → r2.b`. Done twice with distinct types
+// (int and float) so the chain carries polymorphic values.
+//
+// Per 09c, this targets setter-of-setter. Whether it actually
+// fires (vs the type stage absorbing the polymorphism first) is
+// what the golden documents.
+//
+// Params: n_types (1-3). With 2 types, mirrors the 09c sketch.
+void setter_chain(const ParamMap &);
+
 // stored_fn_dispatch: a deeper variant of same_type_dispatch
 // targeting mark-type via a stored-function-pointer pattern.
 //

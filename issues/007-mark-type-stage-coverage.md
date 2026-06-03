@@ -1,8 +1,10 @@
-# Issue 007: mark-type splitter stage not triggered by any shape attempted
+# Issue 007: post-type splitter stages not triggered by any shape
 
-**Status:** open (empirical gap surfaced during Phase 09 C 7.4).
-**Affects:** `ifa/analysis/fa.cc:split_ess_for_mark_type` and
-related `split_with_type_marks` machinery; `IFA.md` splitter section.
+**Status:** open (empirical gap surfaced during Phase 09 C 7.4
+and C 7.5).
+**Affects:** `ifa/analysis/fa.cc:split_ess_for_mark_type`,
+`split_for_setters_of_setters`, and the mark-based variants;
+`IFA.md` splitter section.
 **Related:** [issues/003-fa-converge-determinism.md](003-fa-converge-determinism.md)
 (empirical stage recon), [testing/phases/09c_splitter_triggers.md](../testing/phases/09c_splitter_triggers.md)
 (predicted trigger preconditions), [testing/phases/09d_generator_design.md](../testing/phases/09d_generator_design.md)
@@ -10,18 +12,24 @@ related `split_with_type_marks` machinery; `IFA.md` splitter section.
 
 ## Symptom
 
-Two synthetic shapes (`same_type_dispatch`, `stored_fn_dispatch`)
-designed to trigger the `mark-type` splitter stage both fall to
-the `type` stage instead. Per the FAPassEvent sidecar:
+Four synthetic shapes designed to trigger the post-type splitter
+stages all fall to the `type` stage (or, in the simplest cases,
+to no stage at all because FA converges in one pass). Per the
+FAPassEvent sidecar:
 
 ```
-same_type_dispatch_2:  type=1 (mark-type=0)
-stored_fn_dispatch_2:  type=1 (mark-type=0)
+same_type_dispatch_2:    type=1 (mark-type=0)
+stored_fn_dispatch_2:    type=1 (mark-type=0)
+setter_chain_2types:     type=1 (setter-of-setter=0)
+                         (a flat inline variant produced
+                          0 events — no stage fires)
 ```
 
-Combined with the issue-003 recon (no pyc test triggers mark-type
-either; no V test triggers it), this means **no current shape —
-synthetic or real — triggers the mark-type stage in practice**.
+Combined with the issue-003 recon (no pyc test triggers
+mark-type or setter-of-setter; no V test triggers them either),
+this means **no current shape — synthetic or real — triggers
+any of `mark-type`, `setter-of-setter`, `mark-setter`,
+`mark-setter-of-setter` in practice**.
 
 ## Root cause analysis
 
@@ -62,16 +70,27 @@ But empirically, every shape with a polymorphic flow generates at
 least one stage-1-qualifying confluence somewhere (a formal, a
 return value), which fires stage 1 and pre-empts stage 2.
 
-Two iteration attempts (Phase 09 C 7.4):
+Iteration attempts so far:
 
 1. **`same_type_dispatch`** (same shape as `13_setter_split.ir`):
    two T allocations with distinct-typed values in the same field,
-   read via a polymorphic `peek(t)`. Type stage fires (probably on
-   peek's formal or some derived AVar).
+   read via a polymorphic `peek(t)`. Type stage fires.
 
 2. **`stored_fn_dispatch`**: stored function pointers — record T
    holds a `fn` field; allocate two T's with different closures;
    dispatcher `call_via(t)` does `t.fn()`. Type stage still fires.
+
+3. **`setter_chain`** (inline): per type variant, allocate
+   r1+r2 inline in main, do `r1.a = val; v = r1.a; r2.b = v`. No
+   wrapper function. Result: zero events — FA converges in one
+   pass. Each iteration's CSes are distinct and the chain's
+   carried type is statically resolvable.
+
+4. **`setter_chain`** (with wrapper): wrap the chain in a
+   `chain(r1, r2)` function called twice with allocations of
+   different value types. Type stage fires (chain's formals see a
+   uniform R1/R2 type but the polymorphism in r1.a feeds a derived
+   AVar that stage 1 catches).
 
 ## Hypotheses (untested)
 
@@ -133,12 +152,13 @@ c. **Mark-type is dead code** — a transitional pass left from a
   more empirical data about which shape characteristics matter for
   end-of-pass stages overall.
 
-## Current shape fixtures (lock the type-absorbs-it behavior)
+## Current shape fixtures (lock the absorbed behavior)
 
-- `ifa/tests/synthetic/same_type_dispatch_2.synth`
-- `ifa/tests/synthetic/stored_fn_dispatch_2.synth`
+- `ifa/tests/synthetic/same_type_dispatch_2.synth` — `splits[type]=1`.
+- `ifa/tests/synthetic/stored_fn_dispatch_2.synth` — `splits[type]=1`.
+- `ifa/tests/synthetic/setter_chain_2types.synth` — `splits[type]=1`.
 
-Both have `.fa-converge.expected` goldens showing `splits[type]=1`.
-If someone fixes mark-type (e.g., by changing the splitter
-cascade or by writing a shape that actually triggers it), the
-goldens will shift and become the regression markers.
+If someone fixes any post-type stage (e.g., by changing the
+splitter cascade or by writing a shape that actually triggers
+them), one of these goldens will shift and become the regression
+marker.

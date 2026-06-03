@@ -1,0 +1,9 @@
+;; setter_chain_2types.synth — two RECORD types R1, R2 in a
+;; setter cascade: r1.a = val; v = r1.a; r2.b = v. Two type
+;; variants (int, float) so the chain carries polymorphic data.
+;;
+;; Targets setter-of-setter per 09c. Per 09d's eager-absorption
+;; caveat, expect earlier stages may absorb it.
+
+shape: setter_chain
+n_types: 2
