@@ -1,0 +1,7 @@
+;; vector_element_polymorphism_2.synth — vector type V; two
+;; allocations, each with a different-typed value written into
+;; element 0; reader peek(v) returns v[0]. Targets split_css —
+;; the only post-type splitter path pyc programs reach.
+
+shape: vector_element_polymorphism
+n_writes: 2

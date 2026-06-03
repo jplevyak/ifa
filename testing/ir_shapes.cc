@@ -73,6 +73,41 @@ void same_type_dispatch(const ParamMap &m) {
   if1->top = top;
 }
 
+void vector_element_polymorphism(const ParamMap &m) {
+  int n_writes = param(m, "n_writes", 2);
+  if (n_writes < 2) n_writes = 2;
+  if (n_writes > 3) n_writes = 3;
+
+  // Vector type V — is_vector=1, element=fresh Sym.
+  Sym *V = RecordBuilder("V").vector().build();
+
+  // Write n_writes distinct-typed values into the SAME vector CS,
+  // then read back. The element AVar for that CS sees a per-CS
+  // type confluence (multiple types within one creation set) —
+  // pyc's list runtime creates the same shape via list iteration.
+  // Stage 1 can't split the CS (single allocation site), so the
+  // residual confluence should fall to setter/mark stages.
+  Sym *top = ClosureBuilder("top")
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        Sym *v = ir::new_instance(cb, V);
+        for (int i = 0; i < n_writes; i++) {
+          Sym *idx = ir::const_int32(i);
+          Sym *val = nullptr;
+          switch (i) {
+            case 0: val = ir::const_int32(10); break;
+            case 1: val = ir::const_float64(2.5); break;
+            case 2: val = ir::const_int64(99); break;
+          }
+          ir::vec_set(cb, v, idx, val);
+        }
+        // Read element 0 back — sees the per-CS polymorphic element.
+        Sym *r = ir::vec_get(cb, v, ir::const_int32(0), "r");
+        cb.move(r, ret);
+        cb.reply(cont, ret);
+      });
+  if1->top = top;
+}
+
 void missing_field_dispatch(const ParamMap & /*m*/) {
   // Two record types with DISJOINT field sets.
   Sym *A = RecordBuilder("A").field("fa").build();
@@ -266,6 +301,7 @@ static Entry kRegistry[] = {
     {"stored_fn_dispatch", stored_fn_dispatch},
     {"setter_chain", setter_chain},
     {"missing_field_dispatch", missing_field_dispatch},
+    {"vector_element_polymorphism", vector_element_polymorphism},
     {nullptr, nullptr},
 };
 

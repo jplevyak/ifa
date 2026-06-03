@@ -170,6 +170,11 @@ class RecordBuilder {
  public:
   explicit RecordBuilder(cchar *name);
   RecordBuilder &field(cchar *name, Sym *type = nullptr);
+  // Mark this type as a vector — sets is_vector=1 and creates an
+  // `element` Sym. Used for shapes targeting the split_css setter
+  // path (the only post-type stage pyc programs actually reach,
+  // via list runtime). element_type defaults to a fresh "any" Sym.
+  RecordBuilder &vector(Sym *element_type = nullptr);
   Sym *build();
 
  private:
@@ -209,6 +214,16 @@ Sym *call_method(CodeBuilder &cb, Sym *obj, cchar *method,
 // receiver / method-symbol indirection — fn IS the dispatch
 // target (the .ir form `(send %f %a => %r)`).
 Sym *call_fn(CodeBuilder &cb, Sym *fn, std::initializer_list<Sym *> args,
+             cchar *result_name = nullptr);
+
+// Vector element write: (send sym_primitive sym_set_index_object
+// vec index val => _). For vector-shaped CSes, this writes val
+// into the CS's element AVar (the entry point for split_css).
+void vec_set(CodeBuilder &cb, Sym *vec, Sym *index, Sym *val);
+
+// Vector element read: (send sym_primitive sym_index_object
+// vec index => result). Returns the result Sym.
+Sym *vec_get(CodeBuilder &cb, Sym *vec, Sym *index,
              cchar *result_name = nullptr);
 
 // Create a fresh local Sym (nesting_depth = LOCALLY_NESTED so the

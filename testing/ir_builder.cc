@@ -179,6 +179,12 @@ RecordBuilder &RecordBuilder::field(cchar *name, Sym *type) {
   return *this;
 }
 
+RecordBuilder &RecordBuilder::vector(Sym *element_type) {
+  type_->is_vector = 1;
+  type_->element = element_type ? element_type : new_Sym();
+  return *this;
+}
+
 Sym *RecordBuilder::build() {
   Vec<Sym *> *fields = as_vec(fields_storage_);
   for (Sym *f : *fields) type_->has.add(f);
@@ -227,6 +233,18 @@ Sym *call_fn(CodeBuilder &cb, Sym *fn, std::initializer_list<Sym *> args,
   if1_add_send_arg(if1, c, fn);
   for (Sym *a : args) if1_add_send_arg(if1, c, a);
   if1_add_send_result(if1, c, result);
+  return result;
+}
+
+void vec_set(CodeBuilder &cb, Sym *vec, Sym *index, Sym *val) {
+  // (send sym_primitive sym_set_index_object vec index val => _)
+  Sym *dead = local();
+  cb.send_prim(sym_set_index_object, {vec, index, val}, {dead});
+}
+
+Sym *vec_get(CodeBuilder &cb, Sym *vec, Sym *index, cchar *result_name) {
+  Sym *result = local(result_name);
+  cb.send_prim(sym_index_object, {vec, index}, {result});
   return result;
 }
 

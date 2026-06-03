@@ -99,6 +99,23 @@ Iteration attempts so far:
    golden) but the type stage fires first because the reader's
    formal sees a confluence — the violation stage never runs.
 
+6. **`vector_element_polymorphism`** (targeting setter via
+   split_css, the path pyc list runtime hits). Two iterations:
+   a. Multiple V instances each with a different-typed value
+      written, polymorphic reader. Type-absorbed.
+   b. Single V with multiple different-typed writes (within-CS
+      element polymorphism). Zero events — FA converges in
+      one pass.
+   The pyc list runtime triggers split_css via the polymorphic
+   `__list_iter__` class — a stored iterator instance whose
+   `__next__` dispatches polymorphically through the element type.
+   Reproducing that in synthetic IR requires not just vector
+   primitives but a full iterator-pattern record type, beyond the
+   single-shape budget for this step. Pyc's 4 test programs that
+   exercise split_css (`list_multiply`, `list_comprehension`,
+   `builtins`, `pyc_declare`) are the implicit regression
+   coverage for now.
+
 ## Hypotheses (untested)
 
 a. **The post-type stages genuinely require a shape where
@@ -174,6 +191,10 @@ d. **The violation stage specifically requires a shape that
 - `ifa/tests/synthetic/missing_field_dispatch.synth` —
   `splits[type]=1`, with `violations=2` recorded but the
   violation stage never runs.
+- `ifa/tests/synthetic/vector_polymorphic_writes_2.synth` —
+  0 events; FA converges in one pass. Locks the "primitive
+  vec_set + vec_get without iterator pattern doesn't fire any
+  splitter stage" finding.
 
 If someone fixes any post-type stage (e.g., by changing the
 splitter cascade or by writing a shape that actually triggers

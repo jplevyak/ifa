@@ -67,6 +67,20 @@ void polymorphic_formal(const ParamMap &);
 // setter/mark-type).
 void same_type_dispatch(const ParamMap &);
 
+// vector_element_polymorphism: targets split_css — the only
+// post-type splitter path pyc programs reach in practice (via
+// list runtime). A vector-marked type V; n_allocs instances
+// of V, each having different-typed values written to its
+// element slot via set_index_object. Reader function reads
+// the element back via index_object.
+//
+// Per 09c §"Stage 3c", the trigger is AVars with cs_map
+// populated where setters' containers overlap with the cs_map's
+// CSes. Vector element AVars are CS-mapped.
+//
+// Params: n_allocs (>=2, <=3).
+void vector_element_polymorphism(const ParamMap &);
+
 // missing_field_dispatch: two record types with disjoint fields.
 // A polymorphic reader reads a field that exists in one type
 // but not the other → type violation on the missing-field path.
