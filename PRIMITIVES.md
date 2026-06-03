@@ -627,6 +627,52 @@ emit them yourself inside the `tfn` via `type_violation(...)`.
 If your `cgfn` mixes `fputs` with `fprintf`, that's fine; but don't
 mix in raw `write(fileno(fp), ...)` calls — flush ordering will surprise.
 
+### 13.12 Primitives do NOT get per-call-site ES specialization
+
+A `(sym_primitive, name, ...)` SEND resolves to a single Prim and runs
+its transfer function in the *caller's* EntrySet. Unlike a user-fun
+SEND, the primitive doesn't get its own ES per call site, so the
+splitter cascade (`split_ess_for_type` and friends — see
+[IFA.md](IFA.md) §splitter) cannot specialize the primitive's
+behavior per receiver-CS. The transfer function instead iterates *all*
+CSes flowing into the relevant rval and unions their results into a
+single output AVar.
+
+**Concrete consequence for indexing.** `prim_index_object` (and its
+companion `prim_set_index_object`) iterate every CS in the `vec` rval's
+out-set and call `flow_vars(get_element_avar(cs), result)` per CS. The
+result AVar receives the *union* of all per-CS element types in one
+shot. If the same `vec` AVar carries instances of `V<int>` and
+`V<float>`, the read site's lval is `int | float` — and no later
+ES-level split can disentangle that, because the union happened inside
+a single primitive call.
+
+**The escape hatch is method dispatch.** `obj[i]` in pyc lowers not
+to a direct `prim_index_object` SEND but to a method call:
+`obj.__getitem__(i)`. That's a user-fun-shaped SEND; the splitter
+*can* fork it per-receiver-CS via the normal type-stage / mark
+machinery, giving each list-CS its own specialized `__getitem__`
+resolution. The simple inliner ([OPTIMIZE.md](OPTIMIZE.md)
+§simple_inlining) then removes the dispatch overhead in the
+monomorphic case, so there's no runtime cost for the indirection.
+
+**Implication for frontend / IR-builder authors.** When the
+polymorphism at a primitive call site needs per-CS specialization,
+emit a method-dispatch SEND, not the primitive directly. The
+primitive is the right tool for monomorphic-by-construction
+operations (arithmetic on a single numeric type, identity, marker
+sends like `reply`); the method-dispatch path is the right tool
+anywhere CS identity carries real type information that downstream
+analysis depends on.
+
+This design tradeoff — keeping primitives simple at the cost of
+per-call ES specialization — is deliberate. Adding ES-level splitting
+to primitives would mean per-CS transfer-function specialization and
+matching codegen variants, expanding the analysis surface
+substantially. The method-dispatch detour gives the same end result
+(per-CS specialization where it matters) with no new machinery, and
+the inliner buys back the runtime overhead.
+
 ---
 
 ## 14. Symptom → start-here

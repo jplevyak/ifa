@@ -24,6 +24,20 @@ should target). All overload resolution, generic instantiation,
 coercion, promotion, default-argument supply, and argument-reordering
 happens here.
 
+**Why method dispatch matters for splitter precision.** Sends
+resolved through this module create per-call EntrySets that the
+splitter can fork via type-stage and mark machinery, giving each
+receiver-CS its own specialized callee resolution. Primitive sends
+([PRIMITIVES.md](PRIMITIVES.md) §13.12) bypass this entirely —
+a primitive's transfer function unions all incoming-CS contributions
+into one result AVar in the caller's ES, with no per-CS specialization
+opportunity. Frontend authors who need polymorphic indexing,
+subscripting, or container access should lower to method dispatch
+(`obj.__getitem__(i)`) rather than raw primitives
+(`prim_index_object`) when CS identity carries real type information
+downstream. The simple inliner ([OPTIMIZE.md](OPTIMIZE.md)) removes
+the method-call overhead in monomorphic cases.
+
 ---
 
 ## 2. Vocabulary
