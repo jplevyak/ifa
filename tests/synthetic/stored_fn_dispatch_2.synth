@@ -1,0 +1,9 @@
+;; stored_fn_dispatch_2.synth — wrapped variant of same_type_dispatch.
+;; Targets mark-type by using stored function pointers — record T
+;; has one fn-typed field; two T's hold different closures; a
+;; dispatcher calls obj.fn() polymorphically. The dispatcher's
+;; receiver is monomorphic on T, but the result type varies by CS,
+;; which mark-type should be able to split.
+
+shape: stored_fn_dispatch
+n_allocs: 2

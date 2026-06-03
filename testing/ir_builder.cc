@@ -219,6 +219,17 @@ Sym *call_method(CodeBuilder &cb, Sym *obj, cchar *method,
   return cb.send_method(method_sym, obj, args, result);
 }
 
+Sym *call_fn(CodeBuilder &cb, Sym *fn, std::initializer_list<Sym *> args,
+             cchar *result_name) {
+  Sym *result = local(result_name);
+  // (send fn args... => result) — fn is rval[0], no separate recv.
+  Code *c = if1_send1(if1, cb.slot());
+  if1_add_send_arg(if1, c, fn);
+  for (Sym *a : args) if1_add_send_arg(if1, c, a);
+  if1_add_send_result(if1, c, result);
+  return result;
+}
+
 Sym *local(cchar *name) {
   Sym *s = new_Sym(name);
   s->is_local = 1;

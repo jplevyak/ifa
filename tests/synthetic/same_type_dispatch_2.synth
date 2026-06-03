@@ -1,0 +1,10 @@
+;; same_type_dispatch_2.synth — 2 allocations of same record type
+;; T with distinct-typed values stored in T.data. Reader peek(t)
+;; is monomorphic on receiver type but reads polymorphic field.
+;;
+;; Targets mark-type stage (per 09c) — but per 09d's eager-
+;; absorption caveat, the simple shape may get absorbed by the
+;; type stage first. Golden documents what actually fires.
+
+shape: same_type_dispatch
+n_allocs: 2

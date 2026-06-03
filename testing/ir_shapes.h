@@ -51,6 +51,40 @@ void noop_main(const ParamMap &);
 // matches the shape of 02_splitter.ir.
 void polymorphic_formal(const ParamMap &);
 
+// same_type_dispatch: a record type T with one field. Builds
+// `n_allocs` allocations of T (same type, distinct CSes), each
+// storing a *different-typed* value in the field. A reader fn
+// `peek(t)` returns t.field; main calls peek on each allocation.
+//
+// Per 09c, this targets the mark-type stage: the formal of peek
+// has same type T (no ES-level type confluence to split), but the
+// field's CS-contour AVar has mixed types across CSes. Whether
+// mark-type actually fires (vs the type stage absorbing the
+// confluence first) is what the golden documents.
+//
+// Params: n_allocs (>=2, <=3). With 2 allocs this is the same
+// shape as 13_setter_split.ir (which currently triggers type, not
+// setter/mark-type).
+void same_type_dispatch(const ParamMap &);
+
+// stored_fn_dispatch: a deeper variant of same_type_dispatch
+// targeting mark-type via a stored-function-pointer pattern.
+//
+// Builds: record T with one field `fn`. Builds N small closures
+// f0(), f1(), ... each returning a different-typed constant.
+// Allocates N T instances, each storing a different fi in its
+// `fn` field. A dispatcher closure `call_via(t)` does
+// `t.fn()` — calling whatever closure is stored in t's field.
+// Main calls call_via on each allocation.
+//
+// Hypothesis: the call dispatch through stored function pointers
+// creates a mark-distinguishable resolution that mark-type can
+// split. If it still falls to the type stage, that's a finding
+// (the mark mechanism may not engage on this pattern either).
+//
+// Params: n_allocs (>=2, <=3).
+void stored_fn_dispatch(const ParamMap &);
+
 }  // namespace IRShape
 
 #endif  // IFA_TESTING_IR_SHAPES_H

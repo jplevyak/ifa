@@ -205,6 +205,12 @@ Sym *call_method(CodeBuilder &cb, Sym *obj, cchar *method,
                  std::initializer_list<Sym *> args,
                  cchar *result_name = nullptr);
 
+// Direct closure call: emit (send fn args... => result). No
+// receiver / method-symbol indirection — fn IS the dispatch
+// target (the .ir form `(send %f %a => %r)`).
+Sym *call_fn(CodeBuilder &cb, Sym *fn, std::initializer_list<Sym *> args,
+             cchar *result_name = nullptr);
+
 // Create a fresh local Sym (nesting_depth = LOCALLY_NESTED so the
 // finalize pass adjusts it to fn_depth + 1).
 Sym *local(cchar *name = nullptr);

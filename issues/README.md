@@ -62,6 +62,12 @@ that:
   pattern matcher to a chain matcher would catch the most common
   method-wrapper shape in pyc-emitted IR. Stays within the "simple"
   boundary (no iteration, no cost model).
+- [007-mark-type-stage-coverage.md](007-mark-type-stage-coverage.md) —
+  the `mark-type` splitter stage isn't triggered by any pyc test,
+  V test, or synthetic shape attempted. Either there's a shape no
+  one's tried yet, or it's dead code. Two synthetic fixtures
+  document the type-stage-absorbs-it behavior; needs deeper trace
+  of `split_with_type_marks` to settle.
 
 ## When to file an issue here vs fix it now
 

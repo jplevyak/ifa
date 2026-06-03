@@ -29,6 +29,105 @@ void noop_main(const ParamMap & /*m*/) {
   if1->top = fn;
 }
 
+void same_type_dispatch(const ParamMap &m) {
+  int n_allocs = param(m, "n_allocs", 2);
+  if (n_allocs < 2) n_allocs = 2;
+  if (n_allocs > 3) n_allocs = 3;
+
+  // RECORD T with one field `data`.
+  Sym *T = RecordBuilder("T").field("data").build();
+
+  // Reader: peek(t) → t.data. Polymorphic in the value type;
+  // monomorphic in the receiver type (all T). This is the
+  // dispatch site whose ES does NOT split on type stage (formal
+  // is uniformly T), pushing the work to mark-type / setter.
+  Sym *t_arg = ir::local("t");
+  Sym *peek = ClosureBuilder("peek")
+      .arg(t_arg)
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        Sym *v = ir::get_field(cb, t_arg, "data", "v");
+        cb.move(v, ret);
+        cb.reply(cont, ret);
+      });
+
+  // Main: allocate n_allocs instances of T, store a different-
+  // typed value in each, then read each via peek.
+  Sym *top = ClosureBuilder("top")
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        Sym *insts[3] = {nullptr, nullptr, nullptr};
+        Sym *vals[3] = {nullptr, nullptr, nullptr};
+        for (int i = 0; i < n_allocs; i++) {
+          insts[i] = ir::new_instance(cb, T);
+          switch (i) {
+            case 0: vals[i] = ir::const_int32(100); break;
+            case 1: vals[i] = ir::const_float64(2.5); break;
+            case 2: vals[i] = ir::const_int64(42); break;
+          }
+          ir::set_field(cb, insts[i], "data", vals[i]);
+        }
+        for (int i = 0; i < n_allocs; i++) {
+          cb.send_method(peek, insts[i], {});
+        }
+        cb.reply(cont, ret);
+      });
+  if1->top = top;
+}
+
+void stored_fn_dispatch(const ParamMap &m) {
+  int n_allocs = param(m, "n_allocs", 2);
+  if (n_allocs < 2) n_allocs = 2;
+  if (n_allocs > 3) n_allocs = 3;
+
+  Sym *T = RecordBuilder("T").field("fn").build();
+
+  // Build n_allocs leaf closures, each returning a different-
+  // typed constant. f0() → int32, f1() → float64, f2() → int64.
+  Sym *leaves[3] = {nullptr, nullptr, nullptr};
+  for (int i = 0; i < n_allocs; i++) {
+    char nm[16];
+    snprintf(nm, sizeof(nm), "leaf%d", i);
+    leaves[i] = ClosureBuilder(nm).body(
+        [&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+          Sym *v = nullptr;
+          switch (i) {
+            case 0: v = ir::const_int32(10); break;
+            case 1: v = ir::const_float64(3.14); break;
+            case 2: v = ir::const_int64(99); break;
+          }
+          cb.move(v, ret);
+          cb.reply(cont, ret);
+        });
+  }
+
+  // Dispatcher: call_via(t) does t.fn(). Monomorphic on T but
+  // dispatches through a stored function pointer.
+  Sym *t_arg = ir::local("t");
+  Sym *call_via = ClosureBuilder("call_via")
+      .arg(t_arg)
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        Sym *m = ir::get_field(cb, t_arg, "fn", "m");
+        Sym *r = ir::call_fn(cb, m, {}, "r");
+        cb.move(r, ret);
+        cb.reply(cont, ret);
+      });
+
+  // Main: allocate n_allocs T instances; store leaves[i] in
+  // each fn field; call call_via on each instance.
+  Sym *top = ClosureBuilder("top")
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        Sym *insts[3] = {nullptr, nullptr, nullptr};
+        for (int i = 0; i < n_allocs; i++) {
+          insts[i] = ir::new_instance(cb, T);
+          ir::set_field(cb, insts[i], "fn", leaves[i]);
+        }
+        for (int i = 0; i < n_allocs; i++) {
+          cb.send_method(call_via, insts[i], {});
+        }
+        cb.reply(cont, ret);
+      });
+  if1->top = top;
+}
+
 void polymorphic_formal(const ParamMap &m) {
   int n_types = param(m, "n_types", 2);
   int n_per_type = param(m, "n_per_type", 1);
@@ -86,6 +185,8 @@ struct Entry {
 static Entry kRegistry[] = {
     {"noop_main", noop_main},
     {"polymorphic_formal", polymorphic_formal},
+    {"same_type_dispatch", same_type_dispatch},
+    {"stored_fn_dispatch", stored_fn_dispatch},
     {nullptr, nullptr},
 };
 
