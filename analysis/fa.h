@@ -149,7 +149,7 @@ class Setters : public Vec<AVar *> {
   SettersClasses *eq_classes;
   Map<AVar *, Setters *> add_map;
 
-  Setters() : hash(0), eq_classes(0) {}
+  Setters() : hash(0), eq_classes(nullptr) {}
 };
 
 typedef MapElem<void *, int> MarkElem;
@@ -226,15 +226,15 @@ class SettersClassesHashFns {
   }
 };
 
-enum ATypeViolation_kind {
-  ATypeViolation_PRIMITIVE_ARGUMENT,
-  ATypeViolation_SEND_ARGUMENT,
-  ATypeViolation_DISPATCH_AMBIGUITY,
-  ATypeViolation_MEMBER,
-  ATypeViolation_MATCH,
-  ATypeViolation_NOTYPE,
-  ATypeViolation_BOXING,
-  ATypeViolation_CLOSURE_RECURSION
+enum class ATypeViolation_kind {
+  PRIMITIVE_ARGUMENT,
+  SEND_ARGUMENT,
+  DISPATCH_AMBIGUITY,
+  MEMBER,
+  MATCH,
+  NOTYPE,
+  BOXING,
+  CLOSURE_RECURSION
 };
 
 class ATypeViolation : public gc {
@@ -246,7 +246,7 @@ class ATypeViolation : public gc {
   Vec<Fun *> *funs;
 
   ATypeViolation(ATypeViolation_kind akind, AVar *aav, AVar *asend)
-      : kind(akind), av(aav), send(asend), type(0), funs(0) {}
+      : kind(akind), av(aav), send(asend), type(nullptr), funs(nullptr) {}
 };
 
 class ATypeViolationHashFuns {
@@ -266,7 +266,7 @@ class ATypeFold : public gc {
   AType *b;
   AType *result;
 
-  ATypeFold(Prim *ap, AType *aa, AType *ab, AType *aresult = 0) : p(ap), a(aa), b(ab), result(aresult) {}
+  ATypeFold(Prim *ap, AType *aa, AType *ab, AType *aresult = nullptr) : p(ap), a(aa), b(ab), result(aresult) {}
 };
 
 class ATypeFoldChainHashFns {
@@ -325,14 +325,14 @@ void fa_reset();
 // pattern in ifa/optimize/inline.h — events are only recorded when
 // fa_events_enable() has been called; production pays nothing.
 
-enum FAPassStage {
-  FA_STAGE_TYPE_CONFLUENCE,  // split_ess_for_type
-  FA_STAGE_MARK_TYPE,        // split_ess_for_mark_type
-  FA_STAGE_SETTER,           // split_for_setters (type-based)
-  FA_STAGE_SETTER_OF_SETTER, // split_for_setters_of_setters (type-based)
-  FA_STAGE_MARK_SETTER,      // split_for_setters with marks
-  FA_STAGE_MARK_SETTER_OF_SETTER, // split_for_setters_of_setters with marks
-  FA_STAGE_VIOLATION,        // split_for_violations
+enum class FAPassStage {
+  TYPE_CONFLUENCE,        // split_ess_for_type
+  MARK_TYPE,              // split_ess_for_mark_type
+  SETTER,                 // split_for_setters (type-based)
+  SETTER_OF_SETTER,       // split_for_setters_of_setters (type-based)
+  MARK_SETTER,            // split_for_setters with marks
+  MARK_SETTER_OF_SETTER,  // split_for_setters_of_setters with marks
+  VIOLATION,              // split_for_violations
 };
 
 struct FAPassEvent {
@@ -369,7 +369,7 @@ void flow_vars(AVar *v, AVar *vv);
 void flow_var_type_permit(AVar *v, AType *t);
 CreationSet *creation_point(AVar *v, Sym *s, int nvars = -1);
 void prim_make_constraints(PNode *p, EntrySet *es);
-void type_violation(ATypeViolation_kind akind, AVar *av, AType *type, AVar *send, Vec<Fun *> *funs = NULL);
+void type_violation(ATypeViolation_kind akind, AVar *av, AType *type, AVar *send, Vec<Fun *> *funs = nullptr);
 AType *type_cannonicalize(AType *t);
 AType *type_diff(AType *, AType *);
 AType *type_intersection(AType *, AType *);

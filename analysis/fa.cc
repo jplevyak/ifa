@@ -27,30 +27,30 @@ int write_code_exit = 0;
 
 int analysis_pass = 0;
 
-AType *bottom_type = 0;
-AType *nil_type = 0;
-AType *unknown_type = 0;
-AType *void_type = 0;
-AType *top_type = 0;
-AType *any_type = 0;
-AType *bool_type = 0;
-AType *true_type = 0;
-AType *false_type = 0;
-AType *size_type = 0;
-AType *anyint_type = 0;
-AType *anynum_kind = 0;
-AType *symbol_type = 0;
-AType *string_type = 0;
-AType *tuple_type = 0;
-AType *anytype_type = 0;
-AType *function_type = 0;
+AType *bottom_type = nullptr;
+AType *nil_type = nullptr;
+AType *unknown_type = nullptr;
+AType *void_type = nullptr;
+AType *top_type = nullptr;
+AType *any_type = nullptr;
+AType *bool_type = nullptr;
+AType *true_type = nullptr;
+AType *false_type = nullptr;
+AType *size_type = nullptr;
+AType *anyint_type = nullptr;
+AType *anynum_kind = nullptr;
+AType *symbol_type = nullptr;
+AType *string_type = nullptr;
+AType *tuple_type = nullptr;
+AType *anytype_type = nullptr;
+AType *function_type = nullptr;
 
 static int avar_id = 1;
 static int aedge_id = 1;
 static int creation_set_id = 1;
 static int entry_set_id = 1;
 
-FA *fa = 0;
+FA *fa = nullptr;
 static Timer pass_timer, match_timer, extend_timer;
 
 static ChainHash<AType *, ATypeChainHashFns> cannonical_atypes;
@@ -73,12 +73,12 @@ static int application(PNode *p, EntrySet *es, AVar *fun, CreationSet *s, Vec<AV
 // from a prior run leaking in.
 void fa_reset() {
   analysis_pass = 0;
-  bottom_type = nil_type = unknown_type = void_type = top_type = any_type = NULL;
-  bool_type = true_type = false_type = size_type = NULL;
-  anyint_type = anynum_kind = symbol_type = string_type = tuple_type = NULL;
-  anytype_type = function_type = NULL;
+  bottom_type = nil_type = unknown_type = void_type = top_type = any_type = nullptr;
+  bool_type = true_type = false_type = size_type = nullptr;
+  anyint_type = anynum_kind = symbol_type = string_type = tuple_type = nullptr;
+  anytype_type = function_type = nullptr;
   avar_id = aedge_id = creation_set_id = entry_set_id = 1;
-  fa = NULL;
+  fa = nullptr;
   pass_timer.reset();    match_timer.reset();    extend_timer.reset();
   memset(pass_timer.accumulator,   0, sizeof(pass_timer.accumulator));
   memset(match_timer.accumulator,  0, sizeof(match_timer.accumulator));
@@ -122,23 +122,23 @@ static void record_fa_event(FAPassStage stage, int splits, int ess_before, int c
   fa_events_storage.add(e);
 }
 
-AEdge::AEdge() : from(0), to(0), pnode(0), fun(0), match(0), in_edge_worklist(0) { id = aedge_id++; }
+AEdge::AEdge() : from(nullptr), to(nullptr), pnode(nullptr), fun(nullptr), match(nullptr), in_edge_worklist(0) { id = aedge_id++; }
 
 AVar::AVar(Var *v, void *acontour)
     : var(v),
       contour(acontour),
-      lvalue(0),
-      gen(0),
+      lvalue(nullptr),
+      gen(nullptr),
       in(bottom_type),
       out(bottom_type),
-      restrict(0),
-      container(0),
-      setters(0),
-      setter_class(0),
-      mark_map(0),
-      cs_map(0),
-      match_cache(0),
-      type(0),
+      restrict(nullptr),
+      container(nullptr),
+      setters(nullptr),
+      setter_class(nullptr),
+      mark_map(nullptr),
+      cs_map(nullptr),
+      match_cache(nullptr),
+      type(nullptr),
       ivar_offset(0),
       in_send_worklist(0),
       contour_is_entry_set(0),
@@ -190,14 +190,15 @@ CreationSet::CreationSet(Sym *s)
       added_element_var(0),
       closure_used(0),
       tuple_able(0),
-      atype(0),
-      equiv(0),
-      type(0) {
+      atype(nullptr),
+      equiv(nullptr),
+      type(nullptr) {
   id = creation_set_id++;
 }
 
 CreationSet::CreationSet(CreationSet *cs)
-    : dfs_color(DFS_white), added_element_var(0), closure_used(0), tuple_able(0), atype(0), equiv(0), type(0) {
+    : dfs_color(DFS_white), added_element_var(0), closure_used(0), tuple_able(0),
+      atype(nullptr), equiv(nullptr), type(nullptr) {
   sym = cs->sym;
   id = creation_set_id++;
   clone_for_constants = cs->clone_for_constants;
@@ -210,7 +211,7 @@ CreationSet::CreationSet(CreationSet *cs)
   sym->creators.add(this);
 }
 
-EntrySet::EntrySet(Fun *af) : fun(af), dfs_color(DFS_white), in_es_worklist(0), split(0), equiv(0) {
+EntrySet::EntrySet(Fun *af) : fun(af), dfs_color(DFS_white), in_es_worklist(0), split(nullptr), equiv(nullptr) {
   id = entry_set_id++;
 }
 
@@ -474,7 +475,7 @@ AType *type_cannonicalize(AType *t) {
   Vec<CreationSet *> nonconsts;
   for (CreationSet *cs : *t) if (cs) {
     // strip out constants if the base type is included
-    CreationSet *base_cs = 0;
+    CreationSet *base_cs = nullptr;
     if (cs->sym->is_constant || (cs->sym->type->num_kind && cs->sym != cs->sym->type))
       base_cs = cs->sym->type->abstract_type->v[0];
     else if (cs->sym->type_kind == Type_TAGGED)
@@ -915,7 +916,7 @@ static AEdge *set_or_copy_AEdge(AEdge *e, EntrySet *es, Vec<AEdge *> &ees) {
 }
 
 static int find_best_entry_sets(AEdge *e, Vec<AEdge *> &edges) {
-  EntrySet *es = NULL;
+  EntrySet *es = nullptr;
   int val = -1;
   for (EntrySet *x : e->match->fun->ess) {
     int v = entry_set_compatibility(e, x);
@@ -976,14 +977,14 @@ static int check_split(AEdge *e, Vec<AEdge *> &ees) {
 // check results of last session read from disk
 static int check_es_db(AEdge *e, Vec<AEdge *> &ees) { return 0; }
 
-static void make_entry_set(AEdge *e, Vec<AEdge *> &edges, EntrySet *split = 0, EntrySet *preference = 0) {
+static void make_entry_set(AEdge *e, Vec<AEdge *> &edges, EntrySet *split = nullptr, EntrySet *preference = 0) {
   if (e->to) {
     edges.add(e);
     return;
   }
   if (check_split(e, edges)) return;
   if (check_es_db(e, edges)) return;
-  EntrySet *es = 0;
+  EntrySet *es = nullptr;
   if (!split) {
     if (find_best_entry_sets(e, edges)) return;
   }
@@ -1062,7 +1063,7 @@ static void make_kind(PNode *p, EntrySet *es, Sym *kind, AVar *container, Vec<Va
   CreationSet *cs = creation_point(container, kind, l);
   cs->vars.fill(l);
   for (int i = 0; i < l; i++) {
-    AVar *av = 0;
+    AVar *av = nullptr;
     if (avars)
       av = avars->v[vstart + i];
     else
@@ -1306,7 +1307,7 @@ static void make_AEdges(Match *m, PNode *p, EntrySet *from, Vec<AVar *> &args) {
 
 // returns 1 if any are partial, 0 if some matched and -1 if none matched
 static int all_applications(PNode *p, EntrySet *es, AVar *a0, Vec<AVar *> &args, Vec<cchar *> &names, int is_closure,
-                            Partial_kind partial, PNode *visibility_point = 0, Vec<CreationSet *> *closures = 0) {
+                            Partial_kind partial, PNode *visibility_point = nullptr, Vec<CreationSet *> *closures = 0) {
   if (!visibility_point) visibility_point = p;
   int incomplete = -2;
   a0->arg_of_send.add(make_AVar(p->lvals[0], es));
@@ -1346,7 +1347,7 @@ static int partial_application(PNode *p, EntrySet *es, CreationSet *cs, Vec<AVar
   Vec<CreationSet *> c;
   if (closures) {
     if (closures->set_in(cs)) {
-      type_violation(ATypeViolation_CLOSURE_RECURSION, cs->vars[0], 0, result, 0);
+      type_violation(ATypeViolation_kind::CLOSURE_RECURSION, cs->vars[0], nullptr, result, nullptr);
       return 0;
     }
   } else
@@ -1420,14 +1421,14 @@ static Var **destruct(Var **lvals, int nlvals, AVar *r, Sym *t, AVar *result, in
   r->arg_of_send.add(result);
   if (t->has.n) {
     for (CreationSet *cs : r->out->sorted) {
-      AVar *violation = 0;
+      AVar *violation = nullptr;
       int r_tuple = sym_tuple->specializers.set_in(cs->sym->type) != 0;
       int t_tuple = sym_tuple->specializers.set_in(t) != 0;
       if (cs->sym->must_specialize->specializers.set_in(t) || (r_tuple && t_tuple)) {
         for (int i = 0; i < t->has.n; i++) {
           assert(t->has.v[i]->var == lvals[i]);
           AVar *l = make_AVar(lvals[i], es);
-          AVar *av = NULL;
+          AVar *av = nullptr;
           if (!t_tuple && t->has_name(i))
             av = cs->var_map.get(t->has_name(i));
           else if (t_tuple && i < cs->vars.n) {
@@ -1462,7 +1463,7 @@ static Var **destruct(Var **lvals, int nlvals, AVar *r, Sym *t, AVar *result, in
           av = make_AVar(t->has[cs->vars.n]->var, es);
         if (!av->var->sym->name && cs->vars.n > t->has.n && t->has.n && t->has[t->has.n - 1]->name)
           av = make_AVar(t->has[t->has.n - 1]->var, es);
-        type_violation(ATypeViolation_MATCH, av, make_AType(cs), result);
+        type_violation(ATypeViolation_kind::MATCH, av, make_AType(cs), result);
       }
     }
   }
@@ -1566,14 +1567,14 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
   } else {
     // argument and return constraints
     int n = p->prim->nargs < 0 ? -p->prim->nargs : p->prim->nargs;
-    AVar *a = 0, *b = 0;
+    AVar *a = nullptr, *b = nullptr;
     int iarg = 0;
     for (int i = 1; i < p->rvals.n; i++) {
       if (i - 1 == p->prim->pos) continue;
       AVar *arg = make_AVar(p->rvals[i], es);
       // record violations
       if (type_diff(arg->out, p->prim->args[iarg]) != bottom_type)
-        type_violation(ATypeViolation_PRIMITIVE_ARGUMENT, arg, type_diff(arg->out, p->prim->args[iarg]),
+        type_violation(ATypeViolation_kind::PRIMITIVE_ARGUMENT, arg, type_diff(arg->out, p->prim->args[iarg]),
                        make_AVar(p->lvals[0], es));
       switch (p->prim->arg_types[iarg]) {
         default:
@@ -1667,7 +1668,7 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
                 (s = meta_apply(cs1->sym->meta_type, cs2->sym->meta_type)))
               update_gen(result, make_abstract_type(s));
             else
-              type_violation(ATypeViolation_SEND_ARGUMENT, a1, a1->out, result);
+              type_violation(ATypeViolation_kind::SEND_ARGUMENT, a1, a1->out, result);
 #else
         assert(!"implemented");
 #endif
@@ -1714,7 +1715,7 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
         for (CreationSet *cs : vec->out->sorted) {
           if (sym_string->specializers.set_in(cs->sym)) {
             AType *d = type_diff(sym_char->abstract_type, val->out);
-            if (d != bottom_type) type_violation(ATypeViolation_MATCH, val, d, result);
+            if (d != bottom_type) type_violation(ATypeViolation_kind::MATCH, val, d, result);
           } else {
             int i;
             bool is_const = get_obj_index(index, &i, cs->vars.n);
@@ -1824,7 +1825,7 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
             if (sym_anynum->specializers.set_in(cs->sym->type))
               update_in(result, cs->sym->type->abstract_type);
             else
-              type_violation(ATypeViolation_MATCH, lhs, make_AType(cs), result);
+              type_violation(ATypeViolation_kind::MATCH, lhs, make_AType(cs), result);
           }
         }
         break;
@@ -2015,7 +2016,7 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
       if (t == bottom_type) return;
       AType *b = type_intersection(t, bool_type);
       AType *e = type_diff(t, b);
-      if (e != bottom_type) type_violation(ATypeViolation_PRIMITIVE_ARGUMENT, cond, e, 0);
+      if (e != bottom_type) type_violation(ATypeViolation_kind::PRIMITIVE_ARGUMENT, cond, e, nullptr);
       if (type_intersection(b, bool_type) == bool_type) break;
       if (type_intersection(b, true_type) != bottom_type) {
         for (PNode *n : p->phy) {
@@ -2501,11 +2502,11 @@ static void show_violations(FA *fa, FILE *fp) {
     switch (v->kind) {
       default:
         assert(0);
-      case ATypeViolation_PRIMITIVE_ARGUMENT:
+      case ATypeViolation_kind::PRIMITIVE_ARGUMENT:
         fprintf(fp, "illegal primitive argument type ");
         show_illegal_type(fp, v);
         break;
-      case ATypeViolation_SEND_ARGUMENT:
+      case ATypeViolation_kind::SEND_ARGUMENT:
         if (v->av->var->sym->is_symbol && v->send->var->def->rvals[0] == v->av->var) {
           fprintf(fp, "unresolved call '%s'", v->av->var->sym->name);
           if (ifa_verbose) fprintf(fp, " send:%d", v->send->var->sym->id);
@@ -2516,7 +2517,7 @@ static void show_violations(FA *fa, FILE *fp) {
           show_illegal_type(fp, v);
         }
         break;
-      case ATypeViolation_DISPATCH_AMBIGUITY:
+      case ATypeViolation_kind::DISPATCH_AMBIGUITY:
         fprintf(fp, "%s: ambiguous call '%s'", fruntime_errors ? "warning" : "error", v->av->var->sym->name);
         if (ifa_verbose) fprintf(fp, " send:%d", v->send->var->sym->id);
         fprintf(fp, "\n");
@@ -2526,7 +2527,7 @@ static void show_violations(FA *fa, FILE *fp) {
           fprintf(fp, "\n");
         }
         break;
-      case ATypeViolation_MEMBER:
+      case ATypeViolation_kind::MEMBER:
         if (v->av->out->n == 1)
           fprintf(fp, "unresolved member '%s'", v->av->out->v[0]->sym->name);
         else {
@@ -2540,7 +2541,7 @@ static void show_violations(FA *fa, FILE *fp) {
           for (CreationSet *cs : v->type->sorted) fprintf(fp, "  class '%s'\n", cs->sym->name);
         }
         break;
-      case ATypeViolation_MATCH:
+      case ATypeViolation_kind::MATCH:
         if (v->av->var->sym->name)
           fprintf(fp, "near '%s' unmatched type: ", v->av->var->sym->name);
         else
@@ -2548,17 +2549,17 @@ static void show_violations(FA *fa, FILE *fp) {
         show_type(*v->type, fp);
         fprintf(fp, "\n");
         break;
-      case ATypeViolation_NOTYPE:
+      case ATypeViolation_kind::NOTYPE:
         show_name(fp, v->av);
         fprintf(fp, "has no type\n");
         break;
-      case ATypeViolation_BOXING:
+      case ATypeViolation_kind::BOXING:
         show_name(fp, v->av);
         fprintf(fp, "has mixed basic types:");
         show_type(*v->type, fp);
         fprintf(fp, "\n");
         break;
-      case ATypeViolation_CLOSURE_RECURSION:
+      case ATypeViolation_kind::CLOSURE_RECURSION:
         show_name(fp, v->av);
         fprintf(fp, "is recursive closure\n");
         break;
@@ -2687,7 +2688,7 @@ static void collect_argument_type_violations() {
           if (p->code->partial == Partial_NEVER) {
             for (Var *v : p->rvals) {
               AVar *av = make_AVar(v, from);
-              type_violation(ATypeViolation_SEND_ARGUMENT, av, av->out, make_AVar(p->lvals[0], from));
+              type_violation(ATypeViolation_kind::SEND_ARGUMENT, av, av->out, make_AVar(p->lvals[0], from));
             }
           }
         } else {
@@ -2710,7 +2711,7 @@ static void collect_argument_type_violations() {
             }
             if (!empty_type_minus_partial_applications(t)) {
               t = type_minus_partial_applications(t);
-              type_violation(ATypeViolation_SEND_ARGUMENT, av, t, make_AVar(p->lvals[0], from));
+              type_violation(ATypeViolation_kind::SEND_ARGUMENT, av, t, make_AVar(p->lvals[0], from));
             }
           }
         }
@@ -2735,7 +2736,7 @@ static void collect_var_type_violations() {
       AVar *av = make_AVar(v, es);
       if (av->live_arg && !av->var->sym->is_fake && !av->var->is_internal && av->out == bottom_type &&
           !is_Sym_OUT(av->var->sym))
-        type_violation(ATypeViolation_NOTYPE, av, av->out, 0, 0);
+        type_violation(ATypeViolation_kind::NOTYPE, av, av->out, nullptr, nullptr);
     }
   }
   if (!fa->permit_boxing) {
@@ -2743,19 +2744,19 @@ static void collect_var_type_violations() {
     for (EntrySet *es : fa->ess) {
       for (Var *v : es->fun->fa_all_Vars) {
         AVar *av = make_AVar(v, es);
-        if (mixed_basics(av)) type_violation(ATypeViolation_BOXING, av, av->out, 0, 0);
+        if (mixed_basics(av)) type_violation(ATypeViolation_kind::BOXING, av, av->out, nullptr, nullptr);
       }
     }
     for (CreationSet *cs : fa->css) {
       for (AVar *av : cs->vars) {
-        if (mixed_basics(av)) type_violation(ATypeViolation_BOXING, av, av->out, 0, 0);
+        if (mixed_basics(av)) type_violation(ATypeViolation_kind::BOXING, av, av->out, nullptr, nullptr);
       }
     }
   }
   if (fa->no_unused_instance_variables) {
     for (CreationSet *cs : fa->css) {
       for (AVar *av : cs->vars) {
-        if (av->live_arg && av->out == bottom_type) type_violation(ATypeViolation_NOTYPE, av, av->out, 0, 0);
+        if (av->live_arg && av->out == bottom_type) type_violation(ATypeViolation_kind::NOTYPE, av, av->out, nullptr, nullptr);
       }
     }
   }
@@ -3082,13 +3083,13 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
   return new_es;
 }
 
-static int split_edges(AVar *av, int fsetters, int fmark) {
+[[nodiscard]] static int split_edges(AVar *av, int fsetters, int fmark) {
   int again = 0;
   EntrySet *es = (EntrySet *)av->contour;
   Vec<AEdge *> all_edges;
   for (AEdge *ee : es->edges) if (ee) all_edges.add(ee);
   qsort_by_id(all_edges);
-  MPosition *p = 0;
+  MPosition *p = nullptr;
   form_MPositionAVar(x, es->args) {
     if (x->value == av) {
       p = x->key;
@@ -3127,7 +3128,7 @@ static int split_edges(AVar *av, int fsetters, int fmark) {
   return again;
 }
 
-static int split_entry_set(AVar *av, int fsetters, int fmark, int fdynamic) {
+[[nodiscard]] static int split_entry_set(AVar *av, int fsetters, int fmark, int fdynamic) {
   EntrySet *es = (EntrySet *)av->contour;
   if (es->split) return 0;
   if (fdynamic)
@@ -3362,8 +3363,8 @@ setters_classes_cannonicalize(SettersClasses *s) {
 }
 #endif
 
-static int update_setter(AVar *av, AVar *s, Accum<AVar *> &avs) {
-  Setters *new_setters = 0;
+[[nodiscard]] static int update_setter(AVar *av, AVar *s, Accum<AVar *> &avs) {
+  Setters *new_setters = nullptr;
   avs.add(av);
   if (av->setters) {
     if (av->setters->in(s)) return 0;
@@ -3377,7 +3378,7 @@ static int update_setter(AVar *av, AVar *s, Accum<AVar *> &avs) {
   if (av->setters) av->setters->add_map.put(s, new_setters);
 Ldone:
   av->setters = new_setters;
-  for (AVar *x : av->backward) if (x) update_setter(x, s, avs);
+  for (AVar *x : av->backward) if (x) (void)update_setter(x, s, avs);
   return 1;
 }
 
@@ -3415,7 +3416,7 @@ static void split_eq_class(Setters *eq_class, Vec<AVar *> &diff) {
 static void recompute_eq_classes(Vec<Setters *> &ss) {
   for (Setters *s : ss) {
     // build new class for unclassed setters
-    Setters *new_s = NULL;
+    Setters *new_s = nullptr;
     for (AVar *v : *s) if (v) if (!v->setter_class) {
       if (!new_s) new_s = new Setters;
       new_s->set_add(v);
@@ -3437,7 +3438,7 @@ static void recompute_eq_classes(Vec<Setters *> &ss) {
 
 enum AKind { AKIND_TYPE, AKIND_SETTER, AKIND_MARK };
 
-static int compute_setters(AVar *av, Accum<AVar *> &avs, int akind = AKIND_TYPE) {
+[[nodiscard]] static int compute_setters(AVar *av, Accum<AVar *> &avs, int akind = AKIND_TYPE) {
   if (av->contour_is_entry_set || av->contour == GLOBAL_CONTOUR) return 0;
   int setters_changed = 0;
   Vec<Setters *> ss;
@@ -3497,7 +3498,7 @@ static void collect_setter_confluences(Accum<AVar *> &avs, Vec<AVar *> &setter_c
   qsort_by_id(setter_starters);
 }
 
-static int split_with_setter_marks(AVar *av) {
+[[nodiscard]] static int split_with_setter_marks(AVar *av) {
   Accum<AVar *> acc;
   build_setter_marks(av, acc);
   Vec<AVar *> confluences;
@@ -3516,7 +3517,7 @@ static int split_with_setter_marks(AVar *av) {
   return analyze_again;
 }
 
-static int split_ess_setters_marks(Vec<AVar *> &confluences) {
+[[nodiscard]] static int split_ess_setters_marks(Vec<AVar *> &confluences) {
   int analyze_again = 0;
   for (AVar *av : confluences) if (av->contour_is_entry_set) analyze_again |= split_with_setter_marks(av);
   if (!analyze_again)
@@ -3524,7 +3525,7 @@ static int split_ess_setters_marks(Vec<AVar *> &confluences) {
   return analyze_again;
 }
 
-static int split_ess_setters(Vec<AVar *> &confluences) {
+[[nodiscard]] static int split_ess_setters(Vec<AVar *> &confluences) {
   int analyze_again = 0;
   for (AVar *av : confluences) {
     if (av->contour_is_entry_set) {
@@ -3544,7 +3545,7 @@ static int split_ess_setters(Vec<AVar *> &confluences) {
   return analyze_again;
 }
 
-static int split_css(Vec<AVar *> &starters) {
+[[nodiscard]] static int split_css(Vec<AVar *> &starters) {
   int analyze_again = 0;
   Vec<CreationSet *> css;
   for (AVar *av : starters) form_Map(CSMapElem, x, *av->cs_map) if (fa->css_set.set_in(x->value)) css.set_add(x->value);
@@ -3582,7 +3583,7 @@ static int split_css(Vec<AVar *> &starters) {
   return analyze_again;
 }
 
-static int split_for_setters(Accum<AVar *> &avs, int analyze_again) {
+[[nodiscard]] static int split_for_setters(Accum<AVar *> &avs, int analyze_again) {
   Vec<AVar *> setter_confluences, setter_starters;
   collect_setter_confluences(avs, setter_confluences, setter_starters);
   if (split_ess_setters(setter_confluences)) return 1;
@@ -3592,7 +3593,7 @@ static int split_for_setters(Accum<AVar *> &avs, int analyze_again) {
   return analyze_again;
 }
 
-static int split_with_type_marks(AVar *av, int fdynamic) {
+[[nodiscard]] static int split_with_type_marks(AVar *av, int fdynamic) {
   Accum<AVar *> acc;
   build_type_marks(av, acc);
   Vec<AVar *> confluences;
@@ -3644,7 +3645,7 @@ static void collect_cs_setter_confluences(Vec<AVar *> &setters_confluences) {
   setters_confluences.set_to_vec();
 }
 
-static int split_ess_for_type(Vec<AVar *> &imprecisions, int fdynamic) {
+[[nodiscard]] static int split_ess_for_type(Vec<AVar *> &imprecisions, int fdynamic) {
   int analyze_again = 0;
   for (AVar *av : imprecisions) {
     if (av->contour_is_entry_set) {
@@ -3659,7 +3660,7 @@ static int split_ess_for_type(Vec<AVar *> &imprecisions, int fdynamic) {
   return analyze_again;
 }
 
-static int split_ess_for_mark_type(Vec<AVar *> &confluences) {
+[[nodiscard]] static int split_ess_for_mark_type(Vec<AVar *> &confluences) {
   int analyze_again = 0;
   // a) first those where the confluence is NOT at an instance variable
   for (AVar *av : confluences) if (av->contour_is_entry_set) analyze_again |= split_with_type_marks(av, SPLIT_EDGES);
@@ -3726,7 +3727,7 @@ static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Ve
   imprecisions.set_to_vec();
 }
 
-static int split_for_violations(Vec<ATypeViolation *> &violations) {
+[[nodiscard]] static int split_for_violations(Vec<ATypeViolation *> &violations) {
   Vec<AVar *> imprecisions;
   collect_violation_imprecisions(violations, imprecisions);
   int analyze_again = split_ess_for_type(imprecisions, SPLIT_DYNAMIC);
@@ -3739,7 +3740,7 @@ static void clear_splits() {
   for (CreationSet *cs : fa->css) cs->split = 0;
 }
 
-static int split_for_setters_of_setters(Vec<AVar *> &confluences) {
+[[nodiscard]] static int split_for_setters_of_setters(Vec<AVar *> &confluences) {
   int analyze_again = 0;
   // split based on setters
   while (!analyze_again) {
@@ -3759,7 +3760,7 @@ static int split_for_setters_of_setters(Vec<AVar *> &confluences) {
   return analyze_again;
 }
 
-static int extend_analysis() {
+[[nodiscard]] static int extend_analysis() {
   int analyze_again = 0;
   extend_timer.restart();
   compute_recursive_entry_sets();
@@ -3773,26 +3774,26 @@ static int extend_analysis() {
   collect_type_confluences(confluences);
   analyze_again = split_ess_for_type(confluences, SPLIT_EDGES);
   DEBUG_PRINT("split_ess_for_type %d\n", analyze_again);
-  if (analyze_again) record_fa_event(FA_STAGE_TYPE_CONFLUENCE, analyze_again, ess0, css0, viol0);
+  if (analyze_again) record_fa_event(FAPassStage::TYPE_CONFLUENCE, analyze_again, ess0, css0, viol0);
   // 2) split EntrySets based on type using marks
   if (!analyze_again) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = type_violations.n;
     analyze_again = split_ess_for_mark_type(confluences);
-    if (analyze_again) record_fa_event(FA_STAGE_MARK_TYPE, analyze_again, ess0, css0, viol0);
+    if (analyze_again) record_fa_event(FAPassStage::MARK_TYPE, analyze_again, ess0, css0, viol0);
   }
   DEBUG_PRINT("split_ess_for_mark_type %d\n", analyze_again);
   // 3) split based on setters of type
   if (!analyze_again) {
     Accum<AVar *> avs;
-    for (AVar *av : confluences) compute_setters(av, avs, AKIND_TYPE);
+    for (AVar *av : confluences) (void)compute_setters(av, avs, AKIND_TYPE);
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = type_violations.n;
     if (split_for_setters(avs, analyze_again)) analyze_again = 1;
-    if (analyze_again) record_fa_event(FA_STAGE_SETTER, analyze_again, ess0, css0, viol0);
+    if (analyze_again) record_fa_event(FAPassStage::SETTER, analyze_again, ess0, css0, viol0);
     DEBUG_PRINT("split_for_setters %d\n", analyze_again);
     if (!analyze_again) {
       ess0 = fa->ess.n, css0 = fa->css.n, viol0 = type_violations.n;
       analyze_again = split_for_setters_of_setters(confluences);
-      if (analyze_again) record_fa_event(FA_STAGE_SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
+      if (analyze_again) record_fa_event(FAPassStage::SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
     }
     DEBUG_PRINT("split_for_setters_of_setters %d\n", analyze_again);
   }
@@ -3804,15 +3805,15 @@ static int extend_analysis() {
       Vec<AVar *> marked_confluences;
       collect_cs_marked_confluences(marked_confluences);
       Accum<AVar *> avs;
-      for (AVar *av : marked_confluences) compute_setters(av, avs, AKIND_MARK);
+      for (AVar *av : marked_confluences) (void)compute_setters(av, avs, AKIND_MARK);
       ess0 = fa->ess.n, css0 = fa->css.n, viol0 = type_violations.n;
       if (split_for_setters(avs, analyze_again)) analyze_again = 1;
-      if (analyze_again) record_fa_event(FA_STAGE_MARK_SETTER, analyze_again, ess0, css0, viol0);
+      if (analyze_again) record_fa_event(FAPassStage::MARK_SETTER, analyze_again, ess0, css0, viol0);
       DEBUG_PRINT("split_for_setters with marks %d\n", analyze_again);
       if (!analyze_again) {
         ess0 = fa->ess.n, css0 = fa->css.n, viol0 = type_violations.n;
         analyze_again = split_for_setters_of_setters(confluences);
-        if (analyze_again) record_fa_event(FA_STAGE_MARK_SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
+        if (analyze_again) record_fa_event(FAPassStage::MARK_SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
       }
       DEBUG_PRINT("split_for_setters_of_setters with marks %d\n", analyze_again);
     }
@@ -3822,7 +3823,7 @@ static int extend_analysis() {
     // dynamic dispatch
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = type_violations.n;
     analyze_again = split_for_violations(type_violations);
-    if (analyze_again) record_fa_event(FA_STAGE_VIOLATION, analyze_again, ess0, css0, viol0);
+    if (analyze_again) record_fa_event(FAPassStage::VIOLATION, analyze_again, ess0, css0, viol0);
   }
   DEBUG_PRINT("split_for_violations %d\n", analyze_again);
   extend_timer.stop();
@@ -3984,17 +3985,17 @@ int constant_info(Var *v, Vec<Sym *> &constants) {
 
 Sym *constant(Sym *s) {
   if (s->constant || s->is_symbol || s->is_fun || s->type_kind) return s;
-  return NULL;
+  return nullptr;
 }
 
 Sym *get_constant(Var *v) {
   if (Sym *c = constant(v->sym)) return c;
-  Sym *c = NULL;
+  Sym *c = nullptr;
   for (int i = 0; i < v->avars.n; i++)
     if (v->avars[i].key) {
       Sym *cc = get_constant(v->avars[i].value);
       if (!cc || (c && c != cc))
-        return NULL;
+        return nullptr;
       else
         c = cc;
     }
@@ -4002,13 +4003,13 @@ Sym *get_constant(Var *v) {
 }
 
 Sym *get_constant(AVar *av) {
-  Sym *c = NULL;
+  Sym *c = nullptr;
   for (CreationSet *cs : *av->out) if (cs) {
     if (cs->sym->constant || cs->sym->is_meta_type) {
-      if (c && c != cs->sym) return NULL;
+      if (c && c != cs->sym) return nullptr;
       c = cs->sym;
     } else
-      return NULL;
+      return nullptr;
   }
   return c;
 }

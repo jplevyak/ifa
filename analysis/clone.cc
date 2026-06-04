@@ -104,12 +104,12 @@ static Sym *to_concrete_type(Sym *t) {
 
 // return the Sym of some basic type, fail if basics are mixed or with non
 // basics
-// and NULL if basic
+// and nullptr if basic
 Sym *basic_type(FA *fa, AType *t, Sym *fail) {
   Sym non_basic;
-  Sym *res = 0;
+  Sym *res = nullptr;
   for (CreationSet *cs : *t) if (cs) {
-    Sym *t = 0;
+    Sym *t = nullptr;
     if ((t = to_basic_type(cs->sym))) {
       if (!res)
         res = t;
@@ -122,7 +122,7 @@ Sym *basic_type(FA *fa, AType *t, Sym *fail) {
         res = fail;
     }
   }
-  if (res == &non_basic) res = NULL;
+  if (res == &non_basic) res = nullptr;
   return res;
 }
 
@@ -344,7 +344,7 @@ static void determine_basic_clones(Vec<Vec<CreationSet *> *> &css_sets_by_sym) {
         // for each variable
         int start = cs1->sym->element ? -1 : 0;
         for (int v = start; v < cs1->vars.n; v++) {
-          AVar *av1 = 0, *av2 = 0;
+          AVar *av1 = nullptr, *av2 = nullptr;
           if (v < 0) {
             av1 = get_element_avar(cs1);
             av2 = get_element_avar(cs2);
@@ -420,7 +420,7 @@ static void determine_clones() {
             f->ess.some_intersection(last_changed_css_ess) || f->called_ess.some_intersection(last_changed_css_ess)) {
           sets_by_f<EntrySet, ES_FN>(f->ess, f->equiv_sets);
           for (EntrySet *es : f->ess) if (es) {
-            Vec<EntrySet *> *myset = NULL;
+            Vec<EntrySet *> *myset = nullptr;
             for (int i = 0; i < f->equiv_sets.n; i++)
               if (f->equiv_sets[i]->in(es)) {
                 myset = f->equiv_sets[i];
@@ -527,7 +527,7 @@ static bool tuple_able(CreationSet *cs) {
 }
 
 static void get_sym_tup(Vec<CreationSet *> *eqcss, Sym **psym, bool *ptup) {
-  Sym *sym = 0;
+  Sym *sym = nullptr;
   bool tup = true;
   int n = -1;
   for (CreationSet *cs : *eqcss) if (cs) {
@@ -549,7 +549,7 @@ static void get_sym_tup(Vec<CreationSet *> *eqcss, Sym **psym, bool *ptup) {
 static void set_tuple_able(CSSS &css_sets) {
   for (int i = 0; i < css_sets.n; i++) {
     Vec<CreationSet *> *eqcss = css_sets[i];
-    Sym *sym = 0;
+    Sym *sym = nullptr;
     bool tup = true;
     for (CreationSet *cs : *eqcss) if (cs) {
       Sym *ct = to_concrete_type(cs->sym);
@@ -570,7 +570,7 @@ static int define_concrete_types(CSSS &css_sets) {
   // for those only used in one way, do not clone
   for (int i = 0; i < css_sets.n; i++) {
     Vec<CreationSet *> *eqcss = css_sets[i];
-    Sym *sym = 0;
+    Sym *sym = nullptr;
     bool tup = true;
     get_sym_tup(eqcss, &sym, &tup);
     for (CreationSet *cs : *eqcss) if (cs) cs->tuple_able = tup;
@@ -593,12 +593,12 @@ static int define_concrete_types(CSSS &css_sets) {
   // clone those used in more than one way
   for (int i = 0; i < css_sets_local.n; i++) {
     Vec<CreationSet *> *eqcss = css_sets_local[i];
-    Sym *sym = 0;
+    Sym *sym = nullptr;
     bool tup = true;
     get_sym_tup(eqcss, &sym, &tup);
     // same sym
     if (sym != (Sym *)-1) {
-      AVar *def = 0;
+      AVar *def = nullptr;
       for (CreationSet *cs : *eqcss) if (cs) {
         for (AVar *av : cs->defs) if (av) {
           if (!def)
@@ -609,8 +609,8 @@ static int define_concrete_types(CSSS &css_sets) {
       }
       if (sym == sym_tuple || sym == sym_closure || tup) {
         // tuples use record type
-        cchar *name = 0;
-        IFAAST *ast = 0;
+        cchar *name = nullptr;
+        IFAAST *ast = nullptr;
         int abstract = eqcss->n == 1 && eqcss->v[0]->defs.n == 0;
         Sym *s = abstract ? sym->copy() : sym->clone();
         s->type_kind = (sym == sym_tuple || tup) ? Type_RECORD : Type_FUN;
@@ -652,7 +652,7 @@ static int define_concrete_types(CSSS &css_sets) {
         } else {
           int abstract = eqcss->n == 1 && eqcss->v[0]->defs.n == 0;
           Sym *s = abstract ? sym->copy() : sym->clone();
-          cchar *name = 0;
+          cchar *name = nullptr;
           s->type_kind = sym->type_kind;
           s->creators.copy(*eqcss);
           Vec<CreationSet *> old_creators;
@@ -685,7 +685,7 @@ static int define_concrete_types(CSSS &css_sets) {
 }
 
 static int concretize_avar(AVar *av) {
-  Sym *sym = 0, *type = 0;
+  Sym *sym = nullptr, *type = nullptr;
   if (av->type) return 0;
   for (CreationSet *cs : *av->out) if (cs) {
     if (!sym)
@@ -714,7 +714,7 @@ static int concretize_avar(AVar *av) {
 }
 
 static int concretize_var_list_type(Var *v) {
-  Sym *sym = 0;
+  Sym *sym = nullptr;
   // check if we even need to try to convert a list
   bool all_list = false;
   AType *etype = bottom_type;
@@ -757,7 +757,7 @@ static int concretize_var_list_type(Var *v) {
 }
 
 static int concretize_var_type(Var *v) {
-  Sym *sym = 0, *type = 0;
+  Sym *sym = nullptr, *type = nullptr;
   if (v->type) return 0;
   for (int i = 0; i < v->avars.n; i++) {
     if (!v->avars[i].key) continue;

@@ -26,13 +26,13 @@
 
 static cchar *stage_name(FAPassStage s) {
   switch (s) {
-    case FA_STAGE_TYPE_CONFLUENCE: return "type";
-    case FA_STAGE_MARK_TYPE: return "mark-type";
-    case FA_STAGE_SETTER: return "setter";
-    case FA_STAGE_SETTER_OF_SETTER: return "setter-of-setter";
-    case FA_STAGE_MARK_SETTER: return "mark-setter";
-    case FA_STAGE_MARK_SETTER_OF_SETTER: return "mark-setter-of-setter";
-    case FA_STAGE_VIOLATION: return "violation";
+    case FAPassStage::TYPE_CONFLUENCE: return "type";
+    case FAPassStage::MARK_TYPE: return "mark-type";
+    case FAPassStage::SETTER: return "setter";
+    case FAPassStage::SETTER_OF_SETTER: return "setter-of-setter";
+    case FAPassStage::MARK_SETTER: return "mark-setter";
+    case FAPassStage::MARK_SETTER_OF_SETTER: return "mark-setter-of-setter";
+    case FAPassStage::VIOLATION: return "violation";
   }
   return "?";
 }
@@ -75,14 +75,15 @@ void print_fa_converge_normalized(FILE *fp, IF1 *p) {
   for (FAPassEvent *e : events) if (e->pass > max_pass) max_pass = e->pass;
 
   // Per-stage totals.
-  int total_by_stage[FA_STAGE_VIOLATION + 1] = {0};
-  for (FAPassEvent *e : events) total_by_stage[e->stage] += e->splits;
+  constexpr int num_stages = (int)FAPassStage::VIOLATION + 1;
+  int total_by_stage[num_stages] = {0};
+  for (FAPassEvent *e : events) total_by_stage[(int)e->stage] += e->splits;
 
   fputs("(pass-counts\n", fp);
   fprintf(fp, "  rc:                %d\n", rc);
   fprintf(fp, "  total-passes:      %d\n", max_pass);
   fprintf(fp, "  events:            %d\n", events.n);
-  for (int s = 0; s <= FA_STAGE_VIOLATION; s++)
+  for (int s = 0; s < num_stages; s++)
     if (total_by_stage[s])
       fprintf(fp, "  splits[%s]: %d\n", stage_name((FAPassStage)s), total_by_stage[s]);
   fputs(")\n\n", fp);

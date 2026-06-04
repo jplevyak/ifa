@@ -5,7 +5,7 @@
 #include "fun.h"
 #include "if1.h"
 
-PDB *pdb = 0;
+PDB *pdb = nullptr;
 
 PDB::PDB(IF1 *aif1) {
   if1 = aif1;

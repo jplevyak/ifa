@@ -802,7 +802,7 @@ void Matcher::instantiation_wrappers_and_partial_application(Vec<Fun *> &matches
   complete.set_to_vec();
   new_matches.set_to_vec();
   if (complete.n > 1) {
-    type_violation(ATypeViolation_DISPATCH_AMBIGUITY, arg0, arg0->out, send, new Vec<Fun *>(complete));
+    type_violation(ATypeViolation_kind::DISPATCH_AMBIGUITY, arg0, arg0->out, send, new Vec<Fun *>(complete));
     is_error = 1;
   }
   matches.move(new_matches);

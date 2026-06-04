@@ -7,10 +7,10 @@ static FILE *log_FILE[128];
 
 void init_logs() {
   if (log_dir[strlen(log_dir) - 1] != '/') strcat(log_dir, "/");
-  mkdir(log_dir, 0xFFF);
+  mkdir(log_dir, 0755);
   strcpy(save_dir, log_dir);
   strcat(save_dir, "save/");
-  mkdir(save_dir, 0xFFF);
+  mkdir(save_dir, 0755);
 }
 
 void log_flags_arg(ArgumentState *arg_state, char *arg) {
