@@ -73,8 +73,15 @@ that:
   intermittent FA-level segfault in `fa-converge` when the
   `nested_iterator` synthetic shape runs alongside other
   fixtures. Standalone the shape works; the crash is order-
-  dependent. Workaround: fixture dropped. Real fix needs valgrind +
-  reading `split_for_violations` internals.
+  dependent. Workaround: fixture dropped. Likely same root cause
+  as issue 009.
+- [009-fa-violations-nondeterminism.md](009-fa-violations-nondeterminism.md) —
+  FA's `type_violations.n` count is non-deterministic across
+  runs of the same input — alternates between values with
+  ~50/50 probability. Workaround: dropped the `violations=X→Y`
+  field from the fa-converge printer's history. Real fix:
+  identify the hash/iteration-order dependency in `fa.cc`'s
+  violation collection. Likely fixes issue 008 as a side effect.
 
 ## When to file an issue here vs fix it now
 

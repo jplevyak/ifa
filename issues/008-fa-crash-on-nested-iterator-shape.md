@@ -64,6 +64,14 @@ to: this shape exercises a code path in `extend_analysis` /
 `split_for_violations` that has either a use-after-free or a
 race condition on internal data structures' iteration order.
 
+**Likely same root cause as [009](009-fa-violations-nondeterminism.md).**
+Issue 009 documents the broader non-determinism in
+`type_violations.n` (the count alternates between runs even
+when no crash occurs). A reasonable theory: hash table or
+pointer_set iteration order, keyed on GC heap addresses, causes
+both the count variation AND occasionally hits a path where
+some entry is freed before use. Fix one, fix both.
+
 Worth investigating:
 - Run under valgrind. The crash signature should be obvious.
 - Compare with the `pyc` test programs that have violations
@@ -72,6 +80,8 @@ Worth investigating:
 - Read `split_for_violations` and
   `collect_violation_imprecisions` looking for AVar /
   CreationSet pointer arithmetic on a vector that may resize.
+- See issue 009's verification plan for the iteration-order
+  investigation steps.
 
 ## What this unblocks
 
