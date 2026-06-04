@@ -91,12 +91,16 @@ void print_fa_converge_normalized(FILE *fp, IF1 *p) {
   if (events.n == 0)
     fputs("  (no events — converged in one pass)\n", fp);
   else
+    // Violation counts (before/after) are non-deterministic for some
+    // shapes — FA records different numbers of violations depending
+    // on internal iteration order. Omitted from the printed history
+    // to keep goldens stable. The split count and pass count, which
+    // are the actual splitter behavior, are deterministic.
     for (FAPassEvent *e : events)
       fprintf(fp,
-              "  pass %d %s splits=%d ess=%d→%d css=%d→%d violations=%d→%d\n",
+              "  pass %d %s splits=%d ess=%d→%d css=%d→%d\n",
               e->pass, stage_name(e->stage), e->splits,
               e->ess_before, e->ess_after,
-              e->css_before, e->css_after,
-              e->violations_before, e->violations_after);
+              e->css_before, e->css_after);
   fputs(")\n", fp);
 }

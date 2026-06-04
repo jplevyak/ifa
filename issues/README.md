@@ -63,14 +63,18 @@ that:
   method-wrapper shape in pyc-emitted IR. Stays within the "simple"
   boundary (no iteration, no cost model).
 - [007-mark-type-stage-coverage.md](007-mark-type-stage-coverage.md) —
-  post-type splitter stages coverage. **Partial:** setter and
-  violation stages now reachable via synthetic shapes (Phase 09
-  C 7.7 + follow-on). Remaining gaps: `mark-type`,
-  `setter-of-setter`, `mark-setter`, `mark-setter-of-setter`.
-  The breakthroughs (vector_iterator for setter; nested_iterator
-  for violation) used the method-dispatch pattern over raw
-  primitives (see PRIMITIVES §13.12). Worth retrying the
-  mark-* and setter-of-setter targets with the same approach.
+  post-type splitter stages coverage. **Partial:** setter stage
+  reachable via synthetic shapes. Violation briefly reachable
+  via `nested_iterator` but that fixture exposed an FA crash
+  (issue 008) and was dropped. Remaining open: `mark-type`,
+  `setter-of-setter`, `mark-setter`, `mark-setter-of-setter`,
+  `violation`.
+- [008-fa-crash-on-nested-iterator-shape.md](008-fa-crash-on-nested-iterator-shape.md) —
+  intermittent FA-level segfault in `fa-converge` when the
+  `nested_iterator` synthetic shape runs alongside other
+  fixtures. Standalone the shape works; the crash is order-
+  dependent. Workaround: fixture dropped. Real fix needs valgrind +
+  reading `split_for_violations` internals.
 
 ## When to file an issue here vs fix it now
 

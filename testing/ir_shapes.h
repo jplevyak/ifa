@@ -67,13 +67,14 @@ void polymorphic_formal(const ParamMap &);
 // setter/mark-type).
 void same_type_dispatch(const ParamMap &);
 
-// nested_iterator: V (outer vector) holds inner V's. Re-attempted
-// with method dispatch through __getitem__/__setitem__ rather than
-// raw primitives — per PRIMITIVES.md §13.12, the method-dispatch
-// path gives the splitter per-CS specialization opportunity that
-// primitive-direct doesn't, which avoids the clone-phase
-// "mismatched field sizes" failure the raw-primitive version hit.
-void nested_iterator(const ParamMap &);
+// nested_iterator: REMOVED. Two-level vector nesting via method
+// dispatch. Worked correctly (fired the violation stage — first
+// synthetic shape to reach it) but exposed an FA-level crash in
+// fa-converge phase that's intermittent and order-dependent. See
+// issues/008-fa-crash-on-nested-iterator-shape.md for the trail.
+// The fixture itself, the IRShape::nested_iterator function, and
+// its registry entry are all removed; re-instate after the FA
+// crash is fixed.
 
 // iterator_copy: copy elements between two vectors via two
 // iterators. Builds on the vector_iterator breakthrough — tries

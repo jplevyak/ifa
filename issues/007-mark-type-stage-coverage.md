@@ -1,9 +1,11 @@
 # Issue 007: post-type splitter stages not triggered by any shape
 
-**Status:** partial — `setter` and `violation` stages now
-reachable via synthetic shapes (Phase 09 C 7.7 + follow-on).
+**Status:** partial — `setter` stage now reachable via synthetic
+shapes (Phase 09 C 7.7). `violation` was briefly reachable via
+the `nested_iterator` shape but that fixture exposed an FA-level
+crash and was dropped; see [008-fa-crash-on-nested-iterator-shape.md](008-fa-crash-on-nested-iterator-shape.md).
 Remaining gaps: `mark-type`, `setter-of-setter`, `mark-setter`,
-`mark-setter-of-setter`.
+`mark-setter-of-setter`, and (until 008 is fixed) `violation`.
 **Affects:** `ifa/analysis/fa.cc:split_ess_for_mark_type`,
 `split_for_setters_of_setters`, and the mark-based variants;
 `IFA.md` splitter section.
@@ -150,8 +152,28 @@ Iteration attempts so far:
     distinct outer/inner vector types): 🎯 **Violation stage
     fires.** Three-pass converge with `type=2, violation=1`.
     Second post-type stage to be reached synthetically. Clone
-    phase no longer trips (distinct types avoid the type-union
-    collision).
+    phase no longer trips. BUT: exposed an FA-level crash —
+    intermittent segfault during fa-converge when the fixture
+    runs alongside others. Filed as issue 008. The fixture is
+    DROPPED for now; restore once issue 008 is fixed.
+
+14. **`mark_dispatch_uniform_element`** (attempted, dropped):
+    V with uniform int element type, two allocations, polymorphic
+    `consume(v)`. Targeted mark-type. Fires only `type=2`. Also
+    triggers an intermittent FA crash. Dropped — no unique
+    coverage AND unstable.
+
+15. **`triple_nested`** (attempted, dropped): three-level vector
+    nesting. Same outcome as nested_iterator (`type=2,
+    violation=1`) but duplicates its coverage and the deeper
+    structure makes the crash more reproducible. Dropped.
+
+**Final round summary**: pushed hard on mark-type / setter-of-
+setter / mark-setter / mark-setter-of-setter / violation using
+the method-dispatch pattern. Of those five, only violation was
+ever reached (briefly, before issue 008 forced dropping its
+fixture). The four other stages remain unreached after ~15
+shape iterations across multiple sessions.
 
 The retry round demonstrates: **setter is reachable via several
 iterator-pattern variants, but the remaining post-type stages
@@ -237,10 +259,9 @@ d. **The violation stage specifically requires a shape that
   violation stage never runs.
 - `ifa/tests/synthetic/vector_polymorphic_writes_2.synth` —
   **type=1** (was 0 events before the method-dispatch fix).
-- `ifa/tests/synthetic/nested_iterator.synth` (re-introduced) —
-  **type=2, violation=1**. Two-level vector iteration via
-  method dispatch. Confirms violation stage is synthetically
-  reachable.
+- ~~`ifa/tests/synthetic/nested_iterator.synth`~~ — re-introduced
+  with violation stage firing, then DROPPED due to FA crash
+  (issue 008). Restore once 008 is fixed.
 - `ifa/tests/synthetic/vector_iterator.synth` — **type=2,
   setter=1** across 3 passes. The first synthetic shape to fire
   any post-type stage.
