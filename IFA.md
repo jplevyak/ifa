@@ -456,19 +456,25 @@ is silent acceptance of remaining `type_violations`. Two paths:
 benchmarks reportedly converge in single-digit passes (paper Table 2),
 so 100 is generous.
 
-### 11.5 `check_es_db` is a stub
-`fa.cc:922` — the database hook for "use cached entry set decisions from
-last compile" is just `return 0`. CDB read/write is half-implemented
-(`write_cdb` returns -1). Reviving this is the biggest latent
-optimization opportunity — and what the paper called the "compilation
-database" feature.
+### 11.5 Compilation-database (CDB) is removed
+The `cdb.{cc,h}` scaffolding and the `check_es_db` stub used to live
+here as a half-built cache of analysis decisions from the previous
+compile. Removed June 2026; intent and revival plan in
+[notes/001-compilation-database.md](notes/001-compilation-database.md).
+This is still the biggest latent optimization opportunity in the
+analysis — and what the paper called the "compilation database"
+feature.
 
-### 11.6 `set_eq_classes` exists but is unused (`#if 0` blocks)
-`setters_classes_cannonicalize` and the "Eventual Optimization" block at
-`fa.cc:3294` and the `initial_compatibility` check at `fa.cc:816` are
-dead code preserved as breadcrumbs for future work. Don't delete them
-without understanding the intent — they hint at a planned eager-splitting
-mode that was deemed not worth it for the benchmarks at the time.
+### 11.6 Eager splitting / setter equivalence classes — removed
+Three `#if 0` blocks (`initial_compatibility`,
+`setters_classes_cannonicalize`, and the "group" pass inside
+`compute_setters`) plus the supporting `SettersClasses`
+infrastructure used to live here as breadcrumbs for an eager
+entry-set splitting mode. Removed June 2026 along with the dormant
+infra; intent in
+[notes/002-eager-splitting.md](notes/002-eager-splitting.md). They
+hinted at a planned eager-splitting mode that was deemed not worth
+it for the benchmarks at the time.
 
 ### 11.7 `P_prim_meta_apply` and `P_prim_cast` are unimplemented
 Both `assert(!"implemented")` (`fa.cc:1617`, `fa.cc:1927`). Any program
@@ -523,10 +529,13 @@ if you start refactoring those.
 - A few `goto Lfound` / `goto Lagain` patterns (e.g. `creation_point`,
   `qsort_pointers`, `qsort_by_id`) are clear once you read them, but a
   light refactor into early-return style would help new readers.
-- `EdgeHash`, `PendingMapHash`, `ATypeChainHashFns`,
-  `SettersHashFns`, `ATypeViolationHashFuns` follow a hand-rolled pattern
-  using `100003` / `13` / `1009` magic primes. A central
-  `combine_hash(a, b)` utility would dedupe these.
+- `EdgeHash`, `ATypeChainHashFns`, and `SettersHashFns` still use
+  the hand-rolled `100003` / `13` / `open_hash_primes[i % 256]`
+  mixers. The pairwise pointer hashers (`PendingMapHash`,
+  `ATypeViolationHashFuns`, `ATypeFoldChainHashFns`) were unified
+  on a single `combine_hash(uintptr_t, uintptr_t)` helper in
+  June 2026; the sequence/sorted hashers above still inline their
+  mixers.
 
 ---
 

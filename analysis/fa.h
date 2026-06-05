@@ -21,12 +21,10 @@ class Edge;
 class AVar;
 class AEdge;
 class AType;
-class SettersClasses;
 class SettersHashFns;
 class Setters;
 class CreationSet;
 class ATypeViolation;
-class CDB;
 class Patterns;
 class MatchCache;
 class MPosition;
@@ -36,6 +34,16 @@ typedef Map<PNode *, Vec<AEdge *> *> EdgeMap;
 typedef BlockHash<AEdge *, PointerHashFns> EdgeHash;
 typedef Vec<CreationSet *> VecCreationSet;
 typedef Vec<Vec<CreationSet *> *> CSSS;
+
+// Mix two pointer-sized values into a 32-bit hash. The bespoke
+// `(13 * a) + (100003 * b)` pattern previously appeared inline in
+// every hash-functions class; centralizing it here keeps the mixer
+// consistent and gives future hashable types one obvious helper to
+// reach for. Callers that need to mix three values do
+// `a + combine_hash(b, c)` (matches the historical shape).
+inline uint combine_hash(uintptr_t a, uintptr_t b) {
+  return (uint)((13 * a) + (100003 * b));
+}
 
 class AType : public Vec<CreationSet *> {
  public:
@@ -75,7 +83,7 @@ class AEdge : public gc {
 class PendingMapHash {
  public:
   static uint hash(AEdge *e) {
-    return (uint)((uintptr_t)e->fun + (13 * (uintptr_t)e->pnode) + (100003 * (uintptr_t)e->from));
+    return (uint)(uintptr_t)e->fun + combine_hash((uintptr_t)e->pnode, (uintptr_t)e->from);
   }
   static int equal(AEdge *a, AEdge *b) { return (a->fun == b->fun) && (a->pnode == b->pnode) && (a->from == b->from); }
 };
@@ -136,20 +144,13 @@ class CreationSet : public gc {
   CreationSet(CreationSet *cs);
 };
 
-class SettersClasses : public Vec<Setters *> {
- public:
-  uint hash;
-  Vec<Setters *> sorted;
-};
-
 class Setters : public Vec<AVar *> {
  public:
   uint hash;
   Vec<AVar *> sorted;
-  SettersClasses *eq_classes;
   Map<AVar *, Setters *> add_map;
 
-  Setters() : hash(0), eq_classes(nullptr) {}
+  Setters() : hash(0) {}
 };
 
 typedef MapElem<void *, int> MarkElem;
@@ -215,17 +216,6 @@ class SettersHashFns {
   }
 };
 
-class SettersClassesHashFns {
- public:
-  static uint hash(SettersClasses *a) { return a->hash; }
-  static int equal(SettersClasses *a, SettersClasses *b) {
-    if (a->sorted.n != b->sorted.n) return 0;
-    for (int i = 0; i < a->sorted.n; i++)
-      if (a->sorted[i] != b->sorted[i]) return 0;
-    return 1;
-  }
-};
-
 enum class ATypeViolation_kind {
   PRIMITIVE_ARGUMENT,
   SEND_ARGUMENT,
@@ -252,7 +242,7 @@ class ATypeViolation : public gc {
 class ATypeViolationHashFuns {
  public:
   static uint hash(ATypeViolation *x) {
-    return (uint)((uint)x->kind + (13 * (uintptr_t)x->av) + (100003 * (uintptr_t)x->send));
+    return (uint)x->kind + combine_hash((uintptr_t)x->av, (uintptr_t)x->send);
   }
   static int equal(ATypeViolation *x, ATypeViolation *y) {
     return x->kind == y->kind && x->av == y->av && x->send == y->send;
@@ -272,7 +262,7 @@ class ATypeFold : public gc {
 class ATypeFoldChainHashFns {
  public:
   static uint hash(ATypeFold *x) {
-    return (uint)((uintptr_t)x->p + (1009 * (uintptr_t)x->a) + (100003 * (uintptr_t)x->b));
+    return (uint)(uintptr_t)x->p + combine_hash((uintptr_t)x->a, (uintptr_t)x->b);
   }
   static int equal(ATypeFold *x, ATypeFold *y) { return x->p == y->p && x->a == y->a && x->b == y->b; }
 };
@@ -280,7 +270,6 @@ class ATypeFoldChainHashFns {
 class FA : public gc {
  public:
   PDB *pdb;
-  CDB *cdb;
   cchar *fn;
   Patterns *patterns;
   Vec<Fun *> funs;
@@ -299,7 +288,6 @@ class FA : public gc {
 
   FA(PDB *apdb)
       : pdb(apdb),
-        cdb(0),
         patterns(0),
         top_edge(0),
         print_call_depth(2),

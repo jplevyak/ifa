@@ -269,9 +269,10 @@ is "how many times this Fun is expected to run in one invocation of
 operation executes."
 
 These numbers are *static estimates*. There's no profile-guided
-backing — see the CDB notes in [IFA.md](IFA.md) §11.5 for the
-intended (but inert) compilation-database feature that would replace
-them with real profile data.
+backing — see
+[notes/001-compilation-database.md](notes/001-compilation-database.md)
+for the intended (but never finished) compilation-database feature
+that would have replaced them with real profile data.
 
 ---
 
@@ -469,8 +470,9 @@ expecting a runtime computation.
 
 ### 8.8 `LOOP_FREQUENCY = 10.0` is a constant magic number
 The 10× per loop level is a heuristic. It's defined in `inline.cc:12`.
-If profile data ever feeds in (via CDB or similar), this constant
-becomes irrelevant.
+If profile data ever feeds in (via the CDB sketched in
+[notes/001-compilation-database.md](notes/001-compilation-database.md)
+or similar), this constant becomes irrelevant.
 
 ### 8.9 `Fun::execution_frequency` is reset mid-pass
 `global_frequency_estimation` reuses the field — first as loop-level

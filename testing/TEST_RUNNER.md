@@ -262,7 +262,7 @@ Not in v1, but the harness should leave room:
   no unreachable PNodes). Needs a perturbation library; defer.
 - **Snapshot lifecycle.** Save per-phase IF1 state to disk between
   test runs. Doubles as CDB-style cache. See
-  [IFA.md](../IFA.md) §11.5.
+  [notes/001-compilation-database.md](../notes/001-compilation-database.md).
 - **Diff-aware reblessing.** `--rebless --interactive` prompts
   per-test before writing.
 - **Parallel execution.** Tests are isolated (independent files), so

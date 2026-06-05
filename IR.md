@@ -463,9 +463,6 @@ else is reached by walking `cfg_pred` from `exit`).
 **Flags:** `is_generic`, `is_external`, `is_varargs`, `is_eager` (will
 evaluate for `Partial_OK`), `is_lazy` (will not match `Partial_NEVER`).
 
-**CDB:** `prof_id`, `prof_ess`, `es_info` — placeholders for the dormant
-compilation database. Don't rely on values here.
-
 **FA fields:** `fa_collected` flag, `clone_for_constants`, `split_unique`,
 `split_eager`, plus per-Fun caches of the analysis state:
 - `ess : Vec<EntrySet*>` — specialisations of this Fun (see IFA.md).

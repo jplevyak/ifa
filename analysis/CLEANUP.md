@@ -56,7 +56,7 @@ Low-effort fixes with no semantic risk. Safe to bundle. **Landed.**
 
 Self-contained changes; easy to review; no cross-file ripple.
 
-- [ ] **`int` → `bool` for two-valued predicates.** Audit each:
+- [x] **`int` → `bool` for two-valued predicates.** Audit each:
   `same_eq_classes`, `edge_nest_compatible_with_entry_set`,
   `sset_compatible`, `edge_sset_compatible_with_edge/_entry_set`,
   `edge_constant_compatible_with_entry_set`, `check_edge`,
@@ -69,23 +69,32 @@ Self-contained changes; easy to review; no cross-file ripple.
   need renaming + documentation instead.
   ([AUDIT §1 item 3](AUDIT.md#1-headline-issues--in-order-of-likely-impact),
   [§4.1](AUDIT.md#41-what-is-worth-modernizing))
-- [ ] **Centralize hash combiners** into a single
+- [x] **Centralize hash combiners** into a single
   `combine_hash(uintptr_t a, uintptr_t b)` helper, replacing the
-  bespoke `(13 * …) + (100003 * …)` blobs in `PendingMapHash`
-  (`fa.h:75`), `ATypeViolationHashFuns` (`fa.h:252`),
-  `ATypeFoldChainHashFns` (`fa.h:272`). Pick one mixer; verify
-  test goldens unchanged.
+  bespoke `(13 * …) + (100003 * …)` blobs in `PendingMapHash`,
+  `ATypeViolationHashFuns`, `ATypeFoldChainHashFns` (all in
+  `fa.h`). Mixer chosen: `(13 * a) + (100003 * b)` — matches the
+  first two existing sites; `ATypeFoldChainHashFns` previously
+  used `1009` for the first multiplier and now uses `13` to keep
+  one mixer. Verified: `make test`, `make test_llvm`, and
+  `./test_pyc` all unchanged (73 pass, 2 expected fails).
   ([AUDIT §1 item 4](AUDIT.md#1-headline-issues--in-order-of-likely-impact))
-- [ ] **Decide the fate of `cdb.cc` / `cdb.h`.** Either revive
-  (`write_cdb` returning -1 in `cdb.cc:104`, `check_es_db`
-  stubbed in `fa.cc:977`) or delete behind a clear commit message
-  pointing at git history.
+- [x] **Decide the fate of `cdb.cc` / `cdb.h`.** Deleted —
+  `cdb.cc`, `cdb.h`, the `FA::cdb` member, the `class CDB` forward
+  decl, the `check_es_db` stub in `fa.cc`, the
+  `Fun::prof_id` / `prof_ess` / `es_info` fields, the
+  `class CDB_EntrySet` forward decl in `fun.h`, and the
+  `analysis/cdb.cc` entry in `ifa/Makefile`. Intent and revival
+  plan captured in
+  [../notes/001-compilation-database.md](../notes/001-compilation-database.md).
   ([AUDIT §1 item 7](AUDIT.md#1-headline-issues--in-order-of-likely-impact),
   [§7](AUDIT.md#7-code-thats-marked-dead-but-kept-on-purpose))
-- [ ] **Document the `#if 0` survivors.** `fa.cc:870-879`,
-  `fa.cc:3347-3363`, `fa.cc:3449-3463`. Each gets a one-line
-  banner comment explaining what eventual feature it points at,
-  so the next reader doesn't delete them by accident.
+- [x] **Document the `#if 0` survivors.** All three blocks deleted
+  along with the `SettersClasses` infrastructure that only existed
+  to support them (`class SettersClasses`, `SettersClassesHashFns`,
+  `cannonical_setters_classes`, `Setters::eq_classes`). Intent
+  captured in
+  [../notes/002-eager-splitting.md](../notes/002-eager-splitting.md).
   ([AUDIT §7](AUDIT.md#7-code-thats-marked-dead-but-kept-on-purpose))
 - [ ] **Wire `DEBUG_PRINT` into `log_tag` / `LOG_SPLITTING`.**
   `fa.cc:21` currently keys on `ifa_debug` and prints to stdout;

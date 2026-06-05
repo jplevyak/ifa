@@ -433,16 +433,16 @@ which then propagates into cloning).
 
 ---
 
-## 11. The compilation-database angle (paper §3.3, code: dormant)
+## 11. The compilation-database angle (paper §3.3, code: removed)
 
 The paper notes that cloning decisions are stable across runs and
-could be cached. The intent in `cdb.h`/`cdb.cc` is to write the
-"ES_id → CS_ids + outgoing edges" mapping to disk after a successful
-compile, then on the next compile pre-seed `equiv` classes from that
-file. Currently `write_cdb` returns -1 and `check_es_db` (in `fa.cc`)
-returns 0 — the feature is inert. Reviving it would mostly mean
-filling those two routines; the on-disk format is already specified in
-`cdb.h`'s `CDB_EntrySet` / `CDB_CreationSet`.
+could be cached. `cdb.{cc,h}` used to scaffold the on-disk format
+("ES_id → CS_ids + outgoing edges") and `check_es_db` in `fa.cc`
+was the consumer hook. Both were removed June 2026 — the writer was
+never finished and there was no test. The original record layout,
+the call-site, and what reviving the feature would require are
+preserved in
+[notes/001-compilation-database.md](notes/001-compilation-database.md).
 
 ---
 

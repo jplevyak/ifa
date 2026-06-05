@@ -7,7 +7,6 @@ class AVar;
 struct LoopGraph;
 struct LoopNode;
 struct Dom;
-class CDB_EntrySet;
 class MPosition;
 class EntrySet;
 class Fun;
@@ -67,11 +66,6 @@ class Fun : public gc {
   uint is_varargs : 1;
   uint is_eager : 1;  // will evaulate for Partial_OK
   uint is_lazy : 1;   // will not match Partial_NEVER
-
-  // cdb
-  int prof_id;
-  Vec<int> prof_ess;
-  Vec<CDB_EntrySet *> es_info;
 
   // fa
   uint fa_collected : 1;

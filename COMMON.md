@@ -589,8 +589,9 @@ Pointer-based hash functions (most of IFA) produce different
 results across runs because `malloc` returns different addresses.
 This is fine for correctness — the lookup is consistent within one
 run — but breaks if you serialise hash-keyed state to disk and
-expect to reload. The CDB (see [IFA.md](IFA.md) §11.5) is dormant
-partly because of this.
+expect to reload. The CDB (see
+[notes/001-compilation-database.md](notes/001-compilation-database.md))
+would have had to solve this before being usable.
 
 ### 16.9 `fail()` calls `exit(1)`
 Use it only for genuinely unrecoverable errors. For user-facing

@@ -67,7 +67,6 @@ ifa/
 │   ├── fa.{cc,h}             ← IFA flow analysis (4034 lines)             [IFA.md]
 │   ├── clone.{cc,h}          ← Type-directed cloning (1031 lines)         [CLONE.md]
 │   ├── pdb.{cc,h}            ← PDB (program database) singleton
-│   ├── cdb.{cc,h}            ← CDB (compilation database) — DORMANT
 │   ├── graph.{cc,h}          ← GraphViz/VCG visualisation
 │   └── ifalog.{cc,h}         ← analysis-specific logging
 │

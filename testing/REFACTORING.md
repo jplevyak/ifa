@@ -275,7 +275,9 @@ for each format lets you start the pipeline at a chosen phase.
 
 This is **substantial** — equivalent to designing 8 different file
 formats. Defer to a separate sub-plan if/when needed. Realistically
-not needed until incremental compilation (CDB) is revived.
+not needed until incremental compilation (CDB — see
+[notes/001-compilation-database.md](../notes/001-compilation-database.md))
+is revived.
 
 **Acceptance.** N/A in v1.
 

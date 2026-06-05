@@ -55,7 +55,6 @@ static Timer pass_timer, match_timer, extend_timer;
 
 static ChainHash<AType *, ATypeChainHashFns> cannonical_atypes;
 static ChainHash<Setters *, SettersHashFns> cannonical_setters;
-static ChainHash<SettersClasses *, SettersClassesHashFns> cannonical_setters_classes;
 static ChainHash<ATypeFold *, ATypeFoldChainHashFns> type_fold_cache;
 static ChainHash<ATypeViolation *, ATypeViolationHashFuns> type_violation_hash;
 
@@ -85,7 +84,6 @@ void fa_reset() {
   memset(extend_timer.accumulator, 0, sizeof(extend_timer.accumulator));
   cannonical_atypes.clear();
   cannonical_setters.clear();
-  cannonical_setters_classes.clear();
   type_fold_cache.clear();
   type_violation_hash.clear();
   edge_worklist.clear();
@@ -634,9 +632,9 @@ static void fill_rets(EntrySet *es, int n) {
     }
 }
 
-static int same_eq_classes(Setters *s, Setters *ss) {
-  if (s == ss) return 1;
-  if (!s || !ss) return 0;
+static bool same_eq_classes(Setters *s, Setters *ss) {
+  if (s == ss) return true;
+  if (!s || !ss) return false;
   Vec<Setters *> sc1, sc2;
   for (AVar *av : *s) if (av) {
     assert(av->setter_class);
@@ -646,19 +644,19 @@ static int same_eq_classes(Setters *s, Setters *ss) {
     assert(av->setter_class);
     sc2.set_add(av->setter_class);
   }
-  if (sc1.some_disjunction(sc2)) return 0;
-  return 1;
+  if (sc1.some_disjunction(sc2)) return false;
+  return true;
 }
 
-static int edge_nest_compatible_with_entry_set(AEdge *e, EntrySet *es) {
-  if (!es->fun->sym->nesting_depth) return 1;
+static bool edge_nest_compatible_with_entry_set(AEdge *e, EntrySet *es) {
+  if (!es->fun->sym->nesting_depth) return true;
   int ef_nd = e->from->fun->sym->nesting_depth, es_nd = es->fun->sym->nesting_depth;
   int n = ef_nd < es_nd ? ef_nd : es_nd;  // MIN
   for (int i = 0; i < n; i++)
-    if (e->from->display[i] != es->display.v[i]) return 0;
+    if (e->from->display[i] != es->display.v[i]) return false;
   if (ef_nd < es_nd)  // down call
-    if (es->display[es_nd - 1] != e->from) return 0;
-  return 1;
+    if (es->display[es_nd - 1] != e->from) return false;
+  return true;
 }
 
 static int different_marked_args(AVar *a1, AVar *a2, int offset, AVar *basis = 0) {
@@ -756,56 +754,56 @@ static int edge_type_compatible_with_entry_set(AEdge *e, EntrySet *es, int fmark
   return 1;
 }
 
-static int sset_compatible(AVar *av1, AVar *av2) {
-  if (!same_eq_classes(av1->setters, av2->setters)) return 0;
+static bool sset_compatible(AVar *av1, AVar *av2) {
+  if (!same_eq_classes(av1->setters, av2->setters)) return false;
   if (av1->lvalue && av2->lvalue)
-    if (!same_eq_classes(av1->lvalue->setters, av2->lvalue->setters)) return 0;
-  return 1;
+    if (!same_eq_classes(av1->lvalue->setters, av2->lvalue->setters)) return false;
+  return true;
 }
 
-static int edge_sset_compatible_with_edge(AEdge *e, AEdge *ee) {
+static bool edge_sset_compatible_with_edge(AEdge *e, AEdge *ee) {
   assert(e->args.n && ee->args.n);
   for (MPosition *p : e->match->fun->positional_arg_positions) {
     AVar *eav = e->args.get(p), *eeav = ee->args.get(p);
     if (eav && eeav)
-      if (!sset_compatible(eav, eeav)) return 0;
+      if (!sset_compatible(eav, eeav)) return false;
   }
-  if (e->rets.n != ee->rets.n) return 0;
+  if (e->rets.n != ee->rets.n) return false;
   for (int i = 0; i < e->rets.n; i++)
-    if (!sset_compatible(e->rets[i], ee->rets.v[i])) return 0;
-  return 1;
+    if (!sset_compatible(e->rets[i], ee->rets.v[i])) return false;
+  return true;
 }
 
-static int edge_sset_compatible_with_entry_set(AEdge *e, EntrySet *es) {
+static bool edge_sset_compatible_with_entry_set(AEdge *e, EntrySet *es) {
   assert(e->args.n && es->args.n);
   if (!es->split) {
     for (MPosition *p : e->match->fun->positional_arg_positions) {
       AVar *av = e->args.get(p);
       if (av)
-        if (!sset_compatible(av, es->args.get(p))) return 0;
+        if (!sset_compatible(av, es->args.get(p))) return false;
     }
-    if (es->rets.n != e->rets.n) return 0;
+    if (es->rets.n != e->rets.n) return false;
     for (int i = 0; i < es->rets.n; i++)
-      if (!sset_compatible(e->rets[i], es->rets.v[i])) return 0;
+      if (!sset_compatible(e->rets[i], es->rets.v[i])) return false;
   } else {
     for (AEdge *ee : es->edges) if (ee) {
       if (!ee->args.n) continue;
-      if (!edge_sset_compatible_with_edge(e, ee)) return 0;
+      if (!edge_sset_compatible_with_edge(e, ee)) return false;
     }
   }
-  return 1;
+  return true;
 }
 
-static int edge_constant_compatible_with_entry_set(AEdge *e, EntrySet *es) {
+static bool edge_constant_compatible_with_entry_set(AEdge *e, EntrySet *es) {
   for (MPosition *p : e->match->fun->positional_arg_positions) {
     AVar *av = es->args.get(p);
     if (av->var->sym->clone_for_constants) {
       AType css;
       av->out->set_disjunction(*e->args.get(p)->out, css);
-      for (CreationSet *cs : css) if (cs) if (cs->sym->constant) return 0;
+      for (CreationSet *cs : css) if (cs) if (cs->sym->constant) return false;
     }
   }
-  return 1;
+  return true;
 }
 
 static void update_display(AEdge *e, EntrySet *es) {
@@ -868,17 +866,6 @@ static AEdge *copy_AEdge(AEdge *ee, EntrySet *to) {
   return e;
 }
 
-#if 0
-static int
-initial_compatibility(AEdge *e, EntrySet *es) {
-  for (AEdge *ee : es->edges) if (ee)
-    for (MPosition *p : e->match->fun->positional_arg_positions)
-      if (e->initial_types.get(p) != ee->initial_types.get(p))
-        return 0;
-  return 1;
-}
-#endif
-
 static int entry_set_compatibility(AEdge *e, EntrySet *es) {
   int val = INT_MAX;
   if (e->match->fun->split_unique) return 0;
@@ -933,7 +920,7 @@ static int find_best_entry_sets(AEdge *e, Vec<AEdge *> &edges) {
   return 0;
 }
 
-static int check_edge(AEdge *e, EntrySet *es) {
+static bool check_edge(AEdge *e, EntrySet *es) {
   form_MPositionAVar(x, e->args) {
     if (!x->key->is_positional()) continue;
     AType *filter = e->match->formal_filters.get(x->key);
@@ -942,9 +929,9 @@ static int check_edge(AEdge *e, EntrySet *es) {
       if (es_filter) filter = type_intersection(filter, es_filter);
     } else
       filter = es_filter;
-    if (filter && type_intersection(x->value->out, filter) == bottom_type) return 0;
+    if (filter && type_intersection(x->value->out, filter) == bottom_type) return false;
   }
-  return 1;
+  return true;
 }
 
 static int check_split(AEdge *e, Vec<AEdge *> &ees) {
@@ -974,16 +961,12 @@ static int check_split(AEdge *e, Vec<AEdge *> &ees) {
   return 0;
 }
 
-// check results of last session read from disk
-static int check_es_db(AEdge *e, Vec<AEdge *> &ees) { return 0; }
-
 static void make_entry_set(AEdge *e, Vec<AEdge *> &edges, EntrySet *split = nullptr, EntrySet *preference = 0) {
   if (e->to) {
     edges.add(e);
     return;
   }
   if (check_split(e, edges)) return;
-  if (check_es_db(e, edges)) return;
   EntrySet *es = nullptr;
   if (!split) {
     if (find_best_entry_sets(e, edges)) return;
@@ -1470,17 +1453,17 @@ static Var **destruct(Var **lvals, int nlvals, AVar *r, Sym *t, AVar *result, in
   return lend;
 }
 
-static int get_obj_index(AVar *index, int *i, int n) {
+static bool get_obj_index(AVar *index, int *i, int n) {
   if (index->var->sym->type && index->var->sym->imm_int(i) == 0) {
     *i -= fa->tuple_index_base;
-    if (*i >= 0 && *i < n) return 1;
+    if (*i >= 0 && *i < n) return true;
   }
   if (index->out->n == 1 && index->out->v[0]->sym->is_constant)
     if (index->out->v[0]->sym->imm_int(i) == 0) {
       *i -= fa->tuple_index_base;
-      if (*i >= 0 && *i < n) return 1;
+      if (*i >= 0 && *i < n) return true;
     }
-  return 0;
+  return false;
 }
 
 AType *make_size_constant_type(int n) {
@@ -2050,7 +2033,7 @@ static void add_es_constraints(EntrySet *es) {
   add_pnode_constraints(es->fun->entry, es, done);
 }
 
-static inline int is_fa_Var(Var *v) {
+static inline bool is_fa_Var(Var *v) {
   return v->sym->type || v->sym->aspect || v->sym->is_constant || v->sym->is_symbol;
 }
 
@@ -2164,10 +2147,10 @@ static AEdge *make_top_edge(Fun *top) {
   return e;
 }
 
-static int is_return_value(AVar *av) {
+static bool is_return_value(AVar *av) {
   EntrySet *es = (EntrySet *)av->contour;
-  for (AVar *v : es->rets) if (v == av) return 1;
-  return 0;
+  for (AVar *v : es->rets) if (v == av) return true;
+  return false;
 }
 
 static void show_sym_name(Sym *s, FILE *fp) {
@@ -2655,13 +2638,13 @@ static void collect_results() {
   }
 }
 
-static int empty_type_minus_partial_applications(AType *a) {
+static bool empty_type_minus_partial_applications(AType *a) {
   for (CreationSet *aa : *a) if (aa) {
     if (aa->sym == sym_closure && aa->defs.n) continue;
     if (aa->sym->is_unique_type) continue;
-    return 0;
+    return false;
   }
-  return 1;
+  return true;
 }
 
 static AType *type_minus_partial_applications(AType *a) {
@@ -2720,7 +2703,7 @@ static void collect_argument_type_violations() {
   }
 }
 
-static int mixed_basics(AVar *av) {
+static bool mixed_basics(AVar *av) {
   Vec<Sym *> basics;
   for (CreationSet *cs : *av->out) if (cs) {
     Sym *b = to_basic_type(cs->sym->type);
@@ -3345,24 +3328,6 @@ static Setters *setters_cannonicalize(Setters *s) {
   return ss;
 }
 
-#if 0
-// Eventual Optimization
-static SettersClasses *
-setters_classes_cannonicalize(SettersClasses *s) {
-  assert(!s->sorted.n);
-  for (Setters *x : *s) if (x) s->sorted.add(x);
-  if (s->sorted.n > 1)
-    qsort_pointers((void**)&s->sorted[0], (void**)s->sorted.end());
-  uint h = 0;
-  for (int i = 0; i < s->sorted.n; i++)
-    h = (uint)s->sorted[i] * open_hash_primes[i % 256];
-  s->hash = h ? h : h + 1; // 0 is empty
-  SettersClasses *ss = cannonical_setters_classes.put(s);
-  if (!ss) ss = s;
-  return ss;
-}
-#endif
-
 [[nodiscard]] static int update_setter(AVar *av, AVar *s, Accum<AVar *> &avs) {
   Setters *new_setters = nullptr;
   avs.add(av);
@@ -3447,24 +3412,8 @@ enum AKind { AKIND_TYPE, AKIND_SETTER, AKIND_MARK };
     assert(x->contour_is_entry_set);
     if (akind == AKIND_TYPE && !x->out->type->n) continue;
     if (akind == AKIND_MARK && !x->mark_map) continue;
-#if 0
-    // group
-    for (int i = 0; i < ss.n; i++) {
-      for (AVar *a : *ss[i]) if (a) {
-        if ((akind == AKIND_TYPE &&
-             (!a->out->type->n || !x->out->type->n || a->out->type == x->out->type)) ||
-            (akind == AKIND_SETTER && same_eq_classes(a->setters, x->setters)) ||
-            (akind == AKIND_MARK && !different_marked_args(x, a, 1)))
-        {
-          ss[i]->set_add(x);
-          goto Ldone;
-        }
-      }
-    }
-#endif
     ss.add(new Setters);
     ss[ss.n - 1]->set_add(x);
-    //  Ldone:;
   }
   for (int i = 0; i < ss.n; i++) ss[i] = setters_cannonicalize(ss.v[i]);
   recompute_eq_classes(ss);
@@ -3670,35 +3619,35 @@ static void collect_cs_setter_confluences(Vec<AVar *> &setters_confluences) {
   return analyze_again;
 }
 
-static int back_reaching(AVar *av, Vec<AVar *> &reached) {
-  if (reached.set_in(av)) return 1;
+static bool back_reaching(AVar *av, Vec<AVar *> &reached) {
+  if (reached.set_in(av)) return true;
   Accum<AVar *> seen;
   seen.add(av);
   for (AVar *x : seen.asvec) for (AVar *r : x->backward) if (r) {
-    if (reached.set_in(r)) return 1;
+    if (reached.set_in(r)) return true;
     seen.add(r);
   }
-  return 0;
+  return false;
 }
 
 static void all_back_reaching(Vec<AVar *> &dispatched, Vec<AVar *> &reached, Vec<AVar *> &result) {
   for (AVar *av : dispatched) if (back_reaching(av, reached)) result.set_add(av);
 }
 
-static int is_call_result(AVar *av) {
+static bool is_call_result(AVar *av) {
   PNode *p = av->var->def;
   if (p && av->contour_is_entry_set) {
     EntrySet *es = (EntrySet *)av->contour;
-    return !!es->out_edge_map.get(p);
+    return es->out_edge_map.get(p) != nullptr;
   }
-  return 0;
+  return false;
 }
 
-static int result_is_different(AVar *result, AEdge *e) {
+static bool result_is_different(AVar *result, AEdge *e) {
   for (int i = 0; i < e->pnode->lvals.n; i++)
     if (result == e->rets[i]) return e->to->rets[i]->out->type != result->out->type;
   assert(!"found");
-  return 0;
+  return false;
 }
 
 static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Vec<AVar *> &imprecisions) {

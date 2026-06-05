@@ -39,8 +39,9 @@ A complementary IF1-level suite gives us:
 The format work also has a secondary win: each per-phase normalized
 output is a candidate **inter-phase interface**. If a future
 refactoring wants to checkpoint IF1 between phases (e.g., to revive
-the dormant CDB cache, see [IFA.md](IFA.md) §11.5), these formats
-become the on-disk schema.
+the CDB cache sketched in
+[notes/001-compilation-database.md](notes/001-compilation-database.md)),
+these formats become the on-disk schema.
 
 ---
 
