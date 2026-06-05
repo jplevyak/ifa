@@ -32,21 +32,30 @@ int graph_type = VCG;
 int fgraph_frequencies = 0;
 int fgraph_constants = 0;
 
+// Bounded strcat: append src to buf, never writing past buf[cap-1].
+// Always nul-terminates. Truncation is silent — callers here are
+// building human-readable diagnostic labels, not anything we need
+// to round-trip.
+static void safe_strcat(char *buf, size_t cap, cchar *src) {
+  if (!cap) return;
+  size_t cur = strnlen(buf, cap);
+  if (cur >= cap - 1) return;
+  size_t room = cap - cur - 1;
+  size_t n = strlen(src);
+  if (n > room) n = room;
+  memcpy(buf + cur, src, n);
+  buf[cur + n] = 0;
+}
+
 static FILE *graph_start(cchar *fn, cchar *tag, cchar *name) {
   char hfn[512];
-  strcpy(hfn, fn);
-  strcat(hfn, ".");
-  strcat(hfn, tag);
+  cchar *ext = nullptr;
   switch (graph_type) {
-    case VCG:
-      strcat(hfn, ".vcg");
-      break;
-    case GraphViz:
-      strcat(hfn, ".dot");
-      break;
-    default:
-      assert(!"bad case");
+    case VCG:      ext = ".vcg"; break;
+    case GraphViz: ext = ".dot"; break;
+    default:       assert(!"bad case");
   }
+  snprintf(hfn, sizeof(hfn), "%s.%s%s", fn, tag, ext);
   FILE *fp = fopen(hfn, "w");
   switch (graph_type) {
     case VCG:
@@ -140,13 +149,13 @@ static void graph_ast(Vec<Fun *> &funs, cchar *fn) {
   graph_end(fp);
 }
 
-static void strcat_sym_node(char *s, Sym *sy) {
-  if (sy->name)
-    strcat(s, sy->name);
-  else {
-    char id[80];
+static void strcat_sym_node(char *s, size_t cap, Sym *sy) {
+  if (sy->name) {
+    safe_strcat(s, cap, sy->name);
+  } else {
+    char id[32];
     snprintf(id, sizeof(id), "_%d", sy->id);
-    strcat(s, id);
+    safe_strcat(s, cap, id);
   }
 }
 
@@ -154,16 +163,16 @@ static void graph_pnode_node(FILE *fp, PNode *pn, int options = 0) {
   char title[256] = "";
   if (pn->lvals.n) {
     for (Var *v : pn->lvals) {
-      strcat_sym_node(title, v->sym);
-      strcat(title, " ");
+      strcat_sym_node(title, sizeof(title), v->sym);
+      safe_strcat(title, sizeof(title), " ");
     }
-    strcat(title, "= ");
+    safe_strcat(title, sizeof(title), "= ");
   }
   int kind = pn->code ? pn->code->kind : Code_MOVE;
-  strcat(title, code_string[kind]);
+  safe_strcat(title, sizeof(title), code_string[kind]);
   for (Var *v : pn->rvals) {
-    strcat(title, " ");
-    strcat_sym_node(title, v->sym);
+    safe_strcat(title, sizeof(title), " ");
+    strcat_sym_node(title, sizeof(title), v->sym);
   }
   if (options & G_DOM) {
     for (int i = 0; i < pn->dom->intervals.n; i += 2) {
@@ -244,16 +253,16 @@ static void graph_loops(Vec<Fun *> &funs, cchar *fn) {
 
 static void graph_var_node(FILE *fp, Var *v, int options = 0) {
   char id[80] = "";
-  strcat_sym_node(id, v->sym);
+  strcat_sym_node(id, sizeof(id), v->sym);
   if (fgraph_constants) {
     Vec<Sym *> consts;
     if (constant_info(v, consts)) {
-      strcat(id, " {");
+      safe_strcat(id, sizeof(id), " {");
       for (Sym *s : consts) {
-        strcat(id, " ");
+        safe_strcat(id, sizeof(id), " ");
         sprint_imm(id + strlen(id), sizeof(id) - strlen(id), s->imm);
       }
-      strcat(id, " }");
+      safe_strcat(id, sizeof(id), " }");
     }
   }
   graph_node(fp, v, id, options | G_BLUE);
@@ -313,12 +322,12 @@ static void graph_avar_node(FILE *fp, AVar *av) {
   }
   consts.set_to_vec();
   if (consts.n) {
-    strcat(label, " {");
+    safe_strcat(label, sizeof(label), " {");
     for (Sym *s : consts) {
-      strcat(label, " ");
+      safe_strcat(label, sizeof(label), " ");
       sprint_imm(label + strlen(label), sizeof(label) - strlen(label), s->imm);
     }
-    strcat(label, " }");
+    safe_strcat(label, sizeof(label), " }");
   }
   graph_node(fp, av, label, av->var->sym->constant ? G_BOX : 0);
 }
@@ -386,25 +395,25 @@ void graph_contours(FA *fa, cchar *fn) {
   graph_end(fp);
 }
 
-static void strcat_pattern(char *title, Sym *s) {
-  strcat(title, "(");
+static void strcat_pattern(char *title, size_t cap, Sym *s) {
+  safe_strcat(title, cap, "(");
   for (Sym *a : s->has) {
-    strcat(title, " ");
-    strcat_sym_node(title, a);
+    safe_strcat(title, cap, " ");
+    strcat_sym_node(title, cap, a);
   }
-  strcat(title, " )");
+  safe_strcat(title, cap, " )");
 }
 
 static void graph_fun_node(FILE *fp, Fun *f) {
   char title[256] = "";
-  strcat_sym_node(title, f->sym);
+  strcat_sym_node(title, sizeof(title), f->sym);
   for (MPosition *p : f->arg_positions) {
     if (Var *a = f->args.get(p)) {
-      strcat(title, " ");
+      safe_strcat(title, sizeof(title), " ");
       if (!a->sym->is_pattern)
-        strcat_sym_node(title, a->sym);
+        strcat_sym_node(title, sizeof(title), a->sym);
       else
-        strcat_pattern(title, a->sym);
+        strcat_pattern(title, sizeof(title), a->sym);
     }
   }
   if (fgraph_frequencies)
@@ -445,38 +454,24 @@ static void graph_abstract_types(FA *fa, cchar *fn) {
   syms.set_union(fa->patterns->types);
   for (Sym *s : fa->patterns->types) if (s) syms.set_union(s->implementors);
   for (Sym *s : syms) if (s && s->live && !s->constant) {
-    char name[256], *pname = name;
-    strcpy(pname, type_kind_string[s->type_kind]);
-    pname += strlen(pname);
-    *pname++ = ' ';
-    *pname = 0;
+    char name[256] = "";
+    safe_strcat(name, sizeof(name), type_kind_string[s->type_kind]);
+    safe_strcat(name, sizeof(name), " ");
     if (s->is_symbol) {
-      *pname++ = '#';
-      strcpy(pname, s->name);
-      pname += strlen(pname);
+      safe_strcat(name, sizeof(name), "#");
+      safe_strcat(name, sizeof(name), s->name);
     } else if (s->is_pattern) {
-      strcpy(pname, "pattern ");
-      pname += strlen(pname);
-      if (s->name)
-        strcpy(pname, s->name);
-      else
-        snprintf(pname, sizeof(name) - (pname - name), "%d", s->id);
-      pname += strlen(pname);
+      safe_strcat(name, sizeof(name), "pattern ");
+      if (s->name) {
+        safe_strcat(name, sizeof(name), s->name);
+      } else {
+        snprintf(name + strlen(name), sizeof(name) - strlen(name), "%d", s->id);
+      }
     } else if (s->fun) {
-      pname += strlen(pname);
-      if (s->name)
-        strcpy(pname, s->name);
-      else
-        strcpy(pname, "<anonymous>");
-      pname += strlen(pname);
-      snprintf(pname, sizeof(name) - (pname - name), "%s:%d ", s->fun->filename(), s->fun->line());
-      pname += strlen(pname);
-    } else if (s->name) {
-      strcpy(pname, s->name);
-      pname += strlen(pname);
+      safe_strcat(name, sizeof(name), s->name ? s->name : "<anonymous>");
+      snprintf(name + strlen(name), sizeof(name) - strlen(name), "%s:%d ", s->fun->filename(), s->fun->line());
     } else {
-      strcpy(pname, "<anonymous>");
-      pname += strlen(pname);
+      safe_strcat(name, sizeof(name), s->name ? s->name : "<anonymous>");
     }
     graph_node(fp, s, name);
   }

@@ -16,10 +16,6 @@
 #include "timer.h"
 #include "var.h"
 
-// Gate splitter-progress prints on `ifa_debug` (set via `-d`) so default
-// runs are silent and tests can diff stdout cleanly.
-#define DEBUG_PRINT(...) do { if (ifa_debug) printf(__VA_ARGS__); } while (0)
-
 /* runtime options
  */
 bool fgraph_pass_contours = false;
@@ -1641,20 +1637,11 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
         break;
       }
       case P_prim_meta_apply: {
-#if 0
-        AVar *a1 = make_AVar(p->rvals[1], es);
-        AVar *a2 = make_AVar(p->rvals[2], es);
-        Sym *s;
-        for (CreationSet *cs1 : a1->out->sorted)
-          for (CreationSet *cs2 : a2->out->sorted)
-            if (cs1->sym->is_meta_type && cs2->sym->is_meta_type &&
-                (s = meta_apply(cs1->sym->meta_type, cs2->sym->meta_type)))
-              update_gen(result, make_abstract_type(s));
-            else
-              type_violation(ATypeViolation_kind::SEND_ARGUMENT, a1, a1->out, result);
-#else
-        assert(!"implemented");
-#endif
+        cchar *file = p->code && p->code->filename() ? p->code->filename() : "<unknown>";
+        int line = p->code ? p->code->line() : 0;
+        fail("P_prim_meta_apply transfer function not implemented at %s:%d; "
+             "no live frontend emits this prim — see ifa/notes/003-cast-and-meta-apply-prims.md",
+             file, line);
         break;
       }
       case P_prim_destruct: {
@@ -1963,7 +1950,11 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
         break;
       }
       case P_prim_cast: {
-        assert(!"implemented");
+        cchar *file = p->code && p->code->filename() ? p->code->filename() : "<unknown>";
+        int line = p->code ? p->code->line() : 0;
+        fail("P_prim_cast transfer function not implemented at %s:%d; "
+             "no live frontend emits this prim — see ifa/notes/003-cast-and-meta-apply-prims.md",
+             file, line);
         break;
       }
     }
@@ -3722,7 +3713,7 @@ static void clear_splits() {
   // 1) split EntrySets based on type using AVar::out
   collect_type_confluences(confluences);
   analyze_again = split_ess_for_type(confluences, SPLIT_EDGES);
-  DEBUG_PRINT("split_ess_for_type %d\n", analyze_again);
+  log(LOG_SPLITTING, "split_ess_for_type %d\n", analyze_again);
   if (analyze_again) record_fa_event(FAPassStage::TYPE_CONFLUENCE, analyze_again, ess0, css0, viol0);
   // 2) split EntrySets based on type using marks
   if (!analyze_again) {
@@ -3730,7 +3721,7 @@ static void clear_splits() {
     analyze_again = split_ess_for_mark_type(confluences);
     if (analyze_again) record_fa_event(FAPassStage::MARK_TYPE, analyze_again, ess0, css0, viol0);
   }
-  DEBUG_PRINT("split_ess_for_mark_type %d\n", analyze_again);
+  log(LOG_SPLITTING, "split_ess_for_mark_type %d\n", analyze_again);
   // 3) split based on setters of type
   if (!analyze_again) {
     Accum<AVar *> avs;
@@ -3738,13 +3729,13 @@ static void clear_splits() {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = type_violations.n;
     if (split_for_setters(avs, analyze_again)) analyze_again = 1;
     if (analyze_again) record_fa_event(FAPassStage::SETTER, analyze_again, ess0, css0, viol0);
-    DEBUG_PRINT("split_for_setters %d\n", analyze_again);
+    log(LOG_SPLITTING, "split_for_setters %d\n", analyze_again);
     if (!analyze_again) {
       ess0 = fa->ess.n, css0 = fa->css.n, viol0 = type_violations.n;
       analyze_again = split_for_setters_of_setters(confluences);
       if (analyze_again) record_fa_event(FAPassStage::SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
     }
-    DEBUG_PRINT("split_for_setters_of_setters %d\n", analyze_again);
+    log(LOG_SPLITTING, "split_for_setters_of_setters %d\n", analyze_again);
   }
   // 4) split based on setters of type using marks
   if (!analyze_again) {
@@ -3758,13 +3749,13 @@ static void clear_splits() {
       ess0 = fa->ess.n, css0 = fa->css.n, viol0 = type_violations.n;
       if (split_for_setters(avs, analyze_again)) analyze_again = 1;
       if (analyze_again) record_fa_event(FAPassStage::MARK_SETTER, analyze_again, ess0, css0, viol0);
-      DEBUG_PRINT("split_for_setters with marks %d\n", analyze_again);
+      log(LOG_SPLITTING, "split_for_setters with marks %d\n", analyze_again);
       if (!analyze_again) {
         ess0 = fa->ess.n, css0 = fa->css.n, viol0 = type_violations.n;
         analyze_again = split_for_setters_of_setters(confluences);
         if (analyze_again) record_fa_event(FAPassStage::MARK_SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
       }
-      DEBUG_PRINT("split_for_setters_of_setters with marks %d\n", analyze_again);
+      log(LOG_SPLITTING, "split_for_setters_of_setters with marks %d\n", analyze_again);
     }
   }
   if (!analyze_again) {
@@ -3774,9 +3765,21 @@ static void clear_splits() {
     analyze_again = split_for_violations(type_violations);
     if (analyze_again) record_fa_event(FAPassStage::VIOLATION, analyze_again, ess0, css0, viol0);
   }
-  DEBUG_PRINT("split_for_violations %d\n", analyze_again);
+  log(LOG_SPLITTING, "split_for_violations %d\n", analyze_again);
   extend_timer.stop();
-  if (analysis_pass > IFA_PASS_LIMIT) analyze_again = 0;
+  if (analyze_again && analysis_pass > fa->pass_limit) {
+    // Splitter wanted another pass but we've hit the configured cap.
+    // Force termination, surface the trip on LOG_SPLITTING, and flag
+    // it on FA so the frontend can distinguish a converged
+    // type_violations set from this mid-iteration snapshot. The
+    // existing violations stay in type_violations — callers iterating
+    // them get the snapshot, but they can check fa->pass_limit_hit to
+    // know they're holding partial results.
+    fa->pass_limit_hit = true;
+    log(LOG_SPLITTING, "PASS LIMIT %d reached at pass %d, %d violations remain (mid-iteration)\n",
+        fa->pass_limit, analysis_pass, type_violations.n);
+    analyze_again = 0;
+  }
   if (analyze_again) clear_results();
   pass_timer.stop();
   ++analysis_pass;

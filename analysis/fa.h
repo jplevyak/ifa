@@ -8,6 +8,11 @@
 #include "sym.h"
 
 #define DEFAULT_NUM_CONSTANTS_PER_VARIABLE 1
+// Default cap on outer convergence iterations. The runtime value lives
+// in `FA::pass_limit` — change that to override per-FA instance. See
+// `ifa/notes/`-style discussion at the cleanup entry in
+// `ifa/analysis/CLEANUP.md` tier-2 item 4 for why the cap is soft
+// (frontends inspect `FA::pass_limit_hit` instead of aborting).
 #define IFA_PASS_LIMIT 100
 
 #define GLOBAL_CONTOUR ((void *)1)
@@ -285,6 +290,14 @@ class FA : public gc {
   bool no_unused_instance_variables;
   int tuple_index_base;
   int num_constants_per_variable;
+  // Cap on outer convergence iterations. Frontends may raise it for
+  // pathological inputs or lower it for fail-fast tests.
+  int pass_limit;
+  // Set to true when `pass_limit` was reached with `analyze_again`
+  // still set — i.e. the splitter wanted another pass and was cut
+  // off. Frontends inspect this to distinguish a converged
+  // `type_violations` from a snapshot mid-iteration.
+  bool pass_limit_hit;
 
   FA(PDB *apdb)
       : pdb(apdb),
@@ -294,7 +307,9 @@ class FA : public gc {
         permit_boxing(0),
         no_unused_instance_variables(0),
         tuple_index_base(0),
-        num_constants_per_variable(1) {}
+        num_constants_per_variable(1),
+        pass_limit(IFA_PASS_LIMIT),
+        pass_limit_hit(false) {}
 
   int analyze(Fun *f);
   int concretize();

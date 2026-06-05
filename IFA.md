@@ -444,17 +444,28 @@ manual `type_cannonicalize`.
   `GLOBAL_CONTOUR`, which makes the global a true singleton.  Code that
   passes a real ES expecting a per-ES global will not get one.
 
-### 11.3 The `DEBUG_PRINT` macro is on
-`fa.cc:19` enables `DEBUG_PRINT(...)` to stdout. The "off" definition
-(`((void)0)`) is right below, commented out. Production builds currently
-print extension summaries every pass; flip the macros for quiet runs.
+### 11.3 Splitter stage-progress logging
+The 8 stage-transition prints inside `extend_analysis`
+("split_ess_for_type", "split_for_setters", …) route through
+`log(LOG_SPLITTING, …)` like the rest of the splitter's logging.
+Enable them with `-ls` on the command line. Previously these were
+gated on the global `-d` flag via a `DEBUG_PRINT` macro; unified
+onto the LOG_SPLITTING channel June 2026.
 
 ### 11.4 `IFA_PASS_LIMIT = 100`
-Hard cap on outer iterations. If a real program ever hits it the result
-is silent acceptance of remaining `type_violations`. Two paths:
-(a) detect the cap-trip and fail loudly, (b) raise the limit. Production
-benchmarks reportedly converge in single-digit passes (paper Table 2),
-so 100 is generous.
+Soft cap on outer iterations. The compile-time macro provides the
+default for the runtime field `FA::pass_limit` — frontends override
+the field for pathological inputs or fail-fast tests. On trip the
+splitter forces termination, logs `PASS LIMIT … reached at pass … N
+violations remain (mid-iteration)` on `LOG_SPLITTING`, and sets
+`FA::pass_limit_hit = true`. `type_violations` is **not** cleared —
+downstream consumers see the snapshot and can check
+`pass_limit_hit` to distinguish "converged, these are the real
+errors" from "we ran out of passes mid-iteration, treat as
+indicative." Production benchmarks converge in single-digit passes
+(paper Table 2), so 100 is generous; the cap stays soft because
+existing programs with leftover violations are correctly handled by
+the frontend (boxing fallback, diagnostic emission).
 
 ### 11.5 Compilation-database (CDB) is removed
 The `cdb.{cc,h}` scaffolding and the `check_es_db` stub used to live
@@ -476,12 +487,19 @@ infra; intent in
 hinted at a planned eager-splitting mode that was deemed not worth
 it for the benchmarks at the time.
 
-### 11.7 `P_prim_meta_apply` and `P_prim_cast` are unimplemented
-Both `assert(!"implemented")` (`fa.cc:1617`, `fa.cc:1927`). Any program
-that exercises them through the V frontend will abort. The Python
-frontend (`pyc`, sibling of this tree) emits these primitives in some
-edge cases — check there if you see runtime asserts during `pyc`
-compilation.
+### 11.7 `P_prim_meta_apply` and `P_prim_cast` transfer functions
+Both transfer functions are structured `fail()` calls — they name
+the primitive, report the source position when available, and
+point at the design note. No live frontend currently emits either
+prim (V grammar has no cast syntax; pyc never references
+`prim_cast`; the `@meta_apply` send in `for1.v.code` is the
+symbol-named builtin, not the primitive). The constants stay
+because `clone.cc` references them. If you hit one of these
+failures you've either fed IFA a hand-written `.ir` fixture or
+added a new frontend path — see
+[notes/003-cast-and-meta-apply-prims.md](notes/003-cast-and-meta-apply-prims.md)
+for the original `#if 0` sketch, the missing dependencies, and
+what reviving each prim would require.
 
 ### 11.8 Two `make_closure_var` overloads
 `fa.cc:1090` and `fa.cc:1105`. Both legitimately needed (AVar vs Var

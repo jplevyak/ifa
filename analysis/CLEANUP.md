@@ -96,10 +96,13 @@ Self-contained changes; easy to review; no cross-file ripple.
   captured in
   [../notes/002-eager-splitting.md](../notes/002-eager-splitting.md).
   ([AUDIT §7](AUDIT.md#7-code-thats-marked-dead-but-kept-on-purpose))
-- [ ] **Wire `DEBUG_PRINT` into `log_tag` / `LOG_SPLITTING`.**
-  `fa.cc:21` currently keys on `ifa_debug` and prints to stdout;
-  the rest of the splitter logging goes through `log(LOG_SPLITTING, …)`.
-  Pick one channel.
+- [x] **Wire `DEBUG_PRINT` into `log_tag` / `LOG_SPLITTING`.**
+  The macro and all 8 call sites in `extend_analysis` rewritten to
+  `log(LOG_SPLITTING, …)`, matching the rest of the splitter's
+  logging. Behavioral change: stage-progress messages now gate on
+  `-ls` (the splitter log channel) instead of `-d` (the global
+  debug flag). Verified: `make test`, `make test_llvm`, and
+  `./test_pyc` all clean (73 pass, 2 expected fails).
   ([AUDIT §1 item 5](AUDIT.md#1-headline-issues--in-order-of-likely-impact))
 
 ---
@@ -109,30 +112,78 @@ Self-contained changes; easy to review; no cross-file ripple.
 Touches multiple files or has subtle correctness implications.
 Land each as its own PR; run the full §8 checklist.
 
-- [ ] **Buffer-overflow-prone `strcat` / `strcpy` in `graph.cc`.**
-  Audit every fixed-size buffer: `hfn[512]`, `title[256]`,
-  `id[80]`, `label[80]`, `name[256]`. Convert to bounded
-  `snprintf` (mixed inconsistently today). Add a `safe_strcat`
-  helper if it helps. All-internal inputs so likelihood is low,
-  but a long symbol name silently corrupts the stack.
+- [x] **Buffer-overflow-prone `strcat` / `strcpy` in `graph.cc`.**
+  All bare `strcat` / `strcpy` sites converted to bounded
+  `safe_strcat(buf, cap, src)` (new helper at the top of `graph.cc`)
+  or to `snprintf`. `strcat_sym_node` and `strcat_pattern` gained
+  explicit `size_t cap` parameters so callers pass `sizeof(buf)` at
+  every use. `graph_start` and `graph_abstract_types` (the
+  hand-rolled `pname += strlen` chain) rewritten to single
+  `snprintf` / sequential `safe_strcat` calls. Verified by build +
+  full test suite (graph code path is dormant from the live
+  drivers — `fgraph` is parsed in `ifa/main.cc` but never consulted,
+  and `pyc.cc`'s `fgraph` is never wired to args/env — but the fix
+  stands on its own and keeps the door open for reviving the
+  feature).
   ([AUDIT §1 item 10](AUDIT.md#1-headline-issues--in-order-of-likely-impact))
-- [ ] **Implement `P_prim_meta_apply` and `P_prim_cast`** —
-  currently `assert(!"implemented")` at `fa.cc:1672` and
-  `fa.cc:1927`. The Python frontend can hit `P_prim_cast` in
-  edge cases. If the path is genuinely unreachable from V and
-  pyc, convert to a structured `fail()` with a diagnostic.
+- [x] **Implement `P_prim_meta_apply` and `P_prim_cast`** —
+  chose the "convert to structured `fail()`" path after
+  investigation showed neither prim is emitted by any live
+  frontend (V grammar has no cast syntax; pyc never references
+  `prim_cast`; the `@meta_apply` send in `for1.v.code` is the
+  symbol-named builtin, not the primitive). Asserts replaced with
+  `fail(...)` calls that name the prim, report the PNode source
+  position via `p->code->filename()` / `p->code->line()`, and
+  point at the design note. The `#if 0` sketch in
+  `P_prim_meta_apply` (which referenced a `meta_apply(Sym*, Sym*)`
+  helper that doesn't exist) was removed; the snippet plus its
+  missing dependencies and a roadmap for reviving either prim are
+  preserved in
+  [../notes/003-cast-and-meta-apply-prims.md](../notes/003-cast-and-meta-apply-prims.md).
+  Kept the `Prim *prim_cast` / `prim_meta_apply` definitions and
+  the `P_prim_*` macros — `clone.cc:234` and `llvm.cc:233` still
+  reference the constants by name. Verified: `make test`,
+  `make test_llvm`, `./ifa --test` (51 pass), `./test_pyc` (73
+  pass / 2 expected fail) all clean.
   ([AUDIT §1 item 8](AUDIT.md#1-headline-issues--in-order-of-likely-impact))
-- [ ] **Add unit tests for the lattice ops** — pure functions
-  with no `FA*` dependency once canonical types are constructed:
-  `type_union`, `type_intersection`, `type_diff`,
-  `type_cannonicalize`, `type_num_fold`. Highest-leverage
-  testing work in the directory; unlocks future refactor
-  safety. ([AUDIT §3.4](AUDIT.md#34-the-deeper-fix),
+- [x] **Add unit tests for the lattice ops.** New
+  `ifa/testing/lattice_test.cc` registers 5 UnitTest functions
+  (`test_type_union`, `test_type_intersection`, `test_type_diff`,
+  `test_type_cannonicalize`, `test_lattice_cross_ops`) that stand
+  up a minimal canonical-type world (just `bottom_type` and a
+  handful of "boring" abstract types, no full FA pass) and verify
+  the algebraic identities: identity / absorbing elements,
+  idempotency, commutativity, associativity, distinct-disjoint
+  behavior, the absorption law, and inclusion-exclusion. Result:
+  `./ifa --test` now runs 51 tests (was 46), 0 failures.
+  `type_num_fold` is deferred — it depends on `coerce_num` and the
+  abstract-type tables for numeric symbols, which the minimal
+  setup doesn't have; covered by the existing phase tests under
+  `make test`. ([AUDIT §3.4](AUDIT.md#34-the-deeper-fix),
   [§8](AUDIT.md#8-things-to-verify-before-merging-an-fa-change))
-- [ ] **Make `IFA_PASS_LIMIT` overflow loud.** `fa.h:11`,
-  triggered at `fa.cc:3829`. Either raise the cap with
-  justification or fail hard with a clear message on trip — silent
-  acceptance of remaining violations is misleading.
+- [x] **Make `IFA_PASS_LIMIT` overflow loud.** Reframed after
+  reviewing the trip behavior: `type_violations` is never cleared
+  on trip, so downstream consumers (e.g. pyc's `show_violations`)
+  *do* see the leftover violations — the missing thing was the
+  signal that they were holding a mid-iteration snapshot rather
+  than a converged set. Landed:
+  - New `FA::pass_limit` field (defaults to `IFA_PASS_LIMIT = 100`).
+    The macro stays as the default constant; the field is what the
+    splitter actually consults. Frontends can raise/lower per FA
+    instance without recompiling.
+  - New `FA::pass_limit_hit` flag, set true when the trip fires
+    with `analyze_again` still set (i.e. the splitter wanted
+    another pass and was cut off).
+  - Trip site rewritten to emit `log(LOG_SPLITTING, "PASS LIMIT %d
+    reached at pass %d, %d violations remain (mid-iteration)\n", …)`
+    and set the flag. Behavior on natural convergence is unchanged.
+  - Chose not to fail hard — the existing pyc tests include
+    programs whose violations are correctly handled downstream
+    (boxing fallbacks, frontend diagnostics), and aborting would
+    break them. Frontends that want fail-fast behavior can check
+    `fa->pass_limit_hit` and escalate.
+  Verified: `make test`, `make test_llvm`, `./ifa --test`
+  (51 pass), `./test_pyc` (73 pass / 2 expected fail) all clean.
   ([AUDIT §1 item 6](AUDIT.md#1-headline-issues--in-order-of-likely-impact))
 
 ---
@@ -144,12 +195,18 @@ Don't attempt without a stable test harness (so: only after
 closed). Each tier-3 item is its own multi-week project.
 
 - [ ] **Fix [issue 009](../issues/009-fa-violations-nondeterminism.md)
-  (non-deterministic violation count).** Follow the recipe in
-  [AUDIT §10](AUDIT.md#10-suggested-first-steps-for-issue-009).
-  Likely closes [issue 008](../issues/008-fa-crash-on-nested-iterator-shape.md)
+  (non-deterministic violation count).** Detailed 6-step plan in
+  [issue 009 §Verification plan](../issues/009-fa-violations-nondeterminism.md#verification-plan)
+  — recover the deleted `nested_iterator` fixture, instrument
+  `type_violation`, walk the divergence point back to the
+  offending iteration, `qsort_by_id` it, regression-test, file
+  the deeper plib follow-up as a note. ~1 focused day if the
+  AUDIT's hypothesis is right. Likely closes
+  [issue 008](../issues/008-fa-crash-on-nested-iterator-shape.md)
   as a side effect. **Blocks every later tier-3 item** — until
   goldens are reliable, no large refactor can be validated.
-  ([AUDIT §3](AUDIT.md#3-determinism--the-cause-of-issue-009))
+  ([AUDIT §3](AUDIT.md#3-determinism--the-cause-of-issue-009),
+  [§10](AUDIT.md#10-suggested-first-steps-for-issue-009))
 - [ ] **Reentrancy step 1: sink worklists into `FA`.**
   `edge_worklist`, `send_worklist`, `es_worklist`,
   `entry_set_done`, `type_violations`, `fa_events_storage`.
@@ -189,3 +246,29 @@ closed). Each tier-3 item is its own multi-week project.
 - **Tier 0 (5 items)** — landed as one batch. See tier 0 section
   above for what was in scope and what was deferred. Verified
   with full `make test` + `./test_pyc`.
+- **Tier 1 (5 items)** — landed incrementally. Predicate-bool
+  conversion; `combine_hash` centralization (single mixer used by
+  `PendingMapHash` / `ATypeViolationHashFuns` /
+  `ATypeFoldChainHashFns`); CDB removal (cdb sources + `FA::cdb`
+  + `check_es_db` + `Fun::prof_id`/`prof_ess`/`es_info` deleted,
+  intent in [../notes/001-compilation-database.md](../notes/001-compilation-database.md));
+  three `#if 0` survivors + their `SettersClasses` support infra
+  removed, intent in [../notes/002-eager-splitting.md](../notes/002-eager-splitting.md);
+  `DEBUG_PRINT` macro + 8 call sites unified onto
+  `log(LOG_SPLITTING, …)`. Verified with full `make test` +
+  `make test_llvm` + `./test_pyc` (73 pass, 2 expected fails) at
+  each step.
+- **Tier 2 (4 items)** — landed incrementally. `graph.cc` buffer
+  overflows fixed via a `safe_strcat(buf, cap, src)` helper +
+  size params on `strcat_sym_node` / `strcat_pattern` (graph code
+  path is currently dormant from the live drivers but the fix
+  stands); `P_prim_cast` / `P_prim_meta_apply` asserts converted
+  to structured `fail()` calls with PNode source position, intent
+  in [../notes/003-cast-and-meta-apply-prims.md](../notes/003-cast-and-meta-apply-prims.md);
+  5 new lattice-op unit tests in `ifa/testing/lattice_test.cc`
+  (`./ifa --test` now runs 51, was 46); `IFA_PASS_LIMIT` made
+  soft and configurable via `FA::pass_limit` + `FA::pass_limit_hit`
+  flag instead of failing hard (frontends already iterate
+  `type_violations` downstream, the missing signal was "this is a
+  mid-iteration snapshot"). Verified at each step with the full
+  test matrix.

@@ -45,3 +45,10 @@ field, no expectation that anyone will work on it.
   the "group" pass inside `compute_setters`) plus the supporting
   `SettersClasses` / `cannonical_setters_classes` infrastructure
   were preserved as breadcrumbs; removed June 2026.
+- [003-cast-and-meta-apply-prims.md](003-cast-and-meta-apply-prims.md) —
+  `prim_cast` and `prim_meta_apply` IFA primitives. Both have
+  registered slots in the IR vocabulary but no live frontend emits
+  them. Transfer functions converted from `assert(!"implemented")`
+  to structured `fail()` June 2026; the `#if 0` design sketch for
+  `prim_meta_apply` and the missing dependencies are preserved
+  here.
