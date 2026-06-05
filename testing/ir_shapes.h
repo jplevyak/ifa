@@ -67,14 +67,13 @@ void polymorphic_formal(const ParamMap &);
 // setter/mark-type).
 void same_type_dispatch(const ParamMap &);
 
-// nested_iterator: REMOVED. Two-level vector nesting via method
-// dispatch. Worked correctly (fired the violation stage — first
-// synthetic shape to reach it) but exposed an FA-level crash in
-// fa-converge phase that's intermittent and order-dependent. See
+// nested_iterator: restored for issue 009 Step 1 (confirm the
+// alternation). Two-level vector nesting via method dispatch.
+// Fires the violation stage — first synthetic shape to reach it.
+// Standalone runs are documented as safe; the FA-level crash is
+// only when run alongside other fixtures via test-ir. See
 // issues/008-fa-crash-on-nested-iterator-shape.md for the trail.
-// The fixture itself, the IRShape::nested_iterator function, and
-// its registry entry are all removed; re-instate after the FA
-// crash is fixed.
+void nested_iterator(const ParamMap &);
 
 // iterator_copy: copy elements between two vectors via two
 // iterators. Builds on the vector_iterator breakthrough — tries

@@ -73,9 +73,60 @@ void same_type_dispatch(const ParamMap &m) {
   if1->top = top;
 }
 
-// nested_iterator removed — see issues/008-fa-crash-on-nested-iterator-shape.md.
-// The implementation lives in git history; re-introduce when the FA
-// crash is fixed.
+// nested_iterator: restored for issue 009 Step 1 (confirm the
+// alternation). Was previously removed because of an intermittent
+// FA crash when run *alongside* other fixtures (issue 008);
+// standalone is documented as safe. If you're running the full
+// test-ir set and hitting a crash, this is the culprit — re-remove
+// or skip until issue 008 / 009 are fixed.
+void nested_iterator(const ParamMap & /*m*/) {
+  // Two-level vector iteration via DISTINCT outer and inner types.
+  // The original (now-deleted) version reused one V at both levels
+  // and tripped clone's "mismatched field sizes" because the
+  // type union became {int32, float64, V}. With separate types
+  // and method dispatch through __getitem__, each level's
+  // element type stays clean.
+  Sym *V_inner = RecordBuilder("V_inner").vector().build();
+  Sym *V_outer = RecordBuilder("V_outer").vector(V_inner).build();
+  auto inner_methods = ir::install_subscript_methods(V_inner);
+  auto outer_methods = ir::install_subscript_methods(V_outer);
+
+  // consume_outer(vv): vv.__getitem__(0).__getitem__(0). Two
+  // levels of method-dispatched indexing.
+  Sym *vv_arg = ir::local("vv");
+  Sym *consume_outer = ClosureBuilder("consume_outer")
+      .arg(vv_arg)
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        Sym *zero = ir::const_int32(0);
+        Sym *inner_v = ir::call_getitem(cb, outer_methods, vv_arg, zero,
+                                        "inner_v");
+        Sym *e = ir::call_getitem(cb, inner_methods, inner_v, zero, "e");
+        cb.move(e, ret);
+        cb.reply(cont, ret);
+      });
+
+  Sym *top = ClosureBuilder("top")
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        Sym *zero = ir::const_int32(0);
+
+        Sym *inner1 = ir::new_instance(cb, V_inner);
+        ir::call_setitem(cb, inner_methods, inner1, zero,
+                         ir::const_int32(10));
+        Sym *outer1 = ir::new_instance(cb, V_outer);
+        ir::call_setitem(cb, outer_methods, outer1, zero, inner1);
+
+        Sym *inner2 = ir::new_instance(cb, V_inner);
+        ir::call_setitem(cb, inner_methods, inner2, zero,
+                         ir::const_float64(2.5));
+        Sym *outer2 = ir::new_instance(cb, V_outer);
+        ir::call_setitem(cb, outer_methods, outer2, zero, inner2);
+
+        cb.send_method(consume_outer, outer1, {});
+        cb.send_method(consume_outer, outer2, {});
+        cb.reply(cont, ret);
+      });
+  if1->top = top;
+}
 
 void iterator_copy(const ParamMap & /*m*/) {
   // Same V + It as vector_iterator; add a `next` method.
@@ -472,6 +523,7 @@ static Entry kRegistry[] = {
     {"vector_iterator", vector_iterator},
     {"iterator_copy", iterator_copy},
     {"iterator_missing_field", iterator_missing_field},
+    {"nested_iterator", nested_iterator},
     {nullptr, nullptr},
 };
 

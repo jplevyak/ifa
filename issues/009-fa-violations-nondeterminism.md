@@ -114,14 +114,56 @@ deleted in commit `a6e98e2` and are recoverable from `a6e98e2^`:
 
 Restore them on a throwaway branch. Loop
 `./ifa-test --phase fa-converge nested_iterator` 20 times and
-confirm the documented alternation (13 vs 31 violations, or
-whatever the current numbers are — they may have drifted since
-the AUDIT was written). If we don't see it, the bug may have
-shifted; instrument harder before continuing.
+confirm the documented alternation. The fa-converge printer
+omits the violation count by default since this issue was
+filed; gate the field on `IFA_PRINT_VIOLATIONS=1` and re-enable
+it for the run.
 
 **Output:** confirmation the symptom reproduces in HEAD; recorded
 both alternating violation counts for use as Step 2's diff
 oracles.
+
+#### Step 1 results (recorded 2026-06-05)
+
+Restored on the working branch (cleanup-tier-3 era). The
+`IFA_PRINT_VIOLATIONS=1` env-var gate was added to
+`testing/print_fa_converge.cc` so the violations field can be
+re-emitted on demand without disturbing the default goldens.
+
+20 standalone runs of
+`IFA_PRINT_VIOLATIONS=1 ./ifa-test --rebless --phase fa-converge nested_iterator`:
+
+| Pattern (per-pass `violations_after`) | Count |
+|---------------------------------------|-------|
+| `13, 13, 13`                          | 15 (75%) |
+| `13, 31, 31`                          | 5 (25%) |
+
+Sharper observations than the original "13 vs 31" framing:
+
+- **Pass 1 always records 13 violations.** Deterministic.
+  Whatever produces violations in pass 1 is order-independent.
+- **Pass 2 records either +0 or +18 new violations.** This is
+  where the non-determinism enters. Pass 2's transfer-function
+  pass adds 18 violations under one iteration order and zero
+  under the other.
+- **Pass 3 inherits the divergence** (it adds zero in both
+  branches), so the final count is whatever pass 2 settled on.
+- **No standalone crash** observed in 20 runs. This matches
+  issue 008's claim that the crash only fires when
+  `nested_iterator` runs alongside other fixtures via
+  `make test-ir`.
+- **No third bucket** — exactly two outcomes. This suggests a
+  single binary iteration-order decision somewhere in pass 2,
+  not a fan-out of multiple non-deterministic sites.
+
+**Implication for Step 2:** find what pass 2's `extend_analysis`
+does that records exactly 18 violations or zero, depending on
+iteration order. 18 is a chunky number — likely one loop touching
+18 AVars, all flagged under one ordering, none under the other.
+That sharpens the instrumentation target: log every
+`type_violation()` call with the current `analysis_pass`, then
+diff the pass-2 slices of two runs against each other; the run
+with 18 extra calls in pass 2 names the iteration site.
 
 ### Step 2 — Instrument `type_violation` to log every call
 
