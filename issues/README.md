@@ -63,12 +63,14 @@ that:
   method-wrapper shape in pyc-emitted IR. Stays within the "simple"
   boundary (no iteration, no cost model).
 - [007-mark-type-stage-coverage.md](007-mark-type-stage-coverage.md) —
-  post-type splitter stages coverage. **Partial:** setter stage
-  reachable via synthetic shapes. Violation briefly reachable
-  via `nested_iterator` but that fixture exposed an FA crash
-  (issue 008) and was dropped. Remaining open: `mark-type`,
-  `setter-of-setter`, `mark-setter`, `mark-setter-of-setter`,
-  `violation`.
+  post-type splitter stages coverage. **Partial:** 3 of 7 stages
+  reached (type / setter / violation; violation came back when
+  008 closed and `nested_iterator` was restored June 2026).
+  Remaining open: `mark-type`, `setter-of-setter`, `mark-setter`,
+  `mark-setter-of-setter`. June 2026 follow-up added a structural
+  reading of the four splitters and a dead-code hypothesis; next
+  move is either one targeted recursive-polymorphic shape OR a
+  dead-code archeology pass to remove the unreached stages.
 - [008-fa-crash-on-nested-iterator-shape.md](008-fa-crash-on-nested-iterator-shape.md) —
   intermittent FA-level segfault when `nested_iterator` ran
   alongside other fixtures. **Closed June 2026 (could not

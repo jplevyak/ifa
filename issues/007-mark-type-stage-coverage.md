@@ -1,11 +1,11 @@
 # Issue 007: post-type splitter stages not triggered by any shape
 
-**Status:** partial — `setter` stage now reachable via synthetic
-shapes (Phase 09 C 7.7). `violation` was briefly reachable via
-the `nested_iterator` shape but that fixture exposed an FA-level
-crash and was dropped; see [008-fa-crash-on-nested-iterator-shape.md](008-fa-crash-on-nested-iterator-shape.md).
-Remaining gaps: `mark-type`, `setter-of-setter`, `mark-setter`,
-`mark-setter-of-setter`, and (until 008 is fixed) `violation`.
+**Status:** partial — `setter` reachable via iterator shapes
+(Phase 09 C 7.7); `violation` reachable via `nested_iterator`
+(restored June 2026 after issue 008 closed as "could not
+reproduce"). Remaining gaps: `mark-type`, `setter-of-setter`,
+`mark-setter`, `mark-setter-of-setter` (4 of 7 splitter stages
+uncovered, down from 5 of 7 when filed).
 **Affects:** `ifa/analysis/fa.cc:split_ess_for_mark_type`,
 `split_for_setters_of_setters`, and the mark-based variants;
 `IFA.md` splitter section.
@@ -277,3 +277,138 @@ If someone fixes any post-type stage (e.g., by changing the
 splitter cascade or by writing a shape that actually triggers
 them), one of these goldens will shift and become the regression
 marker.
+
+## Follow-up — June 2026
+
+With [issue 008](008-fa-crash-on-nested-iterator-shape.md)
+closed as "could not reproduce," the `nested_iterator.synth`
+fixture is back in the suite and the **violation** stage is
+covered again. Current stage tally across all 17 fa-converge
+fixtures:
+
+| Stage                 | Reached? | Fixtures                                                                      |
+|-----------------------|----------|-------------------------------------------------------------------------------|
+| type                  | ✓        | 13 fixtures, broadly                                                          |
+| **mark-type**         | ✗        | none — 0/17                                                                   |
+| setter                | ✓        | 3 (`iterator_copy`, `iterator_missing_field`, `vector_iterator`)              |
+| **setter-of-setter**  | ✗        | none — 0/17                                                                   |
+| **mark-setter**       | ✗        | none — 0/17                                                                   |
+| **mark-setter-of-setter** | ✗    | none — 0/17                                                                   |
+| violation             | ✓        | 1 (`nested_iterator`)                                                         |
+
+3 of 7 splitter stages reached; 4 remain uncovered.
+
+### Verification plan step 4: read `split_with_type_marks` directly
+
+Per the issue's verification plan #4, read the four uncovered-
+stage splitters and figure out what inputs would actually cause
+them to make progress. Structural finding follows.
+
+#### `split_ess_for_mark_type` (the mark-type stage)
+
+```cpp
+// fa.cc ~3535
+static int split_with_type_marks(AVar *av, int fdynamic) {
+  Accum<AVar *> acc;
+  build_type_marks(av, acc);
+  Vec<AVar *> confluences;
+  collect_es_marked_confluences(confluences, acc, SPLIT_TYPE);
+  // ... same formal/return-value qualifier as stage 1 ...
+  if (av->contour_is_entry_set) {
+    if (!av->is_lvalue) {
+      if (av->var->is_formal) ...split with SPLIT_MARK...
+    } else {
+      if (is_return_value(aav)) ...split with SPLIT_MARK...
+    }
+  }
+}
+```
+
+Structure mirrors stage 1 (`split_ess_for_type`) but uses
+mark-collected confluences instead of raw confluences. The two
+confluence sets differ when an AVar receives the *same base
+type* from multiple sources but those sources carry different
+`mark_map` entries — i.e., the polymorphism is at the "same type
+from distinct origins" level, not the "different types" level.
+
+Per IFA.md §6.2, this is the **"recursion-meets-polymorphism"**
+case: a recursive function called from two distinct contexts
+with the same argument type, where the analysis would benefit
+from splitting per-call-site even though the call-site types
+match. None of the 15 prior iteration attempts tried a
+recursive-polymorphic shape, because the natural shape ("call
+the same fn twice with different types") gives stage 1 a
+qualifying confluence on the formal.
+
+#### `split_for_setters_of_setters`
+
+Cascade order: setter fires first; setter-of-setter only runs
+if setter returned 0. Iterator shapes generate setter splits at
+the first hop (the iterator record's `vec`/`pos` write graph),
+so setter absorbs the polymorphism before setter-of-setter sees
+it. To trigger setter-of-setter, we'd need a write graph where
+the first hop is uniform but the *second* hop is polymorphic —
+e.g., a setter chain where the intermediate's setter list is
+uniform but its setters' setters diverge.
+
+#### `mark-setter` and `mark-setter-of-setter`
+
+Same relationship as mark-type vs type: they're the
+mark-augmented versions of setter and setter-of-setter, only
+firing when the unmarked versions found no progress. To reach
+them, the setter graph would need a same-base-type-distinct-
+origin polymorphism (the recursion analog at the setter level).
+
+### Hypothesis (c) "dead code" — supporting evidence
+
+- **Zero fa-converge fixtures trigger any of the 4 stages.**
+- **No pyc test program triggers them** (issue 003 §empirical recon).
+- **No V test program triggers them** (issue 003 §empirical recon).
+- **15+ iteration attempts** using polymorphic-receiver shapes,
+  iterator shapes, missing-field shapes, setter chains, control-
+  flow merges, and nested vectors all failed to reach any of
+  the 4 stages.
+- The required pattern for `mark-type` (recursion-meets-
+  polymorphism with same-type-distinct-origin confluences) is
+  structurally rare; if it ever fires, the splitter cascade
+  already provides simpler stages (type, setter, violation) that
+  would usually catch it first.
+
+This is *suggestive* but not definitive — absence of evidence
+isn't evidence of absence. A patient targeted attempt at a
+recursive-polymorphic shape would either confirm hypothesis (c)
+by failing OR refute it by triggering mark-type.
+
+### Recommended next move
+
+Two options, in increasing scope:
+
+1. **One targeted recursive-polymorphic shape attempt.** Build
+   a shape like:
+   ```
+   def recurse(it):
+     if (cond): return it
+     else: return recurse(advance(it))
+   main:
+     recurse(it_int); recurse(it_float)
+   ```
+   Same instrumentation as Phase C: drop it into
+   `ifa/testing/ir_shapes.cc`, bless the fa-converge golden,
+   check whether `splits[mark-type]` appears.
+
+   - If yes → close mark-type's gap; same approach probably
+     applies to mark-setter / mark-setter-of-setter.
+   - If no → strong evidence for hypothesis (c). Move to option 2.
+
+2. **Code-archeology pass for dead-code candidate removal.**
+   Confirm hypothesis (c) by reading the splitter call chain
+   in depth, comparing to the paper §5/§6 prescriptions, and
+   filing a `[ ]` CLEANUP item to remove the unreached stages
+   if they truly correspond to abandoned design directions.
+   Removing ~50 LOC per stage = ~200 LOC simplification.
+
+Either option is bounded work. The 15+ failed attempts to date
+were all on the polymorphic-call axis; option 1 explores the
+recursion axis, which is the one IFA.md §6.2 attributes to
+mark-type. If it also fails, option 2 is the principled next
+step.
