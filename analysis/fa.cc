@@ -3875,7 +3875,7 @@ int FA::analyze(Fun *top) {
   set_void_lub_types_to_void();
   remove_unused_closures();
   if1->callback->report_analysis_errors(type_violations);
-  show_violations(fa, stderr);
+  if (show_violation_output) show_violations(fa, stderr);
   if (fruntime_errors) convert_NOTYPE_to_void();
   return (!fruntime_errors && type_violations.set_count()) ? -1 : 0;
 }

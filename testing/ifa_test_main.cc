@@ -386,6 +386,10 @@ static int run_one(Fixture &f, Phase *phase, int &out_failed) {
   ifa_reset();
   ifa_init(new IRCallbacks);
   parse_ir_reset();
+  // The test harness exercises violation-stage fixtures by design;
+  // FA's per-pass `show_violations(stderr)` dump would drown out
+  // the test results. Suppress it for the duration of this test.
+  if (pdb && pdb->fa) pdb->fa->show_violation_output = false;
 
   // Match the production frontend default. With Partial_OK, every
   // SEND constructed by the .ir parser is treated as a partial

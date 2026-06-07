@@ -346,6 +346,12 @@ class FA : public gc {
   // off. Frontends inspect this to distinguish a converged
   // `type_violations` from a snapshot mid-iteration.
   bool pass_limit_hit;
+  // Print FA's accumulated type violations to stderr at the end of
+  // `FA::analyze`. Default true (production behavior); the test
+  // harness sets it to false because fixtures are designed to
+  // *trigger* violations and the stderr noise drowns out the test
+  // results. Frontends that want to suppress can also flip this.
+  bool show_violation_output = true;
 
   // ---- Per-instance hash-cons world (tier-3 reentrancy step 2) ----
   // See TypeWorld declaration above.
