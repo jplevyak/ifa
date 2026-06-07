@@ -76,12 +76,18 @@ that:
   dependent. Workaround: fixture dropped. Likely same root cause
   as issue 009.
 - [009-fa-violations-nondeterminism.md](009-fa-violations-nondeterminism.md) —
-  FA's `type_violations.n` count is non-deterministic across
-  runs of the same input — alternates between values with
-  ~50/50 probability. Workaround: dropped the `violations=X→Y`
-  field from the fa-converge printer's history. Real fix:
-  identify the hash/iteration-order dependency in `fa.cc`'s
-  violation collection. Likely fixes issue 008 as a side effect.
+  FA's `type_violations.n` reported value alternated across
+  runs. **Closed June 2026.** Surprise diagnosis: the analysis
+  was deterministic; the printer was reading `.n` (table
+  capacity of the underlying `Vec`-as-set) instead of
+  `.set_count()` (live element count). Fix was a one-line-per-
+  site swap at ~10 reporting sites in `fa.cc`. Scan of all 17
+  fa-converge fixtures showed 9 were silently mis-reporting,
+  only `nested_iterator` happened to alternate visibly.
+  Cross-cutting plib follow-on filed as
+  [../notes/004-plib-vec-pointer-set-hashing.md](../notes/004-plib-vec-pointer-set-hashing.md).
+  Side observation: issue 008 stopped reproducing in 40 runs
+  post-fix (cause unclear, separate investigation).
 
 ## When to file an issue here vs fix it now
 

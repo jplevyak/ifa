@@ -34,6 +34,7 @@ class Patterns;
 class MatchCache;
 class MPosition;
 class EntrySet;
+struct FAPassEvent;
 
 typedef Map<PNode *, Vec<AEdge *> *> EdgeMap;
 typedef BlockHash<AEdge *, PointerHashFns> EdgeHash;
@@ -272,6 +273,43 @@ class ATypeFoldChainHashFns {
   static int equal(ATypeFold *x, ATypeFold *y) { return x->p == y->p && x->a == y->a && x->b == y->b; }
 };
 
+// Per-FA hash-cons world (tier-3 reentrancy step 2). Holds the
+// canonical-AType table, the Setters hash-cons, the type-fold cache,
+// and the violation-dedup table. AType identity is meaningful only
+// *within* one TypeWorld: two FAs with separate TypeWorlds will hand
+// out distinct canonical pointers for structurally identical types.
+// Today there's one TypeWorld per FA (embedded as a member); future
+// work can share a TypeWorld across multiple FAs if cross-instance
+// AType identity is wanted.
+class TypeWorld : public gc {
+ public:
+  ChainHash<AType *, ATypeChainHashFns> cannonical_atypes;
+  ChainHash<Setters *, SettersHashFns> cannonical_setters;
+  ChainHash<ATypeFold *, ATypeFoldChainHashFns> type_fold_cache;
+  ChainHash<ATypeViolation *, ATypeViolationHashFuns> type_violation_hash;
+
+  // Canonical AType pointers (tier-3 reentrancy step 3). Populated by
+  // `initialize()` at FA::analyze entry; valid for the lifetime of
+  // their owning FA. Accessed via `fa->type_world.bottom_type` etc.
+  AType *bottom_type = nullptr;
+  AType *nil_type = nullptr;
+  AType *unknown_type = nullptr;
+  AType *void_type = nullptr;
+  AType *top_type = nullptr;
+  AType *any_type = nullptr;
+  AType *bool_type = nullptr;
+  AType *true_type = nullptr;
+  AType *false_type = nullptr;
+  AType *size_type = nullptr;
+  AType *anyint_type = nullptr;
+  AType *anynum_kind = nullptr;
+  AType *symbol_type = nullptr;
+  AType *string_type = nullptr;
+  AType *tuple_type = nullptr;
+  AType *anytype_type = nullptr;
+  AType *function_type = nullptr;
+};
+
 class FA : public gc {
  public:
   PDB *pdb;
@@ -290,6 +328,16 @@ class FA : public gc {
   bool no_unused_instance_variables;
   int tuple_index_base;
   int num_constants_per_variable;
+  // ---- Per-instance id counters (tier-3 reentrancy step 4) ----
+  // Each new AVar/AEdge/CreationSet/EntrySet gets its id from these.
+  // Constructors do `id = fa->X_id++`, so the global `fa` must be
+  // set (which it is at `FA::analyze` entry) before any of these
+  // objects are constructed.
+  int avar_id = 1;
+  int aedge_id = 1;
+  int creation_set_id = 1;
+  int entry_set_id = 1;
+
   // Cap on outer convergence iterations. Frontends may raise it for
   // pathological inputs or lower it for fail-fast tests.
   int pass_limit;
@@ -298,6 +346,26 @@ class FA : public gc {
   // off. Frontends inspect this to distinguish a converged
   // `type_violations` from a snapshot mid-iteration.
   bool pass_limit_hit;
+
+  // ---- Per-instance hash-cons world (tier-3 reentrancy step 2) ----
+  // See TypeWorld declaration above.
+  TypeWorld type_world;
+
+  // ---- Per-instance worklists / completion set / violation list ----
+  // Sunk into FA from file-static globals June 2026 (tier-3
+  // reentrancy step 1). See AUDIT §2.2 and CLEANUP.md.
+  Que(AEdge, edge_worklist_link) edge_worklist;
+  Que(AVar, send_worklist_link) send_worklist;
+  Que(EntrySet, es_worklist_link) es_worklist;
+  Vec<EntrySet *> entry_set_done;
+  Vec<ATypeViolation *> type_violations;
+
+  // ---- FAPassEvent sidecar (issue 003) ----
+  // Test-harness sidecar; populated by `record_fa_event()` during a
+  // splitter pass when `fa_events_enabled` is true. Accessed via the
+  // `fa_events_*()` free functions which delegate to `pdb->fa`.
+  bool fa_events_enabled;
+  Vec<FAPassEvent *> fa_events_storage;
 
   FA(PDB *apdb)
       : pdb(apdb),
@@ -309,7 +377,8 @@ class FA : public gc {
         tuple_index_base(0),
         num_constants_per_variable(1),
         pass_limit(IFA_PASS_LIMIT),
-        pass_limit_hit(false) {}
+        pass_limit_hit(false),
+        fa_events_enabled(false) {}
 
   int analyze(Fun *f);
   int concretize();
@@ -373,6 +442,10 @@ void flow_var_type_permit(AVar *v, AType *t);
 CreationSet *creation_point(AVar *v, Sym *s, int nvars = -1);
 void prim_make_constraints(PNode *p, EntrySet *es);
 void type_violation(ATypeViolation_kind akind, AVar *av, AType *type, AVar *send, Vec<Fun *> *funs = nullptr);
+// Live count of unique (kind, av, send) violation triples currently
+// recorded. Use this — not `type_violations.n`, which is the
+// underlying open-addressed table capacity (see issue 009).
+int type_violations_count();
 AType *type_cannonicalize(AType *t);
 AType *type_diff(AType *, AType *);
 AType *type_intersection(AType *, AType *);
@@ -437,21 +510,10 @@ void qsort_by_id(Vec<C *> &v) {
 
 extern FA *fa;
 
-extern AType *bottom_type;
-extern AType *void_type;
-extern AType *unknown_type;
-extern AType *top_type;
-extern AType *any_type;
-extern AType *bool_type;
-extern AType *true_type;
-extern AType *false_type;
-extern AType *size_type;
-extern AType *anyint_type;
-extern AType *anynum_kind;
-extern AType *fun_type;
-extern AType *symbol_type;
-extern AType *fun_symbol_type;
-extern AType *anytype_type;
+// Canonical AType pointers (bottom_type, void_type, etc.) are now
+// members of TypeWorld owned by FA. Access via
+// `fa->type_world.bottom_type` (the global `fa` is set at
+// `FA::analyze` entry). Tier-3 reentrancy step 3.
 
 extern int analysis_pass;
 

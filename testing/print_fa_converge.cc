@@ -92,21 +92,17 @@ void print_fa_converge_normalized(FILE *fp, IF1 *p) {
   if (events.n == 0) {
     fputs("  (no events — converged in one pass)\n", fp);
   } else {
-    // Violation counts (before/after) are non-deterministic for some
-    // shapes (issue 009) — FA records different numbers of violations
-    // depending on internal iteration order. Omitted from the printed
-    // history by default to keep goldens stable. Set
-    // IFA_PRINT_VIOLATIONS=1 to re-enable for issue 009 investigation.
-    bool show_viol = getenv("IFA_PRINT_VIOLATIONS") != nullptr;
+    // violations= now reports type_violations.set_count() — the live
+    // element count, not the open-addressed table capacity (the
+    // capacity oscillated with allocation order and is what made the
+    // numbers look non-deterministic; see issue 009).
     for (FAPassEvent *e : events) {
       fprintf(fp,
-              "  pass %d %s splits=%d ess=%d→%d css=%d→%d",
+              "  pass %d %s splits=%d ess=%d→%d css=%d→%d violations=%d→%d\n",
               e->pass, stage_name(e->stage), e->splits,
               e->ess_before, e->ess_after,
-              e->css_before, e->css_after);
-      if (show_viol)
-        fprintf(fp, " violations=%d→%d", e->violations_before, e->violations_after);
-      fputc('\n', fp);
+              e->css_before, e->css_after,
+              e->violations_before, e->violations_after);
     }
   }
   fputs(")\n", fp);

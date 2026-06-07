@@ -70,7 +70,7 @@ static void initialize() {
 }
 
 static AType *element_type(CreationSet *cs) {
-  if (!cs->sym->element) return bottom_type;
+  if (!cs->sym->element) return fa->type_world.bottom_type;
   AType *t = get_element_avar(cs)->out;
   for (AVar *av : cs->vars) t = type_union(t, av->out);
   return t;
@@ -520,7 +520,7 @@ static int compute_member_types(Vec<CreationSet *> *eqcss) {
 static bool tuple_able(CreationSet *cs) {
 #ifdef CONVERT_LISTS_TO_TUPLES
   AVar *elem = get_element_avar(cs);
-  return elem && elem->out == bottom_type;
+  return elem && elem->out == fa->type_world.bottom_type;
 #else
   return false;
 #endif
@@ -640,7 +640,7 @@ static int define_concrete_types(CSSS &css_sets) {
       } else if (sym->type_kind == Type_PRIMITIVE || sym->type_kind == Type_TAGGED || sym->is_fun) {
         AVar *elem = get_element_avar(eqcss->first_in_set());
         Sym *s = sym;
-        if (elem && elem->out != bottom_type) {
+        if (elem && elem->out != fa->type_world.bottom_type) {
           int abstract = eqcss->n == 1 && eqcss->v[0]->defs.n == 0;
           s = abstract ? sym->copy() : sym->clone();
         }
@@ -717,7 +717,7 @@ static int concretize_var_list_type(Var *v) {
   Sym *sym = nullptr;
   // check if we even need to try to convert a list
   bool all_list = false;
-  AType *etype = bottom_type;
+  AType *etype = fa->type_world.bottom_type;
   for (int i = 0; i < v->avars.n; i++) {
     if (!v->avars[i].key) continue;
     for (CreationSet *cs : *v->avars[i].value->out) if (cs) {

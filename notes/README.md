@@ -52,3 +52,20 @@ field, no expectation that anyone will work on it.
   to structured `fail()` June 2026; the `#if 0` design sketch for
   `prim_meta_apply` and the missing dependencies are preserved
   here.
+- [004-plib-vec-pointer-set-hashing.md](004-plib-vec-pointer-set-hashing.md) —
+  `Vec::set_add_internal`'s `(uintptr_t)c % n` bucket hashing,
+  which causes both iteration-order non-determinism and table-
+  capacity oscillation across runs. Filed as a cross-cutting
+  follow-on after issue 009 surfaced the capacity-reporting
+  symptom (closed in `fa.cc` with `.n` → `.set_count()`) but not
+  the underlying iteration-order effect, which is contained in
+  practice by ~17 `qsort_by_id` sites in `fa.cc` and the same
+  discipline elsewhere.
+- [005-singleton-fa-and-pdb.md](005-singleton-fa-and-pdb.md) —
+  the global `FA *fa` / `PDB *pdb` pointers remain after tier-3
+  reentrancy steps 1-4 landed. Captures the surface area
+  (~430 references across 10 files), the two migration shapes
+  (thread `FA*` vs. back-pointers on IR objects), and why we
+  stopped (no concrete multi-FA use case justifies the cost).
+  Reentrancy step 5 and the related `graph.cc`-globals cleanup
+  are both deferred pending that use case.

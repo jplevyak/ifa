@@ -9,7 +9,7 @@
 )
 
 (history
-  pass 1 type splits=1 ess=3→3 css=32→32
-  pass 2 setter splits=1 ess=4→4 css=32→32
-  pass 3 type splits=1 ess=4→4 css=33→33
+  pass 1 type splits=1 ess=3→3 css=32→32 violations=8→8
+  pass 2 setter splits=1 ess=4→4 css=32→32 violations=11→11
+  pass 3 type splits=1 ess=4→4 css=33→33 violations=11→11
 )

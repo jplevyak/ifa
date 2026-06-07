@@ -655,11 +655,11 @@ static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done
   switch (n->code->kind) {
     case Code_IF:
       if (n->live && n->fa_live) {
-        if (n->rvals[0]->sym == true_type->v[0]->sym) {
+        if (n->rvals[0]->sym == fa->type_world.true_type->v[0]->sym) {
           do_phy_nodes(fp, n, 0);
           do_phi_nodes(fp, n, 0);
           if (done.set_add(n->cfg_succ[0])) write_c_pnode(fp, fa, f, n->cfg_succ[0], done);
-        } else if (n->rvals[0]->sym == false_type->v[0]->sym) {
+        } else if (n->rvals[0]->sym == fa->type_world.false_type->v[0]->sym) {
           do_phy_nodes(fp, n, 1);
           do_phi_nodes(fp, n, 1);
           if (done.set_add(n->cfg_succ[1])) write_c_pnode(fp, fa, f, n->cfg_succ[1], done);

@@ -23,42 +23,24 @@ int write_code_exit = 0;
 
 int analysis_pass = 0;
 
-AType *bottom_type = nullptr;
-AType *nil_type = nullptr;
-AType *unknown_type = nullptr;
-AType *void_type = nullptr;
-AType *top_type = nullptr;
-AType *any_type = nullptr;
-AType *bool_type = nullptr;
-AType *true_type = nullptr;
-AType *false_type = nullptr;
-AType *size_type = nullptr;
-AType *anyint_type = nullptr;
-AType *anynum_kind = nullptr;
-AType *symbol_type = nullptr;
-AType *string_type = nullptr;
-AType *tuple_type = nullptr;
-AType *anytype_type = nullptr;
-AType *function_type = nullptr;
+// The 17 canonical AType pointers (bottom_type, void_type, top_type,
+// any_type, bool_type, ..., function_type) are now members of
+// TypeWorld on FA (tier-3 reentrancy step 3). See fa.h.
 
-static int avar_id = 1;
-static int aedge_id = 1;
-static int creation_set_id = 1;
-static int entry_set_id = 1;
+// avar_id, aedge_id, creation_set_id, entry_set_id are now members
+// of FA (tier-3 reentrancy step 4). See fa.h.
 
 FA *fa = nullptr;
 static Timer pass_timer, match_timer, extend_timer;
 
-static ChainHash<AType *, ATypeChainHashFns> cannonical_atypes;
-static ChainHash<Setters *, SettersHashFns> cannonical_setters;
-static ChainHash<ATypeFold *, ATypeFoldChainHashFns> type_fold_cache;
-static ChainHash<ATypeViolation *, ATypeViolationHashFuns> type_violation_hash;
+// cannonical_atypes / cannonical_setters / type_fold_cache /
+// type_violation_hash now live on `FA::type_world` (tier-3
+// reentrancy step 2). Access via `fa->type_world.X`.
 
-static Que(AEdge, edge_worklist_link) edge_worklist;
-static Que(AVar, send_worklist_link) send_worklist;
-static Que(EntrySet, es_worklist_link) es_worklist;
-static Vec<EntrySet *> entry_set_done;
-static Vec<ATypeViolation *> type_violations;
+// edge_worklist, send_worklist, es_worklist, entry_set_done,
+// type_violations are now members of FA (tier-3 reentrancy step 1).
+// Access via `fa->edge_worklist` etc. inside the splitter call tree
+// (the global `fa` is set at FA::analyze entry).
 
 static int application(PNode *p, EntrySet *es, AVar *fun, CreationSet *s, Vec<AVar *> &args, Vec<cchar *> &names,
                        int is_closure, Partial_kind partial, PNode *visibility_point, Vec<CreationSet *> *closures);
@@ -68,41 +50,38 @@ static int application(PNode *p, EntrySet *es, AVar *fun, CreationSet *s, Vec<AV
 // from a prior run leaking in.
 void fa_reset() {
   analysis_pass = 0;
-  bottom_type = nil_type = unknown_type = void_type = top_type = any_type = nullptr;
-  bool_type = true_type = false_type = size_type = nullptr;
-  anyint_type = anynum_kind = symbol_type = string_type = tuple_type = nullptr;
-  anytype_type = function_type = nullptr;
-  avar_id = aedge_id = creation_set_id = entry_set_id = 1;
+  // Canonical types now live on TypeWorld per FA; FA destruction
+  // handles them.
+  // id counters live on FA now; FA destruction handles them.
   fa = nullptr;
   pass_timer.reset();    match_timer.reset();    extend_timer.reset();
   memset(pass_timer.accumulator,   0, sizeof(pass_timer.accumulator));
   memset(match_timer.accumulator,  0, sizeof(match_timer.accumulator));
   memset(extend_timer.accumulator, 0, sizeof(extend_timer.accumulator));
-  cannonical_atypes.clear();
-  cannonical_setters.clear();
-  type_fold_cache.clear();
-  type_violation_hash.clear();
-  edge_worklist.clear();
-  send_worklist.clear();
-  es_worklist.clear();
-  entry_set_done.clear();
-  type_violations.clear();
+  // hash-cons caches (cannonical_atypes / cannonical_setters /
+  // type_fold_cache / type_violation_hash) and the worklists are
+  // now per-FA on FA::type_world / FA itself. FA destruction
+  // handles them.
 }
 
 // ---------------------------------------------------------------------------
 // FA-pass-event sidecar (issue 003). Disabled by default; production
 // pays nothing. Mirrors InlineEvent in ifa/optimize/inline.cc.
 // ---------------------------------------------------------------------------
-static bool fa_events_enabled = false;
-static Vec<FAPassEvent *> fa_events_storage;
+// fa_events_enabled and fa_events_storage are now members of FA.
+// The free functions below delegate via `pdb->fa` because they are
+// called *before* FA::analyze sets the global `fa` pointer.
 
-void fa_events_enable() { fa_events_enabled = true; }
-void fa_events_disable() { fa_events_enabled = false; }
-void fa_events_reset() { fa_events_storage.clear(); }
-const Vec<FAPassEvent *> &fa_events_get() { return fa_events_storage; }
+void fa_events_enable()  { if (pdb && pdb->fa) pdb->fa->fa_events_enabled = true; }
+void fa_events_disable() { if (pdb && pdb->fa) pdb->fa->fa_events_enabled = false; }
+void fa_events_reset()   { if (pdb && pdb->fa) pdb->fa->fa_events_storage.clear(); }
+const Vec<FAPassEvent *> &fa_events_get() {
+  static const Vec<FAPassEvent *> empty;
+  return (pdb && pdb->fa) ? pdb->fa->fa_events_storage : empty;
+}
 
 static void record_fa_event(FAPassStage stage, int splits, int ess_before, int css_before, int viol_before) {
-  if (!fa_events_enabled) return;
+  if (!fa->fa_events_enabled) return;
   FAPassEvent *e = new FAPassEvent;
   e->pass = analysis_pass + 1;  // extend_analysis hasn't incremented yet
   e->stage = stage;
@@ -112,19 +91,28 @@ static void record_fa_event(FAPassStage stage, int splits, int ess_before, int c
   e->css_before = css_before;
   e->css_after = fa->css.n;
   e->violations_before = viol_before;
-  e->violations_after = type_violations.n;
-  fa_events_storage.add(e);
+  // type_violations is a Vec used as a pointer-set; `.n` is the
+  // open-addressed table capacity (varies non-deterministically as
+  // probe chains may or may not trigger set_expand), not the live
+  // element count. Use `.set_count()` to report the actual number
+  // of distinct violations. See issue 009.
+  e->violations_after = fa->type_violations.set_count();
+  if (getenv("IFA_DEBUG_VIOLATIONS")) {
+    fprintf(stderr, "VIOL_EVENT pass=%d stage=%d viol.n=%d viol.set_count=%d\n",
+            e->pass, (int)stage, fa->type_violations.n, fa->type_violations.set_count());
+  }
+  fa->fa_events_storage.add(e);
 }
 
-AEdge::AEdge() : from(nullptr), to(nullptr), pnode(nullptr), fun(nullptr), match(nullptr), in_edge_worklist(0) { id = aedge_id++; }
+AEdge::AEdge() : from(nullptr), to(nullptr), pnode(nullptr), fun(nullptr), match(nullptr), in_edge_worklist(0) { id = fa->aedge_id++; }
 
 AVar::AVar(Var *v, void *acontour)
     : var(v),
       contour(acontour),
       lvalue(nullptr),
       gen(nullptr),
-      in(bottom_type),
-      out(bottom_type),
+      in(fa->type_world.bottom_type),
+      out(fa->type_world.bottom_type),
       restrict(nullptr),
       container(nullptr),
       setters(nullptr),
@@ -140,7 +128,7 @@ AVar::AVar(Var *v, void *acontour)
       live(0),
       live_arg(0),
       is_if_arg(0) {
-  id = avar_id++;
+  id = fa->avar_id++;
 }
 
 AType::AType(AType &a) {
@@ -187,14 +175,14 @@ CreationSet::CreationSet(Sym *s)
       atype(nullptr),
       equiv(nullptr),
       type(nullptr) {
-  id = creation_set_id++;
+  id = fa->creation_set_id++;
 }
 
 CreationSet::CreationSet(CreationSet *cs)
     : dfs_color(DFS_white), added_element_var(0), closure_used(0), tuple_able(0),
       atype(nullptr), equiv(nullptr), type(nullptr) {
   sym = cs->sym;
-  id = creation_set_id++;
+  id = fa->creation_set_id++;
   clone_for_constants = cs->clone_for_constants;
   for (AVar *v : cs->vars) {
     AVar *iv = unique_AVar(v->var, this);
@@ -206,7 +194,7 @@ CreationSet::CreationSet(CreationSet *cs)
 }
 
 EntrySet::EntrySet(Fun *af) : fun(af), dfs_color(DFS_white), in_es_worklist(0), split(nullptr), equiv(nullptr) {
-  id = entry_set_id++;
+  id = fa->entry_set_id++;
 }
 
 AVar *make_AVar(Var *v, EntrySet *es) {
@@ -249,23 +237,23 @@ AType *AType::constants() {
 void update_in(AVar *v, AType *t) {
   AType *tt = type_union(v->in, t);
   if (tt != v->in) {
-    assert(tt && tt != top_type);
+    assert(tt && tt != fa->type_world.top_type);
     v->in = tt;
     if (v->restrict) tt = type_intersection(v->in, v->restrict);
     if (tt != v->out) {
-      assert(tt != top_type);
+      assert(tt != fa->type_world.top_type);
       v->out = tt;
       for (AVar *vv : v->arg_of_send.asvec) {
         if (!vv->in_send_worklist) {
           vv->in_send_worklist = 1;
-          send_worklist.enqueue(vv);
+          fa->send_worklist.enqueue(vv);
         }
       }
       if (v->is_if_arg) {
         EntrySet *es = (EntrySet *)v->contour;
         if (!es->in_es_worklist) {
           es->in_es_worklist = 1;
-          es_worklist.enqueue(es);
+          fa->es_worklist.enqueue(es);
         }
       }
       for (AVar *vv : v->forward) if (vv) update_in(vv, tt);
@@ -409,10 +397,10 @@ Sym *coerce_num(Sym *a, Sym *b) {
 AType *type_num_fold(Prim *p, AType *a, AType *b) {
   (void)p;
   p = 0;  // for now
-  a = type_intersection(a, anynum_kind);
-  b = type_intersection(b, anynum_kind);
+  a = type_intersection(a, fa->type_world.anynum_kind);
+  b = type_intersection(b, fa->type_world.anynum_kind);
   ATypeFold f(p, a, b), *ff;
-  if ((ff = type_fold_cache.get(&f))) return ff->result;
+  if ((ff = fa->type_world.type_fold_cache.get(&f))) return ff->result;
   AType *r = new AType();
   for (CreationSet *acs : a->sorted) {
     Sym *atype = acs->sym->type;
@@ -422,7 +410,7 @@ AType *type_num_fold(Prim *p, AType *a, AType *b) {
     }
   }
   r = type_cannonicalize(r);
-  type_fold_cache.put(new ATypeFold(p, a, b, r));
+  fa->type_world.type_fold_cache.put(new ATypeFold(p, a, b, r));
   return r;
 }
 
@@ -500,7 +488,7 @@ AType *type_cannonicalize(AType *t) {
   unsigned int h = 0;
   for (int i = 0; i < t->sorted.n; i++) h = (uint)(intptr_t)t->sorted[i] * open_hash_primes[i % 256];
   t->hash = h ? h : h + 1;  // 0 is empty
-  AType *tt = cannonical_atypes.put(t);
+  AType *tt = fa->type_world.cannonical_atypes.put(t);
   if (!tt) tt = t;
   // compute "type" (without constants)
   if (nonconsts.n) {
@@ -509,18 +497,18 @@ AType *type_cannonicalize(AType *t) {
     else
       tt->type = tt;
   } else
-    tt->type = bottom_type;
+    tt->type = fa->type_world.bottom_type;
   return tt;
 }
 
 AType *type_union(AType *a, AType *b) {
   AType *r;
   if ((r = a->union_map.get(b))) return r;
-  if (a == b || b == bottom_type) {
+  if (a == b || b == fa->type_world.bottom_type) {
     r = a;
     goto Ldone;
   }
-  if (a == bottom_type) {
+  if (a == fa->type_world.bottom_type) {
     r = b;
     goto Ldone;
   }
@@ -545,7 +533,7 @@ static inline int subsumed_by(Sym *a, Sym *b) {
 AType *type_diff(AType *a, AType *b) {
   AType *r;
   if ((r = a->diff_map.get(b))) return r;
-  if (b == bottom_type) {
+  if (b == fa->type_world.bottom_type) {
     r = a;
     goto Ldone;
   }
@@ -567,11 +555,11 @@ Ldone:
 AType *type_intersection(AType *a, AType *b) {
   AType *r;
   if ((r = a->intersection_map.get(b))) return r;
-  if (a == b || a == bottom_type || b == top_type) {
+  if (a == b || a == fa->type_world.bottom_type || b == fa->type_world.top_type) {
     r = a;
     goto Ldone;
   }
-  if (a == top_type || b == bottom_type) {
+  if (a == fa->type_world.top_type || b == fa->type_world.bottom_type) {
     r = b;
     goto Ldone;
   }
@@ -925,7 +913,7 @@ static bool check_edge(AEdge *e, EntrySet *es) {
       if (es_filter) filter = type_intersection(filter, es_filter);
     } else
       filter = es_filter;
-    if (filter && type_intersection(x->value->out, filter) == bottom_type) return false;
+    if (filter && type_intersection(x->value->out, filter) == fa->type_world.bottom_type) return false;
   }
   return true;
 }
@@ -980,12 +968,12 @@ void flow_var_type_permit(AVar *v, AType *t) {
     v->restrict = type_union(t, v->restrict);
   AType *tt = type_intersection(v->in, v->restrict);
   if (tt != v->out) {
-    assert(tt != top_type);
+    assert(tt != fa->type_world.top_type);
     v->out = tt;
     for (AVar *vv : v->arg_of_send.asvec) {
       if (!vv->in_send_worklist) {
         vv->in_send_worklist = 1;
-        send_worklist.enqueue(vv);
+        fa->send_worklist.enqueue(vv);
       }
     }
     for (AVar *vv : v->forward) if (vv) update_in(vv, v->out);
@@ -1179,10 +1167,10 @@ static void add_send_constraints(PNode *p, EntrySet *es) {
         case PRIM_TYPE_ANY:
           break;
         case PRIM_TYPE_STRING:
-          update_gen(make_AVar(p->lvals[i], es), string_type);
+          update_gen(make_AVar(p->lvals[i], es), fa->type_world.string_type);
           break;
         case PRIM_TYPE_SIZE:
-          update_gen(make_AVar(p->lvals[i], es), size_type);
+          update_gen(make_AVar(p->lvals[i], es), fa->type_world.size_type);
           break;
         case PRIM_TYPE_BOOL:
         case PRIM_TYPE_ANY_NUM_AB:
@@ -1279,7 +1267,7 @@ static void make_AEdges(Match *m, PNode *p, EntrySet *from, Vec<AVar *> &args) {
     record_args_rets(e, args);
     if (!e->in_edge_worklist) {
       e->in_edge_worklist = 1;
-      edge_worklist.enqueue(e);
+      fa->edge_worklist.enqueue(e);
     }
   }
 }
@@ -1367,8 +1355,17 @@ static int application(PNode *p, EntrySet *es, AVar *a0, CreationSet *cs, Vec<AV
 }
 
 void type_violation(ATypeViolation_kind akind, AVar *av, AType *type, AVar *send, Vec<Fun *> *funs) {
+  // Issue 009 investigation: env-gated one-line trace of every
+  // call, suitable for diffing two runs. Emits the analysis pass,
+  // the dedup key triple, and the AType hash so two runs can be
+  // compared either by sequence or by set of unique triples.
+  if (getenv("IFA_DEBUG_VIOLATIONS")) {
+    fprintf(stderr, "VIOLATION pass=%d kind=%d av=%d send=%d type=%u\n",
+            analysis_pass, (int)akind, av ? av->id : 0,
+            send ? send->id : 0, type ? type->hash : 0u);
+  }
   ATypeViolation *v = new ATypeViolation(akind, av, send);
-  v = type_violation_hash.put(v);
+  v = fa->type_world.type_violation_hash.put(v);
   if (!v->type)
     v->type = type;
   else
@@ -1379,8 +1376,10 @@ void type_violation(ATypeViolation_kind akind, AVar *av, AType *type, AVar *send
     else
       v->funs = new Vec<Fun *>(*funs);
   }
-  type_violations.set_add(v);
+  fa->type_violations.set_add(v);
 }
+
+int type_violations_count() { return fa->type_violations.set_count(); }
 
 static int make_rest_tuple(EntrySet *es, PNode *p, AVar *to, Vec<AVar *> &v, int vstart, int tvals) {
   int t = tvals;
@@ -1552,7 +1551,7 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
       if (i - 1 == p->prim->pos) continue;
       AVar *arg = make_AVar(p->rvals[i], es);
       // record violations
-      if (type_diff(arg->out, p->prim->args[iarg]) != bottom_type)
+      if (type_diff(arg->out, p->prim->args[iarg]) != fa->type_world.bottom_type)
         type_violation(ATypeViolation_kind::PRIMITIVE_ARGUMENT, arg, type_diff(arg->out, p->prim->args[iarg]),
                        make_AVar(p->lvals[0], es));
       switch (p->prim->arg_types[iarg]) {
@@ -1582,13 +1581,13 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
         AVar *res = make_AVar(p->lvals[i], es);
         fill_tvals(es->fun, p, p->lvals.n);
         AVar *t = make_AVar(p->tvals[i], es);
-        flow_var_type_permit(t, bottom_type);
+        flow_var_type_permit(t, fa->type_world.bottom_type);
         flow_vars(a, t);
         flow_vars(b, t);
         flow_vars(t, res);
         // can we fold this?
         if (a->out && b->out && a->out->n && b->out->n) {
-          AType *nt = p->prim->ret_types[i] == PRIM_TYPE_BOOL ? bool_type : type_num_fold(p->prim, a->out, b->out);
+          AType *nt = p->prim->ret_types[i] == PRIM_TYPE_BOOL ? fa->type_world.bool_type : type_num_fold(p->prim, a->out, b->out);
           if (a->out->n == 1 && b->out->n == 1 && a->out->v[0]->sym->imm.const_kind &&
               b->out->v[0]->sym->imm.const_kind) {
             Immediate imm;
@@ -1605,11 +1604,11 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
         AVar *res = make_AVar(p->lvals[i], es);
         fill_tvals(es->fun, p, p->lvals.n);
         AVar *t = make_AVar(p->tvals[i], es);
-        flow_var_type_permit(t, bottom_type);
+        flow_var_type_permit(t, fa->type_world.bottom_type);
         flow_vars(a, t);
         flow_vars(t, res);
         if (a->out && a->out->n) {
-          AType *nt = p->prim->ret_types[i] == PRIM_TYPE_BOOL ? bool_type : type_num_fold(p->prim, a->out, a->out);
+          AType *nt = p->prim->ret_types[i] == PRIM_TYPE_BOOL ? fa->type_world.bool_type : type_num_fold(p->prim, a->out, a->out);
           if (a->out->n == 1 && a->out->v[0]->sym->imm.const_kind) {
             Immediate imm;
             if (!fold_constant(p->prim->index, &a->out->v[0]->sym->imm, 0, &imm))
@@ -1685,7 +1684,7 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
         for (CreationSet *cs : vec->out->sorted) {
           if (sym_string->specializers.set_in(cs->sym)) {
             AType *d = type_diff(sym_char->abstract_type, val->out);
-            if (d != bottom_type) type_violation(ATypeViolation_kind::MATCH, val, d, result);
+            if (d != fa->type_world.bottom_type) type_violation(ATypeViolation_kind::MATCH, val, d, result);
           } else {
             int i;
             bool is_const = get_obj_index(index, &i, cs->vars.n);
@@ -1730,9 +1729,9 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
             if (iv) {
               iv->arg_of_send.add(result);
               if (partial) {
-                flow_var_type_permit(result, type_diff(iv->out, function_type));
+                flow_var_type_permit(result, type_diff(iv->out, fa->type_world.function_type));
                 flow_vars(iv, result);
-                if (type_intersection(iv->out, function_type) != bottom_type) methods.add(iv);
+                if (type_intersection(iv->out, fa->type_world.function_type) != fa->type_world.bottom_type) methods.add(iv);
               } else
                 flow_vars(iv, result);
             }
@@ -1826,13 +1825,13 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
       case P_prim_isinstance: {
         AVar *thing1 = make_AVar(p->rvals[p->rvals.n - 2], es);  // instance
         AVar *thing2 = make_AVar(p->rvals[p->rvals.n - 1], es);  // type
-        AType *rtype = bottom_type;
+        AType *rtype = fa->type_world.bottom_type;
         for (CreationSet *cs1 : thing1->out->sorted) {
           for (CreationSet *cs2 : thing2->out->sorted) {
             if (cs2->sym->meta_type && cs2->sym->meta_type->implementors.in(cs1->sym->type))
-              rtype = type_union(rtype, true_type);
+              rtype = type_union(rtype, fa->type_world.true_type);
             else
-              rtype = type_union(rtype, false_type);
+              rtype = type_union(rtype, fa->type_world.false_type);
           }
         }
         update_gen(result, rtype);
@@ -1841,13 +1840,13 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
       case P_prim_issubclass: {
         AVar *thing1 = make_AVar(p->rvals[p->rvals.n - 2], es);
         AVar *thing2 = make_AVar(p->rvals[p->rvals.n - 1], es);
-        AType *rtype = bottom_type;
+        AType *rtype = fa->type_world.bottom_type;
         for (CreationSet *cs1 : thing1->out->sorted) {
           for (CreationSet *cs2 : thing2->out->sorted) {
             if (cs2->sym->type->implementors.in(cs1->sym->type))
-              rtype = type_union(rtype, true_type);
+              rtype = type_union(rtype, fa->type_world.true_type);
             else
-              rtype = type_union(rtype, false_type);
+              rtype = type_union(rtype, fa->type_world.false_type);
           }
         }
         update_gen(result, rtype);
@@ -1890,12 +1889,12 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
       }
       case P_prim_len: {
         AVar *t = make_AVar(p->rvals[2], es);
-        AType *rtype = bottom_type;
+        AType *rtype = fa->type_world.bottom_type;
         for (CreationSet *cs : t->out->sorted) {
           AVar *elem = get_element_avar(cs);
           if (elem) elem->arg_of_send.add(result);
-          if ((elem && elem->out != bottom_type) || sym_string->specializers.set_in(cs->sym))
-            rtype = type_union(rtype, size_type);
+          if ((elem && elem->out != fa->type_world.bottom_type) || sym_string->specializers.set_in(cs->sym))
+            rtype = type_union(rtype, fa->type_world.size_type);
           else
             rtype = type_union(rtype, make_size_constant_type(cs->vars.n));
         }
@@ -1904,19 +1903,19 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
       }
       case P_prim_sizeof: {
         AVar *t = make_AVar(p->rvals[2], es);
-        AType *rtype = bottom_type;
+        AType *rtype = fa->type_world.bottom_type;
         for (CreationSet *cs : t->out->sorted) {
           if (cs->sym->size)
             rtype = type_union(rtype, make_size_constant_type(cs->sym->size));
           else
-            rtype = type_union(rtype, size_type);
+            rtype = type_union(rtype, fa->type_world.size_type);
         }
         update_gen(result, rtype);
         break;
       }
       case P_prim_sizeof_element: {
         AVar *t = make_AVar(p->rvals[2], es);
-        AType *rtype = bottom_type;
+        AType *rtype = fa->type_world.bottom_type;
         for (CreationSet *cs : t->out->sorted) {
           AVar *elem = get_element_avar(cs);
           if (elem) {
@@ -1924,7 +1923,7 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
               if (cs2->sym->size)
                 rtype = type_union(rtype, make_size_constant_type(cs2->sym->size));
               else
-                rtype = type_union(rtype, size_type);
+                rtype = type_union(rtype, fa->type_world.size_type);
             }
           }
         }
@@ -1933,14 +1932,14 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
       }
       case P_prim_typeof: {
         AVar *t = make_AVar(p->rvals[2], es);
-        AType *rtype = bottom_type;
+        AType *rtype = fa->type_world.bottom_type;
         for (CreationSet *cs : t->out->sorted) rtype = type_union(rtype, make_abstract_type(cs->sym->meta_type));
         update_gen(result, rtype);
         break;
       }
       case P_prim_typeof_element: {
         AVar *t = make_AVar(p->rvals[2], es);
-        AType *rtype = bottom_type;
+        AType *rtype = fa->type_world.bottom_type;
         for (CreationSet *cs : t->out->sorted) {
           AVar *elem = get_element_avar(cs);
           if (elem)
@@ -1987,12 +1986,12 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
     case Code_IF: {
       AVar *cond = make_AVar(p->rvals.v[0], es);
       AType *t = cond->out;
-      if (t == bottom_type) return;
-      AType *b = type_intersection(t, bool_type);
+      if (t == fa->type_world.bottom_type) return;
+      AType *b = type_intersection(t, fa->type_world.bool_type);
       AType *e = type_diff(t, b);
-      if (e != bottom_type) type_violation(ATypeViolation_kind::PRIMITIVE_ARGUMENT, cond, e, nullptr);
-      if (type_intersection(b, bool_type) == bool_type) break;
-      if (type_intersection(b, true_type) != bottom_type) {
+      if (e != fa->type_world.bottom_type) type_violation(ATypeViolation_kind::PRIMITIVE_ARGUMENT, cond, e, nullptr);
+      if (type_intersection(b, fa->type_world.bool_type) == fa->type_world.bool_type) break;
+      if (type_intersection(b, fa->type_world.true_type) != fa->type_world.bottom_type) {
         for (PNode *n : p->phy) {
           AVar *vv = make_AVar(n->rvals[0], es);
           flow_vars(vv, make_AVar(n->lvals.v[0], es));
@@ -2000,7 +1999,7 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
         PNode *n = p->cfg_succ[0];
         if (done.set_add(n)) add_pnode_constraints(n, es, done);
       }
-      if (type_intersection(b, false_type) != bottom_type) {
+      if (type_intersection(b, fa->type_world.false_type) != fa->type_world.bottom_type) {
         for (PNode *n : p->phy) {
           AVar *vv = make_AVar(n->rvals[0], es);
           flow_vars(vv, make_AVar(n->lvals.v[1], es));
@@ -2075,7 +2074,7 @@ static void analyze_edge(AEdge *e_arg) {
         if (es_filter) filter = type_intersection(filter, es_filter);
       } else
         filter = es_filter;
-      if (filter && type_intersection(x->value->out, filter) == bottom_type) goto LskipEdge;
+      if (filter && type_intersection(x->value->out, filter) == fa->type_world.bottom_type) goto LskipEdge;
     }
     if (ee->from) ee->from->out_edges.set_add(ee);
     form_MPositionAVar(x, ee->args) {
@@ -2105,8 +2104,8 @@ static void analyze_edge(AEdge *e_arg) {
       AVar *actual = ee->args.get(p);
       flow_vars(ee->to->rets[o + regular_rets], actual);
     }
-    if (!entry_set_done.set_in(ee->to)) {
-      entry_set_done.set_add(ee->to);
+    if (!fa->entry_set_done.set_in(ee->to)) {
+      fa->entry_set_done.set_add(ee->to);
       if (!ee->match->fun->fa_collected) collect_Vars_PNodes(ee->match->fun);
       for (PNode *p : ee->match->fun->fa_if_PNodes) make_AVar(p->rvals[0], ee->to)->is_if_arg = 1;
       add_es_constraints(ee->to);
@@ -2119,7 +2118,7 @@ static void refresh_top_edge(AEdge *e) {
   MPosition p, *cp;
   p.push(1);
   cp = cannonicalize_mposition(p);
-  e->match->formal_filters.put(cp, any_type);
+  e->match->formal_filters.put(cp, fa->type_world.any_type);
   AVar *av = make_AVar(sym___main__->var, e->to);
   e->args.put(cp, av);
   e->filtered_args.put(cp, av);
@@ -2457,7 +2456,7 @@ Lskip:
 
 static void show_violations(FA *fa, FILE *fp) {
   Vec<ATypeViolation *> vv;
-  for (ATypeViolation *v : type_violations) if (v) vv.add(v);
+  for (ATypeViolation *v : fa->type_violations) if (v) vv.add(v);
   qsort(vv.v, vv.n, sizeof(vv[0]), compar_tv);
   for (ATypeViolation *v : vv) if (v) {
     if (v->send && v->send->var->def->code->source_line() > 0)
@@ -2601,13 +2600,13 @@ static void collect_results() {
   // collect funs, ess and ess_set
   fa->funs.clear();
   fa->ess.clear();
-  for (EntrySet *es : entry_set_done) if (es) {
+  for (EntrySet *es : fa->entry_set_done) if (es) {
     fa->funs.set_add(es->fun);
     fa->ess.add(es);
   }
   fa->funs.set_to_vec();
   qsort_by_id(fa->funs);
-  fa->ess_set.move(entry_set_done);
+  fa->ess_set.move(fa->entry_set_done);
   // collect css and css_set
   fa->css.clear();
   fa->css_set.clear();
@@ -2708,7 +2707,7 @@ static void collect_var_type_violations() {
   for (EntrySet *es : fa->ess) {
     for (Var *v : es->fun->fa_all_Vars) {
       AVar *av = make_AVar(v, es);
-      if (av->live_arg && !av->var->sym->is_fake && !av->var->is_internal && av->out == bottom_type &&
+      if (av->live_arg && !av->var->sym->is_fake && !av->var->is_internal && av->out == fa->type_world.bottom_type &&
           !is_Sym_OUT(av->var->sym))
         type_violation(ATypeViolation_kind::NOTYPE, av, av->out, nullptr, nullptr);
     }
@@ -2730,27 +2729,27 @@ static void collect_var_type_violations() {
   if (fa->no_unused_instance_variables) {
     for (CreationSet *cs : fa->css) {
       for (AVar *av : cs->vars) {
-        if (av->live_arg && av->out == bottom_type) type_violation(ATypeViolation_kind::NOTYPE, av, av->out, nullptr, nullptr);
+        if (av->live_arg && av->out == fa->type_world.bottom_type) type_violation(ATypeViolation_kind::NOTYPE, av, av->out, nullptr, nullptr);
       }
     }
   }
 }
 
 static void convert_NOTYPE_to_void() {
-  if (!fa->css_set.set_in(void_type->v[0])) {
-    fa->css_set.set_add(void_type->v[0]);
-    fa->css.add(void_type->v[0]);
+  if (!fa->css_set.set_in(fa->type_world.void_type->v[0])) {
+    fa->css_set.set_add(fa->type_world.void_type->v[0]);
+    fa->css.add(fa->type_world.void_type->v[0]);
   }
   for (EntrySet *es : fa->ess) {
     for (Var *v : es->fun->fa_all_Vars) {
       AVar *av = make_AVar(v, es);
-      if (!av->var->is_internal && av->out == bottom_type && !is_Sym_OUT(av->var->sym)) av->out = void_type;
+      if (!av->var->is_internal && av->out == fa->type_world.bottom_type && !is_Sym_OUT(av->var->sym)) av->out = fa->type_world.void_type;
     }
   }
   if (fa->no_unused_instance_variables) {
     for (CreationSet *cs : fa->css) {
       for (AVar *av : cs->vars) {
-        if (av->out == bottom_type) av->out = void_type;
+        if (av->out == fa->type_world.bottom_type) av->out = fa->type_world.void_type;
       }
     }
   }
@@ -2771,22 +2770,22 @@ static void initialize_primitives() {
     for (int i = 0; i < n - 1; i++) {
       switch (p->arg_types[i]) {
         case PRIM_TYPE_ALL:
-          p->args.add(top_type);
+          p->args.add(fa->type_world.top_type);
           break;
         case PRIM_TYPE_ANY:
-          p->args.add(any_type);
+          p->args.add(fa->type_world.any_type);
           break;
         case PRIM_TYPE_SYMBOL:
-          p->args.add(symbol_type);
+          p->args.add(fa->type_world.symbol_type);
           break;
         case PRIM_TYPE_STRING:
-          p->args.add(string_type);
+          p->args.add(fa->type_world.string_type);
           break;
         case PRIM_TYPE_SIZE:
-          p->args.add(size_type);
+          p->args.add(fa->type_world.size_type);
           break;
         case PRIM_TYPE_TUPLE:
-          p->args.add(tuple_type);
+          p->args.add(fa->type_world.tuple_type);
           break;
         case PRIM_TYPE_CONT:
           p->args.add(make_abstract_type(sym_continuation));
@@ -2795,16 +2794,16 @@ static void initialize_primitives() {
           p->args.add(make_abstract_type(sym_ref));
           break;
         case PRIM_TYPE_ANY_NUM_A:
-          p->args.add(anynum_kind);
+          p->args.add(fa->type_world.anynum_kind);
           break;
         case PRIM_TYPE_ANY_NUM_B:
-          p->args.add(anynum_kind);
+          p->args.add(fa->type_world.anynum_kind);
           break;
         case PRIM_TYPE_ANY_INT_A:
-          p->args.add(anyint_type);
+          p->args.add(fa->type_world.anyint_type);
           break;
         case PRIM_TYPE_ANY_INT_B:
-          p->args.add(anyint_type);
+          p->args.add(fa->type_world.anyint_type);
           break;
         default:
           assert(!"case");
@@ -2821,34 +2820,34 @@ static void initialize_global(Sym *s) {
 
 static void initialize() {
   if1->callback->finalize_functions();
-  bottom_type = type_cannonicalize(new AType());
-  bottom_type->type = bottom_type;
-  void_type = make_abstract_type(sym_void_type);
-  any_type = make_abstract_type(sym_any);
-  top_type = type_union(any_type, void_type);
-  bool_type = make_abstract_type(sym_bool);
+  fa->type_world.bottom_type = type_cannonicalize(new AType());
+  fa->type_world.bottom_type->type = fa->type_world.bottom_type;
+  fa->type_world.void_type = make_abstract_type(sym_void_type);
+  fa->type_world.any_type = make_abstract_type(sym_any);
+  fa->type_world.top_type = type_union(fa->type_world.any_type, fa->type_world.void_type);
+  fa->type_world.bool_type = make_abstract_type(sym_bool);
   Immediate imm;
   imm.v_bool = 1;
-  true_type = make_abstract_type(if1_const(if1, sym_bool, "true", &imm));
+  fa->type_world.true_type = make_abstract_type(if1_const(if1, sym_bool, "true", &imm));
   imm.v_bool = 0;
-  false_type = make_abstract_type(if1_const(if1, sym_bool, "false", &imm));
-  size_type = make_abstract_type(sym_size);
-  symbol_type = make_abstract_type(sym_symbol);
-  string_type = make_abstract_type(sym_string);
-  anyint_type = make_abstract_type(sym_anyint);
-  function_type = make_abstract_type(sym_function);
-  anynum_kind = make_abstract_type(sym_anynum);
-  anytype_type = make_abstract_type(sym_anytype);
-  nil_type = make_abstract_type(sym_nil_type);
-  unknown_type = make_abstract_type(sym_unknown_type);
-  tuple_type = make_abstract_type(sym_tuple);
+  fa->type_world.false_type = make_abstract_type(if1_const(if1, sym_bool, "false", &imm));
+  fa->type_world.size_type = make_abstract_type(sym_size);
+  fa->type_world.symbol_type = make_abstract_type(sym_symbol);
+  fa->type_world.string_type = make_abstract_type(sym_string);
+  fa->type_world.anyint_type = make_abstract_type(sym_anyint);
+  fa->type_world.function_type = make_abstract_type(sym_function);
+  fa->type_world.anynum_kind = make_abstract_type(sym_anynum);
+  fa->type_world.anytype_type = make_abstract_type(sym_anytype);
+  fa->type_world.nil_type = make_abstract_type(sym_nil_type);
+  fa->type_world.unknown_type = make_abstract_type(sym_unknown_type);
+  fa->type_world.tuple_type = make_abstract_type(sym_tuple);
   initialize_global(sym_nil);
   initialize_global(sym_empty_list);
   initialize_global(sym_empty_tuple);
   initialize_global(sym_unknown);
   initialize_global(sym_void);
-  edge_worklist.clear();
-  send_worklist.clear();
+  fa->edge_worklist.clear();
+  fa->send_worklist.clear();
   initialize_symbols();
   initialize_primitives();
   build_arg_positions(fa);
@@ -2857,9 +2856,9 @@ static void initialize() {
 
 static void initialize_pass() {
   pass_timer.restart();
-  type_violations.clear();
-  type_violation_hash.clear();
-  entry_set_done.clear();
+  fa->type_violations.clear();
+  fa->type_world.type_violation_hash.clear();
+  fa->entry_set_done.clear();
   refresh_top_edge(fa->top_edge);
 }
 
@@ -2972,12 +2971,12 @@ static void collect_type_confluence(AVar *av, Vec<AVar *> &confluences) {
   for (AVar *x : av->backward) if (x) {
     if (!x->out->type->n) continue;
     if (av->var->sym->clone_for_constants) {
-      if (type_diff(av->in, x->out) != bottom_type) {
+      if (type_diff(av->in, x->out) != fa->type_world.bottom_type) {
         confluences.set_add(av);
         break;
       }
     } else {
-      if (x->out->type->n && type_diff(av->in->type, x->out->type) != bottom_type) {
+      if (x->out->type->n && type_diff(av->in->type, x->out->type) != fa->type_world.bottom_type) {
         confluences.set_add(av);
         break;
       }
@@ -3245,8 +3244,8 @@ static void clear_marks(Accum<AVar *> &acc) { for (AVar *x : acc.asvec) x->mark_
 
 static void clear_avar(AVar *av) {
   av->gen = 0;
-  av->in = bottom_type;
-  av->out = bottom_type;
+  av->in = fa->type_world.bottom_type;
+  av->out = fa->type_world.bottom_type;
   av->setters = 0;
   av->setter_class = 0;
   av->restrict = 0;
@@ -3304,7 +3303,7 @@ static void clear_results() {
   foreach_var(clear_var);
   for (CreationSet *cs : fa->css) clear_cs(cs);
   for (EntrySet *es : fa->ess) clear_es(es);
-  cannonical_setters.clear();
+  fa->type_world.cannonical_setters.clear();
 }
 
 static Setters *setters_cannonicalize(Setters *s) {
@@ -3314,7 +3313,7 @@ static Setters *setters_cannonicalize(Setters *s) {
   uint h = 0;
   for (int i = 0; i < s->sorted.n; i++) h = (uint)(intptr_t)s->sorted[i] * open_hash_primes[i % 256];
   s->hash = h ? h : h + 1;  // 0 is empty
-  Setters *ss = cannonical_setters.put(s);
+  Setters *ss = fa->type_world.cannonical_setters.put(s);
   if (!ss) ss = s;
   return ss;
 }
@@ -3708,7 +3707,7 @@ static void clear_splits() {
   clear_splits();
   // Snapshots taken before each split_* call so the sidecar can record
   // the delta this stage produced. See fa_events_storage / record_fa_event.
-  int ess0 = fa->ess.n, css0 = fa->css.n, viol0 = type_violations.n;
+  int ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
   Vec<AVar *> confluences;
   // 1) split EntrySets based on type using AVar::out
   collect_type_confluences(confluences);
@@ -3717,7 +3716,7 @@ static void clear_splits() {
   if (analyze_again) record_fa_event(FAPassStage::TYPE_CONFLUENCE, analyze_again, ess0, css0, viol0);
   // 2) split EntrySets based on type using marks
   if (!analyze_again) {
-    ess0 = fa->ess.n, css0 = fa->css.n, viol0 = type_violations.n;
+    ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
     analyze_again = split_ess_for_mark_type(confluences);
     if (analyze_again) record_fa_event(FAPassStage::MARK_TYPE, analyze_again, ess0, css0, viol0);
   }
@@ -3726,12 +3725,12 @@ static void clear_splits() {
   if (!analyze_again) {
     Accum<AVar *> avs;
     for (AVar *av : confluences) (void)compute_setters(av, avs, AKIND_TYPE);
-    ess0 = fa->ess.n, css0 = fa->css.n, viol0 = type_violations.n;
+    ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
     if (split_for_setters(avs, analyze_again)) analyze_again = 1;
     if (analyze_again) record_fa_event(FAPassStage::SETTER, analyze_again, ess0, css0, viol0);
     log(LOG_SPLITTING, "split_for_setters %d\n", analyze_again);
     if (!analyze_again) {
-      ess0 = fa->ess.n, css0 = fa->css.n, viol0 = type_violations.n;
+      ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
       analyze_again = split_for_setters_of_setters(confluences);
       if (analyze_again) record_fa_event(FAPassStage::SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
     }
@@ -3746,12 +3745,12 @@ static void clear_splits() {
       collect_cs_marked_confluences(marked_confluences);
       Accum<AVar *> avs;
       for (AVar *av : marked_confluences) (void)compute_setters(av, avs, AKIND_MARK);
-      ess0 = fa->ess.n, css0 = fa->css.n, viol0 = type_violations.n;
+      ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
       if (split_for_setters(avs, analyze_again)) analyze_again = 1;
       if (analyze_again) record_fa_event(FAPassStage::MARK_SETTER, analyze_again, ess0, css0, viol0);
       log(LOG_SPLITTING, "split_for_setters with marks %d\n", analyze_again);
       if (!analyze_again) {
-        ess0 = fa->ess.n, css0 = fa->css.n, viol0 = type_violations.n;
+        ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
         analyze_again = split_for_setters_of_setters(confluences);
         if (analyze_again) record_fa_event(FAPassStage::MARK_SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
       }
@@ -3761,8 +3760,8 @@ static void clear_splits() {
   if (!analyze_again) {
     // 5) split AEdges(s) and EntrySet(s) for violations based on type using
     // dynamic dispatch
-    ess0 = fa->ess.n, css0 = fa->css.n, viol0 = type_violations.n;
-    analyze_again = split_for_violations(type_violations);
+    ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    analyze_again = split_for_violations(fa->type_violations);
     if (analyze_again) record_fa_event(FAPassStage::VIOLATION, analyze_again, ess0, css0, viol0);
   }
   log(LOG_SPLITTING, "split_for_violations %d\n", analyze_again);
@@ -3777,7 +3776,7 @@ static void clear_splits() {
     // know they're holding partial results.
     fa->pass_limit_hit = true;
     log(LOG_SPLITTING, "PASS LIMIT %d reached at pass %d, %d violations remain (mid-iteration)\n",
-        fa->pass_limit, analysis_pass, type_violations.n);
+        fa->pass_limit, analysis_pass, fa->type_violations.set_count());
     analyze_again = 0;
   }
   if (analyze_again) clear_results();
@@ -3815,11 +3814,11 @@ static void clear_splits() {
 }
 
 static void set_void_lub_types_to_void(Var *v) {
-  CreationSet *s = void_type->v[0];
+  CreationSet *s = fa->type_world.void_type->v[0];
   for (int i = 0; i < v->avars.n; i++)
     if (v->avars[i].key) {
       AVar *av = v->avars[i].value;
-      if (av->out->in(s)) av->out = void_type;
+      if (av->out->in(s)) av->out = fa->type_world.void_type;
     }
 }
 
@@ -3878,7 +3877,7 @@ int FA::analyze(Fun *top) {
   if1->callback->report_analysis_errors(type_violations);
   show_violations(fa, stderr);
   if (fruntime_errors) convert_NOTYPE_to_void();
-  return (!fruntime_errors && type_violations.n) ? -1 : 0;
+  return (!fruntime_errors && type_violations.set_count()) ? -1 : 0;
 }
 
 static Var *info_var(IFAAST *a, Sym *s) {

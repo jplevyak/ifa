@@ -7,7 +7,7 @@
 // populated: same inputs return the same AType pointer, and the
 // algebraic identities (idempotency, commutativity, absorbing/identity
 // elements) hold by construction. The tests below build a minimal
-// canonical-type world from scratch — just bottom_type plus a handful
+// canonical-type world from scratch — just fa->type_world.bottom_type plus a handful
 // of "boring" abstract types — and verify those identities directly,
 // without spinning up a full FA pass.
 //
@@ -51,8 +51,8 @@ static AType *boring_type(cchar *name) {
 
 // Stand up just enough state for the lattice ops to work:
 //   - a fresh FA with num_constants_per_variable=1 (the ctor default),
-//   - bottom_type built from an empty AType (matches initialize()
-//     at fa.cc bottom_type = type_cannonicalize(new AType())).
+//   - fa->type_world.bottom_type built from an empty AType (matches initialize()
+//     at fa.cc fa->type_world.bottom_type = type_cannonicalize(new AType())).
 //
 // fa_reset() at the top makes the test idempotent across runs of the
 // UnitTest harness — without it a second --test invocation in the
@@ -60,8 +60,8 @@ static AType *boring_type(cchar *name) {
 static void init_minimal_lattice() {
   fa_reset();
   fa = new FA(nullptr);
-  bottom_type = type_cannonicalize(new AType());
-  bottom_type->type = bottom_type;
+  fa->type_world.bottom_type = type_cannonicalize(new AType());
+  fa->type_world.bottom_type->type = fa->type_world.bottom_type;
 }
 
 // ---------------------------------------------------------------------------
@@ -74,8 +74,8 @@ static int test_type_union() {
   AType *C = boring_type("C");
 
   // bottom is the identity element
-  CHECK(type_union(bottom_type, A) == A);
-  CHECK(type_union(A, bottom_type) == A);
+  CHECK(type_union(fa->type_world.bottom_type, A) == A);
+  CHECK(type_union(A, fa->type_world.bottom_type) == A);
 
   // idempotent
   CHECK(type_union(A, A) == A);
@@ -105,14 +105,14 @@ static int test_type_intersection() {
   AType *B = boring_type("B");
 
   // bottom is absorbing — intersection with bottom is bottom
-  CHECK(type_intersection(bottom_type, A) == bottom_type);
-  CHECK(type_intersection(A, bottom_type) == bottom_type);
+  CHECK(type_intersection(fa->type_world.bottom_type, A) == fa->type_world.bottom_type);
+  CHECK(type_intersection(A, fa->type_world.bottom_type) == fa->type_world.bottom_type);
 
   // idempotent
   CHECK(type_intersection(A, A) == A);
 
   // distinct boring types are disjoint — their intersection is bottom
-  CHECK(type_intersection(A, B) == bottom_type);
+  CHECK(type_intersection(A, B) == fa->type_world.bottom_type);
 
   // a ∩ (a ∪ b) == a (absorption law)
   AType *AB = type_union(A, B);
@@ -131,13 +131,13 @@ static int test_type_diff() {
   AType *B = boring_type("B");
 
   // x - bottom = x
-  CHECK(type_diff(A, bottom_type) == A);
+  CHECK(type_diff(A, fa->type_world.bottom_type) == A);
   // x - x = bottom
-  CHECK(type_diff(A, A) == bottom_type);
+  CHECK(type_diff(A, A) == fa->type_world.bottom_type);
   // distinct boring types — diff leaves the LHS untouched
   CHECK(type_diff(A, B) == A);
   // bottom - x = bottom
-  CHECK(type_diff(bottom_type, A) == bottom_type);
+  CHECK(type_diff(fa->type_world.bottom_type, A) == fa->type_world.bottom_type);
 
   // (a ∪ b) - a = b for disjoint boring types
   AType *AB = type_union(A, B);
@@ -192,7 +192,7 @@ static int test_lattice_cross_ops() {
   // intersection is bottom and the union is unchanged by the diff.
   AType *u = type_union(A, B);
   AType *i = type_intersection(A, B);
-  CHECK(i == bottom_type);
+  CHECK(i == fa->type_world.bottom_type);
   CHECK(type_diff(u, i) == u);
 
   // a ∪ b == (a - b) ∪ (b - a) ∪ (a ∩ b)  -- the full inclusion-
@@ -205,3 +205,86 @@ static int test_lattice_cross_ops() {
   return 0;
 }
 UNIT_TEST_FUN(test_lattice_cross_ops);
+
+// ---------------------------------------------------------------------------
+// type_violation dedup is order-invariant (regression test for issue 009).
+//
+// The bug closed by issue 009 was a printer mis-reporting `.n`
+// (Vec-as-set table capacity) instead of `.set_count()` (live element
+// count) at every site that read `type_violations`. Adjacent failure
+// modes worth nailing down:
+//
+//   - Someone changes ATypeViolationHashFuns::equal so that distinct
+//     triples accidentally compare equal — count would deflate.
+//   - Someone changes the hash function such that collision behavior
+//     changes — count would still be right (set is collision-tolerant)
+//     but reporting via `.n` would be more or less affected.
+//   - Someone reverts type_violations_count() back to reading `.n`.
+//
+// This test covers all three by exercising the
+// "set_count() == #unique triples regardless of insertion order"
+// invariant.
+// ---------------------------------------------------------------------------
+static AVar *dummy_avar() {
+  // type_violation() only uses AVar pointers as opaque hash keys —
+  // never derefs them. A zero-initialized AVar with a unique id is
+  // enough. Pass `(void *)1` for contour so the field isn't null
+  // (a null contour is a sentinel meaning "global" in other paths,
+  // not relevant here but cheap to avoid).
+  return new AVar(nullptr, (void *)1);
+}
+
+static int test_type_violation_dedup_invariance() {
+  init_minimal_lattice();
+
+  // Build six distinct AVar* keys: 3 "av" sides, 3 "send" sides.
+  AVar *a0 = dummy_avar();
+  AVar *a1 = dummy_avar();
+  AVar *a2 = dummy_avar();
+  AVar *s0 = dummy_avar();
+  AVar *s1 = dummy_avar();
+  AVar *s2 = dummy_avar();
+
+  // Distinct triples we'll record: (a0,s0), (a1,s0), (a2,s1), (a0,s2).
+  // Four unique under the (kind, av, send) dedup key.
+  using K = ATypeViolation_kind;
+
+  // Order A: a0/s0, a1/s0, a2/s1, a0/s2, then duplicate a1/s0 and a2/s1.
+  type_violation(K::SEND_ARGUMENT, a0, fa->type_world.bottom_type, s0);
+  type_violation(K::SEND_ARGUMENT, a1, fa->type_world.bottom_type, s0);
+  type_violation(K::SEND_ARGUMENT, a2, fa->type_world.bottom_type, s1);
+  type_violation(K::SEND_ARGUMENT, a0, fa->type_world.bottom_type, s2);
+  type_violation(K::SEND_ARGUMENT, a1, fa->type_world.bottom_type, s0);  // dup of #2
+  type_violation(K::SEND_ARGUMENT, a2, fa->type_world.bottom_type, s1);  // dup of #3
+  CHECK(type_violations_count() == 4);
+
+  // Reset (clears type_violations + type_violation_hash + fa->type_world.bottom_type).
+  init_minimal_lattice();
+  a0 = dummy_avar();
+  a1 = dummy_avar();
+  a2 = dummy_avar();
+  s0 = dummy_avar();
+  s1 = dummy_avar();
+  s2 = dummy_avar();
+
+  // Order B: same triples but reversed, with duplicates interleaved
+  // earlier than the original record.
+  type_violation(K::SEND_ARGUMENT, a0, fa->type_world.bottom_type, s2);
+  type_violation(K::SEND_ARGUMENT, a0, fa->type_world.bottom_type, s2);  // immediate dup
+  type_violation(K::SEND_ARGUMENT, a2, fa->type_world.bottom_type, s1);
+  type_violation(K::SEND_ARGUMENT, a1, fa->type_world.bottom_type, s0);
+  type_violation(K::SEND_ARGUMENT, a0, fa->type_world.bottom_type, s0);
+  type_violation(K::SEND_ARGUMENT, a1, fa->type_world.bottom_type, s0);  // dup
+  CHECK(type_violations_count() == 4);
+
+  // Different `kind` is a separate triple even with the same av/send.
+  init_minimal_lattice();
+  a0 = dummy_avar();
+  s0 = dummy_avar();
+  type_violation(K::SEND_ARGUMENT, a0, fa->type_world.bottom_type, s0);
+  type_violation(K::NOTYPE,        a0, fa->type_world.bottom_type, s0);
+  type_violation(K::SEND_ARGUMENT, a0, fa->type_world.bottom_type, s0);  // dup of #1
+  CHECK(type_violations_count() == 2);
+  return 0;
+}
+UNIT_TEST_FUN(test_type_violation_dedup_invariance);

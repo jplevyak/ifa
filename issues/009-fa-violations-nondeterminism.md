@@ -1,18 +1,24 @@
 # Issue 009: FA violation count is non-deterministic across runs
 
-**Status:** open (worked around by dropping the field from the
-`fa-converge` printer's history output; the underlying
-non-determinism is unfixed).
+**Status:** **closed** June 2026. Diagnosis was a surprise: the
+symptom was a *measurement* bug in the printer, not an
+iteration-order non-determinism as the AUDIT had hypothesized.
+`type_violations` is a `Vec`-as-set; `.n` is the open-addressed
+table capacity (oscillates with allocation order), and
+`.set_count()` is the live element count (deterministic). The
+fix was a one-line-per-site replacement at ~10 reporting sites
+in `fa.cc`. Steps 1-6 of the verification plan all landed; see
+`## Status` near the bottom of this file.
 **Affects:** `ifa/analysis/fa.cc` — the violation collection /
-counting path. Likely related to issue 008 (FA crash on
-nested_iterator) — both may share a root cause in iteration
-order.
-**Workaround landed:** `testing/print_fa_converge.cc` no longer
-emits `violations=X→Y` in the per-pass history; all existing
-goldens re-blessed without that field. Split counts and ess/css
-remain (those are stable).
+counting path. Initially assumed related to issue 008 (FA crash
+on nested_iterator) via a shared root cause; that turned out not
+to be the case — see the Step 4 surprise section for the
+observation that 008 stopped reproducing after the 009 fix
+(reason unclear, separate investigation needed).
 **Related:** [008-fa-crash-on-nested-iterator-shape.md](008-fa-crash-on-nested-iterator-shape.md),
-[007-mark-type-stage-coverage.md](007-mark-type-stage-coverage.md).
+[007-mark-type-stage-coverage.md](007-mark-type-stage-coverage.md),
+[../notes/004-plib-vec-pointer-set-hashing.md](../notes/004-plib-vec-pointer-set-hashing.md)
+(deeper plib follow-up).
 
 ## Symptom
 
@@ -201,92 +207,260 @@ What is the iteration source?
 `fa.cc:2652`, or one of the per-AVar loops downstream of
 `from->out_edges` / `from->out_edge_map`).
 
-### Step 3 — Sort the offending iteration by id
+#### Step 2 results (recorded 2026-06-05)
 
-Once Step 2 names the site, prepend `qsort_by_id(...)` before the
-loop. For `collect_argument_type_violations`:
+The Step 1 framing turned out to be wrong. Step 2's
+instrumentation conclusively showed the analysis is
+**deterministic** for this fixture — the symptom is a measurement
+bug.
 
-```cpp
-for (AEdge *me : *m) {
-  if (!from->out_edges.set_in(me)) continue;
-  form_MPositionAVar(x, me->args) if (x->key->is_positional()) actuals.set_add(x->value);
-}
-qsort_by_id(actuals);     // <-- NEW
-for (AVar *av : actuals) if (av) { ... }
+#### Instrumentation
+
+`type_violation()` (`fa.cc:1369`) got a one-line env-gated stderr
+trace printing `(analysis_pass, kind, av->id, send->id, type->hash)`.
+A companion stderr line was added to `record_fa_event()` printing
+both `type_violations.n` and `type_violations.set_count()` at
+event-record time, so the discrepancy was visible directly.
+
+#### Findings
+
+Across 20 standalone runs:
+
+| Metric                          | Pass 1     | Pass 2     | Pass 3     |
+|---------------------------------|------------|------------|------------|
+| `set_count()` (live count)      | 13 always  | 11 always  | 11 always  |
+| `.n` (table capacity)           | 13 always  | 13 or 31   | 13 or 31   |
+| `type_violation()` calls/pass   | 13 always  | 14 always  | 14 always  |
+| Unique `(kind,av,send)` triples | 13 always  | 11 always  | 11 always  |
+
+The set of violations recorded is *identical* in every run. Only
+the underlying `Vec`-as-set's table capacity oscillates.
+
+#### Why `.n` oscillates
+
+`Vec<C *>` doubles as a pointer-set; `set_add` populates an
+open-addressed table whose initial size is `prime2[2] = 7` and
+which expands through 13 → 31 → 61 … (see `ifa/common/vec.h:598`,
+`ifa/common/vec.cc:6`). In set mode, `Vec::n` is the **table
+size** (capacity), not the live element count — that's
+`set_count()` (`ifa/common/vec.h:493`).
+
+`set_add_internal` expands when it can't find a slot within `i+3`
+probes from the home bucket. With 11 elements and 13 slots, that
+"sometimes fits, sometimes doesn't" depending on each pointer's
+home bucket — which is `(uintptr_t)c % n`, i.e., depends on
+GC-allocated addresses. ~75% of runs fit; ~25% trigger expansion
+to 31.
+
+#### What the printer was doing wrong
+
+`record_fa_event()` records
+`e->violations_after = type_violations.n` (`fa.cc:115`). Every
+`viol0 = type_violations.n` snapshot at the splitter trip-recording
+sites (`fa.cc:3720`, `3729`, `3738`, `3743`, `3758`, `3763`,
+`3773`) does the same. All of these report **capacity**, not
+**count**.
+
+`Vec::clear()` and the per-pass `initialize_pass()` at
+`fa.cc:2867` reset the set, which is why each pass's measurement
+is independent (cleared → 11 inserts → either fits in cap-13 or
+expands to cap-31).
+
+The pass-limit trip log (`fa.cc:3789`) and the return-code check
+(`fa.cc:3890`) also read `.n`. The trip log mis-reports the same
+way. The return-code check is *coincidentally* correct: `n == 0`
+exactly when no violations have been added (which is the live
+count too), and `n > 0` is the load-bearing test. Still worth
+making consistent.
+
+#### What this means for the rest of the plan
+
+- **Step 3 (sort the offending iteration by id) is not needed for
+  this fixture.** There's no iteration-order divergence in the
+  analysis. The fix is a one-line correction at each `.n` →
+  `.set_count()` site in `fa.cc`.
+- **Step 6 (deeper plib pointer-set hashing fix) is not blocked
+  by 009.** That AUDIT §3.4 work stands on its own — the
+  pointer-bucket hashing is still real, it just doesn't surface
+  through `type_violations.n` the way 009 originally guessed.
+  Worth a note (the plib hashing scheme dictates capacity-growth
+  behavior that the printer was inadvertently probing), but not a
+  blocker.
+- **Issue 008 (the crash) is NOT explained by this finding.** The
+  shared-root-cause hypothesis from AUDIT §3.5 was that count
+  alternation and the crash arose from the same iteration-order
+  bug. With count alternation now diagnosed as a measurement bug,
+  the crash must have a separate cause. Likely candidate per
+  AUDIT §3.5: `clear_avar` not evicting AVars from pointer-set
+  caches, leading to use-after-clear on multi-fixture runs.
+  Investigate when restoring `nested_iterator.synth` to the
+  multi-fixture test set.
+- **Other shapes may also be affected by the same measurement
+  bug** at their own probabilities. Any pass that produces >7
+  violations and ≤ next-prime-step elements is a candidate. Worth
+  a sweep after the fix lands.
+- **Reproducible-build worry for pyc was based on the same false
+  premise.** If the analysis is deterministic and only the
+  *printer's* count is unstable, pyc compilations were never
+  actually affected.
+
+#### Step 2 follow-up: how widespread was the mis-report?
+
+A sweep of all 17 fa-converge fixtures (5 runs each) showed the
+bug affects 9 of them. The `.n` value over-reports the real
+violation count whenever the open-addressed table sized up beyond
+the live element count.
+
+Per-fixture summary (sample of the `(.n, set_count)` pairs seen
+across 5 runs):
+
+| Fixture                            | Affected? | Sample pairs                                       |
+|------------------------------------|-----------|----------------------------------------------------|
+| `01_monomorphic`                   | no        | (no events)                                        |
+| `02_splitter`                      | no        | p1(3,3)                                            |
+| `03_cascade`                       | yes       | p1(7,5) p2(3,3)                                    |
+| `04_setter_split`                  | no        | p1(1,1)                                            |
+| `05_violation`                     | no        | (no events)                                        |
+| `iterator_copy`                    | yes       | p1(13,8) p2(13,11) p3(13,11)                       |
+| `iterator_missing_field`           | no        | p1(2,2) p2(2,2) p3(2,2)                            |
+| `missing_field_dispatch`           | no        | p1(2,2)                                            |
+| `nested_iterator`                  | yes       | p1(13,13) p2(13|31,11) p3(13|31,11)                |
+| `noop_main`                        | no        | (no events)                                        |
+| `polymorphic_formal_2types`        | no        | p1(7,7)                                            |
+| `polymorphic_formal_3types_2each`  | yes       | p1(13,11)                                          |
+| `same_type_dispatch_2`             | yes       | p1(7,6)                                            |
+| `setter_chain_2types`              | yes       | p1(13,8)                                           |
+| `stored_fn_dispatch_2`             | yes       | p1(7,6)                                            |
+| `vector_iterator`                  | yes       | p1(13,8) p2(13,9) p3(13,9)                         |
+| `vector_polymorphic_writes_2`      | yes       | p1(13,10)                                          |
+
+Only `nested_iterator` happened to land near a probe-collision
+threshold often enough that its `.n` value visibly *alternated*
+(13 vs 31). The other 8 affected fixtures mis-reported
+consistently — which is why nobody noticed before
+`nested_iterator` came along: the printer was *systematically*
+over-counting by a fixed amount per fixture, so the goldens
+locked in that wrong-but-stable number.
+
+### Step 3 — Apply the fix
+
+Replace every read of `type_violations.n` in `fa.cc` with
+`type_violations.set_count()`:
+
+- `record_fa_event()` line 115: `e->violations_after = …`
+- `extend_analysis()` lines 3724, 3733, 3742, 3747, 3762, 3767,
+  3777: the seven `viol0 = …` snapshots per splitter stage
+- pass-limit trip log at line 3793
+- final return-code check at line 3894 (for consistency; was
+  coincidentally correct since `n > 0` iff `set_count > 0` once
+  the set is populated)
+
+The env-gated `VIOLATION` and `VIOL_EVENT` debug prints stay in
+the tree, gated on `IFA_DEBUG_VIOLATIONS=1`. They cost nothing in
+production and were load-bearing for this diagnosis.
+
+#### Step 3 verification (recorded 2026-06-05)
+
+After the fix, 20 standalone runs of `nested_iterator` all
+produced identical output:
+
+```
+pass 1 type splits=1 ess=6→6 css=29→29 violations=13→13
+pass 2 type splits=1 ess=9→9 css=29→29 violations=11→11
+pass 3 violation splits=1 ess=10→10 css=29→29 violations=11→11
 ```
 
-If Step 2 also implicates the `Vec<AEdge *> *m = ... out_edge_map.get(p)`
-iteration, sort a copy:
+Determinism confirmed. Pass-2 violation count is 11 (the real
+count of distinct triples recorded at that pass), not the
+oscillating 13/31 (table capacities).
 
-```cpp
-Vec<AEdge *> ms;
-ms.copy(*m);
-qsort_by_id(ms);
-for (AEdge *me : ms) { ... }
-```
+Full test suite clean: `./ifa --test` (51/0), `make test` (all
+phases, fa-converge now 17/17 with `nested_iterator` included),
+`make test_llvm`, `./test_pyc` (73 pass / 2 expected fail).
 
-There may be more than one site — Step 2's stack walk catches
-them. Each `qsort_by_id` insertion is one line and behaviorally
-trivial: the loop now visits AVars/edges by stable, allocation-
-order-independent id.
+### Step 4 — Restore the printer field, re-bless goldens
 
-`fa.cc` already has 17 `qsort_by_id` sites doing exactly this for
-the same reason; the AUDIT §3.3 wants this to become a
-code-review checklist item.
+The `IFA_PRINT_VIOLATIONS` env gate dropped from
+`testing/print_fa_converge.cc`. `violations=X→Y` is now emitted
+unconditionally — it's deterministic and useful.
 
-**Output:** N call sites annotated; ~N–5N lines of diff total.
+14 of the 17 fa-converge goldens were re-blessed. The other 3
+(`01_monomorphic`, `05_violation`, `noop_main`) had no events to
+print, so they were unchanged. The reblessed values match the
+scan's `set_count` predictions exactly — e.g. `iterator_copy`'s
+pass-1 violations went from missing (the pre-Step-4 omitted
+form) to `8→8`; `nested_iterator`'s pass-2/3 from missing to
+`11→11`; `vector_iterator`'s pass-1 to `8→8`.
 
-### Step 4 — Re-run the 20× test, restore the printer field
+#### Step 4 verification (recorded 2026-06-05)
 
-```bash
-for i in $(seq 1 20); do
-  ./ifa-test --phase fa-converge nested_iterator | grep violations=
-done
-```
+- 20 standalone runs of `nested_iterator` after the printer was
+  restored: all identical, 0 failures.
+- `./ifa --test`: 51/0.
+- `make test`: 15 phases all clean (`fa-converge` 17/17 including
+  `nested_iterator`).
+- `make test_llvm`: pass.
+- `./test_pyc`: 73 pass / 2 expected fail / 0 fail.
 
-All 20 lines should agree. If they don't, Step 2 missed an
-iteration source — go back.
+#### Surprise: issue 008 may also be gone
 
-Once stable, also run **all** fa-converge fixtures 20× — the
-AUDIT notes that other goldens "appear deterministic in practice
-but might also be affected at lower probability." Hunt any others
-the same way.
+While verifying Step 4, ran the multi-fixture `fa-converge` phase
+40× (30 of just `fa-converge`, plus 10 full-phase
+`./ifa-test`). **Zero segfaults.**
 
-Then: restore the `violations=X→Y` field in
-`testing/print_fa_converge.cc` and re-bless all `fa-converge`
-goldens. Note that `qsort_by_id` insertions can shift the *number*
-of passes by one even on fixtures that weren't previously
-alternating — the convergence theorem says the final state is the
-same, but the work inside a pass is reordered. That's expected and
-benign; re-bless those goldens too.
+Issue 008 documented an intermittent crash *only* when
+`nested_iterator` ran alongside other fixtures, with claimed
+30-60% reproducibility. At those rates, 40 runs should show
+~12-24 crashes. Observing zero is real signal — either:
 
-**Output:** restored printer field, re-blessed goldens, locked-in
-determinism for the violation counts.
+1. The crash was actually downstream of the `.n`-vs-`set_count`
+   confusion in some non-obvious way (e.g. a code path that
+   sized a buffer off `viol0 = type_violations.n`).
+2. The crash was sensitive to something else that changed in
+   the tier 0/1/2 cleanup (boundary fix, dormant-code removal,
+   etc.).
+3. The crash is still latent at lower probability than 008
+   estimated. Possible but a sharp drop from 30-60% to <2.5%
+   would need explanation.
+
+Not closing 008 unilaterally — but worth a separate
+investigation pass to either reproduce it on another
+configuration or update 008 with the current empirical
+non-reproducibility.
 
 ### Step 5 — Add regression tests
 
-Two regression tests, both small:
+A new `test_type_violation_dedup_invariance` UNIT_TEST_FUN
+in `ifa/testing/lattice_test.cc` exercises the
+"set_count() == #unique triples regardless of insertion order"
+invariant directly:
 
-**5a — Unit test in `ifa/testing/lattice_test.cc`.** A focused test
-on `type_violation()`'s dedup invariance:
+- Build 6 distinct AVar* keys (3 av-side, 3 send-side). Record
+  4 distinct (kind, av, send) triples plus 2 duplicates in some
+  order; CHECK `type_violations_count() == 4`.
+- Reset; record the same 4 distinct triples in different order
+  (with the duplicates interleaved earlier); CHECK the same
+  result.
+- Verify `kind` is part of the dedup key: same av/send with two
+  different kinds yields 2 distinct triples.
 
-> Given the same `(kind, av, send)` triples in two different
-> orders, `type_violations` ends up with the same size.
+A new public helper `int type_violations_count()` in `fa.h` /
+`fa.cc` exposes `type_violations.set_count()` so the test can
+read it without touching the static. (Useful as a debug
+affordance too.)
 
-Requires more setup than the existing lattice tests (real AVars,
-not just synthetic ATypes), but it's the natural home and would
-catch any regression where someone changes the
-`type_violation_hash` equality / hash without realizing.
+This catches the regressions worth catching:
 
-**5b — Restore `nested_iterator.synth` to `ifa/tests/synthetic/`.**
-Run it 20× as part of the harness. The existing test harness diffs
-golden output; if the violation count is stable, the diff is
-clean. If issue 008 (the crash) was indeed the same root cause —
-likely per AUDIT §3.5 — this also restores synthetic coverage of
-the violation stage that was lost to issue 007's coverage gap.
+- `type_violations_count()` getting reverted to read `.n` → test
+  fails (the empty set's first expand goes to capacity 7,
+  not 4).
+- `ATypeViolationHashFuns::equal` getting broken (always-true →
+  count collapses to 1; always-false → count inflates to 6) →
+  test fails in either direction.
+- The `kind` field being dropped from the dedup key → the third
+  check fails.
 
-**Output:** lattice unit test for dedup invariance + restored
-fixture + harness run 20× clean.
+`./ifa --test` count: **52 / 0** (was 51).
 
 ### Step 6 — File the deeper plib fix as a follow-up note
 
@@ -313,6 +487,39 @@ someone decides to take it on.
 
 **Output:** new note 004, ready to graduate to an issue when
 someone wants it.
+
+#### Step 6 results (recorded 2026-06-05)
+
+[`../notes/004-plib-vec-pointer-set-hashing.md`](../notes/004-plib-vec-pointer-set-hashing.md)
+landed. The note captures:
+
+- `set_add_internal` verbatim, the `prime2` expansion sequence,
+  and the two observable effects (iteration-order
+  non-determinism + capacity oscillation).
+- How 009 manifested only the capacity effect, why the iteration-
+  order effect didn't surface for `nested_iterator`, and the ~17
+  `qsort_by_id` sites in `fa.cc` that show how the codebase has
+  been pragmatically containing the iteration-order concern.
+- Total surface: ~244 `set_add` / `set_in` call sites across the
+  ifa core, of which ~110 are in `analysis/`. Each is a latent
+  non-determinism site if its post-`set_add` iteration loop isn't
+  either order-insensitive or explicitly sorted.
+- Three migration shapes (sorted iteration helper /
+  content-based hashing / dedicated IdSet container), ordered by
+  invasiveness.
+- Cross-references to the AUDIT sections and the closing of
+  this issue.
+
+No code change. The note is parked at `ifa/notes/` per the same
+convention as the CDB and eager-splitting deferrals; it can
+graduate to a numbered `ifa/issues/` file if someone scopes the
+work.
+
+## Status
+
+Steps 1-6 complete. Closing this issue. Remaining work
+referenced in note 004 if anyone wants to take on the deeper
+plib hashing fix.
 
 ## What this unblocks
 

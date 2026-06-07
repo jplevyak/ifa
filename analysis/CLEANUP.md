@@ -194,43 +194,144 @@ Don't attempt without a stable test harness (so: only after
 [issue 009](../issues/009-fa-violations-nondeterminism.md) is
 closed). Each tier-3 item is its own multi-week project.
 
-- [ ] **Fix [issue 009](../issues/009-fa-violations-nondeterminism.md)
-  (non-deterministic violation count).** Detailed 6-step plan in
-  [issue 009 §Verification plan](../issues/009-fa-violations-nondeterminism.md#verification-plan)
-  — recover the deleted `nested_iterator` fixture, instrument
-  `type_violation`, walk the divergence point back to the
-  offending iteration, `qsort_by_id` it, regression-test, file
-  the deeper plib follow-up as a note. ~1 focused day if the
-  AUDIT's hypothesis is right. Likely closes
-  [issue 008](../issues/008-fa-crash-on-nested-iterator-shape.md)
-  as a side effect. **Blocks every later tier-3 item** — until
-  goldens are reliable, no large refactor can be validated.
+- [x] **Fix [issue 009](../issues/009-fa-violations-nondeterminism.md)
+  (non-deterministic violation count).** **Closed June 2026.**
+  Diagnosis was a surprise: the symptom was a **measurement bug**
+  in the printer, not an iteration-order non-determinism as the
+  AUDIT hypothesized. `type_violations` is a `Vec`-as-set; `.n`
+  is the open-addressed table capacity, not the live element
+  count (which is `.set_count()`). 9 of 17 fa-converge fixtures
+  were silently mis-reporting — only `nested_iterator` happened
+  to land near a probe-collision threshold often enough to
+  *alternate* visibly. Landed:
+  - Step 1: restored `nested_iterator` fixture + builder; added
+    env-gated `IFA_PRINT_VIOLATIONS` to the printer; confirmed
+    13/31 alternation reproduces in HEAD.
+  - Step 2: added env-gated per-call trace in `type_violation()`
+    (`IFA_DEBUG_VIOLATIONS=1`); diagnosed the `.n` vs
+    `.set_count` measurement bug; scanned all fixtures.
+  - Step 3: replaced `type_violations.n` with `.set_count()` at
+    10 reporting sites in `fa.cc` (printer recorder, 7 splitter
+    `viol0` snapshots, pass-limit trip log, return-code check).
+  - Step 4: dropped the printer's env gate, re-blessed 14
+    fa-converge goldens. Determinism restored — 20× nested_iterator
+    runs all identical.
+  - Step 5: regression test landed —
+    `test_type_violation_dedup_invariance` in
+    `ifa/testing/lattice_test.cc` exercises the order-invariance
+    of `type_violations.set_count()` across distinct triples and
+    confirms `kind` is part of the dedup key. New public helper
+    `type_violations_count()` exposes the live count.
+    `./ifa --test`: 52/0 (was 51).
+  - Step 6: cross-cutting plib pointer-set hashing follow-on
+    filed as
+    [../notes/004-plib-vec-pointer-set-hashing.md](../notes/004-plib-vec-pointer-set-hashing.md).
+    No code change — captures the AUDIT §3.4 concern, the
+    iteration-order effect (latent, contained by ~17
+    `qsort_by_id` sites in `fa.cc`), the ~244 set_add/set_in
+    call-site surface area, and three migration shapes
+    (sorted-view helper / content-based hashing / dedicated
+    IdSet container).
+  - **Unexpected side observation**: 40 multi-fixture runs
+    probing for
+    [issue 008](../issues/008-fa-crash-on-nested-iterator-shape.md)
+    produced zero crashes (008 claimed 30-60% reproducibility).
+    Not closing 008 unilaterally; flagged for separate
+    investigation.
   ([AUDIT §3](AUDIT.md#3-determinism--the-cause-of-issue-009),
-  [§10](AUDIT.md#10-suggested-first-steps-for-issue-009))
-- [ ] **Reentrancy step 1: sink worklists into `FA`.**
+  [§10](AUDIT.md#10-suggested-first-steps-for-issue-009),
+  [Issue 009 §Verification plan](../issues/009-fa-violations-nondeterminism.md#verification-plan)
+  for the full trail)
+- [x] **Reentrancy step 1: sink worklists into `FA`.** Done
+  June 2026. Seven globals moved onto `class FA` as members:
   `edge_worklist`, `send_worklist`, `es_worklist`,
-  `entry_set_done`, `type_violations`, `fa_events_storage`.
-  ~30 sites; each becomes `fa->...`.
+  `entry_set_done`, `type_violations`, `fa_events_storage`,
+  `fa_events_enabled`. Touch sites in `fa.cc` were redirected
+  via `fa->...` in free functions; references inside
+  `FA::analyze` (member function) work as bare member access.
+  The `fa_events_*()` free functions called by the test harness
+  delegate via `pdb->fa` because they fire *before* `FA::analyze`
+  sets the global `fa` pointer. `fa_reset()` no longer clears
+  the moved members — FA destruction handles them.
+  `FAPassEvent` got a forward declaration in `fa.h` since
+  `Vec<FAPassEvent *>` is now used in the `FA` class body before
+  its definition. Verified: `./ifa --test` (52/0), full
+  `make test` (15 phases clean), `make test_llvm`, `./test_pyc`
+  (73 pass / 2 expected fail), and 20 multi-fixture
+  `fa-converge` runs with `nested_iterator` included (0 crashes
+  — same as the post-009 baseline).
   ([AUDIT §2.2](AUDIT.md#22-refactor-plan-when-ready))
-- [ ] **Reentrancy step 2: sink hash-cons caches into a
-  `TypeWorld` owned by `FA`.** `cannonical_atypes`,
-  `cannonical_setters`, `cannonical_setters_classes`,
-  `type_fold_cache`, `type_violation_hash`. Trickier because
-  AType identity is shared everywhere.
-- [ ] **Reentrancy step 3: sink canonical types.**
-  `bottom_type`, `void_type`, `any_type`, …; move onto
-  `TypeWorld`. Update `fa.h:437-451` `extern` block.
-- [ ] **Reentrancy step 4: sink id counters.** `avar_id`,
-  `aedge_id`, `creation_set_id`, `entry_set_id`. Trivial after
-  steps 1-3; do last because everything else uses them.
-- [ ] **Reentrancy step 5: remove global `fa` and `pdb`.** Thread
-  `FA*` through call chains; add `EntrySet::fa` /
-  `CreationSet::fa` back pointers if helpful.
+- [x] **Reentrancy step 2: sink hash-cons caches into a
+  `TypeWorld` owned by `FA`.** Done June 2026. New `class
+  TypeWorld : public gc` in `fa.h` (placed between the four
+  hash-fn classes and `class FA`) holds the four remaining
+  hash-cons caches: `cannonical_atypes`, `cannonical_setters`,
+  `type_fold_cache`, `type_violation_hash`. (`cannonical_setters_classes`
+  was already removed during tier-1 eager-splitting cleanup.)
+  `FA` got a `TypeWorld type_world` member. The four
+  file-statics in `fa.cc` and their `fa_reset()` clears are
+  gone; the 7 reference sites were redirected via
+  `fa->type_world.X`. AType identity remains meaningful only
+  *within* one TypeWorld — today there's one TypeWorld per FA,
+  so the per-process behavior is unchanged; future work can
+  share a TypeWorld across multiple FAs if cross-instance
+  AType identity is wanted. Verified: `./ifa --test` (52/0),
+  full `make test` (15 phases clean), `make test_llvm`,
+  `./test_pyc` (73 pass / 2 expected fail), and 20× multi-
+  fixture `fa-converge` (0 crashes).
+- [x] **Reentrancy step 3: sink canonical types.** Done June 2026.
+  All 17 canonical AType pointers (`bottom_type`, `nil_type`,
+  `unknown_type`, `void_type`, `top_type`, `any_type`, `bool_type`,
+  `true_type`, `false_type`, `size_type`, `anyint_type`,
+  `anynum_kind`, `symbol_type`, `string_type`, `tuple_type`,
+  `anytype_type`, `function_type`) moved onto `TypeWorld` as
+  members (default-init to `nullptr`; populated by `initialize()`
+  at `FA::analyze` entry). The `extern` block in `fa.h` removed,
+  including two stale entries (`fun_type`, `fun_symbol_type`) that
+  were declared but never defined or used. The 17 file-static
+  definitions and the 4 chained nulls in `fa_reset()` are gone.
+  Reference rewrites: ~109 in `fa.cc` and 8 external (4 in
+  `clone.cc`, 2 in `codegen/cg.cc`, 2 in `llvm.cc`) plus 30 in
+  `testing/lattice_test.cc`. All driven by word-boundary sed
+  passes so collisions with `sym_nil_type` / `sym_unknown_type` /
+  `sym_void_type` were avoided. Verified: `./ifa --test` (52/0),
+  full `make test` (15 phases clean), `make test_llvm`,
+  `./test_pyc` (73 pass / 2 expected fail), 20× multi-fixture
+  `fa-converge` (0 crashes).
+- [x] **Reentrancy step 4: sink id counters.** Done June 2026.
+  All four counters (`avar_id`, `aedge_id`, `creation_set_id`,
+  `entry_set_id`) moved onto `FA` as `int` members defaulting to
+  1. The 4 file-statics in `fa.cc` and the `fa_reset()` reset
+  line are gone. Only 5 usage sites — all in object constructors
+  — needed redirection to `fa->X_id++`. Constructors run inside
+  `FA::analyze`'s call tree (where the global `fa` pointer is
+  set), so the redirection is safe. As the CLEANUP item
+  predicted, this was the cheapest reentrancy step to land.
+  Verified: `./ifa --test` (52/0), full `make test` (15 phases
+  clean), `make test_llvm`, `./test_pyc` (73 pass / 2 expected
+  fail), 20× multi-fixture `fa-converge` (0 crashes).
+- [-] **Reentrancy step 5: remove global `fa` and `pdb`.**
+  Deferred June 2026 — no concrete multi-FA use case justifies
+  the cost. Steps 1-4 already gave each FA instance ownership of
+  its analysis state; what remains is signature-level
+  independence from the singleton `FA *fa` / `PDB *pdb`. That
+  would touch ~430 references across 10 files (~50 functions
+  already accept `FA*`; ~380 implicit-global uses remain). The
+  AUDIT explicitly warns "Don't try to do this in one PR."
+  Surface-area inventory, migration shapes (thread `FA*` /
+  back-pointers on IR objects / hybrid), and what it would
+  unblock (true concurrent analyses, embedded IFA usage, the
+  graph.cc globals cleanup below) are preserved in
+  [../notes/005-singleton-fa-and-pdb.md](../notes/005-singleton-fa-and-pdb.md).
   ([AUDIT §2.1](AUDIT.md#21-the-non-reentrant-set))
-- [ ] **Move `graph.cc` globals into a config object.**
-  `graph_fun[80]`, `graph_var[80]`, `graph_type`,
-  `fgraph_frequencies`, `fgraph_constants` (`graph.h:13-17`).
-  Naturally piggybacks on reentrancy step 5.
+- [-] **Move `graph.cc` globals into a config object.** Deferred
+  alongside reentrancy step 5. The graph subsystem reaches the
+  current FA via the global `::fa`; threading FA through
+  `graph()` naturally drags the graph-specific globals
+  (`graph_fun[80]`, `graph_var[80]`, `graph_type`,
+  `fgraph_frequencies`, `fgraph_constants` from `graph.h:13-17`)
+  into a config struct, so this work is gated on step 5. See
+  [../notes/005-singleton-fa-and-pdb.md](../notes/005-singleton-fa-and-pdb.md).
 - [ ] **Fix `Vec::set_add_internal` pointer-bucket hashing in
   plib.** The deeper fix for [issue 009](../issues/009-fa-violations-nondeterminism.md):
   replace `(uintptr_t)c % n` with content-based hashing or
