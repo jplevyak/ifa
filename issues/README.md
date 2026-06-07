@@ -70,11 +70,13 @@ that:
   `setter-of-setter`, `mark-setter`, `mark-setter-of-setter`,
   `violation`.
 - [008-fa-crash-on-nested-iterator-shape.md](008-fa-crash-on-nested-iterator-shape.md) —
-  intermittent FA-level segfault in `fa-converge` when the
-  `nested_iterator` synthetic shape runs alongside other
-  fixtures. Standalone the shape works; the crash is order-
-  dependent. Workaround: fixture dropped. Likely same root cause
-  as issue 009.
+  intermittent FA-level segfault when `nested_iterator` ran
+  alongside other fixtures. **Closed June 2026 (could not
+  reproduce):** fixture restored as part of 009; 550 stress runs
+  produced 0 crashes; valgrind found no FA-code errors. The 009
+  measurement-bug diagnosis didn't explain a crash, so one of
+  the tier 0-3 cleanups apparently masked or fixed the trigger.
+  Fixture stays in the suite as a tripwire if it recurs.
 - [009-fa-violations-nondeterminism.md](009-fa-violations-nondeterminism.md) —
   FA's `type_violations.n` reported value alternated across
   runs. **Closed June 2026.** Surprise diagnosis: the analysis
