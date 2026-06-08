@@ -1,10 +1,14 @@
 # Issue 002: LLVM backend has no test-harness golden
 
-**Status:** partial — `codegen-llvm` phase + normalizer landed
-June 2026 (commit pending). Locked in one `.ir` fixture
-(`01_baseline`). Multi-fixture runs deferred behind an LLVM-side
-state-leak issue documented in the "Follow-up — June 2026"
-section.
+**Status:** **closed June 2026.** `codegen-llvm` phase +
+normalizer + four locked-in `.ir` fixtures
+(`01_baseline`, `02_call`, `03_record_with_field`,
+`04_two_records`) covering the integer/function-call/record/GEP
+codegen paths. Multi-fixture state leak fixed at root cause.
+Plan §5 fixtures #24 (external-linkage audit) and #25
+(verifyModule smoke test) deferred — they need printer changes
+rather than additional `.ir` content; filed as a future
+enhancement.
 **Affects:** `ifa/codegen/llvm*.cc`, `ifa/testing/`.
 **Related:** `ifa/testing/phases/08_codegen.md` §3.2,
 `ifa/testing/print_codegen.{cc,h}` (C side done).
@@ -225,3 +229,65 @@ state-leak (so multiple `.ir` fixtures can coexist in the suite)
 or splitting them into one-fixture-per-phase-invocation, which
 defeats the purpose of having a phase-suite. Filed as a
 follow-on; the infrastructure for adding them is now in place.
+
+## Follow-on landed — multi-fixture state-leak (June 2026)
+
+The multi-fixture state-leak called out above was a destructor-
+ordering bug in `llvm_codegen_initialize`. Diagnosed via valgrind:
+
+```
+==4045570== Invalid read of size 8
+==4045570==    at 0x9F18CB8: llvm::Module::~Module()
+==4045570==    by 0x1ECF7F: llvm_codegen_initialize(FA*)
+==4045570==  Address 0x105bb520 is 0 bytes inside a block of size
+              1,152 free'd
+==4045570==    at 0x4E0625C: operator delete(void*, unsigned long)
+==4045570==    by 0x9EE1622: llvm::LLVMContextImpl::~LLVMContextImpl()
+==4045570==    by 0x1F2B76: std::default_delete<llvm::LLVMContext>::operator()
+==4045570==    by 0x1ECECB: llvm_codegen_initialize(FA*)
+```
+
+The pattern in `llvm_codegen_initialize`:
+
+```cpp
+TheContext = std::make_unique<llvm::LLVMContext>();
+// ^ assigns the new Context to the unique_ptr; the old Context
+//   is destroyed FIRST, then the new one is moved in.
+TheModule = std::make_unique<llvm::Module>(mod_id, *TheContext);
+// ^ assigns the new Module to the unique_ptr; the old Module is
+//   destroyed, but its destructor calls Context::removeModule(),
+//   which dereferences the just-freed old Context. Boom.
+```
+
+Fix (commit pending): explicit reset() in reverse-dependency
+order before re-creating:
+
+```cpp
+CU = nullptr;
+UnitFile = nullptr;
+DBuilder.reset();
+Builder.reset();
+TheModule.reset();
+TheContext.reset();
+// Now all globals are null; recreate.
+TheContext = std::make_unique<llvm::LLVMContext>();
+TheModule = std::make_unique<llvm::Module>(mod_id, *TheContext);
+Builder = std::make_unique<llvm::IRBuilder<>>(*TheContext);
+DBuilder = std::make_unique<llvm::DIBuilder>(*TheModule);
+```
+
+With the fix, `--phase codegen-llvm` runs all four fixtures
+back-to-back. 5 consecutive multi-fixture invocations: all clean.
+Valgrind reports 92 remaining errors, all inside Boehm GC's
+stack-scanner / heap-block allocator (conservative-collector
+false positives, same noise as issue 008 follow-up); zero in the
+LLVM codegen path.
+
+**Fixtures added** (4 total): `01_baseline` (move/store/return),
+`02_call` (function call + alloca), `03_record_with_field`
+(struct definition + GEP-style field setter),
+`04_two_records` (two distinct struct types without conflation).
+Plan §5 #20-#23, #26 effectively covered between these and the
+existing C codegen-c fixtures; plan §5 #24 (linkage attribute
+counting) and #25 (`verifyModule` smoke test) need printer
+changes beyond what the normalizer does — filed as future work.

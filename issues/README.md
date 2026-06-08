@@ -36,17 +36,21 @@ that:
   (keepalive removed as part of 005); kept for the investigation
   trail.
 - [002-codegen-llvm-normalizer.md](002-codegen-llvm-normalizer.md) —
-  **Partial:** `codegen-llvm` phase + normalizer landed June
-  2026 with one locked-in `.ir` fixture (`01_baseline`). The
-  normalizer strips host-specific module-level lines
-  (`target triple`, named metadata, `!N = ...` debug-info table)
-  and `, !dbg !N` / `#dbg_declare(...)` debug annotations.
-  Multi-fixture runs deferred behind a state-leak in
-  `ifa/codegen/llvm.cc`'s singleton globals — the LLVM-side
-  analog of the tier-3 reentrancy work, scoped as follow-on.
-  Plan §5 fixtures (#20-#26) remain unwritten until the leak is
-  fixed. Harness improvement piggybacked: synth fixtures with no
-  expected file are now skipped *before* `phase->print()` runs.
+  **Closed June 2026.** `codegen-llvm` phase + normalizer
+  landed with 4 locked-in `.ir` fixtures (`01_baseline`,
+  `02_call`, `03_record_with_field`, `04_two_records`)
+  covering integer / function-call / record / GEP codegen
+  paths. The normalizer strips host-specific module-level lines
+  (`target triple`, named metadata, `!N = ...` debug-info
+  table) and `, !dbg !N` / `#dbg_declare(...)` debug
+  annotations. The multi-fixture state-leak called out in the
+  initial commit was traced to destructor-ordering in
+  `llvm_codegen_initialize` (old Module's destructor accesses
+  freed Context) and fixed with explicit `reset()` in
+  reverse-dependency order. Plan §5 fixtures #24 / #25
+  (linkage counting + verifyModule smoke test) remain as future
+  enhancements that need printer changes beyond the normalizer
+  itself.
 - [003-fa-converge-determinism.md](003-fa-converge-determinism.md) —
   `fa-converge` phase needed a per-pass event sidecar (mirroring
   `InlineEvent`) so pass counts and per-stage splits could be

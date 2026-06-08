@@ -1,0 +1,30 @@
+;; 04_two_records.ir — two distinct record types with a field each.
+;; Verifies the LLVM backend emits independent struct definitions
+;; and doesn't conflate the two types' GEP indices.
+
+(type %A :kind RECORD :has (%ax))
+(sym %ax :in %A)
+
+(type %B :kind RECORD :has (%bx))
+(sym %bx :in %B)
+
+(sym %k1 :is-constant :immediate (int32 1))
+(sym %k2 :is-constant :immediate (int32 2))
+
+(sym %a :is-local)
+(sym %b :is-local)
+(sym %sa :is-local)
+(sym %sb :is-local)
+(sym %r :is-local)
+(sym %tcont)
+(fun %top
+  :rets (%r)
+  :cont %tcont
+  :body
+    (send @primitive @new %A => %a)
+    (send @operator %a @setter #ax %k1 => %sa)
+    (send @primitive @new %B => %b)
+    (send @operator %b @setter #bx %k2 => %sb)
+    (move %a %r))
+
+(entry %top)

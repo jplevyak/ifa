@@ -43,6 +43,22 @@ static void llvm_codegen_initialize(FA *fa) {
   // llvm::InitializeAllAsmParsers(); // Not strictly needed for IR generation to .ll
   llvm::InitializeAllAsmPrinters();  // Needed for object file emission if done via PassManager
 
+  // Tear down any previous-call state in reverse-dependency order.
+  // The naive `TheContext = make_unique<...>()` assigns the new Context
+  // first, which destroys the old Context — and then `TheModule = ...`
+  // tries to destroy the old Module, which dereferences the just-freed
+  // Context. Explicit reset() in reverse order keeps every destructor
+  // running while its dependencies are still alive. CU and UnitFile
+  // are raw pointers owned by DBuilder; null them so a re-entry that
+  // doesn't go through createCompileUnit again can't dereference
+  // dangling memory.
+  CU = nullptr;
+  UnitFile = nullptr;
+  DBuilder.reset();
+  Builder.reset();
+  TheModule.reset();
+  TheContext.reset();
+
   TheContext = std::make_unique<llvm::LLVMContext>();
   // Use a more descriptive module ID, perhaps from FA or filename
   cchar *mod_id = fa && fa->pdb && fa->pdb->if1 && fa->pdb->if1->filename ? fa->pdb->if1->filename : "ifa_output";
