@@ -17,6 +17,7 @@ enum InlineEventKind {
   INLINE_SINGLE_SEND,   // call site replaced with the callee's single body SEND
   INLINE_IDENTITY,      // identity-fun call converted to MOVE
   INLINE_CLOSURE,       // closure-create + call collapsed to direct call
+  INLINE_PRIM_CHAIN,    // straight-line N-SEND primitive wrapper spliced (N>=2)
 };
 
 struct InlineEvent {

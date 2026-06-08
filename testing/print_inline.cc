@@ -44,6 +44,7 @@ static cchar *kind_str(InlineEventKind k) {
     case INLINE_SINGLE_SEND: return "single-send";
     case INLINE_IDENTITY:    return "identity";
     case INLINE_CLOSURE:     return "closure-collapse";
+    case INLINE_PRIM_CHAIN:  return "prim-chain";
   }
   return "?";
 }

@@ -1,6 +1,8 @@
 # Issue 006: simple_inlining misses straight-line multi-SEND wrappers
 
-**Status:** open
+**Status:** chain matcher implemented June 2026 (commit pending);
+the issue's specific example (`add_one`) no longer reproduces in
+HEAD — see "Follow-up — June 2026" section below.
 **Affects:** `ifa/optimize/inline.cc:inline_single_sends`,
 `ifa/testing/phases/07_dce_optimize.md` (Inline test cases).
 **Related:** [005-retire-speculative-sym-level-dce.md](005-retire-speculative-sym-level-dce.md)
@@ -204,3 +206,78 @@ or the full inliner, not here:
 - Needs measurement first. The "inline-coverage probe" should be
   built and run *before* the matcher change, so we know which
   tests' goldens are expected to shift and which aren't.
+
+## Follow-up — June 2026
+
+The chain-aware matcher (`match_prim_chain` + `inline_prim_chain`)
+landed per the spec above:
+
+- `match_prim_chain(Fun *f)` accepts chains of ≥2 primitive SENDs
+  feeding a single (optional) reply, with each chain element
+  reading only formals / constants / earlier chain lvals.
+- `inline_prim_chain(Fun *f, PNode *p, Fun *fn, Vec<PNode*> *chain)`
+  mutates `p` in place as chain[0] (preserving call-site lvals via
+  allocator), then inserts new PNodes for chain[1..N-1] linked
+  into the CFG. Intermediate writes go to fresh Vars in the
+  caller's namespace; the final chain element writes to `p`'s
+  original lval. Reuses `inline_single_pnode`'s rval-substitution
+  logic for formals and type-coercion MOVEs.
+- New `INLINE_PRIM_CHAIN` event kind; printer recognizes it as
+  `prim-chain`.
+- Wired into both call-site loops (direct SEND and
+  closure-collapsed SEND), prioritized over single_send/identity
+  so >=2 chains take precedence over their (non-existent) single
+  matches.
+
+**Verification results.** Implementation is correct in shape and
+fires on real pyc code, but the issue's specific example
+(`add_one` surviving in the .c output) does not reproduce in HEAD.
+
+| Probe | Before chain matcher | After |
+|---|---|---|
+| `_CG_f_*` symbols across all pyc test `.py.c`s | 10 | 10 |
+| Total `.py.c` line count | 10280 | 10282 |
+| `./test_pyc` | 73 / 2 / 0 | 73 / 2 / 0 |
+| `./ifa --test` | 52 / 0 | 52 / 0 |
+| `make test` (all phases) | clean | clean |
+
+The chain matcher fires on real pyc-generated code (e.g. 4 funs
+in `sieve.py`, 1 in `dict_basic.py`), but reaches no wrappers that
+weren't already optimized away by another pipeline phase. The
+likely reason: the existing closure-collapse + single_send + DCE
+chain already handles the original example's `add_one` shape via
+a different path, so the surviving-wrapper set was effectively
+already at the floor.
+
+**Why the example no longer reproduces.** The issue was filed
+prior to the tier 0-3 cleanups. Several of those (in particular
+the dispatch / clone / DCE changes that landed around the
+phase-09 round) reshape the post-FA IR enough that the example
+`add_one` is fully consumed by the existing pipeline. The chain
+matcher is correct insofar as it implements the spec, but its
+*practical* coverage win for the current pyc test set is zero.
+
+**What this leaves.** Two things worth carrying forward:
+
+1. The chain matcher infrastructure is in place. If a future pyc
+   change exposes a 2+ SEND wrapper that survives FA / clone, the
+   matcher will catch it without further work.
+2. **Gap A (iterative inlining) is the natural next ask.** When
+   the single_send pass inlines a callee body into a caller, the
+   caller's own body may *become* a chain of N SENDs. Without
+   iteration, that chain is never reconsidered. The issue's "Out
+   of scope" §A flagged this; with the chain matcher in place,
+   the iteration's gain would now be real (one pass to inline
+   single_send, second pass for the matcher to consume the
+   resulting chain). Filing as a follow-on if anyone wants to
+   pursue it.
+
+**Test-fixture gap.** The `.ir` text format and the ifa-test
+inline phase harness don't currently produce a state where
+multiple user funs land in `fa->funs` (only `__main__` makes it
+through; even the existing `02_identity` fixture documents this
+gap with a `0 events` baseline). Attempts to construct a
+chain-firing fixture all degenerated to a single-fun analysis
+state and didn't exercise the matcher. The matcher is verified
+on pyc compilation (where multiple funs do reach the inliner)
+rather than via a per-issue ifa-test fixture.

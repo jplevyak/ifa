@@ -57,11 +57,16 @@ that:
   only. Pyc's `asymbol` blanket-set kept (load-bearing for scope
   resolution — separate cleanup).
 - [006-simple-inlining-multi-send-chain.md](006-simple-inlining-multi-send-chain.md) —
-  `simple_inlining` misses straight-line multi-SEND wrappers like
-  `def add_one(self): return self.v + 1`. Extending the single-SEND
-  pattern matcher to a chain matcher would catch the most common
-  method-wrapper shape in pyc-emitted IR. Stays within the "simple"
-  boundary (no iteration, no cost model).
+  chain-aware matcher landed (`match_prim_chain` + `inline_prim_chain`
+  + `INLINE_PRIM_CHAIN` event, June 2026). Implementation matches
+  the issue's spec; fires on real pyc code (e.g. sieve.py,
+  dict_basic.py); test suite stays green. **But:** the issue's
+  original example (`add_one` surviving) no longer reproduces in
+  HEAD — existing closure-collapse + single_send + DCE pipeline
+  has already squeezed the wrapper count to its floor. Coverage
+  win for current pyc tests is zero. Infrastructure in place for
+  future cases; the natural next ask is "Gap A: iterative
+  inlining" (file as follow-on if desired).
 - [007-mark-type-stage-coverage.md](007-mark-type-stage-coverage.md) —
   post-type splitter stages coverage. **Partial:** 3 of 7 stages
   reached (type / setter / violation; violation came back when
