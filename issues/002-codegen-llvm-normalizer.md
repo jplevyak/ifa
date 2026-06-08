@@ -1,6 +1,10 @@
 # Issue 002: LLVM backend has no test-harness golden
 
-**Status:** open (deferred from phase 08)
+**Status:** partial — `codegen-llvm` phase + normalizer landed
+June 2026 (commit pending). Locked in one `.ir` fixture
+(`01_baseline`). Multi-fixture runs deferred behind an LLVM-side
+state-leak issue documented in the "Follow-up — June 2026"
+section.
 **Affects:** `ifa/codegen/llvm*.cc`, `ifa/testing/`.
 **Related:** `ifa/testing/phases/08_codegen.md` §3.2,
 `ifa/testing/print_codegen.{cc,h}` (C side done).
@@ -155,3 +159,69 @@ suffix.
   backend; the LLVM path is a stretch goal already.
 - The DEBUG_PRINT prereq (REFACTORING.md §6) already landed
   (`49dda85`), so this isn't blocked — just unscheduled.
+
+## Follow-up — June 2026
+
+**Landed**: `print_codegen_llvm_normalized` (mirrors the C
+printer's pipeline; captures `llvm_codegen_print_ir`'s textual
+output), `codegen-llvm` phase registered in the test harness,
+and `tests/ir/codegen-llvm/01_baseline.ir.codegen-llvm.expected`
+blessed as the first golden.
+
+**Normalizer scope** (concrete, in `print_codegen.cc`):
+
+- Strip the entire line for any of:
+  - `; ModuleID = ...`
+  - `source_filename = ...`
+  - `target triple = ...`
+  - `target datalayout = ...`
+  - Any line starting with `!` — module-level named metadata
+    (`!llvm.module.flags`, `!llvm.dbg.cu`) and all metadata
+    definitions (`!N = ...`, including the entire `!DI*`
+    debug-info table).
+  - `attributes #N = { ... }` — LLVM-version-sensitive.
+- Within surviving lines:
+  - Strip the entire line if it's a `#dbg_declare(...)` or
+    `#dbg_value(...)` debug-record annotation (LLVM 17+/22 form).
+    Whitespace-only prefix is required so the search is exact.
+  - Strip inline `, !dbg !N` / ` !dbg !N` spans, preserving any
+    trailing ` {` on `define` headers.
+
+**Verification gap (multi-fixture state leak)**: only one `.ir`
+fixture is locked in. Running two `.ir` fixtures consecutively
+under `--phase codegen-llvm` produces a segfault during the
+second fixture's `llvm_codegen_print_ir`. The likely cause: the
+LLVM-side globals in `ifa/codegen/llvm.cc` (`TheContext`,
+`TheModule`, `DBuilder`, `CU`, `UnitFile`, plus
+`all_funs_global` which dangles after each call) are reassigned
+in `llvm_codegen_initialize` but `Sym::llvm_value` /
+`Sym::llvm_type` / `Sym::llvm_type_di_cache` from the first
+fixture's Syms are GC-reachable from somewhere even after
+`ifa_reset()` nulls `if1` and `pdb`, and dereferencing them
+through the destroyed LLVM module corrupts the codegen state.
+
+This is the same flavor of singleton problem tier-3 reentrancy
+steps 1-4 sunk for FA but didn't reach for codegen — see
+[../notes/005-singleton-fa-and-pdb.md](../notes/005-singleton-fa-and-pdb.md)
+for the broader pattern. A focused `llvm_codegen_reset()` that
+explicitly nulls the LLVM globals + walks all extant Syms
+clearing their `llvm_*` fields would address this; out of scope
+for issue 002 itself.
+
+**Harness improvement piggybacked**: synth fixtures with no
+expected file for the current phase are now skipped *before*
+running `phase->print()`, not after. The previous order ran the
+codegen for every synth fixture and then threw the output away,
+which was wasted work for the C side and segfault-prone for the
+LLVM side. This change makes the codegen-c phase faster too —
+12 fewer C codegen runs per `--phase codegen-c` invocation.
+
+**Outstanding fixtures from plan §5**: tests 20-26 (simple_add,
+if_else, record_gep, function_decl_only, external_linkage_audit,
+verifyModule_passes, recursive_struct_type) remain unwritten.
+Each is a separate `.ir` fixture; the matching goldens follow
+from `--rebless`. Adding them requires either fixing the
+state-leak (so multiple `.ir` fixtures can coexist in the suite)
+or splitting them into one-fixture-per-phase-invocation, which
+defeats the purpose of having a phase-suite. Filed as a
+follow-on; the infrastructure for adding them is now in place.

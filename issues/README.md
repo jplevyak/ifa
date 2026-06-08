@@ -36,8 +36,17 @@ that:
   (keepalive removed as part of 005); kept for the investigation
   trail.
 - [002-codegen-llvm-normalizer.md](002-codegen-llvm-normalizer.md) —
-  no `codegen-llvm` test phase; needs a line-by-line normalizer
-  for host-specific LLVM-IR text variation.
+  **Partial:** `codegen-llvm` phase + normalizer landed June
+  2026 with one locked-in `.ir` fixture (`01_baseline`). The
+  normalizer strips host-specific module-level lines
+  (`target triple`, named metadata, `!N = ...` debug-info table)
+  and `, !dbg !N` / `#dbg_declare(...)` debug annotations.
+  Multi-fixture runs deferred behind a state-leak in
+  `ifa/codegen/llvm.cc`'s singleton globals — the LLVM-side
+  analog of the tier-3 reentrancy work, scoped as follow-on.
+  Plan §5 fixtures (#20-#26) remain unwritten until the leak is
+  fixed. Harness improvement piggybacked: synth fixtures with no
+  expected file are now skipped *before* `phase->print()` runs.
 - [003-fa-converge-determinism.md](003-fa-converge-determinism.md) —
   `fa-converge` phase needed a per-pass event sidecar (mirroring
   `InlineEvent`) so pass counts and per-stage splits could be

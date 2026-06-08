@@ -17,3 +17,11 @@
 class IF1;
 
 void print_codegen_c_normalized(FILE *fp, IF1 *p);
+
+// Phase printer for the LLVM backend (llvm_codegen_print_ir).
+// Mirrors the C-side pipeline; captures `llvm_codegen_print_ir`'s
+// textual LLVM IR output and applies a line-by-line normalizer
+// that strips host-specific module-level lines (target triple /
+// datalayout, named metadata, debug-info metadata) so the golden
+// can survive across hosts and LLVM versions. See issue 002.
+void print_codegen_llvm_normalized(FILE *fp, IF1 *p);

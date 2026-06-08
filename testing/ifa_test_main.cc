@@ -104,6 +104,9 @@ static void phase_freq_run(IF1 *p) { fa_setup_environment(p); }
 // `codegen-c` — the printer runs the full ifa_analyze + ifa_optimize
 // pipeline and then captures c_codegen_print_c output.
 static void phase_codegen_c_run(IF1 *p) { fa_setup_environment(p); }
+// `codegen-llvm` — same pipeline as codegen-c; the printer captures
+// llvm_codegen_print_ir output and runs a normalizer (issue 002).
+static void phase_codegen_llvm_run(IF1 *p) { fa_setup_environment(p); }
 // `inline` — enables the InlineEvent sidecar around simple_inlining
 // to record per-call-site inliner actions.
 static void phase_inline_run(IF1 *p) { fa_setup_environment(p); }
@@ -125,9 +128,9 @@ static Phase phases[] = {
     {"dce",      pre_parse_builtin_types, phase_dce_run,      print_dce_normalized},
     {"freq",     pre_parse_builtin_types, phase_freq_run,     print_freq_normalized},
     {"codegen-c", pre_parse_builtin_types, phase_codegen_c_run, print_codegen_c_normalized},
+    {"codegen-llvm", pre_parse_builtin_types, phase_codegen_llvm_run, print_codegen_llvm_normalized},
     {"inline",    pre_parse_builtin_types, phase_inline_run,    print_inline_normalized},
     {"fa-converge", pre_parse_builtin_types, phase_fa_converge_run, print_fa_converge_normalized},
-    // Future phases: codegen-llvm.
     // See ifa/testing/phases/00_INDEX.md.
     {0, 0, 0, 0},
 };
@@ -428,6 +431,17 @@ static int run_one(Fixture &f, Phase *phase, int &out_failed) {
 
   // Run the requested phase.
   phase->run(if1);
+
+  // For synth fixtures we let a missing .expected mean "this fixture
+  // doesn't claim coverage for this phase" (silently skipped below).
+  // Skip *before* running phase->print() so phases whose codegen
+  // isn't reentrant across fixtures (e.g. the LLVM backend, which
+  // accumulates module-level state that's not torn down between calls)
+  // don't accumulate work for fixtures we're going to throw away.
+  if (!opt_rebless && f.kind == FIXTURE_SYNTH) {
+    struct stat st;
+    if (stat(f.expected, &st) != 0) return 1;  // signal "skip"
+  }
 
   // Capture output to a buffer.
   char *got_buf = NULL;
