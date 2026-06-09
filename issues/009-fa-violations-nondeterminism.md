@@ -515,11 +515,22 @@ convention as the CDB and eager-splitting deferrals; it can
 graduate to a numbered `ifa/issues/` file if someone scopes the
 work.
 
+#### Step 6 follow-on: options A + B landed (June 2026)
+
+Notes/004's option A (`sorted_view` helper) and option B
+(`PointerHash<C>` trait + id-based specializations for the six
+id-bearing pointer types) landed together as one bundle. After
+the change, `fa-converge` is byte-identical across 5+ runs of
+every fixture (`nested_iterator` included). The remaining
+cleanup work — the `.n` → `.capacity` / `.size` rename and the
+17 `qsort_by_id` → `sorted_view` migrations — is filed as
+[010-vec-set-api-cleanup.md](010-vec-set-api-cleanup.md).
+
 ## Status
 
-Steps 1-6 complete. Closing this issue. Remaining work
-referenced in note 004 if anyone wants to take on the deeper
-plib hashing fix.
+Steps 1-6 complete; Step 6 follow-on (options A + B) landed
+June 2026. Closing this issue. Remaining cleanup work tracked
+in [010](010-vec-set-api-cleanup.md).
 
 ## What this unblocks
 

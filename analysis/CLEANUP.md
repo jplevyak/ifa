@@ -332,13 +332,27 @@ closed). Each tier-3 item is its own multi-week project.
   `fgraph_frequencies`, `fgraph_constants` from `graph.h:13-17`)
   into a config struct, so this work is gated on step 5. See
   [../notes/005-singleton-fa-and-pdb.md](../notes/005-singleton-fa-and-pdb.md).
-- [ ] **Fix `Vec::set_add_internal` pointer-bucket hashing in
-  plib.** The deeper fix for [issue 009](../issues/009-fa-violations-nondeterminism.md):
-  replace `(uintptr_t)c % n` with content-based hashing or
-  chain by stable id. Cross-cutting change — affects the entire
-  pyc tree, not just `ifa/analysis/`. File as a separate
-  follow-on once the surface fix at the use sites stabilizes
-  goldens. ([AUDIT §3.4](AUDIT.md#34-the-deeper-fix))
+- [x] **Fix `Vec::set_add_internal` pointer-bucket hashing in
+  plib.** Done June 2026. Combined option A + option B from
+  [../notes/004-plib-vec-pointer-set-hashing.md](../notes/004-plib-vec-pointer-set-hashing.md):
+  added `PointerHash<C>` trait in `ifa/common/vec.h` with
+  explicit specializations on `c->id` for the six id-bearing
+  pointer types (`AVar`, `AEdge`, `EntrySet`, `CreationSet`,
+  `Sym`, `Fun`); `set_add_internal` / `set_in_internal` now
+  index via the trait. Also added a `sorted_view(Vec<C*>&)` free
+  function in `analysis/fa.h` (option A) as the non-mutating
+  alternative to the in-place `qsort_by_id` discipline; no call
+  sites migrated in this PR (deferred — see issue 010). Result:
+  `fa-converge` is byte-identical across 5+ runs of every
+  fixture (including `nested_iterator`, the one issue 009
+  surfaced). The remaining deferred work — the API rename
+  (`Vec::n` → `Vec::capacity`, add `Vec::size`) and the
+  migration of the 17 `qsort_by_id` call sites to `sorted_view`
+  — is filed as [issue 010](../issues/010-vec-set-api-cleanup.md).
+  Verified: `./ifa --test` (52/0), full `make test` (all
+  phases clean), `make test_llvm`, `./test_pyc` (73 pass / 2
+  expected fail), 5× determinism check on every fa-converge
+  fixture. ([AUDIT §3.4](AUDIT.md#34-the-deeper-fix))
 
 ---
 

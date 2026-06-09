@@ -107,7 +107,19 @@ that:
   fa-converge fixtures showed 9 were silently mis-reporting,
   only `nested_iterator` happened to alternate visibly.
   Cross-cutting plib follow-on filed as
-  [../notes/004-plib-vec-pointer-set-hashing.md](../notes/004-plib-vec-pointer-set-hashing.md).
+  [../notes/004-plib-vec-pointer-set-hashing.md](../notes/004-plib-vec-pointer-set-hashing.md);
+  options A + B from that note landed June 2026 (`PointerHash<C>`
+  trait + id-based specializations + `sorted_view` helper).
+  Remaining cleanup tracked in [010](010-vec-set-api-cleanup.md).
+- [010-vec-set-api-cleanup.md](010-vec-set-api-cleanup.md) —
+  **Open.** Two-task follow-on from 009: rename `Vec::n` to
+  `Vec::capacity` and add `Vec::size` alias to make the
+  capacity-vs-count footgun compile-error detectable; migrate
+  the 17 `qsort_by_id(s); for(x:s)...` sites in `fa.cc` to
+  the non-mutating `sorted_view(s)` helper and delete
+  `qsort_by_id`. Deferred from the A+B landing because the API
+  rename touches ~1000+ Vec consumer sites and benefits from
+  separate review.
   Side observation: issue 008 stopped reproducing in 40 runs
   post-fix (cause unclear, separate investigation).
 

@@ -178,6 +178,14 @@ class Sym : public BasicSym {
   int imm_int(int *);
 };
 
+// Content-based hashing for `Vec<Sym*>::set_add` / `set_in`. The
+// `id` field comes from BasicSym and is monotonically assigned at
+// construction, so iteration order is deterministic across runs
+// (see ifa/notes/004).
+template <> struct PointerHash<Sym *> {
+  static uintptr_t hash(Sym *c) { return c ? (uintptr_t)c->id : 0; }
+};
+
 
 Sym *unalias_type(Sym *s);
 void convert_constant_to_immediate(Sym *sym);

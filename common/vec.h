@@ -9,6 +9,26 @@
 
 // Simple Vector class, also supports open hashed sets
 
+// Hash trait used by `Vec<C>::set_add_internal` / `set_in_internal`
+// to compute bucket indices. The primary template casts to
+// uintptr_t — for pointer element types this gives pointer-bucket
+// hashing, which is the historical behavior. Headers that define
+// id-bearing pointer types (e.g. fa.h for AVar, sym.h for Sym)
+// specialize `PointerHash<T*>` to hash on the stable `c->id`
+// field, so iteration order over `set_add`-populated Vec<T*>
+// becomes deterministic across runs and table-capacity
+// oscillation goes away.
+//
+// Specializations MUST be visible at every translation unit that
+// instantiates `Vec<T*>::set_add_internal` / `set_in_internal`
+// for a given T — otherwise the set's storage layout would be
+// inconsistent across TUs. In practice this means: place the
+// specialization in the same header that defines T.
+template <class C>
+struct PointerHash {
+  static uintptr_t hash(C c) { return (uintptr_t)c; }
+};
+
 #define VEC_INTEGRAL_SHIFT_DEFAULT 2 /* power of 2 (1 << VEC_INTEGRAL_SHIFT)*/
 #define VEC_INTEGRAL_SIZE (1 << (S))
 #define VEC_INITIAL_SHIFT ((S) + 1)
@@ -380,7 +400,7 @@ template <class C, class A, int S>
 C *Vec<C, A, S>::set_add_internal(C c) {
   int j, k;
   if (n) {
-    uintptr_t h = (uintptr_t)c;
+    uintptr_t h = PointerHash<C>::hash(c);
     h = h % n;
     for (k = h, j = 0; j < i + 3; j++) {
       if (!v[k]) {
@@ -402,7 +422,7 @@ template <class C, class A, int S>
 C *Vec<C, A, S>::set_in_internal(C c) {
   int j, k;
   if (n) {
-    uintptr_t h = (uintptr_t)c;
+    uintptr_t h = PointerHash<C>::hash(c);
     h = h % n;
     for (k = h, j = 0; j < i + 3; j++) {
       if (!v[k])

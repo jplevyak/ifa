@@ -223,9 +223,68 @@ two roles separately.
 - `ifa/common/vec.h:380` — `set_add_internal` implementation.
 - `ifa/common/vec.cc:6` — `prime2` expansion sequence.
 
+## What landed (June 2026): options A + B
+
+Both option A and option B from this note landed together as a
+single bundle:
+
+**Option B** — `ifa/common/vec.h` now declares a
+`PointerHash<C>` trait whose primary template still returns
+`(uintptr_t)c` (so non-pointer `Vec<T>` users and pointer
+`Vec<T*>` users without an id-bearing pointee see no behavior
+change). `set_add_internal` and `set_in_internal` index via
+`PointerHash<C>::hash(c)`. Explicit specializations on `c->id`
+are provided in the headers that own the six id-bearing pointer
+types:
+
+- `ifa/analysis/fa.h` — `AVar`, `AEdge`, `EntrySet`, `CreationSet`
+- `ifa/if1/sym.h` — `Sym` (via inherited `BasicSym::id`)
+- `ifa/if1/fun.h` — `Fun`
+
+The specializations live in the same header that defines each
+type, so any TU that uses `Vec<T*>::set_add` for an id-bearing T
+has already seen the specialization (it includes the type's
+header). The note in `vec.h` documents this co-location
+requirement.
+
+**Option A** — `ifa/analysis/fa.h` adds a free
+function template:
+
+```cpp
+template <class C>
+Vec<C *> sorted_view(const Vec<C *> &v);
+```
+
+next to the existing `qsort_by_id`. It returns a sorted-by-id
+snapshot, skipping null hash-table holes; leaves the input
+untouched. Intended as the non-mutating replacement for the
+`qsort_by_id(v); for (x : v) ...` pattern. No call sites migrated
+in this PR — see issue 010 for the migration plan.
+
+**Verification.** `fa-converge` is byte-identical across 5+
+consecutive runs of every fixture (including `nested_iterator`,
+which issue 009 surfaced); `./ifa --test` 52/0; full ifa
+`make test` clean across all phases (finalize, freq,
+codegen-c, codegen-llvm, inline, fa-converge 17/17); top-level
+`make test` + `./test_pyc` 73 pass / 2 expected fail / 0 fail.
+
+**What stayed deferred.** The two follow-ons from this note's
+"Migration notes" section:
+
+- The API rename (`Vec::n` → `Vec::capacity`, add `Vec::size`
+  as alias for `set_count()`) — makes the capacity-vs-count
+  footgun compile-error detectable.
+- Migration of the 17 explicit `qsort_by_id` sites in `fa.cc` to
+  `sorted_view()` — and eventual deletion of `qsort_by_id`.
+
+Both are now tracked in
+[../issues/010-vec-set-api-cleanup.md](../issues/010-vec-set-api-cleanup.md).
+The motivating correctness issue (non-determinism) is resolved by
+the changes that landed; the deferred items are cleanup, not
+fixes.
+
 ## History
 
-Filed June 2026 as part of issue 009's Step 6. No code change
-landed; this is a placeholder for the cross-cutting work if
-someone decides to take it on. Promote to
-`ifa/issues/NNN-...md` when scoping starts.
+Filed June 2026 as part of issue 009's Step 6. Options A + B
+landed June 2026 (this commit); remaining cleanup moved to
+issue 010.

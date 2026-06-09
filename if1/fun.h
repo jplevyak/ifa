@@ -152,6 +152,14 @@ class Fun : public gc {
   Fun *copy(int copy_ast = 1, Map<Var *, Var *> *var_map = 0);
 };
 
+// Content-based hashing for `Vec<Fun*>::set_add` / `set_in`. The
+// `id` field is monotonically assigned at construction, so
+// iteration order is deterministic across runs (see
+// ifa/notes/004).
+template <> struct PointerHash<Fun *> {
+  static uintptr_t hash(Fun *c) { return c ? (uintptr_t)c->id : 0; }
+};
+
 int compar_funs(const void *ai, const void *aj);
 void check_invariants(Fun *);
 void rebuild_cfg_pred_index(Fun *);

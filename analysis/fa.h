@@ -196,6 +196,23 @@ class AVar : public gc {
   AVar(Var *v, void *acontour);
 };
 
+// Content-based hashing for `Vec<T*>::set_add` / `set_in` over
+// the four id-bearing FA pointer types. Using `c->id` instead of
+// `(uintptr_t)c` makes set iteration order and table capacity
+// deterministic across runs (see ifa/notes/004).
+template <> struct PointerHash<AVar *> {
+  static uintptr_t hash(AVar *c) { return c ? (uintptr_t)c->id : 0; }
+};
+template <> struct PointerHash<AEdge *> {
+  static uintptr_t hash(AEdge *c) { return c ? (uintptr_t)c->id : 0; }
+};
+template <> struct PointerHash<EntrySet *> {
+  static uintptr_t hash(EntrySet *c) { return c ? (uintptr_t)c->id : 0; }
+};
+template <> struct PointerHash<CreationSet *> {
+  static uintptr_t hash(CreationSet *c) { return c ? (uintptr_t)c->id : 0; }
+};
+
 typedef Map<MPosition *, AVar *> MapMPositionAVar;
 typedef MapElem<MPosition *, AVar *> MapMPositionAVarElem;
 #define form_MPositionAVar(_p, _v) form_Map(MapMPositionAVarElem, _p, _v)
@@ -512,6 +529,21 @@ Lagain:
 template <class C>
 void qsort_by_id(Vec<C *> &v) {
   if (v.n > 1) qsort_by_id(&v[0], v.end());
+}
+
+// Return a sorted-by-id snapshot of `v` (live entries only,
+// skipping null hash-table holes). Leaves `v` untouched. Use
+// when iterating a `set_add`-populated `Vec<C*>` and the loop
+// body would observe order — preferred over the in-place
+// `qsort_by_id(v); for(...) ...` pattern when `v` should not be
+// mutated. See ifa/notes/004.
+template <class C>
+Vec<C *> sorted_view(const Vec<C *> &v) {
+  Vec<C *> out;
+  for (int i = 0; i < v.n; i++)
+    if (v.v[i]) out.add(v.v[i]);
+  if (out.n > 1) qsort_by_id(out);
+  return out;
 }
 
 extern FA *fa;
