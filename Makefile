@@ -6,7 +6,7 @@ MODULE=ifa
 DEBUG=1
 #OPTIMIZE=1
 #PROFILE=1
-USE_GC=1
+# Boehm GC is a hard dependency — no non-GC build path.
 #LEAK_DETECT=1
 #VALGRIND=1
 TEST_EXEC=ifa_tests
@@ -80,10 +80,8 @@ GC_CFLAGS += -I/usr/local/include
 LIBS += -lrt -lpthread
 endif
 
-ifdef USE_GC
 CFLAGS += -DUSE_GC $(GC_CFLAGS)
 LIBS += -lgc -lgccpp
-endif
 ifdef LEAK_DETECT
 CFLAGS += -DLEAK_DETECT $(GC_CFLAGS)
 LIBS += -lleak
@@ -135,11 +133,7 @@ IFA_SRCS = $(IFA_DEPEND_SRCS) frontend/v.g.d_parser.cc frontend/python.g.d_parse
 IFA_OBJS = $(IFA_SRCS:%.cc=%.o)
 
 EXECUTABLE_FILES = ifa ifa-test
-ifdef USE_GC
 LIBRARY = libifa_gc.a
-else
-LIBRARY = libifa.a
-endif
 INSTALL_LIBRARIES = $(LIBRARY)
 MANPAGES = ifa.1
 

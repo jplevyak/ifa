@@ -569,8 +569,8 @@ the runtime header. Don't add bodies to those.
 
 - `ifa/codegen/cg.cc` + `cg.h` — implementation + public API.
 - `ifa/Makefile.cg` (in the install dir) — driver makefile.
-- `pyc_c_runtime.h` / `pyc_c_runtime_plib.h` (pyc) — runtime
-  definitions referenced by `_CG_*` macros.
+- `pyc_c_runtime.h` (pyc) — runtime definitions referenced by
+  `_CG_*` macros.
 - `ifa/common/c_runtime.h` (V) — V-language runtime.
 - Sister docs: [IR.md](IR.md) (the IR being emitted),
   [OPTIMIZE.md](OPTIMIZE.md) (the `live`/`fa_live` flags consumed),
