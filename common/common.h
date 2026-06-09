@@ -2,6 +2,10 @@
 #ifndef _ifa_common_common_H_
 #define _ifa_common_common_H_
 
+// Boehm GC is a hard dependency. LEAK_DETECT selects the
+// debugging GC build; the default selects the C++-flavored GC.
+// The historical non-GC build path has been removed (the runtime
+// and IFA library both assume Boehm GC).
 #ifdef LEAK_DETECT
 #define GC_DEBUG
 #include "gc.h"
@@ -13,7 +17,6 @@
 #define FREE(_p) GC_FREE(_p)
 #define DELETE(_x)
 #else
-#ifdef USE_GC
 #include "gc_cpp.h"
 #define MEM_INIT() GC_INIT()
 #define MALLOC(_n) GC_MALLOC(_n)
@@ -21,15 +24,6 @@
 #define MEMALIGN(_p, _n, _a) _p = GC_MALLOC(_n)
 #define FREE(_x) (void)(_x)
 #define DELETE(_x) (void)(_x)
-#else
-#define MEM_INIT()
-#define MALLOC ::malloc
-#define REALLOC ::realloc
-#define MEMALIGN(_p, _a, _n) ::posix_memalign((void **)&(_p), (_a), (_n))
-#define FREE ::free
-#define DELETE(_x) delete _x
-class gc {};
-#endif
 #endif
 
 #define round2(_x, _n) ((_x + ((_n)-1)) & ~((_n)-1))

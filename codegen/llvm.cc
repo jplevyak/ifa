@@ -84,25 +84,6 @@ static void llvm_codegen_initialize(FA *fa) {
   // }
 }
 
-// Define fail to my_fail to avoid linker conflict with libplib's fail
-// and allows us to make it non-fatal locally in this file.
-// ONLY for backend/nogc
-#ifndef USE_GC
-extern "C" void my_fail(const char *fmt, ...);
-
-#undef fail
-#define fail my_fail
-
-extern "C" void my_fail(const char *fmt, ...) {
-  va_list ap;
-  va_start(ap, fmt);
-  fprintf(stderr, "FAIL (ignored): ");
-  vfprintf(stderr, fmt, ap);
-  fprintf(stderr, "\n");
-  va_end(ap);
-}
-#endif
-
 // Forward declaration
 
 // Helper function from cg.cc:537-540
