@@ -81,106 +81,83 @@ PRs. Each fixes a specific AUDIT item.
 
 ### 0.1 LLVM backend static-state leaks ([AUDIT §1 #2](AUDIT.md#1-headline-issues--in-order-of-likely-impact))
 
-- [ ] **Move `string_constants_map` into `llvm_codegen_initialize`'s
-  reset.** `llvm.cc:691` declares a function-static
-  `std::map<std::string, llvm::Constant *>` that's never cleared.
-  Across the next `llvm_codegen_print_ir` call its cached pointers
-  reference a freed Context. Either lift it to a file-scope
-  variable that `llvm_codegen_initialize` `.clear()`s, or
-  (better) make it a member of a future `Codegen` context object
-  (deferred to phase 5).
-  **Verify**: 10× back-to-back `./ifa-test --phase codegen-llvm`
-  runs are byte-identical and don't leak between fixtures.
-
-- [ ] **Reset `label_to_bb_map` in `llvm_codegen_print_ir`.**
-  `llvm_codegen.cc:10` declares the map at file scope.
-  `translateFunctionBody` clears it per-function, but the
-  top-level driver doesn't clear before the first function. Add
-  `label_to_bb_map.clear()` early in `llvm_codegen_print_ir` —
-  same shape as the other reset block.
-
-- [ ] **Audit for other file-static maps** in the LLVM backend.
-  `grep -n "static std::map\|static std::vector\|static std::set"`
-  across the trio. Any that survives a `llvm_codegen_initialize`
-  call needs to be reset or moved.
+- [x] **Move `string_constants_map` into `llvm_codegen_initialize`'s
+  reset.** Lifted to file scope; `llvm_codegen_initialize` now
+  `.clear()`s it (and `label_to_bb_map`, `reverse_call_graph`)
+  alongside the existing Context/Module reset block. 10×
+  back-to-back `./ifa-test --phase codegen-llvm` runs are
+  byte-identical.
+- [x] **Reset `label_to_bb_map` in `llvm_codegen_print_ir`.**
+  Done via the same `llvm_codegen_initialize` reset block.
+- [x] **Audit for other file-static maps**. Confirmed: only
+  `string_constants_map` (was function-static, now fixed),
+  `reverse_call_graph` (already cleared per-call), and
+  `label_to_bb_map` (already cleared per-function; now also
+  reset on init for defense).
 
 ### 0.2 02_call.ir.codegen-c.expected golden ([AUDIT §1 #3](AUDIT.md#1-headline-issues--in-order-of-likely-impact))
 
-- [ ] **Decide which truth the golden should encode.** Two
-  options:
-  - **A.** Rebless to current truth (the C backend elides `add`
-    because its result is unused). Update the fixture comment to
-    explain why — "DCE removes `add` since `r` is unused; locked
-    in to detect a regression where DCE stops firing here."
-  - **B.** Modify the fixture so `add`'s result is used (e.g.,
-    print `r`), forcing emission. Then rebless. This is the
-    "stronger test" path and also brings the C fixture into
-    parallel with the LLVM fixture (which DOES show
-    `define internal void @add0()`).
-  Recommend (B) — gets actual primitive coverage.
+- [x] **Picked Option A.** Updated fixture comment to explain
+  the DCE behavior (`add` elided because its result isn't
+  consumed by the synthesized `__main__`). Cross-references the
+  LLVM golden which still emits `@add0()`. Tightening to Option B
+  (parallel fixture with observable result) is phase 1 work.
 
 ### 0.3 Move `make_prims.cc` out of `codegen/` ([AUDIT §1 #8](AUDIT.md#1-headline-issues--in-order-of-likely-impact))
 
-- [ ] **Move to `ifa/tools/make_prims.cc`** (create dir).
-  Update Makefile to find it in the new location. Add a one-line
-  comment at the new top of file explaining what it does
-  ("Build-time tool: reads prim_data.dat, writes prim_data.cc
-  and prim_data.h. Not part of the runtime codegen.").
+- [x] **Moved to `ifa/tools/make_prims.cc`.** Created `tools/`,
+  `git mv`'d the file, updated `Makefile`'s build rule from
+  `codegen/make_prims.cc` to `tools/make_prims.cc`, added a
+  top-of-file comment explaining the tool's role.
 
 ### 0.4 Dead code removal
 
-- [ ] **`cg.cc:12`**: delete duplicate `#include "pattern.h"`.
-- [ ] **`cg.cc:919, 926`**: `build_type_strings` returns 0
-  unconditionally; caller's `if (... < 0) fail(...)` is dead.
-  Either change return type to `void` (and drop the check) or
-  make `build_type_strings` actually return non-zero on failure
-  (preferred — it has a `fail("setter not resolved")` path that
-  should propagate). Pick one.
-- [ ] **`cg.cc:156`**: `num_string` returns `0` after an
-  unreachable switch — replace with `__builtin_unreachable()`
-  or `fail("unhandled num_kind %d", s->num_kind)`. Same shape
-  in `cg.cc`'s other switch defaults.
-- [ ] **`llvm.cc:510-536`**: dead `#if 0` block documenting
-  intended Type_ARRAY handling. Delete (the design idea is in
-  the AUDIT now).
-- [ ] **`llvm.cc:468-474`**: dead `#if 0` block for varargs.
-  Same disposition.
-- [ ] **`llvm.cc:491-506`** (`Type_REF`): computes
-  `element_type` then ignores it. Either use it or delete the
-  computation.
+- [x] **`cg.cc:12`**: duplicate `#include "pattern.h"` removed.
+- [x] **`cg.cc:919, 926`**: `build_type_strings` now returns
+  `void`; the dead `< 0` check at the caller is gone.
+- [x] **`cg.cc:156`**: `num_string` switch fallthrough now
+  ends in `fail("num_string: unhandled num_kind %d ...")`.
+- [x] **`llvm.cc:510-536`**: dead `#if 0` Type_ARRAY block
+  deleted.
+- [x] **`llvm.cc:468-474`**: dead `#if 0` varargs block
+  deleted.
+- [x] **`llvm.cc:491-506`** (`Type_REF`): dead
+  `element_type` computation deleted; opaque-pointer
+  representation made explicit with comment.
 
 ### 0.5 stderr → DEBUG_LOG in the LLVM backend ([AUDIT §1 #4](AUDIT.md#1-headline-issues--in-order-of-likely-impact))
 
-- [ ] **`llvm.cc`** (25 sites): every `fprintf(stderr, …)` that
-  isn't followed by `fail(...)` should be `DEBUG_LOG(...)`.
-  Special cases:
-  - `getLLVMType`'s "ERROR: getLLVMType called with function
-    symbol …" branch (lines 317-329) — this IS a real error.
-    Convert to `fail(...)`.
-  - The "WARNING: Function not found in module" path
-    (line 1319) — investigate whether this is recoverable. If
-    yes, `DEBUG_LOG`. If no, `fail`.
-- [ ] **`llvm_codegen.cc`** (14 sites): same treatment.
-  Particular focus on the locals-allocation loop spew at
-  lines 411-422 — those are flat unconditional writes that
-  should be `DEBUG_LOG` immediately.
-- [ ] **`llvm_primitives.cc`**: same treatment.
+- [x] **`llvm.cc`**: 23 unconditional stderr writes converted.
+  Recoverable warnings → `DEBUG_LOG`. Real errors merged into
+  `fail(...)` calls (e.g., `getLLVMType` function-symbol
+  branch). Two remaining `fprintf(stderr,...)` sites are gated
+  inside `if (ifa_debug)` blocks for instruction-dump diagnostics.
+- [x] **`llvm_codegen.cc`**: 14 sites swept. The locals-allocation
+  loop spew (lines 410-422) is now gated by `if (ifa_debug)`.
+  Invalid `code_kind` and "Failed to add terminator" cases
+  upgraded to `fail(...)`.
+- [x] **`llvm_primitives.cc`**: 8 sites swept. `write_send`'s
+  unresolved-call and on-demand-create paths use `DEBUG_LOG`;
+  argument-null warnings → `DEBUG_LOG`; `P_prim_make` struct-
+  type-resolution failure → `DEBUG_LOG` (returns 0, caller
+  falls back).
 
 ### 0.6 Buffer-safety in cg.cc ([AUDIT §1 #9](AUDIT.md#1-headline-issues--in-order-of-likely-impact))
 
-- [ ] **`cg.cc:984-1003`**: replace `char fn[512]` /
-  `char target[512]` + `strcpy`/`strcat` with `snprintf` and
-  size checks. If snprintf truncates, `fail(...)`.
-- [ ] **`c_codegen_compile`**: properly quote `filename` and
-  `system_dir` arguments to the `system()` call (or move to
-  `posix_spawn` with explicit argv to avoid shell entirely —
-  preferred).
+- [x] **`cg.cc:984-1003`**: replaced fixed `char[512]` buffers
+  with `char[FILENAME_MAX]`-sized buffers, all
+  `strcpy`/`strcat` calls replaced with `snprintf` + truncation
+  checks that `fail(...)` if the formatted string exceeds the
+  buffer. Added open() failure check on `c_codegen_write_c`.
+- [-] **`c_codegen_compile` shell quoting**: deferred to phase 4
+  (`posix_spawn` migration). The truncation check provides
+  some protection; full shell-safety is bigger scope.
 
 ### 0.7 LLVM `DBuilder->finalize()` called twice
 
-- [ ] **`llvm.cc:1182, 1219`**: `DBuilder->finalize()` is called
-  at line 1182 and again at line 1219. Delete the first call
-  (or the second — they're at function exit).
+- [x] **`llvm.cc:1142-1143`**: first `DBuilder->finalize()`
+  call deleted (the post-verification call at the end of
+  `llvm_codegen_print_ir` is the canonical one).
 
 ### Phase 0 exit criteria
 

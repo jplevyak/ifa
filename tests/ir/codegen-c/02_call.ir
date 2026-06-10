@@ -1,6 +1,13 @@
-;; 02_call.ir — typed int32 call. The C backend should emit %add as a
-;; separate function (named `_CG_f_<id>` after monomorphization) and
-;; emit a direct call from __main__.
+;; 02_call.ir — typed int32 call.
+;;
+;; %top sends to %add, but %top's return is unused by the synthesized
+;; __main__ wrapper (`fa_setup_environment` wires top in but doesn't
+;; consume its result). The C backend's DCE elides %add as a result,
+;; emitting only an empty __main__. The LLVM backend currently retains
+;; %add even with no observable use — see the parallel
+;; codegen-llvm/02_call.ir golden, which shows `define internal void
+;; @add0()`. Tightening this asymmetry (and adding a real "call-with-
+;; observable-result" fixture) is CODEGEN_PLAN phase 1 work.
 
 (sym %k1 :is-constant :immediate (int32 1))
 (sym %k2 :is-constant :immediate (int32 2))

@@ -296,9 +296,8 @@ llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
   if (ifa_fun->is_external || !ifa_fun->entry) {
     for (llvm::BasicBlock &BB : *llvm_func) {
       if (!BB.getTerminator()) {
-        fprintf(stderr,
-                "DEBUG: Basic block %s in function %s (id %d) has no terminator after createFunction, adding default\n",
-                BB.getName().str().c_str(), ifa_fun->sym->name, ifa_fun->sym->id);
+        DEBUG_LOG("Basic block %s in function %s (id %d) has no terminator after createFunction; adding default\n",
+                  BB.getName().str().c_str(), ifa_fun->sym->name, ifa_fun->sym->id);
         // Create a builder - if block is not empty, insert after last instruction
         // Otherwise insert at beginning
         llvm::IRBuilder<> temp_builder(*TheContext);
@@ -406,20 +405,23 @@ void translateFunctionBody(Fun *ifa_fun) {
   std::map<Sym *, llvm::AllocaInst *> sym_to_alloca;
   int var_loop_idx = 0;
   for (Var *v : ifa_fun->fa_all_Vars) {  // Or a more specific list of locals
-    DEBUG_LOG("Loop idx %d, v=%p", var_loop_idx++, v);
-    if (v && v->sym) {
-      fprintf(stderr, ", sym=%s (id=%d), is_local=%d, is_formal=%d, has_llvm_value=%d",
-              v->sym->name ? v->sym->name : "(null)", v->sym->id, v->sym->is_local ? 1 : 0, v->is_formal ? 1 : 0,
-              v->llvm_value ? 1 : 0);
-      if (v->llvm_value && llvm::isa<llvm::Constant>(v->llvm_value)) {
-        fprintf(stderr, ", llvm_value is constant: ");
-        v->llvm_value->print(llvm::errs());
+    if (ifa_debug) {
+      DEBUG_LOG("Loop idx %d, v=%p", var_loop_idx, v);
+      if (v && v->sym) {
+        fprintf(stderr, ", sym=%s (id=%d), is_local=%d, is_formal=%d, has_llvm_value=%d",
+                v->sym->name ? v->sym->name : "(null)", v->sym->id, v->sym->is_local ? 1 : 0,
+                v->is_formal ? 1 : 0, v->llvm_value ? 1 : 0);
+        if (v->llvm_value && llvm::isa<llvm::Constant>(v->llvm_value)) {
+          fprintf(stderr, ", llvm_value is constant: ");
+          v->llvm_value->print(llvm::errs());
+        }
+        fprintf(stderr, "\n");
+      } else {
+        fprintf(stderr, ", no sym\n");
       }
-      fprintf(stderr, "\n");
-    } else {
-      fprintf(stderr, ", no sym\n");
+      fflush(stderr);
     }
-    fflush(stderr);
+    var_loop_idx++;
 
     if (v && v->sym && v->sym->is_local && !v->is_formal) {
       auto it = sym_to_alloca.find(v->sym);
@@ -578,12 +580,14 @@ void translateFunctionBody(Fun *ifa_fun) {
               BB.getName().str().c_str(), full_func_name.c_str(), BB.size());
 
       // Print existing instructions
-      DEBUG_LOG("Existing instructions in block:\n");
-      int inst_idx = 0;
-      for (llvm::Instruction &I : BB) {
-        DEBUG_LOG("  [%d] ", inst_idx++);
-        I.print(llvm::errs());
-        fprintf(stderr, "\n");
+      if (ifa_debug) {
+        fprintf(stderr, "DEBUG: Existing instructions in block:\n");
+        int inst_idx = 0;
+        for (llvm::Instruction &I : BB) {
+          fprintf(stderr, "DEBUG:   [%d] ", inst_idx++);
+          I.print(llvm::errs());
+          fprintf(stderr, "\n");
+        }
       }
 
       // Create a new IRBuilder for this specific terminator addition
@@ -610,15 +614,16 @@ void translateFunctionBody(Fun *ifa_fun) {
       }
 
       // Print the created terminator
-      if (term_inst) {
-        DEBUG_LOG("Created terminator instruction: ");
+      if (term_inst && ifa_debug) {
+        fprintf(stderr, "DEBUG: Created terminator instruction: ");
         term_inst->print(llvm::errs());
         fprintf(stderr, "\n");
       }
 
       // Verify terminator was added
       if (!BB.getTerminator()) {
-        fprintf(stderr, "ERROR: Failed to add terminator to block %s!\n", BB.getName().str().c_str());
+        fail("Failed to add terminator to block %s in function %s", BB.getName().str().c_str(),
+             full_func_name.c_str());
       } else {
         DEBUG_LOG("Terminator successfully added. Block now has %zu instructions\n", BB.size());
       }
@@ -675,7 +680,7 @@ void translatePNode(PNode *pn, Fun *ifa_fun) {
   int code_kind = pn->code->kind;
   // Sanity check code_kind - valid values should be < 100
   if (code_kind < 0 || code_kind > 100) {
-    fprintf(stderr, "ERROR: Invalid code_kind %d for pn=%p, skipping\n", code_kind, (void *)pn);
+    fail("translatePNode: invalid code_kind %d for pn=%p", code_kind, (void *)pn);
     return;
   }
 
@@ -685,12 +690,14 @@ void translatePNode(PNode *pn, Fun *ifa_fun) {
   // to ensure control flow targets (labels) and value-producing operations are generated
   bool is_live = pn->fa_live;
   if (!is_live) {
-    DEBUG_LOG("Skipping non-live PNode pn=%p (live=%d, fa_live=%d), code_kind=%d, lvals.n=%d", (void *)pn,
-            pn->live, pn->fa_live, code_kind, pn->lvals.n);
-    if (pn->lvals.n > 0 && pn->lvals[0]) {
-      fprintf(stderr, ", lval[0] id=%d", pn->lvals[0]->id);
+    if (ifa_debug) {
+      DEBUG_LOG("Skipping non-live PNode pn=%p (live=%d, fa_live=%d), code_kind=%d, lvals.n=%d", (void *)pn,
+                pn->live, pn->fa_live, code_kind, pn->lvals.n);
+      if (pn->lvals.n > 0 && pn->lvals[0]) {
+        fprintf(stderr, ", lval[0] id=%d", pn->lvals[0]->id);
+      }
+      fprintf(stderr, ", but will process CFG successors\n");
     }
-    fprintf(stderr, ", but will process CFG successors\n");
     // Skip the instruction translation but continue to CFG processing at the end
     return;  // For now, still return - we'll fix CFG traversal in worklist instead
   }
@@ -783,10 +790,12 @@ void translatePNode(PNode *pn, Fun *ifa_fun) {
           DEBUG_LOG("Code_IF condition var has no llvm_value, using constant true\n");
           cond_llvm_val = llvm::ConstantInt::getTrue(*TheContext);
         }
-        DEBUG_LOG("Code_IF got llvm_val=%p, type=%s\n", (void *)cond_llvm_val,
-                cond_llvm_val->getType()->isIntegerTy() ? "int" : "other");
-        cond_llvm_val->print(llvm::errs());
-        fprintf(stderr, "\n");
+        if (ifa_debug) {
+          DEBUG_LOG("Code_IF got llvm_val=%p, type=%s: ", (void *)cond_llvm_val,
+                    cond_llvm_val->getType()->isIntegerTy() ? "int" : "other");
+          cond_llvm_val->print(llvm::errs());
+          fprintf(stderr, "\n");
+        }
         fflush(stderr);
 
         // Ensure condition is i1
@@ -861,7 +870,7 @@ void translatePNode(PNode *pn, Fun *ifa_fun) {
       break;
     }
     default:
-      fprintf(stderr, "Unhandled PNode code kind: %d in function %s\n", pn->code->kind, ifa_fun->sym->name);
+      fail("translatePNode: unhandled code kind %d in function %s", pn->code->kind, ifa_fun->sym->name);
       break;
   }
 }

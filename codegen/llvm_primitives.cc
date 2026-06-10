@@ -63,12 +63,12 @@ void write_send(Fun *f, PNode *n) {
 
   Fun *target = get_target_fun(n, f);
   if (!target) {
-    fprintf(stderr, "FAIL (ignored): unable to resolve to a single function at call site %s\n", f->sym->name);
+    DEBUG_LOG("write_send: unable to resolve to a single function at call site in %s\n", f->sym->name);
     return;
   }
 
   if (!target->sym) {
-    fprintf(stderr, "FAIL: target function has null sym\n");
+    DEBUG_LOG("write_send: target function has null sym\n");
     return;
   }
 
@@ -77,12 +77,11 @@ void write_send(Fun *f, PNode *n) {
           (void *)target, (void *)callee);
 
   if (!callee) {
-    // This should not happen if call graph discovery worked correctly
-    // But keep as a safety fallback
-    fprintf(stderr, "WARNING: Target function %s (id %d) not discovered during call graph walk!\n",
-            target->sym->name ? target->sym->name : "unnamed", target->sym->id);
-    fprintf(stderr, "WARNING: This indicates the function was not reachable during discovery.\n");
-    fprintf(stderr, "WARNING: Creating it on-demand, but liveness info may be incomplete.\n");
+    // This should not happen if call graph discovery worked correctly;
+    // see AUDIT §1 #6. We keep the fallback for now and surface the
+    // condition only at debug level.
+    DEBUG_LOG("Target function %s (id %d) not discovered during call graph walk; creating on-demand\n",
+              target->sym->name ? target->sym->name : "unnamed", target->sym->id);
 
     callee = createFunction(target, TheModule.get());
     if (!callee) {
@@ -165,13 +164,13 @@ void write_send(Fun *f, PNode *n) {
       if (val) {
         args.push_back(val);
       } else {
-        fprintf(stderr, "Warning: Argument %d value is null\n", arg_idx);
+        DEBUG_LOG("Argument %d value is null; substituting undef\n", arg_idx);
         if (arg_idx < callee->arg_size()) {
           args.push_back(llvm::UndefValue::get(callee->getArg(arg_idx)->getType()));
         }
       }
     } else {
-      fprintf(stderr, "Warning: No actual arg for formal parameter %d\n", arg_idx);
+      DEBUG_LOG("No actual arg for formal parameter %d; substituting undef\n", arg_idx);
       if (arg_idx < callee->arg_size()) {
         args.push_back(llvm::UndefValue::get(callee->getArg(arg_idx)->getType()));
       }
@@ -378,9 +377,9 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
       }
 
       if (!struct_ty || !struct_ty->isStructTy()) {
-        fprintf(stderr, "P_prim_make: Could not resolve struct type for %s (res_ty is %s)\n",
-                res_var->sym && res_var->sym->name ? res_var->sym->name : "unknown",
-                res_ty->isPointerTy() ? "pointer" : (res_ty->isStructTy() ? "struct" : "other"));
+        DEBUG_LOG("P_prim_make: could not resolve struct type for %s (res_ty is %s); falling back\n",
+                  res_var->sym && res_var->sym->name ? res_var->sym->name : "unknown",
+                  res_ty->isPointerTy() ? "pointer" : (res_ty->isStructTy() ? "struct" : "other"));
         return 0;
       }
 

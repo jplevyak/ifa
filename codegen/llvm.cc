@@ -35,6 +35,12 @@ llvm::DICompileUnit *CU = nullptr;
 llvm::DIFile *UnitFile = nullptr;
 Vec<Fun *> *all_funs_global = NULL;
 
+// Forward declarations of file-scope caches reset by
+// llvm_codegen_initialize. Definitions live near their use sites
+// later in this file. See AUDIT §4 / CODEGEN_PLAN §3.1.
+static std::map<std::string, llvm::Constant *> string_constants_map;
+static std::map<Fun *, std::vector<PNode *>> reverse_call_graph;
+
 static void llvm_codegen_initialize(FA *fa) {
   // Initialize LLVM components
   llvm::InitializeAllTargetInfos();
@@ -58,6 +64,15 @@ static void llvm_codegen_initialize(FA *fa) {
   Builder.reset();
   TheModule.reset();
   TheContext.reset();
+
+  // File-scope caches whose entries are pointers into the just-destroyed
+  // TheContext / TheModule. Clearing them here makes lookups in the new
+  // run start cold and removes the use-after-free risk that would otherwise
+  // bite on the second invocation. See AUDIT §4 / CODEGEN_PLAN §3.1.
+  string_constants_map.clear();
+  extern std::map<Label *, llvm::BasicBlock *> label_to_bb_map;  // llvm_codegen.cc
+  label_to_bb_map.clear();
+  reverse_call_graph.clear();
 
   TheContext = std::make_unique<llvm::LLVMContext>();
   // Use a more descriptive module ID, perhaps from FA or filename
@@ -144,8 +159,8 @@ static llvm::Type *mapNumericType(Sym *sym) {
 
 // Forward Declarations
 
-// Reverse Call Graph for Constant Recovery
-static std::map<Fun *, std::vector<PNode *>> reverse_call_graph;
+// Reverse Call Graph for Constant Recovery (definition above, near
+// the other reset-on-init globals).
 
 // Forward declaration for get_target_fun
 
@@ -304,29 +319,24 @@ static llvm::Value *recover_constant_arg(Var *var, Fun *ifa_fun) {
 llvm::Type *getLLVMType(Sym *sym) {
   DEBUG_LOG("getLLVMType %p\n", (void *)sym);
   if (!sym) {
-    // fail("Null Sym provided to getLLVMType");
-    fprintf(stderr, "WARNING: getLLVMType(nil), returning VoidTy as fallback\n");
+    DEBUG_LOG("getLLVMType(nil), returning VoidTy as fallback\n");
     return llvm::Type::getVoidTy(*TheContext);
   }
   DEBUG_LOG("getLLVMType %s kind %d is_fun %d\n", sym->name ? sym->name : "unnamed", sym->type_kind,
           sym->is_fun);
 
-  // Check if this is a function symbol (not a type) - this should NOT happen
-  // getLLVMType should only be called with type symbols, not function symbols
+  // Function symbols shouldn't reach here; getLLVMType is for type symbols.
+  // Attempt sym->type recovery first, then fail with full context if even
+  // that isn't a usable type.
   if (sym->type_kind == 0 && sym->is_fun) {
-    fprintf(stderr, "ERROR: getLLVMType called with function symbol '%s' - this is incorrect!\n",
-            sym->name ? sym->name : "unnamed");
-    fprintf(stderr, "       Function symbols should not be passed to getLLVMType.\n");
-    fprintf(stderr, "       sym=%p, sym->type=%p, sym->type == sym: %d\n", (void *)sym, (void *)sym->type,
-            sym->type == sym);
     if (sym->type && sym->type != sym) {
-      fprintf(stderr, "       Attempting to use sym->type instead...\n");
-      fprintf(stderr, "       sym->type name=%s, type_kind=%d, is_fun=%d\n",
-              sym->type->name ? sym->type->name : "unnamed", sym->type->type_kind, sym->type->is_fun);
-      // Try to use the type, but only if it's not self-referential
+      DEBUG_LOG("getLLVMType: function symbol '%s' passed; recovering via sym->type (name=%s, kind=%d)\n",
+                sym->name ? sym->name : "unnamed",
+                sym->type->name ? sym->type->name : "unnamed", sym->type->type_kind);
       return getLLVMType(sym->type);
     }
-    fail("getLLVMType called with function symbol '%s' and cannot recover", sym->name ? sym->name : "unnamed");
+    fail("getLLVMType called with function symbol '%s' and cannot recover (sym->type=%p)",
+         sym->name ? sym->name : "unnamed", (void *)sym->type);
     return nullptr;
   }
 
@@ -465,75 +475,21 @@ llvm::Type *getLLVMType(Sym *sym) {
         }
         if (!success) return nullptr;
 
-#if 0
-         bool is_var_arg = false;
-        // TODO: Handle varargs if unaliased_sym->is_varargs or similar flag exists
-        if (unaliased_sym->fun && unaliased_sym->fun->is_varargs) {
-            is_var_arg = true;
-        }
-#endif
-
-        // Function type in LLVM is the signature.
-        // Variables of function type are pointers to functions.
-        type = llvm::PointerType::getUnqual(*TheContext);  // All function values are pointers
-        // Wait, if we return type, do we return FunctionType or PointerType?
-        // getLLVMType returns the type of the VALUE.
-        // A function value is a pointer.
-        // But for declaring functions, we need FunctionType.
-        // Since getLLVMType is used for variable ALLOCATION, we want the pointer type.
-        // Ideally we should cache FunctionType somewhere else if needed.
-        // But llvm_type field on Sym is used for both?
-        // Let's return PointerType (opaque in LLVM 18) for now.
-        // Special case: if we need signature, we re-derive it.
+        // All function values are opaque pointers (LLVM 18). The signature
+        // is re-derived from the IF1 Sym at call sites that need it.
         type = llvm::PointerType::getUnqual(*TheContext);
         break;
       }
-      case Type_REF:  // Explicit pointer types, if they exist in IF1
-        // Assuming unaliased_sym->element holds the pointed-to type
-        if (unaliased_sym->element && unaliased_sym->element->type) {
-          llvm::Type *element_type = getLLVMType(unaliased_sym->element->type);
-          if (element_type) {
-            type = llvm::PointerType::getUnqual(*TheContext);
-          } else {
-            fail("Could not get LLVM type for pointee of REF type %s",
-                 unaliased_sym->name ? unaliased_sym->name : "unnamed_ref");
-            return nullptr;
-          }
-        } else {
-          fail("REF type %s has no element type", unaliased_sym->name ? unaliased_sym->name : "unnamed_ref");
+      case Type_REF:
+        if (!unaliased_sym->element || !unaliased_sym->element->type) {
+          fail("REF type %s has no element type",
+               unaliased_sym->name ? unaliased_sym->name : "unnamed_ref");
           return nullptr;
         }
+        // Opaque pointers in LLVM 18 — we don't carry the pointee type in
+        // the LLVM Type, only at IF1 use sites.
+        type = llvm::PointerType::getUnqual(*TheContext);
         break;
-      // Array/Vector types might be represented as Type_RECORD with is_vector flag
-      // or a dedicated Type_kind. For now, assuming Type_RECORD with is_vector.
-      // This logic is partly in Type_RECORD, but if there's a specific Type_ARRAY or Type_VECTOR:
-      /*
-      case Type_ARRAY: // Or Type_VECTOR
-        if (unaliased_sym->element && unaliased_sym->element->type) {
-          llvm::Type *element_type = getLLVMType(unaliased_sym->element->type);
-          uint64_t num_elements = 0; // IF1 needs a way to specify array size for fixed-size arrays
-                                     // Or it's a dynamic array (slice), often {ptr, len} struct.
-                                     // For LLVM ArrayType, size must be known.
-          if (unaliased_sym->size > 0 && element_type->getPrimitiveSizeInBits() > 0) { // A guess
-             num_elements = unaliased_sym->size / (element_type->getPrimitiveSizeInBits()/8);
-          }
-          if (element_type && num_elements > 0) { // Condition for fixed size array
-            type = llvm::ArrayType::get(element_type, num_elements);
-          } else if (element_type) {
-            // Fallback for dynamic arrays or if size is unknown: treat as pointer to element
-            // Or better, a struct {element_type*, size_type}
-            // For now, pointer to element. This needs refinement.
-            type = llvm::PointerType::getUnqual(element_type);
-            fprintf(stderr, "Warning: Array/Vector type %s without fixed size, mapped to pointer.\\n",
-      unaliased_sym->name); } else { fail("Could not get LLVM type for element of ARRAY/VECTOR type %s",
-      unaliased_sym->name); return nullptr;
-          }
-        } else {
-          fail("ARRAY/VECTOR type %s has no element type", unaliased_sym->name);
-          return nullptr;
-        }
-        break;
-      */
       case Type_SUM:                      // Union or tagged union. LLVM doesn't have direct sum types.
                                           // This needs careful handling. For now, map to largest element or i8 array.
                                           // A common approach is a struct { i8 tag, union_data }
@@ -556,8 +512,8 @@ llvm::Type *getLLVMType(Sym *sym) {
           // Default for SUM: an opaque pointer or a sufficiently large integer/byte array.
           // This is a placeholder and needs a proper strategy for sum types.
           // For now, let's use a pointer to i8 as a very generic type.
-          fprintf(stderr, "Warning: SUM type %s mapped to i8*. Needs proper handling.\\n",
-                  unaliased_sym->name ? unaliased_sym->name : "unnamed_sum");
+          DEBUG_LOG("SUM type %s mapped to i8* (placeholder — needs proper sum handling)\n",
+                    unaliased_sym->name ? unaliased_sym->name : "unnamed_sum");
           type = llvm::PointerType::getUnqual(*TheContext);
         }
         break;
@@ -684,12 +640,12 @@ static std::string unescapeStringLiteral(const char *s) {
   return result;
 }
 
-// Helper to get or create string constants as global variables
+// Helper to get or create string constants as global variables.
+// `string_constants_map` is defined at file scope above and cleared
+// by `llvm_codegen_initialize` — every entry references the prior
+// run's TheContext / TheModule, so caching across calls would be
+// a use-after-free. See AUDIT §4 / CODEGEN_PLAN §3.1.
 static llvm::Constant *getOrCreateLLVMStringConstant(const std::string &str) {
-  // Check if already exists
-  // This simple caching might need to be more robust, e.g., per-module manager
-  static std::map<std::string, llvm::Constant *> string_constants_map;
-
   if (string_constants_map.count(str)) {
     return string_constants_map[str];
   }
@@ -820,14 +776,13 @@ llvm::Constant *getLLVMConstant(Var *var) {
     if (llvm_type->isPointerTy()) {
       return llvm::ConstantPointerNull::get(static_cast<llvm::PointerType *>(llvm_type));
     } else if (llvm_type->isVoidTy()) {
-      // Void type has no value - this should not be used as a constant
-      fprintf(stderr, "Warning: Attempting to create nil constant for void type for var %s. Returning nullptr.\n",
-              sym->name);
+      // Void type has no value — caller is asking for nil-of-void.
+      DEBUG_LOG("nil constant requested for void-typed var %s; returning nullptr\n", sym->name);
       return nullptr;
     } else {
-      // How to represent nil for non-pointer types? Often zero.
-      fprintf(stderr, "Warning: Nil constant for non-pointer type %s for var %s. Using zero.\n",
-              getTypeName(llvm_type).c_str(), sym->name);
+      // Nil for non-pointer types: best-effort zero.
+      DEBUG_LOG("nil constant for non-pointer type %s for var %s; using zero\n",
+                getTypeName(llvm_type).c_str(), sym->name);
       return llvm::Constant::getNullValue(llvm_type);
     }
   }
@@ -863,7 +818,7 @@ static void createGlobalVariables(FA *fa) {
 
     llvm::Type *gvar_llvm_type = getLLVMType(var->type);
     if (!gvar_llvm_type || gvar_llvm_type->isVoidTy()) {
-      fprintf(stderr, "Skipping global var %s due to void or unmappable type\n", sym->name);
+      DEBUG_LOG("Skipping global var %s due to void or unmappable type\n", sym->name);
       continue;
     }
 
@@ -876,8 +831,8 @@ static void createGlobalVariables(FA *fa) {
     }
 
     if (!initializer && !(var->type == sym_string && sym->is_constant && sym->constant)) {
-      // If it's not a string that getOrCreateLLVMStringConstant handles by creating its own GV.
-      fprintf(stderr, "Warning: Global variable %s has no initializer, will be zero-initialized.\n", sym->name);
+      // Not a string handled by getOrCreateLLVMStringConstant — zero-init.
+      DEBUG_LOG("Global variable %s has no initializer; zero-initializing\n", sym->name);
       initializer = llvm::Constant::getNullValue(gvar_llvm_type);
     }
 
@@ -912,8 +867,7 @@ static void createGlobalVariables(FA *fa) {
       }
       var->llvm_value = gvar;  // Store the GlobalVariable itself
     } else {
-      fprintf(stderr, "Warning: Could not create global variable for %s, missing initializer and not string.\n",
-              sym->name);
+      DEBUG_LOG("Could not create global variable for %s; missing initializer and not string\n", sym->name);
       continue;
     }
 
@@ -1174,12 +1128,11 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
     Builder->CreateCall(main_fun->llvm);
   } else {
     // This case should ideally not happen if main_fun is valid and processed
-    fprintf(stderr, "Warning: IF1 main function '%s' not found or generated in LLVM module.\\n", main_fun->sym->name);
+    DEBUG_LOG("IF1 main function '%s' not found or generated in LLVM module\n", main_fun->sym->name);
   }
   Builder->CreateRet(llvm::ConstantInt::get(llvm::Type::getInt32Ty(*TheContext), 0));
 
-  // Finalize DI builder after all IR and debug info is generated
-  if (DBuilder) DBuilder->finalize();
+  // (DBuilder->finalize() is called once below, after module verification.)
 
   // Debug: Check for unterminated blocks before verification
   DEBUG_LOG("Pre-verification check for unterminated blocks:\n");
@@ -1191,9 +1144,11 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
         DEBUG_LOG("Block instructions:\n");
         int idx = 0;
         for (llvm::Instruction &I : BB) {
-          DEBUG_LOG("  [%d] ", idx++);
-          I.print(llvm::errs());
-          fprintf(stderr, "\n");
+          if (ifa_debug) {
+            fprintf(stderr, "DEBUG:   [%d] ", idx++);
+            I.print(llvm::errs());
+            fprintf(stderr, "\n");
+          }
         }
       }
     }
@@ -1263,10 +1218,9 @@ llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun) {
     } else if (llvm::isa<llvm::Argument>(val)) {
       llvm::Function *val_func = llvm::cast<llvm::Argument>(val)->getParent();
       if (val_func != this_func) {
-        fprintf(stderr,
-                "DEBUG: Argument Scope mismatch for var %s (id %d). Val func: %s, Current func: %s. Clearing cache.\n",
-                var->sym->name, var->id, val_func ? val_func->getName().str().c_str() : "null",
-                this_func ? this_func->getName().str().c_str() : "null");
+        DEBUG_LOG("Argument scope mismatch for var %s (id %d): val func %s vs current %s; clearing cache\n",
+                  var->sym->name, var->id, val_func ? val_func->getName().str().c_str() : "null",
+                  this_func ? this_func->getName().str().c_str() : "null");
         scope_mismatch = true;
       }
     }
@@ -1316,7 +1270,8 @@ llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun) {
     if (func) {
       return func;
     }
-    fprintf(stderr, "WARNING: Function %s not found in module\n", var->sym->name ? var->sym->name : "unnamed");
+    DEBUG_LOG("Function %s not found in module; returning nullptr\n",
+              var->sym->name ? var->sym->name : "unnamed");
     return nullptr;
   }
 
@@ -1388,11 +1343,11 @@ llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun) {
       }
 
       if (!tuple_formal_var || !tuple_formal_var->type) {
-        fprintf(stderr, "WARNING: Could not find tuple formal variable for field extraction\n");
+        DEBUG_LOG("Could not find tuple formal variable for field extraction\n");
       } else {
         llvm::Type *tuple_struct_type = getLLVMType(tuple_formal_var->type);
         if (!tuple_struct_type || !tuple_struct_type->isStructTy()) {
-          fprintf(stderr, "WARNING: Tuple formal variable has invalid struct type\n");
+          DEBUG_LOG("Tuple formal variable has invalid struct type\n");
         } else {
           // Use MPosition to determine field index (not sequential counting!)
           // Tuple operators like (a, +, b) have field indices 0, 1, 2, but + is not a formal.
@@ -1413,9 +1368,8 @@ llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun) {
           }
 
           if (formal_idx < 0 || !found_pos) {
-            fprintf(stderr,
-                    "WARNING: Could not find MPosition or field index for var %s (formal_idx=%d, found_pos=%p)\n",
-                    var->sym->name ? var->sym->name : "(null)", formal_idx, (void *)found_pos);
+            DEBUG_LOG("Could not find MPosition or field index for var %s (formal_idx=%d, found_pos=%p)\n",
+                      var->sym->name ? var->sym->name : "(null)", formal_idx, (void *)found_pos);
           } else {
             DEBUG_LOG("Extracting field %d from tuple argument for var %s (MPos.n=%d)\n", formal_idx,
                     var->sym->name ? var->sym->name : "(null)", found_pos->pos.n);
@@ -1434,9 +1388,8 @@ llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun) {
         }
       }
     } else {
-      fprintf(stderr,
-              "WARNING: No tuple argument found for var %s (function has 0 args, likely unspecialized template)\n",
-              var->sym->name ? var->sym->name : "(null)");
+      DEBUG_LOG("No tuple argument found for var %s (function has 0 args, likely unspecialized template)\n",
+                var->sym->name ? var->sym->name : "(null)");
       // Return undef value for unspecialized templates with no arguments
       llvm::Type *var_type = getLLVMType(var->type);
       if (var_type) {
@@ -1483,9 +1436,9 @@ void setLLVMValue(Var *var, llvm::Value *val, Fun *ifa_fun) {
     var->llvm_value = val;
     if (val->getType() != var->llvm_type) {  // Update cached type if different
       if (var->llvm_type) {
-        fprintf(stderr, "Warning: LLVM value type mismatch for var %s. Expected %s, got %s. Updating cache.\n",
-                var->sym && var->sym->name ? var->sym->name : "??", getTypeName(var->llvm_type).c_str(),
-                getTypeName(val->getType()).c_str());
+        DEBUG_LOG("LLVM value type mismatch for var %s: expected %s, got %s; updating cache\n",
+                  var->sym && var->sym->name ? var->sym->name : "??", getTypeName(var->llvm_type).c_str(),
+                  getTypeName(val->getType()).c_str());
       }
       var->llvm_type = val->getType();
     }
@@ -1510,7 +1463,7 @@ void llvm_codegen_write_ir(FA *fa, Fun *main, cchar *input_filename) {
   }
   llvm_codegen_print_ir(fp, fa, main, input_filename);
   fclose(fp);
-  fprintf(stderr, "LLVM IR written to %s\n", fn);
+  DEBUG_LOG("LLVM IR written to %s\n", fn);
 }
 
 int llvm_codegen_compile(cchar *input_filename) {
@@ -1552,7 +1505,7 @@ int llvm_codegen_compile(cchar *input_filename) {
     return res;
   }
 
-  fprintf(stderr, "LLVM IR from %s compiled to %s\n", ll_file, obj_file);
+  DEBUG_LOG("LLVM IR from %s compiled to %s\n", ll_file, obj_file);
 
   // Step 3: Link the object file to create executable
   char exe_file[512];
@@ -1570,6 +1523,6 @@ int llvm_codegen_compile(cchar *input_filename) {
     return res;
   }
 
-  fprintf(stderr, "Executable %s created successfully\n", exe_file);
+  DEBUG_LOG("Executable %s created successfully\n", exe_file);
   return 0;
 }

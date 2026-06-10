@@ -9,7 +9,6 @@
 #include "fun.h"
 #include "if1.h"
 #include "pattern.h"
-#include "pattern.h"
 #include "pdb.h"
 #include "pnode.h"
 #include "prim.h"
@@ -153,6 +152,7 @@ static cchar *num_string(Sym *s) {
       }
       break;
   }
+  fail("num_string: unhandled num_kind %d num_index %d", s->num_kind, s->num_index);
   return 0;
 }
 
@@ -788,7 +788,9 @@ static inline bool homogeneous_tuple(Sym *s) {
   return true;
 }
 
-static int build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
+// Returns nothing; failure paths inside use fail() directly.
+// (Historically returned int; the caller's `< 0` check was dead.)
+static void build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
 // build builtin map
 #define S(_n) if1_get_builtin(fa->pdb->if1, #_n)->cg_string = "_CG_" #_n;
 #include "builtin_symbols.h"
@@ -916,14 +918,13 @@ static int build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
         s->has.n)
       fprintf(fp, "_CG_TUPLE_TO_LIST_FUN(%d, %d);\n", s->id, s->has.n);
   }
-  return 0;
 }
 
 void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
   Vec<Var *> globals;
   int index = 0;
   if (!if1->callback->c_codegen_pre_file(fp)) fprintf(fp, "#include \"c_runtime.h\"\n\n");
-  if (build_type_strings(fp, fa, globals) < 0) fail("unable to generate C code: no unique typing");
+  build_type_strings(fp, fa, globals);
   if (globals.n) {
     fputs("\n/*\n Global Variables\n*/\n\n", fp);
   }
@@ -982,22 +983,28 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
 }
 
 void c_codegen_write_c(FA *fa, Fun *main, cchar *filename) {
-  char fn[512];
-  strcpy(fn, filename);
-  strcat(fn, ".c");
+  char fn[FILENAME_MAX];
+  int n = snprintf(fn, sizeof(fn), "%s.c", filename);
+  if (n < 0 || (size_t)n >= sizeof(fn)) fail("c_codegen_write_c: filename too long: %s", filename);
   FILE *fp = fopen(fn, "w");
+  if (!fp) fail("c_codegen_write_c: unable to open %s for writing", fn);
   c_codegen_print_c(fp, fa, main);
   fclose(fp);
 }
 
 int c_codegen_compile(cchar *filename) {
-  char target[512], s[1024];
-  strcpy(target, filename);
-  *strrchr(target, '.') = 0;
-  snprintf(s, sizeof(s),
-           "make --no-print-directory -f %s/Makefile.cg CG_ROOT=%s CG_TARGET=%s "
-           "CG_FILES=%s.c %s %s",
-           system_dir, system_dir, target, filename, codegen_optimize ? "OPTIMIZE=1" : "",
-           codegen_debug ? "DEBUG=1" : "");
+  char target[FILENAME_MAX];
+  int n = snprintf(target, sizeof(target), "%s", filename);
+  if (n < 0 || (size_t)n >= sizeof(target)) fail("c_codegen_compile: filename too long: %s", filename);
+  char *dot = strrchr(target, '.');
+  if (!dot) fail("c_codegen_compile: filename has no extension: %s", filename);
+  *dot = 0;
+  char s[FILENAME_MAX * 4];
+  int m = snprintf(s, sizeof(s),
+                   "make --no-print-directory -f %s/Makefile.cg CG_ROOT=%s CG_TARGET=%s "
+                   "CG_FILES=%s.c %s %s",
+                   system_dir, system_dir, target, filename, codegen_optimize ? "OPTIMIZE=1" : "",
+                   codegen_debug ? "DEBUG=1" : "");
+  if (m < 0 || (size_t)m >= sizeof(s)) fail("c_codegen_compile: command line too long");
   return system(s);
 }

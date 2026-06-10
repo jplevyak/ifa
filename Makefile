@@ -183,7 +183,7 @@ ifa-test: $(IFA_TEST_OBJS) $(LIBRARY)
 $(LIBRARY): $(LIB_OBJS) $(PLIB_OBJS)
 	$(AR) $(AR_FLAGS) $@ $^
 
-$(MAKE_PRIMS): codegen/make_prims.cc
+$(MAKE_PRIMS): tools/make_prims.cc
 	$(CXX) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
 
 $(MAKE_CAST_CODE): if1/make_cast_code.cc

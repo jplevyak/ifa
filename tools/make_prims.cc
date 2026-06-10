@@ -1,3 +1,11 @@
+// make_prims — build-time tool.
+//
+// Reads `prim_data.dat` (the IF1 primitive table) and writes
+// `prim_data.cc` + `prim_data.h`. Invoked from the Makefile; the
+// resulting generated source is then compiled into the IFA library.
+// Not part of the runtime codegen — moved out of `codegen/` so the
+// directory holds only runtime emission code. See AUDIT §11 /
+// CODEGEN_PLAN §3.3.
 
 #include <stdio.h>
 #include <stdlib.h>
