@@ -675,7 +675,81 @@ the inliner buys back the runtime overhead.
 
 ---
 
-## 14. Symptom → start-here
+## 14. Backend coverage matrix
+
+The single dashboard for "which primitives does each backend handle, and which have pinpoint fixtures?" Update this alongside any change to `cg.cc:write_c_prim` or `llvm_primitives.cc:write_llvm_prim`. See
+[codegen/AUDIT.md §3](codegen/AUDIT.md) for the backend-gap discussion, and
+[codegen/CODEGEN_PLAN.md](codegen/CODEGEN_PLAN.md) §6 (phase 3) for the
+order of LLVM-side primitive implementation work.
+
+Status legend:
+- ✓ — implemented.
+- ⚠ — implemented but with known caveats (see notes column).
+- ✗ — not implemented.
+- — — not applicable (e.g., arithmetic primitives don't have a single
+  "fixture" but are covered by the binary-op switch).
+
+| Primitive | C backend | LLVM backend | Pinpoint fixture | Notes |
+|---|---|---|---|---|
+| `prim_reply` | ✓ `cg.cc:189` | ✓ `llvm_primitives.cc:589` | `01_baseline.ir` (both) | Function return. |
+| `prim_make` (tuple/list) | ✓ `cg.cc:193` | ⚠ `llvm_primitives.cc:355` | — | LLVM uses `malloc`, should use GC allocator. |
+| `prim_period` (getter) | ✓ `cg.cc:222` | ⚠ `llvm_primitives.cc:429` | `04_getter.ir` (C only) | LLVM `fail`s on non-pointer obj_val (see attempted `codegen-llvm/06_getter.ir`). |
+| `prim_setter` | ✓ `cg.cc:262` (issue 011) | ✗ | `03_setter.ir` (C), `05_setter.ir` (LLVM, framework only) | LLVM doesn't emit the store; phase 3 target. |
+| `prim_apply` | ✓ `cg.cc:293` (asserts unimplemented) | ✗ | — | Closure apply. Asserted-unimplemented in C, missing in LLVM. |
+| `prim_index_object` | ✓ `cg.cc:320` | ✗ | — | `a[i]`. Phase 3 target on LLVM. |
+| `prim_set_index_object` | ✓ `cg.cc:353` | ✗ | — | `a[i] = v`. Phase 3 target on LLVM. |
+| `prim_new` | ✓ `cg.cc:379` | ✗ | (used in 03/04/05/06 C fixtures + LLVM fixtures) | Fresh instance. Phase 3 target on LLVM. |
+| `prim_assign` | ✓ `cg.cc:386` | ✗ | — | Ref assignment. Phase 3 target on LLVM. |
+| `prim_len` | ✓ `cg.cc:392` | ✗ | — | `len(obj)`. Phase 3 target on LLVM. |
+| `prim_clone` | ✓ `cg.cc:404` | ✗ | `05_clone.ir` (C), `07_clone.ir` (LLVM, framework only) | LLVM doesn't emit clone call; phase 3 target. |
+| `prim_clone_vector` | ✓ `cg.cc:404` | ✗ | — | Same path as `prim_clone`. |
+| `prim_sizeof` | ✓ `cg.cc:420` | ✗ | — | Constant emission. Phase 3 target on LLVM. |
+| `prim_sizeof_element` | ✓ `cg.cc:433` | ✗ | — | Same. |
+| `prim_destruct` | ✓ `cg.cc:486` | ✗ | — | Tuple unpacking. Phase 3 target on LLVM. |
+| `prim_primitive` (registered dispatch) | ✓ `cg.cc:452` (via `RegisteredPrim->cgfn`) | ⚠ `llvm_primitives.cc:493` (print/println hardcoded only) | — | LLVM has no `RegisteredPrim` LLVM-side hook. Phase 3 §3.2. |
+| `prim_operator` | — | ⚠ `llvm_primitives.cc:230` (hardcoded `"Output: %d\n"` printf) | — | The LLVM branch looks like a debug placeholder; phase 3 §3.4. |
+| Arithmetic / comparison / logical (`prim_add`, `prim_mult`, `prim_less`, ...) | ✓ via runtime helpers (`cg.cc` registered prims) | ✓ `llvm_primitives.cc:255-354` (one switch) | — | Signed-only on LLVM; unsigned variants missing. |
+| Type-side primitives (`prim_isinstance`, `prim_issubclass`, `prim_typeof`, `prim_meta_apply`, `prim_coerce`, `prim_merge`, `prim_merge_in`, `prim_type_assert`) | ✓ via runtime helpers | ✗ | — | Pyc routes through `prim_primitive`; needs the LLVM-side `RegisteredPrim` hook from phase 3 §3.2. |
+
+### Known LLVM-backend gaps surfaced by phase 1 fixturing
+
+While creating the codegen-llvm parallels (CODEGEN_PLAN phase 1.2),
+two LLVM-side bugs surfaced and are filed for phase 3:
+
+- `(send @operator obj @period #field => r)` after a setter on a
+  freshly-`@new`'d record — `getLLVMValue(obj_var)` returns a
+  non-pointer and `P_prim_period` `fail`s. Tried as
+  `codegen-llvm/06_getter.ir`; dropped.
+- Minimal record-only fixture with no constants and no setter
+  (`@new + move`) crashes the LLVM backend with SIGTRAP during
+  printer teardown. Tried as `codegen-llvm/08_sum_type.ir`;
+  dropped. The C-side equivalent `codegen-c/06_sum_type.ir`
+  works fine.
+
+### Notes on the codegen-c pinpoint fixtures
+
+The codegen-c fixtures (`03_setter.ir`, `04_getter.ir`, `05_clone.ir`,
+`06_sum_type.ir`) all currently produce goldens of `bytes=338` —
+identical-modulo-fn-id to `01_baseline.ir`. The reason: the synthesized
+`__main__` wrapper in `fa_setup_environment` doesn't observe top's
+return, so DCE elides every primitive operation whose result only flows
+to top's return. The fixtures still:
+
+- Document the `.ir` DSL spelling for each primitive (input).
+- Detect regressions in the framework-level emission (function naming,
+  prototype emission, etc.).
+- Serve as templates for when a future "preserve" mode (a CODEGEN_PLAN
+  phase 4 target) makes operations observable.
+
+The codegen-llvm parallels have richer goldens (3885-4926 bytes) because
+the LLVM backend emits `alloca` instructions and struct type
+definitions regardless of DCE — so the type-emission paths ARE locked
+in by those goldens. See `tests/ir/codegen-llvm/05_setter.ir.codegen-llvm.expected`
+vs `01_baseline.ir.codegen-llvm.expected` for the difference.
+
+---
+
+## 15. Symptom → start-here
 
 | Symptom | Start here |
 |---|---|
@@ -690,7 +764,7 @@ the inliner buys back the runtime overhead.
 
 ---
 
-## 15. References
+## 16. References
 
 - `ifa/if1/prim.cc` + `prim.h` — `Prim`, `Primitives`,
   `RegisteredPrim`, `prim_reg`, `prim_get`.

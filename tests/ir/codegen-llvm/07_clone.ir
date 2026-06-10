@@ -1,0 +1,32 @@
+;; 05_clone.ir — pinpoint the P_prim_clone codegen path.
+;;
+;; Allocates a %Point via @new, sets a field, then clones the
+;; instance. Exercises cg.cc:404-419:
+;;   (T)_CG_prim_clone(proto)
+;; The codegen path differs from @new in that it uses the existing
+;; instance as the prototype rather than creating from the type.
+;;
+;; Note: DCE may elide the operations. This fixture documents the
+;; .ir spelling `(send @primitive @clone <proto> => obj)` and
+;; locks in framework-level emission.
+
+(type %Point :kind RECORD :has (%px))
+(sym %px :in %Point)
+
+(sym %k :is-constant :immediate (int32 7))
+
+(sym %p :is-local)
+(sym %s :is-local)
+(sym %c :is-local)
+(sym %r :is-local)
+(sym %tcont)
+(fun %top
+  :rets (%r)
+  :cont %tcont
+  :body
+    (send @primitive @new %Point => %p)
+    (send @operator %p @setter #px %k => %s)
+    (send @primitive @clone %p => %c)
+    (move %c %r))
+
+(entry %top)
