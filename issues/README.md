@@ -121,15 +121,15 @@ that:
   rename touches ~1000+ Vec consumer sites and benefits from
   separate review.
 - [011-setter-codegen-vs-analyzer-mismatch.md](011-setter-codegen-vs-analyzer-mismatch.md) —
-  **Open.** P_prim_setter has an analyzer/codegen disagreement:
-  `fa.cc:1781` flows `val` into the lvalue (val's type), but
-  `cg.cc:277` emits the assignment using the receiver. C
-  rejects the resulting type mismatch. Surfaced by
-  `dict_methods.py` once the build_type_marks traversal-cap
-  fix (`d37fec5`) stopped the IFA hang. `cross_type_method.py`
-  was incidentally exploiting the same bug for its
-  `.expect_fail` status, so any fix needs to handle both
-  cases (options A/B/C in the issue).
+  **Closed June 2026 (Option A landed).** P_prim_setter
+  codegen now emits val (rvals[4]) cast through lvals[0]'s
+  type, matching the analyzer's `flow_vars(val, result)`.
+  `tests/cross_type_method.py.expect_fail` replaced with
+  `.check` capturing the analyzer warnings (test now passes
+  compile-only). `tests/dict_methods.py.ignore` kept until
+  the dict-instance-state-sharing runtime issue is addressed
+  separately. Option C (explicit cross-type-setter analyzer
+  check) remains as future work.
   Side observation: issue 008 stopped reproducing in 40 runs
   post-fix (cause unclear, separate investigation).
 

@@ -273,8 +273,16 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         if (symbol == obj->has[i]->name) {
           fprintf(fp, "  ((%s)%s)->e%d = (%s)%s;\n", obj->cg_string, n->rvals[1]->cg_string, i, c_type(obj->has[i]),
                   c_rhs(n->rvals.v[4]));
+          // P_prim_setter's analyzer (fa.cc:1781) flows val
+          // (rvals[4]) into the lvalue — the lvalue carries
+          // val's type, matching Python's chained-assignment
+          // semantics where `obj.attr = val` evaluates to val.
+          // Emit the matching assignment when the lvalue is
+          // live; cast through lvals[0]'s declared type so the
+          // C compiler accepts the move. See issue 011.
           if (n->lvals[0]->live)
-            fprintf(fp, "  %s = ((%s)%s);\n", n->lvals[0]->cg_string, obj->cg_string, n->rvals[1]->cg_string);
+            fprintf(fp, "  %s = (%s)%s;\n", n->lvals[0]->cg_string, c_type(n->lvals[0]),
+                    c_rhs(n->rvals.v[4]));
           goto Lsetter_found;
         }
       }
