@@ -3001,7 +3001,10 @@ static void collect_type_confluences(Vec<AVar *> &confluences) {
   confluences.set_to_vec();
   qsort_by_id(confluences);
   for (AVar *x : confluences) {
-      log(LOG_SPLITTING, "type confluence %s %d ", x->var->sym->name ? x->var->sym->name : "", x->var->sym->id);
+      cchar *contour_tag = x->contour_is_entry_set ? "ES" : "CS";
+      cchar *role_tag = x->is_lvalue ? "lval" : (x->var->is_formal ? "formal" : "other");
+      log(LOG_SPLITTING, "[confluence] av %d %s [%s/%s] ", x->id,
+          x->var->sym->name ? x->var->sym->name : "(anon)", contour_tag, role_tag);
       for (CreationSet *cs : x->in->sorted) {
         if (cs->sym)
            log(LOG_SPLITTING, "%s ", cs->sym->name ? cs->sym->name : "");
@@ -3103,7 +3106,10 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
 
 [[nodiscard]] static int split_entry_set(AVar *av, int fsetters, int fmark, int fdynamic) {
   EntrySet *es = (EntrySet *)av->contour;
-  if (es->split) return 0;
+  if (es->split) {
+    log(LOG_SPLITTING, "[ses] av %d es %d short-circuit: es->split set\n", av->id, es->id);
+    return 0;
+  }
   if (fdynamic)
     if (split_edges(av, fsetters, fmark)) return 1;
   Vec<AEdge *> all_edges, do_edges, stay_edges;
@@ -3144,7 +3150,13 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
     else
       do_edges.add(e);
   }
-  if (non_rec_edges == 1 && nedges != do_edges.n) return 0;
+  log(LOG_SPLITTING, "[ses] av %d es %d %s%s nedges=%d non_rec=%d do=%d stay=%d\n",
+      av->id, es->id, fsetters ? "setters " : "", fmark ? "marks " : "",
+      nedges, non_rec_edges, do_edges.n, stay_edges.n);
+  if (non_rec_edges == 1 && nedges != do_edges.n) {
+    log(LOG_SPLITTING, "[ses] av %d es %d short-circuit: non_rec_edges==1 && nedges!=do_edges.n\n", av->id, es->id);
+    return 0;
+  }
   int split = 0;
   while (do_edges.n) {
     Vec<AEdge *> these_edges, next_edges;
@@ -3162,7 +3174,10 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
       else
         next_edges.add(ee);
     }
-    if (!next_edges.n && !stay_edges.n) return split;
+    if (!next_edges.n && !stay_edges.n) {
+      log(LOG_SPLITTING, "[ses] av %d es %d short-circuit: single group exhausted (split=%d)\n", av->id, es->id, split);
+      return split;
+    }
     for (AEdge *x : these_edges) {
       x->to = 0;
       x->filtered_args.clear();
@@ -3187,7 +3202,14 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
 static void build_type_mark(AVar *av, CreationSet *cs, int mark = 1) {
   int m = av->mark_map ? av->mark_map->get(cs) : 0;
   if (!m) {
-    if (!av->out->type->set_in(cs)) return;
+    if (!av->out->type->set_in(cs)) {
+      log(LOG_SPLITTING, "[btm] av %d skip: cs %d (sym %s) not in out->type (size=%d)\n",
+          av->id, cs->id, cs->sym && cs->sym->name ? cs->sym->name : "(anon)",
+          av->out->type->set_count());
+      return;
+    }
+    log(LOG_SPLITTING, "[btm] av %d MARK cs %d (sym %s) dist=%d\n",
+        av->id, cs->id, cs->sym && cs->sym->name ? cs->sym->name : "(anon)", mark);
     if (!av->mark_map) av->mark_map = new MarkMap;
     av->mark_map->put(cs, mark);
   } else if (m > mark)
@@ -3201,14 +3223,29 @@ static void build_type_mark(AVar *av, CreationSet *cs, int mark = 1) {
 // AVar generating the value.  Dataflow is considered to be only
 // from lower to higher distances for the purpose of splitting.
 static void build_type_marks(AVar *av, Accum<AVar *> &acc) {
-  // collect all contributing nodes
+  // collect all contributing nodes — index-based so adds appended
+  // to acc.asvec during iteration are visited (transitive closure).
+  // The range-for over `acc.asvec` captures end() at loop entry and
+  // only walks the 1-hop neighborhood — see issue 007 for the
+  // finding that this was a long-standing one-level cap.
   acc.add(av);
-  for (AVar *x : acc.asvec) for (AVar *y : x->backward) if (y) acc.add(y);
-  for (AVar *x : acc.asvec) for (AVar *y : x->forward) if (y) acc.add(y);
+  for (int i = 0; i < acc.asvec.n; i++) {
+    AVar *x = acc.asvec.v[i];
+    for (AVar *y : x->backward) if (y) acc.add(y);
+  }
+  for (int i = 0; i < acc.asvec.n; i++) {
+    AVar *x = acc.asvec.v[i];
+    for (AVar *y : x->forward) if (y) acc.add(y);
+  }
   // mark them
   for (AVar *x : acc.asvec) {
     if (x->gen) for (CreationSet *s : *x->gen) if (s && s->sym != sym_nil_type) {
+        CreationSet *orig = s;
         if (s->sym != s->sym->type) s = s->sym->type->abstract_type->v[0];
+        log(LOG_SPLITTING, "[btm-seed] av %d gen-cs %d (sym %s) -> mark-cs %d (sym %s) %s\n",
+            x->id, orig->id, orig->sym && orig->sym->name ? orig->sym->name : "(anon)",
+            s->id, s->sym && s->sym->name ? s->sym->name : "(anon)",
+            orig == s ? "no-subst" : "SUBST");
         build_type_mark(x, s);
       }
   }
@@ -3535,21 +3572,51 @@ static void collect_setter_confluences(Accum<AVar *> &avs, Vec<AVar *> &setter_c
 [[nodiscard]] static int split_with_type_marks(AVar *av, int fdynamic) {
   Accum<AVar *> acc;
   build_type_marks(av, acc);
+  // Diagnostic: count closure size, mark-seed candidates (gen != null), and
+  // how many AVars actually got a mark_map populated.
+  int closure_marked = 0, closure_with_gen = 0, closure_gen_nonempty = 0;
+  for (AVar *x : acc.asvec) if (x) {
+    if (x->mark_map) closure_marked++;
+    if (x->gen) {
+      closure_with_gen++;
+      if (x->gen->n) closure_gen_nonempty++;
+    }
+  }
+  log(LOG_SPLITTING, "[stage2-marks] av %d closure=%d with_gen=%d gen_nonempty=%d marked=%d\n",
+      av->id, acc.asvec.n, closure_with_gen, closure_gen_nonempty, closure_marked);
+  for (AVar *x : acc.asvec) if (x) {
+    log(LOG_SPLITTING, "[stage2-marks]   closure-member av %d %s gen=%d out-type=%d\n",
+        x->id, x->var && x->var->sym && x->var->sym->name ? x->var->sym->name : "(anon)",
+        x->gen ? x->gen->set_count() : -1,
+        x->out && x->out->type ? x->out->type->set_count() : -1);
+  }
   Vec<AVar *> confluences;
   collect_es_marked_confluences(confluences, acc, SPLIT_TYPE);
+  log(LOG_SPLITTING, "[stage2-marks] av %d marked-confluences=%d\n",
+      av->id, confluences.set_count());
   int analyze_again = 0;
-  for (AVar *av : confluences) {
-    if (av->contour_is_entry_set) {
-      if (!av->is_lvalue) {
-        if (av->var->is_formal) {
-          if (split_entry_set(av, SPLIT_TYPE, SPLIT_MARK, fdynamic)) analyze_again = 1;
+  for (AVar *cav : confluences) {
+    if (cav->contour_is_entry_set) {
+      if (!cav->is_lvalue) {
+        if (cav->var->is_formal) {
+          int r = split_entry_set(cav, SPLIT_TYPE, SPLIT_MARK, fdynamic);
+          log(LOG_SPLITTING, "[stage2-marks]   marked-conf av %d ES/formal split_entry_set -> %d\n", cav->id, r);
+          if (r) analyze_again = 1;
+        } else {
+          log(LOG_SPLITTING, "[stage2-marks]   marked-conf av %d ES/non-formal-rval skipped\n", cav->id);
         }
       } else {
-        AVar *aav = unique_AVar(av->var, av->contour);
+        AVar *aav = unique_AVar(cav->var, cav->contour);
         if (is_return_value(aav)) {
-          if (split_entry_set(aav, SPLIT_TYPE, SPLIT_MARK, fdynamic)) analyze_again = 1;
+          int r = split_entry_set(aav, SPLIT_TYPE, SPLIT_MARK, fdynamic);
+          log(LOG_SPLITTING, "[stage2-marks]   marked-conf av %d ES/return split_entry_set -> %d\n", cav->id, r);
+          if (r) analyze_again = 1;
+        } else {
+          log(LOG_SPLITTING, "[stage2-marks]   marked-conf av %d ES/lval-non-return skipped\n", cav->id);
         }
       }
+    } else {
+      log(LOG_SPLITTING, "[stage2-marks]   marked-conf av %d CS-contour skipped\n", cav->id);
     }
   }
   clear_marks(acc);
@@ -3589,11 +3656,25 @@ static void collect_cs_setter_confluences(Vec<AVar *> &setters_confluences) {
   for (AVar *av : imprecisions) {
     if (av->contour_is_entry_set) {
       if (!av->is_lvalue) {
-        if (av->var->is_formal) analyze_again |= split_entry_set(av, SPLIT_TYPE, SPLIT_VALUE, fdynamic);
+        if (av->var->is_formal) {
+          int r = split_entry_set(av, SPLIT_TYPE, SPLIT_VALUE, fdynamic);
+          log(LOG_SPLITTING, "[stage1] av %d ES/formal split_entry_set -> %d\n", av->id, r);
+          analyze_again |= r;
+        } else {
+          log(LOG_SPLITTING, "[stage1] av %d ES/non-formal-rval skipped\n", av->id);
+        }
       } else {
         AVar *aav = unique_AVar(av->var, av->contour);
-        if (is_return_value(aav)) analyze_again |= split_entry_set(aav, SPLIT_TYPE, SPLIT_VALUE, fdynamic);
+        if (is_return_value(aav)) {
+          int r = split_entry_set(aav, SPLIT_TYPE, SPLIT_VALUE, fdynamic);
+          log(LOG_SPLITTING, "[stage1] av %d ES/return split_entry_set -> %d\n", av->id, r);
+          analyze_again |= r;
+        } else {
+          log(LOG_SPLITTING, "[stage1] av %d ES/lval-non-return skipped\n", av->id);
+        }
       }
+    } else {
+      log(LOG_SPLITTING, "[stage1] av %d CS-contour skipped (passes to stage2)\n", av->id);
     }
   }
   return analyze_again;
@@ -3602,10 +3683,19 @@ static void collect_cs_setter_confluences(Vec<AVar *> &setters_confluences) {
 [[nodiscard]] static int split_ess_for_mark_type(Vec<AVar *> &confluences) {
   int analyze_again = 0;
   // a) first those where the confluence is NOT at an instance variable
-  for (AVar *av : confluences) if (av->contour_is_entry_set) analyze_again |= split_with_type_marks(av, SPLIT_EDGES);
+  for (AVar *av : confluences) if (av->contour_is_entry_set) {
+    int r = split_with_type_marks(av, SPLIT_EDGES);
+    log(LOG_SPLITTING, "[stage2-marks] (ES-contour) av %d split_with_type_marks -> %d\n", av->id, r);
+    analyze_again |= r;
+  }
   // b) then those where the confluence is at an instance variable
-  if (!analyze_again)
-    for (AVar *av : confluences) if (!av->contour_is_entry_set) analyze_again |= split_with_type_marks(av, SPLIT_EDGES);
+  if (!analyze_again) {
+    for (AVar *av : confluences) if (!av->contour_is_entry_set) {
+      int r = split_with_type_marks(av, SPLIT_EDGES);
+      log(LOG_SPLITTING, "[stage2-marks] (CS-contour) av %d split_with_type_marks -> %d\n", av->id, r);
+      analyze_again |= r;
+    }
+  }
   return analyze_again;
 }
 

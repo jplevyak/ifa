@@ -162,6 +162,8 @@ static void usage(FILE *fp) {
       "  --keep                keep tests/ir/build/ outputs after run\n"
       "  --bail                stop at first failure\n"
       "  --fixtures-root DIR   fixture root (default: tests/ir)\n"
+      "  --log-flags CHARS     enable IFA log channels (e.g. 's' for splitting);\n"
+      "                        output goes to ./log/log.<char>\n"
       "  -v / --verbose        show every pass result, not just failures\n"
       "  -h / --help           this help\n"
       "\n"
@@ -192,6 +194,10 @@ static int parse_args(int argc, char **argv) {
       opt_keep = 1;
     } else if (!strcmp(a, "--bail")) {
       opt_bail = 1;
+    } else if (!strcmp(a, "--log-flags")) {
+      cchar *v = need_val(); if (!v) return -1;
+      for (cchar *c = v; *c; c++) log_tag[(unsigned char)*c]++;
+      init_logs();
     } else if (!strcmp(a, "-v") || !strcmp(a, "--verbose")) {
       opt_verbose = 1;
     } else if (!strcmp(a, "-h") || !strcmp(a, "--help")) {

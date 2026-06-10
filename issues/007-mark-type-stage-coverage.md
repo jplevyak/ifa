@@ -412,3 +412,116 @@ were all on the polymorphic-call axis; option 1 explores the
 recursion axis, which is the one IFA.md §6.2 attributes to
 mark-type. If it also fails, option 2 is the principled next
 step.
+
+## Follow-up — June 2026: diagnostics + traversal-cap fix
+
+Verification-plan step 1 (per-pass splitter diagnostics) and a
+fix to `build_type_marks`'s closure traversal landed June 2026.
+Empirical findings against all 17 fa-converge fixtures:
+
+### What `--log-flags s` reveals
+
+Added `LOG_SPLITTING` enrichments at every splitter decision
+point in `fa.cc` (`[confluence]`, `[stage1]`, `[ses]`,
+`[stage2-marks]`, `[btm-seed]`, `[btm]`) and a `--log-flags`
+option on `ifa-test`. Output lands at `log/log.s` and is the
+single source of truth for which splitter conditions short-
+circuit on which AVar in which pass.
+
+### The 2-hop traversal cap
+
+`build_type_marks` had `for (AVar *x : acc.asvec)` walking
+backward then forward of the starting AVar. The range-for
+captures `end()` at loop entry, so `acc.add(y)` calls during
+iteration appended elements never visited. Effective reach:
+1 hop back from `av`, then 1 hop forward from each of those.
+The comment "collect all contributing nodes" was aspirational;
+the loop never did transitive closure.
+
+Concrete impact: for `same_type_dispatch_2`'s `av33` (the
+polymorphic `data` field), the closure had 5 AVars and zero of
+them had `gen` set — the literal-constant AVars (the only ones
+with non-null `gen`) were further upstream and never reached.
+`build_type_marks` produced zero marks across every fixture.
+
+Fix (one line): index-based loop reading `acc.asvec.n` per
+iteration. With the fix, `av33`'s closure is now 13 AVars, the
+int32 and float64 generators are reached, and both keys mark
+through to `av33` at dist=5. All 17 fa-converge goldens
+remained byte-identical after the change — the analysis result
+didn't shift because the resulting marked-confluences land
+where stage 2's qualifier rejects them (next finding).
+
+### The qualifier mismatch (next blocker)
+
+With marks now propagating, `collect_es_marked_confluences`
+finds 1 marked-confluence per stage-2 invocation in most
+fixtures. But the qualifier in `split_with_type_marks`
+requires the marked-confluence to be ES-contour AND
+(`is_formal` OR `is_return_value`):
+
+```cpp
+if (cav->contour_is_entry_set) {
+  if (!cav->is_lvalue) {
+    if (cav->var->is_formal) { split_entry_set(...); }
+  } else {
+    if (is_return_value(aav)) { split_entry_set(...); }
+  }
+}
+```
+
+Across all 17 fixtures, the marked-confluences land on either:
+
+- **CS-contour fields** (e.g., `same_type_dispatch_2`'s
+  `av33 = T.data`) — the polymorphic merge happens at the
+  record field, not at a function boundary.
+- **ES-contour non-formal locals** (e.g., `vector_iterator`'s
+  `av63 = elt` returned from `vec_get`).
+
+Neither qualifies for stage 2's split action. Mark-type
+returns 0 on every call.
+
+### Why current shapes don't produce ES-formal marked-confluences
+
+`collect_es_marked_confluences` adds `av` to the result when
+`av->backward` includes some `x` such that
+`different_marked_args(x, av, 1)` returns 1. With basis=0
+(the call-site default), this fires when `av` has a mark key
+that `x` doesn't continue at the expected distance — i.e.,
+`av` aggregates marks from multiple sources where no single
+source covers all keys.
+
+That pattern arises naturally at fields and merge points
+(av33 receives both int32 and float64 writes from distinct
+setter sites). It does NOT arise at formals AFTER stage 1's
+split — because each split copy's formal sees a single
+incoming type from its single split call-edge group. Stage 1
+has already absorbed the formal-level polymorphism by the
+time stage 2 runs.
+
+For mark-type to fire, we'd need a shape where:
+- Stage 1's `split_entry_set` returns 0 (it short-circuits on,
+  e.g., `non_rec_edges == 1 && nedges != do_edges.n`), AND
+- The unsplit formal accumulates marks from multiple sources
+  whose key-sets are disjoint, AND
+- Those sources are visible in the formal's `backward` at the
+  time stage 2 runs.
+
+The combination is specifically: a recursive function called
+from a SINGLE polymorphic site where stage 1's short-circuit
+prevents the per-call split. The recursive edges (compatible
+with the unsplit ES) coexist with one new-type non-recursive
+edge → stage 1 short-circuits → stage 2 takes over with mark
+distances distinguishing the recursion paths.
+
+This is the precise shape to try as the next experiment.
+
+### Status
+
+3 of 7 splitter stages reached (type / setter / violation).
+4 remain uncovered (mark-type / setter-of-setter /
+mark-setter / mark-setter-of-setter). The traversal cap was a
+real bug masking the diagnostic; with it fixed, the next
+blocker is now precisely localized to `split_with_type_marks`'s
+ES-formal/return qualifier. A targeted recursive-single-site
+shape is the next experiment.
