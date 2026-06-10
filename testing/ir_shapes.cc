@@ -458,6 +458,50 @@ void stored_fn_dispatch(const ParamMap &m) {
   if1->top = top;
 }
 
+void mark_recursive_single_site(const ParamMap & /*m*/) {
+  // Record T with a polymorphic `data` field.
+  Sym *T = RecordBuilder("T").field("data").build();
+
+  // Symbol used at the recursive dispatch site.
+  Sym *walk_sym = if1_make_symbol(if1, "walk");
+
+  // walk(self: T) → reads self.data, recursively dispatches walk
+  // via the symbol on its own receiver. Single-site invocation
+  // from main below; the recursive backward edge re-enters the
+  // formal at a different mark distance than main's direct edge.
+  ClosureBuilder walk_cb("walk_impl");
+  Sym *walk_self = walk_cb.method("walk", T);
+  Sym *walk = walk_cb.body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+    Sym *v = ir::get_field(cb, walk_self, "data", "v");
+    // Recursive dispatch on self via the "walk" symbol. The
+    // recursive backward edge re-enters walk_self at a
+    // different mark distance than main's direct edge.
+    cb.send_method(walk_sym, walk_self, {});
+    // Return the read field so v qualifies as is_return_value
+    // (the second branch of stage 2's qualifier).
+    cb.move(v, ret);
+    cb.reply(cont, ret);
+  });
+  (void)walk;
+
+  // Main: TWO T allocations, each with one polymorphic data
+  // write (int into t1, float into t2). Two call sites to walk
+  // — stage 1 fires on pass 0 to split walk per CS; on
+  // subsequent passes, the recursive backward edge at walk's
+  // formal coexists with the (now-split) direct main edge.
+  Sym *top = ClosureBuilder("top")
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        Sym *t1 = ir::new_instance(cb, T);
+        ir::set_field(cb, t1, "data", ir::const_int32(42));
+        Sym *t2 = ir::new_instance(cb, T);
+        ir::set_field(cb, t2, "data", ir::const_float64(2.5));
+        cb.send_method(walk_sym, t1, {});
+        cb.send_method(walk_sym, t2, {});
+        cb.reply(cont, ret);
+      });
+  if1->top = top;
+}
+
 void polymorphic_formal(const ParamMap &m) {
   int n_types = param(m, "n_types", 2);
   int n_per_type = param(m, "n_per_type", 1);
@@ -524,6 +568,7 @@ static Entry kRegistry[] = {
     {"iterator_copy", iterator_copy},
     {"iterator_missing_field", iterator_missing_field},
     {"nested_iterator", nested_iterator},
+    {"mark_recursive_single_site", mark_recursive_single_site},
     {nullptr, nullptr},
 };
 

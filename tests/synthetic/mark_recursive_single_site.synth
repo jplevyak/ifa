@@ -1,0 +1,16 @@
+;; mark_recursive_single_site.synth — recursive single-site
+;; polymorphism targeting mark-type per 007 follow-up.
+;;
+;; Record T with a `data` field; two writes (int32 + float64)
+;; to ONE T instance make the field CS-contour polymorphic.
+;; walk(self: T) reads self.data and recursively dispatches
+;; "walk" on itself. Main: single call site to walk(t).
+;;
+;; With the build_type_marks traversal fix, the polymorphic
+;; field's marks propagate into walk's closure. The recursive
+;; call edge re-enters walk's formal at a different mark
+;; distance than main's direct edge. The hypothesis is that
+;; stage 2 finds an ES-formal marked-confluence and splits via
+;; mark-type. Golden documents what actually fires.
+
+shape: mark_recursive_single_site

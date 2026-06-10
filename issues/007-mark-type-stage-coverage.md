@@ -516,12 +516,99 @@ distances distinguishing the recursion paths.
 
 This is the precise shape to try as the next experiment.
 
+### Recursive-shape experiment (June 2026)
+
+Added `mark_recursive_single_site` to `ifa/testing/ir_shapes.cc`:
+record T with polymorphic `data` field, recursive method
+`walk(self)` that reads `self.data` and recursively dispatches
+`walk` on self, returning the read value. Two call sites from
+main with distinct-typed t1/t2 to force stage 1 to fire.
+
+Result: 1 pass, `splits[type]: 1`. Stage 1 splits walk per-CS
+at the formal. **Mark-type still doesn't fire.** Stage 2's
+closure on the polymorphic field is now 15 AVars (with the
+traversal fix); 15 are marked; one marked-confluence is found
+— but it's again CS-contour (the anonymous merge), skipped by
+the qualifier.
+
+The closure includes `v` (the local read of `self.data`, an
+ES-contour return value) and the recursive ES's locals. None
+of them are marked-confluences because each has only ONE
+backward source carrying both mark keys — no disjunction, no
+confluence.
+
+### Why ES-formal/return marked-confluences don't arise
+
+`collect_es_marked_confluences` adds `av` when some backward
+predecessor `x` has a mark-key set that DIFFERS from `av`'s
+(via `different_marked_args(x, av, 1)`). This fires at MERGE
+points where multiple sources contribute DISJOINT subsets of
+keys.
+
+In current shapes the merge points are CS-contour fields:
+multiple sequential writes (`set_field(t, "data", int_const)`
+then `set_field(t, "data", float_const)`) create distinct
+backward AVars at the field — one per write — each carrying a
+disjoint key set. Hence the CS-contour field becomes a marked-
+confluence.
+
+ES-contour formals/returns DON'T naturally merge with disjoint
+keys:
+- After stage 1's split, each split copy's formal has ONE
+  backward edge (or recursive edges carrying the same CS).
+- A return value receives from `move(v, ret)`; its backward is
+  a single AVar (v), which carries all the keys it inherited
+  from the merged field.
+- Polymorphism enters the function via the formal as a single
+  CS; flows through field reads (which carry all keys); exits
+  via the return (single key set).
+
+For an ES-formal to be a marked-confluence, we'd need stage 1
+to NOT split a polymorphic call (so multiple backward edges
+with disjoint key sets remain). Stage 1's short-circuit
+condition `non_rec_edges == 1 && nedges != do_edges.n`
+requires the non-recursive edge to be incompatible with the
+ES — which only happens if the ES's current type-expectation
+differs from the non-rec arg, and that gap evolves DURING the
+analysis (via transformation in the recursion path). No source-
+level primitive in `ir_shapes` constructs this transformation.
+
+### Final structural finding
+
+**Two compounding structural blockers prevent mark-type from
+firing on any current shape:**
+
+1. The 2-hop traversal cap in `build_type_marks` — FIXED
+   (one-line index-based loop); marks now propagate properly.
+
+2. The qualifier in `split_with_type_marks` requires the
+   marked-confluence to be at an ES-contour formal/return.
+   But mark-confluences in shape-language-expressible programs
+   land at CS-contour merge points (record fields). To produce
+   an ES-formal marked-confluence requires either:
+   - A stage-1 short-circuit on a polymorphic call (which
+     requires within-recursion type transformation that
+     `ir_shapes` can't currently express), OR
+   - A frontend primitive that injects abstract-type CSes
+     into `out->type` flow (e.g., reflective `type(x)` or
+     class-as-value patterns).
+
+The same logic applies symmetrically to mark-setter and
+mark-setter-of-setter — they have the same structural
+position relative to setter / setter-of-setter that mark-type
+has to type.
+
 ### Status
 
 3 of 7 splitter stages reached (type / setter / violation).
 4 remain uncovered (mark-type / setter-of-setter /
-mark-setter / mark-setter-of-setter). The traversal cap was a
-real bug masking the diagnostic; with it fixed, the next
-blocker is now precisely localized to `split_with_type_marks`'s
-ES-formal/return qualifier. A targeted recursive-single-site
-shape is the next experiment.
+mark-setter / mark-setter-of-setter). The mark-* uncovered
+stages now have a precise structural explanation: the
+qualifier rejects every marked-confluence that current
+shape-language patterns produce. The traversal-cap fix is
+landed as a standalone correctness improvement (commit
+`d37fec5`). `mark_recursive_single_site.synth` stays in the
+suite as the structural-evidence fixture — if anyone ever
+adjusts the qualifier or adds a frontend primitive that
+produces abstract-type CSes in flow, this fixture's golden
+should shift.

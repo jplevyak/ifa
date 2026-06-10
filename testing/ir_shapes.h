@@ -148,6 +148,25 @@ void missing_field_dispatch(const ParamMap &);
 // Params: n_types (1-3). With 2 types, mirrors the 09c sketch.
 void setter_chain(const ParamMap &);
 
+// mark_recursive_single_site: targets the mark-type stage via a
+// recursive single-site call where stage 1 can't split the formal.
+//
+// Shape: record T with a polymorphic `data` field (two writes
+// of distinct-typed values into ONE T instance). A method
+// `walk(self: T)` that reads `self.data` and recursively calls
+// `walk(self)`. Main has a SINGLE call site to walk(t).
+//
+// Hypothesis (per 007 follow-up): with the build_type_marks
+// traversal fix in place, the polymorphic field's marks
+// propagate into walk's closure. The recursive call edge brings
+// walk's formal back with marks at a different distance than the
+// direct main-edge — producing an ES-formal marked-confluence
+// that stage 2's qualifier would accept.
+//
+// If splits[mark-type] > 0 in the golden, mark-type is reached
+// for the first time.
+void mark_recursive_single_site(const ParamMap &);
+
 // stored_fn_dispatch: a deeper variant of same_type_dispatch
 // targeting mark-type via a stored-function-pointer pattern.
 //
