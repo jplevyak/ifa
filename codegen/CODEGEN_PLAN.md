@@ -663,13 +663,32 @@ sticks.
 
 ### 9.3 Performance pass
 
-- [ ] **Profile** `c_codegen_print_c` and `llvm_codegen_print_ir`
-  on the largest test programs. Suspected hot spots: the type-
-  string allocation loop, the per-function PNode worklist.
-- [ ] **Measure** `pyc` end-to-end compilation time on
-  representative programs (sieve.py, dict_basic.py, the largest
-  test_pyc fixture). Establish a baseline; aim for ≤ 10%
-  regression on any single PR through this plan.
+- [x] **Measure** `pyc` end-to-end compilation time on
+  representative programs (sieve.py, dict_basic.py,
+  logical_operators.py, class_inheritance.py, builtins.py).
+  Baseline recorded in
+  [`ifa/codegen/PERFORMANCE.md`](PERFORMANCE.md) with median
+  wall time, maxRSS, and emitted-`.c` size per fixture, plus a
+  reproducible 5-run timing recipe future PRs can re-run. The
+  baseline shows pyc-only work is 90-140 ms / `cc` spawn is
+  150-180 ms — the spawned subprocess dominates user-visible
+  wall time, so codegen-side speedups have a bounded ceiling
+  until programs grow past the current largest fixture
+  (`builtins.py` at 33 KB of emitted C).
+- [ ] **Profile** `c_codegen_print_c` and
+  `llvm_codegen_print_ir` on the largest test programs.
+  Suspected hot spots (type-string allocation loop,
+  per-function PNode worklist) **deferred**:
+  `perf_event_paranoid=4` on the recording host blocks
+  unprivileged sampling, and intrusive
+  `Timer`/`clock_gettime` instrumentation around the codegen
+  passes is its own diff. See PERFORMANCE.md §1.2 and §3 for
+  the path forward.
+- [ ] **LLVM-side numbers** deferred until
+  [issue 013](../issues/013-pyc-llvm-default-off.md) lands:
+  the default build has `USE_LLVM` commented out, so
+  `PYC_LLVM=1` is a no-op and the LLVM codegen path can't be
+  benched from a default checkout.
 
 ### 9.4 Backend selection cleanup
 
