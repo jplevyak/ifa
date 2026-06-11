@@ -692,39 +692,43 @@ Status legend:
 | Primitive | C backend | LLVM backend | Pinpoint fixture | Notes |
 |---|---|---|---|---|
 | `prim_reply` | ✓ `cg.cc:189` | ✓ `llvm_primitives.cc:589` | `01_baseline.ir` (both) | Function return. |
-| `prim_make` (tuple/list) | ✓ `cg.cc:193` | ⚠ `llvm_primitives.cc:355` | — | LLVM uses `malloc`, should use GC allocator. |
-| `prim_period` (getter) | ✓ `cg.cc:222` | ⚠ `llvm_primitives.cc:429` | `04_getter.ir` (C only) | LLVM `fail`s on non-pointer obj_val (see attempted `codegen-llvm/06_getter.ir`). |
-| `prim_setter` | ✓ `cg.cc:262` (issue 011) | ✗ | `03_setter.ir` (C), `05_setter.ir` (LLVM, framework only) | LLVM doesn't emit the store; phase 3 target. |
-| `prim_apply` | ✓ `cg.cc:293` (asserts unimplemented) | ✗ | — | Closure apply. Asserted-unimplemented in C, missing in LLVM. |
-| `prim_index_object` | ✓ `cg.cc:320` | ✗ | — | `a[i]`. Phase 3 target on LLVM. |
-| `prim_set_index_object` | ✓ `cg.cc:353` | ✗ | — | `a[i] = v`. Phase 3 target on LLVM. |
-| `prim_new` | ✓ `cg.cc:379` | ✗ | (used in 03/04/05/06 C fixtures + LLVM fixtures) | Fresh instance. Phase 3 target on LLVM. |
-| `prim_assign` | ✓ `cg.cc:386` | ✗ | — | Ref assignment. Phase 3 target on LLVM. |
-| `prim_len` | ✓ `cg.cc:392` | ✗ | — | `len(obj)`. Phase 3 target on LLVM. |
-| `prim_clone` | ✓ `cg.cc:404` | ✗ | `05_clone.ir` (C), `07_clone.ir` (LLVM, framework only) | LLVM doesn't emit clone call; phase 3 target. |
-| `prim_clone_vector` | ✓ `cg.cc:404` | ✗ | — | Same path as `prim_clone`. |
-| `prim_sizeof` | ✓ `cg.cc:420` | ✗ | — | Constant emission. Phase 3 target on LLVM. |
-| `prim_sizeof_element` | ✓ `cg.cc:433` | ✗ | — | Same. |
-| `prim_destruct` | ✓ `cg.cc:486` | ✗ | — | Tuple unpacking. Phase 3 target on LLVM. |
-| `prim_primitive` (registered dispatch) | ✓ `cg.cc:452` (via `RegisteredPrim->cgfn`) | ⚠ `llvm_primitives.cc:493` (print/println hardcoded only) | — | LLVM has no `RegisteredPrim` LLVM-side hook. Phase 3 §3.2. |
-| `prim_operator` | — | ⚠ `llvm_primitives.cc:230` (hardcoded `"Output: %d\n"` printf) | — | The LLVM branch looks like a debug placeholder; phase 3 §3.4. |
-| Arithmetic / comparison / logical (`prim_add`, `prim_mult`, `prim_less`, ...) | ✓ via runtime helpers (`cg.cc` registered prims) | ✓ `llvm_primitives.cc:255-354` (one switch) | — | Signed-only on LLVM; unsigned variants missing. |
+| `prim_make` (tuple/list) | ✓ `cg.cc:193` | ✓ `llvm_primitives.cc:341` (phase 3) | — | Now uses GC_malloc (Boehm GC) instead of malloc. |
+| `prim_period` (getter) | ✓ `cg.cc:222` | ✓ `llvm_primitives.cc:415` (phase 3 fix) | `04_getter.ir` (C), `06_getter.ir` (LLVM) | LLVM fix: spill non-pointer obj_val to alloca for GEP. |
+| `prim_setter` | ✓ `cg.cc:262` (issue 011) | ✓ `llvm_primitives.cc:485` (phase 3) | `03_setter.ir` (C), `05_setter.ir` (LLVM) | LLVM now emits GEP + store. Issue-011 val-emit semantics preserved on both backends. |
+| `prim_apply` | ✓ `cg.cc:293` (asserts unimplemented) | ✗ | — | Closure apply. Asserted-unimplemented on both backends; intentional gap. |
+| `prim_index_object` | ✓ `cg.cc:320` | ✓ `llvm_primitives.cc:565` (phase 3) | — | LLVM handles vector and record-with-constant-index. List-style defers to runtime helper. |
+| `prim_set_index_object` | ✓ `cg.cc:353` | ✓ `llvm_primitives.cc:613` (phase 3) | — | Same case coverage as index_object. |
+| `prim_new` | ✓ `cg.cc:379` | ✓ `llvm_primitives.cc:399` (phase 3) | (used in fixtures) | LLVM uses GC_malloc. Mirrors cg.cc's `_CG_prim_new`. |
+| `prim_assign` | ✓ `cg.cc:386` | ✓ `llvm_primitives.cc:425` (phase 3) | — | Ref assignment with type-cast. |
+| `prim_len` | ✓ `cg.cc:392` | ✓ `llvm_primitives.cc:528` (phase 3) | — | Dispatches to `_CG_string_len` or `_CG_prim_len` runtime helpers. |
+| `prim_clone` | ✓ `cg.cc:404` | ✓ `llvm_primitives.cc:502` (phase 3) | `05_clone.ir` (C), `07_clone.ir` (LLVM) | LLVM: GC_malloc + memcpy. |
+| `prim_clone_vector` | ✓ `cg.cc:404` | ✓ `llvm_primitives.cc:502` (phase 3) | — | Shares LLVM path with `prim_clone`. |
+| `prim_sizeof` | ✓ `cg.cc:420` | ✓ `llvm_primitives.cc:452` (phase 3) | — | Constant emission. |
+| `prim_sizeof_element` | ✓ `cg.cc:433` | ✓ `llvm_primitives.cc:464` (phase 3) | — | Same. |
+| `prim_destruct` | ✓ `cg.cc:486` | ✓ `llvm_primitives.cc:653` (phase 3) | — | Tuple unpacking: per-lvalue setLLVMValue from corresponding rvalue. |
+| `prim_primitive` (registered dispatch) | ✓ `cg.cc:452` (via `RegisteredPrim->cgfn`) | ⚠ `llvm_primitives.cc:493` (print/println hardcoded only) | — | LLVM has no `RegisteredPrim` LLVM-side hook. Phase 3 §3.2 deferred. |
+| `prim_operator` | — | ✓ `llvm_primitives.cc:216` (phase 3 cleanup) | — | LLVM placeholder hack removed; returns 0 to dispatch to generic call path. |
+| Arithmetic / comparison / logical (`prim_add`, `prim_mult`, `prim_less`, ...) | ✓ via runtime helpers (`cg.cc` registered prims) | ✓ `llvm_primitives.cc:241-340` (one switch) | — | Signed-only on LLVM; unsigned variants missing. |
 | Type-side primitives (`prim_isinstance`, `prim_issubclass`, `prim_typeof`, `prim_meta_apply`, `prim_coerce`, `prim_merge`, `prim_merge_in`, `prim_type_assert`) | ✓ via runtime helpers | ✗ | — | Pyc routes through `prim_primitive`; needs the LLVM-side `RegisteredPrim` hook from phase 3 §3.2. |
 
-### Known LLVM-backend gaps surfaced by phase 1 fixturing
+### LLVM-backend bugs fixed in phase 3
 
-While creating the codegen-llvm parallels (CODEGEN_PLAN phase 1.2),
-two LLVM-side bugs surfaced and are filed for phase 3:
+Two LLVM-side bugs surfaced by phase 1 are now fixed:
 
-- `(send @operator obj @period #field => r)` after a setter on a
-  freshly-`@new`'d record — `getLLVMValue(obj_var)` returns a
-  non-pointer and `P_prim_period` `fail`s. Tried as
-  `codegen-llvm/06_getter.ir`; dropped.
-- Minimal record-only fixture with no constants and no setter
-  (`@new + move`) crashes the LLVM backend with SIGTRAP during
-  printer teardown. Tried as `codegen-llvm/08_sum_type.ir`;
-  dropped. The C-side equivalent `codegen-c/06_sum_type.ir`
-  works fine.
+- **`P_prim_period` on a freshly-`@new`'d record** — was failing
+  with "Object is not a pointer" because `getLLVMValue` loads
+  AllocaInst-backed locals to their struct value. Fix
+  (llvm_primitives.cc:415): for object pointers, use
+  `var->llvm_value` directly (skipping the load) when it's an
+  AllocaInst or GlobalVariable; otherwise spill to a fresh
+  alloca. Same pattern reused in `P_prim_setter`,
+  `P_prim_index_object`, `P_prim_set_index_object`,
+  `P_prim_clone`.
+- **Minimal record-only fixture SIGTRAP** — was crashing
+  `llvm::StructLayout::getPrefTypeAlign` when a struct field's
+  type was void/null (no setter in the IR ⇒ field type stays
+  void). Fix (llvm.cc:407): substitute void field types with i8
+  so the struct is well-formed and field indexing is preserved.
 
 ### Notes on the codegen-c pinpoint fixtures
 

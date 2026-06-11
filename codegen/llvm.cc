@@ -406,24 +406,23 @@ llvm::Type *getLLVMType(Sym *sym) {
           std::vector<llvm::Type *> field_types;
           for (int i = 0; i < unaliased_sym->has.n; ++i) {
             Sym *field_sym = unaliased_sym->has[i];
-            // In IF1, fields of a struct are symbols themselves, their type is field_sym->type
+            llvm::Type *field_llvm_type = nullptr;
             if (field_sym && field_sym->type) {
-              llvm::Type *field_llvm_type = getLLVMType(field_sym->type);
-              if (field_llvm_type) {
-                field_types.push_back(field_llvm_type);
-              } else {
-                fail("Could not determine LLVM type for field %s (index %d) of struct %s",
-                     field_sym->name ? field_sym->name : "unnamed_field", i,
-                     unaliased_sym->name ? unaliased_sym->name : "unnamed_struct");
-                struct_type->setBody(field_types);  // Set with what we have so far
-                return nullptr;
-              }
-            } else {
-              fail("Null field_sym or field_sym->type for field index %d of struct %s", i,
-                   unaliased_sym->name ? unaliased_sym->name : "unnamed_struct");
-              struct_type->setBody(field_types);  // Set with what we have so far
-              return nullptr;
+              field_llvm_type = getLLVMType(field_sym->type);
             }
+            // Void/null field types crash StructLayout. Substitute a
+            // single-byte placeholder so the struct is well-formed and
+            // field indexing is preserved. The C backend (cg.cc:838)
+            // simply elides void fields, but LLVM struct indexing is
+            // positional — we need to keep every slot. See AUDIT §1 #1
+            // and phase-1's `08_sum_type` SIGTRAP.
+            if (!field_llvm_type || field_llvm_type->isVoidTy()) {
+              DEBUG_LOG("getLLVMType: field %s (index %d) of struct %s is void/null; substituting i8\n",
+                        field_sym && field_sym->name ? field_sym->name : "(anon)", i,
+                        unaliased_sym->name ? unaliased_sym->name : "(anon)");
+              field_llvm_type = llvm::Type::getInt8Ty(*TheContext);
+            }
+            field_types.push_back(field_llvm_type);
           }
           if (struct_type->isOpaque()) {  // Only set body if still opaque (no recursive error)
             struct_type->setBody(field_types);

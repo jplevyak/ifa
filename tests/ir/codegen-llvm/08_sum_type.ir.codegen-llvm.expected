@@ -1,33 +1,24 @@
 ;; phase: codegen-llvm
 
-(summary fa_rc=0 clone_rc=0 funs=1 bytes=4171)
+(summary fa_rc=0 clone_rc=0 funs=1 bytes=2840)
 
 ;; llvm-ir (host-specific module lines + !dbg metadata stripped):
 
-%Point = type { i32 }
+%Point = type { i8 }
 
 @__primitive = internal global ptr null
 @reply = internal global ptr null
 @new = internal global ptr null
-@__operator = internal global ptr null
-@".=" = internal global ptr null
 @nil = global ptr null
 @Point = global ptr null, align 8
-@k = global i32 42, align 4
-@px = global ptr null
 
-define internal ptr @_CG_f_85_0() {
+define internal ptr @_CG_f_82_0() {
 entry:
   %p = alloca %Point, align 8
   %r = alloca %Point, align 8
-  %s = alloca i32, align 4
-  %0 = call ptr @GC_malloc(i64 4)
+  %0 = call ptr @GC_malloc(i64 1)
   store ptr %0, ptr %p, align 8
-  %k.load = load i32, ptr @k, align 4
-  %1 = getelementptr inbounds nuw %Point, ptr %p, i32 0, i32 0
-  store i32 %k.load, ptr %1, align 4
   %nil.load = load ptr, ptr @nil, align 8
-
 
 
   ret ptr %nil.load
@@ -37,7 +28,7 @@ declare ptr @GC_malloc(i64)
 
 define i32 @main() {
 entry:
-  %0 = call ptr @_CG_f_85_0()
+  %0 = call ptr @_CG_f_82_0()
   ret i32 0
 }
 

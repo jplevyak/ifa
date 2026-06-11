@@ -213,30 +213,15 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
   llvm::Function *llvm_func = ifa_fun->llvm;
 
   switch (n->prim->index) {
-    case P_prim_operator: {
-      // Hijack for printf via operator(a, ".", b)
-      // Expected args: a, ".", b
-      if (n->rvals.n < 1) return 0;
-      Var *arg1 = n->rvals[0];  // Assuming no "primitive" prefix
-      // If prefixed, adjust.
-      if (arg1->sym && arg1->sym->name && strcmp(arg1->sym->name, "primitive") == 0) {
-        if (n->rvals.n > 2) arg1 = n->rvals[2];
-      }
-
-      llvm::Value *val = getLLVMValue(arg1, ifa_fun);
-      if (!val) return 0;
-
-      llvm::Module *M = ifa_fun->llvm->getParent();
-      llvm::FunctionCallee printfFunc = M->getOrInsertFunction(
-          "printf", llvm::FunctionType::get(llvm::IntegerType::getInt32Ty(M->getContext()),
-                                            llvm::PointerType::getUnqual(M->getContext()), true));
-      llvm::Value *fmt = Builder->CreateGlobalString("Output: %d\n");
-      std::vector<llvm::Value *> args;
-      args.push_back(fmt);
-      args.push_back(val);
-      Builder->CreateCall(printfFunc, args);
-      return 1;
-    }
+    case P_prim_operator:
+      // sym_operator is the BIN-OP marker (`(send @operator x op y)`).
+      // Every binary op is recognized by its *operator-token sym* via
+      // the dispatch — we don't handle `P_prim_operator` directly
+      // because the actual arithmetic / comparison / etc. lands in the
+      // explicit `P_prim_add` ... `P_prim_xor` cases below. Return 0
+      // so the dispatcher in translatePNode falls back to the generic
+      // call path (which has the closure-dispatch logic).
+      return 0;
 
     case P_prim_add:
     case P_prim_subtract:
@@ -339,13 +324,16 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
       return 1;
     }
     case P_prim_make: {
-      // Tuple creation: lval = make(type, elem1, elem2, ...)
+      // Tuple/list/vector creation: lval = make(type, elem1, elem2, ...).
+      // Uses GC_malloc (Boehm GC) so allocations are managed by the
+      // same GC the runtime uses. See AUDIT §1 #1 / PRIMITIVES.md §14.
       if (n->lvals.n < 1) return 0;
       Var *res_var = n->lvals[0];
       llvm::Type *res_ty = getLLVMType(res_var->type);
 
       if (!res_ty) {
-        fail("P_prim_make: Could not get result type");
+        fail("P_prim_make: could not get result type for %s",
+             res_var->sym && res_var->sym->name ? res_var->sym->name : "(anon)");
         return 1;
       }
 
@@ -364,45 +352,24 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
       }
 
       if (!struct_ty || !struct_ty->isStructTy()) {
-        DEBUG_LOG("P_prim_make: could not resolve struct type for %s (res_ty is %s); falling back\n",
-                  res_var->sym && res_var->sym->name ? res_var->sym->name : "unknown",
-                  res_ty->isPointerTy() ? "pointer" : (res_ty->isStructTy() ? "struct" : "other"));
+        DEBUG_LOG("P_prim_make: could not resolve struct type for %s; falling back\n",
+                  res_var->sym && res_var->sym->name ? res_var->sym->name : "(anon)");
         return 0;
       }
 
-      // Allocate memory
       uint64_t size = TheModule->getDataLayout().getTypeAllocSize(struct_ty);
-      llvm::FunctionCallee mallocFunc = TheModule->getOrInsertFunction(
-          "malloc", llvm::FunctionType::get(llvm::PointerType::getUnqual(*TheContext),
-                                            llvm::IntegerType::getInt64Ty(*TheContext), false));
+      llvm::FunctionCallee gcMallocFunc = TheModule->getOrInsertFunction(
+          "GC_malloc", llvm::FunctionType::get(llvm::PointerType::getUnqual(*TheContext),
+                                                llvm::IntegerType::getInt64Ty(*TheContext), false));
+      llvm::Value *struct_ptr = Builder->CreateCall(
+          gcMallocFunc, llvm::ConstantInt::get(llvm::IntegerType::getInt64Ty(*TheContext), size));
 
-      llvm::Value *void_ptr =
-          Builder->CreateCall(mallocFunc, llvm::ConstantInt::get(llvm::IntegerType::getInt64Ty(*TheContext), size));
-
-      // Bitcast to struct pointer
-      // LLVM 18 pointers are opaque, but we might need cast for GEP safety?
-      // Actually opaque pointers mean no bitcast needed for pointer itself,
-      // but GEP needs type.
-      llvm::Value *struct_ptr = void_ptr;  // Opaque pointer
-
-      // Initialize fields
-      // rvals: 0=prim, 1="make", 2=type, 3...=elements
-      DEBUG_LOG("P_prim_make: initializing %d fields\n", n->rvals.n - 3);
+      // Initialize fields. rvals: 0=prim, 1="make", 2=type, 3...=elements.
       for (int i = 3; i < n->rvals.n; i++) {
         int field_idx = i - 3;
         Var *field_val_var = n->rvals[i];
-        DEBUG_LOG("P_prim_make: field %d, var=%p, sym=%s (id=%d), is_fun=%d\n", field_idx,
-                (void *)field_val_var,
-                field_val_var->sym && field_val_var->sym->name ? field_val_var->sym->name : "(null)",
-                field_val_var->sym ? field_val_var->sym->id : -1, field_val_var->sym ? field_val_var->sym->is_fun : -1);
-        // Skip function symbols - they're not field values
-        if (field_val_var->sym && field_val_var->sym->is_fun) {
-          DEBUG_LOG("P_prim_make: skipping function symbol %s\n",
-                  field_val_var->sym->name ? field_val_var->sym->name : "unnamed");
-          continue;
-        }
+        if (field_val_var->sym && field_val_var->sym->is_fun) continue;  // Skip function-symbol "fields".
         llvm::Value *val = getLLVMValue(field_val_var, ifa_fun);
-
         if (val) {
           llvm::Value *gep = Builder->CreateStructGEP(struct_ty, struct_ptr, field_idx);
           Builder->CreateStore(val, gep);
@@ -412,39 +379,306 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
       setLLVMValue(res_var, struct_ptr, ifa_fun);
       return 1;
     }
+    case P_prim_new: {
+      // Fresh instance of a type: lval = new(<Type>). Allocates a
+      // zero-initialized struct via GC_malloc. Mirrors cg.cc:320-326
+      // which calls _CG_prim_new(<type_name>).
+      if (n->lvals.n != 1) {
+        fail("P_prim_new: expected exactly one lvalue, got %d", n->lvals.n);
+        return 1;
+      }
+      Var *res_var = n->lvals[0];
+      Sym *type_sym = res_var->type;
+      if (!type_sym) {
+        fail("P_prim_new: result has no type");
+        return 1;
+      }
+      llvm::Type *struct_ty = getLLVMType(type_sym);
+      if (!struct_ty || !struct_ty->isStructTy()) {
+        DEBUG_LOG("P_prim_new: result type for %s isn't a struct; falling back\n",
+                  res_var->sym && res_var->sym->name ? res_var->sym->name : "(anon)");
+        return 0;
+      }
+      uint64_t size = TheModule->getDataLayout().getTypeAllocSize(struct_ty);
+      llvm::FunctionCallee gcMallocFunc = TheModule->getOrInsertFunction(
+          "GC_malloc", llvm::FunctionType::get(llvm::PointerType::getUnqual(*TheContext),
+                                                llvm::IntegerType::getInt64Ty(*TheContext), false));
+      llvm::Value *struct_ptr = Builder->CreateCall(
+          gcMallocFunc, llvm::ConstantInt::get(llvm::IntegerType::getInt64Ty(*TheContext), size));
+      setLLVMValue(res_var, struct_ptr, ifa_fun);
+      return 1;
+    }
+    case P_prim_assign: {
+      // Reference-assignment: lval = (cast)rval[3]. Mirrors cg.cc:327-332.
+      if (n->lvals.n != 1 || n->rvals.n < 4) {
+        fail("P_prim_assign: malformed (lvals=%d, rvals=%d)", n->lvals.n, n->rvals.n);
+        return 1;
+      }
+      Var *res_var = n->lvals[0];
+      Var *rhs_var = n->rvals[3];
+      llvm::Value *rhs_val = getLLVMValue(rhs_var, ifa_fun);
+      if (!rhs_val) {
+        DEBUG_LOG("P_prim_assign: rhs has no LLVM value for %s\n",
+                  rhs_var->sym && rhs_var->sym->name ? rhs_var->sym->name : "(anon)");
+        return 1;
+      }
+      llvm::Type *dst_ty = getLLVMType(res_var->type);
+      if (dst_ty && dst_ty != rhs_val->getType()) {
+        if (dst_ty->isIntegerTy() && rhs_val->getType()->isIntegerTy()) {
+          rhs_val = Builder->CreateZExtOrTrunc(rhs_val, dst_ty, "assign.zext");
+        } else if (dst_ty->isPointerTy() && rhs_val->getType()->isPointerTy()) {
+          // Opaque pointers — no actual cast needed in LLVM 18.
+        } else {
+          DEBUG_LOG("P_prim_assign: dst type and rhs type differ but no clean cast; using rhs as-is\n");
+        }
+      }
+      setLLVMValue(res_var, rhs_val, ifa_fun);
+      return 1;
+    }
+    case P_prim_sizeof: {
+      // sizeof(T) — emit the IF1 Sym's recorded `size` as a constant.
+      // Mirrors cg.cc:361-373. The `o` offset selects which rval has
+      // the type argument (2 if prefixed by `__primitive`, else 1).
+      Sym *t_sym = n->rvals[o]->type;
+      if (!t_sym) return 0;
+      llvm::Value *size_val = llvm::ConstantInt::get(llvm::Type::getInt64Ty(*TheContext), t_sym->size);
+      if (n->lvals.n == 1) setLLVMValue(n->lvals[0], size_val, ifa_fun);
+      return 1;
+    }
+    case P_prim_sizeof_element: {
+      // sizeof(element_type(T)) — handles the record-of-records
+      // corner case at cg.cc:374-392.
+      Sym *t_sym = n->rvals[o]->type;
+      if (!t_sym || !t_sym->element || !t_sym->element->type) return 0;
+      uint64_t sz = 0;
+      if (!t_sym->element->type->size && t_sym->type_kind == Type_RECORD) {
+        sz = t_sym->has.n ? t_sym->has[0]->type->size : 0;
+      } else {
+        sz = t_sym->element->type->size;
+      }
+      llvm::Value *size_val = llvm::ConstantInt::get(llvm::Type::getInt64Ty(*TheContext), sz);
+      if (n->lvals.n == 1) setLLVMValue(n->lvals[0], size_val, ifa_fun);
+      return 1;
+    }
+    case P_prim_clone:
+    case P_prim_clone_vector: {
+      // lval = clone(proto[, vec_size]). Mirrors cg.cc:345-360 which
+      // calls _CG_prim_clone / _CG_prim_clone_vector runtime helpers.
+      // Implementation: GC_malloc(sizeof(T)) + memcpy from the
+      // prototype. Matches the runtime semantics — Boehm GC tracks
+      // the new pointer; memcpy duplicates the byte image.
+      if (n->lvals.n != 1) return 0;
+      Var *res_var = n->lvals[0];
+      Sym *type_sym = res_var->type;
+      if (!type_sym) return 0;
+      llvm::Type *struct_ty = getLLVMType(type_sym);
+      if (!struct_ty || !struct_ty->isStructTy()) {
+        DEBUG_LOG("P_prim_clone: result type for %s isn't a struct; falling back\n",
+                  res_var->sym && res_var->sym->name ? res_var->sym->name : "(anon)");
+        return 0;
+      }
+      uint64_t size = TheModule->getDataLayout().getTypeAllocSize(struct_ty);
+      llvm::FunctionCallee gcMallocFunc = TheModule->getOrInsertFunction(
+          "GC_malloc", llvm::FunctionType::get(llvm::PointerType::getUnqual(*TheContext),
+                                                llvm::IntegerType::getInt64Ty(*TheContext), false));
+      llvm::Value *new_ptr = Builder->CreateCall(
+          gcMallocFunc, llvm::ConstantInt::get(llvm::Type::getInt64Ty(*TheContext), size));
+      // Source pointer = rvals[2] (the prototype). Get the pointer
+      // (not the loaded struct) the same way P_prim_period does.
+      if (n->rvals.n < 3) return 0;
+      Var *proto_var = n->rvals[2];
+      llvm::Value *proto_ptr = nullptr;
+      if (proto_var->llvm_value &&
+          (llvm::isa<llvm::AllocaInst>(proto_var->llvm_value) ||
+           llvm::isa<llvm::GlobalVariable>(proto_var->llvm_value))) {
+        proto_ptr = proto_var->llvm_value;
+      } else {
+        proto_ptr = getLLVMValue(proto_var, ifa_fun);
+      }
+      if (proto_ptr && proto_ptr->getType()->isPointerTy()) {
+        Builder->CreateMemCpy(new_ptr, llvm::MaybeAlign(8), proto_ptr, llvm::MaybeAlign(8), size);
+      } else {
+        DEBUG_LOG("P_prim_clone: proto pointer not available; skipping memcpy\n");
+      }
+      setLLVMValue(res_var, new_ptr, ifa_fun);
+      return 1;
+    }
+    case P_prim_index_object: {
+      // Result = obj[idx]. Mirrors cg.cc:261-292:
+      //   - vector type:                obj->v[idx]
+      //   - record with constant index:  ((T*)obj)->eN
+      //   - other:                       runtime fallback (list lookup)
+      if (n->lvals.n != 1 || n->rvals.n < o + 2) return 0;
+      Var *res_var = n->lvals[0];
+      Sym *obj_type = n->rvals[o]->type;
+      if (!obj_type) return 0;
+      Var *obj_var = n->rvals[o];
+      Var *idx_var = n->rvals[o + 1];
+
+      // Helper: extract a struct pointer from `obj_var` (avoiding the
+      // load that getLLVMValue does for AllocaInst-backed locals).
+      auto get_struct_ptr = [&](Var *v) -> llvm::Value * {
+        if (v->llvm_value &&
+            (llvm::isa<llvm::AllocaInst>(v->llvm_value) || llvm::isa<llvm::GlobalVariable>(v->llvm_value))) {
+          return v->llvm_value;
+        }
+        return getLLVMValue(v, ifa_fun);
+      };
+
+      llvm::Value *obj_ptr = get_struct_ptr(obj_var);
+      if (!obj_ptr || !obj_ptr->getType()->isPointerTy()) return 0;
+
+      llvm::Type *obj_struct_ty = getLLVMType(obj_type);
+
+      if (obj_type->is_vector) {
+        // {fields...; element_t v[0];} layout. The `v` field is the
+        // last element of the struct.
+        llvm::Value *idx_val = getLLVMValue(idx_var, ifa_fun);
+        if (!idx_val) return 0;
+        int v_field_idx = obj_type->has.n;  // `v` follows the named fields
+        llvm::Value *v_ptr = Builder->CreateStructGEP(obj_struct_ty, obj_ptr, v_field_idx, "vec.base");
+        llvm::Type *elem_ty = obj_type->element && obj_type->element->type
+                                  ? getLLVMType(obj_type->element->type)
+                                  : llvm::Type::getInt8Ty(*TheContext);
+        llvm::Value *elem_ptr = Builder->CreateInBoundsGEP(elem_ty, v_ptr, idx_val, "vec.elt");
+        llvm::Value *loaded = Builder->CreateLoad(elem_ty, elem_ptr, "vec.load");
+        setLLVMValue(res_var, loaded, ifa_fun);
+        return 1;
+      }
+
+      // Record with constant index: idx_var->sym->constant gives the
+      // field index as a string. cg.cc emits `e<constant>`.
+      if (obj_type->type_kind == Type_RECORD && idx_var->sym && idx_var->sym->constant) {
+        int field_idx = atoi(idx_var->sym->constant);
+        llvm::Value *gep = Builder->CreateStructGEP(obj_struct_ty, obj_ptr, field_idx, "rec.idx");
+        llvm::Type *elem_ty = getLLVMType(res_var->type);
+        if (!elem_ty || elem_ty->isVoidTy()) return 0;
+        llvm::Value *loaded = Builder->CreateLoad(elem_ty, gep, "rec.load");
+        setLLVMValue(res_var, loaded, ifa_fun);
+        return 1;
+      }
+
+      // List / non-constant index: defer to runtime helper.
+      DEBUG_LOG("P_prim_index_object: list-style or non-constant index — falling back\n");
+      return 0;
+    }
+    case P_prim_set_index_object: {
+      // obj[idx] = val. Mirrors cg.cc:294-318. Handles vector and
+      // record-with-constant-index cases; list-style defers to
+      // runtime.
+      if (n->rvals.n < o + 3) return 0;
+      Var *obj_var = n->rvals[o];
+      Var *idx_var = n->rvals[o + 1];
+      Var *val_var = n->rvals[n->rvals.n - 1];
+      Sym *obj_type = obj_var->type;
+      if (!obj_type) return 0;
+
+      auto get_struct_ptr = [&](Var *v) -> llvm::Value * {
+        if (v->llvm_value &&
+            (llvm::isa<llvm::AllocaInst>(v->llvm_value) || llvm::isa<llvm::GlobalVariable>(v->llvm_value))) {
+          return v->llvm_value;
+        }
+        return getLLVMValue(v, ifa_fun);
+      };
+
+      llvm::Value *obj_ptr = get_struct_ptr(obj_var);
+      if (!obj_ptr || !obj_ptr->getType()->isPointerTy()) return 0;
+      llvm::Value *val_val = getLLVMValue(val_var, ifa_fun);
+      if (!val_val) return 0;
+      llvm::Type *obj_struct_ty = getLLVMType(obj_type);
+
+      if (obj_type->is_vector) {
+        llvm::Value *idx_val = getLLVMValue(idx_var, ifa_fun);
+        if (!idx_val) return 0;
+        int v_field_idx = obj_type->has.n;
+        llvm::Value *v_ptr = Builder->CreateStructGEP(obj_struct_ty, obj_ptr, v_field_idx, "vec.base");
+        llvm::Type *elem_ty = obj_type->element && obj_type->element->type
+                                  ? getLLVMType(obj_type->element->type)
+                                  : llvm::Type::getInt8Ty(*TheContext);
+        llvm::Value *elem_ptr = Builder->CreateInBoundsGEP(elem_ty, v_ptr, idx_val, "vec.elt");
+        Builder->CreateStore(val_val, elem_ptr);
+        if (n->lvals.n) setLLVMValue(n->lvals[0], val_val, ifa_fun);
+        return 1;
+      }
+
+      if (obj_type->type_kind == Type_RECORD && idx_var->sym && idx_var->sym->constant) {
+        int field_idx = atoi(idx_var->sym->constant);
+        llvm::Value *gep = Builder->CreateStructGEP(obj_struct_ty, obj_ptr, field_idx, "rec.idx");
+        Builder->CreateStore(val_val, gep);
+        if (n->lvals.n) setLLVMValue(n->lvals[0], val_val, ifa_fun);
+        return 1;
+      }
+
+      DEBUG_LOG("P_prim_set_index_object: list-style or non-constant index — falling back\n");
+      return 0;
+    }
+    case P_prim_destruct: {
+      // Tuple destructuring: lvals[0..n-1] receive fields of rvals[o..]
+      // Mirrors cg.cc:486-488 + `destruct_prim` (cg.cc:172-181):
+      //   l->eN = r->eN  for each lvalue
+      if (n->lvals.n == 0) return 1;
+      for (int i = 0; i < n->lvals.n; i++) {
+        Var *lhs = n->lvals[i];
+        Var *rhs = n->rvals.v[o + i];
+        if (!lhs->live) continue;
+        llvm::Value *rhs_val = getLLVMValue(rhs, ifa_fun);
+        if (rhs_val) setLLVMValue(lhs, rhs_val, ifa_fun);
+      }
+      return 1;
+    }
+    case P_prim_len: {
+      // Result = length of obj. Mirrors cg.cc:333-344:
+      //   string : _CG_string_len(obj)
+      //   other  : _CG_prim_len(t, obj)
+      // We declare the runtime helper externs and call them.
+      Sym *t = n->rvals[o]->type;
+      if (!t) return 0;
+      Var *obj_var = n->rvals[o];
+      llvm::Value *obj_val = getLLVMValue(obj_var, ifa_fun);
+      if (!obj_val) return 0;
+      llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+      llvm::Type *ptr = llvm::PointerType::getUnqual(*TheContext);
+      llvm::Value *result = nullptr;
+      if (sym_string->specializers.set_in(t)) {
+        llvm::FunctionCallee fn = TheModule->getOrInsertFunction(
+            "_CG_string_len", llvm::FunctionType::get(i64, ptr, false));
+        result = Builder->CreateCall(fn, obj_val);
+      } else {
+        // _CG_prim_len takes (type_descriptor, obj). The C backend
+        // passes rvals[o-1]->cg_string which is the type's runtime
+        // descriptor; here we use the obj_val type's name as a
+        // placeholder argument (the runtime can fall back to obj's
+        // recorded size).
+        llvm::FunctionCallee fn = TheModule->getOrInsertFunction(
+            "_CG_prim_len", llvm::FunctionType::get(i64, {ptr, ptr}, false));
+        Var *desc_var = n->rvals[o - 1];
+        llvm::Value *desc_val = getLLVMValue(desc_var, ifa_fun);
+        if (!desc_val) desc_val = llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(*TheContext));
+        result = Builder->CreateCall(fn, {desc_val, obj_val});
+      }
+      if (n->lvals.n && result) setLLVMValue(n->lvals[0], result, ifa_fun);
+      return 1;
+    }
     case P_prim_period: {
-      // Struct member access (Getter)
-      // lval = rval[1].field
-      // Field is specified by rval[3] (Symbol)
+      // Struct member access (Getter): lval = rval[1].field where the
+      // field is specified by rval[3] (a symbol Sym).
       if (n->rvals.n < 4) return 0;
       Var *obj_var = n->rvals[1];
       Var *field_sym_var = n->rvals[3];
       Var *res_var = n->lvals.n > 0 ? n->lvals[0] : nullptr;
 
-      if (!res_var) return 1;  // No result needed?
-
-      llvm::Value *obj_val = getLLVMValue(obj_var, ifa_fun);
-      if (!obj_val) {
-        fail("P_prim_period: Object value missing for %s", obj_var->sym->name);
-        return 1;
-      }
-
-      // Check if it matches closure creation logic in cg.cc?
-      // "if (n->lvals[0]->type->type_kind == Type_FUN && n->creates)" ...
-      // For now, handle standard struct access.
+      if (!res_var) return 1;  // No result needed.
 
       Sym *obj_type_sym = obj_var->type;
       if (!obj_type_sym) {
-        fail("P_prim_period: Object has no type");
+        fail("P_prim_period: object has no type for var %s",
+             obj_var->sym && obj_var->sym->name ? obj_var->sym->name : "(anon)");
         return 1;
       }
 
-      // Resolve field index
+      // Resolve field index by name match (or `eN` for tuples).
       int field_idx = -1;
       cchar *field_name = field_sym_var->sym->name;
-
-      // Special case for Tuples "e0", "e1"...?
-      // Or iterate obj_type_sym->has
       for (int i = 0; i < obj_type_sym->has.n; i++) {
         if (obj_type_sym->has[i]->name == field_name ||
             (obj_type_sym->has[i]->name && field_name && strcmp(obj_type_sym->has[i]->name, field_name) == 0)) {
@@ -452,28 +686,121 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
           break;
         }
       }
-
       if (field_idx == -1) {
-        // Try parsing "eN" if tuple?
         if (field_name && field_name[0] == 'e' && isdigit(field_name[1])) {
           field_idx = atoi(field_name + 1);
         } else {
-          fail("P_prim_period: Could not resolve field %s in type %s", field_name, obj_type_sym->name);
+          fail("P_prim_period: could not resolve field %s in type %s",
+               field_name, obj_type_sym->name);
           return 1;
         }
       }
 
-      // GEP and Load
-      // Ensure obj_val is pointer
-      if (!obj_val->getType()->isPointerTy()) {
-        fail("P_prim_period: Object is not a pointer");
+      // For GEP we need a pointer to the struct. getLLVMValue loads
+      // local AllocaInsts to their stored value (matching the SSA
+      // convention) — for structs that gives the struct value, not a
+      // pointer. When the underlying storage IS already a pointer
+      // (alloca / global), use it directly; otherwise fall back to
+      // getLLVMValue and hope it returns a pointer.
+      llvm::Value *obj_ptr = nullptr;
+      if (obj_var->llvm_value &&
+          (llvm::isa<llvm::AllocaInst>(obj_var->llvm_value) ||
+           llvm::isa<llvm::GlobalVariable>(obj_var->llvm_value))) {
+        obj_ptr = obj_var->llvm_value;
+      } else {
+        obj_ptr = getLLVMValue(obj_var, ifa_fun);
+      }
+      if (!obj_ptr) {
+        fail("P_prim_period: object value missing for %s",
+             obj_var->sym && obj_var->sym->name ? obj_var->sym->name : "(anon)");
+        return 1;
+      }
+      if (!obj_ptr->getType()->isPointerTy()) {
+        // Recoverable: spill to a fresh alloca and use that.
+        DEBUG_LOG("P_prim_period: obj_val for %s is not a pointer; spilling to alloca\n",
+                  obj_var->sym && obj_var->sym->name ? obj_var->sym->name : "(anon)");
+        llvm::AllocaInst *tmp = Builder->CreateAlloca(obj_ptr->getType(), nullptr, "period.spill");
+        Builder->CreateStore(obj_ptr, tmp);
+        obj_ptr = tmp;
+      }
+
+      llvm::Value *gep = Builder->CreateStructGEP(getLLVMType(obj_type_sym), obj_ptr, field_idx);
+      llvm::Value *loaded = Builder->CreateLoad(getLLVMType(res_var->type), gep);
+      setLLVMValue(res_var, loaded, ifa_fun);
+      return 1;
+    }
+    case P_prim_setter: {
+      // Struct field write: obj.field = val. Mirrors cg.cc:262-291
+      // and the issue-011 Option A semantics — when lvals[0] is live,
+      // assign val (rvals[4]) to it (not the receiver).
+      // rvals: [__operator, obj, setter, field_sym, val]
+      if (n->rvals.n < 5) return 0;
+      Var *obj_var = n->rvals[1];
+      Var *field_sym_var = n->rvals[3];
+      Var *val_var = n->rvals[4];
+      Var *res_var = n->lvals.n > 0 ? n->lvals[0] : nullptr;
+
+      Sym *obj_type_sym = obj_var->type;
+      if (!obj_type_sym) {
+        fail("P_prim_setter: object has no type for var %s",
+             obj_var->sym && obj_var->sym->name ? obj_var->sym->name : "(anon)");
         return 1;
       }
 
-      llvm::Value *gep = Builder->CreateStructGEP(getLLVMType(obj_type_sym),  // Pointee type
-                                                  obj_val, field_idx);
-      llvm::Value *loaded = Builder->CreateLoad(getLLVMType(res_var->type), gep);
-      setLLVMValue(res_var, loaded, ifa_fun);
+      // Resolve field index (same logic as P_prim_period).
+      int field_idx = -1;
+      cchar *field_name = field_sym_var->sym->name;
+      for (int i = 0; i < obj_type_sym->has.n; i++) {
+        if (obj_type_sym->has[i]->name == field_name ||
+            (obj_type_sym->has[i]->name && field_name && strcmp(obj_type_sym->has[i]->name, field_name) == 0)) {
+          field_idx = i;
+          break;
+        }
+      }
+      if (field_idx == -1) {
+        if (field_name && field_name[0] == 'e' && isdigit(field_name[1])) {
+          field_idx = atoi(field_name + 1);
+        } else {
+          fail("P_prim_setter: could not resolve field %s in type %s",
+               field_name, obj_type_sym->name);
+          return 1;
+        }
+      }
+
+      // Get an actual pointer to the object's storage (same shape as
+      // P_prim_period's fix above).
+      llvm::Value *obj_ptr = nullptr;
+      if (obj_var->llvm_value &&
+          (llvm::isa<llvm::AllocaInst>(obj_var->llvm_value) ||
+           llvm::isa<llvm::GlobalVariable>(obj_var->llvm_value))) {
+        obj_ptr = obj_var->llvm_value;
+      } else {
+        obj_ptr = getLLVMValue(obj_var, ifa_fun);
+      }
+      if (!obj_ptr || !obj_ptr->getType()->isPointerTy()) {
+        DEBUG_LOG("P_prim_setter: obj_ptr for %s is not a pointer; spilling\n",
+                  obj_var->sym && obj_var->sym->name ? obj_var->sym->name : "(anon)");
+        if (!obj_ptr) return 1;
+        llvm::AllocaInst *tmp = Builder->CreateAlloca(obj_ptr->getType(), nullptr, "setter.spill");
+        Builder->CreateStore(obj_ptr, tmp);
+        obj_ptr = tmp;
+      }
+
+      llvm::Value *val_llvm = getLLVMValue(val_var, ifa_fun);
+      if (!val_llvm) {
+        fail("P_prim_setter: val value missing for %s",
+             val_var->sym && val_var->sym->name ? val_var->sym->name : "(anon)");
+        return 1;
+      }
+
+      // The store itself: ((obj_type *)obj_ptr)->eN = val.
+      llvm::Value *gep = Builder->CreateStructGEP(getLLVMType(obj_type_sym), obj_ptr, field_idx);
+      Builder->CreateStore(val_llvm, gep);
+
+      // Issue 011 Option A: when the lvalue is live, write val to it.
+      if (res_var && res_var->live) {
+        setLLVMValue(res_var, val_llvm, ifa_fun);
+      }
       return 1;
     }
     case P_prim_primitive: {

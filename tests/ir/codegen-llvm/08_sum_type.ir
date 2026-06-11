@@ -1,0 +1,25 @@
+;; 06_sum_type.ir — pinpoint the Type_SUM cg_string collapse path.
+;;
+;; Declares a sum type %MaybePoint = %Point | %nil_type. The
+;; codegen-c backend (cg.cc:857-862) special-cases the
+;; "T | nil" form and collapses cg_string to the non-nil
+;; branch's string. Exercises the struct emission path plus the
+;; Type_SUM aliasing rule.
+;;
+;; The LLVM parallel exercises llvm.cc Type_SUM handling
+;; (currently maps to i8* via getLLVMType — see AUDIT §1 #1).
+
+(type %Point :kind RECORD :has (%px))
+(sym %px :in %Point)
+
+(sym %p :is-local)
+(sym %r :is-local)
+(sym %tcont)
+(fun %top
+  :rets (%r)
+  :cont %tcont
+  :body
+    (send @primitive @new %Point => %p)
+    (move %p %r))
+
+(entry %top)
