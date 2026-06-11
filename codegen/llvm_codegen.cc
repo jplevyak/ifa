@@ -559,7 +559,10 @@ void translatePNode(PNode *pn, Fun *ifa_fun) {
   // Liveness check
   // Trust FA analysis (fa_live) - it's more accurate than dead.cc's live flag
   // The C backend checks both live && fa_live, but LLVM backend needs fa_live
-  // to ensure control flow targets (labels) and value-producing operations are generated
+  // to ensure control flow targets (labels) and value-producing operations are generated.
+  // Per-primitive emitters (e.g. P_prim_period) consult `pn->live` directly
+  // when DCE-dead PNodes would otherwise crash codegen — see issue 013-era
+  // method-binding-on-builtins notes in llvm_primitives.cc.
   bool is_live = pn->fa_live;
   if (!is_live) {
     if (ifa_debug) {

@@ -667,6 +667,48 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
         return 1;
       }
 
+      // Unwrap Type_SUM the same way the C backend does (cg.cc:176).
+      // For a `T | nil` receiver, methods live on T (has[0]), not on
+      // the sum itself (whose `has` is just the alternatives).
+      if (obj_type_sym->type_kind == Type_SUM && obj_type_sym->has.n > 0) {
+        obj_type_sym = obj_type_sym->has[0];
+      }
+
+      // Closure-creation: when the lvalue is a function type and the
+      // analyzer marked this PNode as creating new Syms, the period
+      // is method-binding (e.g. `obj.method` → a closure that pairs
+      // selector + receiver). Mirror cg.cc:177-185: allocate the
+      // closure via GC_malloc, then store rvals[3] (selector) and
+      // rvals[1] (receiver) into fields 0 and 1.
+      if (res_var->type && res_var->type->type_kind == Type_FUN && n->creates) {
+        llvm::Type *closure_ty = getLLVMType(res_var->type);
+        if (closure_ty && closure_ty->isStructTy()) {
+          uint64_t closure_size = TheModule->getDataLayout().getTypeAllocSize(closure_ty);
+          llvm::FunctionCallee gcMallocFunc = TheModule->getOrInsertFunction(
+              "GC_malloc", llvm::FunctionType::get(
+                               llvm::PointerType::getUnqual(*TheContext),
+                               llvm::IntegerType::getInt64Ty(*TheContext), false));
+          llvm::Value *closure_ptr = Builder->CreateCall(
+              gcMallocFunc,
+              llvm::ConstantInt::get(llvm::IntegerType::getInt64Ty(*TheContext), closure_size));
+
+          if (llvm::Value *sel_val = getLLVMValue(n->rvals[3], ifa_fun)) {
+            llvm::Value *gep0 = Builder->CreateStructGEP(closure_ty, closure_ptr, 0);
+            Builder->CreateStore(sel_val, gep0);
+          }
+          if (llvm::Value *recv_val = getLLVMValue(n->rvals[1], ifa_fun)) {
+            llvm::Value *gep1 = Builder->CreateStructGEP(closure_ty, closure_ptr, 1);
+            Builder->CreateStore(recv_val, gep1);
+          }
+          setLLVMValue(res_var, closure_ptr, ifa_fun);
+          return 1;
+        }
+        // closure_ty wasn't a struct — fall through to regular field
+        // resolution and let it succeed-or-fail there.
+        DEBUG_LOG("P_prim_period: closure-create branch: result type %s isn't a struct, falling through\n",
+                  res_var->type->name ? res_var->type->name : "(anon)");
+      }
+
       // Resolve field index by name match (or `eN` for tuples).
       int field_idx = -1;
       cchar *field_name = field_sym_var->sym->name;
@@ -680,6 +722,16 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
       if (field_idx == -1) {
         if (field_name && field_name[0] == 'e' && isdigit(field_name[1])) {
           field_idx = atoi(field_name + 1);
+        } else if (!n->live) {
+          // DCE marked this getter dead — the field genuinely doesn't
+          // exist on this type (typical case: builtin-scalar method
+          // binding like `int.__str__` where the IFA leaves a
+          // FA-reachable PNode but DCE strips the result). The C
+          // backend's parallel skips the per-kind emission for
+          // non-live SENDs entirely (cg.cc:586); mirror that here.
+          DEBUG_LOG("P_prim_period: skipping non-live unresolved getter (field=%s, type=%s)\n",
+                    field_name, obj_type_sym->name);
+          return 1;
         } else {
           fail("P_prim_period: could not resolve field %s in type %s",
                field_name, obj_type_sym->name);
@@ -736,6 +788,11 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
         fail("P_prim_setter: object has no type for var %s",
              obj_var->sym && obj_var->sym->name ? obj_var->sym->name : "(anon)");
         return 1;
+      }
+
+      // Unwrap Type_SUM the same way the C backend does (cg.cc:212).
+      if (obj_type_sym->type_kind == Type_SUM && obj_type_sym->has.n > 0) {
+        obj_type_sym = obj_type_sym->has[0];
       }
 
       // Resolve field index (same logic as P_prim_period).
