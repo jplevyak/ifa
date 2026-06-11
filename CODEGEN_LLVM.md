@@ -189,8 +189,13 @@ helpers:
   infinite recursion for self-referential record types. Void or null
   field types get substituted with `i8` placeholders to keep
   LLVM's `StructLayout` happy (see Phase 3 fix history).
-- `mapFunctionType(sym)` (`llvm.cc:381`) — `Type_FUN` closures: a
-  struct with function pointer + captured-var fields.
+- `mapFunctionType(sym)` (`llvm.cc:381`) — `Type_FUN`. Returns an
+  opaque pointer (`ptr`); under LLVM 15+ opaque-pointer mode every
+  function value is just `ptr` regardless of signature. The actual
+  signature lives on `Fun::llvm`'s `FunctionType` and is consulted at
+  call sites via `CreateCall(target->llvm, args)`. `ret` and `has`
+  are walked best-effort to warm the type cache for debug info, but
+  lazily-populated slots are no longer fatal.
 - `mapSumType(sym)` (`llvm.cc:412`) — `Type_SUM` "T | nil" collapses
   to the underlying non-nil type's pointer.
 - `mapByTypeKind(sym, unaliased)` (`llvm.cc:429`) — the per-`Type_*`
@@ -198,7 +203,15 @@ helpers:
 
 `getLLVMType` itself is now ~50 LOC: null check, function-symbol
 recovery, cache lookup, `mapBuiltinOrNumeric` short-circuit,
-`mapByTypeKind` dispatch, cache store.
+`mapByTypeKind` dispatch, cache store. Function symbols
+(`is_fun && type_kind == 0`) follow a three-step resolution:
+recurse through `sym->type` if usable; else fall back to opaque
+pointer if `sym->fun` is set (the analog of the C backend's
+`s->fun->cg_structural_string` resolution); else fail. This is what
+keeps method dispatch (`__iter__`, `__init__`, `__pyc_more__`, etc.)
+from crashing — the symbol's Type_FUN slot is often lazily populated,
+but `sym->fun` is set by the IFA analyzer and that's enough under
+opaque pointers.
 
 ### 5.3 `getLLVMDIType(sym, di_file)` (`llvm.cc:517`)
 

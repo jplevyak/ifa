@@ -377,31 +377,24 @@ static llvm::Type *mapStructType(Sym *sym, Sym *unaliased_sym) {
 }
 
 // Type_FUN: function values are opaque pointers. The signature is
-// re-derived from the IF1 Sym at call sites that need it.
+// re-derived from the IF1 Sym at call sites that need it (via the
+// `llvm::Function*` cached on `Fun::llvm`, which carries its own
+// `FunctionType`). Under opaque pointers (LLVM 15+) every function
+// pointer is `ptr` regardless of signature — so we never need to
+// reify the signature here.
+//
+// We still walk ret + args opportunistically to warm the type cache
+// (so the structural information is available for debug info and
+// for cases that do need a concrete struct field type), but the
+// walk is best-effort: lazily-populated `ret` / arg type slots are
+// no longer an error, they just skip the cache priming.
 static llvm::Type *mapFunctionType(Sym *unaliased_sym) {
-  Sym *ret_type_sym = unaliased_sym->ret;
-  if (!ret_type_sym || !ret_type_sym->type) {
-    fail("Function symbol %s has no return type",
-         unaliased_sym->name ? unaliased_sym->name : "(anon)");
-    return nullptr;
-  }
-  if (!getLLVMType(ret_type_sym->type)) {
-    fail("Could not get LLVM return type for function symbol %s",
-         unaliased_sym->name ? unaliased_sym->name : "(anon)");
-    return nullptr;
+  if (Sym *ret_type_sym = unaliased_sym->ret) {
+    if (ret_type_sym->type) (void)getLLVMType(ret_type_sym->type);
   }
   for (int i = 0; i < unaliased_sym->has.n; ++i) {
     Sym *arg_sym = unaliased_sym->has[i];
-    if (!arg_sym || !arg_sym->type) {
-      fail("Function type %s: null arg sym at index %d",
-           unaliased_sym->name ? unaliased_sym->name : "(anon)", i);
-      return nullptr;
-    }
-    if (!getLLVMType(arg_sym->type)) {
-      fail("Function type %s: could not get LLVM type for arg %d",
-           unaliased_sym->name ? unaliased_sym->name : "(anon)", i);
-      return nullptr;
-    }
+    if (arg_sym && arg_sym->type) (void)getLLVMType(arg_sym->type);
   }
   return llvm::PointerType::getUnqual(*TheContext);
 }
@@ -468,15 +461,32 @@ llvm::Type *getLLVMType(Sym *sym) {
   DEBUG_LOG("getLLVMType %s kind %d is_fun %d\n", sym->name ? sym->name : "unnamed", sym->type_kind,
           sym->is_fun);
 
-  // Function symbols shouldn't reach here; getLLVMType is for type symbols.
-  // Attempt sym->type recovery first, then fail with full context if even
-  // that isn't a usable type.
+  // Function symbols shouldn't usually reach here — getLLVMType is for type
+  // symbols. The C backend's parallel path resolves function-typed Syms via
+  // `s->fun->cg_structural_string` (see codegen_common::assign_type_cg_strings_pass2);
+  // the LLVM analog is opaque-pointer-as-function-value (see mapFunctionType).
+  //
+  // Resolution order:
+  //   1. If sym->type is a usable type Sym, recurse through it (gives us a
+  //      concrete struct for typed closures).
+  //   2. If sym->fun is set (this Sym names a known Fun), return an opaque
+  //      pointer. The actual signature lives on Fun::llvm's FunctionType and
+  //      is consulted at the call site via CreateCall(target->llvm, args).
+  //   3. Otherwise fail with full context — a function Sym with neither a
+  //      type recovery path nor a Fun is genuinely unresolvable.
   if (sym->type_kind == 0 && sym->is_fun) {
     if (sym->type && sym->type != sym) {
       DEBUG_LOG("getLLVMType: function symbol '%s' passed; recovering via sym->type (name=%s, kind=%d)\n",
                 sym->name ? sym->name : "unnamed",
                 sym->type->name ? sym->type->name : "unnamed", sym->type->type_kind);
       return getLLVMType(sym->type);
+    }
+    if (sym->fun) {
+      DEBUG_LOG("getLLVMType: function symbol '%s' with no sym->type, returning opaque ptr (Fun=%p)\n",
+                sym->name ? sym->name : "unnamed", (void *)sym->fun);
+      llvm::Type *fn_ptr = llvm::PointerType::getUnqual(*TheContext);
+      sym->llvm_type = fn_ptr;
+      return fn_ptr;
     }
     fail("getLLVMType called with function symbol '%s' and cannot recover (sym->type=%p)",
          sym->name ? sym->name : "unnamed", (void *)sym->type);
