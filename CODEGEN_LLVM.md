@@ -15,17 +15,28 @@ same overall structure), [IR.md](IR.md), [PRIMITIVES.md](PRIMITIVES.md),
 
 The LLVM backend mirrors the C backend's structure but emits LLVM IR
 instead of C source. `llvm_codegen_write_ir(fa, main, filename)`
-allocates a process-wide LLVM `Module` / `Builder` / `DIBuilder`,
-maps IF1 `Sym`s to LLVM `Type`s (`getLLVMType`), creates LLVM
-`Function` declarations for every live `Fun` (`createFunction`), then
-translates each function body (`translateFunctionBody`) by walking
-PNodes. Each PNode becomes a `BasicBlock` (or part of one) terminated
-by a branch/ret. Phi/phy MOVEs are materialised the same way as in
-the C backend, but using LLVM IR `phi` instructions or simple stores.
-`llvm_codegen_compile` shells out to `clang -c -fPIC <file>.ll -o
-<file>.o` then `clang <file>.o -o <file> -lm`. The implementation
-currently has heavy `DEBUG` output and a handful of fallback heuristics
-for symbol resolution that suggest it's less mature than the C backend.
+allocates a process-wide LLVM `Module` / `Builder` / `DIBuilder` (with
+explicit reverse-order tear-down on re-entry, see §3 and §14.2), maps
+IF1 `Sym`s to LLVM `Type`s (`getLLVMType` and its phase-4 helpers
+`mapBuiltinOrNumeric` / `mapVectorType` / `mapStructType` /
+`mapFunctionType` / `mapSumType` / `mapByTypeKind`), creates LLVM
+`Function` declarations for every live `Fun` (`createFunction`, ~30
+LOC after phase-4 decomposition into helper functions), then
+translates each function body (`translateFunctionBody`, ~20 LOC after
+phase-4 decomposition into a CFG-walk driver + per-Code_kind
+helpers) by walking PNodes. Each PNode becomes a `BasicBlock` (or
+part of one) terminated by a branch/ret. Phi/phy MOVEs are materialised
+the same way as in the C backend, but using LLVM IR `phi` instructions
+or simple stores. `llvm_codegen_compile` spawns
+`clang -c -fPIC <file>.ll -o <file>.o` then
+`clang <file>.o -o <file> -lm` via `posix_spawnp` (see §11). Debug
+output goes through the `DEBUG_LOG(…)` macro (off unless built with
+the right flag) — production builds are quiet.
+
+Most of the cross-backend code (`c_type`, `num_string`,
+`is_closure_var`, `get_target_fun_core`, type-string assignment,
+process spawn) lives in `codegen_common.{h,cc}`; the LLVM backend
+includes the header and calls those helpers directly.
 
 ---
 
@@ -66,6 +77,8 @@ extern llvm::DICompileUnit *CU;
 extern llvm::DIFile *UnitFile;
 extern Vec<Fun *> *all_funs_global;
 extern std::map<Label *, llvm::BasicBlock *> label_to_bb_map;
+extern std::map<…> string_constants_map;
+extern std::map<Fun *, Vec<…>> reverse_call_graph;
 ```
 
 `label_to_bb_map` is **per-function-translation**; it's cleared at
@@ -73,20 +86,39 @@ the start of each `translateFunctionBody` so labels don't leak
 between functions.
 
 `all_funs_global` holds the *transitive call closure* from `main`,
-computed by `discover_all_reachable_functions` (`llvm.cc:168`). Used
+computed by `discover_all_reachable_functions` (`llvm.cc:164`). Used
 as a fallback target lookup table when `f->calls.get(p)` returns
 inconclusive results.
+
+**Reset-on-init (phase 0.1 of CODEGEN_PLAN).**
+`llvm_codegen_initialize` (`llvm.cc:45`) tears down all of the above
+in reverse-dependency order — `DBuilder.reset()`, `Builder.reset()`,
+`TheModule.reset()`, `TheContext.reset()`, then clears
+`string_constants_map`, `label_to_bb_map`, and `reverse_call_graph` —
+*before* allocating the new instances. Two reasons:
+- Reverse order ensures every destructor runs while its dependencies
+  are still alive (e.g. destroying `Module` after `Context` would
+  dereference freed memory).
+- The cleared maps hold pointers into the just-destroyed Context /
+  Module; not clearing them would be a use-after-free on the next
+  lookup.
+
+This makes re-entrant `llvm_codegen_print_ir` calls safe. Phase 5
+of CODEGEN_PLAN added a `Codegen` base class scaffold (in
+`codegen_common.h`) so a future migration can move these globals
+into a per-run instance; the actual mass-rewrite of access sites is
+deferred — see CODEGEN_PLAN §8.
 
 ---
 
 ## 4. Top-level emission
 
-### 4.1 `llvm_codegen_write_ir` (`llvm.cc:1509`)
+### 4.1 `llvm_codegen_write_ir` (`llvm.cc:1321`)
 
 Opens `<filename without extension>.ll`, calls
 `llvm_codegen_print_ir`, closes.
 
-### 4.2 `llvm_codegen_print_ir` (`llvm.cc:1091`)
+### 4.2 `llvm_codegen_print_ir` (`llvm.cc:904`)
 
 ```c
 void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filename) {
@@ -122,7 +154,7 @@ The two-pass approach (declarations, then bodies) is required because
 function-call instructions need their target's `llvm::Function*` to
 already exist.
 
-### 4.3 `llvm_codegen_initialize(fa)` (`llvm.cc:49`)
+### 4.3 `llvm_codegen_initialize(fa)` (`llvm.cc:45`)
 
 Initializes LLVM target subsystems (`InitializeAllTargetInfos`,
 `InitializeAllTargets`, `InitializeAllTargetMCs`,
@@ -134,34 +166,47 @@ triple from the host.
 
 ## 5. Type mapping (`llvm.cc`)
 
-### 5.1 `mapNumericType(sym)` (`llvm.cc:118`)
+### 5.1 `mapNumericType(sym)` (`llvm.cc:114`)
 
 Maps `Sym::num_kind` + `Sym::num_index` to the corresponding LLVM
 primitive type (`getInt8Ty`, `getInt32Ty`, `getDoubleTy`, etc.).
 
-### 5.2 `getLLVMType(sym)` (`llvm.cc:318`)
+### 5.2 `getLLVMType(sym)` (`llvm.cc:462`)
 
-The general mapper. Caches results on `Sym::llvm_type`. Handles:
-- Numeric primitives → via `mapNumericType`.
-- `sym_string` → `i8 *`.
-- `sym_symbol` → `i64`.
-- `Type_RECORD` → `StructType` (recursive; named struct with field
-  types from `Sym::has`).
-- `Type_FUN` (closure types) → `StructType` with function pointer +
-  captured-var fields.
-- `Type_REF` → pointer.
-- Lists, vectors → pointers to opaque runtime structs.
+The general mapper. Caches results on `Sym::llvm_type`. Phase 4 of
+CODEGEN_PLAN decomposed the formerly-monolithic implementation
+(~230 LOC of nested switches) into a thin dispatcher plus per-shape
+helpers:
 
-Recursive types are handled by allocating an opaque named struct first,
-recording it in `llvm_type`, then setting the body.
+- `mapBuiltinOrNumeric(sym)` (`llvm.cc:317`) — handles
+  `sym_string` → `i8 *`, `sym_symbol` → `i64`, and the numeric path
+  (delegating to `mapNumericType`).
+- `mapVectorType(sym)` (`llvm.cc:334`) — vector types (struct with
+  trailing flexible array of `element` type).
+- `mapStructType(sym, unaliased)` (`llvm.cc:353`) — `Type_RECORD`
+  layout. Allocates an opaque named StructType *first*, caches it on
+  `llvm_type`, then sets the body — this is what breaks the
+  infinite recursion for self-referential record types. Void or null
+  field types get substituted with `i8` placeholders to keep
+  LLVM's `StructLayout` happy (see Phase 3 fix history).
+- `mapFunctionType(sym)` (`llvm.cc:381`) — `Type_FUN` closures: a
+  struct with function pointer + captured-var fields.
+- `mapSumType(sym)` (`llvm.cc:412`) — `Type_SUM` "T | nil" collapses
+  to the underlying non-nil type's pointer.
+- `mapByTypeKind(sym, unaliased)` (`llvm.cc:429`) — the per-`Type_*`
+  dispatch.
 
-### 5.3 `getLLVMDIType(sym, di_file)` (`llvm.cc:605`)
+`getLLVMType` itself is now ~50 LOC: null check, function-symbol
+recovery, cache lookup, `mapBuiltinOrNumeric` short-circuit,
+`mapByTypeKind` dispatch, cache store.
+
+### 5.3 `getLLVMDIType(sym, di_file)` (`llvm.cc:517`)
 
 Parallel mapper for debug-info types. Cached on
 `Sym::llvm_type_di_cache`. Emits `DI*Type` records that show up in
 the resulting binary's DWARF.
 
-### 5.4 `llvm_build_type_strings(fa)` (`llvm.cc:1027`)
+### 5.4 `llvm_build_type_strings(fa)` (`llvm.cc:887`)
 
 Pre-pass that walks all live Syms and assigns names — both the
 C-side `cg_string` (matching the C backend, for runtime helpers) and
@@ -171,7 +216,7 @@ the LLVM-side StructType names. Run before any actual translation.
 
 ## 6. Value mapping
 
-### 6.1 `getLLVMValue(var, ifa_fun)` (`llvm.cc:1243`)
+### 6.1 `getLLVMValue(var, ifa_fun)` (`llvm.cc:1057`)
 
 Returns the LLVM `Value*` for a Var in the context of `ifa_fun`.
 - If `var->llvm_value` is set, return it (cached).
@@ -183,13 +228,13 @@ Returns the LLVM `Value*` for a Var in the context of `ifa_fun`.
   passing happens implicitly via the LLVM verifier promoting allocas
   to registers).
 
-### 6.2 `setLLVMValue(var, val, ifa_fun)` (`llvm.cc:1486`)
+### 6.2 `setLLVMValue(var, val, ifa_fun)` (`llvm.cc:1298`)
 
 Stores `val` to `var`'s LLVM location. For SSA-style Vars, just
 caches `var->llvm_value = val`; for memory-backed Vars, emits a
 `store` instruction.
 
-### 6.3 `getLLVMConstant(var)` (`llvm.cc:732`)
+### 6.3 `getLLVMConstant(var)` (`llvm.cc:644`)
 
 Builds an LLVM `Constant*` from an immediate Sym:
 - Numeric → `ConstantInt::get` / `ConstantFP::get`.
@@ -197,7 +242,7 @@ Builds an LLVM `Constant*` from an immediate Sym:
   string globals.
 - Symbol → constant integer (the symbol's id).
 
-### 6.4 `createGlobalVariables(fa)` (`llvm.cc:855`)
+### 6.4 `createGlobalVariables(fa)` (`llvm.cc:766`)
 
 Walks `if1->allsyms` for globals (`!is_local`, `!is_fun`,
 non-constant), emits `llvm::GlobalVariable` declarations with the
@@ -205,18 +250,28 @@ appropriate initial values.
 
 ---
 
-## 7. Function declaration (`createFunction`, `llvm_codegen.cc:31`)
+## 7. Function declaration (`createFunction`, `llvm_codegen.cc:204`)
 
-Per Fun:
+Phase 4 of CODEGEN_PLAN decomposed this from ~290 LOC into a ~30-LOC
+driver plus per-job helpers above it in the file. The driver:
+
 1. Check `f->llvm` cache; if set, return it.
-2. Determine return type: `f->rets[0]->type` mapped via `getLLVMType`.
-3. Build the argument type vector by walking `f->positional_arg_positions`
-   and mapping each formal's type.
-4. Build the `FunctionType`, call `Function::Create(...)` with
+2. Compute return / argument LLVM types via the helpers
+   (`compute_return_type`, `compute_arg_types`).
+3. Build the `FunctionType`, call `Function::Create(...)` with
    `ExternalLinkage` and the Fun's `cg_string` as the symbol name.
-5. Cache `f->llvm = llvm_fun`.
-6. Set arg names (for IR readability).
-7. (Optional) Build debug info for the function declaration.
+4. Cache `f->llvm = llvm_func`.
+5. Name arguments for IR readability (helper).
+6. Optionally build the `DISubprogram` debug-info entry (helper at
+   `llvm_codegen.cc:180`).
+7. For external functions, return the declaration here — no entry
+   block. Otherwise, emit the entry `BasicBlock` and stack-allocate
+   each formal arg.
+
+The helpers live above `createFunction` so the driver reads
+top-down: each step is a named function call instead of an inline
+block, which makes the per-Fun control flow easy to follow and the
+"what does each phase do" mapping legible at a glance.
 
 External functions (`f->is_external`) get declarations only; their
 bodies come from the runtime library at link time.
@@ -224,54 +279,35 @@ bodies come from the runtime library at link time.
 ---
 
 ## 8. Function body translation (`translateFunctionBody`,
-`llvm_codegen.cc:324`)
+`llvm_codegen.cc:382`)
 
-The 300-line body of this function:
+Phase 4 of CODEGEN_PLAN decomposed this from ~250 LOC into a
+~20-LOC driver that calls a sequence of named helpers — entry-BB
+setup, var alloca, arg translation, CFG-walk worklist. The
+worklist invokes `translatePNode` (see §8.1) per PNode and adds
+successors as it goes. After the walk, untermimated blocks get
+inserted-unreachable/ret terminators and `verifyFunction` runs.
 
-```c
-void translateFunctionBody(Fun *ifa_fun) {
-  llvm::Function *llvm_fun = ifa_fun->llvm;
-  label_to_bb_map.clear();              // per-function-call reset
+### 8.1 `translatePNode` (`llvm_codegen.cc:545`)
 
-  // Create entry BB. Builder->SetInsertPoint(entry).
-  // Stack-allocate Var slots for non-constant Vars.
-  // Translate args: store each formal arg's LLVM value into its alloca.
+Phase 4 of CODEGEN_PLAN decomposed the formerly ~200-LOC switch into
+a thin dispatcher that defers each `Code_kind` to a helper:
 
-  // Walk PNodes in CFG order from f->entry.
-  Vec<PNode *> done;
-  done.set_add(f->entry);
-  translatePNode(f->entry, ifa_fun);    // recurses through cfg_succ
+- `translate_code_label` (`llvm_codegen.cc:404`) — emits/gets the
+  BB and sets the insert point.
+- `translate_code_move` (`llvm_codegen.cc:436`) — phi-precondition
+  + `simple_move`.
+- `translate_code_send` (`llvm_codegen.cc:499`) — primitive
+  dispatch (`write_llvm_prim` → `write_send` fallback).
+- `translate_code_if` (`llvm_codegen.cc:446`) — constant-branch
+  elimination and `CreateCondBr`.
+- `translate_code_goto` (`llvm_codegen.cc:420`) — phi nodes + `CreateBr`.
 
-  // For any BB without a terminator, insert unreachable or ret.
+Same control flow as the C backend's `write_c_pnode`, but emitting
+LLVM IR via `Builder->Create*`. The dispatcher (`translatePNode`)
+itself is now ~10 LOC: null-check the code, dispatch by kind, done.
 
-  // verifyFunction(*llvm_fun) for sanity.
-}
-```
-
-### 8.1 `translatePNode` (`llvm_codegen.cc:668`)
-
-The per-PNode switch — exactly the same structure as the C backend's
-`write_c_pnode` but emitting LLVM IR via `Builder->Create*`:
-
-```c
-void translatePNode(PNode *pn, Fun *ifa_fun) {
-  if (pn->live && pn->fa_live) switch (pn->code->kind) {
-    case Code_LABEL:
-      // Emit BB (or get-or-create), Builder->SetInsertPoint(bb).
-    case Code_MOVE:
-      // For each lval/rval pair, simple_move.
-    case Code_SEND:
-      if (pn->prim) if (write_llvm_prim(ifa_fun, pn)) break;
-      write_send(ifa_fun, pn);
-    case Code_IF:    // emit CreateCondBr or CreateBr (constant case)
-    case Code_GOTO:  // emit CreateBr
-  }
-  // do_phi_nodes / do_phy_nodes for successors
-  // Recurse into cfg_succ, similar to C backend's extra_goto logic
-}
-```
-
-### 8.2 `getLLVMBasicBlock(label, current_llvm_fun)` (`llvm_codegen.cc:12`)
+### 8.2 `getLLVMBasicBlock(label, current_llvm_fun)` (`llvm_codegen.cc:44`)
 
 Look up or create the LLVM `BasicBlock*` for an IF1 `Label`. Caches
 in both `label_to_bb_map` and `label->bb` (the union field —
@@ -285,7 +321,7 @@ ifa_fun)` — same semantics as the C backend, but using
 assignment. LLVM's own SSA optimisations + verifier promote the
 allocas to registers / phi instructions later.
 
-### 8.4 `simple_move(lhs, rhs, ifa_fun)` (`llvm_codegen.cc:630`)
+### 8.4 `simple_move(lhs, rhs, ifa_fun)` (`llvm_codegen.cc:507`)
 
 ```c
 void simple_move(Var *lhs, Var *rhs, Fun *ifa_fun) {
@@ -302,28 +338,36 @@ emits a `load`/`store`.
 
 ## 9. Send emission
 
-### 9.1 `write_llvm_prim` (`llvm_primitives.cc:204`)
+### 9.1 `write_llvm_prim` (`llvm_primitives.cc:181`)
 
 A switch on `Prim::index` — parallel to the C backend's
-`write_c_prim`:
-- `P_prim_add` → `Builder->CreateAdd(a, b)` (or `CreateFAdd` for
-  floats).
-- `P_prim_subtract` → `CreateSub` / `CreateFSub`.
-- `P_prim_mult` → `CreateMul` / `CreateFMul`.
-- `P_prim_div` → `CreateSDiv` / `CreateFDiv`.
-- Comparisons (`P_prim_less` etc.) → `CreateICmpSLT` /
-  `CreateFCmpOLT` then optional `CreateZExt` to i1.
-- Bitwise: `CreateAnd`, `CreateOr`, `CreateXor`.
-- Logical: synthesised via branches.
-- `P_prim_reply` → `Builder->CreateRet(val)`.
-- `P_prim_make` (tuple/list) → calls runtime helpers via
-  `Builder->CreateCall(runtime_fn, args)`.
-- `P_prim_period` (getter) → `CreateGEP` + `CreateLoad`.
-- `P_prim_setter` → `CreateGEP` + `CreateStore`.
+`write_c_prim`. After phase 3 of CODEGEN_PLAN, the coverage is:
+
+| Primitive | Emission |
+|---|---|
+| `P_prim_operator` / numeric ops | `CreateAdd` / `CreateFAdd` / `CreateSDiv` / `CreateFDiv` / `CreateMul` / `CreateMod` etc., with int/float dispatch from operand type |
+| `P_prim_add` / `subtract` / `mult` / `div` / `mod` | as above; type-dispatched |
+| `P_prim_less` / `lessorequal` / `greater` / `greaterorequal` / `equal` / `notequal` | `CreateICmp*` / `CreateFCmp*` + optional `CreateZExt` to i1 |
+| `P_prim_and` / `or` / `xor` | `CreateAnd` / `CreateOr` / `CreateXor` (bitwise; logical-short-circuit is lowered earlier) |
+| `P_prim_make` | tuple/list/record allocation via runtime call (`GC_malloc` + `CreateStore` initializers) |
+| `P_prim_new` | runtime allocation; phase 3 added the spill-to-alloca pattern for the resulting pointer |
+| `P_prim_clone` / `clone_vector` | structural copy via GC_malloc + memcpy |
+| `P_prim_assign` | `CreateStore` (typed) |
+| `P_prim_sizeof` / `sizeof_element` | LLVM `DataLayout::getTypeAllocSize` constant |
+| `P_prim_index_object` / `set_index_object` | `CreateGEP` + `CreateLoad` / `CreateStore` |
+| `P_prim_destruct` | per-field `CreateGEP` + `CreateLoad` per lval |
+| `P_prim_len` | runtime-call lowered or GEP-to-length-field |
+| `P_prim_period` (getter) | `CreateGEP` + `CreateLoad`; spill-to-alloca for AllocaInst/GlobalVariable receivers |
+| `P_prim_setter` | `CreateGEP` + `CreateStore` |
+| `P_prim_primitive` | metadata-marker, no codegen |
+| `P_prim_reply` | `Builder->CreateRet(val)` |
+
+See [PRIMITIVES.md §14](PRIMITIVES.md) for the cross-backend
+coverage matrix and per-primitive pinpoint fixtures.
 
 Return value: `1` if handled, `0` to fall through to `write_send`.
 
-### 9.2 `write_send(f, n)` (`llvm_primitives.cc:58`)
+### 9.2 `write_send(f, n)` (`llvm_primitives.cc:45`)
 
 For non-primitive SENDs:
 
@@ -340,10 +384,12 @@ void write_send(Fun *f, PNode *n) {
 }
 ```
 
-### 9.3 `get_target_fun(n, f)` (`llvm_primitives.cc:10`) — with fallbacks
+### 9.3 `get_target_fun(n, f)` (`llvm_primitives.cc:18`) — with fallbacks
 
-The version here is more permissive than the C backend's:
-1. Try `f->calls.get(n)` (single target).
+Wraps `get_target_fun_core` (now in `codegen_common.cc`) with two
+LLVM-specific fallback paths:
+1. Call `get_target_fun_core(n, f)` (single target via
+   `f->calls.get(n)`); if that returns non-null, use it.
 2. If no entry: walk `n->rvals[0]`'s Sym, look it up in
    `all_funs_global` by Sym pointer.
 3. Last resort: walk `all_funs_global` looking for any Fun whose
@@ -351,22 +397,28 @@ The version here is more permissive than the C backend's:
 
 The fallback exists because clone's call-graph rebuild can leave
 some sites without a definitive `calls` entry in less-tested
-configurations. The C backend treats this as fatal; the LLVM backend
-tries harder.
+configurations. The C backend treats this as fatal (its
+`get_target_fun` wrapper at `cg.cc:438` calls `fail(...)`); the
+LLVM backend tries harder.
 
 If all fallbacks fail, returns NULL and the call emits an
 abort-runtime call (the equivalent of C's
 `assert(!"runtime error: matching function not found");`).
 
+The structural bug — that `discover_all_reachable_functions`
+doesn't always populate `all_funs` via the `top->calls` walk — is
+filed in CODEGEN_PLAN §8 / AUDIT §1 #6 and deferred to the §5
+Codegen migration.
+
 ---
 
-## 10. Constant propagation: `recover_constant_arg` (`llvm.cc:249`)
+## 10. Constant propagation: `recover_constant_arg` (`llvm.cc:245`)
 
 Heuristic for inlining-equivalent constant propagation. When a call
 site passes a constant Var to a callee whose formal expects a runtime
 value, this helper:
 1. Walks `reverse_call_graph` (built by `build_reverse_call_graph`,
-   `llvm.cc:232`) to find every call site of the function.
+   `llvm.cc:228`) to find every call site of the function.
 2. If every call site passes the same constant, use that constant
    instead of the formal's load.
 
@@ -376,22 +428,38 @@ through it. Treat as experimental.
 
 ---
 
-## 11. The compile driver (`llvm_codegen_compile`, `llvm.cc:1530`)
+## 11. The compile driver (`llvm_codegen_compile`, `llvm.cc:1342`)
 
 ```c
 int llvm_codegen_compile(cchar *input_filename) {
-  // input_filename → ll_file (".ll") and obj_file (".o")
-  snprintf(cmd, sizeof(cmd), "clang -c -fPIC %s -o %s", ll_file, obj_file);
-  int res = system(cmd);
-  if (res != 0) fail("LLVM IR compilation failed...");
+  // Derive <name>.ll, <name>.o, <name> paths from input_filename.
+  // Each snprintf uses FILENAME_MAX and fails on truncation.
+  char ll_file[FILENAME_MAX], obj_file[FILENAME_MAX], exe_file[FILENAME_MAX];
+  // ... bounded snprintf, fail-on-overflow ...
 
-  // Link
-  snprintf(cmd, sizeof(cmd), "clang %s -o %s -lm", obj_file, exe_file);
-  res = system(cmd);
-  if (res != 0) fail("Linking failed...");
+  // Step 1: clang -c -fPIC <ll> -o <obj>
+  {
+    char *argv[] = {"clang", "-c", "-fPIC", ll_file, "-o", obj_file, nullptr};
+    int res = codegen_spawn("clang", argv);
+    if (res != 0) fail("llvm_codegen_compile: clang -c failed for %s (exit=%d)", ll_file, res);
+  }
+
+  // Step 2: clang <obj> -o <exe> -lm
+  {
+    char *argv[] = {"clang", obj_file, "-o", exe_file, "-lm", nullptr};
+    int res = codegen_spawn("clang", argv);
+    if (res != 0) fail("llvm_codegen_compile: linking failed for %s (exit=%d)", obj_file, res);
+  }
   return 0;
 }
 ```
+
+Phase 4 of CODEGEN_PLAN replaced the pre-existing `system(cmd)`
+shell invocations with `codegen_spawn(file, argv)` (from
+`codegen_common.cc`), which calls `posix_spawnp`. Same benefits as
+the C backend's compile path (§9 of CODEGEN_C.md): no shell quoting,
+length-checked path buffers, no chance of shell-metachar surprises
+in user-supplied filenames.
 
 So the LLVM backend's compile path is:
 1. Emit `.ll`.
@@ -445,18 +513,22 @@ If a binary IR serialization format ever returns, that's what
 
 ## 14. Gotchas
 
-### 14.1 Heavy debug logging
-The LLVM backend has `fprintf(stderr, "DEBUG: ...")` calls
-throughout. They're unconditional in the current source. This is noise
-for production builds; either wrap them in `#ifdef DEBUG_LLVM` or
-remove. (The C backend has the same temptation but cleaner gates.)
+### 14.1 Debug logging gated by `DEBUG_LOG`
+Phase 4 of CODEGEN_PLAN wrapped the formerly-unconditional
+`fprintf(stderr, "DEBUG: …")` calls in the `DEBUG_LOG(fmt, …)` macro
+(defined in `codegen_common.h` — expands to nothing in release
+builds). Only a handful of raw `fprintf(stderr, …)` remain for true
+warnings/errors. Production builds are quiet.
 
 ### 14.2 Module / Context globals
 `TheContext`, `TheModule`, `Builder`, `DBuilder` are process-wide
-unique_ptrs. A second `llvm_codegen_write_ir` invocation will reset
-them (via `llvm_codegen_initialize`), which destroys all previously
-emitted state. Don't try to emit two programs from one process unless
-each finishes before the next begins.
+unique_ptrs. `llvm_codegen_initialize` tears them down in
+reverse-dependency order *before* allocating new ones, and clears
+the pointer-into-Context maps (`string_constants_map`,
+`label_to_bb_map`, `reverse_call_graph`). This makes re-entrant
+codegen runs safe — see §3 (Reset-on-init). Phase 5 added the
+`Codegen` base class scaffold for a future migration of these into
+per-run instance state; the actual wholesale move is deferred.
 
 ### 14.3 `label_to_bb_map` must clear per-function
 The map is module-level, but each `translateFunctionBody` clears it
@@ -520,7 +592,10 @@ block's first instruction.
 re-run codegen in the same process, the cached pointer references
 the *first* module's Function — which is destroyed when the new
 module is allocated. Either reset all `f->llvm` to NULL between
-invocations or accept single-shot semantics.
+invocations or accept single-shot semantics. (The reset hook in
+`llvm_codegen_initialize` clears the module-level maps but not the
+per-`Fun` `f->llvm` field; that's a known gap, filed in CODEGEN_PLAN
+for the §5 wholesale Codegen migration.)
 
 ---
 

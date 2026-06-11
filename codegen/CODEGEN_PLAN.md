@@ -624,14 +624,33 @@ sticks.
 
 ### 9.2 Documentation alignment
 
-- [ ] **`CODEGEN_C.md`** — review against current code. Currently
-  documents the dead `< 0` branch (cg.cc:919). Fix any other
-  drift.
-- [ ] **`CODEGEN_LLVM.md`** — review. After phase 3, many
-  primitives listed as "intended" will be "implemented" —
-  update.
-- [ ] **`PRIMITIVES.md`** — coverage matrix from phase 1.3
-  reflects post-phase-3 state.
+- [x] **`CODEGEN_C.md`** — reviewed against current code; all
+  line refs updated (c_codegen_print_c, build_type_strings,
+  write_c, write_c_pnode, write_c_prim, write_send, etc.);
+  pointers added to the codegen_common helpers; the dead `< 0`
+  build_type_strings branch description was rewritten to match
+  the void-returning reality; §9 compile-driver section now
+  reflects the phase-4 `posix_spawnp` migration with explicit
+  argv array.
+- [x] **`CODEGEN_LLVM.md`** — reviewed; phase-3 primitive
+  implementations marked done in §9.1's coverage table; phase-4
+  decomposition of `getLLVMType` (helpers
+  mapBuiltinOrNumeric/Vector/Struct/Function/Sum/ByTypeKind),
+  `createFunction` (~290→30 LOC), `translateFunctionBody`
+  (~250→20 LOC), and `translatePNode` (per-Code_kind helpers)
+  documented; phase-0.1 reset-on-init guarantees explained in
+  §3; phase-5 `Codegen`/`PrimEmitter` scaffolding referenced;
+  §11 updated to reflect `codegen_spawn` driving the `clang -c`
+  + link steps.
+- [x] **`PRIMITIVES.md`** — §14 coverage matrix line refs
+  updated to current cg.cc / llvm_primitives.cc line numbers;
+  the "phase-3 bug fixes" entry updated to point at the
+  current homes (`mapStructType` for the StructLayout fix,
+  `P_prim_period` case for the spill-to-alloca pattern); §15.3
+  updated to reflect that phase 5 landed the `PrimEmitter`
+  scaffold (the inline switches are still authoritative
+  implementations because the `Codegen` base class doesn't yet
+  carry the backend-specific state needed by virtual dispatch).
 
 ### 9.3 Performance pass
 

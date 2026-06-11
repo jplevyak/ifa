@@ -8,7 +8,13 @@ Sister docs: [IR.md](IR.md) (the Sym/Var/PNode/Fun forms it consumes),
 [OPTIMIZE.md](OPTIMIZE.md) (the `live` bits it respects),
 [PRIMITIVES.md](PRIMITIVES.md) (the per-primitive emission paths),
 [CFG_SSU.md](CFG_SSU.md) (the phi/phy nodes it inlines as MOVEs),
-[CODEGEN_LLVM.md](CODEGEN_LLVM.md) when written (the alternative backend).
+[CODEGEN_LLVM.md](CODEGEN_LLVM.md) (the alternative backend).
+
+Shared with the LLVM backend lives in `codegen/codegen_common.{h,cc}` —
+`c_type`, `num_string`, `is_closure_var`, `get_target_fun_core`, the
+type-string assignment passes, the `codegen_spawn` process spawner, and
+the `Codegen` / `PrimEmitter` scaffolding. See `codegen_common.h` for
+the contracts.
 
 ---
 
@@ -43,22 +49,20 @@ int  c_codegen_compile(cchar *filename);               // shell out to system cc
 
 ---
 
-## 3. Top-level emission (`c_codegen_print_c`, `cg.cc:914`)
+## 3. Top-level emission (`c_codegen_print_c`, `cg.cc:809`)
 
 In order:
 
 ```c
 void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
   Vec<Var *> globals;
-  int index = 0;
 
   // 1. Frontend prologue (default: include c_runtime.h).
   if (!if1->callback->c_codegen_pre_file(fp))
     fprintf(fp, "#include \"c_runtime.h\"\n\n");
 
-  // 2. Type declarations.
-  if (build_type_strings(fp, fa, globals) < 0)
-    fail("unable to generate C code: no unique typing");
+  // 2. Type declarations + collect globals.
+  build_type_strings(fp, fa, globals);  // void; failures abort via fail()
 
   // 3. Global variable declarations.
   for (Var *v : globals) { ... assign v->cg_string, emit "T t /* name */ gN;" ... }
@@ -74,6 +78,11 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
 }
 ```
 
+`build_type_strings` returns void — it has no failure path in the
+modern code. Phase 2 of CODEGEN_PLAN moved its core (Fun/Sym
+`cg_string` assignment) into `codegen_common.cc`; the residual code in
+cg.cc is the C-specific forward-decl and struct-definition emission.
+
 ### 3.1 Frontend prologue
 
 `if1->callback->c_codegen_pre_file(fp)` — when true, the frontend has
@@ -84,15 +93,33 @@ default `#include "c_runtime.h"`. pyc's `c_codegen_pre_file`
 (stored in `ctx.c_code`), then returns true. See
 [PYTHON_FRONTEND.md](../PYTHON_FRONTEND.md) §8.
 
-### 3.2 Type declarations (`build_type_strings`, `cg.cc:783`)
+### 3.2 Type declarations (`build_type_strings`, `cg.cc:734`)
 
 Walks `if1->allsyms`, assigns each type Sym a unique `cg_string`,
 emits forward declarations and full definitions for `Type_RECORD`,
 `Type_FUN`, and the special-case `_CG_TUPLE_TO_LIST_FUN` macro for
 homogeneous-tuple→list converters.
 
-Returns -1 if a Sym can't be uniquely typed (post-clone, every type
-should have one concrete representation; if not, codegen fails).
+The core work is now delegated to shared helpers in
+`codegen_common.cc`:
+
+- `assign_fun_cg_strings(fa, /*annotate=*/true, &globals)` — walks live
+  `Fun`s, assigns each `cg_string` and `cg_structural_string`, and
+  collects `sym->var` into `globals` for §3.3.
+- `assign_type_cg_strings_pass1(allsyms, fp)` — first pass over
+  `if1->allsyms`: assigns `_CG_int32` / `_CG_psN` / `_CG_void` /
+  `_CG_symbol` style names; for `Type_RECORD` with fields, also emits
+  the forward declaration `struct _CG_sN; typedef struct _CG_sN *_CG_psN;`
+  to `fp`.
+- `assign_type_cg_strings_pass2(allsyms)` — second pass: resolves
+  `s->fun`-bearing Syms to their Fun's `cg_structural_string` and
+  collapses `Type_SUM` "T | nil" to "T".
+
+The cg.cc residual emits the function-pointer typedef list, the
+prototype declarations, the struct definitions (including the
+`is_vector` trailing flexible-array member), and the
+`_CG_TUPLE_TO_LIST_FUN(id, n)` lines for homogeneous-tuple→list
+conversion.
 
 ### 3.3 Global declarations
 
@@ -123,7 +150,7 @@ init closure (typically `pyc_init` for pyc, `init_main` for V).
 
 ---
 
-## 4. Per-Fun emission (`write_c`, `cg.cc:731`)
+## 4. Per-Fun emission (`write_c`, `cg.cc:680`)
 
 ```c
 static void write_c(FILE *fp, FA *fa, Fun *f, Vec<Var *> *globals = 0) {
@@ -150,7 +177,7 @@ static void write_c(FILE *fp, FA *fa, Fun *f, Vec<Var *> *globals = 0) {
 }
 ```
 
-### 4.1 Prototype (`write_c_fun_proto`, `cg.cc:28`)
+### 4.1 Prototype (`write_c_fun_proto`, `cg.cc:20`)
 
 Emits e.g.:
 
@@ -165,7 +192,7 @@ function-position Sym; subsequent args are the actual parameters.
 The `type = 1` overload emits a function-pointer typedef-style form
 (used by `_CG_FUN_TYPE` emission in the type declarations).
 
-### 4.2 Local variable declarations (`cg.cc:740`)
+### 4.2 Local variable declarations (`cg.cc:689`)
 
 For each Var collected by `collect_Vars(... FUN_COLLECT_VARS_NO_TVALS)`:
 - Reset `cg_string = 0` for `is_local` and `is_fake` Vars.
@@ -182,7 +209,7 @@ This generates e.g.:
   T7 t3;
 ```
 
-### 4.3 Argument initialisation (`write_c_args`, `cg.cc:713`)
+### 4.3 Argument initialisation (`write_c_args`, `cg.cc:662`)
 
 For each formal, emit `arg = <position>;` so the caller's positional
 argument lands in the local Var the body expects. Use of MPositions
@@ -190,7 +217,7 @@ allows nested-pattern unpacking to be handled by `write_arg_position`.
 
 ---
 
-## 5. PNode walk (`write_c_pnode`, `cg.cc:636`)
+## 5. PNode walk (`write_c_pnode`, `cg.cc:585`)
 
 Recursive DFS over `cfg_succ`. `done` tracks visited PNodes; each is
 visited at most once (its successors are deferred to subsequent
@@ -280,9 +307,9 @@ complain about a non-void function falling off the end.
 
 ## 6. Send emission
 
-### 6.1 `write_c_prim` (`cg.cc:183`) — table primitives
+### 6.1 `write_c_prim` (`cg.cc:124`) — table primitives
 
-A 300-line switch on `Prim::index` covering every `P_prim_*`.
+A ~300-line switch on `Prim::index` covering every `P_prim_*`.
 Highlights:
 
 - `P_prim_reply` → `return <val>;`
@@ -300,7 +327,7 @@ Return value:
 - `return 0` → fall through to default `write_send` which emits
   `lhs = _CG_<name>(...args...);`
 
-### 6.2 Default `write_send` (`cg.cc:580`)
+### 6.2 Default `write_send` (`cg.cc:529`)
 
 For non-primitive SENDs:
 
@@ -319,13 +346,19 @@ if (n->prim) {
 }
 ```
 
-`get_target_fun(n, f)` (`cg.cc:485`) looks up `f->calls.get(n)` and
-returns the *single* call target if there's exactly one; otherwise
-NULL. The post-cloning + post-DCE state should have monomorphised
-most call sites; failures here usually mean a polymorphic site
-survived clone (which is also a problem for the analysis correctness).
+`get_target_fun(n, f)` (`cg.cc:438`) is a thin C-backend wrapper
+around `get_target_fun_core` (in `codegen_common.cc`). The core
+looks up `f->calls.get(n)` and returns the *single* call target if
+there's exactly one; otherwise NULL. The C wrapper additionally calls
+`fail(...)` via `fruntime_errors` when no resolution is possible. The
+LLVM backend has its own wrapper in `llvm_primitives.cc` that adds a
+"search by sym, then by name" fallback over a global function list.
 
-### 6.3 Argument emission (`write_send_arg`, `cg.cc:550`)
+The post-cloning + post-DCE state should have monomorphised most call
+sites; failures here usually mean a polymorphic site survived clone
+(which is also a problem for the analysis correctness).
+
+### 6.3 Argument emission (`write_send_arg`, `cg.cc:499`)
 
 Walks the `target->positional_arg_positions`, looks up the actual at
 each position via the call's rvals, emits with comma separation
@@ -334,21 +367,25 @@ between live args.
 ### 6.4 Closure handling
 
 A SEND emitted with a closure-typed receiver (Sym whose `is_fun &&
-type_kind == Type_FUN`) is a closure call. `is_closure_var(v)`
-(`cg.cc:534`) checks this. The `simple_inlining` pass tries to
-collapse closure-create+closure-call pairs into direct calls, so
-runtime closures should be rare.
+type_kind == Type_FUN`) is a closure call. `is_closure_var(v)` —
+moved to `codegen_common.cc` so both backends share the predicate —
+checks this. The `simple_inlining` pass tries to collapse
+closure-create+closure-call pairs into direct calls, so runtime
+closures should be rare.
 
 ---
 
 ## 7. Helper functions
 
-### 7.1 `c_type(v)` / `c_type(s)` (`cg.cc:18,23`)
+### 7.1 `c_type(v)` / `c_type(s)` (`codegen_common.cc`)
 
 Returns the Sym's `cg_string` if available, otherwise `_CG_void`.
-Used everywhere a C type name is needed.
+Used everywhere a C type name is needed. Phase 2 of CODEGEN_PLAN
+moved this into `codegen_common.{h,cc}` so both backends share the
+same name-resolution rule; `cg.cc` keeps a forwarding comment at
+line 18.
 
-### 7.2 `c_rhs(v)` (`cg.cc:159`)
+### 7.2 `c_rhs(v)` (`cg.cc:100`)
 
 Returns the C-string form of a Var suitable for the right-hand side
 of an assignment. Handles:
@@ -356,24 +393,26 @@ of an assignment. Handles:
 - Strings → `_CG_String(...)`.
 - Otherwise → `v->cg_string`.
 
-### 7.3 `num_string(s)` (`cg.cc:106`)
+### 7.3 `num_string(s)` (`codegen_common.cc`)
 
 Returns a C literal for a numeric constant Sym, including the right
-suffix (`L`, `LL`, `U`, etc.) for the type.
+suffix (`L`, `LL`, `U`, etc.) for the type. Moved to
+`codegen_common.{h,cc}` in CODEGEN_PLAN phase 2 — both backends use
+the same numeric formatting.
 
-### 7.4 `simple_move(fp, lhs, rhs)` (`cg.cc:494`)
+### 7.4 `simple_move(fp, lhs, rhs)` (`cg.cc:446`)
 
 Emits a single MOVE: `lhs = (T)rhs;` with the right cast if types
 differ. Skipped if `lhs == rhs` or if the lhs is dead.
 
-### 7.5 `destruct_prim(fp, l, r)` (`cg.cc:172`)
+### 7.5 `destruct_prim(fp, l, r)` (`cg.cc:113`)
 
 Special-case codegen for `P_prim_destruct` — splices a tuple/record
 into multiple destination Vars.
 
 ---
 
-## 8. Type strings (`build_type_strings`, `cg.cc:783`)
+## 8. Type strings (`build_type_strings`, `cg.cc:734`)
 
 A 130-line function that walks `if1->allsyms` and assigns `cg_string`
 to every type Sym. The naming convention:
@@ -394,31 +433,51 @@ Emission order:
 4. Full struct definitions: `struct Tn { T0 e0; T1 e1; ... };`.
 5. `_CG_TUPLE_TO_LIST_FUN(id, n)` for tuples that get used as lists.
 
-`homogeneous_tuple(s)` (`cg.cc:776`) — true if every field of a
+`homogeneous_tuple(s)` (`cg.cc:725`) — true if every field of a
 record type has the same type. Triggers tuple-to-list conversion.
 
 ---
 
-## 9. Compile driver (`c_codegen_compile`, `cg.cc:985`)
+## 9. Compile driver (`c_codegen_compile`, `cg.cc:881`)
 
 ```c
 int c_codegen_compile(cchar *filename) {
-  char target[512], s[1024];
-  strcpy(target, filename);
-  *strrchr(target, '.') = 0;
-  snprintf(s, sizeof(s),
-           "make --no-print-directory -f %s/Makefile.cg "
-           "CG_ROOT=%s CG_TARGET=%s CG_FILES=%s.c %s %s",
-           system_dir, system_dir, target, filename,
-           codegen_optimize ? "OPTIMIZE=1" : "",
-           codegen_debug ? "DEBUG=1" : "");
-  return system(s);
+  char target[FILENAME_MAX];
+  // strip extension into `target`...
+
+  // Build argv for posix_spawn (no shell interpretation, no quoting).
+  char makefile_arg[FILENAME_MAX];  // "<system_dir>/Makefile.cg"
+  char cg_root_arg[FILENAME_MAX];   // "CG_ROOT=<system_dir>"
+  char cg_target_arg[FILENAME_MAX]; // "CG_TARGET=<target>"
+  char cg_files_arg[FILENAME_MAX];  // "CG_FILES=<filename>.c"
+
+  char *argv[16];
+  int ai = 0;
+  argv[ai++] = "make";
+  argv[ai++] = "--no-print-directory";
+  argv[ai++] = "-f";
+  argv[ai++] = makefile_arg;
+  argv[ai++] = cg_root_arg;
+  argv[ai++] = cg_target_arg;
+  argv[ai++] = cg_files_arg;
+  if (codegen_optimize) argv[ai++] = "OPTIMIZE=1";
+  if (codegen_debug)    argv[ai++] = "DEBUG=1";
+  argv[ai] = nullptr;
+  return codegen_spawn("make", argv);
 }
 ```
 
-`Makefile.cg` (root: `/Makefile.cg`) drives the system C compiler
-(`cc` by default) with the right include paths, optimization flags,
-and links against `pyc_c_runtime`. `system_dir` is the install location
+Phase 4 of CODEGEN_PLAN replaced the pre-existing `system(s)` shell
+invocation with `codegen_spawn(file, argv)` (defined in
+`codegen_common.cc`), which calls `posix_spawnp`. Benefits:
+- Arguments are passed literally — no shell quoting concerns for
+  filenames with spaces or special characters.
+- Each `snprintf` into a fixed `FILENAME_MAX` buffer is length-checked;
+  overflow calls `fail(...)` with the offending argument name.
+
+`Makefile.cg` (in `system_dir`) drives the system C compiler (`cc` by
+default) with the right include paths, optimization flags, and links
+against `pyc_c_runtime`. `system_dir` is the install location
 (controlled by `IFA_SYSTEM_DIRECTORY` / `PYC_SYSTEM_DIRECTORY`).
 
 The `target` is `filename` with the extension stripped, so
@@ -520,7 +579,7 @@ line-buffered to a file (or unbuffered if `fp` is a pipe). If you
 add custom emission via `system()` calls or external processes,
 ensure `fflush` before `close`.
 
-### 11.11 `escape_string` (used at `cg.cc:937`) is a separate helper
+### 11.11 `escape_string` (used at `cg.cc:831`) is a separate helper
 Defined in `common/misc.cc`. Properly escapes C string literals
 (backslashes, quotes, control chars). If you handle constant strings
 elsewhere, call this function to avoid producing invalid C.
