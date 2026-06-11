@@ -64,38 +64,29 @@ void write_send(Fun *f, PNode *n) {
           (void *)target, (void *)callee);
 
   if (!callee) {
-    // This should not happen if call graph discovery worked correctly;
-    // see AUDIT §1 #6. We keep the fallback for now and surface the
-    // condition only at debug level.
-    DEBUG_LOG("Target function %s (id %d) not discovered during call graph walk; creating on-demand\n",
-              target->sym->name ? target->sym->name : "unnamed", target->sym->id);
-
+    // Target wasn't discovered by `discover_all_reachable_functions`
+    // — `get_target_fun` reached it via the name-search fallback over
+    // `all_funs_global`. This happens when `current->calls.get(n)`
+    // returns null for some SEND PNode, which means the analyzer's
+    // call-resolution map didn't record this edge but the LLVM-side
+    // name lookup still found the function.
+    //
+    // We create the function and translate its body in-place, saving
+    // and restoring the Builder insert point so the calling function's
+    // translation isn't disrupted. See AUDIT §1 #6 — this fallback
+    // masks a real call-graph-discovery gap, slated for closure in
+    // phase 5's unified `Codegen` context object.
     callee = createFunction(target, TheModule.get());
     if (!callee) {
-      fail("Failed to create target function %s (id %d)", target->sym->name ? target->sym->name : "unnamed",
-           target->sym->id);
+      fail("write_send: failed to create on-demand callee %s (id %d)",
+           target->sym->name ? target->sym->name : "(anon)", target->sym->id);
       return;
     }
-
-    // Translate the function body immediately for on-demand created functions
     if (!target->is_external && target->entry) {
-      DEBUG_LOG("Translating body for on-demand created function %s (id %d)\n",
-              target->sym->name ? target->sym->name : "unnamed", target->sym->id);
-
-      // CRITICAL: Save the current Builder insert point before translating the on-demand function
-      // Otherwise, after translating the callee, the Builder will still point to the callee's block,
-      // causing subsequent instructions to be added to the wrong function
       llvm::BasicBlock *saved_bb = Builder->GetInsertBlock();
       llvm::BasicBlock::iterator saved_ip = Builder->GetInsertPoint();
-
       translateFunctionBody(target);
-
-      // Restore the insert point to continue translating the calling function
-      if (saved_bb) {
-        Builder->SetInsertPoint(saved_bb, saved_ip);
-        DEBUG_LOG("Restored Builder insert point to calling function after translating %s\n",
-                target->sym->name ? target->sym->name : "unnamed");
-      }
+      if (saved_bb) Builder->SetInsertPoint(saved_bb, saved_ip);
     }
   }
 

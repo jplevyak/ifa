@@ -448,44 +448,80 @@ After functionality is complete, harden the code.
 - [ ] **`getLLVMType`** (llvm.cc:304-588): split by `type_kind`
   switch case into private helpers.
 
-Exit criterion: no function in `codegen/llvm*.cc` longer than
-100 lines (excluding switch tables).
+### 4.1 Function decomposition — landed
+
+- [x] **`translatePNode`** decomposed into
+  `translate_code_label`, `translate_code_goto`,
+  `translate_code_move`, `translate_code_if`,
+  `translate_code_send`. Driver `translatePNode` is now a thin
+  switch with one-line dispatch per Code_kind.
+- [x] **`translateFunctionBody`** decomposed into
+  `prepare_basic_blocks`, `allocate_locals`,
+  `emit_parameter_debug_info`, `translate_pnodes_worklist`.
+  Driver function is ~20 lines.
+- [x] **`createFunction`** decomposed into
+  `determine_return_type`, `build_arg_list`,
+  `create_llvm_function_decl`, `attach_debug_info`. Driver is
+  ~30 lines.
+- [x] **`getLLVMType`** decomposed into `mapBuiltinOrNumeric`,
+  `mapVectorType`, `mapStructType`, `mapFunctionType`,
+  `mapSumType`, `mapByTypeKind`. Driver is ~20 lines.
+
+Every function in `codegen/llvm*.cc` is now under 100 lines.
+The largest helpers: `allocate_locals` (57), `translate_code_if`
+(53), `attach_debug_info` (45). Each is responsible for one
+named job and reads top-to-bottom.
 
 ### 4.2 Modern C++ idioms
 
-- [ ] **Replace raw `char[]` paths in `cg.cc:984-1003`** with
-  `std::string` + bounds-safe construction.
-- [ ] **RAII for `FILE*`** in `c_codegen_write_c` (currently
-  fine but a `std::ofstream` would be safer if it fits the
-  callback contract).
-- [ ] **`const`-correct** the cg.cc helpers (`c_type`, `c_rhs`)
-  — they take pointers that aren't mutated.
+- [x] **Buffer safety** in cg.cc paths landed in **phase 0.6**
+  (`snprintf` with truncation checks, `FILENAME_MAX` sizing).
+- [-] **RAII for `FILE*`** in `c_codegen_write_c` — deferred.
+  `fail()` calls exit; OS reclaims the FD. A `std::ofstream`
+  refactor would require changing the `c_codegen_print_c(FILE*,
+  …)` signature and the frontend `c_codegen_pre_file` callback
+  contract — bigger than phase 4's scope.
+- [-] **`const`-correct cg.cc helpers** — deferred. `c_type` /
+  `c_rhs` only inspect their args, but adding `const` propagates
+  to dozens of caller signatures across IF1 / IR types that
+  don't use const elsewhere. Friction outweighs benefit.
 
-### 4.3 Safer process invocation
+### 4.3 Safer process invocation — landed
 
-- [ ] **`c_codegen_compile`** (cg.cc:993-1003) and
-  **`llvm_codegen_compile`** (llvm.cc:1516-1575): replace
-  `system()` with `posix_spawn` or `execvp` using explicit
-  argv arrays. Eliminates shell injection from filenames.
+- [x] **`codegen_spawn(const char *file, char *const argv[])`**
+  added to `codegen_common.{h,cc}`. Wraps `posix_spawnp` +
+  `waitpid`. No shell interpretation — arguments are passed
+  literally to `exec`.
+- [x] **`c_codegen_compile`** rewritten to build an explicit
+  argv (`make`, `-f`, makefile, CG_ROOT=, CG_TARGET=, CG_FILES=,
+  optional OPTIMIZE=1 / DEBUG=1) and call `codegen_spawn("make",
+  argv)`. Each arg buffer bounded with `snprintf` truncation
+  checks.
+- [x] **`llvm_codegen_compile`** rewritten the same way for the
+  two clang invocations (compile and link). `FILENAME_MAX`-sized
+  buffers replace the `char[512]/char[1024]` mix.
+- No `system()` calls remain in production codegen paths.
 
-### 4.4 Defensive code consolidation
+### 4.4 Defensive code consolidation — landed
 
-- [ ] **"Ensure terminators" pass** is currently duplicated in
-  `createFunction` (lines 296-317) and `translateFunctionBody`
-  (lines 571-626). Extract into one helper.
-- [ ] **"On-demand create function" fallback** in
-  `write_send` (llvm_primitives.cc:79-114): see AUDIT §1 #6.
-  Either prove `discover_all_reachable_functions` is complete
-  (delete the fallback, treat misses as `fail`) or document
-  why the fallback is structurally required and keep it.
+- [x] **`ensure_block_terminators(llvm_func, origin)`** extracted
+  to llvm_codegen.cc. Called from both `createFunction` (for
+  external / no-entry functions) and `translateFunctionBody`
+  (catching any worklist-missed blocks). The two ~30-line
+  inline copies are gone.
+- [x] **`write_send` on-demand fallback** — documented in
+  llvm_primitives.cc with explicit "AUDIT §1 #6" reference and
+  the structural reason it must stay until phase 5's `Codegen`
+  context closes the call-graph-discovery gap. Tried converting
+  to `fail()`: 02_call.ir immediately failed because
+  `discover_all_reachable_functions` doesn't find `add` via
+  `top->calls`. Reverted with better docs.
 
 ### Phase 4 exit criteria
 
-- No function in `codegen/` longer than 100 lines (excluding
-  switch tables).
-- No `system()` calls in production codegen paths.
-- No duplicated "ensure terminators" / "ensure x" defensive
-  blocks.
+- [x] Every function in `codegen/` ≤ 100 LOC.
+- [x] No `system()` calls in production codegen paths.
+- [x] No duplicated "ensure terminators" / "ensure x" blocks.
 
 ---
 

@@ -4,6 +4,38 @@
 #include <set>
 
 // ============================================================================
+// Defensive helpers
+// ============================================================================
+
+// Walk every BasicBlock in `llvm_func` and add a default terminator to any
+// block that doesn't have one. The terminator matches the function's
+// declared return type — `ret void` for void-returning, `ret undef` for
+// value-returning. Used at the end of `createFunction` (for external
+// functions whose bodies aren't translated) and at the end of
+// `translateFunctionBody` (catching any block the worklist left
+// unterminated). See CODEGEN_PLAN §7.4 / AUDIT §4 — the two callsites
+// previously inlined this same logic.
+static void ensure_block_terminators(llvm::Function *llvm_func, cchar *origin) {
+  llvm::Type *ret_ty = llvm_func->getReturnType();
+  for (llvm::BasicBlock &BB : *llvm_func) {
+    if (BB.getTerminator()) continue;
+    DEBUG_LOG("ensure_block_terminators (%s): block %s in function %s has no terminator; adding default\n",
+              origin, BB.getName().str().c_str(), llvm_func->getName().str().c_str());
+    llvm::IRBuilder<> temp_builder(*TheContext);
+    temp_builder.SetInsertPoint(&BB, BB.end());
+    if (ret_ty->isVoidTy()) {
+      temp_builder.CreateRetVoid();
+    } else {
+      temp_builder.CreateRet(llvm::UndefValue::get(ret_ty));
+    }
+    if (!BB.getTerminator()) {
+      fail("ensure_block_terminators (%s): failed to add terminator to %s in %s", origin,
+           BB.getName().str().c_str(), llvm_func->getName().str().c_str());
+    }
+  }
+}
+
+// ============================================================================
 // Basic Block Management
 // ============================================================================
 
@@ -28,52 +60,283 @@ llvm::BasicBlock *getLLVMBasicBlock(Label *label, llvm::Function *current_llvm_f
 
 // Forward declare
 static void translatePNode(PNode *pn, Fun *ifa_fun);
-llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
-  if (!ifa_fun) {
-    fail("Null Fun provided to createFunction");
-    return nullptr;
-  }
-  DEBUG_LOG("createFunction entry for %s (id %d)\n", ifa_fun->sym->name, ifa_fun->sym->id);
+// ============================================================================
+// createFunction helpers (phase-4 decomposition)
+//
+// createFunction used to be ~290 lines doing five jobs:
+//   1. Determine the LLVM return type.
+//   2. Build the live-args list and corresponding LLVM arg types.
+//   3. Construct the llvm::Function declaration + entry BasicBlock.
+//   4. Attach DISubprogram and DIParameterVariable debug info.
+//   5. Ensure terminators on external / no-entry functions.
+// Each step is now its own helper. The driver sequences them.
+// ============================================================================
 
-  if (ifa_fun->llvm) return ifa_fun->llvm;
-  if (!ifa_fun->sym) {
-    fail("Fun %p has no symbol associated.", (void *)ifa_fun);
-    return nullptr;
-  }
-
-  // Determine return type
-  DEBUG_LOG("createFunction step 1: determine ret type for %d rets\n", ifa_fun->rets.n);
-  llvm::Type *llvm_ret_type;
-  DEBUG_LOG("check rets: n=%d, rets[0]=%p, rets[0]->type=%p\n", ifa_fun->rets.n,
-          (ifa_fun->rets.n > 0 ? ifa_fun->rets[0] : nullptr),
-          (ifa_fun->rets.n > 0 && ifa_fun->rets[0] ? ifa_fun->rets[0]->type : nullptr));
-
+static llvm::Type *determine_return_type(Fun *ifa_fun) {
+  if (ifa_fun->rets.n == 0) return llvm::Type::getVoidTy(*TheContext);
   if (ifa_fun->rets.n == 1 && ifa_fun->rets[0]) {
     Var *ret_var = ifa_fun->rets[0];
-    if (!ret_var->type || !ret_var->type->cg_string) {
-      llvm_ret_type = llvm::Type::getVoidTy(*TheContext);
-    } else {
-      llvm_ret_type = getLLVMType(ret_var->type);
-    }
-  } else if (ifa_fun->rets.n == 0) {
-    llvm_ret_type = llvm::Type::getVoidTy(*TheContext);
-  } else {
-    DEBUG_LOG("Unsupported ret count %d\n", ifa_fun->rets.n);
-    fail("Function %s has %d return values, unsupported. Assumed void or single.", ifa_fun->sym->name, ifa_fun->rets.n);
-    llvm_ret_type = llvm::Type::getVoidTy(*TheContext);
+    if (!ret_var->type || !ret_var->type->cg_string) return llvm::Type::getVoidTy(*TheContext);
+    return getLLVMType(ret_var->type);
   }
-  if (!llvm_ret_type) {
-    fail("Could not determine LLVM return type for function %s", ifa_fun->sym->name);
+  fail("createFunction: function %s has %d return values, unsupported (only 0 or 1 handled)",
+       ifa_fun->sym->name ? ifa_fun->sym->name : "(anon)", ifa_fun->rets.n);
+  return llvm::Type::getVoidTy(*TheContext);
+}
+
+// Determine whether `arg_var` counts as "live" for codegen purposes.
+// An argument is live if its `live` bit is set OR any of its abstract
+// vars is live (FA-level liveness). Function-typed formals are
+// excluded — they're handled via the dispatcher path, not as direct
+// parameters.
+static bool arg_is_live_for_codegen(Var *arg_var) {
+  if (!arg_var) return false;
+  if (arg_var->live) return true;
+  form_AVarMapElem(x, arg_var->avars) {
+    if (x->value && x->value->live) return true;
+  }
+  return false;
+}
+
+static void build_arg_list(Fun *ifa_fun, std::vector<Var *> &live_args,
+                           std::vector<llvm::Type *> &llvm_arg_types) {
+  MPosition p;
+  p.push(1);
+  for (int i = 0; i < ifa_fun->sym->has.n; i++) {
+    MPosition *cp = cannonicalize_mposition(p);
+    p.inc();
+    Var *arg_var = ifa_fun->args.get(cp);
+    if (!arg_is_live_for_codegen(arg_var)) continue;
+    if (arg_var->type && arg_var->type->is_fun) continue;  // Skip function-typed formals.
+    live_args.push_back(arg_var);
+  }
+  for (Var *arg_var : live_args) {
+    llvm::Type *arg_llvm_type =
+        arg_var->type ? getLLVMType(arg_var->type) : llvm::Type::getInt64Ty(*TheContext);
+    // Struct-typed args are passed as pointers (matches C-backend convention).
+    if (arg_llvm_type && arg_llvm_type->isStructTy() && arg_var->type &&
+        arg_var->type->type_kind == Type_RECORD) {
+      arg_llvm_type = llvm::PointerType::getUnqual(*TheContext);
+    }
+    if (!arg_llvm_type) {
+      fail("createFunction: could not get LLVM type for argument %s of function %s",
+           arg_var->sym && arg_var->sym->name ? arg_var->sym->name : "(anon)",
+           ifa_fun->sym->name ? ifa_fun->sym->name : "(anon)");
+      return;
+    }
+    llvm_arg_types.push_back(arg_llvm_type);
+  }
+}
+
+static llvm::Function *create_llvm_function_decl(Fun *ifa_fun, llvm::Module *module,
+                                                  llvm::Type *llvm_ret_type,
+                                                  const std::vector<llvm::Type *> &llvm_arg_types,
+                                                  const std::vector<Var *> &live_args,
+                                                  std::string &func_name_out) {
+  llvm::FunctionType *func_type =
+      llvm::FunctionType::get(llvm_ret_type, llvm_arg_types, ifa_fun->is_varargs);
+  func_name_out = (ifa_fun->sym->name ? ifa_fun->sym->name : "func") + std::to_string(ifa_fun->id);
+  if (ifa_fun->cg_string && strncmp(ifa_fun->cg_string, "_CG_", 4) == 0) {
+    func_name_out = ifa_fun->cg_string;
+  }
+  llvm::Function::LinkageTypes linkage =
+      ifa_fun->entry ? llvm::Function::InternalLinkage : llvm::Function::ExternalLinkage;
+  llvm::Function *llvm_func = llvm::Function::Create(func_type, linkage, func_name_out, module);
+  ifa_fun->llvm = llvm_func;
+  // Wire each live arg to its LLVM Argument.
+  for (unsigned i = 0; i < live_args.size() && i < llvm_func->arg_size(); ++i) {
+    llvm::Argument *llvm_arg = llvm_func->getArg(i);
+    Var *arg_var = live_args[i];
+    if (arg_var->sym && arg_var->sym->name) llvm_arg->setName(arg_var->sym->name);
+    arg_var->llvm_value = llvm_arg;
+  }
+  if (!ifa_fun->is_external && ifa_fun->entry) {
+    llvm::BasicBlock::Create(*TheContext, "entry", llvm_func);
+  }
+  return llvm_func;
+}
+
+static void attach_debug_info(Fun *ifa_fun, llvm::Function *llvm_func,
+                              const std::vector<Var *> &live_args, const std::string &func_name) {
+  if (!DBuilder || !UnitFile) return;
+  unsigned line_num = 0;
+  if (ifa_fun->sym && ifa_fun->sym->ast) {
+    line_num = ifa_fun->sym->ast->source_line();
+  } else if (ifa_fun->entry && ifa_fun->entry->code) {
+    line_num = ifa_fun->entry->code->source_line();
+  }
+  llvm::SmallVector<llvm::Metadata *, 8> di_param_types;
+  if (ifa_fun->rets.n == 1 && ifa_fun->rets[0] && ifa_fun->rets[0]->type) {
+    di_param_types.push_back(getLLVMDIType(ifa_fun->rets[0]->type, UnitFile));
+  } else {
+    di_param_types.push_back(nullptr);
+  }
+  for (Var *arg_var : live_args) {
+    di_param_types.push_back(
+        arg_var && arg_var->type ? getLLVMDIType(arg_var->type, UnitFile) : nullptr);
+  }
+  llvm::DISubroutineType *di_func_type =
+      DBuilder->createSubroutineType(DBuilder->getOrCreateTypeArray(di_param_types));
+  llvm::DISubprogram *sp = DBuilder->createFunction(UnitFile, func_name, llvm_func->getName(), UnitFile,
+                                                    line_num, di_func_type, line_num,
+                                                    llvm::DINode::FlagPrototyped,
+                                                    llvm::DISubprogram::SPFlagDefinition);
+  llvm_func->setSubprogram(sp);
+
+  // DIParameter info for every source-level parameter (live or
+  // optimized-out — optimized-out get the metadata but no dbg.value).
+  MPosition p2;
+  p2.push(1);
+  for (int i = 0; i < ifa_fun->sym->has.n; i++) {
+    MPosition *cp2 = cannonicalize_mposition(p2);
+    p2.inc();
+    Var *arg_var = ifa_fun->args.get(cp2);
+    if (!arg_var || !arg_var->sym || !arg_var->type || arg_var->type->is_fun) continue;
+    llvm::DIType *arg_di_type = getLLVMDIType(arg_var->type, UnitFile);
+    if (!arg_di_type) continue;
+    unsigned arg_line = arg_var->sym->source_line() ? arg_var->sym->source_line() : line_num;
+    llvm::DILocalVariable *param_var = DBuilder->createParameterVariable(
+        sp, arg_var->sym->name ? arg_var->sym->name : "arg", i + 1, UnitFile, arg_line, arg_di_type, true);
+    arg_var->llvm_debug_var = param_var;
+  }
+}
+
+llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
+  if (!ifa_fun) {
+    fail("createFunction: null Fun");
+    return nullptr;
+  }
+  if (ifa_fun->llvm) return ifa_fun->llvm;
+  if (!ifa_fun->sym) {
+    fail("createFunction: Fun %p has no associated symbol", (void *)ifa_fun);
+    return nullptr;
+  }
+  if (!module) {
+    fail("createFunction: module is null");
     return nullptr;
   }
 
-  // Build argument list (parallels cg.cc's write_c_fun_proto at cg.cc:31-60)
-  DEBUG_LOG("createFunction step 2: args\n");
+  llvm::Type *llvm_ret_type = determine_return_type(ifa_fun);
+  if (!llvm_ret_type) return nullptr;
   std::vector<llvm::Type *> llvm_arg_types;
   std::vector<Var *> live_args;
+  build_arg_list(ifa_fun, live_args, llvm_arg_types);
+  std::string func_name;
+  llvm::Function *llvm_func =
+      create_llvm_function_decl(ifa_fun, module, llvm_ret_type, llvm_arg_types, live_args, func_name);
+  if (!llvm_func) return nullptr;
+  attach_debug_info(ifa_fun, llvm_func, live_args, func_name);
 
-  DEBUG_LOG("Function %s has %d formal parameters (sym->has.n)\n", ifa_fun->sym->name,
-          ifa_fun->sym->has.n);
+  // External / no-entry functions skip translateFunctionBody, so their
+  // (typically-empty) blocks need terminators here.
+  if (ifa_fun->is_external || !ifa_fun->entry) {
+    ensure_block_terminators(llvm_func, "createFunction");
+  }
+  return llvm_func;
+}
+
+// --- PNode Translation ---
+// ============================================================================
+// translateFunctionBody helpers (phase-4 decomposition)
+//
+// translateFunctionBody used to be ~250 lines doing four jobs:
+//   1. Walk PNodes pre-creating BasicBlocks for every LABEL.
+//   2. Allocate stack slots (AllocaInst) for each local Var.
+//   3. Emit debug info for function parameters.
+//   4. Run the CFG-walk worklist that calls translatePNode per PNode.
+// Each step is now its own helper. The driver `translateFunctionBody`
+// just sequences them.
+// ============================================================================
+
+// Step 1: pre-create LLVM BasicBlocks for every Code_LABEL PNode and
+// wire up the function's auto-created entry block to branch to the
+// IF1 entry if needed.
+static void prepare_basic_blocks(Fun *ifa_fun) {
+  llvm::Function *llvm_func = ifa_fun->llvm;
+  Vec<PNode *> pnodes;
+  ifa_fun->collect_PNodes(pnodes);
+  if (ifa_fun->fa_all_Vars.n == 0) ifa_fun->collect_Vars(ifa_fun->fa_all_Vars);
+  for (PNode *pn : pnodes) {
+    if (pn->code && pn->code->kind == Code_LABEL && pn->code->label[0]) {
+      getLLVMBasicBlock(pn->code->label[0], llvm_func);
+    }
+  }
+  // If the IF1 entry is a Code_LABEL, branch from LLVM's auto-created
+  // entry block to it.
+  if (ifa_fun->entry->code && ifa_fun->entry->code->kind == Code_LABEL && ifa_fun->entry->code->label[0]) {
+    llvm::BasicBlock *entry_bb = getLLVMBasicBlock(ifa_fun->entry->code->label[0], llvm_func);
+    if (entry_bb != &llvm_func->getEntryBlock()) {
+      Builder->SetInsertPoint(&llvm_func->getEntryBlock());
+      if (llvm_func->getEntryBlock().getTerminator() == nullptr) Builder->CreateBr(entry_bb);
+    }
+  }
+}
+
+// Step 2: allocate stack slots for local variables (one AllocaInst per
+// unique Sym), with optional debug-info DI variable declarations.
+static void allocate_locals(Fun *ifa_fun) {
+  llvm::Function *llvm_func = ifa_fun->llvm;
+  Builder->SetInsertPoint(&llvm_func->getEntryBlock(), llvm_func->getEntryBlock().begin());
+  // Clear debug location before allocating locals to avoid wrong
+  // subprogram references on the alloca instructions themselves.
+  Builder->SetCurrentDebugLocation(llvm::DebugLoc());
+
+  llvm::DIFile *di_file_for_locals = llvm_func->getSubprogram() ? llvm_func->getSubprogram()->getFile() : nullptr;
+  unsigned func_start_line = llvm_func->getSubprogram() ? llvm_func->getSubprogram()->getLine() : 0;
+
+  // Multiple Vars can share the same Sym (e.g., loop variable `i`
+  // appears multiple times in the SSU form). Dedup by Sym so we emit
+  // exactly one alloca per source variable.
+  std::map<Sym *, llvm::AllocaInst *> sym_to_alloca;
+  for (Var *v : ifa_fun->fa_all_Vars) {
+    if (!v || !v->sym || !v->sym->is_local || v->is_formal) continue;
+
+    // Reuse the existing alloca if this Sym has already been seen.
+    auto it = sym_to_alloca.find(v->sym);
+    if (it != sym_to_alloca.end()) {
+      v->llvm_value = it->second;
+      v->llvm_type = it->second->getAllocatedType();
+      continue;
+    }
+    if (v->llvm_value) continue;
+
+    llvm::Type *var_llvm_type = v->type ? getLLVMType(v->type) : llvm::Type::getInt64Ty(*TheContext);
+    if (!var_llvm_type) {
+      fail("allocate_locals: could not get LLVM type for var %s", v->sym->name);
+      continue;
+    }
+    if (var_llvm_type->isVoidTy()) continue;
+
+    llvm::AllocaInst *alloca_inst =
+        Builder->CreateAlloca(var_llvm_type, nullptr, v->sym->name ? v->sym->name : "local_var");
+    v->llvm_value = alloca_inst;
+    v->llvm_type = var_llvm_type;
+    sym_to_alloca[v->sym] = alloca_inst;
+
+    if (DBuilder && llvm_func->getSubprogram() && di_file_for_locals) {
+      llvm::DIType *var_di_type = getLLVMDIType(v->type, di_file_for_locals);
+      unsigned var_line = v->sym->source_line() ? v->sym->source_line() : func_start_line;
+      if (var_di_type) {
+        llvm::DILocalVariable *dil_var = DBuilder->createAutoVariable(
+            llvm_func->getSubprogram(), v->sym->name ? v->sym->name : "var", UnitFile, var_line,
+            getLLVMDIType(v->type, UnitFile));
+        DBuilder->insertDeclare(alloca_inst, dil_var, DBuilder->createExpression(),
+                                llvm::DILocation::get(*TheContext, var_line, 0, llvm_func->getSubprogram()),
+                                Builder->GetInsertBlock());
+      }
+    }
+  }
+}
+
+// Step 3: emit dbg.value intrinsics for every formal argument. Must
+// run after `allocate_locals` (the dbg.value insertions land in the
+// entry block at the current builder position).
+static void emit_parameter_debug_info(Fun *ifa_fun) {
+  if (!DBuilder) return;
+  llvm::Function *llvm_func = ifa_fun->llvm;
+  llvm::DISubprogram *sp = llvm_func->getSubprogram();
+  if (!sp) return;
+  unsigned func_start_line = sp->getLine();
 
   MPosition p;
   p.push(1);
@@ -81,555 +344,164 @@ llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
     MPosition *cp = cannonicalize_mposition(p);
     p.inc();
     Var *arg_var = ifa_fun->args.get(cp);
-    DEBUG_LOG("  formal %d: arg_var=%p, live=%d, sym=%s\n", i, arg_var, arg_var ? arg_var->live : -1,
-            arg_var && arg_var->sym && arg_var->sym->name ? arg_var->sym->name : "(null)");
-    // Check if argument is live according to either dead code elimination or FA
-    bool arg_is_live = false;
-    if (arg_var) {
-      arg_is_live = arg_var->live;
-      // Also check FA liveness by looking at AVars
-      if (!arg_is_live) {
-        int fa_live_count = 0;
-        form_AVarMapElem(x, arg_var->avars) {
-          AVar *av = x->value;
-          if (av && av->live) {
-            arg_is_live = true;
-            fa_live_count++;
-          }
-        }
-        if (fa_live_count > 0) {
-          DEBUG_LOG("    Found %d FA-live AVars for arg %s\n", fa_live_count,
-                  arg_var->sym && arg_var->sym->name ? arg_var->sym->name : "(null)");
-        }
-      }
+    if (!arg_var || !arg_var->llvm_debug_var) continue;
+    unsigned arg_line = arg_var->sym->source_line() ? arg_var->sym->source_line() : func_start_line;
+    llvm::DILocation *debug_loc = llvm::DILocation::get(*TheContext, arg_line, 0, sp);
+    if (arg_var->llvm_value) {
+      DBuilder->insertDbgValueIntrinsic(arg_var->llvm_value, arg_var->llvm_debug_var,
+                                        DBuilder->createExpression(), debug_loc, Builder->GetInsertBlock());
     }
-    if (arg_var && arg_is_live) {
-      if (arg_var->type && arg_var->type->is_fun) {
-        DEBUG_LOG("  Skipping function-typed formal %d\n", i);
-        continue;
-      }
-      live_args.push_back(arg_var);
-    }
+    // Optimized-out parameters intentionally emit no dbg.value — the
+    // debugger displays them as "<optimized out>".
   }
-
-  DEBUG_LOG("Found %zu live args for %s\n", live_args.size(), ifa_fun->sym->name);
-
-  // Now create LLVM types for live args
-  for (Var *arg_var : live_args) {
-    DEBUG_LOG("processing live arg %p (id %d, sym=%s)\n", arg_var, arg_var->id,
-            arg_var->sym && arg_var->sym->name ? arg_var->sym->name : "(null)");
-
-    llvm::Type *arg_llvm_type = nullptr;
-    if (arg_var->type) {
-      arg_llvm_type = getLLVMType(arg_var->type);
-
-      // For struct/tuple types, function arguments should be pointers
-      // (matching the C backend convention)
-      if (arg_llvm_type && arg_llvm_type->isStructTy() && arg_var->type->type_kind == Type_RECORD) {
-        DEBUG_LOG("Wrapping struct arg type in pointer for arg %s\n",
-                arg_var->sym && arg_var->sym->name ? arg_var->sym->name : "(unnamed)");
-        arg_llvm_type = llvm::PointerType::getUnqual(*TheContext);
-      }
-    } else {
-      arg_llvm_type = llvm::Type::getInt64Ty(*TheContext);  // Fallback
-    }
-
-    if (arg_llvm_type) {
-      llvm_arg_types.push_back(arg_llvm_type);
-    } else {
-      fail("Could not get LLVM type for argument %s of function %s",
-           arg_var->sym && arg_var->sym->name ? arg_var->sym->name : "unnamed_arg", ifa_fun->sym->name);
-      return nullptr;
-    }
-  }
-
-  DEBUG_LOG("createFunction step 3: FunctionType::get\n");
-  llvm::FunctionType *func_type = llvm::FunctionType::get(llvm_ret_type, llvm_arg_types, ifa_fun->is_varargs);
-
-  // 3. Create llvm::Function
-  DEBUG_LOG("createFunction step 4: Function::Create\n");
-  std::string func_name = (ifa_fun->sym->name ? ifa_fun->sym->name : "func") + std::to_string(ifa_fun->id);
-  if (ifa_fun->cg_string && strncmp(ifa_fun->cg_string, "_CG_", 4) == 0) {
-    func_name = ifa_fun->cg_string;
-  }
-
-  if (!module) fail("Module is null");
-  if (!func_type) fail("FuncType is null");
-
-  // Linkage logic
-  llvm::Function::LinkageTypes linkage = llvm::Function::ExternalLinkage;
-  // FIX: Force External if no entry, regardless of builtin status
-  if (!ifa_fun->entry) {
-    linkage = llvm::Function::ExternalLinkage;
-  } else {
-    linkage = llvm::Function::InternalLinkage;
-  }
-  DEBUG_LOG("Linkage Fixed: entry=%p -> %d\n", ifa_fun->entry, (int)linkage);
-
-  DEBUG_LOG("func_name='%s', module=%p, func_type=%p, varargs=%d, linkage=%d\n", func_name.c_str(), module,
-          func_type, ifa_fun->is_varargs, (int)linkage);
-
-  llvm::Function *llvm_func = llvm::Function::Create(func_type, linkage, func_name, module);
-  DEBUG_LOG("Function created %p\n", llvm_func);
-  ifa_fun->llvm = llvm_func;  // Store it
-
-  // 3. Set argument names and store llvm::Argument in Var::llvm_value
-  DEBUG_LOG("Setting arg names for %zu live args\n", live_args.size());
-  for (unsigned i = 0; i < live_args.size() && i < llvm_func->arg_size(); ++i) {
-    llvm::Argument *llvm_arg = llvm_func->getArg(i);
-    Var *arg_var = live_args[i];
-
-    if (arg_var->sym && arg_var->sym->name) {
-      llvm_arg->setName(arg_var->sym->name);
-    }
-    arg_var->llvm_value = llvm_arg;
-    DEBUG_LOG("Mapped arg %d: %s\n", i,
-            arg_var->sym && arg_var->sym->name ? arg_var->sym->name : "(unnamed)");
-  }
-  DEBUG_LOG("Finished mapping arguments\n");
-
-  DEBUG_LOG("Starting Entry Block creation. Entry=%p, External=%d\n", ifa_fun->entry,
-          ifa_fun->is_external);
-  DEBUG_LOG("TheContext=%p, llvm_func=%p\n", TheContext.get(), llvm_func);
-  if (!TheContext) fail("TheContext is null");
-  if (!llvm_func) fail("llvm_func is null");
-
-  if (!ifa_fun->is_external && ifa_fun->entry) {
-    llvm::BasicBlock *entry_bb = llvm::BasicBlock::Create(*TheContext, "entry", llvm_func);
-    DEBUG_LOG("Entry Block Created: %p\n", entry_bb);
-  }
-
-  // Create Debug Info for this function
-  if (DBuilder && UnitFile) {
-    // Get source location info
-    unsigned line_num = 0;
-    if (ifa_fun->sym && ifa_fun->sym->ast) {
-      line_num = ifa_fun->sym->ast->source_line();  // Use source_line() to get actual source line, not generated code
-      DEBUG_LOG("Function %s: ast->line()=%d, ast->source_line()=%d\n", ifa_fun->sym->name,
-              ifa_fun->sym->ast->line(), line_num);
-    } else if (ifa_fun->entry && ifa_fun->entry->code) {
-      line_num = ifa_fun->entry->code->source_line();  // Use source_line() instead of line()
-      DEBUG_LOG("Function %s: code->line()=%d, code->source_line()=%d\n", ifa_fun->sym->name,
-              ifa_fun->entry->code->line(), line_num);
-    }
-
-    // Create DISubroutineType
-    llvm::SmallVector<llvm::Metadata *, 8> di_param_types;
-
-    // Return type
-    if (ifa_fun->rets.n == 1 && ifa_fun->rets[0] && ifa_fun->rets[0]->type) {
-      llvm::DIType *di_ret_type = getLLVMDIType(ifa_fun->rets[0]->type, UnitFile);
-      di_param_types.push_back(di_ret_type);
-    } else {
-      di_param_types.push_back(nullptr);  // void return
-    }
-
-    // Parameter types
-    for (Var *arg_var : live_args) {
-      if (arg_var && arg_var->type) {
-        llvm::DIType *di_arg_type = getLLVMDIType(arg_var->type, UnitFile);
-        di_param_types.push_back(di_arg_type);
-      } else {
-        di_param_types.push_back(nullptr);
-      }
-    }
-
-    llvm::DISubroutineType *di_func_type =
-        DBuilder->createSubroutineType(DBuilder->getOrCreateTypeArray(di_param_types));
-
-    // Create DISubprogram
-    llvm::DISubprogram *sp = DBuilder->createFunction(UnitFile,                             // Scope
-                                                      func_name,                            // Name
-                                                      llvm_func->getName(),                 // Linkage name
-                                                      UnitFile,                             // File
-                                                      line_num,                             // Line number
-                                                      di_func_type,                         // Type
-                                                      line_num,                             // ScopeLine
-                                                      llvm::DINode::FlagPrototyped,         // Flags
-                                                      llvm::DISubprogram::SPFlagDefinition  // SPFlags
-    );
-
-    llvm_func->setSubprogram(sp);
-    DEBUG_LOG("Created DISubprogram for %s at line %u\n", func_name.c_str(), line_num);
-
-    // Create debug info for ALL source-level function parameters
-    // This includes parameters that were optimized away
-    MPosition p2;
-    p2.push(1);
-    for (int i = 0; i < ifa_fun->sym->has.n; i++) {
-      MPosition *cp2 = cannonicalize_mposition(p2);
-      p2.inc();
-      Var *arg_var = ifa_fun->args.get(cp2);
-
-      if (arg_var && arg_var->sym && arg_var->type && !arg_var->type->is_fun) {
-        llvm::DIType *arg_di_type = getLLVMDIType(arg_var->type, UnitFile);
-
-        if (arg_di_type) {
-          unsigned arg_line = arg_var->sym->source_line() ? arg_var->sym->source_line() : line_num;
-          llvm::DILocalVariable *param_var =
-              DBuilder->createParameterVariable(sp,                                               // Scope
-                                                arg_var->sym->name ? arg_var->sym->name : "arg",  // Name
-                                                i + 1,        // Arg number (1-based)
-                                                UnitFile,     // File
-                                                arg_line,     // Line
-                                                arg_di_type,  // Type
-                                                true          // AlwaysPreserve
-              );
-
-          // Store the debug variable info
-          arg_var->llvm_debug_var = param_var;
-
-          // Track if this is a live arg (has actual LLVM parameter)
-          bool is_live = arg_var->live;
-          DEBUG_LOG("Created DIParameter for arg %d: %s (live=%d)\n", i,
-                  arg_var->sym->name ? arg_var->sym->name : "(unnamed)", is_live);
-        }
-      }
-    }
-  }
-
-  // Note: Function body translation is done in a separate pass after all functions are created
-  // This ensures all function declarations exist before any body tries to call them
-
-  // For functions that won't get translateFunctionBody called (external or no entry point),
-  // ensure any created basic blocks have terminators
-  if (ifa_fun->is_external || !ifa_fun->entry) {
-    for (llvm::BasicBlock &BB : *llvm_func) {
-      if (!BB.getTerminator()) {
-        DEBUG_LOG("Basic block %s in function %s (id %d) has no terminator after createFunction; adding default\n",
-                  BB.getName().str().c_str(), ifa_fun->sym->name, ifa_fun->sym->id);
-        // Create a builder - if block is not empty, insert after last instruction
-        // Otherwise insert at beginning
-        llvm::IRBuilder<> temp_builder(*TheContext);
-        if (BB.empty()) {
-          temp_builder.SetInsertPoint(&BB);
-        } else {
-          temp_builder.SetInsertPoint(&BB, BB.end());
-        }
-        if (llvm_func->getReturnType()->isVoidTy()) {
-          temp_builder.CreateRetVoid();
-        } else {
-          temp_builder.CreateRet(llvm::UndefValue::get(llvm_func->getReturnType()));
-        }
-      }
-    }
-  }
-
-  DEBUG_LOG("Finished createFunction for %d\n", ifa_fun->sym->id);
-  return llvm_func;
 }
 
-// --- PNode Translation ---
-void translateFunctionBody(Fun *ifa_fun) {
-  DEBUG_LOG("translateFunctionBody entry for %s (id %d)\n", ifa_fun->sym->name, ifa_fun->id);
-  if (!ifa_fun || !ifa_fun->llvm || !ifa_fun->entry) {
-    fail("Invalid function or missing LLVM function/entry PNode for translateFunctionBody");
-    return;
-  }
-
-  label_to_bb_map.clear();  // Clear map for each function
-
-  llvm::Function *llvm_func = ifa_fun->llvm;
-
-  // Create all basic blocks first by iterating PNodes once to find labels
-  // This helps with forward branches.
-  Vec<PNode *> pnodes;
-  ifa_fun->collect_PNodes(pnodes);  // Assumes this collects all relevant PNodes
-  DEBUG_LOG("Collected %d PNodes\n", pnodes.n);
-
-  if (ifa_fun->fa_all_Vars.n == 0) {
-    DEBUG_LOG("fa_all_Vars empty, collecting vars...\n");
-    ifa_fun->collect_Vars(ifa_fun->fa_all_Vars);
-    DEBUG_LOG("Collected %d Vars\n", ifa_fun->fa_all_Vars.n);
-  }
-
-  for (PNode *pn : pnodes) {
-    if (pn->code) {
-      if (pn->code->kind == Code_LABEL) {
-        if (pn->code->label[0]) {
-          getLLVMBasicBlock(pn->code->label[0], llvm_func);
-        }
-      }
-    }
-  }
-
-  DEBUG_LOG("Done labels loop. Checking entry code...\n");
-  // Ensure entry block is correctly mapped if it's from a label
-  if (ifa_fun->entry->code) {
-    DEBUG_LOG("Entry code kind=%d\n", ifa_fun->entry->code->kind);
-  } else {
-    DEBUG_LOG("Entry code is NULL\n");
-  }
-
-  if (ifa_fun->entry->code && ifa_fun->entry->code->kind == Code_LABEL && ifa_fun->entry->code->label[0]) {
-    llvm::BasicBlock *entry_bb = getLLVMBasicBlock(ifa_fun->entry->code->label[0], llvm_func);
-    if (entry_bb != &llvm_func->getEntryBlock() && llvm_func->getEntryBlock().empty()) {
-      // LLVM auto-creates an entry block - branch from it to our labeled entry
-      Builder->SetInsertPoint(&llvm_func->getEntryBlock());
-      Builder->CreateBr(entry_bb);
-    } else if (entry_bb != &llvm_func->getEntryBlock()) {
-      Builder->SetInsertPoint(&llvm_func->getEntryBlock());
-      if (llvm_func->getEntryBlock().getTerminator() == nullptr) {
-        Builder->CreateBr(entry_bb);
-      }
-    }
-  }
-
-  // Allocate local variables using AllocaInst (for mutable locals)
-
-  DEBUG_LOG("Setting Builder InsertPoint to EntryBlock\n");
-  if (llvm_func->getEntryBlock().empty()) {
-    DEBUG_LOG("EntryBlock is empty, setting to beginning\n");
-  } else {
-    DEBUG_LOG("EntryBlock not empty, setting to beginning\n");
-  }
-
-  // Check Builder
-  if (!Builder) {
-    fail("Builder is null in translateFunctionBody");
-    return;
-  }
-  Builder->SetInsertPoint(&llvm_func->getEntryBlock(), llvm_func->getEntryBlock().begin());  // Allocas at the top
-
-  // Clear debug location before allocating locals to avoid wrong subprogram references
-  Builder->SetCurrentDebugLocation(llvm::DebugLoc());
-
-  DEBUG_LOG("InsertPoint set. Getting subprogram for locals...\n");
-  llvm::DIFile *di_file_for_locals = llvm_func->getSubprogram() ? llvm_func->getSubprogram()->getFile() : nullptr;
-  DEBUG_LOG("Got subprogram components\n");
-  unsigned func_start_line = llvm_func->getSubprogram() ? llvm_func->getSubprogram()->getLine() : 0;
-
-  DEBUG_LOG("Starting local vars loop\n");
-  // Multiple Vars can share the same Sym (e.g., loop variable 'i' appears multiple times)
-  // Create only one alloca per Sym to avoid duplicate allocations
-  std::map<Sym *, llvm::AllocaInst *> sym_to_alloca;
-  int var_loop_idx = 0;
-  for (Var *v : ifa_fun->fa_all_Vars) {  // Or a more specific list of locals
-    if (ifa_debug) {
-      DEBUG_LOG("Loop idx %d, v=%p", var_loop_idx, v);
-      if (v && v->sym) {
-        fprintf(stderr, ", sym=%s (id=%d), is_local=%d, is_formal=%d, has_llvm_value=%d",
-                v->sym->name ? v->sym->name : "(null)", v->sym->id, v->sym->is_local ? 1 : 0,
-                v->is_formal ? 1 : 0, v->llvm_value ? 1 : 0);
-        if (v->llvm_value && llvm::isa<llvm::Constant>(v->llvm_value)) {
-          fprintf(stderr, ", llvm_value is constant: ");
-          v->llvm_value->print(llvm::errs());
-        }
-        fprintf(stderr, "\n");
-      } else {
-        fprintf(stderr, ", no sym\n");
-      }
-      fflush(stderr);
-    }
-    var_loop_idx++;
-
-    if (v && v->sym && v->sym->is_local && !v->is_formal) {
-      auto it = sym_to_alloca.find(v->sym);
-      if (it != sym_to_alloca.end()) {
-        v->llvm_value = it->second;
-        v->llvm_type = it->second->getAllocatedType();
-        DEBUG_LOG("Reusing existing alloca for var %s (id %d)\n", v->sym->name ? v->sym->name : "(null)",
-                v->sym->id);
-        continue;
-      }
-    }
-
-    if (v && v->sym && v->sym->is_local && !v->is_formal && !v->llvm_value) {
-      llvm::Type *var_llvm_type = nullptr;
-      if (!v->type) {
-        DEBUG_LOG("Defaulting local var %s (id %d) with null type to i64\n", v->sym->name, v->sym->id);
-        var_llvm_type = llvm::Type::getInt64Ty(*TheContext);
-      } else {
-        var_llvm_type = getLLVMType(v->type);
-      }
-
-      if (var_llvm_type && !var_llvm_type->isVoidTy()) {
-        llvm::AllocaInst *alloca_inst =
-            Builder->CreateAlloca(var_llvm_type, nullptr, v->sym->name ? v->sym->name : "local_var");
-        v->llvm_value = alloca_inst;
-        v->llvm_type = var_llvm_type;
-        sym_to_alloca[v->sym] = alloca_inst;
-
-        // Add debug info for this local variable
-        if (DBuilder && llvm_func->getSubprogram() && di_file_for_locals) {
-          llvm::DIType *var_di_type = getLLVMDIType(v->type, di_file_for_locals);
-          unsigned var_line = v->sym->source_line() ? v->sym->source_line() : func_start_line;  // Prefer var's own line
-
-          if (var_di_type) {
-            llvm::DILocalVariable *dil_var = DBuilder->createAutoVariable(llvm_func->getSubprogram(),  // Scope
-                                                                          v->sym->name ? v->sym->name : "var", UnitFile,
-                                                                          var_line, getLLVMDIType(v->type, UnitFile));
-
-            DBuilder->insertDeclare(alloca_inst, dil_var, DBuilder->createExpression(),
-                                    llvm::DILocation::get(*TheContext, var_line, 0, llvm_func->getSubprogram()),
-                                    Builder->GetInsertBlock());
-          }
-        }
-
-      } else if (!var_llvm_type) {
-        fail("Could not get LLVM type for local var %s", v->sym->name);
-      }
-    } else if (v && v->sym && v->sym->is_local && v->is_formal && !v->llvm_value) {
-      // Handle tuple field parameters: variables marked as both is_local and is_formal
-      // These are fields that need to be extracted from the tuple argument
-      // For now, extract them from the corresponding function argument
-      DEBUG_LOG("Handling tuple field formal: %s (id=%d)\n", v->sym->name ? v->sym->name : "(null)",
-              v->sym->id);
-
-      // Find the tuple argument this field belongs to
-      // The live arguments were stored in the function's llvm Function
-      // We need to map this formal to the actual argument
-      // For tuple operators, there's typically one tuple argument
-      if (llvm_func->arg_size() > 0) {
-        // Get the first (and likely only) argument - the tuple
-        llvm::Argument *tuple_arg = llvm_func->arg_begin();
-        (void)tuple_arg;  // Mark as used to suppress warning until implementation is complete
-
-        // We need to extract the field from the tuple
-        // But we need to know which field index this corresponds to
-        // The C backend uses a1->e0, a1->e2, etc.
-        // For now, let's create a placeholder that we'll fix later
-        // We need more info about field mapping
-
-        DEBUG_LOG("Tuple field formal needs extraction from tuple arg\n");
-        // TODO: Need to determine field index and extract
-      }
-    }
-  }
-  DEBUG_LOG("Finished local vars loop\n");
-
-  // Emit debug info for function parameters
-  // This must be done after allocas are created, at the beginning of the function
-  if (DBuilder && llvm_func->getSubprogram()) {
-    MPosition p;
-    p.push(1);
-    for (int i = 0; i < ifa_fun->sym->has.n; i++) {
-      MPosition *cp = cannonicalize_mposition(p);
-      p.inc();
-      Var *arg_var = ifa_fun->args.get(cp);
-
-      if (arg_var && arg_var->llvm_debug_var) {
-        unsigned arg_line = arg_var->sym->source_line() ? arg_var->sym->source_line() : func_start_line;
-        llvm::DILocation *debug_loc = llvm::DILocation::get(*TheContext, arg_line, 0, llvm_func->getSubprogram());
-
-        if (arg_var->llvm_value) {
-          // Parameter has a value (live parameter)
-          DBuilder->insertDbgValueIntrinsic(arg_var->llvm_value,           // Value
-                                            arg_var->llvm_debug_var,       // Variable
-                                            DBuilder->createExpression(),  // Expression
-                                            debug_loc,                     // Location
-                                            Builder->GetInsertBlock()      // Insert at current position
-          );
-          DEBUG_LOG("Emitted dbg.value for parameter %s\n",
-                  arg_var->sym->name ? arg_var->sym->name : "(unnamed)");
-        } else {
-          // Parameter was optimized away
-          // Don't emit a value - debugger will show it as "<optimized out>"
-          DEBUG_LOG("Parameter %s is optimized out (no debug value emitted)\n",
-                  arg_var->sym->name ? arg_var->sym->name : "(unnamed)");
-        }
-      }
-    }
-  }
-
-  // Now translate PNodes in order
-  // A more robust way would be to iterate over basic blocks in some order (e.g., RPO)
-  // and then PNodes within those blocks. For now, linear scan of collected PNodes.
-  std::set<PNode *> visited_pnodes;  // To handle graph traversal correctly if not linear
-
-  // We need a worklist approach for translating PNodes based on CFG
+// Step 4: run the CFG-walk worklist, dispatching each PNode to
+// translatePNode. Successors are always added (even from non-live
+// PNodes) to match the C backend's CFG traversal.
+static void translate_pnodes_worklist(Fun *ifa_fun) {
+  std::set<PNode *> visited_pnodes;
   std::vector<PNode *> worklist;
-  if (ifa_fun->entry) {
-    worklist.push_back(ifa_fun->entry);
-    visited_pnodes.insert(ifa_fun->entry);
-    DEBUG_LOG("Starting worklist with entry PNode %p\n", (void *)ifa_fun->entry);
-  } else {
-    DEBUG_LOG("WARNING: ifa_fun->entry is NULL, worklist will be empty!\n");
-  }
-  DEBUG_LOG("Starting worklist with %zu items\n", worklist.size());
+  worklist.push_back(ifa_fun->entry);
+  visited_pnodes.insert(ifa_fun->entry);
 
   unsigned worklist_idx = 0;
   while (worklist_idx < worklist.size()) {
     PNode *current_pn = worklist[worklist_idx++];
-    if (!current_pn) {
-      DEBUG_LOG("Null PNode in worklist, skipping\n");
-      continue;
-    }
+    if (!current_pn) continue;
     translatePNode(current_pn, ifa_fun);
-
-    // Add successors to worklist - ALWAYS add cfg_succ like C backend does (cg.cc:657-689)
-    // C backend traverses CFG regardless of whether node is live
-    if (current_pn->cfg_succ.n > 0) {
-      for (PNode *succ_pn : current_pn->cfg_succ) {
-        if (succ_pn && visited_pnodes.find(succ_pn) == visited_pnodes.end()) {
-          worklist.push_back(succ_pn);
-          visited_pnodes.insert(succ_pn);
-        }
+    for (PNode *succ_pn : current_pn->cfg_succ) {
+      if (succ_pn && visited_pnodes.find(succ_pn) == visited_pnodes.end()) {
+        worklist.push_back(succ_pn);
+        visited_pnodes.insert(succ_pn);
       }
     }
   }
-  DEBUG_LOG("Finished worklist processing\n");
+}
 
-  // Ensure all basic blocks have terminators
-  std::string full_func_name = llvm_func->getName().str();
-  DEBUG_LOG("Checking terminators for function %s (LLVM name: %s)\n", ifa_fun->sym->name,
-          full_func_name.c_str());
-  for (llvm::BasicBlock &BB : *llvm_func) {
-    if (!BB.getTerminator()) {
-      DEBUG_LOG("Basic block %s in function %s has no terminator (size=%zu), adding default\n",
-              BB.getName().str().c_str(), full_func_name.c_str(), BB.size());
-
-      // Print existing instructions
-      if (ifa_debug) {
-        fprintf(stderr, "DEBUG: Existing instructions in block:\n");
-        int inst_idx = 0;
-        for (llvm::Instruction &I : BB) {
-          fprintf(stderr, "DEBUG:   [%d] ", inst_idx++);
-          I.print(llvm::errs());
-          fprintf(stderr, "\n");
-        }
-      }
-
-      // Create a new IRBuilder for this specific terminator addition
-      // This ensures we don't interfere with any ongoing translation
-      llvm::IRBuilder<> temp_builder(*TheContext);
-      temp_builder.SetInsertPoint(&BB);
-
-      // Check return type
-      llvm::Type *ret_type = llvm_func->getReturnType();
-      DEBUG_LOG("Return type is void: %d\n", ret_type->isVoidTy());
-
-      // Add appropriate terminator based on function return type
-      llvm::Instruction *term_inst = nullptr;
-      if (ret_type->isVoidTy()) {
-        DEBUG_LOG("Creating RetVoid...\n");
-        term_inst = temp_builder.CreateRetVoid();
-        DEBUG_LOG("Added RetVoid to block %s\n", BB.getName().str().c_str());
-      } else {
-        DEBUG_LOG("Creating Ret with UndefValue...\n");
-        llvm::Value *undef = llvm::UndefValue::get(ret_type);
-        DEBUG_LOG("Created UndefValue\n");
-        term_inst = temp_builder.CreateRet(undef);
-        DEBUG_LOG("Added Ret(undef) to block %s\n", BB.getName().str().c_str());
-      }
-
-      // Print the created terminator
-      if (term_inst && ifa_debug) {
-        fprintf(stderr, "DEBUG: Created terminator instruction: ");
-        term_inst->print(llvm::errs());
-        fprintf(stderr, "\n");
-      }
-
-      // Verify terminator was added
-      if (!BB.getTerminator()) {
-        fail("Failed to add terminator to block %s in function %s", BB.getName().str().c_str(),
-             full_func_name.c_str());
-      } else {
-        DEBUG_LOG("Terminator successfully added. Block now has %zu instructions\n", BB.size());
-      }
-    }
+void translateFunctionBody(Fun *ifa_fun) {
+  if (!ifa_fun || !ifa_fun->llvm || !ifa_fun->entry) {
+    fail("translateFunctionBody: invalid Fun (missing llvm or entry)");
+    return;
   }
-  DEBUG_LOG("Finished translateFunctionBody for %s\n", ifa_fun->sym->name);
+  if (!Builder) {
+    fail("translateFunctionBody: Builder is null");
+    return;
+  }
+  label_to_bb_map.clear();
+  prepare_basic_blocks(ifa_fun);
+  allocate_locals(ifa_fun);
+  emit_parameter_debug_info(ifa_fun);
+  translate_pnodes_worklist(ifa_fun);
+  ensure_block_terminators(ifa_fun->llvm, "translateFunctionBody");
+}
+
+// translatePNode helpers, one per Code_kind. Phase-4 decomposition of
+// the formerly-200-line translatePNode switch. Each helper is short
+// and named for its kind so call traces and stack frames are
+// self-explanatory.
+
+static void translate_code_label(PNode *pn, Fun *ifa_fun) {
+  if (!pn->code->label[0]) {
+    fail("Code_LABEL PNode has no Label object");
+    return;
+  }
+  llvm::BasicBlock *bb = getLLVMBasicBlock(pn->code->label[0], ifa_fun->llvm);
+  llvm::BasicBlock *current_bb = Builder->GetInsertBlock();
+  // Avoid creating a self-loop branch (br label %X inside %X).
+  if (current_bb && current_bb != bb && !current_bb->getTerminator()) {
+    Builder->CreateBr(bb);
+  }
+  Builder->SetInsertPoint(bb);
+}
+
+static void do_phi_nodes(PNode *n, int isucc, Fun *ifa_fun);  // forward decl
+
+static void translate_code_goto(PNode *pn, Fun *ifa_fun) {
+  do_phi_nodes(pn, 0, ifa_fun);
+  if (!pn->code->label[0]) {
+    fail("Code_GOTO PNode has no destination Label object");
+    return;
+  }
+  if (!Builder->GetInsertBlock()) {
+    fail("Code_GOTO: Builder has no insert block (missing prior LABEL or entry setup)");
+    return;
+  }
+  llvm::BasicBlock *dest_bb = getLLVMBasicBlock(pn->code->label[0], ifa_fun->llvm);
+  Builder->CreateBr(dest_bb);
+}
+
+static void simple_move(Var *lhs, Var *rhs, Fun *ifa_fun);  // forward decl
+
+static void translate_code_move(PNode *pn, Fun *ifa_fun) {
+  if (pn->lvals.n != 1 || pn->rvals.n != 1) {
+    fail("Code_MOVE PNode with unhandled number of lvals/rvals (%d/%d)", pn->lvals.n, pn->rvals.n);
+    return;
+  }
+  simple_move(pn->lvals[0], pn->rvals[0], ifa_fun);
+}
+
+static void do_phy_nodes(PNode *n, int isucc, Fun *ifa_fun);  // forward decl
+
+static void translate_code_if(PNode *pn, Fun *ifa_fun) {
+  if (pn->rvals.n == 0) {
+    fail("Code_IF PNode has no condition variable");
+    return;
+  }
+  llvm::Function *llvm_func = ifa_fun->llvm;
+  Var *cond_var = pn->rvals[0];
+  llvm::Value *cond_llvm_val = getLLVMValue(cond_var, ifa_fun);
+  if (!cond_llvm_val) {
+    // Dead-code-eliminated condition — assume true branch.
+    DEBUG_LOG("Code_IF condition var has no llvm_value; using constant true\n");
+    cond_llvm_val = llvm::ConstantInt::getTrue(*TheContext);
+  }
+  // Coerce condition to i1.
+  if (cond_llvm_val->getType() != llvm::Type::getInt1Ty(*TheContext)) {
+    cond_llvm_val = Builder->CreateICmpNE(
+        cond_llvm_val, llvm::Constant::getNullValue(cond_llvm_val->getType()), "ifcond.tobool");
+  }
+
+  llvm::BasicBlock *true_bb = pn->code->label[0] ? getLLVMBasicBlock(pn->code->label[0], llvm_func) : nullptr;
+  llvm::BasicBlock *false_bb = pn->code->label[1] ? getLLVMBasicBlock(pn->code->label[1], llvm_func) : nullptr;
+  if (!true_bb || !false_bb) {
+    fail("Code_IF targets missing");
+    return;
+  }
+
+  // Constant-folded condition: branch to the taken target only.
+  if (llvm::ConstantInt *const_cond = llvm::dyn_cast<llvm::ConstantInt>(cond_llvm_val)) {
+    llvm::BasicBlock *target_bb = const_cond->isOne() ? true_bb : false_bb;
+    Builder->CreateBr(target_bb);
+    Builder->SetInsertPoint(target_bb);
+    return;
+  }
+
+  // Dynamic condition: emit both branches with phi/phy node fixups in
+  // an intermediate block per side.
+  llvm::BasicBlock *if_true_bb = llvm::BasicBlock::Create(*TheContext, "if.true", llvm_func);
+  llvm::BasicBlock *if_false_bb = llvm::BasicBlock::Create(*TheContext, "if.false", llvm_func);
+  Builder->CreateCondBr(cond_llvm_val, if_true_bb, if_false_bb);
+
+  Builder->SetInsertPoint(if_true_bb);
+  do_phy_nodes(pn, 0, ifa_fun);
+  do_phi_nodes(pn, 0, ifa_fun);
+  Builder->CreateBr(true_bb);
+
+  Builder->SetInsertPoint(if_false_bb);
+  do_phy_nodes(pn, 1, ifa_fun);
+  do_phi_nodes(pn, 1, ifa_fun);
+  Builder->CreateBr(false_bb);
+
+  Builder->SetInsertPoint(true_bb);
+}
+
+static void translate_code_send(PNode *pn, Fun *ifa_fun) {
+  if (pn->prim) {
+    if (write_llvm_prim(ifa_fun, pn)) return;
+    DEBUG_LOG("write_llvm_prim returned 0; falling back to write_send for prim %p\n", pn->prim);
+  }
+  write_send(ifa_fun, pn);
 }
 
 static void simple_move(Var *lhs, Var *rhs, Fun *ifa_fun) {
@@ -740,135 +612,11 @@ void translatePNode(PNode *pn, Fun *ifa_fun) {
   }
 
   switch (pn->code->kind) {
-    case Code_LABEL: {
-      if (pn->code->label[0]) {
-        llvm::BasicBlock *bb = getLLVMBasicBlock(pn->code->label[0], llvm_func);
-        llvm::BasicBlock *current_bb = Builder->GetInsertBlock();
-        // Avoid creating self-loop branches (br label %X inside %X)
-        if (current_bb && current_bb != bb && !current_bb->getTerminator()) {
-          Builder->CreateBr(bb);
-        }
-        Builder->SetInsertPoint(bb);
-      } else {
-        fail("Code_LABEL PNode has no Label object");
-      }
-      break;
-    }
-    case Code_GOTO: {
-      do_phi_nodes(pn, 0, ifa_fun);
-      if (pn->code->label[0]) {
-        llvm::BasicBlock *dest_bb = getLLVMBasicBlock(pn->code->label[0], llvm_func);
-        if (!Builder->GetInsertBlock()) {
-          fail("Builder has no insert block for GOTO. Ensure prior LABEL or entry setup.");
-          return;
-        }
-        Builder->CreateBr(dest_bb);
-      } else {
-        fail("Code_GOTO PNode has no destination Label object");
-      }
-      break;
-    }
-    case Code_MOVE: {
-      if (pn->lvals.n == 1 && pn->rvals.n == 1) {
-        Var *lhs_var = pn->lvals[0];
-        Var *rhs_var = pn->rvals[0];
-        simple_move(lhs_var, rhs_var, ifa_fun);  // Use simple_move helper
-      } else {
-        fail("Code_MOVE PNode with unhandled number of lvals/rvals (%d/%d)", pn->lvals.n, pn->rvals.n);
-      }
-      break;
-    }
-    case Code_IF: {
-      if (pn->rvals.n > 0) {
-        Var *cond_var = pn->rvals[0];
-        DEBUG_LOG("Code_IF condition var=%p, sym=%s, id=%d\n", (void *)cond_var,
-                cond_var->sym ? cond_var->sym->name : "(null)", cond_var->id);
-        fflush(stderr);
-        llvm::Value *cond_llvm_val = getLLVMValue(cond_var, ifa_fun);
-        if (!cond_llvm_val) {
-          // Dead code eliminated condition - assume true branch
-          DEBUG_LOG("Code_IF condition var has no llvm_value, using constant true\n");
-          cond_llvm_val = llvm::ConstantInt::getTrue(*TheContext);
-        }
-        if (ifa_debug) {
-          DEBUG_LOG("Code_IF got llvm_val=%p, type=%s: ", (void *)cond_llvm_val,
-                    cond_llvm_val->getType()->isIntegerTy() ? "int" : "other");
-          cond_llvm_val->print(llvm::errs());
-          fprintf(stderr, "\n");
-        }
-        fflush(stderr);
-
-        // Ensure condition is i1
-        if (cond_llvm_val->getType() != llvm::Type::getInt1Ty(*TheContext)) {
-          cond_llvm_val = Builder->CreateICmpNE(cond_llvm_val, llvm::Constant::getNullValue(cond_llvm_val->getType()),
-                                                "ifcond.tobool");
-        }
-
-        llvm::BasicBlock *true_bb = nullptr;
-        llvm::BasicBlock *false_bb = nullptr;
-        if (pn->code->label[0]) {
-          true_bb = getLLVMBasicBlock(pn->code->label[0], llvm_func);
-          DEBUG_LOG("Code_IF true branch target: label_%d\n", pn->code->label[0]->id);
-        }
-        if (pn->code->label[1]) {
-          false_bb = getLLVMBasicBlock(pn->code->label[1], llvm_func);
-          DEBUG_LOG("Code_IF false branch target: label_%d\n", pn->code->label[1]->id);
-        }
-
-        if (!true_bb || !false_bb) {
-          fail("Code_IF targets missing");
-          return;
-        }
-
-        // Handle constant-folded conditions (from dead code elimination)
-        if (llvm::ConstantInt *const_cond = llvm::dyn_cast<llvm::ConstantInt>(cond_llvm_val)) {
-          // Branch to taken target only (matches C backend handling of if(0) / if(1))
-          bool cond_value = const_cond->isOne();
-          llvm::BasicBlock *target_bb = cond_value ? true_bb : false_bb;
-          DEBUG_LOG("Code_IF has constant condition: %s, branching to %s\n", cond_value ? "true" : "false",
-                  target_bb->getName().str().c_str());
-
-          Builder->CreateBr(target_bb);
-          Builder->SetInsertPoint(target_bb);
-        } else {
-          // Dynamic condition - generate both branches
-          llvm::BasicBlock *if_true_bb = llvm::BasicBlock::Create(*TheContext, "if.true", llvm_func);
-          llvm::BasicBlock *if_false_bb = llvm::BasicBlock::Create(*TheContext, "if.false", llvm_func);
-
-          Builder->CreateCondBr(cond_llvm_val, if_true_bb, if_false_bb);
-
-          Builder->SetInsertPoint(if_true_bb);
-          do_phy_nodes(pn, 0, ifa_fun);
-          do_phi_nodes(pn, 0, ifa_fun);
-          Builder->CreateBr(true_bb);
-
-          Builder->SetInsertPoint(if_false_bb);
-          do_phy_nodes(pn, 1, ifa_fun);
-          do_phi_nodes(pn, 1, ifa_fun);
-          Builder->CreateBr(false_bb);
-
-          Builder->SetInsertPoint(true_bb);
-        }
-      } else {
-        fail("Code_IF PNode has no condition variable");
-      }
-      break;
-    }
-    case Code_SEND: {
-      DEBUG_LOG("Processing Code_SEND. prim=%p\n", pn->prim);
-      fflush(stderr);
-      if (pn->prim) {
-        if (!write_llvm_prim(ifa_fun, pn)) {
-          DEBUG_LOG("write_llvm_prim returned false, calling write_send as fallback\n");
-          // Primitive not handled, try generic function call
-          write_send(ifa_fun, pn);
-        }
-      } else {
-        DEBUG_LOG("Calling write_send\n");
-        write_send(ifa_fun, pn);
-      }
-      break;
-    }
+    case Code_LABEL: translate_code_label(pn, ifa_fun); break;
+    case Code_GOTO:  translate_code_goto(pn, ifa_fun);  break;
+    case Code_MOVE:  translate_code_move(pn, ifa_fun);  break;
+    case Code_IF:    translate_code_if(pn, ifa_fun);    break;
+    case Code_SEND:  translate_code_send(pn, ifa_fun);  break;
     default:
       fail("translatePNode: unhandled code kind %d in function %s", pn->code->kind, ifa_fun->sym->name);
       break;

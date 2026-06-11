@@ -303,6 +303,154 @@ static llvm::Value *recover_constant_arg(Var *var, Fun *ifa_fun) {
   return nullptr;
 }
 
+// ============================================================================
+// getLLVMType helpers (phase-4 decomposition)
+//
+// getLLVMType used to be ~230 lines doing the cross-product of all
+// type_kinds. Now it's a thin driver over per-kind helpers. Each
+// helper is responsible for one type family.
+// ============================================================================
+
+// Builtin singletons (void, string) and numeric kinds. Returns nullptr
+// if `sym` doesn't fall into one of these — caller dispatches by
+// type_kind.
+static llvm::Type *mapBuiltinOrNumeric(Sym *unaliased_sym) {
+  if (unaliased_sym == sym_void || unaliased_sym == sym_void_type) {
+    return llvm::Type::getVoidTy(*TheContext);
+  }
+  if (unaliased_sym == sym_string) {
+    // String represented as opaque pointer (i8*).
+    return llvm::PointerType::getUnqual(*TheContext);
+  }
+  if (unaliased_sym->num_kind != IF1_NUM_KIND_NONE) {
+    return mapNumericType(unaliased_sym);
+  }
+  return nullptr;
+}
+
+// Type_RECORD vector variant (is_vector flag set): IF1 vectors are
+// dynamically sized; we represent them as opaque pointers and let the
+// runtime helpers (`_CG_prim_*`) carry the actual layout.
+static llvm::Type *mapVectorType(Sym *unaliased_sym) {
+  if (!unaliased_sym->element || !unaliased_sym->element->type) {
+    fail("Vector type %s has no element type",
+         unaliased_sym->name ? unaliased_sym->name : "(anon)");
+    return nullptr;
+  }
+  if (!getLLVMType(unaliased_sym->element->type)) {
+    fail("Could not get LLVM type for element of vector type %s",
+         unaliased_sym->name ? unaliased_sym->name : "(anon)");
+    return nullptr;
+  }
+  return llvm::PointerType::getUnqual(*TheContext);
+}
+
+// Type_RECORD struct variant: build an `llvm::StructType` with one
+// LLVM Type per IF1 field. Sets sym->llvm_type to the opaque type
+// before recursing into fields, so cyclic references break cleanly.
+// Void/null field types are substituted with i8 to keep struct
+// layouts well-formed (see AUDIT §1 #1).
+static llvm::Type *mapStructType(Sym *sym, Sym *unaliased_sym) {
+  llvm::StructType *struct_type = llvm::StructType::create(
+      *TheContext,
+      unaliased_sym->name ? unaliased_sym->name : ("struct.anon" + std::to_string(unaliased_sym->id)));
+  sym->llvm_type = struct_type;
+  unaliased_sym->llvm_type = struct_type;
+
+  std::vector<llvm::Type *> field_types;
+  for (int i = 0; i < unaliased_sym->has.n; ++i) {
+    Sym *field_sym = unaliased_sym->has[i];
+    llvm::Type *field_llvm_type = nullptr;
+    if (field_sym && field_sym->type) field_llvm_type = getLLVMType(field_sym->type);
+    if (!field_llvm_type || field_llvm_type->isVoidTy()) {
+      // i8 placeholder for void/null fields keeps StructLayout safe
+      // and field-indexing positional. See AUDIT §1 #1 / phase-3.0.
+      DEBUG_LOG("mapStructType: field %s (index %d) of %s is void/null; substituting i8\n",
+                field_sym && field_sym->name ? field_sym->name : "(anon)", i,
+                unaliased_sym->name ? unaliased_sym->name : "(anon)");
+      field_llvm_type = llvm::Type::getInt8Ty(*TheContext);
+    }
+    field_types.push_back(field_llvm_type);
+  }
+  if (struct_type->isOpaque()) struct_type->setBody(field_types);
+  return struct_type;
+}
+
+// Type_FUN: function values are opaque pointers. The signature is
+// re-derived from the IF1 Sym at call sites that need it.
+static llvm::Type *mapFunctionType(Sym *unaliased_sym) {
+  Sym *ret_type_sym = unaliased_sym->ret;
+  if (!ret_type_sym || !ret_type_sym->type) {
+    fail("Function symbol %s has no return type",
+         unaliased_sym->name ? unaliased_sym->name : "(anon)");
+    return nullptr;
+  }
+  if (!getLLVMType(ret_type_sym->type)) {
+    fail("Could not get LLVM return type for function symbol %s",
+         unaliased_sym->name ? unaliased_sym->name : "(anon)");
+    return nullptr;
+  }
+  for (int i = 0; i < unaliased_sym->has.n; ++i) {
+    Sym *arg_sym = unaliased_sym->has[i];
+    if (!arg_sym || !arg_sym->type) {
+      fail("Function type %s: null arg sym at index %d",
+           unaliased_sym->name ? unaliased_sym->name : "(anon)", i);
+      return nullptr;
+    }
+    if (!getLLVMType(arg_sym->type)) {
+      fail("Function type %s: could not get LLVM type for arg %d",
+           unaliased_sym->name ? unaliased_sym->name : "(anon)", i);
+      return nullptr;
+    }
+  }
+  return llvm::PointerType::getUnqual(*TheContext);
+}
+
+// Type_SUM: collapses the common `T | nil` shape to T's LLVM type
+// (when T is a pointer); falls back to opaque pointer for any other
+// shape. Full tagged-union representation is future work.
+static llvm::Type *mapSumType(Sym *unaliased_sym) {
+  if (unaliased_sym->has.n == 2) {
+    Sym *t1 = unaliased_sym->has[0]->type;
+    Sym *t2 = unaliased_sym->has[1]->type;
+    Sym *non_nil = (t1 == sym_nil_type) ? t2 : ((t2 == sym_nil_type) ? t1 : nullptr);
+    if (non_nil) {
+      llvm::Type *underlying = getLLVMType(non_nil);
+      if (underlying && underlying->isPointerTy()) return underlying;
+    }
+  }
+  DEBUG_LOG("SUM type %s mapped to opaque ptr (placeholder)\n",
+            unaliased_sym->name ? unaliased_sym->name : "(anon)");
+  return llvm::PointerType::getUnqual(*TheContext);
+}
+
+// Dispatch by type_kind. Sub-helpers may set sym->llvm_type early
+// (e.g. mapStructType) to handle cycles.
+static llvm::Type *mapByTypeKind(Sym *sym, Sym *unaliased_sym) {
+  switch (unaliased_sym->type_kind) {
+    case Type_RECORD:
+      return unaliased_sym->is_vector ? mapVectorType(unaliased_sym) : mapStructType(sym, unaliased_sym);
+    case Type_FUN:
+      return mapFunctionType(unaliased_sym);
+    case Type_REF:
+      if (!unaliased_sym->element || !unaliased_sym->element->type) {
+        fail("REF type %s has no element type",
+             unaliased_sym->name ? unaliased_sym->name : "(anon)");
+        return nullptr;
+      }
+      return llvm::PointerType::getUnqual(*TheContext);
+    case Type_SUM:
+      return mapSumType(unaliased_sym);
+    case Type_PRIMITIVE:
+      // Non-numeric primitives (e.g. symbol) → opaque ptr.
+      return llvm::PointerType::getUnqual(*TheContext);
+    default:
+      fail("Unhandled type_kind %d for Sym %s", unaliased_sym->type_kind,
+           unaliased_sym->name ? unaliased_sym->name : "(anon)");
+      return nullptr;
+  }
+}
+
 /**
  * Maps IF1 Sym types to LLVM types.
  * Handles numeric types, structs, functions, vectors, and sum types.
@@ -349,181 +497,9 @@ llvm::Type *getLLVMType(Sym *sym) {
     return sym->llvm_type;
   }
 
-  llvm::Type *type = nullptr;
-
-  if (unaliased_sym == sym_void || unaliased_sym == sym_void_type) {
-    type = llvm::Type::getVoidTy(*TheContext);
-  } else if (unaliased_sym == sym_string) {
-    // Represent string as char* or a custom struct {i8*, i64} for length
-    // For now, let's use i8* (pointer to char)
-    // This might need adjustment based on runtime string representation
-    type = llvm::PointerType::getUnqual(*TheContext);
-  } else if (unaliased_sym->num_kind != IF1_NUM_KIND_NONE) {
-    type = mapNumericType(unaliased_sym);
-  } else {
-    switch (unaliased_sym->type_kind) {
-      case Type_RECORD: {
-        if (unaliased_sym->is_vector) {
-          // This is a language-level vector/array, not necessarily an LLVM <N x T> fixed-size vector.
-          // IF1 vectors are often dynamically sized.
-          // cg.cc seems to treat these as structs with a flexible array member or special list types.
-          // For LLVM, a common representation for a dynamic array/list is a struct:
-          // struct List { ElementType* data; int64_t length; int64_t capacity; };
-          // Or simply ElementType* if length is handled elsewhere or it's a pointer to the first element.
-          if (unaliased_sym->element && unaliased_sym->element->type) {
-            llvm::Type *element_llvm_type = getLLVMType(unaliased_sym->element->type);
-            if (element_llvm_type) {
-              // Let's represent it as a pointer to its element type for now.
-              // This implies the actual data structure (length, capacity) is managed by runtime calls.
-              // A more complete representation would be a specific struct type e.g. _CG_list_struct
-              // For now, ElementType*
-              type = llvm::PointerType::getUnqual(*TheContext);
-              // Alternative: create a struct like { T* data, size_t length }
-              // std::vector<llvm::Type*> list_fields = {
-              //   llvm::PointerType::getUnqual(element_llvm_type), // data
-              //   llvm::Type::getInt64Ty(*TheContext)             // length
-              // };
-              // type = llvm::StructType::create(*TheContext, list_fields,
-              //                                unaliased_sym->name ? (std::string(unaliased_sym->name) + ".vecdata") :
-              //                                ("vecdata.anon" + std::to_string(unaliased_sym->id)));
-            } else {
-              fail("Could not get LLVM type for element of vector type %s",
-                   unaliased_sym->name ? unaliased_sym->name : "unnamed_vector");
-              return nullptr;
-            }
-          } else {
-            fail("Vector type %s has no element type", unaliased_sym->name ? unaliased_sym->name : "unnamed_vector");
-            return nullptr;
-          }
-        } else {
-          // Handle regular structs
-          llvm::StructType *struct_type = llvm::StructType::create(
-              *TheContext,
-              unaliased_sym->name ? unaliased_sym->name : ("struct.anon" + std::to_string(unaliased_sym->id)));
-          sym->llvm_type = struct_type;  // Store opaque type to break recursion
-          unaliased_sym->llvm_type = struct_type;
-
-          std::vector<llvm::Type *> field_types;
-          for (int i = 0; i < unaliased_sym->has.n; ++i) {
-            Sym *field_sym = unaliased_sym->has[i];
-            llvm::Type *field_llvm_type = nullptr;
-            if (field_sym && field_sym->type) {
-              field_llvm_type = getLLVMType(field_sym->type);
-            }
-            // Void/null field types crash StructLayout. Substitute a
-            // single-byte placeholder so the struct is well-formed and
-            // field indexing is preserved. The C backend (cg.cc:838)
-            // simply elides void fields, but LLVM struct indexing is
-            // positional — we need to keep every slot. See AUDIT §1 #1
-            // and phase-1's `08_sum_type` SIGTRAP.
-            if (!field_llvm_type || field_llvm_type->isVoidTy()) {
-              DEBUG_LOG("getLLVMType: field %s (index %d) of struct %s is void/null; substituting i8\n",
-                        field_sym && field_sym->name ? field_sym->name : "(anon)", i,
-                        unaliased_sym->name ? unaliased_sym->name : "(anon)");
-              field_llvm_type = llvm::Type::getInt8Ty(*TheContext);
-            }
-            field_types.push_back(field_llvm_type);
-          }
-          if (struct_type->isOpaque()) {  // Only set body if still opaque (no recursive error)
-            struct_type->setBody(field_types);
-          }
-          type = struct_type;
-        }
-        break;
-      }
-      case Type_FUN: {
-        // Handle function types
-        Sym *ret_type_sym = unaliased_sym->ret;
-        if (!ret_type_sym || !ret_type_sym->type) {
-          fail("Function symbol %s has no return type symbol or type for getLLVMType",
-               unaliased_sym->name ? unaliased_sym->name : "unnamed_fun_type");
-          return nullptr;
-        }
-        llvm::Type *return_llvm_type = getLLVMType(ret_type_sym->type);
-        if (!return_llvm_type) {
-          fail("Could not get LLVM return type for function symbol %s",
-               unaliased_sym->name ? unaliased_sym->name : "unnamed_fun_type");
-          return nullptr;
-        }
-
-        std::vector<llvm::Type *> arg_llvm_types;
-        bool success = true;
-        for (int i = 0; i < unaliased_sym->has.n; ++i) {
-          Sym *arg_sym = unaliased_sym->has[i];
-          if (arg_sym && arg_sym->type) {
-            llvm::Type *ll_arg_type = getLLVMType(arg_sym->type);
-            if (ll_arg_type) {
-              arg_llvm_types.push_back(ll_arg_type);
-            } else {
-              fail("Could not get LLVM type for argument %d of function type %s", i,
-                   unaliased_sym->name ? unaliased_sym->name : "unnamed_fun_type");
-              success = false;
-              break;
-            }
-          } else {
-            fail("Null arg_sym or arg_sym->type for argument %d of function type %s", i,
-                 unaliased_sym->name ? unaliased_sym->name : "unnamed_fun_type");
-            success = false;
-            break;
-          }
-        }
-        if (!success) return nullptr;
-
-        // All function values are opaque pointers (LLVM 18). The signature
-        // is re-derived from the IF1 Sym at call sites that need it.
-        type = llvm::PointerType::getUnqual(*TheContext);
-        break;
-      }
-      case Type_REF:
-        if (!unaliased_sym->element || !unaliased_sym->element->type) {
-          fail("REF type %s has no element type",
-               unaliased_sym->name ? unaliased_sym->name : "unnamed_ref");
-          return nullptr;
-        }
-        // Opaque pointers in LLVM 18 — we don't carry the pointee type in
-        // the LLVM Type, only at IF1 use sites.
-        type = llvm::PointerType::getUnqual(*TheContext);
-        break;
-      case Type_SUM:                      // Union or tagged union. LLVM doesn't have direct sum types.
-                                          // This needs careful handling. For now, map to largest element or i8 array.
-                                          // A common approach is a struct { i8 tag, union_data }
-                                          // Or, if it's just an optional pointer (e.g. Foo | Nil), map to Foo*.
-        if (unaliased_sym->has.n == 2) {  // Potential optional pointer like (type | nil)
-          Sym *t1 = unaliased_sym->has[0]->type;
-          Sym *t2 = unaliased_sym->has[1]->type;
-          if (t1 == sym_nil_type && t2) {
-            llvm::Type *underlying_type = getLLVMType(t2);
-            if (underlying_type && underlying_type->isPointerTy()) type = underlying_type;
-            // else if (underlying_type) type = llvm::PointerType::getUnqual(underlying_type); // if it's not already a
-            // pointer, make it one?
-          } else if (t2 == sym_nil_type && t1) {
-            llvm::Type *underlying_type = getLLVMType(t1);
-            if (underlying_type && underlying_type->isPointerTy()) type = underlying_type;
-            // else if (underlying_type) type = llvm::PointerType::getUnqual(underlying_type);
-          }
-        }
-        if (!type) {
-          // Default for SUM: an opaque pointer or a sufficiently large integer/byte array.
-          // This is a placeholder and needs a proper strategy for sum types.
-          // For now, let's use a pointer to i8 as a very generic type.
-          DEBUG_LOG("SUM type %s mapped to i8* (placeholder — needs proper sum handling)\n",
-                    unaliased_sym->name ? unaliased_sym->name : "unnamed_sum");
-          type = llvm::PointerType::getUnqual(*TheContext);
-        }
-        break;
-      case Type_PRIMITIVE:
-        // Non-numeric primitives (e.g. symbol) -> i8*
-        type = llvm::PointerType::getUnqual(*TheContext);
-        break;
-      case Type_UNKNOWN:
-      case Type_APPLICATION:
-      case Type_VARIABLE:
-      case Type_ALIAS:  // Should be resolved by unalias_type
-      default:
-        fail("Unhandled or unknown Sym type_kind: %d for Sym %s", unaliased_sym->type_kind,
-             unaliased_sym->name ? unaliased_sym->name : "unnamed");
-        return nullptr;
-    }
+  llvm::Type *type = mapBuiltinOrNumeric(unaliased_sym);
+  if (!type) {
+    type = mapByTypeKind(sym, unaliased_sym);
   }
 
   if (type) {
@@ -1364,62 +1340,46 @@ void llvm_codegen_write_ir(FA *fa, Fun *main, cchar *input_filename) {
 }
 
 int llvm_codegen_compile(cchar *input_filename) {
-  char ll_file[512];
-  char obj_file[512];
-  char cmd[1024];
+  // Derive .ll / .o / executable paths from the input filename.
+  // Bounded `snprintf` with fail-on-truncation so we never silently
+  // corrupt paths longer than FILENAME_MAX.
+  char ll_file[FILENAME_MAX], obj_file[FILENAME_MAX], exe_file[FILENAME_MAX];
+  if (snprintf(ll_file, sizeof(ll_file), "%s", input_filename) >= (int)sizeof(ll_file))
+    fail("llvm_codegen_compile: input filename too long: %s", input_filename);
+  if (snprintf(obj_file, sizeof(obj_file), "%s", input_filename) >= (int)sizeof(obj_file))
+    fail("llvm_codegen_compile: input filename too long: %s", input_filename);
+  if (snprintf(exe_file, sizeof(exe_file), "%s", input_filename) >= (int)sizeof(exe_file))
+    fail("llvm_codegen_compile: input filename too long: %s", input_filename);
 
-  // Construct .ll filename from input_filename (e.g., test.ifa -> test.ll)
-  strncpy(ll_file, input_filename, sizeof(ll_file) - 1);
-  ll_file[sizeof(ll_file) - 1] = '\0';
   char *dot_ll = strrchr(ll_file, '.');
-  if (dot_ll)
-    strcpy(dot_ll, ".ll");
-  else
-    strcat(ll_file, ".ll");
-
-  // Construct .o filename from input_filename (e.g., test.ifa -> test.o)
-  strncpy(obj_file, input_filename, sizeof(obj_file) - 1);
-  obj_file[sizeof(obj_file) - 1] = '\0';
+  if (dot_ll) strcpy(dot_ll, ".ll");
+  else strcat(ll_file, ".ll");
   char *dot_o = strrchr(obj_file, '.');
-  if (dot_o)
-    strcpy(dot_o, ".o");
-  else
-    strcat(obj_file, ".o");
+  if (dot_o) strcpy(dot_o, ".o");
+  else strcat(obj_file, ".o");
+  char *dot_exe = strrchr(exe_file, '.');
+  if (dot_exe) *dot_exe = '\0';
 
-  // Ensure TheModule is initialized (e.g. by a prior call to write_ir or print_ir)
-  // or re-initialize if this function is called standalone.
-  // For now, we assume TheModule and its TargetTriple are set.
-  // If TheModule is null, this path is problematic.
-  // A robust solution would pass FA* and Fun* here too, or ensure state.
-
-  // Compile LLVM IR directly to object file using clang
-  // This handles debug info directives properly
-  snprintf(cmd, sizeof(cmd), "clang -c -fPIC %s -o %s", ll_file, obj_file);
-  int res = system(cmd);
-
-  if (res != 0) {
-    fail("LLVM IR compilation failed for %s using clang.", ll_file);
-    return res;
+  // Step 1: clang -c -fPIC <ll> -o <obj>
+  {
+    char *argv[] = {(char *)"clang", (char *)"-c", (char *)"-fPIC", ll_file, (char *)"-o", obj_file, nullptr};
+    int res = codegen_spawn("clang", argv);
+    if (res != 0) {
+      fail("llvm_codegen_compile: clang -c failed for %s (exit=%d)", ll_file, res);
+      return res;
+    }
   }
-
   DEBUG_LOG("LLVM IR from %s compiled to %s\n", ll_file, obj_file);
 
-  // Step 3: Link the object file to create executable
-  char exe_file[512];
-  strncpy(exe_file, input_filename, sizeof(exe_file) - 1);
-  exe_file[sizeof(exe_file) - 1] = '\0';
-  char *dot_exe = strrchr(exe_file, '.');
-  if (dot_exe) *dot_exe = '\0';  // Remove extension to get executable name
-
-  // Link with necessary libraries (matching Makefile.cg)
-  snprintf(cmd, sizeof(cmd), "clang %s -o %s -lm", obj_file, exe_file);
-  res = system(cmd);
-
-  if (res != 0) {
-    fail("Linking failed for %s", obj_file);
-    return res;
+  // Step 2: clang <obj> -o <exe> -lm
+  {
+    char *argv[] = {(char *)"clang", obj_file, (char *)"-o", exe_file, (char *)"-lm", nullptr};
+    int res = codegen_spawn("clang", argv);
+    if (res != 0) {
+      fail("llvm_codegen_compile: linking failed for %s (exit=%d)", obj_file, res);
+      return res;
+    }
   }
-
   DEBUG_LOG("Executable %s created successfully\n", exe_file);
   return 0;
 }

@@ -80,6 +80,21 @@ void assign_type_cg_strings_pass1(Vec<Sym *> &allsyms, FILE *fp);
 void assign_type_cg_strings_pass2(Vec<Sym *> &allsyms);
 
 // -------------------------------------------------------------
+// Process invocation
+// -------------------------------------------------------------
+
+// Spawn a command via `posix_spawnp` (PATH-search) and wait for it.
+// `argv` must be a NULL-terminated array of char* (cast-away const
+// is acceptable since the spawn family takes char *const argv[]).
+// Returns the child's exit code on normal exit; -1 on spawn or wait
+// failure. No shell interpretation — arguments are passed literally.
+//
+// Replaces direct `system()` calls in `c_codegen_compile` /
+// `llvm_codegen_compile`, eliminating shell-quoting concerns for
+// filenames with spaces or special characters. See CODEGEN_PLAN §7.3.
+int codegen_spawn(const char *file, char *const argv[]);
+
+// -------------------------------------------------------------
 // Primitive emission contract (phase 2.3 stub)
 // -------------------------------------------------------------
 

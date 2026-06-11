@@ -11,6 +11,10 @@
 #include "sym.h"
 #include "var.h"
 
+#include <spawn.h>
+#include <sys/wait.h>
+extern char **environ;
+
 // -------------------------------------------------------------
 // Type-name strings
 // -------------------------------------------------------------
@@ -92,6 +96,26 @@ Fun *get_target_fun_core(PNode *n, Fun *f) {
   Vec<Fun *> *fns = f->calls.get(n);
   if (!fns || fns->n != 1) return nullptr;
   return fns->v[0];
+}
+
+// -------------------------------------------------------------
+// Process invocation
+// -------------------------------------------------------------
+
+int codegen_spawn(const char *file, char *const argv[]) {
+  pid_t pid = 0;
+  int rc = posix_spawnp(&pid, file, nullptr, nullptr, argv, environ);
+  if (rc != 0) {
+    fail("codegen_spawn: posix_spawnp failed for %s: errno=%d", file, rc);
+    return -1;
+  }
+  int status = 0;
+  if (waitpid(pid, &status, 0) < 0) {
+    fail("codegen_spawn: waitpid failed for %s pid %d", file, (int)pid);
+    return -1;
+  }
+  if (WIFEXITED(status)) return WEXITSTATUS(status);
+  return -1;
 }
 
 // -------------------------------------------------------------

@@ -885,12 +885,34 @@ int c_codegen_compile(cchar *filename) {
   char *dot = strrchr(target, '.');
   if (!dot) fail("c_codegen_compile: filename has no extension: %s", filename);
   *dot = 0;
-  char s[FILENAME_MAX * 4];
-  int m = snprintf(s, sizeof(s),
-                   "make --no-print-directory -f %s/Makefile.cg CG_ROOT=%s CG_TARGET=%s "
-                   "CG_FILES=%s.c %s %s",
-                   system_dir, system_dir, target, filename, codegen_optimize ? "OPTIMIZE=1" : "",
-                   codegen_debug ? "DEBUG=1" : "");
-  if (m < 0 || (size_t)m >= sizeof(s)) fail("c_codegen_compile: command line too long");
-  return system(s);
+
+  // Build argv for posix_spawn (no shell, no quoting concerns).
+  char makefile_arg[FILENAME_MAX];
+  if (snprintf(makefile_arg, sizeof(makefile_arg), "%s/Makefile.cg", system_dir) >= (int)sizeof(makefile_arg))
+    fail("c_codegen_compile: makefile path too long");
+  char cg_root_arg[FILENAME_MAX];
+  if (snprintf(cg_root_arg, sizeof(cg_root_arg), "CG_ROOT=%s", system_dir) >= (int)sizeof(cg_root_arg))
+    fail("c_codegen_compile: CG_ROOT arg too long");
+  char cg_target_arg[FILENAME_MAX];
+  if (snprintf(cg_target_arg, sizeof(cg_target_arg), "CG_TARGET=%s", target) >= (int)sizeof(cg_target_arg))
+    fail("c_codegen_compile: CG_TARGET arg too long");
+  char cg_files_arg[FILENAME_MAX];
+  if (snprintf(cg_files_arg, sizeof(cg_files_arg), "CG_FILES=%s.c", filename) >= (int)sizeof(cg_files_arg))
+    fail("c_codegen_compile: CG_FILES arg too long");
+
+  // posix_spawn's argv signature is `char *const argv[]`; we pass pointers
+  // to local buffers, which is OK because spawnp dup()s them before exec.
+  char *argv[16];
+  int ai = 0;
+  argv[ai++] = (char *)"make";
+  argv[ai++] = (char *)"--no-print-directory";
+  argv[ai++] = (char *)"-f";
+  argv[ai++] = makefile_arg;
+  argv[ai++] = cg_root_arg;
+  argv[ai++] = cg_target_arg;
+  argv[ai++] = cg_files_arg;
+  if (codegen_optimize) argv[ai++] = (char *)"OPTIMIZE=1";
+  if (codegen_debug) argv[ai++] = (char *)"DEBUG=1";
+  argv[ai] = nullptr;
+  return codegen_spawn("make", argv);
 }
