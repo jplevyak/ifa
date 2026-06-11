@@ -1371,9 +1371,16 @@ int llvm_codegen_compile(cchar *input_filename) {
   }
   DEBUG_LOG("LLVM IR from %s compiled to %s\n", ll_file, obj_file);
 
-  // Step 2: clang <obj> -o <exe> -lm
+  // Step 2: clang <obj> -o <exe> -lm -lgc -lgccpp
+  //
+  // -lgc / -lgccpp: the IR emitted by P_prim_make / P_prim_new /
+  // P_prim_clone references GC_malloc (Boehm GC). Without these the
+  // link fails on undefined `GC_malloc`. See issue 012.
   {
-    char *argv[] = {(char *)"clang", obj_file, (char *)"-o", exe_file, (char *)"-lm", nullptr};
+    char *argv[] = {(char *)"clang",   obj_file,
+                    (char *)"-o",      exe_file,
+                    (char *)"-lm",     (char *)"-lgc",
+                    (char *)"-lgccpp", nullptr};
     int res = codegen_spawn("clang", argv);
     if (res != 0) {
       fail("llvm_codegen_compile: linking failed for %s (exit=%d)", obj_file, res);

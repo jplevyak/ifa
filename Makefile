@@ -226,11 +226,17 @@ realclean: clean
 
 -include $(PLIB_OBJS:.o=.d) $(LIB_OBJS:.o=.d) $(IFA_OBJS:.o=.d)
 
-# Test target for LLVM backend
+# Test target for LLVM backend.
+#
+# `IFA_LLVM=1 ./ifa test_llvm.v` runs the LLVM codegen and then
+# `llvm_codegen_compile` (codegen/llvm.cc) spawns clang itself to
+# produce the final `test_llvm` binary — including the
+# -lm -lgc -lgccpp link flags needed for GC_malloc references in
+# the emitted IR. No separate clang invocation needed here. See
+# issue 012 for the history.
 test_llvm: ifa
 	@echo "Testing LLVM backend..."
 	IFA_LLVM=1 ./ifa test_llvm.v
-	clang test_llvm.o -o test_llvm
 	@echo "Running test_llvm..."
 	./test_llvm
 	@echo "Test passed!"

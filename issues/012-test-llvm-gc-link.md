@@ -1,6 +1,10 @@
 # Issue 012: `make test_llvm` link fails on `GC_malloc`
 
-**Status:** open (pre-existing).
+**Status:** **closed June 2026** — `-lgc -lgccpp` added to
+`llvm_codegen_compile`'s link step (option A below); redundant
+`clang test_llvm.o -o test_llvm` dropped from `ifa/Makefile:233`;
+`make test_llvm` and the CI `make -C ifa test_llvm` step both
+pass.
 **Affects:** `ifa/Makefile:230` (the `test_llvm` target),
 `ifa/codegen/llvm.cc:1342` (`llvm_codegen_compile`'s clang link
 step). Surfaced when wiring up GitHub Actions for the

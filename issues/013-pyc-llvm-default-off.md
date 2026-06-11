@@ -1,11 +1,22 @@
 # Issue 013: pyc LLVM backend not built / not exercised by default
 
-**Status:** open (architectural).
-**Affects:** the top-level `Makefile` (`USE_LLVM` is commented out
-by default), `pyc.cc:45` and `pyc.cc:99` (the `-b/--llvm` option
-and the `codegen_llvm` branch are `#ifdef USE_LLVM`-guarded),
-`test_pyc` (no LLVM env var translation), the GitHub Actions
-workflow at `.github/workflows/ci.yml:78-83`.
+**Status:** **closed June 2026** — `test_pyc` learned to honor a
+`PYC_FLAGS` env var (passed to every pyc invocation); the
+top-level Makefile's bogus `PYC_SRCS += llvm.cc` line was
+removed (the LLVM sources are compiled into `libifa_gc.a`, not
+duplicated at top level); `pyc.cc`'s `llvm_codegen()` call was
+renamed to `llvm_codegen_write_ir()` to match the actual
+symbol; and the CI workflow now exports `USE_LLVM=1` job-wide
+and runs `PYC_FLAGS=-b ./test_pyc` as a regression-detection
+step floored at the baseline pass count.
+**Affects:** the top-level `Makefile` (`USE_LLVM` was commented
+out by default and the `USE_LLVM`-conditional `PYC_SRCS` line
+referenced a non-existent top-level `llvm.cc`), `pyc.cc:45` and
+`pyc.cc:99` (the `-b/--llvm` option and the `codegen_llvm`
+branch are `#ifdef USE_LLVM`-guarded; the branch called a
+non-existent `llvm_codegen()` symbol), `test_pyc` (no env-var
+hook for backend selection), the GitHub Actions workflow at
+`.github/workflows/ci.yml:78-83`.
 
 Surfaced while collecting the phase-6.3 performance baseline
 ([`ifa/codegen/PERFORMANCE.md`](../codegen/PERFORMANCE.md)).
@@ -110,11 +121,50 @@ After the fix:
 - The CI signal stops being misleading. A green LLVM CI step
   today does *not* mean the LLVM backend works.
 
+## What landed (closing notes)
+
+The fix turned out to be steps 1 and 2 from the proposed plan,
+plus two bugs that surfaced only because nothing had ever
+exercised the `USE_LLVM=1` build path:
+
+- **`test_pyc` honors `PYC_FLAGS`.** A new `PYC_FLAGS` env var
+  is prepended to every pyc invocation inside the harness. No
+  per-test sidecar edits needed; the convention is documented
+  in the script header.
+- **Top-level Makefile drops the bogus `PYC_SRCS += llvm.cc`.**
+  The LLVM codegen sources are compiled into
+  `ifa/libifa_gc.a`, not duplicated at the top level. The old
+  line tried to compile a non-existent top-level `llvm.cc` and
+  broke any `USE_LLVM=1` build immediately.
+- **`pyc.cc` calls the right symbol.** `llvm_codegen()` was a
+  rename casualty from earlier work — the actual function is
+  `llvm_codegen_write_ir()`. `defs.h` got the same fix.
+- **CI exports `USE_LLVM=1` job-wide** so every step's `make`
+  builds with the LLVM path compiled in. The
+  `IFA_LLVM=1 ./test_pyc` step (which was a no-op) is replaced
+  with `PYC_FLAGS=-b ./test_pyc`, floored at the current
+  baseline pass count so future PRs that improve the LLVM
+  backend ratchet the floor up but routine PRs aren't gated
+  on full parity (phase 3.5 territory).
+- **`USE_LLVM=1` stays default-off** for casual `make` builds
+  per the issue's "option B". The Makefile comment now
+  documents how to flip it on and points at CODEGEN_LLVM.md.
+
+Deferred: full LLVM-backend parity (`PYC_FLAGS=-b ./test_pyc`
+currently passes 8/74 — known method-dispatch-through-closure
+gap, tracked in CODEGEN_PLAN §3.5). The PERFORMANCE.md
+LLVM-side numbers item is partly unblocked (the LLVM path can
+now be measured for the 8 fixtures that pass) but the
+representative-program comparison the doc was set up for is
+still bottlenecked on §3.5.
+
 ## Related
 
 - `ifa/codegen/CODEGEN_PLAN.md` §9.1 — phase 6.1 CI gates (the
   workflow change lands here).
+- `ifa/codegen/CODEGEN_PLAN.md` §3.5 — the parity gap
+  `PYC_FLAGS=-b ./test_pyc` currently surfaces.
 - `ifa/codegen/PERFORMANCE.md` §1.2 — the missing LLVM numbers
-  this issue gates.
+  this issue partly gates.
 - `ifa/CODEGEN_LLVM.md` §12 — the `-b` / `--llvm` /
   `PYC_LLVM=1` CLI documentation.

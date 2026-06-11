@@ -617,17 +617,26 @@ sticks.
 ### 9.1 CI gates
 
 - [x] **GitHub Actions / CI config** runs on every push +
-  pull request: `make`, `make test` (covers `./ifa --test`,
-  IR fixtures, and `./test_pyc`), `IFA_LLVM=1 ./test_pyc`, and
-  `make test_dparse`. The workflow lives at
-  `.github/workflows/ci.yml`; it installs `clang`, `llvm`,
-  `llvm-dev`, `libgc-dev`, `libpcre3-dev`, `python3`, then
-  builds DParser from source (`jplevyak/dparser` with
-  `D_USE_GC=1`).
-- [ ] **`make test_llvm`** is intentionally omitted from CI
-  — pre-existing missing-`-lgc` link failure, tracked in
-  [`ifa/issues/012-test-llvm-gc-link.md`](../issues/012-test-llvm-gc-link.md).
-  Re-enable once the issue is closed.
+  pull request. The workflow lives at `.github/workflows/ci.yml`
+  and exports `USE_LLVM=1` job-wide so both backends compile in.
+  Steps:
+  - `make` (with `USE_LLVM=1`): build pyc + ifa.
+  - `make test`: `./ifa --test` + IR fixtures + `./test_pyc`
+    (C backend).
+  - `make -C ifa test_llvm`: V-language LLVM smoke test
+    (re-enabled after [issue 012](../issues/012-test-llvm-gc-link.md)
+    closed).
+  - `PYC_FLAGS=-b ./test_pyc`: LLVM-backend pyc e2e, with a
+    floor at the current baseline pass count (8/74); a
+    regression below that fails CI, but the still-failing
+    tests don't gate (phase 3.5 territory; see
+    [issue 013](../issues/013-pyc-llvm-default-off.md) closing
+    notes).
+  - `make test_dparse`: DParser grammar validation.
+
+  Apt deps: `clang`, `llvm`, `llvm-dev`, `libgc-dev`,
+  `libpcre3-dev`, `python3`. DParser is built from
+  `jplevyak/dparser` (D_USE_GC=1).
 - [ ] **Optional**: a `--keep-build` CI mode that retains
   `tests/build/` artifacts for debugging failures. Deferred.
 
@@ -684,11 +693,15 @@ sticks.
   `Timer`/`clock_gettime` instrumentation around the codegen
   passes is its own diff. See PERFORMANCE.md §1.2 and §3 for
   the path forward.
-- [ ] **LLVM-side numbers** deferred until
-  [issue 013](../issues/013-pyc-llvm-default-off.md) lands:
-  the default build has `USE_LLVM` commented out, so
-  `PYC_LLVM=1` is a no-op and the LLVM codegen path can't be
-  benched from a default checkout.
+- [-] **LLVM-side numbers** partly unblocked.
+  [Issue 013](../issues/013-pyc-llvm-default-off.md) closed
+  June 2026; `make USE_LLVM=1 && PYC_FLAGS=-b ./test_pyc`
+  now actually exercises the LLVM path. The PERFORMANCE.md
+  baseline tables remain C-only because only 8/74 fixtures
+  currently compile through the LLVM backend (phase 3.5
+  parity gap). Re-enable LLVM benching for the 8 passing
+  fixtures, or wait until §3.5 progress brings the count up
+  enough for a representative comparison.
 
 ### 9.4 Backend selection cleanup
 
