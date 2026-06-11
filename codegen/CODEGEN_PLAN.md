@@ -616,11 +616,20 @@ sticks.
 
 ### 9.1 CI gates
 
-- [ ] **GitHub Actions / CI config** runs on every push:
-  `make`, `make test`, `make test_llvm`, `./test_pyc`,
-  `IFA_LLVM=1 ./test_pyc`, `make test_dparse`.
+- [x] **GitHub Actions / CI config** runs on every push +
+  pull request: `make`, `make test` (covers `./ifa --test`,
+  IR fixtures, and `./test_pyc`), `IFA_LLVM=1 ./test_pyc`, and
+  `make test_dparse`. The workflow lives at
+  `.github/workflows/ci.yml`; it installs `clang`, `llvm`,
+  `llvm-dev`, `libgc-dev`, `libpcre3-dev`, `python3`, then
+  builds DParser from source (`jplevyak/dparser` with
+  `D_USE_GC=1`).
+- [ ] **`make test_llvm`** is intentionally omitted from CI
+  — pre-existing missing-`-lgc` link failure, tracked in
+  [`ifa/issues/012-test-llvm-gc-link.md`](../issues/012-test-llvm-gc-link.md).
+  Re-enable once the issue is closed.
 - [ ] **Optional**: a `--keep-build` CI mode that retains
-  `tests/build/` artifacts for debugging failures.
+  `tests/build/` artifacts for debugging failures. Deferred.
 
 ### 9.2 Documentation alignment
 
