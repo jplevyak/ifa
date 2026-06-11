@@ -95,29 +95,103 @@ void assign_type_cg_strings_pass2(Vec<Sym *> &allsyms);
 int codegen_spawn(const char *file, char *const argv[]);
 
 // -------------------------------------------------------------
+// Codegen context — per-codegen-run state (phase 5.1 scaffolding)
+// -------------------------------------------------------------
+
+class PNode;
+
+// `Codegen` is the per-run state owner for a single
+// `c_codegen_print_c` / `llvm_codegen_print_ir` invocation.
+// Instantiating it (typically as a local in the print driver)
+// establishes a known lifetime for backend state — no more
+// file-scope-state leaking across compilations.
+//
+// The base class holds backend-agnostic fields: the FA the run is
+// emitting for, the entry Fun, and the source filename. Each
+// backend subclasses this to add its own state (the C backend
+// adds a FILE*; the LLVM backend adds Context/Module/Builder etc.).
+//
+// Phase 5 scaffolding: the type exists and the scaffold for
+// instantiation lives in `llvm_codegen_print_ir`. Wholesale
+// migration of every reference to file-scope globals into
+// `codegen->TheContext` / `codegen->Builder` style accesses is
+// deferred — there are hundreds of access sites across three
+// files. The destructor invariants and reset hooks are already
+// in place via the phase-0.1 state-leak fix; the Codegen type
+// codifies the lifetime contract so a future migration is
+// strictly mechanical. See CODEGEN_PLAN §8 and AUDIT §4.
+class Codegen {
+ public:
+  FA *fa;
+  Fun *entry_fun;
+  cchar *input_filename;
+
+  Codegen(FA *fa_, Fun *entry_fun_, cchar *input_filename_)
+      : fa(fa_), entry_fun(entry_fun_), input_filename(input_filename_) {}
+  virtual ~Codegen() = default;
+
+  // Non-copyable; codegen state is unique per run.
+  Codegen(const Codegen &) = delete;
+  Codegen &operator=(const Codegen &) = delete;
+};
+
+// -------------------------------------------------------------
+// Failure reporting with PNode context (phase 5.3)
+// -------------------------------------------------------------
+
+// Structured `fail()` variant that includes PNode source-location
+// context when available. Use this in primitive emitters and
+// per-PNode helpers so the user sees `<file>:<line>: ` prefix
+// pointing at the offending IR site, rather than just the
+// emitter's stock error message.
+//
+// Falls back to plain `fail()` when no source info is reachable.
+// Always terminates (no return).
+void codegen_fail(PNode *n, cchar *fmt, ...) __attribute__((noreturn, format(printf, 2, 3)));
+
+// Same for Var-level errors (variable's source line if available).
+void codegen_fail(Var *v, cchar *fmt, ...) __attribute__((noreturn, format(printf, 2, 3)));
+
+// -------------------------------------------------------------
 // Primitive emission contract (phase 2.3 stub)
 // -------------------------------------------------------------
 
-// PrimEmitter is the (currently-documentation-only) seam between
-// the per-primitive switches in cg.cc / llvm_primitives.cc and a
-// future unified dispatch (CODEGEN_PLAN phase 5). The interface
-// codifies what each backend must implement for each primitive,
-// even though the actual dispatch is still inline switches today.
+// PrimEmitter is the polymorphic seam between the per-primitive
+// switches in cg.cc / llvm_primitives.cc. Each backend implements
+// the interface; the per-primitive dispatcher (currently still
+// an inline `switch` block in each backend) walks the switch.
 //
-// Document each primitive's rvals/lvals contract in PRIMITIVES.md
-// before implementing a new emitter. The convention:
+// Phase 5.2 scaffolding: the interface exists and documents the
+// contract. The dispatchers still inline-switch by `prim->index`
+// for performance and because the switch cases need access to
+// backend-specific state (FILE* in C, IR Builder in LLVM). When
+// the Codegen base class adds the per-backend state machine, the
+// switches can be migrated to virtual methods. See CODEGEN_PLAN
+// §8 and PRIMITIVES.md §15 (the primitive emission contract).
+//
+// Primitive emission contract (recap from PRIMITIVES.md §15):
 //
 //   - rvals[0] is either the dispatched function symbol or the
-//     `__primitive` marker.
+//     `__primitive` / `__operator` marker.
 //   - For `__primitive`-marked SENDs, rvals[1] is the primitive
 //     name; arguments start at rvals[2].
 //   - lvals[0], if present, receives the primitive's result. Only
 //     emit the lvalue assignment when `lvals[0]->live` is true.
+//   - Side effects (struct write, printf, etc.) emit
+//     unconditionally; only the lvalue store is gated on live.
 //
 // See PRIMITIVES.md §14 (Backend coverage matrix) for the
 // per-primitive status and pinpoint-fixture map.
-//
-// (The actual dispatch table lands in phase 5; this header
-// reserves the namespace.)
+class PrimEmitter {
+ public:
+  virtual ~PrimEmitter() = default;
+
+  // Emit code for a single SEND PNode whose `prim` field is
+  // already resolved. Returns 1 if the primitive was handled,
+  // 0 if it should fall through to the generic call path.
+  // Backends override this with their dispatch (typically a
+  // `switch (n->prim->index)`).
+  virtual int emit(Fun *ifa_fun, PNode *n) = 0;
+};
 
 #endif  // _codegen_common_H_

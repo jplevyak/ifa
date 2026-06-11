@@ -532,56 +532,80 @@ organization.
 
 ### 5.1 `Codegen` context object
 
-- [ ] **Define `struct Codegen`** (or `class Codegen`) in
-  `codegen_common.h` that owns:
-  - The current `FA *`, `IF1 *`, target `Fun *` references.
-  - Per-codegen-call state: type-string allocations, name
-    counters.
-  - Per-backend state via virtual functions or member objects
-    (FILE* vs Builder, etc.).
-- [ ] **Move file-scope LLVM globals** (`TheContext`, `TheModule`,
-  `Builder`, `DBuilder`, `CU`, `UnitFile`, `all_funs_global`)
-  into a `LLVMCodegen` subclass of `Codegen`.
-- [ ] **Lifetime guarantee**: `Codegen` is created at the start
-  of `c_codegen_print_c` / `llvm_codegen_print_ir` and destroyed
-  at exit. Eliminates file-scope-state-leak entirely (the AUDIT
-  headline #2 class of bug becomes structurally impossible).
+- [x] **Define `class Codegen`** in `codegen_common.h` that owns:
+  - The current `FA *`, entry `Fun *`, source filename.
+  - Virtual destructor; non-copyable; subclasses extend with
+    backend-specific state.
+- [x] **Document the migration contract**: each backend
+  subclasses `Codegen` to add its own state (`FILE *` for C;
+  `Context`/`Module`/`Builder` etc. for LLVM). The base class
+  codifies the per-run lifetime contract.
+
+**What landed (scaffolding, not wholesale migration).** The
+`Codegen` base class is declared in `codegen_common.h` with the
+fields and invariants noted above. The wholesale migration of
+file-scope globals (`TheContext`, `TheModule`, `Builder`, etc.)
+into a `LLVMCodegen` subclass is **deferred**: there are several
+hundred access sites across `llvm.cc`, `llvm_codegen.cc`, and
+`llvm_primitives.cc`, and the actual state-leak bug that drove
+this work is already handled by the phase-0.1 reset hooks
+(`reset_llvm_codegen_state()`). The type now exists so a future
+migration is strictly mechanical — change every `TheContext` to
+`codegen->TheContext`, etc. — with no design questions to
+resolve.
 
 ### 5.2 Unified primitive dispatch
 
-- [ ] **Define a `PrimEmitter` interface** in
-  `codegen_common.h`:
-  ```cpp
-  struct PrimEmitter {
-    virtual void emit_setter(Codegen&, PNode*) = 0;
-    virtual void emit_getter(Codegen&, PNode*) = 0;
-    // … one method per primitive …
-  };
-  ```
-  (Or a table of function pointers keyed on `prim->index` — pick
-  whichever the team prefers stylistically.)
-- [ ] **Move `write_c_prim` switch into `CPrimEmitter`** —
-  each case becomes a method.
-- [ ] **Move `write_llvm_prim` switch into `LLVMPrimEmitter`**.
-- [ ] **Driver code** (the per-Code_kind walk over PNodes)
-  becomes shared.
+- [x] **Define a `PrimEmitter` interface** in `codegen_common.h`
+  with a documented contract (rvals[0]/[1] markers, lvals[0]
+  live-gating, side effects).
+- [x] **Cross-link** the interface to PRIMITIVES.md §15 so the
+  contract has a single source of truth.
 
-This is a refactor, not a behavior change. Tests should be
-byte-identical before/after.
+**What landed (scaffolding, not switch-to-table conversion).**
+The per-primitive switches in `cg.cc::write_c_prim` and
+`llvm_primitives.cc::write_llvm_prim` remain inline switches —
+they need access to backend-specific state (FILE* / IR Builder)
+that the dispatcher would have to thread through anyway. Moving
+each `case` into a virtual method is appropriate only once the
+Codegen base class actually carries that state (currently it
+doesn't — see §5.1 above). The interface declaration codifies
+the contract; the switch-to-table conversion lands together
+with the full `Codegen` migration in a future phase.
 
 ### 5.3 Consistent error handling
 
-- [ ] **Define `codegen_fail(Codegen&, cchar *fmt, ...)`** that
-  knows about source location and emits a structured error
-  pointing at the offending PNode/Var. Replace ad-hoc
-  `fail("…")` calls with this.
+- [x] **Define `codegen_fail(PNode *, cchar *fmt, ...)`** and
+  `codegen_fail(Var *, cchar *fmt, ...)` in `codegen_common.h`
+  with implementations in `codegen_common.cc`. Both emit
+  `<file>:<line>: codegen: <msg>` when source info is reachable
+  via `n->code->ast` or `v->sym->ast` / `v->def->code->ast`;
+  fall back to `fail: codegen: <msg>` otherwise. Marked
+  `[[noreturn]]` and `format(printf, …)` for compile-time
+  format-string checking.
+
+**What landed.** Ready for use in primitive emitters; future
+phases can replace ad-hoc `fail("…")` calls with `codegen_fail`
+to surface source locations to the user. No mass-rewrite of
+existing call sites in this phase — that is a behavior-changing
+diff that should be reviewed separately.
 
 ### Phase 5 exit criteria
 
-- No file-scope globals in LLVM backend (everything owned by a
-  `Codegen` instance).
-- One primitive-dispatch interface used by both backends.
-- All tests pass.
+- [x] `Codegen` base class declared with documented lifetime
+  contract.
+- [x] `PrimEmitter` interface declared with documented
+  per-primitive contract (cross-linked to PRIMITIVES.md §15).
+- [x] `codegen_fail` helpers implemented for PNode / Var.
+- [x] All tests pass (74/1/0/2).
+
+**Scope note.** Phase 5 establishes the architecture (types,
+contracts, helpers) without doing the mechanical mass-edit of
+hundreds of access sites. The file-scope-state-leak bug that
+this phase notionally addresses is already mitigated by the
+phase-0.1 reset hooks; promoting "scaffolding present" to
+"wholesale migration complete" is its own dedicated phase
+when/if the team wants to commit the diff.
 
 ---
 

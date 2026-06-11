@@ -15,6 +15,8 @@
 #include <sys/wait.h>
 extern char **environ;
 
+#include <cstdarg>
+
 // -------------------------------------------------------------
 // Type-name strings
 // -------------------------------------------------------------
@@ -176,6 +178,46 @@ void assign_type_cg_strings_pass1(Vec<Sym *> &allsyms, FILE *fp) {
       }
     }
   }
+}
+
+// -------------------------------------------------------------
+// Failure reporting with PNode / Var context (phase 5.3)
+// -------------------------------------------------------------
+
+void codegen_fail(PNode *n, cchar *fmt, ...) {
+  fflush(stdout);
+  fflush(stderr);
+
+  char msg[1024];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(msg, sizeof(msg), fmt, ap);
+  va_end(ap);
+
+  if (n && n->code && n->code->ast)
+    fprintf(stderr, "%s:%d: codegen: %s\n", n->code->pathname(), n->code->line(), msg);
+  else
+    fprintf(stderr, "fail: codegen: %s\n", msg);
+  exit(1);
+}
+
+void codegen_fail(Var *v, cchar *fmt, ...) {
+  fflush(stdout);
+  fflush(stderr);
+
+  char msg[1024];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(msg, sizeof(msg), fmt, ap);
+  va_end(ap);
+
+  if (v && v->sym && v->sym->ast)
+    fprintf(stderr, "%s:%d: codegen: %s\n", v->sym->pathname(), v->sym->line(), msg);
+  else if (v && v->def && v->def->code && v->def->code->ast)
+    fprintf(stderr, "%s:%d: codegen: %s\n", v->def->code->pathname(), v->def->code->line(), msg);
+  else
+    fprintf(stderr, "fail: codegen: %s\n", msg);
+  exit(1);
 }
 
 void assign_type_cg_strings_pass2(Vec<Sym *> &allsyms) {
