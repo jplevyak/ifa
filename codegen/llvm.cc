@@ -1,6 +1,7 @@
 #include "llvm_internal.h"
 #include "builtin.h"
 #include "cg.h"
+#include "codegen_common.h"
 #include "fail.h"
 #include "if1.h"
 #include "pdb.h"
@@ -99,13 +100,7 @@ static void llvm_codegen_initialize(FA *fa) {
   // }
 }
 
-// Forward declaration
-
-// Helper function from cg.cc:537-540
-int is_closure_var(Var *v) {
-  Sym *t = v->type;
-  return (t && t->type_kind == Type_FUN && !t->fun && t->has.n);
-}
+// is_closure_var(Var*) — moved to codegen_common.{h,cc}.
 
 static std::string getTypeName(llvm::Type *Ty) {
   if (!Ty) return "null";
@@ -912,120 +907,23 @@ static void createGlobalVariables(FA *fa) {
   }
 }
 
-static cchar *num_string(Sym *s) {
-  switch (s->num_kind) {
-    default:
-      assert(!"case");
-    case IF1_NUM_KIND_UINT:
-      switch (s->num_index) {
-        case IF1_INT_TYPE_1:
-          return "_CG_bool";
-        case IF1_INT_TYPE_8:
-          return "_CG_uint8";
-        case IF1_INT_TYPE_16:
-          return "_CG_uint16";
-        case IF1_INT_TYPE_32:
-          return "_CG_uint32";
-        case IF1_INT_TYPE_64:
-          return "_CG_uint64";
-        default:
-          assert(!"case");
-      }
-      break;
-    case IF1_NUM_KIND_INT:
-      switch (s->num_index) {
-        case IF1_INT_TYPE_1:
-          return "_CG_bool";
-        case IF1_INT_TYPE_8:
-          return "_CG_int8";
-        case IF1_INT_TYPE_16:
-          return "_CG_int16";
-        case IF1_INT_TYPE_32:
-          return "_CG_int32";
-        case IF1_INT_TYPE_64:
-          return "_CG_int64";
-        default:
-          assert(!"case");
-      }
-      break;
-    case IF1_NUM_KIND_FLOAT:
-      switch (s->num_index) {
-        case IF1_FLOAT_TYPE_32:
-          return "_CG_float32";
-        case IF1_FLOAT_TYPE_64:
-          return "_CG_float64";
-        case IF1_FLOAT_TYPE_128:
-          return "_CG_float128";
-        default:
-          assert(!"case");
-      }
-      break;
-  }
-  return 0;
-}
+// num_string(Sym*) — moved to codegen_common.{h,cc}.
 
 void llvm_build_type_strings(FA *fa) {
 #define S(_n) if1_get_builtin(fa->pdb->if1, #_n)->cg_string = "_CG_" #_n;
 #include "builtin_symbols.h"
 #undef S
-  int f_index = 0;
-  for (Fun *f : fa->funs) {
-    if (!f->live) continue;
-    char s[100];
-    if (f->sym->name) {
-      if (f->sym->has.n > 1 && f->sym->has[1]->must_specialize)
-        snprintf(s, sizeof(s), "_CG_f_%d_%d", f->sym->id, f_index);
-      else
-        snprintf(s, sizeof(s), "_CG_f_%d_%d", f->sym->id, f_index);
-    } else
-      snprintf(s, sizeof(s), "_CG_f_%d_%d", f->sym->id, f_index);
-    f->cg_string = dupstr(s);
-    snprintf(s, sizeof(s), "_CG_pf%d", f_index);
-    f->cg_structural_string = dupstr(s);
-    f->sym->cg_string = f->cg_structural_string;
-    f_index++;
-  }
+  // Annotate=false: LLVM IR identifiers can't carry comments. No
+  // globals collection: the LLVM backend discovers globals separately
+  // via createGlobalVariables. See codegen_common.{h,cc}.
+  assign_fun_cg_strings(fa, /*annotate=*/false, /*globals=*/nullptr);
   Vec<Var *> globals;
   Vec<Sym *> allsyms;
   collect_types_and_globals(fa, allsyms, globals);
-  for (Sym *s : allsyms) {
-    if (s->num_kind)
-      s->cg_string = num_string(s);
-    else if (s->is_symbol) {
-      s->cg_string = "_CG_symbol";
-    } else {
-      if (!s->cg_string) {
-        switch (s->type_kind) {
-          default:
-            s->cg_string = dupstr("_CG_any");
-            break;
-          case Type_FUN:
-            if (s->fun) break;
-          case Type_RECORD: {
-            if (s->has.n) {
-              char ss[100];
-              snprintf(ss, sizeof(ss), "_CG_ps%d", s->id);
-              s->cg_string = dupstr(ss);
-            } else
-              s->cg_string = "_CG_void";
-            break;
-          }
-        }
-      }
-    }
-  }
-  for (Sym *s : allsyms) {
-    if (s->fun)
-      s->cg_string = s->fun->cg_structural_string;
-    else if (s->is_symbol)
-      s->cg_string = sym_symbol->cg_string;
-    if (s->type_kind == Type_SUM && s->has.n == 2) {
-      if (s->has[0] == sym_nil_type)
-        s->cg_string = s->has[1]->cg_string;
-      else if (s->has[1] == sym_nil_type)
-        s->cg_string = s->has[0]->cg_string;
-    }
-  }
+  // fp=nullptr: the LLVM backend doesn't emit struct-forward-decls;
+  // struct types are built via getLLVMType when needed.
+  assign_type_cg_strings_pass1(allsyms, /*fp=*/nullptr);
+  assign_type_cg_strings_pass2(allsyms);
 }
 
 void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filename) {

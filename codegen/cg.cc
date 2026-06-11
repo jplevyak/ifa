@@ -4,6 +4,7 @@
 
 #include "cg.h"
 #include "builtin.h"
+#include "codegen_common.h"
 #include "fa.h"
 #include "fail.h"
 #include "fun.h"
@@ -14,15 +15,7 @@
 #include "prim.h"
 #include "var.h"
 
-static inline cchar *c_type(Var *v) {
-  if (!v->type || !v->type->cg_string) return "_CG_void";
-  return v->type->cg_string;
-}
-
-static inline cchar *c_type(Sym *s) {
-  if (!s->type || !s->type->cg_string) return "_CG_void";
-  return s->type->cg_string;
-}
+// c_type(Var*), c_type(Sym*) — moved to codegen_common.{h,cc}.
 
 static void write_c_fun_proto(FILE *fp, Fun *f, int type = 0) {
   assert(f->rets.n == 1);
@@ -102,59 +95,7 @@ static int cg_writeln(FILE *fp, Vec<Var *> &vars, int ln) {
   return 0;
 }
 
-static cchar *num_string(Sym *s) {
-  switch (s->num_kind) {
-    default:
-      assert(!"case");
-    case IF1_NUM_KIND_UINT:
-      switch (s->num_index) {
-        case IF1_INT_TYPE_1:
-          return "_CG_bool";
-        case IF1_INT_TYPE_8:
-          return "_CG_uint8";
-        case IF1_INT_TYPE_16:
-          return "_CG_uint16";
-        case IF1_INT_TYPE_32:
-          return "_CG_uint32";
-        case IF1_INT_TYPE_64:
-          return "_CG_uint64";
-        default:
-          assert(!"case");
-      }
-      break;
-    case IF1_NUM_KIND_INT:
-      switch (s->num_index) {
-        case IF1_INT_TYPE_1:
-          return "_CG_bool";
-        case IF1_INT_TYPE_8:
-          return "_CG_int8";
-        case IF1_INT_TYPE_16:
-          return "_CG_int16";
-        case IF1_INT_TYPE_32:
-          return "_CG_int32";
-        case IF1_INT_TYPE_64:
-          return "_CG_int64";
-        default:
-          assert(!"case");
-      }
-      break;
-    case IF1_NUM_KIND_FLOAT:
-      switch (s->num_index) {
-        case IF1_FLOAT_TYPE_32:
-          return "_CG_float32";
-        case IF1_FLOAT_TYPE_64:
-          return "_CG_float64";
-        case IF1_FLOAT_TYPE_128:
-          return "_CG_float128";
-        default:
-          assert(!"case");
-          break;
-      }
-      break;
-  }
-  fail("num_string: unhandled num_kind %d num_index %d", s->num_kind, s->num_index);
-  return 0;
-}
+// num_string(Sym*) — moved to codegen_common.{h,cc}.
 
 static cchar *c_rhs(Var *v) {
   if (!v->sym->is_fun) {
@@ -490,13 +431,16 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
   return 1;
 }
 
+// C-backend wrapper around get_target_fun_core (codegen_common.{h,cc}).
+// When no single resolution is available, the C backend `fail`s in
+// the absence of `fruntime_errors`; the LLVM backend has its own
+// (search-by-sym, search-by-name) wrapper instead.
 static Fun *get_target_fun(PNode *n, Fun *f) {
-  Vec<Fun *> *fns = f->calls.get(n);
-  if (!fns || fns->n != 1) {
+  Fun *target = get_target_fun_core(n, f);
+  if (!target) {
     if (!fruntime_errors) fail("unable to resolve to a single function at call site");
-    return 0;
   }
-  return fns->v[0];
+  return target;
 }
 
 static void simple_move(FILE *fp, Var *lhs, Var *rhs) {
@@ -539,10 +483,7 @@ static int write_c_fun_arg(FILE *fp, Fun *f, char *s, char *e, Sym *sym, int i, 
   return 1;
 }
 
-static int is_closure_var(Var *v) {
-  Sym *t = v->type;
-  return (t && t->type_kind == Type_FUN && !t->fun && t->has.n);
-}
+// is_closure_var(Var*) — moved to codegen_common.{h,cc}.
 
 static void write_arg_position(FILE *fp, MPosition *p) {
   for (int i = 0; i < p->pos.n; i++) {
@@ -796,73 +737,18 @@ static void build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
 #include "builtin_symbols.h"
 #undef S
   // assign functions a C type string
-  int f_index = 0;
-  for (Fun *f : fa->funs) {
-    if (!f->live) continue;
-    char s[100];
-    if (f->sym->name) {
-      if (f->sym->has.n > 1 && f->sym->has[1]->must_specialize)
-        snprintf(s, sizeof(s), "_CG_f_%d_%d/*%s::%s*/", f->sym->id, f_index, f->sym->has[1]->must_specialize->name,
-                 f->sym->name);
-      else
-        snprintf(s, sizeof(s), "_CG_f_%d_%d/*%s*/", f->sym->id, f_index, f->sym->name);
-    } else
-      snprintf(s, sizeof(s), "_CG_f_%d_%d", f->sym->id, f_index);
-    f->cg_string = dupstr(s);
-    snprintf(s, sizeof(s), "_CG_pf%d", f_index);
-    f->cg_structural_string = dupstr(s);
-    f->sym->cg_string = f->cg_structural_string;
-    f_index++;
-    if (f->sym->var) globals.set_add(f->sym->var);
-  }
+  // Assign each live Fun a cg_string (with /*name*/ annotation, the
+  // C-backend convention) and collect their sym->var into globals.
+  // See codegen_common.{h,cc}.
+  assign_fun_cg_strings(fa, /*annotate=*/true, &globals);
   Vec<Sym *> allsyms;
   collect_types_and_globals(fa, allsyms, globals);
-  // assign creation sets C type strings
+  // assign creation sets C type strings. Pass1 emits forward decls
+  // for Type_RECORD types alongside the cg_string assignment; pass2
+  // resolves fun/symbol/sum-type aliases.
   if (allsyms.n) fputs("/*\n Type Declarations\n*/\n\n", fp);
-  for (Sym *s : allsyms) {
-    if (s->num_kind)
-      s->cg_string = num_string(s);
-    else if (s->is_symbol) {
-      s->cg_string = "_CG_symbol";
-    } else {
-      if (s->cg_string) {
-        // skip
-      } else {
-        switch (s->type_kind) {
-          default:
-            s->cg_string = dupstr("_CG_any");
-            break;
-          case Type_FUN:
-            if (s->fun) break;
-          // fall through
-          case Type_RECORD: {
-            if (s->has.n) {
-              char ss[100];
-              fprintf(fp, "/* %s */ struct _CG_s%d; ", s->name ? s->name : "", s->id);
-              fprintf(fp, "typedef struct _CG_s%d *_CG_ps%d;\n", s->id, s->id);
-              snprintf(ss, sizeof(ss), "_CG_ps%d", s->id);
-              s->cg_string = dupstr(ss);
-            } else
-              s->cg_string = "_CG_void";
-            break;
-          }
-        }
-      }
-    }
-  }
-  // resolve types
-  for (Sym *s : allsyms) {
-    if (s->fun)
-      s->cg_string = s->fun->cg_structural_string;
-    else if (s->is_symbol)
-      s->cg_string = sym_symbol->cg_string;
-    if (s->type_kind == Type_SUM && s->has.n == 2) {
-      if (s->has[0] == sym_nil_type)
-        s->cg_string = s->has[1]->cg_string;
-      else if (s->has[1] == sym_nil_type)
-        s->cg_string = s->has[0]->cg_string;
-    }
-  }
+  assign_type_cg_strings_pass1(allsyms, fp);
+  assign_type_cg_strings_pass2(allsyms);
   if (allsyms.n) fputs("\n", fp);
   // define function types and prototypes
   Vec<Fun *> live_funs;

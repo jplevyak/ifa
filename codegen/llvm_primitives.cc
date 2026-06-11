@@ -1,5 +1,6 @@
 #include "llvm_internal.h"
 #include "builtin.h"
+#include "codegen_common.h"
 #include "prim.h"
 #include <ctype.h>
 
@@ -7,52 +8,38 @@
 // Call Target Resolution
 // ============================================================================
 
+// LLVM-backend wrapper around get_target_fun_core (codegen_common.{h,cc}).
+//
+// When `f->calls` doesn't resolve the SEND uniquely, the LLVM backend
+// has a riskier fallback that the C backend doesn't: search
+// `all_funs_global` first by exact Sym pointer, then by Sym name.
+// See AUDIT §1 #6 — the fallback masks a real call-graph-discovery
+// gap and is slated for removal in phase 4 once the gap is closed.
 Fun *get_target_fun(PNode *n, Fun *f) {
-  Vec<Fun *> *fns = f->calls.get(n);
-  if (!fns || fns->n != 1) {
-    if (1) {  // TODO: Check runtime error flags
-      // For debugging, print what we found
-      DEBUG_LOG("get_target_fun failed for PNode %p. fns=%p, fns->n=%d\n", n, fns, fns ? fns->n : 0);
-    }
+  if (Fun *core = get_target_fun_core(n, f)) return core;
 
-    // Fallback: Check n->rvals[0]
-    if (n->rvals.n > 0) {
-      Var *called_var = n->rvals[0];
-      if (called_var && called_var->sym) {
-        DEBUG_LOG("Attempting fallback for symbol %s (id %d)\n",
-                called_var->sym->name ? called_var->sym->name : "unnamed", called_var->sym->id);
-        if (all_funs_global) {
-          DEBUG_LOG("Searching %d functions in all_funs_global\n", all_funs_global->n);
-          for (Fun *fx : *all_funs_global) {
-            if (!fx) {
-              DEBUG_LOG("Skipping null fun in all_funs_global\n");
-              continue;
-            }
-            if (fx->sym && fx->sym == called_var->sym) {
-              DEBUG_LOG("Found fallback target fun: %s\n", fx->sym->name ? fx->sym->name : "unnamed");
-              return fx;
-            }
-          }
-          // Name match fallback (risky but trying it if sym IDs don't align for some reason)
-          for (Fun *fx : *all_funs_global) {
-            if (!fx) continue;
-            if (fx->sym && fx->sym->name && called_var->sym->name &&
-                strcmp(fx->sym->name, called_var->sym->name) == 0) {
-              DEBUG_LOG("Found fallback target fun by NAME: %s\n", fx->sym->name);
-              return fx;
-            }
-          }
-          DEBUG_LOG("Fallback search complete, no match found\n");
-        } else {
-          DEBUG_LOG("all_funs_global is NULL\n");
-        }
-      }
-    }
+  DEBUG_LOG("get_target_fun: f->calls didn't resolve PNode %p uniquely; trying fallback\n", n);
+  if (n->rvals.n == 0) return nullptr;
+  Var *called_var = n->rvals[0];
+  if (!called_var || !called_var->sym || !all_funs_global) return nullptr;
 
-    // fail("unable to resolve to a single function at call site"); // Non-fatal allowed?
-    return 0;
+  // First pass: exact Sym pointer match.
+  for (Fun *fx : *all_funs_global) {
+    if (fx && fx->sym && fx->sym == called_var->sym) {
+      DEBUG_LOG("get_target_fun fallback: matched by sym pointer (%s)\n",
+                fx->sym->name ? fx->sym->name : "unnamed");
+      return fx;
+    }
   }
-  return fns->v[0];
+  // Second pass: Sym-name match (risky if name collisions exist).
+  for (Fun *fx : *all_funs_global) {
+    if (fx && fx->sym && fx->sym->name && called_var->sym->name &&
+        strcmp(fx->sym->name, called_var->sym->name) == 0) {
+      DEBUG_LOG("get_target_fun fallback: matched by sym name (%s)\n", fx->sym->name);
+      return fx;
+    }
+  }
+  return nullptr;
 }
 
 void write_send(Fun *f, PNode *n) {

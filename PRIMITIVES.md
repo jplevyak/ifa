@@ -749,7 +749,74 @@ vs `01_baseline.ir.codegen-llvm.expected` for the difference.
 
 ---
 
-## 15. Symptom → start-here
+## 15. Primitive emission contract
+
+The seam between the per-primitive analyzer switch in
+`fa.cc:add_send_edges_pnode` and the per-primitive codegen
+switches in `cg.cc:write_c_prim` / `llvm_primitives.cc:write_llvm_prim`
+is a contract every primitive obeys. Documenting it lets a new
+backend (or a refactor like CODEGEN_PLAN phase 5's unified
+dispatch) check correctness mechanically.
+
+The contract has three parts.
+
+### 15.1 SEND PNode shape
+
+Every primitive call lowers to a `Code_SEND` PNode with the
+following `rvals` / `lvals` layout:
+
+| Position | Meaning |
+|---|---|
+| `rvals[0]` | Either the dispatched user function's sym (for `(send fn args)`) or the `@primitive` / `@operator` marker (for primitive calls). |
+| `rvals[1]` | For `@primitive`-marked SENDs: the primitive name (e.g. `@new`, `@clone`, `print`, `println`). For binary operators (`@operator …`): the receiver. |
+| `rvals[2]+` | Primitive arguments. The argument offset `o` (from `cg.cc:184`) is 2 if `rvals[0]->sym == sym_primitive`, else 1. |
+| `lvals[0]` | The result. `lvals.n == 0` for void-result primitives (e.g. `@reply`); `lvals.n == 1` otherwise. Multi-result primitives (rare; `@destruct`) carry `lvals[0..n-1]`. |
+
+### 15.2 Per-primitive contract details
+
+| Primitive | `rvals` layout | `lvals[0]` semantics | `live` gating? |
+|---|---|---|---|
+| `@new <T>` | `[__primitive, new, T]` | New instance of T (pointer). | always live; codegen must emit. |
+| `@clone <obj>` | `[__primitive, clone, obj]` | Copy of obj (pointer of same type). | always live. |
+| `@operator obj @period <sym>` | `[__operator, obj, period, sym]` | `obj.field` value. | always live. |
+| `@operator obj @setter <sym> <val>` | `[__operator, obj, setter, sym, val]` | The `val` that was assigned (issue 011 Option A semantics). | emit lvalue assignment only when `lvals[0]->live` is true. |
+| `@primitive @index_object obj idx` | `[__primitive, index_object, obj, idx, …]` | `obj[idx]`. Multiple `idx` rvals for nested indexing. | `lvals[0]->live` gates the result store; the array bounds check (if any) emits regardless. |
+| `@primitive @set_index_object obj idx val` | `[__primitive, set_index_object, obj, idx, val]` | The `val` (analyzer flows val to result). | gated. |
+| `@primitive @assign lhs rhs` | `[__primitive, assign, lhs, rhs]` | The `rhs` (assignment returns the value). | gated. |
+| `@primitive @len obj` | `[__primitive, len, obj]` | int64 length. | gated. |
+| `@primitive @sizeof T` / `@sizeof_element T` | `[__primitive, sizeof, T]` | int64 sizeof. | gated. |
+| `@primitive @reply cont ret` | `[__primitive, reply, cont, ret]` | (no lvalue — this IS the function return). | n/a. |
+| `@primitive @make kind args…` | `[__primitive, make, kind, args…]` | Allocated compound (tuple, list, vector). | gated. |
+| `@primitive @destruct args…` | `[__primitive, destruct, args…]` | Decomposes lvals[0..n-1] from a tuple. | each lval gated individually. |
+| `@primitive @print …` / `@println …` | `[__primitive, print/println, args…]` | int (printf return code; unused in practice). | gated; but the side effect is always emitted. |
+
+### 15.3 Backend obligations
+
+For each primitive in §15.2, the C backend (`cg.cc:write_c_prim`)
+and the LLVM backend (`llvm_primitives.cc:write_llvm_prim`)
+must:
+
+1. **Emit the operation's side effect** (struct write, array
+   store, printf call, etc.) unconditionally. This happens
+   even when `lvals[0]->live` is false — the result might be
+   unused but the side effect matters.
+2. **Emit the lvalue assignment** only when `lvals[0]->live`
+   is true. For setter-style primitives where the analyzer
+   flows `val` to the lvalue (see issue 011), the lvalue
+   assignment must use the val (not the receiver).
+3. **Respect `fruntime_errors`**: when set, emit runtime
+   checks (e.g. `assert(!"runtime error: getter not resolved")`)
+   instead of `fail`ing at compile time.
+
+The `PrimEmitter` interface in `codegen_common.h` reserves a
+namespace for a future unified dispatch (CODEGEN_PLAN phase 5)
+that codifies this contract as virtual methods. Until that
+lands, the inline `switch (n->prim->index)` blocks in each
+backend's `write_*_prim` are the authoritative implementation.
+
+---
+
+## 16. Symptom → start-here
 
 | Symptom | Start here |
 |---|---|
@@ -764,7 +831,7 @@ vs `01_baseline.ir.codegen-llvm.expected` for the difference.
 
 ---
 
-## 16. References
+## 17. References
 
 - `ifa/if1/prim.cc` + `prim.h` — `Prim`, `Primitives`,
   `RegisteredPrim`, `prim_reg`, `prim_get`.

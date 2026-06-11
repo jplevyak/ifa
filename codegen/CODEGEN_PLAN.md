@@ -273,48 +273,61 @@ header, link against the implementation.
 
 ### 2.1 Create the module
 
-- [ ] **`ifa/codegen/codegen_common.h`** and **`codegen_common.cc`**.
-  Add to `ifa/Makefile`.
+- [x] **`ifa/codegen/codegen_common.h` + `codegen_common.cc`**
+  created and wired into `ifa/Makefile`'s `LIB_SRCS` and
+  `IFA_DEPEND_SRCS`.
 
 ### 2.2 Move duplicated functions ([AUDIT §1 #7](AUDIT.md#1-headline-issues--in-order-of-likely-impact))
 
-Each function is currently identical between backends. Move,
-delete from `cg.cc` and `llvm.cc`, update includes.
-
-- [ ] **`num_string(Sym *s)`** — IF1 numeric-type → name
-  mapping. Currently in cg.cc:106-157 and llvm.cc:961-1011.
-- [ ] **`is_closure_var(Var *v)`** — cg.cc:542-545 and
-  llvm.cc:90-93.
-- [ ] **`c_type(Var *)` / `c_type(Sym *)`** — cg.cc:18-26.
-  Used only by C backend currently but the structure is shared.
-- [ ] **`get_target_fun(PNode *n, Fun *f)`** — cg.cc:493-499
-  and llvm_primitives.cc:10-56 (with the LLVM-specific name-match
-  fallback isolated under `#ifdef CODEGEN_LLVM_FALLBACKS` or a
-  parameter).
-- [ ] **The type-string assignment pass** that walks `allsyms`
-  and assigns `cg_string` to each Sym. The two implementations
-  (cg.cc:791-920 and llvm.cc:1013-1075) have the same shape but
-  emit different strings. Factor the walk into a shared
-  template / callback structure.
+- [x] **`num_string(Sym *s)`** — moved. cg.cc & llvm.cc now
+  reference the codegen_common version (50 LOC removed each).
+- [x] **`is_closure_var(Var *v)`** — moved. 3-line implementation
+  was identical in both files; now single source.
+- [x] **`c_type(Var *)` / `c_type(Sym *)`** — moved. Now used
+  by both `cg.cc` (heavily) and the LLVM backend (for
+  cg_string introspection).
+- [x] **`get_target_fun`** — factored into
+  `get_target_fun_core(n, f)` (the shared `f->calls.get(n)`
+  lookup) plus C-backend and LLVM-backend wrappers. C backend
+  adds the `fruntime_errors` fail; LLVM backend adds the
+  sym-pointer + sym-name fallback search over `all_funs_global`.
+  Both wrappers stay in their respective .cc files so each
+  backend can use its own logging/error idioms.
+- [x] **Type-string assignment pass** — factored into three
+  helpers in codegen_common: `assign_fun_cg_strings(fa,
+  annotate, globals)`, `assign_type_cg_strings_pass1(allsyms,
+  fp)`, `assign_type_cg_strings_pass2(allsyms)`. C backend
+  passes `annotate=true` + `globals` + a FILE* (for struct
+  forward decls); LLVM backend passes `annotate=false` +
+  nullptr + nullptr. The 80-line duplicated block in cg.cc
+  becomes 4 lines; the same block in llvm.cc becomes 5 lines.
 
 ### 2.3 Define the primitive emission contract
 
-Backends differ in how they emit, but they all answer the same
-question: "given a SEND PNode for primitive P, in function F,
-emit code that writes lvals[0] = computation over rvals."
-
-- [ ] **Document the contract in `PRIMITIVES.md`** — what
-  `rvals[0..n]` mean for each prim, what `lvals[0]` should hold
-  after emission, whether `lvals[0]->live` gating applies.
-- [ ] **Add an interface header** (in `codegen_common.h`) for
-  primitive emission — see phase 5 for the actual unified
-  dispatch. For now, just the documentation.
+- [x] **PRIMITIVES.md §15** added: "Primitive emission contract"
+  — three subsections covering the SEND PNode shape, per-
+  primitive contract details (table of every primitive's rvals
+  layout, lvals semantics, live-gating rule), and the backend
+  obligations.
+- [x] **`PrimEmitter` namespace reservation** documented in
+  `codegen_common.h`. The actual virtual interface lands in
+  phase 5; for now the inline `switch` blocks in each backend
+  remain authoritative, but the contract they implement is now
+  written down.
 
 ### Phase 2 exit criteria
 
-- `codegen_common.{h,cc}` exists, holds the moved functions.
-- `cg.cc` and `llvm.cc` no longer contain duplicates.
-- `make` clean; all tests pass.
+- [x] `codegen_common.{h,cc}` exists and holds the shared
+  helpers (~115 lines).
+- [x] cg.cc and llvm.cc no longer contain duplicate
+  `num_string`, `is_closure_var`, `c_type`, or the type-string
+  assignment pass.
+- [x] `make` clean; all tests pass:
+  - `./ifa --test` 52/0
+  - ifa `make test` all phases clean (codegen-c 6/6,
+    codegen-llvm 6/6, fa-converge 18/18)
+  - top-level `make test` + `./test_pyc` 74 / 1 expected fail / 0
+  - `make test_dparse` clean
 
 ---
 
