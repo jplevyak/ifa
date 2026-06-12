@@ -1318,6 +1318,14 @@ void setLLVMValue(Var *var, llvm::Value *val, Fun *ifa_fun) {
   if (var->llvm_value && llvm::isa<llvm::AllocaInst>(var->llvm_value)) {
     // It's a local variable allocated with AllocaInst, so we store the new value.
     Builder->CreateStore(val, var->llvm_value);
+  } else if (var->llvm_value && llvm::isa<llvm::GlobalVariable>(var->llvm_value)) {
+    // Mirror the AllocaInst path for globals — the global slot is
+    // backed by a fixed pointer just like an alloca, and the C
+    // backend's parallel is plain `g0 = val;`. Without this store,
+    // assignments to module-level vars (`a = (1, 2, 3)`) only
+    // updated the in-memory cache and never reached @a, so the
+    // subsequent `a[i]` reads picked up the zero-init'd global.
+    Builder->CreateStore(val, var->llvm_value);
   } else {
     // It's an SSA variable, its llvm_value should be the instruction that defines it.
     // Or it's an argument.
