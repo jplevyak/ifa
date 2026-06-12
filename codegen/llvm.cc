@@ -535,14 +535,25 @@ llvm::Type *getLLVMType(Sym *sym) {
 // type have" is asked. Keep using `getLLVMType` for the underlying
 // struct type — CreateStructGEP / sizeof / struct construction
 // expect the struct type, not the pointer.
+//
+// POD-record override (Sym::is_value_type, IR.md §3.4): when the
+// frontend explicitly marks a record type as "pass-by-value" — V's
+// `is_structure` records, or a future pyc `@struct` decorator —
+// fall back to the underlying value type instead of a pointer. The
+// current pyc frontend never sets this on a user Type_RECORD (it's
+// only lifted onto numeric primitives via the implements chain), so
+// the override is a no-op today but documents the seam for the
+// future enhancement tracked in
+// ifa/issues/015-pyc-pod-records-no-frontend-hook.md.
 llvm::Type *getLLVMVarType(Sym *type) {
   llvm::Type *t = getLLVMType(type);
   if (!t) return nullptr;
   if (type) {
     Sym *unaliased = unalias_type(type);
-    if (unaliased && (unaliased->type_kind == Type_RECORD ||
-                      unaliased->type_kind == Type_FUN ||
-                      unaliased->type_kind == Type_REF)) {
+    if (unaliased && !unaliased->is_value_type &&
+        (unaliased->type_kind == Type_RECORD ||
+         unaliased->type_kind == Type_FUN ||
+         unaliased->type_kind == Type_REF)) {
       return llvm::PointerType::getUnqual(*TheContext);
     }
   }
