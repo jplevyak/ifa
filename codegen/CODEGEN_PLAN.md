@@ -734,12 +734,28 @@ sticks.
 
 ---
 
+## 9.5 Phase 7 — Codegen-time IR (`CG_IR`)
+
+Adopted June 2026. The post-clone / post-DCE IF1 state gets
+normalized into a separate `CGProgram` (CGFun / CGBlock / CGInst)
+that both backends consume. Decision and design rationale in
+[`ifa/CODE_GEN_IR.md`](../CODE_GEN_IR.md); execution plan
+(12-15 PRs across 5 phases) in [CG_IR_PLAN.md](CG_IR_PLAN.md).
+
+Closes issues 014 (construction-flow gap) and 016 (SSU
+formal-arg binding) structurally. Commits the project to LLVM
+as a first-class production target — CI gates on the LLVM-suite
+intersection with the C-suite after Phase 4 lands.
+
+---
+
 ## 10. What's deliberately NOT in scope
 
 Things that look like they could be in this plan but aren't:
 
 - **A third backend** (WASM, bytecode, etc.). Wait until the
-  two existing backends are at parity.
+  two existing backends are at parity (closer after Phase 7's
+  CG_IR migration than today).
 - **Cross-type method dispatch semantic check** (the missing
   Option C from issue 011). That's a frontend/analyzer concern;
   not codegen.

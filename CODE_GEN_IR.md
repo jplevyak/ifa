@@ -7,18 +7,20 @@ new IR designed for codegen consumption, with both the C and
 LLVM backends emitting from that new IR instead of from IF1
 directly?**
 
-Short answer: **yes, eventually, scoped tightly to the
-post-clone / post-DCE state**. The current dual-backend
-divergence is real and the issues filed in `ifa/issues/`
-(004-016, especially 014 and 016) trace to four specific places
-where codegen has to interpret IF1's analyzer-facing shape on
-the fly. A focused normalization pass — call it `CG_IR` —
-collapses those interpretations into explicit operations the
-backends just translate.
+Short answer: **yes, scoped tightly to the post-clone / post-DCE
+state**. Decided June 2026 — Option B will be landed in stages,
+with LLVM treated as a first-class production target. See
+[codegen/CG_IR_PLAN.md](codegen/CG_IR_PLAN.md) for the execution
+plan.
 
-But this is a several-week refactor with real test infrastructure
-implications, so the value-proposition has to be earned before
-landing. This document lays out:
+The current dual-backend divergence is real and the issues filed
+in `ifa/issues/` (004-016, especially 014 and 016) trace to four
+specific places where codegen has to interpret IF1's
+analyzer-facing shape on the fly. A focused normalization
+pass — call it `CG_IR` — collapses those interpretations into
+explicit operations the backends just translate.
+
+This document lays out:
 
 1. What codegen consumes today, and what each backend has to do
    to interpret it (§§1-2).
@@ -572,38 +574,30 @@ existing codegen.
 Each stage is independently committable, individually testable,
 and reversible.
 
-## 9. Decision: should we?
+## 9. Decision — June 2026
 
-**Yes if**: the LLVM backend is going to remain a first-class
-target with regular updates. The interpretation drift between
-the two backends is real and growing; each fix lands in two
-places. Issue 016 in particular is a textbook structural bug
-that disappears once SSU phi/phy materializes into explicit
-moves.
+**Decided: Option B, with LLVM as a first-class target.**
 
-**No if**: the LLVM backend stays at "work in progress, stretch
-goal" indefinitely. The C backend is healthy; the work to bring
-it to parity with CGFun is significant; if no future bugs are
-going to land in either backend, the existing duplication is
-fine.
+The execution plan lives at
+[codegen/CG_IR_PLAN.md](codegen/CG_IR_PLAN.md) — 5 phases,
+12-15 PRs, 6-8 weeks elapsed. The plan is structured so:
 
-The recommendation here, given the LLVM backend's recent
-progress (8/74 → 37/74 over one focused session, with most
-remaining failures tracing to four categorized issues), is to
-plan for Stage 1 in the next CODEGEN_PLAN revision and gate
-Stages 2-5 on the resolution of issue 016 (which would either
-demonstrate the value of the CGFun shape concretely, or fix the
-specific bug and reduce the marginal case for the broader
-refactor).
+- C-backend stays at production parity throughout.
+- LLVM-backend pass count rises monotonically (not just
+  unchanged) at each phase.
+- Each phase is independently committable and reversible.
+- Issues 014 and 016 close structurally in Phase 3.3 (the LLVM
+  per-instruction emitter rewrite consuming CGProgram).
 
-A tactical alternative that captures most of the benefit at much
-lower cost: **Option A** (in-place PNode rewrite) implementing
-just the SSU-materialization and explicit-bind-result steps. That
-would close issues 014 and 016 with ~300 LOC of changes and zero
-new IR. The remaining "interpretation drift" between backends
-would remain but would be smaller. Worth doing as a step on the
-way to Option B, or as the stopping point if Option B never
-earns its keep.
+Option A (in-place PNode rewrite) was considered as a tactical
+alternative — it would close issues 014 and 016 for ~300 LOC.
+The reason Option B prevails: the LLVM backend's recent
+progress (8/74 → 37/74 in one focused session) demonstrated
+that the interpretation-drift cost is real and growing. Option
+A papers over the worst of it without removing the drift; B
+makes it structurally impossible. Given the LLVM-first-class
+commitment, the marginal cost of B over A (~9 weeks vs ~1) buys
+years of avoided bug duplication.
 
 ## 10. References
 
