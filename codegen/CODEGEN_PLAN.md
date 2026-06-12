@@ -545,29 +545,28 @@ named job and reads top-to-bottom.
 With both backends complete and clean, unify their internal
 organization.
 
-### 5.1 `Codegen` context object
+### 5.1 `Codegen` context object — removed (superseded by CG_IR)
 
-- [x] **Define `class Codegen`** in `codegen_common.h` that owns:
-  - The current `FA *`, entry `Fun *`, source filename.
-  - Virtual destructor; non-copyable; subclasses extend with
-    backend-specific state.
-- [x] **Document the migration contract**: each backend
-  subclasses `Codegen` to add its own state (`FILE *` for C;
-  `Context`/`Module`/`Builder` etc. for LLVM). The base class
-  codifies the per-run lifetime contract.
+**Update (CG_IR_PLAN Phase 0 §5.5, June 2026).** The `Codegen`
+scaffolding was deleted. CG_IR_PLAN Phase 3 introduces
+`EmissionContext &` as the per-CGFun state holder; that struct,
+not a generalized `Codegen` subclass, is the path forward for
+the LLVM backend's persistent state (Context, Module, Builder,
+per-Fun maps). Activating the `Codegen` base class now would
+require a wholesale migration that CG_IR_PLAN Phase 3 will
+obviate.
 
-**What landed (scaffolding, not wholesale migration).** The
-`Codegen` base class is declared in `codegen_common.h` with the
-fields and invariants noted above. The wholesale migration of
-file-scope globals (`TheContext`, `TheModule`, `Builder`, etc.)
-into a `LLVMCodegen` subclass is **deferred**: there are several
-hundred access sites across `llvm.cc`, `llvm_codegen.cc`, and
-`llvm_primitives.cc`, and the actual state-leak bug that drove
-this work is already handled by the phase-0.1 reset hooks
-(`reset_llvm_codegen_state()`). The type now exists so a future
-migration is strictly mechanical — change every `TheContext` to
-`codegen->TheContext`, etc. — with no design questions to
-resolve.
+**Original entry (kept for history):**
+
+- ~~Define `class Codegen`~~ — declared and never instantiated;
+  removed in commit landing CG_IR_PLAN Phase 0 §5.5.
+- ~~Subclasses extend with backend-specific state~~ — superseded
+  by `EmissionContext` in CG_IR_PLAN §8 (Phase 3).
+
+The actual state-leak bug that drove this work was already
+handled by the phase-0.1 reset hooks
+(`reset_llvm_codegen_state()`). Removing the scaffolding does
+not regress that fix.
 
 ### 5.2 Unified primitive dispatch
 
@@ -608,7 +607,8 @@ diff that should be reviewed separately.
 ### Phase 5 exit criteria
 
 - [x] `Codegen` base class declared with documented lifetime
-  contract.
+  contract. ~~Superseded; removed in CG_IR_PLAN Phase 0 §5.5
+  in favor of `EmissionContext` (CG_IR_PLAN §8 Phase 3).~~
 - [x] `PrimEmitter` interface declared with documented
   per-primitive contract (cross-linked to PRIMITIVES.md §15).
 - [x] `codegen_fail` helpers implemented for PNode / Var.

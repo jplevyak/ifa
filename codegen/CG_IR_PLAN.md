@@ -452,10 +452,15 @@ Rewrite every direct field access in `cg.cc` / `llvm*.cc` /
 reviewable in 2-3 sub-PRs (Sym, Var, Fun separately if needed).
 
 Acceptance:
-- [ ] No direct read or write of the listed fields outside
-      `codegen_common.cc` or `cg_normalize.cc` (post-Phase-2).
-- [ ] All tests still pass (C suite 74/1/0/2, LLVM suite
-      ≥ 37, all IR-phase goldens green).
+- [x] No direct read or write of the listed fields outside
+      `codegen_common.h` or `cg_normalize.cc` (post-Phase-2).
+      Implemented as static-inline accessors in
+      `codegen_common.h` (not `.cc`) for zero call overhead at
+      the ~270 hot sites. Migration done with perl regex per
+      field, verified by build + tests after each pass.
+- [x] All tests still pass: C suite 74/1/0/2, LLVM suite
+      37/38/2, codegen-llvm IR fixtures 14/0/9, ifa unit
+      tests 53/0.
 
 This subphase is recommended, not mandatory. Skipping it makes
 Phase 5 sprawl across every codegen file; doing it spreads the
@@ -481,12 +486,43 @@ Pick one path:
   CODEGEN_PLAN §8 entry is updated to record the deletion and
   why.
 
+**Decision (June 2026): Option (b).** Rationale:
+
+1. The base class as written (`FA *fa; Fun *entry_fun; cchar
+   *input_filename`) is a backend-agnostic shell; the C and
+   LLVM backends share *none* of their post-CG_IR state. The C
+   backend's `FILE *`, indent state, and forward-decl trackers
+   have nothing in common with the LLVM backend's `Context` /
+   `Module` / `Builder` / per-Fun BasicBlock maps. A shared base
+   class would carry no shared behavior and force every method
+   through `dynamic_cast` or virtual dispatch to the actual
+   backend's state.
+
+2. Phase 3's `EmissionContext` is sized for CGFun emission
+   (CGProgram-walker state, type-cache for `cg_to_llvm_type`,
+   block-map for control-flow lowering). None of those have a
+   natural home in a `Codegen`-style base.
+
+3. The actual state-leak bug that motivated `class Codegen`
+   was already fixed by the phase-0.1 reset hooks
+   (`reset_llvm_codegen_state()`); the scaffolding paid a
+   maintenance cost (~40 lines of unreferenced code) for no
+   user-visible benefit.
+
+4. Phase 3 will land `EmissionContext` as a non-polymorphic
+   struct in `cg_ir.h` (or a sibling header). The C backend's
+   eventual CG_IR consumer (Phase 4) gets its own struct.
+
+Implementation: deleted `class Codegen` from
+`codegen_common.h`; updated CODEGEN_PLAN.md §5.1 and §"Phase 5
+exit criteria" to record the supersession. No build break:
+no source file ever instantiated or referenced the type.
+
 Acceptance:
-- [ ] Decision recorded in both CODEGEN_PLAN.md §8 and
-      CG_IR_PLAN.md §8 (Phase 3).
-- [ ] Decision is uniform: no path forward that has Phase 3
-      partially using `Codegen` and partially using a fresh
-      context.
+- [x] Decision recorded in both CODEGEN_PLAN.md §8 and
+      CG_IR_PLAN.md §5.5.
+- [x] Decision is uniform: Phase 3 uses `EmissionContext`,
+      not `Codegen`.
 
 ### 5.6 Stabilize the LLVM pyc-suite baseline — RECOMMENDED (1 day)
 
@@ -538,14 +574,18 @@ Three categories: mandatory (block Phase 2), recommended (block
 nothing, but each unaddressed item adds risk to a later
 phase), and deferred (not blocking).
 
-- [ ] §5.1 (fixtures for 014/016) — landed.
-- [ ] §5.2 (liveness audit) — landed.
-- [ ] §5.3 (construction-flow investigation) — landed.
-- [ ] §5.4 (side-channel accessors) — landed, OR explicit
-      decision recorded to defer to Phase 5.
-- [ ] §5.5 (Codegen base class fate) — decided.
-- [ ] §5.6 (LLVM baseline stabilization) — done.
-- [ ] No regression in any existing test suite.
+- [x] §5.1 (fixtures for 014/016) — landed.
+- [x] §5.2 (liveness audit) — landed.
+- [x] §5.3 (construction-flow investigation) — landed; outcome
+      (a) recorded in issue 014.
+- [x] §5.4 (side-channel accessors) — landed (static-inline in
+      `codegen_common.h`).
+- [x] §5.5 (Codegen base class fate) — decided: Option (b),
+      removed.
+- [x] §5.6 (LLVM baseline stabilization) — done; see
+      `tests/PARITY.md`.
+- [x] No regression in any existing test suite (C 74/0,
+      LLVM 37/38, IR fixtures all green).
 
 The mandatory subset (§§5.1-5.3) is the strict gate. Phase 2.1
 can start the moment §5.3's investigation lands; the recommended

@@ -95,45 +95,21 @@ void assign_type_cg_strings_pass2(Vec<Sym *> &allsyms);
 int codegen_spawn(const char *file, char *const argv[]);
 
 // -------------------------------------------------------------
-// Codegen context — per-codegen-run state (phase 5.1 scaffolding)
+// Codegen context — superseded by CG_IR's EmissionContext
 // -------------------------------------------------------------
+//
+// The scaffolding `class Codegen` (CODEGEN_PLAN §5.1) was removed
+// in CG_IR_PLAN Phase 0 §5.5. The wholesale "subclass Codegen,
+// migrate hundreds of file-scope globals" rewrite was never
+// instantiated and never read; the actual state-leak bug was
+// already fixed by the phase-0.1 reset hooks. CG_IR_PLAN Phase 3
+// introduces an `EmissionContext` struct sized for CGFun emission
+// (see CG_IR_PLAN §8 / cg_ir.h) — the natural successor.
+//
+// See CODEGEN_PLAN.md §8 (revised) and CG_IR_PLAN.md §5.5 for the
+// recorded decision.
 
 class PNode;
-
-// `Codegen` is the per-run state owner for a single
-// `c_codegen_print_c` / `llvm_codegen_print_ir` invocation.
-// Instantiating it (typically as a local in the print driver)
-// establishes a known lifetime for backend state — no more
-// file-scope-state leaking across compilations.
-//
-// The base class holds backend-agnostic fields: the FA the run is
-// emitting for, the entry Fun, and the source filename. Each
-// backend subclasses this to add its own state (the C backend
-// adds a FILE*; the LLVM backend adds Context/Module/Builder etc.).
-//
-// Phase 5 scaffolding: the type exists and the scaffold for
-// instantiation lives in `llvm_codegen_print_ir`. Wholesale
-// migration of every reference to file-scope globals into
-// `codegen->TheContext` / `codegen->Builder` style accesses is
-// deferred — there are hundreds of access sites across three
-// files. The destructor invariants and reset hooks are already
-// in place via the phase-0.1 state-leak fix; the Codegen type
-// codifies the lifetime contract so a future migration is
-// strictly mechanical. See CODEGEN_PLAN §8 and AUDIT §4.
-class Codegen {
- public:
-  FA *fa;
-  Fun *entry_fun;
-  cchar *input_filename;
-
-  Codegen(FA *fa_, Fun *entry_fun_, cchar *input_filename_)
-      : fa(fa_), entry_fun(entry_fun_), input_filename(input_filename_) {}
-  virtual ~Codegen() = default;
-
-  // Non-copyable; codegen state is unique per run.
-  Codegen(const Codegen &) = delete;
-  Codegen &operator=(const Codegen &) = delete;
-};
 
 // -------------------------------------------------------------
 // Failure reporting with PNode context (phase 5.3)
@@ -193,5 +169,54 @@ class PrimEmitter {
   // `switch (n->prim->index)`).
   virtual int emit(Fun *ifa_fun, PNode *n) = 0;
 };
+
+// -------------------------------------------------------------
+// Side-channel accessors (CG_IR_PLAN Phase 0 §5.4)
+// -------------------------------------------------------------
+//
+// The codegen-time fields on Sym/Var/Fun (`cg_string`,
+// `llvm_value`, `llvm_type`, etc.) are deleted in CG_IR_PLAN
+// Phase 5 in favor of CGFun / CGProgram-owned tables. To make
+// that deletion one mechanical PR, the readers and writers go
+// through these accessors now — there are ~270 of them across
+// cg.cc, llvm.cc, llvm_codegen.cc, llvm_primitives.cc, and
+// codegen_common.cc.
+//
+// Phase 5 then:
+//   1. Replaces each accessor body with a lookup into the
+//      CGProgram-owned side table (or removes the accessor if
+//      the field is no longer needed).
+//   2. Deletes the field declarations on Sym/Var/Fun.
+// No call site outside this header changes.
+
+#include "fun.h"
+#include "sym.h"
+#include "var.h"
+
+static inline cchar *cg_get_string(Sym *s) { return s->cg_string; }
+static inline void   cg_set_string(Sym *s, cchar *v) { s->cg_string = v; }
+static inline cchar *cg_get_string(Var *v) { return v->cg_string; }
+static inline void   cg_set_string(Var *v, cchar *s) { v->cg_string = s; }
+static inline char  *cg_get_string(Fun *f) { return f->cg_string; }
+static inline void   cg_set_string(Fun *f, char *s) { f->cg_string = s; }
+
+static inline char  *cg_get_structural_string(Fun *f) { return f->cg_structural_string; }
+static inline void   cg_set_structural_string(Fun *f, char *s) { f->cg_structural_string = s; }
+
+static inline llvm::Value *cg_get_llvm_value(Sym *s) { return s->llvm_value; }
+static inline void         cg_set_llvm_value(Sym *s, llvm::Value *v) { s->llvm_value = v; }
+static inline llvm::Value *cg_get_llvm_value(Var *v) { return v->llvm_value; }
+static inline void         cg_set_llvm_value(Var *v, llvm::Value *val) { v->llvm_value = val; }
+
+static inline llvm::Type *cg_get_llvm_type(Sym *s) { return s->llvm_type; }
+static inline void        cg_set_llvm_type(Sym *s, llvm::Type *t) { s->llvm_type = t; }
+static inline llvm::Type *cg_get_llvm_type(Var *v) { return v->llvm_type; }
+static inline void        cg_set_llvm_type(Var *v, llvm::Type *t) { v->llvm_type = t; }
+
+static inline llvm::DILocalVariable *cg_get_llvm_debug_var(Var *v) { return v->llvm_debug_var; }
+static inline void                   cg_set_llvm_debug_var(Var *v, llvm::DILocalVariable *d) { v->llvm_debug_var = d; }
+
+static inline llvm::Function *cg_get_llvm(Fun *f) { return f->llvm; }
+static inline void            cg_set_llvm(Fun *f, llvm::Function *fn) { f->llvm = fn; }
 
 #endif  // _codegen_common_H_

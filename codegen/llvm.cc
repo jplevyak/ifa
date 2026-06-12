@@ -346,7 +346,7 @@ static llvm::Type *mapVectorType(Sym *unaliased_sym) {
 }
 
 // Type_RECORD struct variant: build an `llvm::StructType` with one
-// LLVM Type per IF1 field. Sets sym->llvm_type to the opaque type
+// LLVM Type per IF1 field. Sets cg_get_llvm_type(sym) to the opaque type
 // before recursing into fields, so cyclic references break cleanly.
 // Void/null field types are substituted with i8 to keep struct
 // layouts well-formed (see AUDIT §1 #1).
@@ -354,8 +354,8 @@ static llvm::Type *mapStructType(Sym *sym, Sym *unaliased_sym) {
   llvm::StructType *struct_type = llvm::StructType::create(
       *TheContext,
       unaliased_sym->name ? unaliased_sym->name : ("struct.anon" + std::to_string(unaliased_sym->id)));
-  sym->llvm_type = struct_type;
-  unaliased_sym->llvm_type = struct_type;
+  cg_set_llvm_type(sym, struct_type);
+  cg_set_llvm_type(unaliased_sym, struct_type);
 
   std::vector<llvm::Type *> field_types;
   for (int i = 0; i < unaliased_sym->has.n; ++i) {
@@ -417,7 +417,7 @@ static llvm::Type *mapSumType(Sym *unaliased_sym) {
   return llvm::PointerType::getUnqual(*TheContext);
 }
 
-// Dispatch by type_kind. Sub-helpers may set sym->llvm_type early
+// Dispatch by type_kind. Sub-helpers may set cg_get_llvm_type(sym) early
 // (e.g. mapStructType) to handle cycles.
 static llvm::Type *mapByTypeKind(Sym *sym, Sym *unaliased_sym) {
   switch (unaliased_sym->type_kind) {
@@ -447,7 +447,7 @@ static llvm::Type *mapByTypeKind(Sym *sym, Sym *unaliased_sym) {
 /**
  * Maps IF1 Sym types to LLVM types.
  * Handles numeric types, structs, functions, vectors, and sum types.
- * Caches the result in sym->llvm_type to avoid recomputation.
+ * Caches the result in cg_get_llvm_type(sym) to avoid recomputation.
  *
  * @param sym The IF1 symbol type to map
  * @return The corresponding LLVM type, or nullptr on failure
@@ -463,7 +463,7 @@ llvm::Type *getLLVMType(Sym *sym) {
 
   // Function symbols shouldn't usually reach here — getLLVMType is for type
   // symbols. The C backend's parallel path resolves function-typed Syms via
-  // `s->fun->cg_structural_string` (see codegen_common::assign_type_cg_strings_pass2);
+  // `cg_get_structural_string(s->fun)` (see codegen_common::assign_type_cg_strings_pass2);
   // the LLVM analog is opaque-pointer-as-function-value (see mapFunctionType).
   //
   // Resolution order:
@@ -471,7 +471,7 @@ llvm::Type *getLLVMType(Sym *sym) {
   //      concrete struct for typed closures).
   //   2. If sym->fun is set (this Sym names a known Fun), return an opaque
   //      pointer. The actual signature lives on Fun::llvm's FunctionType and
-  //      is consulted at the call site via CreateCall(target->llvm, args).
+  //      is consulted at the call site via CreateCall(cg_get_llvm(target), args).
   //   3. Otherwise fail with full context — a function Sym with neither a
   //      type recovery path nor a Fun is genuinely unresolvable.
   if (sym->type_kind == 0 && sym->is_fun) {
@@ -485,7 +485,7 @@ llvm::Type *getLLVMType(Sym *sym) {
       DEBUG_LOG("getLLVMType: function symbol '%s' with no sym->type, returning opaque ptr (Fun=%p)\n",
                 sym->name ? sym->name : "unnamed", (void *)sym->fun);
       llvm::Type *fn_ptr = llvm::PointerType::getUnqual(*TheContext);
-      sym->llvm_type = fn_ptr;
+      cg_set_llvm_type(sym, fn_ptr);
       return fn_ptr;
     }
     fail("getLLVMType called with function symbol '%s' and cannot recover (sym->type=%p)",
@@ -493,8 +493,8 @@ llvm::Type *getLLVMType(Sym *sym) {
     return nullptr;
   }
 
-  if (sym->llvm_type) {
-    return sym->llvm_type;
+  if (cg_get_llvm_type(sym)) {
+    return cg_get_llvm_type(sym);
   }
   if (!TheContext) {
     fail("LLVM Context not initialized in getLLVMType for sym: %s", sym->name ? sym->name : "unnamed");
@@ -502,9 +502,9 @@ llvm::Type *getLLVMType(Sym *sym) {
   }
 
   Sym *unaliased_sym = unalias_type(sym);
-  if (unaliased_sym->llvm_type) {  // Check again after unaliasing
-    sym->llvm_type = unaliased_sym->llvm_type;
-    return sym->llvm_type;
+  if (cg_get_llvm_type(unaliased_sym)) {  // Check again after unaliasing
+    cg_set_llvm_type(sym, cg_get_llvm_type(unaliased_sym));
+    return cg_get_llvm_type(sym);
   }
 
   llvm::Type *type = mapBuiltinOrNumeric(unaliased_sym);
@@ -513,9 +513,9 @@ llvm::Type *getLLVMType(Sym *sym) {
   }
 
   if (type) {
-    sym->llvm_type = type;
+    cg_set_llvm_type(sym, type);
     if (unaliased_sym != sym) {
-      unaliased_sym->llvm_type = type;  // Cache on unaliased too
+      cg_set_llvm_type(unaliased_sym, type);  // Cache on unaliased too
     }
   } else {
     fail("Failed to map Sym %s (kind %d) to LLVM type", sym->name ? sym->name : "unnamed", sym->type_kind);
@@ -696,8 +696,8 @@ llvm::Constant *getLLVMConstant(Var *var) {
   Sym *sym = var->sym;
 
   // Check if llvm_value is already a constant (e.g. from a global variable)
-  if (var->llvm_value && llvm::isa<llvm::Constant>(var->llvm_value)) {
-    return llvm::cast<llvm::Constant>(var->llvm_value);
+  if (cg_get_llvm_value(var) && llvm::isa<llvm::Constant>(cg_get_llvm_value(var))) {
+    return llvm::cast<llvm::Constant>(cg_get_llvm_value(var));
   }
 
   llvm::Type *llvm_type = getLLVMType(var->type);
@@ -836,7 +836,7 @@ static void createGlobalVariables(FA *fa) {
         !sym->name) {
       continue;
     }
-    if (var->llvm_value) continue;
+    if (cg_get_llvm_value(var)) continue;
 
     // pyc declares heap-aggregate globals as pointers (matching the
     // C backend's `_CG_psN g0;`). getLLVMVarType encodes that.
@@ -872,11 +872,11 @@ static void createGlobalVariables(FA *fa) {
     }
 
     // Special case for string constants created by getLLVMConstant via getOrCreateLLVMStringConstant:
-    // Their var->llvm_value might already be set to a GEP of a global.
+    // Their cg_get_llvm_value(var) might already be set to a GEP of a global.
     // We should not create another GlobalVariable for the Var itself in that case.
     if (var->type == sym_string && sym->is_constant && sym->constant) {
-      if (!var->llvm_value) {                    // If getLLVMConstant didn't set it (e.g. if it wasn't called before)
-        var->llvm_value = getLLVMConstant(var);  // This will create the string GV and return a GEP
+      if (!cg_get_llvm_value(var)) {                    // If getLLVMConstant didn't set it (e.g. if it wasn't called before)
+        cg_set_llvm_value(var, getLLVMConstant(var));  // This will create the string GV and return a GEP
       }
       // The llvm_value is already the pointer to the string, not the GV itself.
       // Debug info for the Var (as a pointer) can still be created.
@@ -889,14 +889,14 @@ static void createGlobalVariables(FA *fa) {
       if (sym->alignment > 0) {
         gvar->setAlignment(llvm::Align(sym->alignment));
       }
-      var->llvm_value = gvar;  // Store the GlobalVariable itself
+      cg_set_llvm_value(var, gvar);  // Store the GlobalVariable itself
     } else {
       DEBUG_LOG("Could not create global variable for %s; missing initializer and not string\n", sym->name);
       continue;
     }
 
     // Add Debug Info for Global Variable
-    if (DBuilder && CU && var->llvm_value) {
+    if (DBuilder && CU && cg_get_llvm_value(var)) {
       llvm::DIFile *di_file = UnitFile;  // Use CU's file
       unsigned line_num = sym->line();
       llvm::DIType *di_type = getLLVMDIType(var->type, di_file);
@@ -904,9 +904,9 @@ static void createGlobalVariables(FA *fa) {
       if (di_type) {
         // DIBuilder expects the actual GlobalVariable for createGlobalVariableExpression,
         // not a GEP constant in case of strings.
-        llvm::GlobalVariable *gv_for_debug = llvm::dyn_cast<llvm::GlobalVariable>(var->llvm_value);
+        llvm::GlobalVariable *gv_for_debug = llvm::dyn_cast<llvm::GlobalVariable>(cg_get_llvm_value(var));
         if (!gv_for_debug && var->type == sym_string && sym->is_constant && sym->constant) {
-          // If it's a string constant, var->llvm_value is a GEP. We need to find the underlying GV.
+          // If it's a string constant, cg_get_llvm_value(var) is a GEP. We need to find the underlying GV.
           // This is a bit hacky. getOrCreateLLVMStringConstant needs to return the GV or make it findable.
           // For now, we might not be able to create perfect DI for these string Vars.
         }
@@ -923,7 +923,7 @@ static void createGlobalVariables(FA *fa) {
               true,                                           // isDefined
               nullptr                                         // Expression (optional, for complex debug info)
           );
-        } else if (var->type == sym_string && llvm::isa<llvm::Constant>(var->llvm_value)) {
+        } else if (var->type == sym_string && llvm::isa<llvm::Constant>(cg_get_llvm_value(var))) {
           // For string vars that are GEPs to global constants.
           // Create a simpler global variable debug info entry without direct GV linkage
           // This is a fallback.
@@ -939,7 +939,7 @@ static void createGlobalVariables(FA *fa) {
 // num_string(Sym*) — moved to codegen_common.{h,cc}.
 
 void llvm_build_type_strings(FA *fa) {
-#define S(_n) if1_get_builtin(fa->pdb->if1, #_n)->cg_string = "_CG_" #_n;
+#define S(_n) cg_set_string(if1_get_builtin(fa->pdb->if1, #_n), "_CG_" #_n);
 #include "builtin_symbols.h"
 #undef S
   // Annotate=false: LLVM IR identifiers can't carry comments. No
@@ -1033,7 +1033,7 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
   // Second pass: Translate all function bodies
   // (This is now done separately to ensure all functions are declared before any body is translated)
   for (Fun *f : all_funs) {
-    if (!f || !f->live || !f->llvm || f->is_external || !f->entry) {
+    if (!f || !f->live || !cg_get_llvm(f) || f->is_external || !f->entry) {
       continue;
     }
     DEBUG_LOG("translateFunctionBody for %s (id %d)\n", f->sym->name, f->sym->id);
@@ -1051,8 +1051,8 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
   llvm::BasicBlock *main_entry_bb = llvm::BasicBlock::Create(*TheContext, "entry", llvm_main);
   Builder->SetInsertPoint(main_entry_bb);
 
-  if (main_fun->llvm) {  // If IF1 main function was generated
-    Builder->CreateCall(main_fun->llvm);
+  if (cg_get_llvm(main_fun)) {  // If IF1 main function was generated
+    Builder->CreateCall(cg_get_llvm(main_fun));
   } else {
     // This case should ideally not happen if main_fun is valid and processed
     DEBUG_LOG("IF1 main function '%s' not found or generated in LLVM module\n", main_fun->sym->name);
@@ -1114,9 +1114,9 @@ llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun) {
     return nullptr;
   }
   DEBUG_LOG("getLLVMValue var=%p, sym=%s, type=%p\n", var, var->sym ? var->sym->name : "null", var->type);
-  if (var->llvm_value) {
-    llvm::Value *val = var->llvm_value;
-    llvm::Function *this_func = ifa_fun->llvm;
+  if (cg_get_llvm_value(var)) {
+    llvm::Value *val = cg_get_llvm_value(var);
+    llvm::Function *this_func = cg_get_llvm(ifa_fun);
 
     DEBUG_LOG("getLLVMValue found cached llvm_value for var %s (id %d)\n",
             var->sym ? var->sym->name : "(null)", var->id);
@@ -1154,24 +1154,24 @@ llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun) {
 
     if (scope_mismatch) {
       // Stale value, clear it and fall through to reload
-      var->llvm_value = nullptr;
+      cg_set_llvm_value(var, nullptr);
     } else {
       // If it's an AllocaInst or GlobalVariable (pointers), we need to load them.
       // If it's an SSA value (Argument or Instruction result), we use it directly.
-      if (llvm::isa<llvm::AllocaInst>(var->llvm_value)) {
-        llvm::AllocaInst *ai = llvm::cast<llvm::AllocaInst>(var->llvm_value);
+      if (llvm::isa<llvm::AllocaInst>(cg_get_llvm_value(var))) {
+        llvm::AllocaInst *ai = llvm::cast<llvm::AllocaInst>(cg_get_llvm_value(var));
         llvm::Type *load_type = ai->getAllocatedType();
-        return Builder->CreateLoad(load_type, var->llvm_value,
+        return Builder->CreateLoad(load_type, cg_get_llvm_value(var),
                                    var->sym->name ? (std::string(var->sym->name) + ".load") : "");
       }
-      if (llvm::isa<llvm::GlobalVariable>(var->llvm_value)) {
-        llvm::GlobalVariable *gv = llvm::cast<llvm::GlobalVariable>(var->llvm_value);
+      if (llvm::isa<llvm::GlobalVariable>(cg_get_llvm_value(var))) {
+        llvm::GlobalVariable *gv = llvm::cast<llvm::GlobalVariable>(cg_get_llvm_value(var));
         llvm::Type *load_type = gv->getValueType();
         return Builder->CreateLoad(
-            load_type, var->llvm_value,
+            load_type, cg_get_llvm_value(var),
             var->sym && var->sym->name ? (std::string(var->sym->name) + ".load") : "global.load");
       }
-      return var->llvm_value;
+      return cg_get_llvm_value(var);
     }
   }
 
@@ -1184,8 +1184,8 @@ llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun) {
     llvm::Function *func = nullptr;
     if (all_funs_global) {
       for (Fun *fx : *all_funs_global) {
-        if (fx && fx->sym == var->sym && fx->llvm) {
-          func = fx->llvm;
+        if (fx && fx->sym == var->sym && cg_get_llvm(fx)) {
+          func = cg_get_llvm(fx);
           break;
         }
       }
@@ -1226,7 +1226,7 @@ llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun) {
 
     // The tuple argument should be in the function's arguments
     // Find it by looking for an argument with a struct type
-    llvm::Function *llvm_func = ifa_fun->llvm;
+    llvm::Function *llvm_func = cg_get_llvm(ifa_fun);
     llvm::Argument *tuple_arg = nullptr;
 
     DEBUG_LOG("Function %s has %ld arguments\n", ifa_fun->sym->name ? ifa_fun->sym->name : "(null)",
@@ -1250,7 +1250,7 @@ llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun) {
 
       Var *tuple_formal_var = nullptr;
       for (Var *fv : ifa_fun->fa_all_Vars) {
-        if (fv && fv->is_formal && fv->llvm_value == tuple_arg) {
+        if (fv && fv->is_formal && cg_get_llvm_value(fv) == tuple_arg) {
           tuple_formal_var = fv;
           DEBUG_LOG("Found tuple formal var by llvm_value match: sym=%s (id=%d)\n",
                   fv->sym ? fv->sym->name : "(null)", fv->sym ? fv->sym->id : -1);
@@ -1309,7 +1309,7 @@ llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun) {
             llvm::Value *field_val = Builder->CreateLoad(
                 field_type, field_ptr, var->sym->name ? (std::string(var->sym->name) + ".val") : "field.val");
 
-            var->llvm_value = field_val;
+            cg_set_llvm_value(var, field_val);
             return field_val;
           }
         }
@@ -1329,7 +1329,7 @@ llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun) {
   // Assume global if not local
   if (!var->sym->is_local && !var->is_formal) {
     if (var->sym->name) {
-      llvm::Module *M = ifa_fun->llvm->getParent();
+      llvm::Module *M = cg_get_llvm(ifa_fun)->getParent();
       llvm::GlobalVariable *gv = M->getGlobalVariable(var->sym->name);
       if (gv) return gv;
       // If not found, fail or return null
@@ -1354,28 +1354,28 @@ void setLLVMValue(Var *var, llvm::Value *val, Fun *ifa_fun) {
     fail("Null Var provided to setLLVMValue");
     return;
   }
-  if (var->llvm_value && llvm::isa<llvm::AllocaInst>(var->llvm_value)) {
+  if (cg_get_llvm_value(var) && llvm::isa<llvm::AllocaInst>(cg_get_llvm_value(var))) {
     // It's a local variable allocated with AllocaInst, so we store the new value.
-    Builder->CreateStore(val, var->llvm_value);
-  } else if (var->llvm_value && llvm::isa<llvm::GlobalVariable>(var->llvm_value)) {
+    Builder->CreateStore(val, cg_get_llvm_value(var));
+  } else if (cg_get_llvm_value(var) && llvm::isa<llvm::GlobalVariable>(cg_get_llvm_value(var))) {
     // Mirror the AllocaInst path for globals — the global slot is
     // backed by a fixed pointer just like an alloca, and the C
     // backend's parallel is plain `g0 = val;`. Without this store,
     // assignments to module-level vars (`a = (1, 2, 3)`) only
     // updated the in-memory cache and never reached @a, so the
     // subsequent `a[i]` reads picked up the zero-init'd global.
-    Builder->CreateStore(val, var->llvm_value);
+    Builder->CreateStore(val, cg_get_llvm_value(var));
   } else {
     // It's an SSA variable, its llvm_value should be the instruction that defines it.
     // Or it's an argument.
-    var->llvm_value = val;
-    if (val->getType() != var->llvm_type) {  // Update cached type if different
-      if (var->llvm_type) {
+    cg_set_llvm_value(var, val);
+    if (val->getType() != cg_get_llvm_type(var)) {  // Update cached type if different
+      if (cg_get_llvm_type(var)) {
         DEBUG_LOG("LLVM value type mismatch for var %s: expected %s, got %s; updating cache\n",
-                  var->sym && var->sym->name ? var->sym->name : "??", getTypeName(var->llvm_type).c_str(),
+                  var->sym && var->sym->name ? var->sym->name : "??", getTypeName(cg_get_llvm_type(var)).c_str(),
                   getTypeName(val->getType()).c_str());
       }
-      var->llvm_type = val->getType();
+      cg_set_llvm_type(var, val->getType());
     }
   }
 }

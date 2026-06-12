@@ -22,13 +22,13 @@ extern char **environ;
 // -------------------------------------------------------------
 
 cchar *c_type(Var *v) {
-  if (!v->type || !v->type->cg_string) return "_CG_void";
-  return v->type->cg_string;
+  if (!v->type || !cg_get_string(v->type)) return "_CG_void";
+  return cg_get_string(v->type);
 }
 
 cchar *c_type(Sym *s) {
-  if (!s->type || !s->type->cg_string) return "_CG_void";
-  return s->type->cg_string;
+  if (!s->type || !cg_get_string(s->type)) return "_CG_void";
+  return cg_get_string(s->type);
 }
 
 cchar *num_string(Sym *s) {
@@ -138,10 +138,10 @@ void assign_fun_cg_strings(FA *fa, bool annotate, Vec<Var *> *globals) {
     } else {
       snprintf(s, sizeof(s), "_CG_f_%d_%d", f->sym->id, f_index);
     }
-    f->cg_string = dupstr(s);
+    cg_set_string(f, dupstr(s));
     snprintf(s, sizeof(s), "_CG_pf%d", f_index);
-    f->cg_structural_string = dupstr(s);
-    f->sym->cg_string = f->cg_structural_string;
+    cg_set_structural_string(f, dupstr(s));
+    cg_set_string(f->sym, cg_get_structural_string(f));
     f_index++;
     if (globals && f->sym->var) globals->set_add(f->sym->var);
   }
@@ -150,13 +150,13 @@ void assign_fun_cg_strings(FA *fa, bool annotate, Vec<Var *> *globals) {
 void assign_type_cg_strings_pass1(Vec<Sym *> &allsyms, FILE *fp) {
   for (Sym *s : allsyms) {
     if (s->num_kind) {
-      s->cg_string = num_string(s);
+      cg_set_string(s, num_string(s));
     } else if (s->is_symbol) {
-      s->cg_string = "_CG_symbol";
-    } else if (!s->cg_string) {
+      cg_set_string(s, "_CG_symbol");
+    } else if (!cg_get_string(s)) {
       switch (s->type_kind) {
         default:
-          s->cg_string = dupstr("_CG_any");
+          cg_set_string(s, dupstr("_CG_any"));
           break;
         case Type_FUN:
           if (s->fun) break;
@@ -169,9 +169,9 @@ void assign_type_cg_strings_pass1(Vec<Sym *> &allsyms, FILE *fp) {
               fprintf(fp, "typedef struct _CG_s%d *_CG_ps%d;\n", s->id, s->id);
             }
             snprintf(ss, sizeof(ss), "_CG_ps%d", s->id);
-            s->cg_string = dupstr(ss);
+            cg_set_string(s, dupstr(ss));
           } else {
-            s->cg_string = "_CG_void";
+            cg_set_string(s, "_CG_void");
           }
           break;
         }
@@ -223,15 +223,15 @@ void codegen_fail(Var *v, cchar *fmt, ...) {
 void assign_type_cg_strings_pass2(Vec<Sym *> &allsyms) {
   for (Sym *s : allsyms) {
     if (s->fun) {
-      s->cg_string = s->fun->cg_structural_string;
+      cg_set_string(s, cg_get_structural_string(s->fun));
     } else if (s->is_symbol) {
-      s->cg_string = sym_symbol->cg_string;
+      cg_set_string(s, cg_get_string(sym_symbol));
     }
     if (s->type_kind == Type_SUM && s->has.n == 2) {
       if (s->has[0] == sym_nil_type)
-        s->cg_string = s->has[1]->cg_string;
+        cg_set_string(s, cg_get_string(s->has[1]));
       else if (s->has[1] == sym_nil_type)
-        s->cg_string = s->has[0]->cg_string;
+        cg_set_string(s, cg_get_string(s->has[0]));
     }
   }
 }

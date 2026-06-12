@@ -59,7 +59,7 @@ Fun *get_target_fun(PNode *n, Fun *f) {
 
 // `pyc_llvm_write_cgfn` — emit printf for the single arg (rvals[n-1]).
 // Mirrors python_ifa_main.cc::write_codegen which emits
-// `_CG_write(rvals[n-1]->cg_string);`.
+// `_CG_write(cg_get_string(rvals[n-1]));`.
 void pyc_llvm_write_cgfn(PNode *n, Fun *ifa_fun) {
   if (n->rvals.n < 1) return;
   Var *arg = n->rvals[n->rvals.n - 1];
@@ -231,7 +231,7 @@ void write_send(Fun *f, PNode *n) {
     return;
   }
 
-  llvm::Function *callee = target->llvm;
+  llvm::Function *callee = cg_get_llvm(target);
   DEBUG_LOG("write_send target %s (Fun %p), llvm=%p\n", target->sym->name ? target->sym->name : "unnamed",
           (void *)target, (void *)callee);
 
@@ -336,10 +336,10 @@ void write_send(Fun *f, PNode *n) {
         if (val->getType() != formal_ty) {
           if (formal_ty->isPointerTy() && !val->getType()->isPointerTy()) {
             // Need a pointer; getLLVMValue gave us the dereferenced value.
-            if (actual_arg->llvm_value &&
-                (llvm::isa<llvm::AllocaInst>(actual_arg->llvm_value) ||
-                 llvm::isa<llvm::GlobalVariable>(actual_arg->llvm_value))) {
-              val = actual_arg->llvm_value;
+            if (cg_get_llvm_value(actual_arg) &&
+                (llvm::isa<llvm::AllocaInst>(cg_get_llvm_value(actual_arg)) ||
+                 llvm::isa<llvm::GlobalVariable>(cg_get_llvm_value(actual_arg)))) {
+              val = cg_get_llvm_value(actual_arg);
             } else if (val->getType()->isIntegerTy()) {
               // Integer-to-pointer coercion. This is the IF1 `nil` shape
               // (a numeric immediate zero whose abstract type is a
@@ -390,14 +390,14 @@ void write_send(Fun *f, PNode *n) {
 
   llvm::CallInst *call = Builder->CreateCall(callee, args);
   // Set debug location
-  llvm::DISubprogram *sp = f->llvm->getSubprogram();
+  llvm::DISubprogram *sp = cg_get_llvm(f)->getSubprogram();
   int line_num = n->code ? n->code->line() : 0;
   if (sp) call->setDebugLoc(llvm::DILocation::get(*TheContext, line_num, 0, sp));
 
   // Result assignment
   if (n->lvals.n == 1 && !callee->getReturnType()->isVoidTy()) {
     Var *res_var = n->lvals[0];
-    llvm::Value *dest_ptr = res_var->llvm_value;
+    llvm::Value *dest_ptr = cg_get_llvm_value(res_var);
     if (dest_ptr && (llvm::isa<llvm::AllocaInst>(dest_ptr) || llvm::isa<llvm::GlobalVariable>(dest_ptr))) {
       Builder->CreateStore(call, dest_ptr);
     } else {
@@ -431,7 +431,7 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
   // "primitive" symbol logic from cg.cc: (n->rvals.v[0]->sym == sym_primitive) ? 2 : 1;
   // We don't have sym_primitive available globally? It's in builtin.h, but check name "primitive".
 
-  llvm::Function *llvm_func = ifa_fun->llvm;
+  llvm::Function *llvm_func = cg_get_llvm(ifa_fun);
 
   switch (n->prim->index) {
     case P_prim_operator:
@@ -534,8 +534,8 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
         if (res->getType()->isIntegerTy(1) && lhs->type->size > 1) {  // Assuming size in bytes? No, type->size is bits?
           // In cg.cc, bool is often int8.
           // getLLVMType maps bool to ... ?
-          // Let's assume lhs->llvm_type is correct target type.
-          llvm::Type *dest_ty = lhs->llvm_type ? lhs->llvm_type : getLLVMType(lhs->type);
+          // Let's assume cg_get_llvm_type(lhs) is correct target type.
+          llvm::Type *dest_ty = cg_get_llvm_type(lhs) ? cg_get_llvm_type(lhs) : getLLVMType(lhs->type);
           if (dest_ty && dest_ty != res->getType()) {
             res = Builder->CreateZExt(res, dest_ty);
           }
@@ -709,10 +709,10 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
       if (n->rvals.n < 3) return 0;
       Var *proto_var = n->rvals[2];
       llvm::Value *proto_ptr = nullptr;
-      if (proto_var->llvm_value &&
-          (llvm::isa<llvm::AllocaInst>(proto_var->llvm_value) ||
-           llvm::isa<llvm::GlobalVariable>(proto_var->llvm_value))) {
-        proto_ptr = proto_var->llvm_value;
+      if (cg_get_llvm_value(proto_var) &&
+          (llvm::isa<llvm::AllocaInst>(cg_get_llvm_value(proto_var)) ||
+           llvm::isa<llvm::GlobalVariable>(cg_get_llvm_value(proto_var)))) {
+        proto_ptr = cg_get_llvm_value(proto_var);
       } else {
         proto_ptr = getLLVMValue(proto_var, ifa_fun);
       }
@@ -742,9 +742,9 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
       // construction-flow connects results to slots — see
       // ifa/issues/014-llvm-construction-flow-to-slots.md.
       auto get_struct_ptr = [&](Var *v) -> llvm::Value * {
-        if (v->llvm_value &&
-            (llvm::isa<llvm::AllocaInst>(v->llvm_value) || llvm::isa<llvm::GlobalVariable>(v->llvm_value))) {
-          return v->llvm_value;
+        if (cg_get_llvm_value(v) &&
+            (llvm::isa<llvm::AllocaInst>(cg_get_llvm_value(v)) || llvm::isa<llvm::GlobalVariable>(cg_get_llvm_value(v)))) {
+          return cg_get_llvm_value(v);
         }
         return getLLVMValue(v, ifa_fun);
       };
@@ -798,9 +798,9 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
       if (!obj_type) return 0;
 
       auto get_struct_ptr = [&](Var *v) -> llvm::Value * {
-        if (v->llvm_value &&
-            (llvm::isa<llvm::AllocaInst>(v->llvm_value) || llvm::isa<llvm::GlobalVariable>(v->llvm_value))) {
-          return v->llvm_value;
+        if (cg_get_llvm_value(v) &&
+            (llvm::isa<llvm::AllocaInst>(cg_get_llvm_value(v)) || llvm::isa<llvm::GlobalVariable>(cg_get_llvm_value(v)))) {
+          return cg_get_llvm_value(v);
         }
         return getLLVMValue(v, ifa_fun);
       };
@@ -869,7 +869,7 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
         result = Builder->CreateCall(fn, obj_val);
       } else {
         // _CG_prim_len takes (type_descriptor, obj). The C backend
-        // passes rvals[o-1]->cg_string which is the type's runtime
+        // passes cg_get_string(rvals[o-1]) which is the type's runtime
         // descriptor; here we use the obj_val type's name as a
         // placeholder argument (the runtime can fall back to obj's
         // recorded size).
@@ -1001,10 +1001,10 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
       // were the struct. See
       // ifa/issues/014-llvm-construction-flow-to-slots.md.
       llvm::Value *obj_ptr = nullptr;
-      if (obj_var->llvm_value &&
-          (llvm::isa<llvm::AllocaInst>(obj_var->llvm_value) ||
-           llvm::isa<llvm::GlobalVariable>(obj_var->llvm_value))) {
-        obj_ptr = obj_var->llvm_value;
+      if (cg_get_llvm_value(obj_var) &&
+          (llvm::isa<llvm::AllocaInst>(cg_get_llvm_value(obj_var)) ||
+           llvm::isa<llvm::GlobalVariable>(cg_get_llvm_value(obj_var)))) {
+        obj_ptr = cg_get_llvm_value(obj_var);
       } else {
         obj_ptr = getLLVMValue(obj_var, ifa_fun);
       }
@@ -1075,10 +1075,10 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
       // TODO(post-getLLVMVarType): drop the alloca/global special-case
       // once construction-flow stores results into slots consistently.
       llvm::Value *obj_ptr = nullptr;
-      if (obj_var->llvm_value &&
-          (llvm::isa<llvm::AllocaInst>(obj_var->llvm_value) ||
-           llvm::isa<llvm::GlobalVariable>(obj_var->llvm_value))) {
-        obj_ptr = obj_var->llvm_value;
+      if (cg_get_llvm_value(obj_var) &&
+          (llvm::isa<llvm::AllocaInst>(cg_get_llvm_value(obj_var)) ||
+           llvm::isa<llvm::GlobalVariable>(cg_get_llvm_value(obj_var)))) {
+        obj_ptr = cg_get_llvm_value(obj_var);
       } else {
         obj_ptr = getLLVMValue(obj_var, ifa_fun);
       }
@@ -1119,7 +1119,7 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
       if (!name) return 0;
 
       DEBUG_LOG("P_prim_primitive: name='%s', rvals.n=%d\n", name, n->rvals.n);
-      llvm::Module *TheModule = ifa_fun->llvm->getParent();
+      llvm::Module *TheModule = cg_get_llvm(ifa_fun)->getParent();
 
       DEBUG_LOG("P_prim_primitive: checking if name='%s' is print/println\n", name);
 
