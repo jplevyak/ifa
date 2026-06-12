@@ -16,5 +16,6 @@ class PNode;
 class Fun;
 void pyc_llvm_write_cgfn(PNode *n, Fun *f);
 void pyc_llvm_writeln_cgfn(PNode *n, Fun *f);
+void pyc_llvm_to_string_cgfn(PNode *n, Fun *f);
 
 #endif

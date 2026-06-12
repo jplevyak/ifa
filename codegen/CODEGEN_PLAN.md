@@ -389,13 +389,15 @@ incrementally.
   The LLVM `P_prim_primitive` dispatcher (llvm_primitives.cc)
   now consults the lookup after the print/println fastpath,
   mirroring cg.cc:411.
-- [x] **`write` / `writeln` LLVM cgfns** — implemented as
-  `pyc_llvm_write_cgfn` / `pyc_llvm_writeln_cgfn` in
+- [x] **`write` / `writeln` / `to_string` LLVM cgfns** —
+  implemented as `pyc_llvm_write_cgfn` /
+  `pyc_llvm_writeln_cgfn` / `pyc_llvm_to_string_cgfn` in
   llvm_primitives.cc, declared in llvm.h, registered from
-  python_ifa_main.cc under `#ifdef USE_LLVM`. Both emit
-  type-dispatched printf (the LLVM backend doesn't link the
-  pyc C runtime, so we inline-emit until §14.5 closes that
-  gap).
+  python_ifa_main.cc under `#ifdef USE_LLVM`. The first two
+  emit type-dispatched printf; `to_string` does snprintf into
+  a GC_malloc'd 64-byte buffer and returns the pointer.
+  (The LLVM backend doesn't link the pyc C runtime, so we
+  inline-emit until §14.5 closes that gap.)
 - [-] **Other registered prims** (`__pyc_c_call__`,
   `__pyc_format_string__`, `__pyc_to_str__`) — deferred. Their
   C cgfns call into the pyc C runtime (`_CG_format_string`,

@@ -114,6 +114,82 @@ void pyc_llvm_write_cgfn(PNode *n, Fun *ifa_fun) {
   Builder->CreateCall(printfFunc, {fmt_ptr, val});
 }
 
+// `pyc_llvm_to_string_cgfn` — emit `lvals[0] = snprintf-of-arg`.
+// Mirrors the C-backend fallback at cg.cc:412-422 which emits
+// `_CG_prim_primitive_to_string(arg)` calling into the pyc runtime.
+// The LLVM backend doesn't link the runtime, so we inline-emit:
+//   buf = GC_malloc(64);
+//   snprintf(buf, 64, "%lld" / "%f" / etc., arg);
+//   lvals[0] = buf;
+//
+// The result is a `char *` pointing at GC-managed storage that the
+// downstream `write` primitive's `%s` format will print correctly.
+void pyc_llvm_to_string_cgfn(PNode *n, Fun *ifa_fun) {
+  if (n->rvals.n < 1 || n->lvals.n < 1) return;
+  Var *arg = n->rvals[n->rvals.n - 1];
+  Var *res = n->lvals[0];
+  if (!arg || !res) return;
+
+  llvm::Value *val = getLLVMValue(arg, ifa_fun);
+  if (!val) {
+    DEBUG_LOG("pyc_llvm_to_string_cgfn: getLLVMValue returned NULL\n");
+    return;
+  }
+
+  // Type-dispatch the format string + casts (parallels pyc_llvm_write_cgfn).
+  std::string fmt;
+  if (arg->type == sym_int8 || arg->type == sym_int16 || arg->type == sym_int32) {
+    fmt = "%d";
+  } else if (arg->type == sym_bool || arg->type == sym_uint8 || arg->type == sym_uint16 ||
+             arg->type == sym_uint32) {
+    fmt = "%u";
+  } else if (arg->type == sym_int64) {
+    fmt = "%lld";
+    val = Builder->CreateSExtOrTrunc(val, llvm::Type::getInt64Ty(*TheContext));
+  } else if (arg->type == sym_uint64) {
+    fmt = "%llu";
+    val = Builder->CreateZExtOrTrunc(val, llvm::Type::getInt64Ty(*TheContext));
+  } else if (arg->type == sym_float32 || arg->type == sym_float64 || arg->type == sym_float128) {
+    fmt = "%f";
+    if (val->getType()->isFloatTy()) {
+      val = Builder->CreateFPExt(val, llvm::Type::getDoubleTy(*TheContext));
+    }
+  } else if (arg->type == sym_string) {
+    // Already a string; just pass through the pointer.
+    setLLVMValue(res, val, ifa_fun);
+    return;
+  } else {
+    DEBUG_LOG("pyc_llvm_to_string_cgfn: unsupported arg type %s\n",
+              arg->type && arg->type->name ? arg->type->name : "(null)");
+    fmt = "<unsupported>";
+  }
+
+  // Allocate a 64-byte GC-managed buffer for the result string.
+  llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+  llvm::Type *ptr = llvm::PointerType::getUnqual(*TheContext);
+  llvm::Type *i32 = llvm::Type::getInt32Ty(*TheContext);
+  const uint64_t kBufSize = 64;
+  llvm::FunctionCallee gcMallocFunc = TheModule->getOrInsertFunction(
+      "GC_malloc", llvm::FunctionType::get(ptr, i64, false));
+  llvm::Value *buf = Builder->CreateCall(
+      gcMallocFunc, llvm::ConstantInt::get(i64, kBufSize));
+
+  // Declare snprintf: `int snprintf(char *str, size_t size, const char *fmt, ...);`
+  llvm::FunctionCallee snprintfFunc = TheModule->getOrInsertFunction(
+      "snprintf", llvm::FunctionType::get(i32, {ptr, i64, ptr}, /*vararg=*/true));
+
+  llvm::Constant *fmt_const = llvm::ConstantDataArray::getString(*TheContext, fmt);
+  llvm::GlobalVariable *fmt_global = new llvm::GlobalVariable(
+      *TheModule, fmt_const->getType(), true, llvm::GlobalValue::PrivateLinkage, fmt_const,
+      ".str.tostr");
+  llvm::Value *fmt_ptr = Builder->CreateInBoundsGEP(
+      fmt_const->getType(), fmt_global,
+      {llvm::ConstantInt::get(i32, 0), llvm::ConstantInt::get(i32, 0)});
+
+  Builder->CreateCall(snprintfFunc, {buf, llvm::ConstantInt::get(i64, kBufSize), fmt_ptr, val});
+  setLLVMValue(res, buf, ifa_fun);
+}
+
 // `pyc_llvm_writeln_cgfn` — emit printf("\n"). Mirrors
 // python_ifa_main.cc::writeln_codegen.
 void pyc_llvm_writeln_cgfn(PNode *n, Fun *ifa_fun) {
