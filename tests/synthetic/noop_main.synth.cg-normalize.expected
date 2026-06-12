@@ -11,11 +11,7 @@
 (fun #0 :main
   :return-type ?
   :arg-types (?)
-  :locals 4 :blocks 1
+  :locals 0 :blocks 1
   (block #0 :label entry :preds 0 :succs 0
-    :body (
-      (CALL %s0 %s1 %s77 %s78)
-      (CALL %s0 %s1 %s81 %s69)
-    )
     :term (UNREACHABLE))
 )

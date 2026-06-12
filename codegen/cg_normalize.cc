@@ -238,22 +238,154 @@ static void lower_move(PNode *pn, CGBlock *blk, LowerCtx &lc) {
   blk->body.add(st);
 }
 
-// Emit CG_CALL for a generic Code_SEND. The primitive-dispatch and
-// direct-call resolution lands in a follow-up PR; for now record a
-// CG_CALL with the rvals captured so the printer has something to
-// dump and downstream phases can refine without touching the
-// caller side.
-static void lower_send(PNode *pn, CGBlock *blk, LowerCtx &lc) {
-  if (!pn || !pn->code) return;
+// Resolve a P_prim_period / P_prim_setter field name to its index in
+// the object's `has` list. Mirrors cg.cc's symbol_info walk. Returns
+// -1 if not resolvable (the call falls back to generic CG_CALL).
+static int resolve_field_index(PNode *pn, int field_rval_idx, int obj_rval_idx) {
+  if (field_rval_idx >= pn->rvals.n || obj_rval_idx >= pn->rvals.n) return -1;
+  Var *field_var = pn->rvals[field_rval_idx];
+  Var *obj_var = pn->rvals[obj_rval_idx];
+  if (!field_var || !obj_var || !obj_var->type) return -1;
+  Sym *obj = obj_var->type;
+  if (obj->type_kind == Type_SUM && obj->has.n) obj = obj->has[0]->type;
+  cchar *symbol = nullptr;
+  if (field_var->sym && field_var->sym->is_symbol) symbol = field_var->sym->name;
+  if (!symbol) {
+    Vec<Sym *> symbols;
+    symbol_info(field_var, symbols);
+    if (symbols.n == 1) symbol = symbols[0]->name;
+  }
+  if (!symbol) return -1;
+  for (int i = 0; i < obj->has.n; i++) {
+    if (symbol == obj->has[i]->name) return i;
+  }
+  return -1;
+}
+
+// Emit a generic CG_CALL with prim hint preserved. The LLVM/C
+// emitter still dispatches on `inst->prim->index` for primitives we
+// don't structurally decompose at normalization time (arithmetic,
+// comparison, registered cgfns, etc.).
+static void emit_generic_call(PNode *pn, CGBlock *blk, LowerCtx &lc) {
   CGInst *call = new_inst(CG_CALL, pn);
   call->prim = pn->prim;
-  // rvals[0] is conventionally the target sym (closure/prim); rest
-  // are arguments. CGCall consumes all rvals; the primitive switch
-  // (in cg.cc/llvm_primitives.cc today) chooses what they mean.
   for (Var *r : pn->rvals) call->rvals.add(rval_to_value(r, lc));
   if (pn->lvals.n) call->slot = get_or_make_local_slot(pn->lvals[0], lc);
   if (call->slot && call->slot->type) call->result_type = call->slot->type;
   blk->body.add(call);
+}
+
+// Emit per-CG_OP dispatch for Code_SEND. For structural primitives
+// (period/setter/new/clone/reply/index_object) we emit a specific
+// CG_OP so the LLVM emitter dispatches on shape rather than on
+// `prim->index`. For everything else (arithmetic/comparison/
+// registered cgfns) we fall back to CG_CALL with prim preserved.
+//
+// rvals convention (from cg.cc mirror):
+//   P_prim_period:     rvals[1]=object, rvals[3]=field-name symbol
+//   P_prim_setter:     rvals[1]=object, rvals[3]=field-name, rvals[4]=value
+//   P_prim_new:        result is heap allocation typed by lvals[0]
+//   P_prim_clone:      rvals[1]=prototype object
+//   P_prim_reply:      rvals[3]=return value (terminator)
+//   P_prim_index_object: rvals[1]=object, rvals[2]=index
+static void lower_send(PNode *pn, CGBlock *blk, LowerCtx &lc) {
+  if (!pn || !pn->code) return;
+  if (!pn->prim) {
+    emit_generic_call(pn, blk, lc);
+    return;
+  }
+  int idx = pn->prim->index;
+
+  // P_prim_reply: emit nothing here — the terminator emit in
+  // build_cgfun's pass-3 picks this up as the block's CG_RET.
+  if (idx == P_prim_reply) return;
+
+  // P_prim_period: structural field load. rvals[3] is the field
+  // selector, rvals[1] is the object. Resolve to a field index.
+  if (idx == P_prim_period) {
+    int fi = resolve_field_index(pn, /*field_rval_idx=*/3, /*obj_rval_idx=*/1);
+    if (fi < 0) { emit_generic_call(pn, blk, lc); return; }
+    CGInst *inst = new_inst(CG_LOAD_FIELD, pn);
+    inst->rvals.add(rval_to_value(pn->rvals[1], lc));
+    inst->field_idx = fi;
+    if (pn->lvals.n) {
+      inst->slot = get_or_make_local_slot(pn->lvals[0], lc);
+      if (inst->slot) inst->result_type = inst->slot->type;
+    }
+    blk->body.add(inst);
+    return;
+  }
+
+  // P_prim_setter: structural field store. rvals[1]=obj,
+  // rvals[3]=field, rvals[4]=value. The setter also flows the
+  // value back into lvals[0] (Python chained-assignment); we emit
+  // an extra CG_STORE for the lval bind when live.
+  if (idx == P_prim_setter) {
+    int fi = resolve_field_index(pn, /*field_rval_idx=*/3, /*obj_rval_idx=*/1);
+    if (fi < 0 || pn->rvals.n < 5) { emit_generic_call(pn, blk, lc); return; }
+    CGInst *store = new_inst(CG_STORE_FIELD, pn);
+    store->rvals.add(rval_to_value(pn->rvals[1], lc));  // object
+    store->rvals.add(rval_to_value(pn->rvals[4], lc));  // value
+    store->field_idx = fi;
+    blk->body.add(store);
+    // Forward the value into the lvalue (chained-assignment).
+    if (pn->lvals.n && pn->lvals[0]->live) {
+      CGInst *fwd = new_inst(CG_STORE, pn);
+      fwd->slot = get_or_make_local_slot(pn->lvals[0], lc);
+      fwd->rvals.add(rval_to_value(pn->rvals[4], lc));
+      blk->body.add(fwd);
+    }
+    return;
+  }
+
+  // P_prim_new: heap allocation typed by lvals[0]. Bind into the
+  // result slot.
+  if (idx == P_prim_new) {
+    if (!pn->lvals.n) { emit_generic_call(pn, blk, lc); return; }
+    CGInst *inst = new_inst(CG_ALLOC, pn);
+    inst->slot = get_or_make_local_slot(pn->lvals[0], lc);
+    if (inst->slot) inst->result_type = inst->slot->type;
+    blk->body.add(inst);
+    return;
+  }
+
+  // P_prim_clone / P_prim_clone_vector: allocate-and-copy from
+  // prototype. For now emit CG_ALLOC + a CG_CALL hint (the LLVM
+  // emitter can switch on the prim to decide between GC_malloc +
+  // memcpy and the C runtime's _CG_prim_clone helper).
+  if (idx == P_prim_clone || idx == P_prim_clone_vector) {
+    if (!pn->lvals.n) { emit_generic_call(pn, blk, lc); return; }
+    CGInst *inst = new_inst(CG_ALLOC, pn);
+    inst->slot = get_or_make_local_slot(pn->lvals[0], lc);
+    inst->prim = pn->prim;  // hint: clone vs. plain new
+    if (inst->slot) inst->result_type = inst->slot->type;
+    blk->body.add(inst);
+    return;
+  }
+
+  // P_prim_index_object: vector/list element load. rvals[1]=obj,
+  // rvals[2]=index. The exact CG_OP depends on whether the index
+  // is a compile-time constant; for now route through CG_LOAD_FIELD
+  // with field_idx = -1 (sentinel meaning "use a CGValue index").
+  if (idx == P_prim_index_object) {
+    if (pn->rvals.n < 3) { emit_generic_call(pn, blk, lc); return; }
+    CGInst *inst = new_inst(CG_LOAD_FIELD, pn);
+    inst->rvals.add(rval_to_value(pn->rvals[1], lc));
+    inst->rvals.add(rval_to_value(pn->rvals[2], lc));
+    inst->field_idx = -1;  // dynamic index (CGValue in rvals[1])
+    if (pn->lvals.n) {
+      inst->slot = get_or_make_local_slot(pn->lvals[0], lc);
+      if (inst->slot) inst->result_type = inst->slot->type;
+    }
+    blk->body.add(inst);
+    return;
+  }
+
+  // Fallthrough: arithmetic / comparison / registered cgfn — keep
+  // CG_CALL with prim hint preserved. The LLVM emitter dispatches
+  // on prim->index via the existing per-prim helpers in
+  // llvm_primitives.cc.
+  emit_generic_call(pn, blk, lc);
 }
 
 // 2.4 — phi/phy materialization. Emit unconditionally; this is the

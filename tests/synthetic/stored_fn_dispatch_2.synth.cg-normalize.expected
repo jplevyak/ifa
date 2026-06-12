@@ -18,17 +18,15 @@
 (fun #3 :main
   :return-type ?
   :arg-types (?)
-  :locals 11 :blocks 1
+  :locals 4 :blocks 1
   (block #0 :label entry :preds 0 :succs 0
     :body (
-      (CALL :slot %s99 %s0 %s5 %s76)
-      (CALL :slot %s100 %s10 %s99 %s14 %s92 %s78)
-      (CALL :slot %s101 %s0 %s5 %s76)
-      (CALL :slot %s102 %s10 %s101 %s14 %s92 %s83)
+      (ALLOC :slot %s99)
+      (STORE_FIELD %s99 %s78)
+      (ALLOC :slot %s101)
+      (STORE_FIELD %s101 %s83)
       (CALL :slot %s103 %s89 %s99)
       (CALL :slot %s104 %s89 %s101)
-      (CALL %s0 %s1 %s97 %s98)
-      (CALL %s0 %s1 %s107 %s69)
     )
     :term (UNREACHABLE))
 )

@@ -16,13 +16,12 @@
 (fun #0 :main
   :return-type ?
   :arg-types (?)
-  :locals 6 :blocks 1
+  :locals 2 :blocks 1
   (block #0 :label entry :preds 0 :succs 0
     :body (
-      (CALL :slot %s79 %s0 %s5 %s76)
-      (CALL :slot %s80 %s10 %s79 %s14 %s84 %s78)
+      (ALLOC :slot %s79)
+      (STORE_FIELD %s79 %s78)
       (STORE :slot %s81 %s79)
-      (CALL %s0 %s1 %s86 %s69)
     )
     :term (UNREACHABLE))
 )

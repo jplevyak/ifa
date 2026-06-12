@@ -24,7 +24,7 @@
 (fun #1 :main
   :return-type ?
   :arg-types (?)
-  :locals 10 :blocks 1
+  :locals 6 :blocks 1
   (block #0 :label entry :preds 0 :succs 0
     :body (
       (CALL :slot %s87 %s78 %s85 %s86)
@@ -33,8 +33,6 @@
       (CALL :slot %s96 %s78 %s94 %s95)
       (CALL :slot %s99 %s78 %s97 %s98)
       (CALL :slot %s102 %s78 %s100 %s101)
-      (CALL %s0 %s1 %s83 %s84)
-      (CALL %s0 %s1 %s105 %s69)
     )
     :term (UNREACHABLE))
 )
