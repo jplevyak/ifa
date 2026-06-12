@@ -882,6 +882,31 @@ After PR 3.3 lands:
 - [ ] CODEGEN_LLVM.md §5.2 / §8 updated to describe the
       CGProgram-driven flow.
 
+### Partial-progress notes (June 2026)
+
+Phase 3.1 and 3.2 have landed as **parallel functions**: the
+new code paths exist and pass unit tests, but the production
+LLVM codegen still goes through `getLLVMType` / `createFunction`.
+The split keeps each PR reviewable while preserving the LLVM
+suite's 37/38/2 baseline. Phase 3.3 wires up the swap.
+
+- **3.1**: `cg_to_llvm_type(CGType*)` in `llvm.cc`, declared in
+  `llvm_internal.h`, exercised by
+  `cg_to_llvm_type_test.cc` (covers VOID/BOOL/INT/UINT/FLOAT
+  widths, PTR / FUN_PTR opaque pointer, STRUCT with fields,
+  null fallback). Caches result on `CGType::llvm_handle`.
+- **3.2**: `create_llvm_function_from_cgfun(CGFun*, Module*)` in
+  `llvm_codegen.cc`, exercised by
+  `create_llvm_function_from_cgfun_test.cc` (covers void/i32/i32
+  internal, ptr/i64 external, unnamed-cgfun fallback). Caches on
+  `CGFun::llvm_handle`. Debug info (DISubprogram) is
+  deliberately out of scope until Phase 3.3 carries source-line
+  info on CGInst.
+- **3.3 and 3.4 deferred** to the next session — they touch the
+  per-PNode emitter (~300 LOC rewrite) and the `print_ir`
+  wire-up (~50 LOC delete) and need a coordinated landing to
+  avoid leaving the LLVM backend half-converted.
+
 ---
 
 ## 9. Phase 4 — C backend consumes CGProgram (3-4 PRs)

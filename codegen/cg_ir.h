@@ -27,11 +27,11 @@ class Var;
 class PNode;
 class Prim;
 
-// LLVM types — opaque pointers stashed on CGSlot / CGFun.
+// LLVM types — opaque pointers stashed on CGSlot / CGFun / CGType.
 // Declared as `void *` here so the header is consumable without
 // pulling in LLVM headers. The LLVM backend casts back at the
 // use site.
-namespace llvm { class Value; class Function; }
+namespace llvm { class Value; class Function; class Type; }
 
 // Forward declarations for circular references within CG_IR.
 class CGProgram;
@@ -76,9 +76,13 @@ class CGType : public gc {
   // backend's `_CG_psN` typedef convention).
   bool is_heap_aggregate() const { return kind == CG_T_PTR; }
 
+  // LLVM-side cache, populated lazily by `cg_to_llvm_type()`. Phase
+  // 3.1 of CG_IR_PLAN — parallel function until 3.3 wires it up.
+  llvm::Type *llvm_handle;
+
   CGType()
     : kind(CG_T_VOID), bits(0), element(0),
-      source(0), name(0) {}
+      source(0), name(0), llvm_handle(0) {}
 };
 
 // =====================================================================

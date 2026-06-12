@@ -1,4 +1,5 @@
 #include "llvm_internal.h"
+#include "cg_ir.h"
 #include "builtin.h"
 #include "cg.h"
 #include "codegen_common.h"
@@ -42,7 +43,11 @@ Vec<Fun *> *all_funs_global = NULL;
 static std::map<std::string, llvm::Constant *> string_constants_map;
 static std::map<Fun *, std::vector<PNode *>> reverse_call_graph;
 
-static void llvm_codegen_initialize(FA *fa) {
+// Exposed for unit tests that need a live LLVMContext (CG_IR_PLAN
+// Phase 3.1 onwards). Production codegen still calls it from
+// llvm_codegen_print_ir as the static-link-time entry.
+void llvm_codegen_initialize(FA *fa);
+void llvm_codegen_initialize(FA *fa) {
   // Initialize LLVM components
   llvm::InitializeAllTargetInfos();
   llvm::InitializeAllTargets();
@@ -545,6 +550,89 @@ llvm::Type *getLLVMType(Sym *sym) {
 // the override is a no-op today but documents the seam for the
 // future enhancement tracked in
 // ifa/issues/015-pyc-pod-records-no-frontend-hook.md.
+// ============================================================================
+// CG_IR_PLAN Phase 3.1 — direct CGType → llvm::Type lowering.
+//
+// Parallel function to getLLVMType. Until Phase 3.3 wires the LLVM
+// backend to consume CGProgram, this function is exercised only via
+// unit tests; the production codegen path still goes through
+// getLLVMType. Locking it in now means Phase 3.3 just calls this
+// function instead of getLLVMType, with no semantic surprise.
+//
+// CGType carries enough information that this is a single switch
+// with per-kind sub-handlers:
+//   - VOID/BOOL/INT/UINT/FLOAT: trivial; bits drives width.
+//   - PTR: opaque pointer (LLVM 15+ opaque pointer model).
+//   - FUN_PTR: opaque pointer; the signature lives on CGFun.
+//   - STRUCT: build llvm::StructType from `fields` (rare in pyc;
+//     heap aggregates default to PTR).
+// ============================================================================
+
+llvm::Type *cg_to_llvm_type(CGType *t) {
+  if (!t) return llvm::Type::getVoidTy(*TheContext);
+  if (t->llvm_handle) return t->llvm_handle;
+
+  llvm::Type *result = nullptr;
+  switch (t->kind) {
+    case CG_T_VOID:
+      result = llvm::Type::getVoidTy(*TheContext);
+      break;
+    case CG_T_BOOL:
+      result = llvm::Type::getInt1Ty(*TheContext);
+      break;
+    case CG_T_INT:
+    case CG_T_UINT:
+      switch (t->bits) {
+        case 1:  result = llvm::Type::getInt1Ty(*TheContext);  break;
+        case 8:  result = llvm::Type::getInt8Ty(*TheContext);  break;
+        case 16: result = llvm::Type::getInt16Ty(*TheContext); break;
+        case 32: result = llvm::Type::getInt32Ty(*TheContext); break;
+        case 64: result = llvm::Type::getInt64Ty(*TheContext); break;
+        default:
+          fail("cg_to_llvm_type: unsupported int width %d for CGType %s",
+               t->bits, t->name ? t->name : "(anon)");
+          return nullptr;
+      }
+      break;
+    case CG_T_FLOAT:
+      switch (t->bits) {
+        case 32:  result = llvm::Type::getFloatTy(*TheContext);  break;
+        case 64:  result = llvm::Type::getDoubleTy(*TheContext); break;
+        case 128: result = llvm::Type::getFP128Ty(*TheContext);  break;
+        default:
+          fail("cg_to_llvm_type: unsupported float width %d for CGType %s",
+               t->bits, t->name ? t->name : "(anon)");
+          return nullptr;
+      }
+      break;
+    case CG_T_PTR:
+    case CG_T_FUN_PTR:
+      // Opaque pointer (LLVM 15+) — same for both kinds. CG_T_FUN_PTR
+      // exists as a separate kind so the IR dump distinguishes
+      // function-typed slots from generic pointers.
+      result = llvm::PointerType::getUnqual(*TheContext);
+      break;
+    case CG_T_STRUCT: {
+      // Set the cache before recursing into fields so cycles break
+      // (mirroring mapStructType's pattern).
+      llvm::StructType *st = llvm::StructType::create(
+          *TheContext,
+          t->name ? t->name : ("cgstruct.anon" + std::to_string(reinterpret_cast<uintptr_t>(t))));
+      t->llvm_handle = st;
+      std::vector<llvm::Type *> field_types;
+      for (CGType *f : t->fields) {
+        llvm::Type *ft = cg_to_llvm_type(f);
+        if (!ft || ft->isVoidTy()) ft = llvm::Type::getInt8Ty(*TheContext);
+        field_types.push_back(ft);
+      }
+      if (st->isOpaque()) st->setBody(field_types);
+      return st;  // already cached above
+    }
+  }
+  t->llvm_handle = result;
+  return result;
+}
+
 llvm::Type *getLLVMVarType(Sym *type) {
   llvm::Type *t = getLLVMType(type);
   if (!t) return nullptr;

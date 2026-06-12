@@ -38,6 +38,25 @@ llvm::Type *getLLVMType(Sym *sym);
 // stay value-typed.
 llvm::Type *getLLVMVarType(Sym *type);
 
+// CG_IR_PLAN Phase 3.1 — direct CGType → llvm::Type lowering.
+// Parallel function to getLLVMType. Caches result on
+// `CGType::llvm_handle`. Phase 3.3 wires this in place of
+// getLLVMType once the LLVM backend starts consuming CGProgram.
+class CGType;
+llvm::Type *cg_to_llvm_type(CGType *t);
+
+// CG_IR_PLAN Phase 3.2 — direct CGFun → llvm::Function lowering.
+// Parallel function to `createFunction(Fun*, ...)`. Caches result
+// on `CGFun::llvm_handle`. Debug info (DISubprogram) deliberately
+// out of scope until Phase 3.3 carries source-line info on CGInst.
+class CGFun;
+llvm::Function *create_llvm_function_from_cgfun(CGFun *cf, llvm::Module *module);
+
+// Bring up TheContext / TheModule / Builder / DBuilder. Exposed for
+// unit tests that need a live LLVMContext (the production path
+// invokes this from llvm_codegen_print_ir).
+void llvm_codegen_initialize(FA *fa);
+
 // Convert IF1 type to LLVM debug info type
 llvm::DIType *getLLVMDIType(Sym *sym, llvm::DIFile *di_file);
 

@@ -1,4 +1,5 @@
 #include "llvm_internal.h"
+#include "cg_ir.h"
 #include "codegen_common.h"
 #include "prim.h"
 #include "var.h"
@@ -230,6 +231,85 @@ llvm::Function *createFunction(Fun *ifa_fun, llvm::Module *module) {
   // (typically-empty) blocks need terminators here.
   if (ifa_fun->is_external || !ifa_fun->entry) {
     ensure_block_terminators(llvm_func, "createFunction");
+  }
+  return llvm_func;
+}
+
+// ============================================================================
+// CG_IR_PLAN Phase 3.2 — direct CGFun → llvm::Function lowering.
+//
+// Parallel to `createFunction(Fun*, ...)`. Consumes a CGFun
+// (CGProgram-owned) instead of dereferencing IF1. The function's
+// name, return type, and arg types come straight from CGFun fields;
+// no `cg_get_string(ifa_fun)`, no `getLLVMVarType(arg->type)` walks.
+//
+// Until Phase 3.3 wires the LLVM backend over to CGProgram, this
+// function is unused at production codegen time. The unit test
+// (`run_create_llvm_function_from_cgfun`) verifies the contract:
+// signature shape, linkage, llvm_handle caching on CGFun.
+//
+// Debug info (DISubprogram, DIParameterVariable) is NOT attached
+// here — that needs the IF1 source-line plumbing, which Phase 3.3
+// re-introduces by carrying source-pn / source-fun on CGInst /
+// CGFun. The parallel landing keeps debug info out of scope to
+// limit the diff; Phase 3.3 fills it back in.
+// ============================================================================
+
+llvm::Function *create_llvm_function_from_cgfun(CGFun *cf, llvm::Module *module) {
+  if (!cf) {
+    fail("create_llvm_function_from_cgfun: null CGFun");
+    return nullptr;
+  }
+  if (cf->llvm_handle) return cf->llvm_handle;
+  if (!module) {
+    fail("create_llvm_function_from_cgfun: null Module");
+    return nullptr;
+  }
+
+  llvm::Type *llvm_ret_type = cg_to_llvm_type(cf->return_type);
+  if (!llvm_ret_type) llvm_ret_type = llvm::Type::getVoidTy(*TheContext);
+
+  std::vector<llvm::Type *> llvm_arg_types;
+  for (CGType *at : cf->arg_types) {
+    llvm::Type *t = cg_to_llvm_type(at);
+    if (!t) t = llvm::Type::getInt64Ty(*TheContext);
+    llvm_arg_types.push_back(t);
+  }
+
+  bool is_varargs = cf->source_fun ? cf->source_fun->is_varargs : false;
+  llvm::FunctionType *func_type =
+      llvm::FunctionType::get(llvm_ret_type, llvm_arg_types, is_varargs);
+
+  std::string func_name = cf->name ? std::string(cf->name)
+                                   : ("cgfun." + std::to_string(reinterpret_cast<uintptr_t>(cf)));
+
+  // External CGFuns get external linkage; everything else gets
+  // internal linkage matching the existing C-side default.
+  llvm::Function::LinkageTypes linkage =
+      cf->is_external ? llvm::Function::ExternalLinkage : llvm::Function::InternalLinkage;
+
+  llvm::Function *llvm_func =
+      llvm::Function::Create(func_type, linkage, func_name, module);
+  cf->llvm_handle = llvm_func;
+
+  // Wire each formal-arg slot (when present) to its LLVM Argument.
+  // Phase 2's CGFun has `formal_arg_slots.n == 0` because the
+  // initial cut didn't populate them; Phase 3.3 adds the slot
+  // population to cg_normalize. This loop is a no-op until then.
+  for (unsigned i = 0; i < cf->formal_arg_slots.n && i < llvm_func->arg_size(); ++i) {
+    llvm::Argument *llvm_arg = llvm_func->getArg(i);
+    CGSlot *fs = cf->formal_arg_slots[i];
+    if (fs && fs->name) llvm_arg->setName(fs->name);
+    if (fs) fs->llvm_handle = llvm_arg;
+  }
+
+  // For internal-linkage non-external functions, create an entry
+  // BasicBlock so the function is well-formed even when called
+  // before translateFunctionBody runs.
+  if (!cf->is_external) {
+    llvm::BasicBlock::Create(*TheContext, "entry", llvm_func);
+  } else {
+    ensure_block_terminators(llvm_func, "create_llvm_function_from_cgfun");
   }
   return llvm_func;
 }

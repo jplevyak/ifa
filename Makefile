@@ -126,7 +126,8 @@ LIB_SRCS = ifa.cc main.cc \
 	testing/print_dispatch.cc testing/print_clone.cc testing/print_dce.cc \
 	testing/print_codegen.cc testing/print_inline.cc \
 	testing/fa_setup.cc testing/roundtrip_test.cc testing/lattice_test.cc \
-	testing/cg_normalize_test.cc
+	testing/cg_normalize_test.cc testing/cg_to_llvm_type_test.cc \
+	testing/create_llvm_function_from_cgfun_test.cc
 LIB_OBJS = $(LIB_SRCS:%.cc=%.o)
 
 IFA_DEPEND_SRCS = main.cc frontend/parse.cc frontend/scope.cc frontend/make_ast.cc frontend/ast_to_if1.cc \
