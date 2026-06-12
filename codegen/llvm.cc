@@ -669,9 +669,14 @@ llvm::Constant *getLLVMConstant(Var *var) {
     return nullptr;
   }
 
-  // Match cg.cc:934-938 order: check sym->imm FIRST, then sym->constant
-  // This ensures numeric immediates (including booleans) are handled before string parsing
-  if (sym->imm.const_kind != IF1_NUM_KIND_NONE) {  // Numeric immediates
+  // Match cg.cc:825 order: numeric immediates first (so booleans land in
+  // the integer path), then string / symbol constants via sym->constant.
+  // The string-kind exclusion matters: a Var with type sym_string carries
+  // its bytes in sym->constant, not in sym->imm — without the exclusion
+  // we enter the numeric path, find the LLVM type isn't int/float, and
+  // fail() instead of falling through to the string handling below.
+  if (sym->imm.const_kind != IF1_NUM_KIND_NONE &&
+      sym->imm.const_kind != IF1_CONST_KIND_STRING) {  // Numeric immediates
     Immediate imm = sym->imm;
     if (llvm_type->isIntegerTy()) {
       uint64_t val = 0;
