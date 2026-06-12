@@ -732,6 +732,9 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
 
       // Helper: extract a struct pointer from `obj_var` (avoiding the
       // load that getLLVMValue does for AllocaInst-backed locals).
+      // TODO(post-getLLVMVarType): drop the special-case once
+      // construction-flow connects results to slots — see
+      // ifa/issues/014-llvm-construction-flow-to-slots.md.
       auto get_struct_ptr = [&](Var *v) -> llvm::Value * {
         if (v->llvm_value &&
             (llvm::isa<llvm::AllocaInst>(v->llvm_value) || llvm::isa<llvm::GlobalVariable>(v->llvm_value))) {
@@ -983,6 +986,14 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
       // pointer. When the underlying storage IS already a pointer
       // (alloca / global), use it directly; otherwise fall back to
       // getLLVMValue and hope it returns a pointer.
+      //
+      // TODO(post-getLLVMVarType): once construction-flow connects
+      // results to the slot consistently, this special-case should
+      // drop in favor of just calling getLLVMValue. Doing it now
+      // without the construction-flow fix regresses tests that
+      // happen to "work" by reading garbage from the slot as if it
+      // were the struct. See
+      // ifa/issues/014-llvm-construction-flow-to-slots.md.
       llvm::Value *obj_ptr = nullptr;
       if (obj_var->llvm_value &&
           (llvm::isa<llvm::AllocaInst>(obj_var->llvm_value) ||
@@ -1055,6 +1066,8 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
 
       // Get an actual pointer to the object's storage (same shape as
       // P_prim_period's fix above).
+      // TODO(post-getLLVMVarType): drop the alloca/global special-case
+      // once construction-flow stores results into slots consistently.
       llvm::Value *obj_ptr = nullptr;
       if (obj_var->llvm_value &&
           (llvm::isa<llvm::AllocaInst>(obj_var->llvm_value) ||
