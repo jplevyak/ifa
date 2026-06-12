@@ -557,14 +557,22 @@ void translatePNode(PNode *pn, Fun *ifa_fun) {
     return;
   }
 
-  // Liveness check
-  // Trust FA analysis (fa_live) - it's more accurate than dead.cc's live flag
-  // The C backend checks both live && fa_live, but LLVM backend needs fa_live
-  // to ensure control flow targets (labels) and value-producing operations are generated.
-  // Per-primitive emitters (e.g. P_prim_period) consult `pn->live` directly
-  // when DCE-dead PNodes would otherwise crash codegen — see issue 013-era
-  // method-binding-on-builtins notes in llvm_primitives.cc.
-  bool is_live = pn->fa_live;
+  // Liveness gate — `live && fa_live`, matching the C backend's
+  // `write_c_pnode` (cg.cc:586). DCE-live AND FA-reachable; the
+  // intersection is what survives codegen.
+  //
+  // The earlier comment here said "trust fa_live alone, it's more
+  // accurate than dead.cc's live flag." That advice was wrong —
+  // running on `fa_live` alone made the LLVM backend skip body
+  // PNodes inside for-loops (whose `live=1, fa_live=0` because the
+  // IFA template version is shadowed by clones, but DCE rightly
+  // keeps the surviving copy). The strict gate brought the
+  // pyc-suite from 32 → 37, codegen-llvm fixtures from 8 → 12 (the
+  // four newly-passing fixtures were previously emitting too little
+  // IR and the goldens documented the gap). Per-primitive emitters
+  // still consult `pn->live` directly when they need to handle
+  // DCE-dead-but-FA-reachable cases differently.
+  bool is_live = pn->live && pn->fa_live;
   if (!is_live) {
     if (ifa_debug) {
       DEBUG_LOG("Skipping non-live PNode pn=%p (live=%d, fa_live=%d), code_kind=%d, lvals.n=%d", (void *)pn,

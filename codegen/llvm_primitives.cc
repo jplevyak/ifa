@@ -87,7 +87,11 @@ void pyc_llvm_write_cgfn(PNode *n, Fun *ifa_fun) {
     fmt = "%llu";
     val = Builder->CreateZExtOrTrunc(val, llvm::Type::getInt64Ty(*TheContext));
   } else if (arg->type == sym_float32 || arg->type == sym_float64 || arg->type == sym_float128) {
-    fmt = "%f";
+    // %g matches Python's str(float) formatting much better than %f:
+    // 1.2 → "1.2" instead of "1.200000". The known mismatch is that
+    // %g drops the .0 suffix on integer-valued floats (2.0 → "2"),
+    // which Python keeps. Acceptable trade for the dominant case.
+    fmt = "%g";
     if (val->getType()->isFloatTy()) {
       val = Builder->CreateFPExt(val, llvm::Type::getDoubleTy(*TheContext));
     }
@@ -150,7 +154,9 @@ void pyc_llvm_to_string_cgfn(PNode *n, Fun *ifa_fun) {
     fmt = "%llu";
     val = Builder->CreateZExtOrTrunc(val, llvm::Type::getInt64Ty(*TheContext));
   } else if (arg->type == sym_float32 || arg->type == sym_float64 || arg->type == sym_float128) {
-    fmt = "%f";
+    // %g matches Python's str(float) for the common case (see
+    // pyc_llvm_write_cgfn for the rationale).
+    fmt = "%g";
     if (val->getType()->isFloatTy()) {
       val = Builder->CreateFPExt(val, llvm::Type::getDoubleTy(*TheContext));
     }
@@ -1161,7 +1167,7 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
             fmt_str += doln ? "%llu\n" : "%llu";
             val = Builder->CreateZExtOrTrunc(val, llvm::Type::getInt64Ty(*TheContext));
           } else if (arg->type == sym_float32 || arg->type == sym_float64 || arg->type == sym_float128) {
-            fmt_str += doln ? "%f\n" : "%f";
+            fmt_str += doln ? "%g\n" : "%g";
             // Extend to double for printf
             if (val->getType()->isFloatTy()) {
               val = Builder->CreateFPExt(val, llvm::Type::getDoubleTy(*TheContext));

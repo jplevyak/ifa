@@ -1,10 +1,8 @@
 ;; phase: codegen-llvm
 
-(summary fa_rc=0 clone_rc=0 funs=1 bytes=5030)
+(summary fa_rc=0 clone_rc=0 funs=1 bytes=4160)
 
 ;; llvm-ir (host-specific module lines + !dbg metadata stripped):
-
-%Point = type { i32 }
 
 @__primitive = internal global ptr null
 @reply = internal global ptr null
@@ -23,32 +21,17 @@ entry:
   %r = alloca ptr, align 8
   %p = alloca ptr, align 8
   %s = alloca i32, align 4
-  %0 = call ptr @GC_malloc(i64 4)
-  store ptr %0, ptr %p, align 8
-  %k.load = load i32, ptr @k, align 4
-  %1 = getelementptr inbounds nuw %Point, ptr %p, i32 0, i32 0
-  store i32 %k.load, ptr %1, align 4
-  %2 = call ptr @GC_malloc(i64 4)
-  call void @llvm.memcpy.p0.p0.i64(ptr align 8 %2, ptr align 8 %p, i64 4, i1 false)
-  store ptr %2, ptr %c, align 8
-  %nil.load = load ptr, ptr @nil, align 8
 
 
 
 
-  ret ptr %nil.load
+  ret ptr undef
 }
-
-declare ptr @GC_malloc(i64)
-
-; Function Attrs: nocallback nofree nounwind willreturn memory(argmem: readwrite)
-declare void @llvm.memcpy.p0.p0.i64(ptr noalias writeonly captures(none), ptr noalias readonly captures(none), i64, i1 immarg) #0
 
 define i32 @main() {
 entry:
   %0 = call ptr @_CG_f_86_0()
   ret i32 0
 }
-
 
 
