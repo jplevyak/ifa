@@ -884,11 +884,14 @@ After PR 3.3 lands:
 
 ### Partial-progress notes (June 2026)
 
-Phase 3.1 and 3.2 have landed as **parallel functions**: the
-new code paths exist and pass unit tests, but the production
-LLVM codegen still goes through `getLLVMType` / `createFunction`.
+Phases 3.1, 3.2, and 3.3-scaffold have landed as **parallel
+paths**: the new code exists and is exercised by unit tests,
+but the production LLVM codegen still flows through
+`getLLVMType` / `createFunction` / `translateFunctionBody`.
 The split keeps each PR reviewable while preserving the LLVM
-suite's 37/38/2 baseline. Phase 3.3 wires up the swap.
+suite's 37/38/2 baseline. The production swap (Phase 3.4 full)
+remains as a focused follow-up — see "Deferred for 3.4 full
+swap" below.
 
 - **3.1**: `cg_to_llvm_type(CGType*)` in `llvm.cc`, declared in
   `llvm_internal.h`, exercised by
@@ -902,10 +905,60 @@ suite's 37/38/2 baseline. Phase 3.3 wires up the swap.
   `CGFun::llvm_handle`. Debug info (DISubprogram) is
   deliberately out of scope until Phase 3.3 carries source-line
   info on CGInst.
-- **3.3 and 3.4 deferred** to the next session — they touch the
-  per-PNode emitter (~300 LOC rewrite) and the `print_ir`
-  wire-up (~50 LOC delete) and need a coordinated landing to
-  avoid leaving the LLVM backend half-converted.
+- **3.3 scaffold** (this session): `emit_cg.cc` lands with
+  `emit_llvm_module(CGProgram*)`, `emit_cgfun(CGFun*)`, and
+  `emit_cg_inst(CGInst*, EmitCtx&)`. Coverage:
+  - **Handled now**: CG_NOP, CG_STORE, terminators
+    (CG_BR / CG_COND_BR / CG_RET / CG_UNREACHABLE),
+    BasicBlock pre-allocation per CGBlock, AllocaInst
+    materialization for local CGSlots, function-decl pass via
+    Phase 3.2's `create_llvm_function_from_cgfun`.
+  - **Deferred for 3.4 full swap**: CG_LOAD_FIELD,
+    CG_STORE_FIELD, CG_ALLOC structural ops (coupled to issue
+    015's `is_value_type` work — heap-aggregate struct-type
+    resolution); CG_CALL with prim back-translation to source
+    PNode (calls into the existing per-prim emitter); phi/phy
+    materialization at predecessor-block placement.
+  - **Production print_ir wire-up**: NOT done. Production
+    codegen continues through translateFunctionBody. The
+    parallel `emit_llvm_module` is exercised only by the unit
+    test (`run_emit_llvm_module` in `emit_cg_test.cc`).
+
+### Deferred for 3.4 full swap
+
+A focused follow-up session lands the production swap. The
+work splits into four tracks:
+
+1. **Structural CG_OP completion** — implement
+   CG_LOAD_FIELD / CG_STORE_FIELD / CG_ALLOC in
+   `emit_cg_inst`. Needs the pyc heap-aggregate struct-type
+   resolution that issue 015 documents; the existing
+   `mapStructType` in `llvm.cc` is the reference. ~100 LOC.
+
+2. **CG_CALL back-translation** — when a CGInst has
+   `prim` set and `source_pn` non-null, dispatch through the
+   existing per-prim emitter in `llvm_primitives.cc`. The
+   ~1274 LOC of per-prim emission logic is preserved verbatim;
+   the seam is a small adapter that maps CGInst → PNode arg
+   shape. ~50 LOC.
+
+3. **phi/phy materialization** — Phase 2.4 emits phi/phy as
+   CG_STOREs in the source block; LLVM IR semantics require phi
+   to live in the predecessor block (or use llvm::PHINode in
+   the successor). The emitter walks each CGBlock's preds and
+   places the phi STOREs accordingly. ~80 LOC.
+
+4. **print_ir simplification** — once 1-3 land and the unit
+   tests + cg-normalize fixtures show the parallel path matches
+   the IF1 path's output for the existing codegen-llvm
+   fixtures, modify `llvm_codegen_print_ir` to call
+   `emit_llvm_module` and delete the old translateFunctionBody
+   / translatePNode / translate_code_* / do_phi_nodes /
+   do_phy_nodes (~520 LOC delete).
+
+The pyc-suite ratchet (§8.2) governs the cutover: 3.4 must
+hold ≥ 37 passes; landing 1-3 incrementally with no production
+swap keeps every intermediate state safe.
 
 ---
 

@@ -127,12 +127,13 @@ LIB_SRCS = ifa.cc main.cc \
 	testing/print_codegen.cc testing/print_inline.cc \
 	testing/fa_setup.cc testing/roundtrip_test.cc testing/lattice_test.cc \
 	testing/cg_normalize_test.cc testing/cg_to_llvm_type_test.cc \
-	testing/create_llvm_function_from_cgfun_test.cc
+	testing/create_llvm_function_from_cgfun_test.cc \
+	testing/emit_cg_test.cc
 LIB_OBJS = $(LIB_SRCS:%.cc=%.o)
 
 IFA_DEPEND_SRCS = main.cc frontend/parse.cc frontend/scope.cc frontend/make_ast.cc frontend/ast_to_if1.cc \
 	codegen/codegen_common.cc codegen/cg.cc codegen/llvm.cc codegen/llvm_codegen.cc codegen/llvm_primitives.cc \
-	codegen/cg_normalize.cc
+	codegen/cg_normalize.cc codegen/emit_cg.cc
 IFA_SRCS = $(IFA_DEPEND_SRCS) frontend/v.g.d_parser.cc frontend/python.g.d_parser.cc
 IFA_OBJS = $(IFA_SRCS:%.cc=%.o)
 

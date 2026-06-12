@@ -57,6 +57,14 @@ llvm::Function *create_llvm_function_from_cgfun(CGFun *cf, llvm::Module *module)
 // invokes this from llvm_codegen_print_ir).
 void llvm_codegen_initialize(FA *fa);
 
+// CG_IR_PLAN Phase 3.3 — emit an LLVM module from a CGProgram.
+// Parallel path to the existing translateFunctionBody loop.
+// Phase 3.4's production swap calls this from
+// llvm_codegen_print_ir; until then it's exercised by unit tests
+// only. See `emit_cg.cc` for the deferred CG_OP coverage.
+class CGProgram;
+void emit_llvm_module(CGProgram *prog);
+
 // Convert IF1 type to LLVM debug info type
 llvm::DIType *getLLVMDIType(Sym *sym, llvm::DIFile *di_file);
 
