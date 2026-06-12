@@ -115,6 +115,7 @@ LIB_SRCS = ifa.cc main.cc \
 	if1/pnode.cc if1/prim.cc if1/prim_data.cc if1/sym.cc if1/var.cc \
 	analysis/fa.cc analysis/pdb.cc analysis/graph.cc analysis/clone.cc analysis/ifalog.cc \
 	codegen/codegen_common.cc codegen/cg.cc codegen/llvm.cc codegen/llvm_codegen.cc codegen/llvm_primitives.cc \
+	codegen/cg_normalize.cc \
 	optimize/cfg.cc optimize/dead.cc optimize/dom.cc optimize/inline.cc optimize/loop.cc optimize/ssu.cc \
 	testing/parse_ir.cc testing/write_ir.cc testing/test_callbacks.cc \
 	testing/printer_util.cc testing/ir_builder.cc testing/ir_builder_test.cc \
@@ -124,11 +125,13 @@ LIB_SRCS = ifa.cc main.cc \
 	testing/print_patterns.cc testing/print_fa.cc testing/print_fa_converge.cc \
 	testing/print_dispatch.cc testing/print_clone.cc testing/print_dce.cc \
 	testing/print_codegen.cc testing/print_inline.cc \
-	testing/fa_setup.cc testing/roundtrip_test.cc testing/lattice_test.cc
+	testing/fa_setup.cc testing/roundtrip_test.cc testing/lattice_test.cc \
+	testing/cg_normalize_test.cc
 LIB_OBJS = $(LIB_SRCS:%.cc=%.o)
 
 IFA_DEPEND_SRCS = main.cc frontend/parse.cc frontend/scope.cc frontend/make_ast.cc frontend/ast_to_if1.cc \
-	codegen/codegen_common.cc codegen/cg.cc codegen/llvm.cc codegen/llvm_codegen.cc codegen/llvm_primitives.cc
+	codegen/codegen_common.cc codegen/cg.cc codegen/llvm.cc codegen/llvm_codegen.cc codegen/llvm_primitives.cc \
+	codegen/cg_normalize.cc
 IFA_SRCS = $(IFA_DEPEND_SRCS) frontend/v.g.d_parser.cc frontend/python.g.d_parser.cc
 IFA_OBJS = $(IFA_SRCS:%.cc=%.o)
 
