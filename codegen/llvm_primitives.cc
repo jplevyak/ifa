@@ -85,8 +85,17 @@ void write_send(Fun *f, PNode *n) {
     if (!target->is_external && target->entry) {
       llvm::BasicBlock *saved_bb = Builder->GetInsertBlock();
       llvm::BasicBlock::iterator saved_ip = Builder->GetInsertPoint();
+      // Save the CurrentDebugLocation too — translateFunctionBody
+      // updates it to target's subprogram via translatePNode's
+      // SetCurrentDebugLocation call. Without this restore, every
+      // instruction we emit after returning here (CreateStore for the
+      // call result, etc.) inherits target's DISubprogram as its
+      // !dbg scope while living in the calling function's BB, which
+      // verifyModule rejects with "wrong subprogram for function".
+      llvm::DebugLoc saved_dbg = Builder->getCurrentDebugLocation();
       translateFunctionBody(target);
       if (saved_bb) Builder->SetInsertPoint(saved_bb, saved_ip);
+      Builder->SetCurrentDebugLocation(saved_dbg);
     }
   }
 
