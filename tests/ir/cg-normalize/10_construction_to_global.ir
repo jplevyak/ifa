@@ -1,0 +1,55 @@
+;; 10_construction_to_global.ir — pinpoint the construction-flow gap
+;; from issue 014.
+;;
+;; Reproduces the `y = A()` SEGV: a `P_prim_new` allocates a heap
+;; aggregate whose result should be stored into a module-level global,
+;; but the IF1 → LLVM lowering drops the bind. The LLVM IR shows:
+;;   @g = global ptr null
+;;   ... call GC_malloc ...
+;;   (no store to @g)
+;;   ... call __init__ ...
+;;   %y.load = load ptr, ptr @g           ; loads null
+;;   GEP %y.load, 0, N                     ; SEGV on access
+;;
+;; Pre-CG_IR LLVM golden:
+;;   - `@g = global ptr null` declared.
+;;   - GC_malloc / __init__ calls emitted.
+;;   - NO `store ptr <result>, ptr @g`.
+;;
+;; Post-CG_IR (Phase 3.3) LLVM golden:
+;;   - The `store ptr <result>, ptr @g` appears immediately after the
+;;     constructor sequence (cg_normalize's construction-flow patch
+;;     in Phase 2.5 emits an explicit CG_STORE).
+;;
+;; This fixture also pairs with issue 015's `is_value_type` work: the
+;; @g global is currently `ptr null` because heap aggregates default
+;; to pointer; a future @pyc_struct POD record opts back into struct
+;; value semantics and stores to a struct slot directly.
+
+(type %Box :kind RECORD :has (%v))
+(sym %v :in %Box)
+
+(sym %k :is-constant :immediate (int32 99))
+
+;; %g is module-level (not :is-local), so it lives as a global slot
+;; and exhibits the construction-flow gap end-to-end. The setter
+;; followed by the period read forces the codegen to actually
+;; materialize the store-to-global; without the construction-flow
+;; patch the period's load reads zero-init storage.
+
+(sym %g)
+
+(sym %p :is-local)
+(sym %s :is-local)
+(sym %r :is-local)
+(sym %tcont)
+(fun %top
+  :rets (%r)
+  :cont %tcont
+  :body
+    (send @primitive @new %Box => %p)
+    (send @operator %p @setter #v %k => %s)
+    (move %p %g)
+    (send @operator %g @period #v => %r))
+
+(entry %top)

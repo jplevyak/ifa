@@ -1,0 +1,31 @@
+;; 04_getter.ir — pinpoint the P_prim_period (getter) codegen path.
+;;
+;; Allocates a %Point, writes %k (int32) into %px, then reads %px
+;; back through the period primitive. Exercises cg.cc:222-261:
+;;   ((<obj_type>)receiver)->eN
+;; with the read result flowing into %r.
+;;
+;; Caveat: aggressive DCE in the synthesized __main__ may elide
+;; the entire body. The fixture is still useful as input-DSL
+;; documentation and as a regression marker if DCE behavior
+;; changes. The codegen-llvm parallel exercises more of the
+;; struct-type emission path.
+
+(type %Point :kind RECORD :has (%px))
+(sym %px :in %Point)
+
+(sym %k :is-constant :immediate (int32 42))
+
+(sym %p :is-local)
+(sym %s :is-local)
+(sym %r :is-local)
+(sym %tcont)
+(fun %top
+  :rets (%r)
+  :cont %tcont
+  :body
+    (send @primitive @new %Point => %p)
+    (send @operator %p @setter #px %k => %s)
+    (send @operator %p @period #px => %r))
+
+(entry %top)

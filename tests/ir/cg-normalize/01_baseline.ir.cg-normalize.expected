@@ -1,0 +1,23 @@
+;; phase: cg-normalize
+
+(summary fa_rc=0 clone_rc=0 funs=1 globals=4 types=0)
+
+;; globals
+(slot %s0 :kind global :type ? :name __primitive)
+(slot %s1 :kind global :type ? :name reply)
+(slot %s76 :kind const :type ? :name k)
+(slot %s81 :kind global :type ? :name __main__)
+
+;; funs
+(fun #0 :main
+  :return-type ?
+  :arg-types (?)
+  :locals 4 :blocks 1
+  (block #0 :label entry :preds 0 :succs 0
+    :body (
+      (STORE :slot %s77 %s76)
+      (STORE :slot %s78 %s77)
+      (CALL %s0 %s1 %s82 %s69)
+    )
+    :term (UNREACHABLE))
+)

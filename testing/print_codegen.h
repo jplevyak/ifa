@@ -25,3 +25,15 @@ void print_codegen_c_normalized(FILE *fp, IF1 *p);
 // datalayout, named metadata, debug-info metadata) so the golden
 // can survive across hosts and LLVM versions. See issue 002.
 void print_codegen_llvm_normalized(FILE *fp, IF1 *p);
+
+// Phase printer for the CG_IR normalization pass (cg_normalize).
+// Runs the same FA + clone + DCE pipeline as the codegen-c /
+// codegen-llvm phases, then invokes `cg_normalize(fa)` and dumps
+// the resulting CGProgram in a stable textual form: types, globals,
+// per-Fun (name, sig, blocks with body insts + terminator).
+//
+// This phase locks the CGProgram shape during Phase 2 of
+// CG_IR_PLAN. Phase 3 (LLVM backend) and Phase 4 (C backend)
+// consume CGProgram instead of IF1; the goldens here document the
+// intermediate representation each backend will read from.
+void print_cg_normalize_normalized(FILE *fp, IF1 *p);

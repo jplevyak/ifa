@@ -1,0 +1,35 @@
+;; phase: cg-normalize
+
+(summary fa_rc=-1 clone_rc=0 funs=1 globals=10 types=0)
+
+;; globals
+(slot %s0 :kind global :type ? :name __primitive)
+(slot %s1 :kind global :type ? :name reply)
+(slot %s5 :kind global :type ? :name new)
+(slot %s9 :kind global :type ? :name set_index_object)
+(slot %s93 :kind global :type ? :name copy)
+(slot %s108 :kind const :type ?)
+(slot %s109 :kind const :type ?)
+(slot %s112 :kind const :type ?)
+(slot %s113 :kind const :type ?)
+(slot %s119 :kind global :type ? :name __main__)
+
+;; funs
+(fun #2 :main
+  :return-type ?
+  :arg-types (?)
+  :locals 12 :blocks 1
+  (block #0 :label entry :preds 0 :succs 0
+    :body (
+      (CALL :slot %s107 %s0 %s5 %s76)
+      (CALL :slot %s110 %s0 %s9 %s107 %s108 %s109)
+      (CALL :slot %s111 %s0 %s5 %s76)
+      (CALL :slot %s114 %s0 %s9 %s111 %s112 %s113)
+      (CALL :slot %s115 %s0 %s5 %s76)
+      (CALL :slot %s116 %s93 %s107 %s115)
+      (CALL :slot %s117 %s93 %s111 %s115)
+      (CALL %s0 %s1 %s105 %s106)
+      (CALL %s0 %s1 %s120 %s69)
+    )
+    :term (UNREACHABLE))
+)

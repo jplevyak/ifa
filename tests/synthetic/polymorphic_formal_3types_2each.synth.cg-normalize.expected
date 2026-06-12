@@ -1,0 +1,40 @@
+;; phase: cg-normalize
+
+(summary fa_rc=-1 clone_rc=0 funs=1 globals=16 types=0)
+
+;; globals
+(slot %s0 :kind global :type ? :name __primitive)
+(slot %s1 :kind global :type ? :name reply)
+(slot %s78 :kind global :type ? :name f)
+(slot %s85 :kind const :type ?)
+(slot %s86 :kind const :type ?)
+(slot %s88 :kind const :type ?)
+(slot %s89 :kind const :type ?)
+(slot %s91 :kind const :type ?)
+(slot %s92 :kind const :type ?)
+(slot %s94 :kind const :type ?)
+(slot %s95 :kind const :type ?)
+(slot %s97 :kind const :type ?)
+(slot %s98 :kind const :type ?)
+(slot %s100 :kind const :type ?)
+(slot %s101 :kind const :type ?)
+(slot %s104 :kind global :type ? :name __main__)
+
+;; funs
+(fun #1 :main
+  :return-type ?
+  :arg-types (?)
+  :locals 10 :blocks 1
+  (block #0 :label entry :preds 0 :succs 0
+    :body (
+      (CALL :slot %s87 %s78 %s85 %s86)
+      (CALL :slot %s90 %s78 %s88 %s89)
+      (CALL :slot %s93 %s78 %s91 %s92)
+      (CALL :slot %s96 %s78 %s94 %s95)
+      (CALL :slot %s99 %s78 %s97 %s98)
+      (CALL :slot %s102 %s78 %s100 %s101)
+      (CALL %s0 %s1 %s83 %s84)
+      (CALL %s0 %s1 %s105 %s69)
+    )
+    :term (UNREACHABLE))
+)

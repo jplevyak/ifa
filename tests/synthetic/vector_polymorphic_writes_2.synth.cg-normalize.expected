@@ -1,0 +1,34 @@
+;; phase: cg-normalize
+
+(summary fa_rc=-1 clone_rc=0 funs=1 globals=11 types=0)
+
+;; globals
+(slot %s0 :kind global :type ? :name __primitive)
+(slot %s1 :kind global :type ? :name reply)
+(slot %s5 :kind global :type ? :name new)
+(slot %s84 :kind global :type ? :name __getitem__)
+(slot %s92 :kind global :type ? :name __setitem__)
+(slot %s97 :kind const :type ?)
+(slot %s98 :kind const :type ?)
+(slot %s100 :kind const :type ?)
+(slot %s101 :kind const :type ?)
+(slot %s103 :kind const :type ?)
+(slot %s106 :kind global :type ? :name __main__)
+
+;; funs
+(fun #2 :main
+  :return-type ?
+  :arg-types (?)
+  :locals 9 :blocks 1
+  (block #0 :label entry :preds 0 :succs 0
+    :body (
+      (CALL :slot %s96 %s0 %s5 %s76)
+      (CALL :slot %s99 %s92 %s96 %s97 %s98)
+      (CALL :slot %s102 %s92 %s96 %s100 %s101)
+      (CALL :slot %s104 %s84 %s96 %s103)
+      (STORE :slot %s95 %s104)
+      (CALL %s0 %s1 %s94 %s95)
+      (CALL %s0 %s1 %s107 %s69)
+    )
+    :term (UNREACHABLE))
+)

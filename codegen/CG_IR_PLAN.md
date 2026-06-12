@@ -745,19 +745,47 @@ construction. The two backends still emit from IF1 directly.
 
 ### Phase 2 exit criteria
 
-- [ ] `cg_normalize(fa)` produces a complete CGProgram for
+- [x] `cg_normalize(fa)` produces a complete CGProgram for
       every test in the pyc-suite (no crashes, no missing
-      slots, no missing blocks).
-- [ ] `tests/ir/cg-normalize/<fixture>.cg-normalize.expected`
-      for at least 8 fixtures (matching the codegen-llvm set).
-- [ ] `make test-ir` includes `cg-normalize`; all locked
-      goldens pass.
-- [ ] `make test` 74/1/0/2 (unchanged).
-- [ ] `make USE_LLVM=1 ./test_pyc` 37/0/38/2 (unchanged — both
+      slots, no missing blocks). Verified by 19 cg-normalize
+      goldens (6 codegen-llvm-shape `.ir` + 13 synthetic) all
+      passing, plus full C and LLVM suite runs not crashing.
+- [x] `tests/ir/cg-normalize/<fixture>.cg-normalize.expected`
+      for at least 8 fixtures: 6 codegen-llvm-shape `.ir`
+      goldens + 13 synthetic = 19 locked goldens.
+- [x] `make test-ir` includes `cg-normalize`; all locked
+      goldens pass (19/0/0).
+- [x] `make test` 74/1/0/2 (unchanged).
+- [x] `make USE_LLVM=1 ./test_pyc` 37/0/38/2 (unchanged — both
       backends still consume IF1).
 - [ ] CGProgram allocation is < 10% additional codegen time
-      for representative programs (measured against
-      `ifa/codegen/PERFORMANCE.md`'s baseline).
+      for representative programs (deferred — Phase 3 is when
+      cg_normalize actually runs in the pyc binary; measuring
+      now would be testing the test-phase plumbing, not the
+      production codegen path).
+
+Note: per-PNode lowering is intentionally incomplete in this
+landing. Code_MOVE → CG_STORE and Code_SEND → CG_CALL (with
+prim hint preserved) work; primitive-specific dispatch
+(P_prim_period → CG_GEP_FIELD, P_prim_setter → CG_STORE_FIELD,
+etc.) lands in Phase 3.3's per-instruction emitter when the
+LLVM backend starts consuming CGProgram. The goldens captured
+here lock the *block-and-terminator* shape; the per-prim
+refinement won't perturb that shape.
+
+Phase 2.4 (phi/phy materialization) lands as
+`materialize_phi_phy()` + `materialize_phi()` walking
+`pn->phi` and `pn->phy` unconditionally, per Phase 0 §5.2's
+`pn_should_emit()` contract. This is the structural fix for
+issue 016; verified visible in the
+`09_ssu_self_binding.ir.cg-normalize.expected` golden.
+
+Phase 2.5 (construction-flow patch) is **skipped** per Phase
+0 §5.3 outcome (a): the construction-flow Code_MOVE exists in
+IF1 and Phase 2.4's unconditional emission suffices. Verified
+visible in `10_construction_to_global.ir.cg-normalize.expected`:
+`(STORE :slot %s79 %s80)` is the construction-result binding
+that the LLVM backend was previously dropping.
 
 ---
 

@@ -4,7 +4,9 @@
 #include "ifadefs.h"
 
 #include "cg.h"
+#include "cg_ir.h"
 #include "clone.h"
+#include "code.h"
 #include "codegen/llvm.h"
 #include "fa.h"
 #include "fun.h"
@@ -283,4 +285,199 @@ void print_codegen_llvm_normalized(FILE *fp, IF1 *p) {
   // Silence unused-helper warning if `ll_contains` is not hit by the
   // strip list above; it stays available for future strip rules.
   (void)ll_contains;
+}
+
+// ---------------------------------------------------------------------------
+// cg-normalize phase printer (CG_IR_PLAN Phase 2).
+//
+// Same FA + clone + DCE pipeline as the codegen-c / codegen-llvm
+// phases, then invokes `cg_normalize(fa)` and dumps the resulting
+// CGProgram in a stable textual form. Output is sorted by
+// stable keys (sym ID, fun ID, block ID) so per-run nondeterminism
+// (Map iteration order, allocator address) doesn't show through.
+// ---------------------------------------------------------------------------
+
+static cchar *cg_type_kind_str(CGTypeKind k) {
+  switch (k) {
+    case CG_T_VOID:    return "void";
+    case CG_T_INT:     return "int";
+    case CG_T_UINT:    return "uint";
+    case CG_T_FLOAT:   return "float";
+    case CG_T_BOOL:    return "bool";
+    case CG_T_PTR:     return "ptr";
+    case CG_T_STRUCT:  return "struct";
+    case CG_T_FUN_PTR: return "funptr";
+  }
+  return "?";
+}
+
+static cchar *cg_slot_kind_str(CGSlotKind k) {
+  switch (k) {
+    case CG_SLOT_GLOBAL:   return "global";
+    case CG_SLOT_LOCAL:    return "local";
+    case CG_SLOT_FORMAL:   return "formal";
+    case CG_SLOT_CONSTANT: return "const";
+  }
+  return "?";
+}
+
+static cchar *cg_op_str(CGOp op) {
+  switch (op) {
+    case CG_NOP:          return "NOP";
+    case CG_LOAD:         return "LOAD";
+    case CG_STORE:        return "STORE";
+    case CG_GEP_FIELD:    return "GEP_FIELD";
+    case CG_LOAD_FIELD:   return "LOAD_FIELD";
+    case CG_STORE_FIELD:  return "STORE_FIELD";
+    case CG_CALL:         return "CALL";
+    case CG_ALLOC:        return "ALLOC";
+    case CG_CAST:         return "CAST";
+    case CG_PRIM_OP:      return "PRIM_OP";
+    case CG_PRIM_CGFN:    return "PRIM_CGFN";
+    case CG_BR:           return "BR";
+    case CG_COND_BR:      return "COND_BR";
+    case CG_RET:          return "RET";
+    case CG_UNREACHABLE:  return "UNREACHABLE";
+  }
+  return "?";
+}
+
+static void print_cgtype(FILE *fp, CGType *t) {
+  if (!t) { fputs("?", fp); return; }
+  fprintf(fp, "%s", cg_type_kind_str(t->kind));
+  if (t->bits) fprintf(fp, ":%d", t->bits);
+}
+
+static void print_cgvalue(FILE *fp, CGValue *v) {
+  if (!v) { fputs("?", fp); return; }
+  switch (v->kind) {
+    case CG_V_NONE:      fputs("none", fp); break;
+    case CG_V_INST:      fputs("inst", fp); break;
+    case CG_V_SLOT:
+      if (v->slot && v->slot->source_sym)
+        fprintf(fp, "%%s%d", v->slot->source_sym->id);
+      else
+        fputs("%?", fp);
+      break;
+    case CG_V_IMMEDIATE: fputs("imm", fp); break;
+    case CG_V_FUN:       fputs("fun", fp); break;
+  }
+}
+
+static int cmp_cgslots_by_id(const void *a, const void *b) {
+  CGSlot *x = *(CGSlot **)a;
+  CGSlot *y = *(CGSlot **)b;
+  if (x->id != y->id) return x->id - y->id;
+  return 0;
+}
+
+static int cmp_cgfuns_by_source_id(const void *a, const void *b) {
+  CGFun *x = *(CGFun **)a;
+  CGFun *y = *(CGFun **)b;
+  int xi = x->source_fun ? x->source_fun->id : 0;
+  int yi = y->source_fun ? y->source_fun->id : 0;
+  return xi - yi;
+}
+
+void print_cg_normalize_normalized(FILE *fp, IF1 *p) {
+  // Setup — same as print_codegen_c_normalized.
+  Vec<Sym *> closures;
+  for (Sym *c : p->allclosures) closures.add(c);
+  for (Sym *c : closures) {
+    if (c == fa_setup_user_entry) continue;
+    if (!c->code) continue;
+    Fun *f = new Fun(c, FUN_BUILD_ALL);
+    if (!c->var) c->var = new Var(c);
+    for (Sym *a : c->has) if (!a->var) a->var = new Var(a);
+    if (c->ret && !c->ret->var) c->ret->var = new Var(c->ret);
+    if (c->cont && !c->cont->var) c->cont->var = new Var(c->cont);
+    pdb->add(f);
+  }
+
+  fputs(";; phase: cg-normalize\n\n", fp);
+  if (!if1->top || !if1->top->fun) {
+    fputs("(skipped — no top closure)\n", fp);
+    return;
+  }
+
+  int fa_rc = pdb->fa->analyze(if1->top->fun);
+  int clone_rc = clone(pdb->fa);
+  FA *fa = pdb->fa;
+  for (Fun *f : fa->funs) build_cfg_dominators(f);
+  mark_live_code(fa);
+  frequency_estimation(fa);
+  mark_live_funs(fa);
+  if (fa_rc == 0 && clone_rc == 0) {
+    simple_inlining(fa);
+    mark_live_types(fa);
+    mark_live_funs(fa);
+  }
+
+  CGProgram *prog = cg_normalize(fa);
+
+  fprintf(fp, "(summary fa_rc=%d clone_rc=%d funs=%d globals=%d types=%d)\n\n",
+          fa_rc, clone_rc, prog->funs.n, prog->globals.n, prog->types.n);
+
+  // Globals (sorted by sym id).
+  Vec<CGSlot *> sorted_globals;
+  for (CGSlot *s : prog->globals) sorted_globals.add(s);
+  qsort(sorted_globals.v, sorted_globals.n, sizeof(CGSlot *), cmp_cgslots_by_id);
+  if (sorted_globals.n) {
+    fputs(";; globals\n", fp);
+    for (CGSlot *s : sorted_globals) {
+      fprintf(fp, "(slot %%s%d :kind %s :type ", s->id, cg_slot_kind_str(s->kind));
+      print_cgtype(fp, s->type);
+      if (s->name) fprintf(fp, " :name %s", s->name);
+      fputs(")\n", fp);
+    }
+    fputc('\n', fp);
+  }
+
+  // Functions (sorted by source Fun id).
+  Vec<CGFun *> sorted_funs;
+  for (CGFun *cf : prog->funs) sorted_funs.add(cf);
+  qsort(sorted_funs.v, sorted_funs.n, sizeof(CGFun *), cmp_cgfuns_by_source_id);
+  if (sorted_funs.n) fputs(";; funs\n", fp);
+  for (CGFun *cf : sorted_funs) {
+    fprintf(fp, "(fun #%d", cf->source_fun ? cf->source_fun->id : 0);
+    if (cf->name) fprintf(fp, " :name %s", cf->name);
+    if (cf->is_main) fputs(" :main", fp);
+    if (cf->is_external) fputs(" :external", fp);
+    fputs("\n  :return-type ", fp);
+    print_cgtype(fp, cf->return_type);
+    fprintf(fp, "\n  :arg-types (");
+    for (int i = 0; i < cf->arg_types.n; i++) {
+      if (i) fputc(' ', fp);
+      print_cgtype(fp, cf->arg_types[i]);
+    }
+    fputs(")\n", fp);
+    fprintf(fp, "  :locals %d :blocks %d\n", cf->locals.n, cf->blocks.n);
+    for (CGBlock *b : cf->blocks) {
+      fprintf(fp, "  (block #%d :label %s :preds %d :succs %d", b->id,
+              b->label ? b->label : "?", b->preds.n, b->succs.n);
+      if (b->body.n) {
+        fputs("\n    :body (\n", fp);
+        for (CGInst *inst : b->body) {
+          fprintf(fp, "      (%s", cg_op_str(inst->op));
+          if (inst->slot) fprintf(fp, " :slot %%s%d", inst->slot->id);
+          for (CGValue *cv : inst->rvals) {
+            fputc(' ', fp);
+            print_cgvalue(fp, cv);
+          }
+          fputs(")\n", fp);
+        }
+        fputs("    )", fp);
+      }
+      if (b->terminator) {
+        fprintf(fp, "\n    :term (%s", cg_op_str(b->terminator->op));
+        for (CGValue *cv : b->terminator->rvals) {
+          fputc(' ', fp);
+          print_cgvalue(fp, cv);
+        }
+        fputc(')', fp);
+      }
+      fputs(")\n", fp);
+    }
+    fputs(")\n", fp);
+  }
 }
