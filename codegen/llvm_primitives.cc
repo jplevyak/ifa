@@ -148,6 +148,55 @@ void write_send(Fun *f, PNode *n) {
               actual_arg->sym && actual_arg->sym->name ? actual_arg->sym->name : "(null)",
               actual_arg->sym ? actual_arg->sym->id : -1);
       llvm::Value *val = getLLVMValue(actual_arg, f);
+
+      // Coerce to the callee's declared formal type if they disagree.
+      // Common case under the pyc calling convention: the formal is a
+      // pointer (records / closures are passed by pointer) but
+      // getLLVMValue loaded the AllocaInst-backed local to its struct
+      // value. Use the underlying alloca/global pointer instead — same
+      // pattern as P_prim_period's `obj_ptr` resolution. Falls back to
+      // a spill-to-alloca for non-pointer-backed struct values.
+      //
+      // For integer width mismatches (i32 vs i64 etc.) emit a sign/zero-
+      // extend or truncation matching the formal width.
+      if (val && arg_idx < callee->arg_size()) {
+        llvm::Type *formal_ty = callee->getArg(arg_idx)->getType();
+        if (val->getType() != formal_ty) {
+          if (formal_ty->isPointerTy() && !val->getType()->isPointerTy()) {
+            // Need a pointer; getLLVMValue gave us the dereferenced value.
+            if (actual_arg->llvm_value &&
+                (llvm::isa<llvm::AllocaInst>(actual_arg->llvm_value) ||
+                 llvm::isa<llvm::GlobalVariable>(actual_arg->llvm_value))) {
+              val = actual_arg->llvm_value;
+            } else if (val->getType()->isIntegerTy()) {
+              // Integer-to-pointer coercion. This is the IF1 `nil` shape
+              // (a numeric immediate zero whose abstract type is a
+              // pointer-typed nil). Matches the C backend's `(T*)0`
+              // implicit cast for null-pointer constants.
+              val = Builder->CreateIntToPtr(val, formal_ty);
+            } else {
+              DEBUG_LOG("write_send arg %d: spilling non-ptr value to alloca for ptr formal\n",
+                        arg_idx);
+              llvm::AllocaInst *tmp =
+                  Builder->CreateAlloca(val->getType(), nullptr, "arg.spill");
+              Builder->CreateStore(val, tmp);
+              val = tmp;
+            }
+          } else if (formal_ty->isIntegerTy() && val->getType()->isIntegerTy()) {
+            // Sign-extend / truncate to formal width. SExt matches the C
+            // backend's default `(T)expr` cast for signed integers; the
+            // analyzer almost always gives us int_*. Unsigned narrowing
+            // truncates either way.
+            val = Builder->CreateSExtOrTrunc(val, formal_ty);
+          } else if (formal_ty->isFloatingPointTy() && val->getType()->isFloatingPointTy()) {
+            val = Builder->CreateFPCast(val, formal_ty);
+          }
+          // Other cases (pointer→non-pointer, struct of different shape,
+          // etc.) fall through unchanged — verifyModule will still flag
+          // them, and the verbose log will help track the next-layer fix.
+        }
+      }
+
       if (val) {
         args.push_back(val);
       } else {
@@ -654,6 +703,20 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
         Var *desc_var = n->rvals[o - 1];
         llvm::Value *desc_val = getLLVMValue(desc_var, ifa_fun);
         if (!desc_val) desc_val = llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(*TheContext));
+        // Coerce each arg to ptr — getLLVMValue may return an integer
+        // (sym id, immediate) where the runtime helper wants a pointer.
+        // IntToPtr for non-pointer values; the runtime's own conversion
+        // recovers semantics.
+        if (!desc_val->getType()->isPointerTy()) {
+          desc_val = desc_val->getType()->isIntegerTy()
+                         ? Builder->CreateIntToPtr(desc_val, ptr)
+                         : llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(*TheContext));
+        }
+        if (!obj_val->getType()->isPointerTy()) {
+          obj_val = obj_val->getType()->isIntegerTy()
+                        ? Builder->CreateIntToPtr(obj_val, ptr)
+                        : llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(*TheContext));
+        }
         result = Builder->CreateCall(fn, {desc_val, obj_val});
       }
       if (n->lvals.n && result) setLLVMValue(n->lvals[0], result, ifa_fun);
