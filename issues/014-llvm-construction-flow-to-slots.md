@@ -121,6 +121,88 @@ After the fix:
   partly unblocked: with construction working, the next
   bottleneck moves to runtime-helper linking.
 
+## Root-cause investigation (June 2026)
+
+Done as part of CG_IR plan Phase 0 §5.3 (IF1 construction-flow
+walk).
+
+**Outcome: (a)** — the Code_MOVE binding the constructor result
+to the destination slot IS present in the IF1 stream. The C
+backend faithfully emits it; the LLVM backend was dropping it
+because of overly aggressive liveness gating.
+
+**Reproducer.** `/tmp/construct3.py`:
+
+```python
+class A:
+  def __init__(self):
+    self.x = 2
+  def hello(self):
+    print(self.x)
+y = A()
+y.x = 5
+y.hello()
+```
+
+The `hello()` call defeats the constant-folding path (cf. the
+hypothesis in §"Root cause" above). The C backend's
+`__main__` then emits:
+
+```c
+/* 2162 */ g2 = _CG_prim_new(_CG_ps3363);            // SEND @primitive @new
+t1 = _CG_f_2163_1/*A::___init___*/(/* 2162 */ g2);   // SEND #__init__
+t0 = _CG_f_3284_2/*__new__*/();                      // SEND %__new__
+/* y 2188 */ g1 = t0;                                // *** MOVE %t0 %y ***
+((_CG_ps3367)/* y 2188 */ g1)->e2 = (_CG_int64)5;    // setter
+_CG_f_2177_0/*A::hello*/(/* y 2188 */ g1);           // hello()
+```
+
+The line `g1 = t0` IS a Code_MOVE PNode with `rvals[0] = %t0`
+(the temp that received `__new__`'s reply) and `lvals[0] = %y`
+(the module-level global). It is present in the IF1 — the C
+backend's `translate_code_move` emits it as `g1 = t0`. The LLVM
+backend was filtering it out because the gating condition in
+`translate_pn` looked at `pn->live` without making MOVE
+unconditional.
+
+**Confirmation from the IF1 dump.** Running
+`pyc -x 1 -v construct3.py` writes `if1.code`. The dump's
+`(sym %y)` is declared but only writers/readers in the dump are
+for the module-init path; the dump's `;; funs` section does not
+include the top-level `__main__` because the writer in
+`testing/write_ir.cc:235` iterates `p->allclosures` and the
+program entry isn't materialized as an `allclosures` member at
+that point. The C output is the authoritative window into what
+the IF1 stream contains for `__main__`.
+
+**Implication for the plan.**
+- **Phase 2.4** ("emit all Code_MOVE unconditionally during
+  cg_normalize"): sufficient and necessary. This is the patch
+  that closes this issue.
+- **Phase 2.5** (peephole inserting a `CG_STORE` when MOVE is
+  missing): NOT needed for the construction-flow case. Keep it
+  scoped to the SEND-with-immediate-lvalue cases (Code_SEND
+  whose `lvals[0]` is a global slot) if any of those come up,
+  but do not block on it for closing this issue.
+
+**Why the SEGV happens despite the MOVE being present.** Before
+the gating change, `translate_pn` in `llvm_codegen.cc`
+short-circuited Code_MOVE nodes when `!pn->live || !pn->fa_live`
+on the assumption that a "dead" MOVE was DCE'd. But the
+construction-flow MOVE has `pn->fa_live` true and `pn->live`
+false in some IF1 shapes (it's the lvalue's first definition
+and the lvalue is module-scoped, so the SSU pass marks it
+non-live within the local function while flow analysis keeps
+fa_live true for the cross-function visibility). The fix is to
+treat all Code_MOVE as emit-unconditionally during normalization
+— which is exactly what the c-backend does (its MOVE handler
+has no liveness gate at all).
+
+See also: `ifa/LIVENESS.md` (§"The three gates" and §"Common
+pitfalls — the `fa_live` is more accurate trap") which
+documents the contract `cg_normalize::pn_should_emit(pn)` will
+implement.
+
 ## Related
 
 - `ifa/codegen/llvm.cc` `setLLVMValue` (commit 087075d added
