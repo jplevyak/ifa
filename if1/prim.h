@@ -15,15 +15,20 @@ class Fun;
 
 typedef void (*PrimitiveTransferFunctionPtr)(PNode *pn, EntrySet *es);
 typedef void (*PrimitiveCGPtr)(FILE *fp, PNode *n, Fun *f);
+// The LLVM-backend counterpart of PrimitiveCGPtr. No FILE* — the LLVM
+// emitter uses the file-scope Builder/Module/Context globals from
+// `codegen/llvm_internal.h`. Phase 3.2 of CODEGEN_PLAN.
+typedef void (*PrimitiveLLVMCGPtr)(PNode *n, Fun *f);
 
 class RegisteredPrim : public gc {
  public:
   PrimitiveTransferFunctionPtr tfn;
   PrimitiveCGPtr cgfn;
+  PrimitiveLLVMCGPtr llvm_cgfn;
   uint is_functional : 1;
   uint is_visible : 1;
-  RegisteredPrim(PrimitiveTransferFunctionPtr atfn, PrimitiveCGPtr acgfn)
-      : tfn(atfn), cgfn(acgfn), is_functional(1), is_visible(0) {}
+  RegisteredPrim(PrimitiveTransferFunctionPtr atfn, PrimitiveCGPtr acgfn, PrimitiveLLVMCGPtr allvm_cgfn = nullptr)
+      : tfn(atfn), cgfn(acgfn), llvm_cgfn(allvm_cgfn), is_functional(1), is_visible(0) {}
 };
 
 class Primitives : public gc {
@@ -76,7 +81,8 @@ class Prim : public gc {
 };
 
 void prim_init(Primitives *p, IF1 *if1);
-RegisteredPrim *prim_reg(cchar *name, PrimitiveTransferFunctionPtr ptrfn, PrimitiveCGPtr pcgfn = 0);
+RegisteredPrim *prim_reg(cchar *name, PrimitiveTransferFunctionPtr ptrfn, PrimitiveCGPtr pcgfn = 0,
+                         PrimitiveLLVMCGPtr pllvm_cgfn = 0);
 RegisteredPrim *prim_get(cchar *name);
 
 #include "prim_data.h"

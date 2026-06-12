@@ -52,8 +52,9 @@ Prim *Primitives::find(PNode *p) {
   return find(p->rvals.n, p->rvals[0]->sym, p->rvals[1]->sym, p->rvals.n < 3 ? 0 : p->rvals[2]->sym);
 }
 
-RegisteredPrim *prim_reg(cchar *name, PrimitiveTransferFunctionPtr ptr, PrimitiveCGPtr pcg) {
-  RegisteredPrim *p = new RegisteredPrim(ptr, pcg);
+RegisteredPrim *prim_reg(cchar *name, PrimitiveTransferFunctionPtr ptr, PrimitiveCGPtr pcg,
+                         PrimitiveLLVMCGPtr pllvm) {
+  RegisteredPrim *p = new RegisteredPrim(ptr, pcg, pllvm);
   if1->primitives->registered_prims.put(name, p);
   return p;
 }

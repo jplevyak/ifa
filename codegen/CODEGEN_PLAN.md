@@ -382,13 +382,26 @@ incrementally.
 
 ### 3.2 Hook up RegisteredPrim dispatch
 
-- [-] **`RegisteredPrim->llvm_cgfn`** — deferred. Touching
-  the `RegisteredPrim` struct in `prim.h` is cross-cutting;
-  every existing C-side `cgfn` would need an LLVM counterpart
-  written. The single `print`/`println` hardcoded path
-  (`llvm_primitives.cc:493-588`) covers the only registered
-  primitives the LLVM-fixture set exercises. File as a
-  follow-on issue for phase 5's unified `PrimEmitter` work.
+- [x] **`RegisteredPrim->llvm_cgfn`** — landed June 2026.
+  Added `PrimitiveLLVMCGPtr` typedef + `llvm_cgfn` member to
+  `RegisteredPrim` (prim.h), threaded through `prim_reg`'s
+  third defaulted arg (no breaking change for the C path).
+  The LLVM `P_prim_primitive` dispatcher (llvm_primitives.cc)
+  now consults the lookup after the print/println fastpath,
+  mirroring cg.cc:411.
+- [x] **`write` / `writeln` LLVM cgfns** — implemented as
+  `pyc_llvm_write_cgfn` / `pyc_llvm_writeln_cgfn` in
+  llvm_primitives.cc, declared in llvm.h, registered from
+  python_ifa_main.cc under `#ifdef USE_LLVM`. Both emit
+  type-dispatched printf (the LLVM backend doesn't link the
+  pyc C runtime, so we inline-emit until §14.5 closes that
+  gap).
+- [-] **Other registered prims** (`__pyc_c_call__`,
+  `__pyc_format_string__`, `__pyc_to_str__`) — deferred. Their
+  C cgfns call into the pyc C runtime (`_CG_format_string`,
+  `_CG_String`); the LLVM-side stubs would need either the
+  runtime linked in (CODEGEN_LLVM.md §14.5) or inline
+  printf-equivalent emission. Track as a follow-on.
 
 ### 3.3 P_prim_make using GC allocator
 

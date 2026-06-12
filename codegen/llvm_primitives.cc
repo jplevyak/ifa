@@ -42,6 +42,96 @@ Fun *get_target_fun(PNode *n, Fun *f) {
   return nullptr;
 }
 
+// ============================================================================
+// Pyc-frontend RegisteredPrim LLVM cgfns (phase 3.2)
+// ============================================================================
+//
+// These are the LLVM-backend counterparts of the cgfns in
+// python_ifa_main.cc (write_codegen, writeln_codegen, etc.). They are
+// registered via prim_reg's third argument; the LLVM
+// `P_prim_primitive` dispatcher (above) calls them when it finds an
+// `llvm_cgfn` on the RegisteredPrim lookup.
+//
+// The functions emit equivalent printf-based output rather than
+// calling into the pyc C runtime (`_CG_write`, `_CG_writeln`) — the
+// LLVM backend doesn't link `pyc_c_runtime` yet (CODEGEN_LLVM.md
+// §14.5), so we inline-emit until that gap closes.
+
+// `pyc_llvm_write_cgfn` — emit printf for the single arg (rvals[n-1]).
+// Mirrors python_ifa_main.cc::write_codegen which emits
+// `_CG_write(rvals[n-1]->cg_string);`.
+void pyc_llvm_write_cgfn(PNode *n, Fun *ifa_fun) {
+  if (n->rvals.n < 1) return;
+  Var *arg = n->rvals[n->rvals.n - 1];
+  if (!arg) return;
+
+  llvm::Value *val = getLLVMValue(arg, ifa_fun);
+  if (!val) {
+    DEBUG_LOG("pyc_llvm_write_cgfn: getLLVMValue returned NULL for arg\n");
+    return;
+  }
+
+  // Type-dispatch the format string + LLVM cast (parallels the
+  // existing print/println printf-emission inside
+  // P_prim_primitive). No trailing newline — that's writeln's job.
+  std::string fmt;
+  if (arg->type == sym_int8 || arg->type == sym_int16 || arg->type == sym_int32) {
+    fmt = "%d";
+  } else if (arg->type == sym_bool || arg->type == sym_uint8 || arg->type == sym_uint16 ||
+             arg->type == sym_uint32) {
+    fmt = "%u";
+  } else if (arg->type == sym_int64) {
+    fmt = "%lld";
+    val = Builder->CreateSExtOrTrunc(val, llvm::Type::getInt64Ty(*TheContext));
+  } else if (arg->type == sym_uint64) {
+    fmt = "%llu";
+    val = Builder->CreateZExtOrTrunc(val, llvm::Type::getInt64Ty(*TheContext));
+  } else if (arg->type == sym_float32 || arg->type == sym_float64 || arg->type == sym_float128) {
+    fmt = "%f";
+    if (val->getType()->isFloatTy()) {
+      val = Builder->CreateFPExt(val, llvm::Type::getDoubleTy(*TheContext));
+    }
+  } else if (arg->type == sym_string) {
+    fmt = "%s";
+  } else {
+    DEBUG_LOG("pyc_llvm_write_cgfn: unsupported arg type %s\n",
+              arg->type && arg->type->name ? arg->type->name : "(null)");
+    fmt = "<unsupported>";
+  }
+
+  llvm::FunctionCallee printfFunc = TheModule->getOrInsertFunction(
+      "printf", llvm::FunctionType::get(llvm::IntegerType::getInt32Ty(*TheContext),
+                                        llvm::PointerType::getUnqual(*TheContext), true));
+
+  llvm::Constant *fmt_const = llvm::ConstantDataArray::getString(*TheContext, fmt);
+  llvm::GlobalVariable *fmt_global = new llvm::GlobalVariable(
+      *TheModule, fmt_const->getType(), true, llvm::GlobalValue::PrivateLinkage, fmt_const, ".str.write");
+  llvm::Value *fmt_ptr = Builder->CreateInBoundsGEP(
+      fmt_const->getType(), fmt_global,
+      {llvm::ConstantInt::get(llvm::Type::getInt32Ty(*TheContext), 0),
+       llvm::ConstantInt::get(llvm::Type::getInt32Ty(*TheContext), 0)});
+
+  Builder->CreateCall(printfFunc, {fmt_ptr, val});
+}
+
+// `pyc_llvm_writeln_cgfn` — emit printf("\n"). Mirrors
+// python_ifa_main.cc::writeln_codegen.
+void pyc_llvm_writeln_cgfn(PNode *n, Fun *ifa_fun) {
+  (void)n;
+  (void)ifa_fun;
+  llvm::FunctionCallee printfFunc = TheModule->getOrInsertFunction(
+      "printf", llvm::FunctionType::get(llvm::IntegerType::getInt32Ty(*TheContext),
+                                        llvm::PointerType::getUnqual(*TheContext), true));
+  llvm::Constant *nl_const = llvm::ConstantDataArray::getString(*TheContext, "\n");
+  llvm::GlobalVariable *nl_global = new llvm::GlobalVariable(
+      *TheModule, nl_const->getType(), true, llvm::GlobalValue::PrivateLinkage, nl_const, ".str.writeln");
+  llvm::Value *nl_ptr = Builder->CreateInBoundsGEP(
+      nl_const->getType(), nl_global,
+      {llvm::ConstantInt::get(llvm::Type::getInt32Ty(*TheContext), 0),
+       llvm::ConstantInt::get(llvm::Type::getInt32Ty(*TheContext), 0)});
+  Builder->CreateCall(printfFunc, {nl_ptr});
+}
+
 void write_send(Fun *f, PNode *n) {
   if (n->prim) {
     // Primitives should be handled by caller or specific helper
@@ -1016,6 +1106,20 @@ int write_llvm_prim(Fun *ifa_fun, PNode *n) {
         llvm::CallInst *ci = Builder->CreateCall(printfFunc, args);
         if (n->lvals.n > 0) setLLVMValue(n->lvals[0], ci, ifa_fun);
         return 1;
+      }
+
+      // Phase 3.2: RegisteredPrim->llvm_cgfn dispatch. Mirrors
+      // cg.cc:411 for the C backend. The frontend registers
+      // primitives like `write`, `writeln`, `__pyc_format_string__`,
+      // `__pyc_to_str__`, `__pyc_c_call__` with a per-backend cgfn.
+      // If an llvm_cgfn is set, delegate to it; otherwise return 0
+      // so the dispatcher falls through to write_send.
+      if (RegisteredPrim *p = prim_get(name)) {
+        if (p->llvm_cgfn) {
+          DEBUG_LOG("P_prim_primitive: dispatching '%s' to RegisteredPrim->llvm_cgfn\n", name);
+          p->llvm_cgfn(n, ifa_fun);
+          return 1;
+        }
       }
       return 0;
     }
