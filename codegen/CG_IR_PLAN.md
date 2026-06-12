@@ -310,26 +310,256 @@ Notes on design choices:
 
 | Phase | Focus | Risk | Bounded effort | Exit criterion |
 |---|---|---|---|---|
+| 0 | Preparation — fixtures, audits, baseline | Low | 3-7 days | New `.ir` fixtures reproduce issues 014 / 016; liveness flags documented; construction-flow investigation outcome recorded; baseline stable. |
 | 1 | Header-only scaffolding | Low | 1 PR | `cg_ir.h` compiles; `cg_normalize()` stub returns an empty CGProgram. No semantic change. |
 | 2 | Normalization pass + `cg-normalize` test phase | Medium | 3-4 PRs | `cg_normalize` produces a complete CGProgram for every IF1 fixture. Goldens locked in. C and LLVM backends still consume IF1; CGProgram is built and discarded. |
 | 3 | LLVM backend consumes CGProgram | Medium | 3-4 PRs | `llvm_codegen_print_ir` reads CGProgram only. LLVM-suite pass count strictly rises from 37; issues 014, 016 close. Codegen-llvm fixture goldens reblessed. |
 | 4 | C backend consumes CGProgram | Medium-high | 3-4 PRs | `c_codegen_print_c` reads CGProgram only. C-suite stays 74/1/0/2. Codegen-c fixture goldens reblessed. |
 | 5 | Cleanup — remove IF1-side codegen channels | Low | 1-2 PRs | `Sym::cg_string`, `Sym::llvm_value`, `Sym::llvm_type`, `Var::cg_string`, `Var::llvm_value` all removed. CGProgram is the only codegen state. |
 
-Total: 12-15 PRs across 5 phases. The C backend stays at
-production parity throughout (phases 1, 2, 3, 5) and at
+Total: 13-17 PRs across 6 phases. The C backend stays at
+production parity throughout (phases 0, 1, 2, 3, 5) and at
 production parity post-phase-4 once the rewrite passes the
 suite.
 
+**Phase 0 gates Phase 2.** Phases 1 and 0 can run in parallel
+(Phase 1 is a header-only stub; Phase 0 is unrelated audit and
+fixture work), but Phase 2's start requires Phase 0's mandatory
+subphases (§5.1, §5.2, §5.3) complete.
+
 ---
 
-## 5. Phase 1 — Header-only scaffolding (1 PR)
+## 5. Phase 0 — Preparation (3-7 days)
+
+A short-running set of prep tasks that make Phase 2 land more
+safely. Three subphases are **mandatory** (block Phase 2 start);
+three are **recommended** but not blocking. None require any
+new IR or backend changes.
+
+Phase 0 can start immediately, in parallel with Phase 1 (which is
+header-only and has no dependencies). Phase 2 cannot start until
+§§5.1, 5.2, 5.3 land.
+
+### 5.1 Fixtures for issues 014 and 016 — MANDATORY (1-2 days)
+
+Today both issues are reproduced only through the full pyc
+pipeline. Phase 3.3's "monotonic pass-count rise" gate requires
+a deterministic, minimal reproducer that can be verified
+against IR-phase goldens.
+
+Deliverables:
+- `tests/ir/codegen-llvm/09_ssu_self_binding.ir` — minimal
+  function with a formal arg, an SSU rename of that arg, and a
+  field access on the rename. Pre-fix LLVM goldens show the
+  field load reading from an uninitialized alloca; post-fix
+  goldens show a store from the formal arg.
+- `tests/ir/codegen-llvm/10_construction_to_global.ir` — a
+  `P_prim_new` + write-to-global pattern. Pre-fix goldens show
+  `@g = global ptr null` with no store; post-fix goldens show
+  the store.
+
+Acceptance:
+- [ ] Both fixtures present in tree and locked into the
+      codegen-llvm phase via reblessed goldens.
+- [ ] Pre-Phase-3 LLVM IR captured in the fixture goldens
+      (so the post-Phase-3 rebless documents the structural fix).
+- [ ] Phase 3.3's PR description names the exact diff each
+      fixture is expected to show.
+
+### 5.2 Liveness audit and documentation — MANDATORY (1-2 days)
+
+The plan's `pn_should_emit(pn)` decides what gets normalized
+into CGProgram. Today it's unclear what `Sym::live`,
+`Var::live`, `PNode::live`, `PNode::fa_live` each mean
+precisely — the last session swung the LLVM gate three times
+before settling on `live && fa_live`.
+
+Deliverable: `ifa/LIVENESS.md` (or an expanded section in
+`ifa/IR.md`) walking each of the four flags:
+
+- **Who sets it.** Source location of the set/clear (DCE pass,
+  FA pass, frontend init).
+- **Who reads it.** All call sites across `ifa/` and the
+  backends.
+- **What it means.** A one-sentence semantic statement.
+- **Cross-reference** to the C backend's gate (`cg.cc:586`) and
+  the current LLVM gate (`llvm_codegen.cc::translatePNode`),
+  including the unconditional phi/phy fallthrough at
+  `cg.cc:604-650` (the structural difference that motivates
+  issue 016).
+
+Acceptance:
+- [ ] Document landed; all four flags have setter / reader /
+      semantics entries.
+- [ ] `pn_should_emit(pn)`'s decision criteria documented in
+      advance, before Phase 2.3 implementation starts.
+
+### 5.3 Construction-flow IF1 investigation — MANDATORY (1 day)
+
+Phase 2.5 (the construction-flow peephole) is the riskiest part
+of Phase 2 because it depends on a hypothesis about what the
+IF1 actually emits for `y = A()`. Issue 014 lists two
+possibilities; nobody has actually walked the PNode chain
+end-to-end.
+
+Investigation steps:
+1. Build a minimal reproducer (e.g., `tests/ir/codegen-llvm/10_construction_to_global.ir`
+   from §5.1).
+2. Dump the IF1 via `pyc -c if1` (or `--write_code_exit`) and
+   walk the PNode chain by hand.
+3. Record which of three outcomes applies:
+   - **(a)** MOVE present, just DCE'd. Phase 2.5 not needed;
+     Phase 2.4's "emit all Code_MOVE unconditionally" suffices.
+   - **(b)** MOVE missing but the constructor SEND has the
+     lvalue. Phase 2.5 is a 30-line peephole inserting a
+     `CG_STORE`.
+   - **(c)** Neither — no MOVE, no lvalue on the SEND. Phase
+     2.5 needs a real pattern matcher; revisit scope (probably
+     escalate to a frontend fix and defer the LLVM closure of
+     issue 014).
+
+Deliverable: append a "Root-cause investigation (June 2026)"
+section to `ifa/issues/014-llvm-construction-flow-to-slots.md`
+recording the answer.
+
+Acceptance:
+- [ ] Outcome (a) / (b) / (c) recorded in issue 014.
+- [ ] Phase 2.5's implementation approach pre-committed in
+      CG_IR_PLAN's §7 (Phase 2) updates.
+
+### 5.4 Centralize side-channel accessors — RECOMMENDED (2-3 days)
+
+`Sym::cg_string`, `Var::llvm_value`, and similar are read and
+written across `cg.cc`, `llvm.cc`, `llvm_codegen.cc`,
+`llvm_primitives.cc`, and `codegen_common.cc`. Phase 5 removes
+them outright. The removal is easier if the readers are
+centralized first.
+
+Deliverable: accessor functions in `codegen_common.h`:
+
+```cpp
+cchar         *cg_get_string(Sym *s);
+void           cg_set_string(Sym *s, cchar *v);
+llvm::Value   *cg_get_llvm_value(Sym *s);
+void           cg_set_llvm_value(Sym *s, llvm::Value *v);
+// ... and parallel for Var::cg_string, Var::llvm_value,
+// Var::llvm_type, Var::llvm_debug_var, Fun::cg_string,
+// Fun::cg_structural_string, Fun::llvm.
+```
+
+Rewrite every direct field access in `cg.cc` / `llvm*.cc` /
+`codegen_common.cc` to go through them. Mechanical and
+reviewable in 2-3 sub-PRs (Sym, Var, Fun separately if needed).
+
+Acceptance:
+- [ ] No direct read or write of the listed fields outside
+      `codegen_common.cc` or `cg_normalize.cc` (post-Phase-2).
+- [ ] All tests still pass (C suite 74/1/0/2, LLVM suite
+      ≥ 37, all IR-phase goldens green).
+
+This subphase is recommended, not mandatory. Skipping it makes
+Phase 5 sprawl across every codegen file; doing it spreads the
+cost across Phase 0 and makes Phase 5 a single-PR finale.
+
+### 5.5 Resolve the Phase-5 `Codegen` base class — RECOMMENDED (1-2 days)
+
+Phase 5 of [CODEGEN_PLAN.md](CODEGEN_PLAN.md) landed `class
+Codegen` as scaffolding for "the wholesale Codegen migration."
+It's never instantiated and never read. Phase 3 of *this* plan
+is exactly that wholesale migration; the LLVM emitter's
+persistent state (Context, Module, Builder, per-Fun maps) wants
+to live somewhere.
+
+Pick one path:
+
+- **(a) Activate `Codegen`** as the state container for Phase
+  3's LLVM emitter. Update CODEGEN_PLAN §8 to record that
+  Phase 5's scaffolding is now in use. CG_IR_PLAN §8 (Phase 3)
+  references the type.
+- **(b) Delete the unused scaffolding.** Phase 3 introduces a
+  fresh `EmissionContext` struct sized to its needs. The
+  CODEGEN_PLAN §8 entry is updated to record the deletion and
+  why.
+
+Acceptance:
+- [ ] Decision recorded in both CODEGEN_PLAN.md §8 and
+      CG_IR_PLAN.md §8 (Phase 3).
+- [ ] Decision is uniform: no path forward that has Phase 3
+      partially using `Codegen` and partially using a fresh
+      context.
+
+### 5.6 Stabilize the LLVM pyc-suite baseline — RECOMMENDED (1 day)
+
+The current 37 is real but several recent sessions saw it
+swing 26 → 32 → 37 depending on gate variant. CI floors it at
+37 but the failure modes underneath are still noisy. Phase
+3.3's "strict monotonic rise" gate works much better against a
+stable baseline.
+
+Steps:
+1. Run `PYC_FLAGS=-b ./test_pyc` ≥ 5 times back-to-back.
+2. Diff the per-test results between runs. Any test whose
+   pass/fail status flaps is a flake.
+3. Either fix the flake or sidecar it with a
+   `.llvm_expect_fail` (parallel to the existing
+   `.expect_fail` mechanism). Document the rationale.
+
+Deliverable: `tests/PARITY.md` short doc listing every test
+that differs between the C and LLVM backends, with the reason
+(open issue link or expected-fail rationale).
+
+Acceptance:
+- [ ] 5-run stable LLVM-suite count documented in
+      `tests/PARITY.md`.
+- [ ] Every test in `tests/` is in one of three states:
+      passes-on-both, expect-fail-on-LLVM-with-issue-link,
+      or known-flake-being-fixed.
+- [ ] CI `LLVM_BASELINE_PASS=37` is grounded in this audit
+      (not an approximation).
+
+### 5.7 Deferred / optional preparation
+
+The following are nice-to-haves that don't block Phase 2 and
+can land at any later point if they earn their keep:
+
+- **Pre-write the `cg-normalize` printer's normalizer** (in
+  parallel with `print_codegen_llvm_normalized`). Defer until
+  Phase 2.3 fixes the dump format.
+- **Map every `P_prim_*` to its eventual `CG_OP`** as a short
+  reference table in PRIMITIVES.md §15. Existing PRIMITIVES.md
+  §14 + §15 already covers the contract; defer.
+- **PERFORMANCE.md refresh with an LLVM column.** Defer until
+  Phase 3 starts; the comparison is most meaningful against the
+  pre-Phase-3 LLVM baseline.
+
+### Phase 0 exit criteria
+
+Three categories: mandatory (block Phase 2), recommended (block
+nothing, but each unaddressed item adds risk to a later
+phase), and deferred (not blocking).
+
+- [ ] §5.1 (fixtures for 014/016) — landed.
+- [ ] §5.2 (liveness audit) — landed.
+- [ ] §5.3 (construction-flow investigation) — landed.
+- [ ] §5.4 (side-channel accessors) — landed, OR explicit
+      decision recorded to defer to Phase 5.
+- [ ] §5.5 (Codegen base class fate) — decided.
+- [ ] §5.6 (LLVM baseline stabilization) — done.
+- [ ] No regression in any existing test suite.
+
+The mandatory subset (§§5.1-5.3) is the strict gate. Phase 2.1
+can start the moment §5.3's investigation lands; the recommended
+subphases can finish in parallel during Phase 2.1-2.2.
+
+---
+
+## 6. Phase 1 — Header-only scaffolding (1 PR)
 
 The cheapest possible first commit. Establishes the type names
 in tree so nothing in subsequent phases has to live on a
 long-lived branch.
 
-### 5.1 Files to add
+### 6.1 Files to add
 
 - `ifa/codegen/cg_ir.h` — the declarations from §3.
 - `ifa/codegen/cg_normalize.cc` — implementation file with a
@@ -347,13 +577,13 @@ CGProgram *cg_normalize(FA *fa) {
 }
 ```
 
-### 5.2 Build integration
+### 6.2 Build integration
 
 - Add `cg_normalize.cc` to `ifa/Makefile` IFA_SRCS list.
 - Add `#include "cg_ir.h"` to `codegen_common.h` (where the
   forward declarations of CGProgram appear).
 
-### 5.3 Test
+### 6.3 Test
 
 - One unit test in `ifa/testing/`: `cg_normalize(fa)` returns a
   non-null CGProgram with empty fun list.
@@ -372,14 +602,21 @@ CGProgram *cg_normalize(FA *fa) {
 
 ---
 
-## 6. Phase 2 — Normalization pass + `cg-normalize` test phase
+## 7. Phase 2 — Normalization pass + `cg-normalize` test phase
 
 The substantive work. ~1500 LOC of normalization logic, plus a
 new ifa-test phase that locks in the CGProgram shape via golden
 files. Both backends are still consuming IF1 directly; CGProgram
 is built and discarded.
 
-### 6.1 Subphases
+**Prerequisites:** Phase 0 mandatory subphases (§5.1 fixtures,
+§5.2 liveness audit, §5.3 construction-flow investigation) must
+have landed. The fixtures from §5.1 anchor the Phase 2.4 and
+2.5 verification; the audit from §5.2 fixes the
+`pn_should_emit()` contract used in §7.1; the investigation from
+§5.3 determines the implementation approach for Phase 2.5.
+
+### 7.1 Subphases
 
 **2.1 — Type table and slot building.** Walk `if1->allsyms` and
 build `CGType`s for every type Sym; build `CGSlot`s for every
@@ -440,7 +677,7 @@ generated CGBlocks looking for `CG_CALL` to a `__new__` /
 missing `CG_STORE` to the receiver's slot. **Closes issue
 014.** Single PR.
 
-### 6.2 The `cg-normalize` test phase
+### 7.2 The `cg-normalize` test phase
 
 Add to `ifa/testing/ifa_test_main.cc`:
 
@@ -460,7 +697,7 @@ Goldens for the existing `.ir` fixtures live at
 8 codegen-llvm fixtures (which exercise the same FA + clone
 pipeline) all get a `.cg-normalize` sibling.
 
-### 6.3 What ships built but unused
+### 7.3 What ships built but unused
 
 After Phase 2, CGProgram is built on every codegen run but
 discarded. The `cg-normalize` test phase exercises the
@@ -484,13 +721,13 @@ construction. The two backends still emit from IF1 directly.
 
 ---
 
-## 7. Phase 3 — LLVM backend consumes CGProgram (3-4 PRs)
+## 8. Phase 3 — LLVM backend consumes CGProgram (3-4 PRs)
 
 The first backend to switch. The LLVM-first-class commitment
 means **this phase ends with structurally closed issues 014 and
 016, and the pyc-suite count strictly rises**.
 
-### 7.1 Subphases
+### 8.1 Subphases
 
 **3.1 — Type printer.** Replace `getLLVMType` / `getLLVMVarType`
 / `mapStructType` etc. with a direct walk over `CGType`. Each
@@ -523,7 +760,7 @@ The old `translateFunctionBody`, `translate_code_*`,
 `do_phi_nodes`, `do_phy_nodes` all go away. ~50 LOC, but a
 large delete. Single PR.
 
-### 7.2 The pyc-suite ratchet
+### 8.2 The pyc-suite ratchet
 
 Each PR in this phase must show **strictly non-decreasing**
 LLVM pyc-suite pass count:
@@ -541,7 +778,7 @@ analysis in §6.2.4 (unconditional phi/phy materialization)
 holds; if it doesn't, the plan is wrong and we pause to
 re-investigate before continuing.
 
-### 7.3 Codegen-llvm fixture goldens
+### 8.3 Codegen-llvm fixture goldens
 
 The IR shape changes everywhere because the per-PNode lowering
 goes through CGProgram. Goldens for all 12 codegen-llvm
@@ -549,7 +786,7 @@ fixtures get reblessed in PR 3.3 or 3.4. The diff should be
 mechanical (no semantic change beyond what the CGProgram dump
 already documents).
 
-### 7.4 Per-issue closure verification
+### 8.4 Per-issue closure verification
 
 After PR 3.3 lands:
 
@@ -579,13 +816,13 @@ After PR 3.3 lands:
 
 ---
 
-## 8. Phase 4 — C backend consumes CGProgram (3-4 PRs)
+## 9. Phase 4 — C backend consumes CGProgram (3-4 PRs)
 
 The C backend rewrite. Lower risk than Phase 3 because we now
 have CGProgram exercised end-to-end on the LLVM side; the C
 backend just adds a printer over the same input.
 
-### 8.1 Subphases
+### 9.1 Subphases
 
 **4.1 — Type-string emission.** Replace
 `assign_type_cg_strings_pass1/2` with a direct walk over
@@ -619,7 +856,7 @@ The old `write_c`, `write_c_prim`, `write_send`,
 `build_type_strings` all go away. ~50 LOC plus a large delete.
 Single PR.
 
-### 8.2 The C-suite ratchet
+### 9.2 The C-suite ratchet
 
 Each PR in this phase must keep the C-suite at **74/1/0/2 with
 zero new EXEC diffs** in the generated `.c` files' behavior. The
@@ -629,7 +866,7 @@ The C backend currently has two expected-fail tests
 (`class_attr_mutation.py`, `cross_type_method.py`). These stay
 expected-fail; the rewrite doesn't change their status.
 
-### 8.3 What goes away
+### 9.3 What goes away
 
 - `cg.cc`: most of it. `write_c_pnode`, `write_c_prim`,
   `write_send`, `write_send_arg`, `simple_move`,
@@ -650,12 +887,12 @@ expected-fail; the rewrite doesn't change their status.
 
 ---
 
-## 9. Phase 5 — Cleanup (1-2 PRs)
+## 10. Phase 5 — Cleanup (1-2 PRs)
 
 Remove the IF1-side codegen channels. This is the cleanest part
 of the plan and the longest-lived payoff.
 
-### 9.1 What gets removed
+### 10.1 What gets removed
 
 - `Sym::cg_string` (`sym.h:98`) — readers replaced by CGType /
   CGSlot lookups during normalization.
@@ -667,7 +904,7 @@ of the plan and the longest-lived payoff.
 - `Fun::cg_string`, `Fun::cg_structural_string`, `Fun::llvm` —
   replaced by `CGFun::name`, `CGFun::llvm_handle`.
 
-### 9.2 What stays
+### 10.2 What stays
 
 - IF1 layer in its entirety. The codegen-side caches go away
   but nothing else changes.
@@ -689,15 +926,15 @@ of the plan and the longest-lived payoff.
 
 ---
 
-## 10. Test strategy
+## 11. Test strategy
 
-### 10.1 The `cg-normalize` phase as the safety net
+### 11.1 The `cg-normalize` phase as the safety net
 
 The new ifa-test phase locks in CGProgram's shape for 8+
 fixtures. Every PR in Phases 2-5 must keep these green; that
 ensures no semantic drift in the normalization layer.
 
-### 10.2 Three-way regression gating
+### 11.2 Three-way regression gating
 
 Every PR in Phases 2-5 runs:
 
@@ -708,7 +945,7 @@ Every PR in Phases 2-5 runs:
 A PR that regresses any of these three is rejected. CI gates
 on all three.
 
-### 10.3 Cross-backend parity tests
+### 11.3 Cross-backend parity tests
 
 A new test type: tests that explicitly assert the C and LLVM
 backends produce equivalent output for the same input. Lives
@@ -716,7 +953,7 @@ under `tests/parity/` and is invoked via
 `./test_pyc --parity`. Pre-Phase 5, may not all pass; post-
 Phase 5, all parity tests must pass.
 
-### 10.4 Fuzzing (deferred)
+### 11.4 Fuzzing (deferred)
 
 A `cg_normalize` fuzzer that exercises random IF1 shapes
 (constructed via a small generator) and asserts:
@@ -732,7 +969,7 @@ for Phase 2-4 acceptance.
 
 ---
 
-## 11. Issue closure map
+## 12. Issue closure map
 
 | Issue | Closure phase | How |
 |---|---|---|
@@ -747,7 +984,7 @@ closing-commit hash recorded.
 
 ---
 
-## 12. Risk register
+## 13. Risk register
 
 | Risk | Probability | Mitigation |
 |---|---|---|
@@ -760,16 +997,21 @@ closing-commit hash recorded.
 
 ---
 
-## 13. Estimated cost
+## 14. Estimated cost
 
 | Phase | LOC | PRs | Calendar |
 |---|---|---|---|
+| 0 | +400 (fixtures, audit docs), 0 LOC code (accessor sub-PRs optional) | 1-4 | 3-7 days |
 | 1 | +200 (headers + stub) | 1 | 2-3 days |
 | 2 | +1500 (normalization), +400 (test phase) | 4-5 | 2-3 weeks |
 | 3 | +800 / -600 (LLVM printer rewrite) | 3-4 | 1.5-2 weeks |
 | 4 | +700 / -700 (C printer rewrite) | 3-4 | 1.5-2 weeks |
 | 5 | -200 (cleanup) | 1-2 | 3-5 days |
-| **Total** | **~+3000 / -1500 net ≈ +1500 LOC**; many lines are pure replacement | **12-15** | **6-8 weeks elapsed**, dependent on review cadence and how often subphases need iteration |
+| **Total** | **~+3400 / -1500 net ≈ +1900 LOC**; many lines are pure replacement, plus ~400 LOC of new doc and fixtures in Phase 0 | **13-17** | **7-9 weeks elapsed**, dependent on review cadence and how often subphases need iteration |
+
+Phase 0 + Phase 1 can run in parallel; if §5.4 (the
+side-channel accessor refactor) ships in Phase 0, total LOC
+nets out lower in Phase 5.
 
 The +1500 net LOC includes ~1200 lines of structurally new code
 (CGFun and friends, the normalization pass itself) and replaces
@@ -780,34 +1022,45 @@ strictly simpler.
 
 ---
 
-## 14. Ordering across PRs
+## 15. Ordering across PRs
 
 ```
-Phase 1
-  └── Phase 2.1 (types + slots)
-        └── Phase 2.2 (per-Fun skeleton)
-              ├── Phase 2.3 (per-PNode lowering)  ← biggest, may split into N PRs
-              ├── Phase 2.4 (phi/phy materialization)  ← gates Phase 3 start
-              └── Phase 2.5 (construction-flow patch)
-                    └── Phase 2.6 (test-phase + goldens)
-                          └── Phase 3.1 (LLVM type printer)
-                                └── Phase 3.2 (LLVM function shell)
-                                      └── Phase 3.3 (LLVM instruction emitter)
-                                            └── Phase 3.4 (LLVM wire-up + cleanup)
-                                                  └── Phase 4.1 (C type printer)
-                                                        └── Phase 4.2 (C decls)
-                                                              └── Phase 4.3 (C instruction emitter)
-                                                                    └── Phase 4.4 (C wire-up + cleanup)
-                                                                          └── Phase 5 (cleanup)
+Phase 0.1 (fixtures for 014/016)  ┐
+Phase 0.2 (liveness audit)         ├── [MANDATORY] gate Phase 2 start
+Phase 0.3 (construction-flow IF1)  ┘
+
+Phase 0.4 (side-channel accessors) ┐
+Phase 0.5 (Codegen base class)     ├── [RECOMMENDED] parallel with Phase 0.1-3 and Phase 1
+Phase 0.6 (baseline stabilization) ┘
+
+Phase 1 (headers + stub)             ← can land any time after Phase 0 starts;
+                                       independent of Phase 0's outcome
+        ↓
+Phase 2.1 (types + slots)            ← requires Phase 0.1, 0.2, 0.3
+  └── Phase 2.2 (per-Fun skeleton)
+        ├── Phase 2.3 (per-PNode lowering)  ← biggest, may split into N PRs
+        ├── Phase 2.4 (phi/phy materialization)  ← gates Phase 3 start
+        └── Phase 2.5 (construction-flow patch — scope per Phase 0.3 outcome)
+              └── Phase 2.6 (test-phase + goldens)
+                    └── Phase 3.1 (LLVM type printer)
+                          └── Phase 3.2 (LLVM function shell)
+                                └── Phase 3.3 (LLVM instruction emitter)
+                                      └── Phase 3.4 (LLVM wire-up + cleanup)
+                                            └── Phase 4.1 (C type printer)
+                                                  └── Phase 4.2 (C decls)
+                                                        └── Phase 4.3 (C instruction emitter)
+                                                              └── Phase 4.4 (C wire-up + cleanup)
+                                                                    └── Phase 5 (cleanup)
 ```
 
-Phases 1-2 are pure additions. Phase 3 swaps the LLVM input.
-Phase 4 swaps the C input. Phase 5 removes the now-unused
-caches.
+Phase 0 unblocks Phase 2 and sets the verification gates that
+Phases 2-4 depend on. Phases 1-2 are pure additions. Phase 3
+swaps the LLVM input. Phase 4 swaps the C input. Phase 5
+removes the now-unused caches.
 
 ---
 
-## 15. Cross-references
+## 16. Cross-references
 
 - [ifa/CODE_GEN_IR.md](../CODE_GEN_IR.md) — the investigation
   motivating this plan. Read this first if you haven't.
