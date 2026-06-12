@@ -523,6 +523,32 @@ llvm::Type *getLLVMType(Sym *sym) {
   return type;
 }
 
+// Map a Sym to the LLVM type for a *variable* of that type. Heap-
+// allocated aggregates (Type_RECORD, Type_FUN closures, Type_REF)
+// live on the GC heap and are addressed through a pointer — the
+// variable slot just holds the pointer, never the value. Mirrors the
+// C backend's `_CG_psN` typedef: variables are declared with the
+// pointer typedef, never the raw struct.
+//
+// Use for: global slots, local allocas, function args, function
+// return types — anywhere "what LLVM type does a variable of this IF1
+// type have" is asked. Keep using `getLLVMType` for the underlying
+// struct type — CreateStructGEP / sizeof / struct construction
+// expect the struct type, not the pointer.
+llvm::Type *getLLVMVarType(Sym *type) {
+  llvm::Type *t = getLLVMType(type);
+  if (!t) return nullptr;
+  if (type) {
+    Sym *unaliased = unalias_type(type);
+    if (unaliased && (unaliased->type_kind == Type_RECORD ||
+                      unaliased->type_kind == Type_FUN ||
+                      unaliased->type_kind == Type_REF)) {
+      return llvm::PointerType::getUnqual(*TheContext);
+    }
+  }
+  return t;
+}
+
 // Basic implementation of getLLVMDIType for Debug Info
 llvm::DIType *getLLVMDIType(Sym *sym, llvm::DIFile *di_file) {
   if (!sym || !DBuilder) return nullptr;
@@ -801,7 +827,9 @@ static void createGlobalVariables(FA *fa) {
     }
     if (var->llvm_value) continue;
 
-    llvm::Type *gvar_llvm_type = getLLVMType(var->type);
+    // pyc declares heap-aggregate globals as pointers (matching the
+    // C backend's `_CG_psN g0;`). getLLVMVarType encodes that.
+    llvm::Type *gvar_llvm_type = getLLVMVarType(var->type);
     if (!gvar_llvm_type || gvar_llvm_type->isVoidTy()) {
       DEBUG_LOG("Skipping global var %s due to void or unmappable type\n", sym->name);
       continue;

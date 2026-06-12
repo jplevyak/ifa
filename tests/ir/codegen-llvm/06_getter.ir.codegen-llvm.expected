@@ -1,6 +1,6 @@
 ;; phase: codegen-llvm
 
-(summary fa_rc=0 clone_rc=0 funs=1 bytes=4556)
+(summary fa_rc=0 clone_rc=0 funs=1 bytes=4553)
 
 ;; llvm-ir (host-specific module lines + !dbg metadata stripped):
 
@@ -19,7 +19,7 @@
 
 define internal ptr @_CG_f_85_0() {
 entry:
-  %p = alloca %Point, align 8
+  %p = alloca ptr, align 8
   %r = alloca i32, align 4
   %s = alloca i32, align 4
   %0 = call ptr @GC_malloc(i64 4)

@@ -27,8 +27,16 @@ extern Vec<Fun*> *all_funs_global;
 // Type System (llvm.cc)
 // ============================================================================
 
-// Convert IF1 type to LLVM type
+// Convert IF1 type to LLVM type (returns the underlying struct for
+// Type_RECORD — for CreateStructGEP / sizeof / struct construction).
 llvm::Type *getLLVMType(Sym *sym);
+
+// Convert IF1 type to the LLVM type of a *variable* of that type.
+// Heap aggregates (Type_RECORD, Type_FUN closures, Type_REF) become
+// `ptr` — the variable slot holds the pointer to the allocation,
+// matching the C backend's `_CG_psN` typedef convention. Primitives
+// stay value-typed.
+llvm::Type *getLLVMVarType(Sym *type);
 
 // Convert IF1 type to LLVM debug info type
 llvm::DIType *getLLVMDIType(Sym *sym, llvm::DIFile *di_file);

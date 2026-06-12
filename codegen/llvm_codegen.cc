@@ -77,7 +77,8 @@ static llvm::Type *determine_return_type(Fun *ifa_fun) {
   if (ifa_fun->rets.n == 1 && ifa_fun->rets[0]) {
     Var *ret_var = ifa_fun->rets[0];
     if (!ret_var->type || !ret_var->type->cg_string) return llvm::Type::getVoidTy(*TheContext);
-    return getLLVMType(ret_var->type);
+    // getLLVMVarType — pyc returns heap aggregates by pointer.
+    return getLLVMVarType(ret_var->type);
   }
   fail("createFunction: function %s has %d return values, unsupported (only 0 or 1 handled)",
        ifa_fun->sym->name ? ifa_fun->sym->name : "(anon)", ifa_fun->rets.n);
@@ -111,13 +112,10 @@ static void build_arg_list(Fun *ifa_fun, std::vector<Var *> &live_args,
     live_args.push_back(arg_var);
   }
   for (Var *arg_var : live_args) {
+    // getLLVMVarType handles the struct→pointer convention uniformly
+    // (Type_RECORD, Type_FUN closures, Type_REF — all become `ptr`).
     llvm::Type *arg_llvm_type =
-        arg_var->type ? getLLVMType(arg_var->type) : llvm::Type::getInt64Ty(*TheContext);
-    // Struct-typed args are passed as pointers (matches C-backend convention).
-    if (arg_llvm_type && arg_llvm_type->isStructTy() && arg_var->type &&
-        arg_var->type->type_kind == Type_RECORD) {
-      arg_llvm_type = llvm::PointerType::getUnqual(*TheContext);
-    }
+        arg_var->type ? getLLVMVarType(arg_var->type) : llvm::Type::getInt64Ty(*TheContext);
     if (!arg_llvm_type) {
       fail("createFunction: could not get LLVM type for argument %s of function %s",
            arg_var->sym && arg_var->sym->name ? arg_var->sym->name : "(anon)",
@@ -300,7 +298,10 @@ static void allocate_locals(Fun *ifa_fun) {
     }
     if (v->llvm_value) continue;
 
-    llvm::Type *var_llvm_type = v->type ? getLLVMType(v->type) : llvm::Type::getInt64Ty(*TheContext);
+    // getLLVMVarType: heap aggregates become `ptr`, so the local slot
+    // holds the GC_malloc'd pointer instead of being sized as the
+    // struct itself.
+    llvm::Type *var_llvm_type = v->type ? getLLVMVarType(v->type) : llvm::Type::getInt64Ty(*TheContext);
     if (!var_llvm_type) {
       fail("allocate_locals: could not get LLVM type for var %s", v->sym->name);
       continue;
