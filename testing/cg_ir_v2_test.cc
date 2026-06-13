@@ -676,3 +676,66 @@ int run_cg_ir_v2_emit_test05() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test05);
+
+// Phase 4 commit 7 — CG2_MOVE (value copy).
+//
+// Test 06 (full loop + :phi_by_pred + alloca lowering) is
+// staged across two commits. This one lands plain CG2_MOVE
+// alone — alias semantics in value_map. Next commit adds the
+// phi/alloca lowering on top.
+//
+// Test shape ("copy"): identity-via-move.
+//   y = x
+//   return y
+static cchar *test_copy_text =
+    "((fun %copy\n"
+    "   :signature (int64 int64)\n"
+    "   :entry %b0\n"
+    "   :formals (%x)\n"
+    "   (value %x :type int64 :scope formal)\n"
+    "   (value %y :type int64 :scope local)\n"
+    "   (block %b0\n"
+    "     (inst %i0 move %x => %y)\n"
+    "     :term (ret %y))))";
+
+int run_cg_ir_v2_test_copy_roundtrip() {
+  if (!run_one("copy", test_copy_text, 1, "copy")) return 1;
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_test_copy_roundtrip);
+
+int run_cg_ir_v2_emit_test_copy() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(test_copy_text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+
+  llvm::Function *fn = TheModule->getFunction("copy");
+  if (!fn) { printf("  'copy' not found\n"); return 1; }
+  llvm::Argument *arg0 = &*fn->arg_begin();
+  auto *ret = llvm::dyn_cast<llvm::ReturnInst>(
+      fn->getEntryBlock().getTerminator());
+  if (!ret || ret->getReturnValue() != arg0) {
+    printf("  'copy' did not return its arg via move alias\n");
+    return 1;
+  }
+
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test_copy);

@@ -352,7 +352,22 @@ static CGv2Inst *build_inst(BuildCtx &c, SExpr *e) {
   inst->id = c.next_id++;
   inst->name = dupstr(name);
 
-  if (strcmp(op_tag, "binop") == 0) {
+  if (strcmp(op_tag, "move") == 0) {
+    inst->op = CG2_MOVE;
+    int i = 3;
+    bool in_lvals = false;
+    for (; i < e->children.n; i++) {
+      SExpr *ch = e->children[i];
+      if (!ch->is_list && ch->atom && strcmp(ch->atom, "=>") == 0) {
+        in_lvals = true;
+        continue;
+      }
+      CGv2Value *v = resolve_value_ref(c, ch);
+      if (c.err) return 0;
+      if (in_lvals) inst->lvals.add(v);
+      else inst->rvals.add(v);
+    }
+  } else if (strcmp(op_tag, "binop") == 0) {
     inst->op = CG2_BINOP;
     if (e->children.n < 4) {
       c.fail_at(e, "binop needs sub-op");

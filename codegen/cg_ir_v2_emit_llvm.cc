@@ -179,8 +179,18 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       if (r) ctx.value_map.put(inst->lvals[0], r);
       break;
     }
+    case CG2_MOVE: {
+      // Pure value copy. In the SSU-style v0 model (no allocas
+      // yet), the dest just aliases the src in value_map.
+      // Alloca/store/load lowering for phi-target locals lands
+      // with :phi_by_pred in commit 8.
+      if (inst->rvals.n < 1 || inst->lvals.n < 1) return;
+      llvm::Value *src = resolve_value(ctx, inst->rvals[0]);
+      if (!src) return;
+      ctx.value_map.put(inst->lvals[0], src);
+      break;
+    }
     case CG2_NOP:
-    case CG2_MOVE:
     default:
       // Land per-test.
       break;

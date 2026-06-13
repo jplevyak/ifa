@@ -129,6 +129,9 @@ static void print_inst(Buf &b, CGv2Inst *inst) {
       b.puts_(" binop ");
       b.puts_(binop_name(inst->sub_op));
       break;
+    case CG2_MOVE:
+      b.puts_(" move");
+      break;
     default:
       b.puts_(" nop");
       break;
