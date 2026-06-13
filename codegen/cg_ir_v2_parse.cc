@@ -403,6 +403,85 @@ static CGv2Fun *build_fun(BuildCtx &c, SExpr *fun_expr) {
   return f;
 }
 
+// Parse an ImmValue subexpression: (int N), (uint N), (float
+// N), (bool true|false), (str "..."), (sym name), (nil), (undef).
+// Sets `out` on success. Reports a parse error on failure.
+static void build_imm(BuildCtx &c, SExpr *expr, CGv2Immediate &out) {
+  out.kind = CGv2Immediate::I_NONE;
+  if (!expr || !expr->is_list || expr->children.n == 0) {
+    c.fail_at(expr, "expected an immediate value form");
+    return;
+  }
+  SExpr *head = expr->children[0];
+  if (head->is_list || !head->atom) {
+    c.fail_at(expr, "immediate head must be an atom");
+    return;
+  }
+  cchar *tag = head->atom;
+  if (strcmp(tag, "int") == 0) {
+    if (expr->children.n != 2) { c.fail_at(expr, "(int N) needs one arg"); return; }
+    out.kind = CGv2Immediate::I_INT;
+    out.v.i = atoll(expr->children[1]->atom);
+  } else if (strcmp(tag, "uint") == 0) {
+    if (expr->children.n != 2) { c.fail_at(expr, "(uint N) needs one arg"); return; }
+    out.kind = CGv2Immediate::I_UINT;
+    out.v.u = (uint64_t)strtoull(expr->children[1]->atom, nullptr, 10);
+  } else if (strcmp(tag, "float") == 0) {
+    if (expr->children.n != 2) { c.fail_at(expr, "(float N) needs one arg"); return; }
+    out.kind = CGv2Immediate::I_FLOAT;
+    out.v.f = atof(expr->children[1]->atom);
+  } else if (strcmp(tag, "bool") == 0) {
+    if (expr->children.n != 2) { c.fail_at(expr, "(bool T) needs one arg"); return; }
+    out.kind = CGv2Immediate::I_BOOL;
+    out.v.b = strcmp(expr->children[1]->atom, "true") == 0;
+  } else if (strcmp(tag, "str") == 0) {
+    if (expr->children.n != 2) { c.fail_at(expr, "(str S) needs one arg"); return; }
+    out.kind = CGv2Immediate::I_STR;
+    out.str = expr->children[1]->atom;  // already GC-dup'd; quotes included
+  } else if (strcmp(tag, "sym") == 0) {
+    if (expr->children.n != 2) { c.fail_at(expr, "(sym N) needs one arg"); return; }
+    out.kind = CGv2Immediate::I_SYM;
+    out.str = expr->children[1]->atom;
+  } else if (strcmp(tag, "nil") == 0) {
+    out.kind = CGv2Immediate::I_NIL;
+  } else if (strcmp(tag, "undef") == 0) {
+    out.kind = CGv2Immediate::I_UNDEF;
+  } else {
+    c.fail_at(expr, "unknown immediate form");
+  }
+}
+
+// (const %name (int N) :type TYPE)
+static CGv2Value *build_const(BuildCtx &c, SExpr *e) {
+  if (e->children.n < 3) {
+    c.fail_at(e, "const needs %name, ImmValue, :type TYPE");
+    return 0;
+  }
+  SExpr *nm = e->children[1];
+  if (nm->is_list || !nm->atom) {
+    c.fail_at(nm, "const name must be atom");
+    return 0;
+  }
+  cchar *name = nm->atom;
+  if (name[0] == '%') name++;
+
+  CGv2Value *v = new CGv2Value();
+  v->id = c.next_id++;
+  v->name = dupstr(name);
+  v->scope = CG2V_CONSTANT;
+  build_imm(c, e->children[2], v->imm);
+  if (c.err) return 0;
+
+  int type_kw = find_kw(e, "type", 3);
+  if (type_kw < 0) {
+    c.fail_at(e, "const missing :type");
+    return 0;
+  }
+  v->type = resolve_type(c, e->children[type_kw + 1]);
+  if (c.err) return 0;
+  return v;
+}
+
 static void build_program(BuildCtx &c, SExpr *root) {
   // The grammar's top-level is a single SExpr that's a list of
   // top-level decls. `((fun ...) (type ...))` means root is a
@@ -411,18 +490,30 @@ static void build_program(BuildCtx &c, SExpr *root) {
     c.fail_at(root, "program must be a list");
     return;
   }
+  // Two-pass: declare constants first so they're visible to
+  // any fun that references them. (Functions can also be
+  // forward-referenced — handled when test 07's CGV_FUN_REF
+  // resolution lands.)
+  for (SExpr *d : root->children) {
+    if (starts_with_atom(d, "const")) {
+      CGv2Value *cv = build_const(c, d);
+      if (c.err) return;
+      c.prog->constants.add(cv);
+    }
+  }
+
   for (SExpr *d : root->children) {
     if (starts_with_atom(d, "fun")) {
       CGv2Fun *f = build_fun(c, d);
       if (c.err) return;
       c.prog->funs.add(f);
       if (f->is_main) c.prog->main_fun = f;
-    }
-    // (TypeDecl, ConstDecl, GlobalDecl land with their test
-    // corpus expansions.)
-    else {
-      // For now: silently skip unrecognized top-level forms.
-      // Each landing will add explicit recognition.
+    } else if (starts_with_atom(d, "const")) {
+      // Already handled in pass 1.
+    } else {
+      // (TypeDecl, GlobalDecl land with their test corpus
+      // expansions.) Silently skip unrecognized top-level
+      // forms for now.
     }
   }
 }

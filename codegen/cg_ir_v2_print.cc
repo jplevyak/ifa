@@ -63,6 +63,55 @@ static void print_type_ref(Buf &b, CGv2Type *t) {
   b.puts_(t->name);
 }
 
+static void print_imm(Buf &b, const CGv2Immediate &imm) {
+  switch (imm.kind) {
+    case CGv2Immediate::I_INT:
+      b.putf("(int %lld)", (long long)imm.v.i);
+      break;
+    case CGv2Immediate::I_UINT:
+      b.putf("(uint %llu)", (unsigned long long)imm.v.u);
+      break;
+    case CGv2Immediate::I_FLOAT:
+      b.putf("(float %g)", imm.v.f);
+      break;
+    case CGv2Immediate::I_BOOL:
+      b.puts_(imm.v.b ? "(bool true)" : "(bool false)");
+      break;
+    case CGv2Immediate::I_STR:
+      // imm.str already includes its surrounding quotes (the
+      // parser preserved them).
+      b.puts_("(str ");
+      b.puts_(imm.str ? imm.str : "\"\"");
+      b.put(')');
+      break;
+    case CGv2Immediate::I_SYM:
+      b.puts_("(sym ");
+      b.puts_(imm.str ? imm.str : "?");
+      b.put(')');
+      break;
+    case CGv2Immediate::I_NIL:
+      b.puts_("(nil)");
+      break;
+    case CGv2Immediate::I_UNDEF:
+      b.puts_("(undef)");
+      break;
+    case CGv2Immediate::I_NONE:
+    default:
+      b.puts_("(undef)");
+      break;
+  }
+}
+
+static void print_const(Buf &b, CGv2Value *v) {
+  b.puts_("  (const %");
+  b.puts_(v->name ? v->name : "?");
+  b.put(' ');
+  print_imm(b, v->imm);
+  b.puts_(" :type ");
+  print_type_ref(b, v->type);
+  b.put(')');
+}
+
 static void print_term(Buf &b, CGv2Inst *inst) {
   if (!inst) {
     b.puts_("(unreachable)");
@@ -147,9 +196,16 @@ static void print_fun(Buf &b, CGv2Fun *f) {
 cchar *cg_v2_print(CGv2Program *prog) {
   Buf b;
   b.put('(');
-  for (int i = 0; i < prog->funs.n; i++) {
-    if (i) b.put('\n');
-    print_fun(b, prog->funs[i]);
+  bool first = true;
+  for (CGv2Value *cv : prog->constants) {
+    if (!first) b.put('\n');
+    print_const(b, cv);
+    first = false;
+  }
+  for (CGv2Fun *f : prog->funs) {
+    if (!first) b.put('\n');
+    print_fun(b, f);
+    first = false;
   }
   b.put(')');
   return dupstr(b.data);

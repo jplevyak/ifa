@@ -21,7 +21,9 @@
 #include "codegen/llvm_internal.h"
 #include "unit.h"
 
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
 
@@ -274,3 +276,102 @@ int run_cg_ir_v2_emit_test01_br() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test01_br);
+
+// Phase 4 commit 3 — test 02 round-trip.
+//
+// Test 02 (from CG_IR_TEXT.md): a function returning an int
+// constant. Exercises:
+//   - top-level `(const ...)` decl parsing/printing
+//   - `(int N)` ImmValue
+//   - cross-decl reference resolution (`%c42` in fun body
+//     resolves to the program-scope const)
+//   - non-void :signature
+//   - CG2_RET with one rval
+int run_cg_ir_v2_test02_roundtrip() {
+  cchar *text =
+      "((const %c42 (int 42) :type int64)\n"
+      " (fun %answer\n"
+      "   :signature (int64)\n"
+      "   :entry %b0\n"
+      "   (block %b0\n"
+      "     :term (ret %c42))))";
+  if (!run_one("test02", text, 1, "answer")) return 1;
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_test02_roundtrip);
+
+// Phase 4 commit 3 — test 02 LLVM emit.
+//
+// Verify: parse + emit produces a function `@answer` of type
+// `i64()` whose entry block is `ret i64 42`.
+int run_cg_ir_v2_emit_test02() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *text =
+      "((const %c42 (int 42) :type int64)\n"
+      " (fun %answer\n"
+      "   :signature (int64)\n"
+      "   :entry %b0\n"
+      "   (block %b0\n"
+      "     :term (ret %c42))))";
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+
+  llvm::Function *fn = TheModule->getFunction("answer");
+  if (!fn) {
+    printf("  function 'answer' not found in module\n");
+    return 1;
+  }
+  if (!fn->getReturnType()->isIntegerTy(64)) {
+    printf("  'answer' return type is not i64\n");
+    return 1;
+  }
+  if (fn->size() != 1) {
+    printf("  'answer' has %u blocks, expected 1\n",
+           (unsigned)fn->size());
+    return 1;
+  }
+  llvm::BasicBlock &bb = fn->getEntryBlock();
+  llvm::Instruction *term = bb.getTerminator();
+  if (!term) {
+    printf("  'answer' entry has no terminator\n");
+    return 1;
+  }
+  auto *ret = llvm::dyn_cast<llvm::ReturnInst>(term);
+  if (!ret) {
+    printf("  'answer' terminator is not Ret\n");
+    return 1;
+  }
+  llvm::Value *rv = ret->getReturnValue();
+  if (!rv) {
+    printf("  'answer' ret has no value\n");
+    return 1;
+  }
+  auto *ci = llvm::dyn_cast<llvm::ConstantInt>(rv);
+  if (!ci || !ci->getType()->isIntegerTy(64) ||
+      ci->getSExtValue() != 42) {
+    printf("  'answer' did not return i64 42\n");
+    return 1;
+  }
+
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test02);

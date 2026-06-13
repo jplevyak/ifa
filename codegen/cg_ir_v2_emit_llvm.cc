@@ -104,6 +104,57 @@ struct EmitFunCtx {
   Map<CGv2Value *, llvm::Value *> value_map;
 };
 
+// Resolve a CGv2Value to an llvm::Value usable in the current
+// function. Constants materialize a ConstantInt/ConstantFP/etc.
+// Locals, formals, and globals are looked up in the per-fun
+// value_map (the issue-017 structural fix).
+//
+// Returns nullptr on unresolved value (caller emits undef).
+llvm::Value *resolve_value(EmitFunCtx &ctx, CGv2Value *v) {
+  if (!v) return nullptr;
+
+  // Constants materialize fresh into the current function's
+  // context every time. ConstantInt/ConstantFP are uniqued by
+  // LLVM, so there's no cross-function leak risk.
+  if (v->scope == CG2V_CONSTANT) {
+    llvm::Type *t = to_llvm_type(v->type);
+    if (!t) return nullptr;
+    switch (v->imm.kind) {
+      case CGv2Immediate::I_INT:
+        if (auto *it = llvm::dyn_cast<llvm::IntegerType>(t))
+          return llvm::ConstantInt::getSigned(it, v->imm.v.i);
+        return nullptr;
+      case CGv2Immediate::I_UINT:
+        if (auto *it = llvm::dyn_cast<llvm::IntegerType>(t))
+          return llvm::ConstantInt::get(it, v->imm.v.u, false);
+        return nullptr;
+      case CGv2Immediate::I_BOOL:
+        return llvm::ConstantInt::get(
+            llvm::Type::getInt1Ty(*TheContext),
+            v->imm.v.b ? 1 : 0);
+      case CGv2Immediate::I_FLOAT:
+        return llvm::ConstantFP::get(t, v->imm.v.f);
+      case CGv2Immediate::I_NIL:
+        if (t->isPointerTy())
+          return llvm::ConstantPointerNull::get(
+              llvm::cast<llvm::PointerType>(t));
+        return nullptr;
+      case CGv2Immediate::I_UNDEF:
+        return llvm::UndefValue::get(t);
+      case CGv2Immediate::I_STR:
+      case CGv2Immediate::I_SYM:
+        // Land with their corresponding tests.
+        return nullptr;
+      case CGv2Immediate::I_NONE:
+      default:
+        return nullptr;
+    }
+  }
+
+  // Function-scoped lookup. Lands with formals/locals tests.
+  return ctx.value_map.get(v);
+}
+
 void emit_block_skeleton(CGv2Block *b, EmitFunCtx &ctx) {
   cchar *name = b->name ? b->name : "blk";
   llvm::BasicBlock *bb =
@@ -122,11 +173,10 @@ void emit_terminator(CGv2Inst *term, CGv2Block *blk, EmitFunCtx &ctx) {
       if (ret_ty->isVoidTy()) {
         Builder->CreateRetVoid();
       } else {
-        // Value resolution lands with test 02 (CGV_CONSTANT)
-        // and test 03 (CGV_FORMAL). For v0 (test 01 only,
-        // void), this branch isn't reached. Emit undef as
-        // a safety net.
-        Builder->CreateRet(llvm::UndefValue::get(ret_ty));
+        llvm::Value *rv = nullptr;
+        if (term->rvals.n > 0) rv = resolve_value(ctx, term->rvals[0]);
+        if (!rv) rv = llvm::UndefValue::get(ret_ty);
+        Builder->CreateRet(rv);
       }
       (void)blk;
       break;
