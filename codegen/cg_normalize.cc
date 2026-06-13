@@ -395,11 +395,28 @@ static void lower_send(PNode *pn, CGBlock *blk, LowerCtx &lc) {
 // CG_STORE in the owning block — refinement to predecessor-block
 // placement for phi lands with the LLVM emitter (Phase 3) which
 // is where the placement actually matters.
+// Mark the most-recently appended body inst as phi/phy. Used by
+// materialize_phi/phy below so emit_cg_inst can skip the
+// in-body STOREs (the LLVM emitter walks source_pn->phi/phy at
+// terminator time via Track 3 instead).
+static void mark_last_phi_phy(CGBlock *blk) {
+  if (blk->body.n == 0) return;
+  CGInst *last = blk->body[blk->body.n - 1];
+  if (last) last->is_phi_phy = 1;
+}
 static void materialize_phi_phy(PNode *pn, CGBlock *blk, LowerCtx &lc) {
-  for (PNode *pp : pn->phy) lower_move(pp, blk, lc);
+  for (PNode *pp : pn->phy) {
+    int n_before = blk->body.n;
+    lower_move(pp, blk, lc);
+    if (blk->body.n > n_before) mark_last_phi_phy(blk);
+  }
 }
 static void materialize_phi(PNode *pn, CGBlock *blk, LowerCtx &lc) {
-  for (PNode *pp : pn->phi) lower_move(pp, blk, lc);
+  for (PNode *pp : pn->phi) {
+    int n_before = blk->body.n;
+    lower_move(pp, blk, lc);
+    if (blk->body.n > n_before) mark_last_phi_phy(blk);
+  }
 }
 
 // Emit a terminator for a block. Called once per block from the
@@ -432,7 +449,11 @@ static void emit_terminator(PNode *closer, CGBlock *blk, LowerCtx &lc) {
       break;
     }
     default:
-      blk->terminator = new_inst(CG_UNREACHABLE, closer);
+      // Implicit fall-through closer (e.g. Code_MOVE whose
+      // cfg_succ leaves the block). Emit a CG_BR — the LLVM
+      // emitter wires it to blk->succs[0] which build_cgfun
+      // populates from closer->cfg_succ.
+      blk->terminator = new_inst(CG_BR, closer);
       break;
   }
 }
@@ -570,18 +591,32 @@ static void build_cgfun(Fun *f, CGProgram *p) {
       PNode *w = walk.pop();
       if (!seen.set_add(w)) continue;
       if (lc.pn_owning.get(w) != b) continue;
-      if (w->code && (w->code->kind == Code_IF ||
-                      w->code->kind == Code_GOTO ||
-                      w->code->kind == Code_SEND)) {
-        // A terminator candidate; SEND counts as a closer when its
-        // cfg_succ leaves the block OR is empty (function-exit
-        // returns, typically @primitive @reply, have no successor
-        // and lose the block edge otherwise).
-        bool leaves = w->cfg_succ.n == 0;
-        for (PNode *s : w->cfg_succ) {
-          if (lc.pn_owning.get(s) != b) { leaves = true; break; }
+      if (w->code) {
+        // Explicit terminator kinds (IF/GOTO/SEND).
+        if (w->code->kind == Code_IF ||
+            w->code->kind == Code_GOTO ||
+            w->code->kind == Code_SEND) {
+          // SEND counts as a closer when its cfg_succ leaves the
+          // block OR is empty (function-exit returns, typically
+          // @primitive @reply, have no successor).
+          bool leaves = w->cfg_succ.n == 0;
+          for (PNode *s : w->cfg_succ) {
+            if (lc.pn_owning.get(s) != b) { leaves = true; break; }
+          }
+          if (leaves || w->code->kind != Code_SEND) closer = w;
+        } else {
+          // Implicit fall-through: any non-terminator PNode (e.g.
+          // Code_MOVE) whose cfg_succ leaves the block becomes a
+          // CG_BR closer. The translateFunctionBody worklist
+          // handles this implicit transfer; cg_normalize must
+          // surface it as an explicit terminator for the LLVM
+          // emit_terminator to branch correctly.
+          bool leaves = false;
+          for (PNode *s : w->cfg_succ) {
+            if (lc.pn_owning.get(s) != b) { leaves = true; break; }
+          }
+          if (leaves) closer = w;
         }
-        if (leaves || w->code->kind != Code_SEND) closer = w;
       }
       for (PNode *s : w->cfg_succ) walk.add(s);
     }

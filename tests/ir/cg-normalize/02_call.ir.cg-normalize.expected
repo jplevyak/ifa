@@ -19,5 +19,5 @@
     :body (
       (CALL :slot %s83 %s82 %s76 %s77)
     )
-    :term (UNREACHABLE))
+    :term (RET))
 )

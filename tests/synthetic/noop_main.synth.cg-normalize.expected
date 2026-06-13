@@ -13,5 +13,5 @@
   :arg-types (?)
   :locals 0 :blocks 1
   (block #0 :label entry :preds 0 :succs 0
-    :term (UNREACHABLE))
+    :term (RET))
 )

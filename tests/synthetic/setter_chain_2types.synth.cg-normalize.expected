@@ -30,5 +30,5 @@
       (STORE_FIELD %s99 %s98)
       (CALL :slot %s102 %s82 %s99 %s100)
     )
-    :term (UNREACHABLE))
+    :term (RET))
 )

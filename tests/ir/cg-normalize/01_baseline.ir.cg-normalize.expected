@@ -18,5 +18,5 @@
       (STORE :slot %s77 %s76)
       (STORE :slot %s78 %s77)
     )
-    :term (UNREACHABLE))
+    :term (RET))
 )

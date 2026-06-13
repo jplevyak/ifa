@@ -477,7 +477,9 @@ void translateFunctionBody(Fun *ifa_fun) {
   prepare_basic_blocks(ifa_fun);
   allocate_locals(ifa_fun);
   emit_parameter_debug_info(ifa_fun);
-  translate_pnodes_worklist(ifa_fun);
+  CGFun *cf = current_cg_program ? current_cg_program->fun_map.get(ifa_fun) : nullptr;
+  if (cf) emit_cgfun_body(cf, cg_get_llvm(ifa_fun));
+  else translate_pnodes_worklist(ifa_fun);
   ensure_block_terminators(cg_get_llvm(ifa_fun), "translateFunctionBody");
 }
 

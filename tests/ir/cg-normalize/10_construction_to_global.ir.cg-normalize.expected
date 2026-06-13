@@ -25,5 +25,5 @@
       (STORE :slot %s79 %s80)
       (LOAD_FIELD :slot %s82 %s79)
     )
-    :term (UNREACHABLE))
+    :term (RET))
 )

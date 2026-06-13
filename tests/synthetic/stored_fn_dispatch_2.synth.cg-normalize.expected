@@ -28,5 +28,5 @@
       (CALL :slot %s103 %s89 %s99)
       (CALL :slot %s104 %s89 %s101)
     )
-    :term (UNREACHABLE))
+    :term (RET))
 )

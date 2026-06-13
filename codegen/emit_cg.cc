@@ -334,6 +334,14 @@ static void emit_terminator(CGInst *term, CGBlock *blk, EmitCtx &ctx) {
 
 static void emit_cg_inst(CGInst *inst, EmitCtx &ctx) {
   if (!inst) return;
+  // Fix 4f — phi/phy double-emission avoidance. Phase 2.4 emits
+  // phi/phy MOVEs as in-body CG_STOREs so they show in the
+  // cg-normalize golden, but emit_terminator (Track 3) re-emits
+  // the same MOVEs at the right per-successor blocks via
+  // emit_phi_phy. Skip the in-body STOREs to prevent
+  // double-emission. The marker bit is set by
+  // materialize_phi/phy in cg_normalize.cc.
+  if (inst->is_phi_phy) return;
   // Live gate: mirrors translatePNode's `pn->live && pn->fa_live`
   // check (llvm_codegen.cc:666). Non-live PNodes carry stale
   // refs that DCE expected to elide (e.g. P_prim_period on
@@ -349,12 +357,30 @@ static void emit_cg_inst(CGInst *inst, EmitCtx &ctx) {
       break;
 
     case CG_STORE: {
+      // Fix 4e — SSA-style cache rename. The IF1 path's
+      // simple_move uses setLLVMValue, which is a cache rename
+      // (not a real store): subsequent getLLVMValue reads return
+      // the cached val without loading. emit_cg_inst's previous
+      // raw CreateStore broke this — the store went to memory but
+      // write_llvm_prim's later getLLVMValue reads returned stale
+      // values. Repro: multi_assignment.py `a=b=c=1; print(a+b+c)`
+      // printed 2 instead of 3.
+      //
+      // When the source PNode is available, delegate to
+      // simple_move — exactly matching translate_code_move's
+      // semantics. Direct CreateStore stays as the fallback for
+      // synthesized CGPrograms (no source_pn).
+      PNode *spn = inst->source_pn;
+      Fun *sf = ctx.cf ? ctx.cf->source_fun : nullptr;
+      if (spn && sf && spn->lvals.n >= 1 && spn->rvals.n >= 1) {
+        simple_move(spn->lvals[0], spn->rvals[0], sf);
+        break;
+      }
+      // Fallback: raw store, used for synthesized CGPrograms
+      // (no IF1 backing, e.g. unit tests).
       if (!inst->slot || inst->rvals.n == 0) return;
       llvm::Value *ptr = slot_pointer(inst->slot);
       if (!ptr) return;
-      // Formals (Arguments) are values, not storage. Skip the
-      // store — there's no slot to write to. The IF1 path uses
-      // setLLVMValue which routes around this in its SSA model.
       if (llvm::isa<llvm::Argument>(ptr)) return;
       if (!ptr->getType()->isPointerTy()) return;
       llvm::Value *val = resolve_value(inst->rvals[0]);

@@ -977,8 +977,18 @@ work splits into four tracks:
    Phase 2.4 emission or by skipping marked CG_STOREs in
    emit_cg_inst (the simpler path).
 
-4. **print_ir simplification** — infrastructure landed; ratchet
-   FAILED. Attempted the production swap by:
+4. **print_ir simplification** — **LANDED 2026-06-13**.
+   Production codegen now goes through cg_normalize +
+   emit_cgfun_body. LLVM pyc-suite holds at 37/38, exactly
+   matching the IF1 baseline. Track 4 retry plan fully
+   executed in commits 5f238f9 (4 fixes from initial
+   investigation) and the present commit (fixes 4f phi/phy
+   double-emission, 4e SSA-style cache via simple_move, and
+   4g implicit fall-through closer detection — Code_MOVE
+   PNodes whose cfg_succ leaves the block now serve as CG_BR
+   closers).
+
+   ORIGINAL FAILURE INVESTIGATION (kept for history): Attempted the production swap by:
    - Building `current_cg_program = cg_normalize(fa)` in
      `llvm_codegen_print_ir` between createFunction and the
      body emit loop.

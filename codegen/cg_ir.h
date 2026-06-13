@@ -181,11 +181,17 @@ class CGInst : public gc {
   unsigned src_line;             // for !dbg
   cchar *src_file;
   PNode *source_pn;              // back-ref for debugging
+  // Phase 2.4 emits phi/phy MOVEs as CG_STOREs in the block body
+  // so the cg-normalize golden visualizes them. The LLVM emitter
+  // re-emits the same MOVEs at terminator time via
+  // emit_phi_phy (Track 3). To avoid double-emission, the body
+  // CG_STOREs carry this bit so emit_cg_inst skips them.
+  unsigned is_phi_phy : 1;
 
   CGInst()
     : op(CG_NOP), result_type(0), slot(0), field_idx(-1),
       prim(0), prim_name(0), src_line(0), src_file(0),
-      source_pn(0) {}
+      source_pn(0), is_phi_phy(0) {}
 };
 
 // =====================================================================
