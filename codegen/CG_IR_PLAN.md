@@ -929,11 +929,19 @@ swap" below.
 A focused follow-up session lands the production swap. The
 work splits into four tracks:
 
-1. **Structural CG_OP completion** — implement
-   CG_LOAD_FIELD / CG_STORE_FIELD / CG_ALLOC in
-   `emit_cg_inst`. Needs the pyc heap-aggregate struct-type
-   resolution that issue 015 documents; the existing
-   `mapStructType` in `llvm.cc` is the reference. ~100 LOC.
+1. ~~Structural CG_OP completion~~ **LANDED**. emit_cg_inst now
+   emits CG_ALLOC (GC_malloc + sizeof(struct) + store to slot),
+   CG_LOAD_FIELD (StructGEP + Load + store to slot), and
+   CG_STORE_FIELD (StructGEP + Store) directly. The
+   struct-type resolution goes through
+   `struct_type_for(CGType*)` which reads `CGType::source` and
+   calls `getLLVMType()` — couples Track 1 to IF1's type cache,
+   which is fine through Phase 5 (the cache lives on Sym
+   anyway). When struct resolution fails (no source, or source
+   isn't a struct), the case `goto fallback`s into Track 2's
+   back-translation. Unit test
+   `run_emit_llvm_module_alloc_no_source` covers the fallback
+   path.
 
 2. ~~CG_CALL back-translation~~ **LANDED**. emit_cg_inst now
    dispatches CG_CALL / CG_LOAD_FIELD / CG_STORE_FIELD /

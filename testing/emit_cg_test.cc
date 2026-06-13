@@ -138,3 +138,61 @@ int run_emit_llvm_module_call_no_source() {
 }
 
 UNIT_TEST_FUN(run_emit_llvm_module_call_no_source);
+
+// Track 1 — CG_ALLOC fallback safety. A CG_ALLOC whose slot
+// type lacks a usable struct (no source Sym, or source has no
+// struct shape) should fall back to back-translation. Without
+// source_pn, the back-translation also gracefully skips.
+// Verify: no crash, no spurious instructions, module verifies.
+int run_emit_llvm_module_alloc_no_source() {
+  llvm_codegen_initialize(nullptr);
+
+  CGProgram *prog = new CGProgram();
+  CGFun *cf = new CGFun();
+  cf->name = "test_alloc_no_source";
+  cf->return_type = nullptr;
+
+  CGBlock *entry = new CGBlock();
+  entry->id = 0;
+  entry->label = "entry";
+
+  // Slot for the allocation result. Type has no source Sym,
+  // so struct_type_for() returns nullptr → Track 1 fallback.
+  CGSlot *result = new CGSlot();
+  result->kind = CG_SLOT_LOCAL;
+  result->name = "obj";
+  CGType *t = new CGType();
+  t->kind = CG_T_PTR;
+  // t->source is nullptr — direct emit cannot resolve struct.
+  result->type = t;
+  cf->locals.add(result);
+
+  CGInst *alloc = new CGInst();
+  alloc->op = CG_ALLOC;
+  alloc->slot = result;
+  // No source_pn — back-translation also skips.
+  entry->body.add(alloc);
+
+  CGInst *term = new CGInst();
+  term->op = CG_RET;
+  entry->terminator = term;
+  cf->blocks.add(entry);
+  cf->entry = entry;
+  prog->funs.add(cf);
+
+  emit_llvm_module(prog);
+
+  if (!cf->llvm_handle) {
+    printf("  emit_llvm_module: CGFun has no llvm_handle for alloc test\n");
+    return 1;
+  }
+  std::string err;
+  llvm::raw_string_ostream rso(err);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  emit_llvm_module: verifyModule failed after CG_ALLOC fallback: %s\n", err.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_emit_llvm_module_alloc_no_source);

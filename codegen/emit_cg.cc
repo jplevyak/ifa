@@ -61,6 +61,28 @@ extern std::unique_ptr<llvm::IRBuilder<>> Builder;
 extern int  write_llvm_prim(Fun *ifa_fun, PNode *n);
 extern void write_send(Fun *ifa_fun, PNode *n);
 
+// GC_malloc declaration helper. Same pattern as the per-prim
+// emitter (see llvm_primitives.cc:624). Used by CG_ALLOC and
+// CG_LOAD_FIELD's closure-create paths.
+static llvm::FunctionCallee gc_malloc_fn() {
+  return TheModule->getOrInsertFunction(
+      "GC_malloc",
+      llvm::FunctionType::get(llvm::PointerType::getUnqual(*TheContext),
+                              llvm::IntegerType::getInt64Ty(*TheContext), false));
+}
+
+// Resolve a CGType to its underlying llvm::StructType (when
+// available). pyc heap aggregates are CG_T_PTR at the type level
+// with `source` preserving the original IF1 Sym; the StructType
+// lives in getLLVMType's cache. Returns nullptr if no struct
+// type is available — caller should fall back to back-translation.
+static llvm::Type *struct_type_for(CGType *t) {
+  if (!t || !t->source) return nullptr;
+  llvm::Type *st = getLLVMType(t->source);
+  if (!st || !st->isStructTy()) return nullptr;
+  return st;
+}
+
 // ---------------------------------------------------------------------------
 // Emission state
 // ---------------------------------------------------------------------------
@@ -206,12 +228,74 @@ static void emit_cg_inst(CGInst *inst, EmitCtx &ctx) {
       // CG_OP additions land their direct emission here.
       break;
 
-    case CG_LOAD_FIELD:
-    case CG_STORE_FIELD:
-    case CG_ALLOC:
+    case CG_ALLOC: {
+      // Track 1 — direct emission. GC_malloc(sizeof(struct))
+      // into the result slot. Falls back to back-translation
+      // when the slot's type doesn't yield a struct type
+      // (typically: when CGType::source is unset, e.g. for
+      // synthesized CGPrograms without IF1 backing).
+      if (!inst->slot) goto fallback;
+      llvm::Type *st = struct_type_for(inst->slot->type);
+      if (!st) goto fallback;
+      uint64_t size = TheModule->getDataLayout().getTypeAllocSize(st);
+      llvm::Value *p = Builder->CreateCall(
+          gc_malloc_fn(),
+          llvm::ConstantInt::get(llvm::IntegerType::getInt64Ty(*TheContext), size));
+      llvm::Value *slot_ptr = slot_pointer(inst->slot);
+      if (slot_ptr) Builder->CreateStore(p, slot_ptr);
+      break;
+    }
+
+    case CG_LOAD_FIELD: {
+      // Track 1 — direct emission. GEP into object's struct,
+      // load field, store into result slot.
+      if (inst->rvals.n == 0 || !inst->slot) goto fallback;
+      if (inst->field_idx < 0) goto fallback;  // dynamic index — fallback
+      CGValue *obj_cv = inst->rvals[0];
+      if (!obj_cv || obj_cv->kind != CG_V_SLOT || !obj_cv->slot) goto fallback;
+      llvm::Type *st = struct_type_for(obj_cv->slot->type);
+      if (!st) goto fallback;
+      llvm::Value *obj_ptr = resolve_value(obj_cv);
+      if (!obj_ptr || !obj_ptr->getType()->isPointerTy()) goto fallback;
+      llvm::Value *gep = Builder->CreateStructGEP(st, obj_ptr, inst->field_idx);
+      // Field LLVM type from CGType.fields[field_idx], with PTR
+      // fallback so an under-specified CGType doesn't fail emit.
+      llvm::Type *field_lt = llvm::PointerType::getUnqual(*TheContext);
+      if (inst->field_idx < obj_cv->slot->type->fields.n) {
+        CGType *ft = obj_cv->slot->type->fields[inst->field_idx];
+        if (ft) {
+          llvm::Type *t = cg_to_llvm_type(ft);
+          if (t && !t->isVoidTy()) field_lt = t;
+        }
+      }
+      llvm::Value *loaded = Builder->CreateLoad(field_lt, gep);
+      llvm::Value *slot_ptr = slot_pointer(inst->slot);
+      if (slot_ptr) Builder->CreateStore(loaded, slot_ptr);
+      break;
+    }
+
+    case CG_STORE_FIELD: {
+      // Track 1 — direct emission. GEP into object's struct,
+      // store value at field_idx.
+      if (inst->rvals.n < 2) goto fallback;
+      if (inst->field_idx < 0) goto fallback;
+      CGValue *obj_cv = inst->rvals[0];
+      if (!obj_cv || obj_cv->kind != CG_V_SLOT || !obj_cv->slot) goto fallback;
+      llvm::Type *st = struct_type_for(obj_cv->slot->type);
+      if (!st) goto fallback;
+      llvm::Value *obj_ptr = resolve_value(obj_cv);
+      if (!obj_ptr || !obj_ptr->getType()->isPointerTy()) goto fallback;
+      llvm::Value *val = resolve_value(inst->rvals[1]);
+      if (!val) goto fallback;
+      llvm::Value *gep = Builder->CreateStructGEP(st, obj_ptr, inst->field_idx);
+      Builder->CreateStore(val, gep);
+      break;
+    }
+
     case CG_CALL:
     case CG_PRIM_OP:
     case CG_PRIM_CGFN: {
+    fallback:
       // Track 2 — CG_CALL back-translation. When the CGInst
       // carries source_pn and the owning CGFun's source_fun is
       // available, dispatch through the existing per-prim
