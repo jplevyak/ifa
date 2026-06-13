@@ -116,6 +116,7 @@ LIB_SRCS = ifa.cc main.cc \
 	analysis/fa.cc analysis/pdb.cc analysis/graph.cc analysis/clone.cc analysis/ifalog.cc \
 	codegen/codegen_common.cc codegen/cg.cc codegen/llvm.cc codegen/llvm_codegen.cc codegen/llvm_primitives.cc \
 	codegen/cg_normalize.cc codegen/emit_cg.cc \
+	codegen/cg_ir_v2.cc codegen/cg_ir_v2_parse.cc codegen/cg_ir_v2_print.cc \
 	optimize/cfg.cc optimize/dead.cc optimize/dom.cc optimize/inline.cc optimize/loop.cc optimize/ssu.cc \
 	testing/parse_ir.cc testing/write_ir.cc testing/test_callbacks.cc \
 	testing/printer_util.cc testing/ir_builder.cc testing/ir_builder_test.cc \
@@ -128,7 +129,7 @@ LIB_SRCS = ifa.cc main.cc \
 	testing/fa_setup.cc testing/roundtrip_test.cc testing/lattice_test.cc \
 	testing/cg_normalize_test.cc testing/cg_to_llvm_type_test.cc \
 	testing/create_llvm_function_from_cgfun_test.cc \
-	testing/emit_cg_test.cc
+	testing/emit_cg_test.cc testing/cg_ir_v2_test.cc
 LIB_OBJS = $(LIB_SRCS:%.cc=%.o)
 
 IFA_DEPEND_SRCS = main.cc frontend/parse.cc frontend/scope.cc frontend/make_ast.cc frontend/ast_to_if1.cc \
