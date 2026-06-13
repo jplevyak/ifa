@@ -414,6 +414,78 @@ static CGv2Inst *build_inst(BuildCtx &c, SExpr *e) {
   return inst;
 }
 
+// Parse a short-form move inside :phi_by_pred:
+//   (move %src => %dst)
+// Returns a CG2_MOVE inst. (Distinct from the full
+// `(inst %name move ...)` form used in block bodies.)
+static CGv2Inst *build_phi_move(BuildCtx &c, SExpr *e) {
+  if (!e->is_list || !starts_with_atom(e, "move")) {
+    c.fail_at(e, "phi MOVE must be (move %src => %dst)");
+    return 0;
+  }
+  CGv2Inst *inst = new CGv2Inst();
+  inst->id = c.next_id++;
+  inst->op = CG2_MOVE;
+  bool in_lvals = false;
+  for (int i = 1; i < e->children.n; i++) {
+    SExpr *ch = e->children[i];
+    if (!ch->is_list && ch->atom && strcmp(ch->atom, "=>") == 0) {
+      in_lvals = true;
+      continue;
+    }
+    CGv2Value *v = resolve_value_ref(c, ch);
+    if (c.err) return 0;
+    if (in_lvals) inst->lvals.add(v);
+    else inst->rvals.add(v);
+  }
+  return inst;
+}
+
+// Parse the value following :phi_by_pred. Shape:
+//   ((%pred1 ((move ...) (move ...)))
+//    (%pred2 ((move ...))))
+//
+// Each pred-group is `(%predname (move-list))` where
+// move-list is `((move %src => %dst) ...)`.
+static void build_phi_by_pred(BuildCtx &c, SExpr *expr,
+                              CGv2Block *blk) {
+  if (!expr || !expr->is_list) {
+    c.fail_at(expr, ":phi_by_pred value must be a list");
+    return;
+  }
+  for (SExpr *grp : expr->children) {
+    if (!grp->is_list || grp->children.n < 2) {
+      c.fail_at(grp, "phi group must be (%pred (moves))");
+      return;
+    }
+    SExpr *pref = grp->children[0];
+    if (pref->is_list || !pref->atom) {
+      c.fail_at(pref, "phi pred must be atom");
+      return;
+    }
+    cchar *pn = pref->atom;
+    if (pn[0] == '%') pn++;
+    CGv2Block *pb = c.blocks_by_name.get(pn);
+    if (!pb) {
+      c.fail_at(pref, "phi pred references unknown block");
+      return;
+    }
+    CGv2PhiGroup *g = new CGv2PhiGroup();
+    g->pred = pb;
+    SExpr *mlist = grp->children[1];
+    if (!mlist->is_list) {
+      c.fail_at(mlist, "phi moves must be a list");
+      return;
+    }
+    for (SExpr *mv : mlist->children) {
+      CGv2Inst *minst = build_phi_move(c, mv);
+      if (c.err) return;
+      g->moves.add(minst);
+    }
+    blk->phi_by_pred.add(g);
+  }
+}
+
 static CGv2Block *build_block(BuildCtx &c, SExpr *block_expr) {
   // (block %name :label name? :preds (...) inst* :term term)
   if (!starts_with_atom(block_expr, "block")) {
@@ -440,6 +512,12 @@ static CGv2Block *build_block(BuildCtx &c, SExpr *block_expr) {
   }
 
   // Walk keyword args.
+  int phi_idx = find_kw(block_expr, "phi_by_pred");
+  if (phi_idx >= 0) {
+    build_phi_by_pred(c, block_expr->children[phi_idx + 1], b);
+    if (c.err) return 0;
+  }
+
   int term_idx = find_kw(block_expr, "term");
   if (term_idx < 0) {
     c.fail_at(block_expr, "block missing :term");

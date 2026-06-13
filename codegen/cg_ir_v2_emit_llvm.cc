@@ -102,6 +102,11 @@ struct EmitFunCtx {
   // construction. v0 has no values to cache yet (test 01 is
   // empty); test 02+ populates this.
   Map<CGv2Value *, llvm::Value *> value_map;
+
+  // Locals that are phi-by-pred destinations live in alloca
+  // slots. Stored to from the predecessor's edge, loaded
+  // fresh on each use site.
+  Map<CGv2Value *, llvm::AllocaInst *> alloca_map;
 };
 
 // Resolve a CGv2Value to an llvm::Value usable in the current
@@ -151,8 +156,27 @@ llvm::Value *resolve_value(EmitFunCtx &ctx, CGv2Value *v) {
     }
   }
 
+  // Phi-target locals live in an alloca slot. Each use emits
+  // a fresh load. mem2reg/SROA will collapse redundant loads
+  // back to register values during optimization.
+  llvm::AllocaInst *slot = ctx.alloca_map.get(v);
+  if (slot) {
+    return Builder->CreateLoad(slot->getAllocatedType(), slot,
+                                v->name ? v->name : "");
+  }
+
   // Function-scoped lookup. Lands with formals/locals tests.
   return ctx.value_map.get(v);
+}
+
+// Store-to-slot if the dst is an alloca-backed local;
+// otherwise alias through value_map. Used by both regular
+// MOVE/BINOP body insts and phi-edge MOVEs.
+void put_result(EmitFunCtx &ctx, CGv2Value *dst, llvm::Value *r) {
+  if (!dst || !r) return;
+  llvm::AllocaInst *slot = ctx.alloca_map.get(dst);
+  if (slot) Builder->CreateStore(r, slot);
+  else ctx.value_map.put(dst, r);
 }
 
 void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
@@ -176,18 +200,14 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
         case CG2B_NONE:
           return;
       }
-      if (r) ctx.value_map.put(inst->lvals[0], r);
+      put_result(ctx, inst->lvals[0], r);
       break;
     }
     case CG2_MOVE: {
-      // Pure value copy. In the SSU-style v0 model (no allocas
-      // yet), the dest just aliases the src in value_map.
-      // Alloca/store/load lowering for phi-target locals lands
-      // with :phi_by_pred in commit 8.
       if (inst->rvals.n < 1 || inst->lvals.n < 1) return;
       llvm::Value *src = resolve_value(ctx, inst->rvals[0]);
       if (!src) return;
-      ctx.value_map.put(inst->lvals[0], src);
+      put_result(ctx, inst->lvals[0], src);
       break;
     }
     case CG2_NOP:
@@ -285,12 +305,47 @@ void emit_fun(CGv2Fun *cf) {
   // Pre-allocate basic blocks so cross-block branches resolve.
   for (CGv2Block *b : cf->blocks) emit_block_skeleton(b, ctx);
 
-  // Emit each block's body insts + terminator.
+  // Alloca pre-pass: every distinct phi-target local gets a
+  // slot in the entry block. Stores happen on the pred edge,
+  // loads happen at each use site (resolve_value).
+  if (cf->entry) {
+    llvm::BasicBlock *entry_bb = ctx.blk_map.get(cf->entry);
+    if (entry_bb) {
+      Builder->SetInsertPoint(entry_bb);
+      for (CGv2Block *b : cf->blocks) {
+        for (CGv2PhiGroup *g : b->phi_by_pred) {
+          for (CGv2Inst *mv : g->moves) {
+            for (CGv2Value *lv : mv->lvals) {
+              if (!lv || ctx.alloca_map.get(lv)) continue;
+              llvm::Type *t = to_llvm_type(lv->type);
+              if (!t) continue;
+              llvm::AllocaInst *a = Builder->CreateAlloca(
+                  t, nullptr, lv->name ? lv->name : "");
+              ctx.alloca_map.put(lv, a);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Emit each block's body insts + edge MOVEs + terminator.
   for (CGv2Block *b : cf->blocks) {
     llvm::BasicBlock *bb = ctx.blk_map.get(b);
     if (!bb) continue;
     Builder->SetInsertPoint(bb);
     for (CGv2Inst *inst : b->body) emit_inst(inst, ctx);
+
+    // Phi-edge MOVEs: for each successor S in the fun, if S
+    // declares a phi_by_pred group with pred == b, emit those
+    // MOVE stores here (before this block's terminator).
+    for (CGv2Block *s : cf->blocks) {
+      for (CGv2PhiGroup *g : s->phi_by_pred) {
+        if (g->pred != b) continue;
+        for (CGv2Inst *mv : g->moves) emit_inst(mv, ctx);
+      }
+    }
+
     emit_terminator(b->terminator, b, ctx);
   }
 }

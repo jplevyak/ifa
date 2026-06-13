@@ -168,6 +168,18 @@ class CGv2Inst : public gc {
 //   BLOCKS
 // ============================================================
 
+// Phi-by-pred group: for one predecessor of a block, the list
+// of MOVE insts to execute on the edge from that pred into
+// this block. The emitter places these in the predecessor's
+// terminator emission (mirroring LLVM's phi-on-edge semantics
+// via the alloca-and-store convention).
+class CGv2PhiGroup : public gc {
+ public:
+  CGv2Block *pred;
+  Vec<CGv2Inst *> moves;       // all CG2_MOVE
+  CGv2PhiGroup() : pred(0) {}
+};
+
 class CGv2Block : public gc {
  public:
   int id;
@@ -178,6 +190,11 @@ class CGv2Block : public gc {
 
   Vec<CGv2Block *> preds;
   Vec<CGv2Block *> succs;
+
+  // phi_by_pred: groups of MOVE insts per predecessor. For
+  // each pred P, the group's `moves` execute on the edge
+  // (P → this). Empty if this block has no phis.
+  Vec<CGv2PhiGroup *> phi_by_pred;
 
   CGv2Block() : id(0), name(0), terminator(0) {}
 };

@@ -739,3 +739,95 @@ int run_cg_ir_v2_emit_test_copy() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test_copy);
+
+// Phase 4 commit 8 — test 06 (count_to: loop + :phi_by_pred).
+//
+// Second half of the test 06 landing. Adds the cross-block
+// phi machinery using pyc's alloca/store/load convention:
+//   - :phi_by_pred parses into CGv2PhiGroup lists
+//   - emitter alloca's every phi-target local in entry
+//   - resolve_value loads from the alloca on each use
+//   - phi MOVEs emit store on the predecessor's edge
+//
+// count_to(n) = while i < n: i = i + 1; return i  (returns n)
+static cchar *test06_text =
+    "((const %zero (int 0) :type int64)\n"
+    " (const %one  (int 1) :type int64)\n"
+    " (fun %count_to\n"
+    "   :signature (int64 int64)\n"
+    "   :entry %b_entry\n"
+    "   :formals (%n)\n"
+    "   (value %n        :type int64 :scope formal)\n"
+    "   (value %i_entry  :type int64 :scope local)\n"
+    "   (value %i_loop   :type int64 :scope local)\n"
+    "   (value %i_next   :type int64 :scope local)\n"
+    "   (value %cond     :type bool  :scope local)\n"
+    "   (block %b_entry\n"
+    "     (inst %i0 move %zero => %i_entry)\n"
+    "     :term (br %b_head))\n"
+    "   (block %b_head\n"
+    "     :phi_by_pred\n"
+    "       ((%b_entry ((move %i_entry => %i_loop)))\n"
+    "        (%b_body  ((move %i_next  => %i_loop))))\n"
+    "     (inst %i1 binop lt %i_loop %n => %cond)\n"
+    "     :term (cond_br %cond %b_body %b_exit))\n"
+    "   (block %b_body\n"
+    "     (inst %i2 binop add %i_loop %one => %i_next)\n"
+    "     :term (br %b_head))\n"
+    "   (block %b_exit\n"
+    "     :term (ret %i_loop))))";
+
+int run_cg_ir_v2_test06_roundtrip() {
+  if (!run_one("test06", test06_text, 1, "count_to")) return 1;
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_test06_roundtrip);
+
+int run_cg_ir_v2_emit_test06() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(test06_text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+
+  llvm::Function *fn = TheModule->getFunction("count_to");
+  if (!fn) { printf("  'count_to' not found\n"); return 1; }
+  if (fn->size() != 4) {
+    printf("  'count_to' has %u blocks, expected 4\n",
+           (unsigned)fn->size());
+    return 1;
+  }
+
+  // verifyModule is the load-bearing check here — it catches
+  // dominance violations from phi MOVEs landing in the wrong
+  // block, mismatched alloca types, etc.
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+
+  // Spot-check: entry must contain an Alloca (for i_loop) and
+  // end in br to head.
+  llvm::BasicBlock &entry = fn->getEntryBlock();
+  bool found_alloca = false;
+  for (llvm::Instruction &i : entry) {
+    if (llvm::isa<llvm::AllocaInst>(i)) { found_alloca = true; break; }
+  }
+  if (!found_alloca) {
+    printf("  entry block has no alloca for phi-target\n");
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test06);

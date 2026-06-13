@@ -212,6 +212,34 @@ static void print_block(Buf &b, CGv2Block *blk) {
     }
     b.put(')');
   }
+  // Phi groups.
+  if (blk->phi_by_pred.n > 0) {
+    b.puts_("\n      :phi_by_pred (");
+    for (int i = 0; i < blk->phi_by_pred.n; i++) {
+      CGv2PhiGroup *g = blk->phi_by_pred[i];
+      if (i) b.put(' ');
+      b.puts_("(%");
+      b.puts_(g->pred && g->pred->name ? g->pred->name : "?");
+      b.puts_(" (");
+      for (int j = 0; j < g->moves.n; j++) {
+        CGv2Inst *mv = g->moves[j];
+        if (j) b.put(' ');
+        b.puts_("(move %");
+        if (mv->rvals.n > 0 && mv->rvals[0]->name)
+          b.puts_(mv->rvals[0]->name);
+        else
+          b.put('?');
+        b.puts_(" => %");
+        if (mv->lvals.n > 0 && mv->lvals[0]->name)
+          b.puts_(mv->lvals[0]->name);
+        else
+          b.put('?');
+        b.put(')');
+      }
+      b.puts_("))");
+    }
+    b.put(')');
+  }
   // Body insts.
   for (CGv2Inst *inst : blk->body) {
     b.put('\n');
