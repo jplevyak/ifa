@@ -67,6 +67,7 @@ extern void write_send(Fun *ifa_fun, PNode *n);
 // the resulting LLVM IR matches the existing translateFunctionBody
 // pattern byte-for-byte.
 extern void simple_move(Var *lhs, Var *rhs, Fun *ifa_fun);
+extern llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun);
 
 // label_to_bb_map: populated by `prepare_basic_blocks` in
 // `translateFunctionBody`. emit_cgfun_body (Phase 3.4 production
@@ -360,9 +361,17 @@ static void emit_cg_inst(CGInst *inst, EmitCtx &ctx) {
   // refs that DCE expected to elide (e.g. P_prim_period on
   // methods that no longer exist on the post-DCE type), so
   // back-translation to write_llvm_prim/write_send must be
-  // gated. Phi/phy materialization stays unconditional and
-  // happens in emit_terminator.
-  if (inst->source_pn && !(inst->source_pn->live && inst->source_pn->fa_live)) {
+  // gated. CG_STORE (Code_MOVE) is EXEMPT — issue 017 / 014:
+  // the construction-flow MOVE `(MOVE %malloc_tmp %global_slot)`
+  // has live=0 (DCE treats it as a trivial rename) but it IS
+  // load-bearing — without it, the GC_malloc result never
+  // reaches the global slot, and the __new__ call later sees
+  // `ptr undef`. The C backend emits Code_MOVE unconditionally
+  // (cg.cc::simple_move respects only lhs->live, not pn->live);
+  // we mirror that here. Phi/phy materialization stays
+  // unconditional via emit_phi_phy (Track 3).
+  if (inst->op != CG_STORE && inst->source_pn &&
+      !(inst->source_pn->live && inst->source_pn->fa_live)) {
     return;
   }
   switch (inst->op) {
@@ -387,6 +396,29 @@ static void emit_cg_inst(CGInst *inst, EmitCtx &ctx) {
       Fun *sf = ctx.cf ? ctx.cf->source_fun : nullptr;
       if (spn && sf && spn->lvals.n >= 1 && spn->rvals.n >= 1) {
         simple_move(spn->lvals[0], spn->rvals[0], sf);
+        // Issue 017 / 014: simple_move's setLLVMValue only
+        // emits a CreateStore when the lhs Var's cache contains
+        // a GlobalVariable. Post-clone, multiple Vars may share
+        // the same global Sym, but only ONE has the
+        // GlobalVariable cached. The others take the SSA-style
+        // cache path and never write to memory. This breaks the
+        // construction-flow chain: `g3 = _CG_prim_new(...)`'s
+        // result never reaches @range, so `_CG_f_1682_4(g3)` is
+        // called with `ptr undef`. Defensive store: look up the
+        // GlobalVariable by lhs sym's name and write to it
+        // explicitly when applicable.
+        Var *lhs = spn->lvals[0];
+        Var *rhs = spn->rvals[0];
+        if (lhs && lhs->sym && lhs->sym->name && !lhs->sym->is_local &&
+            !lhs->is_formal && rhs && rhs->live) {
+          if (llvm::GlobalVariable *gv =
+                  TheModule->getNamedGlobal(lhs->sym->name)) {
+            llvm::Value *val = getLLVMValue(rhs, sf);
+            if (val && val->getType() == gv->getValueType()) {
+              Builder->CreateStore(val, gv);
+            }
+          }
+        }
         break;
       }
       // Fallback: raw store, used for synthesized CGPrograms
@@ -412,9 +444,20 @@ static void emit_cg_inst(CGInst *inst, EmitCtx &ctx) {
     case CG_ALLOC: {
       // Track 1 — direct emission. GC_malloc(sizeof(struct))
       // into the result slot. Falls back to back-translation
-      // when the slot's type doesn't yield a struct type
-      // (typically: when CGType::source is unset, e.g. for
-      // synthesized CGPrograms without IF1 backing).
+      // when the slot's type doesn't yield a struct type.
+      //
+      // Issue 017: this path's CreateStore correctly puts the
+      // malloc result into the slot, but the Var-cache used by
+      // write_llvm_prim downstream (for __init__'s arg
+      // resolution) isn't updated. Result: the __init__ call's
+      // first arg resolves to `ptr undef`. Routing through
+      // write_llvm_prim P_prim_new (which DOES update the
+      // cache via setLLVMValue) triggers a cross-function
+      // instruction leak during verifyModule — the cache hit
+      // returns an instruction from a previously-emitted
+      // function. Both paths produce wrong IR; the structural
+      // resolution belongs in getLLVMValue/setLLVMValue's
+      // scope tracking and is upstream of CG_IR.
       if (!inst->slot) goto fallback;
       llvm::Type *st = struct_type_for(inst->slot->type);
       if (!st) goto fallback;

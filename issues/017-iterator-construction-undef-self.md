@@ -92,6 +92,84 @@ and `0 < 0` = false. Loop terminates after zero iterations.
 So the same underlying bug surfaces differently depending on
 the codegen path. Neither version actually iterates correctly.
 
+## Investigation findings (2026-06-13)
+
+The bug is BACKEND-LOCALIZED to the Var-cache management in
+the LLVM emitter, not in cg_normalize. Concrete findings:
+
+**IF1 path emits the correct call.** Without the CG_IR swap,
+`translate_pnodes_worklist` produces:
+
+```llvm
+%0 = call ptr @GC_malloc(i64 56), !dbg !150
+%1 = call ptr @_CG_f_1682_4(ptr %0), !dbg !151   ; ← %0 passed correctly
+```
+
+**CG_IR path emits the broken call.** With the swap:
+
+```llvm
+%0 = call ptr @GC_malloc(i64 56)
+%1 = call ptr @_CG_f_1682_4(ptr undef), !dbg !167  ; ← undef
+```
+
+**Root cause is the Var cache.** In the IF1 path,
+`write_llvm_prim P_prim_new` (llvm_primitives.cc:603) does:
+
+```cpp
+llvm::Value *struct_ptr = Builder->CreateCall(gcMallocFunc, size);
+setLLVMValue(res_var, struct_ptr, ifa_fun);   // ← updates Var cache
+```
+
+The downstream `_CG_f_1682_4` call (for __init__) resolves its
+first arg via `getLLVMValue(arg_var)` which hits the cache and
+returns the malloc pointer.
+
+The CG_IR path's `emit_cg_inst CG_ALLOC` direct emission does
+`Builder->CreateCall(gc_malloc...) + Builder->CreateStore(p,
+slot_ptr)`. This writes the malloc result to the SLOT's
+pointer (an AllocaInst or GlobalVariable) but does NOT update
+the Var cache. Subsequent `getLLVMValue(arg_var)` reads return
+`undef` (the cache is empty, the recovery path falls back to
+undef when constant-recovery can't reconstruct the value).
+
+**Why routing through write_llvm_prim doesn't help.** Two
+attempted fixes both caused verifyModule to fail with
+"Referring to an instruction in another function!":
+
+1. Adding `setLLVMValue(res_var, p, source_fun)` after the
+   direct CG_ALLOC emission — when the var's cache contains a
+   GlobalVariable/AllocaInst, setLLVMValue emits CreateStore.
+   The cross-function leak comes when the cached value belongs
+   to a function whose Builder is no longer current.
+
+2. Routing CG_ALLOC through write_llvm_prim P_prim_new (via
+   inst->prim hint + fallback path) — same leak. The
+   write_llvm_prim path's setLLVMValue + getLLVMValue cache
+   thread across the FA's per-function dispatch in a way that
+   the IF1 path's worklist BFS happens to avoid by accident.
+
+**The structural resolution lives in getLLVMValue/setLLVMValue's
+scope tracking** (llvm.cc:1207-1271). The existing
+scope-mismatch detection clears cache entries when the cached
+Instruction's parent function isn't `cg_get_llvm(ifa_fun)`. The
+clear-and-recover path's recovery isn't reliable for the
+malloc-then-init pattern; it ends up returning undef when the
+Var's defining instruction was emitted in a different function
+context.
+
+A proper fix would either:
+- Make the Var cache function-aware (key by Var + Fun rather
+  than just Var), OR
+- Move construction-flow value flow off the Var cache and onto
+  CGSlot (the explicit slot model) — which is exactly what
+  CG_IR is supposed to be moving toward, but requires
+  eliminating the IF1-path Var cache dependency on the LLVM
+  emitter's per-prim emitters first.
+
+For this session, no further code change. The structural
+insights are recorded; the deeper fix requires upstream work
+that's out of the CG_IR plan's scope.
+
 ## Proposed fix
 
 The construction-flow chain is:
