@@ -65,6 +65,13 @@ void llvm_codegen_initialize(FA *fa);
 class CGProgram;
 void emit_llvm_module(CGProgram *prog);
 
+// Phase 3.4 production-path entry — emit one CGFun's body into
+// the given llvm::Function. Reuses the IF1-side label_to_bb_map
+// and Var-keyed allocas populated by prepare_basic_blocks +
+// allocate_locals + emit_parameter_debug_info.
+class CGFun;
+void emit_cgfun_body(CGFun *cf, llvm::Function *llvm_fun);
+
 // Convert IF1 type to LLVM debug info type
 llvm::DIType *getLLVMDIType(Sym *sym, llvm::DIFile *di_file);
 

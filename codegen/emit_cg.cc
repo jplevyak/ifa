@@ -39,6 +39,7 @@
 #include "ifadefs.h"
 
 #include "cg_ir.h"
+#include "code.h"
 #include "codegen_common.h"
 #include "fa.h"
 #include "fun.h"
@@ -66,6 +67,13 @@ extern void write_send(Fun *ifa_fun, PNode *n);
 // the resulting LLVM IR matches the existing translateFunctionBody
 // pattern byte-for-byte.
 extern void simple_move(Var *lhs, Var *rhs, Fun *ifa_fun);
+
+// label_to_bb_map: populated by `prepare_basic_blocks` in
+// `translateFunctionBody`. emit_cgfun_body (Phase 3.4 production
+// path) looks up llvm::BasicBlock by Label so the same BBs from
+// the IF1-side setup are reused. Defined in llvm_codegen.cc.
+extern std::map<Label *, llvm::BasicBlock *> label_to_bb_map;
+extern llvm::BasicBlock *getLLVMBasicBlock(Label *label, llvm::Function *current_llvm_fun);
 
 // GC_malloc declaration helper. Same pattern as the per-prim
 // emitter (see llvm_primitives.cc:624). Used by CG_ALLOC and
@@ -101,9 +109,15 @@ struct EmitCtx {
 };
 
 // Resolve a CGSlot's storage pointer (AllocaInst / GlobalVariable /
-// Argument). Returns nullptr if the slot hasn't been materialized.
+// Argument). Falls back to the IF1-side Var::llvm_value cache
+// populated by `allocate_locals` (the production path). Returns
+// nullptr if no storage is materialized for the slot.
 static llvm::Value *slot_pointer(CGSlot *s) {
-  return s ? s->llvm_handle : nullptr;
+  if (!s) return nullptr;
+  if (s->llvm_handle) return s->llvm_handle;
+  if (s->source_var) return cg_get_llvm_value(s->source_var);
+  if (s->source_sym) return cg_get_llvm_value(s->source_sym);
+  return nullptr;
 }
 
 // Resolve a CGValue to an llvm::Value at the current insert point.
@@ -147,18 +161,34 @@ static void materialize_local_slots(EmitCtx &ctx) {
   }
 }
 
-// Pre-allocate BasicBlocks for every CGBlock so cross-block
-// terminator targets can resolve before instruction emission.
+// Pre-allocate (or reuse) BasicBlocks for every CGBlock so
+// cross-block terminator targets can resolve before instruction
+// emission. The production path (Phase 3.4) reuses BBs created by
+// `prepare_basic_blocks` via `label_to_bb_map`; the standalone
+// test path creates fresh BBs.
 static void materialize_blocks(EmitCtx &ctx) {
-  // The first CGBlock is the entry; the LLVM function already has
-  // an entry block from create_llvm_function_from_cgfun. Bind it.
   if (ctx.cf->blocks.n == 0) return;
-  CGBlock *entry = ctx.cf->blocks[0];
-  ctx.blk_map.put(entry, &ctx.llvm_fun->getEntryBlock());
-  for (int i = 1; i < ctx.cf->blocks.n; i++) {
+  for (int i = 0; i < ctx.cf->blocks.n; i++) {
     CGBlock *b = ctx.cf->blocks[i];
-    llvm::BasicBlock *bb = llvm::BasicBlock::Create(
-        *TheContext, b->label ? b->label : "blk", ctx.llvm_fun);
+    llvm::BasicBlock *bb = nullptr;
+    // Reuse the existing LLVM BasicBlock when the source PNode is
+    // a LABEL whose `label_to_bb_map` entry was populated by the
+    // IF1-side `prepare_basic_blocks`. This is how Phase 3.4's
+    // swap stays compatible with allocate_locals / debug-info
+    // emission that already ran in the LLVM function's entry block.
+    if (b->source_pn && b->source_pn->code &&
+        b->source_pn->code->kind == Code_LABEL &&
+        b->source_pn->code->label[0]) {
+      auto it = label_to_bb_map.find(b->source_pn->code->label[0]);
+      if (it != label_to_bb_map.end()) bb = it->second;
+    }
+    if (!bb) {
+      // First CGBlock (entry) maps to the LLVM function's
+      // auto-created entry block; the rest get fresh BBs.
+      if (i == 0) bb = &ctx.llvm_fun->getEntryBlock();
+      else        bb = llvm::BasicBlock::Create(
+                          *TheContext, b->label ? b->label : "blk", ctx.llvm_fun);
+    }
     ctx.blk_map.put(b, bb);
   }
 }
@@ -412,14 +442,12 @@ static void emit_cg_inst(CGInst *inst, EmitCtx &ctx) {
 // emit_cgfun — emit one CGFun's body
 // ---------------------------------------------------------------------------
 
-static void emit_cgfun(CGFun *cf, CGProgram *prog) {
-  if (!cf || cf->is_external) return;
-  if (!cf->llvm_handle) return;
-
+static void emit_cgfun_inner(CGFun *cf, CGProgram *prog,
+                              llvm::Function *llvm_fun) {
   EmitCtx ctx;
   ctx.prog = prog;
   ctx.cf = cf;
-  ctx.llvm_fun = cf->llvm_handle;
+  ctx.llvm_fun = llvm_fun;
 
   materialize_blocks(ctx);
   materialize_local_slots(ctx);
@@ -432,6 +460,26 @@ static void emit_cgfun(CGFun *cf, CGProgram *prog) {
     for (CGInst *inst : b->body) emit_cg_inst(inst, ctx);
     emit_terminator(b->terminator, b, ctx);
   }
+}
+
+static void emit_cgfun(CGFun *cf, CGProgram *prog) {
+  if (!cf || cf->is_external) return;
+  if (!cf->llvm_handle) return;
+  emit_cgfun_inner(cf, prog, cf->llvm_handle);
+}
+
+// Phase 3.4 production-path entry. Called from
+// `translateFunctionBody` after prepare_basic_blocks /
+// allocate_locals / emit_parameter_debug_info have set up the
+// IF1-side caches. The CGFun's llvm_handle isn't set on this
+// path (createFunction populates `cg_get_llvm(source_fun)`
+// instead), so we pass the function pointer explicitly.
+void emit_cgfun_body(CGFun *cf, llvm::Function *llvm_fun) {
+  if (!cf || !llvm_fun) return;
+  // Wire CGFun::llvm_handle so cross-CGFun calls and recursive
+  // dispatch can resolve back to the same Function.
+  if (!cf->llvm_handle) cf->llvm_handle = llvm_fun;
+  emit_cgfun_inner(cf, /*prog=*/nullptr, llvm_fun);
 }
 
 // ---------------------------------------------------------------------------

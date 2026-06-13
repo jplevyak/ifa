@@ -43,6 +43,12 @@ Vec<Fun *> *all_funs_global = NULL;
 static std::map<std::string, llvm::Constant *> string_constants_map;
 static std::map<Fun *, std::vector<PNode *>> reverse_call_graph;
 
+// CG_IR_PLAN Phase 3.4 — CGProgram built once per llvm_codegen_print_ir
+// invocation and consumed by translateFunctionBody (via emit_cgfun_body)
+// for each per-function emission. Exposed (non-static) so
+// llvm_codegen.cc can read it from the print_ir-side build.
+CGProgram *current_cg_program = nullptr;
+
 // Exposed for unit tests that need a live LLVMContext (CG_IR_PLAN
 // Phase 3.1 onwards). Production codegen still calls it from
 // llvm_codegen_print_ir as the static-link-time entry.

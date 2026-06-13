@@ -977,13 +977,64 @@ work splits into four tracks:
    Phase 2.4 emission or by skipping marked CG_STOREs in
    emit_cg_inst (the simpler path).
 
-4. **print_ir simplification** — once 1-3 land and the unit
-   tests + cg-normalize fixtures show the parallel path matches
-   the IF1 path's output for the existing codegen-llvm
-   fixtures, modify `llvm_codegen_print_ir` to call
-   `emit_llvm_module` and delete the old translateFunctionBody
-   / translatePNode / translate_code_* / do_phi_nodes /
-   do_phy_nodes (~520 LOC delete).
+4. **print_ir simplification** — infrastructure landed; ratchet
+   FAILED. Attempted the production swap by:
+   - Building `current_cg_program = cg_normalize(fa)` in
+     `llvm_codegen_print_ir` between createFunction and the
+     body emit loop.
+   - Replacing `translate_pnodes_worklist(ifa_fun)` inside
+     `translateFunctionBody` with `emit_cgfun_body(cf, llvm_fun)`
+     when `current_cg_program->fun_map.get(ifa_fun)` resolves.
+   - Adding `emit_cgfun_body` as a parallel entry to
+     `emit_cgfun` that reuses the IF1-side `label_to_bb_map`
+     and Var-keyed alloca cache (so allocate_locals /
+     emit_parameter_debug_info still wire correctly).
+   - Slot pointer fallback: `slot_pointer(CGSlot*)` now also
+     reads `cg_get_llvm_value(source_var/source_sym)` when
+     `llvm_handle` is null.
+
+   Result: LLVM pyc-suite dropped from **37/38 to 10/65**. The
+   27-test regression points to one or more of:
+   - **Double-emission of phi/phy**: Phase 2.4's in-body
+     phi/phy CG_STOREs (emitted by `lower_move` via
+     `materialize_phi_phy` / `materialize_phi`) are still
+     emitted by `emit_cg_inst::CG_STORE`, alongside Track 3's
+     `emit_terminator`-driven `simple_move` for the same phi/phy
+     MOVEs. The store-twice writes the wrong value first, then
+     corrects it, but intervening loads (from getLLVMValue
+     caching) capture the wrong value.
+   - **Slot pointer mismatch**: emit_cg_inst's direct CG_STORE
+     stores into `slot_pointer(slot)` which falls back to
+     `cg_get_llvm_value(source_var)`. If allocate_locals stored
+     the AllocaInst via cg_set_llvm_value and Track 1's
+     emit_cg_inst CG_STORE uses it directly, the value cache
+     (which getLLVMValue/setLLVMValue manage as SSA-style)
+     becomes inconsistent — write_llvm_prim's
+     getLLVMValue(rval) loads from a cache key that emit_cg_inst
+     overwrote without going through setLLVMValue.
+   - **CG_LOAD_FIELD divergence**: emit_cg_inst's direct
+     emission uses `cg_to_llvm_type(CGType::fields[idx])` for
+     the field's LLVM type. write_llvm_prim uses
+     `getLLVMType(res_var->type)` for the field type. These
+     are usually equivalent but can diverge under
+     getLLVMVarType's heap-aggregate→ptr convention.
+
+   **Action**: production swap reverted; infrastructure
+   (`emit_cgfun_body`, slot_pointer fallback, materialize_blocks
+   reuse, current_cg_program global, makefile inclusion of
+   emit_cg.cc in LIB_SRCS) committed so the next attempt starts
+   from a clean state. Track 4 retry needs:
+   - Mark phi/phy CG_STOREs in cg_normalize.cc (add
+     `is_phi_phy` bit on CGInst) so emit_cg_inst skips them.
+   - Audit emit_cg_inst's direct emission against the IF1
+     reference: each CG_OP must produce IR semantically
+     identical to write_llvm_prim's per-prim handler, including
+     setLLVMValue side-effects so write_llvm_prim later reads
+     consistent values.
+   - Consider routing every CGInst through back-translation
+     (Track 2) initially, dropping Track 1's direct emission,
+     to confirm the wiring works. Then re-add Track 1 with
+     careful comparison against the IF1 reference.
 
 The pyc-suite ratchet (§8.2) governs the cutover: 3.4 must
 hold ≥ 37 passes; landing 1-3 incrementally with no production

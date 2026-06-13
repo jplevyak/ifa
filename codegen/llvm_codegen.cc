@@ -1,9 +1,12 @@
 #include "llvm_internal.h"
 #include "cg_ir.h"
 #include "codegen_common.h"
+#include "fa.h"
 #include "prim.h"
 #include "var.h"
 #include <set>
+
+extern CGProgram *current_cg_program;
 
 // ============================================================================
 // Defensive helpers
