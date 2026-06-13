@@ -1124,6 +1124,8 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
     createFunction(f, TheModule.get());
   }
 
+  current_cg_program = cg_normalize(fa);
+
   // Second pass: Translate all function bodies
   // (This is now done separately to ensure all functions are declared before any body is translated)
   for (Fun *f : all_funs) {

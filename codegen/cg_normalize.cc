@@ -573,9 +573,11 @@ static void build_cgfun(Fun *f, CGProgram *p) {
       if (w->code && (w->code->kind == Code_IF ||
                       w->code->kind == Code_GOTO ||
                       w->code->kind == Code_SEND)) {
-        // A terminator candidate; SEND only if its cfg_succ leaves
-        // the block (then it's a reply / external transfer).
-        bool leaves = false;
+        // A terminator candidate; SEND counts as a closer when its
+        // cfg_succ leaves the block OR is empty (function-exit
+        // returns, typically @primitive @reply, have no successor
+        // and lose the block edge otherwise).
+        bool leaves = w->cfg_succ.n == 0;
         for (PNode *s : w->cfg_succ) {
           if (lc.pn_owning.get(s) != b) { leaves = true; break; }
         }

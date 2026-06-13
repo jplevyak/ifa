@@ -121,7 +121,9 @@ static llvm::Value *slot_pointer(CGSlot *s) {
 }
 
 // Resolve a CGValue to an llvm::Value at the current insert point.
-// For CG_V_SLOT, emit a load of the slot's pointee. Other kinds
+// For CG_V_SLOT, emit a load of the slot's pointee — UNLESS the
+// cached value is already a non-pointer (Argument / direct
+// constant), in which case it's the value itself. Other kinds
 // return nullptr (the caller is responsible for skip-or-fail).
 static llvm::Value *resolve_value(CGValue *cv) {
   if (!cv) return nullptr;
@@ -132,6 +134,11 @@ static llvm::Value *resolve_value(CGValue *cv) {
       llvm::Value *ptr = slot_pointer(cv->slot);
       if (!ptr) return nullptr;
       if (cv->slot && cv->slot->kind == CG_SLOT_FORMAL) return ptr;
+      // Formals cached via allocate_locals's Var-keyed map come
+      // through as Arguments — already the value, not a pointer.
+      if (llvm::isa<llvm::Argument>(ptr)) return ptr;
+      // Constants (e.g. global function pointers) return directly.
+      if (!ptr->getType()->isPointerTy()) return ptr;
       llvm::Type *ty = (cv->slot && cv->slot->type) ? cg_to_llvm_type(cv->slot->type)
                                                     : llvm::PointerType::getUnqual(*TheContext);
       if (!ty || ty->isVoidTy()) ty = llvm::PointerType::getUnqual(*TheContext);
@@ -148,12 +155,21 @@ static llvm::Value *resolve_value(CGValue *cv) {
 // constants (CG_SLOT_CONSTANT) get GlobalVariables elsewhere;
 // formals (CG_SLOT_FORMAL) get their Argument value wired by
 // create_llvm_function_from_cgfun.
+//
+// Production path (Phase 3.4): allocate_locals already created
+// allocas keyed on Var via cg_set_llvm_value. Skip CGSlots whose
+// source_var has a cached value — re-allocating duplicates and
+// causes lookups to diverge.
 static void materialize_local_slots(EmitCtx &ctx) {
   llvm::BasicBlock *entry_bb = &ctx.llvm_fun->getEntryBlock();
   llvm::IRBuilder<> entry_builder(entry_bb, entry_bb->getFirstInsertionPt());
   for (CGSlot *s : ctx.cf->locals) {
     if (!s || s->llvm_handle) continue;
     if (s->kind != CG_SLOT_LOCAL) continue;
+    // Skip if allocate_locals already gave this slot's source Var
+    // backing storage (production path).
+    if (s->source_var && cg_get_llvm_value(s->source_var)) continue;
+    if (s->source_sym && cg_get_llvm_value(s->source_sym)) continue;
     llvm::Type *ty = s->type ? cg_to_llvm_type(s->type)
                              : llvm::PointerType::getUnqual(*TheContext);
     if (!ty || ty->isVoidTy()) ty = llvm::PointerType::getUnqual(*TheContext);
@@ -318,6 +334,16 @@ static void emit_terminator(CGInst *term, CGBlock *blk, EmitCtx &ctx) {
 
 static void emit_cg_inst(CGInst *inst, EmitCtx &ctx) {
   if (!inst) return;
+  // Live gate: mirrors translatePNode's `pn->live && pn->fa_live`
+  // check (llvm_codegen.cc:666). Non-live PNodes carry stale
+  // refs that DCE expected to elide (e.g. P_prim_period on
+  // methods that no longer exist on the post-DCE type), so
+  // back-translation to write_llvm_prim/write_send must be
+  // gated. Phi/phy materialization stays unconditional and
+  // happens in emit_terminator.
+  if (inst->source_pn && !(inst->source_pn->live && inst->source_pn->fa_live)) {
+    return;
+  }
   switch (inst->op) {
     case CG_NOP:
       break;
@@ -326,6 +352,11 @@ static void emit_cg_inst(CGInst *inst, EmitCtx &ctx) {
       if (!inst->slot || inst->rvals.n == 0) return;
       llvm::Value *ptr = slot_pointer(inst->slot);
       if (!ptr) return;
+      // Formals (Arguments) are values, not storage. Skip the
+      // store — there's no slot to write to. The IF1 path uses
+      // setLLVMValue which routes around this in its SSA model.
+      if (llvm::isa<llvm::Argument>(ptr)) return;
+      if (!ptr->getType()->isPointerTy()) return;
       llvm::Value *val = resolve_value(inst->rvals[0]);
       if (!val) return;
       Builder->CreateStore(val, ptr);
