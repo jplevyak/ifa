@@ -308,8 +308,9 @@ static CGv2Inst *build_term(BuildCtx &c, SExpr *term_expr) {
 static CGv2Value *build_value_decl(BuildCtx &c, SExpr *e);
 
 // Look up a value reference like `%x`. Checks per-fun
-// values_by_name first, then program-scope constants. Returns
-// nullptr (with err set) if unresolved.
+// values_by_name first, then program-scope constants and
+// globals (incl. fun_ref). Returns nullptr (with err set) if
+// unresolved.
 static CGv2Value *resolve_value_ref(BuildCtx &c, SExpr *vref) {
   if (vref->is_list || !vref->atom) {
     c.fail_at(vref, "expected a value ref");
@@ -321,6 +322,9 @@ static CGv2Value *resolve_value_ref(BuildCtx &c, SExpr *vref) {
   if (v) return v;
   for (CGv2Value *cv : c.prog->constants) {
     if (cv && cv->name && strcmp(cv->name, n) == 0) return cv;
+  }
+  for (CGv2Value *gv : c.prog->globals) {
+    if (gv && gv->name && strcmp(gv->name, n) == 0) return gv;
   }
   c.fail_at(vref, "unknown value");
   return 0;
@@ -400,6 +404,26 @@ static CGv2Inst *build_inst(BuildCtx &c, SExpr *e) {
       if (c.err) return 0;
       if (in_lvals) inst->lvals.add(v);
       else inst->rvals.add(v);
+    }
+  } else if (strcmp(op_tag, "call") == 0) {
+    inst->op = CG2_CALL;
+    // (inst %name call %fn_ref %arg1 ... => %result)
+    int i = 3;
+    bool in_lvals = false;
+    for (; i < e->children.n; i++) {
+      SExpr *ch = e->children[i];
+      if (!ch->is_list && ch->atom && strcmp(ch->atom, "=>") == 0) {
+        in_lvals = true;
+        continue;
+      }
+      CGv2Value *v = resolve_value_ref(c, ch);
+      if (c.err) return 0;
+      if (in_lvals) inst->lvals.add(v);
+      else inst->rvals.add(v);
+    }
+    if (inst->rvals.n < 1) {
+      c.fail_at(e, "call needs a callee");
+      return 0;
     }
   } else {
     c.fail_at(op_atom, "unsupported inst op");
@@ -773,6 +797,17 @@ static CGv2Value *build_value_decl(BuildCtx &c, SExpr *e) {
       return 0;
     }
   }
+  int target_kw = find_kw(e, "target", 2);
+  if (target_kw >= 0) {
+    SExpr *tx = e->children[target_kw + 1];
+    if (tx->is_list || !tx->atom) {
+      c.fail_at(tx, ":target must be atom");
+      return 0;
+    }
+    cchar *tn = tx->atom;
+    if (tn[0] == '%') tn++;
+    v->target_name = dupstr(tn);
+  }
   return v;
 }
 
@@ -815,10 +850,15 @@ static void build_program(BuildCtx &c, SExpr *root) {
     c.fail_at(root, "program must be a list");
     return;
   }
-  // Two-pass: declare constants first so they're visible to
-  // any fun that references them. (Functions can also be
-  // forward-referenced — handled when test 07's CGV_FUN_REF
-  // resolution lands.)
+  // Multi-pass walk over top-level decls:
+  //   pass 1: constants (no dependencies)
+  //   pass 2: top-level (value ...) decls — registers globals
+  //           and fun_refs so inst bodies can resolve them
+  //   pass 3: fun signatures + bodies
+  //
+  // fun_ref values bind to fns by `:target` name. Resolution
+  // happens at emit time, so pass 2 can run before pass 3
+  // populates funs.
   for (SExpr *d : root->children) {
     if (starts_with_atom(d, "const")) {
       CGv2Value *cv = build_const(c, d);
@@ -828,18 +868,22 @@ static void build_program(BuildCtx &c, SExpr *root) {
   }
 
   for (SExpr *d : root->children) {
+    if (starts_with_atom(d, "value")) {
+      CGv2Value *gv = build_value_decl(c, d);
+      if (c.err) return;
+      c.prog->globals.add(gv);
+    }
+  }
+
+  for (SExpr *d : root->children) {
     if (starts_with_atom(d, "fun")) {
       CGv2Fun *f = build_fun(c, d);
       if (c.err) return;
       c.prog->funs.add(f);
       if (f->is_main) c.prog->main_fun = f;
-    } else if (starts_with_atom(d, "const")) {
-      // Already handled in pass 1.
-    } else {
-      // (TypeDecl, GlobalDecl land with their test corpus
-      // expansions.) Silently skip unrecognized top-level
-      // forms for now.
     }
+    // Other top-level forms already handled above; everything
+    // else is silently skipped until its test lands.
   }
 }
 

@@ -181,6 +181,29 @@ void put_result(EmitFunCtx &ctx, CGv2Value *dst, llvm::Value *r) {
 
 void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
   switch (inst->op) {
+    case CG2_CALL: {
+      if (inst->rvals.n < 1) return;
+      // rvals[0] is the callee — a CGv2Value of scope FUN_REF
+      // with a target_name. Resolve to llvm::Function by name.
+      CGv2Value *callee_v = inst->rvals[0];
+      if (!callee_v || callee_v->scope != CG2V_FUN_REF ||
+          !callee_v->target_name) return;
+      llvm::Function *callee =
+          TheModule->getFunction(callee_v->target_name);
+      if (!callee) return;
+      std::vector<llvm::Value *> args;
+      for (int i = 1; i < inst->rvals.n; i++) {
+        llvm::Value *a = resolve_value(ctx, inst->rvals[i]);
+        if (!a) return;
+        args.push_back(a);
+      }
+      cchar *out = inst->lvals.n > 0 && inst->lvals[0]->name
+                       ? inst->lvals[0]->name : "";
+      llvm::Value *r = Builder->CreateCall(callee, args,
+          callee->getReturnType()->isVoidTy() ? "" : out);
+      if (inst->lvals.n > 0) put_result(ctx, inst->lvals[0], r);
+      break;
+    }
     case CG2_BINOP: {
       if (inst->rvals.n < 2 || inst->lvals.n < 1) return;
       llvm::Value *a = resolve_value(ctx, inst->rvals[0]);
@@ -265,26 +288,31 @@ void emit_terminator(CGv2Inst *term, CGv2Block *blk, EmitFunCtx &ctx) {
   }
 }
 
-void emit_fun(CGv2Fun *cf) {
-  if (cf->is_external) {
-    // External: declaration only.
-    llvm::FunctionType *ft = to_llvm_fn_type(cf->signature);
-    if (!ft) return;
-    (void)llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                  cf->name ? cf->name : "ext",
-                                  TheModule.get());
-    return;
-  }
-
-  // Internal: full declaration + body.
+// Declaration-only pass. Creates the llvm::Function and adds
+// it to TheModule. Called for every fun before any body is
+// emitted, so cross-fun CG_CALL sites resolve regardless of
+// declaration order.
+llvm::Function *declare_fun(CGv2Fun *cf) {
   llvm::FunctionType *ft = to_llvm_fn_type(cf->signature);
-  if (!ft) return;
+  if (!ft) return nullptr;
+  llvm::GlobalValue::LinkageTypes linkage =
+      cf->is_external ? llvm::Function::ExternalLinkage
+                      : llvm::Function::InternalLinkage;
+  return llvm::Function::Create(ft, linkage,
+                                cf->name ? cf->name : "fn",
+                                TheModule.get());
+}
+
+void emit_fun(CGv2Fun *cf) {
+  if (cf->is_external) return;       // declared in pre-pass
+
+  llvm::Function *llvm_fun =
+      TheModule->getFunction(cf->name ? cf->name : "fn");
+  if (!llvm_fun) return;
 
   EmitFunCtx ctx;
   ctx.cf = cf;
-  ctx.llvm_fun = llvm::Function::Create(
-      ft, llvm::Function::InternalLinkage,
-      cf->name ? cf->name : "fn", TheModule.get());
+  ctx.llvm_fun = llvm_fun;
 
   // Bind formals into the per-fun value map. The CGv2Fun's
   // formals vector is in signature order (parser enforces this
@@ -360,9 +388,14 @@ void emit_fun(CGv2Fun *cf) {
 // partially populated; caller should run verifyModule.
 bool cg_v2_emit_llvm_module(CGv2Program *prog) {
   if (!prog || !TheModule) return false;
+  // Pass 1: declare all funs up front so CG_CALL sites can
+  // resolve callees by name regardless of source ordering.
   for (CGv2Fun *f : prog->funs) {
-    if (!f) continue;
-    emit_fun(f);
+    if (f) declare_fun(f);
+  }
+  // Pass 2: emit bodies.
+  for (CGv2Fun *f : prog->funs) {
+    if (f) emit_fun(f);
   }
   return true;
 }

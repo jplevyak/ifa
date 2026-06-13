@@ -831,3 +831,103 @@ int run_cg_ir_v2_emit_test06() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test06);
+
+// Phase 4 commit 9 — test 07 (inter-fun call).
+//
+// main() { return id(7); }
+//
+// Exercises:
+//   - CG2_CALL inst
+//   - top-level (value %id_ref :scope fun_ref :target %id)
+//     for the callee binding
+//   - declare_fun() pre-pass so the call resolves regardless
+//     of source ordering
+static cchar *test07_text =
+    "((const %c7 (int 7) :type int64)\n"
+    " (fun %id\n"
+    "   :signature (int64 int64)\n"
+    "   :entry %b0\n"
+    "   :formals (%x)\n"
+    "   (value %x :type int64 :scope formal)\n"
+    "   (block %b0\n"
+    "     :term (ret %x)))\n"
+    " (value %id_ref :type fun_ptr :scope fun_ref :target %id)\n"
+    " (fun %main\n"
+    "   :signature (int64)\n"
+    "   :main true\n"
+    "   :entry %b0\n"
+    "   (value %r :type int64 :scope local)\n"
+    "   (block %b0\n"
+    "     (inst %i0 call %id_ref %c7 => %r)\n"
+    "     :term (ret %r))))";
+
+int run_cg_ir_v2_test07_roundtrip() {
+  if (!run_one("test07", test07_text, 2, "id")) return 1;
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_test07_roundtrip);
+
+int run_cg_ir_v2_emit_test07() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(test07_text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+
+  llvm::Function *id_fn = TheModule->getFunction("id");
+  llvm::Function *main_fn = TheModule->getFunction("main");
+  if (!id_fn || !main_fn) {
+    printf("  missing id/main fn\n");
+    return 1;
+  }
+
+  // main's entry must contain a CallInst calling @id with a
+  // single i64 7 arg, and Ret returns that call.
+  llvm::BasicBlock &entry = main_fn->getEntryBlock();
+  llvm::CallInst *call = nullptr;
+  for (llvm::Instruction &i : entry) {
+    if (auto *c = llvm::dyn_cast<llvm::CallInst>(&i)) {
+      call = c; break;
+    }
+  }
+  if (!call) {
+    printf("  main has no CallInst\n");
+    return 1;
+  }
+  if (call->getCalledFunction() != id_fn) {
+    printf("  CallInst does not call @id\n");
+    return 1;
+  }
+  if (call->arg_size() != 1) {
+    printf("  CallInst expected 1 arg\n");
+    return 1;
+  }
+  auto *arg_ci = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(0));
+  if (!arg_ci || arg_ci->getSExtValue() != 7) {
+    printf("  CallInst arg is not 7\n");
+    return 1;
+  }
+  auto *ret = llvm::dyn_cast<llvm::ReturnInst>(entry.getTerminator());
+  if (!ret || ret->getReturnValue() != call) {
+    printf("  Ret does not return the call\n");
+    return 1;
+  }
+
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test07);

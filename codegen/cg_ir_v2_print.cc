@@ -132,6 +132,9 @@ static void print_inst(Buf &b, CGv2Inst *inst) {
     case CG2_MOVE:
       b.puts_(" move");
       break;
+    case CG2_CALL:
+      b.puts_(" call");
+      break;
     default:
       b.puts_(" nop");
       break;
@@ -322,6 +325,22 @@ static void print_fun(Buf &b, CGv2Fun *f) {
 
 }  // namespace
 
+static void print_global(Buf &b, CGv2Value *v) {
+  b.puts_("  (value %");
+  b.puts_(v->name ? v->name : "?");
+  if (v->type) {
+    b.puts_(" :type ");
+    print_type_ref(b, v->type);
+  }
+  b.puts_(" :scope ");
+  b.puts_(scope_name(v->scope));
+  if (v->target_name) {
+    b.puts_(" :target %");
+    b.puts_(v->target_name);
+  }
+  b.put(')');
+}
+
 cchar *cg_v2_print(CGv2Program *prog) {
   Buf b;
   b.put('(');
@@ -329,6 +348,11 @@ cchar *cg_v2_print(CGv2Program *prog) {
   for (CGv2Value *cv : prog->constants) {
     if (!first) b.put('\n');
     print_const(b, cv);
+    first = false;
+  }
+  for (CGv2Value *gv : prog->globals) {
+    if (!first) b.put('\n');
+    print_global(b, gv);
     first = false;
   }
   for (CGv2Fun *f : prog->funs) {

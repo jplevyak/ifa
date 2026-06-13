@@ -40,6 +40,7 @@ CGv2Program::CGv2Program() : main_fun(0) {
   t_float64 = mk_type(12, "float64", CG2T_FLOAT, 64);
   t_sym     = mk_type(13, "sym",     CG2T_SYMBOL, 0);
   t_nil     = mk_type(14, "nil",     CG2T_PTR,    0);
+  t_fun_ptr = mk_type(15, "fun_ptr", CG2T_FUN_PTR, 0);
 }
 
 CGv2Type *CGv2Program::lookup_type(cchar *name) const {
@@ -60,6 +61,7 @@ CGv2Type *CGv2Program::lookup_type(cchar *name) const {
     {"float64", t_float64},
     {"sym",     t_sym},
     {"nil",     t_nil},
+    {"fun_ptr", t_fun_ptr},
   };
   for (auto &p : preset) {
     if (p.n && p.t && strcmp(p.n, name) == 0) return p.t;

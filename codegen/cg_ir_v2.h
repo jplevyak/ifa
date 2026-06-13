@@ -117,7 +117,12 @@ class CGv2Value : public gc {
   // For CG2V_CONSTANT
   CGv2Immediate imm;
 
-  CGv2Value() : id(0), name(0), type(0), scope(CG2V_LOCAL) {}
+  // For CG2V_FUN_REF: the textual fn name this ref binds to.
+  // Resolved at emit time via TheModule->getFunction().
+  cchar *target_name;
+
+  CGv2Value() : id(0), name(0), type(0), scope(CG2V_LOCAL),
+                target_name(0) {}
 };
 
 // ============================================================
@@ -129,6 +134,7 @@ enum CGv2Op {
   CG2_MOVE,
   // Body ops:
   CG2_BINOP,           // sub_op selects add/sub/mul/lt/eq/...
+  CG2_CALL,            // rvals[0]=fun ref, rvals[1..]=args, lvals[0]=result
   // Terminators:
   CG2_BR,
   CG2_COND_BR,
@@ -263,6 +269,7 @@ class CGv2Program : public gc {
   CGv2Type *t_float64;
   CGv2Type *t_sym;
   CGv2Type *t_nil;
+  CGv2Type *t_fun_ptr;
 
   CGv2Program();
   CGv2Type *lookup_type(cchar *name) const;
