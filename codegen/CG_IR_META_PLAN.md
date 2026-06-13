@@ -7,6 +7,140 @@ This is a **plan to make a plan**, not the design itself. The
 design (CG_IR_SEMANTICS.md) is the output of executing this
 plan.
 
+## Constraints (accepted, 2026-06-13)
+
+The project owner answered the open questions. These are
+no longer assumptions — they're the design contract:
+
+1. **C backend stays until LLVM achieves parity.** Both
+   backends coexist. The C backend is the reference (74/0)
+   and the validation gate. The LLVM backend can replace it
+   only when it matches the C backend on the full pyc-suite.
+   Practical implication: CG_IR must encode everything
+   `cg.cc` emits; the IR design that can't lower to working C
+   isn't viable.
+
+2. **IF1 stays.** No replacement on the table. CG_IR is **the
+   emission layer**, not a replacement IR. It can lean on
+   IF1 (escape hatches are FEATURES not bugs). What CG_IR
+   owns is "how the post-FA / post-SSU information flows into
+   the backends." The boundary is:
+
+   ```
+   IF1 (analysis IR)  →  CG_IR (emission IR)  →  C / LLVM
+   ```
+
+   This is a sharper boundary than the original CG_IR_PLAN
+   imagined. It SIMPLIFIES the design.
+
+3. **More frontends are coming with diverse language
+   semantics.** CG_IR cannot be pyc-shaped. It has to be a
+   general post-analysis emission target multiple frontends
+   can lower to. Likely: each frontend has its own front-end
+   AST → IF1 lowering; the shared analysis (FA + clone + DCE
+   + SSU) is generic; CG_IR is the shared emission target.
+
+   The IR design pulls toward LLVM-IR-shape (low-level,
+   language-agnostic) over pyc-flavored.
+
+4. **Low appetite for breaking changes. Incremental work
+   preferred.** The owner has watched me revert code several
+   times this session: the formal-arg / live-gate / setLLVMValue
+   attempts on issue 017, the production swap iterations on
+   Phase 3.4, the field-index investigation. The reverts are
+   correct — broken code that's reverted is better than
+   committed broken code — but the PATTERN says I've been
+   landing changes that are too big to verify in one step.
+
+   The meta-plan's process must address this directly. Every
+   code-touching phase needs:
+
+   - An explicit rollback plan
+   - Per-change verification (the suite test runs, not just
+     a "looks right" review)
+   - Smaller commits with smaller blast radius
+   - A stop condition: "if N attempts fail to land cleanly,
+     escalate to a design pause and reconsider."
+
+5. **More pain points are certain without a principled
+   process.** This is the deepest motivation for the
+   meta-plan. The semantics doc must be **the canonical
+   answer** to "is this a bug?" questions. A bug becomes
+   "the IR doesn't allow this" or "the emitter doesn't match
+   the IR's contract" — both have clear next actions.
+   Without the doc, every new bug is a fresh investigation
+   into what the IR was supposed to mean.
+
+## Implications for the phases
+
+Given the constraints, the phases adjust:
+
+- **Phase 0 (Survey)** unchanged. Pure reading.
+- **Phase 1 (Distill)**: the "what backends need" tabulation
+  now MUST be done for BOTH backends, in equal depth. The
+  intersection is what CG_IR needs to expose; the union is
+  what CG_IR must support.
+- **Phase 2 (Sketch)**: explicitly rejects "replace IF1 refs."
+  Escape hatches to IF1 (source_pn for dispatch, source_var
+  for value resolution) are part of the contract. What
+  changes is making the escape hatches EXPLICIT (typed,
+  named, contractual) rather than incidental.
+- **Phase 3 (Textual form)**: now constrained to be
+  language-agnostic. A pyc-specific S-expression won't do
+  if V or the next frontend has different semantics.
+- **Phase 4 (Build incrementally)**: stronger ratchets.
+  Smaller commits. Rollback plan per landing. Explicit
+  acceptance criteria per synthetic test. If I land code,
+  it's because the suite stays at 38/37+, ifa-test stays
+  58/0, and the new synthetic test passes.
+- **Phase 5 (Semantics doc + migration)**: the doc explicitly
+  defines:
+  - The IF1 ↔ CG_IR boundary
+  - The escape hatches as contractual interfaces
+  - The migration path from C-backend-reference toward
+    LLVM-backend-parity
+  - What "parity achieved" measurably means (e.g.,
+    "LLVM-suite ≥ 74/0 for one full cycle")
+
+## On the revert pattern (acknowledgment)
+
+The owner is right to flag this. Let me be specific about
+what's changing:
+
+**What I did**: landed bigger changes than I could verify in
+one step. The setLLVMValue + cross-function leak chain (issue
+017) is the clearest example — three sequential attempts, all
+reverted, because the underlying interaction with
+program-scoped state wasn't understood before I tried fixing
+it.
+
+**Why this happened**: I treated "the suite still passes" as
+sufficient verification. It isn't: the suite passing doesn't
+mean the architecture is right, only that the existing tests
+don't exercise the new bug. For an architectural change,
+I need to first articulate what should be true, then verify
+that.
+
+**What changes in the meta-plan's execution**:
+
+- **Phases 0-3 are pure docs.** No production code. No
+  revert risk because there's nothing to revert.
+- **Phase 4's per-synthetic-test cadence is tight.** Each
+  example forces ONE new piece of emission logic. If a piece
+  doesn't land cleanly in 1-2 attempts, I stop and write up
+  why before trying again.
+- **No "big bang" landings.** If a change would touch
+  emit_cg.cc, llvm_codegen.cc, AND llvm.cc, it's too big.
+  Split.
+- **Verification is per-CG_OP, not per-suite.** The synthetic
+  test corpus is the unit of verification. When I land
+  CG_BR support, the synthetic CG_BR test passes; the suite
+  is a regression catcher, not a verification.
+- **Explicit "this is an experiment" flag.** When I'm trying
+  something I'm not sure about, I say so in the commit
+  message. Easier to track which commits to scrutinize on
+  next review.
+
 ## Why this exists
 
 The existing docs each cover a different stage:
@@ -33,29 +167,41 @@ re-establishes the slope.
 
 Stated in the conversation that prompted this doc:
 
-1. **The Sym/Var/AVar pyramid likely flattens.** At emission
-   time, after FA + clone + DCE + SSU, much of the layered
-   abstraction isn't load-bearing. Sym + Var + AVar may
-   collapse to a flat namespace of values.
+1. **The Sym/Var/AVar pyramid likely flattens at the CG_IR
+   boundary.** IF1 keeps the pyramid (analysis needs all three
+   layers). CG_IR projects it down to a flat value namespace
+   at emission time. Important nuance given constraint #2
+   (IF1 stays): we don't flatten IF1 itself; we lower IF1's
+   pyramid INTO CG_IR's flat shape during cg_normalize.
 
-2. **SSU/SSA likewise flattens.** After SSU resolution, each
-   value has a single definition. The renaming machinery has
-   done its job; the IR doesn't need to re-represent it.
+2. **SSU/SSA likewise flattens.** After SSU resolution in IF1,
+   each Var has a single definition. cg_normalize translates
+   this to "each CG_IR value has one definition" without
+   re-running SSU. The renaming machinery has done its job;
+   CG_IR records the result.
 
 3. **What's left is small.** Functions, types, and code with
    operations like IF / SEND / PRIMITIVE / MOVE. This is
-   recognizably an LLVM-IR-shape post-mem2reg.
+   recognizably an LLVM-IR-shape post-mem2reg. With the
+   language-agnostic constraint (#3), this needs to be
+   genuinely low-level — not just "pyc primitives."
 
 4. **A textual form enables synthetic tests.** Decouples
    emitter validation from FA invariants. Lets us write
-   stress-case programs by hand. Every IR I know of that
-   ships robustly (LLVM, MLIR, GCC RTL with `-dRTL`, Cranelift
-   CLIF) has a textual form.
+   stress-case programs by hand without going through any
+   frontend or IF1 analysis. Every IR I know of that ships
+   robustly (LLVM, MLIR, GCC RTL with `-dRTL`, Cranelift CLIF)
+   has a textual form. With future frontends coming (#3), the
+   textual form is also the joining point for cross-frontend
+   work — a CG_IR program is the same regardless of whether
+   it came from pyc, V, or anything else.
 
-5. **Minimal translation with simple tests, built incrementally.**
-   Start by emitting one trivial program through CG_IR; expand
-   the test corpus one shape at a time; each addition forces
-   one new IR / emission piece.
+5. **Minimal translation with simple tests, built
+   incrementally.** Start by emitting one trivial program
+   through CG_IR; expand the test corpus one shape at a time;
+   each addition forces one new IR / emission piece. With the
+   low-breakage constraint (#4), this approach is mandatory,
+   not optional.
 
 These are hypotheses to test, not foregone conclusions. The
 meta-plan is the structure for testing them.
@@ -311,35 +457,30 @@ risk. Result: a complete design proposal with examples.
 ## Open questions for the project owner (lower-priority but
 will sharpen the design)
 
-1. **Is the C backend a permanent fixture?** If so, the IR
-   needs to express things both backends can consume — that
-   constrains the operation set. If the C backend is
-   maintenance-mode, we can design for LLVM and back-port to C
-   as needed.
+~~All five answered 2026-06-13 — see "Constraints (accepted)"
+at the top of this doc. Kept here for history.~~
 
-2. **Is IF1 stable, or is "eventually replace IF1" on the
-   table?** If IF1 is forever, CG_IR is genuinely
-   "scaffolding on top of IF1 for emission." If IF1 might
-   change, CG_IR should be self-contained.
+1. ~~Is the C backend a permanent fixture?~~ **No, but it's
+   the reference until LLVM parity. Cannot be deleted before
+   the LLVM suite reaches 74/0.**
 
-3. **Is there a future-frontend story?** Lua, V, Python 4,
-   etc. If pyc-the-frontend grows siblings, CG_IR is the
-   joining point. If pyc is THE frontend forever, CG_IR can
-   be pyc-shaped.
+2. ~~Is IF1 stable?~~ **Yes. No replacement on the table.
+   CG_IR is the emission layer, not a replacement IR. The
+   escape hatches to IF1 are part of the contract.**
 
-4. **What's the appetite for breaking changes?** Some
-   semantic clarifications (e.g., changing the cg-normalize
-   golden format) imply rebless work. How much of that is
-   acceptable per session?
+3. ~~Future-frontend story?~~ **More frontends are coming
+   with diverse language semantics. CG_IR must be
+   language-agnostic.**
 
-5. **Are there pain points beyond issues 014/016/017 that
-   the redesign should consciously address?** Things you've
-   noticed but haven't filed.
+4. ~~Appetite for breaking changes?~~ **Low. Incremental
+   work strongly preferred. The owner has explicitly noted
+   the revert pattern as a signal that changes have been too
+   big. The execution methodology updates to address this.**
 
-Default assumptions if you don't answer: C and LLVM both
-permanent, IF1 stable, pyc-only frontend, willing to break
-the cg-normalize golden format, only known pain points
-addressed.
+5. ~~Pain points beyond 014/016/017?~~ **More are certain
+   without a principled process. The semantics doc must be
+   the canonical answer to "is this a bug?" so we stop
+   re-investigating from scratch each time.**
 
 ## Why this is more than just "redo CG_IR"
 
