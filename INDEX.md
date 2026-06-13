@@ -73,6 +73,13 @@ frontend see [../PIPELINE.md](../PIPELINE.md).
   (`codegen/llvm*.cc`): the `-b`/`USE_LLVM` path, module/context
   globals, type/value mapping, function declaration + body
   translation, `write_llvm_prim`, compile driver, known limitations.
+- [codegen/CG_IR_SEMANTICS.md](codegen/CG_IR_SEMANTICS.md) —
+  CG_IR_v2 definitive semantics: the five concepts, seven
+  invariants, the issue-017 structural lemma, the frontend ↔
+  backend contract, and the v1-retirement migration plan.
+  Implementation in `codegen/cg_ir_v2*.cc/.h`. Provenance docs:
+  CG_IR_META_PLAN.md, CG_IR_SURVEY.md, CG_IR_NEEDS.md,
+  CG_IR_SKETCH.h, CG_IR_TEXT.md.
 
 ## Utility layer
 

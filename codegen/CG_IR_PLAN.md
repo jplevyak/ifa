@@ -20,6 +20,17 @@ Sister docs:
 - [CODEGEN_C.md](../CODEGEN_C.md) / [CODEGEN_LLVM.md](../CODEGEN_LLVM.md)
   — the current consumers, which get rewritten in stages 3-4.
 
+> **As of June 2026, the path of record is the CG_IR_v2 redesign**
+> (see [CG_IR_META_PLAN.md](CG_IR_META_PLAN.md)). The v2
+> architecture is now implemented and tested in `cg_ir_v2*.cc/.h`,
+> with a 14-test in-source corpus covering every must-expose
+> concept including the issue-017 trigger case (test 09). The
+> definitive semantics and the v1-retirement migration plan live
+> in [CG_IR_SEMANTICS.md](CG_IR_SEMANTICS.md). The earlier phases
+> of *this* plan (Phase 3.3+ LLVM migration, Phase 4 C backend
+> port, Phase 5 cleanup) are superseded by §6 of CG_IR_SEMANTICS.md
+> ("Migration plan: retiring v1's `cg_ir.h`").
+
 ---
 
 ## 1. Goals and non-goals
