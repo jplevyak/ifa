@@ -155,6 +155,34 @@ llvm::Value *resolve_value(EmitFunCtx &ctx, CGv2Value *v) {
   return ctx.value_map.get(v);
 }
 
+void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
+  switch (inst->op) {
+    case CG2_BINOP: {
+      if (inst->rvals.n < 2 || inst->lvals.n < 1) return;
+      llvm::Value *a = resolve_value(ctx, inst->rvals[0]);
+      llvm::Value *b = resolve_value(ctx, inst->rvals[1]);
+      if (!a || !b) return;
+      llvm::Value *r = nullptr;
+      switch (inst->sub_op) {
+        case CG2B_ADD:
+          r = Builder->CreateAdd(a, b,
+                                  inst->lvals[0]->name
+                                      ? inst->lvals[0]->name : "");
+          break;
+        case CG2B_NONE:
+          return;
+      }
+      if (r) ctx.value_map.put(inst->lvals[0], r);
+      break;
+    }
+    case CG2_NOP:
+    case CG2_MOVE:
+    default:
+      // Land per-test.
+      break;
+  }
+}
+
 void emit_block_skeleton(CGv2Block *b, EmitFunCtx &ctx) {
   cchar *name = b->name ? b->name : "blk";
   llvm::BasicBlock *bb =
@@ -240,7 +268,7 @@ void emit_fun(CGv2Fun *cf) {
     llvm::BasicBlock *bb = ctx.blk_map.get(b);
     if (!bb) continue;
     Builder->SetInsertPoint(bb);
-    // Body emission lands with test 02 (non-empty body).
+    for (CGv2Inst *inst : b->body) emit_inst(inst, ctx);
     emit_terminator(b->terminator, b, ctx);
   }
 }

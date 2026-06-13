@@ -282,6 +282,96 @@ static CGv2Inst *build_term(BuildCtx &c, SExpr *term_expr) {
 
 static CGv2Value *build_value_decl(BuildCtx &c, SExpr *e);
 
+// Look up a value reference like `%x`. Checks per-fun
+// values_by_name first, then program-scope constants. Returns
+// nullptr (with err set) if unresolved.
+static CGv2Value *resolve_value_ref(BuildCtx &c, SExpr *vref) {
+  if (vref->is_list || !vref->atom) {
+    c.fail_at(vref, "expected a value ref");
+    return 0;
+  }
+  cchar *n = vref->atom;
+  if (n[0] == '%') n++;
+  CGv2Value *v = c.values_by_name.get(n);
+  if (v) return v;
+  for (CGv2Value *cv : c.prog->constants) {
+    if (cv && cv->name && strcmp(cv->name, n) == 0) return cv;
+  }
+  c.fail_at(vref, "unknown value");
+  return 0;
+}
+
+// (inst %name OP_TAG SUB_TAG rval* => lval*)
+// v0 supports: OP_TAG=binop, SUB_TAG=add.
+static CGv2Inst *build_inst(BuildCtx &c, SExpr *e) {
+  if (e->children.n < 3) {
+    c.fail_at(e, "inst needs op and operands");
+    return 0;
+  }
+  SExpr *nm = e->children[1];
+  if (nm->is_list || !nm->atom) {
+    c.fail_at(nm, "inst name must be atom");
+    return 0;
+  }
+  cchar *name = nm->atom;
+  if (name[0] == '%') name++;
+
+  SExpr *op_atom = e->children[2];
+  if (op_atom->is_list || !op_atom->atom) {
+    c.fail_at(op_atom, "inst op must be atom");
+    return 0;
+  }
+  cchar *op_tag = op_atom->atom;
+
+  CGv2Inst *inst = new CGv2Inst();
+  inst->id = c.next_id++;
+  inst->name = dupstr(name);
+
+  if (strcmp(op_tag, "binop") == 0) {
+    inst->op = CG2_BINOP;
+    if (e->children.n < 4) {
+      c.fail_at(e, "binop needs sub-op");
+      return 0;
+    }
+    SExpr *sub = e->children[3];
+    if (sub->is_list || !sub->atom) {
+      c.fail_at(sub, "binop sub-op must be atom");
+      return 0;
+    }
+    cchar *st = sub->atom;
+    if (strcmp(st, "add") == 0) {
+      inst->sub_op = CG2B_ADD;
+    } else {
+      c.fail_at(sub, "unsupported binop sub-op");
+      return 0;
+    }
+    // Parse rvals up to '=>', then lvals after.
+    int i = 4;
+    bool in_lvals = false;
+    for (; i < e->children.n; i++) {
+      SExpr *ch = e->children[i];
+      if (!ch->is_list && ch->atom && strcmp(ch->atom, "=>") == 0) {
+        in_lvals = true;
+        continue;
+      }
+      CGv2Value *v = resolve_value_ref(c, ch);
+      if (c.err) return 0;
+      if (in_lvals) inst->lvals.add(v);
+      else inst->rvals.add(v);
+    }
+  } else {
+    c.fail_at(op_atom, "unsupported inst op");
+    return 0;
+  }
+
+  // Register the lval name(s) for downstream lookups (single
+  // result for binop; extends as more ops land).
+  for (CGv2Value *lv : inst->lvals) {
+    if (lv && lv->name) c.values_by_name.put(lv->name, lv);
+  }
+  return inst;
+}
+
 static CGv2Block *build_block(BuildCtx &c, SExpr *block_expr) {
   // (block %name :label name? :preds (...) inst* :term term)
   if (!starts_with_atom(block_expr, "block")) {
@@ -314,8 +404,26 @@ static CGv2Block *build_block(BuildCtx &c, SExpr *block_expr) {
     return 0;
   }
   b->terminator = build_term(c, block_expr->children[term_idx + 1]);
+  if (c.err) return 0;
 
-  // (Body insts will land when test 02+ requires them.)
+  // Body insts. Walk children after the name (index 2..) and
+  // pick out `(inst ...)` lists; skip :preds / :term / :label
+  // keyword pairs (their values are at i+1 — we just don't
+  // confuse them with insts).
+  for (int i = 2; i < block_expr->children.n; i++) {
+    SExpr *ch = block_expr->children[i];
+    if (!ch->is_list) {
+      // Likely a keyword like :preds or :term — skip it AND
+      // its following value.
+      if (ch->atom && ch->atom[0] == ':') i++;
+      continue;
+    }
+    if (starts_with_atom(ch, "inst")) {
+      CGv2Inst *inst = build_inst(c, ch);
+      if (c.err) return 0;
+      b->body.add(inst);
+    }
+  }
   return b;
 }
 

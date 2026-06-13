@@ -127,7 +127,8 @@ class CGv2Value : public gc {
 enum CGv2Op {
   CG2_NOP,
   CG2_MOVE,
-  // Body ops lands per-test.
+  // Body ops:
+  CG2_BINOP,           // sub_op selects add/sub/mul/lt/eq/...
   // Terminators:
   CG2_BR,
   CG2_COND_BR,
@@ -135,10 +136,20 @@ enum CGv2Op {
   CG2_UNREACHABLE,
 };
 
+// Sub-kind for CG2_BINOP (and later CG2_UNOP/CG2_CAST). Lands
+// one entry per landing test: test 04 adds ADD; test 05 adds
+// LT; etc. CG2B_NONE is the default for non-binop insts.
+enum CGv2BinSub {
+  CG2B_NONE,
+  CG2B_ADD,
+};
+
 class CGv2Inst : public gc {
  public:
   int id;
+  cchar *name;              // textual id (%i0); optional
   CGv2Op op;
+  CGv2BinSub sub_op;        // CG2B_NONE for non-binop
 
   Vec<CGv2Value *> rvals;
   Vec<CGv2Value *> lvals;
@@ -148,7 +159,7 @@ class CGv2Inst : public gc {
   CGv2Block *br_true;       // CG2_COND_BR
   CGv2Block *br_false;      // CG2_COND_BR
 
-  CGv2Inst() : id(0), op(CG2_NOP),
+  CGv2Inst() : id(0), name(0), op(CG2_NOP), sub_op(CG2B_NONE),
                br_target(0), br_true(0), br_false(0) {}
 };
 

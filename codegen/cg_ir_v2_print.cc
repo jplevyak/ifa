@@ -112,6 +112,40 @@ static void print_const(Buf &b, CGv2Value *v) {
   b.put(')');
 }
 
+static cchar *binop_name(CGv2BinSub s) {
+  switch (s) {
+    case CG2B_ADD:  return "add";
+    case CG2B_NONE: return "?";
+  }
+  return "?";
+}
+
+static void print_inst(Buf &b, CGv2Inst *inst) {
+  b.puts_("      (inst %");
+  b.puts_(inst->name ? inst->name : "?");
+  switch (inst->op) {
+    case CG2_BINOP:
+      b.puts_(" binop ");
+      b.puts_(binop_name(inst->sub_op));
+      break;
+    default:
+      b.puts_(" nop");
+      break;
+  }
+  for (CGv2Value *v : inst->rvals) {
+    b.puts_(" %");
+    b.puts_(v->name ? v->name : "?");
+  }
+  if (inst->lvals.n > 0) {
+    b.puts_(" =>");
+    for (CGv2Value *v : inst->lvals) {
+      b.puts_(" %");
+      b.puts_(v->name ? v->name : "?");
+    }
+  }
+  b.put(')');
+}
+
 static void print_term(Buf &b, CGv2Inst *inst) {
   if (!inst) {
     b.puts_("(unreachable)");
@@ -156,7 +190,11 @@ static void print_block(Buf &b, CGv2Block *blk) {
     }
     b.put(')');
   }
-  // Body (empty in v0).
+  // Body insts.
+  for (CGv2Inst *inst : blk->body) {
+    b.put('\n');
+    print_inst(b, inst);
+  }
   // Terminator.
   b.puts_("\n      :term ");
   print_term(b, blk->terminator);

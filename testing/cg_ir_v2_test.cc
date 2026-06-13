@@ -473,3 +473,95 @@ int run_cg_ir_v2_emit_test03() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test03);
+
+// Phase 4 commit 5 — test 04 (sum2: local + binop add).
+//
+// Test 04: (fun %sum2 :formals (%a %b)
+//             (value %a/%b :formal) (value %s :local)
+//             (block %b0 (inst %i0 binop add %a %b => %s)
+//                        :term (ret %s)))
+//
+// Exercises:
+//   - (value %s :scope local)
+//   - body inst: (inst %i0 binop add %a %b => %s)
+//   - CGV_LOCAL def-use through value_map
+int run_cg_ir_v2_test04_roundtrip() {
+  cchar *text =
+      "((fun %sum2\n"
+      "   :signature (int64 int64 int64)\n"
+      "   :entry %b0\n"
+      "   :formals (%a %b)\n"
+      "   (value %a :type int64 :scope formal)\n"
+      "   (value %b :type int64 :scope formal)\n"
+      "   (value %s :type int64 :scope local)\n"
+      "   (block %b0\n"
+      "     (inst %i0 binop add %a %b => %s)\n"
+      "     :term (ret %s))))";
+  if (!run_one("test04", text, 1, "sum2")) return 1;
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_test04_roundtrip);
+
+int run_cg_ir_v2_emit_test04() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *text =
+      "((fun %sum2\n"
+      "   :signature (int64 int64 int64)\n"
+      "   :entry %b0\n"
+      "   :formals (%a %b)\n"
+      "   (value %a :type int64 :scope formal)\n"
+      "   (value %b :type int64 :scope formal)\n"
+      "   (value %s :type int64 :scope local)\n"
+      "   (block %b0\n"
+      "     (inst %i0 binop add %a %b => %s)\n"
+      "     :term (ret %s))))";
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+
+  llvm::Function *fn = TheModule->getFunction("sum2");
+  if (!fn) { printf("  'sum2' not found\n"); return 1; }
+  if (fn->arg_size() != 2) {
+    printf("  'sum2' expected 2 args, got %u\n",
+           (unsigned)fn->arg_size());
+    return 1;
+  }
+
+  llvm::BasicBlock &bb = fn->getEntryBlock();
+  // Expect an Add inst feeding the Ret.
+  auto *ret = llvm::dyn_cast<llvm::ReturnInst>(bb.getTerminator());
+  if (!ret) { printf("  no Ret\n"); return 1; }
+  llvm::Value *rv = ret->getReturnValue();
+  auto *bo = llvm::dyn_cast<llvm::BinaryOperator>(rv);
+  if (!bo || bo->getOpcode() != llvm::Instruction::Add) {
+    printf("  ret value is not an Add\n");
+    return 1;
+  }
+  // Operands must be the function's two args, in order.
+  llvm::Argument *arg0 = &*fn->arg_begin();
+  llvm::Argument *arg1 = &*std::next(fn->arg_begin());
+  if (bo->getOperand(0) != arg0 || bo->getOperand(1) != arg1) {
+    printf("  add operands are not (arg0, arg1)\n");
+    return 1;
+  }
+
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test04);
