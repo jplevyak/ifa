@@ -115,6 +115,7 @@ static void print_const(Buf &b, CGv2Value *v) {
 static cchar *binop_name(CGv2BinSub s) {
   switch (s) {
     case CG2B_ADD:  return "add";
+    case CG2B_LT:   return "lt";
     case CG2B_NONE: return "?";
   }
   return "?";
@@ -165,6 +166,24 @@ static void print_term(Buf &b, CGv2Inst *inst) {
       b.puts_("(br %");
       b.puts_(inst->br_target && inst->br_target->name
                   ? inst->br_target->name
+                  : "?");
+      b.put(')');
+      break;
+    case CG2_COND_BR:
+      b.puts_("(cond_br ");
+      if (inst->rvals.n > 0 && inst->rvals[0]->name) {
+        b.put('%');
+        b.puts_(inst->rvals[0]->name);
+      } else {
+        b.put('?');
+      }
+      b.puts_(" %");
+      b.puts_(inst->br_true && inst->br_true->name
+                  ? inst->br_true->name
+                  : "?");
+      b.puts_(" %");
+      b.puts_(inst->br_false && inst->br_false->name
+                  ? inst->br_false->name
                   : "?");
       b.put(')');
       break;

@@ -142,6 +142,7 @@ enum CGv2Op {
 enum CGv2BinSub {
   CG2B_NONE,
   CG2B_ADD,
+  CG2B_LT,
 };
 
 class CGv2Inst : public gc {

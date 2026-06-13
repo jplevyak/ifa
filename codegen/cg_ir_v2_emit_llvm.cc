@@ -163,11 +163,15 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       llvm::Value *b = resolve_value(ctx, inst->rvals[1]);
       if (!a || !b) return;
       llvm::Value *r = nullptr;
+      cchar *out = inst->lvals[0]->name ? inst->lvals[0]->name : "";
       switch (inst->sub_op) {
         case CG2B_ADD:
-          r = Builder->CreateAdd(a, b,
-                                  inst->lvals[0]->name
-                                      ? inst->lvals[0]->name : "");
+          r = Builder->CreateAdd(a, b, out);
+          break;
+        case CG2B_LT:
+          // v0 supports signed-integer LT only. Unsigned /
+          // float / typed-bool paths land when their tests do.
+          r = Builder->CreateICmpSLT(a, b, out);
           break;
         case CG2B_NONE:
           return;
@@ -214,6 +218,14 @@ void emit_terminator(CGv2Inst *term, CGv2Block *blk, EmitFunCtx &ctx) {
       if (term->br_target) target = ctx.blk_map.get(term->br_target);
       if (!target) Builder->CreateUnreachable();
       else Builder->CreateBr(target);
+      break;
+    }
+    case CG2_COND_BR: {
+      llvm::BasicBlock *tb = term->br_true ? ctx.blk_map.get(term->br_true) : nullptr;
+      llvm::BasicBlock *fb = term->br_false ? ctx.blk_map.get(term->br_false) : nullptr;
+      llvm::Value *cond = term->rvals.n > 0 ? resolve_value(ctx, term->rvals[0]) : nullptr;
+      if (!tb || !fb || !cond) Builder->CreateUnreachable();
+      else Builder->CreateCondBr(cond, tb, fb);
       break;
     }
     case CG2_UNREACHABLE:

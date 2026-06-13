@@ -565,3 +565,114 @@ int run_cg_ir_v2_emit_test04() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test04);
+
+// Phase 4 commit 6 — test 05 (sign: cond_br + binop lt).
+//
+// sign(x) = -1 if x < 0 else 1
+//
+// Exercises:
+//   - multi-block CFG with cond_br divergence
+//   - binop lt (signed int cmp)
+//   - bool-typed local (the icmp result)
+//   - constants returned in distinct successors
+//   - negative int constant (int -1)
+static cchar *test05_text =
+    "((const %neg1 (int -1) :type int64)\n"
+    " (const %one  (int  1) :type int64)\n"
+    " (const %zero (int  0) :type int64)\n"
+    " (fun %sign\n"
+    "   :signature (int64 int64)\n"
+    "   :entry %b0\n"
+    "   :formals (%x)\n"
+    "   (value %x :type int64 :scope formal)\n"
+    "   (value %t0 :type bool :scope local)\n"
+    "   (block %b0\n"
+    "     (inst %i0 binop lt %x %zero => %t0)\n"
+    "     :term (cond_br %t0 %b1 %b2))\n"
+    "   (block %b1\n"
+    "     :preds (%b0)\n"
+    "     :term (ret %neg1))\n"
+    "   (block %b2\n"
+    "     :preds (%b0)\n"
+    "     :term (ret %one))))";
+
+int run_cg_ir_v2_test05_roundtrip() {
+  if (!run_one("test05", test05_text, 1, "sign")) return 1;
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_test05_roundtrip);
+
+int run_cg_ir_v2_emit_test05() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(test05_text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+
+  llvm::Function *fn = TheModule->getFunction("sign");
+  if (!fn) { printf("  'sign' not found\n"); return 1; }
+  if (fn->size() != 3) {
+    printf("  'sign' has %u blocks, expected 3\n",
+           (unsigned)fn->size());
+    return 1;
+  }
+
+  // Entry block must end in CondBr(icmp slt, true_block, false_block).
+  llvm::BasicBlock &entry = fn->getEntryBlock();
+  auto *br = llvm::dyn_cast<llvm::BranchInst>(entry.getTerminator());
+  if (!br || !br->isConditional()) {
+    printf("  entry terminator is not a CondBr\n");
+    return 1;
+  }
+  auto *cmp = llvm::dyn_cast<llvm::ICmpInst>(br->getCondition());
+  if (!cmp || cmp->getPredicate() != llvm::CmpInst::ICMP_SLT) {
+    printf("  CondBr cond is not an ICmp SLT\n");
+    return 1;
+  }
+  llvm::Argument *arg0 = &*fn->arg_begin();
+  if (cmp->getOperand(0) != arg0) {
+    printf("  ICmp lhs is not arg0\n");
+    return 1;
+  }
+  auto *rhs = llvm::dyn_cast<llvm::ConstantInt>(cmp->getOperand(1));
+  if (!rhs || rhs->getSExtValue() != 0) {
+    printf("  ICmp rhs is not 0\n");
+    return 1;
+  }
+
+  // Each successor must return a distinct constant.
+  llvm::BasicBlock *tb = br->getSuccessor(0);
+  llvm::BasicBlock *fb = br->getSuccessor(1);
+  auto check_ret = [](llvm::BasicBlock *b, int64_t want) -> bool {
+    auto *r = llvm::dyn_cast<llvm::ReturnInst>(b->getTerminator());
+    if (!r) return false;
+    auto *c = llvm::dyn_cast<llvm::ConstantInt>(r->getReturnValue());
+    return c && c->getSExtValue() == want;
+  };
+  if (!check_ret(tb, -1)) {
+    printf("  true block does not return -1\n");
+    return 1;
+  }
+  if (!check_ret(fb, 1)) {
+    printf("  false block does not return 1\n");
+    return 1;
+  }
+
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test05);

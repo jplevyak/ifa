@@ -218,6 +218,8 @@ static CGv2Sig *build_sig(BuildCtx &c, SExpr *sig_expr) {
   return s;
 }
 
+static CGv2Value *resolve_value_ref(BuildCtx &c, SExpr *vref);
+
 // Parse a terminator instruction.
 static CGv2Inst *build_term(BuildCtx &c, SExpr *term_expr) {
   if (!term_expr || !term_expr->is_list || term_expr->children.n == 0) {
@@ -271,6 +273,29 @@ static CGv2Inst *build_term(BuildCtx &c, SExpr *term_expr) {
       return 0;
     }
     inst->br_target = b;
+  } else if (strcmp(op, "cond_br") == 0) {
+    inst->op = CG2_COND_BR;
+    if (term_expr->children.n != 4) {
+      c.fail_at(term_expr, "cond_br needs cond, then-block, else-block");
+      return 0;
+    }
+    CGv2Value *cond = resolve_value_ref(c, term_expr->children[1]);
+    if (c.err) return 0;
+    inst->rvals.add(cond);
+    SExpr *tref = term_expr->children[2];
+    SExpr *fref = term_expr->children[3];
+    cchar *tn = tref->atom;
+    if (tn[0] == '%') tn++;
+    cchar *fn = fref->atom;
+    if (fn[0] == '%') fn++;
+    CGv2Block *tb = c.blocks_by_name.get(tn);
+    CGv2Block *fb = c.blocks_by_name.get(fn);
+    if (!tb || !fb) {
+      c.fail_at(term_expr, "cond_br block target unknown");
+      return 0;
+    }
+    inst->br_true = tb;
+    inst->br_false = fb;
   } else if (strcmp(op, "unreachable") == 0) {
     inst->op = CG2_UNREACHABLE;
   } else {
@@ -341,6 +366,8 @@ static CGv2Inst *build_inst(BuildCtx &c, SExpr *e) {
     cchar *st = sub->atom;
     if (strcmp(st, "add") == 0) {
       inst->sub_op = CG2B_ADD;
+    } else if (strcmp(st, "lt") == 0) {
+      inst->sub_op = CG2B_LT;
     } else {
       c.fail_at(sub, "unsupported binop sub-op");
       return 0;
