@@ -61,6 +61,12 @@ extern std::unique_ptr<llvm::IRBuilder<>> Builder;
 extern int  write_llvm_prim(Fun *ifa_fun, PNode *n);
 extern void write_send(Fun *ifa_fun, PNode *n);
 
+// Used by Track 3 (phi/phy placement) to emit a single MOVE in
+// the predecessor block. Reuses the IF1 path's value cache so
+// the resulting LLVM IR matches the existing translateFunctionBody
+// pattern byte-for-byte.
+extern void simple_move(Var *lhs, Var *rhs, Fun *ifa_fun);
+
 // GC_malloc declaration helper. Same pattern as the per-prim
 // emitter (see llvm_primitives.cc:624). Used by CG_ALLOC and
 // CG_LOAD_FIELD's closure-create paths.
@@ -158,6 +164,50 @@ static void materialize_blocks(EmitCtx &ctx) {
 }
 
 // ---------------------------------------------------------------------------
+// Track 3 — phi/phy placement at predecessor blocks
+// ---------------------------------------------------------------------------
+//
+// Phase 2.4's `materialize_phi_phy` / `materialize_phi` in
+// `cg_normalize.cc` emit phi/phy MOVEs as CG_STOREs in the source
+// PNode's block. That's correct for single-successor flows, but
+// the LLVM SSA model wants phi MOVEs placed in the PREDECESSOR
+// block (each predecessor stores into the phi'd slot before
+// branching, so the successor reads the correct value).
+//
+// For the parallel emitter, we ignore the in-body phi/phy
+// CG_STOREs (they're informational — they show in the
+// cg-normalize golden) and instead walk `source_pn->phi` /
+// `source_pn->phy` at terminator time, emitting MOVEs in the
+// right blocks. This mirrors the IF1 emitter's
+// `do_phi_nodes` / `do_phy_nodes` at translate_code_goto /
+// translate_code_if call sites.
+
+// Mirrors do_phy_nodes / do_phi_nodes from llvm_codegen.cc. For
+// each phy MOVE p in spn->phy, emit `simple_move(p->lvals[isucc],
+// p->rvals[0])`. For each phi MOVE pp in cfg_succ[isucc]->phi,
+// emit `simple_move(pp->lvals[0], pp->rvals[pred_idx])`.
+static void emit_phi_phy(PNode *spn, int isucc, EmitCtx &ctx) {
+  if (!spn || !ctx.cf || !ctx.cf->source_fun) return;
+  Fun *sf = ctx.cf->source_fun;
+  for (PNode *p : spn->phy) {
+    if (p->lvals.n > isucc && p->rvals.n > 0) {
+      simple_move(p->lvals[isucc], p->rvals[0], sf);
+    }
+  }
+  if (spn->cfg_succ.n > isucc) {
+    PNode *succ = spn->cfg_succ[isucc];
+    if (succ && succ->phi.n) {
+      int pred_idx = succ->cfg_pred_index.get(spn);
+      for (PNode *pp : succ->phi) {
+        if (pp->rvals.n > pred_idx && pp->lvals.n > 0) {
+          simple_move(pp->lvals[0], pp->rvals[pred_idx], sf);
+        }
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Per-CG_OP emitter (Phase 3.3)
 // ---------------------------------------------------------------------------
 
@@ -165,17 +215,25 @@ static void emit_cg_inst(CGInst *inst, EmitCtx &ctx);
 
 // Terminator emission. The CGBlock passed in supplies succs for
 // branches; CG_RET's value comes from the inst's rvals[0] (when
-// present).
+// present). For CG_BR / CG_COND_BR, phi/phy MOVEs (from
+// `source_pn->phi` and `source_pn->phy`) are emitted before
+// the branch — placed in the current block for CG_BR, in
+// per-successor intermediate blocks for CG_COND_BR. See Track 3
+// notes above.
 static void emit_terminator(CGInst *term, CGBlock *blk, EmitCtx &ctx) {
   if (!term) {
     Builder->CreateUnreachable();
     return;
   }
+  PNode *spn = term->source_pn;
   switch (term->op) {
     case CG_BR: {
       llvm::BasicBlock *target = nullptr;
       if (blk->succs.n) target = ctx.blk_map.get(blk->succs[0]);
       if (!target) { Builder->CreateUnreachable(); return; }
+      // phi/phy MOVEs go at end of current block, before the
+      // unconditional branch.
+      if (spn) emit_phi_phy(spn, 0, ctx);
       Builder->CreateBr(target);
       break;
     }
@@ -184,7 +242,30 @@ static void emit_terminator(CGInst *term, CGBlock *blk, EmitCtx &ctx) {
       llvm::BasicBlock *tbb = blk->succs.n > 0 ? ctx.blk_map.get(blk->succs[0]) : nullptr;
       llvm::BasicBlock *fbb = blk->succs.n > 1 ? ctx.blk_map.get(blk->succs[1]) : nullptr;
       if (!cond || !tbb || !fbb) { Builder->CreateUnreachable(); return; }
-      Builder->CreateCondBr(cond, tbb, fbb);
+      // Constant-folded condition: skip intermediate blocks, branch
+      // directly. Matches translate_code_if's optimization.
+      if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(cond)) {
+        llvm::BasicBlock *target = ci->isOne() ? tbb : fbb;
+        int isucc = ci->isOne() ? 0 : 1;
+        if (spn) emit_phi_phy(spn, isucc, ctx);
+        Builder->CreateBr(target);
+        break;
+      }
+      // Dynamic condition: create per-branch intermediate blocks
+      // and place phi/phy MOVEs in each before branching to the
+      // real successor. Mirrors translate_code_if's pattern
+      // (llvm_codegen.cc:562-578).
+      llvm::BasicBlock *if_true_bb =
+          llvm::BasicBlock::Create(*TheContext, "if.true", ctx.llvm_fun);
+      llvm::BasicBlock *if_false_bb =
+          llvm::BasicBlock::Create(*TheContext, "if.false", ctx.llvm_fun);
+      Builder->CreateCondBr(cond, if_true_bb, if_false_bb);
+      Builder->SetInsertPoint(if_true_bb);
+      if (spn) emit_phi_phy(spn, 0, ctx);
+      Builder->CreateBr(tbb);
+      Builder->SetInsertPoint(if_false_bb);
+      if (spn) emit_phi_phy(spn, 1, ctx);
+      Builder->CreateBr(fbb);
       break;
     }
     case CG_RET: {

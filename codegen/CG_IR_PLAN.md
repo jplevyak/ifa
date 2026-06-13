@@ -954,11 +954,28 @@ work splits into four tracks:
    driver. Unit test `run_emit_llvm_module_call_no_source`
    verifies graceful no-op when source_pn is null.
 
-3. **phi/phy materialization** — Phase 2.4 emits phi/phy as
-   CG_STOREs in the source block; LLVM IR semantics require phi
-   to live in the predecessor block (or use llvm::PHINode in
-   the successor). The emitter walks each CGBlock's preds and
-   places the phi STOREs accordingly. ~80 LOC.
+3. ~~phi/phy materialization~~ **LANDED**. `emit_terminator`
+   in `emit_cg.cc` walks `source_pn->phi` / `source_pn->phy`
+   and emits MOVEs via `simple_move` (un-static'd from
+   `llvm_codegen.cc` and reused verbatim). Placement matches
+   the IF1 emitter's pattern:
+   - **CG_BR**: phi/phy MOVEs go at end of current block,
+     before the unconditional branch.
+   - **CG_COND_BR (dynamic)**: per-branch intermediate
+     blocks (`if.true` / `if.false`) hold the phi/phy MOVEs
+     with `isucc=0` / `isucc=1`, then branch to the real
+     successors. Mirrors `translate_code_if` lines 562-578.
+   - **CG_COND_BR (constant-folded)**: skip intermediate
+     blocks, emit phi/phy for the taken side only, branch
+     directly. Matches the IF1 emitter's constant-fold path.
+   - **CG_RET / CG_UNREACHABLE**: no phi/phy (no successor).
+   Phase 2.4's in-body phi/phy CG_STOREs are kept in
+   `cg_normalize.cc` as informational record (visible in the
+   cg-normalize golden); the LLVM emitter ignores them and
+   walks `source_pn` directly. Track 4's print_ir swap will
+   need to ensure no double-emission — either by gating the
+   Phase 2.4 emission or by skipping marked CG_STOREs in
+   emit_cg_inst (the simpler path).
 
 4. **print_ir simplification** — once 1-3 land and the unit
    tests + cg-normalize fixtures show the parallel path matches

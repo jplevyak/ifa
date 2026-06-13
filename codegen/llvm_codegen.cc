@@ -513,7 +513,7 @@ static void translate_code_goto(PNode *pn, Fun *ifa_fun) {
   Builder->CreateBr(dest_bb);
 }
 
-static void simple_move(Var *lhs, Var *rhs, Fun *ifa_fun);  // forward decl
+void simple_move(Var *lhs, Var *rhs, Fun *ifa_fun);  // forward decl
 
 static void translate_code_move(PNode *pn, Fun *ifa_fun) {
   if (pn->lvals.n != 1 || pn->rvals.n != 1) {
@@ -586,7 +586,8 @@ static void translate_code_send(PNode *pn, Fun *ifa_fun) {
   write_send(ifa_fun, pn);
 }
 
-static void simple_move(Var *lhs, Var *rhs, Fun *ifa_fun) {
+// Exposed for emit_cg.cc (CG_IR_PLAN Phase 3.3 Track 3).
+void simple_move(Var *lhs, Var *rhs, Fun *ifa_fun) {
   // Early returns matching C backend's simple_move (cg.cc:497-501)
   if (!lhs->live) return;                                                  // Skip if LHS not live
   if (!rhs->type || !lhs->type) return;                                    // Skip if no types
