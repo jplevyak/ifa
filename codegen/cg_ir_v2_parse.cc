@@ -280,6 +280,8 @@ static CGv2Inst *build_term(BuildCtx &c, SExpr *term_expr) {
   return inst;
 }
 
+static CGv2Value *build_value_decl(BuildCtx &c, SExpr *e);
+
 static CGv2Block *build_block(BuildCtx &c, SExpr *block_expr) {
   // (block %name :label name? :preds (...) inst* :term term)
   if (!starts_with_atom(block_expr, "block")) {
@@ -357,6 +359,50 @@ static CGv2Fun *build_fun(BuildCtx &c, SExpr *fun_expr) {
 
   bool main_flag = find_kw(fun_expr, "main") >= 0;
   if (main_flag) f->is_main = true;
+
+  // Walk (value ...) decls first; they define formals/locals
+  // that block insts and terminators may reference. Each is
+  // registered in values_by_name and into f->formals/locals
+  // based on scope.
+  for (int i = 2; i < fun_expr->children.n; i++) {
+    SExpr *ch = fun_expr->children[i];
+    if (!ch->is_list || !starts_with_atom(ch, "value")) continue;
+    CGv2Value *v = build_value_decl(c, ch);
+    if (c.err) return 0;
+    c.values_by_name.put(v->name, v);
+    if (v->scope == CG2V_FORMAL) f->formals.add(v);
+    else if (v->scope == CG2V_LOCAL) f->locals.add(v);
+  }
+
+  // :formals (%x %y) — declares the ORDER of formals as they
+  // match the signature. Cross-check the count and reorder
+  // f->formals to follow this list. If absent, f->formals
+  // keeps the order of (value ...) decls.
+  int formals_kw = find_kw(fun_expr, "formals");
+  if (formals_kw >= 0) {
+    SExpr *flist = fun_expr->children[formals_kw + 1];
+    if (!flist->is_list) {
+      c.fail_at(flist, ":formals must be a list");
+      return 0;
+    }
+    Vec<CGv2Value *> ordered;
+    for (SExpr *fref : flist->children) {
+      if (fref->is_list || !fref->atom) {
+        c.fail_at(fref, "formal ref must be atom");
+        return 0;
+      }
+      cchar *fn = fref->atom;
+      if (fn[0] == '%') fn++;
+      CGv2Value *v = c.values_by_name.get(fn);
+      if (!v) {
+        c.fail_at(fref, ":formals references undeclared value");
+        return 0;
+      }
+      ordered.add(v);
+    }
+    f->formals.clear();
+    for (CGv2Value *v : ordered) f->formals.add(v);
+  }
 
   // Pre-pass: declare every block by name so forward
   // references (br to a block defined later) resolve. The
@@ -449,6 +495,57 @@ static void build_imm(BuildCtx &c, SExpr *expr, CGv2Immediate &out) {
   } else {
     c.fail_at(expr, "unknown immediate form");
   }
+}
+
+// Parse a CGv2ValueScope name. Returns true on success.
+static bool parse_scope(cchar *s, CGv2ValueScope &out) {
+  if (!s) return false;
+  if (strcmp(s, "local") == 0) { out = CG2V_LOCAL; return true; }
+  if (strcmp(s, "formal") == 0) { out = CG2V_FORMAL; return true; }
+  if (strcmp(s, "global") == 0) { out = CG2V_GLOBAL; return true; }
+  if (strcmp(s, "constant") == 0) { out = CG2V_CONSTANT; return true; }
+  if (strcmp(s, "fun_ref") == 0) { out = CG2V_FUN_REF; return true; }
+  if (strcmp(s, "symbol") == 0) { out = CG2V_SYMBOL; return true; }
+  return false;
+}
+
+// (value %name :type TYPE :scope SCOPE)
+//
+// Per-fun value declaration. Test 03 only needs the formal
+// case; locals/globals reuse the same form and land with their
+// tests.
+static CGv2Value *build_value_decl(BuildCtx &c, SExpr *e) {
+  if (e->children.n < 2) {
+    c.fail_at(e, "value decl needs %name");
+    return 0;
+  }
+  SExpr *nm = e->children[1];
+  if (nm->is_list || !nm->atom) {
+    c.fail_at(nm, "value name must be atom");
+    return 0;
+  }
+  cchar *name = nm->atom;
+  if (name[0] == '%') name++;
+
+  CGv2Value *v = new CGv2Value();
+  v->id = c.next_id++;
+  v->name = dupstr(name);
+  v->scope = CG2V_LOCAL;
+
+  int type_kw = find_kw(e, "type", 2);
+  if (type_kw >= 0) {
+    v->type = resolve_type(c, e->children[type_kw + 1]);
+    if (c.err) return 0;
+  }
+  int scope_kw = find_kw(e, "scope", 2);
+  if (scope_kw >= 0) {
+    SExpr *sx = e->children[scope_kw + 1];
+    if (sx->is_list || !sx->atom || !parse_scope(sx->atom, v->scope)) {
+      c.fail_at(sx, "unknown :scope");
+      return 0;
+    }
+  }
+  return v;
 }
 
 // (const %name (int N) :type TYPE)

@@ -375,3 +375,101 @@ int run_cg_ir_v2_emit_test02() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test02);
+
+// Phase 4 commit 4 — test 03 (identity fn) round-trip.
+//
+// Test 03: (fun %id :signature (int64 int64) ... :formals (%x)
+//           (value %x :type int64 :scope formal)
+//           (block %b0 :term (ret %x)))
+//
+// Exercises:
+//   - :formals (%x) syntax
+//   - (value %x :type T :scope formal) decl
+//   - CGV_FORMAL value resolution
+int run_cg_ir_v2_test03_roundtrip() {
+  cchar *text =
+      "((fun %id\n"
+      "   :signature (int64 int64)\n"
+      "   :entry %b0\n"
+      "   :formals (%x)\n"
+      "   (value %x :type int64 :scope formal)\n"
+      "   (block %b0\n"
+      "     :term (ret %x))))";
+  if (!run_one("test03", text, 1, "id")) return 1;
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_test03_roundtrip);
+
+// Phase 4 commit 4 — test 03 LLVM emit.
+//
+// Verify @id has signature i64(i64), one block, terminator
+// `ret i64 %x` where the returned value is the function's arg.
+int run_cg_ir_v2_emit_test03() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *text =
+      "((fun %id\n"
+      "   :signature (int64 int64)\n"
+      "   :entry %b0\n"
+      "   :formals (%x)\n"
+      "   (value %x :type int64 :scope formal)\n"
+      "   (block %b0\n"
+      "     :term (ret %x))))";
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+
+  llvm::Function *fn = TheModule->getFunction("id");
+  if (!fn) {
+    printf("  function 'id' not found\n");
+    return 1;
+  }
+  if (!fn->getReturnType()->isIntegerTy(64)) {
+    printf("  'id' return type is not i64\n");
+    return 1;
+  }
+  if (fn->arg_size() != 1) {
+    printf("  'id' expected 1 arg, got %u\n",
+           (unsigned)fn->arg_size());
+    return 1;
+  }
+  llvm::Argument *arg0 = &*fn->arg_begin();
+  if (!arg0->getType()->isIntegerTy(64)) {
+    printf("  'id' arg0 is not i64\n");
+    return 1;
+  }
+  if (fn->size() != 1) {
+    printf("  'id' has %u blocks, expected 1\n",
+           (unsigned)fn->size());
+    return 1;
+  }
+  auto *ret = llvm::dyn_cast<llvm::ReturnInst>(
+      fn->getEntryBlock().getTerminator());
+  if (!ret) {
+    printf("  'id' terminator is not Ret\n");
+    return 1;
+  }
+  if (ret->getReturnValue() != arg0) {
+    printf("  'id' did not return its arg\n");
+    return 1;
+  }
+
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test03);

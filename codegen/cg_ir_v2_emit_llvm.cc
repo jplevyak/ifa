@@ -216,6 +216,22 @@ void emit_fun(CGv2Fun *cf) {
       ft, llvm::Function::InternalLinkage,
       cf->name ? cf->name : "fn", TheModule.get());
 
+  // Bind formals into the per-fun value map. The CGv2Fun's
+  // formals vector is in signature order (parser enforces this
+  // when :formals (...) is present, else falls back to value
+  // decl order).
+  {
+    int i = 0;
+    for (llvm::Argument &a : ctx.llvm_fun->args()) {
+      if (i < cf->formals.n) {
+        CGv2Value *v = cf->formals[i];
+        if (v && v->name) a.setName(v->name);
+        ctx.value_map.put(v, &a);
+      }
+      i++;
+    }
+  }
+
   // Pre-allocate basic blocks so cross-block branches resolve.
   for (CGv2Block *b : cf->blocks) emit_block_skeleton(b, ctx);
 

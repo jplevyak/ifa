@@ -173,6 +173,30 @@ static void print_sig(Buf &b, CGv2Sig *sig) {
   b.put(')');
 }
 
+static cchar *scope_name(CGv2ValueScope s) {
+  switch (s) {
+    case CG2V_LOCAL:    return "local";
+    case CG2V_FORMAL:   return "formal";
+    case CG2V_GLOBAL:   return "global";
+    case CG2V_CONSTANT: return "constant";
+    case CG2V_FUN_REF:  return "fun_ref";
+    case CG2V_SYMBOL:   return "symbol";
+  }
+  return "local";
+}
+
+static void print_value_decl(Buf &b, CGv2Value *v) {
+  b.puts_("    (value %");
+  b.puts_(v->name ? v->name : "?");
+  if (v->type) {
+    b.puts_(" :type ");
+    print_type_ref(b, v->type);
+  }
+  b.puts_(" :scope ");
+  b.puts_(scope_name(v->scope));
+  b.put(')');
+}
+
 static void print_fun(Buf &b, CGv2Fun *f) {
   b.puts_("  (fun %");
   b.puts_(f->name ? f->name : "?");
@@ -183,7 +207,24 @@ static void print_fun(Buf &b, CGv2Fun *f) {
     b.puts_(f->entry->name);
   }
   if (f->is_main) b.puts_("\n    :main true");
+  if (f->formals.n > 0) {
+    b.puts_("\n    :formals (");
+    for (int i = 0; i < f->formals.n; i++) {
+      if (i) b.put(' ');
+      b.put('%');
+      b.puts_(f->formals[i]->name ? f->formals[i]->name : "?");
+    }
+    b.put(')');
+  }
   b.put('\n');
+  for (CGv2Value *v : f->formals) {
+    print_value_decl(b, v);
+    b.put('\n');
+  }
+  for (CGv2Value *v : f->locals) {
+    print_value_decl(b, v);
+    b.put('\n');
+  }
   for (int i = 0; i < f->blocks.n; i++) {
     if (i) b.put('\n');
     print_block(b, f->blocks[i]);
