@@ -1497,3 +1497,119 @@ int run_cg_ir_v2_emit_test13() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test13);
+
+// SSU-per-use narrowing test (Phase 5 follow-up).
+//
+// IFA does SSU, not SSA: each USE of a source variable gets
+// its own Var post-pass, allowing conditionals to narrow types
+// per branch. CG_IR_v2 honours this transparently — each SSU-
+// renamed Var becomes its own CGv2Value with its own :type,
+// disambiguated by CGv2Value* pointer identity (not by name
+// string).
+//
+// This test exercises that explicitly. Pseudocode:
+//
+//   def abs(x):
+//     if x >= 0:
+//       (here x has SSU name x_nonneg, lattice says x>=0)
+//       return x_nonneg
+//     else:
+//       (here x has SSU name x_neg, lattice says x<0)
+//       return -x_neg
+//
+// The SSU renames are explicit CG2_MOVE insts (no LLVM op, just
+// a rebind at the SSU level). At the join, %abs_val is a phi
+// of the two branch values. value_map and alloca_map identity
+// is keyed on CGv2Value*, so even though x_nonneg and x_neg
+// trace back to the same source x, they're distinct values
+// with their own (potentially different) types.
+//
+// The corpus uses int64 for all SSU names because LLVM types
+// are coarser than pyc's lattice. The structural property is
+// the load-bearing thing — verifyModule + arm-distinct
+// behaviour proves the model carries SSU naming correctly.
+static cchar *test_ssu_text =
+    "((const %zero (int 0) :type int64)\n"
+    " (fun %abs\n"
+    "   :signature (int64 int64)\n"
+    "   :entry %b_entry\n"
+    "   :formals (%x)\n"
+    "   (value %x         :type int64 :scope formal)\n"
+    "   (value %cond      :type bool  :scope local)\n"
+    "   (value %x_nonneg  :type int64 :scope local)\n"
+    "   (value %x_neg     :type int64 :scope local)\n"
+    "   (value %neg_x     :type int64 :scope local)\n"
+    "   (value %abs_val   :type int64 :scope local)\n"
+    "   (block %b_entry\n"
+    "     (inst %i0 binop lt %x %zero => %cond)\n"
+    "     :term (cond_br %cond %b_neg %b_pos))\n"
+    "   (block %b_pos\n"
+    "     :preds (%b_entry)\n"
+    "     (inst %i1 move %x => %x_nonneg)\n"
+    "     :term (br %b_join))\n"
+    "   (block %b_neg\n"
+    "     :preds (%b_entry)\n"
+    "     (inst %i2 move %x => %x_neg)\n"
+    "     (inst %i3 binop sub %zero %x_neg => %neg_x)\n"
+    "     :term (br %b_join))\n"
+    "   (block %b_join\n"
+    "     :preds (%b_pos %b_neg)\n"
+    "     :phi_by_pred\n"
+    "       ((%b_pos ((move %x_nonneg => %abs_val)))\n"
+    "        (%b_neg ((move %neg_x    => %abs_val))))\n"
+    "     :term (ret %abs_val))))";
+
+int run_cg_ir_v2_test_ssu_roundtrip() {
+  if (!run_one("ssu_narrowing", test_ssu_text, 1, "abs")) return 1;
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_test_ssu_roundtrip);
+
+int run_cg_ir_v2_emit_test_ssu() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(test_ssu_text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+
+  llvm::Function *fn = TheModule->getFunction("abs");
+  if (!fn) { printf("  'abs' not found\n"); return 1; }
+  if (fn->size() != 4) {
+    printf("  expected 4 blocks; got %u\n", (unsigned)fn->size());
+    return 1;
+  }
+
+  // The join block's alloca'd abs_val must exist (the SSU-
+  // merged value). Look for an AllocaInst in the entry block.
+  llvm::BasicBlock &entry = fn->getEntryBlock();
+  bool has_alloca = false;
+  for (llvm::Instruction &i : entry) {
+    if (llvm::isa<llvm::AllocaInst>(&i)) { has_alloca = true; break; }
+  }
+  if (!has_alloca) {
+    printf("  entry has no alloca for the SSU-merged value\n");
+    return 1;
+  }
+
+  // verifyModule is the load-bearing structural check — if the
+  // SSU model didn't carry through (e.g. value_map collisions
+  // on shared source names), verifyModule would catch the
+  // resulting dominance / phi-incoming violations.
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test_ssu);

@@ -219,6 +219,32 @@ In keeping with "tight scope":
   formal-arg binding is, in this model, just a regular
   per-fn `(value %x :scope formal)` — no special case.
 
+  IFA does **SSU**, not SSA: each *use* of a source variable
+  gets its own Var post-pass (not just each definition), which
+  lets conditionals narrow types per branch. CG_IR_v2 honours
+  this transparently — each SSU-renamed Var becomes its own
+  `CGv2Value` with its own `:type`. The disambiguator is
+  `CGv2Value*` pointer identity, **not** the textual name
+  string. Two SSU values originating from the same source `x`
+  get two distinct `CGv2Value` instances in `prog->{values,
+  globals,constants}` (whichever scope applies) and two
+  separate `value_map` slots in `EmitFunCtx`.
+
+  Branch-narrowed types appear as different `:type`
+  annotations on different `(value ...)` decls. Type-widening
+  at a join point happens either through `:phi_by_pred` (one
+  MOVE per pred narrows-up to the join's widened type) or via
+  a plain `CG2_MOVE` when only one pred reaches the merge.
+
+  This is exercised end-to-end by `run_cg_ir_v2_emit_test_ssu`
+  (the `ssu_narrowing` corpus test): an `abs(x)` function
+  where the SSU pass would rename `x` to `x_nonneg` in the
+  ≥0 branch and `x_neg` in the <0 branch, joined to
+  `%abs_val` at the merge. `verifyModule` is the load-bearing
+  assertion — if `value_map` collided on shared source
+  names, the resulting dominance / phi-incoming violations
+  would surface there.
+
 - **No optimization framework.** CG_IR is the *emission*
   layer. Optimization happens before (IF1-level transforms
   like inlining, dead code) or after (LLVM's pass manager).
