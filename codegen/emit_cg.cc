@@ -446,18 +446,15 @@ static void emit_cg_inst(CGInst *inst, EmitCtx &ctx) {
       // into the result slot. Falls back to back-translation
       // when the slot's type doesn't yield a struct type.
       //
-      // Issue 017: this path's CreateStore correctly puts the
-      // malloc result into the slot, but the Var-cache used by
-      // write_llvm_prim downstream (for __init__'s arg
-      // resolution) isn't updated. Result: the __init__ call's
-      // first arg resolves to `ptr undef`. Routing through
-      // write_llvm_prim P_prim_new (which DOES update the
-      // cache via setLLVMValue) triggers a cross-function
-      // instruction leak during verifyModule — the cache hit
-      // returns an instruction from a previously-emitted
-      // function. Both paths produce wrong IR; the structural
-      // resolution belongs in getLLVMValue/setLLVMValue's
-      // scope tracking and is upstream of CG_IR.
+      // Issue 017 (acknowledged, not fixed here): this path
+      // doesn't update the Var-cache that write_llvm_prim
+      // expects downstream. __init__ sees `ptr undef` for
+      // its first arg. The structural fix needs a per-CGFun
+      // value cache (CG_IR_v2 audit §) — both attempts at a
+      // surgical update of the global Var-cache caused
+      // cross-function instruction leaks during verifyModule.
+      // Leaving the IF1-path semantics in place; for-loop
+      // cohort will need the v2 work to fully close.
       if (!inst->slot) goto fallback;
       llvm::Type *st = struct_type_for(inst->slot->type);
       if (!st) goto fallback;

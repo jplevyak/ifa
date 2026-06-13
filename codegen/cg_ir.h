@@ -1,18 +1,55 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
-// CG_IR — the codegen-time intermediate representation produced by
-// `cg_normalize(fa)` and consumed by both the C backend
-// (`c_codegen_print_c`) and the LLVM backend
-// (`llvm_codegen_print_ir`).
+// CG_IR — codegen-time scaffolding produced by `cg_normalize(fa)`
+// and consumed by the LLVM backend (and Phase 4 onwards, the C
+// backend). The header declarations are the contract; cg_normalize
+// fills them in from IF1 state and emit_cg consumes them.
 //
-// Phase 1 of CG_IR_PLAN — header-only scaffolding. The
-// declarations here are the contract; the implementation in
-// `cg_normalize.cc` is a stub through Phase 1 and gets filled in
-// during Phase 2. The two printers continue to consume IF1
-// directly until Phases 3-4 swap them over.
+// Status (2026-06-13): SCAFFOLDING WITH ESCAPE HATCHES. CG_IR is
+// not an independent IR — see CG_IR_v2.md for the audit that
+// confirms this. The escape hatches:
+//
+// - **CGType wraps Sym**: all production emission paths reach
+//   the LLVM Type via `getLLVMType(CGType::source)`. CGType's
+//   `kind`, `bits`, `field_names` are decorative (read only by
+//   the cg-normalize golden printer).
+//
+// - **CGSlot wraps Var**: `slot_pointer(CGSlot)` falls back to
+//   `cg_get_llvm_value(source_var)` in production. CGSlot::
+//   llvm_handle is set only in standalone unit tests.
+//
+// - **CGValue is a thin tag over CGSlot**: only CG_V_SLOT is
+//   exercised in production. CG_V_INST and CG_V_IMMEDIATE are
+//   dead arms.
+//
+// - **CGInst::source_pn is THE dispatch key** (not a debugging
+//   aid as previously documented). Every back-translation in
+//   emit_cg_inst routes through `write_llvm_prim(source_fun,
+//   source_pn)`. Without source_pn, ~95% of CGInsts can't be
+//   emitted.
+//
+// What CG_IR genuinely contributes:
+//
+// - **CGBlock + block-level CFG**: per-basic-block iteration order
+//   (which the IF1 worklist didn't guarantee) and explicit
+//   `terminator` + `succs` metadata for the LLVM emitter.
+// - **emit_terminator's phi/phy placement**: phi/phy MOVEs are
+//   emitted in predecessor blocks rather than at the source
+//   PNode — issue 016's structural fix.
+//
+// What CG_IR _doesn't_ contribute but should (CG_IR_v2 finding):
+//
+// - **Per-CGFun value cache**: the per-Var llvm::Value cache is
+//   program-scoped; llvm::Value identity is function-scoped. This
+//   gap is the structural root of issue 017 (construction-flow
+//   `ptr undef`, cross-function instruction leak). A surgical fix
+//   to update the program-scoped cache from emit_cg_inst causes
+//   verifyModule failures, confirming the cache needs to move
+//   on-CGFun. Deferred to v2.
 //
 // Design rationale: see [ifa/CODE_GEN_IR.md](../CODE_GEN_IR.md).
 // Execution plan: see [CG_IR_PLAN.md](CG_IR_PLAN.md).
+// Honest assessment after the swap: see [CG_IR_v2.md](CG_IR_v2.md).
 
 #ifndef _cg_ir_H_
 #define _cg_ir_H_
@@ -43,9 +80,12 @@ class CGSlot;
 class CGType;
 
 // =====================================================================
-// CGType — explicit "what this value or slot holds" at LLVM-IR / C
-// level. Replaces the on-the-fly derivation from Sym's flag soup
-// (`type_kind`, `num_kind`, `is_value_type`, `has.n`, `is_fun`).
+// CGType — wraps `Sym *source` for the emitter. Production
+// emission paths use `getLLVMType(source)`; the other fields
+// (kind/bits/fields/field_names/element/name) are populated by
+// cg_normalize for the cg-normalize golden printer's benefit
+// and are otherwise decorative. The audit (CG_IR_v2 §A) tagged
+// CGType for v2 removal.
 // =====================================================================
 
 enum CGTypeKind {
@@ -86,7 +126,13 @@ class CGType : public gc {
 };
 
 // =====================================================================
-// CGSlot — addressable storage. Globals, formal-arg slots, locals.
+// CGSlot — wraps `Var *source_var` (and `Sym *source_sym` for
+// globals/constants). `slot_pointer(CGSlot)` in production falls
+// back to `cg_get_llvm_value(source_var)` because cg_normalize
+// never populates `llvm_handle` outside unit-test scaffolding.
+// The other fields (kind/name/cg_name/id/imm) are populated
+// by cg_normalize for the cg-normalize golden printer's benefit.
+// Audit (CG_IR_v2 §B) tagged for v2 removal.
 // =====================================================================
 
 enum CGSlotKind {
@@ -116,8 +162,10 @@ class CGSlot : public gc {
 };
 
 // =====================================================================
-// CGValue — a use-site reference. Either an immediate, a slot
-// (resolved via CG_LOAD), or the result of a prior CGInst (SSA).
+// CGValue — tagged reference. In production only CG_V_SLOT is
+// exercised; CG_V_INST and CG_V_IMMEDIATE are dead arms. The
+// SLOT path delegates through CGSlot's source_var fallback.
+// Audit (CG_IR_v2 §C) tagged for v2 collapse to a plain Var*.
 // =====================================================================
 
 enum CGValueKind {
@@ -180,7 +228,11 @@ class CGInst : public gc {
   cchar *prim_name;              // for CG_PRIM_CGFN dispatch
   unsigned src_line;             // for !dbg
   cchar *src_file;
-  PNode *source_pn;              // back-ref for debugging
+  PNode *source_pn;              // LOAD-BEARING dispatch key — every
+                                 //   back-translation calls
+                                 //   write_llvm_prim(source_fun, source_pn)
+                                 //   (~95% of CGInsts in production).
+                                 //   NOT a debugging aid.
   // Phase 2.4 emits phi/phy MOVEs as CG_STOREs in the block body
   // so the cg-normalize golden visualizes them. The LLVM emitter
   // re-emits the same MOVEs at terminator time via
@@ -245,9 +297,14 @@ class CGProgram : public gc {
   CGFun *main_fun;               // entry point (pyc __main__)
   Vec<CGSlot *> globals;
   Vec<CGType *> types;           // emitted at top of C output
-  Map<Fun *, CGFun *> fun_map;   // for cross-Fun call resolution
-  Map<Sym *, CGSlot *> sym_to_slot;
-  Map<Sym *, CGType *> sym_to_type;
+  Map<Fun *, CGFun *> fun_map;   // load-bearing — translateFunctionBody
+                                 //   looks up the CGFun for the current
+                                 //   Fun here.
+  Map<Sym *, CGSlot *> sym_to_slot;  // populated by cg_normalize, read
+                                     //   only by the cg-normalize golden
+                                     //   printer. CG_IR_v2 §D removal
+                                     //   candidate.
+  Map<Sym *, CGType *> sym_to_type;  // same — golden-only.
   IFACallbacks *frontend;        // c_codegen_pre_file et al.
 
   CGProgram() : main_fun(0), frontend(0) {}

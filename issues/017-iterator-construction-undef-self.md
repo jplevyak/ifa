@@ -170,6 +170,47 @@ For this session, no further code change. The structural
 insights are recorded; the deeper fix requires upstream work
 that's out of the CG_IR plan's scope.
 
+## Update 2026-06-13 — confirmed structural via CG_IR_v2 audit
+
+The CG_IR_v2 audit (`ifa/codegen/CG_IR_v2.md`) traced this
+issue's root cause to CG_IR's biggest architectural miss: the
+per-Var llvm::Value cache is program-scoped, but llvm::Value
+identity is function-scoped. Three surgical fixes were
+attempted post-audit:
+
+1. **cg_set_llvm_value directly after CG_ALLOC direct
+   emission** (bypassing setLLVMValue's store branches).
+   Result: verifyModule rejects with cross-function
+   instruction leak — overwriting the program-scoped cache
+   with a function-local value contaminates other functions'
+   reads.
+
+2. **Branched cg_set_llvm_value / CreateStore** that only
+   writes the cache when no AllocaInst/GlobalVariable is
+   already there, and only emits CreateStore when the
+   existing handle's function matches the current Builder's
+   function. Result: still verifyModule failure — the
+   contamination happens before the guard can detect it.
+
+3. **Routing CG_ALLOC through write_llvm_prim P_prim_new**
+   via the back-translation fallback (with `inst->prim`
+   populated). Result: same verifyModule failure — the IF1
+   path's setLLVMValue inside write_llvm_prim hits the same
+   contamination, but the IF1 path's worklist BFS happens
+   to avoid the cross-function read order; the CG_IR
+   per-CGBlock iteration order exposes the bug.
+
+The structural resolution is a **per-CGFun value cache**
+(`Map<Var *, llvm::Value *>` on each CGFun), with
+emit_cg_inst's `resolve_value` and back-translation seam
+threading the CGFun through to write_llvm_prim. That's the
+CG_IR_v2 design.
+
+**Status**: documented, not implemented. Deferred to a v2
+landing that's properly scoped (not a one-session attempt).
+Issue 017 stays open with the understanding that closure
+requires the per-CGFun cache.
+
 ## Proposed fix
 
 The construction-flow chain is:
