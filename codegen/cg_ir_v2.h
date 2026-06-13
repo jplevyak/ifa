@@ -157,6 +157,7 @@ enum CGv2Op {
   CG2_FIELD_STORE,     // field_idx=N, rvals=(ptr, value)
   CG2_FIELD_LOAD,      // field_idx=N, rvals=(ptr), lvals[0]=loaded
   CG2_INDEX_LOAD,      // rvals=(ptr, idx), lvals[0]=loaded element
+  CG2_PRIM,            // prim_name + rvals=args, lvals[0]=result (optional)
   // Terminators:
   CG2_BR,
   CG2_COND_BR,
@@ -196,9 +197,13 @@ class CGv2Inst : public gc {
                             // :struct hint on CG2_FIELD_*
   int field_idx;            // CG2_FIELD_STORE / CG2_FIELD_LOAD
 
+  // For CG2_PRIM — name of the primitive (e.g. "write"). The
+  // emitter dispatches to a per-prim emit function by name.
+  cchar *prim_name;
+
   CGv2Inst() : id(0), name(0), op(CG2_NOP), sub_op(CG2B_NONE),
                br_target(0), br_true(0), br_false(0),
-               type_arg(0), field_idx(0) {}
+               type_arg(0), field_idx(0), prim_name(0) {}
 };
 
 // ============================================================

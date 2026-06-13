@@ -460,6 +460,43 @@ static CGv2Inst *build_inst(BuildCtx &c, SExpr *e) {
       if (in_lvals) inst->lvals.add(v);
       else inst->rvals.add(v);
     }
+  } else if (strcmp(op_tag, "prim") == 0) {
+    inst->op = CG2_PRIM;
+    // (inst %name prim :name "primname" %arg* [=> %dst])
+    int name_kw = find_kw(e, "name", 3);
+    if (name_kw < 0) {
+      c.fail_at(e, "prim missing :name");
+      return 0;
+    }
+    SExpr *nx = e->children[name_kw + 1];
+    if (nx->is_list || !nx->atom) {
+      c.fail_at(nx, "prim :name must be atom");
+      return 0;
+    }
+    // String literals come back from read_atom with surrounding
+    // quotes preserved. Strip them so the stored name is clean.
+    cchar *raw = nx->atom;
+    int rlen = strlen(raw);
+    if (rlen >= 2 && raw[0] == '"' && raw[rlen - 1] == '"') {
+      char *s = (char *)MALLOC(rlen - 1);
+      memcpy(s, raw + 1, rlen - 2);
+      s[rlen - 2] = 0;
+      inst->prim_name = s;
+    } else {
+      inst->prim_name = dupstr(raw);
+    }
+    bool in_lvals = false;
+    for (int i = 3; i < e->children.n; i++) {
+      SExpr *ch = e->children[i];
+      if (!ch->is_list && ch->atom) {
+        if (strcmp(ch->atom, "=>") == 0) { in_lvals = true; continue; }
+        if (ch->atom[0] == ':') { i++; continue; }
+      }
+      CGv2Value *v = resolve_value_ref(c, ch);
+      if (c.err) return 0;
+      if (in_lvals) inst->lvals.add(v);
+      else inst->rvals.add(v);
+    }
   } else if (strcmp(op_tag, "index_load") == 0) {
     inst->op = CG2_INDEX_LOAD;
     // (inst %name index_load %ptr %idx => %dst)

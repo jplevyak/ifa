@@ -1613,3 +1613,76 @@ int run_cg_ir_v2_emit_test_ssu() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test_ssu);
+
+// Phase A.1 — test 11 (prim escape hatch: write/writeln).
+//
+// First production-parity step. CG2_PRIM dispatches by name
+// to a per-prim emit function. v0 ships write + writeln only
+// (int64-typed args for write). Each subsequent IF1 prim adds
+// one branch to dispatch_prim — same per-test cadence as
+// Phase 4.
+//
+// def shout(n: int64):
+//   write(n)
+//   writeln()
+static cchar *test11_text =
+    "((fun %shout\n"
+    "   :signature (void int64)\n"
+    "   :entry %b0\n"
+    "   :formals (%n)\n"
+    "   (value %n :type int64 :scope formal)\n"
+    "   (block %b0\n"
+    "     (inst %i0 prim :name \"write\" %n)\n"
+    "     (inst %i1 prim :name \"writeln\")\n"
+    "     :term (ret))))";
+
+int run_cg_ir_v2_test11_roundtrip() {
+  if (!run_one("test11", test11_text, 1, "shout")) return 1;
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_test11_roundtrip);
+
+int run_cg_ir_v2_emit_test11() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(test11_text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+
+  llvm::Function *fn = TheModule->getFunction("shout");
+  llvm::Function *printf_fn = TheModule->getFunction("printf");
+  if (!fn || !printf_fn) {
+    printf("  shout or printf missing\n");
+    return 1;
+  }
+
+  // Two CallInsts to printf in shout's entry block.
+  int n_printf_calls = 0;
+  for (llvm::Instruction &i : fn->getEntryBlock()) {
+    if (auto *c = llvm::dyn_cast<llvm::CallInst>(&i)) {
+      if (c->getCalledFunction() == printf_fn) n_printf_calls++;
+    }
+  }
+  if (n_printf_calls != 2) {
+    printf("  expected 2 printf calls; got %d\n", n_printf_calls);
+    return 1;
+  }
+
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test11);

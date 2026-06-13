@@ -88,6 +88,42 @@ llvm::Type *to_llvm_type(CGv2Type *t) {
   return nullptr;
 }
 
+// Get-or-create a variadic printf declaration.
+llvm::Function *get_printf() {
+  llvm::Function *f = TheModule->getFunction("printf");
+  if (f) return f;
+  llvm::FunctionType *ft = llvm::FunctionType::get(
+      llvm::Type::getInt32Ty(*TheContext),
+      { llvm::PointerType::getUnqual(*TheContext) },
+      /*isVarArg=*/true);
+  return llvm::Function::Create(ft,
+      llvm::Function::ExternalLinkage, "printf",
+      TheModule.get());
+}
+
+// Get-or-create a private constant string global for a printf
+// format. Names by the format text so two emit sites for the
+// same format share one global. Returns a ptr to the first
+// char.
+llvm::Value *get_format_str(cchar *fmt, cchar *name_hint) {
+  std::string gname = std::string(".str.") + name_hint;
+  llvm::GlobalVariable *existing = TheModule->getNamedGlobal(gname);
+  if (existing) {
+    return Builder->CreateInBoundsGEP(
+        existing->getValueType(), existing,
+        { llvm::ConstantInt::get(llvm::Type::getInt32Ty(*TheContext), 0),
+          llvm::ConstantInt::get(llvm::Type::getInt32Ty(*TheContext), 0) });
+  }
+  llvm::Constant *c = llvm::ConstantDataArray::getString(*TheContext, fmt);
+  llvm::GlobalVariable *gv = new llvm::GlobalVariable(
+      *TheModule, c->getType(), /*isConstant=*/true,
+      llvm::GlobalValue::PrivateLinkage, c, gname);
+  return Builder->CreateInBoundsGEP(
+      c->getType(), gv,
+      { llvm::ConstantInt::get(llvm::Type::getInt32Ty(*TheContext), 0),
+        llvm::ConstantInt::get(llvm::Type::getInt32Ty(*TheContext), 0) });
+}
+
 // Get-or-create the GC_malloc(i64) -> ptr declaration.
 llvm::Function *get_gc_malloc() {
   llvm::Function *f = TheModule->getFunction("GC_malloc");
@@ -248,6 +284,47 @@ void put_result(EmitFunCtx &ctx, CGv2Value *dst, llvm::Value *r) {
   else ctx.value_map.put(dst, r);
 }
 
+// Per-prim emit functions. v0 ships write + writeln only
+// (int64 args for write). Each subsequent IF1 prim adds one
+// branch to dispatch_prim — same per-test cadence as Phase 4.
+
+void emit_prim_write(EmitFunCtx &ctx, CGv2Inst *inst) {
+  if (inst->rvals.n < 1) return;
+  llvm::Value *arg = resolve_value(ctx, inst->rvals[0]);
+  if (!arg) return;
+  CGv2Value *argv = inst->rvals[0];
+  cchar *fmt = nullptr;
+  if (argv->type && argv->type->kind == CG2T_INT &&
+      argv->type->bits == 64) {
+    fmt = "%lld";
+  } else if (argv->type && argv->type->kind == CG2T_INT) {
+    fmt = "%d";
+  } else {
+    // Unsupported arg type — emit nothing rather than malformed
+    // IR. Future landings extend coverage.
+    return;
+  }
+  llvm::Value *fmt_ptr = get_format_str(fmt, "write_int");
+  Builder->CreateCall(get_printf(), { fmt_ptr, arg });
+}
+
+void emit_prim_writeln(EmitFunCtx &ctx, CGv2Inst *inst) {
+  (void)ctx; (void)inst;
+  llvm::Value *fmt_ptr = get_format_str("\n", "writeln");
+  Builder->CreateCall(get_printf(), { fmt_ptr });
+}
+
+// Dispatch a CG2_PRIM by name to a per-prim emit function.
+// Unknown prims are silently no-op'd in v0 — landings extend
+// the switch one prim at a time.
+void dispatch_prim(EmitFunCtx &ctx, CGv2Inst *inst) {
+  if (!inst->prim_name) return;
+  cchar *n = inst->prim_name;
+  if (strcmp(n, "write") == 0) { emit_prim_write(ctx, inst); return; }
+  if (strcmp(n, "writeln") == 0) { emit_prim_writeln(ctx, inst); return; }
+  // Unknown — leave for a later landing.
+}
+
 void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
   switch (inst->op) {
     case CG2_ALLOC: {
@@ -395,6 +472,9 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       if (st) ctx.ptr_struct.put(dst, st);
       break;
     }
+    case CG2_PRIM:
+      dispatch_prim(ctx, inst);
+      break;
     case CG2_NOP:
     default:
       // Land per-test.
