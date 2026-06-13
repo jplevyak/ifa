@@ -17,10 +17,19 @@
 #include "ifadefs.h"
 
 #include "codegen/cg_ir_v2.h"
+#include "codegen/llvm.h"
+#include "codegen/llvm_internal.h"
 #include "unit.h"
 
+#include "llvm/IR/Function.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IR/Verifier.h"
+
+#include <memory>
 #include <stdio.h>
 #include <string.h>
+
+extern std::unique_ptr<llvm::Module> TheModule;
 
 namespace {
 
@@ -155,3 +164,113 @@ int run_cg_ir_v2_roundtrip() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_roundtrip);
+
+// Phase 4 commit 2 — minimal LLVM emit for test 01.
+//
+// Parse test 01, emit into a fresh LLVM module, verify the
+// module is well-formed and contains a function named "hi"
+// with void return and a ret void terminator.
+int run_cg_ir_v2_emit_test01() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *text =
+      "((fun %hi\n"
+      "   :signature (void)\n"
+      "   :entry %b0\n"
+      "   (block %b0\n"
+      "     :term (ret))))";
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+
+  // The "hi" function should be in TheModule.
+  llvm::Function *fn = TheModule->getFunction("hi");
+  if (!fn) {
+    printf("  function 'hi' not found in module\n");
+    return 1;
+  }
+  if (!fn->getReturnType()->isVoidTy()) {
+    printf("  'hi' return type is not void\n");
+    return 1;
+  }
+  if (fn->arg_size() != 0) {
+    printf("  'hi' has unexpected args (%u)\n",
+           (unsigned)fn->arg_size());
+    return 1;
+  }
+  if (fn->size() != 1) {
+    printf("  'hi' has %u blocks, expected 1\n",
+           (unsigned)fn->size());
+    return 1;
+  }
+  llvm::BasicBlock &bb = fn->getEntryBlock();
+  if (!bb.getTerminator()) {
+    printf("  'hi' entry block has no terminator\n");
+    return 1;
+  }
+  if (!llvm::isa<llvm::ReturnInst>(bb.getTerminator())) {
+    printf("  'hi' entry terminator is not Ret\n");
+    return 1;
+  }
+
+  // verifyModule on the whole module.
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test01);
+
+// Phase 4 commit 2 also covers the two-block br case so we
+// know the block CFG wiring works for non-trivial flows.
+int run_cg_ir_v2_emit_test01_br() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *text =
+      "((fun %two\n"
+      "   :signature (void)\n"
+      "   :entry %b0\n"
+      "   (block %b0\n"
+      "     :term (br %b1))\n"
+      "   (block %b1\n"
+      "     :preds (%b0)\n"
+      "     :term (ret))))";
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(text, &err);
+  if (!prog) { printf("  parse failed: %s\n", err ? err : ""); return 1; }
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+
+  llvm::Function *fn = TheModule->getFunction("two");
+  if (!fn || fn->size() != 2) {
+    printf("  expected fn 'two' with 2 blocks; got %s/%u\n",
+           fn ? "found" : "null", fn ? (unsigned)fn->size() : 0);
+    return 1;
+  }
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test01_br);

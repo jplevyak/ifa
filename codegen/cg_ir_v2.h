@@ -256,4 +256,11 @@ CGv2Program *cg_v2_parse(cchar *text, cchar **err);
 // Print a program to a freshly GC-allocated text buffer.
 cchar *cg_v2_print(CGv2Program *prog);
 
+// Emit a CGv2Program into the current LLVM Module
+// (TheModule from llvm.cc). Caller must initialize via
+// llvm_codegen_initialize first. Returns true on success;
+// on partial failure the module may be malformed (caller
+// should run verifyModule).
+bool cg_v2_emit_llvm_module(CGv2Program *prog);
+
 #endif // _cg_ir_v2_H_
