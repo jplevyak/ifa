@@ -1023,18 +1023,124 @@ work splits into four tracks:
    (`emit_cgfun_body`, slot_pointer fallback, materialize_blocks
    reuse, current_cg_program global, makefile inclusion of
    emit_cg.cc in LIB_SRCS) committed so the next attempt starts
-   from a clean state. Track 4 retry needs:
-   - Mark phi/phy CG_STOREs in cg_normalize.cc (add
-     `is_phi_phy` bit on CGInst) so emit_cg_inst skips them.
-   - Audit emit_cg_inst's direct emission against the IF1
-     reference: each CG_OP must produce IR semantically
-     identical to write_llvm_prim's per-prim handler, including
-     setLLVMValue side-effects so write_llvm_prim later reads
-     consistent values.
-   - Consider routing every CGInst through back-translation
-     (Track 2) initially, dropping Track 1's direct emission,
-     to confirm the wiring works. Then re-add Track 1 with
-     careful comparison against the IF1 reference.
+   from a clean state.
+
+   **Track 4 retry investigation (June 2026)**: re-applied the
+   swap and incrementally fixed four root causes, taking the
+   suite from 8/67 to 34/41 (3 below baseline). Findings:
+
+   - **Issue 4a — Duplicate allocas**: emit_cg.cc::
+     materialize_local_slots created ~24 fresh AllocaInsts per
+     function on top of allocate_locals's Var-keyed allocas.
+     **Fix landed**: skip CGSlots whose source_var/source_sym
+     already has cached llvm_value.
+
+   - **Issue 4b — Closer detection misses function-exit
+     @reply**: cg_normalize.cc's closer heuristic only set
+     `closer = w` for Code_SEND when `cfg_succ` left the block;
+     @primitive @reply at function exit has EMPTY cfg_succ.
+     Result: blocks defaulted to CG_UNREACHABLE instead of
+     CG_RET. **Fix landed**: treat empty cfg_succ as "leaves".
+
+   - **Issue 4c — Missing live gate**: translatePNode
+     (llvm_codegen.cc:666) returns early when
+     `!(pn->live && pn->fa_live)`; emit_cg_inst was missing
+     this. Non-live PNodes referenced types DCE had stripped
+     fields from, triggering `fail("could not resolve field
+     __getitem__ in type list")`. **Fix landed**: gate
+     emit_cg_inst on the same condition.
+
+   - **Issue 4d — Formals treated as locals**: allocate_locals
+     only creates allocas for non-formal Vars. Formals cache
+     the llvm::Argument directly (a value, not a pointer).
+     emit_cg_inst was emitting `load i1, i1 %self` which
+     verifyModule rejected. **Fix landed**: detect Arguments
+     and non-pointer values in resolve_value/CG_STORE.
+
+   **Remaining 3-test gap** (37→34): all EXEC failures.
+   `multi_assignment.py` reproduces the cleanest case —
+   `a = b = c = 1; print(a+b+c)` prints `2` instead of `3`.
+   The IR shows `load %a; add 1; add 1` — the assignment to
+   global `@a` never lands. Root cause: the IF1 path's
+   `setLLVMValue(var, val)` is an SSA-style cache RENAME, not
+   a store. Subsequent `getLLVMValue(var)` reads return the
+   cached val directly. emit_cg_inst's CG_STORE emits a real
+   `Builder->CreateStore(val, ptr)` and resolve_value's CG_V_SLOT
+   loads it back. The store/load round-trip is semantically
+   different from the cache rename: for globals, the store goes
+   to `@a` but the analyzer-resolved value at the AST level
+   reads from the local Var cache. The two don't synchronize,
+   so reads see `@a`'s initial value (0) rather than the stored
+   1.
+
+   **Track 4 RETRY PLAN** (next session):
+
+   1. **Phi/phy double-emission** (separate from the 4 fixes
+      above; not yet addressed in the retry investigation):
+      Phase 2.4's in-body phi/phy CG_STOREs are still being
+      emitted by emit_cg_inst (the live gate doesn't filter
+      them because Phase 2.4 sets the phi/phy MOVE PNode's
+      live bit from the source PNode). emit_terminator ALSO
+      emits the same MOVEs via simple_move. Need to mark these
+      CG_STOREs with an `is_phi_phy` bit on CGInst and skip
+      them in emit_cg_inst. Without this fix, every phi/phy
+      MOVE is written twice in any function with branches.
+
+   2. **SSA-style cache vs raw store**: the deeper issue is
+      that emit_cg_inst's CG_STORE doesn't update the IF1
+      path's Var cache. write_llvm_prim's later getLLVMValue
+      reads see stale cache. **Fix options**:
+      - **(a)** Replace `Builder->CreateStore` in CG_STORE with
+        `setLLVMValue(slot->source_var, val, source_fun)` when
+        source_var is set. This makes CG_STORE a cache rename
+        like simple_move, matching the IF1 path exactly. The
+        downside: emit_cg_inst becomes coupled to the IF1 Var
+        cache permanently, contradicting the Phase 5 cleanup
+        goal.
+      - **(b)** Make every Code_MOVE go through Track 2 (call
+        simple_move via back-translation) instead of emit_cg's
+        direct CG_STORE. This routes ALL semantic stores
+        through setLLVMValue. Simple to implement: in
+        emit_cg_inst, for CG_STORE with source_pn set, call
+        simple_move(source_pn->lvals[0], source_pn->rvals[0],
+        source_fun) and break. Direct CG_STORE only fires when
+        source_pn is unset (e.g. synthesized CGPrograms in
+        unit tests).
+      - **(c)** Keep CG_STORE direct emission, but ALSO call
+        setLLVMValue so the cache stays in sync. This is the
+        safest path during the swap; Phase 5 then strips the
+        setLLVMValue call.
+
+      Recommend **option (b)** — least intrusive, most
+      consistent with Phase 5 cleanup direction.
+
+   3. **CG_LOAD_FIELD/STORE_FIELD/ALLOC direct emission audit**:
+      these were already gated to back-translation when struct
+      resolution fails, but the direct-emission cases need to
+      use the same setLLVMValue route so subsequent reads
+      consult the cache. Apply the same fix as #2: when
+      source_pn is available, route through back-translation
+      instead of direct emission. Direct emission stays as the
+      synthesized-CGProgram path only.
+
+   4. **Verification protocol**: after each fix, run
+      `PYC_FLAGS=-b ./test_pyc -k multi_assignment` and check
+      stdout against the expected; this isolates the
+      cache-sync issue. Once multi_assignment passes, run the
+      full suite; expect a count rise toward 37, with possible
+      improvements (issue 016 cohort) lifting it beyond 37
+      once the cache-sync is correct.
+
+   5. **Phi/phy CGInst marking**: add `unsigned is_phi_phy : 1;`
+      to CGInst. Set in cg_normalize.cc's lower_move when
+      called from materialize_phi/phi_phy. emit_cg_inst skips
+      `is_phi_phy` instructions. emit_terminator continues to
+      walk source_pn->phi/phy and emit them.
+
+   The full retry is a focused, ~150 LOC change spread across
+   cg_normalize.cc, cg_ir.h, and emit_cg.cc. Expected payoff:
+   the production swap stays at or above 37/38, the issue 016
+   cohort starts passing (for-loop / iterator binding tests).
 
 The pyc-suite ratchet (§8.2) governs the cutover: 3.4 must
 hold ≥ 37 passes; landing 1-3 incrementally with no production
