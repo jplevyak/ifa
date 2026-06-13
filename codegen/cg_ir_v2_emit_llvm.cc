@@ -66,11 +66,39 @@ llvm::Type *to_llvm_type(CGv2Type *t) {
     case CG2T_SYMBOL:
     case CG2T_SUM:
       return llvm::PointerType::getUnqual(*TheContext);
-    case CG2T_STRUCT:
-      // Lands with test 08 (struct alloc + field access).
-      return nullptr;
+    case CG2T_STRUCT: {
+      // Look up by name first; if opaque (or absent), set its
+      // body. Using named structs keeps llvm IR readable and
+      // allows recursive types in later tests.
+      cchar *nm = t->name ? t->name : "anon_struct";
+      llvm::StructType *st =
+          llvm::StructType::getTypeByName(*TheContext, nm);
+      if (st && !st->isOpaque()) return st;
+      if (!st) st = llvm::StructType::create(*TheContext, nm);
+      std::vector<llvm::Type *> fields;
+      for (CGv2TypeField *f : t->fields) {
+        llvm::Type *ft = to_llvm_type(f->type);
+        if (!ft) return nullptr;
+        fields.push_back(ft);
+      }
+      st->setBody(fields, /*isPacked=*/false);
+      return st;
+    }
   }
   return nullptr;
+}
+
+// Get-or-create the GC_malloc(i64) -> ptr declaration.
+llvm::Function *get_gc_malloc() {
+  llvm::Function *f = TheModule->getFunction("GC_malloc");
+  if (f) return f;
+  llvm::FunctionType *ft = llvm::FunctionType::get(
+      llvm::PointerType::getUnqual(*TheContext),
+      { llvm::Type::getInt64Ty(*TheContext) },
+      /*isVarArg=*/false);
+  return llvm::Function::Create(ft,
+      llvm::Function::ExternalLinkage, "GC_malloc",
+      TheModule.get());
 }
 
 llvm::FunctionType *to_llvm_fn_type(CGv2Sig *sig) {
@@ -107,6 +135,13 @@ struct EmitFunCtx {
   // slots. Stored to from the predecessor's edge, loaded
   // fresh on each use site.
   Map<CGv2Value *, llvm::AllocaInst *> alloca_map;
+
+  // ptr values that point to a known struct (currently
+  // populated by CG2_ALLOC). FIELD_STORE / FIELD_LOAD look
+  // up the struct here to compute GEPs. Future tests with
+  // ptr formals/globals will populate this through other
+  // routes.
+  Map<CGv2Value *, CGv2Type *> ptr_struct;
 };
 
 // Resolve a CGv2Value to an llvm::Value usable in the current
@@ -181,6 +216,55 @@ void put_result(EmitFunCtx &ctx, CGv2Value *dst, llvm::Value *r) {
 
 void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
   switch (inst->op) {
+    case CG2_ALLOC: {
+      if (inst->lvals.n < 1 || !inst->type_arg) return;
+      llvm::Type *sty = to_llvm_type(inst->type_arg);
+      if (!sty) return;
+      uint64_t size_bytes = TheModule->getDataLayout()
+                                    .getTypeAllocSize(sty);
+      llvm::Function *gc_malloc = get_gc_malloc();
+      llvm::Value *size_v = llvm::ConstantInt::get(
+          llvm::Type::getInt64Ty(*TheContext), size_bytes);
+      llvm::Value *p = Builder->CreateCall(gc_malloc, { size_v },
+          inst->lvals[0]->name ? inst->lvals[0]->name : "p");
+      put_result(ctx, inst->lvals[0], p);
+      ctx.ptr_struct.put(inst->lvals[0], inst->type_arg);
+      break;
+    }
+    case CG2_FIELD_STORE: {
+      if (inst->rvals.n < 2) return;
+      llvm::Value *p = resolve_value(ctx, inst->rvals[0]);
+      llvm::Value *v = resolve_value(ctx, inst->rvals[1]);
+      if (!p || !v) return;
+      CGv2Type *st = ctx.ptr_struct.get(inst->rvals[0]);
+      if (!st) return;
+      llvm::Type *sty = to_llvm_type(st);
+      if (!sty) return;
+      llvm::Value *gep = Builder->CreateStructGEP(sty, p,
+          (unsigned)inst->field_idx);
+      Builder->CreateStore(v, gep);
+      break;
+    }
+    case CG2_FIELD_LOAD: {
+      if (inst->rvals.n < 1 || inst->lvals.n < 1) return;
+      llvm::Value *p = resolve_value(ctx, inst->rvals[0]);
+      if (!p) return;
+      CGv2Type *st = ctx.ptr_struct.get(inst->rvals[0]);
+      if (!st) return;
+      llvm::Type *sty = to_llvm_type(st);
+      if (!sty) return;
+      llvm::Value *gep = Builder->CreateStructGEP(sty, p,
+          (unsigned)inst->field_idx);
+      // Resolve field type to know what we're loading.
+      if ((int)inst->field_idx < 0 ||
+          inst->field_idx >= st->fields.n) return;
+      llvm::Type *ft = to_llvm_type(st->fields[inst->field_idx]->type);
+      if (!ft) return;
+      llvm::Value *loaded = Builder->CreateLoad(ft, gep,
+          inst->lvals[0]->name ? inst->lvals[0]->name : "");
+      put_result(ctx, inst->lvals[0], loaded);
+      break;
+    }
     case CG2_CALL: {
       if (inst->rvals.n < 1) return;
       // rvals[0] is the callee — a CGv2Value of scope FUN_REF

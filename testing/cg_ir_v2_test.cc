@@ -990,3 +990,85 @@ int run_cg_ir_v2_type_decl_roundtrip() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_type_decl_roundtrip);
+
+// Phase 4 commit 11 — test 08 (alloc + field store/load).
+//
+// struct Point { x: int64; y: int64 }
+// def make_pt():
+//   p = Point(); p.x = 3; return p.x
+//
+// Exercises:
+//   - CG2T_STRUCT lowering to llvm::StructType
+//   - CG2_ALLOC via GC_malloc external call
+//   - CG2_FIELD_STORE / CG2_FIELD_LOAD via getelementptr
+//   - per-fun ptr_struct map (lets field ops find the struct)
+static cchar *test08_text =
+    "((type %Point :kind struct :is_heap_aggregate true\n"
+    "   :fields ((%x :type int64 :idx 0)\n"
+    "            (%y :type int64 :idx 1)))\n"
+    " (const %c3 (int 3) :type int64)\n"
+    " (fun %make_pt\n"
+    "   :signature (int64)\n"
+    "   :entry %b0\n"
+    "   (value %p :type ptr   :scope local)\n"
+    "   (value %v :type int64 :scope local)\n"
+    "   (block %b0\n"
+    "     (inst %i0 alloc :type %Point => %p)\n"
+    "     (inst %i1 field_store :field_idx 0 %p %c3)\n"
+    "     (inst %i2 field_load  :field_idx 0 %p => %v)\n"
+    "     :term (ret %v))))";
+
+int run_cg_ir_v2_test08_roundtrip() {
+  if (!run_one("test08", test08_text, 1, "make_pt")) return 1;
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_test08_roundtrip);
+
+int run_cg_ir_v2_emit_test08() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(test08_text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+
+  llvm::Function *fn = TheModule->getFunction("make_pt");
+  if (!fn) { printf("  'make_pt' not found\n"); return 1; }
+
+  // Expect: CallInst (GC_malloc), GEP + Store, GEP + Load, Ret.
+  llvm::BasicBlock &bb = fn->getEntryBlock();
+  bool saw_malloc = false, saw_store = false, saw_load = false;
+  for (llvm::Instruction &i : bb) {
+    if (auto *c = llvm::dyn_cast<llvm::CallInst>(&i)) {
+      if (c->getCalledFunction() &&
+          c->getCalledFunction()->getName() == "GC_malloc")
+        saw_malloc = true;
+    } else if (llvm::isa<llvm::StoreInst>(&i)) {
+      saw_store = true;
+    } else if (llvm::isa<llvm::LoadInst>(&i)) {
+      saw_load = true;
+    }
+  }
+  if (!saw_malloc || !saw_store || !saw_load) {
+    printf("  expected GC_malloc/Store/Load; saw %d/%d/%d\n",
+           saw_malloc, saw_store, saw_load);
+    return 1;
+  }
+
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test08);

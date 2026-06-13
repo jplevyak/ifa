@@ -135,6 +135,16 @@ static void print_inst(Buf &b, CGv2Inst *inst) {
     case CG2_CALL:
       b.puts_(" call");
       break;
+    case CG2_ALLOC:
+      b.puts_(" alloc :type ");
+      print_type_ref(b, inst->type_arg);
+      break;
+    case CG2_FIELD_STORE:
+      b.putf(" field_store :field_idx %d", inst->field_idx);
+      break;
+    case CG2_FIELD_LOAD:
+      b.putf(" field_load :field_idx %d", inst->field_idx);
+      break;
     default:
       b.puts_(" nop");
       break;

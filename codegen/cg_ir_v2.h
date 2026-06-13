@@ -148,6 +148,9 @@ enum CGv2Op {
   // Body ops:
   CG2_BINOP,           // sub_op selects add/sub/mul/lt/eq/...
   CG2_CALL,            // rvals[0]=fun ref, rvals[1..]=args, lvals[0]=result
+  CG2_ALLOC,           // type_arg=struct, lvals[0]=ptr to heap aggregate
+  CG2_FIELD_STORE,     // field_idx=N, rvals=(ptr, value)
+  CG2_FIELD_LOAD,      // field_idx=N, rvals=(ptr), lvals[0]=loaded
   // Terminators:
   CG2_BR,
   CG2_COND_BR,
@@ -179,8 +182,13 @@ class CGv2Inst : public gc {
   CGv2Block *br_true;       // CG2_COND_BR
   CGv2Block *br_false;      // CG2_COND_BR
 
+  // For aggregate ops
+  CGv2Type *type_arg;       // CG2_ALLOC (type to allocate)
+  int field_idx;            // CG2_FIELD_STORE / CG2_FIELD_LOAD
+
   CGv2Inst() : id(0), name(0), op(CG2_NOP), sub_op(CG2B_NONE),
-               br_target(0), br_true(0), br_false(0) {}
+               br_target(0), br_true(0), br_false(0),
+               type_arg(0), field_idx(0) {}
 };
 
 // ============================================================
@@ -283,6 +291,7 @@ class CGv2Program : public gc {
   CGv2Type *t_sym;
   CGv2Type *t_nil;
   CGv2Type *t_fun_ptr;
+  CGv2Type *t_ptr;
 
   CGv2Program();
   CGv2Type *lookup_type(cchar *name) const;

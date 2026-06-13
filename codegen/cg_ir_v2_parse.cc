@@ -405,6 +405,52 @@ static CGv2Inst *build_inst(BuildCtx &c, SExpr *e) {
       if (in_lvals) inst->lvals.add(v);
       else inst->rvals.add(v);
     }
+  } else if (strcmp(op_tag, "alloc") == 0) {
+    inst->op = CG2_ALLOC;
+    // (inst %p alloc :type %TypeName => %dst)
+    int type_kw = find_kw(e, "type", 3);
+    if (type_kw < 0) {
+      c.fail_at(e, "alloc missing :type");
+      return 0;
+    }
+    inst->type_arg = resolve_type(c, e->children[type_kw + 1]);
+    if (c.err) return 0;
+    // Find the '=>' marker and read lvals after it.
+    bool in_lvals = false;
+    for (int i = 3; i < e->children.n; i++) {
+      SExpr *ch = e->children[i];
+      if (!ch->is_list && ch->atom) {
+        if (strcmp(ch->atom, "=>") == 0) { in_lvals = true; continue; }
+        if (ch->atom[0] == ':') { i++; continue; }
+      }
+      if (in_lvals) {
+        CGv2Value *v = resolve_value_ref(c, ch);
+        if (c.err) return 0;
+        inst->lvals.add(v);
+      }
+    }
+  } else if (strcmp(op_tag, "field_store") == 0 ||
+             strcmp(op_tag, "field_load") == 0) {
+    inst->op = strcmp(op_tag, "field_store") == 0
+                   ? CG2_FIELD_STORE : CG2_FIELD_LOAD;
+    int idx_kw = find_kw(e, "field_idx", 3);
+    if (idx_kw < 0) {
+      c.fail_at(e, "field op missing :field_idx");
+      return 0;
+    }
+    inst->field_idx = atoi(e->children[idx_kw + 1]->atom);
+    bool in_lvals = false;
+    for (int i = 3; i < e->children.n; i++) {
+      SExpr *ch = e->children[i];
+      if (!ch->is_list && ch->atom) {
+        if (strcmp(ch->atom, "=>") == 0) { in_lvals = true; continue; }
+        if (ch->atom[0] == ':') { i++; continue; }
+      }
+      CGv2Value *v = resolve_value_ref(c, ch);
+      if (c.err) return 0;
+      if (in_lvals) inst->lvals.add(v);
+      else inst->rvals.add(v);
+    }
   } else if (strcmp(op_tag, "call") == 0) {
     inst->op = CG2_CALL;
     // (inst %name call %fn_ref %arg1 ... => %result)
