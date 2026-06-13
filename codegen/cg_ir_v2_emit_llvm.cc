@@ -348,10 +348,19 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
         case CG2B_ADD:
           r = Builder->CreateAdd(a, b, out);
           break;
+        case CG2B_SUB:
+          r = Builder->CreateSub(a, b, out);
+          break;
+        case CG2B_MUL:
+          r = Builder->CreateMul(a, b, out);
+          break;
         case CG2B_LT:
           // v0 supports signed-integer LT only. Unsigned /
           // float / typed-bool paths land when their tests do.
           r = Builder->CreateICmpSLT(a, b, out);
+          break;
+        case CG2B_LE:
+          r = Builder->CreateICmpSLE(a, b, out);
           break;
         case CG2B_NONE:
           return;

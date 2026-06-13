@@ -383,11 +383,12 @@ static CGv2Inst *build_inst(BuildCtx &c, SExpr *e) {
       return 0;
     }
     cchar *st = sub->atom;
-    if (strcmp(st, "add") == 0) {
-      inst->sub_op = CG2B_ADD;
-    } else if (strcmp(st, "lt") == 0) {
-      inst->sub_op = CG2B_LT;
-    } else {
+    if (strcmp(st, "add") == 0)      inst->sub_op = CG2B_ADD;
+    else if (strcmp(st, "sub") == 0) inst->sub_op = CG2B_SUB;
+    else if (strcmp(st, "mul") == 0) inst->sub_op = CG2B_MUL;
+    else if (strcmp(st, "lt") == 0)  inst->sub_op = CG2B_LT;
+    else if (strcmp(st, "le") == 0)  inst->sub_op = CG2B_LE;
+    else {
       c.fail_at(sub, "unsupported binop sub-op");
       return 0;
     }
@@ -686,6 +687,13 @@ static CGv2Fun *build_fun(BuildCtx &c, SExpr *fun_expr) {
     c.values_by_name.put(v->name, v);
     if (v->scope == CG2V_FORMAL) f->formals.add(v);
     else if (v->scope == CG2V_LOCAL) f->locals.add(v);
+    else if (v->scope == CG2V_FUN_REF) {
+      // Per-fn fun_ref values that don't specify :target
+      // bind to the enclosing function — the recursive
+      // self-call pattern from test 12.
+      if (!v->target_name) v->target_name = f->name;
+      f->locals.add(v);
+    }
   }
 
   // :formals (%x %y) — declares the ORDER of formals as they

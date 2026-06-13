@@ -115,7 +115,10 @@ static void print_const(Buf &b, CGv2Value *v) {
 static cchar *binop_name(CGv2BinSub s) {
   switch (s) {
     case CG2B_ADD:  return "add";
+    case CG2B_SUB:  return "sub";
+    case CG2B_MUL:  return "mul";
     case CG2B_LT:   return "lt";
+    case CG2B_LE:   return "le";
     case CG2B_NONE: return "?";
   }
   return "?";
@@ -298,6 +301,10 @@ static void print_value_decl(Buf &b, CGv2Value *v) {
   }
   b.puts_(" :scope ");
   b.puts_(scope_name(v->scope));
+  if (v->target_name) {
+    b.puts_(" :target %");
+    b.puts_(v->target_name);
+  }
   b.put(')');
 }
 

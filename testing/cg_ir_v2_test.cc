@@ -1273,3 +1273,93 @@ int run_cg_ir_v2_emit_test10() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test10);
+
+// Phase 4 commit 14 — test 12 (recursion).
+//
+// def fact(n):
+//   if n <= 1: return 1
+//   return n * fact(n - 1)
+//
+// Exercises:
+//   - per-fn fun_ref value with implicit target = enclosing fn
+//     (the recursive self-call pattern)
+//   - binop sub-ops le, sub, mul
+//   - multi-block CFG with both branches returning
+static cchar *test12_text =
+    "((const %one (int 1) :type int64)\n"
+    " (fun %fact\n"
+    "   :signature (int64 int64)\n"
+    "   :entry %b0\n"
+    "   :formals (%n)\n"
+    "   (value %n        :type int64   :scope formal)\n"
+    "   (value %is_base  :type bool    :scope local)\n"
+    "   (value %nm1      :type int64   :scope local)\n"
+    "   (value %sub_res  :type int64   :scope local)\n"
+    "   (value %prod     :type int64   :scope local)\n"
+    "   (value %fact_ref :type fun_ptr :scope fun_ref)\n"
+    "   (block %b0\n"
+    "     (inst %i0 binop le %n %one => %is_base)\n"
+    "     :term (cond_br %is_base %b_base %b_rec))\n"
+    "   (block %b_base\n"
+    "     :preds (%b0)\n"
+    "     :term (ret %one))\n"
+    "   (block %b_rec\n"
+    "     :preds (%b0)\n"
+    "     (inst %i1 binop sub %n %one     => %nm1)\n"
+    "     (inst %i2 call %fact_ref %nm1   => %sub_res)\n"
+    "     (inst %i3 binop mul %n %sub_res => %prod)\n"
+    "     :term (ret %prod))))";
+
+int run_cg_ir_v2_test12_roundtrip() {
+  if (!run_one("test12", test12_text, 1, "fact")) return 1;
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_test12_roundtrip);
+
+int run_cg_ir_v2_emit_test12() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(test12_text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+
+  llvm::Function *fn = TheModule->getFunction("fact");
+  if (!fn) { printf("  'fact' not found\n"); return 1; }
+  if (fn->size() != 3) {
+    printf("  expected 3 blocks; got %u\n", (unsigned)fn->size());
+    return 1;
+  }
+
+  // Recursive self-call: the rec block must contain a CallInst
+  // whose target is @fact itself.
+  bool found_self_call = false;
+  for (llvm::BasicBlock &bb : *fn) {
+    for (llvm::Instruction &i : bb) {
+      if (auto *c = llvm::dyn_cast<llvm::CallInst>(&i)) {
+        if (c->getCalledFunction() == fn) found_self_call = true;
+      }
+    }
+  }
+  if (!found_self_call) {
+    printf("  no recursive @fact call\n");
+    return 1;
+  }
+
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test12);
