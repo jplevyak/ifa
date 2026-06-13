@@ -1012,6 +1012,15 @@ static void build_program(BuildCtx &c, SExpr *root) {
       CGv2Value *gv = build_value_decl(c, d);
       if (c.err) return;
       c.prog->globals.add(gv);
+    } else if (starts_with_atom(d, "global")) {
+      // (global %name :type T :scope global)
+      // Reuse build_value_decl by swapping the head atom; the
+      // body shape is identical to a top-level value decl.
+      // Default scope to GLOBAL if :scope absent.
+      CGv2Value *gv = build_value_decl(c, d);
+      if (c.err) return;
+      if (find_kw(d, "scope", 2) < 0) gv->scope = CG2V_GLOBAL;
+      c.prog->globals.add(gv);
     }
   }
 

@@ -114,6 +114,20 @@ llvm::FunctionType *to_llvm_fn_type(CGv2Sig *sig) {
   return llvm::FunctionType::get(ret, args, sig->is_varargs);
 }
 
+// Program-scope emit state. Cleared at the start of each
+// cg_v2_emit_llvm_module call. Holds maps that genuinely
+// need to span functions (globals + their tracked struct
+// types) — kept separate from EmitFunCtx so per-fun caches
+// stay local and the issue-017 structural fix holds.
+struct EmitProgCtx {
+  Map<CGv2Value *, llvm::GlobalVariable *> global_map;
+  Map<CGv2Value *, CGv2Type *> global_ptr_struct;
+
+  void clear() { global_map.clear(); global_ptr_struct.clear(); }
+};
+
+static EmitProgCtx g_prog_ctx;
+
 // Per-CGFun emission state. Holds the LLVM function + block
 // map. This is intentionally function-scoped — the
 // per-CGFun value cache (issue 017 structural fix) lives here.
@@ -200,8 +214,28 @@ llvm::Value *resolve_value(EmitFunCtx &ctx, CGv2Value *v) {
                                 v->name ? v->name : "");
   }
 
+  // Globals: each use loads from the @global slot. Like the
+  // alloca case, mem2reg/SROA cleans this up where possible.
+  if (v->scope == CG2V_GLOBAL) {
+    llvm::GlobalVariable *gv = g_prog_ctx.global_map.get(v);
+    if (gv) {
+      return Builder->CreateLoad(gv->getValueType(), gv,
+                                  v->name ? v->name : "");
+    }
+  }
+
   // Function-scoped lookup. Lands with formals/locals tests.
   return ctx.value_map.get(v);
+}
+
+// Resolve the struct type a ptr value points to. Looks in
+// the per-fun ptr_struct first, then falls back to the
+// program-scope global_ptr_struct (populated by cross-fn
+// MOVEs to globals).
+CGv2Type *lookup_ptr_struct(EmitFunCtx &ctx, CGv2Value *v) {
+  CGv2Type *st = ctx.ptr_struct.get(v);
+  if (st) return st;
+  return g_prog_ctx.global_ptr_struct.get(v);
 }
 
 // Store-to-slot if the dst is an alloca-backed local;
@@ -236,7 +270,7 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       llvm::Value *p = resolve_value(ctx, inst->rvals[0]);
       llvm::Value *v = resolve_value(ctx, inst->rvals[1]);
       if (!p || !v) return;
-      CGv2Type *st = ctx.ptr_struct.get(inst->rvals[0]);
+      CGv2Type *st = lookup_ptr_struct(ctx, inst->rvals[0]);
       if (!st) return;
       llvm::Type *sty = to_llvm_type(st);
       if (!sty) return;
@@ -249,7 +283,7 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       if (inst->rvals.n < 1 || inst->lvals.n < 1) return;
       llvm::Value *p = resolve_value(ctx, inst->rvals[0]);
       if (!p) return;
-      CGv2Type *st = ctx.ptr_struct.get(inst->rvals[0]);
+      CGv2Type *st = lookup_ptr_struct(ctx, inst->rvals[0]);
       if (!st) return;
       llvm::Type *sty = to_llvm_type(st);
       if (!sty) return;
@@ -314,7 +348,23 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       if (inst->rvals.n < 1 || inst->lvals.n < 1) return;
       llvm::Value *src = resolve_value(ctx, inst->rvals[0]);
       if (!src) return;
-      put_result(ctx, inst->lvals[0], src);
+      CGv2Value *dst = inst->lvals[0];
+      // Cross-fn construction-flow case: MOVE into a global
+      // emits `store src, ptr @global` AND propagates the
+      // ptr_struct annotation from src into the program-scope
+      // map, so field ops in OTHER functions can find the
+      // struct type of @global. This is THE issue-017 path.
+      if (dst->scope == CG2V_GLOBAL) {
+        llvm::GlobalVariable *gv = g_prog_ctx.global_map.get(dst);
+        if (gv) Builder->CreateStore(src, gv);
+        CGv2Type *st = lookup_ptr_struct(ctx, inst->rvals[0]);
+        if (st) g_prog_ctx.global_ptr_struct.put(dst, st);
+        break;
+      }
+      put_result(ctx, dst, src);
+      // Propagate per-fun ptr_struct through the alias too.
+      CGv2Type *st = ctx.ptr_struct.get(inst->rvals[0]);
+      if (st) ctx.ptr_struct.put(dst, st);
       break;
     }
     case CG2_NOP:
@@ -472,12 +522,36 @@ void emit_fun(CGv2Fun *cf) {
 // partially populated; caller should run verifyModule.
 bool cg_v2_emit_llvm_module(CGv2Program *prog) {
   if (!prog || !TheModule) return false;
-  // Pass 1: declare all funs up front so CG_CALL sites can
+  // Reset program-scope emit state at the start of each call.
+  // This is critical for issue-017 hygiene — leftover map
+  // entries from a previous emit would cross fn boundaries.
+  g_prog_ctx.clear();
+
+  // Pass 1: declare globals as llvm::GlobalVariable.
+  for (CGv2Value *gv : prog->globals) {
+    if (!gv || gv->scope != CG2V_GLOBAL) continue;
+    llvm::Type *t = to_llvm_type(gv->type);
+    if (!t) continue;
+    llvm::Constant *init = nullptr;
+    if (t->isPointerTy()) {
+      init = llvm::ConstantPointerNull::get(
+          llvm::cast<llvm::PointerType>(t));
+    } else {
+      init = llvm::Constant::getNullValue(t);
+    }
+    llvm::GlobalVariable *llgv = new llvm::GlobalVariable(
+        *TheModule, t, /*isConstant=*/false,
+        llvm::GlobalValue::InternalLinkage, init,
+        gv->name ? gv->name : "g");
+    g_prog_ctx.global_map.put(gv, llgv);
+  }
+
+  // Pass 2: declare all funs up front so CG_CALL sites can
   // resolve callees by name regardless of source ordering.
   for (CGv2Fun *f : prog->funs) {
     if (f) declare_fun(f);
   }
-  // Pass 2: emit bodies.
+  // Pass 3: emit bodies.
   for (CGv2Fun *f : prog->funs) {
     if (f) emit_fun(f);
   }

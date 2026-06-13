@@ -1072,3 +1072,129 @@ int run_cg_ir_v2_emit_test08() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test08);
+
+// Phase 4 commit 12 — test 09 (global + construction-flow).
+//
+// THE STRUCTURAL ISSUE-017 TEST.
+//
+// struct Box { val: int64 }
+// box: Box*  (global, init null)
+// def init_box(): box = Box(); box.val = 42
+// def get_val():  return box.val
+//
+// Exercises (and verifies that v2's structural fix holds):
+//   - (global %name :type ptr :scope global) — top-level
+//     global decl declared as llvm::GlobalVariable @box
+//   - CG2_MOVE %tmp => %box — store into a global; carries
+//     the ptr_struct annotation across the function boundary
+//     via g_prog_ctx.global_ptr_struct (the cross-fn map)
+//   - Resolve CGV_GLOBAL by loading @box at use site
+//   - get_val emits load @box → GEP → load i64 — across the
+//     function boundary, the struct type is known because
+//     init_box registered it in the program-scope map
+//
+// Under v1, the cross-fn instruction leak of issue 017
+// manifested here. Under v2, the per-CGFun cache stays per-
+// fun and only the explicit program-scope global_ptr_struct
+// crosses the boundary.
+static cchar *test09_text =
+    "((type %Box :kind struct :is_heap_aggregate true\n"
+    "   :fields ((%val :type int64 :idx 0)))\n"
+    " (const %c42 (int 42) :type int64)\n"
+    " (global %box :type ptr :scope global)\n"
+    " (fun %init_box\n"
+    "   :signature (void)\n"
+    "   :entry %b0\n"
+    "   (value %tmp :type ptr :scope local)\n"
+    "   (block %b0\n"
+    "     (inst %i0 alloc :type %Box => %tmp)\n"
+    "     (inst %i1 move %tmp => %box)\n"
+    "     (inst %i2 field_store :field_idx 0 %box %c42)\n"
+    "     :term (ret)))\n"
+    " (fun %get_val\n"
+    "   :signature (int64)\n"
+    "   :entry %b0\n"
+    "   (value %v :type int64 :scope local)\n"
+    "   (block %b0\n"
+    "     (inst %i0 field_load :field_idx 0 %box => %v)\n"
+    "     :term (ret %v))))";
+
+int run_cg_ir_v2_test09_roundtrip() {
+  if (!run_one("test09", test09_text, 2, "init_box")) return 1;
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_test09_roundtrip);
+
+int run_cg_ir_v2_emit_test09() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(test09_text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+
+  // Global @box must exist.
+  llvm::GlobalVariable *box_gv = TheModule->getNamedGlobal("box");
+  if (!box_gv) { printf("  @box not declared\n"); return 1; }
+  if (!box_gv->getValueType()->isPointerTy()) {
+    printf("  @box not a ptr\n");
+    return 1;
+  }
+
+  llvm::Function *init_fn = TheModule->getFunction("init_box");
+  llvm::Function *get_fn = TheModule->getFunction("get_val");
+  if (!init_fn || !get_fn) {
+    printf("  init_box/get_val missing\n");
+    return 1;
+  }
+
+  // verifyModule is the load-bearing check — under v1 the
+  // module would be malformed here (instructions leaking
+  // across functions). Under v2 it must verify cleanly.
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+
+  // Spot-check: init_box must contain a Store into @box.
+  bool found_store_to_box = false;
+  for (llvm::Instruction &i : init_fn->getEntryBlock()) {
+    if (auto *s = llvm::dyn_cast<llvm::StoreInst>(&i)) {
+      if (s->getPointerOperand() == box_gv) {
+        found_store_to_box = true;
+        break;
+      }
+    }
+  }
+  if (!found_store_to_box) {
+    printf("  init_box does not store into @box\n");
+    return 1;
+  }
+
+  // Spot-check: get_val must contain a Load from @box.
+  bool found_load_from_box = false;
+  for (llvm::Instruction &i : get_fn->getEntryBlock()) {
+    if (auto *l = llvm::dyn_cast<llvm::LoadInst>(&i)) {
+      if (l->getPointerOperand() == box_gv) {
+        found_load_from_box = true;
+        break;
+      }
+    }
+  }
+  if (!found_load_from_box) {
+    printf("  get_val does not load from @box\n");
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test09);
