@@ -63,6 +63,15 @@ enum CGv2TypeKind {
   CG2T_SYMBOL,
 };
 
+// Struct field. Owned by the parent CGv2Type via fields[].
+class CGv2TypeField : public gc {
+ public:
+  cchar *name;
+  CGv2Type *type;
+  int idx;
+  CGv2TypeField() : name(0), type(0), idx(0) {}
+};
+
 class CGv2Type : public gc {
  public:
   int id;
@@ -70,10 +79,14 @@ class CGv2Type : public gc {
   CGv2TypeKind kind;
   int bits;             // for numeric kinds; 0 otherwise
 
-  // Fields, element, fun_sig, alias_of, is_heap_aggregate land
-  // when their corresponding test cases land. Keep this lean.
+  // For CG2T_STRUCT.
+  Vec<CGv2TypeField *> fields;
+  bool is_heap_aggregate;     // alloc via GC heap (vs stack)
 
-  CGv2Type() : id(0), name(0), kind(CG2T_VOID), bits(0) {}
+  // (element, fun_sig, alias_of land with their tests.)
+
+  CGv2Type() : id(0), name(0), kind(CG2T_VOID), bits(0),
+               is_heap_aggregate(false) {}
 };
 
 // ============================================================

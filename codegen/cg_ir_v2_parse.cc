@@ -749,6 +749,94 @@ static void build_imm(BuildCtx &c, SExpr *expr, CGv2Immediate &out) {
   }
 }
 
+// Parse one field of a struct type decl. Shape:
+//   (%fname :type TYPE :idx N)
+static CGv2TypeField *build_field(BuildCtx &c, SExpr *e) {
+  if (!e->is_list || e->children.n < 1) {
+    c.fail_at(e, "field must be (%name :type T :idx N)");
+    return 0;
+  }
+  SExpr *nm = e->children[0];
+  if (nm->is_list || !nm->atom) {
+    c.fail_at(nm, "field name must be atom");
+    return 0;
+  }
+  cchar *name = nm->atom;
+  if (name[0] == '%') name++;
+  CGv2TypeField *f = new CGv2TypeField();
+  f->name = dupstr(name);
+  int type_kw = find_kw(e, "type", 1);
+  if (type_kw < 0) {
+    c.fail_at(e, "field missing :type");
+    return 0;
+  }
+  f->type = resolve_type(c, e->children[type_kw + 1]);
+  if (c.err) return 0;
+  int idx_kw = find_kw(e, "idx", 1);
+  if (idx_kw < 0) {
+    c.fail_at(e, "field missing :idx");
+    return 0;
+  }
+  f->idx = atoi(e->children[idx_kw + 1]->atom);
+  return f;
+}
+
+// Top-level type decl:
+//   (type %Name :kind struct
+//               :is_heap_aggregate true
+//               :fields ((%fname :type T :idx N) ...))
+static CGv2Type *build_type(BuildCtx &c, SExpr *e) {
+  if (e->children.n < 2) {
+    c.fail_at(e, "type decl needs %name");
+    return 0;
+  }
+  SExpr *nm = e->children[1];
+  if (nm->is_list || !nm->atom) {
+    c.fail_at(nm, "type name must be atom");
+    return 0;
+  }
+  cchar *name = nm->atom;
+  if (name[0] == '%') name++;
+
+  CGv2Type *t = new CGv2Type();
+  t->id = 1000 + c.prog->types.n;
+  t->name = dupstr(name);
+  t->kind = CG2T_STRUCT;          // v0: struct-only
+
+  int kind_kw = find_kw(e, "kind", 2);
+  if (kind_kw >= 0) {
+    SExpr *k = e->children[kind_kw + 1];
+    if (!k->is_list && k->atom && strcmp(k->atom, "struct") == 0) {
+      t->kind = CG2T_STRUCT;
+    } else {
+      c.fail_at(k, "unsupported :kind");
+      return 0;
+    }
+  }
+  int heap_kw = find_kw(e, "is_heap_aggregate", 2);
+  if (heap_kw >= 0) {
+    SExpr *h = e->children[heap_kw + 1];
+    if (!h->is_list && h->atom && strcmp(h->atom, "true") == 0)
+      t->is_heap_aggregate = true;
+  }
+  int fields_kw = find_kw(e, "fields", 2);
+  if (fields_kw < 0) {
+    c.fail_at(e, "struct type missing :fields");
+    return 0;
+  }
+  SExpr *flist = e->children[fields_kw + 1];
+  if (!flist->is_list) {
+    c.fail_at(flist, ":fields must be a list");
+    return 0;
+  }
+  for (SExpr *fe : flist->children) {
+    CGv2TypeField *f = build_field(c, fe);
+    if (c.err) return 0;
+    t->fields.add(f);
+  }
+  return t;
+}
+
 // Parse a CGv2ValueScope name. Returns true on success.
 static bool parse_scope(cchar *s, CGv2ValueScope &out) {
   if (!s) return false;
@@ -851,14 +939,20 @@ static void build_program(BuildCtx &c, SExpr *root) {
     return;
   }
   // Multi-pass walk over top-level decls:
-  //   pass 1: constants (no dependencies)
-  //   pass 2: top-level (value ...) decls — registers globals
+  //   pass 1: type decls — must run first so :type refs in
+  //           constants/values/funs resolve
+  //   pass 2: constants
+  //   pass 3: top-level (value ...) decls — registers globals
   //           and fun_refs so inst bodies can resolve them
-  //   pass 3: fun signatures + bodies
-  //
-  // fun_ref values bind to fns by `:target` name. Resolution
-  // happens at emit time, so pass 2 can run before pass 3
-  // populates funs.
+  //   pass 4: fun signatures + bodies
+  for (SExpr *d : root->children) {
+    if (starts_with_atom(d, "type")) {
+      CGv2Type *t = build_type(c, d);
+      if (c.err) return;
+      c.prog->types.add(t);
+    }
+  }
+
   for (SExpr *d : root->children) {
     if (starts_with_atom(d, "const")) {
       CGv2Value *cv = build_const(c, d);

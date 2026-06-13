@@ -931,3 +931,62 @@ int run_cg_ir_v2_emit_test07() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test07);
+
+// Phase 4 commit 10 — struct type decl parsing.
+//
+// Lands the syntax + data model for `(type %Name :kind struct
+//   :is_heap_aggregate true :fields ((%f :type T :idx N)*))`
+// in isolation. No new ops yet — CG_ALLOC and field accessors
+// land in commit 11 atop this.
+//
+// Verifies: parse, round-trip, and that the type appears in
+// prog->types with the expected name and field count.
+int run_cg_ir_v2_type_decl_roundtrip() {
+  cchar *text =
+      "((type %Point :kind struct :is_heap_aggregate true\n"
+      "   :fields ((%x :type int64 :idx 0)\n"
+      "            (%y :type int64 :idx 1)))\n"
+      " (fun %use\n"
+      "   :signature (void)\n"
+      "   :entry %b0\n"
+      "   (block %b0 :term (ret))))";
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (prog->types.n != 1) {
+    printf("  expected 1 type, got %d\n", prog->types.n);
+    return 1;
+  }
+  CGv2Type *t = prog->types[0];
+  if (!t->name || strcmp(t->name, "Point") != 0) {
+    printf("  type name expected 'Point', got '%s'\n",
+           t->name ? t->name : "(null)");
+    return 1;
+  }
+  if (t->fields.n != 2) {
+    printf("  expected 2 fields, got %d\n", t->fields.n);
+    return 1;
+  }
+  if (!t->is_heap_aggregate) {
+    printf("  is_heap_aggregate not set\n");
+    return 1;
+  }
+  // Round-trip: re-parse the printed form, check stable.
+  cchar *back = cg_v2_print(prog);
+  cchar *err2 = 0;
+  CGv2Program *prog2 = cg_v2_parse(back, &err2);
+  if (!prog2 || prog2->types.n != 1 ||
+      strcmp(prog2->types[0]->name, "Point") != 0 ||
+      prog2->types[0]->fields.n != 2) {
+    printf("  round-trip failed; reparse err=%s\n",
+           err2 ? err2 : "(none)");
+    printf("  printed text:\n%s\n", back);
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_type_decl_roundtrip);

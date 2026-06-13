@@ -325,6 +325,29 @@ static void print_fun(Buf &b, CGv2Fun *f) {
 
 }  // namespace
 
+static void print_type_decl(Buf &b, CGv2Type *t) {
+  b.puts_("  (type %");
+  b.puts_(t->name ? t->name : "?");
+  b.puts_(" :kind ");
+  switch (t->kind) {
+    case CG2T_STRUCT: b.puts_("struct"); break;
+    default: b.puts_("?"); break;
+  }
+  if (t->is_heap_aggregate) b.puts_(" :is_heap_aggregate true");
+  b.puts_(" :fields (");
+  for (int i = 0; i < t->fields.n; i++) {
+    CGv2TypeField *f = t->fields[i];
+    if (i) b.put(' ');
+    b.puts_("(%");
+    b.puts_(f->name ? f->name : "?");
+    b.puts_(" :type ");
+    print_type_ref(b, f->type);
+    b.putf(" :idx %d", f->idx);
+    b.put(')');
+  }
+  b.puts_("))");
+}
+
 static void print_global(Buf &b, CGv2Value *v) {
   b.puts_("  (value %");
   b.puts_(v->name ? v->name : "?");
@@ -345,6 +368,11 @@ cchar *cg_v2_print(CGv2Program *prog) {
   Buf b;
   b.put('(');
   bool first = true;
+  for (CGv2Type *t : prog->types) {
+    if (!first) b.put('\n');
+    print_type_decl(b, t);
+    first = false;
+  }
   for (CGv2Value *cv : prog->constants) {
     if (!first) b.put('\n');
     print_const(b, cv);
