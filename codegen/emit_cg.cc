@@ -55,6 +55,12 @@ extern std::unique_ptr<llvm::LLVMContext> TheContext;
 extern std::unique_ptr<llvm::Module> TheModule;
 extern std::unique_ptr<llvm::IRBuilder<>> Builder;
 
+// Per-prim / generic-call emitters from the IF1 path. Used by
+// Track 2 (CG_CALL back-translation) to reuse the ~1274 LOC of
+// existing per-prim emission without porting it to CGInst.
+extern int  write_llvm_prim(Fun *ifa_fun, PNode *n);
+extern void write_send(Fun *ifa_fun, PNode *n);
+
 // ---------------------------------------------------------------------------
 // Emission state
 // ---------------------------------------------------------------------------
@@ -193,20 +199,40 @@ static void emit_cg_inst(CGInst *inst, EmitCtx &ctx) {
       break;
     }
 
-    // Deferred structural / call ops (see file header). Land in
-    // the production-swap PR alongside per-prim back-translation.
     case CG_LOAD:
+    case CG_GEP_FIELD:
+    case CG_CAST:
+      // Unused in the current Phase 2.3 lowering output. Future
+      // CG_OP additions land their direct emission here.
+      break;
+
     case CG_LOAD_FIELD:
     case CG_STORE_FIELD:
-    case CG_GEP_FIELD:
     case CG_ALLOC:
-    case CG_CAST:
     case CG_CALL:
     case CG_PRIM_OP:
-    case CG_PRIM_CGFN:
-      // Emit a no-op marker so the surrounding control flow stays
-      // sound; the production path still emits these via IF1.
+    case CG_PRIM_CGFN: {
+      // Track 2 — CG_CALL back-translation. When the CGInst
+      // carries source_pn and the owning CGFun's source_fun is
+      // available, dispatch through the existing per-prim
+      // emitter in `llvm_primitives.cc`. The ~1274 LOC of
+      // primitive emission logic is preserved verbatim;
+      // emit_cg_inst is the seam.
+      //
+      // Note: this code path is exercised only when the parallel
+      // emitter runs standalone (the production path uses
+      // translateFunctionBody, which double-emits if we also
+      // back-translate). Track 4's print_ir swap deletes the IF1
+      // path so the back-translation becomes the sole emitter.
+      PNode *spn = inst->source_pn;
+      Fun *sf = ctx.cf ? ctx.cf->source_fun : nullptr;
+      if (!spn || !sf) break;
+      if (inst->prim) {
+        if (write_llvm_prim(sf, spn)) break;
+      }
+      write_send(sf, spn);
       break;
+    }
 
     // Terminators handled by emit_terminator at block close.
     case CG_BR:

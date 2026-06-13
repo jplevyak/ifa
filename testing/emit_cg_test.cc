@@ -83,3 +83,58 @@ int run_emit_llvm_module() {
 }
 
 UNIT_TEST_FUN(run_emit_llvm_module);
+
+// Track 2 — CG_CALL back-translation safety. Verify that a
+// CG_CALL with no source_pn / source_fun degrades gracefully:
+// the emit path skips it without crashing, the surrounding
+// terminator is still emitted, and verifyModule stays clean.
+// (A real back-translation requires a populated IF1 state,
+// which the integration test in a follow-up will exercise.)
+int run_emit_llvm_module_call_no_source() {
+  llvm_codegen_initialize(nullptr);
+
+  CGProgram *prog = new CGProgram();
+  CGFun *cf = new CGFun();
+  cf->name = "test_call_no_source";
+  cf->return_type = nullptr;  // void
+
+  CGBlock *entry = new CGBlock();
+  entry->id = 0;
+  entry->label = "entry";
+
+  // CG_CALL inst with no source_pn — emit_cg_inst should skip
+  // gracefully (the back-translation path's null check fires).
+  CGInst *call = new CGInst();
+  call->op = CG_CALL;
+  call->source_pn = nullptr;
+  entry->body.add(call);
+
+  // Add a CG_RET terminator so the block is well-formed.
+  CGInst *term = new CGInst();
+  term->op = CG_RET;
+  entry->terminator = term;
+  cf->blocks.add(entry);
+  cf->entry = entry;
+  prog->funs.add(cf);
+
+  emit_llvm_module(prog);
+
+  if (!cf->llvm_handle) {
+    printf("  emit_llvm_module: CGFun has no llvm_handle\n");
+    return 1;
+  }
+  llvm::Function *f = cf->llvm_handle;
+  if (!f->getEntryBlock().getTerminator()) {
+    printf("  emit_llvm_module: entry block has no terminator after CG_CALL skip\n");
+    return 1;
+  }
+  std::string err;
+  llvm::raw_string_ostream rso(err);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  emit_llvm_module: verifyModule failed after CG_CALL skip: %s\n", err.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_emit_llvm_module_call_no_source);

@@ -935,12 +935,16 @@ work splits into four tracks:
    resolution that issue 015 documents; the existing
    `mapStructType` in `llvm.cc` is the reference. ~100 LOC.
 
-2. **CG_CALL back-translation** — when a CGInst has
-   `prim` set and `source_pn` non-null, dispatch through the
-   existing per-prim emitter in `llvm_primitives.cc`. The
-   ~1274 LOC of per-prim emission logic is preserved verbatim;
-   the seam is a small adapter that maps CGInst → PNode arg
-   shape. ~50 LOC.
+2. ~~CG_CALL back-translation~~ **LANDED**. emit_cg_inst now
+   dispatches CG_CALL / CG_LOAD_FIELD / CG_STORE_FIELD /
+   CG_ALLOC / CG_PRIM_OP / CG_PRIM_CGFN through
+   `write_llvm_prim(source_fun, source_pn)` (and falls back to
+   `write_send` if the per-prim emitter returns 0). The
+   ~1274 LOC of per-prim logic is preserved verbatim; the
+   adapter is ~15 LOC. Production path unaffected — the
+   back-translation only runs when `emit_llvm_module` is the
+   driver. Unit test `run_emit_llvm_module_call_no_source`
+   verifies graceful no-op when source_pn is null.
 
 3. **phi/phy materialization** — Phase 2.4 emits phi/phy as
    CG_STOREs in the source block; LLVM IR semantics require phi
