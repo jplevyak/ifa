@@ -287,7 +287,20 @@ static void emit_terminator(CGInst *term, CGBlock *blk, EmitCtx &ctx) {
       llvm::Value *cond = term->rvals.n ? resolve_value(term->rvals[0]) : nullptr;
       llvm::BasicBlock *tbb = blk->succs.n > 0 ? ctx.blk_map.get(blk->succs[0]) : nullptr;
       llvm::BasicBlock *fbb = blk->succs.n > 1 ? ctx.blk_map.get(blk->succs[1]) : nullptr;
-      if (!cond || !tbb || !fbb) { Builder->CreateUnreachable(); return; }
+      if (!tbb || !fbb) { Builder->CreateUnreachable(); return; }
+      // Issue 016 fix: when the condition Var can't be resolved
+      // (DCE-eliminated or non-live), assume true branch — mirrors
+      // translate_code_if's behavior (llvm_codegen.cc:536-540).
+      // Without this fallback, the entry block of iterator
+      // functions like range::__pyc_more__ degenerates to
+      // `unreachable`, causing for-loops to skip their body
+      // entirely.
+      if (!cond) cond = llvm::ConstantInt::getTrue(*TheContext);
+      // Coerce to i1 if necessary (mirrors llvm_codegen.cc:542-545).
+      if (cond->getType() != llvm::Type::getInt1Ty(*TheContext)) {
+        cond = Builder->CreateICmpNE(
+            cond, llvm::Constant::getNullValue(cond->getType()), "ifcond.tobool");
+      }
       // Constant-folded condition: skip intermediate blocks, branch
       // directly. Matches translate_code_if's optimization.
       if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(cond)) {

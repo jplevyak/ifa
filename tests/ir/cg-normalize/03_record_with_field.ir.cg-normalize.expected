@@ -16,12 +16,12 @@
 (fun #0 :main
   :return-type ?
   :arg-types (?)
-  :locals 2 :blocks 1
+  :locals 3 :blocks 1
   (block #0 :label entry :preds 0 :succs 0
     :body (
       (ALLOC :slot %s79)
       (STORE_FIELD %s79 %s78)
       (STORE :slot %s81 %s79)
     )
-    :term (RET))
+    :term (RET %s69))
 )

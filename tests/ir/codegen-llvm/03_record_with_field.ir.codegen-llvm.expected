@@ -1,6 +1,6 @@
 ;; phase: codegen-llvm
 
-(summary fa_rc=0 clone_rc=0 funs=1 bytes=3773)
+(summary fa_rc=0 clone_rc=0 funs=1 bytes=3805)
 
 ;; llvm-ir (host-specific module lines + !dbg metadata stripped):
 
@@ -22,7 +22,8 @@ entry:
 
 
 
-  ret ptr undef
+  %0 = load ptr, ptr @nil, align 8
+  ret ptr %0
 }
 
 define i32 @main() {

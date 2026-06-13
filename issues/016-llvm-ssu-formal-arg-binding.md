@@ -1,6 +1,63 @@
 # Issue 016: LLVM backend — SSU formal-arg → renamed-local MOVEs are skipped
 
-**Status:** open.
+**Status:** partial fix landed (CG_IR_PLAN Phase 3.4 production
+swap), full closure blocked on a separate field-index bug.
+
+## Progress (2026-06-13)
+
+CG_IR_PLAN Phase 3.4 production swap closes the structural
+half of this issue:
+
+- `range::__pyc_more__` now correctly emits `store ptr %self,
+  ptr %self5` in the entry block (the SSU formal-arg binding).
+- `__pyc_more__` correctly returns `ret i1 %0` (the comparison
+  result) instead of `ret i1 undef`. Fixed by populating
+  `CG_RET`'s rvals from `closer->rvals[3]` (the @reply SEND's
+  return value) in cg_normalize.
+- Entry blocks no longer degenerate to `unreachable`. Fixed by
+  cg_normalize's implicit fall-through closer detection (any
+  PNode whose cfg_succ leaves the block becomes a CG_BR
+  closer) and emit_cg's CG_COND_BR fallback (when the
+  condition Var can't be resolved, fall back to
+  `ConstantInt::getTrue` instead of `unreachable`).
+- LLVM pyc-suite: 38/37 (was 37/38 baseline) — 1 net
+  improvement (`conditional.py` newly passes, others shifted
+  failure modes).
+
+## Blocked on: field-index resolution bug in mapStructType
+
+The remaining failure for `for_range_from_zero.py` and the
+for-loop cohort is NOT issue 016's SSU binding — that's now
+correctly emitted. The actual blocker is in the LLVM struct
+type layout for `range`:
+
+```
+;; IF1 sees range's has = (s_6 i_4 __iter__ __next__ j_3 __init__ __pyc_more__)
+;; expected struct: 7 fields where field 1=i, field 4=j
+
+%range = type { ptr, ptr, i64, ptr, ptr, i64, i64 }
+;; actual: field 1 is ptr (should be i64), field 4 is ptr (should be i64),
+;; field 2 is i64 (should be ptr __iter__), etc.
+```
+
+`__pyc_more__`'s IR ends up comparing field 6 with field 2
+(both i64 in the struct) — but those should be METHOD
+pointers, not integers. The actual `i` (field 1) and `j`
+(field 4) are typed as `ptr` so the comparison silently uses
+the wrong fields.
+
+This is upstream of `cg_normalize` — it's in
+`getLLVMType::mapStructType` or in how the type-string pass
+populates `field_sym->type` for record-with-methods. Both the
+IF1 path and the CG_IR path produce the same wrong struct
+layout.
+
+**Action**: file a follow-up issue for the field-index /
+struct-layout bug; the CG_IR path can't fix it without an
+upstream fix to mapStructType or to how the analyzer
+populates field types on cloned record types.
+
+## Original report (pre-fix):
 **Affects:** `ifa/codegen/llvm_codegen.cc:translatePNode` (the
 liveness gate), all functions that have SSU-renamed `self`
 references — iterators in particular (`range::__pyc_more__`,

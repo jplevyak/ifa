@@ -441,11 +441,19 @@ static void emit_terminator(PNode *closer, CGBlock *blk, LowerCtx &lc) {
       break;
     }
     case Code_SEND: {
-      // @primitive @reply: treat as RET. Detection by checking the
-      // first rval's name is approximate; the Phase 3 emitter
-      // refines via Prim. For Phase 2 the test phase only checks
-      // structural shape, so an UNREACHABLE here is acceptable.
-      blk->terminator = new_inst(CG_RET, closer);
+      // @primitive @reply: treat as RET. The IF1 convention is
+      // that rvals[3] holds the return value (cg.cc:131 emits
+      // `return %s;` from rvals[3]). Populate the CG_RET's rvals
+      // so emit_terminator's CreateRet sees the actual value
+      // instead of falling back to undef. Issue 016: without
+      // this, iterator functions like `range::__pyc_more__`
+      // return `i1 undef`, which causes for-loops to behave
+      // non-deterministically (skip body, infinite-loop, etc.).
+      CGInst *t = new_inst(CG_RET, closer);
+      if (closer->rvals.n >= 4) {
+        t->rvals.add(rval_to_value(closer->rvals[3], lc));
+      }
+      blk->terminator = t;
       break;
     }
     default:

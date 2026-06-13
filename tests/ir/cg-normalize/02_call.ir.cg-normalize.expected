@@ -14,10 +14,10 @@
 (fun #1 :main
   :return-type ?
   :arg-types (?)
-  :locals 1 :blocks 1
+  :locals 2 :blocks 1
   (block #0 :label entry :preds 0 :succs 0
     :body (
       (CALL :slot %s83 %s82 %s76 %s77)
     )
-    :term (RET))
+    :term (RET %s69))
 )

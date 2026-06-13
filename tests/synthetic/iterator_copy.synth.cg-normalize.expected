@@ -18,7 +18,7 @@
 (fun #2 :main
   :return-type ?
   :arg-types (?)
-  :locals 7 :blocks 1
+  :locals 8 :blocks 1
   (block #0 :label entry :preds 0 :succs 0
     :body (
       (ALLOC :slot %s107)
@@ -29,5 +29,5 @@
       (CALL :slot %s116 %s93 %s107 %s115)
       (CALL :slot %s117 %s93 %s111 %s115)
     )
-    :term (RET))
+    :term (RET %s69))
 )
