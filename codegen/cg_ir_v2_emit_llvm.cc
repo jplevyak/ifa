@@ -270,7 +270,10 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       llvm::Value *p = resolve_value(ctx, inst->rvals[0]);
       llvm::Value *v = resolve_value(ctx, inst->rvals[1]);
       if (!p || !v) return;
-      CGv2Type *st = lookup_ptr_struct(ctx, inst->rvals[0]);
+      // Prefer the explicit :struct hint when present (test
+      // 13's cross-fn ptr-formal pattern); else look up.
+      CGv2Type *st = inst->type_arg ? inst->type_arg
+                                     : lookup_ptr_struct(ctx, inst->rvals[0]);
       if (!st) return;
       llvm::Type *sty = to_llvm_type(st);
       if (!sty) return;
@@ -298,7 +301,8 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       if (inst->rvals.n < 1 || inst->lvals.n < 1) return;
       llvm::Value *p = resolve_value(ctx, inst->rvals[0]);
       if (!p) return;
-      CGv2Type *st = lookup_ptr_struct(ctx, inst->rvals[0]);
+      CGv2Type *st = inst->type_arg ? inst->type_arg
+                                     : lookup_ptr_struct(ctx, inst->rvals[0]);
       if (!st) return;
       llvm::Type *sty = to_llvm_type(st);
       if (!sty) return;

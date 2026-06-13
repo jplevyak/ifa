@@ -440,6 +440,14 @@ static CGv2Inst *build_inst(BuildCtx &c, SExpr *e) {
       return 0;
     }
     inst->field_idx = atoi(e->children[idx_kw + 1]->atom);
+    // Optional :struct %T hint — used when the rval ptr's
+    // struct type isn't recoverable via ALLOC (cross-fn
+    // formal-arg ptr).
+    int sk = find_kw(e, "struct", 3);
+    if (sk >= 0) {
+      inst->type_arg = resolve_type(c, e->children[sk + 1]);
+      if (c.err) return 0;
+    }
     bool in_lvals = false;
     for (int i = 3; i < e->children.n; i++) {
       SExpr *ch = e->children[i];

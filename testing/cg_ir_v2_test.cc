@@ -1363,3 +1363,137 @@ int run_cg_ir_v2_emit_test12() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test12);
+
+// Phase 4 commit 15 — test 13 (composition test).
+//
+// Combines alloc + multi-fn + struct mutation + loop:
+//
+//   struct Counter { value: int64 }
+//   def reset(c): c.value = 0
+//   def bump(c):  c.value = c.value + 1
+//   def count_up_to(n):
+//     c = Counter(); reset(c)
+//     while c.value < n: bump(c)
+//     return c.value
+//
+// Exercises composition of every concept landed so far. The
+// :struct hint on field ops is the new piece — it lets
+// reset/bump's ptr-formal-arg field accesses know the struct
+// type (which can't be recovered from the per-fn ptr_struct
+// map because there's no ALLOC in reset/bump).
+//
+// No phi needed: the loop variable is the struct field, re-
+// read each iteration.
+static cchar *test13_text =
+    "((type %Counter :kind struct :is_heap_aggregate true\n"
+    "   :fields ((%value :type int64 :idx 0)))\n"
+    " (const %zero (int 0) :type int64)\n"
+    " (const %one  (int 1) :type int64)\n"
+    " (fun %reset\n"
+    "   :signature (void ptr)\n"
+    "   :entry %b0\n"
+    "   :formals (%c)\n"
+    "   (value %c :type ptr :scope formal)\n"
+    "   (block %b0\n"
+    "     (inst %i0 field_store :field_idx 0 :struct %Counter %c %zero)\n"
+    "     :term (ret)))\n"
+    " (fun %bump\n"
+    "   :signature (void ptr)\n"
+    "   :entry %b0\n"
+    "   :formals (%c)\n"
+    "   (value %c  :type ptr   :scope formal)\n"
+    "   (value %v0 :type int64 :scope local)\n"
+    "   (value %v1 :type int64 :scope local)\n"
+    "   (block %b0\n"
+    "     (inst %i0 field_load  :field_idx 0 :struct %Counter %c => %v0)\n"
+    "     (inst %i1 binop add %v0 %one => %v1)\n"
+    "     (inst %i2 field_store :field_idx 0 :struct %Counter %c %v1)\n"
+    "     :term (ret)))\n"
+    " (value %reset_ref :type fun_ptr :scope fun_ref :target %reset)\n"
+    " (value %bump_ref  :type fun_ptr :scope fun_ref :target %bump)\n"
+    " (fun %count_up_to\n"
+    "   :signature (int64 int64)\n"
+    "   :main true\n"
+    "   :entry %b_entry\n"
+    "   :formals (%n)\n"
+    "   (value %n    :type int64 :scope formal)\n"
+    "   (value %c    :type ptr   :scope local)\n"
+    "   (value %cv   :type int64 :scope local)\n"
+    "   (value %cond :type bool  :scope local)\n"
+    "   (block %b_entry\n"
+    "     (inst %i0 alloc :type %Counter => %c)\n"
+    "     (inst %i1 call %reset_ref %c)\n"
+    "     :term (br %b_head))\n"
+    "   (block %b_head\n"
+    "     :preds (%b_entry %b_body)\n"
+    "     (inst %i2 field_load :field_idx 0 %c => %cv)\n"
+    "     (inst %i3 binop lt %cv %n => %cond)\n"
+    "     :term (cond_br %cond %b_body %b_exit))\n"
+    "   (block %b_body\n"
+    "     :preds (%b_head)\n"
+    "     (inst %i4 call %bump_ref %c)\n"
+    "     :term (br %b_head))\n"
+    "   (block %b_exit\n"
+    "     :preds (%b_head)\n"
+    "     :term (ret %cv))))";
+
+int run_cg_ir_v2_test13_roundtrip() {
+  if (!run_one("test13", test13_text, 3, "reset")) return 1;
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_test13_roundtrip);
+
+int run_cg_ir_v2_emit_test13() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(test13_text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+
+  llvm::Function *reset_fn = TheModule->getFunction("reset");
+  llvm::Function *bump_fn = TheModule->getFunction("bump");
+  llvm::Function *main_fn = TheModule->getFunction("count_up_to");
+  if (!reset_fn || !bump_fn || !main_fn) {
+    printf("  missing one of reset/bump/count_up_to\n");
+    return 1;
+  }
+  if (main_fn->size() != 4) {
+    printf("  count_up_to expected 4 blocks; got %u\n",
+           (unsigned)main_fn->size());
+    return 1;
+  }
+
+  // main_fn must call reset and bump.
+  bool calls_reset = false, calls_bump = false;
+  for (llvm::BasicBlock &bb : *main_fn) {
+    for (llvm::Instruction &i : bb) {
+      if (auto *c = llvm::dyn_cast<llvm::CallInst>(&i)) {
+        if (c->getCalledFunction() == reset_fn) calls_reset = true;
+        if (c->getCalledFunction() == bump_fn) calls_bump = true;
+      }
+    }
+  }
+  if (!calls_reset || !calls_bump) {
+    printf("  count_up_to does not call reset and bump\n");
+    return 1;
+  }
+
+  // verifyModule is the structural check.
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test13);

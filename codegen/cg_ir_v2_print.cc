@@ -144,9 +144,17 @@ static void print_inst(Buf &b, CGv2Inst *inst) {
       break;
     case CG2_FIELD_STORE:
       b.putf(" field_store :field_idx %d", inst->field_idx);
+      if (inst->type_arg) {
+        b.puts_(" :struct ");
+        print_type_ref(b, inst->type_arg);
+      }
       break;
     case CG2_FIELD_LOAD:
       b.putf(" field_load :field_idx %d", inst->field_idx);
+      if (inst->type_arg) {
+        b.puts_(" :struct ");
+        print_type_ref(b, inst->type_arg);
+      }
       break;
     case CG2_INDEX_LOAD:
       b.puts_(" index_load");

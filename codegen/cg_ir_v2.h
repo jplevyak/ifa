@@ -192,7 +192,8 @@ class CGv2Inst : public gc {
   CGv2Block *br_false;      // CG2_COND_BR
 
   // For aggregate ops
-  CGv2Type *type_arg;       // CG2_ALLOC (type to allocate)
+  CGv2Type *type_arg;       // CG2_ALLOC (type to allocate), optional
+                            // :struct hint on CG2_FIELD_*
   int field_idx;            // CG2_FIELD_STORE / CG2_FIELD_LOAD
 
   CGv2Inst() : id(0), name(0), op(CG2_NOP), sub_op(CG2B_NONE),
