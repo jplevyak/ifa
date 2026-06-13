@@ -451,6 +451,22 @@ static CGv2Inst *build_inst(BuildCtx &c, SExpr *e) {
       if (in_lvals) inst->lvals.add(v);
       else inst->rvals.add(v);
     }
+  } else if (strcmp(op_tag, "index_load") == 0) {
+    inst->op = CG2_INDEX_LOAD;
+    // (inst %name index_load %ptr %idx => %dst)
+    int i = 3;
+    bool in_lvals = false;
+    for (; i < e->children.n; i++) {
+      SExpr *ch = e->children[i];
+      if (!ch->is_list && ch->atom && strcmp(ch->atom, "=>") == 0) {
+        in_lvals = true;
+        continue;
+      }
+      CGv2Value *v = resolve_value_ref(c, ch);
+      if (c.err) return 0;
+      if (in_lvals) inst->lvals.add(v);
+      else inst->rvals.add(v);
+    }
   } else if (strcmp(op_tag, "call") == 0) {
     inst->op = CG2_CALL;
     // (inst %name call %fn_ref %arg1 ... => %result)
@@ -854,6 +870,8 @@ static CGv2Type *build_type(BuildCtx &c, SExpr *e) {
     SExpr *k = e->children[kind_kw + 1];
     if (!k->is_list && k->atom && strcmp(k->atom, "struct") == 0) {
       t->kind = CG2T_STRUCT;
+    } else if (!k->is_list && k->atom && strcmp(k->atom, "ptr") == 0) {
+      t->kind = CG2T_PTR;
     } else {
       c.fail_at(k, "unsupported :kind");
       return 0;
@@ -865,20 +883,27 @@ static CGv2Type *build_type(BuildCtx &c, SExpr *e) {
     if (!h->is_list && h->atom && strcmp(h->atom, "true") == 0)
       t->is_heap_aggregate = true;
   }
-  int fields_kw = find_kw(e, "fields", 2);
-  if (fields_kw < 0) {
-    c.fail_at(e, "struct type missing :fields");
-    return 0;
-  }
-  SExpr *flist = e->children[fields_kw + 1];
-  if (!flist->is_list) {
-    c.fail_at(flist, ":fields must be a list");
-    return 0;
-  }
-  for (SExpr *fe : flist->children) {
-    CGv2TypeField *f = build_field(c, fe);
+  int elem_kw = find_kw(e, "element", 2);
+  if (elem_kw >= 0) {
+    t->element = resolve_type(c, e->children[elem_kw + 1]);
     if (c.err) return 0;
-    t->fields.add(f);
+  }
+  if (t->kind == CG2T_STRUCT) {
+    int fields_kw = find_kw(e, "fields", 2);
+    if (fields_kw < 0) {
+      c.fail_at(e, "struct type missing :fields");
+      return 0;
+    }
+    SExpr *flist = e->children[fields_kw + 1];
+    if (!flist->is_list) {
+      c.fail_at(flist, ":fields must be a list");
+      return 0;
+    }
+    for (SExpr *fe : flist->children) {
+      CGv2TypeField *f = build_field(c, fe);
+      if (c.err) return 0;
+      t->fields.add(f);
+    }
   }
   return t;
 }

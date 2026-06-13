@@ -83,10 +83,15 @@ class CGv2Type : public gc {
   Vec<CGv2TypeField *> fields;
   bool is_heap_aggregate;     // alloc via GC heap (vs stack)
 
-  // (element, fun_sig, alias_of land with their tests.)
+  // For CG2T_PTR / CG2T_REF — the element type pointed to.
+  // Drives CG_INDEX_LOAD's gep element type. Optional;
+  // nullptr means opaque (no indexable element known).
+  CGv2Type *element;
+
+  // (fun_sig, alias_of land with their tests.)
 
   CGv2Type() : id(0), name(0), kind(CG2T_VOID), bits(0),
-               is_heap_aggregate(false) {}
+               is_heap_aggregate(false), element(0) {}
 };
 
 // ============================================================
@@ -151,6 +156,7 @@ enum CGv2Op {
   CG2_ALLOC,           // type_arg=struct, lvals[0]=ptr to heap aggregate
   CG2_FIELD_STORE,     // field_idx=N, rvals=(ptr, value)
   CG2_FIELD_LOAD,      // field_idx=N, rvals=(ptr), lvals[0]=loaded
+  CG2_INDEX_LOAD,      // rvals=(ptr, idx), lvals[0]=loaded element
   // Terminators:
   CG2_BR,
   CG2_COND_BR,

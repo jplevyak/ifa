@@ -279,6 +279,21 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       Builder->CreateStore(v, gep);
       break;
     }
+    case CG2_INDEX_LOAD: {
+      if (inst->rvals.n < 2 || inst->lvals.n < 1) return;
+      llvm::Value *p = resolve_value(ctx, inst->rvals[0]);
+      llvm::Value *idx = resolve_value(ctx, inst->rvals[1]);
+      if (!p || !idx) return;
+      CGv2Type *ptr_ty = inst->rvals[0]->type;
+      if (!ptr_ty || !ptr_ty->element) return;
+      llvm::Type *elem = to_llvm_type(ptr_ty->element);
+      if (!elem) return;
+      llvm::Value *gep = Builder->CreateGEP(elem, p, idx);
+      cchar *out = inst->lvals[0]->name ? inst->lvals[0]->name : "";
+      llvm::Value *loaded = Builder->CreateLoad(elem, gep, out);
+      put_result(ctx, inst->lvals[0], loaded);
+      break;
+    }
     case CG2_FIELD_LOAD: {
       if (inst->rvals.n < 1 || inst->lvals.n < 1) return;
       llvm::Value *p = resolve_value(ctx, inst->rvals[0]);

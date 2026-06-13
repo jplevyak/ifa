@@ -1198,3 +1198,78 @@ int run_cg_ir_v2_emit_test09() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test09);
+
+// Phase 4 commit 13 — test 10 (vector indexing).
+//
+// sum_first_two(v) = v[0] + v[1]
+//
+// Exercises:
+//   - typed-ptr type decl (kind=ptr + :element)
+//   - CG2_INDEX_LOAD via gep on the element type + load
+static cchar *test10_text =
+    "((type %IntVec :kind ptr :element int64)\n"
+    " (const %zero (int 0) :type int64)\n"
+    " (const %one  (int 1) :type int64)\n"
+    " (fun %sum_first_two\n"
+    "   :signature (int64 %IntVec)\n"
+    "   :entry %b0\n"
+    "   :formals (%v)\n"
+    "   (value %v :type %IntVec :scope formal)\n"
+    "   (value %a :type int64   :scope local)\n"
+    "   (value %b :type int64   :scope local)\n"
+    "   (value %s :type int64   :scope local)\n"
+    "   (block %b0\n"
+    "     (inst %i0 index_load %v %zero => %a)\n"
+    "     (inst %i1 index_load %v %one  => %b)\n"
+    "     (inst %i2 binop add  %a %b    => %s)\n"
+    "     :term (ret %s))))";
+
+int run_cg_ir_v2_test10_roundtrip() {
+  if (!run_one("test10", test10_text, 1, "sum_first_two")) return 1;
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_test10_roundtrip);
+
+int run_cg_ir_v2_emit_test10() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(test10_text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+
+  llvm::Function *fn = TheModule->getFunction("sum_first_two");
+  if (!fn) { printf("  fn not found\n"); return 1; }
+
+  // Should see two GEPs + two Loads + an Add.
+  int n_gep = 0, n_load = 0, n_add = 0;
+  for (llvm::Instruction &i : fn->getEntryBlock()) {
+    if (llvm::isa<llvm::GetElementPtrInst>(&i)) n_gep++;
+    else if (llvm::isa<llvm::LoadInst>(&i)) n_load++;
+    else if (auto *bo = llvm::dyn_cast<llvm::BinaryOperator>(&i)) {
+      if (bo->getOpcode() == llvm::Instruction::Add) n_add++;
+    }
+  }
+  if (n_gep != 2 || n_load != 2 || n_add != 1) {
+    printf("  expected 2 GEP + 2 Load + 1 Add; got %d/%d/%d\n",
+           n_gep, n_load, n_add);
+    return 1;
+  }
+
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test10);

@@ -145,6 +145,9 @@ static void print_inst(Buf &b, CGv2Inst *inst) {
     case CG2_FIELD_LOAD:
       b.putf(" field_load :field_idx %d", inst->field_idx);
       break;
+    case CG2_INDEX_LOAD:
+      b.puts_(" index_load");
+      break;
     default:
       b.puts_(" nop");
       break;
@@ -341,21 +344,29 @@ static void print_type_decl(Buf &b, CGv2Type *t) {
   b.puts_(" :kind ");
   switch (t->kind) {
     case CG2T_STRUCT: b.puts_("struct"); break;
+    case CG2T_PTR:    b.puts_("ptr"); break;
     default: b.puts_("?"); break;
   }
   if (t->is_heap_aggregate) b.puts_(" :is_heap_aggregate true");
-  b.puts_(" :fields (");
-  for (int i = 0; i < t->fields.n; i++) {
-    CGv2TypeField *f = t->fields[i];
-    if (i) b.put(' ');
-    b.puts_("(%");
-    b.puts_(f->name ? f->name : "?");
-    b.puts_(" :type ");
-    print_type_ref(b, f->type);
-    b.putf(" :idx %d", f->idx);
+  if (t->element) {
+    b.puts_(" :element ");
+    print_type_ref(b, t->element);
+  }
+  if (t->fields.n > 0) {
+    b.puts_(" :fields (");
+    for (int i = 0; i < t->fields.n; i++) {
+      CGv2TypeField *f = t->fields[i];
+      if (i) b.put(' ');
+      b.puts_("(%");
+      b.puts_(f->name ? f->name : "?");
+      b.puts_(" :type ");
+      print_type_ref(b, f->type);
+      b.putf(" :idx %d", f->idx);
+      b.put(')');
+    }
     b.put(')');
   }
-  b.puts_("))");
+  b.put(')');
 }
 
 static void print_global(Buf &b, CGv2Value *v) {
