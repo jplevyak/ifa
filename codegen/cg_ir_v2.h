@@ -170,11 +170,25 @@ enum CGv2Op {
 // LT; etc. CG2B_NONE is the default for non-binop insts.
 enum CGv2BinSub {
   CG2B_NONE,
+  // Arithmetic (signed)
   CG2B_ADD,
   CG2B_SUB,
   CG2B_MUL,
+  CG2B_DIV,
+  CG2B_MOD,
+  // Comparison (signed)
   CG2B_LT,
   CG2B_LE,
+  CG2B_GT,
+  CG2B_GE,
+  CG2B_EQ,
+  CG2B_NE,
+  // Bitwise / logical
+  CG2B_AND,
+  CG2B_OR,
+  CG2B_XOR,
+  CG2B_SHL,
+  CG2B_SHR,
 };
 
 class CGv2Inst : public gc {

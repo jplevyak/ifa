@@ -578,13 +578,52 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
         case CG2B_MUL:
           r = Builder->CreateMul(a, b, out);
           break;
+        case CG2B_DIV:
+          // Signed integer division. Unsigned/float lands
+          // with a typed-binop variant when those tests do.
+          r = Builder->CreateSDiv(a, b, out);
+          break;
+        case CG2B_MOD:
+          r = Builder->CreateSRem(a, b, out);
+          break;
+        // Comparisons (signed integer).
         case CG2B_LT:
-          // v0 supports signed-integer LT only. Unsigned /
-          // float / typed-bool paths land when their tests do.
           r = Builder->CreateICmpSLT(a, b, out);
           break;
         case CG2B_LE:
           r = Builder->CreateICmpSLE(a, b, out);
+          break;
+        case CG2B_GT:
+          r = Builder->CreateICmpSGT(a, b, out);
+          break;
+        case CG2B_GE:
+          r = Builder->CreateICmpSGE(a, b, out);
+          break;
+        case CG2B_EQ:
+          r = Builder->CreateICmpEQ(a, b, out);
+          break;
+        case CG2B_NE:
+          r = Builder->CreateICmpNE(a, b, out);
+          break;
+        // Bitwise / logical (work on integer types of any width;
+        // logical-and / logical-or on bool values are bitwise on i1).
+        case CG2B_AND:
+          r = Builder->CreateAnd(a, b, out);
+          break;
+        case CG2B_OR:
+          r = Builder->CreateOr(a, b, out);
+          break;
+        case CG2B_XOR:
+          r = Builder->CreateXor(a, b, out);
+          break;
+        case CG2B_SHL:
+          r = Builder->CreateShl(a, b, out);
+          break;
+        case CG2B_SHR:
+          // Arithmetic shift right (signed). Logical-shr would
+          // be a separate sub-op; AShr matches Python's `>>`
+          // semantics for negative numbers.
+          r = Builder->CreateAShr(a, b, out);
           break;
         case CG2B_NONE:
           return;

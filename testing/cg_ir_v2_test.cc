@@ -1851,3 +1851,107 @@ int run_cg_ir_v2_emit_test_to_string() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test_to_string);
+
+// Phase A.4 — binop sub-op coverage.
+//
+// Exercises every new sub-op landed in this commit: div, mod,
+// gt, ge, eq, ne, and, or, xor, shl, shr. Each is a separate
+// inst in a one-block fn; the test counts opcode appearances
+// in the emitted module.
+//
+// def all_ops(a: int64, b: int64) -> int64:
+//   q   = a / b
+//   r   = a % b
+//   gt  = a > b
+//   ge  = a >= b
+//   eq  = a == b
+//   ne  = a != b
+//   and = a & b
+//   or  = a | b
+//   xor = a ^ b
+//   shl = a << b
+//   shr = a >> b
+//   return q + r
+int run_cg_ir_v2_emit_test_binop_coverage() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *text =
+      "((fun %all_ops\n"
+      "   :signature (int64 int64 int64)\n"
+      "   :entry %b0\n"
+      "   :formals (%a %b)\n"
+      "   (value %a   :type int64 :scope formal)\n"
+      "   (value %b   :type int64 :scope formal)\n"
+      "   (value %q   :type int64 :scope local)\n"
+      "   (value %r   :type int64 :scope local)\n"
+      "   (value %gt  :type bool  :scope local)\n"
+      "   (value %ge  :type bool  :scope local)\n"
+      "   (value %eq  :type bool  :scope local)\n"
+      "   (value %ne  :type bool  :scope local)\n"
+      "   (value %an  :type int64 :scope local)\n"
+      "   (value %or  :type int64 :scope local)\n"
+      "   (value %xo  :type int64 :scope local)\n"
+      "   (value %sl  :type int64 :scope local)\n"
+      "   (value %sr  :type int64 :scope local)\n"
+      "   (value %sum :type int64 :scope local)\n"
+      "   (block %b0\n"
+      "     (inst %i0  binop div %a %b => %q)\n"
+      "     (inst %i1  binop mod %a %b => %r)\n"
+      "     (inst %i2  binop gt  %a %b => %gt)\n"
+      "     (inst %i3  binop ge  %a %b => %ge)\n"
+      "     (inst %i4  binop eq  %a %b => %eq)\n"
+      "     (inst %i5  binop ne  %a %b => %ne)\n"
+      "     (inst %i6  binop and %a %b => %an)\n"
+      "     (inst %i7  binop or  %a %b => %or)\n"
+      "     (inst %i8  binop xor %a %b => %xo)\n"
+      "     (inst %i9  binop shl %a %b => %sl)\n"
+      "     (inst %i10 binop shr %a %b => %sr)\n"
+      "     (inst %i11 binop add %q %r => %sum)\n"
+      "     :term (ret %sum))))";
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+  llvm::Function *fn = TheModule->getFunction("all_ops");
+  if (!fn) { printf("  fn missing\n"); return 1; }
+
+  // Count specific opcodes to make sure each sub-op produced
+  // its expected LLVM instruction kind.
+  int n_sdiv = 0, n_srem = 0;
+  int n_icmp = 0;
+  int n_and = 0, n_or = 0, n_xor = 0;
+  int n_shl = 0, n_ashr = 0;
+  for (llvm::Instruction &i : fn->getEntryBlock()) {
+    if (i.getOpcode() == llvm::Instruction::SDiv) n_sdiv++;
+    else if (i.getOpcode() == llvm::Instruction::SRem) n_srem++;
+    else if (llvm::isa<llvm::ICmpInst>(&i)) n_icmp++;
+    else if (i.getOpcode() == llvm::Instruction::And) n_and++;
+    else if (i.getOpcode() == llvm::Instruction::Or) n_or++;
+    else if (i.getOpcode() == llvm::Instruction::Xor) n_xor++;
+    else if (i.getOpcode() == llvm::Instruction::Shl) n_shl++;
+    else if (i.getOpcode() == llvm::Instruction::AShr) n_ashr++;
+  }
+  if (n_sdiv != 1 || n_srem != 1 || n_icmp != 4 || n_and != 1 ||
+      n_or != 1 || n_xor != 1 || n_shl != 1 || n_ashr != 1) {
+    printf("  opcode counts off — sdiv=%d srem=%d icmp=%d and=%d "
+           "or=%d xor=%d shl=%d ashr=%d\n",
+           n_sdiv, n_srem, n_icmp, n_and, n_or, n_xor, n_shl, n_ashr);
+    return 1;
+  }
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test_binop_coverage);

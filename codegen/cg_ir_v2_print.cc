@@ -117,8 +117,19 @@ static cchar *binop_name(CGv2BinSub s) {
     case CG2B_ADD:  return "add";
     case CG2B_SUB:  return "sub";
     case CG2B_MUL:  return "mul";
+    case CG2B_DIV:  return "div";
+    case CG2B_MOD:  return "mod";
     case CG2B_LT:   return "lt";
     case CG2B_LE:   return "le";
+    case CG2B_GT:   return "gt";
+    case CG2B_GE:   return "ge";
+    case CG2B_EQ:   return "eq";
+    case CG2B_NE:   return "ne";
+    case CG2B_AND:  return "and";
+    case CG2B_OR:   return "or";
+    case CG2B_XOR:  return "xor";
+    case CG2B_SHL:  return "shl";
+    case CG2B_SHR:  return "shr";
     case CG2B_NONE: return "?";
   }
   return "?";

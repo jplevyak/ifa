@@ -386,8 +386,19 @@ static CGv2Inst *build_inst(BuildCtx &c, SExpr *e) {
     if (strcmp(st, "add") == 0)      inst->sub_op = CG2B_ADD;
     else if (strcmp(st, "sub") == 0) inst->sub_op = CG2B_SUB;
     else if (strcmp(st, "mul") == 0) inst->sub_op = CG2B_MUL;
+    else if (strcmp(st, "div") == 0) inst->sub_op = CG2B_DIV;
+    else if (strcmp(st, "mod") == 0) inst->sub_op = CG2B_MOD;
     else if (strcmp(st, "lt") == 0)  inst->sub_op = CG2B_LT;
     else if (strcmp(st, "le") == 0)  inst->sub_op = CG2B_LE;
+    else if (strcmp(st, "gt") == 0)  inst->sub_op = CG2B_GT;
+    else if (strcmp(st, "ge") == 0)  inst->sub_op = CG2B_GE;
+    else if (strcmp(st, "eq") == 0)  inst->sub_op = CG2B_EQ;
+    else if (strcmp(st, "ne") == 0)  inst->sub_op = CG2B_NE;
+    else if (strcmp(st, "and") == 0) inst->sub_op = CG2B_AND;
+    else if (strcmp(st, "or") == 0)  inst->sub_op = CG2B_OR;
+    else if (strcmp(st, "xor") == 0) inst->sub_op = CG2B_XOR;
+    else if (strcmp(st, "shl") == 0) inst->sub_op = CG2B_SHL;
+    else if (strcmp(st, "shr") == 0) inst->sub_op = CG2B_SHR;
     else {
       c.fail_at(sub, "unsupported binop sub-op");
       return 0;
