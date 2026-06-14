@@ -30,6 +30,7 @@ struct NormCtx {
   CGv2Program *p;
   Map<Sym *, CGv2Type *> sym_to_type;
   Map<Sym *, CGv2Value *> sym_to_value;   // globals + constants
+  Map<Fun *, CGv2Fun *> fun_to_fun;        // IF1 Fun → CGv2Fun
 
   explicit NormCtx(CGv2Program *prog) : p(prog) {}
 };
@@ -222,6 +223,56 @@ void build_globals(NormCtx &c, FA *fa) {
   for (Var *v : globals) (void)build_global(c, v);
 }
 
+// Declare an IF1 Fun as a CGv2Fun — signature, formals, but
+// no body. Body translation lands in B.5+. Mirrors the
+// per-Fun head of v1's build_cgfun (cg_normalize.cc:472).
+CGv2Fun *build_fun_decl(NormCtx &c, Fun *f) {
+  if (!f || !f->live || !f->entry) return nullptr;
+  if (CGv2Fun *cached = c.fun_to_fun.get(f)) return cached;
+
+  CGv2Fun *cf = new CGv2Fun();
+  cf->id = c.p->funs.n;
+  cf->name = f->cg_string ? f->cg_string :
+             (f->sym && f->sym->name ? f->sym->name : "fn");
+  cf->is_external = f->is_external;
+  cf->is_varargs = f->is_varargs;
+  cf->is_main = (if1->top && if1->top->fun == f);
+
+  cf->signature = new CGv2Sig();
+  cf->signature->is_varargs = f->is_varargs;
+  if (f->rets.n == 1 && f->rets[0] && f->rets[0]->type) {
+    cf->signature->ret = build_type(c, f->rets[0]->type);
+  } else {
+    cf->signature->ret = c.p->t_void;
+  }
+
+  // Args come from a map keyed by MPosition; use the same
+  // get_values helper v1 uses to extract them in order.
+  Vec<Var *> arg_vars;
+  f->args.get_values(arg_vars);
+  for (Var *a : arg_vars) {
+    if (!a) continue;
+    CGv2Type *at = a->type ? build_type(c, a->type) : c.p->t_ptr;
+    cf->signature->args.add(at);
+    CGv2Value *formal = new CGv2Value();
+    formal->id = 1000 + c.p->funs.n * 100 + cf->formals.n;
+    formal->name = a->sym && a->sym->name ? a->sym->name :
+                   (a->cg_string ? a->cg_string : "arg");
+    formal->type = at;
+    formal->scope = CG2V_FORMAL;
+    cf->formals.add(formal);
+  }
+
+  c.fun_to_fun.put(f, cf);
+  c.p->funs.add(cf);
+  if (cf->is_main) c.p->main_fun = cf;
+  return cf;
+}
+
+void build_funs(NormCtx &c, FA *fa) {
+  for (Fun *f : fa->funs) (void)build_fun_decl(c, f);
+}
+
 }  // namespace
 
 CGv2Program *cg_normalize_v2(FA *fa) {
@@ -231,6 +282,7 @@ CGv2Program *cg_normalize_v2(FA *fa) {
   NormCtx c(p);
   build_types(c, fa);
   build_globals(c, fa);
+  build_funs(c, fa);
 
   return p;
 }

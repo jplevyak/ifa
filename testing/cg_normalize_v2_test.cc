@@ -150,3 +150,31 @@ int run_cg_normalize_v2_no_globals() {
 }
 
 UNIT_TEST_FUN(run_cg_normalize_v2_no_globals);
+
+// Phase B.4 — function declarations.
+//
+// build_funs walks fa->funs and translates each live Fun
+// (with an entry PNode) into a CGv2Fun with signature +
+// formals. No body emission yet — Phase B.5+.
+//
+// In a freshly-initialized FA there are no user functions, so
+// prog->funs stays empty and main_fun stays null. This
+// validates the walker doesn't synthesize spurious entries.
+int run_cg_normalize_v2_no_funs() {
+  ifa_reset();
+  ifa_init(new IRCallbacks);
+
+  CGv2Program *p = cg_normalize_v2(pdb->fa);
+  if (!p) { printf("  cg_normalize_v2 returned NULL\n"); return 1; }
+  if (p->funs.n != 0) {
+    printf("  expected 0 funs, got %d\n", p->funs.n);
+    return 1;
+  }
+  if (p->main_fun != nullptr) {
+    printf("  expected null main_fun\n");
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_normalize_v2_no_funs);
