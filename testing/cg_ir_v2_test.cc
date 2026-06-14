@@ -2168,3 +2168,75 @@ int run_cg_ir_v2_emit_test_cast() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test_cast);
+
+// Phase A.8 — CG2_SIZEOF + CG2_SIZEOF_ELEMENT.
+// Both return compile-time i64 constants computed from
+// the LLVM DataLayout. Used by array allocators
+// (n_bytes = sizeof_element(arr) * count).
+//
+// def alloc_size(v: IntVec) -> int64:
+//   p = sizeof(Pt)            # 16 (two i64 fields)
+//   e = sizeof_element(v)     # 8 (i64)
+//   return p + e              # 24
+int run_cg_ir_v2_emit_test_sizeof() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *text =
+      "((type %Pt :kind struct :is_heap_aggregate true\n"
+      "   :fields ((%x :type int64 :idx 0)\n"
+      "            (%y :type int64 :idx 1)))\n"
+      " (type %IntVec :kind ptr :element int64)\n"
+      " (fun %alloc_size\n"
+      "   :signature (int64 %IntVec)\n"
+      "   :entry %b0\n"
+      "   :formals (%v)\n"
+      "   (value %v   :type %IntVec :scope formal)\n"
+      "   (value %p   :type int64   :scope local)\n"
+      "   (value %e   :type int64   :scope local)\n"
+      "   (value %sum :type int64   :scope local)\n"
+      "   (block %b0\n"
+      "     (inst %i0 sizeof :type %Pt => %p)\n"
+      "     (inst %i1 sizeof_element %v => %e)\n"
+      "     (inst %i2 binop add %p %e => %sum)\n"
+      "     :term (ret %sum))))";
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+  llvm::Function *fn = TheModule->getFunction("alloc_size");
+  if (!fn) { printf("  fn missing\n"); return 1; }
+
+  // Both sizeof results are compile-time constants, so the
+  // Builder folds Add(16, 8) -> 24 at insertion time. The
+  // entry block contains just `ret i64 24`.
+  auto *ret = llvm::dyn_cast<llvm::ReturnInst>(
+      fn->getEntryBlock().getTerminator());
+  if (!ret) { printf("  no Ret\n"); return 1; }
+  auto *ci = llvm::dyn_cast<llvm::ConstantInt>(ret->getReturnValue());
+  if (!ci) {
+    printf("  Ret value not a folded constant\n");
+    return 1;
+  }
+  if (ci->getZExtValue() != 24) {
+    printf("  expected ret=24 (16+8), got %llu\n",
+           (unsigned long long)ci->getZExtValue());
+    return 1;
+  }
+
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test_sizeof);

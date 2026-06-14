@@ -605,6 +605,28 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       if (r) put_result(ctx, inst->lvals[0], r);
       break;
     }
+    case CG2_SIZEOF: {
+      if (!inst->type_arg || inst->lvals.n < 1) return;
+      llvm::Type *t = to_llvm_type(inst->type_arg);
+      if (!t) return;
+      uint64_t sz = TheModule->getDataLayout().getTypeAllocSize(t);
+      llvm::Value *c = llvm::ConstantInt::get(
+          llvm::Type::getInt64Ty(*TheContext), sz);
+      put_result(ctx, inst->lvals[0], c);
+      break;
+    }
+    case CG2_SIZEOF_ELEMENT: {
+      if (inst->rvals.n < 1 || inst->lvals.n < 1) return;
+      CGv2Type *ptr_ty = inst->rvals[0]->type;
+      if (!ptr_ty || !ptr_ty->element) return;
+      llvm::Type *elem = to_llvm_type(ptr_ty->element);
+      if (!elem) return;
+      uint64_t sz = TheModule->getDataLayout().getTypeAllocSize(elem);
+      llvm::Value *c = llvm::ConstantInt::get(
+          llvm::Type::getInt64Ty(*TheContext), sz);
+      put_result(ctx, inst->lvals[0], c);
+      break;
+    }
     case CG2_LEN: {
       if (inst->rvals.n < 1 || inst->lvals.n < 1) return;
       llvm::Value *obj = resolve_value(ctx, inst->rvals[0]);
