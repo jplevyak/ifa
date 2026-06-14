@@ -473,7 +473,18 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
     case CG2_ALLOC: {
       if (inst->lvals.n < 1 || !inst->type_arg) return;
       llvm::Type *sty = to_llvm_type(inst->type_arg);
-      if (!sty) return;
+      if (!sty || !sty->isSized()) {
+        // Type isn't sized (opaque struct, void, or struct
+        // with one of those as a field). LLVM's
+        // getTypeAllocSize traps on unsized types — skip the
+        // ALLOC entirely. Phase B.10 investigation: figure out
+        // why cg_normalize_v2 produced a struct without a
+        // computable size.
+        DEBUG_LOG("CG2_ALLOC skipped: unsized type %s\n",
+                  inst->type_arg->name ? inst->type_arg->name
+                                       : "(anon)");
+        return;
+      }
       uint64_t size_bytes = TheModule->getDataLayout()
                                     .getTypeAllocSize(sty);
       llvm::Function *gc_malloc = get_gc_malloc();
@@ -613,7 +624,12 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       if (!inst->type_arg || inst->rvals.n < 1 || inst->lvals.n < 1)
         return;
       llvm::Type *sty = to_llvm_type(inst->type_arg);
-      if (!sty) return;
+      if (!sty || !sty->isSized()) {
+        DEBUG_LOG("CG2_CLONE skipped: unsized type %s\n",
+                  inst->type_arg->name ? inst->type_arg->name
+                                       : "(anon)");
+        return;
+      }
       llvm::Value *proto = resolve_value(ctx, inst->rvals[0]);
       if (!proto) return;
       uint64_t sz = TheModule->getDataLayout().getTypeAllocSize(sty);
@@ -631,7 +647,12 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
     case CG2_SIZEOF: {
       if (!inst->type_arg || inst->lvals.n < 1) return;
       llvm::Type *t = to_llvm_type(inst->type_arg);
-      if (!t) return;
+      if (!t || !t->isSized()) {
+        DEBUG_LOG("CG2_SIZEOF skipped: unsized type %s\n",
+                  inst->type_arg->name ? inst->type_arg->name
+                                       : "(anon)");
+        return;
+      }
       uint64_t sz = TheModule->getDataLayout().getTypeAllocSize(t);
       llvm::Value *c = llvm::ConstantInt::get(
           llvm::Type::getInt64Ty(*TheContext), sz);
@@ -643,7 +664,10 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       CGv2Type *ptr_ty = inst->rvals[0]->type;
       if (!ptr_ty || !ptr_ty->element) return;
       llvm::Type *elem = to_llvm_type(ptr_ty->element);
-      if (!elem) return;
+      if (!elem || !elem->isSized()) {
+        DEBUG_LOG("CG2_SIZEOF_ELEMENT skipped: unsized element\n");
+        return;
+      }
       uint64_t sz = TheModule->getDataLayout().getTypeAllocSize(elem);
       llvm::Value *c = llvm::ConstantInt::get(
           llvm::Type::getInt64Ty(*TheContext), sz);
