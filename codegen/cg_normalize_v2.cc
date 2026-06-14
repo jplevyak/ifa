@@ -54,6 +54,7 @@ struct NormCtx {
 struct FunCtx {
   CGv2Fun *cf;
   Map<PNode *, CGv2Block *> pn_to_block;
+  Map<Label *, CGv2Block *> label_to_block;  // for branch targets
   Map<Var *, CGv2Value *> var_to_value;
   Map<CGv2Block *, PNode *> block_closer;   // for phi/phy edges
 };
@@ -111,7 +112,15 @@ CGv2Type *build_struct_type(NormCtx &c, Sym *s) {
   for (Sym *f : s->has) {
     CGv2TypeField *cf = new CGv2TypeField();
     cf->name = f->name;
-    cf->type = build_type(c, f->type);
+    CGv2Type *ft = build_type(c, f->type);
+    // Substitute t_ptr for unsized field types (void / nested
+    // structs that can't be sized at this point). pyc records
+    // often contain method-slot fields whose IF1 type is
+    // sym_void; without the substitution the containing
+    // struct becomes unsized and LLVM rejects GEPs through it.
+    // Phase B.10.6.
+    if (!ft || ft->kind == CG2T_VOID) ft = c.p->t_ptr;
+    cf->type = ft;
     cf->idx = idx++;
     t->fields.add(cf);
   }
@@ -390,6 +399,15 @@ void build_block_skeleton(NormCtx &c, Fun *f, FunCtx &fc) {
         b->name = dupstr(buf);
         fc.cf->blocks.add(b);
         fc.pn_to_block.put(succ, b);
+        // Register the LABEL's first Label* so GOTO/IF
+        // targets resolve via the same map v1 uses
+        // (llvm_codegen.cc:getLLVMBasicBlock).
+        if (succ->code->label[0]) {
+          fc.label_to_block.put(succ->code->label[0], b);
+        }
+        if (succ->code->label[1]) {
+          fc.label_to_block.put(succ->code->label[1], b);
+        }
       }
       worklist.add(succ);
     }
@@ -572,6 +590,14 @@ bool lower_send_setter(NormCtx &c, FunCtx &fc, PNode *pn,
   return true;
 }
 
+// Unwrap a CGv2Type to its underlying CG2T_STRUCT when it's a
+// CG2T_PTR wrapper. Used by ALLOC/CLONE/SIZEOF to get the
+// actual struct's byte size, not the ptr's 8 bytes. B.10.6.
+CGv2Type *unwrap_struct(CGv2Type *t) {
+  if (t && t->kind == CG2T_PTR && t->element) return t->element;
+  return t;
+}
+
 // P_prim_new / P_prim_make — heap allocation. The result type
 // comes from lvals[0]->type (the result-Var carries the type
 // it will hold post-construction).
@@ -582,7 +608,8 @@ bool lower_send_alloc(NormCtx &c, FunCtx &fc, PNode *pn,
   if (!dst || !dst->type) return false;
   CGv2Inst *inst = new CGv2Inst();
   inst->op = CG2_ALLOC;
-  inst->type_arg = dst->type;
+  // Allocate the underlying struct, not its ptr wrapper.
+  inst->type_arg = unwrap_struct(dst->type);
   inst->lvals.add(dst);
   blk->body.add(inst);
   return true;
@@ -599,7 +626,7 @@ bool lower_send_clone(NormCtx &c, FunCtx &fc, PNode *pn,
   if (!proto || !dst || !dst->type) return false;
   CGv2Inst *inst = new CGv2Inst();
   inst->op = CG2_CLONE;
-  inst->type_arg = dst->type;
+  inst->type_arg = unwrap_struct(dst->type);
   inst->rvals.add(proto);
   inst->lvals.add(dst);
   blk->body.add(inst);
@@ -944,7 +971,13 @@ void build_terminator(NormCtx &c, FunCtx &fc, CGv2Block *blk,
   switch (cd->kind) {
     case Code_GOTO:
       term->op = CG2_BR;
-      term->br_target = succ_blocks.n > 0 ? succ_blocks[0] : nullptr;
+      // Use code->label[0] (the goto target) via label_to_block.
+      // cfg_succ ordering doesn't reliably match v1's semantics
+      // for branches — v1 uses pn->code->label[N] explicitly
+      // (llvm_codegen.cc:translate_code_goto). Phase B.10.6.
+      term->br_target = cd->label[0]
+                            ? fc.label_to_block.get(cd->label[0])
+                            : (succ_blocks.n > 0 ? succ_blocks[0] : nullptr);
       break;
     case Code_IF:
       term->op = CG2_COND_BR;
@@ -952,8 +985,16 @@ void build_terminator(NormCtx &c, FunCtx &fc, CGv2Block *blk,
         CGv2Value *cv = build_var(c, fc, closer->rvals[0]);
         if (cv) term->rvals.add(cv);
       }
-      term->br_true  = succ_blocks.n > 0 ? succ_blocks[0] : nullptr;
-      term->br_false = succ_blocks.n > 1 ? succ_blocks[1] : nullptr;
+      // label[0] = true branch, label[1] = false branch
+      // (matches v1's translate_code_if and the IF1
+      // convention). Falls back to cfg_succ ordering when
+      // labels aren't set (rare).
+      term->br_true = cd->label[0]
+                          ? fc.label_to_block.get(cd->label[0])
+                          : (succ_blocks.n > 0 ? succ_blocks[0] : nullptr);
+      term->br_false = cd->label[1]
+                           ? fc.label_to_block.get(cd->label[1])
+                           : (succ_blocks.n > 1 ? succ_blocks[1] : nullptr);
       break;
     case Code_SEND:
       // P_prim_reply: the IF1 "return" form. rvals[3] is the
