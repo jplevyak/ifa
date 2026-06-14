@@ -16,6 +16,7 @@
 #include "codegen/cg_normalize_v2.h"
 
 #include "codegen/cg_ir_v2.h"
+#include "builtin.h"
 #include "code.h"
 #include "fa.h"
 #include "fun.h"
@@ -108,6 +109,21 @@ CGv2Type *build_struct_type(NormCtx &c, Sym *s) {
   return t;
 }
 
+// Get-or-make a typed-ptr CGv2Type for char* (string), so
+// emit_prim_write's "%s" path matches and CG2_LEN dispatches
+// to _CG_string_len. Cached by name on prog->types so all
+// string-family Syms share one entry.
+CGv2Type *get_string_type(NormCtx &c) {
+  if (CGv2Type *cached = c.p->lookup_type("string")) return cached;
+  CGv2Type *t = new CGv2Type();
+  t->id = 1000 + c.p->types.n;
+  t->name = "string";
+  t->kind = CG2T_PTR;
+  t->element = c.p->t_int8;
+  c.p->types.add(t);
+  return t;
+}
+
 CGv2Type *build_type(NormCtx &c, Sym *s) {
   if (!s) return nullptr;
   CGv2Type *cached = c.sym_to_type.get(s);
@@ -130,6 +146,15 @@ CGv2Type *build_type(NormCtx &c, Sym *s) {
   if (s->is_symbol) {
     c.sym_to_type.put(s, c.p->t_sym);
     return c.p->t_sym;
+  }
+  // pyc string family: sym_string and its specializers all
+  // become a typed char-ptr so emit_prim_write/len take the
+  // string path. Phase B.10.3.
+  if (s == sym_string ||
+      (sym_string && sym_string->specializers.set_in(s))) {
+    CGv2Type *t = get_string_type(c);
+    c.sym_to_type.put(s, t);
+    return t;
   }
   if (s->type_kind == Type_RECORD) {
     return build_struct_type(c, s);
