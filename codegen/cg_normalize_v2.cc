@@ -273,6 +273,15 @@ CGv2Fun *build_fun_decl(NormCtx &c, Fun *f) {
   f->args.get_values(arg_vars);
   for (Var *a : arg_vars) {
     if (!a) continue;
+    // Mirror v1's createFunction filter (llvm_codegen.cc:98).
+    // Skip args that DCE killed (not in any live path) AND
+    // function-typed formals (closures — dispatched at call
+    // sites, not passed as direct parameters). Without these
+    // filters the v2 LLVM signature has args v1's main
+    // wrapper isn't passing, producing verifyModule
+    // arg-count mismatches. Phase B.10.2.
+    if (!a->live) continue;
+    if (a->type && a->type->is_fun) continue;
     CGv2Type *at = a->type ? build_type(c, a->type) : c.p->t_ptr;
     cf->signature->args.add(at);
     CGv2Value *formal = new CGv2Value();
