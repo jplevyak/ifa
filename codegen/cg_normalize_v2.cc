@@ -21,6 +21,8 @@
 #include "fun.h"
 #include "num.h"
 #include "pnode.h"
+#include "prim.h"
+#include "prim_data.h"
 #include "sym.h"
 
 namespace {
@@ -473,9 +475,27 @@ void build_terminator(NormCtx &c, FunCtx &fc, CGv2Block *blk,
       term->br_true  = succ_blocks.n > 0 ? succ_blocks[0] : nullptr;
       term->br_false = succ_blocks.n > 1 ? succ_blocks[1] : nullptr;
       break;
+    case Code_SEND:
+      // P_prim_reply: the IF1 "return" form. rvals[3] is the
+      // value to return. Other SEND kinds land as body insts
+      // in B.8.2+ — those wouldn't be closers anyway (a
+      // returning fn always ends in @reply).
+      if (closer->prim && closer->prim->index == P_prim_reply) {
+        term->op = CG2_RET;
+        if (closer->rvals.n >= 4) {
+          CGv2Value *cv = build_var(c, fc, closer->rvals[3]);
+          if (cv) term->rvals.add(cv);
+        }
+      } else if (succ_blocks.n == 0) {
+        term->op = CG2_UNREACHABLE;
+      } else {
+        term->op = CG2_BR;
+        term->br_target = succ_blocks[0];
+      }
+      break;
     default:
       if (succ_blocks.n == 0) {
-        term->op = CG2_RET;            // void; rval lands in B.8
+        term->op = CG2_RET;            // void
       } else {
         term->op = CG2_BR;
         term->br_target = succ_blocks[0];
