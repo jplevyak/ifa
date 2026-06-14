@@ -371,6 +371,72 @@ void lower_move(NormCtx &c, FunCtx &fc, PNode *pn, CGv2Block *blk) {
   blk->body.add(inst);
 }
 
+// Map an IF1 arithmetic/comparison/bitwise prim index to a
+// CG_BINOP sub-op. Returns CG2B_NONE for non-binop prims
+// (caller falls through to other dispatch).
+CGv2BinSub prim_to_binop(int idx) {
+  switch (idx) {
+    case P_prim_add:            return CG2B_ADD;
+    case P_prim_subtract:       return CG2B_SUB;
+    case P_prim_mult:           return CG2B_MUL;
+    case P_prim_div:            return CG2B_DIV;
+    case P_prim_mod:            return CG2B_MOD;
+    case P_prim_less:           return CG2B_LT;
+    case P_prim_lessorequal:    return CG2B_LE;
+    case P_prim_greater:        return CG2B_GT;
+    case P_prim_greaterorequal: return CG2B_GE;
+    case P_prim_equal:          return CG2B_EQ;
+    case P_prim_notequal:       return CG2B_NE;
+    case P_prim_and:            return CG2B_AND;
+    case P_prim_or:             return CG2B_OR;
+    case P_prim_xor:            return CG2B_XOR;
+    default:                    return CG2B_NONE;
+  }
+}
+
+// Lower a Code_SEND with an arithmetic / comparison / bitwise
+// prim into a CG2_BINOP. Mirrors v1's per-prim handling at
+// llvm_primitives.cc:463 (P_prim_operator + family). Operand
+// pattern: rvals[n-3] = lhs, rvals[n-1] = rhs, lvals[0] = result.
+// Returns true if handled (caller stops dispatch).
+bool lower_send_binop(NormCtx &c, FunCtx &fc, PNode *pn,
+                       CGv2Block *blk, CGv2BinSub sub) {
+  if (sub == CG2B_NONE) return false;
+  if (pn->rvals.n < 4 || pn->lvals.n < 1) return false;
+  CGv2Value *a = build_var(c, fc, pn->rvals[pn->rvals.n - 3]);
+  CGv2Value *b = build_var(c, fc, pn->rvals[pn->rvals.n - 1]);
+  CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
+  if (!a || !b || !dst) return false;
+  CGv2Inst *inst = new CGv2Inst();
+  inst->op = CG2_BINOP;
+  inst->sub_op = sub;
+  inst->rvals.add(a);
+  inst->rvals.add(b);
+  inst->lvals.add(dst);
+  blk->body.add(inst);
+  return true;
+}
+
+// Lower a Code_SEND PNode. Dispatches on pn->prim. Currently
+// supports:
+//   P_prim_reply         — handled by build_terminator (B.8.1)
+//   arithmetic family    — CG2_BINOP (this commit)
+//   other                — deferred to B.8.3+ (RegisteredPrim,
+//                          regular calls, aggregate ops, ...)
+void lower_send(NormCtx &c, FunCtx &fc, PNode *pn,
+                CGv2Block *blk) {
+  if (!pn || !pn->prim) return;
+  int idx = pn->prim->index;
+  if (idx == P_prim_reply) return;     // terminator
+  if (CGv2BinSub sub = prim_to_binop(idx); sub != CG2B_NONE) {
+    lower_send_binop(c, fc, pn, blk, sub);
+    return;
+  }
+  // Other SEND kinds deferred. Future landings extend this
+  // dispatch (RegisteredPrim, regular CALL, period/setter,
+  // make/clone, etc.).
+}
+
 // Pass 2 of build_fun_body — DFS from entry, tracking owning
 // block (most recent LABEL ancestor on the path). For each
 // PNode, dispatch on Code kind:
@@ -400,9 +466,12 @@ void lower_body(NormCtx &c, Fun *f, FunCtx &fc,
         case Code_MOVE:
           lower_move(c, fc, cur, blk);
           break;
+        case Code_SEND:
+          lower_send(c, fc, cur, blk);
+          break;
         default:
-          // Code_SEND lands in B.8+. Code_IF/GOTO closers
-          // are recognized by emit_terminator below.
+          // Code_IF/GOTO closers are recognized by
+          // build_terminator below.
           break;
       }
       // A PNode is a closer if any of its cfg_succ leaves
