@@ -2026,3 +2026,79 @@ int run_cg_ir_v2_emit_test_index_store() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test_index_store);
+
+// Phase A.6 — CG2_LEN. Dispatches to _CG_string_len for
+// char-ptr (string-like) args, _CG_prim_len(null_desc, obj)
+// for other ptr types. Mirrors v1's P_prim_len logic.
+//
+// def lens(s: char*, v: IntVec) -> int64: return len(s) + len(v)
+int run_cg_ir_v2_emit_test_len() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *text =
+      "((type %CharPtr :kind ptr :element int8)\n"
+      " (type %IntVec  :kind ptr :element int64)\n"
+      " (fun %lens\n"
+      "   :signature (int64 %CharPtr %IntVec)\n"
+      "   :entry %b0\n"
+      "   :formals (%s %v)\n"
+      "   (value %s   :type %CharPtr :scope formal)\n"
+      "   (value %v   :type %IntVec  :scope formal)\n"
+      "   (value %sl  :type int64    :scope local)\n"
+      "   (value %vl  :type int64    :scope local)\n"
+      "   (value %sum :type int64    :scope local)\n"
+      "   (block %b0\n"
+      "     (inst %i0 len %s => %sl)\n"
+      "     (inst %i1 len %v => %vl)\n"
+      "     (inst %i2 binop add %sl %vl => %sum)\n"
+      "     :term (ret %sum))))";
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+  llvm::Function *fn = TheModule->getFunction("lens");
+  llvm::Function *strlen_fn = TheModule->getFunction("_CG_string_len");
+  llvm::Function *primlen_fn = TheModule->getFunction("_CG_prim_len");
+  if (!fn || !strlen_fn || !primlen_fn) {
+    printf("  missing fn / _CG_string_len / _CG_prim_len\n");
+    return 1;
+  }
+  bool saw_strlen = false, saw_primlen = false;
+  for (llvm::Instruction &i : fn->getEntryBlock()) {
+    if (auto *c = llvm::dyn_cast<llvm::CallInst>(&i)) {
+      if (c->getCalledFunction() == strlen_fn) saw_strlen = true;
+      else if (c->getCalledFunction() == primlen_fn) saw_primlen = true;
+    }
+  }
+  if (!saw_strlen) { printf("  no _CG_string_len call\n"); return 1; }
+  if (!saw_primlen) { printf("  no _CG_prim_len call\n"); return 1; }
+  // _CG_prim_len's signature is (ptr desc, ptr obj). The desc
+  // should be a null pointer in v2 (we don't carry IF1's
+  // type-descriptor arg).
+  for (llvm::Instruction &i : fn->getEntryBlock()) {
+    auto *c = llvm::dyn_cast<llvm::CallInst>(&i);
+    if (!c || c->getCalledFunction() != primlen_fn) continue;
+    auto *null_arg = llvm::dyn_cast<llvm::ConstantPointerNull>(
+        c->getArgOperand(0));
+    if (!null_arg) {
+      printf("  _CG_prim_len's descriptor arg is not null\n");
+      return 1;
+    }
+  }
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test_len);

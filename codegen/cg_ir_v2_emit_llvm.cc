@@ -517,6 +517,58 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       put_result(ctx, inst->lvals[0], loaded);
       break;
     }
+    case CG2_LEN: {
+      if (inst->rvals.n < 1 || inst->lvals.n < 1) return;
+      llvm::Value *obj = resolve_value(ctx, inst->rvals[0]);
+      if (!obj) return;
+      llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+      llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
+      // String-like (char* / ref to int8) → _CG_string_len.
+      // Other ptr → _CG_prim_len(null_desc, obj). Mirrors v1's
+      // P_prim_len dispatch in llvm_primitives.cc:853.
+      CGv2Type *t = inst->rvals[0]->type;
+      bool is_str = t && (t->kind == CG2T_PTR || t->kind == CG2T_REF) &&
+                    t->element && t->element->kind == CG2T_INT &&
+                    t->element->bits == 8;
+      llvm::Value *result = nullptr;
+      cchar *out = inst->lvals[0]->name ? inst->lvals[0]->name : "";
+      // Coerce non-ptr args (immediate ints carrying a small payload)
+      // to ptr the same way v1 does.
+      if (!obj->getType()->isPointerTy()) {
+        obj = obj->getType()->isIntegerTy()
+                  ? Builder->CreateIntToPtr(obj, ptr_ty)
+                  : llvm::ConstantPointerNull::get(
+                        llvm::cast<llvm::PointerType>(ptr_ty));
+      }
+      if (is_str) {
+        llvm::Function *fn = TheModule->getFunction("_CG_string_len");
+        if (!fn) {
+          llvm::FunctionType *ft = llvm::FunctionType::get(i64,
+              { ptr_ty }, false);
+          fn = llvm::Function::Create(ft,
+              llvm::Function::ExternalLinkage, "_CG_string_len",
+              TheModule.get());
+        }
+        result = Builder->CreateCall(fn, { obj }, out);
+      } else {
+        llvm::Function *fn = TheModule->getFunction("_CG_prim_len");
+        if (!fn) {
+          llvm::FunctionType *ft = llvm::FunctionType::get(i64,
+              { ptr_ty, ptr_ty }, false);
+          fn = llvm::Function::Create(ft,
+              llvm::Function::ExternalLinkage, "_CG_prim_len",
+              TheModule.get());
+        }
+        // No type descriptor available in v2 (v1 reads it from
+        // the IF1 args). Pass null; runtime fallback can read
+        // obj's own size header.
+        llvm::Value *desc = llvm::ConstantPointerNull::get(
+            llvm::cast<llvm::PointerType>(ptr_ty));
+        result = Builder->CreateCall(fn, { desc, obj }, out);
+      }
+      put_result(ctx, inst->lvals[0], result);
+      break;
+    }
     case CG2_INDEX_STORE: {
       if (inst->rvals.n < 3) return;
       llvm::Value *p = resolve_value(ctx, inst->rvals[0]);

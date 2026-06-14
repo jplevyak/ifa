@@ -508,6 +508,22 @@ static CGv2Inst *build_inst(BuildCtx &c, SExpr *e) {
       if (in_lvals) inst->lvals.add(v);
       else inst->rvals.add(v);
     }
+  } else if (strcmp(op_tag, "len") == 0) {
+    inst->op = CG2_LEN;
+    // (inst %name len %obj => %dst)
+    int i = 3;
+    bool in_lvals = false;
+    for (; i < e->children.n; i++) {
+      SExpr *ch = e->children[i];
+      if (!ch->is_list && ch->atom && strcmp(ch->atom, "=>") == 0) {
+        in_lvals = true;
+        continue;
+      }
+      CGv2Value *v = resolve_value_ref(c, ch);
+      if (c.err) return 0;
+      if (in_lvals) inst->lvals.add(v);
+      else inst->rvals.add(v);
+    }
   } else if (strcmp(op_tag, "index_load") == 0 ||
              strcmp(op_tag, "index_store") == 0) {
     inst->op = strcmp(op_tag, "index_load") == 0
