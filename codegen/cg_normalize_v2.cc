@@ -571,6 +571,73 @@ bool lower_send_index_store(NormCtx &c, FunCtx &fc, PNode *pn,
   return true;
 }
 
+// Compute the argument offset for prims that may be prefixed
+// by an explicit `primitive` selector. Mirrors v1's `o` at
+// llvm_primitives.cc:425-428.
+int compute_prim_arg_offset(PNode *pn) {
+  if (pn->rvals.n > 0 && pn->rvals[0] && pn->rvals[0]->sym &&
+      pn->rvals[0]->sym->name &&
+      strcmp(pn->rvals[0]->sym->name, "primitive") == 0) {
+    return 2;
+  }
+  return 1;
+}
+
+// P_prim_sizeof — sizeof(T) where T is the type of rvals[o].
+// Mirrors v1's llvm_primitives.cc:659.
+bool lower_send_sizeof(NormCtx &c, FunCtx &fc, PNode *pn,
+                       CGv2Block *blk) {
+  int o = compute_prim_arg_offset(pn);
+  if (o >= pn->rvals.n || pn->lvals.n < 1) return false;
+  Var *type_var = pn->rvals[o];
+  if (!type_var || !type_var->type) return false;
+  CGv2Type *t = build_type(c, type_var->type);
+  CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
+  if (!t || !dst) return false;
+  CGv2Inst *inst = new CGv2Inst();
+  inst->op = CG2_SIZEOF;
+  inst->type_arg = t;
+  inst->lvals.add(dst);
+  blk->body.add(inst);
+  return true;
+}
+
+// P_prim_sizeof_element — sizeof(element type of rvals[o]).
+// The v2 emit reads element off the rval ptr's CGv2Type;
+// build_struct_type already populates Type::element from
+// the Sym's element->type so the lookup resolves naturally.
+bool lower_send_sizeof_element(NormCtx &c, FunCtx &fc, PNode *pn,
+                                CGv2Block *blk) {
+  int o = compute_prim_arg_offset(pn);
+  if (o >= pn->rvals.n || pn->lvals.n < 1) return false;
+  CGv2Value *src = build_var(c, fc, pn->rvals[o]);
+  CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
+  if (!src || !dst) return false;
+  CGv2Inst *inst = new CGv2Inst();
+  inst->op = CG2_SIZEOF_ELEMENT;
+  inst->rvals.add(src);
+  inst->lvals.add(dst);
+  blk->body.add(inst);
+  return true;
+}
+
+// P_prim_len — len(obj). v2 emit dispatches to _CG_string_len
+// or _CG_prim_len based on the obj's CGv2Type kind.
+bool lower_send_len(NormCtx &c, FunCtx &fc, PNode *pn,
+                    CGv2Block *blk) {
+  int o = compute_prim_arg_offset(pn);
+  if (o >= pn->rvals.n || pn->lvals.n < 1) return false;
+  CGv2Value *obj = build_var(c, fc, pn->rvals[o]);
+  CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
+  if (!obj || !dst) return false;
+  CGv2Inst *inst = new CGv2Inst();
+  inst->op = CG2_LEN;
+  inst->rvals.add(obj);
+  inst->lvals.add(dst);
+  blk->body.add(inst);
+  return true;
+}
+
 // Lower a Code_SEND without a (recognized) prim into a
 // CG2_CALL. The callee is resolved via the FA's
 // caller->calls map: when it contains exactly one Fun for
@@ -701,6 +768,12 @@ void lower_send(NormCtx &c, FunCtx &fc, PNode *pn, Fun *caller,
         lower_send_index_load(c, fc, pn, blk)) return;
     if (idx == P_prim_set_index_object &&
         lower_send_index_store(c, fc, pn, blk)) return;
+    if (idx == P_prim_sizeof &&
+        lower_send_sizeof(c, fc, pn, blk)) return;
+    if (idx == P_prim_sizeof_element &&
+        lower_send_sizeof_element(c, fc, pn, blk)) return;
+    if (idx == P_prim_len &&
+        lower_send_len(c, fc, pn, blk)) return;
   }
   lower_send_call(c, fc, pn, caller, blk);
 }
