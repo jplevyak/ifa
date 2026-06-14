@@ -123,3 +123,30 @@ int run_cg_normalize_v2_builtin_types() {
 }
 
 UNIT_TEST_FUN(run_cg_normalize_v2_builtin_types);
+
+// Phase B.3 — globals/constants pass runs cleanly on empty FA.
+// The freshly-initialized FA has no user-declared globals, so
+// prog->constants and prog->globals should both stay empty.
+// This validates that build_globals's walker doesn't add
+// spurious entries from builtin syms.
+int run_cg_normalize_v2_no_globals() {
+  ifa_reset();
+  ifa_init(new IRCallbacks);
+
+  CGv2Program *p = cg_normalize_v2(pdb->fa);
+  if (!p) {
+    printf("  cg_normalize_v2 returned NULL\n");
+    return 1;
+  }
+  if (p->constants.n != 0) {
+    printf("  expected 0 constants, got %d\n", p->constants.n);
+    return 1;
+  }
+  if (p->globals.n != 0) {
+    printf("  expected 0 globals, got %d\n", p->globals.n);
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_normalize_v2_no_globals);

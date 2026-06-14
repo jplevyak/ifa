@@ -24,11 +24,12 @@
 namespace {
 
 // Per-translation context. Holds the CGv2Program being built
-// plus the Sym → CGv2Type map used by subsequent passes to
-// resolve type references on values.
+// plus the maps subsequent passes read to resolve IF1
+// entities to CGv2 entities.
 struct NormCtx {
   CGv2Program *p;
   Map<Sym *, CGv2Type *> sym_to_type;
+  Map<Sym *, CGv2Value *> sym_to_value;   // globals + constants
 
   explicit NormCtx(CGv2Program *prog) : p(prog) {}
 };
@@ -129,6 +130,98 @@ void build_types(NormCtx &c, FA *fa) {
   for (Sym *s : typesyms) (void)build_type(c, s);
 }
 
+// Translate an IF1 Immediate (carried on Sym::imm for constant
+// syms) into a CGv2Immediate. Best-effort across numeric kinds
+// and strings; sets I_NONE on unrecognized kinds so the
+// downstream emitter can fall back to undef.
+void build_immediate(const Immediate &src, CGv2Immediate &dst) {
+  switch (src.const_kind) {
+    case IF1_NUM_KIND_INT: {
+      dst.kind = CGv2Immediate::I_INT;
+      // Imm carries a tagged width — coerce up to int64 for
+      // the CGv2 immediate.
+      switch (src.num_index) {
+        case IF1_INT_TYPE_1:  dst.v.i = src.v_bool ? 1 : 0;  break;
+        case IF1_INT_TYPE_8:  dst.v.i = src.v_int8;          break;
+        case IF1_INT_TYPE_16: dst.v.i = src.v_int16;         break;
+        case IF1_INT_TYPE_32: dst.v.i = src.v_int32;         break;
+        case IF1_INT_TYPE_64: dst.v.i = src.v_int64;         break;
+        default:              dst.v.i = 0;                   break;
+      }
+      break;
+    }
+    case IF1_NUM_KIND_UINT: {
+      // IF1_INT_TYPE_1 with UINT kind is bool semantically; we
+      // model it as I_BOOL so the v2 emitter picks i1 properly.
+      if (src.num_index == IF1_INT_TYPE_1) {
+        dst.kind = CGv2Immediate::I_BOOL;
+        dst.v.b = src.v_bool;
+        break;
+      }
+      dst.kind = CGv2Immediate::I_UINT;
+      switch (src.num_index) {
+        case IF1_INT_TYPE_8:  dst.v.u = src.v_uint8;  break;
+        case IF1_INT_TYPE_16: dst.v.u = src.v_uint16; break;
+        case IF1_INT_TYPE_32: dst.v.u = src.v_uint32; break;
+        case IF1_INT_TYPE_64: dst.v.u = src.v_uint64; break;
+        default:              dst.v.u = 0;            break;
+      }
+      break;
+    }
+    case IF1_NUM_KIND_FLOAT: {
+      dst.kind = CGv2Immediate::I_FLOAT;
+      switch (src.num_index) {
+        case IF1_FLOAT_TYPE_32: dst.v.f = src.v_float32; break;
+        case IF1_FLOAT_TYPE_64: dst.v.f = src.v_float64; break;
+        default:                dst.v.f = 0.0;          break;
+      }
+      break;
+    }
+    case IF1_CONST_KIND_STRING:
+      dst.kind = CGv2Immediate::I_STR;
+      dst.str = src.v_string;
+      break;
+    case IF1_CONST_KIND_SYMBOL:
+      dst.kind = CGv2Immediate::I_SYM;
+      dst.str = src.v_string;
+      break;
+    default:
+      dst.kind = CGv2Immediate::I_NONE;
+      break;
+  }
+}
+
+// Translate a global IF1 Var → CGv2Value. Constants land in
+// prog->constants with their imm populated; non-constants
+// land in prog->globals.
+CGv2Value *build_global(NormCtx &c, Var *v) {
+  if (!v || !v->sym) return nullptr;
+  if (CGv2Value *cached = c.sym_to_value.get(v->sym)) return cached;
+
+  CGv2Value *cv = new CGv2Value();
+  cv->id = 1000 + c.p->constants.n + c.p->globals.n;
+  cv->name = v->sym->name ? v->sym->name : v->cg_string;
+  cv->type = v->type ? build_type(c, v->type) : c.p->t_ptr;
+
+  if (v->sym->is_constant) {
+    cv->scope = CG2V_CONSTANT;
+    build_immediate(v->sym->imm, cv->imm);
+    c.p->constants.add(cv);
+  } else {
+    cv->scope = CG2V_GLOBAL;
+    c.p->globals.add(cv);
+  }
+  c.sym_to_value.put(v->sym, cv);
+  return cv;
+}
+
+void build_globals(NormCtx &c, FA *fa) {
+  Vec<Sym *> typesyms;
+  Vec<Var *> globals;
+  collect_types_and_globals(fa, typesyms, globals);
+  for (Var *v : globals) (void)build_global(c, v);
+}
+
 }  // namespace
 
 CGv2Program *cg_normalize_v2(FA *fa) {
@@ -137,6 +230,7 @@ CGv2Program *cg_normalize_v2(FA *fa) {
 
   NormCtx c(p);
   build_types(c, fa);
+  build_globals(c, fa);
 
   return p;
 }
