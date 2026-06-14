@@ -605,6 +605,29 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       if (r) put_result(ctx, inst->lvals[0], r);
       break;
     }
+    case CG2_CLONE: {
+      // GC_malloc(sizeof(T)) + memcpy(new_p, proto_p, sz).
+      // Mirrors v1's P_prim_clone in llvm_primitives.cc:684.
+      // The new ptr aliases the same struct type — register
+      // it in ctx.ptr_struct so subsequent field ops resolve.
+      if (!inst->type_arg || inst->rvals.n < 1 || inst->lvals.n < 1)
+        return;
+      llvm::Type *sty = to_llvm_type(inst->type_arg);
+      if (!sty) return;
+      llvm::Value *proto = resolve_value(ctx, inst->rvals[0]);
+      if (!proto) return;
+      uint64_t sz = TheModule->getDataLayout().getTypeAllocSize(sty);
+      llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+      llvm::Value *size_v = llvm::ConstantInt::get(i64, sz);
+      cchar *out = inst->lvals[0]->name ? inst->lvals[0]->name : "clone";
+      llvm::Value *new_p = Builder->CreateCall(get_gc_malloc(),
+          { size_v }, out);
+      Builder->CreateMemCpy(new_p, llvm::MaybeAlign(8),
+                            proto, llvm::MaybeAlign(8), size_v);
+      put_result(ctx, inst->lvals[0], new_p);
+      ctx.ptr_struct.put(inst->lvals[0], inst->type_arg);
+      break;
+    }
     case CG2_SIZEOF: {
       if (!inst->type_arg || inst->lvals.n < 1) return;
       llvm::Type *t = to_llvm_type(inst->type_arg);

@@ -508,6 +508,28 @@ static CGv2Inst *build_inst(BuildCtx &c, SExpr *e) {
       if (in_lvals) inst->lvals.add(v);
       else inst->rvals.add(v);
     }
+  } else if (strcmp(op_tag, "clone") == 0) {
+    inst->op = CG2_CLONE;
+    // (inst %name clone :type T %proto => %dst)
+    int type_kw = find_kw(e, "type", 3);
+    if (type_kw < 0) {
+      c.fail_at(e, "clone missing :type");
+      return 0;
+    }
+    inst->type_arg = resolve_type(c, e->children[type_kw + 1]);
+    if (c.err) return 0;
+    bool in_lvals = false;
+    for (int i = 3; i < e->children.n; i++) {
+      SExpr *ch = e->children[i];
+      if (!ch->is_list && ch->atom) {
+        if (strcmp(ch->atom, "=>") == 0) { in_lvals = true; continue; }
+        if (ch->atom[0] == ':') { i++; continue; }
+      }
+      CGv2Value *v = resolve_value_ref(c, ch);
+      if (c.err) return 0;
+      if (in_lvals) inst->lvals.add(v);
+      else inst->rvals.add(v);
+    }
   } else if (strcmp(op_tag, "sizeof") == 0) {
     inst->op = CG2_SIZEOF;
     // (inst %name sizeof :type T => %dst)

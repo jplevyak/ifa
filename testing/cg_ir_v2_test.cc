@@ -2335,3 +2335,83 @@ int run_cg_ir_v2_emit_test_binop_dispatch() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test_binop_dispatch);
+
+// Phase A.10 — CG2_CLONE.
+//
+// def dup(p: ptr) -> ptr: return clone(p)
+//
+// Verifies the emit shape:
+//   %r = call ptr @GC_malloc(i64 16)
+//   call void @llvm.memcpy.p0.p0.i64(ptr %r, ptr %p, i64 16, i1 false)
+//   ret ptr %r
+int run_cg_ir_v2_emit_test_clone() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *text =
+      "((type %Pt :kind struct :is_heap_aggregate true\n"
+      "   :fields ((%x :type int64 :idx 0)\n"
+      "            (%y :type int64 :idx 1)))\n"
+      " (fun %dup\n"
+      "   :signature (ptr ptr)\n"
+      "   :entry %b0\n"
+      "   :formals (%p)\n"
+      "   (value %p :type ptr :scope formal)\n"
+      "   (value %r :type ptr :scope local)\n"
+      "   (block %b0\n"
+      "     (inst %i0 clone :type %Pt %p => %r)\n"
+      "     :term (ret %r))))";
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+
+  llvm::Function *fn = TheModule->getFunction("dup");
+  if (!fn) { printf("  dup missing\n"); return 1; }
+
+  llvm::CallInst *gcm_call = nullptr;
+  bool saw_memcpy = false;
+  llvm::Function *gcm = TheModule->getFunction("GC_malloc");
+  for (llvm::Instruction &i : fn->getEntryBlock()) {
+    if (auto *c = llvm::dyn_cast<llvm::CallInst>(&i)) {
+      if (c->getCalledFunction() == gcm) gcm_call = c;
+      else if (auto *cf = c->getCalledFunction()) {
+        if (cf->getName().starts_with("llvm.memcpy")) saw_memcpy = true;
+      }
+    }
+  }
+  if (!gcm_call) { printf("  no GC_malloc call\n"); return 1; }
+  if (!saw_memcpy) { printf("  no memcpy intrinsic call\n"); return 1; }
+
+  // GC_malloc's size arg should be the constant 16 (two i64
+  // fields on the standard DataLayout).
+  auto *sz = llvm::dyn_cast<llvm::ConstantInt>(gcm_call->getArgOperand(0));
+  if (!sz || sz->getZExtValue() != 16) {
+    printf("  GC_malloc size expected 16, got %llu\n",
+           (unsigned long long)(sz ? sz->getZExtValue() : 0));
+    return 1;
+  }
+
+  auto *ret = llvm::dyn_cast<llvm::ReturnInst>(
+      fn->getEntryBlock().getTerminator());
+  if (!ret || ret->getReturnValue() != gcm_call) {
+    printf("  Ret does not return the GC_malloc result\n");
+    return 1;
+  }
+
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test_clone);

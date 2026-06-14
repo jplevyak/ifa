@@ -162,6 +162,7 @@ enum CGv2Op {
   CG2_CAST,            // type_arg=dst type, rvals=(src), lvals[0]=cast result
   CG2_SIZEOF,          // type_arg=T, lvals[0]=i64 sizeof(T)
   CG2_SIZEOF_ELEMENT,  // rvals=(typed_ptr), lvals[0]=i64 sizeof(ptr->element)
+  CG2_CLONE,           // type_arg=T, rvals=(proto), lvals[0]=new ptr-to-T
   CG2_PRIM,            // prim_name + rvals=args, lvals[0]=result (optional)
   // Terminators:
   CG2_BR,
