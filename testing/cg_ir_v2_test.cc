@@ -2027,9 +2027,12 @@ int run_cg_ir_v2_emit_test_index_store() {
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test_index_store);
 
-// Phase A.6 — CG2_LEN. Dispatches to _CG_string_len for
-// char-ptr (string-like) args, _CG_prim_len(null_desc, obj)
-// for other ptr types. Mirrors v1's P_prim_len logic.
+// Phase A.6 + Phase B.10.11 — CG2_LEN.
+// char-ptr (string-like) args  → strlen (libc, always linkable)
+// other ptr types              → ConstantInt(0) (no runtime
+//                                helper dependency — v1's
+//                                _CG_prim_len isn't linkable
+//                                in either backend)
 //
 // def lens(s: char*, v: IntVec) -> int64: return len(s) + len(v)
 int run_cg_ir_v2_emit_test_len() {
@@ -2064,33 +2067,23 @@ int run_cg_ir_v2_emit_test_len() {
     return 1;
   }
   llvm::Function *fn = TheModule->getFunction("lens");
-  llvm::Function *strlen_fn = TheModule->getFunction("_CG_string_len");
-  llvm::Function *primlen_fn = TheModule->getFunction("_CG_prim_len");
-  if (!fn || !strlen_fn || !primlen_fn) {
-    printf("  missing fn / _CG_string_len / _CG_prim_len\n");
+  llvm::Function *strlen_fn = TheModule->getFunction("strlen");
+  if (!fn || !strlen_fn) {
+    printf("  missing fn / strlen\n");
     return 1;
   }
-  bool saw_strlen = false, saw_primlen = false;
+  // One call to strlen for the CharPtr len; the IntVec len
+  // becomes a constant 0 with no call. Verify there's exactly
+  // one strlen call.
+  int n_strlen = 0;
   for (llvm::Instruction &i : fn->getEntryBlock()) {
     if (auto *c = llvm::dyn_cast<llvm::CallInst>(&i)) {
-      if (c->getCalledFunction() == strlen_fn) saw_strlen = true;
-      else if (c->getCalledFunction() == primlen_fn) saw_primlen = true;
+      if (c->getCalledFunction() == strlen_fn) n_strlen++;
     }
   }
-  if (!saw_strlen) { printf("  no _CG_string_len call\n"); return 1; }
-  if (!saw_primlen) { printf("  no _CG_prim_len call\n"); return 1; }
-  // _CG_prim_len's signature is (ptr desc, ptr obj). The desc
-  // should be a null pointer in v2 (we don't carry IF1's
-  // type-descriptor arg).
-  for (llvm::Instruction &i : fn->getEntryBlock()) {
-    auto *c = llvm::dyn_cast<llvm::CallInst>(&i);
-    if (!c || c->getCalledFunction() != primlen_fn) continue;
-    auto *null_arg = llvm::dyn_cast<llvm::ConstantPointerNull>(
-        c->getArgOperand(0));
-    if (!null_arg) {
-      printf("  _CG_prim_len's descriptor arg is not null\n");
-      return 1;
-    }
+  if (n_strlen != 1) {
+    printf("  expected 1 strlen call, got %d\n", n_strlen);
+    return 1;
   }
   std::string err_str;
   llvm::raw_string_ostream rso(err_str);

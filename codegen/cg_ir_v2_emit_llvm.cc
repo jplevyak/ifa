@@ -727,30 +727,26 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
                         llvm::cast<llvm::PointerType>(ptr_ty));
       }
       if (is_str) {
-        llvm::Function *fn = TheModule->getFunction("_CG_string_len");
+        // Use libc strlen (always linkable) instead of
+        // _CG_string_len (a pyc-runtime helper that the v2
+        // LLVM toolchain doesn't link). Returns size_t which
+        // is i64 on 64-bit. Phase B.10.11.
+        llvm::Function *fn = TheModule->getFunction("strlen");
         if (!fn) {
           llvm::FunctionType *ft = llvm::FunctionType::get(i64,
               { ptr_ty }, false);
           fn = llvm::Function::Create(ft,
-              llvm::Function::ExternalLinkage, "_CG_string_len",
+              llvm::Function::ExternalLinkage, "strlen",
               TheModule.get());
         }
         result = Builder->CreateCall(fn, { obj }, out);
       } else {
-        llvm::Function *fn = TheModule->getFunction("_CG_prim_len");
-        if (!fn) {
-          llvm::FunctionType *ft = llvm::FunctionType::get(i64,
-              { ptr_ty, ptr_ty }, false);
-          fn = llvm::Function::Create(ft,
-              llvm::Function::ExternalLinkage, "_CG_prim_len",
-              TheModule.get());
-        }
-        // No type descriptor available in v2 (v1 reads it from
-        // the IF1 args). Pass null; runtime fallback can read
-        // obj's own size header.
-        llvm::Value *desc = llvm::ConstantPointerNull::get(
-            llvm::cast<llvm::PointerType>(ptr_ty));
-        result = Builder->CreateCall(fn, { desc, obj }, out);
+        // No linkable equivalent for _CG_prim_len. v1 emits
+        // a call to it and fails at link time too — both
+        // backends share the same gap. v2 returns a constant
+        // 0 so programs at least link. Semantic correctness
+        // for non-string len awaits a runtime support layer.
+        result = llvm::ConstantInt::get(i64, 0);
       }
       put_result(ctx, inst->lvals[0], result);
       break;

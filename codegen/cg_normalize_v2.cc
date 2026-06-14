@@ -721,13 +721,37 @@ bool lower_send_sizeof_element(NormCtx &c, FunCtx &fc, PNode *pn,
   return true;
 }
 
-// P_prim_len — len(obj). v2 emit dispatches to _CG_string_len
-// or _CG_prim_len based on the obj's CGv2Type kind.
+// P_prim_len — len(obj). v2 emit dispatches based on the
+// obj's CGv2Type: string-like → strlen, other → constant 0.
+//
+// The IF1 SEND for len() can route the actual obj into
+// different rvals positions depending on the call shape
+// (direct len(s) vs @primitive @len s vs method dispatch).
+// Walk the rvals from index 1 looking for the first one
+// whose Sym suggests it's the real obj (i.e., type is
+// sym_string-family rather than a function/method
+// reference). Falls back to compute_prim_arg_offset's
+// guess. Phase B.10.11.
 bool lower_send_len(NormCtx &c, FunCtx &fc, PNode *pn,
                     CGv2Block *blk) {
-  int o = compute_prim_arg_offset(pn);
-  if (o >= pn->rvals.n || pn->lvals.n < 1) return false;
-  CGv2Value *obj = build_var(c, fc, pn->rvals[o]);
+  if (pn->lvals.n < 1) return false;
+  // Scan for a string-typed rval first.
+  Var *obj_var = nullptr;
+  for (int i = 1; i < pn->rvals.n; i++) {
+    Var *v = pn->rvals[i];
+    if (!v || !v->type) continue;
+    if (v->type == sym_string ||
+        (sym_string && sym_string->specializers.set_in(v->type))) {
+      obj_var = v;
+      break;
+    }
+  }
+  if (!obj_var) {
+    int o = compute_prim_arg_offset(pn);
+    if (o >= pn->rvals.n) return false;
+    obj_var = pn->rvals[o];
+  }
+  CGv2Value *obj = build_var(c, fc, obj_var);
   CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
   if (!obj || !dst) return false;
   CGv2Inst *inst = new CGv2Inst();
