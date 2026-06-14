@@ -293,18 +293,72 @@ void emit_prim_write(EmitFunCtx &ctx, CGv2Inst *inst) {
   llvm::Value *arg = resolve_value(ctx, inst->rvals[0]);
   if (!arg) return;
   CGv2Value *argv = inst->rvals[0];
+  if (!argv->type) return;
+
+  // Type-dispatch the format string + LLVM cast. Mirrors v1's
+  // pyc_llvm_write_cgfn (codegen/llvm_primitives.cc). The
+  // dispatch matches what users actually print: ints (all
+  // widths/signs), bools, floats, strings.
   cchar *fmt = nullptr;
-  if (argv->type && argv->type->kind == CG2T_INT &&
-      argv->type->bits == 64) {
-    fmt = "%lld";
-  } else if (argv->type && argv->type->kind == CG2T_INT) {
-    fmt = "%d";
-  } else {
-    // Unsupported arg type — emit nothing rather than malformed
-    // IR. Future landings extend coverage.
-    return;
+  cchar *name_hint = "write_unknown";
+  switch (argv->type->kind) {
+    case CG2T_INT:
+      switch (argv->type->bits) {
+        case 8: case 16: case 32:
+          fmt = "%d";  name_hint = "write_int";
+          break;
+        case 64:
+          fmt = "%lld"; name_hint = "write_i64";
+          arg = Builder->CreateSExtOrTrunc(arg,
+              llvm::Type::getInt64Ty(*TheContext));
+          break;
+      }
+      break;
+    case CG2T_UINT:
+      switch (argv->type->bits) {
+        case 8: case 16: case 32:
+          fmt = "%u"; name_hint = "write_uint";
+          break;
+        case 64:
+          fmt = "%llu"; name_hint = "write_u64";
+          arg = Builder->CreateZExtOrTrunc(arg,
+              llvm::Type::getInt64Ty(*TheContext));
+          break;
+      }
+      break;
+    case CG2T_BOOL:
+      // Print booleans as 0/1 like v1 does. (Python users
+      // expect True/False but that's a frontend decision —
+      // the prim layer just emits what it was asked to.)
+      fmt = "%u"; name_hint = "write_bool";
+      arg = Builder->CreateZExt(arg,
+          llvm::Type::getInt32Ty(*TheContext));
+      break;
+    case CG2T_FLOAT:
+      // %g matches Python's str(float) better than %f
+      // (1.2 → "1.2" not "1.200000"). Same trade as v1.
+      fmt = "%g"; name_hint = "write_float";
+      if (arg->getType()->isFloatTy()) {
+        arg = Builder->CreateFPExt(arg,
+            llvm::Type::getDoubleTy(*TheContext));
+      }
+      break;
+    case CG2T_PTR:
+    case CG2T_REF:
+      // Treat as string when the element is a small int (the
+      // pyc string convention: char* = ptr to int8 element).
+      // Generic ptr printing isn't user-meaningful; skip.
+      if (argv->type->element &&
+          argv->type->element->kind == CG2T_INT &&
+          argv->type->element->bits == 8) {
+        fmt = "%s"; name_hint = "write_str";
+      }
+      break;
+    default:
+      break;
   }
-  llvm::Value *fmt_ptr = get_format_str(fmt, "write_int");
+  if (!fmt) return;       // unsupported — emit nothing
+  llvm::Value *fmt_ptr = get_format_str(fmt, name_hint);
   Builder->CreateCall(get_printf(), { fmt_ptr, arg });
 }
 

@@ -1686,3 +1686,86 @@ int run_cg_ir_v2_emit_test11() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test11);
+
+// Phase A.2 — write type coverage.
+//
+// Extends emit_prim_write past the int64-only v0. Test verifies
+// each typed write produces a distinct printf format global and
+// the correct cast.
+//
+// def write_typed(i: int32, u: uint64, b: bool, f: float64):
+//   write(i)
+//   write(u)
+//   write(b)
+//   write(f)
+int run_cg_ir_v2_emit_test_write_types() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *text =
+      "((fun %write_typed\n"
+      "   :signature (void int32 uint64 bool float64)\n"
+      "   :entry %b0\n"
+      "   :formals (%i %u %b %f)\n"
+      "   (value %i :type int32   :scope formal)\n"
+      "   (value %u :type uint64  :scope formal)\n"
+      "   (value %b :type bool    :scope formal)\n"
+      "   (value %f :type float64 :scope formal)\n"
+      "   (block %b0\n"
+      "     (inst %i0 prim :name \"write\" %i)\n"
+      "     (inst %i1 prim :name \"write\" %u)\n"
+      "     (inst %i2 prim :name \"write\" %b)\n"
+      "     (inst %i3 prim :name \"write\" %f)\n"
+      "     :term (ret))))";
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+
+  llvm::Function *fn = TheModule->getFunction("write_typed");
+  llvm::Function *printf_fn = TheModule->getFunction("printf");
+  if (!fn || !printf_fn) {
+    printf("  write_typed or printf missing\n");
+    return 1;
+  }
+
+  int n_printf = 0;
+  for (llvm::Instruction &i : fn->getEntryBlock()) {
+    if (auto *c = llvm::dyn_cast<llvm::CallInst>(&i)) {
+      if (c->getCalledFunction() == printf_fn) n_printf++;
+    }
+  }
+  if (n_printf != 4) {
+    printf("  expected 4 printf calls; got %d\n", n_printf);
+    return 1;
+  }
+
+  // The four distinct typed-write format globals must exist.
+  // Names follow get_format_str()'s ".str.<hint>" convention.
+  cchar *expected[] = {
+      ".str.write_int", ".str.write_u64",
+      ".str.write_bool", ".str.write_float"
+  };
+  for (cchar *name : expected) {
+    if (!TheModule->getNamedGlobal(name)) {
+      printf("  missing format global '%s'\n", name);
+      return 1;
+    }
+  }
+
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test_write_types);
