@@ -1086,6 +1086,45 @@ void emit_fun(CGv2Fun *cf) {
   // Pre-allocate basic blocks so cross-block branches resolve.
   for (CGv2Block *b : cf->blocks) emit_block_skeleton(b, ctx);
 
+  // Class-prototype init prelude (Phase B.10.10.3).
+  //
+  // For main_fun only: walk every ptr-to-struct global and
+  // allocate a fresh GC_malloc'd block at the start. Without
+  // this, pyc-generated stores like `class A: x = 2` (which
+  // compile to `store i64 2, GEP (load @g)`) deref a null @g
+  // and segfault.
+  //
+  // v1 sidesteps this because its analyzer specializes class
+  // attribute reads into constants — `print(A.x)` becomes
+  // `print(2)` with no @g reference emitted at all. v2's
+  // per-PNode walk preserves the field-store path, so the
+  // global has to actually be allocated.
+  //
+  // Only ptr-to-struct globals get the GC_malloc; ptr-to-
+  // primitive globals (which v2 also produces) stay null.
+  if (cf->is_main && cf->entry) {
+    llvm::BasicBlock *entry_bb = ctx.blk_map.get(cf->entry);
+    if (entry_bb) {
+      Builder->SetInsertPoint(entry_bb);
+      Vec<CGv2Value *> gkeys;
+      g_prog_ctx.global_map.get_keys(gkeys);
+      for (CGv2Value *gv : gkeys) {
+        llvm::GlobalVariable *llgv = g_prog_ctx.global_map.get(gv);
+        if (!gv || !llgv || !gv->type) continue;
+        if (gv->type->kind != CG2T_PTR || !gv->type->element ||
+            gv->type->element->kind != CG2T_STRUCT) continue;
+        llvm::Type *sty = to_llvm_type(gv->type->element);
+        if (!sty || !sty->isSized()) continue;
+        uint64_t sz = TheModule->getDataLayout().getTypeAllocSize(sty);
+        llvm::Value *size_v = llvm::ConstantInt::get(
+            llvm::Type::getInt64Ty(*TheContext), sz);
+        llvm::Value *p = Builder->CreateCall(get_gc_malloc(),
+            { size_v }, gv->name ? gv->name : "proto");
+        Builder->CreateStore(p, llgv);
+      }
+    }
+  }
+
   // Alloca pre-pass: every distinct phi-target local gets a
   // slot in the entry block. Stores happen on the pred edge,
   // loads happen at each use site (resolve_value).
