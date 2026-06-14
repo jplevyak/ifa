@@ -16,11 +16,13 @@
 #include "codegen/cg_normalize_v2.h"
 
 #include "codegen/cg_ir_v2.h"
+#include "codegen/codegen_common.h"
 #include "builtin.h"
 #include "code.h"
 #include "fa.h"
 #include "fun.h"
 #include "num.h"
+#include "pattern.h"
 #include "pnode.h"
 #include "prim.h"
 #include "prim_data.h"
@@ -774,16 +776,40 @@ bool lower_send_call(NormCtx &c, FunCtx &fc, PNode *pn,
   inst->op = CG2_CALL;
   inst->rvals.add(fnref);
 
-  // Args from pn->rvals. v1's emit_generic_call adds all
-  // rvals to the CG_CALL preserving everything for the LLVM
-  // backend's later MPosition-based remapping. For v2 we
-  // forward rvals[1..] verbatim — the LLVM-call CreateCall
-  // expects them in declaration order, which they are when
-  // the IF1 emit is well-formed. (Mismatches surface as
-  // verifyModule errors and inform a later refinement.)
-  for (int i = 1; i < pn->rvals.n; i++) {
-    CGv2Value *cv = build_var(c, fc, pn->rvals[i]);
+  // MPosition-aware arg routing — mirror v1's write_send
+  // (llvm_primitives.cc:281). Walk target->positional_arg_
+  // positions in order; for each formal that survives the
+  // live/non-fun filter, compute its rvals index via
+  // Position2int(p->pos[0]) - 1. Handle closure self the
+  // same way v1 does. Phase B.10.8.
+  Var *v0 = pn->rvals.n > 0 ? pn->rvals[0] : nullptr;
+  int before = inst->rvals.n;
+  for (MPosition *p : target->positional_arg_positions) {
+    Var *formal_arg = target->args.get(p);
+    if (!formal_arg || !formal_arg->live) continue;
+    if (formal_arg->type && formal_arg->type->is_fun) continue;
+    if (p->pos.n > 1) continue;     // skip nested tuple fields
+    int i = (int)Position2int(p->pos[0]) - 1;
+    if (v0 && is_closure_var(v0) && v0->type) {
+      if (i < v0->type->has.n) i = 0;
+      else i -= v0->type->has.n - 1;
+    }
+    if (i < 0 || i >= pn->rvals.n) continue;
+    Var *actual = pn->rvals[i];
+    if (!actual) continue;
+    CGv2Value *cv = build_var(c, fc, actual);
     if (cv) inst->rvals.add(cv);
+  }
+  // Fallback to verbatim rvals[1..] when MPosition routing
+  // produced nothing (target has no positional_arg_positions
+  // populated, or every formal failed the filter). Better to
+  // pass something than nothing — the defensive coercion in
+  // v2 emit's CG2_CALL trims as needed.
+  if (inst->rvals.n == before) {
+    for (int i = 1; i < pn->rvals.n; i++) {
+      CGv2Value *cv = build_var(c, fc, pn->rvals[i]);
+      if (cv) inst->rvals.add(cv);
+    }
   }
   if (pn->lvals.n > 0) {
     CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
