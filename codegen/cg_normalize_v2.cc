@@ -35,7 +35,13 @@ struct FunCtx;
 // entities to CGv2 entities.
 struct NormCtx {
   CGv2Program *p;
+  // sym_to_type maps a Sym to its "value-shape" CGv2Type —
+  // what to put on a Var/Value carrying that Sym's type.
+  // For records this is a CG2T_PTR (pyc's by-pointer
+  // convention); the underlying struct lives in
+  // sym_to_struct.
   Map<Sym *, CGv2Type *> sym_to_type;
+  Map<Sym *, CGv2Type *> sym_to_struct;   // CG2T_STRUCT underlying
   Map<Sym *, CGv2Value *> sym_to_value;   // globals + constants
   Map<Fun *, CGv2Fun *> fun_to_fun;        // IF1 Fun → CGv2Fun
   Map<Fun *, FunCtx *> fun_to_ctx;         // IF1 Fun → FunCtx
@@ -89,13 +95,17 @@ CGv2Type *predef_numeric(NormCtx &c, Sym *s) {
 
 CGv2Type *build_type(NormCtx &c, Sym *s);
 
+// Get-or-make the CG2T_STRUCT entry for a Type_RECORD Sym.
+// Cached in sym_to_struct (separate from sym_to_type which
+// carries the ptr wrapper, since pyc holds records by pointer).
 CGv2Type *build_struct_type(NormCtx &c, Sym *s) {
+  if (CGv2Type *cached = c.sym_to_struct.get(s)) return cached;
   CGv2Type *t = new CGv2Type();
   t->id = 1000 + c.p->types.n;
   t->name = s->name ? s->name : (s->cg_string ? s->cg_string : "anon");
   t->kind = CG2T_STRUCT;
   t->is_heap_aggregate = true;       // pyc's default for RECORD
-  c.sym_to_type.put(s, t);            // register first (recursion guard)
+  c.sym_to_struct.put(s, t);          // register first (recursion guard)
   c.p->types.add(t);
   int idx = 0;
   for (Sym *f : s->has) {
@@ -157,7 +167,23 @@ CGv2Type *build_type(NormCtx &c, Sym *s) {
     return t;
   }
   if (s->type_kind == Type_RECORD) {
-    return build_struct_type(c, s);
+    // pyc holds records by pointer (matches v1 build_cgtype:
+    // CG_T_PTR for s->has.n > 0). Wrap the underlying struct
+    // in a CG2T_PTR. Field ops follow ptr->element to find
+    // the struct shape; to_llvm_type for CG2T_PTR returns
+    // opaque ptr so LLVM values are correctly pointer-shaped.
+    CGv2Type *struct_t = build_struct_type(c, s);
+    CGv2Type *ptr_t = new CGv2Type();
+    ptr_t->id = 1000 + c.p->types.n;
+    char buf[128];
+    snprintf(buf, sizeof(buf), "ptr_%s",
+             struct_t->name ? struct_t->name : "anon");
+    ptr_t->name = dupstr(buf);
+    ptr_t->kind = CG2T_PTR;
+    ptr_t->element = struct_t;
+    c.sym_to_type.put(s, ptr_t);
+    c.p->types.add(ptr_t);
+    return ptr_t;
   }
   // Type_FUN, Type_REF, Type_PRIMITIVE → treat as opaque ptr.
   // Refined when their tests land.
@@ -497,7 +523,13 @@ bool lower_send_period(NormCtx &c, FunCtx &fc, PNode *pn,
   CGv2Inst *inst = new CGv2Inst();
   inst->op = CG2_FIELD_LOAD;
   inst->field_idx = fi;
-  inst->type_arg = obj->type;            // :struct hint
+  // :struct hint = obj->type->element when obj is a ptr-to-
+  // struct (the pyc record convention). Fall back to obj->type
+  // for cases where the value already carries the struct type.
+  inst->type_arg = (obj->type && obj->type->kind == CG2T_PTR &&
+                     obj->type->element)
+                        ? obj->type->element
+                        : obj->type;
   inst->rvals.add(obj);
   inst->lvals.add(dst);
   blk->body.add(inst);
@@ -518,7 +550,11 @@ bool lower_send_setter(NormCtx &c, FunCtx &fc, PNode *pn,
   CGv2Inst *store = new CGv2Inst();
   store->op = CG2_FIELD_STORE;
   store->field_idx = fi;
-  store->type_arg = obj->type;            // :struct hint
+  // :struct hint = obj->type->element when obj is ptr-to-struct.
+  store->type_arg = (obj->type && obj->type->kind == CG2T_PTR &&
+                      obj->type->element)
+                         ? obj->type->element
+                         : obj->type;
   store->rvals.add(obj);
   store->rvals.add(val);
   blk->body.add(store);
