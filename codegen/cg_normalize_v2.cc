@@ -417,12 +417,42 @@ bool lower_send_binop(NormCtx &c, FunCtx &fc, PNode *pn,
   return true;
 }
 
+// Lower a Code_SEND with P_prim_primitive (the named
+// RegisteredPrim form) into a CG2_PRIM. rvals[1] carries the
+// name Var (sym->name or sym->constant); rvals[2..] are the
+// args. Mirrors v1's llvm_primitives.cc:1111 name extraction.
+// Returns true if handled.
+bool lower_send_prim(NormCtx &c, FunCtx &fc, PNode *pn,
+                      CGv2Block *blk) {
+  if (pn->rvals.n < 2) return false;
+  Var *name_var = pn->rvals[1];
+  if (!name_var || !name_var->sym) return false;
+  cchar *name = name_var->sym->name;
+  if (!name) name = name_var->sym->constant;
+  if (!name) return false;
+
+  CGv2Inst *inst = new CGv2Inst();
+  inst->op = CG2_PRIM;
+  inst->prim_name = name;
+  for (int i = 2; i < pn->rvals.n; i++) {
+    CGv2Value *cv = build_var(c, fc, pn->rvals[i]);
+    if (cv) inst->rvals.add(cv);
+  }
+  if (pn->lvals.n > 0) {
+    CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
+    if (dst) inst->lvals.add(dst);
+  }
+  blk->body.add(inst);
+  return true;
+}
+
 // Lower a Code_SEND PNode. Dispatches on pn->prim. Currently
 // supports:
 //   P_prim_reply         — handled by build_terminator (B.8.1)
-//   arithmetic family    — CG2_BINOP (this commit)
-//   other                — deferred to B.8.3+ (RegisteredPrim,
-//                          regular calls, aggregate ops, ...)
+//   arithmetic family    — CG2_BINOP (B.8.2)
+//   P_prim_primitive     — CG2_PRIM (this commit)
+//   other                — deferred (regular calls, aggregate
+//                          ops, sizeof/len/clone, ...)
 void lower_send(NormCtx &c, FunCtx &fc, PNode *pn,
                 CGv2Block *blk) {
   if (!pn || !pn->prim) return;
@@ -432,9 +462,13 @@ void lower_send(NormCtx &c, FunCtx &fc, PNode *pn,
     lower_send_binop(c, fc, pn, blk, sub);
     return;
   }
+  if (idx == P_prim_primitive) {
+    lower_send_prim(c, fc, pn, blk);
+    return;
+  }
   // Other SEND kinds deferred. Future landings extend this
-  // dispatch (RegisteredPrim, regular CALL, period/setter,
-  // make/clone, etc.).
+  // dispatch (regular CALL via Fun, period/setter, make/clone,
+  // index_object, sizeof, len, ...).
 }
 
 // Pass 2 of build_fun_body — DFS from entry, tracking owning
