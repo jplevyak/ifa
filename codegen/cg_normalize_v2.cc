@@ -48,6 +48,7 @@ struct FunCtx {
   CGv2Fun *cf;
   Map<PNode *, CGv2Block *> pn_to_block;
   Map<Var *, CGv2Value *> var_to_value;
+  Map<CGv2Block *, PNode *> block_closer;   // for phi/phy edges
 };
 
 // Map an IF1 numeric Sym (e.g. sym_int64, sym_uint8, sym_float32)
@@ -787,8 +788,7 @@ void lower_send(NormCtx &c, FunCtx &fc, PNode *pn, Fun *caller,
 // Also detects each block's "closer" PNode — the last PNode
 // before the block's cfg exits — and stashes it in
 // `block_closer` for terminator emission.
-void lower_body(NormCtx &c, Fun *f, FunCtx &fc,
-                Map<CGv2Block *, PNode *> &block_closer) {
+void lower_body(NormCtx &c, Fun *f, FunCtx &fc) {
   if (!f->entry) return;
   Vec<PNode *> stack;
   Vec<CGv2Block *> stack_blk;
@@ -826,7 +826,7 @@ void lower_body(NormCtx &c, Fun *f, FunCtx &fc,
                               : blk;
         if (sblk != blk) { is_closer = true; break; }
       }
-      if (is_closer) block_closer.put(blk, cur);
+      if (is_closer) fc.block_closer.put(blk, cur);
     }
     for (PNode *s : cur->cfg_succ) {
       if (!s || !visited.set_add(s)) continue;
@@ -915,17 +915,100 @@ void build_terminator(NormCtx &c, FunCtx &fc, CGv2Block *blk,
   blk->terminator = term;
 }
 
+// Get-or-create a phi-group on `succ_blk` for the edge from
+// `pred_blk`. Two distinct phi/phy passes (or the same pass
+// firing for multiple edges) on the same edge share one
+// group so the v2 emit's per-pred alloca+store pass picks
+// up all the MOVEs in source order.
+CGv2PhiGroup *get_or_make_phi_group(CGv2Block *succ_blk,
+                                     CGv2Block *pred_blk) {
+  for (CGv2PhiGroup *g : succ_blk->phi_by_pred) {
+    if (g->pred == pred_blk) return g;
+  }
+  CGv2PhiGroup *g = new CGv2PhiGroup();
+  g->pred = pred_blk;
+  succ_blk->phi_by_pred.add(g);
+  return g;
+}
+
+// Pass 3 of build_fun_body — phi/phy materialization.
+//
+// IF1's phi and phy PNodes encode "MOVE on an edge":
+//   phy at closer N, edge i: lvals[i] ← rvals[0]
+//   phi at successor S, from pred N: lvals[0] ← rvals[pred_idx]
+// where pred_idx is N's position in S's pred list (carried
+// on cfg_pred_index).
+//
+// Both translate to CGv2_MOVE insts placed in the
+// successor block's phi_by_pred group keyed by the
+// predecessor block. The v2 emit's alloca/store-on-edge
+// path takes over from there (Phase 4 :phi_by_pred lowering).
+//
+// Mirrors v1's do_phy_nodes / do_phi_nodes in
+// llvm_codegen.cc:610-631, but encodes the moves into the
+// IR rather than emitting them inline at LLVM-emit time.
+void materialize_phi_phy(NormCtx &c, FunCtx &fc) {
+  for (CGv2Block *pred_blk : fc.cf->blocks) {
+    PNode *closer = fc.block_closer.get(pred_blk);
+    if (!closer) continue;
+    for (int isucc = 0; isucc < closer->cfg_succ.n; isucc++) {
+      PNode *succ_pn = closer->cfg_succ[isucc];
+      if (!succ_pn) continue;
+      // Find the block this edge lands in. Only LABEL-headed
+      // successors start a new block; intra-block edges aren't
+      // candidates for phi MOVEs.
+      CGv2Block *succ_blk = nullptr;
+      if (succ_pn->code && succ_pn->code->kind == Code_LABEL) {
+        succ_blk = fc.pn_to_block.get(succ_pn);
+      }
+      if (!succ_blk || succ_blk == pred_blk) continue;
+
+      // phy: lvals[isucc] = rvals[0] for each phy on the
+      // closer. The isucc index distinguishes which target
+      // slot of the multi-lval phy gets bound on this edge.
+      for (PNode *p : closer->phy) {
+        if (!p || p->lvals.n <= isucc || p->rvals.n < 1) continue;
+        CGv2Value *src = build_var(c, fc, p->rvals[0]);
+        CGv2Value *dst = build_var(c, fc, p->lvals[isucc]);
+        if (!src || !dst) continue;
+        CGv2Inst *mv = new CGv2Inst();
+        mv->op = CG2_MOVE;
+        mv->rvals.add(src);
+        mv->lvals.add(dst);
+        get_or_make_phi_group(succ_blk, pred_blk)->moves.add(mv);
+      }
+
+      // phi: each phi PNode on the successor has lvals[0] ←
+      // rvals[pred_idx] where pred_idx is the closer's position
+      // in succ's pred list.
+      int pred_idx = succ_pn->cfg_pred_index.get(closer);
+      for (PNode *p : succ_pn->phi) {
+        if (!p || p->lvals.n < 1) continue;
+        if (p->rvals.n <= pred_idx) continue;
+        CGv2Value *src = build_var(c, fc, p->rvals[pred_idx]);
+        CGv2Value *dst = build_var(c, fc, p->lvals[0]);
+        if (!src || !dst) continue;
+        CGv2Inst *mv = new CGv2Inst();
+        mv->op = CG2_MOVE;
+        mv->rvals.add(src);
+        mv->lvals.add(dst);
+        get_or_make_phi_group(succ_blk, pred_blk)->moves.add(mv);
+      }
+    }
+  }
+}
+
 // Per-Fun body build. Block skeleton (B.5) + body insts (B.6)
-// + terminator translation (B.7). Any block without a closer
-// after the walk gets an UNREACHABLE so verifyModule stays
-// happy.
+// + terminators (B.7) + phi/phy materialization (B.8.7). Any
+// block without a closer gets an UNREACHABLE terminator so
+// verifyModule stays happy.
 void build_fun_body(NormCtx &c, Fun *f, CGv2Fun *cf, FunCtx &fc) {
   if (!f || !cf || !f->entry) return;
   build_block_skeleton(c, f, fc);
-  Map<CGv2Block *, PNode *> block_closer;
-  lower_body(c, f, fc, block_closer);
+  lower_body(c, f, fc);
+  materialize_phi_phy(c, fc);
   for (CGv2Block *b : cf->blocks) {
-    build_terminator(c, fc, b, block_closer.get(b));
+    build_terminator(c, fc, b, fc.block_closer.get(b));
   }
 }
 
