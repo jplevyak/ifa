@@ -417,6 +417,63 @@ bool lower_send_binop(NormCtx &c, FunCtx &fc, PNode *pn,
   return true;
 }
 
+// Lower a Code_SEND without a (recognized) prim into a
+// CG2_CALL. The callee is resolved via the FA's
+// caller->calls map: when it contains exactly one Fun for
+// this PNode, we can statically dispatch. Multi-target or
+// missing call edges fall through (B.8.4+ will refine for
+// dynamic-dispatch sites).
+//
+// Mirrors v1's emit_generic_call (cg_normalize.cc:269) at
+// the IR level + v1's write_send for callee resolution
+// (llvm_primitives.cc:217-235) + codegen_common.cc:97's
+// get_target_fun_core.
+//
+// Returns true if handled.
+bool lower_send_call(NormCtx &c, FunCtx &fc, PNode *pn,
+                      Fun *caller, CGv2Block *blk) {
+  if (!caller) return false;
+  Vec<Fun *> *callees = caller->calls.get(pn);
+  if (!callees || callees->n != 1) return false;
+  Fun *target = callees->v[0];
+  if (!target) return false;
+  CGv2Fun *target_cf = c.fun_to_fun.get(target);
+  if (!target_cf || !target_cf->name) return false;
+
+  // fun_ref CGv2Value for the call site. The v2 emit's
+  // CG2_CALL case reads target_name to look up the
+  // llvm::Function. Cheap to construct per-site; the v2
+  // emitter shares the llvm::Function across sites by name.
+  CGv2Value *fnref = new CGv2Value();
+  fnref->id = 5000 + fc.cf->id * 100 + (int)blk->body.n;
+  fnref->name = target_cf->name;
+  fnref->type = c.p->t_fun_ptr;
+  fnref->scope = CG2V_FUN_REF;
+  fnref->target_name = target_cf->name;
+
+  CGv2Inst *inst = new CGv2Inst();
+  inst->op = CG2_CALL;
+  inst->rvals.add(fnref);
+
+  // Args from pn->rvals. v1's emit_generic_call adds all
+  // rvals to the CG_CALL preserving everything for the LLVM
+  // backend's later MPosition-based remapping. For v2 we
+  // forward rvals[1..] verbatim — the LLVM-call CreateCall
+  // expects them in declaration order, which they are when
+  // the IF1 emit is well-formed. (Mismatches surface as
+  // verifyModule errors and inform a later refinement.)
+  for (int i = 1; i < pn->rvals.n; i++) {
+    CGv2Value *cv = build_var(c, fc, pn->rvals[i]);
+    if (cv) inst->rvals.add(cv);
+  }
+  if (pn->lvals.n > 0) {
+    CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
+    if (dst) inst->lvals.add(dst);
+  }
+  blk->body.add(inst);
+  return true;
+}
+
 // Lower a Code_SEND with P_prim_primitive (the named
 // RegisteredPrim form) into a CG2_PRIM. rvals[1] carries the
 // name Var (sym->name or sym->constant); rvals[2..] are the
@@ -446,29 +503,40 @@ bool lower_send_prim(NormCtx &c, FunCtx &fc, PNode *pn,
   return true;
 }
 
-// Lower a Code_SEND PNode. Dispatches on pn->prim. Currently
-// supports:
+// Lower a Code_SEND PNode. Dispatches on pn->prim, with a
+// fall-through to lower_send_call (regular Fun-targeted call)
+// for the no-prim or unrecognized-prim case.
+//
+// Currently supports:
 //   P_prim_reply         — handled by build_terminator (B.8.1)
 //   arithmetic family    — CG2_BINOP (B.8.2)
-//   P_prim_primitive     — CG2_PRIM (this commit)
-//   other                — deferred (regular calls, aggregate
-//                          ops, sizeof/len/clone, ...)
-void lower_send(NormCtx &c, FunCtx &fc, PNode *pn,
+//   P_prim_primitive     — CG2_PRIM (B.8.3)
+//   no prim / other      — CG2_CALL via lower_send_call (this
+//                          commit; resolves callee from
+//                          caller->calls). Aggregate ops
+//                          (period/setter/make/clone/index)
+//                          land in B.8.5.
+void lower_send(NormCtx &c, FunCtx &fc, PNode *pn, Fun *caller,
                 CGv2Block *blk) {
-  if (!pn || !pn->prim) return;
-  int idx = pn->prim->index;
-  if (idx == P_prim_reply) return;     // terminator
-  if (CGv2BinSub sub = prim_to_binop(idx); sub != CG2B_NONE) {
-    lower_send_binop(c, fc, pn, blk, sub);
-    return;
+  if (!pn) return;
+  if (pn->prim) {
+    int idx = pn->prim->index;
+    if (idx == P_prim_reply) return;     // terminator
+    if (CGv2BinSub sub = prim_to_binop(idx); sub != CG2B_NONE) {
+      lower_send_binop(c, fc, pn, blk, sub);
+      return;
+    }
+    if (idx == P_prim_primitive) {
+      lower_send_prim(c, fc, pn, blk);
+      return;
+    }
+    // Other prim kinds fall through to call resolution. The
+    // FA's call edges include prim-targeted SENDs for
+    // primitives that resolve to a method (e.g. __add__ on a
+    // user class), so the fall-through can still produce a
+    // CG2_CALL when caller->calls has a single Fun entry.
   }
-  if (idx == P_prim_primitive) {
-    lower_send_prim(c, fc, pn, blk);
-    return;
-  }
-  // Other SEND kinds deferred. Future landings extend this
-  // dispatch (regular CALL via Fun, period/setter, make/clone,
-  // index_object, sizeof, len, ...).
+  lower_send_call(c, fc, pn, caller, blk);
 }
 
 // Pass 2 of build_fun_body — DFS from entry, tracking owning
@@ -501,7 +569,7 @@ void lower_body(NormCtx &c, Fun *f, FunCtx &fc,
           lower_move(c, fc, cur, blk);
           break;
         case Code_SEND:
-          lower_send(c, fc, cur, blk);
+          lower_send(c, fc, cur, f, blk);
           break;
         default:
           // Code_IF/GOTO closers are recognized by
