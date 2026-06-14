@@ -2102,3 +2102,69 @@ int run_cg_ir_v2_emit_test_len() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test_len);
+
+// Phase A.7 — CG2_CAST. Auto-dispatched typecast.
+//
+// def all_casts(s8: int8, f: float32) -> int64:
+//   w64  = (int64) s8       # SExt
+//   uf   = (uint32) w64     # Trunc + same-width no-op
+//   fd   = (float64) f      # FPExt
+//   fi   = (int64) fd       # FPToSI
+//   return fi
+int run_cg_ir_v2_emit_test_cast() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *text =
+      "((fun %all_casts\n"
+      "   :signature (int64 int8 float32)\n"
+      "   :entry %b0\n"
+      "   :formals (%s8 %f)\n"
+      "   (value %s8  :type int8    :scope formal)\n"
+      "   (value %f   :type float32 :scope formal)\n"
+      "   (value %w64 :type int64   :scope local)\n"
+      "   (value %fd  :type float64 :scope local)\n"
+      "   (value %fi  :type int64   :scope local)\n"
+      "   (block %b0\n"
+      "     (inst %i0 cast :type int64   %s8 => %w64)\n"
+      "     (inst %i1 cast :type float64 %f  => %fd)\n"
+      "     (inst %i2 cast :type int64   %fd => %fi)\n"
+      "     :term (ret %fi))))";
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+
+  llvm::Function *fn = TheModule->getFunction("all_casts");
+  if (!fn) { printf("  fn missing\n"); return 1; }
+
+  int n_sext = 0, n_fpext = 0, n_fptosi = 0;
+  for (llvm::Instruction &i : fn->getEntryBlock()) {
+    switch (i.getOpcode()) {
+      case llvm::Instruction::SExt:   n_sext++;   break;
+      case llvm::Instruction::FPExt:  n_fpext++;  break;
+      case llvm::Instruction::FPToSI: n_fptosi++; break;
+    }
+  }
+  if (n_sext != 1 || n_fpext != 1 || n_fptosi != 1) {
+    printf("  cast counts off — sext=%d fpext=%d fptosi=%d\n",
+           n_sext, n_fpext, n_fptosi);
+    return 1;
+  }
+
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test_cast);

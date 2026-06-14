@@ -176,6 +176,10 @@ static void print_inst(Buf &b, CGv2Inst *inst) {
     case CG2_LEN:
       b.puts_(" len");
       break;
+    case CG2_CAST:
+      b.puts_(" cast :type ");
+      print_type_ref(b, inst->type_arg);
+      break;
     case CG2_PRIM:
       b.puts_(" prim :name \"");
       b.puts_(inst->prim_name ? inst->prim_name : "");

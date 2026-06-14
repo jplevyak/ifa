@@ -159,6 +159,7 @@ enum CGv2Op {
   CG2_INDEX_LOAD,      // rvals=(ptr, idx), lvals[0]=loaded element
   CG2_INDEX_STORE,     // rvals=(ptr, idx, value)
   CG2_LEN,             // rvals=(obj), lvals[0]=i64 length
+  CG2_CAST,            // type_arg=dst type, rvals=(src), lvals[0]=cast result
   CG2_PRIM,            // prim_name + rvals=args, lvals[0]=result (optional)
   // Terminators:
   CG2_BR,

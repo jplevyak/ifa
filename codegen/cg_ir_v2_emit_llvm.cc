@@ -517,6 +517,94 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       put_result(ctx, inst->lvals[0], loaded);
       break;
     }
+    case CG2_CAST: {
+      // Auto-dispatched typecast. The frontend produces a
+      // (src_value, dst_type) pair; the emitter picks the right
+      // LLVM cast opcode (sext/zext/trunc/sitofp/fptosi/fpext/
+      // fptrunc/ptrtoint/inttoptr/bitcast) from the (src_kind,
+      // dst_kind, bits) tuple.
+      if (inst->rvals.n < 1 || inst->lvals.n < 1) return;
+      llvm::Value *src = resolve_value(ctx, inst->rvals[0]);
+      if (!src) return;
+      CGv2Type *src_ty = inst->rvals[0]->type;
+      CGv2Type *dst_ty = inst->type_arg ? inst->type_arg
+                                         : inst->lvals[0]->type;
+      if (!src_ty || !dst_ty) return;
+      llvm::Type *dst_llvm = to_llvm_type(dst_ty);
+      if (!dst_llvm) return;
+      cchar *out = inst->lvals[0]->name ? inst->lvals[0]->name : "";
+
+      // Same kind+bits → no-op (just alias).
+      if (src->getType() == dst_llvm) {
+        put_result(ctx, inst->lvals[0], src);
+        break;
+      }
+
+      auto is_int_like = [](CGv2TypeKind k) {
+        return k == CG2T_INT || k == CG2T_UINT || k == CG2T_BOOL;
+      };
+      auto is_ptr_like = [](CGv2TypeKind k) {
+        return k == CG2T_PTR || k == CG2T_REF || k == CG2T_FUN_PTR;
+      };
+      auto bits_of = [](CGv2Type *t) {
+        return t->kind == CG2T_BOOL ? 1 : t->bits;
+      };
+
+      llvm::Value *r = nullptr;
+      bool src_int = is_int_like(src_ty->kind);
+      bool dst_int = is_int_like(dst_ty->kind);
+      bool src_flt = src_ty->kind == CG2T_FLOAT;
+      bool dst_flt = dst_ty->kind == CG2T_FLOAT;
+      bool src_ptr = is_ptr_like(src_ty->kind);
+      bool dst_ptr = is_ptr_like(dst_ty->kind);
+
+      if (src_int && dst_int) {
+        int sb = bits_of(src_ty);
+        int db = bits_of(dst_ty);
+        if (sb > db) {
+          r = Builder->CreateTrunc(src, dst_llvm, out);
+        } else if (sb < db) {
+          // Unsigned extension if src is UINT or BOOL; signed
+          // otherwise. The "is the source signed" property
+          // lives on the src type — LLVM types alone are
+          // signedness-agnostic.
+          bool unsigned_src = src_ty->kind == CG2T_UINT ||
+                              src_ty->kind == CG2T_BOOL;
+          r = unsigned_src
+                  ? Builder->CreateZExt(src, dst_llvm, out)
+                  : Builder->CreateSExt(src, dst_llvm, out);
+        } else {
+          // Same width — signed/unsigned distinction is per-op,
+          // not per-value. Bitwise no-op.
+          r = src;
+        }
+      } else if (src_int && dst_flt) {
+        r = (src_ty->kind == CG2T_UINT)
+                ? Builder->CreateUIToFP(src, dst_llvm, out)
+                : Builder->CreateSIToFP(src, dst_llvm, out);
+      } else if (src_flt && dst_int) {
+        r = (dst_ty->kind == CG2T_UINT)
+                ? Builder->CreateFPToUI(src, dst_llvm, out)
+                : Builder->CreateFPToSI(src, dst_llvm, out);
+      } else if (src_flt && dst_flt) {
+        if (src_ty->bits > dst_ty->bits) {
+          r = Builder->CreateFPTrunc(src, dst_llvm, out);
+        } else if (src_ty->bits < dst_ty->bits) {
+          r = Builder->CreateFPExt(src, dst_llvm, out);
+        } else {
+          r = src;
+        }
+      } else if (src_ptr && dst_int) {
+        r = Builder->CreatePtrToInt(src, dst_llvm, out);
+      } else if (src_int && dst_ptr) {
+        r = Builder->CreateIntToPtr(src, dst_llvm, out);
+      } else if (src_ptr && dst_ptr) {
+        // Opaque ptr → opaque ptr: bitwise no-op.
+        r = src;
+      }
+      if (r) put_result(ctx, inst->lvals[0], r);
+      break;
+    }
     case CG2_LEN: {
       if (inst->rvals.n < 1 || inst->lvals.n < 1) return;
       llvm::Value *obj = resolve_value(ctx, inst->rvals[0]);
