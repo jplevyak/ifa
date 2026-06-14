@@ -860,8 +860,23 @@ void lower_send(NormCtx &c, FunCtx &fc, PNode *pn, Fun *caller,
         lower_send_setter(c, fc, pn, blk)) return;
     if ((idx == P_prim_new || idx == P_prim_make) &&
         lower_send_alloc(c, fc, pn, blk)) return;
-    if ((idx == P_prim_clone || idx == P_prim_clone_vector) &&
-        lower_send_clone(c, fc, pn, blk)) return;
+    // P_prim_clone: prefer a concrete Fun call when the
+    // analyzer resolved one (constructors, factory methods,
+    // etc.). v1's translate_code_send/write_send takes the
+    // same path implicitly because P_prim_clone returns 0
+    // when the target type isn't a struct, falling through
+    // to write_send. v2's CG_CLONE+memcpy from the @clone
+    // prototype only works when that global is initialized
+    // — which it isn't in pyc's current runtime model. So
+    // when there's a callable Fun, route there instead.
+    // Phase B.10.7.
+    if (idx == P_prim_clone || idx == P_prim_clone_vector) {
+      // Don't emit CG_CLONE — the @clone prototype global
+      // it depends on isn't initialized in pyc's current
+      // runtime. Always fall through to lower_send_call so
+      // the analyzer-resolved constructor (or factory) runs
+      // instead. Phase B.10.7.
+    }
     if (idx == P_prim_index_object &&
         lower_send_index_load(c, fc, pn, blk)) return;
     if (idx == P_prim_set_index_object &&
