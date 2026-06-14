@@ -897,11 +897,15 @@ void lower_send(NormCtx &c, FunCtx &fc, PNode *pn, Fun *caller,
     // when there's a callable Fun, route there instead.
     // Phase B.10.7.
     if (idx == P_prim_clone || idx == P_prim_clone_vector) {
-      // Don't emit CG_CLONE — the @clone prototype global
-      // it depends on isn't initialized in pyc's current
-      // runtime. Always fall through to lower_send_call so
-      // the analyzer-resolved constructor (or factory) runs
-      // instead. Phase B.10.7.
+      // Emit CG_ALLOC instead of CG_CLONE. The full clone
+      // semantics would GC_malloc + memcpy from @clone, but
+      // the @clone prototype global isn't initialized in
+      // pyc's current runtime — memcpy from null crashed
+      // (B.10.7). Emitting plain alloc gives a zero-init'd
+      // new object which the analyzer-resolved __init__
+      // (called via the normal fall-through path) populates.
+      // Phase B.10.9.
+      if (lower_send_alloc(c, fc, pn, blk)) return;
     }
     if (idx == P_prim_index_object &&
         lower_send_index_load(c, fc, pn, blk)) return;
