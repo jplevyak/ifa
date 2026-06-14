@@ -2240,3 +2240,98 @@ int run_cg_ir_v2_emit_test_sizeof() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test_sizeof);
+
+// Phase A.9 — binop operand-type dispatch.
+//
+// The same textual sub-op picks signed/unsigned/float LLVM
+// ops based on operand kind. No new sub-ops needed.
+//
+// Two functions to exercise both float + unsigned variants:
+//   float_ops(a: f64, b: f64) → b ? 1 : 0     (uses fadd, fdiv, fcmpolt)
+//   uint_ops (a: u64, b: u64) → quot + (a<b?)  (uses udiv, icmpult)
+int run_cg_ir_v2_emit_test_binop_dispatch() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *text =
+      "((const %zero (int 0) :type int64)\n"
+      " (const %one  (int 1) :type int64)\n"
+      " (fun %float_ops\n"
+      "   :signature (bool float64 float64)\n"
+      "   :entry %b0\n"
+      "   :formals (%a %b)\n"
+      "   (value %a    :type float64 :scope formal)\n"
+      "   (value %b    :type float64 :scope formal)\n"
+      "   (value %s    :type float64 :scope local)\n"
+      "   (value %d    :type float64 :scope local)\n"
+      "   (value %lt   :type bool    :scope local)\n"
+      "   (block %b0\n"
+      "     (inst %i0 binop add %a %b => %s)\n"
+      "     (inst %i1 binop div %a %b => %d)\n"
+      "     (inst %i2 binop lt  %a %b => %lt)\n"
+      "     :term (ret %lt)))\n"
+      " (fun %uint_ops\n"
+      "   :signature (bool uint64 uint64)\n"
+      "   :entry %b0\n"
+      "   :formals (%a %b)\n"
+      "   (value %a   :type uint64 :scope formal)\n"
+      "   (value %b   :type uint64 :scope formal)\n"
+      "   (value %q   :type uint64 :scope local)\n"
+      "   (value %ult :type bool   :scope local)\n"
+      "   (block %b0\n"
+      "     (inst %i0 binop div %a %b => %q)\n"
+      "     (inst %i1 binop lt  %a %b => %ult)\n"
+      "     :term (ret %ult))))";
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+
+  // float_ops: expect FAdd, FDiv, FCmpOLT.
+  llvm::Function *ffn = TheModule->getFunction("float_ops");
+  if (!ffn) { printf("  float_ops missing\n"); return 1; }
+  int n_fadd = 0, n_fdiv = 0, n_fcmp = 0;
+  for (llvm::Instruction &i : ffn->getEntryBlock()) {
+    if (i.getOpcode() == llvm::Instruction::FAdd) n_fadd++;
+    else if (i.getOpcode() == llvm::Instruction::FDiv) n_fdiv++;
+    else if (auto *c = llvm::dyn_cast<llvm::FCmpInst>(&i)) {
+      if (c->getPredicate() == llvm::CmpInst::FCMP_OLT) n_fcmp++;
+    }
+  }
+  if (n_fadd != 1 || n_fdiv != 1 || n_fcmp != 1) {
+    printf("  float_ops counts off: fadd=%d fdiv=%d fcmpolt=%d\n",
+           n_fadd, n_fdiv, n_fcmp);
+    return 1;
+  }
+
+  // uint_ops: expect UDiv + ICmpULT.
+  llvm::Function *ufn = TheModule->getFunction("uint_ops");
+  if (!ufn) { printf("  uint_ops missing\n"); return 1; }
+  int n_udiv = 0, n_iult = 0;
+  for (llvm::Instruction &i : ufn->getEntryBlock()) {
+    if (i.getOpcode() == llvm::Instruction::UDiv) n_udiv++;
+    else if (auto *c = llvm::dyn_cast<llvm::ICmpInst>(&i)) {
+      if (c->getPredicate() == llvm::CmpInst::ICMP_ULT) n_iult++;
+    }
+  }
+  if (n_udiv != 1 || n_iult != 1) {
+    printf("  uint_ops counts off: udiv=%d iult=%d\n", n_udiv, n_iult);
+    return 1;
+  }
+
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test_binop_dispatch);

@@ -744,45 +744,72 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       if (!a || !b) return;
       llvm::Value *r = nullptr;
       cchar *out = inst->lvals[0]->name ? inst->lvals[0]->name : "";
+      // Operand-type dispatch: the same textual sub-op
+      // ("add"/"div"/"lt"/etc.) selects an integer-signed,
+      // integer-unsigned, or floating-point LLVM op based on
+      // the operand's CGv2Type. Mirrors v1's P_prim_operator
+      // (which inspects t->type_kind to pick FAdd vs Add etc.)
+      // without needing per-typed sub-ops.
+      CGv2Type *t = inst->rvals[0]->type;
+      bool is_flt = t && t->kind == CG2T_FLOAT;
+      bool is_uns = t && (t->kind == CG2T_UINT || t->kind == CG2T_BOOL);
       switch (inst->sub_op) {
         case CG2B_ADD:
-          r = Builder->CreateAdd(a, b, out);
+          r = is_flt ? Builder->CreateFAdd(a, b, out)
+                     : Builder->CreateAdd(a, b, out);
           break;
         case CG2B_SUB:
-          r = Builder->CreateSub(a, b, out);
+          r = is_flt ? Builder->CreateFSub(a, b, out)
+                     : Builder->CreateSub(a, b, out);
           break;
         case CG2B_MUL:
-          r = Builder->CreateMul(a, b, out);
+          r = is_flt ? Builder->CreateFMul(a, b, out)
+                     : Builder->CreateMul(a, b, out);
           break;
         case CG2B_DIV:
-          // Signed integer division. Unsigned/float lands
-          // with a typed-binop variant when those tests do.
-          r = Builder->CreateSDiv(a, b, out);
+          r = is_flt ? Builder->CreateFDiv(a, b, out)
+            : is_uns ? Builder->CreateUDiv(a, b, out)
+                     : Builder->CreateSDiv(a, b, out);
           break;
         case CG2B_MOD:
-          r = Builder->CreateSRem(a, b, out);
+          r = is_flt ? Builder->CreateFRem(a, b, out)
+            : is_uns ? Builder->CreateURem(a, b, out)
+                     : Builder->CreateSRem(a, b, out);
           break;
-        // Comparisons (signed integer).
+        // Comparisons. FCmp uses ordered predicates (OLT/OEQ/...)
+        // — false if either operand is NaN, matching Python's
+        // total ordering semantics for `<` and `==`.
         case CG2B_LT:
-          r = Builder->CreateICmpSLT(a, b, out);
+          r = is_flt ? Builder->CreateFCmpOLT(a, b, out)
+            : is_uns ? Builder->CreateICmpULT(a, b, out)
+                     : Builder->CreateICmpSLT(a, b, out);
           break;
         case CG2B_LE:
-          r = Builder->CreateICmpSLE(a, b, out);
+          r = is_flt ? Builder->CreateFCmpOLE(a, b, out)
+            : is_uns ? Builder->CreateICmpULE(a, b, out)
+                     : Builder->CreateICmpSLE(a, b, out);
           break;
         case CG2B_GT:
-          r = Builder->CreateICmpSGT(a, b, out);
+          r = is_flt ? Builder->CreateFCmpOGT(a, b, out)
+            : is_uns ? Builder->CreateICmpUGT(a, b, out)
+                     : Builder->CreateICmpSGT(a, b, out);
           break;
         case CG2B_GE:
-          r = Builder->CreateICmpSGE(a, b, out);
+          r = is_flt ? Builder->CreateFCmpOGE(a, b, out)
+            : is_uns ? Builder->CreateICmpUGE(a, b, out)
+                     : Builder->CreateICmpSGE(a, b, out);
           break;
         case CG2B_EQ:
-          r = Builder->CreateICmpEQ(a, b, out);
+          // ICmpEQ is signedness-agnostic.
+          r = is_flt ? Builder->CreateFCmpOEQ(a, b, out)
+                     : Builder->CreateICmpEQ(a, b, out);
           break;
         case CG2B_NE:
-          r = Builder->CreateICmpNE(a, b, out);
+          r = is_flt ? Builder->CreateFCmpONE(a, b, out)
+                     : Builder->CreateICmpNE(a, b, out);
           break;
-        // Bitwise / logical (work on integer types of any width;
-        // logical-and / logical-or on bool values are bitwise on i1).
+        // Bitwise / logical — integer-only (LLVM rejects them
+        // on float types; the frontend must have typed correctly).
         case CG2B_AND:
           r = Builder->CreateAnd(a, b, out);
           break;
@@ -796,10 +823,11 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
           r = Builder->CreateShl(a, b, out);
           break;
         case CG2B_SHR:
-          // Arithmetic shift right (signed). Logical-shr would
-          // be a separate sub-op; AShr matches Python's `>>`
-          // semantics for negative numbers.
-          r = Builder->CreateAShr(a, b, out);
+          // AShr for signed, LShr for unsigned/bool. AShr
+          // matches Python's `>>` semantics on signed; LShr
+          // matches C's `>>` semantics on unsigned.
+          r = is_uns ? Builder->CreateLShr(a, b, out)
+                     : Builder->CreateAShr(a, b, out);
           break;
         case CG2B_NONE:
           return;
