@@ -2415,3 +2415,103 @@ int run_cg_ir_v2_emit_test_clone() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test_clone);
+
+// Phase A.11 — integration test: the full print_int pipeline.
+//
+// def print_int(n: int64):
+//   buf: char* = to_string(n)
+//   write(buf)
+//   writeln()
+//
+// Validates that the prim layer composes correctly: to_string
+// returns a typed CharPtr; write dispatches on element=int8 to
+// the %s format; writeln closes the line; the alloca-backed
+// local %buf carries the to_string result through to write.
+//
+// This is the shape pyc emits for `print(int_value)` calls.
+int run_cg_ir_v2_emit_test_print_int_pipeline() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *text =
+      "((type %CharPtr :kind ptr :element int8)\n"
+      " (fun %print_int\n"
+      "   :signature (void int64)\n"
+      "   :entry %b0\n"
+      "   :formals (%n)\n"
+      "   (value %n   :type int64    :scope formal)\n"
+      "   (value %buf :type %CharPtr :scope local)\n"
+      "   (block %b0\n"
+      "     (inst %i0 prim :name \"to_string\" %n   => %buf)\n"
+      "     (inst %i1 prim :name \"write\"     %buf)\n"
+      "     (inst %i2 prim :name \"writeln\")\n"
+      "     :term (ret))))";
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+
+  llvm::Function *fn = TheModule->getFunction("print_int");
+  llvm::Function *gcm = TheModule->getFunction("GC_malloc");
+  llvm::Function *spr = TheModule->getFunction("snprintf");
+  llvm::Function *prf = TheModule->getFunction("printf");
+  if (!fn || !gcm || !spr || !prf) {
+    printf("  missing fn / GC_malloc / snprintf / printf\n");
+    return 1;
+  }
+
+  int n_gcm = 0, n_spr = 0, n_prf = 0;
+  llvm::CallInst *write_prf_call = nullptr;
+  llvm::CallInst *first_prf_call = nullptr;
+  for (llvm::Instruction &i : fn->getEntryBlock()) {
+    if (auto *c = llvm::dyn_cast<llvm::CallInst>(&i)) {
+      llvm::Function *cf = c->getCalledFunction();
+      if (cf == gcm) n_gcm++;
+      else if (cf == spr) n_spr++;
+      else if (cf == prf) {
+        n_prf++;
+        if (!first_prf_call) first_prf_call = c;
+        // The first printf is the write call (uses the buf).
+        if (!write_prf_call) write_prf_call = c;
+      }
+    }
+  }
+  if (n_gcm != 1 || n_spr != 1 || n_prf != 2) {
+    printf("  call counts off — gcm=%d spr=%d prf=%d\n",
+           n_gcm, n_spr, n_prf);
+    return 1;
+  }
+
+  // The write printf's format global should be .str.write_str.
+  if (!TheModule->getNamedGlobal(".str.write_str")) {
+    printf("  missing .str.write_str global (write didn't take char-ptr path)\n");
+    return 1;
+  }
+  // The writeln printf's format should be .str.writeln (the
+  // explicit "\n" we emit).
+  if (!TheModule->getNamedGlobal(".str.writeln")) {
+    printf("  missing .str.writeln global\n");
+    return 1;
+  }
+  // And the to_string format for int64 should be present.
+  if (!TheModule->getNamedGlobal(".str.tostr_i64")) {
+    printf("  missing .str.tostr_i64 global\n");
+    return 1;
+  }
+
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test_print_int_pipeline);
