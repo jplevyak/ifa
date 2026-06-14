@@ -25,6 +25,8 @@
 
 namespace {
 
+struct FunCtx;
+
 // Per-translation context. Holds the CGv2Program being built
 // plus the maps subsequent passes read to resolve IF1
 // entities to CGv2 entities.
@@ -33,8 +35,17 @@ struct NormCtx {
   Map<Sym *, CGv2Type *> sym_to_type;
   Map<Sym *, CGv2Value *> sym_to_value;   // globals + constants
   Map<Fun *, CGv2Fun *> fun_to_fun;        // IF1 Fun → CGv2Fun
+  Map<Fun *, FunCtx *> fun_to_ctx;         // IF1 Fun → FunCtx
 
   explicit NormCtx(CGv2Program *prog) : p(prog) {}
+};
+
+// Per-Fun lowering context. Created at decl time so formals
+// have a stable Var → CGv2Value mapping by body-build time.
+struct FunCtx {
+  CGv2Fun *cf;
+  Map<PNode *, CGv2Block *> pn_to_block;
+  Map<Var *, CGv2Value *> var_to_value;
 };
 
 // Map an IF1 numeric Sym (e.g. sym_int64, sym_uint8, sym_float32)
@@ -250,6 +261,11 @@ CGv2Fun *build_fun_decl(NormCtx &c, Fun *f) {
 
   // Args come from a map keyed by MPosition; use the same
   // get_values helper v1 uses to extract them in order.
+  // Each formal's Var is registered in the per-Fun FunCtx
+  // so body translation resolves arg references cleanly.
+  FunCtx *fc = new FunCtx();
+  fc->cf = cf;
+
   Vec<Var *> arg_vars;
   f->args.get_values(arg_vars);
   for (Var *a : arg_vars) {
@@ -263,9 +279,11 @@ CGv2Fun *build_fun_decl(NormCtx &c, Fun *f) {
     formal->type = at;
     formal->scope = CG2V_FORMAL;
     cf->formals.add(formal);
+    fc->var_to_value.put(a, formal);
   }
 
   c.fun_to_fun.put(f, cf);
+  c.fun_to_ctx.put(f, fc);
   c.p->funs.add(cf);
   if (cf->is_main) c.p->main_fun = cf;
   return cf;
@@ -274,15 +292,6 @@ CGv2Fun *build_fun_decl(NormCtx &c, Fun *f) {
 void build_funs(NormCtx &c, FA *fa) {
   for (Fun *f : fa->funs) (void)build_fun_decl(c, f);
 }
-
-// Per-Fun lowering context. Created per-fn during body build.
-// Holds the PNode → CGv2Block map (block-skeleton output) and
-// the per-fn Var → CGv2Value map populated by body lowering.
-struct FunCtx {
-  CGv2Fun *cf;
-  Map<PNode *, CGv2Block *> pn_to_block;
-  Map<Var *, CGv2Value *> var_to_value;
-};
 
 // Pass 1 of build_fun_body — walk the CFG from the entry PNode
 // in BFS order. Create a CGv2Block for the entry and one for
@@ -324,19 +333,93 @@ void build_block_skeleton(NormCtx &c, Fun *f, FunCtx &fc) {
   }
 }
 
-// Per-Fun body build. Currently just creates the block
-// skeleton — inst placement lands in B.6+. An empty (skeleton-
-// only) body still produces a valid CGv2Fun because every
-// block needs a terminator. We give the entry block an
-// UNREACHABLE so the v2 emitter+verifyModule can swallow it
-// safely until real terminators land.
-void build_fun_body(NormCtx &c, Fun *f, CGv2Fun *cf) {
+// Resolve an IF1 Var → CGv2Value. Order:
+//   per-Fn formals/locals (var_to_value) → globals/constants
+//   (sym_to_value via the Var's Sym) → fresh local (created
+//   on first use, similar to v1's get_or_make_local_slot).
+CGv2Value *build_var(NormCtx &c, FunCtx &fc, Var *v) {
+  if (!v) return nullptr;
+  if (CGv2Value *cached = fc.var_to_value.get(v)) return cached;
+  if (v->sym) {
+    if (CGv2Value *g = c.sym_to_value.get(v->sym)) return g;
+  }
+  // Fresh local. Name from Var/Sym; type via build_type.
+  CGv2Value *cv = new CGv2Value();
+  cv->id = 2000 + fc.cf->id * 1000 + fc.cf->locals.n;
+  cv->name = v->sym && v->sym->name ? v->sym->name :
+             (v->cg_string ? v->cg_string : "v");
+  cv->type = v->type ? build_type(c, v->type) : c.p->t_ptr;
+  cv->scope = CG2V_LOCAL;
+  fc.var_to_value.put(v, cv);
+  fc.cf->locals.add(cv);
+  return cv;
+}
+
+// Lower a Code_MOVE PNode into a CG2_MOVE inst placed in
+// `blk`. Mirrors v1's lower_move (cg_normalize.cc:230).
+void lower_move(NormCtx &c, FunCtx &fc, PNode *pn, CGv2Block *blk) {
+  if (!pn || pn->rvals.n < 1 || pn->lvals.n < 1) return;
+  CGv2Value *src = build_var(c, fc, pn->rvals[0]);
+  CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
+  if (!src || !dst) return;
+  CGv2Inst *inst = new CGv2Inst();
+  inst->op = CG2_MOVE;
+  inst->rvals.add(src);
+  inst->lvals.add(dst);
+  blk->body.add(inst);
+}
+
+// Pass 2 of build_fun_body — DFS from entry, tracking owning
+// block (most recent LABEL ancestor on the path). For each
+// PNode, dispatch on Code kind:
+//   Code_LABEL → no body inst (boundary marker)
+//   Code_MOVE  → CG2_MOVE
+//   others     → defer to later landings
+void lower_body(NormCtx &c, Fun *f, FunCtx &fc) {
+  if (!f->entry) return;
+  Vec<PNode *> stack;
+  Vec<CGv2Block *> stack_blk;
+  Vec<PNode *> visited;
+  stack.add(f->entry);
+  stack_blk.add(fc.pn_to_block.get(f->entry));
+  visited.set_add(f->entry);
+  while (stack.n) {
+    PNode *cur = stack.pop();
+    CGv2Block *blk = stack_blk.pop();
+    Code *cd = cur->code;
+    if (cd && blk) {
+      switch (cd->kind) {
+        case Code_LABEL:
+          break;
+        case Code_MOVE:
+          lower_move(c, fc, cur, blk);
+          break;
+        default:
+          // Code_SEND / Code_IF / Code_GOTO land in B.7+.
+          break;
+      }
+    }
+    for (PNode *s : cur->cfg_succ) {
+      if (!s || !visited.set_add(s)) continue;
+      CGv2Block *succ_blk =
+          (s->code && s->code->kind == Code_LABEL)
+              ? fc.pn_to_block.get(s)
+              : blk;
+      stack.add(s);
+      stack_blk.add(succ_blk);
+    }
+  }
+}
+
+// Per-Fun body build. Block skeleton (B.5) + body inst
+// translation (B.6+). Each block gets a placeholder
+// UNREACHABLE terminator until B.7 lands the real
+// Code_GOTO / Code_IF → terminator translation; this keeps
+// the partial IR valid for verifyModule.
+void build_fun_body(NormCtx &c, Fun *f, CGv2Fun *cf, FunCtx &fc) {
   if (!f || !cf || !f->entry) return;
-  FunCtx fc;
-  fc.cf = cf;
   build_block_skeleton(c, f, fc);
-  // Placeholder terminator on every block until B.7 lands the
-  // real Code_GOTO / Code_IF → terminator translation.
+  lower_body(c, f, fc);
   for (CGv2Block *b : cf->blocks) {
     if (!b->terminator) {
       CGv2Inst *term = new CGv2Inst();
@@ -349,8 +432,9 @@ void build_fun_body(NormCtx &c, Fun *f, CGv2Fun *cf) {
 void build_fun_bodies(NormCtx &c, FA *fa) {
   for (Fun *f : fa->funs) {
     CGv2Fun *cf = c.fun_to_fun.get(f);
-    if (!cf || cf->is_external) continue;
-    build_fun_body(c, f, cf);
+    FunCtx *fc = c.fun_to_ctx.get(f);
+    if (!cf || !fc || cf->is_external) continue;
+    build_fun_body(c, f, cf, *fc);
   }
 }
 
