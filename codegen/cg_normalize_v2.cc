@@ -417,6 +417,160 @@ bool lower_send_binop(NormCtx &c, FunCtx &fc, PNode *pn,
   return true;
 }
 
+// Resolve the integer field index of a P_prim_period /
+// P_prim_setter send. Mirrors v1's resolve_field_index
+// (cg_normalize.cc:244): pn->rvals[obj_idx]->type carries
+// the struct Sym; pn->rvals[field_idx] is the field-name
+// symbol Var. Returns -1 on unresolvable shapes (dynamic
+// dispatch — caller falls through to CG_CALL).
+int resolve_field_index_v2(PNode *pn, int field_rval_idx,
+                            int obj_rval_idx) {
+  if (field_rval_idx >= pn->rvals.n || obj_rval_idx >= pn->rvals.n)
+    return -1;
+  Var *field_var = pn->rvals[field_rval_idx];
+  Var *obj_var = pn->rvals[obj_rval_idx];
+  if (!field_var || !obj_var || !obj_var->type) return -1;
+  Sym *obj = obj_var->type;
+  if (obj->type_kind == Type_SUM && obj->has.n) obj = obj->has[0]->type;
+  cchar *symbol = nullptr;
+  if (field_var->sym && field_var->sym->is_symbol)
+    symbol = field_var->sym->name;
+  if (!symbol) {
+    Vec<Sym *> symbols;
+    symbol_info(field_var, symbols);
+    if (symbols.n == 1) symbol = symbols[0]->name;
+  }
+  if (!symbol) return -1;
+  for (int i = 0; i < obj->has.n; i++) {
+    if (symbol == obj->has[i]->name) return i;
+  }
+  return -1;
+}
+
+// P_prim_period — structural field load.
+//   rvals[1] = object, rvals[3] = field selector.
+//   lvals[0] = loaded value.
+// Returns true if handled; false if shape doesn't resolve
+// (dynamic dispatch, caller falls through to CG_CALL).
+bool lower_send_period(NormCtx &c, FunCtx &fc, PNode *pn,
+                        CGv2Block *blk) {
+  int fi = resolve_field_index_v2(pn, 3, 1);
+  if (fi < 0 || pn->lvals.n < 1) return false;
+  CGv2Value *obj = build_var(c, fc, pn->rvals[1]);
+  CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
+  if (!obj || !dst) return false;
+  CGv2Inst *inst = new CGv2Inst();
+  inst->op = CG2_FIELD_LOAD;
+  inst->field_idx = fi;
+  inst->type_arg = obj->type;            // :struct hint
+  inst->rvals.add(obj);
+  inst->lvals.add(dst);
+  blk->body.add(inst);
+  return true;
+}
+
+// P_prim_setter — structural field store.
+//   rvals[1]=obj, rvals[3]=field, rvals[4]=value.
+// v1 also forwards the value into lvals[0] for chained
+// assignment; we do the same via a CG2_MOVE.
+bool lower_send_setter(NormCtx &c, FunCtx &fc, PNode *pn,
+                        CGv2Block *blk) {
+  int fi = resolve_field_index_v2(pn, 3, 1);
+  if (fi < 0 || pn->rvals.n < 5) return false;
+  CGv2Value *obj = build_var(c, fc, pn->rvals[1]);
+  CGv2Value *val = build_var(c, fc, pn->rvals[4]);
+  if (!obj || !val) return false;
+  CGv2Inst *store = new CGv2Inst();
+  store->op = CG2_FIELD_STORE;
+  store->field_idx = fi;
+  store->type_arg = obj->type;            // :struct hint
+  store->rvals.add(obj);
+  store->rvals.add(val);
+  blk->body.add(store);
+  // Chained-assignment forward (Python semantics).
+  if (pn->lvals.n > 0) {
+    CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
+    if (dst) {
+      CGv2Inst *fwd = new CGv2Inst();
+      fwd->op = CG2_MOVE;
+      fwd->rvals.add(val);
+      fwd->lvals.add(dst);
+      blk->body.add(fwd);
+    }
+  }
+  return true;
+}
+
+// P_prim_new / P_prim_make — heap allocation. The result type
+// comes from lvals[0]->type (the result-Var carries the type
+// it will hold post-construction).
+bool lower_send_alloc(NormCtx &c, FunCtx &fc, PNode *pn,
+                      CGv2Block *blk) {
+  if (pn->lvals.n < 1) return false;
+  CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
+  if (!dst || !dst->type) return false;
+  CGv2Inst *inst = new CGv2Inst();
+  inst->op = CG2_ALLOC;
+  inst->type_arg = dst->type;
+  inst->lvals.add(dst);
+  blk->body.add(inst);
+  return true;
+}
+
+// P_prim_clone / P_prim_clone_vector — allocate-and-copy from
+// prototype. rvals[1] = prototype object. Result type from
+// lvals[0]->type, same as alloc.
+bool lower_send_clone(NormCtx &c, FunCtx &fc, PNode *pn,
+                      CGv2Block *blk) {
+  if (pn->rvals.n < 2 || pn->lvals.n < 1) return false;
+  CGv2Value *proto = build_var(c, fc, pn->rvals[1]);
+  CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
+  if (!proto || !dst || !dst->type) return false;
+  CGv2Inst *inst = new CGv2Inst();
+  inst->op = CG2_CLONE;
+  inst->type_arg = dst->type;
+  inst->rvals.add(proto);
+  inst->lvals.add(dst);
+  blk->body.add(inst);
+  return true;
+}
+
+// P_prim_index_object — vector / list element load.
+//   rvals[1] = obj, rvals[2] = index.
+bool lower_send_index_load(NormCtx &c, FunCtx &fc, PNode *pn,
+                            CGv2Block *blk) {
+  if (pn->rvals.n < 3 || pn->lvals.n < 1) return false;
+  CGv2Value *obj = build_var(c, fc, pn->rvals[1]);
+  CGv2Value *idx = build_var(c, fc, pn->rvals[2]);
+  CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
+  if (!obj || !idx || !dst) return false;
+  CGv2Inst *inst = new CGv2Inst();
+  inst->op = CG2_INDEX_LOAD;
+  inst->rvals.add(obj);
+  inst->rvals.add(idx);
+  inst->lvals.add(dst);
+  blk->body.add(inst);
+  return true;
+}
+
+// P_prim_set_index_object — vector / list element store.
+//   rvals[1] = obj, rvals[2] = index, rvals[3] = value.
+bool lower_send_index_store(NormCtx &c, FunCtx &fc, PNode *pn,
+                             CGv2Block *blk) {
+  if (pn->rvals.n < 4) return false;
+  CGv2Value *obj = build_var(c, fc, pn->rvals[1]);
+  CGv2Value *idx = build_var(c, fc, pn->rvals[2]);
+  CGv2Value *val = build_var(c, fc, pn->rvals[3]);
+  if (!obj || !idx || !val) return false;
+  CGv2Inst *inst = new CGv2Inst();
+  inst->op = CG2_INDEX_STORE;
+  inst->rvals.add(obj);
+  inst->rvals.add(idx);
+  inst->rvals.add(val);
+  blk->body.add(inst);
+  return true;
+}
+
 // Lower a Code_SEND without a (recognized) prim into a
 // CG2_CALL. The callee is resolved via the FA's
 // caller->calls map: when it contains exactly one Fun for
@@ -511,11 +665,12 @@ bool lower_send_prim(NormCtx &c, FunCtx &fc, PNode *pn,
 //   P_prim_reply         — handled by build_terminator (B.8.1)
 //   arithmetic family    — CG2_BINOP (B.8.2)
 //   P_prim_primitive     — CG2_PRIM (B.8.3)
-//   no prim / other      — CG2_CALL via lower_send_call (this
-//                          commit; resolves callee from
-//                          caller->calls). Aggregate ops
-//                          (period/setter/make/clone/index)
-//                          land in B.8.5.
+//   no prim / other      — CG2_CALL via lower_send_call (B.8.4)
+//   P_prim_period/setter — CG_FIELD_LOAD/STORE (B.8.5)
+//   P_prim_new/make      — CG_ALLOC (B.8.5)
+//   P_prim_clone[_vector]— CG_CLONE (B.8.5)
+//   P_prim_index_object  — CG_INDEX_LOAD (B.8.5)
+//   P_prim_set_index_object — CG_INDEX_STORE (B.8.5)
 void lower_send(NormCtx &c, FunCtx &fc, PNode *pn, Fun *caller,
                 CGv2Block *blk) {
   if (!pn) return;
@@ -530,11 +685,22 @@ void lower_send(NormCtx &c, FunCtx &fc, PNode *pn, Fun *caller,
       lower_send_prim(c, fc, pn, blk);
       return;
     }
-    // Other prim kinds fall through to call resolution. The
-    // FA's call edges include prim-targeted SENDs for
-    // primitives that resolve to a method (e.g. __add__ on a
-    // user class), so the fall-through can still produce a
-    // CG2_CALL when caller->calls has a single Fun entry.
+    // Aggregate ops. Each handler returns true if it can
+    // structurally decompose the SEND; on false (dynamic
+    // dispatch / shape mismatch) we fall through to CG_CALL
+    // so the FA's call-edge resolution can take over.
+    if (idx == P_prim_period &&
+        lower_send_period(c, fc, pn, blk)) return;
+    if (idx == P_prim_setter &&
+        lower_send_setter(c, fc, pn, blk)) return;
+    if ((idx == P_prim_new || idx == P_prim_make) &&
+        lower_send_alloc(c, fc, pn, blk)) return;
+    if ((idx == P_prim_clone || idx == P_prim_clone_vector) &&
+        lower_send_clone(c, fc, pn, blk)) return;
+    if (idx == P_prim_index_object &&
+        lower_send_index_load(c, fc, pn, blk)) return;
+    if (idx == P_prim_set_index_object &&
+        lower_send_index_store(c, fc, pn, blk)) return;
   }
   lower_send_call(c, fc, pn, caller, blk);
 }
