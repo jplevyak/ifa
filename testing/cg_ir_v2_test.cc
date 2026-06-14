@@ -1769,3 +1769,85 @@ int run_cg_ir_v2_emit_test_write_types() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test_write_types);
+
+// Phase A.3 — to_string prim.
+//
+// to_string(v) → ptr (GC-managed null-terminated buffer). The
+// numeric/bool path: GC_malloc(64) + snprintf. The string-arg
+// path: passthrough.
+//
+// def stringify(n: int64) -> ptr: return to_string(n)
+int run_cg_ir_v2_emit_test_to_string() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *text =
+      "((fun %stringify\n"
+      "   :signature (ptr int64)\n"
+      "   :entry %b0\n"
+      "   :formals (%n)\n"
+      "   (value %n :type int64 :scope formal)\n"
+      "   (value %s :type ptr   :scope local)\n"
+      "   (block %b0\n"
+      "     (inst %i0 prim :name \"to_string\" %n => %s)\n"
+      "     :term (ret %s))))";
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+
+  llvm::Function *fn = TheModule->getFunction("stringify");
+  llvm::Function *gcm = TheModule->getFunction("GC_malloc");
+  llvm::Function *sprn = TheModule->getFunction("snprintf");
+  if (!fn || !gcm || !sprn) {
+    printf("  missing stringify/GC_malloc/snprintf\n");
+    return 1;
+  }
+
+  // Entry block: CallInst GC_malloc, CallInst snprintf, Ret of
+  // the malloc'd ptr.
+  llvm::CallInst *malloc_call = nullptr;
+  llvm::CallInst *sprintf_call = nullptr;
+  llvm::ReturnInst *ret = nullptr;
+  for (llvm::Instruction &i : fn->getEntryBlock()) {
+    if (auto *c = llvm::dyn_cast<llvm::CallInst>(&i)) {
+      if (c->getCalledFunction() == gcm) malloc_call = c;
+      else if (c->getCalledFunction() == sprn) sprintf_call = c;
+    } else if (auto *r = llvm::dyn_cast<llvm::ReturnInst>(&i)) {
+      ret = r;
+    }
+  }
+  if (!malloc_call) { printf("  no GC_malloc call\n"); return 1; }
+  if (!sprintf_call) { printf("  no snprintf call\n"); return 1; }
+  if (!ret) { printf("  no Ret\n"); return 1; }
+  if (ret->getReturnValue() != malloc_call) {
+    printf("  Ret does not return the GC_malloc result\n");
+    return 1;
+  }
+  // snprintf's first arg should be the GC_malloc result.
+  if (sprintf_call->getArgOperand(0) != malloc_call) {
+    printf("  snprintf does not write into the GC_malloc buffer\n");
+    return 1;
+  }
+  // tostr_i64 format global must exist.
+  if (!TheModule->getNamedGlobal(".str.tostr_i64")) {
+    printf("  missing .str.tostr_i64 global\n");
+    return 1;
+  }
+
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test_to_string);

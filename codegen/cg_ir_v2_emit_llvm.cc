@@ -368,6 +368,94 @@ void emit_prim_writeln(EmitFunCtx &ctx, CGv2Inst *inst) {
   Builder->CreateCall(get_printf(), { fmt_ptr });
 }
 
+// Get-or-create the snprintf(char*, i64, char*, ...) -> i32
+// declaration. Used by to_string's numeric-to-string path.
+llvm::Function *get_snprintf() {
+  llvm::Function *f = TheModule->getFunction("snprintf");
+  if (f) return f;
+  llvm::Type *i32 = llvm::Type::getInt32Ty(*TheContext);
+  llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+  llvm::Type *p = llvm::PointerType::getUnqual(*TheContext);
+  llvm::FunctionType *ft = llvm::FunctionType::get(i32,
+      { p, i64, p }, /*isVarArg=*/true);
+  return llvm::Function::Create(ft,
+      llvm::Function::ExternalLinkage, "snprintf",
+      TheModule.get());
+}
+
+// to_string(v) → ptr (GC-managed null-terminated buffer).
+// Numeric/bool → GC_malloc(64) + snprintf with type-dispatched
+// format. String passthrough (the arg is already a ptr to
+// chars; just propagate). Mirrors v1's
+// pyc_llvm_to_string_cgfn in codegen/llvm_primitives.cc.
+void emit_prim_to_string(EmitFunCtx &ctx, CGv2Inst *inst) {
+  if (inst->rvals.n < 1 || inst->lvals.n < 1) return;
+  llvm::Value *arg = resolve_value(ctx, inst->rvals[0]);
+  if (!arg) return;
+  CGv2Value *argv = inst->rvals[0];
+  if (!argv->type) return;
+
+  // String passthrough — char* in, char* out.
+  if (argv->type->kind == CG2T_PTR && argv->type->element &&
+      argv->type->element->kind == CG2T_INT &&
+      argv->type->element->bits == 8) {
+    put_result(ctx, inst->lvals[0], arg);
+    return;
+  }
+
+  cchar *fmt = nullptr;
+  cchar *name_hint = "tostr_unknown";
+  switch (argv->type->kind) {
+    case CG2T_INT:
+      if (argv->type->bits == 64) {
+        fmt = "%lld"; name_hint = "tostr_i64";
+        arg = Builder->CreateSExtOrTrunc(arg,
+            llvm::Type::getInt64Ty(*TheContext));
+      } else {
+        fmt = "%d"; name_hint = "tostr_int";
+      }
+      break;
+    case CG2T_UINT:
+      if (argv->type->bits == 64) {
+        fmt = "%llu"; name_hint = "tostr_u64";
+        arg = Builder->CreateZExtOrTrunc(arg,
+            llvm::Type::getInt64Ty(*TheContext));
+      } else {
+        fmt = "%u"; name_hint = "tostr_uint";
+      }
+      break;
+    case CG2T_BOOL:
+      fmt = "%u"; name_hint = "tostr_bool";
+      arg = Builder->CreateZExt(arg,
+          llvm::Type::getInt32Ty(*TheContext));
+      break;
+    case CG2T_FLOAT:
+      fmt = "%g"; name_hint = "tostr_float";
+      if (arg->getType()->isFloatTy()) {
+        arg = Builder->CreateFPExt(arg,
+            llvm::Type::getDoubleTy(*TheContext));
+      }
+      break;
+    default:
+      return;
+  }
+  if (!fmt) return;
+
+  // GC_malloc(64) — buffer for the snprintf result. 64 is the
+  // v1 size; covers every numeric type comfortably.
+  const uint64_t kBufSize = 64;
+  llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+  cchar *out_name = inst->lvals[0]->name ? inst->lvals[0]->name : "s";
+  llvm::Value *buf = Builder->CreateCall(get_gc_malloc(),
+      { llvm::ConstantInt::get(i64, kBufSize) }, out_name);
+
+  llvm::Value *fmt_ptr = get_format_str(fmt, name_hint);
+  Builder->CreateCall(get_snprintf(),
+      { buf, llvm::ConstantInt::get(i64, kBufSize), fmt_ptr, arg });
+
+  put_result(ctx, inst->lvals[0], buf);
+}
+
 // Dispatch a CG2_PRIM by name to a per-prim emit function.
 // Unknown prims are silently no-op'd in v0 — landings extend
 // the switch one prim at a time.
@@ -376,6 +464,7 @@ void dispatch_prim(EmitFunCtx &ctx, CGv2Inst *inst) {
   cchar *n = inst->prim_name;
   if (strcmp(n, "write") == 0) { emit_prim_write(ctx, inst); return; }
   if (strcmp(n, "writeln") == 0) { emit_prim_writeln(ctx, inst); return; }
+  if (strcmp(n, "to_string") == 0) { emit_prim_to_string(ctx, inst); return; }
   // Unknown — leave for a later landing.
 }
 
