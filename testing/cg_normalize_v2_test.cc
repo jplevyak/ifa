@@ -81,3 +81,45 @@ int run_cg_normalize_v2_null() {
 }
 
 UNIT_TEST_FUN(run_cg_normalize_v2_null);
+
+// Phase B.2 — type translation.
+//
+// build_types() walks fa->sym_set via collect_types_and_globals
+// and populates the sym→CGv2Type map. Numeric Syms short-
+// circuit to predefined CGv2Type instances; user struct types
+// (Type_RECORD) become fresh CGv2Type entries with field lists.
+//
+// In a freshly-initialized FA there are no user types — the
+// expected outcome is that build_types runs cleanly without
+// adding entries to prog->types (predefined types stay
+// reserved). The lookup_type contract still holds.
+int run_cg_normalize_v2_builtin_types() {
+  ifa_reset();
+  ifa_init(new IRCallbacks);
+
+  CGv2Program *p = cg_normalize_v2(pdb->fa);
+  if (!p) {
+    printf("  cg_normalize_v2 returned NULL\n");
+    return 1;
+  }
+  // No user types in an empty FA — prog->types must stay empty.
+  if (p->types.n != 0) {
+    printf("  expected 0 user types, got %d\n", p->types.n);
+    return 1;
+  }
+  // Predefined still resolvable.
+  CGv2Type *i64 = p->lookup_type("int64");
+  CGv2Type *flt = p->lookup_type("float64");
+  CGv2Type *vd  = p->lookup_type("void");
+  if (!i64 || !flt || !vd) {
+    printf("  predefined int64/float64/void not resolvable\n");
+    return 1;
+  }
+  if (i64->kind != CG2T_INT || i64->bits != 64) {
+    printf("  predefined int64 wrong shape\n");
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_normalize_v2_builtin_types);
