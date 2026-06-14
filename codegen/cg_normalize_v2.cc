@@ -16,9 +16,11 @@
 #include "codegen/cg_normalize_v2.h"
 
 #include "codegen/cg_ir_v2.h"
+#include "code.h"
 #include "fa.h"
 #include "fun.h"
 #include "num.h"
+#include "pnode.h"
 #include "sym.h"
 
 namespace {
@@ -273,6 +275,85 @@ void build_funs(NormCtx &c, FA *fa) {
   for (Fun *f : fa->funs) (void)build_fun_decl(c, f);
 }
 
+// Per-Fun lowering context. Created per-fn during body build.
+// Holds the PNode → CGv2Block map (block-skeleton output) and
+// the per-fn Var → CGv2Value map populated by body lowering.
+struct FunCtx {
+  CGv2Fun *cf;
+  Map<PNode *, CGv2Block *> pn_to_block;
+  Map<Var *, CGv2Value *> var_to_value;
+};
+
+// Pass 1 of build_fun_body — walk the CFG from the entry PNode
+// in BFS order. Create a CGv2Block for the entry and one for
+// each LABEL PNode. Subsequent passes (B.6+) place insts in
+// the right block via pn_to_block.
+void build_block_skeleton(NormCtx &c, Fun *f, FunCtx &fc) {
+  (void)c;
+  CGv2Block *entry_blk = new CGv2Block();
+  entry_blk->id = 0;
+  entry_blk->name = "entry";
+  fc.cf->entry = entry_blk;
+  fc.cf->blocks.add(entry_blk);
+  fc.pn_to_block.put(f->entry, entry_blk);
+
+  int next_id = 1;
+  Vec<PNode *> worklist;
+  Vec<PNode *> seen;
+  worklist.add(f->entry);
+  seen.set_add(f->entry);
+  while (worklist.n) {
+    PNode *cur = worklist.pop();
+    for (PNode *succ : cur->cfg_succ) {
+      if (!succ || !seen.set_add(succ)) continue;
+      if (succ->code && succ->code->kind == Code_LABEL) {
+        CGv2Block *b = new CGv2Block();
+        b->id = next_id++;
+        char buf[32];
+        if (succ->code->label[0]) {
+          snprintf(buf, sizeof(buf), "L%d", succ->code->label[0]->id);
+        } else {
+          snprintf(buf, sizeof(buf), "B%d", b->id);
+        }
+        b->name = dupstr(buf);
+        fc.cf->blocks.add(b);
+        fc.pn_to_block.put(succ, b);
+      }
+      worklist.add(succ);
+    }
+  }
+}
+
+// Per-Fun body build. Currently just creates the block
+// skeleton — inst placement lands in B.6+. An empty (skeleton-
+// only) body still produces a valid CGv2Fun because every
+// block needs a terminator. We give the entry block an
+// UNREACHABLE so the v2 emitter+verifyModule can swallow it
+// safely until real terminators land.
+void build_fun_body(NormCtx &c, Fun *f, CGv2Fun *cf) {
+  if (!f || !cf || !f->entry) return;
+  FunCtx fc;
+  fc.cf = cf;
+  build_block_skeleton(c, f, fc);
+  // Placeholder terminator on every block until B.7 lands the
+  // real Code_GOTO / Code_IF → terminator translation.
+  for (CGv2Block *b : cf->blocks) {
+    if (!b->terminator) {
+      CGv2Inst *term = new CGv2Inst();
+      term->op = CG2_UNREACHABLE;
+      b->terminator = term;
+    }
+  }
+}
+
+void build_fun_bodies(NormCtx &c, FA *fa) {
+  for (Fun *f : fa->funs) {
+    CGv2Fun *cf = c.fun_to_fun.get(f);
+    if (!cf || cf->is_external) continue;
+    build_fun_body(c, f, cf);
+  }
+}
+
 }  // namespace
 
 CGv2Program *cg_normalize_v2(FA *fa) {
@@ -283,6 +364,7 @@ CGv2Program *cg_normalize_v2(FA *fa) {
   build_types(c, fa);
   build_globals(c, fa);
   build_funs(c, fa);
+  build_fun_bodies(c, fa);
 
   return p;
 }
