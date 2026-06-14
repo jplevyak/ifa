@@ -231,9 +231,38 @@ llvm::Value *resolve_value(EmitFunCtx &ctx, CGv2Value *v) {
         return nullptr;
       case CGv2Immediate::I_UNDEF:
         return llvm::UndefValue::get(t);
-      case CGv2Immediate::I_STR:
+      case CGv2Immediate::I_STR: {
+        // Materialize as a private constant global with the
+        // string text, return a ptr to the first byte. Each
+        // distinct value gets its own global; LLVM dedupes
+        // identical literals at link time.
+        //
+        // The imm.str carries the textual literal, with or
+        // without surrounding quotes depending on the source:
+        // cg_normalize_v2's build_immediate uses src.v_string
+        // directly (no quotes). The textual-form parser
+        // preserves quotes; we strip them so the runtime sees
+        // exactly the program's literal bytes.
+        cchar *s = v->imm.str ? v->imm.str : "";
+        std::string text = s;
+        if (text.size() >= 2 && text.front() == '"' &&
+            text.back() == '"') {
+          text = text.substr(1, text.size() - 2);
+        }
+        llvm::Constant *cdata =
+            llvm::ConstantDataArray::getString(*TheContext, text);
+        llvm::GlobalVariable *gv = new llvm::GlobalVariable(
+            *TheModule, cdata->getType(), /*isConstant=*/true,
+            llvm::GlobalValue::PrivateLinkage, cdata, ".str.lit");
+        return Builder->CreateInBoundsGEP(
+            cdata->getType(), gv,
+            { llvm::ConstantInt::get(
+                  llvm::Type::getInt32Ty(*TheContext), 0),
+              llvm::ConstantInt::get(
+                  llvm::Type::getInt32Ty(*TheContext), 0) });
+      }
       case CGv2Immediate::I_SYM:
-        // Land with their corresponding tests.
+        // Land with the symbol type test.
         return nullptr;
       case CGv2Immediate::I_NONE:
       default:
