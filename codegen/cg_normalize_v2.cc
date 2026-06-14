@@ -375,7 +375,11 @@ void lower_move(NormCtx &c, FunCtx &fc, PNode *pn, CGv2Block *blk) {
 //   Code_LABEL → no body inst (boundary marker)
 //   Code_MOVE  → CG2_MOVE
 //   others     → defer to later landings
-void lower_body(NormCtx &c, Fun *f, FunCtx &fc) {
+// Also detects each block's "closer" PNode — the last PNode
+// before the block's cfg exits — and stashes it in
+// `block_closer` for terminator emission.
+void lower_body(NormCtx &c, Fun *f, FunCtx &fc,
+                Map<CGv2Block *, PNode *> &block_closer) {
   if (!f->entry) return;
   Vec<PNode *> stack;
   Vec<CGv2Block *> stack_blk;
@@ -395,9 +399,22 @@ void lower_body(NormCtx &c, Fun *f, FunCtx &fc) {
           lower_move(c, fc, cur, blk);
           break;
         default:
-          // Code_SEND / Code_IF / Code_GOTO land in B.7+.
+          // Code_SEND lands in B.8+. Code_IF/GOTO closers
+          // are recognized by emit_terminator below.
           break;
       }
+      // A PNode is a closer if any of its cfg_succ leaves
+      // the current block (different CGv2Block) or it has
+      // no cfg_succ at all.
+      bool is_closer = cur->cfg_succ.n == 0;
+      for (PNode *s : cur->cfg_succ) {
+        if (!s) continue;
+        CGv2Block *sblk = (s->code && s->code->kind == Code_LABEL)
+                              ? fc.pn_to_block.get(s)
+                              : blk;
+        if (sblk != blk) { is_closer = true; break; }
+      }
+      if (is_closer) block_closer.put(blk, cur);
     }
     for (PNode *s : cur->cfg_succ) {
       if (!s || !visited.set_add(s)) continue;
@@ -411,21 +428,74 @@ void lower_body(NormCtx &c, Fun *f, FunCtx &fc) {
   }
 }
 
-// Per-Fun body build. Block skeleton (B.5) + body inst
-// translation (B.6+). Each block gets a placeholder
-// UNREACHABLE terminator until B.7 lands the real
-// Code_GOTO / Code_IF → terminator translation; this keeps
-// the partial IR valid for verifyModule.
+// Translate a block's closer PNode into a CGv2Inst terminator.
+// Mirrors v1's emit_terminator (cg_normalize.cc:425).
+//
+// Supported in this landing:
+//   Code_GOTO → CG2_BR with br_target = succ block
+//   Code_IF   → CG2_COND_BR with cond=rvals[0], targets from
+//               cfg_succ[0] (true) / cfg_succ[1] (false)
+//   no succs  → CG2_RET (void; rval translation lands when
+//               Code_SEND reply handling does in B.8)
+//   other     → CG2_BR to the single successor block (the
+//               implicit fall-through case)
+void build_terminator(NormCtx &c, FunCtx &fc, CGv2Block *blk,
+                       PNode *closer) {
+  if (blk->terminator) return;
+  CGv2Inst *term = new CGv2Inst();
+  if (!closer || !closer->code) {
+    term->op = CG2_UNREACHABLE;
+    blk->terminator = term;
+    return;
+  }
+  Code *cd = closer->code;
+  // Find which CGv2Blocks the closer's cfg_succ leads to,
+  // unique, in source order.
+  Vec<CGv2Block *> succ_blocks;
+  for (PNode *s : closer->cfg_succ) {
+    if (!s) continue;
+    CGv2Block *sblk = (s->code && s->code->kind == Code_LABEL)
+                          ? fc.pn_to_block.get(s)
+                          : nullptr;
+    if (sblk) succ_blocks.set_add(sblk);
+  }
+  switch (cd->kind) {
+    case Code_GOTO:
+      term->op = CG2_BR;
+      term->br_target = succ_blocks.n > 0 ? succ_blocks[0] : nullptr;
+      break;
+    case Code_IF:
+      term->op = CG2_COND_BR;
+      if (closer->rvals.n > 0) {
+        CGv2Value *cv = build_var(c, fc, closer->rvals[0]);
+        if (cv) term->rvals.add(cv);
+      }
+      term->br_true  = succ_blocks.n > 0 ? succ_blocks[0] : nullptr;
+      term->br_false = succ_blocks.n > 1 ? succ_blocks[1] : nullptr;
+      break;
+    default:
+      if (succ_blocks.n == 0) {
+        term->op = CG2_RET;            // void; rval lands in B.8
+      } else {
+        term->op = CG2_BR;
+        term->br_target = succ_blocks[0];
+      }
+      break;
+  }
+  blk->terminator = term;
+}
+
+// Per-Fun body build. Block skeleton (B.5) + body insts (B.6)
+// + terminator translation (B.7). Any block without a closer
+// after the walk gets an UNREACHABLE so verifyModule stays
+// happy.
 void build_fun_body(NormCtx &c, Fun *f, CGv2Fun *cf, FunCtx &fc) {
   if (!f || !cf || !f->entry) return;
   build_block_skeleton(c, f, fc);
-  lower_body(c, f, fc);
+  Map<CGv2Block *, PNode *> block_closer;
+  lower_body(c, f, fc, block_closer);
   for (CGv2Block *b : cf->blocks) {
-    if (!b->terminator) {
-      CGv2Inst *term = new CGv2Inst();
-      term->op = CG2_UNREACHABLE;
-      b->terminator = term;
-    }
+    build_terminator(c, fc, b, block_closer.get(b));
   }
 }
 
