@@ -157,6 +157,7 @@ enum CGv2Op {
   CG2_FIELD_STORE,     // field_idx=N, rvals=(ptr, value)
   CG2_FIELD_LOAD,      // field_idx=N, rvals=(ptr), lvals[0]=loaded
   CG2_INDEX_LOAD,      // rvals=(ptr, idx), lvals[0]=loaded element
+  CG2_INDEX_STORE,     // rvals=(ptr, idx, value)
   CG2_PRIM,            // prim_name + rvals=args, lvals[0]=result (optional)
   // Terminators:
   CG2_BR,

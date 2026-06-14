@@ -508,9 +508,12 @@ static CGv2Inst *build_inst(BuildCtx &c, SExpr *e) {
       if (in_lvals) inst->lvals.add(v);
       else inst->rvals.add(v);
     }
-  } else if (strcmp(op_tag, "index_load") == 0) {
-    inst->op = CG2_INDEX_LOAD;
-    // (inst %name index_load %ptr %idx => %dst)
+  } else if (strcmp(op_tag, "index_load") == 0 ||
+             strcmp(op_tag, "index_store") == 0) {
+    inst->op = strcmp(op_tag, "index_load") == 0
+                   ? CG2_INDEX_LOAD : CG2_INDEX_STORE;
+    // index_load:  (inst %name index_load %ptr %idx => %dst)
+    // index_store: (inst %name index_store %ptr %idx %value)
     int i = 3;
     bool in_lvals = false;
     for (; i < e->children.n; i++) {

@@ -1955,3 +1955,74 @@ int run_cg_ir_v2_emit_test_binop_coverage() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test_binop_coverage);
+
+// Phase A.5 — CG2_INDEX_STORE (symmetric with INDEX_LOAD).
+//
+// def set_first(v: IntVec, x: int64):
+//   v[0] = x
+//
+// Exercises CG2_INDEX_STORE — GEP to element + Store.
+int run_cg_ir_v2_emit_test_index_store() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *text =
+      "((type %IntVec :kind ptr :element int64)\n"
+      " (const %zero (int 0) :type int64)\n"
+      " (fun %set_first\n"
+      "   :signature (void %IntVec int64)\n"
+      "   :entry %b0\n"
+      "   :formals (%v %x)\n"
+      "   (value %v :type %IntVec :scope formal)\n"
+      "   (value %x :type int64   :scope formal)\n"
+      "   (block %b0\n"
+      "     (inst %i0 index_store %v %zero %x)\n"
+      "     :term (ret))))";
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+
+  llvm::Function *fn = TheModule->getFunction("set_first");
+  if (!fn) { printf("  fn missing\n"); return 1; }
+
+  int n_gep = 0, n_store = 0;
+  llvm::StoreInst *the_store = nullptr;
+  llvm::GetElementPtrInst *the_gep = nullptr;
+  for (llvm::Instruction &i : fn->getEntryBlock()) {
+    if (auto *g = llvm::dyn_cast<llvm::GetElementPtrInst>(&i)) {
+      n_gep++; the_gep = g;
+    } else if (auto *s = llvm::dyn_cast<llvm::StoreInst>(&i)) {
+      n_store++; the_store = s;
+    }
+  }
+  if (n_gep != 1 || n_store != 1) {
+    printf("  expected 1 GEP + 1 Store; got %d/%d\n", n_gep, n_store);
+    return 1;
+  }
+  if (the_store->getPointerOperand() != the_gep) {
+    printf("  Store does not write to the GEP's result\n");
+    return 1;
+  }
+  // The stored value should be the function's x arg.
+  llvm::Argument *arg1 = &*std::next(fn->arg_begin());
+  if (the_store->getValueOperand() != arg1) {
+    printf("  Store value is not the x formal\n");
+    return 1;
+  }
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test_index_store);
