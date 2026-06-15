@@ -604,6 +604,36 @@ CGv2Type *unwrap_struct(CGv2Type *t) {
 // block; needed by lower_send_index_{load,store} above it.
 int compute_prim_arg_offset(PNode *pn);
 
+// Mint an int32 constant CGv2Value. Used by E.2/E.3 to thread
+// element-size + count constants into CG2_C_CALL invocations
+// of `_CG_prim_tuple_list_internal` / `_CG_to_list_runtime`,
+// which both take (uint32, uint32) signatures.
+static CGv2Value *make_uint32_const(NormCtx &c, FunCtx &fc,
+                                     int64_t v, cchar *name) {
+  CGv2Value *cv = new CGv2Value();
+  cv->id = 8000 + fc.cf->id * 1000 + (int)fc.cf->locals.n;
+  cv->name = name;
+  cv->type = c.p->t_uint32;
+  cv->scope = CG2V_CONSTANT;
+  cv->imm.kind = CGv2Immediate::I_INT;
+  cv->imm.v.i = v;
+  return cv;
+}
+
+// Discriminate a `make` SEND's target sym as a list/tuple/vector
+// literal — same check `cg.cc:135-144` uses. The discriminator
+// is whether `rvals[2]->sym` is in `sym_tuple` / `sym_list`'s
+// specializers set, or marked `is_vector`. Returns false for
+// regular class instantiations (which keep the existing bare
+// CG2_ALLOC path).
+static bool is_list_or_tuple_make_target(Sym *target) {
+  if (!target) return false;
+  if (sym_tuple && sym_tuple->specializers.set_in(target)) return true;
+  if (sym_list && sym_list->specializers.set_in(target)) return true;
+  if (target->is_vector) return true;
+  return false;
+}
+
 // P_prim_new / P_prim_make — heap allocation. The result type
 // comes from lvals[0]->type (the result-Var carries the type
 // it will hold post-construction).
@@ -615,17 +645,90 @@ int compute_prim_arg_offset(PNode *pn);
 // (`cg.cc:142`); v2 LLVM needs the same field-store sequence
 // after the alloc, otherwise the freshly-allocated struct
 // holds uninitialized memory.
+//
+// E.2 (issue 019): for the flat-array shape, the alloc itself
+// now routes through pyc's `_CG_prim_tuple_list_internal`
+// runtime helper so the 16-byte list header is carved out.
+// Runtime helpers (`_CG_list_add`, `_CG_list_mult`,
+// `_CG_prim_len`) read header.len/header.ptr at `dst - 16`;
+// without the header they crashed (issue 019 ratchet table).
+// The struct-shape path still uses bare CG2_ALLOC for now;
+// E.3 lands the two-stage construction that gives the struct
+// path the same runtime contract.
 bool lower_send_alloc(NormCtx &c, FunCtx &fc, PNode *pn,
                       CGv2Block *blk) {
   if (pn->lvals.n < 1) return false;
   CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
   if (!dst || !dst->type) return false;
   CGv2Type *struct_t = unwrap_struct(dst->type);
-  CGv2Inst *inst = new CGv2Inst();
-  inst->op = CG2_ALLOC;
-  inst->type_arg = struct_t;
-  inst->lvals.add(dst);
-  blk->body.add(inst);
+
+  // E.2: route the flat-array list-literal shape through the
+  // runtime helper. Conditions:
+  //   - this is a `make` SEND (not `new` / `clone` etc.)
+  //   - `rvals[2]->sym` is a list/tuple/vector spec
+  //   - `unwrap_struct(dst->type)` is NOT a CG2T_STRUCT
+  //     (i.e. the FA's typing keeps it as an opaque/flat ptr;
+  //     struct-shape literals stay on the bare-alloc path for
+  //     E.2 and pick up the two-stage construction in E.3)
+  bool routed_flat = false;
+  if (pn->prim && pn->prim->index == P_prim_make &&
+      pn->rvals.n > 3 &&
+      pn->rvals[2] && pn->rvals[2]->sym &&
+      is_list_or_tuple_make_target(pn->rvals[2]->sym) &&
+      !(struct_t && struct_t->kind == CG2T_STRUCT)) {
+    // Discover the element type from the first value's
+    // CGv2Type. For `[1, 2, 3]` the FA tags rvals[3] as
+    // int64, which is exactly the stride
+    // `_CG_prim_tuple_list_internal` needs.
+    CGv2Type *elem_type = nullptr;
+    CGv2Value *fv = build_var(c, fc, pn->rvals[3]);
+    if (fv && fv->type) elem_type = fv->type;
+
+    if (elem_type) {
+      // CG2_SIZEOF — compute element_size at LLVM-emit time
+      // from the CGv2Type. Stays as i64 by emit convention;
+      // CG2_C_CALL's arg coercion truncates to i32 at the
+      // call site.
+      CGv2Value *size_v = new CGv2Value();
+      size_v->id = 9000 + fc.cf->id * 1000 + (int)fc.cf->locals.n;
+      size_v->name = "elem_sz";
+      size_v->type = c.p->t_int64;
+      size_v->scope = CG2V_LOCAL;
+      fc.cf->locals.add(size_v);
+      CGv2Inst *sz_inst = new CGv2Inst();
+      sz_inst->op = CG2_SIZEOF;
+      sz_inst->type_arg = elem_type;
+      sz_inst->lvals.add(size_v);
+      blk->body.add(sz_inst);
+
+      // CG2_C_CALL `_CG_prim_tuple_list_internal(size, n)`.
+      // n is the element count (rvals.n - 3). Args are passed
+      // as uint32 to match the runtime helper's signature.
+      CGv2Value *n_v = make_uint32_const(c, fc,
+                                          pn->rvals.n - 3, "cnt");
+      CGv2Inst *call_inst = new CGv2Inst();
+      call_inst->op = CG2_C_CALL;
+      call_inst->prim_name = "_CG_prim_tuple_list_internal";
+      call_inst->type_arg = dst->type;
+      // Mark size_v as uint32 too so the call signature
+      // matches; the emit's CG2_C_CALL coercion handles the
+      // int64 → uint32 trunc.
+      size_v->type = c.p->t_uint32;
+      call_inst->rvals.add(size_v);
+      call_inst->rvals.add(n_v);
+      call_inst->lvals.add(dst);
+      blk->body.add(call_inst);
+      routed_flat = true;
+    }
+  }
+
+  if (!routed_flat) {
+    CGv2Inst *inst = new CGv2Inst();
+    inst->op = CG2_ALLOC;
+    inst->type_arg = struct_t;
+    inst->lvals.add(dst);
+    blk->body.add(inst);
+  }
 
   // Per-element initializers for tuple/list literals. pyc's C
   // backend has two shapes (`cg.cc:140`-onwards):
