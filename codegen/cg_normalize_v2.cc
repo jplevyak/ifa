@@ -848,6 +848,68 @@ bool lower_send_call(NormCtx &c, FunCtx &fc, PNode *pn,
 // name Var (sym->name or sym->constant); rvals[2..] are the
 // args. Mirrors v1's llvm_primitives.cc:1111 name extraction.
 // Returns true if handled.
+// __pyc_c_call__(ret_type, "fn_name", arg_type, arg_value, ...)
+// — pyc's generic FFI primitive. Lower to CG2_C_CALL. Mirrors
+// v1's c_call_codegen (python_ifa_main.cc:56) at the IR level.
+//
+// SEND rval layout (set by python_ifa_build_if1.cc:301):
+//   rvals[0] = sym_primitive marker
+//   rvals[1] = __pyc_c_call__ sym (the prim name)
+//   rvals[2] = ret type (FA-typed; meta_type)
+//   rvals[3] = fn name (string constant)
+//   rvals[4] = arg_type_1 (meta_type, ignored at emit)
+//   rvals[5] = arg_value_1
+//   rvals[6] = arg_type_2
+//   rvals[7] = arg_value_2
+//   ...
+//
+// The type meta-rvals exist for FA's benefit only — at codegen
+// the actual LLVM arg type is read from each arg value's
+// CGv2Type, mirroring CG2_C_CALL's emit contract. The return
+// type comes from the lval's FA-inferred type (matching v1's
+// transfer function); for void calls with no lval, we fall
+// back to the meta_type chain off rvals[2].
+//
+// Phase D.3.
+bool lower_send_c_call(NormCtx &c, FunCtx &fc, PNode *pn,
+                        CGv2Block *blk) {
+  if (pn->rvals.n < 4) return false;
+  Var *name_var = pn->rvals[3];
+  if (!name_var || !name_var->sym || !name_var->sym->constant) {
+    return false;
+  }
+  CGv2Inst *inst = new CGv2Inst();
+  inst->op = CG2_C_CALL;
+  inst->prim_name = name_var->sym->constant;
+
+  if (pn->lvals.n > 0 && pn->lvals[0]) {
+    CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
+    if (dst) {
+      inst->type_arg = dst->type;
+      inst->lvals.add(dst);
+    }
+  }
+  if (!inst->type_arg) {
+    Var *rt_var = pn->rvals[2];
+    if (rt_var && rt_var->sym) {
+      Sym *t = rt_var->sym->is_meta_type ? rt_var->sym->meta_type
+                                          : rt_var->sym;
+      inst->type_arg = build_type(c, t);
+    }
+  }
+  if (!inst->type_arg) inst->type_arg = c.p->t_void;
+
+  // Walk the (arg_type, arg_value) pairs and keep only values.
+  for (int i = 5; i < pn->rvals.n; i += 2) {
+    Var *v = pn->rvals[i];
+    if (!v) continue;
+    CGv2Value *cv = build_var(c, fc, v);
+    if (cv) inst->rvals.add(cv);
+  }
+  blk->body.add(inst);
+  return true;
+}
+
 bool lower_send_prim(NormCtx &c, FunCtx &fc, PNode *pn,
                       CGv2Block *blk) {
   if (pn->rvals.n < 2) return false;
@@ -857,6 +919,12 @@ bool lower_send_prim(NormCtx &c, FunCtx &fc, PNode *pn,
   if (!name) name = name_var->sym->constant;
   if (!name) return false;
 
+  // __pyc_c_call__ — pyc's generic FFI primitive. Route to
+  // CG2_C_CALL via lower_send_c_call (D.3).
+  if (strcmp(name, "__pyc_c_call__") == 0 &&
+      lower_send_c_call(c, fc, pn, blk)) {
+    return true;
+  }
   CGv2Inst *inst = new CGv2Inst();
   inst->op = CG2_PRIM;
   inst->prim_name = name;
