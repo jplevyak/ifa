@@ -105,7 +105,18 @@ CGv2Type *build_struct_type(NormCtx &c, Sym *s) {
   if (CGv2Type *cached = c.sym_to_struct.get(s)) return cached;
   CGv2Type *t = new CGv2Type();
   t->id = 1000 + c.p->types.n;
-  t->name = s->name ? s->name : (s->cg_string ? s->cg_string : "anon");
+  // Multiple list / tuple Syms can share the same `name`
+  // (`"list"`, `"tuple"`) but have different field counts —
+  // pyc specializes a fresh struct per specialization. The
+  // LLVM emit's named-struct cache (`getTypeByName`) keys on
+  // the name only, so two such CGv2Types of different shapes
+  // collide and the second's body silently inherits the
+  // first's. Append the Sym id to disambiguate (F.1.1).
+  cchar *raw_name = s->name ? s->name :
+                    (s->cg_string ? s->cg_string : "anon");
+  char buf[160];
+  snprintf(buf, sizeof(buf), "%s.%d", raw_name, s->id);
+  t->name = dupstr(buf);
   t->kind = CG2T_STRUCT;
   t->is_heap_aggregate = true;       // pyc's default for RECORD
   c.sym_to_struct.put(s, t);          // register first (recursion guard)
@@ -683,19 +694,31 @@ bool lower_send_alloc(NormCtx &c, FunCtx &fc, PNode *pn,
   //     (i.e. the FA's typing keeps it as an opaque/flat ptr;
   //     struct-shape literals stay on the bare-alloc path for
   //     E.2 and pick up the two-stage construction in E.3)
+  //
+  // F.1.1: empty literal `[]` (rvals.n == 3) needs the runtime
+  // header too — `_CG_list_add(empty_list, ...)` reads len/ptr
+  // at `dst - 16` and crashes without it. Take the flat path
+  // unconditionally for any list/tuple `make` whose dst isn't
+  // a struct, defaulting the element type to int64 when
+  // there's no first element to infer from.
   bool routed_flat = false;
   if (pn->prim && pn->prim->index == P_prim_make &&
-      pn->rvals.n > 3 &&
+      pn->rvals.n >= 3 &&
       pn->rvals[2] && pn->rvals[2]->sym &&
       is_list_or_tuple_make_target(pn->rvals[2]->sym) &&
       !(struct_t && struct_t->kind == CG2T_STRUCT)) {
     // Discover the element type from the first value's
     // CGv2Type. For `[1, 2, 3]` the FA tags rvals[3] as
     // int64, which is exactly the stride
-    // `_CG_prim_tuple_list_internal` needs.
+    // `_CG_prim_tuple_list_internal` needs. For empty literals
+    // (F.1.1) there's no first value; default to int64 so the
+    // header carving still happens.
     CGv2Type *elem_type = nullptr;
-    CGv2Value *fv = build_var(c, fc, pn->rvals[3]);
-    if (fv && fv->type) elem_type = fv->type;
+    if (pn->rvals.n > 3) {
+      CGv2Value *fv = build_var(c, fc, pn->rvals[3]);
+      if (fv && fv->type) elem_type = fv->type;
+    }
+    if (!elem_type) elem_type = c.p->t_int64;
 
     if (elem_type) {
       // CG2_SIZEOF — compute element_size at LLVM-emit time
@@ -751,7 +774,7 @@ bool lower_send_alloc(NormCtx &c, FunCtx &fc, PNode *pn,
   CGv2Value *struct_init_target = dst;  // FIELD_STORE writes here
   bool routed_struct = false;
   if (!routed_flat && pn->prim && pn->prim->index == P_prim_make &&
-      pn->rvals.n > 3 &&
+      pn->rvals.n >= 3 &&
       pn->rvals[2] && pn->rvals[2]->sym &&
       is_list_or_tuple_make_target(pn->rvals[2]->sym) &&
       struct_t && struct_t->kind == CG2T_STRUCT) {
