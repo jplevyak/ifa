@@ -709,12 +709,17 @@ bool lower_send_index_store(NormCtx &c, FunCtx &fc, PNode *pn,
 }
 
 // Compute the argument offset for prims that may be prefixed
-// by an explicit `primitive` selector. Mirrors v1's `o` at
-// llvm_primitives.cc:425-428.
+// by an explicit `primitive` selector. Mirrors `cg.cc`'s
+// `(n->rvals.v[0]->sym == sym_primitive) ? 2 : 1` — the
+// pointer comparison is robust against frontend name choices
+// (in pyc `sym_primitive->name` is "__primitive", not the
+// "primitive" string v1's llvm_primitives.cc:425 happened to
+// compare against). Without the right offset, structural
+// lowerings like `lower_send_index_load` read self as the
+// index and the prim sym as the obj.
 int compute_prim_arg_offset(PNode *pn) {
-  if (pn->rvals.n > 0 && pn->rvals[0] && pn->rvals[0]->sym &&
-      pn->rvals[0]->sym->name &&
-      strcmp(pn->rvals[0]->sym->name, "primitive") == 0) {
+  if (pn->rvals.n > 0 && pn->rvals[0] &&
+      pn->rvals[0]->sym == sym_primitive) {
     return 2;
   }
   return 1;
