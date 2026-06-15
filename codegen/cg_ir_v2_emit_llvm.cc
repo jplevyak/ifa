@@ -567,7 +567,19 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       if (!p || !idx) return;
       CGv2Type *ptr_ty = inst->rvals[0]->type;
       if (!ptr_ty || !ptr_ty->element) return;
-      llvm::Type *elem = to_llvm_type(ptr_ty->element);
+      // pyc lists are laid out as a struct whose fields share a
+      // single semantic element type (`{ e0:i64, e1:i64, ... }`
+      // for `list[int64]`). For dynamic indexing, GEP needs to
+      // walk the *field stride* (8 bytes for int64), not the
+      // full struct stride. Pick the first field's CGv2Type as
+      // the element type when the container is a struct.
+      CGv2Type *index_ty = ptr_ty->element;
+      if (index_ty->kind == CG2T_STRUCT &&
+          index_ty->fields.n > 0 && index_ty->fields[0] &&
+          index_ty->fields[0]->type) {
+        index_ty = index_ty->fields[0]->type;
+      }
+      llvm::Type *elem = to_llvm_type(index_ty);
       if (!elem) return;
       llvm::Value *gep = Builder->CreateGEP(elem, p, idx);
       cchar *out = inst->lvals[0]->name ? inst->lvals[0]->name : "";
@@ -777,7 +789,16 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       if (!p || !idx || !v) return;
       CGv2Type *ptr_ty = inst->rvals[0]->type;
       if (!ptr_ty || !ptr_ty->element) return;
-      llvm::Type *elem = to_llvm_type(ptr_ty->element);
+      // Same per-field-stride logic as CG2_INDEX_LOAD: for
+      // pyc's struct-as-array list layout, the GEP stride is
+      // the field type, not the full struct type.
+      CGv2Type *index_ty = ptr_ty->element;
+      if (index_ty->kind == CG2T_STRUCT &&
+          index_ty->fields.n > 0 && index_ty->fields[0] &&
+          index_ty->fields[0]->type) {
+        index_ty = index_ty->fields[0]->type;
+      }
+      llvm::Type *elem = to_llvm_type(index_ty);
       if (!elem) return;
       llvm::Value *gep = Builder->CreateGEP(elem, p, idx);
       Builder->CreateStore(v, gep);
