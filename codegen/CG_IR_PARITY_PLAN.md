@@ -15,13 +15,61 @@ infrastructure but still need small follow-ups.
 
 | Test | Failure | Fix |
 |---|---|---|
-| list_or_concat.py | COMPILE | Empty literal `[]` in E.3's struct-shape path: `rvals.n == 3` means no first-element type to discover. One arm in `lower_send_alloc`. |
-| list_slicing.py | EXEC | `_CG_list_getslice` already exported in `libpyc_runtime.a`; library's `__pyc_getslice__` SEND needs `__add__`-shape opaque-ptr fallbacks. |
-| list_multiply.py | EXEC | Partial pass: `[1] * 4` works, `[' '] * 3` returns `[]`. Element-size dispatch when element is `str` (ptr) not `int64`. |
-| list_comprehension.py | EXEC | `[i+j+1 for i in x for j in y]` lowers to range + append; should fall out once the list family is solid. |
-| sieve.py | EXEC | Heavy list workload; most likely unblocked when the others pass. |
+| list_or_concat.py | EXEC | COMPILE → EXEC after F.1.1 (commit `4d2080c`).  Now: `[] or [1,2,3]` prints `[]`.  Root cause is `list.__str__` specialization for "might be empty" inputs — analyzer constant-folds `len(self)` to a wrong value.  Same shape blocks list_slicing, list_multiply (str case), list_comprehension. |
+| list_slicing.py | EXEC | `_CG_list_getslice` is exported in `libpyc_runtime.a`; some prints work (`[1, 2, 6, 7, 8]` is correct) but most prints return `[]` — same `list.__str__` specialization issue as list_or_concat. |
+| list_multiply.py | EXEC | `[1] * 4` works (correct: `[1, 1, 1, 1]`); `[' '] * 3` returns `[]` (expected `[' ', ' ', ' ']`).  Same root cause. |
+| list_comprehension.py | EXEC | `[i+j+1 for i in x for j in y]` prints `[0, 0, 0, 0, 0, 0, 0, 0, 0]` (length right, values zeroed).  Comprehension lowering loses the computed element value. |
+| sieve.py | EXEC | Wrong prime counts (35539 instead of 9592); index loads/stores into the sieve list misread. |
 
-**Target:** v2 LLVM 61/14. **Estimate:** 1-2 sessions.
+### F.1.1 progress (commit `4d2080c`)
+
+Two structural fixes landed:
+
+- **Empty literal `[]` allocation** in `lower_send_alloc` — `[]`
+  used to fall through to bare `CG2_ALLOC` of a 0-field struct
+  (`GC_malloc(0)`).  Now routes through
+  `_CG_to_list_runtime(..., 0)` for the header.
+- **Struct-name uniqueness** in `build_struct_type` — pyc
+  specializes a fresh list/tuple struct per shape but multiple
+  CGv2Types of different field counts shared the name "list" /
+  "tuple", and LLVM's `getTypeByName` cache silently inherited
+  the first struct's body.  Now `<name>.<sym->id>` is unique
+  per Sym.  Without this, list_or_concat's COMPILE failure
+  (`Invalid indices for GEP pointer type` on field 2 of a
+  struct with fewer than 3 fields) didn't surface in the
+  pre-F.1 baseline because the second `[1,2,3]` literal
+  reused the empty list's struct.
+
+Net-zero on the ratchet (list_or_concat moved COMPILE → EXEC)
+but both fixes unblock downstream F.1 / F.2 work.
+
+### F.1 remaining work — refined diagnosis
+
+All five tests share the same shape: **the v2 emit's
+`list.__str__` clone is specialized in a way that makes its
+range bound `len(self)` constant-fold to 0** (or a wrong
+value) when the input list's exact shape isn't FA-narrowed.
+The runtime list correctly has `header.len = N`, but the
+function doesn't read it — the analyzer's specialization
+hard-codes the bound.
+
+This isn't a v2-LLVM-only bug; the FA is producing the
+specialization.  Two paths forward:
+
+1. **Force the v2 emit to read `header.len` at runtime** even
+   when the analyzer thinks the value is folded.  Would mean
+   the v2 LLVM's `CG2_LEN` always emits the GEP+load even when
+   the source PNode looks foldable.  Risk: defeats useful
+   analyzer optimization in cases where the bound really is
+   known.
+2. **Fix the FA specialization** so it doesn't claim len == 0
+   for an unknown-shape input.  Cleaner but in analyzer
+   territory.
+
+**Target:** v2 LLVM 61/14 after the specialization fix.
+**Estimate:** 1 session of analyzer investigation + a small
+patch.  Currently blocked pending that investigation; F.2/F.3
+can proceed in parallel.
 
 ## Bucket F.2 — String / tuple shape work
 
