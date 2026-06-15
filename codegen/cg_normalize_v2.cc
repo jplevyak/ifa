@@ -721,6 +721,45 @@ bool lower_send_sizeof_element(NormCtx &c, FunCtx &fc, PNode *pn,
   return true;
 }
 
+// P_prim_strcat — string `::` operator (`s = a + b` for str).
+// The C backend expands to the `_CG_prim_strcat(a, "::", b)`
+// macro which calls the `_CG_strcat` runtime helper. The v2
+// LLVM backend has no inline emit for it, so without this
+// handler the SEND was silently dropped (issue 018, "loop-after"
+// symptom: post-loop string concats vanished and the return
+// loaded an undef SSU rename of the accumulator).
+//
+// SEND rvals layout from the operator path:
+//   rvals[0] = sym_operator marker
+//   rvals[1] = lhs  (string)
+//   rvals[2] = "::" operator symbol
+//   rvals[3] = rhs  (string)
+//   lvals[0] = result
+// (Mirrors `llvm_primitives.cc:447`'s P_prim_add layout — `o=1`
+// when rvals[0] is the operator marker, lhs at rvals[o],
+// rhs at rvals[o+2].)
+//
+// Routes through CG2_C_CALL so libpyc_runtime.a's `_CG_strcat`
+// satisfies the link (Phase D.3.5).
+bool lower_send_strcat(NormCtx &c, FunCtx &fc, PNode *pn,
+                        CGv2Block *blk) {
+  int o = compute_prim_arg_offset(pn);
+  if (pn->rvals.n < o + 3 || pn->lvals.n < 1) return false;
+  CGv2Value *a = build_var(c, fc, pn->rvals[o]);
+  CGv2Value *b = build_var(c, fc, pn->rvals[o + 2]);
+  CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
+  if (!a || !b || !dst) return false;
+  CGv2Inst *inst = new CGv2Inst();
+  inst->op = CG2_C_CALL;
+  inst->prim_name = "_CG_strcat";
+  inst->type_arg = dst->type ? dst->type : get_string_type(c);
+  inst->rvals.add(a);
+  inst->rvals.add(b);
+  inst->lvals.add(dst);
+  blk->body.add(inst);
+  return true;
+}
+
 // P_prim_len — len(obj). v2 emit dispatches based on the
 // obj's CGv2Type: string-like → strlen, other → constant 0.
 //
@@ -1009,6 +1048,8 @@ void lower_send(NormCtx &c, FunCtx &fc, PNode *pn, Fun *caller,
         lower_send_sizeof_element(c, fc, pn, blk)) return;
     if (idx == P_prim_len &&
         lower_send_len(c, fc, pn, blk)) return;
+    if (idx == P_prim_strcat &&
+        lower_send_strcat(c, fc, pn, blk)) return;
   }
   lower_send_call(c, fc, pn, caller, blk);
 }

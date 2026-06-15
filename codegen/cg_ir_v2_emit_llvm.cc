@@ -232,10 +232,12 @@ llvm::Value *resolve_value(EmitFunCtx &ctx, CGv2Value *v) {
       case CGv2Immediate::I_UNDEF:
         return llvm::UndefValue::get(t);
       case CGv2Immediate::I_STR: {
-        // Materialize as a private constant global with the
-        // string text, return a ptr to the first byte. Each
-        // distinct value gets its own global; LLVM dedupes
-        // identical literals at link time.
+        // Materialize as a private constant global with the pyc
+        // string layout: [i64 length][N x i8 chars (with NUL
+        // terminator)]. The returned pointer skips the 8-byte
+        // length prefix so it can be handed to runtime helpers
+        // (`_CG_string_len(s)` reads bytes -8..0; `_CG_strcat`
+        // and friends rely on this layout).
         //
         // The imm.str carries the textual literal, with or
         // without surrounding quotes depending on the source:
@@ -249,17 +251,33 @@ llvm::Value *resolve_value(EmitFunCtx &ctx, CGv2Value *v) {
             text.back() == '"') {
           text = text.substr(1, text.size() - 2);
         }
+        llvm::Type *i8_ty = llvm::Type::getInt8Ty(*TheContext);
+        llvm::Type *i64_ty = llvm::Type::getInt64Ty(*TheContext);
+        // getString adds a trailing NUL so the inner array is
+        // (text.size() + 1) bytes.
         llvm::Constant *cdata =
             llvm::ConstantDataArray::getString(*TheContext, text);
+        // Packed struct so the i8 array starts exactly at byte 8.
+        llvm::StructType *sty = llvm::StructType::get(
+            *TheContext, { i64_ty, cdata->getType() },
+            /*isPacked=*/true);
+        llvm::Constant *init = llvm::ConstantStruct::get(
+            sty,
+            { llvm::ConstantInt::get(i64_ty,
+                                      (uint64_t)text.size()),
+              cdata });
         llvm::GlobalVariable *gv = new llvm::GlobalVariable(
-            *TheModule, cdata->getType(), /*isConstant=*/true,
-            llvm::GlobalValue::PrivateLinkage, cdata, ".str.lit");
+            *TheModule, sty, /*isConstant=*/true,
+            llvm::GlobalValue::PrivateLinkage, init, ".str.lit");
+        // GEP to &sty->field1[0] — skip the i64 prefix and land
+        // at the first char.
+        llvm::Type *i32_ty = llvm::Type::getInt32Ty(*TheContext);
         return Builder->CreateInBoundsGEP(
-            cdata->getType(), gv,
-            { llvm::ConstantInt::get(
-                  llvm::Type::getInt32Ty(*TheContext), 0),
-              llvm::ConstantInt::get(
-                  llvm::Type::getInt32Ty(*TheContext), 0) });
+            sty, gv,
+            { llvm::ConstantInt::get(i32_ty, 0),
+              llvm::ConstantInt::get(i32_ty, 1),
+              llvm::ConstantInt::get(i32_ty, 0) });
+        (void)i8_ty;
       }
       case CGv2Immediate::I_SYM:
         // Land with the symbol type test.
