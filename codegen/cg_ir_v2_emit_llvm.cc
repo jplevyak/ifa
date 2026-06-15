@@ -486,14 +486,18 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       llvm::Value *idx = resolve_value(ctx, inst->rvals[1]);
       if (!p || !idx) return;
       CGv2Type *ptr_ty = inst->rvals[0]->type;
-      // Issue 020: opaque ptr (FA's `_CG_any` fallback) gets
-      // i64 stride. Matches CG2_SIZEOF_ELEMENT's fallback so
-      // the post-`__add__` list reads its int64 elements
-      // correctly even though FA never narrowed the result
-      // type past `_CG_any`. (Reading `_CG_LIST_HDR_PTR(self)`
-      // upstream isn't necessary because pyc's allocator sets
-      // the header.ptr to the data start in-place.)
-      if (!ptr_ty || !ptr_ty->element) {
+      // Issue 020 + F.1.2: take the opaque-ptr-via-header-ptr
+      // path when ptr_ty's element gives no usable stride.
+      // That's the case for:
+      //   - opaque `_CG_any` ptrs (no element at all)
+      //   - 0-field structs (FA's union shape across an empty
+      //     list and a non-empty one collapses to this — the
+      //     "first field" picker below produces a 0-byte
+      //     stride that re-reads the same byte every iter)
+      bool no_stride = !ptr_ty || !ptr_ty->element ||
+                        (ptr_ty->element->kind == CG2T_STRUCT &&
+                         ptr_ty->element->fields.n == 0);
+      if (no_stride) {
         llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
         // The list header's `ptr` field at offset -8 points at
         // the data area; for our literal allocs it's just `p`
@@ -679,17 +683,24 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       //     same call sites. See issue 020.
       CGv2Type *ptr_ty = inst->rvals[0]->type;
       CGv2Type *elem_ty = ptr_ty ? ptr_ty->element : nullptr;
-      if (elem_ty && elem_ty->kind == CG2T_STRUCT &&
-          elem_ty->fields.n > 0 && elem_ty->fields[0] &&
-          elem_ty->fields[0]->type) {
-        elem_ty = elem_ty->fields[0]->type;
+      // F.1.2: 0-field struct (FA union of empty / non-empty
+      // list specializations) also collapses to the i64
+      // fallback — sizeof(empty struct) = 0 would propagate
+      // a zero stride into the runtime helpers.
+      if (elem_ty && elem_ty->kind == CG2T_STRUCT) {
+        if (elem_ty->fields.n == 0) {
+          elem_ty = nullptr;
+        } else if (elem_ty->fields[0] && elem_ty->fields[0]->type) {
+          elem_ty = elem_ty->fields[0]->type;
+        }
       }
       llvm::Type *elem = elem_ty ? to_llvm_type(elem_ty) : nullptr;
       uint64_t sz;
-      if (elem && elem->isSized()) {
+      if (elem && elem->isSized() &&
+          TheModule->getDataLayout().getTypeAllocSize(elem) > 0) {
         sz = TheModule->getDataLayout().getTypeAllocSize(elem);
       } else {
-        sz = 8;  // i64 fallback for FA-opaque ptrs (issue 020).
+        sz = 8;  // i64 fallback for FA-opaque ptrs / 0-field structs.
       }
       llvm::Value *c = llvm::ConstantInt::get(
           llvm::Type::getInt64Ty(*TheContext), sz);
@@ -762,16 +773,37 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       // element. Without one of these the SEND would be dropped
       // silently on opaque ptrs.
       CGv2Type *index_ty = inst->type_arg;
+      bool use_header_indirection = false;
       if (!index_ty) {
         CGv2Type *ptr_ty = inst->rvals[0]->type;
         if (ptr_ty && ptr_ty->element) {
           index_ty = ptr_ty->element;
-          if (index_ty->kind == CG2T_STRUCT &&
-              index_ty->fields.n > 0 && index_ty->fields[0] &&
-              index_ty->fields[0]->type) {
-            index_ty = index_ty->fields[0]->type;
+          if (index_ty->kind == CG2T_STRUCT) {
+            // F.1.2: 0-field struct (FA union with empty
+            // list) collapses to a 0-byte stride; redirect
+            // to the header.ptr indirection like INDEX_LOAD.
+            if (index_ty->fields.n == 0) {
+              index_ty = nullptr;
+              use_header_indirection = true;
+            } else if (index_ty->fields[0] &&
+                        index_ty->fields[0]->type) {
+              index_ty = index_ty->fields[0]->type;
+            }
           }
+        } else {
+          use_header_indirection = true;
         }
+      }
+      if (use_header_indirection) {
+        llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+        llvm::Type *ptr_lty = llvm::PointerType::getUnqual(*TheContext);
+        llvm::Value *hdr_ptr_addr = Builder->CreateGEP(
+            llvm::Type::getInt8Ty(*TheContext), p,
+            llvm::ConstantInt::getSigned(i64, -8));
+        llvm::Value *data_ptr = Builder->CreateLoad(ptr_lty, hdr_ptr_addr, "list_data");
+        llvm::Value *gep = Builder->CreateGEP(i64, data_ptr, idx);
+        Builder->CreateStore(v, gep);
+        break;
       }
       if (!index_ty) return;
       llvm::Type *elem = to_llvm_type(index_ty);
