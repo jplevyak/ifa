@@ -1,6 +1,14 @@
 # Issue 018: v2 LLVM backend drops the loop-after block and list-literal element stores
 
-**Status:** open.
+**Status:** **closed** by commits `01994fd` (loop-after, via
+strcat lowering + length-prefixed str literals), `32419ca`
+(list-literal field stores + named-prim dispatch), and
+`4d2253f` (INDEX_LOAD/STORE stride for struct-as-array lists).
+The two structural gaps this issue tracked are repaired; the
+follow-on consequence ("`list_print` still fails because of
+arg routing in CG2_CALL for `self[k].__repr__()`") is tracked
+separately and is **not** what 018 was about — see "Closing
+notes" below.
 **Affects:** `ifa/codegen/cg_normalize_v2.cc` (or the SSU
 phi-by-pred handling) under `IFA_LLVM_V2=1`. The v1 LLVM and
 the C backends are not affected by these specific shapes.
@@ -188,3 +196,68 @@ When fixing:
   suggested doesn't work in practice (see "Companion gap"
   above), so list/tuple/dict `__str__` migration has to wait
   for the lowering fix.
+
+## Closing notes (June 2026)
+
+The diagnosis ended up smaller than the symptom suggested. The
+loop-after block was never actually being dropped; reading the
+v2 IR carefully showed it was reached and had its terminator,
+just with no body. The real bug was that
+`cg_normalize_v2`'s `lower_send` had no arm for
+`P_prim_strcat`, so every Python `s += other_s` was a SEND
+that produced no IR at all — and the post-loop `s += "]"; return s`
+was simply two such SENDs followed by a return that loaded
+the SSU-renamed accumulator. With nothing writing the
+accumulator the load returned `undef`, which surfaced as
+`(null)` once printf got hold of it.
+
+The two coordinated fixes that closed this:
+
+1. `lower_send_strcat` in `cg_normalize_v2.cc` — routes
+   `P_prim_strcat` through `CG2_C_CALL → _CG_strcat` (which
+   D.3.5's `libpyc_runtime.a` already exports).
+2. String-literal layout in `cg_ir_v2_emit_llvm.cc` — pyc str
+   pointers expect an 8-byte length prefix at `s[-8..-1]`
+   (`_CG_string_len` and friends rely on it). The v2 I_STR
+   emit was materializing raw `[N x i8]` globals; it now uses
+   a packed `<{ i64, [N x i8] }>` struct and returns a GEP
+   that lands at the chars. Runtime helpers see the layout
+   they expect.
+
+For the companion gap (list-literal init):
+
+3. `lower_send_alloc` now emits per-field stores after the
+   alloc for `P_prim_make` on tuple/list literals, matching
+   the C backend's `t1->e0 = v1; t1->e1 = v2; ...` loop in
+   `cg.cc:142`. The freshly-allocated `[1, 2, 3]` literal
+   holds its values instead of uninitialized memory.
+4. `lower_send_prim` dispatches named primitives
+   (`index_object`, `set_index_object`, `sizeof`,
+   `sizeof_element`, `len`) to their structural lowerings.
+   Without this, the FA's habit of leaving `pn->prim` as the
+   outer `P_prim_primitive` meant the existing per-prim arms
+   never fired for the `__pyc_primitive__("name", ...)`
+   shape — the SEND went into a generic CG2_PRIM that
+   `dispatch_prim` silently dropped.
+5. `CG2_INDEX_LOAD` and `CG2_INDEX_STORE` emit pick the
+   first struct field's type as the GEP stride. For pyc's
+   homogeneous list-of-int64 layout this gives the per-element
+   stride instead of stepping by one whole struct.
+
+Pyc-suite ratchet after all three fixes: C **74/0** (held),
+v2 LLVM **47/28 → 49/26** (+2), unit tests **107/0** (held).
+Both `list_print.py` and `list_concat.py` are no longer
+producing null/garbage — the loop in `list.__str__` now runs
+its body and produces an output of the right *shape*
+(`[N, N, N, N]`). What's left is a separate CG2_CALL arg-
+routing issue (next paragraph) which 018 does not own.
+
+What still fails on `tests/list_print.py`: the SEND for
+`self[k].__repr__()` inside `list.__str__` reaches the CG2_CALL
+for `int.__repr__` with `i64 undef` as the self argument
+instead of the element value loaded by index_object. The
+index_object SEND lowers correctly in isolation — the gap is
+how CG2_CALL routes the SEND's rvals into the callee's formal
+arg slots when there's a primitive-call result feeding into a
+method-call SEND in the same block. Worth its own
+investigation; not in scope for 018.
