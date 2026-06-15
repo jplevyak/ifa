@@ -486,7 +486,31 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       llvm::Value *idx = resolve_value(ctx, inst->rvals[1]);
       if (!p || !idx) return;
       CGv2Type *ptr_ty = inst->rvals[0]->type;
-      if (!ptr_ty || !ptr_ty->element) return;
+      // Issue 020: opaque ptr (FA's `_CG_any` fallback) gets
+      // i64 stride. Matches CG2_SIZEOF_ELEMENT's fallback so
+      // the post-`__add__` list reads its int64 elements
+      // correctly even though FA never narrowed the result
+      // type past `_CG_any`. (Reading `_CG_LIST_HDR_PTR(self)`
+      // upstream isn't necessary because pyc's allocator sets
+      // the header.ptr to the data start in-place.)
+      if (!ptr_ty || !ptr_ty->element) {
+        llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+        // The list header's `ptr` field at offset -8 points at
+        // the data area; for our literal allocs it's just `p`
+        // itself, but reading through the indirection works
+        // for concat'd lists too (which point ptr to a fresh
+        // GC_malloc buffer).
+        llvm::Type *ptr_lty = llvm::PointerType::getUnqual(*TheContext);
+        llvm::Value *hdr_ptr_addr = Builder->CreateGEP(
+            llvm::Type::getInt8Ty(*TheContext), p,
+            llvm::ConstantInt::getSigned(i64, -8));
+        llvm::Value *data_ptr = Builder->CreateLoad(ptr_lty, hdr_ptr_addr, "list_data");
+        llvm::Value *gep = Builder->CreateGEP(i64, data_ptr, idx);
+        cchar *out = inst->lvals[0]->name ? inst->lvals[0]->name : "";
+        llvm::Value *loaded = Builder->CreateLoad(i64, gep, out);
+        put_result(ctx, inst->lvals[0], loaded);
+        break;
+      }
       // pyc lists are laid out as a struct whose fields share a
       // single semantic element type (`{ e0:i64, e1:i64, ... }`
       // for `list[int64]`). For dynamic indexing, GEP needs to
@@ -640,14 +664,33 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
     }
     case CG2_SIZEOF_ELEMENT: {
       if (inst->rvals.n < 1 || inst->lvals.n < 1) return;
+      // Element discovery walks the rval's CGv2Type:
+      //   - ptr → struct: use the struct's first field type
+      //     (pyc's homogeneous-list-as-struct shape lays
+      //     `{i64, i64, ...}` for `list[int64]`; runtime
+      //     helpers want sizeof(field), not sizeof(struct)).
+      //   - ptr → primitive: use the pointee directly.
+      //   - opaque ptr (the FA's `t_ptr` fallback for formals
+      //     of library methods like `list.__add__` whose self
+      //     stays unnarrowed past `_CG_any`): fall back to
+      //     int64 (8 bytes). pyc's library list operations
+      //     all assume int64 elements at runtime; the C
+      //     backend's analyzer constant-folds to 8 for the
+      //     same call sites. See issue 020.
       CGv2Type *ptr_ty = inst->rvals[0]->type;
-      if (!ptr_ty || !ptr_ty->element) return;
-      llvm::Type *elem = to_llvm_type(ptr_ty->element);
-      if (!elem || !elem->isSized()) {
-        DEBUG_LOG("CG2_SIZEOF_ELEMENT skipped: unsized element\n");
-        return;
+      CGv2Type *elem_ty = ptr_ty ? ptr_ty->element : nullptr;
+      if (elem_ty && elem_ty->kind == CG2T_STRUCT &&
+          elem_ty->fields.n > 0 && elem_ty->fields[0] &&
+          elem_ty->fields[0]->type) {
+        elem_ty = elem_ty->fields[0]->type;
       }
-      uint64_t sz = TheModule->getDataLayout().getTypeAllocSize(elem);
+      llvm::Type *elem = elem_ty ? to_llvm_type(elem_ty) : nullptr;
+      uint64_t sz;
+      if (elem && elem->isSized()) {
+        sz = TheModule->getDataLayout().getTypeAllocSize(elem);
+      } else {
+        sz = 8;  // i64 fallback for FA-opaque ptrs (issue 020).
+      }
       llvm::Value *c = llvm::ConstantInt::get(
           llvm::Type::getInt64Ty(*TheContext), sz);
       put_result(ctx, inst->lvals[0], c);
@@ -691,12 +734,17 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
         }
         result = Builder->CreateCall(fn, { obj }, out);
       } else {
-        // No linkable equivalent for _CG_prim_len. v1 emits
-        // a call to it and fails at link time too — both
-        // backends share the same gap. v2 returns a constant
-        // 0 so programs at least link. Semantic correctness
-        // for non-string len awaits a runtime support layer.
-        result = llvm::ConstantInt::get(i64, 0);
+        // Issue 020: read header.len directly from pyc's list
+        // layout. The list ptr points past a 16-byte header
+        // whose `len` (uint32) sits at offset -12. Equivalent
+        // to `_CG_prim_len(0, ptr)` in pyc_c_runtime.h's
+        // C-backend macro form, without needing a runtime call.
+        llvm::Type *i32 = llvm::Type::getInt32Ty(*TheContext);
+        llvm::Value *len_addr = Builder->CreateGEP(
+            llvm::Type::getInt8Ty(*TheContext), obj,
+            llvm::ConstantInt::getSigned(i64, -12), "len_addr");
+        llvm::Value *len32 = Builder->CreateLoad(i32, len_addr, "len32");
+        result = Builder->CreateZExt(len32, i64, out);
       }
       put_result(ctx, inst->lvals[0], result);
       break;
