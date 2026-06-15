@@ -324,16 +324,29 @@ CGv2Fun *build_fun_decl(NormCtx &c, Fun *f) {
     cf->signature->ret = c.p->t_void;
   }
 
-  // Args come from a map keyed by MPosition; use the same
-  // get_values helper v1 uses to extract them in order.
-  // Each formal's Var is registered in the per-Fun FunCtx
-  // so body translation resolves arg references cleanly.
+  // Args come from a map keyed by MPosition. Iterating
+  // `f->args.get_values()` directly returns them in map
+  // insertion order, which does NOT match the positional
+  // ordering that `lower_send_call`'s MPosition routing uses
+  // — when those two diverge, the LLVM signature's formals
+  // end up in a different order than the rvals the caller
+  // passes, and CG2_CALL emit inserts ptrtoint/inttoptr
+  // coercions that look like type fixes but are actually
+  // bridging a positional swap (issue 021).
+  //
+  // Mirror v1's `build_arg_list` (llvm_codegen.cc:107):
+  // walk positions 1..N explicitly via `cannonicalize_mposition`
+  // and look up the formal Var at each position. This keeps
+  // signature ordering and call-site routing locked together.
   FunCtx *fc = new FunCtx();
   fc->cf = cf;
 
-  Vec<Var *> arg_vars;
-  f->args.get_values(arg_vars);
-  for (Var *a : arg_vars) {
+  MPosition p;
+  p.push(1);
+  for (int i = 0; i < f->sym->has.n; i++) {
+    MPosition *cp = cannonicalize_mposition(p);
+    p.inc();
+    Var *a = f->args.get(cp);
     if (!a) continue;
     // Mirror v1's createFunction filter (llvm_codegen.cc:98).
     // Skip args that DCE killed (not in any live path) AND
