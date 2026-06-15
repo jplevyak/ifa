@@ -786,6 +786,63 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       put_result(ctx, inst->lvals[0], loaded);
       break;
     }
+    case CG2_C_CALL: {
+      // Generic FFI primitive. Mirrors v1's c_call_codegen
+      // (python_ifa_main.cc:56) at the LLVM emit level.
+      //
+      // The callee's C function name lives on inst->prim_name.
+      // Its return type is inst->type_arg. Each arg is a
+      // CGv2Value in inst->rvals; the arg's CGv2Type drives
+      // the LLVM param type.
+      //
+      // The external function is declared on demand. If a
+      // call site for the same name with a different
+      // signature appears later, LLVM rejects the second
+      // declaration (verifyModule catches the mismatch).
+      if (!inst->prim_name || !inst->type_arg) return;
+      llvm::Type *ret_ty = to_llvm_type(inst->type_arg);
+      if (!ret_ty) return;
+      std::vector<llvm::Type *> param_tys;
+      std::vector<llvm::Value *> args;
+      for (CGv2Value *v : inst->rvals) {
+        if (!v) continue;
+        llvm::Type *pt = to_llvm_type(v->type);
+        if (!pt) return;
+        llvm::Value *a = resolve_value(ctx, v);
+        if (!a) return;
+        // Coerce to the declared param type when LLVM's
+        // already-cached argument type differs (e.g. an
+        // integer-typed local widened during resolve_value).
+        if (a->getType() != pt) {
+          if (a->getType()->isIntegerTy() && pt->isIntegerTy()) {
+            a = Builder->CreateSExtOrTrunc(a, pt);
+          } else if (a->getType()->isPointerTy() && pt->isPointerTy()) {
+            // Opaque ptrs in LLVM 22 — no-op.
+          } else if (a->getType()->isPointerTy() && pt->isIntegerTy()) {
+            a = Builder->CreatePtrToInt(a, pt);
+          } else if (a->getType()->isIntegerTy() && pt->isPointerTy()) {
+            a = Builder->CreateIntToPtr(a, pt);
+          }
+        }
+        param_tys.push_back(pt);
+        args.push_back(a);
+      }
+      llvm::Function *callee =
+          TheModule->getFunction(inst->prim_name);
+      if (!callee) {
+        llvm::FunctionType *ft = llvm::FunctionType::get(
+            ret_ty, param_tys, /*isVarArg=*/false);
+        callee = llvm::Function::Create(ft,
+            llvm::Function::ExternalLinkage,
+            inst->prim_name, TheModule.get());
+      }
+      cchar *out = inst->lvals.n > 0 && inst->lvals[0]->name
+                       ? inst->lvals[0]->name : "";
+      llvm::Value *r = Builder->CreateCall(callee, args,
+          ret_ty->isVoidTy() ? "" : out);
+      if (inst->lvals.n > 0) put_result(ctx, inst->lvals[0], r);
+      break;
+    }
     case CG2_CALL: {
       if (inst->rvals.n < 1) return;
       // rvals[0] is the callee — a CGv2Value of scope FUN_REF

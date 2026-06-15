@@ -163,6 +163,10 @@ enum CGv2Op {
   CG2_SIZEOF,          // type_arg=T, lvals[0]=i64 sizeof(T)
   CG2_SIZEOF_ELEMENT,  // rvals=(typed_ptr), lvals[0]=i64 sizeof(ptr->element)
   CG2_CLONE,           // type_arg=T, rvals=(proto), lvals[0]=new ptr-to-T
+  CG2_C_CALL,          // prim_name=C fn name, type_arg=ret type,
+                       // rvals=args (each arg's type comes from its
+                       // CGv2Value::type); lvals[0]=result (optional).
+                       // External function declared on-demand.
   CG2_PRIM,            // prim_name + rvals=args, lvals[0]=result (optional)
   // Terminators:
   CG2_BR,

@@ -2508,3 +2508,102 @@ int run_cg_ir_v2_emit_test_print_int_pipeline() {
 }
 
 UNIT_TEST_FUN(run_cg_ir_v2_emit_test_print_int_pipeline);
+
+// Phase D.2 — CG2_C_CALL. Generic FFI primitive.
+//
+// def hello() -> void:
+//   __pyc_c_call__(int, "puts", str, "hi")
+//
+// CG_IR_v2 representation: the textual form below mints a
+// %CharPtr type for the string literal, declares a constant
+// hi-string, and emits a single c_call whose :type is int32 and
+// :target is "puts". Verify the emit produces:
+//   - exactly one external declare for `puts` taking ptr arg
+//   - exactly one CallInst targeting `puts`
+//   - module verifies clean
+int run_cg_ir_v2_emit_test_c_call() {
+  llvm_codegen_initialize(nullptr);
+
+  cchar *text =
+      "((type %CharPtr :kind ptr :element int8)\n"
+      " (const %hi (str \"hi\") :type %CharPtr)\n"
+      " (fun %caller\n"
+      "   :signature (int32)\n"
+      "   :entry %b0\n"
+      "   :formals ()\n"
+      "   (value %rc :type int32 :scope local)\n"
+      "   (block %b0\n"
+      "     (inst %i0 c_call :target \"puts\" :type int32 %hi => %rc)\n"
+      "     :term (ret %rc))))";
+
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (!cg_v2_emit_llvm_module(prog)) {
+    printf("  emit returned false\n");
+    return 1;
+  }
+
+  llvm::Function *fn = TheModule->getFunction("caller");
+  llvm::Function *puts_fn = TheModule->getFunction("puts");
+  if (!fn || !puts_fn) {
+    printf("  missing caller / puts decl\n");
+    return 1;
+  }
+  if (!puts_fn->isDeclaration()) {
+    printf("  puts should be an external declaration\n");
+    return 1;
+  }
+  // Signature: int32 (ptr).
+  llvm::FunctionType *pft = puts_fn->getFunctionType();
+  if (!pft->getReturnType()->isIntegerTy(32)) {
+    printf("  puts return type is not int32\n");
+    return 1;
+  }
+  if (pft->getNumParams() != 1 || !pft->getParamType(0)->isPointerTy()) {
+    printf("  puts param shape wrong\n");
+    return 1;
+  }
+
+  int n_puts = 0;
+  for (llvm::Instruction &i : fn->getEntryBlock()) {
+    if (auto *c = llvm::dyn_cast<llvm::CallInst>(&i)) {
+      if (c->getCalledFunction() == puts_fn) n_puts++;
+    }
+  }
+  if (n_puts != 1) {
+    printf("  expected 1 call to puts, got %d\n", n_puts);
+    return 1;
+  }
+
+  std::string err_str;
+  llvm::raw_string_ostream rso(err_str);
+  if (llvm::verifyModule(*TheModule, &rso)) {
+    printf("  verifyModule failed: %s\n", err_str.c_str());
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_emit_test_c_call);
+
+// Phase D.2 — c_call textual round-trip. Catches printer drift.
+int run_cg_ir_v2_test_c_call_roundtrip() {
+  cchar *text =
+      "((type %CharPtr :kind ptr :element int8)\n"
+      " (const %hi (str \"hi\") :type %CharPtr)\n"
+      " (fun %caller\n"
+      "   :signature (int32)\n"
+      "   :entry %b0\n"
+      "   (value %rc :type int32 :scope local)\n"
+      "   (block %b0\n"
+      "     (inst %i0 c_call :target \"puts\" :type int32 %hi => %rc)\n"
+      "     :term (ret %rc))))";
+  if (!run_one("c_call_roundtrip", text, 1, "caller")) return 1;
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_test_c_call_roundtrip);

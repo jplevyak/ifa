@@ -568,6 +568,49 @@ static CGv2Inst *build_inst(BuildCtx &c, SExpr *e) {
       if (in_lvals) inst->lvals.add(v);
       else inst->rvals.add(v);
     }
+  } else if (strcmp(op_tag, "c_call") == 0) {
+    inst->op = CG2_C_CALL;
+    // (inst %name c_call :target "fn_name" :type RET_TYPE %arg* [=> %dst])
+    int target_kw = find_kw(e, "target", 3);
+    if (target_kw < 0) {
+      c.fail_at(e, "c_call missing :target");
+      return 0;
+    }
+    SExpr *tx = e->children[target_kw + 1];
+    if (tx->is_list || !tx->atom) {
+      c.fail_at(tx, "c_call :target must be a string atom");
+      return 0;
+    }
+    // Strip surrounding quotes (parser preserves them on strings).
+    cchar *raw = tx->atom;
+    int rlen = strlen(raw);
+    if (rlen >= 2 && raw[0] == '"' && raw[rlen - 1] == '"') {
+      char *s = (char *)MALLOC(rlen - 1);
+      memcpy(s, raw + 1, rlen - 2);
+      s[rlen - 2] = 0;
+      inst->prim_name = s;
+    } else {
+      inst->prim_name = dupstr(raw);
+    }
+    int type_kw = find_kw(e, "type", 3);
+    if (type_kw < 0) {
+      c.fail_at(e, "c_call missing :type (return type)");
+      return 0;
+    }
+    inst->type_arg = resolve_type(c, e->children[type_kw + 1]);
+    if (c.err) return 0;
+    bool in_lvals = false;
+    for (int i = 3; i < e->children.n; i++) {
+      SExpr *ch = e->children[i];
+      if (!ch->is_list && ch->atom) {
+        if (strcmp(ch->atom, "=>") == 0) { in_lvals = true; continue; }
+        if (ch->atom[0] == ':') { i++; continue; }
+      }
+      CGv2Value *v = resolve_value_ref(c, ch);
+      if (c.err) return 0;
+      if (in_lvals) inst->lvals.add(v);
+      else inst->rvals.add(v);
+    }
   } else if (strcmp(op_tag, "cast") == 0) {
     inst->op = CG2_CAST;
     // (inst %name cast :type DST_TYPE %src => %dst)

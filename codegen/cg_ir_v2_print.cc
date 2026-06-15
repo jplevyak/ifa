@@ -196,6 +196,12 @@ static void print_inst(Buf &b, CGv2Inst *inst) {
       b.puts_(inst->prim_name ? inst->prim_name : "");
       b.put('"');
       break;
+    case CG2_C_CALL:
+      b.puts_(" c_call :target \"");
+      b.puts_(inst->prim_name ? inst->prim_name : "");
+      b.puts_("\" :type ");
+      print_type_ref(b, inst->type_arg);
+      break;
     default:
       b.puts_(" nop");
       break;
