@@ -1565,16 +1565,31 @@ int llvm_codegen_compile(cchar *input_filename) {
   }
   DEBUG_LOG("LLVM IR from %s compiled to %s\n", ll_file, obj_file);
 
-  // Step 2: clang <obj> -o <exe> -lm -lgc -lgccpp
+  // Step 2: clang <obj> -o <exe> -L<system_dir> -lpyc_runtime
+  //         -lm -lgc -lgccpp
   //
   // -lgc / -lgccpp: the IR emitted by P_prim_make / P_prim_new /
   // P_prim_clone references GC_malloc (Boehm GC). Without these the
   // link fails on undefined `GC_malloc`. See issue 012.
+  //
+  // -lpyc_runtime (D.3.5): out-of-line copies of the runtime
+  // helpers (`_CG_string_alloc`, `_CG_chr`, `_CG_str_eq`, ...). The
+  // C backend gets these via `#include "pyc_c_runtime.h"` per
+  // generated .py.c; the LLVM backend produces a single .o that
+  // references them as external symbols, so we link the pyc
+  // runtime library here. -L points at the install location (the
+  // same `system_dir` we use for Makefile.cg and __pyc__).
   {
-    char *argv[] = {(char *)"clang",   obj_file,
-                    (char *)"-o",      exe_file,
-                    (char *)"-lm",     (char *)"-lgc",
-                    (char *)"-lgccpp", nullptr};
+    char libdir_arg[FILENAME_MAX];
+    int n = snprintf(libdir_arg, sizeof(libdir_arg), "-L%s", system_dir);
+    if (n < 0 || (size_t)n >= sizeof(libdir_arg))
+      fail("llvm_codegen_compile: -L<system_dir> arg too long");
+    char *argv[] = {(char *)"clang",         obj_file,
+                    (char *)"-o",            exe_file,
+                    libdir_arg,
+                    (char *)"-lpyc_runtime",
+                    (char *)"-lm",           (char *)"-lgc",
+                    (char *)"-lgccpp",       nullptr};
     int res = codegen_spawn("clang", argv);
     if (res != 0) {
       fail("llvm_codegen_compile: linking failed for %s (exit=%d)", obj_file, res);
