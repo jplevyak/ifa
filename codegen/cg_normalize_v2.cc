@@ -722,7 +722,73 @@ bool lower_send_alloc(NormCtx &c, FunCtx &fc, PNode *pn,
     }
   }
 
-  if (!routed_flat) {
+  // E.3 (issue 019): for the struct-shape list-literal,
+  // route through the two-stage construction the C backend
+  // already uses (`cg.cc:140` for stage 1,
+  // `pyc_c_runtime.h:_CG_TUPLE_TO_LIST_FUN` macro for stage 2).
+  // Stage 1 over-allocates with `n = element_count + 1` (the
+  // pyc +1 convention) into an intermediate temp; the FIELD_STOREs
+  // below write the elements into that temp; stage 2 calls
+  // `_CG_to_list_runtime` to produce the runtime-contract-shaped
+  // list (16-byte header + `header.len = element_count`) into
+  // dst. dst's CGv2Type is NOT touched — downstream
+  // `CG2_FIELD_LOAD` / `CG2_SIZEOF_ELEMENT` / etc. see the same
+  // type they always did (the June 2026 reverted attempt's
+  // mistake was rewriting it).
+  CGv2Value *struct_init_target = dst;  // FIELD_STORE writes here
+  bool routed_struct = false;
+  if (!routed_flat && pn->prim && pn->prim->index == P_prim_make &&
+      pn->rvals.n > 3 &&
+      pn->rvals[2] && pn->rvals[2]->sym &&
+      is_list_or_tuple_make_target(pn->rvals[2]->sym) &&
+      struct_t && struct_t->kind == CG2T_STRUCT) {
+    // Stage 1: SIZEOF(struct_t) → size_v.
+    CGv2Value *size_v = new CGv2Value();
+    size_v->id = 9500 + fc.cf->id * 1000 + (int)fc.cf->locals.n;
+    size_v->name = "list_struct_sz";
+    size_v->type = c.p->t_int64;
+    size_v->scope = CG2V_LOCAL;
+    fc.cf->locals.add(size_v);
+    CGv2Inst *sz_inst = new CGv2Inst();
+    sz_inst->op = CG2_SIZEOF;
+    sz_inst->type_arg = struct_t;
+    sz_inst->lvals.add(size_v);
+    blk->body.add(sz_inst);
+
+    // CG2_C_CALL — _CG_prim_tuple_list_internal(sizeof(struct),
+    //                                            element_count+1)
+    // → tmp. The +1 mirrors cg.cc:141's `rvals.n - 2` count.
+    // tmp has the same CGv2Type as dst; the field stores
+    // below GEP into it as a struct.
+    size_v->type = c.p->t_uint32;
+    CGv2Value *n_alloc = make_uint32_const(c, fc,
+                                            pn->rvals.n - 2,
+                                            "alloc_cnt");
+    CGv2Value *tmp = new CGv2Value();
+    tmp->id = 9700 + fc.cf->id * 1000 + (int)fc.cf->locals.n;
+    tmp->name = "list_tmp";
+    tmp->type = dst->type;
+    tmp->scope = CG2V_LOCAL;
+    fc.cf->locals.add(tmp);
+    CGv2Inst *alloc_inst = new CGv2Inst();
+    alloc_inst->op = CG2_C_CALL;
+    alloc_inst->prim_name = "_CG_prim_tuple_list_internal";
+    alloc_inst->type_arg = dst->type;
+    alloc_inst->rvals.add(size_v);
+    alloc_inst->rvals.add(n_alloc);
+    alloc_inst->lvals.add(tmp);
+    blk->body.add(alloc_inst);
+
+    // FIELD_STORE writes below target the temp, not dst.
+    struct_init_target = tmp;
+
+    // Stage 2 (deferred): the conversion CG2_C_CALL into dst
+    // lands after the FIELD_STORE block below. Stash the
+    // pieces we need so the post-loop code can emit it.
+    routed_struct = true;
+  }
+
+  if (!routed_flat && !routed_struct) {
     CGv2Inst *inst = new CGv2Inst();
     inst->op = CG2_ALLOC;
     inst->type_arg = struct_t;
@@ -764,7 +830,7 @@ bool lower_send_alloc(NormCtx &c, FunCtx &fc, PNode *pn,
         st->op = CG2_FIELD_STORE;
         st->field_idx = field_idx;
         st->type_arg = struct_t;
-        st->rvals.add(dst);
+        st->rvals.add(struct_init_target);
         st->rvals.add(val);
         blk->body.add(st);
       }
@@ -798,6 +864,41 @@ bool lower_send_alloc(NormCtx &c, FunCtx &fc, PNode *pn,
       }
     }
   }
+
+  // E.3 stage 2 — `_CG_to_list_runtime(struct_init_target,
+  //                                     sizeof(struct), semantic_n)`
+  // → dst. Runs after the field stores so the runtime sees
+  // a fully populated struct. Recomputes SIZEOF locally
+  // because the stage-1 size_v has already been retyped
+  // (uint32 for the alloc call's signature) and reusing it
+  // here would force another coercion.
+  if (routed_struct) {
+    CGv2Value *size2 = new CGv2Value();
+    size2->id = 9800 + fc.cf->id * 1000 + (int)fc.cf->locals.n;
+    size2->name = "list_struct_sz2";
+    size2->type = c.p->t_uint32;
+    size2->scope = CG2V_LOCAL;
+    fc.cf->locals.add(size2);
+    CGv2Inst *sz2_inst = new CGv2Inst();
+    sz2_inst->op = CG2_SIZEOF;
+    sz2_inst->type_arg = struct_t;
+    sz2_inst->lvals.add(size2);
+    blk->body.add(sz2_inst);
+
+    CGv2Value *n_semantic = make_uint32_const(c, fc,
+                                                pn->rvals.n - 3,
+                                                "sem_cnt");
+    CGv2Inst *conv_inst = new CGv2Inst();
+    conv_inst->op = CG2_C_CALL;
+    conv_inst->prim_name = "_CG_to_list_runtime";
+    conv_inst->type_arg = dst->type;
+    conv_inst->rvals.add(struct_init_target);
+    conv_inst->rvals.add(size2);
+    conv_inst->rvals.add(n_semantic);
+    conv_inst->lvals.add(dst);
+    blk->body.add(conv_inst);
+  }
+
   return true;
 }
 
