@@ -707,17 +707,25 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       llvm::Value *idx = resolve_value(ctx, inst->rvals[1]);
       llvm::Value *v = resolve_value(ctx, inst->rvals[2]);
       if (!p || !idx || !v) return;
-      CGv2Type *ptr_ty = inst->rvals[0]->type;
-      if (!ptr_ty || !ptr_ty->element) return;
-      // Same per-field-stride logic as CG2_INDEX_LOAD: for
-      // pyc's struct-as-array list layout, the GEP stride is
-      // the field type, not the full struct type.
-      CGv2Type *index_ty = ptr_ty->element;
-      if (index_ty->kind == CG2T_STRUCT &&
-          index_ty->fields.n > 0 && index_ty->fields[0] &&
-          index_ty->fields[0]->type) {
-        index_ty = index_ty->fields[0]->type;
+      // GEP stride: explicit type_arg overrides (used by
+      // lower_send_alloc for flat-array list literals where the
+      // dst's CGv2Type is opaque); else use the struct's first-
+      // field type (pyc's struct-as-array list); else the ptr
+      // element. Without one of these the SEND would be dropped
+      // silently on opaque ptrs.
+      CGv2Type *index_ty = inst->type_arg;
+      if (!index_ty) {
+        CGv2Type *ptr_ty = inst->rvals[0]->type;
+        if (ptr_ty && ptr_ty->element) {
+          index_ty = ptr_ty->element;
+          if (index_ty->kind == CG2T_STRUCT &&
+              index_ty->fields.n > 0 && index_ty->fields[0] &&
+              index_ty->fields[0]->type) {
+            index_ty = index_ty->fields[0]->type;
+          }
+        }
       }
+      if (!index_ty) return;
       llvm::Type *elem = to_llvm_type(index_ty);
       if (!elem) return;
       llvm::Value *gep = Builder->CreateGEP(elem, p, idx);

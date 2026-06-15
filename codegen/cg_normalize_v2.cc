@@ -627,24 +627,72 @@ bool lower_send_alloc(NormCtx &c, FunCtx &fc, PNode *pn,
   inst->lvals.add(dst);
   blk->body.add(inst);
 
-  // Per-field initializers for tuple/list literals.
-  if (pn->prim && pn->prim->index == P_prim_make && struct_t &&
-      struct_t->kind == CG2T_STRUCT) {
-    int n_fields = struct_t->fields.n;
-    for (int i = 3; i < pn->rvals.n; i++) {
-      int field_idx = i - 3;
-      if (field_idx >= n_fields) break;       // over-alloc tail
-      Var *val_var = pn->rvals[i];
-      if (!val_var) continue;
-      CGv2Value *val = build_var(c, fc, val_var);
-      if (!val) continue;
-      CGv2Inst *st = new CGv2Inst();
-      st->op = CG2_FIELD_STORE;
-      st->field_idx = field_idx;
-      st->type_arg = struct_t;
-      st->rvals.add(dst);
-      st->rvals.add(val);
-      blk->body.add(st);
+  // Per-element initializers for tuple/list literals. pyc's C
+  // backend has two shapes (`cg.cc:140`-onwards):
+  //
+  //   - Tuple-list / multi-element list of mixed types →
+  //     `_CG_prim_tuple_list` returning a struct whose fields
+  //     are `e0`, `e1`, ... and named-field stores
+  //     `t->e0 = v1; t->e1 = v2; ...`. CG2_FIELD_STORE matches.
+  //
+  //   - Flat list (homogeneous element type, including the
+  //     single-element-literal case `[x]`) → `_CG_prim_list`
+  //     returning a typed pointer, written via array indexing
+  //     `((T*)t)[0] = v1; ((T*)t)[1] = v2; ...`.
+  //     CG2_INDEX_STORE matches.
+  //
+  // The discriminator is whether `unwrap_struct(dst->type)`
+  // gave us a CG2T_STRUCT: if yes, we have the tuple shape; if
+  // no, we have a flat array and route through INDEX_STORE.
+  // Without the flat-array arm, single-element `[1]` was
+  // allocated but never initialized — `list_concat.py` segv'd
+  // when `_CG_list_add` read garbage from it.
+  if (pn->prim && pn->prim->index == P_prim_make) {
+    if (struct_t && struct_t->kind == CG2T_STRUCT) {
+      int n_fields = struct_t->fields.n;
+      for (int i = 3; i < pn->rvals.n; i++) {
+        int field_idx = i - 3;
+        if (field_idx >= n_fields) break;       // over-alloc tail
+        Var *val_var = pn->rvals[i];
+        if (!val_var) continue;
+        CGv2Value *val = build_var(c, fc, val_var);
+        if (!val) continue;
+        CGv2Inst *st = new CGv2Inst();
+        st->op = CG2_FIELD_STORE;
+        st->field_idx = field_idx;
+        st->type_arg = struct_t;
+        st->rvals.add(dst);
+        st->rvals.add(val);
+        blk->body.add(st);
+      }
+    } else {
+      // Flat-array shape. INDEX_STORE walks a typed-ptr stride
+      // (see CG2_INDEX_STORE emit), so the dst's ptr type
+      // drives the addressing.
+      for (int i = 3; i < pn->rvals.n; i++) {
+        Var *val_var = pn->rvals[i];
+        if (!val_var) continue;
+        CGv2Value *val = build_var(c, fc, val_var);
+        if (!val) continue;
+        // Build a constant index value at i-3.
+        CGv2Value *idx = new CGv2Value();
+        idx->id = 7000 + fc.cf->id * 100 + (i - 3);
+        idx->name = "litidx";
+        idx->type = c.p->t_int64;
+        idx->scope = CG2V_CONSTANT;
+        idx->imm.kind = CGv2Immediate::I_INT;
+        idx->imm.v.i = i - 3;
+        CGv2Inst *st = new CGv2Inst();
+        st->op = CG2_INDEX_STORE;
+        // type_arg overrides the GEP element type when the
+        // dst's CGv2Type is opaque (`t_ptr` for FA-unknown
+        // ptrs — single-element list literals end up here).
+        st->type_arg = val->type;
+        st->rvals.add(dst);
+        st->rvals.add(idx);
+        st->rvals.add(val);
+        blk->body.add(st);
+      }
     }
   }
   return true;
