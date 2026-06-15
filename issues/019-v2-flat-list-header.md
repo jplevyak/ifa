@@ -87,3 +87,82 @@ When fixing:
   removing the second source of pyc-list-layout knowledge
   (right now it lives in both `pyc_runtime.c` and the v2
   emit).
+
+## June 2026 attempt — diagnostics worth keeping
+
+An attempted fix (reverted; commits 7f4c1c2 and earlier are
+the baseline) added an out-of-line `_CG_prim_tuple_list_internal`
+to `pyc_runtime.c` and routed `lower_send_alloc` for
+list/tuple-symbol SENDs through a `CG2_C_CALL` to it. That
+piece compiled and produced the right shape for the simple
+case (`print([1, 2, 3, 4])` worked), but uncovered three
+deeper entanglements that any future fix needs to handle
+together:
+
+1. **The C backend's two-stage allocation.** Looking at
+   `cg.cc:140` (struct path), pyc allocates with
+   `_CG_prim_tuple_list(_c, rvals.n - 2)` — that's
+   `element_count + 1`, the over-alloc count. The struct
+   it returns has `header.len = element_count + 1` (semantic
+   length **plus one**). The conversion that fixes this lives
+   in `_CG_TUPLE_TO_LIST_FUN(_s, _n)` (`pyc_c_runtime.h:216`),
+   which `list.__add__` and other consumers call as
+   `_CG_to_list(struct_ptr)` — it allocates a new list with
+   `header.len = _n` (the **correct** count) and memcpys the
+   struct's payload. v2 has no equivalent of `_CG_to_list`,
+   so any v2 route through the runtime helper must either
+   skip the over-alloc convention or replicate the conversion.
+
+2. **`sizeof_element` returns sizeof(element), not
+   sizeof(struct).** In the C output for `[1] + [2,3,4,5,6]`,
+   `_CG_list_add(t2, t3, 8, 8)` — both size args are 8.
+   That's because `_CG_prim_sizeof_element(_c, _l) sizeof(*_l)`
+   for the struct-ptr `_l` of type `_CG_ps3343` is
+   `sizeof(_CG_s3343) = 40` at the C level, but pyc's
+   *analyzer* constant-folds the argument to a known semantic
+   element size (8 for int64) before the call. The v2
+   `CG2_SIZEOF_ELEMENT` emit, by contrast, computes from the
+   CGv2Type at LLVM-emit time and gets 40 for the struct,
+   which propagates into `_CG_list_add` and overruns the
+   source buffer. Any attempt that updates the alloc shape
+   has to coordinate with `CG2_SIZEOF_ELEMENT` so both sides
+   see the same "element size" semantics. Falling back to
+   `struct->fields[0]->type` in the emit works for
+   homogeneous lists but is fragile (heterogeneous tuples
+   would still mislead).
+
+3. **dst's CGv2Type rewriting cascades.** When the FA leaves
+   the dst's type as opaque `t_ptr` (which is the common case
+   for flat single-element lists like `[1]`), `CG2_SIZEOF_ELEMENT`
+   can't compute a stride at all. Attempting to "upgrade" the
+   dst's CGv2Type in `lower_send_alloc` to a more specific
+   `ptr_<elem>` breaks downstream FIELD_STORE call sites that
+   were using the original struct shape — the GEP indices that
+   pyc's analyzer generated for the struct's layout no longer
+   match the new flat type. The two views (struct-layout-with-
+   named-fields vs flat-array-of-elements) are mutually
+   incompatible at the LLVM type level even though they
+   produce identical byte offsets for homogeneous lists.
+
+The structurally correct fix is probably one of:
+
+- **(a)** Add a v2-side `_CG_to_list` equivalent that runs
+  after each list/tuple `make` SEND in the same block. Keep
+  the existing CG2_ALLOC + FIELD_STORE shape for the
+  literal's construction; immediately follow it with a
+  `CG2_C_CALL` to the conversion helper that re-emits the
+  payload with the correct header.len. This is the closest
+  match to what the C backend already does, including
+  preserving the +1 convention's intent.
+
+- **(b)** Skip the +1 convention entirely in v2 and route
+  `make` through the runtime helper with `(sizeof(element),
+  element_count)`. Requires CG2_SIZEOF_ELEMENT to agree on
+  the element-size semantics across both paths, plus
+  re-emitting per-element stores using INDEX_STORE
+  exclusively (not FIELD_STORE) so the GEP stride matches
+  what `_CG_list_add` will memcpy.
+
+Either path is a substantial refactor that needs to be done
+as one coherent commit, not incrementally — the partial
+states leave the pyc-suite half-broken.
