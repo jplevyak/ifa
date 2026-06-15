@@ -600,20 +600,53 @@ CGv2Type *unwrap_struct(CGv2Type *t) {
   return t;
 }
 
+// Forward decl — definition at the bottom of the prim-handler
+// block; needed by lower_send_index_{load,store} above it.
+int compute_prim_arg_offset(PNode *pn);
+
 // P_prim_new / P_prim_make — heap allocation. The result type
 // comes from lvals[0]->type (the result-Var carries the type
 // it will hold post-construction).
+//
+// For P_prim_make on tuple/list literals (`[1, 2, 3]`,
+// `(a, b)`), rvals[3..] carry the element values that
+// initialize fields e0, e1, e2 ... of the allocated struct.
+// The C backend emits these as `t1->e0 = v1; t1->e1 = v2; ...`
+// (`cg.cc:142`); v2 LLVM needs the same field-store sequence
+// after the alloc, otherwise the freshly-allocated struct
+// holds uninitialized memory.
 bool lower_send_alloc(NormCtx &c, FunCtx &fc, PNode *pn,
                       CGv2Block *blk) {
   if (pn->lvals.n < 1) return false;
   CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
   if (!dst || !dst->type) return false;
+  CGv2Type *struct_t = unwrap_struct(dst->type);
   CGv2Inst *inst = new CGv2Inst();
   inst->op = CG2_ALLOC;
-  // Allocate the underlying struct, not its ptr wrapper.
-  inst->type_arg = unwrap_struct(dst->type);
+  inst->type_arg = struct_t;
   inst->lvals.add(dst);
   blk->body.add(inst);
+
+  // Per-field initializers for tuple/list literals.
+  if (pn->prim && pn->prim->index == P_prim_make && struct_t &&
+      struct_t->kind == CG2T_STRUCT) {
+    int n_fields = struct_t->fields.n;
+    for (int i = 3; i < pn->rvals.n; i++) {
+      int field_idx = i - 3;
+      if (field_idx >= n_fields) break;       // over-alloc tail
+      Var *val_var = pn->rvals[i];
+      if (!val_var) continue;
+      CGv2Value *val = build_var(c, fc, val_var);
+      if (!val) continue;
+      CGv2Inst *st = new CGv2Inst();
+      st->op = CG2_FIELD_STORE;
+      st->field_idx = field_idx;
+      st->type_arg = struct_t;
+      st->rvals.add(dst);
+      st->rvals.add(val);
+      blk->body.add(st);
+    }
+  }
   return true;
 }
 
@@ -636,12 +669,15 @@ bool lower_send_clone(NormCtx &c, FunCtx &fc, PNode *pn,
 }
 
 // P_prim_index_object — vector / list element load.
-//   rvals[1] = obj, rvals[2] = index.
+//   rvals[o] = obj, rvals[o+1] = index, where o accounts for
+//   the optional `primitive` marker at rvals[0] (set when the
+//   SEND came from __pyc_primitive__).
 bool lower_send_index_load(NormCtx &c, FunCtx &fc, PNode *pn,
                             CGv2Block *blk) {
-  if (pn->rvals.n < 3 || pn->lvals.n < 1) return false;
-  CGv2Value *obj = build_var(c, fc, pn->rvals[1]);
-  CGv2Value *idx = build_var(c, fc, pn->rvals[2]);
+  int o = compute_prim_arg_offset(pn);
+  if (pn->rvals.n < o + 2 || pn->lvals.n < 1) return false;
+  CGv2Value *obj = build_var(c, fc, pn->rvals[o]);
+  CGv2Value *idx = build_var(c, fc, pn->rvals[o + 1]);
   CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
   if (!obj || !idx || !dst) return false;
   CGv2Inst *inst = new CGv2Inst();
@@ -654,13 +690,14 @@ bool lower_send_index_load(NormCtx &c, FunCtx &fc, PNode *pn,
 }
 
 // P_prim_set_index_object — vector / list element store.
-//   rvals[1] = obj, rvals[2] = index, rvals[3] = value.
+//   rvals[o] = obj, rvals[o+1] = index, rvals[o+2] = value.
 bool lower_send_index_store(NormCtx &c, FunCtx &fc, PNode *pn,
                              CGv2Block *blk) {
-  if (pn->rvals.n < 4) return false;
-  CGv2Value *obj = build_var(c, fc, pn->rvals[1]);
-  CGv2Value *idx = build_var(c, fc, pn->rvals[2]);
-  CGv2Value *val = build_var(c, fc, pn->rvals[3]);
+  int o = compute_prim_arg_offset(pn);
+  if (pn->rvals.n < o + 3) return false;
+  CGv2Value *obj = build_var(c, fc, pn->rvals[o]);
+  CGv2Value *idx = build_var(c, fc, pn->rvals[o + 1]);
+  CGv2Value *val = build_var(c, fc, pn->rvals[o + 2]);
   if (!obj || !idx || !val) return false;
   CGv2Inst *inst = new CGv2Inst();
   inst->op = CG2_INDEX_STORE;
@@ -964,6 +1001,25 @@ bool lower_send_prim(NormCtx &c, FunCtx &fc, PNode *pn,
       lower_send_c_call(c, fc, pn, blk)) {
     return true;
   }
+  // Named primitives that have structural lowerings — route to
+  // the typed CG_OP rather than a generic CG2_PRIM, so the v2
+  // LLVM emit produces real IR instead of dropping the SEND.
+  // The dispatcher in lower_send already calls these handlers
+  // for prim->index == P_prim_*; the same handlers also work
+  // here because they read rvals via compute_prim_arg_offset.
+  // This catches the case where the FA leaves pn->prim as the
+  // outer P_prim_primitive and the inner primitive name lives
+  // in rvals[1] (the __pyc_primitive__("name", ...) shape).
+  if (strcmp(name, "index_object") == 0 &&
+      lower_send_index_load(c, fc, pn, blk)) return true;
+  if (strcmp(name, "set_index_object") == 0 &&
+      lower_send_index_store(c, fc, pn, blk)) return true;
+  if (strcmp(name, "sizeof") == 0 &&
+      lower_send_sizeof(c, fc, pn, blk)) return true;
+  if (strcmp(name, "sizeof_element") == 0 &&
+      lower_send_sizeof_element(c, fc, pn, blk)) return true;
+  if (strcmp(name, "len") == 0 &&
+      lower_send_len(c, fc, pn, blk)) return true;
   CGv2Inst *inst = new CGv2Inst();
   inst->op = CG2_PRIM;
   inst->prim_name = name;
