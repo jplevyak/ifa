@@ -82,6 +82,14 @@ class CGv2Type : public gc {
   // For CG2T_STRUCT.
   Vec<CGv2TypeField *> fields;
   bool is_heap_aggregate;     // alloc via GC heap (vs stack)
+  // pyc's `@vector("s")` classes (e.g. bytearray) have an
+  // element data area that lives PAST the struct's regular
+  // fields (v1's C-output `T v[0]` flexible-array idiom).
+  // When set, CG2_INDEX_LOAD/STORE on a `ptr` whose `element`
+  // is this struct advances by `sizeof(struct)` bytes before
+  // GEPing by `idx * sizeof(element)`.  CG2_CLONE also uses
+  // it to route through the vector-sized allocator.
+  bool is_vector_struct;
 
   // For CG2T_PTR / CG2T_REF — the element type pointed to.
   // Drives CG_INDEX_LOAD's gep element type. Optional;
@@ -91,7 +99,8 @@ class CGv2Type : public gc {
   // (fun_sig, alias_of land with their tests.)
 
   CGv2Type() : id(0), name(0), kind(CG2T_VOID), bits(0),
-               is_heap_aggregate(false), element(0) {}
+               is_heap_aggregate(false), is_vector_struct(false),
+               element(0) {}
 };
 
 // ============================================================

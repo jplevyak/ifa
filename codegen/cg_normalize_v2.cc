@@ -119,6 +119,7 @@ CGv2Type *build_struct_type(NormCtx &c, Sym *s) {
   t->name = dupstr(buf);
   t->kind = CG2T_STRUCT;
   t->is_heap_aggregate = true;       // pyc's default for RECORD
+  t->is_vector_struct = s->is_vector;
   c.sym_to_struct.put(s, t);          // register first (recursion guard)
   c.p->types.add(t);
   int idx = 0;
@@ -296,6 +297,18 @@ CGv2Value *build_global(NormCtx &c, Var *v) {
   if (v->sym->is_constant) {
     cv->scope = CG2V_CONSTANT;
     build_immediate(v->sym->imm, cv->imm);
+    c.p->constants.add(cv);
+  } else if (v->sym->is_fun && v->sym->fun) {
+    // Function reference — track the IF1 Fun so emit-time can
+    // resolve to the materialized llvm::Function (via the
+    // CGv2Fun name lookup in the emit's global function map).
+    // Without this, the global ends up as a generic ptr-typed
+    // module variable storing null, and stores of "the lambda
+    // function" (class-default method-slot init from the
+    // ___init___ pyc synthesizes) write null instead of the
+    // real function pointer.  F.4.8 lambda_closure fix.
+    cv->scope = CG2V_FUN_REF;
+    cv->target_name = v->sym->fun->cg_string;
     c.p->constants.add(cv);
   } else {
     cv->scope = CG2V_GLOBAL;
@@ -486,6 +499,8 @@ CGv2BinSub prim_to_binop(int idx) {
     case P_prim_mult:           return CG2B_MUL;
     case P_prim_div:            return CG2B_DIV;
     case P_prim_mod:            return CG2B_MOD;
+    case P_prim_lsh:            return CG2B_SHL;
+    case P_prim_rsh:            return CG2B_SHR;
     case P_prim_less:           return CG2B_LT;
     case P_prim_lessorequal:    return CG2B_LE;
     case P_prim_greater:        return CG2B_GT;
@@ -564,6 +579,28 @@ bool lower_send_period(NormCtx &c, FunCtx &fc, PNode *pn,
   CGv2Value *obj = build_var(c, fc, pn->rvals[1]);
   CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
   if (!obj || !dst) return false;
+  // F.4.8 lambda_closure: when the field is a function (the
+  // method-slot in a `@vector`-free class), `a.x` creates a
+  // closure binding `a` as the implicit self.  v1 mirrors
+  // this with `_CG_prim_closure({symbol, obj})` (cg.cc:177
+  // — guarded by `lvals[0]->type->type_kind == Type_FUN`).
+  //
+  // Shortcut for the single-method common case: the lambda's
+  // function pointer is FA-resolved statically at the call
+  // site (CG2_CALL gets a FUN_REF callee), and the lambda
+  // takes the bound object as its only real arg.  So storing
+  // `obj` (the bound self) into `dst` instead of the method
+  // slot makes `z()` → `lambda(z)` see `z == obj` directly,
+  // without materializing the {symbol, obj} struct.
+  Var *lv = pn->lvals[0];
+  if (lv && lv->type && lv->type->type_kind == Type_FUN) {
+    CGv2Inst *mv = new CGv2Inst();
+    mv->op = CG2_MOVE;
+    mv->rvals.add(obj);
+    mv->lvals.add(dst);
+    blk->body.add(mv);
+    return true;
+  }
   CGv2Inst *inst = new CGv2Inst();
   inst->op = CG2_FIELD_LOAD;
   inst->field_idx = fi;
@@ -939,17 +976,71 @@ bool lower_send_alloc(NormCtx &c, FunCtx &fc, PNode *pn,
 }
 
 // P_prim_clone / P_prim_clone_vector — allocate-and-copy from
-// prototype. rvals[1] = prototype object. Result type from
-// lvals[0]->type, same as alloc.
+// prototype.  The IF1 SEND from gen_class_pyda
+// (python_ifa_build_syms.cc:614 / :621) is
+// `(sym_primitive, sym_clone, proto)` → t for plain clone, or
+// `(sym_primitive, sym_clone_vector, proto, vec_size)` → t for
+// vector clone (`@vector("s")` classes like bytearray).
+// `compute_prim_arg_offset` returns 2 when rvals[0] is
+// sym_primitive, so proto is at rvals[o] and vec_size at
+// rvals[o+1].  Reading rvals[1] would pick up the sym_clone
+// marker, whose global is uninitialized — exactly the segfault
+// the pre-F.3 comment warned about.
+//
+// F.4.5: clone_vector routes through the
+// `_CG_prim_clone_vector_runtime(proto, sizeof_struct,
+// vec_extra)` helper so `@vector("s")` instances get
+// `sizeof(struct) + vec_extra` bytes allocated with the trailing
+// data area zero-init'd.  Matches v1's `_CG_prim_clone_vector`
+// macro semantics: `vec_extra` is the value passed by the
+// frontend, which for bytearray equals the byte count (uint8
+// element).
 bool lower_send_clone(NormCtx &c, FunCtx &fc, PNode *pn,
                       CGv2Block *blk) {
-  if (pn->rvals.n < 2 || pn->lvals.n < 1) return false;
-  CGv2Value *proto = build_var(c, fc, pn->rvals[1]);
+  if (pn->lvals.n < 1) return false;
+  int o = compute_prim_arg_offset(pn);
+  if (pn->rvals.n <= o) return false;
+  CGv2Value *proto = build_var(c, fc, pn->rvals[o]);
   CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
   if (!proto || !dst || !dst->type) return false;
+  CGv2Type *struct_t = unwrap_struct(dst->type);
+  if (!struct_t || struct_t->kind != CG2T_STRUCT) return false;
+
+  bool is_vec = pn->prim &&
+                pn->prim->index == P_prim_clone_vector;
+  if (is_vec && pn->rvals.n > o + 1) {
+    CGv2Value *vec_extra = build_var(c, fc, pn->rvals[o + 1]);
+    if (!vec_extra) return false;
+
+    // Materialize sizeof(struct) as a fresh local from
+    // CG2_SIZEOF so the call site has a real value.
+    CGv2Value *sz = new CGv2Value();
+    sz->id = 9300 + fc.cf->id * 1000 + (int)fc.cf->locals.n;
+    sz->name = "vec_sz";
+    sz->type = c.p->t_int64;
+    sz->scope = CG2V_LOCAL;
+    fc.cf->locals.add(sz);
+    CGv2Inst *sz_inst = new CGv2Inst();
+    sz_inst->op = CG2_SIZEOF;
+    sz_inst->type_arg = struct_t;
+    sz_inst->lvals.add(sz);
+    blk->body.add(sz_inst);
+
+    CGv2Inst *call = new CGv2Inst();
+    call->op = CG2_C_CALL;
+    call->prim_name = "_CG_prim_clone_vector_runtime";
+    call->type_arg = dst->type;
+    call->rvals.add(proto);
+    call->rvals.add(sz);
+    call->rvals.add(vec_extra);
+    call->lvals.add(dst);
+    blk->body.add(call);
+    return true;
+  }
+
   CGv2Inst *inst = new CGv2Inst();
   inst->op = CG2_CLONE;
-  inst->type_arg = unwrap_struct(dst->type);
+  inst->type_arg = struct_t;
   inst->rvals.add(proto);
   inst->lvals.add(dst);
   blk->body.add(inst);
@@ -968,6 +1059,46 @@ bool lower_send_index_load(NormCtx &c, FunCtx &fc, PNode *pn,
   CGv2Value *idx = build_var(c, fc, pn->rvals[o + 1]);
   CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
   if (!obj || !idx || !dst) return false;
+  // String indexing: `s[i]` returns a 1-char string, not a
+  // raw byte.  v1 dispatches to `_CG_char_from_string(s, i)`
+  // (cg.cc:271 — guarded by `sym_string->specializers.set_in(t)`).
+  // Without this, v2 emits a raw i8 load and hands it to
+  // printf("%s", ...) — segfault.
+  Sym *obj_ty = pn->rvals[o]->type;
+  if (obj_ty &&
+      (obj_ty == sym_string ||
+       (sym_string && sym_string->specializers.set_in(obj_ty)))) {
+    CGv2Inst *call = new CGv2Inst();
+    call->op = CG2_C_CALL;
+    call->prim_name = "_CG_char_from_string";
+    call->type_arg = dst->type ? dst->type : get_string_type(c);
+    call->rvals.add(obj);
+    call->rvals.add(idx);
+    call->lvals.add(dst);
+    blk->body.add(call);
+    return true;
+  }
+  // Heterogeneous-tuple indexing with a constant index:
+  // `t[N]` where t is a Type_RECORD-typed object goes through
+  // CG2_FIELD_LOAD so the per-field type (not first-field
+  // stride) drives the GEP.  v1 emits `obj->eN` for this case
+  // (cg.cc:289).
+  Var *idx_var = pn->rvals[o + 1];
+  if (obj_ty && obj_ty->type_kind == Type_RECORD && obj_ty->has.n &&
+      idx_var && idx_var->sym && idx_var->sym->constant) {
+    int fi = (int)strtol(idx_var->sym->constant, nullptr, 10);
+    if (fi >= 0 && fi < obj_ty->has.n) {
+      CGv2Type *struct_t = build_struct_type(c, obj_ty);
+      CGv2Inst *fl = new CGv2Inst();
+      fl->op = CG2_FIELD_LOAD;
+      fl->field_idx = fi;
+      fl->type_arg = struct_t;
+      fl->rvals.add(obj);
+      fl->lvals.add(dst);
+      blk->body.add(fl);
+      return true;
+    }
+  }
   CGv2Inst *inst = new CGv2Inst();
   inst->op = CG2_INDEX_LOAD;
   inst->rvals.add(obj);
@@ -1085,6 +1216,120 @@ bool lower_send_strcat(NormCtx &c, FunCtx &fc, PNode *pn,
   inst->type_arg = dst->type ? dst->type : get_string_type(c);
   inst->rvals.add(a);
   inst->rvals.add(b);
+  inst->lvals.add(dst);
+  blk->body.add(inst);
+  return true;
+}
+
+// P_prim_minus — unary `-x`.  IF1 layout from
+// `__pyc_operator__("-", x)`:
+//   rvals[0] = sym_operator marker
+//   rvals[1] = "-" symbol
+//   rvals[2] = operand
+//   lvals[0] = result
+// Emit as `0 - x` (CG2_BINOP SUB).  Without this, the SEND
+// drops and `x = -x` becomes a no-op — bin(-1) then loops
+// over the negative value's two-complement representation
+// (all ones), producing a 64-digit binary string (F.4.7).
+bool lower_send_neg(NormCtx &c, FunCtx &fc, PNode *pn,
+                     CGv2Block *blk) {
+  if (pn->rvals.n < 1 || pn->lvals.n < 1) return false;
+  CGv2Value *src = build_var(c, fc, pn->rvals[pn->rvals.n - 1]);
+  CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
+  if (!src || !dst || !src->type) return false;
+  CGv2Value *zero = new CGv2Value();
+  zero->id = 9650 + fc.cf->id * 1000 + (int)c.p->constants.n;
+  zero->name = "zero";
+  zero->type = src->type;
+  zero->scope = CG2V_CONSTANT;
+  zero->imm.kind = (src->type->kind == CG2T_FLOAT)
+                       ? CGv2Immediate::I_FLOAT
+                       : CGv2Immediate::I_INT;
+  if (src->type->kind == CG2T_FLOAT) zero->imm.v.f = 0.0;
+  else zero->imm.v.i = 0;
+  c.p->constants.add(zero);
+  CGv2Inst *inst = new CGv2Inst();
+  inst->op = CG2_BINOP;
+  inst->sub_op = CG2B_SUB;
+  inst->rvals.add(zero);
+  inst->rvals.add(src);
+  inst->lvals.add(dst);
+  blk->body.add(inst);
+  return true;
+}
+
+// P_prim_lnot — logical `not x`.  IF1 layout from pyc's
+// `PY_bool_not` lowering (python_ifa_build_if1.cc:846) into
+// `__pyc_operator__("!", x)`:
+//   rvals[0] = sym_operator marker
+//   rvals[1] = "!" symbol
+//   rvals[2] = operand
+//   lvals[0] = result (bool)
+// Emit as `x == 0` (CG2_BINOP EQ against zero) so any numeric
+// type works.  Without this, the SEND was being silently
+// dropped (CG2_PRIM fall-through emits no LLVM IR) — every
+// `if not x` in user code lost its condition, and the
+// surrounding block's CFG fell off into `unreachable`.
+bool lower_send_lnot(NormCtx &c, FunCtx &fc, PNode *pn,
+                      CGv2Block *blk) {
+  if (pn->rvals.n < 1 || pn->lvals.n < 1) return false;
+  CGv2Value *src = build_var(c, fc, pn->rvals[pn->rvals.n - 1]);
+  CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
+  if (!src || !dst || !src->type) return false;
+  // Build a zero constant of the same type as src.
+  CGv2Value *zero = new CGv2Value();
+  zero->id = 9600 + fc.cf->id * 1000 + (int)c.p->constants.n;
+  zero->name = "zero";
+  zero->type = src->type;
+  zero->scope = CG2V_CONSTANT;
+  zero->imm.kind = (src->type->kind == CG2T_FLOAT)
+                       ? CGv2Immediate::I_FLOAT
+                       : CGv2Immediate::I_INT;
+  if (src->type->kind == CG2T_FLOAT) zero->imm.v.f = 0.0;
+  else zero->imm.v.i = 0;
+  c.p->constants.add(zero);
+  CGv2Inst *inst = new CGv2Inst();
+  inst->op = CG2_BINOP;
+  inst->sub_op = CG2B_EQ;
+  inst->rvals.add(src);
+  inst->rvals.add(zero);
+  inst->lvals.add(dst);
+  blk->body.add(inst);
+  return true;
+}
+
+// P_prim_coerce — `int(x)`, `float(x)`, etc.  v1 emits
+// `_CG_prim_coerce(t, v)` which is a C-cast macro.  v2 emits
+// CG2_CAST with the target type from `rvals[n-2]`'s Sym and
+// source value from `rvals[n-1]`.  Mirrors the FA's transfer
+// function at `fa.cc:1878`.
+bool lower_send_coerce(NormCtx &c, FunCtx &fc, PNode *pn,
+                        CGv2Block *blk) {
+  if (pn->rvals.n < 2 || pn->lvals.n < 1) return false;
+  Var *tgt_var = pn->rvals[pn->rvals.n - 2];
+  Var *src_var = pn->rvals[pn->rvals.n - 1];
+  if (!tgt_var || !tgt_var->sym || !src_var) return false;
+  // The target Var holds the meta-type symbol; unwrap to its
+  // concrete type before building the CGv2Type.
+  Sym *tgt_sym = tgt_var->sym->is_meta_type
+                     ? tgt_var->sym->meta_type
+                     : tgt_var->sym;
+  // Follow Type_ALIAS chains (pyc `int` is an alias for
+  // sym_int64; `float` for sym_float64; etc.) — without this,
+  // build_type falls into the Type_RECORD branch and returns
+  // an opaque ptr instead of the i64/double the cast should
+  // target.  Mirrors the FA's `unalias_type` call at
+  // `analysis/fa.cc:1879`.
+  tgt_sym = unalias_type(tgt_sym);
+  if (!tgt_sym) return false;
+  CGv2Type *dst_ty = build_type(c, tgt_sym);
+  CGv2Value *src = build_var(c, fc, src_var);
+  CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
+  if (!dst_ty || !src || !dst) return false;
+  CGv2Inst *inst = new CGv2Inst();
+  inst->op = CG2_CAST;
+  inst->type_arg = dst_ty;
+  inst->rvals.add(src);
   inst->lvals.add(dst);
   blk->body.add(inst);
   return true;
@@ -1279,6 +1524,63 @@ bool lower_send_c_call(NormCtx &c, FunCtx &fc, PNode *pn,
   return true;
 }
 
+// __pyc_format_string__ — pyc's `s % t` operator runtime.
+// Mirrors v1's `format_string_codegen` (python_ifa_main.cc:80):
+//
+//   rvals[0] = sym_primitive marker
+//   rvals[1] = __pyc_format_string__ sym (the prim name)
+//   rvals[2] = format string
+//   rvals[3] = value (tuple → unpack fields; scalar → pass through)
+//   lvals[0] = result string
+//
+// Route to `_CG_format_string(fmt, ...)` via CG2_C_CALL,
+// unpacking tuple fields into separate varargs.  Without this
+// the SEND was being dropped (CG2_PRIM fall-through emits no
+// LLVM IR), so `a = "foo %d" % (3,4)` left @a null and the
+// program printed "(null)".  F.4 string_format fix.
+bool lower_send_format_string(NormCtx &c, FunCtx &fc, PNode *pn,
+                               CGv2Block *blk) {
+  if (pn->rvals.n < 4 || pn->lvals.n < 1) return false;
+  CGv2Value *fmt = build_var(c, fc, pn->rvals[2]);
+  CGv2Value *val = build_var(c, fc, pn->rvals[3]);
+  CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
+  if (!fmt || !val || !dst) return false;
+  CGv2Inst *call = new CGv2Inst();
+  call->op = CG2_C_CALL;
+  call->prim_name = "_CG_format_string";
+  call->type_arg = dst->type ? dst->type : get_string_type(c);
+  call->rvals.add(fmt);
+  // If val is a tuple/struct, unpack each field via
+  // CG2_FIELD_LOAD into a fresh local and append those locals
+  // to the call's rvals.  Otherwise pass val directly.
+  Sym *val_ty = pn->rvals[3]->type;
+  if (val_ty && val_ty->type_kind == Type_RECORD && val_ty->has.n) {
+    CGv2Type *struct_t = build_struct_type(c, val_ty);
+    for (int i = 0; i < val_ty->has.n; i++) {
+      if (i >= struct_t->fields.n || !struct_t->fields[i]) continue;
+      CGv2Value *field = new CGv2Value();
+      field->id = 9500 + fc.cf->id * 1000 + (int)fc.cf->locals.n;
+      field->name = "fmt_arg";
+      field->type = struct_t->fields[i]->type;
+      field->scope = CG2V_LOCAL;
+      fc.cf->locals.add(field);
+      CGv2Inst *fl = new CGv2Inst();
+      fl->op = CG2_FIELD_LOAD;
+      fl->field_idx = i;
+      fl->type_arg = struct_t;
+      fl->rvals.add(val);
+      fl->lvals.add(field);
+      blk->body.add(fl);
+      call->rvals.add(field);
+    }
+  } else {
+    call->rvals.add(val);
+  }
+  call->lvals.add(dst);
+  blk->body.add(call);
+  return true;
+}
+
 bool lower_send_prim(NormCtx &c, FunCtx &fc, PNode *pn,
                       CGv2Block *blk) {
   if (pn->rvals.n < 2) return false;
@@ -1293,6 +1595,47 @@ bool lower_send_prim(NormCtx &c, FunCtx &fc, PNode *pn,
   if (strcmp(name, "__pyc_c_call__") == 0 &&
       lower_send_c_call(c, fc, pn, blk)) {
     return true;
+  }
+  // __pyc_format_string__ — pyc's `s % t` runtime helper.
+  if (strcmp(name, "__pyc_format_string__") == 0 &&
+      lower_send_format_string(c, fc, pn, blk)) {
+    return true;
+  }
+  // __pyc_to_str__ — pyc's class/instance repr.  v1's
+  // `to_str_codegen` (python_ifa_main.cc:93) compile-time-
+  // resolves to a constant string: `"<class 'X'>"` for a
+  // meta-type with a name, `"<instance>"` otherwise.  The
+  // operand is at rvals[2] (after the sym_primitive +
+  // prim-name markers).  Without this handler, `print(str)`
+  // dropped the SEND and printed nothing.  F.4.6.
+  if (strcmp(name, "__pyc_to_str__") == 0 && pn->rvals.n >= 3 &&
+      pn->lvals.n >= 1) {
+    Var *val_var = pn->rvals[2];
+    CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
+    if (val_var && val_var->type && dst) {
+      char buf[256];
+      if (val_var->type->is_meta_type && val_var->type->name) {
+        snprintf(buf, sizeof(buf), "<class '%s'>",
+                 val_var->type->name);
+      } else {
+        snprintf(buf, sizeof(buf), "<instance>");
+      }
+      CGv2Value *kc = new CGv2Value();
+      kc->id = 9700 + fc.cf->id * 1000 +
+               (int)c.p->constants.n;
+      kc->name = "class_repr";
+      kc->type = get_string_type(c);
+      kc->scope = CG2V_CONSTANT;
+      kc->imm.kind = CGv2Immediate::I_STR;
+      kc->imm.str = dupstr(buf);
+      c.p->constants.add(kc);
+      CGv2Inst *mv = new CGv2Inst();
+      mv->op = CG2_MOVE;
+      mv->rvals.add(kc);
+      mv->lvals.add(dst);
+      blk->body.add(mv);
+      return true;
+    }
   }
   // Named primitives that have structural lowerings — route to
   // the typed CG_OP rather than a generic CG2_PRIM, so the v2
@@ -1377,14 +1720,25 @@ void lower_send(NormCtx &c, FunCtx &fc, PNode *pn, Fun *caller,
     // when there's a callable Fun, route there instead.
     // Phase B.10.7.
     if (idx == P_prim_clone || idx == P_prim_clone_vector) {
-      // Emit CG_ALLOC instead of CG_CLONE. The full clone
-      // semantics would GC_malloc + memcpy from @clone, but
-      // the @clone prototype global isn't initialized in
-      // pyc's current runtime — memcpy from null crashed
-      // (B.10.7). Emitting plain alloc gives a zero-init'd
-      // new object which the analyzer-resolved __init__
-      // (called via the normal fall-through path) populates.
-      // Phase B.10.9.
+      // F.3.1: route through CG2_CLONE.  The IF1 SEND from
+      // `gen_class_pyda` (`python_ifa_build_syms.cc:614`) is
+      // `(sym_primitive, sym_clone, proto)` → t.  Its `proto`
+      // is `cls->self`, the class's prototype global, which
+      // gets initialized by the class's ___init___ at startup
+      // (line 581 in the same builder).  Memcpy'ing from that
+      // global into the new instance gives the class-default
+      // field values — `class A: x = 2; y = A(); y.x` now
+      // reads 2 instead of 0.
+      //
+      // The pre-F.3 comment warned that "@clone prototype
+      // global isn't initialized" — but that was reading
+      // `rvals[1]` (the sym_clone marker), not the actual
+      // proto at `rvals[o]`.  See lower_send_clone's comment.
+      //
+      // Falls back to bare alloc on shape mismatch so other
+      // clone-edge cases (non-struct types, missing proto)
+      // stay on the existing path.
+      if (lower_send_clone(c, fc, pn, blk)) return;
       if (lower_send_alloc(c, fc, pn, blk)) return;
     }
     if (idx == P_prim_index_object &&
@@ -1399,6 +1753,12 @@ void lower_send(NormCtx &c, FunCtx &fc, PNode *pn, Fun *caller,
         lower_send_len(c, fc, pn, blk)) return;
     if (idx == P_prim_strcat &&
         lower_send_strcat(c, fc, pn, blk)) return;
+    if (idx == P_prim_coerce &&
+        lower_send_coerce(c, fc, pn, blk)) return;
+    if (idx == P_prim_lnot &&
+        lower_send_lnot(c, fc, pn, blk)) return;
+    if (idx == P_prim_minus &&
+        lower_send_neg(c, fc, pn, blk)) return;
   }
   lower_send_call(c, fc, pn, caller, blk);
 }
@@ -1618,7 +1978,8 @@ void materialize_phi_phy(NormCtx &c, FunCtx &fc) {
 
       // phi: each phi PNode on the successor has lvals[0] ←
       // rvals[pred_idx] where pred_idx is the closer's position
-      // in succ's pred list.
+      // in succ's pred list.  build_fun_body calls
+      // rebuild_cfg_pred_index before us so the map is fresh.
       int pred_idx = succ_pn->cfg_pred_index.get(closer);
       for (PNode *p : succ_pn->phi) {
         if (!p || p->lvals.n < 1) continue;
@@ -1644,6 +2005,14 @@ void build_fun_body(NormCtx &c, Fun *f, CGv2Fun *cf, FunCtx &fc) {
   if (!f || !cf || !f->entry) return;
   build_block_skeleton(c, f, fc);
   lower_body(c, f, fc);
+  // SSU's cfg_pred_index is stale after clone/optimization
+  // passes — the v1 C backend rebuilds it before walking
+  // PNodes (cg.cc:718). Without this rebuild, the phi loop in
+  // materialize_phi_phy below reads `cfg_pred_index.get(closer)`
+  // for non-entry preds and gets 0 (the missing-key default),
+  // causing loop-back edges to incorrectly resolve to the entry
+  // pred's rvals[0] — the SSU accumulation bug.
+  rebuild_cfg_pred_index(f);
   materialize_phi_phy(c, fc);
   for (CGv2Block *b : cf->blocks) {
     build_terminator(c, fc, b, fc.block_closer.get(b));

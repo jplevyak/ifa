@@ -1213,6 +1213,12 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
     }
   }
 
+  // Debug dump pre-verify (PYC_DUMP_LL=path enables).
+  if (const char *dump_path = getenv("PYC_DUMP_LL")) {
+    std::error_code dec;
+    llvm::raw_fd_ostream dump_os(dump_path, dec);
+    if (!dec) TheModule->print(dump_os, nullptr);
+  }
   // Verify the module
   std::string error_str;
   llvm::raw_string_ostream rso(error_str);

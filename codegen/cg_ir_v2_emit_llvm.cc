@@ -307,6 +307,14 @@ llvm::Value *resolve_value(EmitFunCtx &ctx, CGv2Value *v) {
     }
   }
 
+  // Function references — used as values (e.g. method-slot
+  // initialization in a class ___init___).  Resolves to the
+  // LLVM Function pointer.  F.4.8 lambda_closure fix.
+  if (v->scope == CG2V_FUN_REF && v->target_name) {
+    llvm::Function *fn = TheModule->getFunction(v->target_name);
+    if (fn) return fn;
+  }
+
   // Function-scoped lookup. Lands with formals/locals tests.
   return ctx.value_map.get(v);
 }
@@ -327,8 +335,12 @@ CGv2Type *lookup_ptr_struct(EmitFunCtx &ctx, CGv2Value *v) {
 void put_result(EmitFunCtx &ctx, CGv2Value *dst, llvm::Value *r) {
   if (!dst || !r) return;
   llvm::AllocaInst *slot = ctx.alloca_map.get(dst);
-  if (slot) Builder->CreateStore(r, slot);
-  else ctx.value_map.put(dst, r);
+  if (slot) { Builder->CreateStore(r, slot); return; }
+  if (dst->scope == CG2V_GLOBAL) {
+    llvm::GlobalVariable *gv = g_prog_ctx.global_map.get(dst);
+    if (gv) { Builder->CreateStore(r, gv); return; }
+  }
+  ctx.value_map.put(dst, r);
 }
 
 // Per-prim emit functions. v0 ships write + writeln only
@@ -486,6 +498,41 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       llvm::Value *idx = resolve_value(ctx, inst->rvals[1]);
       if (!p || !idx) return;
       CGv2Type *ptr_ty = inst->rvals[0]->type;
+      // pyc's `@vector("s")` classes (bytearray) put the
+      // element data area PAST the regular struct fields,
+      // matching v1's C-output `T v[0]` flexible-array idiom.
+      // Advance the base ptr by `sizeof(struct)` first, then
+      // fall through to the normal stride GEP on the data
+      // area. Element type comes from `ptr_ty->element->element`
+      // (the struct's `element` slot, set by build_struct_type
+      // from `s->element`). F.4.5 bytearray fix.
+      if (ptr_ty && ptr_ty->element &&
+          ptr_ty->element->kind == CG2T_STRUCT &&
+          ptr_ty->element->is_vector_struct) {
+        llvm::Type *sty = to_llvm_type(ptr_ty->element);
+        if (sty && sty->isSized()) {
+          uint64_t prefix =
+              TheModule->getDataLayout().getTypeAllocSize(sty);
+          llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+          llvm::Value *base = Builder->CreateGEP(
+              llvm::Type::getInt8Ty(*TheContext), p,
+              llvm::ConstantInt::get(i64, prefix), "vec_data");
+          CGv2Type *elem_ct = ptr_ty->element->element;
+          llvm::Type *elem_lty = elem_ct ?
+              to_llvm_type(elem_ct) :
+              llvm::Type::getInt8Ty(*TheContext);
+          if (!elem_lty || !elem_lty->isSized())
+            elem_lty = llvm::Type::getInt8Ty(*TheContext);
+          llvm::Value *gep = Builder->CreateGEP(elem_lty,
+                                                 base, idx);
+          cchar *out = inst->lvals[0]->name ?
+                       inst->lvals[0]->name : "";
+          llvm::Value *loaded = Builder->CreateLoad(elem_lty,
+                                                     gep, out);
+          put_result(ctx, inst->lvals[0], loaded);
+          break;
+        }
+      }
       // Issue 020 + F.1.2: take the opaque-ptr-via-header-ptr
       // path when ptr_ty's element gives no usable stride.
       // That's the case for:
@@ -509,9 +556,18 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
             llvm::Type::getInt8Ty(*TheContext), p,
             llvm::ConstantInt::getSigned(i64, -8));
         llvm::Value *data_ptr = Builder->CreateLoad(ptr_lty, hdr_ptr_addr, "list_data");
-        llvm::Value *gep = Builder->CreateGEP(i64, data_ptr, idx);
+        // Stride from the result Var's type so non-i64 element
+        // lists (e.g. `[True] * N` → i1/i8) walk by the right
+        // byte count.  Default to i64 only when the result
+        // type is missing or unsized.  F.4 sieve fix.
+        llvm::Type *elem_ty = i64;
+        if (inst->lvals[0]->type) {
+          llvm::Type *t = to_llvm_type(inst->lvals[0]->type);
+          if (t && t->isSized()) elem_ty = t;
+        }
+        llvm::Value *gep = Builder->CreateGEP(elem_ty, data_ptr, idx);
         cchar *out = inst->lvals[0]->name ? inst->lvals[0]->name : "";
-        llvm::Value *loaded = Builder->CreateLoad(i64, gep, out);
+        llvm::Value *loaded = Builder->CreateLoad(elem_ty, gep, out);
         put_result(ctx, inst->lvals[0], loaded);
         break;
       }
@@ -569,14 +625,50 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       };
 
       llvm::Value *r = nullptr;
-      bool src_int = is_int_like(src_ty->kind);
-      bool dst_int = is_int_like(dst_ty->kind);
-      bool src_flt = src_ty->kind == CG2T_FLOAT;
-      bool dst_flt = dst_ty->kind == CG2T_FLOAT;
-      bool src_ptr = is_ptr_like(src_ty->kind);
-      bool dst_ptr = is_ptr_like(dst_ty->kind);
+      // Classify by LLVM type, not CGv2 type kind.  Upstream
+      // ops (notably CG2_INDEX_LOAD's element-type picker) can
+      // produce an LLVM `ptr` when the CGv2Type says
+      // `uint8`/`int8` — that happens in bytearray clones where
+      // the FA can't narrow the element type.  Dispatching by
+      // CGv2 kind alone would then call `CreateZExt(ptr, i64)`,
+      // invalid IR.  LLVM-type dispatch makes the cast robust:
+      // a ptr-valued source gets `ptrtoint` to any integer dst,
+      // matching v1's `_CG_prim_coerce` macro semantics
+      // (it's a plain C cast: `((dst_t)src)`).
+      llvm::Type *src_llvm = src->getType();
+      bool src_int = src_llvm->isIntegerTy();
+      bool dst_int = is_int_like(dst_ty->kind) &&
+                      dst_llvm->isIntegerTy();
+      bool src_flt = src_llvm->isFloatingPointTy();
+      bool dst_flt = dst_ty->kind == CG2T_FLOAT &&
+                      dst_llvm->isFloatingPointTy();
+      bool src_ptr = src_llvm->isPointerTy();
+      bool dst_ptr = is_ptr_like(dst_ty->kind) &&
+                      dst_llvm->isPointerTy();
+      if (getenv("PYC_DEBUG_COERCE")) {
+        fprintf(stderr, "  src_int=%d src_flt=%d src_ptr=%d "
+                "dst_int=%d dst_flt=%d dst_ptr=%d "
+                "dst_kind=%d\n",
+                src_int, src_flt, src_ptr,
+                dst_int, dst_flt, dst_ptr,
+                (int)dst_ty->kind);
+        fflush(stderr);
+      }
 
-      if (src_int && dst_int) {
+      if (src_int && dst_ty->kind == CG2T_BOOL &&
+          src_ty->kind != CG2T_BOOL) {
+        // int → bool: Python semantics is `x != 0`, not trunc
+        // (which would keep only the LSB and read bool(10) as
+        // False).  LLVM emits `icmp ne x, 0`.
+        llvm::Value *zero = llvm::ConstantInt::get(
+            src->getType(), 0);
+        r = Builder->CreateICmpNE(src, zero, out);
+      } else if (src_flt && dst_ty->kind == CG2T_BOOL) {
+        // float → bool: `x != 0.0`.
+        llvm::Value *zero = llvm::ConstantFP::get(
+            src->getType(), 0.0);
+        r = Builder->CreateFCmpONE(src, zero, out);
+      } else if (src_int && dst_int) {
         int sb = bits_of(src_ty);
         int db = bits_of(dst_ty);
         if (sb > db) {
@@ -766,6 +858,45 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       llvm::Value *idx = resolve_value(ctx, inst->rvals[1]);
       llvm::Value *v = resolve_value(ctx, inst->rvals[2]);
       if (!p || !idx || !v) return;
+      // F.4.5 bytearray fix — symmetric with INDEX_LOAD.  See
+      // the CG2_INDEX_LOAD comment above.
+      {
+        CGv2Type *ptr_ty = inst->rvals[0]->type;
+        if (ptr_ty && ptr_ty->element &&
+            ptr_ty->element->kind == CG2T_STRUCT &&
+            ptr_ty->element->is_vector_struct) {
+          llvm::Type *sty = to_llvm_type(ptr_ty->element);
+          if (sty && sty->isSized()) {
+            uint64_t prefix =
+                TheModule->getDataLayout().getTypeAllocSize(sty);
+            llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+            llvm::Value *base = Builder->CreateGEP(
+                llvm::Type::getInt8Ty(*TheContext), p,
+                llvm::ConstantInt::get(i64, prefix), "vec_data");
+            CGv2Type *elem_ct = ptr_ty->element->element;
+            llvm::Type *elem_lty = elem_ct ?
+                to_llvm_type(elem_ct) :
+                llvm::Type::getInt8Ty(*TheContext);
+            if (!elem_lty || !elem_lty->isSized())
+              elem_lty = llvm::Type::getInt8Ty(*TheContext);
+            // Coerce the value to the element LLVM type when
+            // needed (the IF1 stores `coerce(uint8, val)` which
+            // may have arrived as i64 if upstream paths kept
+            // the wider type — same robustness as CG2_CAST's
+            // LLVM-type dispatch).
+            if (v->getType() != elem_lty) {
+              if (v->getType()->isIntegerTy() &&
+                  elem_lty->isIntegerTy()) {
+                v = Builder->CreateTruncOrBitCast(v, elem_lty);
+              }
+            }
+            llvm::Value *gep = Builder->CreateGEP(elem_lty,
+                                                   base, idx);
+            Builder->CreateStore(v, gep);
+            break;
+          }
+        }
+      }
       // GEP stride: explicit type_arg overrides (used by
       // lower_send_alloc for flat-array list literals where the
       // dst's CGv2Type is opaque); else use the struct's first-
@@ -801,7 +932,17 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
             llvm::Type::getInt8Ty(*TheContext), p,
             llvm::ConstantInt::getSigned(i64, -8));
         llvm::Value *data_ptr = Builder->CreateLoad(ptr_lty, hdr_ptr_addr, "list_data");
-        llvm::Value *gep = Builder->CreateGEP(i64, data_ptr, idx);
+        // Stride from the value's CGv2Type so non-i64 element
+        // stores (i1/i8 booleans, etc.) advance by the right
+        // byte count — must match INDEX_LOAD's stride logic
+        // or `a[i] = False; if a[i]` reads from a different
+        // address than the store wrote (F.4 sieve fix).
+        llvm::Type *elem_ty = i64;
+        if (inst->rvals[2]->type) {
+          llvm::Type *t = to_llvm_type(inst->rvals[2]->type);
+          if (t && t->isSized()) elem_ty = t;
+        }
+        llvm::Value *gep = Builder->CreateGEP(elem_ty, data_ptr, idx);
         Builder->CreateStore(v, gep);
         break;
       }
@@ -877,8 +1018,17 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       llvm::Function *callee =
           TheModule->getFunction(inst->prim_name);
       if (!callee) {
+        // Known-varargs C runtime helpers: declare with just
+        // the first param's type fixed, the rest as varargs.
+        // Without this, distinct call sites with different
+        // arg counts trip "Incorrect number of arguments
+        // passed to called function" at verifyModule.
+        bool is_va = (strcmp(inst->prim_name,
+                              "_CG_format_string") == 0);
+        std::vector<llvm::Type *> decl_tys = param_tys;
+        if (is_va && decl_tys.size() > 1) decl_tys.resize(1);
         llvm::FunctionType *ft = llvm::FunctionType::get(
-            ret_ty, param_tys, /*isVarArg=*/false);
+            ret_ty, decl_tys, /*isVarArg=*/is_va);
         callee = llvm::Function::Create(ft,
             llvm::Function::ExternalLinkage,
             inst->prim_name, TheModule.get());
