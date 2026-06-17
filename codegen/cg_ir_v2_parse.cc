@@ -1080,6 +1080,10 @@ static CGv2Type *build_type(BuildCtx &c, SExpr *e) {
       t->kind = CG2T_STRUCT;
     } else if (!k->is_list && k->atom && strcmp(k->atom, "ptr") == 0) {
       t->kind = CG2T_PTR;
+    } else if (!k->is_list && k->atom && strcmp(k->atom, "opaque") == 0) {
+      t->kind = CG2T_OPAQUE;
+    } else if (!k->is_list && k->atom && strcmp(k->atom, "vector") == 0) {
+      t->kind = CG2T_VECTOR;
     } else {
       c.fail_at(k, "unsupported :kind");
       return 0;
@@ -1096,7 +1100,7 @@ static CGv2Type *build_type(BuildCtx &c, SExpr *e) {
     t->element = resolve_type(c, e->children[elem_kw + 1]);
     if (c.err) return 0;
   }
-  if (t->kind == CG2T_STRUCT) {
+  if (t->kind == CG2T_STRUCT || t->kind == CG2T_VECTOR) {
     int fields_kw = find_kw(e, "fields", 2);
     if (fields_kw < 0) {
       c.fail_at(e, "struct type missing :fields");

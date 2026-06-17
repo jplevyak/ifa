@@ -61,15 +61,18 @@ llvm::Type *to_llvm_type(CGv2Type *t) {
         default: return nullptr;
       }
     case CG2T_PTR:
+    case CG2T_OPAQUE:
     case CG2T_REF:
     case CG2T_FUN_PTR:
     case CG2T_SYMBOL:
     case CG2T_SUM:
       return llvm::PointerType::getUnqual(*TheContext);
-    case CG2T_STRUCT: {
-      // Look up by name first; if opaque (or absent), set its
-      // body. Using named structs keeps llvm IR readable and
-      // allows recursive types in later tests.
+    case CG2T_STRUCT:
+    case CG2T_VECTOR: {
+      // VECTOR's LLVM type is just the prefix struct — the
+      // trailing flexible array is handled by INDEX_LOAD/STORE
+      // advancing past `sizeof(struct)` before GEPing by element
+      // stride.  Same body / named-struct caching as STRUCT.
       cchar *nm = t->name ? t->name : "anon_struct";
       llvm::StructType *st =
           llvm::StructType::getTypeByName(*TheContext, nm);
@@ -343,90 +346,6 @@ void put_result(EmitFunCtx &ctx, CGv2Value *dst, llvm::Value *r) {
   ctx.value_map.put(dst, r);
 }
 
-// Per-prim emit functions. v0 ships write + writeln only
-// (int64 args for write). Each subsequent IF1 prim adds one
-// branch to dispatch_prim — same per-test cadence as Phase 4.
-
-void emit_prim_write(EmitFunCtx &ctx, CGv2Inst *inst) {
-  if (inst->rvals.n < 1) return;
-  llvm::Value *arg = resolve_value(ctx, inst->rvals[0]);
-  if (!arg) return;
-  CGv2Value *argv = inst->rvals[0];
-  if (!argv->type) return;
-
-  // Type-dispatch the format string + LLVM cast. Mirrors v1's
-  // pyc_llvm_write_cgfn (codegen/llvm_primitives.cc). The
-  // dispatch matches what users actually print: ints (all
-  // widths/signs), bools, floats, strings.
-  cchar *fmt = nullptr;
-  cchar *name_hint = "write_unknown";
-  switch (argv->type->kind) {
-    case CG2T_INT:
-      switch (argv->type->bits) {
-        case 8: case 16: case 32:
-          fmt = "%d";  name_hint = "write_int";
-          break;
-        case 64:
-          fmt = "%lld"; name_hint = "write_i64";
-          arg = Builder->CreateSExtOrTrunc(arg,
-              llvm::Type::getInt64Ty(*TheContext));
-          break;
-      }
-      break;
-    case CG2T_UINT:
-      switch (argv->type->bits) {
-        case 8: case 16: case 32:
-          fmt = "%u"; name_hint = "write_uint";
-          break;
-        case 64:
-          fmt = "%llu"; name_hint = "write_u64";
-          arg = Builder->CreateZExtOrTrunc(arg,
-              llvm::Type::getInt64Ty(*TheContext));
-          break;
-      }
-      break;
-    case CG2T_BOOL:
-      // Print booleans as 0/1 like v1 does. (Python users
-      // expect True/False but that's a frontend decision —
-      // the prim layer just emits what it was asked to.)
-      fmt = "%u"; name_hint = "write_bool";
-      arg = Builder->CreateZExt(arg,
-          llvm::Type::getInt32Ty(*TheContext));
-      break;
-    case CG2T_FLOAT:
-      // %g matches Python's str(float) better than %f
-      // (1.2 → "1.2" not "1.200000"). Same trade as v1.
-      fmt = "%g"; name_hint = "write_float";
-      if (arg->getType()->isFloatTy()) {
-        arg = Builder->CreateFPExt(arg,
-            llvm::Type::getDoubleTy(*TheContext));
-      }
-      break;
-    case CG2T_PTR:
-    case CG2T_REF:
-      // Treat as string when the element is a small int (the
-      // pyc string convention: char* = ptr to int8 element).
-      // Generic ptr printing isn't user-meaningful; skip.
-      if (argv->type->element &&
-          argv->type->element->kind == CG2T_INT &&
-          argv->type->element->bits == 8) {
-        fmt = "%s"; name_hint = "write_str";
-      }
-      break;
-    default:
-      break;
-  }
-  if (!fmt) return;       // unsupported — emit nothing
-  llvm::Value *fmt_ptr = get_format_str(fmt, name_hint);
-  Builder->CreateCall(get_printf(), { fmt_ptr, arg });
-}
-
-void emit_prim_writeln(EmitFunCtx &ctx, CGv2Inst *inst) {
-  (void)ctx; (void)inst;
-  llvm::Value *fmt_ptr = get_format_str("\n", "writeln");
-  Builder->CreateCall(get_printf(), { fmt_ptr });
-}
-
 // D.7: emit_prim_to_string + get_snprintf retired. int.__str__
 // and float.__str__ now resolve through libpyc_runtime.a's
 // `_CG_str_from_int` / `_CG_str_from_float` via __pyc_c_call__
@@ -435,16 +354,133 @@ void emit_prim_writeln(EmitFunCtx &ctx, CGv2Inst *inst) {
 // dead. snprintf is no longer declared on demand here — if it
 // resurfaces (e.g. for a future format primitive) it'll be
 // declared by CG2_C_CALL the same way as any other libc fn.
+//
+// Recommendation 4 follow-up: emit_prim_write / writeln /
+// dispatch_prim are gone too.  The frontend's `print(...)`
+// lowering (python_ifa_build_if1.cc:346) already calls
+// `__str__(arg)` before every `write(s)` SEND, so write's arg
+// is always a string.  lower_send_prim's default routes both
+// `write` and `writeln` through CG2_C_CALL to libpyc_runtime
+// externs `_CG_write` / `_CG_writeln`, identical to every
+// other library helper.  CG2_PRIM is now unreachable from the
+// normalize pass; emit_inst keeps the case so the IR can still
+// parse hand-written round-trip tests if needed.
 
-// Dispatch a CG2_PRIM by name to a per-prim emit function.
-// Unknown prims are silently no-op'd in v0 — landings extend
-// the switch one prim at a time.
-void dispatch_prim(EmitFunCtx &ctx, CGv2Inst *inst) {
-  if (!inst->prim_name) return;
-  cchar *n = inst->prim_name;
-  if (strcmp(n, "write") == 0) { emit_prim_write(ctx, inst); return; }
-  if (strcmp(n, "writeln") == 0) { emit_prim_writeln(ctx, inst); return; }
-  // Unknown — leave for a later landing.
+// IndexLayout — distilled "what does GEP through this ptr look
+// like?" decision shared by CG2_INDEX_LOAD, CG2_INDEX_STORE and
+// CG2_SIZEOF_ELEMENT.  Folds the three workaround branches the
+// restart.txt called out:
+//
+//   1. `@vector("s")` classes (CG2T_VECTOR) — advance the base
+//      ptr by `vec_prefix_bytes = sizeof(struct prefix)` before
+//      GEPing by element stride.
+//   2. opaque ptrs (CG2T_OPAQUE) and "FA collapsed to a 0-field
+//      struct" — read the list-header `data` pointer at offset
+//      -8 and stride from the lval/rval CGv2Type (val_ty).
+//   3. typed struct-as-array lists — stride by the first field's
+//      type (pyc lists are laid out as `{e0,e1,...}` per
+//      specialization).
+//
+// All three sites used to re-derive these answers independently;
+// keeping them in one place is the recommendation 2 cleanup.
+struct IndexLayout {
+  bool use_header_indirection;  // load `(ptr_lty *)(p - 8)` first
+  uint64_t vec_prefix_bytes;    // 0 unless CG2T_VECTOR
+  llvm::Type *elem_lty;         // GEP stride type
+};
+
+IndexLayout compute_index_layout(CGv2Type *ptr_ty, CGv2Type *val_ty,
+                                  CGv2Type *type_arg_override) {
+  IndexLayout L{};
+  L.use_header_indirection = false;
+  L.vec_prefix_bytes = 0;
+  L.elem_lty = nullptr;
+
+  // 1. CG2_INDEX_STORE callers can supply an explicit override
+  //    (lower_send_alloc does this when the dst's type is
+  //    opaque).  That wins over everything below.
+  if (type_arg_override) {
+    L.elem_lty = to_llvm_type(type_arg_override);
+    return L;
+  }
+
+  // 2. @vector struct → step past the prefix, then stride by
+  //    the trailing element type.
+  if (ptr_ty && ptr_ty->element &&
+      ptr_ty->element->kind == CG2T_VECTOR) {
+    llvm::Type *sty = to_llvm_type(ptr_ty->element);
+    if (sty && sty->isSized()) {
+      L.vec_prefix_bytes =
+          TheModule->getDataLayout().getTypeAllocSize(sty);
+      CGv2Type *ect = ptr_ty->element->element;
+      llvm::Type *elt = ect ? to_llvm_type(ect)
+                            : llvm::Type::getInt8Ty(*TheContext);
+      if (!elt || !elt->isSized())
+        elt = llvm::Type::getInt8Ty(*TheContext);
+      L.elem_lty = elt;
+      return L;
+    }
+  }
+
+  // 3. No usable static element type → opaque-via-header-ptr
+  //    path.  Catches:
+  //      - CG2T_OPAQUE (FA-unknown, _CG_any)
+  //      - missing ptr_ty entirely
+  //      - 0-field struct (FA union of empty/non-empty list
+  //        specializations collapsed to a zero-stride shape)
+  bool opaque_kind = !ptr_ty || ptr_ty->kind == CG2T_OPAQUE ||
+                     !ptr_ty->element ||
+                     ptr_ty->element->kind == CG2T_OPAQUE;
+  bool empty_struct = ptr_ty && ptr_ty->element &&
+                      ptr_ty->element->kind == CG2T_STRUCT &&
+                      ptr_ty->element->fields.n == 0;
+  if (opaque_kind || empty_struct) {
+    L.use_header_indirection = true;
+    // Stride from the value's CGv2Type — the lval for LOAD, the
+    // rval for STORE — so non-i64 element lists (i1/i8 booleans,
+    // etc.) walk by the correct byte count.  Default i64.
+    llvm::Type *elt = llvm::Type::getInt64Ty(*TheContext);
+    if (val_ty) {
+      llvm::Type *t = to_llvm_type(val_ty);
+      if (t && t->isSized()) elt = t;
+    }
+    L.elem_lty = elt;
+    return L;
+  }
+
+  // 4. Typed struct-as-array list: stride by the first field
+  //    type.  Pyc specializes `{e0:i64, e1:i64, ...}` for
+  //    `list[int64]` and walks dynamic indices over the field
+  //    stride, not the full struct stride.
+  CGv2Type *index_ty = ptr_ty->element;
+  if (index_ty->kind == CG2T_STRUCT &&
+      index_ty->fields.n > 0 && index_ty->fields[0] &&
+      index_ty->fields[0]->type) {
+    index_ty = index_ty->fields[0]->type;
+  }
+  L.elem_lty = to_llvm_type(index_ty);
+  return L;
+}
+
+// Step `base` past a CG2T_VECTOR's prefix to the trailing data
+// area.  No-op when `prefix_bytes == 0`.
+llvm::Value *apply_vec_prefix(llvm::Value *base, uint64_t prefix_bytes) {
+  if (!prefix_bytes) return base;
+  llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+  return Builder->CreateGEP(
+      llvm::Type::getInt8Ty(*TheContext), base,
+      llvm::ConstantInt::get(i64, prefix_bytes), "vec_data");
+}
+
+// Read the list-header `data` ptr at offset -8 from `p`.  Pyc's
+// runtime list layout: `[ptr@-8][cap@-12][len@-16]<data...>`.
+llvm::Value *apply_header_indirection(llvm::Value *p) {
+  llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+  llvm::Type *ptr_lty = llvm::PointerType::getUnqual(*TheContext);
+  llvm::Value *hdr_addr = Builder->CreateGEP(
+      llvm::Type::getInt8Ty(*TheContext), p,
+      llvm::ConstantInt::getSigned(i64, -8));
+  return Builder->CreateLoad(ptr_lty, hdr_addr, "list_data");
 }
 
 void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
@@ -497,97 +533,16 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       llvm::Value *p = resolve_value(ctx, inst->rvals[0]);
       llvm::Value *idx = resolve_value(ctx, inst->rvals[1]);
       if (!p || !idx) return;
-      CGv2Type *ptr_ty = inst->rvals[0]->type;
-      // pyc's `@vector("s")` classes (bytearray) put the
-      // element data area PAST the regular struct fields,
-      // matching v1's C-output `T v[0]` flexible-array idiom.
-      // Advance the base ptr by `sizeof(struct)` first, then
-      // fall through to the normal stride GEP on the data
-      // area. Element type comes from `ptr_ty->element->element`
-      // (the struct's `element` slot, set by build_struct_type
-      // from `s->element`). F.4.5 bytearray fix.
-      if (ptr_ty && ptr_ty->element &&
-          ptr_ty->element->kind == CG2T_STRUCT &&
-          ptr_ty->element->is_vector_struct) {
-        llvm::Type *sty = to_llvm_type(ptr_ty->element);
-        if (sty && sty->isSized()) {
-          uint64_t prefix =
-              TheModule->getDataLayout().getTypeAllocSize(sty);
-          llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
-          llvm::Value *base = Builder->CreateGEP(
-              llvm::Type::getInt8Ty(*TheContext), p,
-              llvm::ConstantInt::get(i64, prefix), "vec_data");
-          CGv2Type *elem_ct = ptr_ty->element->element;
-          llvm::Type *elem_lty = elem_ct ?
-              to_llvm_type(elem_ct) :
-              llvm::Type::getInt8Ty(*TheContext);
-          if (!elem_lty || !elem_lty->isSized())
-            elem_lty = llvm::Type::getInt8Ty(*TheContext);
-          llvm::Value *gep = Builder->CreateGEP(elem_lty,
-                                                 base, idx);
-          cchar *out = inst->lvals[0]->name ?
-                       inst->lvals[0]->name : "";
-          llvm::Value *loaded = Builder->CreateLoad(elem_lty,
-                                                     gep, out);
-          put_result(ctx, inst->lvals[0], loaded);
-          break;
-        }
-      }
-      // Issue 020 + F.1.2: take the opaque-ptr-via-header-ptr
-      // path when ptr_ty's element gives no usable stride.
-      // That's the case for:
-      //   - opaque `_CG_any` ptrs (no element at all)
-      //   - 0-field structs (FA's union shape across an empty
-      //     list and a non-empty one collapses to this — the
-      //     "first field" picker below produces a 0-byte
-      //     stride that re-reads the same byte every iter)
-      bool no_stride = !ptr_ty || !ptr_ty->element ||
-                        (ptr_ty->element->kind == CG2T_STRUCT &&
-                         ptr_ty->element->fields.n == 0);
-      if (no_stride) {
-        llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
-        // The list header's `ptr` field at offset -8 points at
-        // the data area; for our literal allocs it's just `p`
-        // itself, but reading through the indirection works
-        // for concat'd lists too (which point ptr to a fresh
-        // GC_malloc buffer).
-        llvm::Type *ptr_lty = llvm::PointerType::getUnqual(*TheContext);
-        llvm::Value *hdr_ptr_addr = Builder->CreateGEP(
-            llvm::Type::getInt8Ty(*TheContext), p,
-            llvm::ConstantInt::getSigned(i64, -8));
-        llvm::Value *data_ptr = Builder->CreateLoad(ptr_lty, hdr_ptr_addr, "list_data");
-        // Stride from the result Var's type so non-i64 element
-        // lists (e.g. `[True] * N` → i1/i8) walk by the right
-        // byte count.  Default to i64 only when the result
-        // type is missing or unsized.  F.4 sieve fix.
-        llvm::Type *elem_ty = i64;
-        if (inst->lvals[0]->type) {
-          llvm::Type *t = to_llvm_type(inst->lvals[0]->type);
-          if (t && t->isSized()) elem_ty = t;
-        }
-        llvm::Value *gep = Builder->CreateGEP(elem_ty, data_ptr, idx);
-        cchar *out = inst->lvals[0]->name ? inst->lvals[0]->name : "";
-        llvm::Value *loaded = Builder->CreateLoad(elem_ty, gep, out);
-        put_result(ctx, inst->lvals[0], loaded);
-        break;
-      }
-      // pyc lists are laid out as a struct whose fields share a
-      // single semantic element type (`{ e0:i64, e1:i64, ... }`
-      // for `list[int64]`). For dynamic indexing, GEP needs to
-      // walk the *field stride* (8 bytes for int64), not the
-      // full struct stride. Pick the first field's CGv2Type as
-      // the element type when the container is a struct.
-      CGv2Type *index_ty = ptr_ty->element;
-      if (index_ty->kind == CG2T_STRUCT &&
-          index_ty->fields.n > 0 && index_ty->fields[0] &&
-          index_ty->fields[0]->type) {
-        index_ty = index_ty->fields[0]->type;
-      }
-      llvm::Type *elem = to_llvm_type(index_ty);
-      if (!elem) return;
-      llvm::Value *gep = Builder->CreateGEP(elem, p, idx);
+      IndexLayout L = compute_index_layout(inst->rvals[0]->type,
+                                            inst->lvals[0]->type,
+                                            nullptr);
+      if (!L.elem_lty) return;
+      llvm::Value *base = L.use_header_indirection
+                              ? apply_header_indirection(p)
+                              : apply_vec_prefix(p, L.vec_prefix_bytes);
+      llvm::Value *gep = Builder->CreateGEP(L.elem_lty, base, idx);
       cchar *out = inst->lvals[0]->name ? inst->lvals[0]->name : "";
-      llvm::Value *loaded = Builder->CreateLoad(elem, gep, out);
+      llvm::Value *loaded = Builder->CreateLoad(L.elem_lty, gep, out);
       put_result(ctx, inst->lvals[0], loaded);
       break;
     }
@@ -618,7 +573,8 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
         return k == CG2T_INT || k == CG2T_UINT || k == CG2T_BOOL;
       };
       auto is_ptr_like = [](CGv2TypeKind k) {
-        return k == CG2T_PTR || k == CG2T_REF || k == CG2T_FUN_PTR;
+        return k == CG2T_PTR || k == CG2T_OPAQUE ||
+               k == CG2T_REF || k == CG2T_FUN_PTR;
       };
       auto bits_of = [](CGv2Type *t) {
         return t->kind == CG2T_BOOL ? 1 : t->bits;
@@ -760,39 +716,16 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
     }
     case CG2_SIZEOF_ELEMENT: {
       if (inst->rvals.n < 1 || inst->lvals.n < 1) return;
-      // Element discovery walks the rval's CGv2Type:
-      //   - ptr → struct: use the struct's first field type
-      //     (pyc's homogeneous-list-as-struct shape lays
-      //     `{i64, i64, ...}` for `list[int64]`; runtime
-      //     helpers want sizeof(field), not sizeof(struct)).
-      //   - ptr → primitive: use the pointee directly.
-      //   - opaque ptr (the FA's `t_ptr` fallback for formals
-      //     of library methods like `list.__add__` whose self
-      //     stays unnarrowed past `_CG_any`): fall back to
-      //     int64 (8 bytes). pyc's library list operations
-      //     all assume int64 elements at runtime; the C
-      //     backend's analyzer constant-folds to 8 for the
-      //     same call sites. See issue 020.
-      CGv2Type *ptr_ty = inst->rvals[0]->type;
-      CGv2Type *elem_ty = ptr_ty ? ptr_ty->element : nullptr;
-      // F.1.2: 0-field struct (FA union of empty / non-empty
-      // list specializations) also collapses to the i64
-      // fallback — sizeof(empty struct) = 0 would propagate
-      // a zero stride into the runtime helpers.
-      if (elem_ty && elem_ty->kind == CG2T_STRUCT) {
-        if (elem_ty->fields.n == 0) {
-          elem_ty = nullptr;
-        } else if (elem_ty->fields[0] && elem_ty->fields[0]->type) {
-          elem_ty = elem_ty->fields[0]->type;
-        }
-      }
-      llvm::Type *elem = elem_ty ? to_llvm_type(elem_ty) : nullptr;
-      uint64_t sz;
-      if (elem && elem->isSized() &&
-          TheModule->getDataLayout().getTypeAllocSize(elem) > 0) {
-        sz = TheModule->getDataLayout().getTypeAllocSize(elem);
-      } else {
-        sz = 8;  // i64 fallback for FA-opaque ptrs / 0-field structs.
+      // Element stride matches the INDEX_LOAD/STORE dispatch.
+      // For FA-opaque ptrs and 0-field structs the runtime
+      // helpers all assume i64 elements; for typed lists we use
+      // the first-field type (homogeneous {e0,e1,...} shape).
+      IndexLayout L = compute_index_layout(inst->rvals[0]->type,
+                                            nullptr, nullptr);
+      uint64_t sz = 8;
+      if (L.elem_lty && L.elem_lty->isSized()) {
+        uint64_t s = TheModule->getDataLayout().getTypeAllocSize(L.elem_lty);
+        if (s > 0) sz = s;
       }
       llvm::Value *c = llvm::ConstantInt::get(
           llvm::Type::getInt64Ty(*TheContext), sz);
@@ -858,98 +791,22 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       llvm::Value *idx = resolve_value(ctx, inst->rvals[1]);
       llvm::Value *v = resolve_value(ctx, inst->rvals[2]);
       if (!p || !idx || !v) return;
-      // F.4.5 bytearray fix — symmetric with INDEX_LOAD.  See
-      // the CG2_INDEX_LOAD comment above.
-      {
-        CGv2Type *ptr_ty = inst->rvals[0]->type;
-        if (ptr_ty && ptr_ty->element &&
-            ptr_ty->element->kind == CG2T_STRUCT &&
-            ptr_ty->element->is_vector_struct) {
-          llvm::Type *sty = to_llvm_type(ptr_ty->element);
-          if (sty && sty->isSized()) {
-            uint64_t prefix =
-                TheModule->getDataLayout().getTypeAllocSize(sty);
-            llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
-            llvm::Value *base = Builder->CreateGEP(
-                llvm::Type::getInt8Ty(*TheContext), p,
-                llvm::ConstantInt::get(i64, prefix), "vec_data");
-            CGv2Type *elem_ct = ptr_ty->element->element;
-            llvm::Type *elem_lty = elem_ct ?
-                to_llvm_type(elem_ct) :
-                llvm::Type::getInt8Ty(*TheContext);
-            if (!elem_lty || !elem_lty->isSized())
-              elem_lty = llvm::Type::getInt8Ty(*TheContext);
-            // Coerce the value to the element LLVM type when
-            // needed (the IF1 stores `coerce(uint8, val)` which
-            // may have arrived as i64 if upstream paths kept
-            // the wider type — same robustness as CG2_CAST's
-            // LLVM-type dispatch).
-            if (v->getType() != elem_lty) {
-              if (v->getType()->isIntegerTy() &&
-                  elem_lty->isIntegerTy()) {
-                v = Builder->CreateTruncOrBitCast(v, elem_lty);
-              }
-            }
-            llvm::Value *gep = Builder->CreateGEP(elem_lty,
-                                                   base, idx);
-            Builder->CreateStore(v, gep);
-            break;
-          }
-        }
+      IndexLayout L = compute_index_layout(inst->rvals[0]->type,
+                                            inst->rvals[2]->type,
+                                            inst->type_arg);
+      if (!L.elem_lty) return;
+      llvm::Value *base = L.use_header_indirection
+                              ? apply_header_indirection(p)
+                              : apply_vec_prefix(p, L.vec_prefix_bytes);
+      // Coerce the stored value to the element LLVM type when
+      // it arrived wider (e.g. `coerce(uint8, val)` upstream
+      // kept i64).  Mirrors CG2_CAST's LLVM-type dispatch.
+      if (v->getType() != L.elem_lty &&
+          v->getType()->isIntegerTy() &&
+          L.elem_lty->isIntegerTy()) {
+        v = Builder->CreateTruncOrBitCast(v, L.elem_lty);
       }
-      // GEP stride: explicit type_arg overrides (used by
-      // lower_send_alloc for flat-array list literals where the
-      // dst's CGv2Type is opaque); else use the struct's first-
-      // field type (pyc's struct-as-array list); else the ptr
-      // element. Without one of these the SEND would be dropped
-      // silently on opaque ptrs.
-      CGv2Type *index_ty = inst->type_arg;
-      bool use_header_indirection = false;
-      if (!index_ty) {
-        CGv2Type *ptr_ty = inst->rvals[0]->type;
-        if (ptr_ty && ptr_ty->element) {
-          index_ty = ptr_ty->element;
-          if (index_ty->kind == CG2T_STRUCT) {
-            // F.1.2: 0-field struct (FA union with empty
-            // list) collapses to a 0-byte stride; redirect
-            // to the header.ptr indirection like INDEX_LOAD.
-            if (index_ty->fields.n == 0) {
-              index_ty = nullptr;
-              use_header_indirection = true;
-            } else if (index_ty->fields[0] &&
-                        index_ty->fields[0]->type) {
-              index_ty = index_ty->fields[0]->type;
-            }
-          }
-        } else {
-          use_header_indirection = true;
-        }
-      }
-      if (use_header_indirection) {
-        llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
-        llvm::Type *ptr_lty = llvm::PointerType::getUnqual(*TheContext);
-        llvm::Value *hdr_ptr_addr = Builder->CreateGEP(
-            llvm::Type::getInt8Ty(*TheContext), p,
-            llvm::ConstantInt::getSigned(i64, -8));
-        llvm::Value *data_ptr = Builder->CreateLoad(ptr_lty, hdr_ptr_addr, "list_data");
-        // Stride from the value's CGv2Type so non-i64 element
-        // stores (i1/i8 booleans, etc.) advance by the right
-        // byte count — must match INDEX_LOAD's stride logic
-        // or `a[i] = False; if a[i]` reads from a different
-        // address than the store wrote (F.4 sieve fix).
-        llvm::Type *elem_ty = i64;
-        if (inst->rvals[2]->type) {
-          llvm::Type *t = to_llvm_type(inst->rvals[2]->type);
-          if (t && t->isSized()) elem_ty = t;
-        }
-        llvm::Value *gep = Builder->CreateGEP(elem_ty, data_ptr, idx);
-        Builder->CreateStore(v, gep);
-        break;
-      }
-      if (!index_ty) return;
-      llvm::Type *elem = to_llvm_type(index_ty);
-      if (!elem) return;
-      llvm::Value *gep = Builder->CreateGEP(elem, p, idx);
+      llvm::Value *gep = Builder->CreateGEP(L.elem_lty, base, idx);
       Builder->CreateStore(v, gep);
       break;
     }
@@ -1234,7 +1091,10 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       break;
     }
     case CG2_PRIM:
-      dispatch_prim(ctx, inst);
+      // Unreachable from cg_normalize_v2 — lower_send_prim
+      // routes everything through CG2_C_CALL / typed CG_OPs.
+      // The case stays so round-trip parsing of hand-authored
+      // IR (cg_ir_v2_parse.cc) doesn't trap; emit is a no-op.
       break;
     case CG2_NOP:
     default:
@@ -1361,8 +1221,14 @@ void emit_fun(CGv2Fun *cf) {
       for (CGv2Value *gv : gkeys) {
         llvm::GlobalVariable *llgv = g_prog_ctx.global_map.get(gv);
         if (!gv || !llgv || !gv->type) continue;
+        // Class-proto globals: typed PTR whose element is either
+        // a regular STRUCT or a VECTOR (`@vector("s")` like
+        // bytearray — its proto is just the prefix struct; the
+        // trailing data area is materialized per-clone by
+        // _CG_prim_clone_vector_runtime).
         if (gv->type->kind != CG2T_PTR || !gv->type->element ||
-            gv->type->element->kind != CG2T_STRUCT) continue;
+            (gv->type->element->kind != CG2T_STRUCT &&
+             gv->type->element->kind != CG2T_VECTOR)) continue;
         llvm::Type *sty = to_llvm_type(gv->type->element);
         if (!sty || !sty->isSized()) continue;
         uint64_t sz = TheModule->getDataLayout().getTypeAllocSize(sty);

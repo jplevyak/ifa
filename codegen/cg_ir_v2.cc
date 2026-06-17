@@ -39,9 +39,15 @@ CGv2Program::CGv2Program() : main_fun(0) {
   t_float32 = mk_type(11, "float32", CG2T_FLOAT, 32);
   t_float64 = mk_type(12, "float64", CG2T_FLOAT, 64);
   t_sym     = mk_type(13, "sym",     CG2T_SYMBOL, 0);
-  t_nil     = mk_type(14, "nil",     CG2T_PTR,    0);
+  t_nil     = mk_type(14, "nil",     CG2T_OPAQUE,  0);
   t_fun_ptr = mk_type(15, "fun_ptr", CG2T_FUN_PTR, 0);
-  t_ptr     = mk_type(16, "ptr",     CG2T_PTR,     0);
+  // Predefined opaque ptr.  All sites that previously created a
+  // CG2T_PTR with `element == nullptr` (FA-unknown ptrs from
+  // Type_FUN, Type_REF, Type_PRIMITIVE fallbacks; method-slot
+  // fields whose IF1 type is sym_void; the test-roundtrip
+  // `:kind ptr` form with no `:element`) now route here.  This
+  // makes CG2T_PTR.element a non-null invariant.
+  t_ptr     = mk_type(16, "ptr",     CG2T_OPAQUE,  0);
 }
 
 CGv2Type *CGv2Program::lookup_type(cchar *name) const {

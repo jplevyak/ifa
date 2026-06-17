@@ -403,6 +403,8 @@ static void print_type_decl(Buf &b, CGv2Type *t) {
   switch (t->kind) {
     case CG2T_STRUCT: b.puts_("struct"); break;
     case CG2T_PTR:    b.puts_("ptr"); break;
+    case CG2T_OPAQUE: b.puts_("opaque"); break;
+    case CG2T_VECTOR: b.puts_("vector"); break;
     default: b.puts_("?"); break;
   }
   if (t->is_heap_aggregate) b.puts_(" :is_heap_aggregate true");

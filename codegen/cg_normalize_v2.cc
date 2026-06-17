@@ -117,9 +117,12 @@ CGv2Type *build_struct_type(NormCtx &c, Sym *s) {
   char buf[160];
   snprintf(buf, sizeof(buf), "%s.%d", raw_name, s->id);
   t->name = dupstr(buf);
-  t->kind = CG2T_STRUCT;
+  // `@vector("s")` classes (e.g. bytearray) have a struct prefix
+  // followed by a trailing flexible array of `s->element`; this is
+  // its own type-lattice kind so CG2_INDEX_LOAD/STORE/SIZEOF_ELEMENT
+  // can dispatch on it instead of a side-channel bool.
+  t->kind = s->is_vector ? CG2T_VECTOR : CG2T_STRUCT;
   t->is_heap_aggregate = true;       // pyc's default for RECORD
-  t->is_vector_struct = s->is_vector;
   c.sym_to_struct.put(s, t);          // register first (recursion guard)
   c.p->types.add(t);
   int idx = 0;
@@ -208,8 +211,51 @@ CGv2Type *build_type(NormCtx &c, Sym *s) {
     c.p->types.add(ptr_t);
     return ptr_t;
   }
-  // Type_FUN, Type_REF, Type_PRIMITIVE → treat as opaque ptr.
-  // Refined when their tests land.
+  // Closure type — Type_FUN with no resolved fun and a non-empty
+  // `has[]` (codegen_common.cc's is_closure_var test).  pyc's
+  // closure layout is `{e0 = fn_ptr, e1 = bound_obj, e2..eN =
+  // captured_locals}`.  Build it as a CG2T_PTR wrapping a
+  // CG2T_STRUCT so lower_send_period can ALLOC/FIELD_STORE and
+  // lower_send_call can FIELD_LOAD the unpack at call sites.
+  // v1's equivalent: the `_CG_s<NNN>` struct + `_CG_prim_closure`
+  // macro (cg.cc:177).
+  if (s->type_kind == Type_FUN && !s->fun && s->has.n) {
+    CGv2Type *struct_t = new CGv2Type();
+    struct_t->id = 1000 + c.p->types.n;
+    char sbuf[160];
+    cchar *raw_name = s->name ? s->name :
+                      (s->cg_string ? s->cg_string : "closure");
+    snprintf(sbuf, sizeof(sbuf), "closure_%s.%d", raw_name, s->id);
+    struct_t->name = dupstr(sbuf);
+    struct_t->kind = CG2T_STRUCT;
+    struct_t->is_heap_aggregate = true;
+    c.p->types.add(struct_t);
+    int idx = 0;
+    for (Sym *f : s->has) {
+      CGv2TypeField *cf = new CGv2TypeField();
+      cf->name = f->name;
+      CGv2Type *ft = build_type(c, f->type);
+      // Function-pointer fields (the selector slot) collapse to
+      // opaque ptr — there's no useful LLVM-typed signature
+      // because the FA already resolves call targets statically.
+      if (!ft || ft->kind == CG2T_VOID) ft = c.p->t_ptr;
+      cf->type = ft;
+      cf->idx = idx++;
+      struct_t->fields.add(cf);
+    }
+    CGv2Type *ptr_t = new CGv2Type();
+    ptr_t->id = 1000 + c.p->types.n;
+    char pbuf[160];
+    snprintf(pbuf, sizeof(pbuf), "ptr_%s", struct_t->name);
+    ptr_t->name = dupstr(pbuf);
+    ptr_t->kind = CG2T_PTR;
+    ptr_t->element = struct_t;
+    c.sym_to_type.put(s, ptr_t);
+    c.p->types.add(ptr_t);
+    return ptr_t;
+  }
+  // Type_FUN (function pointer), Type_REF, Type_PRIMITIVE →
+  // opaque ptr.  Refined when their tests land.
   c.sym_to_type.put(s, c.p->t_ptr);
   return c.p->t_ptr;
 }
@@ -579,27 +625,62 @@ bool lower_send_period(NormCtx &c, FunCtx &fc, PNode *pn,
   CGv2Value *obj = build_var(c, fc, pn->rvals[1]);
   CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
   if (!obj || !dst) return false;
-  // F.4.8 lambda_closure: when the field is a function (the
-  // method-slot in a `@vector`-free class), `a.x` creates a
-  // closure binding `a` as the implicit self.  v1 mirrors
-  // this with `_CG_prim_closure({symbol, obj})` (cg.cc:177
-  // — guarded by `lvals[0]->type->type_kind == Type_FUN`).
+  // Closure construction: when `a.x` reads a function-typed
+  // field, materialize a `{selector, bound_self, ...captured}`
+  // struct.  Mirrors v1's `_CG_prim_closure` (cg.cc:177) which
+  // allocates the closure struct and stores e0=selector,
+  // e1=bound_obj.  Triggered when:
+  //   - lvals[0] is Type_FUN (a closure-typed result, including
+  //     plain method bindings)
+  //   - pn->creates is non-empty (FA marked this SEND as
+  //     allocating; absent for non-closure bindings)
   //
-  // Shortcut for the single-method common case: the lambda's
-  // function pointer is FA-resolved statically at the call
-  // site (CG2_CALL gets a FUN_REF callee), and the lambda
-  // takes the bound object as its only real arg.  So storing
-  // `obj` (the bound self) into `dst` instead of the method
-  // slot makes `z()` → `lambda(z)` see `z == obj` directly,
-  // without materializing the {symbol, obj} struct.
+  // This replaces the earlier MOVE-bound-obj-into-dst shortcut
+  // (F.4.8), which only worked when (a) the lambda had a single
+  // resolved target and (b) there were no captured locals.  The
+  // FIELD_LOAD-driven dispatch in lower_send_call (below)
+  // unpacks each formal from its closure field.
   Var *lv = pn->lvals[0];
-  if (lv && lv->type && lv->type->type_kind == Type_FUN) {
-    CGv2Inst *mv = new CGv2Inst();
-    mv->op = CG2_MOVE;
-    mv->rvals.add(obj);
-    mv->lvals.add(dst);
-    blk->body.add(mv);
-    return true;
+  if (lv && lv->type && lv->type->type_kind == Type_FUN &&
+      pn->creates && pn->creates->n &&
+      lv->type->has.n >= 2) {
+    CGv2Type *closure_ptr = build_type(c, lv->type);
+    CGv2Type *closure_struct = closure_ptr ? closure_ptr->element
+                                            : nullptr;
+    if (closure_struct &&
+        closure_struct->kind == CG2T_STRUCT &&
+        closure_struct->fields.n >= 2) {
+      // Alloc the closure struct.
+      CGv2Inst *alloc = new CGv2Inst();
+      alloc->op = CG2_ALLOC;
+      alloc->type_arg = closure_struct;
+      alloc->lvals.add(dst);
+      blk->body.add(alloc);
+      // e0 = selector (the method/symbol var at rvals[3]).
+      // FIELD_LOAD/STORE coercion at emit (CG2_CAST in v2's
+      // CG2_C_CALL arg path) accepts ptr-or-int sources.
+      if (pn->rvals.n > 3) {
+        CGv2Value *sel = build_var(c, fc, pn->rvals[3]);
+        if (sel) {
+          CGv2Inst *st = new CGv2Inst();
+          st->op = CG2_FIELD_STORE;
+          st->field_idx = 0;
+          st->type_arg = closure_struct;
+          st->rvals.add(dst);
+          st->rvals.add(sel);
+          blk->body.add(st);
+        }
+      }
+      // e1 = bound self.
+      CGv2Inst *st = new CGv2Inst();
+      st->op = CG2_FIELD_STORE;
+      st->field_idx = 1;
+      st->type_arg = closure_struct;
+      st->rvals.add(dst);
+      st->rvals.add(obj);
+      blk->body.add(st);
+      return true;
+    }
   }
   CGv2Inst *inst = new CGv2Inst();
   inst->op = CG2_FIELD_LOAD;
@@ -1004,7 +1085,9 @@ bool lower_send_clone(NormCtx &c, FunCtx &fc, PNode *pn,
   CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
   if (!proto || !dst || !dst->type) return false;
   CGv2Type *struct_t = unwrap_struct(dst->type);
-  if (!struct_t || struct_t->kind != CG2T_STRUCT) return false;
+  if (!struct_t ||
+      (struct_t->kind != CG2T_STRUCT &&
+       struct_t->kind != CG2T_VECTOR)) return false;
 
   bool is_vec = pn->prim &&
                 pn->prim->index == P_prim_clone_vector;
@@ -1418,8 +1501,22 @@ bool lower_send_call(NormCtx &c, FunCtx &fc, PNode *pn,
   // (llvm_primitives.cc:281). Walk target->positional_arg_
   // positions in order; for each formal that survives the
   // live/non-fun filter, compute its rvals index via
-  // Position2int(p->pos[0]) - 1. Handle closure self the
-  // same way v1 does. Phase B.10.8.
+  // Position2int(p->pos[0]) - 1.
+  //
+  // Closure dispatch: when rvals[0] is a closure (is_closure_var
+  // — a Type_FUN sym with `has[]` populated), the lambda was
+  // built with each formal mapped to a closure-struct field:
+  // formal at IF1 position p reads closure->e_{p-1}.  Since v2
+  // filters Type_FUN formals at the def site, the position-1
+  // selector slot (e0) is never visited; subsequent positions
+  // map directly: position 2 → e1, position 3 → e2, ...  So
+  // `i = pos - 1` IS the closure field index for the unpack.
+  // For formal positions past the closure's field count, the
+  // extra args come from rvals (shifted by `has.n - 1` since
+  // rvals[0] is the closure itself).
+  //
+  // Mirrors v1's write_send_arg (cg.cc:502 + write_c_fun_arg)
+  // semantics minus the unused fn_ptr formal v2 already drops.
   Var *v0 = pn->rvals.n > 0 ? pn->rvals[0] : nullptr;
   int before = inst->rvals.n;
   for (MPosition *p : target->positional_arg_positions) {
@@ -1429,8 +1526,35 @@ bool lower_send_call(NormCtx &c, FunCtx &fc, PNode *pn,
     if (p->pos.n > 1) continue;     // skip nested tuple fields
     int i = (int)Position2int(p->pos[0]) - 1;
     if (v0 && is_closure_var(v0) && v0->type) {
-      if (i < v0->type->has.n) i = 0;
-      else i -= v0->type->has.n - 1;
+      if (i < v0->type->has.n) {
+        // Unpack: FIELD_LOAD(closure, i) → fresh local → arg.
+        CGv2Value *closure = build_var(c, fc, v0);
+        CGv2Type *cptr = closure ? closure->type : nullptr;
+        CGv2Type *cst = (cptr && cptr->kind == CG2T_PTR)
+                            ? cptr->element : nullptr;
+        if (closure && cst && cst->kind == CG2T_STRUCT &&
+            i >= 0 && i < cst->fields.n) {
+          CGv2Value *arg = new CGv2Value();
+          arg->id = 7000 + fc.cf->id * 1000 +
+                    (int)fc.cf->locals.n;
+          arg->name = "clo_arg";
+          arg->type = cst->fields[i] ? cst->fields[i]->type
+                                      : c.p->t_ptr;
+          arg->scope = CG2V_LOCAL;
+          fc.cf->locals.add(arg);
+          CGv2Inst *fl = new CGv2Inst();
+          fl->op = CG2_FIELD_LOAD;
+          fl->field_idx = i;
+          fl->type_arg = cst;
+          fl->rvals.add(closure);
+          fl->lvals.add(arg);
+          blk->body.add(fl);
+          inst->rvals.add(arg);
+        }
+        continue;
+      } else {
+        i -= v0->type->has.n - 1;
+      }
     }
     if (i < 0 || i >= pn->rvals.n) continue;
     Var *actual = pn->rvals[i];
@@ -1656,16 +1780,32 @@ bool lower_send_prim(NormCtx &c, FunCtx &fc, PNode *pn,
       lower_send_sizeof_element(c, fc, pn, blk)) return true;
   if (strcmp(name, "len") == 0 &&
       lower_send_len(c, fc, pn, blk)) return true;
+  // Default: route an unrecognized primitive to a `_CG_<name>`
+  // runtime helper via CG2_C_CALL, mirroring v1's write_send
+  // (cg.cc:536) which emits `_CG_%s(...)` and lets the C
+  // toolchain resolve the symbol at link time.  The old
+  // behavior — wrapping the SEND in a CG2_PRIM whose emit
+  // dispatcher silently drops unknown names — converted prim
+  // bugs into wrong-output / hang / segfault failures with no
+  // diagnostic.  CG2_C_CALL turns the same bug into a loud
+  // "undefined reference to _CG_<name>" link error, surfacing
+  // the missing handler before any test runs.
   CGv2Inst *inst = new CGv2Inst();
-  inst->op = CG2_PRIM;
-  inst->prim_name = name;
+  inst->op = CG2_C_CALL;
+  char helper[256];
+  snprintf(helper, sizeof(helper), "_CG_%s", name);
+  inst->prim_name = dupstr(helper);
+  if (pn->lvals.n > 0 && pn->lvals[0]) {
+    CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
+    if (dst) {
+      inst->type_arg = dst->type;
+      inst->lvals.add(dst);
+    }
+  }
+  if (!inst->type_arg) inst->type_arg = c.p->t_void;
   for (int i = 2; i < pn->rvals.n; i++) {
     CGv2Value *cv = build_var(c, fc, pn->rvals[i]);
     if (cv) inst->rvals.add(cv);
-  }
-  if (pn->lvals.n > 0) {
-    CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
-    if (dst) inst->lvals.add(dst);
   }
   blk->body.add(inst);
   return true;

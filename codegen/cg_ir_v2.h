@@ -55,8 +55,13 @@ enum CGv2TypeKind {
   CG2T_UINT,
   CG2T_FLOAT,         // bits = 32/64/128
   CG2T_BOOL,
-  CG2T_PTR,
+  CG2T_PTR,           // typed ptr — element MUST be non-null
+  CG2T_OPAQUE,        // opaque ptr — no indexable element known
   CG2T_STRUCT,
+  CG2T_VECTOR,        // struct prefix + trailing flexible array
+                      // (`@vector("s")` classes like bytearray);
+                      // `fields` is the prefix, `element` is the
+                      // trailing array's element type
   CG2T_FUN_PTR,
   CG2T_REF,
   CG2T_SUM,
@@ -79,28 +84,20 @@ class CGv2Type : public gc {
   CGv2TypeKind kind;
   int bits;             // for numeric kinds; 0 otherwise
 
-  // For CG2T_STRUCT.
+  // For CG2T_STRUCT / CG2T_VECTOR.
   Vec<CGv2TypeField *> fields;
   bool is_heap_aggregate;     // alloc via GC heap (vs stack)
-  // pyc's `@vector("s")` classes (e.g. bytearray) have an
-  // element data area that lives PAST the struct's regular
-  // fields (v1's C-output `T v[0]` flexible-array idiom).
-  // When set, CG2_INDEX_LOAD/STORE on a `ptr` whose `element`
-  // is this struct advances by `sizeof(struct)` bytes before
-  // GEPing by `idx * sizeof(element)`.  CG2_CLONE also uses
-  // it to route through the vector-sized allocator.
-  bool is_vector_struct;
 
   // For CG2T_PTR / CG2T_REF — the element type pointed to.
-  // Drives CG_INDEX_LOAD's gep element type. Optional;
-  // nullptr means opaque (no indexable element known).
+  // For CG2T_VECTOR — the trailing flexible-array element type.
+  // INVARIANT: when kind == CG2T_PTR, `element` is non-null.
+  // Opaque ptrs are CG2T_OPAQUE (with element == nullptr).
   CGv2Type *element;
 
   // (fun_sig, alias_of land with their tests.)
 
   CGv2Type() : id(0), name(0), kind(CG2T_VOID), bits(0),
-               is_heap_aggregate(false), is_vector_struct(false),
-               element(0) {}
+               is_heap_aggregate(false), element(0) {}
 };
 
 // ============================================================
