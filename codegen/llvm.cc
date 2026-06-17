@@ -1219,32 +1219,95 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
     llvm::raw_fd_ostream dump_os(dump_path, dec);
     if (!dec) TheModule->print(dump_os, nullptr);
   }
-  // Verify the module
-  std::string error_str;
-  llvm::raw_string_ostream rso(error_str);
-  if (llvm::verifyModule(*TheModule, &rso)) {
-    fail("LLVM module verification failed: %s", rso.str().c_str());
-    if (fp != stderr) {  // Print to file as well if it's not stderr
-      std::string err_msg = rso.str();
-      std::stringstream ss(err_msg);
-      std::string segment;
-      while (std::getline(ss, segment, '\n')) {
-        fprintf(fp, "; LLVM module verification failed: %s\n", segment.c_str());
-      }
-    }
-    // Continue despite verification failure (non-fatal fail allows this)
-  }
 
-  // Finalize debug info
+  // Finalize debug info before serializing.  Keeps `!dbg !N`
+  // metadata indices stable between the on-failure .ll dump and
+  // the verifier output.
   if (DBuilder) {
     DBuilder->finalize();
   }
 
-  // Print the module to the file
+  // Serialize the module to the .ll file BEFORE running the
+  // verifier.  Two reasons:
+  //   1. Post-mortem: when verifyModule fails, fail() exits — so
+  //      without this reorder the .ll never lands on disk and
+  //      you can't inspect the broken IR.  With the reorder the
+  //      .ll exists and the harness's tests/build/<name>.ll
+  //      artifact is debuggable.
+  //   2. Tests can diff `.ll` even on intentional verify-failure
+  //      cases (the issues/ directory regression-trail).
   std::string ir_string;
   llvm::raw_string_ostream ir_rso(ir_string);
   TheModule->print(ir_rso, nullptr);
   fprintf(fp, "%s", ir_rso.str().c_str());
+  fflush(fp);
+
+  // Verify the module.  verifyModule was always a hard gate; the
+  // change here is the .ll reorder above and the optional
+  // per-function attribution under --strict-verify.
+  std::string error_str;
+  llvm::raw_string_ostream rso(error_str);
+  bool broken = llvm::verifyModule(*TheModule, &rso);
+
+  // --strict-verify (PYC_STRICT_VERIFY=1): scan user functions
+  // for `undef` operands.  verifyModule accepts `undef` (it's
+  // valid LLVM IR), but pyc's codegen should never emit it: an
+  // undef value typically means "the FA didn't narrow this rval
+  // to anything" and the optimizer is allowed to propagate undef
+  // through to any constant, producing wrong runtime output
+  // that's not caught by the regular verifier.  Issue 017's
+  // "passes undef self to __new__" was exactly this shape;
+  // surfacing it as a verification failure converts the bug
+  // class from "wrong output via UB" to "compile error".
+  // Declarations and emit-builtin externals are skipped.  Read
+  // the env var directly — the ifa library doesn't see pyc's
+  // defs.h globals (the --strict-verify flag in pyc.cc sets the
+  // env so both flag forms work).
+  const char *sv = getenv("PYC_STRICT_VERIFY");
+  bool strict = sv && sv[0] && sv[0] != '0';
+  if (strict) {
+    int undef_count = 0;
+    std::string sample;
+    for (llvm::Function &F : *TheModule) {
+      if (F.isDeclaration()) continue;
+      for (llvm::BasicBlock &BB : F) {
+        for (llvm::Instruction &I : BB) {
+          // Exclusions: undef in `ret` and `phi` is common and
+          // harmless.  `ret undef` happens at the tail of v2's
+          // __main__-shaped functions whose result is unused by
+          // the synthesized C main() wrapper; `phi undef` is the
+          // standard LLVM idiom for an SSU edge that's never
+          // taken in practice but is structurally required by
+          // the CFG.  Neither propagates to user-visible
+          // computation.  Issue 017's "passes undef self" was
+          // a `call` operand, which this still catches.
+          if (llvm::isa<llvm::ReturnInst>(&I) ||
+              llvm::isa<llvm::PHINode>(&I)) continue;
+          for (unsigned op = 0; op < I.getNumOperands(); op++) {
+            if (llvm::isa<llvm::UndefValue>(I.getOperand(op))) {
+              undef_count++;
+              if (sample.empty()) {
+                llvm::raw_string_ostream sos(sample);
+                sos << "@" << F.getName().str() << ": ";
+                I.print(sos);
+              }
+            }
+          }
+        }
+      }
+    }
+    if (undef_count > 0) {
+      broken = true;
+      rso << "  strict-verify: " << undef_count
+          << " undef operand(s) in user functions; first: "
+          << sample << "\n";
+    }
+  }
+
+  if (broken) {
+    fail("LLVM module verification failed: %s",
+         rso.str().c_str());
+  }
 }
 llvm::Value *getLLVMValue(Var *var, Fun *ifa_fun) {
   if (!var) {
