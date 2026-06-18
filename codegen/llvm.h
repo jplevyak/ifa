@@ -7,15 +7,12 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main, cchar *input_filename);
 void llvm_codegen_write_ir(FA *fa, Fun *main, cchar *filename);
 int llvm_codegen_compile(cchar *filename);
 
-// Pyc-frontend RegisteredPrim LLVM cgfns (phase 3.2 of CODEGEN_PLAN).
-// The pyc frontend registers these via prim_reg's third argument so
-// the LLVM `P_prim_primitive` dispatcher can route `write` / `writeln`
-// through them instead of falling back to write_send (which has no
-// target Fun for primitive calls).
-class PNode;
-class Fun;
-void pyc_llvm_write_cgfn(PNode *n, Fun *f);
-void pyc_llvm_writeln_cgfn(PNode *n, Fun *f);
-void pyc_llvm_to_string_cgfn(PNode *n, Fun *f);
+// `pyc_llvm_write_cgfn` / `pyc_llvm_writeln_cgfn` /
+// `pyc_llvm_to_string_cgfn` retired alongside the v1 LLVM
+// backend (issue 014).  v2 LLVM's lower_send_prim routes
+// `write`/`writeln` through libpyc_runtime.a's `_CG_write` /
+// `_CG_writeln`, and `to_string` is no longer reachable from
+// pyc-Python source (replaced by int.__str__ /
+// float.__str__ in __pyc__/02_numeric.py).
 
 #endif
