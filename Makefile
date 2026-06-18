@@ -183,8 +183,16 @@ IFA_TEST_OBJS = testing/ifa_test_main.o
 ifa-test: $(IFA_TEST_OBJS) $(LIBRARY)
 	$(CXX) $(CFLAGS) $(LDFLAGS_EXEC) -o $@ $(IFA_TEST_OBJS) $(LIBRARY) $(LIBS)
 
-$(LIBRARY): $(LIB_OBJS) $(PLIB_OBJS)
-	$(AR) $(AR_FLAGS) $@ $^
+# `ar` is additive — `crv` inserts/replaces but never removes
+# members.  When a source file is dropped from LIB_SRCS, its
+# .o would otherwise linger in the archive across rebuilds,
+# leaking obsolete symbols into the link line.  Two guards:
+#   1. Delete the archive first so each rebuild starts clean.
+#   2. Depend on Makefile so editing LIB_SRCS triggers re-archive
+#      even when no individual .o needs rebuilding.
+$(LIBRARY): $(LIB_OBJS) $(PLIB_OBJS) Makefile
+	$(RM) $@
+	$(AR) $(AR_FLAGS) $@ $(LIB_OBJS) $(PLIB_OBJS)
 
 $(MAKE_PRIMS): tools/make_prims.cc
 	$(CXX) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
