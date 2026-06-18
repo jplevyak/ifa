@@ -32,11 +32,6 @@ that:
 
 ## Current open issues
 
-- [006-simple-inlining-multi-send-chain.md](006-simple-inlining-multi-send-chain.md)
-  — chain matcher implemented; the issue's original example no
-  longer reproduces (post-cleanup), so coverage win is zero.
-  Infrastructure stays; "Gap A: iterative inlining" is the
-  follow-on if anyone pursues it.
 - [007-mark-type-stage-coverage.md](007-mark-type-stage-coverage.md)
   — **partial.** 3 of 7 splitter stages reached (`type`,
   `setter`, `violation`).  Remaining: `mark-type`,
@@ -71,6 +66,12 @@ that:
 - [021-v2-call-arg-swap.md](021-v2-call-arg-swap.md) —
   v2 LLVM `CG2_CALL` walks formals in IF1-MPosition order;
   ordering convention deserves a documented invariant.
+- [022-iterative-inlining.md](022-iterative-inlining.md) —
+  `simple_inlining` runs `inline_single_sends` once.  Wrappers
+  that *become* chains after one inlining round are never
+  reconsidered.  Follow-on to [closed/006](closed/006-simple-inlining-multi-send-chain.md):
+  the chain matcher's infrastructure is ready; iteration is
+  what would make Gap A's targets reachable.
 
 ## Closed (archive)
 
@@ -79,12 +80,13 @@ commit ref recorded in each file's status line.  They stay in
 the tree as history — a code-search for the affected file finds
 the trail of investigation even after the fix has landed.
 
-Currently 11 closed issues:
+Currently 12 closed issues:
 [001](closed/001-keepalive-vs-explicit-reply.md),
 [002](closed/002-codegen-llvm-normalizer.md),
 [003](closed/003-fa-converge-determinism.md),
 [004](closed/004-find-local-loops-siblings.md),
 [005](closed/005-retire-speculative-sym-level-dce.md),
+[006](closed/006-simple-inlining-multi-send-chain.md),
 [008](closed/008-fa-crash-on-nested-iterator-shape.md),
 [009](closed/009-fa-violations-nondeterminism.md),
 [011](closed/011-setter-codegen-vs-analyzer-mismatch.md),

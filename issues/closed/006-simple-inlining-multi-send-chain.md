@@ -1,11 +1,18 @@
 # Issue 006: simple_inlining misses straight-line multi-SEND wrappers
 
-**Status:** chain matcher implemented June 2026 (commit pending);
-the issue's specific example (`add_one`) no longer reproduces in
-HEAD — see "Follow-up — June 2026" section below.
+**Status:** **closed June 2026** by commit `65bdc7e`
+(`ifa/optimize: chain-aware matcher in simple_inlining`).  The
+chain matcher (`match_prim_chain` + `inline_prim_chain` +
+`INLINE_PRIM_CHAIN` event) implements the spec below.  The
+issue's specific `add_one` example no longer reproduces in HEAD
+— the existing pipeline already collapses it — so the
+practical coverage win is zero on the current pyc test set.
+Infrastructure stays in place for future wrappers; the natural
+follow-on is Gap A (iterative inlining), filed separately as
+[022-iterative-inlining.md](../022-iterative-inlining.md).
 **Affects:** `ifa/optimize/inline.cc:inline_single_sends`,
 `ifa/testing/phases/07_dce_optimize.md` (Inline test cases).
-**Related:** [closed/005-retire-speculative-sym-level-dce.md](closed/005-retire-speculative-sym-level-dce.md)
+**Related:** [005-retire-speculative-sym-level-dce.md](005-retire-speculative-sym-level-dce.md)
 (predecessor — established that `simple_inlining`'s purpose is to
 clean up IR-gen-emitted trivial wrappers so the IR generator can stay
 naive; the cost/benefit + iterative work belongs to a future "full
