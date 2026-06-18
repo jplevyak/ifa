@@ -45,18 +45,9 @@ that:
   the count-vs-capacity footgun); migrate `qsort_by_id; for(x:s)`
   sites to `sorted_view()`.  Deferred because the rename touches
   ~1000+ Vec consumer sites.
-- [014-llvm-construction-flow-to-slots.md](014-llvm-construction-flow-to-slots.md)
-  — LLVM construction flow doesn't reach all phi/phy slots.
 - [015-pyc-pod-records-no-frontend-hook.md](015-pyc-pod-records-no-frontend-hook.md)
   — Feature gap: pyc has no frontend hook for declaring POD
   records.
-- [016-llvm-ssu-formal-arg-binding.md](016-llvm-ssu-formal-arg-binding.md)
-  — **partial.** Structural half closed by CG_IR_PLAN Phase 3.4;
-  full closure blocked on a separate field-index bug.
-- [017-iterator-construction-undef-self.md](017-iterator-construction-undef-self.md)
-  — Iterator construction passes `undef` self to `__new__`.
-  Both IF1 and CG_IR paths affected.  v2's `--strict-verify`
-  surfaces this class of bug as a verification failure.
 - [019-v2-flat-list-header.md](019-v2-flat-list-header.md) —
   v2 LLVM flat-list-allocator emits the wrong list-header
   layout.
@@ -80,7 +71,7 @@ commit ref recorded in each file's status line.  They stay in
 the tree as history — a code-search for the affected file finds
 the trail of investigation even after the fix has landed.
 
-Currently 12 closed issues:
+Currently 15 closed issues:
 [001](closed/001-keepalive-vs-explicit-reply.md),
 [002](closed/002-codegen-llvm-normalizer.md),
 [003](closed/003-fa-converge-determinism.md),
@@ -92,6 +83,9 @@ Currently 12 closed issues:
 [011](closed/011-setter-codegen-vs-analyzer-mismatch.md),
 [012](closed/012-test-llvm-gc-link.md),
 [013](closed/013-pyc-llvm-default-off.md),
+[014](closed/014-llvm-construction-flow-to-slots.md),
+[016](closed/016-llvm-ssu-formal-arg-binding.md),
+[017](closed/017-iterator-construction-undef-self.md),
 [018](closed/018-v2-loop-after-undef.md).
 
 ## When to file an issue here vs fix it now

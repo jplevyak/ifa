@@ -1,7 +1,13 @@
 # Issue 016: LLVM backend — SSU formal-arg → renamed-local MOVEs are skipped
 
-**Status:** partial fix landed (CG_IR_PLAN Phase 3.4 production
-swap), full closure blocked on a separate field-index bug.
+**Status:** **closed June 2026 (obsolete — v1 LLVM retired).**
+This issue described the v1 LLVM SSU formal-arg-binding gap.
+With v1 LLVM removed (commits `c4a9475` Stage 1, `41535cc`
+Stage 2 of issue 014), the gap site no longer exists.  v2 LLVM
+binds formals via the per-CGFun value cache populated in
+`cg_ir_v2_emit_llvm.cc`'s `EmitFunCtx`; the test suite
+(80/0 both backends) confirms it works for the patterns this
+issue called out.
 
 ## Progress (2026-06-13)
 

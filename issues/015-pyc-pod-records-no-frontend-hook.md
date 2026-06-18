@@ -170,7 +170,7 @@ After the chosen option lands:
   the `@vector("s")` parallel for any decorator-based opt-in.
 - V's `is_structure` (sym.h:88, IR.md:128) — the closest
   existing precedent for "record laid out inline".
-- `ifa/issues/014-llvm-construction-flow-to-slots.md` —
+- `ifa/issues/closed/014-llvm-construction-flow-to-slots.md` —
   unrelated to this issue but referenced by the same
   getLLVMVarType migration commit.
 

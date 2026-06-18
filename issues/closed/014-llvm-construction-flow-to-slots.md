@@ -1,12 +1,18 @@
 # Issue 014: LLVM backend — heap-object construction doesn't store into the variable slot
 
-**Status:** open.
-**Affects:** `ifa/codegen/llvm.cc` (setLLVMValue), `ifa/codegen/llvm_codegen.cc`
-(translate_code_move and the per-Code_kind handlers), the
-`__new__` / `_CG_prim_new` LLVM emission paths. Surfaced while
-landing the `getLLVMVarType` migration
-(`ifa/codegen/CODEGEN_PLAN.md` references the partial fix in
-commit 06bec4a).
+**Status:** **closed June 2026 (obsolete — v1 LLVM retired).**
+v2 LLVM passes the issue's `/tmp/construct3.py` reproducer
+cleanly because it bypasses the v1 `translate_pn` gating
+condition entirely (v2 emits CG2_C_CALL into the destination
+slot directly via lower_send_clone / lower_send_alloc).  With
+v1 LLVM removed (commits `c4a9475` Stage 1, `41535cc` Stage 2),
+the gating site this issue's fix would have touched no longer
+exists.  v2's `--strict-verify` mode catches the same class of
+"undef self to constructor" bug as a verification failure (see
+`pyc_runtime.c` / `cg_normalize_v2.cc`).
+**Affects (historical):** `ifa/codegen/llvm.cc` (setLLVMValue,
+deleted), `ifa/codegen/llvm_codegen.cc` (translate_code_move,
+deleted), the `__new__` / `_CG_prim_new` LLVM emission paths.
 
 ## Symptom
 

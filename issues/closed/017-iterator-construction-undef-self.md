@@ -1,9 +1,20 @@
 # Issue 017: iterator construction passes `undef` self to `__new__`
 
-**Status:** open.
-**Affects:** LLVM backend, both IF1 path and CG_IR path. C
-backend unaffected. Surfaced during issue 016 investigation
-(CG_IR_PLAN Phase 3.4 production swap).
+**Status:** **closed June 2026 (obsolete — v1 LLVM retired).**
+The "IF1 path" and "CG_IR path" both refer to v1 LLVM code
+paths that were deleted with the v1 retirement (commits
+`c4a9475` Stage 1, `41535cc` Stage 2 of issue 014).  v2 LLVM
+goes through `cg_normalize_v2` + `cg_v2_emit_llvm_module`,
+which constructs iterators via CG2_ALLOC + explicit FIELD_STORE
+of the freshly-allocated pointer into the destination slot
+(see `lower_send_period` and `lower_send_clone` in
+`cg_normalize_v2.cc`).  The 80/0 v2 LLVM pass rate confirms the
+for-loop iterator construction works; `PYC_STRICT_VERIFY=1`
+would surface any new "undef self to call" regression as a
+verification failure.
+**Affects (historical):** v1 LLVM backend, both IF1 path
+(`llvm_codegen.cc:translate_pn`, deleted) and CG_IR path
+(`emit_cg.cc:emit_cg_inst`, deleted).
 
 ## Symptom
 
