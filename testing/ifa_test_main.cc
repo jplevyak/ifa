@@ -104,13 +104,10 @@ static void phase_freq_run(IF1 *p) { fa_setup_environment(p); }
 // `codegen-c` — the printer runs the full ifa_analyze + ifa_optimize
 // pipeline and then captures c_codegen_print_c output.
 static void phase_codegen_c_run(IF1 *p) { fa_setup_environment(p); }
-// `codegen-llvm` — same pipeline as codegen-c; the printer captures
-// llvm_codegen_print_ir output and runs a normalizer (issue 002).
-static void phase_codegen_llvm_run(IF1 *p) { fa_setup_environment(p); }
-// `cg-normalize` — CG_IR_PLAN Phase 2 normalization pass. Same FA +
-// clone + DCE pipeline as codegen-c; the printer invokes
-// cg_normalize(fa) and dumps the resulting CGProgram.
-static void phase_cg_normalize_run(IF1 *p) { fa_setup_environment(p); }
+// `codegen-llvm` / `cg-normalize` phases retired alongside v1
+// LLVM (issue 014).  v2 LLVM goes through cg_normalize_v2 +
+// cg_v2_emit_llvm_module, which have their own unit-test
+// coverage in ifa/testing/cg_ir_v2_test.cc.
 // `inline` — enables the InlineEvent sidecar around simple_inlining
 // to record per-call-site inliner actions.
 static void phase_inline_run(IF1 *p) { fa_setup_environment(p); }
@@ -132,8 +129,7 @@ static Phase phases[] = {
     {"dce",      pre_parse_builtin_types, phase_dce_run,      print_dce_normalized},
     {"freq",     pre_parse_builtin_types, phase_freq_run,     print_freq_normalized},
     {"codegen-c", pre_parse_builtin_types, phase_codegen_c_run, print_codegen_c_normalized},
-    {"codegen-llvm", pre_parse_builtin_types, phase_codegen_llvm_run, print_codegen_llvm_normalized},
-    {"cg-normalize", pre_parse_builtin_types, phase_cg_normalize_run, print_cg_normalize_normalized},
+    // codegen-llvm and cg-normalize retired with v1 LLVM (issue 014).
     {"inline",    pre_parse_builtin_types, phase_inline_run,    print_inline_normalized},
     {"fa-converge", pre_parse_builtin_types, phase_fa_converge_run, print_fa_converge_normalized},
     // See ifa/testing/phases/00_INDEX.md.

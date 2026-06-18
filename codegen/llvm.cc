@@ -1087,88 +1087,29 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
     TheModule->addModuleFlag(llvm::Module::Warning, "Debug Info Version", llvm::DEBUG_METADATA_VERSION);
   }
 
-  // V2 backend gate (CG_IR_SEMANTICS.md §6.2 Phase B). When
-  // IFA_LLVM_V2=1, cg_normalize_v2 + cg_v2_emit_llvm_module
-  // replace the v1 createGlobalVariables / createFunction /
-  // cg_normalize / translateFunctionBody chain. The main-
-  // wrapper code below still runs and resolves the IF1 main
-  // callee via the cg_get_llvm(f) cache, which the v2 path
-  // populates from TheModule->getFunction by name.
-  bool use_v2 = false;
-  if (const char *flag = getenv("IFA_LLVM_V2")) {
-    use_v2 = (flag[0] == '1');
+  // LLVM codegen — single path (cg_normalize_v2 + v2 emit).
+  // The v1 LLVM path (createGlobalVariables + createFunction +
+  // cg_normalize + translateFunctionBody) was retired alongside
+  // issue 014: v2 LLVM strictly subsumes v1 (every test that
+  // passed under v1 also passes under v2; v1 16/59, v2 80/0 at
+  // retirement), so keeping the legacy translator alive only
+  // diluted the maintenance surface.  IFA_LLVM_V2 is no longer
+  // consulted — there's only the v2 path.
+  CGv2Program *v2prog = cg_normalize_v2(fa);
+  if (!v2prog) {
+    fail("cg_normalize_v2 returned null");
+    return;
   }
-
-  if (use_v2) {
-    DEBUG_LOG("IFA_LLVM_V2=1 — running cg_normalize_v2 + v2 emit\n");
-    CGv2Program *v2prog = cg_normalize_v2(fa);
-    if (!v2prog) {
-      fail("cg_normalize_v2 returned null");
-      return;
-    }
-    if (!cg_v2_emit_llvm_module(v2prog)) {
-      fail("cg_v2_emit_llvm_module returned false");
-      return;
-    }
-    // Populate f->llvm cache so the main wrapper (and any
-    // other v1 code path that reads cg_get_llvm(f)) sees the
-    // v2-emitted functions.
-    for (Fun *f : fa->funs) {
-      if (!f || !f->cg_string) continue;
-      if (llvm::Function *fn = TheModule->getFunction(f->cg_string)) {
-        f->llvm = fn;
-      }
-    }
-  } else {
-    // Create Global Variables
-    createGlobalVariables(fa);
-
-    // Iterate over all functions in FA and create them in the LLVM Module
-    // Ensure main_fun is processed, and other functions it might call.
-    // The order might matter if there are dependencies not captured by FA's list directly.
-    // For now, iterate fa->funs then ensure main_fun is included if not already.
-
-    Vec<Fun *> all_funs;
-
-    DEBUG_LOG("fa->funs.n = %d before discovery\n", fa->funs.n);
-
-    // Discover all reachable functions before translation
-    // This ensures they all have proper liveness analysis
-    discover_all_reachable_functions(fa, main_fun, all_funs);
-
-    DEBUG_LOG("all_funs.n = %d after discovery\n", all_funs.n);
-
-    // Build reverse call graph for constant recovery
-    build_reverse_call_graph(fa);
-
-    all_funs_global = &all_funs;
-
-    // First pass: Create all function declarations (signatures only)
-    // Only process live functions (like C backend does)
-    for (Fun *f : all_funs) {
-      if (!f) {
-        DEBUG_LOG("Found NULL fun in all_funs\n");
-        continue;
-      }
-      if (!f->live) {
-        DEBUG_LOG("Skipping non-live function %s (id %d)\n", f->sym->name ? f->sym->name : "(null)",
-                f->sym->id);
-        continue;
-      }
-      DEBUG_LOG("createFunction for %d\n", f->sym->id);
-      createFunction(f, TheModule.get());
-    }
-
-    current_cg_program = cg_normalize(fa);
-
-    // Second pass: Translate all function bodies
-    // (This is now done separately to ensure all functions are declared before any body is translated)
-    for (Fun *f : all_funs) {
-      if (!f || !f->live || !cg_get_llvm(f) || f->is_external || !f->entry) {
-        continue;
-      }
-      DEBUG_LOG("translateFunctionBody for %s (id %d)\n", f->sym->name, f->sym->id);
-      translateFunctionBody(f);
+  if (!cg_v2_emit_llvm_module(v2prog)) {
+    fail("cg_v2_emit_llvm_module returned false");
+    return;
+  }
+  // Populate f->llvm cache so the synthesized C main() wrapper
+  // below can resolve the IF1 main_fun via cg_get_llvm(f).
+  for (Fun *f : fa->funs) {
+    if (!f || !f->cg_string) continue;
+    if (llvm::Function *fn = TheModule->getFunction(f->cg_string)) {
+      f->llvm = fn;
     }
   }
 
