@@ -991,6 +991,134 @@ int run_cg_ir_v2_type_decl_roundtrip() {
 
 UNIT_TEST_FUN(run_cg_ir_v2_type_decl_roundtrip);
 
+// rec-2 follow-up — CG2T_OPAQUE round-trip.
+//
+// Lands the textual syntax for the new opaque kind introduced
+// when t_ptr/t_nil switched away from "CG2T_PTR with null
+// element."  An opaque type carries no fields and no element;
+// the only carried bit is the kind.  Verifies: parser accepts
+// `:kind opaque`, the resulting CGv2Type round-trips
+// (print → reparse) without loss, and is distinguishable from
+// `:kind ptr` (which requires :element).
+int run_cg_ir_v2_type_opaque_roundtrip() {
+  cchar *text =
+      "((type %Any :kind opaque)\n"
+      " (fun %use\n"
+      "   :signature (void)\n"
+      "   :entry %b0\n"
+      "   (block %b0 :term (ret))))";
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (prog->types.n != 1) {
+    printf("  expected 1 type, got %d\n", prog->types.n);
+    return 1;
+  }
+  CGv2Type *t = prog->types[0];
+  if (t->kind != CG2T_OPAQUE) {
+    printf("  expected CG2T_OPAQUE, got kind=%d\n", (int)t->kind);
+    return 1;
+  }
+  if (t->element) {
+    printf("  opaque type should not carry an element\n");
+    return 1;
+  }
+  if (t->fields.n != 0) {
+    printf("  opaque type should not carry fields; got %d\n",
+           t->fields.n);
+    return 1;
+  }
+  // Round-trip: print + re-parse, kind must survive.
+  cchar *back = cg_v2_print(prog);
+  if (!strstr(back, ":kind opaque")) {
+    printf("  printed form missing ':kind opaque':\n%s\n", back);
+    return 1;
+  }
+  cchar *err2 = 0;
+  CGv2Program *prog2 = cg_v2_parse(back, &err2);
+  if (!prog2 || prog2->types.n != 1 ||
+      prog2->types[0]->kind != CG2T_OPAQUE) {
+    printf("  round-trip lost the opaque kind; reparse err=%s\n",
+           err2 ? err2 : "(none)");
+    printf("  printed text:\n%s\n", back);
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_type_opaque_roundtrip);
+
+// rec-2 follow-up — CG2T_VECTOR round-trip.
+//
+// pyc's `@vector("s")` classes (bytearray) have a struct prefix
+// followed by a trailing flexible array of `element` items.
+// VECTOR carries both `fields` (the prefix) and `element` (the
+// trailing item type).  Round-trip must preserve both.
+int run_cg_ir_v2_type_vector_roundtrip() {
+  cchar *text =
+      "((type %ByteVec :kind vector :is_heap_aggregate true\n"
+      "   :element uint8\n"
+      "   :fields ((%length :type int64 :idx 0)))\n"
+      " (fun %use\n"
+      "   :signature (void)\n"
+      "   :entry %b0\n"
+      "   (block %b0 :term (ret))))";
+  cchar *err = 0;
+  CGv2Program *prog = cg_v2_parse(text, &err);
+  if (!prog) {
+    printf("  parse failed: %s\n", err ? err : "(no msg)");
+    return 1;
+  }
+  if (prog->types.n != 1) {
+    printf("  expected 1 type, got %d\n", prog->types.n);
+    return 1;
+  }
+  CGv2Type *t = prog->types[0];
+  if (t->kind != CG2T_VECTOR) {
+    printf("  expected CG2T_VECTOR, got kind=%d\n", (int)t->kind);
+    return 1;
+  }
+  if (t->fields.n != 1) {
+    printf("  expected 1 prefix field, got %d\n", t->fields.n);
+    return 1;
+  }
+  if (!t->element || t->element->kind != CG2T_UINT ||
+      t->element->bits != 8) {
+    printf("  expected element=uint8, got kind=%d bits=%d\n",
+           t->element ? (int)t->element->kind : -1,
+           t->element ? t->element->bits : -1);
+    return 1;
+  }
+  if (!t->is_heap_aggregate) {
+    printf("  expected is_heap_aggregate set\n");
+    return 1;
+  }
+  // Round-trip: print + re-parse, kind/element/fields preserved.
+  cchar *back = cg_v2_print(prog);
+  if (!strstr(back, ":kind vector")) {
+    printf("  printed form missing ':kind vector':\n%s\n", back);
+    return 1;
+  }
+  cchar *err2 = 0;
+  CGv2Program *prog2 = cg_v2_parse(back, &err2);
+  if (!prog2 || prog2->types.n != 1 ||
+      prog2->types[0]->kind != CG2T_VECTOR ||
+      prog2->types[0]->fields.n != 1 ||
+      !prog2->types[0]->element ||
+      prog2->types[0]->element->kind != CG2T_UINT) {
+    printf("  round-trip lost vector shape; reparse err=%s\n",
+           err2 ? err2 : "(none)");
+    printf("  printed text:\n%s\n", back);
+    return 1;
+  }
+  return 0;
+}
+
+UNIT_TEST_FUN(run_cg_ir_v2_type_vector_roundtrip);
+
 // Phase 4 commit 11 — test 08 (alloc + field store/load).
 //
 // struct Point { x: int64; y: int64 }
