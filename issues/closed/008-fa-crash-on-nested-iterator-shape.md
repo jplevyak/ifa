@@ -17,7 +17,7 @@ pattern recurs.
 its callees); only manifests when the synthetic `nested_iterator`
 shape is run via the test harness.
 **Related:** Phase 09 step C 7.7 follow-on (the "fix shapes via
-method dispatch" round), [007-mark-type-stage-coverage.md](007-mark-type-stage-coverage.md),
+method dispatch" round), [007-mark-type-stage-coverage.md](../007-mark-type-stage-coverage.md),
 [009-fa-violations-nondeterminism.md](009-fa-violations-nondeterminism.md)
 (closed; restored the fixture and tickled the same code path
 without crashes).

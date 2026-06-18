@@ -5,7 +5,7 @@
 and `ifa/codegen/cg_ir_v2_emit_llvm.cc`'s `CG2_ALLOC` emit
 under `IFA_LLVM_V2=1`. Surfaced while investigating
 `tests/list_concat.py` (`x = [1] + [2,3,4,5,6]`) after closing
-[018-v2-loop-after-undef.md](018-v2-loop-after-undef.md).
+[018-v2-loop-after-undef.md](closed/018-v2-loop-after-undef.md).
 
 ## Symptom
 

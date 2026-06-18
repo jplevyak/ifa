@@ -19,7 +19,7 @@ hook for backend selection), the GitHub Actions workflow at
 `.github/workflows/ci.yml:78-83`.
 
 Surfaced while collecting the phase-6.3 performance baseline
-([`ifa/codegen/PERFORMANCE.md`](../codegen/PERFORMANCE.md)).
+([`ifa/codegen/PERFORMANCE.md`](../../codegen/PERFORMANCE.md)).
 
 ## Symptom
 

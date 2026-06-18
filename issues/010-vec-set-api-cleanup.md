@@ -6,7 +6,7 @@ landed June 2026.
 **Affects:** `ifa/common/vec.h`, all Vec consumers (frontend,
 ifa/, codegen), `ifa/analysis/fa.cc` (the 17 explicit
 `qsort_by_id` sites).
-**Related:** [009-fa-violations-nondeterminism.md](009-fa-violations-nondeterminism.md)
+**Related:** [009-fa-violations-nondeterminism.md](closed/009-fa-violations-nondeterminism.md)
 (the surface fix that motivated notes/004), [../notes/004-plib-vec-pointer-set-hashing.md](../notes/004-plib-vec-pointer-set-hashing.md)
 (design discussion of A/B/C, what landed and what's deferred).
 
@@ -130,7 +130,7 @@ Three reasons (per the discussion in notes/004):
 
 - [../notes/004-plib-vec-pointer-set-hashing.md](../notes/004-plib-vec-pointer-set-hashing.md)
   — design discussion of A/B/C and what landed.
-- [009-fa-violations-nondeterminism.md](009-fa-violations-nondeterminism.md)
+- [009-fa-violations-nondeterminism.md](closed/009-fa-violations-nondeterminism.md)
   — the bug that surfaced the capacity-vs-count footgun.
 - `ifa/common/vec.h` — the `Vec` definition.
 - `ifa/analysis/fa.h` — `qsort_by_id` and `sorted_view`

@@ -12,7 +12,7 @@ notes" below.
 **Affects:** `ifa/codegen/cg_normalize_v2.cc` (or the SSU
 phi-by-pred handling) under `IFA_LLVM_V2=1`. The v1 LLVM and
 the C backends are not affected by these specific shapes.
-**Related:** [017-iterator-construction-undef-self.md](017-iterator-construction-undef-self.md)
+**Related:** [017-iterator-construction-undef-self.md](../017-iterator-construction-undef-self.md)
 (also a v2 LLVM lowering gap; manifested at iterator
 construction). Surfaced during the Phase D FFI library
 migration (commit `026891b`, while landing D.6).

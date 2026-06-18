@@ -16,8 +16,8 @@ to be the case — see the Step 4 surprise section for the
 observation that 008 stopped reproducing after the 009 fix
 (reason unclear, separate investigation needed).
 **Related:** [008-fa-crash-on-nested-iterator-shape.md](008-fa-crash-on-nested-iterator-shape.md),
-[007-mark-type-stage-coverage.md](007-mark-type-stage-coverage.md),
-[../notes/004-plib-vec-pointer-set-hashing.md](../notes/004-plib-vec-pointer-set-hashing.md)
+[007-mark-type-stage-coverage.md](../007-mark-type-stage-coverage.md),
+[../../notes/004-plib-vec-pointer-set-hashing.md](../../notes/004-plib-vec-pointer-set-hashing.md)
 (deeper plib follow-up).
 
 ## Symptom
@@ -490,7 +490,7 @@ someone wants it.
 
 #### Step 6 results (recorded 2026-06-05)
 
-[`../notes/004-plib-vec-pointer-set-hashing.md`](../notes/004-plib-vec-pointer-set-hashing.md)
+[`../../notes/004-plib-vec-pointer-set-hashing.md`](../../notes/004-plib-vec-pointer-set-hashing.md)
 landed. The note captures:
 
 - `set_add_internal` verbatim, the `prime2` expansion sequence,
@@ -524,13 +524,13 @@ the change, `fa-converge` is byte-identical across 5+ runs of
 every fixture (`nested_iterator` included). The remaining
 cleanup work — the `.n` → `.capacity` / `.size` rename and the
 17 `qsort_by_id` → `sorted_view` migrations — is filed as
-[010-vec-set-api-cleanup.md](010-vec-set-api-cleanup.md).
+[010-vec-set-api-cleanup.md](../010-vec-set-api-cleanup.md).
 
 ## Status
 
 Steps 1-6 complete; Step 6 follow-on (options A + B) landed
 June 2026. Closing this issue. Remaining cleanup work tracked
-in [010](010-vec-set-api-cleanup.md).
+in [010](../010-vec-set-api-cleanup.md).
 
 ## What this unblocks
 

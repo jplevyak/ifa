@@ -8,7 +8,7 @@ pass.
 **Affects:** `ifa/Makefile:230` (the `test_llvm` target),
 `ifa/codegen/llvm.cc:1342` (`llvm_codegen_compile`'s clang link
 step). Surfaced when wiring up GitHub Actions for the
-[CODEGEN_PLAN phase 6.1 CI gates](../codegen/CODEGEN_PLAN.md).
+[CODEGEN_PLAN phase 6.1 CI gates](../../codegen/CODEGEN_PLAN.md).
 
 ## Symptom
 

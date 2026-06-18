@@ -9,7 +9,7 @@ uncovered, down from 5 of 7 when filed).
 **Affects:** `ifa/analysis/fa.cc:split_ess_for_mark_type`,
 `split_for_setters_of_setters`, and the mark-based variants;
 `IFA.md` splitter section.
-**Related:** [issues/003-fa-converge-determinism.md](003-fa-converge-determinism.md)
+**Related:** [closed/003-fa-converge-determinism.md](closed/003-fa-converge-determinism.md)
 (empirical stage recon), [testing/phases/09c_splitter_triggers.md](../testing/phases/09c_splitter_triggers.md)
 (predicted trigger preconditions), [testing/phases/09d_generator_design.md](../testing/phases/09d_generator_design.md)
 (eager-absorption caveat).
@@ -280,7 +280,7 @@ marker.
 
 ## Follow-up — June 2026
 
-With [issue 008](008-fa-crash-on-nested-iterator-shape.md)
+With [issue 008](closed/008-fa-crash-on-nested-iterator-shape.md)
 closed as "could not reproduce," the `nested_iterator.synth`
 fixture is back in the suite and the **violation** stage is
 covered again. Current stage tally across all 17 fa-converge

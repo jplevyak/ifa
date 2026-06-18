@@ -206,7 +206,7 @@ through the destroyed LLVM module corrupts the codegen state.
 
 This is the same flavor of singleton problem tier-3 reentrancy
 steps 1-4 sunk for FA but didn't reach for codegen — see
-[../notes/005-singleton-fa-and-pdb.md](../notes/005-singleton-fa-and-pdb.md)
+[../../notes/005-singleton-fa-and-pdb.md](../../notes/005-singleton-fa-and-pdb.md)
 for the broader pattern. A focused `llvm_codegen_reset()` that
 explicitly nulls the LLVM globals + walks all extant Syms
 clearing their `llvm_*` fields would address this; out of scope

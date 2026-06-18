@@ -5,7 +5,7 @@ the issue's specific example (`add_one`) no longer reproduces in
 HEAD — see "Follow-up — June 2026" section below.
 **Affects:** `ifa/optimize/inline.cc:inline_single_sends`,
 `ifa/testing/phases/07_dce_optimize.md` (Inline test cases).
-**Related:** [005-retire-speculative-sym-level-dce.md](005-retire-speculative-sym-level-dce.md)
+**Related:** [closed/005-retire-speculative-sym-level-dce.md](closed/005-retire-speculative-sym-level-dce.md)
 (predecessor — established that `simple_inlining`'s purpose is to
 clean up IR-gen-emitted trivial wrappers so the IR generator can stay
 naive; the cost/benefit + iterative work belongs to a future "full
