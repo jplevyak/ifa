@@ -1,17 +1,34 @@
 # Issue 017: iterator construction passes `undef` self to `__new__`
 
-**Status:** **closed June 2026 (obsolete — v1 LLVM retired).**
-The "IF1 path" and "CG_IR path" both refer to v1 LLVM code
-paths that were deleted with the v1 retirement (commits
-`c4a9475` Stage 1, `41535cc` Stage 2 of issue 014).  v2 LLVM
-goes through `cg_normalize_v2` + `cg_v2_emit_llvm_module`,
-which constructs iterators via CG2_ALLOC + explicit FIELD_STORE
-of the freshly-allocated pointer into the destination slot
-(see `lower_send_period` and `lower_send_clone` in
-`cg_normalize_v2.cc`).  The 80/0 v2 LLVM pass rate confirms the
-for-loop iterator construction works; `PYC_STRICT_VERIFY=1`
-would surface any new "undef self to call" regression as a
-verification failure.
+**Status:** **closed June 2026 (resolved structurally by v2 LLVM
+design; v1 LLVM retired).**
+The "IF1 path" and "CG_IR path" both refer to v1 LLVM code that
+was deleted with the v1 retirement (commits `c4a9475` Stage 1,
+`41535cc` Stage 2 of issue 014).  But the substantive part of
+the resolution is structural: the v2 audit below (lines 184ff)
+identified the root cause as a **program-scoped Var → llvm::Value
+cache** when llvm::Value identity is function-scoped, and called
+for a **per-CGFun value cache**.  v2 LLVM implements exactly that
+— `EmitFunCtx::value_map` in `cg_ir_v2_emit_llvm.cc:185` is a
+per-CGFun `Map<CGv2Value *, llvm::Value *>` populated by
+`put_result` (line 338) and consumed by `resolve_value`
+(line 206).  A cache miss returns null (early-return at the
+caller) rather than the v1-era `undef` materialization, so even
+the failure mode is now loud rather than silent.
+
+Verified at HEAD:
+- `for_range_from_zero.py` and the rest of the issue-016 cohort
+  (`for_over_range`, `for_over_list`, `for_over_tuple`,
+  `break_continue`) pass on both backends.
+- A multi-pattern iterator stress test (simple, nested,
+  branch-guarded, fn-returned, list-typed) matches CPython
+  output exactly.
+- `--strict-verify` finds zero `undef` operands in user
+  functions — the regression detector for this bug class.
+- The .ll dump for `for x in range(N): print(x)` shows the
+  expected pattern: `GC_malloc` → store to slot →
+  constructor-call with the real pointer (no `undef`).
+
 **Affects (historical):** v1 LLVM backend, both IF1 path
 (`llvm_codegen.cc:translate_pn`, deleted) and CG_IR path
 (`emit_cg.cc:emit_cg_inst`, deleted).
