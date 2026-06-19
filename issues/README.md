@@ -45,15 +45,19 @@ that:
   the count-vs-capacity footgun); migrate `qsort_by_id; for(x:s)`
   sites to `sorted_view()`.  Deferred because the rename touches
   ~1000+ Vec consumer sites.
-- [015-pyc-pod-records-no-frontend-hook.md](015-pyc-pod-records-no-frontend-hook.md)
-  — Feature gap: pyc has no frontend hook for declaring POD
-  records.
 - [022-iterative-inlining.md](022-iterative-inlining.md) —
   `simple_inlining` runs `inline_single_sends` once.  Wrappers
   that *become* chains after one inlining round are never
   reconsidered.  Follow-on to [closed/006](closed/006-simple-inlining-multi-send-chain.md):
   the chain matcher's infrastructure is ready; iteration is
   what would make Gap A's targets reachable.
+- [023-v2-is-value-type-consumer.md](023-v2-is-value-type-consumer.md) —
+  v2 LLVM has no `Sym::is_value_type` consumer.  The frontend
+  opt-in landed in [`issues/closed/015`](../../issues/closed/015-pyc-pod-records-no-frontend-hook.md),
+  but `build_type` still wraps every Type_RECORD in CG2T_PTR
+  regardless of the bit.  Restoring the v1 `getLLVMVarType`
+  POD-record override in v2 form would make `@pyc_struct`
+  emit stack-alloc'd structs instead of heap pointers.
 
 ## Closed (archive)
 
