@@ -500,13 +500,65 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
                                        : "(anon)");
         return;
       }
-      uint64_t size_bytes = TheModule->getDataLayout()
-                                    .getTypeAllocSize(sty);
-      llvm::Function *gc_malloc = get_gc_malloc();
-      llvm::Value *size_v = llvm::ConstantInt::get(
-          llvm::Type::getInt64Ty(*TheContext), size_bytes);
-      llvm::Value *p = Builder->CreateCall(gc_malloc, { size_v },
-          inst->lvals[0]->name ? inst->lvals[0]->name : "p");
+      llvm::Value *p = nullptr;
+      if (!inst->type_arg->is_heap_aggregate) {
+        // Issue 023: value-type record (@pyc_struct in pyc, or
+        // any IF1 Type_RECORD with `is_value_type=1` that's not
+        // a vector).  Emit a stack alloca in the function's
+        // entry block so the slot lives for the function's
+        // duration without GC pressure.  Caller-side: the SSA
+        // ptr behaves the same as a heap ptr — downstream
+        // FIELD_LOAD/FIELD_STORE GEP through it the same way.
+        //
+        // Safety: only safe when the alloca'd pointer doesn't
+        // escape the current function.  We scan all uses of
+        // `inst->lvals[0]` and only allow ops that read/write
+        // through the ptr (FIELD/INDEX LOAD/STORE in target
+        // position, LEN, SIZEOF_ELEMENT, CLONE-as-proto).
+        // Anything else — RET, CALL arg, MOVE source (which
+        // may alias-then-escape), being the value of a
+        // FIELD_STORE / INDEX_STORE — is treated as escape and
+        // falls back to GC_malloc.
+        bool escapes = false;
+        if (ctx.cf) {
+          for (CGv2Block *b : ctx.cf->blocks) {
+            for (CGv2Inst *bi : b->body) {
+              bool ptr_target_op = (bi->op == CG2_FIELD_STORE ||
+                                    bi->op == CG2_FIELD_LOAD ||
+                                    bi->op == CG2_INDEX_STORE ||
+                                    bi->op == CG2_INDEX_LOAD ||
+                                    bi->op == CG2_LEN ||
+                                    bi->op == CG2_SIZEOF_ELEMENT ||
+                                    bi->op == CG2_CLONE);
+              for (int i = 0; i < bi->rvals.n; i++) {
+                if (bi->rvals[i] != inst->lvals[0]) continue;
+                if (ptr_target_op && i == 0) continue;  // benign use
+                escapes = true;
+                break;
+              }
+              if (escapes) break;
+            }
+            if (escapes) break;
+          }
+        }
+        if (!escapes) {
+          llvm::BasicBlock &entry_bb =
+              Builder->GetInsertBlock()->getParent()->getEntryBlock();
+          llvm::IRBuilder<> entry_builder(&entry_bb,
+                                          entry_bb.getFirstInsertionPt());
+          p = entry_builder.CreateAlloca(sty, nullptr,
+              inst->lvals[0]->name ? inst->lvals[0]->name : "p");
+        }
+      }
+      if (!p) {
+        uint64_t size_bytes = TheModule->getDataLayout()
+                                      .getTypeAllocSize(sty);
+        llvm::Function *gc_malloc = get_gc_malloc();
+        llvm::Value *size_v = llvm::ConstantInt::get(
+            llvm::Type::getInt64Ty(*TheContext), size_bytes);
+        p = Builder->CreateCall(gc_malloc, { size_v },
+            inst->lvals[0]->name ? inst->lvals[0]->name : "p");
+      }
       put_result(ctx, inst->lvals[0], p);
       ctx.ptr_struct.put(inst->lvals[0], inst->type_arg);
       break;

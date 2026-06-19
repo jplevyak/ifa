@@ -1,21 +1,53 @@
 # Issue 023: v2 LLVM has no `is_value_type` consumer for Type_RECORD
 
-**Status:** open (codegen gap).
-**Affects:** `ifa/codegen/cg_normalize_v2.cc:build_type`
-(Type_RECORD branch), plus the cascade through
-`lower_send_alloc`, `lower_send_period`,
-`CG2_FIELD_LOAD` / `CG2_FIELD_STORE` emit, and CG2_CALL's
-argument / return ABI.
+**Status:** **partial (Stage 1 landed June 2026)**.
+
+**Stage 1 done:**
+`build_struct_type` now propagates `is_heap_aggregate = !s->is_value_type`
+into the CGv2Type lattice (vectors always stay heap-allocated).
+`CG2_ALLOC` emit (`cg_ir_v2_emit_llvm.cc:488`) now consults the
+bit and emits a stack alloca in the function's entry block
+when `!is_heap_aggregate` AND the alloc's lvalue doesn't escape
+the current function.  Escape is detected conservatively by
+scanning all instructions for non-target-position uses of the
+lvalue (any rval other than position-0 of FIELD/INDEX
+LOAD/STORE / LEN / SIZEOF_ELEMENT / CLONE-as-proto).
+
+**Stage 2 remaining (the actual user-visible win):**
+Today's pyc IR shape wraps every `__new__` constructor in a
+helper that allocates a fresh struct and returns the ptr.  Any
+call to `Point(x, y)` lands in the wrapper, which means the
+alloc's lvalue is in the wrapper's `CG2_RET` rvals — escape
+positive, fallback to GC_malloc.  The result: the alloca path
+is wired and correct, but **dormant** on pyc's current
+codegen: zero allocas fire for `@pyc_struct` instances in the
+pyc test suite today.
+
+To unlock Stage 2, the constructor wrappers need either
+- (a) inlining at the call site (issue 022 territory — once
+  iterative inlining lands, small `__new__` wrappers fold into
+  the caller and the alloca site moves to the caller's frame
+  where escape is determined by the caller's own uses), or
+- (b) sret-style calling convention rework so the caller
+  pre-alloca's the slot and passes its ptr as an out arg; the
+  wrapper writes through the slot ptr instead of allocating.
+  This is more invasive but doesn't depend on inlining.
+
+**Affects:** `ifa/codegen/cg_normalize_v2.cc:build_struct_type`
+(Stage 1 done), plus the cascade through `lower_send_alloc`,
+the wrapper IR shape, and CG2_CALL's argument / return ABI
+(Stage 2).
 **Surfaced while:** closing
 [`issues/015-pyc-pod-records-no-frontend-hook.md`](../../issues/closed/015-pyc-pod-records-no-frontend-hook.md)
 — pyc's `@pyc_struct` decorator now sets `Sym::is_value_type`
-on user RECORDs, but no codegen path consumes the bit; the
-class still ends up CG2T_PTR-wrapped and heap-allocated, the
-same as without the decorator.
+on user RECORDs.  Stage 1 closes the gap between the bit and
+the codegen layer.  Stage 2 makes the bit observable.
 **Related:**
 [`closed/014-llvm-construction-flow-to-slots.md`](closed/014-llvm-construction-flow-to-slots.md)
 (v1 LLVM had a `getLLVMVarType` POD-record override that was
-retired alongside v1 LLVM).
+retired alongside v1 LLVM),
+[`022-iterative-inlining.md`](022-iterative-inlining.md) (the
+inliner-side dependency for Stage 2 path (a)).
 
 ## Symptom
 

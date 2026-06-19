@@ -122,7 +122,12 @@ CGv2Type *build_struct_type(NormCtx &c, Sym *s) {
   // its own type-lattice kind so CG2_INDEX_LOAD/STORE/SIZEOF_ELEMENT
   // can dispatch on it instead of a side-channel bool.
   t->kind = s->is_vector ? CG2T_VECTOR : CG2T_STRUCT;
-  t->is_heap_aggregate = true;       // pyc's default for RECORD
+  // pyc's default for RECORD is heap (GC_malloc).  @pyc_struct
+  // (issue 015) sets Sym::is_value_type=1; lift that bit into
+  // the CGv2Type so the CG2_ALLOC emit can route to alloca
+  // (issue 023).  Vectors stay heap-allocated regardless —
+  // their trailing-array layout has no upper size bound.
+  t->is_heap_aggregate = s->is_vector ? true : !s->is_value_type;
   c.sym_to_struct.put(s, t);          // register first (recursion guard)
   c.p->types.add(t);
   int idx = 0;
