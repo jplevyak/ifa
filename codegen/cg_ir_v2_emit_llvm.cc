@@ -507,33 +507,16 @@ llvm::Value *apply_header_indirection(llvm::Value *p) {
 }
 
 // Issue 023: would routing `v` through a stack alloca (rather
-// than GC_malloc) be safe?  Yes iff every use of `v` in the
-// current function is a benign read/write THROUGH the ptr —
-// position-0 of FIELD/INDEX LOAD/STORE, LEN, SIZEOF_ELEMENT,
-// or CLONE-as-proto.  Anywhere else (RET rvals, CALL args,
-// MOVE source, FIELD_STORE value position, etc.) is treated as
-// escape.  Used by CG2_ALLOC for the @pyc_struct heap→stack
-// promotion (Stage 1) and by CG2_CALL for the sret-slot
-// allocation site (Stage 2).
+// than GC_malloc) be safe?  Yes iff `v` provably doesn't
+// escape its enclosing function.  The full analysis lives in
+// cg_normalize_v2.cc:compute_arg_escapes (Stage 3); it
+// populates `v->escapes` for every CGv2Value during the
+// normalize pass, with cross-function arg_escapes propagation
+// for CALL-arg uses.  At emit time we just consult the bit.
 bool value_escapes_in_fun(CGv2Value *v, CGv2Fun *cf) {
-  if (!v || !cf) return true;
-  for (CGv2Block *b : cf->blocks) {
-    for (CGv2Inst *bi : b->body) {
-      bool ptr_target_op = (bi->op == CG2_FIELD_STORE ||
-                            bi->op == CG2_FIELD_LOAD ||
-                            bi->op == CG2_INDEX_STORE ||
-                            bi->op == CG2_INDEX_LOAD ||
-                            bi->op == CG2_LEN ||
-                            bi->op == CG2_SIZEOF_ELEMENT ||
-                            bi->op == CG2_CLONE);
-      for (int i = 0; i < bi->rvals.n; i++) {
-        if (bi->rvals[i] != v) continue;
-        if (ptr_target_op && i == 0) continue;
-        return true;
-      }
-    }
-  }
-  return false;
+  (void)cf;  // analysis is per-value, function-scoped already
+  if (!v) return true;
+  return v->escapes;
 }
 
 void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {

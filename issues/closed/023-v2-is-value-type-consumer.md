@@ -1,13 +1,11 @@
 # Issue 023: v2 LLVM has no `is_value_type` consumer for Type_RECORD
 
-**Status:** **partial (Stage 1 + Stage 2 (b) landed June 2026)**.
-Stage 1: heap→stack promotion for non-escaping `@pyc_struct`
-allocs (commit `a37d652`).  Stage 2 (b): sret-style calling
-convention for value-type-returning functions.  Remaining work
-is improving the per-function escape check (today it
-conservatively bails on any cross-function pointer flow, which
-keeps the heap fallback active for the common closure-bound
-`self` pattern).
+**Status:** **closed June 2026** — Stage 1 (alloca for non-
+escaping value-type RECORDs), Stage 2(b) (sret calling
+convention for value-type returns), and Stage 3 (inter-
+procedural escape analysis) all landed.  The closure-bound
+`self` pattern that was the remaining gap now correctly
+proves non-escape and uses alloca.
 
 **Stage 1 done:**
 `build_struct_type` now propagates `is_heap_aggregate = !s->is_value_type`
@@ -47,16 +45,51 @@ to the args, and binds the dst CGv2Value to the slot ptr.
   remaining GC_mallocs are prototypes, closure structs, and
   Point slots whose dst escapes via global / closure capture.
 
-**What's still on the table:**
-The user-visible global-bound case (`p = Point(3, 4); print(p.x)`
-at top level) still GC_mallocs the sret slot because `p` is
-stored into the module global `@p`.  Same for any Point bound
-into a closure-self slot — the escape check (correctly) treats
-the closure's field-store as escape.  Loosening this requires
-real escape analysis at the FA / CG_IR level, ideally
-propagating across function calls.  That's a substantial
-follow-on, but the sret ABI is now in place and ready to
-benefit from any future loosening.
+**Stage 3 done — inter-procedural escape analysis:**
+`cg_normalize_v2.cc:compute_arg_escapes` runs as the final
+step of the normalize pass.  It populates two pieces of data:
+- `CGv2Fun::arg_escapes` — per-formal "this arg escapes the
+  function" bit, used by callers when checking whether
+  passing a value to this function counts as escape.
+- `CGv2Value::escapes` — per-value "this value escapes its
+  enclosing function" bit, read by emit-time
+  `value_escapes_in_fun` to drive the alloca-vs-GC_malloc
+  choice in CG2_ALLOC and CG2_CALL (sret slot allocation).
+
+The analysis is a nested fixed-point: an inner per-function
+loop refines the local non-escape set by classifying each
+use as benign or escaping, taking already-known callee
+`arg_escapes` into account.  An outer loop iterates over
+functions until no `arg_escapes` flips.  Bounded at 8 outer
+passes (in practice settles in 2-3).
+
+Benign-use rules expanded over Stage 1's local check:
+- Position 0 of FIELD/INDEX LOAD/STORE / LEN / SIZEOF_ELEMENT
+  / CLONE — read/write through the ptr (unchanged).
+- Value position (≥1) of FIELD/INDEX_STORE where the target
+  ptr is itself non-escaping — the value lives only as long
+  as the target.
+- CALL arg position where the callee's matching formal is
+  marked non-escape.
+- MOVE source where the destination is a local (escape
+  decision propagates transitively); MOVE-into-global still
+  escapes.
+
+**Observable wins on `tests/pyc_struct_no_escape.py`:**
+`compute(x, y)` previously kept the Point on the heap because
+`%v` was field-stored into a closure (for method dispatch).
+With Stage 3, the closure is recognised as non-escaping (its
+only uses are FIELD_STOREs at position-0), so the closure's
+value-position stores are benign for `%v`; the
+`magnitude_squared(%v)` call's arg-0 is also marked benign
+because the method's body never escapes self; result: `%v`
+becomes `alloca %Point.3432` instead of `call ptr
+@GC_malloc(i64 32)`.
+
+Corpus-wide IR audit: 3 struct-typed allocas across the pyc
+test suite (1 from Stage 2 in `pyc_struct_basic.py`,
+2 from Stages 2+3 in `pyc_struct_no_escape.py`).  Zero
+struct-typed allocas pre-023.
 
 **Stage 2 (a) — inlining — independent value:**
 Issue 022's iterative inliner is still worth landing, but no

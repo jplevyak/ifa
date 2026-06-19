@@ -145,8 +145,18 @@ class CGv2Value : public gc {
   // Resolved at emit time via TheModule->getFunction().
   cchar *target_name;
 
+  // Issue 023 Stage 3: per-value escape annotation, computed
+  // by compute_arg_escapes (cg_normalize_v2.cc) after all
+  // bodies are built.  Default true (conservative).  Set to
+  // false when the value provably does not escape its
+  // enclosing function (no RET / no global-MOVE / no escape-
+  // ing CALL arg / no FIELD-STORE-into-escaping-target use).
+  // Read at emit time by CG2_ALLOC / CG2_CALL to choose
+  // alloca vs GC_malloc.
+  bool escapes;
+
   CGv2Value() : id(0), name(0), type(0), scope(CG2V_LOCAL),
-                target_name(0) {}
+                target_name(0), escapes(true) {}
 };
 
 // ============================================================
@@ -311,6 +321,19 @@ class CGv2Fun : public gc {
   Vec<CGv2Value *> formals;
   Vec<CGv2Value *> locals;
 
+  // Issue 023 Stage 3: per-formal escape annotation, populated
+  // by compute_arg_escapes() after all bodies are built.  An
+  // arg "escapes" if its CGv2Value flows into any non-benign
+  // use (RET rvals, MOVE-to-global source, FIELD/INDEX_STORE
+  // value position, CALL arg where the callee's matching slot
+  // is itself flagged as escape).  When false, a caller can
+  // safely treat passing a stack-alloca'd ptr at that arg
+  // position as not escaping.
+  //
+  // Indexed parallel to `formals`.  Empty until the analysis
+  // runs (treat empty as "all escape" conservatively).
+  Vec<bool> arg_escapes;
+
   bool live;
   bool is_external;
   bool is_varargs;
@@ -355,6 +378,7 @@ class CGv2Program : public gc {
 
   CGv2Program();
   CGv2Type *lookup_type(cchar *name) const;
+  CGv2Fun *lookup_fun(cchar *name) const;
 };
 
 // ============================================================

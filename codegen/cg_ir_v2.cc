@@ -79,3 +79,11 @@ CGv2Type *CGv2Program::lookup_type(cchar *name) const {
   }
   return nullptr;
 }
+
+CGv2Fun *CGv2Program::lookup_fun(cchar *name) const {
+  if (!name) return nullptr;
+  for (CGv2Fun *f : funs) {
+    if (f && f->name && strcmp(f->name, name) == 0) return f;
+  }
+  return nullptr;
+}

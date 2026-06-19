@@ -2193,6 +2193,175 @@ void build_fun_bodies(NormCtx &c, FA *fa) {
 
 }  // namespace
 
+// Issue 023 Stage 3 — per-function arg-escape analysis.
+//
+// For each function, compute which formals "escape" the
+// function body.  An arg `fa` escapes if any of its uses is
+// non-benign: appearing in CG2_RET rvals, being the source of
+// a MOVE into a CG2V_GLOBAL lvalue, appearing as the value
+// position (rvals[1+]) of a FIELD/INDEX_STORE whose target ptr
+// also escapes, or being passed to a CG2_CALL at an arg
+// position whose callee marks that slot as escape.
+//
+// Benign uses (which do NOT cause escape): position 0 of
+// FIELD/INDEX LOAD/STORE / LEN / SIZEOF_ELEMENT / CLONE (the
+// pointer is read/written THROUGH, the pointer itself doesn't
+// leave), or the value position of a FIELD/INDEX_STORE whose
+// target is itself non-escaping (the value lives only as long
+// as the target).
+//
+// Algorithm: track a per-function "non-escape" set of
+// CGv2Values, initially populated with formals.  Iteratively
+// prune any value whose uses include an escape.  Cross-function
+// info (callee arg_escapes) participates in the per-iteration
+// re-check.  Outer loop iterates over the call graph until
+// arg_escapes stabilizes (bounded by total args).
+namespace {
+
+static bool is_ptr_target_op(CGv2Op op) {
+  return op == CG2_FIELD_STORE || op == CG2_FIELD_LOAD ||
+         op == CG2_INDEX_STORE || op == CG2_INDEX_LOAD ||
+         op == CG2_LEN || op == CG2_SIZEOF_ELEMENT ||
+         op == CG2_CLONE;
+}
+
+// Check whether `v` escapes the body of `cf`, given the
+// current `non_escape` set within cf and the cross-function
+// arg_escapes data already populated.
+//
+// `non_escape` is the set of CGv2Values already proved
+// non-escaping in this function (formals + values whose uses
+// have all been classified benign so far).  `v` itself need
+// not be in the set; we're computing whether to add it.
+static bool value_escapes(CGv2Fun *cf, CGv2Value *v,
+                          Map<CGv2Value *, int> &non_escape,
+                          CGv2Program *p) {
+  for (CGv2Block *b : cf->blocks) {
+    for (CGv2Inst *bi : b->body) {
+      // MOVE: source escapes if dst is a global; otherwise
+      // dst is a local alias — escape transitively if dst
+      // escapes (i.e. dst not in non_escape).
+      if (bi->op == CG2_MOVE && bi->rvals.n > 0 && bi->lvals.n > 0 &&
+          bi->rvals[0] == v) {
+        if (bi->lvals[0]->scope == CG2V_GLOBAL) return true;
+        if (!non_escape.get(bi->lvals[0])) return true;
+        continue;
+      }
+      bool target_op = is_ptr_target_op(bi->op);
+      for (int i = 0; i < bi->rvals.n; i++) {
+        if (bi->rvals[i] != v) continue;
+        if (target_op && i == 0) continue;  // benign: ptr is the target
+        // Value position of FIELD/INDEX_STORE: benign if the
+        // target ptr is non-escaping.
+        if ((bi->op == CG2_FIELD_STORE || bi->op == CG2_INDEX_STORE) &&
+            i >= 1 && bi->rvals.n >= 1 && non_escape.get(bi->rvals[0])) {
+          continue;
+        }
+        // CG2_CALL: benign if callee marks this slot as
+        // non-escaping.  rvals[0] is the callee; rvals[1..]
+        // are user args.  If callee has sret, its LLVM
+        // arg-0 is the implicit slot — so the rvals[i] at
+        // position 1 maps to the callee's formal index 0,
+        // etc.
+        if (bi->op == CG2_CALL && i >= 1 && bi->rvals[0] &&
+            bi->rvals[0]->target_name) {
+          CGv2Fun *callee = p->lookup_fun(bi->rvals[0]->target_name);
+          if (callee && callee->arg_escapes.n > 0) {
+            int formal_idx = i - 1;  // skip callee slot
+            if (formal_idx < callee->arg_escapes.n &&
+                !callee->arg_escapes[formal_idx]) {
+              continue;
+            }
+          }
+        }
+        return true;
+      }
+    }
+    // Block terminator escape check.
+    if (b->terminator) {
+      CGv2Inst *t = b->terminator;
+      if (t->op == CG2_RET) {
+        for (CGv2Value *rv : t->rvals)
+          if (rv == v) return true;
+      }
+      // CG2_BR / CG2_COND_BR don't carry CGv2Values as rvals
+      // in a way that would propagate `v`; skip.
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+static void compute_arg_escapes(CGv2Program *p) {
+  if (!p) return;
+
+  // Outer loop: re-run until no function's arg_escapes flips.
+  // Each function's analysis can refine its own arg_escapes
+  // (which then feeds back into callers' analyses on the next
+  // iteration).
+  bool changed = true;
+  int outer_passes = 0;
+  while (changed && outer_passes < 8) {
+    changed = false;
+    outer_passes++;
+    for (CGv2Fun *cf : p->funs) {
+      if (!cf || cf->is_external) continue;
+      // Inner fixed-point per function: start with formals in
+      // non_escape, iteratively prune.  Also pull in locals
+      // that prove non-escaping so transitive uses (value
+      // stored into a non-escaping struct, etc.) chain
+      // correctly.
+      Map<CGv2Value *, int> non_escape;
+      for (CGv2Value *fv : cf->formals) non_escape.put(fv, 1);
+      // Seed locals as candidates; we'll prune ones that
+      // escape.
+      Vec<CGv2Value *> candidates;
+      candidates.copy(cf->formals);
+      for (CGv2Value *lv : cf->locals) {
+        if (lv) {
+          non_escape.put(lv, 1);
+          candidates.add(lv);
+        }
+      }
+      bool inner_changed = true;
+      while (inner_changed) {
+        inner_changed = false;
+        for (CGv2Value *v : candidates) {
+          if (!non_escape.get(v)) continue;
+          if (value_escapes(cf, v, non_escape, p)) {
+            non_escape.put(v, 0);
+            inner_changed = true;
+          }
+        }
+      }
+      // Project the final state onto cf->arg_escapes (for
+      // cross-function lookup) and onto each value's
+      // .escapes bit (for emit-time consumption).
+      Vec<bool> new_escapes;
+      for (CGv2Value *fv : cf->formals) {
+        bool ne = non_escape.get(fv) ? true : false;
+        new_escapes.add(!ne);
+        fv->escapes = !ne;
+      }
+      for (CGv2Value *lv : cf->locals) {
+        if (lv) lv->escapes = non_escape.get(lv) ? false : true;
+      }
+      if (cf->arg_escapes.n != new_escapes.n) {
+        cf->arg_escapes.move(new_escapes);
+        changed = true;
+      } else {
+        for (int i = 0; i < new_escapes.n; i++) {
+          if (cf->arg_escapes[i] != new_escapes[i]) {
+            cf->arg_escapes[i] = new_escapes[i];
+            changed = true;
+          }
+        }
+      }
+    }
+  }
+}
+
 CGv2Program *cg_normalize_v2(FA *fa) {
   CGv2Program *p = new CGv2Program();
   if (!fa) return p;
@@ -2202,6 +2371,11 @@ CGv2Program *cg_normalize_v2(FA *fa) {
   build_globals(c, fa);
   build_funs(c, fa);
   build_fun_bodies(c, fa);
+
+  // Issue 023 Stage 3: cross-function arg-escape annotation,
+  // consumed by emit-time `value_escapes_in_fun` to unlock
+  // alloca for ptrs passed only into read-only callees.
+  compute_arg_escapes(p);
 
   return p;
 }
