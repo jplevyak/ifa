@@ -1,14 +1,73 @@
 # Issue 021: v2 LLVM CG2_CALL swaps args on cross-clone calls
 
-**Status:** open.
+**Status:** **closed June 2026** — fix landed in commit
+`0f2c37e` ("ifa/codegen: issue 021 — walk MPositions for v2
+LLVM signature").  Root cause was the signature-build path
+disagreeing with the call-site arg-routing path about which
+formal goes in which slot (hypothesis #1 from below).  Pyc
+suite 80/0 on v2 LLVM; the swap-coercion pattern
+(`ptrtoint` + `inttoptr` on adjacent args) is gone from the
+entire 79-file test corpus IR audit.
+
 **Affects:** `ifa/codegen/cg_normalize_v2.cc`'s `lower_send_call`
 MPosition-based arg routing. Surfaced when issue 020's
 fixes made `list.__add__` actually call `_CG_list_add`, which
 caused `list.__str__` on the concat result to reach a wrapper
 function (`_CG_f_2947_10`) whose internal call to range's
 `__init__` had positionally-swapped + ptr/int-coerced args.
-**Related:** [020-v2-list-add-empty-body.md](020-v2-list-add-empty-body.md)
+**Related:** [closed/020-v2-list-add-empty-body.md](closed/020-v2-list-add-empty-body.md)
 (the alloc/sizeof_element/len fixes that unblocked this gap).
+
+## What landed (closes the issue)
+
+Of the three hypotheses below, **#1 was the actual cause**:
+`build_fun_decl` (the v2 LLVM signature builder) iterated
+`f->args.get_values(arg_vars)`, which returns args in map-
+insertion order rather than positional MPosition order.
+`lower_send_call` was already walking
+`target->positional_arg_positions` and indexing rvals via
+`Position2int(p->pos[0]) - 1`, so when the two orderings
+diverged (which they did for any clone whose args entered the
+map in a non-positional sequence), the LLVM signature had its
+formal slots in one order and the call-site rvals routed
+against a different order.
+
+The v2 emit's type-checker then inserted `ptrtoint` +
+`inttoptr` coercions to bridge the resulting type mismatch —
+those coercions *looked* like type fixes but were actually
+covering up a positional swap.  The visible footprint was a
+pair of opposite-direction casts on adjacent call args
+(`%v` ptr coerced to i64, `%arg` i64 coerced to ptr).
+
+**Fix:** `build_fun_decl` now walks
+`positional_arg_positions` itself (same iteration order as
+`lower_send_call`), so the LLVM signature's formal order
+agrees with the call site's rval routing for every clone.
+
+## Verification (June 2026)
+
+- `x = [1] + [2,3,4,5,6]; print(x)` → `[1, 2, 3, 4, 5, 6]`
+  under `IFA_LLVM_V2=1 -b`.
+- Wrapper function for `range(0, len(x))` is now:
+  ```llvm
+  define internal ptr @_CG_f_2954_10(i64 %arg) {
+  entry:
+    %v = call ptr @GC_malloc(i64 56)
+    %v1 = call ptr @_CG_f_1695_5(ptr %v, i64 %arg)
+    ret ptr %v
+  }
+  ```
+  Direct call with no ptrtoint/inttoptr — matches the
+  inlined-loop reference shape from the original report.
+- `tests/list_concat.py`, `tests/list_or_concat.py`,
+  `tests/list_multiply.py` all PASS on v2 LLVM.
+- **Corpus-wide audit**: dumped IR for all 82 pyc test files
+  (79 reached codegen; 3 are scope-test exits before
+  codegen).  `grep "ptrtoint\|inttoptr"` across the 79 .ll
+  files returns **zero hits** — the diagnostic shape is gone
+  from the entire suite, not just the list cohort.
+- pyc suite v2 LLVM: 80/0 (parity with C backend).
+- ifa unit tests: 99/0.
 
 ## Symptom
 
