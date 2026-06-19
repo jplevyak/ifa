@@ -1,14 +1,70 @@
 # Issue 020: v2 LLVM list.__add__ body is `ret ptr undef`
 
-**Status:** open.
+**Status:** **closed June 2026** — fix landed in commit
+`7dc970b` ("ifa/codegen: issue 020 — list runtime helpers +
+opaque-ptr fallbacks").  `list.__add__`'s v2 LLVM body now
+contains the call to `_CG_list_add`; sibling methods
+(`list.__mul__`, `list.__pyc_getslice__`,
+`list.__pyc_setslice__`) emit their respective helpers; pyc
+suite is 80/0 on both backends.
+
 **Affects:** v2 LLVM lowering of pyc-Python library methods
 that build `__pyc_c_call__` SENDs with a non-trivial type
 marker as the return-type argument. Surfaced when the
 issue 019 E.3 commit (`5a0ff11`) made the allocation side of
 list literals sound, leaving `list.__add__`'s body as the
 next bottleneck.
-**Related:** [019-v2-flat-list-header.md](019-v2-flat-list-header.md)
+**Related:** [closed/019-v2-flat-list-header.md](closed/019-v2-flat-list-header.md)
 (the alloc-side fix that exposed this gap).
+
+## What landed (closes the issue)
+
+The actual root cause turned out to be different from the
+three suspected hypotheses below — the fn-name slot was being
+read correctly; what was failing was downstream.  Three
+coordinated changes in commit `7dc970b`:
+
+1. **`CG2_SIZEOF_ELEMENT` opaque-ptr fallback**
+   (`cg_ir_v2_emit_llvm.cc`). The previous emit bailed when
+   the rval's CGv2Type was opaque (`t_ptr`), which is exactly
+   how the FA leaves `self` / `l` formals in pyc library
+   methods (they hold `_CG_any`-typed ptrs). The new emit
+   walks the CGv2Type for a struct's first-field type to
+   recover the element size, or returns a default
+   `sizeof(int64) = 8` for fully-opaque ptrs.  Without a
+   produced value, the downstream `CG2_C_CALL` to
+   `_CG_list_add` was bailing at `resolve_value`-of-undef and
+   the SEND silently disappeared — leaving the function body
+   empty with `ret ptr undef`.
+2. **`CG2_LEN` runtime path** (`cg_ir_v2_emit_llvm.cc`). The
+   previous emit returned `ConstantInt 0` for non-string
+   ptrs (placeholder from before `_CG_prim_len` existed).
+   `for k in range(len(self))` inside `list.__str__` would
+   iterate zero times.  Replaced with a `CG2_C_CALL` to
+   `_CG_prim_len` that reads `header.len` from `ptr - 12`.
+3. **`libpyc_runtime.a` exports**
+   (`pyc_runtime.c:225-333`). `_CG_list_add`, `_CG_list_mult`,
+   `_CG_list_resize`, `_CG_list_getslice`, `_CG_list_setslice`
+   are now exported as plain externs taking int64 size args
+   (matching v2's `CG2_SIZEOF_ELEMENT` which produces i64;
+   diverges from `pyc_c_runtime.h`'s uint32 internals
+   intentionally).
+
+## Verification (June 2026)
+
+- `_CG_f_1359_3` (list.__add__) body:
+  `call ptr @_CG_list_add(ptr %self, ptr %l, i64 8, i64 8)`
+  followed by `ret ptr %v` — no more `ret ptr undef`.
+- `list.__mul__` body:
+  `call ptr @_CG_list_mult(ptr %self, i64 N, i64 8)`.
+- `list.__pyc_getslice__` body:
+  `call ptr @_CG_list_getslice(ptr %self, i64 8, i64 %i, i64 %j, i64 %s)`.
+- `list.__pyc_setslice__` body:
+  `call ptr @_CG_list_setslice(ptr %self, i64 8, i64 lo, i64 hi, ptr %v)`.
+- `tests/list_concat.py`, `tests/list_or_concat.py`,
+  `tests/list_multiply.py`, `tests/list_comprehension.py`,
+  `tests/list_slicing.py` — all PASS on v2 LLVM.
+- pyc suite v2 LLVM: 80/0 (parity with C backend).
 
 ## Symptom
 

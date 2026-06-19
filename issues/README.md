@@ -48,9 +48,6 @@ that:
 - [015-pyc-pod-records-no-frontend-hook.md](015-pyc-pod-records-no-frontend-hook.md)
   — Feature gap: pyc has no frontend hook for declaring POD
   records.
-- [020-v2-list-add-empty-body.md](020-v2-list-add-empty-body.md) —
-  v2 LLVM `list.__add__` lowers to an empty body for some
-  specializations.
 - [021-v2-call-arg-swap.md](021-v2-call-arg-swap.md) —
   v2 LLVM `CG2_CALL` walks formals in IF1-MPosition order;
   ordering convention deserves a documented invariant.
@@ -68,7 +65,7 @@ commit ref recorded in each file's status line.  They stay in
 the tree as history — a code-search for the affected file finds
 the trail of investigation even after the fix has landed.
 
-Currently 16 closed issues:
+Currently 17 closed issues:
 [001](closed/001-keepalive-vs-explicit-reply.md),
 [002](closed/002-codegen-llvm-normalizer.md),
 [003](closed/003-fa-converge-determinism.md),
@@ -84,7 +81,8 @@ Currently 16 closed issues:
 [016](closed/016-llvm-ssu-formal-arg-binding.md),
 [017](closed/017-iterator-construction-undef-self.md),
 [018](closed/018-v2-loop-after-undef.md),
-[019](closed/019-v2-flat-list-header.md).
+[019](closed/019-v2-flat-list-header.md),
+[020](closed/020-v2-list-add-empty-body.md).
 
 ## When to file an issue here vs fix it now
 
