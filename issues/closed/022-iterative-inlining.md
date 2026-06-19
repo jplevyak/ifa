@@ -1,11 +1,18 @@
 # Issue 022: simple_inlining doesn't iterate — single-pass leaves second-order chains uninlined
 
-**Status:** open.  Follow-on to closed
-[006-simple-inlining-multi-send-chain.md](closed/006-simple-inlining-multi-send-chain.md);
-the chain-matcher infrastructure from 006 is in place but is
-fired only once per pyc invocation, so wrappers that *become*
-chains after one round of single-send inlining are never
-reconsidered.
+**Status:** **closed June 2026** as "infrastructure ready, no
+live cases" (the disposition the issue's own verification plan
+§1 anticipated for a zero-delta probe).  The iteration is now
+in place — `simple_inlining` runs `inline_single_sends` until a
+pass produces no new events, capped at 4 passes.  But the
+pyc-suite `_CG_f_*` coverage probe is unchanged
+(631 → 631 across all 81 reachable test files), confirming
+that the wrappers Gap A was meant to expose don't appear in
+real pyc output today.  The loop is harmless and future-proof:
+if pyc grows new wrapper-chain patterns later, the iteration
+catches them automatically; if it doesn't, the second pass
+breaks out on zero delta and adds no compile-time cost.
+
 **Affects:** `ifa/optimize/inline.cc:552` (`simple_inlining`
 calls `inline_single_sends` exactly once).
 **Related:** [closed/006-simple-inlining-multi-send-chain.md](closed/006-simple-inlining-multi-send-chain.md)
@@ -129,7 +136,7 @@ functions are filtered out elsewhere (FA doesn't single-target
 them in `f->calls`), but the bound is a belt-and-suspenders
 guard.
 
-## Verification plan
+## Verification (June 2026)
 
 1. **Coverage probe.**  Replicate 006's `_CG_f_*` count probe
    across the pyc test suite, pre/post this change.  Expect a
@@ -139,6 +146,11 @@ guard.
    that's evidence the wrappers Gap A targets just don't exist
    in real pyc output, and we close this with the same
    "infrastructure ready, no live cases" disposition.
+
+   **Result:** zero delta. 631 `_CG_f_*` function definitions
+   pre, 631 post, across all 81 test files that reach codegen.
+   No per-test diff.  Same disposition as 006's "no live
+   cases."
 2. **Targeted ifa-test fixture.**  Construct an `.ir` test
    where `g` is a single-SEND wrapper around `prim_period`, `h`
    is a single-SEND wrapper around `g`.  Expect pass 1 to inline

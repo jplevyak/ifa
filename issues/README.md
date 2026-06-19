@@ -45,19 +45,12 @@ that:
   the count-vs-capacity footgun); migrate `qsort_by_id; for(x:s)`
   sites to `sorted_view()`.  Deferred because the rename touches
   ~1000+ Vec consumer sites.
-- [022-iterative-inlining.md](022-iterative-inlining.md) —
-  `simple_inlining` runs `inline_single_sends` once.  Wrappers
-  that *become* chains after one inlining round are never
-  reconsidered.  Follow-on to [closed/006](closed/006-simple-inlining-multi-send-chain.md):
-  the chain matcher's infrastructure is ready; iteration is
-  what would make Gap A's targets reachable.
-- [023-v2-is-value-type-consumer.md](023-v2-is-value-type-consumer.md) —
-  v2 LLVM has no `Sym::is_value_type` consumer.  The frontend
-  opt-in landed in [`issues/closed/015`](../../issues/closed/015-pyc-pod-records-no-frontend-hook.md),
-  but `build_type` still wraps every Type_RECORD in CG2T_PTR
-  regardless of the bit.  Restoring the v1 `getLLVMVarType`
-  POD-record override in v2 form would make `@pyc_struct`
-  emit stack-alloc'd structs instead of heap pointers.
+- [023-v2-is-value-type-consumer.md](023-v2-is-value-type-consumer.md)
+  — **partial.** Stage 1 (heap→stack alloca for non-escaping
+  value-type allocs) and Stage 2(b) (sret calling convention
+  for value-type returns) both landed.  Remaining is an
+  escape-analysis loosening that would let the closure-bound
+  `self` pattern stop falling back to GC_malloc.
 
 ## Closed (archive)
 
@@ -66,7 +59,7 @@ commit ref recorded in each file's status line.  They stay in
 the tree as history — a code-search for the affected file finds
 the trail of investigation even after the fix has landed.
 
-Currently 18 closed issues:
+Currently 19 closed issues:
 [001](closed/001-keepalive-vs-explicit-reply.md),
 [002](closed/002-codegen-llvm-normalizer.md),
 [003](closed/003-fa-converge-determinism.md),
@@ -84,7 +77,8 @@ Currently 18 closed issues:
 [018](closed/018-v2-loop-after-undef.md),
 [019](closed/019-v2-flat-list-header.md),
 [020](closed/020-v2-list-add-empty-body.md),
-[021](closed/021-v2-call-arg-swap.md).
+[021](closed/021-v2-call-arg-swap.md),
+[022](closed/022-iterative-inlining.md).
 
 ## When to file an issue here vs fix it now
 

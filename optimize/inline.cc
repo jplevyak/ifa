@@ -550,6 +550,25 @@ static int inline_single_sends(FA *fa) {
 }
 
 int simple_inlining(FA *fa) {
-  inline_single_sends(fa);
+  // Issue 022: iterate `inline_single_sends` until a pass
+  // produces no new INLINE events.  The first pass collapses
+  // first-order single-SEND wrappers; the chain-matcher
+  // infrastructure from issue 006 then has a shot at any
+  // straight-line chains those collapses exposed, on the
+  // second pass.  `inline_single_sends` calls
+  // `f->collect_Vars(&f->fa_all_PNodes)` per fun (above), so
+  // the per-fun PNode index is rebuilt between passes — no
+  // staleness.
+  //
+  // The cap is defensive: real codebases shouldn't produce
+  // deep wrapper chains, and the chain matcher absorbs
+  // straight-line chains in one pass anyway.  Iteration count
+  // is reported via inline_events_storage.n deltas.
+  const int max_passes = 4;
+  for (int pass = 0; pass < max_passes; pass++) {
+    int before = inline_events_storage.n;
+    inline_single_sends(fa);
+    if (inline_events_storage.n == before) break;
+  }
   return 0;
 }
