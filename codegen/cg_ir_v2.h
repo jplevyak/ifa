@@ -276,12 +276,27 @@ class CGv2Block : public gc {
 // ============================================================
 
 // Function signature: ret + arg types.
+//
+// Issue 023 Stage 2 — when the IF1 return type is a value-type
+// RECORD (Sym::is_value_type=1 → CG2T_PTR whose element CGv2Type
+// has is_heap_aggregate=false), the signature is rewritten to
+// LLVM sret form: `ret` becomes t_void, a `ptr sret(struct)`
+// is implicitly prepended to the LLVM signature, and CG2_RET in
+// the body emits `ret void` (after the value has been written
+// through the sret slot).  Callers see `is_sret==true` and
+// alloca a slot of `sret_struct` to pass as the implicit first
+// arg.  The `CGv2Type *ret` field still holds the *logical*
+// return type so callers can recover the dst CGv2Value's type;
+// only the LLVM-level signature shape is different.
 class CGv2Sig : public gc {
  public:
   CGv2Type *ret;
   Vec<CGv2Type *> args;
   bool is_varargs;
-  CGv2Sig() : ret(0), is_varargs(false) {}
+  bool is_sret;
+  CGv2Type *sret_struct;   // the CG2T_STRUCT pointee for sret slot
+  CGv2Sig() : ret(0), is_varargs(false), is_sret(false),
+              sret_struct(0) {}
 };
 
 class CGv2Fun : public gc {

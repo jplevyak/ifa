@@ -399,6 +399,24 @@ CGv2Fun *build_fun_decl(NormCtx &c, Fun *f) {
     cf->signature->ret = c.p->t_void;
   }
 
+  // Issue 023 Stage 2: sret-rewrite when the logical return is
+  // a value-type RECORD.  Detection is structural on the
+  // CGv2Type: CG2T_PTR whose element is a CG2T_STRUCT with
+  // `is_heap_aggregate==false` (set by build_struct_type when
+  // the underlying IF1 Sym had `is_value_type=1`).  Skip the
+  // rewrite for main (it's called by the LLVM-level main wrapper
+  // which expects the existing void/int return) and for varargs
+  // (LLVM's sret + varargs interaction has caller-side rules
+  // that aren't worth the complexity for now).
+  CGv2Type *rt = cf->signature->ret;
+  if (rt && rt->kind == CG2T_PTR && rt->element &&
+      rt->element->kind == CG2T_STRUCT &&
+      !rt->element->is_heap_aggregate &&
+      !cf->is_main && !cf->is_varargs) {
+    cf->signature->is_sret = true;
+    cf->signature->sret_struct = rt->element;
+  }
+
   // Args come from a map keyed by MPosition. Iterating
   // `f->args.get_values()` directly returns them in map
   // insertion order, which does NOT match the positional

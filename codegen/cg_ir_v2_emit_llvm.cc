@@ -142,9 +142,19 @@ llvm::Function *get_gc_malloc() {
 
 llvm::FunctionType *to_llvm_fn_type(CGv2Sig *sig) {
   if (!sig) return nullptr;
-  llvm::Type *ret = to_llvm_type(sig->ret);
-  if (!ret) return nullptr;
   std::vector<llvm::Type *> args;
+  llvm::Type *ret;
+  if (sig->is_sret) {
+    // Issue 023 Stage 2: LLVM ret is void; first arg is the
+    // sret slot ptr (opaque ptr at the type level; the actual
+    // sret attribute carries the struct type and is set in
+    // declare_fun on the LLVM Function object).
+    ret = llvm::Type::getVoidTy(*TheContext);
+    args.push_back(llvm::PointerType::get(*TheContext, 0));
+  } else {
+    ret = to_llvm_type(sig->ret);
+    if (!ret) return nullptr;
+  }
   for (CGv2Type *a : sig->args) {
     llvm::Type *at = to_llvm_type(a);
     if (!at) return nullptr;
@@ -195,6 +205,19 @@ struct EmitFunCtx {
   // ptr formals/globals will populate this through other
   // routes.
   Map<CGv2Value *, CGv2Type *> ptr_struct;
+
+  // Issue 023 Stage 2: when cf->signature->is_sret, this is
+  // the LLVM Value of the implicit first arg — the sret slot
+  // ptr.  CG2_ALLOC of the matching sret_struct routes its
+  // lvalue to this Value instead of emitting an alloc; CG2_RET
+  // emits `ret void`.
+  llvm::Value *sret_slot;
+  bool sret_consumed;       // set once we've routed an ALLOC
+                            // to the sret slot (sanity for the
+                            // single-ret-flowing-alloc shape)
+
+  EmitFunCtx() : cf(0), llvm_fun(0), sret_slot(0),
+                 sret_consumed(false) {}
 };
 
 // Resolve a CGv2Value to an llvm::Value usable in the current
@@ -483,6 +506,36 @@ llvm::Value *apply_header_indirection(llvm::Value *p) {
   return Builder->CreateLoad(ptr_lty, hdr_addr, "list_data");
 }
 
+// Issue 023: would routing `v` through a stack alloca (rather
+// than GC_malloc) be safe?  Yes iff every use of `v` in the
+// current function is a benign read/write THROUGH the ptr —
+// position-0 of FIELD/INDEX LOAD/STORE, LEN, SIZEOF_ELEMENT,
+// or CLONE-as-proto.  Anywhere else (RET rvals, CALL args,
+// MOVE source, FIELD_STORE value position, etc.) is treated as
+// escape.  Used by CG2_ALLOC for the @pyc_struct heap→stack
+// promotion (Stage 1) and by CG2_CALL for the sret-slot
+// allocation site (Stage 2).
+bool value_escapes_in_fun(CGv2Value *v, CGv2Fun *cf) {
+  if (!v || !cf) return true;
+  for (CGv2Block *b : cf->blocks) {
+    for (CGv2Inst *bi : b->body) {
+      bool ptr_target_op = (bi->op == CG2_FIELD_STORE ||
+                            bi->op == CG2_FIELD_LOAD ||
+                            bi->op == CG2_INDEX_STORE ||
+                            bi->op == CG2_INDEX_LOAD ||
+                            bi->op == CG2_LEN ||
+                            bi->op == CG2_SIZEOF_ELEMENT ||
+                            bi->op == CG2_CLONE);
+      for (int i = 0; i < bi->rvals.n; i++) {
+        if (bi->rvals[i] != v) continue;
+        if (ptr_target_op && i == 0) continue;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
   switch (inst->op) {
     case CG2_ALLOC: {
@@ -500,6 +553,20 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
                                        : "(anon)");
         return;
       }
+      // Issue 023 Stage 2: when the current function is sret
+      // and this alloc's type matches the sret slot's struct,
+      // route the lvalue directly to the sret slot ptr (no
+      // alloc emitted).  Downstream FIELD_STORE / FIELD_LOAD
+      // GEP through the slot just like they would have through
+      // a fresh GC_malloc'd ptr.
+      if (ctx.cf && ctx.cf->signature->is_sret && ctx.sret_slot &&
+          inst->type_arg == ctx.cf->signature->sret_struct &&
+          !ctx.sret_consumed) {
+        ctx.sret_consumed = true;
+        put_result(ctx, inst->lvals[0], ctx.sret_slot);
+        ctx.ptr_struct.put(inst->lvals[0], inst->type_arg);
+        break;
+      }
       llvm::Value *p = nullptr;
       if (!inst->type_arg->is_heap_aggregate) {
         // Issue 023: value-type record (@pyc_struct in pyc, or
@@ -511,37 +578,10 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
         // FIELD_LOAD/FIELD_STORE GEP through it the same way.
         //
         // Safety: only safe when the alloca'd pointer doesn't
-        // escape the current function.  We scan all uses of
-        // `inst->lvals[0]` and only allow ops that read/write
-        // through the ptr (FIELD/INDEX LOAD/STORE in target
-        // position, LEN, SIZEOF_ELEMENT, CLONE-as-proto).
-        // Anything else — RET, CALL arg, MOVE source (which
-        // may alias-then-escape), being the value of a
-        // FIELD_STORE / INDEX_STORE — is treated as escape and
-        // falls back to GC_malloc.
-        bool escapes = false;
-        if (ctx.cf) {
-          for (CGv2Block *b : ctx.cf->blocks) {
-            for (CGv2Inst *bi : b->body) {
-              bool ptr_target_op = (bi->op == CG2_FIELD_STORE ||
-                                    bi->op == CG2_FIELD_LOAD ||
-                                    bi->op == CG2_INDEX_STORE ||
-                                    bi->op == CG2_INDEX_LOAD ||
-                                    bi->op == CG2_LEN ||
-                                    bi->op == CG2_SIZEOF_ELEMENT ||
-                                    bi->op == CG2_CLONE);
-              for (int i = 0; i < bi->rvals.n; i++) {
-                if (bi->rvals[i] != inst->lvals[0]) continue;
-                if (ptr_target_op && i == 0) continue;  // benign use
-                escapes = true;
-                break;
-              }
-              if (escapes) break;
-            }
-            if (escapes) break;
-          }
-        }
-        if (!escapes) {
+        // escape the current function.  See
+        // value_escapes_in_fun() for the safe-use set; any
+        // escape falls back to GC_malloc.
+        if (!value_escapes_in_fun(inst->lvals[0], ctx.cf)) {
           llvm::BasicBlock &entry_bb =
               Builder->GetInsertBlock()->getParent()->getEntryBlock();
           llvm::IRBuilder<> entry_builder(&entry_bb,
@@ -743,8 +783,30 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
       llvm::Value *size_v = llvm::ConstantInt::get(i64, sz);
       cchar *out = inst->lvals[0]->name ? inst->lvals[0]->name : "clone";
-      llvm::Value *new_p = Builder->CreateCall(get_gc_malloc(),
-          { size_v }, out);
+      llvm::Value *new_p = nullptr;
+      // Issue 023 Stage 2: when CG2_CLONE produces the sret
+      // return value, memcpy directly into the sret slot
+      // (no fresh GC_malloc).  Same single-consumer
+      // discipline as CG2_ALLOC.
+      if (ctx.cf && ctx.cf->signature->is_sret && ctx.sret_slot &&
+          inst->type_arg == ctx.cf->signature->sret_struct &&
+          !ctx.sret_consumed) {
+        ctx.sret_consumed = true;
+        new_p = ctx.sret_slot;
+      } else if (!inst->type_arg->is_heap_aggregate &&
+                 !value_escapes_in_fun(inst->lvals[0], ctx.cf)) {
+        // Issue 023 Stage 1 generalisation: if the clone target
+        // is a value-type that doesn't escape, alloca instead
+        // of GC_malloc.
+        llvm::BasicBlock &entry_bb =
+            Builder->GetInsertBlock()->getParent()->getEntryBlock();
+        llvm::IRBuilder<> entry_builder(&entry_bb,
+                                        entry_bb.getFirstInsertionPt());
+        new_p = entry_builder.CreateAlloca(sty, nullptr, out);
+      } else {
+        new_p = Builder->CreateCall(get_gc_malloc(),
+            { size_v }, out);
+      }
       Builder->CreateMemCpy(new_p, llvm::MaybeAlign(8),
                             proto, llvm::MaybeAlign(8), size_v);
       put_result(ctx, inst->lvals[0], new_p);
@@ -960,7 +1022,44 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
           TheModule->getFunction(callee_v->target_name);
       if (!callee) return;
       llvm::FunctionType *ft = callee->getFunctionType();
+      // Issue 023 Stage 2: if the callee was declared with
+      // sret on its first arg, the caller needs to allocate
+      // the slot (alloca if dst doesn't escape; GC_malloc
+      // otherwise — same conservative escape policy as
+      // CG2_ALLOC) and pass its ptr as the new first arg.
+      // The call returns void; the dst CGv2Value's value
+      // becomes the slot ptr so downstream FIELD_LOAD/STORE
+      // GEP through it.
+      llvm::Value *sret_slot_at_caller = nullptr;
+      bool target_is_sret =
+          callee->arg_size() > 0 &&
+          callee->hasParamAttribute(0, llvm::Attribute::StructRet);
+      if (target_is_sret && inst->lvals.n > 0) {
+        llvm::Type *st = callee->getParamAttribute(
+            0, llvm::Attribute::StructRet).getValueAsType();
+        if (st && st->isSized()) {
+          if (!value_escapes_in_fun(inst->lvals[0], ctx.cf)) {
+            llvm::BasicBlock &entry_bb =
+                Builder->GetInsertBlock()->getParent()->getEntryBlock();
+            llvm::IRBuilder<> entry_builder(&entry_bb,
+                                            entry_bb.getFirstInsertionPt());
+            sret_slot_at_caller = entry_builder.CreateAlloca(
+                st, nullptr,
+                inst->lvals[0]->name ? inst->lvals[0]->name : "sret");
+          } else {
+            uint64_t sz = TheModule->getDataLayout()
+                                   .getTypeAllocSize(st);
+            llvm::Function *gc_malloc = get_gc_malloc();
+            llvm::Value *size_v = llvm::ConstantInt::get(
+                llvm::Type::getInt64Ty(*TheContext), sz);
+            sret_slot_at_caller = Builder->CreateCall(
+                gc_malloc, { size_v },
+                inst->lvals[0]->name ? inst->lvals[0]->name : "p");
+          }
+        }
+      }
       std::vector<llvm::Value *> args;
+      if (sret_slot_at_caller) args.push_back(sret_slot_at_caller);
       for (int i = 1; i < inst->rvals.n; i++) {
         llvm::Value *a = resolve_value(ctx, inst->rvals[i]);
         if (a) args.push_back(a);
@@ -1018,7 +1117,21 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
                        ? inst->lvals[0]->name : "";
       llvm::Value *r = Builder->CreateCall(callee, args,
           ft->getReturnType()->isVoidTy() ? "" : out);
-      if (inst->lvals.n > 0) put_result(ctx, inst->lvals[0], r);
+      if (inst->lvals.n > 0) {
+        // Issue 023 Stage 2: sret call returns void; the
+        // "result" is the slot ptr we allocated above.
+        // Propagate the struct annotation so downstream
+        // FIELD_LOAD/STORE can GEP through the slot.
+        if (sret_slot_at_caller) {
+          put_result(ctx, inst->lvals[0], sret_slot_at_caller);
+          ctx.ptr_struct.put(inst->lvals[0],
+                             callee_v->type && callee_v->type->element
+                                 ? callee_v->type->element
+                                 : (CGv2Type *)nullptr);
+        } else {
+          put_result(ctx, inst->lvals[0], r);
+        }
+      }
       break;
     }
     case CG2_BINOP: {
@@ -1170,6 +1283,31 @@ void emit_terminator(CGv2Inst *term, CGv2Block *blk, EmitFunCtx &ctx) {
   switch (term->op) {
     case CG2_RET: {
       llvm::Type *ret_ty = ctx.llvm_fun->getReturnType();
+      // Issue 023 Stage 2: sret functions return void.  If the
+      // rval is something other than the alloc that became the
+      // sret slot (i.e. the function path didn't go through the
+      // canonical "alloc → fill → ret" shape), memcpy the rval's
+      // pointed-to struct into the sret slot before returning.
+      // This handles `return existing_thing` cases that don't
+      // alloc-and-fill.
+      if (ctx.cf && ctx.cf->signature->is_sret) {
+        if (term->rvals.n > 0 && ctx.sret_slot) {
+          llvm::Value *src = resolve_value(ctx, term->rvals[0]);
+          if (src && src != ctx.sret_slot) {
+            llvm::Type *st = to_llvm_type(
+                ctx.cf->signature->sret_struct);
+            if (st) {
+              uint64_t sz = TheModule->getDataLayout()
+                                     .getTypeAllocSize(st);
+              Builder->CreateMemCpy(ctx.sret_slot, llvm::MaybeAlign(),
+                                    src, llvm::MaybeAlign(), sz);
+            }
+          }
+        }
+        Builder->CreateRetVoid();
+        (void)blk;
+        break;
+      }
       if (ret_ty->isVoidTy()) {
         Builder->CreateRetVoid();
       } else {
@@ -1213,9 +1351,22 @@ llvm::Function *declare_fun(CGv2Fun *cf) {
   llvm::GlobalValue::LinkageTypes linkage =
       cf->is_external ? llvm::Function::ExternalLinkage
                       : llvm::Function::InternalLinkage;
-  return llvm::Function::Create(ft, linkage,
-                                cf->name ? cf->name : "fn",
-                                TheModule.get());
+  llvm::Function *fn = llvm::Function::Create(
+      ft, linkage, cf->name ? cf->name : "fn", TheModule.get());
+  // Issue 023 Stage 2: tag the first arg with sret(struct_t).
+  // LLVM uses this attribute (rather than the LLVM-level type
+  // alone) to drive the by-reference-return ABI; the verifier
+  // also checks that the pointee type matches the attribute.
+  if (cf->signature->is_sret && cf->signature->sret_struct &&
+      fn->arg_size() > 0) {
+    llvm::Type *st = to_llvm_type(cf->signature->sret_struct);
+    if (st) {
+      fn->addParamAttr(0,
+          llvm::Attribute::get(*TheContext,
+                               llvm::Attribute::StructRet, st));
+    }
+  }
+  return fn;
 }
 
 void emit_fun(CGv2Fun *cf) {
@@ -1233,15 +1384,26 @@ void emit_fun(CGv2Fun *cf) {
   // formals vector is in signature order (parser enforces this
   // when :formals (...) is present, else falls back to value
   // decl order).
+  //
+  // Issue 023 Stage 2: when the signature is sret, the first
+  // LLVM arg is the synthetic sret slot ptr (it has no
+  // CGv2Value formal counterpart).  Capture it as
+  // ctx.sret_slot and start formal-binding from the second
+  // LLVM arg.
   {
-    int i = 0;
+    int llvm_idx = 0;
+    int formal_idx = 0;
     for (llvm::Argument &a : ctx.llvm_fun->args()) {
-      if (i < cf->formals.n) {
-        CGv2Value *v = cf->formals[i];
+      if (llvm_idx == 0 && cf->signature->is_sret) {
+        a.setName("sret");
+        ctx.sret_slot = &a;
+      } else if (formal_idx < cf->formals.n) {
+        CGv2Value *v = cf->formals[formal_idx];
         if (v && v->name) a.setName(v->name);
         ctx.value_map.put(v, &a);
+        formal_idx++;
       }
-      i++;
+      llvm_idx++;
     }
   }
 

@@ -1,6 +1,13 @@
 # Issue 023: v2 LLVM has no `is_value_type` consumer for Type_RECORD
 
-**Status:** **partial (Stage 1 landed June 2026)**.
+**Status:** **partial (Stage 1 + Stage 2 (b) landed June 2026)**.
+Stage 1: heap→stack promotion for non-escaping `@pyc_struct`
+allocs (commit `a37d652`).  Stage 2 (b): sret-style calling
+convention for value-type-returning functions.  Remaining work
+is improving the per-function escape check (today it
+conservatively bails on any cross-function pointer flow, which
+keeps the heap fallback active for the common closure-bound
+`self` pattern).
 
 **Stage 1 done:**
 `build_struct_type` now propagates `is_heap_aggregate = !s->is_value_type`
@@ -9,29 +16,54 @@ into the CGv2Type lattice (vectors always stay heap-allocated).
 bit and emits a stack alloca in the function's entry block
 when `!is_heap_aggregate` AND the alloc's lvalue doesn't escape
 the current function.  Escape is detected conservatively by
-scanning all instructions for non-target-position uses of the
-lvalue (any rval other than position-0 of FIELD/INDEX
-LOAD/STORE / LEN / SIZEOF_ELEMENT / CLONE-as-proto).
+`value_escapes_in_fun` — any rval other than position-0 of
+FIELD/INDEX LOAD/STORE / LEN / SIZEOF_ELEMENT / CLONE-as-proto
+counts as escape.
 
-**Stage 2 remaining (the actual user-visible win):**
-Today's pyc IR shape wraps every `__new__` constructor in a
-helper that allocates a fresh struct and returns the ptr.  Any
-call to `Point(x, y)` lands in the wrapper, which means the
-alloc's lvalue is in the wrapper's `CG2_RET` rvals — escape
-positive, fallback to GC_malloc.  The result: the alloca path
-is wired and correct, but **dormant** on pyc's current
-codegen: zero allocas fire for `@pyc_struct` instances in the
-pyc test suite today.
+**Stage 2 (b) done — sret calling convention:**
+When `CGv2Sig::ret` is CG2T_PTR-to-(value-type CG2T_STRUCT),
+`build_fun_decl` now sets `is_sret=true` + `sret_struct=<elem>`
+on the signature.  `to_llvm_fn_type` rewrites such signatures
+to `void @f(ptr sret(struct), <user args...>)`; `declare_fun`
+attaches the LLVM `StructRet(struct)` attribute to the implicit
+first param.  Inside sret-returning bodies, the canonical
+"alloc → fill → ret" pattern is routed: CG2_ALLOC / CG2_CLONE
+of the sret target struct put_result through the sret slot
+instead of allocating; CG2_RET emits `ret void` (with a fallback
+memcpy if some other rval reaches the ret).  At call sites,
+CG2_CALL detects `StructRet` on the callee's first param,
+allocates the slot (alloca if the dst doesn't escape — same
+`value_escapes_in_fun` check; GC_malloc otherwise), prepends it
+to the args, and binds the dst CGv2Value to the slot ptr.
 
-To unlock Stage 2, the constructor wrappers need either
-- (a) inlining at the call site (issue 022 territory — once
-  iterative inlining lands, small `__new__` wrappers fold into
-  the caller and the alloca site moves to the caller's frame
-  where escape is determined by the caller's own uses), or
-- (b) sret-style calling convention rework so the caller
-  pre-alloca's the slot and passes its ptr as an out arg; the
-  wrapper writes through the slot ptr instead of allocating.
-  This is more invasive but doesn't depend on inlining.
+**Observable wins on `tests/pyc_struct_basic.py`:**
+- The Point constructor wrapper (`_CG_f_3338_3`) now has **zero
+  internal allocations** — it writes directly through `%sret`.
+  Previously it did GC_malloc + memcpy(proto) + field stores +
+  ret ptr.  Now: memcpy(proto → sret) + field stores → ret void.
+- Caller alloca's the sret slot when the dst is local
+  (e.g. `%v10 = alloca %Point.3465`) and GC_mallocs otherwise.
+- Two sret-attributed function definitions; one alloca'd slot;
+  remaining GC_mallocs are prototypes, closure structs, and
+  Point slots whose dst escapes via global / closure capture.
+
+**What's still on the table:**
+The user-visible global-bound case (`p = Point(3, 4); print(p.x)`
+at top level) still GC_mallocs the sret slot because `p` is
+stored into the module global `@p`.  Same for any Point bound
+into a closure-self slot — the escape check (correctly) treats
+the closure's field-store as escape.  Loosening this requires
+real escape analysis at the FA / CG_IR level, ideally
+propagating across function calls.  That's a substantial
+follow-on, but the sret ABI is now in place and ready to
+benefit from any future loosening.
+
+**Stage 2 (a) — inlining — independent value:**
+Issue 022's iterative inliner is still worth landing, but no
+longer for value-type purposes (Stage 2 (b) handles those
+directly).  See [`022-iterative-inlining.md`](022-iterative-inlining.md);
+its motivation is now strictly the FA-feedback / code-size
+side of the ledger.
 
 **Affects:** `ifa/codegen/cg_normalize_v2.cc:build_struct_type`
 (Stage 1 done), plus the cascade through `lower_send_alloc`,
