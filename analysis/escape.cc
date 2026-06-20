@@ -1,16 +1,20 @@
 // SPDX-License-Identifier: BSD-3-Clause
-// IFA escape analysis — Phase 2 (intra-procedural).  See
-// ESCAPE_PLAN.md for the lattice, transfer functions, and the
-// multi-phase rollout that consumes the result.
+// IFA escape analysis — Phases 2 & 3.  See ESCAPE_PLAN.md for
+// the lattice, transfer functions, and the multi-phase
+// rollout that consumes the result.
 //
-// Phase 2 scope: per-EntrySet flow-insensitive fixed point
-// over the per-AVar escape lattice.  Fresh allocations
-// (prim_make / prim_new / prim_clone) start at ES_NoEscape;
-// uses pull them up to ES_Escape.  Every concrete CALL is
-// treated as escaping its args (Phase 3 reads the callee's
-// arg_escapes to refine).  The per-formal projection is
-// written back to Fun::arg_escapes for cg_normalize_v2's
-// readback path.
+// Scope:
+// - Phase 2 (intra-procedural): per-EntrySet fixed point over
+//   the per-AVar escape lattice with transfer rules for
+//   Code_MOVE, prim_period, prim_set_period, prim_reply,
+//   prim_make / new / clone.  Fresh allocations seed at
+//   ES_NoEscape; use sites pull values up to ES_Escape.
+// - Phase 3 (inter-procedural): at each non-prim Code_SEND,
+//   look up the callee set via Fun::calls and consult each
+//   callee's arg_escapes to decide whether each arg position
+//   propagates Escape into the caller.  Outer fixed point
+//   re-runs the per-EntrySet pass until no Fun::arg_escapes
+//   flips.
 //
 // The pass is a no-op when ifa_escape_in_fa is off — codegen
 // then falls back to the Stage 3 post-IFA analysis.
@@ -71,10 +75,38 @@ bool is_fresh_alloc(PNode *p) {
   }
 }
 
+// Look up the set of possible callees at `p` in `caller`.
+// Returns the (possibly empty / null-valued) Vec<Fun*>.  An
+// indirect / closure-dispatched call may have multiple
+// callees; the transfer takes the union (= conservative
+// escape).  A null return means "no callee info" → treat
+// every arg as escaping.
+Vec<Fun *> *callees_at(Fun *caller, PNode *p) {
+  if (!caller) return nullptr;
+  return caller->calls.get(p);
+}
+
+// True iff the arg at position `formal_idx` is known to NOT
+// escape its callees.  Conservative: any callee with
+// unpopulated arg_escapes, or any callee that says Escape at
+// this position, returns false.
+bool arg_safe_across_callees(Vec<Fun *> *cs, int formal_idx) {
+  if (!cs || cs->n == 0) return false;
+  for (Fun *callee : *cs) {
+    if (!callee) return false;
+    if (callee->arg_escapes.n == 0) return false;  // no info
+    if (formal_idx < 0 || formal_idx >= callee->arg_escapes.n)
+      return false;  // shape mismatch — be safe
+    if (callee->arg_escapes[formal_idx] != ES_NoEscape) return false;
+  }
+  return true;
+}
+
 // Apply the transfer function for `p` to the current
 // per-AVar lattice within `es`.  Returns true iff any AVar's
-// escape bit changed.
-bool transfer(PNode *p, EntrySet *es) {
+// escape bit changed.  Phase 3: needs the caller Fun so it
+// can look up Fun::calls at call sites.
+bool transfer(Fun *caller, PNode *p, EntrySet *es) {
   if (!p || !p->live || !p->code) return false;
   bool changed = false;
   auto join_av = [&](AVar *dst, EscapeStatus s) {
@@ -113,9 +145,31 @@ bool transfer(PNode *p, EntrySet *es) {
       Prim *pr = p->prim;
       if (!pr) {
         // Non-primitive SEND — concrete or closure-dispatch
-        // call.  Phase 2: conservatively escape every arg.
-        // (Phase 3 reads callee arg_escapes to refine.)
-        for (Var *rv : p->rvals) join_av(avar_for(rv, es), ES_Escape);
+        // call.  Phase 3: consult each callee's arg_escapes
+        // (via Fun::calls).  rvals[0] is the function ref;
+        // rvals[1..] are user args mapping 1:1 to the
+        // callee's positional formals.
+        //
+        // If a callee's arg_escapes is empty (not yet
+        // analyzed) or marks that slot as escaping, the
+        // caller's rval at that position is forced to
+        // Escape.  Otherwise it can stay non-escaping.
+        Vec<Fun *> *cs = callees_at(caller, p);
+        // rvals[0] is the function reference itself; for
+        // closure dispatch this is the closure ptr.  It
+        // doesn't escape the caller just by being called
+        // (the call site reads it locally), but if the
+        // closure captures any non-escaping locals, those
+        // captured-locals' escape status was already
+        // pulled up by the closure-creation code path.
+        // Don't touch rvals[0] here.
+        for (int i = 1; i < p->rvals.n; i++) {
+          int formal_idx = i - 1;
+          bool safe = arg_safe_across_callees(cs, formal_idx);
+          if (!safe) {
+            join_av(avar_for(p->rvals[i], es), ES_Escape);
+          }
+        }
         break;
       }
       switch (pr->index) {
@@ -230,16 +284,19 @@ void seed_lattice(EntrySet *es) {
   }
 }
 
-// Per-EntrySet flow-insensitive fixed point.
-void analyze_es(EntrySet *es) {
+// Per-EntrySet flow-insensitive fixed point.  `seed` is true
+// only on the first analysis pass — re-runs (from the outer
+// inter-procedural loop) preserve the existing per-AVar
+// state so monotonic refinement holds.
+void analyze_es(EntrySet *es, bool seed) {
   if (!es || !es->fun) return;
-  seed_lattice(es);
+  if (seed) seed_lattice(es);
   const int max_iters = 64;
   for (int iter = 0; iter < max_iters; iter++) {
     bool changed = false;
     for (PNode *p : es->fun->fa_all_PNodes) {
       if (!p || !p->fa_live) continue;
-      if (transfer(p, es)) changed = true;
+      if (transfer(es->fun, p, es)) changed = true;
     }
     if (!changed) break;
   }
@@ -278,18 +335,46 @@ void project_to_fun(Fun *f) {
 
 }  // namespace
 
+// Returns true iff `a` and `b` have the same per-formal
+// escape signature.  Used to detect arg_escapes flips between
+// inter-procedural iterations.
+bool same_escapes(const Vec<uint8_t> &a, const Vec<uint8_t> &b) {
+  if (a.n != b.n) return false;
+  for (int i = 0; i < a.n; i++) if (a[i] != b[i]) return false;
+  return true;
+}
+
 void compute_escape(FA *fa) {
   if (!ifa_escape_in_fa || !fa) return;
+
+  // Phase 3 outer loop: iterate until no Fun::arg_escapes
+  // signature changes.  In practice settles in 1-3 passes
+  // because the lattice is monotonic and depths are small.
+  const int max_outer = 8;
+  int outer_passes = 0;
+  bool changed = true;
+  while (changed && outer_passes < max_outer) {
+    changed = false;
+    outer_passes++;
+    for (Fun *f : fa->funs) {
+      if (!f || !f->live) continue;
+      // Remember the pre-pass per-formal signature so we can
+      // detect a flip after re-analyze.
+      Vec<uint8_t> prev;
+      prev.copy(f->arg_escapes);
+      for (EntrySet *es : f->ess) {
+        if (!es) continue;
+        analyze_es(es, /*seed=*/outer_passes == 1);
+      }
+      project_to_fun(f);
+      if (!same_escapes(prev, f->arg_escapes)) changed = true;
+    }
+  }
+
   int funs_analyzed = 0;
   int total_formals = 0;
   int formals_no_escape = 0;
   for (Fun *f : fa->funs) {
-    if (!f || !f->live) continue;
-    for (EntrySet *es : f->ess) {
-      if (!es) continue;
-      analyze_es(es);
-    }
-    project_to_fun(f);
     if (f->arg_escapes.n > 0) {
       funs_analyzed++;
       for (uint8_t e : f->arg_escapes) {
@@ -300,8 +385,9 @@ void compute_escape(FA *fa) {
   }
   if (ifa_verbose > 0) {
     fprintf(stderr,
-            "[escape] Phase 2: analyzed %d funs, %d/%d formals "
-            "marked NoEscape\n",
-            funs_analyzed, formals_no_escape, total_formals);
+            "[escape] Phase 3: %d outer passes, analyzed %d "
+            "funs, %d/%d formals marked NoEscape\n",
+            outer_passes, funs_analyzed, formals_no_escape,
+            total_formals);
   }
 }
