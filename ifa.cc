@@ -4,6 +4,7 @@
 #include "clone.h"
 #include "optimize/dead.h"
 #include "optimize/dom.h"
+#include "analysis/escape.h"
 #include "fa.h"
 #include "fun.h"
 #include "graph.h"
@@ -49,6 +50,11 @@ int ifa_analyze(cchar *fn) {
   if (mark_live_code(fa) < 0) return -1;
   if (get_int_config("alog.test.fa") > 0) log_test_fa(fa);
   frequency_estimation(fa);
+  // ESCAPE_PLAN.md Phase 2: intra-procedural escape lattice.
+  // No-op when ifa_escape_in_fa==0; otherwise populates
+  // Fun::arg_escapes which cg_normalize_v2 reads in lieu of
+  // running the Stage 3 fallback.
+  compute_escape(fa);
   return 0;
 }
 

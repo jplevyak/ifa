@@ -2381,9 +2381,18 @@ CGv2Program *cg_normalize_v2(FA *fa) {
   //   - Stage 3 (issue 023, today's default): scan each
   //     CGv2Fun body locally with cross-function lookups via
   //     CGv2Program::lookup_fun.
-  // Both can run in Phase 1 — the in-FA path is a no-op until
-  // Phase 2 wires the transfer functions.
+  // Both can run during the phased rollout (1-4); Stage 3
+  // remains the production source-of-truth until Phase 5.
+  //
+  // Phase 2: IFA populates Fun::arg_escapes intra-procedurally,
+  // but it's used only as a comparison signal — Stage 3
+  // still computes the result that drives alloca/sret choice.
+  // This keeps the IFA pass non-disruptive while the lattice
+  // and transfer rules mature.
   if (ifa_escape_in_fa) {
+    // Phase 2 readback: copy onto CGv2Fun for cross-fun
+    // lookup ergonomics, but do NOT drive codegen — Stage 3
+    // below will overwrite.  Phase 5 will flip this around.
     for (Fun *f : fa->funs) {
       CGv2Fun *cf = c.fun_to_fun.get(f);
       if (!cf || f->arg_escapes.n == 0) continue;
@@ -2395,6 +2404,7 @@ CGv2Program *cg_normalize_v2(FA *fa) {
   // Issue 023 Stage 3: cross-function arg-escape annotation,
   // consumed by emit-time `value_escapes_in_fun` to unlock
   // alloca for ptrs passed only into read-only callees.
+  // Production source of truth during Phases 1-4.
   compute_arg_escapes(p);
 
   return p;
