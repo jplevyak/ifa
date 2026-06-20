@@ -333,6 +333,53 @@ void build_immediate(const Immediate &src, CGv2Immediate &dst) {
   }
 }
 
+// Phase 6 plumbing: derive a CGv2Value's escape status from
+// IFA's per-AVar escape lattice.
+//
+// IFA tracks escape per (Var, contour=EntrySet) pair.  A
+// single Var has one AVar per EntrySet of its enclosing Fun,
+// or one AVar at GLOBAL_CONTOUR if it's a global.  The
+// CGv2Value the lowering produces here is a single per-Fun
+// slot, so we JOIN the per-EntrySet AVars' escape — an arg
+// escapes from the CGv2 perspective iff any context's AVar
+// says it does.  Phase 4's cloning is what splits divergent
+// escape contexts into separate Funs in the first place, so
+// after Phase 4 the JOIN over a single Fun is well-defined.
+//
+// Returns ES_Escape (conservative top) when no AVars exist
+// for this Var (e.g. a freshly-created emit-time temp with
+// no IFA counterpart).
+static EscapeStatus compute_var_escape(Var *v, Fun *enclosing) {
+  if (!v) return ES_Escape;
+  // Globals (and constants) live at GLOBAL_CONTOUR.  For
+  // any of these, escape is meaningless from codegen's
+  // alloca-vs-GC_malloc perspective — globals don't get
+  // alloca'd in any case, and constants live in
+  // .rodata-equivalent.  Return Escape so the default
+  // codegen choices stick.
+  if (v->sym && !v->sym->nesting_depth && !v->is_internal) {
+    return ES_Escape;
+  }
+  // Walk all AVars of this Var; pick the ones whose contour
+  // is an EntrySet of `enclosing` (if known); join their
+  // escape.  If no enclosing fun is provided, join over all
+  // AVars (conservative).
+  EscapeStatus joined = ES_NoEscape;
+  bool any = false;
+  for (int i = 0; i < v->avars.n; i++) {
+    if (!v->avars[i].key) continue;
+    AVar *av = v->avars[i].value;
+    if (!av) continue;
+    if (enclosing && v->avars[i].key != (void *)1) {
+      EntrySet *es = (EntrySet *)v->avars[i].key;
+      if (es->fun != enclosing) continue;
+    }
+    joined = join_escape(joined, (EscapeStatus)av->escape);
+    any = true;
+  }
+  return any ? joined : ES_Escape;
+}
+
 // Translate a global IF1 Var → CGv2Value. Constants land in
 // prog->constants with their imm populated; non-constants
 // land in prog->globals.
@@ -344,6 +391,10 @@ CGv2Value *build_global(NormCtx &c, Var *v) {
   cv->id = 1000 + c.p->constants.n + c.p->globals.n;
   cv->name = v->sym->name ? v->sym->name : v->cg_string;
   cv->type = v->type ? build_type(c, v->type) : c.p->t_ptr;
+  // Phase 6: globals / constants always escape — they outlive
+  // any function frame.  (CGv2Value::escapes defaults to true;
+  // this is documentation as much as code.)
+  cv->escapes = true;
 
   if (v->sym->is_constant) {
     cv->scope = CG2V_CONSTANT;
@@ -458,6 +509,8 @@ CGv2Fun *build_fun_decl(NormCtx &c, Fun *f) {
                    (a->cg_string ? a->cg_string : "arg");
     formal->type = at;
     formal->scope = CG2V_FORMAL;
+    // Phase 6: derive escape from IFA's per-AVar lattice.
+    formal->escapes = (compute_var_escape(a, f) == ES_Escape);
     cf->formals.add(formal);
     fc->var_to_value.put(a, formal);
   }
@@ -539,6 +592,20 @@ CGv2Value *build_var(NormCtx &c, FunCtx &fc, Var *v) {
              (v->cg_string ? v->cg_string : "v");
   cv->type = v->type ? build_type(c, v->type) : c.p->t_ptr;
   cv->scope = CG2V_LOCAL;
+  // Phase 6: pull IFA's per-AVar escape onto the CGv2Value.
+  // For Vars in `fc`'s Fun, join across the Fun's EntrySets.
+  // For unknown enclosure (rare), join over all AVars.
+  Fun *enclosing = fc.cf && c.fun_to_ctx.n > 0
+                       ? nullptr  // resolved below via reverse map
+                       : nullptr;
+  // Find the enclosing IF1 Fun for fc.cf.
+  for (int i = 0; i < c.fun_to_fun.n; i++) {
+    if (c.fun_to_fun[i].value == fc.cf) {
+      enclosing = c.fun_to_fun[i].key;
+      break;
+    }
+  }
+  cv->escapes = (compute_var_escape(v, enclosing) == ES_Escape);
   fc.var_to_value.put(v, cv);
   fc.cf->locals.add(cv);
   return cv;
@@ -2193,29 +2260,18 @@ void build_fun_bodies(NormCtx &c, FA *fa) {
 
 }  // namespace
 
-// Issue 023 Stage 3 — per-function arg-escape analysis.
-//
-// For each function, compute which formals "escape" the
-// function body.  An arg `fa` escapes if any of its uses is
-// non-benign: appearing in CG2_RET rvals, being the source of
-// a MOVE into a CG2V_GLOBAL lvalue, appearing as the value
-// position (rvals[1+]) of a FIELD/INDEX_STORE whose target ptr
-// also escapes, or being passed to a CG2_CALL at an arg
-// position whose callee marks that slot as escape.
-//
-// Benign uses (which do NOT cause escape): position 0 of
-// FIELD/INDEX LOAD/STORE / LEN / SIZEOF_ELEMENT / CLONE (the
-// pointer is read/written THROUGH, the pointer itself doesn't
-// leave), or the value position of a FIELD/INDEX_STORE whose
-// target is itself non-escaping (the value lives only as long
-// as the target).
-//
-// Algorithm: track a per-function "non-escape" set of
-// CGv2Values, initially populated with formals.  Iteratively
-// prune any value whose uses include an escape.  Cross-function
-// info (callee arg_escapes) participates in the per-iteration
-// re-check.  Outer loop iterates over the call graph until
-// arg_escapes stabilizes (bounded by total args).
+// Issue 023 Stage 3 / ESCAPE_PLAN Phases 1-5 used a local
+// post-IFA scan in this file (compute_arg_escapes) to derive
+// per-CGv2Value::escapes from the CGv2 IR.  Phase 6 (June
+// 2026) replaced that scan with direct plumbing from IFA's
+// per-AVar escape lattice into CGv2Value::escapes during
+// the build_var / build_global / build_fun_decl lowering
+// paths (see compute_var_escape above).  The legacy block
+// below — `is_ptr_target_op`, `value_escapes`,
+// `compute_per_fun_value_escapes`, `compute_arg_escapes` —
+// is removed in this commit.  ESCAPE_PLAN.md documents the
+// pre-Phase-6 structure for historical reference.
+#if 0  // RETIRED with ESCAPE_PLAN Phase 6
 namespace {
 
 static bool is_ptr_target_op(CGv2Op op) {
@@ -2389,6 +2445,7 @@ static void compute_arg_escapes(CGv2Program *p) {
     }
   }
 }
+#endif  // RETIRED with ESCAPE_PLAN Phase 6
 
 CGv2Program *cg_normalize_v2(FA *fa) {
   CGv2Program *p = new CGv2Program();
@@ -2400,32 +2457,25 @@ CGv2Program *cg_normalize_v2(FA *fa) {
   build_funs(c, fa);
   build_fun_bodies(c, fa);
 
-  // Escape annotation source — see ESCAPE_PLAN.md.
+  // Escape (ESCAPE_PLAN Phase 6): IFA's compute_escape ran
+  // pre-clone and populated AVar::escape across the program.
+  // During the build_* lowering passes above, every
+  // CGv2Value created from a Var picks up its escape bit
+  // directly via compute_var_escape().  Emit-time
+  // temporaries that have no Var counterpart stay at the
+  // conservative default (escapes=true).  No post-hoc
+  // body scan needed.
   //
-  // IFA-driven path (ifa_escape_in_fa=1): IFA's escape pass
-  // populates `Fun::arg_escapes`.  Copy it onto each CGv2Fun
-  // for cross-fun lookup.  compute_arg_escapes then runs in
-  // its Phase-5 short-circuit mode — single pass per fn,
-  // trusting cf->arg_escapes for cross-fn info; the per-fn
-  // body scan only populates per-CGv2Value::escapes.
-  //
-  // Legacy path (ifa_escape_in_fa=0): IFA leaves Fun::
-  // arg_escapes empty; compute_arg_escapes runs the original
-  // outer iteration to discover arg_escapes from scratch.
-  if (ifa_escape_in_fa) {
-    for (Fun *f : fa->funs) {
-      CGv2Fun *cf = c.fun_to_fun.get(f);
-      if (!cf || f->arg_escapes.n == 0) continue;
-      cf->arg_escapes.clear();
-      for (int i = 0; i < f->arg_escapes.n; i++)
-        cf->arg_escapes.add(f->arg_escapes[i] != 0);
-    }
+  // Mirror IFA's per-Fun arg_escapes onto CGv2Fun for any
+  // future consumer that wants the per-formal signature
+  // without walking formals' escapes individually.
+  for (Fun *f : fa->funs) {
+    CGv2Fun *cf = c.fun_to_fun.get(f);
+    if (!cf || f->arg_escapes.n == 0) continue;
+    cf->arg_escapes.clear();
+    for (int i = 0; i < f->arg_escapes.n; i++)
+      cf->arg_escapes.add(f->arg_escapes[i] != 0);
   }
-  // Issue 023 Stage 3 + ESCAPE_PLAN Phase 5: per-function
-  // body scan that populates CGv2Value::escapes (the bit
-  // emit_inst reads).  Iterates cross-fn only when IFA isn't
-  // driving (see compute_arg_escapes implementation).
-  compute_arg_escapes(p);
 
   return p;
 }

@@ -1,7 +1,9 @@
 # Escape Integration into IFA — Plan
 
-Status: **Phase 1 in progress** (2026-06-19). Following phases
-not yet scheduled.
+Status: **Phases 1-6 landed** (2026-06-20).  ESCAPE_PLAN
+is complete — IFA's per-AVar escape lattice now drives
+codegen directly; `compute_arg_escapes` in cg_normalize_v2
+is retired.
 
 The plan: move escape analysis from a post-IFA codegen pass
 (today's [`closed/023-v2-is-value-type-consumer.md`](issues/closed/023-v2-is-value-type-consumer.md)
@@ -286,6 +288,52 @@ for non-Var-backed locals.  Deferred to Phase 6.
 **Verification:** 4-quadrant table (test, pre-clones,
 post-clones, alloca delta) committed to `closed/023` as
 evidence.
+
+**Implementation note (landed June 2026):** What landed
+under "Phase 6 plumbing" was the structural completion of
+the plan rather than the tuning/audit work the original
+section described:
+
+- `compute_escape` now runs unconditionally inside
+  `ifa_analyze` (pre-clone).  The `ifa_escape_in_fa` flag
+  no longer gates anything in production; it survives as an
+  externally-settable variable for tests but production
+  always runs the IFA pass.
+- `cg_normalize_v2.cc` plumbs IFA's per-AVar escape into
+  every Var-backed CGv2Value during the build_var /
+  build_global / build_fun_decl lowering paths via a new
+  `compute_var_escape` helper.  Emit-time temporaries
+  without a Var counterpart stay at the conservative default
+  (`escapes=true`).
+- The legacy Stage 3 body scan (`compute_arg_escapes`,
+  `compute_per_fun_value_escapes`, `value_escapes`,
+  `is_ptr_target_op`) is wrapped in `#if 0` for one cycle
+  and slated for full removal in a follow-up commit.
+
+One gotcha discovered during the work: my initial
+`seed_lattice` filtered `fa_all_PNodes` by `p->fa_live`,
+which is only set during `clone` (post-FA).  Since
+`compute_escape` now runs pre-clone, the filter excluded
+every PNode and locals stayed at the default ES_Escape,
+collapsing the per-value escape result.  Fixed by dropping
+the liveness filter — seed every PNode in `fa_all_PNodes`.
+The IF1 transfer's monotonicity means processing non-live
+nodes is benign (worst case: extra Escape pulls that the
+transfer would have applied anyway).
+
+Corpus-wide alloca audit (struct allocas across the pyc
+test suite):
+- Pre-Phase-6 (Stage 3 driving codegen): 3
+- Post-Phase-6 (IFA driving codegen):    **5**
+
+Phase 6 catches MORE escape opportunities than Stage 3 did
+— a side benefit of operating on IF1 (where IFA's escape
+sees the full call graph) rather than CGv2 (where Stage 3
+only saw the locally-lowered shape).
+
+The original "Phase 6" framing (benchmark + tuning + IR.md
+docs) is now a Phase 7 — work to be done when a real
+benchmark motivates further refinement.
 
 ## Verification gates
 

@@ -271,7 +271,7 @@ bool transfer(PNode *p, EntrySet *es) {
 // `p->fa_live` so we only seed for the analysis-live subset.
 void seed_lattice(EntrySet *es) {
   for (PNode *p : es->fun->fa_all_PNodes) {
-    if (!p || !p->fa_live) continue;
+    if (!p) continue;
     for (Var *v : p->lvals) {
       AVar *av = avar_for(v, es);
       if (av) av->escape = ES_NoEscape;
@@ -299,7 +299,7 @@ void analyze_es(EntrySet *es, bool seed) {
   for (int iter = 0; iter < max_iters; iter++) {
     bool changed = false;
     for (PNode *p : es->fun->fa_all_PNodes) {
-      if (!p || !p->fa_live) continue;
+      if (!p) continue;
       if (transfer(p, es)) changed = true;
     }
     if (!changed) break;
@@ -356,7 +356,13 @@ bool same_escapes(const Vec<uint8_t> &a, const Vec<uint8_t> &b) {
 }
 
 void compute_escape(FA *fa) {
-  if (!ifa_escape_in_fa || !fa) return;
+  if (!fa) return;
+  // Phase 6: always run.  Codegen relies on per-AVar escape
+  // being populated to set CGv2Value::escapes during
+  // lowering — there's no longer a fallback path.  The
+  // ifa_escape_in_fa flag is preserved for compatibility
+  // with tests that still consult it, but no production
+  // code path gates on it anymore.
 
   // Group EntrySets by Fun once.  Pre-clone, Fun::ess is
   // empty (clone's fixup_clone_ess populates it later); we
