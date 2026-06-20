@@ -230,7 +230,8 @@ common/ifa_version.o: Makefile common/ifa_version.cc
 	$(CXX) $(CFLAGS) $(VERSIONCFLAGS) -c common/ifa_version.cc -o common/ifa_version.o
 
 clean:
-	\rm -f *.o common/*.o if1/*.o frontend/*.o optimize/*.o codegen/*.o analysis/*.o core *.core *.gmon $(EXECUTABLES) $(CLEAN_FILES) LICENSE.i COPYRIGHT.i
+	\rm -f *.o common/*.o if1/*.o frontend/*.o optimize/*.o codegen/*.o analysis/*.o testing/*.o core *.core *.gmon $(EXECUTABLES) $(CLEAN_FILES) LICENSE.i COPYRIGHT.i
+	\rm -f *.d common/*.d if1/*.d frontend/*.d optimize/*.d codegen/*.d analysis/*.d testing/*.d
 
 realclean: clean
 	\rm -f *.a *.orig *.rej

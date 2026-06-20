@@ -73,6 +73,14 @@ class Fun : public gc {
   uint split_unique : 1;  // must be split uniquely for each caller
   uint split_eager : 1;   // split eagerly for different argument types
   Vec<EntrySet *> ess;
+
+  // Escape annotation per positional formal arg (see
+  // ESCAPE_PLAN.md, ifa_escape_in_fa flag).  Populated by
+  // IFA's escape pass once landed; consumed by
+  // cg_normalize_v2:build_fun_decl in lieu of running the
+  // post-IFA Stage 3 analysis.  In Phase 1 stays empty.
+  Vec<uint8_t> arg_escapes;
+
   Vec<Var *> fa_Vars;
   Vec<Var *> fa_all_Vars;
   Vec<PNode *> fa_all_PNodes;
@@ -132,17 +140,6 @@ class Fun : public gc {
 
   // llvm
   llvm::Function *llvm;
-
-  // Escape annotation per positional formal arg (see
-  // ESCAPE_PLAN.md, ifa_escape_in_fa flag).  Populated by
-  // IFA's escape pass once landed; consumed by
-  // cg_normalize_v2:build_fun_decl in lieu of running the
-  // post-IFA Stage 3 analysis.  In Phase 1 stays empty.
-  // Placed at end-of-class to avoid shifting historical
-  // field offsets that other passes may depend on (one of
-  // the loops-phase tests broke when inserted mid-class —
-  // root cause not yet diagnosed; revisit when needed).
-  Vec<uint8_t> arg_escapes;
 
   cchar *pathname();
   cchar *filename();
