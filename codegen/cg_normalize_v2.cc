@@ -2372,6 +2372,26 @@ CGv2Program *cg_normalize_v2(FA *fa) {
   build_funs(c, fa);
   build_fun_bodies(c, fa);
 
+  // Escape annotation source.  Two paths:
+  //   - IFA-integrated (Phase 1+, see ESCAPE_PLAN.md): when
+  //     ifa_escape_in_fa is on, copy `f->arg_escapes` (set
+  //     by IFA's escape pass) onto each CGv2Fun.  In Phase 1
+  //     IFA leaves it empty, so the copy is a no-op and
+  //     codegen still relies on the Stage 3 fallback.
+  //   - Stage 3 (issue 023, today's default): scan each
+  //     CGv2Fun body locally with cross-function lookups via
+  //     CGv2Program::lookup_fun.
+  // Both can run in Phase 1 — the in-FA path is a no-op until
+  // Phase 2 wires the transfer functions.
+  if (ifa_escape_in_fa) {
+    for (Fun *f : fa->funs) {
+      CGv2Fun *cf = c.fun_to_fun.get(f);
+      if (!cf || f->arg_escapes.n == 0) continue;
+      cf->arg_escapes.clear();
+      for (int i = 0; i < f->arg_escapes.n; i++)
+        cf->arg_escapes.add(f->arg_escapes[i] != 0);
+    }
+  }
   // Issue 023 Stage 3: cross-function arg-escape annotation,
   // consumed by emit-time `value_escapes_in_fun` to unlock
   // alloca for ptrs passed only into read-only callees.

@@ -54,6 +54,12 @@ frontend see [../PIPELINE.md](../PIPELINE.md).
 
 ## Lowering & optimisation
 
+- [ESCAPE_PLAN.md](ESCAPE_PLAN.md) — Phased plan for moving
+  escape analysis from the post-IFA codegen pass
+  ([closed/023](issues/closed/023-v2-is-value-type-consumer.md)
+  Stage 3) into IFA proper as a first-class lattice with
+  per-call cloning.  Currently Phase 1 landed; opt-in via
+  `--escape_in_fa` / `IFA_ESCAPE_IN_FA=1`.
 - [CFG_SSU.md](CFG_SSU.md) — Control flow, SSU form, dominators,
   and loops (`optimize/{cfg,ssu,dom,loop}.cc`): the four passes
   triggered by `Fun(Sym*)`, phi/phy placement, Tarjan + Cytron

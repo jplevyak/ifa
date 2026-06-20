@@ -120,6 +120,15 @@ class EntrySet : public gc {
   EntrySet *split;
   PendingAEdgeEntrySetsMap pending_es_backedge_map;
   Vec<EntrySet *> *equiv;  // clone.cpp
+
+  // Escape annotation per positional formal arg.  Populated
+  // by IFA's escape transfer (Phase 2+).  In Phase 1 the
+  // vector stays empty; codegen reads from `Fun::arg_escapes`
+  // / `cg_normalize_v2`'s post-IFA pass instead.  When
+  // populated it parameterises the EntrySet's spec key, so
+  // calls with divergent escape settings clone (Phase 4).
+  Vec<uint8_t> arg_escapes;
+
   LINK(EntrySet, es_worklist_link);
 
   EntrySet(Fun *af);
@@ -164,6 +173,24 @@ typedef Map<void *, int> MarkMap;
 typedef Map<Sym *, CreationSet *> CSMap;
 typedef MapElem<Sym *, CreationSet *> CSMapElem;
 
+// Escape integration into IFA — two-point monotonic lattice
+// per AVar.  Bottom = NoEscape (the value provably stays
+// within its function's frame); Top = Escape (default
+// conservative).  See ESCAPE_PLAN.md for the lattice
+// definition, transfer functions, and the cloning policy
+// that consumes this annotation.
+//
+// Phase 1: enum defined; AVar carries the field; everyone
+// is initialized to Escape; analysis is not yet wired.
+enum EscapeStatus {
+  ES_NoEscape = 0,
+  ES_Escape   = 1,
+};
+
+inline EscapeStatus join_escape(EscapeStatus a, EscapeStatus b) {
+  return (a == ES_Escape || b == ES_Escape) ? ES_Escape : ES_NoEscape;
+}
+
 class AVar : public gc {
  public:
   Var *var;
@@ -190,6 +217,9 @@ class AVar : public gc {
   uint live : 1;
   uint live_arg : 1;
   uint is_if_arg : 1;
+  // Escape status (Phase 1+: see ESCAPE_PLAN.md).  Stored as
+  // uint:1 to fit alongside the existing bit-fields.
+  uint escape : 1;
   Accum<AVar *> arg_of_send;
   LINK(AVar, send_worklist_link);
 
