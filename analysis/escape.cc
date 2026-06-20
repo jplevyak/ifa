@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BSD-3-Clause
-// IFA escape analysis — Phases 2 & 3.  See ESCAPE_PLAN.md for
+// IFA escape analysis — Phases 2-4.  See ESCAPE_PLAN.md for
 // the lattice, transfer functions, and the multi-phase
 // rollout that consumes the result.
 //
@@ -75,24 +75,28 @@ bool is_fresh_alloc(PNode *p) {
   }
 }
 
-// Look up the set of possible callees at `p` in `caller`.
-// Returns the (possibly empty / null-valued) Vec<Fun*>.  An
-// indirect / closure-dispatched call may have multiple
-// callees; the transfer takes the union (= conservative
-// escape).  A null return means "no callee info" → treat
-// every arg as escaping.
-Vec<Fun *> *callees_at(Fun *caller, PNode *p) {
-  if (!caller) return nullptr;
-  return caller->calls.get(p);
+// Look up the set of possible callee Funs at PNode `p` in
+// EntrySet `es`.  Uses `es->out_edge_map` so we work both
+// pre-clone (when Fun::calls hasn't been built) and post-
+// clone.  Returns whether at least one callee was found.
+bool callees_at(EntrySet *es, PNode *p, Vec<Fun *> &out) {
+  if (!es) return false;
+  Vec<AEdge *> *edges = es->out_edge_map.get(p);
+  if (!edges) return false;
+  for (AEdge *ee : *edges) {
+    if (!ee || !ee->to || !ee->to->fun) continue;
+    out.set_add(ee->to->fun);
+  }
+  return out.n > 0;
 }
 
 // True iff the arg at position `formal_idx` is known to NOT
 // escape its callees.  Conservative: any callee with
 // unpopulated arg_escapes, or any callee that says Escape at
 // this position, returns false.
-bool arg_safe_across_callees(Vec<Fun *> *cs, int formal_idx) {
-  if (!cs || cs->n == 0) return false;
-  for (Fun *callee : *cs) {
+bool arg_safe_across_callees(Vec<Fun *> &cs, int formal_idx) {
+  if (cs.n == 0) return false;
+  for (Fun *callee : cs) {
     if (!callee) return false;
     if (callee->arg_escapes.n == 0) return false;  // no info
     if (formal_idx < 0 || formal_idx >= callee->arg_escapes.n)
@@ -104,9 +108,8 @@ bool arg_safe_across_callees(Vec<Fun *> *cs, int formal_idx) {
 
 // Apply the transfer function for `p` to the current
 // per-AVar lattice within `es`.  Returns true iff any AVar's
-// escape bit changed.  Phase 3: needs the caller Fun so it
-// can look up Fun::calls at call sites.
-bool transfer(Fun *caller, PNode *p, EntrySet *es) {
+// escape bit changed.
+bool transfer(PNode *p, EntrySet *es) {
   if (!p || !p->live || !p->code) return false;
   bool changed = false;
   auto join_av = [&](AVar *dst, EscapeStatus s) {
@@ -146,15 +149,16 @@ bool transfer(Fun *caller, PNode *p, EntrySet *es) {
       if (!pr) {
         // Non-primitive SEND — concrete or closure-dispatch
         // call.  Phase 3: consult each callee's arg_escapes
-        // (via Fun::calls).  rvals[0] is the function ref;
-        // rvals[1..] are user args mapping 1:1 to the
+        // (via es->out_edge_map).  rvals[0] is the function
+        // ref; rvals[1..] are user args mapping 1:1 to the
         // callee's positional formals.
         //
         // If a callee's arg_escapes is empty (not yet
         // analyzed) or marks that slot as escaping, the
         // caller's rval at that position is forced to
         // Escape.  Otherwise it can stay non-escaping.
-        Vec<Fun *> *cs = callees_at(caller, p);
+        Vec<Fun *> cs;
+        callees_at(es, p, cs);
         // rvals[0] is the function reference itself; for
         // closure dispatch this is the closure ptr.  It
         // doesn't escape the caller just by being called
@@ -296,9 +300,21 @@ void analyze_es(EntrySet *es, bool seed) {
     bool changed = false;
     for (PNode *p : es->fun->fa_all_PNodes) {
       if (!p || !p->fa_live) continue;
-      if (transfer(es->fun, p, es)) changed = true;
+      if (transfer(p, es)) changed = true;
     }
     if (!changed) break;
+  }
+}
+
+// Walk fa->ess and group by EntrySet::fun.  Pre-clone the
+// Fun::ess vector hasn't been populated yet (clone's
+// fixup_clone_ess does that), so we group on the fly.
+void group_ess_by_fun(FA *fa, Map<Fun *, Vec<EntrySet *> *> &out) {
+  for (EntrySet *es : fa->ess) {
+    if (!es || !es->fun) continue;
+    Vec<EntrySet *> *v = out.get(es->fun);
+    if (!v) { v = new Vec<EntrySet *>(); out.put(es->fun, v); }
+    v->add(es);
   }
 }
 
@@ -308,16 +324,15 @@ void analyze_es(EntrySet *es, bool seed) {
 // take the JOIN: an arg escapes from the Fun's perspective if
 // ANY context's formal escapes.  Phase 4's cloning will split
 // these back out per context.
-void project_to_fun(Fun *f) {
+void project_to_fun(Fun *f, Vec<EntrySet *> *ess) {
   if (!f || f->positional_arg_positions.n == 0) return;
+  if (!ess || ess->n == 0) return;
   Vec<uint8_t> escapes;
   for (int i = 0; i < f->positional_arg_positions.n; i++) {
     escapes.add(ES_NoEscape);
   }
-  bool any = false;
-  for (EntrySet *es : f->ess) {
+  for (EntrySet *es : *ess) {
     if (!es) continue;
-    any = true;
     for (int i = 0; i < f->positional_arg_positions.n; i++) {
       MPosition *p = f->positional_arg_positions[i];
       AVar *av = es->args.get(p);
@@ -325,10 +340,6 @@ void project_to_fun(Fun *f) {
       if (av->escape == ES_Escape) escapes[i] = (uint8_t)ES_Escape;
     }
   }
-  if (!any) return;
-  // Conservative default for un-analyzed Funs (no live
-  // EntrySet) is to leave arg_escapes empty so the readback
-  // in cg_normalize_v2 falls through to the Stage 3 scan.
   f->arg_escapes.clear();
   for (uint8_t e : escapes) f->arg_escapes.add(e);
 }
@@ -347,6 +358,12 @@ bool same_escapes(const Vec<uint8_t> &a, const Vec<uint8_t> &b) {
 void compute_escape(FA *fa) {
   if (!ifa_escape_in_fa || !fa) return;
 
+  // Group EntrySets by Fun once.  Pre-clone, Fun::ess is
+  // empty (clone's fixup_clone_ess populates it later); we
+  // build the same mapping locally from fa->ess.
+  Map<Fun *, Vec<EntrySet *> *> ess_by_fun;
+  group_ess_by_fun(fa, ess_by_fun);
+
   // Phase 3 outer loop: iterate until no Fun::arg_escapes
   // signature changes.  In practice settles in 1-3 passes
   // because the lattice is monotonic and depths are small.
@@ -357,16 +374,20 @@ void compute_escape(FA *fa) {
     changed = false;
     outer_passes++;
     for (Fun *f : fa->funs) {
-      if (!f || !f->live) continue;
+      if (!f) continue;
+      // Pre-clone `Fun::live` is not yet set (mark_live_funs
+      // runs later); filter on having EntrySets instead.
+      Vec<EntrySet *> *ess = ess_by_fun.get(f);
+      if (!ess || ess->n == 0) continue;
       // Remember the pre-pass per-formal signature so we can
       // detect a flip after re-analyze.
       Vec<uint8_t> prev;
       prev.copy(f->arg_escapes);
-      for (EntrySet *es : f->ess) {
+      for (EntrySet *es : *ess) {
         if (!es) continue;
         analyze_es(es, /*seed=*/outer_passes == 1);
       }
-      project_to_fun(f);
+      project_to_fun(f, ess);
       if (!same_escapes(prev, f->arg_escapes)) changed = true;
     }
   }
@@ -375,6 +396,7 @@ void compute_escape(FA *fa) {
   int total_formals = 0;
   int formals_no_escape = 0;
   for (Fun *f : fa->funs) {
+    if (!f) continue;
     if (f->arg_escapes.n > 0) {
       funs_analyzed++;
       for (uint8_t e : f->arg_escapes) {
@@ -385,8 +407,8 @@ void compute_escape(FA *fa) {
   }
   if (ifa_verbose > 0) {
     fprintf(stderr,
-            "[escape] Phase 3: %d outer passes, analyzed %d "
-            "funs, %d/%d formals marked NoEscape\n",
+            "[escape] Phases 2-4: %d outer passes, analyzed "
+            "%d funs, %d/%d formals NoEscape\n",
             outer_passes, funs_analyzed, formals_no_escape,
             total_formals);
   }

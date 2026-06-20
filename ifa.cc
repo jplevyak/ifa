@@ -45,16 +45,19 @@ int ifa_analyze(cchar *fn) {
   FA *fa = pdb->fa;
   fa->fn = fn;
   if (fa->analyze(if1->top->fun) < 0) return -1;
+  // ESCAPE_PLAN.md Phases 2-4: intra+inter-procedural escape
+  // lattice.  Runs BEFORE clone so the per-EntrySet escape
+  // signature is available to ES_FN::equivalent — that lets
+  // clone refuse to merge EntrySets whose formals diverge in
+  // escape status (Phase 4).  No-op when
+  // ifa_escape_in_fa==0; codegen then uses the Stage 3
+  // fallback.
+  compute_escape(fa);
   if (clone(fa) < 0) return -1;
   for (Fun *f : fa->funs) build_cfg_dominators(f);
   if (mark_live_code(fa) < 0) return -1;
   if (get_int_config("alog.test.fa") > 0) log_test_fa(fa);
   frequency_estimation(fa);
-  // ESCAPE_PLAN.md Phase 2: intra-procedural escape lattice.
-  // No-op when ifa_escape_in_fa==0; otherwise populates
-  // Fun::arg_escapes which cg_normalize_v2 reads in lieu of
-  // running the Stage 3 fallback.
-  compute_escape(fa);
   return 0;
 }
 

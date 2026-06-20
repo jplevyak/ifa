@@ -199,6 +199,22 @@ inline int ES_FN::equivalent(EntrySet *a, EntrySet *b) {
         if (av->out->constants() != b->args.get(p)->out->constants()) return 0;
     }
   }
+  // ESCAPE_PLAN.md Phase 4: escape divergence trigger.
+  // When `ifa_escape_in_fa` is on, refuse to merge two
+  // EntrySets whose per-formal escape signatures differ.
+  // This causes the cloning phase to split the Fun into
+  // separate specializations — one per (type, escape)
+  // signature.  Gated to the formal positions only; locals'
+  // escape can vary freely within a clone because it's
+  // analyzed per-EntrySet anyway.
+  if (ifa_escape_in_fa) {
+    for (MPosition *p : a->fun->positional_arg_positions) {
+      AVar *av = a->args.get(p);
+      AVar *bv = b->args.get(p);
+      if (!av || !bv) continue;
+      if (av->escape != bv->escape) return 0;
+    }
+  }
   if (!equivalent_es_ivars(a, b)) return 0;
   for (Var *v : a->fun->fa_all_Vars) if (!equivalent_es_vars(v, a, b)) return 0;
   for (PNode *n : a->fun->fa_all_PNodes) {

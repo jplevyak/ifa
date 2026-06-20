@@ -210,6 +210,25 @@ tests clean.
 - Pyc suite: clone count rises measurably but stays within
   budget.  Coverage probe across the corpus.
 
+**Implementation note (landed June 2026):** The mechanism is
+wired correctly — `ES_FN::equivalent` in `analysis/clone.cc`
+refuses to merge EntrySets whose per-formal `AVar::escape`
+differs, and `compute_escape` now runs BEFORE `clone()` so
+the bit is set before partition refinement runs.  On the
+current pyc test corpus, however, the trigger never fires
+(clone count unchanged at 631 across both flag states).
+Root cause: `project_to_fun` JOINs per-formal escape across
+EntrySets to produce a single per-Fun `arg_escapes`
+signature, and the outer inter-procedural loop feeds that
+joined signature back into the inner per-EntrySet transfer.
+Two EntrySets of the same Fun therefore converge to the same
+per-formal escape answer.  Fixing this — preserving
+per-EntrySet escape divergence — would require either
+context-sensitive escape (track per-call-site escape
+demands) or refusing to join in `project_to_fun` for callee
+lookups.  Deferred to Phase 6's tuning pass once a
+benchmark shows the lift would be worth it.
+
 ### Phase 5 — Codegen simplification
 
 - Delete `compute_arg_escapes` in `cg_normalize_v2`.
