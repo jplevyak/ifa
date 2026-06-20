@@ -36,6 +36,7 @@
 #include "testing/print_fa.h"
 #include "testing/print_fa_converge.h"
 #include "testing/print_finalize.h"
+#include "testing/print_escape.h"
 #include "testing/print_inline.h"
 #include "testing/print_loops.h"
 #include "testing/print_patterns.h"
@@ -111,6 +112,9 @@ static void phase_codegen_c_run(IF1 *p) { fa_setup_environment(p); }
 // `inline` — enables the InlineEvent sidecar around simple_inlining
 // to record per-call-site inliner actions.
 static void phase_inline_run(IF1 *p) { fa_setup_environment(p); }
+// `escape` — forces ifa_escape_in_fa on, runs FA + compute_escape,
+// then dumps per-Fun arg_escapes (Phase 2-4 verification).
+static void phase_escape_run(IF1 *p) { fa_setup_environment(p); }
 // `fa-converge` — enables the FAPassEvent sidecar around FA::analyze
 // to record per-pass splitter stage events.
 static void phase_fa_converge_run(IF1 *p) { fa_setup_environment(p); }
@@ -131,6 +135,7 @@ static Phase phases[] = {
     {"codegen-c", pre_parse_builtin_types, phase_codegen_c_run, print_codegen_c_normalized},
     // codegen-llvm and cg-normalize retired with v1 LLVM (issue 014).
     {"inline",    pre_parse_builtin_types, phase_inline_run,    print_inline_normalized},
+    {"escape",    pre_parse_builtin_types, phase_escape_run,    print_escape_normalized},
     {"fa-converge", pre_parse_builtin_types, phase_fa_converge_run, print_fa_converge_normalized},
     // See ifa/testing/phases/00_INDEX.md.
     {0, 0, 0, 0},

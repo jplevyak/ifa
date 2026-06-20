@@ -1,0 +1,8 @@
+;; phase: escape
+
+(summary fa_rc=0 funs=2)
+
+(escape
+  fun __main__ ess=1 escape-sig=[N]
+  fun id ess=2 escape-sig=[N N]
+)

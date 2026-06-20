@@ -1,0 +1,37 @@
+;; 03_chained_calls.ir — top calls outer, outer calls inner.
+;; Phase 3 verification: inter-procedural propagation across
+;; two levels.  All formals are scalars (NoEscape lattice
+;; default); structure exercises that the outer iteration
+;; converges across multiple call edges.
+
+(sym %k :is-constant :immediate (int32 1))
+
+(sym %a :is-local)
+(sym %r :is-local)
+(sym %icont)
+(fun %inner
+  :args (%inner %a)
+  :rets (%r)
+  :cont %icont
+  :body
+    (move %a %r))
+
+(sym %ob :is-local)
+(sym %or :is-local)
+(sym %ocont)
+(fun %outer
+  :args (%outer %ob)
+  :rets (%or)
+  :cont %ocont
+  :body
+    (send %inner %ob => %or))
+
+(sym %tr :is-local)
+(sym %tcont)
+(fun %top
+  :rets (%tr)
+  :cont %tcont
+  :body
+    (send %outer %k => %tr))
+
+(entry %top)

@@ -127,6 +127,7 @@ LIB_SRCS = ifa.cc main.cc \
 	testing/print_patterns.cc testing/print_fa.cc testing/print_fa_converge.cc \
 	testing/print_dispatch.cc testing/print_clone.cc testing/print_dce.cc \
 	testing/print_codegen.cc testing/print_inline.cc \
+	testing/print_escape.cc \
 	testing/fa_setup.cc testing/roundtrip_test.cc testing/lattice_test.cc \
 	testing/cg_ir_v2_test.cc testing/cg_normalize_v2_test.cc
 LIB_OBJS = $(LIB_SRCS:%.cc=%.o)
