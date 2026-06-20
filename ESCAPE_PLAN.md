@@ -239,6 +239,42 @@ benchmark shows the lift would be worth it.
 **Verification:** Identical IR output to Phase 4.  Reduces
 code surface.
 
+**Implementation note (landed June 2026):** Slimmer than the
+plan proposed.  Rather than delete `compute_arg_escapes`
+outright, the implementation splits it into two pieces:
+- `compute_per_fun_value_escapes(cf, p)`: the per-function
+  local body scan that walks each value's uses and writes
+  per-CGv2Value::escapes (plus the per-formal signature on
+  cf->arg_escapes).
+- The wrapper `compute_arg_escapes(p)`: when
+  `ifa_escape_in_fa==1`, runs `compute_per_fun_value_escapes`
+  once per function trusting IFA's pre-populated
+  `cf->arg_escapes`; when off, retains the original cross-fn
+  outer iteration to discover arg_escapes from scratch.
+
+The default flag is left **off** for now, despite the plan.
+Phase 6's benchmark pass should validate the IFA path's
+behavior on real workloads before we flip the production
+default — see commit `e2456ae` for the Phase 4 caveat that
+informed this decision.
+
+Why not delete the local body scan entirely?  The IFA
+per-AVar escape lattice doesn't have a 1:1 mapping to
+CGv2Value (CGv2 lowering generates emit-time temporaries
+that aren't Var-backed).  Replacing the local scan would
+require either pulling escape annotation through the
+normalize lowering, or trusting the conservative default
+for non-Var-backed locals.  Deferred to Phase 6.
+
+**Verification:**
+- Pyc suite 82/0 across all 4 quadrants (no regressions).
+- Corpus-wide functional comparison: zero per-test
+  alloca-or-GC_malloc count differences between flag-on
+  and flag-off — the simplified path produces identical
+  codegen.  This is the plan's "identical IR output to
+  Phase 4" gate.
+- ifa unit tests 99/0; all 15 IR-phase tests pass.
+
 ### Phase 6 — Tuning and audit
 
 - Run on a real benchmark beyond the test suite.

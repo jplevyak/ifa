@@ -2293,71 +2293,99 @@ static bool value_escapes(CGv2Fun *cf, CGv2Value *v,
 
 }  // namespace
 
+// Per-function local body scan: populate CGv2Value::escapes
+// for every formal and local, using `cf->arg_escapes` as the
+// seed for the formal escape signature and walking the body
+// to find any escape-causing use.  Also writes back the
+// freshly-computed per-formal signature onto cf->arg_escapes
+// (callers consume it for the outer cross-fn iteration when
+// IFA isn't driving).
+//
+// Returns true iff cf->arg_escapes flipped during this pass.
+static bool compute_per_fun_value_escapes(CGv2Fun *cf,
+                                          CGv2Program *p) {
+  if (!cf || cf->is_external) return false;
+  // Inner fixed-point: start with formals + locals all in
+  // non_escape, prune any whose uses cause escape.
+  Map<CGv2Value *, int> non_escape;
+  Vec<CGv2Value *> candidates;
+  for (CGv2Value *fv : cf->formals) {
+    non_escape.put(fv, 1);
+    candidates.add(fv);
+  }
+  for (CGv2Value *lv : cf->locals) {
+    if (lv) {
+      non_escape.put(lv, 1);
+      candidates.add(lv);
+    }
+  }
+  bool inner_changed = true;
+  while (inner_changed) {
+    inner_changed = false;
+    for (CGv2Value *v : candidates) {
+      if (!non_escape.get(v)) continue;
+      if (value_escapes(cf, v, non_escape, p)) {
+        non_escape.put(v, 0);
+        inner_changed = true;
+      }
+    }
+  }
+  // Project onto per-value `.escapes` (for emit-time
+  // consumption) and onto cf->arg_escapes (for cross-fn
+  // lookup).  Return whether the arg signature flipped.
+  Vec<bool> new_escapes;
+  for (CGv2Value *fv : cf->formals) {
+    bool ne = non_escape.get(fv) ? true : false;
+    new_escapes.add(!ne);
+    fv->escapes = !ne;
+  }
+  for (CGv2Value *lv : cf->locals) {
+    if (lv) lv->escapes = non_escape.get(lv) ? false : true;
+  }
+  bool changed = false;
+  if (cf->arg_escapes.n != new_escapes.n) {
+    cf->arg_escapes.move(new_escapes);
+    changed = true;
+  } else {
+    for (int i = 0; i < new_escapes.n; i++) {
+      if (cf->arg_escapes[i] != new_escapes[i]) {
+        cf->arg_escapes[i] = new_escapes[i];
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+// Phase 5: when ifa_escape_in_fa is on, IFA already gave us
+// the per-Fun arg_escapes (copied to cf->arg_escapes by the
+// readback above).  The outer cross-fn iteration becomes
+// redundant — one pass of the per-fn body scan suffices to
+// populate per-CGv2Value::escapes, after which the answer
+// is stable.  When the flag is off, fall back to the
+// original outer iteration to discover arg_escapes from
+// scratch.
 static void compute_arg_escapes(CGv2Program *p) {
   if (!p) return;
-
-  // Outer loop: re-run until no function's arg_escapes flips.
-  // Each function's analysis can refine its own arg_escapes
-  // (which then feeds back into callers' analyses on the next
-  // iteration).
+  if (ifa_escape_in_fa) {
+    // Single pass: trust the IFA-populated cf->arg_escapes
+    // for cross-fn lookups; the per-fn scan only needs to
+    // propagate that into per-value escapes.
+    for (CGv2Fun *cf : p->funs) {
+      (void)compute_per_fun_value_escapes(cf, p);
+    }
+    return;
+  }
+  // Legacy outer fixed point: discover arg_escapes from
+  // scratch by repeatedly re-running the per-fn pass until
+  // signatures stabilize.
   bool changed = true;
   int outer_passes = 0;
   while (changed && outer_passes < 8) {
     changed = false;
     outer_passes++;
     for (CGv2Fun *cf : p->funs) {
-      if (!cf || cf->is_external) continue;
-      // Inner fixed-point per function: start with formals in
-      // non_escape, iteratively prune.  Also pull in locals
-      // that prove non-escaping so transitive uses (value
-      // stored into a non-escaping struct, etc.) chain
-      // correctly.
-      Map<CGv2Value *, int> non_escape;
-      for (CGv2Value *fv : cf->formals) non_escape.put(fv, 1);
-      // Seed locals as candidates; we'll prune ones that
-      // escape.
-      Vec<CGv2Value *> candidates;
-      candidates.copy(cf->formals);
-      for (CGv2Value *lv : cf->locals) {
-        if (lv) {
-          non_escape.put(lv, 1);
-          candidates.add(lv);
-        }
-      }
-      bool inner_changed = true;
-      while (inner_changed) {
-        inner_changed = false;
-        for (CGv2Value *v : candidates) {
-          if (!non_escape.get(v)) continue;
-          if (value_escapes(cf, v, non_escape, p)) {
-            non_escape.put(v, 0);
-            inner_changed = true;
-          }
-        }
-      }
-      // Project the final state onto cf->arg_escapes (for
-      // cross-function lookup) and onto each value's
-      // .escapes bit (for emit-time consumption).
-      Vec<bool> new_escapes;
-      for (CGv2Value *fv : cf->formals) {
-        bool ne = non_escape.get(fv) ? true : false;
-        new_escapes.add(!ne);
-        fv->escapes = !ne;
-      }
-      for (CGv2Value *lv : cf->locals) {
-        if (lv) lv->escapes = non_escape.get(lv) ? false : true;
-      }
-      if (cf->arg_escapes.n != new_escapes.n) {
-        cf->arg_escapes.move(new_escapes);
-        changed = true;
-      } else {
-        for (int i = 0; i < new_escapes.n; i++) {
-          if (cf->arg_escapes[i] != new_escapes[i]) {
-            cf->arg_escapes[i] = new_escapes[i];
-            changed = true;
-          }
-        }
-      }
+      if (compute_per_fun_value_escapes(cf, p)) changed = true;
     }
   }
 }
@@ -2372,27 +2400,19 @@ CGv2Program *cg_normalize_v2(FA *fa) {
   build_funs(c, fa);
   build_fun_bodies(c, fa);
 
-  // Escape annotation source.  Two paths:
-  //   - IFA-integrated (Phase 1+, see ESCAPE_PLAN.md): when
-  //     ifa_escape_in_fa is on, copy `f->arg_escapes` (set
-  //     by IFA's escape pass) onto each CGv2Fun.  In Phase 1
-  //     IFA leaves it empty, so the copy is a no-op and
-  //     codegen still relies on the Stage 3 fallback.
-  //   - Stage 3 (issue 023, today's default): scan each
-  //     CGv2Fun body locally with cross-function lookups via
-  //     CGv2Program::lookup_fun.
-  // Both can run during the phased rollout (1-4); Stage 3
-  // remains the production source-of-truth until Phase 5.
+  // Escape annotation source — see ESCAPE_PLAN.md.
   //
-  // Phase 2: IFA populates Fun::arg_escapes intra-procedurally,
-  // but it's used only as a comparison signal — Stage 3
-  // still computes the result that drives alloca/sret choice.
-  // This keeps the IFA pass non-disruptive while the lattice
-  // and transfer rules mature.
+  // IFA-driven path (ifa_escape_in_fa=1): IFA's escape pass
+  // populates `Fun::arg_escapes`.  Copy it onto each CGv2Fun
+  // for cross-fun lookup.  compute_arg_escapes then runs in
+  // its Phase-5 short-circuit mode — single pass per fn,
+  // trusting cf->arg_escapes for cross-fn info; the per-fn
+  // body scan only populates per-CGv2Value::escapes.
+  //
+  // Legacy path (ifa_escape_in_fa=0): IFA leaves Fun::
+  // arg_escapes empty; compute_arg_escapes runs the original
+  // outer iteration to discover arg_escapes from scratch.
   if (ifa_escape_in_fa) {
-    // Phase 2 readback: copy onto CGv2Fun for cross-fun
-    // lookup ergonomics, but do NOT drive codegen — Stage 3
-    // below will overwrite.  Phase 5 will flip this around.
     for (Fun *f : fa->funs) {
       CGv2Fun *cf = c.fun_to_fun.get(f);
       if (!cf || f->arg_escapes.n == 0) continue;
@@ -2401,10 +2421,10 @@ CGv2Program *cg_normalize_v2(FA *fa) {
         cf->arg_escapes.add(f->arg_escapes[i] != 0);
     }
   }
-  // Issue 023 Stage 3: cross-function arg-escape annotation,
-  // consumed by emit-time `value_escapes_in_fun` to unlock
-  // alloca for ptrs passed only into read-only callees.
-  // Production source of truth during Phases 1-4.
+  // Issue 023 Stage 3 + ESCAPE_PLAN Phase 5: per-function
+  // body scan that populates CGv2Value::escapes (the bit
+  // emit_inst reads).  Iterates cross-fn only when IFA isn't
+  // driving (see compute_arg_escapes implementation).
   compute_arg_escapes(p);
 
   return p;
