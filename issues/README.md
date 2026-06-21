@@ -45,6 +45,12 @@ that:
   the count-vs-capacity footgun); migrate `qsort_by_id; for(x:s)`
   sites to `sorted_view()`.  Deferred because the rename touches
   ~1000+ Vec consumer sites.
+- [024-is-comparison-narrowing.md](024-is-comparison-narrowing.md) —
+  IFA doesn't narrow union types on `is None` comparisons.
+  The partial-fix `__is__` method from
+  [`issues/004`](../../issues/004-is-operator-unimplemented.md)
+  makes basic `x is None` patterns work, but recursive-type
+  narrowing and polymorphic-None-LHS dispatch still crash.
 
 ## Closed (archive)
 
