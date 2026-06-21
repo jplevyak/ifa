@@ -336,3 +336,69 @@ the above lands.
 
 Test impact: pyc suite stays at 85/0.  No new tests pass
 because the BOXING gate still triggers.  No regressions.
+
+## Additional finding: `isinstance` wrapper not inlined before FA
+
+While debugging why direct `prim_isinstance` recognition
+didn't fire on Python code, I discovered another timing
+issue worth recording:
+
+The Python `isinstance` is a one-line wrapper function:
+```python
+def isinstance(obj, ci):
+  return __pyc_primitive__(__pyc_symbol__("isinstance"), obj,
+                           __pyc_clone_constants__(ci))
+```
+
+This is a textbook single-SEND inlining candidate.  Issue
+022's `simple_inlining` correctly identifies and inlines
+such wrappers.  But pyc's pipeline order is:
+
+```
+ifa_analyze:
+  fa->analyze()              ← my narrowing runs here, sees the SEND
+  compute_escape(fa)
+  clone(fa)
+  mark_live_code(fa)
+  frequency_estimation(fa)
+ifa_optimize:
+  simple_inlining(fa)        ← wrapper inlined HERE, after FA done
+```
+
+By the time `simple_inlining` collapses the wrapper into
+its caller, FA has already converged with the wrapper's
+SEND as cond.def — so the narrowing infrastructure sees a
+SEND-to-isinstance, not a direct `prim_isinstance`.  The
+in-this-commit workaround (recognize the wrapper SEND by
+callee sym name) addresses Python's `isinstance` specifically,
+but doesn't extend to other wrapped discriminators (e.g. a
+user's `is_kind_of(x, T)` helper).
+
+The structural fix: run `simple_inlining` (at least the
+single-SEND case) *before* FA — or run FA, inline, then
+re-FA.  Either has cost implications worth measuring
+before committing to a direction.
+
+This is an independent concern that compounds with 025
+but isn't strictly part of it.  Worth filing separately
+if the narrowing work proceeds and the wrapper-recognition
+hack becomes brittle.  For now, documented here so the
+follow-on author has the full picture.
+
+## Summary of structural blockers
+
+To make narrowing observable on practical Python patterns,
+three things need to compose:
+
+1. **Per-branch SSU AVars** — ✓ already exist in pyc.
+2. **Per-branch type filter application** — ✓ implemented
+   in this commit.
+3. **BOXING violation gating** — ✗ still rejects the
+   union before downstream narrowing helps.
+4. **Pre-FA inlining of single-SEND wrappers** —
+   ✗ inlining runs post-FA, so narrowing detection works
+   only via the wrapper-name workaround.
+
+Items 3 and 4 are the remaining blockers.  Either by
+itself partially helps; both together fully unblock
+isinstance-narrowing in Python code.
