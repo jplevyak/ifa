@@ -307,8 +307,8 @@ section described:
   (`escapes=true`).
 - The legacy Stage 3 body scan (`compute_arg_escapes`,
   `compute_per_fun_value_escapes`, `value_escapes`,
-  `is_ptr_target_op`) is wrapped in `#if 0` for one cycle
-  and slated for full removal in a follow-up commit.
+  `is_ptr_target_op`) has been deleted entirely.  The IFA
+  path is now the only escape source.
 
 One gotcha discovered during the work: my initial
 `seed_lattice` filtered `fa_all_PNodes` by `p->fa_live`,
