@@ -385,20 +385,135 @@ if the narrowing work proceeds and the wrapper-recognition
 hack becomes brittle.  For now, documented here so the
 follow-on author has the full picture.
 
-## Summary of structural blockers
+## Refinement (June 2026, follow-up): `Node | None` doesn't trigger BOXING
 
-To make narrowing observable on practical Python patterns,
-three things need to compose:
+The "BOXING rejects the original `v`'s union" framing above
+is true only for unions of *basic* types (int|str etc.).
+`to_basic_type` in `analysis/clone.cc` returns nullptr for
+user-defined classes and for `__pyc_None_type__`:
 
-1. **Per-branch SSU AVars** — ✓ already exist in pyc.
+```cpp
+Sym *to_basic_type(Sym *t) {
+  if (t == sym_symbol) return t;
+  if (t == sym_string) return t;
+  if (t->num_kind) return t;
+  if (t->is_constant) return t->type;
+  if (t->is_symbol) return sym_symbol;
+  if (t->type_kind == Type_TAGGED) return t->specializes[0];
+  return 0;   // user classes and None_type land here
+}
+```
+
+`mixed_basics` (fa.cc:2785) only counts CreationSets whose
+type has a basic-type; with both falling through to nullptr,
+they're not counted.  So `Node | None` doesn't trigger
+BOXING.  Verified: the recursive linked-list pattern
+*compiles* (no BOXING warning) — the runtime assertion has
+a different cause (item 5 below).
+
+This is consistent with pyc's C runtime:
+`typedef void *_CG_nil_type;` (in `pyc_c_runtime.h`).  None
+is just a null pointer; user classes are also pointer-shaped.
+The union `Node | None` has the natural C-level representation
+"pointer that may be null", and the existing `__null__()`
+check (returns True iff the value is the None singleton) is
+already pointer equality with NULL at the C level.
+
+So BOXING is NOT the blocker for `is None`-style narrowing on
+class types.  It still blocks int|str and similar primitive
+unions, but that's a less interesting case for now.
+
+## Refinement (June 2026, follow-up): `__is__` recognition + walk-back
+
+This commit additionally extends the predicate recognition
+to walk back through pyc's `__pyc_to_bool__` wrapper chain
+that sits between every `if cond:` and the discriminator:
+
+```
+SEND1: t = cond_op(...)                    ; e.g. x.__is__(None)
+SEND2: m = operator(t, period, __pyc_to_bool__)  ; bind method
+SEND3: bool_cond = m()                     ; invoke
+IF bool_cond
+```
+
+The narrowing code now hops:
+- through pure-MOVE chains,
+- through SEND3→SEND2 pairs (the `__pyc_to_bool__` binding +
+  invocation),
+to find the underlying discriminator (SEND1).  Recognizes
+`__is__` and `__nis__` patterns by callee sym name — for
+`x is None`, narrows the non-None operand to None on the
+True branch and to non-None on the False branch.  Recognition
+fires correctly (verified with debug instrumentation).
+
+Also removes the early `break` in Code_IF that previously
+skipped per-branch processing when the condition was a fully
+polymorphic bool (the common case).  Without the break, both
+the True and False branches now route through the per-branch
+SSU phy machinery — letting the narrowing filters take
+effect.
+
+## What's still broken (the actual remaining blocker)
+
+With BOXING out of the way and narrowing recognition firing,
+the recursive linked-list test (`if node is None: return 0;
+return node.value + ...`) still asserts at runtime:
+
+```
+runtime error: matching function not found
+```
+
+Investigation shows the unresolved SEND is the `__is__`
+dispatch itself, not the downstream `node.value` access:
+
+```c
+_CG_int64 _CG_f_2211_4/*f*/() {
+  ...
+  assert(!"runtime error: matching function not found");
+  ...
+}
+
+_CG_bool _CG_f_161_0/*__pyc_any_type__::__is__*/() { return 0; }
+_CG_bool _CG_f_252_1/*__pyc_None_type__::__is__*/() { return 0; }
+```
+
+Both `__is__` clones return 0 (False) and take NO ARGS,
+suggesting they were specialized for fully-constant inputs
+and constant-folded away.  The caller's SEND for
+`x.__is__(None)` (where x has union type {Node, None}) finds
+no resolution because no clone matches "polymorphic receiver
++ None argument".
+
+This is the **polymorphic-receiver dispatch problem** that
+issue 024 documents — a problem with `__is__`'s analysis,
+not the narrowing infrastructure.  My narrowing fires
+correctly; it just can't help because the dispatch itself is
+unresolved before narrowing has a chance to gate downstream
+uses.
+
+## Summary of structural blockers (updated)
+
+To make narrowing observable on the motivating recursive-
+type patterns, the following must compose:
+
+1. **Per-branch SSU AVars** — ✓ exist in pyc.
 2. **Per-branch type filter application** — ✓ implemented
-   in this commit.
-3. **BOXING violation gating** — ✗ still rejects the
-   union before downstream narrowing helps.
+   (issue 025 commit).
+3. **BOXING violation gating** — ✓ doesn't fire for
+   `Node | None` (only for unions of basic types like
+   int|str, which aren't the recursive-type case).
 4. **Pre-FA inlining of single-SEND wrappers** —
-   ✗ inlining runs post-FA, so narrowing detection works
-   only via the wrapper-name workaround.
+   workaround in place (recognize wrapper by sym name);
+   robust fix would be to run inlining before FA.
+5. **Polymorphic `__is__` dispatch resolution** — ✗
+   issue 024's underlying gap.  `__is__` on a union
+   receiver fails to dispatch.  Either:
+   - Make pyc's IFA decompose union receivers into
+     per-CS dispatches (issue 024 Option C).
+   - Replace `__is__` method dispatch with a typed
+     primitive `prim_is_none` that the IFA splitter
+     already knows how to handle (issue 024 Option B).
 
-Items 3 and 4 are the remaining blockers.  Either by
-itself partially helps; both together fully unblock
-isinstance-narrowing in Python code.
+Item 5 is now the remaining blocker.  Once it's fixed, the
+narrowing infrastructure in this commit should make the
+recursive linked-list pattern compile and run.

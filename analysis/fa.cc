@@ -1991,7 +1991,17 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
       AType *b = type_intersection(t, fa->type_world.bool_type);
       AType *e = type_diff(t, b);
       if (e != fa->type_world.bottom_type) type_violation(ATypeViolation_kind::PRIMITIVE_ARGUMENT, cond, e, nullptr);
-      if (type_intersection(b, fa->type_world.bool_type) == fa->type_world.bool_type) break;
+      // Note: previously this case `break`'d out (skipping
+      // the per-branch blocks below) when `b == bool_type`
+      // — i.e. cond was a polymorphic bool that could be
+      // either True or False.  In that case the post-switch
+      // default code merged both branches' phy lvals from
+      // a single rval AVar, losing the per-branch SSU
+      // distinction.  Issue 025 keeps the per-branch blocks
+      // running for polymorphic conds so each branch's
+      // SSU-renamed AVar gets its own narrowed-type flow,
+      // enabling discriminator-based narrowing (isinstance,
+      // is None) to take effect.
 
       // Issue 025: per-branch type narrowing.  When the
       // condition is the result of a recognized
@@ -2026,9 +2036,57 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
       Var *narrow_operand = nullptr;
       AType *narrow_true_type = nullptr;
       AType *narrow_false_type = nullptr;
+      // Walk back through MOVEs and the __pyc_to_bool__
+      // wrapper that pyc inserts before every IF condition.
+      //
+      // The pyc frontend lowers `if cond:` as:
+      //   SEND1: t = cond_op(...)              ; the discriminator
+      //   SEND2: m = operator cond_op . __pyc_to_bool__
+      //   SEND3: bool_cond = m()
+      //   IF bool_cond
+      // To recover the discriminator we walk:
+      //   IF.cond → SEND3 (1 rval = m) → m.def =
+      //   SEND2 (4 rvals: sym_operator, cond_op_var,
+      //   sym_period, sym___pyc_to_bool__) → cond_op_var.def
+      //   = SEND1 (the actual discriminator).
       PNode *iso_def = p->rvals.v[0]->def;
+      // Bound the walk to a small depth as a safety net.
+      for (int hop = 0; hop < 6 && iso_def && iso_def->code; hop++) {
+        bool advanced = false;
+        // Walk through pure-MOVE chains.
+        if (iso_def->code->kind == Code_MOVE &&
+            iso_def->rvals.n == 1) {
+          Var *src = iso_def->rvals[0];
+          if (src && src->def && src->def != iso_def) {
+            iso_def = src->def;
+            advanced = true;
+          }
+        }
+        // Walk through the SEND3 (invocation) → SEND2 (binding)
+        // → SEND1 (discriminator) chain.  SEND3 has 1 rval (the
+        // bound method); SEND2 has 4 rvals [sym_operator, recv,
+        // sym_period, method_sym].
+        if (!advanced && iso_def->code->kind == Code_SEND &&
+            iso_def->rvals.n == 1) {
+          Var *bound = iso_def->rvals[0];
+          if (bound && bound->def && bound->def != iso_def &&
+              bound->def->code &&
+              bound->def->code->kind == Code_SEND &&
+              bound->def->rvals.n == 4) {
+            PNode *bind = bound->def;
+            Var *recv = bind->rvals[1];
+            if (recv && recv->def && recv->def != bind) {
+              iso_def = recv->def;
+              advanced = true;
+            }
+          }
+        }
+        if (!advanced) break;
+      }
       Var *operand_var = nullptr;
       Var *type_var = nullptr;
+      bool is_none_check = false;   // narrowing target: nil_type
+      bool is_not_none_check = false;
       if (iso_def) {
         if (iso_def->prim &&
             iso_def->prim->index == P_prim_isinstance) {
@@ -2040,36 +2098,82 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
         } else if (iso_def->code &&
                    iso_def->code->kind == Code_SEND &&
                    iso_def->rvals.n >= 3) {
-          // SEND to a user/builtin function.  Layout:
+          // SEND layout:
           //   rvals[0] = function ref
           //   rvals[1..] = args
-          // For the Python `isinstance(obj, ci)` wrapper,
-          // rvals[0] is sym_isinstance.  Recognize by name.
+          // Recognized patterns:
+          //   - Python `isinstance(obj, ci)` wrapper.
+          //   - `x is None` / `x is not None` via the
+          //     __is__ / __nis__ method dispatch (issue 004
+          //     partial fix).  For these, one of the two
+          //     operands is the None constant.
           Var *fn_var = iso_def->rvals[0];
-          if (fn_var && fn_var->sym && fn_var->sym->name &&
-              !strcmp(fn_var->sym->name, "isinstance") &&
+          cchar *fname = (fn_var && fn_var->sym && fn_var->sym->name)
+                             ? fn_var->sym->name : nullptr;
+          if (fname && !strcmp(fname, "isinstance") &&
               iso_def->rvals.n >= 3) {
             operand_var = iso_def->rvals[1];
             type_var = iso_def->rvals[2];
+          } else if (fname &&
+                     (!strcmp(fname, "__is__") ||
+                      !strcmp(fname, "__nis__")) &&
+                     iso_def->rvals.n >= 3) {
+            // rvals[1] = self, rvals[2] = x.  Narrow whichever
+            // operand isn't the None constant.  If both or
+            // neither, skip.
+            Var *self_v = iso_def->rvals[1];
+            Var *x_v = iso_def->rvals[2];
+            AVar *self_av = make_AVar(self_v, es);
+            AVar *x_av = make_AVar(x_v, es);
+            bool self_is_none = false, x_is_none = false;
+            for (CreationSet *cs : self_av->out->sorted)
+              if (cs->sym->type == sym_nil_type) { self_is_none = true; break; }
+            for (CreationSet *cs : x_av->out->sorted)
+              if (cs->sym->type == sym_nil_type) { x_is_none = true; break; }
+            // Find the non-None operand for narrowing.
+            if (self_is_none && !x_is_none) {
+              operand_var = x_v;
+            } else if (x_is_none && !self_is_none) {
+              operand_var = self_v;
+            }
+            if (operand_var) {
+              if (!strcmp(fname, "__is__")) is_none_check = true;
+              else is_not_none_check = true;
+            }
           }
         }
       }
-      if (operand_var && type_var) {
+      if (operand_var) {
         AVar *operand_av = make_AVar(operand_var, es);
-        AVar *type_av = make_AVar(type_var, es);
         AType *tt = fa->type_world.bottom_type;
         AType *ft = fa->type_world.bottom_type;
-        for (CreationSet *cs1 : operand_av->out->sorted) {
-          bool matches = false;
-          for (CreationSet *cs2 : type_av->out->sorted) {
-            if (cs2->sym->meta_type &&
-                cs2->sym->meta_type->implementors.in(cs1->sym->type)) {
-              matches = true;
-              break;
+        if (type_var) {
+          // isinstance path: True if operand's type implements
+          // type_var's instance-class.
+          AVar *type_av = make_AVar(type_var, es);
+          for (CreationSet *cs1 : operand_av->out->sorted) {
+            bool matches = false;
+            for (CreationSet *cs2 : type_av->out->sorted) {
+              if (cs2->sym->meta_type &&
+                  cs2->sym->meta_type->implementors.in(cs1->sym->type)) {
+                matches = true;
+                break;
+              }
             }
+            if (matches) tt = type_union(tt, make_AType(cs1));
+            else ft = type_union(ft, make_AType(cs1));
           }
-          if (matches) tt = type_union(tt, make_AType(cs1));
-          else ft = type_union(ft, make_AType(cs1));
+        } else if (is_none_check || is_not_none_check) {
+          // `x is None` / `x is not None`: True for None CSes,
+          // False for everything else.  For __nis__, swap the
+          // True / False partitions.
+          for (CreationSet *cs1 : operand_av->out->sorted) {
+            bool is_none = (cs1->sym->type == sym_nil_type);
+            if (is_none_check ? is_none : !is_none)
+              tt = type_union(tt, make_AType(cs1));
+            else
+              ft = type_union(ft, make_AType(cs1));
+          }
         }
         if (tt != fa->type_world.bottom_type ||
             ft != fa->type_world.bottom_type) {
