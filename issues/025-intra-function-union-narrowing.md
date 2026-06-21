@@ -505,15 +505,20 @@ type patterns, the following must compose:
 4. **Pre-FA inlining of single-SEND wrappers** —
    workaround in place (recognize wrapper by sym name);
    robust fix would be to run inlining before FA.
-5. **Polymorphic `__is__` dispatch resolution** — ✗
-   issue 024's underlying gap.  `__is__` on a union
-   receiver fails to dispatch.  Either:
-   - Make pyc's IFA decompose union receivers into
-     per-CS dispatches (issue 024 Option C).
-   - Replace `__is__` method dispatch with a typed
-     primitive `prim_is_none` that the IFA splitter
-     already knows how to handle (issue 024 Option B).
+5. **Polymorphic `__is__` dispatch resolution** — ✓
+   addressed by [issue 024](024-is-comparison-narrowing.md)'s
+   fix (June 2026).  The frontend rewrites `x is None`
+   directly to `prim_isinstance(x, sym_nil_type)` and
+   codegen emits a NULL pointer check.  No method dispatch
+   needed.
 
-Item 5 is now the remaining blocker.  Once it's fixed, the
-narrowing infrastructure in this commit should make the
-recursive linked-list pattern compile and run.
+All five pieces now compose: the originally-motivating
+recursive linked-list pattern (see
+`tests/recursive_list_is_none.py`) compiles and runs on
+both backends.  Pyc suite 86/0.
+
+The broader `isinstance(v, T)` narrowing (Case 2 from the
+symptom section) is still gated on items 3 and 4 — the
+present commit handles the specific `is None` shape, not
+arbitrary isinstance-on-runtime-union patterns.  Those
+remain follow-on work.

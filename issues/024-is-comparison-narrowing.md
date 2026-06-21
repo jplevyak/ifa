@@ -1,6 +1,12 @@
 # Issue 024: IFA doesn't narrow union types on `is None` comparisons
 
-**Status:** open.
+**Status:** **fixed June 2026.**  The frontend now rewrites
+`x is None` and `None is x` directly to
+`prim_isinstance(x, sym_nil_type)` (Option B from below).
+Codegen (both C and v2 LLVM) emits a NULL pointer check.
+The recursive-linked-list pattern that originally
+motivated this issue now compiles and runs.  See "Fix
+landed" section below for details.
 **Affects:** `ifa/analysis/fa.cc` (the splitter that decides
 when to refine an EntrySet based on conditional predicates).
 **Related:**
@@ -135,12 +141,53 @@ When fixing:
 - A broader class of Python ports from CPython that rely on
   None-narrowing.
 
+## Fix landed (June 2026)
+
+Took **Option B** (frontend rewrite to a primitive IFA
+already handles).  Three pieces:
+
+1. **Frontend** (`python_ifa_build_if1.cc` `PY_compare`):
+   when one operand of `is` / `is not` is the None
+   constant, emit `prim_isinstance(operand, sym_nil_type)`
+   (or its negation) instead of the `__is__` / `__nis__`
+   method dispatch.
+
+2. **C codegen** (`cg.cc:write_send`): special-case
+   `prim_isinstance(x, sym_nil_type)` — emit
+   `dst = (x == NULL);` directly.
+
+3. **v2 LLVM codegen** (`cg_normalize_v2.cc`): added an
+   `idx == P_prim_isinstance` route in `lower_send` that
+   funnels into a new `lower_send_prim` handler emitting
+   `CG2_BINOP EQ src null_const` (an `icmp eq ptr, null`).
+
+The frontend rewrite covers `x is None` AND `None is x` —
+Pattern 1 from the symptom section is unreachable now
+because the rewrite fires before any `__is__` dispatch.
+The IFA splitter narrows `x` per-branch via Code_IF's
+prim_isinstance recognition (the per-branch type-filter
+machinery from issue 025 commit cb6425a).  Both
+infrastructure pieces compose.
+
+Verified:
+- `tests/recursive_list_is_none.py` (new) — the
+  originally-motivating linked-list-with-`is None` pattern
+  compiles and runs on both backends (output: `6\n55\n0`).
+- pyc suite **86/0** on both backends (was 85/0; +1 for
+  the new test).
+- ifa unit tests 105/0; all 16 IR-phase tests pass.
+
 ## Related
 
-- `python_ifa_build_if1.cc:102` — `PY_CMP_IS` → `__is__`
-  symbol mapping.
-- `__pyc__/00_runtime.py` — where the partial fix landed.
+- `python_ifa_build_if1.cc:PY_compare` — the rewrite
+  location.
+- `ifa/codegen/cg.cc:write_send` — C-backend handler.
+- `ifa/codegen/cg_normalize_v2.cc:lower_send_prim` — v2
+  LLVM handler.
+- `__pyc__/00_runtime.py` — the `__is__` method survives
+  as a fallback (rarely hit since the frontend
+  short-circuits `is None` patterns directly).
 - `ifa/IFA.md` §6 — setter-splitting docs.
 - `ifa/if1/prim_data.h` — `prim_isinstance` (the existing
-  primitive that the splitter already narrows on; a
-  potential model for `prim_is_none`).
+  primitive whose narrowing infrastructure this fix
+  reuses).

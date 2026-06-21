@@ -47,16 +47,16 @@ that:
   ~1000+ Vec consumer sites.
 - [024-is-comparison-narrowing.md](024-is-comparison-narrowing.md) —
   IFA doesn't narrow union types on `is None` comparisons.
-  The partial-fix `__is__` method from
-  [`issues/004`](../../issues/004-is-operator-unimplemented.md)
-  makes basic `x is None` patterns work, but recursive-type
-  narrowing and polymorphic-None-LHS dispatch still crash.
+  **Fixed June 2026:** frontend rewrites `x is None` /
+  `None is x` directly to `prim_isinstance(x,
+  sym_nil_type)`; codegen emits a NULL ptr check.
+  Recursive linked-list pattern now works.
 - [025-intra-function-union-narrowing.md](025-intra-function-union-narrowing.md) —
   Broader: IFA doesn't narrow runtime union types
-  intra-function on conditional branches, even for
-  `isinstance` (which only narrows when the union is
-  cross-function and resolved via clone-time
-  specialization).  024 is the `is None` sub-case.
+  intra-function on conditional branches.  **Partially
+  fixed June 2026** for the `is None` shape (composes
+  with 024); `isinstance(v, T)` on runtime unions and
+  other discriminator patterns remain follow-on work.
 
 ## Closed (archive)
 

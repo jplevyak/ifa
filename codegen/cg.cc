@@ -529,6 +529,25 @@ static void write_send_arg(FILE *fp, Fun *f, PNode *n, MPosition *p, int &wrote_
 static void write_send(FILE *fp, Fun *f, PNode *n) {
   fputs("  ", fp);
   if (n->prim) {
+    // Issue 024/025: `prim_isinstance(x, sym_nil_type)`
+    // (emitted by the frontend for `x is None` /
+    // `x is not None`) lowers to a C-level NULL pointer
+    // check.  Both class instances and the None singleton
+    // are pointer-shaped in pyc's runtime (the latter is
+    // `void *` = NULL), so identity-with-None is just
+    // `x == NULL`.  No `_CG_prim_isinstance` helper needed.
+    if (n->prim->index == P_prim_isinstance && n->rvals.n >= 4 &&
+        n->rvals[3]->sym == sym_nil_type) {
+      if (n->lvals.n && cg_get_string(n->lvals[0])) {
+        cchar *opnd = cg_get_string(n->rvals[2]);
+        if (!opnd) opnd = cg_get_string(n->rvals[2]->sym);
+        fprintf(fp, "%s = (%s == NULL);\n",
+                cg_get_string(n->lvals[0]), opnd ? opnd : "NULL");
+      } else {
+        fputs(";\n", fp);
+      }
+      return;
+    }
     if (n->lvals.n) {
       assert(n->lvals.n == 1);
       if (cg_get_string(n->lvals[0])) fprintf(fp, "%s = ", cg_get_string(n->lvals[0]));

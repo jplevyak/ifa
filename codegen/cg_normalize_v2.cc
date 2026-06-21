@@ -1804,6 +1804,34 @@ bool lower_send_prim(NormCtx &c, FunCtx &fc, PNode *pn,
   if (!name) name = name_var->sym->constant;
   if (!name) return false;
 
+  // isinstance(operand, __pyc_None_type__) — emitted by the
+  // frontend for `x is None` / `x is not None` patterns
+  // (issue 024 / 025).  At the C / LLVM level, identity-
+  // with-None is just NULL pointer equality since pyc
+  // represents None as a null pointer for all class types.
+  if (strcmp(name, "isinstance") == 0 && pn->rvals.n >= 4 &&
+      pn->rvals[3] && pn->rvals[3]->sym == sym_nil_type) {
+    CGv2Value *src = build_var(c, fc, pn->rvals[2]);
+    CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
+    if (src && dst && src->type) {
+      CGv2Value *null_c = new CGv2Value();
+      null_c->id = 9610 + fc.cf->id * 1000 + (int)c.p->constants.n;
+      null_c->name = "null";
+      null_c->type = src->type;
+      null_c->scope = CG2V_CONSTANT;
+      null_c->imm.kind = CGv2Immediate::I_NIL;
+      null_c->imm.v.i = 0;
+      c.p->constants.add(null_c);
+      CGv2Inst *inst = new CGv2Inst();
+      inst->op = CG2_BINOP;
+      inst->sub_op = CG2B_EQ;
+      inst->rvals.add(src);
+      inst->rvals.add(null_c);
+      inst->lvals.add(dst);
+      blk->body.add(inst);
+      return true;
+    }
+  }
   // __pyc_c_call__ — pyc's generic FFI primitive. Route to
   // CG2_C_CALL via lower_send_c_call (D.3).
   if (strcmp(name, "__pyc_c_call__") == 0 &&
@@ -1926,6 +1954,15 @@ void lower_send(NormCtx &c, FunCtx &fc, PNode *pn, Fun *caller,
       return;
     }
     if (idx == P_prim_primitive) {
+      lower_send_prim(c, fc, pn, blk);
+      return;
+    }
+    // Issue 024/025: `prim_isinstance(operand, sym_nil_type)`
+    // (emitted by the frontend for `x is None` /
+    // `x is not None`) — route through lower_send_prim's
+    // isinstance-vs-nil handler which emits CG2_BINOP EQ
+    // against a null pointer constant.
+    if (idx == P_prim_isinstance) {
       lower_send_prim(c, fc, pn, blk);
       return;
     }
