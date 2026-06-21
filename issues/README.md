@@ -51,6 +51,12 @@ that:
   [`issues/004`](../../issues/004-is-operator-unimplemented.md)
   makes basic `x is None` patterns work, but recursive-type
   narrowing and polymorphic-None-LHS dispatch still crash.
+- [025-intra-function-union-narrowing.md](025-intra-function-union-narrowing.md) —
+  Broader: IFA doesn't narrow runtime union types
+  intra-function on conditional branches, even for
+  `isinstance` (which only narrows when the union is
+  cross-function and resolved via clone-time
+  specialization).  024 is the `is None` sub-case.
 
 ## Closed (archive)
 
