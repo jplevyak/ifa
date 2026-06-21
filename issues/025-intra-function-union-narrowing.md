@@ -216,3 +216,56 @@ When fixing:
 - `prim_isinstance` (`if1/prim_data.h:41`) — the
   discriminator the splitter already recognizes but only
   at call boundaries.
+
+## Investigation notes (June 2026)
+
+A scoping investigation surfaced the right infrastructure
+without committing a fix:
+
+**Infrastructure that already exists** (`ifa/analysis/fa.cc`):
+- `AVar::restrict` — an upper-bound type filter.
+  `update_in(v, t)` re-computes `v->out = v->in ∩ v->restrict`
+  every time `v->in` changes (line 243).  This is the
+  knob narrowing would turn.
+- `flow_var_type_permit(v, t)` (line 965) — the API to
+  add a type to `v->restrict`.  Already used for:
+  - prim_isinstance result narrowing the result AVar (the
+    bool result, not the input!).
+  - Constant folding.
+  - prim_apply.
+  - Splitter filtering at function boundaries.
+- `Code_IF` (line 1987) — already detects when only one
+  branch is reachable (condition AType doesn't include
+  true/false).  Walks `p->phy` nodes that wire SSU-
+  renamed Vars per branch (lvals[0]=True, lvals[1]=False).
+
+**What's missing**:
+- Logic at `Code_IF` that walks back from the condition
+  Var to find its def PNode, recognizes narrowing
+  predicates (isinstance, is None, ==, etc.), and calls
+  `flow_var_type_permit` on the operand's per-branch view.
+- The "per-branch view" itself.  In read-only branches
+  (operand isn't reassigned), there is no per-branch SSU
+  Var — the same AVar serves both branches.  Narrowing it
+  would corrupt the False branch.
+
+**Scope estimate**:
+- Per-branch AVar mechanism: significant.  Either teach
+  the IF1 lowering to insert "filter MOVEs" at narrowable
+  branch entries (similar to how phy nodes work, but for
+  narrowing rather than merging), or extend the AVar
+  machinery with a "context-sensitive view" concept.
+- Predicate recognition: medium.  Walk back from condition
+  Var to find prim_isinstance / __is__ / __null__ /
+  prim_equal patterns; extract operand + narrowing type.
+- Splitter integration: medium.  The new narrowed AVars
+  need to participate in the splitter's worklist and
+  EntrySet-equivalence checks.
+
+Estimated 1-2 weeks of focused IFA work.  Not session-scale.
+
+The right approach would be to start with the smallest
+case (isinstance narrowing for one specific test pattern
+where the operand has a phy node available), measure the
+real benefit on the pyc test suite, then decide whether
+the broader infrastructure investment is warranted.
