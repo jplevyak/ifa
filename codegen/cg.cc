@@ -346,11 +346,18 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
     case P_prim_clone: {
       fputs("  ", fp);
       assert(n->lvals.n == 1);
+      cchar *dst_t = cg_get_string(n->lvals[0]->type);
       if (cg_get_string(n->lvals[0])) fprintf(fp, "%s = ", cg_get_string(n->lvals[0]));
-      if (n->prim->index == P_prim_clone)
-        fprintf(fp, "(%s)_CG_prim_clone(", cg_get_string(n->lvals[0]->type));
-      else
-        fprintf(fp, "(%s)_CG_prim_clone_vector(", cg_get_string(n->lvals[0]->type));
+      if (n->prim->index == P_prim_clone) {
+        // Issue 026: use destination-sized clone.  When the
+        // source prototype's per-CS struct is smaller than
+        // the destination instance's (which happens for
+        // classes with >1 self-typed field where the proto
+        // never receives field writes), the destination's
+        // size must drive the GC_MALLOC.
+        fprintf(fp, "(%s)_CG_prim_clone_dst(%s, ", dst_t, dst_t);
+      } else
+        fprintf(fp, "(%s)_CG_prim_clone_vector(", dst_t);
       for (int i = 2; i < n->rvals.n; i++) {
         if (i > 2) fprintf(fp, ", ");
         fputs(cg_get_string(n->rvals[i]), fp);

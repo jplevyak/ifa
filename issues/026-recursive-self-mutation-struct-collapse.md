@@ -1,6 +1,11 @@
 # Issue 026: recursive types with >1 self-typed field lose value field in C struct
 
-**Status:** open.
+**Status:** **partial fix landed June 2026** — root-cause
+diagnosed; the prototype-vs-instance size mismatch is fixed
+(manual tree builds now work).  A second related bug
+(per-CS field tracking dropping writes from outside
+`__init__`) still blocks BST insert and doubly-linked list.
+See "Fix landed" section below.
 **Affects:** pyc IFA cloning / struct synthesis when a
 class has two or more fields of its own type alongside
 non-recursive fields.
@@ -185,15 +190,121 @@ still works because it builds the structure outside any
 recursive function.  Patterns where the field is only
 written outside the recursion compile cleanly.
 
+## Fix landed (June 2026) — prototype-vs-instance size
+
+Root cause traced.  Pyc creates two CreationSets for the
+same class:
+
+1. **The prototype CS** (from `prim_new(cls)` in
+   `gen_class_pyda`).  Used as the source for `prim_clone`
+   when constructing new instances.  This CS has **no
+   field writes** because nothing assigns to the proto's
+   fields (the class-level `___init___` only sets defaults
+   when the class has class-scope attributes like
+   `x = 2` — which our test classes don't).
+2. **The instance CS** (from `prim_clone(proto)` in
+   `__new__`).  This CS gets field writes from `__init__`
+   and any caller-side assignments.
+
+Both CSs have the same `sym` (the class's instance type),
+but pyc's per-CS struct synthesis produces **different
+struct layouts** for them:
+
+- Proto CS → 0-byte struct (no fields).
+- Instance CS → struct with all written fields.
+
+The runtime macro `_CG_prim_clone(src)` used to allocate
+`sizeof(*src)` bytes, copying from the source.  With
+`src` being the proto (0 bytes), only 0 bytes were
+allocated.  Subsequent `__init__` writes to
+`obj->value`, `obj->left`, `obj->right` corrupted the
+heap.
+
+The fix (`pyc_c_runtime.h` + `cg.cc:write_prim_send`):
+
+- New runtime helper `_CG_prim_primitive_clone_dst(src,
+  dst_size, src_size)` that allocates by `dst_size` and
+  memcpy's only `min(src_size, dst_size)` bytes.
+- New macro `_CG_prim_clone_dst(_dt, _src)` that passes
+  both source and destination types so the macro can
+  compute both sizes.
+- Codegen emits `_CG_prim_clone_dst(DST_TYPE, src)`
+  instead of `_CG_prim_clone(src)` for `P_prim_clone`.
+- `__init__`'s writes now have room.  GC_MALLOC zeros
+  the unused tail, so fields not in the source are still
+  initialized cleanly.
+
+**Result**: `tests/tree_manual.py` (manually-built tree
+with recursive sum_tree and depth) compiles and runs
+correctly on the C backend.  v2 LLVM still has issue 027.
+
+## What's still broken
+
+A *second* related bug blocks BST insert and DLL:
+
+```python
+def insert(root, v):
+  if root is None:
+    return Node(v)
+  ...
+
+t = Node(5)
+t = insert(t, 3)
+t = insert(t, 7)
+print(sum_tree(t))   # returns 30 instead of 29
+```
+
+The generated struct for Node is missing the `value`
+field even though `__init__` does `self.value = v`.  Both
+clones of `Node::__init__` in the C output write only
+`e2=NULL; e3=NULL;` — the value write is **dropped**.
+
+Also `__init__` is generated as `(_CG_ps3548 a1)` — no v
+parameter.  Pyc constant-folded v across clones.
+
+This is a different root cause — **per-CS field tracking
+is missing writes**.  In the DLL test:
+
+```python
+head = Node(1)
+n2 = Node(2)
+n2.prev = head   # write of head into n2.prev
+```
+
+The `n2.prev = head` write writes a Node into the prev
+field.  IFA tracks this write on n2's CS, but the
+generated struct for ps3449 (the Node CS) has only e1
+(value) and e3 (next) — no e2 (prev).
+
+Hypothesis: each `Node(v)` call site creates a SEPARATE
+CreationSet.  Field writes are tracked per-CS.  The CS for
+n2 receives writes to `prev` from main but the CS that
+`__init__` writes via gets only value and next.  The
+struct synthesis picks ONE CS's layout but the codegen
+emits casts to a different CS's type.  Or the CSs are
+merged for cast purposes but their field sets aren't
+unioned.
+
+This second bug needs further investigation.  It seems to
+require either:
+
+- Merging field sets across all CSs of the same instance
+  type before struct synthesis.
+- Or making field writes propagate to all CSs of the
+  same sym at IFA time.
+
 ## Related
 
 - [`issues/004-is-operator-unimplemented.md`](../../issues/004-is-operator-unimplemented.md)
   — the `is None` fix that unblocked recursive type
-  narrowing.  This issue is the next layer down — even
-  with narrowing working, the struct layout for
-  self-mutating recursive types is wrong.
+  narrowing.  This issue is the next layer down.
 - [`ifa/issues/025-intra-function-union-narrowing.md`](025-intra-function-union-narrowing.md)
-  — the broader narrowing infrastructure that prim_isinstance
-  rewrites use.
-- `ifa/CLONE.md` — pyc's clone-time specialization, where
-  the struct field pruning likely happens.
+  — the broader narrowing infrastructure that
+  prim_isinstance rewrites use.
+- [`ifa/issues/027-v2-llvm-narrowed-loop-loses-struct-type.md`](027-v2-llvm-narrowed-loop-loses-struct-type.md)
+  — v2 LLVM has a related struct-tracking issue.
+- `ifa/CLONE.md` — pyc's clone-time specialization where
+  per-CS layouts are determined.
+- `ifa/codegen/cg.cc:write_prim_send` (P_prim_clone case)
+  — codegen emission.
+- `pyc_c_runtime.h` — runtime helpers and macros.

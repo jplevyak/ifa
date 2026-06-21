@@ -58,10 +58,12 @@ that:
   with 024); `isinstance(v, T)` on runtime unions and
   other discriminator patterns remain follow-on work.
 - [026-recursive-self-mutation-struct-collapse.md](026-recursive-self-mutation-struct-collapse.md) —
-  Recursive types with >1 self-typed field (BST: left+right,
-  doubly-linked list: prev+next, fib heap: many) lose the
-  value field in the synthesized C struct.  Blocks the
-  graduated test series beyond the linked-list shape.
+  Recursive types with >1 self-typed field lose fields in
+  the synthesized C struct.  **Partial fix June 2026:**
+  prototype-vs-instance allocation size mismatch fixed via
+  `_CG_prim_clone_dst`.  Manual tree builds now work; BST
+  insert and DLL still hit a separate per-CS
+  field-tracking bug.
 - [027-v2-llvm-narrowed-loop-loses-struct-type.md](027-v2-llvm-narrowed-loop-loses-struct-type.md) —
   v2 LLVM loses struct type through `while x is not None`
   loops, leaving GEPs on bare `ptr`.  Recursive form
