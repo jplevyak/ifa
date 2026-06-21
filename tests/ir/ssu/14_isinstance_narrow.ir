@@ -1,0 +1,31 @@
+;; 14_isinstance_narrow.ir — `v` is read-only across an
+;; `if cond`.  Does SSU still create per-branch versions
+;; of v (which would let an FA-level narrowing pass set
+;; restrict per-branch without corrupting the other side)?
+;;
+;; Mirrors the IF1 shape of:
+;;   v = ...   (defined before)
+;;   if cond:
+;;     use(v)  — should narrow if cond was a discriminator
+;;   else:
+;;     use(v)  — should narrow the other way
+
+(sym %v :is-local)
+(sym %cond :is-local)
+(sym %r :is-local)
+(sym %cont)
+
+(fun %f
+  :args (%v %cond)
+  :rets (%r)
+  :cont %cont
+  :body
+    (if %cond %L_t %L_f)
+    (label %L_t)
+    (move %v %r)
+    (goto %L_join)
+    (label %L_f)
+    (move %v %r)
+    (label %L_join))
+
+(entry %f)

@@ -249,23 +249,90 @@ without committing a fix:
   Var — the same AVar serves both branches.  Narrowing it
   would corrupt the False branch.
 
-**Scope estimate**:
-- Per-branch AVar mechanism: significant.  Either teach
-  the IF1 lowering to insert "filter MOVEs" at narrowable
-  branch entries (similar to how phy nodes work, but for
-  narrowing rather than merging), or extend the AVar
-  machinery with a "context-sensitive view" concept.
-- Predicate recognition: medium.  Walk back from condition
-  Var to find prim_isinstance / __is__ / __null__ /
-  prim_equal patterns; extract operand + narrowing type.
-- Splitter integration: medium.  The new narrowed AVars
-  need to participate in the splitter's worklist and
-  EntrySet-equivalence checks.
+**Scope estimate (REVISED June 2026)**:
 
-Estimated 1-2 weeks of focused IFA work.  Not session-scale.
+First scoping pass mis-claimed "in read-only branches, no
+SSU rename exists for the operand."  That claim was
+**wrong** — pyc's SSU DOES rename Vars per-branch even
+when the operand isn't reassigned.  Verified with a
+fixture (`ifa/tests/ir/ssu/14_isinstance_narrow.ir`):
 
-The right approach would be to start with the smallest
-case (isinstance narrowing for one specific test pattern
-where the operand has a phy node available), measure the
-real benefit on the pyc test suite, then decide whether
-the broader infrastructure investment is warranted.
+```
+(phy
+  %p0:
+    [0] lvals=[%v_v1 %v_v2] rvals=[%v]
+)
+(rename
+  %v -> %v(def ?) %v_v1(def p0) %v_v2(def p0)
+)
+```
+
+The IF node's phy creates `%v_v1` (True-branch view) and
+`%v_v2` (False-branch view).  Each has its own `(Var,
+contour)` AVar, so narrowing one doesn't corrupt the
+other.
+
+This makes the implementation much smaller than the first
+scope estimate:
+
+- Predicate recognition: ~50 LOC.  Walk back from the
+  condition Var's def PNode, recognize prim_isinstance /
+  prim_equal patterns, extract (operand, narrowing type).
+- Per-branch narrowing application: ~30 LOC.  At the
+  Code_IF True/False branch processing in fa.cc:1987, find
+  the phy node whose rval is the operand and call
+  `flow_var_type_permit` on the appropriate lval's AVar
+  with the narrowing type.
+- No new AVar mechanism needed.  No IF1 transformation
+  needed.
+
+Estimated 1-2 days, not weeks.  Tracked separately as the
+implementation work for this issue.
+
+## Implementation attempt (June 2026)
+
+Landed: predicate-recognition + per-branch narrowing
+infrastructure in `add_pnode_constraints` Code_IF
+(commit follows).  Recognizes `prim_isinstance` direct
+calls AND the Python `isinstance` wrapper SEND (by callee
+sym name), computes per-branch narrowed AType, and applies
+`flow_var_type_permit` on the per-branch SSU AVars.
+
+**Found at implementation time**: a deeper design
+constraint blocks observable narrowing on real Python
+patterns:
+
+- pyc emits BOXING violations on any AVar whose `out` has
+  mixed basic types (`collect_var_type_violations` at
+  fa.cc:2806).  This check runs on the **original Var** (e.g.
+  `v`), not on the per-branch SSU views (`v_v1` / `v_v2`).
+- Even with per-branch narrowing fully applied, the
+  original `v`'s AVar still holds the union type
+  {int, str}.  The BOXING check fires → compilation fails
+  BEFORE downstream code can benefit from the narrowed
+  per-branch types.
+
+The narrowing CODE is correct; the structural problem is
+that pyc's "no boxing by default" invariant rejects the
+union before narrowing can route around it.
+
+Two complementary fixes to make narrowing observable:
+
+1. **Liveness-aware BOXING**: only emit BOXING violations
+   on AVars actually USED downstream in a context that
+   requires a concrete type.  If all uses of `v` are
+   routed through phy nodes (v_v1, v_v2), `v` itself can
+   carry the union type without violating anything.
+2. **SSU rewrite-and-prune**: after FA converges, replace
+   every use of `v` after the IF with the appropriate
+   v_v1 / v_v2, then mark `v` as un-used.  This is a real
+   IR transformation, not just a code-gen change.
+
+Both are substantial follow-on work.  The narrowing code
+landed here is the prerequisite for either approach — it
+correctly computes and applies per-branch type filters; it
+just doesn't fully unblock practical patterns until one of
+the above lands.
+
+Test impact: pyc suite stays at 85/0.  No new tests pass
+because the BOXING gate still triggers.  No regressions.

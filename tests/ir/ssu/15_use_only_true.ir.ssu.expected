@@ -1,0 +1,22 @@
+;; phase: ssu
+
+;; Fun %f
+(phi
+  (none)
+)
+
+(phy
+  %p0:
+    [0] lvals=[%v_v1 %v_v2] rvals=[%v]
+)
+
+(rename
+  %v -> %v(def ?) %v_v1(def p0) %v_v2(def p0)
+)
+
+(live-vars
+  %p0: %cond %v
+  %p1: %v
+  %p2: %v
+)
+

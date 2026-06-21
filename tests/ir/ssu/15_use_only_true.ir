@@ -1,0 +1,22 @@
+;; 15_use_only_true.ir — v is used only in the True branch.
+;; Does SSU still create a v_v1 (True-branch view) for the
+;; narrowing infrastructure to target?
+
+(sym %v :is-local)
+(sym %cond :is-local)
+(sym %r :is-local)
+(sym %cont)
+
+(fun %f
+  :args (%v %cond)
+  :rets (%r)
+  :cont %cont
+  :body
+    (if %cond %L_t %L_f)
+    (label %L_t)
+    (move %v %r)
+    (goto %L_join)
+    (label %L_f)
+    (label %L_join))
+
+(entry %f)

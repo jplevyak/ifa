@@ -1992,10 +1992,103 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
       AType *e = type_diff(t, b);
       if (e != fa->type_world.bottom_type) type_violation(ATypeViolation_kind::PRIMITIVE_ARGUMENT, cond, e, nullptr);
       if (type_intersection(b, fa->type_world.bool_type) == fa->type_world.bool_type) break;
+
+      // Issue 025: per-branch type narrowing.  When the
+      // condition is the result of a recognized
+      // discriminator primitive (today: prim_isinstance),
+      // narrow the operand's per-branch SSU-renamed Var
+      // (which the phy node below already creates as
+      // lvals[0]=True, lvals[1]=False) by restricting it
+      // to the matching/non-matching CreationSets.  The
+      // restrict propagates via `out = in ∩ restrict`
+      // (see update_in), so the narrowing flows through to
+      // downstream uses in each branch without affecting
+      // the other.
+      // Issue 025: detect narrowing predicates that wrote
+      // cond, and apply per-branch type filters to the SSU
+      // per-branch Vars (which always exist — see the
+      // ifa/tests/ir/ssu/14_isinstance_narrow.ir fixture).
+      //
+      // Two cases handled:
+      //  (a) direct prim_isinstance call (rare — Python
+      //      `isinstance` is a wrapper function),
+      //  (b) call to the isinstance wrapper (recognized by
+      //      callee sym name == "isinstance" with two args).
+      //
+      // Status: the narrowing successfully targets the
+      // per-branch SSU AVars (v_v1 / v_v2), but pyc's
+      // strict no-boxing default emits BOXING violations
+      // on the ORIGINAL Var (v) BEFORE these narrowed views
+      // get a chance to gate downstream uses.  See issue
+      // 025 for the deeper design constraint and follow-on
+      // work needed (liveness-aware BOXING, or
+      // SSU-rewrite-and-prune).
+      Var *narrow_operand = nullptr;
+      AType *narrow_true_type = nullptr;
+      AType *narrow_false_type = nullptr;
+      PNode *iso_def = p->rvals.v[0]->def;
+      Var *operand_var = nullptr;
+      Var *type_var = nullptr;
+      if (iso_def) {
+        if (iso_def->prim &&
+            iso_def->prim->index == P_prim_isinstance) {
+          int n = iso_def->rvals.n;
+          if (n >= 2) {
+            operand_var = iso_def->rvals[n - 2];
+            type_var = iso_def->rvals[n - 1];
+          }
+        } else if (iso_def->code &&
+                   iso_def->code->kind == Code_SEND &&
+                   iso_def->rvals.n >= 3) {
+          // SEND to a user/builtin function.  Layout:
+          //   rvals[0] = function ref
+          //   rvals[1..] = args
+          // For the Python `isinstance(obj, ci)` wrapper,
+          // rvals[0] is sym_isinstance.  Recognize by name.
+          Var *fn_var = iso_def->rvals[0];
+          if (fn_var && fn_var->sym && fn_var->sym->name &&
+              !strcmp(fn_var->sym->name, "isinstance") &&
+              iso_def->rvals.n >= 3) {
+            operand_var = iso_def->rvals[1];
+            type_var = iso_def->rvals[2];
+          }
+        }
+      }
+      if (operand_var && type_var) {
+        AVar *operand_av = make_AVar(operand_var, es);
+        AVar *type_av = make_AVar(type_var, es);
+        AType *tt = fa->type_world.bottom_type;
+        AType *ft = fa->type_world.bottom_type;
+        for (CreationSet *cs1 : operand_av->out->sorted) {
+          bool matches = false;
+          for (CreationSet *cs2 : type_av->out->sorted) {
+            if (cs2->sym->meta_type &&
+                cs2->sym->meta_type->implementors.in(cs1->sym->type)) {
+              matches = true;
+              break;
+            }
+          }
+          if (matches) tt = type_union(tt, make_AType(cs1));
+          else ft = type_union(ft, make_AType(cs1));
+        }
+        if (tt != fa->type_world.bottom_type ||
+            ft != fa->type_world.bottom_type) {
+          narrow_operand = operand_var;
+          narrow_true_type = tt;
+          narrow_false_type = ft;
+        }
+      }
+
       if (type_intersection(b, fa->type_world.true_type) != fa->type_world.bottom_type) {
         for (PNode *n : p->phy) {
           AVar *vv = make_AVar(n->rvals[0], es);
-          flow_vars(vv, make_AVar(n->lvals.v[0], es));
+          AVar *lv = make_AVar(n->lvals.v[0], es);
+          flow_vars(vv, lv);
+          if (narrow_operand && n->rvals[0] == narrow_operand &&
+              narrow_true_type &&
+              narrow_true_type != fa->type_world.bottom_type) {
+            flow_var_type_permit(lv, narrow_true_type);
+          }
         }
         PNode *n = p->cfg_succ[0];
         if (done.set_add(n)) add_pnode_constraints(n, es, done);
@@ -2003,7 +2096,13 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
       if (type_intersection(b, fa->type_world.false_type) != fa->type_world.bottom_type) {
         for (PNode *n : p->phy) {
           AVar *vv = make_AVar(n->rvals[0], es);
-          flow_vars(vv, make_AVar(n->lvals.v[1], es));
+          AVar *lv = make_AVar(n->lvals.v[1], es);
+          flow_vars(vv, lv);
+          if (narrow_operand && n->rvals[0] == narrow_operand &&
+              narrow_false_type &&
+              narrow_false_type != fa->type_world.bottom_type) {
+            flow_var_type_permit(lv, narrow_false_type);
+          }
         }
         PNode *n = p->cfg_succ[1];
         if (done.set_add(n)) add_pnode_constraints(n, es, done);
