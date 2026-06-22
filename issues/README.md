@@ -61,10 +61,13 @@ that:
   Recursive types with >1 self-typed field lose fields in
   the synthesized C struct.  **Two fixes June 2026**:
   (1) prototype-vs-instance allocation size via
-  `_CG_prim_clone_dst`; (2) struct field-index holes via
-  always-emit-typed-fields.  DLL and manual tree now work.
-  BST insert still blocked by a third bug —
-  constant-folding of field reads across CSs.
+  `_CG_prim_clone_dst`; (2) struct field-index elision via
+  cg_field_live (dead setters dropped, struct keeps live
+  fields at has-index `eN`).  DLL and manual tree now
+  work.  BST insert still blocked by a third bug —
+  Node-in-function CS doesn't establish field-iv tracking
+  → field reads through dispatch over union receivers
+  miss the inside-function Node's value.
 - [027-v2-llvm-narrowed-loop-loses-struct-type.md](027-v2-llvm-narrowed-loop-loses-struct-type.md) —
   v2 LLVM loses struct type through `while x is not None`
   loops, leaving GEPs on bare `ptr`.  Recursive form

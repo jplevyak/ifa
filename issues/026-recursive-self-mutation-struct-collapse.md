@@ -1,14 +1,18 @@
 # Issue 026: recursive types with >1 self-typed field lose value field in C struct
 
-**Status:** **two fixes landed June 2026, one bug remains.**
+**Status:** **two fixes landed June 2026, one bug
+diagnosed.**
 (1) Prototype-vs-instance allocation size mismatch fixed
 via `_CG_prim_clone_dst`.  (2) Struct field-index holes
-fixed by always emitting typed fields regardless of live
-status.  Doubly-linked list now works.  Manual tree
-builds work on the C backend (v2 LLVM blocked by issue
-027).  BST `insert` still has a *third* bug — constant-
-folding of field reads across multiple CreationSets —
-documented but not yet fixed.
+fixed by elision + indexing (live fields keep their
+has-index, dead-field setters are elided).  DLL works.
+Manual tree builds work on the C backend (v2 LLVM
+blocked by issue 027).  BST `insert` still hits a
+*third* bug — when a Node is created inside a function
+and assigned to another Node's field, the inside-function
+Node's CS doesn't get its own field-iv tracking
+established.  Diagnosed but not fixed (needs deeper IFA
+investigation — see "Third bug" below).
 **Affects:** pyc IFA cloning / struct synthesis when a
 class has two or more fields of its own type alongside
 non-recursive fields.
@@ -294,70 +298,107 @@ Verified:
 - Linked-list tests, recursive_alloc tests, suite
   remained 88/0.
 
-## Third bug — constant-folding across CSs (BST insert)
+## Third bug — Node-in-function loses iv tracking
 
-A *separate* bug still blocks BST insert:
+A *separate* bug still blocks BST insert (and any pattern
+that creates Nodes inside a function and reads their
+fields through dispatch later).
+
+Minimal reproducer:
 
 ```python
-def insert(root, v):
-  if root is None: return Node(v)
-  if v < root.value:
-    root.left = insert(root.left, v)
-  else:
-    root.right = insert(root.right, v)
-  return root
+class Node:
+  def __init__(self, v):
+    self.value = v
+    self.next = None
+
+def set_next(node, v):
+  node.next = Node(v)         # ← Node created inside function
+
+def sum_list(n):
+  if n is None: return 0
+  return n.value + sum_list(n.next)
 
 t = Node(5)
-t = insert(t, 3); t = insert(t, 7); t = insert(t, 1)
-t = insert(t, 9); t = insert(t, 4)
-print(sum_tree(t))   # returns 30 instead of 29
+set_next(t, 3)
+print(sum_list(t))   # expected 8, returns 10
 ```
 
-The generated `sum_tree` body emits a *constant*:
+Generated `sum_list` body:
 
 ```c
-t3 = _CG_prim_add(5, ..., t10);   // 5 + recursive sum
+_CG_int64 sum_list(_CG_any a1) {
+  ...
+  t3 = sum_list(t->e2);      // recurse on .next
+  t2 = _CG_prim_add(5, "+", t3);   // ← literal 5, not n.value
+  return t2;
+}
 ```
 
-It treats `root.value` as the constant `5` across the
-recursive sum.  All 6 nodes get summed as if value=5:
-`6 * 5 = 30`.
+The `n.value` field read is fully *elided* and replaced
+with the constant `5`.  There's no read of `e1` from
+memory.  Pyc IFA decided that the value field across all
+contexts reaching this function is `{5}` only — it never
+saw the value=3 of the Node created inside set_next.
 
-Similarly, the `if v < root.value` comparison in
-`insert`'s body becomes `_CG_prim_less(v, "<", 5)` — also
-hardcoded to 5.  Which means all 5 inserted values
-compare against 5 instead of the actual root's value at
-that recursion level, producing a wrong tree shape (sum
-happens to still be 30 because all 6 nodes are still
-created).
+The C output also shows two Node struct types:
+- `ps3449` (Node created outer-scope): `e2; /* next */`
+  pointing to ps3452.
+- `ps3452` (Node created inside set_next): **empty**
+  struct — no fields.
 
-Root cause: pyc's IFA cloning policy collapses all Node
-CreationSets (one per `Node(v)` call site) into a single
-clone of `sum_tree` / `insert`.  In that clone, the
-receiver's value field has a *union* of constants
-{3, 5, 7, 1, 9, 4} — but constant-folding picks **one**
-representative (the first written, 5) and emits that.
+So the inside-function Node CS exists at the type level
+(distinct struct) but doesn't track field reads/writes.
+When sum_list reads `n.value` for a receiver typed as
+{ps3449, ps3452}, only ps3449's value iv (constant {5})
+contributes — ps3452's value field isn't in its
+var_map.
 
-The struct has `e1 /* value */` correctly typed as
-`_CG_int64`, so the field IS present.  The codegen just
-doesn't read from it — it inlines the (wrong) constant.
+This is a different root cause than the first two bugs in
+this issue.  It's not about struct field elision (now
+fixed); it's about the iv set on a CS that doesn't get
+populated when the Node is created inside a function and
+stored into another Node's field.
 
-This needs a different fix:
+Hypothesis: when `prim_setter` fires on `node.next =
+Node(v)`, the val being set is the new Node's CS.  The
+iv tracking of the new Node's *own* fields (value, next)
+isn't established because the Node never goes through a
+read context that would trigger `reanalyze`'s
+unknown_vars promotion.  Without iv promotion, the
+struct synthesis sees no fields → empty struct.  When
+the field read at sum_list happens, the dispatch over
+CSs visits ps3452 but finds no var_map entry for "value"
+→ no flow.  The result is just ps3449's contribution.
 
-- **Option A**: split `sum_tree` and `insert` per
-  receiver CS so each clone has a single value constant.
-  Currently pyc's cloning policy may be over-collapsing.
-- **Option B**: don't constant-fold field reads when the
-  receiver type has multiple CSs with different values.
-  The fold should only fire when the result is genuinely
-  a single constant across all reachable contexts.
-- **Option C**: mark value field as `clone_for_constants`
-  off so its value isn't tracked as constants in the CS.
-  Forces a non-constant field read.
+Fix paths:
 
-Option B is probably the safest — constant folding should
-defer when the union has multiple distinct values.  This
-needs further investigation.
+- **Option A**: at every `flow_vars(val, iv)` where val
+  has Node-type CSs, ensure each CS's own fields are
+  tracked (force iv-promotion).  Likely involves making
+  `prim_setter` / `prim_make` propagate field-tracking
+  expectations to nested CSs.
+- **Option B**: at field-read NOTYPE-violation time,
+  promote not just the receiver's unknown_vars but also
+  any nested CSs' unknown_vars.  Reanalyze gets deeper.
+- **Option C**: when a NOTYPE violation triggers
+  reanalyze, also promote unknown_vars on CSs reachable
+  via field assignments (transitive closure).
+
+Each requires substantial IFA work and careful
+investigation of interactions with the splitter.  Not
+session-scale.
+
+The constant-folding aspect (literal `5` in the body) is
+a *symptom*, not the root cause.  The constant fold is
+correct given pyc's analysis sees value={5} only.  Fix
+the iv tracking → multiple constants flow in → widening
+fires → no constant fold.
+
+The original BST insert case is a special variant of
+this — the recursive `insert` mutates `root.left/right =
+insert(...)` which is structurally the same
+"function-creates-Node-and-assigns-to-field" pattern.
 
 ## Related
 
