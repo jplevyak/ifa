@@ -1,26 +1,25 @@
 # Issue 026: recursive types with >1 self-typed field lose value field in C struct
 
-**Status:** **three fixes landed June 2026, one
+**Status:** **four fixes landed June 2026, one
 multi-call-site constant-fold quirk remains.**
 (1) Prototype-vs-instance allocation size mismatch fixed
 via `_CG_prim_clone_dst`.  (2) Struct field-index holes
-fixed by elision + indexing (live fields keep their
-has-index, dead-field setters are elided).  (3) The
-"Node-in-function loses iv tracking" bug fixed by
-(a) eager iv promotion in `reanalyze` (walks every CS
-with pending unknown_vars, not just NOTYPE-driven ones)
-and (b) `mark_live_avar` no longer skips iv backward
-propagation on `get_constant(aav)` — that skip was
-correct for function-local AVars (constants inline) but
-wrong for instance-variable AVars (struct slots still
-needed when the field is read through a non-trivial
-period).  DLL works.  Manual tree builds work on the C
-backend.  list_set_next (the minimal repro for the third
-bug) now works.  Remaining: BST `insert` with multiple
-literal-v call sites still gets the wrong sum — pyc
-clone-for-constants policy collapses `insert` into one
-clone with v constant-folded across all sites.  That's
-a separate cloning-policy issue.
+fixed by elision + indexing.  (3) Eager iv promotion in
+`reanalyze` (walks every CS with pending unknown_vars).
+(4) **Liveness and constness made fully orthogonal**
+(Path B): removed the `!get_constant(aav)` short-circuit
+in `mark_live_avar` entirely; added explicit elision in
+both C codegen (cg.cc) and v2 LLVM normalize
+(cg_normalize_v2.cc) for SENDs whose result is a single
+static constant and whose prim is functional.  Storage
+liveness now depends only on consumer access patterns;
+the value's constness is a separate codegen decision per
+PNode.  DLL, manual tree, list_set_next all work.
+Remaining: BST `insert` with multiple literal-v call
+sites still returns 30 — pyc's clone-for-constants
+policy collapses `insert` into one clone with v
+constant-folded across all sites.  That's a separate
+cloning-policy issue.
 **Affects:** pyc IFA cloning / struct synthesis when a
 class has two or more fields of its own type alongside
 non-recursive fields.

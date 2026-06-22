@@ -1946,6 +1946,20 @@ bool lower_send_prim(NormCtx &c, FunCtx &fc, PNode *pn,
 void lower_send(NormCtx &c, FunCtx &fc, PNode *pn, Fun *caller,
                 CGv2Block *blk) {
   if (!pn) return;
+  // Issue 026 Path B: elide SENDs whose result is a single
+  // statically-known constant AND whose prim is functional
+  // (no side effects).  Consumers inline the literal via
+  // the lowered CGv2Value's `imm` (see build_var /
+  // build_immediate populating per-Var constants).  Mirrors
+  // the C-backend elision in cg.cc:is_const_folded_send.
+  // Without this, removing the get_constant short-circuit
+  // in mark_live_avar leaves the SEND PNode live and the
+  // v2 LLVM lowering produces a CG2_CALL to a runtime
+  // helper that doesn't exist (e.g. `_CG_isinstance`).
+  if (pn->prim && !pn->prim->nonfunctional &&
+      pn->lvals.n == 1 && get_constant(pn->lvals[0])) {
+    return;
+  }
   if (pn->prim) {
     int idx = pn->prim->index;
     if (idx == P_prim_reply) return;     // terminator

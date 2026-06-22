@@ -642,6 +642,30 @@ static void do_phi_nodes(FILE *fp, PNode *n, int isucc) {
   }
 }
 
+// Issue 026 Path B: a SEND PNode whose result is a single
+// statically-known constant AND whose prim is side-effect
+// free (i.e. functional) is elided.  Consumers will inline
+// the constant literal via `cg_get_string(v)` (which
+// returns the literal for constant-typed Vars; see
+// cg.cc:assign_var_cg_strings around line 904).
+//
+// Without this elision, removing the get_constant
+// short-circuit in mark_live_avar would cause the producer
+// PNode to be emitted as `5 = _CG_prim_NAME(...)` — a C
+// error because the lval's cg_string is the literal "5".
+//
+// Side-effecting prims (PRIM_NON_FUNCTIONAL: prim_setter,
+// prim_set_index_object, prim_reply) are never elided
+// regardless of their result type.
+static bool is_const_folded_send(PNode *n) {
+  if (!n || !n->code || n->code->kind != Code_SEND) return false;
+  if (!n->prim || n->prim->nonfunctional) return false;
+  if (n->lvals.n != 1) return false;
+  Var *lv = n->lvals[0];
+  if (!lv) return false;
+  return get_constant(lv) != nullptr;
+}
+
 static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done) {
   if (n->live && n->fa_live) switch (n->code->kind) {
       case Code_LABEL:
@@ -651,6 +675,7 @@ static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done
         for (int i = 0; i < n->lvals.n; i++) simple_move(fp, n->lvals[i], n->rvals.v[i]);
         break;
       case Code_SEND:
+        if (is_const_folded_send(n)) break;
         if (n->prim)
           if (write_c_prim(fp, fa, f, n)) break;
         write_send(fp, f, n);
