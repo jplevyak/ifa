@@ -56,7 +56,23 @@ static void mark_live_avar(AVar *av) {
   mark_live_again = 1;
   if (av->var->def) av->var->def->live = 1;
   for (AVar *aav : av->backward) if (aav) {
-    if (!aav->live && !get_constant(aav)) mark_live_avar(aav);
+    if (aav->live) continue;
+    // Issue 026: the original constant-fold short-circuit
+    // (`!get_constant(aav)`) was correct for regular AVars
+    // (function locals whose single-constant value can be
+    // inlined at use sites) but wrong for *instance
+    // variables* (struct field AVars).  When a single CS's
+    // iv has type {const N}, the period read through a
+    // UNION receiver doesn't constant-fold (the union has
+    // multiple values), so codegen emits `obj->eN`
+    // requiring the struct slot — but without marking the
+    // iv live, the struct elides the field.
+    //
+    // Distinguish by `contour_is_entry_set`: 1 = function-
+    // level AVar (skip-on-constant is fine), 0 = iv on a
+    // CreationSet contour (must propagate).
+    bool is_iv = !aav->contour_is_entry_set;
+    if (is_iv || !get_constant(aav)) mark_live_avar(aav);
   }
 }
 

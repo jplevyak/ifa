@@ -1,18 +1,26 @@
 # Issue 026: recursive types with >1 self-typed field lose value field in C struct
 
-**Status:** **two fixes landed June 2026, one bug
-diagnosed.**
+**Status:** **three fixes landed June 2026, one
+multi-call-site constant-fold quirk remains.**
 (1) Prototype-vs-instance allocation size mismatch fixed
 via `_CG_prim_clone_dst`.  (2) Struct field-index holes
 fixed by elision + indexing (live fields keep their
-has-index, dead-field setters are elided).  DLL works.
-Manual tree builds work on the C backend (v2 LLVM
-blocked by issue 027).  BST `insert` still hits a
-*third* bug — when a Node is created inside a function
-and assigned to another Node's field, the inside-function
-Node's CS doesn't get its own field-iv tracking
-established.  Diagnosed but not fixed (needs deeper IFA
-investigation — see "Third bug" below).
+has-index, dead-field setters are elided).  (3) The
+"Node-in-function loses iv tracking" bug fixed by
+(a) eager iv promotion in `reanalyze` (walks every CS
+with pending unknown_vars, not just NOTYPE-driven ones)
+and (b) `mark_live_avar` no longer skips iv backward
+propagation on `get_constant(aav)` — that skip was
+correct for function-local AVars (constants inline) but
+wrong for instance-variable AVars (struct slots still
+needed when the field is read through a non-trivial
+period).  DLL works.  Manual tree builds work on the C
+backend.  list_set_next (the minimal repro for the third
+bug) now works.  Remaining: BST `insert` with multiple
+literal-v call sites still gets the wrong sum — pyc
+clone-for-constants policy collapses `insert` into one
+clone with v constant-folded across all sites.  That's
+a separate cloning-policy issue.
 **Affects:** pyc IFA cloning / struct synthesis when a
 class has two or more fields of its own type alongside
 non-recursive fields.
