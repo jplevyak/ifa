@@ -1,11 +1,14 @@
 # Issue 026: recursive types with >1 self-typed field lose value field in C struct
 
-**Status:** **partial fix landed June 2026** — root-cause
-diagnosed; the prototype-vs-instance size mismatch is fixed
-(manual tree builds now work).  A second related bug
-(per-CS field tracking dropping writes from outside
-`__init__`) still blocks BST insert and doubly-linked list.
-See "Fix landed" section below.
+**Status:** **two fixes landed June 2026, one bug remains.**
+(1) Prototype-vs-instance allocation size mismatch fixed
+via `_CG_prim_clone_dst`.  (2) Struct field-index holes
+fixed by always emitting typed fields regardless of live
+status.  Doubly-linked list now works.  Manual tree
+builds work on the C backend (v2 LLVM blocked by issue
+027).  BST `insert` still has a *third* bug — constant-
+folding of field reads across multiple CreationSets —
+documented but not yet fixed.
 **Affects:** pyc IFA cloning / struct synthesis when a
 class has two or more fields of its own type alongside
 non-recursive fields.
@@ -238,60 +241,110 @@ The fix (`pyc_c_runtime.h` + `cg.cc:write_prim_send`):
 with recursive sum_tree and depth) compiles and runs
 correctly on the C backend.  v2 LLVM still has issue 027.
 
-## What's still broken
+## Second fix landed (June 2026) — struct-field index holes
 
-A *second* related bug blocks BST insert and DLL:
+Root-caused the DLL and basic-BST struct-collapse issue:
+
+The struct codegen in `cg.cc:write_record` was skipping
+fields whose `Var::live` was false, but it kept the
+original `eN` index numbering (`fprintf(fp, " e%d;", i)`
+where `i` is the index in `s->has`).  When a dead field
+sat at index 2 between two live fields (indices 1 and 3),
+the struct went `... e1; e3; ...` — with **no e2**.
+
+The setter / getter codegen elsewhere (`cg.cc:write_send`
+prim_setter case, prim_period case) matched field names
+to `obj->has[i]` and emitted `obj->eN` using `i` directly.
+So a write to `n2.prev` (where prev was at has[2]) emitted
+`obj->e2 = head;` — referencing the hole in the struct.
+
+Dead-field elision happens because pyc's liveness
+analysis only marks a field's Var live if it's *read*
+downstream.  Pure-write fields stay dead.  In `n2.prev =
+head`, the prev field is written but never read, so it
+stays dead → elided from the struct → codegen for the
+write breaks.
+
+**Fix**: don't skip dead fields from the struct.  Emit
+every field whose `type` is non-null, regardless of live
+status.  The extra struct slots are cheap; the bug they
+prevent is severe (silent UB or compile errors).
+
+Verified:
+- `tests/doubly_linked_list.py` (new): `head`/`n2`/`n3`
+  with prev+next, recursive sum_forward — works on both
+  backends, output `6\n5\n3`.
+- Manual tree (`tests/tree_manual.py` not added because
+  v2 LLVM has a separate GEP-on-ptr issue tracked in
+  [issue 027](027-v2-llvm-narrowed-loop-loses-struct-type.md))
+  works on the C backend.
+- Linked-list tests, recursive_alloc tests, suite
+  remained 88/0.
+
+## Third bug — constant-folding across CSs (BST insert)
+
+A *separate* bug still blocks BST insert:
 
 ```python
 def insert(root, v):
-  if root is None:
-    return Node(v)
-  ...
+  if root is None: return Node(v)
+  if v < root.value:
+    root.left = insert(root.left, v)
+  else:
+    root.right = insert(root.right, v)
+  return root
 
 t = Node(5)
-t = insert(t, 3)
-t = insert(t, 7)
+t = insert(t, 3); t = insert(t, 7); t = insert(t, 1)
+t = insert(t, 9); t = insert(t, 4)
 print(sum_tree(t))   # returns 30 instead of 29
 ```
 
-The generated struct for Node is missing the `value`
-field even though `__init__` does `self.value = v`.  Both
-clones of `Node::__init__` in the C output write only
-`e2=NULL; e3=NULL;` — the value write is **dropped**.
+The generated `sum_tree` body emits a *constant*:
 
-Also `__init__` is generated as `(_CG_ps3548 a1)` — no v
-parameter.  Pyc constant-folded v across clones.
-
-This is a different root cause — **per-CS field tracking
-is missing writes**.  In the DLL test:
-
-```python
-head = Node(1)
-n2 = Node(2)
-n2.prev = head   # write of head into n2.prev
+```c
+t3 = _CG_prim_add(5, ..., t10);   // 5 + recursive sum
 ```
 
-The `n2.prev = head` write writes a Node into the prev
-field.  IFA tracks this write on n2's CS, but the
-generated struct for ps3449 (the Node CS) has only e1
-(value) and e3 (next) — no e2 (prev).
+It treats `root.value` as the constant `5` across the
+recursive sum.  All 6 nodes get summed as if value=5:
+`6 * 5 = 30`.
 
-Hypothesis: each `Node(v)` call site creates a SEPARATE
-CreationSet.  Field writes are tracked per-CS.  The CS for
-n2 receives writes to `prev` from main but the CS that
-`__init__` writes via gets only value and next.  The
-struct synthesis picks ONE CS's layout but the codegen
-emits casts to a different CS's type.  Or the CSs are
-merged for cast purposes but their field sets aren't
-unioned.
+Similarly, the `if v < root.value` comparison in
+`insert`'s body becomes `_CG_prim_less(v, "<", 5)` — also
+hardcoded to 5.  Which means all 5 inserted values
+compare against 5 instead of the actual root's value at
+that recursion level, producing a wrong tree shape (sum
+happens to still be 30 because all 6 nodes are still
+created).
 
-This second bug needs further investigation.  It seems to
-require either:
+Root cause: pyc's IFA cloning policy collapses all Node
+CreationSets (one per `Node(v)` call site) into a single
+clone of `sum_tree` / `insert`.  In that clone, the
+receiver's value field has a *union* of constants
+{3, 5, 7, 1, 9, 4} — but constant-folding picks **one**
+representative (the first written, 5) and emits that.
 
-- Merging field sets across all CSs of the same instance
-  type before struct synthesis.
-- Or making field writes propagate to all CSs of the
-  same sym at IFA time.
+The struct has `e1 /* value */` correctly typed as
+`_CG_int64`, so the field IS present.  The codegen just
+doesn't read from it — it inlines the (wrong) constant.
+
+This needs a different fix:
+
+- **Option A**: split `sum_tree` and `insert` per
+  receiver CS so each clone has a single value constant.
+  Currently pyc's cloning policy may be over-collapsing.
+- **Option B**: don't constant-fold field reads when the
+  receiver type has multiple CSs with different values.
+  The fold should only fire when the result is genuinely
+  a single constant across all reachable contexts.
+- **Option C**: mark value field as `clone_for_constants`
+  off so its value isn't tracked as constants in the CS.
+  Forces a non-constant field read.
+
+Option B is probably the safest — constant folding should
+defer when the union has multiple distinct values.  This
+needs further investigation.
 
 ## Related
 

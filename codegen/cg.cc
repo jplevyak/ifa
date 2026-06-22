@@ -806,13 +806,31 @@ static void build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
         if (s->has.n) {
           fprintf(fp, "struct _CG_s%d {\n", s->id);
           for (int i = 0; i < s->has.n; i++) {
-            if (s->has[i]->type && (!s->has[i]->var || s->has[i]->var->live)) {
-              fputs("  ", fp);
-              fputs(c_type(s->has[i]), fp);
-              fprintf(fp, " e%d;", i);
-              if (s->has[i]->name) fprintf(fp, " /* %s */;", s->has[i]->name);
-              fputs("\n", fp);
-            }
+            // Issue 026: include EVERY field at its slot
+            // index `i`, even if its Var is dead.  The
+            // setter / getter codegen below references
+            // `eN` by index into `s->has`, so dropping a
+            // dead field at index k while keeping the ones
+            // before/after produces a struct with a hole
+            // — and writes to `eK` reference a member that
+            // doesn't exist.  Dead-field emission is
+            // strictly cheaper than the alternative
+            // (rewriting both struct synthesis and field-
+            // access codegen to use a separate
+            // contiguous-index map).
+            //
+            // The only case we still skip is when the
+            // field has no type at all (e.g. a freshly
+            // declared sym that never received any
+            // assignment) — pyc can't emit a C type for
+            // it, and any access via dead writes would be
+            // similarly unreachable.
+            if (!s->has[i]->type) continue;
+            fputs("  ", fp);
+            fputs(c_type(s->has[i]), fp);
+            fprintf(fp, " e%d;", i);
+            if (s->has[i]->name) fprintf(fp, " /* %s */;", s->has[i]->name);
+            fputs("\n", fp);
           }
           if (s->is_vector) {
             fputs("  ", fp);
