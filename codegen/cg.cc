@@ -97,6 +97,30 @@ static int cg_writeln(FILE *fp, Vec<Var *> &vars, int ln) {
 
 // num_string(Sym*) — moved to codegen_common.{h,cc}.
 
+// Issue 026: dead-field aware slot lookup.
+//
+// pyc's liveness analysis marks a field's Var dead if no
+// downstream code reads it.  The C struct codegen elides
+// dead fields entirely (no slot emitted).  For consistency
+// across struct emission, setter, getter, and other
+// field-access codegen, the slot index `N` in `obj->eN` is
+// derived from this helper: live fields get a sequential
+// 0-based index in their order within `s->has`; dead
+// fields return -1 so callers can elide the access
+// altogether.
+//
+// Without this, the struct definition and the field-access
+// codegen drift: the struct skips a dead field at has[k]
+// (numbering goes ... e(k-1); e(k+1) ...), while the
+// setter / getter emit `obj->eK` referencing the missing
+// slot.  Issue 026 documents the symptom.
+static int cg_field_live(Sym *s, int i) {
+  if (!s || i < 0 || i >= s->has.n) return 0;
+  if (!s->has[i]->type) return 0;
+  if (s->has[i]->var && !s->has[i]->var->live) return 0;
+  return 1;
+}
+
 static cchar *c_rhs(Var *v) {
   if (!v->sym->is_fun) {
     if (!cg_get_string(v))
@@ -212,8 +236,18 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       if (obj->type_kind == Type_SUM) obj = obj->has[0];
       for (int i = 0; i < obj->has.n; i++) {
         if (symbol == obj->has[i]->name) {
-          fprintf(fp, "  ((%s)%s)->e%d = (%s)%s;\n", cg_get_string(obj), cg_get_string(n->rvals[1]), i, c_type(obj->has[i]),
-                  c_rhs(n->rvals.v[4]));
+          // Issue 026: elide setter writes to dead fields.
+          // The struct has no slot for `e<i>` when has[i]
+          // is dead, so emitting `obj->e<i> = ...` would
+          // reference a missing member.  Dead fields are
+          // dead by definition — no downstream code reads
+          // the value — so skipping the write is sound.
+          if (cg_field_live(obj, i)) {
+            fprintf(fp, "  ((%s)%s)->e%d = (%s)%s;\n",
+                    cg_get_string(obj), cg_get_string(n->rvals[1]),
+                    i, c_type(obj->has[i]),
+                    c_rhs(n->rvals.v[4]));
+          }
           // P_prim_setter's analyzer (fa.cc:1781) flows val
           // (rvals[4]) into the lvalue — the lvalue carries
           // val's type, matching Python's chained-assignment
@@ -805,27 +839,16 @@ static void build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
       case Type_RECORD: {
         if (s->has.n) {
           fprintf(fp, "struct _CG_s%d {\n", s->id);
+          // Issue 026: emit only live fields, keeping the
+          // has-index `i` as the eN suffix.  Dead fields
+          // leave gaps in the numbering — but the setter,
+          // getter, and other field-access sites use the
+          // SAME has-index `i` for their eN suffix and
+          // elide accesses to dead fields (via
+          // cg_field_live).  The struct definition and
+          // field-access codegen stay consistent.
           for (int i = 0; i < s->has.n; i++) {
-            // Issue 026: include EVERY field at its slot
-            // index `i`, even if its Var is dead.  The
-            // setter / getter codegen below references
-            // `eN` by index into `s->has`, so dropping a
-            // dead field at index k while keeping the ones
-            // before/after produces a struct with a hole
-            // — and writes to `eK` reference a member that
-            // doesn't exist.  Dead-field emission is
-            // strictly cheaper than the alternative
-            // (rewriting both struct synthesis and field-
-            // access codegen to use a separate
-            // contiguous-index map).
-            //
-            // The only case we still skip is when the
-            // field has no type at all (e.g. a freshly
-            // declared sym that never received any
-            // assignment) — pyc can't emit a C type for
-            // it, and any access via dead writes would be
-            // similarly unreachable.
-            if (!s->has[i]->type) continue;
+            if (!cg_field_live(s, i)) continue;
             fputs("  ", fp);
             fputs(c_type(s->has[i]), fp);
             fprintf(fp, " e%d;", i);

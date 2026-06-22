@@ -265,15 +265,28 @@ head`, the prev field is written but never read, so it
 stays dead → elided from the struct → codegen for the
 write breaks.
 
-**Fix**: don't skip dead fields from the struct.  Emit
-every field whose `type` is non-null, regardless of live
-status.  The extra struct slots are cheap; the bug they
-prevent is severe (silent UB or compile errors).
+**Fix** (final form): centralize the live/dead decision
+in a shared `cg_field_live(s, i)` helper.  Struct emission
+now uses it to keep the has-index `i` as the `eN` suffix
+*for live fields only* (dead fields are skipped — the
+struct can have gaps in eN like `e1; e3;`).  Setter
+codegen also uses it to **elide writes to dead fields
+entirely** — no `obj->eN = ...` line is emitted when has[i]
+is dead.  The struct and the field-access codegen stay
+consistent: every `eN` that the codegen references exists
+in the struct.
+
+The getter (`prim_period`) doesn't need an explicit live
+check because dead-field reads can't occur — a read of
+field X makes X's Var live (via the dataflow propagation),
+so getters always see live fields by construction.
 
 Verified:
 - `tests/doubly_linked_list.py` (new): `head`/`n2`/`n3`
   with prev+next, recursive sum_forward — works on both
-  backends, output `6\n5\n3`.
+  backends, output `6\n5\n3`.  Generated DLL struct shows
+  `e1; e3;` (no e2 for prev), and the `n2.prev = head`
+  setter is fully elided from the C output.
 - Manual tree (`tests/tree_manual.py` not added because
   v2 LLVM has a separate GEP-on-ptr issue tracked in
   [issue 027](027-v2-llvm-narrowed-loop-loses-struct-type.md))
