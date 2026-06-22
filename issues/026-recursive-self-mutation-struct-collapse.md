@@ -360,45 +360,86 @@ fixed); it's about the iv set on a CS that doesn't get
 populated when the Node is created inside a function and
 stored into another Node's field.
 
-Hypothesis: when `prim_setter` fires on `node.next =
-Node(v)`, the val being set is the new Node's CS.  The
-iv tracking of the new Node's *own* fields (value, next)
-isn't established because the Node never goes through a
-read context that would trigger `reanalyze`'s
-unknown_vars promotion.  Without iv promotion, the
-struct synthesis sees no fields → empty struct.  When
-the field read at sum_list happens, the dispatch over
-CSs visits ps3452 but finds no var_map entry for "value"
-→ no flow.  The result is just ps3449's contribution.
+### Confirmed root cause
 
-Fix paths:
+The bug has TWO layers:
 
-- **Option A**: at every `flow_vars(val, iv)` where val
-  has Node-type CSs, ensure each CS's own fields are
-  tracked (force iv-promotion).  Likely involves making
-  `prim_setter` / `prim_make` propagate field-tracking
-  expectations to nested CSs.
-- **Option B**: at field-read NOTYPE-violation time,
-  promote not just the receiver's unknown_vars but also
-  any nested CSs' unknown_vars.  Reanalyze gets deeper.
-- **Option C**: when a NOTYPE violation triggers
-  reanalyze, also promote unknown_vars on CSs reachable
-  via field assignments (transitive closure).
+**Layer 1: iv promotion is deferred to NOTYPE
+violations.**  pyc's `reanalyze` callback only promotes
+`unknown_vars` to `var_map` when a NOTYPE violation
+references the missing field.  When a read through a
+union receiver visits multiple CSs, NOTYPE fires only if
+EVERY CS lacks the field; if at least one CS contributes
+a type, no violation.  The inside-function Node's CS
+receives writes (its unknown_vars has value/next) but
+never gets a NOTYPE — it stays unpromoted.  The dispatch
+over CSs at the read site silently skips this CS.
 
-Each requires substantial IFA work and careful
-investigation of interactions with the splitter.  Not
+**Layer 2: when promotion happens, the existing
+prim_period PNodes don't get re-processed.**  Even with
+eager promotion via my updated `reanalyze` (walks ALL
+CSs, not just NOTYPE-driven ones), the field's `Var->live`
+stays 0.  The reason: after a `reanalyze` pass returns
+true, FA does another iteration, but the worklist
+mechanism only re-fires PNodes whose input AVars
+changed.  Adding new ivs to a CS's `var_map` doesn't
+modify the receiver AVar's `out`, so the period PNode
+isn't re-enqueued.  `flow_vars(iv, result)` doesn't run
+again → `result.backward` lacks the new iv →
+`mark_live_avar` never propagates to it →
+`field_sym->var->live` stays 0 → struct codegen elides
+the field.
+
+Verified with instrumentation: `mark_live_avar` is never
+called on the value field's Var even after eager iv
+promotion.
+
+### Fix path
+
+To make the user's natural model work — "every Node CS
+should have a value-iv and the union should be int" —
+both layers need to fix:
+
+**Layer 1 fix (landed)**: `reanalyze` walks every CS
+with pending `unknown_vars`, not just NOTYPE-triggered
+ones.  Promotes uniformly.  Also reuses field syms via a
+`promote_field_one` helper so two CSs of the same class
+don't create duplicate `has` entries.  Sibling
+propagation ensures all CSs of a class get the same
+field set, keeping `determine_basic_clones` happy.
+
+**Layer 2 fix (NOT landed)**: after promotion, force
+the affected `prim_period` PNodes to be re-processed.
+Options:
+- Explicitly enqueue receiver AVars' `arg_of_send` PNodes
+  for re-analysis after each promotion.
+- Mark obj AVars dirty so the worklist re-fires.
+- Walk forward from each newly-promoted iv to find period
+  consumers and re-flow.
+
+Each interacts with FA's worklist invariants and the
+splitter.  This is the substantial remaining work; not
 session-scale.
 
-The constant-folding aspect (literal `5` in the body) is
-a *symptom*, not the root cause.  The constant fold is
-correct given pyc's analysis sees value={5} only.  Fix
-the iv tracking → multiple constants flow in → widening
-fires → no constant fold.
+### Which option is most general
 
-The original BST insert case is a special variant of
-this — the recursive `insert` mutates `root.left/right =
-insert(...)` which is structurally the same
-"function-creates-Node-and-assigns-to-field" pattern.
+Layer 1 fix (eager iv promotion at write site, with
+sibling propagation) is the cleanest and most general.
+It removes a deferred-via-violation mechanism that's hard
+to coordinate, and the invariant becomes: "every CS that
+received a write has the corresponding iv."
+
+Layer 2 (worklist re-fire) is the mechanical glue
+needed to make layer 1's data structures actually
+participate in the analysis.  Without layer 2, layer 1's
+promotion is invisible to downstream consumers.
+
+The constant-folding aspect (literal `5` in the body) is
+a SYMPTOM of layer 2's gap.  Constant folding is correct
+given pyc's analysis sees value={5} only.  With both
+layers fixed, the union of `{3, 5}` would widen to int64
+(num_constants_per_variable=1) and folding wouldn't
+fire.
 
 ## Related
 
