@@ -423,21 +423,54 @@ session-scale.
 
 ### Which option is most general
 
-Layer 1 fix (eager iv promotion at write site, with
-sibling propagation) is the cleanest and most general.
-It removes a deferred-via-violation mechanism that's hard
-to coordinate, and the invariant becomes: "every CS that
-received a write has the corresponding iv."
+**Layer 1 fix** (landed): eager iv promotion at the
+write site, walking every CS with pending unknown_vars
+during `reanalyze`.  **No sibling propagation** — each
+CS's promotion is purely local.  `determine_basic_clones`
+correctly handles CSs with different field sets by
+marking them not_equiv (different struct types, different
+codegen).  This matches the user's principle of localized
+effects.
 
-Layer 2 (worklist re-fire) is the mechanical glue
-needed to make layer 1's data structures actually
-participate in the analysis.  Without layer 2, layer 1's
-promotion is invisible to downstream consumers.
+**Layer 2 fix** (landed, partial): after each promotion
+on a CS, wake the EntrySets containing AVars whose `out`
+includes this CS (via `cs->defs`).  The send_worklist
+re-fires only `add_send_edges_pnode` (dispatch edges) —
+to re-run `add_send_constraints` (the `flow_vars(iv,
+result)` setup), we enqueue ESs onto `es_worklist`.
+
+Status with layers 1+2:
+- DLL, manual tree, recursive linked list: still work.
+- `set_next(t, v): t.next = Node(v)` minimal repro:
+  `next` field gets promoted and made live correctly
+  (struct has `e2 /* next */`).  **`value` field still
+  stays dead** (struct lacks `e1`).  The codegen for the
+  read of `node.value` emits `obj->e1` referencing the
+  missing slot → compile error.
+
+The remaining gap appears to be specific to certain
+field-promotion + period-read patterns where `mark_live`
+doesn't propagate to the field's Var through the
+backward-chain after layer 2's ES re-enqueue.  Needs
+further investigation — possibly the ES re-enqueue
+doesn't fully re-run `add_send_constraints` in the way
+the period PNode needs, or the recursive nature of
+`sum_list` confuses worklist propagation when one field
+(next) is needed for recursion and another (value) is
+purely for arithmetic.
+
+The user's principle holds: locality is the right
+structural invariant.  CSs of a class can legitimately
+have different field sets, and `determine_basic_clones`
+correctly produces distinct structs for them.  The
+remaining gap is a worklist-mechanics nuance, not a
+fundamental design issue.
 
 The constant-folding aspect (literal `5` in the body) is
-a SYMPTOM of layer 2's gap.  Constant folding is correct
-given pyc's analysis sees value={5} only.  With both
-layers fixed, the union of `{3, 5}` would widen to int64
+a SYMPTOM of the layer-2 mechanics gap.  Constant
+folding is correct given pyc's analysis sees value={5}
+only at the unfinished pass.  With layer 2 fully
+functional, the union of `{3, 5}` would widen to int64
 (num_constants_per_variable=1) and folding wouldn't
 fire.
 
