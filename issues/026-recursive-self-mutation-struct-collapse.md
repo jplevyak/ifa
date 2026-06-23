@@ -1,25 +1,13 @@
 # Issue 026: recursive types with >1 self-typed field lose value field in C struct
 
-**Status:** **four fixes landed June 2026, one
-multi-call-site constant-fold quirk remains.**
-(1) Prototype-vs-instance allocation size mismatch fixed
-via `_CG_prim_clone_dst`.  (2) Struct field-index holes
-fixed by elision + indexing.  (3) Eager iv promotion in
-`reanalyze` (walks every CS with pending unknown_vars).
-(4) **Liveness and constness made fully orthogonal**
-(Path B): removed the `!get_constant(aav)` short-circuit
-in `mark_live_avar` entirely; added explicit elision in
-both C codegen (cg.cc) and v2 LLVM normalize
-(cg_normalize_v2.cc) for SENDs whose result is a single
-static constant and whose prim is functional.  Storage
-liveness now depends only on consumer access patterns;
-the value's constness is a separate codegen decision per
-PNode.  DLL, manual tree, list_set_next all work.
-Remaining: BST `insert` with multiple literal-v call
-sites still returns 30 — pyc's clone-for-constants
-policy collapses `insert` into one clone with v
-constant-folded across all sites.  That's a separate
-cloning-policy issue.
+**Status:** **four fixes landed June 2026; remaining
+issue diagnosed as inter-procedural propagation gap.**
+Fixes (1)-(4) [allocation size, struct holes, eager iv
+promotion, liveness/constness orthogonality] documented
+below.  The recursive `insert` pattern still returns the
+wrong sum.  Investigation (Bug 5 below) shows pyc IFA
+tracks the right CSs but the recursive return value's CS
+doesn't reach the calling-context's field setter.
 **Affects:** pyc IFA cloning / struct synthesis when a
 class has two or more fields of its own type alongside
 non-recursive fields.
@@ -480,6 +468,110 @@ only at the unfinished pass.  With layer 2 fully
 functional, the union of `{3, 5}` would widen to int64
 (num_constants_per_variable=1) and folding wouldn't
 fire.
+
+## Bug 5 — recursive-return CS doesn't flow to caller's setter (June 2026 investigation)
+
+Even after fixes (1)-(4) above, the BST `insert` pattern
+returns the wrong sum:
+
+```python
+def insert(node, v):
+  if node is None:
+    return Node(v)
+  node.next = insert(node.next, v)
+  return node
+
+t = Node(5)
+t = insert(t, 3)
+print(sum_list(t))   # returns 10 (5+5), expected 8 (5+3)
+```
+
+### Instrumentation finding
+
+Adding debug to `prim_setter` and `prim_period`
+handlers shows pyc IFA correctly tracks **two distinct
+Node CreationSets**:
+
+- **CS_outer** (`0x...eff200`): the outer `Node(5)`.
+  Its value-iv = {5} (constant 5).
+- **CS_inner** (`0x...f28000`): the inside-insert
+  `Node(v)` with v=3.  Its value-iv = {3}.
+
+Both CSs are reached by `Node::__init__` write sites
+(traced separately via two distinct EntrySets, each with
+its own constant-folded v).
+
+### The gap
+
+`sum_list`'s period read of `n.value` sees obj's `out`
+containing ONLY CS_outer.  CS_inner is missing from
+sum_list's receiver type.
+
+Tracing the data flow:
+
+- `node.next = insert(node.next, v)` (inside outer
+  insert call) sets next's iv on CS_outer.
+- The setter's val is insert's return AVar at this call
+  site.  Insert's recursive call has receiver=None, so
+  it dispatches to the "if None: return Node(v)" branch,
+  whose return type is CS_inner.
+- But CS_outer.next iv ends up containing
+  `{None, Node(cs=CS_outer)}` — **self-referential**,
+  not pointing to CS_inner.
+
+The recursive return's CS_inner isn't reaching the
+outer caller's setter.  Possibly because pyc's matcher
+routes the recursive call to a single insert
+EntrySet whose return type is collapsed across both
+branches; the early-return branch's CS_inner is folded
+into the receiver's CS via some equivalence step.
+
+### Why this is different from the other four bugs
+
+Bugs (1)-(4) were:
+- (1) Struct allocation size — codegen issue.
+- (2) Struct field indexing — codegen issue.
+- (3) Eager iv promotion — reanalyze callback issue.
+- (4) Liveness/constness coupling — mark_live + codegen.
+
+All four were resolvable at the IFA-callback / codegen
+layer without modifying FA's inter-procedural lattice
+propagation.
+
+Bug 5 is at the FA layer: a CS computed in one
+EntrySet's analysis doesn't propagate through the
+function-return AEdge to the caller's setter.  This
+touches:
+
+- `add_send_edges_pnode` / matcher dispatch — chooses
+  which insert ES to route a call to.
+- ES return-type propagation back through AEdges.
+- Possibly the `setter_class` machinery in clone.cc.
+
+Fixing it requires understanding pyc's inter-procedural
+EntrySet linkage at a depth that's beyond a single
+session's investigation.
+
+### Workarounds
+
+Patterns that **work** (issue 026 fully fixed):
+- DLL: build manually outside any function.
+- Manual tree: build manually outside any function.
+- `list_set_next`: function takes a Node and assigns a
+  new Node(v) to its field — single non-recursive
+  level.
+- `recursive_list_is_none`: pre-built list, recursive
+  sum.
+
+Patterns still **affected by Bug 5**:
+- Any recursive function that creates a Node and assigns
+  it to a field of its own argument, AND whose return
+  threads back through multiple call levels.  Including
+  BST insert, fib-heap insert, etc.
+
+The first four fixes mean dead-code-elision and storage
+liveness no longer conflate with constness.  Once Bug 5
+is addressed, the whole BST pattern should work.
 
 ## Related
 
