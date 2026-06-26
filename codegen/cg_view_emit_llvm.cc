@@ -858,6 +858,35 @@ bool emit_send_index_store(EmitCtx &ctx, PNode *pn) {
 }
 
 // -------------------------------------------------------------
+// Phase R.3: P_prim_strcat — string `+`.  Mirrors
+// cg_normalize_v2.cc:lower_send_strcat at the LLVM level.
+// The SEND shape is `__operator + s1 s2`, with rvals[o] = s1
+// and rvals[o+2] = s2 (rvals[o+1] is the '+' operator
+// symbol, skipped).  Calls the linkable `_CG_strcat(a, b)`
+// helper in pyc_runtime.c.
+static bool emit_send_strcat(EmitCtx &ctx, PNode *pn) {
+  if (!pn || !pn->prim || pn->prim->index != P_prim_strcat) return false;
+  if (pn->lvals.n < 1) return false;
+  int o = (pn->rvals.n > 0 && pn->rvals.v[0] &&
+           pn->rvals.v[0]->sym == sym_primitive) ? 2 : 1;
+  if (pn->rvals.n < o + 3) return false;
+  Var *a_var = pn->rvals.v[o];
+  Var *b_var = pn->rvals.v[o + 2];
+  Var *dst_var = pn->lvals.v[0];
+  if (!a_var || !b_var || !dst_var) return false;
+  llvm::Value *a = value_for_var(ctx, a_var);
+  llvm::Value *b = value_for_var(ctx, b_var);
+  if (!a || !b) return false;
+  llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
+  llvm::Function *fn = get_runtime_helper(
+      "_CG_strcat", ptr_ty, { ptr_ty, ptr_ty });
+  llvm::Value *res = Builder->CreateCall(fn, { a, b },
+      cg_get_string(dst_var) ? cg_get_string(dst_var) : "concat");
+  put_result(ctx, dst_var, res);
+  return true;
+}
+
+// -------------------------------------------------------------
 // Phase R.3: P_prim_len — port of cg.cc:417-427.  The C
 // backend emits `_CG_string_len(s)` for strings and
 // `_CG_prim_len(_, l)` for lists; both are macros that
@@ -1265,6 +1294,7 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn);
 static bool emit_send_new(EmitCtx &ctx, PNode *pn);
 static bool emit_send_clone(EmitCtx &ctx, PNode *pn);
 static bool emit_send_len(EmitCtx &ctx, PNode *pn);
+static bool emit_send_strcat(EmitCtx &ctx, PNode *pn);
 void emit_send(EmitCtx &ctx, PNode *pn);
 void emit_send_call(EmitCtx &ctx, PNode *pn);
 
@@ -1430,6 +1460,7 @@ void emit_send(EmitCtx &ctx, PNode *pn) {
     if (emit_send_new(ctx, pn)) return;
     if (emit_send_clone(ctx, pn)) return;
     if (emit_send_len(ctx, pn)) return;
+    if (emit_send_strcat(ctx, pn)) return;
     if (emit_send_make(ctx, pn)) return;
     if (emit_send_index_load(ctx, pn)) return;
     if (emit_send_index_store(ctx, pn)) return;
