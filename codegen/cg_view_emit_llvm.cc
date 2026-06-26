@@ -161,6 +161,7 @@ llvm::Type *sym_to_llvm_type(Sym *s) {
 // -------------------------------------------------------------
 
 struct EmitCtx {
+  FA *fa;
   Fun *fn;
   llvm::Function *llvm_fn;
   Map<Var *, llvm::Value *> var_map;
@@ -328,10 +329,22 @@ llvm::Value *value_for_var(EmitCtx &ctx, Var *v) {
   }
   if (llvm::Value *cached = ctx.var_map.get(v)) return cached;
   // Constant Sym: materialize the LLVM constant directly.
-  Sym *s = v->sym;
+  Sym *s = get_constant(v);
+  if (v->id == 1561 || v->id == 1563) fprintf(stderr, "val%d: get_constant=%p\n", v->id, s);
+  if (!s) s = v->sym;
+  if (v->id == 1561 || v->id == 1563) fprintf(stderr, "val%d: s=%p, is_constant=%d, type=%p\n", v->id, s, s ? s->is_constant : -1, v->type);
   if (s && s->is_constant && v->type) {
     llvm::Type *t = sym_to_llvm_type(v->type);
     if (!t) return nullptr;
+
+    if (s->name && !strcmp(s->name, "True")) {
+      if (t->isIntegerTy()) return llvm::ConstantInt::get(t, 1);
+    }
+    if (s->name && !strcmp(s->name, "False")) {
+      if (t->isIntegerTy()) return llvm::ConstantInt::get(t, 0);
+    }
+
+    if (v->id == 1561 || v->id == 1563) fprintf(stderr, "val%d: const_kind=%d\n", v->id, s->imm.const_kind);
     llvm::Value *cv = nullptr;
     switch (s->imm.const_kind) {
       case IF1_NUM_KIND_INT:
@@ -376,6 +389,9 @@ llvm::Value *value_for_var(EmitCtx &ctx, Var *v) {
 
 void put_result(EmitCtx &ctx, Var *v, llvm::Value *value) {
   if (!v || !value) return;
+  if (v->id == 1563 || v->id == 1561) {
+    fprintf(stderr, "put_result called for id %d!\n", v->id);
+  }
   // Phi-target Var: store to its alloca slot so subsequent
   // reads (including reads in a different block) see the
   // new value via load.
@@ -1580,28 +1596,24 @@ void emit_send(EmitCtx &ctx, PNode *pn) {
     // handled in emit_block_terminator, not here.
     if (idx == P_prim_reply) return;
     // Structural prim handlers (R.2.x landings).  Each
-    // returns true if it claimed; false → fall through.
-    // Arithmetic + comparison family — direct LLVM ops.
-    if (emit_send_binop(ctx, pn)) return;
-    if (emit_send_period(ctx, pn)) return;
-    if (emit_send_setter(ctx, pn)) return;
-    if (emit_send_new(ctx, pn)) return;
-    if (emit_send_clone(ctx, pn)) return;
-    if (emit_send_len(ctx, pn)) return;
-    if (emit_send_strcat(ctx, pn)) return;
-    if (emit_send_is(ctx, pn)) return;
-    if (emit_send_coerce(ctx, pn)) return;
-    if (emit_send_make(ctx, pn)) return;
-    if (emit_send_index_load(ctx, pn)) return;
-    if (emit_send_index_store(ctx, pn)) return;
-    if (emit_send_sizeof(ctx, pn)) return;
-    // P_prim_primitive — name-based dispatch from rvals[1].
-    if (emit_send_primitive(ctx, pn)) return;
-    // Default fallback: `_CG_<name>(args)`.
-    if (emit_send_default_prim(ctx, pn)) return;
+    if (emit_send_binop(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_binop handled %d\n", pn->lvals.v[0]->id); return; }
+    if (emit_send_period(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_period handled %d\n", pn->lvals.v[0]->id); return; }
+    if (emit_send_setter(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_setter handled %d\n", pn->lvals.v[0]->id); return; }
+    if (emit_send_new(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_new handled %d\n", pn->lvals.v[0]->id); return; }
+    if (emit_send_clone(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_clone handled %d\n", pn->lvals.v[0]->id); return; }
+    if (emit_send_len(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_len handled %d\n", pn->lvals.v[0]->id); return; }
+    if (emit_send_strcat(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_strcat handled %d\n", pn->lvals.v[0]->id); return; }
+    if (emit_send_is(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_is handled %d\n", pn->lvals.v[0]->id); return; }
+    if (emit_send_coerce(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_coerce handled %d\n", pn->lvals.v[0]->id); return; }
+    if (emit_send_make(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_make handled %d\n", pn->lvals.v[0]->id); return; }
+    if (emit_send_index_load(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_index_load handled %d\n", pn->lvals.v[0]->id); return; }
+    if (emit_send_index_store(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_index_store handled %d\n", pn->lvals.v[0]->id); return; }
+    if (emit_send_sizeof(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_sizeof handled %d\n", pn->lvals.v[0]->id); return; }
+    if (emit_send_primitive(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_primitive handled %d\n", pn->lvals.v[0]->id); return; }
+    if (emit_send_default_prim(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_default_prim handled %d\n", pn->lvals.v[0]->id); return; }
+    if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "NO handler for %d\n", pn->lvals.v[0]->id);
     return;
   }
-  // No prim — regular function call.
   emit_send_call(ctx, pn);
 }
 
@@ -1620,6 +1632,24 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
   if (!target || !target->cg_string) return;
   llvm::Function *target_fn =
       TheModule->getFunction(target->cg_string);
+  
+  if (strcmp(target->cg_string, "__pyc_to_str__") == 0) {
+    if (pn->rvals.n >= 3) {
+      Var *v = pn->rvals.v[2];
+      char buf[256];
+      if (v && v->type && v->type->is_meta_type && v->type->name) {
+        snprintf(buf, sizeof(buf), "<class '%s'>", v->type->name);
+      } else {
+        snprintf(buf, sizeof(buf), "<instance>");
+      }
+      llvm::Value *cv = materialize_pyc_string(dupstr(buf));
+      if (pn->lvals.n > 0 && pn->lvals.v[0]) {
+        put_result(ctx, pn->lvals.v[0], cv);
+      }
+      return;
+    }
+  }
+
   if (!target_fn) return;
 
   // Closure detection: rvals[0] is a closure receiver when
@@ -1673,7 +1703,10 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
     Var *actual = pn->rvals.v[i];
     if (!actual) continue;
     llvm::Value *val = value_for_var(ctx, actual);
-    if (!val) return;
+    if (!val) {
+      fprintf(stderr, "early 5: actual %d not found\n", actual->id);
+      return;
+    }
     args.push_back(val);
   }
 
@@ -1734,6 +1767,20 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
       break;
     }
     case Code_IF: {
+      if (closer->live && closer->fa_live && closer->rvals.n > 0) {
+        if (ctx.fa && ctx.fa->type_world.true_type && closer->rvals.v[0]->sym == ctx.fa->type_world.true_type->v[0]->sym) {
+          if (closer->cfg_succ.n > 0) {
+            llvm::BasicBlock *t_bb = ctx.label_bb.get(closer->cfg_succ.v[0]);
+            if (t_bb) { Builder->CreateBr(t_bb); break; }
+          }
+        } else if (ctx.fa && ctx.fa->type_world.false_type && closer->rvals.v[0]->sym == ctx.fa->type_world.false_type->v[0]->sym) {
+          if (closer->cfg_succ.n > 1) {
+            llvm::BasicBlock *f_bb = ctx.label_bb.get(closer->cfg_succ.v[1]);
+            if (f_bb) { Builder->CreateBr(f_bb); break; }
+          }
+        }
+      }
+
       llvm::Value *cond = nullptr;
       if (closer->rvals.n > 0)
         cond = value_for_var(ctx, closer->rvals.v[0]);
@@ -1746,7 +1793,14 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
       if (closer->cfg_succ.n > 0) t_bb = ctx.label_bb.get(closer->cfg_succ.v[0]);
       if (closer->cfg_succ.n > 1) f_bb = ctx.label_bb.get(closer->cfg_succ.v[1]);
       if (cond && t_bb && f_bb) Builder->CreateCondBr(cond, t_bb, f_bb);
-      else Builder->CreateUnreachable();
+      else {
+        int vid = -1;
+        if (closer->rvals.n > 0 && closer->rvals.v[0]) {
+          vid = closer->rvals.v[0]->id;
+        }
+        fprintf(stderr, "Code_IF unreachable! id=%d\n", vid);
+        Builder->CreateUnreachable();
+      }
       break;
     }
     case Code_SEND: {
@@ -2259,6 +2313,7 @@ bool cg_view_emit_llvm(FA *fa, Fun *main_fun) {
   for (Fun *f : fa->funs) {
     if (!f || !f->live) continue;
     EmitCtx *ctx = new EmitCtx();
+    ctx->fa = fa;
     ctx->fn = f;
     ctx->llvm_fn = nullptr;
     build_fun_signature(*ctx, f);

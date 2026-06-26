@@ -1,0 +1,22 @@
+;; phase: loops
+
+;; Fun %consume
+(loops %consume
+  (none)
+)
+
+;; Fun %next
+(loops %next
+  (none)
+)
+
+;; Fun %next_impl
+(loops %next_impl
+  (none)
+)
+
+;; Fun %top
+(loops %top
+  (none)
+)
+

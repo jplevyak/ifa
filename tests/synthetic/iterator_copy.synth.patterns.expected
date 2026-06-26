@@ -1,0 +1,41 @@
+;; phase: patterns
+
+(mtype %It
+  pos["self"]: %next
+  pos[2]: %next
+)
+
+(mtype @any
+  pos["dst"]: %copy
+  pos["src"]: %copy
+  pos[2]: %copy
+  pos[3]: %copy
+)
+
+(mtype %copy
+  pos["copy"]: %copy
+  pos[1]: %copy
+)
+
+(mtype #copy
+  pos[1]: %copy
+)
+
+(mtype #next
+  pos[1]: %next
+)
+
+(mtype %next
+  pos["next"]: %next
+  pos[1]: %next
+)
+
+(mtype %top
+  pos["top"]: %top
+  pos[1]: %top
+)
+
+(mtype #top
+  pos[1]: %top
+)
+

@@ -1,0 +1,53 @@
+;; phase: cfg
+
+;; Fun %call_via
+(fun %call_via
+  entry:  %p0
+  exit:   %p3
+  pnodes: 4
+)
+(pnodes %call_via
+  %p0  SEND  prim_period @operator %t @period #fn -> %m  succ:[%p1]
+  %p1  SEND  - %m -> %r  succ:[%p2]  pred:[%p0]
+  %p2  MOVE  %r -> %t5  succ:[%p3]  pred:[%p1]
+  %p3  SEND  prim_reply @primitive @reply %t4 %t5  pred:[%p2]
+)
+
+;; Fun %leaf0
+(fun %leaf0
+  entry:  %p0
+  exit:   %p1
+  pnodes: 2
+)
+(pnodes %leaf0
+  %p0  MOVE  %c0 -> %t1  succ:[%p1]
+  %p1  SEND  prim_reply @primitive @reply %t0 %t1  pred:[%p0]
+)
+
+;; Fun %leaf1
+(fun %leaf1
+  entry:  %p0
+  exit:   %p1
+  pnodes: 2
+)
+(pnodes %leaf1
+  %p0  MOVE  %c1 -> %t3  succ:[%p1]
+  %p1  SEND  prim_reply @primitive @reply %t2 %t3  pred:[%p0]
+)
+
+;; Fun %top
+(fun %top
+  entry:  %p0
+  exit:   %p6
+  pnodes: 7
+)
+(pnodes %top
+  %p0  SEND  prim_new @primitive @new %T -> %t8  succ:[%p1]
+  %p1  SEND  prim_setter @operator %t8 @setter #fn %leaf0 -> %t9  succ:[%p2]  pred:[%p0]
+  %p2  SEND  prim_new @primitive @new %T -> %t10  succ:[%p3]  pred:[%p1]
+  %p3  SEND  prim_setter @operator %t10 @setter #fn %leaf1 -> %t11  succ:[%p4]  pred:[%p2]
+  %p4  SEND  - %call_via %t8 -> %t12  succ:[%p5]  pred:[%p3]
+  %p5  SEND  - %call_via %t10 -> %t13  succ:[%p6]  pred:[%p4]
+  %p6  SEND  prim_reply @primitive @reply %t6 %t7  pred:[%p5]
+)
+

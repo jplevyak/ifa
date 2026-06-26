@@ -1,0 +1,22 @@
+;; phase: loops
+
+;; Fun %call_via
+(loops %call_via
+  (none)
+)
+
+;; Fun %leaf0
+(loops %leaf0
+  (none)
+)
+
+;; Fun %leaf1
+(loops %leaf1
+  (none)
+)
+
+;; Fun %top
+(loops %top
+  (none)
+)
+

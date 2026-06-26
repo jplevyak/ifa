@@ -396,7 +396,7 @@ int llvm_codegen_compile(cchar *input_filename) {
 
   // Step 1: clang -c -fPIC <ll> -o <obj>
   {
-    char *argv[] = {(char *)"clang", (char *)"-c", (char *)"-fPIC", ll_file, (char *)"-o", obj_file, nullptr};
+    char *argv[] = {(char *)"clang", (char *)"-c", (char *)"-fPIC", (char *)"-Wno-override-module", ll_file, (char *)"-o", obj_file, nullptr};
     int res = codegen_spawn("clang", argv);
     if (res != 0) {
       fail("llvm_codegen_compile: clang -c failed for %s (exit=%d)", ll_file, res);
@@ -427,6 +427,8 @@ int llvm_codegen_compile(cchar *input_filename) {
     char *argv[] = {(char *)"clang",         obj_file,
                     (char *)"-o",            exe_file,
                     libdir_arg,
+                    (char *)"-L/opt/homebrew/lib",
+                    (char *)"-L/usr/local/lib",
                     (char *)"-lpyc_runtime",
                     (char *)"-lm",           (char *)"-lgc",
                     (char *)"-lgccpp",       nullptr};

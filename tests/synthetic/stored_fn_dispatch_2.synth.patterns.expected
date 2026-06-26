@@ -1,0 +1,43 @@
+;; phase: patterns
+
+(mtype @any
+  pos["t"]: %call_via
+  pos[2]: %call_via
+)
+
+(mtype #call_via
+  pos[1]: %call_via
+)
+
+(mtype %call_via
+  pos["call_via"]: %call_via
+  pos[1]: %call_via
+)
+
+(mtype #leaf0
+  pos[1]: %leaf0
+)
+
+(mtype %leaf0
+  pos["leaf0"]: %leaf0
+  pos[1]: %leaf0
+)
+
+(mtype %leaf1
+  pos["leaf1"]: %leaf1
+  pos[1]: %leaf1
+)
+
+(mtype #leaf1
+  pos[1]: %leaf1
+)
+
+(mtype %top
+  pos["top"]: %top
+  pos[1]: %top
+)
+
+(mtype #top
+  pos[1]: %top
+)
+

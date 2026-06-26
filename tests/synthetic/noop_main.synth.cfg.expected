@@ -1,0 +1,12 @@
+;; phase: cfg
+
+;; Fun %top
+(fun %top
+  entry:  %p0
+  exit:   %p0
+  pnodes: 1
+)
+(pnodes %top
+  %p0  SEND  prim_reply @primitive @reply %t0 %t1
+)
+

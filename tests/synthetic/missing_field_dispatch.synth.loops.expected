@@ -1,0 +1,12 @@
+;; phase: loops
+
+;; Fun %read_fa
+(loops %read_fa
+  (none)
+)
+
+;; Fun %top
+(loops %top
+  (none)
+)
+

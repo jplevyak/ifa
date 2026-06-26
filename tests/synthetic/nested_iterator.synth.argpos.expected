@@ -1,0 +1,60 @@
+;; phase: argpos
+
+;; Fun %__getitem__
+(positions %__getitem__
+  pos["i"] -> %i :alias-of pos[3]
+  pos["self"] -> %self :alias-of pos[2]
+  pos[1] -> #__getitem__ :positional
+  pos[2] -> %self :positional
+  pos[3] -> %i :positional
+  rets: %t2
+)
+
+;; Fun %__getitem___1
+(positions %__getitem___1
+  pos["i"] -> %i_2 :alias-of pos[3]
+  pos["self"] -> %self_2 :alias-of pos[2]
+  pos[1] -> #__getitem__ :positional
+  pos[2] -> %self_2 :positional
+  pos[3] -> %i_2 :positional
+  rets: %t7
+)
+
+;; Fun %__setitem__
+(positions %__setitem__
+  pos["i"] -> %i_1 :alias-of pos[3]
+  pos["self"] -> %self_1 :alias-of pos[2]
+  pos["val"] -> %val :alias-of pos[4]
+  pos[1] -> #__setitem__ :positional
+  pos[2] -> %self_1 :positional
+  pos[3] -> %i_1 :positional
+  pos[4] -> %val :positional
+  rets: %t4
+)
+
+;; Fun %__setitem___1
+(positions %__setitem___1
+  pos["i"] -> %i_3 :alias-of pos[3]
+  pos["self"] -> %self_3 :alias-of pos[2]
+  pos["val"] -> %val_1 :alias-of pos[4]
+  pos[1] -> #__setitem__ :positional
+  pos[2] -> %self_3 :positional
+  pos[3] -> %i_3 :positional
+  pos[4] -> %val_1 :positional
+  rets: %t9
+)
+
+;; Fun %consume_outer
+(positions %consume_outer
+  pos["vv"] -> %vv :alias-of pos[2]
+  pos[1] -> #consume_outer :positional
+  pos[2] -> %vv :positional
+  rets: %t12
+)
+
+;; Fun %top
+(positions %top
+  pos[1] -> #top :positional
+  rets: %t14
+)
+

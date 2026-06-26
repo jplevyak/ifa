@@ -1,0 +1,80 @@
+;; phase: ssu
+
+;; Fun %consume
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+  %p0: %v
+  %p1: %it_v1 %v
+  %p2: %it_v1
+  %p3: %it_v1
+  %p4: %e_v1
+)
+
+;; Fun %next
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+  %p0: %self
+  %p1: %self %vec_v_v1
+  %p2: %pos_v_v1 %vec_v_v1
+  %p3: %elt_v1
+)
+
+;; Fun %next_impl
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+)
+
+;; Fun %top
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+  %p1: %t11_v1
+  %p2: %t11_v1
+  %p3: %t11_v1 %t13_v1
+  %p4: %t11_v1 %t13_v1
+  %p5: %t13_v1
+)
+

@@ -1,0 +1,93 @@
+;; phase: finalize
+
+(prim-bound
+  in %leaf0:
+    send[1] = prim_reply
+  in %leaf1:
+    send[1] = prim_reply
+  in %call_via:
+    send[1] = prim_period
+    send[2] = (none)
+    send[3] = prim_reply
+  in %top:
+    send[1] = prim_new
+    send[2] = prim_setter
+    send[3] = prim_new
+    send[4] = prim_setter
+    send[5] = (none)
+    send[6] = (none)
+    send[7] = prim_reply
+)
+
+(live
+  syms:     51 live, 0 dead
+  closures: 4 live (of 4 total)
+)
+
+;; full state:
+;; types
+(type %T :kind RECORD :has (%fn))
+
+;; syms
+(sym %fn :in %T)
+(sym %t0)
+(sym %t1)
+(sym %c0 :immediate (int32 10))
+(sym %t2)
+(sym %t3)
+(sym %c1 :immediate (float64 3.1400000000000001))
+(sym %t :is-local :nesting-depth 1)
+(sym %t4)
+(sym %t5)
+(sym %m :is-local :nesting-depth 1)
+(sym %r :is-local :nesting-depth 1)
+(sym %t6)
+(sym %t7)
+(sym %t8 :is-local :nesting-depth 1)
+(sym %t9 :is-local :nesting-depth 1)
+(sym %t10 :is-local :nesting-depth 1)
+(sym %t11 :is-local :nesting-depth 1)
+(sym %t12 :is-local :nesting-depth 1)
+(sym %t13 :is-local :nesting-depth 1)
+
+;; funs
+(fun %leaf0
+  :args (#leaf0)
+  :rets (%t1)
+  :cont %t0
+  :body
+  (move %c0 %t1)
+  (send @primitive @reply %t0 %t1)
+)
+(fun %leaf1
+  :args (#leaf1)
+  :rets (%t3)
+  :cont %t2
+  :body
+  (move %c1 %t3)
+  (send @primitive @reply %t2 %t3)
+)
+(fun %call_via
+  :args (#call_via %t)
+  :rets (%t5)
+  :cont %t4
+  :body
+  (send @operator %t @period #fn => %m)
+  (send %m => %r)
+  (move %r %t5)
+  (send @primitive @reply %t4 %t5)
+)
+(fun %top
+  :args (#top)
+  :rets (%t7)
+  :cont %t6
+  :body
+  (send @primitive @new %T => %t8)
+  (send @operator %t8 @setter #fn %leaf0 => %t9)
+  (send @primitive @new %T => %t10)
+  (send @operator %t10 @setter #fn %leaf1 => %t11)
+  (send %call_via %t8 => %t12)
+  (send %call_via %t10 => %t13)
+  (send @primitive @reply %t6 %t7)
+)
+

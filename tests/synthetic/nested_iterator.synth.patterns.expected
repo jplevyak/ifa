@@ -1,0 +1,67 @@
+;; phase: patterns
+
+(mtype %V_inner
+  pos["self"]: %__getitem__ %__setitem__
+  pos[2]: %__getitem__ %__setitem__
+)
+
+(mtype %V_outer
+  pos["self"]: %__getitem___1 %__setitem___1
+  pos[2]: %__getitem___1 %__setitem___1
+)
+
+(mtype #__getitem__
+  pos[1]: %__getitem__ %__getitem___1
+)
+
+(mtype %__getitem__
+  pos["__getitem__"]: %__getitem__
+  pos[1]: %__getitem__
+)
+
+(mtype %__getitem___1
+  pos["__getitem__"]: %__getitem___1
+  pos[1]: %__getitem___1
+)
+
+(mtype %__setitem__
+  pos["__setitem__"]: %__setitem__
+  pos[1]: %__setitem__
+)
+
+(mtype #__setitem__
+  pos[1]: %__setitem__ %__setitem___1
+)
+
+(mtype %__setitem___1
+  pos["__setitem__"]: %__setitem___1
+  pos[1]: %__setitem___1
+)
+
+(mtype @any
+  pos["i"]: %__getitem__ %__getitem___1 %__setitem__ %__setitem___1
+  pos["val"]: %__setitem__ %__setitem___1
+  pos["vv"]: %consume_outer
+  pos[2]: %consume_outer
+  pos[3]: %__getitem__ %__getitem___1 %__setitem__ %__setitem___1
+  pos[4]: %__setitem__ %__setitem___1
+)
+
+(mtype %consume_outer
+  pos["consume_outer"]: %consume_outer
+  pos[1]: %consume_outer
+)
+
+(mtype #consume_outer
+  pos[1]: %consume_outer
+)
+
+(mtype #top
+  pos[1]: %top
+)
+
+(mtype %top
+  pos["top"]: %top
+  pos[1]: %top
+)
+

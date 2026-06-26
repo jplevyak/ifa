@@ -1,0 +1,30 @@
+;; phase: argpos
+
+;; Fun %consume
+(positions %consume
+  pos["v"] -> %v :alias-of pos[2]
+  pos[1] -> #consume :positional
+  pos[2] -> %v :positional
+  rets: %t6
+)
+
+;; Fun %next
+(positions %next
+  pos["self"] -> %self :alias-of pos[2]
+  pos[1] -> #next :positional
+  pos[2] -> %self :positional
+  rets: %t4
+)
+
+;; Fun %next_impl
+(positions %next_impl
+  pos[1] -> #next_impl :positional
+  rets: %t2
+)
+
+;; Fun %top
+(positions %top
+  pos[1] -> #top :positional
+  rets: %t10
+)
+

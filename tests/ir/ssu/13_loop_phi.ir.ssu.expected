@@ -2,19 +2,21 @@
 
 ;; Fun %accum
 (phi
-  (none)
+  %p1:
+    [0] lvals=[%cond_v2] rvals=[%cond %cond_v1]
+    [1] lvals=[%x_v2] rvals=[%x %x_v1]
 )
 
 (phy
   %p2:
-    [0] lvals=[%cond_v1 %cond_v2] rvals=[%cond]
-    [1] lvals=[%x_v1 %x_v2] rvals=[%x]
+    [0] lvals=[%cond_v1 %cond_v3] rvals=[%cond_v2]
+    [1] lvals=[%x_v1 %x_v3] rvals=[%x_v2]
 )
 
 (rename
-  %x -> %x(def ?) %x_v1(def p2) %x_v2(def p2)
+  %x -> %x(def ?) %x_v1(def p2) %x_v2(def p1) %x_v3(def p2)
   %r -> %r(def p0) %r_v1(def p4)
-  %cond -> %cond(def ?) %cond_v1(def p2) %cond_v2(def p2)
+  %cond -> %cond(def ?) %cond_v1(def p2) %cond_v2(def p1) %cond_v3(def p2)
 )
 
 (live-vars

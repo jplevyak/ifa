@@ -1,0 +1,21 @@
+;; phase: dispatch
+
+(summary rc=-1 ess=3 edges=12)
+
+(es @__main__#0
+  send peek ? => ?
+    → %peek#0
+      args→ [1]:{peek} [2]:{T}
+  send peek ? => ?
+    → %peek#1
+      args→ [1]:{peek} [2]:{T}
+)
+
+(es %peek#0
+  (no out edges)
+)
+
+(es %peek#1
+  (no out edges)
+)
+

@@ -1,0 +1,21 @@
+;; phase: dispatch
+
+(summary rc=-1 ess=3 edges=12)
+
+(es @__main__#0
+  send chain ? ? => ?
+    → %chain#0
+      args→ [1]:{chain} [2]:{R1} [3]:{R2}
+  send chain ? ? => ?
+    → %chain#1
+      args→ [1]:{chain} [2]:{R1} [3]:{R2}
+)
+
+(es %chain#0
+  (no out edges)
+)
+
+(es %chain#1
+  (no out edges)
+)
+

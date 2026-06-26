@@ -1,0 +1,55 @@
+;; phase: clone
+
+(summary fa_rc=-1 clone_rc=0 funs=4 css=31 ess=5)
+
+(cs-equiv
+  class[(anon)] members=1 type=int32
+  class[(anon)] members=1 type=int32
+  class[(anon)] members=1 type=int32
+  class[(anon)] members=1 type=float64
+  class[(anon)] members=1 type=int32
+  class[.] members=1 type=symbol
+  class[.=] members=1 type=symbol
+  class[It] members=1 type=It
+  class[It] members=2 type=It
+  class[V] members=1 type=V
+  class[V] members=1 type=V
+  class[V] members=1 type=V
+  class[__main__] members=1 type=__main__
+  class[__operator] members=1 type=symbol
+  class[__primitive] members=1 type=symbol
+  class[consume] members=1 type=consume
+  class[consume] members=1 type=symbol
+  class[continuation] members=3 type=continuation
+  class[float64] members=1 type=float64
+  class[index_object] members=1 type=symbol
+  class[int32] members=1 type=int32
+  class[new] members=1 type=symbol
+  class[next] members=1 type=symbol
+  class[nil_type] members=1 type=nil_type
+  class[pos] members=1 type=symbol
+  class[reply] members=1 type=symbol
+  class[set_index_object] members=1 type=symbol
+  class[vec] members=1 type=symbol
+)
+
+(es-equiv
+  fun __main__ ess=1 equiv-classes=1
+  fun consume ess=1 equiv-classes=1
+  fun consume ess=1 equiv-classes=1
+  fun next ess=2 equiv-classes=0
+)
+
+(call-graph
+  fun __main__
+    pnode-send → consume
+    pnode-send → consume
+  fun consume
+    pnode-send → next
+  fun consume
+    pnode-send → next
+)
+
+(new-funs
+  (none)
+)

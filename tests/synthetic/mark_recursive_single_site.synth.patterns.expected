@@ -1,0 +1,25 @@
+;; phase: patterns
+
+(mtype %T
+  pos["self"]: %walk
+  pos[2]: %walk
+)
+
+(mtype %top
+  pos["top"]: %top
+  pos[1]: %top
+)
+
+(mtype #top
+  pos[1]: %top
+)
+
+(mtype %walk
+  pos["walk"]: %walk
+  pos[1]: %walk
+)
+
+(mtype #walk
+  pos[1]: %walk
+)
+

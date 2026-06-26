@@ -1,0 +1,43 @@
+;; phase: clone
+
+(summary fa_rc=-1 clone_rc=0 funs=3 css=22 ess=3)
+
+(cs-equiv
+  class[(anon)] members=1 type=int32
+  class[(anon)] members=1 type=float64
+  class[.] members=1 type=symbol
+  class[.=] members=1 type=symbol
+  class[R1] members=1 type=R1
+  class[R1] members=1 type=R1
+  class[R1] members=1 type=R1
+  class[R2] members=1 type=R2
+  class[R2] members=1 type=R2
+  class[R2] members=1 type=R2
+  class[__main__] members=1 type=__main__
+  class[__operator] members=1 type=symbol
+  class[__primitive] members=1 type=symbol
+  class[a] members=1 type=symbol
+  class[b] members=1 type=symbol
+  class[chain] members=1 type=chain
+  class[chain] members=1 type=symbol
+  class[continuation] members=2 type=continuation
+  class[new] members=1 type=symbol
+  class[nil_type] members=1 type=nil_type
+  class[reply] members=1 type=symbol
+)
+
+(es-equiv
+  fun __main__ ess=1 equiv-classes=1
+  fun chain ess=1 equiv-classes=1
+  fun chain ess=1 equiv-classes=1
+)
+
+(call-graph
+  fun __main__
+    pnode-send → chain
+    pnode-send → chain
+)
+
+(new-funs
+  (none)
+)

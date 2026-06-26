@@ -1,0 +1,21 @@
+;; phase: dispatch
+
+(summary rc=-1 ess=3 edges=12)
+
+(es @__main__#0
+  send f (imm) (imm) => ?
+    → %f#0
+      args→ [1]:{f} [2]:{int32} [3]:{int32}
+  send f (imm) (imm) => ?
+    → %f#1
+      args→ [1]:{f} [2]:{float64} [3]:{float64}
+)
+
+(es %f#0
+  (no out edges)
+)
+
+(es %f#1
+  (no out edges)
+)
+

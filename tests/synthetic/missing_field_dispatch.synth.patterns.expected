@@ -1,0 +1,25 @@
+;; phase: patterns
+
+(mtype @any
+  pos["x"]: %read_fa
+  pos[2]: %read_fa
+)
+
+(mtype %read_fa
+  pos["read_fa"]: %read_fa
+  pos[1]: %read_fa
+)
+
+(mtype #read_fa
+  pos[1]: %read_fa
+)
+
+(mtype %top
+  pos["top"]: %top
+  pos[1]: %top
+)
+
+(mtype #top
+  pos[1]: %top
+)
+

@@ -1,0 +1,16 @@
+;; phase: argpos
+
+;; Fun %peek
+(positions %peek
+  pos["t"] -> %t :alias-of pos[2]
+  pos[1] -> #peek :positional
+  pos[2] -> %t :positional
+  rets: %t1
+)
+
+;; Fun %top
+(positions %top
+  pos[1] -> #top :positional
+  rets: %t3
+)
+

@@ -1,0 +1,41 @@
+;; phase: ssu
+
+;; Fun %read_fa
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+  %p0: %x
+  %p1: %v_v1
+)
+
+;; Fun %top
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+  %p1: %t4_v1
+  %p2: %t4_v1
+  %p3: %t4_v1 %t6_v1
+  %p4: %t4_v1 %t6_v1
+  %p5: %t6_v1
+)
+

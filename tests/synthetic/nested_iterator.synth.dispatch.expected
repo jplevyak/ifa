@@ -1,0 +1,75 @@
+;; phase: dispatch
+
+(summary rc=-1 ess=11 edges=44)
+
+(es %__getitem___1#0
+  (no out edges)
+)
+
+(es %__getitem___1#1
+  (no out edges)
+)
+
+(es %__getitem__#0
+  (no out edges)
+)
+
+(es %__getitem__#1
+  (no out edges)
+)
+
+(es @__main__#0
+  send __setitem__ ? (imm) (imm) => ?
+    → %__setitem__#0
+      args→ [1]:{__setitem__} [2]:{V_inner} [3]:{int32} [4]:{int32}
+  send __setitem__ ? (imm) ? => ?
+    → %__setitem___1#0
+      args→ [1]:{__setitem__} [2]:{V_outer} [3]:{int32} [4]:{V_inner}
+  send __setitem__ ? (imm) (imm) => ?
+    → %__setitem__#1
+      args→ [1]:{__setitem__} [2]:{V_inner} [3]:{int32} [4]:{float64}
+  send __setitem__ ? (imm) ? => ?
+    → %__setitem___1#1
+      args→ [1]:{__setitem__} [2]:{V_outer} [3]:{int32} [4]:{V_inner}
+  send consume_outer ? => ?
+    → %consume_outer#0
+      args→ [1]:{consume_outer} [2]:{V_outer}
+  send consume_outer ? => ?
+    → %consume_outer#1
+      args→ [1]:{consume_outer} [2]:{V_outer}
+)
+
+(es %__setitem__#0
+  (no out edges)
+)
+
+(es %__setitem___1#0
+  (no out edges)
+)
+
+(es %__setitem__#1
+  (no out edges)
+)
+
+(es %__setitem___1#1
+  (no out edges)
+)
+
+(es %consume_outer#0
+  send __getitem__ vv (imm) => inner_v
+    → %__getitem___1#0
+      args→ [1]:{__getitem__} [2]:{V_outer} [3]:{int32}
+  send __getitem__ inner_v (imm) => e
+    → %__getitem__#0, %__getitem__#1
+      args→ [1]:{__getitem__} [2]:{V_inner V_inner} [3]:{int32}
+)
+
+(es %consume_outer#1
+  send __getitem__ vv (imm) => inner_v
+    → %__getitem___1#1
+      args→ [1]:{__getitem__} [2]:{V_outer} [3]:{int32}
+  send __getitem__ inner_v (imm) => e
+    → %__getitem__#0, %__getitem__#1
+      args→ [1]:{__getitem__} [2]:{V_inner V_inner} [3]:{int32}
+)
+

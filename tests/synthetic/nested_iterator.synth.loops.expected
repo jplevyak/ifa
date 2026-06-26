@@ -1,0 +1,32 @@
+;; phase: loops
+
+;; Fun %__getitem__
+(loops %__getitem__
+  (none)
+)
+
+;; Fun %__getitem___1
+(loops %__getitem___1
+  (none)
+)
+
+;; Fun %__setitem__
+(loops %__setitem__
+  (none)
+)
+
+;; Fun %__setitem___1
+(loops %__setitem___1
+  (none)
+)
+
+;; Fun %consume_outer
+(loops %consume_outer
+  (none)
+)
+
+;; Fun %top
+(loops %top
+  (none)
+)
+

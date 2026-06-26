@@ -1,0 +1,116 @@
+;; phase: ssu
+
+;; Fun %__getitem__
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+  %p0: %i %self
+  %p1: %e_v1
+)
+
+;; Fun %__getitem___1
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+  %p0: %i_2 %self_2
+  %p1: %e_1_v1
+)
+
+;; Fun %__setitem__
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+  %p0: %i_1 %self_1 %val
+)
+
+;; Fun %__setitem___1
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+  %p0: %i_3 %self_3 %val_1
+)
+
+;; Fun %consume_outer
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+  %p0: %vv
+  %p1: %inner_v_v1
+  %p2: %e_2_v1
+)
+
+;; Fun %top
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+  %p1: %t15_v1
+  %p2: %t15_v1
+  %p3: %t15_v1 %t17_v1
+  %p4: %t17_v1
+  %p5: %t17_v1 %t19_v1
+  %p6: %t17_v1 %t19_v1
+  %p7: %t17_v1 %t19_v1 %t21_v1
+  %p8: %t17_v1 %t21_v1
+  %p9: %t21_v1
+)
+

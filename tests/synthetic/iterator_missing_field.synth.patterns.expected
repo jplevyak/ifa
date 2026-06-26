@@ -1,0 +1,39 @@
+;; phase: patterns
+
+(mtype %It
+  pos["self"]: %next
+  pos[2]: %next
+)
+
+(mtype @any
+  pos["v"]: %consume
+  pos[2]: %consume
+)
+
+(mtype %consume
+  pos["consume"]: %consume
+  pos[1]: %consume
+)
+
+(mtype #consume
+  pos[1]: %consume
+)
+
+(mtype #next
+  pos[1]: %next
+)
+
+(mtype %next
+  pos["next"]: %next
+  pos[1]: %next
+)
+
+(mtype %top
+  pos["top"]: %top
+  pos[1]: %top
+)
+
+(mtype #top
+  pos[1]: %top
+)
+

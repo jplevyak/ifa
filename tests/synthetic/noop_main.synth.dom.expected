@@ -1,0 +1,15 @@
+;; phase: dom
+
+;; Fun %top
+(idom
+  %p0 -> -
+)
+
+(idom-rev
+  %p0 -> -
+)
+
+(frontier
+  (empty)
+)
+

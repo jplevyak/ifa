@@ -1,0 +1,17 @@
+;; phase: loops
+
+;; Fun %consume
+(loops %consume
+  (none)
+)
+
+;; Fun %next
+(loops %next
+  (none)
+)
+
+;; Fun %top
+(loops %top
+  (none)
+)
+

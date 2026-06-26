@@ -1,0 +1,114 @@
+;; phase: finalize
+
+(prim-bound
+  in %next_impl:
+    send[1] = prim_reply
+  in %next:
+    send[1] = prim_period
+    send[2] = prim_period
+    send[3] = prim_index_object
+    send[4] = prim_reply
+  in %consume:
+    send[1] = prim_new
+    send[2] = prim_setter
+    send[3] = prim_setter
+    send[4] = (none)
+    send[5] = prim_reply
+  in %top:
+    send[1] = prim_new
+    send[2] = prim_set_index_object
+    send[3] = prim_new
+    send[4] = prim_set_index_object
+    send[5] = (none)
+    send[6] = (none)
+    send[7] = prim_reply
+)
+
+(live
+  syms:     64 live, 0 dead
+  closures: 4 live (of 4 total)
+)
+
+;; full state:
+;; types
+(type %V :kind RECORD :element %t0)
+(type %It :kind RECORD :has (%vec %pos))
+
+;; syms
+(sym %t0)
+(sym %vec :in %It)
+(sym %pos :in %It)
+(sym %t1)
+(sym %t2)
+(sym %t3)
+(sym %t4)
+(sym %self :is-local :nesting-depth 1)
+(sym %vec_v :is-local :nesting-depth 1)
+(sym %pos_v :is-local :nesting-depth 1)
+(sym %elt :is-local :nesting-depth 1)
+(sym %v :is-local :nesting-depth 1)
+(sym %t5)
+(sym %t6)
+(sym %it :is-local :nesting-depth 1)
+(sym %t7 :is-local :nesting-depth 1)
+(sym %c0 :immediate (int32 0))
+(sym %t8 :is-local :nesting-depth 1)
+(sym %e :is-local :nesting-depth 1)
+(sym %t9)
+(sym %t10)
+(sym %t11 :is-local :nesting-depth 1)
+(sym %c1 :immediate (int32 0))
+(sym %c2 :immediate (int32 10))
+(sym %t12 :is-local :nesting-depth 1)
+(sym %t13 :is-local :nesting-depth 1)
+(sym %c3 :immediate (int32 0))
+(sym %c4 :immediate (float64 2.5))
+(sym %t14 :is-local :nesting-depth 1)
+(sym %t15 :is-local :nesting-depth 1)
+(sym %t16 :is-local :nesting-depth 1)
+
+;; funs
+(fun %next_impl
+  :args (#next_impl)
+  :rets (%t2)
+  :cont %t1
+  :body
+  (send @primitive @reply %t1 %t2)
+)
+(fun %next
+  :args (#next %self)
+  :rets (%t4)
+  :cont %t3
+  :body
+  (send @operator %self @period #vec => %vec_v)
+  (send @operator %self @period #pos => %pos_v)
+  (send @primitive @index_object %vec_v %pos_v => %elt)
+  (move %elt %t4)
+  (send @primitive @reply %t3 %t4)
+)
+(fun %consume
+  :args (#consume %v)
+  :rets (%t6)
+  :cont %t5
+  :body
+  (send @primitive @new %It => %it)
+  (send @operator %it @setter #vec %v => %t7)
+  (send @operator %it @setter #pos %c0 => %t8)
+  (send #next %it => %e)
+  (move %e %t6)
+  (send @primitive @reply %t5 %t6)
+)
+(fun %top
+  :args (#top)
+  :rets (%t10)
+  :cont %t9
+  :body
+  (send @primitive @new %V => %t11)
+  (send @primitive @set_index_object %t11 %c1 %c2 => %t12)
+  (send @primitive @new %V => %t13)
+  (send @primitive @set_index_object %t13 %c3 %c4 => %t14)
+  (send %consume %t11 => %t15)
+  (send %consume %t13 => %t16)
+  (send @primitive @reply %t9 %t10)
+)
+

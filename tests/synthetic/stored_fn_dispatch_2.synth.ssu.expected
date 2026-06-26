@@ -1,0 +1,74 @@
+;; phase: ssu
+
+;; Fun %call_via
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+  %p0: %t
+  %p1: %m_v1
+  %p2: %r_v1
+)
+
+;; Fun %leaf0
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+)
+
+;; Fun %leaf1
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+)
+
+;; Fun %top
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+  %p1: %t8_v1
+  %p2: %t8_v1
+  %p3: %t10_v1 %t8_v1
+  %p4: %t10_v1 %t8_v1
+  %p5: %t10_v1
+)
+

@@ -1,0 +1,57 @@
+;; phase: cfg
+
+;; Fun %consume
+(fun %consume
+  entry:  %p0
+  exit:   %p5
+  pnodes: 6
+)
+(pnodes %consume
+  %p0  SEND  prim_new @primitive @new %It -> %it  succ:[%p1]
+  %p1  SEND  prim_setter @operator %it @setter #vec %v -> %t7  succ:[%p2]  pred:[%p0]
+  %p2  SEND  prim_setter @operator %it @setter #pos %c0 -> %t8  succ:[%p3]  pred:[%p1]
+  %p3  SEND  - #next %it -> %e  succ:[%p4]  pred:[%p2]
+  %p4  MOVE  %e -> %t6  succ:[%p5]  pred:[%p3]
+  %p5  SEND  prim_reply @primitive @reply %t5 %t6  pred:[%p4]
+)
+
+;; Fun %next
+(fun %next
+  entry:  %p0
+  exit:   %p4
+  pnodes: 5
+)
+(pnodes %next
+  %p0  SEND  prim_period @operator %self @period #vec -> %vec_v  succ:[%p1]
+  %p1  SEND  prim_period @operator %self @period #pos -> %pos_v  succ:[%p2]  pred:[%p0]
+  %p2  SEND  prim_index_object @primitive @index_object %vec_v %pos_v -> %elt  succ:[%p3]  pred:[%p1]
+  %p3  MOVE  %elt -> %t4  succ:[%p4]  pred:[%p2]
+  %p4  SEND  prim_reply @primitive @reply %t3 %t4  pred:[%p3]
+)
+
+;; Fun %next_impl
+(fun %next_impl
+  entry:  %p0
+  exit:   %p0
+  pnodes: 1
+)
+(pnodes %next_impl
+  %p0  SEND  prim_reply @primitive @reply %t1 %t2
+)
+
+;; Fun %top
+(fun %top
+  entry:  %p0
+  exit:   %p6
+  pnodes: 7
+)
+(pnodes %top
+  %p0  SEND  prim_new @primitive @new %V -> %t11  succ:[%p1]
+  %p1  SEND  prim_set_index_object @primitive @set_index_object %t11 %c1 %c2 -> %t12  succ:[%p2]  pred:[%p0]
+  %p2  SEND  prim_new @primitive @new %V -> %t13  succ:[%p3]  pred:[%p1]
+  %p3  SEND  prim_set_index_object @primitive @set_index_object %t13 %c3 %c4 -> %t14  succ:[%p4]  pred:[%p2]
+  %p4  SEND  - %consume %t11 -> %t15  succ:[%p5]  pred:[%p3]
+  %p5  SEND  - %consume %t13 -> %t16  succ:[%p6]  pred:[%p4]
+  %p6  SEND  prim_reply @primitive @reply %t9 %t10  pred:[%p5]
+)
+

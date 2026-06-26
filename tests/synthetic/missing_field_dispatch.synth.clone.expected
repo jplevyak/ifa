@@ -1,0 +1,41 @@
+;; phase: clone
+
+(summary fa_rc=-1 clone_rc=0 funs=3 css=20 ess=3)
+
+(cs-equiv
+  class[(anon)] members=1 type=int32
+  class[(anon)] members=1 type=int32
+  class[.] members=1 type=symbol
+  class[.=] members=1 type=symbol
+  class[A] members=1 type=A
+  class[A] members=1 type=A
+  class[B] members=1 type=B
+  class[B] members=1 type=B
+  class[__main__] members=1 type=__main__
+  class[__operator] members=1 type=symbol
+  class[__primitive] members=1 type=symbol
+  class[continuation] members=2 type=continuation
+  class[fa] members=1 type=symbol
+  class[fb] members=1 type=symbol
+  class[new] members=1 type=symbol
+  class[nil_type] members=1 type=nil_type
+  class[read_fa] members=1 type=read_fa
+  class[read_fa] members=1 type=symbol
+  class[reply] members=1 type=symbol
+)
+
+(es-equiv
+  fun __main__ ess=1 equiv-classes=1
+  fun read_fa ess=1 equiv-classes=1
+  fun read_fa ess=1 equiv-classes=1
+)
+
+(call-graph
+  fun __main__
+    pnode-send → read_fa
+    pnode-send → read_fa
+)
+
+(new-funs
+  (none)
+)

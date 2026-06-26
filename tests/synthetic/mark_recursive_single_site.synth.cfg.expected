@@ -1,0 +1,31 @@
+;; phase: cfg
+
+;; Fun %top
+(fun %top
+  entry:  %p0
+  exit:   %p6
+  pnodes: 7
+)
+(pnodes %top
+  %p0  SEND  prim_new @primitive @new %T -> %t5  succ:[%p1]
+  %p1  SEND  prim_setter @operator %t5 @setter #data %c0 -> %t6  succ:[%p2]  pred:[%p0]
+  %p2  SEND  prim_new @primitive @new %T -> %t7  succ:[%p3]  pred:[%p1]
+  %p3  SEND  prim_setter @operator %t7 @setter #data %c1 -> %t8  succ:[%p4]  pred:[%p2]
+  %p4  SEND  - #walk %t5 -> %t9  succ:[%p5]  pred:[%p3]
+  %p5  SEND  - #walk %t7 -> %t10  succ:[%p6]  pred:[%p4]
+  %p6  SEND  prim_reply @primitive @reply %t3 %t4  pred:[%p5]
+)
+
+;; Fun %walk
+(fun %walk
+  entry:  %p0
+  exit:   %p3
+  pnodes: 4
+)
+(pnodes %walk
+  %p0  SEND  prim_period @operator %self @period #data -> %v  succ:[%p1]
+  %p1  SEND  - #walk %self -> %t2  succ:[%p2]  pred:[%p0]
+  %p2  MOVE  %v -> %t1  succ:[%p3]  pred:[%p1]
+  %p3  SEND  prim_reply @primitive @reply %t0 %t1  pred:[%p2]
+)
+

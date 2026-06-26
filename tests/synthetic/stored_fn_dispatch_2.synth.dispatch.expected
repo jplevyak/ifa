@@ -1,0 +1,33 @@
+;; phase: dispatch
+
+(summary rc=-1 ess=5 edges=20)
+
+(es @__main__#0
+  send call_via ? => ?
+    → %call_via#0
+      args→ [1]:{call_via} [2]:{T}
+  send call_via ? => ?
+    → %call_via#1
+      args→ [1]:{call_via} [2]:{T}
+)
+
+(es %call_via#0
+  send m => r
+    → %leaf0#0, %leaf1#0
+      args→ [1]:{leaf0}
+)
+
+(es %call_via#1
+  send m => r
+    → %leaf1#0
+      args→ [1]:{leaf1}
+)
+
+(es %leaf0#0
+  (no out edges)
+)
+
+(es %leaf1#0
+  (no out edges)
+)
+

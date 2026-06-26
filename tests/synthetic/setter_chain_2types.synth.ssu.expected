@@ -1,0 +1,42 @@
+;; phase: ssu
+
+;; Fun %chain
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+  %p0: %r1 %r2
+  %p1: %r2 %v_v1
+)
+
+;; Fun %top
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+  %p1: %t5_v1
+  %p2: %t5_v1 %t6_v1
+  %p3: %t5_v1 %t6_v1
+  %p5: %t9_v1
+  %p6: %t10_v1 %t9_v1
+  %p7: %t10_v1 %t9_v1
+)
+

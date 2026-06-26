@@ -1,0 +1,57 @@
+;; phase: dom
+
+;; Fun %__getitem__
+(idom
+  %p0 -> -
+  %p1 -> %p0
+  %p2 -> %p1
+)
+
+(idom-rev
+  %p0 -> %p1
+  %p1 -> %p2
+  %p2 -> -
+)
+
+(frontier
+  (empty)
+)
+
+;; Fun %__setitem__
+(idom
+  %p0 -> -
+  %p1 -> %p0
+)
+
+(idom-rev
+  %p0 -> %p1
+  %p1 -> -
+)
+
+(frontier
+  (empty)
+)
+
+;; Fun %top
+(idom
+  %p0 -> -
+  %p1 -> %p0
+  %p2 -> %p1
+  %p3 -> %p2
+  %p4 -> %p3
+  %p5 -> %p4
+)
+
+(idom-rev
+  %p0 -> %p1
+  %p1 -> %p2
+  %p2 -> %p3
+  %p3 -> %p4
+  %p4 -> %p5
+  %p5 -> -
+)
+
+(frontier
+  (empty)
+)
+

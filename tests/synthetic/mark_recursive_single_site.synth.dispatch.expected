@@ -1,0 +1,25 @@
+;; phase: dispatch
+
+(summary rc=-1 ess=3 edges=12)
+
+(es @__main__#0
+  send walk ? => ?
+    → %walk#0
+      args→ [1]:{walk} [2]:{T}
+  send walk ? => ?
+    → %walk#1
+      args→ [1]:{walk} [2]:{T}
+)
+
+(es %walk#0
+  send walk self => ?
+    → %walk#0
+      args→ [1]:{walk} [2]:{T}
+)
+
+(es %walk#1
+  send walk self => ?
+    → %walk#1
+      args→ [1]:{walk} [2]:{T}
+)
+

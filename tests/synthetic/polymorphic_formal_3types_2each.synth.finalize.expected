@@ -1,0 +1,70 @@
+;; phase: finalize
+
+(prim-bound
+  in %f:
+    send[1] = prim_reply
+  in %top:
+    send[1] = (none)
+    send[2] = (none)
+    send[3] = (none)
+    send[4] = (none)
+    send[5] = (none)
+    send[6] = (none)
+    send[7] = prim_reply
+)
+
+(live
+  syms:     49 live, 0 dead
+  closures: 2 live (of 2 total)
+)
+
+;; full state:
+;; syms
+(sym %a :is-local :nesting-depth 1)
+(sym %b :is-local :nesting-depth 1)
+(sym %t0)
+(sym %t1)
+(sym %t2)
+(sym %t3)
+(sym %c0 :immediate (int32 1))
+(sym %c1 :immediate (int32 2))
+(sym %t4 :is-local :nesting-depth 1)
+(sym %c2 :immediate (int32 2))
+(sym %c3 :immediate (int32 3))
+(sym %t5 :is-local :nesting-depth 1)
+(sym %c4 :immediate (float64 1.5))
+(sym %c5 :immediate (float64 2.5))
+(sym %t6 :is-local :nesting-depth 1)
+(sym %c6 :immediate (float64 2.5))
+(sym %c7 :immediate (float64 3.5))
+(sym %t7 :is-local :nesting-depth 1)
+(sym %c8 :immediate (int64 10))
+(sym %c9 :immediate (int64 20))
+(sym %t8 :is-local :nesting-depth 1)
+(sym %c10 :immediate (int64 11))
+(sym %c11 :immediate (int64 21))
+(sym %t9 :is-local :nesting-depth 1)
+
+;; funs
+(fun %f
+  :args (#f %a %b)
+  :rets (%t1)
+  :cont %t0
+  :body
+  (move %a %t1)
+  (send @primitive @reply %t0 %t1)
+)
+(fun %top
+  :args (#top)
+  :rets (%t3)
+  :cont %t2
+  :body
+  (send %f %c0 %c1 => %t4)
+  (send %f %c2 %c3 => %t5)
+  (send %f %c4 %c5 => %t6)
+  (send %f %c6 %c7 => %t7)
+  (send %f %c8 %c9 => %t8)
+  (send %f %c10 %c11 => %t9)
+  (send @primitive @reply %t2 %t3)
+)
+

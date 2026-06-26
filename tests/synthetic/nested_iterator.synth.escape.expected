@@ -1,0 +1,12 @@
+;; phase: escape
+
+(summary fa_rc=-1 funs=6)
+
+(escape
+  fun __getitem__ ess=2 escape-sig=[N N N]
+  fun __getitem__ ess=2 escape-sig=[N N N]
+  fun __main__ ess=1 escape-sig=[N]
+  fun __setitem__ ess=2 escape-sig=[N N N N]
+  fun __setitem__ ess=2 escape-sig=[N N N N]
+  fun consume_outer ess=2 escape-sig=[N N]
+)

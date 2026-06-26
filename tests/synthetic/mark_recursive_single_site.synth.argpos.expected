@@ -1,0 +1,16 @@
+;; phase: argpos
+
+;; Fun %top
+(positions %top
+  pos[1] -> #top :positional
+  rets: %t4
+)
+
+;; Fun %walk
+(positions %walk
+  pos["self"] -> %self :alias-of pos[2]
+  pos[1] -> #walk :positional
+  pos[2] -> %self :positional
+  rets: %t1
+)
+

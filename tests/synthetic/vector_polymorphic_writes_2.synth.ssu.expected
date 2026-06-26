@@ -1,0 +1,57 @@
+;; phase: ssu
+
+;; Fun %__getitem__
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+  %p0: %i %self
+  %p1: %e_v1
+)
+
+;; Fun %__setitem__
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+  %p0: %i_1 %self_1 %val
+)
+
+;; Fun %top
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+  %p1: %t8_v1
+  %p2: %t8_v1
+  %p3: %t8_v1
+  %p4: %r_v1
+)
+

@@ -1,0 +1,77 @@
+;; phase: finalize
+
+(prim-bound
+  in %chain:
+    send[1] = prim_period
+    send[2] = prim_setter
+    send[3] = prim_reply
+  in %top:
+    send[1] = prim_new
+    send[2] = prim_new
+    send[3] = prim_setter
+    send[4] = (none)
+    send[5] = prim_new
+    send[6] = prim_new
+    send[7] = prim_setter
+    send[8] = (none)
+    send[9] = prim_reply
+)
+
+(live
+  syms:     49 live, 0 dead
+  closures: 2 live (of 2 total)
+)
+
+;; full state:
+;; types
+(type %R1 :kind RECORD :has (%a))
+(type %R2 :kind RECORD :has (%b))
+
+;; syms
+(sym %a :in %R1)
+(sym %b :in %R2)
+(sym %r1 :is-local :nesting-depth 1)
+(sym %r2 :is-local :nesting-depth 1)
+(sym %t0)
+(sym %t1)
+(sym %v :is-local :nesting-depth 1)
+(sym %t2 :is-local :nesting-depth 1)
+(sym %t3)
+(sym %t4)
+(sym %c0 :immediate (int32 1))
+(sym %t5 :is-local :nesting-depth 1)
+(sym %t6 :is-local :nesting-depth 1)
+(sym %t7 :is-local :nesting-depth 1)
+(sym %t8 :is-local :nesting-depth 1)
+(sym %c1 :immediate (float64 2.5))
+(sym %t9 :is-local :nesting-depth 1)
+(sym %t10 :is-local :nesting-depth 1)
+(sym %t11 :is-local :nesting-depth 1)
+(sym %t12 :is-local :nesting-depth 1)
+
+;; funs
+(fun %chain
+  :args (#chain %r1 %r2)
+  :rets (%t1)
+  :cont %t0
+  :body
+  (send @operator %r1 @period #a => %v)
+  (send @operator %r2 @setter #b %v => %t2)
+  (send @primitive @reply %t0 %t1)
+)
+(fun %top
+  :args (#top)
+  :rets (%t4)
+  :cont %t3
+  :body
+  (send @primitive @new %R1 => %t5)
+  (send @primitive @new %R2 => %t6)
+  (send @operator %t5 @setter #a %c0 => %t7)
+  (send %chain %t5 %t6 => %t8)
+  (send @primitive @new %R1 => %t9)
+  (send @primitive @new %R2 => %t10)
+  (send @operator %t9 @setter #a %c1 => %t11)
+  (send %chain %t9 %t10 => %t12)
+  (send @primitive @reply %t3 %t4)
+)
+

@@ -1,0 +1,13 @@
+;; phase: dce
+
+(summary fa_rc=-1 clone_rc=0 funs=1 css=20 ess=3)
+
+(per-fun-live
+  fun __main__ live=1/1 pnodes=0/8 vars=0/23
+)
+
+(types live=0 dead=95)
+
+(live-funs
+  __main__: live
+)

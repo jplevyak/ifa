@@ -1,0 +1,10 @@
+;; phase: escape
+
+(summary fa_rc=-1 funs=4)
+
+(escape
+  fun __main__ ess=1 escape-sig=[N]
+  fun call_via ess=2 escape-sig=[N N]
+  fun leaf0 ess=1 escape-sig=[N]
+  fun leaf1 ess=1 escape-sig=[N]
+)

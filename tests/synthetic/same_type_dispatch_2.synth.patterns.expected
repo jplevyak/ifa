@@ -1,0 +1,25 @@
+;; phase: patterns
+
+(mtype @any
+  pos["t"]: %peek
+  pos[2]: %peek
+)
+
+(mtype %peek
+  pos["peek"]: %peek
+  pos[1]: %peek
+)
+
+(mtype #peek
+  pos[1]: %peek
+)
+
+(mtype %top
+  pos["top"]: %top
+  pos[1]: %top
+)
+
+(mtype #top
+  pos[1]: %top
+)
+

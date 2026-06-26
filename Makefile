@@ -88,8 +88,9 @@ LIBS += -lleak
 endif
 
 # LLVM Configuration
-LLVM_CXXFLAGS = $(shell llvm-config --cxxflags)
-LLVM_LDFLAGS = $(shell llvm-config --ldflags --libs core irreader executionengine mcjit native target CodeGen AsmPrinter AsmParser | sed 's/-NDEBUG //')
+LLVM_CONFIG ?= $(shell command -v llvm-config 2>/dev/null || echo /opt/homebrew/opt/llvm/bin/llvm-config)
+LLVM_CXXFLAGS = $(shell $(LLVM_CONFIG) --cxxflags)
+LLVM_LDFLAGS = $(shell $(LLVM_CONFIG) --ldflags --libs core irreader executionengine mcjit native target CodeGen AsmPrinter AsmParser | sed 's/-NDEBUG //')
 # Removed -NDEBUG as DEBUG=1 is often set. LLVM_CXXFLAGS usually includes appropriate -DNDEBUG or not.
 
 CFLAGS += $(LLVM_CXXFLAGS)
@@ -206,6 +207,8 @@ $(MAKE_CAST_CODE): if1/make_cast_code.cc
 
 if1/cast_code.cc if1/check_cast.cc: $(MAKE_CAST_CODE)
 	(cd if1 && ../$(MAKE_CAST_CODE))
+
+if1/num.o if1/if1.o if1/builtin.o: if1/check_cast.cc if1/cast_code.cc
 
 ifa.cat: ifa.1
 	rm -f ifa.cat

@@ -1,0 +1,30 @@
+;; phase: argpos
+
+;; Fun %__getitem__
+(positions %__getitem__
+  pos["i"] -> %i :alias-of pos[3]
+  pos["self"] -> %self :alias-of pos[2]
+  pos[1] -> #__getitem__ :positional
+  pos[2] -> %self :positional
+  pos[3] -> %i :positional
+  rets: %t2
+)
+
+;; Fun %__setitem__
+(positions %__setitem__
+  pos["i"] -> %i_1 :alias-of pos[3]
+  pos["self"] -> %self_1 :alias-of pos[2]
+  pos["val"] -> %val :alias-of pos[4]
+  pos[1] -> #__setitem__ :positional
+  pos[2] -> %self_1 :positional
+  pos[3] -> %i_1 :positional
+  pos[4] -> %val :positional
+  rets: %t4
+)
+
+;; Fun %top
+(positions %top
+  pos[1] -> #top :positional
+  rets: %t7
+)
+

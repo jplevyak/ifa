@@ -1,0 +1,152 @@
+;; phase: finalize
+
+(prim-bound
+  in %__getitem__:
+    send[1] = prim_index_object
+    send[2] = prim_reply
+  in %__setitem__:
+    send[1] = prim_set_index_object
+    send[2] = prim_reply
+  in %__getitem__:
+    send[1] = prim_index_object
+    send[2] = prim_reply
+  in %__setitem__:
+    send[1] = prim_set_index_object
+    send[2] = prim_reply
+  in %consume_outer:
+    send[1] = (none)
+    send[2] = (none)
+    send[3] = prim_reply
+  in %top:
+    send[1] = prim_new
+    send[2] = (none)
+    send[3] = prim_new
+    send[4] = (none)
+    send[5] = prim_new
+    send[6] = (none)
+    send[7] = prim_new
+    send[8] = (none)
+    send[9] = (none)
+    send[10] = (none)
+    send[11] = prim_reply
+)
+
+(live
+  syms:     77 live, 0 dead
+  closures: 6 live (of 6 total)
+)
+
+;; full state:
+;; types
+(type %V_inner :kind RECORD :element %t0)
+(type %V_outer :kind RECORD :element %V_inner)
+
+;; syms
+(sym %t0)
+(sym %t1)
+(sym %t2)
+(sym %self :is-local :nesting-depth 1)
+(sym %i :is-local :nesting-depth 1)
+(sym %e :is-local :nesting-depth 1)
+(sym %t3)
+(sym %t4)
+(sym %self_1 :is-local :nesting-depth 1)
+(sym %i_1 :is-local :nesting-depth 1)
+(sym %val :is-local :nesting-depth 1)
+(sym %t5 :is-local :nesting-depth 1)
+(sym %t6)
+(sym %t7)
+(sym %self_2 :is-local :nesting-depth 1)
+(sym %i_2 :is-local :nesting-depth 1)
+(sym %e_1 :is-local :nesting-depth 1)
+(sym %t8)
+(sym %t9)
+(sym %self_3 :is-local :nesting-depth 1)
+(sym %i_3 :is-local :nesting-depth 1)
+(sym %val_1 :is-local :nesting-depth 1)
+(sym %t10 :is-local :nesting-depth 1)
+(sym %vv :is-local :nesting-depth 1)
+(sym %t11)
+(sym %t12)
+(sym %c0 :immediate (int32 0))
+(sym %inner_v :is-local :nesting-depth 1)
+(sym %e_2 :is-local :nesting-depth 1)
+(sym %t13)
+(sym %t14)
+(sym %c1 :immediate (int32 0))
+(sym %t15 :is-local :nesting-depth 1)
+(sym %c2 :immediate (int32 10))
+(sym %t16 :is-local :nesting-depth 1)
+(sym %t17 :is-local :nesting-depth 1)
+(sym %t18 :is-local :nesting-depth 1)
+(sym %t19 :is-local :nesting-depth 1)
+(sym %c3 :immediate (float64 2.5))
+(sym %t20 :is-local :nesting-depth 1)
+(sym %t21 :is-local :nesting-depth 1)
+(sym %t22 :is-local :nesting-depth 1)
+(sym %t23 :is-local :nesting-depth 1)
+(sym %t24 :is-local :nesting-depth 1)
+
+;; funs
+(fun %__getitem__
+  :args (#__getitem__ %self %i)
+  :rets (%t2)
+  :cont %t1
+  :body
+  (send @primitive @index_object %self %i => %e)
+  (move %e %t2)
+  (send @primitive @reply %t1 %t2)
+)
+(fun %__setitem__
+  :args (#__setitem__ %self_1 %i_1 %val)
+  :rets (%t4)
+  :cont %t3
+  :body
+  (send @primitive @set_index_object %self_1 %i_1 %val => %t5)
+  (send @primitive @reply %t3 %t4)
+)
+(fun %__getitem___1
+  :args (#__getitem__ %self_2 %i_2)
+  :rets (%t7)
+  :cont %t6
+  :body
+  (send @primitive @index_object %self_2 %i_2 => %e_1)
+  (move %e_1 %t7)
+  (send @primitive @reply %t6 %t7)
+)
+(fun %__setitem___1
+  :args (#__setitem__ %self_3 %i_3 %val_1)
+  :rets (%t9)
+  :cont %t8
+  :body
+  (send @primitive @set_index_object %self_3 %i_3 %val_1 => %t10)
+  (send @primitive @reply %t8 %t9)
+)
+(fun %consume_outer
+  :args (#consume_outer %vv)
+  :rets (%t12)
+  :cont %t11
+  :body
+  (send #__getitem__ %vv %c0 => %inner_v)
+  (send #__getitem__ %inner_v %c0 => %e_2)
+  (move %e_2 %t12)
+  (send @primitive @reply %t11 %t12)
+)
+(fun %top
+  :args (#top)
+  :rets (%t14)
+  :cont %t13
+  :body
+  (send @primitive @new %V_inner => %t15)
+  (send #__setitem__ %t15 %c1 %c2 => %t16)
+  (send @primitive @new %V_outer => %t17)
+  (send #__setitem__ %t17 %c1 %t15 => %t18)
+  (send @primitive @new %V_inner => %t19)
+  (send #__setitem__ %t19 %c1 %c3 => %t20)
+  (send @primitive @new %V_outer => %t21)
+  (send #__setitem__ %t21 %c1 %t19 => %t22)
+  (send %consume_outer %t17 => %t23)
+  (send %consume_outer %t21 => %t24)
+  (send @primitive @reply %t13 %t14)
+)
+

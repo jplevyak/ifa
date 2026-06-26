@@ -1,0 +1,27 @@
+;; phase: patterns
+
+(mtype @any
+  pos["r1"]: %chain
+  pos["r2"]: %chain
+  pos[2]: %chain
+  pos[3]: %chain
+)
+
+(mtype %chain
+  pos["chain"]: %chain
+  pos[1]: %chain
+)
+
+(mtype #chain
+  pos[1]: %chain
+)
+
+(mtype %top
+  pos["top"]: %top
+  pos[1]: %top
+)
+
+(mtype #top
+  pos[1]: %top
+)
+

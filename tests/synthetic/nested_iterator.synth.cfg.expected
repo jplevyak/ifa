@@ -1,0 +1,81 @@
+;; phase: cfg
+
+;; Fun %__getitem__
+(fun %__getitem__
+  entry:  %p0
+  exit:   %p2
+  pnodes: 3
+)
+(pnodes %__getitem__
+  %p0  SEND  prim_index_object @primitive @index_object %self %i -> %e  succ:[%p1]
+  %p1  MOVE  %e -> %t2  succ:[%p2]  pred:[%p0]
+  %p2  SEND  prim_reply @primitive @reply %t1 %t2  pred:[%p1]
+)
+
+;; Fun %__getitem___1
+(fun %__getitem___1
+  entry:  %p0
+  exit:   %p2
+  pnodes: 3
+)
+(pnodes %__getitem___1
+  %p0  SEND  prim_index_object @primitive @index_object %self_2 %i_2 -> %e_1  succ:[%p1]
+  %p1  MOVE  %e_1 -> %t7  succ:[%p2]  pred:[%p0]
+  %p2  SEND  prim_reply @primitive @reply %t6 %t7  pred:[%p1]
+)
+
+;; Fun %__setitem__
+(fun %__setitem__
+  entry:  %p0
+  exit:   %p1
+  pnodes: 2
+)
+(pnodes %__setitem__
+  %p0  SEND  prim_set_index_object @primitive @set_index_object %self_1 %i_1 %val -> %t5  succ:[%p1]
+  %p1  SEND  prim_reply @primitive @reply %t3 %t4  pred:[%p0]
+)
+
+;; Fun %__setitem___1
+(fun %__setitem___1
+  entry:  %p0
+  exit:   %p1
+  pnodes: 2
+)
+(pnodes %__setitem___1
+  %p0  SEND  prim_set_index_object @primitive @set_index_object %self_3 %i_3 %val_1 -> %t10  succ:[%p1]
+  %p1  SEND  prim_reply @primitive @reply %t8 %t9  pred:[%p0]
+)
+
+;; Fun %consume_outer
+(fun %consume_outer
+  entry:  %p0
+  exit:   %p3
+  pnodes: 4
+)
+(pnodes %consume_outer
+  %p0  SEND  - #__getitem__ %vv %c0 -> %inner_v  succ:[%p1]
+  %p1  SEND  - #__getitem__ %inner_v %c0 -> %e_2  succ:[%p2]  pred:[%p0]
+  %p2  MOVE  %e_2 -> %t12  succ:[%p3]  pred:[%p1]
+  %p3  SEND  prim_reply @primitive @reply %t11 %t12  pred:[%p2]
+)
+
+;; Fun %top
+(fun %top
+  entry:  %p0
+  exit:   %p10
+  pnodes: 11
+)
+(pnodes %top
+  %p0  SEND  prim_new @primitive @new %V_inner -> %t15  succ:[%p1]
+  %p1  SEND  - #__setitem__ %t15 %c1 %c2 -> %t16  succ:[%p2]  pred:[%p0]
+  %p2  SEND  prim_new @primitive @new %V_outer -> %t17  succ:[%p3]  pred:[%p1]
+  %p3  SEND  - #__setitem__ %t17 %c1 %t15 -> %t18  succ:[%p4]  pred:[%p2]
+  %p4  SEND  prim_new @primitive @new %V_inner -> %t19  succ:[%p5]  pred:[%p3]
+  %p5  SEND  - #__setitem__ %t19 %c1 %c3 -> %t20  succ:[%p6]  pred:[%p4]
+  %p6  SEND  prim_new @primitive @new %V_outer -> %t21  succ:[%p7]  pred:[%p5]
+  %p7  SEND  - #__setitem__ %t21 %c1 %t19 -> %t22  succ:[%p8]  pred:[%p6]
+  %p8  SEND  - %consume_outer %t17 -> %t23  succ:[%p9]  pred:[%p7]
+  %p9  SEND  - %consume_outer %t21 -> %t24  succ:[%p10]  pred:[%p8]
+  %p10  SEND  prim_reply @primitive @reply %t13 %t14  pred:[%p9]
+)
+

@@ -1,0 +1,32 @@
+;; phase: cfg
+
+;; Fun %chain
+(fun %chain
+  entry:  %p0
+  exit:   %p2
+  pnodes: 3
+)
+(pnodes %chain
+  %p0  SEND  prim_period @operator %r1 @period #a -> %v  succ:[%p1]
+  %p1  SEND  prim_setter @operator %r2 @setter #b %v -> %t2  succ:[%p2]  pred:[%p0]
+  %p2  SEND  prim_reply @primitive @reply %t0 %t1  pred:[%p1]
+)
+
+;; Fun %top
+(fun %top
+  entry:  %p0
+  exit:   %p8
+  pnodes: 9
+)
+(pnodes %top
+  %p0  SEND  prim_new @primitive @new %R1 -> %t5  succ:[%p1]
+  %p1  SEND  prim_new @primitive @new %R2 -> %t6  succ:[%p2]  pred:[%p0]
+  %p2  SEND  prim_setter @operator %t5 @setter #a %c0 -> %t7  succ:[%p3]  pred:[%p1]
+  %p3  SEND  - %chain %t5 %t6 -> %t8  succ:[%p4]  pred:[%p2]
+  %p4  SEND  prim_new @primitive @new %R1 -> %t9  succ:[%p5]  pred:[%p3]
+  %p5  SEND  prim_new @primitive @new %R2 -> %t10  succ:[%p6]  pred:[%p4]
+  %p6  SEND  prim_setter @operator %t9 @setter #a %c1 -> %t11  succ:[%p7]  pred:[%p5]
+  %p7  SEND  - %chain %t9 %t10 -> %t12  succ:[%p8]  pred:[%p6]
+  %p8  SEND  prim_reply @primitive @reply %t3 %t4  pred:[%p7]
+)
+

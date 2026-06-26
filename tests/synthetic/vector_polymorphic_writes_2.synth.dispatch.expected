@@ -1,0 +1,28 @@
+;; phase: dispatch
+
+(summary rc=-1 ess=4 edges=16)
+
+(es %__getitem__#0
+  (no out edges)
+)
+
+(es @__main__#0
+  send __setitem__ ? (imm) (imm) => ?
+    → %__setitem__#0
+      args→ [1]:{__setitem__} [2]:{V} [3]:{int32} [4]:{int32}
+  send __setitem__ ? (imm) (imm) => ?
+    → %__setitem__#1
+      args→ [1]:{__setitem__} [2]:{V} [3]:{int32} [4]:{float64}
+  send __getitem__ ? (imm) => r
+    → %__getitem__#0
+      args→ [1]:{__getitem__} [2]:{V} [3]:{int32}
+)
+
+(es %__setitem__#0
+  (no out edges)
+)
+
+(es %__setitem__#1
+  (no out edges)
+)
+

@@ -1,0 +1,40 @@
+;; phase: cfg
+
+;; Fun %__getitem__
+(fun %__getitem__
+  entry:  %p0
+  exit:   %p2
+  pnodes: 3
+)
+(pnodes %__getitem__
+  %p0  SEND  prim_index_object @primitive @index_object %self %i -> %e  succ:[%p1]
+  %p1  MOVE  %e -> %t2  succ:[%p2]  pred:[%p0]
+  %p2  SEND  prim_reply @primitive @reply %t1 %t2  pred:[%p1]
+)
+
+;; Fun %__setitem__
+(fun %__setitem__
+  entry:  %p0
+  exit:   %p1
+  pnodes: 2
+)
+(pnodes %__setitem__
+  %p0  SEND  prim_set_index_object @primitive @set_index_object %self_1 %i_1 %val -> %t5  succ:[%p1]
+  %p1  SEND  prim_reply @primitive @reply %t3 %t4  pred:[%p0]
+)
+
+;; Fun %top
+(fun %top
+  entry:  %p0
+  exit:   %p5
+  pnodes: 6
+)
+(pnodes %top
+  %p0  SEND  prim_new @primitive @new %V -> %t8  succ:[%p1]
+  %p1  SEND  - #__setitem__ %t8 %c0 %c1 -> %t9  succ:[%p2]  pred:[%p0]
+  %p2  SEND  - #__setitem__ %t8 %c2 %c3 -> %t10  succ:[%p3]  pred:[%p1]
+  %p3  SEND  - #__getitem__ %t8 %c4 -> %r  succ:[%p4]  pred:[%p2]
+  %p4  MOVE  %r -> %t7  succ:[%p5]  pred:[%p3]
+  %p5  SEND  prim_reply @primitive @reply %t6 %t7  pred:[%p4]
+)
+

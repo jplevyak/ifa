@@ -1,0 +1,27 @@
+;; phase: fa-init
+
+(summary
+  rc:              -1
+  entry-sets:      5
+  creation-sets:   26
+  global-avars:    0
+  funs:            4
+  basic-types:     0
+)
+
+(entry-sets
+  @__main__ args=1 rets=1 edges=4 creates=2
+  %call_via args=2 rets=1 edges=4 creates=0
+  %call_via args=2 rets=1 edges=4 creates=0
+  %leaf0 args=1 rets=1 edges=4 creates=0
+  %leaf1 args=1 rets=1 edges=4 creates=0
+)
+
+(closures-registered
+  @__main__ args=1 fun=set
+  %call_via args=2 fun=set
+  %leaf0 args=1 fun=set
+  %leaf1 args=1 fun=set
+  %top args=1 (spliced into @__main__)
+)
+

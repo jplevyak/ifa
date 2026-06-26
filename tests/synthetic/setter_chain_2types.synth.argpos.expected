@@ -1,0 +1,18 @@
+;; phase: argpos
+
+;; Fun %chain
+(positions %chain
+  pos["r1"] -> %r1 :alias-of pos[2]
+  pos["r2"] -> %r2 :alias-of pos[3]
+  pos[1] -> #chain :positional
+  pos[2] -> %r1 :positional
+  pos[3] -> %r2 :positional
+  rets: %t1
+)
+
+;; Fun %top
+(positions %top
+  pos[1] -> #top :positional
+  rets: %t4
+)
+
