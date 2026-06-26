@@ -164,6 +164,15 @@ struct EmitCtx {
   Fun *fn;
   llvm::Function *llvm_fn;
   Map<Var *, llvm::Value *> var_map;
+  // Phi-target Vars get an alloca slot in the entry block so
+  // cross-edge writes have a stable storage location.  Mirrors
+  // cg_ir_v2_emit_llvm.cc's alloca pre-pass.  Without this,
+  // SSA-bind alone can't carry values across loop back-edges
+  // or if/else joins — every loop body just sees the initial
+  // value forever.  When a Var has an entry in alloca_map,
+  // value_for_var emits a load, put_result emits a store, and
+  // emit_phi_moves writes via store.
+  Map<Var *, llvm::AllocaInst *> alloca_map;
   Map<PNode *, llvm::BasicBlock *> label_bb;
 };
 
@@ -296,6 +305,14 @@ llvm::Value *materialize_pyc_string(cchar *raw) {
 
 llvm::Value *value_for_var(EmitCtx &ctx, Var *v) {
   if (!v) return nullptr;
+  // Phi-target Var: load from its alloca slot every time
+  // (each read sees the current store, which lets loops
+  // re-read updated state).
+  if (llvm::AllocaInst *slot = ctx.alloca_map.get(v)) {
+    cchar *name = cg_get_string(v);
+    return Builder->CreateLoad(
+        slot->getAllocatedType(), slot, name ? name : "");
+  }
   if (llvm::Value *cached = ctx.var_map.get(v)) return cached;
   // Global Var: load from the module-level GlobalVariable.
   if (llvm::GlobalVariable *gv = g_var_to_global.get(v)) {
@@ -355,6 +372,25 @@ llvm::Value *value_for_var(EmitCtx &ctx, Var *v) {
 
 void put_result(EmitCtx &ctx, Var *v, llvm::Value *value) {
   if (!v || !value) return;
+  // Phi-target Var: store to its alloca slot so subsequent
+  // reads (including reads in a different block) see the
+  // new value via load.
+  if (llvm::AllocaInst *slot = ctx.alloca_map.get(v)) {
+    llvm::Type *want = slot->getAllocatedType();
+    if (value->getType() != want) {
+      if (value->getType()->isPointerTy() && want->isPointerTy()) {
+        // opaque-ptr no-op.
+      } else if (value->getType()->isIntegerTy() && want->isIntegerTy()) {
+        value = Builder->CreateSExtOrTrunc(value, want);
+      } else if (value->getType()->isPointerTy() && want->isIntegerTy()) {
+        value = Builder->CreatePtrToInt(value, want);
+      } else if (value->getType()->isIntegerTy() && want->isPointerTy()) {
+        value = Builder->CreateIntToPtr(value, want);
+      }
+    }
+    Builder->CreateStore(value, slot);
+    return;
+  }
   ctx.var_map.put(v, value);
   if (value->getType()->isPointerTy() == false &&
       value->getType()->isVoidTy() == false) {
@@ -1141,6 +1177,22 @@ void emit_move(EmitCtx &ctx, PNode *pn) {
     if (rhs->type == sym_void || lhs->type == sym_void) continue;
     if (lhs->type == sym_nil_type) continue;
     if (get_constant(lhs)) continue;
+    // Alloca coalesce: if both sides have alloca slots (or
+    // either has one), share the slot.  Mirrors what
+    // cg_ir_v2_emit_llvm.cc gets implicitly because
+    // cg_normalize_v2's MOVE-folding consolidates SSU Vars
+    // before alloca allocation — the materialized side has
+    // FEWER Vars per logical variable.  At the view level
+    // each SSU Var still gets its own slot, and without
+    // coalescing the loop body reads from a slot the
+    // back-edge never writes.
+    llvm::AllocaInst *lhs_slot = ctx.alloca_map.get(lhs);
+    llvm::AllocaInst *rhs_slot = ctx.alloca_map.get(rhs);
+    if (lhs_slot && !rhs_slot) {
+      ctx.alloca_map.put(rhs, lhs_slot);
+    } else if (rhs_slot && !lhs_slot) {
+      ctx.alloca_map.put(lhs, rhs_slot);
+    }
     llvm::Value *src = value_for_var(ctx, rhs);
     if (!src) continue;
     // Global Var as lhs: emit a real store to the
@@ -1559,6 +1611,146 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
 }
 
 // -------------------------------------------------------------
+// Alloca pre-pass: every distinct phi-target Var gets an
+// alloca slot in the entry block.  Mirrors the materialized
+// emit's pre-pass at cg_ir_v2_emit_llvm.cc:1467-1488.
+//
+// Phi targets are `pn->phi[i]->lvals[0]` and `pn->phy[i]->
+// lvals[*]` — Vars whose value flows across cfg edges via
+// SSU MOVE PNodes.  Without alloca slots, SSA-bind alone
+// can't carry their state across loop back-edges or join
+// blocks: each block sees the initial value forever.
+// -------------------------------------------------------------
+
+// Union-find for Var equivalence classes.  Two Vars are
+// equivalent when linked by a Code_MOVE or by an SSU
+// phi/phy pair.  After building the classes we allocate
+// one alloca per class containing a phi target.
+namespace {
+struct VarUF {
+  Map<Var *, Var *> parent;
+  Var *find(Var *v) {
+    Var *p = parent.get(v);
+    if (!p || p == v) {
+      parent.put(v, v);
+      return v;
+    }
+    Var *root = find(p);
+    if (root != p) parent.put(v, root);
+    return root;
+  }
+  void unite(Var *a, Var *b) {
+    Var *ra = find(a);
+    Var *rb = find(b);
+    if (ra != rb) parent.put(ra, rb);
+  }
+};
+}  // anonymous namespace
+
+void discover_phi_targets(EmitCtx &ctx, Fun *f) {
+  if (!f || !f->entry || !ctx.llvm_fn) return;
+  // Pass A: walk every PNode reachable from f->entry,
+  // collect phi/phy targets AND build a Var-equivalence
+  // union-find by uniting:
+  //   - Code_MOVE: lhs[i] ~ rhs[i]
+  //   - phi PNode: lvals[0] ~ each rvals[i]
+  //   - phy PNode: each lvals[i] ~ rvals[0]
+  // The classes capture chains of SSU Vars representing the
+  // same logical variable; allocating one alloca per class
+  // makes loop-body reads load from the same slot the
+  // back-edge writes to.
+  Vec<PNode *> stack;
+  Vec<PNode *> seen;
+  stack.add(f->entry);
+  seen.set_add(f->entry);
+  VarUF uf;
+  Vec<Var *> phi_targets;
+  Vec<Var *> seen_targets;
+  while (stack.n) {
+    PNode *cur = stack.pop();
+    auto allocable = [](Var *v) -> bool {
+      if (!v || !v->sym) return false;
+      if (v->sym->is_constant) return false;
+      if (v->sym->is_fun) return false;
+      if (v->sym->is_symbol) return false;
+      if (g_var_to_global.get(v)) return false;
+      return true;
+    };
+    if (cur->code && cur->code->kind == Code_MOVE) {
+      int n = cur->lvals.n < cur->rvals.n ? cur->lvals.n : cur->rvals.n;
+      for (int i = 0; i < n; i++) {
+        Var *lhs = cur->lvals.v[i];
+        Var *rhs = cur->rvals.v[i];
+        if (lhs && rhs && lhs->live && allocable(lhs) && allocable(rhs))
+          uf.unite(lhs, rhs);
+      }
+    }
+    for (PNode *p : cur->phi) {
+      if (!p || p->lvals.n < 1) continue;
+      Var *lv = p->lvals.v[0];
+      if (lv && lv->live && allocable(lv) && seen_targets.set_add(lv))
+        phi_targets.add(lv);
+      for (int i = 0; i < p->rvals.n; i++) {
+        Var *rv = p->rvals.v[i];
+        if (lv && rv && allocable(lv) && allocable(rv)) uf.unite(lv, rv);
+      }
+    }
+    for (PNode *p : cur->phy) {
+      if (!p || p->rvals.n < 1) continue;
+      Var *rv = p->rvals.v[0];
+      for (int i = 0; i < p->lvals.n; i++) {
+        Var *lv = p->lvals.v[i];
+        if (lv && lv->live && allocable(lv) && seen_targets.set_add(lv))
+          phi_targets.add(lv);
+        if (lv && rv && allocable(lv) && allocable(rv)) uf.unite(lv, rv);
+      }
+    }
+    for (PNode *s : cur->cfg_succ) {
+      if (s && seen.set_add(s)) stack.add(s);
+    }
+  }
+  if (phi_targets.n == 0) return;
+
+  // Pass B: allocate one alloca per phi-target equivalence
+  // class (representative = uf.find()).  All Vars in the
+  // class share the same slot via ctx.alloca_map.
+  llvm::BasicBlock *entry_bb = ctx.label_bb.get(f->entry);
+  if (!entry_bb) return;
+  llvm::IRBuilder<>::InsertPointGuard guard(*Builder);
+  if (entry_bb->empty()) {
+    Builder->SetInsertPoint(entry_bb);
+  } else {
+    Builder->SetInsertPoint(&entry_bb->front());
+  }
+  Map<Var *, llvm::AllocaInst *> class_slot;  // root → alloca
+  for (Var *v : phi_targets) {
+    Var *root = uf.find(v);
+    llvm::AllocaInst *slot = class_slot.get(root);
+    if (!slot) {
+      if (!v->type) continue;
+      llvm::Type *t = sym_to_llvm_type(v->type);
+      if (!t || t->isVoidTy()) continue;
+      cchar *name = cg_get_string(v);
+      slot = Builder->CreateAlloca(t, nullptr, name ? name : "");
+      class_slot.put(root, slot);
+    }
+    ctx.alloca_map.put(v, slot);
+  }
+  // Pass C: also map every Var in any allocated class to
+  // the shared slot.  Walk the union-find's parent map and
+  // assign.
+  Vec<Var *> all_vars;
+  uf.parent.get_keys(all_vars);
+  for (Var *v : all_vars) {
+    if (ctx.alloca_map.get(v)) continue;
+    Var *root = uf.find(v);
+    if (llvm::AllocaInst *slot = class_slot.get(root)) {
+      ctx.alloca_map.put(v, slot);
+    }
+  }
+}
+
+// -------------------------------------------------------------
 // Pre-pass: allocate an llvm::BasicBlock for the Fun's entry
 // PNode and for each Code_LABEL PNode reachable via cfg_succ.
 // Registers in `ctx.label_bb`.  BFS — mirrors cg.cc's
@@ -1605,6 +1797,19 @@ void discover_blocks(EmitCtx &ctx, Fun *f) {
 // branch; for GOTO/SEND: on isucc=0.
 // -------------------------------------------------------------
 
+// Coalesce: if both lhs and rhs of an SSU MOVE have alloca
+// slots, point them at the same slot.  This is what makes
+// chains of SSU Vars representing the same logical variable
+// share storage — without it, loop-body reads load from a
+// different slot than the loop back-edge writes to.
+static void coalesce_alloca(EmitCtx &ctx, Var *lhs, Var *rhs) {
+  if (!lhs || !rhs) return;
+  llvm::AllocaInst *lhs_slot = ctx.alloca_map.get(lhs);
+  llvm::AllocaInst *rhs_slot = ctx.alloca_map.get(rhs);
+  if (lhs_slot && !rhs_slot) ctx.alloca_map.put(rhs, lhs_slot);
+  else if (rhs_slot && !lhs_slot) ctx.alloca_map.put(lhs, rhs_slot);
+}
+
 void emit_phy_moves(EmitCtx &ctx, PNode *pn, int isucc) {
   if (!pn) return;
   for (PNode *p : pn->phy) {
@@ -1612,6 +1817,7 @@ void emit_phy_moves(EmitCtx &ctx, PNode *pn, int isucc) {
     Var *lhs = p->lvals.v[isucc];
     Var *rhs = p->rvals.v[0];
     if (!lhs || !rhs || !lhs->live) continue;
+    coalesce_alloca(ctx, lhs, rhs);
     llvm::Value *src = value_for_var(ctx, rhs);
     if (src) put_result(ctx, lhs, src);
   }
@@ -1628,6 +1834,7 @@ void emit_phi_moves(EmitCtx &ctx, PNode *pn, int isucc) {
     Var *lhs = p->lvals.v[0];
     Var *rhs = p->rvals.v[i];
     if (!lhs || !rhs || !lhs->live) continue;
+    coalesce_alloca(ctx, lhs, rhs);
     llvm::Value *src = value_for_var(ctx, rhs);
     if (src) put_result(ctx, lhs, src);
   }
@@ -1800,6 +2007,10 @@ void emit_fun(EmitCtx &ctx, Fun *f) {
   // entry and every Code_LABEL PNode.  This lets emit_pnode
   // resolve cross-block branch targets directly.
   discover_blocks(ctx, f);
+  // R.3 follow-up: alloca slots for phi-target Vars so
+  // cross-edge writes have stable storage.  Mirrors the
+  // materialized emit's alloca pre-pass.
+  discover_phi_targets(ctx, f);
   llvm::BasicBlock *entry_bb = ctx.label_bb.get(f->entry);
   if (!entry_bb) {
     // Defensive fallback if entry wasn't reachable (no PNodes).
