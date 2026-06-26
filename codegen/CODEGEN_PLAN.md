@@ -734,18 +734,13 @@ sticks.
 
 ---
 
-## 9.5 Phase 7 — Codegen-time IR (`CG_IR`)
+## 9.5 Phase 7 — LLVM Direct Emission (Post-Reset)
 
-Adopted June 2026. The post-clone / post-DCE IF1 state gets
-normalized into a separate `CGProgram` (CGFun / CGBlock / CGInst)
-that both backends consume. Decision and design rationale in
-[`ifa/CODE_GEN_IR.md`](../CODE_GEN_IR.md); execution plan
-(12-15 PRs across 5 phases) in [CG_IR_PLAN.md](CG_IR_PLAN.md).
+Adopted June 2026. After attempting to build an intermediate `CG_IR` (and a subsequent `CGView` layer), the architectural realization was that intermediate codegen forms were lossy and unnecessarily complex.
 
-Closes issues 014 (construction-flow gap) and 016 (SSU
-formal-arg binding) structurally. Commits the project to LLVM
-as a first-class production target — CI gates on the LLVM-suite
-intersection with the C-suite after Phase 4 lands.
+The LLVM backend is being pivoted to emit *directly* from the `IF1` core data structures, exactly mirroring the proven, 99/0-parity architecture of the C backend (`cg.cc`). 
+
+See [LLVM_DIRECT_EMIT_PLAN.md](LLVM_DIRECT_EMIT_PLAN.md) for the detailed execution checklist. This architecture eliminates intermediate allocations, drastically reduces LOC, and simplifies addition of future backends.
 
 ---
 
