@@ -1177,22 +1177,12 @@ void emit_move(EmitCtx &ctx, PNode *pn) {
     if (rhs->type == sym_void || lhs->type == sym_void) continue;
     if (lhs->type == sym_nil_type) continue;
     if (get_constant(lhs)) continue;
-    // Alloca coalesce: if both sides have alloca slots (or
-    // either has one), share the slot.  Mirrors what
-    // cg_ir_v2_emit_llvm.cc gets implicitly because
-    // cg_normalize_v2's MOVE-folding consolidates SSU Vars
-    // before alloca allocation — the materialized side has
-    // FEWER Vars per logical variable.  At the view level
-    // each SSU Var still gets its own slot, and without
-    // coalescing the loop body reads from a slot the
-    // back-edge never writes.
-    llvm::AllocaInst *lhs_slot = ctx.alloca_map.get(lhs);
-    llvm::AllocaInst *rhs_slot = ctx.alloca_map.get(rhs);
-    if (lhs_slot && !rhs_slot) {
-      ctx.alloca_map.put(rhs, lhs_slot);
-    } else if (rhs_slot && !lhs_slot) {
-      ctx.alloca_map.put(lhs, rhs_slot);
-    }
+    // Alloca consolidation is handled exclusively by
+    // discover_phi_targets's union-find pre-pass.  Doing
+    // it at emit time would pollute alloca_map with
+    // non-allocable Vars (constants, function refs) which
+    // then load-from-uninitialized-slot instead of being
+    // materialized.
     llvm::Value *src = value_for_var(ctx, rhs);
     if (!src) continue;
     // Global Var as lhs: emit a real store to the
@@ -1797,19 +1787,6 @@ void discover_blocks(EmitCtx &ctx, Fun *f) {
 // branch; for GOTO/SEND: on isucc=0.
 // -------------------------------------------------------------
 
-// Coalesce: if both lhs and rhs of an SSU MOVE have alloca
-// slots, point them at the same slot.  This is what makes
-// chains of SSU Vars representing the same logical variable
-// share storage — without it, loop-body reads load from a
-// different slot than the loop back-edge writes to.
-static void coalesce_alloca(EmitCtx &ctx, Var *lhs, Var *rhs) {
-  if (!lhs || !rhs) return;
-  llvm::AllocaInst *lhs_slot = ctx.alloca_map.get(lhs);
-  llvm::AllocaInst *rhs_slot = ctx.alloca_map.get(rhs);
-  if (lhs_slot && !rhs_slot) ctx.alloca_map.put(rhs, lhs_slot);
-  else if (rhs_slot && !lhs_slot) ctx.alloca_map.put(lhs, rhs_slot);
-}
-
 void emit_phy_moves(EmitCtx &ctx, PNode *pn, int isucc) {
   if (!pn) return;
   for (PNode *p : pn->phy) {
@@ -1817,7 +1794,6 @@ void emit_phy_moves(EmitCtx &ctx, PNode *pn, int isucc) {
     Var *lhs = p->lvals.v[isucc];
     Var *rhs = p->rvals.v[0];
     if (!lhs || !rhs || !lhs->live) continue;
-    coalesce_alloca(ctx, lhs, rhs);
     llvm::Value *src = value_for_var(ctx, rhs);
     if (src) put_result(ctx, lhs, src);
   }
@@ -1834,7 +1810,6 @@ void emit_phi_moves(EmitCtx &ctx, PNode *pn, int isucc) {
     Var *lhs = p->lvals.v[0];
     Var *rhs = p->rvals.v[i];
     if (!lhs || !rhs || !lhs->live) continue;
-    coalesce_alloca(ctx, lhs, rhs);
     llvm::Value *src = value_for_var(ctx, rhs);
     if (src) put_result(ctx, lhs, src);
   }
