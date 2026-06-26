@@ -858,6 +858,65 @@ bool emit_send_index_store(EmitCtx &ctx, PNode *pn) {
 }
 
 // -------------------------------------------------------------
+// Phase R.3: P_prim_is / P_prim_isinstance — identity tests.
+//
+// cg.cc:686-698 emits these as direct C-level pointer
+// equality:
+//   prim_is(a, b) → (void *)a == (void *)b
+//   prim_isinstance(x, nil_type) → x == NULL
+// At LLVM level both become `CreateICmpEQ` on opaque ptrs.
+// The IF1 SEND shape is `(__primitive, "is"/"isinstance",
+// arg0, arg1)` with operands at rvals[2] and rvals[3].
+static bool emit_send_is(EmitCtx &ctx, PNode *pn) {
+  if (!pn || !pn->prim) return false;
+  if (pn->prim->index != P_prim_is &&
+      pn->prim->index != P_prim_isinstance) return false;
+  if (pn->lvals.n < 1 || pn->rvals.n < 4) return false;
+  Var *dst_var = pn->lvals.v[0];
+  Var *lhs_var = pn->rvals.v[2];
+  Var *rhs_var = pn->rvals.v[3];
+  if (!dst_var || !lhs_var || !rhs_var) return false;
+  llvm::Value *lhs = value_for_var(ctx, lhs_var);
+  if (!lhs) return false;
+  llvm::Value *rhs = nullptr;
+  if (pn->prim->index == P_prim_isinstance &&
+      rhs_var->sym == sym_nil_type) {
+    // Compare against null.
+    llvm::Type *t = lhs->getType();
+    if (t->isPointerTy()) {
+      rhs = llvm::ConstantPointerNull::get(
+          llvm::cast<llvm::PointerType>(t));
+    } else {
+      rhs = llvm::ConstantInt::get(t, 0);
+    }
+  } else {
+    rhs = value_for_var(ctx, rhs_var);
+    if (!rhs) return false;
+    // Coerce to lhs's type if needed.
+    if (lhs->getType() != rhs->getType()) {
+      if (lhs->getType()->isPointerTy() && rhs->getType()->isPointerTy()) {
+        // opaque ptrs no-op.
+      } else if (lhs->getType()->isPointerTy() && rhs->getType()->isIntegerTy()) {
+        rhs = Builder->CreateIntToPtr(rhs, lhs->getType());
+      } else if (lhs->getType()->isIntegerTy() && rhs->getType()->isPointerTy()) {
+        rhs = Builder->CreatePtrToInt(rhs, lhs->getType());
+      }
+    }
+  }
+  llvm::Value *res = Builder->CreateICmpEQ(lhs, rhs,
+      cg_get_string(dst_var) ? cg_get_string(dst_var) : "is");
+  // Coerce to dst type (typically i1, but FA may widen).
+  llvm::Type *dst_ty = sym_to_llvm_type(dst_var->type);
+  if (dst_ty && res->getType() != dst_ty) {
+    if (dst_ty->isIntegerTy()) {
+      res = Builder->CreateZExtOrTrunc(res, dst_ty);
+    }
+  }
+  put_result(ctx, dst_var, res);
+  return true;
+}
+
+// -------------------------------------------------------------
 // Phase R.3: P_prim_strcat — string `+`.  Mirrors
 // cg_normalize_v2.cc:lower_send_strcat at the LLVM level.
 // The SEND shape is `__operator + s1 s2`, with rvals[o] = s1
@@ -1295,6 +1354,7 @@ static bool emit_send_new(EmitCtx &ctx, PNode *pn);
 static bool emit_send_clone(EmitCtx &ctx, PNode *pn);
 static bool emit_send_len(EmitCtx &ctx, PNode *pn);
 static bool emit_send_strcat(EmitCtx &ctx, PNode *pn);
+static bool emit_send_is(EmitCtx &ctx, PNode *pn);
 void emit_send(EmitCtx &ctx, PNode *pn);
 void emit_send_call(EmitCtx &ctx, PNode *pn);
 
@@ -1461,6 +1521,7 @@ void emit_send(EmitCtx &ctx, PNode *pn) {
     if (emit_send_clone(ctx, pn)) return;
     if (emit_send_len(ctx, pn)) return;
     if (emit_send_strcat(ctx, pn)) return;
+    if (emit_send_is(ctx, pn)) return;
     if (emit_send_make(ctx, pn)) return;
     if (emit_send_index_load(ctx, pn)) return;
     if (emit_send_index_store(ctx, pn)) return;
