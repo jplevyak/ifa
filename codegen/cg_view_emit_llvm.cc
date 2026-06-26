@@ -496,6 +496,7 @@ bool emit_send_period(EmitCtx &ctx, PNode *pn) {
     if (!closure_struct || closure_struct->getNumElements() < 2) {
       return false;
     }
+    if (!closure_struct->isSized()) return false;
     const llvm::DataLayout &DL = TheModule->getDataLayout();
     uint64_t sz = DL.getTypeAllocSize(closure_struct);
     llvm::Value *sz_v =
@@ -772,19 +773,35 @@ bool emit_send_sizeof(EmitCtx &ctx, PNode *pn) {
   int o = (pn->rvals.n > 0 && pn->rvals.v[0] &&
            pn->rvals.v[0]->sym == sym_primitive) ? 2 : 1;
   if (o >= pn->rvals.n) return false;
-  Sym *t_sym = pn->rvals.v[o]->type;
-  if (!t_sym) return false;
+  Sym *outer = pn->rvals.v[o]->type;
+  if (!outer) return false;
+  Sym *t_sym = outer;
   if (pn->prim->index == P_prim_sizeof_element) {
-    if (!t_sym->element) return false;
-    t_sym = t_sym->element->type;
+    // Mirrors cg.cc:465-481: prefer outer->element->type;
+    // fall back to first field of a Type_RECORD if the
+    // element type has no compile-time size; else 0.
+    if (outer->element) t_sym = outer->element->type;
+    if (t_sym && !t_sym->size && outer->type_kind == Type_RECORD &&
+        outer->has.n) {
+      t_sym = outer->has.v[0]->type;
+    }
   }
-  if (!t_sym) return false;
+  llvm::Type *dst_ty = sym_to_llvm_type(pn->lvals.v[0]->type);
+  if (!dst_ty) return false;
+  if (!t_sym) {
+    put_result(ctx, pn->lvals.v[0],
+               llvm::ConstantInt::get(dst_ty, 0));
+    return true;
+  }
   llvm::Type *t = sym_to_llvm_type(t_sym);
-  if (!t) return false;
+  if (!t || !t->isSized()) {
+    put_result(ctx, pn->lvals.v[0],
+               llvm::ConstantInt::get(dst_ty, 0));
+    return true;
+  }
   uint64_t sz = TheModule->getDataLayout().getTypeAllocSize(t);
-  llvm::Value *sz_v = llvm::ConstantInt::get(
-      sym_to_llvm_type(pn->lvals.v[0]->type), sz);
-  put_result(ctx, pn->lvals.v[0], sz_v);
+  put_result(ctx, pn->lvals.v[0],
+             llvm::ConstantInt::get(dst_ty, sz));
   return true;
 }
 
@@ -1236,7 +1253,7 @@ bool emit_send_make(EmitCtx &ctx, PNode *pn) {
     // itself (sizeof entire record, like cg.cc's
     // `_CG_prim_tuple(<type>, n)`).
     llvm::StructType *struct_ty = sym_to_llvm_struct(dst_ty);
-    if (!struct_ty) return false;
+    if (!struct_ty || !struct_ty->isSized()) return false;
     uint64_t sz_bytes = DL.getTypeAllocSize(struct_ty);
     llvm::Value *size_arg = llvm::ConstantInt::get(i32, sz_bytes);
     // pyc convention: n+1 for over-allocation when the lvals[0]
@@ -1298,7 +1315,7 @@ bool emit_send_make(EmitCtx &ctx, PNode *pn) {
   Sym *elem_sym = nullptr;
   if (dst_ty && dst_ty->element) elem_sym = dst_ty->element->type;
   llvm::Type *elem_ty = elem_sym ? sym_to_llvm_type(elem_sym) : i64;
-  if (!elem_ty || elem_ty->isVoidTy()) elem_ty = i64;
+  if (!elem_ty || elem_ty->isVoidTy() || !elem_ty->isSized()) elem_ty = i64;
   uint64_t elem_sz = DL.getTypeAllocSize(elem_ty);
   llvm::Value *size_arg = llvm::ConstantInt::get(i32, elem_sz);
   llvm::Value *n_arg = llvm::ConstantInt::get(i32, n_elements);
