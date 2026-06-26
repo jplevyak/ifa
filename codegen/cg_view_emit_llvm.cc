@@ -858,6 +858,56 @@ bool emit_send_index_store(EmitCtx &ctx, PNode *pn) {
 }
 
 // -------------------------------------------------------------
+// Phase R.3: P_prim_coerce — type conversion.
+//
+// cg_normalize_v2.cc:lower_send_coerce reads
+// rvals[n-2] (the target-type Sym) and rvals[n-1] (the
+// source value) and emits a CG2_CAST.  At LLVM level: emit
+// the appropriate Sext/ZExt/Trunc/FPToSI/SIToFP/etc.
+// directly based on src and dst LLVM types.
+static bool emit_send_coerce(EmitCtx &ctx, PNode *pn) {
+  if (!pn || !pn->prim || pn->prim->index != P_prim_coerce) return false;
+  if (pn->rvals.n < 2 || pn->lvals.n < 1) return false;
+  Var *tgt_var = pn->rvals.v[pn->rvals.n - 2];
+  Var *src_var = pn->rvals.v[pn->rvals.n - 1];
+  Var *dst_var = pn->lvals.v[0];
+  if (!tgt_var || !tgt_var->sym || !src_var || !dst_var) return false;
+  Sym *tgt_sym = tgt_var->sym->is_meta_type
+                     ? tgt_var->sym->meta_type
+                     : tgt_var->sym;
+  tgt_sym = unalias_type(tgt_sym);
+  if (!tgt_sym) return false;
+  llvm::Type *dst_ty = sym_to_llvm_type(tgt_sym);
+  llvm::Value *src = value_for_var(ctx, src_var);
+  if (!dst_ty || !src) return false;
+
+  llvm::Type *src_ty = src->getType();
+  llvm::Value *res = src;
+  if (src_ty != dst_ty) {
+    if (src_ty->isIntegerTy() && dst_ty->isIntegerTy()) {
+      res = Builder->CreateSExtOrTrunc(src, dst_ty);
+    } else if (src_ty->isIntegerTy() && dst_ty->isFloatingPointTy()) {
+      res = Builder->CreateSIToFP(src, dst_ty);
+    } else if (src_ty->isFloatingPointTy() && dst_ty->isIntegerTy()) {
+      res = Builder->CreateFPToSI(src, dst_ty);
+    } else if (src_ty->isFloatingPointTy() && dst_ty->isFloatingPointTy()) {
+      if (src_ty->getPrimitiveSizeInBits() <
+          dst_ty->getPrimitiveSizeInBits()) {
+        res = Builder->CreateFPExt(src, dst_ty);
+      } else {
+        res = Builder->CreateFPTrunc(src, dst_ty);
+      }
+    } else if (src_ty->isPointerTy() && dst_ty->isIntegerTy()) {
+      res = Builder->CreatePtrToInt(src, dst_ty);
+    } else if (src_ty->isIntegerTy() && dst_ty->isPointerTy()) {
+      res = Builder->CreateIntToPtr(src, dst_ty);
+    }
+  }
+  put_result(ctx, dst_var, res);
+  return true;
+}
+
+// -------------------------------------------------------------
 // Phase R.3: P_prim_is / P_prim_isinstance — identity tests.
 //
 // cg.cc:686-698 emits these as direct C-level pointer
@@ -1355,6 +1405,7 @@ static bool emit_send_clone(EmitCtx &ctx, PNode *pn);
 static bool emit_send_len(EmitCtx &ctx, PNode *pn);
 static bool emit_send_strcat(EmitCtx &ctx, PNode *pn);
 static bool emit_send_is(EmitCtx &ctx, PNode *pn);
+static bool emit_send_coerce(EmitCtx &ctx, PNode *pn);
 void emit_send(EmitCtx &ctx, PNode *pn);
 void emit_send_call(EmitCtx &ctx, PNode *pn);
 
@@ -1522,6 +1573,7 @@ void emit_send(EmitCtx &ctx, PNode *pn) {
     if (emit_send_len(ctx, pn)) return;
     if (emit_send_strcat(ctx, pn)) return;
     if (emit_send_is(ctx, pn)) return;
+    if (emit_send_coerce(ctx, pn)) return;
     if (emit_send_make(ctx, pn)) return;
     if (emit_send_index_load(ctx, pn)) return;
     if (emit_send_index_store(ctx, pn)) return;
