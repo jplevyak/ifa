@@ -985,18 +985,58 @@ for the framing.*
       an implicit `sret` ptr arg and rewrite the body's
       RET to a store-then-ret-void.  Mirrors the materialized
       sret detection in cg_normalize_v2.cc:462.
-- [ ] **R.1.3** Per-Fun body: `write_c_pnode`-style DFS over
-      `f->entry`'s `cfg_succ`, with a `done` set.  Inside each
-      live PNode: dispatch on `Code_kind`.  Code_LABEL emits the
-      LLVM basic-block boundary; Code_MOVE emits `Builder->CreateStore`
-      / `CreateLoad` pair (or alloca slot bind); Code_IF emits
-      `CreateCondBr`; Code_GOTO emits `CreateBr`; Code_SEND dispatches
-      via `emit_send_*`.
-- [ ] **R.1.4** Code_SEND skeleton: `is_const_folded_send` check
-      first; then dispatch on `pn->prim->index` (mirror
-      cg.cc:write_c_prim's switch).  Default to
-      `emit_send_call` (`get_target_fun` resolves; emit
-      `Builder->CreateCall`).
+- [x] **R.1.3** Per-Fun body emission lands.  Pre-pass
+      `discover_blocks(ctx, f)` BFS over `cfg_succ` from
+      `f->entry`, allocating an `llvm::BasicBlock` per entry
+      and per `Code_LABEL` PNode (names "entry" / "L<id>"),
+      registered in `ctx.label_bb`.  Then `emit_pnode(ctx, pn,
+      done)` DFSes via `cfg_succ`, dispatching on
+      `pn->code->kind`:
+      - **Code_LABEL** switches `Builder->SetInsertPoint(bb)`.
+      - **Code_MOVE** calls `emit_move(ctx, pn)`, which mirrors
+        `cg.cc:simple_move`'s SSA-bind semantics:
+        `put_result(lhs, value_for_var(rhs))` for each pair,
+        with the same live / type_kind / sym_void / nil_type /
+        get_constant guards.
+      - **Code_SEND** calls `emit_send(ctx, pn)`.
+      - **Code_IF** / **Code_GOTO** are pure terminators (no
+        body emission).
+      A PNode is detected as a block closer when any `cfg_succ`
+      lands on a LABEL (or no successors, or it's an IF /
+      GOTO / SEND-reply); closers emit the LLVM terminator
+      via `emit_block_terminator(ctx, closer)` which mirrors
+      `cg.cc`'s per-Code branch logic at the LLVM level:
+      `Code_GOTO` → `CreateBr(succ_bb)`, `Code_IF` →
+      `CreateCondBr(cond, t_bb, f_bb)`, `Code_SEND` with
+      `P_prim_reply` → `CreateRet(rvals[3])`, fall-through
+      cases → `CreateBr` or `CreateUnreachable`.  Post-emit
+      sweep ensures every BB has a terminator (defensive
+      against missed closer detection).
+- [x] **R.1.4** Code_SEND skeleton.  `is_const_folded_send`
+      check (port of cg.cc:768) elides constant-folded SENDs
+      so consumers inline the literal via `value_for_var`'s
+      is_constant materialization.  `emit_send(ctx, pn)`
+      dispatches: `P_prim_reply` is skipped (handled at
+      terminator time); per-prim handlers consulted in
+      order (`emit_send_make` from R.2.3 is the first wired
+      handler); default fallback `emit_send_default_prim`
+      routes unrecognized prims to `_CG_<name>(args)` via
+      `get_runtime_helper` (mirrors write_c_prim's tail at
+      cg.cc:704-716).  No-prim SENDs fall through to
+      `emit_send_call` (R.1.4 stub — verbatim
+      `rvals[1..]` as args, truncated to target's arg
+      count; R.2.12 lands MPosition-aware routing +
+      closure unpack).
+- [x] **R.1.4 wiring**.  `PYC_LLVM_VIEW2=1` now selects
+      the new direct emitter in `llvm.cc` (`cg_view_emit_llvm(fa,
+      main_fun)`).  First suite run: **9/100 passing** —
+      all compile-only / xfail-ok tests.  No real EXEC
+      passes yet, as expected (period/setter/binops/etc.
+      still stubs in `emit_send_default_prim`'s
+      `_CG_<name>` fallback, which only works for prims
+      that happen to have a matching runtime helper).
+      Defaults unchanged: C 99/0, LLVM 92/7, ifa-test
+      79/1.
 - [ ] **R.1.5** First three prim cases: `P_prim_reply` (CreateRet),
       `P_prim_isinstance`-vs-nil (`CreateICmp` against null),
       `P_prim_is` (`CreateICmp` of two ptrs).
@@ -1018,37 +1058,132 @@ For each prim, port the cg.cc emit code to LLVM (replacing the
 `fprintf` calls with `Builder->Create*` calls).  Each is its own
 landing.  Target: `PYC_LLVM_VIEW2=1` reaches 99/0.
 
-- [ ] **R.2.1** `P_prim_period` — both struct getter (GEP + Load)
-      and closure-construction (alloca + 2 stores) cases.
-- [ ] **R.2.2** `P_prim_setter` — struct setter (GEP + Store) and
-      chained-assignment forward (extra Store to lvals[0]).
-- [ ] **R.2.3** `P_prim_make` — tuple (`_CG_prim_tuple` call +
-      e0/e1/... stores) and list (`_CG_prim_list` call + indexed
-      stores).  Both variants live in cg.cc:208-236.
-- [ ] **R.2.4** Arithmetic family (`P_prim_add` etc.) — direct
-      `Builder->CreateAdd`/`Sub`/etc.; constant-fold path for
-      pairs of `Sym->constant` operands.
-- [ ] **R.2.5** Comparison family — `CreateICmp`/`CreateFCmp`.
-- [ ] **R.2.6** `P_prim_index_object` — string detour (call
-      `_CG_char_from_string`); constant-index tuple FIELD_LOAD;
-      otherwise `CreateGEP` + `CreateLoad`.
-- [ ] **R.2.7** `P_prim_set_index_object` — `CreateGEP` +
-      `CreateStore`.
-- [ ] **R.2.8** `P_prim_sizeof` / `P_prim_sizeof_element` —
-      `DataLayout::getTypeAllocSize`.
+- [x] **R.2.1** `P_prim_period` handler `emit_send_period(ctx, pn)`.
+      Mirrors `cg.cc:237-276` (`write_c_prim`'s P_prim_period
+      case) at LLVM level.  Two sub-shapes:
+      - **Closure construction** (`lvals[0]->type` is
+        Type_FUN AND `pn->creates` non-empty AND closure
+        has ≥ 2 fields): `GC_malloc(sizeof(closure_struct))`
+        → dst, then GEP + Store the selector (rvals[3]) at
+        field 0 and the bound-self (rvals[1]) at field 1.
+        Type-coerces selector / bound to match field types
+        (int↔ptr casts handled).
+      - **Struct getter**: resolves rvals[1]'s type through
+        the new `resolve_union_receiver(obj, symbol)` helper
+        (ported from cg.cc:148 — picks a concrete component
+        from Type_SUM that carries the named field; this is
+        the cg.cc trick that gets it to 99/0 vs materialized's
+        92/7), finds the field index by symbol name in
+        `obj->has`, GEPs into the resolved struct via
+        `sym_to_llvm_struct(obj)`, CreateLoads, and coerces
+        to dst's expected type (int↔ptr↔widen).
+      Also adds `get_gc_malloc()` get-or-create for the
+      runtime helper.  Wired into `emit_send`'s prim
+      dispatch before `emit_send_make`.  9/100 unchanged
+      (period alone needs binops/setter/calls to unlock
+      real EXEC tests).  Defaults stable: C 99/0, LLVM
+      92/7, ifa-test 79/1.
+- [x] **R.2.2** `P_prim_setter` handler `emit_send_setter`.
+      Ports cg.cc:277-317.  Resolves symbol from rvals[3]
+      (`is_symbol` shortcut or `symbol_info` fallback),
+      resolves obj's union via `resolve_union_receiver`,
+      finds field idx in `obj->has`, emits GEP + Store
+      with int↔ptr↔width coercion to match the field's
+      declared LLVM type.  Dead-field elision (issue 026
+      mirror) skips stores when `obj->has[i]->var` is
+      non-live.  Chained-assignment forward (`lvals[0]
+      = val`) wires through `put_result` for the
+      Python `obj.attr = val` evaluates-to-val semantics.
+- [x] **R.2.3** `P_prim_make` handler `emit_send_make(ctx, pn)`.
+      Mirrors cg.cc:208-236 directly at LLVM level.  Three
+      sub-shapes:
+      - **Tuple** (`sym_tuple->specializers.set_in(rvals[2]->sym)`):
+        `_CG_prim_tuple_list_internal(sizeof(struct), n+1)` →
+        dst; per-field GEP + Store for rvals[3..].
+      - **Struct-shape list** (Type_RECORD `dst->type`):
+        same alloc helper + per-field FIELD_STORE as tuple,
+        followed by an explicit `_CG_to_list_runtime(tmp,
+        size, n)` conversion call.  cg.cc's C-level macro
+        handles this inline; at LLVM level we emit the
+        helper call explicitly.
+      - **Flat list / vector**:
+        `_CG_prim_tuple_list_internal(sizeof(elem), n)` →
+        dst; per-index GEP + Store via the element type's
+        stride.  Element type from `dst->type->element->type`;
+        falls back to int64 when missing.
+      Uses `sym_to_llvm_struct` for layout, `DataLayout::
+      getTypeAllocSize` for runtime sizes, and the new
+      `get_runtime_helper(name, ret_ty, params)` adapter
+      that get-or-creates `_CG_<name>` external decls
+      with the right signature.  Plus the new
+      `value_for_var(ctx, v)` lookup (mirrors
+      `cg_get_string` — caches by Var, materializes
+      LLVM constants inline for is_constant Syms) and
+      `put_result(ctx, v, value)` writer.  Returns
+      bool — true on claim — so the R.1.4 dispatcher
+      pairs it with the fall-through to
+      emit_send_call.  Not yet wired through the
+      Code_SEND switch (R.1.3 work).
+- [x] **R.2.4 / R.2.5** Arithmetic + comparison family
+      unified into `emit_send_binop`.  Reads operands from
+      `rvals[n-3]` / `rvals[n-1]` (IF1's prim-call
+      convention), int↔int width coercion on rhs, dispatches
+      via switch: `add`/`sub`/`mult`/`div`/`mod`/`lsh`/`rsh`/
+      `and`/`or`/`xor`/`less`/`lessorequal`/`greater`/
+      `greaterorequal`/`equal`/`notequal`.  Direct
+      `Builder->CreateAdd`/`Sub`/`Mul`/`SDiv`/`SRem`/
+      `Shl`/`AShr`/`And`/`Or`/`Xor`/`ICmpSLT`/etc., with
+      `FAdd`/`FSub`/.../`FCmpOLT` branches for floating-
+      point operands.  Result coerced via
+      `CreateZExtOrTrunc` to dst's declared LLVM type
+      (widening bool results to int locals).  Constant-
+      folded operands fall through `value_for_var`'s
+      is_constant path which emits `ConstantInt`/`Fp`
+      directly.
+- [x] **R.2.6** `P_prim_index_object` partial port —
+      `emit_send_index_load` handles the general flat
+      path: `Builder->CreateGEP(elem_ty, obj, idx)` +
+      `CreateLoad`.  i64-coerces the index for GEP.
+      String detour (`_CG_char_from_string`) +
+      constant-index tuple FIELD_LOAD + is_vector header
+      walk deferred — they're orthogonal once basic
+      GEP+Load is in place.
+- [x] **R.2.7** `P_prim_set_index_object` —
+      `emit_send_index_store` emits GEP + Store with
+      i64-coerced idx.
+- [x] **R.2.8** `P_prim_sizeof` / `P_prim_sizeof_element` —
+      `emit_send_sizeof` reads target type via
+      `view_prim_arg_offset` (`o=2` if sym_primitive
+      marker at rvals[0]), translates to llvm::Type,
+      gets size via `DataLayout::getTypeAllocSize`,
+      emits a ConstantInt of dst's declared type.
 - [ ] **R.2.9** `P_prim_len` — string detour (`_CG_string_len`);
       otherwise `_CG_list_len` etc. via the typed runtime call.
 - [ ] **R.2.10** `P_prim_clone` (non-vector) — alloc + memcpy.
       Vector form: `_CG_prim_clone_vector_runtime` call.
-- [ ] **R.2.11** `P_prim_primitive` — name-based dispatch via
-      `rvals[1]->sym->name`: `__pyc_c_call__` → CreateCall to
-      `rvals[3]->sym->constant`; `__pyc_format_string__` →
-      CreateCall to `_CG_format_string`; `__pyc_to_str__` →
-      constant string; default fallback → CreateCall to
-      `_CG_<name>(rvals[2..])`.
-- [ ] **R.2.12** Generic call path (`emit_send_call`) — MPosition
-      arg routing, closure unpacking via FIELD_LOAD per formal,
-      MPosition-shifted index for extra args.
+- [x] **R.2.11** `P_prim_primitive` handler
+      `emit_send_primitive`.  Reads `rvals[1]->sym->name`
+      (or `->constant`).  `__pyc_c_call__` path: reads
+      fn name from `rvals[3]->sym->constant`, args from
+      odd positions starting at rvals[5], emits
+      CreateCall.  Default named-prim path: emits
+      CreateCall to `_CG_<name>(rvals[2..])`.  Routed
+      ahead of the generic `_CG_<prim_name>` default
+      so it picks up the inner prim name correctly.
+      `__pyc_to_str__` constant-MOVE shape + `__pyc_format_string__`
+      varargs are pending; the default route handles
+      them with degraded fidelity for now.
+- [x] **R.2.12** `emit_send_call` MPosition-aware routing.
+      Walks `target->positional_arg_positions`, skips
+      dead and `is_fun` formals, computes the rval index
+      via `Position2int(p->pos[0]) - 1`.  Closure
+      unpacking: when rvals[0] is a closure
+      (`is_closure_var`), formals within the closure's
+      `has.n` range emit `CreateStructGEP` + `CreateLoad`
+      BEFORE the call; beyond that, the index shifts
+      by `has.n - 1`.  Arg types coerced to match the
+      target's declared param types (int↔ptr↔width
+      casts).
 
 ### Phase R.3 — close C-parity (99/0)
 
@@ -1057,6 +1192,96 @@ getters pick a non-nil receiver component (issue 029 echo).  Plus
 the voidish-arg cast in send-call args.  At this point the new
 emitter is at 99/0 and `cg_normalize_v2` + `cg_ir_v2_emit_llvm.cc`
 + the C.2 multi-inst handlers can be retired.
+
+#### R.3 progress
+
+- [x] **`resolve_union_receiver`** — ported as part of R.2.1.
+- [x] **Voidish-arg cast** — handled implicitly by
+      `emit_send_call`'s LLVM-level coercion loop (int↔ptr↔width
+      casts in front of each arg).  At LLVM level opaque ptrs
+      make `_CG_any` / `_CG_void` / `_CG_nil_type` look the
+      same; the cast is a no-op.
+- [x] **String constants** — `value_for_var` now handles
+      `IF1_CONST_KIND_STRING` by materializing pyc-layout
+      string globals (`{ i64 len, [N x i8] body }` packed,
+      private linkage), returning a GEP to the first body
+      byte.  Identical literals share via per-program
+      `g_string_globals` cache.  Mirrors
+      `cg_ir_v2_emit_llvm.cc:261-307`.  This was the biggest
+      single blocker — every `print("hi")` was passing
+      `_CG_write(ptr null)` because the I_STR case fell into
+      `ConstantPointerNull::get`.  Fix unlocked
+      **9/100 → 33/100** under `PYC_LLVM_VIEW2=1`.
+- [x] **SSU phi/phy MOVE emission** — ported `do_phy_nodes` /
+      `do_phi_nodes` from cg.cc:739-751 as
+      `emit_phy_moves(ctx, pn, isucc)` and
+      `emit_phi_moves(ctx, pn, isucc)`.  Phi rebinds via
+      `put_result` (SSA-bind semantics).  Called from
+      `emit_pnode` after each non-IF code's body emit; IF
+      cases will need per-branch dispatch from
+      `emit_block_terminator` (R.3 follow-up — most
+      conditional tests still depend on this).
+- [x] **Forward-declare all functions before bodies** — the
+      single biggest emission bug.  `emit_send_call`'s
+      `TheModule->getFunction(target->cg_string)` lookup
+      was missing for any callee declared later in
+      `fa->funs` order, silently dropping the call (5 of
+      6 wrapper calls in `arithmetic_ops.py`'s main went
+      missing).  Fix: split `cg_view_emit_llvm` into two
+      passes — Pass 1 calls `build_fun_signature` for
+      every live Fun; Pass 2 emits bodies.  Standard
+      LLVM pattern.  Unlocks 8 more tests:
+      **33/100 → 41/100**.
+- [x] **Module-level globals** — Pass 0
+      `declare_globals(fa)` walks
+      `collect_types_and_globals` (fa.h:550) and emits
+      `llvm::GlobalVariable` for each live non-constant
+      non-fun Var, registered in `g_var_to_global`.
+      `value_for_var` loads from these on global Var
+      reads; `emit_move` emits a `CreateStore` when lhs
+      is global (in addition to SSA-binding the source).
+      Without this, all loads/stores to module-level
+      Vars silently resolve to null.
+- [x] **Class-prototype init prelude** — for `main_fun`,
+      insert a fresh `main_prelude` BB before the entry
+      block.  In it, for every ptr-to-struct global:
+      `GC_malloc(sizeof(struct))` + `store` to the
+      global.  Branches to the original entry.  Mirrors
+      `cg_ir_v2_emit_llvm.cc:1438-1465`.  Without this,
+      stores like `class A: x = 2` deref a null @A.
+- [x] **P_prim_new** handler `emit_send_new` —
+      `GC_malloc(sizeof(struct))` direct, mirroring
+      `cg.cc:404-409`'s `_CG_prim_new(<type>)` macro.
+      Removed from `emit_send_make`'s scope (which
+      only handles P_prim_make tuple/list).
+- [x] **P_prim_clone / P_prim_clone_vector** —
+      `emit_send_clone` emits `GC_malloc(dst_sz)` +
+      `llvm.memcpy.p0.p0.i64(dst, src, min_sz)` for the
+      non-vector case (since `_CG_prim_clone_dst` is a
+      static inline macro in `pyc_c_runtime.h`, not a
+      linkable function).  Vector form calls the
+      linkable `_CG_prim_clone_vector_runtime(src,
+      proto_sz, v_extra)`.  Both produce the same
+      runtime behavior as cg.cc's macro emit at the
+      C level.
+- [ ] **Remaining EXEC failures** — 52 tests still fail.
+      Common shapes:
+      - Class tests now output partial data (class_init
+        emits "1 2 2 ..." vs expected "2 3 4 4 5") —
+        intermediate stores landing but not all.
+      - while_loop / break_continue / for-loops time out
+        — control-flow termination bug.
+      - Some COMPILE failures (string_format,
+        string_len, sieve, list_concat, builtins) trip
+        a Trace/breakpoint trap in the compiler —
+        likely assert() in IF1 helpers.
+      - operator_overload / chained_comparison segfault
+        — call-path or operand routing issues.
+
+      **Progress: 33 → 48 across this session** with
+      three targeted fixes (string constants,
+      forward-decl pass, globals + prelude + memcpy
+      clone).
 
 ### Phase R.4 — retire the old paths
 

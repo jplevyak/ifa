@@ -166,15 +166,20 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
     fail("cg_normalize_v2 returned null");
     return;
   }
-  // CG_VIRTUAL_PLAN Phase C.1: PYC_LLVM_VIEW=1 selects
-  // the view-driven emit (rebuilds prog's bodies from
-  // the view enumeration, then runs the existing LLVM
-  // emit machinery).  Default is the materialized path
-  // until Phase C closes the CGInstView::kind()
-  // classification gaps reported by B.6's diff oracle.
-  bool ok = getenv("PYC_LLVM_VIEW")
-                ? cg_v2_emit_llvm_module_view(fa, v2prog)
-                : cg_v2_emit_llvm_module(v2prog);
+  // CG_VIRTUAL_PLAN Phase R: PYC_LLVM_VIEW2=1 selects the
+  // new direct-emit path (no CGv2 intermediate).  Phase C.1's
+  // PYC_LLVM_VIEW=1 selects the view-driven path that
+  // rebuilds prog's bodies from the view enumeration.
+  // Default is the materialized path.
+  extern bool cg_view_emit_llvm(FA *fa, Fun *main_fun);
+  bool ok;
+  if (getenv("PYC_LLVM_VIEW2")) {
+    ok = cg_view_emit_llvm(fa, main_fun);
+  } else if (getenv("PYC_LLVM_VIEW")) {
+    ok = cg_v2_emit_llvm_module_view(fa, v2prog);
+  } else {
+    ok = cg_v2_emit_llvm_module(v2prog);
+  }
   if (!ok) {
     fail("cg_v2_emit_llvm_module returned false");
     return;
