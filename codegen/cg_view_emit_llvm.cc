@@ -313,8 +313,11 @@ llvm::Value *value_for_var(EmitCtx &ctx, Var *v) {
     return Builder->CreateLoad(
         slot->getAllocatedType(), slot, name ? name : "");
   }
-  if (llvm::Value *cached = ctx.var_map.get(v)) return cached;
-  // Global Var: load from the module-level GlobalVariable.
+  // Global Var: ALWAYS load from the module-level
+  // GlobalVariable.  Checking var_map first would return a
+  // stale cached SSA value from a different block, causing
+  // dominance violations.  Globals are unique values whose
+  // current contents live in memory.
   if (llvm::GlobalVariable *gv = g_var_to_global.get(v)) {
     llvm::Type *t = sym_to_llvm_type(v->type);
     if (!t) t = llvm::PointerType::getUnqual(*TheContext);
@@ -323,6 +326,7 @@ llvm::Value *value_for_var(EmitCtx &ctx, Var *v) {
         t, gv, name ? name : "g");
     return loaded;
   }
+  if (llvm::Value *cached = ctx.var_map.get(v)) return cached;
   // Constant Sym: materialize the LLVM constant directly.
   Sym *s = v->sym;
   if (s && s->is_constant && v->type) {
@@ -2080,12 +2084,17 @@ bool cg_view_emit_llvm(FA *fa, Fun *main_fun) {
           *TheContext, "main_prelude", ctx->llvm_fn, old_entry);
       Builder->SetInsertPoint(new_entry);
       // Emit GC_malloc + store for every ptr-to-struct global.
+      // Dedupe by GlobalVariable — multiple Vars can map to
+      // the same GV (e.g. aliased class refs), and emitting
+      // a fresh malloc per alias would clobber the slot.
       Vec<Var *> keys;
       g_var_to_global.get_keys(keys);
+      Vec<llvm::GlobalVariable *> seen_gvs;
       for (Var *v : keys) {
         llvm::GlobalVariable *gv = g_var_to_global.get(v);
         if (!gv || !v || !v->type) continue;
         if (v->type->type_kind != Type_RECORD) continue;
+        if (!seen_gvs.set_add(gv)) continue;
         llvm::StructType *struct_ty = sym_to_llvm_struct(v->type);
         if (!struct_ty || !struct_ty->isSized()) continue;
         uint64_t sz =
