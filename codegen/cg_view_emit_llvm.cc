@@ -858,6 +858,51 @@ bool emit_send_index_store(EmitCtx &ctx, PNode *pn) {
 }
 
 // -------------------------------------------------------------
+// Phase R.3: P_prim_len — port of cg.cc:417-427.  The C
+// backend emits `_CG_string_len(s)` for strings and
+// `_CG_prim_len(_, l)` for lists; both are macros that
+// don't link.  We inline the equivalent operations:
+//   - String: load i64 at (s - 8).
+//   - List: load i64 at (l - SIZEOF_LIST_HEADER), i.e. at
+//     (l - 16) since list header is 16 bytes (len + ptr).
+static bool emit_send_len(EmitCtx &ctx, PNode *pn) {
+  if (!pn || !pn->prim || pn->prim->index != P_prim_len) return false;
+  if (pn->lvals.n < 1) return false;
+  Var *dst_var = pn->lvals.v[0];
+  if (!dst_var) return false;
+  int o = (pn->rvals.n > 0 && pn->rvals.v[0] &&
+           pn->rvals.v[0]->sym == sym_primitive) ? 2 : 1;
+  if (o >= pn->rvals.n) return false;
+  Var *obj_var = pn->rvals.v[o];
+  if (!obj_var || !obj_var->type) return false;
+  llvm::Value *obj = value_for_var(ctx, obj_var);
+  if (!obj) return false;
+
+  llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+  llvm::Type *i8 = llvm::Type::getInt8Ty(*TheContext);
+  Sym *t = obj_var->type;
+  bool is_string = (t == sym_string ||
+                    (sym_string && sym_string->specializers.set_in(t)));
+  // Header offset: -8 for string, -16 for list (sizeof
+  // list header at the C runtime).
+  int64_t offset = is_string ? -8 : -16;
+  llvm::Value *off = llvm::ConstantInt::get(i64, offset);
+  // GEP through i8 to do byte arithmetic.
+  llvm::Value *header_ptr = Builder->CreateGEP(i8, obj, off);
+  llvm::Value *len = Builder->CreateLoad(i64, header_ptr,
+      cg_get_string(dst_var) ? cg_get_string(dst_var) : "len");
+  // Coerce to dst type.
+  llvm::Type *dst_ty = sym_to_llvm_type(dst_var->type);
+  if (dst_ty && len->getType() != dst_ty) {
+    if (dst_ty->isIntegerTy()) {
+      len = Builder->CreateZExtOrTrunc(len, dst_ty);
+    }
+  }
+  put_result(ctx, dst_var, len);
+  return true;
+}
+
+// -------------------------------------------------------------
 // Phase R.3: P_prim_clone / P_prim_clone_vector — clones a
 // prototype struct.  Mirrors cg.cc:429-451 (write_c_prim's
 // clone case) at the runtime level.  cg.cc emits the C
@@ -1219,6 +1264,7 @@ bool emit_send_index_store(EmitCtx &ctx, PNode *pn);
 bool emit_send_primitive(EmitCtx &ctx, PNode *pn);
 static bool emit_send_new(EmitCtx &ctx, PNode *pn);
 static bool emit_send_clone(EmitCtx &ctx, PNode *pn);
+static bool emit_send_len(EmitCtx &ctx, PNode *pn);
 void emit_send(EmitCtx &ctx, PNode *pn);
 void emit_send_call(EmitCtx &ctx, PNode *pn);
 
@@ -1383,6 +1429,7 @@ void emit_send(EmitCtx &ctx, PNode *pn) {
     if (emit_send_setter(ctx, pn)) return;
     if (emit_send_new(ctx, pn)) return;
     if (emit_send_clone(ctx, pn)) return;
+    if (emit_send_len(ctx, pn)) return;
     if (emit_send_make(ctx, pn)) return;
     if (emit_send_index_load(ctx, pn)) return;
     if (emit_send_index_store(ctx, pn)) return;
