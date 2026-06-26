@@ -16,6 +16,7 @@
 #include "ifadefs.h"
 
 #include "codegen/cg_ir_v2.h"
+#include "codegen/cg_view.h"  // CGInstRef bridge (CG_VIRTUAL_PLAN Phase B)
 #include "codegen/llvm_internal.h"
 
 #include "llvm/IR/BasicBlock.h"
@@ -519,11 +520,24 @@ bool value_escapes_in_fun(CGv2Value *v, CGv2Fun *cf) {
   return v->escapes;
 }
 
-void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
-  switch (inst->op) {
+// CG_VIRTUAL_PLAN Phase B.2/B.2a: emit_inst consumes
+// CGInstRef.  All case-body field accesses go through
+// `ref.X` (op, sub_op, rvals, lvals, type_arg,
+// field_idx, prim_name) — no provenance-pointer
+// dependence remains inside the switch.
+//
+// The early-return on `!ref.rvals || !ref.lvals`
+// gates view-origin callers (Phase B.3 will populate
+// these; until then their early exit here is
+// intended).  Materialized callers via
+// `CGInstRef::from_v2` always have both populated, so
+// behavior is unchanged for the production path.
+void emit_inst(const CGInstRef &ref, EmitFunCtx &ctx) {
+  if (!ref.rvals || !ref.lvals) return;
+  switch (ref.op) {
     case CG2_ALLOC: {
-      if (inst->lvals.n < 1 || !inst->type_arg) return;
-      llvm::Type *sty = to_llvm_type(inst->type_arg);
+      if (ref.lvals->n < 1 || !ref.type_arg) return;
+      llvm::Type *sty = to_llvm_type(ref.type_arg);
       if (!sty || !sty->isSized()) {
         // Type isn't sized (opaque struct, void, or struct
         // with one of those as a field). LLVM's
@@ -532,7 +546,7 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
         // why cg_normalize_v2 produced a struct without a
         // computable size.
         DEBUG_LOG("CG2_ALLOC skipped: unsized type %s\n",
-                  inst->type_arg->name ? inst->type_arg->name
+                  ref.type_arg->name ? ref.type_arg->name
                                        : "(anon)");
         return;
       }
@@ -543,15 +557,15 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       // GEP through the slot just like they would have through
       // a fresh GC_malloc'd ptr.
       if (ctx.cf && ctx.cf->signature->is_sret && ctx.sret_slot &&
-          inst->type_arg == ctx.cf->signature->sret_struct &&
+          ref.type_arg == ctx.cf->signature->sret_struct &&
           !ctx.sret_consumed) {
         ctx.sret_consumed = true;
-        put_result(ctx, inst->lvals[0], ctx.sret_slot);
-        ctx.ptr_struct.put(inst->lvals[0], inst->type_arg);
+        put_result(ctx, (*ref.lvals)[0], ctx.sret_slot);
+        ctx.ptr_struct.put((*ref.lvals)[0], ref.type_arg);
         break;
       }
       llvm::Value *p = nullptr;
-      if (!inst->type_arg->is_heap_aggregate) {
+      if (!ref.type_arg->is_heap_aggregate) {
         // Issue 023: value-type record (@pyc_struct in pyc, or
         // any IF1 Type_RECORD with `is_value_type=1` that's not
         // a vector).  Emit a stack alloca in the function's
@@ -564,13 +578,13 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
         // escape the current function.  See
         // value_escapes_in_fun() for the safe-use set; any
         // escape falls back to GC_malloc.
-        if (!value_escapes_in_fun(inst->lvals[0], ctx.cf)) {
+        if (!value_escapes_in_fun((*ref.lvals)[0], ctx.cf)) {
           llvm::BasicBlock &entry_bb =
               Builder->GetInsertBlock()->getParent()->getEntryBlock();
           llvm::IRBuilder<> entry_builder(&entry_bb,
                                           entry_bb.getFirstInsertionPt());
           p = entry_builder.CreateAlloca(sty, nullptr,
-              inst->lvals[0]->name ? inst->lvals[0]->name : "p");
+              (*ref.lvals)[0]->name ? (*ref.lvals)[0]->name : "p");
         }
       }
       if (!p) {
@@ -580,45 +594,45 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
         llvm::Value *size_v = llvm::ConstantInt::get(
             llvm::Type::getInt64Ty(*TheContext), size_bytes);
         p = Builder->CreateCall(gc_malloc, { size_v },
-            inst->lvals[0]->name ? inst->lvals[0]->name : "p");
+            (*ref.lvals)[0]->name ? (*ref.lvals)[0]->name : "p");
       }
-      put_result(ctx, inst->lvals[0], p);
-      ctx.ptr_struct.put(inst->lvals[0], inst->type_arg);
+      put_result(ctx, (*ref.lvals)[0], p);
+      ctx.ptr_struct.put((*ref.lvals)[0], ref.type_arg);
       break;
     }
     case CG2_FIELD_STORE: {
-      if (inst->rvals.n < 2) return;
-      llvm::Value *p = resolve_value(ctx, inst->rvals[0]);
-      llvm::Value *v = resolve_value(ctx, inst->rvals[1]);
+      if (ref.rvals->n < 2) return;
+      llvm::Value *p = resolve_value(ctx, (*ref.rvals)[0]);
+      llvm::Value *v = resolve_value(ctx, (*ref.rvals)[1]);
       if (!p || !v) return;
       // Prefer the explicit :struct hint when present (test
       // 13's cross-fn ptr-formal pattern); else look up.
-      CGv2Type *st = inst->type_arg ? inst->type_arg
-                                     : lookup_ptr_struct(ctx, inst->rvals[0]);
+      CGv2Type *st = ref.type_arg ? ref.type_arg
+                                     : lookup_ptr_struct(ctx, (*ref.rvals)[0]);
       if (!st) return;
       llvm::Type *sty = to_llvm_type(st);
       if (!sty) return;
       llvm::Value *gep = Builder->CreateStructGEP(sty, p,
-          (unsigned)inst->field_idx);
+          (unsigned)ref.field_idx);
       Builder->CreateStore(v, gep);
       break;
     }
     case CG2_INDEX_LOAD: {
-      if (inst->rvals.n < 2 || inst->lvals.n < 1) return;
-      llvm::Value *p = resolve_value(ctx, inst->rvals[0]);
-      llvm::Value *idx = resolve_value(ctx, inst->rvals[1]);
+      if (ref.rvals->n < 2 || ref.lvals->n < 1) return;
+      llvm::Value *p = resolve_value(ctx, (*ref.rvals)[0]);
+      llvm::Value *idx = resolve_value(ctx, (*ref.rvals)[1]);
       if (!p || !idx) return;
-      IndexLayout L = compute_index_layout(inst->rvals[0]->type,
-                                            inst->lvals[0]->type,
+      IndexLayout L = compute_index_layout((*ref.rvals)[0]->type,
+                                            (*ref.lvals)[0]->type,
                                             nullptr);
       if (!L.elem_lty) return;
       llvm::Value *base = L.use_header_indirection
                               ? apply_header_indirection(p)
                               : apply_vec_prefix(p, L.vec_prefix_bytes);
       llvm::Value *gep = Builder->CreateGEP(L.elem_lty, base, idx);
-      cchar *out = inst->lvals[0]->name ? inst->lvals[0]->name : "";
+      cchar *out = (*ref.lvals)[0]->name ? (*ref.lvals)[0]->name : "";
       llvm::Value *loaded = Builder->CreateLoad(L.elem_lty, gep, out);
-      put_result(ctx, inst->lvals[0], loaded);
+      put_result(ctx, (*ref.lvals)[0], loaded);
       break;
     }
     case CG2_CAST: {
@@ -627,20 +641,20 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       // LLVM cast opcode (sext/zext/trunc/sitofp/fptosi/fpext/
       // fptrunc/ptrtoint/inttoptr/bitcast) from the (src_kind,
       // dst_kind, bits) tuple.
-      if (inst->rvals.n < 1 || inst->lvals.n < 1) return;
-      llvm::Value *src = resolve_value(ctx, inst->rvals[0]);
+      if (ref.rvals->n < 1 || ref.lvals->n < 1) return;
+      llvm::Value *src = resolve_value(ctx, (*ref.rvals)[0]);
       if (!src) return;
-      CGv2Type *src_ty = inst->rvals[0]->type;
-      CGv2Type *dst_ty = inst->type_arg ? inst->type_arg
-                                         : inst->lvals[0]->type;
+      CGv2Type *src_ty = (*ref.rvals)[0]->type;
+      CGv2Type *dst_ty = ref.type_arg ? ref.type_arg
+                                         : (*ref.lvals)[0]->type;
       if (!src_ty || !dst_ty) return;
       llvm::Type *dst_llvm = to_llvm_type(dst_ty);
       if (!dst_llvm) return;
-      cchar *out = inst->lvals[0]->name ? inst->lvals[0]->name : "";
+      cchar *out = (*ref.lvals)[0]->name ? (*ref.lvals)[0]->name : "";
 
       // Same kind+bits → no-op (just alias).
       if (src->getType() == dst_llvm) {
-        put_result(ctx, inst->lvals[0], src);
+        put_result(ctx, (*ref.lvals)[0], src);
         break;
       }
 
@@ -743,7 +757,7 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
         // Opaque ptr → opaque ptr: bitwise no-op.
         r = src;
       }
-      if (r) put_result(ctx, inst->lvals[0], r);
+      if (r) put_result(ctx, (*ref.lvals)[0], r);
       break;
     }
     case CG2_CLONE: {
@@ -751,33 +765,33 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       // Mirrors v1's P_prim_clone in llvm_primitives.cc:684.
       // The new ptr aliases the same struct type — register
       // it in ctx.ptr_struct so subsequent field ops resolve.
-      if (!inst->type_arg || inst->rvals.n < 1 || inst->lvals.n < 1)
+      if (!ref.type_arg || ref.rvals->n < 1 || ref.lvals->n < 1)
         return;
-      llvm::Type *sty = to_llvm_type(inst->type_arg);
+      llvm::Type *sty = to_llvm_type(ref.type_arg);
       if (!sty || !sty->isSized()) {
         DEBUG_LOG("CG2_CLONE skipped: unsized type %s\n",
-                  inst->type_arg->name ? inst->type_arg->name
+                  ref.type_arg->name ? ref.type_arg->name
                                        : "(anon)");
         return;
       }
-      llvm::Value *proto = resolve_value(ctx, inst->rvals[0]);
+      llvm::Value *proto = resolve_value(ctx, (*ref.rvals)[0]);
       if (!proto) return;
       uint64_t sz = TheModule->getDataLayout().getTypeAllocSize(sty);
       llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
       llvm::Value *size_v = llvm::ConstantInt::get(i64, sz);
-      cchar *out = inst->lvals[0]->name ? inst->lvals[0]->name : "clone";
+      cchar *out = (*ref.lvals)[0]->name ? (*ref.lvals)[0]->name : "clone";
       llvm::Value *new_p = nullptr;
       // Issue 023 Stage 2: when CG2_CLONE produces the sret
       // return value, memcpy directly into the sret slot
       // (no fresh GC_malloc).  Same single-consumer
       // discipline as CG2_ALLOC.
       if (ctx.cf && ctx.cf->signature->is_sret && ctx.sret_slot &&
-          inst->type_arg == ctx.cf->signature->sret_struct &&
+          ref.type_arg == ctx.cf->signature->sret_struct &&
           !ctx.sret_consumed) {
         ctx.sret_consumed = true;
         new_p = ctx.sret_slot;
-      } else if (!inst->type_arg->is_heap_aggregate &&
-                 !value_escapes_in_fun(inst->lvals[0], ctx.cf)) {
+      } else if (!ref.type_arg->is_heap_aggregate &&
+                 !value_escapes_in_fun((*ref.lvals)[0], ctx.cf)) {
         // Issue 023 Stage 1 generalisation: if the clone target
         // is a value-type that doesn't escape, alloca instead
         // of GC_malloc.
@@ -792,32 +806,32 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       }
       Builder->CreateMemCpy(new_p, llvm::MaybeAlign(8),
                             proto, llvm::MaybeAlign(8), size_v);
-      put_result(ctx, inst->lvals[0], new_p);
-      ctx.ptr_struct.put(inst->lvals[0], inst->type_arg);
+      put_result(ctx, (*ref.lvals)[0], new_p);
+      ctx.ptr_struct.put((*ref.lvals)[0], ref.type_arg);
       break;
     }
     case CG2_SIZEOF: {
-      if (!inst->type_arg || inst->lvals.n < 1) return;
-      llvm::Type *t = to_llvm_type(inst->type_arg);
+      if (!ref.type_arg || ref.lvals->n < 1) return;
+      llvm::Type *t = to_llvm_type(ref.type_arg);
       if (!t || !t->isSized()) {
         DEBUG_LOG("CG2_SIZEOF skipped: unsized type %s\n",
-                  inst->type_arg->name ? inst->type_arg->name
+                  ref.type_arg->name ? ref.type_arg->name
                                        : "(anon)");
         return;
       }
       uint64_t sz = TheModule->getDataLayout().getTypeAllocSize(t);
       llvm::Value *c = llvm::ConstantInt::get(
           llvm::Type::getInt64Ty(*TheContext), sz);
-      put_result(ctx, inst->lvals[0], c);
+      put_result(ctx, (*ref.lvals)[0], c);
       break;
     }
     case CG2_SIZEOF_ELEMENT: {
-      if (inst->rvals.n < 1 || inst->lvals.n < 1) return;
+      if (ref.rvals->n < 1 || ref.lvals->n < 1) return;
       // Element stride matches the INDEX_LOAD/STORE dispatch.
       // For FA-opaque ptrs and 0-field structs the runtime
       // helpers all assume i64 elements; for typed lists we use
       // the first-field type (homogeneous {e0,e1,...} shape).
-      IndexLayout L = compute_index_layout(inst->rvals[0]->type,
+      IndexLayout L = compute_index_layout((*ref.rvals)[0]->type,
                                             nullptr, nullptr);
       uint64_t sz = 8;
       if (L.elem_lty && L.elem_lty->isSized()) {
@@ -826,24 +840,24 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       }
       llvm::Value *c = llvm::ConstantInt::get(
           llvm::Type::getInt64Ty(*TheContext), sz);
-      put_result(ctx, inst->lvals[0], c);
+      put_result(ctx, (*ref.lvals)[0], c);
       break;
     }
     case CG2_LEN: {
-      if (inst->rvals.n < 1 || inst->lvals.n < 1) return;
-      llvm::Value *obj = resolve_value(ctx, inst->rvals[0]);
+      if (ref.rvals->n < 1 || ref.lvals->n < 1) return;
+      llvm::Value *obj = resolve_value(ctx, (*ref.rvals)[0]);
       if (!obj) return;
       llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
       llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
       // String-like (char* / ref to int8) → _CG_string_len.
       // Other ptr → _CG_prim_len(null_desc, obj). Mirrors v1's
       // P_prim_len dispatch in llvm_primitives.cc:853.
-      CGv2Type *t = inst->rvals[0]->type;
+      CGv2Type *t = (*ref.rvals)[0]->type;
       bool is_str = t && (t->kind == CG2T_PTR || t->kind == CG2T_REF) &&
                     t->element && t->element->kind == CG2T_INT &&
                     t->element->bits == 8;
       llvm::Value *result = nullptr;
-      cchar *out = inst->lvals[0]->name ? inst->lvals[0]->name : "";
+      cchar *out = (*ref.lvals)[0]->name ? (*ref.lvals)[0]->name : "";
       // Coerce non-ptr args (immediate ints carrying a small payload)
       // to ptr the same way v1 does.
       if (!obj->getType()->isPointerTy()) {
@@ -879,18 +893,18 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
         llvm::Value *len32 = Builder->CreateLoad(i32, len_addr, "len32");
         result = Builder->CreateZExt(len32, i64, out);
       }
-      put_result(ctx, inst->lvals[0], result);
+      put_result(ctx, (*ref.lvals)[0], result);
       break;
     }
     case CG2_INDEX_STORE: {
-      if (inst->rvals.n < 3) return;
-      llvm::Value *p = resolve_value(ctx, inst->rvals[0]);
-      llvm::Value *idx = resolve_value(ctx, inst->rvals[1]);
-      llvm::Value *v = resolve_value(ctx, inst->rvals[2]);
+      if (ref.rvals->n < 3) return;
+      llvm::Value *p = resolve_value(ctx, (*ref.rvals)[0]);
+      llvm::Value *idx = resolve_value(ctx, (*ref.rvals)[1]);
+      llvm::Value *v = resolve_value(ctx, (*ref.rvals)[2]);
       if (!p || !idx || !v) return;
-      IndexLayout L = compute_index_layout(inst->rvals[0]->type,
-                                            inst->rvals[2]->type,
-                                            inst->type_arg);
+      IndexLayout L = compute_index_layout((*ref.rvals)[0]->type,
+                                            (*ref.rvals)[2]->type,
+                                            ref.type_arg);
       if (!L.elem_lty) return;
       llvm::Value *base = L.use_header_indirection
                               ? apply_header_indirection(p)
@@ -908,45 +922,45 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       break;
     }
     case CG2_FIELD_LOAD: {
-      if (inst->rvals.n < 1 || inst->lvals.n < 1) return;
-      llvm::Value *p = resolve_value(ctx, inst->rvals[0]);
+      if (ref.rvals->n < 1 || ref.lvals->n < 1) return;
+      llvm::Value *p = resolve_value(ctx, (*ref.rvals)[0]);
       if (!p) return;
-      CGv2Type *st = inst->type_arg ? inst->type_arg
-                                     : lookup_ptr_struct(ctx, inst->rvals[0]);
+      CGv2Type *st = ref.type_arg ? ref.type_arg
+                                     : lookup_ptr_struct(ctx, (*ref.rvals)[0]);
       if (!st) return;
       llvm::Type *sty = to_llvm_type(st);
       if (!sty) return;
       llvm::Value *gep = Builder->CreateStructGEP(sty, p,
-          (unsigned)inst->field_idx);
+          (unsigned)ref.field_idx);
       // Resolve field type to know what we're loading.
-      if ((int)inst->field_idx < 0 ||
-          inst->field_idx >= st->fields.n) return;
-      llvm::Type *ft = to_llvm_type(st->fields[inst->field_idx]->type);
+      if ((int)ref.field_idx < 0 ||
+          ref.field_idx >= st->fields.n) return;
+      llvm::Type *ft = to_llvm_type(st->fields[ref.field_idx]->type);
       if (!ft) return;
       llvm::Value *loaded = Builder->CreateLoad(ft, gep,
-          inst->lvals[0]->name ? inst->lvals[0]->name : "");
-      put_result(ctx, inst->lvals[0], loaded);
+          (*ref.lvals)[0]->name ? (*ref.lvals)[0]->name : "");
+      put_result(ctx, (*ref.lvals)[0], loaded);
       break;
     }
     case CG2_C_CALL: {
       // Generic FFI primitive. Mirrors v1's c_call_codegen
       // (python_ifa_main.cc:56) at the LLVM emit level.
       //
-      // The callee's C function name lives on inst->prim_name.
-      // Its return type is inst->type_arg. Each arg is a
-      // CGv2Value in inst->rvals; the arg's CGv2Type drives
+      // The callee's C function name lives on ref.prim_name.
+      // Its return type is ref.type_arg. Each arg is a
+      // CGv2Value in ref.rvals; the arg's CGv2Type drives
       // the LLVM param type.
       //
       // The external function is declared on demand. If a
       // call site for the same name with a different
       // signature appears later, LLVM rejects the second
       // declaration (verifyModule catches the mismatch).
-      if (!inst->prim_name || !inst->type_arg) return;
-      llvm::Type *ret_ty = to_llvm_type(inst->type_arg);
+      if (!ref.prim_name || !ref.type_arg) return;
+      llvm::Type *ret_ty = to_llvm_type(ref.type_arg);
       if (!ret_ty) return;
       std::vector<llvm::Type *> param_tys;
       std::vector<llvm::Value *> args;
-      for (CGv2Value *v : inst->rvals) {
+      for (CGv2Value *v : *ref.rvals) {
         if (!v) continue;
         llvm::Type *pt = to_llvm_type(v->type);
         if (!pt) return;
@@ -970,14 +984,14 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
         args.push_back(a);
       }
       llvm::Function *callee =
-          TheModule->getFunction(inst->prim_name);
+          TheModule->getFunction(ref.prim_name);
       if (!callee) {
         // Known-varargs C runtime helpers: declare with just
         // the first param's type fixed, the rest as varargs.
         // Without this, distinct call sites with different
         // arg counts trip "Incorrect number of arguments
         // passed to called function" at verifyModule.
-        bool is_va = (strcmp(inst->prim_name,
+        bool is_va = (strcmp(ref.prim_name,
                               "_CG_format_string") == 0);
         std::vector<llvm::Type *> decl_tys = param_tys;
         if (is_va && decl_tys.size() > 1) decl_tys.resize(1);
@@ -985,20 +999,20 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
             ret_ty, decl_tys, /*isVarArg=*/is_va);
         callee = llvm::Function::Create(ft,
             llvm::Function::ExternalLinkage,
-            inst->prim_name, TheModule.get());
+            ref.prim_name, TheModule.get());
       }
-      cchar *out = inst->lvals.n > 0 && inst->lvals[0]->name
-                       ? inst->lvals[0]->name : "";
+      cchar *out = ref.lvals->n > 0 && (*ref.lvals)[0]->name
+                       ? (*ref.lvals)[0]->name : "";
       llvm::Value *r = Builder->CreateCall(callee, args,
           ret_ty->isVoidTy() ? "" : out);
-      if (inst->lvals.n > 0) put_result(ctx, inst->lvals[0], r);
+      if (ref.lvals->n > 0) put_result(ctx, (*ref.lvals)[0], r);
       break;
     }
     case CG2_CALL: {
-      if (inst->rvals.n < 1) return;
+      if (ref.rvals->n < 1) return;
       // rvals[0] is the callee — a CGv2Value of scope FUN_REF
       // with a target_name. Resolve to llvm::Function by name.
-      CGv2Value *callee_v = inst->rvals[0];
+      CGv2Value *callee_v = (*ref.rvals)[0];
       if (!callee_v || callee_v->scope != CG2V_FUN_REF ||
           !callee_v->target_name) return;
       llvm::Function *callee =
@@ -1017,18 +1031,18 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       bool target_is_sret =
           callee->arg_size() > 0 &&
           callee->hasParamAttribute(0, llvm::Attribute::StructRet);
-      if (target_is_sret && inst->lvals.n > 0) {
+      if (target_is_sret && ref.lvals->n > 0) {
         llvm::Type *st = callee->getParamAttribute(
             0, llvm::Attribute::StructRet).getValueAsType();
         if (st && st->isSized()) {
-          if (!value_escapes_in_fun(inst->lvals[0], ctx.cf)) {
+          if (!value_escapes_in_fun((*ref.lvals)[0], ctx.cf)) {
             llvm::BasicBlock &entry_bb =
                 Builder->GetInsertBlock()->getParent()->getEntryBlock();
             llvm::IRBuilder<> entry_builder(&entry_bb,
                                             entry_bb.getFirstInsertionPt());
             sret_slot_at_caller = entry_builder.CreateAlloca(
                 st, nullptr,
-                inst->lvals[0]->name ? inst->lvals[0]->name : "sret");
+                (*ref.lvals)[0]->name ? (*ref.lvals)[0]->name : "sret");
           } else {
             uint64_t sz = TheModule->getDataLayout()
                                    .getTypeAllocSize(st);
@@ -1037,14 +1051,14 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
                 llvm::Type::getInt64Ty(*TheContext), sz);
             sret_slot_at_caller = Builder->CreateCall(
                 gc_malloc, { size_v },
-                inst->lvals[0]->name ? inst->lvals[0]->name : "p");
+                (*ref.lvals)[0]->name ? (*ref.lvals)[0]->name : "p");
           }
         }
       }
       std::vector<llvm::Value *> args;
       if (sret_slot_at_caller) args.push_back(sret_slot_at_caller);
-      for (int i = 1; i < inst->rvals.n; i++) {
-        llvm::Value *a = resolve_value(ctx, inst->rvals[i]);
+      for (int i = 1; i < ref.rvals->n; i++) {
+        llvm::Value *a = resolve_value(ctx, (*ref.rvals)[i]);
         if (a) args.push_back(a);
       }
 
@@ -1096,44 +1110,44 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
         }
       }
 
-      cchar *out = inst->lvals.n > 0 && inst->lvals[0]->name
-                       ? inst->lvals[0]->name : "";
+      cchar *out = ref.lvals->n > 0 && (*ref.lvals)[0]->name
+                       ? (*ref.lvals)[0]->name : "";
       llvm::Value *r = Builder->CreateCall(callee, args,
           ft->getReturnType()->isVoidTy() ? "" : out);
-      if (inst->lvals.n > 0) {
+      if (ref.lvals->n > 0) {
         // Issue 023 Stage 2: sret call returns void; the
         // "result" is the slot ptr we allocated above.
         // Propagate the struct annotation so downstream
         // FIELD_LOAD/STORE can GEP through the slot.
         if (sret_slot_at_caller) {
-          put_result(ctx, inst->lvals[0], sret_slot_at_caller);
-          ctx.ptr_struct.put(inst->lvals[0],
+          put_result(ctx, (*ref.lvals)[0], sret_slot_at_caller);
+          ctx.ptr_struct.put((*ref.lvals)[0],
                              callee_v->type && callee_v->type->element
                                  ? callee_v->type->element
                                  : (CGv2Type *)nullptr);
         } else {
-          put_result(ctx, inst->lvals[0], r);
+          put_result(ctx, (*ref.lvals)[0], r);
         }
       }
       break;
     }
     case CG2_BINOP: {
-      if (inst->rvals.n < 2 || inst->lvals.n < 1) return;
-      llvm::Value *a = resolve_value(ctx, inst->rvals[0]);
-      llvm::Value *b = resolve_value(ctx, inst->rvals[1]);
+      if (ref.rvals->n < 2 || ref.lvals->n < 1) return;
+      llvm::Value *a = resolve_value(ctx, (*ref.rvals)[0]);
+      llvm::Value *b = resolve_value(ctx, (*ref.rvals)[1]);
       if (!a || !b) return;
       llvm::Value *r = nullptr;
-      cchar *out = inst->lvals[0]->name ? inst->lvals[0]->name : "";
+      cchar *out = (*ref.lvals)[0]->name ? (*ref.lvals)[0]->name : "";
       // Operand-type dispatch: the same textual sub-op
       // ("add"/"div"/"lt"/etc.) selects an integer-signed,
       // integer-unsigned, or floating-point LLVM op based on
       // the operand's CGv2Type. Mirrors v1's P_prim_operator
       // (which inspects t->type_kind to pick FAdd vs Add etc.)
       // without needing per-typed sub-ops.
-      CGv2Type *t = inst->rvals[0]->type;
+      CGv2Type *t = (*ref.rvals)[0]->type;
       bool is_flt = t && t->kind == CG2T_FLOAT;
       bool is_uns = t && (t->kind == CG2T_UINT || t->kind == CG2T_BOOL);
-      switch (inst->sub_op) {
+      switch (ref.sub_op) {
         case CG2B_ADD:
           r = is_flt ? Builder->CreateFAdd(a, b, out)
                      : Builder->CreateAdd(a, b, out);
@@ -1212,14 +1226,14 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
         case CG2B_NONE:
           return;
       }
-      put_result(ctx, inst->lvals[0], r);
+      put_result(ctx, (*ref.lvals)[0], r);
       break;
     }
     case CG2_MOVE: {
-      if (inst->rvals.n < 1 || inst->lvals.n < 1) return;
-      llvm::Value *src = resolve_value(ctx, inst->rvals[0]);
+      if (ref.rvals->n < 1 || ref.lvals->n < 1) return;
+      llvm::Value *src = resolve_value(ctx, (*ref.rvals)[0]);
       if (!src) return;
-      CGv2Value *dst = inst->lvals[0];
+      CGv2Value *dst = (*ref.lvals)[0];
       // Cross-fn construction-flow case: MOVE into a global
       // emits `store src, ptr @global` AND propagates the
       // ptr_struct annotation from src into the program-scope
@@ -1228,13 +1242,13 @@ void emit_inst(CGv2Inst *inst, EmitFunCtx &ctx) {
       if (dst->scope == CG2V_GLOBAL) {
         llvm::GlobalVariable *gv = g_prog_ctx.global_map.get(dst);
         if (gv) Builder->CreateStore(src, gv);
-        CGv2Type *st = lookup_ptr_struct(ctx, inst->rvals[0]);
+        CGv2Type *st = lookup_ptr_struct(ctx, (*ref.rvals)[0]);
         if (st) g_prog_ctx.global_ptr_struct.put(dst, st);
         break;
       }
       put_result(ctx, dst, src);
       // Propagate per-fun ptr_struct through the alias too.
-      CGv2Type *st = ctx.ptr_struct.get(inst->rvals[0]);
+      CGv2Type *st = ctx.ptr_struct.get((*ref.rvals)[0]);
       if (st) ctx.ptr_struct.put(dst, st);
       break;
     }
@@ -1258,12 +1272,23 @@ void emit_block_skeleton(CGv2Block *b, EmitFunCtx &ctx) {
   ctx.blk_map.put(b, bb);
 }
 
-void emit_terminator(CGv2Inst *term, CGv2Block *blk, EmitFunCtx &ctx) {
-  if (!term) {
+// CG_VIRTUAL_PLAN Phase B.1: emit_terminator consumes
+// CGInstRef instead of CGv2Inst* directly.  The
+// materialized path calls `CGInstRef::from_v2(inst)`
+// at the call site (below).  Future view-path callers
+// will use `CGInstRef::from_view(view)`.  Bridge type
+// fields mirror the CGv2Inst fields the terminator
+// emission needs; both factories populate them
+// identically for the cases the view supports.
+void emit_terminator(const CGInstRef &term, CGv2Block *blk, EmitFunCtx &ctx) {
+  if (term.op == CG2_NOP && !term.v2 && !term.view_pn) {
+    // No instruction provided — preserves the
+    // pre-refactor "null terminator → unreachable"
+    // semantics.
     Builder->CreateUnreachable();
     return;
   }
-  switch (term->op) {
+  switch (term.op) {
     case CG2_RET: {
       llvm::Type *ret_ty = ctx.llvm_fun->getReturnType();
       // Issue 023 Stage 2: sret functions return void.  If the
@@ -1274,8 +1299,8 @@ void emit_terminator(CGv2Inst *term, CGv2Block *blk, EmitFunCtx &ctx) {
       // This handles `return existing_thing` cases that don't
       // alloc-and-fill.
       if (ctx.cf && ctx.cf->signature->is_sret) {
-        if (term->rvals.n > 0 && ctx.sret_slot) {
-          llvm::Value *src = resolve_value(ctx, term->rvals[0]);
+        if (term.rvals && term.rvals->n > 0 && ctx.sret_slot) {
+          llvm::Value *src = resolve_value(ctx, term.rvals->v[0]);
           if (src && src != ctx.sret_slot) {
             llvm::Type *st = to_llvm_type(
                 ctx.cf->signature->sret_struct);
@@ -1295,7 +1320,7 @@ void emit_terminator(CGv2Inst *term, CGv2Block *blk, EmitFunCtx &ctx) {
         Builder->CreateRetVoid();
       } else {
         llvm::Value *rv = nullptr;
-        if (term->rvals.n > 0) rv = resolve_value(ctx, term->rvals[0]);
+        if (term.rvals && term.rvals->n > 0) rv = resolve_value(ctx, term.rvals->v[0]);
         if (!rv) rv = llvm::UndefValue::get(ret_ty);
         Builder->CreateRet(rv);
       }
@@ -1304,15 +1329,16 @@ void emit_terminator(CGv2Inst *term, CGv2Block *blk, EmitFunCtx &ctx) {
     }
     case CG2_BR: {
       llvm::BasicBlock *target = nullptr;
-      if (term->br_target) target = ctx.blk_map.get(term->br_target);
+      if (term.br_target) target = ctx.blk_map.get(term.br_target);
       if (!target) Builder->CreateUnreachable();
       else Builder->CreateBr(target);
       break;
     }
     case CG2_COND_BR: {
-      llvm::BasicBlock *tb = term->br_true ? ctx.blk_map.get(term->br_true) : nullptr;
-      llvm::BasicBlock *fb = term->br_false ? ctx.blk_map.get(term->br_false) : nullptr;
-      llvm::Value *cond = term->rvals.n > 0 ? resolve_value(ctx, term->rvals[0]) : nullptr;
+      llvm::BasicBlock *tb = term.br_true ? ctx.blk_map.get(term.br_true) : nullptr;
+      llvm::BasicBlock *fb = term.br_false ? ctx.blk_map.get(term.br_false) : nullptr;
+      llvm::Value *cond = (term.rvals && term.rvals->n > 0)
+                              ? resolve_value(ctx, term.rvals->v[0]) : nullptr;
       if (!tb || !fb || !cond) Builder->CreateUnreachable();
       else Builder->CreateCondBr(cond, tb, fb);
       break;
@@ -1467,7 +1493,10 @@ void emit_fun(CGv2Fun *cf) {
     llvm::BasicBlock *bb = ctx.blk_map.get(b);
     if (!bb) continue;
     Builder->SetInsertPoint(bb);
-    for (CGv2Inst *inst : b->body) emit_inst(inst, ctx);
+    // CG_VIRTUAL_PLAN Phase B.2: route through CGInstRef.
+    // Phase B.3 lets view-origin callers reach this same
+    // code path with `CGInstRef::from_view(view)`.
+    for (CGv2Inst *inst : b->body) emit_inst(CGInstRef::from_v2(inst), ctx);
 
     // Phi-edge MOVEs: for each successor S in the fun, if S
     // declares a phi_by_pred group with pred == b, emit those
@@ -1475,11 +1504,15 @@ void emit_fun(CGv2Fun *cf) {
     for (CGv2Block *s : cf->blocks) {
       for (CGv2PhiGroup *g : s->phi_by_pred) {
         if (g->pred != b) continue;
-        for (CGv2Inst *mv : g->moves) emit_inst(mv, ctx);
+        for (CGv2Inst *mv : g->moves) emit_inst(CGInstRef::from_v2(mv), ctx);
       }
     }
 
-    emit_terminator(b->terminator, b, ctx);
+    // CG_VIRTUAL_PLAN Phase B.1: route through CGInstRef
+    // bridge.  Today's caller wraps the materialized
+    // CGv2Inst*; future view-path callers will wrap a
+    // CGInstView via CGInstRef::from_view().
+    emit_terminator(CGInstRef::from_v2(b->terminator), b, ctx);
   }
 }
 

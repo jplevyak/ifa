@@ -762,10 +762,25 @@ static int concretize_var_list_type(Var *v) {
     if (etype->n == 1)
       v->type->element->type = etype->v[0]->type;
     else {
+      // Multi-element-type case: the list's element type
+      // is the SUM of the contributing CS types.  The
+      // original code wrote `v->type = make_LUB_type(t)`
+      // here, which OVERWROTE the freshly-cloned
+      // `sym_list` with the element-type SUM — leaving the
+      // Var typed as the element union (e.g.
+      // `Node | nil_type`) instead of as a list.  cg_string
+      // for that SUM falls back to "_CG_any" when the SUM
+      // has 2+ non-nil components, which triggered the
+      // list-element-cross-contam codegen errors fixed at
+      // the codegen layer in cg.cc:write_send_arg
+      // (issue 028 step 5 follow-up).  Set the element
+      // sym instead of clobbering the list type.
       Sym *t = new_Sym();
       t->type_kind = Type_SUM;
       for (CreationSet *cs : *etype) if (cs) t->has.set_add(cs->type);
-      if (!(v->type = if1->callback->make_LUB_type(t))) return -1;
+      Sym *lub = if1->callback->make_LUB_type(t);
+      if (!lub) return -1;
+      v->type->element->type = lub;
     }
     return 1;
   }

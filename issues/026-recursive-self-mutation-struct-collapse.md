@@ -573,6 +573,182 @@ The first four fixes mean dead-code-elision and storage
 liveness no longer conflate with constness.  Once Bug 5
 is addressed, the whole BST pattern should work.
 
+## Bug 5 — REVISED root cause: stale narrow-filter snapshot (June 2026 investigation, part 2)
+
+Further FA-layer investigation invalidates the
+earlier hypothesis (CS_inner failing to flow through
+insert's return).  Direct dumps at post-FA fixed
+point show insert's `fn->ret` AVar **does** hold
+both `Node5` and `Node3` CSs.  The IF1 dumps in
+`-v -v -v` confirm: at the top-level call site
+`insert(t, 3)`, the result temp (3383) has both
+Node CSs.
+
+The actual bug is in `sum_list`, specifically in
+the `is None` narrowing on the param `n`:
+
+```
+::n(2233) ( __pyc_None_type__ Node[value:"3",next:None] Node[value:"5",next:(None|Node)] )  <- original
+::n(2233) ( __pyc_None_type__ )                                                                <- true branch
+::n(2233) ( Node[value:"5",next:(None|Node)] )                                                 <- false branch ← MISSING Node3!
+```
+
+The false branch (where `n is not None`) is
+narrowed to **only Node5**, losing Node3.  Because
+of this, `n.value` is constant-folded to `5`, and
+the generated C emits
+
+```c
+t3 = _CG_prim_add(5, "+", t4);   // 5 baked in
+```
+
+So `sum_list(Node5 -> Node3)` returns `5 + 5 = 10`
+instead of `5 + 3 = 8`.
+
+### Mechanism
+
+Issue 025's per-branch narrowing
+(`fa.cc` ~line 2231) for `__is__`/`__nis__` does:
+
+```cpp
+for (CreationSet *cs1 : operand_av->out->sorted) {
+  bool is_none = (cs1->sym->type == sym_nil_type);
+  if (is_none_check ? is_none : !is_none) tt = type_union(tt, make_AType(cs1));
+  else                                    ft = type_union(ft, make_AType(cs1));
+}
+```
+
+Then `flow_var_type_permit(lv, narrow_false_type)`
+stamps `lv->restrict = ft` — a **snapshot of CSs
+present in operand_av->out at constraint setup**.
+
+`flow_var_type_permit` keeps `lv->restrict`
+unchanged once set (it `type_union`s additional
+constraints with the existing restrict, but ft
+itself isn't re-derived).  Future iterations grow
+`operand_av->out` (Node3 arrives via recursive
+flow), but `update_in(lv, ...)` intersects with
+the stale `restrict={Node5}` — and Node3 is
+**filtered out** of lv forever.
+
+This explains why `n.value` in the non-None branch
+sees only `5` and not `{5, 3}`: lv2 (the SSU
+view) is permanently capped at Node5.
+
+### Fix sketch
+
+The CS-enumeration approach is wrong here because
+it bakes the CS set in at the wrong moment.
+The proper narrowing for `is None` / `is not None`
+is **type-predicate-based**: "all CSs whose
+`sym->type == sym_nil_type`" vs "all CSs whose
+`sym->type != sym_nil_type`."
+
+Options:
+
+- (a) Re-derive `narrow_true_type` /
+  `narrow_false_type` whenever `operand_av->out`
+  grows, then call `flow_var_type_permit` again
+  with the diff.  Requires hooking into AVar
+  update propagation.
+- (b) Introduce a "type-predicate restrict" on
+  AVar (an alternate filter form that runs against
+  each incoming CS at `update_in` time) and use it
+  for is/is-not None narrowing.
+- (c) For `is None`-class narrowing only: skip
+  the false-branch type filter entirely (the false
+  branch keeps the full operand union; logically
+  unsound but in practice the discriminator on the
+  true branch is enough to keep correctness if
+  None is properly handled at field accesses).
+  Risk: None could leak into field-access type
+  contexts and silently type-violate.
+
+(a) or (b) are the right fix.  (a) is more local
+to the narrowing code; (b) is a more general
+mechanism that also helps isinstance narrowing
+(which has the same issue — newly-arriving CSs
+won't be classified post-setup).
+
+### Status
+
+**FIXED** (June 2026).  Implementation: option (b)
+from the fix sketch — a type-predicate restrict
+on AVar that re-evaluates at each `update_in`.
+
+Changes:
+
+- `ifa/analysis/fa.h`: added `enum AVarRestrictPred`
+  (`RP_IsNilType`, `RP_IsNotNilType`,
+  `RP_IsInstanceOf`, `RP_NotInstanceOf`) and two
+  fields on `AVar` (`restrict_pred`,
+  `restrict_pred_cls`).  Declared
+  `flow_var_permit_pred`.
+- `ifa/analysis/fa.cc`:
+  - `restrict_pred_keeps` / `apply_restrict_pred`
+    helpers.
+  - `update_in` and `flow_var_type_permit`
+    consult the predicate after the static
+    `v->restrict` intersection.
+  - `flow_var_permit_pred` installs a predicate
+    and refreshes `v->out`.
+  - Narrowing site in `Code_IF` (the issue-025
+    block) now installs predicates for
+    `is None` / `is not None` (always) and for
+    isinstance against a single class.  Falls
+    back to the snapshot-AType path otherwise.
+- `tests/bst_insert.py`: regression test
+  (returns 8, 15, 16 — pre-fix returned 10, …).
+
+The predicate is consulted on every
+`update_in(v, t)` so CSs that arrive in v->in
+AFTER the narrowing site was set up still get
+classified by `cs->sym->type == sym_nil_type`
+(or the chosen predicate) and admitted /
+filtered correctly.
+
+Composition note: re-installing the SAME
+predicate is idempotent; installing a DIFFERENT
+one is currently a no-op.  No narrowing site
+today needs composition; if one does, extend
+`flow_var_permit_pred` to OR predicates.
+
+### Experimental knobs
+
+Two pyc flags let you A/B the precision sources:
+
+- `--narrow N` / `IFA_NARROW=N` (default 1) —
+  gates the issue-025 discriminator-recognition
+  + per-branch narrowing.  Set 0 to disable
+  narrowing entirely; the lv views inherit
+  operand_av->out unfiltered.
+- `--fa_inline N` / `IFA_FA_INLINE=N`
+  (default 0) — runs `mark_live_funs` +
+  `simple_inlining` between FA convergence
+  passes.  After the inlining pass, per-ES
+  `live_pnodes` caches are cleared and the
+  worklist re-converges over the cleaner IR.
+  Lets the second FA pass benefit from elided
+  identity wrappers (e.g.
+  type-specialized `__pyc_to_bool__`).
+
+Matrix on bst_insert + standalone recnode3:
+
+| narrow | inline | bst_insert | recnode3 |
+|--------|--------|------------|----------|
+|   1    |   0    |  PASS (8,15,16) | PASS (8) |
+|   1    |   1    |  PASS           | PASS     |
+|   0    |   0    |  COMPILE_FAIL   | FAIL     |
+|   0    |   1    |  COMPILE_FAIL   | FAIL     |
+
+Disabling narrowing surfaces a latent
+codegen bug in `dict::___init___` (emits
+`NULL = NULL`) that the narrowed type info
+otherwise masks via dead-code elimination.
+Mid-FA inlining doesn't compensate for missing
+narrowing; the precision win on this pattern
+comes from narrowing, not from inlining.
+
 ## Related
 
 - [`issues/004-is-operator-unimplemented.md`](../../issues/004-is-operator-unimplemented.md)

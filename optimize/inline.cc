@@ -215,6 +215,26 @@ static void insert_move_before(Fun *f, PNode *p, Var *rhs, Var *lhs) {
 }
 
 static void inline_single_pnode(Fun *f, PNode *p, Fun *fn, PNode *s) {
+  // Pre-check: bail if any (callsite arg, formal) pair both
+  // have Type_SUM.  The substitution loop below needs ONE
+  // side to be concrete to pick the new var's type — when
+  // both are SUM, neither has a unique projection.  An
+  // earlier `assert(v->type->type_kind != Type_SUM)` here
+  // crashed pyc on the fib-heap consolidate pattern (step 5
+  // of issue 028) where a method passes a union-typed
+  // receiver through a call into another union-returning
+  // method.  Skipping the inline keeps the call as a real
+  // dispatch — slightly slower but correct.
+  for (Var *v : s->rvals) {
+    if (v->constant) continue;
+    Sym *fs = first_var(v)->sym;
+    int i = fn->sym->has.index(fs);
+    if (i < 0) continue;
+    if (p->rvals[i]->constant) continue;
+    if (p->rvals[i]->type == v->type) continue;
+    if (p->rvals[i]->type->type_kind == Type_SUM &&
+        v->type->type_kind == Type_SUM) return;
+  }
   Vec<Var *> rvals;
   rvals.move(p->rvals);
   p->prim = s->prim;
@@ -239,7 +259,8 @@ static void inline_single_pnode(Fun *f, PNode *p, Fun *fn, PNode *s) {
         vv->type = rvals[i]->type;
         vv->avars = rvals[i]->avars;
       } else {
-        assert(v->type->type_kind != Type_SUM);
+        // The pre-check above guarantees v->type is NOT SUM
+        // here (if both were SUM, we returned early).
         vv->type = v->type;
         vv->avars = v->avars;
       }

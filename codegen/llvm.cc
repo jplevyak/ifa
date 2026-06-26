@@ -1,6 +1,7 @@
 #include "llvm_internal.h"
 #include "cg_ir_v2.h"
 #include "cg_normalize_v2.h"
+#include "cg_view.h"  // Phase A diff oracle (CG_VIRTUAL_PLAN)
 #include "builtin.h"
 #include "cg.h"
 #include "codegen_common.h"
@@ -165,9 +166,40 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
     fail("cg_normalize_v2 returned null");
     return;
   }
-  if (!cg_v2_emit_llvm_module(v2prog)) {
+  // CG_VIRTUAL_PLAN Phase C.1: PYC_LLVM_VIEW=1 selects
+  // the view-driven emit (rebuilds prog's bodies from
+  // the view enumeration, then runs the existing LLVM
+  // emit machinery).  Default is the materialized path
+  // until Phase C closes the CGInstView::kind()
+  // classification gaps reported by B.6's diff oracle.
+  bool ok = getenv("PYC_LLVM_VIEW")
+                ? cg_v2_emit_llvm_module_view(fa, v2prog)
+                : cg_v2_emit_llvm_module(v2prog);
+  if (!ok) {
     fail("cg_v2_emit_llvm_module returned false");
     return;
+  }
+  // CG_VIRTUAL_PLAN Phase A: compare the view-side
+  // classification of every live PNode with the
+  // materialized CGv2Program's per-instruction op
+  // counts.  Histogram-level match is the Phase A
+  // correctness check; bin-level disagreement reveals
+  // classification gaps the views haven't yet covered.
+  // Enable with PYC_VIEW_DIFF=1.
+  if (getenv("PYC_VIEW_DIFF")) {
+    cg_view_diff_report(fa, v2prog);
+  }
+  // CG_VIRTUAL_PLAN Phase B.6: instruction-level diff of
+  // view-side enumeration vs materialized CGv2Insts.  This
+  // is the safety net Phase D relies on — divergences mean
+  // the view-driven emit (Phase C) would produce different
+  // LLVM IR than the materialized path.  Phase B/C reports
+  // divergences to stderr but does not fail the compile;
+  // Phase D promotes a non-zero count to a hard error once
+  // the materialized side is removed.  Enable with
+  // PYC_LLVM_DIFF=1.
+  if (getenv("PYC_LLVM_DIFF")) {
+    cg_view_diff_module(fa, v2prog, input_filename);
   }
   // Populate f->llvm cache so the synthesized C main() wrapper
   // below can resolve the IF1 main_fun via cg_get_llvm(f).

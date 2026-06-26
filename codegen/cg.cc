@@ -114,6 +114,56 @@ static int cg_writeln(FILE *fp, Vec<Var *> &vars, int ln) {
 // (numbering goes ... e(k-1); e(k+1) ...), while the
 // setter / getter emit `obj->eK` referencing the missing
 // slot.  Issue 026 documents the symptom.
+// Issue 028 Bug A — pick a non-nil component of a union
+// receiver for getter/setter codegen.
+//
+// pyc's `is None` narrowing in IFA only attaches a
+// type-predicate restrict to the SSU view of the
+// conditional's operand temp.  A fresh re-read of the
+// same property in the body (e.g. `self.min.next` after
+// `if self.min is None`) creates a NEW period SEND whose
+// receiver var has the full union type (None | Node).
+//
+// At codegen time, getter/setter resolved the field via
+// `obj = recv->type; if (obj->type_kind == Type_SUM)
+// obj = obj->has[0]` — i.e. blindly took the first union
+// component, which for typical orderings is `nil_type`.
+// `nil_type` has no fields; the result was a cast to
+// `_CG_nil_type` (a `void *` typedef) followed by
+// `->eN`, which fails to compile.
+//
+// Soundness: at runtime, the receiver's value in the
+// narrowed branch is non-None (the IF guarded it), so
+// emitting code assuming the non-None component is the
+// correct semantic.  Picking it here matches what
+// `assign_type_cg_strings_pass2` does at the SUM-sym
+// level for cg_string assignment (the 2-element
+// `None | T` shortcut).
+//
+// Strategy: search the union for a component whose
+// `has` list contains a field named `symbol`.  If none
+// found, fall back to the historical `obj->has[0]` so
+// the existing "getter not resolved" assert path still
+// fires for genuinely-unresolvable cases.
+static Sym *resolve_union_receiver(Sym *obj, cchar *symbol) {
+  if (!obj || obj->type_kind != Type_SUM) return obj;
+  if (symbol) {
+    for (Sym *component : obj->has) {
+      if (!component || component == sym_nil_type) continue;
+      for (Sym *field : component->has) {
+        if (field && field->name == symbol) return component;
+      }
+    }
+  }
+  if (obj->has.n > 0) {
+    for (Sym *component : obj->has) {
+      if (component && component != sym_nil_type) return component;
+    }
+    return obj->has[0];
+  }
+  return obj;
+}
+
 static int cg_field_live(Sym *s, int i) {
   if (!s || i < 0 || i >= s->has.n) return 0;
   if (!s->has[i]->type) return 0;
@@ -197,7 +247,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         assert(!"selector");
       }
       Sym *obj = n->rvals[1]->type;
-      if (obj->type_kind == Type_SUM) obj = obj->has[0];
+      obj = resolve_union_receiver(obj, symbol);
       if (n->lvals[0]->type->type_kind == Type_FUN && n->creates) {  // creates a closure
         fprintf(fp, "  %s = _CG_prim_closure(%s);\n", cg_get_string(n->lvals[0]), t);
         if (n->prim && n->prim->index == P_prim_period) {
@@ -233,7 +283,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         symbol = symbols[0]->name;
       }
       Sym *obj = n->rvals[1]->type;
-      if (obj->type_kind == Type_SUM) obj = obj->has[0];
+      obj = resolve_union_receiver(obj, symbol);
       for (int i = 0; i < obj->has.n; i++) {
         if (symbol == obj->has[i]->name) {
           // Issue 026: elide setter writes to dead fields.
@@ -489,6 +539,18 @@ static void simple_move(FILE *fp, Var *lhs, Var *rhs) {
   if (lhs->sym->type_kind || rhs->sym->type_kind) return;
   if (!cg_get_string(lhs) || !cg_get_string(rhs)) return;
   if (rhs->type == sym_void->type || lhs->type == sym_void->type) return;
+  // If FA collapsed lhs's type to nil_type (`sym_nil_type`)
+  // the global-var emitter in c_codegen_print_c sets its
+  // cg_string to the literal "NULL" — no storage, no lvalue.
+  // Without this guard, `simple_move` would emit
+  // `NULL = NULL;` which is invalid C.  The MOVE itself is
+  // semantically a no-op (writing None into a single-None-
+  // value Var) so dropping it is sound.  Mirrors
+  // `is_const_folded_send` for SEND PNodes.  Same logic
+  // covers any other future case where a Var's cg_string
+  // becomes a non-lvalue literal — `get_constant` returns
+  // non-null for Vars folded to a single constant value.
+  if (lhs->type == sym_nil_type || get_constant(lhs)) return;
   if (!rhs->sym->fun) {
     ASSERT(cg_get_string(rhs));
     if (rhs->type != lhs->type)
@@ -554,7 +616,30 @@ static void write_send_arg(FILE *fp, Fun *f, PNode *n, MPosition *p, int &wrote_
   if (p->pos.n <= 1) {
     if (wrote_one) fprintf(fp, ", ");
     wrote_one = 1;
-    fputs(c_rhs(v), fp);
+    // Voidish-arg cast: if the callsite arg's C type is
+    // `_CG_any` / `_CG_void` / `_CG_nil_type` (because FA
+    // inferred a union receiver that resolves to one of
+    // those at the cg layer) but the formal expects a
+    // typed pointer, emit an explicit cast.  FA's dispatch
+    // already proved the runtime value is of formal's type
+    // — the C source just lost track of the concrete type
+    // through an intermediate move or union-field projection.
+    // See issue 028 step 5 / issue 029.
+    Var *formal = f->args.get(p);
+    cchar *formal_t = formal ? c_type(formal) : nullptr;
+    cchar *arg_cg = c_rhs(v);
+    cchar *arg_t = c_type(v);
+    bool arg_is_voidish = arg_t && (!strcmp(arg_t, "_CG_any") ||
+                                    !strcmp(arg_t, "_CG_void") ||
+                                    !strcmp(arg_t, "_CG_nil_type"));
+    bool formal_is_voidish = formal_t && (!strcmp(formal_t, "_CG_any") ||
+                                          !strcmp(formal_t, "_CG_void") ||
+                                          !strcmp(formal_t, "_CG_nil_type"));
+    if (arg_is_voidish && !formal_is_voidish) {
+      fprintf(fp, "(%s)%s", formal_t, arg_cg);
+    } else {
+      fputs(arg_cg, fp);
+    }
   } else {
 #if 0
     // These are inside tuples: potentially we could unwrap the tuple and pass the arguments directly.
@@ -584,6 +669,29 @@ static void write_send(FILE *fp, Fun *f, PNode *n) {
         if (!opnd) opnd = cg_get_string(n->rvals[2]->sym);
         fprintf(fp, "%s = (%s == NULL);\n",
                 cg_get_string(n->lvals[0]), opnd ? opnd : "NULL");
+      } else {
+        fputs(";\n", fp);
+      }
+      return;
+    }
+    // Issue 028 step 4: `prim_is(a, b)` (emitted by the
+    // frontend for `a is b` / `a is not b` when neither
+    // operand is the None constant) lowers to a C-level
+    // pointer equality.  Both operands are pointer-shaped
+    // (class instances, or the None singleton = NULL); a
+    // raw `==` matches CPython's identity-for-non-None
+    // semantics.  The `is not` form is emitted by the
+    // frontend as `__not__(prim_is(a, b))` — handled by
+    // the existing __not__ method dispatch on bool.
+    if (n->prim->index == P_prim_is && n->rvals.n >= 4) {
+      if (n->lvals.n && cg_get_string(n->lvals[0])) {
+        cchar *lhs = cg_get_string(n->rvals[2]);
+        if (!lhs) lhs = cg_get_string(n->rvals[2]->sym);
+        cchar *rhs = cg_get_string(n->rvals[3]);
+        if (!rhs) rhs = cg_get_string(n->rvals[3]->sym);
+        fprintf(fp, "%s = ((void *)%s == (void *)%s);\n",
+                cg_get_string(n->lvals[0]),
+                lhs ? lhs : "NULL", rhs ? rhs : "NULL");
       } else {
         fputs(";\n", fp);
       }

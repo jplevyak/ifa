@@ -16,6 +16,25 @@ EXTERN int ifa_debug EXTERN_INIT(0);
 // while the integration is phased in.
 EXTERN int ifa_escape_in_fa EXTERN_INIT(0);
 
+// Run simple_inlining between FA convergence passes
+// (experimental).  Default off — production runs
+// simple_inlining once post-FA via ifa_optimize().  When
+// set, FA::analyze converges, runs mark_live_funs +
+// simple_inlining, resets per-ES live_pnode sets, then
+// re-converges.  Lets the second FA pass benefit from
+// elided identity wrappers.  See
+// `ifa/issues/026-recursive-self-mutation-struct-collapse.md`
+// and the discussion in `ifa/analysis/NOTES.md`.
+EXTERN int ifa_fa_inline EXTERN_INIT(0);
+
+// Enable the issue-025 per-branch type narrowing
+// recognizer at Code_IF.  Default on (production
+// behavior).  Set to 0 to compare FA precision with /
+// without narrowing in isolation — useful for
+// distinguishing whether a precision win comes from
+// narrowing, mid-FA inlining, or both.
+EXTERN int ifa_narrow EXTERN_INIT(1);
+
 int show_error(cchar *str, IFAAST *a, ...);
 int show_error(cchar *str, Var *v, ...);
 char *get_file_line(char *filename, int lineno);

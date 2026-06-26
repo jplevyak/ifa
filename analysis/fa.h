@@ -191,6 +191,21 @@ inline EscapeStatus join_escape(EscapeStatus a, EscapeStatus b) {
   return (a == ES_Escape || b == ES_Escape) ? ES_Escape : ES_NoEscape;
 }
 
+// Predicate-based restrict kinds for AVar narrowing.
+// Issue 026 Bug 5: type-level narrowing predicates that
+// re-evaluate as new CSs arrive at v->in.  Replaces the
+// CS-snapshot-in-restrict pattern that filtered out
+// later-arriving CSs (`is None` narrowing of recursive-
+// receiver types in particular).  See
+// `ifa/issues/026-recursive-self-mutation-struct-collapse.md`.
+enum AVarRestrictPred {
+  RP_None = 0,
+  RP_IsNilType,      // keep cs if cs->sym->type == sym_nil_type
+  RP_IsNotNilType,   // keep cs if cs->sym->type != sym_nil_type
+  RP_IsInstanceOf,   // keep cs if restrict_pred_cls->meta_type->implementors.in(cs->sym->type)
+  RP_NotInstanceOf,  // keep cs if !restrict_pred_cls->meta_type->implementors.in(cs->sym->type)
+};
+
 class AVar : public gc {
  public:
   Var *var;
@@ -203,6 +218,8 @@ class AVar : public gc {
   AType *in;
   AType *out;
   AType *restrict;
+  AVarRestrictPred restrict_pred;
+  Sym *restrict_pred_cls;
   AVar *container;
   Setters *setters;
   Setters *setter_class;
@@ -220,6 +237,14 @@ class AVar : public gc {
   // Escape status (Phase 1+: see ESCAPE_PLAN.md).  Stored as
   // uint:1 to fit alongside the existing bit-fields.
   uint escape : 1;
+  // Issue 029 step 1: marks an AVar that participates in a
+  // polymorphic confluence — i.e. its `out` contains CSs
+  // from multiple distinct non-nil metatypes, OR it
+  // backward-flows into such a confluence.  Set by
+  // `mark_fat_avars()` after FA convergence; consumed by
+  // codegen (in a later step) to choose a fat-pointer
+  // representation `{tag, ptr}` for the corresponding Var.
+  uint needs_fat : 1;
   Accum<AVar *> arg_of_send;
   LINK(AVar, send_worklist_link);
 
@@ -492,6 +517,12 @@ void update_gen(AVar *v, AType *t);
 void update_in(AVar *v, AType *t);
 void flow_vars(AVar *v, AVar *vv);
 void flow_var_type_permit(AVar *v, AType *t);
+// Set / install a predicate restrict on `v`.  cls is only
+// used for RP_IsInstanceOf / RP_NotInstanceOf.  Idempotent:
+// re-installing the same predicate is a no-op; installing a
+// different one is currently treated as a no-op (composing
+// predicates isn't needed by today's narrowing sites).
+void flow_var_permit_pred(AVar *v, AVarRestrictPred pred, Sym *cls = nullptr);
 CreationSet *creation_point(AVar *v, Sym *s, int nvars = -1);
 void prim_make_constraints(PNode *p, EntrySet *es);
 void type_violation(ATypeViolation_kind akind, AVar *av, AType *type, AVar *send, Vec<Fun *> *funs = nullptr);

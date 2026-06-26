@@ -1,6 +1,90 @@
-# CG_IR_PARITY_PLAN — v2 LLVM → C-backend parity (74/0)
+# CG_IR_PARITY_PLAN — LLVM → C-backend parity
 
-**v2 LLVM has reached 74/0 — full parity with the C
+## Status (June 2026 update)
+
+- **C backend:** 99/0/1xfail/1skip.
+- **LLVM backend (`-b`):** 92/7/0/1.  Gap is exactly the
+  7 tests we added recently (ring_splice, fibheap_*,
+  expr_evaluator) that landed C-side fixes the LLVM
+  emitter hasn't yet absorbed.
+
+## Architecture clarification (correcting an earlier
+## confusion in this session)
+
+There is **only one LLVM backend**.  The naming "v1" /
+"v2" referred to two historical *implementations* of the
+LLVM emission:
+
+- **v1**: a direct IF1 → LLVM emitter that lived in
+  `llvm.cc` (`createGlobalVariables` +
+  `translateFunctionBody`).  **Retired in issue 014.**
+- **v2**: an IF1 → CGv2Program → LLVM pipeline
+  (`cg_normalize_v2.cc` + `cg_ir_v2_emit_llvm.cc`) that
+  strictly subsumed v1.
+
+Today, `llvm_codegen_print_ir` in `llvm.cc` IS the v2
+path — it just orchestrates init + v2 emit + main
+wrapper synthesis + verify + write.  The "v1" code is
+gone; the file is just scaffolding around v2.
+
+The `-b` flag selects this single LLVM backend.  92/7 is
+the current parity number.
+
+## Policy (June 2026)
+
+Every codegen-affecting change must land such that BOTH
+backends compile and run it correctly.  Validation:
+
+```
+./test_pyc                 # C backend (canonical)
+PYC_FLAGS=-b ./test_pyc    # LLVM backend
+```
+
+The C backend remains canonical because (a) it's the
+default, (b) gcc serves as a free type checker on the
+generated code, (c) the generated C is human-readable
+for debugging codegen bugs.  The LLVM backend is the
+parity follower — production-quality codegen with a 7-
+test lag that needs closing.
+
+## What's currently failing on LLVM and why
+
+The 7 failures are exactly the recent additions:
+
+- `ring_splice`, `fibheap_*`, `expr_evaluator` — landed
+  C-side fixes that the LLVM emitter doesn't yet apply:
+  - `prim_is` (issue 028 step 4) — new identity primitive.
+  - Voidish-arg cast (issue 028 step 5 / 029) — implicit
+    `(formal_t)arg` at call boundaries when arg's C type
+    is `_CG_any`/`_CG_void`/`_CG_nil_type`.
+  - `resolve_union_receiver` — picks a non-nil component
+    of a union receiver for the period/setter cast.
+
+Two FA-level fixes (`concretize_var_list_type`, SSU phi
+cascade) are already shared and don't need an LLVM port.
+
+## Closing the gap
+
+Each remaining v2 emission gap is bounded.  Triage:
+
+1. `prim_is` — add a CG2_BINOP-EQ case in
+   `cg_ir_v2_emit_llvm.cc` (the parallel of cg.cc:709).
+2. Voidish-arg cast — at the v2 emit level, when a
+   CG_CALL argument's CGv2Type is `_CG_any`/`_CG_void`
+   and the formal expects a typed pointer, emit a
+   `bitcast`.  Parallels cg.cc:write_send_arg.
+3. `resolve_union_receiver` — when emitting GEP for a
+   union-receiver period/setter, pick a non-nil
+   component for the cast.
+
+After these three, run the suite, see what remains, and
+file the residuals as parity tickets.
+
+---
+
+# Historical record (pre-June 2026)
+
+**v2 LLVM reached 74/0 at one point — full parity with the C
 backend.**  Unit tests 105/0.  All test suites green.
 
 Closure landed via F.4.8 with a two-piece shortcut (see

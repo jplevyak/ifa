@@ -4,10 +4,12 @@
 #include "ast.h"
 #include "builtin.h"
 #include "clone.h"
+#include "dead.h"
 #include "fail.h"
 #include "fun.h"
 #include "graph.h"
 #include "if1.h"
+#include "inline.h"
 #include "log.h"
 #include "pattern.h"
 #include "pdb.h"
@@ -114,6 +116,8 @@ AVar::AVar(Var *v, void *acontour)
       in(fa->type_world.bottom_type),
       out(fa->type_world.bottom_type),
       restrict(nullptr),
+      restrict_pred(RP_None),
+      restrict_pred_cls(nullptr),
       container(nullptr),
       setters(nullptr),
       setter_class(nullptr),
@@ -128,7 +132,8 @@ AVar::AVar(Var *v, void *acontour)
       live(0),
       live_arg(0),
       is_if_arg(0),
-      escape(ES_Escape) {  // Phase 1: conservative top
+      escape(ES_Escape),  // Phase 1: conservative top
+      needs_fat(0) {
   id = fa->avar_id++;
 }
 
@@ -235,12 +240,37 @@ AType *AType::constants() {
   return type_cannonicalize(t);
 }
 
+static inline bool restrict_pred_keeps(AVar *v, CreationSet *cs) {
+  switch (v->restrict_pred) {
+    case RP_IsNilType:    return cs && cs->sym && cs->sym->type == sym_nil_type;
+    case RP_IsNotNilType: return cs && cs->sym && cs->sym->type != sym_nil_type;
+    case RP_IsInstanceOf:
+      return cs && cs->sym && v->restrict_pred_cls && v->restrict_pred_cls->meta_type &&
+             v->restrict_pred_cls->meta_type->implementors.in(cs->sym->type);
+    case RP_NotInstanceOf:
+      return cs && cs->sym && v->restrict_pred_cls && v->restrict_pred_cls->meta_type &&
+             !v->restrict_pred_cls->meta_type->implementors.in(cs->sym->type);
+    default:
+      return true;
+  }
+}
+
+static AType *apply_restrict_pred(AVar *v, AType *t) {
+  if (v->restrict_pred == RP_None) return t;
+  if (t == fa->type_world.bottom_type || t == fa->type_world.top_type) return t;
+  AType *r = new AType();
+  for (CreationSet *cs : t->sorted)
+    if (restrict_pred_keeps(v, cs)) r->set_add(cs);
+  return type_cannonicalize(r);
+}
+
 void update_in(AVar *v, AType *t) {
   AType *tt = type_union(v->in, t);
   if (tt != v->in) {
     assert(tt && tt != fa->type_world.top_type);
     v->in = tt;
     if (v->restrict) tt = type_intersection(v->in, v->restrict);
+    if (v->restrict_pred != RP_None) tt = apply_restrict_pred(v, tt);
     if (tt != v->out) {
       assert(tt != fa->type_world.top_type);
       v->out = tt;
@@ -250,7 +280,21 @@ void update_in(AVar *v, AType *t) {
           fa->send_worklist.enqueue(vv);
         }
       }
-      if (v->is_if_arg) {
+      if (v->is_if_arg && v->contour != GLOBAL_CONTOUR) {
+        // Guard against the GLOBAL_CONTOUR case: `make_AVar`
+        // returns a globally-shared AVar (with `contour ==
+        // GLOBAL_CONTOUR`, which is `(void*)1`) when the Var
+        // is module-level and non-internal — e.g. the `True`
+        // constant used as the condition of a top-level
+        // `while True:`.  `analyze_edge` then sets
+        // `is_if_arg = 1` on that global AVar
+        // (fa.cc:add_es_constraints around line 2438), but
+        // its `contour` isn't a real EntrySet — dereffing
+        // `(EntrySet *)1)->in_es_worklist` segfaults.
+        // Skipping the enqueue is sound: the global AVar
+        // doesn't need per-ES re-analysis (no per-ES
+        // contour to refine).
+        // See issues/005-while-true-fa-crash.md.
         EntrySet *es = (EntrySet *)v->contour;
         if (!es->in_es_worklist) {
           es->in_es_worklist = 1;
@@ -968,6 +1012,31 @@ void flow_var_type_permit(AVar *v, AType *t) {
   else
     v->restrict = type_union(t, v->restrict);
   AType *tt = type_intersection(v->in, v->restrict);
+  if (v->restrict_pred != RP_None) tt = apply_restrict_pred(v, tt);
+  if (tt != v->out) {
+    assert(tt != fa->type_world.top_type);
+    v->out = tt;
+    for (AVar *vv : v->arg_of_send.asvec) {
+      if (!vv->in_send_worklist) {
+        vv->in_send_worklist = 1;
+        fa->send_worklist.enqueue(vv);
+      }
+    }
+    for (AVar *vv : v->forward) if (vv) update_in(vv, v->out);
+  }
+}
+
+void flow_var_permit_pred(AVar *v, AVarRestrictPred pred, Sym *cls) {
+  if (pred == RP_None) return;
+  if (v->restrict_pred == RP_None) {
+    v->restrict_pred = pred;
+    v->restrict_pred_cls = cls;
+  } else if (v->restrict_pred != pred || v->restrict_pred_cls != cls) {
+    return;  // composition not implemented; bail
+  }
+  AType *tt = v->in;
+  if (v->restrict) tt = type_intersection(tt, v->restrict);
+  tt = apply_restrict_pred(v, tt);
   if (tt != v->out) {
     assert(tt != fa->type_world.top_type);
     v->out = tt;
@@ -1823,6 +1892,26 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
         }
         break;
       }
+      case P_prim_is: {
+        // Real identity comparison.  Lattice: if the two
+        // operand AVars' CS-sets are disjoint, the result
+        // is statically False.  Otherwise it's polymorphic
+        // bool — we can't prove True or False at compile
+        // time (two AVars sharing a CS might or might not
+        // hold the same instance at runtime).
+        AVar *thing1 = make_AVar(p->rvals[p->rvals.n - 2], es);
+        AVar *thing2 = make_AVar(p->rvals[p->rvals.n - 1], es);
+        bool overlap = false;
+        for (CreationSet *cs1 : thing1->out->sorted) {
+          for (CreationSet *cs2 : thing2->out->sorted) {
+            if (cs1 == cs2) { overlap = true; break; }
+          }
+          if (overlap) break;
+        }
+        AType *rtype = overlap ? fa->type_world.bool_type : fa->type_world.false_type;
+        update_gen(result, rtype);
+        break;
+      }
       case P_prim_isinstance: {
         AVar *thing1 = make_AVar(p->rvals[p->rvals.n - 2], es);  // instance
         AVar *thing2 = make_AVar(p->rvals[p->rvals.n - 1], es);  // type
@@ -1961,6 +2050,51 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
   }
 }
 
+// Walk back from a Var's def through the wrapper shapes
+// pyc emits, returning the originating discriminator PNode.
+// Returns v->def if no recognized wrapper is found.
+//
+// Shapes peeled:
+//   - pure MOVE chains
+//   - the SEND3 (invocation) → SEND2 (period-bind) → SEND1
+//     chain that the frontend emits around every `if cond:`
+//     via the __pyc_to_bool__ method dispatch.
+//     SEND3 has 1 rval (the bound method); SEND2 has 4
+//     rvals: [sym_operator, recv, sym_period, method_sym].
+//
+// Used by issue-025 narrowing recognition to look through
+// the wrapper for `is None`, `is not None`, isinstance, etc.
+// Depth-bounded as a safety net; see ifa/analysis/NOTES.md.
+static PNode *peel_wrapper_def(Var *v, int max_depth = 6) {
+  if (!v || !v->def) return v ? v->def : nullptr;
+  PNode *p = v->def;
+  for (int hop = 0; hop < max_depth && p && p->code; hop++) {
+    bool advanced = false;
+    if (p->code->kind == Code_MOVE && p->rvals.n == 1) {
+      Var *src = p->rvals[0];
+      if (src && src->def && src->def != p) {
+        p = src->def;
+        advanced = true;
+      }
+    }
+    if (!advanced && p->code->kind == Code_SEND && p->rvals.n == 1) {
+      Var *bound = p->rvals[0];
+      if (bound && bound->def && bound->def != p &&
+          bound->def->code && bound->def->code->kind == Code_SEND &&
+          bound->def->rvals.n == 4) {
+        PNode *bind = bound->def;
+        Var *recv = bind->rvals[1];
+        if (recv && recv->def && recv->def != bind) {
+          p = recv->def;
+          advanced = true;
+        }
+      }
+    }
+    if (!advanced) break;
+  }
+  return p;
+}
+
 static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
   es->live_pnodes.set_add(p);
   for (PNode *n : p->phi) {
@@ -2036,53 +2170,30 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
       Var *narrow_operand = nullptr;
       AType *narrow_true_type = nullptr;
       AType *narrow_false_type = nullptr;
-      // Walk back through MOVEs and the __pyc_to_bool__
-      // wrapper that pyc inserts before every IF condition.
-      //
-      // The pyc frontend lowers `if cond:` as:
+      // Issue 026 Bug 5 fix: when narrowing can be
+      // expressed as a type-level predicate (`is None`,
+      // `is not None`, isinstance against a single class),
+      // record it here so the lv view re-evaluates as new
+      // CSs arrive at v->in.  Otherwise we fall back to
+      // the snapshot-AType path (narrow_*_type above).
+      AVarRestrictPred narrow_true_pred = RP_None;
+      AVarRestrictPred narrow_false_pred = RP_None;
+      Sym *narrow_pred_cls = nullptr;
+      // Peel pyc's `if cond:` wrapper to find the
+      // discriminator PNode.  Frontend lowers `if cond:` as:
       //   SEND1: t = cond_op(...)              ; the discriminator
       //   SEND2: m = operator cond_op . __pyc_to_bool__
       //   SEND3: bool_cond = m()
       //   IF bool_cond
-      // To recover the discriminator we walk:
-      //   IF.cond → SEND3 (1 rval = m) → m.def =
-      //   SEND2 (4 rvals: sym_operator, cond_op_var,
-      //   sym_period, sym___pyc_to_bool__) → cond_op_var.def
-      //   = SEND1 (the actual discriminator).
-      PNode *iso_def = p->rvals.v[0]->def;
-      // Bound the walk to a small depth as a safety net.
-      for (int hop = 0; hop < 6 && iso_def && iso_def->code; hop++) {
-        bool advanced = false;
-        // Walk through pure-MOVE chains.
-        if (iso_def->code->kind == Code_MOVE &&
-            iso_def->rvals.n == 1) {
-          Var *src = iso_def->rvals[0];
-          if (src && src->def && src->def != iso_def) {
-            iso_def = src->def;
-            advanced = true;
-          }
-        }
-        // Walk through the SEND3 (invocation) → SEND2 (binding)
-        // → SEND1 (discriminator) chain.  SEND3 has 1 rval (the
-        // bound method); SEND2 has 4 rvals [sym_operator, recv,
-        // sym_period, method_sym].
-        if (!advanced && iso_def->code->kind == Code_SEND &&
-            iso_def->rvals.n == 1) {
-          Var *bound = iso_def->rvals[0];
-          if (bound && bound->def && bound->def != iso_def &&
-              bound->def->code &&
-              bound->def->code->kind == Code_SEND &&
-              bound->def->rvals.n == 4) {
-            PNode *bind = bound->def;
-            Var *recv = bind->rvals[1];
-            if (recv && recv->def && recv->def != bind) {
-              iso_def = recv->def;
-              advanced = true;
-            }
-          }
-        }
-        if (!advanced) break;
-      }
+      // peel_wrapper_def follows that chain (plus MOVE chains).
+      //
+      // The whole discriminator-recognition + narrowing
+      // setup below is gated on `ifa_narrow` so we can
+      // measure FA precision with/without narrowing in
+      // isolation.  When disabled, narrow_operand stays
+      // nullptr and the apply sites below fall through to
+      // the unnarrowed flow_vars.
+      PNode *iso_def = ifa_narrow ? peel_wrapper_def(p->rvals.v[0]) : nullptr;
       Var *operand_var = nullptr;
       Var *type_var = nullptr;
       bool is_none_check = false;   // narrowing target: nil_type
@@ -2151,6 +2262,17 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
           // isinstance path: True if operand's type implements
           // type_var's instance-class.
           AVar *type_av = make_AVar(type_var, es);
+          // If type_av resolves to a single class, install a
+          // predicate so late-arriving operand CSs get
+          // re-classified.  (Issue 026 Bug 5.)
+          if (type_av->out && type_av->out->sorted.n == 1) {
+            CreationSet *cs2 = type_av->out->sorted[0];
+            if (cs2 && cs2->sym && cs2->sym->meta_type) {
+              narrow_pred_cls = cs2->sym;
+              narrow_true_pred = RP_IsInstanceOf;
+              narrow_false_pred = RP_NotInstanceOf;
+            }
+          }
           for (CreationSet *cs1 : operand_av->out->sorted) {
             bool matches = false;
             for (CreationSet *cs2 : type_av->out->sorted) {
@@ -2166,7 +2288,13 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
         } else if (is_none_check || is_not_none_check) {
           // `x is None` / `x is not None`: True for None CSes,
           // False for everything else.  For __nis__, swap the
-          // True / False partitions.
+          // True / False partitions.  Both forms are
+          // expressible as type-level predicates, so install
+          // them — late-arriving CSs at operand_av->in get
+          // classified correctly without re-running this
+          // constraint setup.
+          narrow_true_pred  = is_none_check ? RP_IsNilType    : RP_IsNotNilType;
+          narrow_false_pred = is_none_check ? RP_IsNotNilType : RP_IsNilType;
           for (CreationSet *cs1 : operand_av->out->sorted) {
             bool is_none = (cs1->sym->type == sym_nil_type);
             if (is_none_check ? is_none : !is_none)
@@ -2176,7 +2304,8 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
           }
         }
         if (tt != fa->type_world.bottom_type ||
-            ft != fa->type_world.bottom_type) {
+            ft != fa->type_world.bottom_type ||
+            narrow_true_pred != RP_None || narrow_false_pred != RP_None) {
           narrow_operand = operand_var;
           narrow_true_type = tt;
           narrow_false_type = ft;
@@ -2188,10 +2317,11 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
           AVar *vv = make_AVar(n->rvals[0], es);
           AVar *lv = make_AVar(n->lvals.v[0], es);
           flow_vars(vv, lv);
-          if (narrow_operand && n->rvals[0] == narrow_operand &&
-              narrow_true_type &&
-              narrow_true_type != fa->type_world.bottom_type) {
-            flow_var_type_permit(lv, narrow_true_type);
+          if (narrow_operand && n->rvals[0] == narrow_operand) {
+            if (narrow_true_pred != RP_None)
+              flow_var_permit_pred(lv, narrow_true_pred, narrow_pred_cls);
+            else if (narrow_true_type && narrow_true_type != fa->type_world.bottom_type)
+              flow_var_type_permit(lv, narrow_true_type);
           }
         }
         PNode *n = p->cfg_succ[0];
@@ -2202,10 +2332,11 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
           AVar *vv = make_AVar(n->rvals[0], es);
           AVar *lv = make_AVar(n->lvals.v[1], es);
           flow_vars(vv, lv);
-          if (narrow_operand && n->rvals[0] == narrow_operand &&
-              narrow_false_type &&
-              narrow_false_type != fa->type_world.bottom_type) {
-            flow_var_type_permit(lv, narrow_false_type);
+          if (narrow_operand && n->rvals[0] == narrow_operand) {
+            if (narrow_false_pred != RP_None)
+              flow_var_permit_pred(lv, narrow_false_pred, narrow_pred_cls);
+            else if (narrow_false_type && narrow_false_type != fa->type_world.bottom_type)
+              flow_var_type_permit(lv, narrow_false_type);
           }
         }
         PNode *n = p->cfg_succ[1];
@@ -3490,11 +3621,14 @@ static void clear_avar(AVar *av) {
   av->setters = 0;
   av->setter_class = 0;
   av->restrict = 0;
+  av->restrict_pred = RP_None;
+  av->restrict_pred_cls = nullptr;
   av->backward.clear();
   av->forward.clear();
   av->arg_of_send.clear();
   av->mark_map = 0;
   av->live_arg = 0;
+  av->needs_fat = 0;
   if (av->lvalue) clear_avar(av->lvalue);
 }
 
@@ -4107,6 +4241,195 @@ static void clear_splits() {
   return analyze_again;
 }
 
+// Issue 029 step 1: identify AVars that participate in a
+// polymorphic confluence and propagate the marker backward
+// through producer flow edges.
+//
+// An AVar is a "confluence" iff its `out` contains
+// CreationSets from 2+ distinct non-nil metatypes.  Single-
+// metatype AVars (even with multiple CSs of the same class)
+// stay monomorphic; nil-only or T+nil stay monomorphic
+// (nil = NULL pointer, encoded by absence).
+//
+// Propagation: once an AVar A is marked, every AVar B with
+// B in A->backward (i.e. B flows to A) is also marked.
+// Rationale: B's producer must materialize a value
+// compatible with A's fat representation, so B carries the
+// fat-ness backward to the materialization point.
+// Terminates because the bit is monotone: each AVar gets
+// marked at most once.
+//
+// Step 1 (this commit) only computes the bit and exposes
+// it via `PYC_DEBUG_FAT=1`.  Codegen consumption lands in
+// later steps.
+// Distinct non-nil meta-types seen across all AVars of a
+// single Var.  Per-AVar may be monomorphic (FA splits
+// aggressively), but the Var's storage representation must
+// be wide enough to cover the union seen by every ES that
+// references it — that's where polymorphism lands at the
+// codegen layer.  Uses `cs->type` (the CS's grouping type
+// — e.g. `bool` for both True/False, the class for an
+// instance) rather than `cs->sym` (which would split bool
+// CSs into True+False, ints into per-value constants, etc.
+// — those aren't polymorphism for dispatch).
+// Map a CS to its grouping type for dispatch purposes.
+// - Class instances: cs->sym is the class.  Use it.
+// - Value-type constants (sym_true, sym_false, int
+//   literals): cs->sym is the constant Sym; the actual
+//   class is `cs->sym->type` (e.g. sym_bool).  Walk one
+//   level up so True+False group as bool, 5+7 group as
+//   int, etc.  Otherwise the grouping would treat every
+//   distinct constant value as its own type and we'd see
+//   spurious confluences everywhere.
+static Sym *cs_group_type(CreationSet *cs) {
+  if (!cs || !cs->sym) return nullptr;
+  Sym *s = cs->sym;
+  if (s->is_constant && s->type) s = s->type;
+  return s;
+}
+
+static int distinct_nonnil_metatypes(Var *v) {
+  Vec<Sym *> seen;
+  form_AVarMapElem(x, v->avars) {
+    AVar *av = x->value;
+    if (!av || !av->out) continue;
+    for (CreationSet *cs : av->out->sorted) {
+      Sym *g = cs_group_type(cs);
+      if (!g) continue;
+      if (g == sym_nil_type) continue;
+      seen.set_add(g);
+    }
+  }
+  return seen.n;
+}
+
+static void mark_fat_avars() {
+  // Collect initial confluence AVars.
+  Vec<AVar *> worklist;
+  int n_total = 0;
+  int n_initial = 0;
+  int n_var_total = 0;
+  int n_var_initial = 0;
+  for (Fun *f : fa->funs) {
+    for (Var *v : f->fa_all_Vars) {
+      n_var_total++;
+      // Count total AVars for reporting.
+      form_AVarMapElem(x, v->avars) {
+        if (x->value) n_total++;
+      }
+      if (distinct_nonnil_metatypes(v) > 1) {
+        n_var_initial++;
+        form_AVarMapElem(x, v->avars) {
+          AVar *av = x->value;
+          if (av && !av->needs_fat) {
+            av->needs_fat = 1;
+            worklist.add(av);
+            n_initial++;
+          }
+        }
+      }
+    }
+  }
+  // Backward propagation: a producer that flows into a fat
+  // AVar must also be fat (it materializes the fat value).
+  while (worklist.n) {
+    AVar *a = worklist.pop();
+    for (AVar *b : a->backward) {
+      if (b && !b->needs_fat) {
+        b->needs_fat = 1;
+        worklist.add(b);
+      }
+    }
+  }
+  if (getenv("PYC_DEBUG_FAT_ALL")) {
+    // Dump every Var's union of grouping types.  Lets us
+    // see WHY a Var was or wasn't classified as fat.
+    for (Fun *f : fa->funs) {
+      for (Var *v : f->fa_all_Vars) {
+        Vec<Sym *> seen;
+        form_AVarMapElem(x, v->avars) {
+          AVar *av = x->value;
+          if (!av || !av->out) continue;
+          for (CreationSet *cs : av->out->sorted) {
+            Sym *g = cs_group_type(cs);
+            if (g) seen.set_add(g);
+          }
+        }
+        if (seen.n < 1) continue;
+        cchar *fname = f->sym && f->sym->name ? f->sym->name : "(anon)";
+        cchar *vname = v->sym && v->sym->name ? v->sym->name : "(anon)";
+        fprintf(stderr, "[all] fun=%s var=%s id=%d types={", fname, vname, v->id);
+        int n = 0;
+        for (Sym *s : seen) {
+          if (n++) fprintf(stderr, ", ");
+          fprintf(stderr, "%s", s && s->name ? s->name : "(anon)");
+        }
+        fprintf(stderr, "}\n");
+      }
+    }
+  }
+  if (getenv("PYC_DEBUG_FAT")) {
+    int n_marked = 0;
+    int n_var_marked = 0;
+    for (Fun *f : fa->funs) {
+      for (Var *v : f->fa_all_Vars) {
+        bool v_fat = false;
+        form_AVarMapElem(x, v->avars) {
+          AVar *av = x->value;
+          if (av && av->needs_fat) {
+            n_marked++;
+            v_fat = true;
+          }
+        }
+        if (v_fat) n_var_marked++;
+      }
+    }
+    fprintf(stderr, "[fat] %d/%d AVars marked needs_fat (initial AVars: %d)\n",
+            n_marked, n_total, n_initial);
+    fprintf(stderr, "[fat] %d/%d Vars marked needs_fat (initial Vars: %d)\n",
+            n_var_marked, n_var_total, n_var_initial);
+    // Per-fun summary of fat AVars by Var name.
+    for (Fun *f : fa->funs) {
+      bool any_in_fun = false;
+      for (Var *v : f->fa_all_Vars) {
+        bool v_fat = false;
+        form_AVarMapElem(x, v->avars) {
+          if (x->value && x->value->needs_fat) { v_fat = true; break; }
+        }
+        if (v_fat) {
+          if (!any_in_fun) {
+            cchar *fname = f->sym && f->sym->name ? f->sym->name : "(anon)";
+            fprintf(stderr, "[fat]   fun %s:\n", fname);
+            any_in_fun = true;
+          }
+          cchar *vname = v->sym && v->sym->name ? v->sym->name : "(anon)";
+          // Print up to 4 distinct metatypes in this Var's
+          // unified out.
+          Vec<Sym *> seen;
+          form_AVarMapElem(x, v->avars) {
+            AVar *av = x->value;
+            if (!av || !av->out) continue;
+            for (CreationSet *cs : av->out->sorted) {
+              Sym *g = cs_group_type(cs);
+              if (!g) continue;
+              if (g == sym_nil_type) continue;
+              seen.set_add(g);
+            }
+          }
+          fprintf(stderr, "[fat]     var %s (id %d): types {", vname, v->id);
+          int n = 0;
+          for (Sym *s : seen) {
+            if (n++) fprintf(stderr, ", ");
+            if (n > 4) { fprintf(stderr, "..."); break; }
+            fprintf(stderr, "%s", s && s->name ? s->name : "(anon)");
+          }
+          fprintf(stderr, "}\n");
+        }
+      }
+    }
+  }
+}
+
 static void set_void_lub_types_to_void(Var *v) {
   CreationSet *s = fa->type_world.void_type->v[0];
   for (int i = 0; i < v->avars.n; i++)
@@ -4143,29 +4466,58 @@ static void complete_pass() {
   pass_timer.stop();
 }
 
-int FA::analyze(Fun *top) {
-  ::fa = this;
-  initialize();
-  top_edge = make_top_edge(top);
+static void analyze_to_convergence() {
   do {
     initialize_pass();
-    edge_worklist.enqueue(top_edge);
-    while (edge_worklist.head || send_worklist.head) {
-      while (AEdge *e = edge_worklist.pop()) {
+    fa->edge_worklist.enqueue(fa->top_edge);
+    while (fa->edge_worklist.head || fa->send_worklist.head) {
+      while (AEdge *e = fa->edge_worklist.pop()) {
         e->in_edge_worklist = 0;
         analyze_edge(e);
       }
-      while (AVar *send = send_worklist.pop()) {
+      while (AVar *send = fa->send_worklist.pop()) {
         send->in_send_worklist = 0;
         add_send_edges_pnode(send->var->def, (EntrySet *)send->contour);
       }
-      while (EntrySet *es = es_worklist.pop()) {
+      while (EntrySet *es = fa->es_worklist.pop()) {
         es->in_es_worklist = 0;
         add_es_constraints(es);
       }
     }
     complete_pass();
-  } while (extend_analysis() || if1->callback->reanalyze(type_violations));
+  } while (extend_analysis() || if1->callback->reanalyze(fa->type_violations));
+}
+
+int FA::analyze(Fun *top) {
+  ::fa = this;
+  initialize();
+  top_edge = make_top_edge(top);
+  analyze_to_convergence();
+  // Experimental: mid-FA inlining (issue 026 followup).
+  // After first convergence, run simple_inlining to fold
+  // identity-fun wrappers (e.g. type-specialized
+  // __pyc_to_bool__), then reset per-ES live-pnode caches
+  // and re-converge so FA's second pass sees the cleaner
+  // IR.  Gated on `ifa_fa_inline`; default off (production
+  // runs simple_inlining post-FA via ifa_optimize()).
+  if (ifa_fa_inline) {
+    mark_live_funs(this);
+    simple_inlining(this);
+    // Stale constraint state: inlining marked some PNodes
+    // dead and possibly added new ones.  Drop each ES's
+    // live_pnodes set; add_es_constraints repopulates it
+    // on the next pass.  AVars on Vars survive (Vars are
+    // stable across inlining), so flow info already
+    // computed isn't lost — the second pass re-derives
+    // constraints for the new shape and converges from
+    // there.
+    for (EntrySet *es : ess) es->live_pnodes.clear();
+    analyze_to_convergence();
+  }
+  // Issue 029 step 1: identify polymorphic confluences for
+  // future fat-pointer codegen.  No effect on this pass yet
+  // (just sets the AVar bit + optional debug dump).
+  mark_fat_avars();
   set_void_lub_types_to_void();
   remove_unused_closures();
   if1->callback->report_analysis_errors(type_violations);

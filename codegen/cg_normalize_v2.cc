@@ -1832,6 +1832,26 @@ bool lower_send_prim(NormCtx &c, FunCtx &fc, PNode *pn,
       return true;
     }
   }
+  // Issue 028 step 4: prim_is(a, b) — real identity
+  // comparison for non-None operands.  Same lowering as
+  // the isinstance-vs-nil case (CG2_BINOP EQ on two
+  // pointers), just both sides are runtime values rather
+  // than one being a null constant.
+  if (strcmp(name, "is") == 0 && pn->rvals.n >= 4) {
+    CGv2Value *lhs = build_var(c, fc, pn->rvals[2]);
+    CGv2Value *rhs = build_var(c, fc, pn->rvals[3]);
+    CGv2Value *dst = build_var(c, fc, pn->lvals[0]);
+    if (lhs && rhs && dst) {
+      CGv2Inst *inst = new CGv2Inst();
+      inst->op = CG2_BINOP;
+      inst->sub_op = CG2B_EQ;
+      inst->rvals.add(lhs);
+      inst->rvals.add(rhs);
+      inst->lvals.add(dst);
+      blk->body.add(inst);
+      return true;
+    }
+  }
   // __pyc_c_call__ — pyc's generic FFI primitive. Route to
   // CG2_C_CALL via lower_send_c_call (D.3).
   if (strcmp(name, "__pyc_c_call__") == 0 &&
@@ -1977,6 +1997,10 @@ void lower_send(NormCtx &c, FunCtx &fc, PNode *pn, Fun *caller,
     // isinstance-vs-nil handler which emits CG2_BINOP EQ
     // against a null pointer constant.
     if (idx == P_prim_isinstance) {
+      lower_send_prim(c, fc, pn, blk);
+      return;
+    }
+    if (idx == P_prim_is) {
       lower_send_prim(c, fc, pn, blk);
       return;
     }
@@ -2343,3 +2367,4 @@ CGv2Program *cg_normalize_v2(FA *fa) {
 
   return p;
 }
+

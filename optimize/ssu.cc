@@ -188,11 +188,31 @@ void Fun::build_ssu() {
     for (Var *v : p->lvals) if (v->sym->is_local) v->ssu->defs.add(p);
     for (Var *v : p->rvals) if (v->sym->is_local) v->ssu->uses.add(p);
   }
+  // Phi placement and phy placement feed each other: a
+  // new phy creates new defs (its lvals at branch entries
+  // — see `place_phy` line `defs.append(y->cfg_succ)`),
+  // which give `place_phi` more work; a new phi creates
+  // new uses (`place_phi` line `uses.append(y->cfg_pred)`),
+  // which give `place_phy` more work.  Iterate until both
+  // converge.
+  //
+  // The previous condition `while (phi && phy)` stopped
+  // as soon as EITHER pass made no progress on its own
+  // — which mis-handled the common shape where a var has
+  // no real defs (read-only parameter like `self`).  For
+  // those vars the initial phi pass places nothing, the
+  // initial phy pass places branch splits, but the
+  // cascading phi at the merge point — needed by codegen
+  // to converge per-branch renames — was never placed.
+  // Result: codegen emits per-branch SSU renames for
+  // `self`, with no merge convergence, and post-if code
+  // reads from an uninitialized branch-rename.  See
+  // `ifa/issues/028-fibheap-blockers.md` Bug B.
   int phi = place_phi(vrs);
   int phy = place_phy(vrs);
-  while (phi && phy) {
+  while (phi || phy) {
     phi = place_phi(vrs);
-    phy = phi && place_phy(vrs);
+    phy = place_phy(vrs);
   }
   rename_vars(this, pnodes);
   for (PNode *n : pnodes) {

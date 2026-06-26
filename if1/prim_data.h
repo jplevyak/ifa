@@ -115,4 +115,12 @@ extern Prim *prim_typeof;
 #define P_prim_typeof 54
 extern Prim *prim_typeof_element;
 #define P_prim_typeof_element 55
+// Real-identity comparison (CPython `is` semantics on
+// non-None operands).  Lowers to pointer equality in C
+// codegen.  Issue 028 step 4 — the previous `__is__`
+// method dispatch on `__pyc_any_type__` returned False
+// unconditionally and silently broke `z is z.next`-style
+// single-node-ring checks in mutable data structures.
+extern Prim *prim_is;
+#define P_prim_is 56
 #endif

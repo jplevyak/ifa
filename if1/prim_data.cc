@@ -56,6 +56,7 @@ Prim *prim_sizeof = 0;
 Prim *prim_sizeof_element = 0;
 Prim *prim_typeof = 0;
 Prim *prim_typeof_element = 0;
+Prim *prim_is = 0;
 
 void prim_init(Primitives *p, IF1 *if1) {
   char *n;
@@ -424,4 +425,14 @@ void prim_init(Primitives *p, IF1 *if1) {
   n = (char *)if1->strings.put((char *)"typeof_element");
   p->prims.add(prim_typeof_element);
   p->prim_map[0][0].put(n, prim_typeof_element);
+  // prim_is: real identity comparison (CPython `is`
+  // semantics on non-None operands).  Two args, one
+  // bool result; pointer equality at codegen.  See
+  // ifa/issues/028 and __pyc__/00_runtime.py comments.
+  static PrimType prim_is_arg_types[] = {PRIM_TYPE_ANY, PRIM_TYPE_ANY};
+  static PrimType prim_is_ret_types[] = {PRIM_TYPE_ANY};
+  prim_is = new Prim(56, "is", "prim_is", -3, 0, 1, prim_is_arg_types, prim_is_ret_types, 0);
+  n = (char *)if1->strings.put((char *)"is");
+  p->prims.add(prim_is);
+  p->prim_map[0][0].put(n, prim_is);
 }
