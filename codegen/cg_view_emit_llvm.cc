@@ -337,9 +337,7 @@ llvm::Value *value_for_var(EmitCtx &ctx, Var *v) {
   if (llvm::Value *cached = ctx.var_map.get(v)) return cached;
   // Constant Sym: materialize the LLVM constant directly.
   Sym *s = get_constant(v);
-  if (v->id == 1561 || v->id == 1563) fprintf(stderr, "val%d: get_constant=%p\n", v->id, s);
   if (!s) s = v->sym;
-  if (v->id == 1561 || v->id == 1563) fprintf(stderr, "val%d: s=%p, is_constant=%d, type=%p\n", v->id, s, s ? s->is_constant : -1, v->type);
   if (s && s->is_constant && v->type) {
     llvm::Type *t = sym_to_llvm_type(v->type);
     if (!t) return nullptr;
@@ -360,7 +358,6 @@ llvm::Value *value_for_var(EmitCtx &ctx, Var *v) {
       if (t->isFloatingPointTy()) return llvm::ConstantFP::get(t, 0.0);
     }
 
-    if (v->id == 1561 || v->id == 1563) fprintf(stderr, "val%d: const_kind=%d\n", v->id, s->imm.const_kind);
     llvm::Value *cv = nullptr;
     switch (s->imm.const_kind) {
       case IF1_NUM_KIND_INT:
@@ -1526,6 +1523,23 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
     return true;
   }
 
+  if (strcmp(name, "__pyc_to_str__") == 0) {
+    if (pn->rvals.n >= 3) {
+      Var *v = pn->rvals.v[2];
+      char buf[256];
+      if (v && v->type && v->type->is_meta_type && v->type->name) {
+        snprintf(buf, sizeof(buf), "<class '%s'>", v->type->name);
+      } else {
+        snprintf(buf, sizeof(buf), "<instance>");
+      }
+      llvm::Value *cv = materialize_pyc_string(dupstr(buf));
+      if (pn->lvals.n > 0 && pn->lvals.v[0]) {
+        put_result(ctx, pn->lvals.v[0], cv);
+      }
+      return true;
+    }
+  }
+
   // Default named-prim route: `_CG_<name>(rvals[2..])`.
   char helper[256];
   snprintf(helper, sizeof(helper), "_CG_%s", name);
@@ -1606,22 +1620,21 @@ void emit_send(EmitCtx &ctx, PNode *pn) {
     // handled in emit_block_terminator, not here.
     if (idx == P_prim_reply) return;
     // Structural prim handlers (R.2.x landings).  Each
-    if (emit_send_binop(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_binop handled %d\n", pn->lvals.v[0]->id); return; }
-    if (emit_send_period(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_period handled %d\n", pn->lvals.v[0]->id); return; }
-    if (emit_send_setter(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_setter handled %d\n", pn->lvals.v[0]->id); return; }
-    if (emit_send_new(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_new handled %d\n", pn->lvals.v[0]->id); return; }
-    if (emit_send_clone(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_clone handled %d\n", pn->lvals.v[0]->id); return; }
-    if (emit_send_len(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_len handled %d\n", pn->lvals.v[0]->id); return; }
-    if (emit_send_strcat(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_strcat handled %d\n", pn->lvals.v[0]->id); return; }
-    if (emit_send_is(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_is handled %d\n", pn->lvals.v[0]->id); return; }
-    if (emit_send_coerce(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_coerce handled %d\n", pn->lvals.v[0]->id); return; }
-    if (emit_send_make(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_make handled %d\n", pn->lvals.v[0]->id); return; }
-    if (emit_send_index_load(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_index_load handled %d\n", pn->lvals.v[0]->id); return; }
-    if (emit_send_index_store(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_index_store handled %d\n", pn->lvals.v[0]->id); return; }
-    if (emit_send_sizeof(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_sizeof handled %d\n", pn->lvals.v[0]->id); return; }
-    if (emit_send_primitive(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_primitive handled %d\n", pn->lvals.v[0]->id); return; }
-    if (emit_send_default_prim(ctx, pn)) { if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "emit_send_default_prim handled %d\n", pn->lvals.v[0]->id); return; }
-    if (pn->lvals.n > 0 && pn->lvals.v[0] && (pn->lvals.v[0]->id == 1561 || pn->lvals.v[0]->id == 1563)) fprintf(stderr, "NO handler for %d\n", pn->lvals.v[0]->id);
+    if (emit_send_binop(ctx, pn)) return;
+    if (emit_send_period(ctx, pn)) return;
+    if (emit_send_setter(ctx, pn)) return;
+    if (emit_send_new(ctx, pn)) return;
+    if (emit_send_clone(ctx, pn)) return;
+    if (emit_send_len(ctx, pn)) return;
+    if (emit_send_strcat(ctx, pn)) return;
+    if (emit_send_is(ctx, pn)) return;
+    if (emit_send_coerce(ctx, pn)) return;
+    if (emit_send_make(ctx, pn)) return;
+    if (emit_send_index_load(ctx, pn)) return;
+    if (emit_send_index_store(ctx, pn)) return;
+    if (emit_send_sizeof(ctx, pn)) return;
+    if (emit_send_primitive(ctx, pn)) return;
+    if (emit_send_default_prim(ctx, pn)) return;
     return;
   }
   emit_send_call(ctx, pn);
@@ -1642,23 +1655,6 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
   if (!target || !target->cg_string) return;
   llvm::Function *target_fn =
       TheModule->getFunction(target->cg_string);
-  
-  if (strcmp(target->cg_string, "__pyc_to_str__") == 0) {
-    if (pn->rvals.n >= 3) {
-      Var *v = pn->rvals.v[2];
-      char buf[256];
-      if (v && v->type && v->type->is_meta_type && v->type->name) {
-        snprintf(buf, sizeof(buf), "<class '%s'>", v->type->name);
-      } else {
-        snprintf(buf, sizeof(buf), "<instance>");
-      }
-      llvm::Value *cv = materialize_pyc_string(dupstr(buf));
-      if (pn->lvals.n > 0 && pn->lvals.v[0]) {
-        put_result(ctx, pn->lvals.v[0], cv);
-      }
-      return;
-    }
-  }
 
   if (!target_fn) return;
 
@@ -1714,7 +1710,8 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
     if (!actual) continue;
     llvm::Value *val = value_for_var(ctx, actual);
     if (!val) {
-      fprintf(stderr, "early 5: actual %d not found\n", actual->id);
+      // Not found
+      fprintf(stderr, "emit_send_call %p missing arg val for %d\n", pn, actual->id);
       return;
     }
     args.push_back(val);
