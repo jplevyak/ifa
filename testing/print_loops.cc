@@ -14,6 +14,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <algorithm>
 
 // A LoopNode wraps either a real PNode (node != NULL) or a synthesized
 // "loop rep" (node == NULL). Only loop reps have meaningful children
@@ -59,12 +60,7 @@ static void collect_members(LoopNode *rep, Vec<PNode *> &out) {
   }
 }
 
-static int compar_pnode_by_name(const void *a, const void *b, void *ctx) {
-  Map<PNode *, cchar *> *pn = (Map<PNode *, cchar *> *)ctx;
-  cchar *na = pn->get(*(PNode *const *)a);
-  cchar *nb = pn->get(*(PNode *const *)b);
-  return strcmp(na ? na : "", nb ? nb : "");
-}
+
 
 static void print_loop_tree(FILE *fp, LoopNode *n, int depth,
                             Map<LoopNode *, cchar *> &lnames,
@@ -75,7 +71,11 @@ static void print_loop_tree(FILE *fp, LoopNode *n, int depth,
   Vec<PNode *> members;
   collect_members(n, members);
   // Sort by PNode name for stable output.
-  qsort_r(members.v, members.n, sizeof(PNode *), compar_pnode_by_name, &pnames);
+  std::sort(members.v, members.v + members.n, [&pnames](PNode *a, PNode *b) {
+    cchar *na = pnames.get(a);
+    cchar *nb = pnames.get(b);
+    return strcmp(na ? na : "", nb ? nb : "") < 0;
+  });
   fprintf(fp, "%s depth=%d members=[", nm ? nm : "?", depth + 1);
   for (int i = 0; i < members.n; i++) {
     if (i) fputc(' ', fp);

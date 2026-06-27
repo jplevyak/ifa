@@ -224,11 +224,18 @@ void declare_globals(FA *fa) {
     llvm::Type *t = sym_to_llvm_type(v->type);
     if (!t) continue;
     cchar *name = cg_get_string(v);
-    if (!name) name = (s->name ? s->name : "g");
+    std::string final_name;
+    if (name && name[0]) {
+      final_name = name;
+    } else if (s->name && s->name[0] && strchr(s->name, ' ') == nullptr) {
+      final_name = s->name;
+    } else {
+      final_name = "g" + std::to_string(v->id);
+    }
     // If a global with this name already exists in the
     // module (declared by some earlier pass), reuse it.
     if (llvm::GlobalVariable *existing =
-            TheModule->getNamedGlobal(name)) {
+            TheModule->getNamedGlobal(final_name)) {
       g_var_to_global.put(v, existing);
       continue;
     }
@@ -245,7 +252,7 @@ void declare_globals(FA *fa) {
     }
     llvm::GlobalVariable *gv = new llvm::GlobalVariable(
         *TheModule, t, /*isConstant=*/false,
-        llvm::GlobalValue::InternalLinkage, init, name);
+        llvm::GlobalValue::InternalLinkage, init, final_name);
     g_var_to_global.put(v, gv);
   }
 }
@@ -336,12 +343,21 @@ llvm::Value *value_for_var(EmitCtx &ctx, Var *v) {
   if (s && s->is_constant && v->type) {
     llvm::Type *t = sym_to_llvm_type(v->type);
     if (!t) return nullptr;
-
-    if (s->name && !strcmp(s->name, "True")) {
+    if (s->name && (!strcmp(s->name, "True") || !strcmp(s->name, "true"))) {
       if (t->isIntegerTy()) return llvm::ConstantInt::get(t, 1);
+      if (t->isPointerTy()) {
+        llvm::Constant *int_val = llvm::ConstantInt::get(llvm::Type::getInt64Ty(*TheContext), 1);
+        return llvm::ConstantExpr::getIntToPtr(int_val, t);
+      }
+      if (t->isFloatingPointTy()) return llvm::ConstantFP::get(t, 1.0);
     }
-    if (s->name && !strcmp(s->name, "False")) {
+    if (s->name && (!strcmp(s->name, "False") || !strcmp(s->name, "false"))) {
       if (t->isIntegerTy()) return llvm::ConstantInt::get(t, 0);
+      if (t->isPointerTy()) {
+        llvm::Constant *int_val = llvm::ConstantInt::get(llvm::Type::getInt64Ty(*TheContext), 0);
+        return llvm::ConstantExpr::getIntToPtr(int_val, t);
+      }
+      if (t->isFloatingPointTy()) return llvm::ConstantFP::get(t, 0.0);
     }
 
     if (v->id == 1561 || v->id == 1563) fprintf(stderr, "val%d: const_kind=%d\n", v->id, s->imm.const_kind);
@@ -389,12 +405,6 @@ llvm::Value *value_for_var(EmitCtx &ctx, Var *v) {
 
 void put_result(EmitCtx &ctx, Var *v, llvm::Value *value) {
   if (!v || !value) return;
-  if (v->id == 1563 || v->id == 1561) {
-    fprintf(stderr, "put_result called for id %d!\n", v->id);
-  }
-  // Phi-target Var: store to its alloca slot so subsequent
-  // reads (including reads in a different block) see the
-  // new value via load.
   if (llvm::AllocaInst *slot = ctx.alloca_map.get(v)) {
     llvm::Type *want = slot->getAllocatedType();
     if (value->getType() != want) {
@@ -1792,8 +1802,15 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
       llvm::BasicBlock *t_bb = nullptr, *f_bb = nullptr;
       if (closer->cfg_succ.n > 0) t_bb = ctx.label_bb.get(closer->cfg_succ.v[0]);
       if (closer->cfg_succ.n > 1) f_bb = ctx.label_bb.get(closer->cfg_succ.v[1]);
-      if (cond && t_bb && f_bb) Builder->CreateCondBr(cond, t_bb, f_bb);
-      else {
+      
+      if (t_bb && f_bb) {
+        if (cond) Builder->CreateCondBr(cond, t_bb, f_bb);
+        else Builder->CreateUnreachable();
+      } else if (t_bb && !f_bb) {
+        Builder->CreateBr(t_bb);
+      } else if (f_bb && !t_bb) {
+        Builder->CreateBr(f_bb);
+      } else {
         int vid = -1;
         if (closer->rvals.n > 0 && closer->rvals.v[0]) {
           vid = closer->rvals.v[0]->id;
