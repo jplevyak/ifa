@@ -476,6 +476,9 @@ IndexLayout compute_index_layout(CGv2Type *ptr_ty, CGv2Type *val_ty,
   //    type.  Pyc specializes `{e0:i64, e1:i64, ...}` for
   //    `list[int64]` and walks dynamic indices over the field
   //    stride, not the full struct stride.
+  //    Enable header indirection for ALL lists because they can
+  //    be resized dynamically, moving the data pointer!
+  L.use_header_indirection = true;
   CGv2Type *index_ty = ptr_ty->element;
   if (index_ty->kind == CG2T_STRUCT &&
       index_ty->fields.n > 0 && index_ty->fields[0] &&

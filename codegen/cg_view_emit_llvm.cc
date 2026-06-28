@@ -2314,10 +2314,12 @@ void emit_fun(EmitCtx &ctx, Fun *f) {
   Vec<Var *> bound_vars;
   ctx.var_map.get_keys(bound_vars);
   for (Var *v : bound_vars) {
-    llvm::AllocaInst *slot = ctx.alloca_map.get(v);
     llvm::Value *arg_val = ctx.var_map.get(v);
-    if (slot && arg_val && llvm::isa<llvm::Argument>(arg_val)) {
+    if (!arg_val || !llvm::isa<llvm::Argument>(arg_val)) continue;
+    if (llvm::AllocaInst *slot = ctx.alloca_map.get(v)) {
       Builder->CreateStore(arg_val, slot);
+    } else if (llvm::GlobalVariable *gv = g_var_to_global.get(v)) {
+      Builder->CreateStore(arg_val, gv);
     }
   }
 
