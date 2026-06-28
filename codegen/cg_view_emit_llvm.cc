@@ -1711,7 +1711,6 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
     llvm::Value *val = value_for_var(ctx, actual);
     if (!val) {
       // Not found
-      fprintf(stderr, "emit_send_call %p missing arg val for %d\n", pn, actual->id);
       return;
     }
     args.push_back(val);
@@ -2280,6 +2279,15 @@ void emit_fun(EmitCtx &ctx, Fun *f) {
     return;
   }
   Builder->SetInsertPoint(entry_bb);
+  Vec<Var *> bound_vars;
+  ctx.var_map.get_keys(bound_vars);
+  for (Var *v : bound_vars) {
+    llvm::AllocaInst *slot = ctx.alloca_map.get(v);
+    llvm::Value *arg_val = ctx.var_map.get(v);
+    if (slot && arg_val && llvm::isa<llvm::Argument>(arg_val)) {
+      Builder->CreateStore(arg_val, slot);
+    }
+  }
 
   // DFS emit from entry.  emit_pnode handles MOVE / SEND /
   // LABEL switching / terminator emission.
