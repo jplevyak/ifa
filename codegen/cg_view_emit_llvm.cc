@@ -178,6 +178,8 @@ struct EmitCtx {
 };
 
 void emit_pnode(EmitCtx &ctx, PNode *pn, Vec<PNode *> &done);
+void emit_phy_moves(EmitCtx &ctx, PNode *pn, int isucc);
+void emit_phi_moves(EmitCtx &ctx, PNode *pn, int isucc);
 
 // -------------------------------------------------------------
 // Reset per-program state.  Called at the start of every
@@ -402,7 +404,8 @@ llvm::Value *value_for_var(EmitCtx &ctx, Var *v) {
 
 void put_result(EmitCtx &ctx, Var *v, llvm::Value *value) {
   if (!v || !value) return;
-  if (llvm::AllocaInst *slot = ctx.alloca_map.get(v)) {
+  llvm::AllocaInst *slot = ctx.alloca_map.get(v);
+  if (slot) {
     llvm::Type *want = slot->getAllocatedType();
     if (value->getType() != want) {
       if (value->getType()->isPointerTy() && want->isPointerTy()) {
@@ -1777,12 +1780,22 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
         if (ctx.fa && ctx.fa->type_world.true_type && closer->rvals.v[0]->sym == ctx.fa->type_world.true_type->v[0]->sym) {
           if (closer->cfg_succ.n > 0) {
             llvm::BasicBlock *t_bb = ctx.label_bb.get(closer->cfg_succ.v[0]);
-            if (t_bb) { Builder->CreateBr(t_bb); break; }
+            if (t_bb) {
+              emit_phy_moves(ctx, closer, 0);
+              emit_phi_moves(ctx, closer, 0);
+              Builder->CreateBr(t_bb);
+              break;
+            }
           }
         } else if (ctx.fa && ctx.fa->type_world.false_type && closer->rvals.v[0]->sym == ctx.fa->type_world.false_type->v[0]->sym) {
           if (closer->cfg_succ.n > 1) {
             llvm::BasicBlock *f_bb = ctx.label_bb.get(closer->cfg_succ.v[1]);
-            if (f_bb) { Builder->CreateBr(f_bb); break; }
+            if (f_bb) {
+              emit_phy_moves(ctx, closer, 1);
+              emit_phi_moves(ctx, closer, 1);
+              Builder->CreateBr(f_bb);
+              break;
+            }
           }
         }
       }
@@ -1800,11 +1813,30 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
       if (closer->cfg_succ.n > 1) f_bb = ctx.label_bb.get(closer->cfg_succ.v[1]);
       
       if (t_bb && f_bb) {
-        if (cond) Builder->CreateCondBr(cond, t_bb, f_bb);
-        else Builder->CreateUnreachable();
+        if (cond) {
+          llvm::BasicBlock *t_edge = llvm::BasicBlock::Create(*TheContext, "t_edge", ctx.llvm_fn);
+          llvm::BasicBlock *f_edge = llvm::BasicBlock::Create(*TheContext, "f_edge", ctx.llvm_fn);
+          Builder->CreateCondBr(cond, t_edge, f_edge);
+          
+          Builder->SetInsertPoint(t_edge);
+          emit_phy_moves(ctx, closer, 0);
+          emit_phi_moves(ctx, closer, 0);
+          Builder->CreateBr(t_bb);
+          
+          Builder->SetInsertPoint(f_edge);
+          emit_phy_moves(ctx, closer, 1);
+          emit_phi_moves(ctx, closer, 1);
+          Builder->CreateBr(f_bb);
+        } else {
+          Builder->CreateUnreachable();
+        }
       } else if (t_bb && !f_bb) {
+        emit_phy_moves(ctx, closer, 0);
+        emit_phi_moves(ctx, closer, 0);
         Builder->CreateBr(t_bb);
       } else if (f_bb && !t_bb) {
+        emit_phy_moves(ctx, closer, 1);
+        emit_phi_moves(ctx, closer, 1);
         Builder->CreateBr(f_bb);
       } else {
         int vid = -1;
