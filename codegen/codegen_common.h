@@ -158,17 +158,39 @@ void codegen_fail(Var *v, cchar *fmt, ...) __attribute__((noreturn, format(print
 //
 // See PRIMITIVES.md §14 (Backend coverage matrix) for the
 // per-primitive status and pinpoint-fixture map.
-class PrimEmitter {
+class VirtualCGEmitter {
  public:
-  virtual ~PrimEmitter() = default;
+  virtual ~VirtualCGEmitter() = default;
 
-  // Emit code for a single SEND PNode whose `prim` field is
-  // already resolved. Returns 1 if the primitive was handled,
-  // 0 if it should fall through to the generic call path.
-  // Backends override this with their dispatch (typically a
-  // `switch (n->prim->index)`).
-  virtual int emit(Fun *ifa_fun, PNode *n) = 0;
+  virtual void emit_move(PNode *pn) = 0;
+
+  // Returns true if the PNode was handled, false otherwise
+  virtual bool emit_send_unaryop(PNode *pn) = 0;
+  virtual bool emit_send_binop(PNode *pn) = 0;
+  virtual bool emit_send_period(PNode *pn) = 0;
+  virtual bool emit_send_setter(PNode *pn) = 0;
+  virtual bool emit_send_new(PNode *pn) = 0;
+  virtual bool emit_send_clone(PNode *pn) = 0;
+  virtual bool emit_send_len(PNode *pn) = 0;
+  virtual bool emit_send_strcat(PNode *pn) = 0;
+  virtual bool emit_send_is(PNode *pn) = 0;
+  virtual bool emit_send_coerce(PNode *pn) = 0;
+  virtual bool emit_send_make(PNode *pn) = 0;
+  virtual bool emit_send_index_load(PNode *pn) = 0;
+  virtual bool emit_send_index_store(PNode *pn) = 0;
+  virtual bool emit_send_sizeof(PNode *pn) = 0;
+  virtual bool emit_send_primitive(PNode *pn) = 0;
+  virtual bool emit_send_default_prim(PNode *pn) = 0;
+  virtual void emit_send_call(PNode *pn) = 0;
 };
+
+// Returns true if the SEND operation's lvalue was fully constant-folded
+// by the IF1 optimizer, meaning we shouldn't emit the computation at runtime.
+bool virtual_cg_is_const_folded_send(PNode *pn);
+
+// The unified primitive dispatch loop for SEND operations.
+// Maps `pn->prim->index` to the appropriate `emit_send_*` interface hook.
+void virtual_cg_emit_send(VirtualCGEmitter *emitter, PNode *pn);
 
 // -------------------------------------------------------------
 // Side-channel accessors (CG_IR_PLAN Phase 0 §5.4)

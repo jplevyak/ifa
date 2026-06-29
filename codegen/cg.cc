@@ -652,74 +652,89 @@ static void write_send_arg(FILE *fp, Fun *f, PNode *n, MPosition *p, int &wrote_
   }
 }
 
-static void write_send(FILE *fp, Fun *f, PNode *n) {
-  fputs("  ", fp);
-  if (n->prim) {
-    // Issue 024/025: `prim_isinstance(x, sym_nil_type)`
-    // (emitted by the frontend for `x is None` /
-    // `x is not None`) lowers to a C-level NULL pointer
-    // check.  Both class instances and the None singleton
-    // are pointer-shaped in pyc's runtime (the latter is
-    // `void *` = NULL), so identity-with-None is just
-    // `x == NULL`.  No `_CG_prim_isinstance` helper needed.
-    if (n->prim->index == P_prim_isinstance && n->rvals.n >= 4 &&
-        n->rvals[3]->sym == sym_nil_type) {
-      if (n->lvals.n && cg_get_string(n->lvals[0])) {
-        cchar *opnd = cg_get_string(n->rvals[2]);
-        if (!opnd) opnd = cg_get_string(n->rvals[2]->sym);
-        fprintf(fp, "%s = (%s == NULL);\n",
-                cg_get_string(n->lvals[0]), opnd ? opnd : "NULL");
+class CBackendEmitter : public VirtualCGEmitter {
+  FILE *fp;
+  FA *fa;
+  Fun *f;
+ public:
+  CBackendEmitter(FILE *fp, FA *fa, Fun *f) : fp(fp), fa(fa), f(f) {}
+
+  void emit_move(PNode *pn) override {
+    for (int i = 0; i < pn->lvals.n; i++) {
+      simple_move(fp, pn->lvals[i], pn->rvals.v[i]);
+    }
+  }
+
+  bool handle_prim(PNode *pn) {
+    return write_c_prim(fp, fa, f, pn) != 0;
+  }
+
+  bool emit_send_unaryop(PNode *pn) override { return handle_prim(pn); }
+  bool emit_send_binop(PNode *pn) override { return handle_prim(pn); }
+  bool emit_send_period(PNode *pn) override { return handle_prim(pn); }
+  bool emit_send_setter(PNode *pn) override { return handle_prim(pn); }
+  bool emit_send_new(PNode *pn) override { return handle_prim(pn); }
+  bool emit_send_clone(PNode *pn) override { return handle_prim(pn); }
+  bool emit_send_len(PNode *pn) override { return handle_prim(pn); }
+  bool emit_send_strcat(PNode *pn) override { return handle_prim(pn); }
+  bool emit_send_is(PNode *pn) override {
+    if (pn->prim->index == P_prim_is && pn->rvals.n >= 4) {
+      if (pn->lvals.n && cg_get_string(pn->lvals[0])) {
+        cchar *lhs = cg_get_string(pn->rvals[2]);
+        if (!lhs) lhs = cg_get_string(pn->rvals[2]->sym);
+        cchar *rhs = cg_get_string(pn->rvals[3]);
+        if (!rhs) rhs = cg_get_string(pn->rvals[3]->sym);
+        fprintf(fp, "  %s = ((void *)%s == (void *)%s);\n", cg_get_string(pn->lvals[0]), lhs ? lhs : "NULL", rhs ? rhs : "NULL");
       } else {
-        fputs(";\n", fp);
+        fputs("  ;\n", fp);
       }
-      return;
+      return true;
     }
-    // Issue 028 step 4: `prim_is(a, b)` (emitted by the
-    // frontend for `a is b` / `a is not b` when neither
-    // operand is the None constant) lowers to a C-level
-    // pointer equality.  Both operands are pointer-shaped
-    // (class instances, or the None singleton = NULL); a
-    // raw `==` matches CPython's identity-for-non-None
-    // semantics.  The `is not` form is emitted by the
-    // frontend as `__not__(prim_is(a, b))` — handled by
-    // the existing __not__ method dispatch on bool.
-    if (n->prim->index == P_prim_is && n->rvals.n >= 4) {
-      if (n->lvals.n && cg_get_string(n->lvals[0])) {
-        cchar *lhs = cg_get_string(n->rvals[2]);
-        if (!lhs) lhs = cg_get_string(n->rvals[2]->sym);
-        cchar *rhs = cg_get_string(n->rvals[3]);
-        if (!rhs) rhs = cg_get_string(n->rvals[3]->sym);
-        fprintf(fp, "%s = ((void *)%s == (void *)%s);\n",
-                cg_get_string(n->lvals[0]),
-                lhs ? lhs : "NULL", rhs ? rhs : "NULL");
+    if (pn->prim->index == P_prim_isinstance && pn->rvals.n >= 4 && pn->rvals[3]->sym == sym_nil_type) {
+      if (pn->lvals.n && cg_get_string(pn->lvals[0])) {
+        cchar *opnd = cg_get_string(pn->rvals[2]);
+        if (!opnd) opnd = cg_get_string(pn->rvals[2]->sym);
+        fprintf(fp, "  %s = (%s == NULL);\n", cg_get_string(pn->lvals[0]), opnd ? opnd : "NULL");
       } else {
-        fputs(";\n", fp);
+        fputs("  ;\n", fp);
       }
-      return;
+      return true;
     }
-    if (n->lvals.n) {
-      assert(n->lvals.n == 1);
-      if (cg_get_string(n->lvals[0])) fprintf(fp, "%s = ", cg_get_string(n->lvals[0]));
+    return false;
+  }
+  bool emit_send_coerce(PNode *pn) override { return handle_prim(pn); }
+  bool emit_send_make(PNode *pn) override { return handle_prim(pn); }
+  bool emit_send_index_load(PNode *pn) override { return handle_prim(pn); }
+  bool emit_send_index_store(PNode *pn) override { return handle_prim(pn); }
+  bool emit_send_sizeof(PNode *pn) override { return handle_prim(pn); }
+  bool emit_send_primitive(PNode *pn) override { return handle_prim(pn); }
+  bool emit_send_default_prim(PNode *pn) override {
+    fputs("  ", fp);
+    if (pn->lvals.n && cg_get_string(pn->lvals[0])) {
+      fprintf(fp, "%s = ", cg_get_string(pn->lvals[0]));
     }
-    fprintf(fp, "_CG_%s(", n->prim->name);
+    fprintf(fp, "_CG_%s(", pn->prim->name);
     int comma = 0;
     int start = 1;
-    if (n->rvals[0]->sym == sym_primitive) start = 2;
-    for (int i = start; i < n->rvals.n; i++) {
-      cchar *s = cg_get_string(n->rvals[i]);
-      if (!s) s = cg_get_string(n->rvals[i]->sym);
+    if (pn->rvals[0]->sym == sym_primitive) start = 2;
+    for (int i = start; i < pn->rvals.n; i++) {
+      cchar *s = cg_get_string(pn->rvals[i]);
+      if (!s) s = cg_get_string(pn->rvals[i]->sym);
       assert(s);
       if (comma) fprintf(fp, ", ");
       comma = 1;
       fputs(s, fp);
     }
     fputs(");\n", fp);
-  } else {
-    Fun *target = get_target_fun(n, f);
+    return true;
+  }
+
+  void emit_send_call(PNode *pn) override {
+    Fun *target = get_target_fun(pn, f);
     if (target) {
-      if (n->lvals.n) {
-        assert(n->lvals.n == 1);
-        if (cg_get_string(n->lvals[0])) fprintf(fp, "%s = ", cg_get_string(n->lvals[0]));
+      fputs("  ", fp);
+      if (pn->lvals.n && cg_get_string(pn->lvals[0])) {
+        fprintf(fp, "%s = ", cg_get_string(pn->lvals[0]));
       }
       fputs(cg_get_string(target), fp);
       fputs("(", fp);
@@ -727,14 +742,14 @@ static void write_send(FILE *fp, Fun *f, PNode *n) {
       for (MPosition *p : target->positional_arg_positions) {
         Var *av = target->args.get(p);
         if (!av->live) continue;
-        write_send_arg(fp, target, n, p, wrote_one);
+        write_send_arg(fp, target, pn, p, wrote_one);
       }
       fputs(");\n", fp);
     } else {
-      fputs("assert(!\"runtime error: matching function not found\");\n", fp);
+      fputs("  assert(!\"runtime error: matching function not found\");\n", fp);
     }
   }
-}
+};
 
 static void do_phy_nodes(FILE *fp, PNode *n, int isucc) {
   for (PNode *p : n->phy) simple_move(fp, p->lvals[isucc], p->rvals.v[0]);
@@ -750,44 +765,27 @@ static void do_phi_nodes(FILE *fp, PNode *n, int isucc) {
   }
 }
 
-// Issue 026 Path B: a SEND PNode whose result is a single
-// statically-known constant AND whose prim is side-effect
-// free (i.e. functional) is elided.  Consumers will inline
-// the constant literal via `cg_get_string(v)` (which
-// returns the literal for constant-typed Vars; see
-// cg.cc:assign_var_cg_strings around line 904).
-//
-// Without this elision, removing the get_constant
-// short-circuit in mark_live_avar would cause the producer
-// PNode to be emitted as `5 = _CG_prim_NAME(...)` — a C
-// error because the lval's cg_string is the literal "5".
-//
-// Side-effecting prims (PRIM_NON_FUNCTIONAL: prim_setter,
-// prim_set_index_object, prim_reply) are never elided
-// regardless of their result type.
-static bool is_const_folded_send(PNode *n) {
-  if (!n || !n->code || n->code->kind != Code_SEND) return false;
-  if (!n->prim || n->prim->nonfunctional) return false;
-  if (n->lvals.n != 1) return false;
-  Var *lv = n->lvals[0];
-  if (!lv) return false;
-  return get_constant(lv) != nullptr;
-}
+// is_const_folded_send moved to codegen_common.cc
 
 static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done) {
   if (n->live && n->fa_live) switch (n->code->kind) {
       case Code_LABEL:
         fprintf(fp, " L%d:;\n", n->code->label[0]->id);
         break;
-      case Code_MOVE:
-        for (int i = 0; i < n->lvals.n; i++) simple_move(fp, n->lvals[i], n->rvals.v[i]);
+      case Code_MOVE: {
+        CBackendEmitter emitter(fp, fa, f);
+        emitter.emit_move(n);
         break;
-      case Code_SEND:
-        if (is_const_folded_send(n)) break;
-        if (n->prim)
-          if (write_c_prim(fp, fa, f, n)) break;
-        write_send(fp, f, n);
+      }
+      case Code_SEND: {
+        if (n->prim && n->prim->index == P_prim_reply) {
+          fprintf(fp, "  return %s;\n", c_rhs(n->rvals[3]));
+        } else {
+          CBackendEmitter emitter(fp, fa, f);
+          virtual_cg_emit_send(&emitter, n);
+        }
         break;
+      }
       case Code_IF:
       case Code_GOTO:
         break;

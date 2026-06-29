@@ -1436,19 +1436,8 @@ bool emit_send_make(EmitCtx &ctx, PNode *pn) {
 }
 
 // -------------------------------------------------------------
-// is_const_folded_send — port of cg.cc:768.  Skip SENDs whose
-// single lval is a known constant: consumers inline the
-// literal via value_for_var's is_constant path.
+// is_const_folded_send moved to codegen_common.cc
 // -------------------------------------------------------------
-
-bool is_const_folded_send(PNode *pn) {
-  if (!pn || !pn->code || pn->code->kind != Code_SEND) return false;
-  if (!pn->prim || pn->prim->nonfunctional) return false;
-  if (pn->lvals.n != 1) return false;
-  Var *lv = pn->lvals.v[0];
-  if (!lv) return false;
-  return get_constant(lv) != nullptr;
-}
 
 // -------------------------------------------------------------
 // Code_MOVE emit.  Port of cg.cc:simple_move (line 537) at LLVM
@@ -1683,34 +1672,33 @@ bool emit_send_default_prim(EmitCtx &ctx, PNode *pn) {
   return true;
 }
 
+class LLVMEmitter : public VirtualCGEmitter {
+  EmitCtx &ctx;
+ public:
+  LLVMEmitter(EmitCtx &ctx) : ctx(ctx) {}
+  void emit_move(PNode *pn) override { ::emit_move(ctx, pn); }
+  bool emit_send_unaryop(PNode *pn) override { return ::emit_send_unaryop(ctx, pn); }
+  bool emit_send_binop(PNode *pn) override { return ::emit_send_binop(ctx, pn); }
+  bool emit_send_period(PNode *pn) override { return ::emit_send_period(ctx, pn); }
+  bool emit_send_setter(PNode *pn) override { return ::emit_send_setter(ctx, pn); }
+  bool emit_send_new(PNode *pn) override { return ::emit_send_new(ctx, pn); }
+  bool emit_send_clone(PNode *pn) override { return ::emit_send_clone(ctx, pn); }
+  bool emit_send_len(PNode *pn) override { return ::emit_send_len(ctx, pn); }
+  bool emit_send_strcat(PNode *pn) override { return ::emit_send_strcat(ctx, pn); }
+  bool emit_send_is(PNode *pn) override { return ::emit_send_is(ctx, pn); }
+  bool emit_send_coerce(PNode *pn) override { return ::emit_send_coerce(ctx, pn); }
+  bool emit_send_make(PNode *pn) override { return ::emit_send_make(ctx, pn); }
+  bool emit_send_index_load(PNode *pn) override { return ::emit_send_index_load(ctx, pn); }
+  bool emit_send_index_store(PNode *pn) override { return ::emit_send_index_store(ctx, pn); }
+  bool emit_send_sizeof(PNode *pn) override { return ::emit_send_sizeof(ctx, pn); }
+  bool emit_send_primitive(PNode *pn) override { return ::emit_send_primitive(ctx, pn); }
+  bool emit_send_default_prim(PNode *pn) override { return ::emit_send_default_prim(ctx, pn); }
+  void emit_send_call(PNode *pn) override { ::emit_send_call(ctx, pn); }
+};
+
 void emit_send(EmitCtx &ctx, PNode *pn) {
-  if (!pn) return;
-  if (is_const_folded_send(pn)) return;
-  if (pn->prim) {
-    int idx = pn->prim->index;
-    // P_prim_reply is the function-return terminator —
-    // handled in emit_block_terminator, not here.
-    if (idx == P_prim_reply) return;
-    // Structural prim handlers (R.2.x landings).  Each
-    if (emit_send_unaryop(ctx, pn)) return;
-    if (emit_send_binop(ctx, pn)) return;
-    if (emit_send_period(ctx, pn)) return;
-    if (emit_send_setter(ctx, pn)) return;
-    if (emit_send_new(ctx, pn)) return;
-    if (emit_send_clone(ctx, pn)) return;
-    if (emit_send_len(ctx, pn)) return;
-    if (emit_send_strcat(ctx, pn)) return;
-    if (emit_send_is(ctx, pn)) return;
-    if (emit_send_coerce(ctx, pn)) return;
-    if (emit_send_make(ctx, pn)) return;
-    if (emit_send_index_load(ctx, pn)) return;
-    if (emit_send_index_store(ctx, pn)) return;
-    if (emit_send_sizeof(ctx, pn)) return;
-    if (emit_send_primitive(ctx, pn)) return;
-    if (emit_send_default_prim(ctx, pn)) return;
-    return;
-  }
-  emit_send_call(ctx, pn);
+  LLVMEmitter emitter(ctx);
+  virtual_cg_emit_send(&emitter, pn);
 }
 
 // -------------------------------------------------------------

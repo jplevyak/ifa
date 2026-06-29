@@ -235,3 +235,39 @@ void assign_type_cg_strings_pass2(Vec<Sym *> &allsyms) {
     }
   }
 }
+
+bool virtual_cg_is_const_folded_send(PNode *pn) {
+  if (!pn || !pn->code || pn->code->kind != Code_SEND) return false;
+  if (!pn->prim || pn->prim->nonfunctional) return false;
+  if (pn->lvals.n != 1) return false;
+  Var *lv = pn->lvals.v[0];
+  if (!lv) return false;
+  return get_constant(lv) != nullptr;
+}
+
+void virtual_cg_emit_send(VirtualCGEmitter *emitter, PNode *pn) {
+  if (!pn) return;
+  if (virtual_cg_is_const_folded_send(pn)) return;
+  if (pn->prim) {
+    int idx = pn->prim->index;
+    if (idx == P_prim_reply) return;
+    if (emitter->emit_send_unaryop(pn)) return;
+    if (emitter->emit_send_binop(pn)) return;
+    if (emitter->emit_send_period(pn)) return;
+    if (emitter->emit_send_setter(pn)) return;
+    if (emitter->emit_send_new(pn)) return;
+    if (emitter->emit_send_clone(pn)) return;
+    if (emitter->emit_send_len(pn)) return;
+    if (emitter->emit_send_strcat(pn)) return;
+    if (emitter->emit_send_is(pn)) return;
+    if (emitter->emit_send_coerce(pn)) return;
+    if (emitter->emit_send_make(pn)) return;
+    if (emitter->emit_send_index_load(pn)) return;
+    if (emitter->emit_send_index_store(pn)) return;
+    if (emitter->emit_send_sizeof(pn)) return;
+    if (emitter->emit_send_primitive(pn)) return;
+    if (emitter->emit_send_default_prim(pn)) return;
+    return;
+  }
+  emitter->emit_send_call(pn);
+}
