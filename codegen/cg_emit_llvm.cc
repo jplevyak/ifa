@@ -399,6 +399,8 @@ llvm::Value *value_for_var(EmitCtx &ctx, Var *v) {
     if (cv) ctx.var_map.put(v, cv);
     return cv;
   }
+  
+
   return nullptr;
 }
 
@@ -568,7 +570,9 @@ bool emit_send_period(EmitCtx &ctx, PNode *pn) {
   // find field index by name, GEP + Load.
   Sym *obj_sym = pn->rvals.v[1]->type;
   obj_sym = resolve_union_receiver(obj_sym, symbol);
-  if (!obj_sym) return false;
+  if (!obj_sym) {
+    return false;
+  }
   int field_idx = -1;
   for (int i = 0; i < obj_sym->has.n; i++) {
     if (obj_sym->has.v[i] && symbol == obj_sym->has.v[i]->name) {
@@ -576,14 +580,18 @@ bool emit_send_period(EmitCtx &ctx, PNode *pn) {
       break;
     }
   }
-  if (field_idx < 0) return false;
+  if (field_idx < 0) {
+    return false;
+  }
 
   llvm::StructType *obj_struct = sym_to_llvm_struct(obj_sym);
   if (!obj_struct || field_idx >= (int)obj_struct->getNumElements()) {
     return false;
   }
   llvm::Value *obj = value_for_var(ctx, pn->rvals.v[1]);
-  if (!obj) return false;
+  if (!obj) {
+    return false;
+  }
   llvm::Value *gep =
       Builder->CreateStructGEP(obj_struct, obj, field_idx);
   llvm::Type *field_ty = obj_struct->getElementType(field_idx);
@@ -696,6 +704,66 @@ bool emit_send_setter(EmitCtx &ctx, PNode *pn) {
 // Materialized's lower_send_binop reads at these positions
 // (cg_normalize_v2.cc:662).
 // -------------------------------------------------------------
+
+// -------------------------------------------------------------
+// emit_send_unaryop — P_prim_lnot and P_prim_minus.
+// -------------------------------------------------------------
+
+bool emit_send_unaryop(EmitCtx &ctx, PNode *pn) {
+  if (!pn || !pn->prim) return false;
+  int op = pn->prim->index;
+  if (op != P_prim_lnot && op != P_prim_minus) return false;
+
+  if (pn->rvals.n < 1 || pn->lvals.n < 1) {
+    return true;
+  }
+  Var *src = pn->rvals.v[pn->rvals.n - 1];
+  Var *dst = pn->lvals.v[0];
+  if (!src || !dst) {
+    return true;
+  }
+
+  llvm::Value *val = value_for_var(ctx, src);
+  if (!val) return true;
+
+  llvm::Value *res = nullptr;
+  if (op == P_prim_lnot) {
+    if (val->getType()->isIntegerTy()) {
+      llvm::Value *zero = llvm::ConstantInt::get(val->getType(), 0);
+      res = Builder->CreateICmpEQ(val, zero);
+    } else if (val->getType()->isFloatTy() || val->getType()->isDoubleTy()) {
+      llvm::Value *zero = llvm::ConstantFP::get(val->getType(), 0.0);
+      res = Builder->CreateFCmpOEQ(val, zero);
+    } else if (val->getType()->isPointerTy()) {
+      llvm::Value *zero = llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(val->getType()));
+      res = Builder->CreateICmpEQ(val, zero);
+    } else {
+      res = Builder->CreateNot(val);
+    }
+  } else if (op == P_prim_minus) {
+    if (val->getType()->isFloatTy() || val->getType()->isDoubleTy()) {
+      res = Builder->CreateFNeg(val);
+    } else if (val->getType()->isIntegerTy()) {
+      res = Builder->CreateNeg(val);
+    }
+  }
+
+  if (!res) return true;
+
+  // Coerce to dst's expected LLVM type
+  llvm::Type *dst_ty = sym_to_llvm_type(dst->type);
+  if (dst_ty && res->getType() != dst_ty) {
+    if (res->getType()->isIntegerTy() && dst_ty->isIntegerTy()) {
+      res = Builder->CreateZExtOrTrunc(res, dst_ty);
+    } else if (res->getType()->isIntegerTy() && dst_ty->isFloatTy()) {
+      res = Builder->CreateSIToFP(res, dst_ty);
+    } else if (res->getType()->isFloatTy() && dst_ty->isIntegerTy()) {
+      res = Builder->CreateFPToSI(res, dst_ty);
+    }
+  }
+  put_result(ctx, dst, res);
+  return true;
+}
 
 bool emit_send_binop(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim) return false;
@@ -1439,6 +1507,7 @@ bool emit_send_make(EmitCtx &ctx, PNode *pn);
 bool emit_send_period(EmitCtx &ctx, PNode *pn);
 bool emit_send_setter(EmitCtx &ctx, PNode *pn);
 bool emit_send_binop(EmitCtx &ctx, PNode *pn);
+bool emit_send_unaryop(EmitCtx &ctx, PNode *pn);
 bool emit_send_sizeof(EmitCtx &ctx, PNode *pn);
 bool emit_send_index_load(EmitCtx &ctx, PNode *pn);
 bool emit_send_index_store(EmitCtx &ctx, PNode *pn);
@@ -1623,6 +1692,7 @@ void emit_send(EmitCtx &ctx, PNode *pn) {
     // handled in emit_block_terminator, not here.
     if (idx == P_prim_reply) return;
     // Structural prim handlers (R.2.x landings).  Each
+    if (emit_send_unaryop(ctx, pn)) return;
     if (emit_send_binop(ctx, pn)) return;
     if (emit_send_period(ctx, pn)) return;
     if (emit_send_setter(ctx, pn)) return;
@@ -1713,7 +1783,6 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
     if (!actual) continue;
     llvm::Value *val = value_for_var(ctx, actual);
     if (!val) {
-      // Not found
       return;
     }
     args.push_back(val);
@@ -1760,6 +1829,7 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
 // -------------------------------------------------------------
 
 void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
+
   if (!closer || !closer->code) {
     Builder->CreateUnreachable();
     return;
@@ -1800,24 +1870,33 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
         }
       }
 
+
       llvm::Value *cond = nullptr;
-      if (closer->rvals.n > 0)
+      if (closer->rvals.n > 0) {
         cond = value_for_var(ctx, closer->rvals.v[0]);
+      } else {
+      }
       // Truncate to i1 if needed.
       if (cond && !cond->getType()->isIntegerTy(1)) {
         cond = Builder->CreateICmpNE(cond,
             llvm::Constant::getNullValue(cond->getType()));
       }
       llvm::BasicBlock *t_bb = nullptr, *f_bb = nullptr;
-      if (closer->cfg_succ.n > 0) t_bb = ctx.label_bb.get(closer->cfg_succ.v[0]);
-      if (closer->cfg_succ.n > 1) f_bb = ctx.label_bb.get(closer->cfg_succ.v[1]);
+      if (closer->cfg_succ.n > 0 && closer->cfg_succ.v[0]) {
+        t_bb = ctx.label_bb.get(closer->cfg_succ.v[0]);
+      }
+      if (closer->cfg_succ.n > 1 && closer->cfg_succ.v[1]) {
+        f_bb = ctx.label_bb.get(closer->cfg_succ.v[1]);
+      }
       
+
       if (t_bb && f_bb) {
         if (cond) {
           llvm::BasicBlock *t_edge = llvm::BasicBlock::Create(*TheContext, "t_edge", ctx.llvm_fn);
           llvm::BasicBlock *f_edge = llvm::BasicBlock::Create(*TheContext, "f_edge", ctx.llvm_fn);
           Builder->CreateCondBr(cond, t_edge, f_edge);
           
+
           Builder->SetInsertPoint(t_edge);
           emit_phy_moves(ctx, closer, 0);
           emit_phi_moves(ctx, closer, 0);
@@ -2136,6 +2215,7 @@ void emit_phi_moves(EmitCtx &ctx, PNode *pn, int isucc) {
 
 void emit_pnode(EmitCtx &ctx, PNode *pn, Vec<PNode *> &done) {
   if (!pn || !pn->code) return;
+  
   // LABEL: switch to the corresponding BB.  Previous block's
   // closer should have already emitted its terminator.
   if (pn->code->kind == Code_LABEL) {
@@ -2185,13 +2265,17 @@ void emit_pnode(EmitCtx &ctx, PNode *pn, Vec<PNode *> &done) {
        pn->prim->index == P_prim_reply)) {
     is_closer = true;
   }
+
+
   if (is_closer && Builder->GetInsertBlock() &&
       !Builder->GetInsertBlock()->getTerminator()) {
     emit_block_terminator(ctx, pn);
   }
   // Recurse to successors.
   for (PNode *s : pn->cfg_succ) {
-    if (s && done.set_add(s)) emit_pnode(ctx, s, done);
+    if (s && done.set_add(s)) {
+      emit_pnode(ctx, s, done);
+    }
   }
 }
 
@@ -2335,12 +2419,10 @@ void emit_fun(EmitCtx &ctx, Fun *f) {
   for (llvm::BasicBlock &bb : *ctx.llvm_fn) {
     if (!bb.getTerminator()) {
       Builder->SetInsertPoint(&bb);
-      if (ctx.llvm_fn->getReturnType()->isVoidTy())
-        Builder->CreateRetVoid();
-      else
-        Builder->CreateUnreachable();
+      Builder->CreateUnreachable();
     }
   }
+  
 }
 
 }  // namespace
@@ -2349,7 +2431,7 @@ void emit_fun(EmitCtx &ctx, Fun *f) {
 // Public entry.
 // -------------------------------------------------------------
 
-bool cg_view_emit_llvm(FA *fa, Fun *main_fun) {
+bool cg_emit_llvm(FA *fa, Fun *main_fun) {
   if (!fa || !TheModule) return false;
   reset_state();
 
