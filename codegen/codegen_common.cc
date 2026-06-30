@@ -251,6 +251,7 @@ void virtual_cg_emit_send(VirtualCGEmitter *emitter, PNode *pn) {
   if (pn->prim) {
     int idx = pn->prim->index;
     if (idx == P_prim_reply) return;
+    if (emitter->emit_send_any_prim(pn)) return;
     if (emitter->emit_send_unaryop(pn)) return;
     if (emitter->emit_send_binop(pn)) return;
     if (emitter->emit_send_period(pn)) return;
