@@ -45,17 +45,12 @@ that:
   the count-vs-capacity footgun); migrate `qsort_by_id; for(x:s)`
   sites to `sorted_view()`.  Deferred because the rename touches
   ~1000+ Vec consumer sites.
-- [024-is-comparison-narrowing.md](024-is-comparison-narrowing.md) —
-  IFA doesn't narrow union types on `is None` comparisons.
-  **Fixed June 2026:** frontend rewrites `x is None` /
-  `None is x` directly to `prim_isinstance(x,
-  sym_nil_type)`; codegen emits a NULL ptr check.
-  Recursive linked-list pattern now works.
 - [025-intra-function-union-narrowing.md](025-intra-function-union-narrowing.md) —
   Broader: IFA doesn't narrow runtime union types
   intra-function on conditional branches.  **Partially
   fixed June 2026** for the `is None` shape (composes
-  with 024); `isinstance(v, T)` on runtime unions and
+  with [closed/024](closed/024-is-comparison-narrowing.md));
+  `isinstance(v, T)` on runtime unions and
   other discriminator patterns remain follow-on work.
 - [026-recursive-self-mutation-struct-collapse.md](026-recursive-self-mutation-struct-collapse.md) —
   Recursive types with >1 self-typed field lose fields in
@@ -80,7 +75,7 @@ commit ref recorded in each file's status line.  They stay in
 the tree as history — a code-search for the affected file finds
 the trail of investigation even after the fix has landed.
 
-Currently 20 closed issues:
+Currently 21 closed issues:
 [001](closed/001-keepalive-vs-explicit-reply.md),
 [002](closed/002-codegen-llvm-normalizer.md),
 [003](closed/003-fa-converge-determinism.md),
@@ -100,7 +95,8 @@ Currently 20 closed issues:
 [020](closed/020-v2-list-add-empty-body.md),
 [021](closed/021-v2-call-arg-swap.md),
 [022](closed/022-iterative-inlining.md),
-[023](closed/023-v2-is-value-type-consumer.md).
+[023](closed/023-v2-is-value-type-consumer.md),
+[024](closed/024-is-comparison-narrowing.md).
 
 ## When to file an issue here vs fix it now
 
