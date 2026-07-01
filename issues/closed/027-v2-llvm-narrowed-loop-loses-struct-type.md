@@ -77,7 +77,7 @@ Use the recursive form.  `recursive_list_is_none.py` and
 
 ## Related
 
-- [`ifa/issues/024-is-comparison-narrowing.md`](024-is-comparison-narrowing.md)
+- [`ifa/issues/024-is-comparison-narrowing.md`](closed/024-is-comparison-narrowing.md)
   — the frontend rewrite this issue is downstream of.
 - [`ifa/issues/025-intra-function-union-narrowing.md`](025-intra-function-union-narrowing.md)
   — the Code_IF per-branch narrowing infrastructure.

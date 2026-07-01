@@ -201,10 +201,6 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
   switch (n->prim->index) {
     default:
       return 0;
-    case P_prim_reply: {
-      fprintf(fp, "  return %s;\n", c_rhs(n->rvals[3]));
-      break;
-    }
     case P_prim_make:
       if (sym_tuple->specializers.set_in(n->rvals[2]->sym)) {
       Ltuple:
@@ -660,23 +656,14 @@ class CBackendEmitter : public VirtualCGEmitter {
   CBackendEmitter(FILE *fp, FA *fa, Fun *f) : fp(fp), fa(fa), f(f) {}
 
   void emit_move(PNode *pn) override {
-    for (int i = 0; i < pn->lvals.n; i++) {
-      simple_move(fp, pn->lvals[i], pn->rvals.v[i]);
-    }
+    for (int i = 0; i < pn->lvals.n; i++) simple_move(fp, pn->lvals[i], pn->rvals.v[i]);
   }
 
-  bool handle_prim(PNode *pn) {
-    return write_c_prim(fp, fa, f, pn) != 0;
-  }
+  // Route all primitives through write_c_prim's switch in one shot.
+  // Primitives not in the switch (is, isinstance) return false here and
+  // fall through to emit_send_is below.
+  bool emit_send_any_prim(PNode *pn) override { return write_c_prim(fp, fa, f, pn) != 0; }
 
-  bool emit_send_unaryop(PNode *pn) override { return handle_prim(pn); }
-  bool emit_send_binop(PNode *pn) override { return handle_prim(pn); }
-  bool emit_send_period(PNode *pn) override { return handle_prim(pn); }
-  bool emit_send_setter(PNode *pn) override { return handle_prim(pn); }
-  bool emit_send_new(PNode *pn) override { return handle_prim(pn); }
-  bool emit_send_clone(PNode *pn) override { return handle_prim(pn); }
-  bool emit_send_len(PNode *pn) override { return handle_prim(pn); }
-  bool emit_send_strcat(PNode *pn) override { return handle_prim(pn); }
   bool emit_send_is(PNode *pn) override {
     if (pn->prim->index == P_prim_is && pn->rvals.n >= 4) {
       if (pn->lvals.n && cg_get_string(pn->lvals[0])) {
@@ -702,12 +689,6 @@ class CBackendEmitter : public VirtualCGEmitter {
     }
     return false;
   }
-  bool emit_send_coerce(PNode *pn) override { return handle_prim(pn); }
-  bool emit_send_make(PNode *pn) override { return handle_prim(pn); }
-  bool emit_send_index_load(PNode *pn) override { return handle_prim(pn); }
-  bool emit_send_index_store(PNode *pn) override { return handle_prim(pn); }
-  bool emit_send_sizeof(PNode *pn) override { return handle_prim(pn); }
-  bool emit_send_primitive(PNode *pn) override { return handle_prim(pn); }
   bool emit_send_default_prim(PNode *pn) override {
     fputs("  ", fp);
     if (pn->lvals.n && cg_get_string(pn->lvals[0])) {

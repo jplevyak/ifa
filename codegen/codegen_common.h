@@ -162,26 +162,40 @@ class VirtualCGEmitter {
  public:
   virtual ~VirtualCGEmitter() = default;
 
+  // emit_move and emit_send_call handle the two fundamental operations that
+  // every backend must implement.  emit_send_default_prim is the fallthrough
+  // for any primitive not claimed by a more specific hook — silently dropping
+  // it would be wrong, so it stays pure-virtual too.
   virtual void emit_move(PNode *pn) = 0;
-
-  // Returns true if the PNode was handled, false otherwise
-  virtual bool emit_send_unaryop(PNode *pn) = 0;
-  virtual bool emit_send_binop(PNode *pn) = 0;
-  virtual bool emit_send_period(PNode *pn) = 0;
-  virtual bool emit_send_setter(PNode *pn) = 0;
-  virtual bool emit_send_new(PNode *pn) = 0;
-  virtual bool emit_send_clone(PNode *pn) = 0;
-  virtual bool emit_send_len(PNode *pn) = 0;
-  virtual bool emit_send_strcat(PNode *pn) = 0;
-  virtual bool emit_send_is(PNode *pn) = 0;
-  virtual bool emit_send_coerce(PNode *pn) = 0;
-  virtual bool emit_send_make(PNode *pn) = 0;
-  virtual bool emit_send_index_load(PNode *pn) = 0;
-  virtual bool emit_send_index_store(PNode *pn) = 0;
-  virtual bool emit_send_sizeof(PNode *pn) = 0;
-  virtual bool emit_send_primitive(PNode *pn) = 0;
   virtual bool emit_send_default_prim(PNode *pn) = 0;
   virtual void emit_send_call(PNode *pn) = 0;
+
+  // Catch-all primitive hook, called before the specialized send methods.
+  // A backend that routes all primitives through a single switch (e.g. the
+  // C backend's write_c_prim) overrides this and returns true on success.
+  // Backends with per-operation LLVM IR builders leave this as false and
+  // override the specialized methods below instead.
+  virtual bool emit_send_any_prim(PNode *pn) { return false; }
+
+  // Specialized primitive hooks.  Each defaults to false (not handled) so
+  // backends only override the operations they care about.  The dispatch in
+  // virtual_cg_emit_send calls emit_send_any_prim first; these are only
+  // reached when it returns false.
+  virtual bool emit_send_unaryop(PNode *pn) { return false; }
+  virtual bool emit_send_binop(PNode *pn) { return false; }
+  virtual bool emit_send_period(PNode *pn) { return false; }
+  virtual bool emit_send_setter(PNode *pn) { return false; }
+  virtual bool emit_send_new(PNode *pn) { return false; }
+  virtual bool emit_send_clone(PNode *pn) { return false; }
+  virtual bool emit_send_len(PNode *pn) { return false; }
+  virtual bool emit_send_strcat(PNode *pn) { return false; }
+  virtual bool emit_send_is(PNode *pn) { return false; }
+  virtual bool emit_send_coerce(PNode *pn) { return false; }
+  virtual bool emit_send_make(PNode *pn) { return false; }
+  virtual bool emit_send_index_load(PNode *pn) { return false; }
+  virtual bool emit_send_index_store(PNode *pn) { return false; }
+  virtual bool emit_send_sizeof(PNode *pn) { return false; }
+  virtual bool emit_send_primitive(PNode *pn) { return false; }
 };
 
 // Returns true if the SEND operation's lvalue was fully constant-folded

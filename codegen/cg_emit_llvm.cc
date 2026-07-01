@@ -1,22 +1,22 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
-// cg_view_emit_llvm.cc — direct PNode → LLVM IR emitter.
+// cg_emit_llvm.cc — direct PNode → LLVM IR emitter.
 //
-// Phase R (CG_VIRTUAL_PLAN architectural reset).  Mirrors the
-// structure of `codegen/cg.cc` (the C backend at 99/0) but
-// emits LLVM IR instead of C text.  No CGv2Program, no
-// CGv2Inst — type info comes from the IF1 `Var->type` Sym +
-// `Sym->has[]` field walk at emit time; per-Fun
-// `Var * → llvm::Value *` map binds operand identity.
+// Parallel to cg.cc (C-text backend) but emits LLVM IR directly.
+// Type info comes from IF1 Var->type Sym and Sym->has[] fields at
+// emit time; a per-Fun Var* → llvm::Value* map (EmitCtx::var_map)
+// binds operands.  Public entry: cg_emit_llvm() called from llvm.cc.
 //
-// Public entry: `cg_view_emit_llvm(fa, main_fun)`.  Wired
-// from `llvm.cc` via `PYC_LLVM_VIEW2=1`.
-//
-// Phase R sub-phases (see CG_VIRTUAL_PLAN.md):
-//   R.1 — skeleton + simplest cases (MOVE, LABEL, RET, IF, GOTO).
-//   R.2 — per-prim ports (period, setter, make, call, etc.).
-//   R.3 — close C-parity to 99/0.
-//   R.4 — retire cg_normalize_v2 + cg_ir_v2_emit_llvm.
+// Key contracts:
+//   • Phi/phy targets get alloca slots (discover_phi_targets) so
+//     cross-edge writes have stable storage across loop back-edges.
+//   • Globals are always loaded fresh (value_for_var bypasses
+//     var_map for GlobalVariables to avoid dominance violations).
+//   • cfg_pred_index is rebuilt per function (emit_fun) so
+//     emit_phi_moves selects the correct predecessor rval.
+//   • For Code_IF with two live branches, interceding "edge" blocks
+//     (t_edge / f_edge) are inserted as critical-edge splits so
+//     phi/phy moves execute only on the taken branch.
 
 #include "ifadefs.h"
 
@@ -166,26 +166,21 @@ struct EmitCtx {
   llvm::Function *llvm_fn;
   Map<Var *, llvm::Value *> var_map;
   // Phi-target Vars get an alloca slot in the entry block so
-  // cross-edge writes have a stable storage location.  Mirrors
-  // cg_ir_v2_emit_llvm.cc's alloca pre-pass.  Without this,
-  // SSA-bind alone can't carry values across loop back-edges
-  // or if/else joins — every loop body just sees the initial
-  // value forever.  When a Var has an entry in alloca_map,
+  // cross-edge writes have a stable storage location.  Without
+  // this, SSA-bind alone can't carry values across loop back-edges
+  // or if/else joins — every loop body sees the initial value
+  // forever.  When a Var has an entry in alloca_map,
   // value_for_var emits a load, put_result emits a store, and
   // emit_phi_moves writes via store.
   Map<Var *, llvm::AllocaInst *> alloca_map;
   Map<PNode *, llvm::BasicBlock *> label_bb;
 };
 
-void emit_pnode(EmitCtx &ctx, PNode *pn, Vec<PNode *> &done);
+// emit_phy_moves/emit_phi_moves are called by emit_block_terminator but defined later.
 void emit_phy_moves(EmitCtx &ctx, PNode *pn, int isucc);
 void emit_phi_moves(EmitCtx &ctx, PNode *pn, int isucc);
 
-// -------------------------------------------------------------
-// Reset per-program state.  Called at the start of every
-// `cg_view_emit_llvm` invocation so type caches don't leak
-// across compiles.
-// -------------------------------------------------------------
+// Reset per-program state so type caches don't leak across compiles.
 
 void reset_state() {
   g_sym_to_type.clear();
@@ -194,9 +189,9 @@ void reset_state() {
   g_var_to_global.clear();
 }
 
-// Pass 0: declare module-level globals.  Mirrors
-// cg.cc:c_codegen_print_c lines 1014-1057 (which emits C
-// `<type> g<N>;` declarations) and the materialized
+// Pass 0: declare module-level globals.  Parallel to cg.cc's
+// `<type> gN;` declarations.  Walks live non-constant non-fun Vars;
+// the materialized
 // emitter's globals pre-declaration pass.
 //
 // `collect_types_and_globals` (fa.h:550) walks fa and
@@ -259,9 +254,8 @@ void declare_globals(FA *fa) {
   }
 }
 
-// (emit_main_prelude logic inlined into cg_view_emit_llvm
-// below since it needs get_gc_malloc which is declared
-// later in the file; cleaner than a forward decl.)
+// (emit_main_prelude logic is inlined into cg_emit_llvm below
+// since it needs get_gc_malloc which is declared later.)
 
 // -------------------------------------------------------------
 // Operand lookup helpers — mirror cg.cc's `cg_get_string(v)`
@@ -271,10 +265,9 @@ void declare_globals(FA *fa) {
 // `put_result`.
 // -------------------------------------------------------------
 
-// Build (or fetch from the cache) a pyc-layout string
-// global: `{ i64 len, [N x i8] body }` packed.  Returns
-// a pointer to the first body byte (i.e. `gv + offset(len)`).
-// Mirrors cg_ir_v2_emit_llvm.cc:261-307.
+// Build (or fetch from cache) a pyc-layout string global:
+// `{ i64 len, [N x i8] body }` packed.  Returns a GEP to
+// the first body byte.  Length is at offset -8 from that ptr.
 llvm::Value *materialize_pyc_string(cchar *raw) {
   if (!raw) raw = "";
   if (llvm::GlobalVariable *cached = g_string_globals.get(raw)) {
@@ -373,10 +366,9 @@ llvm::Value *value_for_var(EmitCtx &ctx, Var *v) {
           cv = llvm::ConstantFP::get(t, s->imm.v_float64);
         break;
       case IF1_CONST_KIND_STRING:
-        // String literal — emit as pyc-layout global and GEP
-        // to the first char.  Same shape as cg_ir_v2_emit_llvm
-        // produces so runtime helpers (`_CG_string_len` etc.)
-        // can read the length prefix at offset -8.
+        // String literal → pyc-layout global; GEP to first char.
+        // Length prefix is at offset -8 from that pointer so
+        // runtime helpers (_CG_string_len etc.) can read it.
         cv = materialize_pyc_string(s->imm.v_string);
         break;
       case IF1_CONST_KIND_SYMBOL:
@@ -399,8 +391,6 @@ llvm::Value *value_for_var(EmitCtx &ctx, Var *v) {
     if (cv) ctx.var_map.put(v, cv);
     return cv;
   }
-  
-
   return nullptr;
 }
 
@@ -422,6 +412,22 @@ void put_result(EmitCtx &ctx, Var *v, llvm::Value *value) {
     }
     Builder->CreateStore(value, slot);
     return;
+  }
+  // Global Var: always also emit a real store so reads via
+  // value_for_var (which loads from the GlobalVariable) see
+  // the current value, not the initial null.
+  if (llvm::GlobalVariable *gv = g_var_to_global.get(v)) {
+    llvm::Type *gv_ty = sym_to_llvm_type(v->type);
+    llvm::Value *sv = value;
+    if (gv_ty && sv->getType() != gv_ty) {
+      if (sv->getType()->isPointerTy() && gv_ty->isPointerTy()) {
+        // opaque-ptr no-op
+      } else if (sv->getType()->isIntegerTy() && gv_ty->isIntegerTy()) {
+        sv = Builder->CreateSExtOrTrunc(sv, gv_ty);
+      }
+    }
+    Builder->CreateStore(sv, gv);
+    return;  // value_for_var always loads globals fresh; var_map bind would be dead
   }
   ctx.var_map.put(v, value);
   if (value->getType()->isPointerTy() == false &&
@@ -483,22 +489,16 @@ llvm::Function *get_gc_malloc() {
 }
 
 // -------------------------------------------------------------
-// Phase R.2.1: P_prim_period emit — struct getter and closure
-// construction.
-//
-// Mirrors cg.cc:237-276 (write_c_prim's P_prim_period case)
-// at LLVM level.
+// P_prim_period: struct field getter and closure construction.
 //
 // Two sub-shapes:
-//   1. Closure construction (lvals[0]->type is Type_FUN AND
-//      pn->creates non-empty): allocate a closure struct via
-//      GC_malloc(sizeof), then store selector at e0 and
-//      bound-self at e1.
+//   1. Closure: lvals[0]->type is Type_FUN and pn->creates is
+//      non-empty — GC_malloc a closure struct, store selector
+//      at field 0 (e0) and bound-self at field 1 (e1).
 //   2. Struct getter: resolve the obj's concrete type through
-//      `resolve_union_receiver`, find the field index by
-//      symbol name in `obj->has`, GEP + Load.
-//
-// Returns true if it claimed; false → fall through to default.
+//      resolve_union_receiver, find the field index by symbol
+//      name in obj->has, emit GEP + Load.
+// -------------------------------------------------------------
 
 bool emit_send_period(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim) return false;
@@ -617,12 +617,10 @@ bool emit_send_period(EmitCtx &ctx, PNode *pn) {
 }
 
 // -------------------------------------------------------------
-// Phase R.2.2: P_prim_setter emit — struct setter.
-//
-// Mirrors cg.cc:277-317.  Resolves symbol from rvals[3],
-// looks up the field index in the union-resolved obj type,
-// emits GEP + Store, then optionally a value-forward Store
-// to lvals[0] (chained-assignment semantics).
+// P_prim_setter: struct field setter.
+// Resolves symbol from rvals[3], looks up the field index in the
+// union-resolved obj type, emits GEP + Store.  Optionally also
+// stores into lvals[0] for chained-assignment semantics.
 // -------------------------------------------------------------
 
 bool emit_send_setter(EmitCtx &ctx, PNode *pn) {
@@ -690,16 +688,12 @@ bool emit_send_setter(EmitCtx &ctx, PNode *pn) {
 }
 
 // -------------------------------------------------------------
-// Phase R.2.4 / R.2.5: arithmetic and comparison family.
-//
-// Direct LLVM ops (CreateAdd/Sub/.../CreateICmp/FCmp) keyed
-// on the prim index.  The C backend punts to `_CG_<name>`
-// runtime helpers for these, but LLVM emits the IR ops
-// directly — that's the standard LLVM idiom and matches
-// what the materialized v2 emitter does.
+// Arithmetic and comparison operators: direct LLVM IR ops keyed
+// on prim index.  Unlike the C backend (which calls _CG_<name>
+// runtime helpers), LLVM emits CreateAdd/Sub/ICmp/FCmp directly.
 //
 // Operand layout from IF1 prim-call convention:
-//   rvals[n-3] = lhs (the `__operator` receiver if present)
+//   rvals[n-3] = lhs (the __operator receiver if present)
 //   rvals[n-1] = rhs
 // Materialized's lower_send_binop reads at these positions
 // (cg_normalize_v2.cc:662).
@@ -714,14 +708,13 @@ bool emit_send_unaryop(EmitCtx &ctx, PNode *pn) {
   int op = pn->prim->index;
   if (op != P_prim_lnot && op != P_prim_minus) return false;
 
-  if (pn->rvals.n < 1 || pn->lvals.n < 1) {
-    return true;
-  }
+  // Return true (claimed) even when operands are missing — these are
+  // dead/pruned nodes; falling through to emit_send_default_prim would
+  // produce a spurious _CG_<name> call for an operation with no result.
+  if (pn->rvals.n < 1 || pn->lvals.n < 1) return true;
   Var *src = pn->rvals.v[pn->rvals.n - 1];
   Var *dst = pn->lvals.v[0];
-  if (!src || !dst) {
-    return true;
-  }
+  if (!src || !dst) return true;
 
   llvm::Value *val = value_for_var(ctx, src);
   if (!val) return true;
@@ -748,7 +741,13 @@ bool emit_send_unaryop(EmitCtx &ctx, PNode *pn) {
     }
   }
 
-  if (!res) return true;
+  if (!res) {
+    // Live unaryop with an unsupported operand type — not a dead node,
+    // so silently returning true would leave dst uninitialized.
+    cchar *src_ty_name = src->type ? cg_get_string(src->type) : "?";
+    codegen_fail(pn, "emit_send_unaryop: op %d unsupported for operand type %s",
+                 op, src_ty_name ? src_ty_name : "?");
+  }
 
   // Coerce to dst's expected LLVM type
   llvm::Type *dst_ty = sym_to_llvm_type(dst->type);
@@ -855,8 +854,7 @@ bool emit_send_binop(EmitCtx &ctx, PNode *pn) {
 }
 
 // -------------------------------------------------------------
-// Phase R.2.8: P_prim_sizeof and P_prim_sizeof_element —
-// compile-time constants via DataLayout.
+// P_prim_sizeof / P_prim_sizeof_element: compile-time sizes via DataLayout.
 // -------------------------------------------------------------
 
 bool emit_send_sizeof(EmitCtx &ctx, PNode *pn) {
@@ -900,21 +898,22 @@ bool emit_send_sizeof(EmitCtx &ctx, PNode *pn) {
 }
 
 // -------------------------------------------------------------
-// Phase R.2.6 / R.2.7: index load / store.  Mirrors
-// cg.cc:345-403 at LLVM level.  Three sub-shapes per cg.cc:
-//   - is_vector: `obj->v[idx]` — GEP through the vector
-//     header to its trailing array.
-//   - constant-index tuple (Type_RECORD with constant idx
-//     Sym): FIELD_LOAD/STORE at that index.
-//   - general flat: GEP into the typed-ptr stride.
-// String detour (`_CG_char_from_string`) is for INDEX_LOAD
-// on string-specializer types.
-//
-// R.2.6/R.2.7 stub: cover only the general flat case (the
-// most common).  is_vector + constant-index-tuple + string
-// detour are deferred to follow-ups — they're orthogonal
-// once the fundamental GEP+Load/Store is in place.
+// P_prim_index_object: indexed load / store.
+//   - String: call _CG_char_from_string(obj, idx) → ptr
+//   - List (non-vector, non-RECORD): deref _CG_list_ptr (*(ptr*)(obj-8))
+//     then GEP into that data buffer.
+//   - Vector / RECORD: GEP directly into obj.
 // -------------------------------------------------------------
+
+// Return the data pointer for a list: *(ptr*)(l - 8) = _CG_list_ptr(l).
+static llvm::Value *load_list_data_ptr(llvm::Value *obj) {
+  llvm::Type *i8 = llvm::Type::getInt8Ty(*TheContext);
+  llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+  llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
+  llvm::Value *ptr_field = Builder->CreateGEP(
+      i8, obj, llvm::ConstantInt::get(i64, -8), "list_ptr_addr");
+  return Builder->CreateLoad(ptr_ty, ptr_field, "list_data");
+}
 
 bool emit_send_index_load(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim || pn->prim->index != P_prim_index_object)
@@ -932,16 +931,39 @@ bool emit_send_index_load(EmitCtx &ctx, PNode *pn) {
   if (!elem_ty || elem_ty->isVoidTy())
     elem_ty = llvm::Type::getInt64Ty(*TheContext);
 
-  // Coerce idx to i64 (LLVM GEP expects integer index).
-  if (idx->getType()->isIntegerTy() &&
-      !idx->getType()->isIntegerTy(64)) {
-    idx = Builder->CreateSExtOrTrunc(
-        idx, llvm::Type::getInt64Ty(*TheContext));
+  llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+  if (idx->getType()->isIntegerTy() && !idx->getType()->isIntegerTy(64))
+    idx = Builder->CreateSExtOrTrunc(idx, i64);
+
+  Sym *t = pn->rvals.v[o]->type;
+
+  // String: _CG_char_from_string(obj, (int)idx) → ptr
+  if (t && sym_string && sym_string->specializers.set_in(t)) {
+    llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
+    llvm::Type *i32 = llvm::Type::getInt32Ty(*TheContext);
+    llvm::Value *idx32 = Builder->CreateTrunc(idx, i32);
+    llvm::FunctionCallee fn = TheModule->getOrInsertFunction(
+        "_CG_char_from_string",
+        llvm::FunctionType::get(ptr_ty, {ptr_ty, i32}, false));
+    llvm::Value *result = Builder->CreateCall(fn, {obj, idx32});
+    put_result(ctx, dst_v, result);
+    return true;
   }
+
+  // List (not vector, not RECORD): GEP through _CG_list_ptr(obj)
+  if (t && !t->is_vector && t->type_kind != Type_RECORD) {
+    llvm::Value *data = load_list_data_ptr(obj);
+    llvm::Value *gep = Builder->CreateGEP(elem_ty, data, idx);
+    llvm::Value *loaded = Builder->CreateLoad(
+        elem_ty, gep, cg_get_string(dst_v) ? cg_get_string(dst_v) : "");
+    put_result(ctx, dst_v, loaded);
+    return true;
+  }
+
+  // Vector / RECORD: direct GEP into obj
   llvm::Value *gep = Builder->CreateGEP(elem_ty, obj, idx);
   llvm::Value *loaded = Builder->CreateLoad(
-      elem_ty, gep,
-      cg_get_string(dst_v) ? cg_get_string(dst_v) : "");
+      elem_ty, gep, cg_get_string(dst_v) ? cg_get_string(dst_v) : "");
   put_result(ctx, dst_v, loaded);
   return true;
 }
@@ -958,24 +980,31 @@ bool emit_send_index_store(EmitCtx &ctx, PNode *pn) {
       value_for_var(ctx, pn->rvals.v[pn->rvals.n - 1]);
   if (!obj || !idx || !val) return false;
   llvm::Type *elem_ty = val->getType();
-  if (idx->getType()->isIntegerTy() &&
-      !idx->getType()->isIntegerTy(64)) {
-    idx = Builder->CreateSExtOrTrunc(
-        idx, llvm::Type::getInt64Ty(*TheContext));
+  llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+  if (idx->getType()->isIntegerTy() && !idx->getType()->isIntegerTy(64))
+    idx = Builder->CreateSExtOrTrunc(idx, i64);
+
+  Sym *t = pn->rvals.v[o]->type;
+
+  // List: GEP through _CG_list_ptr(obj)
+  if (t && !t->is_vector && t->type_kind != Type_RECORD &&
+      !(sym_string && sym_string->specializers.set_in(t))) {
+    llvm::Value *data = load_list_data_ptr(obj);
+    llvm::Value *gep = Builder->CreateGEP(elem_ty, data, idx);
+    Builder->CreateStore(val, gep);
+    return true;
   }
+
   llvm::Value *gep = Builder->CreateGEP(elem_ty, obj, idx);
   Builder->CreateStore(val, gep);
   return true;
 }
 
 // -------------------------------------------------------------
-// Phase R.3: P_prim_coerce — type conversion.
-//
-// cg_normalize_v2.cc:lower_send_coerce reads
-// rvals[n-2] (the target-type Sym) and rvals[n-1] (the
-// source value) and emits a CG2_CAST.  At LLVM level: emit
-// the appropriate Sext/ZExt/Trunc/FPToSI/SIToFP/etc.
-// directly based on src and dst LLVM types.
+// P_prim_coerce: type conversion.
+// rvals[n-2] = target-type Sym, rvals[n-1] = source value.
+// Emits the appropriate SExtOrTrunc / ZExtOrTrunc / FPToSI /
+// SIToFP / PtrToInt / IntToPtr based on src and dst LLVM types.
 static bool emit_send_coerce(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim || pn->prim->index != P_prim_coerce) return false;
   if (pn->rvals.n < 2 || pn->lvals.n < 1) return false;
@@ -996,7 +1025,14 @@ static bool emit_send_coerce(EmitCtx &ctx, PNode *pn) {
   llvm::Value *res = src;
   if (src_ty != dst_ty) {
     if (src_ty->isIntegerTy() && dst_ty->isIntegerTy()) {
-      res = Builder->CreateSExtOrTrunc(src, dst_ty);
+      // Narrowing to i1: use icmp ne instead of trunc to preserve truthiness.
+      // Trunc keeps only the LSB, so bool(10) → 0 → False (wrong).
+      if (dst_ty->isIntegerTy(1)) {
+        res = Builder->CreateICmpNE(src,
+            llvm::ConstantInt::get(src_ty, 0));
+      } else {
+        res = Builder->CreateSExtOrTrunc(src, dst_ty);
+      }
     } else if (src_ty->isIntegerTy() && dst_ty->isFloatingPointTy()) {
       res = Builder->CreateSIToFP(src, dst_ty);
     } else if (src_ty->isFloatingPointTy() && dst_ty->isIntegerTy()) {
@@ -1019,13 +1055,9 @@ static bool emit_send_coerce(EmitCtx &ctx, PNode *pn) {
 }
 
 // -------------------------------------------------------------
-// Phase R.3: P_prim_is / P_prim_isinstance — identity tests.
-//
-// cg.cc:686-698 emits these as direct C-level pointer
-// equality:
-//   prim_is(a, b) → (void *)a == (void *)b
-//   prim_isinstance(x, nil_type) → x == NULL
-// At LLVM level both become `CreateICmpEQ` on opaque ptrs.
+// P_prim_is / P_prim_isinstance: pointer identity and None checks.
+//   prim_is(a, b)           → icmp eq ptr a, b
+//   prim_isinstance(x, nil) → icmp eq ptr x, null
 // The IF1 SEND shape is `(__primitive, "is"/"isinstance",
 // arg0, arg1)` with operands at rvals[2] and rvals[3].
 static bool emit_send_is(EmitCtx &ctx, PNode *pn) {
@@ -1078,12 +1110,9 @@ static bool emit_send_is(EmitCtx &ctx, PNode *pn) {
 }
 
 // -------------------------------------------------------------
-// Phase R.3: P_prim_strcat — string `+`.  Mirrors
-// cg_normalize_v2.cc:lower_send_strcat at the LLVM level.
-// The SEND shape is `__operator + s1 s2`, with rvals[o] = s1
-// and rvals[o+2] = s2 (rvals[o+1] is the '+' operator
-// symbol, skipped).  Calls the linkable `_CG_strcat(a, b)`
-// helper in pyc_runtime.c.
+// P_prim_strcat: string concatenation via _CG_strcat(a, b).
+// SEND shape: __operator + s1 s2; rvals[o]=s1, rvals[o+2]=s2.
+// rvals[o+1] is the '+' operator symbol — skipped.
 static bool emit_send_strcat(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim || pn->prim->index != P_prim_strcat) return false;
   if (pn->lvals.n < 1) return false;
@@ -1107,13 +1136,10 @@ static bool emit_send_strcat(EmitCtx &ctx, PNode *pn) {
 }
 
 // -------------------------------------------------------------
-// Phase R.3: P_prim_len — port of cg.cc:417-427.  The C
-// backend emits `_CG_string_len(s)` for strings and
-// `_CG_prim_len(_, l)` for lists; both are macros that
-// don't link.  We inline the equivalent operations:
-//   - String: load i64 at (s - 8).
-//   - List: load i64 at (l - SIZEOF_LIST_HEADER), i.e. at
-//     (l - 16) since list header is 16 bytes (len + ptr).
+// P_prim_len: length of string or list.
+//   - String: i64 at (s - 8)  (_CG_string layout: {i64 len, char data[]})
+//   - List:   i32 at (l - 12) (_CG_list_struct: {u32 total @-16,
+//             u32 len @-12, void* ptr @-8, char data[] @0})
 static bool emit_send_len(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim || pn->prim->index != P_prim_len) return false;
   if (pn->lvals.n < 1) return false;
@@ -1132,14 +1158,21 @@ static bool emit_send_len(EmitCtx &ctx, PNode *pn) {
   Sym *t = obj_var->type;
   bool is_string = (t == sym_string ||
                     (sym_string && sym_string->specializers.set_in(t)));
-  // Header offset: -8 for string, -16 for list (sizeof
-  // list header at the C runtime).
-  int64_t offset = is_string ? -8 : -16;
-  llvm::Value *off = llvm::ConstantInt::get(i64, offset);
-  // GEP through i8 to do byte arithmetic.
-  llvm::Value *header_ptr = Builder->CreateGEP(i8, obj, off);
-  llvm::Value *len = Builder->CreateLoad(i64, header_ptr,
-      cg_get_string(dst_var) ? cg_get_string(dst_var) : "len");
+  llvm::Value *len;
+  if (is_string) {
+    // String: i64 at offset -8.
+    llvm::Value *off = llvm::ConstantInt::get(i64, -8);
+    llvm::Value *header_ptr = Builder->CreateGEP(i8, obj, off);
+    len = Builder->CreateLoad(i64, header_ptr,
+        cg_get_string(dst_var) ? cg_get_string(dst_var) : "len");
+  } else {
+    // List: u32 `len` field at offset -12; zero-extend to i64.
+    llvm::Type *i32 = llvm::Type::getInt32Ty(*TheContext);
+    llvm::Value *off = llvm::ConstantInt::get(i64, -12);
+    llvm::Value *len_addr = Builder->CreateGEP(i8, obj, off, "len_addr");
+    llvm::Value *len32 = Builder->CreateLoad(i32, len_addr, "len32");
+    len = Builder->CreateZExt(len32, i64, "len");
+  }
   // Coerce to dst type.
   llvm::Type *dst_ty = sym_to_llvm_type(dst_var->type);
   if (dst_ty && len->getType() != dst_ty) {
@@ -1152,15 +1185,10 @@ static bool emit_send_len(EmitCtx &ctx, PNode *pn) {
 }
 
 // -------------------------------------------------------------
-// Phase R.3: P_prim_clone / P_prim_clone_vector — clones a
-// prototype struct.  Mirrors cg.cc:429-451 (write_c_prim's
-// clone case) at the runtime level.  cg.cc emits the C
-// macro `_CG_prim_clone_dst(dst_type, src)` which expands
-// to `_CG_prim_primitive_clone_dst(src, sizeof(dst), sizeof(src))`.
-// At LLVM level we compute the two sizes via DataLayout and
-// call the real runtime function directly.
-//
-// Vector variant: `_CG_prim_primitive_clone_vector(c, size, v)`.
+// P_prim_clone / P_prim_clone_vector: copy a prototype struct.
+//   clone: GC_malloc(dst_size) + memcpy(src, min(dst,src) bytes).
+//     dst_size may exceed src_size for subclass destinations.
+//   clone_vector: _CG_prim_clone_vector_runtime(proto, sz, n_extra).
 static bool emit_send_clone(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim) return false;
   if (pn->prim->index != P_prim_clone &&
@@ -1217,9 +1245,8 @@ static bool emit_send_clone(EmitCtx &ctx, PNode *pn) {
 
   // Vector form: cg.cc:444 emits `_CG_prim_clone_vector(c, v)`
   // which expands to `_CG_prim_primitive_clone_vector(c,
-  // sizeof(*(c)), v)`.  At runtime this is the linkable
-  // `_CG_prim_clone_vector_runtime(proto, sz, v_extra)` in
-  // pyc_runtime.c.
+  // sizeof(*(c)), v)` — the same symbol exported from
+  // libpyc_runtime.a via extern inline in pyc_runtime.c.
   if (pn->rvals.n <= o + 1) return false;
   llvm::Value *v_extra = value_for_var(ctx, pn->rvals.v[o + 1]);
   if (!v_extra) return false;
@@ -1229,7 +1256,7 @@ static bool emit_send_clone(EmitCtx &ctx, PNode *pn) {
     v_extra = Builder->CreateZExtOrTrunc(v_extra, i64);
   }
   llvm::Function *fn = get_runtime_helper(
-      "_CG_prim_clone_vector_runtime", ptr_ty,
+      "_CG_prim_primitive_clone_vector", ptr_ty,
       { ptr_ty, i64, i64 });
   llvm::Value *res = Builder->CreateCall(
       fn, { src, llvm::ConstantInt::get(i64, src_sz), v_extra },
@@ -1239,18 +1266,9 @@ static bool emit_send_clone(EmitCtx &ctx, PNode *pn) {
 }
 
 // -------------------------------------------------------------
-// Phase R.3: P_prim_new emit — class instantiation.
-//
-// Mirrors cg.cc:404-409 (write_c_prim's P_prim_new case).
-// C-level emit is `lvals[0] = _CG_prim_new(<type>)`, which
-// expands to `GC_MALLOC(sizeof(struct _CG_sNNN))` cast to the
-// dst type.  At LLVM level we just call `GC_malloc(sizeof)`
-// directly.
-//
-// Without this, class-prototype globals stay null and any
-// `class A: x = 2`-style attribute store crashes — exactly
-// the segfault pattern that dominates the VIEW2 EXEC failure
-// list.
+// P_prim_new: class instantiation — GC_malloc(sizeof(struct)).
+// Without this, class-prototype globals stay null and attribute
+// stores on class instances crash at runtime.
 static bool emit_send_new(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim || pn->prim->index != P_prim_new) return false;
   if (pn->lvals.n < 1) return false;
@@ -1283,32 +1301,21 @@ static bool emit_send_new(EmitCtx &ctx, PNode *pn) {
 }
 
 // -------------------------------------------------------------
-// Phase R.2.3: P_prim_make emit — tuple and list literals.
+// P_prim_make: tuple and list literals.
 //
-// Mirrors cg.cc:208-236 (write_c_prim's P_prim_make case)
-// adapted to LLVM IR.  The C backend uses macro-expanded
-// `_CG_prim_tuple(<type>, n)` where the C preprocessor
-// computes sizeof; at the LLVM level we use the pyc runtime's
-// `_CG_prim_tuple_list_internal(size, n)` variant which takes
-// the size as a runtime arg.  Both variants share the same
-// underlying allocator in libpyc_runtime.a, so the LLVM-emitted
-// calls link cleanly against C-compiled call sites.
+// The C backend uses _CG_prim_tuple(<type>, n) with a C
+// preprocessor sizeof; at LLVM level we call the runtime's
+// _CG_prim_tuple_list_internal(size, n) with a DataLayout size.
 //
-// Three sub-shapes (mirroring cg.cc:209-235):
+// Three sub-shapes:
 //   1. Tuple (rvals[2]->sym in sym_tuple->specializers):
-//      `_CG_prim_tuple_list_internal(sizeof(<struct>), n)` →
-//      dst, then per-field FIELD_STORE for rvals[3..].
-//   2. List with Type_RECORD lvals[0]->type (struct-shape
-//      list): same as tuple — same helper, same FIELD_STOREs.
-//      cg.cc gotos Ltuple via `listish_tuple=true`.
-//   3. Flat list (rvals[2]->sym in sym_list->specializers
-//      or is_vector, and lvals[0]->type is NOT Type_RECORD):
-//      `_CG_prim_list_internal(sizeof(<elem>), n)` → dst,
-//      then per-index INDEX_STORE for rvals[3..].
-//
-// Returns true if it handled the PNode; false otherwise.  The
-// R.1.4 dispatcher will pair this with the fall-through to
-// emit_send_call.
+//      _CG_prim_tuple_list_internal(sizeof(struct), n) → dst,
+//      then per-field GEP+Store for rvals[3..].
+//   2. Struct-shape list (lvals[0]->type is Type_RECORD):
+//      same as tuple path — same helper, same field stores.
+//   3. Flat list (sym_list specializer, type NOT Type_RECORD):
+//      _CG_prim_tuple_list_internal(sizeof(elem), n) → dst,
+//      then per-index GEP+Store for rvals[3..].
 
 bool emit_send_make(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim) return false;
@@ -1491,51 +1498,18 @@ void emit_move(EmitCtx &ctx, PNode *pn) {
   }
 }
 
-// Forward decls for the SEND dispatcher.
-bool emit_send_make(EmitCtx &ctx, PNode *pn);
-bool emit_send_period(EmitCtx &ctx, PNode *pn);
-bool emit_send_setter(EmitCtx &ctx, PNode *pn);
-bool emit_send_binop(EmitCtx &ctx, PNode *pn);
-bool emit_send_unaryop(EmitCtx &ctx, PNode *pn);
-bool emit_send_sizeof(EmitCtx &ctx, PNode *pn);
-bool emit_send_index_load(EmitCtx &ctx, PNode *pn);
-bool emit_send_index_store(EmitCtx &ctx, PNode *pn);
-bool emit_send_primitive(EmitCtx &ctx, PNode *pn);
-static bool emit_send_new(EmitCtx &ctx, PNode *pn);
-static bool emit_send_clone(EmitCtx &ctx, PNode *pn);
-static bool emit_send_len(EmitCtx &ctx, PNode *pn);
-static bool emit_send_strcat(EmitCtx &ctx, PNode *pn);
-static bool emit_send_is(EmitCtx &ctx, PNode *pn);
-static bool emit_send_coerce(EmitCtx &ctx, PNode *pn);
-void emit_send(EmitCtx &ctx, PNode *pn);
+// emit_send_call is defined after LLVMEmitter (which calls it).
 void emit_send_call(EmitCtx &ctx, PNode *pn);
 
-// -------------------------------------------------------------
-// Code_SEND dispatcher.  Mirrors cg.cc:write_send (line 655) +
-// write_c_prim (line 198) at LLVM level.
-//
-// Order:
-//   1. is_const_folded_send → skip entirely.
-//   2. P_prim_reply is handled as a terminator, not here.
-//   3. If prim, route to per-prim handler.  Each handler
-//      returns bool — true claims, false falls through.
-//   4. Fall through to emit_send_call (regular fn call).
-//
-// Phase R.1.4: skeleton with three prim handlers wired
-// (make from R.2.3, plus stub fallback for unrecognized
-// prims that routes to `_CG_<name>` via the runtime
-// helper).  R.2.1+ ports the remaining prim cases.
-// -------------------------------------------------------------
+// Code_SEND dispatcher — wraps virtual_cg_emit_send with LLVMEmitter.
+// P_prim_reply is short-circuited in virtual_cg_emit_send before
+// reaching any emitter hook; constant-folded SENDs are also skipped there.
 
 // -------------------------------------------------------------
-// Phase R.2.11: P_prim_primitive emit — name-based dispatch.
-//
-// Mirrors cg.cc:484-517.  The actual primitive name lives in
-// `rvals[1]->sym->name` (or `->constant`); rvals[2..] are
-// the args.  Default route: `_CG_<name>(args)`.  Specialized
-// dispatch for `__pyc_c_call__` (FFI — name at rvals[3],
-// arg pairs from rvals[5..]) is needed when the analyzer
-// doesn't statically pick a target.
+// P_prim_primitive: name-based runtime dispatch.
+// rvals[1]->sym->name (or ->constant) is the primitive name.
+// Default: call _CG_<name>(args).
+// Special: __pyc_c_call__(ret_type, fn_name, (type, arg)*) for FFI.
 // -------------------------------------------------------------
 
 bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
@@ -1581,6 +1555,46 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
     if (pn->lvals.n > 0 && pn->lvals.v[0] && !ret_ty->isVoidTy()) {
       put_result(ctx, pn->lvals.v[0], res);
     }
+    return true;
+  }
+
+  // __pyc_format_string__(fmt, arg) → _CG_format_string(fmt, [fields...])
+  // Mirrors format_string_codegen in python_ifa_main.cc: rvals[2]=fmt,
+  // rvals[3]=arg (single value or struct/record tuple).
+  if (strcmp(name, "__pyc_format_string__") == 0) {
+    if (pn->rvals.n < 4) return false;
+    Var *fmt_var = pn->rvals.v[2];
+    Var *arg_var = pn->rvals.v[3];
+    if (!fmt_var || !arg_var) return false;
+    llvm::Value *fmt = value_for_var(ctx, fmt_var);
+    if (!fmt) return false;
+    llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
+    // Collect args: fmt + expanded tuple fields (or single arg).
+    std::vector<llvm::Value *> args;
+    args.push_back(fmt);
+    if (arg_var->type && arg_var->type->type_kind == Type_RECORD &&
+        arg_var->type->has.n > 0) {
+      llvm::StructType *rec_ty = sym_to_llvm_struct(arg_var->type);
+      llvm::Value *rec = value_for_var(ctx, arg_var);
+      if (!rec || !rec_ty) return false;
+      for (int fi = 0; fi < (int)rec_ty->getNumElements(); fi++) {
+        llvm::Type *ft = rec_ty->getElementType(fi);
+        llvm::Value *gep = Builder->CreateStructGEP(rec_ty, rec, fi);
+        args.push_back(Builder->CreateLoad(ft, gep));
+      }
+    } else {
+      llvm::Value *av = value_for_var(ctx, arg_var);
+      if (!av) return false;
+      args.push_back(av);
+    }
+    // Declare as varargs: ptr (char *str, ...)
+    llvm::FunctionType *ft = llvm::FunctionType::get(
+        ptr_ty, {ptr_ty}, /*isVarArg=*/true);
+    llvm::FunctionCallee fn = TheModule->getOrInsertFunction(
+        "_CG_format_string", ft);
+    llvm::Value *res = Builder->CreateCall(ft, fn.getCallee(), args);
+    if (pn->lvals.n > 0 && pn->lvals.v[0])
+      put_result(ctx, pn->lvals.v[0], res);
     return true;
   }
 
@@ -1810,10 +1824,13 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
 }
 
 // -------------------------------------------------------------
-// Block-terminator emit.  Reads the closer PNode's Code kind
-// and emits the LLVM terminator (CreateBr / CreateCondBr /
-// CreateRet / CreateUnreachable).  Mirrors cg.cc's per-Code
-// branch logic at write_c_pnode lines 797-843.
+// Block-terminator emit: given a "closer" PNode (one whose cfg_succ
+// exits the current block), emit the LLVM terminator.
+//
+// For Code_IF with both branches live, critical-edge split blocks
+// (t_edge / f_edge) are inserted between the conditional and each
+// target.  Without them, phi/phy moves intended for only one branch
+// would execute in a block shared by both, corrupting the other branch.
 // -------------------------------------------------------------
 
 void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
@@ -1857,13 +1874,9 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
           }
         }
       }
-
-
       llvm::Value *cond = nullptr;
-      if (closer->rvals.n > 0) {
+      if (closer->rvals.n > 0)
         cond = value_for_var(ctx, closer->rvals.v[0]);
-      } else {
-      }
       // Truncate to i1 if needed.
       if (cond && !cond->getType()->isIntegerTy(1)) {
         cond = Builder->CreateICmpNE(cond,
@@ -1876,20 +1889,15 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
       if (closer->cfg_succ.n > 1 && closer->cfg_succ.v[1]) {
         f_bb = ctx.label_bb.get(closer->cfg_succ.v[1]);
       }
-      
-
       if (t_bb && f_bb) {
         if (cond) {
           llvm::BasicBlock *t_edge = llvm::BasicBlock::Create(*TheContext, "t_edge", ctx.llvm_fn);
           llvm::BasicBlock *f_edge = llvm::BasicBlock::Create(*TheContext, "f_edge", ctx.llvm_fn);
           Builder->CreateCondBr(cond, t_edge, f_edge);
-          
-
           Builder->SetInsertPoint(t_edge);
           emit_phy_moves(ctx, closer, 0);
           emit_phi_moves(ctx, closer, 0);
           Builder->CreateBr(t_bb);
-          
           Builder->SetInsertPoint(f_edge);
           emit_phy_moves(ctx, closer, 1);
           emit_phi_moves(ctx, closer, 1);
@@ -1906,11 +1914,6 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
         emit_phi_moves(ctx, closer, 1);
         Builder->CreateBr(f_bb);
       } else {
-        int vid = -1;
-        if (closer->rvals.n > 0 && closer->rvals.v[0]) {
-          vid = closer->rvals.v[0]->id;
-        }
-        fprintf(stderr, "Code_IF unreachable! id=%d\n", vid);
         Builder->CreateUnreachable();
       }
       break;
@@ -1979,9 +1982,7 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
 }
 
 // -------------------------------------------------------------
-// Alloca pre-pass: every distinct phi-target Var gets an
-// alloca slot in the entry block.  Mirrors the materialized
-// emit's pre-pass at cg_ir_v2_emit_llvm.cc:1467-1488.
+// Alloca pre-pass: one alloca slot per phi-target Var.
 //
 // Phi targets are `pn->phi[i]->lvals[0]` and `pn->phy[i]->
 // lvals[*]` — Vars whose value flows across cfg edges via
@@ -2044,15 +2045,13 @@ void discover_phi_targets(EmitCtx &ctx, Fun *f) {
       if (g_var_to_global.get(v)) return false;
       return true;
     };
-    if (cur->code && cur->code->kind == Code_MOVE) {
-      int n = cur->lvals.n < cur->rvals.n ? cur->lvals.n : cur->rvals.n;
-      for (int i = 0; i < n; i++) {
-        Var *lhs = cur->lvals.v[i];
-        Var *rhs = cur->rvals.v[i];
-        if (lhs && rhs && lhs->live && allocable(lhs) && allocable(rhs))
-          uf.unite(lhs, rhs);
-      }
-    }
+    // Code_MOVE: do NOT unite lhs~rhs here.  MOVE chains carry
+    // values between SSU vars via register bindings (var_map);
+    // uniting them through the union-find collapses distinct
+    // function args that happen to flow to the same phi target
+    // into one alloca slot, clobbering earlier args at entry.
+    // phi/phy PNodes below already create all the sharing that
+    // loops and joins actually need.
     for (PNode *p : cur->phi) {
       if (!p || p->lvals.n < 1) continue;
       Var *lv = p->lvals.v[0];
@@ -2193,12 +2192,10 @@ void emit_phi_moves(EmitCtx &ctx, PNode *pn, int isucc) {
   }
 }
 
-// -------------------------------------------------------------
-// Per-PNode emit.  Mirrors cg.cc:write_c_pnode (line 777) — the
-// body-emit loop.  Phase R.1.3+R.1.4: dispatch on Code_kind,
-// handle MOVE / SEND / LABEL / GOTO / IF.  Block boundaries
-// switch the IRBuilder's insert point; closer PNodes emit
-// terminators via emit_block_terminator.
+// Per-PNode DFS emit.  Mirrors cg.cc:write_c_pnode structure.
+// LABEL → switch IRBuilder insert point; MOVE/SEND → inline emit;
+// IF/GOTO → emit_block_terminator.  A "closer" PNode (cfg_succ
+// targets a Code_LABEL) always ends the current block.
 // -------------------------------------------------------------
 
 void emit_pnode(EmitCtx &ctx, PNode *pn, Vec<PNode *> &done) {
@@ -2350,28 +2347,23 @@ llvm::Function *build_fun_signature(EmitCtx &ctx, Fun *f) {
   return llvm_fn;
 }
 
-// -------------------------------------------------------------
-// Per-Fun emit.  Phase R.1.2 builds the signature.  Body
-// emission lands in R.1.3.
+// Per-Fun emit: build signature, then body.
 // -------------------------------------------------------------
 
 void emit_fun(EmitCtx &ctx, Fun *f) {
   if (!f) return;
   if (!build_fun_signature(ctx, f)) return;
-  if (f->is_external) return;  // body is in a linked library.
+  if (f->is_external) return;  // body is in a linked library
   if (!ctx.llvm_fn) return;
 
-  // R.1.3: pre-pass to allocate llvm::BasicBlocks for the
-  // entry and every Code_LABEL PNode.  This lets emit_pnode
-  // resolve cross-block branch targets directly.
+  // Pre-pass 1: allocate one llvm::BasicBlock per Code_LABEL PNode
+  // so emit_pnode can resolve branch targets without a second walk.
   discover_blocks(ctx, f);
-  // R.3 follow-up: alloca slots for phi-target Vars so
-  // cross-edge writes have stable storage.  Mirrors the
-  // materialized emit's alloca pre-pass.
+  // Pre-pass 2: alloca slots for phi-target Vars (loop back-edges,
+  // if/else joins) so cross-edge writes have stable storage.
   discover_phi_targets(ctx, f);
   llvm::BasicBlock *entry_bb = ctx.label_bb.get(f->entry);
   if (!entry_bb) {
-    // Defensive fallback if entry wasn't reachable (no PNodes).
     entry_bb =
         llvm::BasicBlock::Create(*TheContext, "entry", ctx.llvm_fn);
     Builder->SetInsertPoint(entry_bb);
@@ -2383,6 +2375,10 @@ void emit_fun(EmitCtx &ctx, Fun *f) {
     return;
   }
   Builder->SetInsertPoint(entry_bb);
+  // Store each argument into its alloca slot at function entry.
+  // discover_phi_targets may assign an alloca to a Var that's also
+  // a formal (e.g., a loop that modifies a parameter); without this
+  // prestore the first loop iteration reads an uninitialized slot.
   Vec<Var *> bound_vars;
   ctx.var_map.get_keys(bound_vars);
   for (Var *v : bound_vars) {
@@ -2394,6 +2390,10 @@ void emit_fun(EmitCtx &ctx, Fun *f) {
       Builder->CreateStore(arg_val, gv);
     }
   }
+
+  // Rebuild cfg_pred_index so emit_phi_moves selects the correct
+  // predecessor's rval (mirrors write_c_fun's call in cg.cc:909).
+  rebuild_cfg_pred_index(f);
 
   // DFS emit from entry.  emit_pnode handles MOVE / SEND /
   // LABEL switching / terminator emission.
@@ -2410,7 +2410,6 @@ void emit_fun(EmitCtx &ctx, Fun *f) {
       Builder->CreateUnreachable();
     }
   }
-  
 }
 
 }  // namespace

@@ -3,7 +3,7 @@
 **Status:** open.
 **Affects:** `ifa/analysis/fa.cc` (splitter), the FA-level
 EntrySet/AVar specialization machinery.
-**Related:** [024-is-comparison-narrowing.md](024-is-comparison-narrowing.md)
+**Related:** [024-is-comparison-narrowing.md](closed/024-is-comparison-narrowing.md)
 (specific to `is`/`is not`) — this issue is the broader
 underlying problem.
 
@@ -209,7 +209,7 @@ When fixing:
 - [`ifa/IFA.md`](../IFA.md) §6 — setter-splitting (the
   existing per-EntrySet machinery; narrowing would extend
   this with per-branch refinement).
-- [`ifa/issues/024-is-comparison-narrowing.md`](024-is-comparison-narrowing.md)
+- [`ifa/issues/024-is-comparison-narrowing.md`](closed/024-is-comparison-narrowing.md)
   — narrower scope (is/is_not).
 - [`ifa/CLONE.md`](../CLONE.md) — current clone-time
   specialization.
@@ -506,7 +506,7 @@ type patterns, the following must compose:
    workaround in place (recognize wrapper by sym name);
    robust fix would be to run inlining before FA.
 5. **Polymorphic `__is__` dispatch resolution** — ✓
-   addressed by [issue 024](024-is-comparison-narrowing.md)'s
+   addressed by [issue 024](closed/024-is-comparison-narrowing.md)'s
    fix (June 2026).  The frontend rewrites `x is None`
    directly to `prim_isinstance(x, sym_nil_type)` and
    codegen emits a NULL pointer check.  No method dispatch
