@@ -1,7 +1,8 @@
 # Issue 027: v2 LLVM loses struct type through `while x is not None` narrowing
 
-**Status:** open.
-**Affects:** v2 LLVM backend (`cg_normalize_v2.cc` / emit).
+**Status:** closed (fixed).
+**Affects:** v2 LLVM backend (decommissioned).
+Fixed by the replacement of `cg_normalize_v2` with `VirtualCGEmitter` and `LLVMEmitter`. The new `resolve_union_receiver` properly extracts the struct type (`Node`) from the narrowed `[Node | None]` union type passing through the `while` back-edge.
 **Surfaced while:** writing iterative linked list tests
 after the `is None` fix.
 
