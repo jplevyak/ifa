@@ -3037,6 +3037,21 @@ static bool mixed_basics(AVar *av) {
   return basics.n > 1;
 }
 
+static bool is_only_used_by_phy_or_phi(Var *v) {
+  if (!v) return false;
+  if (!v->uses.n) return true;
+  for (PNode *p : v->uses) {
+    if (p->code) {
+      if (p->code->kind == Code_SEND && p->prim && 
+          (p->prim->index == P_prim_isinstance || p->prim->index == P_prim_is)) {
+        continue;
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
 static void collect_var_type_violations() {
   // collect NOTYPE violations
   for (EntrySet *es : fa->ess) {
@@ -3052,12 +3067,15 @@ static void collect_var_type_violations() {
     for (EntrySet *es : fa->ess) {
       for (Var *v : es->fun->fa_all_Vars) {
         AVar *av = make_AVar(v, es);
-        if (mixed_basics(av)) type_violation(ATypeViolation_kind::BOXING, av, av->out, nullptr, nullptr);
+        if (!is_only_used_by_phy_or_phi(av->var) && mixed_basics(av))
+          type_violation(ATypeViolation_kind::BOXING, av, av->out, nullptr, nullptr);
       }
     }
     for (CreationSet *cs : fa->css) {
       for (AVar *av : cs->vars) {
-        if (mixed_basics(av)) type_violation(ATypeViolation_kind::BOXING, av, av->out, nullptr, nullptr);
+        if (!av->var || !is_only_used_by_phy_or_phi(av->var)) {
+          if (mixed_basics(av)) type_violation(ATypeViolation_kind::BOXING, av, av->out, nullptr, nullptr);
+        }
       }
     }
   }
@@ -4512,6 +4530,7 @@ int FA::analyze(Fun *top) {
     // constraints for the new shape and converges from
     // there.
     for (EntrySet *es : ess) es->live_pnodes.clear();
+    type_violations.clear();
     analyze_to_convergence();
   }
   // Issue 029 step 1: identify polymorphic confluences for

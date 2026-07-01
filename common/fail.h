@@ -25,7 +25,7 @@ EXTERN int ifa_escape_in_fa EXTERN_INIT(0);
 // elided identity wrappers.  See
 // `ifa/issues/026-recursive-self-mutation-struct-collapse.md`
 // and the discussion in `ifa/analysis/NOTES.md`.
-EXTERN int ifa_fa_inline EXTERN_INIT(0);
+EXTERN int ifa_fa_inline EXTERN_INIT(1);
 
 // Enable the issue-025 per-branch type narrowing
 // recognizer at Code_IF.  Default on (production
