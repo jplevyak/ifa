@@ -1,4 +1,6 @@
 #include <ctype.h>
+#include <set>
+#include <string>
 
 #include "ifadefs.h"
 
@@ -704,7 +706,11 @@ class CBackendEmitter : public VirtualCGEmitter {
       assert(s);
       if (comma) fprintf(fp, ", ");
       comma = 1;
-      fputs(s, fp);
+      if (pn->prim->index == P_prim_isinstance && i == 3) {
+        fprintf(fp, "&_CG_type_%s", s);
+      } else {
+        fputs(s, fp);
+      }
     }
     fputs(");\n", fp);
     return true;
@@ -977,6 +983,17 @@ static void build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
       }
     }
   }
+  if (allsyms.n) fputs("\n/*\n Type Objects\n*/\n\n", fp);
+  std::set<std::string> emitted_types;
+  for (Sym *s : allsyms) {
+    if (s->type_kind == Type_RECORD && !s->is_system_type) {
+      if (emitted_types.find(s->name) == emitted_types.end()) {
+        fprintf(fp, "_CG_TypeObject _CG_type_%s = { PYC_TAG_OBJECT, \"%s\" };\n", s->name, s->name);
+        emitted_types.insert(s->name);
+      }
+    }
+  }
+
   if (allsyms.n) fputs("\n/*\n Builtin Functions\n*/\n\n", fp);
   for (Sym *s : allsyms) {
     if (s->type_kind == Type_RECORD && s->creators.n && s->creators[0]->sym == sym_list && homogeneous_tuple(s) &&
