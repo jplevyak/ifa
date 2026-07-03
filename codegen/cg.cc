@@ -220,7 +220,13 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       Ltuple:
         fputs("  ", fp);
         cchar *t = c_type(n->lvals[0]);
-        int voidish = n->rvals.n < 4 && n->lvals[0]->type->element->type == sym_void;
+        Sym *elem = n->lvals[0]->type->element;
+        // An always-empty tuple (n->rvals.n < 4, i.e. zero elements passed
+        // to this "make" call) may never get its element type resolved by
+        // FA at all -- `element` itself can be null here, not just
+        // `element->type`. Treat "no element type" the same as "void
+        // element type" rather than dereferencing a null Sym*.
+        int voidish = n->rvals.n < 4 && (!elem || elem->type == sym_void);
         fprintf(fp, "%s = _CG_prim_tuple%s(%s, %d);\n", cg_get_string(n->lvals[0]), listish_tuple ? "_list" : "",
                 voidish ? "int*" : t, n->rvals.n - 2);
         for (int i = 3; i < n->rvals.n; i++)

@@ -57,6 +57,16 @@ class PNode : public gc {
 
 int compar_pnodes(const void *ai, const void *aj);
 
+// Content-based hashing for `Vec<PNode*>::set_add` / `set_in` (used
+// extensively by cfg_succ/cfg_pred/phi/phy and codegen's visited-node
+// tracking, e.g. cg.cc's write_c_pnode `done` set). `id` is monotonically
+// assigned at construction (pnode.cc), so iteration/lookup is deterministic
+// and collision-free across runs (see ifa/notes/004; like Var, this was a
+// pointer-hashed id-bearing type missing from that landing's six).
+template <> struct PointerHash<PNode *> {
+  static uintptr_t hash(PNode *c) { return c ? (uintptr_t)c->id : 0; }
+};
+
 typedef Vec<PNode *> VecPNode;
 typedef Map<PNode *, VecPNode> MapPNVecPN;
 
