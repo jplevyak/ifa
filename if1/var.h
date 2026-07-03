@@ -48,6 +48,15 @@ class Var : public gc {
   Var *copy();
   Var(Sym *s);
 };
+
+// Content-based hashing for `Vec<Var*>::set_add` / `set_in`. `id` is
+// monotonically assigned at construction (var.cc), so iteration order
+// is deterministic across runs (see ifa/notes/004; this specialization
+// was the one id-bearing pointer type missing from that landing).
+template <> struct PointerHash<Var *> {
+  static uintptr_t hash(Var *c) { return c ? (uintptr_t)c->id : 0; }
+};
+
 #define form_AVarMapElem(_p, _v) form_Map(AVarMapElem, _p, _v)
 
 void pp(Var *);

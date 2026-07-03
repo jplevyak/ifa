@@ -11,7 +11,18 @@ ifa/, codegen), `ifa/analysis/fa.cc` (the 17 explicit
 (design discussion of A/B/C, what landed and what's deferred).
 [../../issues/021-scope-map-pointer-hash-nondeterminism.md](../../issues/021-scope-map-pointer-hash-nondeterminism.md)
 is the same bug class in the pyc frontend's `PycScope::map`, not
-touched by this issue's scope (ifa's own `Vec`-as-set).
+touched by this issue's scope (ifa's own `Vec`-as-set). Issue 021's
+second investigation (added after a `Var *` `PointerHash` gap was
+found and fixed — `Var` was missing from the six types notes/004's
+options A+B specialized) confirmed *this* issue's deferred audit is
+what's actually blocking pyc build reproducibility: `expr_evaluator.py`
+compiled 8 times still produced 8 distinct `.ll` outputs even after
+both the `PycScope::map` and `Var *` fixes landed, traced to dozens
+of remaining unspecialized `set_add`/`set_in` sites over `PNode *`,
+`Dom *`, `CallPoint *`, `MatchCacheEntry *`, `llvm::Value *`, etc.
+whose iteration order feeds back into Sym/Var/Fun id-assignment
+order during FA cloning. Treat 021's remaining scope as folded into
+this issue rather than tracked twice.
 
 ## Background
 
