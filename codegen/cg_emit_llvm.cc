@@ -1533,6 +1533,14 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
     if (!name_var || !name_var->sym || !name_var->sym->constant)
       return false;
     cchar *fn_name = name_var->sym->constant;
+    // A leading "::" (e.g. "::exit") is a C++ global-scope qualifier for
+    // the C backend's generated C++ output (so it reaches the real libc
+    // symbol rather than any shadowing name) -- meaningless as an LLVM/C
+    // symbol name. Without stripping it, the LLVM backend declares and
+    // calls a function literally named "::exit", which never links
+    // against the real `exit` (issues/013 found this via `exit()`,
+    // called from the frontend's new assert-fail lowering).
+    if (fn_name[0] == ':' && fn_name[1] == ':') fn_name += 2;
 
     llvm::Type *ret_ty = llvm::Type::getVoidTy(*TheContext);
     if (pn->lvals.n > 0 && pn->lvals.v[0] && pn->lvals.v[0]->type) {
