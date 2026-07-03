@@ -117,9 +117,18 @@ static int is_simple_closure_create(PNode *n, bool verify_other = true);
 
 static PNode *simple_closure_call(PNode *n, bool verify_other = true) {
   if (!is_closure_call(n)) return 0;
+  // issues/002: a closure passed in as a formal argument (rather than
+  // created earlier in this same function's body) can be the very
+  // first PNode of the function -- cfg_pred is legitimately empty at
+  // function entry. Walking backward through a MOVE chain looking for
+  // the closure's local creation site doesn't apply here; there's no
+  // local creation site to find, so bail (not a "simple" closure call
+  // eligible for this inlining, just an ordinary escaped one).
+  if (!n->cfg_pred.n) return 0;
   PNode *p = n->cfg_pred[0];
   Var *v = n->rvals[0];
   while (p->code->kind == Code_MOVE && v == p->lvals[0]) {
+    if (!p->cfg_pred.n) return 0;
     v = p->rvals[0];
     p = p->cfg_pred[0];
   }
@@ -230,6 +239,14 @@ static void inline_single_pnode(Fun *f, PNode *p, Fun *fn, PNode *s) {
     Sym *fs = first_var(v)->sym;
     int i = fn->sym->has.index(fs);
     if (i < 0) continue;
+    // issues/002: `i` is a formal-position index into fn's declared
+    // has[] list, but the call site `p`'s own rvals aren't guaranteed
+    // to align 1:1 with it -- an escaped-closure call site can have a
+    // different rval count/shape than a plain direct call. When `i`
+    // runs past p->rvals, this substitution's alignment assumption
+    // doesn't hold for this call site; bail, mirroring the Type_SUM
+    // bail-out below (leaves the call as a real, uninlined dispatch).
+    if (i >= p->rvals.n) return;
     if (p->rvals[i]->constant) continue;
     if (p->rvals[i]->type == v->type) continue;
     if (p->rvals[i]->type->type_kind == Type_SUM &&
