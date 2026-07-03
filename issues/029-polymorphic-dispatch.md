@@ -2,6 +2,16 @@
 
 **Status:** open.  Workaround is tag-based dispatch in
 user code (see `tests/expr_evaluator.py`).
+**Related:** `../../issues/007-decorators-not-applied.md` hits the
+same `get_target_fun_core` gap for a shape this issue doesn't cover —
+calling a bare polymorphic function-typed *value* directly (e.g. a
+variable reassigned to one of two different closures), with no
+receiver object to dispatch a vtable slot through at all. Confirmed
+via `def double(f): ...; @double def add_one(x): ...` becoming, after
+a prerequisite fix, a call site with 2 candidate `Fun`s and zero
+receiver — same `assert(!"runtime error: matching function not
+found")` fallback, but the struct-slot lookup in `cg.cc:801-802`
+can't apply since there's no struct to look a slot up in.
 
 ## Symptom
 

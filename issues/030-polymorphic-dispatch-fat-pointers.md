@@ -128,6 +128,21 @@ call" sketch.  This issue records the full design agreed in conversation
 dispatch).  029 can be closed in favour of this issue once implementation
 begins.
 
+## Related: bare callable-value dispatch (no receiver)
+
+`../../issues/007-decorators-not-applied.md`'s re-check (2026-07)
+found the same `get_target_fun_core`-returns-null gap for a call site
+with no receiver at all — a plain function-typed variable (e.g.
+reassigned by a decorator to one of two different closures) called
+directly (`g(5)`), rather than a method called through an instance
+(`obj.method()`). The fat-pointer/classtag design above is framed
+entirely around receiver objects (`obj->classtag`, `obj->e<N>` method
+slots); extending it to bare callable values would need first-class
+function values to carry the same kind of taggable/dispatchable
+representation, even when they were never wrapped in a user-visible
+class. Not scoped or designed here — flagging as a needed extension
+to this issue's design before it can unblock issue 007.
+
 ## Tests to add
 
 - `tests/poly_dispatch_small.py` — 2-way dispatch (fan-out ≤ threshold):
