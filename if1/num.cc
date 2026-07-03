@@ -4,7 +4,15 @@
 #include "math.h"
 
 static int sprint_float_val(char *str, size_t size, double val) {
-  int numchars = snprintf(str, size, "%g", val);
+  // %g defaults to 6 significant digits -- too coarse once this is used
+  // to embed a float *constant*'s literal text into generated C code
+  // (cg.cc's write_c, via the no-control-string sprint_imm overload
+  // below): a literal like 1234567.89 would round-trip through the
+  // generated .c file as 1.23457e+06 == 1234570.0, silently losing
+  // precision. %.17g round-trips any double exactly, matching the
+  // convention pyc_c_runtime.h's _CG_str_from_float/
+  // _CG_prim_primitive_to_string(double) already use for the same reason.
+  int numchars = snprintf(str, size, "%.17g", val);
   if (strchr(str, '.') == NULL && strchr(str, 'e') == NULL) {
     if ((size_t)numchars + 2 < size) {
       strcat(str, ".0");
