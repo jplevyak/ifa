@@ -288,3 +288,12 @@ fixes.
 Filed June 2026 as part of issue 009's Step 6. Options A + B
 landed June 2026 (this commit); remaining cleanup moved to
 issue 010.
+
+**Scope note:** this note and issues 009/010 are about `ifa`'s own
+`Vec`-as-set hashing (`PointerHashFns`/`MapElem::operator uintptr_t`
+used by ifa-level CreationSets/AVars). The **pyc frontend** has an
+independent instance of the same underlying pattern —
+`PycScope::map` (`Map<cchar *, PycSymbol *>`, `python_ifa_int.h`) —
+which was never touched by options A + B and remains susceptible to
+the same class of nondeterminism. Tracked separately as
+[../../issues/021-scope-map-pointer-hash-nondeterminism.md](../../issues/021-scope-map-pointer-hash-nondeterminism.md).

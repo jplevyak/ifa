@@ -9,6 +9,9 @@ ifa/, codegen), `ifa/analysis/fa.cc` (the 17 explicit
 **Related:** [009-fa-violations-nondeterminism.md](closed/009-fa-violations-nondeterminism.md)
 (the surface fix that motivated notes/004), [../notes/004-plib-vec-pointer-set-hashing.md](../notes/004-plib-vec-pointer-set-hashing.md)
 (design discussion of A/B/C, what landed and what's deferred).
+[../../issues/021-scope-map-pointer-hash-nondeterminism.md](../../issues/021-scope-map-pointer-hash-nondeterminism.md)
+is the same bug class in the pyc frontend's `PycScope::map`, not
+touched by this issue's scope (ifa's own `Vec`-as-set).
 
 ## Background
 
