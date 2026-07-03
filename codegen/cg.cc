@@ -19,6 +19,18 @@
 
 // c_type(Var*), c_type(Sym*) — moved to codegen_common.{h,cc}.
 
+// Polymorphic method dispatch map: maps each __new__ Fun to a list of
+// (slot_index, target_fun) pairs discovered by tracing FA creation chains
+// at polymorphic call sites.  Built once before codegen; consumed by the
+// P_prim_clone emitter (to populate method pointer fields) and by
+// emit_send_call (to emit indirect calls through those fields).
+struct PolymorphicSlot {
+  int slot;
+  Fun *fun_val;
+  int specificity;  // lower = more specific (fewer CSes in the ES sorted list)
+};
+static Map<Fun *, Vec<PolymorphicSlot> *> new_to_val_map;
+
 static void write_c_fun_proto(FILE *fp, Fun *f, int type = 0) {
   assert(f->rets.n == 1);
   fputs(c_type(f->rets[0]), fp);
@@ -257,7 +269,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         }
       } else {
         for (int i = 0; i < obj->has.n; i++) {
-          if (symbol == obj->has[i]->name) {
+          if (symbol == obj->has[i]->name && cg_field_live(obj, i)) {
             assert(cg_get_string(n->lvals[0]));
             fprintf(fp, "  %s = (%s)((%s)%s)->e%d; /* %s */\n", cg_get_string(n->lvals[0]), t, cg_get_string(obj),
                     cg_get_string(n->rvals[1]), i, symbol);
@@ -445,6 +457,21 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         fputs(cg_get_string(n->rvals[i]), fp);
       }
       fputs(");\n", fp);
+      // After cloning, populate any method pointer slots for polymorphic dispatch.
+      if (n->prim->index == P_prim_clone && cg_get_string(n->lvals[0])) {
+        Vec<PolymorphicSlot> *pslots = new_to_val_map.get(f);
+        if (pslots) {
+          cchar *dst_t = cg_get_string(n->lvals[0]->type);
+          for (int si = 0; si < pslots->n; si++) {
+            int slot = (*pslots)[si].slot;
+            Fun *fun_val = (*pslots)[si].fun_val;
+            if (!cg_field_live(n->lvals[0]->type, slot)) continue;
+            if (!cg_get_string(fun_val)) continue;
+            fprintf(fp, "  ((%s)%s)->e%d = (void*)%s;\n",
+                    dst_t, cg_get_string(n->lvals[0]), slot, cg_get_string(fun_val));
+          }
+        }
+      }
       break;
     }
     case P_prim_sizeof: {
@@ -733,6 +760,60 @@ class CBackendEmitter : public VirtualCGEmitter {
       }
       fputs(");\n", fp);
     } else {
+      // Polymorphic dispatch through a method pointer slot (vtable).
+      //
+      // Call PNode rvals layout (for a method call like `right.val()`):
+      //   rvals[0] = method symbol (e.g. "val"), sym->name="val", def=nil
+      //   rvals[i] = receiver (self) at index i = Position2int(self_pos) - 1
+      //
+      // Strategy: find the first live positional arg of any callee, derive
+      // the rvals index from its position, get the receiver cg-string, find
+      // the method slot in that arg's concrete type, and emit an indirect call
+      // through `((recv_type)(void*)recv)->eN`.
+      Vec<Fun *> *fns = f->calls.get(pn);
+      if (fns && fns->n > 1) {
+        // Find receiver index, concrete type, slot, and return type from any callee.
+        int slot = -1;
+        int recv_idx = -1;
+        cchar *recv_type_str = nullptr;
+        cchar *ret_type_str = nullptr;
+        for (int fi = 0; fi < fns->n && slot < 0; fi++) {
+          Fun *fun_val = (*fns)[fi];
+          if (!fun_val || !fun_val->sym || !fun_val->sym->name) continue;
+          cchar *method_name = fun_val->sym->name;
+          MPosition argp; argp.push(1);
+          for (int pi = 0; pi < fun_val->sym->has.n + 2 && slot < 0; pi++) {
+            MPosition *cp = cannonicalize_mposition(argp);
+            argp.inc();
+            Var *argv = fun_val->args.get(cp);
+            if (!argv || !argv->live || !argv->type) continue;
+            int ridx = (int)Position2int(cp->pos[0]) - 1;
+            if (ridx < 0 || ridx >= pn->rvals.n) continue;
+            Var *recv_var = pn->rvals[ridx];
+            if (!recv_var || !cg_get_string(recv_var)) continue;
+            Sym *csym = argv->type;
+            for (int k = 0; k < csym->has.n; k++) {
+              if (csym->has[k] && csym->has[k]->name == method_name && cg_field_live(csym, k)) {
+                slot = k;
+                recv_idx = ridx;
+                recv_type_str = cg_get_string(csym);
+                if (fun_val->rets.n && fun_val->rets[0]) ret_type_str = c_type(fun_val->rets[0]);
+                break;
+              }
+            }
+            if (slot >= 0) break;
+          }
+        }
+        if (slot >= 0 && recv_idx >= 0 && recv_type_str && ret_type_str) {
+          cchar *recv_str = cg_get_string(pn->rvals[recv_idx]);
+          fputs("  ", fp);
+          if (pn->lvals.n && cg_get_string(pn->lvals[0]))
+            fprintf(fp, "%s = ", cg_get_string(pn->lvals[0]));
+          fprintf(fp, "((%s(*)(void*))((%s)(void*)%s)->e%d)((void*)%s);\n",
+                  ret_type_str, recv_type_str, recv_str, slot, recv_str);
+          return;
+        }
+      }
       fputs("  assert(!\"runtime error: matching function not found\");\n", fp);
     }
   }
@@ -1002,11 +1083,114 @@ static void build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
   }
 }
 
+// Populate new_to_val_map:
+//   For each live function that appears at any poly call site (method name
+//   with fns->n > 1 anywhere in the program), find its self-arg concrete type,
+//   discover the slot for its name in that type, trace the FA creation chain
+//   from that arg's AType through cs->defs to the creator function, and register
+//   creator → (slot, fun_val).
+//
+// Unlike the previous approach (only scanning fa_send_PNodes of original
+// functions), this scans ALL fun->calls entries (including cloned functions)
+// to collect poly method names, then iterates ALL live functions with those
+// names. This catches val clones that only appear at monomorphic call sites
+// within specialized callers but participate in vtable dispatch overall.
+static void build_new_to_val_map(FA *fa) {
+  new_to_val_map.clear();
+
+  // Pass 1: collect method names that appear at any poly call site.
+  Vec<cchar *> poly_names;
+  for (Fun *f : fa->funs) {
+    if (!f->live) continue;
+    for (int ci = 0; ci < f->calls.n; ci++) {
+      if (!f->calls[ci].key) continue;
+      Vec<Fun *> *fns = f->calls[ci].value;
+      if (!fns || fns->n <= 1) continue;
+      for (Fun *fv : *fns)
+        if (fv && fv->sym && fv->sym->name) poly_names.set_add(fv->sym->name);
+    }
+  }
+
+  // Pass 2: for every live function whose name is a poly method, find its
+  // self arg, the method slot in that arg's concrete type, and register all
+  // creators of self with this function.
+  for (Fun *fun_val : fa->funs) {
+    if (!fun_val->live || !fun_val->sym || !fun_val->sym->name) continue;
+    if (!poly_names.set_in(fun_val->sym->name)) continue;
+    cchar *method_name = fun_val->sym->name;
+
+    // Find the self-arg position and slot.
+    int slot = -1;
+    MPosition *self_cp = nullptr;
+    {
+      MPosition argp; argp.push(1);
+      for (int pi = 0; pi < fun_val->sym->has.n + 2 && slot < 0; pi++) {
+        MPosition *cp = cannonicalize_mposition(argp);
+        argp.inc();
+        Var *v = fun_val->args.get(cp);
+        if (!v || !v->live || !v->type) continue;
+        Sym *csym = v->type;
+        for (int k = 0; k < csym->has.n; k++) {
+          if (csym->has[k] && csym->has[k]->name == method_name && cg_field_live(csym, k)) {
+            slot = k;
+            self_cp = cp;
+            break;
+          }
+        }
+        if (slot >= 0) break;
+      }
+    }
+    if (slot < 0 || !self_cp) continue;
+
+    // Walk every EntrySet for fun_val; look only at the self arg's AType.
+    // Track specificity = sorted.n of the ES: lower means more specific.
+    // When multiple val clones compete for the same (creator, slot), the
+    // most-specific one (smallest sorted.n) wins — FA is conservative and
+    // may include extra CSes in the self AType of less-specific clones.
+    for (EntrySet *es : fun_val->ess) {
+      AVar *self_av = nullptr;
+      for (int j = 0; j < es->args.n; j++) {
+        if (es->args.v[j].key == self_cp) { self_av = es->args.v[j].value; break; }
+      }
+      if (!self_av || !self_av->out) continue;
+      int specificity = self_av->out->sorted.n;  // fewer CSes = more specific
+      for (CreationSet *cs : self_av->out->sorted) {
+        if (!cs) continue;
+        for (AVar *def_av : cs->defs) {
+          if (!def_av || !def_av->contour_is_entry_set) continue;
+          EntrySet *creator_es = (EntrySet *)def_av->contour;
+          Fun *fun_new = creator_es->fun;
+          if (!fun_new || !fun_new->live) continue;
+          Vec<PolymorphicSlot> *slots = new_to_val_map.get(fun_new);
+          if (!slots) { slots = new Vec<PolymorphicSlot>(); new_to_val_map.put(fun_new, slots); }
+          // Find existing registration for this (slot) — replace if less specific.
+          int existing = -1;
+          for (int k = 0; k < slots->n; k++)
+            if ((*slots)[k].slot == slot) { existing = k; break; }
+          if (existing >= 0) {
+            if ((*slots)[existing].fun_val == fun_val) continue;  // exact dup
+            if (specificity < (*slots)[existing].specificity) {
+              // More specific: replace existing registration.
+              (*slots)[existing].fun_val = fun_val;
+              (*slots)[existing].specificity = specificity;
+            }
+            // else: existing is equally or more specific, keep it
+            continue;
+          }
+          PolymorphicSlot ps; ps.slot = slot; ps.fun_val = fun_val; ps.specificity = specificity;
+          slots->add(ps);
+        }
+      }
+    }
+  }
+}
+
 void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
   Vec<Var *> globals;
   int index = 0;
   if (!if1->callback->c_codegen_pre_file(fp)) fprintf(fp, "#include \"c_runtime.h\"\n\n");
   build_type_strings(fp, fa, globals);
+  build_new_to_val_map(fa);
   if (globals.n) {
     fputs("\n/*\n Global Variables\n*/\n\n", fp);
   }
