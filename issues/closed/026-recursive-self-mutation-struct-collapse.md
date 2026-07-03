@@ -751,7 +751,7 @@ comes from narrowing, not from inlining.
 
 ## Related
 
-- [`issues/004-is-operator-unimplemented.md`](../../issues/004-is-operator-unimplemented.md)
+- [`issues/004-is-operator-unimplemented.md`](../../issues/closed/004-is-operator-unimplemented.md)
   — the `is None` fix that unblocked recursive type
   narrowing.  This issue is the next layer down.
 - [`ifa/issues/025-intra-function-union-narrowing.md`](025-intra-function-union-narrowing.md)

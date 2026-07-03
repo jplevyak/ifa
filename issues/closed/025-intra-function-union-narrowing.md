@@ -189,7 +189,7 @@ When fixing:
 2. The isinstance-on-runtime-union pattern (Case 2)
    compiles and returns the right values.
 3. The recursive-linked-list pattern from
-   [issues/004](../../issues/004-is-operator-unimplemented.md#whats-still-broken)
+   [issues/004](../../issues/closed/004-is-operator-unimplemented.md#whats-still-broken)
    compiles (once issue 024 also lands).
 4. Pyc suite stays at 85/0 on both backends.
 5. Add a `tests/conditional_narrowing.py` exercising each

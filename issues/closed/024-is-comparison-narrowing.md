@@ -10,12 +10,12 @@ landed" section below for details.
 **Affects:** `ifa/analysis/fa.cc` (the splitter that decides
 when to refine an EntrySet based on conditional predicates).
 **Related:**
-[`issues/004-is-operator-unimplemented.md`](../../issues/004-is-operator-unimplemented.md)
+[`issues/004-is-operator-unimplemented.md`](../../issues/closed/004-is-operator-unimplemented.md)
 — the partial fix for `is` that exposed this gap.
 
 ## Symptom
 
-After [issue 004](../../issues/004-is-operator-unimplemented.md)'s
+After [issue 004](../../issues/closed/004-is-operator-unimplemented.md)'s
 partial fix lands the `is`/`is not` operators, two
 follow-on patterns crash at codegen with a "matching
 function not found" runtime assertion:
@@ -124,7 +124,7 @@ When fixing:
 1. The `print(a is b); print(a is c)` two-statement test
    compiles and prints `True\nFalse`.
 2. The recursive linked-list pattern in
-   [`issues/004`](../../issues/004-is-operator-unimplemented.md#whats-still-broken)
+   [`issues/004`](../../issues/closed/004-is-operator-unimplemented.md#whats-still-broken)
    compiles and runs.
 3. `tests/recursive_alloc_basic.py` and the other recursive
    tests still pass.
