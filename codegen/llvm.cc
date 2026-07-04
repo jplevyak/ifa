@@ -78,7 +78,11 @@ void llvm_codegen_initialize(FA *fa) {
 
   // Set target triple for the module
   std::string TargetTriple = llvm::sys::getDefaultTargetTriple();
+#if LLVM_VERSION_MAJOR >= 19
   TheModule->setTargetTriple(llvm::Triple(TargetTriple));
+#else
+  TheModule->setTargetTriple(TargetTriple);
+#endif
 
   // Enable PIC for position-independent code generation
   TheModule->setPICLevel(llvm::PICLevel::BigPIC);
