@@ -3,15 +3,16 @@
 ;; Fun %while
 (fun %while
   entry:  %p0
-  exit:   %p5
-  pnodes: 6
+  exit:   %p6
+  pnodes: 7
 )
 (pnodes %while
-  %p0  LABEL  succ:[%p1]  pred:[%p4]
-  %p1  IF    %cond  succ:[%p2 %p5]  pred:[%p0]
-  %p2  LABEL  succ:[%p3]  pred:[%p1]
-  %p3  MOVE  %i -> %r  succ:[%p4]  pred:[%p2]
-  %p4  GOTO   succ:[%p0]  pred:[%p3]
-  %p5  LABEL  pred:[%p1]
+  %p0  NOP    succ:[%p1]
+  %p1  LABEL  succ:[%p2]  pred:[%p0 %p5]
+  %p2  IF    %cond  succ:[%p3 %p6]  pred:[%p1]
+  %p3  LABEL  succ:[%p4]  pred:[%p2]
+  %p4  MOVE  %i -> %r  succ:[%p5]  pred:[%p3]
+  %p5  GOTO   succ:[%p1]  pred:[%p4]
+  %p6  LABEL  pred:[%p2]
 )
 
