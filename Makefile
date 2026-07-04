@@ -94,7 +94,7 @@ LLVM_LDFLAGS = $(shell $(LLVM_CONFIG) --ldflags --libs core irreader executionen
 # Removed -NDEBUG as DEBUG=1 is often set. LLVM_CXXFLAGS usually includes appropriate -DNDEBUG or not.
 
 CFLAGS += $(LLVM_CXXFLAGS)
-LDFLAGS_EXEC = $(LDFLAGS) $(LLVM_LDFLAGS) # LDFLAGS for executables needing LLVM libs
+LDFLAGS_EXEC = $(LDFLAGS) # path/rpath flags for executables; LLVM_LDFLAGS added after objects
 
 CFLAGS += -std=c++23
 CPPFLAGS += $(CFLAGS)
@@ -176,14 +176,14 @@ deinstall:
 	rm $(INSTALL_LIBRARIES:%=$(PREFIX)/lib/%)
 
 $(IFA): $(IFA_OBJS) $(LIB_OBJS) $(PLIB_OBJS)
-	$(CXX) $(CFLAGS) $(LDFLAGS_EXEC) -o $@ $^ $(LIBS)
+	$(CXX) $(CFLAGS) $(LDFLAGS_EXEC) -o $@ $^ $(LIBS) $(LLVM_LDFLAGS)
 
 # IF1-level test harness. Links against the static library so the
 # archive can skip main.o (ifa_test_main.o provides its own main) and
 # also skip frontend objects pulled in by ifa.cc that we don't need.
 IFA_TEST_OBJS = testing/ifa_test_main.o
 ifa-test: $(IFA_TEST_OBJS) $(LIBRARY)
-	$(CXX) $(CFLAGS) $(LDFLAGS_EXEC) -o $@ $(IFA_TEST_OBJS) $(LIBRARY) $(LIBS)
+	$(CXX) $(CFLAGS) $(LDFLAGS_EXEC) -o $@ $(IFA_TEST_OBJS) $(LIBRARY) $(LIBS) $(LLVM_LDFLAGS)
 
 # `ar` is additive — `crv` inserts/replaces but never removes
 # members.  When a source file is dropped from LIB_SRCS, its

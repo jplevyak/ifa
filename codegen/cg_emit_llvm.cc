@@ -22,6 +22,7 @@
 
 #include "codegen/llvm_internal.h"
 #include "codegen/codegen_common.h"
+#include "builtin.h"  // sym_bool, sym_int32, sym_string, etc.
 #include "fa.h"
 #include "fun.h"
 #include "pattern.h"  // MPosition + Position2int
@@ -1629,6 +1630,103 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
     }
   }
 
+  // print / println: emit type-specific printf calls, mirroring
+  // the C backend's cg_writeln.  Using a single typed _CG_println
+  // declaration causes LLVM verification failures when arguments
+  // are i1, double, or ptr (type mismatch against the first-seen
+  // i32 declaration).
+  if (strcmp(name, "print") == 0 || strcmp(name, "println") == 0) {
+    bool do_nl = (strcmp(name, "println") == 0);
+    llvm::Type *i32_ty = llvm::Type::getInt32Ty(*TheContext);
+    llvm::Type *i64_ty = llvm::Type::getInt64Ty(*TheContext);
+    llvm::Type *dbl_ty = llvm::Type::getDoubleTy(*TheContext);
+    llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
+    llvm::FunctionType *printf_ty =
+        llvm::FunctionType::get(i32_ty, {ptr_ty}, /*isVarArg=*/true);
+    llvm::FunctionCallee printf_fn =
+        TheModule->getOrInsertFunction("printf", printf_ty);
+
+    for (int i = 2; i < pn->rvals.n; i++) {
+      Var *v = pn->rvals.v[i];
+      if (!v) continue;
+      bool last_nl = (i == pn->rvals.n - 1) && do_nl;
+      Sym *t = v->type;
+
+      // For string constants, materialise the char* directly from the
+      // constant Sym so we bypass value_for_var returning ptr null
+      // (which happens when FA leaves v->type unresolved for literals).
+      Sym *cs = get_constant(v);
+      bool is_str = (t == sym_string) ||
+                    (sym_string && t && sym_string->specializers.set_in(t)) ||
+                    (cs && cs->imm.const_kind == IF1_CONST_KIND_STRING);
+      if (is_str) {
+        llvm::Value *str_val = nullptr;
+        if (cs && cs->imm.const_kind == IF1_CONST_KIND_STRING && cs->imm.v_string)
+          str_val = materialize_pyc_string(cs->imm.v_string);
+        if (!str_val) str_val = value_for_var(ctx, v);
+        if (str_val) {
+          cchar *fmt = last_nl ? "%s\n" : "%s";
+          llvm::Value *fmt_v = Builder->CreateGlobalStringPtr(fmt, ".fmt");
+          Builder->CreateCall(printf_ty, printf_fn.getCallee(), {fmt_v, str_val});
+        }
+        continue;
+      }
+
+      llvm::Value *val = value_for_var(ctx, v);
+      if (!val) return false;
+      llvm::Type *vty = val->getType();
+
+      if (vty->isIntegerTy(1)) {
+        // Boolean: zero-extend to i32, print as unsigned.
+        cchar *fmt = last_nl ? "%u\n" : "%u";
+        llvm::Value *fmt_v = Builder->CreateGlobalStringPtr(fmt, ".fmt");
+        llvm::Value *ext = Builder->CreateZExt(val, i32_ty, "zext");
+        Builder->CreateCall(printf_ty, printf_fn.getCallee(), {fmt_v, ext});
+      } else if (vty->isIntegerTy(64)) {
+        bool is_signed = !(t == sym_uint64);
+        cchar *fmt = last_nl ? (is_signed ? "%lld\n" : "%llu\n")
+                             : (is_signed ? "%lld"   : "%llu");
+        llvm::Value *fmt_v = Builder->CreateGlobalStringPtr(fmt, ".fmt");
+        Builder->CreateCall(printf_ty, printf_fn.getCallee(), {fmt_v, val});
+      } else if (vty->isIntegerTy()) {
+        bool is_signed = !(t == sym_bool || t == sym_uint8 || t == sym_uint16 ||
+                           t == sym_uint32);
+        cchar *fmt = last_nl ? (is_signed ? "%d\n" : "%u\n")
+                             : (is_signed ? "%d"   : "%u");
+        llvm::Value *fmt_v = Builder->CreateGlobalStringPtr(fmt, ".fmt");
+        llvm::Value *ext =
+            is_signed ? Builder->CreateSExt(val, i32_ty, "sext")
+                      : Builder->CreateZExt(val, i32_ty, "zext");
+        Builder->CreateCall(printf_ty, printf_fn.getCallee(), {fmt_v, ext});
+      } else if (vty->isFloatingPointTy()) {
+        cchar *fmt = last_nl ? "%g\n" : "%g";
+        llvm::Value *fmt_v = Builder->CreateGlobalStringPtr(fmt, ".fmt");
+        llvm::Value *dv =
+            vty->isDoubleTy() ? val
+                              : Builder->CreateFPExt(val, dbl_ty, "fpext");
+        Builder->CreateCall(printf_ty, printf_fn.getCallee(), {fmt_v, dv});
+      } else {
+        // Pointer or other opaque type: skip (unsupported).
+        cchar *ph = last_nl ? "<unsupported>\n" : "<unsupported>";
+        llvm::Value *fmt_v = Builder->CreateGlobalStringPtr(ph, ".fmt");
+        Builder->CreateCall(printf_ty, printf_fn.getCallee(), {fmt_v});
+      }
+    }
+
+    if (pn->rvals.n < 3 && do_nl) {
+      // Empty println(): just a newline.
+      llvm::Value *nl = Builder->CreateGlobalStringPtr("\n", ".nl");
+      Builder->CreateCall(printf_ty, printf_fn.getCallee(), {nl});
+    }
+
+    if (pn->lvals.n > 0 && pn->lvals.v[0]) {
+      llvm::Type *ret_ty = sym_to_llvm_type(pn->lvals.v[0]->type);
+      if (ret_ty && !ret_ty->isVoidTy())
+        put_result(ctx, pn->lvals.v[0], llvm::Constant::getNullValue(ret_ty));
+    }
+    return true;
+  }
+
   // Default named-prim route: `_CG_<name>(rvals[2..])`.
   char helper[256];
   snprintf(helper, sizeof(helper), "_CG_%s", name);
@@ -2323,12 +2421,16 @@ llvm::Function *build_fun_signature(EmitCtx &ctx, Fun *f) {
   }
 
   // Collect param types from positional formals, skipping
-  // dead and is_fun (closure-self) formals.  Order matches
-  // cg.cc's iteration so the per-position arg routing in
-  // emit_send_call lines up.
+  // dead and is_fun (closure-self) formals.  Sub-positions
+  // (pos.n > 1, i.e. pattern-match field extractions) are
+  // excluded from the LLVM signature; they are materialised
+  // by GEP + Load at function entry in emit_fun instead.
+  // Order matches cg.cc's iteration so the per-position arg
+  // routing in emit_send_call lines up.
   std::vector<llvm::Type *> param_tys;
   Vec<Var *> formal_vars;
   for (MPosition *p : f->positional_arg_positions) {
+    if (p->pos.n > 1) continue;
     Var *v = f->args.get(p);
     if (!v || !v->live) continue;
     if (v->sym && v->sym->is_fun) continue;
@@ -2405,6 +2507,37 @@ void emit_fun(EmitCtx &ctx, Fun *f) {
     } else if (llvm::GlobalVariable *gv = g_var_to_global.get(v)) {
       Builder->CreateStore(arg_val, gv);
     }
+  }
+
+  // Pattern-arg extraction: for each sub-position formal (pos.n == 2),
+  // GEP + Load the field from the parent struct pointer.  These vars
+  // were excluded from the LLVM signature by build_fun_signature; they
+  // must be materialised here so the function body can use them.
+  for (MPosition *p : f->positional_arg_positions) {
+    if (p->pos.n != 2) continue;
+    Var *sub_var = f->args.get(p);
+    if (!sub_var || !sub_var->live) continue;
+    if (sub_var->type && sub_var->type->is_fun) continue;
+    // Build the parent position (drop the last component).
+    MPosition pp;
+    pp.push((int)Position2int(p->pos.v[0]));
+    MPosition *parent_pos = cannonicalize_mposition(pp);
+    Var *parent_var = f->args.get(parent_pos);
+    if (!parent_var || !parent_var->type) continue;
+    llvm::Value *parent_val = ctx.var_map.get(parent_var);
+    if (!parent_val) continue;
+    llvm::StructType *struct_ty = sym_to_llvm_struct(parent_var->type);
+    if (!struct_ty) continue;
+    int field_idx = (int)Position2int(p->pos.v[1]) - 1;
+    if (field_idx < 0 || field_idx >= (int)struct_ty->getNumElements()) continue;
+    llvm::Value *gep =
+        Builder->CreateStructGEP(struct_ty, parent_val, field_idx, "pat_gep");
+    llvm::Type *field_ty = struct_ty->getElementType(field_idx);
+    llvm::Value *loaded = Builder->CreateLoad(field_ty, gep, "pat");
+    if (llvm::AllocaInst *slot = ctx.alloca_map.get(sub_var))
+      Builder->CreateStore(loaded, slot);
+    else
+      ctx.var_map.put(sub_var, loaded);
   }
 
   // Rebuild cfg_pred_index so emit_phi_moves selects the correct

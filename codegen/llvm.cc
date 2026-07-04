@@ -374,6 +374,11 @@ int llvm_codegen_compile(cchar *input_filename) {
   // references them as external symbols, so we link the pyc
   // runtime library here. -L points at the install location (the
   // same `system_dir` we use for Makefile.cg and __pyc__).
+  //
+  // -L.. is a development fallback: when running `make test_llvm`
+  // from ifa/ the library lives one level up (pyc root) where
+  // `make` built it; after `make install` it lands in system_dir
+  // so this path is a no-op in production.
   {
     char libdir_arg[FILENAME_MAX];
     int n = snprintf(libdir_arg, sizeof(libdir_arg), "-L%s", system_dir);
@@ -382,6 +387,7 @@ int llvm_codegen_compile(cchar *input_filename) {
     char *argv[] = {(char *)"clang",         obj_file,
                     (char *)"-o",            exe_file,
                     libdir_arg,
+                    (char *)"-L..",
                     (char *)"-L/opt/homebrew/lib",
                     (char *)"-L/usr/local/lib",
                     (char *)"-lpyc_runtime",
