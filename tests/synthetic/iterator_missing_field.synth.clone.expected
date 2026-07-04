@@ -40,7 +40,7 @@
   fun __main__ ess=1 equiv-classes=1
   fun consume ess=1 equiv-classes=1
   fun consume ess=1 equiv-classes=1
-  fun next ess=2 equiv-classes=0
+  fun next ess=2 equiv-classes=1
 )
 
 (call-graph

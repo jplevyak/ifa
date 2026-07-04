@@ -1,6 +1,6 @@
 ;; phase: clone
 
-(summary fa_rc=-1 clone_rc=0 funs=4 css=26 ess=5)
+(summary fa_rc=-1 clone_rc=0 funs=5 css=26 ess=5)
 
 (cs-equiv
   class[(anon)] members=1 type=int32
@@ -29,9 +29,10 @@
 
 (es-equiv
   fun __main__ ess=1 equiv-classes=1
-  fun call_via ess=2 equiv-classes=0
-  fun leaf0 ess=1 equiv-classes=0
-  fun leaf1 ess=1 equiv-classes=0
+  fun call_via ess=1 equiv-classes=1
+  fun call_via ess=1 equiv-classes=1
+  fun leaf0 ess=1 equiv-classes=1
+  fun leaf1 ess=1 equiv-classes=1
 )
 
 (call-graph
@@ -39,7 +40,9 @@
     pnode-send → call_via
     pnode-send → call_via
   fun call_via
-    pnode-send → leaf0 leaf1
+    pnode-send → leaf1
+  fun call_via
+    pnode-send → leaf0
 )
 
 (new-funs
