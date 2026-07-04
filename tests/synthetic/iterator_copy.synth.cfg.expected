@@ -37,9 +37,9 @@
 )
 (pnodes %top
   %p0  SEND  prim_new @primitive @new %V -> %t10  succ:[%p1]
-  %p1  SEND  prim_set_index_object @primitive @set_index_object %t10 %c2 %c3 -> %t11  succ:[%p2]  pred:[%p0]
+  %p1  SEND  prim_set_index_object @primitive @set_index_object %t10 %c3 %c2 -> %t11  succ:[%p2]  pred:[%p0]
   %p2  SEND  prim_new @primitive @new %V -> %t12  succ:[%p3]  pred:[%p1]
-  %p3  SEND  prim_set_index_object @primitive @set_index_object %t12 %c4 %c5 -> %t13  succ:[%p4]  pred:[%p2]
+  %p3  SEND  prim_set_index_object @primitive @set_index_object %t12 %c5 %c4 -> %t13  succ:[%p4]  pred:[%p2]
   %p4  SEND  prim_new @primitive @new %V -> %t14  succ:[%p5]  pred:[%p3]
   %p5  SEND  - %copy %t10 %t14 -> %t15  succ:[%p6]  pred:[%p4]
   %p6  SEND  - %copy %t12 %t14 -> %t16  succ:[%p7]  pred:[%p5]
