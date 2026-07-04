@@ -47,9 +47,9 @@ class Vec : public gc {
   C e[VEC_INTEGRAL_SIZE];
 
   Vec();
-  Vec<C, A, S>(const Vec<C, A, S> &vv);
-  Vec<C, A, S>(Vec<C, A, S> &vv, InitType init_type);
-  Vec<C, A, S>(const C c);
+  Vec(const Vec<C, A, S> &vv);
+  Vec(Vec<C, A, S> &vv, InitType init_type);
+  Vec(const C c);
   ~Vec();
 
   C &operator[](int i) const { return v[i]; }
