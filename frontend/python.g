@@ -67,7 +67,11 @@ global_stmt: 'global' NAME (',' NAME)*;
 exec_stmt: 'exec' expr ('in' test (',' test)?)?;
 assert_stmt: 'assert' test (',' test)?;
 
-compound_stmt: if_stmt | while_stmt | for_stmt | try_stmt | funcdef | classdef;
+compound_stmt: if_stmt | while_stmt | for_stmt | try_stmt | funcdef | classdef | async_stmt;
+
+async_stmt: async_funcdef | async_for_stmt;
+async_funcdef: 'async' funcdef;
+async_for_stmt: 'async' for_stmt;
 if_stmt: 'if' test ':' suite ('elif' test ':' suite)* ('else' ':' suite)?;
 while_stmt: 'while' test ':' suite ('else' ':' suite)?;
 for_stmt: 'for' exprlist 'in' testlist ':' suite ('else' ':' suite)?;
@@ -88,7 +92,7 @@ and_expr: shift_expr ('&' shift_expr)*;
 shift_expr: arith_expr (('<<'|'>>') arith_expr)*;
 arith_expr: term (('+'|'-') term)*;
 term: factor (('*'|'/'|'%'|'//') factor)*;
-factor: ('+'|'-'|'~') factor | power;
+factor: ('+'|'-'|'~') factor | 'await' factor | power;
 power: atom trailer* ('**' factor)*;
 atom: LP testlist? RP | LB listmaker? RB | LC dictmaker? RC | '`' testlist '`' | NAME | NUMBER | STRING+;
 listmaker: test ( list_for | (',' test)* ','? );
