@@ -5,7 +5,7 @@
 Supersedes the simpler "indirect call through struct slot" sketch in
 issue 029.
 
-## Current state (issue 029 implemented)
+## Current state (issue 029 implemented; FA fixpoint sub-bug fixed 2026-07-04)
 
 `tests/poly_dispatch_low.py` passes: vtable slot dispatch works for
 `Branch.val()` where `Branch.l` and `Branch.r` can be Leaf or Branch.
@@ -13,18 +13,42 @@ At creation time, `__new__` stores the concrete val function pointer in
 the struct's `e2` slot.  At dispatch sites where `fns->n > 1`, the
 emitter reads `obj->e2` via the common struct cast and calls it.
 
-`tests/poly_dispatch_high.py` is a compile-only test with expected
-warnings.  The 6-way `Inner.val()` case (N1–N5 and Inner as `l`/`r`)
-exposes a FA fixpoint issue: the clones for `Inner(N1,N2)` and
-`Inner(N2,N1)` end up with void/dead result vars because `convert_NOTYPE_to_void()`
-fires during the FA pass.  Fixing this requires either:
-- Ensuring the FA fixpoint converges for these leaf-leaf cases before
-  converting NOTYPE to void, OR
-- Implementing the full fat-pointer / classtag design below so the
-  codegen no longer depends on FA-cloned result types being non-void.
+**The FA fixpoint sub-bug is fixed** (2026-07-04). The old symptom:
+the clones for `Inner(N1,N2)` and `Inner(N2,N1)` ended up with
+void/dead result vars ("expression has no type" violations, then
+`convert_NOTYPE_to_void()` papering them over). Root cause, traced
+via env-gated tracing of the period-closure lifecycle: bound-method
+closure CreationSets persist across analysis passes (cached in the
+result AVar's `cs_map`), but every pass clears all AVar state
+(`clear_results`, including `closure_used`) and re-derives it.
+`make_closure_var` flowed each field's value into
+`unique_AVar(av->var, cs)` — keyed by whichever Var carries the
+value *this* pass — while consumers (`partial_application`'s
+`fun = cs->vars[0]`) read the *positional* slots created by the
+pass that built the CS. After the receiver CS split between passes,
+the method value arrived via a different Var, the re-derived flow
+landed in an orphan AVar, `cs->vars[0]` stayed bottom, the closure's
+call site returned "incomplete" forever, `closure_used` was never
+re-set on the final pass, and `remove_unused_closures()` stripped
+the closure — hence the void results. Fix in
+`fa.cc:make_closure_var`: when the CS's positional slots already
+exist and `iv != cs->vars[i]`, also flow into `cs->vars[i]`, keeping
+the positional slot fed regardless of which Var carries the value.
+
+After the fix: the minimal two-creation-site swapped-children case
+compiles clean and executes correctly on both backends — new
+regression test `tests/poly_dispatch_swapped.py`. The full
+`poly_dispatch_high.py` now compiles with **zero** FA warnings
+(its `.check` updated to empty); at runtime the leaf-leaf and
+mixed clones behave, and what remains is the genuine high-fan-out
+dispatch gap: the `Inner`-receiver clone with polymorphic children
+still hits the `matching function not found` runtime assert — that
+is this issue's actual fat-pointer/classtag work, not a fixpoint
+problem.
 
 `tests/poly_dispatch_high.py.exec.check.TODO` holds the expected
-execution output (3 3 6 7 11 18) for when this is fixed.
+execution output (3 3 6 7 11 18) for when the dispatch design below
+is implemented.
 
 Supersedes the simpler "indirect call through struct slot" sketch in
 issue 029.  That sketch assumed method pointers are already in instance

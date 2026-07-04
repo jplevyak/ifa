@@ -1188,7 +1188,25 @@ static void make_closure_var(AVar *av, EntrySet *es, CreationSet *cs, AVar *resu
   flow_vars(av, cav);
   set_container(cav, result);
   flow_var_to_var(cav, iv);
-  if (add) cs->vars.add(iv);
+  if (add)
+    cs->vars.add(iv);
+  else if (i < cs->vars.n && cs->vars[i] != iv)
+    // The closure CS persists across analysis passes (it's cached in
+    // the result AVar's cs_map), but each pass clears all AVar state
+    // and re-derives it. `iv` is keyed by `av->var`, while consumers
+    // (partial_application's `fun = cs->vars[0]`, argument unpacking)
+    // read the *positional* slots created by whichever pass/path
+    // built the CS. If the Var carrying this field's value differs
+    // from the one that created vars[i] (e.g. the receiver CS was
+    // split between passes, so the method now arrives via a
+    // different field Var; or the method-path vs selector-path
+    // ordering changed), the flow above lands in an orphan AVar and
+    // vars[i] stays bottom -- the closure's call site then sees an
+    // empty fun slot, never completes, and remove_unused_closures()
+    // strips the closure entirely (issue 030's "void/dead result
+    // vars" fixpoint failure). Keep the positional slot fed no
+    // matter which Var carries the value this pass.
+    flow_var_to_var(cav, cs->vars[i]);
 }
 
 static void make_closure_var(Var *v, EntrySet *es, CreationSet *cs, AVar *result, int add, int i) {
