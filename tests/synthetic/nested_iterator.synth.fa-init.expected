@@ -14,7 +14,7 @@
   %__getitem___1 args=3 rets=1 edges=4 creates=0
   %__getitem__ args=3 rets=1 edges=4 creates=0
   %__getitem__ args=3 rets=1 edges=4 creates=0
-  @__main__ args=1 rets=1 edges=4 creates=4
+  @__main__ args=1 rets=1 edges=4 creates=7
   %__setitem__ args=4 rets=1 edges=4 creates=0
   %__setitem___1 args=4 rets=1 edges=4 creates=0
   %__setitem__ args=4 rets=1 edges=4 creates=0

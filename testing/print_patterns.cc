@@ -22,11 +22,21 @@ static void ensure_var(Sym *s) {
   if (s && !s->var) s->var = new Var(s);
 }
 
+// issues/010 (ifa): several synthetic Sym pairs share the same base
+// name (e.g. a "%next" type Sym and a "#next" selector Sym both
+// named "next") -- strcmp alone ties, and qsort's tie-break then
+// falls through to these Vecs' pre-sort order, which comes from
+// pointer/hash-keyed Map iteration (nondeterministic across builds).
+// Sym::id (assignment order, never address-dependent) makes every
+// comparator here a total order, so ties can't fall through to an
+// unspecified qsort tie-break.
 static int compar_closure_by_name(const void *a, const void *b) {
   Sym *sa = *(Sym *const *)a, *sb = *(Sym *const *)b;
   cchar *na = sa->name ? sa->name : "";
   cchar *nb = sb->name ? sb->name : "";
-  return strcmp(na, nb);
+  int c = strcmp(na, nb);
+  if (c) return c;
+  return (sa->id > sb->id) - (sa->id < sb->id);
 }
 
 static void format_mposition(FILE *fp, MPosition *mp) {
@@ -65,7 +75,9 @@ static int compar_sym_by_name(const void *a, const void *b) {
   Sym *sa = *(Sym *const *)a, *sb = *(Sym *const *)b;
   cchar *na = sa->name ? sa->name : "";
   cchar *nb = sb->name ? sb->name : "";
-  return strcmp(na, nb);
+  int c = strcmp(na, nb);
+  if (c) return c;
+  return (sa->id > sb->id) - (sa->id < sb->id);
 }
 
 void print_patterns_normalized(FILE *fp, IF1 *p) {

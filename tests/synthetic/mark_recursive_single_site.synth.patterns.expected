@@ -14,12 +14,12 @@
   pos[1]: %top
 )
 
-(mtype %walk
-  pos["walk"]: %walk
+(mtype #walk
   pos[1]: %walk
 )
 
-(mtype #walk
+(mtype %walk
+  pos["walk"]: %walk
   pos[1]: %walk
 )
 

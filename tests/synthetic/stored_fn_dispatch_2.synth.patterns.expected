@@ -5,21 +5,21 @@
   pos[2]: %call_via
 )
 
-(mtype #call_via
-  pos[1]: %call_via
-)
-
 (mtype %call_via
   pos["call_via"]: %call_via
   pos[1]: %call_via
 )
 
-(mtype #leaf0
-  pos[1]: %leaf0
+(mtype #call_via
+  pos[1]: %call_via
 )
 
 (mtype %leaf0
   pos["leaf0"]: %leaf0
+  pos[1]: %leaf0
+)
+
+(mtype #leaf0
   pos[1]: %leaf0
 )
 

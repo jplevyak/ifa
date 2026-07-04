@@ -37,11 +37,18 @@ static cchar *stage_name(FAPassStage s) {
   return "?";
 }
 
+// issues/010 (ifa): same-name Sym pairs tie under strcmp alone; without
+// a deterministic secondary key, qsort's tie-break falls through to
+// this Vec's pre-sort (pointer/hash-keyed Map iteration) order, which
+// can vary across runs/builds. Sym::id (assignment order, never
+// address-dependent) makes this a total order.
 static int compar_closure_by_name(const void *a, const void *b) {
   Sym *sa = *(Sym *const *)a, *sb = *(Sym *const *)b;
   cchar *na = sa->name ? sa->name : "";
   cchar *nb = sb->name ? sb->name : "";
-  return strcmp(na, nb);
+  int c = strcmp(na, nb);
+  if (c) return c;
+  return (sa->id > sb->id) - (sa->id < sb->id);
 }
 
 void print_fa_converge_normalized(FILE *fp, IF1 *p) {

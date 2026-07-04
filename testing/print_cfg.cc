@@ -18,11 +18,18 @@
 // Collect closures into a list sorted by assigned name → output order is
 // independent of allocation order (i.e. of the order closures appear in
 // the source .ir).
+// issues/010 (ifa): same-name Sym pairs tie under strcmp alone; without
+// a deterministic secondary key, qsort's tie-break falls through to
+// this Vec's pre-sort (pointer/hash-keyed Map iteration) order, which
+// can vary across runs/builds. Sym::id (assignment order, never
+// address-dependent) makes this a total order.
 static int compar_closure_by_name(const void *a, const void *b) {
   Sym *sa = *(Sym *const *)a, *sb = *(Sym *const *)b;
   cchar *na = sa->name ? sa->name : "";
   cchar *nb = sb->name ? sb->name : "";
-  return strcmp(na, nb);
+  int c = strcmp(na, nb);
+  if (c) return c;
+  return (sa->id > sb->id) - (sa->id < sb->id);
 }
 
 // Format a Sym list as "%a %b %c" using the shared NameAssigner.

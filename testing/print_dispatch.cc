@@ -20,11 +20,18 @@
 #include <stdio.h>
 #include <string.h>
 
+// issues/010 (ifa): same-name Sym pairs tie under strcmp alone; without
+// a deterministic secondary key, qsort's tie-break falls through to
+// this Vec's pre-sort (pointer/hash-keyed Map iteration) order, which
+// can vary across runs/builds. Sym::id (assignment order, never
+// address-dependent) makes this a total order.
 static int compar_closure_by_name(const void *a, const void *b) {
   Sym *sa = *(Sym *const *)a, *sb = *(Sym *const *)b;
   cchar *na = sa->name ? sa->name : "";
   cchar *nb = sb->name ? sb->name : "";
-  return strcmp(na, nb);
+  int c = strcmp(na, nb);
+  if (c) return c;
+  return (sa->id > sb->id) - (sa->id < sb->id);
 }
 
 static int compar_es_by_fun_then_id(const void *a, const void *b) {
@@ -39,6 +46,27 @@ static int compar_es_by_fun_then_id(const void *a, const void *b) {
 static int compar_pn_by_id(const void *a, const void *b) {
   PNode *pa = *(PNode *const *)a, *pb = *(PNode *const *)b;
   return (pa->id > pb->id) - (pa->id < pb->id);
+}
+
+// Stable string form for sorting MPositions (5-digit zero-padded ints
+// so lexical order matches numeric) -- see testing/print_argpos.cc.
+static int compar_mposition_str(const void *a, const void *b) {
+  MPosition *ma = *(MPosition *const *)a, *mb = *(MPosition *const *)b;
+  char sa[128], sb[128]; int na = 0, nb = 0;
+  auto fmt = [](char *buf, int &n, int cap, MPosition *m) {
+    for (int i = 0; i < m->pos.n && n < cap - 16; i++) {
+      const void *p = m->pos[i];
+      if (i) buf[n++] = ',';
+      if (is_intPosition(p))
+        n += snprintf(buf + n, cap - n, "%05d", (int)Position2int(p));
+      else
+        n += snprintf(buf + n, cap - n, "\"%s\"", (cchar *)p);
+    }
+    buf[n] = 0;
+  };
+  fmt(sa, na, sizeof(sa), ma);
+  fmt(sb, nb, sizeof(sb), mb);
+  return strcmp(sa, sb);
 }
 
 // Print "@__main__#0" / "%add#3" — function name + ES ordinal among
@@ -180,6 +208,7 @@ void print_dispatch_normalized(FILE *fp, IF1 *p) {
         Vec<MPosition *> ps;
         form_MPositionAType(it, ae->initial_types) if (it->key) ps.add(it->key);
         if (ps.n == 0) continue;
+        if (ps.n > 1) qsort(ps.v, ps.n, sizeof(MPosition *), compar_mposition_str);
         fputs("      args→ ", fp);
         for (int i = 0; i < ps.n; i++) {
           if (i) fputc(' ', fp);

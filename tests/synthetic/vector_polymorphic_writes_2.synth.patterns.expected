@@ -30,12 +30,12 @@
   pos[4]: %__setitem__
 )
 
-(mtype #top
+(mtype %top
+  pos["top"]: %top
   pos[1]: %top
 )
 
-(mtype %top
-  pos["top"]: %top
+(mtype #top
   pos[1]: %top
 )
 

@@ -19,12 +19,12 @@
   pos[1]: %consume
 )
 
-(mtype #next
+(mtype %next
+  pos["next"]: %next
   pos[1]: %next
 )
 
-(mtype %next
-  pos["next"]: %next
+(mtype #next
   pos[1]: %next
 )
 

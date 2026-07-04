@@ -17,11 +17,20 @@
 #include <stdio.h>
 #include <string.h>
 
+// issues/010 (ifa): same-name Sym pairs (e.g. a "%next" type Sym and a
+// "#next" selector Sym) tie under strcmp alone; without a deterministic
+// secondary key, qsort's tie-break falls through to this Vec's pre-sort
+// (pointer/hash-keyed Map iteration) order. Here that order feeds Fun
+// registration *before* fa->analyze runs, so the tie doesn't just affect
+// print formatting -- it can change real analysis counts (creates=N)
+// from run to run. Sym::id (assignment order) makes this a total order.
 static int compar_closure_by_name(const void *a, const void *b) {
   Sym *sa = *(Sym *const *)a, *sb = *(Sym *const *)b;
   cchar *na = sa->name ? sa->name : "";
   cchar *nb = sb->name ? sb->name : "";
-  return strcmp(na, nb);
+  int c = strcmp(na, nb);
+  if (c) return c;
+  return (sa->id > sb->id) - (sa->id < sb->id);
 }
 
 static int compar_es_by_fun_then_id(const void *a, const void *b) {

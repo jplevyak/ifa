@@ -10,13 +10,13 @@
   pos[2]: %__getitem___1 %__setitem___1
 )
 
-(mtype #__getitem__
-  pos[1]: %__getitem__ %__getitem___1
-)
-
 (mtype %__getitem__
   pos["__getitem__"]: %__getitem__
   pos[1]: %__getitem__
+)
+
+(mtype #__getitem__
+  pos[1]: %__getitem__ %__getitem___1
 )
 
 (mtype %__getitem___1
@@ -56,12 +56,12 @@
   pos[1]: %consume_outer
 )
 
-(mtype #top
+(mtype %top
+  pos["top"]: %top
   pos[1]: %top
 )
 
-(mtype %top
-  pos["top"]: %top
+(mtype #top
   pos[1]: %top
 )
 
