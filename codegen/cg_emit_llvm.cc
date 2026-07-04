@@ -1233,9 +1233,15 @@ static bool emit_send_clone(EmitCtx &ctx, PNode *pn) {
         cg_get_string(dst_var) ? cg_get_string(dst_var) : "clone");
     // memcpy(new_p, src, min(dst_size, src_size)).
     uint64_t copy_sz = dst_sz < src_sz ? dst_sz : src_sz;
+#if LLVM_VERSION_MAJOR >= 19
+    llvm::Function *memcpy_fn = llvm::Intrinsic::getOrInsertDeclaration(
+        TheModule.get(), llvm::Intrinsic::memcpy,
+        { ptr_ty, ptr_ty, i64 });
+#else
     llvm::Function *memcpy_fn = llvm::Intrinsic::getDeclaration(
         TheModule.get(), llvm::Intrinsic::memcpy,
         { ptr_ty, ptr_ty, i64 });
+#endif
     Builder->CreateCall(memcpy_fn,
         { new_p, src, llvm::ConstantInt::get(i64, copy_sz),
           llvm::ConstantInt::getFalse(*TheContext) });
