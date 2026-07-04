@@ -37,7 +37,7 @@ class EntrySet;
 struct FAPassEvent;
 
 typedef Map<PNode *, Vec<AEdge *> *> EdgeMap;
-typedef BlockHash<AEdge *, PointerHashFns> EdgeHash;
+// EdgeHash moved below class AEdge
 typedef Vec<CreationSet *> VecCreationSet;
 typedef Vec<Vec<CreationSet *> *> CSSS;
 
@@ -85,6 +85,14 @@ class AEdge : public gc {
 
   AEdge();
 };
+
+class AEdgeHashFns {
+ public:
+  static uintptr_t hash(AEdge *e) { return e ? e->id : 0; }
+  static int equal(AEdge *a, AEdge *b) { return a == b; }
+};
+
+typedef BlockHash<AEdge *, AEdgeHashFns> EdgeHash;
 
 class PendingMapHash {
  public:
