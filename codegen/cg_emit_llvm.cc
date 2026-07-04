@@ -1742,16 +1742,18 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
   if (!target_fn) return;
 
   // Closure detection: rvals[0] is a closure receiver when
-  // its type is Type_FUN with has.n ≥ 2 (is_closure_var
-  // predicate from codegen_common).  Unpack via FIELD_LOAD
-  // per closure-struct field that maps to a formal.
+  // its type is Type_FUN with has.n ≥ 2 (closure_fun_type
+  // from codegen_common; also looks through a nullable
+  // SUM{nil_type, closure} — issues/002 Case B).  Unpack via
+  // FIELD_LOAD per closure-struct field that maps to a formal.
   Var *v0 = pn->rvals.n > 0 ? pn->rvals.v[0] : nullptr;
-  bool v0_is_closure = v0 && is_closure_var(v0);
+  Sym *v0_closure_type = v0 ? closure_fun_type(v0) : nullptr;
+  bool v0_is_closure = v0_closure_type != nullptr;
   llvm::Value *closure = nullptr;
   llvm::StructType *closure_struct = nullptr;
   if (v0_is_closure) {
     closure = value_for_var(ctx, v0);
-    closure_struct = sym_to_llvm_struct(v0->type);
+    closure_struct = sym_to_llvm_struct(v0_closure_type);
   }
 
   std::vector<llvm::Value *> args;
@@ -1770,8 +1772,8 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
     if (p->pos.n == 0) continue;
     int i = (int)Position2int(p->pos.v[0]) - 1;
 
-    if (v0_is_closure && v0->type) {
-      if (i < v0->type->has.n) {
+    if (v0_is_closure) {
+      if (i < v0_closure_type->has.n) {
         // Unpack closure field i: GEP + Load.
         if (closure && closure_struct && i >= 0 &&
             i < (int)closure_struct->getNumElements()) {
@@ -1785,7 +1787,7 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
         }
         continue;
       } else {
-        i -= v0->type->has.n - 1;
+        i -= v0_closure_type->has.n - 1;
       }
     }
     if (i < 0 || i >= pn->rvals.n) continue;

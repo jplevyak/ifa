@@ -633,16 +633,20 @@ static void write_arg_position(FILE *fp, MPosition *p) {
 static void write_send_arg(FILE *fp, Fun *f, PNode *n, MPosition *p, int &wrote_one) {
   int i = Position2int(p->pos[0]) - 1;
   Var *v0 = n->rvals[0];
-  if (is_closure_var(v0)) {
-    if (i < v0->type->has.n) {
+  Sym *clo = closure_fun_type(v0);
+  if (clo) {
+    if (i < clo->has.n) {
       char ss[4096];
       snprintf(ss, sizeof(ss), "(%s)%s", c_type(f->args.get(p)), cg_get_string(v0));
       char *ee = ss + strlen(ss);
-      write_c_fun_arg(fp, f, ss, ee, v0->type->has[i], i, wrote_one);
+      write_c_fun_arg(fp, f, ss, ee, clo->has[i], i, wrote_one);
       return;
     } else
-      i -= v0->type->has.n - 1;
+      i -= clo->has.n - 1;
   }
+  if (i < 0 || i >= n->rvals.n)
+    codegen_fail(n, "call argument %d out of range (call site has %d values; callee '%s' expects more)", i, n->rvals.n,
+                 f->sym->name ? f->sym->name : "<anonymous>");
   Var *v = n->rvals[i];
   if (p->pos.n <= 1) {
     if (wrote_one) fprintf(fp, ", ");

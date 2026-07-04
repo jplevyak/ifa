@@ -40,6 +40,15 @@ cchar *c_type(Sym *s);
 // indirect call sites.
 int is_closure_var(Var *v);
 
+// The effective closure record type of `v`, or nullptr if `v`
+// is not closure-typed. Looks through a nullable SUM
+// (`Type_SUM{nil_type, closure}` — e.g. a global initialized to
+// None and later bound to a closure): the C repr of such a SUM
+// is already the closure struct pointer (NULL for None; see
+// assign_type_cg_strings_pass2), so call sites unpack it the
+// same way as a plain closure. See issues/002 Case B.
+Sym *closure_fun_type(Var *v);
+
 // Resolve a SEND PNode to its single concrete target Fun, or
 // nullptr if the call site has zero or multiple resolutions.
 //

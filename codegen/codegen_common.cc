@@ -4,6 +4,7 @@
 
 #include "ifadefs.h"
 
+#include "builtin.h"
 #include "codegen_common.h"
 #include "fail.h"
 #include "fun.h"
@@ -89,10 +90,23 @@ cchar *num_string(Sym *s) {
 // Closure / dispatch helpers
 // -------------------------------------------------------------
 
-int is_closure_var(Var *v) {
+Sym *closure_fun_type(Var *v) {
   Sym *t = v->type;
-  return (t && t->type_kind == Type_FUN && !t->fun && t->has.n);
+  if (!t) return nullptr;
+  // Nullable closure: SUM{nil_type, closure}. pass2 already
+  // types this SUM as the closure struct pointer in C, so the
+  // unpacking path can treat it as the closure component.
+  if (t->type_kind == Type_SUM && t->has.n == 2) {
+    if (t->has[0] == sym_nil_type)
+      t = t->has[1];
+    else if (t->has[1] == sym_nil_type)
+      t = t->has[0];
+  }
+  if (t->type_kind == Type_FUN && !t->fun && t->has.n) return t;
+  return nullptr;
 }
+
+int is_closure_var(Var *v) { return closure_fun_type(v) != nullptr; }
 
 Fun *get_target_fun_core(PNode *n, Fun *f) {
   Vec<Fun *> *fns = f->calls.get(n);
