@@ -769,6 +769,7 @@ int fold_constant(int op, Immediate *aim1, Immediate *aim2, Immediate *imm) {
     case P_prim_plus:
     case P_prim_minus:
     case P_prim_not:
+    case P_prim_await:
       imm->const_kind = im1.const_kind;
       imm->num_index = im1.num_index;
       break;
@@ -847,6 +848,9 @@ int fold_constant(int op, Immediate *aim1, Immediate *aim2, Immediate *imm) {
       break;
     case P_prim_not:
       DO_FOLD1I(~);
+      break;
+    case P_prim_await:
+      DO_FOLD1(+);
       break;
     case P_prim_lnot:
       DO_FOLD1(!);

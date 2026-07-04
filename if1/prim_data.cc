@@ -57,6 +57,7 @@ Prim *prim_sizeof_element = 0;
 Prim *prim_typeof = 0;
 Prim *prim_typeof_element = 0;
 Prim *prim_is = 0;
+Prim *prim_await = 0;
 
 void prim_init(Primitives *p, IF1 *if1) {
   char *n;
@@ -435,4 +436,11 @@ void prim_init(Primitives *p, IF1 *if1) {
   n = (char *)if1->strings.put((char *)"is");
   p->prims.add(prim_is);
   p->prim_map[0][0].put(n, prim_is);
+
+  static PrimType prim_await_arg_types[] = {PRIM_TYPE_ANY};
+  static PrimType prim_await_ret_types[] = {PRIM_TYPE_ANY};
+  prim_await = new Prim(57, "await", "prim_await", -3, 0, 1, prim_await_arg_types, prim_await_ret_types, 0);
+  n = (char *)if1->strings.put((char *)"await");
+  p->prims.add(prim_await);
+  p->prim_map[0][0].put(n, prim_await);
 }

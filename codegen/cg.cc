@@ -29,7 +29,10 @@
 
 static void write_c_fun_proto(FILE *fp, Fun *f, int type = 0) {
   assert(f->rets.n == 1);
-  fputs(c_type(f->rets[0]), fp);
+  if (f->sym->is_async)
+    fputs("_CG_Coroutine", fp);
+  else
+    fputs(c_type(f->rets[0]), fp);
   if (type)
     fputs(" (*", fp);
   else
@@ -432,6 +435,17 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
                 cg_get_string(n->rvals[n->rvals.n - 1]));
       }
       break;
+    }
+    case P_prim_await: {
+      if (virtual_cg_is_const_folded_send(n)) return 1;
+      fputs("  ", fp);
+      if (n->lvals.n) {
+        assert(n->lvals.n == 1);
+        fprintf(fp, "%s = co_await %s;\n", cg_get_string(n->lvals[0]), cg_get_string(n->rvals[o]));
+      } else {
+        fprintf(fp, "co_await %s;\n", cg_get_string(n->rvals[o]));
+      }
+      return 1;
     }
     case P_prim_new: {
       fputs("  ", fp);
@@ -923,7 +937,11 @@ static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done
       }
       case Code_SEND: {
         if (n->prim && n->prim->index == P_prim_reply) {
-          fprintf(fp, "  return %s;\n", c_rhs(n->rvals[3]));
+          if (f->sym->is_async) {
+            fprintf(fp, "  co_return %s;\n", c_rhs(n->rvals[3]));
+          } else {
+            fprintf(fp, "  return %s;\n", c_rhs(n->rvals[3]));
+          }
         } else {
           CBackendEmitter emitter(fp, fa, f);
           virtual_cg_emit_send(&emitter, n);
@@ -981,7 +999,10 @@ static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done
         // (ifa/issues/030 dispatch) still consume the return value.
         // c_rhs returns the constant literal in that case ("0" as
         // before when there is genuinely no value).
-        fprintf(fp, "  return %s;\n", c_rhs(n->rvals[3]));
+        if (f->sym->is_async)
+          fprintf(fp, "  co_return %s;\n", c_rhs(n->rvals[3]));
+        else
+          fprintf(fp, "  return %s;\n", c_rhs(n->rvals[3]));
       else
         do_phi_nodes(fp, n, 0);
       break;

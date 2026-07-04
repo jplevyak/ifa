@@ -123,4 +123,6 @@ extern Prim *prim_typeof_element;
 // single-node-ring checks in mutable data structures.
 extern Prim *prim_is;
 #define P_prim_is 56
+extern Prim *prim_await;
+#define P_prim_await 57
 #endif

@@ -79,6 +79,7 @@ class BasicSym : public gc {
   unsigned int is_external : 1;     // Sym is "external", so constraints are type
   unsigned int is_this : 1;         // Sym is "this" (member function "target")
   unsigned int is_fake : 1;         // Sym not necessary at run time
+  unsigned int is_async : 1;        // Sym is an async function
 
   unsigned int intent : 2;  // Sym is "in", "inout", or "out"
 

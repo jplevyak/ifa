@@ -1712,6 +1712,11 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
     switch (p->prim->index) {
       default:
         break;
+      case P_prim_await: {
+        AVar *a = make_AVar(p->rvals[o], es);
+        flow_vars(a, result);
+        break;
+      }
       case P_prim_primitive: {
         cchar *name = p->rvals[1]->sym->name;
         RegisteredPrim *rp = prim_get(name);
