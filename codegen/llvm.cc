@@ -351,8 +351,8 @@ int llvm_codegen_compile(cchar *input_filename) {
 
   // Step 1: clang -c -fPIC <ll> -o <obj>
   {
-    char *argv[] = {(char *)"clang", (char *)"-c", (char *)"-fPIC", (char *)"-Wno-override-module", ll_file, (char *)"-o", obj_file, nullptr};
-    int res = codegen_spawn("clang", argv);
+    char *argv[] = {(char *)"/opt/homebrew/opt/llvm/bin/clang++", (char *)"-O2", (char *)"-c", (char *)"-fPIC", (char *)"-Wno-override-module", ll_file, (char *)"-o", obj_file, nullptr};
+    int res = codegen_spawn("/opt/homebrew/opt/llvm/bin/clang++", argv);
     if (res != 0) {
       fail("llvm_codegen_compile: clang -c failed for %s (exit=%d)", ll_file, res);
       return res;
@@ -384,7 +384,7 @@ int llvm_codegen_compile(cchar *input_filename) {
     int n = snprintf(libdir_arg, sizeof(libdir_arg), "-L%s", system_dir);
     if (n < 0 || (size_t)n >= sizeof(libdir_arg))
       fail("llvm_codegen_compile: -L<system_dir> arg too long");
-    char *argv[] = {(char *)"clang",         obj_file,
+    char *argv[] = {(char *)"/opt/homebrew/opt/llvm/bin/clang++",         obj_file,
                     (char *)"-o",            exe_file,
                     libdir_arg,
                     (char *)"-L..",
@@ -392,8 +392,8 @@ int llvm_codegen_compile(cchar *input_filename) {
                     (char *)"-L/usr/local/lib",
                     (char *)"-lpyc_runtime",
                     (char *)"-lm",           (char *)"-lgc",
-                    (char *)"-lgccpp",       nullptr};
-    int res = codegen_spawn("clang", argv);
+                    (char *)"-lgccpp",       (char *)"-stdlib=libc++", nullptr};
+    int res = codegen_spawn("/opt/homebrew/opt/llvm/bin/clang++", argv);
     if (res != 0) {
       fail("llvm_codegen_compile: linking failed for %s (exit=%d)", obj_file, res);
       return res;

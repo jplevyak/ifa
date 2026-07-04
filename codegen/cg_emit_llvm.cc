@@ -198,6 +198,8 @@ struct EmitCtx {
   // emit_phi_moves writes via store.
   Map<Var *, llvm::AllocaInst *> alloca_map;
   Map<PNode *, llvm::BasicBlock *> label_bb;
+  llvm::Value *coro_id = nullptr;
+  llvm::Value *coro_hdl = nullptr;
 };
 
 // emit_phy_moves/emit_phi_moves are called by emit_block_terminator but defined later.
@@ -1867,6 +1869,32 @@ class LLVMEmitter : public VirtualCGEmitter {
   bool emit_send_primitive(PNode *pn) override { return ::emit_send_primitive(ctx, pn); }
   bool emit_send_default_prim(PNode *pn) override { return ::emit_send_default_prim(ctx, pn); }
   void emit_send_call(PNode *pn) override { ::emit_send_call(ctx, pn); }
+  
+  bool emit_send_any_prim(PNode *pn) override {
+    if (!pn || !pn->prim) return false;
+    if (pn->prim->index == P_prim_await) {
+      if (ctx.coro_hdl) {
+        llvm::Function *suspend_fn = llvm::Intrinsic::getOrInsertDeclaration(TheModule.get(), llvm::Intrinsic::coro_suspend);
+        llvm::Value *suspend_res = Builder->CreateCall(suspend_fn, {
+            llvm::ConstantTokenNone::get(*TheContext),
+            Builder->getFalse()
+        });
+        
+        llvm::BasicBlock *suspend_ret_bb = llvm::BasicBlock::Create(*TheContext, "suspend_ret", ctx.llvm_fn);
+        llvm::BasicBlock *resume_bb = llvm::BasicBlock::Create(*TheContext, "resume", ctx.llvm_fn);
+        
+        llvm::SwitchInst *sw = Builder->CreateSwitch(suspend_res, suspend_ret_bb, 1);
+        sw->addCase(Builder->getInt8(0), resume_bb);
+        
+        Builder->SetInsertPoint(suspend_ret_bb);
+        Builder->CreateRet(ctx.coro_hdl);
+        
+        Builder->SetInsertPoint(resume_bb);
+      }
+      return true;
+    }
+    return false;
+  }
 };
 
 void emit_send(EmitCtx &ctx, PNode *pn) {
@@ -2165,6 +2193,23 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
     }
     case Code_SEND: {
       if (closer->prim && closer->prim->index == P_prim_reply) {
+        if (ctx.fn->sym && ctx.fn->sym->is_async && ctx.coro_hdl && ctx.coro_id) {
+          // Emitting coroutine epilogue
+          llvm::Function *coro_free_fn = llvm::Intrinsic::getOrInsertDeclaration(TheModule.get(), llvm::Intrinsic::coro_free);
+          llvm::Value *mem = Builder->CreateCall(coro_free_fn, {ctx.coro_id, ctx.coro_hdl});
+          
+          llvm::Function *free_fn = TheModule->getFunction("GC_free");
+          if (!free_fn) {
+            llvm::FunctionType *free_ty = llvm::FunctionType::get(llvm::Type::getVoidTy(*TheContext), {llvm::PointerType::getUnqual(*TheContext)}, false);
+            free_fn = llvm::Function::Create(free_ty, llvm::Function::ExternalLinkage, "GC_free", TheModule.get());
+          }
+          Builder->CreateCall(free_fn, {mem});
+          
+          llvm::Function *coro_end_fn = llvm::Intrinsic::getOrInsertDeclaration(TheModule.get(), llvm::Intrinsic::coro_end);
+          Builder->CreateCall(coro_end_fn, {ctx.coro_hdl, Builder->getFalse(), llvm::ConstantTokenNone::get(*TheContext)});
+          Builder->CreateRet(ctx.coro_hdl);
+          break;
+        }
         llvm::Type *ret_ty = ctx.llvm_fn->getReturnType();
         if (ret_ty->isVoidTy()) {
           Builder->CreateRetVoid();
@@ -2550,6 +2595,9 @@ llvm::Function *build_fun_signature(EmitCtx &ctx, Fun *f) {
     ret_ty = sym_to_llvm_type(f->rets.v[0]->type);
     if (!ret_ty) ret_ty = llvm::Type::getVoidTy(*TheContext);
   }
+  if (f->sym && f->sym->is_async) {
+    ret_ty = llvm::PointerType::getUnqual(*TheContext);
+  }
 
   // Collect param types from positional formals, skipping
   // dead and is_fun (closure-self) formals.  Sub-positions
@@ -2577,6 +2625,10 @@ llvm::Function *build_fun_signature(EmitCtx &ctx, Fun *f) {
       ret_ty, param_tys, /*isVarArg=*/false);
   llvm::Function *llvm_fn = llvm::Function::Create(
       ft, llvm::Function::ExternalLinkage, name, TheModule.get());
+
+  if (f->sym && f->sym->is_async) {
+    llvm_fn->addFnAttr(llvm::Attribute::PresplitCoroutine);
+  }
 
   // Bind each llvm::Argument back to its Var via the per-Fun
   // var_map.  Read sites pick up the bound value through
@@ -2624,6 +2676,32 @@ void emit_fun(EmitCtx &ctx, Fun *f) {
     return;
   }
   Builder->SetInsertPoint(entry_bb);
+  
+  if (f->sym && f->sym->is_async) {
+    llvm::Function *coro_id_fn = llvm::Intrinsic::getOrInsertDeclaration(TheModule.get(), llvm::Intrinsic::coro_id);
+    ctx.coro_id = Builder->CreateCall(coro_id_fn, {
+        Builder->getInt32(0),
+        llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(*TheContext)),
+        llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(*TheContext)),
+        llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(*TheContext))
+    });
+
+    llvm::Function *coro_size_fn = llvm::Intrinsic::getOrInsertDeclaration(TheModule.get(), llvm::Intrinsic::coro_size, {Builder->getInt64Ty()});
+    llvm::Value *size = Builder->CreateCall(coro_size_fn, {});
+
+    // Allocate frame using standard memory allocator (e.g., GC_malloc)
+    llvm::Function *malloc_fn = TheModule->getFunction("GC_malloc");
+    if (!malloc_fn) {
+      llvm::FunctionType *malloc_ty = llvm::FunctionType::get(
+          llvm::PointerType::getUnqual(*TheContext), {Builder->getInt64Ty()}, false);
+      malloc_fn = llvm::Function::Create(malloc_ty, llvm::Function::ExternalLinkage, "GC_malloc", TheModule.get());
+    }
+    llvm::Value *alloc = Builder->CreateCall(malloc_fn, {size});
+
+    llvm::Function *coro_begin_fn = llvm::Intrinsic::getOrInsertDeclaration(TheModule.get(), llvm::Intrinsic::coro_begin);
+    ctx.coro_hdl = Builder->CreateCall(coro_begin_fn, {ctx.coro_id, alloc});
+  }
+
   // Store each argument into its alloca slot at function entry.
   // discover_phi_targets may assign an alloca to a Var that's also
   // a formal (e.g., a loop that modifies a parameter); without this
