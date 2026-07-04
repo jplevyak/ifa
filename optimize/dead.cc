@@ -83,8 +83,27 @@ static void mark_live_avars(FA *fa) {
     for (PNode *p : f->fa_all_PNodes) {
       // if a pnode is live, and it is not a function call, it's inputs (rvals)
       // must be live
-      if (p->live && !f->calls.get(p)) {
+      Vec<Fun *> *calls = f->calls.get(p);
+      if (p->live && !calls) {
         for (Var *v : p->rvals) if (!v->constant) {
+          form_AVarMapElem(x, v->avars) {
+            AVar *av = x->value;
+            if (!av->live) mark_live_avar(av);
+          }
+        }
+      }
+      // ifa/issues/030: a POLYMORPHIC call site (multiple candidate
+      // Funs) must keep its dispatch operand (rvals[0], the
+      // callable/receiver value) live even when no candidate's body
+      // reads its formals -- the *choice* of callee still depends on
+      // the operand's runtime type (e.g. `self.l.val()` where l is
+      // N2|N4 and both leaf val()s ignore self: the results differ,
+      // so codegen must load self.l and dispatch through its method
+      // slot). Without this, the period-load chain goes dead and
+      // codegen has no receiver to dispatch on.
+      if (p->live && calls && calls->n > 1 && p->rvals.n) {
+        Var *v = p->rvals[0];
+        if (!v->constant) {
           form_AVarMapElem(x, v->avars) {
             AVar *av = x->value;
             if (!av->live) mark_live_avar(av);

@@ -1,6 +1,13 @@
 # 030 — Polymorphic dispatch via fat-pointer backward flow analysis
 
-**Status:** open / partially implemented (issue 029 struct-slot dispatch done).
+**Status:** core implemented (2026-07-04) — classtag dispatch works
+end-to-end on BOTH backends; `tests/poly_dispatch_high.py` executes
+its full expected output (3 3 6 7 11 18) and `poly_dispatch_low.py`
+passes strictly (its `check_fail` sidecar removed). See "What
+landed (classtag dispatch)" below. Remaining open scope: the
+receiver-less bare-callable extension (issue 007's decorator shape)
+and table-based emission for very high fan-out (the if/else chain
+is O(n_classes) per site today).
 
 Supersedes the simpler "indirect call through struct slot" sketch in
 issue 029.
@@ -46,9 +53,65 @@ still hits the `matching function not found` runtime assert — that
 is this issue's actual fat-pointer/classtag work, not a fixpoint
 problem.
 
-`tests/poly_dispatch_high.py.exec.check.TODO` holds the expected
-execution output (3 3 6 7 11 18) for when the dispatch design below
-is implemented.
+`tests/poly_dispatch_high.py.exec.check.TODO` held the expected
+execution output (3 3 6 7 11 18); it is now the live
+`.exec.check`, passing on both backends.
+
+## What landed (classtag dispatch, 2026-07-04)
+
+The failing piece after the fixpoint fix was isolated to three
+independent gaps, each fixed:
+
+1. **Liveness** (`ifa/optimize/dead.cc` `mark_live_avars`): a
+   polymorphic call site (calls->n > 1) now keeps its dispatch
+   operand (rvals[0]) live even when no candidate's body reads its
+   formals — with `l: N2|N4` and both leaf `val()`s ignoring self,
+   the *choice* of callee still depends on the operand's runtime
+   type, but the whole period-load chain used to go dead and
+   codegen had nothing to dispatch on.
+2. **Classtag** (both backends): 029's fixed-slot indirect call was
+   unsound across a union of classes with different layouts (leaf
+   structs carried `val` at e1, Inner at e2 — the "inherited from
+   the base ⇒ same slot" assumption does not survive per-class
+   dead-field elision). Every class-like record now carries a
+   `__pyc_tag` header at offset 0 (C: struct member; LLVM: leading
+   ptr field with `llvm_fld()` shifting all has-index GEPs),
+   stamped once into the class prototype at `prim_new` (instances
+   inherit it through clone's memcpy), pointing at the existing
+   per-class `_CG_type_<name>` object (LLVM: an internal global
+   with matching name; only address identity matters). Dispatch
+   emits an if/else chain on the tag; each class branch casts to
+   THAT class's layout and calls through THAT class's own stored
+   method slot — so the per-creation-site clone selection keeps
+   riding the 029 stored-pointer mechanism, and same-class clones
+   need no extra branches. Excluded from tagging (raw-layout
+   types, identified structurally by having only unnamed fields
+   plus the tuple/list/vector predicates): tuples, list-backed
+   tuples, vectors — `_CG_TUPLE_TO_LIST_FUN`'s memcpy and
+   `_CG_list_ptr` indexing treat those as bare element arrays
+   (found the hard way: 15-test regression, then a 2-test tuple
+   regression from tuple clones missing from
+   `sym_tuple->specializers`).
+3. **Constant returns through indirect calls** (C backend
+   `c_rhs` + the dead-reply emission): a constant-folded result
+   deadens the reply under the "consumers inline the literal"
+   protocol — but a caller reaching the clone through a stored
+   method pointer cannot inline a per-clone constant. Dead replies
+   now return the formatted literal (`sprint_imm`/string/nil
+   handling) instead of a bare `0`. (The LLVM path already
+   materialized constants in `value_for_var`.)
+
+Shared infrastructure moved to `codegen_common.{h,cc}`:
+`cg_has_classtag`, `cg_field_live`, `PolymorphicSlot`,
+`cg_new_to_val_map`, `cg_build_new_to_val_map` (the LLVM backend
+previously had NO slot-store emission at all — that, plus the
+dispatch chain, is why `poly_dispatch_low` was `check_fail` on
+LLVM; it now passes strictly on both backends and the sidecar is
+removed).
+
+Verification: `./test_pyc` 132/0, `PYC_FLAGS=-b` 132/0,
+`ifa/ifa-test` 14/14; poly_dispatch_{low,high,swapped} pass
+strictly on both backends.
 
 Supersedes the simpler "indirect call through struct slot" sketch in
 issue 029.  That sketch assumed method pointers are already in instance

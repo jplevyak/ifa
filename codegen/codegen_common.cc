@@ -6,8 +6,10 @@
 
 #include "builtin.h"
 #include "codegen_common.h"
+#include "fa.h"
 #include "fail.h"
 #include "fun.h"
+#include "pattern.h"
 #include "pnode.h"
 #include "sym.h"
 #include "var.h"
@@ -89,6 +91,138 @@ cchar *num_string(Sym *s) {
 // -------------------------------------------------------------
 // Closure / dispatch helpers
 // -------------------------------------------------------------
+
+bool cg_has_classtag(Sym *s) {
+  if (!(s && s->type_kind == Type_RECORD && !s->is_system_type && s->name && s->has.n && !s->is_vector &&
+        !sym_tuple->specializers.set_in(s) && !(s->creators.n && s->creators[0]->sym == sym_list)))
+    return false;
+  // Tuple clones aren't always in sym_tuple->specializers; identify
+  // them structurally: element records have only UNNAMED fields,
+  // while class records always carry named fields/methods.
+  for (Sym *h : s->has) if (h && h->name) return true;
+  return false;
+}
+
+int cg_field_live(Sym *s, int i) {
+  if (!s || i < 0 || i >= s->has.n) return 0;
+  if (!s->has[i]->type) return 0;
+  if (s->has[i]->var && !s->has[i]->var->live) return 0;
+  return 1;
+}
+
+Map<Fun *, Vec<PolymorphicSlot> *> cg_new_to_val_map;
+
+// See codegen_common.h. For each live function that appears at any
+// poly call site (method name with fns->n > 1 anywhere), find its
+// self-arg concrete type, discover the slot for its name in that
+// type, trace the FA creation chain from that arg's AType through
+// cs->defs to the creator function, and register
+// creator -> (slot, fun_val). Scans ALL fun->calls entries
+// (including cloned functions), catching val clones that only
+// appear at monomorphic call sites within specialized callers but
+// participate in vtable dispatch overall.
+void cg_build_new_to_val_map(FA *fa) {
+  cg_new_to_val_map.clear();
+
+  // Pass 1: collect method names that appear at any poly call site.
+  Vec<cchar *> poly_names;
+  for (Fun *f : fa->funs) {
+    if (!f->live) continue;
+    for (int ci = 0; ci < f->calls.n; ci++) {
+      if (!f->calls[ci].key) continue;
+      Vec<Fun *> *fns = f->calls[ci].value;
+      if (!fns || fns->n <= 1) continue;
+      for (Fun *fv : *fns)
+        if (fv && fv->sym && fv->sym->name) poly_names.set_add(fv->sym->name);
+    }
+  }
+
+  // Pass 2: for every live function whose name is a poly method, find its
+  // self arg, the method slot in that arg's concrete type, and register all
+  // creators of self with this function.
+  for (Fun *fun_val : fa->funs) {
+    if (!fun_val->live || !fun_val->sym || !fun_val->sym->name) continue;
+    if (!poly_names.set_in(fun_val->sym->name)) continue;
+    cchar *method_name = fun_val->sym->name;
+
+    // Find the self-arg position and slot.
+    int slot = -1;
+    MPosition *self_cp = nullptr;
+    {
+      MPosition argp;
+      argp.push(1);
+      for (int pi = 0; pi < fun_val->sym->has.n + 2 && slot < 0; pi++) {
+        MPosition *cp = cannonicalize_mposition(argp);
+        argp.inc();
+        Var *v = fun_val->args.get(cp);
+        if (!v || !v->live || !v->type) continue;
+        Sym *csym = v->type;
+        for (int k = 0; k < csym->has.n; k++) {
+          if (csym->has[k] && csym->has[k]->name == method_name && cg_field_live(csym, k)) {
+            slot = k;
+            self_cp = cp;
+            break;
+          }
+        }
+        if (slot >= 0) break;
+      }
+    }
+    if (slot < 0 || !self_cp) continue;
+
+    // Walk every EntrySet for fun_val; look only at the self arg's AType.
+    // Track specificity = sorted.n of the ES: lower means more specific.
+    // When multiple val clones compete for the same (creator, slot), the
+    // most-specific one (smallest sorted.n) wins — FA is conservative and
+    // may include extra CSes in the self AType of less-specific clones.
+    for (EntrySet *es : fun_val->ess) {
+      AVar *self_av = nullptr;
+      for (int j = 0; j < es->args.n; j++) {
+        if (es->args.v[j].key == self_cp) {
+          self_av = es->args.v[j].value;
+          break;
+        }
+      }
+      if (!self_av || !self_av->out) continue;
+      int specificity = self_av->out->sorted.n;  // fewer CSes = more specific
+      for (CreationSet *cs : self_av->out->sorted) {
+        if (!cs) continue;
+        for (AVar *def_av : cs->defs) {
+          if (!def_av || !def_av->contour_is_entry_set) continue;
+          EntrySet *creator_es = (EntrySet *)def_av->contour;
+          Fun *fun_new = creator_es->fun;
+          if (!fun_new || !fun_new->live) continue;
+          Vec<PolymorphicSlot> *slots = cg_new_to_val_map.get(fun_new);
+          if (!slots) {
+            slots = new Vec<PolymorphicSlot>();
+            cg_new_to_val_map.put(fun_new, slots);
+          }
+          // Find existing registration for this (slot) — replace if less specific.
+          int existing = -1;
+          for (int k = 0; k < slots->n; k++)
+            if ((*slots)[k].slot == slot) {
+              existing = k;
+              break;
+            }
+          if (existing >= 0) {
+            if ((*slots)[existing].fun_val == fun_val) continue;  // exact dup
+            if (specificity < (*slots)[existing].specificity) {
+              // More specific: replace existing registration.
+              (*slots)[existing].fun_val = fun_val;
+              (*slots)[existing].specificity = specificity;
+            }
+            // else: existing is equally or more specific, keep it
+            continue;
+          }
+          PolymorphicSlot ps;
+          ps.slot = slot;
+          ps.fun_val = fun_val;
+          ps.specificity = specificity;
+          slots->add(ps);
+        }
+      }
+    }
+  }
+}
 
 Sym *closure_fun_type(Var *v) {
   Sym *t = v->type;

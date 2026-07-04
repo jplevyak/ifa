@@ -80,6 +80,12 @@ llvm::StructType *sym_to_llvm_struct(Sym *s) {
   g_sym_to_struct.put(s, st);
   if (st->isOpaque()) {
     std::vector<llvm::Type *> fields;
+    // ifa/issues/030: class records carry a classtag header at
+    // slot 0 (mirrors the C backend's `__pyc_tag` member). All
+    // has-index -> struct-slot translations must go through
+    // llvm_fld() so tagged structs shift by one.
+    if (cg_has_classtag(s))
+      fields.push_back(llvm::PointerType::getUnqual(*TheContext));
     for (Sym *f : s->has) {
       llvm::Type *ft = sym_to_llvm_type(f->type);
       // Substitute opaque ptr for unsized / void fields.
@@ -91,6 +97,23 @@ llvm::StructType *sym_to_llvm_struct(Sym *s) {
     st->setBody(fields, /*isPacked=*/false);
   }
   return st;
+}
+
+// ifa/issues/030: translate a has-index into the LLVM struct slot
+// (tagged class records have the classtag at slot 0).
+static inline int llvm_fld(Sym *s, int i) { return cg_has_classtag(s) ? i + 1 : i; }
+
+// ifa/issues/030: the per-class tag object. Only its ADDRESS
+// matters (identity comparison at dispatch sites), so an internal
+// i64 global per class name suffices; named to match the C
+// backend's `_CG_type_<name>` for debuggability.
+static llvm::GlobalVariable *get_classtag_global(cchar *name) {
+  char buf[160];
+  snprintf(buf, sizeof(buf), "_CG_type_%s", name);
+  if (llvm::GlobalVariable *gv = TheModule->getNamedGlobal(buf)) return gv;
+  llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+  return new llvm::GlobalVariable(*TheModule, i64, /*isConstant=*/false, llvm::GlobalValue::InternalLinkage,
+                                  llvm::ConstantInt::get(i64, 0), buf);
 }
 
 llvm::Type *sym_to_llvm_type(Sym *s) {
@@ -586,7 +609,8 @@ bool emit_send_period(EmitCtx &ctx, PNode *pn) {
   }
 
   llvm::StructType *obj_struct = sym_to_llvm_struct(obj_sym);
-  if (!obj_struct || field_idx >= (int)obj_struct->getNumElements()) {
+  int slot_idx = llvm_fld(obj_sym, field_idx);
+  if (!obj_struct || slot_idx >= (int)obj_struct->getNumElements()) {
     return false;
   }
   llvm::Value *obj = value_for_var(ctx, pn->rvals.v[1]);
@@ -594,8 +618,8 @@ bool emit_send_period(EmitCtx &ctx, PNode *pn) {
     return false;
   }
   llvm::Value *gep =
-      Builder->CreateStructGEP(obj_struct, obj, field_idx);
-  llvm::Type *field_ty = obj_struct->getElementType(field_idx);
+      Builder->CreateStructGEP(obj_struct, obj, slot_idx);
+  llvm::Type *field_ty = obj_struct->getElementType(slot_idx);
   llvm::Value *loaded = Builder->CreateLoad(
       field_ty, gep,
       cg_get_string(dst_var) ? cg_get_string(dst_var) : "");
@@ -653,7 +677,8 @@ bool emit_send_setter(EmitCtx &ctx, PNode *pn) {
   if (field_idx < 0) return false;
 
   llvm::StructType *obj_struct = sym_to_llvm_struct(obj_sym);
-  if (!obj_struct || field_idx >= (int)obj_struct->getNumElements())
+  int slot_idx = llvm_fld(obj_sym, field_idx);
+  if (!obj_struct || slot_idx >= (int)obj_struct->getNumElements())
     return false;
 
   llvm::Value *obj = value_for_var(ctx, pn->rvals.v[1]);
@@ -668,8 +693,8 @@ bool emit_send_setter(EmitCtx &ctx, PNode *pn) {
         !obj_sym->has.v[field_idx]->var->live);
   if (field_live) {
     llvm::Value *gep =
-        Builder->CreateStructGEP(obj_struct, obj, field_idx);
-    llvm::Type *field_ty = obj_struct->getElementType(field_idx);
+        Builder->CreateStructGEP(obj_struct, obj, slot_idx);
+    llvm::Type *field_ty = obj_struct->getElementType(slot_idx);
     if (val->getType() != field_ty) {
       if (val->getType()->isIntegerTy() && field_ty->isPointerTy()) {
         val = Builder->CreateIntToPtr(val, field_ty);
@@ -1246,6 +1271,22 @@ static bool emit_send_clone(EmitCtx &ctx, PNode *pn) {
     Builder->CreateCall(memcpy_fn,
         { new_p, src, llvm::ConstantInt::get(i64, copy_sz),
           llvm::ConstantInt::getFalse(*TheContext) });
+    // ifa/issues/029/030: populate method-pointer slots for
+    // polymorphic dispatch (mirrors cg.cc's P_prim_clone
+    // emission from cg_new_to_val_map).
+    if (Vec<PolymorphicSlot> *pslots = cg_new_to_val_map.get(ctx.fn)) {
+      Sym *dt = dst_var->type;
+      for (int si = 0; si < pslots->n; si++) {
+        int slot = (*pslots)[si].slot;
+        Fun *fun_val = (*pslots)[si].fun_val;
+        if (!cg_field_live(dt, slot)) continue;
+        if (!fun_val->cg_string) continue;
+        llvm::Function *fv = TheModule->getFunction(fun_val->cg_string);
+        if (!fv) continue;
+        llvm::Value *gep = Builder->CreateStructGEP(dst_struct, new_p, llvm_fld(dt, slot));
+        Builder->CreateStore(fv, gep);
+      }
+    }
     put_result(ctx, dst_var, new_p);
     return true;
   }
@@ -1303,6 +1344,12 @@ static bool emit_send_new(EmitCtx &ctx, PNode *pn) {
   llvm::Value *result = Builder->CreateCall(
       get_gc_malloc(), { sz_v },
       cg_get_string(dst_var) ? cg_get_string(dst_var) : "new");
+  // ifa/issues/030: stamp the classtag into the prototype; every
+  // instance inherits it via emit_send_clone's memcpy.
+  if (cg_has_classtag(t_sym)) {
+    llvm::Value *tag_gep = Builder->CreateStructGEP(struct_ty, result, 0);
+    Builder->CreateStore(get_classtag_global(t_sym->name), tag_gep);
+  }
   put_result(ctx, dst_var, result);
   return true;
 }
@@ -1837,7 +1884,91 @@ void emit_send(EmitCtx &ctx, PNode *pn) {
 void emit_send_call(EmitCtx &ctx, PNode *pn) {
   if (!pn || !ctx.fn) return;
   Vec<Fun *> *callees = ctx.fn->calls.get(pn);
-  if (!callees || callees->n != 1) return;
+  if (!callees) return;
+  if (callees->n > 1) {
+    // ifa/issues/030 classtag dispatch (mirrors cg.cc's
+    // emit_send_call polymorphic branch). Group candidates by
+    // receiver class; branch on the instance's classtag (slot 0);
+    // each class branch calls through THAT class's own stored
+    // method pointer, so per-creation-site clones keep working.
+    Vec<Sym *> classes;
+    Vec<int> slots;
+    llvm::Value *recv = nullptr;
+    bool ok = true;
+    for (int fi = 0; fi < callees->n && ok; fi++) {
+      Fun *fun_val = (*callees)[fi];
+      if (!fun_val || !fun_val->sym || !fun_val->sym->name) { ok = false; break; }
+      cchar *method_name = fun_val->sym->name;
+      Sym *rt = nullptr;
+      int slot = -1;
+      MPosition argp;
+      argp.push(1);
+      for (int pi = 0; pi < fun_val->sym->has.n + 2 && !rt; pi++) {
+        MPosition *cp = cannonicalize_mposition(argp);
+        argp.inc();
+        Var *argv = fun_val->args.get(cp);
+        if (!argv || !argv->type) continue;
+        Sym *csym = argv->type;
+        for (int k = 0; k < csym->has.n; k++) {
+          if (csym->has[k] && csym->has[k]->name == method_name && cg_field_live(csym, k)) {
+            rt = csym;
+            slot = k;
+            int ridx = (int)Position2int(cp->pos[0]) - 1;
+            if (!recv && ridx >= 0 && ridx < pn->rvals.n && pn->rvals[ridx])
+              recv = value_for_var(ctx, pn->rvals[ridx]);
+            break;
+          }
+        }
+      }
+      if (!rt || !rt->name || rt->is_system_type || !cg_has_classtag(rt)) { ok = false; break; }
+      bool found = false;
+      for (int ci = 0; ci < classes.n; ci++)
+        if (!strcmp(classes[ci]->name, rt->name)) { found = true; break; }
+      if (!found) {
+        classes.add(rt);
+        slots.add(slot);
+      }
+    }
+    if (!ok || !classes.n || !recv) return;
+    Var *dst_var = pn->lvals.n ? pn->lvals.v[0] : nullptr;
+    llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
+    llvm::Type *res_ty = (dst_var && dst_var->type) ? sym_to_llvm_type(dst_var->type) : nullptr;
+    if (res_ty && res_ty->isVoidTy()) res_ty = nullptr;
+    // Load the instance's classtag (slot 0 of any tagged struct).
+    llvm::Value *tag = Builder->CreateLoad(ptr_ty, recv, "classtag");
+    llvm::Function *cur_fn = ctx.llvm_fn;
+    llvm::BasicBlock *merge_bb = llvm::BasicBlock::Create(*TheContext, "poly.merge", cur_fn);
+    llvm::AllocaInst *res_slot = nullptr;
+    if (res_ty) {
+      llvm::IRBuilder<> tmp(&cur_fn->getEntryBlock(), cur_fn->getEntryBlock().begin());
+      res_slot = tmp.CreateAlloca(res_ty, nullptr, "poly.res");
+    }
+    for (int ci = 0; ci < classes.n; ci++) {
+      llvm::BasicBlock *hit_bb = llvm::BasicBlock::Create(*TheContext, "poly.hit", cur_fn);
+      llvm::BasicBlock *next_bb = llvm::BasicBlock::Create(*TheContext, "poly.next", cur_fn);
+      llvm::Value *cmp = Builder->CreateICmpEQ(tag, get_classtag_global(classes[ci]->name), "tagcmp");
+      Builder->CreateCondBr(cmp, hit_bb, next_bb);
+      Builder->SetInsertPoint(hit_bb);
+      llvm::StructType *st = sym_to_llvm_struct(classes[ci]);
+      llvm::Value *slot_gep = Builder->CreateStructGEP(st, recv, llvm_fld(classes[ci], slots[ci]));
+      llvm::Value *fnptr = Builder->CreateLoad(ptr_ty, slot_gep, "methodptr");
+      llvm::FunctionType *fty =
+          llvm::FunctionType::get(res_ty ? res_ty : llvm::Type::getVoidTy(*TheContext), {ptr_ty}, false);
+      llvm::Value *callv = Builder->CreateCall(fty, fnptr, {recv});
+      if (res_slot) Builder->CreateStore(callv, res_slot);
+      Builder->CreateBr(merge_bb);
+      Builder->SetInsertPoint(next_bb);
+    }
+    // Fallthrough (unknown tag): trap-free no-op, mirror the C
+    // backend's assert by leaving the result zeroed.
+    Builder->CreateBr(merge_bb);
+    Builder->SetInsertPoint(merge_bb);
+    if (dst_var && res_slot) {
+      llvm::Value *res = Builder->CreateLoad(res_ty, res_slot, "poly.val");
+      put_result(ctx, dst_var, res);
+    }
+    return;
+  }
   Fun *target = callees->v[0];
   if (!target || !target->cg_string) return;
   llvm::Function *target_fn =
@@ -2570,6 +2701,11 @@ void emit_fun(EmitCtx &ctx, Fun *f) {
 bool cg_emit_llvm(FA *fa, Fun *main_fun) {
   if (!fa || !TheModule) return false;
   reset_state();
+
+  // ifa/issues/029/030: creator-Fun -> method-slot registrations,
+  // consumed by emit_send_clone (slot stores) and emit_send_call
+  // (classtag dispatch). Shared with the C backend.
+  cg_build_new_to_val_map(fa);
 
   // Pass 0: declare module-level globals so per-Fun emit can
   // resolve global Var operands.  Without this, loads/stores

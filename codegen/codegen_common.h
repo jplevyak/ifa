@@ -49,6 +49,35 @@ int is_closure_var(Var *v);
 // same way as a plain closure. See issues/002 Case B.
 Sym *closure_fun_type(Var *v);
 
+// ifa/issues/030: does this record type carry the classtag header
+// (`__pyc_tag` in C structs / a leading ptr field in LLVM structs)?
+// Only class-like records (created via prim_new prototypes +
+// clone_dst) qualify. Tuples, list-backed tuples, and vectors are
+// laid out as bare element arrays and accessed with raw pointer
+// math -- a leading tag member would corrupt them; they are
+// identified structurally (only unnamed fields) since tuple clones
+// aren't always in sym_tuple->specializers.
+bool cg_has_classtag(Sym *s);
+
+// Is field i of record s live (present in the emitted struct)?
+// Shared by struct emission, field access elision, and the
+// polymorphic-slot discovery in cg_build_new_to_val_map.
+int cg_field_live(Sym *s, int i);
+
+// ifa/issues/029/030: registry of method-pointer slot stores.
+// For each creator Fun (a __new__ clone), the (slot, method-clone)
+// pairs its instances must carry so polymorphic call sites can
+// dispatch through the stored pointer. Built once per codegen run
+// by cg_build_new_to_val_map; consumed by both backends' clone
+// emitters.
+struct PolymorphicSlot {
+  int slot;
+  Fun *fun_val;
+  int specificity;  // lower = more specific (fewer CSes in the ES sorted list)
+};
+extern Map<Fun *, Vec<PolymorphicSlot> *> cg_new_to_val_map;
+void cg_build_new_to_val_map(FA *fa);
+
 // Resolve a SEND PNode to its single concrete target Fun, or
 // nullptr if the call site has zero or multiple resolutions.
 //

@@ -357,3 +357,17 @@ static inline int _CG_ord(char *x) {
   else
     return 0;
 }
+
+/* ifa/issues/030: classtag support for polymorphic dispatch.
+   pyc's runtime (pyc_c_runtime.h) defines the full tagged
+   _CG_TypeObject; this minimal mirror keeps the shared C codegen's
+   emitted `_CG_TypeObject _CG_type_<name>` globals and per-record
+   `__pyc_tag` header members compiling for the ifa-native (V
+   language) test path too. */
+#ifndef PYC_TAG_OBJECT
+enum { PYC_TAG_OBJECT = 5 };
+typedef struct {
+  int tag;
+  const char *name;
+} _CG_TypeObject;
+#endif

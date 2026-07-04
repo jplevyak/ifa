@@ -1,7 +1,14 @@
 # 029 — Polymorphic method dispatch unsupported
 
-**Status:** open.  Workaround is tag-based dispatch in
-user code (see `tests/expr_evaluator.py`).
+**Status:** closed (2026-07-04) in favour of
+[030](030-polymorphic-dispatch-fat-pointers.md), whose classtag
+dispatch is now implemented on both backends
+(`poly_dispatch_low.py` / `poly_dispatch_high.py` /
+`poly_dispatch_swapped.py` all pass strictly). This issue's own
+struct-slot mechanism (method pointers stored per creation site by
+`__new__`, `cg_build_new_to_val_map`) survives as the clone-
+selection half of 030's design; the receiver-less bare-callable
+shape flagged in "Related" below remains 030's open scope.
 **Related:** `../../issues/007-decorators-not-applied.md` hits the
 same `get_target_fun_core` gap for a shape this issue doesn't cover —
 calling a bare polymorphic function-typed *value* directly (e.g. a
