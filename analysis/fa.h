@@ -15,7 +15,19 @@
 // (frontends inspect `FA::pass_limit_hit` instead of aborting).
 #define IFA_PASS_LIMIT 100
 
-#define GLOBAL_CONTOUR ((void *)1)
+// The contour of module-level (global) variables' shared AVars.
+// Historically a raw sentinel (`(void *)1`), which made every
+// `(EntrySet *)av->contour` deref on a global AVar a latent crash
+// (issue pyc/005) and required scattered `!= GLOBAL_CONTOUR`
+// guards. Now a real, distinguished EntrySet (`FA::global_es`,
+// created at `FA::analyze` entry): never registered in `fa->ess`,
+// never given edges or pnodes, and with `in_es_worklist`
+// permanently 1 so the standard `if (!es->in_es_worklist)`
+// enqueue checks naturally skip it. Pointer comparisons against
+// GLOBAL_CONTOUR keep their meaning ("is this the global
+// contour?"); derefs of its EntrySet fields are now safe no-ops.
+// See ifa/issues/031-globals-outside-fa-precision.md step 1.
+#define GLOBAL_CONTOUR ((void *)::fa->global_es)
 
 class Prim;
 class RegisteredPrim;
@@ -402,6 +414,10 @@ class FA : public gc {
   Vec<Sym *> basic_types;
   Vec<CreationSet *> css, css_set;
   Vec<AVar *> global_avars;
+  // The distinguished global contour (see GLOBAL_CONTOUR above).
+  // Created once at FA::analyze entry; fun points at the top-level
+  // Fun so incidental `es->fun` derefs are safe.
+  EntrySet *global_es = nullptr;
 
   int print_call_depth;
   bool permit_boxing;

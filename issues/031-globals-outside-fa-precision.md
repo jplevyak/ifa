@@ -1,7 +1,8 @@
 # Issue 031: Globals live outside all of FA's precision machinery
 
-**Status:** open (analysis; no crash outstanding). Filed 2026-07-04
-as the common-root-cause writeup for pyc issues
+**Status:** steps 1 and 2 implemented (2026-07-04, same day as
+filing) — see "What landed" below. Step 3 remains 029/030's.
+Originally filed as the common-root-cause writeup for pyc issues
 [001](../../issues/001-fa-crash-captured-locals.md) /
 [002](../../issues/002-fa-crash-escaped-closure.md) /
 [005](../../issues/005-while-true-fa-crash.md), all three of which
@@ -114,7 +115,7 @@ per-ES state should check this issue first, and if a new
 GLOBAL_CONTOUR guard is about to be added, that is the signal to do
 step 1 instead.
 
-## Verification sketch
+## Verification sketch (original)
 
 - Step 1: full suites (both backends) + `ifa-test` unchanged;
   delete the 005 guard and confirm `while True:` tests still pass;
@@ -122,3 +123,94 @@ step 1 instead.
 - Step 2: `closure_in_global.py` stays green; add a narrowing
   variant asserting the *temp's* type at the guarded call site is
   closure-only (e.g. via `-l F` var-type log), not `None ∪ closure`.
+
+## What landed (2026-07-04)
+
+### Step 1 — GLOBAL_CONTOUR is now a real EntrySet
+
+- `fa.h`: `GLOBAL_CONTOUR` is now `((void *)::fa->global_es)`; new
+  `FA::global_es` member. Keeping the macro `void *`-typed was
+  deliberate: `unique_AVar` has both `(Var *, void *)` and
+  `(Var *, EntrySet *)` overloads, and only the void* one must be
+  selected for globals (the EntrySet overload sets
+  `contour_is_entry_set`, which would change clone-equivalence and
+  every `contour is a CreationSet` test of the form
+  `!contour_is_entry_set && contour != GLOBAL_CONTOUR`).
+- `fa.cc` `FA::analyze`: creates the singleton at entry —
+  `fun = top` (so incidental `es->fun` derefs are safe), never
+  registered in `fa->ess` (clone/equivalence passes never see it),
+  and `in_es_worklist` permanently 1, so every standard
+  `if (!es->in_es_worklist)` enqueue check skips it naturally.
+- Guards removed: `update_in`'s issue-005 special case (the deref
+  is now safe and the enqueue self-suppresses), `creation_point`'s
+  `es = 0` sentinel dodge (`global_es->split` is always null), and
+  `show_call_tree`'s skip (`global_es->edges` is always empty).
+  The remaining `contour != GLOBAL_CONTOUR` comparisons are
+  *semantic* ("is this contour a CreationSet?" / "is this AVar
+  global?") and still correct as pointer comparisons.
+
+### Step 2 — global reads are loads into per-read local temps
+
+Implemented in the pyc frontend (`python_ifa_build_if1.cc`,
+`PY_name` load path + `is_module_data_var`): each *read* of a
+module-level data variable emits `if1_move(cell, temp)` and the
+expression consumes the temp; stores still write the cell
+directly. The temp is `is_local`/`LOCALLY_NESTED`, i.e. on FA's
+first-class track (EntrySet-contoured, SSU-renamable), so no
+global Var ever appears as a SEND rval / if-condition operand
+anymore — verified in the IF1 dump (`(MOVE (temp N) (var
+"stash"))` before the call, where previously the SEND consumed
+`(var "stash")` directly).
+
+`is_module_data_var` intentionally excludes everything downstream
+passes match by identity: functions (call dispatch), classes/types
+(instantiation, isinstance), modules (attribute resolution),
+interned symbols, constants, and builtin unique objects
+(`is_external`/`is_builtin` — None/nil, void, unknown). The first
+implementation attempt missed that last category and tempified
+`None` reads, which hit codegen's constant-elision protocol
+(`mark_live_avar` skips constant rvals on the assumption consumers
+inline the literal; a load temp for nil got declared but its
+defining MOVE dead-elided — 11 test failures, all the
+`is`-identity/None-narrowing family). Worth remembering: **any new
+Var whose type concretizes to a bare constant (esp. nil) must not
+be consumed by emission paths that reference the variable name**
+— that protocol mismatch is a pre-existing codegen sharp edge,
+not specific to this change.
+
+### Honest scope note: cross-read narrowing did NOT land
+
+The original sketch hoped `if g is not None: g()` would narrow.
+It does not: the condition read and the body read are now two
+*different* temps, and issue-025's recognizer (correctly) narrows
+only the Var it saw in the predicate. Narrowing across two loads
+of the same cell requires proving no intervening store (no calls
+between the loads) — i.e. load CSE, a real dataflow optimization,
+not a contour question. In practice this costs nothing today:
+the nullable-SUM codegen (issue 002 Case B fix, `closure_fun_type`
++ the long-standing `SUM{nil,T}` nullable-pointer idiom) already
+compiles the guarded-call and guarded-field-access shapes
+correctly without narrowing, and the local-copy idiom
+(`t = g; if t is not None: t.f()`) gets full narrowing through
+the existing machinery. File a separate issue if a shape ever
+genuinely needs cross-load narrowing.
+
+### Verification results
+
+- `./test_pyc`: 126 passed / 0 failed (three consecutive clean
+  runs; one earlier single-run transient `expr_evaluator` COMPILE
+  flake matches issue 021's known nondeterminism class and did not
+  reproduce). `PYC_FLAGS=-b ./test_pyc`: 126 / 0. `ifa/ifa-test`:
+  14 / 0.
+- New test `tests/global_cell_semantics.py` (both backends +
+  CPython cross-verified): global closure rebinding observed by
+  the next call, global object rebinding observed by field reads,
+  a loop whose condition re-reads a global mutated by its callee,
+  and store/read interleaving at module top level — locks in the
+  memory-cell (fresh-load-per-read) semantics against any future
+  caching regression.
+- `tests/closure_in_global.py` (issue 002 Case B) stays green with
+  the call now routed through the load temp.
+- Structural check: IF1 dump shows every global read as a MOVE
+  into a temp; `fibheap_full.py` (the issue-005 regression
+  carrier) passes with the update_in guard gone.

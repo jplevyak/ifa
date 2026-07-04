@@ -280,21 +280,15 @@ void update_in(AVar *v, AType *t) {
           fa->send_worklist.enqueue(vv);
         }
       }
-      if (v->is_if_arg && v->contour != GLOBAL_CONTOUR) {
-        // Guard against the GLOBAL_CONTOUR case: `make_AVar`
-        // returns a globally-shared AVar (with `contour ==
-        // GLOBAL_CONTOUR`, which is `(void*)1`) when the Var
-        // is module-level and non-internal — e.g. the `True`
-        // constant used as the condition of a top-level
-        // `while True:`.  `analyze_edge` then sets
-        // `is_if_arg = 1` on that global AVar
-        // (fa.cc:add_es_constraints around line 2438), but
-        // its `contour` isn't a real EntrySet — dereffing
-        // `(EntrySet *)1)->in_es_worklist` segfaults.
-        // Skipping the enqueue is sound: the global AVar
-        // doesn't need per-ES re-analysis (no per-ES
-        // contour to refine).
-        // See issues/005-while-true-fa-crash.md.
+      if (v->is_if_arg) {
+        // A global AVar can be an if-arg too (e.g. the `True`
+        // constant conditioning a top-level `while True:` —
+        // issues/005). Its contour is the distinguished
+        // `fa->global_es` (see GLOBAL_CONTOUR in fa.h), a real
+        // EntrySet whose `in_es_worklist` is permanently 1, so
+        // this deref is safe and the enqueue self-suppresses —
+        // sound, since the global contour has no per-ES state
+        // to re-analyze.
         EntrySet *es = (EntrySet *)v->contour;
         if (!es->in_es_worklist) {
           es->in_es_worklist = 1;
@@ -355,7 +349,9 @@ CreationSet *creation_point(AVar *v, Sym *s, int nvars) {
     goto Lfound;
   }
   if (s == sym_closure) goto Lunique;
-  if ((void *)es == GLOBAL_CONTOUR) es = 0;
+  // `es` may be the distinguished global contour (fa->global_es);
+  // its `split` is always null, so the split-lookup below
+  // naturally no-ops for globals.
   if (es && es->split) {
     AVar *oldv = make_AVar(v->var, es->split);
     cs = oldv->cs_map ? oldv->cs_map->get(s) : 0;
@@ -2706,12 +2702,12 @@ static void show_call_tree(FILE *fp, PNode *p, EntrySet *es, int depth = 0) {
     if (ifa_verbose && p->lvals.n) fprintf(fp, " send:%d", p->lvals[0]->sym->id);
     fprintf(fp, "\n");
   }
-  if (es != GLOBAL_CONTOUR) {
-    Vec<AEdge *> edges;
-    for (AEdge *e : es->edges) if (e) edges.add(e);
-    qsort(edges.v, edges.n, sizeof(edges[0]), compar_edge_id);
-    for (AEdge *e : edges) show_call_tree(fp, e->pnode, e->from, depth);
-  }
+  // `es` may be the distinguished global contour (fa->global_es),
+  // whose edges vec is always empty — the loop below no-ops.
+  Vec<AEdge *> edges;
+  for (AEdge *e : es->edges) if (e) edges.add(e);
+  qsort(edges.v, edges.n, sizeof(edges[0]), compar_edge_id);
+  for (AEdge *e : edges) show_call_tree(fp, e->pnode, e->from, depth);
 }
 
 void show_avar_call_tree(FILE *fp, AVar *av) {
@@ -4508,6 +4504,16 @@ static void analyze_to_convergence() {
 
 int FA::analyze(Fun *top) {
   ::fa = this;
+  if (!global_es) {
+    // The distinguished global contour (see GLOBAL_CONTOUR in
+    // fa.h). A real EntrySet so `(EntrySet *)contour` derefs on
+    // global AVars are safe; in_es_worklist stays permanently 1
+    // so no worklist ever picks it up (it has no edges/pnodes to
+    // analyze); not registered in fa->ess so clone/equivalence
+    // passes never see it.
+    global_es = new EntrySet(top);
+    global_es->in_es_worklist = 1;
+  }
   initialize();
   top_edge = make_top_edge(top);
   analyze_to_convergence();
