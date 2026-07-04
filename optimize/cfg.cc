@@ -15,6 +15,22 @@ static void build_pn_cfg(IF1 *if1, Code *code, Code *cont, Code *conc_cont);
 void Fun::build_cfg() {
   if (ifa_verbose > 2) if1_dump(stdout, sym->code);
   if (!sym || !sym->code || (sym->code->is_group() && !sym->code->sub.n)) return;
+  // issues/025: if the body's first leaf Code is a LABEL (e.g. the
+  // loop header of a `while True:` that opens the function), the
+  // entry PNode would BE that label -- a jump target. SSU's phi
+  // construction sizes loop-header phis by cfg_pred.n and relies on
+  // the function-entry path being a real edge from a distinct
+  // predecessor; with the label as entry, the phi only sees the back
+  // edge, so the formals' values never flow into the loop (FA then
+  // reports "'x' has no type" and dispatch aborts at runtime). The
+  // LLVM verifier likewise rejects back edges into a function's
+  // entry block. Prepend a synthetic NOP so the entry PNode is never
+  // a jump target.
+  if (sym->code->is_group()) {
+    Code *first = sym->code;
+    while (first->is_group() && first->sub.n) first = first->sub[0];
+    if (first->kind == Code_LABEL) sym->code->sub.insert(0, new Code(Code_NOP));
+  }
   resolve_labels(sym->code);
   build_pn_cfg(pdb->if1, sym->code, NULL, NULL);
   entry = sym->code->pn;
