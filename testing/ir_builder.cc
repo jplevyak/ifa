@@ -352,6 +352,12 @@ Sym *const_int64(long long v) {
   return register_const(s, if1_get_builtin(if1, "int64"));
 }
 
+Sym *const_float32(double v) {
+  Sym *s = new_Sym();
+  s->imm.set_float(v, IF1_FLOAT_TYPE_32);
+  return register_const(s, if1_get_builtin(if1, "float32"));
+}
+
 Sym *const_float64(double v) {
   Sym *s = new_Sym();
   s->imm.set_float(v, IF1_FLOAT_TYPE_64);

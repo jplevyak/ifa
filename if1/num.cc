@@ -692,18 +692,23 @@ void fold_result(Immediate *im1, Immediate *im2, Immediate *imm) {
     im1 = t;
   }
   if (im1->const_kind == IF1_NUM_KIND_FLOAT) {
-    if (int_type_precision[im2->const_kind] <= float_type_precision[im1->const_kind]) {
+    // Survey B2 (same fix as coerce_num in analysis/fa.cc): index
+    // the precision tables by num_index, not the kind enum, and
+    // widen to float64 when a >=32-bit int doesn't fit -- the old
+    // code both misindexed and returned the NARROW float for the
+    // wide-int case.
+    if (int_type_precision[im2->num_index] <= float_type_precision[im1->num_index]) {
       imm->const_kind = im1->const_kind;
       imm->num_index = im1->num_index;
       return;
     }
-    if (int_type_precision[im2->const_kind] >= 32) {
+    if (int_type_precision[im2->num_index] >= 32) {
       imm->const_kind = IF1_NUM_KIND_FLOAT;
-      imm->num_index = IF1_FLOAT_TYPE_32;
+      imm->num_index = IF1_FLOAT_TYPE_64;
       return;
     }
     imm->const_kind = IF1_NUM_KIND_FLOAT;
-    imm->num_index = IF1_FLOAT_TYPE_64;
+    imm->num_index = IF1_FLOAT_TYPE_32;
     return;
   }
   // mixed signed and unsigned

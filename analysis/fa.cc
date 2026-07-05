@@ -409,19 +409,26 @@ Sym *coerce_num(Sym *a, Sym *b) {
     b = a;
     a = t;
   }
+  // Survey B2: these lookups used to index the precision tables by
+  // num_kind (the KIND enum, 0..4) instead of num_index, which made
+  // every int operand read a precision of 8 or 16 -- so the
+  // "does the int fit the float?" test always said yes, the widening
+  // branches were dead, and (had they been reachable) the wide-int
+  // case returned the NARROW float. Now: index by num_index, and a
+  // >=32-bit int that doesn't fit widens to the 64-bit float/complex.
   if (a->num_kind == IF1_NUM_KIND_COMPLEX) {
     if (b->num_kind == IF1_NUM_KIND_FLOAT) {
       if (a->num_index > b->num_index) return a;
       return if1->complex_types[b->num_index];
     }
-    if (int_type_precision[b->num_kind] <= float_type_precision[a->num_kind]) return a;
-    if (int_type_precision[b->num_kind] >= 32) return sym_complex32;
-    return sym_complex64;
+    if (int_type_precision[b->num_index] <= float_type_precision[a->num_index]) return a;
+    if (int_type_precision[b->num_index] >= 32) return sym_complex64;
+    return sym_complex32;
   }
   if (a->num_kind == IF1_NUM_KIND_FLOAT) {
-    if (int_type_precision[b->num_kind] <= float_type_precision[a->num_kind]) return a;
-    if (int_type_precision[b->num_kind] >= 32) return sym_float32;
-    return sym_float64;
+    if (int_type_precision[b->num_index] <= float_type_precision[a->num_index]) return a;
+    if (int_type_precision[b->num_index] >= 32) return sym_float64;
+    return sym_float32;
   }
   // mixed signed and unsigned
   if (a->num_index >= IF1_INT_TYPE_64 || b->num_index >= IF1_INT_TYPE_64)

@@ -547,6 +547,26 @@ void polymorphic_formal(const ParamMap &m) {
   if1->top = top;
 }
 
+
+// Survey B2 regression shape: mixed-width numeric coercion.
+// float32 + int64 must widen to float64 (the int does not fit the
+// float's precision); float32 + int32 stays float32 (it fits).
+// Before the fix, coerce_num indexed the precision tables by
+// num_kind, making every int "fit" -- both results typed float32.
+// The clone-phase golden captures the CS types of both results.
+void mixed_num_fold(const ParamMap & /*m*/) {
+  Sym *plus = if1_make_symbol(if1, "+");
+  Sym *top = ClosureBuilder("top")
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        Sym *wide = cb.send_op({ir::const_float32(1.5), plus, ir::const_int64(2)});
+        Sym *narrow = cb.send_op({ir::const_float32(1.5), plus, ir::const_int32(2)});
+        (void)narrow;
+        cb.move(wide, ret);
+        cb.reply(cont, ret);
+      });
+  if1->top = top;
+}
+
 // ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
@@ -569,6 +589,7 @@ static Entry kRegistry[] = {
     {"iterator_missing_field", iterator_missing_field},
     {"nested_iterator", nested_iterator},
     {"mark_recursive_single_site", mark_recursive_single_site},
+    {"mixed_num_fold", mixed_num_fold},
     {nullptr, nullptr},
 };
 

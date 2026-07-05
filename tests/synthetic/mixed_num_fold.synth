@@ -1,0 +1,12 @@
+;; mixed_num_fold.synth — mixed-width numeric coercion (survey B2).
+;;
+;; Two binary adds on constants: float32 + int64 and float32 + int32.
+;; coerce_num must widen the first to float64 (a 64-bit int does not
+;; fit float32's precision) and keep the second float32. Before the
+;; B2 fix the precision tables were indexed by num_kind, every int
+;; "fit", and both typed float32 (with the widening branches dead —
+;; and inverted had they been reachable).
+;;
+;; The clone-phase golden pins the resulting CS types.
+
+shape: mixed_num_fold
