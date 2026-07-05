@@ -405,14 +405,18 @@ will hit stack limits inside the splitter before anything else.
   intentional or move behind `-O`), and B2's twin in
   `fold_constant` predates async but sits next to the new await
   case.
-- **`sym.h` layout changes require `make clean`** — the
-  `is_async` bitfield addition produced mixed-layout objects under
-  incremental builds and a spectacular 142-test phantom breakage.
-  The real fix is dependency generation for the ifa Makefile
-  (`-MMD` is already in pyc's top-level CXXFLAGS; ifa's Makefile
-  doesn't include the `.d` files it generates for all targets).
-  Until then this remains a recurring foot-gun already warned
-  about in project memory.
+- **`sym.h` layout changes and stale builds** — the `is_async`
+  bitfield addition coincided with a spectacular 142-test phantom
+  breakage under incremental rebuilds. CORRECTION on
+  investigation: both Makefiles do generate AND include `.d`
+  files for their main object groups; the one concrete gap found
+  is that `IFA_TEST_OBJS` (testing/ifa_test_main.o) was missing
+  from ifa's `-include` line, so `ifa-test` itself could go stale
+  on header changes (fixed). The pyc-binary staleness that
+  produced the phantom breakage likely came from the
+  checkout-heavy bisect churn rather than a systematic Makefile
+  hole; `make clean` after header-layout changes remains the safe
+  habit MEMORY.md already prescribes.
 - **Synthetic golden instability**: `iterator_copy` /
   `vector_iterator` finalize goldens flipped constant-numbering
   order between two sessions' regenerations (issue-021 class,
@@ -421,10 +425,12 @@ will hit stack limits inside the splitter before anything else.
   canonical (value-sorted) order so goldens stop encoding
   evaluation order.
 - **`ifa-test` must run from `ifa/`** (fixtures resolved
-  relatively; from the repo root it reports "no fixtures found"
-  and exits *successfully-looking* with a summary of 0 — a
-  false-green hazard for scripts; it should fail loudly or accept
-  a `--root`).
+  relatively). CORRECTION: it does exit 1 on "no fixtures found"
+  — the false-green during this survey was the caller's grep
+  pipeline swallowing the exit code. It also prints no
+  pass/fail summary in that case, so grep-for-"failed:" scripts
+  see nothing; the message now says ERROR and points at the cwd
+  requirement / `--fixtures-root`.
 
 ---
 

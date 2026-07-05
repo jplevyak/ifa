@@ -540,7 +540,10 @@ int main(int argc, char **argv) {
   scan_fixtures(opt_fixtures_root, phase->name, fixtures);
   scan_synth_fixtures(opt_fixtures_root, phase->name, fixtures);
   if (fixtures.n == 0) {
-    fprintf(stderr, "ifa-test: no fixtures found under %s/%s/\n", opt_fixtures_root, phase->name);
+    fprintf(stderr,
+            "ifa-test: ERROR: no fixtures found under %s/%s/ "
+            "(fixture paths are cwd-relative -- run from ifa/, or pass --fixtures-root)\n",
+            opt_fixtures_root, phase->name);
     return 1;
   }
 
