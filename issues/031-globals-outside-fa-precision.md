@@ -3,7 +3,7 @@
 **Status:** steps 1 and 2 implemented (2026-07-04, same day as
 filing) — see "What landed" below. Step 3 remains 029/030's.
 Originally filed as the common-root-cause writeup for pyc issues
-[001](../../issues/001-fa-crash-captured-locals.md) /
+[001](../../issues/closed/001-fa-crash-captured-locals.md) /
 [002](../../issues/closed/002-fa-crash-escaped-closure.md) /
 [005](../../issues/closed/005-while-true-fa-crash.md), all three of which
 are individually fixed. This issue tracks the underlying structural

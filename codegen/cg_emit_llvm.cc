@@ -1534,6 +1534,16 @@ void emit_move(EmitCtx &ctx, PNode *pn) {
     // then load-from-uninitialized-slot instead of being
     // materialized.
     llvm::Value *src = value_for_var(ctx, rhs);
+    // Function value moved into a variable (issues/007 split
+    // identity: `public_name = internal_fn`, or `f = g` for a
+    // def'd g): materialize the function's address, matching the
+    // C backend's representation and the value-identity dispatch
+    // comparisons. Deliberately done HERE and not in
+    // value_for_var: other fn-Sym reads (e.g. builtin-class
+    // prototype attribute stores) historically no-op on null, and
+    // materializing addresses there pollutes vector prototypes.
+    if (!src && rhs->sym && rhs->sym->is_fun && rhs->sym->fun && rhs->sym->fun->cg_string)
+      src = TheModule->getFunction(rhs->sym->fun->cg_string);
     if (!src) continue;
     // Global Var as lhs: emit a real store to the
     // module-level GlobalVariable.  Without this, stores
@@ -1957,42 +1967,134 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
         slots.add(slot);
       }
     }
-    if (!ok || !classes.n || !recv) return;
     Var *dst_var = pn->lvals.n ? pn->lvals.v[0] : nullptr;
     llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
     llvm::Type *res_ty = (dst_var && dst_var->type) ? sym_to_llvm_type(dst_var->type) : nullptr;
     if (res_ty && res_ty->isVoidTy()) res_ty = nullptr;
-    // Load the instance's classtag (slot 0 of any tagged struct).
-    llvm::Value *tag = Builder->CreateLoad(ptr_ty, recv, "classtag");
     llvm::Function *cur_fn = ctx.llvm_fn;
-    llvm::BasicBlock *merge_bb = llvm::BasicBlock::Create(*TheContext, "poly.merge", cur_fn);
-    llvm::AllocaInst *res_slot = nullptr;
+    if (ok && classes.n && recv) {
+      // Load the instance's classtag (slot 0 of any tagged struct).
+      llvm::Value *tag = Builder->CreateLoad(ptr_ty, recv, "classtag");
+      llvm::BasicBlock *merge_bb = llvm::BasicBlock::Create(*TheContext, "poly.merge", cur_fn);
+      llvm::AllocaInst *res_slot = nullptr;
+      if (res_ty) {
+        llvm::IRBuilder<> tmp(&cur_fn->getEntryBlock(), cur_fn->getEntryBlock().begin());
+        res_slot = tmp.CreateAlloca(res_ty, nullptr, "poly.res");
+      }
+      for (int ci = 0; ci < classes.n; ci++) {
+        llvm::BasicBlock *hit_bb = llvm::BasicBlock::Create(*TheContext, "poly.hit", cur_fn);
+        llvm::BasicBlock *next_bb = llvm::BasicBlock::Create(*TheContext, "poly.next", cur_fn);
+        llvm::Value *cmp = Builder->CreateICmpEQ(tag, get_classtag_global(classes[ci]->name), "tagcmp");
+        Builder->CreateCondBr(cmp, hit_bb, next_bb);
+        Builder->SetInsertPoint(hit_bb);
+        llvm::StructType *st = sym_to_llvm_struct(classes[ci]);
+        llvm::Value *slot_gep = Builder->CreateStructGEP(st, recv, llvm_fld(classes[ci], slots[ci]));
+        llvm::Value *fnptr = Builder->CreateLoad(ptr_ty, slot_gep, "methodptr");
+        llvm::FunctionType *fty =
+            llvm::FunctionType::get(res_ty ? res_ty : llvm::Type::getVoidTy(*TheContext), {ptr_ty}, false);
+        llvm::Value *callv = Builder->CreateCall(fty, fnptr, {recv});
+        if (res_slot) Builder->CreateStore(callv, res_slot);
+        Builder->CreateBr(merge_bb);
+        Builder->SetInsertPoint(next_bb);
+      }
+      // Fallthrough (unknown tag): trap-free no-op, mirror the C
+      // backend's assert by leaving the result zeroed.
+      Builder->CreateBr(merge_bb);
+      Builder->SetInsertPoint(merge_bb);
+      if (dst_var && res_slot) {
+        llvm::Value *res = Builder->CreateLoad(res_ty, res_slot, "poly.val");
+        put_result(ctx, dst_var, res);
+      }
+      return;
+    }
+    // ifa/issues/030 "bare callable value" extension (issue 007's
+    // shape; mirrors cg.cc's emit_send_call): no receiver object to
+    // read a classtag from -- the callable ITSELF is the polymorphic
+    // value. Raw function values are function addresses, so dispatch
+    // by VALUE IDENTITY with a direct call per candidate.
+    Var *v0 = pn->rvals.v[0];
+    if (!v0 || !v0->sym || v0->sym->is_symbol) return;
+    llvm::Value *fv0 = value_for_var(ctx, v0);
+    if (!fv0 || !fv0->getType()->isPointerTy()) return;
+    std::vector<llvm::Function *> cands;
+    for (int fi = 0; fi < callees->n; fi++) {
+      Fun *fv = (*callees)[fi];
+      if (!fv || !fv->cg_string) return;
+      llvm::Function *lf = TheModule->getFunction(fv->cg_string);
+      if (!lf) return;
+      cands.push_back(lf);
+    }
+    llvm::BasicBlock *fmerge_bb = llvm::BasicBlock::Create(*TheContext, "fnid.merge", cur_fn);
+    llvm::AllocaInst *fres_slot = nullptr;
     if (res_ty) {
       llvm::IRBuilder<> tmp(&cur_fn->getEntryBlock(), cur_fn->getEntryBlock().begin());
-      res_slot = tmp.CreateAlloca(res_ty, nullptr, "poly.res");
+      fres_slot = tmp.CreateAlloca(res_ty, nullptr, "fnid.res");
     }
-    for (int ci = 0; ci < classes.n; ci++) {
-      llvm::BasicBlock *hit_bb = llvm::BasicBlock::Create(*TheContext, "poly.hit", cur_fn);
-      llvm::BasicBlock *next_bb = llvm::BasicBlock::Create(*TheContext, "poly.next", cur_fn);
-      llvm::Value *cmp = Builder->CreateICmpEQ(tag, get_classtag_global(classes[ci]->name), "tagcmp");
+    for (int fi = 0; fi < callees->n; fi++) {
+      Fun *fv = (*callees)[fi];
+      llvm::Function *lf = cands[fi];
+      llvm::BasicBlock *hit_bb = llvm::BasicBlock::Create(*TheContext, "fnid.hit", cur_fn);
+      llvm::BasicBlock *next_bb = llvm::BasicBlock::Create(*TheContext, "fnid.next", cur_fn);
+      llvm::Value *cmp = Builder->CreateICmpEQ(fv0, lf, "fncmp");
       Builder->CreateCondBr(cmp, hit_bb, next_bb);
       Builder->SetInsertPoint(hit_bb);
-      llvm::StructType *st = sym_to_llvm_struct(classes[ci]);
-      llvm::Value *slot_gep = Builder->CreateStructGEP(st, recv, llvm_fld(classes[ci], slots[ci]));
-      llvm::Value *fnptr = Builder->CreateLoad(ptr_ty, slot_gep, "methodptr");
-      llvm::FunctionType *fty =
-          llvm::FunctionType::get(res_ty ? res_ty : llvm::Type::getVoidTy(*TheContext), {ptr_ty}, false);
-      llvm::Value *callv = Builder->CreateCall(fty, fnptr, {recv});
-      if (res_slot) Builder->CreateStore(callv, res_slot);
-      Builder->CreateBr(merge_bb);
+      // Route live formals from the call-site rvals, coercing to
+      // the callee's declared param types.
+      std::vector<llvm::Value *> args;
+      llvm::FunctionType *lft = lf->getFunctionType();
+      bool args_ok = true;
+      unsigned ai = 0;
+      MPosition argp;
+      argp.push(1);
+      for (int pi = 0; pi < fv->sym->has.n + 2 && args_ok; pi++) {
+        MPosition *cp = cannonicalize_mposition(argp);
+        argp.inc();
+        Var *av = fv->args.get(cp);
+        if (!av || !av->live) continue;
+        // Fun-typed formals are excluded from LLVM signatures
+        // (mirrors build_fun_signature / the single-target path).
+        if (av->type && av->type->is_fun) continue;
+        if (ai >= lft->getNumParams()) break;
+        int i = (int)Position2int(cp->pos[0]) - 1;
+        if (i < 0 || i >= pn->rvals.n) { args_ok = false; break; }
+        llvm::Value *aval = value_for_var(ctx, pn->rvals[i]);
+        if (!aval) { args_ok = false; break; }
+        if (ai < lft->getNumParams()) {
+          llvm::Type *pt = lft->getParamType(ai);
+          if (aval->getType() != pt) {
+            if (aval->getType()->isIntegerTy() && pt->isIntegerTy())
+              aval = Builder->CreateSExtOrTrunc(aval, pt);
+            else if (aval->getType()->isPointerTy() && pt->isIntegerTy())
+              aval = Builder->CreatePtrToInt(aval, pt);
+            else if (aval->getType()->isIntegerTy() && pt->isPointerTy())
+              aval = Builder->CreateIntToPtr(aval, pt);
+          }
+        }
+        args.push_back(aval);
+        ai++;
+      }
+      if (args_ok) {
+        llvm::Value *callv = Builder->CreateCall(lf, args);
+        if (fres_slot && !callv->getType()->isVoidTy()) {
+          llvm::Value *cv = callv;
+          if (cv->getType() != res_ty) {
+            if (cv->getType()->isIntegerTy() && res_ty->isIntegerTy())
+              cv = Builder->CreateSExtOrTrunc(cv, res_ty);
+            else if (cv->getType()->isPointerTy() && res_ty->isIntegerTy())
+              cv = Builder->CreatePtrToInt(cv, res_ty);
+            else if (cv->getType()->isIntegerTy() && res_ty->isPointerTy())
+              cv = Builder->CreateIntToPtr(cv, res_ty);
+          }
+          Builder->CreateStore(cv, fres_slot);
+        }
+      }
+      Builder->CreateBr(fmerge_bb);
       Builder->SetInsertPoint(next_bb);
     }
-    // Fallthrough (unknown tag): trap-free no-op, mirror the C
-    // backend's assert by leaving the result zeroed.
-    Builder->CreateBr(merge_bb);
-    Builder->SetInsertPoint(merge_bb);
-    if (dst_var && res_slot) {
-      llvm::Value *res = Builder->CreateLoad(res_ty, res_slot, "poly.val");
+    Builder->CreateBr(fmerge_bb);
+    Builder->SetInsertPoint(fmerge_bb);
+    if (dst_var && fres_slot) {
+      llvm::Value *res = Builder->CreateLoad(res_ty, fres_slot, "fnid.val");
       put_result(ctx, dst_var, res);
     }
     return;
