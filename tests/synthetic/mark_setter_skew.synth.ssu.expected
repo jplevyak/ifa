@@ -1,0 +1,57 @@
+;; phase: ssu
+
+;; Fun %make_t
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+  %p0: %v
+  %p1: %t4_v1 %v
+  %p2: %t4_v1
+)
+
+;; Fun %relay2
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+  %p0: %x
+)
+
+;; Fun %top
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+  %p1: %t8_v1
+  %p2: %t8_v1
+  %p5: %t12_v1
+)
+

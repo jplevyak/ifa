@@ -1,0 +1,28 @@
+;; phase: dispatch
+
+(summary rc=-1 ess=4 edges=16)
+
+(es @__main__#0
+  send make_t (imm) => ?
+    → %make_t#0
+      args→ [1]:{make_t} [2]:{int32}
+  send relay2 (imm) => ?
+    → %relay2#0
+      args→ [1]:{relay2} [2]:{int32}
+  send make_t ? => ?
+    → %make_t#1
+      args→ [1]:{make_t} [2]:{int32}
+)
+
+(es %make_t#0
+  (no out edges)
+)
+
+(es %make_t#1
+  (no out edges)
+)
+
+(es %relay2#0
+  (no out edges)
+)
+

@@ -1,0 +1,15 @@
+;; phase: freq
+
+(summary fa_rc=-1 clone_rc=0 funs=3)
+
+(freq-funs
+  __main__ 1
+  relay 1
+  sink 2
+)
+
+(freq-pnode-peaks
+  __main__ peak=1
+  relay peak=1
+  sink peak=1
+)

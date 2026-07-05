@@ -1,0 +1,18 @@
+;; mark_setter_skew.synth — mark-setter candidate via distance
+;; skew at a CS ivar (issue 007, July 2026 round).
+;;
+;; Companion to mark_distance_skew.synth: same
+;; same-key-different-distance trick, but the skew lands on
+;; t.data (a CS-contour ivar) instead of an ES formal, so
+;; stage 2's ES-formal/return qualifier skips it and control
+;; falls through to stage 4, which collects CS marked
+;; confluences and computes AKIND_MARK setters for them.
+;; t.data is NOT a type confluence (both writes int32), so
+;; stage 3 never touches it; the seed type confluence lives on
+;; u.tag (int32+float32), which stages 1-3 can't act on.
+;; CS_T has two defs (t@main, o@g) with different mark-setter
+;; views (t sees both writes, o only the long-path one).
+;;
+;; Golden documents what actually fires.
+
+shape: mark_setter_skew

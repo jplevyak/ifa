@@ -1,0 +1,40 @@
+;; phase: cfg
+
+;; Fun %relay
+(fun %relay
+  entry:  %p0
+  exit:   %p1
+  pnodes: 2
+)
+(pnodes %relay
+  %p0  MOVE  %x -> %t1  succ:[%p1]
+  %p1  SEND  prim_reply @primitive @reply %t0 %t1  pred:[%p0]
+)
+
+;; Fun %sink
+(fun %sink
+  entry:  %p0
+  exit:   %p1
+  pnodes: 2
+)
+(pnodes %sink
+  %p0  MOVE  %y -> %t3  succ:[%p1]
+  %p1  SEND  prim_reply @primitive @reply %t2 %t3  pred:[%p0]
+)
+
+;; Fun %top
+(fun %top
+  entry:  %p0
+  exit:   %p6
+  pnodes: 7
+)
+(pnodes %top
+  %p0  SEND  prim_new @primitive @new %T -> %t6  succ:[%p1]
+  %p1  SEND  prim_setter @operator %t6 @setter #data %c0 -> %t7  succ:[%p2]  pred:[%p0]
+  %p2  SEND  prim_setter @operator %t6 @setter #data %c1 -> %t8  succ:[%p3]  pred:[%p1]
+  %p3  SEND  - %sink %c0 -> %t9  succ:[%p4]  pred:[%p2]
+  %p4  SEND  - %relay %c0 -> %t10  succ:[%p5]  pred:[%p3]
+  %p5  SEND  - %sink %t10 -> %t11  succ:[%p6]  pred:[%p4]
+  %p6  SEND  prim_reply @primitive @reply %t4 %t5  pred:[%p5]
+)
+

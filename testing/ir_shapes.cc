@@ -567,6 +567,121 @@ void mixed_num_fold(const ParamMap & /*m*/) {
   if1->top = top;
 }
 
+// Issue 007 experiment: target mark-type via DISTANCE skew, not
+// recursion. The marked-confluence predicate
+// (different_marked_args) is distance-sensitive: a key is dropped
+// from an edge's continuing set when its recorded distance doesn't
+// continue the basis's distance. So the SAME mark key arriving at
+// one formal along two paths of different length is a
+// marked-confluence -- with no type difference at that formal,
+// which keeps stage 1 (type) structurally out of the picture.
+//
+// - t.data receives int32 + float64: the only type confluence in
+//   the program, CS-contour, which stage 1 skips (and which seeds
+//   stage 2's mark closure).
+// - the int constant ALSO flows to sink() twice: once directly,
+//   once through relay() (extra flow hops). sink's formal is
+//   monomorphic (int32 only), invisible to stage 1, but its two
+//   call edges carry the int32 mark key at different distances.
+void mark_distance_skew(const ParamMap & /*m*/) {
+  Sym *T = RecordBuilder("T").field("data").build();
+
+  Sym *relay_x = ir::local("x");
+  Sym *relay = ClosureBuilder("relay")
+      .arg(relay_x)
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        cb.move(relay_x, ret);
+        cb.reply(cont, ret);
+      });
+
+  Sym *sink_y = ir::local("y");
+  Sym *sink = ClosureBuilder("sink")
+      .arg(sink_y)
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        cb.move(sink_y, ret);
+        cb.reply(cont, ret);
+      });
+
+  Sym *top = ClosureBuilder("top")
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        Sym *t = ir::new_instance(cb, T);
+        Sym *i = ir::const_int32(7);
+        // Tie the int into the seed confluence's mark closure.
+        ir::set_field(cb, t, "data", i);
+        // float32, not float64: the seed confluence needs two
+        // TYPES, but clone requires uniform field WIDTH within
+        // the single T CS ("mismatched field sizes" otherwise).
+        ir::set_field(cb, t, "data", ir::const_float32(3.5));
+        // Short path: gen -> actual -> formal.
+        cb.send_method(sink, i, {});
+        // Long path: gen -> relay formal -> relay ret -> j -> formal.
+        Sym *j = cb.send_method(relay, i, {});
+        cb.send_method(sink, j, {});
+        cb.reply(cont, ret);
+      });
+  if1->top = top;
+}
+
+// Issue 007 experiment: target mark-SETTER by composing two
+// mechanisms:
+//   pass 1 — the mark_distance_skew mechanism splits the ES of
+//     the CREATOR function make_t (its formal receives the same
+//     int32 key at two mark distances);
+//   pass 2 — the two ES copies share the persisted CS_T (the
+//     split_css precondition observed in vector_iterator's
+//     "SPLIT CS ... It" log: a CS splits only when its creator
+//     has ≥2 entry-set contours). Each contour writes the SAME
+//     type into t.data, so t.data is never a type confluence and
+//     stage 3 (AKIND_TYPE setters) skips it — but the writes
+//     carry the int32 key at different distances, so stage 4's
+//     collect_cs_marked_confluences picks the ivar up and
+//     AKIND_MARK setters distinguish the two creation contexts.
+//
+// u.tag (int32 + float32) is the seed type confluence that keeps
+// mark-building alive in pass 2; u never flows, so stages 1-3
+// can't act on it.
+void mark_setter_skew(const ParamMap & /*m*/) {
+  Sym *U = RecordBuilder("U").field("tag").build();
+  Sym *T = RecordBuilder("T").field("data").build();
+
+  Sym *relay_x = ir::local("x");
+  Sym *relay = ClosureBuilder("relay2")
+      .arg(relay_x)
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        cb.move(relay_x, ret);
+        cb.reply(cont, ret);
+      });
+
+  // make_t(v): allocates T and stores v — the creator whose ES
+  // the pass-1 mark-type split forks into two creation contexts.
+  Sym *mk_v = ir::local("v");
+  Sym *make_t = ClosureBuilder("make_t")
+      .arg(mk_v)
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        Sym *t = ir::new_instance(cb, T);
+        ir::set_field(cb, t, "data", mk_v);
+        cb.move(t, ret);
+        cb.reply(cont, ret);
+      });
+
+  Sym *top = ClosureBuilder("top")
+      .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
+        Sym *i = ir::const_int32(7);
+        Sym *u = ir::new_instance(cb, U);
+        // Seed type confluence (int32 + float32; same width so
+        // clone's field-size check stays happy).
+        ir::set_field(cb, u, "tag", i);
+        ir::set_field(cb, u, "tag", ir::const_float32(3.5));
+        // Short path: the key at a small distance.
+        cb.send_method(make_t, i, {});
+        // Long path: the same key, more flow hops.
+        Sym *j = cb.send_method(relay, i, {});
+        cb.send_method(make_t, j, {});
+        cb.reply(cont, ret);
+      });
+  if1->top = top;
+}
+
 // ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
@@ -590,6 +705,8 @@ static Entry kRegistry[] = {
     {"nested_iterator", nested_iterator},
     {"mark_recursive_single_site", mark_recursive_single_site},
     {"mixed_num_fold", mixed_num_fold},
+    {"mark_distance_skew", mark_distance_skew},
+    {"mark_setter_skew", mark_setter_skew},
     {nullptr, nullptr},
 };
 

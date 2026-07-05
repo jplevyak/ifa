@@ -1,0 +1,17 @@
+;; phase: loops
+
+;; Fun %relay
+(loops %relay
+  (none)
+)
+
+;; Fun %sink
+(loops %sink
+  (none)
+)
+
+;; Fun %top
+(loops %top
+  (none)
+)
+

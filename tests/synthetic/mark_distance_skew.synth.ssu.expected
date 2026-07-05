@@ -1,0 +1,55 @@
+;; phase: ssu
+
+;; Fun %relay
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+  %p0: %x
+)
+
+;; Fun %sink
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+  %p0: %y
+)
+
+;; Fun %top
+(phi
+  (none)
+)
+
+(phy
+  (none)
+)
+
+(rename
+  (no splits)
+)
+
+(live-vars
+  %p1: %t6_v1
+  %p2: %t6_v1
+  %p5: %t10_v1
+)
+

@@ -3813,14 +3813,21 @@ static void collect_cs_marked_confluences(Vec<AVar *> &confluences) {
   confluences.clear();
   for (CreationSet *cs : fa->css) {
     for (AVar *av : cs->vars) {
+      int nback_marked = 0, ndiff = 0;
       for (AVar *x : av->backward) if (x && x->mark_map) {
+        nback_marked++;
         if (!av->contour_is_entry_set && av->contour != GLOBAL_CONTOUR) {
           if (different_marked_args(x, av, 1)) {
+            ndiff++;
             confluences.set_add(av);
             break;
           }
         }
       }
+      if (av->mark_map || nback_marked)
+        log(LOG_SPLITTING, "[ccmc] cs %d (sym %s) ivar av %d marked=%d back_marked=%d diff=%d\n",
+            cs->id, cs->sym && cs->sym->name ? cs->sym->name : "(anon)", av->id,
+            av->mark_map ? 1 : 0, nback_marked, ndiff);
     }
   }
   confluences.set_to_vec();
@@ -3965,6 +3972,8 @@ static void collect_setter_confluences(Accum<AVar *> &avs, Vec<AVar *> &setter_c
   for (CreationSet *cs : css) {
     Vec<AVar *> starter_set, save;
     for (AVar *av : starters) if (av->cs_map->get(cs->sym) == cs) starter_set.add(av);
+    log(LOG_SPLITTING, "[scss] cs %d (sym %s) starter_set=%d defs=%d\n", cs->id,
+        cs->sym && cs->sym->name ? cs->sym->name : "(anon)", starter_set.n, cs->defs.set_count());
     while (starter_set.n > 1) {
       AVar *av = starter_set[0];
       Vec<AVar *> compatible_set;
@@ -4210,8 +4219,16 @@ static void clear_splits() {
   for (CreationSet *cs : fa->css) cs->split = 0;
 }
 
-[[nodiscard]] static int split_for_setters_of_setters(Vec<AVar *> &confluences) {
+// NOTE deliberately takes no confluence input: the loop's first
+// action collects its own CS setter confluences. It used to take
+// the caller's type-confluences Vec by reference as scratch --
+// collect_cs_setter_confluences clear()s and refills it -- which
+// clobbered `confluences` between extend_analysis stages 3 and 4,
+// so stage 4's mark seeding always ran over the emptied vector
+// and the mark-setter stages could never fire (issue 007/032).
+[[nodiscard]] static int split_for_setters_of_setters() {
   int analyze_again = 0;
+  Vec<AVar *> confluences;
   // split based on setters
   while (!analyze_again) {
     // a) compute setters for ivar confluences
@@ -4262,7 +4279,7 @@ static void clear_splits() {
     log(LOG_SPLITTING, "split_for_setters %d\n", analyze_again);
     if (!analyze_again) {
       ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-      analyze_again = split_for_setters_of_setters(confluences);
+      analyze_again = split_for_setters_of_setters();
       if (analyze_again) record_fa_event(FAPassStage::SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
     }
     log(LOG_SPLITTING, "split_for_setters_of_setters %d\n", analyze_again);
@@ -4287,14 +4304,18 @@ static void clear_splits() {
     Vec<AVar *> marked_confluences;
     collect_cs_marked_confluences(marked_confluences);
     Accum<AVar *> avs;
-    for (AVar *av : marked_confluences) (void)compute_setters(av, avs, AKIND_MARK);
+    for (AVar *av : marked_confluences) {
+      int r = compute_setters(av, avs, AKIND_MARK);
+      log(LOG_SPLITTING, "[stage4] marked-conf av %d %s compute_setters(MARK) -> %d\n", av->id,
+          av->var && av->var->sym && av->var->sym->name ? av->var->sym->name : "(anon)", r);
+    }
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
     if (split_for_setters(avs, analyze_again)) analyze_again = 1;
     if (analyze_again) record_fa_event(FAPassStage::MARK_SETTER, analyze_again, ess0, css0, viol0);
     log(LOG_SPLITTING, "split_for_setters with marks %d\n", analyze_again);
     if (!analyze_again) {
       ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-      analyze_again = split_for_setters_of_setters(confluences);
+      analyze_again = split_for_setters_of_setters();
       if (analyze_again) record_fa_event(FAPassStage::MARK_SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
     }
     log(LOG_SPLITTING, "split_for_setters_of_setters with marks %d\n", analyze_again);
