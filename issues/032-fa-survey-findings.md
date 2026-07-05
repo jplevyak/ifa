@@ -54,10 +54,12 @@ check them off here with the closing commit.
   (fa.cc:1707-1709) so snapshot-style prim transfers can't be
   emitted without a resume path; turn `record_arg`'s
   `assert(s->has.n == cs->vars.n)` into a type_violation.
-- [x] (`e39d8db`) **S3** — (the invariants comment; the closure_used debug assertion needs a consumed-by-live-call-site backlink that does not exist yet -- left open below) invariants comment at `clear_avar` (what survives
+- [x] (`e39d8db`) **S3** — invariants comment at `clear_avar` (what survives
   a pass and why) + debug assertion in `remove_unused_closures`
   that a closure CS consumed by a live call site has
-  `closure_used` set.
+  `closure_used` set. (Comment half landed; the assertion half
+  needs a consumed-by backlink that doesn't exist yet -- tracked
+  as the open item below.)
 - [x] (`e39d8db`) **S5** — normalize `P_prim_coerce`'s operand indexing to
   the `o = rvals[0]==sym_primitive ? 2 : 1` convention (or prove
   only the 3-rval form is emitted).
