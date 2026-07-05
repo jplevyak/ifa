@@ -9,7 +9,12 @@ with [issue 009](../issues/009-fa-violations-nondeterminism.md)
 and its sibling [issue 008](../issues/008-fa-crash-on-nested-iterator-shape.md).
 
 This is paired with [IFA.md](../IFA.md), which describes *what
-the analysis does*. Read IFA.md first if you need orientation.
+the analysis does*, and with
+[FA_SEMANTIC_SURVEY.md](FA_SEMANTIC_SURVEY.md) (2026-07), which
+covers the *analysis semantics* — algorithmic bugs, soundness and
+precision gaps, and convergence-protocol hazards — where this
+document covers code shape. Read IFA.md first if you need
+orientation.
 This document is about *the shape of the code* — what to fix,
 what not to fix, and what to be aware of when refactoring.
 
