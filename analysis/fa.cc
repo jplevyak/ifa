@@ -527,7 +527,11 @@ AType *type_cannonicalize(AType *t) {
   }
   if (t->sorted.n > 1) qsort_by_id(t->sorted);
   unsigned int h = 0;
-  for (int i = 0; i < t->sorted.n; i++) h = (uint)(intptr_t)t->sorted[i] * open_hash_primes[i % 256];
+  // Accumulate (survey B1): `h =` here discarded all but the last
+  // element, collapsing the hash-cons table's distribution to
+  // last-element groups. Position sensitivity comes from the
+  // per-index prime.
+  for (int i = 0; i < t->sorted.n; i++) h += (uint)(intptr_t)t->sorted[i] * open_hash_primes[i % 256];
   t->hash = h ? h : h + 1;  // 0 is empty
   AType *tt = fa->type_world.cannonical_atypes.put(t);
   if (!tt) tt = t;
@@ -3739,7 +3743,8 @@ static Setters *setters_cannonicalize(Setters *s) {
   for (AVar *x : *s) if (x) s->sorted.add(x);
   if (s->sorted.n > 1) qsort_pointers((void **)&s->sorted[0], (void **)s->sorted.end());
   uint h = 0;
-  for (int i = 0; i < s->sorted.n; i++) h = (uint)(intptr_t)s->sorted[i] * open_hash_primes[i % 256];
+  // Accumulate (survey B1) — see type_cannonicalize.
+  for (int i = 0; i < s->sorted.n; i++) h += (uint)(intptr_t)s->sorted[i] * open_hash_primes[i % 256];
   s->hash = h ? h : h + 1;  // 0 is empty
   Setters *ss = fa->type_world.cannonical_setters.put(s);
   if (!ss) ss = s;
