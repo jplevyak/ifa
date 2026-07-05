@@ -264,6 +264,38 @@ static AType *apply_restrict_pred(AVar *v, AType *t) {
   return type_cannonicalize(r);
 }
 
+// Shared out-change propagation tail for update_in /
+// flow_var_type_permit / flow_var_permit_pred (survey S1):
+// enqueue dependent sends, resume any IF blocked on this AVar
+// (add_pnode_constraints stops its CFG walk at a bottom-typed
+// condition and relies on this re-enqueue), and push the new
+// `out` forward. The permit variants historically re-implemented
+// this tail and omitted the IF resume.
+static void propagate_out_change(AVar *v) {
+  for (AVar *vv : v->arg_of_send.asvec) {
+    if (!vv->in_send_worklist) {
+      vv->in_send_worklist = 1;
+      fa->send_worklist.enqueue(vv);
+    }
+  }
+  if (v->is_if_arg) {
+    // A global AVar can be an if-arg too (e.g. the `True`
+    // constant conditioning a top-level `while True:` —
+    // issues/005). Its contour is the distinguished
+    // `fa->global_es` (see GLOBAL_CONTOUR in fa.h), a real
+    // EntrySet whose `in_es_worklist` is permanently 1, so
+    // this deref is safe and the enqueue self-suppresses —
+    // sound, since the global contour has no per-ES state
+    // to re-analyze.
+    EntrySet *es = (EntrySet *)v->contour;
+    if (!es->in_es_worklist) {
+      es->in_es_worklist = 1;
+      fa->es_worklist.enqueue(es);
+    }
+  }
+  for (AVar *vv : v->forward) if (vv) update_in(vv, v->out);
+}
+
 void update_in(AVar *v, AType *t) {
   AType *tt = type_union(v->in, t);
   if (tt != v->in) {
@@ -274,28 +306,7 @@ void update_in(AVar *v, AType *t) {
     if (tt != v->out) {
       assert(tt != fa->type_world.top_type);
       v->out = tt;
-      for (AVar *vv : v->arg_of_send.asvec) {
-        if (!vv->in_send_worklist) {
-          vv->in_send_worklist = 1;
-          fa->send_worklist.enqueue(vv);
-        }
-      }
-      if (v->is_if_arg) {
-        // A global AVar can be an if-arg too (e.g. the `True`
-        // constant conditioning a top-level `while True:` —
-        // issues/005). Its contour is the distinguished
-        // `fa->global_es` (see GLOBAL_CONTOUR in fa.h), a real
-        // EntrySet whose `in_es_worklist` is permanently 1, so
-        // this deref is safe and the enqueue self-suppresses —
-        // sound, since the global contour has no per-ES state
-        // to re-analyze.
-        EntrySet *es = (EntrySet *)v->contour;
-        if (!es->in_es_worklist) {
-          es->in_es_worklist = 1;
-          fa->es_worklist.enqueue(es);
-        }
-      }
-      for (AVar *vv : v->forward) if (vv) update_in(vv, tt);
+      propagate_out_change(v);
     }
   }
 }
@@ -1023,13 +1034,7 @@ void flow_var_type_permit(AVar *v, AType *t) {
   if (tt != v->out) {
     assert(tt != fa->type_world.top_type);
     v->out = tt;
-    for (AVar *vv : v->arg_of_send.asvec) {
-      if (!vv->in_send_worklist) {
-        vv->in_send_worklist = 1;
-        fa->send_worklist.enqueue(vv);
-      }
-    }
-    for (AVar *vv : v->forward) if (vv) update_in(vv, v->out);
+    propagate_out_change(v);
   }
 }
 
@@ -1039,7 +1044,8 @@ void flow_var_permit_pred(AVar *v, AVarRestrictPred pred, Sym *cls) {
     v->restrict_pred = pred;
     v->restrict_pred_cls = cls;
   } else if (v->restrict_pred != pred || v->restrict_pred_cls != cls) {
-    return;  // composition not implemented; bail
+    return;  // composition not implemented; bail (survey S1 notes
+             // the precision loss for chained predicates)
   }
   AType *tt = v->in;
   if (v->restrict) tt = type_intersection(tt, v->restrict);
@@ -1047,13 +1053,7 @@ void flow_var_permit_pred(AVar *v, AVarRestrictPred pred, Sym *cls) {
   if (tt != v->out) {
     assert(tt != fa->type_world.top_type);
     v->out = tt;
-    for (AVar *vv : v->arg_of_send.asvec) {
-      if (!vv->in_send_worklist) {
-        vv->in_send_worklist = 1;
-        fa->send_worklist.enqueue(vv);
-      }
-    }
-    for (AVar *vv : v->forward) if (vv) update_in(vv, v->out);
+    propagate_out_change(v);
   }
 }
 
@@ -1326,7 +1326,13 @@ static void record_arg(PNode *pn, CreationSet *cs, AVar *a, Sym *s, AEdge *e, MP
   e->initial_types.put(cp, t->type);
   if (s->is_pattern) {
     for (CreationSet *cs : t->sorted) {
-      assert(s->has.n == cs->vars.n);
+      if (s->has.n != cs->vars.n) {
+        // Arity mismatch between a pattern formal and an actual's
+        // CS is user-reachable input, not an internal invariant
+        // (survey S2) -- report it instead of aborting.
+        type_violation(ATypeViolation_kind::MATCH, a, make_AType(cs), nullptr);
+        continue;
+      }
       p.push(1);
       for (int i = 0; i < s->has.n; i++) {
         record_arg(pn, cs, cs->vars[i], s->has.v[i], e, p);
@@ -1716,6 +1722,14 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
       }
     }
     AVar *result = p->lvals.n ? make_AVar(p->lvals[0], es) : 0;
+    // CONTRACT (survey S2): every snapshot-style transfer below
+    // (isinstance, len, merge, index_object, destruct, period,
+    // ... -- anything iterating an operand's ->out->sorted at
+    // execution time) relies on THIS blanket registration to be
+    // re-run when operand types arrive later. It hangs off the
+    // result AVar, so a prim SEND without lvals has no resume
+    // path -- such prims must not read operand->out in their
+    // transfer (today only reply-shaped prims are lval-less).
     if (result)
       for (int i = 0; i < p->rvals.n; i++) make_AVar(p->rvals[i], es)->arg_of_send.add(result);
     int o = p->rvals.v[0]->sym == sym_primitive ? 2 : 1;
@@ -2000,7 +2014,11 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
         assert(s->abstract_type);
         AVar *rhs = make_AVar(p->rvals[p->rvals.n - 1], es);
         Vec<CreationSet *> css;
-        for (CreationSet *cs : rhs->out->sorted) if (cs->sym->type == p->rvals[1]->sym) css.set_add(cs);
+        // Compare against the type operand at its positional slot
+        // (n-2), not rvals[1] -- in the @primitive-prefixed form
+        // rvals[1] is the prim-name symbol and the filter could
+        // never match (survey S5).
+        for (CreationSet *cs : rhs->out->sorted) if (cs->sym->type == p->rvals[p->rvals.n - 2]->sym) css.set_add(cs);
         if (css.n)
           update_gen(result, make_AType(css));
         else if (s->type->num_kind || s->type == sym_string || s->type->is_symbol)
@@ -3678,7 +3696,21 @@ static void build_setter_marks(AVar *av, Accum<AVar *> &acc) {
 
 static void clear_marks(Accum<AVar *> &acc) { for (AVar *x : acc.asvec) x->mark_map = 0; }
 
+// Per-pass reset. NOTE what deliberately SURVIVES a pass (survey
+// S3) -- the analysis re-derives flow state from scratch each
+// pass, but identity-carrying caches persist:
+//   - av->cs_map: CreationSet identity across passes. Load-bearing:
+//     consumers hold positional slots into these CSs (see the
+//     issue-030 fixpoint fix in make_closure_var; the invariant is
+//     "a CS's positional vars[i] must be fed by every pass that
+//     feeds the CS, regardless of which Var carries the value").
+//   - av->container: structural parenthood, stable across passes.
+//   - av->type / av->ivar_offset: written post-convergence by clone.
+//   - av->match_cache: entries are validated against canonical
+//     ATypes, so stale entries miss safely -- cleared here anyway
+//     (survey P2) to stop unbounded growth across passes.
 static void clear_avar(AVar *av) {
+  av->match_cache = 0;
   av->gen = 0;
   av->in = fa->type_world.bottom_type;
   av->out = fa->type_world.bottom_type;
