@@ -3456,11 +3456,18 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
   for (AEdge *ee : all_edges) if (ee) {
     AVar *earg = es->args.get(p);
     EntrySet *old = ee->to;
-    if (earg->out->n == 1)
-      ee->to = cs_es_map.get(earg->out->v[0]);
+    // Probe with the constant-stripped type view throughout:
+    // cs_es_map is keyed by av->out->type CSs, but a raw
+    // single-element out can be a CONSTANT CS ("3" rather than
+    // int64), whose map lookup misses and used to null ee->to
+    // (survey B5). An empty type view (e.g. pure-nil out) leaves
+    // the edge untouched, as before.
+    AType *ety = earg->out->type;
+    if (ety->sorted.n == 1)
+      ee->to = cs_es_map.get(ety->sorted.v[0]);
     else {
-      for (int i = 0; i < earg->out->type->sorted.n; i++) {
-        CreationSet *cs = earg->out->type->sorted[i];
+      for (int i = 0; i < ety->sorted.n; i++) {
+        CreationSet *cs = ety->sorted[i];
         if (!i)
           set_entry_set(ee, cs_es_map.get(cs));
         else
@@ -3639,13 +3646,22 @@ static void build_setter_mark(AVar *av, AVar *x, int mark = 1) {
 // this is a backward problem, so search forward then back
 // to find all the contributors and what they effect
 static void build_setter_marks(AVar *av, Accum<AVar *> &acc) {
-  // collect all contributing nodes
+  // collect all contributing nodes — index-based so elements
+  // appended during iteration are visited (transitive closure).
+  // A range-for here both capped the closure at one hop AND
+  // iterated a Vec whose backing store can be reallocated by
+  // add() — the same defect fixed in build_type_marks (see the
+  // comment there); survey finding B3.
   acc.add(av);
-  for (AVar *x : acc.asvec) for (AVar *y : x->forward) if (y && y->setters && y->setters->some_intersection(*av->setters))
-      acc.add(y);
-  for (AVar *x : acc.asvec) for (AVar *y : x->backward) if (y && y->setters && y->setters->some_intersection(*av->setters))
-      acc.add(y);
-  // mark them
+  for (int i = 0; i < acc.asvec.n; i++) {
+    AVar *x = acc.asvec.v[i];
+    for (AVar *y : x->forward) if (y && y->setters && y->setters->some_intersection(*av->setters)) acc.add(y);
+  }
+  for (int i = 0; i < acc.asvec.n; i++) {
+    AVar *x = acc.asvec.v[i];
+    for (AVar *y : x->backward) if (y && y->setters && y->setters->some_intersection(*av->setters)) acc.add(y);
+  }
+  // mark them (no additions here — plain iteration is safe)
   for (AVar *x : acc.asvec) if (x->setters) for (AVar *y : *x->setters) if (x == y->container) build_setter_mark(x, y);
 }
 
@@ -4078,9 +4094,15 @@ static bool back_reaching(AVar *av, Vec<AVar *> &reached) {
   if (reached.set_in(av)) return true;
   Accum<AVar *> seen;
   seen.add(av);
-  for (AVar *x : seen.asvec) for (AVar *r : x->backward) if (r) {
-    if (reached.set_in(r)) return true;
-    seen.add(r);
+  // Index-based: elements appended during iteration must be
+  // visited (full backward closure), and a range-for would hold
+  // pointers into a Vec that add() can reallocate. Survey B3.
+  for (int i = 0; i < seen.asvec.n; i++) {
+    AVar *x = seen.asvec.v[i];
+    for (AVar *r : x->backward) if (r) {
+      if (reached.set_in(r)) return true;
+      seen.add(r);
+    }
   }
   return false;
 }
@@ -4201,26 +4223,38 @@ static void clear_splits() {
     }
     log(LOG_SPLITTING, "split_for_setters_of_setters %d\n", analyze_again);
   }
-  // 4) split based on setters of type using marks
+  // 4) split based on setters of type using marks.
+  //
+  // Reworked (survey B4/P3): the previous shape looped over every
+  // type confluence, and per iteration seeded that confluence's
+  // marks, re-ran a GLOBAL collect + the full setter-split
+  // cascade, and never cleared the marks — so iteration k saw the
+  // union of marks from iterations 1..k-1 (an iteration-order
+  // dependence, issue-009/021 flavor), the stage was quadratic,
+  // and when nothing split the stale marks leaked into stage 5
+  // and the converged state. Marks are per-(AVar, CS) minimum
+  // distances from generation points; seeding all confluences
+  // jointly computes the same minima deterministically, and one
+  // collect + one split over the joint marking dominates every
+  // per-confluence run of the old loop.
   if (!analyze_again) {
-    for (AVar *av : confluences) {
-      Accum<AVar *> acc;
-      build_type_marks(av, acc);
-      Vec<AVar *> marked_confluences;
-      collect_cs_marked_confluences(marked_confluences);
-      Accum<AVar *> avs;
-      for (AVar *av : marked_confluences) (void)compute_setters(av, avs, AKIND_MARK);
+    Accum<AVar *> acc;
+    for (AVar *av : confluences) build_type_marks(av, acc);
+    Vec<AVar *> marked_confluences;
+    collect_cs_marked_confluences(marked_confluences);
+    Accum<AVar *> avs;
+    for (AVar *av : marked_confluences) (void)compute_setters(av, avs, AKIND_MARK);
+    ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    if (split_for_setters(avs, analyze_again)) analyze_again = 1;
+    if (analyze_again) record_fa_event(FAPassStage::MARK_SETTER, analyze_again, ess0, css0, viol0);
+    log(LOG_SPLITTING, "split_for_setters with marks %d\n", analyze_again);
+    if (!analyze_again) {
       ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-      if (split_for_setters(avs, analyze_again)) analyze_again = 1;
-      if (analyze_again) record_fa_event(FAPassStage::MARK_SETTER, analyze_again, ess0, css0, viol0);
-      log(LOG_SPLITTING, "split_for_setters with marks %d\n", analyze_again);
-      if (!analyze_again) {
-        ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-        analyze_again = split_for_setters_of_setters(confluences);
-        if (analyze_again) record_fa_event(FAPassStage::MARK_SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
-      }
-      log(LOG_SPLITTING, "split_for_setters_of_setters with marks %d\n", analyze_again);
+      analyze_again = split_for_setters_of_setters(confluences);
+      if (analyze_again) record_fa_event(FAPassStage::MARK_SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
     }
+    log(LOG_SPLITTING, "split_for_setters_of_setters with marks %d\n", analyze_again);
+    clear_marks(acc);
   }
   if (!analyze_again) {
     // 5) split AEdges(s) and EntrySet(s) for violations based on type using
