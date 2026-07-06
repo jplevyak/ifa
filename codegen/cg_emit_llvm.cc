@@ -200,6 +200,8 @@ struct EmitCtx {
   Map<PNode *, llvm::BasicBlock *> label_bb;
   llvm::Value *coro_id = nullptr;
   llvm::Value *coro_hdl = nullptr;
+  llvm::BasicBlock *coro_suspend_bb = nullptr;
+  llvm::BasicBlock *coro_destroy_bb = nullptr;
 };
 
 // emit_phy_moves/emit_phi_moves are called by emit_block_terminator but defined later.
@@ -1614,6 +1616,67 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
       args.push_back(val);
       param_tys.push_back(val->getType());
     }
+    if (strcmp(fn_name, "__pyc_net_wait_read__") == 0 || strcmp(fn_name, "__pyc_net_wait_write__") == 0) {
+      if (args.size() < 1) return false;
+      llvm::Value *fd = args[0];
+      
+      llvm::Type *void_ty = llvm::Type::getVoidTy(*TheContext);
+      std::vector<llvm::Type*> io_tys = {
+        llvm::PointerType::getUnqual(*TheContext),
+        fd->getType(),
+        llvm::Type::getInt32Ty(*TheContext)
+      };
+      llvm::Function *reg_fn = get_runtime_helper("_CG_event_loop_register_io", void_ty, io_tys);
+      
+      int event = (strcmp(fn_name, "__pyc_net_wait_read__") == 0) ? 1 : 4;
+      Builder->CreateCall(reg_fn, {ctx.coro_hdl, fd, Builder->getInt32(event)});
+
+      llvm::Function *save_fn = llvm::Intrinsic::getOrInsertDeclaration(TheModule.get(), llvm::Intrinsic::coro_save);
+        llvm::Value *save_res = Builder->CreateCall(save_fn, {ctx.coro_hdl});
+        llvm::Function *suspend_fn = llvm::Intrinsic::getOrInsertDeclaration(TheModule.get(), llvm::Intrinsic::coro_suspend);
+        llvm::Value *suspend_res = Builder->CreateCall(suspend_fn, {save_res, Builder->getFalse()});
+
+      llvm::BasicBlock *suspend_ret_bb = ctx.coro_suspend_bb;
+      if (!suspend_ret_bb) {
+        suspend_ret_bb = llvm::BasicBlock::Create(*TheContext, "suspend_ret", ctx.llvm_fn);
+        ctx.coro_suspend_bb = suspend_ret_bb;
+        llvm::BasicBlock *old = Builder->GetInsertBlock();
+        Builder->SetInsertPoint(suspend_ret_bb);
+        llvm::Function *coro_end_fn = llvm::Intrinsic::getOrInsertDeclaration(TheModule.get(), llvm::Intrinsic::coro_end);
+        Builder->CreateCall(coro_end_fn, {llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(*TheContext)), Builder->getFalse(), llvm::ConstantTokenNone::get(*TheContext)});
+        Builder->CreateRet(ctx.coro_hdl);
+        Builder->SetInsertPoint(old);
+      }
+      
+      llvm::BasicBlock *destroy_bb = ctx.coro_destroy_bb;
+      if (!destroy_bb) {
+        destroy_bb = llvm::BasicBlock::Create(*TheContext, "destroy", ctx.llvm_fn);
+        ctx.coro_destroy_bb = destroy_bb;
+        llvm::BasicBlock *old = Builder->GetInsertBlock();
+        Builder->SetInsertPoint(destroy_bb);
+        llvm::Function *coro_free_fn = llvm::Intrinsic::getOrInsertDeclaration(TheModule.get(), llvm::Intrinsic::coro_free);
+        llvm::Value *mem = Builder->CreateCall(coro_free_fn, {ctx.coro_id, ctx.coro_hdl});
+        llvm::Function *gc_free = get_runtime_helper("GC_free", llvm::Type::getVoidTy(*TheContext), {llvm::PointerType::getUnqual(*TheContext)});
+        Builder->CreateCall(gc_free, {mem});
+        Builder->CreateBr(suspend_ret_bb);
+        Builder->SetInsertPoint(old);
+      }
+      
+      llvm::BasicBlock *resume_bb = llvm::BasicBlock::Create(*TheContext, "resume", ctx.llvm_fn);
+      
+      llvm::SwitchInst *sw = Builder->CreateSwitch(suspend_res, suspend_ret_bb, 2);
+      sw->addCase(Builder->getInt8(0), resume_bb);
+      sw->addCase(Builder->getInt8(1), destroy_bb);
+      
+      Builder->SetInsertPoint(resume_bb);
+
+      if (pn->lvals.n > 0 && pn->lvals.v[0] && !ret_ty->isVoidTy()) {
+        llvm::Value *zero = llvm::ConstantInt::get(ret_ty, 0);
+        put_result(ctx, pn->lvals.v[0], zero);
+      }
+      return true;
+    }
+
     llvm::Function *fn = get_runtime_helper(fn_name, ret_ty, param_tys);
     llvm::Value *res = Builder->CreateCall(fn, args);
     if (pn->lvals.n > 0 && pn->lvals.v[0] && !ret_ty->isVoidTy()) {
@@ -1873,21 +1936,44 @@ class LLVMEmitter : public VirtualCGEmitter {
   bool emit_send_any_prim(PNode *pn) override {
     if (!pn || !pn->prim) return false;
     if (pn->prim->index == P_prim_await) {
+
       if (ctx.coro_hdl) {
+        llvm::Function *save_fn = llvm::Intrinsic::getOrInsertDeclaration(TheModule.get(), llvm::Intrinsic::coro_save);
+        llvm::Value *save_res = Builder->CreateCall(save_fn, {ctx.coro_hdl});
         llvm::Function *suspend_fn = llvm::Intrinsic::getOrInsertDeclaration(TheModule.get(), llvm::Intrinsic::coro_suspend);
-        llvm::Value *suspend_res = Builder->CreateCall(suspend_fn, {
-            llvm::ConstantTokenNone::get(*TheContext),
-            Builder->getFalse()
-        });
+        llvm::Value *suspend_res = Builder->CreateCall(suspend_fn, {save_res, Builder->getFalse()});
         
-        llvm::BasicBlock *suspend_ret_bb = llvm::BasicBlock::Create(*TheContext, "suspend_ret", ctx.llvm_fn);
+        llvm::BasicBlock *suspend_ret_bb = ctx.coro_suspend_bb;
+        if (!suspend_ret_bb) {
+          suspend_ret_bb = llvm::BasicBlock::Create(*TheContext, "suspend_ret", ctx.llvm_fn);
+          ctx.coro_suspend_bb = suspend_ret_bb;
+          llvm::BasicBlock *old = Builder->GetInsertBlock();
+          Builder->SetInsertPoint(suspend_ret_bb);
+          llvm::Function *coro_end_fn = llvm::Intrinsic::getOrInsertDeclaration(TheModule.get(), llvm::Intrinsic::coro_end);
+          Builder->CreateCall(coro_end_fn, {llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(*TheContext)), Builder->getFalse(), llvm::ConstantTokenNone::get(*TheContext)});
+          Builder->CreateRet(ctx.coro_hdl);
+          Builder->SetInsertPoint(old);
+        }
+        
+        llvm::BasicBlock *destroy_bb = ctx.coro_destroy_bb;
+        if (!destroy_bb) {
+          destroy_bb = llvm::BasicBlock::Create(*TheContext, "destroy", ctx.llvm_fn);
+          ctx.coro_destroy_bb = destroy_bb;
+          llvm::BasicBlock *old = Builder->GetInsertBlock();
+          Builder->SetInsertPoint(destroy_bb);
+          llvm::Function *coro_free_fn = llvm::Intrinsic::getOrInsertDeclaration(TheModule.get(), llvm::Intrinsic::coro_free);
+          llvm::Value *mem = Builder->CreateCall(coro_free_fn, {ctx.coro_id, ctx.coro_hdl});
+          llvm::Function *gc_free = get_runtime_helper("GC_free", llvm::Type::getVoidTy(*TheContext), {llvm::PointerType::getUnqual(*TheContext)});
+          Builder->CreateCall(gc_free, {mem});
+        Builder->CreateBr(suspend_ret_bb);
+          Builder->SetInsertPoint(old);
+        }
+        
         llvm::BasicBlock *resume_bb = llvm::BasicBlock::Create(*TheContext, "resume", ctx.llvm_fn);
         
-        llvm::SwitchInst *sw = Builder->CreateSwitch(suspend_res, suspend_ret_bb, 1);
+        llvm::SwitchInst *sw = Builder->CreateSwitch(suspend_res, suspend_ret_bb, 2);
         sw->addCase(Builder->getInt8(0), resume_bb);
-        
-        Builder->SetInsertPoint(suspend_ret_bb);
-        Builder->CreateRet(ctx.coro_hdl);
+        sw->addCase(Builder->getInt8(1), destroy_bb);
         
         Builder->SetInsertPoint(resume_bb);
       }

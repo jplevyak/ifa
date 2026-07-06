@@ -183,6 +183,14 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
 
   if (cg_get_llvm(main_fun)) {  // If IF1 main function was generated
     Builder->CreateCall(cg_get_llvm(main_fun));
+    
+    // Inject a call to _CG_event_loop_run(NULL) at the end of main
+    llvm::Function *loop_run_fn = TheModule->getFunction("_CG_event_loop_run");
+    if (!loop_run_fn) {
+        llvm::FunctionType *loop_run_ty = llvm::FunctionType::get(llvm::Type::getVoidTy(*TheContext), {llvm::PointerType::getUnqual(*TheContext)}, false);
+        loop_run_fn = llvm::Function::Create(loop_run_ty, llvm::Function::ExternalLinkage, "_CG_event_loop_run", TheModule.get());
+    }
+    Builder->CreateCall(loop_run_fn, {llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(*TheContext))});
   } else {
     // This case should ideally not happen if main_fun is valid and processed
     DEBUG_LOG("IF1 main function '%s' not found or generated in LLVM module\n", main_fun->sym->name);

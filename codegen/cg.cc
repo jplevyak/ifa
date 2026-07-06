@@ -439,7 +439,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
     case P_prim_await: {
       if (virtual_cg_is_const_folded_send(n)) return 1;
       fputs("  ", fp);
-      if (n->lvals.n) {
+      if (n->lvals.n && cg_get_string(n->lvals[0]) && strcmp(cg_get_string(n->lvals[0]), "(null)") != 0) {
         assert(n->lvals.n == 1);
         fprintf(fp, "%s = co_await %s;\n", cg_get_string(n->lvals[0]), cg_get_string(n->rvals[o]));
       } else {
@@ -1061,18 +1061,30 @@ static void write_c(FILE *fp, FA *fa, Fun *f, Vec<Var *> *globals = 0) {
     }
   }
   defs.qsort(lt_type_id);
-  Sym *last_t = (Sym *)-1;
-  for (Var *v : defs) {
-    if (v->type != last_t) {
-      if (last_t != (Sym *)-1) fprintf(fp, ";\n");
-      fputs("  ", fp);
-      write_c_type(fp, v);
-      fprintf(fp, " %s", cg_get_string(v));
-    } else
-      fprintf(fp, ", %s", cg_get_string(v));
-    last_t = v->type;
+
+  Vec<Var*> coro_vars;
+  Vec<PNode*> nodes;
+  f->collect_PNodes(nodes);
+  for (PNode *n : nodes) {
+    if (n->code->kind == Code_SEND && n->lvals.n == 1) {
+      if (n->prim && n->prim->index == P_prim_await) continue;
+      Fun *target = get_target_fun_core(n, f);
+      if (target && target->sym->is_async) {
+         coro_vars.set_add(n->lvals[0]);
+      }
+    }
   }
-  if (defs.n) fprintf(fp, ";\n\n");
+
+  for (Var *v : defs) {
+    fputs("  ", fp);
+    if (coro_vars.set_in(v)) {
+      fputs("_CG_Coroutine", fp);
+    } else {
+      write_c_type(fp, v);
+    }
+    fprintf(fp, " %s;\n", cg_get_string(v));
+  }
+  if (defs.n) fprintf(fp, "\n");
   if (globals)
     for (Var *v : *globals) if (!v->sym->is_fun && v->sym->fun && !v->sym->type_kind && cg_get_string(v))
         fprintf(fp, "  %s = %s;\n", cg_get_string(v), cg_get_string(v->sym->fun));

@@ -214,6 +214,9 @@ static void mark_initial_dead_and_alive(FA *fa, int init = 0) {
     }
     for (PNode *p : f->fa_all_PNodes) {
       p->live = init;
+      if (p->code && p->code->kind == Code_SEND && p->prim && p->prim->index == P_prim_await) {
+        p->live = 1;
+      }
       if (p->code && p->code->kind == Code_SEND && p->prim && p->prim->index == P_prim_primitive) {
         cchar *name = p->code->rvals[1]->name;
         RegisteredPrim *rp = prim_get(name);
@@ -327,6 +330,9 @@ mark_initial_dead_and_alive(FA *fa, int init = 0) {
     }
     for (PNode *p : f->fa_all_PNodes) {
       p->live = init;
+      if (p->code && p->code->kind == Code_SEND && p->prim && p->prim->index == P_prim_await) {
+        p->live = 1;
+      }
       if (p->code && p->code->kind == Code_SEND && p->prim && p->prim->index == P_prim_primitive) {
         cchar *name = p->code->rvals[1]->name;
         RegisteredPrim *rp = pdb->fa->primitive_transfer_functions.get(name);

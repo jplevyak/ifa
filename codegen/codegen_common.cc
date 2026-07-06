@@ -386,7 +386,7 @@ void assign_type_cg_strings_pass2(Vec<Sym *> &allsyms) {
 
 bool virtual_cg_is_const_folded_send(PNode *pn) {
   if (!pn || !pn->code || pn->code->kind != Code_SEND) return false;
-  if (!pn->prim || pn->prim->nonfunctional) return false;
+  if (!pn->prim || (pn->prim->nonfunctional && pn->prim->index != P_prim_await)) return false;
   if (pn->lvals.n != 1) return false;
   Var *lv = pn->lvals.v[0];
   if (!lv) return false;
