@@ -1,11 +1,12 @@
 # Issue 007: post-type splitter stages not triggered by any shape
 
-**Status:** partial — `setter` reachable via iterator shapes
-(Phase 09 C 7.7); `violation` reachable via `nested_iterator`
-(restored June 2026 after issue 008 closed as "could not
-reproduce"). Remaining gaps: `mark-type`, `setter-of-setter`,
-`mark-setter`, `mark-setter-of-setter` (4 of 7 splitter stages
-uncovered, down from 5 of 7 when filed).
+**Status:** partial — `type`, `setter`, `violation`, **`mark-type`
+(July 2026)** and **`mark-setter` (July 2026)** now covered.
+Remaining gaps: `setter-of-setter`, `mark-setter-of-setter`
+(2 of 7 splitter stages uncovered, down from 4). Reaching
+`mark-setter` required fixing a real bug — a shared-`Vec`
+aliasing that destroyed stage-4 mark seeding — see the July 2026
+follow-up at the end of this file.
 **Affects:** `ifa/analysis/fa.cc:split_ess_for_mark_type`,
 `split_for_setters_of_setters`, and the mark-based variants;
 `IFA.md` splitter section.
@@ -612,3 +613,126 @@ suite as the structural-evidence fixture — if anyone ever
 adjusts the qualifier or adds a frontend primitive that
 produces abstract-type CSes in flow, this fixture's golden
 should shift.
+
+## Follow-up — July 2026: two more stages reached (`mark-type`, `mark-setter`) + an aliasing bug that had blocked `mark-setter`
+
+Two things landed here. First, the standing structural claim from
+the June follow-up ("shape-language-expressible programs can't
+put a marked-confluence at an ES formal / can't reach the mark
+stages") turned out to be false — the missing ingredient wasn't a
+frontend primitive, it was **distance skew**. Second, chasing a
+`mark-setter` witness surfaced a genuine bug that meant no shape,
+however constructed, could ever have reached stage 4.
+
+### The insight: distance skew, not type divergence
+
+Every prior attempt drove the *type* polymorphism into the AVar
+we hoped would become a marked-confluence, which just handed
+stage 1 (type) a confluence to split on first. But
+`different_marked_args` doesn't compare types — it compares, per
+mark key, whether the recorded distance *continues* the basis's
+distance at the expected offset. So the **same** mark key (one
+type) arriving at one AVar along two paths of **different flow
+length** is a marked-confluence, with no type difference there at
+all — invisible to stages 1 and 3, which is exactly what forces
+control down to the mark stages.
+
+Concretely (`ir_shapes.cc::mark_distance_skew`,
+`tests/synthetic/mark_distance_skew.synth`):
+
+- The only *type* confluence lives at a CS-contour field
+  (`t.data` gets `int32` + `float32`). Stage 1 skips CS contours;
+  it also seeds stage 2's mark closure with those two keys.
+- The `int32` constant *also* flows to a monomorphic `sink()`
+  formal along two paths — directly, and through a `relay()`
+  hop. `sink`'s formal is `int32`-only (stage 1 sees nothing),
+  but its two call edges carry the `int32` key at different mark
+  distances → `split_with_type_marks` splits `sink`'s ES.
+  Result: `splits[mark-type]: 1`.
+
+`mark_setter_skew.synth` reuses the trick one level down: pass 1
+`mark-type`-splits a *creator* function `make_t(v)`, giving the
+single `CS_T` two creation contours; pass 2's stage-4 mark-setter
+sees `t.data`'s two contours carry the key at skewed distances
+and `split_css` splits `CS_T` → `splits[mark-setter]: 1`.
+
+### The bug: stage 4 seeded its marks from a clobbered `Vec`
+
+`split_for_setters_of_setters(Vec<AVar *> &confluences)` took the
+caller's *type-confluences* vector by reference purely as
+scratch, and its very first action —
+`collect_cs_setter_confluences(confluences)` — `clear()`s and
+refills it with a *different* set (CS setter confluences). So
+after stage 3b ran, `extend_analysis`'s local `confluences` no
+longer held the type confluences. Stage 4 then did:
+
+```cpp
+for (AVar *av : confluences) build_type_marks(av, acc);  // wrong/empty set
+```
+
+i.e. it seeded the mark closure from whatever stage 3b happened to
+leave behind (usually empty). **Stage 4 (`mark-setter`,
+`mark-setter-of-setter`) was un-reachable for any program**, not
+just the synthetic ones — a plausible chunk of why 15+ prior
+`mark-setter` attempts all failed regardless of shape. Fix: give
+`split_for_setters_of_setters` its own local `Vec` and drop the
+parameter (it never used the caller's contents as input). Both
+call sites updated. All pre-existing fa-converge goldens are
+byte-identical after the fix; only the two new fixtures exercise
+the newly-reachable path.
+
+### Stage tally now
+
+| Stage                     | Reached? | Witness                                  |
+|---------------------------|----------|------------------------------------------|
+| type                      | ✓        | broad                                    |
+| **mark-type**             | ✓ (Jul)  | `mark_distance_skew`                     |
+| setter                    | ✓        | `vector_iterator`, `iterator_copy`, …    |
+| **setter-of-setter**      | ✗        | none                                     |
+| **mark-setter**           | ✓ (Jul)  | `mark_setter_skew`                       |
+| **mark-setter-of-setter** | ✗        | none                                     |
+| violation                 | ✓        | `nested_iterator`                        |
+
+5 of 7 reached (was 3 of 7).
+
+### Why `setter-of-setter` / `mark-setter-of-setter` still resist
+
+Two compounding walls, both now understood precisely:
+
+1. **Cascade ordering is self-defeating.** `extend_analysis`
+   returns as soon as any stage sets `analyze_again`, restarting
+   the whole pass. `setter-of-setter` (3b) only runs when the
+   plain `setter` stage (3a) found nothing *in the same pass*.
+   But a setter-of-setter needs the outer CS already split into
+   ≥2 differentiated creation contours — and producing that split
+   is itself a stage that ends the pass before 3b can build on
+   it. So 3b can only fire on a CS whose contours were
+   differentiated in a *prior* pass yet whose first-order setters
+   are *identical* while a *second-order* (nested, through an
+   ivar's ivar) setter view diverges.
+
+2. **The confluence lives at the wrong granularity.**
+   `collect_cs_setter_confluences` keys off *ivar-level* setter
+   confluences (an ivar whose setter set differs from a forward
+   neighbor's). A first-order write asymmetry on the outer def
+   (tried: `o1.flag = …`, `o2.flag` never) never registers as an
+   ivar confluence, and a reader asymmetry on `o.inner` attaches
+   to the *shared* inner ivar (the outer CS isn't split yet), so
+   `split_css` sees both outer defs as setter-equal. The genuine
+   trigger is a setter chain whose intermediate hop is uniform
+   but whose setters-of-setters diverge — the shape the June note
+   predicted, still un-synthesized.
+
+These two are left open. The distance-skew mechanism is the
+right tool for the *mark* variant of them, but only once a
+non-mark setter-of-setter shape exists to graft it onto.
+
+### Fixtures added
+
+- `tests/synthetic/mark_distance_skew.synth` — `splits[mark-type]: 1`.
+- `tests/synthetic/mark_setter_skew.synth` — `splits[mark-type]: 1`
+  then `splits[mark-setter]: 1` (2-pass).
+
+Both carry full goldens for every pipeline phase, so a future
+change to the splitter cascade or the mark predicate will shift a
+golden and flag the regression.

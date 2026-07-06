@@ -822,35 +822,49 @@ class CBackendEmitter : public VirtualCGEmitter {
       // through `((recv_type)(void*)recv)->eN`.
       Vec<Fun *> *fns = f->calls.get(pn);
       if (fns && fns->n > 1 && pn->rvals.n) {
-        // ifa/issues/030 classtag dispatch. Every user-class
-        // instance carries `__pyc_tag` at offset 0 (see struct
-        // emission / P_prim_new). Group the candidate Funs by
-        // receiver CLASS; emit an if/else chain on the tag, and in
-        // each class branch call through THAT class's own method
-        // slot -- slot indexes differ per class layout, and the
-        // per-creation-site clone selection is handled by the
-        // method pointer __new__ stored in the instance. The
-        // dispatch operand is the call-site rval at the receiver
-        // formal's position (kept live by dead.cc's
-        // polymorphic-call rule).
-        cchar *recv_str = nullptr;
-        Vec<Sym *> classes;  // receiver concrete type per branch
-        Vec<int> slots;      // that class's method-slot index
+        // ifa/issues/030 dispatch. Candidates are partitioned into
+        // two kinds and dispatched in ONE if/else chain over a
+        // single operand:
+        //  - CLASSTAG candidates (method calls / carrier-class
+        //    __call__ clones): the receiver instance carries
+        //    `__pyc_tag` at offset 0; each class branch casts to
+        //    THAT class's layout and calls through its own stored
+        //    method slot (per-creation-site clone selection rides
+        //    the stored pointer).
+        //  - PLAIN-FUNCTION candidates (bare callable values,
+        //    issue 007's shape): raw function values are function
+        //    addresses; dispatch by value identity with a direct
+        //    call. (Address compares run after tag compares;
+        //    dereferencing a code address for the tag read is
+        //    harmless -- mapped readable, never equal to a tag
+        //    object's address.)
+        auto scalar_ct = [](cchar *t) {
+          return t && (!strncmp(t, "_CG_int", 7) || !strncmp(t, "_CG_uint", 8) || !strncmp(t, "_CG_float", 9) ||
+                       !strcmp(t, "_CG_bool"));
+        };
+        cchar *recv_str = nullptr;  // shared dispatch operand
+        if (!pn->rvals[0]->sym->is_symbol && cg_get_string(pn->rvals[0])) recv_str = cg_get_string(pn->rvals[0]);
+        Vec<Sym *> classes;  // classtag partition, grouped by class
+        Vec<int> slots;      //   ... that class's method-slot index
+        Vec<Fun *> plains;   // plain-function partition
         bool ok = true;
         for (int fi = 0; fi < fns->n && ok; fi++) {
           Fun *fun_val = (*fns)[fi];
-          if (!fun_val || !fun_val->sym || !fun_val->sym->name) { ok = false; break; }
+          if (!fun_val || !fun_val->sym) { ok = false; break; }
+          // Unnamed candidates (lambdas) can't take the classtag
+          // route (slot lookup is by method name) -- plain route only.
           cchar *method_name = fun_val->sym->name;
-          // Find the candidate's receiver type: the first formal
-          // whose concrete type carries a live field named like the
-          // method. Deliberately does NOT require the formal to be
-          // live -- leaf methods that ignore self still need a
-          // dispatch branch (the *choice* depends on the receiver).
+          // Classtag route: find the candidate's receiver type --
+          // the first formal whose concrete type carries a live
+          // field named like the method. Deliberately does NOT
+          // require the formal to be live: leaf methods that ignore
+          // self still need a dispatch branch (the CHOICE depends
+          // on the receiver).
           Sym *rt = nullptr;
           int slot = -1;
           MPosition argp;
           argp.push(1);
-          for (int pi = 0; pi < fun_val->sym->has.n + 2 && !rt; pi++) {
+          for (int pi = 0; method_name && pi < fun_val->sym->has.n + 2 && !rt; pi++) {
             MPosition *cp = cannonicalize_mposition(argp);
             argp.inc();
             Var *argv = fun_val->args.get(cp);
@@ -861,7 +875,8 @@ class CBackendEmitter : public VirtualCGEmitter {
                 rt = csym;
                 slot = k;
                 // The receiver value lives at this formal's
-                // call-site position.
+                // call-site position (used when rvals[0] is the
+                // method symbol rather than the callable value).
                 int ridx = (int)Position2int(cp->pos[0]) - 1;
                 if (!recv_str && ridx >= 0 && ridx < pn->rvals.n && pn->rvals[ridx] &&
                     cg_get_string(pn->rvals[ridx]))
@@ -870,29 +885,45 @@ class CBackendEmitter : public VirtualCGEmitter {
               }
             }
           }
-          if (!rt || !rt->name || rt->is_system_type || !cg_get_string(rt)) {
-            ok = false;
-            break;
+          if (rt && cg_has_classtag(rt) && cg_get_string(rt)) {
+            // Merge into a per-class-name branch (clones of one
+            // class share a tag; the stored slot pointer
+            // disambiguates).
+            bool found = false;
+            for (int ci = 0; ci < classes.n; ci++)
+              if (!strcmp(classes[ci]->name, rt->name)) { found = true; break; }
+            if (!found) {
+              classes.add(rt);
+              slots.add(slot);
+            }
+            continue;
           }
-          // Merge into a per-class-name branch (clones of one class
-          // share a tag; the stored slot pointer disambiguates).
-          bool found = false;
-          for (int ci = 0; ci < classes.n; ci++) {
-            if (classes[ci]->name == rt->name || !strcmp(classes[ci]->name, rt->name)) {
-              found = true;
-              break;
+          // Plain-function route: needs the fun's address and every
+          // live formal mapping to an in-range call-site rval of a
+          // castable C type.
+          if (cg_get_string(fun_val) && !pn->rvals[0]->sym->is_symbol) {
+            bool compat = true;
+            for (MPosition *p : fun_val->positional_arg_positions) {
+              Var *av = fun_val->args.get(p);
+              if (!av->live) continue;
+              int i = (int)Position2int(p->pos[0]) - 1;
+              if (i < 0 || i >= pn->rvals.n || !cg_get_string(pn->rvals[i])) { compat = false; break; }
+              cchar *ft = c_type(av), *at = c_type(pn->rvals[i]);
+              if (strcmp(ft, at) && scalar_ct(ft) != scalar_ct(at)) { compat = false; break; }
+            }
+            if (compat) {
+              plains.add(fun_val);
+              continue;
             }
           }
-          if (!found) {
-            classes.add(rt);
-            slots.add(slot);
-          }
+          ok = false;
         }
-        if (ok && classes.n && recv_str) {
+        if (ok && recv_str && (classes.n || plains.n)) {
           cchar *lhs = (pn->lvals.n && cg_get_string(pn->lvals[0])) ? cg_get_string(pn->lvals[0]) : nullptr;
           cchar *ret_type_str = (pn->lvals.n && pn->lvals[0]->type) ? c_type(pn->lvals[0]) : "void*";
-          for (int ci = 0; ci < classes.n; ci++) {
-            fprintf(fp, "  %sif ((*(_CG_TypeObject**)(void*)%s) == &_CG_type_%s) {\n", ci ? "else " : "", recv_str,
+          int nb = 0;
+          for (int ci = 0; ci < classes.n; ci++, nb++) {
+            fprintf(fp, "  %sif ((*(_CG_TypeObject**)(void*)%s) == &_CG_type_%s) {\n", nb ? "else " : "", recv_str,
                     classes[ci]->name);
             fputs("    ", fp);
             if (lhs) fprintf(fp, "%s = ", lhs);
@@ -900,7 +931,30 @@ class CBackendEmitter : public VirtualCGEmitter {
                     cg_get_string(classes[ci]), recv_str, slots[ci], recv_str);
             fputs("  }\n", fp);
           }
-          fputs("  else { assert(!\"runtime error: polymorphic dispatch: unknown classtag\"); }\n", fp);
+          for (int fi = 0; fi < plains.n; fi++, nb++) {
+            Fun *fv = plains[fi];
+            fprintf(fp, "  %sif ((void*)%s == (void*)&%s) {\n", nb ? "else " : "", recv_str, cg_get_string(fv));
+            fputs("    ", fp);
+            if (lhs) fprintf(fp, "%s = ", lhs);
+            fprintf(fp, "%s(", cg_get_string(fv));
+            int wrote_one = 0;
+            for (MPosition *p : fv->positional_arg_positions) {
+              Var *av = fv->args.get(p);
+              if (!av->live) continue;
+              int i = (int)Position2int(p->pos[0]) - 1;
+              cchar *ft = c_type(av), *at = c_type(pn->rvals[i]);
+              if (wrote_one) fputs(", ", fp);
+              wrote_one = 1;
+              if (!strcmp(ft, at))
+                fputs(cg_get_string(pn->rvals[i]), fp);
+              else if (scalar_ct(ft))
+                fprintf(fp, "(%s)%s", ft, cg_get_string(pn->rvals[i]));
+              else
+                fprintf(fp, "(%s)(void*)%s", ft, cg_get_string(pn->rvals[i]));
+            }
+            fputs(");\n  }\n", fp);
+          }
+          fputs("  else { assert(!\"runtime error: polymorphic dispatch: no branch matched\"); }\n", fp);
           return;
         }
       }

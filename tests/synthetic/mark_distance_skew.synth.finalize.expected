@@ -1,0 +1,76 @@
+;; phase: finalize
+
+(prim-bound
+  in %relay:
+    send[1] = prim_reply
+  in %sink:
+    send[1] = prim_reply
+  in %top:
+    send[1] = prim_new
+    send[2] = prim_setter
+    send[3] = prim_setter
+    send[4] = (none)
+    send[5] = (none)
+    send[6] = (none)
+    send[7] = prim_reply
+)
+
+(live
+  syms:     46 live, 0 dead
+  closures: 3 live (of 3 total)
+)
+
+;; full state:
+;; types
+(type %T :kind RECORD :has (%data))
+
+;; syms
+(sym %data :in %T)
+(sym %x :is-local :nesting-depth 1)
+(sym %t0)
+(sym %t1)
+(sym %y :is-local :nesting-depth 1)
+(sym %t2)
+(sym %t3)
+(sym %t4)
+(sym %t5)
+(sym %t6 :is-local :nesting-depth 1)
+(sym %c0 :immediate (int32 7))
+(sym %t7 :is-local :nesting-depth 1)
+(sym %c1 :immediate (float32 3.5))
+(sym %t8 :is-local :nesting-depth 1)
+(sym %t9 :is-local :nesting-depth 1)
+(sym %t10 :is-local :nesting-depth 1)
+(sym %t11 :is-local :nesting-depth 1)
+
+;; funs
+(fun %relay
+  :args (#relay %x)
+  :rets (%t1)
+  :cont %t0
+  :body
+  (move %x %t1)
+  (send @primitive @reply %t0 %t1)
+)
+(fun %sink
+  :args (#sink %y)
+  :rets (%t3)
+  :cont %t2
+  :body
+  (move %y %t3)
+  (send @primitive @reply %t2 %t3)
+)
+(fun %top
+  :args (#top)
+  :rets (%t5)
+  :cont %t4
+  :body
+  (send @primitive @new %T => %t6)
+  (send @operator %t6 @setter #data %c0 => %t7)
+  (send @operator %t6 @setter #data %c1 => %t8)
+  (send %sink %c0 => %t9)
+  (send %relay %c0 => %t10)
+  (send %sink %t10 => %t11)
+  (send @primitive @reply %t4 %t5)
+)
+

@@ -1,0 +1,18 @@
+;; mark_distance_skew.synth — mark-type candidate via distance
+;; skew (issue 007, July 2026 round).
+;;
+;; Prior attempts all fed the polymorphism into an ES formal,
+;; which stage 1 (type) splits first. This shape decouples the
+;; two ingredients mark-type needs:
+;;   1. the SEED type confluence lives only at a CS-contour
+;;      field (t.data gets int32 + float64) — stage 1 skips it;
+;;   2. the MARKED confluence lives at sink()'s monomorphic
+;;      int32 formal, fed by the same int constant along two
+;;      paths of different flow length (direct vs through
+;;      relay()). different_marked_args is distance-sensitive,
+;;      so the long-path edge's key set diverges from the
+;;      short-path edge's at the formal.
+;;
+;; Golden documents what actually fires.
+
+shape: mark_distance_skew

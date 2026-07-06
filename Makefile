@@ -159,7 +159,7 @@ endif
 
 CLEAN_FILES += *.cat tests/*.out tests/*.c frontend/*.d_parser.cc frontend/*.d_parser.h \
 	$(MAKE_CAST_CODE) \
-	$(PLIB_OBJS:.o=.d) $(LIB_OBJS:.o=.d) $(IFA_OBJS:.o=.d)
+	$(PLIB_OBJS:.o=.d) $(LIB_OBJS:.o=.d) $(IFA_OBJS:.o=.d) $(IFA_TEST_OBJS:.o=.d)
 
 DEPEND_SRCS = $(IFA_DEPEND_SRCS) $(LIB_SRCS)
 
@@ -240,7 +240,7 @@ clean:
 realclean: clean
 	\rm -f *.a *.orig *.rej
 
--include $(PLIB_OBJS:.o=.d) $(LIB_OBJS:.o=.d) $(IFA_OBJS:.o=.d)
+-include $(PLIB_OBJS:.o=.d) $(LIB_OBJS:.o=.d) $(IFA_OBJS:.o=.d) $(IFA_TEST_OBJS:.o=.d)
 
 # Test target for LLVM backend.
 #

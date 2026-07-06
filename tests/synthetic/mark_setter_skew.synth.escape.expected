@@ -1,0 +1,9 @@
+;; phase: escape
+
+(summary fa_rc=-1 funs=3)
+
+(escape
+  fun __main__ ess=1 escape-sig=[N]
+  fun make_t ess=2 escape-sig=[N N]
+  fun relay2 ess=1 escape-sig=[N N]
+)

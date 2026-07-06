@@ -1,0 +1,35 @@
+;; phase: patterns
+
+(mtype @any
+  pos["x"]: %relay
+  pos["y"]: %sink
+  pos[2]: %relay %sink
+)
+
+(mtype %relay
+  pos["relay"]: %relay
+  pos[1]: %relay
+)
+
+(mtype #relay
+  pos[1]: %relay
+)
+
+(mtype %sink
+  pos["sink"]: %sink
+  pos[1]: %sink
+)
+
+(mtype #sink
+  pos[1]: %sink
+)
+
+(mtype %top
+  pos["top"]: %top
+  pos[1]: %top
+)
+
+(mtype #top
+  pos[1]: %top
+)
+

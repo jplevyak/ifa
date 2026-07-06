@@ -264,6 +264,38 @@ static AType *apply_restrict_pred(AVar *v, AType *t) {
   return type_cannonicalize(r);
 }
 
+// Shared out-change propagation tail for update_in /
+// flow_var_type_permit / flow_var_permit_pred (survey S1):
+// enqueue dependent sends, resume any IF blocked on this AVar
+// (add_pnode_constraints stops its CFG walk at a bottom-typed
+// condition and relies on this re-enqueue), and push the new
+// `out` forward. The permit variants historically re-implemented
+// this tail and omitted the IF resume.
+static void propagate_out_change(AVar *v) {
+  for (AVar *vv : v->arg_of_send.asvec) {
+    if (!vv->in_send_worklist) {
+      vv->in_send_worklist = 1;
+      fa->send_worklist.enqueue(vv);
+    }
+  }
+  if (v->is_if_arg) {
+    // A global AVar can be an if-arg too (e.g. the `True`
+    // constant conditioning a top-level `while True:` —
+    // issues/005). Its contour is the distinguished
+    // `fa->global_es` (see GLOBAL_CONTOUR in fa.h), a real
+    // EntrySet whose `in_es_worklist` is permanently 1, so
+    // this deref is safe and the enqueue self-suppresses —
+    // sound, since the global contour has no per-ES state
+    // to re-analyze.
+    EntrySet *es = (EntrySet *)v->contour;
+    if (!es->in_es_worklist) {
+      es->in_es_worklist = 1;
+      fa->es_worklist.enqueue(es);
+    }
+  }
+  for (AVar *vv : v->forward) if (vv) update_in(vv, v->out);
+}
+
 void update_in(AVar *v, AType *t) {
   AType *tt = type_union(v->in, t);
   if (tt != v->in) {
@@ -274,28 +306,7 @@ void update_in(AVar *v, AType *t) {
     if (tt != v->out) {
       assert(tt != fa->type_world.top_type);
       v->out = tt;
-      for (AVar *vv : v->arg_of_send.asvec) {
-        if (!vv->in_send_worklist) {
-          vv->in_send_worklist = 1;
-          fa->send_worklist.enqueue(vv);
-        }
-      }
-      if (v->is_if_arg) {
-        // A global AVar can be an if-arg too (e.g. the `True`
-        // constant conditioning a top-level `while True:` —
-        // issues/005). Its contour is the distinguished
-        // `fa->global_es` (see GLOBAL_CONTOUR in fa.h), a real
-        // EntrySet whose `in_es_worklist` is permanently 1, so
-        // this deref is safe and the enqueue self-suppresses —
-        // sound, since the global contour has no per-ES state
-        // to re-analyze.
-        EntrySet *es = (EntrySet *)v->contour;
-        if (!es->in_es_worklist) {
-          es->in_es_worklist = 1;
-          fa->es_worklist.enqueue(es);
-        }
-      }
-      for (AVar *vv : v->forward) if (vv) update_in(vv, tt);
+      propagate_out_change(v);
     }
   }
 }
@@ -409,19 +420,26 @@ Sym *coerce_num(Sym *a, Sym *b) {
     b = a;
     a = t;
   }
+  // Survey B2: these lookups used to index the precision tables by
+  // num_kind (the KIND enum, 0..4) instead of num_index, which made
+  // every int operand read a precision of 8 or 16 -- so the
+  // "does the int fit the float?" test always said yes, the widening
+  // branches were dead, and (had they been reachable) the wide-int
+  // case returned the NARROW float. Now: index by num_index, and a
+  // >=32-bit int that doesn't fit widens to the 64-bit float/complex.
   if (a->num_kind == IF1_NUM_KIND_COMPLEX) {
     if (b->num_kind == IF1_NUM_KIND_FLOAT) {
       if (a->num_index > b->num_index) return a;
       return if1->complex_types[b->num_index];
     }
-    if (int_type_precision[b->num_kind] <= float_type_precision[a->num_kind]) return a;
-    if (int_type_precision[b->num_kind] >= 32) return sym_complex32;
-    return sym_complex64;
+    if (int_type_precision[b->num_index] <= float_type_precision[a->num_index]) return a;
+    if (int_type_precision[b->num_index] >= 32) return sym_complex64;
+    return sym_complex32;
   }
   if (a->num_kind == IF1_NUM_KIND_FLOAT) {
-    if (int_type_precision[b->num_kind] <= float_type_precision[a->num_kind]) return a;
-    if (int_type_precision[b->num_kind] >= 32) return sym_float32;
-    return sym_float64;
+    if (int_type_precision[b->num_index] <= float_type_precision[a->num_index]) return a;
+    if (int_type_precision[b->num_index] >= 32) return sym_float64;
+    return sym_float32;
   }
   // mixed signed and unsigned
   if (a->num_index >= IF1_INT_TYPE_64 || b->num_index >= IF1_INT_TYPE_64)
@@ -527,7 +545,11 @@ AType *type_cannonicalize(AType *t) {
   }
   if (t->sorted.n > 1) qsort_by_id(t->sorted);
   unsigned int h = 0;
-  for (int i = 0; i < t->sorted.n; i++) h = (uint)(intptr_t)t->sorted[i] * open_hash_primes[i % 256];
+  // Accumulate (survey B1): `h =` here discarded all but the last
+  // element, collapsing the hash-cons table's distribution to
+  // last-element groups. Position sensitivity comes from the
+  // per-index prime.
+  for (int i = 0; i < t->sorted.n; i++) h += (uint)(intptr_t)t->sorted[i] * open_hash_primes[i % 256];
   t->hash = h ? h : h + 1;  // 0 is empty
   AType *tt = fa->type_world.cannonical_atypes.put(t);
   if (!tt) tt = t;
@@ -1012,13 +1034,7 @@ void flow_var_type_permit(AVar *v, AType *t) {
   if (tt != v->out) {
     assert(tt != fa->type_world.top_type);
     v->out = tt;
-    for (AVar *vv : v->arg_of_send.asvec) {
-      if (!vv->in_send_worklist) {
-        vv->in_send_worklist = 1;
-        fa->send_worklist.enqueue(vv);
-      }
-    }
-    for (AVar *vv : v->forward) if (vv) update_in(vv, v->out);
+    propagate_out_change(v);
   }
 }
 
@@ -1028,7 +1044,8 @@ void flow_var_permit_pred(AVar *v, AVarRestrictPred pred, Sym *cls) {
     v->restrict_pred = pred;
     v->restrict_pred_cls = cls;
   } else if (v->restrict_pred != pred || v->restrict_pred_cls != cls) {
-    return;  // composition not implemented; bail
+    return;  // composition not implemented; bail (survey S1 notes
+             // the precision loss for chained predicates)
   }
   AType *tt = v->in;
   if (v->restrict) tt = type_intersection(tt, v->restrict);
@@ -1036,13 +1053,7 @@ void flow_var_permit_pred(AVar *v, AVarRestrictPred pred, Sym *cls) {
   if (tt != v->out) {
     assert(tt != fa->type_world.top_type);
     v->out = tt;
-    for (AVar *vv : v->arg_of_send.asvec) {
-      if (!vv->in_send_worklist) {
-        vv->in_send_worklist = 1;
-        fa->send_worklist.enqueue(vv);
-      }
-    }
-    for (AVar *vv : v->forward) if (vv) update_in(vv, v->out);
+    propagate_out_change(v);
   }
 }
 
@@ -1315,7 +1326,13 @@ static void record_arg(PNode *pn, CreationSet *cs, AVar *a, Sym *s, AEdge *e, MP
   e->initial_types.put(cp, t->type);
   if (s->is_pattern) {
     for (CreationSet *cs : t->sorted) {
-      assert(s->has.n == cs->vars.n);
+      if (s->has.n != cs->vars.n) {
+        // Arity mismatch between a pattern formal and an actual's
+        // CS is user-reachable input, not an internal invariant
+        // (survey S2) -- report it instead of aborting.
+        type_violation(ATypeViolation_kind::MATCH, a, make_AType(cs), nullptr);
+        continue;
+      }
       p.push(1);
       for (int i = 0; i < s->has.n; i++) {
         record_arg(pn, cs, cs->vars[i], s->has.v[i], e, p);
@@ -1705,6 +1722,14 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
       }
     }
     AVar *result = p->lvals.n ? make_AVar(p->lvals[0], es) : 0;
+    // CONTRACT (survey S2): every snapshot-style transfer below
+    // (isinstance, len, merge, index_object, destruct, period,
+    // ... -- anything iterating an operand's ->out->sorted at
+    // execution time) relies on THIS blanket registration to be
+    // re-run when operand types arrive later. It hangs off the
+    // result AVar, so a prim SEND without lvals has no resume
+    // path -- such prims must not read operand->out in their
+    // transfer (today only reply-shaped prims are lval-less).
     if (result)
       for (int i = 0; i < p->rvals.n; i++) make_AVar(p->rvals[i], es)->arg_of_send.add(result);
     int o = p->rvals.v[0]->sym == sym_primitive ? 2 : 1;
@@ -1989,7 +2014,11 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
         assert(s->abstract_type);
         AVar *rhs = make_AVar(p->rvals[p->rvals.n - 1], es);
         Vec<CreationSet *> css;
-        for (CreationSet *cs : rhs->out->sorted) if (cs->sym->type == p->rvals[1]->sym) css.set_add(cs);
+        // Compare against the type operand at its positional slot
+        // (n-2), not rvals[1] -- in the @primitive-prefixed form
+        // rvals[1] is the prim-name symbol and the filter could
+        // never match (survey S5).
+        for (CreationSet *cs : rhs->out->sorted) if (cs->sym->type == p->rvals[p->rvals.n - 2]->sym) css.set_add(cs);
         if (css.n)
           update_gen(result, make_AType(css));
         else if (s->type->num_kind || s->type == sym_string || s->type->is_symbol)
@@ -3456,11 +3485,18 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
   for (AEdge *ee : all_edges) if (ee) {
     AVar *earg = es->args.get(p);
     EntrySet *old = ee->to;
-    if (earg->out->n == 1)
-      ee->to = cs_es_map.get(earg->out->v[0]);
+    // Probe with the constant-stripped type view throughout:
+    // cs_es_map is keyed by av->out->type CSs, but a raw
+    // single-element out can be a CONSTANT CS ("3" rather than
+    // int64), whose map lookup misses and used to null ee->to
+    // (survey B5). An empty type view (e.g. pure-nil out) leaves
+    // the edge untouched, as before.
+    AType *ety = earg->out->type;
+    if (ety->sorted.n == 1)
+      ee->to = cs_es_map.get(ety->sorted.v[0]);
     else {
-      for (int i = 0; i < earg->out->type->sorted.n; i++) {
-        CreationSet *cs = earg->out->type->sorted[i];
+      for (int i = 0; i < ety->sorted.n; i++) {
+        CreationSet *cs = ety->sorted[i];
         if (!i)
           set_entry_set(ee, cs_es_map.get(cs));
         else
@@ -3639,19 +3675,42 @@ static void build_setter_mark(AVar *av, AVar *x, int mark = 1) {
 // this is a backward problem, so search forward then back
 // to find all the contributors and what they effect
 static void build_setter_marks(AVar *av, Accum<AVar *> &acc) {
-  // collect all contributing nodes
+  // collect all contributing nodes — index-based so elements
+  // appended during iteration are visited (transitive closure).
+  // A range-for here both capped the closure at one hop AND
+  // iterated a Vec whose backing store can be reallocated by
+  // add() — the same defect fixed in build_type_marks (see the
+  // comment there); survey finding B3.
   acc.add(av);
-  for (AVar *x : acc.asvec) for (AVar *y : x->forward) if (y && y->setters && y->setters->some_intersection(*av->setters))
-      acc.add(y);
-  for (AVar *x : acc.asvec) for (AVar *y : x->backward) if (y && y->setters && y->setters->some_intersection(*av->setters))
-      acc.add(y);
-  // mark them
+  for (int i = 0; i < acc.asvec.n; i++) {
+    AVar *x = acc.asvec.v[i];
+    for (AVar *y : x->forward) if (y && y->setters && y->setters->some_intersection(*av->setters)) acc.add(y);
+  }
+  for (int i = 0; i < acc.asvec.n; i++) {
+    AVar *x = acc.asvec.v[i];
+    for (AVar *y : x->backward) if (y && y->setters && y->setters->some_intersection(*av->setters)) acc.add(y);
+  }
+  // mark them (no additions here — plain iteration is safe)
   for (AVar *x : acc.asvec) if (x->setters) for (AVar *y : *x->setters) if (x == y->container) build_setter_mark(x, y);
 }
 
 static void clear_marks(Accum<AVar *> &acc) { for (AVar *x : acc.asvec) x->mark_map = 0; }
 
+// Per-pass reset. NOTE what deliberately SURVIVES a pass (survey
+// S3) -- the analysis re-derives flow state from scratch each
+// pass, but identity-carrying caches persist:
+//   - av->cs_map: CreationSet identity across passes. Load-bearing:
+//     consumers hold positional slots into these CSs (see the
+//     issue-030 fixpoint fix in make_closure_var; the invariant is
+//     "a CS's positional vars[i] must be fed by every pass that
+//     feeds the CS, regardless of which Var carries the value").
+//   - av->container: structural parenthood, stable across passes.
+//   - av->type / av->ivar_offset: written post-convergence by clone.
+//   - av->match_cache: entries are validated against canonical
+//     ATypes, so stale entries miss safely -- cleared here anyway
+//     (survey P2) to stop unbounded growth across passes.
 static void clear_avar(AVar *av) {
+  av->match_cache = 0;
   av->gen = 0;
   av->in = fa->type_world.bottom_type;
   av->out = fa->type_world.bottom_type;
@@ -3723,7 +3782,8 @@ static Setters *setters_cannonicalize(Setters *s) {
   for (AVar *x : *s) if (x) s->sorted.add(x);
   if (s->sorted.n > 1) qsort_pointers((void **)&s->sorted[0], (void **)s->sorted.end());
   uint h = 0;
-  for (int i = 0; i < s->sorted.n; i++) h = (uint)(intptr_t)s->sorted[i] * open_hash_primes[i % 256];
+  // Accumulate (survey B1) — see type_cannonicalize.
+  for (int i = 0; i < s->sorted.n; i++) h += (uint)(intptr_t)s->sorted[i] * open_hash_primes[i % 256];
   s->hash = h ? h : h + 1;  // 0 is empty
   Setters *ss = fa->type_world.cannonical_setters.put(s);
   if (!ss) ss = s;
@@ -3753,14 +3813,21 @@ static void collect_cs_marked_confluences(Vec<AVar *> &confluences) {
   confluences.clear();
   for (CreationSet *cs : fa->css) {
     for (AVar *av : cs->vars) {
+      int nback_marked = 0, ndiff = 0;
       for (AVar *x : av->backward) if (x && x->mark_map) {
+        nback_marked++;
         if (!av->contour_is_entry_set && av->contour != GLOBAL_CONTOUR) {
           if (different_marked_args(x, av, 1)) {
+            ndiff++;
             confluences.set_add(av);
             break;
           }
         }
       }
+      if (av->mark_map || nback_marked)
+        log(LOG_SPLITTING, "[ccmc] cs %d (sym %s) ivar av %d marked=%d back_marked=%d diff=%d\n",
+            cs->id, cs->sym && cs->sym->name ? cs->sym->name : "(anon)", av->id,
+            av->mark_map ? 1 : 0, nback_marked, ndiff);
     }
   }
   confluences.set_to_vec();
@@ -3905,6 +3972,8 @@ static void collect_setter_confluences(Accum<AVar *> &avs, Vec<AVar *> &setter_c
   for (CreationSet *cs : css) {
     Vec<AVar *> starter_set, save;
     for (AVar *av : starters) if (av->cs_map->get(cs->sym) == cs) starter_set.add(av);
+    log(LOG_SPLITTING, "[scss] cs %d (sym %s) starter_set=%d defs=%d\n", cs->id,
+        cs->sym && cs->sym->name ? cs->sym->name : "(anon)", starter_set.n, cs->defs.set_count());
     while (starter_set.n > 1) {
       AVar *av = starter_set[0];
       Vec<AVar *> compatible_set;
@@ -4078,9 +4147,15 @@ static bool back_reaching(AVar *av, Vec<AVar *> &reached) {
   if (reached.set_in(av)) return true;
   Accum<AVar *> seen;
   seen.add(av);
-  for (AVar *x : seen.asvec) for (AVar *r : x->backward) if (r) {
-    if (reached.set_in(r)) return true;
-    seen.add(r);
+  // Index-based: elements appended during iteration must be
+  // visited (full backward closure), and a range-for would hold
+  // pointers into a Vec that add() can reallocate. Survey B3.
+  for (int i = 0; i < seen.asvec.n; i++) {
+    AVar *x = seen.asvec.v[i];
+    for (AVar *r : x->backward) if (r) {
+      if (reached.set_in(r)) return true;
+      seen.add(r);
+    }
   }
   return false;
 }
@@ -4144,8 +4219,16 @@ static void clear_splits() {
   for (CreationSet *cs : fa->css) cs->split = 0;
 }
 
-[[nodiscard]] static int split_for_setters_of_setters(Vec<AVar *> &confluences) {
+// NOTE deliberately takes no confluence input: the loop's first
+// action collects its own CS setter confluences. It used to take
+// the caller's type-confluences Vec by reference as scratch --
+// collect_cs_setter_confluences clear()s and refills it -- which
+// clobbered `confluences` between extend_analysis stages 3 and 4,
+// so stage 4's mark seeding always ran over the emptied vector
+// and the mark-setter stages could never fire (issue 007/032).
+[[nodiscard]] static int split_for_setters_of_setters() {
   int analyze_again = 0;
+  Vec<AVar *> confluences;
   // split based on setters
   while (!analyze_again) {
     // a) compute setters for ivar confluences
@@ -4196,31 +4279,47 @@ static void clear_splits() {
     log(LOG_SPLITTING, "split_for_setters %d\n", analyze_again);
     if (!analyze_again) {
       ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-      analyze_again = split_for_setters_of_setters(confluences);
+      analyze_again = split_for_setters_of_setters();
       if (analyze_again) record_fa_event(FAPassStage::SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
     }
     log(LOG_SPLITTING, "split_for_setters_of_setters %d\n", analyze_again);
   }
-  // 4) split based on setters of type using marks
+  // 4) split based on setters of type using marks.
+  //
+  // Reworked (survey B4/P3): the previous shape looped over every
+  // type confluence, and per iteration seeded that confluence's
+  // marks, re-ran a GLOBAL collect + the full setter-split
+  // cascade, and never cleared the marks — so iteration k saw the
+  // union of marks from iterations 1..k-1 (an iteration-order
+  // dependence, issue-009/021 flavor), the stage was quadratic,
+  // and when nothing split the stale marks leaked into stage 5
+  // and the converged state. Marks are per-(AVar, CS) minimum
+  // distances from generation points; seeding all confluences
+  // jointly computes the same minima deterministically, and one
+  // collect + one split over the joint marking dominates every
+  // per-confluence run of the old loop.
   if (!analyze_again) {
-    for (AVar *av : confluences) {
-      Accum<AVar *> acc;
-      build_type_marks(av, acc);
-      Vec<AVar *> marked_confluences;
-      collect_cs_marked_confluences(marked_confluences);
-      Accum<AVar *> avs;
-      for (AVar *av : marked_confluences) (void)compute_setters(av, avs, AKIND_MARK);
-      ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-      if (split_for_setters(avs, analyze_again)) analyze_again = 1;
-      if (analyze_again) record_fa_event(FAPassStage::MARK_SETTER, analyze_again, ess0, css0, viol0);
-      log(LOG_SPLITTING, "split_for_setters with marks %d\n", analyze_again);
-      if (!analyze_again) {
-        ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-        analyze_again = split_for_setters_of_setters(confluences);
-        if (analyze_again) record_fa_event(FAPassStage::MARK_SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
-      }
-      log(LOG_SPLITTING, "split_for_setters_of_setters with marks %d\n", analyze_again);
+    Accum<AVar *> acc;
+    for (AVar *av : confluences) build_type_marks(av, acc);
+    Vec<AVar *> marked_confluences;
+    collect_cs_marked_confluences(marked_confluences);
+    Accum<AVar *> avs;
+    for (AVar *av : marked_confluences) {
+      int r = compute_setters(av, avs, AKIND_MARK);
+      log(LOG_SPLITTING, "[stage4] marked-conf av %d %s compute_setters(MARK) -> %d\n", av->id,
+          av->var && av->var->sym && av->var->sym->name ? av->var->sym->name : "(anon)", r);
     }
+    ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    if (split_for_setters(avs, analyze_again)) analyze_again = 1;
+    if (analyze_again) record_fa_event(FAPassStage::MARK_SETTER, analyze_again, ess0, css0, viol0);
+    log(LOG_SPLITTING, "split_for_setters with marks %d\n", analyze_again);
+    if (!analyze_again) {
+      ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+      analyze_again = split_for_setters_of_setters();
+      if (analyze_again) record_fa_event(FAPassStage::MARK_SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
+    }
+    log(LOG_SPLITTING, "split_for_setters_of_setters with marks %d\n", analyze_again);
+    clear_marks(acc);
   }
   if (!analyze_again) {
     // 5) split AEdges(s) and EntrySet(s) for violations based on type using

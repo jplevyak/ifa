@@ -4,10 +4,17 @@
 end-to-end on BOTH backends; `tests/poly_dispatch_high.py` executes
 its full expected output (3 3 6 7 11 18) and `poly_dispatch_low.py`
 passes strictly (its `check_fail` sidecar removed). See "What
-landed (classtag dispatch)" below. Remaining open scope: the
-receiver-less bare-callable extension (issue 007's decorator shape)
-and table-based emission for very high fan-out (the if/else chain
-is O(n_classes) per site today).
+landed (classtag dispatch)" below. Remaining open scope after
+2026-07-05's bare-callable landing (value-identity dispatch on raw
+function addresses, mixed classtag+address chains, both backends —
+see issues/007): (a) closure-CARRIER candidates mixed with
+per-creation-site clone selection (stacked applications of the same
+closure-wrapping decorator): carrier classes need a method-pointer
+slot like __new__-built classes have, plus unique class names (all
+carriers are currently named `__closure__`, so the by-name tag
+grouping and `_CG_type_<name>` globals would collide); (b)
+table-based emission for very high fan-out (the if/else chain is
+O(n_branches) per site today).
 
 Supersedes the simpler "indirect call through struct slot" sketch in
 issue 029.

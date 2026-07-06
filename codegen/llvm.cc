@@ -357,10 +357,24 @@ int llvm_codegen_compile(cchar *input_filename) {
   char *dot_exe = strrchr(exe_file, '.');
   if (dot_exe) *dot_exe = '\0';
 
+  // The compiler driving .ll -> .o -> exe. C++ (not C) since the
+  // coroutine-lowered IR links against C++ runtime pieces. The
+  // macOS/homebrew LLVM location is only a fallback for Apple
+  // hosts; everywhere else use clang++ from PATH, and let
+  // PYC_LLVM_CXX override either.
+  cchar *cxx = getenv("PYC_LLVM_CXX");
+  if (!cxx) {
+#ifdef __APPLE__
+    cxx = "/opt/homebrew/opt/llvm/bin/clang++";
+#else
+    cxx = "clang++";
+#endif
+  }
+
   // Step 1: clang -c -fPIC <ll> -o <obj>
   {
-    char *argv[] = {(char *)"/opt/homebrew/opt/llvm/bin/clang++", (char *)"-O2", (char *)"-c", (char *)"-fPIC", (char *)"-Wno-override-module", ll_file, (char *)"-o", obj_file, nullptr};
-    int res = codegen_spawn("/opt/homebrew/opt/llvm/bin/clang++", argv);
+    char *argv[] = {(char *)cxx, (char *)"-O2", (char *)"-c", (char *)"-fPIC", (char *)"-Wno-override-module", ll_file, (char *)"-o", obj_file, nullptr};
+    int res = codegen_spawn(cxx, argv);
     if (res != 0) {
       fail("llvm_codegen_compile: clang -c failed for %s (exit=%d)", ll_file, res);
       return res;
@@ -392,7 +406,7 @@ int llvm_codegen_compile(cchar *input_filename) {
     int n = snprintf(libdir_arg, sizeof(libdir_arg), "-L%s", system_dir);
     if (n < 0 || (size_t)n >= sizeof(libdir_arg))
       fail("llvm_codegen_compile: -L<system_dir> arg too long");
-    char *argv[] = {(char *)"/opt/homebrew/opt/llvm/bin/clang++",         obj_file,
+    char *argv[] = {(char *)cxx,             obj_file,
                     (char *)"-o",            exe_file,
                     libdir_arg,
                     (char *)"-L..",
@@ -400,8 +414,12 @@ int llvm_codegen_compile(cchar *input_filename) {
                     (char *)"-L/usr/local/lib",
                     (char *)"-lpyc_runtime",
                     (char *)"-lm",           (char *)"-lgc",
-                    (char *)"-lgccpp",       (char *)"-stdlib=libc++", nullptr};
-    int res = codegen_spawn("/opt/homebrew/opt/llvm/bin/clang++", argv);
+                    (char *)"-lgccpp",
+#ifdef __APPLE__
+                    (char *)"-stdlib=libc++",
+#endif
+                    nullptr};
+    int res = codegen_spawn(cxx, argv);
     if (res != 0) {
       fail("llvm_codegen_compile: linking failed for %s (exit=%d)", obj_file, res);
       return res;

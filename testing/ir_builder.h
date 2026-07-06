@@ -280,6 +280,7 @@ Sym *symbol(cchar *name);
 // fa-init / fa-converge etc. phases handle this via pre_parse).
 Sym *const_int32(int v);
 Sym *const_int64(long long v);
+Sym *const_float32(double v);
 Sym *const_float64(double v);
 Sym *const_string(cchar *s);
 

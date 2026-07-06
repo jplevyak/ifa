@@ -1,0 +1,31 @@
+;; phase: clone
+
+(summary fa_rc=-1 clone_rc=0 funs=1 css=13 ess=1)
+
+(cs-equiv
+  class[(anon)] members=1 type=float32
+  class[(anon)] members=1 type=int64
+  class[(anon)] members=1 type=float32
+  class[(anon)] members=1 type=int32
+  class["3.5"] members=1 type=float64
+  class["3.5"] members=1 type=float32
+  class[+] members=1 type=symbol
+  class[__main__] members=1 type=__main__
+  class[__operator] members=1 type=symbol
+  class[__primitive] members=1 type=symbol
+  class[continuation] members=1 type=continuation
+  class[nil_type] members=1 type=nil_type
+  class[reply] members=1 type=symbol
+)
+
+(es-equiv
+  fun __main__ ess=1 equiv-classes=1
+)
+
+(call-graph
+  (no inter-fun calls)
+)
+
+(new-funs
+  (none)
+)

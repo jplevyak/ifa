@@ -1,0 +1,35 @@
+;; phase: patterns
+
+(mtype @any
+  pos["v"]: %make_t
+  pos["x"]: %relay2
+  pos[2]: %make_t %relay2
+)
+
+(mtype %make_t
+  pos["make_t"]: %make_t
+  pos[1]: %make_t
+)
+
+(mtype #make_t
+  pos[1]: %make_t
+)
+
+(mtype %relay2
+  pos["relay2"]: %relay2
+  pos[1]: %relay2
+)
+
+(mtype #relay2
+  pos[1]: %relay2
+)
+
+(mtype %top
+  pos["top"]: %top
+  pos[1]: %top
+)
+
+(mtype #top
+  pos[1]: %top
+)
+
