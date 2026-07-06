@@ -780,6 +780,13 @@ int fold_constant(int op, Immediate *aim1, Immediate *aim2, Immediate *imm) {
       break;
   }
   if (coerce.const_kind) {
+    // A numeric coercion target can't apply to a non-numeric constant
+    // operand (const_kind >= STRING), e.g. a string in a mixed
+    // `str == int` comparison. Bail (return "not folded") so the
+    // operation is handled at runtime instead of aborting
+    // coerce_immediate on an unhandled cast case (issue 025 bucket E,
+    // sudoku2).
+    if (im1.const_kind >= IF1_CONST_KIND_STRING || (aim2 && im2.const_kind >= IF1_CONST_KIND_STRING)) return -1;
     coerce_immediate(&im1, &coerce);
     im1 = coerce;
     if (aim2) {
