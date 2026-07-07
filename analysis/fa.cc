@@ -1886,9 +1886,46 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
             if (iv) {
               iv->arg_of_send.add(result);
               if (partial) {
-                flow_var_type_permit(result, type_diff(iv->out, fa->type_world.function_type));
-                flow_vars(iv, result);
-                if (type_intersection(iv->out, fa->type_world.function_type) != fa->type_world.bottom_type) methods.add(iv);
+                // Function-valued fields split two ways, following
+                // Python's actual rule -- a function found on the
+                // CLASS binds as a method, a function stored as an
+                // INSTANCE attribute does not (issue 025
+                // first-class-function-in-field):
+                //  - METHOD-like values keep the historical behavior
+                //    (filtered out of the direct flow, re-routed
+                //    through a method-binding partial application):
+                //    real methods and capturing-def carriers
+                //    (Fun->sym->self set), and class-body lambdas /
+                //    defs (Sym::in is a class, i.e. non-fun) -- pyc
+                //    stores class attributes as prototype fields, so
+                //    definition scope is the FA-visible equivalent of
+                //    "found on the class".
+                //  - BARE function values (a module- or
+                //    function-level def stored in an instance
+                //    attribute: fun set, no self, in absent or a
+                //    function) flow through UNBOUND --
+                //    `self.cf(3, 1)` calls cf(3, 1), not
+                //    cf(self, 3, 1). Previously they were bound too,
+                //    so any call through such a field dispatched with
+                //    the object inserted as the first argument and
+                //    matched nothing (timsort's self.comparefn).
+                // Mixed fields (both kinds) conservatively flow both
+                // forms; permits and bindings only ever grow, so the
+                // fixpoint stays monotone.
+                AType *fnpart = type_intersection(iv->out, fa->type_world.function_type);
+                bool all_bare = fnpart != fa->type_world.bottom_type;
+                for (CreationSet *fcs : fnpart->sorted) {
+                  Fun *ff = fcs->sym->fun;
+                  if (!ff || ff->sym->self || (ff->sym->in && !ff->sym->in->is_fun)) { all_bare = false; break; }
+                }
+                if (all_bare) {
+                  flow_var_type_permit(result, iv->out);
+                  flow_vars(iv, result);
+                } else {
+                  flow_var_type_permit(result, type_diff(iv->out, fa->type_world.function_type));
+                  flow_vars(iv, result);
+                  if (fnpart != fa->type_world.bottom_type) methods.add(iv);
+                }
               } else
                 flow_vars(iv, result);
             }
