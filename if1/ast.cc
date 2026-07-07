@@ -441,6 +441,7 @@ void build_type_hierarchy(int compute_structural_value_hierarchy) {
   }
   // compute structural type hierarchy
   if (compute_structural_value_hierarchy) compute_structural_type_hierarchy(types);
+
   // map subtyping and subclassing to meta_types
   for (Sym *s : types.asvec) if (!s->is_meta_type) {
     for (Sym *ss : s->implementors) if (ss && s->meta_type != ss->meta_type)
