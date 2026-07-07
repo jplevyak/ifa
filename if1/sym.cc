@@ -331,6 +331,8 @@ void Sym::inherits_add(Sym *s) {
   implements.add(s);
   specializes.add(s);
   includes.add(s);
+  s->implementors.set_add(this);
+  s->specializers.set_add(this);
 }
 
 void Sym::must_implement_and_specialize(Sym *s) {

@@ -589,8 +589,11 @@ Ldone:
 }
 
 static inline int subsumed_by(Sym *a, Sym *b) {
-  return (a == b) || a->type == b ||
-         ((b->type_kind == Type_SUM || a->is_symbol || a->is_fun) && b->specializers.set_in(a->type));
+  int r = (a == b) || a->type == b || b->specializers.set_in(a->type);
+  if (!r && a->name && b->name && (!strcmp(b->name, "B") || !strcmp(b->name, "A") || !strcmp(b->name, "C"))) {
+    printf("subsumed_by FALSE: a=%s a->type=%s b=%s\n", a->name, a->type ? a->type->name : "none", b->name);
+  }
+  return r;
 }
 
 AType *type_diff(AType *a, AType *b) {
@@ -1443,6 +1446,10 @@ int function_dispatch(PNode *p, EntrySet *es, AVar *a0, CreationSet *s, Vec<AVar
       else
         partial_result = 1;
     }
+  } else {
+    printf("pattern_match FAILED for %s (names=", p->lvals[0]->sym->name ? p->lvals[0]->sym->name : "anon");
+    for (int i = 0; i < names.n; i++) printf("%s ", names[i] ? names[i] : "null");
+    printf("send_sym=%s)\n", send->var->sym && send->var->sym->name ? send->var->sym->name : "none");
   }
   match_timer.stop();
   return matches.n ? partial_result : -1;
@@ -1456,6 +1463,9 @@ static int application(PNode *p, EntrySet *es, AVar *a0, CreationSet *cs, Vec<AV
 }
 
 void type_violation(ATypeViolation_kind akind, AVar *av, AType *type, AVar *send, Vec<Fun *> *funs) {
+  if (akind == ATypeViolation_kind::SEND_ARGUMENT) {
+    printf("SEND_ARGUMENT violation: av=%s (out has %d), type left=%d\n", av->var->sym->name ? av->var->sym->name : "anon", av->out->n, type ? type->n : 0);
+  }
   // Issue 009 investigation: env-gated one-line trace of every
   // call, suitable for diffing two runs. Emits the analysis pass,
   // the dedup key triple, and the AType hash so two runs can be
@@ -3062,7 +3072,9 @@ static void collect_argument_type_violations() {
                 if (!x->key->is_positional()) continue;
                 MPosition *p = x->key;
                 AVar *filtered = e->filtered_args.get(p);
-                if (filtered) t = type_diff(t, filtered->out);
+                if (filtered) {
+                  t = type_diff(t, filtered->out);
+                }
               }
             }
             if (!empty_type_minus_partial_applications(t)) {
