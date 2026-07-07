@@ -543,13 +543,29 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       } else
         fprintf(fp, "  ");
       Sym *t = n->rvals[o]->type;
-      if (!t->element->type->size && t->type_kind == Type_RECORD) {
-        if (t->has.n)
-          fprintf(fp, "%d;\n", t->has[0]->type->size);
-        else
-          fprintf(fp, "0;\n");
-      } else
-        fprintf(fp, "%d;\n", t->element->type->size);
+      int sz = t->element->type->size;
+      if (!sz && t->type_kind == Type_RECORD && t->has.n) sz = t->has[0]->type->size;
+      // A generic list's element type is the program-wide union of
+      // element types. With 2+ distinct record element types that is
+      // a Type_SUM with no compile-time size -- but every member is
+      // a boxed reference, so the stored element IS a pointer. This
+      // used to emit 0, so list::append resized with element size 0,
+      // the storage never grew, and reads returned null at runtime
+      // with a clean compile (issue 025 tuple-list soundness bug:
+      // two functions append-building lists of different tuple
+      // types).
+      if (!sz) {
+        Sym *et = t->element->type;
+        if (et && et->type_kind == Type_SUM && et->has.n) {
+          bool all_ref = true;
+          for (Sym *m : et->has) if (m) {
+            Sym *mt = m->type ? m->type : m;
+            if (mt->type_kind != Type_RECORD) { all_ref = false; break; }
+          }
+          if (all_ref) sz = if1->pointer_size;
+        }
+      }
+      fprintf(fp, "%d;\n", sz);
       break;
     }
     case P_prim_primitive: {

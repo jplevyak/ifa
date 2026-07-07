@@ -915,18 +915,35 @@ bool emit_send_sizeof(EmitCtx &ctx, PNode *pn) {
   Sym *outer = pn->rvals.v[o]->type;
   if (!outer) return false;
   Sym *t_sym = outer;
+  llvm::Type *dst_ty = sym_to_llvm_type(pn->lvals.v[0]->type);
+  if (!dst_ty) return false;
   if (pn->prim->index == P_prim_sizeof_element) {
-    // Mirrors cg.cc:465-481: prefer outer->element->type;
-    // fall back to first field of a Type_RECORD if the
-    // element type has no compile-time size; else 0.
+    // Mirrors cg.cc: prefer outer->element->type; fall back to first
+    // field of a Type_RECORD if the element type has no compile-time
+    // size; else 0.
     if (outer->element) t_sym = outer->element->type;
     if (t_sym && !t_sym->size && outer->type_kind == Type_RECORD &&
         outer->has.n) {
       t_sym = outer->has.v[0]->type;
     }
+    // Mirrors cg.cc's SUM-of-records case: a generic list whose
+    // element type is the union of 2+ record types stores boxed
+    // pointers -- emit pointer size instead of 0. Emitting 0 made
+    // list::append resize with element size 0, so the storage never
+    // grew and reads returned null at runtime with a clean compile
+    // (issue 025 tuple-list soundness bug).
+    if (t_sym && !t_sym->size && t_sym->type_kind == Type_SUM && t_sym->has.n) {
+      bool all_ref = true;
+      for (Sym *m : t_sym->has) if (m) {
+        Sym *mt = m->type ? m->type : m;
+        if (mt->type_kind != Type_RECORD) { all_ref = false; break; }
+      }
+      if (all_ref) {
+        put_result(ctx, pn->lvals.v[0], llvm::ConstantInt::get(dst_ty, if1->pointer_size));
+        return true;
+      }
+    }
   }
-  llvm::Type *dst_ty = sym_to_llvm_type(pn->lvals.v[0]->type);
-  if (!dst_ty) return false;
   if (!t_sym) {
     put_result(ctx, pn->lvals.v[0],
                llvm::ConstantInt::get(dst_ty, 0));
