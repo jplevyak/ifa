@@ -204,7 +204,6 @@ void Matcher::pattern_match_sym_internal(Sym *type, MPosition *fcp, Vec<Fun *> &
 void Matcher::pattern_match_arg(Sym *type, MPosition *cp, Vec<Fun *> &test, Vec<Fun *> &result, int facp) {
   Vec<PMatch *> matches;
   Vec<MPosition *> positions;
-  printf("pattern_match_arg: test.n=%d for type=%s cp=%p\n", test.n, type->name ? type->name : "anon", cp);
   for (Fun *f : test) if (f) {
     if (facp) {
       PMatch *m = match_map.get(f);
@@ -213,17 +212,10 @@ void Matcher::pattern_match_arg(Sym *type, MPosition *cp, Vec<Fun *> &test, Vec<
     Sym *a = f->arg_syms.get(cp);
     if (!a) {
       if (f->is_varargs) result.set_add(f);
-      printf("pattern_match_arg: NO ARG SYM FOR CP %p in %s\n", cp, f->sym ? f->sym->name : "anon");
       continue;
     }
     Sym *m_type = dispatch_type(a);
-    if (!m_type->specializers.set_in(type)) {
-      if (type->name && m_type->name && (!strcmp(type->name, "C") || !strcmp(type->name, "B") || !strcmp(type->name, "A"))) {
-        printf("pattern_match_arg failed: formal=%s actual=%s\n", m_type->name, type->name);
-      }
-    } else {
-      result.set_add(f);
-    }
+    if (m_type->specializers.set_in(type)) result.set_add(f);
   }
 }
 
@@ -256,7 +248,6 @@ Ldone:
     }
   } else
     funs.set_union(*vfn);
-  printf("pattern_match_sym returning %d funs for type %s\n", funs.n, type->name ? type->name : "anon");
   return funs.n;
 }
 
@@ -1399,7 +1390,7 @@ static int match_cache_hit(Vec<AVar *> &args, AVar *send, int is_closure, Partia
 int pattern_match(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_closure, Partial_kind partial,
                   PNode *visibility_point, Vec<Match *> &matches) {
   pattern_matches++;
-  if (incomplete_call(args, send)) { printf("pattern_match fail 1\n"); return 0; }
+  if (incomplete_call(args, send)) return 0;
   pattern_match_complete++;
   if (match_cache_hit(args, send, is_closure, partial, visibility_point, matches)) {
     pattern_match_hits++;
@@ -1411,7 +1402,7 @@ int pattern_match(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_clo
   log_dispatch_pattern_match(partial_matches, matcher.function_values, send);
   MPosition app;
   matcher.find_all_matches(0, args, names, &partial_matches, app, 0);
-  if (!partial_matches || !partial_matches->n) { printf("pattern_match fail 2\n"); return 0; }
+  if (!partial_matches || !partial_matches->n) return 0;
 
   {
     MPosition app;
@@ -1419,7 +1410,7 @@ int pattern_match(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_clo
     Vec<Fun *> result;
     matcher.find_best_matches(args, csargs, *partial_matches, app, result, 1);
     partial_matches->move(result);
-    if (!partial_matches->n) { printf("pattern_match fail 3\n"); return 0; }
+    if (!partial_matches->n) return 0;
   }
   matcher.cannonicalize_matches(*partial_matches, is_closure, partial, matches, visibility_point);
   return matches.n;
