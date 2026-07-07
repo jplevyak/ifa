@@ -71,6 +71,9 @@ class AType : public Vec<CreationSet *> {
   Map<AType *, AType *> union_map;
   Map<AType *, AType *> intersection_map;
   Map<AType *, AType *> diff_map;
+  // Cache for type_coerce_numeric_constants (issue 025 numeric
+  // unification): target numeric type -> coerced AType.
+  Map<Sym *, AType *> coerce_map;
 
   AType(CreationSet *cs);
   AType(AType &a);
@@ -247,6 +250,19 @@ class AVar : public gc {
   CSMap *cs_map;
   MatchCache *match_cache;
   Sym *type;
+  // Numeric-confluence coercion target (issue 025 numeric
+  // unification). Set BETWEEN passes (PycCompiler::reanalyze ->
+  // fa_coerce_numeric_confluences) on an AVar whose converged `out`
+  // mixed a numeric constant with a wider numeric type; during
+  // subsequent passes every out-computation maps numeric-constant
+  // CSs to this type's constants (0 -> 0.0). Per-AVar == per
+  // (Var, contour), so the coercion is flow- and contour-sensitive:
+  // an int-only specialization of the same Var keeps int. Persists
+  // across clear_avar (like cs_map) by design -- it must hold from
+  // the first instant of the next pass so the transform is
+  // element-wise monotone (nothing a consumer saw is ever
+  // retracted mid-pass).
+  Sym *num_coerce;
   int ivar_offset;
   uint in_send_worklist : 1;
   uint contour_is_entry_set : 1;
@@ -541,6 +557,14 @@ void update_gen(AVar *v, AType *t);
 void update_in(AVar *v, AType *t);
 void flow_vars(AVar *v, AVar *vv);
 void flow_var_type_permit(AVar *v, AType *t);
+// Issue 025 numeric unification: annotate AVars whose converged
+// type mixes a numeric constant with a wider numeric (BOXING
+// violations) so the next pass coerces the constant (0 -> 0.0)
+// at that flow point. Returns the number of newly annotated AVars
+// and, when nonzero, resets per-pass analysis state
+// (clear_results) so the re-run re-derives flow with the
+// annotations in force. Call from IFACallbacks::reanalyze.
+int fa_coerce_numeric_confluences(Vec<ATypeViolation *> &violations);
 // Set / install a predicate restrict on `v`.  cls is only
 // used for RP_IsInstanceOf / RP_NotInstanceOf.  Idempotent:
 // re-installing the same predicate is a no-op; installing a

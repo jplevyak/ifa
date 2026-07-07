@@ -125,6 +125,7 @@ AVar::AVar(Var *v, void *acontour)
       cs_map(nullptr),
       match_cache(nullptr),
       type(nullptr),
+      num_coerce(nullptr),
       ivar_offset(0),
       in_send_worklist(0),
       contour_is_entry_set(0),
@@ -296,6 +297,46 @@ static void propagate_out_change(AVar *v) {
   for (AVar *vv : v->forward) if (vv) update_in(vv, v->out);
 }
 
+// Issue 025 numeric unification: map every numeric CS of a type
+// other than `w` to `w` -- constants to the coerced constant of `w`
+// (0 -> 0.0, value-preserving, free at compile time), non-constant
+// numerics to abstract `w` (the runtime value converts at the
+// assignment: C's conversion-on-assignment; verified for the LLVM
+// path by the regression tests). Applied to an AVar's out when
+// av->num_coerce is set (see fa.h). Element-wise, so it is
+// monotone: as `t` grows the result only grows -- required for use
+// inside the fixpoint. Mapping the abstract narrows too (not just
+// constants) matters even for constant-only programs: `in` keeps
+// the original int constant, and once the loop's folded constants
+// exceed num_constants_per_variable, type_cannonicalize's cap-strip
+// rebuilds `in` with every constant's BASE type -- resurrecting an
+// abstract int64 from the already-coerced-away constant.
+static AType *type_coerce_numeric_constants(AType *t, Sym *w) {
+  AType *r = t->coerce_map.get(w);
+  if (r) return r;
+  Vec<CreationSet *> css;
+  int changed = 0;
+  for (CreationSet *cs : t->sorted) {
+    Sym *ct = cs->sym->type;
+    if (ct && ct->num_kind && ct != w) {
+      if (cs->sym->is_constant) {
+        Immediate to;
+        to.const_kind = w->num_kind;
+        to.num_index = w->num_index;
+        Immediate from = cs->sym->imm;
+        coerce_immediate(&from, &to);
+        css.set_add(make_abstract_type(imm_constant(to, w))->v[0]);
+      } else
+        css.set_add(make_abstract_type(w)->v[0]);
+      changed = 1;
+    } else
+      css.set_add(cs);
+  }
+  r = changed ? make_AType(css) : t;
+  t->coerce_map.put(w, r);
+  return r;
+}
+
 void update_in(AVar *v, AType *t) {
   AType *tt = type_union(v->in, t);
   if (tt != v->in) {
@@ -303,6 +344,7 @@ void update_in(AVar *v, AType *t) {
     v->in = tt;
     if (v->restrict) tt = type_intersection(v->in, v->restrict);
     if (v->restrict_pred != RP_None) tt = apply_restrict_pred(v, tt);
+    if (v->num_coerce) tt = type_coerce_numeric_constants(tt, v->num_coerce);
     if (tt != v->out) {
       assert(tt != fa->type_world.top_type);
       v->out = tt;
@@ -1034,6 +1076,7 @@ void flow_var_type_permit(AVar *v, AType *t) {
     v->restrict = type_union(t, v->restrict);
   AType *tt = type_intersection(v->in, v->restrict);
   if (v->restrict_pred != RP_None) tt = apply_restrict_pred(v, tt);
+  if (v->num_coerce) tt = type_coerce_numeric_constants(tt, v->num_coerce);
   if (tt != v->out) {
     assert(tt != fa->type_world.top_type);
     v->out = tt;
@@ -1053,6 +1096,7 @@ void flow_var_permit_pred(AVar *v, AVarRestrictPred pred, Sym *cls) {
   AType *tt = v->in;
   if (v->restrict) tt = type_intersection(tt, v->restrict);
   tt = apply_restrict_pred(v, tt);
+  if (v->num_coerce) tt = type_coerce_numeric_constants(tt, v->num_coerce);
   if (tt != v->out) {
     assert(tt != fa->type_world.top_type);
     v->out = tt;
@@ -3721,6 +3765,11 @@ static void clear_marks(Accum<AVar *> &acc) { for (AVar *x : acc.asvec) x->mark_
 //   - av->match_cache: entries are validated against canonical
 //     ATypes, so stale entries miss safely -- cleared here anyway
 //     (survey P2) to stop unbounded growth across passes.
+//   - av->num_coerce: numeric-confluence coercion target (issue
+//     025), set between passes by fa_coerce_numeric_confluences.
+//     MUST survive: it has to be in force from the first instant
+//     of the next pass so type_coerce_numeric_constants is
+//     element-wise monotone for the whole pass.
 static void clear_avar(AVar *av) {
   av->match_cache = 0;
   av->gen = 0;
@@ -3787,6 +3836,78 @@ static void clear_results() {
   for (CreationSet *cs : fa->css) clear_cs(cs);
   for (EntrySet *es : fa->ess) clear_es(es);
   fa->type_world.cannonical_setters.clear();
+}
+
+// Issue 025 numeric unification (see fa.h decl and AVar::num_coerce).
+// For each BOXING violation whose AVar mixes ONLY numeric basic
+// types and where at least one member is a numeric CONSTANT narrower
+// than the widest member: annotate the AVar with the widest type.
+// The next pass then coerces the constant at exactly this (Var,
+// contour) flow point -- flow- and contour-sensitive, unlike any
+// source-level rewrite (the same `x = 0` MOVE may feed an int-only
+// specialization that must keep int, and the confluence may arise
+// hops from any MOVE, e.g. against a restrict-narrowed monomorphic
+// numeric). Runtime (non-constant) narrow members are left alone --
+// they would need an inserted conversion -- so their violations
+// persist and are reported honestly. Terminates: each call either
+// annotates a previously-unannotated (or wider-retarget) AVar or
+// returns 0; targets only widen (coerce_num).
+// Annotate `av` if its converged out is a pure-numeric mix.
+// Returns 1 when newly annotated (or retargeted wider).
+static int coerce_annotate(AVar *av) {
+  Sym *w = nullptr;
+  Vec<Sym *> basics;
+  for (CreationSet *cs : av->out->sorted) {
+    Sym *bt = to_basic_type(cs->sym->type);
+    if (!bt) continue;  // non-basics don't block (mirrors mixed_basics)
+    if (!bt->num_kind) return 0;
+    basics.set_add(bt);
+    w = w ? coerce_num(w, bt) : bt;
+  }
+  // Need an actual mix: at least two distinct numeric basics.
+  if (!w || basics.set_count() < 2) return 0;
+  if (av->num_coerce == w) return 0;
+  av->num_coerce = w;
+  if (getenv("PYC_DBG_NUMC"))
+    fprintf(stderr, "[numc] annotate av#%d '%s' -> %s\n", av->id,
+            av->var && av->var->sym && av->var->sym->name ? av->var->sym->name : "?", w->name ? w->name : "?");
+  return 1;
+}
+
+int fa_coerce_numeric_confluences(Vec<ATypeViolation *> &violations) {
+  (void)violations;  // scan directly: see phi-carrier note below
+  int annotated = 0;
+  // Scan every ES-contour variable rather than the BOXING violations:
+  // the violation collector deliberately skips Vars
+  // only_used_by_phy_or_phi, but the SSU loop-carry temp (the phi
+  // carrier) holds the same numeric mix and becomes a C variable at
+  // codegen -- leaving it unannotated leaves an _CG_any behind.
+  for (EntrySet *es : fa->ess) {
+    for (Var *v : es->fun->fa_all_Vars) {
+      AVar *av = make_AVar(v, es);
+      annotated += coerce_annotate(av);
+      if (av->lvalue) annotated += coerce_annotate(av->lvalue);
+    }
+  }
+  // Ivars of compiler-internal `closure` CSs: pyc lowers a
+  // function's locals through its closure frame record, so a
+  // loop-carried local's storage IS a closure ivar; leaving it
+  // unannotated lets the mix cycle back in through the frame. USER
+  // record fields (named classes) stay excluded: mixed numeric
+  // fields across instances are the classtag-dispatch machinery's
+  // domain (issues 029/030), and coercing them would silently
+  // change field polymorphism.
+  for (CreationSet *cs : fa->css) {
+    if (!cs || cs->sym != sym_closure) continue;
+    for (AVar *av : cs->vars) annotated += coerce_annotate(av);
+  }
+  // The re-run must re-derive flow from scratch: unlike the
+  // monotone-growth reanalyze repairs (field promotion), coercion
+  // changes what an existing out computes, which is only legal from
+  // a clean slate. Same phase as extend_analysis's clear (fa.cc
+  // "if (analyze_again) clear_results()").
+  if (annotated) clear_results();
+  return annotated;
 }
 
 static Setters *setters_cannonicalize(Setters *s) {
