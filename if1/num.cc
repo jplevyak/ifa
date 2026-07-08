@@ -734,6 +734,23 @@ void fold_result(Immediate *im1, Immediate *im2, Immediate *imm) {
   return;
 }
 
+// True if an integer-kind immediate is zero (any width). Used to bail
+// out of folding div/mod: FA feeds fold_constant speculative constants
+// from contours that may be dead at runtime, and folding an integer
+// division by zero would SIGFPE the compiler itself (issue 025,
+// tonyjpegdecoder).
+static bool imm_int_is_zero(const Immediate &im) {
+  if (im.const_kind != IF1_NUM_KIND_UINT && im.const_kind != IF1_NUM_KIND_INT) return false;
+  switch (im.num_index) {
+    case IF1_INT_TYPE_1: return !im.v_bool;
+    case IF1_INT_TYPE_8: return !im.v_uint8;
+    case IF1_INT_TYPE_16: return !im.v_uint16;
+    case IF1_INT_TYPE_32: return !im.v_uint32;
+    case IF1_INT_TYPE_64: return !im.v_uint64;
+    default: return false;
+  }
+}
+
 int fold_constant(int op, Immediate *aim1, Immediate *aim2, Immediate *imm) {
   Immediate im1(*aim1), im2, coerce;
   if (aim2) im2 = *aim2;
@@ -802,9 +819,11 @@ int fold_constant(int op, Immediate *aim1, Immediate *aim2, Immediate *imm) {
       DO_FOLD(*);
       break;
     case P_prim_div:
+      if (aim2 && imm_int_is_zero(im2)) return -1;  // leave for runtime
       DO_FOLD(/);
       break;
     case P_prim_mod:
+      if (aim2 && imm_int_is_zero(im2)) return -1;  // leave for runtime
       DO_FOLDI(%);
       break;
     case P_prim_add:
