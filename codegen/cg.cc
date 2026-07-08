@@ -876,6 +876,7 @@ class CBackendEmitter : public VirtualCGEmitter {
         Vec<Sym *> classes;  // classtag partition, grouped by class
         Vec<int> slots;      //   ... that class's method-slot index
         Vec<Fun *> plains;   // plain-function partition
+        Fun *nil_fn = nullptr;  // nil-receiver candidate (None method on a nil|record union)
         bool ok = true;
         for (int fi = 0; fi < fns->n && ok; fi++) {
           Fun *fun_val = (*fns)[fi];
@@ -914,6 +915,46 @@ class CBackendEmitter : public VirtualCGEmitter {
               }
             }
           }
+          if (!rt) {
+            // Nil-receiver candidate: a None-class method reached
+            // through a nil|record union (`if not self.field:` where
+            // the field starts as None). None is a NULL pointer at
+            // runtime -- no classtag to read, no value identity to
+            // compare -- so it gets its own partition, dispatched by
+            // a null test emitted BEFORE any tag dereference (which
+            // also makes the tag reads null-safe).
+            MPosition np;
+            np.push(1);
+            bool is_nil_recv = false;
+            for (int pi = 0; pi < fun_val->sym->has.n + 2 && !is_nil_recv; pi++) {
+              MPosition *cp = cannonicalize_mposition(np);
+              np.inc();
+              Var *argv = fun_val->args.get(cp);
+              if (!argv || !argv->type) continue;
+              if (argv->type == sym_nil_type) {
+                is_nil_recv = true;
+                int ridx = (int)Position2int(cp->pos[0]) - 1;
+                if (!recv_str && ridx >= 0 && ridx < pn->rvals.n && pn->rvals[ridx] &&
+                    cg_get_string(pn->rvals[ridx]))
+                  recv_str = cg_get_string(pn->rvals[ridx]);
+              }
+            }
+            if (is_nil_recv) {
+              // Only one nil-receiver branch is distinguishable, and
+              // its live formals must map to call-site rvals.
+              bool compat = !nil_fn && cg_get_string(fun_val);
+              if (compat)
+                for (MPosition *p : fun_val->positional_arg_positions) {
+                  Var *av = fun_val->args.get(p);
+                  if (!av->live) continue;
+                  int i = (int)Position2int(p->pos[0]) - 1;
+                  if (i < 0 || i >= pn->rvals.n || !cg_get_string(pn->rvals[i])) { compat = false; break; }
+                }
+              if (!compat) { ok = false; break; }
+              nil_fn = fun_val;
+              continue;
+            }
+          }
           if (rt && cg_has_classtag(rt) && cg_get_string(rt)) {
             // Merge into a per-class-name branch (clones of one
             // class share a tag; the stored slot pointer
@@ -947,10 +988,35 @@ class CBackendEmitter : public VirtualCGEmitter {
           }
           ok = false;
         }
-        if (ok && recv_str && (classes.n || plains.n)) {
+        if (ok && recv_str && (classes.n || plains.n || nil_fn)) {
           cchar *lhs = (pn->lvals.n && cg_get_string(pn->lvals[0])) ? cg_get_string(pn->lvals[0]) : nullptr;
           cchar *ret_type_str = (pn->lvals.n && pn->lvals[0]->type) ? c_type(pn->lvals[0]) : "void*";
           int nb = 0;
+          if (nil_fn) {
+            // Null test first: it both selects the None method and
+            // keeps the classtag dereferences below null-safe.
+            fprintf(fp, "  if (!%s) {\n", recv_str);
+            fputs("    ", fp);
+            if (lhs) fprintf(fp, "%s = ", lhs);
+            fprintf(fp, "%s(", cg_get_string(nil_fn));
+            int wrote_one = 0;
+            for (MPosition *p : nil_fn->positional_arg_positions) {
+              Var *av = nil_fn->args.get(p);
+              if (!av->live) continue;
+              int i = (int)Position2int(p->pos[0]) - 1;
+              cchar *ft = c_type(av), *at = c_type(pn->rvals[i]);
+              if (wrote_one) fputs(", ", fp);
+              wrote_one = 1;
+              if (!strcmp(ft, at))
+                fputs(cg_get_string(pn->rvals[i]), fp);
+              else if (scalar_ct(ft))
+                fprintf(fp, "(%s)%s", ft, cg_get_string(pn->rvals[i]));
+              else
+                fprintf(fp, "(%s)(void*)%s", ft, cg_get_string(pn->rvals[i]));
+            }
+            fputs(");\n  }\n", fp);
+            nb++;
+          }
           for (int ci = 0; ci < classes.n; ci++, nb++) {
             fprintf(fp, "  %sif ((*(_CG_TypeObject**)(void*)%s) == &_CG_type_%s) {\n", nb ? "else " : "", recv_str,
                     classes[ci]->name);
@@ -986,6 +1052,17 @@ class CBackendEmitter : public VirtualCGEmitter {
           fputs("  else { assert(!\"runtime error: polymorphic dispatch: no branch matched\"); }\n", fp);
           return;
         }
+      }
+      if (getenv("PYC_DBG_DISPATCH")) {
+        fprintf(stderr, "DISPATCH FAIL in %s: fns=%d rvals=%d |", f->sym->name ? f->sym->name : "?",
+                fns ? fns->n : -1, pn->rvals.n);
+        if (fns)
+          for (Fun *fv : *fns)
+            fprintf(stderr, " cand=%s", fv && fv->sym && fv->sym->name ? fv->sym->name : "?");
+        for (int i = 0; i < pn->rvals.n; i++)
+          fprintf(stderr, " r%d=%s:%s", i, pn->rvals[i]->sym->name ? pn->rvals[i]->sym->name : "_",
+                  pn->rvals[i]->type && pn->rvals[i]->type->name ? pn->rvals[i]->type->name : "?");
+        fprintf(stderr, "\n");
       }
       fputs("  assert(!\"runtime error: matching function not found\");\n", fp);
     }

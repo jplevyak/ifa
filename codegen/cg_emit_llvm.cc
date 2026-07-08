@@ -2055,6 +2055,7 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
     // method pointer, so per-creation-site clones keep working.
     Vec<Sym *> classes;
     Vec<int> slots;
+    Fun *nil_fn = nullptr;  // nil-receiver candidate (None method on a nil|record union)
     llvm::Value *recv = nullptr;
     bool ok = true;
     for (int fi = 0; fi < callees->n && ok; fi++) {
@@ -2082,6 +2083,33 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
           }
         }
       }
+      if (!rt) {
+        // Nil-receiver candidate (mirrors cg.cc): a None-class method
+        // reached through a nil|record union (`if not self.field:`
+        // where the field starts as None). None is a NULL pointer at
+        // runtime -- no classtag -- so it dispatches via a null test
+        // emitted before the tag load (which also makes the tag load
+        // null-safe).
+        MPosition np;
+        np.push(1);
+        bool is_nil_recv = false;
+        for (int pi = 0; pi < fun_val->sym->has.n + 2 && !is_nil_recv; pi++) {
+          MPosition *cp = cannonicalize_mposition(np);
+          np.inc();
+          Var *argv = fun_val->args.get(cp);
+          if (!argv || !argv->type) continue;
+          if (argv->type == sym_nil_type) {
+            is_nil_recv = true;
+            int ridx = (int)Position2int(cp->pos[0]) - 1;
+            if (!recv && ridx >= 0 && ridx < pn->rvals.n && pn->rvals[ridx])
+              recv = value_for_var(ctx, pn->rvals[ridx]);
+          }
+        }
+        if (is_nil_recv && !nil_fn && fun_val->cg_string && TheModule->getFunction(fun_val->cg_string)) {
+          nil_fn = fun_val;
+          continue;
+        }
+      }
       if (!rt || !rt->name || rt->is_system_type || !cg_has_classtag(rt)) { ok = false; break; }
       bool found = false;
       for (int ci = 0; ci < classes.n; ci++)
@@ -2097,14 +2125,72 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
     if (res_ty && res_ty->isVoidTy()) res_ty = nullptr;
     llvm::Function *cur_fn = ctx.llvm_fn;
     if (ok && classes.n && recv) {
-      // Load the instance's classtag (slot 0 of any tagged struct).
-      llvm::Value *tag = Builder->CreateLoad(ptr_ty, recv, "classtag");
       llvm::BasicBlock *merge_bb = llvm::BasicBlock::Create(*TheContext, "poly.merge", cur_fn);
       llvm::AllocaInst *res_slot = nullptr;
       if (res_ty) {
         llvm::IRBuilder<> tmp(&cur_fn->getEntryBlock(), cur_fn->getEntryBlock().begin());
         res_slot = tmp.CreateAlloca(res_ty, nullptr, "poly.res");
       }
+      if (nil_fn) {
+        // Null test first: selects the None method and keeps the
+        // classtag load below null-safe.
+        llvm::Function *nlf = TheModule->getFunction(nil_fn->cg_string);
+        llvm::BasicBlock *nil_bb = llvm::BasicBlock::Create(*TheContext, "poly.nil", cur_fn);
+        llvm::BasicBlock *nonnull_bb = llvm::BasicBlock::Create(*TheContext, "poly.nonnull", cur_fn);
+        llvm::Value *isnull = Builder->CreateICmpEQ(
+            recv, llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptr_ty)), "nilcmp");
+        Builder->CreateCondBr(isnull, nil_bb, nonnull_bb);
+        Builder->SetInsertPoint(nil_bb);
+        // Route live non-fun formals from the call-site rvals
+        // (None methods usually ignore self, so this is often empty).
+        std::vector<llvm::Value *> nargs;
+        llvm::FunctionType *nft = nlf->getFunctionType();
+        unsigned nai = 0;
+        MPosition nargp;
+        nargp.push(1);
+        for (int pi = 0; pi < nil_fn->sym->has.n + 2; pi++) {
+          MPosition *cp = cannonicalize_mposition(nargp);
+          nargp.inc();
+          Var *av = nil_fn->args.get(cp);
+          if (!av || !av->live) continue;
+          if (av->type && av->type->is_fun) continue;
+          if (nai >= nft->getNumParams()) break;
+          int i = (int)Position2int(cp->pos[0]) - 1;
+          if (i < 0 || i >= pn->rvals.n) break;
+          llvm::Value *aval = value_for_var(ctx, pn->rvals[i]);
+          if (!aval) break;
+          llvm::Type *pt = nft->getParamType(nai);
+          if (aval->getType() != pt) {
+            if (aval->getType()->isIntegerTy() && pt->isIntegerTy())
+              aval = Builder->CreateSExtOrTrunc(aval, pt);
+            else if (aval->getType()->isPointerTy() && pt->isIntegerTy())
+              aval = Builder->CreatePtrToInt(aval, pt);
+            else if (aval->getType()->isIntegerTy() && pt->isPointerTy())
+              aval = Builder->CreateIntToPtr(aval, pt);
+          }
+          nargs.push_back(aval);
+          nai++;
+        }
+        if (nargs.size() == nft->getNumParams()) {
+          llvm::Value *ncall = Builder->CreateCall(nlf, nargs);
+          if (res_slot && !nlf->getReturnType()->isVoidTy()) {
+            llvm::Value *nres = ncall;
+            if (nres->getType() != res_ty) {
+              if (nres->getType()->isIntegerTy() && res_ty->isIntegerTy())
+                nres = Builder->CreateSExtOrTrunc(nres, res_ty);
+              else if (nres->getType()->isPointerTy() && res_ty->isIntegerTy())
+                nres = Builder->CreatePtrToInt(nres, res_ty);
+              else if (nres->getType()->isIntegerTy() && res_ty->isPointerTy())
+                nres = Builder->CreateIntToPtr(nres, res_ty);
+            }
+            if (nres->getType() == res_ty) Builder->CreateStore(nres, res_slot);
+          }
+        }
+        Builder->CreateBr(merge_bb);
+        Builder->SetInsertPoint(nonnull_bb);
+      }
+      // Load the instance's classtag (slot 0 of any tagged struct).
+      llvm::Value *tag = Builder->CreateLoad(ptr_ty, recv, "classtag");
       for (int ci = 0; ci < classes.n; ci++) {
         llvm::BasicBlock *hit_bb = llvm::BasicBlock::Create(*TheContext, "poly.hit", cur_fn);
         llvm::BasicBlock *next_bb = llvm::BasicBlock::Create(*TheContext, "poly.next", cur_fn);
