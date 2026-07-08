@@ -482,6 +482,19 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       }
       break;
     }
+    case P_prim_copy: {
+      fputs("  ", fp);
+      assert(n->lvals.n == 1);
+      cchar *dst_t = cg_get_string(n->lvals[0]->type);
+      if (cg_get_string(n->lvals[0])) fprintf(fp, "%s = ", cg_get_string(n->lvals[0]));
+      fprintf(fp, "(%s)_CG_prim_copy_dst(%s, ", dst_t, dst_t);
+      for (int i = 2; i < n->rvals.n; i++) {
+        if (i > 2) fprintf(fp, ", ");
+        fputs(cg_get_string(n->rvals[i]), fp);
+      }
+      fputs(");\n", fp);
+      break;
+    }
     case P_prim_clone_vector:
     case P_prim_clone: {
       fputs("  ", fp);

@@ -2007,6 +2007,7 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
         for (CreationSet *cs : thing->out->sorted) creation_point(result, cs->sym->meta_type);  // recover original type
         break;
       }
+      case P_prim_copy:
       case P_prim_clone_vector:
       case P_prim_clone: {
         AVar *thing = make_AVar(p->rvals[o], es);

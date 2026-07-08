@@ -125,4 +125,6 @@ extern Prim *prim_is;
 #define P_prim_is 56
 extern Prim *prim_await;
 #define P_prim_await 57
+extern Prim *prim_copy;
+#define P_prim_copy 58
 #endif

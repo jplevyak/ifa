@@ -1256,7 +1256,8 @@ static bool emit_send_len(EmitCtx &ctx, PNode *pn) {
 static bool emit_send_clone(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim) return false;
   if (pn->prim->index != P_prim_clone &&
-      pn->prim->index != P_prim_clone_vector) return false;
+      pn->prim->index != P_prim_clone_vector &&
+      pn->prim->index != P_prim_copy) return false;
   if (pn->lvals.n < 1) return false;
   Var *dst_var = pn->lvals.v[0];
   if (!dst_var || !dst_var->type) return false;
@@ -1287,7 +1288,7 @@ static bool emit_send_clone(EmitCtx &ctx, PNode *pn) {
   llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
   llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
 
-  if (pn->prim->index == P_prim_clone) {
+  if (pn->prim->index == P_prim_clone || pn->prim->index == P_prim_copy) {
     // Plain clone: GC_malloc(dst_size) + memcpy from src.
     // The materialized emit uses this approach (no runtime
     // call — the `_CG_prim_clone_dst` macro is static inline
@@ -1311,6 +1312,8 @@ static bool emit_send_clone(EmitCtx &ctx, PNode *pn) {
           llvm::ConstantInt::getFalse(*TheContext) });
     // ifa/issues/029/030: populate method-pointer slots for
     // polymorphic dispatch (mirrors cg.cc's P_prim_clone
+    // polymorphic method-pointer installation logic).
+    if (pn->prim->index == P_prim_clone) {
     // emission from cg_new_to_val_map).
     if (Vec<PolymorphicSlot> *pslots = cg_new_to_val_map.get(ctx.fn)) {
       Sym *dt = dst_var->type;
@@ -1324,6 +1327,7 @@ static bool emit_send_clone(EmitCtx &ctx, PNode *pn) {
         llvm::Value *gep = Builder->CreateStructGEP(dst_struct, new_p, llvm_fld(dt, slot));
         Builder->CreateStore(fv, gep);
       }
+    }
     }
     put_result(ctx, dst_var, new_p);
     return true;

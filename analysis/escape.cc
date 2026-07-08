@@ -67,6 +67,7 @@ bool is_fresh_alloc(PNode *p) {
   switch (p->prim->index) {
     case P_prim_make:
     case P_prim_new:
+    case P_prim_copy:
     case P_prim_clone:
     case P_prim_clone_vector:
       return true;
@@ -214,6 +215,7 @@ bool transfer(PNode *p, EntrySet *es) {
         }
         case P_prim_make:
         case P_prim_new:
+        case P_prim_copy:
         case P_prim_clone:
         case P_prim_clone_vector: {
           // Fresh allocation — lval starts at ES_NoEscape
