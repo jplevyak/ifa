@@ -4490,6 +4490,29 @@ static void clear_splits() {
   }
   log(LOG_SPLITTING, "split_for_violations %d\n", analyze_again);
   extend_timer.stop();
+  if (analyze_again) {
+    // Divergence (stall) guard. Split decisions are not idempotent
+    // across passes, so some inputs never reach a fixed point: ess
+    // and violation counts oscillate while per-pass cost grows
+    // superlinearly, making pass_limit unreachable in wall time
+    // (issue 025 compile timeouts). Splitting exists to resolve
+    // violations; if the count hasn't improved on its best in
+    // stall_limit consecutive passes, treat further splitting as
+    // divergence and stop. Zero-violation passes (pure precision
+    // splitting) don't advance the stall counter.
+    int v = fa->type_violations.set_count();
+    if (v > 0) {
+      if (v < fa->best_violations) {
+        fa->best_violations = v;
+        fa->stall_passes = 0;
+      } else if (++fa->stall_passes >= fa->stall_limit) {
+        fa->pass_limit_hit = true;
+        log(LOG_SPLITTING, "STALL LIMIT %d reached at pass %d, %d violations (best %d); stopping\n",
+            fa->stall_limit, analysis_pass, v, fa->best_violations);
+        analyze_again = 0;
+      }
+    }
+  }
   if (analyze_again && analysis_pass > fa->pass_limit) {
     // Splitter wanted another pass but we've hit the configured cap.
     // Force termination, surface the trip on LOG_SPLITTING, and flag
@@ -4510,10 +4533,11 @@ static void clear_splits() {
     double flow = pass_timer.time - extend_timer.time - match_timer.time;
     printf(
         "PASS %d COMPLETE: %f seconds, %f flow (%d%%), %f match (%d%%), %f "
-        "extend (%d%%)\n",
+        "extend (%d%%), %d ess, %d css, %d violations\n",
         analysis_pass, pass_timer.time, flow, (int)(flow * 100.0 / pass_timer.time), match_timer.time,
         (int)(match_timer.time * 100.0 / pass_timer.time), extend_timer.time,
-        (int)(extend_timer.time * 100.0 / pass_timer.time));
+        (int)(extend_timer.time * 100.0 / pass_timer.time), fa->ess.n, fa->css.n,
+        fa->type_violations.set_count());
   }
   if (write_code_exit == analysis_pass) {
     if1_simple_dead_code_elimination(fa->pdb->if1);

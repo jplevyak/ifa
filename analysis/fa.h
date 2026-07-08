@@ -15,6 +15,19 @@
 // (frontends inspect `FA::pass_limit_hit` instead of aborting).
 #define IFA_PASS_LIMIT 100
 
+// Stall guard on the splitting/reanalysis loop. The splitter's
+// decisions are not idempotent across passes (order-dependent split
+// choices, issues 009/021 flavor), so on some inputs the outer loop
+// never reaches a fixed point: EntrySet counts and violations
+// oscillate while per-pass cost grows superlinearly, and
+// IFA_PASS_LIMIT is unreachable in wall time (issue 025 compile
+// timeouts). Splitting exists to RESOLVE violations, so if the
+// violation count hasn't improved on its best in this many
+// consecutive passes, further splitting is treated as divergence and
+// the loop stops (same pass_limit_hit semantics as the hard cap).
+// Passes with zero violations (pure precision splitting) don't count.
+#define IFA_STALL_LIMIT 8
+
 // The contour of module-level (global) variables' shared AVars.
 // Historically a raw sentinel (`(void *)1`), which made every
 // `(EntrySet *)av->contour` deref on a global AVar a latent crash
@@ -458,6 +471,12 @@ class FA : public gc {
   // off. Frontends inspect this to distinguish a converged
   // `type_violations` from a snapshot mid-iteration.
   bool pass_limit_hit;
+  // Divergence guard (see IFA_STALL_LIMIT): consecutive passes the
+  // splitter may run without improving on the best violation count
+  // seen so far before the loop is force-terminated.
+  int stall_limit;
+  int best_violations;  // best (lowest) nonzero-pass violation count seen
+  int stall_passes;     // consecutive passes at or above best_violations
   // Print FA's accumulated type violations to stderr at the end of
   // `FA::analyze`. Default true (production behavior); the test
   // harness sets it to false because fixtures are designed to
@@ -496,6 +515,9 @@ class FA : public gc {
         num_constants_per_variable(1),
         pass_limit(IFA_PASS_LIMIT),
         pass_limit_hit(false),
+        stall_limit(IFA_STALL_LIMIT),
+        best_violations(INT_MAX),
+        stall_passes(0),
         fa_events_enabled(false) {}
 
   int analyze(Fun *f);
