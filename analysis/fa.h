@@ -26,6 +26,9 @@
 // consecutive passes, further splitting is treated as divergence and
 // the loop stops (same pass_limit_hit semantics as the hard cap).
 // Passes with zero violations (pure precision splitting) don't count.
+// This is a MITIGATION; the root cause and the real fix (persistent,
+// keyed, order-independent split decisions) are documented in
+// ifa/issues/033-splitter-non-idempotent-divergence.md.
 #define IFA_STALL_LIMIT 8
 
 // The contour of module-level (global) variables' shared AVars.
