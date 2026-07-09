@@ -367,21 +367,135 @@ landed second, right after stage A, for early corpus relief.
 
 ## D7. Stage F — ordering audit (determinism hardening)
 
-For every container feeding a split decision, ensure canonical
-order before iteration (`qsort_by_id` is the house idiom):
-- `collect_type_confluences` output (fa.cc:3471 — CONFIRMED
-  missing: it ends with `set_to_vec()` and no sort, unlike
-  `collect_es_marked_confluences` which does sort),
-- `collect_violation_imprecisions` output,
-- the `Accum<AVar*> avs` fed to `split_for_setters` (Accum
-  preserves insertion order of a hash-ordered walk — sort it),
-- `split_edges`' `form_MPositionAVar` position lookup is fine
-  (single lookup) but `cs_es_map` construction iterates
-  `av->out->type->sorted` (already sorted — ok),
-- `split_css`'s `starters` (already `qsort_by_id` — ok).
+**Status: audit performed 2026-07-09; two real gaps found and
+fixed, one original claim in this section corrected, one
+hypothesized deeper bug investigated and refuted.** Every
+`collect_*`/`split_*` function feeding `extend_analysis` was read
+end to end and traced against its consumer(s) to determine whether
+consumption is (a) order-independent (membership-only test, or a
+final canonicalizing sort makes traversal order irrelevant) or (b)
+order-sensitive (first-match short-circuit, e.g.
+`split_entry_set`'s `if (es->split) return 0`, or a greedy seed
+like `do_edges[0]`/`starter_set[0]`). Findings, corrected from the
+original draft of this section:
+
+- **`collect_type_confluences` — ORIGINAL CLAIM WAS WRONG.** It
+  already ends with `confluences.set_to_vec(); qsort_by_id
+  (confluences);` (fa.cc:3485-3486) — verified by direct
+  `git blame` (present since Feb 2026, long before this session).
+  No fix needed; correcting the record here since the design doc
+  is meant to be trustworthy source material for whoever implements
+  D1-D6.
+- **`collect_violation_imprecisions` — CONFIRMED, FIXED.** Ended
+  with a bare `imprecisions.set_to_vec();`, no sort. Its output
+  feeds `split_ess_for_type`'s and `split_with_type_marks`'s
+  straight `for (AVar *av : imprecisions)` loops, both of which
+  call `split_entry_set` per element — order determines which
+  `AVar` "drives" a given ES's split this pass (subsequent AVars
+  hitting an already-split ES short-circuit via `es->split`).
+  Fixed: `qsort_by_id(imprecisions);` added (fa.cc, in
+  `collect_violation_imprecisions`).
+- **`collect_cs_setter_confluences` — NEW FINDING, NOT IN THE
+  ORIGINAL LIST, FIXED.** Every sibling collector in this file
+  (`collect_type_confluences`, `collect_cs_marked_confluences`,
+  `collect_es_marked_confluences`, `collect_setter_confluences`)
+  sorts its output; this one didn't. Its sole consumer,
+  `split_for_setters_of_setters`, feeds the result straight into
+  `compute_setters(..., AKIND_SETTER)` — and that function is
+  called every pass from BOTH `extend_analysis` stage 3 and stage
+  4, so this was a live, frequently-exercised gap, not a
+  theoretical one. Doubly notable: the enclosing function already
+  carries a comment describing a PRIOR order-dependence bug fixed
+  in this exact spot (issue 007/032 — confluences vector clobbered
+  across stages) — this collector's missing sort is a sibling
+  defect the 007/032 fix didn't happen to touch. Fixed:
+  `qsort_by_id(setters_confluences);` added (fa.cc, in
+  `collect_cs_setter_confluences`).
+- **The `Accum<AVar*> avs` fed to `split_for_setters` (stages 3
+  and 4) — ORIGINAL CLAIM WAS WRONG; investigated in depth,
+  concluded NO FIX NEEDED.** The original draft asserted this
+  needed sorting. Tracing it fully: `avs`'s insertion order comes
+  from `update_setter`'s recursive backward propagation
+  (fa.cc:3953), which is a **standard memoized reachability
+  closure** — for a fixed setter `s`, the early-return
+  `if (av->setters->in(s)) return 0` only prunes an AVar whose
+  backward recursion has ALREADY completed via some other path (a
+  visited-set check, not a value chosen among competing
+  alternatives), so the final `av->setters` membership is
+  provably independent of traversal order. Its companion,
+  `recompute_eq_classes` (fa.cc:4010), has a general "reparition"
+  code path that WOULD be order-sensitive for a multi-element
+  input, but its one and only call site (`compute_setters`,
+  fa.cc:4048) always passes singleton `Setters` objects, for which
+  that path is unreachable (a singleton either already has a
+  `setter_class` and the function no-ops, or doesn't and gets one
+  assigned with no other element to reparition against). `avs`'s
+  own traversal order therefore doesn't affect what gets computed;
+  its only consumer, `collect_setter_confluences`, already
+  produces sorted, membership-only output regardless. Left
+  unchanged (a code comment could be added here to save the next
+  reader this investigation, but is not required for correctness).
+- `split_edges`'s `all_edges` (fa.cc:3549 `qsort_by_id`) and
+  `cs_es_map` construction over `av->out->type->sorted` (sorted by
+  AType canonicalization) — confirmed fine as originally claimed.
+- `split_entry_set`'s `all_edges` (fa.cc:3609 `qsort_by_id`) —
+  confirmed fine: the edge LIST is canonically ordered, so
+  `do_edges[0]`'s greedy seed is at least deterministic run-to-run.
+  Note this does NOT make the GROUPING outcome itself
+  order-independent of split HISTORY — that's what D1-D4's ledger
+  is for; D7 only guarantees the iteration order feeding the
+  greedy seed is stable, not that the greedy algorithm's grouping
+  choice is optimal or history-independent.
+- `split_css`'s `starters` parameter — confirmed fine: it arrives
+  pre-sorted from its caller (`split_for_setters` passes
+  `collect_setter_confluences`'s already-sorted `setter_starters`),
+  and `split_css`'s own internal `css` local is separately sorted
+  (fa.cc:4131-4132) before its `starter_set[0]` greedy grouping —
+  same caveat as `split_entry_set` above (stable order, not
+  history-independent grouping).
+- **`fa->ess` itself — CONFIRMED foot-gun, FIXED.** Rebuilt every
+  pass by `collect_results()` (fa.cc:3064) from
+  `fa->entry_set_done` in WORKLIST-COMPLETION order (not sorted) —
+  unlike the sibling `fa->css`, which IS sorted two lines later in
+  the same function (fa.cc:3083). Every CURRENT direct consumer of
+  `fa->ess` (`collect_type_confluences`, `collect_cs_marked_
+  confluences`, `collect_cs_setter_confluences`, `collect_var_
+  type_violations`, `fa_coerce_numeric_confluences`,
+  `fa_dump_types`) either canonicalizes its own output before
+  return or performs an order-independent per-(ES,Var) test/action
+  with no cross-element interaction, so this was NOT a live bug —
+  but it was exactly the kind of foot-gun that produces one
+  silently: a future consumer that assumed sorted order (as every
+  sibling collector correctly does) or that performed a greedy/
+  first-match pass directly over `fa->ess` would reintroduce this
+  whole class of bug with no local signal that anything was wrong.
+  Fixed: `qsort_by_id(fa->ess);` added in `collect_results`,
+  immediately after the `fa->ess.add(es)` loop and its `fa->funs`
+  sort, before `fa->css` is derived from `fa->ess` (so `fa->css`'s
+  own construction now also walks `fa->ess` in canonical order,
+  though its output was already independently sorted regardless).
+
 This stage doesn't change what converges; it makes repeated runs
 byte-identical so the issue-003 sidecar fixtures can lock pass
-counts.
+counts. **Verified**: three consecutive `pyc -v` runs of fysphun
+produce IDENTICAL ess/css/violation counts on every pass (only
+wall-clock timing numbers differ in a byte diff) — before this
+fix, this had not been checked run-to-run; re-verified after
+landing the `fa->ess` sort with the same result. Full corpus sweep
+run three times across the three D7 fixes (the two collector
+sorts, then again after the `fa->ess` sort): identical 22-compiled/
+55-failed split each time, same member set (ant, astar, genetic,
+mandelbrot, nbody, neural2 compile clean; bh, block, brainfuck,
+chess, collatz, hq2x, life, mao, neural1, pisang, richards, rsync,
+sudoku1, sudoku4, voronoi, webserver compile with warnings) — no
+regression from any of the three fixes. The two examples that
+showed timeout/warning changes across EARLIER sweep runs (oliva2,
+stereo, from before this D7 work started) were independently
+confirmed to fail IDENTICALLY at the pre-D7 commit (`e7b76a37`)
+across four repeated runs each, ruling out the D7 fixes as the
+cause — they are pre-existing, unrelated gaps (oliva2: a
+primitive-argument type mismatch; stereo: a timeout still gated by
+the stall guard from the mitigation, not touched by D7).
 
 ## D8. What NOT to change
 
@@ -422,12 +536,15 @@ because D5 is advisory and because "finite" can still be "large".)
 | `analysis/fa.cc` `split_for_violations` | non-refinable marking (D6) | ~15 |
 | `analysis/fa.cc` `split_css` | advisory signature map (D5, deferrable) | ~20 |
 | `analysis/fa.cc` `initialize_pass` / PASS print | counter reset + report | ~5 |
-| ordering audit (D7) | sorts at ~4 sites | ~10 |
+| ordering audit (D7) | **DONE** (2026-07-09): `qsort_by_id` added in `collect_violation_imprecisions`, `collect_cs_setter_confluences`, and `collect_results` (`fa->ess`) | 3 lines landed |
 | tests | fa-converge fixture + determinism double-run + corpus greps | — |
 
 Land order: A (record-only) → D6 → B → C → E → (D5 if ever
-needed). Each lands with all three suites (pyc C, pyc LLVM,
-ifa-test) plus the acceptance checks below.
+needed). D7 landed out of order (audit-only, no behavior change
+beyond removing two nondeterminism sources) since it was safe to
+verify independently of the ledger machinery. Each lands with all
+three suites (pyc C, pyc LLVM, ifa-test) plus the acceptance checks
+below.
 
 ## D11. Acceptance checks per landing
 

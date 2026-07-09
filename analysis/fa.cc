@@ -3070,6 +3070,16 @@ static void collect_results() {
   }
   fa->funs.set_to_vec();
   qsort_by_id(fa->funs);
+  // Issue 033 D7: unlike fa->css (sorted a few lines below), fa->ess
+  // was left in fa->entry_set_done's WORKLIST-COMPLETION order. No
+  // current consumer is order-sensitive to it (each either
+  // canonicalizes its own output or performs an order-independent
+  // per-(ES,Var) test), so this wasn't a live bug -- but it was a
+  // foot-gun: any future direct consumer that assumed sorted order,
+  // or ran a greedy/first-match pass over fa->ess, would silently
+  // reintroduce this whole class of nondeterminism. Sort once, here,
+  // rather than re-auditing every future call site.
+  qsort_by_id(fa->ess);
   fa->ess_set.move(fa->entry_set_done);
   // collect css and css_set
   fa->css.clear();
@@ -4253,6 +4263,16 @@ static void collect_cs_setter_confluences(Vec<AVar *> &setters_confluences) {
     }
   }
   setters_confluences.set_to_vec();
+  // Issue 033 D7: every sibling collector in this file
+  // (collect_type_confluences, collect_cs_marked_confluences,
+  // collect_es_marked_confluences, collect_setter_confluences)
+  // sorts its output before returning; this one didn't. Its sole
+  // consumer, split_for_setters_of_setters, feeds the result
+  // straight into compute_setters(..., AKIND_SETTER) -- called every
+  // pass from both extend_analysis stage 3 and stage 4 -- so an
+  // unstable order here was a live, frequently-exercised source of
+  // pass-to-pass nondeterminism, not just a theoretical gap.
+  qsort_by_id(setters_confluences);
 }
 
 [[nodiscard]] static int split_ess_for_type(Vec<AVar *> &imprecisions, int fdynamic) {
@@ -4364,6 +4384,12 @@ static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Ve
     }
   }
   imprecisions.set_to_vec();
+  // Issue 033 D7: canonicalize before split_ess_for_type /
+  // split_with_type_marks iterate this in a first-wins-short-circuit
+  // loop (split_entry_set returns early once es->split is set) --
+  // without a stable order, which AVar "drives" a given ES's split
+  // this pass depends on open-addressed hash-bucket layout.
+  qsort_by_id(imprecisions);
 }
 
 [[nodiscard]] static int split_for_violations(Vec<ATypeViolation *> &violations) {
