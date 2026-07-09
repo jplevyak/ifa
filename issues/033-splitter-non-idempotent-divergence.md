@@ -146,3 +146,300 @@ instead of load-bearing.
 - Removes the risk that stall_limit=8 clips a legitimately slow
   but converging program (none known today; the guard only fires
   on nonzero-violation plateaus).
+
+---
+
+# Detailed implementation design (the split-decision ledger)
+
+Everything below is written to be implementable without prior
+familiarity with the splitter. File/line references are as of
+commit `21dbdad4`.
+
+## D0. Background: how splitting actually works today
+
+Read this first; the design hangs off these five mechanisms.
+
+1. **Contour storage.** EntrySets live in the per-function list
+   `Fun::ess` and are NEVER deleted. The global `fa->ess` is
+   rebuilt every pass by `collect_results()` (fa.cc:3064) from
+   `fa->entry_set_done` — it lists only the ESs *reached* this
+   pass. That is why `fa->ess.n` can DROP between passes while
+   total allocated contours only grow: an oscillation is the flow
+   re-derivation reaching a different subset of `Fun::ess` each
+   pass.
+
+2. **Edge → ES routing.** When an `AEdge` needs a target,
+   `make_entry_set` (fa.cc:1052) tries, in order:
+   `check_split(e, ...)` (fa.cc:1031 — follows
+   `e->from->split->out_edge_map` when the caller ES was itself
+   split this pass), then `find_best_entry_sets` (scores every
+   existing ES of the callee via `entry_set_compatibility`, which
+   consults `EntrySet::filters` through `check_edge`), then
+   creates a fresh ES.
+
+3. **Split path A — filtered (already half-keyed).**
+   `split_edges` (fa.cc:3546, the `SPLIT_DYNAMIC` route) builds a
+   `Map<MPosition*, AType*> filters` per receiver CreationSet and
+   calls `find_or_make_filtered_entry_set` (fa.cc:3536), which
+   REUSES an existing ES of the function whose filters are
+   compatible (`!some_disjunction`) and only otherwise allocates
+   (recording the filters on the new ES). This path has a natural
+   persistent key; its defect is only that nothing stops the same
+   confluence from being re-collected and re-acted-on after
+   `clear_results()`.
+
+4. **Split path B — greedy grouping (the unkeyed one).**
+   `split_entry_set` (fa.cc:3598) partitions an ES's incoming
+   edges into pairwise-compatible groups
+   (`edge_type_compatible_with_edge`), seeds each group from
+   `do_edges[0]` (greedy — group shape depends on iteration
+   order), and parks each group in a NEW bare ES via
+   `make_entry_set(x, ..., es, e->to)`. The only record is
+   `new_es->split = orig_es`, which `clear_splits()` erases at the
+   start of the next `extend_analysis`. Nothing prevents the next
+   pass from regrouping the same edges differently.
+
+5. **CS splits.** `split_css` (fa.cc:~4130) groups a CreationSet's
+   defs by setter-equivalence (`same_eq_classes(v->setters, ...)`)
+   and moves each group into a `new CreationSet(cs)` with
+   `new_cs->split = cs`. Same per-pass amnesia as path B. NOTE:
+   setter objects are hash-consed in
+   `type_world.cannonical_setters`, which `clear_results()`
+   CLEARS — setter pointers are therefore unusable in any
+   cross-pass key.
+
+**Stable-identity inventory** (safe to key on across passes):
+`Fun*`, `Sym*`, `Var*`, `PNode*`, `MPosition*` (globally interned,
+pattern.h), and `AType*` (hash-consed in
+`type_world.cannonical_atypes`, which `clear_results()` does NOT
+clear — verify: fa.cc:3861 clears only `cannonical_setters`).
+**Unstable** (never key on): `EntrySet*`/`CreationSet*` contents,
+`AVar->out` object identity mid-pass, setters, anything cleared by
+`clear_avar`/`clear_es`/`clear_cs`.
+
+## D1. The ledger data structure
+
+Add to `FA` (fa.h), next to the type_world:
+
+```cpp
+// Issue 033: persistent record of split decisions, so re-running
+// the splitter over a re-derived flow state is idempotent.
+// Key components are all interned/stable (see issue 033 D0):
+// fun, the FAPassStage that made the split, the argument
+// position driving it, and the canonical AType partition
+// assigned to the product contour. Never cleared between passes
+// (only in FA::initialize / a fresh analyze()).
+struct SplitDecision {
+  Fun *fun;
+  int stage;          // FAPassStage of the split site
+  MPosition *pos;     // confluence/dispatch position (interned)
+  AType *partition;   // canonical (cannonical_atypes) filter type
+  int pass_made;      // analysis_pass at record time (diagnostics)
+  EntrySet *product;  // ES created/selected (nullptr for CS splits)
+};
+```
+
+Hashing: all four key fields are pointers with stable identity.
+Use the house position-sensitive accumulation idiom (see the AType
+hash in fa.cc ~590: `h += (uint)(intptr_t)ptr *
+open_hash_primes[i % 256]`, primes from common/vec.h:188) over the
+four fields, into a `ChainHash` (the `cannonical_atypes` pattern,
+fa.h:410) or a plain `Map<uintptr_t, Vec<SplitDecision*>>`;
+collisions resolved by comparing the four fields. Add:
+
+```cpp
+  SplitDecision *ledger_find(Fun*, int stage, MPosition*, AType*);
+  SplitDecision *ledger_add (Fun*, int stage, MPosition*, AType*, EntrySet*);
+  int dup_split_attempts;   // per-pass diagnostic counter
+```
+
+Debug-assert on insert that `partition` is canonical:
+`assert(partition == fa->type_world.cannonical_atypes.put(partition))`.
+
+## D2. Stage A — record-only + observability (land first, no behavior change)
+
+1. Thread `int stage` (the `FAPassStage` values already defined for
+   the issue-003 sidecar) into `split_edges`, `split_entry_set`,
+   and `find_or_make_filtered_entry_set` call sites.
+2. In `find_or_make_filtered_entry_set`: for each (position,
+   AType) pair in `filters` that differs from `orig_es->filters`,
+   probe the ledger. On miss: `ledger_add`. On hit:
+   `++fa->dup_split_attempts` (do NOT change behavior yet).
+3. In `split_entry_set`, when a group lands in a new ES
+   (`x->to != es` after `make_entry_set`): compute the group's
+   partition (see D4) and record/probe the same way.
+4. Print `dup_splits=%d` in the `-v` PASS line (fa.cc:4509)
+   and reset the counter in `initialize_pass`.
+
+Acceptance for stage A: suites unchanged (record-only);
+`pyc -v fysphun.py` shows `dup_splits > 0` beginning around pass 8
+(the plateau) — this validates the key shape against the real
+divergence before any enforcement. If dup_splits stays 0 on
+fysphun, the key is wrong — stop and re-derive (most likely the
+partition ATypes differ across passes because constants haven't
+been stripped; see D4 note).
+
+## D3. Stage B — enforce on the filtered path (SPLIT_DYNAMIC)
+
+In `split_edges` (fa.cc:3546), before building `cs_es_map`:
+
+```cpp
+// Probe: have we already split this fun at this position for
+// this receiver partition? If every receiver CS's key hits, the
+// contours already exist; routing is find_best_entry_sets' job.
+bool all_known = true;
+for (CreationSet *cs : av->out->type->sorted)
+  if (!fa->ledger_find(es->fun, stage, p, make_AType(cs))) { all_known = false; break; }
+if (all_known) { ++fa->dup_split_attempts; return 0; }
+```
+
+and record each miss when its ES is made. `make_AType(cs)`
+(fa.cc:219, decl fa.h:577) returns the canonical singleton, so the
+key matches across passes as long as the receiver CS set is the
+same — which
+is exactly the "no new information" case we want to stop acting
+on. If the CS set grew (new CS from a CS split), its key misses
+and the split proceeds: that is the legitimate-refinement case.
+
+## D4. Stage C — put split_entry_set's groups on filters
+
+This is the core change. In `split_entry_set`'s group loop
+(fa.cc:3652), replace the bare
+`make_entry_set(x, new_edges, es, e->to)` parking with:
+
+1. Find the confluence position `p` for `av` in `es->args` (the
+   same `form_MPositionAVar` lookup `split_edges` uses; hoist it).
+2. For the group `these_edges`, compute the partition:
+   `AType *part = bottom; for (x : these_edges) part =
+   type_union(part, x->args.get(p)->out->type)`. Note the `->type`
+   accessor: every canonical AType carries its CONSTANT-STRIPPED
+   view (computed during canonicalization, fa.cc ~570-600), and
+   both `split_edges` and the compatibility predicates already
+   key off it. Using the raw `->out` instead would make partitions
+   pass-unstable (constant CSs like "3" vs int64 re-derive
+   differently under the constant cap) — this is the most likely
+   silent mistake in the whole implementation; the stage-A
+   dup-counter check on fysphun exists to catch exactly it.
+3. Probe ledger with (es->fun, stage, p, part). Hit: do NOT make
+   a new ES; instead route the group's edges to the hit's
+   `product` ES via `set_entry_set` (it exists — product ESs are
+   never deleted) and count `dup_split_attempts`. Miss:
+   `filters = es->filters + (p -> part)`, call
+   `find_or_make_filtered_entry_set(es, filters)`, route the
+   group there, and `ledger_add(..., product)`.
+4. Keep `new_es->split = orig_es` exactly as today (check_split
+   and the intra-pass short-circuits depend on it).
+
+The greedy group SEEDING stays, but becomes harmless: whatever
+order groups form in, each group's (position, partition) key is
+canonical, so a re-derived pass either reproduces the same keys
+(all hit; zero new contours) or produces genuinely refined ones.
+
+## D5. Stage D — CS splits
+
+Key shape for `split_css`: (`cs->sym`, stage, position = nullptr,
+partition = canonical AType of the compatible_set's VALUE types)
+is NOT sufficient — two def-groups can share value types and
+differ only by setters, and setters aren't stable. Use instead the
+sorted def-Var identity signature: hash of the sorted
+`v->var->sym->id` list of `compatible_set`, stored in a parallel
+FA-level `Map<uintptr_t, int>` (advisory, CS-only ledger). On
+re-derivation the same def partition hashes identically; a hit
+skips the split. This is deliberately weaker (advisory only) —
+if stage A observation shows CS splits are not a driver of the
+fysphun-class divergence (expected: the trace shows css stops
+growing at 578 while ess oscillates), stage D can be deferred
+indefinitely.
+
+## D6. Stage E — split_for_violations non-refinability
+
+Add `Map<Var *, int> violation_split_attempts` to FA (persistent).
+In `split_for_violations` (fa.cc:4369): for each imprecision AVar
+`av`, bump `violation_split_attempts[av->var]`. If the count
+exceeds 2 (two full split attempts for the same underlying Var
+that both failed to remove its violation), drop it from
+`imprecisions` before splitting and log
+`LOG_SPLITTING "[nonrefinable] var %d"`. Key on `Var*` (stable),
+not `AVar*` (contour pointer changes as ESs are superseded).
+This directly kills the stage-5 "manufacture contours forever"
+arm even before stages C/D land, and is ~15 lines — it can be
+landed second, right after stage A, for early corpus relief.
+
+## D7. Stage F — ordering audit (determinism hardening)
+
+For every container feeding a split decision, ensure canonical
+order before iteration (`qsort_by_id` is the house idiom):
+- `collect_type_confluences` output (fa.cc:3471 — CONFIRMED
+  missing: it ends with `set_to_vec()` and no sort, unlike
+  `collect_es_marked_confluences` which does sort),
+- `collect_violation_imprecisions` output,
+- the `Accum<AVar*> avs` fed to `split_for_setters` (Accum
+  preserves insertion order of a hash-ordered walk — sort it),
+- `split_edges`' `form_MPositionAVar` position lookup is fine
+  (single lookup) but `cs_es_map` construction iterates
+  `av->out->type->sorted` (already sorted — ok),
+- `split_css`'s `starters` (already `qsort_by_id` — ok).
+This stage doesn't change what converges; it makes repeated runs
+byte-identical so the issue-003 sidecar fixtures can lock pass
+counts.
+
+## D8. What NOT to change
+
+- `clear_splits` / `EntrySet::split` / `check_split`: intra-pass
+  routing machinery; the ledger complements it, does not replace
+  it.
+- `find_best_entry_sets` scoring: product ESs carry filters, so
+  existing compatibility logic already prefers them.
+- The stall guard: keep as a safety net. After stages A–E it
+  should never fire; add `assert(!fa->pass_limit_hit)` to the
+  fa-converge FIXTURES only (not production) to catch regressions.
+- `reanalyze` scheduling: unchanged; with splitting idempotent the
+  splitter reports no-work as soon as contours stabilize, and the
+  annotator runs as designed.
+
+## D9. Termination argument (for the reviewer)
+
+With enforcement on, a split happens only under a ledger MISS.
+Every key's partition either equals a previous pass's (hit — no
+work) or is new. New keys require new canonical ATypes at the
+position, which requires the CS universe or the flow state at the
+confluence to have genuinely changed. CS growth is bounded by
+`split_css`'s def partitions (each split strictly shrinks
+`cs->defs`, well-founded), and per-(fun, pos) partitions are
+subsets of the CS universe, so the key space is finite for a
+finite CS universe. Total splits are therefore finite; the outer
+loop terminates without the stall guard. (The stall guard stays
+because D5 is advisory and because "finite" can still be "large".)
+
+## D10. Change inventory & sizing
+
+| File | Change | Est. |
+|---|---|---|
+| `analysis/fa.h` | SplitDecision, FA::ledger fields + 2 methods, dup counter | ~60 lines |
+| `analysis/fa.cc` `find_or_make_filtered_entry_set` | probe/record | ~20 |
+| `analysis/fa.cc` `split_edges` | all-known probe (D3) | ~15 |
+| `analysis/fa.cc` `split_entry_set` | group partition + filters routing (D4) | ~50 |
+| `analysis/fa.cc` `split_for_violations` | non-refinable marking (D6) | ~15 |
+| `analysis/fa.cc` `split_css` | advisory signature map (D5, deferrable) | ~20 |
+| `analysis/fa.cc` `initialize_pass` / PASS print | counter reset + report | ~5 |
+| ordering audit (D7) | sorts at ~4 sites | ~10 |
+| tests | fa-converge fixture + determinism double-run + corpus greps | — |
+
+Land order: A (record-only) → D6 → B → C → E → (D5 if ever
+needed). Each lands with all three suites (pyc C, pyc LLVM,
+ifa-test) plus the acceptance checks below.
+
+## D11. Acceptance checks per landing
+
+- **A**: suites green; fysphun `-v` shows nonzero dup_splits on
+  the plateau; dup_splits == 0 on 5 converging tests (e.g.
+  fibheap_full, expr_evaluator, richards) — if converging tests
+  show dups, the key is too coarse (would enforce wrongly later).
+- **D6**: kmeanspp/pylife pass counts drop; no suite change.
+- **B/C**: fysphun/kmeanspp/pylife: ess monotone nondecreasing
+  across passes (grep the `-v` trail), stall guard no longer
+  fires (`STALL LIMIT` absent from logs), outcomes unchanged or
+  improved; full corpus sweep bucket counts not worse anywhere.
+- **E**: two consecutive full runs of the ifa-test fixtures
+  produce byte-identical sidecar event streams (issue 003
+  machinery gives this for free — extend the harness to diff).
