@@ -1916,7 +1916,13 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
                 bool all_bare = fnpart != fa->type_world.bottom_type;
                 for (CreationSet *fcs : fnpart->sorted) {
                   Fun *ff = fcs->sym->fun;
-                  if (!ff || ff->sym->self || (ff->sym->in && !ff->sym->in->is_fun)) { all_bare = false; break; }
+                  if (!ff) { all_bare = false; break; }
+                  // issue 027 feature: @staticmethod lives in a class
+                  // scope like a method but takes NO receiver -- reads
+                  // through an instance must flow the raw function
+                  // value unbound, overriding the class-scope test.
+                  if (ff->sym->is_static_method) continue;
+                  if (ff->sym->self || (ff->sym->in && !ff->sym->in->is_fun)) { all_bare = false; break; }
                 }
                 if (all_bare) {
                   flow_var_type_permit(result, iv->out);

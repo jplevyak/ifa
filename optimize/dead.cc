@@ -168,11 +168,15 @@ static void mark_live_pnodes(FA *fa) {
                     for (Var *v : f->rets) if (v->live) goto Live;
                     break;
                   case P_prim_setter: {
-                    if (forward_live(p->tvals.v[0])) goto Live;
+                    // tvals can be empty when FA never completed this
+                    // send's analysis (programs with type violations
+                    // proceed under fruntime_errors); an unanalyzed
+                    // setter has no target to keep live.
+                    if (p->tvals.n && forward_live(p->tvals.v[0])) goto Live;
                     break;
                   }
                   case P_prim_set_index_object: {
-                    if (forward_live(p->tvals.v[0])) goto Live;
+                    if (p->tvals.n && forward_live(p->tvals.v[0])) goto Live;
                     break;
                   }
                 }

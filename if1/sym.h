@@ -80,6 +80,17 @@ class BasicSym : public gc {
   unsigned int is_this : 1;         // Sym is "this" (member function "target")
   unsigned int is_fake : 1;         // Sym not necessary at run time
   unsigned int is_async : 1;        // Sym is an async function
+  unsigned int is_static_method : 1;  // fun Sym: class-scope function with NO
+                                      // receiver (Python @staticmethod / C++-
+                                      // style static). Stored as a prototype
+                                      // field like any method, but reads
+                                      // through an instance must flow the raw
+                                      // function value UNBOUND (P_prim_period's
+                                      // bare-value rule) instead of binding
+                                      // the receiver.
+  unsigned int is_class_method : 1;   // fun Sym: Python @classmethod -- first
+                                      // formal receives the CLASS value the
+                                      // call was made through, not an instance.
 
   unsigned int intent : 2;  // Sym is "in", "inout", or "out"
 

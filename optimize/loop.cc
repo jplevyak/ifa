@@ -178,9 +178,14 @@ void find_recursive_loops(FA *fa) {
   for (Fun *f : fa->funs) {
     Vec<Fun *> calls;
     f->calls_funs(calls);
-    for (Fun *ff : calls) f->loop_node->succ.add(ff->loop_node);
+    // Callees/callers outside fa->funs (dead or unanalyzed under
+    // fruntime_errors -- programs with type violations proceed) never
+    // got a loop_node above; a null edge here segfaults
+    // LoopGraph::find later. Only live funs participate in loop
+    // detection.
+    for (Fun *ff : calls) if (ff->loop_node) f->loop_node->succ.add(ff->loop_node);
     f->called_by_funs(calls);
-    for (Fun *ff : calls) f->loop_node->pred.add(ff->loop_node);
+    for (Fun *ff : calls) if (ff->loop_node) f->loop_node->pred.add(ff->loop_node);
     for (Dom *ff : f->dom->children) f->loop_node->dom_children.add(((Fun *)ff->node)->loop_node);
   }
   g->entry = fa->pdb->if1->top->fun->loop_node;
