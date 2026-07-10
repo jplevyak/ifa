@@ -3852,7 +3852,11 @@ static void build_type_marks(AVar *av, Accum<AVar *> &acc) {
 static void build_setter_mark(AVar *av, AVar *x, int mark = 1) {
   int m = av->mark_map ? av->mark_map->get(x) : 0;
   if (!m) {
-    if (!av->setters->set_in(x)) return;
+    // The backward recursion below reaches arbitrary AVars; null
+    // setters means "empty" (same guard as build_setter_marks'
+    // loops). Unguarded, this was an ASLR-dependent crash: pylife
+    // segfaulted here on ~4 of 5 runs (null this in Vec::set_in).
+    if (!av->setters || !av->setters->set_in(x)) return;
     if (!av->mark_map) av->mark_map = new MarkMap;
     av->mark_map->put(x, mark);
   } else if (m > mark)
