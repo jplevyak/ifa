@@ -127,9 +127,10 @@ typedef BlockHash<AEdge *, AEdgeHashFns> EdgeHash;
 
 class PendingMapHash {
  public:
-  static uint hash(AEdge *e) {
-    return (uint)(uintptr_t)e->fun + combine_hash((uintptr_t)e->pnode, (uintptr_t)e->from);
-  }
+  // Issue 035: hash the key CONTENT by ids, not raw pointers, so
+  // bucket layout (and any iteration over the pending map) is
+  // deterministic across runs.
+  static uint hash(AEdge *e);
   static int equal(AEdge *a, AEdge *b) { return (a->fun == b->fun) && (a->pnode == b->pnode) && (a->from == b->from); }
 };
 

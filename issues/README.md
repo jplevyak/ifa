@@ -82,11 +82,16 @@ that:
   `update_display` assert on pygasus, undiagnosed; unmasked
   (not introduced) by the 033 stall guard.
 - [035-nondeterministic-codegen-clone-order.md](035-nondeterministic-codegen-clone-order.md) —
-  **BLOCKER**: clone/codegen output depends on heap layout —
-  back-to-back identical compiles emit different `.c`, and some
-  layouts bind callers to the wrong type specialization (int
-  printed as float bits). Gates all analysis-side work, incl.
-  033 stage C (branch `issue033-stage-c`).
+  heap-layout-dependent compiles (different `.c` per run, some
+  layouts miscompiling): **FIXED 2026-07-10** — twelve defects
+  from SSU liveness through clone to codegen; determinism sweep
+  36 → 0 flaky tests. Open only for the harness double-compile
+  gate and the issue033-stage-c revalidation.
+- [036-llvm-phy-lowering-wrong-value.md](036-llvm-phy-lowering-wrong-value.md) —
+  v2 LLVM backend miscompiles expr_evaluator (returns 0 for 6)
+  now that complete liveness places more phys; C backend lowers
+  the same IR correctly. Deterministic repro; the one remaining
+  suite failure.
 
 ## Closed (archive)
 

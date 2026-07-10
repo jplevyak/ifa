@@ -6,7 +6,7 @@
   fun __main__ live=1/1 pnodes=0/12 vars=0/25
 )
 
-(types live=0 dead=102)
+(types live=0 dead=108)
 
 (live-funs
   __main__: live

@@ -57,6 +57,16 @@ template <> struct PointerHash<Var *> {
   static uintptr_t hash(Var *c) { return c ? (uintptr_t)c->id : 0; }
 };
 
+// Id-based hash/equal fns for BlockHash/ChainHash-style containers
+// of Var* (issue 035: raw-pointer hashing made iteration order — and
+// through ssu.cc's liveness fixpoint, analysis RESULTS — follow heap
+// layout across runs).
+class VarIdHashFns {
+ public:
+  static uintptr_t hash(Var *v) { return v ? (uintptr_t)v->id : 0; }
+  static int equal(Var *a, Var *b) { return a == b; }
+};
+
 #define form_AVarMapElem(_p, _v) form_Map(AVarMapElem, _p, _v)
 
 void pp(Var *);

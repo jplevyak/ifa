@@ -2,6 +2,7 @@
 #include "fail.h"
 #include "fun.h"
 #include "if1.h"
+#include "ifalog.h"
 #include "pdb.h"
 #include "pnode.h"
 

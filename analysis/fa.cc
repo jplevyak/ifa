@@ -108,6 +108,11 @@ static void record_fa_event(FAPassStage stage, int splits, int ess_before, int c
 
 AEdge::AEdge() : from(nullptr), to(nullptr), pnode(nullptr), fun(nullptr), match(nullptr), in_edge_worklist(0) { id = fa->aedge_id++; }
 
+uint PendingMapHash::hash(AEdge *e) {
+  return (uint)(uintptr_t)(e->fun ? e->fun->id : 0) +
+         combine_hash((uintptr_t)(e->pnode ? e->pnode->id : 0), (uintptr_t)(e->from ? e->from->id : 0));
+}
+
 AVar::AVar(Var *v, void *acontour)
     : var(v),
       contour(acontour),
@@ -294,7 +299,13 @@ static void propagate_out_change(AVar *v) {
       fa->es_worklist.enqueue(es);
     }
   }
-  for (AVar *vv : v->forward) if (vv) update_in(vv, v->out);
+  // Issue 035: forward is an open-hash set — cascading update_in
+  // in bucket (heap-layout) order lets the constant-cap's
+  // order-sensitive union reach different fixpoints run to run.
+  Vec<AVar *> fwd;
+  for (AVar *vv : v->forward) if (vv) fwd.add(vv);
+  if (fwd.n > 1) qsort_by_id(fwd);
+  for (AVar *vv : fwd) update_in(vv, v->out);
 }
 
 // Issue 025 numeric unification: map every numeric CS of a type
@@ -1025,13 +1036,22 @@ static bool check_edge(AEdge *e, EntrySet *es) {
 static int check_split(AEdge *e, Vec<AEdge *> &ees) {
   if (!e->from) return 0;
   if (Vec<EntrySet *> *ess = e->from->pending_es_backedge_map.get(e)) {
-    for (EntrySet *es : *ess) set_or_copy_AEdge(e, es, ees);
+    // Issue 035: hash-set Vec — copy_AEdge creation order (edge
+    // ids, schedule) must not follow heap layout.
+    Vec<EntrySet *> sorted_ess;
+    for (EntrySet *es : *ess) if (es) sorted_ess.add(es);
+    qsort_by_id(sorted_ess);
+    for (EntrySet *es : sorted_ess) set_or_copy_AEdge(e, es, ees);
     return 1;
   }
   if (e->from->split) {
     Vec<AEdge *> *m = e->from->split->out_edge_map.get(e->pnode);
     if (m) {
-      for (AEdge *ee : *m) if (ee) {
+      // Issue 035: same — first-match routing over a hash-set Vec.
+      Vec<AEdge *> sorted_m;
+      for (AEdge *ee : *m) if (ee) sorted_m.add(ee);
+      qsort_by_id(sorted_m);
+      for (AEdge *ee : sorted_m) if (ee) {
         if (!check_edge(e, ee->to)) continue;
         if (ee->match->fun == e->match->fun) {
           if (e->match->fun->split_unique || !edge_nest_compatible_with_entry_set(e, ee->to)) {
@@ -1355,6 +1375,11 @@ static void get_AEdges(Fun *f, PNode *p, EntrySet *from, Vec<AEdge *> &edges) {
   for (AEdge *e : *ve) if (e) {
     if (f == e->fun) edges.add(e);
   }
+  // Issue 035: ve is a hash set — when several split-product edges
+  // exist for this (pnode, fun), its iteration order follows heap
+  // layout, and make_AEdges ENQUEUES in this order, making the
+  // whole flow schedule (and AVar id assignment) run-dependent.
+  qsort_by_id(edges);
   if (!edges.n) {
     AEdge *e = new_AEdge(f, p, from);
     ve->set_add(e);
@@ -2529,28 +2554,52 @@ static AVar *get_filtered(AEdge *e, MPosition *p, AVar *av) {
   return filtered;
 }
 
+// Issue 035: canonical order for an edge's positional arg
+// positions. form_MPositionAVar walks the args Map in bucket
+// order, which follows the interned MPositions' ADDRESSES (ASLR),
+// and analyze_edge's arg loop CREATES the formal/filtered AVars —
+// so bucket order set the AVar id-assignment order and made every
+// downstream qsort_by_id canonicalization run-dependent (issue 035:
+// FA trajectories, clone sets, and generated C varied between
+// identical runs). Positional position paths are int-encoded
+// (int2Position), so ordering by path is layout-independent.
+static int compar_mposition_path(const void *a, const void *b) {
+  MPosition *x = *(MPosition **)a, *y = *(MPosition **)b;
+  int n = x->pos.n < y->pos.n ? x->pos.n : y->pos.n;
+  for (int i = 0; i < n; i++) {
+    uintptr_t xi = (uintptr_t)x->pos[i], yi = (uintptr_t)y->pos[i];
+    if (xi != yi) return xi < yi ? -1 : 1;
+  }
+  return x->pos.n - y->pos.n;
+}
+
+static void positional_arg_positions_in_order(AEdge *e, Vec<MPosition *> &out) {
+  form_MPositionAVar(x, e->args) if (x->key->is_positional()) out.add(x->key);
+  if (out.n > 1) qsort(out.v, out.n, sizeof(out[0]), compar_mposition_path);
+}
+
 static void analyze_edge(AEdge *e_arg) {
   Vec<AEdge *> edges;
   make_entry_set(e_arg, edges);
   qsort_by_id(edges);
   for (AEdge *ee : edges) {
     int regular_rets = ee->pnode->lvals.n;
+    Vec<MPosition *> arg_positions;
+    positional_arg_positions_in_order(ee, arg_positions);
     // verify filters
-    form_MPositionAVar(x, ee->args) {
-      if (!x->key->is_positional()) continue;
-      AType *filter = ee->match->formal_filters.get(x->key);
-      AType *es_filter = ee->to->filters.get(x->key);
+    for (MPosition *p : arg_positions) {
+      AVar *actual = ee->args.get(p);
+      AType *filter = ee->match->formal_filters.get(p);
+      AType *es_filter = ee->to->filters.get(p);
       if (filter) {
         if (es_filter) filter = type_intersection(filter, es_filter);
       } else
         filter = es_filter;
-      if (filter && type_intersection(x->value->out, filter) == fa->type_world.bottom_type) goto LskipEdge;
+      if (filter && type_intersection(actual->out, filter) == fa->type_world.bottom_type) goto LskipEdge;
     }
     if (ee->from) ee->from->out_edges.set_add(ee);
-    form_MPositionAVar(x, ee->args) {
-      if (!x->key->is_positional()) continue;
-      MPosition *p = x->key;
-      AVar *actual = x->value, *formal = make_AVar(ee->to->fun->args.get(p), ee->to),
+    for (MPosition *p : arg_positions) {
+      AVar *actual = ee->args.get(p), *formal = make_AVar(ee->to->fun->args.get(p), ee->to),
            *filtered = get_filtered(ee, p, formal);
       AType *edge_filter = ee->match->formal_filters.get(p);
       if (!edge_filter) continue;
@@ -3559,8 +3608,26 @@ static void collect_es_marked_confluences(Vec<AVar *> &confluences, Accum<AVar *
   qsort_by_id(confluences);
 }
 
+// Issue 035: canonical order for pending-map iteration. The map
+// buckets by RAW pointers (PendingMapHash over fun/pnode/from), so
+// form_Map order follows heap layout — and record_backedges CREATES
+// AEdges in that order, making edge ids (the key every qsort_by_id
+// canonicalization sorts on) run-dependent.
+static int compar_pending_key(const void *a, const void *b) {
+  AEdge *x = (*(MapElemAEdgeEntrySets **)a)->key, *y = (*(MapElemAEdgeEntrySets **)b)->key;
+  int i = x->fun ? x->fun->id : 0, j = y->fun ? y->fun->id : 0;
+  if (i != j) return i < j ? -1 : 1;
+  i = x->pnode ? x->pnode->id : 0, j = y->pnode ? y->pnode->id : 0;
+  if (i != j) return i < j ? -1 : 1;
+  i = x->from ? x->from->id : 0, j = y->from ? y->from->id : 0;
+  return (i > j) ? 1 : ((i < j) ? -1 : 0);
+}
+
 static void record_backedges(AEdge *e, EntrySet *es, PendingAEdgeEntrySetsMap &up_map) {
-  form_Map(MapElemAEdgeEntrySets, m, up_map) {
+  Vec<MapElemAEdgeEntrySets *> elems;
+  form_Map(MapElemAEdgeEntrySets, m, up_map) elems.add(m);
+  if (elems.n > 1) qsort(elems.v, elems.n, sizeof(elems[0]), compar_pending_key);
+  for (MapElemAEdgeEntrySets *m : elems) {
     if (m->key->from == es)
       map_set_add(e->to->pending_es_backedge_map, new_AEdge(m->key->fun, m->key->pnode, e->to), m->value);
     else
@@ -3687,7 +3754,12 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
   for (AEdge *ee : all_edges) if (ee) {
     if (!ee->from) continue;
     nedges++;
-    pending_es_backedge_map.map_union(ee->from->pending_es_backedge_map);
+    // Issue 035: was map_union, which routed through the BASE
+    // Map::put (pointer-equality keys) on this content-keyed
+    // HashMap AND replaced the value vec on hit; merge each entry
+    // through the content-correct map_set_add instead.
+    form_Map(MapElemAEdgeEntrySets, x, ee->from->pending_es_backedge_map) if (x->key)
+        map_set_add(pending_es_backedge_map, x->key, x->value);
     if (!fsetters ? is_es_recursive(ee) : is_es_cs_recursive(ee)) continue;
     non_rec_edges++;
     if (!fsetters) {
@@ -5168,6 +5240,12 @@ void collect_types_and_globals(FA *fa, Vec<Sym *> &typesyms, Vec<Var *> &globals
   }
   typesyms.set_to_vec();
   globals.set_to_vec();
+  // Issue 035: both sets accumulate over raw pointers, so
+  // set_to_vec yields heap-layout order — and codegen numbers
+  // globals (g%d) and emits type declarations in iteration order,
+  // making the generated C vary between identical runs.
+  qsort_by_id(typesyms);
+  qsort_by_id(globals);
 }
 
 // to be called from the debugger

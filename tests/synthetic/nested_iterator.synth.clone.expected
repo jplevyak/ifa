@@ -1,6 +1,6 @@
 ;; phase: clone
 
-(summary fa_rc=-1 clone_rc=0 funs=7 css=29 ess=11)
+(summary fa_rc=-1 clone_rc=0 funs=9 css=29 ess=11)
 
 (cs-equiv
   class[(anon)] members=1 type=int32
@@ -29,11 +29,13 @@
 )
 
 (es-equiv
-  fun __getitem__ ess=2 equiv-classes=0
-  fun __getitem__ ess=2 equiv-classes=0
+  fun __getitem__ ess=1 equiv-classes=1
+  fun __getitem__ ess=2 equiv-classes=1
+  fun __getitem__ ess=1 equiv-classes=1
   fun __main__ ess=1 equiv-classes=1
-  fun __setitem__ ess=2 equiv-classes=0
-  fun __setitem__ ess=2 equiv-classes=0
+  fun __setitem__ ess=1 equiv-classes=1
+  fun __setitem__ ess=2 equiv-classes=1
+  fun __setitem__ ess=1 equiv-classes=1
   fun consume_outer ess=1 equiv-classes=1
   fun consume_outer ess=1 equiv-classes=1
 )
@@ -48,9 +50,9 @@
     pnode-send → consume_outer
   fun consume_outer
     pnode-send → __getitem__
-    pnode-send → __getitem__
+    pnode-send → __getitem__ __getitem__
   fun consume_outer
-    pnode-send → __getitem__
+    pnode-send → __getitem__ __getitem__
     pnode-send → __getitem__
 )
 

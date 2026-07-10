@@ -5,6 +5,7 @@
 #include "fail.h"
 #include "fun.h"
 #include "if1.h"
+#include "ifalog.h"
 #include "pnode.h"
 #include "prim.h"
 #include "var.h"
@@ -66,13 +67,21 @@ static inline int maybe_live(PNode *n, Var *v) { return n->live_vars->get(v) != 
 
 static int merge_live(PNode *n, PNode *p) {
   int changed = 0;
-  for (Var *v : *p->live_vars) if (v) if (!n->lvals.in(v)) changed = !n->live_vars->put(v);
+  // Issue 035 root cause: this was `changed = !put(v)` — plain
+  // assignment — so only the LAST var iterated out of p->live_vars
+  // decided whether the fixpoint loop kept going, and live_vars'
+  // raw-pointer bucket order chose which var that was. Under some
+  // heap layouts the loop terminated with liveness incomplete,
+  // placing fewer phys (fun-dependent), shifting every subsequent
+  // PNode/Var id, and cascading into run-to-run different clone
+  // sets and generated code.
+  for (Var *v : *p->live_vars) if (v) if (!n->lvals.in(v)) changed |= !n->live_vars->put(v);
   return changed;
 }
 
 static void approximate_liveness(Fun *f, Vec<PNode *> &nodes) {
   int changed = 1;
-  for (PNode *n : nodes) n->live_vars = new BlockHash<Var *, PointerHashFns>;
+  for (PNode *n : nodes) n->live_vars = new BlockHash<Var *, VarIdHashFns>;
   while (changed) {
     changed = 0;
     for (PNode *n : nodes) {

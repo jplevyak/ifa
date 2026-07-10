@@ -39,6 +39,18 @@ class MapElem : public gc {
   MapElem() : key(0) {}
 };
 
+// Issue 035: Map<K,C> is a Vec set of MapElem, and the primary
+// PointerHash template hashes the ELEMENT via MapElem's uintptr_t
+// conversion — i.e. the raw key pointer — so map bucket layout and
+// form_Map iteration order followed the heap layout of the keys,
+// even for key types whose own PointerHash is id-based. Delegate
+// to the key's PointerHash so maps keyed on id-bearing pointers
+// iterate deterministically across runs.
+template <class K, class C>
+struct PointerHash<MapElem<K, C>> {
+  static uintptr_t hash(MapElem<K, C> e) { return PointerHash<K>::hash(e.key); }
+};
+
 template <class K, class C, class A = DefaultAlloc>
 class Map : public Vec<MapElem<K, C>, A> {
  public:
@@ -309,6 +321,28 @@ inline void map_set_add(Map<K, Vec<C, A> *, A> &m, K akey, C avalue) {
 
 template <class K, class C, class A>
 inline void map_set_add(Map<K, Vec<C, A> *, A> &m, K akey, Vec<C> *madd) {
+  Vec<C, A> *v = m.get(akey);
+  if (!v) m.put(akey, (v = new Vec<C, A>));
+  v->set_union(*madd);
+}
+
+// Issue 035: HashMap-aware overloads. Without these, map_set_add on
+// a HashMap bound to the Map overloads above, whose put/get go
+// through the BASE class — hashing the MapElem (key pointer) with
+// pointer-equality keys — while HashMap::get probes with AHashFns
+// content hashing/equality. Inserts and lookups used different hash
+// functions AND different equality on the same table, so whether a
+// content-equal key was ever FOUND depended on heap layout (the
+// pending_es_backedge_map's routing lookups flipped run to run).
+template <class K, class AHashFns, class C, class A>
+inline void map_set_add(HashMap<K, AHashFns, Vec<C, A> *, A> &m, K akey, C avalue) {
+  Vec<C, A> *v = m.get(akey);
+  if (!v) m.put(akey, (v = new Vec<C, A>));
+  v->set_add(avalue);
+}
+
+template <class K, class AHashFns, class C, class A>
+inline void map_set_add(HashMap<K, AHashFns, Vec<C, A> *, A> &m, K akey, Vec<C> *madd) {
   Vec<C, A> *v = m.get(akey);
   if (!v) m.put(akey, (v = new Vec<C, A>));
   v->set_union(*madd);

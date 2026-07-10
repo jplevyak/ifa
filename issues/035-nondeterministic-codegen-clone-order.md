@@ -1,6 +1,92 @@
 # Issue 035: clone/codegen output is heap-layout-dependent; some layouts miscompile (int read as float)
 
-**Status:** open. **Priority: blocker** — this gates all FA/clone
+**Status: FIXED 2026-07-10** (same day; see §Fixes landed below for
+the twelve individual defects). The full tests/ determinism sweep —
+compile every test twice, byte-diff the generated `.c` — went from
+**36 nondeterministic tests to ZERO**, expr_evaluator compiles to a
+byte-identical `.c` eight runs in a row, the ASLR-dependent
+crashes (pylife FA, expr_evaluator clone) no longer reproduce, and
+the corpus member set is unchanged (22/55, same members). Remaining
+follow-ups, tracked here until landed: (a) add the double-compile
+byte-diff gate to the test harness so this bug class can never
+return silently; (b) revalidate branch `issue033-stage-c` on top of
+the fixes; (c) [036](036-llvm-phy-lowering-wrong-value.md) — the
+one suite delta: the now-COMPLETE liveness places more phys, which
+the C backend lowers correctly everywhere but the v2 LLVM path
+miscompiles on expr_evaluator (deterministically — previously this
+failure class was dice).
+
+## Fixes landed (chronological by discovery; each was found by
+byte-diffing logs/outputs of identical runs to their FIRST
+divergence)
+
+1. `clone.cc sets_by_f / sets_by_f_transitive`: greedy equivalence
+   partitioners now canonicalize their input to id order (seeds and
+   Lskip checks were iteration-order sensitive; callers hand these
+   hash-set Vecs).
+2. `clone.cc initialize`: `fa->ess` rebuilt compact + id-sorted
+   (was a raw hash-table image via `append(fa->ess_set)`).
+3. `clone.cc initialize`: `fa->global_avars` id-sorted (built from
+   the contour-pointer-keyed `v->avars` Map).
+4. `clone.cc build_concrete_types`: `css_sets` sorted by min member
+   id — `define_concrete_types` is order-SENSITIVE (eqcss groups
+   sharing a base sym mutate `sym->creators` as processed; order
+   decided which group kept the sym vs got a clone — the actual
+   int-as-float miscompile arm).
+5. `fa.cc collect_types_and_globals`: `typesyms`/`globals`
+   id-sorted (codegen numbers `g%d` and emits type decls in
+   iteration order).
+6. `fa.cc analyze_edge`: positional args iterated in canonical
+   position-path order, not `form_MPositionAVar` bucket order —
+   this loop CREATES the formal/filtered AVars, so bucket order set
+   the AVar id-assignment order that every downstream `qsort_by_id`
+   keys on.
+7. `fa.cc get_AEdges` + `check_split`: edge lists sorted before
+   routing/enqueue (worklist schedule followed hash order).
+8. `map.h`: `PointerHash<MapElem<K,C>>` delegates to the KEY's
+   PointerHash — Map<K*,C> bucketed by raw key pointer even for
+   id-hashed key types, so every form_Map iteration followed heap
+   layout.
+9. `pattern.h MPosition` and `dom.h Dom`: stable serial ids +
+   id-based PointerHash (arg/filter maps; dominance frontiers →
+   phi placement order).
+10. **`ssu.cc merge_live` — the correctness root**: fixpoint
+    progress flag accumulated with `=` instead of `|=`, so only the
+    LAST var iterated out of the (raw-pointer-hashed) live set
+    decided convergence; under some layouts liveness was
+    INCOMPLETE, phy placement varied (25 vs 21 on one fun), and
+    every subsequent PNode/Var id shifted. Also `live_vars` now
+    id-hashed (`VarIdHashFns`).
+11. `fa.cc record_backedges`: pending-map iterated in canonical
+    key order (it CREATES AEdges per element, so edge ids followed
+    bucket layout); `PendingMapHash` now hashes key CONTENT ids.
+12. **`map.h map_set_add`/`fa.cc map_union` on HashMap — the
+    routing root**: `HashMap : Map`, and `map_set_add`/`map_union`
+    bound to the BASE class insert path (MapElem/pointer-equality
+    keys) while `HashMap::get` probes with `AHashFns` content
+    hashing/equality — inserts and lookups used DIFFERENT hash
+    functions and equality on the same table, so
+    `check_split`'s pending-backedge lookups hit or missed by heap
+    layout (edge routing flipped run to run). Added HashMap-aware
+    `map_set_add` overloads; the `split_entry_set` union now merges
+    per-element through the content-correct path (the old
+    `map_union` also REPLACED the value vec on key hit, dropping
+    accumulated entry sets).
+
+Also fixed as fallout: `clone.cc determine_clones` seeded/advanced
+its changed-sets as compacted VECTORS but probed them via
+`some_intersection`→`set_in` (hash probing) — membership answers
+were garbage beyond SET_LINEAR_SIZE and the equivalence gates
+sometimes never fired. The old code only worked because `fa->ess`
+was a raw table image (fix 2 exposed it). Now kept in set mode
+end-to-end. One synthetic fixture's clone/dce/freq goldens
+(`nested_iterator.synth`) were re-blessed: the old expectations
+encoded the dark-gates behavior (`equiv-classes=0` literally means
+the partitioner never ran).
+
+Original filing follows.
+
+**Original status:** open. **Priority: blocker** — this gates all FA/clone
 work (any code change perturbs allocation patterns and re-rolls
 compile outcomes), and it can produce silently WRONG code, not just
 unstable output. Found 2026-07-10 while validating issue 033 stage

@@ -1,13 +1,15 @@
 ;; phase: freq
 
-(summary fa_rc=-1 clone_rc=0 funs=7)
+(summary fa_rc=-1 clone_rc=0 funs=9)
 
 (freq-funs
   __getitem__ 1
   __getitem__ 1
+  __getitem__ 1
   __main__ 1
+  __setitem__ 1
   __setitem__ 2
-  __setitem__ 2
+  __setitem__ 1
   consume_outer 1
   consume_outer 1
 )
@@ -15,7 +17,9 @@
 (freq-pnode-peaks
   __getitem__ peak=1
   __getitem__ peak=1
+  __getitem__ peak=1
   __main__ peak=1
+  __setitem__ peak=1
   __setitem__ peak=1
   __setitem__ peak=1
   consume_outer peak=1

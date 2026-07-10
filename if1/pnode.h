@@ -8,6 +8,7 @@ struct LoopNode;
 class Fun;
 class MPosition;
 class Sym;
+class VarIdHashFns;  // var.h (issue 035)
 
 /* #define CONC_IMPLEMENTED 1 */
 
@@ -40,8 +41,8 @@ class PNode : public gc {
 
   // Temporary Space
   union {
-    LoopNode *loop_node;                          // loop.cpp
-    BlockHash<Var *, PointerHashFns> *live_vars;  // ssu.cpp
+    LoopNode *loop_node;                        // loop.cpp
+    BlockHash<Var *, VarIdHashFns> *live_vars;  // ssu.cpp (id-hashed, issue 035)
   };
   Map<PNode *, int> cfg_pred_index;  // cg.cpp
   Dom *dom, *rdom;                   // dominators and reverse dominators dom.cpp

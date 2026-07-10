@@ -20,6 +20,11 @@ class CreationSet;
 
 class MPosition : public gc {
  public:
+  // Issue 035: stable serial for deterministic hashing/ordering —
+  // MPositions key arg/filter Maps, and raw-pointer bucketing made
+  // map iteration order follow heap layout across runs.
+  static inline int id_counter = 1;
+  int id = id_counter++;
   Vec<const void *> pos;
   MPosition *cp, *up, *next, *down;
   void copy(MPosition &p);
@@ -62,6 +67,10 @@ class MPosition : public gc {
   int prefix_to_last(MPosition &p);
   MPosition() : cp(0), up(0), next(0), down(0) {}
   MPosition(MPosition &p);
+};
+
+template <> struct PointerHash<MPosition *> {
+  static uintptr_t hash(MPosition *c) { return c ? (uintptr_t)c->id : 0; }
 };
 
 inline int MPosition::prefix_to_last(MPosition &p) {

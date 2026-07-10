@@ -24,6 +24,9 @@ static void initialize() {
                                                                   v->avars.v[i].value->contour == GLOBAL_CONTOUR)
       fa->global_avars.set_add(v->avars[i].value);
   fa->global_avars.set_to_vec();
+  // Issue 035: v->avars is keyed by contour POINTER, so the set
+  // above accumulates in heap-layout order; canonicalize.
+  qsort_by_id(fa->global_avars);
   for (CreationSet *cs : fa->css) {
     cs->equiv = new Vec<CreationSet *>();
     cs->equiv->add(cs);
@@ -58,8 +61,13 @@ static void initialize() {
   for (Fun *f : pdb->funs) {
     if (!funs_set.set_in(f)) f->ess.clear();
   }
+  // Issue 035: fa->ess_set is an open-hash set — appending it
+  // verbatim rebuilt fa->ess in heap-layout order (with holes),
+  // undoing the canonical id order collect_results establishes
+  // (issue 033 D7). Rebuild compact and id-sorted.
   fa->ess.clear();
-  fa->ess.append(fa->ess_set);
+  for (EntrySet *es : fa->ess_set) if (es) fa->ess.add(es);
+  qsort_by_id(fa->ess);
   for (Sym *s : fa->pdb->if1->allsyms) {
     if (s->creators.n) {
       Vec<CreationSet *> creators;
@@ -276,8 +284,21 @@ class CS_EQ_FN {
 };
 
 // C++'s answer to higher order functions: YUCK
+//
+// Issue 035: greedy equivalence partitioning is seed-order
+// sensitive — the first element of each class anchors the pairwise
+// checks (Lskip), so which classes form depends on iteration
+// order — and callers hand these functions hash-set Vecs whose
+// order follows heap layout (e.g. f->ess after set_intersection).
+// That made clone partitions, and everything numbered/bound from
+// them, vary between identical runs (and some layouts bound
+// callers to the WRONG type specialization). Canonicalize the
+// input to id order locally so partitions are reproducible.
 template <class C, class FN>
-static void sets_by_f(Vec<C *> &aset, Vec<Vec<C *> *> &asetset) {
+static void sets_by_f(Vec<C *> &aset0, Vec<Vec<C *> *> &asetset) {
+  Vec<C *> aset;
+  for (C *x : aset0) if (x) aset.add(x);
+  qsort_by_id(aset);
   asetset.clear();
   Vec<C *> done;
   for (C *x : aset) if (x) {
@@ -298,7 +319,10 @@ static void sets_by_f(Vec<C *> &aset, Vec<Vec<C *> *> &asetset) {
 }
 
 template <class C, class FN>
-static void sets_by_f_transitive(Vec<C *> &aset, Vec<Vec<C *> *> &asetset) {
+static void sets_by_f_transitive(Vec<C *> &aset0, Vec<Vec<C *> *> &asetset) {
+  Vec<C *> aset;
+  for (C *x : aset0) if (x) aset.add(x);
+  qsort_by_id(aset);
   asetset.clear();
   for (C *x : aset) if (x) {
     typedef Vec<C *> VecC;
@@ -414,8 +438,15 @@ static void determine_layouts() {
 static void determine_clones() {
   Vec<CreationSet *> changed_css, last_changed_css;
   Vec<EntrySet *> changed_ess, last_changed_ess;
-  changed_ess.copy(fa->ess);
-  changed_css.copy(fa->css);
+  // Issue 035: build these as explicit hash SETS. They are consumed
+  // through some_intersection -> set_in, which probes hash buckets;
+  // the old copy() of fa->ess happened to work only because fa->ess
+  // was itself a raw hash-table image back then (holes and all) —
+  // once fa->ess became a compact sorted vector, probing it as a
+  // table returned garbage and the equivalence gates went dark
+  // (no clones formed; polymorphic_formal_3types_2each fixture).
+  for (EntrySet *es : fa->ess) if (es) changed_ess.set_add(es);
+  for (CreationSet *cs : fa->css) if (cs) changed_css.set_add(cs);
 
   Vec<Vec<CreationSet *> *> css_sets_by_sym;
   determine_basic_clones(css_sets_by_sym);
@@ -428,7 +459,10 @@ static void determine_clones() {
 
     // recompute entry set equivalence
     while (changed_ess.n || last_changed_css.n) {
-      changed_ess.set_to_vec();
+      // Issue 035: keep set mode — last_changed_ess is probed via
+      // some_intersection/set_in; set_to_vec'ing it first made
+      // those probes walk a compacted vector as if it were a hash
+      // table (membership answers depended on layout).
       last_changed_ess.move(changed_ess);
       for (Fun *f : fa->funs) {
         if (f->ess.some_intersection(last_changed_ess) || f->called_ess.some_intersection(last_changed_ess) ||
@@ -864,10 +898,25 @@ static int resolve_concrete_types(CSSS &css_sets) {
   return 0;
 }
 
+// Issue 035: css_sets is a hash set of equiv-set POINTERS, so its
+// set_to_vec order follows heap layout — and define_concrete_types
+// is order-SENSITIVE, not just order-revealing: eqcss groups
+// sharing a base sym mutate sym->creators as they are processed
+// (old_creators / set_difference), so which group keeps the sym
+// and which gets a clone depends on processing order. Canonicalize
+// by each set's minimum member id.
+static int compar_eqcss_min_id(const void *a, const void *b) {
+  int i = INT_MAX, j = INT_MAX;
+  for (CreationSet *cs : **(Vec<CreationSet *> **)a) if (cs && cs->id < i) i = cs->id;
+  for (CreationSet *cs : **(Vec<CreationSet *> **)b) if (cs && cs->id < j) j = cs->id;
+  return (i > j) ? 1 : ((i < j) ? -1 : 0);
+}
+
 static int build_concrete_types() {
   CSSS css_sets;
   for (CreationSet *cs : fa->css) css_sets.set_add(cs->equiv);
   css_sets.set_to_vec();
+  qsort(css_sets.v, css_sets.n, sizeof(css_sets[0]), compar_eqcss_min_id);
   if (define_concrete_types(css_sets) < 0) return -1;
   if (resolve_concrete_types(css_sets) < 0) return -1;
   return 0;
