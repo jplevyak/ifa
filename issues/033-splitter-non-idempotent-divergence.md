@@ -10,8 +10,19 @@ observability) landed 2026-07-10** — see D2 for findings, including
 one revision to the D11-A acceptance expectations. Next per land
 order: D6, then B, C, E. **D6 also landed 2026-07-10** — a no-op on
 today's corpus (see D6 for why its premise no longer holds
-post-mitigation); the live driver is the stage-0/1 group path, so
-stages B/C are next.
+post-mitigation); the live driver is the stage-0/1 group path.
+**Stage C was implemented 2026-07-10 on branch `issue033-stage-c`
+and is BLOCKED on [035](035-nondeterministic-codegen-clone-order.md)**:
+on that branch all three diverging examples reach a genuine fixed
+point with the stall guard never firing (fysphun 20 passes/0
+violations, kmeanspp 21/6, pylife 13/52 — was 60), but
+builtins_batch miscompiles — proven NOT to be a stage-C logic
+defect (its failing compile's splitting log is byte-identical to a
+passing HEAD compile's) but a latent heap-layout dependence in
+clone/codegen that the branch's changed allocation pattern
+exposes. See the branch's commit message and D4's status note for
+the three design corrections stage C accumulated (full-signature
+keys, display feasibility, bare — not filtered — products).
 **Affects:** `ifa/analysis/fa.cc` — `extend_analysis()` and every
 `split_*` stage it drives; `analyze_to_convergence()`'s outer loop
 contract.
@@ -351,7 +362,34 @@ and the split proceeds: that is the legitimate-refinement case.
 
 ## D4. Stage C — put split_entry_set's groups on filters
 
-This is the core change. In `split_entry_set`'s group loop
+**Status: implemented 2026-07-10 (branch `issue033-stage-c`),
+blocked on issue 035; three corrections to the design below were
+established empirically and must be kept by whoever lands it:**
+
+1. **Groups must NOT be parked on filtered entry sets.** A filter
+   is a snapshot of the group's partition; when an argument widens
+   in a later pass, `analyze_edge` drops the complement flow
+   silently (LskipEdge / permit-intersection) because the group
+   path has no per-CS edge fan-out, unlike `split_edges`. fysphun
+   regressed 0 -> 3 "expr has no type" under filtered parking.
+   Products stay plain bare ESs; idempotence comes from routing
+   cross-pass ledger hits to the recorded product.
+2. **The (pos, partition) key alone is too coarse for groups.**
+   Type-value grouping is type-equality at EVERY position plus
+   rets, so the ledger key needs the full signature
+   (`group_signature`: hash of per-position and per-ret canonical
+   partition ATypes). Single-position keys merged distinct groups
+   and mistyped int results as float (builtins_batch).
+3. **Nested-function contours are additionally keyed by lexical
+   display.** Route a group into a product only if the whole group
+   implies one display consistent with the product's
+   (`group_display_ok`, mirroring `update_display`'s add-then-
+   verify), and never create-then-abandon a product (empty-display
+   orphans in `Fun::ess` break `make_AVar`'s display walks
+   downstream — kmeanspp/pylife asserts).
+
+Original design follows (superseded by the above where they
+conflict). This is the core change. In `split_entry_set`'s group loop
 (fa.cc:3652), replace the bare
 `make_entry_set(x, new_edges, es, e->to)` parking with:
 

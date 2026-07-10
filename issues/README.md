@@ -63,10 +63,30 @@ that:
   Node-in-function CS doesn't establish field-iv tracking
   → field reads through dispatch over union receivers
   miss the inside-function Node's value.
-- [027-v2-llvm-narrowed-loop-loses-struct-type.md](027-v2-llvm-narrowed-loop-loses-struct-type.md) —
-  v2 LLVM loses struct type through `while x is not None`
-  loops, leaving GEPs on bare `ptr`.  Recursive form
-  works; only the iterative loop shape is affected.
+- [030-polymorphic-dispatch-fat-pointers.md](030-polymorphic-dispatch-fat-pointers.md) —
+  core classtag dispatch implemented on both backends;
+  remaining scope is value-identity dispatch on raw
+  callables beyond the bare-callable landing.
+- [031-globals-outside-fa-precision.md](031-globals-outside-fa-precision.md) —
+  steps 1 and 2 landed 2026-07-04; step 3 folded into
+  029/030's scope.
+- [032-fa-survey-findings.md](032-fa-survey-findings.md) —
+  tracking umbrella for actionable findings from the
+  2026-07 `fa.cc` semantic survey; check items off with
+  their closing commit as they land.
+- [033-splitter-non-idempotent-divergence.md](033-splitter-non-idempotent-divergence.md) —
+  splitting loop has no fixed point on some inputs;
+  mitigated with a stall guard (commit `21dbdad4`) but the
+  root non-idempotence is untouched.
+- [034-pygasus-update-display-assert.md](034-pygasus-update-display-assert.md) —
+  `update_display` assert on pygasus, undiagnosed; unmasked
+  (not introduced) by the 033 stall guard.
+- [035-nondeterministic-codegen-clone-order.md](035-nondeterministic-codegen-clone-order.md) —
+  **BLOCKER**: clone/codegen output depends on heap layout —
+  back-to-back identical compiles emit different `.c`, and some
+  layouts bind callers to the wrong type specialization (int
+  printed as float bits). Gates all analysis-side work, incl.
+  033 stage C (branch `issue033-stage-c`).
 
 ## Closed (archive)
 
@@ -75,7 +95,7 @@ commit ref recorded in each file's status line.  They stay in
 the tree as history — a code-search for the affected file finds
 the trail of investigation even after the fix has landed.
 
-Currently 21 closed issues:
+Currently 24 closed issues:
 [001](closed/001-keepalive-vs-explicit-reply.md),
 [002](closed/002-codegen-llvm-normalizer.md),
 [003](closed/003-fa-converge-determinism.md),
@@ -96,7 +116,10 @@ Currently 21 closed issues:
 [021](closed/021-v2-call-arg-swap.md),
 [022](closed/022-iterative-inlining.md),
 [023](closed/023-v2-is-value-type-consumer.md),
-[024](closed/024-is-comparison-narrowing.md).
+[024](closed/024-is-comparison-narrowing.md),
+[027](closed/027-v2-llvm-narrowed-loop-loses-struct-type.md),
+[028](closed/028-fibheap-blockers.md),
+[029](closed/029-polymorphic-dispatch.md).
 
 ## When to file an issue here vs fix it now
 
