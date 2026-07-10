@@ -324,6 +324,9 @@ typedef Map<MPosition *, AVar *> MapMPositionAVar;
 typedef MapElem<MPosition *, AVar *> MapMPositionAVarElem;
 #define form_MPositionAVar(_p, _v) form_Map(MapMPositionAVarElem, _p, _v)
 
+typedef MapElem<MPosition *, AType *> MapMPositionATypeElem;
+#define form_MPositionAType(_p, _v) form_Map(MapMPositionATypeElem, _p, _v)
+
 class ATypeChainHashFns {
  public:
   static uint hash(AType *a) { return a->hash; }
@@ -395,6 +398,35 @@ class ATypeFoldChainHashFns {
     return (uint)(uintptr_t)x->p + combine_hash((uintptr_t)x->a, (uintptr_t)x->b);
   }
   static int equal(ATypeFold *x, ATypeFold *y) { return x->p == y->p && x->a == y->a && x->b == y->b; }
+};
+
+// Issue 033: persistent record of split decisions, so re-running
+// the splitter over a re-derived flow state can recognize a split
+// it already made in an earlier pass (stage A: record + count
+// duplicates only; enforcement lands in later stages). Key
+// components are all interned/stable across passes (issue 033 D0):
+// the function, the FAPassStage that made the split, the argument
+// position driving it, and the canonical AType partition assigned
+// to the product contour. Never cleared between passes — only a
+// fresh FA starts empty.
+struct SplitDecision : public gc {
+  Fun *fun = nullptr;
+  int stage = 0;                // FAPassStage of the split site
+  MPosition *pos = nullptr;     // confluence/dispatch position (interned)
+  AType *partition = nullptr;   // canonical (cannonical_atypes) filter type
+  int pass_made = 0;            // analysis_pass at record time (diagnostics)
+  EntrySet *product = nullptr;  // ES created/selected (nullptr for CS splits)
+};
+
+class SplitDecisionHashFns {
+ public:
+  static uintptr_t hash(SplitDecision *d) {
+    return (uintptr_t)d->fun + combine_hash((uintptr_t)d->pos, (uintptr_t)d->partition) +
+           combine_hash((uintptr_t)d->stage, (uintptr_t)d->stage);
+  }
+  static int equal(SplitDecision *a, SplitDecision *b) {
+    return a->fun == b->fun && a->stage == b->stage && a->pos == b->pos && a->partition == b->partition;
+  }
 };
 
 // Per-FA hash-cons world (tier-3 reentrancy step 2). Holds the
@@ -490,6 +522,23 @@ class FA : public gc {
   // ---- Per-instance hash-cons world (tier-3 reentrancy step 2) ----
   // See TypeWorld declaration above.
   TypeWorld type_world;
+
+  // ---- Issue 033 split-decision ledger (stage A: record-only) ----
+  // See SplitDecision above. `dup_split_attempts` counts, per pass,
+  // splits whose key was already in the ledger from an earlier pass
+  // — i.e. work the splitter is redoing on a re-derived flow state.
+  // Reported in the -v PASS line; reset in initialize_pass.
+  ChainHash<SplitDecision *, SplitDecisionHashFns> split_ledger;
+  int dup_split_attempts = 0;
+  SplitDecision *ledger_find(Fun *afun, int stage, MPosition *pos, AType *partition);
+  SplitDecision *ledger_add(Fun *afun, int stage, MPosition *pos, AType *partition, EntrySet *product);
+  // Issue 033 D6: per-Var count of stage-5 (split_for_violations)
+  // split attempts. A Var whose violation drove two attempts and
+  // still violates is not refinable by contour splitting; stage 5
+  // excludes it thereafter instead of manufacturing contours
+  // forever. Keyed on Var* (stable across passes), not AVar*.
+  // Persistent across passes, like the ledger.
+  Map<Var *, int> violation_split_attempts;
 
   // ---- Per-instance worklists / completion set / violation list ----
   // Sunk into FA from file-static globals June 2026 (tier-3

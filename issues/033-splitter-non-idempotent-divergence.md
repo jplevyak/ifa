@@ -1,9 +1,17 @@
 # Issue 033: Splitting loop has no fixed point on some inputs (non-idempotent, order-dependent split decisions)
 
-**Status:** open. Divergence is *mitigated* (stall guard, commit
-`21dbdad4` on the pyc side of the tree) so affected programs
-terminate quickly instead of timing out; the root cause — split
-decisions that are not idempotent across passes — is untouched.
+**Status:** open, fix in progress. Divergence is *mitigated* (stall
+guard, commit `21dbdad4` on the pyc side of the tree) so affected
+programs terminate quickly instead of timing out; the root cause —
+split decisions that are not idempotent across passes — is
+untouched. Of the staged fix below: D7 (ordering audit) landed
+2026-07-09; **stage A (record-only ledger + `dup_splits`
+observability) landed 2026-07-10** — see D2 for findings, including
+one revision to the D11-A acceptance expectations. Next per land
+order: D6, then B, C, E. **D6 also landed 2026-07-10** — a no-op on
+today's corpus (see D6 for why its premise no longer holds
+post-mitigation); the live driver is the stage-0/1 group path, so
+stages B/C are next.
 **Affects:** `ifa/analysis/fa.cc` — `extend_analysis()` and every
 `split_*` stage it drives; `analyze_to_convergence()`'s outer loop
 contract.
@@ -258,6 +266,46 @@ Debug-assert on insert that `partition` is canonical:
 
 ## D2. Stage A — record-only + observability (land first, no behavior change)
 
+**Status: LANDED 2026-07-10** (fa.h: `SplitDecision` +
+`SplitDecisionHashFns` + `FA::split_ledger`/`dup_split_attempts`/
+`ledger_find`/`ledger_add`; fa.cc: `cur_split_stage` set per stage
+in `extend_analysis`, probe/record in
+`find_or_make_filtered_entry_set` and `split_entry_set`'s group
+loop, counter reset in `initialize_pass`, `dup_splits` appended to
+the `-v` PASS line). All three suites green (pyc C 177/0, pyc LLVM
+177/0, ifa-test 58 units + 20/20 fa-converge fixtures — the
+fixtures lock per-pass stage events, so green there confirms
+record-only). Findings against the acceptance predictions below:
+
+- One refinement over the spec: a ledger hit whose decision was
+  recorded in the *same* pass (`pass_made == analysis_pass`) is NOT
+  counted — with an empty ledger, fysphun pass 1 showed 17 hits,
+  all intra-pass repeats (two groups/ESs of one fun sharing a key
+  within one extend), which is not the cross-pass re-derivation
+  this counter is meant to expose. With the filter, pass 1 = 0.
+- fysphun: `dup_splits > 0` exactly on the plateau as predicted
+  (pass 6: 6, passes 8/9/10/15: 1, pass 16: 2) — key shape
+  validated against the real divergence. (Trajectory differs from
+  the §Symptom trace because the stall guard + reanalyze now
+  converge fysphun at pass 16 with 0 violations.)
+- fibheap_full: 0 dups on every pass, as predicted.
+- **expr_evaluator and richards show NONZERO dups (up to 3/pass) —
+  the D11-A "converging tests must be 0" criterion was too strict,
+  but NOT because the key is too coarse.** LOG_SPLITTING traces
+  (`[ledger] DUP ...`, kept in tree) show every hit is a
+  byte-identical decision re-made across passes on a
+  recursive/dispatch-heavy fun (`evaluate`, `__pyc_to_bool__`,
+  `__gt__`), all on the stage-0/1 group path — including
+  self-referential cases (`es 33 ... product 33`: the contour
+  *created for* a partition in pass 0 re-accumulates mixed edges
+  and is re-split under the identical key later). I.e. the
+  per-pass-amnesia disease exists, bounded, in converging programs
+  too; it terminates there only because recursion stabilizes.
+  Consequence for stages B/C: enforcement will fire on converging
+  inputs as well (routing those groups to the recorded product
+  instead of re-splitting), so their acceptance gate is "full
+  suites unchanged", not "no ledger hits outside diverging inputs".
+
 1. Thread `int stage` (the `FAPassStage` values already defined for
    the issue-003 sidecar) into `split_edges`, `split_entry_set`,
    and `find_or_make_filtered_entry_set` call sites.
@@ -352,6 +400,35 @@ growing at 578 while ess oscillates), stage D can be deferred
 indefinitely.
 
 ## D6. Stage E — split_for_violations non-refinability
+
+**Status: LANDED 2026-07-10, with a finding that revises this
+section's premise.** Implemented as spec'd below
+(`FA::violation_split_attempts`, exclusion at >2 attempts,
+`[nonrefinable]` log; plus `[stage5]`/`[stage5-attempt]`
+LOG_SPLITTING diagnostics). All three suites green; fysphun/
+kmeanspp/pylife traces byte-identical to the stage-A baseline.
+**The predicted "kmeanspp/pylife pass counts drop" did NOT happen,
+because stage 5 is not the divergence driver in the current
+(post-stall-guard, post-B4) tree**: instrumentation shows
+`split_for_violations` is reached at most once per compile (stages
+1–4 report work on essentially every pass — the same starvation
+dynamic as the §reanalyze finding, but internal to
+`extend_analysis`), and when it IS reached,
+`collect_violation_imprecisions` produces **0 imprecisions** from
+as many as 509 violations (kmeanspp final pass: 7 -> 0, pylife:
+127 -> 0, fysphun: 509 -> 0) — the numeric-coercion-shaped
+residues have no container AVar and no differing-dispatch call
+result, so the collector filters every violation out. The
+"manufacture contours forever" arm this stage guards against is
+therefore dead code TODAY; the guard still lands because stages
+B/C will change exactly the condition that keeps it dead (once
+stages 1–4 stop re-reporting work, stage 5 gets consulted every
+pass on residual violations, and this cutoff becomes load-bearing
+as designed). The live divergence driver, per the stage-A ledger
+traces, is the stage-0/1 group path (`split_entry_set`) — stages
+B/C remain the real fix.
+
+Original spec follows.
 
 Add `Map<Var *, int> violation_split_attempts` to FA (persistent).
 In `split_for_violations` (fa.cc:4369): for each imprecision AVar
@@ -496,6 +573,14 @@ across four repeated runs each, ruling out the D7 fixes as the
 cause — they are pre-existing, unrelated gaps (oliva2: a
 primitive-argument type mismatch; stereo: a timeout still gated by
 the stall guard from the mitigation, not touched by D7).
+**2026-07-10 note:** the member set above drifted after D7 landed
+— still 22/55, but bh and richards regressed to FAIL while go and
+loop started compiling. Bisected (worktree at `7d7a86a2`) to
+`a32a6467` (issue 027's qualified-static-dispatch commit), NOT to
+any issue-033 work; filed as pyc-side
+[issues/028](../../issues/028-raise-exception-regression-qualified-dispatch.md).
+Stage A + D6 were validated against the post-`a32a6467` set and
+changed nothing.
 
 ## D8. What NOT to change
 
@@ -529,13 +614,13 @@ because D5 is advisory and because "finite" can still be "large".)
 
 | File | Change | Est. |
 |---|---|---|
-| `analysis/fa.h` | SplitDecision, FA::ledger fields + 2 methods, dup counter | ~60 lines |
-| `analysis/fa.cc` `find_or_make_filtered_entry_set` | probe/record | ~20 |
+| `analysis/fa.h` | SplitDecision, FA::ledger fields + 2 methods, dup counter | **DONE** (stage A) |
+| `analysis/fa.cc` `find_or_make_filtered_entry_set` | probe/record | **DONE** (stage A) |
 | `analysis/fa.cc` `split_edges` | all-known probe (D3) | ~15 |
-| `analysis/fa.cc` `split_entry_set` | group partition + filters routing (D4) | ~50 |
-| `analysis/fa.cc` `split_for_violations` | non-refinable marking (D6) | ~15 |
+| `analysis/fa.cc` `split_entry_set` | group partition + filters routing (D4); record-only probe of each group **DONE** (stage A) | ~50 |
+| `analysis/fa.cc` `split_for_violations` | non-refinable marking (D6) | **DONE** (no-op today, see D6) |
 | `analysis/fa.cc` `split_css` | advisory signature map (D5, deferrable) | ~20 |
-| `analysis/fa.cc` `initialize_pass` / PASS print | counter reset + report | ~5 |
+| `analysis/fa.cc` `initialize_pass` / PASS print | counter reset + report | **DONE** (stage A) |
 | ordering audit (D7) | **DONE** (2026-07-09): `qsort_by_id` added in `collect_violation_imprecisions`, `collect_cs_setter_confluences`, and `collect_results` (`fa->ess`) | 3 lines landed |
 | tests | fa-converge fixture + determinism double-run + corpus greps | — |
 
@@ -552,7 +637,18 @@ below.
   the plateau; dup_splits == 0 on 5 converging tests (e.g.
   fibheap_full, expr_evaluator, richards) — if converging tests
   show dups, the key is too coarse (would enforce wrongly later).
+  **Outcome (2026-07-10): first two held; the third did not, and
+  the "too coarse" inference was wrong — see D2 findings.
+  Converging recursive programs genuinely re-make identical split
+  decisions across passes (verified via the `[ledger] DUP` log
+  traces), so B/C acceptance is "suites + corpus unchanged or
+  better", not "no hits on converging inputs".**
 - **D6**: kmeanspp/pylife pass counts drop; no suite change.
+  **Outcome (2026-07-10): suites unchanged ✓; pass counts did NOT
+  drop and were not going to — stage 5 is starved by stages 1-4
+  and its collector yields zero imprecisions on these residues
+  (see D6 status note). The guard is in place for when B/C
+  un-starve stage 5.**
 - **B/C**: fysphun/kmeanspp/pylife: ess monotone nondecreasing
   across passes (grep the `-v` trail), stall guard no longer
   fires (`STALL LIMIT` absent from logs), outcomes unchanged or

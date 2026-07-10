@@ -3359,6 +3359,7 @@ static void initialize_pass() {
   fa->type_violations.clear();
   fa->type_world.type_violation_hash.clear();
   fa->entry_set_done.clear();
+  fa->dup_split_attempts = 0;  // issue 033 stage A per-pass counter
   refresh_top_edge(fa->top_edge);
 }
 
@@ -3467,6 +3468,32 @@ int is_es_cs_recursive(CreationSet *cs) {
 #define SPLIT_EDGES 0
 #define SPLIT_DYNAMIC 1
 
+// Issue 033 (stage A): which extend_analysis stage is currently
+// driving splits (an FAPassStage value). Set by extend_analysis
+// before each split_* stage; forms part of the split-ledger key.
+static int cur_split_stage = -1;
+
+SplitDecision *FA::ledger_find(Fun *afun, int stage, MPosition *pos, AType *partition) {
+  SplitDecision probe;
+  probe.fun = afun;
+  probe.stage = stage;
+  probe.pos = pos;
+  probe.partition = partition;
+  return split_ledger.get(&probe);
+}
+
+SplitDecision *FA::ledger_add(Fun *afun, int stage, MPosition *pos, AType *partition, EntrySet *product) {
+  SplitDecision *d = new SplitDecision;
+  d->fun = afun;
+  d->stage = stage;
+  d->pos = pos;
+  d->partition = partition;
+  d->pass_made = analysis_pass;
+  d->product = product;
+  SplitDecision *existing = split_ledger.put(d);
+  return existing ? existing : d;
+}
+
 static void collect_type_confluence(AVar *av, Vec<AVar *> &confluences) {
   for (AVar *x : av->backward) if (x) {
     if (!x->out->type->n) continue;
@@ -3551,12 +3578,35 @@ static void record_backedges(AEdge *e, EntrySet *es, PendingAEdgeEntrySetsMap &u
 
 static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPosition *, AType *> &filters) {
   Fun *f = orig_es->fun;
-  for (EntrySet *es : f->ess) if (!es->filters.some_disjunction(filters)) return es;
-  EntrySet *new_es = new EntrySet(f);
-  f->ess.add(new_es);
-  new_es->filters.copy(filters);
-  new_es->split = orig_es;
-  return new_es;
+  EntrySet *res = nullptr;
+  for (EntrySet *es : f->ess) if (!es->filters.some_disjunction(filters)) {
+    res = es;
+    break;
+  }
+  if (!res) {
+    res = new EntrySet(f);
+    f->ess.add(res);
+    res->filters.copy(filters);
+    res->split = orig_es;
+  }
+  // Issue 033 stage A (record-only): ledger each filter entry that
+  // narrows orig_es. A hit means an earlier pass already split this
+  // fun at this position for this partition — the splitter is
+  // redoing work on a re-derived flow state.
+  form_MPositionAType(x, filters) {
+    if (!x->key || !x->value) continue;
+    if (orig_es->filters.get(x->key) == x->value) continue;
+    SplitDecision *d = fa->ledger_find(f, cur_split_stage, x->key, x->value);
+    if (!d)
+      fa->ledger_add(f, cur_split_stage, x->key, x->value, res);
+    else if (d->pass_made != analysis_pass) {  // intra-pass repeats aren't re-derivation
+      ++fa->dup_split_attempts;
+      log(LOG_SPLITTING, "[ledger] DUP filtered fun %s %d stage %d pos %p part %p/%d (first pass %d, product %d)\n",
+          f->sym->name ? f->sym->name : "", f->sym->id, cur_split_stage, (void *)x->key, (void *)x->value,
+          x->value->sorted.n, d->pass_made, d->product ? d->product->id : -1);
+    }
+  }
+  return res;
 }
 
 [[nodiscard]] static int split_edges(AVar *av, int fsetters, int fmark) {
@@ -3619,6 +3669,16 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
   }
   if (fdynamic)
     if (split_edges(av, fsetters, fmark)) return 1;
+  // Issue 033 stage A: the confluence position driving this split
+  // (same lookup split_edges does). Return-value confluences have
+  // no argument position and are not ledgered yet.
+  MPosition *avpos = nullptr;
+  form_MPositionAVar(x, es->args) {
+    if (x->value == av) {
+      avpos = x->key;
+      break;
+    }
+  }
   Vec<AEdge *> all_edges, do_edges, stay_edges;
   PendingAEdgeEntrySetsMap pending_es_backedge_map;
   for (AEdge *ee : es->edges) if (ee) if (ee->args.n) all_edges.add(ee);
@@ -3699,6 +3759,37 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
         log(LOG_SPLITTING, "SPLIT ES %d %s%s%s %d from %d -> %d\n", es->id, fsetters ? "setters " : "",
             fmark ? "marks " : "", es->fun->sym->name ? es->fun->sym->name : "", es->fun->sym->id,
             x->pnode->lvals[0]->sym->id, x->to->id);
+      }
+    }
+    // Issue 033 stage A (record-only): ledger this group's
+    // (fun, stage, position, partition) key. The partition uses the
+    // constant-stripped ->type view of each edge's argument so it is
+    // stable across passes — raw ->out re-derives constants
+    // differently under the constant cap (D4 note).
+    if (avpos) {
+      EntrySet *product = nullptr;
+      for (AEdge *x : these_edges) if (x->to && x->to != es) {
+        product = x->to;
+        break;
+      }
+      if (product) {
+        AType *part = fa->type_world.bottom_type;
+        for (AEdge *x : these_edges) {
+          AVar *a = x->args.get(avpos);
+          if (a) part = type_union(part, a->out->type);
+        }
+        if (part != fa->type_world.bottom_type) {
+          SplitDecision *d = fa->ledger_find(es->fun, cur_split_stage, avpos, part);
+          if (!d)
+            fa->ledger_add(es->fun, cur_split_stage, avpos, part, product);
+          else if (d->pass_made != analysis_pass) {  // intra-pass repeats aren't re-derivation
+            ++fa->dup_split_attempts;
+            log(LOG_SPLITTING,
+                "[ledger] DUP group es %d fun %s %d stage %d pos %p part %p/%d (first pass %d, product %d)\n",
+                es->id, es->fun->sym->name ? es->fun->sym->name : "", es->fun->sym->id, cur_split_stage,
+                (void *)avpos, (void *)part, part->sorted.n, d->pass_made, d->product ? d->product->id : -1);
+          }
+        }
       }
     }
     do_edges.move(next_edges);
@@ -4401,8 +4492,28 @@ static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Ve
 [[nodiscard]] static int split_for_violations(Vec<ATypeViolation *> &violations) {
   Vec<AVar *> imprecisions;
   collect_violation_imprecisions(violations, imprecisions);
-  int analyze_again = split_ess_for_type(imprecisions, SPLIT_DYNAMIC);
-  if (!analyze_again) for (AVar *av : imprecisions) analyze_again |= split_with_type_marks(av, SPLIT_DYNAMIC);
+  log(LOG_SPLITTING, "[stage5] %d violations -> %d imprecisions\n", violations.n, imprecisions.n);
+  // Issue 033 D6: a Var whose violation already drove two full
+  // stage-5 split attempts and still violates is not refinable by
+  // contour splitting (e.g. fysphun's numeric-coercion residue) —
+  // exclude it instead of manufacturing contours every pass. The
+  // count is per-Var (stable identity) and persistent, so a
+  // violation that a split DID resolve never reaches the cutoff.
+  Vec<AVar *> refinable;
+  for (AVar *av : imprecisions) {
+    int attempts = fa->violation_split_attempts.get(av->var);
+    if (attempts >= 2) {
+      log(LOG_SPLITTING, "[nonrefinable] var %d %s: %d stage-5 split attempts, excluding\n", av->var->sym->id,
+          av->var->sym->name ? av->var->sym->name : "", attempts);
+      continue;
+    }
+    fa->violation_split_attempts.put(av->var, attempts + 1);
+    log(LOG_SPLITTING, "[stage5-attempt] var %d %s attempt %d (av %d)\n", av->var->sym->id,
+        av->var->sym->name ? av->var->sym->name : "", attempts + 1, av->id);
+    refinable.add(av);
+  }
+  int analyze_again = split_ess_for_type(refinable, SPLIT_DYNAMIC);
+  if (!analyze_again) for (AVar *av : refinable) analyze_again |= split_with_type_marks(av, SPLIT_DYNAMIC);
   return analyze_again;
 }
 
@@ -4451,12 +4562,14 @@ static void clear_splits() {
   Vec<AVar *> confluences;
   // 1) split EntrySets based on type using AVar::out
   collect_type_confluences(confluences);
+  cur_split_stage = (int)FAPassStage::TYPE_CONFLUENCE;
   analyze_again = split_ess_for_type(confluences, SPLIT_EDGES);
   log(LOG_SPLITTING, "split_ess_for_type %d\n", analyze_again);
   if (analyze_again) record_fa_event(FAPassStage::TYPE_CONFLUENCE, analyze_again, ess0, css0, viol0);
   // 2) split EntrySets based on type using marks
   if (!analyze_again) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    cur_split_stage = (int)FAPassStage::MARK_TYPE;
     analyze_again = split_ess_for_mark_type(confluences);
     if (analyze_again) record_fa_event(FAPassStage::MARK_TYPE, analyze_again, ess0, css0, viol0);
   }
@@ -4466,11 +4579,13 @@ static void clear_splits() {
     Accum<AVar *> avs;
     for (AVar *av : confluences) (void)compute_setters(av, avs, AKIND_TYPE);
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    cur_split_stage = (int)FAPassStage::SETTER;
     if (split_for_setters(avs, analyze_again)) analyze_again = 1;
     if (analyze_again) record_fa_event(FAPassStage::SETTER, analyze_again, ess0, css0, viol0);
     log(LOG_SPLITTING, "split_for_setters %d\n", analyze_again);
     if (!analyze_again) {
       ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+      cur_split_stage = (int)FAPassStage::SETTER_OF_SETTER;
       analyze_again = split_for_setters_of_setters();
       if (analyze_again) record_fa_event(FAPassStage::SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
     }
@@ -4502,11 +4617,13 @@ static void clear_splits() {
           av->var && av->var->sym && av->var->sym->name ? av->var->sym->name : "(anon)", r);
     }
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    cur_split_stage = (int)FAPassStage::MARK_SETTER;
     if (split_for_setters(avs, analyze_again)) analyze_again = 1;
     if (analyze_again) record_fa_event(FAPassStage::MARK_SETTER, analyze_again, ess0, css0, viol0);
     log(LOG_SPLITTING, "split_for_setters with marks %d\n", analyze_again);
     if (!analyze_again) {
       ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+      cur_split_stage = (int)FAPassStage::MARK_SETTER_OF_SETTER;
       analyze_again = split_for_setters_of_setters();
       if (analyze_again) record_fa_event(FAPassStage::MARK_SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
     }
@@ -4517,6 +4634,7 @@ static void clear_splits() {
     // 5) split AEdges(s) and EntrySet(s) for violations based on type using
     // dynamic dispatch
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    cur_split_stage = (int)FAPassStage::VIOLATION;
     analyze_again = split_for_violations(fa->type_violations);
     if (analyze_again) record_fa_event(FAPassStage::VIOLATION, analyze_again, ess0, css0, viol0);
   }
@@ -4565,11 +4683,11 @@ static void clear_splits() {
     double flow = pass_timer.time - extend_timer.time - match_timer.time;
     printf(
         "PASS %d COMPLETE: %f seconds, %f flow (%d%%), %f match (%d%%), %f "
-        "extend (%d%%), %d ess, %d css, %d violations\n",
+        "extend (%d%%), %d ess, %d css, %d violations, %d dup_splits\n",
         analysis_pass, pass_timer.time, flow, (int)(flow * 100.0 / pass_timer.time), match_timer.time,
         (int)(match_timer.time * 100.0 / pass_timer.time), extend_timer.time,
         (int)(extend_timer.time * 100.0 / pass_timer.time), fa->ess.n, fa->css.n,
-        fa->type_violations.set_count());
+        fa->type_violations.set_count(), fa->dup_split_attempts);
   }
   if (write_code_exit == analysis_pass) {
     if1_simple_dead_code_elimination(fa->pdb->if1);
