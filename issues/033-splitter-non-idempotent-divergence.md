@@ -651,7 +651,7 @@ existing single-candidate guard.
   ([pyc issues/028](../../issues/028-raise-exception-regression-qualified-dispatch.md)),
   not a new failure.
 
-### M2. Batch-stage extend (immutable-snapshot property, step 1) — PARTIALLY LANDED (stage 2 only; stages 3-5 blocked, see status below)
+### M2. Batch-stage extend (immutable-snapshot property, step 1) — REVERTED (stage-2 batching crashed fysphun; see status below). No part of M2 is on main.
 
 Remove first-stage-wins: run stages 1..5 every extend, each over
 the SAME snapshot's collected confluences. Two sub-steps:
@@ -887,6 +887,77 @@ pre-existing failures).
    was never implicated in either failure — plausibly safe to batch
    in isolation, but not verified; worth a dedicated bisection
    before assuming so.
+
+**CORRECTION (2026-07-11, later same day): the stage-2 batching
+above was reverted — it crashes fysphun.py.** While preparing M3
+(rebasing `issue033-stage-c` to attempt the ledger revival), the
+rebased branch segfaulted on fysphun deterministically, partway
+through pass 15, inside `Vec<CreationSet*>::begin()` (confirmed via
+kernel segfault log address resolution — `addr2line` against the
+crash `ip`, consistently at the same offset across repeated runs).
+Bisecting against the branch's parent commits on main showed the
+crash reproduces on **plain main with only the stage-2 change
+applied, no stage-C** — checking out the M1-only commit
+(`bf708ea6`, before stage-2 batching landed) and rebuilding makes
+the crash disappear; fysphun converges cleanly again (18 passes, 0
+violations). So the "stage 2 is safe" conclusion above was wrong,
+or at least incomplete: it's safe against every fixture and test
+this repo has *except* a real, long-running (15+ pass), numerically
+heavy program — exactly the class of input this issue is about.
+
+**The precise mechanism was not pinned down before reverting** (the
+crash site, `Vec<CreationSet*>::begin()`, is called from hundreds of
+sites in fa.cc via range-for loops, and reproducing it under `gdb`
+was impractically slow — ptrace overhead alone pushed it well past
+90s where the un-instrumented binary crashes in under 60s). What is
+known: it happens at the START of pass 15 (right after pass 14's
+actions, which included a stage-2 split), inside stage 1's
+processing, on a fun/EntrySet whose graph structure stage 2's
+now-more-frequent action apparently corrupted or left inconsistent
+on the prior pass. This is consistent with — though not proven to
+be the same bug as — the general class this section already
+diagnoses (a stage's action within a pass invalidating a premise a
+later consumer relies on), just manifesting as a dangling/garbage
+container pointer rather than a wrong-answer partition or a display
+assert. A future attempt should instrument `EntrySet`/`CreationSet`
+construction and destruction-adjacent paths (contours are never
+freed, per D0, so "dangling" here likely means "never properly
+linked into whatever structure stage 1's next-pass traversal
+expects," not a use-after-free) and reproduce with a much smaller
+input than 222-line fysphun if at all possible.
+
+**Reverted cleanly**: `analysis/fa.cc`'s stage 2 gate is back to
+`if (!analyze_again)`, byte-for-byte the same as before any M2 work
+started. Verified: pyc C 179/0, pyc LLVM 179/0, all 16 ifa-test
+phases green, shedskin corpus sweep back to the exact 23-member
+baseline (the `oliva2`/`kanoodle` gains from the buggy stage-2
+change are gone — an acceptable trade for not shipping a crash).
+`issue033-stage-c`'s local branch pointer, which the M3 rebase
+attempt had moved forward, was reset back to its original commit
+(`2d514f58`) — not pushed anywhere, no shared state affected.
+
+**Process lesson, stated plainly because it cost real time**: the
+verification bar used for the (reverted) stage-2 change — full pyc
+C/LLVM suite, all ifa-test phases, one shedskin corpus sweep
+comparing compiled-member sets — was not sufficient for a change to
+`extend_analysis`. Every one of those either runs briefly (the pyc
+test corpus) or only checks whether a `.c` file gets emitted (the
+corpus sweep), neither of which exercises 15+ passes of sustained
+splitting on a real program. **Any future change to
+`extend_analysis` must be checked against the shedskin trio
+(fysphun, kmeanspp, pylife) and pygasus specifically, run to
+completion (or the stall guard), not just folded into the generic
+suites** — this issue's whole subject matter is exactly the
+many-pass, large-contour-universe regime those three exercise and
+the standard suites don't.
+
+M2 is now fully reverted; nothing from M2 is on main. M3 is
+therefore blocked on a correctly-diagnosed, correctly-fixed M2 (or
+an M3 design that doesn't depend on M2 batching at all — worth
+reconsidering, since `issue033-stage-c`'s own `group_signature`
+wildcard-rejection is a general defense against incomplete-type-info
+hazards and may not need M2 as a prerequisite; see the branch's
+mechanics above).
 
 ### M3. Ledger persistence from converged snapshots (stage-C
 revival; the alloc_info analog)
