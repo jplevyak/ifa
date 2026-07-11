@@ -76,8 +76,12 @@ that:
   their closing commit as they land.
 - [033-splitter-non-idempotent-divergence.md](033-splitter-non-idempotent-divergence.md) —
   splitting loop has no fixed point on some inputs;
-  mitigated with a stall guard (commit `21dbdad4`) but the
-  root non-idempotence is untouched.
+  mitigated with a stall guard (commit `21dbdad4`) and the known
+  divergence is gone post-035, but the root non-idempotence is
+  untouched. Current plan is S5 (shedskin round-structure adoption,
+  M0-M6); original per-pass-ledger design archived at
+  [closed/033-ledger-design-detail.md](closed/033-ledger-design-detail.md)
+  (not a closed issue — 033 remains open).
 - [034-pygasus-update-display-assert.md](034-pygasus-update-display-assert.md) —
   `update_display` assert on pygasus, undiagnosed; unmasked
   (not introduced) by the 033 stall guard.
