@@ -290,6 +290,11 @@ class AVar : public gc {
   // Escape status (Phase 1+: see ESCAPE_PLAN.md).  Stored as
   // uint:1 to fit alongside the existing bit-fields.
   uint escape : 1;
+  // Issue 033 M4 probe (measurement only): set in propagate_out_change
+  // when this AVar's `out` changes; cleared per pass in initialize_pass.
+  // Answers "how sparse is the dirty set under today's clear-everything
+  // clear_avar" before committing to any collector rewrite.
+  uint dirty : 1;
   // Issue 029 step 1: marks an AVar that participates in a
   // polymorphic confluence — i.e. its `out` contains CSs
   // from multiple distinct non-nil metatypes, OR it
@@ -531,6 +536,12 @@ class FA : public gc {
   // Reported in the -v PASS line; reset in initialize_pass.
   ChainHash<SplitDecision *, SplitDecisionHashFns> split_ledger;
   int dup_split_attempts = 0;
+  // Issue 033 M4 probe (measurement only): how many AVars had `dirty`
+  // set (via propagate_out_change) during this pass's flow-to-fixpoint,
+  // vs. how many the existing full-scan collectors visit regardless.
+  // Reset in initialize_pass; reported in the -v PASS line.
+  long dirty_avar_count = 0;
+  long examined_avar_count = 0;
   SplitDecision *ledger_find(Fun *afun, int stage, MPosition *pos, AType *partition);
   SplitDecision *ledger_add(Fun *afun, int stage, MPosition *pos, AType *partition, EntrySet *product);
   // Issue 033 D6: per-Var count of stage-5 (split_for_violations)

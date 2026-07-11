@@ -289,6 +289,10 @@ static AType *apply_restrict_pred(AVar *v, AType *t) {
 // `out` forward. The permit variants historically re-implemented
 // this tail and omitted the IF resume.
 static void propagate_out_change(AVar *v) {
+  if (!v->dirty) {
+    v->dirty = 1;
+    ++fa->dirty_avar_count;
+  }
   for (AVar *vv : v->arg_of_send.asvec) {
     if (!vv->in_send_worklist) {
       vv->in_send_worklist = 1;
@@ -3442,6 +3446,8 @@ static void initialize_pass() {
   fa->type_world.type_violation_hash.clear();
   fa->entry_set_done.clear();
   fa->dup_split_attempts = 0;  // issue 033 stage A per-pass counter
+  fa->dirty_avar_count = 0;    // issue 033 M4 probe
+  fa->examined_avar_count = 0;  // issue 033 M4 probe
   refresh_top_edge(fa->top_edge);
 }
 
@@ -3598,11 +3604,15 @@ static void collect_type_confluences(Vec<AVar *> &confluences) {
   for (EntrySet *es : fa->ess) {
     for (Var *v : es->fun->fa_all_Vars) {
       AVar *xav = make_AVar(v, es);
-      for (AVar *av = xav; av; av = av->lvalue) collect_type_confluence(av, confluences);
+      for (AVar *av = xav; av; av = av->lvalue) {
+        ++fa->examined_avar_count;  // issue 033 M4 probe
+        collect_type_confluence(av, confluences);
+      }
     }
   }
   for (CreationSet *cs : fa->css) {
     for (AVar *av : cs->vars) {
+      ++fa->examined_avar_count;  // issue 033 M4 probe
       if (!av->contour_is_entry_set && av->contour != GLOBAL_CONTOUR) collect_type_confluence(av, confluences);
     }
     if (cs->added_element_var) collect_type_confluence(get_element_avar(cs), confluences);
@@ -4029,6 +4039,7 @@ static void clear_avar(AVar *av) {
   av->mark_map = 0;
   av->live_arg = 0;
   av->needs_fat = 0;
+  av->dirty = 0;  // issue 033 M4 probe
   if (av->lvalue) clear_avar(av->lvalue);
 }
 
@@ -4845,11 +4856,12 @@ static void clear_splits() {
     double flow = pass_timer.time - extend_timer.time - match_timer.time;
     printf(
         "PASS %d COMPLETE: %f seconds, %f flow (%d%%), %f match (%d%%), %f "
-        "extend (%d%%), %d ess, %d css, %d violations, %d dup_splits\n",
+        "extend (%d%%), %d ess, %d css, %d violations, %d dup_splits, "
+        "%ld dirty/%ld examined avars\n",
         analysis_pass, pass_timer.time, flow, (int)(flow * 100.0 / pass_timer.time), match_timer.time,
         (int)(match_timer.time * 100.0 / pass_timer.time), extend_timer.time,
         (int)(extend_timer.time * 100.0 / pass_timer.time), fa->ess.n, fa->css.n,
-        fa->type_violations.set_count(), fa->dup_split_attempts);
+        fa->type_violations.set_count(), fa->dup_split_attempts, fa->dirty_avar_count, fa->examined_avar_count);
   }
   if (write_code_exit == analysis_pass) {
     if1_simple_dead_code_elimination(fa->pdb->if1);

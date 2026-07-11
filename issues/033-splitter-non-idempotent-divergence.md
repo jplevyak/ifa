@@ -564,12 +564,16 @@ timers (`FA::stage_time[7]`, lapped at each stage boundary in
 `extend_analysis` regardless of whether that stage found work) and
 the stage-progress histogram (`FA::stage_progress_count[7]`,
 incremented alongside `record_fa_event`) are in, printed as a
-per-stage breakdown under `-v` at convergence. Not yet done: the
-dirty-AVar counter and the S3 `tests/perf/` sketches (needs sketch
-generation + a wall-clock-ceiling test convention that doesn't
-exist yet). Verified against all three suites (pyc C 178/0, pyc
-LLVM 178/0, ifa-test all 16 phases including fa-converge) —
-unchanged, confirming the instrumentation is behavior-preserving.
+per-stage breakdown under `-v` at convergence. The dirty-AVar
+counter landed later the same day, in the course of investigating
+M4 (`AVar::dirty` / `FA::dirty_avar_count` / `examined_avar_count`
+— see the M4 section for the mechanism and the finding it produced:
+M4 is blocked on M3, not merely easier with it). Still not done:
+the S3 `tests/perf/` sketches (needs sketch generation + a
+wall-clock-ceiling test convention that doesn't exist yet).
+Verified against all three suites (pyc C 178/0, pyc LLVM 178/0,
+ifa-test all 16 phases including fa-converge) — unchanged,
+confirming the instrumentation is behavior-preserving.
 
 **Finding: `mark_type` (`split_ess_for_mark_type`, stage 2), not
 the winning stage, dominates extend cost on all three trio
@@ -1185,7 +1189,7 @@ can't be keyed on directly).
   across passes on the trio + pygasus; outcomes unchanged
   (violation sets identical).
 
-### M4. Dirty-marked collection (S4-A)
+### M4. Dirty-marked collection (S4-A) — BLOCKED ON M3, confirmed by measurement, not implemented
 
 With M3, most plateau passes re-derive types into an unchanged
 landscape. Collection is now the residual cost: mark AVars whose
@@ -1203,6 +1207,60 @@ convergence check cheap enough to run stages more often.
   the full corpus; plateau-pass extend-seconds (M0 timers) drop
   toward zero on sketch (c) and pygasus; suites + all S3 sketch
   pass counts unchanged.
+
+**Status (2026-07-11): measured before writing any collector code,
+and the measurement itself answers the question — M4 is genuinely
+blocked on M3 (or M5), not merely easier with it.** Landed a small,
+behavior-neutral probe (`AVar::dirty`, set in `propagate_out_change`
+— the single shared exit point for every flow-update path, per the
+existing comment there — and a `dirty_avar_count` /
+`examined_avar_count` pair on `FA`, printed in the `-v` PASS line)
+before touching any collector, specifically to avoid a repeat of
+this issue's pattern: build the optimization, discover on a large
+input that its premise doesn't hold. Verified behavior-neutral:
+pyc C/LLVM 179/0, all 16 ifa-test phases, zero fixture changes.
+
+The measurement: on pygasus's own documented plateau (S2 above,
+passes 6-11, "~10 ess of progress per pass"), `dirty_avar_count`
+is essentially FLAT across all six plateau passes — 91391, 91895,
+92107, 92185, 92192, 92199 — a >99% RE-touch rate of a ~92K-AVar
+universe every single pass, despite the structural contour count
+(ess/css) barely moving. Fysphun shows the same shape at its own
+scale (passes 2-15 hold at 85-90% of the examined universe dirty
+throughout its own plateau). The only passes where the dirty count
+drops to (near) zero are the terminal "confirm nothing left"
+passes — fysphun's pass 18 (0 dirty / 5365 examined) and pygasus's
+pass 20 (0 dirty / 74640 examined) — a real but narrow win (one
+pass per compile, not the plateau this milestone targets).
+
+**Root cause, and why this isn't fixable by writing dirty-aware
+collectors alone**: `clear_avar` (called every pass via
+`clear_results()`, whenever `analyze_again`) unconditionally resets
+EVERY AVar's `in`/`out` to `bottom_type` and clears its
+`backward`/`forward` edge sets completely. The next pass's
+flow-to-fixpoint therefore has to re-derive the ENTIRE reachable
+graph from scratch regardless of how little conceptually changed —
+which is exactly why `propagate_out_change` (and thus `dirty`)
+fires for nearly the whole universe every pass: from `clear_avar`'s
+perspective, EVERY AVar's `out` "changed" this pass, because it
+went from a forced bottom_type back up to its real value. Dirty-
+tracking collectors would correctly report "everything is dirty,
+scan it all" every plateau pass — functionally equivalent to
+today's unconditional full scan, with the bookkeeping overhead of
+maintaining `dirty` on top. This is the mechanism behind the S5
+plan's own "With M3, most plateau passes re-derive into an
+unchanged landscape" framing: M3's persistence (or M5's more
+complete reset-and-reseed) is what would make "AVar state carries
+over, unchanged, across passes" true in the first place. Until one
+of those lands, "dirty since last extend" is nearly synonymous with
+"exists," and building collectors around it buys nothing.
+
+**Left the probe on main** (harmless, `-v`-only output, useful for
+re-checking this exact question once M3 lands — if the ratio drops
+sharply on M3's persisted state, that's the green light to proceed
+with the actual collector rewrite this section describes). Did not
+write any dirty-aware collector logic, since the measurement shows
+it would be a no-op at best under the current architecture.
 
 ### M5. Reset-and-reseed rounds (the full shedskin shape; only if
 M2-M4 leave a gap)
