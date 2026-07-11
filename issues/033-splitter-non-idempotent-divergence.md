@@ -1040,19 +1040,47 @@ been found — two were found in the course of getting ONE test
 program (fysphun) to run a few passes further, and both were found
 by symptom (a crash), not by systematic audit.
 
-**Recommended path if resumed**: (1) fix the `clone.cc` crash the
-same way (null-check `ee->to`, or determine what the correct
-behavior is for a mid-reroute edge — may not be as simple as
-"treat as compatible," needs the same care the `type_intersection`
-fix took to match an established semantic rather than guess one);
-(2) re-run fysphun (and kmeanspp/pylife/pygasus) to completion under
-ASAN with both fixes, looking for further crashes of the same
-shape; (3) once ASAN-clean across the trio + pygasus, re-apply the
-stage-2 batching commit with both fixes included and re-verify the
-FULL bar (pyc suites, ifa-test, corpus sweep, AND the trio/pygasus
-run to completion per the process lesson above) before landing
-again. This is real, bounded engineering work — plausibly a single
-focused session — not an open architecture problem.
+**Both fixes landed (2026-07-11, same day, standalone).** The
+`clone.cc` crash turned out simpler than expected once traced
+precisely: the ASAN fault address (`0x10`, matching
+`offsetof(AEdge, to)` exactly) meant `ee` itself — the `AEdge*`
+Vec element — was null, not `ee->to`. `out_edge_map`'s vectors are
+set-mode (built via `set_add` in `initialize()`), and this
+codebase's own convention (`.n` is table capacity, not live count;
+every other set-mode-Vec consumer guards with `if (x)`, e.g.
+`for (AEdge *e : es->out_edges) if (e) {...}` a few lines above in
+the same file) already establishes that `[0,n)` legitimately
+contains null slots. `equivalent_es_pnode` was simply missing that
+standard guard — not a semantic judgment call at all, unlike
+`type_intersection`. Fix: `for (AEdge *ee : *va) if (ee && ee->to) ...`.
+
+Landed both fixes as a standalone commit (not re-enabling M2's
+stage-2 batching in the same commit — that's still a separate
+decision). Verified behavior-neutral on today's unbatched main
+(pyc C/LLVM 179/0, all 16 ifa-test phases, zero fixture reblessing
+— the null cases these guards catch don't arise without M2's
+altered pass timing). Verified the actual fix under ASAN with M2's
+stage-2 batching re-applied in a throwaway worktree: fysphun's FA,
+previously crashing at pass 15, now converges cleanly to 0
+violations through pass 18; the shedskin corpus sweep with M2
+re-applied shows 25 compiled (up from 23: `oliva2` and `kanoodle`
+newly clean), no crashes anywhere in the failure buckets (only the
+same benign "has no type" warnings and pre-existing "cannot find
+module" entries as baseline). `kmeanspp`/`pylife` were checked in
+the non-ASAN corpus sweep (clean, no crashes, same benign warnings
+as baseline) — an ASAN-specific run for those two hit an unrelated
+worktree module-path-resolution quirk not chased down (confirmed
+unrelated: reproduces identically with `-D` pointed at either the
+worktree or the main repo, and disappears entirely outside ASAN).
+
+**M2's stage-2 batching itself remains OFF main.** The evidence
+above is a strong signal it's now safe, but re-landing it is a
+distinct decision from fixing these two bugs, given this issue's
+history of "verified safe" claims that didn't hold — worth a
+clean, deliberate re-attempt (rebuild the stage-2 commit on top of
+these two fixes, re-run the FULL bar including the trio/pygasus to
+completion per the process lesson above) rather than folding it
+into this fix silently.
 
 ### M3. Ledger persistence from converged snapshots (stage-C
 revival; the alloc_info analog)
