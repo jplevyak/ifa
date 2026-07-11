@@ -743,6 +743,61 @@ findings for the next attempt:
    FIRST, with display-consistency checking built in from the
    start, rather than retrying M2a's minimal-diff shape.
 
+**Bisection (2026-07-11), confirming (2) is the deeper problem:**
+unlocked the four top-level short-circuits ONE STAGE AT A TIME
+against the full pyc suite (not just the fixtures) to isolate which
+stage's batching causes the regressions.
+
+- **Stage 2 (mark_type) unlocked alone: clean.** `builtins_batch`
+  compiles and executes correctly (its only `x` is a pre-existing,
+  unrelated CPython-xfail marker for the cross-verify step, not a
+  pyc defect).
+- **Stage 3 (setter / setter-of-setter) additionally unlocked:
+  `builtins_batch` becomes clean too (the display assert is gone at
+  this point), but `pyc_declare` develops a genuine WRONG-ANSWER
+  miscompile** — not a completeness warning, an incorrect runtime
+  result: `c2 = C("2")` (a string-valued polymorphic field) prints
+  `<object>` instead of `2` on both occurrences in the test. This is
+  worse than the display-consistency crash: it's silent data
+  corruption in a CreationSet/setter-based field-type partition,
+  not caught by any assertion. (Stage 4/5 were not independently
+  re-tested after this — the full-batch run already showed both the
+  display crash AND completeness regressions, and this bisection's
+  purpose was root-causing, not full stage-by-stage acceptance.)
+
+Working theory: `split_for_setters`'s `compute_setters` calls
+(stage 3) read `confluences` — the AVar/ES list collected ONCE at
+the top of `extend_analysis`, before stage 1 runs. When stage 1
+already split entry sets this pass (which stage 2 alone never does
+enough to trigger, apparently, but stage 1 + stage 3 together do),
+stage 3's setter-equivalence computation runs against AVars/edges
+whose underlying EntrySet graph has already been mutated by stage
+1's action THIS pass — a mismatch between the snapshot `confluences`
+represents and the graph's actual current state. For plain ES
+routing this mismatch is caught by `es->split`'s short-circuit (per
+the original M2a risk note); for setter/CS-partition decisions,
+apparently nothing catches it, and the partition itself can come
+out wrong. This is a stronger, more concrete version of finding
+(2) above: M2a is not just risky in the abstract, it has a
+demonstrated wrong-answer failure mode, confirmed to originate in
+stage 3's setter splitting reading a stage-1-mutated graph through
+a stale confluence snapshot. Fixing this almost certainly requires
+either M2b's full decide-then-apply isolation (compute every
+stage's decisions against the SAME pre-mutation snapshot, apply all
+of them afterward) or, short of that, re-collecting `confluences`
+fresh before each stage that runs after a mutating stage — the
+latter defeats most of M2a's cost-saving intent (the point was to
+reuse one collection across stages) and reintroduces per-stage
+collection cost, so it is not a real shortcut around M2b.
+
+Both attempts left no code changes on `main` (reverted cleanly each
+time; verified pyc C 179/0 before and after). M2 is parked pending
+a properly scoped M2b implementation — this is real restructuring
+work across `split_ess_for_type`, `split_ess_for_mark_type`,
+`split_for_setters`, `split_for_setters_of_setters`, and
+`split_for_violations` (each needs a decide/apply split), not an
+incremental patch on top of what exists today.
+
 ### M3. Ledger persistence from converged snapshots (stage-C
 revival; the alloc_info analog)
 
