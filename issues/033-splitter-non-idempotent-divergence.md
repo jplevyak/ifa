@@ -559,6 +559,42 @@ design (`av->cs_map` survives by exception), and relies on
 - Acceptance: all suites unchanged; pygasus/sketch numbers
   recorded here as the baseline table.
 
+**Status: partially landed 2026-07-11.** Per-stage wall-clock
+timers (`FA::stage_time[7]`, lapped at each stage boundary in
+`extend_analysis` regardless of whether that stage found work) and
+the stage-progress histogram (`FA::stage_progress_count[7]`,
+incremented alongside `record_fa_event`) are in, printed as a
+per-stage breakdown under `-v` at convergence. Not yet done: the
+dirty-AVar counter and the S3 `tests/perf/` sketches (needs sketch
+generation + a wall-clock-ceiling test convention that doesn't
+exist yet). Verified against all three suites (pyc C 178/0, pyc
+LLVM 178/0, ifa-test all 16 phases including fa-converge) —
+unchanged, confirming the instrumentation is behavior-preserving.
+
+**Finding: `mark_type` (`split_ess_for_mark_type`, stage 2), not
+the winning stage, dominates extend cost on all three trio
+examples** — 70-89% of extend time, despite reporting progress on
+only 3-4 of the 10-21 passes (`type_confluence` wins more passes
+but costs far less per pass):
+
+| example | passes | final ess/css/viol | mark_type share of extend | mark_type progress-passes |
+|---|---|---|---|---|
+| fysphun | 18 | 218/556/0 | 70% (0.138s) | 3 |
+| kmeanspp | 21 | 333/706/6 | 80% (0.137s) | 4 |
+| pylife | 13 | 301/829/60 | 84% (0.070s) | 4 |
+
+These pass/ess/violation counts match the RESOLUTION UPDATE
+baseline at the top of this doc exactly (fysphun 18/0, kmeanspp
+21/6, pylife 13/60), confirming no behavior change. The new
+finding sharpens M2/M4's target: `type_confluence` "wins"
+(short-circuits) most passes, but `mark_type`'s collection
+(`collect_cs_marked_confluences` + the joint mark-seeding loop,
+fa.cc stage 4) is the expensive step that keeps running underneath
+it every pass regardless of who wins — batching (M2) won't shrink
+this cost by itself since mark_type still has to run; dirty-marking
+(M4) is what actually targets it, and should be prioritized to
+cover stage 4's collectors first if M4 is split into sub-steps.
+
 ### M1. Multi-candidate match collapsing (S4-C; independent track)
 
 Attacks pygasus pass 1 (~32s). Mechanics and soundness key as

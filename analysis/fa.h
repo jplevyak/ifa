@@ -557,6 +557,22 @@ class FA : public gc {
   bool fa_events_enabled;
   Vec<FAPassEvent *> fa_events_storage;
 
+  // ---- Issue 033 M0: per-stage measurement (S5 prereq) ----
+  // Cumulative wall-clock time (seconds) spent in each of
+  // extend_analysis's stages (collect_* + split_* combined), and a
+  // count of how many passes that stage was the one to report
+  // progress (first-stage-wins truncation point). Always collected
+  // (cheap: array increments + a timer lap per stage boundary);
+  // printed under -v at convergence. Distinguishes which stage
+  // dominates plateau-pass cost and how much of the plateau is
+  // first-stage-wins truncation -- a stage other than the winning
+  // one may have found work too, on a batched extend (see issue 033
+  // S5 M2). Sized to FAPassStage's cardinality (kept as a plain
+  // constant since FAPassStage is declared after this class).
+  static constexpr int kNumFAPassStages = 7;
+  double stage_time[kNumFAPassStages] = {};
+  long stage_progress_count[kNumFAPassStages] = {};
+
   FA(PDB *apdb)
       : pdb(apdb),
         patterns(0),

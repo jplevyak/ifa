@@ -82,6 +82,17 @@ const Vec<FAPassEvent *> &fa_events_get() {
   return (pdb && pdb->fa) ? pdb->fa->fa_events_storage : empty;
 }
 
+// Issue 033 M0: display name for a FAPassStage, for -v measurement
+// output. Order matches the enum in fa.h.
+static const char *fa_pass_stage_name(FAPassStage stage) {
+  static const char *names[FA::kNumFAPassStages] = {
+      "type_confluence", "mark_type", "setter", "setter_of_setter", "mark_setter", "mark_setter_of_setter",
+      "violation",
+  };
+  int i = (int)stage;
+  return (i >= 0 && i < FA::kNumFAPassStages) ? names[i] : "?";
+}
+
 static void record_fa_event(FAPassStage stage, int splits, int ess_before, int css_before, int viol_before) {
   if (!fa->fa_events_enabled) return;
   FAPassEvent *e = new FAPassEvent;
@@ -4639,6 +4650,12 @@ static void clear_splits() {
 [[nodiscard]] static int extend_analysis() {
   int analyze_again = 0;
   extend_timer.restart();
+  // Issue 033 M0: per-stage wall-clock measurement. `stage_timer`
+  // is lapped at each stage boundary below (whether or not that
+  // stage found work) so fa->stage_time[] accumulates the true
+  // cost of every stage visited this pass, not just the winning
+  // one -- that's what makes a plateau's cost breakdown legible.
+  Timer stage_timer;
   compute_recursive_entry_sets();
   compute_recursive_entry_creation_sets();
   clear_splits();
@@ -4650,14 +4667,22 @@ static void clear_splits() {
   collect_type_confluences(confluences);
   cur_split_stage = (int)FAPassStage::TYPE_CONFLUENCE;
   analyze_again = split_ess_for_type(confluences, SPLIT_EDGES);
+  fa->stage_time[(int)FAPassStage::TYPE_CONFLUENCE] += stage_timer.lap();
   log(LOG_SPLITTING, "split_ess_for_type %d\n", analyze_again);
-  if (analyze_again) record_fa_event(FAPassStage::TYPE_CONFLUENCE, analyze_again, ess0, css0, viol0);
+  if (analyze_again) {
+    record_fa_event(FAPassStage::TYPE_CONFLUENCE, analyze_again, ess0, css0, viol0);
+    ++fa->stage_progress_count[(int)FAPassStage::TYPE_CONFLUENCE];
+  }
   // 2) split EntrySets based on type using marks
   if (!analyze_again) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
     cur_split_stage = (int)FAPassStage::MARK_TYPE;
     analyze_again = split_ess_for_mark_type(confluences);
-    if (analyze_again) record_fa_event(FAPassStage::MARK_TYPE, analyze_again, ess0, css0, viol0);
+    fa->stage_time[(int)FAPassStage::MARK_TYPE] += stage_timer.lap();
+    if (analyze_again) {
+      record_fa_event(FAPassStage::MARK_TYPE, analyze_again, ess0, css0, viol0);
+      ++fa->stage_progress_count[(int)FAPassStage::MARK_TYPE];
+    }
   }
   log(LOG_SPLITTING, "split_ess_for_mark_type %d\n", analyze_again);
   // 3) split based on setters of type
@@ -4667,13 +4692,21 @@ static void clear_splits() {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
     cur_split_stage = (int)FAPassStage::SETTER;
     if (split_for_setters(avs, analyze_again)) analyze_again = 1;
-    if (analyze_again) record_fa_event(FAPassStage::SETTER, analyze_again, ess0, css0, viol0);
+    fa->stage_time[(int)FAPassStage::SETTER] += stage_timer.lap();
+    if (analyze_again) {
+      record_fa_event(FAPassStage::SETTER, analyze_again, ess0, css0, viol0);
+      ++fa->stage_progress_count[(int)FAPassStage::SETTER];
+    }
     log(LOG_SPLITTING, "split_for_setters %d\n", analyze_again);
     if (!analyze_again) {
       ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
       cur_split_stage = (int)FAPassStage::SETTER_OF_SETTER;
       analyze_again = split_for_setters_of_setters();
-      if (analyze_again) record_fa_event(FAPassStage::SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
+      fa->stage_time[(int)FAPassStage::SETTER_OF_SETTER] += stage_timer.lap();
+      if (analyze_again) {
+        record_fa_event(FAPassStage::SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
+        ++fa->stage_progress_count[(int)FAPassStage::SETTER_OF_SETTER];
+      }
     }
     log(LOG_SPLITTING, "split_for_setters_of_setters %d\n", analyze_again);
   }
@@ -4705,13 +4738,21 @@ static void clear_splits() {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
     cur_split_stage = (int)FAPassStage::MARK_SETTER;
     if (split_for_setters(avs, analyze_again)) analyze_again = 1;
-    if (analyze_again) record_fa_event(FAPassStage::MARK_SETTER, analyze_again, ess0, css0, viol0);
+    fa->stage_time[(int)FAPassStage::MARK_SETTER] += stage_timer.lap();
+    if (analyze_again) {
+      record_fa_event(FAPassStage::MARK_SETTER, analyze_again, ess0, css0, viol0);
+      ++fa->stage_progress_count[(int)FAPassStage::MARK_SETTER];
+    }
     log(LOG_SPLITTING, "split_for_setters with marks %d\n", analyze_again);
     if (!analyze_again) {
       ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
       cur_split_stage = (int)FAPassStage::MARK_SETTER_OF_SETTER;
       analyze_again = split_for_setters_of_setters();
-      if (analyze_again) record_fa_event(FAPassStage::MARK_SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
+      fa->stage_time[(int)FAPassStage::MARK_SETTER_OF_SETTER] += stage_timer.lap();
+      if (analyze_again) {
+        record_fa_event(FAPassStage::MARK_SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
+        ++fa->stage_progress_count[(int)FAPassStage::MARK_SETTER_OF_SETTER];
+      }
     }
     log(LOG_SPLITTING, "split_for_setters_of_setters with marks %d\n", analyze_again);
     clear_marks(acc);
@@ -4722,7 +4763,11 @@ static void clear_splits() {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
     cur_split_stage = (int)FAPassStage::VIOLATION;
     analyze_again = split_for_violations(fa->type_violations);
-    if (analyze_again) record_fa_event(FAPassStage::VIOLATION, analyze_again, ess0, css0, viol0);
+    fa->stage_time[(int)FAPassStage::VIOLATION] += stage_timer.lap();
+    if (analyze_again) {
+      record_fa_event(FAPassStage::VIOLATION, analyze_again, ess0, css0, viol0);
+      ++fa->stage_progress_count[(int)FAPassStage::VIOLATION];
+    }
   }
   log(LOG_SPLITTING, "split_for_violations %d\n", analyze_again);
   extend_timer.stop();
@@ -4793,6 +4838,18 @@ static void clear_splits() {
         (int)(match_timer.accumulator[0] * 100.0 / pass_timer.accumulator[0]),
         (int)(((double)pattern_match_hits / (double)pattern_match_complete) * 100.0), extend_timer.accumulator[0],
         (int)(extend_timer.accumulator[0] * 100.0 / pass_timer.accumulator[0]));
+    // Issue 033 M0: per-stage breakdown of the extend cost above,
+    // and how many passes each stage was the one to report
+    // progress (first-stage-wins truncation point -- see S5 M2).
+    double stage_total = 0;
+    for (int i = 0; i < FA::kNumFAPassStages; i++) stage_total += fa->stage_time[i];
+    printf("  stage breakdown (of %f extend seconds):\n", stage_total);
+    for (int i = 0; i < FA::kNumFAPassStages; i++) {
+      if (fa->stage_time[i] == 0 && fa->stage_progress_count[i] == 0) continue;
+      printf("    %-22s %f s (%d%%), progress on %ld pass%s\n", fa_pass_stage_name((FAPassStage)i),
+             fa->stage_time[i], stage_total > 0 ? (int)(fa->stage_time[i] * 100.0 / stage_total) : 0,
+             fa->stage_progress_count[i], fa->stage_progress_count[i] == 1 ? "" : "es");
+    }
   }
   return analyze_again;
 }
