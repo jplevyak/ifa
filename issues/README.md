@@ -94,7 +94,7 @@ commit ref recorded in each file's status line.  They stay in
 the tree as history — a code-search for the affected file finds
 the trail of investigation even after the fix has landed.
 
-Currently 25 closed issues:
+Currently 26 closed issues:
 [001](closed/001-keepalive-vs-explicit-reply.md),
 [002](closed/002-codegen-llvm-normalizer.md),
 [003](closed/003-fa-converge-determinism.md),
@@ -119,7 +119,8 @@ Currently 25 closed issues:
 [027](closed/027-v2-llvm-narrowed-loop-loses-struct-type.md),
 [028](closed/028-fibheap-blockers.md),
 [029](closed/029-polymorphic-dispatch.md),
-[036](closed/036-llvm-phy-lowering-wrong-value.md).
+[036](closed/036-llvm-phy-lowering-wrong-value.md),
+[037](closed/037-matcher-cartesian-cs-product.md).
 
 ## When to file an issue here vs fix it now
 

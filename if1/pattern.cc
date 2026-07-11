@@ -82,16 +82,17 @@ class Matcher {
   void find_arg_matches(AVar *, MPosition &, MPosition *, MPosition *, Vec<Fun *> **, int, int);
   void find_all_matches(CreationSet *, Vec<AVar *> &, Vec<cchar *> &, Vec<Fun *> **, MPosition &, int);
   void find_single_match(CreationSet *, Vec<AVar *> &, Vec<Fun *> **, MPosition &, int);
-  void find_best_cs_match(Vec<CreationSet *> &, MPosition &p, Vec<Fun *> &, Vec<Fun *> &, int);
+  void find_best_cs_match(Vec<CreationSet *> &, MPosition &p, Vec<Fun *> &, Vec<Fun *> &, int,
+                          Vec<Vec<CreationSet *> *> &cls);
   void find_best_matches(Vec<AVar *> &, Vec<CreationSet *> &, Vec<Fun *> &, MPosition &, Vec<Fun *> &, int,
-                         int iarg = 0);
+                         Vec<Vec<CreationSet *> *> &cls, int iarg = 0);
   int covers_formals(Fun *, Vec<CreationSet *> &, MPosition &, int);
   PMatch *build_PMatch(Fun *, PMatch *);
   void instantiation_wrappers_and_partial_application(Vec<Fun *> &);
   Fun *build(PMatch *m, Vec<Fun *> &matches);
   int subsumes(PMatch *x, PMatch *y, MPosition &app, Vec<CreationSet *> &csargs);
   void generic_arguments(Vec<CreationSet *> &, MPosition &, Vec<Fun *> &, int);
-  void set_filters(Vec<CreationSet *> &, MPosition &, Vec<Fun *> &);
+  void set_filters(Vec<CreationSet *> &, MPosition &, Vec<Fun *> &, Vec<Vec<CreationSet *> *> &cls);
   void reverify_filters(Vec<Fun *> &);
   void cannonicalize_matches(Vec<Fun *> &, int, Partial_kind, Vec<Match *> &, PNode *);
 
@@ -552,7 +553,8 @@ Lreturn:
   return result;
 }
 
-void Matcher::set_filters(Vec<CreationSet *> &csargs, MPosition &app, Vec<Fun *> &matches) {
+void Matcher::set_filters(Vec<CreationSet *> &csargs, MPosition &app, Vec<Fun *> &matches,
+                          Vec<Vec<CreationSet *> *> &cls) {
   for (Fun *f : matches) {
     PMatch *m = match_map.get(f);
     app.push(1);
@@ -563,7 +565,14 @@ void Matcher::set_filters(Vec<CreationSet *> &csargs, MPosition &app, Vec<Fun *>
         t = new AType;
         m->formal_filters.put(fcpp, t);
       }
-      t->set_add(csargs[i]);
+      // Issue 037: csargs[i] may be the representative of a
+      // dispatch-equivalence class (find_best_matches collapses
+      // CSs the candidate cannot distinguish); the filter must
+      // admit every member, exactly as full enumeration would.
+      if (i < cls.n && cls[i])
+        for (CreationSet *ccs : *cls[i]) t->set_add(ccs);
+      else
+        t->set_add(csargs[i]);
       app.inc();
     }
     app.pop();
@@ -1088,7 +1097,7 @@ void Matcher::reverify_filters(Vec<Fun *> &matches) {
 }
 
 void Matcher::find_best_cs_match(Vec<CreationSet *> &csargs, MPosition &app, Vec<Fun *> &local_matches,
-                                 Vec<Fun *> &result, int top_level) {
+                                 Vec<Fun *> &result, int top_level, Vec<Vec<CreationSet *> *> &cls) {
   log_dispatch_cs_match(*this, csargs, app, local_matches);
   Vec<PMatch *> covered;
   // collect the matches which cover the argument CreationSets
@@ -1206,7 +1215,8 @@ void Matcher::find_best_cs_match(Vec<CreationSet *> &csargs, MPosition &app, Vec
       if (arg->is_pattern) {
         Vec<CreationSet *> local_csargs;
         Vec<Fun *> local_result;
-        find_best_matches(csargs[i]->vars, local_csargs, similar, app, local_result, 0);
+        Vec<Vec<CreationSet *> *> local_cls;
+        find_best_matches(csargs[i]->vars, local_csargs, similar, app, local_result, 0, local_cls);
         similar.copy(local_result);
       }
     LnextSimilarArg:;
@@ -1216,7 +1226,7 @@ void Matcher::find_best_cs_match(Vec<CreationSet *> &csargs, MPosition &app, Vec
     matches.append(similar);
   }
   if (top_level) instantiation_wrappers_and_partial_application(matches);
-  set_filters(csargs, app, matches);
+  set_filters(csargs, app, matches, cls);
   if (top_level) reverify_filters(matches);
   log(LOG_DISPATCH, "%d- destructure_level: %d matches: %d\n", send->var->sym->id, app.pos.n, matches.n);
   qsort_by_id(matches);
@@ -1226,14 +1236,67 @@ void Matcher::find_best_cs_match(Vec<CreationSet *> &csargs, MPosition &app, Vec
 }
 
 void Matcher::find_best_matches(Vec<AVar *> &args, Vec<CreationSet *> &csargs, Vec<Fun *> &matches, MPosition &app,
-                                Vec<Fun *> &result, int top_level, int iarg) {
+                                Vec<Fun *> &result, int top_level, Vec<Vec<CreationSet *> *> &cls, int iarg) {
   if (iarg >= args.n)
-    find_best_cs_match(csargs, app, matches, result, top_level);
+    find_best_cs_match(csargs, app, matches, result, top_level, cls);
   else {
     csargs.fill(iarg + 1);
+    cls.fill(iarg + 1);
+    cls[iarg] = nullptr;
+    // Issue 037: this recursion enumerates the cartesian product of
+    // per-argument CreationSets — exponential in arity x union
+    // width. stereo's 13-argument numeric calls (each argument a
+    // {constant-CS, base-type-CS} union) spent 98%+ of every FA
+    // pass here, and pygasus/bh the same. For a SINGLE non-generic
+    // candidate, dispatch cannot distinguish CSs that agree on the
+    // three per-position tests find_best_cs_match applies
+    // (actual-filter membership, is_exact_match verdict, is_this
+    // verdict) — every downstream consumer (coercion/promotion/
+    // verify) works on cs->sym->type, which the collapsed members
+    // share via the filter test. So group this argument's CSs into
+    // those dispatch-equivalence classes and recurse once per
+    // class; set_filters expands the representative back to the
+    // full class, making the outcome identical to full enumeration.
+    // Multi-candidate sends keep full enumeration (subsumption and
+    // ambiguity are genuinely per-CS there).
+    Fun *single = nullptr;
+    int nmat = 0;
+    for (Fun *f : matches) if (f) {
+      single = f;
+      if (++nmat > 1) break;
+    }
+    if (nmat == 1 && !single->is_generic && args[iarg]->out->sorted.n > 1) {
+      PMatch *m = match_map.get(single);
+      MPosition lp(app);
+      lp.push(1);
+      for (int k = 0; k < iarg; k++) lp.inc();
+      MPosition *acpp = cannonicalize_mposition(lp);
+      MPosition *fcpp = m ? to_formal(acpp, m) : nullptr;
+      Sym *formal = m ? m->fun->arg_syms.get(fcpp) : nullptr;
+      if (m && formal && !formal->is_pattern) {
+        AType *t = m->actual_filters.get(acpp);
+        Sym *ft = formal->is_exact_match ? dispatch_type(formal) : nullptr;
+        Vec<CreationSet *> *groups[8];
+        memset(groups, 0, sizeof(groups));
+        for (CreationSet *cs : args[iarg]->out->sorted) {
+          int key = ((t && t->set_in(cs)) ? 1 : 0) |
+                    ((ft && (cs->sym == ft || cs->sym->type == ft || cs->sym->type->meta_type == ft)) ? 2 : 0) |
+                    ((formal->is_this && cs->sym == sym_nil_type) ? 4 : 0);
+          if (!groups[key]) groups[key] = new Vec<CreationSet *>;
+          groups[key]->add(cs);
+        }
+        for (int k = 0; k < 8; k++) if (groups[k]) {
+          csargs[iarg] = groups[k]->v[0];
+          cls[iarg] = groups[k]->n > 1 ? groups[k] : nullptr;
+          find_best_matches(args, csargs, matches, app, result, top_level, cls, iarg + 1);
+          cls[iarg] = nullptr;
+        }
+        return;
+      }
+    }
     for (CreationSet *cs : args[iarg]->out->sorted) {
       csargs[iarg] = cs;
-      find_best_matches(args, csargs, matches, app, result, top_level, iarg + 1);
+      find_best_matches(args, csargs, matches, app, result, top_level, cls, iarg + 1);
     }
   }
 }
@@ -1407,8 +1470,9 @@ int pattern_match(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_clo
   {
     MPosition app;
     Vec<CreationSet *> csargs;
+    Vec<Vec<CreationSet *> *> csclasses;
     Vec<Fun *> result;
-    matcher.find_best_matches(args, csargs, *partial_matches, app, result, 1);
+    matcher.find_best_matches(args, csargs, *partial_matches, app, result, 1, csclasses);
     partial_matches->move(result);
     if (!partial_matches->n) return 0;
   }
