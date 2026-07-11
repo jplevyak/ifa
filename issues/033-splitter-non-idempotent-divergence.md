@@ -11,18 +11,35 @@ one revision to the D11-A acceptance expectations. Next per land
 order: D6, then B, C, E. **D6 also landed 2026-07-10** — a no-op on
 today's corpus (see D6 for why its premise no longer holds
 post-mitigation); the live driver is the stage-0/1 group path.
-**Stage C was implemented 2026-07-10 on branch `issue033-stage-c`
-and is BLOCKED on [035](035-nondeterministic-codegen-clone-order.md)**:
-on that branch all three diverging examples reach a genuine fixed
-point with the stall guard never firing (fysphun 20 passes/0
-violations, kmeanspp 21/6, pylife 13/52 — was 60), but
-builtins_batch miscompiles — proven NOT to be a stage-C logic
-defect (its failing compile's splitting log is byte-identical to a
-passing HEAD compile's) but a latent heap-layout dependence in
-clone/codegen that the branch's changed allocation pattern
-exposes. See the branch's commit message and D4's status note for
-the three design corrections stage C accumulated (full-signature
-keys, display feasibility, bare — not filtered — products).
+
+**RESOLUTION UPDATE (2026-07-10, after the
+[035](035-nondeterministic-codegen-clone-order.md) determinism
+fixes): the core divergence symptom is GONE on main WITHOUT stage
+C.** All three diverging examples now reach genuine fixed points
+with the stall guard never firing — fysphun 18 passes/0 violations,
+kmeanspp 21/6, pylife 13/60 — i.e. much of the "non-idempotence"
+was heap-layout nondeterminism re-rolling split decisions between
+passes (the issue-009/021 family, living in the container library
+and SSU liveness rather than the splitter itself). The splitter's
+per-pass amnesia (D0) is still real, but with deterministic
+re-derivation it re-makes the SAME decisions, which is enough for a
+fixed point on the known inputs.
+
+**Stage C status (branch `issue033-stage-c`, revalidated on top of
+the 035 fixes + harness determinism gate): parked, likely
+unnecessary.** On the branch the trio also converges stall-free
+(pylife slightly better: 52 vs 60 violations), but builtins_batch
+still miscompiles (int sum printed as float64 bits) — now
+DETERMINISTICALLY, so it is debuggable: the cross-pass ROUTE of a
+group to a previously-recorded product can merge contours whose
+group signature matches but whose full context diverged (the
+int-`sum`/float-`sum` pair). Fixing that means verifying
+group-vs-product compatibility at route time — additional
+complexity for marginal benefit now that the divergence is gone.
+Recommend leaving the branch parked unless a new diverging input
+appears; its D4 design corrections (full-signature keys, display
+feasibility, bare — not filtered — products) are recorded in the D4
+status note for whoever picks it up.
 **Affects:** `ifa/analysis/fa.cc` — `extend_analysis()` and every
 `split_*` stage it drives; `analyze_to_convergence()`'s outer loop
 contract.

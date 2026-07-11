@@ -9,8 +9,12 @@ crashes (pylife FA, expr_evaluator clone) no longer reproduce, and
 the corpus member set is unchanged (22/55, same members). Remaining
 follow-ups, tracked here until landed: (a) DONE 2026-07-10 — the
 harness (test_pyc.py) now compiles every test twice and byte-diffs
-the generated .c/.ll (opt out with SKIP_DET_CHECK=1); (b)
-revalidate branch `issue033-stage-c` on top of the fixes; (c) DONE
+the generated .c/.ll (opt out with SKIP_DET_CHECK=1); (b) DONE
+2026-07-10 — branch merged with main and revalidated: the trio
+converges stall-free on MAIN alone (stage C no longer needed for
+that; see 033's resolution update), and the branch's residual
+builtins_batch miscompile is now deterministic and documented in
+033 — branch parked; (c) DONE
 2026-07-10, closed — [036](036-llvm-phy-lowering-wrong-value.md) — the
 one suite delta: the now-COMPLETE liveness places more phys, which
 the C backend lowers correctly everywhere but the v2 LLVM path
