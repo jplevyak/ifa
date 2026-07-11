@@ -959,6 +959,101 @@ wildcard-rejection is a general defense against incomplete-type-info
 hazards and may not need M2 as a prerequisite; see the branch's
 mechanics above).
 
+**ROOT CAUSE FOUND (2026-07-11, later still): a real, fixable bug —
+missing null-checks on `Map::get()` misses, not a fundamental
+architecture problem.** `gdb` was far too slow to catch the crash
+live (ptrace overhead pushed even a 90-280s budget past the point
+where the un-instrumented binary already crashed in under 60s).
+Building a throwaway worktree with AddressSanitizer instead
+(`-fsanitize=address -fno-omit-frame-pointer` added to both
+Makefiles; `-fsanitize-ignorelist` and a one-line skip for
+primitive index 57 to route around an unrelated pre-existing
+`initialize_primitives` global-buffer-overflow on `await`'s
+registration, out of scope here) got a complete, symbolized stack
+trace on the first run:
+
+```
+#0 Vec<CreationSet*>::begin()               common/vec.h:105
+#1 type_intersection(AType*, AType*)        analysis/fa.cc:694
+#2 edge_type_compatible_with_entry_set(...) analysis/fa.cc:841
+#3 split_entry_set(...)                     analysis/fa.cc:3788
+#4 split_ess_for_type(...)                  analysis/fa.cc:4479
+#5 extend_analysis()                        analysis/fa.cc:4670
+```
+
+`type_intersection(AType *a, AType *b)` (fa.cc:681) never null-checks
+`b` before `for (CreationSet *bb : b->sorted)` (fa.cc:694).
+`edge_type_compatible_with_entry_set` (fa.cc:835) calls it as
+`type_intersection(e_arg->out->type, e->match->formal_filters.get(p))`
+(fa.cc:811, 812, 841) — a direct, unchecked `Map::get()` result. A
+miss there is not a bug in the map: `analyze_edge` (fa.cc:2592),
+the flow-step consumer of the SAME map, already treats a missing
+filter as a legitimate "no constraint" state
+(`if (filter) { ... } else filter = es_filter;` at fa.cc:2605-2608,
+and `if (filter && ...) goto LskipEdge;` at fa.cc:2609 — a null
+filter simply skips the check). `edge_type_compatible_with_entry_set`
+never got the memo. **Fix, verified**: two lines at the top of
+`type_intersection` —
+```cpp
+if (!b) return a;
+if (!a) return b;
+```
+— matching `analyze_edge`'s existing null-is-unconstrained
+semantics. With the fix, fysphun's FA no longer crashes: it runs
+past pass 15 (previously fatal) through pass 17, **reaching 0
+violations** (358 ess / 570 css at pass 17, vs. baseline's 218/556
+at pass 18 — a different but not obviously worse shape; the analysis
+genuinely converges under stage-2 batching once this crash is out of
+the way).
+
+**A second, different crash follows immediately after, same
+pattern, different subsystem.** With the `type_intersection` fix
+in place, fysphun crashes again a few passes later — no longer in
+FA/`extend_analysis` but in the CLONE phase:
+`equivalent_es_pnode(PNode*, EntrySet*, EntrySet*)` (clone.cc:147)
+reads `ee->to->equiv` for every edge in an ES's `out_edge_map`
+(clone.cc:152) without checking `ee->to` for null — and `to` is
+exactly the field `split_entry_set` zeroes mid-split
+(`x->to = 0;` before rerouting, see D0/D4) before reassigning it.
+Not independently root-caused beyond identifying the exact null
+dereference and its likely source (an edge examined by clone
+equivalence-checking while mid-reroute) — this is reported, not yet
+fixed.
+
+**What this changes about the picture**: the earlier
+"flow only happens between outer passes, so any post-first-stage
+contour is fundamentally unsafe to examine" theory was too
+pessimistic as a blanket claim. The actual failure mode is narrower
+and much more ordinary: specific call sites across the codebase
+(so far: one in `fa.cc`'s split machinery, one in `clone.cc`'s
+equivalence checking) silently assumed invariants — "a formal
+filter is always recorded," "an edge's `to` is always resolved" —
+that held under the OLD strictly-sequential pass structure (by the
+time any of these functions ran, everything upstream had a full
+pass to settle) but don't hold once M2's batching lets stages,
+and the graph mutations they cause, compound within a single pass.
+This is a **finite, auditable class of bug** (missing null-checks
+on values that are legitimately absent in an in-flux state), not
+proof that M2-style batching is unsound. It is NOT yet proven that
+this is the *only* remaining class, or that all instances of it have
+been found — two were found in the course of getting ONE test
+program (fysphun) to run a few passes further, and both were found
+by symptom (a crash), not by systematic audit.
+
+**Recommended path if resumed**: (1) fix the `clone.cc` crash the
+same way (null-check `ee->to`, or determine what the correct
+behavior is for a mid-reroute edge — may not be as simple as
+"treat as compatible," needs the same care the `type_intersection`
+fix took to match an established semantic rather than guess one);
+(2) re-run fysphun (and kmeanspp/pylife/pygasus) to completion under
+ASAN with both fixes, looking for further crashes of the same
+shape; (3) once ASAN-clean across the trio + pygasus, re-apply the
+stage-2 batching commit with both fixes included and re-verify the
+FULL bar (pyc suites, ifa-test, corpus sweep, AND the trio/pygasus
+run to completion per the process lesson above) before landing
+again. This is real, bounded engineering work — plausibly a single
+focused session — not an open architecture problem.
+
 ### M3. Ledger persistence from converged snapshots (stage-C
 revival; the alloc_info analog)
 
