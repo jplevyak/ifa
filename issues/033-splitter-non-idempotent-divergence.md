@@ -651,7 +651,7 @@ existing single-candidate guard.
   ([pyc issues/028](../../issues/028-raise-exception-regression-qualified-dispatch.md)),
   not a new failure.
 
-### M2. Batch-stage extend (immutable-snapshot property, step 1) — REVERTED TWICE (crash, then a pygasus hang/severe slowdown after the crash was fixed; see status below). No part of M2 is on main. Do not retry without M4 first, or without testing pygasus.
+### M2. Batch-stage extend (immutable-snapshot property, step 1) — REVERTED TWICE (crash, then a pygasus hang/severe slowdown after the crash was fixed; see status below). No part of M2 is on main. Do not retry without M4 first, or without testing pygasus. The reverted diff is preserved on branch [`issue033-stage2-batching`](https://github.com/jplevyak/pyc/tree/issue033-stage2-batching) (checkpoint only, not mergeable as-is — see its note near the end of this section).
 
 Remove first-stage-wins: run stages 1..5 every extend, each over
 the SAME snapshot's collected confluences. Two sub-steps:
@@ -1135,6 +1135,17 @@ change against pygasus SPECIFICALLY and FIRST, before the trio —
 it is the one corpus member whose scale actually exercises the cost
 dimension this issue is about, and every other test in this repo
 undersells that dimension by 1-2 orders of magnitude.
+
+**The exact reverted change is preserved on branch
+`issue033-stage2-batching`** (pushed to origin, built on top of the
+two crash fixes above — do NOT merge as-is; it's the same code that
+hangs pygasus). Unlike `issue033-stage-c`, this isn't a design
+that's sound-but-parked — it's confirmed not viable standalone.
+Its value is purely as a checkpoint: the batching diff itself is
+small and mechanical (see D8-adjacent reasoning above for exactly
+what it does and doesn't touch), so there's no design work saved by
+keeping it, only re-typing. Revive it by rebasing onto whatever
+lands M4, not by merging it on its own.
 
 ### M3. Ledger persistence from converged snapshots (stage-C
 revival; the alloc_info analog)
