@@ -506,6 +506,151 @@ A (measure + dirty-mark) -> C (multi-candidate collapse) -> B
 persistence store) -> D (deferral valve), with S3's sketches
 landed as regression benchmarks alongside each.
 
+## S5. Merge plan: adopting shedskin's round structure into ifa
+
+This is the actionable plan distilled from S1-S4. It supersedes
+the D10 land order for the remaining ledger stages (the D-design's
+mechanics — keys, display feasibility, bare products — carry over
+unchanged; what changes is WHEN decisions are made and what
+persists). Each milestone lands independently with the full gate:
+pyc C + LLVM suites under the harness determinism check, ifa-test
+all phases, corpus member-set comparison (sets, not counts —
+issue pyc/028's lesson), and the S3 benchmarks' pass counts.
+
+The core insight being adopted, stated once (see the
+provisional-vs-converged discussion): both systems split at flow
+fixpoints, but shedskin (i) computes its COMPLETE split plan
+against an immutable snapshot before mutating anything, (ii)
+persists every decision outside the graph (`alloc_info`), and
+(iii) can therefore reset and reseed instead of incrementally
+mutating a live contour graph whose survival semantics are
+accidental. pyc today interleaves deciding with mutating
+(first-stage-wins, mid-stage ES creation), persists nothing by
+design (`av->cs_map` survives by exception), and relies on
+`Fun::ess` object survival plus deterministic re-derivation
+(post-035) for its de-facto idempotence.
+
+### M0. Measurement + benchmark harness (prereq, no behavior change)
+
+- Per-stage wall-clock timers inside `extend_analysis`, reported
+  in the `-v` PASS line and the issue-003 FAPassEvent sidecar
+  (the sidecar already carries per-stage before/after counts; add
+  micros). Distinguish: confluence COLLECTION vs split MACHINERY
+  vs pending-map bookkeeping.
+- Stage-progress histogram: for each pass, which stage made
+  progress. Quantifies how much of the plateau is
+  first-stage-wins truncation (predicts M2's win).
+- Dirty-AVar counter: how many AVars' `out` changed since the
+  previous extend (predicts M4's win).
+- Land the S3 sketches under `tests/perf/` (generated where
+  needed, sketch (c) with K=200/M=20), asserting PASS COUNTS
+  (exact under determinism) with generous wall-clock ceilings.
+- Acceptance: all suites unchanged; pygasus/sketch numbers
+  recorded here as the baseline table.
+
+### M1. Multi-candidate match collapsing (S4-C; independent track)
+
+Attacks pygasus pass 1 (~32s). Mechanics and soundness key as
+specified in S4-C / the 037 addendum. Order-independent of
+M2-M5; do it first because it is contained (pattern.cc only) and
+its test (sketch (b)) is the simplest.
+
+### M2. Batch-stage extend (immutable-snapshot property, step 1)
+
+Remove first-stage-wins: run stages 1..5 every extend, each over
+the SAME snapshot's collected confluences. Two sub-steps:
+
+- M2a: keep today's interleaved mutation within a stage but stop
+  short-circuiting across stages (`analyze_again |=` instead of
+  `if (!analyze_again)`). Cheap; changes pass counts (fixture
+  goldens re-blessed knowingly, fa-converge sidecar diffs
+  reviewed stage by stage). Risk: stage 2/4 mark machinery ran
+  historically only when stage 1/3 found nothing — verify marks
+  are cleared per stage (they are — `clear_marks(acc)`) and that
+  double-splitting the same ES within one pass short-circuits
+  (it does — `es->split`).
+- M2b: decide-then-apply within each stage: collection loops
+  produce a decision LIST (av, group partition, target) computed
+  against the unmutated state; application runs afterward. This
+  removes the last intra-pass order dependence (the D7/009/021
+  family becomes structurally impossible rather than
+  qsort-suppressed). This is the natural refactor point to route
+  both the bare-parking path and the ledger through one
+  "apply_split(decision)" function.
+
+### M3. Ledger persistence from converged snapshots (stage-C
+revival; the alloc_info analog)
+
+Merge branch `issue033-stage-c` (green at `2d514f58`) on top of
+M2. Semantics change vs the parked branch: keys are recorded and
+routed ONLY from post-M2 snapshot decisions. The builtins_batch
+hazard class (wildcard/partial-type signatures colliding across
+passes at different convergence stages) is structurally absent:
+a converged snapshot of live code has no empty intersected types
+at covered positions, and M2b means every key in one pass
+derives from one consistent state. Keep the branch's
+group_signature exactness (filter-intersected types, wildcard
+rejection) as a defensive invariant — it should never fire; add
+an assert-under-fixture that it doesn't.
+- Extend the ledger to CS splits (D5's advisory design) so data
+  polymorphism decisions persist too — this is the direct
+  `alloc_info` equivalent and what sketch (e) locks.
+- Acceptance: sketch (c) and pygasus plateau passes show
+  route-hits replacing re-splits (`dup_splits` becomes a
+  productivity metric: routed-per-pass); ess growth monotone
+  across passes on the trio + pygasus; outcomes unchanged
+  (violation sets identical).
+
+### M4. Dirty-marked collection (S4-A)
+
+With M3, most plateau passes re-derive types into an unchanged
+landscape. Collection is now the residual cost: mark AVars whose
+`out` changed since the last extend (set in `update_in` /
+`flow_var_type_permit`'s propagate tail); collectors walk the
+dirty set's neighborhoods instead of all of `fa->ess x args x
+backward`. An extend over an empty dirty set is free — making
+"nothing changed" passes O(1) and turning the outer loop's
+convergence check cheap enough to run stages more often.
+- Risk: a missed dirty path = a missed confluence = wrong
+  convergence. Mitigation: fixture mode that runs BOTH collectors
+  and asserts equality (the determinism gate makes the comparison
+  exact); soak on the full corpus before removing the check.
+
+### M5. Reset-and-reseed rounds (the full shedskin shape; only if
+M2-M4 leave a gap)
+
+With decisions fully persistent (M3) and collection incremental
+(M4), evaluate whether the remaining per-round cost justifies the
+final step: rebuild the contour universe from the ledger at round
+start (ESs/CSs constructed from keys; displays from the recorded
+feasibility data) and make `clear_results` a true graph reset.
+This buys shedskin's memory behavior and removes `Fun::ess`
+survival as load-bearing state, at the cost of a reseeding pass.
+Decide on M0-metrics evidence, not aesthetics — if pygasus-class
+inputs converge in seconds after M4, stop there.
+
+### M6. Deferral valve (S4-D; safety net, independent)
+
+The CPA_LIMIT analog for sketch (d)'s genuine product explosions,
+through the existing `incomplete_call` deferral path, with
+escalation at extend-quiescence and explicit diagnostics for
+capped-at-exit sends. Land last: after M1 the corpus doesn't need
+it, and its stall-guard interaction is simpler to reason about
+once M2-M3 have made pass semantics boring.
+
+### Explicitly NOT adopted from shedskin
+
+- **Incremental function/allocation admission** (S4-F): the
+  payoff overlaps M3/M4's, and it changes user-visible analysis
+  order; revisit only if a real input defeats M2-M5.
+- **maxhits=3 silent give-up**: pyc keeps hard diagnostics
+  (`pass_limit_hit`, the stall guard, violation reporting). Any
+  budget that fires must leave a violation trail, never silence.
+- **Graph-reset-first** (reset before persistence exists):
+  ordering matters — persistence (M3) must land before any reset
+  semantics (M5), or we rebuild the 033 divergence with extra
+  steps.
+
 ---
 
 # Detailed implementation design (the split-decision ledger)
