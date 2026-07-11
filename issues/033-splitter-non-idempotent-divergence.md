@@ -3,18 +3,30 @@
 **Status:** open, fix in progress. Divergence is *mitigated* (stall
 guard, commit `21dbdad4`) so affected programs terminate quickly
 instead of timing out; the root cause — split decisions that are
-not idempotent across passes — is untouched. **The current plan
-going forward is [S5](#s5-merge-plan-adopting-shedskins-round-structure-into-ifa)**,
-which adopts shedskin's round structure (decide-from-converged-
-state, persist decisions outside the graph) and supersedes the
-original per-pass-ledger land order. Prerequisite work that already
-landed (ledger observability, a violation-splitting cutoff, a
-determinism/ordering audit) is summarized in
-[Completed stages](#completed-stages); the `issue033-stage-c`
-branch's status and role in the forward plan is in
+not idempotent across passes — is untouched. **S5**
+(shedskin's round structure: decide-from-converged-state, persist
+decisions outside the graph) **remains the intended shape of the
+real fix, but M2/M3/M4 — the milestones that would actually
+implement it — are each individually blocked or reverted as of
+2026-07-11**, every one for a different, concretely-evidenced
+reason found by testing specific real corpus programs to
+completion (not by the standard suites, which none of these three
+findings were visible in): M2 (batch-stage extend) hangs pygasus;
+M3 (ledger persistence / stage-C revival) breaks the stall guard on
+bh, reintroducing genuine unbounded divergence; M4 (dirty-marked
+collection) is a no-op under the current architecture regardless of
+correctness, confirmed by direct measurement before any code was
+written. See each milestone's own status for the full account. Two
+general-hygiene bug fixes from the M2 investigation remain landed
+(a `type_intersection` null-check and an `equivalent_es_pnode`
+Vec-null-slot guard) since they're correct independent of M2's
+fate. Prerequisite work from before this M2/M3/M4 round (ledger
+observability, a violation-splitting cutoff, a determinism/ordering
+audit) is summarized in [Completed stages](#completed-stages); the
+`issue033-stage-c` branch's status is in
 [its own section](#issue033-stage-c-branch). Full implementation
-detail for the landed work, and the original stage-by-stage ledger
-design S5 supersedes, is archived at
+detail for that earlier landed work, and the original stage-by-stage
+ledger design S5 supersedes, is archived at
 [closed/033-ledger-design-detail.md](closed/033-ledger-design-detail.md).
 
 **RESOLUTION UPDATE (2026-07-10, after the
@@ -191,24 +203,28 @@ original "stage C" design — cross-pass ledger routing for
 per-ret `group_signature` (not just one position) with wildcard
 rejection and display-feasibility checks (full spec archived as D4
 in [closed/033-ledger-design-detail.md](closed/033-ledger-design-detail.md)).
-It is **sound and fully green** (both suites 177/0 under the
-determinism gate, ifa-test green, corpus member set unchanged) and
-**parked as unnecessary** for today's corpus: with 035's determinism
-fixes, the trio converges without it, and the branch's
-earlier-observed pylife improvement to 52 violations turned out to
-be an artifact of a since-fixed bogus-merge bug, not a real win over
-main.
+**UPDATE (2026-07-11): rebased and tested to completion against the
+full corpus (see the M3 section below for the full account) — it
+is NOT sound.** It breaks the stall guard on `bh`: the same
+violations-plateau shape that plain main resolves cleanly at pass
+29 via the stall guard instead grows unboundedly past pass 93 (492
+-> 2317 ess) with no sign of stopping under this branch. The
+"sound and fully green" assessment below is superseded; it was
+accurate against the suites and corpus-sweep-by-bucket check
+available at the time, neither of which exercises a program long
+enough or in the right shape to expose this. The branch itself
+(`2d514f58`, unpushed rebase attempt discarded) is unchanged and
+still parked — do not revive without root-causing and fixing the
+stall-guard interaction first.
 
-Status relative to main: the branch last synced main at `8abc6aba`
-(which already included the 035 determinism fixes); main has since
-advanced 8 commits (issue 037's matcher fix, this plan's own
-updates) that the branch does not have. **Do not merge as-is.** Per
-M3 below, the branch's routing was built against today's interleaved
-first-stage-wins extend loop; merging it before M2 lands would
-reintroduce the exact builtins_batch wildcard-key hazard class M3 is
-designed to close structurally. Action: leave the branch parked;
-rebase it onto main after M2 lands, as the concrete starting point
-for M3's revival.
+Original assessment (superseded, kept for the historical record):
+it was believed **sound and fully green** (both suites 177/0 under
+the determinism gate, ifa-test green, corpus member set unchanged)
+and **parked as unnecessary** for the then-current corpus: with
+035's determinism fixes, the trio converges without it, and the
+branch's earlier-observed pylife improvement to 52 violations
+turned out to be an artifact of a since-fixed bogus-merge bug, not
+a real win over main.
 
 ## Shedskin comparison (2026-07-11, from ../shedskin/shedskin/infer.py)
 
@@ -1152,7 +1168,7 @@ keeping it, only re-typing. Revive it by rebasing onto whatever
 lands M4, not by merging it on its own.
 
 ### M3. Ledger persistence from converged snapshots (stage-C
-revival; the alloc_info analog)
+revival; the alloc_info analog) — ATTEMPTED 2026-07-11, REVERTED: rebased branch breaks the stall guard on `bh`, a genuine unbounded divergence. See status near the end of this section.
 
 Rebase and merge branch `issue033-stage-c` (green at `2d514f58`;
 status/staleness detail in
@@ -1188,6 +1204,90 @@ can't be keyed on directly).
   productivity metric: routed-per-pass); ess growth monotone
   across passes on the trio + pygasus; outcomes unchanged
   (violation sets identical).
+
+**Status (2026-07-11): attempted, reverted — a real, severe
+divergence, caught by testing a full corpus member to completion
+per this issue's own hard-won process lesson.** Rebased
+`issue033-stage-c` (`2d514f58`) onto current main (21 commits
+behind; M0/M1, the two crash fixes, and the M4 probe had landed
+since its last rebase) in an isolated, detached worktree — three
+conflicts, all trivial-to-moderate: two pure comment collisions
+(kept both sides' reasoning where they differed — see below), and
+one genuine merge of `FA::dirty_avar_count`/`examined_avar_count`
+(new on main) alongside the branch's `SplitDecision::sig` field
+addition (both needed, no overlap). Notably, one of the "comment"
+conflicts revealed that **the stage-C branch had independently
+found and fixed the exact same `equivalent_es_pnode` null-`AEdge*`
+bug this session's ASAN investigation found** — on fysphun, during
+the branch's own earlier development. Two independent
+investigations, same bug, same fix, same reproducing input —
+strong corroboration the fix itself is correct; merged both
+comments' reasoning into one.
+
+Standard bar all green: pyc C/LLVM 179/0, all 16 ifa-test phases
+with zero fixture changes, corpus sweep 23 compiled (the pre-M2
+baseline set — stage-C alone doesn't add M2's oliva2/kanoodle
+gains, expected since they're unrelated), no crashes. **Then,
+per the process lesson from the M2 investigation, checked every
+corpus member's outcome for anomalies before declaring success —
+not just the pass/fail bucket — and `bh` had silently changed from
+its usual fast, benign failure to `(compile timeout 90s)`.**
+
+Investigated directly rather than dismissing it as noise:
+- **Plain main (no stage-C) on the identical `bh.py`**: violations
+  plateau at 23 for passes 20-28 (9 non-improving passes — at or
+  past `IFA_STALL_LIMIT`'s default of 8), `dup_splits` frozen at 3
+  throughout, ess/css still climbing each of those passes. The
+  stall guard correctly fires: dirty-AVar count collapses from
+  ~14000 to 419 at pass 29 (the guard's forced-stop signature), and
+  the compile ends normally with the same pre-existing "Exception
+  has no type" diagnosis this repo already knows about.
+- **Rebased `issue033-stage-c` on the same `bh.py`**: the identical
+  plateau SHAPE (violations frozen, this time at 29, `dup_splits`
+  frozen at exactly 4) — but it never stops. By the time the
+  external 90-second timeout killed it, `ess` had grown 492 -> 2317
+  and `css` 1086 -> 2473 over 73+ consecutive non-improving passes
+  — nine times past the stall limit with no sign of slowing, each
+  pass more expensive than the last as the ever-growing universe
+  gets rescanned (per-pass extend cost climbing from ~2.1s to
+  ~3.6s across the tail alone).
+
+**This is the exact pathology issue 033's stall guard exists to
+catch, and stage-C's ledger-routing changes defeat it on this
+input** — not a performance regression like M2's pygasus finding,
+a correctness regression in the safety net itself. Not root-caused
+to the specific line: `dup_split_attempts`/`FA::stall_passes`/
+`FA::best_violations` live in `extend_analysis`'s outer bookkeeping,
+which the stage-C diff doesn't directly touch, so the interaction
+is indirect — most likely something about ledger-routed groups
+causing `fa->type_violations`' count to look like it's improving
+(or never quite failing to improve) when it structurally isn't,
+letting `v < fa->best_violations` keep resetting `stall_passes`
+before it can reach the limit. Worth root-causing with the same
+ASAN-first, measure-before-fixing discipline the M2 crashes used,
+rather than guessing at a patch.
+
+**Reverted cleanly**: the rebase was done in a detached-HEAD
+worktree (`git worktree add -d`), so the `issue033-stage-c` branch
+itself was never touched or pushed — it's still at `2d514f58`,
+identical to `origin/issue033-stage-c`. Nothing from this attempt
+is on main or any branch. The one durable artifact worth keeping —
+the merged `equivalent_es_pnode` comment reconciling both
+investigations' findings — is a documentation-only improvement
+already captured above in this write-up, not a code change to
+carry forward.
+
+**M2, M3, and M4 are now all blocked or reverted**, each for a
+different, concrete, well-evidenced reason: M2 (stage-2 batching)
+hangs pygasus; M3 (ledger revival) breaks the stall guard on bh;
+M4 (dirty-marked collection) is a no-op under the current
+architecture regardless of correctness. The common thread across
+all three: **every one of these regressions was invisible to the
+standard suites + corpus-sweep-by-bucket check, and only surfaced
+by running specific, real, at-scale corpus members to completion**
+— fysphun and pygasus for M2, pygasus for M4, bh for M3. Any future
+attempt at any of these should budget for that verification step
+from the start, not add it after a "looks safe" first pass.
 
 ### M4. Dirty-marked collection (S4-A) — BLOCKED ON M3, confirmed by measurement, not implemented
 
