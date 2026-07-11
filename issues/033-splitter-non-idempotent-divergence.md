@@ -651,7 +651,7 @@ existing single-candidate guard.
   ([pyc issues/028](../../issues/028-raise-exception-regression-qualified-dispatch.md)),
   not a new failure.
 
-### M2. Batch-stage extend (immutable-snapshot property, step 1) — REVERTED (stage-2 batching crashed fysphun; see status below). No part of M2 is on main.
+### M2. Batch-stage extend (immutable-snapshot property, step 1) — REVERTED TWICE (crash, then a pygasus hang/severe slowdown after the crash was fixed; see status below). No part of M2 is on main. Do not retry without M4 first, or without testing pygasus.
 
 Remove first-stage-wins: run stages 1..5 every extend, each over
 the SAME snapshot's collected confluences. Two sub-steps:
@@ -1073,14 +1073,68 @@ worktree module-path-resolution quirk not chased down (confirmed
 unrelated: reproduces identically with `-D` pointed at either the
 worktree or the main repo, and disappears entirely outside ASAN).
 
-**M2's stage-2 batching itself remains OFF main.** The evidence
-above is a strong signal it's now safe, but re-landing it is a
-distinct decision from fixing these two bugs, given this issue's
-history of "verified safe" claims that didn't hold — worth a
-clean, deliberate re-attempt (rebuild the stage-2 commit on top of
-these two fixes, re-run the FULL bar including the trio/pygasus to
-completion per the process lesson above) rather than folding it
-into this fix silently.
+**Re-attempted the same day, following the process lesson exactly —
+and it correctly caught a THIRD, more severe problem: M2's stage-2
+batching hangs (or is catastrophically slower than) pygasus.**
+Re-applied the stage-2 batching commit on top of both crash fixes,
+verified the full bar in order: pyc C/LLVM 179/0, all 16 ifa-test
+phases with zero fixture reblessing, two consecutive corpus sweeps
+(deterministic, 25 compiled, no crashes) — all clean, as expected.
+Then, per the process lesson, ran the trio and pygasus to actual
+completion instead of stopping at the corpus sweep's coarse
+pass/fail bucketing:
+- fysphun: clean, 18 passes, 0 violations at pass 17, no crash —
+  matches the ASAN verification.
+- kmeanspp: clean, 21 passes, 5 violations (vs. the documented
+  baseline's 6 — equal or better), no crash.
+- pylife: clean, 13 passes, 60 violations — exact match to the
+  documented baseline, no crash.
+- **pygasus: never printed `PASS 1`. Ran at 99.9% CPU for 7+
+  minutes with the output file completely static (confirmed via
+  two checks 135 seconds apart, zero new lines) before being
+  killed.** Reverting stage-2 batching and rebuilding restored
+  pygasus's PASS 1 to 11.4 seconds, byte-for-byte matching the
+  earlier (pre-M2) measurement — ruling out environmental
+  flukiness and confirming the stage-2 change is unambiguously the
+  cause.
+
+**Why the trio didn't catch this: it's a SCALE problem, not a
+many-pass problem.** The trio (200-400 ess) already showed, via
+M0's own measurement, that stage 2's collection is disproportionately
+expensive relative to how often it wins (`mark_type` 70-89% of
+extend cost while `type_confluence` wins most passes) — but at
+that scale it's merely wasteful, not fatal. `extend_analysis`'s
+original short-circuit (`if (!analyze_again)`) meant stage 2 was
+skipped entirely on every pass where stage 1 found new work — and
+for a large program, stage 1 keeps finding new work for MANY passes
+before it ever runs dry. Pygasus's pass 1 alone discovers 904 ess /
+3673 css (10x the trio's total contour count); under M2's batching,
+stage 2's expensive mark-based collection now runs unconditionally
+against that entire freshly-discovered universe on pass 1 itself,
+before stage 1 has had any chance to let the universe stabilize.
+Whatever stage 2's collection cost scales with (contour count,
+likely worse-than-linear given the trio's own 70-89% share at 1/10th
+the scale), pygasus's pass 1 hits it at full unmitigated force. This
+is exactly the cost M4 (dirty-marked collection) exists to fix —
+this finding suggests M2 and M4 may not be independently orderable
+the way S5 originally sequenced them: **stage-2 batching without
+M4's dirty-marking to bound its collection cost is not viable on
+large programs**, not merely "not yet verified."
+
+**Reverted again**, same day. Verified: pyc C 179/0, pygasus PASS 1
+back to 11.4s. Nothing from M2 is on main; the two crash fixes
+(which are unconditionally good hygiene regardless of M2's fate)
+remain landed.
+
+**Recommendation for any future attempt**: don't re-attempt stage-2
+batching in isolation again. Either (a) land M4 (dirty-marked
+collection) FIRST, so stage 2's collection cost is bounded by what
+actually changed rather than the full contour universe, then retry
+M2's batching on top of it, or (b) test any future `extend_analysis`
+change against pygasus SPECIFICALLY and FIRST, before the trio —
+it is the one corpus member whose scale actually exercises the cost
+dimension this issue is about, and every other test in this repo
+undersells that dimension by 1-2 orders of magnitude.
 
 ### M3. Ledger persistence from converged snapshots (stage-C
 revival; the alloc_info analog)
