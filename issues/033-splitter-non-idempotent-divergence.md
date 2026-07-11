@@ -193,6 +193,57 @@ instead of load-bearing.
   but converging program (none known today; the guard only fires
   on nonzero-violation plateaus).
 
+## Shedskin comparison (2026-07-11, from ../shedskin/shedskin/infer.py)
+
+Shedskin analyzes pygasus successfully with the same underlying
+theory (Agesen CPA for function polymorphism + Plevyak IFA for data
+polymorphism), and its engineering answers map one-to-one onto this
+issue's remaining costs (pygasus post-037: 32s pass 1 in match,
+then a ~110s extend plateau across passes 6-11 at 3800 ess before
+converging to a 788-violation diagnosis in ~200s):
+
+1. **`CPA_LIMIT` (=10, doubling)** — per call site, if
+   `|candidate funs| x |cartesian arg-type product|` exceeds the
+   limit, the call is NOT bound this round (`cpa()` returns without
+   creating templates; `cpa_limited` set). The limit doubles ONLY
+   at quiescence (no splits left and the limit was hit), so
+   precision is bought lazily. pyc analog: `pattern_match` already
+   has a deferral protocol (`incomplete_call` returns 0 and the
+   send re-fires when arg types change) — a product cap could
+   return through the same path, with escalation hooked to
+   extend-quiescence. Issue 037's collapsing + viability pruning
+   removed the need for the current corpus; the cap remains the
+   principled backstop for adversarial arity x union-width.
+2. **Incremental admission (`INCREMENTAL_FUNCS=5`,
+   `INCREMENTAL_ALLOCS=1`)** — cpa() refuses to add more than N new
+   functions/allocations per round; propagation restarts to absorb
+   what was admitted. Early rounds run on tiny graphs, so early
+   (wrong) specialization decisions are cheap to make and remake.
+   pyc has no analog: every pass re-flows the whole program against
+   the full contour universe — this is exactly why pygasus's extend
+   plateau costs 18s/pass (confluence collection + split machinery
+   over 3800 ess x edges, re-derived per pass).
+3. **`alloc_info` persistence across restarts** — shedskin RESETS
+   the constraint graph each round but carries the allocation-site
+   -> contour assignments forward and reseeds from them
+   (`ifa_seed_template`). That is precisely this issue's
+   split-decision ledger (D1) / the stage-C branch, at
+   allocation-site (CS) granularity — shedskin's convergence on
+   pygasus is evidence the persistent-decision architecture is the
+   right endgame, with one structural difference: shedskin's ifa()
+   makes splits ONCE per round from a converged clean state, rather
+   than pyc's split-every-pass-from-partial-state, which is what
+   makes its decisions naturally idempotent.
+
+Verdict: applicable. Adoption order for pygasus-scale inputs:
+(a) already landed — 037 collapsing + pruning (the CPA_LIMIT
+problem attacked by exactness rather than deferral); (b) the
+extend plateau wants shedskin's "split once per converged round +
+persist decisions" shape — i.e. finish the ledger program (stage-C
+branch) and consider moving extend_analysis to run splits from
+converged state only; (c) the literal CPA_LIMIT deferral as a
+cheap safety valve.
+
 ---
 
 # Detailed implementation design (the split-decision ledger)

@@ -2875,9 +2875,19 @@ static void show_illegal_type(FILE *fp, ATypeViolation *v) {
 static int compar_edge_id(const void *aa, const void *bb) {
   AEdge *a = (*(AEdge **)aa);
   AEdge *b = (*(AEdge **)bb);
+  // Reporting-only sort: compare by stable IR sym ids, NOT via
+  // make_AVar — creating AVars here both mutates analysis state
+  // from a print path and walks es->display for the caller pnode's
+  // Var, which reads out of bounds (null es) when the caller is
+  // more deeply nested than the callee contour's display (pygasus
+  // aborted while printing its violations; pylife hit the same on
+  // the issue-033 stage-C branch, where this fix first landed).
   int i = 0, j = 0;
-  if (a->pnode && a->pnode->lvals.n) i = make_AVar(a->pnode->lvals[0], a->to)->id;
-  if (b->pnode && b->pnode->lvals.n) j = make_AVar(b->pnode->lvals[0], b->to)->id;
+  if (a->pnode && a->pnode->lvals.n) i = a->pnode->lvals[0]->sym->id;
+  if (b->pnode && b->pnode->lvals.n) j = b->pnode->lvals[0]->sym->id;
+  if (i != j) return (i > j) ? 1 : -1;
+  i = a->from ? a->from->id : 0;
+  j = b->from ? b->from->id : 0;
   return (i > j) ? 1 : ((i < j) ? -1 : 0);
 }
 

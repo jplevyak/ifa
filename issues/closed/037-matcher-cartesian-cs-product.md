@@ -82,12 +82,34 @@ per-CS there).
   determinism gate (byte-identical recompiles), ifa-test all
   phases green.
 
+## Addendum (2026-07-11): viability pruning
+
+The first fix still enumerated REJECTED equivalence classes "for
+exactness". That was the residual blowup on pygasus: with mixed
+types mid-convergence every position also carries a rejected
+class, and the 2^arity rejected combinations produced ~2.4M
+`cover_formals: 0` leaves per 40s — all provably effect-free,
+since a zero-cover leaf returns before set_filters. The
+single-candidate path now recurses ONLY into the viable class
+(passes actual-filter membership, is_exact_match, is_this) and
+prunes the whole subtree when a position has none. pygasus match
+cost fell from 3.5-30s/pass to 0.4-0.6s/pass; combined with the
+compar_edge_id reporting fix, pygasus goes from HANGING to
+terminating with a full 788-violation diagnosis in ~200s (the
+remainder is the extend-phase plateau — issue 033 territory — plus
+a 32s first pass dominated by 3-candidate `_exec` method sends
+that the single-candidate path deliberately skips).
+
 ## Future work
 
-- Multi-candidate collapsing: sound if the equivalence key is
-  extended with per-candidate-pair `subsumes_arg` verdicts (or
-  restricted to positions where all candidates' dispatch types are
-  equal); not needed for the current corpus.
+- Multi-candidate collapsing (pygasus's remaining 32s pass-1: 3
+  candidates x 4 args): sound with key = per-candidate
+  (accept, exact, this) bit-vectors + cs->sym->type, PLUS
+  cs->sym itself when the candidates' dispatch types differ at
+  the position (subsumes_arg reads cs->sym against isa sets;
+  identical dispatch types make its verdict CS-independent).
+  Estimated 2-5x on that pass; the extend plateau dominates
+  pygasus now, so deferred.
 - The MatchCache misses throughout convergence by design (exact
   AType keys). With collapsing the misses are cheap; a
   subset-aware cache would help pygasus-scale programs further.

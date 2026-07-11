@@ -1276,21 +1276,34 @@ void Matcher::find_best_matches(Vec<AVar *> &args, Vec<CreationSet *> &csargs, V
       if (m && formal && !formal->is_pattern) {
         AType *t = m->actual_filters.get(acpp);
         Sym *ft = formal->is_exact_match ? dispatch_type(formal) : nullptr;
-        Vec<CreationSet *> *groups[8];
-        memset(groups, 0, sizeof(groups));
+        // The single viable class: CSs that pass every per-position
+        // coverage test the leaf applies. Any combination containing
+        // a non-viable CS makes `covered` empty in
+        // find_best_cs_match, which returns BEFORE set_filters — a
+        // provably effect-free evaluation — so non-viable classes
+        // are not enumerated at all. (Enumerating them was the
+        // residual blowup on pygasus: with mixed types
+        // mid-convergence each position also carried a rejected
+        // class, and the 2^arity rejected combinations produced
+        // millions of cover_formals:0 leaves per pass.)
+        Vec<CreationSet *> *viable = nullptr;
         for (CreationSet *cs : args[iarg]->out->sorted) {
-          int key = ((t && t->set_in(cs)) ? 1 : 0) |
-                    ((ft && (cs->sym == ft || cs->sym->type == ft || cs->sym->type->meta_type == ft)) ? 2 : 0) |
-                    ((formal->is_this && cs->sym == sym_nil_type) ? 4 : 0);
-          if (!groups[key]) groups[key] = new Vec<CreationSet *>;
-          groups[key]->add(cs);
+          bool ok = (t && t->set_in(cs)) &&
+                    (!ft || (cs->sym == ft || cs->sym->type == ft || cs->sym->type->meta_type == ft)) &&
+                    !(formal->is_this && cs->sym == sym_nil_type);
+          if (ok) {
+            if (!viable) viable = new Vec<CreationSet *>;
+            viable->add(cs);
+          }
         }
-        for (int k = 0; k < 8; k++) if (groups[k]) {
-          csargs[iarg] = groups[k]->v[0];
-          cls[iarg] = groups[k]->n > 1 ? groups[k] : nullptr;
+        if (viable) {
+          csargs[iarg] = viable->v[0];
+          cls[iarg] = viable->n > 1 ? viable : nullptr;
           find_best_matches(args, csargs, matches, app, result, top_level, cls, iarg + 1);
           cls[iarg] = nullptr;
         }
+        // no viable CS at this position: no combination through
+        // here can match — prune the whole subtree.
         return;
       }
     }
