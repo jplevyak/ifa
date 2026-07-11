@@ -4674,15 +4674,35 @@ static void clear_splits() {
     ++fa->stage_progress_count[(int)FAPassStage::TYPE_CONFLUENCE];
   }
   // 2) split EntrySets based on type using marks
-  if (!analyze_again) {
+  // Issue 033 S5 M2 (scoped-safe variant): unlocked unconditionally.
+  // Stages 3-5 stay gated below -- see the issue 033 doc for why:
+  // flow propagation only happens in analyze_to_convergence's OUTER
+  // do-while loop, never inside extend_analysis itself, so any
+  // contour a stage creates mid-call has zero flow-derived type
+  // info (`av->out->type->n == 0`) for the rest of this call.
+  // Stage 2 is safe under that: a not-yet-flowed contour just
+  // fails its confluence test (needs >=2 distinct types) and is
+  // silently skipped -- a benign non-committal no-op, deferred to
+  // next pass. Stage 3/4 are NOT safe: `compute_setters`' own
+  // guard (`if (akind == AKIND_TYPE && !x->out->type->n) continue`)
+  // skips those same unflowed contours too, but `split_css` then
+  // PERMANENTLY partitions a CreationSet's `defs` from whatever
+  // incomplete `starters` subset it saw -- an irreversible wrong
+  // commitment, not a deferral (CS splits only ever subdivide,
+  // never re-merge). Confirmed by bisection + log-trace comparison
+  // (baseline: one full 6-way CS partition once ES-graph growth
+  // settles at pass 5; batched-with-stage-3: a partial partition on
+  // pass 1 that permanently strands residual violations).
+  {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
     cur_split_stage = (int)FAPassStage::MARK_TYPE;
-    analyze_again = split_ess_for_mark_type(confluences);
+    int stage2 = split_ess_for_mark_type(confluences);
     fa->stage_time[(int)FAPassStage::MARK_TYPE] += stage_timer.lap();
-    if (analyze_again) {
-      record_fa_event(FAPassStage::MARK_TYPE, analyze_again, ess0, css0, viol0);
+    if (stage2) {
+      record_fa_event(FAPassStage::MARK_TYPE, stage2, ess0, css0, viol0);
       ++fa->stage_progress_count[(int)FAPassStage::MARK_TYPE];
     }
+    analyze_again |= stage2;
   }
   log(LOG_SPLITTING, "split_ess_for_mark_type %d\n", analyze_again);
   // 3) split based on setters of type

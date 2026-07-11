@@ -651,7 +651,7 @@ existing single-candidate guard.
   ([pyc issues/028](../../issues/028-raise-exception-regression-qualified-dispatch.md)),
   not a new failure.
 
-### M2. Batch-stage extend (immutable-snapshot property, step 1)
+### M2. Batch-stage extend (immutable-snapshot property, step 1) — PARTIALLY LANDED (stage 2 only; stages 3-5 blocked, see status below)
 
 Remove first-stage-wins: run stages 1..5 every extend, each over
 the SAME snapshot's collected confluences. Two sub-steps:
@@ -790,13 +790,103 @@ latter defeats most of M2a's cost-saving intent (the point was to
 reuse one collection across stages) and reintroduces per-stage
 collection cost, so it is not a real shortcut around M2b.
 
-Both attempts left no code changes on `main` (reverted cleanly each
-time; verified pyc C 179/0 before and after). M2 is parked pending
-a properly scoped M2b implementation — this is real restructuring
-work across `split_ess_for_type`, `split_ess_for_mark_type`,
-`split_for_setters`, `split_for_setters_of_setters`, and
-`split_for_violations` (each needs a decide/apply split), not an
-incremental patch on top of what exists today.
+Both attempts left no code changes on `main` at the time (reverted
+cleanly each time; verified pyc C 179/0 before and after).
+
+**Follow-up investigation (2026-07-11): tried a narrower "re-collect
+`confluences` fresh before every stage" variant (instead of reusing
+one snapshot across stages 1-4) to test whether staleness was the
+whole story.** It was not: identical 3 failures (`builtins_batch`
+crash, `expr_evaluator`/`pyc_declare` incompleteness). `pyc_declare`
+specifically now shows `c4` (not `c2`) with "has no type", and
+`-v` shows it converging in 5 passes at 12 residual violations,
+versus the baseline's 13 passes with a resolving jump from 18 to 0
+violations between passes 5 and 6. So the batched version isn't
+just producing a locally wrong partition — it's **declaring
+convergence prematurely** while real, resolvable violations remain
+stranded. This ruled out plain snapshot staleness as the root
+cause; something deeper was permanently losing information.
+
+**Root cause, confirmed mechanistically (not just empirically):**
+`analyze_to_convergence`'s outer loop is
+`do { flow-to-fixpoint; complete_pass(); } while (extend_analysis() || reanalyze());`
+(fa.cc ~5082). Flow propagation (the edge/send/es-worklist loops)
+runs *only* in that outer loop, strictly BEFORE `extend_analysis()`
+is called — `extend_analysis()` itself never re-enters flow. So any
+new contour a stage creates mid-call (e.g. stage 1's
+`split_ess_for_type`) has **zero flow-derived type information**
+for the rest of that same call: its `av->out->type->n == 0` until
+the *next* outer-loop iteration re-flows it. This isn't a staleness
+bug fresh re-collection can paper over — `collect_type_confluences`
+correctly *discovers* the new AVar/edge structurally, but there is
+no type data yet to collect.
+
+This explains why stage 2 and stage 3 react to the same unflowed
+contours completely differently:
+- **Stage 2** (`split_ess_for_mark_type`) needs >=2 distinct types
+  at a position to call something a confluence. An unflowed contour
+  contributes 0 types, so it just fails that test and is silently
+  skipped — a benign, non-committal no-op, correctly deferred to
+  next pass when flow catches up.
+- **Stage 3** (`split_for_setters` -> `split_css`) has an identical
+  guard in `compute_setters`
+  (`if (akind == AKIND_TYPE && !x->out->type->n) continue;`, fa.cc:4246)
+  that *also* skips unflowed contours — but `split_css` then
+  **permanently partitions** a CreationSet's `defs` from whatever
+  incomplete `starters` subset it saw this call
+  (`cs->defs.set_difference(...); cs->defs.move(new_defs);`,
+  fa.cc:4352-4354). CS splits only ever subdivide, never re-merge —
+  there is no mechanism to revisit a partition once made. An
+  incomplete view produces a wrong, IRREVERSIBLE commitment, not a
+  deferral. (Stage 4 shares the same `split_css` call path and is
+  presumably equally unsafe, though not separately re-verified after
+  this finding — see "what's still open" below.)
+
+The `[scss]`/`SPLIT CS` log trace from the earlier bisection is a
+direct illustration: baseline waits until pass 5 (once stages 1-2
+have exhausted their own ES-graph growth across 4 full passes,
+22->32 ess) before stage 3 gets a turn at all, then partitions the
+`C`-instance CreationSet into its full 6-way split in one shot.
+Batched-with-stage-3 gets a turn on pass 1 — while the ES graph is
+still only 22 entries, four passes short of grown — sees 1 (then 5,
+never 6) starters, and locks in a partial partition that later
+passes cannot correct.
+
+**Landed a scoped-safe partial win reflecting this** (`analysis/fa.cc`,
+same commit as this write-up): stage 2 unlocked unconditionally
+(batched with stage 1, no short-circuit between them); stages 3, 4,
+5 left exactly as before (still gated behind
+`if (!analyze_again)`), since only stage 2's failure mode is proven
+benign. Verified: pyc C 179/0, pyc LLVM 179/0, all 16 ifa-test
+phases green with **zero fixture reblessing needed** (unlike full
+M2a, which touched fa-init/dispatch/freq/fa-converge); shedskin
+corpus sweep **25 compiled (was 23), a strict superset** — `oliva2`
+and `kanoodle` newly compile clean, nothing lost; stable across two
+repeated sweeps. `bh`/`pygasus` unchanged (still their known
+pre-existing failures).
+
+**What's still open for a future attempt:**
+1. Stage 3/4 batching needs either (a) re-running flow-to-fixpoint
+   between stage transitions within `extend_analysis` itself — a
+   materially bigger change than "decide-then-apply on one
+   snapshot" (M2b as originally scoped assumed the snapshot itself
+   was the only problem; it isn't, the missing ingredient is a flow
+   step, not just consistent data), or (b) M3/M5's round-based
+   redesign, which sidesteps the issue by construction: splits are
+   only ever decided from a state that has ALREADY been fully
+   flow-converged, and new contours get their own fresh round with
+   its own flow pass before anything downstream tries to partition
+   them.
+2. Stage 4 was never independently isolated (only tested bundled
+   with 1+2+3 or the full 1-5 batch); given it shares `split_css`'s
+   irreversible-partition mechanism with stage 3, it should be
+   assumed equally unsafe to batch until proven otherwise, not
+   tested as a candidate for a stage-2-style scoped win.
+3. Stage 5 (`split_for_violations`) doesn't consume `confluences`
+   at all (reads the live `fa->type_violations` set directly) and
+   was never implicated in either failure — plausibly safe to batch
+   in isolation, but not verified; worth a dedicated bisection
+   before assuming so.
 
 ### M3. Ledger persistence from converged snapshots (stage-C
 revival; the alloc_info analog)
