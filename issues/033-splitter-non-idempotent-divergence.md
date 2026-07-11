@@ -681,6 +681,68 @@ the SAME snapshot's collected confluences. Two sub-steps:
   histogram (M0) shows first-stage-wins truncation gone; full
   suites unchanged; no new `pass_limit_hit`/stall-guard firings.
 
+**Status: M2a attempted and REVERTED 2026-07-11 — real regressions,
+not safe as literally specified.** Implementation: replaced the
+four top-level `if (!analyze_again) { ...next stage... }` guards
+with per-stage local result variables accumulated via
+`analyze_again |=`, keeping the existing WITHIN-stage short-circuit
+(setter vs setter-of-setter; mark-setter vs mark-setter-of-setter)
+untouched, exactly as spec'd above.
+
+The ifa-test synthetic fixtures behaved exactly as predicted and
+were benign: fa-init/dispatch/freq diffs were pure entry-set-id
+reordering (same multiset, symmetric contours swapped), fa-converge
+diffs were either harmless extra same-pass no-op events (an already
+this-pass-split ES correctly short-circuiting via `es->split`, per
+the risk note) or, on `nested_iterator`, a genuine improvement
+(3 passes -> 2, final violations 9 -> 8, matching the S5 M2 intro's
+"if pass k splits stage 1 and pass k+1 splits stage 3 on the same
+state, batching halves the passes" prediction). All 16 ifa-test
+phases reblessed and green, stable across repeated runs.
+
+**The pyc-level suite caught what the ifa-test fixtures didn't**:
+`./test_pyc.py` went from 179/0 to 177 passed / 3 failed on
+previously-clean tests, two distinct failure classes:
+- `builtins_batch.py`: hard crash,
+  `fa.cc:929: update_display: Assertion 'es->display[i] ==
+  e->from->display.v[i]' failed` — an EntrySet for a nested-function
+  contour received edges from two different enclosing-activation
+  contexts. This is the exact hazard D4 (stage-C) built
+  `group_display_ok` to guard against, for a different mechanism
+  (there: ledger-routing a group into a product ES; here: plain
+  batching lets a later stage in the SAME pass route into an ES
+  whose display was committed by an earlier stage's action this
+  pass) — M2a's risk note (marks-clearing, `es->split`) didn't
+  anticipate this class.
+- `expr_evaluator.py`, `pyc_declare.py`: no crash, but residual
+  `expression has no type` diagnostics on code that compiled clean
+  before — some AVar that used to get resolved no longer does.
+  Root cause not yet traced; plausibly a completeness issue from
+  running a later stage's collection against confluences whose
+  underlying state an earlier stage already mutated THIS pass (the
+  same "stale snapshot" risk the M2a note accepted for `es->split`
+  purposes, but which may also cause a stage to skip work it would
+  have caught had it run against a truly fresh collection).
+
+Reverted cleanly (`git checkout` on `fa.cc` and the reblessed
+fixtures); main is unaffected, still at the M1 commit. Two real
+findings for the next attempt:
+1. The nested-function display hazard means M2 needs a
+   `group_display_ok`-equivalent guard on EVERY ES-routing decision
+   made after the first stage in a pass, not just on the ledger's
+   grouped-product path as D4 assumed — i.e., this is infrastructure
+   M2a needs BEFORE M3, not something M3 was uniquely responsible
+   for.
+2. The "expression has no type" regressions suggest M2b's
+   decide-then-apply restructuring (collect all stages' decisions
+   against one unmutated snapshot, apply afterward) may be a
+   PREREQUISITE for safe batching, not an optional follow-on
+   cleanup — M2a's "keep today's interleaved mutation, just stop
+   short-circuiting across stages" premise looks insufficient on
+   its own. Next attempt should investigate M2b's snapshot-isolation
+   FIRST, with display-consistency checking built in from the
+   start, rather than retrying M2a's minimal-diff shape.
+
 ### M3. Ledger persistence from converged snapshots (stage-C
 revival; the alloc_info analog)
 
