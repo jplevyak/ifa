@@ -2225,6 +2225,18 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
     Var *v0 = pn->rvals.v[0];
     if (!v0 || !v0->sym || v0->sym->is_symbol) return;
     llvm::Value *fv0 = value_for_var(ctx, v0);
+    // Issue 036: a callable that is a compile-time function
+    // constant (sym->fun) has no runtime slot in the LLVM world
+    // (fun-typed values are excluded from signatures and storage),
+    // so value_for_var returns nothing and this send used to be
+    // DROPPED — expr_evaluator's recursive calls vanished from the
+    // clones whose callable resolved to a constant, leaving their
+    // l/r slots uninitialized (returned 0). Use the function's own
+    // address as the identity operand instead; the icmp chain below
+    // then folds statically, mirroring the C backend's cg-string
+    // comparison chain.
+    if ((!fv0 || !fv0->getType()->isPointerTy()) && v0->sym->fun && v0->sym->fun->cg_string)
+      fv0 = TheModule->getFunction(v0->sym->fun->cg_string);
     if (!fv0 || !fv0->getType()->isPointerTy()) return;
     std::vector<llvm::Function *> cands;
     for (int fi = 0; fi < callees->n; fi++) {

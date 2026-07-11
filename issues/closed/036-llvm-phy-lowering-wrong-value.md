@@ -1,5 +1,22 @@
 # Issue 036: v2 LLVM backend returns wrong value when SSU places phys the C backend handles fine (expr_evaluator)
 
+**Status: CLOSED** — fixed 2026-07-10 (same day). Root cause was
+not phy lowering: the v2 LLVM `emit_send_call`'s bare-callable
+value-identity dispatch (ifa/030) SILENTLY DROPPED the send when
+the callable was a compile-time function constant — fun-typed
+values have no runtime slot in the LLVM world, so `value_for_var`
+returned nothing and the whole call vanished, leaving the caller's
+`l`/`r` result slots uninitialized (hence 0). The C backend
+survived because its cg-string comparison chain uses the function
+NAME as a constant operand. Fix (cg_emit_llvm.cc): when
+`value_for_var` yields nothing for the callable, use the known
+function's address (`TheModule->getFunction(
+v0->sym->fun->cg_string)`) as the identity operand; the icmp chain
+then folds statically. The corrected liveness (035) merely produced
+the clone shape that reaches this path deterministically. Both
+suites green on both backends after the fix.
+**Original filing follows.**
+
 **Status:** open. **Found:** 2026-07-10, exposed by the issue 035
 determinism fixes; now DETERMINISTIC (previously this class of
 failure was heap-layout roulette).

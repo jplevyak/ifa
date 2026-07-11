@@ -87,12 +87,6 @@ that:
   from SSU liveness through clone to codegen; determinism sweep
   36 → 0 flaky tests. Open only for the harness double-compile
   gate and the issue033-stage-c revalidation.
-- [036-llvm-phy-lowering-wrong-value.md](036-llvm-phy-lowering-wrong-value.md) —
-  v2 LLVM backend miscompiles expr_evaluator (returns 0 for 6)
-  now that complete liveness places more phys; C backend lowers
-  the same IR correctly. Deterministic repro; the one remaining
-  suite failure.
-
 ## Closed (archive)
 
 Closed issues live in [`closed/`](closed/) with the closing
@@ -100,7 +94,7 @@ commit ref recorded in each file's status line.  They stay in
 the tree as history — a code-search for the affected file finds
 the trail of investigation even after the fix has landed.
 
-Currently 24 closed issues:
+Currently 25 closed issues:
 [001](closed/001-keepalive-vs-explicit-reply.md),
 [002](closed/002-codegen-llvm-normalizer.md),
 [003](closed/003-fa-converge-determinism.md),
@@ -124,7 +118,8 @@ Currently 24 closed issues:
 [024](closed/024-is-comparison-narrowing.md),
 [027](closed/027-v2-llvm-narrowed-loop-loses-struct-type.md),
 [028](closed/028-fibheap-blockers.md),
-[029](closed/029-polymorphic-dispatch.md).
+[029](closed/029-polymorphic-dispatch.md),
+[036](closed/036-llvm-phy-lowering-wrong-value.md).
 
 ## When to file an issue here vs fix it now
 
