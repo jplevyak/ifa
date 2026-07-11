@@ -1257,8 +1257,24 @@ void Matcher::find_best_matches(Vec<AVar *> &args, Vec<CreationSet *> &csargs, V
     // those dispatch-equivalence classes and recurse once per
     // class; set_filters expands the representative back to the
     // full class, making the outcome identical to full enumeration.
-    // Multi-candidate sends keep full enumeration (subsumption and
-    // ambiguity are genuinely per-CS there).
+    //
+    // Issue 033 S5 M1: extends the same collapsing to MULTIPLE live
+    // candidates (pygasus's remaining pass-1 cost: 3-candidate
+    // `_exec`-shaped sends, product not sum across arity). Two CSs
+    // at this position are interchangeable for every remaining leaf
+    // computation iff, for EVERY live candidate, they get the same
+    // accept/exact/this verdict (find_best_cs_match's three
+    // per-position tests, reused verbatim below) AND share
+    // cs->sym->type (coercion_uses/promotion_uses/verify_args key on
+    // it; a differing type can produce a differing coercion decision
+    // even when accept/exact/this agree). When two live candidates'
+    // formal dispatch types DIFFER at this position, `subsumes_arg`
+    // additionally reads the raw `cs->sym` (not just ->type) for its
+    // priority checks, so the raw symbol must also match within a
+    // class in that case. Any candidate with a pattern/varargs/
+    // missing formal at this position, or any generic candidate,
+    // bails the WHOLE position out to full enumeration — same
+    // conservatism as the single-candidate guard above.
     Fun *single = nullptr;
     int nmat = 0;
     for (Fun *f : matches) if (f) {
@@ -1306,6 +1322,89 @@ void Matcher::find_best_matches(Vec<AVar *> &args, Vec<CreationSet *> &csargs, V
         // here can match — prune the whole subtree.
         return;
       }
+    }
+    if (nmat > 1 && args[iarg]->out->sorted.n > 1 && nmat <= 64) {
+      struct Cand {
+        PMatch *m;
+        Sym *formal;
+        AType *t;
+        Sym *ft;
+      };
+      Vec<Cand> cands;
+      bool bail = false;
+      bool dispatch_types_differ = false;
+      Sym *first_fdt = nullptr;
+      MPosition lp(app);
+      lp.push(1);
+      for (int k = 0; k < iarg; k++) lp.inc();
+      MPosition *acpp = cannonicalize_mposition(lp);
+      for (Fun *f : matches) if (f) {
+        if (f->is_generic) { bail = true; break; }
+        PMatch *m = match_map.get(f);
+        MPosition *fcpp = m ? to_formal(acpp, m) : nullptr;
+        Sym *formal = fcpp ? f->arg_syms.get(fcpp) : nullptr;
+        if (!m || !formal || formal->is_pattern) { bail = true; break; }
+        Sym *fdt = dispatch_type(formal);
+        if (!first_fdt) first_fdt = fdt;
+        else if (fdt != first_fdt) dispatch_types_differ = true;
+        Cand c;
+        c.m = m;
+        c.formal = formal;
+        c.t = m->actual_filters.get(acpp);
+        c.ft = formal->is_exact_match ? dispatch_type(formal) : nullptr;
+        cands.add(c);
+      }
+      if (!bail) {
+        struct MCClass {
+          uint64_t votes;
+          Sym *type;
+          Sym *raw;
+          Vec<CreationSet *> *members;
+        };
+        Vec<MCClass> classes;
+        for (CreationSet *cs : args[iarg]->out->sorted) {
+          uint64_t votes = 0;
+          bool any_viable = false;
+          for (int ci = 0; ci < cands.n; ci++) {
+            Cand &c = cands[ci];
+            bool ok = (c.t && c.t->set_in(cs)) &&
+                      (!c.ft || (cs->sym == c.ft || cs->sym->type == c.ft || cs->sym->type->meta_type == c.ft)) &&
+                      !(c.formal->is_this && cs->sym == sym_nil_type);
+            if (ok) { votes |= (1ull << ci); any_viable = true; }
+          }
+          // Globally non-viable: no live candidate can cover this CS
+          // at this position, so no combination through it can
+          // match at all (find_best_cs_match's `covered` would be
+          // empty for every candidate) — prune it here rather than
+          // recursing into a provably effect-free subtree.
+          if (!any_viable) continue;
+          Sym *type = cs->sym->type;
+          Sym *raw = dispatch_types_differ ? cs->sym : nullptr;
+          int found = -1;
+          for (int ki = 0; ki < classes.n; ki++)
+            if (classes[ki].votes == votes && classes[ki].type == type && classes[ki].raw == raw) { found = ki; break; }
+          if (found >= 0)
+            classes[found].members->add(cs);
+          else {
+            MCClass k;
+            k.votes = votes;
+            k.type = type;
+            k.raw = raw;
+            k.members = new Vec<CreationSet *>;
+            k.members->add(cs);
+            classes.add(k);
+          }
+        }
+        for (int ki = 0; ki < classes.n; ki++) {
+          csargs[iarg] = classes[ki].members->v[0];
+          cls[iarg] = classes[ki].members->n > 1 ? classes[ki].members : nullptr;
+          find_best_matches(args, csargs, matches, app, result, top_level, cls, iarg + 1);
+          cls[iarg] = nullptr;
+        }
+        return;
+      }
+      // bail: any candidate has a pattern/varargs/missing formal, or
+      // is generic — fall through to full enumeration below.
     }
     for (CreationSet *cs : args[iarg]->out->sorted) {
       csargs[iarg] = cs;

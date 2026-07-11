@@ -605,6 +605,52 @@ its test (sketch (b)) is the simplest.
   ~sum; pygasus pass-1 wall time drops materially; full suites +
   037's regression test unchanged.
 
+**Status: LANDED 2026-07-11.** `Matcher::find_best_matches`
+(`ifa/if1/pattern.cc`) generalizes the nmat==1 dispatch-equivalence
+collapsing to `nmat > 1` live non-generic candidates (capped at 64,
+past which it falls back to full enumeration — no realistic call
+site approaches that arity of candidates): a CS is grouped with
+others at a position by the joint per-candidate accept/exact/this
+vote bitmask, `cs->sym->type`, and (only when the live candidates'
+formal dispatch types differ at that position — the case
+`subsumes_arg` reads the raw symbol for) `cs->sym` itself. Globally
+non-viable CSs (no live candidate accepts them) are pruned rather
+than enumerated, generalizing the 037 addendum's single-candidate
+viability pruning. Any candidate with a pattern/varargs/missing
+formal at the position, or any generic candidate, bails that
+position out to full enumeration — same conservatism as the
+existing single-candidate guard.
+
+- **pygasus pass 1: 11.1s (was ~32s)**, match share of the pass
+  down from ~95% to 90%; final diagnosis unchanged (788 violations,
+  exact match against the previously-recorded baseline) — confirms
+  the collapsing changes cost, not outcome. The remaining pass-1
+  cost and the rest of the run is the extend-phase plateau (M2-M4
+  territory, not this milestone's target).
+- Landed `tests/multi_candidate_dispatch.py` (3 receiver types, one
+  shared 4-arg signature, each position a widening constant/type
+  union) as the sketch-(b) regression, alongside 037's
+  `tests/high_arity_single_candidate.py`. Verified byte-for-byte
+  against a `pyc`-compiled-and-run binary AND against CPython
+  (`python3 tests/multi_candidate_dispatch.py`), not just the
+  compile-succeeds check — sketch (b) as originally written in S3
+  triggered an unrelated pre-existing runtime crash (a
+  "matching function not found" abort from mixing int/float/str
+  return types through one `print()` call; reproduced identically
+  with this change reverted, so it predates M1 and is out of scope
+  here — the same assert class tracked in
+  [030-polymorphic-dispatch-fat-pointers.md](030-polymorphic-dispatch-fat-pointers.md))
+  — the landed test avoids that by keeping return types homogeneous
+  per receiver while still exercising heterogeneous argument
+  unions.
+- Verified: pyc C 179/0 (178 + the new test), pyc LLVM 179/0,
+  ifa-test all 16 phases (including `patterns`/`dispatch`, which
+  exercise the matcher directly) unchanged; shedskin corpus sweep
+  member set identical (23 compiled, same names) to the pre-change
+  baseline; `bh` still fails on its known pre-existing issue
+  ([pyc issues/028](../../issues/028-raise-exception-regression-qualified-dispatch.md)),
+  not a new failure.
+
 ### M2. Batch-stage extend (immutable-snapshot property, step 1)
 
 Remove first-stage-wins: run stages 1..5 every extend, each over
