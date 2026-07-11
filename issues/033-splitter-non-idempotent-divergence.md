@@ -25,21 +25,31 @@ per-pass amnesia (D0) is still real, but with deterministic
 re-derivation it re-makes the SAME decisions, which is enough for a
 fixed point on the known inputs.
 
-**Stage C status (branch `issue033-stage-c`, revalidated on top of
-the 035 fixes + harness determinism gate): parked, likely
-unnecessary.** On the branch the trio also converges stall-free
-(pylife slightly better: 52 vs 60 violations), but builtins_batch
-still miscompiles (int sum printed as float64 bits) — now
-DETERMINISTICALLY, so it is debuggable: the cross-pass ROUTE of a
-group to a previously-recorded product can merge contours whose
-group signature matches but whose full context diverged (the
-int-`sum`/float-`sum` pair). Fixing that means verifying
-group-vs-product compatibility at route time — additional
-complexity for marginal benefit now that the divergence is gone.
-Recommend leaving the branch parked unless a new diverging input
-appears; its D4 design corrections (full-signature keys, display
-feasibility, bare — not filtered — products) are recorded in the D4
-status note for whoever picks it up.
+**Stage C status (branch `issue033-stage-c`): sound and fully
+green as of `2d514f58`, parked as unnecessary.** The builtins_batch
+miscompile was root-caused with the deterministic logs: the ledger
+key hashed RAW argument types while the grouping predicate
+(`edge_type_compatible_with_edge`) compares per-edge
+FILTER-INTERSECTED types, and the predicate treats an EMPTY
+intersected type as compatible-with-anything — a wildcard that a
+snapshot key cannot represent. Three `__str__` call sites' groups
+(passes 0/1/2) matched one key and were funneled into one product
+(ES 170), which pass 3 then had to split apart (do=2/3) without
+being able to record the re-splits (key occupied); the trajectory
+shift merged the int/float iterator contours downstream
+(`__list_iter__::__next__` ret became float64, both `sum` clones
+returned float64, print formatted the int total's bits). Fix on
+the branch: `group_signature` now mirrors the predicate exactly
+(filter-intersected types) and returns "no identity" for groups
+containing a wildcard, which are neither routed nor recorded that
+pass. With the fix the branch is fully green (both suites 177/0
+under the determinism gate, ifa-test green, corpus member set
+unchanged) — and behaviorally almost identical to main: exactly ONE
+route fires in builtins_batch, and the trio traces match main
+pass-for-pass (the branch's earlier pylife "improvement" to 52
+violations was an artifact of the bogus merges). Parked: correct
+but currently valueless; pick it up only if a genuinely diverging
+input reappears.
 **Affects:** `ifa/analysis/fa.cc` — `extend_analysis()` and every
 `split_*` stage it drives; `analyze_to_convergence()`'s outer loop
 contract.
