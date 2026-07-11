@@ -7,10 +7,11 @@ compile every test twice, byte-diff the generated `.c` — went from
 byte-identical `.c` eight runs in a row, the ASLR-dependent
 crashes (pylife FA, expr_evaluator clone) no longer reproduce, and
 the corpus member set is unchanged (22/55, same members). Remaining
-follow-ups, tracked here until landed: (a) add the double-compile
-byte-diff gate to the test harness so this bug class can never
-return silently; (b) revalidate branch `issue033-stage-c` on top of
-the fixes; (c) [036](036-llvm-phy-lowering-wrong-value.md) — the
+follow-ups, tracked here until landed: (a) DONE 2026-07-10 — the
+harness (test_pyc.py) now compiles every test twice and byte-diffs
+the generated .c/.ll (opt out with SKIP_DET_CHECK=1); (b)
+revalidate branch `issue033-stage-c` on top of the fixes; (c) DONE
+2026-07-10, closed — [036](036-llvm-phy-lowering-wrong-value.md) — the
 one suite delta: the now-COMPLETE liveness places more phys, which
 the C backend lowers correctly everywhere but the v2 LLVM path
 miscompiles on expr_evaluator (deterministically — previously this
