@@ -196,53 +196,315 @@ instead of load-bearing.
 ## Shedskin comparison (2026-07-11, from ../shedskin/shedskin/infer.py)
 
 Shedskin analyzes pygasus successfully with the same underlying
-theory (Agesen CPA for function polymorphism + Plevyak IFA for data
-polymorphism), and its engineering answers map one-to-one onto this
-issue's remaining costs (pygasus post-037: 32s pass 1 in match,
-then a ~110s extend plateau across passes 6-11 at 3800 ess before
-converging to a 788-violation diagnosis in ~200s):
+theory (Agesen CPA for function polymorphism + Plevyak IFA for
+data polymorphism). This section records the architectural
+comparison in detail, the measured anatomy of pygasus's remaining
+cost in pyc, sketches of adversarial test cases that isolate each
+cost class, and suggested investigation directions. All numbers
+are reproducible: the harness determinism gate guarantees
+byte-identical recompiles, so per-pass timings and counts are
+stable metrics.
 
-1. **`CPA_LIMIT` (=10, doubling)** — per call site, if
-   `|candidate funs| x |cartesian arg-type product|` exceeds the
-   limit, the call is NOT bound this round (`cpa()` returns without
-   creating templates; `cpa_limited` set). The limit doubles ONLY
-   at quiescence (no splits left and the limit was hit), so
-   precision is bought lazily. pyc analog: `pattern_match` already
-   has a deferral protocol (`incomplete_call` returns 0 and the
-   send re-fires when arg types change) — a product cap could
-   return through the same path, with escalation hooked to
-   extend-quiescence. Issue 037's collapsing + viability pruning
-   removed the need for the current corpus; the cap remains the
-   principled backstop for adversarial arity x union-width.
-2. **Incremental admission (`INCREMENTAL_FUNCS=5`,
-   `INCREMENTAL_ALLOCS=1`)** — cpa() refuses to add more than N new
-   functions/allocations per round; propagation restarts to absorb
-   what was admitted. Early rounds run on tiny graphs, so early
-   (wrong) specialization decisions are cheap to make and remake.
-   pyc has no analog: every pass re-flows the whole program against
-   the full contour universe — this is exactly why pygasus's extend
-   plateau costs 18s/pass (confluence collection + split machinery
-   over 3800 ess x edges, re-derived per pass).
-3. **`alloc_info` persistence across restarts** — shedskin RESETS
-   the constraint graph each round but carries the allocation-site
-   -> contour assignments forward and reseeds from them
-   (`ifa_seed_template`). That is precisely this issue's
-   split-decision ledger (D1) / the stage-C branch, at
-   allocation-site (CS) granularity — shedskin's convergence on
-   pygasus is evidence the persistent-decision architecture is the
-   right endgame, with one structural difference: shedskin's ifa()
-   makes splits ONCE per round from a converged clean state, rather
-   than pyc's split-every-pass-from-partial-state, which is what
-   makes its decisions naturally idempotent.
+### S1. The two loop architectures
 
-Verdict: applicable. Adoption order for pygasus-scale inputs:
-(a) already landed — 037 collapsing + pruning (the CPA_LIMIT
-problem attacked by exactness rather than deferral); (b) the
-extend plateau wants shedskin's "split once per converged round +
-persist decisions" shape — i.e. finish the ledger program (stage-C
-branch) and consider moving extend_analysis to run splits from
-converged state only; (c) the literal CPA_LIMIT deferral as a
-cheap safety valve.
+pyc/ifa (analyze_to_convergence):
+
+```
+do {
+  flow to fixpoint over the FULL program and FULL contour universe
+  extend_analysis():          // from the converged-but-provisional state
+    collect confluences over ALL ess/css        (per pass, from scratch)
+    run split stages 1..5, STOP at first stage that makes progress
+    clear_results()                              (throw flow state away)
+} while (splitter made progress || reanalyze());
+```
+
+shedskin (iterative_dataflow_analysis):
+
+```
+while True:
+  propagate():                // worklist over the constraint graph
+    cpa() per NEW callsite/arg-type combination:
+      - if |funcs| x |arg product| > cpa_limit: DON'T BIND, mark limited
+      - if this round already admitted 5 new funcs / 1 new alloc: DON'T
+        BIND yet (incremental admission)
+      - else create the (func, dcpa, cpa) template ONCE (memoized)
+  split = ifa()               // data-polymorphism splits, ONCE, from
+                              // the round's converged state
+  if no split:
+      if work was deferred (incremental / cpa_limited): widen and continue
+      else: DONE
+  apply splits to alloc_info; RESET the graph; RESEED from alloc_info
+```
+
+The load-bearing differences:
+
+| dimension | pyc/ifa | shedskin |
+|---|---|---|
+| when splits decided | every pass, from provisional state | once per round, from converged state |
+| what persists across rounds | `av->cs_map` only (S3) | `alloc_info`: every allocation-site→contour assignment |
+| specialization creation | edges/ES re-derived per pass | `(func,dcpa,cpa)` templates memoized forever |
+| work admission | whole program every pass | ≤5 new funcs, ≤1 new alloc per round |
+| explosion valve | pass_limit=100, stall guard=8 | CPA_LIMIT=10 (lazy doubling), MAXITERS=30, maxhits=3 |
+| deferral | `incomplete_call` (types not yet arrived) | same PLUS product-cap and admission-cap deferral |
+
+Splitting from converged state is what makes shedskin's decisions
+naturally idempotent — the exact property this issue's ledger
+(D1-D9) tries to retrofit onto per-pass splitting. Persistence
+(`alloc_info` ≈ the ledger ≈ the stage-C branch) is the other
+half: shedskin can afford to RESET the whole graph every round because
+the decisions survive.
+
+### S2. Anatomy of pygasus's remaining 200s (post-037, `a7c192f2`)
+
+19 passes, terminating with a complete 788-violation diagnosis.
+Cost breakdown from the `-v` PASS lines:
+
+- **Pass 1: 32s, ~95% match.** The hot sends are 3-candidate
+  `_exec` METHOD calls (multi-candidate — the 037 single-candidate
+  collapse deliberately skips them), 4 args each with unions like
+  {int64-const, int64, str, None, float64}. Each send re-matches
+  on every argument-type growth event (the MatchCache keys on
+  exact per-position ATypes and misses throughout convergence);
+  ~120K leaf evaluations for the hottest single send in 40s.
+- **Passes 2-5: ~4.5s each,** mixed flow/match; contour universe
+  grows to ~3750 ess / 4200 css.
+- **Passes 6-11: ~18.5s each, 76-81% extend** — the plateau. Six
+  passes re-run confluence collection + the split machinery over
+  3800 ess x edges to make ~10 ess of progress per pass while
+  violations sit at ~1700-1725. This is the S1 "per-pass amnesia"
+  cost at scale, minus the nondeterministic wandering (035 fixed
+  that): the splitter re-derives and re-decides largely the SAME
+  decisions each pass.
+- **Passes 12-19:** the reanalyze/coercion annotator engages,
+  violations fall 1725 → 788, extend spikes alternate with cheap
+  passes.
+
+So: one-third match (attackable by 037-style exactness), two-thirds
+extend-plateau (attackable only by the shedskin round structure /
+ledger persistence).
+
+### S3. Adversarial test-case sketches
+
+Each isolates one cost class. They belong in a `benchmarks/fa/` or
+`tests/perf/` set gated on wall-clock budgets (the determinism gate
+makes their pass counts exact regression metrics, not just
+timings).
+
+**(a) arity x union-width match product — single candidate**
+(the 037 class; now handled; keep as regression):
+
+```python
+def f(a,b,c,d,e,g,h,i,j,k,l,m,n): return a
+x = f(1,2,3,4,5,6,7,8,9,10,11,12,13)      # all {const,int64} pairs
+y = f(1.0,2,3,4,5,6,7,8,9,10,11,12,13)    # perturb one position
+```
+
+Pre-037 this is 2^13+ leaf matches per re-match. Variant for the
+viability pruning: make a few positions carry a type the callee
+rejects part-time (e.g. thread a `str` through one argument on a
+cold path) so every position has an accepted AND a rejected class
+mid-convergence — pre-pruning that re-explodes to 2^13 REJECTED
+combinations even with collapsing.
+
+**(b) multi-candidate product** (pygasus's pass-1 shape; open):
+
+```python
+class A:
+  def go(self, x, y, z, w): return x
+class B:
+  def go(self, x, y, z, w): return y
+class C:
+  def go(self, x, y, z, w): return z
+os = [A(), B(), C()]
+for o in os:
+  o.go(1, 2.5, "s", None)
+  o.go(2, 3.5, "t", None)     # more constants -> wider unions
+```
+
+3 candidates x 4 positions x {const,base,...} unions. Scale the
+argument count and the union widths; the match cost should be
+~product today and ~sum after multi-candidate collapsing (S4-C).
+
+**(c) extend plateau / contour-universe grind** (the dominant
+pygasus cost; open):
+
+```python
+# K wrapper funs x M call contexts -> ess ~ K*M; plus an
+# unresolvable numeric residue to keep the splitter engaged.
+def w0(x): return x
+def w1(x): return w0(x)
+# ... w2..wK generated, chained ...
+acc = 0
+for v in [1, 2.5]:
+  acc = acc + v          # persistent BOXING violation (fysphun-shaped)
+# fan-in: call wK(int), wK(float), wK(str) from M distinct funs
+```
+
+Generate with a script at K=200, M=20 (≈4000 ess). Metric:
+extend-seconds/pass and passes-to-termination. Today each plateau
+pass costs O(ess x edges) collection + split machinery; the
+target architectures (S4-A/B) should make plateau passes either
+disappear (splits persist) or collapse to near-zero cost (nothing
+changed => nothing recollected).
+
+**(d) genuine CPA explosion** (needs the deferral valve, S4-D —
+exactness cannot help because the return type really depends on
+every argument):
+
+```python
+def pair(a, b): return (a, b)
+def quad(a, b, c, d): return (pair(a, b), pair(c, d))
+# leaves drawn from {int, float, str}: the tuple type lattice is
+# the full 3^N product; every combination is a distinct, USED type.
+v = quad(1, 1.0, "s", 1)
+w = quad("s", 1, 1.0, "s")
+# ... enough call sites to visit a large fraction of the product
+```
+
+pyc must either enumerate (exploding contours/types) or defer and
+merge (losing precision to tuple-of-union). shedskin answers with
+CPA_LIMIT + lazy doubling; the test locks whatever policy pyc
+adopts, including the violation/diagnostic quality when capped.
+
+**(e) data-polymorphism split churn** (ledger/idempotence at CS
+granularity — D5 territory):
+
+```python
+def fill(l, v): l.append(v)
+def drain(l): return l[0]
+pools = [[] for _ in range(50)]
+for i, p in enumerate(pools):
+  fill(p, i)          # int pools
+qools = [[] for _ in range(50)]
+for q in qools:
+  fill(q, 1.5)        # float pools, SAME fill/append contours
+print(drain(pools[0]) + 1, drain(qools[0]) + 1.5)
+```
+
+The shared `fill`/`append`/element-avar contours merge int|float
+until split_css separates the list creation sites — re-derived
+every pass today. Metric: how many passes re-make the same CS
+split (observable via `dup_splits` once D5 records CS keys).
+
+**(f) nested-function display interaction** (the stage-C display
+lesson; guards ledger-routing correctness for closures):
+
+```python
+def outer(v):
+  def mid(w):
+    def inner(x): return x + w + v
+    return inner
+  return mid
+fs = [outer(1)(2), outer(1.5)(2.5)]
+print(fs[0](3), fs[1](3.5))
+```
+
+Closure contours at depth 2 with polymorphic captured vars: any
+persistent-decision mechanism must key display chains (group_
+display_ok exists on the stage-C branch) or corrupt make_AVar's
+display walks.
+
+### S4. Investigation directions
+
+Ordered by expected payoff for pygasus-scale inputs; A and B are
+alternatives at different ambition levels, C/D are independent.
+
+**A. Dirty-marked extend (cheap, incremental; attacks the plateau
+cost without architecture change).** Today every extend pass
+re-collects confluences by walking ALL of fa->ess x args x
+backward (`collect_type_confluences` etc.). But between plateau
+passes almost nothing changed. Investigate: mark AVars whose
+`out` changed since the last extend (a bit + a list, set in
+update_in — the [upd] instrumentation from the 035 hunt shows
+exactly where); re-collect only confluences reachable from dirty
+AVars; stages with an empty dirty set are free. First step is
+measurement: add per-stage timers inside extend_analysis (the
+sidecar FAPassEvent machinery from issue 003 already has the
+shape) and confirm the plateau is collection-dominated vs
+split-machinery-dominated. Risk: low — collection is
+read-only; a wrong dirty set shows up as a missed confluence,
+which the determinism gate + fa-converge fixtures would catch as
+a changed pass count.
+
+**B. Split-from-converged-state + persistence (the shedskin
+shape; the real fix, supersedes the per-pass ledger).** Restructure
+the outer loop so contour DECISIONS are made only from converged
+state and survive graph resets:
+
+```
+round:
+  flow to fixpoint (as today)
+  decide ALL splits for this round from the converged state
+    (not first-stage-progress-wins: batch stages 1..5)
+  record decisions in the ledger (fun/pos/partition/sig — the
+    stage-C keys, plus CS keys per D5)
+  clear flow state; REBUILD contours from the ledger; next round
+```
+
+Two sub-investigations before committing: (1) how much of the
+plateau exists only because extend stops at the first stage with
+progress — count stage-progress patterns across the pygasus trace
+(if pass k splits stage 1 and pass k+1 splits stage 3 on the same
+state, batching halves the passes); (2) whether the stage-C
+branch's route-to-product mechanism becomes fully sound when
+routing only happens from converged state — the builtins_batch
+wildcard hazard (empty intersected types) cannot occur at
+convergence for live code, which would let the branch's ledger
+serve as the reseeding store directly. The branch (`2d514f58`)
+is green and parked; this is its revival path.
+
+**C. Multi-candidate match collapsing (attacks pygasus pass 1,
+~32s -> ~seconds).** Extend the 037 equivalence classes to
+multi-candidate sends. Soundness analysis already done (037
+addendum): key = per-candidate (accept, exact, this) bit-vectors
++ `cs->sym->type`, PLUS `cs->sym` itself when the candidates'
+dispatch types differ at the position (subsumes_arg compares
+`cs->sym` against isa sets; identical dispatch types make its
+verdict CS-independent; coercion/promotion/verify work on
+`cs->sym->type` which the key preserves). Validate against sketch
+(b) and the full battery; watch `formal_dispatch_types` mutation
+across leaves (coercion state evolves per PMatch during a single
+pattern_match — collapsing must not change the SEQUENCE of
+distinct concrete ->type values a candidate sees).
+
+**D. CPA_LIMIT-style deferral valve (safety net for sketch (d);
+small).** In pattern_match, before find_best_matches: compute
+`candidates x prod(per-position class counts)`; if above a limit,
+return 0 through the `incomplete_call` path (the send re-fires
+when types change). Escalate at quiescence: when extend_analysis
+finds no work AND capped sends exist, double the FA-level limit
+and re-enqueue them (a Vec<AVar*> of capped sends on FA).
+Interactions to check: the stall guard (a capped send's violations
+shouldn't count as stall), reanalyze ordering, and diagnostics
+(capped-at-exit sends need a clear violation message, not silence
+— shedskin's maxhits=3 give-up is its weakest part, don't copy
+that silently).
+
+**E. Subset-aware MatchCache (only if C is insufficient).** The
+cache misses all through convergence because it keys exact
+ATypes. Monotonicity suggests caching the per-position
+viable-class PARTITION (from 037) rather than the match result:
+a new AType whose CSs all fall into existing classes reuses the
+cached outcome with the new CSs appended to their classes'
+filters. Needs a careful invalidation story for is_exact_match
+positions; measure C first — collapsing may make re-matching so
+cheap the cache stops mattering.
+
+**F. Incremental admission (long-term, architectural).** Shedskin
+grows the analyzed world by ≤5 functions per round, so early
+specialization mistakes are cheap. pyc's equivalent would be
+SCC-ordered bottom-up analysis with per-fun contour budgets —
+a research-sized change; only worth revisiting if A-D leave a
+gap on real inputs.
+
+Verdict: shedskin's solution is applicable. (a)-already-landed:
+exactness collapsing + viability pruning (037) removed the match
+product for single-candidate sends. The recommended sequence is
+A (measure + dirty-mark) -> C (multi-candidate collapse) -> B
+(converged-state splitting with the ledger/stage-C as the
+persistence store) -> D (deferral valve), with S3's sketches
+landed as regression benchmarks alongside each.
 
 ---
 
