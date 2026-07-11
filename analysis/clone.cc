@@ -149,8 +149,14 @@ static int equivalent_es_pnode(PNode *n, EntrySet *a, EntrySet *b) {
   Vec<AEdge *> *vb = b->out_edge_map.get(n);
   if (!va || !vb) return 1;
   Vec<Vec<EntrySet *> *> ca, cb;
-  for (AEdge *ee : *va) ca.set_add(ee->to->equiv);
-  for (AEdge *ee : *vb) cb.set_add(ee->to->equiv);
+  // Issue 033: out_edge_map's Vecs are set-mode (built via set_add,
+  // see initialize() above) -- `.n` is table capacity, not live
+  // element count, so iterating [0,n) can hit unused (null) slots
+  // by design, same as every other set-mode Vec consumer in this
+  // codebase (e.g. `for (AEdge *e : es->out_edges) if (e) {...}`).
+  // This loop was missing that guard.
+  for (AEdge *ee : *va) if (ee && ee->to) ca.set_add(ee->to->equiv);
+  for (AEdge *ee : *vb) if (ee && ee->to) cb.set_add(ee->to->equiv);
   if (ca.some_disjunction(cb)) return 0;
   return 1;
 }

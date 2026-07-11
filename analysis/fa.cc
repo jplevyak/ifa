@@ -679,6 +679,18 @@ Ldone:
 }
 
 AType *type_intersection(AType *a, AType *b) {
+  // Issue 033: a null filter (a Map<MPosition*,AType*>::get() miss)
+  // means "no constraint" -- analyze_edge already treats a missing
+  // formal_filters entry this way (fa.cc, the `if (filter) {...}
+  // else filter = es_filter;` / `if (filter && ...)` guards around
+  // its own type_intersection calls). Some other callers passed a
+  // possibly-null filter straight through without that guard,
+  // crashing here on `b->sorted`/`a->sorted` when a position simply
+  // has no recorded filter yet. Treat null as the intersection
+  // identity (return the other operand) to match the established
+  // semantic instead of requiring every caller to null-check first.
+  if (!b) return a;
+  if (!a) return b;
   AType *r;
   if ((r = a->intersection_map.get(b))) return r;
   if (a == b || a == fa->type_world.bottom_type || b == fa->type_world.top_type) {
