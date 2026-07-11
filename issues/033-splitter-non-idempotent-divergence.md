@@ -292,20 +292,14 @@ makes their pass counts exact regression metrics, not just
 timings).
 
 **(a) arity x union-width match product — single candidate**
-(the 037 class; now handled; keep as regression):
+(the 037 class; **LANDED** as `tests/high_arity_single_candidate.py`):
 
-```python
-def f(a,b,c,d,e,g,h,i,j,k,l,m,n): return a
-x = f(1,2,3,4,5,6,7,8,9,10,11,12,13)      # all {const,int64} pairs
-y = f(1.0,2,3,4,5,6,7,8,9,10,11,12,13)    # perturb one position
-```
-
-Pre-037 this is 2^13+ leaf matches per re-match. Variant for the
-viability pruning: make a few positions carry a type the callee
-rejects part-time (e.g. thread a `str` through one argument on a
-cold path) so every position has an accepted AND a rejected class
-mid-convergence — pre-pruning that re-explodes to 2^13 REJECTED
-combinations even with collapsing.
+Pre-037, a 13-argument single-candidate call with `{const, int64}` unions at
+each position cost 2^13 leaf evaluations per `pattern_match` invocation.
+Fixed by dispatch-equivalence collapsing in `find_best_matches` (issue 037):
+the single viable class per position is identified in O(N_cs) and the subtree
+is entered once; `set_filters` expands the representative back to the full
+class. See `tests/high_arity_single_candidate.py` for the regression test.
 
 **(b) multi-candidate product** (pygasus's pass-1 shape; open):
 
