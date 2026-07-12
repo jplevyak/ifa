@@ -213,9 +213,11 @@ violations-plateau shape that plain main resolves cleanly at pass
 accurate against the suites and corpus-sweep-by-bucket check
 available at the time, neither of which exercises a program long
 enough or in the right shape to expose this. The branch itself
-(`2d514f58`, unpushed rebase attempt discarded) is unchanged and
-still parked — do not revive without root-causing and fixing the
-stall-guard interaction first.
+(`2d514f58`) is unchanged and still parked. The rebase-onto-main
+attempt that exposed the bug is preserved separately on
+[`issue033-stage-c-rebased`](https://github.com/jplevyak/pyc/tree/issue033-stage-c-rebased)
+(see the M3 section below) — do not revive either branch without
+root-causing and fixing the stall-guard interaction first.
 
 Original assessment (superseded, kept for the historical record):
 it was believed **sound and fully green** (both suites 177/0 under
@@ -334,7 +336,8 @@ the single viable class per position is identified in O(N_cs) and the subtree
 is entered once; `set_filters` expands the representative back to the full
 class. See `tests/high_arity_single_candidate.py` for the regression test.
 
-**(b) multi-candidate product** (pygasus's pass-1 shape; open):
+**(b) multi-candidate product** (pygasus's pass-1 shape; **LANDED**
+as `tests/multi_candidate_dispatch.py`, M1):
 
 ```python
 class A:
@@ -349,9 +352,19 @@ for o in os:
   o.go(2, 3.5, "t", None)     # more constants -> wider unions
 ```
 
-3 candidates x 4 positions x {const,base,...} unions. Scale the
-argument count and the union widths; the match cost should be
-~product today and ~sum after multi-candidate collapsing (S4-C).
+3 candidates x 4 positions x {const,base,...} unions. Multi-candidate
+collapsing (S4-C / M1) landed 2026-07-11 in `find_best_matches`
+(`ifa/if1/pattern.cc`), generalizing 037's single-candidate
+equivalence-class collapsing to K live candidates. Verified:
+pygasus pass 1 32s -> 11.1s (match cost ~product -> ~sum, matching
+this sketch's prediction), regression test
+`tests/multi_candidate_dispatch.py` (a corrected version of this
+exact sketch — the literal code above triggers an unrelated
+pre-existing runtime crash mixing int/float/str through one
+`print()` call, tracked in
+[030-polymorphic-dispatch-fat-pointers.md](030-polymorphic-dispatch-fat-pointers.md);
+the landed test keeps return types homogeneous per receiver to
+avoid it while still exercising the collapsing).
 
 **(c) extend plateau / contour-universe grind** (the dominant
 pygasus cost; open):
@@ -1269,13 +1282,20 @@ rather than guessing at a patch.
 
 **Reverted cleanly**: the rebase was done in a detached-HEAD
 worktree (`git worktree add -d`), so the `issue033-stage-c` branch
-itself was never touched or pushed — it's still at `2d514f58`,
-identical to `origin/issue033-stage-c`. Nothing from this attempt
-is on main or any branch. The one durable artifact worth keeping —
-the merged `equivalent_es_pnode` comment reconciling both
-investigations' findings — is a documentation-only improvement
-already captured above in this write-up, not a code change to
-carry forward.
+itself was never touched — it's still at `2d514f58`, identical to
+`origin/issue033-stage-c`. Nothing from this attempt is on main.
+The rebase-conflict-resolution work itself (three conflicts: the
+merged `equivalent_es_pnode` comment above, one other pure-comment
+conflict, and one genuine field merge of the M4 probe alongside the
+branch's `SplitDecision::sig` addition) was redone and preserved on
+branch [`issue033-stage-c-rebased`](https://github.com/jplevyak/pyc/tree/issue033-stage-c-rebased)
+(pushed to origin, built on current main at the time) so it doesn't
+have to be redone from scratch — **confirmed to break the stall
+guard on `bh`, do not merge.** Its only value is as a checkpoint:
+current main plus `issue033-stage-c`'s unchanged payload,
+conflicts pre-resolved, with the divergence already reproduced
+against it once. Revive by root-causing the stall-guard interaction
+first, not by starting from this branch and hoping.
 
 **M2, M3, and M4 are now all blocked or reverted**, each for a
 different, concrete, well-evidenced reason: M2 (stage-2 batching)
