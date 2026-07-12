@@ -98,6 +98,17 @@ that:
   genuine-suspend path `unreachable`; reproduced with a minimal,
   pyc-independent 90-line `.ll` file on both LLVM 20 (stable) and
   LLVM 22 (trunk) — likely an upstream LLVM bug, not filed there yet.
+- [039-uninitialized-local-reads-silent.md](039-uninitialized-local-reads-silent.md) —
+  reading a local unassigned on some CFG path is silent UB (garbage,
+  not a diagnostic) on both backends — `place_phi`'s liveness-driven
+  placement (`ssu.cc`) has no definite-assignment check, and
+  `get_Var`'s no-reaching-definition fallback silently returns the
+  original Var instead of anything FA can recognize as "empty on
+  this path." Proposed fix: an 18th canonical `AType`
+  (`uninitialized_type` in `TypeWorld`) threaded through the same
+  rename fallback, giving pyc a real compile-time analogue of
+  CPython's `UnboundLocalError`. Found verifying issue 023's capture-
+  pattern fix; not specific to `match`/`case`.
 ## Closed (archive)
 
 Closed issues live in [`closed/`](closed/) with the closing
