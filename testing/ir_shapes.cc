@@ -165,9 +165,13 @@ void iterator_copy(const ParamMap & /*m*/) {
   Sym *top = ClosureBuilder("top")
       .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
         Sym *v1 = ir::new_instance(cb, V);
-        ir::vec_set(cb, v1, ir::const_int32(0), ir::const_int32(10));
+        Sym *v1_idx = ir::const_int32(0);
+        Sym *v1_val = ir::const_int32(10);
+        ir::vec_set(cb, v1, v1_idx, v1_val);
         Sym *v2 = ir::new_instance(cb, V);
-        ir::vec_set(cb, v2, ir::const_int32(0), ir::const_float64(2.5));
+        Sym *v2_idx = ir::const_int32(0);
+        Sym *v2_val = ir::const_float64(2.5);
+        ir::vec_set(cb, v2, v2_idx, v2_val);
         Sym *dst = ir::new_instance(cb, V);
         cb.send_method(copy, v1, {dst});
         cb.send_method(copy, v2, {dst});
@@ -282,9 +286,13 @@ void vector_iterator(const ParamMap & /*m*/) {
   Sym *top = ClosureBuilder("top")
       .body([&](CodeBuilder &cb, Sym *cont, Sym *ret) {
         Sym *v1 = ir::new_instance(cb, V);
-        ir::vec_set(cb, v1, ir::const_int32(0), ir::const_int32(10));
+        Sym *v1_idx = ir::const_int32(0);
+        Sym *v1_val = ir::const_int32(10);
+        ir::vec_set(cb, v1, v1_idx, v1_val);
         Sym *v2 = ir::new_instance(cb, V);
-        ir::vec_set(cb, v2, ir::const_int32(0), ir::const_float64(2.5));
+        Sym *v2_idx = ir::const_int32(0);
+        Sym *v2_val = ir::const_float64(2.5);
+        ir::vec_set(cb, v2, v2_idx, v2_val);
         cb.send_method(consume, v1, {});
         cb.send_method(consume, v2, {});
         cb.reply(cont, ret);

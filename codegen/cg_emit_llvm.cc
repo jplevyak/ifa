@@ -1827,7 +1827,22 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
         if (str_val) {
           cchar *fmt = last_nl ? "%s\n" : "%s";
           llvm::Value *fmt_v = Builder->CreateGlobalStringPtr(fmt, ".fmt");
-          Builder->CreateCall(printf_ty, printf_fn.getCallee(), {fmt_v, str_val});
+          // str_val can be a compile-time or runtime null pointer when
+          // FA leaves the Var's type unresolved (see comment above).
+          // printf's "%s" NULL -> "(null)" behavior is a non-portable
+          // glibc extension that LLVM's libcall simplification
+          // (printf("%s\n", x) -> puts(x)) silently defeats at -O2 --
+          // puts() has no such NULL handling and segfaults. Never pass
+          // a possibly-null pointer to printf; substitute a literal
+          // "(null)" string ourselves instead.
+          llvm::Value *null_str =
+              Builder->CreateGlobalStringPtr("(null)", ".nullstr");
+          llvm::Value *is_null = Builder->CreateICmpEQ(
+              str_val, llvm::ConstantPointerNull::get(
+                           llvm::cast<llvm::PointerType>(str_val->getType())));
+          llvm::Value *safe_str =
+              Builder->CreateSelect(is_null, null_str, str_val);
+          Builder->CreateCall(printf_ty, printf_fn.getCallee(), {fmt_v, safe_str});
         }
         continue;
       }
