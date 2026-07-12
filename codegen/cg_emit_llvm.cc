@@ -1684,18 +1684,30 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
         llvm::Function *suspend_fn = get_intrinsic_decl(llvm::Intrinsic::coro_suspend);
         llvm::Value *suspend_res = Builder->CreateCall(suspend_fn, {save_res, Builder->getFalse()});
 
+      // suspend_ret_bb is reached when the coroutine genuinely
+      // suspends (waiting to be resumed later, e.g. by the I/O event
+      // loop) -- it must just return the handle to the caller, NOT
+      // call llvm.coro.end. Ending here (as this used to do, and with
+      // a null handle to boot) marked the coroutine as permanently
+      // finished on its FIRST suspend, and every subsequent await/
+      // wait in the same function produced a second coro.end call
+      // also marked fallthrough (IsUnwind=false) -- LLVM's coro-split
+      // pass rejects more than one fallthrough coro.end per function
+      // ("Only one coro.end can be marked as fallthrough").  The
+      // epilogue's coro.end (normal completion, see the
+      // P_prim_reply / Code_SEND handling below) is the function's
+      // one true fallthrough end; destroy_bb below gets its own,
+      // non-fallthrough one for the early-cancellation exit.
       llvm::BasicBlock *suspend_ret_bb = ctx.coro_suspend_bb;
       if (!suspend_ret_bb) {
         suspend_ret_bb = llvm::BasicBlock::Create(*TheContext, "suspend_ret", ctx.llvm_fn);
         ctx.coro_suspend_bb = suspend_ret_bb;
         llvm::BasicBlock *old = Builder->GetInsertBlock();
         Builder->SetInsertPoint(suspend_ret_bb);
-        llvm::Function *coro_end_fn = get_intrinsic_decl(llvm::Intrinsic::coro_end);
-        Builder->CreateCall(coro_end_fn, {llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(*TheContext)), Builder->getFalse(), llvm::ConstantTokenNone::get(*TheContext)});
         Builder->CreateRet(ctx.coro_hdl);
         Builder->SetInsertPoint(old);
       }
-      
+
       llvm::BasicBlock *destroy_bb = ctx.coro_destroy_bb;
       if (!destroy_bb) {
         destroy_bb = llvm::BasicBlock::Create(*TheContext, "destroy", ctx.llvm_fn);
@@ -1706,7 +1718,13 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
         llvm::Value *mem = Builder->CreateCall(coro_free_fn, {ctx.coro_id, ctx.coro_hdl});
         llvm::Function *gc_free = get_runtime_helper("GC_free", llvm::Type::getVoidTy(*TheContext), {llvm::PointerType::getUnqual(*TheContext)});
         Builder->CreateCall(gc_free, {mem});
-        Builder->CreateBr(suspend_ret_bb);
+        // Early-cancellation exit: this coroutine is being destroyed
+        // before it ran to completion. It must still call coro.end
+        // (exactly once, like the normal-completion epilogue) but
+        // marked IsUnwind=true so it isn't a second fallthrough end.
+        llvm::Function *coro_end_fn = get_intrinsic_decl(llvm::Intrinsic::coro_end);
+        Builder->CreateCall(coro_end_fn, {ctx.coro_hdl, Builder->getTrue(), llvm::ConstantTokenNone::get(*TheContext)});
+        Builder->CreateRet(ctx.coro_hdl);
         Builder->SetInsertPoint(old);
       }
       
@@ -2006,18 +2024,20 @@ class LLVMEmitter : public VirtualCGEmitter {
         llvm::Function *suspend_fn = get_intrinsic_decl(llvm::Intrinsic::coro_suspend);
         llvm::Value *suspend_res = Builder->CreateCall(suspend_fn, {save_res, Builder->getFalse()});
         
+        // See the wait_read/wait_write suspend_ret_bb/destroy_bb
+        // comment above: suspend_ret_bb must not call llvm.coro.end
+        // (it isn't a real end, just "suspended, resume me later"),
+        // and destroy_bb gets its own non-fallthrough coro.end.
         llvm::BasicBlock *suspend_ret_bb = ctx.coro_suspend_bb;
         if (!suspend_ret_bb) {
           suspend_ret_bb = llvm::BasicBlock::Create(*TheContext, "suspend_ret", ctx.llvm_fn);
           ctx.coro_suspend_bb = suspend_ret_bb;
           llvm::BasicBlock *old = Builder->GetInsertBlock();
           Builder->SetInsertPoint(suspend_ret_bb);
-          llvm::Function *coro_end_fn = get_intrinsic_decl(llvm::Intrinsic::coro_end);
-          Builder->CreateCall(coro_end_fn, {llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(*TheContext)), Builder->getFalse(), llvm::ConstantTokenNone::get(*TheContext)});
           Builder->CreateRet(ctx.coro_hdl);
           Builder->SetInsertPoint(old);
         }
-        
+
         llvm::BasicBlock *destroy_bb = ctx.coro_destroy_bb;
         if (!destroy_bb) {
           destroy_bb = llvm::BasicBlock::Create(*TheContext, "destroy", ctx.llvm_fn);
@@ -2028,7 +2048,9 @@ class LLVMEmitter : public VirtualCGEmitter {
           llvm::Value *mem = Builder->CreateCall(coro_free_fn, {ctx.coro_id, ctx.coro_hdl});
           llvm::Function *gc_free = get_runtime_helper("GC_free", llvm::Type::getVoidTy(*TheContext), {llvm::PointerType::getUnqual(*TheContext)});
           Builder->CreateCall(gc_free, {mem});
-        Builder->CreateBr(suspend_ret_bb);
+          llvm::Function *coro_end_fn = get_intrinsic_decl(llvm::Intrinsic::coro_end);
+          Builder->CreateCall(coro_end_fn, {ctx.coro_hdl, Builder->getTrue(), llvm::ConstantTokenNone::get(*TheContext)});
+          Builder->CreateRet(ctx.coro_hdl);
           Builder->SetInsertPoint(old);
         }
         

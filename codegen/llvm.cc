@@ -76,9 +76,16 @@ void llvm_codegen_initialize(FA *fa) {
   Builder = std::make_unique<llvm::IRBuilder<>>(*TheContext);
   DBuilder = std::make_unique<llvm::DIBuilder>(*TheModule);
 
-  // Set target triple for the module
+  // Set target triple for the module. Module::setTargetTriple's
+  // parameter type changed from StringRef to Triple somewhere after
+  // LLVM 20 (confirmed: 18 and 20 both take StringRef; 22 takes
+  // Triple) -- the >=19 threshold below was wrong (verified against
+  // installed 18/20/22 headers), not a documented LLVM API version.
+  // If this breaks again on a newer LLVM, check
+  // llvm/IR/Module.h's setTargetTriple signature directly rather
+  // than guessing another threshold.
   std::string TargetTriple = llvm::sys::getDefaultTargetTriple();
-#if LLVM_VERSION_MAJOR >= 19
+#if LLVM_VERSION_MAJOR >= 22
   TheModule->setTargetTriple(llvm::Triple(TargetTriple));
 #else
   TheModule->setTargetTriple(TargetTriple);
