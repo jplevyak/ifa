@@ -91,6 +91,13 @@ that:
   from SSU liveness through clone to codegen; determinism sweep
   36 → 0 flaky tests. Open only for the harness double-compile
   gate and the issue033-stage-c revalidation.
+- [038-llvm-coro-split-second-suspend-unreachable.md](038-llvm-coro-split-second-suspend-unreachable.md) —
+  any driven LLVM-backend async function with 2+ suspend points
+  (i.e. any real await) segfaults or infinite-loops. Root-caused to
+  LLVM's `coro-split` pass incorrectly marking the second suspend's
+  genuine-suspend path `unreachable`; reproduced with a minimal,
+  pyc-independent 90-line `.ll` file on both LLVM 20 (stable) and
+  LLVM 22 (trunk) — likely an upstream LLVM bug, not filed there yet.
 ## Closed (archive)
 
 Closed issues live in [`closed/`](closed/) with the closing
