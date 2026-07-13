@@ -137,6 +137,47 @@ void cg_build_new_to_val_map(FA *fa) {
     }
   }
 
+  // Pass 1.5 (issue 026): for each poly method name, which classes are
+  // DIRECTLY, singularly owned by one of ITS candidates (a candidate
+  // whose self formal is a single concrete Type_RECORD, not a
+  // Type_SUM)? Mirrors cg.cc's/cg_emit_llvm.cc's identical pre-pass at
+  // the dispatch site, for the same reason: a class with its own
+  // override among the poly candidates must keep using it, even when
+  // ANOTHER candidate's self formal is a union that happens to cover
+  // that same class (FA imprecision on a recursive structure, not
+  // genuine inheritance-sharing) -- confirmed empirically without this
+  // guard (poly_dispatch_low.py, every concrete class overrides the
+  // dispatched method, segfaulted: one class's union-typed self formal
+  // silently stole another class's own, distinct override).
+  Map<cchar *, Vec<cchar *> *> directly_owned_by_name;
+  for (Fun *fv : fa->funs) {
+    if (!fv->live || !fv->sym || !fv->sym->name) continue;
+    if (!poly_names.set_in(fv->sym->name)) continue;
+    cchar *mname = fv->sym->name;
+    MPosition dap;
+    dap.push(1);
+    for (int pi = 0; pi < fv->sym->has.n + 2; pi++) {
+      MPosition *cp = cannonicalize_mposition(dap);
+      dap.inc();
+      Var *argv = fv->args.get(cp);
+      if (!argv || !argv->type) continue;
+      Sym *csym = argv->type;
+      if (csym->type_kind == Type_SUM) break;  // ambiguous -- not direct ownership
+      for (int k = 0; k < csym->has.n; k++) {
+        if (csym->has[k] && csym->has[k]->name == mname && cg_field_live(csym, k)) {
+          Vec<cchar *> *owned = directly_owned_by_name.get(mname);
+          if (!owned) {
+            owned = new Vec<cchar *>();
+            directly_owned_by_name.put(mname, owned);
+          }
+          owned->set_add(csym->name);
+          break;
+        }
+      }
+      break;
+    }
+  }
+
   // Pass 2: for every live function whose name is a poly method, find its
   // self arg, the method slot in that arg's concrete type, and register all
   // creators of self with this function.
@@ -144,30 +185,57 @@ void cg_build_new_to_val_map(FA *fa) {
     if (!fun_val->live || !fun_val->sym || !fun_val->sym->name) continue;
     if (!poly_names.set_in(fun_val->sym->name)) continue;
     cchar *method_name = fun_val->sym->name;
+    Vec<cchar *> *owned_by_others = directly_owned_by_name.get(method_name);
 
-    // Find the self-arg position and slot.
-    int slot = -1;
+    // Find the self-arg position. issue 026: a method a class INHERITS
+    // rather than overrides gets a self formal typed as a Type_SUM
+    // (union) Sym covering every concrete class reaching it through
+    // inheritance (e.g. `Square | Shape` for `Shape.describe`, also
+    // called for `Square` instances) -- its `.has` holds those MEMBER
+    // TYPES, not fields, so "does this position look like self" has
+    // to check either the type's own .has (single concrete class) OR
+    // recurse into a Type_SUM's members (mirrors cg.cc's identical
+    // fix in emit_send_call's classtag construction). The slot index
+    // itself is NOT resolved here anymore -- a union's member classes
+    // can have different dead-field-elision layouts (issue 026's own
+    // earlier text: "leaf structs carried val at e1, Inner at e2"),
+    // so it has to be looked up per concrete class below, keyed by
+    // each CreationSet's own `cs->sym`, not once for the whole
+    // (union-typed) self arg.
     MPosition *self_cp = nullptr;
+    bool self_is_union = false;
+    int direct_slot = -1;  // slot found when self ISN'T a union -- old, single-slot behavior
     {
       MPosition argp;
       argp.push(1);
-      for (int pi = 0; pi < fun_val->sym->has.n + 2 && slot < 0; pi++) {
+      for (int pi = 0; pi < fun_val->sym->has.n + 2 && !self_cp; pi++) {
         MPosition *cp = cannonicalize_mposition(argp);
         argp.inc();
         Var *v = fun_val->args.get(cp);
         if (!v || !v->live || !v->type) continue;
         Sym *csym = v->type;
-        for (int k = 0; k < csym->has.n; k++) {
-          if (csym->has[k] && csym->has[k]->name == method_name && cg_field_live(csym, k)) {
-            slot = k;
+        bool from_union = csym->type_kind == Type_SUM;
+        Vec<Sym *> candidates;
+        if (from_union) {
+          for (Sym *member : csym->has)
+            if (member) candidates.add(member);
+        } else {
+          candidates.add(csym);
+        }
+        for (Sym *ccls : candidates) {
+          int found_k = -1;
+          for (int k = 0; k < ccls->has.n; k++)
+            if (ccls->has[k] && ccls->has[k]->name == method_name && cg_field_live(ccls, k)) { found_k = k; break; }
+          if (found_k >= 0) {
             self_cp = cp;
+            self_is_union = from_union;
+            if (!from_union) direct_slot = found_k;
             break;
           }
         }
-        if (slot >= 0) break;
       }
     }
-    if (slot < 0 || !self_cp) continue;
+    if (!self_cp) continue;
 
     // Walk every EntrySet for fun_val; look only at the self arg's AType.
     // Track specificity = sorted.n of the ES: lower means more specific.
@@ -185,7 +253,32 @@ void cg_build_new_to_val_map(FA *fa) {
       if (!self_av || !self_av->out) continue;
       int specificity = self_av->out->sorted.n;  // fewer CSes = more specific
       for (CreationSet *cs : self_av->out->sorted) {
-        if (!cs) continue;
+        if (!cs || !cs->sym) continue;
+        // A class DIRECTLY, singularly owned by a DIFFERENT candidate
+        // (this fun_val's OWN self type was a union, so it doesn't
+        // directly own anything itself) keeps using that candidate's
+        // registration instead -- see the directly_owned_by_name
+        // pre-pass comment above for why.
+        if (self_is_union && owned_by_others && owned_by_others->set_in(cs->sym->name)) continue;
+        // Resolve the slot for THIS concrete class. When the self arg
+        // wasn't a union, keep the ORIGINAL behavior exactly (reuse
+        // direct_slot, found once above) -- only a union-typed self
+        // arg needs re-resolving per cs->sym, since only THEN can
+        // different member classes have different dead-field-elision
+        // layouts (see the comment above self_cp's search). Recomputing
+        // this unconditionally regressed poly_dispatch_low.py/high.py
+        // (non-union, single-class self args where every concrete
+        // class already overrides the method) -- confirmed via
+        // PYC_DBG_DISPATCH that neither candidate there is Type_SUM at
+        // all, so the bug was purely in this slot re-resolution, not
+        // the union-unpacking it was meant to fix.
+        int slot = direct_slot;
+        if (self_is_union) {
+          slot = -1;
+          for (int k = 0; k < cs->sym->has.n; k++)
+            if (cs->sym->has[k] && cs->sym->has[k]->name == method_name && cg_field_live(cs->sym, k)) { slot = k; break; }
+        }
+        if (slot < 0) continue;
         for (AVar *def_av : cs->defs) {
           if (!def_av || !def_av->contour_is_entry_set) continue;
           EntrySet *creator_es = (EntrySet *)def_av->contour;

@@ -877,6 +877,44 @@ class CBackendEmitter : public VirtualCGEmitter {
         Vec<int> slots;      //   ... that class's method-slot index
         Vec<Fun *> plains;   // plain-function partition
         Fun *nil_fn = nullptr;  // nil-receiver candidate (None method on a nil|record union)
+        // issue 026: pre-pass -- which classes are DIRECTLY, singularly
+        // owned by one of THIS call's candidates (a candidate whose
+        // self formal is a single concrete Type_RECORD, not a
+        // Type_SUM)? A class that's directly owned here has its OWN
+        // override among `fns` and must keep using it -- the Type_SUM
+        // unpacking below (for a DIFFERENT candidate whose self type
+        // is a union covering that same class, e.g. because FA can't
+        // fully monomorphize a recursive structure) must not steal it.
+        // Confirmed empirically: without this guard, a recursive tree
+        // dispatch where EVERY concrete class overrides the method
+        // (poly_dispatch_low.py's Leaf/Branch, each with its own
+        // val()) segfaulted -- one class's union-typed self formal
+        // caused the OTHER class's OWN override to be silently
+        // replaced by a mismatched one (calling a field the receiver
+        // doesn't have).
+        Vec<cchar *> directly_owned;
+        for (int fi = 0; fi < fns->n; fi++) {
+          Fun *fv = (*fns)[fi];
+          if (!fv || !fv->sym || !fv->sym->name) continue;
+          cchar *mname = fv->sym->name;
+          MPosition dap;
+          dap.push(1);
+          for (int pi = 0; pi < fv->sym->has.n + 2; pi++) {
+            MPosition *cp = cannonicalize_mposition(dap);
+            dap.inc();
+            Var *argv = fv->args.get(cp);
+            if (!argv || !argv->type) continue;
+            Sym *csym = argv->type;
+            if (csym->type_kind == Type_SUM) continue;  // ambiguous -- not direct ownership
+            for (int k = 0; k < csym->has.n; k++) {
+              if (csym->has[k] && csym->has[k]->name == mname && cg_field_live(csym, k)) {
+                directly_owned.set_add(csym->name);
+                break;
+              }
+            }
+            break;
+          }
+        }
         bool ok = true;
         for (int fi = 0; fi < fns->n && ok; fi++) {
           Fun *fun_val = (*fns)[fi];
@@ -890,32 +928,69 @@ class CBackendEmitter : public VirtualCGEmitter {
           // require the formal to be live: leaf methods that ignore
           // self still need a dispatch branch (the CHOICE depends
           // on the receiver).
-          Sym *rt = nullptr;
-          int slot = -1;
+          //
+          // issue 026: when a class INHERITS a method rather than
+          // overriding it, FA gives that method's Fun a self formal
+          // typed as a Type_SUM (union) Sym covering every concrete
+          // class that reaches it through inheritance -- e.g.
+          // `Shape.describe`, also called for `Square` instances
+          // (Square has no override of its own), gets a self type
+          // `Square | Shape`, NOT a single concrete class. A
+          // Type_SUM's `.has` holds its MEMBER TYPES (here: the
+          // Sqaure and Shape class Syms themselves), not fields --
+          // completely different from a Type_RECORD's `.has` (its
+          // OWN fields/methods), even though both reuse the same
+          // Vec<Sym*> slot. The rt-search below has to branch on
+          // which shape it's looking at: for a Type_RECORD, search
+          // its own .has for method_name (the original, single-class
+          // case); for a Type_SUM, recurse into EACH member and
+          // search THAT member's own .has instead -- one Fun
+          // candidate can and does resolve to MULTIPLE concrete
+          // receiver classes this way, each needing its own classtag
+          // branch (all calling through the SAME Fun, since that's
+          // what "doesn't override, just inherits" means).
+          Vec<Sym *> rts;    // every concrete receiver class found for this candidate
+          Vec<int> rt_slots; //   ... and its slot index (layouts can differ per class)
           MPosition argp;
           argp.push(1);
-          for (int pi = 0; method_name && pi < fun_val->sym->has.n + 2 && !rt; pi++) {
+          for (int pi = 0; method_name && pi < fun_val->sym->has.n + 2 && !rts.n; pi++) {
             MPosition *cp = cannonicalize_mposition(argp);
             argp.inc();
             Var *argv = fun_val->args.get(cp);
             if (!argv || !argv->type) continue;
             Sym *csym = argv->type;
-            for (int k = 0; k < csym->has.n; k++) {
-              if (csym->has[k] && csym->has[k]->name == method_name && cg_field_live(csym, k)) {
-                rt = csym;
-                slot = k;
-                // The receiver value lives at this formal's
-                // call-site position (used when rvals[0] is the
-                // method symbol rather than the callable value).
-                int ridx = (int)Position2int(cp->pos[0]) - 1;
-                if (!recv_str && ridx >= 0 && ridx < pn->rvals.n && pn->rvals[ridx] &&
-                    cg_get_string(pn->rvals[ridx]))
-                  recv_str = cg_get_string(pn->rvals[ridx]);
-                break;
+            Vec<Sym *> candidates;  // classes to search: the type itself, or its union members
+            bool from_union = csym->type_kind == Type_SUM;
+            if (from_union) {
+              for (Sym *member : csym->has)
+                if (member) candidates.add(member);
+            } else {
+              candidates.add(csym);
+            }
+            for (Sym *ccls : candidates) {
+              // A union member that's DIRECTLY, singularly owned by
+              // ANOTHER candidate in `fns` keeps using that candidate's
+              // own override -- this candidate's (looser, unioned)
+              // match must not steal it. See the directly_owned
+              // pre-pass comment above for why this matters.
+              if (from_union && ccls->name && directly_owned.set_in(ccls->name)) continue;
+              for (int k = 0; k < ccls->has.n; k++) {
+                if (ccls->has[k] && ccls->has[k]->name == method_name && cg_field_live(ccls, k)) {
+                  rts.add(ccls);
+                  rt_slots.add(k);
+                  // The receiver value lives at this formal's
+                  // call-site position (used when rvals[0] is the
+                  // method symbol rather than the callable value).
+                  int ridx = (int)Position2int(cp->pos[0]) - 1;
+                  if (!recv_str && ridx >= 0 && ridx < pn->rvals.n && pn->rvals[ridx] &&
+                      cg_get_string(pn->rvals[ridx]))
+                    recv_str = cg_get_string(pn->rvals[ridx]);
+                  break;
+                }
               }
             }
           }
-          if (!rt) {
+          if (!rts.n) {
             // Nil-receiver candidate: a None-class method reached
             // through a nil|record union (`if not self.field:` where
             // the field starts as None). None is a NULL pointer at
@@ -955,18 +1030,30 @@ class CBackendEmitter : public VirtualCGEmitter {
               continue;
             }
           }
-          if (rt && cg_has_classtag(rt) && cg_get_string(rt)) {
-            // Merge into a per-class-name branch (clones of one
-            // class share a tag; the stored slot pointer
-            // disambiguates).
-            bool found = false;
-            for (int ci = 0; ci < classes.n; ci++)
-              if (!strcmp(classes[ci]->name, rt->name)) { found = true; break; }
-            if (!found) {
-              classes.add(rt);
-              slots.add(slot);
+          if (rts.n) {
+            // Merge each found receiver class into a per-class-name
+            // branch (clones of one class share a tag; the stored
+            // slot pointer disambiguates). A single Fun candidate can
+            // contribute several classes here (see the Type_SUM
+            // comment above) -- add every one that carries a real
+            // classtag. Matches the original single-class code's
+            // fallback behavior: if NONE of the found classes are
+            // classtag-eligible, fall through to the plain-function
+            // route below instead of silently dropping the candidate.
+            bool added_any = false;
+            for (int ri = 0; ri < rts.n; ri++) {
+              Sym *rt = rts[ri];
+              if (!cg_has_classtag(rt) || !cg_get_string(rt)) continue;
+              added_any = true;
+              bool found = false;
+              for (int ci = 0; ci < classes.n; ci++)
+                if (!strcmp(classes[ci]->name, rt->name)) { found = true; break; }
+              if (!found) {
+                classes.add(rt);
+                slots.add(rt_slots[ri]);
+              }
             }
-            continue;
+            if (added_any) continue;
           }
           // Plain-function route: needs the fun's address and every
           // live formal mapping to an in-range call-site rval of a

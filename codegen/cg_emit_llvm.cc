@@ -2075,33 +2075,87 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
     Vec<int> slots;
     Fun *nil_fn = nullptr;  // nil-receiver candidate (None method on a nil|record union)
     llvm::Value *recv = nullptr;
+    // issue 026 (mirrors cg.cc's identical pre-pass): which classes are
+    // DIRECTLY, singularly owned by one of THIS call's candidates (a
+    // candidate whose self formal is a single concrete Type_RECORD,
+    // not a Type_SUM)? The Type_SUM-unpacking below must not let a
+    // DIFFERENT candidate's looser (unioned) match steal a class that
+    // already has its own override among `callees` -- confirmed
+    // empirically: without this guard, poly_dispatch_low.py (every
+    // concrete class overrides the dispatched method) segfaulted.
+    Vec<cchar *> directly_owned;
+    for (int fi = 0; fi < callees->n; fi++) {
+      Fun *fv = (*callees)[fi];
+      if (!fv || !fv->sym || !fv->sym->name) continue;
+      cchar *mname = fv->sym->name;
+      MPosition dap;
+      dap.push(1);
+      for (int pi = 0; pi < fv->sym->has.n + 2; pi++) {
+        MPosition *cp = cannonicalize_mposition(dap);
+        dap.inc();
+        Var *argv = fv->args.get(cp);
+        if (!argv || !argv->type) continue;
+        Sym *csym = argv->type;
+        if (csym->type_kind == Type_SUM) continue;
+        for (int k = 0; k < csym->has.n; k++) {
+          if (csym->has[k] && csym->has[k]->name == mname && cg_field_live(csym, k)) {
+            directly_owned.set_add(csym->name);
+            break;
+          }
+        }
+        break;
+      }
+    }
     bool ok = true;
     for (int fi = 0; fi < callees->n && ok; fi++) {
       Fun *fun_val = (*callees)[fi];
       if (!fun_val || !fun_val->sym || !fun_val->sym->name) { ok = false; break; }
       cchar *method_name = fun_val->sym->name;
-      Sym *rt = nullptr;
-      int slot = -1;
+      // issue 026 (mirrors cg.cc's identical fix): a class that
+      // INHERITS a dispatched method rather than overriding it makes
+      // FA type that method's self formal as a Type_SUM (union) Sym
+      // covering every concrete class reaching it through
+      // inheritance, not a single concrete class -- e.g.
+      // `Shape.describe`, also called for `Square` instances (no
+      // override of its own), gets a self type `Square | Shape`. A
+      // Type_SUM's `.has` holds its MEMBER TYPES, not fields, so it
+      // needs the receiver search to recurse into each member
+      // instead of treating `.has` as the method-field list directly
+      // -- one Fun candidate can resolve to several concrete receiver
+      // classes this way, each needing its own classtag branch.
+      Vec<Sym *> rts;
+      Vec<int> rt_slots;
       MPosition argp;
       argp.push(1);
-      for (int pi = 0; pi < fun_val->sym->has.n + 2 && !rt; pi++) {
+      for (int pi = 0; pi < fun_val->sym->has.n + 2 && !rts.n; pi++) {
         MPosition *cp = cannonicalize_mposition(argp);
         argp.inc();
         Var *argv = fun_val->args.get(cp);
         if (!argv || !argv->type) continue;
         Sym *csym = argv->type;
-        for (int k = 0; k < csym->has.n; k++) {
-          if (csym->has[k] && csym->has[k]->name == method_name && cg_field_live(csym, k)) {
-            rt = csym;
-            slot = k;
-            int ridx = (int)Position2int(cp->pos[0]) - 1;
-            if (!recv && ridx >= 0 && ridx < pn->rvals.n && pn->rvals[ridx])
-              recv = value_for_var(ctx, pn->rvals[ridx]);
-            break;
+        Vec<Sym *> candidates;
+        bool from_union = csym->type_kind == Type_SUM;
+        if (from_union) {
+          for (Sym *member : csym->has)
+            if (member) candidates.add(member);
+        } else {
+          candidates.add(csym);
+        }
+        for (Sym *ccls : candidates) {
+          if (from_union && ccls->name && directly_owned.set_in(ccls->name)) continue;
+          for (int k = 0; k < ccls->has.n; k++) {
+            if (ccls->has[k] && ccls->has[k]->name == method_name && cg_field_live(ccls, k)) {
+              rts.add(ccls);
+              rt_slots.add(k);
+              int ridx = (int)Position2int(cp->pos[0]) - 1;
+              if (!recv && ridx >= 0 && ridx < pn->rvals.n && pn->rvals[ridx])
+                recv = value_for_var(ctx, pn->rvals[ridx]);
+              break;
+            }
           }
         }
       }
-      if (!rt) {
+      if (!rts.n) {
         // Nil-receiver candidate (mirrors cg.cc): a None-class method
         // reached through a nil|record union (`if not self.field:`
         // where the field starts as None). None is a NULL pointer at
@@ -2128,14 +2182,21 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
           continue;
         }
       }
-      if (!rt || !rt->name || rt->is_system_type || !cg_has_classtag(rt)) { ok = false; break; }
-      bool found = false;
-      for (int ci = 0; ci < classes.n; ci++)
-        if (!strcmp(classes[ci]->name, rt->name)) { found = true; break; }
-      if (!found) {
-        classes.add(rt);
-        slots.add(slot);
+      if (!rts.n) { ok = false; break; }
+      bool added_any = false;
+      for (int ri = 0; ri < rts.n; ri++) {
+        Sym *rt = rts[ri];
+        if (!rt->name || rt->is_system_type || !cg_has_classtag(rt)) continue;
+        added_any = true;
+        bool found = false;
+        for (int ci = 0; ci < classes.n; ci++)
+          if (!strcmp(classes[ci]->name, rt->name)) { found = true; break; }
+        if (!found) {
+          classes.add(rt);
+          slots.add(rt_slots[ri]);
+        }
       }
+      if (!added_any) { ok = false; break; }
     }
     Var *dst_var = pn->lvals.n ? pn->lvals.v[0] : nullptr;
     llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
