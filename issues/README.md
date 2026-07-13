@@ -109,6 +109,17 @@ that:
   rename fallback, giving pyc a real compile-time analogue of
   CPython's `UnboundLocalError`. Found verifying issue 023's capture-
   pattern fix; not specific to `match`/`case`.
+- [040-empty-list-shared-clone-type-inference.md](040-empty-list-shared-clone-type-inference.md) —
+  an empty list literal (`[]`) sharing a `list` method clone
+  (`__str__`/`__getitem__` confirmed) with a non-empty list of some
+  other concrete element type fails to type-check ("expression has
+  no type"), even though either alone compiles fine. Filed for
+  triage, not root-caused — plausible guess: `list` isn't
+  compile-time-generic in pyc, so a shared method clone serving both
+  a concrete-element-type receiver and an unresolved/bottom-typed
+  empty one may not unify cleanly. Found landing pyc's issue 024
+  (extended iterable unpacking) — unrelated to unpacking itself, a
+  plain `b = [2, 3]; print(b); k = []; print(k)` reproduces it.
 ## Closed (archive)
 
 Closed issues live in [`closed/`](closed/) with the closing
