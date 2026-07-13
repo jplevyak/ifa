@@ -4701,9 +4701,11 @@ static void clear_splits() {
   return analyze_again;
 }
 
-[[nodiscard]] static int extend_analysis() {
+// The five split stages (extend_analysis minus its stall/pass-cap
+// bookkeeping), extracted so the sticky stall guard in
+// extend_analysis can skip them wholesale once the guard has fired.
+[[nodiscard]] static int run_split_stages() {
   int analyze_again = 0;
-  extend_timer.restart();
   // Issue 033 M0: per-stage wall-clock measurement. `stage_timer`
   // is lapped at each stage boundary below (whether or not that
   // stage found work) so fa->stage_time[] accumulates the true
@@ -4843,6 +4845,46 @@ static void clear_splits() {
     }
   }
   log(LOG_SPLITTING, "split_for_violations %d\n", analyze_again);
+  return analyze_again;
+}
+
+[[nodiscard]] static int extend_analysis() {
+  int analyze_again = 0;
+  extend_timer.restart();
+  // Issue 033: the stall guard is STICKY. pass_limit_hit is set by
+  // the stall guard and the pass cap below; without this entry
+  // check it only zeroed the current pass's continue vote -- the
+  // stages had already run and split by the time the guard was
+  // consulted. So whenever the frontend's reanalyze() callback
+  // kept the outer loop alive, every subsequent pass split again,
+  // with the guard "firing" after the fact each time: unbounded
+  // contour growth with no cap at all, since the pass-limit check
+  // was gated on analyze_again, which the guard had just zeroed
+  // (observed on bh under the issue033-stage-c branch: 73+
+  // non-improving passes, ess 492 -> 2317, until an external
+  // timeout). Once the guard fires, the splitter stays suppressed.
+  // It re-arms only when a reanalyze-driven pass genuinely improves
+  // the violation count below its best (annotator progress can
+  // legitimately unblock refinement; strict improvement bounds the
+  // number of re-arms by the violation count itself) or resolves
+  // ALL violations (fysphun's shape: the guard fires on the
+  // plateau, the coercion annotator then clears every residual
+  // violation, and the splitter safely resumes pure precision
+  // splitting -- zero-violation passes never advance the stall
+  // counter, so this cannot be the runaway; the hard pass cap
+  // below still bounds pathological re-arm cycles).
+  // Only the flag is cleared here: best_violations/stall_passes are
+  // left to the tail bookkeeping below, which sees the same improved
+  // count and resets them exactly as it would have pre-guard -- so
+  // re-armed stall counting is identical to the never-fired case.
+  if (fa->pass_limit_hit) {
+    int v = fa->type_violations.set_count();
+    if (analysis_pass <= fa->pass_limit && (v == 0 || v < fa->best_violations)) {
+      fa->pass_limit_hit = false;
+      log(LOG_SPLITTING, "STALL GUARD re-armed at pass %d: %d violations\n", analysis_pass, v);
+    }
+  }
+  if (!fa->pass_limit_hit) analyze_again = run_split_stages();
   extend_timer.stop();
   if (analyze_again) {
     // Divergence (stall) guard. Split decisions are not idempotent
@@ -4867,17 +4909,21 @@ static void clear_splits() {
       }
     }
   }
-  if (analyze_again && analysis_pass > fa->pass_limit) {
-    // Splitter wanted another pass but we've hit the configured cap.
-    // Force termination, surface the trip on LOG_SPLITTING, and flag
-    // it on FA so the frontend can distinguish a converged
-    // type_violations set from this mid-iteration snapshot. The
-    // existing violations stay in type_violations — callers iterating
-    // them get the snapshot, but they can check fa->pass_limit_hit to
-    // know they're holding partial results.
+  if (analysis_pass > fa->pass_limit) {
+    // We've hit the configured pass cap: force termination, surface
+    // the trip on LOG_SPLITTING, and flag it on FA so the frontend
+    // can distinguish a converged type_violations set from this
+    // mid-iteration snapshot. The existing violations stay in
+    // type_violations — callers iterating them get the snapshot, but
+    // they can check fa->pass_limit_hit to know they're holding
+    // partial results. Unconditional (issue 033): this was gated on
+    // analyze_again, which the stall guard zeroes when it fires, so
+    // the cap was unreachable exactly when the loop was running away
+    // via reanalyze()-driven passes.
+    if (!fa->pass_limit_hit)
+      log(LOG_SPLITTING, "PASS LIMIT %d reached at pass %d, %d violations remain (mid-iteration)\n",
+          fa->pass_limit, analysis_pass, fa->type_violations.set_count());
     fa->pass_limit_hit = true;
-    log(LOG_SPLITTING, "PASS LIMIT %d reached at pass %d, %d violations remain (mid-iteration)\n",
-        fa->pass_limit, analysis_pass, fa->type_violations.set_count());
     analyze_again = 0;
   }
   if (analyze_again) clear_results();
@@ -5172,7 +5218,12 @@ static void analyze_to_convergence() {
       }
     }
     complete_pass();
-  } while (extend_analysis() || if1->callback->reanalyze(fa->type_violations));
+    // The pass cap bounds the WHOLE loop, including passes kept
+    // alive only by reanalyze() (issue 033): with the splitter
+    // suppressed by the sticky stall guard, extend_analysis returns
+    // 0 but a frontend annotator that never quiesces could
+    // otherwise drive flow passes forever.
+  } while ((extend_analysis() || if1->callback->reanalyze(fa->type_violations)) && analysis_pass <= fa->pass_limit);
 }
 
 int FA::analyze(Fun *top) {

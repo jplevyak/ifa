@@ -29,6 +29,29 @@ detail for that earlier landed work, and the original stage-by-stage
 ledger design S5 supersedes, is archived at
 [closed/033-ledger-design-detail.md](closed/033-ledger-design-detail.md).
 
+**UPDATE (2026-07-13): M3's blocker is dissolved — the bh
+divergence was a latent hole in MAIN's stall guard, not a stage-C
+defect.** The guard was not sticky (it only zeroed the current
+pass's continue vote, after that pass's splitting had already
+happened), the hard pass cap was gated on the very flag the guard
+had just zeroed, and the outer loop is revived by `reanalyze()` —
+so any input whose annotator keeps returning `true` on a frozen
+violation plateau splits forever, one "zombie" pass at a time,
+with the guard impotently firing every pass and NOTHING bounding
+the loop (bh under stage-C blew straight through
+`IFA_PASS_LIMIT=100` and was only stopped by an external timeout).
+The M3 section's earlier "v < best keeps resetting stall_passes"
+hypothesis was wrong — it is inconsistent with the observed frozen
+count. Fixed on main (sticky guard + re-arm on genuine improvement
++ unconditional pass cap + loop-level cap; see the mitigation
+section) and verified: with the fix cherry-picked onto
+`issue033-stage-c-rebased`, bh terminates deterministically at
+pass 32 with 23 violations — the same count and failure class as
+main's bh — and the trio converges with main-equivalent results.
+M3 is no longer blocked by this; reviving it still needs its own
+full verification round (suites, corpus sweep, trio+pygasus+bh to
+completion).
+
 **RESOLUTION UPDATE (2026-07-10, after the
 [035](035-nondeterministic-codegen-clone-order.md) determinism
 fixes): the core divergence symptom is GONE on main WITHOUT stage
@@ -146,6 +169,41 @@ guarantees wall-clock termination and, via the starvation fix-by-
 accident above, actually *converges* some previously-diverging
 inputs. It does NOT make splitting deterministic or idempotent.
 
+**Hardened (2026-07-13), closing the hole found root-causing M3's
+bh divergence** (see the top-of-doc update): the guard is now
+STICKY — `extend_analysis` checks `pass_limit_hit` at entry and
+skips the split stages entirely once it has fired, instead of
+merely zeroing that pass's continue vote after the splitting had
+already happened. It re-arms (clears the flag only, leaving
+`best_violations`/`stall_passes` to the unchanged tail bookkeeping
+so the stall accounting stays baseline-identical — an earlier
+draft that reset them at entry fired the guard one pass early per
+plateau) when a `reanalyze()`-driven pass genuinely improves the
+violation count below its best, or resolves ALL violations
+(fysphun's shape: the annotator clears the plateau and the
+splitter safely resumes pure precision splitting). The hard pass
+cap is now unconditional rather than gated on `analyze_again`
+(which the stall guard had just zeroed — the cap was unreachable
+exactly when the loop was running away), and
+`analyze_to_convergence`'s loop condition is additionally bounded
+by `analysis_pass <= pass_limit` so `reanalyze()`-driven passes
+can't run unbounded either. Verified behavior-equivalent on
+converging inputs: pyc C/LLVM suites 189/0, all 16 ifa-test phases
+zero reblessing; fysphun/pylife/pygasus PASS-trajectories
+byte-identical (pygasus 20 passes / 788 violations, final-pass
+dirty/examined counts matching the M4 section's recorded numbers
+exactly); bh identical through pass 28 with the same final state
+(400 ess/1140 css/23 violations) and diagnostics; kmeanspp same 6
+violations with a 3-ess-smaller final universe — the delta is
+exactly baseline's final "zombie" pass splits, contours that were
+created after the guard fired and never re-flowed before
+termination, which the sticky guard no longer manufactures. (One
+unexplained observation during verification: a single bh run with
+an intermediate build of this fix segfaulted in `fa_dump_types`
+under `-v` at pass 3; it never reproduced across 10+ subsequent
+runs of the same scenario on either build and is noted here only
+for the record.)
+
 ## What it unblocks
 
 - The remaining diverging inputs (kmeanspp, pylife residues) —
@@ -218,6 +276,11 @@ attempt that exposed the bug is preserved separately on
 [`issue033-stage-c-rebased`](https://github.com/jplevyak/pyc/tree/issue033-stage-c-rebased)
 (see the M3 section below) — do not revive either branch without
 root-causing and fixing the stall-guard interaction first.
+*(2026-07-13: done — the stall-guard interaction was root-caused
+to a latent hole in main's guard itself and fixed on main; the
+fixed branch terminates on bh. See the M3 correction. The branches
+remain parked pending a full M3 verification round, but this
+warning no longer blocks them.)*
 
 Original assessment (superseded, kept for the historical record):
 it was believed **sound and fully green** (both suites 177/0 under
@@ -1181,7 +1244,7 @@ keeping it, only re-typing. Revive it by rebasing onto whatever
 lands M4, not by merging it on its own.
 
 ### M3. Ledger persistence from converged snapshots (stage-C
-revival; the alloc_info analog) — ATTEMPTED 2026-07-11, REVERTED: rebased branch breaks the stall guard on `bh`, a genuine unbounded divergence. See status near the end of this section.
+revival; the alloc_info analog) — ATTEMPTED 2026-07-11, REVERTED: rebased branch breaks the stall guard on `bh`, a genuine unbounded divergence. See status near the end of this section. **UPDATE 2026-07-13: UNBLOCKED — the bh divergence root-caused to a latent stall-guard hole on MAIN (not a stage-C defect), now fixed; the fixed branch terminates on bh. See the top-of-doc update and the correction at the end of this section.**
 
 Rebase and merge branch `issue033-stage-c` (green at `2d514f58`;
 status/staleness detail in
@@ -1280,6 +1343,40 @@ before it can reach the limit. Worth root-causing with the same
 ASAN-first, measure-before-fixing discipline the M2 crashes used,
 rather than guessing at a patch.
 
+**CORRECTION + ROOT CAUSE (2026-07-13): the hypothesis above was
+wrong, and the guard was the bug.** A frozen violation count
+cannot keep beating its own best — the observed plateau (v frozen
+at 29) is inconsistent with `v < best_violations` resetting
+anything. The actual mechanism, read straight off main's code: the
+stall guard fired every pass, but (a) it was not sticky — it only
+zeroed that pass's `analyze_again` AFTER the split stages had
+already run and split, (b) the hard pass cap was gated on
+`analyze_again`, which the guard had just zeroed, so the cap was
+unreachable on exactly this path, and (c) the outer loop is
+`extend_analysis() || reanalyze()`, so a frontend annotator that
+keeps returning true (which stage-C's routed contours apparently
+cause, by perturbing the residual violation set each pass) revives
+the loop indefinitely. Every revived pass runs the full split
+stages again — unbounded "zombie" splitting with the guard firing
+impotently each time. Re-reproduced on the unfixed
+`issue033-stage-c-rebased` worktree: bh blows through
+`IFA_PASS_LIMIT=100` (2492 ess at pass 100, still growing, killed
+by external timeout). Main has the identical hole, merely masked:
+on main's bh the annotator happens to quiesce right after the
+guard fires, and main's bh baseline in fact contains 2-3 zombie
+passes (ess 394 -> 400 on a frozen 23-violation plateau) whose
+split products were never re-flowed before termination. Fix landed
+on main (sticky guard + bounded re-arm + unconditional pass cap +
+loop-level cap; details in the mitigation section). With the fix
+cherry-picked onto the branch: bh terminates deterministically at
+pass 32, 717 ess / 1257 css / 23 violations — the same final
+violation count and failure class as main's bh — and the trio
+converges with main-equivalent results (fysphun 18/0 identical,
+kmeanspp 21 passes/6 violations, pylife 13/60). M3 is therefore
+unblocked; revival still owes its own full verification round
+(suites, corpus sweep member-set, trio+pygasus+bh to completion)
+before merging.
+
 **Reverted cleanly**: the rebase was done in a detached-HEAD
 worktree (`git worktree add -d`), so the `issue033-stage-c` branch
 itself was never touched — it's still at `2d514f58`, identical to
@@ -1297,7 +1394,9 @@ conflicts pre-resolved, with the divergence already reproduced
 against it once. Revive by root-causing the stall-guard interaction
 first, not by starting from this branch and hoping.
 
-**M2, M3, and M4 are now all blocked or reverted**, each for a
+**M2, M3, and M4 are now all blocked or reverted** *(2026-07-13
+update: M3 is UNBLOCKED — its blocker was a latent main stall-guard
+hole, since fixed; see the correction above)*, each for a
 different, concrete, well-evidenced reason: M2 (stage-2 batching)
 hangs pygasus; M3 (ledger revival) breaks the stall guard on bh;
 M4 (dirty-marked collection) is a no-op under the current
