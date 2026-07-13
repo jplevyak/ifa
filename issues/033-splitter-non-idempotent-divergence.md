@@ -762,7 +762,7 @@ existing single-candidate guard.
   ([pyc issues/028](../../issues/028-raise-exception-regression-qualified-dispatch.md)),
   not a new failure.
 
-### M2. Batch-stage extend (immutable-snapshot property, step 1) — REVERTED TWICE (crash, then a pygasus hang/severe slowdown after the crash was fixed; see status below). No part of M2 is on main. Do not retry without M4 first, or without testing pygasus. The reverted diff is preserved on branch [`issue033-stage2-batching`](https://github.com/jplevyak/pyc/tree/issue033-stage2-batching) (checkpoint only, not mergeable as-is — see its note near the end of this section).
+### M2. Batch-stage extend (immutable-snapshot property, step 1) — REVERTED TWICE (crash, then a pygasus hang/severe slowdown after the crash was fixed; see status below). No part of M2a is on main. Do not retry cross-stage batching without M4 first, or without testing pygasus. The reverted diff is preserved on branch [`issue033-stage2-batching`](https://github.com/jplevyak/pyc/tree/issue033-stage2-batching) (checkpoint only, not mergeable as-is — see its note near the end of this section). **UPDATE 2026-07-13: M2b (decide-then-apply WITHIN stage 1) is LANDED — see the M2b status block at the end of this section. The M2a (cross-stage) verdict above stands unchanged.**
 
 Remove first-stage-wins: run stages 1..5 every extend, each over
 the SAME snapshot's collected confluences. Two sub-steps:
@@ -1257,6 +1257,52 @@ small and mechanical (see D8-adjacent reasoning above for exactly
 what it does and doesn't touch), so there's no design work saved by
 keeping it, only re-typing. Revive it by rebasing onto whatever
 lands M4, not by merging it on its own.
+
+**M2b: decide-then-apply within stage 1 — LANDED 2026-07-13.**
+`split_entry_set` is now split into `decide_entry_set_split` (pure:
+computes the group partition — edge classification, the greedy
+pairwise-compatible grouping, all short-circuits including the
+remainder-stays rule — against an unmutated graph, into an
+`ESSplitDecision` record) and `apply_entry_set_split` (all
+mutation: pending-backedge-map rebuild, detach, ledger-route or
+park, stage-A recording), with `split_entry_set` reduced to a thin
+wrapper that runs the two back-to-back — so stages 2–5 keep their
+old per-AVar semantics through the same code, and any future stage
+batches by reusing the pair. Stage 1 (`split_ess_for_type`,
+non-dynamic path) now DECIDES every confluence against the same
+converged snapshot before applying any of them, removing the
+intra-stage order dependence (the 009/021 family) structurally
+rather than by qsort suppression. One deliberate semantic change:
+when two confluences target the SAME EntrySet at different
+positions, the old shape split it a second time in one pass,
+partitioning edges that had been rerouted THIS pass and never
+re-flowed — the M2a unflowed-contour hazard in miniature. Now the
+first decision per ES wins and later ones defer to the next pass's
+re-collection (which decides them against re-flowed state). The
+dynamic path (stage 5's refinable violations) keeps the legacy
+shape: `split_edges` mutates as it goes, so batched deciding there
+would read its own stage's mutations.
+
+Verified per this section's own process lesson, pygasus first:
+pygasus 20 passes / 788 violations / 3451 ess with a byte-identical
+PASS trajectory (no hang — M2b adds no collection cost, unlike
+M2a's stage-2 unlock); fysphun/kmeanspp/pylife/bh PASS trajectories
+byte-identical to the D5-landing baseline. The deferral is NOT
+dead code — it fires 14/6/9 times on fysphun/kmeanspp/bh — yet
+outcomes are unchanged everywhere, confirming the old same-pass
+second splits were no-ops re-derived against the post-split
+remainder (now they're structurally impossible instead of
+accidentally harmless). pyc C 190/0, LLVM 190/0, all 16 ifa-test
+phases with zero fixture reblessing (fa-converge event-identical),
+sweep member set unchanged.
+
+What M2b deliberately does NOT change: no cross-stage batching
+(M2a's pygasus verdict stands — stage 2's collection cost needs
+M4-class bounding, and stages 3/4 need a flow step or the round
+structure). What it unblocks: split decisions are now first-class
+records applied through one funnel, which is exactly the shape the
+S5-B round structure needs — a round computes its complete
+`Vec<ESSplitDecision *>` from converged state and applies it.
 
 ### M3. Ledger persistence from converged snapshots (stage-C
 revival; the alloc_info analog) — ATTEMPTED 2026-07-11, REVERTED: rebased branch breaks the stall guard on `bh`, a genuine unbounded divergence. See status near the end of this section. **UPDATE 2026-07-13: LANDED — the bh divergence root-caused to a latent stall-guard hole on MAIN (not a stage-C defect), fixed; full verification bar green twice (on the old base, then re-run on the payload rebased onto current main), merged. See the top-of-doc update and the correction + verification record at the end of this section.**

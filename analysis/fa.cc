@@ -3890,14 +3890,41 @@ static bool group_display_ok(Vec<AEdge *> &these_edges, EntrySet *product, Fun *
   return true;
 }
 
-[[nodiscard]] static int split_entry_set(AVar *av, int fsetters, int fmark, int fdynamic) {
+// Issue 033 M2b: decide-then-apply. The grouping DECISION (which
+// edges of an EntrySet partition away from it, and into which
+// groups) is computed by decide_entry_set_split against an
+// unmutated graph and carried in this record; the graph MUTATION
+// (detaching the groups, parking or ledger-routing them) happens
+// in apply_entry_set_split. For the legacy callers (stages 2-5,
+// which still decide-and-apply per AVar in sequence) the two run
+// back-to-back inside split_entry_set, byte-equivalent to the old
+// interleaved shape; stage 1 (split_ess_for_type, non-dynamic)
+// decides ALL its confluences against the same converged snapshot
+// before applying any of them, which removes the intra-stage
+// order dependence (the 009/021 family) structurally instead of
+// by qsort suppression.
+struct ESSplitDecision : public gc {
+  AVar *av = nullptr;
+  EntrySet *es = nullptr;
+  MPosition *avpos = nullptr;
+  int fsetters = 0, fmark = 0;
+  // Every edge considered (for the pending-backedge-map rebuild at
+  // apply time — the map merges each edge's from-side pending map,
+  // which intra-stage applications don't mutate).
+  Vec<AEdge *> all_edges;
+  // The groups to detach, in decision order. The "remainder stays"
+  // rule is already folded in: when stay_edges was empty, the last
+  // group is dropped here (it keeps the original ES as its home),
+  // matching the old loop's single-group-exhausted short-circuit.
+  Vec<Vec<AEdge *> *> groups;
+};
+
+static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark) {
   EntrySet *es = (EntrySet *)av->contour;
   if (es->split) {
     log(LOG_SPLITTING, "[ses] av %d es %d short-circuit: es->split set\n", av->id, es->id);
-    return 0;
+    return nullptr;
   }
-  if (fdynamic)
-    if (split_edges(av, fsetters, fmark)) return 1;
   // Issue 033 stage A: the confluence position driving this split
   // (same lookup split_edges does). Return-value confluences have
   // no argument position and are not ledgered yet.
@@ -3909,19 +3936,12 @@ static bool group_display_ok(Vec<AEdge *> &these_edges, EntrySet *product, Fun *
     }
   }
   Vec<AEdge *> all_edges, do_edges, stay_edges;
-  PendingAEdgeEntrySetsMap pending_es_backedge_map;
   for (AEdge *ee : es->edges) if (ee) if (ee->args.n) all_edges.add(ee);
   qsort_by_id(all_edges);
   int nedges = 0, non_rec_edges = 0;
   for (AEdge *ee : all_edges) if (ee) {
     if (!ee->from) continue;
     nedges++;
-    // Issue 035: was map_union, which routed through the BASE
-    // Map::put (pointer-equality keys) on this content-keyed
-    // HashMap AND replaced the value vec on hit; merge each entry
-    // through the content-correct map_set_add instead.
-    form_Map(MapElemAEdgeEntrySets, x, ee->from->pending_es_backedge_map) if (x->key)
-        map_set_add(pending_es_backedge_map, x->key, x->value);
     if (!fsetters ? is_es_recursive(ee) : is_es_cs_recursive(ee)) continue;
     non_rec_edges++;
     if (!fsetters) {
@@ -3956,9 +3976,15 @@ static bool group_display_ok(Vec<AEdge *> &these_edges, EntrySet *product, Fun *
       nedges, non_rec_edges, do_edges.n, stay_edges.n);
   if (non_rec_edges == 1 && nedges != do_edges.n) {
     log(LOG_SPLITTING, "[ses] av %d es %d short-circuit: non_rec_edges==1 && nedges!=do_edges.n\n", av->id, es->id);
-    return 0;
+    return nullptr;
   }
-  int split = 0;
+  ESSplitDecision *dec = new ESSplitDecision;
+  dec->av = av;
+  dec->es = es;
+  dec->avpos = avpos;
+  dec->fsetters = fsetters;
+  dec->fmark = fmark;
+  dec->all_edges.copy(all_edges);
   while (do_edges.n) {
     Vec<AEdge *> these_edges, next_edges;
     AEdge *e = do_edges[0];
@@ -3976,9 +4002,43 @@ static bool group_display_ok(Vec<AEdge *> &these_edges, EntrySet *product, Fun *
         next_edges.add(ee);
     }
     if (!next_edges.n && !stay_edges.n) {
-      log(LOG_SPLITTING, "[ses] av %d es %d short-circuit: single group exhausted (split=%d)\n", av->id, es->id, split);
-      return split;
+      // Remainder stays: this (last) group keeps the original ES.
+      log(LOG_SPLITTING, "[ses] av %d es %d short-circuit: single group exhausted (groups=%d)\n", av->id, es->id,
+          dec->groups.n);
+      break;
     }
+    Vec<AEdge *> *g = new Vec<AEdge *>;
+    g->copy(these_edges);
+    dec->groups.add(g);
+    do_edges.move(next_edges);
+  }
+  if (!dec->groups.n) return nullptr;
+  return dec;
+}
+
+[[nodiscard]] static int apply_entry_set_split(ESSplitDecision *dec) {
+  EntrySet *es = dec->es;
+  AVar *av = dec->av;
+  MPosition *avpos = dec->avpos;
+  int fsetters = dec->fsetters, fmark = dec->fmark;
+  if (es->split) {
+    log(LOG_SPLITTING, "[ses] av %d es %d apply short-circuit: es->split set\n", av->id, es->id);
+    return 0;
+  }
+  PendingAEdgeEntrySetsMap pending_es_backedge_map;
+  for (AEdge *ee : dec->all_edges) if (ee) {
+    if (!ee->from) continue;
+    // Issue 035: was map_union, which routed through the BASE
+    // Map::put (pointer-equality keys) on this content-keyed
+    // HashMap AND replaced the value vec on hit; merge each entry
+    // through the content-correct map_set_add instead.
+    form_Map(MapElemAEdgeEntrySets, x, ee->from->pending_es_backedge_map) if (x->key)
+        map_set_add(pending_es_backedge_map, x->key, x->value);
+  }
+  int split = 0;
+  for (Vec<AEdge *> *gp : dec->groups) {
+    Vec<AEdge *> &these_edges = *gp;
+    AEdge *e = these_edges[0];
     // The group's type partition at the confluence position, on the
     // constant-stripped ->type view (raw ->out re-derives constants
     // differently under the constant cap — issue 033 D4 note).
@@ -4075,9 +4135,20 @@ static bool group_display_ok(Vec<AEdge *> &these_edges, EntrySet *product, Fun *
         }
       }
     }
-    do_edges.move(next_edges);
   }
   return split;
+}
+
+[[nodiscard]] static int split_entry_set(AVar *av, int fsetters, int fmark, int fdynamic) {
+  EntrySet *es = (EntrySet *)av->contour;
+  if (es->split) {
+    log(LOG_SPLITTING, "[ses] av %d es %d short-circuit: es->split set\n", av->id, es->id);
+    return 0;
+  }
+  if (fdynamic)
+    if (split_edges(av, fsetters, fmark)) return 1;
+  ESSplitDecision *dec = decide_entry_set_split(av, fsetters, fmark);
+  return dec ? apply_entry_set_split(dec) : 0;
 }
 
 static void build_type_mark(AVar *av, CreationSet *cs, int mark = 1) {
@@ -4722,29 +4793,70 @@ static void collect_cs_setter_confluences(Vec<AVar *> &setters_confluences) {
 
 [[nodiscard]] static int split_ess_for_type(Vec<AVar *> &imprecisions, int fdynamic) {
   int analyze_again = 0;
+  // Issue 033 M2b: for the plain (non-dynamic) stage-1 path, DECIDE
+  // every confluence's split against the same unmutated, converged
+  // state, then APPLY. The old shape decided each confluence against
+  // a graph already mutated by the previous confluences' splits —
+  // deterministic post-035, but order-dependent by construction (the
+  // 009/021 family). One semantic change, deliberate: when two
+  // confluences target the SAME EntrySet (different positions), the
+  // old shape split it twice in one pass — the second split
+  // partitioning edges that had been rerouted THIS pass and never
+  // re-flowed (exactly the unflowed-contour hazard from the M2a
+  // post-mortem, in miniature). Now the first decision per ES wins
+  // and later ones are deferred: if the imprecision survives the
+  // re-flow, the next pass re-collects it and decides it against
+  // settled types. The dynamic path (stage 5's refinable violations)
+  // keeps the legacy per-AVar shape — split_edges mutates the graph
+  // as it goes, so batched deciding would read its own stage's
+  // mutations, the exact thing M2b exists to prevent.
+  Vec<ESSplitDecision *> decisions;
   for (AVar *av : imprecisions) {
     if (av->contour_is_entry_set) {
+      AVar *target = nullptr;
       if (!av->is_lvalue) {
-        if (av->var->is_formal) {
-          int r = split_entry_set(av, SPLIT_TYPE, SPLIT_VALUE, fdynamic);
-          log(LOG_SPLITTING, "[stage1] av %d ES/formal split_entry_set -> %d\n", av->id, r);
-          analyze_again |= r;
-        } else {
+        if (av->var->is_formal)
+          target = av;
+        else
           log(LOG_SPLITTING, "[stage1] av %d ES/non-formal-rval skipped\n", av->id);
-        }
       } else {
         AVar *aav = unique_AVar(av->var, av->contour);
-        if (is_return_value(aav)) {
-          int r = split_entry_set(aav, SPLIT_TYPE, SPLIT_VALUE, fdynamic);
-          log(LOG_SPLITTING, "[stage1] av %d ES/return split_entry_set -> %d\n", av->id, r);
-          analyze_again |= r;
-        } else {
+        if (is_return_value(aav))
+          target = aav;
+        else
           log(LOG_SPLITTING, "[stage1] av %d ES/lval-non-return skipped\n", av->id);
-        }
+      }
+      if (!target) continue;
+      if (fdynamic) {
+        int r = split_entry_set(target, SPLIT_TYPE, SPLIT_VALUE, fdynamic);
+        log(LOG_SPLITTING, "[stage1] av %d ES/%s split_entry_set -> %d\n", av->id, av->is_lvalue ? "return" : "formal",
+            r);
+        analyze_again |= r;
+      } else {
+        ESSplitDecision *dec = decide_entry_set_split(target, SPLIT_TYPE, SPLIT_VALUE);
+        log(LOG_SPLITTING, "[stage1] av %d ES/%s decide -> %d groups\n", av->id, av->is_lvalue ? "return" : "formal",
+            dec ? dec->groups.n : 0);
+        if (dec) decisions.add(dec);
       }
     } else {
       log(LOG_SPLITTING, "[stage1] av %d CS-contour skipped (passes to stage2)\n", av->id);
     }
+  }
+  Vec<EntrySet *> applied;
+  for (ESSplitDecision *dec : decisions) {
+    if (applied.set_in(dec->es)) {
+      log(LOG_SPLITTING, "[stage1] av %d es %d DEFERRED: es already split this pass (next pass re-decides)\n",
+          dec->av->id, dec->es->id);
+      continue;
+    }
+    // Claim the ES whether or not the apply reports a split: the
+    // apply may mutate (detach/re-park edges) even when nothing
+    // ends up counted, and a second decision must never run against
+    // a possibly-touched ES.
+    applied.set_add(dec->es);
+    int r = apply_entry_set_split(dec);
+    log(LOG_SPLITTING, "[stage1] av %d es %d apply -> %d\n", dec->av->id, dec->es->id, r);
+    analyze_again |= r;
   }
   return analyze_again;
 }
