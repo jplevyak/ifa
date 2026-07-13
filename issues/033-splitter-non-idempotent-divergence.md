@@ -48,9 +48,11 @@ section) and verified: with the fix cherry-picked onto
 `issue033-stage-c-rebased`, bh terminates deterministically at
 pass 32 with 23 violations — the same count and failure class as
 main's bh — and the trio converges with main-equivalent results.
-M3 is no longer blocked by this; reviving it still needs its own
-full verification round (suites, corpus sweep, trio+pygasus+bh to
-completion).
+M3 is no longer blocked by this, and its full verification round
+(suites, corpus sweep member-set + determinism, trio+pygasus+bh to
+completion) **ran green the same day** — see the end of the M3
+section. Landing M3 is now a rebase-onto-current-main plus one
+re-run of the bar, i.e. a decision rather than an open problem.
 
 **RESOLUTION UPDATE (2026-07-10, after the
 [035](035-nondeterministic-codegen-clone-order.md) determinism
@@ -1376,6 +1378,50 @@ kmeanspp 21 passes/6 violations, pylife 13/60). M3 is therefore
 unblocked; revival still owes its own full verification round
 (suites, corpus sweep member-set, trio+pygasus+bh to completion)
 before merging.
+
+**VERIFICATION ROUND COMPLETE (2026-07-13, same day): the full M3
+acceptance bar is green on `issue033-stage-c-rebased` (`24871ab3`)
++ the stall-guard fix, applied in a detached worktree.** Results,
+against the branch's own baseline and current main:
+
+- pyc C suite 179/0, pyc LLVM suite 179/0 (the branch's corpus
+  size — it predates the match/case tests), all 16 ifa-test phases
+  green with zero fixture changes.
+- Corpus sweep: 23 compiled, **member set identical to main's**,
+  byte-identical `results.tsv` across two consecutive sweeps
+  (determinism). The single outcome-text difference across all 77
+  examples is `chull` reporting a different variable first
+  (`'fold'` vs `'v2'` has no type) within the same failure class.
+  bh's sweep line matches main's exactly — the
+  "(compile timeout 90s)" anomaly that flagged the original
+  divergence is gone.
+- bh: 32 passes / 23 violations, deterministic across repeated
+  runs; same final violation count and failure class as main's 29
+  passes / 23.
+- Trio to completion: fysphun 18/0 (identical to main), kmeanspp
+  21/6, pylife 13/60 (main-equivalent).
+- pygasus to completion: 20 passes, **788 violations — identical
+  diagnosis to main** — ~6% faster in total FA wall time (158.6s
+  vs 169.1s summed pass time) with a smaller final universe (3451
+  vs 3594 ess; the ledger's route-hits visibly replace re-splits
+  from pass 4 on).
+- The one original acceptance criterion NOT met: "ess growth
+  monotone across passes" — but main itself doesn't meet it (both
+  dip identically when the coercion annotator engages, e.g.
+  3827 -> 3658 ess main pass 11 -> 12), so it is not a stage-C
+  regression; it remains an aspiration for full S5 (converged-state
+  deciding + persistence), not a gate this branch can be held to.
+
+**What's left before merging is a decision plus mechanical work,
+not verification**: the branch is built on an older main (it
+predates the match/case + issue-024/026 commits and this fix), so
+landing means rebasing the stage-C payload onto current main
+(which already contains the guard fix) and re-running this same
+bar once on the result. Note also that enforcement changes
+analysis outcomes only in the routed cases — the observed
+universe-shrink on pygasus/bh is the intended effect (per-pass
+re-split manufacturing replaced by routing to the recorded
+product), and every observed final diagnosis is unchanged.
 
 **Reverted cleanly**: the rebase was done in a detached-HEAD
 worktree (`git worktree add -d`), so the `issue033-stage-c` branch
