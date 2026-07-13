@@ -3291,8 +3291,39 @@ static void collect_var_type_violations() {
     for (Var *v : es->fun->fa_all_Vars) {
       AVar *av = make_AVar(v, es);
       if (av->live_arg && !av->var->sym->is_fake && !av->var->is_internal && av->out == fa->type_world.bottom_type &&
-          !is_Sym_OUT(av->var->sym))
+          !is_Sym_OUT(av->var->sym)) {
+        // ifa/issues/040: dump the receiver's CreationSet(s) for each
+        // NOTYPE violation -- added while tracing an empty-list
+        // literal (e.g. `k = []`) failing to type-check ONLY when a
+        // non-empty list of some other concrete element type also
+        // exists in the program. `arg[N] out.sorted.n` shows whether
+        // this ES's formal is genuinely monomorphic (n==1, one
+        // CreationSet) or still a union at violation-collection time
+        // -- the empty-list case turned out to be the former (its own
+        // dedicated ES, not shared with the non-empty list's), which
+        // ruled out CreationSet-equivalence merging
+        // (`clone.cc:determine_basic_clones`'s `cs1->vars.n !=
+        // cs2->vars.n` check already keeps them apart) as the cause.
+        if (getenv("PYC_DBG_NOTYPE")) {
+          fprintf(stderr, "NOTYPE: var=%s fun=%s(%p) es=%p live=%d uses.n=%d\n",
+                  v->sym->name ? v->sym->name : "?", es->fun->sym && es->fun->sym->name ? es->fun->sym->name : "?",
+                  (void *)es->fun, (void *)es, v->live, v->uses.n);
+          for (int argi = 0; argi < es->args.n; argi++) {
+            if (!es->args.v[argi].key) continue;
+            AVar *aav = es->args.v[argi].value;
+            fprintf(stderr, "  arg[%d] var=%s out.n=%d out.sorted.n=%d\n", argi,
+                    aav && aav->var && aav->var->sym->name ? aav->var->sym->name : "?", aav && aav->out ? aav->out->n : -1,
+                    aav && aav->out ? aav->out->sorted.n : -1);
+            if (aav && aav->out) {
+              for (CreationSet *cs : aav->out->sorted) {
+                fprintf(stderr, "    cs sym=%s vars.n=%d\n", cs && cs->sym && cs->sym->name ? cs->sym->name : "?",
+                        cs ? cs->vars.n : -1);
+              }
+            }
+          }
+        }
         type_violation(ATypeViolation_kind::NOTYPE, av, av->out, nullptr, nullptr);
+      }
     }
   }
   if (!fa->permit_boxing) {

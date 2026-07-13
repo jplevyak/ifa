@@ -110,16 +110,27 @@ that:
   CPython's `UnboundLocalError`. Found verifying issue 023's capture-
   pattern fix; not specific to `match`/`case`.
 - [040-empty-list-shared-clone-type-inference.md](040-empty-list-shared-clone-type-inference.md) —
-  an empty list literal (`[]`) sharing a `list` method clone
-  (`__str__`/`__getitem__` confirmed) with a non-empty list of some
-  other concrete element type fails to type-check ("expression has
-  no type"), even though either alone compiles fine. Filed for
-  triage, not root-caused — plausible guess: `list` isn't
-  compile-time-generic in pyc, so a shared method clone serving both
-  a concrete-element-type receiver and an unresolved/bottom-typed
-  empty one may not unify cleanly. Found landing pyc's issue 024
-  (extended iterable unpacking) — unrelated to unpacking itself, a
-  plain `b = [2, 3]; print(b); k = []; print(k)` reproduces it.
+  an empty list literal (`[]`) fails to type-check ("expression has
+  no type") ONLY when a non-empty list of some other concrete
+  element type also exists in the program; either alone compiles
+  fine. The original "shared clone" hypothesis is RULED OUT (traced
+  further 2026-07-13): the empty list's `list.__getitem__`/
+  `list.__str__` calls run in their own, properly-monomorphic
+  EntrySet, not one merged with the non-empty list's — confirmed via
+  a debug dump (`PYC_DBG_NOTYPE=1`, kept in
+  `collect_var_type_violations`) and by checking `clone.cc`'s
+  CreationSet-equivalence merge guard directly (`cs1->vars.n !=
+  cs2->vars.n` already keeps them apart). The actual gap looks more
+  like a PNode-reachability/scheduling leak between EntrySets of the
+  same `Fun` — the empty list's own loop body (statically
+  unreachable for its own `len(self)==0` receiver, confirmed to
+  never even get analyzed when it's the ONLY list in the program)
+  gets forced into analysis when another EntrySet of the SAME `Fun`
+  needs that loop body live. Not root-caused further; plausibly the
+  same family as 025 / 032 / 033 but not confirmed to share a root
+  cause with any of them. Found landing pyc's issue 024 (extended
+  iterable unpacking) — unrelated to unpacking itself.
+
 ## Closed (archive)
 
 Closed issues live in [`closed/`](closed/) with the closing
