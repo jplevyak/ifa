@@ -481,7 +481,12 @@ CPA_LIMIT + lazy doubling; the test locks whatever policy pyc
 adopts, including the violation/diagnostic quality when capped.
 
 **(e) data-polymorphism split churn** (ledger/idempotence at CS
-granularity — D5 territory):
+granularity — D5 territory; **LANDED 2026-07-13** as
+`tests/cs_split_pools.py`, simplified to a single shared creation
+point, alongside the D5 record-only ledger — whose measurement
+answered this sketch's question: cross-pass CS re-derivation does
+not occur on any corpus member, see the D5 block at the end of the
+M3 section):
 
 ```python
 def fill(l, v): l.append(v)
@@ -1453,6 +1458,64 @@ Cross-pass ledger routing is now on by default for
 scope NOT covered by this landing: extending the ledger to CS
 splits (the D5 key shape, sketch (e)) and deciding from converged
 snapshots (M2b), which stay open under their own milestones.
+
+**CS-split ledger (D5): record-only LANDED 2026-07-13; enforcement
+deferred WITH EVIDENCE — measured zero cross-pass CS re-derivation
+on the entire corpus.** What landed (`analysis/fa.cc`/`fa.h`):
+`cs_group_signature` (the D5 key, strengthened per the ES ledger's
+builtins_batch lesson: `cs->sym` + the sorted def-Var sym ids of
+the compatible group + each setter AVar's Var id paired with its
+canonical constant-stripped value type — Setters/setter_class
+pointers live in `cannonical_setters`, which `clear_results`
+clears, so setter CONTENT is the stable proxy; same
+wildcard-rejection rule as `group_signature` for unflowed setter
+values), `ledger_find_cs`/`ledger_add_cs` (fun/pos/partition-null
+keys, identity entirely in `sig`, so they cannot collide with ES
+keys; stage deliberately excluded — a stage-3-then-stage-4
+re-derivation is still a re-derivation), a
+`SplitDecision::cs_product` field recording the product
+CreationSet (contour pointers are never freed, so routing later is
+a small step), a `cs_dups` counter in the `-v` PASS line, and
+`RECORD/DUP/NO IDENTITY` LOG_SPLITTING lines in `split_css`.
+
+The measurement (validated first — RECORD counts confirm the key
+is live and wildcards never fire, so the zeros are real):
+
+| input | SPLIT CS events | unique recorded | intra-pass repeats | cross-pass dups | wildcards |
+|---|---|---|---|---|---|
+| fysphun | 9 | 6 | 3 | 0 | 0 |
+| kmeanspp | 16 | 12 | 4 | 0 | 0 |
+| pygasus | 36 | 10 | 26 | 0 | 0 |
+| pylife, bh | 0 | — | — | — | — |
+| sketch (e) test | 1 | 1 | 0 | 0 | 0 |
+
+Interpretation: CS split decisions ALREADY persist across passes —
+`av->cs_map` is the one piece of state `clear_results` preserves
+(the S1 table's "what persists" row), so a split's def-repointing
+survives and the next pass's flow re-populates the partitioned
+defs rather than re-deriving the split. D5's own deferral clause
+("if stage A observation shows CS splits are not a driver … stage
+D can be deferred indefinitely") applies, now with corpus-wide
+numbers instead of a prediction. Routing enforcement is therefore
+NOT landed — it would be unreachable code with real hazard surface
+(the ES ledger needed display-feasibility and wildcard guards to
+route safely; the CS analog would need its own soundness argument
+for merging same-key groups across contours). The metric stays on
+permanently: if a future change (M2 batching, M5 reset-and-reseed
+— which resets exactly the `cs_map` state this persistence lives
+on) makes `cs_dups` go nonzero on any corpus member, that is the
+signal to build routing, and `cs_product` is already recorded for
+it. Landed `tests/cs_split_pools.py` (S3 sketch (e), simplified to
+a single shared creation point that only `split_css` can
+disambiguate) locking the split's end-to-end precision against
+CPython. Verified: pyc C 190/0, LLVM 190/0 (189 + the new test),
+all 16 ifa-test phases zero reblessing; trio/bh/pygasus PASS
+trajectories byte-identical to the M3-landing baseline (modulo the
+new PASS-line field); corpus sweep member set unchanged (the only
+sweep-text delta was `othello3`, a never-compiling member whose
+pre-existing parse-stage segfault flips between "crash" and
+"syntax error" under load — reproduced identically on the
+pre-change build, standalone and in-sweep).
 
 **Reverted cleanly**: the rebase was done in a detached-HEAD
 worktree (`git worktree add -d`), so the `issue033-stage-c` branch

@@ -3477,6 +3477,7 @@ static void initialize_pass() {
   fa->type_world.type_violation_hash.clear();
   fa->entry_set_done.clear();
   fa->dup_split_attempts = 0;  // issue 033 stage A per-pass counter
+  fa->cs_dup_split_attempts = 0;  // issue 033 D5 per-pass counter
   fa->dirty_avar_count = 0;    // issue 033 M4 probe
   fa->examined_avar_count = 0;  // issue 033 M4 probe
   refresh_top_edge(fa->top_edge);
@@ -3611,6 +3612,17 @@ SplitDecision *FA::ledger_add(Fun *afun, int stage, MPosition *pos, AType *parti
   d->sig = sig;
   d->pass_made = analysis_pass;
   d->product = product;
+  SplitDecision *existing = split_ledger.put(d);
+  return existing ? existing : d;
+}
+
+SplitDecision *FA::ledger_find_cs(uint sig) { return ledger_find(nullptr, 0, nullptr, nullptr, sig); }
+
+SplitDecision *FA::ledger_add_cs(uint sig, CreationSet *product) {
+  SplitDecision *d = new SplitDecision;
+  d->sig = sig;
+  d->pass_made = analysis_pass;
+  d->cs_product = product;
   SplitDecision *existing = split_ledger.put(d);
   return existing ? existing : d;
 }
@@ -4506,6 +4518,44 @@ static void collect_setter_confluences(Accum<AVar *> &avs, Vec<AVar *> &setter_c
   return analyze_again;
 }
 
+// Issue 033 D5: cross-pass identity for a split_css decision. The
+// partition split_css applies is "these defs share setter
+// equivalence classes" — but Setters/setter_class pointers are
+// hash-consed in cannonical_setters, which clear_results() CLEARS,
+// so they cannot appear in a cross-pass key (issue 033 D0). The
+// stable proxy: the CreationSet's sym, the sorted def-Var sym ids
+// of the compatible group (Var/Sym are interned for the life of
+// the FA), and the CONTENT of the group's setters — each setter
+// AVar's Var sym id paired with its canonical constant-stripped
+// value type (canonical ATypes are never cleared). The value types
+// keep two same-Var-set groups distinct (an int-writing and a
+// float-writing instance of the same creation point must not share
+// a key — the ES ledger learned this as the builtins_batch
+// int/float poisoning; D5's own note says value types alone are
+// too weak and def ids alone can't discriminate either, so the key
+// carries both). Same wildcard rule as the ES group_signature: an
+// unflowed setter value (empty ->type) means the group has NO
+// stable identity this pass — return 0, caller must neither record
+// nor count. Setter contributions accumulate commutatively (sum),
+// so Vec-set iteration order cannot perturb the hash.
+static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
+  Vec<int> def_ids;
+  for (AVar *v : compatible_set) if (v) def_ids.add(v->var->sym->id);
+  qsort(def_ids.v, def_ids.n, sizeof(def_ids[0]),
+        [](const void *a, const void *b) { return *(const int *)a - *(const int *)b; });
+  uint h = (uint)(uintptr_t)cs->sym * open_hash_primes[0];
+  int i = 1;
+  for (int id : def_ids) h += (uint)id * open_hash_primes[i++ % 256];
+  for (AVar *v : compatible_set) if (v) {
+    if (!v->setters) continue;
+    for (AVar *s : *v->setters) if (s) {
+      if (!s->out->type->n) return 0;  // unflowed setter: no identity yet
+      h += (uint)combine_hash((uintptr_t)s->var->sym->id, (uintptr_t)s->out->type);
+    }
+  }
+  return h ? h : 1;  // 0 is reserved for "no identity"
+}
+
 [[nodiscard]] static int split_css(Vec<AVar *> &starters) {
   int analyze_again = 0;
   Vec<CreationSet *> css;
@@ -4540,6 +4590,28 @@ static void collect_setter_confluences(Accum<AVar *> &avs, Vec<AVar *> &setter_c
         analyze_again = 1;
         log(LOG_SPLITTING, "SPLIT CS %d %s %d -> %d\n", cs->id, cs->sym->name ? cs->sym->name : "", cs->sym->id,
             new_cs->id);
+        // Issue 033 D5 (record-only): ledger this CS split decision
+        // and count cross-pass re-derivations, the CS-side analog of
+        // the ES ledger's dup_splits metric. No behavior change —
+        // enforcement (routing the group to d->cs_product instead of
+        // minting new_cs) is a separate step, gated on this metric
+        // showing re-derivation actually occurs.
+        uint csig = cs_group_signature(cs, compatible_set);
+        if (!csig) {
+          log(LOG_SPLITTING, "[ledger] CS split cs %d -> %d NO IDENTITY (unflowed setter)\n", cs->id, new_cs->id);
+        } else {
+          SplitDecision *d = fa->ledger_find_cs(csig);
+          if (!d) {
+            fa->ledger_add_cs(csig, new_cs);
+            log(LOG_SPLITTING, "[ledger] RECORD CS split cs %d sym %s %d sig %u product cs %d\n", cs->id,
+                cs->sym->name ? cs->sym->name : "", cs->sym->id, csig, new_cs->id);
+          } else if (d->pass_made != analysis_pass) {  // intra-pass repeats aren't re-derivation
+            ++fa->cs_dup_split_attempts;
+            log(LOG_SPLITTING, "[ledger] DUP CS split cs %d sym %s %d sig %u (first pass %d, product cs %d)\n",
+                cs->id, cs->sym->name ? cs->sym->name : "", cs->sym->id, csig, d->pass_made,
+                d->cs_product ? d->cs_product->id : -1);
+          }
+        }
       }
     }
   }
@@ -5058,12 +5130,13 @@ static void clear_splits() {
     double flow = pass_timer.time - extend_timer.time - match_timer.time;
     printf(
         "PASS %d COMPLETE: %f seconds, %f flow (%d%%), %f match (%d%%), %f "
-        "extend (%d%%), %d ess, %d css, %d violations, %d dup_splits, "
+        "extend (%d%%), %d ess, %d css, %d violations, %d dup_splits, %d cs_dups, "
         "%ld dirty/%ld examined avars\n",
         analysis_pass, pass_timer.time, flow, (int)(flow * 100.0 / pass_timer.time), match_timer.time,
         (int)(match_timer.time * 100.0 / pass_timer.time), extend_timer.time,
         (int)(extend_timer.time * 100.0 / pass_timer.time), fa->ess.n, fa->css.n,
-        fa->type_violations.set_count(), fa->dup_split_attempts, fa->dirty_avar_count, fa->examined_avar_count);
+        fa->type_violations.set_count(), fa->dup_split_attempts, fa->cs_dup_split_attempts, fa->dirty_avar_count,
+        fa->examined_avar_count);
   }
   if (write_code_exit == analysis_pass) {
     if1_simple_dead_code_elimination(fa->pdb->if1);

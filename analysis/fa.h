@@ -429,6 +429,13 @@ struct SplitDecision : public gc {
   uint sig = 0;
   int pass_made = 0;            // analysis_pass at record time (diagnostics)
   EntrySet *product = nullptr;  // ES created/selected (nullptr for CS splits)
+  // Issue 033 D5: for split_css decisions (fun/pos/partition all
+  // null, identity carried entirely by `sig` — see
+  // cs_group_signature), the CreationSet the compatible group was
+  // moved into. Contours are never freed, so the pointer is stable
+  // across passes; its CONTENTS are per-pass (cleared by
+  // clear_results) and must not be read as state.
+  CreationSet *cs_product = nullptr;
 };
 
 class SplitDecisionHashFns {
@@ -544,6 +551,12 @@ class FA : public gc {
   // Reported in the -v PASS line; reset in initialize_pass.
   ChainHash<SplitDecision *, SplitDecisionHashFns> split_ledger;
   int dup_split_attempts = 0;
+  // Issue 033 D5 (record-only): same counter for split_css
+  // decisions — CS splits whose cs_group_signature was already
+  // recorded by an EARLIER pass, i.e. the CS-side analog of the
+  // per-pass contour re-manufacturing the ES ledger routes away.
+  // Reported in the -v PASS line; reset with dup_split_attempts.
+  int cs_dup_split_attempts = 0;
   // Issue 033 M4 probe (measurement only): how many AVars had `dirty`
   // set (via propagate_out_change) during this pass's flow-to-fixpoint,
   // vs. how many the existing full-scan collectors visit regardless.
@@ -552,6 +565,16 @@ class FA : public gc {
   long examined_avar_count = 0;
   SplitDecision *ledger_find(Fun *afun, int stage, MPosition *pos, AType *partition, uint sig = 0);
   SplitDecision *ledger_add(Fun *afun, int stage, MPosition *pos, AType *partition, EntrySet *product, uint sig = 0);
+  // Issue 033 D5: CS-split keys. fun/pos/partition are all null —
+  // the whole identity is `sig` (cs_group_signature: cs->sym +
+  // sorted def-Var ids + setter Var/value-type content), so these
+  // keys cannot collide with ES keys (which always carry a fun).
+  // Stage is deliberately NOT part of the key: split_css derives
+  // the same setter-equivalence partition whether stage 3 or stage
+  // 4 collected the starters, and a cross-stage re-derivation is
+  // still a re-derivation.
+  SplitDecision *ledger_find_cs(uint sig);
+  SplitDecision *ledger_add_cs(uint sig, CreationSet *product);
   // Issue 033 D6: per-Var count of stage-5 (split_for_violations)
   // split attempts. A Var whose violation drove two attempts and
   // still violates is not refinable by contour splitting; stage 5
