@@ -3592,21 +3592,23 @@ int is_es_cs_recursive(CreationSet *cs) {
 // before each split_* stage; forms part of the split-ledger key.
 static int cur_split_stage = -1;
 
-SplitDecision *FA::ledger_find(Fun *afun, int stage, MPosition *pos, AType *partition) {
+SplitDecision *FA::ledger_find(Fun *afun, int stage, MPosition *pos, AType *partition, uint sig) {
   SplitDecision probe;
   probe.fun = afun;
   probe.stage = stage;
   probe.pos = pos;
   probe.partition = partition;
+  probe.sig = sig;
   return split_ledger.get(&probe);
 }
 
-SplitDecision *FA::ledger_add(Fun *afun, int stage, MPosition *pos, AType *partition, EntrySet *product) {
+SplitDecision *FA::ledger_add(Fun *afun, int stage, MPosition *pos, AType *partition, EntrySet *product, uint sig) {
   SplitDecision *d = new SplitDecision;
   d->fun = afun;
   d->stage = stage;
   d->pos = pos;
   d->partition = partition;
+  d->sig = sig;
   d->pass_made = analysis_pass;
   d->product = product;
   SplitDecision *existing = split_ledger.put(d);
@@ -3802,6 +3804,80 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
   return again;
 }
 
+// Issue 033 stage C: nested-function contours are additionally
+// keyed by their lexical display, which the (position, partition)
+// filters key does not capture. Before routing a group into a
+// product ES, verify the whole group implies one display and that
+// it matches what the product already has — the exact invariant
+// update_display asserts (entries the product lacks are extended
+// from the first routed edge, so only existing entries constrain).
+// Issue 033 stage C: the group's full type signature — the union
+// (constant-stripped) of the group's argument types at EVERY
+// positional arg, plus each ret's lvalue type — hashed over
+// canonical AType pointers. Type-value group compatibility is
+// type-equality per position and per ret, so this is exactly what
+// identifies "the same grouping decision" across passes; keying on
+// one position alone merged distinct groups (int/float results
+// were mistyped in builtins_batch).
+// Returns 0 when the group has NO STABLE IDENTITY — callers must
+// then neither route nor record. Two soundness rules, both learned
+// from builtins_batch (three __str__ call sites' groups from
+// passes 0/1/2 funneled into one product that pass 3 then had to
+// split apart, do=2/3 — the int/float sum poisoning):
+//  - mirror edge_type_compatible_with_edge EXACTLY: it compares
+//    per-edge FILTER-INTERSECTED types, so the key must too, or
+//    groups the predicate distinguishes (same raw types, different
+//    match filters) collide;
+//  - the predicate treats an EMPTY intersected type as compatible
+//    with anything (a wildcard). A wildcard cannot be represented
+//    in a snapshot key — an edge whose types haven't arrived yet
+//    would match any recorded partition — so such groups are
+//    unroutable this pass.
+static uint group_signature(Vec<AEdge *> &these_edges, Fun *f) {
+  uint h = 0;
+  int i = 0;
+  for (MPosition *p : f->positional_arg_positions) {
+    AType *t = fa->type_world.bottom_type;
+    for (AEdge *x : these_edges) {
+      AVar *a = x->args.get(p);
+      if (!a) continue;
+      AType *flt = x->match->formal_filters.get(p);
+      AType *et = flt ? type_intersection(a->out->type, flt) : a->out->type;
+      if (!et->n) return 0;  // wildcard: no identity yet
+      t = type_union(t, et);
+    }
+    h += (uint)(uintptr_t)t * open_hash_primes[i++ % 256];
+  }
+  int nrets = these_edges[0]->rets.n;
+  for (int r = 0; r < nrets; r++) {
+    AType *t = fa->type_world.bottom_type;
+    for (AEdge *x : these_edges)
+      if (r < x->rets.n && x->rets[r]->lvalue) {
+        AType *rt = x->rets[r]->lvalue->out->type;
+        if (!rt->n) return 0;  // wildcard: no identity yet
+        t = type_union(t, rt);
+      }
+    h += (uint)(uintptr_t)t * open_hash_primes[i++ % 256];
+  }
+  return h ? h : 1;  // 0 is reserved for "no identity" / filtered-path keys
+}
+
+static bool group_display_ok(Vec<AEdge *> &these_edges, EntrySet *product, Fun *f) {
+  int nd = f->sym->nesting_depth;
+  if (!nd) return true;
+  Vec<EntrySet *> disp;
+  if (product) disp.copy(product->display);
+  AEdge *e0 = these_edges[0];
+  for (int i = disp.n; i < nd; i++) disp.add(i < e0->from->display.n ? e0->from->display[i] : e0->from);
+  for (int i = 0; i < nd; i++) if (!disp[i]) return false;
+  for (AEdge *x : these_edges)
+    for (int i = 0; i < nd; i++) {
+      EntrySet *want = i < x->from->display.n ? x->from->display.v[i] : x->from;
+      if (disp[i] != want) return false;
+    }
+  return true;
+}
+
 [[nodiscard]] static int split_entry_set(AVar *av, int fsetters, int fmark, int fdynamic) {
   EntrySet *es = (EntrySet *)av->contour;
   if (es->split) {
@@ -3891,43 +3967,92 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
       log(LOG_SPLITTING, "[ses] av %d es %d short-circuit: single group exhausted (split=%d)\n", av->id, es->id, split);
       return split;
     }
-    for (AEdge *x : these_edges) {
-      x->to = 0;
-      x->filtered_args.clear();
-      es->edges.del(x);
+    // The group's type partition at the confluence position, on the
+    // constant-stripped ->type view (raw ->out re-derives constants
+    // differently under the constant cap — issue 033 D4 note).
+    AType *part = fa->type_world.bottom_type;
+    if (avpos)
+      for (AEdge *x : these_edges) {
+        AVar *a = x->args.get(avpos);
+        if (a) part = type_union(part, a->out->type);
+      }
+    // Issue 033 stage C (D4, revised): when a type-value group's
+    // (position, partition) key was already split for in an EARLIER
+    // pass, route the group to that decision's product contour
+    // instead of minting a fresh bare ES — the per-pass contour
+    // manufacturing behind issue 033's divergence. The product
+    // stays a plain bare ES: an earlier revision parked groups on
+    // FILTERED entry sets, but a filter is a snapshot of the
+    // group's partition, and when an argument widens in a later
+    // pass analyze_edge silently drops the complement (there is no
+    // per-CS edge fan-out here, unlike split_edges) — fysphun
+    // regressed 0 -> 3 "has no type" violations exactly that way.
+    // Same-pass repeats keep the legacy parking (grouping within a
+    // pass is already consistent), as do mark- and setter-driven
+    // groups: those are grouped along dimensions a type partition
+    // doesn't characterize (mark distances, setter classes), so
+    // partition-keyed routing could merge groups the splitter
+    // meant separated.
+    EntrySet *product = nullptr;
+    uint gsig = 0;
+    if (!fsetters && !fmark && part != fa->type_world.bottom_type) {
+      gsig = group_signature(these_edges, es->fun);
+      SplitDecision *d = gsig ? fa->ledger_find(es->fun, cur_split_stage, avpos, part, gsig) : nullptr;
+      if (d && d->pass_made != analysis_pass && d->product && d->product != es &&
+          group_display_ok(these_edges, d->product, es->fun)) {
+        product = d->product;
+        ++fa->dup_split_attempts;
+        log(LOG_SPLITTING, "[ledger] ROUTE group es %d fun %s %d pos %p part %p/%d -> product %d (first pass %d)\n",
+            es->id, es->fun->sym->name ? es->fun->sym->name : "", es->fun->sym->id, (void *)avpos, (void *)part,
+            part->sorted.n, d->product->id, d->pass_made);
+      }
     }
-    for (AEdge *x : these_edges) {
-      Vec<AEdge *> new_edges;
-      make_entry_set(x, new_edges, es, e->to);
-      if (x->to != es) {
+    if (product) {
+      if (!product->split) product->split = es;
+      for (AEdge *x : these_edges) {
+        x->to = 0;
+        x->filtered_args.clear();
+        es->edges.del(x);
+        set_entry_set(x, product);
         record_backedges(x, es, pending_es_backedge_map);
         split = 1;
-        log(LOG_SPLITTING, "SPLIT ES %d %s%s%s %d from %d -> %d\n", es->id, fsetters ? "setters " : "",
-            fmark ? "marks " : "", es->fun->sym->name ? es->fun->sym->name : "", es->fun->sym->id,
-            x->pnode->lvals[0]->sym->id, x->to->id);
+        log(LOG_SPLITTING, "SPLIT ES %d (ledger) %s %d from %d -> %d\n", es->id,
+            es->fun->sym->name ? es->fun->sym->name : "", es->fun->sym->id, x->pnode->lvals[0]->sym->id,
+            x->to->id);
       }
-    }
-    // Issue 033 stage A (record-only): ledger this group's
-    // (fun, stage, position, partition) key. The partition uses the
-    // constant-stripped ->type view of each edge's argument so it is
-    // stable across passes — raw ->out re-derives constants
-    // differently under the constant cap (D4 note).
-    if (avpos) {
-      EntrySet *product = nullptr;
-      for (AEdge *x : these_edges) if (x->to && x->to != es) {
-        product = x->to;
-        break;
+    } else {
+      for (AEdge *x : these_edges) {
+        x->to = 0;
+        x->filtered_args.clear();
+        es->edges.del(x);
       }
-      if (product) {
-        AType *part = fa->type_world.bottom_type;
-        for (AEdge *x : these_edges) {
-          AVar *a = x->args.get(avpos);
-          if (a) part = type_union(part, a->out->type);
+      for (AEdge *x : these_edges) {
+        Vec<AEdge *> new_edges;
+        make_entry_set(x, new_edges, es, e->to);
+        if (x->to != es) {
+          record_backedges(x, es, pending_es_backedge_map);
+          split = 1;
+          log(LOG_SPLITTING, "SPLIT ES %d %s%s%s %d from %d -> %d\n", es->id, fsetters ? "setters " : "",
+              fmark ? "marks " : "", es->fun->sym->name ? es->fun->sym->name : "", es->fun->sym->id,
+              x->pnode->lvals[0]->sym->id, x->to->id);
         }
-        if (part != fa->type_world.bottom_type) {
-          SplitDecision *d = fa->ledger_find(es->fun, cur_split_stage, avpos, part);
+      }
+      // Issue 033 stage A (record-only) for the non-enforced paths.
+      if (avpos && part != fa->type_world.bottom_type) {
+        EntrySet *gproduct = nullptr;
+        for (AEdge *x : these_edges) if (x->to && x->to != es) {
+          gproduct = x->to;
+          break;
+        }
+        if (gproduct) {
+          if (!gsig) gsig = group_signature(these_edges, es->fun);
+        }
+        // gsig == 0: the group has no stable identity this pass
+        // (wildcard types) — neither route nor record.
+        if (gproduct && gsig) {
+          SplitDecision *d = fa->ledger_find(es->fun, cur_split_stage, avpos, part, gsig);
           if (!d)
-            fa->ledger_add(es->fun, cur_split_stage, avpos, part, product);
+            fa->ledger_add(es->fun, cur_split_stage, avpos, part, gproduct, gsig);
           else if (d->pass_made != analysis_pass) {  // intra-pass repeats aren't re-derivation
             ++fa->dup_split_attempts;
             log(LOG_SPLITTING,

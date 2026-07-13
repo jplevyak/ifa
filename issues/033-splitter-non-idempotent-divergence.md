@@ -51,8 +51,16 @@ main's bh — and the trio converges with main-equivalent results.
 M3 is no longer blocked by this, and its full verification round
 (suites, corpus sweep member-set + determinism, trio+pygasus+bh to
 completion) **ran green the same day** — see the end of the M3
-section. Landing M3 is now a rebase-onto-current-main plus one
-re-run of the bar, i.e. a decision rather than an open problem.
+section. **M3 then LANDED (2026-07-13, this commit): the stage-C
+payload was rebased onto current main (both commits cherry-picked
+cleanly; the `equivalent_es_pnode` fix the branch and main had
+found independently merged to a comment-only delta) and the entire
+bar re-ran green on the rebased result — pyc C/LLVM 189/0, all 16
+ifa-test phases zero reblessing, sweeps deterministic with the
+compiled member set identical to pre-merge main, trio/bh/pygasus
+outcomes byte-matching the verification round. Cross-pass ledger
+routing (split persistence, the `alloc_info` analog) is now ON by
+default in `split_entry_set`'s type-value group path.**
 
 **RESOLUTION UPDATE (2026-07-10, after the
 [035](035-nondeterministic-codegen-clone-order.md) determinism
@@ -1246,7 +1254,7 @@ keeping it, only re-typing. Revive it by rebasing onto whatever
 lands M4, not by merging it on its own.
 
 ### M3. Ledger persistence from converged snapshots (stage-C
-revival; the alloc_info analog) — ATTEMPTED 2026-07-11, REVERTED: rebased branch breaks the stall guard on `bh`, a genuine unbounded divergence. See status near the end of this section. **UPDATE 2026-07-13: UNBLOCKED — the bh divergence root-caused to a latent stall-guard hole on MAIN (not a stage-C defect), now fixed; the fixed branch terminates on bh. See the top-of-doc update and the correction at the end of this section.**
+revival; the alloc_info analog) — ATTEMPTED 2026-07-11, REVERTED: rebased branch breaks the stall guard on `bh`, a genuine unbounded divergence. See status near the end of this section. **UPDATE 2026-07-13: LANDED — the bh divergence root-caused to a latent stall-guard hole on MAIN (not a stage-C defect), fixed; full verification bar green twice (on the old base, then re-run on the payload rebased onto current main), merged. See the top-of-doc update and the correction + verification record at the end of this section.**
 
 Rebase and merge branch `issue033-stage-c` (green at `2d514f58`;
 status/staleness detail in
@@ -1423,6 +1431,29 @@ universe-shrink on pygasus/bh is the intended effect (per-pass
 re-split manufacturing replaced by routing to the recorded
 product), and every observed final diagnosis is unchanged.
 
+**LANDED (2026-07-13, same day, this commit).** Both payload
+commits cherry-picked cleanly onto current main (no conflicts; the
+`equivalent_es_pnode` fix that the branch and main had each found
+independently merged to a comment-only delta in `clone.cc`),
+squashed into this single landing commit. The full bar re-ran
+green on the rebased result before merging:
+- pyc C 189/0, pyc LLVM 189/0 (current main's corpus, including
+  the match/case tests the old branch base predated), all 16
+  ifa-test phases with zero fixture reblessing.
+- Corpus sweep 23 compiled, member set identical to pre-merge
+  main, byte-identical across two consecutive sweeps; `chull`'s
+  first-reported-variable difference is the only outcome-text
+  delta, same as the pre-rebase round.
+- To completion, all byte-matching the pre-rebase verification
+  round: fysphun 18/0, kmeanspp 21/6, pylife 13/60, bh 32 passes /
+  23 violations, pygasus 20 passes / 788 violations (~165s total
+  FA, 3451 final ess vs main's 3594).
+Cross-pass ledger routing is now on by default for
+`split_entry_set`'s type-value group path. The remaining S5-M3
+scope NOT covered by this landing: extending the ledger to CS
+splits (the D5 key shape, sketch (e)) and deciding from converged
+snapshots (M2b), which stay open under their own milestones.
+
 **Reverted cleanly**: the rebase was done in a detached-HEAD
 worktree (`git worktree add -d`), so the `issue033-stage-c` branch
 itself was never touched — it's still at `2d514f58`, identical to
@@ -1439,10 +1470,15 @@ current main plus `issue033-stage-c`'s unchanged payload,
 conflicts pre-resolved, with the divergence already reproduced
 against it once. Revive by root-causing the stall-guard interaction
 first, not by starting from this branch and hoping.
+*(2026-07-13: done exactly that way — root-caused (main's guard),
+fixed, and the payload merged to main after the bar re-ran green
+on a fresh rebase. `issue033-stage-c` and `issue033-stage-c-rebased`
+are now historical; their payload is on main.)*
 
 **M2, M3, and M4 are now all blocked or reverted** *(2026-07-13
-update: M3 is UNBLOCKED — its blocker was a latent main stall-guard
-hole, since fixed; see the correction above)*, each for a
+update: M3 is LANDED — its blocker was a latent main stall-guard
+hole, since fixed; see the correction above. M4's premise should
+now be re-measured, per its section)*, each for a
 different, concrete, well-evidenced reason: M2 (stage-2 batching)
 hangs pygasus; M3 (ledger revival) breaks the stall guard on bh;
 M4 (dirty-marked collection) is a no-op under the current
@@ -1454,7 +1490,7 @@ by running specific, real, at-scale corpus members to completion**
 attempt at any of these should budget for that verification step
 from the start, not add it after a "looks safe" first pass.
 
-### M4. Dirty-marked collection (S4-A) — BLOCKED ON M3, confirmed by measurement, not implemented
+### M4. Dirty-marked collection (S4-A) — BLOCKED, confirmed by measurement, not implemented. **2026-07-13 re-measurement with M3 landed: STILL blocked** — M3's ledger persists contour *decisions*, not AVar flow state; `clear_results()` still resets every AVar each pass, and the landed-M3 pygasus run shows the same >99% plateau re-touch rate as before (e.g. 90303 dirty / 78654 examined at pass 11, vs pre-M3 main's 92199/80887). The actual prerequisite is M5-style reset-and-reseed (or any change that lets AVar state survive passes), not M3 as this section originally guessed.
 
 With M3, most plateau passes re-derive types into an unchanged
 landscape. Collection is now the residual cost: mark AVars whose

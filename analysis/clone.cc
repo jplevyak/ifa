@@ -154,7 +154,18 @@ static int equivalent_es_pnode(PNode *n, EntrySet *a, EntrySet *b) {
   // element count, so iterating [0,n) can hit unused (null) slots
   // by design, same as every other set-mode Vec consumer in this
   // codebase (e.g. `for (AEdge *e : es->out_edges) if (e) {...}`).
-  // This loop was missing that guard.
+  // This loop was missing that guard -- independently found twice,
+  // both times on fysphun: once here (stage-C's own earlier
+  // validation) and once via AddressSanitizer root-causing the
+  // fysphun crash the M2 stage-2-batching attempt exposed. An edge
+  // whose `->to` was nulled (mid-split, see split_entry_set) and
+  // never re-routed is dead and must be skipped -- but a LIVE
+  // target whose `->equiv` is itself null (that ES simply wasn't
+  // reached this pass) still belongs in the set: it distinguishes
+  // "has an unreached target" from "has no target", and dropping it
+  // would merge clones that must stay separate. Hence `ee && ee->to`
+  // (skip only the dead/unrouted edges) rather than also requiring
+  // `ee->to->equiv`.
   for (AEdge *ee : *va) if (ee && ee->to) ca.set_add(ee->to->equiv);
   for (AEdge *ee : *vb) if (ee && ee->to) cb.set_add(ee->to->equiv);
   if (ca.some_disjunction(cb)) return 0;
