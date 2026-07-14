@@ -3818,6 +3818,29 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
     EntrySet *tes = find_or_make_filtered_entry_set(es, filters);
     cs_es_map.put(cs, tes);
   }
+  // Re-pointing an edge at a different ES must go through the full
+  // re-entry recipe apply_entry_set_split uses (null `to`, clear the
+  // stale per-edge filtered_args whose AVars are contoured on the
+  // OLD to, remove the edge from the old ES's edge set, then
+  // set_entry_set) — NOT a bare `ee->to = tes` assignment. The
+  // find_or_make_filtered_entry_set products routed into here are
+  // BARE EntrySets (filters + split lineage only; no display, args,
+  // or rets — set_entry_set is the only thing that populates those),
+  // and analyze_edge's make_entry_set early-returns on a non-null
+  // e->to, so nothing downstream ever repairs one. A direct
+  // assignment therefore ships analyze_edge an ES whose empty
+  // display/rets it indexes blindly: make_AVar(formal, es) reads
+  // es->display[depth-1] out of bounds and derefs the garbage as a
+  // contour (the pystone/tictactoe/amaze/othello/score4/voronoi2
+  // SIGSEGV family, pyc issue 025), and guarding just that moves the
+  // crash to the rets[i] flow below it.
+  auto redispatch = [](AEdge *ee, EntrySet *tes) {
+    if (!tes || ee->to == tes) return;
+    if (ee->to) ee->to->edges.del(ee);
+    ee->to = 0;
+    ee->filtered_args.clear();
+    set_entry_set(ee, tes);
+  };
   for (AEdge *ee : all_edges) if (ee) {
     AVar *earg = es->args.get(p);
     EntrySet *old = ee->to;
@@ -3829,12 +3852,12 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
     // the edge untouched, as before.
     AType *ety = earg->out->type;
     if (ety->sorted.n == 1)
-      ee->to = cs_es_map.get(ety->sorted.v[0]);
+      redispatch(ee, cs_es_map.get(ety->sorted.v[0]));
     else {
       for (int i = 0; i < ety->sorted.n; i++) {
         CreationSet *cs = ety->sorted[i];
         if (!i)
-          set_entry_set(ee, cs_es_map.get(cs));
+          redispatch(ee, cs_es_map.get(cs));
         else
           ee = copy_AEdge(ee, cs_es_map.get(cs));
       }

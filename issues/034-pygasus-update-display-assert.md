@@ -1,6 +1,24 @@
 # Issue 034: update_display assert on pygasus (unmasked by the stall guard)
 
-**Status:** open, undiagnosed. Newly *visible*, not newly
+**Status:** RESOLVED 2026-07-14, by the `split_edges` fix from the
+"signal 117" family investigation (pyc issue 025): the dispatch
+splitter re-pointed edges at bare `find_or_make_filtered_entry_set`
+products with a plain `->to` assignment, skipping `set_entry_set` —
+leaving ESs whose display (the exact state this assert checks) was
+never stamped, and stale edge/contour structure around them. With
+both `split_edges` paths routed through the full re-entry recipe
+(null `to`, clear `filtered_args`, remove from old edge set,
+`set_entry_set`), pygasus no longer asserts: FA completes and the
+example proceeds to generated-C compilation, where it fails in the
+known type-resolution family (undeclared labels from no-type
+branches, `_CG_any` array subscripts) — tracked with the rest of
+that family in pyc issue 025. The hypothesis below ("stale contour
+structure after aggressive splitting") was the right family; the
+concrete mechanism was the bare `->to` assignment.
+
+Original filing follows.
+
+**Status (original):** open, undiagnosed. Newly *visible*, not newly
 *introduced*: before the issue-033 stall guard, pygasus diverged in
 the splitting loop and timed out before ever reaching this state.
 **Affects:** `ifa/analysis/fa.cc:update_display()` (assert at
