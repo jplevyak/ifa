@@ -153,12 +153,30 @@ void build_cfg_dominators(Fun *f) {
     p->dom = new Dom(p);
     p->rdom = new Dom(p);
   }
+  // The node universe is collect_PNodes' backward-from-exit
+  // reachability -- the same universe every other pass uses. A CFG
+  // region that is forward-reachable from entry but has NO path to
+  // exit is outside it: its PNodes have no Dom (null), yet universe
+  // nodes still hold cfg_succ edges INTO the region, so df_traversal
+  // (forward from entry) used to walk through a null Dom and
+  // segfault. The one observed producer of such a region (othello2's
+  // vs_cpu_ugi: a break-label scoping bug lowering `break` to a
+  // goto-to-self cycle) was a frontend bug, fixed at the source
+  // (python_ifa_build_syms.cc, PY_for_stmt/PY_while_stmt label
+  // save/restore) -- this guard stays as defense-in-depth, because
+  // pruning such edges is sound for dominance within the universe:
+  // a path entry -> n -> exit can never detour through a no-exit
+  // region (once in, never out), so no dominance relation among
+  // universe nodes depends on them. NOTE: liveness/SSU (ssu.cc) walk
+  // the same universe and would also misbehave on a real no-exit
+  // region, so if one ever becomes legitimately constructible, it
+  // needs a universe-level answer, not more edge guards.
   for (PNode *p : pnodes) {
-    for (PNode *pp : p->cfg_pred) {
+    for (PNode *pp : p->cfg_pred) if (pp->dom) {
       p->dom->pred.add(pp->dom);
       p->rdom->succ.add(pp->rdom);
     }
-    for (PNode *pp : p->cfg_succ) {
+    for (PNode *pp : p->cfg_succ) if (pp->dom) {
       p->dom->succ.add(pp->dom);
       p->rdom->pred.add(pp->rdom);
     }
