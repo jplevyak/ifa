@@ -37,6 +37,7 @@ BasicSym::BasicSym(void)
       is_this(0),
       is_fake(0),
       is_async(0),
+      is_generator(0),
       is_static_method(0),
       is_class_method(0),
       intent(0),

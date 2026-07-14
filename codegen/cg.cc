@@ -31,6 +31,14 @@ static void write_c_fun_proto(FILE *fp, Fun *f, int type = 0) {
   assert(f->rets.n == 1);
   if (f->sym->is_async)
     fputs("_CG_Coroutine", fp);
+  else if (f->sym->is_generator)
+    // issues/014: the real coroutine mechanics live in a local lambda
+    // inside this function's body (write_c below); the function
+    // itself is ordinary from here out, returning the raw coroutine
+    // handle as a plain int64 -- regardless of what FA inferred for
+    // f->rets[0] (see gen_fun_pyda's comment on the int64-typed
+    // default reply this relies on).
+    fputs("_CG_int64", fp);
   else
     fputs(c_type(f->rets[0]), fp);
   if (type)
@@ -444,6 +452,37 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         fprintf(fp, "%s = co_await %s;\n", cg_get_string(n->lvals[0]), cg_get_string(n->rvals[o]));
       } else {
         fprintf(fp, "co_await %s;\n", cg_get_string(n->rvals[o]));
+      }
+      return 1;
+    }
+    case P_prim_yield: {
+      // issues/014: `co_yield expr` is itself a C++ expression whose
+      // value is whatever the *next* resume delivers (pyc_c_runtime.h's
+      // _CG_Generator::promise_type::yield_awaiter -- None for a bare
+      // advance, or .send(v)'s v). Mirrors P_prim_await immediately
+      // above: assign into the lval when `x = yield foo` has one
+      // (PY_yield_expr), otherwise emit a bare statement (PY_yield_stmt,
+      // `yield foo` alone -- the delivered value has no consumer).
+      // Unlike P_prim_await, an explicit cast to the lval's own type is
+      // required: `co_yield`'s value is `void*`, and assigning a
+      // void* into an integer-typed local (the common case -- pyc's
+      // `int` is `_CG_int64`) is not an implicit conversion in C++
+      // (confirmed: the analogous uncast `t = co_await ...;` pattern
+      // fails to compile for a non-constant int-typed await result;
+      // P_prim_await has this same latent gap, just never hit by an
+      // existing test). `co_yield` also binds looser than a C-style
+      // cast -- `(T)(uintptr_t)co_yield x` is a syntax error (the
+      // cast operator wants a unary-expression operand, and
+      // `co_yield x` isn't one) -- so the whole `co_yield` expression
+      // must be parenthesized before casting it.
+      if (virtual_cg_is_const_folded_send(n)) return 1;
+      fputs("  ", fp);
+      if (n->lvals.n && cg_get_string(n->lvals[0]) && strcmp(cg_get_string(n->lvals[0]), "(null)") != 0) {
+        assert(n->lvals.n == 1);
+        fprintf(fp, "%s = (%s)(uintptr_t)(co_yield (void*)(uintptr_t)%s);\n", cg_get_string(n->lvals[0]),
+                c_type(n->lvals[0]), cg_get_string(n->rvals[o]));
+      } else {
+        fprintf(fp, "co_yield (void*)(uintptr_t)%s;\n", cg_get_string(n->rvals[o]));
       }
       return 1;
     }
@@ -1186,6 +1225,14 @@ static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done
         if (n->prim && n->prim->index == P_prim_reply) {
           if (f->sym->is_async) {
             fprintf(fp, "  co_return %s;\n", c_rhs(n->rvals[3]));
+          } else if (f->sym->is_generator) {
+            // issues/014: the coroutine's real return value (whatever
+            // FA computed for fn->ret, see gen_fun_pyda) is a
+            // synthetic int64 placeholder, not meaningful to the
+            // _CG_Generator promise type's return_void() -- and not
+            // yet observable to Python code anyway (no `.send()`/
+            // StopIteration.value in v1 scope).
+            fputs("  co_return;\n", fp);
           } else {
             fprintf(fp, "  return %s;\n", c_rhs(n->rvals[3]));
           }
@@ -1322,6 +1369,48 @@ static void write_c(FILE *fp, FA *fa, Fun *f, Vec<Var *> *globals = 0) {
     }
   }
 
+  // issues/014: is_generator's real coroutine body is wrapped in an
+  // immediately-invoked local lambda -- the ONLY thing in this
+  // function that actually contains co_yield/co_return, so it's the
+  // only thing the C++ compiler treats as a coroutine. This keeps the
+  // outer function itself an ordinary function returning a plain
+  // int64 handle (write_c_fun_proto forces that return type above),
+  // exactly what the synthesized wrapper Fun (build_if1_pyda's
+  // PY_funcdef) expects to call -- no call-site-typing surgery needed
+  // anywhere else.
+  //
+  // CRITICAL: the coroutine's locals (defs below) must be declared
+  // INSIDE the lambda, not captured by reference from the outer
+  // function. initial_suspend() (_CG_Generator's promise_type)
+  // returns std::suspend_always, so the outer function constructs the
+  // suspended coroutine and returns *immediately* -- its stack frame
+  // is gone by the time anything resumes the coroutine from a later,
+  // unrelated call. A `[&]`-captured local declared outside the
+  // lambda would dangle the moment that happens (confirmed:
+  // segfaulted on the first resume, from __pyc_more__, called well
+  // after gen()'s own C stack frame had returned). Locals declared
+  // *inside* the lambda are correctly promoted to the coroutine's own
+  // heap-allocated frame by the C++ compiler, so they survive
+  // suspension like any other local in a real coroutine.
+  //
+  // CRITICAL #2 (found investigating a list-argument corruption bug):
+  // when a lambda's operator() is itself a coroutine, [=]-captured
+  // members live in the CLOSURE OBJECT, not the coroutine frame --
+  // the frame only stores an implicit pointer back to the closure.
+  // A stack-local closure (`auto __coro_1014 = [=]...`) is destroyed
+  // the moment this outer function returns (same "gone by the time
+  // anything resumes" problem as CRITICAL above), so any *captured
+  // parameter* (a0, a1, ...; scalars happened to often "work" by
+  // stack-reuse luck, struct/list pointers reliably didn't) read
+  // garbage after the first resume. Fix: heap-allocate the closure
+  // itself (`new auto(...)`) so the object the frame's implicit
+  // pointer refers to survives indefinitely, exactly like the
+  // coroutine frame does. Confirmed via a minimal pyc-independent
+  // repro (dangling closure reproduced with a plain stack `auto`,
+  // fixed with `new auto`).
+  if (f->sym->is_generator) {
+    fputs("  auto *__coro_1014 = new auto([=]() -> _CG_Generator {\n", fp);
+  }
   for (Var *v : defs) {
     fputs("  ", fp);
     if (coro_vars.set_in(v)) {
@@ -1335,11 +1424,25 @@ static void write_c(FILE *fp, FA *fa, Fun *f, Vec<Var *> *globals = 0) {
   if (globals)
     for (Var *v : *globals) if (!v->sym->is_fun && v->sym->fun && !v->sym->type_kind && cg_get_string(v))
         fprintf(fp, "  %s = %s;\n", cg_get_string(v), cg_get_string(v->sym->fun));
+  // issues/014: for a generator, formal parameters (a0, a1, ...) are
+  // the OUTER function's parameters; [=] above captures them by value
+  // into the lambda, so this assignment (which reads a0/a1 by name)
+  // resolves to the captured copies here, not the outer ones -- safe
+  // for the same reason the locals above are. Positional generator
+  // arguments are forwarded from the synthesized wrapper (see the
+  // PY_funcdef case in python_ifa_build_if1.cc); this ordering (args
+  // assigned inside the lambda, not before it) is what makes that
+  // safe.
   write_c_args(fp, f);
   rebuild_cfg_pred_index(f);
   Vec<PNode *> done;
   done.set_add(f->entry);
   write_c_pnode(fp, fa, f, f->entry, done);
+  if (f->sym->is_generator) {
+    fputs("  });\n", fp);
+    fputs("  _CG_Generator __g_1014 = (*__coro_1014)();\n", fp);
+    fputs("  return (_CG_int64)(uintptr_t)__g_1014.handle.address();\n", fp);
+  }
   fputs("}\n", fp);
 }
 

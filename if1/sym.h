@@ -80,6 +80,11 @@ class BasicSym : public gc {
   unsigned int is_this : 1;         // Sym is "this" (member function "target")
   unsigned int is_fake : 1;         // Sym not necessary at run time
   unsigned int is_async : 1;        // Sym is an async function
+  unsigned int is_generator : 1;    // Sym is a generator function (body
+                                     // contains yield); compiled as a
+                                     // C++20 coroutine like is_async, but
+                                     // driven by __next__ instead of an
+                                     // event loop -- see issues/014.
   unsigned int is_static_method : 1;  // fun Sym: class-scope function with NO
                                       // receiver (Python @staticmethod / C++-
                                       // style static). Stored as a prototype

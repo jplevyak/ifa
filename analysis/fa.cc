@@ -1837,6 +1837,38 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
         flow_vars(a, result);
         break;
       }
+      case P_prim_yield: {
+        // issues/014: unlike P_prim_await just above (whose result
+        // flows from a real, call-graph-visible callee return value),
+        // a yield expression's result (`x` in `x = yield foo`) is
+        // whatever a *later*, call-graph-invisible `.send(v)` call
+        // delivers -- no IF1 edge connects __pyc_generator__.send()'s
+        // `value` formal to this primitive; the transfer happens only
+        // through the C++ promise's `sent` field at runtime (see
+        // pyc_c_runtime.h's yield_awaiter). Flowing the yielded
+        // value's own type into the result here (the original,
+        // `.send()`-less design, matching P_prim_await's shape) is
+        // unsound whenever a generator's yielded expression depends
+        // on its own previously-received values (`total += x; yield
+        // total`): with FA seeing no other source, the fixed point
+        // legitimately-but-uselessly collapses the whole loop to a
+        // compile-time constant seeded by the first yield, which
+        // then gets constant-folded away entirely -- silently
+        // breaking .send() (observed: co_yield of a hardcoded literal
+        // instead of the real running value). Anchor to the generic
+        // int64 type instead, the same "opaque, non-constant" trick
+        // as the coroutine-handle placeholder
+        // (_CG_generator_placeholder_return, see gen_fun_pyda) --
+        // correct for today's only supported payload shape (v1
+        // scope: int64 smuggled through void*, same as the yielded-
+        // out value itself). `a` (the yielded value) is already
+        // registered as reachable/used by the generic per-rval
+        // make_AVar/arg_of_send loop above this switch -- no need to
+        // touch it again here, unlike P_prim_await's case, since it
+        // does not feed the result's type.
+        update_gen(result, sym_int64->abstract_type);
+        break;
+      }
       case P_prim_primitive: {
         cchar *name = p->rvals[1]->sym->name;
         RegisteredPrim *rp = prim_get(name);

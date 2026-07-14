@@ -127,4 +127,9 @@ extern Prim *prim_await;
 #define P_prim_await 57
 extern Prim *prim_copy;
 #define P_prim_copy 58
+// issues/014: `yield expr` inside a generator function -- lowers to
+// co_yield in cg.cc (is_generator), same non-functional/one-arg shape
+// as prim_await above (which it's modeled on directly).
+extern Prim *prim_yield;
+#define P_prim_yield 59
 #endif

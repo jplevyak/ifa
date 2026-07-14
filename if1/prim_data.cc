@@ -59,6 +59,7 @@ Prim *prim_typeof_element = 0;
 Prim *prim_is = 0;
 Prim *prim_await = 0;
 Prim *prim_copy = 0;
+Prim *prim_yield = 0;
 
 void prim_init(Primitives *p, IF1 *if1) {
   char *n;
@@ -451,4 +452,14 @@ void prim_init(Primitives *p, IF1 *if1) {
   n = (char *)if1->strings.put((char *)"copy");
   p->prims.add(prim_copy);
   p->prim_map[0][0].put(n, prim_copy);
+
+  // issues/014: modeled directly on prim_await above -- one ANY-typed
+  // arg (the yielded value), one ANY-typed result (what a future
+  // .send() would provide; always None in v1 scope).
+  static PrimType prim_yield_arg_types[] = {PRIM_TYPE_ANY};
+  static PrimType prim_yield_ret_types[] = {PRIM_TYPE_ANY};
+  prim_yield = new Prim(59, "yield", "prim_yield", -3, 0, 1, prim_yield_arg_types, prim_yield_ret_types, PRIM_NON_FUNCTIONAL);
+  n = (char *)if1->strings.put((char *)"yield");
+  p->prims.add(prim_yield);
+  p->prim_map[0][0].put(n, prim_yield);
 }

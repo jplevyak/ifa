@@ -466,10 +466,19 @@ static int inline_single_sends(FA *fa) {
   Map<Fun *, Vec<PNode *> *> chain_send;  // chain of >=2 prim sends (issue 006)
   for (Fun *f : fa->funs) {  // find chain-eligible functions first
     assert(f->live);
+    // issues/014: a coroutine (is_generator, and is_async for the
+    // same reason) must stay a real function -- inlining it merges
+    // its co_yield/co_await-bearing body into a caller that cg.cc
+    // never marks as a coroutine, producing invalid/incoherent C++
+    // (e.g. co_yield inside a plain-void function). Confirmed by
+    // repro: without this guard, a trivial single-call-site generator
+    // wrapper got inlined into its caller here.
+    if (f->sym->is_generator || f->sym->is_async) continue;
     if (Vec<PNode *> *chain = match_prim_chain(f)) chain_send.put(f, chain);
   }
   for (Fun *f : fa->funs) {  // find single prim send functions
     assert(f->live);
+    if (f->sym->is_generator || f->sym->is_async) continue;
     PNode *p = 0, *reply = 0;
     for (PNode *n : f->fa_all_PNodes) {
       if (!n->code || n->code->kind == Code_MOVE || !n->live) continue;

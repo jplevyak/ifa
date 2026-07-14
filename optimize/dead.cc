@@ -218,7 +218,12 @@ static void mark_initial_dead_and_alive(FA *fa, int init = 0) {
     }
     for (PNode *p : f->fa_all_PNodes) {
       p->live = init;
-      if (p->code && p->code->kind == Code_SEND && p->prim && p->prim->index == P_prim_await) {
+      if (p->code && p->code->kind == Code_SEND && p->prim &&
+          (p->prim->index == P_prim_await || p->prim->index == P_prim_yield)) {
+        // issues/014: `yield`'s result is unused in v1 scope (no
+        // .send()), same shape as an await whose result is discarded
+        // -- but the yield itself is never dead: it's the entire
+        // reason the generator's coroutine body exists.
         p->live = 1;
       }
       if (p->code && p->code->kind == Code_SEND && p->prim && p->prim->index == P_prim_primitive) {
@@ -334,7 +339,9 @@ mark_initial_dead_and_alive(FA *fa, int init = 0) {
     }
     for (PNode *p : f->fa_all_PNodes) {
       p->live = init;
-      if (p->code && p->code->kind == Code_SEND && p->prim && p->prim->index == P_prim_await) {
+      if (p->code && p->code->kind == Code_SEND && p->prim &&
+          (p->prim->index == P_prim_await || p->prim->index == P_prim_yield)) {
+        // issues/014: see the identical guard above in this file.
         p->live = 1;
       }
       if (p->code && p->code->kind == Code_SEND && p->prim && p->prim->index == P_prim_primitive) {
