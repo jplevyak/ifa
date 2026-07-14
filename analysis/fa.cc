@@ -4174,13 +4174,23 @@ static void build_type_mark(AVar *av, CreationSet *cs, int mark = 1) {
 // To handle recursion, mark value*AVar distances from the nearest
 // AVar generating the value.  Dataflow is considered to be only
 // from lower to higher distances for the purpose of splitting.
-static void build_type_marks(AVar *av, Accum<AVar *> &acc) {
+// Issue 033 M5-prelude: joint form of build_type_marks, seeded from
+// MANY confluences at once (the stage-4 B4/P3 shape). Backward- and
+// forward-closure both distribute over union, so the joint closure
+// is EXACTLY the union of the per-seed closures; marks are
+// per-(AVar, CS) minimum distances from generation points, so joint
+// seeding computes the min over all seeds' gen sets — the same
+// deterministic union semantics the stage-4 rework adopted. One
+// closure + one collect replaces N per-confluence recomputations
+// (measured 47.7s closure + 36.6s collect of pygasus's 85s
+// mark_type cost before this rework).
+static void build_joint_type_marks(Vec<AVar *> &seeds, Accum<AVar *> &acc) {
   // collect all contributing nodes — index-based so adds appended
   // to acc.asvec during iteration are visited (transitive closure).
   // The range-for over `acc.asvec` captures end() at loop entry and
   // only walks the 1-hop neighborhood — see issue 007 for the
   // finding that this was a long-standing one-level cap.
-  acc.add(av);
+  for (AVar *av : seeds) if (av) acc.add(av);
   for (int i = 0; i < acc.asvec.n; i++) {
     AVar *x = acc.asvec.v[i];
     for (AVar *y : x->backward) if (y) acc.add(y);
@@ -4201,6 +4211,12 @@ static void build_type_marks(AVar *av, Accum<AVar *> &acc) {
         build_type_mark(x, s);
       }
   }
+}
+
+static void build_type_marks(AVar *av, Accum<AVar *> &acc) {
+  Vec<AVar *> seeds;
+  seeds.add(av);
+  build_joint_type_marks(seeds, acc);
 }
 
 static void build_setter_mark(AVar *av, AVar *x, int mark = 1) {
@@ -4699,11 +4715,25 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
   return analyze_again;
 }
 
+// Issue 033 M5 prelude: stage-2 sub-phase cost accumulators, printed
+// with the -v stage breakdown at convergence. mark_type dominates
+// extend cost at pygasus scale (M0 finding: 81-87% of extend); these
+// attribute that cost to closure-building vs diagnostics vs collect
+// vs the split machinery so the fix targets the real term.
+static double stage2_closure_time = 0, stage2_diag_time = 0, stage2_collect_time = 0, stage2_split_time = 0;
+
 [[nodiscard]] static int split_with_type_marks(AVar *av, int fdynamic) {
+  Timer s2_timer;
   Accum<AVar *> acc;
   build_type_marks(av, acc);
+  stage2_closure_time += s2_timer.lap();
   // Diagnostic: count closure size, mark-seed candidates (gen != null), and
   // how many AVars actually got a mark_map populated.
+  // Guarded: log() is a FUNCTION, so its arguments (set_count()
+  // walks, per closure member) evaluate even with logging off —
+  // unguarded, these diagnostics are O(closure) per confluence on
+  // the hot path.
+  if (logging(LOG_SPLITTING)) {
   int closure_marked = 0, closure_with_gen = 0, closure_gen_nonempty = 0;
   for (AVar *x : acc.asvec) if (x) {
     if (x->mark_map) closure_marked++;
@@ -4720,10 +4750,14 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
         x->gen ? x->gen->set_count() : -1,
         x->out && x->out->type ? x->out->type->set_count() : -1);
   }
+  }
+  stage2_diag_time += s2_timer.lap();
   Vec<AVar *> confluences;
   collect_es_marked_confluences(confluences, acc, SPLIT_TYPE);
-  log(LOG_SPLITTING, "[stage2-marks] av %d marked-confluences=%d\n",
-      av->id, confluences.set_count());
+  stage2_collect_time += s2_timer.lap();
+  if (logging(LOG_SPLITTING))
+    log(LOG_SPLITTING, "[stage2-marks] av %d marked-confluences=%d\n",
+        av->id, confluences.set_count());
   int analyze_again = 0;
   for (AVar *cav : confluences) {
     if (cav->contour_is_entry_set) {
@@ -4750,6 +4784,7 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
     }
   }
   clear_marks(acc);
+  stage2_split_time += s2_timer.lap();
   return analyze_again;
 }
 
@@ -4861,20 +4896,103 @@ static void collect_cs_setter_confluences(Vec<AVar *> &setters_confluences) {
   return analyze_again;
 }
 
-[[nodiscard]] static int split_ess_for_mark_type(Vec<AVar *> &confluences) {
+// Issue 033 M5-prelude: split the jointly-marked ES confluences via
+// the M2b decide-then-apply machinery — every decision computed
+// against the same converged, jointly-marked state, first decision
+// per EntrySet wins, later ones defer to the next pass (same
+// arbitration as stage 1).
+[[nodiscard]] static int split_marked_es_confluences(Vec<AVar *> &marked) {
+  Vec<ESSplitDecision *> decisions;
+  for (AVar *cav : marked) {
+    if (!cav->contour_is_entry_set) {
+      log(LOG_SPLITTING, "[stage2-marks]   marked-conf av %d CS-contour skipped\n", cav->id);
+      continue;
+    }
+    AVar *target = nullptr;
+    if (!cav->is_lvalue) {
+      if (cav->var->is_formal)
+        target = cav;
+      else
+        log(LOG_SPLITTING, "[stage2-marks]   marked-conf av %d ES/non-formal-rval skipped\n", cav->id);
+    } else {
+      AVar *aav = unique_AVar(cav->var, cav->contour);
+      if (is_return_value(aav))
+        target = aav;
+      else
+        log(LOG_SPLITTING, "[stage2-marks]   marked-conf av %d ES/lval-non-return skipped\n", cav->id);
+    }
+    if (!target) continue;
+    ESSplitDecision *dec = decide_entry_set_split(target, SPLIT_TYPE, SPLIT_MARK);
+    log(LOG_SPLITTING, "[stage2-marks]   marked-conf av %d decide -> %d groups\n", cav->id,
+        dec ? dec->groups.n : 0);
+    if (dec) decisions.add(dec);
+  }
   int analyze_again = 0;
-  // a) first those where the confluence is NOT at an instance variable
-  for (AVar *av : confluences) if (av->contour_is_entry_set) {
-    int r = split_with_type_marks(av, SPLIT_EDGES);
-    log(LOG_SPLITTING, "[stage2-marks] (ES-contour) av %d split_with_type_marks -> %d\n", av->id, r);
+  Vec<EntrySet *> applied;
+  for (ESSplitDecision *dec : decisions) {
+    if (applied.set_in(dec->es)) {
+      log(LOG_SPLITTING, "[stage2-marks] av %d es %d DEFERRED: es already split this pass\n", dec->av->id,
+          dec->es->id);
+      continue;
+    }
+    applied.set_add(dec->es);
+    int r = apply_entry_set_split(dec);
+    log(LOG_SPLITTING, "[stage2-marks] av %d es %d apply -> %d\n", dec->av->id, dec->es->id, r);
     analyze_again |= r;
+  }
+  return analyze_again;
+}
+
+[[nodiscard]] static int split_ess_for_mark_type(Vec<AVar *> &confluences) {
+  // Issue 033 M5-prelude: the old shape called split_with_type_marks
+  // per confluence — each call rebuilt the full backward+forward
+  // transitive closure, re-ran the global marked-confluence collect,
+  // and re-attempted splits, making stage 2 O(confluences x
+  // universe): 81-87% of pygasus's extend time for progress on 5
+  // passes (M0 measurement). Joint seeding (the landed stage-4
+  // B4/P3 shape) computes the identical union closure once, marks
+  // once (min distances over all seeds' gens — see
+  // build_joint_type_marks for why this is the same-or-more-defined
+  // semantics), collects once, and splits the marked set through
+  // M2b decide-then-apply. The a)/b) priority (ES-contour
+  // confluences first, CS-contour ones only if a) found nothing) is
+  // preserved.
+  int analyze_again = 0;
+  Timer s2_timer;
+  // a) first those where the confluence is NOT at an instance variable
+  {
+    Vec<AVar *> seeds;
+    for (AVar *av : confluences) if (av->contour_is_entry_set) seeds.add(av);
+    if (seeds.n) {
+      Accum<AVar *> acc;
+      build_joint_type_marks(seeds, acc);
+      stage2_closure_time += s2_timer.lap();
+      Vec<AVar *> marked;
+      collect_es_marked_confluences(marked, acc, SPLIT_TYPE);
+      stage2_collect_time += s2_timer.lap();
+      log(LOG_SPLITTING, "[stage2-marks] (ES-contour) seeds=%d closure=%d marked=%d\n", seeds.n, acc.asvec.n,
+          marked.n);
+      analyze_again = split_marked_es_confluences(marked);
+      clear_marks(acc);
+      stage2_split_time += s2_timer.lap();
+    }
   }
   // b) then those where the confluence is at an instance variable
   if (!analyze_again) {
-    for (AVar *av : confluences) if (!av->contour_is_entry_set) {
-      int r = split_with_type_marks(av, SPLIT_EDGES);
-      log(LOG_SPLITTING, "[stage2-marks] (CS-contour) av %d split_with_type_marks -> %d\n", av->id, r);
-      analyze_again |= r;
+    Vec<AVar *> seeds;
+    for (AVar *av : confluences) if (!av->contour_is_entry_set) seeds.add(av);
+    if (seeds.n) {
+      Accum<AVar *> acc;
+      build_joint_type_marks(seeds, acc);
+      stage2_closure_time += s2_timer.lap();
+      Vec<AVar *> marked;
+      collect_es_marked_confluences(marked, acc, SPLIT_TYPE);
+      stage2_collect_time += s2_timer.lap();
+      log(LOG_SPLITTING, "[stage2-marks] (CS-contour) seeds=%d closure=%d marked=%d\n", seeds.n, acc.asvec.n,
+          marked.n);
+      analyze_again = split_marked_es_confluences(marked);
+      clear_marks(acc);
+      stage2_split_time += s2_timer.lap();
     }
   }
   return analyze_again;
@@ -5110,7 +5228,15 @@ static void clear_splits() {
   // per-confluence run of the old loop.
   if (!analyze_again) {
     Accum<AVar *> acc;
-    for (AVar *av : confluences) build_type_marks(av, acc);
+    // Issue 033 M5-prelude: ONE build_joint_type_marks call, not a
+    // per-confluence loop with the shared accumulator. The loop form
+    // re-scanned and re-marked the whole (growing) union closure per
+    // seed — the final mark state is identical (build_type_mark
+    // min-updates are idempotent and the last iteration already
+    // marked over the full union), but the cost was O(confluences x
+    // union): 21 of pygasus's 23.8 extend seconds after the stage-2
+    // joint rework exposed it as the next term.
+    build_joint_type_marks(confluences, acc);
     Vec<AVar *> marked_confluences;
     collect_cs_marked_confluences(marked_confluences);
     Accum<AVar *> avs;
@@ -5280,6 +5406,10 @@ static void clear_splits() {
              fa->stage_time[i], stage_total > 0 ? (int)(fa->stage_time[i] * 100.0 / stage_total) : 0,
              fa->stage_progress_count[i], fa->stage_progress_count[i] == 1 ? "" : "es");
     }
+    // Issue 033 M5 prelude: attribute mark_type's dominant cost.
+    if (stage2_closure_time + stage2_diag_time + stage2_collect_time + stage2_split_time > 0)
+      printf("    mark_type sub-phases: closure %f s, diag %f s, collect %f s, split+clear %f s\n",
+             stage2_closure_time, stage2_diag_time, stage2_collect_time, stage2_split_time);
   }
   return analyze_again;
 }

@@ -705,6 +705,11 @@ it every pass regardless of who wins — batching (M2) won't shrink
 this cost by itself since mark_type still has to run; dirty-marking
 (M4) is what actually targets it, and should be prioritized to
 cover stage 4's collectors first if M4 is split into sub-steps.
+*(2026-07-14 postscript: neither batching nor dirty-marking turned
+out to be the answer — the cost was per-confluence closure/collect
+REDUNDANCY inside the stages, fixed directly by the joint reworks
+recorded in the M5 status block; mark_type+mark_setter fell from
+~106s to ~2s on pygasus.)*
 
 ### M1. Multi-candidate match collapsing (S4-C; independent track)
 
@@ -1673,7 +1678,10 @@ write any dirty-aware collector logic, since the measurement shows
 it would be a no-op at best under the current architecture.
 
 ### M5. Reset-and-reseed rounds (the full shedskin shape; only if
-M2-M4 leave a gap)
+M2-M4 leave a gap) — **CLOSED BY ITS OWN GATE (2026-07-14): the
+re-measured evidence pointed away from the round structure
+entirely; the plateau cost was stage-2/4 per-confluence redundancy,
+now fixed. See the status block below.**
 
 With decisions fully persistent (M3) and collection incremental
 (M4), evaluate whether the remaining per-round cost justifies the
@@ -1684,6 +1692,69 @@ This buys shedskin's memory behavior and removes `Fun::ess`
 survival as load-bearing state, at the cost of a reseeding pass.
 Decide on M0-metrics evidence, not aesthetics — if pygasus-class
 inputs converge in seconds after M4, stop there.
+
+**Status (2026-07-14).** Followed the gate literally before
+building anything: re-instrumented pygasus's dominant `mark_type`
+cost (M0's own finding) with sub-phase timers. The answer was not
+"round structure" at all:
+
+1. **~14s of the 98s was diagnostic overhead**: `log()` is a
+   variadic FUNCTION, so the `[stage2-marks]` per-closure-member
+   diagnostics evaluated two `set_count()` walks per member per
+   confluence even with logging off. Guarded with
+   `if (logging(LOG_SPLITTING))`.
+2. **The rest was per-confluence redundancy, the same disease
+   B4/P3 fixed in stage 4's seeding**: `split_with_type_marks`
+   rebuilt the full backward+forward transitive closure (47.7s)
+   and re-ran the marked-confluence collect (36.6s) once PER
+   CONFLUENCE — O(confluences x universe). Since backward- and
+   forward-closure both distribute over union, the joint closure
+   over all seeds is EXACTLY the union of the per-seed closures;
+   marks are per-(AVar, CS) min distances, so joint seeding is the
+   same-or-more-defined semantics stage 4's rework already adopted.
+   Landed `build_joint_type_marks` + a stage-2 driver that builds
+   one closure, collects once, and splits the marked set through
+   M2b decide-then-apply. **mark_type: 84.8s -> 1.7s.**
+3. That exposed stage 4's seeding as the next term (21s): its
+   B4/P3 "joint" loop still called `build_type_marks` per
+   confluence with a SHARED accumulator, re-scanning and re-marking
+   the growing union per seed — and, it turned out, accidentally
+   computing a RICHER closure (each call's backward pass re-expands
+   from earlier seeds' forward sets, approximating an alternating
+   bwd/fwd fixpoint whose depth depended on the seed COUNT — a
+   seed-order/count dependence, 009/021 flavor). Replaced with one
+   `build_joint_type_marks` call: both stages now use the same
+   well-defined, seed-count-independent closure (bwd* then fwd* of
+   the seed set). **mark_setter: 21s -> 0.08s.**
+
+Net: **pygasus total FA 165s -> 62s** (was ~200s pre-M1, ~300s+
+timeout pre-033). Extend is now 2.8s (3%) of the compile; the
+remaining profile is **match-dominated (53.8s, 62%, 75% cache-hit)**
+— S4-E MatchCache territory, nothing the round structure would
+touch. Outcomes: pygasus 19 passes (was 20 — the accidental
+richer-closure stage-4 splits on old pass 14 don't happen; 24 fewer
+css) with the IDENTICAL 788-violation diagnosis and identical final
+ess; fysphun 18 passes / 0 violations / 217 ess (one fewer ES than
+before, equivalent convergence); kmeanspp/pylife/bh trajectories
+byte-identical. pyc C 190/0, LLVM 190/0, all 16 ifa-test phases
+with ZERO fixture reblessing (the synthetic fixtures' closures were
+already whole-graph, so union semantics change nothing there);
+sweep member set unchanged; deterministic across repeated runs.
+(One verification run crashed in the `-v` type dump — the second
+sighting of a pre-existing intermittent, now filed as
+[041](041-verbose-type-dump-intermittent-segfault.md).)
+
+**Verdict:** the round structure's premise — an extend plateau that
+per-pass re-derivation makes unavoidable — no longer exists on any
+known input. M5 stays closed unless a future input shows a
+divergence or plateau that M3's routing + these collection fixes
+don't already handle; the next real performance frontier is the
+match phase (S4-C landed; S4-E subset-aware MatchCache is the open
+item), which is outside this issue's scope. Side effect worth
+noting for M2a's ledger: stage 2's collection is now cheap enough
+that M2a's pygasus-hang premise ("stage-2 collection at full
+universe scale every pass") may no longer hold — unattempted, and
+there is currently no motivating input.
 
 ### M6. Deferral valve (S4-D; safety net, independent)
 
