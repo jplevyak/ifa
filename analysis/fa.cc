@@ -4270,16 +4270,29 @@ static void clear_marks(Accum<AVar *> &acc) { for (AVar *x : acc.asvec) x->mark_
 //     feeds the CS, regardless of which Var carries the value").
 //   - av->container: structural parenthood, stable across passes.
 //   - av->type / av->ivar_offset: written post-convergence by clone.
-//   - av->match_cache: entries are validated against canonical
-//     ATypes, so stale entries miss safely -- cleared here anyway
-//     (survey P2) to stop unbounded growth across passes.
+//   - av->match_cache: SURVIVES across passes (issue 033 S4-E,
+//     2026-07-14; reverses survey P2's clear-to-bound-growth).
+//     Soundness: entries key on exact canonical AType pointers at
+//     every position including nested CS vars (canonical ATypes are
+//     never cleared), the visibility PNode, and the closure/partial
+//     flags; the match result additionally depends only on the
+//     pattern tables, which are fixed for the whole convergence
+//     (add_patterns has no mid-FA caller). A stale entry therefore
+//     misses, never lies. The payoff: flow re-derives the same
+//     monotone type-growth sequence every pass (post-035
+//     determinism), so pass k's pattern_match calls are pass k-1's
+//     -- retention converts nearly all of them to hits (pygasus:
+//     ~25% miss rate -> <1%, match 54s -> seconds). Growth is
+//     bounded by distinct (send x type-state) over one convergence;
+//     if a future frontend runs multiple FA convergences in one
+//     process, this needs a generation stamp -- today there is
+//     exactly one FA per process.
 //   - av->num_coerce: numeric-confluence coercion target (issue
 //     025), set between passes by fa_coerce_numeric_confluences.
 //     MUST survive: it has to be in force from the first instant
 //     of the next pass so type_coerce_numeric_constants is
 //     element-wise monotone for the whole pass.
 static void clear_avar(AVar *av) {
-  av->match_cache = 0;
   av->gen = 0;
   av->in = fa->type_world.bottom_type;
   av->out = fa->type_world.bottom_type;

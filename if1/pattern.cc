@@ -53,6 +53,15 @@ class MatchCacheEntry : public Vec<Match *> {
   Partial_kind partial;
   PNode *visibility_point;
   MapMPositionAType all_args;
+  // Issue 033 S4-E: the top-level args' `->out` AType pointers at
+  // record time — a cheap necessary condition checked by pointer
+  // compare before the full (recursive, nested-CS-var) all_args
+  // validation. all_args stores exactly these ATypes at the
+  // top-level positions, so a top_out mismatch implies the full
+  // compare would fail; a top_out MATCH is not sufficient (a nested
+  // CS var's type can change under an unchanged top-level AType),
+  // which is why the full validation stays.
+  Vec<AType *> top_out;
 
   MatchCacheEntry(int ais_closure, Partial_kind apartial, PNode *avp)
       : is_closure(ais_closure), partial(apartial), visibility_point(avp) {}
@@ -94,7 +103,7 @@ class Matcher {
   void generic_arguments(Vec<CreationSet *> &, MPosition &, Vec<Fun *> &, int);
   void set_filters(Vec<CreationSet *> &, MPosition &, Vec<Fun *> &, Vec<Vec<CreationSet *> *> &cls);
   void reverify_filters(Vec<Fun *> &);
-  void cannonicalize_matches(Vec<Fun *> &, int, Partial_kind, Vec<Match *> &, PNode *);
+  void cannonicalize_matches(Vec<Fun *> &, int, Partial_kind, Vec<Match *> &, PNode *, Vec<AVar *> &args);
 
   Matcher(AVar *send, AVar *arg0, int is_closure, Partial_kind partial);
 };
@@ -1414,7 +1423,7 @@ void Matcher::find_best_matches(Vec<AVar *> &args, Vec<CreationSet *> &csargs, V
 }
 
 void Matcher::cannonicalize_matches(Vec<Fun *> &partial_matches, int is_closure, Partial_kind partial,
-                                    Vec<Match *> &matches, PNode *visibility_point) {
+                                    Vec<Match *> &matches, PNode *visibility_point, Vec<AVar *> &args) {
   partial_matches.set_to_vec();
   qsort_by_id(partial_matches);
   for (Fun *f : partial_matches) {
@@ -1432,6 +1441,7 @@ void Matcher::cannonicalize_matches(Vec<Fun *> &partial_matches, int is_closure,
     MatchCacheEntry *e = new MatchCacheEntry(is_closure, partial, visibility_point);
     mc->add(e);
     e->all_args.copy(all_args);
+    for (AVar *a : args) e->top_out.add(a->out);
     for (Match *m : matches) e->add(new Match(*m));
   }
 }
@@ -1531,11 +1541,29 @@ static int match_cache_hit(Vec<AVar *> &args, AVar *send, int is_closure, Partia
                            Vec<Match *> &matches) {
   MatchCache *m = send->match_cache;
   if (!m) return 0;
+  // Issue 033 S4-E: with the cache surviving across passes, a send
+  // accumulates one entry per distinct type-state and this scan is
+  // on the hot path (every send re-fires through the same monotone
+  // type-growth sequence every pass). Two mitigations: the top_out
+  // pointer pre-filter rejects non-matching entries without the
+  // recursive get_all_args walk, and a hit moves its entry to the
+  // front (MRU) — the entry that hit at this type-state last pass
+  // hits first this pass. At most one entry can fully validate
+  // (entries are only added on a miss), so order never changes the
+  // result, only the scan length.
   Vec<MatchCacheEntry *> entries;
   for (MatchCacheEntry *e : *m) {
     if (e->is_closure != is_closure) continue;
     if (e->partial != partial) continue;
     if (e->visibility_point != visibility_point) continue;
+    if (e->top_out.n != args.n) continue;
+    bool top_ok = true;
+    for (int i = 0; i < args.n; i++)
+      if (e->top_out.v[i] != args.v[i]->out) {
+        top_ok = false;
+        break;
+      }
+    if (!top_ok) continue;
     entries.add(e);
   }
   if (!entries.n) return 0;
@@ -1552,6 +1580,13 @@ static int match_cache_hit(Vec<AVar *> &args, AVar *send, int is_closure, Partia
       log(LOG_DISPATCH, "%d- hit: %d\n", send->var->sym->id, mm->fun->sym->id);
       matches.add(new Match(*mm));
     }
+    // MRU: move the hitting entry to the front of the cache.
+    for (int i = 0; i < m->n; i++)
+      if (m->v[i] == e) {
+        for (int j = i; j > 0; j--) m->v[j] = m->v[j - 1];
+        m->v[0] = e;
+        break;
+      }
     return 1;
   Lfail:;
   }
@@ -1588,7 +1623,7 @@ int pattern_match(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_clo
     partial_matches->move(result);
     if (!partial_matches->n) return 0;
   }
-  matcher.cannonicalize_matches(*partial_matches, is_closure, partial, matches, visibility_point);
+  matcher.cannonicalize_matches(*partial_matches, is_closure, partial, matches, visibility_point, args);
   return matches.n;
 }
 

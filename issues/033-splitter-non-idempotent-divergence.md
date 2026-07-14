@@ -609,6 +609,33 @@ filters. Needs a careful invalidation story for is_exact_match
 positions; measure C first — collapsing may make re-matching so
 cheap the cache stops mattering.
 
+**LANDED 2026-07-14, in a simpler form than sketched — the
+measurement redirected again.** The real gap wasn't the exact-AType
+key: it was that `clear_avar` wiped `av->match_cache` EVERY PASS
+(survey P2's growth cap), so each pass re-matched the identical
+monotone type-growth sequence from scratch. Retention across
+passes is sound — entries key on canonical AType pointers at every
+position including nested CS vars (canonical ATypes are never
+cleared), the visibility PNode, and flags, and the pattern tables
+are fixed for the whole convergence (`add_patterns` has no mid-FA
+caller) — so a stale entry misses, never lies. With retention the
+hit rate went 75% -> 93% and the hit path became the cost (linear
+entry scan + the recursive `get_all_args` walk per lookup), fixed
+by a `top_out` pointer pre-filter (the top-level args' `->out`
+ATypes stored per entry — a necessary condition checked before the
+full nested validation) and MRU move-to-front (at most one entry
+can fully validate, so order affects only scan length). pygasus:
+62.3s -> 49.9s total FA, trajectories byte-identical everywhere
+(pure memoization), full bar green (C/LLVM 190/0, 16 phases zero
+reblessing, sweep member set unchanged, deterministic). The
+remaining ~37s match share is hit-path SEMANTIC work — per-pass
+`arg_of_send` re-registration through `get_all_args` plus
+per-consumer Match copies, both required for re-fire correctness
+under the clear_results/re-flow architecture — i.e. per-pass
+re-flow volume, not cache design. The full subset-aware partition
+scheme above stays unbuilt: at a 93% hit rate with exact keys it
+has no remaining target.
+
 **F. Incremental admission (long-term, architectural).** Shedskin
 grows the analyzed world by ≤5 functions per round, so early
 specialization mistakes are cheap. pyc's equivalent would be
