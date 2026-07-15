@@ -2021,6 +2021,28 @@ class LLVMEmitter : public VirtualCGEmitter {
   
   bool emit_send_any_prim(PNode *pn) override {
     if (!pn || !pn->prim) return false;
+    if (pn->prim->index == P_prim_id) {
+      // id(x): address (pointers) or value bits (ints) as i64 --
+      // mirrors write_c_prim's `(_CG_int64)(uintptr_t)x` (cg.cc).
+      if (pn->lvals.n < 1 || pn->rvals.n < 3) return false;
+      Var *dst_var = pn->lvals.v[0];
+      llvm::Value *v = value_for_var(ctx, pn->rvals.v[2]);
+      if (!dst_var || !v) return false;
+      llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+      llvm::Value *res;
+      if (v->getType()->isPointerTy())
+        res = Builder->CreatePtrToInt(v, i64, "id");
+      else if (v->getType()->isIntegerTy())
+        res = Builder->CreateZExtOrTrunc(v, i64, "id");
+      else if (v->getType()->isDoubleTy() || v->getType()->isFloatTy())
+        res = Builder->CreateBitCast(
+            v->getType()->isDoubleTy() ? v : Builder->CreateFPExt(v, llvm::Type::getDoubleTy(*TheContext)), i64,
+            "id");
+      else
+        return false;
+      put_result(ctx, dst_var, res);
+      return true;
+    }
     if (pn->prim->index == P_prim_await) {
 
       if (ctx.coro_hdl) {

@@ -486,6 +486,17 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       }
       return 1;
     }
+    case P_prim_id: {
+      // id(x): address (heap objects) or value bits (unboxed
+      // scalars) as int64. uintptr_t round-trip keeps the compiler
+      // quiet for both pointer- and integer-typed operands.
+      if (virtual_cg_is_const_folded_send(n)) return 1;
+      if (n->lvals.n && cg_get_string(n->lvals[0]) && strcmp(cg_get_string(n->lvals[0]), "(null)") != 0) {
+        assert(n->lvals.n == 1);
+        fprintf(fp, "  %s = (_CG_int64)(uintptr_t)%s;\n", cg_get_string(n->lvals[0]), cg_get_string(n->rvals[o]));
+      }
+      return 1;
+    }
     case P_prim_new: {
       fputs("  ", fp);
       assert(n->lvals.n == 1);

@@ -1869,6 +1869,13 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
         update_gen(result, sym_int64->abstract_type);
         break;
       }
+      case P_prim_id: {
+        // id(x): the operand's address (or value bits for unboxed
+        // scalars) as a plain int64 -- the result's type never
+        // depends on the operand's.
+        update_gen(result, sym_int64->abstract_type);
+        break;
+      }
       case P_prim_primitive: {
         cchar *name = p->rvals[1]->sym->name;
         RegisteredPrim *rp = prim_get(name);

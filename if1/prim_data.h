@@ -132,4 +132,11 @@ extern Prim *prim_copy;
 // as prim_await above (which it's modeled on directly).
 extern Prim *prim_yield;
 #define P_prim_yield 59
+// Python's id(): the operand's address as an int64 (heap objects) or
+// its value bits (unboxed scalars -- diverges from CPython's
+// every-int-is-an-object identity, fine for the identity-comparison
+// idiom id(a) == id(b)). Exposed as `def id(x)` via __pyc_primitive__
+// in __pyc__/05_builtins.py (issue 025: timsort, pylife).
+extern Prim *prim_id;
+#define P_prim_id 60
 #endif
