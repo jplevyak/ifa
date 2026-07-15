@@ -42,14 +42,20 @@ remains actionable from the option survey:
 
 - **Option 1's codegen half** (no-type branch → trap instead of
   undeclared-label C errors) — still the highest-leverage honest
-  mitigation for the whole family.
+  mitigation for the whole family. STILL OPEN.
 - **Option 5** (per-contour reachability / CS-per-contour for
-  creation sites like `__str__`'s range) — now has a concrete
-  mechanism attached (above), making it more tractable than when
-  040 was filed.
+  creation sites like `__str__`'s range) — **LANDED 2026-07-15 as
+  [045-receiver-cs-method-cloning.md](045-receiver-cs-method-cloning.md)**
+  (clone_methods_per_cs: hard per-constant contours, per-constant
+  instance CSs, PER_CS_RECEIVER precision split stage). Issue 040 is
+  fixed by it; see 045 for the three chain repairs it actually took.
 - The union cross-product dead-combination shape deserves its own
   measurement: how much of the remaining "has no type" bucket is
-  exactly `op(A, B)` pairings where A and B never co-occur.
+  exactly `op(A, B)` pairings where A and B never co-occur. STILL
+  OPEN (the dict-in-list repro in this file remains its live
+  witness — 045 does not address it: dict is not a
+  clone_methods_per_cs class, and the failing pairing is between
+  same-field VALUES, not constant-keyed instances).
 
 **Bonus:** the prototype's first honest repro exposed a REAL,
 silent wrong-output bug unrelated to empty containers — mixed-length

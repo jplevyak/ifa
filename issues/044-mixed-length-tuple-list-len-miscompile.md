@@ -41,6 +41,18 @@ silent wrong output, no compile-time or runtime error.
   uninitialized/adjacent memory that happens to be zero here; this
   could equally read garbage.
 
+## Sensitivity note (2026-07-15, post issue-045 landing)
+
+The wrong output's exact shape is contour-sensitive: after the
+receiver-CS cloning work (045), the empty-plus-concrete variant
+`ls = [[], [1, 2]]; print(ls)` shifted from `[[], [1, 2, 0]]` to
+`[[0], [1, 2, 0]]` — still wrong, same mechanism (len over the union
+of different-vars.n tuple-list CSs), but the empty inner list now
+also prints a phantom element. Any change to how the inner lists'
+CSs group across contours can move the symptom; don't treat a shift
+in the garbage as progress or regression without checking the len
+resolution itself.
+
 ## Repro variations to check when picking this up
 
 - `[[3], [1, 2]]` printed (above) — wrong.
