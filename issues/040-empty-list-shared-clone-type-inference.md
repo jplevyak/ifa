@@ -1,6 +1,57 @@
 # 040 — An empty list's never-taken loop body gets forced into type-checking (and fails) only when another list also exists in the program
 
-**Status:** open, root cause substantially narrowed (2026-07-13) —
+**Status:** open — but the mechanism is now FULLY traced
+(2026-07-15, superseding the "not identified" note below), and the
+required fix is identified as issue 033-grade splitter work.
+
+## Complete mechanism (2026-07-15)
+
+The scheduling "leak" is a chain through `list.__str__`'s loop
+machinery, each link verified empirically:
+
+1. `len(self)` over a tuple-list CS IS a per-CS constant
+   (`P_prim_len` → `make_size_constant_type(cs->vars.n)`): 0 for
+   `k`, 2 for `b`. Per-clone constants exist.
+2. The `range(0, len(self))` construction merges both callers'
+   constants in `range.__new__`'s single contour (j = {0, 2} →
+   constant cap → generic int64). Verified fixable: flagging the
+   ctor params `__pyc_clone_constants__` (plus a REAL LATENT GAP
+   fixed along the way — `gen_class_pyda` never propagated
+   `clone_for_constants` from `__init__` params to the synthesized
+   `__new__` wrapper formals, so constant-cloning ctor params
+   silently didn't work through a constructor) produces
+   per-constant `__new__` contours and per-constant range CSs.
+3. **But that is still not enough**: `__pyc_more__`/`__next__`
+   merge into ONE EntrySet over the union of receiver range-CSs
+   (both are type `range`; the matcher/splitter has no reason to
+   separate them — no violation arises *there*), and `__next__`'s
+   `self.i += self.s` writes through the shared ES into EVERY
+   receiver CS's `i` field — widening the empty clone's `i` to
+   generic int64 too. `i < j` then cannot fold even with perfectly
+   separated per-constant CSs.
+4. The standalone case (`k=[]` alone) works only as a
+   self-consistent least fixpoint: the loop body is never
+   scheduled, so `__next__` is never analyzed, so `i` stays {0} and
+   `0 < 0` folds false. Adding ANY other list breaks the
+   equilibrium via link 3.
+
+Also ruled out this round: `creation_point`'s split-parent CS reuse
+(fa.cc ~434, the one explicit cross-contour CS-sharing rule) —
+disabling it entirely changes nothing for this repro.
+
+**Consequence:** the fix is receiver-CS-directed method cloning as a
+PRECISION move (split `__pyc_more__`/`__next__` per receiver CS even
+though no type violation occurs in them) — i.e. the deferred
+issue-033 splitter redesign, not a local patch. Constant-flag
+band-aids were tried and reverted (clone pressure, zero corpus
+effect — see `__pyc__/05_builtins.py`'s range note). Until then, the
+honest mitigation is codegen-side: emit a trap for no-type branches
+instead of undeclared-label C errors (issue 043's surviving
+option 1).
+
+The original filing and the 2026-07-13 narrowing follow.
+
+**Status (2026-07-13):** open, root cause substantially narrowed —
 not fixed. The title/hypothesis from the original filing ("shared
 clone") is **superseded**: traced further, confirmed the empty
 list's method calls run in their own, properly-monomorphic
