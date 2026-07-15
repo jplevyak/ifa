@@ -1,8 +1,12 @@
 # 040 — An empty list's never-taken loop body gets forced into type-checking (and fails) only when another list also exists in the program
 
-**Status:** open — but the mechanism is now FULLY traced
-(2026-07-15, superseding the "not identified" note below), and the
-required fix is identified as issue 033-grade splitter work.
+**Status:** FIXED 2026-07-15 by
+[045-receiver-cs-method-cloning.md](045-receiver-cs-method-cloning.md)
+(hard per-constant contours for clone_methods_per_cs classes +
+per-constant instance CSs + the PER_CS_RECEIVER precision split
+stage). The repro below compiles clean and runs correctly; committed
+as `tests/empty_list_print.py`. The mechanism trace that led there
+follows.
 
 ## Complete mechanism (2026-07-15)
 

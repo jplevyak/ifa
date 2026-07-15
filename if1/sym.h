@@ -116,6 +116,15 @@ class BasicSym : public gc {
   unsigned int num_kind : 3;   // Sort of number class
   unsigned int num_index : 3;  // Precision of number class
 
+  unsigned int clone_methods_per_cs : 1;  // class Sym: split method EntrySets per
+                                           // receiver CreationSet as a PRECISION
+                                           // move (no violation needed) -- set by
+                                           // the frontend for classes whose ctor
+                                           // params are clone_for_constants, so
+                                           // per-constant instance CSs keep their
+                                           // field constants foldable inside
+                                           // methods (ifa/issues/045, motivated
+                                           // by 040's range/__pyc_more__ trace).
   unsigned int clone_for_constants : 1;  // analysis should attempt to make this
                                          // a constant
   unsigned int dispatch_types_built : 1;

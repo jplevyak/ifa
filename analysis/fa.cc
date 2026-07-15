@@ -431,6 +431,17 @@ CreationSet *creation_point(AVar *v, Sym *s, int nvars) {
   // `es` may be the distinguished global contour (fa->global_es);
   // its `split` is always null, so the split-lookup below
   // naturally no-ops for globals.
+  //
+  // ifa/issues/045: instances of clone_methods_per_cs classes must
+  // NOT reuse the split parent's CS -- distinct per-constant
+  // contours exist precisely to give each constant binding its own
+  // instance CS (issue 040: both range(0,0) and range(0,2) contours
+  // funneled into ONE range CS through this reuse, merging the i/j
+  // field constants the hard per-constant ES split had separated).
+  {
+    Sym *cmc = s->clone_methods_per_cs ? s : (s->type ? unalias_type(s->type) : 0);
+    if (cmc && cmc->clone_methods_per_cs) goto Lcreators;
+  }
   if (es && es->split) {
     AVar *oldv = make_AVar(v->var, es->split);
     cs = oldv->cs_map ? oldv->cs_map->get(s) : 0;
@@ -439,6 +450,7 @@ CreationSet *creation_point(AVar *v, Sym *s, int nvars) {
       goto Lfound;
     }
   }
+Lcreators:;
   for (CreationSet *x : s->creators) {
     if (s->abstract_type && x == s->abstract_type->v[0]) continue;
     if (nvars != -1 || x->vars.n != nvars) continue;
@@ -1011,8 +1023,23 @@ static int entry_set_compatibility(AEdge *e, EntrySet *es) {
       return 0;
   }
   if (!edge_sset_compatible_with_entry_set(e, es)) val -= 2;
-  if (e->match->fun->clone_for_constants)
-    if (!edge_constant_compatible_with_entry_set(e, es)) val -= 1;
+  if (e->match->fun->clone_for_constants) {
+    if (!edge_constant_compatible_with_entry_set(e, es)) {
+      // ifa/issues/045: for clone_methods_per_cs classes' functions
+      // (ctor wrappers with clone_for_constants formals), differing
+      // constants are a HARD incompatibility, not a preference --
+      // the soft `val -= 1` still matches the merged ES when no
+      // better candidate exists, so `range(0, 0)` and `range(0, 2)`
+      // merged their j constants (-> constant cap -> generic int64)
+      // and no violation ever forced the split (issue 040's chain,
+      // link 2 in its final form). Scoped to the new opt-in flag:
+      // making this hard for ALL clone_for_constants functions
+      // (list.__getitem__ keys etc.) would eagerly fan out contours
+      // that today only split on violation evidence.
+      if (e->match->fun->sym && e->match->fun->sym->clone_methods_per_cs) return 0;
+      val -= 1;
+    }
+  }
   return val;
 }
 
@@ -5203,6 +5230,62 @@ static void clear_splits() {
   return analyze_again;
 }
 
+// ifa/issues/045: precision splitting of method contours per
+// receiver CreationSet, for classes explicitly marked
+// clone_methods_per_cs (pyc: classes whose __init__ params use
+// __pyc_clone_constants__). Violation-driven stages never separate
+// same-class receiver CSs (no violation arises in the merged method
+// itself), but the merge lets one receiver's field WRITES widen
+// every sibling CS's fields, destroying per-CS constants callers
+// fold on (issue 040's range/__pyc_more__ trace). Runs ONLY when
+// every stage above found nothing, and reuses split_edges'
+// find_or_make_filtered_entry_set routing, so products are re-FOUND
+// (not re-minted) across passes -- the issue 033 stability rule.
+static bool cs_is_per_cs_method_class(CreationSet *cs) {
+  if (!cs || !cs->sym) return false;
+  if (cs->sym->clone_methods_per_cs) return true;
+  Sym *t = cs->sym->type ? unalias_type(cs->sym->type) : 0;
+  return t && t->clone_methods_per_cs;
+}
+
+[[nodiscard]] static int split_for_per_cs_method_receivers() {
+  int analyze_again = 0;
+  int n_ess = fa->ess.n;
+  for (int i = 0; i < n_ess; i++) {
+    EntrySet *es = fa->ess[i];
+    // NOTE es->split is LINEAGE (set on every filtered-split
+    // product), not "being split away" -- most method ESs are
+    // products, so do NOT skip on it. Skip only edge-less ESs
+    // (emptied by earlier splits).
+    if (!es) continue;
+    if (!es->fun || !es->fun->sym) continue;
+    bool has_edges = false;
+    for (AEdge *ee : es->edges) if (ee) { has_edges = true; break; }
+    if (!has_edges) continue;
+    // Deterministic arg order (issue 035): positional positions,
+    // not args-map bucket order.
+    for (MPosition *p : es->fun->positional_arg_positions) {
+      AVar *av = es->args.get(p);
+      if (!av || !av->out || !av->out->type || av->out->type->sorted.n < 2) continue;
+      bool all_flagged = true;
+      Sym *cls = 0;
+      for (CreationSet *cs : av->out->type->sorted) {
+        if (!cs_is_per_cs_method_class(cs)) { all_flagged = false; break; }
+        Sym *t = cs->sym->clone_methods_per_cs ? cs->sym : unalias_type(cs->sym->type);
+        if (!cls) cls = t;
+        else if (cls != t) { all_flagged = false; break; }  // one class per split
+      }
+      if (!all_flagged) continue;
+      if (split_edges(av, 0, 0)) {
+        analyze_again = 1;
+        log(LOG_SPLITTING, "[per-cs] split es %d fun %s %d at arg %p (%d receiver CSs)\n", es->id,
+            es->fun->sym->name ? es->fun->sym->name : "", es->fun->sym->id, (void *)p, av->out->type->sorted.n);
+      }
+    }
+  }
+  return analyze_again;
+}
+
 // The five split stages (extend_analysis minus its stall/pass-cap
 // bookkeeping), extracted so the sticky stall guard in
 // extend_analysis can skip them wholesale once the guard has fired.
@@ -5355,6 +5438,21 @@ static void clear_splits() {
     }
   }
   log(LOG_SPLITTING, "split_for_violations %d\n", analyze_again);
+  // 6) precision: per-receiver-CS method contours for
+  // clone_methods_per_cs classes (ifa/issues/045). Only on full
+  // quiescence of stages 1-5 so it cannot perturb their
+  // trajectories within a pass.
+  if (!analyze_again) {
+    ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    cur_split_stage = (int)FAPassStage::PER_CS_RECEIVER;
+    analyze_again = split_for_per_cs_method_receivers();
+    fa->stage_time[(int)FAPassStage::PER_CS_RECEIVER] += stage_timer.lap();
+    if (analyze_again) {
+      record_fa_event(FAPassStage::PER_CS_RECEIVER, analyze_again, ess0, css0, viol0);
+      ++fa->stage_progress_count[(int)FAPassStage::PER_CS_RECEIVER];
+    }
+  }
+  log(LOG_SPLITTING, "split_for_per_cs_method_receivers %d\n", analyze_again);
   return analyze_again;
 }
 

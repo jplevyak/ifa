@@ -70,6 +70,17 @@ static void df_link(Dom *v, Dom *w, Vec<Dom *> &vertex) {
 
 static void compute_semi(Dom *w, Vec<Dom *> &vertex) {
   for (Dom *v : w->pred) {
+    // A pred never reached by df_traversal (semi < 0) is not
+    // reachable from the root, so no semidominator path can run
+    // through it -- and its Dom was never initialized for
+    // df_eval/df_compress (null ancestor chain: the CALL-graph
+    // build_call_dominators allocates Doms for every fa->funs entry
+    // but only traverses those reachable from top; a fun referenced
+    // by call edges yet unreachable from the root left a live pred
+    // edge here and df_compress dereferenced its null ancestor --
+    // same universe-mismatch family as build_cfg_dominators' edge
+    // pruning above).
+    if (v->semi < 0) continue;
     int semiu = df_eval(v, vertex)->semi;
     if (semiu < w->semi) w->semi = semiu;
   }

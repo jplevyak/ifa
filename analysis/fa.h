@@ -611,7 +611,7 @@ class FA : public gc {
   // one may have found work too, on a batched extend (see issue 033
   // S5 M2). Sized to FAPassStage's cardinality (kept as a plain
   // constant since FAPassStage is declared after this class).
-  static constexpr int kNumFAPassStages = 7;
+  static constexpr int kNumFAPassStages = 8;
   double stage_time[kNumFAPassStages] = {};
   long stage_progress_count[kNumFAPassStages] = {};
 
@@ -656,6 +656,11 @@ enum class FAPassStage {
   MARK_SETTER,            // split_for_setters with marks
   MARK_SETTER_OF_SETTER,  // split_for_setters_of_setters with marks
   VIOLATION,              // split_for_violations
+  PER_CS_RECEIVER,        // split_for_per_cs_method_receivers
+                          // (ifa/issues/045: precision split of
+                          // method contours per receiver CS for
+                          // clone_methods_per_cs classes; runs only
+                          // on quiescence of all stages above)
 };
 
 struct FAPassEvent {

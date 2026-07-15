@@ -53,6 +53,7 @@ BasicSym::BasicSym(void)
       type_kind(0),
       num_kind(0),
       num_index(0),
+      clone_methods_per_cs(0),
       clone_for_constants(0),
       dispatch_types_built(0),
       type_live(0) {}
