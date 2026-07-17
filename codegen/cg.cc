@@ -892,11 +892,86 @@ class CBackendEmitter : public VirtualCGEmitter {
       }
       return true;
     }
-    if (pn->prim->index == P_prim_isinstance && pn->rvals.n >= 4 && pn->rvals[3]->sym == sym_nil_type) {
+    // issue 011: a nil_type check reached through a MONOMORPHIC
+    // isinstance() CLONE (build_isinstance_call's ordinary-call form,
+    // used by both match-statement None-patterns and try/except's
+    // typed-clause dispatch) sees the CLASS VALUE Sym as its second
+    // arg (named "nil_type"), not sym_nil_type itself (named
+    // "__pyc_None_type__") -- same value-vs-type-Sym split
+    // ifa/analysis/fa.cc's OWN isinstance constant-folding navigates
+    // via ->meta_type (see the disjunction case below): the value
+    // Sym's meta_type IS sym_nil_type. The direct-send form (`x is
+    // None`'s raw prim_isinstance lowering) passes sym_nil_type
+    // itself, so both checks are needed.
+    Sym *cls3 = pn->rvals.n >= 4 ? pn->rvals[3]->sym : nullptr;
+    bool is_nil_check =
+        pn->prim->index == P_prim_isinstance && cls3 && (cls3 == sym_nil_type || cls3->meta_type == sym_nil_type);
+    if (is_nil_check) {
       if (pn->lvals.n && cg_get_string(pn->lvals[0])) {
         cchar *opnd = cg_get_string(pn->rvals[2]);
         if (!opnd) opnd = cg_get_string(pn->rvals[2]->sym);
-        fprintf(fp, "  %s = (%s == NULL);\n", cg_get_string(pn->lvals[0]), opnd ? opnd : "NULL");
+        // issue 011: reached through build_isinstance_call's
+        // monomorphic clone (see is_nil_check above), the operand can
+        // be a SCALAR-typed contour -- pyc's own convention for an
+        // int-or-None formal specialized to its scalar arm represents
+        // None AS 0 in that slot (describe(None) calling the SAME
+        // int64 clone as describe(5), passing (int64)NULL), so `==
+        // NULL` is already semantically correct here, not just for
+        // real pointers -- only clang's type checker objects
+        // (-Wnull-arithmetic on a direct int-vs-NULL compare).
+        // Routing through a pointer-sized cast keeps the identical
+        // comparison (0 either way) silently.
+        fprintf(fp, "  %s = ((void *)(intptr_t)%s == NULL);\n", cg_get_string(pn->lvals[0]), opnd ? opnd : "NULL");
+      } else {
+        fputs("  ;\n", fp);
+      }
+      return true;
+    }
+    // isinstance against a REAL class. There is no runtime
+    // class-hierarchy structure to walk (a record's only runtime
+    // identity is its classtag pointer, compared by equality) -- so
+    // emit a compile-time disjunction over the checked class's
+    // implementors (FA's own subclass set, `s->implementors.set_add(s)`
+    // in ast.cc means self is included -- exactly the set fa.cc's OWN
+    // constant-folding isinstance uses, ifa/analysis/fa.cc's
+    // P_prim_isinstance case, so the runtime fallback agrees with
+    // whatever FA didn't manage to fold at compile time). Needed for
+    // `except X as e:` matching against the pending-exception slot,
+    // whose union type across the whole program defeats per-CS
+    // constant folding.
+    if (pn->prim->index == P_prim_isinstance && pn->rvals.n >= 4) {
+      if (pn->lvals.n && cg_get_string(pn->lvals[0])) {
+        cchar *opnd = cg_get_string(pn->rvals[2]);
+        if (!opnd) opnd = cg_get_string(pn->rvals[2]->sym);
+        // The second isinstance arg is usually ALREADY the concrete
+        // class Sym directly (a raw sym_primitive send built right
+        // at the checking call site, e.g. try/except's typed-clause
+        // dispatch): type_kind Type_RECORD, has.n > 0, implementors
+        // usable as-is. Only fall back to ->meta_type for a value-
+        // vs-type-Sym split (e.g. reached through
+        // build_isinstance_call's shared isinstance() clone, where
+        // the formal itself carries no concrete type_kind but its
+        // meta_type does -- see is_nil_check above, same split).
+        // Empirically these are NOT interchangeable: using
+        // ->meta_type when cls is already concrete walks a DIFFERENT
+        // (meta-level, has.n==0) Sym's implementors and silently
+        // finds nothing.
+        Sym *cls = pn->rvals[3]->sym;
+        Sym *cls_type = (cls->type_kind == Type_RECORD && cls->has.n) ? cls
+                         : cls->meta_type                              ? cls->meta_type
+                                                                        : cls;
+        Vec<Sym *> concrete;
+        for (Sym *impl : cls_type->implementors)
+          if (impl && cg_has_classtag(impl)) concrete.add(impl);
+        fprintf(fp, "  %s = ", cg_get_string(pn->lvals[0]));
+        if (!opnd || !concrete.n) {
+          fputs("0;\n", fp);
+        } else {
+          fputs("(0", fp);
+          for (Sym *impl : concrete)
+            fprintf(fp, " || (*(_CG_TypeObject**)(void*)%s) == &_CG_type_%s", opnd, impl->name);
+          fputs(");\n", fp);
+        }
       } else {
         fputs("  ;\n", fp);
       }

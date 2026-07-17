@@ -1193,9 +1193,53 @@ static bool emit_send_is(EmitCtx &ctx, PNode *pn) {
   if (!dst_var || !lhs_var || !rhs_var) return false;
   llvm::Value *lhs = value_for_var(ctx, lhs_var);
   if (!lhs) return false;
+  // issue 011: isinstance against a REAL class -- needed for
+  // `except X as e:` matching against the pending-exception slot's
+  // whole-program union type, which defeats FA's per-CS constant
+  // folding. There's no runtime hierarchy to walk (a record's only
+  // identity is its classtag pointer, compared by equality), so
+  // build a compile-time disjunction over the class's implementors
+  // (mirrors cg.cc's identical fix and fa.cc's OWN isinstance
+  // constant-folding, which reads cs2->sym->meta_type->implementors
+  // the same way) instead of falling through to the (wrong for this
+  // case -- compares the OBJECT POINTER, not its classtag) generic
+  // `lhs == rhs` path below.
+  if (pn->prim->index == P_prim_isinstance && rhs_var->sym && rhs_var->sym != sym_nil_type &&
+      rhs_var->sym->meta_type != sym_nil_type) {
+    // cg.cc's identical fix: the second arg is usually ALREADY the
+    // concrete class Sym (a raw sym_primitive send built directly at
+    // the checking call site) -- use it as-is when it looks like a
+    // real record type (type_kind Type_RECORD, has.n > 0).
+    // ->meta_type is a DIFFERENT (meta-level, has.n==0) Sym whose own
+    // implementors are empty here; it's only the right hop for a
+    // value-vs-type-Sym split (build_isinstance_call's shared
+    // isinstance() clone, where the formal itself carries no
+    // concrete type_kind).
+    Sym *cls = rhs_var->sym;
+    Sym *cls_type = (cls->type_kind == Type_RECORD && cls->has.n) ? cls : (cls->meta_type ? cls->meta_type : cls);
+    Vec<Sym *> concrete;
+    for (Sym *impl : cls_type->implementors)
+      if (impl && cg_has_classtag(impl)) concrete.add(impl);
+    llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
+    llvm::Value *res;
+    if (!concrete.n) {
+      res = llvm::ConstantInt::getFalse(*TheContext);
+    } else {
+      llvm::Value *tag = Builder->CreateLoad(ptr_ty, lhs, "classtag");
+      res = llvm::ConstantInt::getFalse(*TheContext);
+      for (Sym *impl : concrete) {
+        llvm::Value *cmp = Builder->CreateICmpEQ(tag, get_classtag_global(impl->name), "isocmp");
+        res = Builder->CreateOr(res, cmp);
+      }
+    }
+    llvm::Type *dst_ty = sym_to_llvm_type(dst_var->type);
+    if (dst_ty && res->getType() != dst_ty && dst_ty->isIntegerTy()) res = Builder->CreateZExtOrTrunc(res, dst_ty);
+    put_result(ctx, dst_var, res);
+    return true;
+  }
   llvm::Value *rhs = nullptr;
-  if (pn->prim->index == P_prim_isinstance &&
-      rhs_var->sym == sym_nil_type) {
+  if (pn->prim->index == P_prim_isinstance && rhs_var->sym &&
+      (rhs_var->sym == sym_nil_type || rhs_var->sym->meta_type == sym_nil_type)) {
     // Compare against null.
     llvm::Type *t = lhs->getType();
     if (t->isPointerTy()) {
