@@ -254,8 +254,18 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         // `element->type`. Treat "no element type" the same as "void
         // element type" rather than dereferencing a null Sym*.
         int voidish = n->rvals.n < 4 && (!elem || elem->type == sym_void);
+        // Element count: rvals = [primitive, make, list/tuple, e0..].
+        // The listish_tuple route's count becomes the runtime LIST
+        // LENGTH (_CG_prim_tuple_list_internal sets len = n), and the
+        // old `- 2` gave every record-represented list literal a
+        // phantom trailing element (NULL/0) -- ifa/issues/044's
+        // "[[3], [1, 2]] prints [[3, 0], [1, 2, 0]]", and a NULL
+        // deref for pointer elements once something len-iterates the
+        // literal (issues/029's deepcopy loops). The true-tuple
+        // macro ignores the count entirely (fixed-size struct
+        // malloc), so it keeps the historical value.
         fprintf(fp, "%s = _CG_prim_tuple%s(%s, %d);\n", cg_get_string(n->lvals[0]), listish_tuple ? "_list" : "",
-                voidish ? "int*" : t, n->rvals.n - 2);
+                voidish ? "int*" : t, n->rvals.n - (listish_tuple ? 3 : 2));
         for (int i = 3; i < n->rvals.n; i++)
           fprintf(fp, "  %s->e%d = %s;\n", cg_get_string(n->lvals[0]), i - 3, cg_get_string(n->rvals.v[i]));
       } else if (sym_list->specializers.set_in(n->rvals[2]->sym) || n->rvals[2]->sym->is_vector) {
@@ -535,7 +545,31 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
     case P_prim_copy: {
       fputs("  ", fp);
       assert(n->lvals.n == 1);
-      cchar *dst_t = cg_get_string(n->lvals[0]->type);
+      Sym *dt = n->lvals[0]->type;
+      // A scalar (or immutable string) copy is identity: the clone
+      // macro's sizeof(*(T)0) only makes sense for records held by
+      // pointer. Reachable now that recursive functions get
+      // monomorphic contours (pyc issues/025 R1 item 5): deepcopy's
+      // int64 leaf contour calls copy(obj:int64), which used to be
+      // buried in a boxed union.
+      if (dt->type_kind != Type_RECORD) {
+        if (cg_get_string(n->lvals[0])) fprintf(fp, "%s = ", cg_get_string(n->lvals[0]));
+        fprintf(fp, "%s;\n", cg_get_string(n->rvals[n->rvals.n - 1]));
+        break;
+      }
+      cchar *dst_t = cg_get_string(dt);
+      cchar *src_t = c_type(n->rvals[n->rvals.n - 1]);
+      // A union of same-class CSs (original + P_prim_copy results,
+      // issues/029) has no single struct type -- its C type is
+      // _CG_any and sizeof is unavailable at compile time. Copy by
+      // the allocation's runtime size instead (GC_size, see
+      // _CG_prim_copy_any in pyc_c_runtime.h).
+      if (!dst_t || !strcmp(dst_t, "_CG_any") || !src_t || !strcmp(src_t, "_CG_any")) {
+        if (cg_get_string(n->lvals[0]))
+          fprintf(fp, "%s = (%s)", cg_get_string(n->lvals[0]), c_type(n->lvals[0]));
+        fprintf(fp, "_CG_prim_copy_any((void*)%s);\n", cg_get_string(n->rvals[n->rvals.n - 1]));
+        break;
+      }
       if (cg_get_string(n->lvals[0])) fprintf(fp, "%s = ", cg_get_string(n->lvals[0]));
       fprintf(fp, "(%s)_CG_prim_copy_dst(%s, ", dst_t, dst_t);
       for (int i = 2; i < n->rvals.n; i++) {
@@ -705,14 +739,25 @@ static void simple_move(FILE *fp, Var *lhs, Var *rhs) {
   // the global-var emitter in c_codegen_print_c sets its
   // cg_string to the literal "NULL" — no storage, no lvalue.
   // Without this guard, `simple_move` would emit
-  // `NULL = NULL;` which is invalid C.  The MOVE itself is
-  // semantically a no-op (writing None into a single-None-
-  // value Var) so dropping it is sound.  Mirrors
+  // `NULL = NULL;` which is invalid C.  Mirrors
   // `is_const_folded_send` for SEND PNodes.  Same logic
   // covers any other future case where a Var's cg_string
   // becomes a non-lvalue literal — `get_constant` returns
   // non-null for Vars folded to a single constant value.
-  if (lhs->type == sym_nil_type || get_constant(lhs)) return;
+  //
+  // But a nil-typed LOCAL (a real `_CG_nil_type tN;` lvalue, e.g.
+  // fn->ret of `__pyc_None_type__.__deepcopy__`'s `return self`)
+  // must still be INITIALIZED: fully dropping the move left
+  // `return t0;` reading an uninitialized stack slot -- issues/029's
+  // deepcopied leaves carried stack garbage in their nil-armed
+  // Optional fields (SIGSEGV far away, in whatever walked the copy).
+  // The value of a nil-typed var is statically NULL, so emit that.
+  if (lhs->type == sym_nil_type) {
+    if (cg_get_string(lhs) && strcmp(cg_get_string(lhs), "NULL"))
+      fprintf(fp, "  %s = NULL;\n", cg_get_string(lhs));
+    return;
+  }
+  if (get_constant(lhs)) return;
   if (!rhs->sym->fun) {
     ASSERT(cg_get_string(rhs));
     if (rhs->type != lhs->type)
@@ -890,6 +935,22 @@ class CBackendEmitter : public VirtualCGEmitter {
       fputs("  ", fp);
       if (pn->lvals.n && cg_get_string(pn->lvals[0])) {
         fprintf(fp, "%s = ", cg_get_string(pn->lvals[0]));
+        // Cast the result when the callee's contour returns a wider
+        // C type than this call site's lval (e.g. a shared method
+        // contour returning _CG_any assigned into a concrete
+        // struct-pointer temp) -- same discipline as
+        // write_send_arg's argument casts; pointer results detour
+        // through void*.
+        cchar *lt = c_type(pn->lvals[0]);
+        cchar *rt = target->rets.n && target->rets[0] ? c_type(target->rets[0]) : nullptr;
+        if (lt && rt && strcmp(lt, rt)) {
+          bool scalar = !strncmp(lt, "_CG_int", 7) || !strncmp(lt, "_CG_uint", 8) ||
+                        !strncmp(lt, "_CG_float", 9) || !strcmp(lt, "_CG_bool");
+          if (scalar)
+            fprintf(fp, "(%s)", lt);
+          else
+            fprintf(fp, "(%s)(void*)", lt);
+        }
       }
       fputs(cg_get_string(target), fp);
       fputs("(", fp);
@@ -939,6 +1000,7 @@ class CBackendEmitter : public VirtualCGEmitter {
         Vec<int> slots;      //   ... that class's method-slot index
         Vec<Fun *> plains;   // plain-function partition
         Fun *nil_fn = nullptr;  // nil-receiver candidate (None method on a nil|record union)
+        Vec<Fun *> directs;  // untagged-receiver method candidates (see below)
         // issue 026: pre-pass -- which classes are DIRECTLY, singularly
         // owned by one of THIS call's candidates (a candidate whose
         // self formal is a single concrete Type_RECORD, not a
@@ -1135,18 +1197,87 @@ class CBackendEmitter : public VirtualCGEmitter {
               continue;
             }
           }
+          // Untagged direct route: a METHOD-send candidate (rvals[0]
+          // is the selector symbol, so the plain route above is out)
+          // whose receiver class carries no classtag / method-pointer
+          // slots -- the builtin containers (list, str, ...), whose
+          // instances are raw runtime layouts, not tagged structs.
+          // There is no way to DISCRIMINATE two such candidates at
+          // runtime, so this route is only usable when it ends up
+          // with exactly ONE member (checked at emission below): it
+          // becomes the final `else` arm after the nil test and any
+          // classtag compares. First user: truth-testing an
+          // Optional[list] field (`if node.args:` where args starts
+          // None) -- __pyc_to_bool__ over {nil, list} is nil_fn plus
+          // exactly one untagged candidate, fully decided by the
+          // null test (pyc issues/025, genetic2's crossover).
+          if (cg_get_string(fun_val) && pn->rvals[0]->sym->is_symbol) {
+            bool compat = true;
+            cchar *drecv = nullptr;
+            for (MPosition *p : fun_val->positional_arg_positions) {
+              Var *av = fun_val->args.get(p);
+              if (!av->live) continue;
+              int i = (int)Position2int(p->pos[0]) - 1;
+              if (i < 0 || i >= pn->rvals.n || !cg_get_string(pn->rvals[i])) { compat = false; break; }
+              cchar *ft = c_type(av), *at = c_type(pn->rvals[i]);
+              if (strcmp(ft, at) && scalar_ct(ft) != scalar_ct(at)) { compat = false; break; }
+              if (!drecv) drecv = cg_get_string(pn->rvals[i]);
+            }
+            if (compat) {
+              directs.add(fun_val);
+              if (!recv_str && drecv) recv_str = drecv;
+              continue;
+            }
+          }
           ok = false;
+        }
+        // Two untagged candidates can't be told apart at runtime.
+        if (directs.n > 1) ok = false;
+        // A nil test on a SCALAR-typed operand can't distinguish
+        // None from 0/0.0/False: if the shared dispatch operand's
+        // C type is scalar and a nil branch exists, bail rather
+        // than miscompile (print of a {nil,int64} union would
+        // render 0 as "None"). EXCEPTION: the truthiness selectors,
+        // where None and zero give the SAME answer (both falsy), so
+        // the conflation is semantically invisible -- `if f():` on a
+        // function whose fall-through path implicitly returns None
+        // ({int64, nil} result) is genetic2's TreeNode.execute.
+        if (ok && nil_fn && recv_str && pn->rvals.n) {
+          cchar *sel = pn->rvals[0]->sym->is_symbol ? pn->rvals[0]->sym->name : nullptr;
+          bool truthiness = sel && (!strcmp(sel, "__pyc_to_bool__") || !strcmp(sel, "__bool__") ||
+                                    !strcmp(sel, "__not__"));
+          if (!truthiness) {
+            for (int i = 1; i < pn->rvals.n; i++) {
+              if (pn->rvals[i] && cg_get_string(pn->rvals[i]) && !strcmp(cg_get_string(pn->rvals[i]), recv_str)) {
+                cchar *rt = c_type(pn->rvals[i]);
+                if (scalar_ct(rt)) ok = false;
+                break;
+              }
+            }
+          }
         }
         if (ok && recv_str && (classes.n || plains.n || nil_fn)) {
           cchar *lhs = (pn->lvals.n && cg_get_string(pn->lvals[0])) ? cg_get_string(pn->lvals[0]) : nullptr;
           cchar *ret_type_str = (pn->lvals.n && pn->lvals[0]->type) ? c_type(pn->lvals[0]) : "void*";
+          // Each branch's callee returns ITS OWN C type (the nil
+          // branch returns _CG_nil_type, an untagged direct returns
+          // e.g. _CG_any) while lhs has the UNION's type -- cast the
+          // result like arguments are cast (pointer results detour
+          // through void*).
+          auto emit_lhs = [&]() {
+            if (!lhs) return;
+            if (scalar_ct(ret_type_str))
+              fprintf(fp, "%s = (%s)", lhs, ret_type_str);
+            else
+              fprintf(fp, "%s = (%s)(void*)", lhs, ret_type_str);
+          };
           int nb = 0;
           if (nil_fn) {
             // Null test first: it both selects the None method and
             // keeps the classtag dereferences below null-safe.
             fprintf(fp, "  if (!%s) {\n", recv_str);
             fputs("    ", fp);
-            if (lhs) fprintf(fp, "%s = ", lhs);
+            emit_lhs();
             fprintf(fp, "%s(", cg_get_string(nil_fn));
             int wrote_one = 0;
             for (MPosition *p : nil_fn->positional_arg_positions) {
@@ -1179,7 +1310,7 @@ class CBackendEmitter : public VirtualCGEmitter {
             Fun *fv = plains[fi];
             fprintf(fp, "  %sif ((void*)%s == (void*)&%s) {\n", nb ? "else " : "", recv_str, cg_get_string(fv));
             fputs("    ", fp);
-            if (lhs) fprintf(fp, "%s = ", lhs);
+            emit_lhs();
             fprintf(fp, "%s(", cg_get_string(fv));
             int wrote_one = 0;
             for (MPosition *p : fv->positional_arg_positions) {
@@ -1198,7 +1329,34 @@ class CBackendEmitter : public VirtualCGEmitter {
             }
             fputs(");\n  }\n", fp);
           }
-          fputs("  else { assert(!\"runtime error: polymorphic dispatch: no branch matched\"); }\n", fp);
+          if (directs.n == 1) {
+            // The single untagged candidate is everything the nil
+            // test / tag compares above didn't claim -- direct call,
+            // no discrimination needed (or possible).
+            Fun *fv = directs[0];
+            fputs(nb ? "  else {\n" : "  {\n", fp);
+            fputs("    ", fp);
+            emit_lhs();
+            fprintf(fp, "%s(", cg_get_string(fv));
+            int wrote_one = 0;
+            for (MPosition *p : fv->positional_arg_positions) {
+              Var *av = fv->args.get(p);
+              if (!av->live) continue;
+              int i = (int)Position2int(p->pos[0]) - 1;
+              cchar *ft = c_type(av), *at = c_type(pn->rvals[i]);
+              if (wrote_one) fputs(", ", fp);
+              wrote_one = 1;
+              if (!strcmp(ft, at))
+                fputs(cg_get_string(pn->rvals[i]), fp);
+              else if (scalar_ct(ft))
+                fprintf(fp, "(%s)%s", ft, cg_get_string(pn->rvals[i]));
+              else
+                fprintf(fp, "(%s)(void*)%s", ft, cg_get_string(pn->rvals[i]));
+            }
+            fputs(");\n  }\n", fp);
+          } else {
+            fputs("  else { assert(!\"runtime error: polymorphic dispatch: no branch matched\"); }\n", fp);
+          }
           return;
         }
       }

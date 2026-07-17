@@ -132,6 +132,66 @@ failing expressions are `self._keys[i]`/`self._vals[i]` in
 `__pyc__/07_dict.py` — bottom-element list fields of the
 never-written dict.
 
+**Shape C (2026-07-16, recursive-ES splitting follow-on): shared
+iterator CS re-fuses level-separated recursion contours.** After the
+recursive-ES splitting fix (pyc issues/025 R1 item 5 resolution), a
+level-descending recursive function (deepcopy over `[[1,2],[3,4]]`)
+gets one monomorphic EntrySet per recursion level — but only when it
+indexes (`obj[i]`, per-receiver `__getitem__` contours). With
+`for x in obj:`, ALL levels' loops share ONE `__list_iter__` CS
+whose `thelist` field unions every level's lists ({outer, inner,
+inner}), so `x` = the union of every level's elements in EVERY
+contour, and the freshly-separated ESs re-fuse (verified by
+per-edge actual dumps: both recursion edges' actuals carried the
+identical 3-CS union). The iterator CS can't split because CS
+splitting is setter-driven (stages 3/4) and the per-level `__init__`
+setters live in ESs whose separation depends on the CS split —
+the CS<->ES contour circularity, with the setter path's recursion
+exclusion (deliberately retained) on top.
+
+**Shape C FIXED (2026-07-16), two pieces:**
+
+1. **`__list_iter__` on the issue-045 `clone_methods_per_cs` track**
+   (`__pyc_clone_constants__` on its `__init__` param,
+   `__pyc__/04_sequence.py`) — the existing circularity-breaking
+   lever, same as `range`: `creation_point` skips split-parent CS
+   reuse (one iterator CS per creating contour) and the
+   PER_CS_RECEIVER stage splits `__pyc_more__`/`__next__` per
+   receiver CS. The lever exists precisely because setter-driven CS
+   splitting can't bootstrap itself out of this circularity.
+   Scoped to `__list_iter__` only: `__tuple_iter__`/str iteration
+   can receive CONSTANTS, where `clone_for_constants` would engage
+   the per-constant contour machinery for real — a separate
+   decision with its own cost measurement if ever needed.
+
+2. **Dup-aware stall guard** (`fa.h` IFA_STALL_LIMIT /
+   IFA_NONIMPROVE_LIMIT, `fa.cc` extend_analysis): the iterator
+   method chain (`__new__` -> `__init__` -> `__iter__` ->
+   `__pyc_more__` -> `__next__`) splits ONE link per pass (each
+   link's confluence only appears after the previous pass's
+   re-flow), so a recursive iterator user needs ~14 non-improving
+   passes while its single boxing violation waits on the last link
+   — the old unconditional 8-pass stall counter killed splitting
+   mid-chain (and starved the PER_CS_RECEIVER stage, which runs
+   only on full quiescence of stages 1-5, so the per-CS iterator
+   contours never materialized when a second recursive function
+   shared the file). Non-improving passes now advance the stall
+   counter only when they RE-DERIVED split decisions (the per-pass
+   ledger dup counters — the oscillation signature this issue's 033
+   sibling measured); dup-free structural descent gets a looser
+   consecutive-non-improving cap (IFA_NONIMPROVE_LIMIT 32) on top
+   of the hard IFA_PASS_LIMIT. Measured: the descent shape is
+   dup-free (2 dups in 15 passes); the statically-unbounded
+   recursion probe runs at 0 violations, where the stall guard
+   never governed (pass_limit does, unchanged).
+
+With both, `for x in obj:` recursion fully monomorphises:
+`pyc_lib/copy.py`'s deepcopy uses the natural loop form, and
+`tests/recursive_polymorphic.py` covers iterator descent next to a
+second recursive function (the combination that exposed the guard
+starvation). Corpus: kanoodle newly compiles (22 -> 23); no other
+example changed; compile times baseline-identical (pygasus 64s).
+
 ## Options
 
 ### Option 1 — prune empty-element CSs at read/violation time

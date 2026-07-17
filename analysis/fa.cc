@@ -1087,16 +1087,44 @@ static bool check_edge(AEdge *e, EntrySet *es) {
   return true;
 }
 
-static int check_split(AEdge *e, Vec<AEdge *> &ees) {
+// `avoid` (when non-null) is the EntrySet a type-driven split is
+// detaching `e` AWAY from: pending-backedge and parent-split routes
+// that would bind the edge straight back into it are skipped. The
+// pending map's monomorphic-recursion binding ("recursion follows
+// its split-off caller contour" -- record_backedges) is a default,
+// not evidence; when the splitter has concrete type evidence that a
+// recursive edge does NOT belong with its enclosing contour, the
+// default must yield or the split silently no-ops and the same
+// decision re-derives every pass (observed: 2-level polymorphic
+// recursion -- f([[1,2],[3,4]]) -- stalled with the level-1 contour
+// permanently holding {list, int64}).
+static int check_split(AEdge *e, Vec<AEdge *> &ees, EntrySet *avoid = nullptr) {
   if (!e->from) return 0;
   if (Vec<EntrySet *> *ess = e->from->pending_es_backedge_map.get(e)) {
     // Issue 035: hash-set Vec — copy_AEdge creation order (edge
     // ids, schedule) must not follow heap layout.
     Vec<EntrySet *> sorted_ess;
-    for (EntrySet *es : *ess) if (es) sorted_ess.add(es);
+    for (EntrySet *es : *ess) if (es && es != avoid) sorted_ess.add(es);
     qsort_by_id(sorted_ess);
-    for (EntrySet *es : sorted_ess) set_or_copy_AEdge(e, es, ees);
-    return 1;
+    // Bind the edge to ONE recorded ES (the canonical first), not a
+    // COPY per recorded ES: argument types haven't flowed at bind
+    // time, so a fan-out can't be filtered here, and a residual
+    // multi-ES fan on a DIRECT call (constant callee) survives to
+    // codegen as an unresolvable dispatch -- write_send emitted
+    // `if (fn == &clone1) ... else if (fn == &clone2)` over the
+    // callee's own address, always taking branch 1 and calling the
+    // wrong contour with the other level's receivers (garbage
+    // field reads in issues/029's recursive deepcopy trees). If
+    // the single binding is type-wrong, the next pass's splitter
+    // re-derives the level split from real evidence -- the same
+    // level-by-level convergence the recursive-ES machinery
+    // already relies on.
+    if (sorted_ess.n) {
+      set_or_copy_AEdge(e, sorted_ess[0], ees);
+      return 1;
+    }
+    // Every route was the avoided ES: fall through to the
+    // split/fresh-ES paths below.
   }
   if (e->from->split) {
     Vec<AEdge *> *m = e->from->split->out_edge_map.get(e->pnode);
@@ -1106,6 +1134,7 @@ static int check_split(AEdge *e, Vec<AEdge *> &ees) {
       for (AEdge *ee : *m) if (ee) sorted_m.add(ee);
       qsort_by_id(sorted_m);
       for (AEdge *ee : sorted_m) if (ee) {
+        if (ee->to == avoid) continue;
         if (!check_edge(e, ee->to)) continue;
         if (ee->match->fun == e->match->fun) {
           if (e->match->fun->split_unique || !edge_nest_compatible_with_entry_set(e, ee->to)) {
@@ -1128,7 +1157,10 @@ static void make_entry_set(AEdge *e, Vec<AEdge *> &edges, EntrySet *split = null
     edges.add(e);
     return;
   }
-  if (check_split(e, edges)) return;
+  // `split` is the ES this edge is being detached from (apply_entry_
+  // set_split); routes that would re-bind straight back into it are
+  // vetoed -- see check_split's `avoid` comment.
+  if (check_split(e, edges, split)) return;
   EntrySet *es = nullptr;
   if (!split) {
     if (find_best_entry_sets(e, edges)) return;
@@ -2131,6 +2163,16 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
         for (CreationSet *cs : thing->out->sorted) creation_point(result, cs->sym->meta_type);  // recover original type
         break;
       }
+      // NB P_prim_copy result CSs must stay FRESH (creation_point),
+      // not shared with the source: an experiment sharing them
+      // (update_gen(result, thing->out)) created a within-pass
+      // divergence for self-referential deepcopy -- each copy
+      // contour's result list unioned back into the SOURCE CS's
+      // field, which re-widened the copier's own input and spawned
+      // another contour, unboundedly (genetic2's TreeNode). The
+      // same-class layout agreement the sharing was after is
+      // guaranteed by determine_layouts' canonical field ordering
+      // instead (clone.cc).
       case P_prim_copy:
       case P_prim_clone_vector:
       case P_prim_clone: {
@@ -4027,12 +4069,72 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
   Vec<AEdge *> all_edges, do_edges, stay_edges;
   for (AEdge *ee : es->edges) if (ee) if (ee->args.n) all_edges.add(ee);
   qsort_by_id(all_edges);
+  // Type-driven grouping includes RECURSIVE edges when the recursion
+  // is STRUCTURAL DESCENT: resolving recursion to monomorphic
+  // contours is core IFA design, and the machinery is already in
+  // place -- when a recursive edge splits away, record_backedges
+  // plants the recursion's pnode in the product's
+  // pending_es_backedge_map, and check_split binds it next pass to
+  // the same ES as its (split-off) caller contour; polymorphic
+  // recursion then re-splits level by level until each contour is
+  // monomorphic (leaf contours converge when per-contour condition
+  // folding kills the recursive branch). The old blanket exclusion
+  // made a self-recursive function with one caller permanently
+  // unsplittable (the non_rec==1 short-circuit below): its formal
+  // stayed a union of ALL recursion depths' types -- pyc issues/025
+  // R1 item 5, deepcopy's `obj` boxed to void*.
+  //
+  // The separability gate: a recursive edge only joins the grouping
+  // when the recursion is LEVEL-DESCENDING at the confluence
+  // position -- its type there must be IDENTICAL TO or DISJOINT FROM
+  // every other edge's (deepcopy's {outer-list} -> {inner-lists} ->
+  // {int64}: each level's actuals partition cleanly, every call site
+  // stays monomorphic after the split, no runtime dispatch is ever
+  // needed between the same-class level contours). A PARTIAL overlap
+  // (same-shape recursion over one union, e.g. a kind-discriminated
+  // Expr tree whose lhs/rhs actuals are {Expr#1, Expr#2, None}
+  // against a caller's {Expr#2}) means the recursion must stay fused
+  // with its caller contour: splitting it both re-derives forever
+  // (each product recreates the same confluence; the union's
+  // runtime-dead members, e.g. None, strand in contours where
+  // nothing resolves) and fans single call sites out across
+  // same-class contours that runtime dispatch cannot discriminate
+  // (tests/expr_evaluator.py regressed BOTH ways -- compile
+  // diagnostics under an ungated version of this change, a
+  // "polymorphic dispatch: no branch matched" abort under a
+  // rec-vs-nonrec-only disjointness gate).
+  auto ety_at = [&](AEdge *ee) -> AType * {
+    AVar *a = avpos ? ee->args.get(avpos) : nullptr;
+    return a ? type_intersection(a->out->type, ee->match->formal_filters.get(avpos))
+             : fa->type_world.bottom_type;
+  };
+  bool have_nonrec = false;
+  if (!fsetters)
+    for (AEdge *ee : all_edges) if (ee && ee->from && !is_es_recursive(ee)) { have_nonrec = true; break; }
   int nedges = 0, non_rec_edges = 0;
   for (AEdge *ee : all_edges) if (ee) {
     if (!ee->from) continue;
     nedges++;
-    if (!fsetters ? is_es_recursive(ee) : is_es_cs_recursive(ee)) continue;
-    non_rec_edges++;
+    bool rec = !fsetters ? is_es_recursive(ee) : is_es_cs_recursive(ee);
+    if (rec) {
+      // The setter path keeps the blanket exclusion: setter
+      // equivalence over recursive DATA (es_cs backedges) isn't
+      // level-separable the way argument types are.
+      if (fsetters) continue;
+      AType *ety = ety_at(ee);
+      // No live non-recursive caller: a dead cycle; leave it fused.
+      bool separable = have_nonrec && ety->n;
+      if (separable) for (AEdge *oe : all_edges) if (oe && oe != ee && oe->from) {
+        AType *oty = ety_at(oe);
+        if (!oty->n || oty == ety) continue;
+        if (type_intersection(ety, oty) != fa->type_world.bottom_type) {
+          separable = false;
+          break;
+        }
+      }
+      if (!separable) continue;
+    } else
+      non_rec_edges++;
     if (!fsetters) {
       if (!edge_type_compatible_with_entry_set(ee, es, fmark))
         do_edges.add(ee);
@@ -4063,7 +4165,13 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
   log(LOG_SPLITTING, "[ses] av %d es %d %s%s nedges=%d non_rec=%d do=%d stay=%d\n",
       av->id, es->id, fsetters ? "setters " : "", fmark ? "marks " : "",
       nedges, non_rec_edges, do_edges.n, stay_edges.n);
-  if (non_rec_edges == 1 && nedges != do_edges.n) {
+  // The single-real-caller short-circuit only applies to the setter
+  // path now: on the type path recursive edges group like any other
+  // edge (see above), and for a NON-recursive ES this check was
+  // always redundant (non_rec==1 implies nedges==1, and a lone edge
+  // either stays -- groups empty -- or hits the single-group-
+  // exhausted break below).
+  if (fsetters && non_rec_edges == 1 && nedges != do_edges.n) {
     log(LOG_SPLITTING, "[ses] av %d es %d short-circuit: non_rec_edges==1 && nedges!=do_edges.n\n", av->id, es->id);
     return nullptr;
   }
@@ -5504,16 +5612,37 @@ static bool cs_is_per_cs_method_class(CreationSet *cs) {
     // stall_limit consecutive passes, treat further splitting as
     // divergence and stop. Zero-violation passes (pure precision
     // splitting) don't advance the stall counter.
+    //
+    // Dup-aware (043 shape C, see IFA_STALL_LIMIT's note): only
+    // passes that RE-DERIVED split decisions (per-pass ledger dup
+    // counters -- oscillation) advance the stall counter; a
+    // non-improving pass of purely FIRST-TIME splits is structural
+    // descent (a contour chain exposing one new confluence per
+    // pass) and gets the looser IFA_NONIMPROVE_LIMIT instead.
+    // Observed shape: a recursive function iterating nested lists
+    // needs ~14 dup-free passes (its iterator method chain splits
+    // one link per pass) while its single boxing violation waits on
+    // the last link -- the unconditional counter stopped it at 8
+    // with the violation stranded.
     int v = fa->type_violations.set_count();
     if (v > 0) {
       if (v < fa->best_violations) {
         fa->best_violations = v;
         fa->stall_passes = 0;
-      } else if (++fa->stall_passes >= fa->stall_limit) {
-        fa->pass_limit_hit = true;
-        log(LOG_SPLITTING, "STALL LIMIT %d reached at pass %d, %d violations (best %d); stopping\n",
-            fa->stall_limit, analysis_pass, v, fa->best_violations);
-        analyze_again = 0;
+        fa->nonimprove_passes = 0;
+      } else {
+        bool rederived = fa->dup_split_attempts + fa->cs_dup_split_attempts > 0;
+        if (rederived) ++fa->stall_passes;
+        ++fa->nonimprove_passes;
+        if (fa->stall_passes >= fa->stall_limit || fa->nonimprove_passes >= IFA_NONIMPROVE_LIMIT) {
+          fa->pass_limit_hit = true;
+          log(LOG_SPLITTING,
+              "STALL LIMIT reached at pass %d, %d violations (best %d): %d re-deriving (limit %d), "
+              "%d non-improving (limit %d); stopping\n",
+              analysis_pass, v, fa->best_violations, fa->stall_passes, fa->stall_limit, fa->nonimprove_passes,
+              IFA_NONIMPROVE_LIMIT);
+          analyze_again = 0;
+        }
       }
     }
   }

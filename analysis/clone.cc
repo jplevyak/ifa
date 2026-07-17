@@ -436,12 +436,49 @@ static void determine_basic_clones(Vec<Vec<CreationSet *> *> &css_sets_by_sym) {
 static void determine_layouts() {
   for (CreationSet *cs : fa->css) {
     unsigned int offset = 0;
-    for (AVar *iv : cs->vars) {
+    // Canonical (name-sorted) field order, NOT cs->vars insertion
+    // order: two CSs of the same class can acquire their ivars in
+    // different orders (the instance CS in __init__'s write order,
+    // a P_prim_copy CS in the copying code's access order -- e.g.
+    // the synthesized __deepcopy__'s field loop, issues/029), and
+    // order-dependent offsets made prim_period_offset's equivalence
+    // gate fail ("missmatched offsets") on layouts that agree in
+    // every real sense. cs->vars itself is left untouched (other
+    // code indexes it positionally); only the offset walk is
+    // reordered.
+    Vec<AVar *> ordered;
+    for (AVar *iv : cs->vars) if (iv) ordered.add(iv);
+    if (ordered.n > 1)
+      qsort(ordered.v, ordered.n, sizeof(ordered[0]), [](const void *a, const void *b) {
+        AVar *x = *(AVar **)a, *y = *(AVar **)b;
+        cchar *xn = x->var && x->var->sym && x->var->sym->name ? x->var->sym->name : "";
+        cchar *yn = y->var && y->var->sym && y->var->sym->name ? y->var->sym->name : "";
+        int c = strcmp(xn, yn);
+        if (c) return c;
+        return (x->id > y->id) - (x->id < y->id);
+      });
+    for (AVar *iv : ordered) {
       unsigned int size = 0, alignment = 0;
       for (CreationSet *x : *iv->out->type) if (x) {
-        if (size && x->sym->size != size) fail("mismatched field sizes");
+        if (size && x->sym->size != size) {
+          fprintf(stderr, "mismatched field members:");
+          for (CreationSet *y : *iv->out->type) if (y)
+            fprintf(stderr, " %s(%d)", y->sym->type && y->sym->type->name ? y->sym->type->name : "?", y->sym->size);
+          fprintf(stderr, "\n");
+          for (AVar *d : cs->defs) if (d && d->var && d->var->sym)
+            fprintf(stderr, "  def: %s %s:%d\n", d->var->sym->name ? d->var->sym->name : "<anon>",
+                    d->var->sym->filename() ? d->var->sym->filename() : "?", d->var->sym->source_line());
+          fail("mismatched field sizes: class '%s' field '%s' mixes %d- and %d-byte members ('%s')",
+               cs->sym && cs->sym->name ? cs->sym->name : "<anon>",
+               iv->var && iv->var->sym && iv->var->sym->name ? iv->var->sym->name : "<anon>", size, x->sym->size,
+               x->sym->type && x->sym->type->name ? x->sym->type->name : "?");
+        }
         size = x->sym->size;
-        if (alignment && x->sym->alignment != alignment) fail("mismatched field alignments");
+        if (alignment && x->sym->alignment != alignment)
+          fail("mismatched field alignments: class '%s' field '%s' mixes %d- and %d-byte alignment ('%s')",
+               cs->sym && cs->sym->name ? cs->sym->name : "<anon>",
+               iv->var && iv->var->sym && iv->var->sym->name ? iv->var->sym->name : "<anon>", alignment,
+               x->sym->alignment, x->sym->type && x->sym->type->name ? x->sym->type->name : "?");
         alignment = x->sym->alignment;
       }
       if (alignment) offset = (offset + alignment - 1) & ~(alignment - 1);

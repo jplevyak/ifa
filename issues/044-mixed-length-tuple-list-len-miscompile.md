@@ -1,6 +1,19 @@
 # 044 — Mixed-length list literals in one container: len over the union miscompiles (silent wrong output)
 
-**Status:** open, found 2026-07-15 while prototyping issue 043's
+**Status:** FIXED 2026-07-17 (root cause found from a different
+direction -- issues/029's deepcopy loops NULL-deref'd the phantom):
+`cg.cc`'s P_prim_make listish-tuple emission passed
+`rvals.n - 2` as the `_CG_prim_tuple_list` count while storing
+`rvals.n - 3` elements, and that count IS the runtime list LENGTH --
+every record-represented list literal carried one phantom trailing
+element (the `[[3], [1, 2]] -> [[3, 0], [1, 2, 0]]` symptom below,
+and a NULL/garbage tail wherever elements are pointers). The count
+is now `rvals.n - 3` on the listish route (the true-tuple macro
+ignores it entirely). Repro prints correctly; suites 200/0 x2.
+
+Original report follows.
+
+**Status (original):** open, found 2026-07-15 while prototyping issue 043's
 option 4 (the repro has nothing to do with empty containers).
 **Affects:** `_CG_prim_tuple_list` concretization + `P_prim_len` over
 a union of tuple-list CreationSets (`ifa/analysis/fa.cc` len

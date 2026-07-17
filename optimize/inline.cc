@@ -357,6 +357,31 @@ static Vec<PNode *> *match_prim_chain(Fun *f) {
   return result;
 }
 
+// ifa/issues/046: can inline_prim_chain's formal substitution retype
+// every mismatched actual? The coercion MOVE needs at least one side
+// CONCRETE -- when both the actual's and the formal's types are
+// Type_SUM there is no retype target, and the old code ASSERTED mid-
+// mutation (compiler abort on any Optional[list-of-self] field chain,
+// e.g. `node.args` unions reaching a chained prim body). Checked
+// BEFORE splicing so the call site is simply left as a plain call
+// (codegen handles those fine) instead of half-rewritten.
+static bool prim_chain_substitution_safe(Fun *fn, PNode *p, Vec<PNode *> *chain) {
+  for (int i = 0; i < chain->n; i++) {
+    for (Var *v : chain->v[i]->rvals) {
+      if (v->constant) continue;
+      Sym *fs = first_var(v)->sym;
+      int formal_idx = (fs ? fn->sym->has.index(fs) : -1);
+      if (formal_idx < 0 || formal_idx >= p->rvals.n) continue;
+      Var *actual = p->rvals[formal_idx];
+      if (!actual || actual->constant) continue;
+      if (actual->type == v->type) continue;
+      if (actual->type && v->type && actual->type->type_kind == Type_SUM && v->type->type_kind == Type_SUM)
+        return false;
+    }
+  }
+  return true;
+}
+
 // Splice a chain wrapper at the call site `p` (in caller `f`, callee
 // `fn`). chain[0] re-uses `p`; chain[1..N-1] are inserted as new PNodes
 // linked into `p->cfg_succ`. Intermediate lvals get fresh Vars in the
@@ -534,6 +559,7 @@ static int inline_single_sends(FA *fa) {
         if (calls && calls->n == 1) {
           Fun *fn = calls->v[0];
           Vec<PNode *> *chain = chain_send.get(fn);
+          if (chain && !prim_chain_substitution_safe(fn, p, chain)) chain = nullptr;  // ifa/issues/046
           if (chain) {
             inline_prim_chain(f, p, fn, chain);
             record_inline_event(INLINE_PRIM_CHAIN, f, p, fn);
@@ -568,6 +594,7 @@ static int inline_single_sends(FA *fa) {
           if (calls && calls->n == 1) {
             Fun *fn = calls->v[0];
             Vec<PNode *> *chain = chain_send.get(fn);
+            if (chain && !prim_chain_substitution_safe(fn, p, chain)) chain = nullptr;  // ifa/issues/046
             if (chain) {
               inline_prim_chain(f, p, fn, chain);
               record_inline_event(INLINE_PRIM_CHAIN, f, p, fn);

@@ -242,7 +242,12 @@ void cg_build_new_to_val_map(FA *fa) {
     // When multiple val clones compete for the same (creator, slot), the
     // most-specific one (smallest sorted.n) wins — FA is conservative and
     // may include extra CSes in the self AType of less-specific clones.
+    // NB `if (!es) continue`: Fun::ess is a hash-set Vec (null
+    // holes) -- every sibling loop guards; this one crashed on
+    // chess once the dup-aware stall guard's extra passes left
+    // holes here.
     for (EntrySet *es : fun_val->ess) {
+      if (!es) continue;
       AVar *self_av = nullptr;
       for (int j = 0; j < es->args.n; j++) {
         if (es->args.v[j].key == self_cp) {

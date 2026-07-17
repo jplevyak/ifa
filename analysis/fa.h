@@ -29,7 +29,27 @@
 // This is a MITIGATION; the root cause and the real fix (persistent,
 // keyed, order-independent split decisions) are documented in
 // ifa/issues/033-splitter-non-idempotent-divergence.md.
+//
+// DUP-AWARE (043 shape C follow-on): only non-improving passes that
+// RE-DERIVED split decisions (per-pass ledger dup counters > 0 --
+// the oscillation signature issue 033 measured) advance the stall
+// counter. A non-improving pass whose splits are all FIRST-TIME is
+// structural descent, not oscillation: e.g. an iterator/method
+// contour chain (__new__ -> __init__ -> __iter__ -> __pyc_more__ ->
+// __next__) exposes exactly one new confluence per pass (each link's
+// types only separate after the previous pass's re-flow), so a
+// recursive function iterating nested lists legitimately needs
+// 10-15 non-improving passes while its single boxing violation
+// waits on the LAST link -- the old unconditional counter killed
+// splitting at 8 and stranded the violation. Dup-free grinding is
+// still bounded by IFA_NONIMPROVE_LIMIT below (and the hard
+// IFA_PASS_LIMIT above).
 #define IFA_STALL_LIMIT 8
+// Secondary cap: consecutive non-improving passes of ANY kind
+// (dup-free included) before the guard fires. Bounds pathological
+// first-time-forever splitting (statically unbounded polymorphic
+// recursion) in pass count without wall-clock dependence.
+#define IFA_NONIMPROVE_LIMIT 32
 
 // The contour of module-level (global) variables' shared AVars.
 // Historically a raw sentinel (`(void *)1`), which made every
@@ -532,7 +552,11 @@ class FA : public gc {
   // seen so far before the loop is force-terminated.
   int stall_limit;
   int best_violations;  // best (lowest) nonzero-pass violation count seen
-  int stall_passes;     // consecutive passes at or above best_violations
+  int stall_passes;     // consecutive RE-DERIVING (dup>0) passes at or
+                        // above best_violations (see IFA_STALL_LIMIT's
+                        // dup-aware note)
+  int nonimprove_passes;  // consecutive passes of ANY kind at or above
+                          // best_violations (IFA_NONIMPROVE_LIMIT cap)
   // Print FA's accumulated type violations to stderr at the end of
   // `FA::analyze`. Default true (production behavior); the test
   // harness sets it to false because fixtures are designed to
@@ -629,6 +653,7 @@ class FA : public gc {
         stall_limit(IFA_STALL_LIMIT),
         best_violations(INT_MAX),
         stall_passes(0),
+        nonimprove_passes(0),
         fa_events_enabled(false) {}
 
   int analyze(Fun *f);

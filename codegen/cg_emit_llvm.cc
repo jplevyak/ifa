@@ -168,7 +168,18 @@ llvm::Type *sym_to_llvm_type(Sym *s) {
   }
 
   if (!t) {
-    if (s == sym_void) {
+    if (s == sym_void || s == sym_void_type) {
+      // sym_void_type marks FA-unreachable/no-value results (the C
+      // backend's `_CG_void_type = void*` placeholder that's declared
+      // but never read/written). Mapping it to a real pointer type
+      // here let void-typed dead-branch Vars poison the shared
+      // alloca-slot union-find in discover_phi_targets: a dead var
+      // could claim a phi-class's slot as 'ptr' before a live,
+      // genuinely-int64 member of the same class got a chance to,
+      // corrupting that live var's storage type (LLVM verifier
+      // failure on otherwise-plain int arithmetic reached through a
+      // loop). LLVM's void type makes discover_phi_targets' existing
+      // `t->isVoidTy()` skip actually fire for these.
       t = llvm::Type::getVoidTy(*TheContext);
     } else if (s == sym_nil_type || s->is_symbol) {
       t = llvm::PointerType::getUnqual(*TheContext);
@@ -1319,6 +1330,15 @@ static bool emit_send_clone(EmitCtx &ctx, PNode *pn) {
   if (!src_var || !src_var->type) return false;
   llvm::Value *src = value_for_var(ctx, src_var);
   if (!src) return false;
+
+  // Scalar (or string) copy is identity — no struct to clone.
+  // Mirrors cg.cc's P_prim_copy Type_RECORD check; reachable via
+  // deepcopy's monomorphic int64 leaf contour (pyc issues/025 R1
+  // item 5).
+  if (pn->prim->index == P_prim_copy && dst_var->type->type_kind != Type_RECORD) {
+    put_result(ctx, dst_var, src);
+    return true;
+  }
 
   // Compute size of dst's underlying struct.
   llvm::StructType *dst_struct =
