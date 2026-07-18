@@ -105,17 +105,136 @@ specific known gap being caught by a specific known fact today.
    current "run once, in a fixed slot" pattern into a real SCCP-style
    loop. Detectors still have to identify NEW facts, but no longer
    have to reason about ordering/cascading themselves.
-3. **Deeper FA integration.** Give FA's own transfer functions
-   call-graph awareness (so a fact like `can_raise` could be derived
-   INSIDE FA's normal fixed point, not via a separate post-hoc pass
-   reading `Fun::calls` after the fact) — would close the root cause
-   of why FA's own constant folding is insufficient for
-   whole-program-shared state like `__pyc_exc__`, rather than working
-   around it per-fact. Biggest, riskiest, most likely to interact with
-   FA's existing precision/performance tradeoffs in ways that need
-   careful study first (see `ifa/issues/032-fa-survey-findings.md` and
-   related FA-precision issues for the general shape of that kind of
-   work in this codebase).
+3. **Deeper FA integration.** Splits into two sub-options of very
+   different size, scoped 2026-07-18 (same day, in a follow-up
+   discussion after this issue was first filed):
+
+   ### 3a — a native `can_raise` fact inside FA's own fixed point (bounded, concretely buildable)
+
+   FA already builds a finer-grained, *during-analysis* call graph —
+   `AEdge` (`from`/`to`/`pnode`/`fun`, `fa.h`) — that it uses for its
+   own interprocedural argument/return propagation, and this
+   converges *before* `clone()` runs (`ifa.cc`: `fa->analyze()` at
+   line 47, `clone(fa)` at line 56). `Fun::calls`, what today's
+   `compute_fun_can_raise` reads, is a *post*-convergence
+   materialization built by `clone()` — not available during FA's own
+   fixed point, which is why `can_raise` is computed after the fact
+   today rather than natively.
+
+   3a: propagate a boolean (seeded the same way `Sym::direct_raise` is
+   today) through `AEdge`s during FA's *own* worklist, converging
+   alongside type propagation instead of after it in a separate pass.
+   Teach the `isinstance(t, nil_type)` transfer function to consult it
+   for the `__pyc_exc__`-sourced pattern specifically and fold to
+   `true_type` inside FA itself. Payoff: the fold becomes
+   indistinguishable from FA's own ordinary constant folding —
+   `mark_live_code` sees the dead branch as dead through its normal
+   mechanism, for free — meaning `exc_check_fold.cc`'s existing
+   dead-`MOVE`/orphaned-LLVM-block fixes become unnecessary, not just
+   superseded.
+
+   ### 3b — general interprocedural slot promotion for global scalars (large, deferred)
+
+   The full realization: not a boolean fact, but making *any* global
+   Sym's read resolve to a call-graph-precise value, the way issue
+   [031](031-globals-outside-fa-precision.md) explicitly deferred
+   ("load CSE, a real dataflow optimization, not a contour question")
+   when it landed per-read local temps for globals (Steps 1-2, 2026-07-04).
+   Steps 1-2 gave each global *read* its own EntrySet-contoured,
+   SSU-renamed temp — but the *value* that temp loads is still the
+   flow-insensitive, whole-program union of every write to the cell,
+   because nothing propagates per-contour reaching-write information
+   into the cell itself.
+
+   **Design.** Give each global Sym a per-EntrySet summary AType
+   ("what could this global hold on entry to / after this ES"),
+   computed by forward flow within an ES's own PNode graph (reusing
+   FA's existing per-Var flow machinery) and threaded across ES
+   boundaries by extending `AEdge` with an implicit global-in/-out
+   pair, propagated through the same `in_edge_worklist` mechanism
+   real arguments already use. **The one decision that bounds risk**:
+   this summary must NOT become part of `EntrySet` equivalence/
+   splitting the way real arguments legitimately do — it's an
+   annotation over the existing ES graph, computed to a fixed point,
+   never a reason to create a new clone (same shape as
+   `compute_escape`'s lattice, which already runs over FA's ES/`AEdge`
+   graph without touching clone equivalence). This caps the blowup:
+   the number of ESes doesn't change, only the precision of what's
+   known about a global read inside an existing one improves.
+
+   In compiler terms this is closer to **interprocedural mem2reg /
+   memory SSA for a scalar slot** than "scalar replacement" (SROA) —
+   there's no aggregate decomposition. It's strictly about the global
+   *slot's* own reference identity (which `CreationSet` it currently
+   points to), which is orthogonal to and unaffected by FA's EXISTING
+   per-field precision for whatever OBJECT that slot might point to
+   (`CreationSet::var_map`/`unknown_vars`, the same machinery
+   `promote_field` uses — issue 011's field-promotion work). Object
+   field precision and slot-reference precision are two already-
+   separate concerns in FA's model; 3b only touches the second.
+
+   **3b subsumes 3a directly, not as a special case bolted on.**
+   `can_raise` becomes nothing but "is `nil_type` the only
+   `CreationSet` in `__pyc_exc__`'s converged per-ES summary at this
+   read" — one query against the general mechanism. The *unmodified*
+   `P_prim_isinstance` transfer function already produces
+   `true_type`/`false_type` from exactly that input shape (that's how
+   ordinary user `isinstance()` already folds), so no
+   `__pyc_exc__`-specific code is needed at all once 3b lands.
+   `exc_check_fold.cc`, `compute_fun_can_raise`,
+   `Sym::direct_raise`/`Fun::can_raise`, and
+   `mark_var_constant`/`reclaim_dead_producer_chain` all become
+   deletable. Precision-wise nothing is lost either: because global
+   summaries deliberately aren't a splitting axis, their precision
+   ceiling is per-ES — exactly the granularity `Fun::can_raise`
+   (a per-clone fact) already has today, so the risk-bounding design
+   choice costs nothing relative to what 3a already delivers.
+
+   **Effort**: large — this is a core-FA feature, not a pyc-local
+   change. Rough pieces: new per-(global, ES) summary storage +
+   intraprocedural forward propagation (moderate, reuses existing
+   flow patterns); `AEdge` extension + interprocedural worklist
+   integration converging *with* type inference, correctly handling
+   recursive/cyclic call graphs (the largest single piece);
+   `clone.cc` changes so concretization of a global-derived Var uses
+   its own ES's summary instead of the shared `GLOBAL_CONTOUR` AVar
+   (moderate, shouldn't need to touch equivalence logic given the
+   non-splitting-axis design). `ssu.cc` and both codegen backends are
+   likely untouched — the global Var itself stays flow-insensitive by
+   design, and precision improvements should reach codegen for free
+   through the already-proven `is_const_folded_send`/
+   `const_if_successor` path. Given `exc_check_fold.cc` alone (a
+   single-purpose pass) took a full session including careful A/B
+   verification, and this touches FA's *own* fixed point, adds a new
+   convergence dimension, and has blast radius across every ifa-based
+   frontend (pyc *and* the V-language frontend — `ifa/tests/*.v`,
+   only 3 files, a thin safety net for whatever this changes outside
+   pyc) — expect roughly an order of magnitude more work, spread
+   across multiple sessions.
+
+   **Risk**: high, and one category is a correctness risk, not just
+   a performance one.
+   - *Soundness under cycles*: the fixed point must start pessimistic
+     and converge upward, same as FA's type inference already does —
+     get the backedge-merge logic wrong and the result is too
+     *precise*, not just imprecise. Unlike today's conservative
+     failure mode (check stays live, correct but unoptimized), a
+     wrong "this global can only be X here" claim used to fold away a
+     real check is a silent miscompilation.
+   - *Performance*: an extra state dimension threaded through FA's
+     already convergence-sensitive fixed point, on top of documented
+     existing stall/performance issues
+     ([048](048-deepcopy-flow-divergence-genetic2.md)'s `genetic2`
+     divergence).
+   - *Interacts with issue 031's existing scar tissue*: ~15 scattered
+     `GLOBAL_CONTOUR` guards already exist to keep that sentinel safe;
+     this touches the same territory.
+
+   **Recommendation**: hold off. 3a gets the one concrete, known-needed
+   benefit at a fraction of the cost and risk; issue 031 already
+   deferred the general version once, for the same reason. Treat this
+   write-up as a ready-to-pick-up plan for whenever a *second*
+   independent global-precision need materializes, not a queued task.
 
 ## Verification plan (once a direction is chosen)
 
