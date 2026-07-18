@@ -2753,6 +2753,19 @@ void discover_phi_targets(EmitCtx &ctx, Fun *f) {
   // same logical variable; allocating one alloca per class
   // makes loop-body reads load from the same slot the
   // back-edge writes to.
+  //
+  // Known gap (not fixed, ifa/issues/011's dead-code-elimination
+  // landing, 2026-07-18): unlike discover_blocks/emit_pnode/
+  // emit_block_terminator, this walk has no const_if_successor
+  // awareness -- it visits BOTH arms of a constant-condition Code_IF,
+  // so a dead arm's phi/phy targets can get an alloca slot allocated
+  // for them here even though nothing ever writes/reads it. Harmless
+  // (LLVM's own -O2, which llvm_codegen_compile always runs
+  // regardless of `-O`, drops unused allocas trivially) and left
+  // alone deliberately -- fixing it would mean threading
+  // const_if_successor through a FOURTH cfg_succ walk for a purely
+  // cosmetic win, unlike the other three fixes which closed actual
+  // correctness/dead-code gaps.
   Vec<PNode *> stack;
   Vec<PNode *> seen;
   stack.add(f->entry);
