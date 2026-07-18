@@ -734,7 +734,14 @@ static void simple_move(FILE *fp, Var *lhs, Var *rhs) {
   if (!lhs->live) return;
   if (lhs->sym->type_kind || rhs->sym->type_kind) return;
   if (!cg_get_string(lhs) || !cg_get_string(rhs)) return;
-  if (rhs->type == sym_void->type || lhs->type == sym_void->type) return;
+  // A null ->type means FA never resolved a type for this Var at all
+  // (e.g. the value lives only on a branch arm FA proved unreachable
+  // for this contour, so nothing ever defines it) -- c_type() already
+  // falls back to treating that the same as sym_void_type for the
+  // purposes of declaring/printing the Var, so the move must be
+  // skipped here too, or this emits a move from an undeclared-type
+  // temp that was never assigned (segfault/garbage reads downstream).
+  if (!rhs->type || !lhs->type || rhs->type == sym_void->type || lhs->type == sym_void->type) return;
   // If FA collapsed lhs's type to nil_type (`sym_nil_type`)
   // the global-var emitter in c_codegen_print_c sets its
   // cg_string to the literal "NULL" — no storage, no lvalue.
