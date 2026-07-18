@@ -2169,108 +2169,39 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
     Vec<int> slots;
     Fun *nil_fn = nullptr;  // nil-receiver candidate (None method on a nil|record union)
     llvm::Value *recv = nullptr;
-    // issue 026 (mirrors cg.cc's identical pre-pass): which classes are
-    // DIRECTLY, singularly owned by one of THIS call's candidates (a
-    // candidate whose self formal is a single concrete Type_RECORD,
-    // not a Type_SUM)? The Type_SUM-unpacking below must not let a
-    // DIFFERENT candidate's looser (unioned) match steal a class that
-    // already has its own override among `callees` -- confirmed
-    // empirically: without this guard, poly_dispatch_low.py (every
-    // concrete class overrides the dispatched method) segfaulted.
+    // issue 026 pre-pass + classtag/nil-receiver resolution: shared
+    // with the C backend (codegen_common.{h,cc}) -- previously
+    // independently duplicated here and in cg.cc, independently
+    // re-fixed for issue 026. Only this resolution algorithm was ever
+    // identical between backends; the emission below (and the total
+    // absence, here, of cg.cc's plain-function/untagged-direct
+    // fallback for a candidate that resolves to neither route) is
+    // backend-specific and unchanged by this refactor.
     Vec<cchar *> directly_owned;
-    for (int fi = 0; fi < callees->n; fi++) {
-      Fun *fv = (*callees)[fi];
-      if (!fv || !fv->sym || !fv->sym->name) continue;
-      cchar *mname = fv->sym->name;
-      MPosition dap;
-      dap.push(1);
-      for (int pi = 0; pi < fv->sym->has.n + 2; pi++) {
-        MPosition *cp = cannonicalize_mposition(dap);
-        dap.inc();
-        Var *argv = fv->args.get(cp);
-        if (!argv || !argv->type) continue;
-        Sym *csym = argv->type;
-        if (csym->type_kind == Type_SUM) continue;
-        for (int k = 0; k < csym->has.n; k++) {
-          if (csym->has[k] && csym->has[k]->name == mname && cg_field_live(csym, k)) {
-            directly_owned.set_add(csym->name);
-            break;
-          }
-        }
-        break;
-      }
-    }
+    poly_dispatch_directly_owned(callees, directly_owned);
     bool ok = true;
     for (int fi = 0; fi < callees->n && ok; fi++) {
       Fun *fun_val = (*callees)[fi];
       if (!fun_val || !fun_val->sym || !fun_val->sym->name) { ok = false; break; }
-      cchar *method_name = fun_val->sym->name;
-      // issue 026 (mirrors cg.cc's identical fix): a class that
-      // INHERITS a dispatched method rather than overriding it makes
-      // FA type that method's self formal as a Type_SUM (union) Sym
-      // covering every concrete class reaching it through
-      // inheritance, not a single concrete class -- e.g.
-      // `Shape.describe`, also called for `Square` instances (no
-      // override of its own), gets a self type `Square | Shape`. A
-      // Type_SUM's `.has` holds its MEMBER TYPES, not fields, so it
-      // needs the receiver search to recurse into each member
-      // instead of treating `.has` as the method-field list directly
-      // -- one Fun candidate can resolve to several concrete receiver
-      // classes this way, each needing its own classtag branch.
       Vec<Sym *> rts;
       Vec<int> rt_slots;
-      MPosition argp;
-      argp.push(1);
-      for (int pi = 0; pi < fun_val->sym->has.n + 2 && !rts.n; pi++) {
-        MPosition *cp = cannonicalize_mposition(argp);
-        argp.inc();
-        Var *argv = fun_val->args.get(cp);
-        if (!argv || !argv->type) continue;
-        Sym *csym = argv->type;
-        Vec<Sym *> candidates;
-        bool from_union = csym->type_kind == Type_SUM;
-        if (from_union) {
-          for (Sym *member : csym->has)
-            if (member) candidates.add(member);
-        } else {
-          candidates.add(csym);
-        }
-        for (Sym *ccls : candidates) {
-          if (from_union && ccls->name && directly_owned.set_in(ccls->name)) continue;
-          for (int k = 0; k < ccls->has.n; k++) {
-            if (ccls->has[k] && ccls->has[k]->name == method_name && cg_field_live(ccls, k)) {
-              rts.add(ccls);
-              rt_slots.add(k);
-              int ridx = (int)Position2int(cp->pos[0]) - 1;
-              if (!recv && ridx >= 0 && ridx < pn->rvals.n && pn->rvals[ridx])
-                recv = value_for_var(ctx, pn->rvals[ridx]);
-              break;
-            }
-          }
-        }
+      Vec<int> rt_ridxs;
+      poly_dispatch_classtag_targets(fun_val, pn, directly_owned, rts, rt_slots, rt_ridxs);
+      for (int ri = 0; ri < rts.n; ri++) {
+        if (!recv && rt_ridxs[ri] >= 0 && rt_ridxs[ri] < pn->rvals.n && pn->rvals[rt_ridxs[ri]])
+          recv = value_for_var(ctx, pn->rvals[rt_ridxs[ri]]);
       }
       if (!rts.n) {
-        // Nil-receiver candidate (mirrors cg.cc): a None-class method
-        // reached through a nil|record union (`if not self.field:`
-        // where the field starts as None). None is a NULL pointer at
-        // runtime -- no classtag -- so it dispatches via a null test
-        // emitted before the tag load (which also makes the tag load
+        // Nil-receiver candidate: a None-class method reached
+        // through a nil|record union (`if not self.field:` where the
+        // field starts as None). None is a NULL pointer at runtime --
+        // no classtag -- so it dispatches via a null test emitted
+        // before the tag load (which also makes the tag load
         // null-safe).
-        MPosition np;
-        np.push(1);
-        bool is_nil_recv = false;
-        for (int pi = 0; pi < fun_val->sym->has.n + 2 && !is_nil_recv; pi++) {
-          MPosition *cp = cannonicalize_mposition(np);
-          np.inc();
-          Var *argv = fun_val->args.get(cp);
-          if (!argv || !argv->type) continue;
-          if (argv->type == sym_nil_type) {
-            is_nil_recv = true;
-            int ridx = (int)Position2int(cp->pos[0]) - 1;
-            if (!recv && ridx >= 0 && ridx < pn->rvals.n && pn->rvals[ridx])
-              recv = value_for_var(ctx, pn->rvals[ridx]);
-          }
-        }
+        int nil_ridx = -1;
+        bool is_nil_recv = poly_dispatch_is_nil_receiver(fun_val, pn, &nil_ridx);
+        if (is_nil_recv && !recv && nil_ridx >= 0 && nil_ridx < pn->rvals.n && pn->rvals[nil_ridx])
+          recv = value_for_var(ctx, pn->rvals[nil_ridx]);
         if (is_nil_recv && !nil_fn && fun_val->cg_string && TheModule->getFunction(fun_val->cg_string)) {
           nil_fn = fun_val;
           continue;

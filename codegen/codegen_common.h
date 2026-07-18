@@ -89,6 +89,59 @@ void cg_build_new_to_val_map(FA *fa);
 Fun *get_target_fun_core(PNode *n, Fun *f);
 
 // -------------------------------------------------------------
+// Polymorphic call-site classtag/nil-receiver resolution
+// (ifa/issues/030 dispatch, ifa/issues/026 override guard)
+// -------------------------------------------------------------
+//
+// A poly call site's candidates resolve to a receiver class + method
+// slot (classtag route), or to the nil-receiver candidate (a
+// None-class method reached through a nil|record union), or to
+// neither -- in which case each backend runs its OWN
+// plain-function/untagged-direct/bare-callable-value fallback and
+// compat filtering (genuinely backend-specific: it depends on target
+// type castability, C type strings for cg.cc vs LLVM types for
+// cg_emit_llvm.cc -- NOT shared). Only the classtag/nil-receiver
+// RESOLUTION algorithm itself was ever identical between backends
+// (independently duplicated, independently re-fixed for issue 026);
+// these three functions are that shared core. Deliberately return
+// call-site rval INDICES, not resolved backend values/strings -- each
+// backend looks up its own representation of `pn->rvals[idx]`.
+// Deliberately do NOT decide which resolved classes end up used
+// (cg.cc filters by `cg_has_classtag(rt) && cg_get_string(rt)`;
+// cg_emit_llvm.cc filters by `rt->name && !rt->is_system_type &&
+// cg_has_classtag(rt)` -- these conditions differ today, so that
+// filtering stays in each backend, unchanged).
+
+// issue 026 pre-pass: which classes are DIRECTLY, singularly owned
+// by one of `candidates`' own (non-Type_SUM) receiver formals. A
+// class found here has its OWN override among `candidates` and must
+// keep using it -- poly_dispatch_classtag_targets's Type_SUM unpack
+// must not let a DIFFERENT candidate's looser (unioned) match steal
+// it. Confirmed empirically (poly_dispatch_low.py): without this
+// guard, a recursive dispatch where every concrete class overrides
+// the method segfaulted -- one class's union-typed self formal
+// silently stole another class's own, distinct override.
+void poly_dispatch_directly_owned(Vec<Fun *> *candidates, Vec<cchar *> &out);
+
+// For ONE poly-dispatch candidate: resolve its receiver formal(s) to
+// concrete (class, method-slot, call-site-rval-index) triples,
+// appending to the parallel classes/slots/rval_idxs Vecs. Unpacks a
+// Type_SUM (inherited-method) receiver into its member classes,
+// skipping any member already `directly_owned` by a sibling
+// candidate's own override. A single candidate can contribute more
+// than one triple -- inheritance can cover several concrete classes
+// through the same Fun. No-op (appends nothing) if `candidate`'s Sym
+// has no name: unnamed/lambda candidates never take the classtag
+// route.
+void poly_dispatch_classtag_targets(Fun *candidate, PNode *pn, Vec<cchar *> &directly_owned, Vec<Sym *> &classes,
+                                     Vec<int> &slots, Vec<int> &rval_idxs);
+
+// For ONE poly-dispatch candidate: is its receiver formal literally
+// sym_nil_type? If so, returns true and sets *rval_idx to that
+// formal's call-site operand index.
+bool poly_dispatch_is_nil_receiver(Fun *candidate, PNode *pn, int *rval_idx);
+
+// -------------------------------------------------------------
 // Type-string assignment pass (cg_string population)
 // -------------------------------------------------------------
 

@@ -347,6 +347,92 @@ Fun *get_target_fun_core(PNode *n, Fun *f) {
 }
 
 // -------------------------------------------------------------
+// Polymorphic call-site classtag/nil-receiver resolution -- see
+// codegen_common.h's declarations for the full rationale.
+// -------------------------------------------------------------
+
+void poly_dispatch_directly_owned(Vec<Fun *> *candidates, Vec<cchar *> &out) {
+  if (!candidates) return;
+  for (int fi = 0; fi < candidates->n; fi++) {
+    Fun *fv = (*candidates)[fi];
+    if (!fv || !fv->sym || !fv->sym->name) continue;
+    cchar *mname = fv->sym->name;
+    MPosition dap;
+    dap.push(1);
+    for (int pi = 0; pi < fv->sym->has.n + 2; pi++) {
+      MPosition *cp = cannonicalize_mposition(dap);
+      dap.inc();
+      Var *argv = fv->args.get(cp);
+      if (!argv || !argv->type) continue;
+      Sym *csym = argv->type;
+      if (csym->type_kind == Type_SUM) continue;  // ambiguous -- not direct ownership
+      for (int k = 0; k < csym->has.n; k++) {
+        if (csym->has[k] && csym->has[k]->name == mname && cg_field_live(csym, k)) {
+          out.set_add(csym->name);
+          break;
+        }
+      }
+      break;
+    }
+  }
+}
+
+void poly_dispatch_classtag_targets(Fun *candidate, PNode *pn, Vec<cchar *> &directly_owned, Vec<Sym *> &classes,
+                                     Vec<int> &slots, Vec<int> &rval_idxs) {
+  if (!candidate || !candidate->sym || !candidate->sym->name || !pn) return;
+  cchar *method_name = candidate->sym->name;
+  MPosition argp;
+  argp.push(1);
+  bool found = false;
+  for (int pi = 0; pi < candidate->sym->has.n + 2 && !found; pi++) {
+    MPosition *cp = cannonicalize_mposition(argp);
+    argp.inc();
+    Var *argv = candidate->args.get(cp);
+    if (!argv || !argv->type) continue;
+    Sym *csym = argv->type;
+    Vec<Sym *> members;  // classes to search: the type itself, or its union members
+    bool from_union = csym->type_kind == Type_SUM;
+    if (from_union) {
+      for (Sym *member : csym->has) if (member) members.add(member);
+    } else {
+      members.add(csym);
+    }
+    for (Sym *ccls : members) {
+      // A union member that's DIRECTLY, singularly owned by ANOTHER
+      // candidate keeps using that candidate's own override -- this
+      // candidate's (looser, unioned) match must not steal it.
+      if (from_union && ccls->name && directly_owned.set_in(ccls->name)) continue;
+      for (int k = 0; k < ccls->has.n; k++) {
+        if (ccls->has[k] && ccls->has[k]->name == method_name && cg_field_live(ccls, k)) {
+          classes.add(ccls);
+          slots.add(k);
+          rval_idxs.add((int)Position2int(cp->pos[0]) - 1);
+          found = true;
+          break;
+        }
+      }
+    }
+  }
+}
+
+bool poly_dispatch_is_nil_receiver(Fun *candidate, PNode *pn, int *rval_idx) {
+  if (!candidate || !candidate->sym || !pn) return false;
+  MPosition np;
+  np.push(1);
+  for (int pi = 0; pi < candidate->sym->has.n + 2; pi++) {
+    MPosition *cp = cannonicalize_mposition(np);
+    np.inc();
+    Var *argv = candidate->args.get(cp);
+    if (!argv || !argv->type) continue;
+    if (argv->type == sym_nil_type) {
+      if (rval_idx) *rval_idx = (int)Position2int(cp->pos[0]) - 1;
+      return true;
+    }
+  }
+  return false;
+}
+
+// -------------------------------------------------------------
 // Process invocation
 // -------------------------------------------------------------
 

@@ -116,6 +116,53 @@ dispatch chain, is why `poly_dispatch_low` was `check_fail` on
 LLVM; it now passes strictly on both backends and the sidecar is
 removed).
 
+**Classtag/nil-receiver call-site resolution unified (2026-07-18)**:
+`cg.cc`'s and `cg_emit_llvm.cc`'s `emit_send_call` polymorphic
+branches had independently duplicated (and, for issue 026's
+`directly_owned` override-priority guard, independently re-fixed) the
+~120-line algorithm that resolves a poly call site's candidate `Fun`s
+to concrete `(receiver class, method slot)` pairs — unpacking
+`Type_SUM` (inherited-method) receivers into member classes and
+detecting the nil-receiver candidate. Extracted the identical portion
+into three shared functions (`poly_dispatch_directly_owned`,
+`poly_dispatch_classtag_targets`, `poly_dispatch_is_nil_receiver`,
+`codegen_common.{h,cc}`) that return call-site rval *indices* rather
+than resolved backend values — each backend still looks up its own
+representation of `pn->rvals[idx]`. Deliberately did NOT unify the
+surrounding compat filtering / fallback control flow: reading both
+backends closely during this refactor surfaced that they already
+diverge there in ways worth knowing about, not touching silently:
+- `cg.cc`'s "which resolved classes actually become classtag
+  targets" filter is `cg_has_classtag(rt) && cg_get_string(rt)`;
+  `cg_emit_llvm.cc`'s is `rt->name && !rt->is_system_type &&
+  cg_has_classtag(rt)` — different conditions today, left
+  backend-specific rather than silently homogenized.
+- `cg.cc` supports MIXING classtag, nil-receiver, plain-function, and
+  untagged-direct candidates in one combined dispatch chain for the
+  same call site. `cg_emit_llvm.cc` does not: if any candidate at a
+  poly call site resolves to neither classtag nor nil-receiver, the
+  whole classtag-dispatch branch bails (`ok = false`) and falls
+  through to a completely separate "bare callable value" pass that
+  re-scans all candidates by value identity — a real, pre-existing
+  behavioral difference between the backends for mixed candidate
+  sets, not something this refactor introduced or fixed. Worth its
+  own investigation (does a program exist that actually hits this
+  gap on the LLVM backend today?) but out of scope here.
+- `cg.cc` also skips the classtag route for unnamed (lambda)
+  candidates via an explicit `method_name &&` guard; `cg_emit_llvm.cc`
+  never reaches that point for an unnamed candidate at all (it bails
+  earlier, unconditionally, for ANY candidate with no `sym->name`).
+  The shared functions replicate both call sites' existing behavior
+  exactly (verified below), they don't reconcile it.
+
+Verified via generated-code diffing: `.c` and `.ll` output for every
+`tests/poly_dispatch_*`, `multi_candidate_dispatch.py`,
+`polymorphic_function.py`, `polymorphic_list.py`, and
+`recursive_polymorphic.py` fixture is byte-identical before and after
+this refactor (git-worktree A/B comparison), on both backends. Full
+suites 203/0 × 2 backends, unit 58/0, IR 20/0, shedskin corpus sweep
+unchanged from baseline.
+
 Verification: `./test_pyc` 132/0, `PYC_FLAGS=-b` 132/0,
 `ifa/ifa-test` 14/14; poly_dispatch_{low,high,swapped} pass
 strictly on both backends.

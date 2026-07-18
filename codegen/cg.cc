@@ -1101,103 +1101,35 @@ class CBackendEmitter : public VirtualCGEmitter {
         // caused the OTHER class's OWN override to be silently
         // replaced by a mismatched one (calling a field the receiver
         // doesn't have).
+        // issue 026 pre-pass + classtag/nil-receiver resolution:
+        // shared with the LLVM backend (codegen_common.{h,cc}) --
+        // previously independently duplicated here and in
+        // cg_emit_llvm.cc, independently re-fixed for issue 026. Only
+        // this resolution algorithm was ever identical between
+        // backends; the compat filtering and emission below remain
+        // backend-specific (they depend on target type castability).
         Vec<cchar *> directly_owned;
-        for (int fi = 0; fi < fns->n; fi++) {
-          Fun *fv = (*fns)[fi];
-          if (!fv || !fv->sym || !fv->sym->name) continue;
-          cchar *mname = fv->sym->name;
-          MPosition dap;
-          dap.push(1);
-          for (int pi = 0; pi < fv->sym->has.n + 2; pi++) {
-            MPosition *cp = cannonicalize_mposition(dap);
-            dap.inc();
-            Var *argv = fv->args.get(cp);
-            if (!argv || !argv->type) continue;
-            Sym *csym = argv->type;
-            if (csym->type_kind == Type_SUM) continue;  // ambiguous -- not direct ownership
-            for (int k = 0; k < csym->has.n; k++) {
-              if (csym->has[k] && csym->has[k]->name == mname && cg_field_live(csym, k)) {
-                directly_owned.set_add(csym->name);
-                break;
-              }
-            }
-            break;
-          }
-        }
+        poly_dispatch_directly_owned(fns, directly_owned);
         bool ok = true;
         for (int fi = 0; fi < fns->n && ok; fi++) {
           Fun *fun_val = (*fns)[fi];
           if (!fun_val || !fun_val->sym) { ok = false; break; }
-          // Unnamed candidates (lambdas) can't take the classtag
-          // route (slot lookup is by method name) -- plain route only.
-          cchar *method_name = fun_val->sym->name;
           // Classtag route: find the candidate's receiver type --
           // the first formal whose concrete type carries a live
           // field named like the method. Deliberately does NOT
           // require the formal to be live: leaf methods that ignore
           // self still need a dispatch branch (the CHOICE depends
-          // on the receiver).
-          //
-          // issue 026: when a class INHERITS a method rather than
-          // overriding it, FA gives that method's Fun a self formal
-          // typed as a Type_SUM (union) Sym covering every concrete
-          // class that reaches it through inheritance -- e.g.
-          // `Shape.describe`, also called for `Square` instances
-          // (Square has no override of its own), gets a self type
-          // `Square | Shape`, NOT a single concrete class. A
-          // Type_SUM's `.has` holds its MEMBER TYPES (here: the
-          // Sqaure and Shape class Syms themselves), not fields --
-          // completely different from a Type_RECORD's `.has` (its
-          // OWN fields/methods), even though both reuse the same
-          // Vec<Sym*> slot. The rt-search below has to branch on
-          // which shape it's looking at: for a Type_RECORD, search
-          // its own .has for method_name (the original, single-class
-          // case); for a Type_SUM, recurse into EACH member and
-          // search THAT member's own .has instead -- one Fun
-          // candidate can and does resolve to MULTIPLE concrete
-          // receiver classes this way, each needing its own classtag
-          // branch (all calling through the SAME Fun, since that's
-          // what "doesn't override, just inherits" means).
-          Vec<Sym *> rts;    // every concrete receiver class found for this candidate
-          Vec<int> rt_slots; //   ... and its slot index (layouts can differ per class)
-          MPosition argp;
-          argp.push(1);
-          for (int pi = 0; method_name && pi < fun_val->sym->has.n + 2 && !rts.n; pi++) {
-            MPosition *cp = cannonicalize_mposition(argp);
-            argp.inc();
-            Var *argv = fun_val->args.get(cp);
-            if (!argv || !argv->type) continue;
-            Sym *csym = argv->type;
-            Vec<Sym *> candidates;  // classes to search: the type itself, or its union members
-            bool from_union = csym->type_kind == Type_SUM;
-            if (from_union) {
-              for (Sym *member : csym->has)
-                if (member) candidates.add(member);
-            } else {
-              candidates.add(csym);
-            }
-            for (Sym *ccls : candidates) {
-              // A union member that's DIRECTLY, singularly owned by
-              // ANOTHER candidate in `fns` keeps using that candidate's
-              // own override -- this candidate's (looser, unioned)
-              // match must not steal it. See the directly_owned
-              // pre-pass comment above for why this matters.
-              if (from_union && ccls->name && directly_owned.set_in(ccls->name)) continue;
-              for (int k = 0; k < ccls->has.n; k++) {
-                if (ccls->has[k] && ccls->has[k]->name == method_name && cg_field_live(ccls, k)) {
-                  rts.add(ccls);
-                  rt_slots.add(k);
-                  // The receiver value lives at this formal's
-                  // call-site position (used when rvals[0] is the
-                  // method symbol rather than the callable value).
-                  int ridx = (int)Position2int(cp->pos[0]) - 1;
-                  if (!recv_str && ridx >= 0 && ridx < pn->rvals.n && pn->rvals[ridx] &&
-                      cg_get_string(pn->rvals[ridx]))
-                    recv_str = cg_get_string(pn->rvals[ridx]);
-                  break;
-                }
-              }
-            }
+          // on the receiver). Unnamed candidates (lambdas) can't
+          // take this route (slot lookup is by method name) -- plain
+          // route only.
+          Vec<Sym *> rts;     // every concrete receiver class found for this candidate
+          Vec<int> rt_slots;  //   ... and its slot index (layouts can differ per class)
+          Vec<int> rt_ridxs;  //   ... and the call-site rval index of its receiver operand
+          poly_dispatch_classtag_targets(fun_val, pn, directly_owned, rts, rt_slots, rt_ridxs);
+          for (int ri = 0; ri < rts.n; ri++) {
+            if (!recv_str && rt_ridxs[ri] >= 0 && rt_ridxs[ri] < pn->rvals.n && pn->rvals[rt_ridxs[ri]] &&
+                cg_get_string(pn->rvals[rt_ridxs[ri]]))
+              recv_str = cg_get_string(pn->rvals[rt_ridxs[ri]]);
           }
           if (!rts.n) {
             // Nil-receiver candidate: a None-class method reached
@@ -1207,22 +1139,11 @@ class CBackendEmitter : public VirtualCGEmitter {
             // compare -- so it gets its own partition, dispatched by
             // a null test emitted BEFORE any tag dereference (which
             // also makes the tag reads null-safe).
-            MPosition np;
-            np.push(1);
-            bool is_nil_recv = false;
-            for (int pi = 0; pi < fun_val->sym->has.n + 2 && !is_nil_recv; pi++) {
-              MPosition *cp = cannonicalize_mposition(np);
-              np.inc();
-              Var *argv = fun_val->args.get(cp);
-              if (!argv || !argv->type) continue;
-              if (argv->type == sym_nil_type) {
-                is_nil_recv = true;
-                int ridx = (int)Position2int(cp->pos[0]) - 1;
-                if (!recv_str && ridx >= 0 && ridx < pn->rvals.n && pn->rvals[ridx] &&
-                    cg_get_string(pn->rvals[ridx]))
-                  recv_str = cg_get_string(pn->rvals[ridx]);
-              }
-            }
+            int nil_ridx = -1;
+            bool is_nil_recv = poly_dispatch_is_nil_receiver(fun_val, pn, &nil_ridx);
+            if (is_nil_recv && !recv_str && nil_ridx >= 0 && nil_ridx < pn->rvals.n && pn->rvals[nil_ridx] &&
+                cg_get_string(pn->rvals[nil_ridx]))
+              recv_str = cg_get_string(pn->rvals[nil_ridx]);
             if (is_nil_recv) {
               // Only one nil-receiver branch is distinguishable, and
               // its live formals must map to call-site rvals.
