@@ -984,20 +984,29 @@ bool emit_send_sizeof(EmitCtx &ctx, PNode *pn) {
         outer->has.n) {
       t_sym = outer->has.v[0]->type;
     }
-    // Mirrors cg.cc's SUM-of-records case: a generic list whose
-    // element type is the union of 2+ record types stores boxed
-    // pointers -- emit pointer size instead of 0. Emitting 0 made
+    // Mirrors cg.cc's SUM-of-uniform-size case: a generic list whose
+    // element type is the union of 2+ distinct types stores each
+    // element in one slot sized to fit all of them -- boxed records
+    // and other boxed containers (list, str, set, dict, ...) are all
+    // one pointer_size; same-width scalars agree too. Emitting 0 made
     // list::append resize with element size 0, so the storage never
-    // grew and reads returned null at runtime with a clean compile
-    // (issue 025 tuple-list soundness bug).
+    // grew and reads returned null/corrupted at runtime with a clean
+    // compile (issue 025 tuple-list soundness bug; recurred as
+    // list-of-list vs list-of-record mixing in rubik2, since `list`
+    // itself is Type_PRIMITIVE, not Type_RECORD -- the original
+    // record-only check rejected a perfectly uniform pointer-sized
+    // union).
     if (t_sym && !t_sym->size && t_sym->type_kind == Type_SUM && t_sym->has.n) {
-      bool all_ref = true;
+      int common = 0;
+      bool uniform = true;
       for (Sym *m : t_sym->has) if (m) {
         Sym *mt = m->type ? m->type : m;
-        if (mt->type_kind != Type_RECORD) { all_ref = false; break; }
+        if (!mt->size) { uniform = false; break; }
+        if (!common) common = mt->size;
+        else if (common != mt->size) { uniform = false; break; }
       }
-      if (all_ref) {
-        put_result(ctx, pn->lvals.v[0], llvm::ConstantInt::get(dst_ty, if1->pointer_size));
+      if (uniform && common) {
+        put_result(ctx, pn->lvals.v[0], llvm::ConstantInt::get(dst_ty, common));
         return true;
       }
     }
