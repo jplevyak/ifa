@@ -278,6 +278,31 @@ void mark_live_funs(FA *fa) {
   for (Fun *f : funs) if (f->live) fa->funs.add(f);
 }
 
+// -------------------------------------------------------------
+// Constant-condition dead-branch elimination primitives -- see
+// dead.h's declarations for the full rationale.
+// -------------------------------------------------------------
+
+void mark_var_constant(Var *v, Sym *constant_sym) {
+  if (v) v->sym = constant_sym;
+}
+
+static void reclaim_var_producer(Var *v) {
+  if (!v || !v->def) return;
+  if (v->uses.n > 1) return;  // still needed by another consumer
+  PNode *def = v->def;
+  if (!def->live) return;  // already handled -- avoid redundant work
+  def->live = 0;
+  for (Var *rv : def->rvals) reclaim_var_producer(rv);
+}
+
+void reclaim_dead_producer_chain(Var *v) {
+  if (!v || !v->def) return;
+  PNode *def = v->def;
+  def->live = 0;
+  for (Var *rv : def->rvals) reclaim_var_producer(rv);
+}
+
 /*
   INCOMPLETE VAR BASED VERSION
 */

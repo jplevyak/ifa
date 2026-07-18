@@ -2,6 +2,7 @@
 
 #include "ast.h"
 #include "builtin.h"
+#include "dead.h"
 #include "fa.h"
 #include "fun.h"
 #include "if1.h"
@@ -57,7 +58,13 @@ void mark_exc_checks_constant(FA *fa) {
       // identity for ordinary FA-folded conditions, so this alone
       // makes the dead (propagate) arm unreachable from codegen's
       // entry-driven CFG walk. No CFG edit needed.
-      p->lvals[0]->sym = fa->type_world.true_type->v[0]->sym;
+      mark_var_constant(p->lvals[0], fa->type_world.true_type->v[0]->sym);
+      // The isinstance send itself is now skipped at emission
+      // (virtual_cg_is_const_folded_send), but its own inputs --
+      // notably the __pyc_exc__ slot-read MOVE -- were marked live
+      // by mark_live_code BEFORE this fold ran and are now stale.
+      // Reclaim anything that's become genuinely unread.
+      reclaim_dead_producer_chain(p->lvals[0]);
     }
   }
 }

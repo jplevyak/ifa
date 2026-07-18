@@ -2524,6 +2524,24 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
   }
 }
 
+// Given a Code_IF PNode, returns the single cfg_succ index (0 or 1)
+// selected by a compile-time-constant condition -- the condition
+// Var's ->sym is FA's own canonical true_type/false_type Sym, either
+// from FA's ordinary constant folding or fed in by a pass like
+// ifa/optimize/exc_check_fold.cc -- or -1 if the condition is a real
+// runtime value (both successors are potentially live). Shared by
+// discover_blocks (which must not allocate/walk into the dead arm at
+// all) and emit_block_terminator (which must not branch into it),
+// so the two can't drift out of sync.
+static int const_if_successor(EmitCtx &ctx, PNode *n) {
+  if (!n || n->rvals.n == 0) return -1;
+  if (ctx.fa && ctx.fa->type_world.true_type && n->rvals.v[0]->sym == ctx.fa->type_world.true_type->v[0]->sym)
+    return 0;
+  if (ctx.fa && ctx.fa->type_world.false_type && n->rvals.v[0]->sym == ctx.fa->type_world.false_type->v[0]->sym)
+    return 1;
+  return -1;
+}
+
 // -------------------------------------------------------------
 // Block-terminator emit: given a "closer" PNode (one whose cfg_succ
 // exits the current block), emit the LLVM terminator.
@@ -2553,25 +2571,14 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
     }
     case Code_IF: {
       if (closer->live && closer->fa_live && closer->rvals.n > 0) {
-        if (ctx.fa && ctx.fa->type_world.true_type && closer->rvals.v[0]->sym == ctx.fa->type_world.true_type->v[0]->sym) {
-          if (closer->cfg_succ.n > 0) {
-            llvm::BasicBlock *t_bb = ctx.label_bb.get(closer->cfg_succ.v[0]);
-            if (t_bb) {
-              emit_phy_moves(ctx, closer, 0);
-              emit_phi_moves(ctx, closer, 0);
-              Builder->CreateBr(t_bb);
-              break;
-            }
-          }
-        } else if (ctx.fa && ctx.fa->type_world.false_type && closer->rvals.v[0]->sym == ctx.fa->type_world.false_type->v[0]->sym) {
-          if (closer->cfg_succ.n > 1) {
-            llvm::BasicBlock *f_bb = ctx.label_bb.get(closer->cfg_succ.v[1]);
-            if (f_bb) {
-              emit_phy_moves(ctx, closer, 1);
-              emit_phi_moves(ctx, closer, 1);
-              Builder->CreateBr(f_bb);
-              break;
-            }
+        int only_succ = const_if_successor(ctx, closer);
+        if (only_succ >= 0 && closer->cfg_succ.n > only_succ) {
+          llvm::BasicBlock *bb = ctx.label_bb.get(closer->cfg_succ.v[only_succ]);
+          if (bb) {
+            emit_phy_moves(ctx, closer, only_succ);
+            emit_phi_moves(ctx, closer, only_succ);
+            Builder->CreateBr(bb);
+            break;
           }
         }
       }
@@ -2840,6 +2847,14 @@ void discover_phi_targets(EmitCtx &ctx, Fun *f) {
 // PNode and for each Code_LABEL PNode reachable via cfg_succ.
 // Registers in `ctx.label_bb`.  BFS — mirrors cg.cc's
 // label-discovery via write_c_pnode's recursion + done-set.
+//
+// A Code_IF PNode with a compile-time-constant condition (see
+// const_if_successor) only enqueues its live successor -- matching
+// emit_block_terminator's selection exactly, so the dead arm is
+// never allocated a BasicBlock at all (previously it was: visible in
+// a raw .ll dump as an orphaned "; No predecessors!" block, cleaned
+// up only by the mandatory downstream `clang++ -O2` in
+// llvm_codegen_compile, never by pyc's own emission).
 // -------------------------------------------------------------
 
 void discover_blocks(EmitCtx &ctx, Fun *f) {
@@ -2854,7 +2869,12 @@ void discover_blocks(EmitCtx &ctx, Fun *f) {
   seen.set_add(f->entry);
   while (worklist.n) {
     PNode *cur = worklist.pop();
-    for (PNode *s : cur->cfg_succ) {
+    int only_succ = -1;
+    if (cur->code && cur->code->kind == Code_IF && cur->live && cur->fa_live)
+      only_succ = const_if_successor(ctx, cur);
+    for (int si = 0; si < cur->cfg_succ.n; si++) {
+      if (only_succ >= 0 && si != only_succ) continue;
+      PNode *s = cur->cfg_succ.v[si];
       if (!s || !seen.set_add(s)) continue;
       if (s->code && s->code->kind == Code_LABEL) {
         char buf[32];
@@ -2974,8 +2994,18 @@ void emit_pnode(EmitCtx &ctx, PNode *pn, Vec<PNode *> &done) {
       !Builder->GetInsertBlock()->getTerminator()) {
     emit_block_terminator(ctx, pn);
   }
-  // Recurse to successors.
-  for (PNode *s : pn->cfg_succ) {
+  // Recurse to successors -- must agree with discover_blocks and
+  // emit_block_terminator about which arm of a constant-condition
+  // Code_IF is live, or this walk emits content for a PNode
+  // discover_blocks never allocated a BasicBlock for (Builder stays
+  // at the previous, already-terminated block, corrupting it: "LLVM
+  // module verification failed: Terminator found in the middle of a
+  // basic block").
+  int only_succ = -1;
+  if (pn->code->kind == Code_IF && pn->live && pn->fa_live) only_succ = const_if_successor(ctx, pn);
+  for (int si = 0; si < pn->cfg_succ.n; si++) {
+    if (only_succ >= 0 && si != only_succ) continue;
+    PNode *s = pn->cfg_succ.v[si];
     if (s && done.set_add(s)) {
       emit_pnode(ctx, s, done);
     }
