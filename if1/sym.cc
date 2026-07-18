@@ -51,6 +51,7 @@ BasicSym::BasicSym(void)
       fun_returns_value(0),
       live(0),
       can_raise(0),
+      direct_raise(0),
       type_kind(0),
       num_kind(0),
       num_index(0),

@@ -119,6 +119,15 @@ class BasicSym : public gc {
                                 // (method dispatch, builtin, constructor, a
                                 // variable holding a callable) forces this true
                                 // on the CALLER, since it can't be disproven.
+                                // Computed BEFORE FA runs (syntactic call graph);
+                                // see Fun::can_raise for the precise, post-FA
+                                // refinement that also handles method dispatch.
+  unsigned int direct_raise : 1;  // pyc frontend (issue 011): this fun Sym's OWN
+                                   // IF1 body contains a raise/assert (set directly
+                                   // at build_if1 time, not syntactically inferred).
+                                   // Seeds Fun::can_raise's post-FA fixed point --
+                                   // every Fun clone of this Sym shares the same
+                                   // IF1 body, so the bit is clone-invariant.
 
   unsigned int type_kind : 4;
   unsigned int num_kind : 3;   // Sort of number class

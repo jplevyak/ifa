@@ -59,6 +59,21 @@ Sym *closure_fun_type(Var *v);
 // aren't always in sym_tuple->specializers.
 bool cg_has_classtag(Sym *s);
 
+// pyc frontend (issue 011, per-callee can-raise gating -- post-FA
+// refinement): true iff `operand` is the local temp an
+// exception-check's `isinstance(t, nil_type)` reads (i.e. `operand`
+// is defined by a MOVE whose source is the `__pyc_exc__` global --
+// nothing else in a pyc-compiled program ever reads that slot) AND
+// the call it immediately follows (found via the defining move's
+// ->ast and FA's own Fun::calls, ifa/analysis/fa.cc's call_info) is
+// PROVEN safe: every resolved candidate Fun has can_raise == false.
+// Conservative if unsure either way (not an exc-check move at all,
+// or the call didn't resolve to any candidate -- e.g. genuinely dead
+// code) -- returns false, so callers keep emitting the real runtime
+// check. Shared by cg.cc and cg_emit_llvm.cc so both backends agree
+// on when a check is foldable to a constant.
+bool cg_exc_check_provably_safe(Var *operand, Fun *f);
+
 // Is field i of record s live (present in the emitted struct)?
 // Shared by struct emission, field access elision, and the
 // polymorphic-slot discovery in cg_build_new_to_val_map.

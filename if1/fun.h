@@ -121,6 +121,18 @@ class Fun : public gc {
   Vec<CallPoint *> called;
   void called_by_funs(Vec<Fun *> &funs);
 
+  // pyc frontend (issue 011): per-CLONE "can this fun transitively
+  // raise" bit, computed post-clone (Fun::calls is populated, so
+  // this correctly resolves method dispatch per receiver type,
+  // unlike Sym::can_raise's pre-FA syntactic approximation) via a
+  // fixed point seeded by sym->direct_raise and propagated over
+  // calls_funs(). See compute_fun_can_raise (python_ifa_main.cc),
+  // run once after ifa_analyze() (pyc.cc) since that's when
+  // Fun::calls first exists. Consumed by codegen (cg.cc/
+  // cg_emit_llvm.cc) to fold an exception check's condition to a
+  // compile-time constant when the call it follows is proven safe.
+  uint can_raise : 1;
+
   // wrappers and instantiations
   Fun *wraps;
 

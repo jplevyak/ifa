@@ -33,6 +33,7 @@ void Fun::init_fun() {
   wraps = 0;
   size = -1;
   live = 0;
+  can_raise = 0;
   cg_string = 0;
   cg_structural_string = 0;
   llvm = 0;
