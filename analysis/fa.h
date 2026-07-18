@@ -165,6 +165,17 @@ class EntrySet : public gc {
   int id;
   uint dfs_color : 2;
   uint in_es_worklist : 1;
+  // Precise, per-contour "can this ES's own body, or anything
+  // transitively reachable from it via out_edges, raise" fact --
+  // seeded from Sym::direct_raise, computed to a fixed point by
+  // compute_es_can_raise() (fa.cc), re-run at the top of every FA
+  // pass so it stays current as the ES/AEdge call graph grows.
+  // Generic (no frontend-specific meaning): consumed today only by
+  // pyc's IFACallbacks::provably_constant_isinstance override
+  // (ifa.h) via P_prim_isinstance's transfer function, but nothing
+  // here is pyc-specific -- any frontend with its own "raises"
+  // concept could seed Sym::direct_raise and get the same fact.
+  uint can_raise : 1;
   Map<MPosition *, AVar *> args;
   Vec<AVar *> rets;
   Map<MPosition *, AType *> filters;

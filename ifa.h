@@ -10,6 +10,9 @@ class ATypeViolation;
 class ASTCopyContext;
 class PNode;
 class MPosition;
+class AVar;
+class AType;
+class EntrySet;
 
 /*
   Interface object between analysis symbols (Sym) and front end symbols
@@ -70,6 +73,26 @@ class IFACallbacks : public gc {
   virtual Fun *default_wrapper(Fun *, Vec<MPosition *> &defaults) { return 0; }
   virtual Fun *instantiate_generic(Fun *, Map<Sym *, Sym *> &substitutions) { return 0; }
   virtual bool reanalyze(Vec<ATypeViolation *> &type_violations) { return false; }
+  // Called by FA's own P_prim_isinstance transfer function
+  // (analysis/fa.cc), before it falls back to its normal
+  // CreationSet-intersection logic, for every isinstance() check FA
+  // analyzes. Lets a frontend fold a check FA itself structurally
+  // cannot -- not because of a type-inference gap, but because the
+  // imprecision comes from language/runtime-specific knowledge FA
+  // has no notion of (e.g. pyc's exception-propagation slot, whose
+  // whole-program-shared-global imprecision is a known, deliberate
+  // FA limitation -- see ifa/issues/031). `operand_av` is the
+  // checked value's AVar (`thing1` in the transfer function),
+  // `es` the current contour, `send_pnode` the isinstance SEND
+  // itself (for callers that need call-site context via
+  // `send_pnode->code->ast` and `es->out_edges`). Return
+  // `fa->type_world.true_type`/`false_type` to force that result, or
+  // nullptr (the default) for "no opinion, use FA's normal logic" --
+  // the overwhelming majority of isinstance() checks in any program,
+  // including nearly all of pyc's own, take this path unchanged.
+  // Must be conservative: an unrecognized pattern or unresolved call
+  // info returns nullptr, never a forced (and possibly wrong) type.
+  virtual AType *provably_constant_isinstance(AVar *operand_av, EntrySet *es, PNode *send_pnode) { return nullptr; }
   virtual void report_analysis_errors(Vec<ATypeViolation *> &type_violations) {}
   virtual bool c_codegen_pre_file(FILE *fp) { return false; }
 };

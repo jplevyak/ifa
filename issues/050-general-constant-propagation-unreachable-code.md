@@ -1,9 +1,11 @@
 # 050 — no general constant-propagation/dead-code fixed point; the current mechanism only consumes point facts fed in by ad-hoc detectors
 
-**Status:** open, not started. Scoping/motivation only, written
-2026-07-18 right after landing issue 011's exception-check
-dead-code-elimination work (see
-[011](../../issues/011-exception-handling-unimplemented.md)'s
+**Status:** partial. Direction 3a **implemented 2026-07-18** (same
+day, in a follow-up session after this issue was filed) — see its
+own section below for the full design and verification record.
+Directions 1, 2, and 3b remain open/not started. Originally written
+right after landing issue 011's exception-check dead-code-elimination
+work (see [011](../../issues/011-exception-handling-unimplemented.md)'s
 "Exception-check dead-code elimination" and "Closing the residual"
 sections, and `ifa/optimize/dead.{h,cc}`'s `mark_var_constant`/
 `reclaim_dead_producer_chain`).
@@ -126,12 +128,70 @@ specific known gap being caught by a specific known fact today.
    alongside type propagation instead of after it in a separate pass.
    Teach the `isinstance(t, nil_type)` transfer function to consult it
    for the `__pyc_exc__`-sourced pattern specifically and fold to
-   `true_type` inside FA itself. Payoff: the fold becomes
-   indistinguishable from FA's own ordinary constant folding —
-   `mark_live_code` sees the dead branch as dead through its normal
-   mechanism, for free — meaning `exc_check_fold.cc`'s existing
-   dead-`MOVE`/orphaned-LLVM-block fixes become unnecessary, not just
-   superseded.
+   `true_type` inside FA itself.
+
+   **Status: implemented 2026-07-18, same day.** Landed as a properly
+   layered feature, not a `__pyc_exc__`-name hardcode in shared code:
+   a new generic `IFACallbacks::provably_constant_isinstance(AVar
+   *operand_av, EntrySet *es, PNode *send_pnode)` virtual (`ifa.h`,
+   default `nullptr` = "no opinion, use normal logic"), consulted by
+   `fa.cc`'s `P_prim_isinstance` transfer function before its own
+   CreationSet-intersection logic. `fa.cc` stays fully frontend-
+   agnostic — it has no notion of `__pyc_exc__` anywhere; pyc's
+   override (`PycCompiler::provably_constant_isinstance`,
+   `python_ifa_sym.cc`) does the pattern-matching, using a new generic
+   (non-pyc-specific) `EntrySet::can_raise` fact (`fa.h`) computed by
+   `compute_es_can_raise()` (`fa.cc`, file-local) — a small,
+   self-contained fixed point over `fa->ess`/`EntrySet::out_edges`,
+   seeded from `Sym::direct_raise`, re-run fresh at the top of every
+   FA pass (monotonic, so an under-approximation on an early pass
+   self-corrects as the ES/`AEdge` graph grows — no separate
+   "did anything change" signal needed; `extend_analysis()`'s own
+   convergence criteria already keep the outer loop running until the
+   graph stabilizes).
+
+   One correction to the payoff claim above, found empirically during
+   verification: disabling Tier 2 (`compute_fun_can_raise`/
+   `mark_exc_checks_constant`) alone showed Tier 3a's fold *does*
+   remove the check/branch on its own — confirming genuine native
+   integration — but the `__pyc_exc__` slot-read `MOVE`'s dead
+   residual came BACK. `mark_live_code` treats constness and liveness
+   as deliberately orthogonal (a pre-existing, general design choice,
+   not something this or the Tier-2 work introduced): a constant-
+   folded `SEND`'s own inputs can still be marked live even though
+   codegen separately elides the `SEND`'s emission via
+   `virtual_cg_is_const_folded_send`. So **Tier 2 is NOT superseded**
+   — both tiers now run, and both do genuinely non-redundant work:
+   Tier 3a folds the check/branch during FA's own fixed point (works
+   even for future non-pyc consumers of the same hook, and is
+   philosophically the "right" layer for it); Tier 2's
+   `reclaim_dead_producer_chain` still does the liveness cleanup Tier
+   3a's native integration doesn't, by itself, provide.
+
+   One real bug caught during implementation, worth remembering:
+   `EntrySet::out_edges` (`Vec<AEdge*>`) can contain **null entries**
+   — both `compute_es_can_raise()` and
+   `provably_constant_isinstance`'s call-site lookup crashed (SIGSEGV
+   on `print(1)`, the simplest possible program) until each `AEdge*`
+   from that Vec was null-checked before dereferencing. Caught via
+   printf-bisection (gdb was unreliable in this environment) after a
+   full `make clean && make` ruled out a stale-build-artifact
+   explanation first.
+
+   Verified: full suites 203/0 × 2 backends, unit 58/0, IR 20/0
+   (all 5 phases), the separate V-language frontend's own test suite
+   (`ifa/tests/*.v`, `make test_llvm`) unaffected (confirms the
+   default no-op hook is safe for a consumer that doesn't override
+   it), `tests/exception_propagation.py` deterministic across 3
+   compiles, shedskin corpus sweep unchanged (47/47 `rc=` results
+   identical to pre-change baseline), and a generated-C A/B diff
+   (`git worktree`) across every `tests/*.py` file that got as far as
+   `import_module` alphabetically before timing out — every
+   difference found was benign (pure `_CG_f_*` renumbering from
+   discovery-order changes, or strictly MORE dead-code elimination /
+   different but still-correct inlining decisions in the four
+   exception-related files, confirmed by `test_pyc.py`'s own
+   output-matching pass for all of them).
 
    ### 3b — general interprocedural slot promotion for global scalars (large, deferred)
 
@@ -230,11 +290,20 @@ specific known gap being caught by a specific known fact today.
      `GLOBAL_CONTOUR` guards already exist to keep that sentinel safe;
      this touches the same territory.
 
-   **Recommendation**: hold off. 3a gets the one concrete, known-needed
-   benefit at a fraction of the cost and risk; issue 031 already
-   deferred the general version once, for the same reason. Treat this
-   write-up as a ready-to-pick-up plan for whenever a *second*
-   independent global-precision need materializes, not a queued task.
+   **Recommendation**: still hold off, now more confidently — 3a is
+   implemented (see above) and delivers the one concrete, known-needed
+   benefit at a fraction of the cost and risk 3b would carry; issue
+   031 already deferred the general version once, for the same
+   reason. Treat this write-up as a ready-to-pick-up plan for whenever
+   a *second* independent global-precision need materializes, not a
+   queued task. Note the subsumption claim needed one correction once
+   3a actually landed: 3a alone did NOT make Tier 2's
+   `reclaim_dead_producer_chain` unnecessary (see 3a's verification
+   notes above — `mark_live_code`'s constness/liveness orthogonality
+   is a separate, general property unrelated to WHERE the fold
+   happens). Whether 3b would close *that* gap too, or would need its
+   own separate liveness-reclaim step, is an open question for
+   whoever picks this up.
 
 ## Verification plan (once a direction is chosen)
 

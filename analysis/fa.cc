@@ -216,7 +216,8 @@ CreationSet::CreationSet(CreationSet *cs)
   sym->creators.add(this);
 }
 
-EntrySet::EntrySet(Fun *af) : fun(af), dfs_color(DFS_white), in_es_worklist(0), split(nullptr), equiv(nullptr) {
+EntrySet::EntrySet(Fun *af)
+    : fun(af), dfs_color(DFS_white), in_es_worklist(0), can_raise(0), split(nullptr), equiv(nullptr) {
   id = fa->entry_set_id++;
 }
 
@@ -2206,6 +2207,17 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
       case P_prim_isinstance: {
         AVar *thing1 = make_AVar(p->rvals[p->rvals.n - 2], es);  // instance
         AVar *thing2 = make_AVar(p->rvals[p->rvals.n - 1], es);  // type
+        // Give the frontend first refusal: it may recognize this
+        // specific check as foldable via language/runtime-specific
+        // knowledge FA structurally can't derive on its own (see
+        // IFACallbacks::provably_constant_isinstance, ifa.h, for the
+        // full rationale and the conservatism contract). Default
+        // (nullptr) falls straight through to the normal
+        // CreationSet-intersection logic below, unchanged.
+        if (AType *forced = if1->callback->provably_constant_isinstance(thing1, es, p)) {
+          update_gen(result, forced);
+          break;
+        }
         AType *rtype = fa->type_world.bottom_type;
         for (CreationSet *cs1 : thing1->out->sorted) {
           for (CreationSet *cs2 : thing2->out->sorted) {
@@ -5941,8 +5953,48 @@ static void complete_pass() {
   pass_timer.stop();
 }
 
+// Per-contour "can this ES's own body, or anything transitively
+// reachable via out_edges, raise" -- see EntrySet::can_raise (fa.h)
+// for the full rationale. Seeded from Sym::direct_raise (clone-
+// invariant: every ES of a Sym shares that Sym's own IF1 body, so
+// the seed doesn't depend on the ES); propagated via a small,
+// self-contained fixed point over fa->ess/EntrySet::out_edges,
+// independent of and much cheaper than FA's own type-inference
+// fixed point. Re-run fresh at the top of every pass (see
+// analyze_to_convergence below) so it always reflects the CURRENT
+// ES/AEdge graph -- which may still be growing early on, as
+// polymorphic call sites resolve more candidates pass over pass.
+// Monotonic (only ever sets bits, never clears): an under-approximate
+// answer on an early pass (missing edge not yet discovered) is
+// always safe -- worst case, a foldable check stays real for one
+// extra pass -- and self-corrects once the edge appears, with no
+// separate "did anything change" signal needed to justify another
+// pass (that's already driven by extend_analysis()'s own type-graph
+// convergence criteria, unrelated to and unaffected by this).
+static void compute_es_can_raise() {
+  for (EntrySet *es : fa->ess) {
+    if (es->can_raise) continue;
+    if (es->fun && es->fun->sym && es->fun->sym->direct_raise) es->can_raise = 1;
+  }
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (EntrySet *es : fa->ess) {
+      if (es->can_raise) continue;
+      for (AEdge *e : es->out_edges) {
+        if (e && e->to && e->to->can_raise) {
+          es->can_raise = 1;
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+}
+
 static void analyze_to_convergence() {
   do {
+    compute_es_can_raise();
     initialize_pass();
     fa->edge_worklist.enqueue(fa->top_edge);
     while (fa->edge_worklist.head || fa->send_worklist.head) {
