@@ -50,6 +50,7 @@ BasicSym::BasicSym(void)
       is_vector(0),
       fun_returns_value(0),
       live(0),
+      can_raise(0),
       type_kind(0),
       num_kind(0),
       num_index(0),

@@ -111,6 +111,14 @@ class BasicSym : public gc {
 
   unsigned int fun_returns_value : 1;  // used by analysis.cpp
   unsigned int live : 1;               // used by if1.cpp
+  unsigned int can_raise : 1;  // pyc frontend (issue 011): fun Sym transitively
+                                // (directly, or via a resolved plain-call edge)
+                                // reaches a raise/assert -- gates whether a call
+                                // site needs a post-call pending-exception check
+                                // at all. Conservative: an unresolvable callee
+                                // (method dispatch, builtin, constructor, a
+                                // variable holding a callable) forces this true
+                                // on the CALLER, since it can't be disproven.
 
   unsigned int type_kind : 4;
   unsigned int num_kind : 3;   // Sort of number class
