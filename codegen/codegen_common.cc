@@ -92,23 +92,6 @@ cchar *num_string(Sym *s) {
 // Closure / dispatch helpers
 // -------------------------------------------------------------
 
-// issue 011 (per-callee can-raise gating, post-FA refinement): see
-// codegen_common.h's declaration for the full rationale.
-bool cg_exc_check_provably_safe(Var *operand, Fun *f) {
-  if (!operand || !f) return false;
-  PNode *def = operand->def;
-  if (!def || !def->code || def->code->kind != Code_MOVE) return false;
-  if (!def->rvals.n || !def->rvals[0]->sym || !def->rvals[0]->sym->name) return false;
-  if (strcmp(def->rvals[0]->sym->name, "__pyc_exc__")) return false;
-  if (!def->code->ast) return false;
-  Vec<Fun *> funs;
-  call_info(f, def->code->ast, funs);
-  if (!funs.n) return false;  // unresolved (e.g. dead code) -- stay conservative
-  for (Fun *callee : funs.values())
-    if (!callee || callee->can_raise) return false;
-  return true;
-}
-
 bool cg_has_classtag(Sym *s) {
   if (!(s && s->type_kind == Type_RECORD && !s->is_system_type && s->name && s->has.n && !s->is_vector &&
         !sym_tuple->specializers.set_in(s) && !(s->creators.n && s->creators[0]->sym == sym_list)))

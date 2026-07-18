@@ -119,6 +119,7 @@ LIB_SRCS = ifa.cc main.cc \
 	codegen/codegen_common.cc codegen/cg.cc codegen/llvm.cc \
 	codegen/cg_emit_llvm.cc codegen/jit.cc \
 	optimize/cfg.cc optimize/dead.cc optimize/dom.cc optimize/inline.cc optimize/loop.cc optimize/ssu.cc \
+	optimize/exc_check_fold.cc \
 	testing/parse_ir.cc testing/write_ir.cc testing/test_callbacks.cc \
 	testing/printer_util.cc testing/ir_builder.cc testing/ir_builder_test.cc \
 	testing/ir_shapes.cc \

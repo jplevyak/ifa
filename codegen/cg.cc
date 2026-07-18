@@ -908,21 +908,16 @@ class CBackendEmitter : public VirtualCGEmitter {
         pn->prim->index == P_prim_isinstance && cls3 && (cls3 == sym_nil_type || cls3->meta_type == sym_nil_type);
     if (is_nil_check) {
       if (pn->lvals.n && cg_get_string(pn->lvals[0])) {
-        // issue 011 (per-callee can-raise gating, post-FA
-        // refinement): this specific nil-check might be an
-        // exception-propagation check (emit_exc_check,
-        // python_ifa_build_if1.cc) rather than a genuine user-level
-        // `x is None` -- cg_exc_check_provably_safe tells them apart
-        // (by tracing the operand back to a __pyc_exc__ slot-read
-        // move) and, only for the former, folds it to a constant
-        // "not pending" when FA proves the preceding call's resolved
-        // target(s) can't raise. A real `x is None` never matches
-        // (its operand isn't sourced from __pyc_exc__), so this can't
-        // misfire on ordinary user code.
-        if (cg_exc_check_provably_safe(pn->rvals[2], f)) {
-          fprintf(fp, "  %s = 1;\n", cg_get_string(pn->lvals[0]));
-          return true;
-        }
+        // issue 011: an exception-propagation check
+        // (emit_exc_check, python_ifa_build_if1.cc) that
+        // ifa/optimize/exc_check_fold.cc proved can never fire has
+        // ALREADY had its condition Var rewritten to FA's own
+        // canonical true_type constant by the time codegen runs --
+        // virtual_cg_is_const_folded_send's check upstream
+        // (virtual_cg_emit_send) skips this whole send for that
+        // case, so this function is never even reached for it; the
+        // downstream branch (write_c_pnode's Code_IF handling) then
+        // elides the dead arm too. No special-casing needed here.
         cchar *opnd = cg_get_string(pn->rvals[2]);
         if (!opnd) opnd = cg_get_string(pn->rvals[2]->sym);
         // issue 011: reached through build_isinstance_call's

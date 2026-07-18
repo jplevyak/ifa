@@ -1240,27 +1240,21 @@ static bool emit_send_is(EmitCtx &ctx, PNode *pn) {
   llvm::Value *rhs = nullptr;
   if (pn->prim->index == P_prim_isinstance && rhs_var->sym &&
       (rhs_var->sym == sym_nil_type || rhs_var->sym->meta_type == sym_nil_type)) {
-    // issue 011 (per-callee can-raise gating, post-FA refinement):
-    // mirrors cg.cc's identical check -- this nil-check might be an
-    // exception-propagation check (emit_exc_check) rather than a
-    // genuine user-level `x is None`; cg_exc_check_provably_safe
-    // tells them apart (traces the operand to a __pyc_exc__
-    // slot-read move) and folds it to "always not pending" when FA
-    // proves the preceding call's resolved target(s) can't raise.
-    // Comparing lhs to itself (always true) instead of null reuses
-    // the ordinary ICmpEQ path below rather than a separate constant
-    // return, so it still gets the same dst-type coercion.
-    if (cg_exc_check_provably_safe(lhs_var, ctx.fn)) {
-      rhs = lhs;
+    // issue 011: an exception-propagation check (emit_exc_check)
+    // that ifa/optimize/exc_check_fold.cc proved can never fire has
+    // ALREADY had its condition Var rewritten to FA's own canonical
+    // true_type constant by the time codegen runs --
+    // virtual_cg_is_const_folded_send's check upstream
+    // (virtual_cg_emit_send) skips this whole send for that case, so
+    // this function is never even reached for it; the downstream
+    // Code_IF handling then elides the dead arm too. No
+    // special-casing needed here -- just the ordinary null compare.
+    llvm::Type *t = lhs->getType();
+    if (t->isPointerTy()) {
+      rhs = llvm::ConstantPointerNull::get(
+          llvm::cast<llvm::PointerType>(t));
     } else {
-      // Compare against null.
-      llvm::Type *t = lhs->getType();
-      if (t->isPointerTy()) {
-        rhs = llvm::ConstantPointerNull::get(
-            llvm::cast<llvm::PointerType>(t));
-      } else {
-        rhs = llvm::ConstantInt::get(t, 0);
-      }
+      rhs = llvm::ConstantInt::get(t, 0);
     }
   } else {
     rhs = value_for_var(ctx, rhs_var);
