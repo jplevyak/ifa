@@ -24,7 +24,15 @@ without bound, EntrySet count flat), but with a dramatically smaller
 (4-line, no 500-line real program needed) and dict/`sorted()`-based
 repro — likely the better starting point for whoever roots-causes
 this, since fixing one likely fixes (or substantially informs) the
-other.
+other. 057 also landed a wall-clock stagnation *mitigation* (bounds
+FA's inner flow loop, converting a hang into a clean failure) — but
+re-tested directly against this issue's own `plcfrs.py` repro
+(`__sub__` returning `self` unconditionally) and it does **not**
+help here: that repro still segfaults in ~7s, the same fast crash
+this issue originally documented, not the slow-hang pattern 057's
+guard targets. The two issues' triggers share a root-cause *family*
+but apparently not the exact same failure mode — 057's mitigation
+does not close this issue.
 
 ## Symptom
 

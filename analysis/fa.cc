@@ -5992,15 +5992,59 @@ static void compute_es_can_raise() {
   }
 }
 
+// ifa/issues/057: the flow-to-fixpoint inner loop below (edge/send/es
+// worklists) has no bound at all, unlike the outer extend_analysis()
+// splitting loop (pass_limit + the issue-033 stall guard). A
+// non-convergent input -- confirmed via ifa/issues/055 and 057, both
+// FA's polymorphic type union failing to stabilize for some AVar --
+// churns this inner loop forever: hundreds of thousands of edges
+// processed with fa->ess.n (distinct EntrySets) completely flat,
+// consuming unbounded memory (observed >1GB and still climbing after
+// 280s on 057's 4-line repro) with no diagnostic, ever. Worse: the
+// PER-EDGE cost itself grows over time as the stuck AVar's type union
+// keeps accumulating without ever stabilizing (measured: the first
+// ~140K edges took ~15s, the next 200K took over 120s) -- so a raw
+// edge-count threshold is unreliable, either too slow to trip (if set
+// high enough to tolerate legitimate large passes) or fires on a
+// slow-but-finite legitimate program. A wall-clock stagnation timeout
+// is robust to this regardless of per-edge cost: as long as fa->ess.n
+// (distinct EntrySets) keeps growing at all, the clock keeps
+// resetting and legitimate large programs are unaffected. Calibrated
+// against the largest known-converging corpus example (pygasus,
+// issue 033's own worst case): its busiest single pass processes
+// ~65K edges while fa->ess.n grows by hundreds *within that same
+// pass* (973 -> 4832 across passes, never flat for long) -- nowhere
+// close to STALL_TIMEOUT_SECONDS of zero growth. This does not fix
+// *why* convergence fails (that's 055/057's still-open root cause) --
+// it converts an unbounded hang/OOM into a clean, bounded failure
+// with a diagnostic pointing at the actual bug class.
+static const long STALL_CHECK_INTERVAL = 20000;
+static const time_t STALL_TIMEOUT_SECONDS = 120;
+
 static void analyze_to_convergence() {
   do {
     compute_es_can_raise();
     initialize_pass();
     fa->edge_worklist.enqueue(fa->top_edge);
+    long edge_count = 0;
+    int last_ess_check = fa->ess.n;
+    time_t last_ess_change_time = time(nullptr);
     while (fa->edge_worklist.head || fa->send_worklist.head) {
       while (AEdge *e = fa->edge_worklist.pop()) {
         e->in_edge_worklist = 0;
         analyze_edge(e);
+        if ((++edge_count % STALL_CHECK_INTERVAL) == 0) {
+          if (fa->ess.n > last_ess_check) {
+            last_ess_check = fa->ess.n;
+            last_ess_change_time = time(nullptr);
+          } else if (time(nullptr) - last_ess_change_time > STALL_TIMEOUT_SECONDS) {
+            fail(
+                "FA flow analysis made no EntrySet progress for %lds (%ld "
+                "edges processed) -- non-convergent input (see "
+                "ifa/issues/057-sorted-tolist-fa-nonconvergence.md)",
+                (long)STALL_TIMEOUT_SECONDS, edge_count);
+          }
+        }
       }
       while (AVar *send = fa->send_worklist.pop()) {
         send->in_send_worklist = 0;
