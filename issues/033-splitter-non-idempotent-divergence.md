@@ -599,6 +599,25 @@ shouldn't count as stall), reanalyze ordering, and diagnostics
 — shedskin's maxhits=3 give-up is its weakest part, don't copy
 that silently).
 
+**Confirmed as a real, live gap (2026-07-19),** via
+[../025 issue tracking](../../ifa/issues/057-sorted-tolist-fa-nonconvergence.md)'s
+root-cause work: a 4-line `sorted()` + `dict.items()` repro hangs the
+compiler because `find_best_entry_sets`/`entry_set_compatibility`
+(the `pyc` analog of shedskin's `cpa()`, not `pattern_match` as
+sketched above but the same failure shape) mints an unbounded
+number of fresh `EntrySet`s for `tuple.__lt__` — no existing contour
+in the callee's `Fun::ess` is ever judged compatible enough to reuse,
+and there's no cap or widen-on-quiescence fallback, so every call
+mints one more (always-incompatible) candidate for the next call to
+scan past and reject. This is exactly the "genuine CPA explosion"
+failure mode sketch (d) predicted, just reached via a builtin
+(`sorted`/`tuple.__lt__`) rather than a hand-written adversarial
+case. 057's own writeup has the full evidence trail (two rounds of
+instrumentation, the specific PNodes/call sites). Not fixed there
+either — flagged as the natural next step for whoever picks up this
+milestone, with `find_best_entry_sets` now a confirmed, concrete
+implementation point rather than a hypothetical one.
+
 **E. Subset-aware MatchCache (only if C is insufficient).** The
 cache misses all through convergence because it keys exact
 ATypes. Monotonicity suggests caching the per-position
