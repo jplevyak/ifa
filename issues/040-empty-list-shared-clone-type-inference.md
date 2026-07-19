@@ -8,6 +8,13 @@ stage). The repro below compiles clean and runs correctly; committed
 as `tests/empty_list_print.py`. The mechanism trace that led there
 follows.
 
+**Caveat found 2026-07-19**: this fix's scope is narrower than it
+looks — adding so much as a no-op comparison (`if key < 0: pass`) to
+`list.__getitem__` reopens the *exact* failure on this issue's own
+`tests/empty_list_print.py` repro, with no other change to the
+program. See
+[052](052-shared-method-branch-reopens-empty-list-fragility.md).
+
 ## Complete mechanism (2026-07-15)
 
 The scheduling "leak" is a chain through `list.__str__`'s loop
