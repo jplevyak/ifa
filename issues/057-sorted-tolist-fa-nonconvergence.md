@@ -1,18 +1,23 @@
 # 057 — Generic `sorted()` across differing element types + `list()`-materialization causes FA non-convergence
 
-**Status:** root cause FOUND 2026-07-19 (see "Root cause" below);
-not fixed — the real fix is a genuine architecture feature (a
-CPA-style cap/widening valve) that issue
-[033](033-splitter-non-idempotent-divergence.md) already anticipated
-needing (its S4-D section) but never built. The *symptom* (unbounded
-hang + unbounded memory growth) is separately MITIGATED as of the
-same day: FA's flow-to-fixpoint inner loop now fails cleanly with a
-diagnostic after a bounded stall instead of hanging/OOMing forever
-(see "Mitigation landed" below) — this mitigation predates the root
-cause finding and its own write-up contains one inaccuracy about
-*why* it works, corrected in the root-cause section. Found 2026-07-19
-while testing the same-day `dict.keys()`/`.values()`/`.items()` fix
-([../../issues/025](../../issues/025-shedskin-examples-coverage.md)).
+**Status:** root cause FOUND 2026-07-19 (see "Root cause" below, and
+especially the "Dedicated instrumentation on the precise flow path"
+subsection — the first pass at root-causing named the wrong function;
+corrected the same day via direct instrumentation of the actual
+path). Not fixed — the real fix is narrower than first thought: a
+recursion-convergence bug in `check_split`'s `e->from->split` branch
+(`ifa/analysis/fa.cc`), not a generic "CPA-style cap" across all of
+`find_best_entry_sets`, though the latter (issue
+[033](033-splitter-non-idempotent-divergence.md)'s S4-D section) is
+still relevant as the general-purpose fix shape. The *symptom*
+(unbounded hang + unbounded memory growth) is separately MITIGATED as
+of the same day: FA's flow-to-fixpoint inner loop now fails cleanly
+with a diagnostic after a bounded stall instead of hanging/OOMing
+forever (see "Mitigation landed" below) — this mitigation predates
+the root cause finding and its own write-up contains one inaccuracy
+about *why* it works, corrected in the root-cause section. Found
+2026-07-19 while testing the same-day `dict.keys()`/`.values()`/
+`.items()` fix ([../../issues/025](../../issues/025-shedskin-examples-coverage.md)).
 Not `dict`-specific and not caused by that fix — it's a pre-existing,
 general FA architecture gap that a natural "exercise every code path"
 test for the new dict methods happened to trip. Same *class* of bug
@@ -20,9 +25,11 @@ as [055](055-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md)
 (FA's fixed-point loop churns worklists without bound), but this
 repro is dramatically smaller — 4 lines, no `plcfrs.py`-scale program
 needed — making this the better issue to use for the real fix.
-**Affects:** `ifa/analysis/fa.cc`'s `find_best_entry_sets` /
-`entry_set_compatibility` / `set_entry_set` (the EntrySet reuse-vs-
-create decision for a call edge) — see "Root cause" below.
+**Affects:** `ifa/analysis/fa.cc`'s `check_split` (specifically its
+`if (e->from->split)` branch) and `edge_nest_compatible_with_entry_set`
+— the EntrySet reuse-vs-create decision for a *recursive* call edge,
+tried before (and able to bypass) `find_best_entry_sets`'s general
+search. See "Root cause" below.
 
 ## Symptom
 
@@ -138,130 +145,150 @@ inaccuracy flagged in the mitigation's status line above — corrected
 here; the mitigation below still *works* (see its own note), just
 not for the reason originally written.
 
-**The actual mechanism**: `find_best_entry_sets` (`fa.cc`), given a
-call edge, scans every existing `EntrySet` in the callee's
-`Fun::ess` and asks `entry_set_compatibility` whether the edge's
-argument types are compatible with reusing that contour. If **none**
-score positively, `find_best_entry_sets` returns 0 and the caller
-falls through to `set_entry_set(e)` with no `es` argument, which
-unconditionally mints a **brand new** `EntrySet` (`new
-EntrySet(e->match->fun); e->match->fun->ess.add(new_es);`) — with no
-cap, and no fallback to *widen* an existing contour to accept the new
-argument type combination instead of forking a fresh one. For
-`tuple.__lt__`, called with elements drawn from `sorted()`'s shared
-(and itself never-stabilizing) union of `str` and `tuple(str,str)`
-values, the incoming argument types never exactly match any
-previously-created contour — so every single call mints a new one,
-which itself becomes one more (always-incompatible) candidate for
-the next call to scan past, which is *also* why the per-edge cost
-grows over time (documented in the mitigation section): each new
-edge does a linear scan of an ever-growing, always-failing candidate
-list before minting yet another EntrySet.
+**Correction — the paragraph that originally lived here named the
+wrong function.** It claimed `find_best_entry_sets` scans `Fun::ess`
+for a compatible contour via `entry_set_compatibility`'s
+exact-type-equality check, and that check's failure to tolerate
+"close enough" was the cause. Dedicated instrumentation the same day
+(next section) found `entry_set_compatibility` is barely even
+*called* for `tuple.__lt__` — nowhere near enough to explain the
+growth. The real routing happens one step earlier, in `check_split`,
+which `make_entry_set` (`fa.cc`) tries **before** `find_best_entry_sets`
+and which can return early without ever reaching it. See below for
+what's actually happening.
 
-### Why the incoming type never exactly matches: the actual compatibility check, and a self-reinforcing feedback loop (found later the same day, in response to a direct follow-up question)
+### Dedicated instrumentation on the precise flow path (2026-07-19, in response to a direct follow-up question: "why are the entry sets growing without bound?")
 
-`entry_set_compatibility`'s core decision (`fa.cc`,
-`edge_type_compatible_with_entry_set`) is exact canonical-pointer
-equality on the argument's type, no tolerance for "close enough":
+The previous write-up's "type never exactly matches" theory turned
+out to be a plausible-sounding wrong turn. Three more rounds of
+targeted instrumentation (each temporarily patched into `fa.cc`,
+removed after) found the real mechanism, and it isn't about type
+drift at all.
+
+**Round 3 — which function actually mints the new `EntrySet`s.**
+Instrumented `set_entry_set`'s fresh-creation branch directly (the
+one common choke point for every caller, sidestepping any risk of
+missing a bypass route) with a histogram keyed by `Fun` name. Result:
+growth is spread across a *cluster* of interdependent functions —
+`bool.__pyc_to_bool__`, `int64.__lt__`, `tuple.__getitem__`,
+`tuple.__lt__`, `str.__lt__`, `range.__new__`, `range.__pyc_more__`,
+`range.__iter__` — not just `tuple.__lt__` alone. Makes sense in
+hindsight: `range(n)`'s own comparison (`self.i < self.j`) and
+`tuple.__getitem__`'s index access are both on `tuple.__lt__`'s own
+call path (`for i in range(n): a = self[i]; b = t[i]; ...`).
+
+**Round 4 — checking whether `entry_set_compatibility` (the function
+the previous write-up blamed) is even being reached.** Instrumented
+`entry_set_compatibility` itself, filtered to `tuple.__lt__`. Result:
+it's called only a handful of times in 40 seconds of a hung compile —
+far too few to explain thousands of new `EntrySet`s. Whatever's
+creating them isn't going through `find_best_entry_sets`.
+
+**Round 5 — `check_split`, the actual culprit.** `make_entry_set`
+calls `check_split(e, edges, split)` *before* `find_best_entry_sets`,
+and `check_split` can handle (and return early for) an edge entirely
+on its own via two routes — one for recorded recursion backedges,
+and one guarded by `if (e->from->split)`, which looks for a matching
+call in the *split-parent's* own `out_edge_map` for the same PNode.
+Instrumented that second route directly: **every single time**, it
+finds a candidate (`m.n=2` matches in the parent's edge map,
+consistently) but rejects it because `edge_nest_compatible_with_entry_set`
+returns false — and the fallback for that specific case
+(`fa.cc`) is unconditional:
 
 ```cpp
-AType *etype = type_intersection(e_arg->out->type, e->match->formal_filters.get(p));
-if (etype->n && es_arg->out->type->n && etype != es_arg->out->type) return 0;
+if (e->match->fun->split_unique || !edge_nest_compatible_with_entry_set(e, ee->to)) {
+  set_entry_set(e);       // mint a brand new EntrySet, no cap
+  e->to->split = ee->to;  // ...marked as a "split" of the rejected candidate
+  ees.add(e);
+  return 1;               // handled -- find_best_entry_sets never runs
+}
 ```
 
-`AType`s are hash-consed (`type_cannonicalize`, confirmed earlier in
-this investigation) — two logically-identical sets of `CreationSet`s
-always canonicalize to the same pointer, so this check is sound *in
-principle*. The problem is there is no widening: an incoming type
-that is the existing contour's bound type plus **one more**
-`CreationSet` is, by this check, exactly as incompatible as a
-completely unrelated type. Zero drift is tolerated.
+**Round 6 — why the nest check always fails.** Instrumented
+`edge_nest_compatible_with_entry_set` itself. The mismatch is at
+display-chain position 1 (`ef_nd=2`, `es_nd=2` — both sides nested
+two levels deep), and **the two colliding values are permanently
+fixed, not drifting**: every sample shows the exact same pair of
+pointers on each side (`e->from->display[1]` always equals one value;
+`es->display[1]` always equals a *different* value) — this is a
+structural, static incompatibility between two nesting lineages, not
+a type union slowly growing.
 
-Why does the incoming type keep drifting, then, rather than settling
-onto one of the (by now thousands of) already-existing contours?
-The working theory, built from the empirical finding that new
-`EntrySet`s and new closure `CreationSet`s grow in lockstep on the
-same 42 fixed PNodes (previous section) — **the act of specializing
-manufactures the next mismatch**:
+**Round 7 — what `e->from` actually is: `tuple.__lt__` calling
+itself.** Logged `e->from->fun` and `es->fun` for these edges — both
+are `tuple.__lt__`. **This is genuine self-recursion.** Inside
+`tuple.__lt__`'s own body (`__pyc__/04_sequence.py`), `if a < b:`
+compares two tuple *elements* — but because FA can't statically rule
+out that a tuple's elements are themselves tuples (the union typing
+here is imprecise, bleeding in from `sorted()`'s shared, polymorphic
+`str`/`tuple(str,str)` state), it speculatively explores the branch
+where `a`/`b` are ALSO tuples, dispatching `a < b` back into
+`tuple.__lt__` — a recursive call, from `tuple.__lt__` to itself.
 
-1. An edge into `tuple.__lt__` arrives with argument type `T`. No
-   existing `EntrySet` in `Fun::ess` has bound type exactly `T`
-   (every existing one is frozen at whatever it was bound to at ITS
-   OWN creation moment — since a rejected edge is *rerouted* to a new
-   `EntrySet` rather than flowed into the nearly-matching existing
-   one, that existing one never gets the chance to catch up and grow
-   into `T` itself). `set_entry_set` mints a fresh `EntrySet` #N.
-2. `EntrySet` #N gets its own fresh `result` AVar for every PNode
-   inside `tuple.__lt__`'s body, including the `a < b` sub-comparison
-   PNode. `sym_closure`-tagged `CreationSet`s are *deliberately*
-   never shared across different `result` AVars (`creation_point`
-   jumps straight to `Lunique` for `sym_closure`, bypassing the
-   normal reuse search entirely — correct in isolation, since two
-   genuinely different call sites/contours should get their own bound
-   closures). So `EntrySet` #N necessarily mints its own brand-new
-   closure `CreationSet` for `a.__lt__`, distinct from every closure
-   any other `EntrySet` created for the "same" source line.
-3. That new closure identity is new information injected into the
-   flow graph. If it (or some other new fact about contour #N — e.g.
-   its own distinct return-value `CreationSet`) flows back into
-   whatever `sorted()`'s shared `r`/`x` state is derived from, that
-   source union gains one more member: type `T` becomes `T'` (`T`
-   plus one).
-4. The next edge into `tuple.__lt__` now carries `T'` — which again
-   matches no existing contour, including #N (frozen at `T`, the
-   instant it was created) — and step 1 repeats, forever.
+**The full picture**: `tuple.__lt__` recursing into itself is exactly
+what `check_split`'s split/backedge-routing machinery exists to
+handle — its own code comments describe it as "recursion follows its
+split-off caller contour," and separately warn (in a different
+section of the same file) that "when the splitter has concrete type
+evidence that a recursive edge does NOT belong with its enclosing
+contour, the default must yield or the split silently no-ops and the
+same decision re-derives every pass." That warning was written about
+the *outer* extend_analysis() loop re-deriving a bad decision once
+per pass. What's happening here is the identical disease one level
+down: **within a single pass**, every recursive call edge from
+`tuple.__lt__` to itself hits a split-parent binding whose nesting
+display permanently disagrees with the current call's, and instead
+of converging on one shared recursive contour (or falling through to
+`find_best_entry_sets`'s general, type-aware search, which never
+gets a chance to run), `check_split` mints a fresh, still-orphaned
+`EntrySet` for every single recursive invocation, forever. `e->from`
+itself — the calling contour — is a *fresh* `tuple.__lt__` `EntrySet`
+every time too, for the exact same reason one level further up the
+recursion: it's the identical bug reproducing itself at every
+recursive depth.
 
-This is a real fixed point that never gets reached not because the
-type space is merely large, but because *every rejection actively
-produces the next rejection's cause*. It's the same general disease
-issue 033 spent weeks on for the *outer* splitting loop (split
-decisions that are not idempotent, re-derived from scratch each time
-rather than persisted) — this is an instance of the identical
-disease one layer down, inside a single pass's *inner* EntrySet
-creation itself.
+**Confidence level**: this is now directly evidenced end-to-end, not
+a theory — every link was confirmed with dedicated instrumentation
+(rounds 3-7 above), including the specific pointer values showing the
+display-chain mismatch is static rather than growing, and the
+specific function identities (`e->from->fun == es->fun ==
+tuple.__lt__`) confirming genuine self-recursion. The one thing not
+chased further: *why* the two nesting lineages permanently disagree
+in the first place (i.e., why the split-parent's recorded display and
+the live recursive call's display were never reconciled to begin
+with) — that's the next natural question for whoever fixes this, and
+is likely close to answerable directly from `check_split`'s and
+`set_entry_set_split`'s (or equivalent) existing code, now that the
+exact call shape (self-recursive `__lt__` via speculative
+tuple-of-tuples dispatch) is known.
 
-**Confidence level, honestly**: steps 1-2 are directly evidenced —
-the exact-pointer-equality code (step 1) is read directly from
-source, and the 1:1 empirical correlation between new-`EntrySet`
-creation and new-closure creation on a fixed 42-PNode set (previous
-section's instrumentation) directly supports step 2. **Step 3 — the
-precise path by which a new closure's identity flows back into the
-shared source union — is the plausible, best-supported theory
-connecting the dots, not something confirmed by dedicated
-instrumentation.** Verifying it precisely would mean instrumenting
-`flow_vars`/`update_gen` to trace one specific `CreationSet`'s
-propagation path from a `make_period_closure` call back to whichever
-AVar feeds `sorted()`'s `r`/`x`/`self`/`t` — a natural next step for
-whoever picks up the actual architecture fix, since it would confirm
-(or correct) exactly which flow edge to special-case, widen, or cap.
+**Relation to issue 033's S4-D ("CPA_LIMIT-style deferral valve")**:
+still relevant as the general-purpose fix shape (any admission cap
+needs a widen-on-quiescence escape hatch, which this specific
+recursive case also needs), but the immediate, better-targeted fix
+is narrower than a full CPA_LIMIT valve: `check_split`'s
+`e->from->split` branch needs either (a) a cap on how many times it
+will mint a fresh split-child for the *same* recursive PNode before
+falling through to `find_best_entry_sets`'s general search instead of
+returning 1 unconditionally, or (b) a real fix to why the two nesting
+displays never reconcile. Issue 033's own comments already flagged
+this general class of risk for the outer loop; this is the first
+concrete repro showing it inside the inner loop too, at the level of
+a single recursive call.
 
-**This is precisely the gap issue 033's own S4-D section
-anticipated but never built**: *"D. CPA_LIMIT-style deferral valve
-(safety net for sketch (d); small). In pattern_match, before
-find_best_matches: compute `candidates x prod(per-position class
-counts)`; if above a limit, return 0 through the `incomplete_call`
-path... Escalate at quiescence: when extend_analysis finds no work
-AND capped sends exist, double the FA-level limit and re-enqueue
-them."* Shedskin's own architecture (033's own comparison table)
-has exactly this valve (`CPA_LIMIT`, lazy doubling) precisely because
-unbounded per-call-site specialization is a known failure mode of
-this style of analysis, not a `pyc`-specific bug — `find_best_entry_sets`
-is the `pyc` analog of shedskin's `cpa()`, and it's missing the
-admission/widening control shedskin's has.
-
-**Why not fixed now**: implementing a real CPA-style cap +
-widen-on-quiescence valve is a genuine architecture feature (033's
-own S4-D calls it "small," but every other S4/S5 milestone in that
-issue that looked small at the time needed a full multi-day
-land-verify-revert cycle against the whole corpus — M2 alone was
-attempted and reverted twice). Out of scope for landing in this
-session; the mitigation below already converts the failure mode from
-"hangs / OOMs forever" to "fails cleanly in ~2 minutes with a
-diagnostic," which is the practically important half for anyone
-hitting this today. The architecture fix is the natural next step
-for whoever picks this up — S4-D's own sketch is a reasonable
-starting design, and `find_best_entry_sets`/`entry_set_compatibility`
-are now a confirmed, concrete implementation point (not a guess).
+**Why not fixed now**: `check_split`'s recursion/split-routing logic
+is exactly the kind of surface issue 033's own M2/M3 milestones show
+is deceptively risky to touch — every "small" fix attempted there
+needed a full multi-day land-verify-revert cycle against the whole
+corpus, and this is architecturally adjacent code. Out of scope for
+landing in this session; the mitigation below already converts the
+failure mode from "hangs / OOMs forever" to "fails cleanly in ~2
+minutes with a diagnostic," which is the practically important half
+for anyone hitting this today. `check_split`'s `e->from->split`
+branch (`fa.cc`) is now a confirmed, precise implementation point for
+whoever picks up the real fix — not a guess, and considerably
+narrower than "the FA splitter in general."
 
 ## Mitigation landed (2026-07-19): bounded stagnation timeout in the flow-to-fixpoint inner loop
 
@@ -334,20 +361,26 @@ are the record instead.
 This is a symptom mitigation, not a fix: `sorted()` + `dict.items()`
 combined still cannot compile (it just fails fast with a clear
 message now, rather than hanging). See "Root cause" above for what
-actually landed later the same day: `find_best_entry_sets` mints an
-unbounded number of `EntrySet`s for `tuple.__lt__` because no
-existing contour is ever judged "compatible enough" to reuse, with
-no cap or widening fallback — the missing valve issue 033's own
-S4-D section already predicted. This issue exists to (a) record a
-much cheaper, cleaner repro of the same underlying bug class than
-055's `plcfrs.py`-scale one, now with a confirmed root cause and
-concrete implementation point (`find_best_entry_sets`/
-`entry_set_compatibility`) for the real fix, and (b) document a real
-landmine: **`sorted()` on both string and dict-items()-derived data
-in the same program is a plausible, fairly ordinary thing to write**,
-unlike 055's `set.__sub__`-on-a-500-line-program trigger — so this is
-more likely to bite a real corpus example than 055 was. Worth
-prioritizing over 055 if only one gets picked up for the actual fix.
+actually landed later the same day, via dedicated instrumentation:
+`tuple.__lt__` recurses into itself (a speculative "what if these
+tuple elements are also tuples" dispatch, forced by imprecise union
+typing bleeding in from `sorted()`'s shared state), and
+`check_split`'s recursion-routing logic (`e->from->split` branch)
+mints a fresh, orphaned `EntrySet` for every single recursive
+invocation because the nesting/closure-display check it relies on
+permanently disagrees between the recursive call's contour and its
+recorded split-parent — never converging on one shared recursive
+contour. This issue exists to (a) record a much cheaper, cleaner
+repro of the same underlying bug class than 055's `plcfrs.py`-scale
+one, now with a confirmed, narrow, concrete implementation point
+(`check_split`'s `e->from->split` branch and
+`edge_nest_compatible_with_entry_set`) for the real fix, and (b)
+document a real landmine: **`sorted()` on both string and
+dict-items()-derived data in the same program is a plausible, fairly
+ordinary thing to write**, unlike 055's `set.__sub__`-on-a-500-line-
+program trigger — so this is more likely to bite a real corpus
+example than 055 was. Worth prioritizing over 055 if only one gets
+picked up for the actual fix.
 
 ## Impact so far
 

@@ -600,34 +600,37 @@ shouldn't count as stall), reanalyze ordering, and diagnostics
 that silently).
 
 **Confirmed as a real, live gap (2026-07-19),** via
-[057](057-sorted-tolist-fa-nonconvergence.md)'s root-cause work: a
-4-line `sorted()` + `dict.items()` repro hangs the compiler because
-`find_best_entry_sets`/`entry_set_compatibility` (the `pyc` analog
-of shedskin's `cpa()`, not `pattern_match` as sketched above but the
-same failure shape) mints an unbounded number of fresh `EntrySet`s
-for `tuple.__lt__` — no existing contour in the callee's `Fun::ess`
-is ever judged compatible enough to reuse (the compatibility check
-is exact canonical-pointer type equality with zero tolerance for
-drift), and there's no cap or widen-on-quiescence fallback, so every
-call mints one more (always-incompatible) candidate for the next
-call to scan past and reject. 057's own follow-up investigation
-traces this to a plausible self-reinforcing feedback loop: each new
-`EntrySet` mints its own never-shared closure `CreationSet` (by
-design — `sym_closure` bypasses the normal reuse search), and if
-that new closure identity flows back into the argument type that
-triggered the split in the first place, the target the *next* edge
-needs to match has already moved before any contour can catch up —
-sound but not confirmed by dedicated instrumentation past the first
-two links in the chain. This is exactly the "genuine CPA explosion"
-failure mode sketch (d) predicted, just reached via a builtin
-(`sorted`/`tuple.__lt__`) rather than a hand-written adversarial
-case. 057's own writeup has the full evidence trail (two rounds of
-instrumentation, the specific PNodes/call sites, the compatibility-
-check source, and the feedback-loop mechanism). Not fixed there
-either — flagged as the natural next step for whoever picks up this
-milestone, with `find_best_entry_sets`/`entry_set_compatibility` now
-a confirmed, concrete implementation point rather than a
-hypothetical one.
+[057](057-sorted-tolist-fa-nonconvergence.md)'s root-cause work — a
+4-line `sorted()` + `dict.items()` repro hangs the compiler — though
+the specific mechanism turned out narrower than "CPA explosion" and
+closer to home: dedicated instrumentation (seven rounds, the full
+trail is in 057's own file) found `tuple.__lt__` recursing into
+itself (a speculative "what if these tuple elements are also tuples"
+dispatch, forced by imprecise union typing) hits `check_split`'s
+`e->from->split` branch — checked *before* `find_best_entry_sets`
+ever runs, and able to handle (return early for) the edge entirely on
+its own. That branch finds a candidate in the split-parent's
+`out_edge_map` every time, but rejects it because
+`edge_nest_compatible_with_entry_set` finds a **permanent** (not
+drifting) closure-display mismatch between the recursive call's own
+nesting context and its split-parent's recorded one — confirmed via
+the specific pointer values staying constant across every sample —
+and its fallback for that case mints a brand-new, still-orphaned
+`EntrySet` unconditionally, one per recursive invocation, forever.
+This is the disease this section's own "pending map's monomorphic-
+recursion binding... is a default, not evidence" comment already
+worried about — previously observed only as "re-derives every pass"
+at the outer-loop level; 057 found the same disease one level down,
+inside a single pass, at the level of one recursive call edge. Not
+`find_best_entry_sets`/`entry_set_compatibility` (the `pyc` analog of
+shedskin's `cpa()`, and this section's original target) at all —
+those are barely even reached for this specific edge shape, since
+`check_split` intercepts and resolves it first. Not fixed there
+either — `check_split`'s `e->from->split` branch and
+`edge_nest_compatible_with_entry_set` are now the confirmed,
+narrow, concrete implementation point for whoever picks this up, a
+smaller and more targeted surface than a general CPA_LIMIT valve
+across all of `find_best_entry_sets` would have been.
 
 **E. Subset-aware MatchCache (only if C is insufficient).** The
 cache misses all through convergence because it keys exact
