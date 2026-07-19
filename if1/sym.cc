@@ -384,7 +384,17 @@ void Sym::convert_constant_string_to_immediate() {
 
 static Sym *int_constant_internal(IF1 *i, int n, Sym *t) {
   Immediate imm;
-  imm.v_int32 = n;
+  // Immediate's v_int32/v_int64 overlap in a union; int64_constant()
+  // (t=sym_int64) needs the wider member set so codegen's int64 read
+  // sees `n` properly sign-extended, not the union's untouched upper
+  // 32 bits (garbage -- confirmed: int64_constant(INT_MIN) emitted
+  // as the unsigned magnitude 2147483648, not -2147483648, since only
+  // v_int32's low half had ever been written). Setting v_int64 (not
+  // v_int32) also leaves v_int32 correct for int32_constant callers
+  // on this codebase's assumed little-endian platforms -- sign
+  // extension only fills the upper bytes, the low 4 match `n` either
+  // way.
+  imm.v_int64 = n;
   if (n >= 0 && n < 10) {
     char c[2];
     c[0] = n + '0';
