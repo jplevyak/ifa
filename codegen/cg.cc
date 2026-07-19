@@ -422,9 +422,24 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       } else {
         if (fruntime_errors && t->type_kind == Type_RECORD && !t->has.n)
           fputs("assert(!\"runtime error: bad getter\");\n", fp);
-        else
-          fprintf(fp, "%s = ((%s)%s)->e%s;\n", cg_get_string(n->lvals[0]), cg_get_string(t), cg_get_string(n->rvals[o]),
-                  n->rvals[o + 1]->sym->constant);
+        else {
+          // A record field whose own resolved type has no compile-time
+          // size (FA never gave it a value along any live path for
+          // this specific record contour, so its struct declaration is
+          // a bare _CG_void) can still have the destination Var
+          // resolved to a different, concrete, non-void type from ITS
+          // OWN broader use elsewhere in the function -- emitting the
+          // getter then assigns a genuinely-typeless field read into a
+          // mismatched C pointer type (issues/025 plcfrs: `_CG_void`
+          // into `_CG_ps13834*`). Skip, matching simple_move's
+          // null/void-type guard (issues/025 rubik2, same commit
+          // family) -- the read is dead for this contour either way.
+          int fidx = atoi(n->rvals[o + 1]->sym->constant);
+          Sym *field_type = (fidx >= 0 && fidx < t->has.n && t->has[fidx]) ? t->has[fidx]->type : nullptr;
+          if (field_type && field_type->size)
+            fprintf(fp, "%s = ((%s)%s)->e%s;\n", cg_get_string(n->lvals[0]), cg_get_string(t),
+                    cg_get_string(n->rvals[o]), n->rvals[o + 1]->sym->constant);
+        }
       }
       break;
     }
