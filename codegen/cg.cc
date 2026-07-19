@@ -225,6 +225,36 @@ static cchar *c_rhs(Var *v) {
   }
 }
 
+// A type's own ->size is 0 for a Type_SUM (a union has no single
+// compile-time size) even when every member happens to share one --
+// boxed records and other boxed containers (list, str, set, dict,
+// ... -- and tuples: "Tuples are stored as a pointer directly to the
+// structure containing the tuple elements", pyc_c_runtime.h) are all
+// one pointer_size, and same-width scalar unions agree too. A single
+// storage slot of that common size safely holds any member, each
+// access site casting/reinterpreting as needed the same way a
+// single-type value already does. Shared by P_prim_sizeof_element
+// (a list's element-storage stride) and the Type_RECORD-constant-index
+// getter below (a tuple field whose own type is itself a union, e.g.
+// one field of a 2-tuple wrapper around tuples of differing arity --
+// issues/025 plcfrs). Returns 0 if `t` has no resolvable size at all
+// (t itself null, or a non-uniform union) -- callers must still
+// treat that as "nothing to emit", not a valid zero-byte slot.
+static int resolve_uniform_size(Sym *t) {
+  if (!t) return 0;
+  if (t->size) return t->size;
+  if (t->type_kind != Type_SUM || !t->has.n) return 0;
+  int common = 0;
+  for (Sym *m : t->has) {
+    if (!m) continue;
+    Sym *mt = m->type ? m->type : m;
+    if (!mt->size) return 0;
+    if (!common) common = mt->size;
+    else if (common != mt->size) return 0;
+  }
+  return common;
+}
+
 static void destruct_prim(FILE *fp, Var *l, Var *r) {
   int is_tuple = sym_tuple->specializers.set_in(l->sym) != 0;
   for (int i = 0; i < l->sym->has.n; i++) {
@@ -471,12 +501,39 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
           // guard's bounds check and silently skipped the read
           // instead (leaving the destination uninitialized -- worse:
           // silently wrong instead of loudly rejected).
+          // issues/025 plcfrs (2nd pass): the field's own type can
+          // itself be a Type_SUM -- e.g. one field of a uniform
+          // 2-tuple wrapper is bound to tuples of *differing* own
+          // arity (grammar rules with a variable RHS length). That
+          // union's ->size is 0 (unions have no single compile-time
+          // size) even though its members are uniformly pointer-sized,
+          // same shape as sizeof_element's fix above --
+          // resolve_uniform_size() covers both. Without this, the
+          // getter was skipped entirely (matching the guard's original
+          // intent for a genuinely-unresolved field), leaving the
+          // destination Var *declared but never assigned* -- read
+          // as uninitialized stack garbage by whatever consumed it,
+          // not a compile error or a clean rejection.
           int fidx = atoi(n->rvals[o + 1]->sym->constant);
           if (fidx < 0) fidx += t->has.n;
           Sym *field_type = (fidx >= 0 && fidx < t->has.n && t->has[fidx]) ? t->has[fidx]->type : nullptr;
-          if (field_type && field_type->size)
-            fprintf(fp, "%s = ((%s)%s)->e%d;\n", cg_get_string(n->lvals[0]), cg_get_string(t),
+          if (resolve_uniform_size(field_type)) {
+            // The struct's own field declaration follows field_type's
+            // *nominal* type, which for a Type_SUM field is whatever
+            // representative the struct-emission pass picked (often
+            // `_CG_void*`, since a union has no single "real" C type
+            // of its own) -- that can differ from the destination
+            // Var's own, independently-resolved type even though both
+            // are the same pointer-sized value underneath. An explicit
+            // cast to the destination's type make this a value-preserving
+            // reinterpretation instead of relying on the two to agree
+            // (a plain-assignment C error, "incompatible type", when
+            // they don't -- confirmed: tests/tuple_arity_union.py's
+            // own repro). A no-op when they already matched.
+            cchar *dst_ty = c_type(n->lvals[0]);
+            fprintf(fp, "%s = (%s)((%s)%s)->e%d;\n", cg_get_string(n->lvals[0]), dst_ty, cg_get_string(t),
                     cg_get_string(n->rvals[o]), fidx);
+          }
         }
       }
       break;
@@ -737,21 +794,9 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       // list-of-list vs list-of-record mixing in rubik2, since `list`
       // itself is Type_PRIMITIVE, not Type_RECORD, so the original
       // record-only check rejected a perfectly uniform pointer-sized
-      // union).
-      if (!sz) {
-        Sym *et = t->element->type;
-        if (et && et->type_kind == Type_SUM && et->has.n) {
-          int common = 0;
-          bool uniform = true;
-          for (Sym *m : et->has) if (m) {
-            Sym *mt = m->type ? m->type : m;
-            if (!mt->size) { uniform = false; break; }
-            if (!common) common = mt->size;
-            else if (common != mt->size) { uniform = false; break; }
-          }
-          if (uniform && common) sz = common;
-        }
-      }
+      // union). See resolve_uniform_size's own comment -- shared with
+      // the Type_RECORD-constant-index getter below.
+      if (!sz) sz = resolve_uniform_size(t->element->type);
       fprintf(fp, "%d;\n", sz);
       break;
     }

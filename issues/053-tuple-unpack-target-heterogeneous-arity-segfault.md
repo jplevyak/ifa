@@ -1,17 +1,48 @@
 # 053 — Unpacking a tuple whose element has heterogeneous own-arity segfaults
 
-**Status:** open, found 2026-07-19 while digging into
+**Status:** FIXED 2026-07-19. Root cause: `ifa/codegen/cg.cc`'s
+constant-field-getter (inside `P_prim_index_object`) rejected a field
+whose *own* type is itself a `Type_SUM` (union) with `->size == 0` —
+true even when every member of that union happens to share a common
+size (here, uniformly pointer-sized tuple records of differing
+`has.n`) — silently skipping the getter emission and leaving the
+destination `Var` declared but never assigned (read as uninitialized
+stack garbage by whatever consumed it downstream; that's the
+segfault). This is the exact same shape `P_prim_sizeof_element` had
+already special-cased for a list's element-storage stride (added
+during the sibling tuple-list-header fix, same day). Fixed by
+extracting that existing uniform-size check into a shared
+`resolve_uniform_size(Sym *t)` helper and using it in the getter too
+— it now emits the field-access read (with an explicit cast to the
+destination's own resolved C type, needed because a `Type_SUM`
+field's *nominal* struct-declared type, often `_CG_void*`, can differ
+from the destination's independently-resolved type even though both
+represent the same pointer-sized value underneath) instead of
+skipping the assignment. Verified via
+`tests/tuple_unpack_target_arity_union.py` (the exact repro below,
+now a committed regression test, passing on both backends) plus a
+full `./test_pyc.py` / `PYC_FLAGS=-b ./test_pyc.py` / `ifa`'s
+`make test` re-run (zero regressions) and a shedskin corpus sweep
+(zero regressions, three examples — dijkstra2, lz2, pygmy — newly
+progress from `PYC_FAIL` to compiling/running).
+**Caveat:** this does NOT fully unblock `plcfrs.py` itself. See
 [../../issues/025-shedskin-examples-coverage.md](../../issues/025-shedskin-examples-coverage.md)'s
-plcfrs "remaining violation" (line 591) — a continuation of that
-entry's tuple-list-header fix, which fixed the *shallower* half of
-this shape (direct iteration/`len()`/indexing of a heterogeneous-arity
-tuple union) but not this one.
+2026-07-19 entries for the followup: `plcfrs.py`'s full complexity
+still fails to compile (`PYC_FAIL`, diagnostics at line 591, matching
+the pre-existing baseline) — a real but distinct gap. A *separate*
+attempt to close that gap (adding `set.__sub__` to support `set(...)
+- set(...)`, which `plcfrs.py` uses) was found to independently
+segfault/hang the *compiler itself* on `plcfrs.py`'s full complexity
+— tracked as [055](055-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md),
+reverted rather than shipped.
 **Affects:** whatever `emit_assign_to_target`
 (`python_ifa_build_if1.cc`)'s tuple-destructuring branch lowers to
 (`call_method(..., sym___getitem__, ..., int64_constant(j))` per
 target position) combined with FA's handling of a Type_SUM element
 whose members are records of differing field count (`t->has.n`) —
-not root-caused past the isolation below.
+root-caused above; fix lives in `ifa/codegen/cg.cc`'s
+`resolve_uniform_size()` and the constant-field-getter branch of
+`P_prim_index_object`.
 **Related:** [044](044-mixed-length-tuple-list-len-miscompile.md),
 [the issues/025 tuple-list-header
 entry](../../issues/025-shedskin-examples-coverage.md) (this issue's
