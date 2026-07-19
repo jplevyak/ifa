@@ -17,7 +17,14 @@ bisection below.
 **Related:** [053](053-tuple-unpack-target-heterogeneous-arity-segfault.md)
 (this was found while following up on that issue — `plcfrs.py` is the
 same corpus program; 053's fix itself is unaffected and was verified
-clean once `__pyc__/08_set.py` was reverted).
+clean once `__pyc__/08_set.py` was reverted). See also
+[057](057-sorted-tolist-fa-nonconvergence.md), found later the same
+day: the identical FA non-convergence signature (worklist churn
+without bound, EntrySet count flat), but with a dramatically smaller
+(4-line, no 500-line real program needed) and dict/`sorted()`-based
+repro — likely the better starting point for whoever roots-causes
+this, since fixing one likely fixes (or substantially informs) the
+other.
 
 ## Symptom
 
