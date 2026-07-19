@@ -23,15 +23,25 @@ skipping the assignment. Verified via
 now a committed regression test, passing on both backends) plus a
 full `./test_pyc.py` / `PYC_FLAGS=-b ./test_pyc.py` / `ifa`'s
 `make test` re-run (zero regressions) and a shedskin corpus sweep
-(zero regressions, three examples — dijkstra2, lz2, pygmy — newly
-progress from `PYC_FAIL` to compiling/running).
-**Caveat:** this does NOT fully unblock `plcfrs.py` itself. See
+(zero regressions, three examples — `dijkstra2`, `lz2`, `plcfrs` —
+newly progress from `PYC_FAIL` to compiling; a fourth, `pygmy`, was
+initially misattributed to this fix in an earlier draft of this note
+— re-swept against the final, committed state with the issue-055
+`set.py` change reverted and confirmed `pygmy` is unaffected by this
+fix, still `PYC_FAIL rc=139` exactly as at baseline).
+**Caveat:** this does NOT fully unblock `plcfrs.py` itself, but it
+does get it further than the note above once implied. See
 [../../issues/025-shedskin-examples-coverage.md](../../issues/025-shedskin-examples-coverage.md)'s
-2026-07-19 entries for the followup: `plcfrs.py`'s full complexity
-still fails to compile (`PYC_FAIL`, diagnostics at line 591, matching
-the pre-existing baseline) — a real but distinct gap. A *separate*
-attempt to close that gap (adding `set.__sub__` to support `set(...)
-- set(...)`, which `plcfrs.py` uses) was found to independently
+2026-07-19 entries for the followup: `plcfrs.py` now *compiles*
+successfully (category moves `PYC_FAIL` → `RUN_FAIL`) — same
+degraded-type diagnostics at line 591 as before (via the
+`runtime_errors` NOTYPE-to-void salvage), but codegen now completes
+instead of the compiler crashing — and the resulting binary aborts at
+runtime on `assert(!"runtime error: matching function not found")`
+(a known pattern for salvage-degraded dispatch, consistent with the
+still-unresolved line-591 violation). A *separate* attempt to close
+that remaining gap (adding `set.__sub__` to support `set(...) -
+set(...)`, which `plcfrs.py` uses) was found to independently
 segfault/hang the *compiler itself* on `plcfrs.py`'s full complexity
 — tracked as [055](055-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md),
 reverted rather than shipped.
