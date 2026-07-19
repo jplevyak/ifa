@@ -238,7 +238,6 @@ static void destruct_prim(FILE *fp, Var *l, Var *r) {
 
 static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
   int o = (n->rvals.v[0]->sym == sym_primitive) ? 2 : 1;
-  bool listish_tuple = false;
   switch (n->prim->index) {
     default:
       return 0;
@@ -255,25 +254,37 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         // element type" rather than dereferencing a null Sym*.
         int voidish = n->rvals.n < 4 && (!elem || elem->type == sym_void);
         // Element count: rvals = [primitive, make, list/tuple, e0..].
-        // The listish_tuple route's count becomes the runtime LIST
-        // LENGTH (_CG_prim_tuple_list_internal sets len = n), and the
-        // old `- 2` gave every record-represented list literal a
-        // phantom trailing element (NULL/0) -- ifa/issues/044's
-        // "[[3], [1, 2]] prints [[3, 0], [1, 2, 0]]", and a NULL
-        // deref for pointer elements once something len-iterates the
-        // literal (issues/029's deepcopy loops). The true-tuple
-        // macro ignores the count entirely (fixed-size struct
-        // malloc), so it keeps the historical value.
-        fprintf(fp, "%s = _CG_prim_tuple%s(%s, %d);\n", cg_get_string(n->lvals[0]), listish_tuple ? "_list" : "",
-                voidish ? "int*" : t, n->rvals.n - (listish_tuple ? 3 : 2));
+        // Always the "_list" route now (issues/025 plcfrs): a real,
+        // fixed-arity tuple literal (`(a, b)`, not a list literal
+        // promoted to record shape) used to get a bare
+        // GC_malloc(sizeof(struct)) with no list-header at all (the
+        // "true-tuple macro", `_CG_prim_tuple`) -- fine as long as
+        // every consumer resolves its arity at compile time (the
+        // `->eN` constant-field-getter path always does), but tuples
+        // of *differing* arity flowing into one union (grammar rules
+        // with a variable RHS length, e.g. shedskin's plcfrs.py) push
+        // len()/non-constant indexing onto the generic runtime
+        // fallback (_CG_prim_len et al.), which unconditionally reads
+        // a list-header that a true tuple never had -- garbage memory,
+        // silently wrong output (an all-empty-tuple union) or a hard
+        // FA violation depending on how badly the garbage confuses
+        // downstream inference. `_CG_prim_tuple_list_internal` sets a
+        // real header (`len = n`, matching t->has.n) unconditionally;
+        // field access (`->eN`) is offset-based from the pointer
+        // forward and doesn't care whether a header sits behind it,
+        // so this is additive, not a semantic change, for every tuple
+        // that was already working. The count is n->rvals.n - 3
+        // either way now (previously the true-tuple case couldn't
+        // matter since _CG_prim_tuple ignored it, so it had been left
+        // at the listish route's old, unrelated `- 2`, per
+        // issues/044's own note on that literal).
+        fprintf(fp, "%s = _CG_prim_tuple_list(%s, %d);\n", cg_get_string(n->lvals[0]), voidish ? "int*" : t,
+                n->rvals.n - 3);
         for (int i = 3; i < n->rvals.n; i++)
           fprintf(fp, "  %s->e%d = %s;\n", cg_get_string(n->lvals[0]), i - 3, cg_get_string(n->rvals.v[i]));
       } else if (sym_list->specializers.set_in(n->rvals[2]->sym) || n->rvals[2]->sym->is_vector) {
         Sym *t = n->lvals.v[0]->type, *e = t->element->type;
-        if (t->type_kind == Type_RECORD) {
-          listish_tuple = true;
-          goto Ltuple;
-        }
+        if (t->type_kind == Type_RECORD) goto Ltuple;
         fputs("  ", fp);
         assert(n->lvals.n == 1);
         e = e ? e : sym_void_type;

@@ -1670,13 +1670,25 @@ bool emit_send_make(EmitCtx &ctx, PNode *pn) {
       Builder->CreateStore(val, gep);
     }
 
-    // Stage 2 conversion to runtime list shape — only for
-    // the list-struct case, NOT plain tuples.  Mirrors
-    // cg_normalize_v2's `_CG_to_list_runtime` lowering.
-    // cg.cc skips this because at C level the runtime
-    // macro handles the conversion inline; at LLVM level
-    // we need an explicit helper call.
-    if (is_list_or_vec) {
+    // Stage 2 conversion to runtime list shape — also needed
+    // for plain tuples now (issues/025 plcfrs), not just the
+    // list-struct case: a real, fixed-arity tuple was left
+    // with Stage 1's over-allocated `alloc_count` (n+1) baked
+    // into its list-header length instead of the true element
+    // count. Harmless as long as every consumer resolves the
+    // tuple's arity at compile time (constant-field access
+    // always does), but tuples of *differing* arity unioned
+    // together (e.g. grammar rules with a variable RHS length)
+    // push len()/non-constant indexing onto the runtime
+    // fallback, which reads that wrong length directly --
+    // confirmed: a phantom trailing element, the exact
+    // issues/044 symptom, that fix never reached this path.
+    // Mirrors cg_normalize_v2's `_CG_to_list_runtime` lowering.
+    // cg.cc skips this because at C level the runtime macro
+    // handles the conversion inline (see its own P_prim_make
+    // case, same commit); at LLVM level we need an explicit
+    // helper call.
+    if (is_list_or_vec || is_tuple) {
       llvm::Value *size2 = llvm::ConstantInt::get(i32, sz_bytes);
       llvm::Value *n_semantic =
           llvm::ConstantInt::get(i32, n_elements);
