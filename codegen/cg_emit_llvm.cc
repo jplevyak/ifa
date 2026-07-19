@@ -1046,6 +1046,50 @@ static llvm::Value *load_list_data_ptr(llvm::Value *obj) {
   return Builder->CreateLoad(ptr_ty, ptr_field, "list_data");
 }
 
+// issues/025: plain (non-slice) indexing had no negative-index
+// normalization at all on this backend either (mirrors the C
+// backend's fix in cg.cc/pyc_c_runtime.h -- `a[-1]` read/wrote
+// out-of-bounds memory instead of counting back from the end).
+// String length lives at (s-8) as i64; list length at (l-12) as u32
+// (same offsets emit_send_len already reads). idx64: the raw index,
+// already sign/zero-extended to i64 by the caller.
+static llvm::Value *emit_norm_idx(llvm::Value *obj, llvm::Value *idx64, bool is_string) {
+  llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+  llvm::Type *i8 = llvm::Type::getInt8Ty(*TheContext);
+  llvm::Value *len;
+  if (is_string) {
+    llvm::Value *off = llvm::ConstantInt::get(i64, -8);
+    llvm::Value *header_ptr = Builder->CreateGEP(i8, obj, off);
+    len = Builder->CreateLoad(i64, header_ptr, "str_len");
+  } else {
+    llvm::Type *i32 = llvm::Type::getInt32Ty(*TheContext);
+    llvm::Value *off = llvm::ConstantInt::get(i64, -12);
+    llvm::Value *len_addr = Builder->CreateGEP(i8, obj, off, "len_addr");
+    llvm::Value *len32 = Builder->CreateLoad(i32, len_addr, "len32");
+    len = Builder->CreateZExt(len32, i64, "list_len");
+  }
+  llvm::Value *is_neg = Builder->CreateICmpSLT(idx64, llvm::ConstantInt::get(i64, 0), "idx_neg");
+  llvm::Value *normed = Builder->CreateAdd(idx64, len, "idx_normed");
+  return Builder->CreateSelect(is_neg, normed, idx64, "idx");
+}
+
+// Same as emit_norm_idx, but for a Type_RECORD receiver (a tuple or
+// a fixed-size tuple-list literal) where the "length" is the field
+// count -- a compile-time constant (`len`), not something to read
+// from memory. Deliberately NOT the runtime -12-offset list-header
+// trick emit_norm_idx uses: a real tuple (_CG_prim_tuple) has no
+// such header at all (only a fixed-size tuple-list literal,
+// _CG_prim_tuple_list, happens to -- confirmed by testing: reading
+// a real tuple's nonexistent header as if it were one gave nonsense
+// results, not a crash). t->has.n is correct for both shapes since
+// it's a static property of the record type either way.
+static llvm::Value *emit_norm_idx_const_len(llvm::Value *idx64, int64_t len) {
+  llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+  llvm::Value *is_neg = Builder->CreateICmpSLT(idx64, llvm::ConstantInt::get(i64, 0), "idx_neg");
+  llvm::Value *normed = Builder->CreateAdd(idx64, llvm::ConstantInt::get(i64, len), "idx_normed");
+  return Builder->CreateSelect(is_neg, normed, idx64, "idx");
+}
+
 bool emit_send_index_load(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim || pn->prim->index != P_prim_index_object)
     return false;
@@ -1072,7 +1116,8 @@ bool emit_send_index_load(EmitCtx &ctx, PNode *pn) {
   if (t && sym_string && sym_string->specializers.set_in(t)) {
     llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
     llvm::Type *i32 = llvm::Type::getInt32Ty(*TheContext);
-    llvm::Value *idx32 = Builder->CreateTrunc(idx, i32);
+    llvm::Value *idx_normed = emit_norm_idx(obj, idx, /*is_string=*/true);
+    llvm::Value *idx32 = Builder->CreateTrunc(idx_normed, i32);
     llvm::FunctionCallee fn = TheModule->getOrInsertFunction(
         "_CG_char_from_string",
         llvm::FunctionType::get(ptr_ty, {ptr_ty, i32}, false));
@@ -1084,15 +1129,24 @@ bool emit_send_index_load(EmitCtx &ctx, PNode *pn) {
   // List (not vector, not RECORD): GEP through _CG_list_ptr(obj)
   if (t && !t->is_vector && t->type_kind != Type_RECORD) {
     llvm::Value *data = load_list_data_ptr(obj);
-    llvm::Value *gep = Builder->CreateGEP(elem_ty, data, idx);
+    llvm::Value *idx_normed = emit_norm_idx(obj, idx, /*is_string=*/false);
+    llvm::Value *gep = Builder->CreateGEP(elem_ty, data, idx_normed);
     llvm::Value *loaded = Builder->CreateLoad(
         elem_ty, gep, cg_get_string(dst_v) ? cg_get_string(dst_v) : "");
     put_result(ctx, dst_v, loaded);
     return true;
   }
 
-  // Vector / RECORD: direct GEP into obj
-  llvm::Value *gep = Builder->CreateGEP(elem_ty, obj, idx);
+  // Vector / RECORD: direct GEP into obj. A non-vector Type_RECORD
+  // reaching here is a real tuple or a fixed-size tuple-list literal
+  // (`a = [1,2,3]`) -- t->has.n (field count) is its length either
+  // way, a compile-time constant. A true @vector class (bytearray)
+  // has no such static length -- its length is a runtime struct
+  // field (`self.length`), not generically discoverable here, so
+  // it's excluded (still-open gap, issues/025).
+  llvm::Value *idx_use = idx;
+  if (t && !t->is_vector) idx_use = emit_norm_idx_const_len(idx, t->has.n);
+  llvm::Value *gep = Builder->CreateGEP(elem_ty, obj, idx_use);
   llvm::Value *loaded = Builder->CreateLoad(
       elem_ty, gep, cg_get_string(dst_v) ? cg_get_string(dst_v) : "");
   put_result(ctx, dst_v, loaded);
@@ -1121,12 +1175,17 @@ bool emit_send_index_store(EmitCtx &ctx, PNode *pn) {
   if (t && !t->is_vector && t->type_kind != Type_RECORD &&
       !(sym_string && sym_string->specializers.set_in(t))) {
     llvm::Value *data = load_list_data_ptr(obj);
-    llvm::Value *gep = Builder->CreateGEP(elem_ty, data, idx);
+    llvm::Value *idx_normed = emit_norm_idx(obj, idx, /*is_string=*/false);
+    llvm::Value *gep = Builder->CreateGEP(elem_ty, data, idx_normed);
     Builder->CreateStore(val, gep);
     return true;
   }
 
-  llvm::Value *gep = Builder->CreateGEP(elem_ty, obj, idx);
+  // Vector / RECORD: same normalization (and the same @vector
+  // exclusion) as emit_send_index_load's fallback above.
+  llvm::Value *idx_use = idx;
+  if (t && !t->is_vector) idx_use = emit_norm_idx_const_len(idx, t->has.n);
+  llvm::Value *gep = Builder->CreateGEP(elem_ty, obj, idx_use);
   Builder->CreateStore(val, gep);
   return true;
 }

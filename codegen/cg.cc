@@ -404,9 +404,20 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         fprintf(fp, "%s = %s->v[%s];\n", cg_get_string(n->lvals[0]), cg_get_string(n->rvals[o]), cg_get_string(n->rvals[o + 1]));
       } else if (t->type_kind != Type_RECORD || !n->rvals[o + 1]->sym->constant) {
         if (n->lvals[0]->live) fprintf(fp, "%s = ", cg_get_string(n->lvals[0]));
-        if (sym_string->specializers.set_in(t))
-          fprintf(fp, "_CG_char_from_string(%s,%s);\n", cg_get_string(n->rvals[o]), cg_get_string(n->rvals[o + 1]));
-        else {
+        // Negative-index normalization (issues/025): only the common
+        // single-index case, where "this object's length" is
+        // unambiguous. A dynamically (non-constant) indexed
+        // Type_RECORD (tuple) and the multi-index case (nested
+        // trailers sharing one SEND) are left as-is -- rare shapes,
+        // and "length" isn't well-defined the same way for either.
+        bool single_idx = n->rvals.n - (o + 1) == 1;
+        if (sym_string->specializers.set_in(t)) {
+          if (single_idx)
+            fprintf(fp, "_CG_char_from_string(%s,_CG_norm_idx(%s,(int32)_CG_string_len(%s)));\n",
+                    cg_get_string(n->rvals[o]), cg_get_string(n->rvals[o + 1]), cg_get_string(n->rvals[o]));
+          else
+            fprintf(fp, "_CG_char_from_string(%s,%s);\n", cg_get_string(n->rvals[o]), cg_get_string(n->rvals[o + 1]));
+        } else {
           fprintf(fp, "((%s", cg_get_string(e));
           for (int i = o + 1; i < n->rvals.n; i++) fprintf(fp, "*");
           if (t->type_kind == Type_RECORD)
@@ -415,7 +426,11 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
             fprintf(fp, ")(_CG_list_ptr(%s)))", cg_get_string(n->rvals[o]));
           for (int i = o + 1; i < n->rvals.n; i++) {
             if (i != o + 1) fputs(", ", fp);
-            fprintf(fp, "[%s-%d]", cg_get_string(n->rvals[i]), fa->tuple_index_base);
+            if (single_idx && t->type_kind != Type_RECORD)
+              fprintf(fp, "[_CG_norm_idx(%s,(int32)_CG_prim_len(0,%s))-%d]", cg_get_string(n->rvals[i]),
+                      cg_get_string(n->rvals[o]), fa->tuple_index_base);
+            else
+              fprintf(fp, "[%s-%d]", cg_get_string(n->rvals[i]), fa->tuple_index_base);
           }
           fprintf(fp, ";\n");
         }
@@ -434,11 +449,23 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
           // into `_CG_ps13834*`). Skip, matching simple_move's
           // null/void-type guard (issues/025 rubik2, same commit
           // family) -- the read is dead for this contour either way.
+          // issues/025: a negative *constant* index (`a[-1]` on a
+          // fixed-size tuple-list) needs the same len-relative
+          // normalization as a dynamic one -- `t->has.n` is this
+          // record's field count, i.e. the tuple-list's length.
+          // Before this, the raw constant string ("-1") was used
+          // directly as the field suffix (`->e-1`, invalid C, a
+          // compile error) -- or, after the field-type guard above
+          // was added for the plcfrs fix, atoi("-1") < 0 failed that
+          // guard's bounds check and silently skipped the read
+          // instead (leaving the destination uninitialized -- worse:
+          // silently wrong instead of loudly rejected).
           int fidx = atoi(n->rvals[o + 1]->sym->constant);
+          if (fidx < 0) fidx += t->has.n;
           Sym *field_type = (fidx >= 0 && fidx < t->has.n && t->has[fidx]) ? t->has[fidx]->type : nullptr;
           if (field_type && field_type->size)
-            fprintf(fp, "%s = ((%s)%s)->e%s;\n", cg_get_string(n->lvals[0]), cg_get_string(t),
-                    cg_get_string(n->rvals[o]), n->rvals[o + 1]->sym->constant);
+            fprintf(fp, "%s = ((%s)%s)->e%d;\n", cg_get_string(n->lvals[0]), cg_get_string(t),
+                    cg_get_string(n->rvals[o]), fidx);
         }
       }
       break;
@@ -450,6 +477,9 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         fprintf(fp, "%s->v[%s] = %s;\n", cg_get_string(n->rvals[o]), cg_get_string(n->rvals[o + 1]),
                 cg_get_string(n->rvals[n->rvals.n - 1]));
       } else if (t->type_kind != Type_RECORD || !n->rvals[o + 1]->sym->constant) {
+        // Mirrors P_prim_index_object's negative-index normalization
+        // above (issues/025) -- same single-index-only scope.
+        bool single_idx = (n->rvals.n - 1) - (o + 1) == 1;
         fprintf(fp, "((%s", cg_get_string(n->lvals[0]->type));
         for (int i = o + 1; i < n->rvals.n - 1; i++) fprintf(fp, "*");
         if (t->type_kind == Type_RECORD)
@@ -457,14 +487,23 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         else
           fprintf(fp, ")(_CG_list_ptr(%s)))", cg_get_string(n->rvals[o]));
         for (int i = o + 1; i < n->rvals.n - 1; i++) {
-          if (!fa->tuple_index_base)
+          if (single_idx && t->type_kind != Type_RECORD)
+            fprintf(fp, "[_CG_norm_idx(%s,(int32)_CG_prim_len(0,%s))-%d]", cg_get_string(n->rvals[i]),
+                    cg_get_string(n->rvals[o]), fa->tuple_index_base);
+          else if (!fa->tuple_index_base)
             fprintf(fp, "[%s]", cg_get_string(n->rvals[i]));
           else
             fprintf(fp, "[%s-%d]", cg_get_string(n->rvals[i]), fa->tuple_index_base);
         }
         fprintf(fp, " = %s;\n", cg_get_string(n->rvals[n->rvals.n - 1]));
       } else {
-        fprintf(fp, "((%s)%s)->e%s = %s;\n", cg_get_string(t), cg_get_string(n->rvals[o]), n->rvals[o + 1]->sym->constant,
+        // issues/025: same negative-constant-index normalization as
+        // P_prim_index_object's Type_RECORD branch above (`a[-1] =
+        // x` on a fixed-size tuple-list otherwise emitted the
+        // invalid C field name `->e-1`).
+        int fidx = atoi(n->rvals[o + 1]->sym->constant);
+        if (fidx < 0) fidx += t->has.n;
+        fprintf(fp, "((%s)%s)->e%d = %s;\n", cg_get_string(t), cg_get_string(n->rvals[o]), fidx,
                 cg_get_string(n->rvals[n->rvals.n - 1]));
       }
       break;
