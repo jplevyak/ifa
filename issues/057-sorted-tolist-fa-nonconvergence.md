@@ -150,13 +150,90 @@ cap, and no fallback to *widen* an existing contour to accept the new
 argument type combination instead of forking a fresh one. For
 `tuple.__lt__`, called with elements drawn from `sorted()`'s shared
 (and itself never-stabilizing) union of `str` and `tuple(str,str)`
-values, the incoming argument types apparently never exactly match
-any previously-created contour — so every single call mints a new
-one, which itself becomes one more (always-incompatible) candidate
-for the next call to scan past, which is *also* why the per-edge cost
+values, the incoming argument types never exactly match any
+previously-created contour — so every single call mints a new one,
+which itself becomes one more (always-incompatible) candidate for
+the next call to scan past, which is *also* why the per-edge cost
 grows over time (documented in the mitigation section): each new
 edge does a linear scan of an ever-growing, always-failing candidate
 list before minting yet another EntrySet.
+
+### Why the incoming type never exactly matches: the actual compatibility check, and a self-reinforcing feedback loop (found later the same day, in response to a direct follow-up question)
+
+`entry_set_compatibility`'s core decision (`fa.cc`,
+`edge_type_compatible_with_entry_set`) is exact canonical-pointer
+equality on the argument's type, no tolerance for "close enough":
+
+```cpp
+AType *etype = type_intersection(e_arg->out->type, e->match->formal_filters.get(p));
+if (etype->n && es_arg->out->type->n && etype != es_arg->out->type) return 0;
+```
+
+`AType`s are hash-consed (`type_cannonicalize`, confirmed earlier in
+this investigation) — two logically-identical sets of `CreationSet`s
+always canonicalize to the same pointer, so this check is sound *in
+principle*. The problem is there is no widening: an incoming type
+that is the existing contour's bound type plus **one more**
+`CreationSet` is, by this check, exactly as incompatible as a
+completely unrelated type. Zero drift is tolerated.
+
+Why does the incoming type keep drifting, then, rather than settling
+onto one of the (by now thousands of) already-existing contours?
+The working theory, built from the empirical finding that new
+`EntrySet`s and new closure `CreationSet`s grow in lockstep on the
+same 42 fixed PNodes (previous section) — **the act of specializing
+manufactures the next mismatch**:
+
+1. An edge into `tuple.__lt__` arrives with argument type `T`. No
+   existing `EntrySet` in `Fun::ess` has bound type exactly `T`
+   (every existing one is frozen at whatever it was bound to at ITS
+   OWN creation moment — since a rejected edge is *rerouted* to a new
+   `EntrySet` rather than flowed into the nearly-matching existing
+   one, that existing one never gets the chance to catch up and grow
+   into `T` itself). `set_entry_set` mints a fresh `EntrySet` #N.
+2. `EntrySet` #N gets its own fresh `result` AVar for every PNode
+   inside `tuple.__lt__`'s body, including the `a < b` sub-comparison
+   PNode. `sym_closure`-tagged `CreationSet`s are *deliberately*
+   never shared across different `result` AVars (`creation_point`
+   jumps straight to `Lunique` for `sym_closure`, bypassing the
+   normal reuse search entirely — correct in isolation, since two
+   genuinely different call sites/contours should get their own bound
+   closures). So `EntrySet` #N necessarily mints its own brand-new
+   closure `CreationSet` for `a.__lt__`, distinct from every closure
+   any other `EntrySet` created for the "same" source line.
+3. That new closure identity is new information injected into the
+   flow graph. If it (or some other new fact about contour #N — e.g.
+   its own distinct return-value `CreationSet`) flows back into
+   whatever `sorted()`'s shared `r`/`x` state is derived from, that
+   source union gains one more member: type `T` becomes `T'` (`T`
+   plus one).
+4. The next edge into `tuple.__lt__` now carries `T'` — which again
+   matches no existing contour, including #N (frozen at `T`, the
+   instant it was created) — and step 1 repeats, forever.
+
+This is a real fixed point that never gets reached not because the
+type space is merely large, but because *every rejection actively
+produces the next rejection's cause*. It's the same general disease
+issue 033 spent weeks on for the *outer* splitting loop (split
+decisions that are not idempotent, re-derived from scratch each time
+rather than persisted) — this is an instance of the identical
+disease one layer down, inside a single pass's *inner* EntrySet
+creation itself.
+
+**Confidence level, honestly**: steps 1-2 are directly evidenced —
+the exact-pointer-equality code (step 1) is read directly from
+source, and the 1:1 empirical correlation between new-`EntrySet`
+creation and new-closure creation on a fixed 42-PNode set (previous
+section's instrumentation) directly supports step 2. **Step 3 — the
+precise path by which a new closure's identity flows back into the
+shared source union — is the plausible, best-supported theory
+connecting the dots, not something confirmed by dedicated
+instrumentation.** Verifying it precisely would mean instrumenting
+`flow_vars`/`update_gen` to trace one specific `CreationSet`'s
+propagation path from a `make_period_closure` call back to whichever
+AVar feeds `sorted()`'s `r`/`x`/`self`/`t` — a natural next step for
+whoever picks up the actual architecture fix, since it would confirm
+(or correct) exactly which flow edge to special-case, widen, or cap.
 
 **This is precisely the gap issue 033's own S4-D section
 anticipated but never built**: *"D. CPA_LIMIT-style deferral valve
