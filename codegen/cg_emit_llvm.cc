@@ -2247,6 +2247,11 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
     // method pointer, so per-creation-site clones keep working.
     Vec<Sym *> classes;
     Vec<int> slots;
+    Vec<Fun *> class_funs;  // candidate Fun bound at that slot (issues/025 kanoodle, C-backend
+                             // sibling of this bug: needed to pass this branch's OWN non-receiver
+                             // arguments -- see emission below)
+    Vec<int> class_recv_ridx;  // ... and the call-site rval index of ITS receiver operand, to
+                                // skip self (already passed as `recv`) when routing the rest
     Fun *nil_fn = nullptr;  // nil-receiver candidate (None method on a nil|record union)
     llvm::Value *recv = nullptr;
     // issue 026 pre-pass + classtag/nil-receiver resolution: shared
@@ -2299,6 +2304,8 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
         if (!found) {
           classes.add(rt);
           slots.add(rt_slots[ri]);
+          class_funs.add(fun_val);
+          class_recv_ridx.add(rt_ridxs[ri]);
         }
       }
       if (!added_any) { ok = false; break; }
@@ -2384,9 +2391,53 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
         llvm::StructType *st = sym_to_llvm_struct(classes[ci]);
         llvm::Value *slot_gep = Builder->CreateStructGEP(st, recv, llvm_fld(classes[ci], slots[ci]));
         llvm::Value *fnptr = Builder->CreateLoad(ptr_ty, slot_gep, "methodptr");
+        // issues/025 kanoodle (this backend's sibling of the C
+        // backend's same-day fix): this used to hardcode a
+        // single-`ptr_ty` (self only) function type and call with
+        // just `{recv}`, silently dropping every other live formal
+        // (e.g. Omino.translate's `v`) -- LLVM's CreateCall enforces
+        // the callee's arg count against the FunctionType given here,
+        // so unlike the C backend's printf-emitted cast this doesn't
+        // even need mismatched-arity UB to go unnoticed: the callee
+        // simply reads uninitialized/garbage registers for the
+        // missing params at the ABI level. Build both the function
+        // type and the argument list from class_funs[ci]'s OWN
+        // positional_arg_positions, mirroring the nil_fn routing
+        // above -- self is already `recv`/`ptr_ty` (skipped by
+        // rval-index, matching class_recv_ridx[ci]) since the
+        // opaque vtable-slot load has no concrete receiver type to
+        // read a signature from.
+        Fun *cfun = class_funs[ci];
+        std::vector<llvm::Type *> param_tys = {ptr_ty};
+        std::vector<llvm::Value *> cargs = {recv};
+        MPosition cargp;
+        cargp.push(1);
+        for (int pi = 0; pi < cfun->sym->has.n + 2; pi++) {
+          MPosition *cp = cannonicalize_mposition(cargp);
+          cargp.inc();
+          Var *av = cfun->args.get(cp);
+          if (!av || !av->live) continue;
+          if (av->type && av->type->is_fun) continue;
+          int i = (int)Position2int(cp->pos[0]) - 1;
+          if (i < 0 || i >= pn->rvals.n || i == class_recv_ridx[ci]) continue;
+          llvm::Value *cval = value_for_var(ctx, pn->rvals[i]);
+          if (!cval) continue;
+          llvm::Type *pt = sym_to_llvm_type(av->type);
+          if (!pt) continue;
+          if (cval->getType() != pt) {
+            if (cval->getType()->isIntegerTy() && pt->isIntegerTy())
+              cval = Builder->CreateSExtOrTrunc(cval, pt);
+            else if (cval->getType()->isPointerTy() && pt->isIntegerTy())
+              cval = Builder->CreatePtrToInt(cval, pt);
+            else if (cval->getType()->isIntegerTy() && pt->isPointerTy())
+              cval = Builder->CreateIntToPtr(cval, pt);
+          }
+          param_tys.push_back(pt);
+          cargs.push_back(cval);
+        }
         llvm::FunctionType *fty =
-            llvm::FunctionType::get(res_ty ? res_ty : llvm::Type::getVoidTy(*TheContext), {ptr_ty}, false);
-        llvm::Value *callv = Builder->CreateCall(fty, fnptr, {recv});
+            llvm::FunctionType::get(res_ty ? res_ty : llvm::Type::getVoidTy(*TheContext), param_tys, false);
+        llvm::Value *callv = Builder->CreateCall(fty, fnptr, cargs);
         if (res_slot) Builder->CreateStore(callv, res_slot);
         Builder->CreateBr(merge_bb);
         Builder->SetInsertPoint(next_bb);

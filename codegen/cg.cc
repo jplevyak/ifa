@@ -1213,6 +1213,8 @@ class CBackendEmitter : public VirtualCGEmitter {
         if (!pn->rvals[0]->sym->is_symbol && cg_get_string(pn->rvals[0])) recv_str = cg_get_string(pn->rvals[0]);
         Vec<Sym *> classes;  // classtag partition, grouped by class
         Vec<int> slots;      //   ... that class's method-slot index
+        Vec<Fun *> class_funs;  // ... and the candidate Fun bound at that slot (issues/025 kanoodle:
+                                 // needed to pass this branch's OWN non-receiver arguments -- see emission below)
         Vec<Fun *> plains;   // plain-function partition
         Fun *nil_fn = nullptr;  // nil-receiver candidate (None method on a nil|record union)
         Vec<Fun *> directs;  // untagged-receiver method candidates (see below)
@@ -1311,6 +1313,7 @@ class CBackendEmitter : public VirtualCGEmitter {
               if (!found) {
                 classes.add(rt);
                 slots.add(rt_slots[ri]);
+                class_funs.add(fun_val);
               }
             }
             if (added_any) continue;
@@ -1438,8 +1441,47 @@ class CBackendEmitter : public VirtualCGEmitter {
                     classes[ci]->name);
             fputs("    ", fp);
             if (lhs) fprintf(fp, "%s = ", lhs);
-            fprintf(fp, "((%s(*)(void*))((%s)(void*)%s)->e%d)((void*)%s);\n", ret_type_str,
-                    cg_get_string(classes[ci]), recv_str, slots[ci], recv_str);
+            // issues/025 kanoodle: this branch used to hardcode the
+            // function pointer type to a single `void*` (self) param
+            // and pass only the receiver, silently dropping every
+            // OTHER live formal (e.g. Omino.translate(self, v) --
+            // `v` was computed at the call site and then never
+            // passed, so the callee read garbage for it). Build the
+            // pointer type and the call's argument list from the
+            // candidate's OWN positional_arg_positions, mirroring the
+            // nil_fn branch above -- self stays a `void*` cast (the
+            // callee's receiver type varies per branch; that's the
+            // whole reason for this cast), every other live formal is
+            // cast like an ordinary call argument.
+            std::string fnptr_args = "void*", call_args = "(void*)";
+            call_args += recv_str;
+            Fun *cfun = class_funs[ci];
+            for (MPosition *p : cfun->positional_arg_positions) {
+              Var *av = cfun->args.get(p);
+              if (!av->live) continue;
+              int i = (int)Position2int(p->pos[0]) - 1;
+              if (i < 0 || i >= pn->rvals.n || !cg_get_string(pn->rvals[i])) continue;
+              if (!strcmp(cg_get_string(pn->rvals[i]), recv_str)) continue;  // self, already emitted
+              cchar *ft = c_type(av), *at = c_type(pn->rvals[i]);
+              fnptr_args += ", ";
+              fnptr_args += ft;
+              call_args += ", ";
+              if (!strcmp(ft, at)) {
+                call_args += cg_get_string(pn->rvals[i]);
+              } else if (scalar_ct(ft)) {
+                call_args += "(";
+                call_args += ft;
+                call_args += ")";
+                call_args += cg_get_string(pn->rvals[i]);
+              } else {
+                call_args += "(";
+                call_args += ft;
+                call_args += ")(void*)";
+                call_args += cg_get_string(pn->rvals[i]);
+              }
+            }
+            fprintf(fp, "((%s(*)(%s))((%s)(void*)%s)->e%d)(%s);\n", ret_type_str, fnptr_args.c_str(),
+                    cg_get_string(classes[ci]), recv_str, slots[ci], call_args.c_str());
             fputs("  }\n", fp);
           }
           for (int fi = 0; fi < plains.n; fi++, nb++) {
