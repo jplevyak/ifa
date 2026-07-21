@@ -1,20 +1,23 @@
 # 060 — `case None:` silently disappears from codegen when combined with a literal/True-False/sequence pattern
 
-**Status:** open, symptom confirmed and narrowed, not root-caused.
-Found 2026-07-22 while verifying [059](059-narrowing-peel-wrapper-boolean-collapse-gap.md)'s
-fix against the full range of combinations
-[../../issues/023-structural-pattern-matching.md](../../issues/023-structural-pattern-matching.md)'s
-compile-time guard currently blocks.
-**Affects:** unknown precisely yet — plausibly `ifa/analysis/fa.cc`'s
-constant-folding/dead-arm-elimination machinery, or `ifa/analysis/clone.cc`'s
-CreationSet unification across call sites passing `None` and an `int`
-literal to the same function. Not the same code 059 touches
-(confirmed: reproduces identically with `IFA_NARROW=0`, i.e.
-independent of narrowing/`peel_wrapper_def`).
+**Status:** partial fix landed 2026-07-21. **Mechanism 1 fixed**:
+`build_isinstance_call` now uses the raw `sym_primitive` isinstance
+send instead of the shared wrapper. **Mechanism 2 still open** — the
+`True`/`False` + `None` combination remains wrong, and
+`issues/023`'s compile-time guard has **not** been relaxed for any
+combination yet (a separate follow-on decision; see "What this
+unblocks").
+**Affects:** `python_ifa_build_if1.cc`'s `build_isinstance_call`
+(mechanism 1, fixed) and `ifa/codegen/cg.cc`'s `emit_send_is`
+(mechanism 2, both its `is_nil_check` branch and its
+classtag-disjunction branch — still open).
 **Related:** [059](059-narrowing-peel-wrapper-boolean-collapse-gap.md)
-(found while testing that fix, but a different bug — 059 is about
-narrowing never engaging; this is about a whole `if` branch vanishing
-from codegen); [../../issues/023-structural-pattern-matching.md](../../issues/023-structural-pattern-matching.md)
+(found while testing that fix, but unrelated — reproduces identically
+with `IFA_NARROW=0`); [030](030-polymorphic-dispatch-fat-pointers.md)
+(raw-layout / classtag-less types, directly implicated in mechanism
+2); [closed/011](closed/011-setter-codegen-vs-analyzer-mismatch.md)
+docs the *first* occurrence of mechanism 1, for except-clauses, and
+its existing fix; `../../issues/023-structural-pattern-matching.md`
 (the `case None:`-combination limitation both this and 059 bear on).
 
 ## Symptom
@@ -22,118 +25,207 @@ from codegen); [../../issues/023-structural-pattern-matching.md](../../issues/02
 ```python
 def test(val):
     match val:
-        case None:
-            print("none")
-        case 5:
-            print("five")
-        case v2:
-            print("other", v2)
-
-test(None)
-test(5)
-test(9)
-```
-
-Expected (CPython): `none` / `five` / `other 9`.
-
-pyc prints: `other 0` / `five` / `other 9` — the `case None:` branch
-is never taken for `test(None)`; it falls through to the capture
-fallback, and `v2` holds `0` (the raw representation `None` shares
-with the same-slot integer encoding) rather than being recognized as
-`None` at all.
-
-**Not a crash** — this compiles clean and runs clean, silently
-producing the wrong answer. Confirmed independent of
-[059](059-narrowing-peel-wrapper-boolean-collapse-gap.md)'s fix and
-of narrowing generally: identical wrong output with `IFA_NARROW=0`.
-`case None:` combined with `True`/`False` patterns and with sequence
-patterns reproduces the identical shape (the `None` arm silently
-never matches, subject falls through to whatever's next):
-
-```python
-def test(val):
-    match val:
         case None: print("none")
-        case True: print("true")
-        case False: print("false")
-test(None)   # prints "false", not "none"
+        case 5: print("five")
+        case v2: print("other", v2)
+test(None)  # prints "other 0", not "none"
 
 def test2(val):
     match val:
         case None: print("none")
-        case [a, b]: print("seq", a, b)
-        case v2: print("other", v2)
-test2(None)  # prints "seq 1 2" against test2([1, 2])'s OWN clone --
-             # i.e. same wrong-branch symptom, different manifestation
+        case True: print("true")
+        case False: print("false")
+test2(False)  # prints "none", not "false"
 ```
 
-**Not affected** (confirmed working, matching CPython): `case None:`
-combined with a bare capture (`case x:`), a class pattern
-(`case Point(x=x, y=y):`, including one with a genuinely
-discriminating sub-pattern like `Point(x=0, y=0)`), or a mapping
-pattern (`case {"a": x}:`) — see 059's own verification notes. The
-common thread in the *working* cases: `Point`/`dict` instances carry
-a classtag (`__pyc_tag`, issue 026/030's mechanism); the *broken*
-cases (literal `int`/`str`, `True`/`False`/`bool`, `list`/`tuple`
-elements) are exactly the types issue 030 explicitly excludes from
-classtag tagging ("raw-layout types"). Plausible, **not confirmed**:
-whatever mechanism decides "is the `None`-check's own `if` reachable
-at all for this clone" may be conflating `None`'s identity with the
-literal integer representation specifically for these
-classtag-less, raw-scalar-representation types, in a way it doesn't
-for tagged class/dict instances.
+Both compile clean and run clean — no crash, just a silently wrong
+answer.
 
-## What's been ruled out
+## Root cause 1 (FIXED): `build_isinstance_call` shared one polymorphic
+`isinstance()` clone across every pattern kind in the match — the
+exact bug class [closed/011](closed/011-setter-codegen-vs-analyzer-mismatch.md)
+already found and fixed for `except` clauses, never ported to
+`match`/`case`
 
-- Not narrowing/`peel_wrapper_def` (059's fix) — reproduces
-  identically with `IFA_NARROW=0`.
-- Not specific to `match`/`case` lowering choices (three different
-  `case None:` lowerings were tried per 023's original investigation,
-  all failed identically for the *crash* case; this bug wasn't
-  re-tried against all three, but the fact that it's independent of
-  narrowing suggests it's not about which isinstance-check shape
-  `build_pattern_match` emits either).
+`build_isinstance_call` (`python_ifa_build_if1.cc` ~1087) built
+`isinstance(obj, cls)` as an ordinary call through the Python-level
+`isinstance()` wrapper (`__pyc__/05_builtins.py`). Once a match
+statement checks **two different classes** this way (e.g. `None`'s
+`NoneType` check and `5`'s `int` check), FA generalized the wrapper
+into one shared polymorphic clone, exactly as documented for
+except-clauses in issue 011 — losing the ability to answer each call
+site's question independently.
 
-## Not yet done
+**Fixed**: switched to the **raw `sym_primitive` isinstance send**
+issue 011 already uses for `except X:` clauses
+(`if1_send(if1, code, 4, 1, sym_primitive, make_symbol("isinstance"),
+obj, cls, result)`), never routing through the shared wrapper. Verified
+(temporary `getenv`-gated experiment during investigation, then the
+permanent change, both re-tested identically):
 
-Full root-cause trace (matching the rigor 059's fix used — an actual
-PNode/CreationSet dump for this exact repro) was not attempted; this
-was found and characterized while verifying 059, not chased further,
-to keep that fix's own scope bounded. Suspect starting points: dump
-`test`'s EntrySet/CreationSet state around the point `test(None)`'s
-argument gets unified with `test(5)`/`test(9)`'s int arguments (does
-`None`'s CreationSet get merged into / conflated with an int
-CreationSet during clone-sharing, losing its distinct identity before
-the `isinstance(val, NoneType)` check ever runs?); alternatively,
-check whether the `case None:` arm's own `if1_if` gets constant-folded
-to always-false by `mark_exc_checks_constant`-style dead-arm
-elimination (issue 011's own dead-code work) based on an incorrectly
-computed static type for `val` at that specific clone.
+- `case None: / case 5: / case v2:` → **fixed**, matches CPython.
+- `case None: / case x:` (bare capture) → **fixed**, matches CPython.
+- `case None: / case [a, b]: / case v2:` → **fixed**, matches CPython
+  (contrary to `build_isinstance_call`'s own old code comment
+  claiming the raw form breaks sequence-pattern OR-composition —
+  not reproduced, including with an actual tuple subject exercising
+  the `is_list or is_tuple` combine_bool path).
+- Full suite (219/219, both backends), `ifa --test` (58/0), `make
+  test_llvm`, and a shedskin corpus sweep (byte-identical
+  before/after diff of the results.tsv) all stay clean — this change
+  affects every pattern kind's isinstance check, not just the ones
+  combined with `None`, and nothing regressed.
+
+This mechanism alone does **not** explain the `True`/`False` case —
+see mechanism 2, still open.
+
+## Root cause 2 (deeper, general codegen gap): `None` and a falsy raw
+scalar (`False`, `0`, `0.0`) can share the identical zero/NULL bit
+pattern in an unsplit contour, and neither of `cg.cc`'s two isinstance
+runtime-dispatch paths can tell them apart
+
+pyc avoids boxing an `Optional[int]`-shaped parameter: when FA doesn't
+split a formal's union into separate per-type clones, a raw scalar
+type (`int64`, `bool`, `float`) sharing a contour with `None`
+represents `None` as literal `0`/`NULL` in that same slot. Confirmed
+directly in generated C for `case None: / case True: / case False:`
+called with `test(False)`:
+
+```c
+t18 = ((void *)(intptr_t)t5 == NULL);   // the `case None:` check
+...
+_CG_f_8300_2/*test*/((_CG_bool)NULL);   // test(False) — False passed as NULL!
+```
+
+`False` and `None` are **literally the same bit pattern** at this call
+site, so the `case None:` check (`cg.cc`'s `emit_send_is`,
+`is_nil_check` branch, ~line 1037-1069: `x == NULL`) matches `False`
+too. This is representation-sound for *pointer*-based types (a real
+`list`/`tuple`/`str`/class instance is never at address `NULL`, which
+is exactly why the sequence-pattern case above works once mechanism 1
+is fixed) but fundamentally ambiguous for *scalar* types where `0` is
+also a legitimate value.
+
+A second, independent symptom of the same shared-representation root
+cause, reachable from **plain user code with no `match`/`case` at
+all**:
+
+```python
+def test(v):
+    if isinstance(v, int):
+        print("int")
+    else:
+        print("other")
+test(5)
+test(None)
+```
+prints `other` / `other` (expected `int` / `other`) — wrong even for
+the plain `int` call. Traced to `cg.cc`'s *other* `emit_send_is`
+branch (the classtag-disjunction path, ~line 1082-1119): once FA
+leaves `int64` and `__pyc_None_type__` merged in one un-split
+`EntrySet` (confirmed via instrumentation: only one `es` ever exists
+for `test`, and its operand AVar's `CreationSet` set eventually
+contains both), the runtime check is emitted as a disjunction over
+the checked class's classtag-bearing implementors
+(`*(_CG_TypeObject**)opnd == &_CG_type_X`). `int` (like `bool`,
+`float`, and any other raw-layout type per
+[030](030-polymorphic-dispatch-fat-pointers.md)'s tagging exclusion)
+has **no classtag**, so the implementors list is empty and codegen
+hard-codes the check to `= 0` — always false, regardless of the
+operand's real runtime type. Confirmed this does *not* happen for two
+genuinely-cloned types (`int`+`str`, `int`+`list` both compile and run
+correctly — FA does clone `test` into two separate `EntrySet`s for
+those combinations, each resolving to a stable per-clone constant);
+it specifically happens when `None` is one of the two types, because
+`None`-shares-a-scalar-slot is a deliberate convention that keeps
+them merged rather than splitting.
+
+Net effect for `issues/023`'s blocked combinations, mapped to
+mechanism:
+
+| combination | mechanism hit | fixed by the raw-form fix? |
+|---|---|---|
+| `None` + literal (`int`/`str`) + capture/wildcard | 1 (wrapper-clone-sharing) | **yes**, landed |
+| `None` + bare capture | 1 | **yes**, landed |
+| `None` + sequence pattern | 1 (sequence targets are pointer-typed, so mechanism 2's `is_nil_check` ambiguity doesn't apply to them) | **yes**, landed |
+| `None` + `True`/`False` | 2 (`is_nil_check`'s `x == NULL` is ambiguous with `False`'s zero representation) | **no** — needs a representation-level fix, not just the isinstance-send-shape change |
+
+Note: `issues/023`'s compile-time guard still unconditionally refuses
+all four combinations above — mechanism 1's fix makes three of them
+safe in principle, but the guard hasn't been narrowed to say so yet
+(a separate, not-yet-requested follow-on; see "What this unblocks").
+
+## What's ruled out
+
+- Not narrowing/`peel_wrapper_def` (059's fix) — every repro above
+  reproduces identically with `IFA_NARROW=0`.
+- Not a compile-time constant-folding bug in the ordinary sense: FA's
+  own `P_prim_isinstance` transfer function (`fa.cc` ~2207) computes
+  the *correct*, honestly-polymorphic `bool_type` for the mixed-union
+  cases (confirmed via instrumentation) — it is not silently folding
+  to a wrong constant. The wrong answer is introduced downstream, in
+  codegen's runtime-dispatch fallback for a type it (`cg.cc`) has no
+  way to discriminate at the machine level, and (mechanism 1,
+  separately) in the wrapper-clone-sharing that corrupts *which*
+  class is even being asked about.
+
+## Proposed fix directions
+
+1. **Mechanism 1 — DONE.** Ported issue 011's raw `sym_primitive`
+   isinstance send into `build_isinstance_call`, exactly as done for
+   `except`-clause dispatch.
+2. **Mechanism 2 (still open)** — genuinely needs a design decision, not a
+   one-line fix:
+   - Option A: give `None` a distinguishable representation even
+     inside a shared scalar contour (e.g. a side discriminant/tag
+     bit alongside the scalar payload for any formal whose union
+     includes `None` and a raw scalar type) — correct but touches
+     the calling convention for every `Optional[scalar]` parameter,
+     wide blast radius.
+   - Option B: force FA to **always** clone a formal into separate
+     `EntrySet`s when its union mixes `None` with a raw scalar type,
+     the same way it already does for two boxed/pointer types
+     (`int` vs `str`) — narrower blast radius (only affects
+     clone/splitting heuristics, not the runtime representation
+     itself), but needs to find where that splitting decision is
+     made (likely `ifa/analysis/clone.cc`) and confirm mixing
+     `None`+scalar isn't relied upon elsewhere as a deliberate
+     boxing-avoidance optimization worth preserving for *non*-isinstance
+     code paths.
+   - Either way, `cg.cc`'s classtag-disjunction path (the `hw3.py`
+     symptom) needs its own fix regardless of mechanism 1/2: a
+     classtag-less checked class should never silently hard-code `0`
+     — at minimum it should be a compile-time diagnostic (the check
+     is unimplementable as constructed) rather than a silent wrong
+     answer, since this is reachable from plain user `isinstance()`
+     calls with zero match/case involvement.
 
 ## Verification plan
 
-1. The exact repro above (`case None: / case 5: / case v2:`) prints
-   `none` / `five` / `other 9`, matching CPython.
-2. The `True`/`False` and sequence-pattern variants above also match
-   CPython.
-3. Once root-caused, re-run [059](059-narrowing-peel-wrapper-boolean-collapse-gap.md)'s
-   own combinations (capture, class, mapping) to confirm they're
-   unaffected by whatever fix lands here.
-4. Full suite + shedskin corpus sweep stay clean on both backends
-   (this plausibly touches clone/CreationSet-sharing machinery used
-   everywhere, not just `match`/`case`).
+1. ~~All four combinations in the table above match CPython.~~ Done
+   for 3 of 4 (literal, capture, sequence); `True`/`False` still
+   wrong, tracked as mechanism 2.
+2. The standalone `isinstance(v, int)` / `test(5)`, `test(None)`
+   repro (no `match`/`case`) matching CPython is still open —
+   mechanism 2's classtag-disjunction half, unaffected by mechanism
+   1's fix (confirmed: this repro doesn't involve `build_isinstance_call`
+   at all, it's plain user-level `isinstance()`).
+3. Done: 059's own verified combinations (capture, class, mapping)
+   re-checked, unaffected by mechanism 1's fix.
+4. Done: full suite (219/219 both backends), `ifa --test` (58/0),
+   `make test_llvm`, and a shedskin corpus sweep (byte-identical
+   results.tsv before/after) all clean.
 
 ## What this unblocks
 
 Together with [059](059-narrowing-peel-wrapper-boolean-collapse-gap.md),
-closes [../../issues/023-structural-pattern-matching.md](../../issues/023-structural-pattern-matching.md)'s
-one remaining pattern-matching limitation. Until this is fixed,
-`issues/023`'s compile-time guard (`pattern_contains_none`/
-`pattern_is_risky_with_none` in `build_match_pyda`) must **not** be
-relaxed for literal, `True`/`False`, or sequence patterns combined
-with `case None:` — doing so would trade a loud compile-time refusal
-for a silent wrong answer, strictly worse. It's safe to relax only
-for the capture/class/mapping subset 059 already verified sound (not
-yet done either, pending a decision on whether to relax the guard
-gradually per-pattern-kind or wait for this issue too — see 059's own
-notes).
+mechanism 1's fix makes 3 of `../../issues/023-structural-pattern-matching.md`'s
+4 blocked combinations (literal, capture, sequence) safe in
+principle — but the guard itself hasn't been relaxed yet (a separate
+follow-on, not yet done). The `True`/`False` combination must stay
+blocked until mechanism 2 has a real fix — relaxing it earlier would
+trade a loud compile-time refusal for a silent wrong answer, strictly
+worse. Mechanism 2's classtag-less diagnostic (or full fix) also
+matters independent of `match`/`case` entirely: it's a latent
+correctness gap in plain `isinstance()` whenever a raw scalar type
+shares a clone with `None`.

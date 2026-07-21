@@ -150,15 +150,24 @@ that:
   guard hasn't been relaxed yet, pending
   [060](060-none-branch-dropped-mixed-with-literal-bool-sequence.md).
 - [060-none-branch-dropped-mixed-with-literal-bool-sequence.md](060-none-branch-dropped-mixed-with-literal-bool-sequence.md) —
-  found while verifying 059: `case None:` combined with a literal,
-  `True`/`False`, or sequence pattern doesn't crash at all — it
-  compiles clean and silently drops the `None` arm's own check
-  entirely, producing the wrong answer. Confirmed independent of
-  narrowing/059 (`IFA_NARROW=0` reproduces identically). Not
-  root-caused; plausible connection to classtag-less "raw layout"
-  types (issue 030) since class/dict patterns combined with
-  `case None:` don't hit this. Blocks relaxing `../../issues/023-structural-pattern-matching.md`'s
-  compile-time guard for these three pattern kinds.
+  **partial fix landed 2026-07-21.** Two distinct mechanisms found;
+  mechanism 1 fixed: `build_isinstance_call` shared one polymorphic
+  `isinstance()` clone across pattern kinds — the same bug class
+  [closed/011](closed/011-setter-codegen-vs-analyzer-mismatch.md)
+  already fixed for `except` clauses, ported to `match`/`case` now
+  (`None` + literal/capture/sequence all verified fixed; full suite,
+  `ifa --test`, `test_llvm`, and a shedskin sweep all clean, no
+  regressions). Mechanism 2 still **open**: a deeper, general codegen
+  gap where `None` and a falsy raw scalar (`False`/`0`/`0.0`) can
+  share the identical zero/NULL bit pattern in an unsplit clone, and
+  `cg.cc`'s `emit_send_is` can't tell them apart either way (its
+  `is_nil_check` path treats `False` as `None`; its classtag-disjunction
+  path hard-codes `0` for any classtag-less checked class like `int`) —
+  reachable from plain `isinstance()` user code, no `match`/`case`
+  needed. Still blocks relaxing `../../issues/023-structural-pattern-matching.md`'s
+  compile-time guard (not yet relaxed for any combination — a
+  separate follow-on decision) for the `True`/`False` combination
+  specifically.
 
 ## Closed (archive)
 
