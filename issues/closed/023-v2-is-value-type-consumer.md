@@ -103,12 +103,12 @@ side of the ledger.
 the wrapper IR shape, and CG2_CALL's argument / return ABI
 (Stage 2).
 **Surfaced while:** closing
-[`issues/015-pyc-pod-records-no-frontend-hook.md`](../../issues/closed/015-pyc-pod-records-no-frontend-hook.md)
+[`issues/015-pyc-pod-records-no-frontend-hook.md`](../../../issues/closed/015-pyc-pod-records-no-frontend-hook.md)
 — pyc's `@pyc_struct` decorator now sets `Sym::is_value_type`
 on user RECORDs.  Stage 1 closes the gap between the bit and
 the codegen layer.  Stage 2 makes the bit observable.
 **Related:**
-[`closed/014-llvm-construction-flow-to-slots.md`](closed/014-llvm-construction-flow-to-slots.md)
+[`closed/014-llvm-construction-flow-to-slots.md`](014-llvm-construction-flow-to-slots.md)
 (v1 LLVM had a `getLLVMVarType` POD-record override that was
 retired alongside v1 LLVM),
 [`022-iterative-inlining.md`](022-iterative-inlining.md) (the
@@ -206,7 +206,7 @@ When fixing:
 
 ## Related
 
-- [`closed/014-llvm-construction-flow-to-slots.md`](closed/014-llvm-construction-flow-to-slots.md)
+- [`closed/014-llvm-construction-flow-to-slots.md`](014-llvm-construction-flow-to-slots.md)
   — v1 LLVM had a `getLLVMVarType` POD-record override that
   this issue would restore in v2 form.
 - `ifa/codegen/cg_normalize_v2.cc:163` (`build_type`) — the

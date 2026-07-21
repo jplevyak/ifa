@@ -288,7 +288,7 @@ Verified:
   setter is fully elided from the C output.
 - Manual tree (`tests/tree_manual.py` not added because
   v2 LLVM has a separate GEP-on-ptr issue tracked in
-  [issue 027](027-v2-llvm-narrowed-loop-loses-struct-type.md))
+  [issue 027](closed/027-v2-llvm-narrowed-loop-loses-struct-type.md))
   works on the C backend.
 - Linked-list tests, recursive_alloc tests, suite
   remained 88/0.
@@ -757,7 +757,7 @@ comes from narrowing, not from inlining.
 - [`ifa/issues/025-intra-function-union-narrowing.md`](025-intra-function-union-narrowing.md)
   — the broader narrowing infrastructure that
   prim_isinstance rewrites use.
-- [`ifa/issues/027-v2-llvm-narrowed-loop-loses-struct-type.md`](027-v2-llvm-narrowed-loop-loses-struct-type.md)
+- [`ifa/issues/027-v2-llvm-narrowed-loop-loses-struct-type.md`](closed/027-v2-llvm-narrowed-loop-loses-struct-type.md)
   — v2 LLVM has a related struct-tracking issue.
 - `ifa/CLONE.md` — pyc's clone-time specialization where
   per-CS layouts are determined.

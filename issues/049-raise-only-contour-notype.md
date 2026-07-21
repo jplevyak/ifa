@@ -6,7 +6,7 @@ Confirmed via `git worktree add ... 04d56587` (the very first
 issue-011 landing commit, before ANY can_raise gating work existed)
 that this bug pre-dates all of today's work — it is intrinsic to the
 original exception-handling implementation, not a regression from
-[011](../../issues/011-exception-handling-unimplemented.md)'s
+[011](../../issues/closed/011-exception-handling-unimplemented.md)'s
 Tier 1/Tier 2 gating.
 
 ## Symptom
@@ -153,7 +153,7 @@ internal helper always called with data that's already known-bad at
 one call site, with the "good" case only reached via a code path the
 whole-program analysis doesn't happen to instantiate with a
 non-raising literal/CS). This is a real gap in
-[011](../../issues/011-exception-handling-unimplemented.md)'s
+[011](../../issues/closed/011-exception-handling-unimplemented.md)'s
 exception-handling support, independent of the can_raise gating work
 (Tier 1/Tier 2), which only decide whether to EMIT a check — they
 don't touch this return-type convergence path at all and can't cause

@@ -15,7 +15,7 @@ fixes made `list.__add__` actually call `_CG_list_add`, which
 caused `list.__str__` on the concat result to reach a wrapper
 function (`_CG_f_2947_10`) whose internal call to range's
 `__init__` had positionally-swapped + ptr/int-coerced args.
-**Related:** [closed/020-v2-list-add-empty-body.md](closed/020-v2-list-add-empty-body.md)
+**Related:** [closed/020-v2-list-add-empty-body.md](020-v2-list-add-empty-body.md)
 (the alloc/sizeof_element/len fixes that unblocked this gap).
 
 ## What landed (closes the issue)

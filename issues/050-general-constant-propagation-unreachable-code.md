@@ -5,7 +5,7 @@ day, in a follow-up session after this issue was filed) — see its
 own section below for the full design and verification record.
 Directions 1, 2, and 3b remain open/not started. Originally written
 right after landing issue 011's exception-check dead-code-elimination
-work (see [011](../../issues/011-exception-handling-unimplemented.md)'s
+work (see [011](../../issues/closed/011-exception-handling-unimplemented.md)'s
 "Exception-check dead-code elimination" and "Closing the residual"
 sections, and `ifa/optimize/dead.{h,cc}`'s `mark_var_constant`/
 `reclaim_dead_producer_chain`).

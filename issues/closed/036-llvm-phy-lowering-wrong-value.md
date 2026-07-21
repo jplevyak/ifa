@@ -23,7 +23,7 @@ failure was heap-layout roulette).
 **Affects:** the v2 LLVM path (`cg_normalize_v2` /
 `cg_v2_emit_llvm_module`) — phy (reverse-phi / branch-split rename)
 lowering.
-**Related:** [035](035-nondeterministic-codegen-clone-order.md)
+**Related:** [035](../035-nondeterministic-codegen-clone-order.md)
 (whose `merge_live` fix completes the liveness approximation and
 therefore places MORE phys — correct per the SSU algorithm),
 `issues/028-fibheap-blockers.md` Bug B (a previous phy-placement

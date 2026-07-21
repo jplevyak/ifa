@@ -517,7 +517,7 @@ the stall guard from the mitigation, not touched by D7).
 loop started compiling. Bisected (worktree at `7d7a86a2`) to
 `a32a6467` (issue 027's qualified-static-dispatch commit), NOT to
 any issue-033 work; filed as pyc-side
-[issues/028](../../issues/028-raise-exception-regression-qualified-dispatch.md).
+[issues/028](../../../issues/028-raise-exception-regression-qualified-dispatch.md).
 Stage A + D6 were validated against the post-`a32a6467` set and
 changed nothing.
 

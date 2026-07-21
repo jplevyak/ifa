@@ -14,7 +14,7 @@ marker as the return-type argument. Surfaced when the
 issue 019 E.3 commit (`5a0ff11`) made the allocation side of
 list literals sound, leaving `list.__add__`'s body as the
 next bottleneck.
-**Related:** [closed/019-v2-flat-list-header.md](closed/019-v2-flat-list-header.md)
+**Related:** [closed/019-v2-flat-list-header.md](019-v2-flat-list-header.md)
 (the alloc-side fix that exposed this gap).
 
 ## What landed (closes the issue)

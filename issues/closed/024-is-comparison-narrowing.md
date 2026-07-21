@@ -10,12 +10,12 @@ landed" section below for details.
 **Affects:** `ifa/analysis/fa.cc` (the splitter that decides
 when to refine an EntrySet based on conditional predicates).
 **Related:**
-[`issues/004-is-operator-unimplemented.md`](../../issues/closed/004-is-operator-unimplemented.md)
+[`issues/004-is-operator-unimplemented.md`](../../../issues/closed/004-is-operator-unimplemented.md)
 — the partial fix for `is` that exposed this gap.
 
 ## Symptom
 
-After [issue 004](../../issues/closed/004-is-operator-unimplemented.md)'s
+After [issue 004](../../../issues/closed/004-is-operator-unimplemented.md)'s
 partial fix lands the `is`/`is not` operators, two
 follow-on patterns crash at codegen with a "matching
 function not found" runtime assertion:

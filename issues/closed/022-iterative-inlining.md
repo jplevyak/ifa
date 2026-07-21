@@ -15,8 +15,8 @@ breaks out on zero delta and adds no compile-time cost.
 
 **Affects:** `ifa/optimize/inline.cc:552` (`simple_inlining`
 calls `inline_single_sends` exactly once).
-**Related:** [closed/006-simple-inlining-multi-send-chain.md](closed/006-simple-inlining-multi-send-chain.md)
-(the chain-matcher landing), [closed/005-retire-speculative-sym-level-dce.md](closed/005-retire-speculative-sym-level-dce.md)
+**Related:** [closed/006-simple-inlining-multi-send-chain.md](006-simple-inlining-multi-send-chain.md)
+(the chain-matcher landing), [closed/005-retire-speculative-sym-level-dce.md](005-retire-speculative-sym-level-dce.md)
 (the design principle: "IR-gen can be naive; the inliner cleans up").
 
 ## Symptom

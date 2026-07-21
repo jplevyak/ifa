@@ -15,7 +15,7 @@ converges stall-free on MAIN alone (stage C no longer needed for
 that; see 033's resolution update), and the branch's residual
 builtins_batch miscompile is now deterministic and documented in
 033 — branch parked; (c) DONE
-2026-07-10, closed — [036](036-llvm-phy-lowering-wrong-value.md) — the
+2026-07-10, closed — [036](closed/036-llvm-phy-lowering-wrong-value.md) — the
 one suite delta: the now-COMPLETE liveness places more phys, which
 the C backend lowers correctly everywhere but the v2 LLVM path
 miscompiles on expr_evaluator (deterministically — previously this

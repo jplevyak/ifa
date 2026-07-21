@@ -9,7 +9,7 @@ issue's specific `add_one` example no longer reproduces in HEAD
 practical coverage win is zero on the current pyc test set.
 Infrastructure stays in place for future wrappers; the natural
 follow-on is Gap A (iterative inlining), filed separately as
-[022-iterative-inlining.md](../022-iterative-inlining.md).
+[022-iterative-inlining.md](022-iterative-inlining.md).
 **Affects:** `ifa/optimize/inline.cc:inline_single_sends`,
 `ifa/testing/phases/07_dce_optimize.md` (Inline test cases).
 **Related:** [005-retire-speculative-sym-level-dce.md](005-retire-speculative-sym-level-dce.md)

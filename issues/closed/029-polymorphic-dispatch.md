@@ -1,7 +1,7 @@
 # 029 — Polymorphic method dispatch unsupported
 
 **Status:** closed (2026-07-04) in favour of
-[030](030-polymorphic-dispatch-fat-pointers.md), whose classtag
+[030](../030-polymorphic-dispatch-fat-pointers.md), whose classtag
 dispatch is now implemented on both backends
 (`poly_dispatch_low.py` / `poly_dispatch_high.py` /
 `poly_dispatch_swapped.py` all pass strictly). This issue's own

@@ -282,6 +282,6 @@ multi-tree merge — likely-novel patterns).
 
 ## Related
 
-- [025-intra-function-union-narrowing.md](025-intra-function-union-narrowing.md) — narrowing scope discussion (this is Case 3).
-- [026-recursive-self-mutation-struct-collapse.md](026-recursive-self-mutation-struct-collapse.md) — Bug 5 fix; unblocks bst_insert.
+- [025-intra-function-union-narrowing.md](../025-intra-function-union-narrowing.md) — narrowing scope discussion (this is Case 3).
+- [026-recursive-self-mutation-struct-collapse.md](../026-recursive-self-mutation-struct-collapse.md) — Bug 5 fix; unblocks bst_insert.
 - `CLAUDE.md` "Critical IFA Code Generator Bug Fixed" — similar-flavor LABEL-placement bug, may share root cause with Bug B.
