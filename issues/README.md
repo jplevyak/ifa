@@ -131,17 +131,34 @@ that:
   cause with any of them. Found landing pyc's issue 024 (extended
   iterable unpacking) — unrelated to unpacking itself.
 - [059-narrowing-peel-wrapper-boolean-collapse-gap.md](059-narrowing-peel-wrapper-boolean-collapse-gap.md) —
-  issue 025's per-branch narrowing (`peel_wrapper_def`) never engages
-  for pyc's `match`/`case`-generated code: it walks single-source MOVE
-  chains and one specific 3-SEND unwrap shape, but not a value
-  phi-merged from two if1_if branches — exactly what pyc's
-  `guarded_bool` frontend helper produces for every isinstance-based
-  pattern kind. Confirmed via a clean `IFA_NARROW=0`-vs-`1` A/B test
-  (byte-identical generated C either way for the affected shape,
-  vs. narrowing-dependent behavior for the same union written by
-  hand). Root-caused 2026-07-22, not fixed; blocks pyc's
-  `../../issues/023-structural-pattern-matching.md`'s one remaining
-  `case None:`-combination limitation.
+  **fixed 2026-07-22**: issue 025's per-branch narrowing
+  (`peel_wrapper_def`) never engaged for pyc's `match`/`case`-generated
+  code because it only walked single-source MOVE chains and one
+  specific 3-SEND unwrap shape, never a value phi-merged from two
+  if1_if branches — exactly what pyc's `guarded_bool` frontend helper
+  produces for every isinstance-based pattern kind. Fixed by extending
+  `peel_wrapper_def` to recognize that merge shape, with a critical
+  soundness constraint found during verification (both branches must
+  be literal `sym_true`/`sym_false` constants, not just the else
+  branch — the looser version produced silently wrong captured values
+  for a guarded `case None if cond:` across multiple calls). Verified:
+  full suite 219/219 both backends, `ifa` unit tests 58/0,
+  `make test_llvm` clean, shedskin corpus sweep byte-identical
+  before/after (one pre-existing flaky example aside). Still blocks
+  pyc's `../../issues/023-structural-pattern-matching.md`'s
+  `case None:`-combination limitation in practice: the compile-time
+  guard hasn't been relaxed yet, pending
+  [060](060-none-branch-dropped-mixed-with-literal-bool-sequence.md).
+- [060-none-branch-dropped-mixed-with-literal-bool-sequence.md](060-none-branch-dropped-mixed-with-literal-bool-sequence.md) —
+  found while verifying 059: `case None:` combined with a literal,
+  `True`/`False`, or sequence pattern doesn't crash at all — it
+  compiles clean and silently drops the `None` arm's own check
+  entirely, producing the wrong answer. Confirmed independent of
+  narrowing/059 (`IFA_NARROW=0` reproduces identically). Not
+  root-caused; plausible connection to classtag-less "raw layout"
+  types (issue 030) since class/dict patterns combined with
+  `case None:` don't hit this. Blocks relaxing `../../issues/023-structural-pattern-matching.md`'s
+  compile-time guard for these three pattern kinds.
 
 ## Closed (archive)
 

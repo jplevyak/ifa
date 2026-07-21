@@ -2369,17 +2369,86 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
 //     SEND3 has 1 rval (the bound method); SEND2 has 4
 //     rvals: [sym_operator, recv, sym_period, method_sym].
 //
+// Walk a single-predecessor CFG chain from `from` looking for the
+// Code_IF PNode that gates it (issue 059). Bounded the same way
+// peel_wrapper_def itself is -- a branch is typically just a label
+// (the jump target) then the write itself, but this doesn't assume
+// an exact hop count.
+static PNode *find_gating_if(PNode *from, int max_depth) {
+  PNode *w = from;
+  for (int hop = 0; hop < max_depth && w; hop++) {
+    if (w->code && w->code->kind == Code_IF && w->rvals.n) return w;
+    if (w->cfg_pred.n != 1) return nullptr;
+    w = w->cfg_pred[0];
+  }
+  return nullptr;
+}
+
+// Issue 059: does `p` (a PNode with phi children -- i.e. a CFG merge
+// point) have a phi entry for `cur` that matches pyc's `guarded_bool`
+// helper's exact shape (python_ifa_build_if1.cc)? `guarded_bool`
+// collapses an arbitrary discriminator check into a plain boolean by
+// merging two branches: the else branch UNCONDITIONALLY writes the
+// literal constant `sym_false`; the then branch writes whatever
+// `build_then` returned.
+//
+// Soundness requires BOTH branches to be the literal constants
+// `sym_true`/`sym_false`, not just the else branch being `sym_false`.
+// If `build_then` returns something else -- a guard's result
+// (`case None if cond:`), or a real AND-fold of sub-pattern matches
+// (`case Point(x=0, y=0):`, `case [a, b]:`) -- then `result == true`
+// still implies the discriminator was true (an AND can only be true
+// if every operand, including the discriminator, was true), but
+// `result == false` does NOT imply the discriminator was false: it
+// could equally mean the discriminator was true but the guard/
+// sub-pattern failed. Narrowing the false-branch view in that case
+// would be UNSOUND (confirmed empirically: it produced a wrong
+// captured value, not just a missed optimization, when guard-gated).
+// `combine_bool`'s own short-circuit (`a == sym_true` returns `b`
+// unchanged) means a pattern kind with no discriminating sub-pattern
+// at all (e.g. every attribute/element itself a bare capture) DOES
+// collapse `build_then`'s result to literal `sym_true` naturally --
+// so this restriction excludes exactly the unsound cases without
+// needing to special-case which pattern kind produced them.
+//
+// If found, returns the enclosing if1_if's own condition Var -- the
+// real discriminator `guarded_bool` wrapped -- so the caller can
+// continue peeling into it (composes with nested guarded_bool calls).
+static Var *peel_guarded_bool_merge(PNode *p, Var *cur, int max_depth) {
+  for (PNode *ph : p->phi) {
+    if (ph->lvals.n != 1 || ph->lvals[0] != cur || ph->rvals.n != 2) continue;
+    PNode *common_if = nullptr;
+    bool saw_true = false, saw_false = false;
+    for (Var *branch_val : ph->rvals) {
+      PNode *w = branch_val->def;
+      if (!w || !w->code || w->code->kind != Code_MOVE || w->rvals.n != 1) return nullptr;
+      Sym *src_sym = w->rvals[0]->sym;
+      if (src_sym == sym_true) saw_true = true;
+      else if (src_sym == sym_false) saw_false = true;
+      else return nullptr;
+      PNode *gating_if = find_gating_if(w, max_depth);
+      if (!gating_if) return nullptr;
+      if (!common_if) common_if = gating_if;
+      else if (common_if != gating_if) return nullptr;
+    }
+    return (saw_true && saw_false && common_if) ? common_if->rvals.v[0] : nullptr;
+  }
+  return nullptr;
+}
+
 // Used by issue-025 narrowing recognition to look through
 // the wrapper for `is None`, `is not None`, isinstance, etc.
 // Depth-bounded as a safety net; see ifa/analysis/NOTES.md.
 static PNode *peel_wrapper_def(Var *v, int max_depth = 6) {
   if (!v || !v->def) return v ? v->def : nullptr;
+  Var *cur = v;
   PNode *p = v->def;
   for (int hop = 0; hop < max_depth && p && p->code; hop++) {
     bool advanced = false;
     if (p->code->kind == Code_MOVE && p->rvals.n == 1) {
       Var *src = p->rvals[0];
       if (src && src->def && src->def != p) {
+        cur = src;
         p = src->def;
         advanced = true;
       }
@@ -2392,9 +2461,22 @@ static PNode *peel_wrapper_def(Var *v, int max_depth = 6) {
         PNode *bind = bound->def;
         Var *recv = bind->rvals[1];
         if (recv && recv->def && recv->def != bind) {
+          cur = recv;
           p = recv->def;
           advanced = true;
         }
+      }
+    }
+    // issue 059: peel through a guarded_bool-style boolean collapse
+    // -- a phi-merge (at the CFG join point after an if/else) with
+    // exactly two sources, one of which unconditionally writes
+    // `sym_false`. See peel_guarded_bool_merge's own comment.
+    if (!advanced && p->phi.n) {
+      Var *discriminator = peel_guarded_bool_merge(p, cur, max_depth);
+      if (discriminator && discriminator->def && discriminator->def != p) {
+        cur = discriminator;
+        p = discriminator->def;
+        advanced = true;
       }
     }
     if (!advanced) break;
