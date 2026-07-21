@@ -130,6 +130,18 @@ that:
   same family as 025 / 032 / 033 but not confirmed to share a root
   cause with any of them. Found landing pyc's issue 024 (extended
   iterable unpacking) — unrelated to unpacking itself.
+- [059-narrowing-peel-wrapper-boolean-collapse-gap.md](059-narrowing-peel-wrapper-boolean-collapse-gap.md) —
+  issue 025's per-branch narrowing (`peel_wrapper_def`) never engages
+  for pyc's `match`/`case`-generated code: it walks single-source MOVE
+  chains and one specific 3-SEND unwrap shape, but not a value
+  phi-merged from two if1_if branches — exactly what pyc's
+  `guarded_bool` frontend helper produces for every isinstance-based
+  pattern kind. Confirmed via a clean `IFA_NARROW=0`-vs-`1` A/B test
+  (byte-identical generated C either way for the affected shape,
+  vs. narrowing-dependent behavior for the same union written by
+  hand). Root-caused 2026-07-22, not fixed; blocks pyc's
+  `../../issues/023-structural-pattern-matching.md`'s one remaining
+  `case None:`-combination limitation.
 
 ## Closed (archive)
 

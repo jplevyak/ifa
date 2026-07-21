@@ -5,7 +5,16 @@
 EntrySet/AVar specialization machinery.
 **Related:** [024-is-comparison-narrowing.md](closed/024-is-comparison-narrowing.md)
 (specific to `is`/`is not`) — this issue is the broader
-underlying problem.
+underlying problem. [059](059-narrowing-peel-wrapper-boolean-collapse-gap.md)
+(2026-07-22) found and root-caused a specific gap in this issue's own
+`peel_wrapper_def` walk-back: it doesn't peel through a value
+phi-merged from two if1_if branches (the shape pyc's frontend
+`guarded_bool` helper produces for every isinstance-based
+`match`/`case` pattern), so narrowing silently never engages for any
+code generated that way — confirmed via a clean `IFA_NARROW=0`-vs-`1`
+A/B test showing byte-identical output either way, contrasted with
+the identical union written by hand (which IS narrowing-dependent).
+Root-caused, not fixed.
 
 ## Symptom
 
