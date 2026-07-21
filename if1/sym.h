@@ -194,6 +194,12 @@ class Sym : public BasicSym {
   Vec<Sym *> specializers;    // used by fa.cpp, specializers *type*
   Vec<Sym *> dispatch_types;  // used by fa.cpp, pattern.cpp  *type*
 
+  Vec<cchar *> match_args;  // pyc frontend (issues/023): class-body
+                            // `__match_args__ = (...)` literal, read back
+                            // at compile time to map positional class-
+                            // pattern args (`case Point(0, 0):`) to
+                            // attribute names           *type*
+
   void *temp;  // algorithmic temp             *type*
   llvm::Type *llvm_type;
   llvm::DIType *llvm_type_di_cache; // Cache for debug information type
