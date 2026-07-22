@@ -4783,13 +4783,23 @@ int fa_coerce_numeric_confluences(Vec<ATypeViolation *> &violations) {
   // Ivars of compiler-internal `closure` CSs: pyc lowers a
   // function's locals through its closure frame record, so a
   // loop-carried local's storage IS a closure ivar; leaving it
-  // unannotated lets the mix cycle back in through the frame. USER
-  // record fields (named classes) stay excluded: mixed numeric
-  // fields across instances are the classtag-dispatch machinery's
-  // domain (issues 029/030), and coercing them would silently
-  // change field polymorphism.
+  // unannotated lets the mix cycle back in through the frame.
+  //
+  // issue 025 (fysphun): user record fields with a PURE numeric mix
+  // (`self.x = 0` in __init__, then float values assigned -- a
+  // `int64 | float64` field) get the same treatment. Without it the
+  // field has no single C type and codegen degrades it to `_CG_void`,
+  // breaking arithmetic on it (`(double)(void*)`). coerce_annotate
+  // self-gates on a pure-numeric mix -- a field holding class
+  // instances, or numeric MIXED with a pointer/class type, has a
+  // non-numeric member and is left untouched, so this stays clear of
+  // the classtag-dispatch machinery's domain (issues 029/030); only
+  // the int-vs-float unboxed-scalar unification pyc already applies to
+  // locals is extended to fields.
   for (CreationSet *cs : fa->css) {
-    if (!cs || cs->sym != sym_closure) continue;
+    if (!cs || !cs->sym) continue;
+    bool eligible = cs->sym == sym_closure || (cs->sym->type && cs->sym->type->type_kind == Type_RECORD);
+    if (!eligible) continue;
     for (AVar *av : cs->vars) annotated += coerce_annotate(av);
   }
   // The re-run must re-derive flow from scratch: unlike the
