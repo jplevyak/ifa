@@ -1643,8 +1643,16 @@ void type_violation(ATypeViolation_kind akind, AVar *av, AType *type, AVar *send
             analysis_pass, (int)akind, av ? av->id : 0,
             send ? send->id : 0, type ? type->hash : 0u);
   }
-  ATypeViolation *v = new ATypeViolation(akind, av, send);
-  v = fa->type_world.type_violation_hash.put(v);
+  ATypeViolation *nv = new ATypeViolation(akind, av, send);
+  ATypeViolation *v = fa->type_world.type_violation_hash.put(nv);
+  // ChainHash::put returns null when `nv` is newly pushed into an
+  // ALREADY-EXISTING bucket (a hash collision between two distinct
+  // (kind, av, send) triples, no equal entry found) -- in that case
+  // `nv` itself is the canonical entry, exactly as type_cannonicalize
+  // handles the same `if (!tt) tt = t;` idiom. Without this guard the
+  // `v->type` read below segfaults on the first hash collision among
+  // type violations (found via shedskin adatron).
+  if (!v) v = nv;
   if (!v->type)
     v->type = type;
   else
