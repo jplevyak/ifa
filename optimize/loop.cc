@@ -51,6 +51,7 @@ static void collapse(LoopGraph *g, Vec<LoopNode *> &body, LoopNode *header) {
   // find_loop (issue 004).
   for (LoopNode *z : body) if (z) {
     for (LoopNode *zp : z->pred) {
+      if (!zp) continue;  // REP nodes' pred is a set-mode Vec (set_add below) -- skip null slots
       LoopNode *zpr = zp;
       while (zpr->parent) zpr = zpr->parent;
       if (zpr != header && !body.set_in(zpr)) header->pred.set_add(zpr);
@@ -80,6 +81,13 @@ static void find_loop(LoopGraph *g, LoopNode *header, Vec<LoopNode *> &worklist)
     b.add(y);
     y->processed = 1;
     for (LoopNode *z : y->pred) {
+      // `pred` is a set-mode Vec (populated via set_add in collapse),
+      // so iteration can hit unused (null) capacity slots -- guard the
+      // same way the body loops in collapse() already do. Without this,
+      // a malformed CFG left by an unresolved call (shedskin bh's
+      // `self != hg.pskip` over a `Body | None` union) reaches here with
+      // a null pred slot and segfaults in g->find(z->index).
+      if (!z) continue;
       LoopNode *zr = g->find(z);
       // If zr is already contained in a previously-discovered loop,
       // its `parent` chain leads to that loop's REP. Walk to the
@@ -130,6 +138,7 @@ void find_loops(LoopGraph *g) {
       for (LoopNode *x : *g->levels[i]) {
         Vec<LoopNode *> worklist;
         for (LoopNode *y : x->pred) {
+          if (!y) continue;  // set-mode Vec: skip null capacity slots
           if (y->dfs_ancestor(x) && y->dom_ancestor(x)) worklist.add(y);
           if (x == y) self_loop(g, x);
         }
@@ -139,6 +148,7 @@ void find_loops(LoopGraph *g) {
         if (!x->processed) {
           Vec<LoopNode *> worklist;
           for (LoopNode *y : x->pred) {
+            if (!y) continue;  // set-mode Vec: skip null capacity slots
             if (y->dfs_ancestor(x) && !y->dom_ancestor(x)) worklist.add(y);
           }
           if (worklist.n) find_loop(g, x, worklist);
@@ -160,8 +170,12 @@ void find_local_loops(FA *fa, Fun *f) {
     g->nodes.add(n->loop_node);
   }
   for (PNode *n : nodes) {
-    for (PNode *nn : n->cfg_succ) n->loop_node->succ.add(nn->loop_node);
-    for (PNode *nn : n->cfg_pred) n->loop_node->pred.add(nn->loop_node);
+    // A cfg_pred/succ PNode outside the collected set (a malformed CFG
+    // left by an unresolved call under fruntime_errors) has no
+    // loop_node; adding its null here plants a null edge that segfaults
+    // LoopGraph::find later. Guard it, mirroring find_recursive_loops.
+    for (PNode *nn : n->cfg_succ) if (nn->loop_node) n->loop_node->succ.add(nn->loop_node);
+    for (PNode *nn : n->cfg_pred) if (nn->loop_node) n->loop_node->pred.add(nn->loop_node);
     for (Dom *nn : n->dom->children) n->loop_node->dom_children.add(((PNode *)nn->node)->loop_node);
   }
   g->entry = f->entry->loop_node;
