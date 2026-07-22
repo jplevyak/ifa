@@ -983,6 +983,25 @@ static void update_display(AEdge *e, EntrySet *es) {
       assert(es->display[i] == e->from);
 }
 
+// Non-asserting form of update_display's consistency check: would
+// routing edge `e` into `es` keep `es`'s ALREADY-STAMPED display
+// entries consistent? A bare/unstamped product ES (display.n == 0)
+// has no existing entries to conflict, so the first edge always fits
+// (it stamps the display); only entries the ES already holds
+// constrain a later edge. Used by split_edges' dynamic redispatch to
+// avoid tripping update_display's assert when two edges with different
+// lexical displays would land in the same product ES (issue 034
+// family; shedskin sudoku5).
+static bool edge_display_compatible(AEdge *e, EntrySet *es) {
+  int nd = es->fun->sym->nesting_depth;
+  int lim = es->display.n < nd ? es->display.n : nd;
+  for (int i = 0; i < lim; i++) {
+    EntrySet *want = (i < e->from->display.n) ? e->from->display[i] : e->from;
+    if (es->display[i] != want) return false;
+  }
+  return true;
+}
+
 static void set_entry_set(AEdge *e, EntrySet *es = 0) {
   EntrySet *new_es = es;
   if (!es) {
@@ -4037,6 +4056,16 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
   // crash to the rets[i] flow below it.
   auto redispatch = [](AEdge *ee, EntrySet *tes) {
     if (!tes || ee->to == tes) return;
+    // Issue 034 family (sudoku5): a bare product ES's display is
+    // stamped by the FIRST edge routed into it (set_entry_set ->
+    // update_display); a later edge whose lexical display differs then
+    // trips update_display's consistency assert. Only redispatch when
+    // the edge is display-compatible with the (possibly already-
+    // stamped) target -- an unstamped ES fits any edge, so the first
+    // edge still routes and stamps it. An incompatible edge stays on
+    // its current contour (sound: no crash, no mis-stamped display; a
+    // later pass re-decides it against settled state).
+    if (!edge_display_compatible(ee, tes)) return;
     if (ee->to) ee->to->edges.del(ee);
     ee->to = 0;
     ee->filtered_args.clear();
@@ -4052,6 +4081,24 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
     // (survey B5). An empty type view (e.g. pure-nil out) leaves
     // the edge untouched, as before.
     AType *ety = earg->out->type;
+    // Issue 034 family (sudoku5): every product ES this edge would be
+    // routed or COPIED into must be display-compatible, or the
+    // set_entry_set -> update_display these paths call asserts.
+    // cs_es_map maps CS -> one product ES, which cannot separate two
+    // edges that share a CS but differ in lexical display; when even
+    // one target conflicts, leave the WHOLE edge on its current contour
+    // (sound -- a later pass re-decides it against settled state)
+    // rather than mis-stamping a shared product's display. The copies
+    // share ee->from, so the original edge's display gates them all.
+    bool all_compat = true;
+    for (int i = 0; i < ety->sorted.n; i++) {
+      EntrySet *tes = cs_es_map.get(ety->sorted[i]);
+      if (tes && tes != ee->to && !edge_display_compatible(ee, tes)) {
+        all_compat = false;
+        break;
+      }
+    }
+    if (!all_compat) continue;
     if (ety->sorted.n == 1)
       redispatch(ee, cs_es_map.get(ety->sorted.v[0]));
     else {
