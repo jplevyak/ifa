@@ -139,4 +139,16 @@ extern Prim *prim_yield;
 // in __pyc__/05_builtins.py (issue 025: timsort, pylife).
 extern Prim *prim_id;
 #define P_prim_id 60
+// Tuple comparison (issue 025, tictactoe): tuple.__lt__/__eq__ can't be
+// written as a Python element loop -- a variable index into a
+// heterogeneous fixed-arity tuple collapses to the union of all element
+// types, so `self[i] < t[i]` compares e.g. int against tuple. These
+// primitives take the FA-side out of it (transfer returns bool) and let
+// codegen emit a lexicographic, per-field comparison using each field's
+// CONCRETE type (int/float/bool/str/nested-tuple), recursing for nested
+// tuples. Option A: element types beyond those fall back / diagnose.
+extern Prim *prim_tuple_lt;
+#define P_prim_tuple_lt 61
+extern Prim *prim_tuple_eq;
+#define P_prim_tuple_eq 62
 #endif

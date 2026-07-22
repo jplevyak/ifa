@@ -2177,6 +2177,105 @@ bool emit_send_default_prim(EmitCtx &ctx, PNode *pn) {
   return true;
 }
 
+// issue 025 (tictactoe): LLVM emitters for tuple.__lt__/__eq__, the
+// backend counterpart of cg.cc's emit_tuple_{lt,eq}_expr. Builds a
+// lexicographic per-field comparison as a pure `select` tree over the
+// tuple's concrete field types, recursing for nested tuples. Option A:
+// int/float/bool/str/nested-tuple fields; returns null otherwise so the
+// caller diagnoses.
+static bool llvm_is_tuple_record(Sym *s) {
+  return s && s->type_kind == Type_RECORD && !cg_has_classtag(s);
+}
+static bool llvm_elem_is_str(Sym *ft) { return ft == sym_string || sym_string->specializers.set_in(ft); }
+static llvm::Value *emit_tuple_lt_llvm(EmitCtx &ctx, llvm::Value *a, llvm::Value *b, Sym *ts, Sym *tt);
+static llvm::Value *emit_tuple_eq_llvm(EmitCtx &ctx, llvm::Value *a, llvm::Value *b, Sym *ts, Sym *tt);
+
+static llvm::Value *tuple_field_llvm(llvm::Value *obj, Sym *tt, int i) {
+  llvm::StructType *st = sym_to_llvm_struct(tt);
+  if (!st) return nullptr;
+  int slot = llvm_fld(tt, i);
+  if (slot < 0 || slot >= (int)st->getNumElements()) return nullptr;
+  llvm::Value *gep = Builder->CreateStructGEP(st, obj, slot);
+  return Builder->CreateLoad(st->getElementType(slot), gep);
+}
+static llvm::Value *llvm_str_cmp(cchar *fn_name, llvm::Value *x, llvm::Value *y) {
+  llvm::Type *ptr = llvm::PointerType::getUnqual(*TheContext);
+  llvm::Type *i8 = llvm::Type::getInt8Ty(*TheContext);
+  llvm::FunctionCallee fn = TheModule->getOrInsertFunction(fn_name, llvm::FunctionType::get(i8, {ptr, ptr}, false));
+  return Builder->CreateICmpNE(Builder->CreateCall(fn, {x, y}), llvm::ConstantInt::get(i8, 0));
+}
+// "is x < y" (i1); fx/fy are the operands' field types. Null if the pair
+// isn't option-A-supported (mismatched kinds are a Python TypeError).
+// Bring a numeric (x,fx)/(y,fy) pair to a common LLVM type: double if
+// either side is float, else i64 (covers bool-vs-int width mismatches).
+// Returns true if the pair is float (use FCmp), false if integer (ICmp).
+static bool llvm_num_unify(llvm::Value *&x, Sym *fx, llvm::Value *&y, Sym *fy) {
+  bool ff = fx->num_kind == IF1_NUM_KIND_FLOAT, gf = fy->num_kind == IF1_NUM_KIND_FLOAT;
+  if (ff || gf) {
+    llvm::Type *d = llvm::Type::getDoubleTy(*TheContext);
+    if (!ff) x = Builder->CreateSIToFP(x, d);
+    if (!gf) y = Builder->CreateSIToFP(y, d);
+    return true;
+  }
+  llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+  x = Builder->CreateSExtOrTrunc(x, i64);
+  y = Builder->CreateSExtOrTrunc(y, i64);
+  return false;
+}
+static llvm::Value *emit_elem_lt_llvm(EmitCtx &ctx, llvm::Value *x, llvm::Value *y, Sym *fx, Sym *fy) {
+  if (!fx || !fy || !x || !y) return nullptr;
+  if (fx->num_kind && fy->num_kind)
+    return llvm_num_unify(x, fx, y, fy) ? Builder->CreateFCmpOLT(x, y) : Builder->CreateICmpSLT(x, y);
+  if (llvm_elem_is_str(fx) && llvm_elem_is_str(fy)) return llvm_str_cmp("_CG_str_lt", x, y);
+  if (llvm_is_tuple_record(fx) && llvm_is_tuple_record(fy)) return emit_tuple_lt_llvm(ctx, x, y, fx, fy);
+  return nullptr;
+}
+// "is x == y" (i1); cross-kind supported operands are never equal (false).
+static llvm::Value *emit_elem_eq_llvm(EmitCtx &ctx, llvm::Value *x, llvm::Value *y, Sym *fx, Sym *fy) {
+  if (!fx || !fy || !x || !y) return nullptr;
+  if (fx->num_kind && fy->num_kind)
+    return llvm_num_unify(x, fx, y, fy) ? Builder->CreateFCmpOEQ(x, y) : Builder->CreateICmpEQ(x, y);
+  if (llvm_elem_is_str(fx) && llvm_elem_is_str(fy)) return llvm_str_cmp("_CG_str_eq", x, y);
+  if (llvm_is_tuple_record(fx) && llvm_is_tuple_record(fy)) return emit_tuple_eq_llvm(ctx, x, y, fx, fy);
+  bool sx = fx->num_kind || llvm_elem_is_str(fx) || llvm_is_tuple_record(fx);
+  bool sy = fy->num_kind || llvm_elem_is_str(fy) || llvm_is_tuple_record(fy);
+  if (sx && sy) return llvm::ConstantInt::getFalse(*TheContext);  // different kinds -> unequal
+  return nullptr;
+}
+static llvm::Value *emit_tuple_lt_llvm(EmitCtx &ctx, llvm::Value *a, llvm::Value *b, Sym *ts, Sym *tt) {
+  // Build backward over the common prefix: acc = "equal so far"; then for
+  // each field acc = select(lt_i, true, select(gt_i, false, acc)). The
+  // base case (all prefix fields equal) is "shorter tuple is less".
+  int n = ts->has.n < tt->has.n ? ts->has.n : tt->has.n;
+  llvm::Value *acc = ts->has.n < tt->has.n ? llvm::ConstantInt::getTrue(*TheContext)
+                                           : llvm::ConstantInt::getFalse(*TheContext);
+  for (int i = n - 1; i >= 0; i--) {
+    Sym *fa = ts->has[i] ? ts->has[i]->type : nullptr;
+    Sym *fb = tt->has[i] ? tt->has[i]->type : nullptr;
+    llvm::Value *af = tuple_field_llvm(a, ts, i), *bf = tuple_field_llvm(b, tt, i);
+    if (!af || !bf) return nullptr;
+    llvm::Value *lt = emit_elem_lt_llvm(ctx, af, bf, fa, fb), *gt = emit_elem_lt_llvm(ctx, bf, af, fb, fa);
+    if (!lt || !gt) return nullptr;
+    llvm::Value *inner = Builder->CreateSelect(gt, llvm::ConstantInt::getFalse(*TheContext), acc);
+    acc = Builder->CreateSelect(lt, llvm::ConstantInt::getTrue(*TheContext), inner);
+  }
+  return acc;
+}
+static llvm::Value *emit_tuple_eq_llvm(EmitCtx &ctx, llvm::Value *a, llvm::Value *b, Sym *ts, Sym *tt) {
+  if (ts->has.n != tt->has.n) return llvm::ConstantInt::getFalse(*TheContext);  // arity differs -> unequal
+  llvm::Value *acc = llvm::ConstantInt::getTrue(*TheContext);
+  for (int i = 0; i < ts->has.n; i++) {
+    Sym *fa = ts->has[i] ? ts->has[i]->type : nullptr;
+    Sym *fb = tt->has[i] ? tt->has[i]->type : nullptr;
+    llvm::Value *af = tuple_field_llvm(a, ts, i), *bf = tuple_field_llvm(b, tt, i);
+    if (!af || !bf) return nullptr;
+    llvm::Value *eq = emit_elem_eq_llvm(ctx, af, bf, fa, fb);
+    if (!eq) return nullptr;
+    acc = Builder->CreateAnd(acc, eq);
+  }
+  return acc;
+}
+
 class LLVMEmitter : public VirtualCGEmitter {
   EmitCtx &ctx;
  public:
@@ -2202,6 +2301,28 @@ class LLVMEmitter : public VirtualCGEmitter {
   
   bool emit_send_any_prim(PNode *pn) override {
     if (!pn || !pn->prim) return false;
+    if (pn->prim->index == P_prim_tuple_lt || pn->prim->index == P_prim_tuple_eq) {
+      // tuple.__lt__/__eq__ (issue 025): lexicographic per-field compare
+      // as a select tree over the operands' concrete field types. rvals
+      // are [prim_sym, symbol_lit, self, other]; result is bool (i8).
+      if (pn->lvals.n < 1 || pn->rvals.n < 4) return false;
+      Var *dst_var = pn->lvals.v[0];
+      Sym *ts = pn->rvals.v[2]->type, *tt = pn->rvals.v[3]->type;
+      llvm::Value *a = value_for_var(ctx, pn->rvals.v[2]);
+      llvm::Value *b = value_for_var(ctx, pn->rvals.v[3]);
+      if (!dst_var || !a || !b || !llvm_is_tuple_record(ts) || !llvm_is_tuple_record(tt))
+        codegen_fail(pn, "tuple comparison operand is not a single tuple type (issue 025 option A)");
+      llvm::Value *r = pn->prim->index == P_prim_tuple_lt ? emit_tuple_lt_llvm(ctx, a, b, ts, tt)
+                                                          : emit_tuple_eq_llvm(ctx, a, b, ts, tt);
+      if (!r)
+        codegen_fail(pn, "tuple comparison element type not supported (issue 025 option A: "
+                         "int/float/bool/str/nested-tuple only)");
+      llvm::Type *dst_ty = sym_to_llvm_type(dst_var->type);
+      if (dst_ty && dst_ty->isIntegerTy())
+        r = Builder->CreateZExtOrTrunc(r, dst_ty);
+      put_result(ctx, dst_var, r);
+      return true;
+    }
     if (pn->prim->index == P_prim_id) {
       // id(x): address (pointers) or value bits (ints) as i64 --
       // mirrors write_c_prim's `(_CG_int64)(uintptr_t)x` (cg.cc).
