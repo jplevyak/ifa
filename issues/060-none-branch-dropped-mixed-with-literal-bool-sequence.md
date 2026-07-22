@@ -11,12 +11,13 @@ contour instead of merging it with the scalar and coercing it to
 `(scalar)NULL`. `is None`/isinstance then folds statically per contour.
 Verified: general (non-`match`) repro, all four `match` combinations,
 `Optional[pointer]` still single-clone (frontend-sanctioned merge
-preserved), full suite 219/219 both backends, `ifa --test` 58/0,
+preserved), full suite 220/220 both backends, `ifa --test` 58/0,
 `test_llvm`, shedskin sweep (no regressions; `chess` advances
-`FAIL`→compiles). Regression test: `tests/none_scalar_split.py`.
-The `issues/023` compile-time guard is now safe to relax (all
-combinations verified working) but has NOT been relaxed in this change
-— a separate frontend follow-on; see "What this unblocks".
+`FAIL`→compiles). Regression tests: `tests/none_scalar_split.py` (the
+general fix) and `tests/match_none.py` (all four `match` combinations).
+With both mechanisms fixed, `issues/023`'s compile-time guard and its
+two helper functions have been **removed** — `case None:` now composes
+with every pattern kind.
 **Affects:** `python_ifa_build_if1.cc`'s `build_isinstance_call`
 (mechanism 1) and `ifa/analysis/fa.cc`'s `type_cannonicalize`
 (mechanism 2).
@@ -388,12 +389,12 @@ load-bearing for this bug.)
 Both mechanisms are now fixed, so
 `../../issues/023-structural-pattern-matching.md`'s compile-time guard
 (`pattern_contains_none` / `pattern_is_risky_with_none` in
-`build_match_pyda`) is **safe to relax** for all four blocked
-combinations (literal, `True`/`False`, sequence, and captures) — every
-one was verified to match CPython with the guard removed. Relaxing it
-is a small, separate frontend change (delete the guard, convert the
-old `match_none.py` expected-limitation test into a passing
-combination test) that has **not** been made in this change. The
+`build_match_pyda`) and its two helper functions have been **removed** —
+`case None:` now composes with every pattern kind, closing issue 023's
+last limitation. `tests/match_none.py` was rewritten from an
+expected-limitation test into a passing combination test covering
+`None` + literal, `None` + `True`/`False`, `None` + sequence + capture,
+and `None` + bare capture, matching CPython on both backends. The
 general `None`-plus-scalar soundness fix also matters well beyond
 `match`/`case`: it corrects any `Optional[int|bool|float]` value
 flowing to a shared function that tests `is None`/`isinstance`.
