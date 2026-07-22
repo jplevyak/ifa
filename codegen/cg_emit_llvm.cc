@@ -1211,6 +1211,35 @@ static bool emit_send_coerce(EmitCtx &ctx, PNode *pn) {
   llvm::Value *src = value_for_var(ctx, src_var);
   if (!dst_ty || !src) return false;
 
+  // String source -> numeric target: `float("...")` / `int("...")`.
+  // A raw ptr->fp/int conversion is meaningless (and fails LLVM
+  // verification); route through the runtime parser, mirroring the C
+  // backend's emit_send_coerce (issue 025, path_tracing's
+  // `float("inf")`).
+  {
+    Sym *sst = src_var->type;
+    bool src_is_string = sst && (sst == sym_string || sym_string->specializers.set_in(sst));
+    if (src_is_string && tgt_sym->num_kind) {
+      llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
+      bool to_float = tgt_sym->num_kind == IF1_NUM_KIND_FLOAT;
+      llvm::Type *ret_ty = to_float ? (llvm::Type *)llvm::Type::getDoubleTy(*TheContext)
+                                     : (llvm::Type *)llvm::Type::getInt64Ty(*TheContext);
+      llvm::FunctionCallee fn = TheModule->getOrInsertFunction(
+          to_float ? "_CG_str_to_float64" : "_CG_str_to_int64",
+          llvm::FunctionType::get(ret_ty, {ptr_ty}, false));
+      llvm::Value *res = Builder->CreateCall(fn, {src});
+      // Narrow/convert to the exact destination numeric type.
+      if (res->getType() != dst_ty) {
+        if (to_float)
+          res = dst_ty->isFloatingPointTy() ? Builder->CreateFPCast(res, dst_ty) : Builder->CreateFPToSI(res, dst_ty);
+        else
+          res = dst_ty->isIntegerTy() ? Builder->CreateSExtOrTrunc(res, dst_ty) : Builder->CreateSIToFP(res, dst_ty);
+      }
+      put_result(ctx, dst_var, res);
+      return true;
+    }
+  }
+
   llvm::Type *src_ty = src->getType();
   llvm::Value *res = src;
   if (src_ty != dst_ty) {

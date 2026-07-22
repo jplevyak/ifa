@@ -1119,6 +1119,32 @@ class CBackendEmitter : public VirtualCGEmitter {
     }
     return false;
   }
+  // P_prim_coerce with a STRING source: `float("...")` / `int("...")`.
+  // The synthesized __coerce__ method (build_syms) emits one coerce
+  // primitive for every argument type; the default emission is a raw
+  // `(target_type)value` cast, which is a valid numeric conversion but
+  // an illegal `(double)(char*)` cast when the argument is a string
+  // (issue 025, shedskin path_tracing's `float("inf")`). Route a string
+  // source through the runtime parser instead; every non-string source
+  // returns false and keeps the default cast.
+  bool emit_send_coerce(PNode *pn) override {
+    if (!pn->prim || pn->prim->index != P_prim_coerce) return false;
+    if (pn->rvals.n < 2 || !pn->lvals.n || !cg_get_string(pn->lvals[0])) return false;
+    Var *src = pn->rvals[pn->rvals.n - 1], *tgt = pn->rvals[pn->rvals.n - 2];
+    Sym *st = src->type;
+    bool src_is_string = st && (st == sym_string || sym_string->specializers.set_in(st));
+    if (!src_is_string) return false;
+    Sym *tt = tgt->sym;
+    if (tt && tt->is_meta_type) tt = tt->meta_type;
+    tt = unalias_type(tt);
+    if (!tt || !tt->num_kind) return false;  // string -> non-numeric: leave to default
+    cchar *src_s = cg_get_string(src);
+    if (!src_s) src_s = cg_get_string(src->sym);
+    cchar *conv = (tt->num_kind == IF1_NUM_KIND_FLOAT) ? "_CG_str_to_float64" : "_CG_str_to_int64";
+    fprintf(fp, "  %s = (%s)%s(%s);\n", cg_get_string(pn->lvals[0]), c_type(pn->lvals[0]), conv,
+            src_s ? src_s : "NULL");
+    return true;
+  }
   bool emit_send_default_prim(PNode *pn) override {
     fputs("  ", fp);
     if (pn->lvals.n && cg_get_string(pn->lvals[0])) {
