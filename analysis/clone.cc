@@ -182,6 +182,17 @@ static int prim_period_offset(PNode *p, EntrySet *es) {
     if (!symbol) symbol = sel->sym->imm.v_string;
     assert(symbol);
     for (CreationSet *cs : *obj->out) if (cs) {
+      // Skip nil_type: in an `Optional[T]` (`T | None`) union receiver,
+      // None carries no real fields -- a phantom field-ivar can be
+      // attributed to its CreationSet (offset 0) through the union, and
+      // it does not match T's real field offset, spuriously tripping
+      // the "missmatched offsets" check below. Codegen already resolves
+      // a union receiver the same way (cg.cc's resolve_union_receiver
+      // skips sym_nil_type and casts to the non-None member's layout),
+      // so aligning the FA-side offset check keeps them consistent. At
+      // runtime `None.field` would fault, but that is the caller's
+      // Optional-without-narrowing bug, not a codegen layout question.
+      if (cs->sym->type == sym_nil_type) continue;
       AVar *iv = cs->var_map.get(symbol);
       if (iv) {
         if (offset >= 0 && offset != iv->ivar_offset) fail("missmatched offsets");
