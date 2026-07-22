@@ -1,6 +1,6 @@
 # 044 — Mixed-length list literals in one container: len over the union miscompiles (silent wrong output)
 
-**Status:** FIXED 2026-07-17 (root cause found from a different
+**Status: CLOSED** — FIXED 2026-07-17 (`e9b6d136`) (root cause found from a different
 direction -- issues/029's deepcopy loops NULL-deref'd the phantom):
 `cg.cc`'s P_prim_make listish-tuple emission passed
 `rvals.n - 2` as the `_CG_prim_tuple_list` count while storing

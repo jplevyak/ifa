@@ -2,7 +2,7 @@
 # null `meta_type` (rdb.py and msp_ss.py, newly reachable via
 # issues/025's os/fnmatch/io shims)
 
-**Status:** RESOLVED 2026-07-14. Root-caused (not the pass-ordering
+**Status: CLOSED** — RESOLVED 2026-07-14. Root-caused (not the pass-ordering
 theory below — see resolution) and fixed; rdb, msp_ss, amaze,
 tictactoe, and voronoi2 all cleared the segfault together.
 

@@ -1,7 +1,7 @@
 # 055 — Adding `set.__sub__` triggers FA non-convergence / compiler crash on plcfrs.py
 
 **Status:** open, found 2026-07-19 while attempting a followup to
-[053](053-tuple-unpack-target-heterogeneous-arity-segfault.md):
+[053](closed/053-tuple-unpack-target-heterogeneous-arity-segfault.md):
 `plcfrs.py` (line 300-301) calls `set(...) - set([...])`, and
 `__pyc__/08_set.py`'s `class set` had no `__sub__`/difference operator
 at all (a plain missing-feature gap, unrelated to 053's tuple-arity
@@ -14,7 +14,7 @@ __pyc__/08_set.py`); NOT shipped. `set.__sub__` is still missing.
 `analyze_to_convergence`), specifically whatever drives the
 edge/send/EntrySet worklists — root cause not yet isolated past the
 bisection below.
-**Related:** [053](053-tuple-unpack-target-heterogeneous-arity-segfault.md)
+**Related:** [053](closed/053-tuple-unpack-target-heterogeneous-arity-segfault.md)
 (this was found while following up on that issue — `plcfrs.py` is the
 same corpus program; 053's fix itself is unaffected and was verified
 clean once `__pyc__/08_set.py` was reverted). See also

@@ -9,13 +9,13 @@ found to be the same underlying class of issue as 040/043, not a new
 one with its own fix.
 **Affects:** whatever produces issue 040's fix (`ifa/analysis/fa.cc`'s
 `clone_methods_per_cs`/per-constant-CS/`PER_CS_RECEIVER` machinery,
-per [045](045-receiver-cs-method-cloning.md)) — this issue is a
+per [045](closed/045-receiver-cs-method-cloning.md)) — this issue is a
 *regression finder* for that machinery's actual scope, not a new
 subsystem.
-**Related:** [040](040-empty-list-shared-clone-type-inference.md)
+**Related:** [040](closed/040-empty-list-shared-clone-type-inference.md)
 (marked FIXED — this issue shows that fix's own verification repro
 reopens with an unrelated, trivial change to the method it's about);
-[043](043-empty-container-inference-options.md) (same family, "every
+[043](closed/043-empty-container-inference-options.md) (same family, "every
 candidate repro checked... works today" — this is a candidate that
 doesn't).
 

@@ -5,7 +5,7 @@
 EntrySet/AVar specialization machinery.
 **Related:** [024-is-comparison-narrowing.md](closed/024-is-comparison-narrowing.md)
 (specific to `is`/`is not`) — this issue is the broader
-underlying problem. [059](059-narrowing-peel-wrapper-boolean-collapse-gap.md)
+underlying problem. [059](closed/059-narrowing-peel-wrapper-boolean-collapse-gap.md)
 (2026-07-22) found and root-caused a specific gap in this issue's own
 `peel_wrapper_def` walk-back: it doesn't peel through a value
 phi-merged from two if1_if branches (the shape pyc's frontend

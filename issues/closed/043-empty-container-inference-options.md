@@ -1,6 +1,6 @@
 # 043 — Empty-container inference: current behavior and fix options
 
-**Status:** RESOLVED-AS-INVALID for the container-element premise,
+**Status: CLOSED** — RESOLVED-AS-INVALID for the container-element premise (`f9624574`),
 2026-07-15: option 4 was prototyped end-to-end (CreationSet
 element-seed annotation + post-convergence confluence scan + re-run,
 mirroring the num_coerce architecture) and **disproved its own

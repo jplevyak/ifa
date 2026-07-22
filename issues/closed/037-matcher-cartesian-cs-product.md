@@ -77,7 +77,7 @@ per-CS there).
   `raise Exception` failure, tracked as pyc issues/028).
 - pygasus: pass 1 66s -> reaches pass 13 in 180s; still times out —
   the residue is genuine FA divergence on a 1700-line program plus
-  [034](../034-pygasus-update-display-assert.md), not match cost.
+  [034](034-pygasus-update-display-assert.md), not match cost.
 - Suites: pyc C 177/0 and pyc LLVM 177/0 under the harness
   determinism gate (byte-identical recompiles), ifa-test all
   phases green.

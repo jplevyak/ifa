@@ -1,6 +1,6 @@
 # 040 — An empty list's never-taken loop body gets forced into type-checking (and fails) only when another list also exists in the program
 
-**Status:** FIXED 2026-07-15 by
+**Status: CLOSED** — FIXED 2026-07-15 (`65e1628f`) by
 [045-receiver-cs-method-cloning.md](045-receiver-cs-method-cloning.md)
 (hard per-constant contours for clone_methods_per_cs classes +
 per-constant instance CSs + the PER_CS_RECEIVER precision split
@@ -13,7 +13,7 @@ looks — adding so much as a no-op comparison (`if key < 0: pass`) to
 `list.__getitem__` reopens the *exact* failure on this issue's own
 `tests/empty_list_print.py` repro, with no other change to the
 program. See
-[052](052-shared-method-branch-reopens-empty-list-fragility.md).
+[052](../052-shared-method-branch-reopens-empty-list-fragility.md).
 
 ## Complete mechanism (2026-07-15)
 
@@ -72,7 +72,7 @@ EntrySet, not one merged with the non-empty list's. See "Root cause
 analysis (`ifa/analysis/fa.cc`, `collect_var_type_violations` and
 whatever schedules `PNode`s for analysis — not further traced).
 **Related:** checked against and ruled out as the same bug:
-[018-dict-mixed-key-types-boxing-failure.md](../../issues/018-dict-mixed-key-types-boxing-failure.md)
+[018-dict-mixed-key-types-boxing-failure.md](../../../issues/018-dict-mixed-key-types-boxing-failure.md)
 (pyc-frontend issue 018 — a genuinely different `ATypeViolation_kind`,
 `BOXING` not `NOTYPE`: that's two concrete, incompatible types
 unifying into one shared `dict`/`set` method body; this is one
@@ -84,11 +84,11 @@ retired-codegen-backend bug, `cg_normalize_v2.cc`/
 overlap in which runtime method it happened to exercise,
 `list.__str__`'s `self[k].__repr__()`, nothing else in common).
 Plausibly the SAME underlying class of problem as
-[025-intra-function-union-narrowing.md](025-intra-function-union-narrowing.md)
+[025-intra-function-union-narrowing.md](../025-intra-function-union-narrowing.md)
 (FA's specialization/narrowing being imprecise for cases outside its
 one well-handled shape, clone-per-call-boundary-type) and
-[033-splitter-non-idempotent-divergence.md](033-splitter-non-idempotent-divergence.md)
-/ [032-fa-survey-findings.md](032-fa-survey-findings.md) (the
+[033-splitter-non-idempotent-divergence.md](../033-splitter-non-idempotent-divergence.md)
+/ [032-fa-survey-findings.md](../032-fa-survey-findings.md) (the
 broader "FA's iterative splitting/cloning has precision gaps"
 family) — not confirmed to share a root cause with either, but the
 shape (a per-receiver CFG path that's reachable for one clone

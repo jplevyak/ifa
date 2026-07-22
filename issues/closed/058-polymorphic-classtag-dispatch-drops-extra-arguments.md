@@ -1,9 +1,9 @@
 # 058 — Polymorphic classtag method dispatch silently dropped every argument beyond `self`
 
-**Status:** FIXED 2026-07-19. Found while digging into the shedskin
+**Status: CLOSED** — FIXED 2026-07-19 (`ff269590`). Found while digging into the shedskin
 corpus's raw-crash bucket (5 examples with no runtime-error assertion
 at all: `block`, `kanoodle`, `mastermind2`, `neural1`, `rsync` — see
-[../../issues/025-shedskin-examples-coverage.md](../../issues/025-shedskin-examples-coverage.md)'s
+[../../issues/025-shedskin-examples-coverage.md](../../../issues/025-shedskin-examples-coverage.md)'s
 2026-07-19 triage entry for the other four's independent, unrelated
 root causes). `kanoodle.py` was the one with a genuine, previously-
 unknown pyc codegen bug.

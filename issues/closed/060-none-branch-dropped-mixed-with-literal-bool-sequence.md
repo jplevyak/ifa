@@ -1,6 +1,7 @@
 # 060 — `case None:` silently disappears from codegen when combined with a literal/True-False/sequence pattern
 
-**Status:** BOTH mechanisms fixed 2026-07-21.
+**Status: CLOSED** — BOTH mechanisms fixed 2026-07-21 (`39f67ff8`
+mechanism 1, `00dddce0` mechanism 2, `9806301d` guard removal).
 **Mechanism 1** (`python_ifa_build_if1.cc`'s `build_isinstance_call`):
 switched to the raw `sym_primitive` isinstance send instead of the
 shared wrapper. **Mechanism 2** (the deeper, general one):
@@ -23,9 +24,9 @@ with every pattern kind.
 (mechanism 2).
 **Related:** [059](059-narrowing-peel-wrapper-boolean-collapse-gap.md)
 (found while testing that fix, but unrelated — reproduces identically
-with `IFA_NARROW=0`); [030](030-polymorphic-dispatch-fat-pointers.md)
+with `IFA_NARROW=0`); [030](../030-polymorphic-dispatch-fat-pointers.md)
 (raw-layout / classtag-less types, directly implicated in mechanism
-2); [closed/011](closed/011-setter-codegen-vs-analyzer-mismatch.md)
+2); [closed/011](011-setter-codegen-vs-analyzer-mismatch.md)
 docs the *first* occurrence of mechanism 1, for except-clauses, and
 its existing fix; `../../issues/023-structural-pattern-matching.md`
 (the `case None:`-combination limitation both this and 059 bear on).
@@ -53,7 +54,7 @@ answer.
 
 ## Root cause 1 (FIXED): `build_isinstance_call` shared one polymorphic
 `isinstance()` clone across every pattern kind in the match — the
-exact bug class [closed/011](closed/011-setter-codegen-vs-analyzer-mismatch.md)
+exact bug class [closed/011](011-setter-codegen-vs-analyzer-mismatch.md)
 already found and fixed for `except` clauses, never ported to
 `match`/`case`
 
@@ -146,7 +147,7 @@ contains both), the runtime check is emitted as a disjunction over
 the checked class's classtag-bearing implementors
 (`*(_CG_TypeObject**)opnd == &_CG_type_X`). `int` (like `bool`,
 `float`, and any other raw-layout type per
-[030](030-polymorphic-dispatch-fat-pointers.md)'s tagging exclusion)
+[030](../030-polymorphic-dispatch-fat-pointers.md)'s tagging exclusion)
 has **no classtag**, so the implementors list is empty and codegen
 hard-codes the check to `= 0` — always false, regardless of the
 operand's real runtime type. Confirmed this does *not* happen for two
@@ -335,7 +336,7 @@ Per-scalar-kind feasibility:
   in an `Optional[int]` slot would misbehave. Same *class* of
   deliberate CPython-divergence pyc already accepts elsewhere (the
   numeric-confluence 0-vs-0.0 compromise noted in
-  [025](025-intra-function-union-narrowing.md)), but this one is
+  [025](../025-intra-function-union-narrowing.md)), but this one is
   user-visible in a more direct way and should be a conscious,
   signed-off decision, not silently shipped.
 - **`float64`**: NaN-boxing — reserve one specific NaN bit pattern as

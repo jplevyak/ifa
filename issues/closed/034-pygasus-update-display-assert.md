@@ -1,6 +1,6 @@
 # Issue 034: update_display assert on pygasus (unmasked by the stall guard)
 
-**Status:** RESOLVED 2026-07-14, by the `split_edges` fix from the
+**Status: CLOSED** — RESOLVED 2026-07-14 (`25227f3b`), by the `split_edges` fix from the
 "signal 117" family investigation (pyc issue 025): the dispatch
 splitter re-pointed edges at bare `find_or_make_filtered_entry_set`
 products with a plain `->to` assignment, skipping `set_entry_set` —
@@ -23,7 +23,7 @@ Original filing follows.
 the splitting loop and timed out before ever reaching this state.
 **Affects:** `ifa/analysis/fa.cc:update_display()` (assert at
 fa.cc:909, `es->display[i] == e->fun` invariant).
-**Related:** [033-splitter-non-idempotent-divergence.md](033-splitter-non-idempotent-divergence.md)
+**Related:** [033-splitter-non-idempotent-divergence.md](../033-splitter-non-idempotent-divergence.md)
 (the guard that exposed it); possibly the emptied-split-ES crash
 family (pyc issue 025: pystone, tictactoe, sudoku2's unique_AVar
 assert) — all are "stale contour structure after aggressive

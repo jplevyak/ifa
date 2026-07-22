@@ -1,17 +1,17 @@
 # 059 — issue 025's per-branch narrowing never engaged for match/case's generated code
 
-**Status:** FIXED 2026-07-22 in `ifa/analysis/fa.cc` (`peel_wrapper_def`
-extended, plus a new `peel_guarded_bool_merge`/`find_gating_if` pair).
-Verified sound and regression-free (full suite 219/219 both backends,
-`ifa`'s own unit tests 58/0, `make test_llvm` clean, shedskin corpus
-sweep byte-identical before/after except one already-documented flaky
-example — see "Verification" below). **Not yet user-visible**:
-`issues/023`'s compile-time guard (`pattern_contains_none`/
-`pattern_is_risky_with_none`) still unconditionally rejects every
-`case None:` combination it did before — relaxing it is a deliberately
-separate follow-up, gated on [060](060-none-branch-dropped-mixed-with-literal-bool-sequence.md)
-(a different, more severe bug found while verifying this fix — see
-"What's still blocked" below).
+**Status: CLOSED** — FIXED 2026-07-22 (`dd6e3928`) in
+`ifa/analysis/fa.cc` (`peel_wrapper_def` extended, plus a new
+`peel_guarded_bool_merge`/`find_gating_if` pair). Verified sound and
+regression-free (full suite 219/219 both backends, `ifa`'s own unit
+tests 58/0, `make test_llvm` clean, shedskin corpus sweep
+byte-identical before/after except one already-documented flaky
+example — see "Verification" below). **Now user-visible**: the
+downstream blocker ([060](060-none-branch-dropped-mixed-with-literal-bool-sequence.md),
+the more severe `None`-plus-scalar bug found while verifying this fix)
+was fixed 2026-07-21, and `issues/023`'s compile-time guard has since
+been removed — every `case None:` combination this fix helped enable
+now compiles and matches CPython (`tests/match_none.py`).
 **Affects:** `ifa/analysis/fa.cc` (`peel_wrapper_def`, new
 `peel_guarded_bool_merge`/`find_gating_if` helpers, the `Code_IF` case
 in `add_pnode_constraints`) — the issue 025 narrowing-predicate
@@ -19,14 +19,14 @@ recognizer. The motivating symptom lives in pyc's frontend
 (`python_ifa_build_if1.cc`'s `build_match_pyda`/`build_pattern_match`/
 `guarded_bool`), but the fix belongs here, in the shared IFA narrowing
 infrastructure — no frontend changes were needed.
-**Related:** [../../issues/023-structural-pattern-matching.md](../../issues/023-structural-pattern-matching.md)
+**Related:** [../../issues/023-structural-pattern-matching.md](../../../issues/closed/023-structural-pattern-matching.md)
 (the `case None:`-combination crash this fixes, partially — see
-"What's still blocked"); [025](025-intra-function-union-narrowing.md)
+"What's still blocked"); [025](../025-intra-function-union-narrowing.md)
 (the per-branch narrowing feature this extends — read that file first,
 especially "Investigation notes" and "Refinement", which this builds
 on directly); [060](060-none-branch-dropped-mixed-with-literal-bool-sequence.md)
 (a separate, more severe bug found while verifying this fix); (closed)
-[../../issues/closed/026-polymorphic-method-dispatch-partial-override-crash.md](../../issues/closed/026-polymorphic-method-dispatch-partial-override-crash.md)
+[../../issues/closed/026-polymorphic-method-dispatch-partial-override-crash.md](../../../issues/closed/026-polymorphic-method-dispatch-partial-override-crash.md)
 (ruled out as the same bug — identical assertion text, different
 mechanism).
 

@@ -7,7 +7,7 @@ fix in
 report — the fix landed is known to be broader than necessary; this
 tracks narrowing or removing that breadth once there's a real reason
 to (performance complaint, or someone picking up
-[053](053-tuple-unpack-target-heterogeneous-arity-segfault.md) and
+[053](closed/053-tuple-unpack-target-heterogeneous-arity-segfault.md) and
 wanting a cleaner base to build on).
 **Affects:** `ifa/codegen/cg.cc`'s `P_prim_make` (the `_CG_prim_tuple`
 → `_CG_prim_tuple_list` change) and
@@ -80,6 +80,6 @@ real surface area, for a benefit that's currently only theoretical.
 
 Nothing currently blocked on this. Revisit if: (a) a tuple-heavy hot
 path shows measurable regression from the extra header, or (b)
-someone working on [053](053-tuple-unpack-target-heterogeneous-arity-segfault.md)
+someone working on [053](closed/053-tuple-unpack-target-heterogeneous-arity-segfault.md)
 finds it easier to reason about the header-vs-headerless distinction
 being precise rather than universal.

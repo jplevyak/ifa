@@ -1,6 +1,6 @@
 # 045 — Receiver-CS-directed method cloning as a precision move
 
-**Status:** LANDED 2026-07-15. Issue 040's repro compiles clean and
+**Status: CLOSED** — LANDED 2026-07-15 (`65e1628f`). Issue 040's repro compiles clean and
 runs correctly; tests `tests/empty_list_print.py` and
 `tests/range_branch_union.py` (both backends); suites 196/0 e2e +
 17/0 ifa-test; fysphun (the many-pass 033 canary) unchanged; full
@@ -44,7 +44,7 @@ Preds with `semi < 0` are now skipped: no semidominator path can run
 through a root-unreachable vertex (same universe-mismatch family as
 build_cfg_dominators' edge pruning).
 **Related:** [040](040-empty-list-shared-clone-type-inference.md)
-(the trace that motivates this), [033](033-splitter-non-idempotent-divergence.md)
+(the trace that motivates this), [033](../033-splitter-non-idempotent-divergence.md)
 (the splitter stability rules this must respect),
 [043](043-empty-container-inference-options.md) (option survey).
 

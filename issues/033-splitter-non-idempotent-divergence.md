@@ -85,7 +85,7 @@ stage 4), closed
 [009-fa-violations-nondeterminism.md](closed/009-fa-violations-nondeterminism.md)
 and [021-v2-call-arg-swap.md](closed/021-v2-call-arg-swap.md) (the
 "iteration-order dependence" family this belongs to),
-[034-pygasus-update-display-assert.md](034-pygasus-update-display-assert.md)
+[034-pygasus-update-display-assert.md](closed/034-pygasus-update-display-assert.md)
 (crash unmasked by the mitigation),
 [037-matcher-cartesian-cs-product.md](closed/037-matcher-cartesian-cs-product.md)
 (S4-C's sibling on the match side, landed — see S3(a)).

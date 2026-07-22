@@ -82,9 +82,6 @@ that:
   M0-M6); original per-pass-ledger design archived at
   [closed/033-ledger-design-detail.md](closed/033-ledger-design-detail.md)
   (not a closed issue — 033 remains open).
-- [034-pygasus-update-display-assert.md](034-pygasus-update-display-assert.md) —
-  `update_display` assert on pygasus, undiagnosed; unmasked
-  (not introduced) by the 033 stall guard.
 - [035-nondeterministic-codegen-clone-order.md](035-nondeterministic-codegen-clone-order.md) —
   heap-layout-dependent compiles (different `.c` per run, some
   layouts miscompiling): **FIXED 2026-07-10** — twelve defects
@@ -109,75 +106,6 @@ that:
   rename fallback, giving pyc a real compile-time analogue of
   CPython's `UnboundLocalError`. Found verifying issue 023's capture-
   pattern fix; not specific to `match`/`case`.
-- [040-empty-list-shared-clone-type-inference.md](040-empty-list-shared-clone-type-inference.md) —
-  an empty list literal (`[]`) fails to type-check ("expression has
-  no type") ONLY when a non-empty list of some other concrete
-  element type also exists in the program; either alone compiles
-  fine. The original "shared clone" hypothesis is RULED OUT (traced
-  further 2026-07-13): the empty list's `list.__getitem__`/
-  `list.__str__` calls run in their own, properly-monomorphic
-  EntrySet, not one merged with the non-empty list's — confirmed via
-  a debug dump (`PYC_DBG_NOTYPE=1`, kept in
-  `collect_var_type_violations`) and by checking `clone.cc`'s
-  CreationSet-equivalence merge guard directly (`cs1->vars.n !=
-  cs2->vars.n` already keeps them apart). The actual gap looks more
-  like a PNode-reachability/scheduling leak between EntrySets of the
-  same `Fun` — the empty list's own loop body (statically
-  unreachable for its own `len(self)==0` receiver, confirmed to
-  never even get analyzed when it's the ONLY list in the program)
-  gets forced into analysis when another EntrySet of the SAME `Fun`
-  needs that loop body live. Not root-caused further; plausibly the
-  same family as 025 / 032 / 033 but not confirmed to share a root
-  cause with any of them. Found landing pyc's issue 024 (extended
-  iterable unpacking) — unrelated to unpacking itself.
-- [059-narrowing-peel-wrapper-boolean-collapse-gap.md](059-narrowing-peel-wrapper-boolean-collapse-gap.md) —
-  **fixed 2026-07-22**: issue 025's per-branch narrowing
-  (`peel_wrapper_def`) never engaged for pyc's `match`/`case`-generated
-  code because it only walked single-source MOVE chains and one
-  specific 3-SEND unwrap shape, never a value phi-merged from two
-  if1_if branches — exactly what pyc's `guarded_bool` frontend helper
-  produces for every isinstance-based pattern kind. Fixed by extending
-  `peel_wrapper_def` to recognize that merge shape, with a critical
-  soundness constraint found during verification (both branches must
-  be literal `sym_true`/`sym_false` constants, not just the else
-  branch — the looser version produced silently wrong captured values
-  for a guarded `case None if cond:` across multiple calls). Verified:
-  full suite 219/219 both backends, `ifa` unit tests 58/0,
-  `make test_llvm` clean, shedskin corpus sweep byte-identical
-  before/after (one pre-existing flaky example aside). Still blocks
-  pyc's `../../issues/023-structural-pattern-matching.md`'s
-  `case None:`-combination limitation in practice: the compile-time
-  guard hasn't been relaxed yet, pending
-  [060](060-none-branch-dropped-mixed-with-literal-bool-sequence.md).
-- [060-none-branch-dropped-mixed-with-literal-bool-sequence.md](060-none-branch-dropped-mixed-with-literal-bool-sequence.md) —
-  **both mechanisms fixed 2026-07-21.** Mechanism 1:
-  `build_isinstance_call` shared one polymorphic `isinstance()` clone
-  across pattern kinds — the same bug class
-  [closed/011](closed/011-setter-codegen-vs-analyzer-mismatch.md)
-  already fixed for `except` clauses, now ported to `match`/`case`.
-  Mechanism 2 (deeper, general — the minimal repro is a plain `def
-  show(v): if v is None: ...; show(None); show(True); show(False)`,
-  no `match` at all): `None` and a falsy raw scalar (`False`/`0`/`0.0`)
-  share the zero/NULL bit pattern in an **unsplit** contour, so a
-  shared clone can't tell them apart. Root cause: `nil_type`
-  (`is_unique_type`) was stripped from the AType `->type` projection
-  *unconditionally* in `type_cannonicalize` (`fa.cc`), so every
-  type-based split gate saw `{None, scalar}` as monomorphic-scalar and
-  merged all callers into one `EntrySet`, coercing `None` to
-  `(scalar)NULL`. **Fixed the IFA way — by splitting incompatible
-  types**: `type_cannonicalize` now keeps nil in `->type` whenever the
-  union also carries a `num_kind` scalar, so FA gives `None` its own
-  contour and `is None`/isinstance folds statically per contour. `None`
-  + a **pointer** type is unchanged (nil still stripped → single clone,
-  `None` as null pointer — a frontend-sanctioned merge, not IFA's
-  default). ~20 lines in one function, gated by `has_scalar`. Verified:
-  full suite 219/219 both backends, `ifa --test` 58/0, `test_llvm`,
-  shedskin sweep (no regressions; `chess` advances `FAIL`→compiles).
-  Regression test `tests/none_scalar_split.py`. This now makes
-  `../../issues/023-structural-pattern-matching.md`'s compile-time
-  guard safe to relax for all four blocked combinations (verified with
-  the guard removed) — a small separate frontend follow-on, not done
-  in this change.
 
 ## Closed (archive)
 
@@ -186,7 +114,7 @@ commit ref recorded in each file's status line.  They stay in
 the tree as history — a code-search for the affected file finds
 the trail of investigation even after the fix has landed.
 
-Currently 26 closed issues:
+Currently 36 closed issues:
 [001](closed/001-keepalive-vs-explicit-reply.md),
 [002](closed/002-codegen-llvm-normalizer.md),
 [003](closed/003-fa-converge-determinism.md),
@@ -211,8 +139,18 @@ Currently 26 closed issues:
 [027](closed/027-v2-llvm-narrowed-loop-loses-struct-type.md),
 [028](closed/028-fibheap-blockers.md),
 [029](closed/029-polymorphic-dispatch.md),
+[034](closed/034-pygasus-update-display-assert.md),
 [036](closed/036-llvm-phy-lowering-wrong-value.md),
-[037](closed/037-matcher-cartesian-cs-product.md).
+[037](closed/037-matcher-cartesian-cs-product.md),
+[040](closed/040-empty-list-shared-clone-type-inference.md),
+[042](closed/042-null-meta-type-build-type-hierarchy-segfault.md),
+[043](closed/043-empty-container-inference-options.md),
+[044](closed/044-mixed-length-tuple-list-len-miscompile.md),
+[045](closed/045-receiver-cs-method-cloning.md),
+[053](closed/053-tuple-unpack-target-heterogeneous-arity-segfault.md),
+[058](closed/058-polymorphic-classtag-dispatch-drops-extra-arguments.md),
+[059](closed/059-narrowing-peel-wrapper-boolean-collapse-gap.md),
+[060](closed/060-none-branch-dropped-mixed-with-literal-bool-sequence.md).
 
 ## When to file an issue here vs fix it now
 
