@@ -150,24 +150,34 @@ that:
   guard hasn't been relaxed yet, pending
   [060](060-none-branch-dropped-mixed-with-literal-bool-sequence.md).
 - [060-none-branch-dropped-mixed-with-literal-bool-sequence.md](060-none-branch-dropped-mixed-with-literal-bool-sequence.md) —
-  **partial fix landed 2026-07-21.** Two distinct mechanisms found;
-  mechanism 1 fixed: `build_isinstance_call` shared one polymorphic
-  `isinstance()` clone across pattern kinds — the same bug class
+  **both mechanisms fixed 2026-07-21.** Mechanism 1:
+  `build_isinstance_call` shared one polymorphic `isinstance()` clone
+  across pattern kinds — the same bug class
   [closed/011](closed/011-setter-codegen-vs-analyzer-mismatch.md)
-  already fixed for `except` clauses, ported to `match`/`case` now
-  (`None` + literal/capture/sequence all verified fixed; full suite,
-  `ifa --test`, `test_llvm`, and a shedskin sweep all clean, no
-  regressions). Mechanism 2 still **open**: a deeper, general codegen
-  gap where `None` and a falsy raw scalar (`False`/`0`/`0.0`) can
-  share the identical zero/NULL bit pattern in an unsplit clone, and
-  `cg.cc`'s `emit_send_is` can't tell them apart either way (its
-  `is_nil_check` path treats `False` as `None`; its classtag-disjunction
-  path hard-codes `0` for any classtag-less checked class like `int`) —
-  reachable from plain `isinstance()` user code, no `match`/`case`
-  needed. Still blocks relaxing `../../issues/023-structural-pattern-matching.md`'s
-  compile-time guard (not yet relaxed for any combination — a
-  separate follow-on decision) for the `True`/`False` combination
-  specifically.
+  already fixed for `except` clauses, now ported to `match`/`case`.
+  Mechanism 2 (deeper, general — the minimal repro is a plain `def
+  show(v): if v is None: ...; show(None); show(True); show(False)`,
+  no `match` at all): `None` and a falsy raw scalar (`False`/`0`/`0.0`)
+  share the zero/NULL bit pattern in an **unsplit** contour, so a
+  shared clone can't tell them apart. Root cause: `nil_type`
+  (`is_unique_type`) was stripped from the AType `->type` projection
+  *unconditionally* in `type_cannonicalize` (`fa.cc`), so every
+  type-based split gate saw `{None, scalar}` as monomorphic-scalar and
+  merged all callers into one `EntrySet`, coercing `None` to
+  `(scalar)NULL`. **Fixed the IFA way — by splitting incompatible
+  types**: `type_cannonicalize` now keeps nil in `->type` whenever the
+  union also carries a `num_kind` scalar, so FA gives `None` its own
+  contour and `is None`/isinstance folds statically per contour. `None`
+  + a **pointer** type is unchanged (nil still stripped → single clone,
+  `None` as null pointer — a frontend-sanctioned merge, not IFA's
+  default). ~20 lines in one function, gated by `has_scalar`. Verified:
+  full suite 219/219 both backends, `ifa --test` 58/0, `test_llvm`,
+  shedskin sweep (no regressions; `chess` advances `FAIL`→compiles).
+  Regression test `tests/none_scalar_split.py`. This now makes
+  `../../issues/023-structural-pattern-matching.md`'s compile-time
+  guard safe to relax for all four blocked combinations (verified with
+  the guard removed) — a small separate frontend follow-on, not done
+  in this change.
 
 ## Closed (archive)
 

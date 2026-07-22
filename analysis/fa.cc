@@ -595,6 +595,7 @@ AType *type_cannonicalize(AType *t) {
   assert(!t->intersection_map.n);
   int consts = 0, rebuild = 0, nulls = 0;
   Vec<CreationSet *> nonconsts;
+  CreationSet *nil_cs = nullptr;  // issue 060 -- decided after the loop
   for (CreationSet *cs : *t) if (cs) {
     // strip out constants if the base type is included
     CreationSet *base_cs = nullptr;
@@ -612,10 +613,32 @@ AType *type_cannonicalize(AType *t) {
     } else {
       if (!cs->sym->is_unique_type)  // e.g. nil, void, or unknown
         nonconsts.set_add(cs);
+      else if (cs->sym->type == sym_nil_type)
+        nil_cs = cs;  // issue 060: keep-or-strip decided after the loop
       else
-        nulls = 1;
+        nulls = 1;  // void / unknown: always stripped from ->type
     }
     t->sorted.add(cs);
+  }
+  // issue 060: nil_type (None) is normally stripped from the ->type
+  // projection (is_unique_type), so a pointer-shaped `T | None` union
+  // stays a single clone -- None is a null pointer there, unambiguous,
+  // and a frontend may sanction that merge (pyc does). But IFA's core
+  // discipline is to split incompatible types, and None IS
+  // incompatible with a raw scalar (int/bool/float): under the unboxed
+  // representation they share the zero bit pattern, so a shared clone
+  // literally cannot tell `None` from `0`/`False` (issue 060). Keep nil
+  // in ->type whenever the union also carries a num_kind scalar, so the
+  // type-splitter puts the None value in its own contour instead of
+  // coercing it to `(scalar)NULL`.
+  if (nil_cs) {
+    bool has_scalar = false;
+    for (CreationSet *c : nonconsts)
+      if (c && c->sym->type && c->sym->type->num_kind) { has_scalar = true; break; }
+    if (has_scalar)
+      nonconsts.set_add(nil_cs);  // keep nil in ->type (no nulls: it is not stripped)
+    else
+      nulls = 1;  // pointer / other: strip nil as before
   }
   if (consts > fa->num_constants_per_variable) rebuild = 1;
   if (rebuild) {

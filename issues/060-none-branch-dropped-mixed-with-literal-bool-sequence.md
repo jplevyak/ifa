@@ -1,16 +1,25 @@
 # 060 — `case None:` silently disappears from codegen when combined with a literal/True-False/sequence pattern
 
-**Status:** partial fix landed 2026-07-21. **Mechanism 1 fixed**:
-`build_isinstance_call` now uses the raw `sym_primitive` isinstance
-send instead of the shared wrapper. **Mechanism 2 still open** — the
-`True`/`False` + `None` combination remains wrong, and
-`issues/023`'s compile-time guard has **not** been relaxed for any
-combination yet (a separate follow-on decision; see "What this
-unblocks").
+**Status:** BOTH mechanisms fixed 2026-07-21.
+**Mechanism 1** (`python_ifa_build_if1.cc`'s `build_isinstance_call`):
+switched to the raw `sym_primitive` isinstance send instead of the
+shared wrapper. **Mechanism 2** (the deeper, general one):
+`type_cannonicalize` (`fa.cc`) now keeps `nil_type` in the AType
+`->type` projection whenever the union also carries a `num_kind`
+scalar, so IFA's type-splitter separates the `None` value into its own
+contour instead of merging it with the scalar and coercing it to
+`(scalar)NULL`. `is None`/isinstance then folds statically per contour.
+Verified: general (non-`match`) repro, all four `match` combinations,
+`Optional[pointer]` still single-clone (frontend-sanctioned merge
+preserved), full suite 219/219 both backends, `ifa --test` 58/0,
+`test_llvm`, shedskin sweep (no regressions; `chess` advances
+`FAIL`→compiles). Regression test: `tests/none_scalar_split.py`.
+The `issues/023` compile-time guard is now safe to relax (all
+combinations verified working) but has NOT been relaxed in this change
+— a separate frontend follow-on; see "What this unblocks".
 **Affects:** `python_ifa_build_if1.cc`'s `build_isinstance_call`
-(mechanism 1, fixed) and `ifa/codegen/cg.cc`'s `emit_send_is`
-(mechanism 2, both its `is_nil_check` branch and its
-classtag-disjunction branch — still open).
+(mechanism 1) and `ifa/analysis/fa.cc`'s `type_cannonicalize`
+(mechanism 2).
 **Related:** [059](059-narrowing-peel-wrapper-boolean-collapse-gap.md)
 (found while testing that fix, but unrelated — reproduces identically
 with `IFA_NARROW=0`); [030](030-polymorphic-dispatch-fat-pointers.md)
@@ -77,19 +86,26 @@ permanent change, both re-tested identically):
   combined with `None`, and nothing regressed.
 
 This mechanism alone does **not** explain the `True`/`False` case —
-see mechanism 2, still open.
+see mechanism 2 (now also fixed).
 
-## Root cause 2 (deeper, general codegen gap): `None` and a falsy raw
-scalar (`False`, `0`, `0.0`) can share the identical zero/NULL bit
-pattern in an unsplit contour, and neither of `cg.cc`'s two isinstance
-runtime-dispatch paths can tell them apart
+## Root cause 2 (deeper, general): `None` and a falsy raw scalar
+(`False`, `0`, `0.0`) share the identical zero/NULL bit pattern in an
+**unsplit** contour
+
+> **Fixed** by making FA split that contour — see "Fixes" above. The
+> symptom below is the *unsplit* behavior; the real defect was FA
+> merging `None` with a scalar in the first place (root cause: nil
+> stripped from `->type`), not anything codegen could paper over. The
+> analysis of the two `cg.cc` dispatch paths is kept because it's how
+> the bug was first localized and confirms why a codegen-only patch
+> was the wrong layer.
 
 pyc avoids boxing an `Optional[int]`-shaped parameter: when FA doesn't
 split a formal's union into separate per-type clones, a raw scalar
 type (`int64`, `bool`, `float`) sharing a contour with `None`
 represents `None` as literal `0`/`NULL` in that same slot. Confirmed
 directly in generated C for `case None: / case True: / case False:`
-called with `test(False)`:
+called with `test(False)`, **before** the split fix:
 
 ```c
 t18 = ((void *)(intptr_t)t5 == NULL);   // the `case None:` check
@@ -169,63 +185,215 @@ safe in principle, but the guard hasn't been narrowed to say so yet
   separately) in the wrapper-clone-sharing that corrupts *which*
   class is even being asked about.
 
-## Proposed fix directions
+## Fixes
 
 1. **Mechanism 1 — DONE.** Ported issue 011's raw `sym_primitive`
    isinstance send into `build_isinstance_call`, exactly as done for
    `except`-clause dispatch.
-2. **Mechanism 2 (still open)** — genuinely needs a design decision, not a
-   one-line fix:
-   - Option A: give `None` a distinguishable representation even
-     inside a shared scalar contour (e.g. a side discriminant/tag
-     bit alongside the scalar payload for any formal whose union
-     includes `None` and a raw scalar type) — correct but touches
-     the calling convention for every `Optional[scalar]` parameter,
-     wide blast radius.
-   - Option B: force FA to **always** clone a formal into separate
-     `EntrySet`s when its union mixes `None` with a raw scalar type,
-     the same way it already does for two boxed/pointer types
-     (`int` vs `str`) — narrower blast radius (only affects
-     clone/splitting heuristics, not the runtime representation
-     itself), but needs to find where that splitting decision is
-     made (likely `ifa/analysis/clone.cc`) and confirm mixing
-     `None`+scalar isn't relied upon elsewhere as a deliberate
-     boxing-avoidance optimization worth preserving for *non*-isinstance
-     code paths.
-   - Either way, `cg.cc`'s classtag-disjunction path (the `hw3.py`
-     symptom) needs its own fix regardless of mechanism 1/2: a
-     classtag-less checked class should never silently hard-code `0`
-     — at minimum it should be a compile-time diagnostic (the check
-     is unimplementable as constructed) rather than a silent wrong
-     answer, since this is reachable from plain user `isinstance()`
-     calls with zero match/case involvement.
+2. **Mechanism 2 — DONE via splitting (Option B), the correct lever.**
+   IFA's core discipline is to split incompatible types, and `None` is
+   incompatible with a raw scalar — they share the zero bit pattern
+   under the unboxed representation. The one-line-idea fix: in
+   `type_cannonicalize` (`fa.cc`), stop unconditionally stripping
+   `nil_type` from the `->type` projection; keep it whenever the union
+   also carries a `num_kind` scalar. Every type-based split gate
+   (`collect_type_confluence`, `edge_type_compatible_*`,
+   `find_best_entry_sets`) partitions on `->type`, so once `{None,
+   scalar}` presents as a genuine two-type union there, FA naturally
+   splits the `None` caller into its own contour — no new machinery,
+   no special-case codegen. `is None`/isinstance then folds to a
+   compile-time constant in each monomorphic contour. Combining `None`
+   with a **pointer** type is unchanged (no scalar → nil still
+   stripped → single clone, `None` as null pointer): that merge is a
+   frontend-sanctioned allowance for a language where a null pointer
+   unambiguously means `None`, not IFA's default. The earlier
+   "Option A" (bespoke per-scalar runtime tags / NaN-boxing) is
+   **not** needed. See the investigation notes below for why the
+   codegen-side `cg.cc` approach was the wrong layer.
+
+### Investigation that led to the splitting fix (2026-07-21)
+
+The following traces *why* splitting is the right lever and how the
+merge was happening — kept for the next investigator. (Earlier this
+section argued splitting was "not a contained fix"; that conclusion
+was wrong. The blocker it described — the merged formal losing `None`
+before the splitter runs — was itself a downstream effect of the
+`->type` stripping, and fixing the stripping at the source in
+`type_cannonicalize` dissolves it.)
+
+**The bug is fully general — not `match`/`case`-specific at all.** The
+minimal reproducer needs no `match`, no pattern-matching lowering,
+nothing pyc-frontend-specific:
+
+```python
+def show(v):
+    if v is None: print("none")
+    else:         print("notnone")
+show(None)   # none
+show(True)   # notnone
+show(False)  # notnone  -- pyc prints "none"
+```
+`show(int)` collapses identically (`show(None)`/`show(5)`/`show(0)` →
+`none`/`val`/`none`, wrong on the last). Reproduces with `IFA_NARROW=0`
+— not the narrowing feature.
+
+**What FA actually does** (traced via `[ses]`/confluence logging plus
+`update_in`/EntrySet-formal instrumentation, all reverted):
+
+1. All three call edges (`show(None)`, `show(True)`, `show(False)`)
+   merge into **one** shared `EntrySet`. The generated C is a single
+   clone `show(_CG_bool a1)` (or `_CG_int64` for the int case), and
+   the calls compile to `show((_CG_bool)NULL)`, `show(1)`, `show(0)` —
+   so `None` and `False` are **the identical bit pattern `0`** at the
+   ABI boundary, and the body's `v == NULL` matches both.
+2. The merge happens because `nil_type` is an `is_unique_type` Sym
+   (`ast.cc` ~205) and is **stripped from the AType `->type`
+   projection** by `type_cannonicalize` (`fa.cc` ~613: `if
+   (!cs->sym->is_unique_type) nonconsts.set_add(cs); else nulls = 1;`).
+   The projection of `{None, bool}` is just `{bool}`. Every gate in the
+   type-based splitter partitions on `->type`:
+   `collect_type_confluence`, `edge_type_compatible_with_edge`,
+   `edge_type_compatible_with_entry_set`, and `find_best_entry_sets`'s
+   `entry_set_compatibility`. So a `{None, scalar}` formal looks
+   **monomorphic scalar** to all of them — no confluence is ever
+   recorded, no split is ever attempted.
+3. Even the routing back-stop is soft: `entry_set_compatibility`
+   returns a *penalty* (`val -= 4`), not a hard reject, for a
+   type-incompatible edge — so with only one candidate ES the `None`
+   edge merges into the scalar ES anyway.
+4. Confirmed the distinction *is* preserved when the parameter is
+   dead: `show(v){ print("x") }` with `v` unused compiles to two
+   trivial no-arg clones. The bug specifically needs `v` **live** (an
+   `is None`/isinstance check makes it live), which is exactly when the
+   scalar-typed shared clone forms.
+
+This is the same design that makes pointer-shaped `T | None`
+(`Optional[Node]`) *correctly* stay unboxed and unsplit — `None` as a
+null pointer is unambiguous there, and issue 025's "`Node | None`
+doesn't trigger BOXING" refinement relies on it. The scalar case is
+the one place the stripping is unsound, because `0` is a legitimate
+scalar value.
+
+**First experiment (too shallow — superseded).** A narrowly-gated
+nil-aware split *view* was added only in the splitter's own gates
+(helpers `atype_has_nil` / `atype_has_num_scalar` / `split_view_pair`,
+wired into `collect_type_confluence`, `edge_type_compatible_with_edge`,
+`edge_type_compatible_with_entry_set`). **It didn't fire**, and the
+reason pointed straight at the real fix: by the time the splitter runs
+the merged formal's `out` reads `{bool}`, not `{None, bool}`, even
+though the `None` caller edge genuinely carries `nil_type` (verified:
+its actual-arg `AVar` is `{__pyc_None_type__}`). The nil is stripped
+by the `->type` projection *upstream* of the splitter — in the flow,
+routing, and canonicalization that all consult `->type`. Patching the
+gates alone was treating symptoms.
+
+**The actual fix: strip nil at its source condition, in
+`type_cannonicalize`.** Keeping `nil_type` in `->type` for the
+`{nil, scalar}` mix (and only that mix) makes the whole pipeline
+nil-aware at once — the flow no longer converges `None` away, edge
+routing sees the two-type union, and the confluence/grouping gates
+partition correctly — because every one of them reads `->type`. The
+feared blast radius did not materialize: `Optional[pointer]` is
+untouched (no scalar → nil still stripped → single clone), and the
+shedskin corpus sweep showed **no regressions** (one example, `chess`,
+advances from `FAIL` to compiling). The change is ~20 lines in one
+function, gated by `has_scalar`.
+
+### Option A (distinct runtime tags per scalar kind) — NOT needed
+
+Kept for context; the splitting fix above makes this unnecessary. The
+representation collapse also has a single codegen site,
+`assign_type_cg_strings_pass2` (`ifa/codegen/codegen_common.cc`
+~555-569):
+
+```cpp
+if (s->type_kind == Type_SUM && s->has.n == 2) {
+  if (s->has[0] == sym_nil_type)
+    cg_set_string(s, cg_get_string(s->has[1]));
+  else if (s->has[1] == sym_nil_type)
+    cg_set_string(s, cg_get_string(s->has[0]));
+}
+```
+
+This collapses **every** 2-element `SUM{None, T}` to `T`'s own raw
+C type, unconditionally — correct when `T` is pointer-shaped (a null
+pointer already means `None` unambiguously) but wrong when `T` is a
+raw scalar (`int64`/`bool`/`float64`), where `None`'s chosen `0`
+encoding collides with a legitimate value of `T`. Fixing this
+requires making the collapse conditional on `T`'s shape, and picking
+a real per-`T` "is this `None`" discriminant when `T` is scalar.
+Per-scalar-kind feasibility:
+
+- **`bool`** (`_CG_bool` is a full `uint8`, only values 0/1 are ever
+  legitimate): free. Use `2` as the `None` sentinel — no storage
+  overhead, no collision risk, no semantic gap. The easy case.
+- **`int64`/other fixed-width ints**: no spare bit pattern exists —
+  every value in range is legitimate. Would need a reserved sentinel
+  (e.g. `INT64_MIN`) to represent `None`, which is a **real, narrow
+  semantic gap**: a program that legitimately stores that exact value
+  in an `Optional[int]` slot would misbehave. Same *class* of
+  deliberate CPython-divergence pyc already accepts elsewhere (the
+  numeric-confluence 0-vs-0.0 compromise noted in
+  [025](025-intra-function-union-narrowing.md)), but this one is
+  user-visible in a more direct way and should be a conscious,
+  signed-off decision, not silently shipped.
+- **`float64`**: NaN-boxing — reserve one specific NaN bit pattern as
+  the `None` sentinel, distinguishable from any NaN real computation
+  produces (well-precedented technique, used by V8/SpiderMonkey/
+  LuaJIT). No semantic gap in practice (a NaN is already
+  non-representable-as-a-normal-value semantically), but touches
+  every float primitive that could produce a NaN, since results must
+  avoid colliding with the reserved payload.
+
+**Assessment: the practical near-term fix.** Confined to one codegen
+site (plus `cg.cc`'s two `emit_send_is` branches, already mapped in
+mechanism 2's root-cause section, which would need to read whatever
+new discriminant this introduces), doesn't touch the splitter at
+all, and `bool` alone would fully fix `none_bool.py` (issue 023's
+last blocked combination) at zero semantic cost. `int64`/`float64`
+support is separable, follow-on work with its own tradeoffs to sign
+off on.
+
+Note the standalone `isinstance(v, int)` symptom (mechanism 2's
+root-cause section) also disappears with the split fix: once FA gives
+`int` and `None` separate contours, the `isinstance` folds to a
+compile-time constant in each and `cg.cc`'s classtag-disjunction path
+is never reached with a merged `{int, None}` operand. (A defensive
+compile-time diagnostic for a genuinely classtag-less runtime
+`isinstance` remains reasonable belt-and-suspenders, but is no longer
+load-bearing for this bug.)
 
 ## Verification plan
 
-1. ~~All four combinations in the table above match CPython.~~ Done
-   for 3 of 4 (literal, capture, sequence); `True`/`False` still
-   wrong, tracked as mechanism 2.
-2. The standalone `isinstance(v, int)` / `test(5)`, `test(None)`
-   repro (no `match`/`case`) matching CPython is still open —
-   mechanism 2's classtag-disjunction half, unaffected by mechanism
-   1's fix (confirmed: this repro doesn't involve `build_isinstance_call`
-   at all, it's plain user-level `isinstance()`).
-3. Done: 059's own verified combinations (capture, class, mapping)
-   re-checked, unaffected by mechanism 1's fix.
-4. Done: full suite (219/219 both backends), `ifa --test` (58/0),
-   `make test_llvm`, and a shedskin corpus sweep (byte-identical
-   results.tsv before/after) all clean.
+1. Done: all four `match` combinations (literal, capture, sequence,
+   `True`/`False`) match CPython — verified with the guard temporarily
+   removed (`tests/none_scalar_split.py` covers the general,
+   non-`match` core; the `match` combos were spot-checked directly).
+2. Done: the standalone `isinstance(v, int)` / `is None` repro with no
+   `match`/`case` (`show(None)`/`show(True)`/`show(False)`,
+   `show(5)`/`show(0)`) matches CPython — this is the fundamental fix,
+   captured by `tests/none_scalar_split.py`.
+3. Done: `None` + pointer (`Optional[Node]`) still compiles to a
+   single clone (no split, no contour explosion), output correct —
+   frontend-sanctioned merge preserved.
+4. Done: 059's own verified combinations (capture, class, mapping)
+   re-checked, unaffected.
+5. Done: full suite (219/219 both backends), `ifa --test` (58/0),
+   `make test_llvm`, shedskin corpus sweep (no regressions; `chess`
+   advances `FAIL`→compiles, `sudoku5`'s pre-existing issue-034 assert
+   only shifts line number).
 
 ## What this unblocks
 
-Together with [059](059-narrowing-peel-wrapper-boolean-collapse-gap.md),
-mechanism 1's fix makes 3 of `../../issues/023-structural-pattern-matching.md`'s
-4 blocked combinations (literal, capture, sequence) safe in
-principle — but the guard itself hasn't been relaxed yet (a separate
-follow-on, not yet done). The `True`/`False` combination must stay
-blocked until mechanism 2 has a real fix — relaxing it earlier would
-trade a loud compile-time refusal for a silent wrong answer, strictly
-worse. Mechanism 2's classtag-less diagnostic (or full fix) also
-matters independent of `match`/`case` entirely: it's a latent
-correctness gap in plain `isinstance()` whenever a raw scalar type
-shares a clone with `None`.
+Both mechanisms are now fixed, so
+`../../issues/023-structural-pattern-matching.md`'s compile-time guard
+(`pattern_contains_none` / `pattern_is_risky_with_none` in
+`build_match_pyda`) is **safe to relax** for all four blocked
+combinations (literal, `True`/`False`, sequence, and captures) — every
+one was verified to match CPython with the guard removed. Relaxing it
+is a small, separate frontend change (delete the guard, convert the
+old `match_none.py` expected-limitation test into a passing
+combination test) that has **not** been made in this change. The
+general `None`-plus-scalar soundness fix also matters well beyond
+`match`/`case`: it corrects any `Optional[int|bool|float]` value
+flowing to a shared function that tests `is None`/`isinstance`.
