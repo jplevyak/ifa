@@ -2002,7 +2002,6 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
   if (strcmp(name, "print") == 0 || strcmp(name, "println") == 0) {
     bool do_nl = (strcmp(name, "println") == 0);
     llvm::Type *i32_ty = llvm::Type::getInt32Ty(*TheContext);
-    llvm::Type *i64_ty = llvm::Type::getInt64Ty(*TheContext);
     llvm::Type *dbl_ty = llvm::Type::getDoubleTy(*TheContext);
     llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
     llvm::FunctionType *printf_ty =
@@ -2030,7 +2029,7 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
         if (!str_val) str_val = value_for_var(ctx, v);
         if (str_val) {
           cchar *fmt = last_nl ? "%s\n" : "%s";
-          llvm::Value *fmt_v = Builder->CreateGlobalStringPtr(fmt, ".fmt");
+          llvm::Value *fmt_v = Builder->CreateGlobalString(fmt, ".fmt");
           // str_val can be a compile-time or runtime null pointer when
           // FA leaves the Var's type unresolved (see comment above).
           // printf's "%s" NULL -> "(null)" behavior is a non-portable
@@ -2040,7 +2039,7 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
           // a possibly-null pointer to printf; substitute a literal
           // "(null)" string ourselves instead.
           llvm::Value *null_str =
-              Builder->CreateGlobalStringPtr("(null)", ".nullstr");
+              Builder->CreateGlobalString("(null)", ".nullstr");
           llvm::Value *is_null = Builder->CreateICmpEQ(
               str_val, llvm::ConstantPointerNull::get(
                            llvm::cast<llvm::PointerType>(str_val->getType())));
@@ -2058,28 +2057,28 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
       if (vty->isIntegerTy(1)) {
         // Boolean: zero-extend to i32, print as unsigned.
         cchar *fmt = last_nl ? "%u\n" : "%u";
-        llvm::Value *fmt_v = Builder->CreateGlobalStringPtr(fmt, ".fmt");
+        llvm::Value *fmt_v = Builder->CreateGlobalString(fmt, ".fmt");
         llvm::Value *ext = Builder->CreateZExt(val, i32_ty, "zext");
         Builder->CreateCall(printf_ty, printf_fn.getCallee(), {fmt_v, ext});
       } else if (vty->isIntegerTy(64)) {
         bool is_signed = !(t == sym_uint64);
         cchar *fmt = last_nl ? (is_signed ? "%lld\n" : "%llu\n")
                              : (is_signed ? "%lld"   : "%llu");
-        llvm::Value *fmt_v = Builder->CreateGlobalStringPtr(fmt, ".fmt");
+        llvm::Value *fmt_v = Builder->CreateGlobalString(fmt, ".fmt");
         Builder->CreateCall(printf_ty, printf_fn.getCallee(), {fmt_v, val});
       } else if (vty->isIntegerTy()) {
         bool is_signed = !(t == sym_bool || t == sym_uint8 || t == sym_uint16 ||
                            t == sym_uint32);
         cchar *fmt = last_nl ? (is_signed ? "%d\n" : "%u\n")
                              : (is_signed ? "%d"   : "%u");
-        llvm::Value *fmt_v = Builder->CreateGlobalStringPtr(fmt, ".fmt");
+        llvm::Value *fmt_v = Builder->CreateGlobalString(fmt, ".fmt");
         llvm::Value *ext =
             is_signed ? Builder->CreateSExt(val, i32_ty, "sext")
                       : Builder->CreateZExt(val, i32_ty, "zext");
         Builder->CreateCall(printf_ty, printf_fn.getCallee(), {fmt_v, ext});
       } else if (vty->isFloatingPointTy()) {
         cchar *fmt = last_nl ? "%g\n" : "%g";
-        llvm::Value *fmt_v = Builder->CreateGlobalStringPtr(fmt, ".fmt");
+        llvm::Value *fmt_v = Builder->CreateGlobalString(fmt, ".fmt");
         llvm::Value *dv =
             vty->isDoubleTy() ? val
                               : Builder->CreateFPExt(val, dbl_ty, "fpext");
@@ -2087,14 +2086,14 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
       } else {
         // Pointer or other opaque type: skip (unsupported).
         cchar *ph = last_nl ? "<unsupported>\n" : "<unsupported>";
-        llvm::Value *fmt_v = Builder->CreateGlobalStringPtr(ph, ".fmt");
+        llvm::Value *fmt_v = Builder->CreateGlobalString(ph, ".fmt");
         Builder->CreateCall(printf_ty, printf_fn.getCallee(), {fmt_v});
       }
     }
 
     if (pn->rvals.n < 3 && do_nl) {
       // Empty println(): just a newline.
-      llvm::Value *nl = Builder->CreateGlobalStringPtr("\n", ".nl");
+      llvm::Value *nl = Builder->CreateGlobalString("\n", ".nl");
       Builder->CreateCall(printf_ty, printf_fn.getCallee(), {nl});
     }
 
