@@ -217,3 +217,48 @@ violation-driven splitter leaves merged because no violation forces the
 separation. That is the real lever — not per-receiver anything.
 Object-comparison repros (`rc.py`, `rc2.py` shapes) are kept in this
 issue for whoever picks it up.
+
+## Update 2026-07-23: tried lowering override-less `==` to identity three ways — the real blocker is the container-element union, not object comparison
+
+Attempted the "lower override-less `==`/`!=` to `prim_is`" fix and
+measured FA convergence on dijkstra2 (`-l s` splitting trace) at each
+step:
+
+1. **`object.__eq__`/`__ne__` as a Python method** (body `prim_is`, or a
+   new always-bool `prim_object_eq` to rule out `prim_is`'s
+   overlap-sensitive transfer): **STALLS** — pass 24–25, ~247–264
+   violations, 8 re-deriving (issue 033 oscillation). Any shared
+   `object.__eq__` *method* contour unions operands per-arm and churns
+   the splitter. The always-bool primitive made no difference, so the
+   transfer isn't the cause — the method dispatch contour is.
+2. **Dispatch fallback (no method)**: contribute `bool` to `__eq__`/
+   `__ne__` results directly in `add_send_edges_pnode` (no edge/contour)
+   and skip arg-violation reporting for those sends. **STILL STALLS** —
+   and the `illegal: (float64 Vertex)` / `(list Vertex)` unions persist
+   unchanged. That's the tell: those unions are **not** from object
+   comparison at all.
+3. **Global `==`→`prim_is`** (frontend, all comparisons): **CONVERGES**
+   (pass 28, every split stage 0, per-CS stage runs) — but breaks value
+   equality (`sizeof_element in __add__` from dijkstra2's `(int,int)`-keyed
+   dict losing `tuple.__eq__`).
+
+Conclusion: the convergence blocker is the **container-element union**
+(issue 043 "shape B") flowing through the element comparisons *inside*
+shared `dict`/`list` methods (`self._keys[i] == key`, `self[i] == item`).
+Global `prim_is` converges only because it makes **every** element
+comparison a tolerant primitive; any object-only fix leaves the value-arm
+element comparisons (`tuple.__eq__` etc. dispatched on union operands)
+churning. Object comparison was merely the *trigger* that let those
+container-element unions fully resolve and flow (without it, the Vertex
+arms stay salvaged/cut, so the union never completes and dijkstra2
+compiles).
+
+So "override-less `==` → `prim_is`" is **necessary but not sufficient**:
+necessary to make object comparison resolve without a method contour,
+insufficient because it doesn't touch the shared-container-method element
+union. The real lever remains **CreationSet-level (element-type) splitting
+of shared container methods** (issue 043 shape B) — separate
+`dict[Vertex→float]`/`dict[Vertex→list]`/`dict[(int,int)→…]` contours so
+each `self._keys[i]`/`self._vals[i]` is monomorphic — or, equivalently,
+make container-internal element comparison a tolerant primitive. All
+experiments reverted; tree clean, suite 227/0.
