@@ -358,24 +358,36 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       // rvals: [primitive, tuple_lt/eq, a, b]; result in lvals[0].
       Var *a = n->rvals[o], *b = n->rvals[o + 1];
       if (!n->lvals.n || !cg_get_string(n->lvals[0])) { fputs("  ;\n", fp); break; }
+      cchar *dst = cg_get_string(n->lvals[0]);
       Sym *ts = a->type, *tt = b->type;
-      // Require both operands to be a single concrete tuple record type
-      // (the common case: a homogeneous list of same-typed tuples). A
-      // union operand or a non-tuple falls through to a graceful
-      // diagnostic rather than emitting wrong code (option A).
-      if (!cg_is_tuple_record(ts) || !cg_is_tuple_record(tt)) {
-        codegen_fail(n, "tuple comparison operand is not a single tuple type (issue 025 option A)");
+      // The common (well-typed) case is two concrete same-shape tuple
+      // records. A union / non-tuple operand or an unsupported element
+      // type means an upstream type-inference failure reached here (see
+      // the "no type" corpus bucket, ifa/issues/025); rather than emit
+      // wrong code we degrade to a runtime-error assert when
+      // fruntime_errors is on (the salvage convention, issue 056) so the
+      // rest of the program still compiles, and only fail() the compile
+      // outright when runtime checks are disabled. Buffer the expression
+      // first so a partway-through element-type miss cleanly falls back.
+      bool ok = cg_is_tuple_record(ts) && cg_is_tuple_record(tt);
+      char *buf = nullptr;
+      size_t bufsz = 0;
+      if (ok) {
+        FILE *mb = open_memstream(&buf, &bufsz);
+        ok = (n->prim->index == P_prim_tuple_lt)
+                 ? emit_tuple_lt_expr(mb, cg_get_string(a), cg_get_string(b), ts, tt)
+                 : emit_tuple_eq_expr(mb, cg_get_string(a), cg_get_string(b), ts, tt);
+        fclose(mb);
       }
-      fprintf(fp, "  %s = ", cg_get_string(n->lvals[0]));
-      bool ok = (n->prim->index == P_prim_tuple_lt)
-                    ? emit_tuple_lt_expr(fp, cg_get_string(a), cg_get_string(b), ts, tt)
-                    : emit_tuple_eq_expr(fp, cg_get_string(a), cg_get_string(b), ts, tt);
-      if (!ok) {
-        fputs("0;\n", fp);
-        codegen_fail(n, "tuple comparison element type not supported (issue 025 option A: "
-                        "only int/float/bool/str/nested-tuple element fields)");
+      if (ok) {
+        fprintf(fp, "  %s = %s;\n", dst, buf);
+      } else if (!fruntime_errors) {
+        codegen_fail(n, "tuple comparison operand is not a single tuple type or has an "
+                        "unsupported element type (issue 025 option A)");
+      } else {
+        fprintf(fp, "  assert(!\"runtime error: unresolved tuple comparison\"); %s = 0;\n", dst);
       }
-      fputs(";\n", fp);
+      if (buf) free(buf);
       break;
     }
     case P_prim_make:
