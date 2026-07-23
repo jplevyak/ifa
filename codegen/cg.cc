@@ -1715,6 +1715,20 @@ static void do_phi_nodes(FILE *fp, PNode *n, int isucc) {
 
 // is_const_folded_send moved to codegen_common.cc
 
+// A Code_LABEL emits its `L%d:;` only when it is live && fa_live (see
+// below). A jump to a label FA salvaged to not-live would therefore
+// reference an undeclared label -- a raw C compile error (the dominant
+// terminal failure of the "no type" corpus bucket: amaze/doom/mwmatching/
+// rdb/sha/softrender/voronoi2/yopyra). Such a jump is on a dead/salvaged
+// path by construction, so degrade it to a runtime-error trap (the
+// salvage convention, issue 056) instead of emitting the dangling goto.
+static void emit_goto_or_trap(FILE *fp, PNode *target, int label_id) {
+  if (target && target->live && target->fa_live)
+    fprintf(fp, "  goto L%d;\n", label_id);
+  else
+    fputs("  assert(!\"runtime error: jump to unreachable block\");\n", fp);
+}
+
 static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done) {
   if (n->live && n->fa_live) switch (n->code->kind) {
       case Code_LABEL:
@@ -1770,14 +1784,14 @@ static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done
           if (done.set_add(n->cfg_succ[0]))
             write_c_pnode(fp, fa, f, n->cfg_succ[0], done);
           else
-            fprintf(fp, "  goto L%d;\n", n->code->label[0]->id);
+            emit_goto_or_trap(fp, n->cfg_succ[0], n->code->label[0]->id);
           fprintf(fp, "  } else {\n");
           do_phy_nodes(fp, n, 1);
           do_phi_nodes(fp, n, 1);
           if (done.set_add(n->cfg_succ[1]))
             write_c_pnode(fp, fa, f, n->cfg_succ[1], done);
           else
-            fprintf(fp, "  goto L%d;\n", n->code->label[1]->id);
+            emit_goto_or_trap(fp, n->cfg_succ[1], n->code->label[1]->id);
           fputs("  }\n", fp);
         }
       } else {
@@ -1787,7 +1801,7 @@ static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done
       break;
     case Code_GOTO:
       do_phi_nodes(fp, n, 0);
-      if (n->live && n->fa_live) fprintf(fp, "  goto L%d;\n", n->code->label[0]->id);
+      if (n->live && n->fa_live) emit_goto_or_trap(fp, n->cfg_succ.n ? n->cfg_succ[0] : nullptr, n->code->label[0]->id);
       break;
     case Code_SEND:
       if ((!n->live || !n->fa_live) && n->prim && n->prim->index == P_prim_reply)
