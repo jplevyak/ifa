@@ -4159,6 +4159,48 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
 //    in a snapshot key — an edge whose types haven't arrived yet
 //    would match any recorded partition — so such groups are
 //    unroutable this pass.
+static int compar_int(const void *a, const void *b) {
+  int x = *(const int *)a, y = *(const int *)b;
+  return x < y ? -1 : (x > y ? 1 : 0);
+}
+
+// issue 065 / 043 shape B: a cross-pass-STABLE signature for a
+// setter/mark-driven split group, keyed on the setter SITES (the writing
+// Vars' sym ids -- stable IR) rather than the per-(Var,EntrySet) setter
+// AVars whose identity shifts as the splitter mutates the ES structure
+// (the reason the type-only group_signature can't key these groups and
+// they were excluded from issue-033 routing). Two passes whose element-
+// type partition writes from the same setter sites produce the same
+// signature, giving the routing a stable product to reuse. Returns 0
+// ("no identity") when no setter sites are visible yet, so such a group
+// stays unroutable this pass rather than colliding on an empty key.
+static uint setter_site_signature(Vec<AEdge *> &these_edges, Fun *f) {
+  uint h = 0;
+  int i = 0;
+  bool any = false;
+  for (MPosition *p : f->positional_arg_positions) {
+    Vec<int> sites;
+    for (AEdge *x : these_edges) {
+      AVar *a = x->args.get(p);
+      if (!a) continue;
+      if (a->setters)
+        for (AVar *s : *a->setters) if (s && s->var && s->var->sym) sites.set_add(s->var->sym->id);
+      if (a->lvalue && a->lvalue->setters)
+        for (AVar *s : *a->lvalue->setters) if (s && s->var && s->var->sym) sites.set_add(s->var->sym->id);
+    }
+    i++;
+    if (!sites.n) continue;
+    any = true;
+    sites.set_to_vec();
+    if (sites.n > 1) qsort(sites.v, sites.n, sizeof(int), compar_int);
+    uint ph = 0;
+    for (int sid : sites) ph = ph * 31u + (uint)sid;
+    h += ph * open_hash_primes[(i - 1) % 256];
+  }
+  if (!any) return 0;
+  return h ? h : 1;
+}
+
 static uint group_signature(Vec<AEdge *> &these_edges, Fun *f) {
   uint h = 0;
   int i = 0;
@@ -4447,16 +4489,26 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
     // meant separated.
     EntrySet *product = nullptr;
     uint gsig = 0;
-    if (!fsetters && !fmark && part != fa->type_world.bottom_type) {
-      gsig = group_signature(these_edges, es->fun);
-      SplitDecision *d = gsig ? fa->ledger_find(es->fun, cur_split_stage, avpos, part, gsig) : nullptr;
+    // issue 065 / 043 shape B: type-stage groups key on the type
+    // partition (group_signature); setter/mark-stage groups key on the
+    // cross-pass-STABLE setter SITES (setter_site_signature) so they can
+    // route across passes too -- previously they were unroutable (the
+    // per-ES setter-AVar identity shifts as splitting proceeds), which
+    // left the container-method element-CS splits re-minting every pass.
+    if (!fsetters && !fmark) {
+      if (part != fa->type_world.bottom_type) gsig = group_signature(these_edges, es->fun);
+    } else {
+      gsig = setter_site_signature(these_edges, es->fun);
+    }
+    if (avpos && gsig) {
+      SplitDecision *d = fa->ledger_find(es->fun, cur_split_stage, avpos, part, gsig);
       if (d && d->pass_made != analysis_pass && d->product && d->product != es &&
           group_display_ok(these_edges, d->product, es->fun)) {
         product = d->product;
         ++fa->dup_split_attempts;
-        log(LOG_SPLITTING, "[ledger] ROUTE group es %d fun %s %d pos %p part %p/%d -> product %d (first pass %d)\n",
+        log(LOG_SPLITTING, "[ledger] ROUTE group es %d fun %s %d pos %p part %p/%d sig %u -> product %d (first pass %d)\n",
             es->id, es->fun->sym->name ? es->fun->sym->name : "", es->fun->sym->id, (void *)avpos, (void *)part,
-            part->sorted.n, d->product->id, d->pass_made);
+            part->sorted.n, gsig, d->product->id, d->pass_made);
       }
     }
     if (product) {
@@ -4489,19 +4541,19 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
               x->pnode->lvals[0]->sym->id, x->to->id);
         }
       }
-      // Issue 033 stage A (record-only) for the non-enforced paths.
-      if (avpos && part != fa->type_world.bottom_type) {
+      // Issue 033 stage A: record the group's product for cross-pass
+      // routing. `gsig` was computed above for the right stage (type ->
+      // group_signature, setter/mark -> setter_site_signature); a
+      // setter/mark group records regardless of the (often bottom) type
+      // partition. gsig == 0 means no stable identity this pass -- neither
+      // route nor record.
+      if (avpos && gsig) {
         EntrySet *gproduct = nullptr;
         for (AEdge *x : these_edges) if (x->to && x->to != es) {
           gproduct = x->to;
           break;
         }
         if (gproduct) {
-          if (!gsig) gsig = group_signature(these_edges, es->fun);
-        }
-        // gsig == 0: the group has no stable identity this pass
-        // (wildcard types) — neither route nor record.
-        if (gproduct && gsig) {
           SplitDecision *d = fa->ledger_find(es->fun, cur_split_stage, avpos, part, gsig);
           if (!d)
             fa->ledger_add(es->fun, cur_split_stage, avpos, part, gproduct, gsig);
