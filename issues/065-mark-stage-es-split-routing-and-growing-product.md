@@ -117,3 +117,38 @@ The blocker is exactly the missing **mark/setter-aware group signature**
 (065 gap 1): the type-only `group_signature` can't key setter-class
 groups, so the routing has nothing stable to route to. That signature is
 the concrete next build.
+
+## Update 2026-07-23 (branch, deepest): why setter-class routing is hard, and the concrete signature design
+
+Traced why a setter-class-keyed routing isn't already there. A setter
+class is a `Setters` = a *set of setter AVars*, canonicalized
+(`setters_cannonicalize`, fa.cc:4825) by hashing its sorted **AVar
+pointers**. An AVar is per-(Var, EntrySet); the ES structure is exactly
+what the splitter is mutating each pass, so the setter AVars — and thus
+the canonical `Setters` identity — **shift as splitting proceeds**. That
+is the root reason the issue-033 routing excludes the setter/mark stages
+(4442-4447): there is no cross-pass-stable key to route to, because the
+key is built from the shifting per-ES structure.
+
+**Concrete design for the fix:** key the setter-class routing on the
+setter **sites** — the writing `Var`/`PNode`s (`d[k]=v`, `l.append(x)`),
+which are stable IR, invariant to ES splitting — instead of the per-ES
+setter AVars. A `setter_site_signature(group)` would hash, for each edge
+in the group, the set of setter-site Vars feeding the split-position
+arg's element (reachable via `av->setters` → `s->container`/`s->var`,
+mapped back to the def PNode/Var). Two passes that produce the same
+element-type partition write from the same setter sites → same
+signature → stable routing target. Then extend the routing gate
+(4450) to setter/mark stages using this signature instead of the
+type-only `group_signature`.
+
+This is the single concrete build that unblocks the whole chain:
+stable setter-site-keyed routing → the container methods split per
+element-CS stably in the main loop → the container-element union stops
+growing (dijkstra2 converges) → the per-caller method display is no
+longer load-bearing, so methods can be `nesting_depth 0` (064 dissolves,
+`recursive_polymorphic`'s per-level separation now comes from the CS
+split). Estimated as a focused but non-trivial change to `group_signature`
++ the routing gate + `decide_entry_set_split`'s setter path; the risk is
+the usual issue-033 fragility, so it needs the full suite + corpus
+determinism gate at each step.
