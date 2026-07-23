@@ -62,7 +62,7 @@ bool is_prim_send(PNode *p) {
 
 // True iff this PNode is a fresh-allocation primitive whose
 // lval starts non-escaping.
-bool is_fresh_alloc(PNode *p) {
+[[maybe_unused]] bool is_fresh_alloc(PNode *p) {
   if (!is_prim_send(p)) return false;
   switch (p->prim->index) {
     case P_prim_make:
