@@ -75,3 +75,38 @@ payoff is unblocking the ES-split routing for shared methods (the
 convergence — see [065](065-mark-stage-es-split-routing.md) for the
 routing side and [063](063-no-type-bucket-triage.md) for the whole
 chain.
+
+## Correction 2026-07-23 (on branch es-split-convergence): the method display is NOT phantom — it does real work
+
+Reworking this on the branch showed the "phantom display" framing above
+is wrong, and zeroing method `nesting_depth` is the wrong direction.
+
+`recursive_polymorphic` regresses because its top-level recursive
+functions (`flatten_sum`, `g`/`h`) are **unchanged** by the fix (the
+module scope has `in == null`, so they are not misclassified as
+methods) — yet they still break. The cause: the *container methods they
+call* (`len`, `__getitem__`) get `nd = 0`, and their `nd > 0`
+caller-based display was providing **per-caller = per-recursion-level
+clone separation**. Level-descending recursion (list-of-list → list →
+int64) relies on each depth getting its own `len`/`__getitem__` contour;
+collapsing them to one contour re-fuses the levels and the recursive
+formal `x` unions all depths' types (`illegal call argument type 'x'
+illegal: int64`). So the method display is genuine precision, and
+`group_display_ok` is *correctly* refusing to route a group across
+distinct caller displays (that would merge per-caller contours and lose
+that precision).
+
+**Consequence for the plan:** 064 as "give methods nesting_depth 0" is a
+dead end — the routing block is a symptom of a genuinely-needed
+per-caller display, not a bug. The oscillation's real root is the
+**growing union** (issue [065](065-mark-stage-es-split-routing-and-growing-product.md)
+gap 2 / issue 043 shape B): the shared container methods over a
+heterogeneous-element union keep widening, so the per-caller contours
+churn. The productive order is therefore **shape B first** — stop the
+union from growing by keeping the container-internal element operations
+from dispatching per-arm over the union (a tolerant comparison primitive,
+the global-`==`→`prim_is` lever that DID converge, generalized to
+identity-for-objects / value-for-value-types). With the union stable, the
+per-caller method contours stop churning and the existing routing +
+display machinery converge on their own — no `nesting_depth` surgery
+needed. 064/065 are downstream of that and may dissolve once it lands.
