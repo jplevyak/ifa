@@ -10,9 +10,12 @@ inference family
 ([040](closed/040-empty-list-shared-clone-type-inference.md) /
 [043](closed/043-empty-container-inference-options.md) /
 [052](052-shared-method-branch-reopens-empty-list-fragility.md)); both
-FA roots remain open and both are blocked on the same per-receiver
-method-cloning precision (issues 033/045). Net corpus effect of what
-landed: **39 → 51 pyc→C compiles, zero regressions.**
+FA roots remain open and both reduce to the same lever —
+**CreationSet-level (element-type) splitting of shared container
+methods**, NOT anything receiver-specific (a mid-investigation draft
+that blamed "per-receiver cloning" was wrong and is corrected in that
+section). Net corpus effect of what landed: **39 → 51 pyc→C compiles,
+zero regressions.**
 
 ## The bucket
 
@@ -138,41 +141,79 @@ def __ne__(self, x): return not __pyc_primitive__(__pyc_symbol__("is"), self, x)
 is **semantically correct and passes the full suite both backends
 (227/227)**, and fixes the repros above — but in the corpus sweep it
 **regresses dijkstra2 (COMPILED → FAIL) with zero offsetting gains**, so
-it was reverted. Two independent reasons it does not pay off yet:
+it was reverted.
 
-1. **FA shared-clone operand union (the 033/040/052 precision family).**
-   `object.__eq__(self, x)` is one method body inherited by every class;
-   `x` is unconstrained, so a single shared clone unions *every* `==`
-   operand in the program. dijkstra2 keys a dict by `Vertex` and stores
-   `float` distances; the shared `__eq__` clone's `x` becomes
-   `(float64 Vertex)`, which then flows illegally
-   (`illegal call argument type '( float64 Vertex )'`). The fix needs
-   the default comparison methods **cloned per receiver CS** (the
-   issue 045 `clone_methods_per_cs` / `PER_CS_RECEIVER` machinery) so
-   each receiver's `__eq__` sees only its own operands — the same
-   splitting-precision wall this whole family keeps hitting. Marking
-   `object` itself `clone_methods_per_cs` is far too broad (every user
-   class) — a targeted lever, or a frontend lowering of override-less
-   `==`/`!=` straight to `prim_is`, is the real shape.
-2. **No net corpus gain.** Only chull's no-type is object-comparison-
-   rooted; the other high-count examples (amaze 224, doom 145,
-   rubik 217, othello2 265, …) are unchanged by the default — their
-   no-types have other roots (empty-container unions, dead union
-   cross-products, etc.). And chull, with its no-type cleared, still
-   fails on its `(null)*` None-list residual (issue 061's sibling), so
-   even it does not reach COMPILED.
+**Correction (traced 2026-07-22, later): the dijkstra2 regression is
+NOT a "receiver" problem, and an earlier draft of this section that
+blamed a shared `object.__eq__` clone unioning operands per call site
+was wrong.** Splitting in this analysis is uniform over *all* argument
+positions — `edge_type_compatible_with_entry_set` (fa.cc:887) iterates
+`positional_arg_positions` and splits when any position's type differs;
+the receiver is just position 0. Even the misleadingly-named
+`split_for_per_cs_method_receivers` (fa.cc:5568) scans every positional
+position. So two `__eq__` sites with different `x` types are *already*
+separated; the argument is not unioned across call sites, and nothing
+about the receiver is special. (The `PER_CS_RECEIVER` name is historical
+— that stage splits on CreationSet *identity* for `clone_methods_per_cs`
+classes, i.e. same *type* / different *CS*; those classes just happen to
+sit in the `self` slot.)
+
+What actually happens (verified via the violation call-traces): the
+illegal union lands on `object.__eq__`'s `x`, but **every call site is a
+container method comparing an element** — `dict.__getitem__`'s
+`self._keys[i] == key`, `list.__eq__`'s `l[i] != self[i]`,
+`list.__contains__`'s `x == item`. `list`/`dict` are *not* on the
+`clone_methods_per_cs` track, so those methods are shared across every
+container CreationSet of the same type regardless of element type, and
+the element AVar inside is already the union of all element types in the
+program (`(float64 Vertex)`, `(list Vertex)` in dijkstra2 — its dicts
+mix `Vertex→float` and `Vertex→list`; its lists mix `list[Vertex]` and
+`list[tuple]`). Adding `object.__eq__` did not *create* that union — it
+made the previously-unresolved element comparison *resolve* to the
+identity primitive, whose argument-type check (fa.cc:1860) then flags
+the pre-existing union as illegal. The `(float64 Vertex)` shape is
+additionally a representation-incompatible union — an unboxed scalar
+unioned with a pointer, which a single identity/pointer comparison
+genuinely cannot do (issue 060 territory).
+
+So the two real gaps are (a) **CS-based (element-type) splitting of
+shared container methods** — separating `list[Vertex].__eq__` from
+`list[tuple].__eq__`, same *type* different *CS*, which type-based
+splitting is structurally blind to (issue 043 "shape B"), and (b)
+**representation-split unions at an identity site** (issue 060). Neither
+is about the receiver, and neither is about `object.__eq__` — that
+method was only the messenger that surfaced a pre-existing
+container-element union. Minimal 2-container repros (even a single
+polymorphic `x in lst` call site — `rc2.py`) *do* compile: the splitter
+separates them at small scale, so dijkstra2's failure is a
+scale/shape-specific splitter-precision limit (no stall fired — the
+analysis converged; it simply had no violation forcing container
+separation), consistent with the 040/043/052 family.
+
+**No net corpus gain either.** Only chull's no-type is object-
+comparison-rooted; the other high-count examples (amaze 224, doom 145,
+rubik 217, othello2 265, …) are unchanged by the default — their
+no-types have other roots. And chull, with its no-type cleared, still
+fails on its `(null)*` None-list residual (issue 061's sibling), so even
+it does not reach COMPILED.
 
 ### Takeaway
 
 The "no type" bucket is genuinely multi-rooted; there is no single FA
 fix that clears it. The three landed codegen-robustness fixes (above)
 are the honest, safe, net-positive stopgap (39 → 51, zero regressions).
-The two real FA root fixes each need the per-receiver method-cloning
-precision that issues 033/040/045/052 circle:
-- **object comparison** (this update) — needs override-less `==`/`!=`
-  to resolve to identity *per receiver* without unioning operands.
+The remaining FA roots are:
+- **object comparison** — needs a default identity `==`/`!=` for
+  override-less classes (correct and suite-clean in isolation), but it
+  only pays off once the *container* methods it flows through are split
+  per element-CS (issue 043 shape B) and identity tolerates / avoids
+  representation-split operands (issue 060). Not a receiver problem.
 - **empty-container / optional-object element typing** (issue 043) —
-  needs the union/absorption or per-contour CS split described there.
-Both are blocked on the same splitter-precision investment, not on any
-local patch. `tests/`-worthy repros for the object-comparison root are
-kept in this issue for whoever picks up the per-receiver lever.
+  the same CS-per-element-type splitting, plus the union/absorption
+  design there.
+Both reduce to the same investment: **CreationSet-level (element-type)
+splitting of shared container methods**, which the current
+violation-driven splitter leaves merged because no violation forces the
+separation. That is the real lever — not per-receiver anything.
+Object-comparison repros (`rc.py`, `rc2.py` shapes) are kept in this
+issue for whoever picks it up.
