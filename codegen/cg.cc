@@ -636,7 +636,14 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
           int fidx = atoi(n->rvals[o + 1]->sym->constant);
           if (fidx < 0) fidx += t->has.n;
           Sym *field_type = (fidx >= 0 && fidx < t->has.n && t->has[fidx]) ? t->has[fidx]->type : nullptr;
-          if (resolve_uniform_size(field_type)) {
+          if (resolve_uniform_size(field_type) && cg_get_string(n->lvals[0])) {
+            // A dead/nameless destination (cg_get_string == null) would
+            // emit `(null) = ...` -- a raw C error ("expression is not
+            // assignable"). The non-record sibling above already guards
+            // with n->lvals[0]->live; a constant record-index getter into
+            // a salvaged (no-type) contour reaches here without a name,
+            // so skip the dead read (issue 025 "no type" bucket: amaze,
+            // voronoi2).
             // The struct's own field declaration follows field_type's
             // *nominal* type, which for a Type_SUM field is whatever
             // representative the struct-emission pass picked (often
