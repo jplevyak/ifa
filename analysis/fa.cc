@@ -2403,6 +2403,17 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
              file, line);
         break;
       }
+      case P_prim_tuple_lt:
+      case P_prim_tuple_eq:
+        // Tuple comparison (issue 025): the result is always a plain
+        // bool. Codegen builds the per-field lexicographic comparison
+        // from the operands' concrete field types (cg.cc), so FA needs
+        // only the result type here -- deliberately NOT modelling any
+        // element-wise comparison (that is exactly the union-collapsing
+        // the Python-level loop hit). Operands' element AVars are
+        // untouched: their types flow normally, codegen reads them.
+        update_gen(result, fa->type_world.bool_type);
+        break;
     }
   }
 }

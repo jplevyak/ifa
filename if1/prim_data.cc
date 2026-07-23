@@ -61,6 +61,8 @@ Prim *prim_await = 0;
 Prim *prim_copy = 0;
 Prim *prim_yield = 0;
 Prim *prim_id = 0;
+Prim *prim_tuple_lt = 0;
+Prim *prim_tuple_eq = 0;
 
 void prim_init(Primitives *p, IF1 *if1) {
   char *n;
@@ -470,4 +472,18 @@ void prim_init(Primitives *p, IF1 *if1) {
   n = (char *)if1->strings.put((char *)"id");
   p->prims.add(prim_id);
   p->prim_map[0][0].put(n, prim_id);
+
+  static PrimType prim_tuple_lt_arg_types[] = {PRIM_TYPE_ANY, PRIM_TYPE_ANY};
+  static PrimType prim_tuple_lt_ret_types[] = {PRIM_TYPE_ANY};
+  prim_tuple_lt = new Prim(61, "tuple_lt", "prim_tuple_lt", -3, 0, 1, prim_tuple_lt_arg_types, prim_tuple_lt_ret_types, 0);
+  n = (char *)if1->strings.put((char *)"tuple_lt");
+  p->prims.add(prim_tuple_lt);
+  p->prim_map[0][0].put(n, prim_tuple_lt);
+
+  static PrimType prim_tuple_eq_arg_types[] = {PRIM_TYPE_ANY, PRIM_TYPE_ANY};
+  static PrimType prim_tuple_eq_ret_types[] = {PRIM_TYPE_ANY};
+  prim_tuple_eq = new Prim(62, "tuple_eq", "prim_tuple_eq", -3, 0, 1, prim_tuple_eq_arg_types, prim_tuple_eq_ret_types, 0);
+  n = (char *)if1->strings.put((char *)"tuple_eq");
+  p->prims.add(prim_tuple_eq);
+  p->prim_map[0][0].put(n, prim_tuple_eq);
 }

@@ -266,11 +266,130 @@ static void destruct_prim(FILE *fp, Var *l, Var *r) {
   }
 }
 
+// issue 025 (tictactoe): emit tuple.__lt__/__eq__ as a lexicographic,
+// per-field comparison over the tuple's CONCRETE field types (the
+// variable-index Python loop collapses heterogeneous element types to a
+// union). Recurses for nested tuples. Option A: element types beyond
+// int/float/bool/str/nested-tuple return false so the caller diagnoses.
+static bool cg_is_tuple_record(Sym *s) {
+  // A tuple is a Type_RECORD with no classtag (user classes carry one);
+  // lists/vectors are not Type_RECORD.
+  return s && s->type_kind == Type_RECORD && !cg_has_classtag(s);
+}
+static bool emit_tuple_lt_expr(FILE *fp, cchar *a, cchar *b, Sym *ts, Sym *tt);
+static bool emit_tuple_eq_expr(FILE *fp, cchar *a, cchar *b, Sym *ts, Sym *tt);
+
+// element-type classification shared by the lt/eq emitters.
+static bool elem_is_str(Sym *ft) { return ft == sym_string || sym_string->specializers.set_in(ft); }
+
+// Emit "(x < y)" for one element; fx/fy are the two operands' field
+// types (they normally match; a numeric int-vs-float pair is fine and C
+// promotes it). Mismatched kinds (e.g. int vs str) is a TypeError in
+// Python, so we return false and the caller diagnoses (option A).
+static bool emit_elem_lt(FILE *fp, cchar *x, cchar *y, Sym *fx, Sym *fy) {
+  if (!fx || !fy) return false;
+  if (fx->num_kind && fy->num_kind) { fprintf(fp, "(%s < %s)", x, y); return true; }
+  if (elem_is_str(fx) && elem_is_str(fy)) { fprintf(fp, "(_CG_str_lt(%s, %s))", x, y); return true; }
+  if (cg_is_tuple_record(fx) && cg_is_tuple_record(fy)) return emit_tuple_lt_expr(fp, x, y, fx, fy);
+  return false;  // option A: unsupported / cross-kind element type
+}
+// Emit "(x == y)" for one element. Cross-kind operands (int vs str, etc.)
+// are never equal in Python, so emit constant 0; genuinely unsupported
+// kinds return false to diagnose.
+static bool emit_elem_eq(FILE *fp, cchar *x, cchar *y, Sym *fx, Sym *fy) {
+  if (!fx || !fy) return false;
+  if (fx->num_kind && fy->num_kind) { fprintf(fp, "(%s == %s)", x, y); return true; }
+  if (elem_is_str(fx) && elem_is_str(fy)) { fprintf(fp, "(_CG_str_eq(%s, %s))", x, y); return true; }
+  if (cg_is_tuple_record(fx) && cg_is_tuple_record(fy)) return emit_tuple_eq_expr(fp, x, y, fx, fy);
+  bool sx = fx->num_kind || elem_is_str(fx) || cg_is_tuple_record(fx);
+  bool sy = fy->num_kind || elem_is_str(fy) || cg_is_tuple_record(fy);
+  if (sx && sy) { fputs("0", fp); return true; }  // supported but different kinds -> unequal
+  return false;
+}
+// Lexicographic <, comparing the common prefix field-by-field; if the
+// prefix is all-equal the shorter tuple is less. ts/tt are the operands'
+// concrete (possibly different-arity) record types.
+static bool emit_tuple_lt_expr(FILE *fp, cchar *a, cchar *b, Sym *ts, Sym *tt) {
+  // ( LT(a.e0,b.e0) ? 1 : LT(b.e0,a.e0) ? 0 : ... : (len(a) < len(b)) )
+  // C ternary is right-associative: first differing field decides, else
+  // the shorter tuple is the smaller one.
+  cchar *tca = cg_get_string(ts), *tcb = cg_get_string(tt);
+  int n = ts->has.n < tt->has.n ? ts->has.n : tt->has.n;
+  fputs("(", fp);
+  for (int i = 0; i < n; i++) {
+    Sym *fa = ts->has[i] ? ts->has[i]->type : nullptr;
+    Sym *fb = tt->has[i] ? tt->has[i]->type : nullptr;
+    char ax[1024], bx[1024];
+    snprintf(ax, sizeof(ax), "((%s)%s)->e%d", tca, a, i);
+    snprintf(bx, sizeof(bx), "((%s)%s)->e%d", tcb, b, i);
+    if (!emit_elem_lt(fp, ax, bx, fa, fb)) return false;
+    fputs(" ? 1 : ", fp);
+    if (!emit_elem_lt(fp, bx, ax, fb, fa)) return false;
+    fputs(" ? 0 : ", fp);
+  }
+  fputs(ts->has.n < tt->has.n ? "1)" : "0)", fp);
+  return true;
+}
+static bool emit_tuple_eq_expr(FILE *fp, cchar *a, cchar *b, Sym *ts, Sym *tt) {
+  if (ts->has.n != tt->has.n) { fputs("0", fp); return true; }  // different arity -> never equal
+  if (!ts->has.n) { fputs("1", fp); return true; }
+  cchar *tca = cg_get_string(ts), *tcb = cg_get_string(tt);
+  fputs("(", fp);
+  for (int i = 0; i < ts->has.n; i++) {
+    if (i) fputs(" && ", fp);
+    Sym *fa = ts->has[i] ? ts->has[i]->type : nullptr;
+    Sym *fb = tt->has[i] ? tt->has[i]->type : nullptr;
+    char ax[1024], bx[1024];
+    snprintf(ax, sizeof(ax), "((%s)%s)->e%d", tca, a, i);
+    snprintf(bx, sizeof(bx), "((%s)%s)->e%d", tcb, b, i);
+    if (!emit_elem_eq(fp, ax, bx, fa, fb)) return false;
+  }
+  fputs(")", fp);
+  return true;
+}
+
 static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
   int o = (n->rvals.v[0]->sym == sym_primitive) ? 2 : 1;
   switch (n->prim->index) {
     default:
       return 0;
+    case P_prim_tuple_lt:
+    case P_prim_tuple_eq: {
+      // rvals: [primitive, tuple_lt/eq, a, b]; result in lvals[0].
+      Var *a = n->rvals[o], *b = n->rvals[o + 1];
+      if (!n->lvals.n || !cg_get_string(n->lvals[0])) { fputs("  ;\n", fp); break; }
+      cchar *dst = cg_get_string(n->lvals[0]);
+      Sym *ts = a->type, *tt = b->type;
+      // The common (well-typed) case is two concrete same-shape tuple
+      // records. A union / non-tuple operand or an unsupported element
+      // type means an upstream type-inference failure reached here (see
+      // the "no type" corpus bucket, ifa/issues/025); rather than emit
+      // wrong code we degrade to a runtime-error assert when
+      // fruntime_errors is on (the salvage convention, issue 056) so the
+      // rest of the program still compiles, and only fail() the compile
+      // outright when runtime checks are disabled. Buffer the expression
+      // first so a partway-through element-type miss cleanly falls back.
+      bool ok = cg_is_tuple_record(ts) && cg_is_tuple_record(tt);
+      char *buf = nullptr;
+      size_t bufsz = 0;
+      if (ok) {
+        FILE *mb = open_memstream(&buf, &bufsz);
+        ok = (n->prim->index == P_prim_tuple_lt)
+                 ? emit_tuple_lt_expr(mb, cg_get_string(a), cg_get_string(b), ts, tt)
+                 : emit_tuple_eq_expr(mb, cg_get_string(a), cg_get_string(b), ts, tt);
+        fclose(mb);
+      }
+      if (ok) {
+        fprintf(fp, "  %s = %s;\n", dst, buf);
+      } else if (!fruntime_errors) {
+        codegen_fail(n, "tuple comparison operand is not a single tuple type or has an "
+                        "unsupported element type (issue 025 option A)");
+      } else {
+        fprintf(fp, "  assert(!\"runtime error: unresolved tuple comparison\"); %s = 0;\n", dst);
+      }
+      if (buf) free(buf);
+      break;
+    }
     case P_prim_make:
       if (sym_tuple->specializers.set_in(n->rvals[2]->sym)) {
       Ltuple:
@@ -517,7 +636,14 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
           int fidx = atoi(n->rvals[o + 1]->sym->constant);
           if (fidx < 0) fidx += t->has.n;
           Sym *field_type = (fidx >= 0 && fidx < t->has.n && t->has[fidx]) ? t->has[fidx]->type : nullptr;
-          if (resolve_uniform_size(field_type)) {
+          if (resolve_uniform_size(field_type) && cg_get_string(n->lvals[0])) {
+            // A dead/nameless destination (cg_get_string == null) would
+            // emit `(null) = ...` -- a raw C error ("expression is not
+            // assignable"). The non-record sibling above already guards
+            // with n->lvals[0]->live; a constant record-index getter into
+            // a salvaged (no-type) contour reaches here without a name,
+            // so skip the dead read (issue 025 "no type" bucket: amaze,
+            // voronoi2).
             // The struct's own field declaration follows field_type's
             // *nominal* type, which for a Type_SUM field is whatever
             // representative the struct-emission pass picked (often
@@ -1596,6 +1722,20 @@ static void do_phi_nodes(FILE *fp, PNode *n, int isucc) {
 
 // is_const_folded_send moved to codegen_common.cc
 
+// A Code_LABEL emits its `L%d:;` only when it is live && fa_live (see
+// below). A jump to a label FA salvaged to not-live would therefore
+// reference an undeclared label -- a raw C compile error (the dominant
+// terminal failure of the "no type" corpus bucket: amaze/doom/mwmatching/
+// rdb/sha/softrender/voronoi2/yopyra). Such a jump is on a dead/salvaged
+// path by construction, so degrade it to a runtime-error trap (the
+// salvage convention, issue 056) instead of emitting the dangling goto.
+static void emit_goto_or_trap(FILE *fp, PNode *target, int label_id) {
+  if (target && target->live && target->fa_live)
+    fprintf(fp, "  goto L%d;\n", label_id);
+  else
+    fputs("  assert(!\"runtime error: jump to unreachable block\");\n", fp);
+}
+
 static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done) {
   if (n->live && n->fa_live) switch (n->code->kind) {
       case Code_LABEL:
@@ -1651,14 +1791,14 @@ static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done
           if (done.set_add(n->cfg_succ[0]))
             write_c_pnode(fp, fa, f, n->cfg_succ[0], done);
           else
-            fprintf(fp, "  goto L%d;\n", n->code->label[0]->id);
+            emit_goto_or_trap(fp, n->cfg_succ[0], n->code->label[0]->id);
           fprintf(fp, "  } else {\n");
           do_phy_nodes(fp, n, 1);
           do_phi_nodes(fp, n, 1);
           if (done.set_add(n->cfg_succ[1]))
             write_c_pnode(fp, fa, f, n->cfg_succ[1], done);
           else
-            fprintf(fp, "  goto L%d;\n", n->code->label[1]->id);
+            emit_goto_or_trap(fp, n->cfg_succ[1], n->code->label[1]->id);
           fputs("  }\n", fp);
         }
       } else {
@@ -1668,7 +1808,7 @@ static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done
       break;
     case Code_GOTO:
       do_phi_nodes(fp, n, 0);
-      if (n->live && n->fa_live) fprintf(fp, "  goto L%d;\n", n->code->label[0]->id);
+      if (n->live && n->fa_live) emit_goto_or_trap(fp, n->cfg_succ.n ? n->cfg_succ[0] : nullptr, n->code->label[0]->id);
       break;
     case Code_SEND:
       if ((!n->live || !n->fa_live) && n->prim && n->prim->index == P_prim_reply)
