@@ -71,3 +71,49 @@ shape-B fix (CS-level element-type separation of shared container
 methods) so the union stops growing in the first place. Routing alone
 (1+2) reduces the oscillation ~6.5x but cannot close it while (3) leaves
 the union growing.
+
+## Update 2026-07-23 (branch): the existing per-CS lever is constant-oriented and cannot do element-type separation
+
+With the user's note that the display machinery is *for nested
+functions* (so a method carrying a per-caller display is a misuse, and
+container-method per-recursion-level separation should come from
+CS-level splitting, not the display), the plan is: **shape B first** —
+give container methods proper per-element-CS separation, after which
+methods can legitimately be `nesting_depth 0` and the display is
+reserved for real closures.
+
+Tested the obvious lever — route `list` CSs into `PER_CS_RECEIVER` by
+setting `sym_list->clone_methods_per_cs = 1` (the same flag
+`__list_iter__`/`range` use) together with methods `nd = 0`. **Badly
+net-negative: suite 227/0 → 200/27** (widespread `matching function not
+found` runtime crashes; `recursive_polymorphic`'s formal changed
+`int64` → `list` but still didn't separate). Reason:
+`clone_methods_per_cs` is the **constant**-cloning track (per-constant
+instance CSs via `creation_point` skipping split-parent reuse); applied
+to `list` it over-mints list CSs per creation site and shatters dispatch.
+It separates by *constant*, not by *element type*.
+
+So shape B needs a **new, demand-driven, element-type** mechanism, not a
+reuse of the constant lever. The pieces are already half-present and
+converge with issue 065:
+
+- The **setter→creation-point CS split** already separates the container
+  CSs by element type, stably (confirmed).
+- The **setter-driven ES split** (`split_ess_setters`) already tries to
+  split the container METHOD contour per setter class (= element type) —
+  but it re-mints every pass because it is excluded from the issue-033
+  product routing (065 gap 1), and the product then re-splits on the
+  growing union (065 gap 2).
+
+Therefore shape B ≈ **a stable, setter-class-keyed ES-split product
+routing** for the container methods, driven by the element-type
+(setter-class) confluence, running in the main split loop (not the
+quiescence-only `PER_CS_RECEIVER`, since the oscillating case never
+quiesces). That single mechanism would: (a) separate `list`/`dict`
+methods per element-CS in the main loop, replacing the per-caller
+display so methods can be `nd 0` (dissolving 064), and (b) stop the
+container-element union from growing (dissolving dijkstra2's stall).
+The blocker is exactly the missing **mark/setter-aware group signature**
+(065 gap 1): the type-only `group_signature` can't key setter-class
+groups, so the routing has nothing stable to route to. That signature is
+the concrete next build.
