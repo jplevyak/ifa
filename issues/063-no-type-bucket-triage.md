@@ -262,3 +262,64 @@ of shared container methods** (issue 043 shape B) — separate
 each `self._keys[i]`/`self._vals[i]` is monomorphic — or, equivalently,
 make container-internal element comparison a tolerant primitive. All
 experiments reverted; tree clean, suite 227/0.
+
+## Update 2026-07-23: pursued the stable per-receiver-CS ES-split fix — root found, fix direction works (242→37) but couples to the closure machinery
+
+Traced why the shared comparison/container-method ES splits oscillate and
+found the precise blocker, then a fix direction that dramatically helps
+but doesn't land cleanly yet.
+
+**The CS split works.** The setter→creation-point creation-set split
+(`split_css`) fires correctly and *stably* on dijkstra2 (3 dict + 4 list
+CS splits, 0 DUP re-derivations). It is not the problem.
+
+**The blocker is `group_display_ok` gating the issue-033 ES-split product
+routing.** Instrumenting the routing decision (fa.cc:4453): of the failed
+routes, ~68% (15/22) fail `group_display_ok`, on exactly the oscillating
+methods (`__eq__`, `__lt__`, `__pyc_to_bool__`, `len`, `__getitem__`).
+Those methods have `nesting_depth == 1`, so the display machinery treats
+them as closures that capture their *dynamic caller's* frame; the split
+group therefore spans many caller displays, `group_display_ok` returns
+false, routing is skipped, and a fresh product is minted every pass →
+non-convergence.
+
+**Why methods have `nesting_depth 1`:** `python_ifa_build_syms.cc`
+(`def_fun_pyda`) computed `nesting_depth = scope_stack.n - 1`, which
+counts the enclosing CLASS-body scope. But a class body is not a runtime
+closure frame a method captures via a display (methods reach class state
+through `self`/globals; pyc synthesizes closure-carrier classes for real
+closures anyway — the issue-001 note). So the class level is a phantom
+display level, and it is what blocks the routing.
+
+**The fix direction works.** Setting methods' `nesting_depth` to 0 drops
+dijkstra2 from **242 violations (stall) to 37 (best 25)** and eliminates
+all the DISPLAY route-fails — the shared methods' splits now route
+stably. That is the mechanism the whole "no type"/dijkstra2 stall hinges
+on, confirmed.
+
+**Why it doesn't land as-is (2 remaining problems):**
+1. **Closure-carrier coupling.** `nesting_depth` is shared with the
+   issue-001 closure-carrier synthesis: the synthesized `class closure`
+   carriers ARE real closures and need `nesting_depth > 0`, but a naive
+   "methods → 0" (immediate enclosing scope is a class) catches them too,
+   regressing `recursive_polymorphic` (a `class closure:: illegal call
+   argument type` type error) plus `match_none`/`match_seq`/
+   `exception_propagation` (compile-output diffs). A correct fix must
+   distinguish a genuine user/builtin method from a synthesized
+   closure-carrier method (carriers are created via
+   `maybe_synthesize_closure_pyda`, in the build_if1 pass), or
+   co-modify the display-building side so lexical depth and the runtime
+   display array stay consistent.
+2. **Residual setter/mark-stage oscillation.** Even with methods at 0,
+   ~27 DUP re-derivations remain, now on the SETTER/MARK-stage splits of
+   `__len__`/`len`/`__getitem__`/`__setitem__` — which are deliberately
+   excluded from the issue-033 type-partition routing (fa.cc:4442-4447,
+   "setter classes aren't characterized by a type partition"). Closing
+   these needs a setter-class-keyed routing ledger, a second step.
+
+Net: the "stable per-receiver-CS ES split" reduces to **(a) give real
+methods `nesting_depth 0`** (unblocks the type-stage routing — the big
+win, 242→37) **and (b) add setter-class-keyed product routing** for the
+residual setter-stage splits. (a) is gated on cleanly separating methods
+from closure-carriers; both are real but bounded follow-ups. All
+experiments reverted; suite 227/0.
