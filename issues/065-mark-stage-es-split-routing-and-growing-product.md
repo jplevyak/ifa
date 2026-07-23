@@ -152,3 +152,46 @@ split). Estimated as a focused but non-trivial change to `group_signature`
 + the routing gate + `decide_entry_set_split`'s setter path; the risk is
 the usual issue-033 fragility, so it needs the full suite + corpus
 determinism gate at each step.
+
+## Update 2026-07-23 (branch): the element-CS split needs a NEW main-loop CS-fan-out; PER_CS_RECEIVER can't do it
+
+Setter-site routing (committed) fixed the setter/mark-stage re-mint
+(dijkstra2 242→72), leaving two coupled residuals: dijkstra2's type-stage
+method DUPs (`__eq__`/`__lt__`/`__pyc_to_bool__`, blocked by 064's method
+display) and `recursive_polymorphic`'s level re-fusion. Both hinge on the
+same missing mechanism: **split a container method by receiver
+element-CS** (same `list` type, different element CS — `list[list]` vs
+`list[int]`).
+
+Tested the obvious lever: make `cs_is_per_cs_method_class` accept `list`
+CSs (per-CS *method* split only, WITHOUT the `clone_methods_per_cs`
+constant-cloning flag that caused the 200/27 blow-up) + methods `nd 0`.
+**It does not work, and the reason is decisive:**
+
+- With methods `nd 0`, `recursive_polymorphic` **stalls** (pass 8, 8
+  re-deriving) instead of converging — the method display was the only
+  thing separating the recursion levels through `len`/`__getitem__`, and
+  removing it collapses them to a union.
+- `PER_CS_RECEIVER` **never fires** (`[per-cs]: 0`) because it runs only
+  on full quiescence of stages 1-5 — which the stall prevents. Circular:
+  quiescence needs the per-CS split, the per-CS split needs quiescence.
+- Even if it ran, `PER_CS_RECEIVER` does **not fan out a union receiver**:
+  it (and `clone_methods_per_cs`) work by separating CSs *at creation*
+  (`creation_point` per-contour), so the method receivers are already
+  monomorphic. The recursion's union receiver (`x = {outer_list_CS,
+  inner_list_CS}` from the recursive call) is never split — `split_edges`
+  partitions *edges* by type, and all the recursive edges carry the same
+  union, so it sees one group.
+
+**Conclusion — the concrete remaining build:** a new *main-loop*
+CS-directed ES fan-out. When a method ES's receiver arg is a union of
+same-TYPE CSs with **divergent element types** (the demand signal, so no
+explosion), create one product contour per receiver CS and route each
+CS's edges/flow to it — running every pass (not on quiescence, to break
+the circularity), keyed on a **CS-identity signature** (stable via the
+CS's creation site) for issue-033 stability. That single mechanism
+unblocks both: dijkstra2 (type-stage method routing works once `nd 0`
+removes the display, and the union stops growing) and
+`recursive_polymorphic` (per-level separation now comes from the CS
+fan-out, not the display). It is a genuinely new split stage — larger
+than the setter-site signature — and is the linchpin of the whole chain.
