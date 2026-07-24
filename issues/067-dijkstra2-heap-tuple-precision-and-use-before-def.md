@@ -145,3 +145,46 @@ user-class element's method **when that method is monomorphic** (single
 clone). Both are real codegen work, but layer 3 is independently
 fixable and independently useful (any `heapq`/`sorted` over
 `(key, object)` tuples hits it), and does not require solving layer 4.
+
+## Layer 3 — implementation (2026-07-23): part B landed, part A attempted and backed out
+
+Layer 3 splits cleanly into two halves:
+
+- **Part B — codegen (LANDED, commit `9ef52f82`).** `emit_elem_lt`/
+  `emit_elem_eq` (`cg.cc`) now compare a user-class tuple element by
+  calling its resolved `__lt__`/`__eq__` clone (`cg_find_elem_compare_fun`
+  matches self/other arg types; note the method arg layout is
+  `[selector, self, other]`, so self is `positional_arg_positions[1]`).
+  Works whenever the clone already exists (verified: h4, a heap of
+  `(float,V)` with `V` compared elsewhere, compiles clean and matches
+  CPython). Zero regressions, suite 227/0. This is the whole fix for any
+  program that also compares the element outside the tuple.
+
+- **Part A — FA clone instantiation (ATTEMPTED, REVERTED).** For the pure
+  case (h1, the tuple comparison is the element's ONLY comparison), no
+  clone exists, so part B has nothing to call. The FA `tuple_lt`/`tuple_eq`
+  transfer function (`fa.cc`) must instantiate it. The scaffolding works
+  and is safe in principle: iterate each **concrete** operand tuple CS and
+  each **constant** slot (`cs->vars[i]`) — precise, no variable-index
+  union collapse — and dispatch the element method; its bool result flows
+  harmlessly into the already-bool tuple result, and codegen routes a prim
+  PNode through `write_c_prim` (ignoring `f->calls`), so no double call is
+  emitted. **The blocker:** the element method must be *dispatched by
+  selector symbol* — instance `var_map` holds only data fields, not
+  methods (confirmed: `ecs->var_map.get("__lt__")` is null even though the
+  class defines it; real method calls resolve via the `P_prim_period`
+  selector path `all_applications(p, es, selector, …)`, fa.cc:2156, not
+  var_map). Synthesizing a `__lt__` **selector AVar** in the generic ifa
+  layer (which has no pyc-symbol knowledge and no reusable selector Var at
+  a `tuple_lt` site), plus replicating the full two-arg method call with
+  per-pass idempotency and without perturbing the splitter, is deep FA
+  surgery — not a safe bounded change, so it was reverted (suite gate).
+  **Concrete next step for a dedicated effort:** obtain the element
+  method's dispatch target without a selector Var — either add a generic
+  `(class-CS, method-name) → method-value AVar` accessor (the class
+  prototype, not the instance `var_map`), or intern a selector symbol +
+  Var once and reuse it — then call `all_applications` per concrete CS /
+  constant slot as the reverted scaffold already did. A frontend
+  alternative (inject element comparisons at tuple literals) is rejected:
+  it would **execute** user `__lt__`/`__eq__` at tuple creation, changing
+  behavior for any side-effecting comparison and adding per-tuple cost.
