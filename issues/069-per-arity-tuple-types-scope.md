@@ -1,5 +1,28 @@
 # 069 — Scope: per-arity tuple types, so the class-side derive dispatches tuple comparison per shape
 
+> ## LANDED (2026-07-24): option 2' shipped — plain-Python tuple `__eq__`/`__lt__`, 067 layer 3 solved
+>
+> `__pyc__/04_sequence.py`'s tuple `__eq__`/`__lt__` are now the len-guarded,
+> constant-index, unrolled (max arity 16) plain-Python folds — no primitive.
+> Results:
+> - **067 layer 3 solved**: `h1` (heap of `(float, V)`) compiles clean (no
+>   "unresolved tuple comparison") and matches CPython; `V.__lt__` is
+>   instantiated from the ordinary `self[i] < t[i]` send — **no codegen
+>   hacks** (067 part B is now dead). dijkstra2's heap-tuple assert is gone
+>   (its remaining 12 no-types are layers 1/2/4).
+> - **Zero regressions**: full suite **229/0**; corpus **51 compiled,
+>   identical per-example status to baseline** (stereo's 16-tuples →
+>   COMPILED_C). Edge cases verified vs CPython: nested tuples (recursion
+>   via dispatch), cross-arity shorter-is-less, `sort` of tuples.
+> - **Caveat**: fixed max arity 16 (covers the corpus's largest literal).
+>   A tuple compared beyond 16 slots would silently ignore the tail; the
+>   robust removal of the bound is a per-program unroll count (frontend
+>   generation) — follow-on. The `tuple_lt`/`tuple_eq` primitives + their
+>   FA transfer + `emit_tuple_lt_expr`/067-part-B codegen are now **dead**;
+>   deleting them is a separate cleanup.
+>
+> Option 1 below is **not needed** — kept as the documented alternative.
+>
 > ## RESULT (2026-07-24): scoping option 1 found a far cheaper fix — do "option 2'" instead
 >
 > The viability probes at the bottom of this doc (the "smaller alternative")
