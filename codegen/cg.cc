@@ -282,6 +282,44 @@ static bool emit_tuple_eq_expr(FILE *fp, cchar *a, cchar *b, Sym *ts, Sym *tt);
 // element-type classification shared by the lt/eq emitters.
 static bool elem_is_str(Sym *ft) { return ft == sym_string || sym_string->specializers.set_in(ft); }
 
+// issue 067 (tuple element is a user class): find the resolved clone of a
+// user-class comparison method (`__lt__` / `__eq__`) whose self and
+// second-arg types EXACTLY match the tuple element operand types, so a
+// tuple element that is a user-class value is compared by a direct call
+// to its method -- the same clone a direct `a < b` / `a == b` reaches.
+// Returns null when the class has no such method, the element is a union
+// (no single clone), or more than one live clone matches (ambiguous
+// dispatch cannot be a direct call) -- the caller then falls back to the
+// unresolved-comparison salvage. `fa` is the codegen singleton (fa.h).
+static Fun *cg_find_elem_compare_fun(Sym *self_type, Sym *other_type, cchar *sel) {
+  Fun *found = nullptr;
+  for (Fun *fn : fa->funs) {
+    if (!fn->live || !fn->sym || !fn->sym->name) continue;
+    if (strcmp(fn->sym->name, sel)) continue;
+    // positional_arg_positions[0] is the selector-symbol arg; self is at
+    // index 1 and the compared operand at index 2 (V.__lt__(self, other)).
+    if (fn->positional_arg_positions.n < 3) continue;
+    Var *self = fn->args.get(fn->positional_arg_positions[1]);
+    Var *arg2 = fn->args.get(fn->positional_arg_positions[2]);
+    if (!self || !self->type || !arg2 || !arg2->type) continue;
+    if (self->type != self_type || arg2->type != other_type) continue;
+    if (found && found != fn) return nullptr;  // ambiguous -> bail
+    found = fn;
+  }
+  return found;
+}
+
+// Emit "(M(x, y))" calling a user-class element's `__lt__`/`__eq__` clone,
+// when both element types are the same user class carrying that method.
+// Returns false (caller diagnoses) if no single matching clone exists.
+static bool emit_user_elem_compare(FILE *fp, cchar *x, cchar *y, Sym *fx, Sym *fy, cchar *sel) {
+  if (!cg_has_classtag(fx) || !cg_has_classtag(fy)) return false;
+  Fun *cf = cg_find_elem_compare_fun(fx, fy, sel);
+  if (!cf) return false;
+  fprintf(fp, "(%s(%s, %s))", cg_get_string(cf), x, y);
+  return true;
+}
+
 // Emit "(x < y)" for one element; fx/fy are the two operands' field
 // types (they normally match; a numeric int-vs-float pair is fine and C
 // promotes it). Mismatched kinds (e.g. int vs str) is a TypeError in
@@ -291,6 +329,7 @@ static bool emit_elem_lt(FILE *fp, cchar *x, cchar *y, Sym *fx, Sym *fy) {
   if (fx->num_kind && fy->num_kind) { fprintf(fp, "(%s < %s)", x, y); return true; }
   if (elem_is_str(fx) && elem_is_str(fy)) { fprintf(fp, "(_CG_str_lt(%s, %s))", x, y); return true; }
   if (cg_is_tuple_record(fx) && cg_is_tuple_record(fy)) return emit_tuple_lt_expr(fp, x, y, fx, fy);
+  if (emit_user_elem_compare(fp, x, y, fx, fy, "__lt__")) return true;  // issue 067
   return false;  // option A: unsupported / cross-kind element type
 }
 // Emit "(x == y)" for one element. Cross-kind operands (int vs str, etc.)
@@ -301,6 +340,7 @@ static bool emit_elem_eq(FILE *fp, cchar *x, cchar *y, Sym *fx, Sym *fy) {
   if (fx->num_kind && fy->num_kind) { fprintf(fp, "(%s == %s)", x, y); return true; }
   if (elem_is_str(fx) && elem_is_str(fy)) { fprintf(fp, "(_CG_str_eq(%s, %s))", x, y); return true; }
   if (cg_is_tuple_record(fx) && cg_is_tuple_record(fy)) return emit_tuple_eq_expr(fp, x, y, fx, fy);
+  if (emit_user_elem_compare(fp, x, y, fx, fy, "__eq__")) return true;  // issue 067
   bool sx = fx->num_kind || elem_is_str(fx) || cg_is_tuple_record(fx);
   bool sy = fy->num_kind || elem_is_str(fy) || cg_is_tuple_record(fy);
   if (sx && sy) { fputs("0", fp); return true; }  // supported but different kinds -> unequal
