@@ -146,33 +146,44 @@ a variable index.
   implemented in the current primitive's codegen — porting that logic up
   into the generated fold).
 
-## Class-side derive — LANDED (2026-07-24, step 1)
+## Class-side derive — LANDED (2026-07-24)
 
-The zero-risk first step is in: `@pyc_compare` derives a **field-wise
-`__eq__`** for a record, standing up the fold-template framework.
+`@pyc_compare` derives the whole record **comparison/ordering family** as
+field-folds of ordinary sends, standing up the fold-template framework.
 
 - **Trigger:** `@pyc_compare`, recognized by bare name in the PY_classdef
   decorator scan (`python_ifa_build_if1.cc`), mirroring `@pyc_struct`;
   passed to `gen_class_pyda` as `derive_compare`. CPython shim
-  `pyc_compat.pyc_compare` gives the matching field-wise semantics
-  (`self.__dict__ == other.__dict__`) so cross-verify agrees.
-- **Synthesis:** in `gen_class_pyda` (`python_ifa_build_syms.cc`), right
-  after the `__deepcopy__` synthesis it generalizes — a BINARY fold
-  `r = True; r = r & (self.f == other.f)` over the init-store field list,
-  every step an **ordinary send** (`self.f`/`other.f` period-gets, the
-  field's own `__eq__`, `bool.__and__`). No primitive, no inline codegen.
-- **Verified:** `tests/derive_eq.py` — a `Point` (int fields) and a `Rec`
-  (int **and** str fields) compile clean and run
-  `True/False/True/False`, matching CPython; the `Rec` case proves each
-  field dispatches to its *own* `__eq__` (`int.__eq__`, `str.__eq__`).
-  Full suite **228/0** (was 227 + this test) — zero regressions, since the
-  derive is opt-in and skipped when the class defines its own `__eq__`.
+  `pyc_compat.pyc_compare` gives matching semantics (field-dict `__eq__`,
+  lexicographic `__lt__`, `functools.total_ordering` for the rest =
+  `dataclass(order=True)` for a totally-ordered record) so cross-verify
+  agrees.
+- **Synthesis:** `synthesize_derived_compare` (`python_ifa_build_syms.cc`),
+  the binary generalization of the `__deepcopy__` synthesis, generates six
+  methods, all from **ordinary sends** (period-gets + the field's own
+  comparison + bool combinators) — no primitive, no inline codegen:
+  - `__eq__`: AND fold `r = True; r = r & (self.f == other.f)`.
+  - `__lt__`: **lexicographic, straight-line** (no branches) —
+    `r = False; r = (self.f < other.f) | ((self.f == other.f) & r)` with
+    fields folded in reverse (`bool.__and__`/`__or__`).
+  - `__ne__`/`__gt__`/`__le__`/`__ge__`: delegate to derived
+    `__eq__`/`__lt__` (mirrors tuple's own reflected ops).
+  Each op is skipped when the class defines its own.
+- **Verified:** `tests/derive_eq.py` (a `Point` with int fields and a `Rec`
+  with int **and** str fields — proves each field dispatches to its own
+  `__eq__`: `int.__eq__` / `str.__eq__`) and `tests/derive_order.py` (the
+  full `< > <= >= != ==` family, incl. lexicographic first-field-decides)
+  both compile clean and match CPython. Full suite **229/0** (227 + two
+  tests) — zero regressions, since the derive is opt-in.
 
-This confirms the field-fold framework end-to-end for a binary structural
-op. Follow-ons on the class side (same machinery): `__lt__`/`__cmp__`
-(lexicographic fold), `__hash__` (combine fold), and — the actual 067
-target — porting the fold to the **tuple** side via the pre-FA recursive
-head/tail body (see findings above).
+This confirms the field-fold framework end-to-end for the comparison
+family, and the key structural shape the tuple side needs: **element
+comparison as an ordinary send** dispatching to the element's own method.
+Follow-ons: `__hash__` (a combine fold — deferred because hash *values*
+differ pyc-vs-CPython, so it can't be validated by output cross-verify the
+way comparison can) and — the actual 067 target — porting the fold to the
+**tuple** side via the pre-FA recursive head/tail body (see findings
+above).
 
 ## De-risking order
 
