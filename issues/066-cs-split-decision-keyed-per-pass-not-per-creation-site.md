@@ -109,6 +109,59 @@ so [064](064-method-phantom-display-blocks-es-split-routing.md) dissolves
 and methods can be `nesting_depth 0`), and [043](closed/043-empty-container-inference-options.md)
 shape B is subsumed.
 
+## Implementation status (2026-07-23, part 1 landed narrow)
+
+Part 1's routing is implemented in `split_css` (fa.cc), but restricted to
+the case it can do **without regression**:
+
+- **ROUTE (enforced):** when a re-derived split group's
+  `cs_group_signature` matches a *prior-pass* ledger decision whose
+  `cs_product` is a **different** CreationSet, the group is moved
+  straight into that recorded duplicate instead of minting a fresh one.
+  This is the clean CS analog of the ES product routing (fa.cc:4498).
+- **Self-product (NOT enforced, deferred):** when the recorded home *is*
+  the CS being split (`d->cs_product == cs`), routing is skipped and the
+  original mint + record-only DUP count runs unchanged. The tempting fix
+  — leave the group in `cs` — is **measured wrong**: this loop peels one
+  setter-class per iteration and keeps the remainder in `cs`, so keeping
+  the home group merges it with a different-class remainder that arrived
+  on reflow, collapsing a dispatch distinction (`pyc_declare` then
+  crashes at runtime with *"matching function not found"*; full suite
+  227/0 → 226/1). The self-product case is the **CS-side analog of
+  [065](065-mark-stage-es-split-routing-and-growing-product.md) gap 2**
+  (the ES `d->product == es` self-product re-mint) and needs the
+  phase-ordering half (part 2) — evict the remainder to *its* home and
+  pin the home group by creation site — not a peel-order hack.
+
+**Validation (swept suite + corpus for CS re-derivation):** exactly two
+programs re-derive a CS split.
+
+- `tests/pyc_declare.py` (`DUP_CS=1`) re-derives a **self-product**
+  (`924 -> 925 -> ...` re-mint of `cs 924`'s own recorded group) — the
+  *deferred* case. With part 1 it is byte-identical to baseline (self-
+  product falls back to mint). Still passes.
+- `shedskin_examples/pygmy` (`ROUTE_CS=2`, `DUP_CS=3`) is the **only**
+  program that exercises the enforced ROUTE branch: a `Shaderinfo` group
+  (sig `3897431865`, recorded home `cs 1620`) is split off a *different*
+  `cs 1327` and routed into `1620` instead of minting a duplicate
+  (SPLIT CS 6 → 5). It still compiles clean.
+
+**Landed with a known, documented caveat (2026-07-23):** ROUTE is
+zero-regression on every metric the project tracks — full suite **227/0**,
+corpus **51 compiled** (both unchanged) — but its correctness *where it
+fires* could not be verified: pygmy renders **35.7% of pixels wrong vs
+CPython even at baseline** (a pre-existing structural breakage unrelated to
+this change — it is not a valid oracle), and ROUTE swings pygmy's render
+**49%**. A pure dedup of identical-by-signature groups should be near-
+neutral; a 49% swing means ROUTE materially *merges* CS contours that the
+baseline kept separate — the same merge-into-an-existing-CS hazard class
+that made the self-product KEEP crash `pyc_declare`. Since it regresses
+nothing verifiable and completes the designed mechanism, it was landed;
+but a **verifiable ROUTE oracle** (a program where ROUTE fires *and* whose
+output can be checked against CPython) is still owed, and part 2 (phase
+ordering to make the durable CS identity sound) is the real fix for the
+merge-soundness question this leaves open.
+
 ## What this unblocks
 
 The entire "no type" / oscillation bucket that the current per-pass CS

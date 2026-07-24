@@ -5122,35 +5122,63 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
       Vec<AVar *> new_defs;
       cs->defs.set_difference(compatible_set, new_defs);
       if (new_defs.n) {
+        // Issue 066 part 1 (enforcement): the CS-side analog of the
+        // issue-033 ES product routing (4498-4513). cs_group_signature
+        // keys this split group on stable IR (cs->sym + def-Var sym ids
+        // + setter value types), so a group re-derived on a later pass
+        // is re-attached to the CreationSet it was first moved into
+        // instead of minting a fresh duplicate every pass. See the
+        // `route` predicate below for the (deliberately narrow) case
+        // this enforces and the self-product case it leaves alone.
+        uint csig = cs_group_signature(cs, compatible_set);
+        SplitDecision *d = csig ? fa->ledger_find_cs(csig) : nullptr;
+        // Route ONLY when the recorded home is a DIFFERENT CreationSet:
+        // move the re-derived group straight into that durable duplicate
+        // instead of minting a fresh one. The self-product case
+        // (d->cs_product == cs) is deliberately NOT routed here -- the
+        // group's home IS the CS we are splitting from, but so is a
+        // remainder of a different setter class that arrived on reflow,
+        // and this peel-one-class-per-iteration loop cannot keep the
+        // home group while evicting that remainder without merging the
+        // two (measured: it collapses a dispatch distinction and
+        // pyc_declare crashes with "matching function not found"). So
+        // self-product falls back to the original mint + record-only DUP
+        // count (the 065-gap-2 analog, left to the phase-ordering half).
+        bool route = d && d->pass_made != analysis_pass && d->cs_product && d->cs_product != cs;
         cs->defs.move(new_defs);
-        CreationSet *new_cs = new CreationSet(cs);
+        CreationSet *new_cs;
+        if (route) {
+          new_cs = d->cs_product;  // route into the recorded duplicate
+          ++fa->cs_dup_split_attempts;
+          log(LOG_SPLITTING, "[ledger] ROUTE CS split cs %d sym %s %d sig %u -> product cs %d (first pass %d)\n",
+              cs->id, cs->sym->name ? cs->sym->name : "", cs->sym->id, csig, new_cs->id, d->pass_made);
+        } else {
+          new_cs = new CreationSet(cs);
+          new_cs->split = cs;
+        }
         for (AVar *v : compatible_set) if (v) {
           assert(cs == v->cs_map->get(cs->sym));
           v->cs_map->put(cs->sym, new_cs);
         }
-        new_cs->split = cs;
         analyze_again = 1;
-        log(LOG_SPLITTING, "SPLIT CS %d %s %d -> %d\n", cs->id, cs->sym->name ? cs->sym->name : "", cs->sym->id,
-            new_cs->id);
-        // Issue 033 D5 (record-only): ledger this CS split decision
-        // and count cross-pass re-derivations, the CS-side analog of
-        // the ES ledger's dup_splits metric. No behavior change —
-        // enforcement (routing the group to d->cs_product instead of
-        // minting new_cs) is a separate step, gated on this metric
-        // showing re-derivation actually occurs.
-        uint csig = cs_group_signature(cs, compatible_set);
-        if (!csig) {
-          log(LOG_SPLITTING, "[ledger] CS split cs %d -> %d NO IDENTITY (unflowed setter)\n", cs->id, new_cs->id);
-        } else {
-          SplitDecision *d = fa->ledger_find_cs(csig);
-          if (!d) {
+        if (!route) {
+          log(LOG_SPLITTING, "SPLIT CS %d %s %d -> %d\n", cs->id, cs->sym->name ? cs->sym->name : "", cs->sym->id,
+              new_cs->id);
+          // Record-only ledger (issue 033 D5): first-time groups RECORD
+          // their durable home; a prior-pass re-derivation of the SAME
+          // signature is a self-product DUP (counted for the stall
+          // guard's oscillation signal, but still minted here -- see the
+          // route comment above).
+          if (!csig)
+            log(LOG_SPLITTING, "[ledger] CS split cs %d -> %d NO IDENTITY (unflowed setter)\n", cs->id, new_cs->id);
+          else if (!d) {
             fa->ledger_add_cs(csig, new_cs);
             log(LOG_SPLITTING, "[ledger] RECORD CS split cs %d sym %s %d sig %u product cs %d\n", cs->id,
                 cs->sym->name ? cs->sym->name : "", cs->sym->id, csig, new_cs->id);
           } else if (d->pass_made != analysis_pass) {  // intra-pass repeats aren't re-derivation
             ++fa->cs_dup_split_attempts;
-            log(LOG_SPLITTING, "[ledger] DUP CS split cs %d sym %s %d sig %u (first pass %d, product cs %d)\n",
-                cs->id, cs->sym->name ? cs->sym->name : "", cs->sym->id, csig, d->pass_made,
+            log(LOG_SPLITTING, "[ledger] DUP CS split cs %d sym %s %d sig %u (first pass %d, product cs %d)\n", cs->id,
+                cs->sym->name ? cs->sym->name : "", cs->sym->id, csig, d->pass_made,
                 d->cs_product ? d->cs_product->id : -1);
           }
         }
