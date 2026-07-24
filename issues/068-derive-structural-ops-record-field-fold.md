@@ -146,6 +146,34 @@ a variable index.
   implemented in the current primitive's codegen — porting that logic up
   into the generated fold).
 
+## Class-side derive — LANDED (2026-07-24, step 1)
+
+The zero-risk first step is in: `@pyc_compare` derives a **field-wise
+`__eq__`** for a record, standing up the fold-template framework.
+
+- **Trigger:** `@pyc_compare`, recognized by bare name in the PY_classdef
+  decorator scan (`python_ifa_build_if1.cc`), mirroring `@pyc_struct`;
+  passed to `gen_class_pyda` as `derive_compare`. CPython shim
+  `pyc_compat.pyc_compare` gives the matching field-wise semantics
+  (`self.__dict__ == other.__dict__`) so cross-verify agrees.
+- **Synthesis:** in `gen_class_pyda` (`python_ifa_build_syms.cc`), right
+  after the `__deepcopy__` synthesis it generalizes — a BINARY fold
+  `r = True; r = r & (self.f == other.f)` over the init-store field list,
+  every step an **ordinary send** (`self.f`/`other.f` period-gets, the
+  field's own `__eq__`, `bool.__and__`). No primitive, no inline codegen.
+- **Verified:** `tests/derive_eq.py` — a `Point` (int fields) and a `Rec`
+  (int **and** str fields) compile clean and run
+  `True/False/True/False`, matching CPython; the `Rec` case proves each
+  field dispatches to its *own* `__eq__` (`int.__eq__`, `str.__eq__`).
+  Full suite **228/0** (was 227 + this test) — zero regressions, since the
+  derive is opt-in and skipped when the class defines its own `__eq__`.
+
+This confirms the field-fold framework end-to-end for a binary structural
+op. Follow-ons on the class side (same machinery): `__lt__`/`__cmp__`
+(lexicographic fold), `__hash__` (combine fold), and — the actual 067
+target — porting the fold to the **tuple** side via the pre-FA recursive
+head/tail body (see findings above).
+
 ## De-risking order
 
 1. **Class-side derive first** — frontend-only, immediately useful
