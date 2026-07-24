@@ -82,3 +82,66 @@ vendored `finaldist` use-before-def is arguably an upstream bug, but a
 tolerant "read-before-any-write local ⇒ union with its later-assigned
 type" would let pyc compile it as CPython runs it. None of these are
 066.
+
+## Deeper dig (2026-07-23): the isolated codegen root + the four layers
+
+Minimal repros (`scratchpad/h*.py`, `d1.py`) pin the deepest blocker to a
+**codegen gap**, cleanly separated from dijkstra2's other tangles.
+
+**The isolated root — h1 (6 lines):** a `heapq` heap of `(float, V)`
+tuples where `V` is a user class with `__lt__`+`__eq__`. It **compiles
+clean but aborts at runtime**: `assert(!"runtime error: unresolved tuple
+comparison")` in `_siftdown`'s `newitem < parent`.
+
+- `tuple.__lt__` (`__pyc__/04_sequence.py:319`) lowers to the
+  `tuple_lt` **primitive**, whose C codegen
+  (`ifa/codegen/cg.cc` `emit_tuple_lt_expr` → `emit_elem_lt`) inlines the
+  element comparisons as a C ternary chain.
+- `emit_elem_lt` handles **only** numeric, string, and nested-tuple
+  elements; a **user-class element returns `false`** → the
+  salvage-assert (issue 056) fires. `emit_elem_eq` is the same for `==`.
+- Control: **h3** — the identical program with `(float, int)` tuples —
+  compiles *and runs correctly* (matches CPython). So the gap is
+  precisely "a tuple element whose type is a user class."
+- The dispatch machinery is not missing: **d1** shows a *direct*
+  `a < b` (V.`__lt__`) compiles fine; only `(0.0,a) < (0.0,b)` asserts.
+  The problem is that the whole tuple compare is ONE primitive send, so
+  the FA never instantiated an element-`__lt__` send/clone for codegen to
+  call — `emit_elem_lt` has a type Sym but no resolved contour-specific
+  clone. This is the **codegen half of [057](057-sorted-tolist-fa-nonconvergence.md)**
+  (the earlier 057 work was on the FA-convergence side, `check_split`).
+
+**The four layers of dijkstra2 (in the order pyc hits them):**
+
+1. **Compile-level "no type" — missing `object.__eq__`.** `Vertex` (has
+   `__lt__`, no `__eq__`) is a `dict` key in `dists`/`seen`/`paths`, so
+   the dict body's `if self._keys[i] == key:` (`__pyc__:1407/1414/1452`)
+   and tuple `!=`'s `if l[i] != self[i]:` (`__pyc__:751`) are unresolved.
+   This is what the *stock* repro stalls on (`wt` no type at line 108).
+2. **`finaldist` use-before-def** masks the rest (commented-out
+   `#finaldist = 1e30000`).
+3. **Tuple/user-class-element comparison** — the h1 codegen gap above.
+   Reached once 1+2 are worked around; a runtime abort, not a warning.
+4. **FA tuple-slot precision loss** — even with `__eq__`+`__hash__`
+   added, ~92 compile errors persist (`( list Vertex )`,
+   `( float64 Vertex )` rejected by primitives). The program mixes
+   **five** 2-tuple shapes — `(int,int)` coord keys, `(Vertex,int)`
+   neighs, `(float,Vertex)` heap, `(float,list)` returns — and a single
+   `dict` keyed by *both* `Vertex` and `(int,int)`. pyc's **shared**
+   generic tuple/dict comparison methods union those heterogeneous
+   element/key types, producing the scrambled `( list Vertex )` tuples.
+   This layer *is* the container-element-union family
+   ([065](065-mark-stage-es-split-routing-and-growing-product.md) /
+   043 shape B) — the shared method needs per-element-CS specialization —
+   so 066's mechanism is relevant here after all, just not via
+   `split_css` (which never fires) but via the ES-side method fan-out.
+
+**Fix assessment for layer 3 (the clean, independent bug):** the correct
+fix generates a real per-tuple-shape comparison that dispatches each
+element through normal `__lt__`/`__eq__` sends (so user-class elements
+resolve like any method call), replacing the inline-primitive expansion —
+or, as a narrower shortcut, `emit_elem_lt`/`emit_elem_eq` could call a
+user-class element's method **when that method is monomorphic** (single
+clone). Both are real codegen work, but layer 3 is independently
+fixable and independently useful (any `heapq`/`sorted` over
+`(key, object)` tuples hits it), and does not require solving layer 4.
