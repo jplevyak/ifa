@@ -14,12 +14,21 @@
 >   identical per-example status to baseline** (stereo's 16-tuples →
 >   COMPILED_C). Edge cases verified vs CPython: nested tuples (recursion
 >   via dispatch), cross-arity shorter-is-less, `sort` of tuples.
-> - **Caveat**: fixed max arity 16 (covers the corpus's largest literal).
->   A tuple compared beyond 16 slots would silently ignore the tail; the
->   robust removal of the bound is a per-program unroll count (frontend
->   generation) — follow-on. The `tuple_lt`/`tuple_eq` primitives + their
->   FA transfer + `emit_tuple_lt_expr`/067-part-B codegen are now **dead**;
->   deleting them is a separate cleanup.
+> - **Cleanup (a) DONE**: the `tuple_lt`/`tuple_eq` primitives + FA transfer
+>   + `emit_tuple_lt_expr`/067-part-B (C and LLVM) are deleted (commit
+>   `cfc61278`).
+> - **Per-program unroll (b) DONE**: the fixed-16 bound is gone. `__eq__`/
+>   `__lt__` are removed from `__pyc__` and **generated at `ast_to_if1`
+>   time** with the program's exact max tuple arity: `inject_tuple_compare`
+>   (`python_ifa_main.cc`) scans every module AST (fold-aware:
+>   `estimate_tuple_arity` sums literal `+` concats), generates the two
+>   methods at that arity, parses them (`dparse_python_buf_to_ast`), and
+>   appends the funcdefs to the builtin `tuple` class. So small programs
+>   get small methods and large-tuple programs (stereo's 16-tuples) are
+>   covered exactly — no cap. The REPL, which can't pre-scan future input,
+>   passes a generous floor (16). Verified: arity-5 tuples differing in the
+>   last slot and a `+`-concat 5-tuple both compare correctly vs CPython;
+>   suite 229/0, corpus 51 (identical status), stereo COMPILED_C.
 >
 > Option 1 below is **not needed** — kept as the documented alternative.
 >
