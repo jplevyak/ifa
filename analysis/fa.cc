@@ -17,32 +17,11 @@
 #include "prim.h"
 #include "timer.h"
 #include "var.h"
-
-/* runtime options
- */
 bool fgraph_pass_contours = false;
 int write_code_exit = 0;
-
 int analysis_pass = 0;
-
-// The 17 canonical AType pointers (bottom_type, void_type, top_type,
-// any_type, bool_type, ..., function_type) are now members of
-// TypeWorld on FA (tier-3 reentrancy step 3). See fa.h.
-
-// avar_id, aedge_id, creation_set_id, entry_set_id are now members
-// of FA (tier-3 reentrancy step 4). See fa.h.
-
 FA *fa = nullptr;
 static Timer pass_timer, match_timer, extend_timer;
-
-// cannonical_atypes / cannonical_setters / type_fold_cache /
-// type_violation_hash now live on `FA::type_world` (tier-3
-// reentrancy step 2). Access via `fa->type_world.X`.
-
-// edge_worklist, send_worklist, es_worklist, entry_set_done,
-// type_violations are now members of FA (tier-3 reentrancy step 1).
-// Access via `fa->edge_worklist` etc. inside the splitter call tree
-// (the global `fa` is set at FA::analyze entry).
 
 static int application(PNode *p, EntrySet *es, AVar *fun, CreationSet *s, Vec<AVar *> &args, Vec<cchar *> &names,
                        int is_closure, Partial_kind partial, PNode *visibility_point, Vec<CreationSet *> *closures);
