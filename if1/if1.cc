@@ -49,15 +49,22 @@ Sym *if1_const(IF1 *p, Sym *type, cchar *constant, Immediate *imm, Sym *asym) {
   if (!imm->const_kind) {
     if (type == sym_string)
       imm->const_kind = IF1_CONST_KIND_STRING;
+    else if (type == sym_bytes)
+      imm->const_kind = IF1_CONST_KIND_BYTES;
     else if (type == sym_symbol)
       imm->const_kind = IF1_CONST_KIND_SYMBOL;
     else
       assert(!"bad const");
   }
   cchar *c = if1_cannonicalize_string(p, constant);
-  // For strings and symbols, set the v_string field to the cannonicalized string
-  // so that the hash and equality functions work correctly
-  if (imm->const_kind == IF1_CONST_KIND_STRING || imm->const_kind == IF1_CONST_KIND_SYMBOL) {
+  // For strings, bytes, and symbols, set the v_string field to the
+  // cannonicalized string so that the hash and equality functions work
+  // correctly. IF1_CONST_KIND_BYTES is distinct from IF1_CONST_KIND_STRING
+  // (not merely a str/bytes flag on the same kind) so that a `str` literal
+  // and a `bytes` literal with identical text never collide in the
+  // constants cache below and return the wrong type's Sym.
+  if (imm->const_kind == IF1_CONST_KIND_STRING || imm->const_kind == IF1_CONST_KIND_BYTES ||
+      imm->const_kind == IF1_CONST_KIND_SYMBOL) {
     imm->v_string = c;
   }
   Sym *sym = p->constants.get(imm);

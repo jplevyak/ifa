@@ -1996,6 +1996,13 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
         for (CreationSet *cs : vec->out->sorted) {
           if (sym_string->specializers.set_in(cs->sym))
             update_gen(result, sym_char->abstract_type);
+          else if (sym_bytes->specializers.set_in(cs->sym))
+            // bytes shares str's exact char* buffer layout (see
+            // sym_bytes registration) but indexes/iterates to plain int,
+            // matching CPython's `bytes[i]` -- unlike sym_char, which is
+            // aliased to sym_string (python_ifa_sym.cc), sym_int is
+            // aliased to sym_int64, a genuine scalar.
+            update_gen(result, sym_int->abstract_type);
           else {
             int i;
             bool is_const = get_obj_index(index, &i, cs->vars.n);
@@ -2319,7 +2326,8 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
         for (CreationSet *cs : t->out->sorted) {
           AVar *elem = get_element_avar(cs);
           if (elem) elem->arg_of_send.add(result);
-          if ((elem && elem->out != fa->type_world.bottom_type) || sym_string->specializers.set_in(cs->sym))
+          if ((elem && elem->out != fa->type_world.bottom_type) || sym_string->specializers.set_in(cs->sym) ||
+              sym_bytes->specializers.set_in(cs->sym))
             rtype = type_union(rtype, fa->type_world.size_type);
           else
             rtype = type_union(rtype, make_size_constant_type(cs->vars.n));

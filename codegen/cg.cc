@@ -201,12 +201,13 @@ static cchar *c_rhs(Var *v) {
       // constant formatting used for global initializers.
       Sym *s = v->constant;
       if (s && s != sym_nil && v->type != sym_nil_type) {
-        if (s->imm.const_kind != IF1_NUM_KIND_NONE && s->imm.const_kind != IF1_CONST_KIND_STRING) {
+        if (s->imm.const_kind != IF1_NUM_KIND_NONE && s->imm.const_kind != IF1_CONST_KIND_STRING &&
+            s->imm.const_kind != IF1_CONST_KIND_BYTES) {
           char ss[100];
           sprint_imm(ss, sizeof(ss), s->imm);
           return dupstr(ss);
         }
-        if (s->constant && v->type == sym_string) {
+        if (s->constant && (v->type == sym_string || v->type == sym_bytes)) {
           char *x = escape_string(s->constant);
           char *r = (char *)MALLOC(strlen(x) + 20);
           STRCPYZ(r, "_CG_String(");
@@ -464,6 +465,12 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
                     cg_get_string(n->rvals[o]), cg_get_string(n->rvals[o + 1]), cg_get_string(n->rvals[o]));
           else
             fprintf(fp, "_CG_char_from_string(%s,%s);\n", cg_get_string(n->rvals[o]), cg_get_string(n->rvals[o + 1]));
+        } else if (sym_bytes->specializers.set_in(t)) {
+          if (single_idx)
+            fprintf(fp, "_CG_int_from_string(%s,_CG_norm_idx(%s,(int32)_CG_string_len(%s)));\n",
+                    cg_get_string(n->rvals[o]), cg_get_string(n->rvals[o + 1]), cg_get_string(n->rvals[o]));
+          else
+            fprintf(fp, "_CG_int_from_string(%s,%s);\n", cg_get_string(n->rvals[o]), cg_get_string(n->rvals[o + 1]));
         } else {
           fprintf(fp, "((%s", cg_get_string(e));
           for (int i = o + 1; i < n->rvals.n; i++) fprintf(fp, "*");
@@ -669,7 +676,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       fputs("  ", fp);
       if (n->lvals.n && cg_get_string(n->lvals[0])) fprintf(fp, "%s = ", cg_get_string(n->lvals[0]));
       Sym *t = n->rvals[o]->type;
-      if (sym_string->specializers.set_in(t))
+      if (sym_string->specializers.set_in(t) || sym_bytes->specializers.set_in(t))
         fprintf(fp, "_CG_string_len(%s);\n", cg_get_string(n->rvals[o]));
       else {
         assert(cg_get_string(n->rvals[o]));
@@ -1989,12 +1996,22 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
       cg_set_string(v, "NULL");
       continue;
     }
-    if (s->imm.const_kind != IF1_NUM_KIND_NONE && s->imm.const_kind != IF1_CONST_KIND_STRING) {
+    if (s->imm.const_kind != IF1_NUM_KIND_NONE && s->imm.const_kind != IF1_CONST_KIND_STRING &&
+        s->imm.const_kind != IF1_CONST_KIND_BYTES) {
       char ss[100];
       sprint_imm(ss, sizeof(ss), s->imm);
       cg_set_string(v, dupstr(ss));
     } else if (s->constant) {
-      if (v->type == sym_string) {
+      // bytes shares str's exact length-prefixed char* buffer layout
+      // (sym_bytes registration, ifa/if1/ast.cc) -- a literal materializes
+      // the same way via _CG_String regardless of which Python type wraps
+      // it. Without this branch, a `b"..."` constant fell through to the
+      // `else` below (bare s->constant, meant for numeric literals) or --
+      // before IF1_CONST_KIND_BYTES was excluded above -- got formatted
+      // as a number by sprint_imm's unhandled-case fallthrough, both
+      // producing garbage (e.g. a `bytes[i]` constant folding to the
+      // decimal ASCII value of one byte instead of the buffer pointer).
+      if (v->type == sym_string || v->type == sym_bytes) {
         char *x = escape_string(s->constant);
         cg_set_string(v, (char *)MALLOC(strlen(x) + 20));
         STRCPYZ(cg_get_string(v), "_CG_String(");

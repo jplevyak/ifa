@@ -27,8 +27,14 @@
 #endif
 
 #define round2(_x, _n) ((_x + ((_n)-1)) & ~((_n)-1))
-#define tohex1(_x) ((((_x)&15) > 9) ? (((_x)&15) - 10 + 'A') : (((_x)&15) + '0'))
-#define tohex2(_x) ((((_x) >> 4) > 9) ? (((_x) >> 4) - 10 + 'A') : (((_x) >> 4) + '0'))
+// (unsigned char) cast is required: `char` is signed on this platform, so
+// a raw high-bit-set byte (0x80-0xFF -- routine in bytes literals/binary
+// data, e.g. escape_string()'s callers) sign-extends before the shift/mask
+// below, producing a nibble outside 0-15 and a garbage non-hex-digit
+// output character instead of a hex digit (found via a corpus bytes
+// literal that escaped to an invalid `\x` C escape sequence).
+#define tohex1(_x) (((((unsigned char)(_x)) & 15) > 9) ? ((((unsigned char)(_x)) & 15) - 10 + 'A') : ((((unsigned char)(_x)) & 15) + '0'))
+#define tohex2(_x) (((((unsigned char)(_x)) >> 4) > 9) ? ((((unsigned char)(_x)) >> 4) - 10 + 'A') : ((((unsigned char)(_x)) >> 4) + '0'))
 #define numberof(_x) ((sizeof(_x)) / (sizeof((_x)[0])))
 
 #ifdef EXTERN

@@ -184,8 +184,11 @@ llvm::Type *sym_to_llvm_type(Sym *s) {
     } else if (s == sym_nil_type || s->is_symbol) {
       t = llvm::PointerType::getUnqual(*TheContext);
     } else if (s == sym_string ||
-               (sym_string && sym_string->specializers.set_in(s))) {
-      // pyc strings are typed char-ptrs.
+               (sym_string && sym_string->specializers.set_in(s)) ||
+               s == sym_bytes ||
+               (sym_bytes && sym_bytes->specializers.set_in(s))) {
+      // pyc strings/bytes are typed char-ptrs (bytes shares str's exact
+      // buffer layout, see sym_bytes registration in ifa/if1/ast.cc).
       t = llvm::PointerType::getUnqual(*TheContext);
     } else if (s->type_kind == Type_RECORD) {
       // pyc holds records by pointer.  The struct itself is
@@ -425,6 +428,11 @@ llvm::Value *value_for_var(EmitCtx &ctx, Var *v) {
         // String literal → pyc-layout global; GEP to first char.
         // Length prefix is at offset -8 from that pointer so
         // runtime helpers (_CG_string_len etc.) can read it.
+        cv = materialize_pyc_string(s->imm.v_string);
+        break;
+      case IF1_CONST_KIND_BYTES:
+        // bytes shares str's exact buffer layout (sym_bytes
+        // registration, ifa/if1/ast.cc) -- same materialization.
         cv = materialize_pyc_string(s->imm.v_string);
         break;
       case IF1_CONST_KIND_SYMBOL:
@@ -1126,6 +1134,23 @@ bool emit_send_index_load(EmitCtx &ctx, PNode *pn) {
     return true;
   }
 
+  // bytes: _CG_int_from_string(obj, (int)idx) → i64. Shares str's exact
+  // buffer layout (emit_norm_idx's is_string=true header-offset read is
+  // valid for bytes too) but CPython's `bytes[i]` yields a plain int, not
+  // a length-1 object, so no allocation, unlike the string case above.
+  if (t && sym_bytes && sym_bytes->specializers.set_in(t)) {
+    llvm::Type *i32 = llvm::Type::getInt32Ty(*TheContext);
+    llvm::Type *i64ty = llvm::Type::getInt64Ty(*TheContext);
+    llvm::Value *idx_normed = emit_norm_idx(obj, idx, /*is_string=*/true);
+    llvm::Value *idx32 = Builder->CreateTrunc(idx_normed, i32);
+    llvm::FunctionCallee fn = TheModule->getOrInsertFunction(
+        "_CG_int_from_string",
+        llvm::FunctionType::get(i64ty, {llvm::PointerType::getUnqual(*TheContext), i32}, false));
+    llvm::Value *result = Builder->CreateCall(fn, {obj, idx32});
+    put_result(ctx, dst_v, result);
+    return true;
+  }
+
   // List (not vector, not RECORD): GEP through _CG_list_ptr(obj)
   if (t && !t->is_vector && t->type_kind != Type_RECORD) {
     llvm::Value *data = load_list_data_ptr(obj);
@@ -1428,7 +1453,9 @@ static bool emit_send_len(EmitCtx &ctx, PNode *pn) {
   llvm::Type *i8 = llvm::Type::getInt8Ty(*TheContext);
   Sym *t = obj_var->type;
   bool is_string = (t == sym_string ||
-                    (sym_string && sym_string->specializers.set_in(t)));
+                    (sym_string && sym_string->specializers.set_in(t)) ||
+                    t == sym_bytes ||
+                    (sym_bytes && sym_bytes->specializers.set_in(t)));
   llvm::Value *len;
   if (is_string) {
     // String: i64 at offset -8.

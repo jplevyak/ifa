@@ -792,6 +792,14 @@ int fold_constant(int op, Immediate *aim1, Immediate *aim2, Immediate *imm) {
     case P_prim_minus:
     case P_prim_not:
     case P_prim_await:
+      // `~` (bitwise invert) is undefined on a float operand (Python
+      // raises TypeError); the DO_FOLD1I float case below has no
+      // implementation and would hit its assert(!"case") stub. This
+      // only happens when an upstream type-inference imprecision feeds
+      // a float constant into what should be an int-only op, so bail
+      // (leave unfolded) rather than crash -- same fallback the div-
+      // by-zero and string-operand cases above already rely on.
+      if (op == P_prim_not && im1.const_kind == IF1_NUM_KIND_FLOAT) return -1;
       imm->const_kind = im1.const_kind;
       imm->num_index = im1.num_index;
       break;

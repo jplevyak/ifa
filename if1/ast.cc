@@ -160,6 +160,7 @@ void init_default_builtin_types() {
   new_builtin_lub_type(sym_anynum, "anynum", 0, sym_anyint, sym_anyfloat, sym_anycomplex, NULL);
 
   new_builtin_primitive_type(sym_string, "string");
+  new_builtin_primitive_type(sym_bytes, "bytes");
 
   if1_set_primitive_types(if1);
 
