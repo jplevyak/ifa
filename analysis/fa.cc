@@ -2542,7 +2542,13 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
       if (t == fa->type_world.bottom_type) return;
       AType *b = type_intersection(t, fa->type_world.bool_type);
       AType *e = type_diff(t, b);
-      if (e != fa->type_world.bottom_type) type_violation(ATypeViolation_kind::PRIMITIVE_ARGUMENT, cond, e, nullptr);
+      if (e != fa->type_world.bottom_type) {
+        AVar *if_send = new AVar(*cond);
+        Var *vif = new Var(*cond->var);
+        vif->def = p;
+        if_send->var = vif;
+        type_violation(ATypeViolation_kind::PRIMITIVE_ARGUMENT, cond, e, if_send);
+      }
       // Note: previously this case `break`'d out (skipping
       // the per-branch blocks below) when `b == bool_type`
       // — i.e. cond was a polymorphic bool that could be
@@ -3241,96 +3247,236 @@ Lskip:
   return 0;
 }
 
+static bool extract_ast_loc(IFAAST *ast, cchar **out_filename, int *out_line, int *out_col) {
+  if (!ast) return false;
+  int sl = ast->source_line();
+  if (sl > 0 && ast->pathname()) {
+    *out_filename = ast->pathname();
+    *out_line = sl;
+    *out_col = ast->column();
+    return true;
+  }
+  return false;
+}
+
+static bool extract_pnode_loc(PNode *p, cchar **out_filename, int *out_line, int *out_col, int depth = 0) {
+  if (!p || depth > 5) return false;
+  if (p->code && extract_ast_loc(p->code->ast, out_filename, out_line, out_col)) return true;
+
+  for (PNode *pred : p->cfg_pred) {
+    if (pred && pred->code && extract_ast_loc(pred->code->ast, out_filename, out_line, out_col)) return true;
+  }
+
+  for (PNode *prev : p->phy) {
+    if (extract_pnode_loc(prev, out_filename, out_line, out_col, depth + 1)) return true;
+  }
+
+  for (Var *v : p->rvals) {
+    if (!v) continue;
+    if (v->def && v->def != p && extract_pnode_loc(v->def, out_filename, out_line, out_col, depth + 1)) return true;
+  }
+  for (Var *v : p->lvals) {
+    if (!v) continue;
+    if (v->def && v->def != p && extract_pnode_loc(v->def, out_filename, out_line, out_col, depth + 1)) return true;
+  }
+
+  for (Var *v : p->rvals) {
+    if (!v) continue;
+    if (v->sym && extract_ast_loc(v->sym->ast, out_filename, out_line, out_col)) return true;
+  }
+  for (Var *v : p->lvals) {
+    if (!v) continue;
+    if (v->sym && extract_ast_loc(v->sym->ast, out_filename, out_line, out_col)) return true;
+  }
+
+  return false;
+}
+
+static bool extract_contour_user_loc(EntrySet *es, cchar **out_filename, int *out_line, int *out_col, int depth = 0) {
+  if (!es || depth > 10) return false;
+
+  for (AEdge *e : es->edges) {
+    if (!e) continue;
+    if (e->pnode && extract_pnode_loc(e->pnode, out_filename, out_line, out_col, depth + 1)) return true;
+    if (e->from && extract_contour_user_loc(e->from, out_filename, out_line, out_col, depth + 1)) return true;
+  }
+
+  if (es->fun) {
+    if (extract_ast_loc(es->fun->ast, out_filename, out_line, out_col)) return true;
+    if (es->fun->sym && extract_ast_loc(es->fun->sym->ast, out_filename, out_line, out_col)) return true;
+  }
+
+  return false;
+}
+
+static bool find_violation_user_loc(ATypeViolation *v, cchar **out_filename, int *out_line, int *out_col) {
+  if (v->send && v->send->var && v->send->var->def) {
+    if (extract_pnode_loc(v->send->var->def, out_filename, out_line, out_col)) return true;
+  }
+
+  if (v->av && v->av->var && v->av->var->def) {
+    if (extract_pnode_loc(v->av->var->def, out_filename, out_line, out_col)) return true;
+  }
+
+  if (v->send && v->send->var && v->send->var->sym) {
+    if (extract_ast_loc(v->send->var->sym->ast, out_filename, out_line, out_col)) return true;
+  }
+
+  if (v->av && v->av->var && v->av->var->sym) {
+    if (extract_ast_loc(v->av->var->sym->ast, out_filename, out_line, out_col)) return true;
+  }
+
+  if (v->send && v->send->contour) {
+    if (extract_contour_user_loc((EntrySet *)v->send->contour, out_filename, out_line, out_col)) return true;
+  }
+  if (v->av && v->av->contour_is_entry_set && v->av->contour) {
+    if (extract_contour_user_loc((EntrySet *)v->av->contour, out_filename, out_line, out_col)) return true;
+  }
+
+  return false;
+}
+
 static void show_violations(FA *fa, FILE *fp) {
   Vec<ATypeViolation *> vv;
   for (ATypeViolation *v : fa->type_violations) if (v) vv.add(v);
   qsort(vv.v, vv.n, sizeof(vv[0]), compar_tv);
+  Vec<cchar *> printed;
   for (ATypeViolation *v : vv) if (v) {
-    if (v->send && v->send->var->def->code->source_line() > 0)
-      fprintf(fp, "%s:%d: ", v->send->var->def->code->filename(), v->send->var->def->code->source_line());
-    else if (v->av->var->sym->ast && v->av->var->sym->source_line() > 0)
-      fprintf(fp, "%s:%d: ", v->av->var->sym->filename(), v->av->var->sym->source_line());
-    else if (!v->av->contour_is_entry_set && v->av->contour != GLOBAL_CONTOUR) {
-      CreationSet *cs = (CreationSet *)v->av->contour;
-      fprintf(fp, "%s:%d: class %s:: ", cs->sym->filename(), cs->sym->source_line(), cs->sym->name);
-    } else {
-      if (fruntime_errors)
-        fprintf(fp, "warning: ");
-      else
-        fprintf(fp, "error: ");
+    char *buf = nullptr;
+    size_t size = 0;
+    FILE *memfp = open_memstream(&buf, &size);
+    if (!memfp) memfp = fp;
+
+    cchar *filename = nullptr;
+    int line = 0;
+    int col = 0;
+
+    find_violation_user_loc(v, &filename, &line, &col);
+
+    if (!filename || line <= 0) {
+      if (v->send && v->send->var && v->send->var->def && v->send->var->def->code) {
+        if (!filename) filename = v->send->var->def->code->filename();
+        if (line <= 0) line = v->send->var->def->code->line();
+      } else if (v->av && v->av->var && v->av->var->sym && v->av->var->sym->ast) {
+        if (!filename) filename = v->av->var->sym->filename();
+        if (line <= 0) line = v->av->var->sym->line();
+      } else if (v->av && !v->av->contour_is_entry_set && v->av->contour != GLOBAL_CONTOUR) {
+        CreationSet *cs = (CreationSet *)v->av->contour;
+        if (cs && cs->sym) {
+          if (!filename) filename = cs->sym->filename();
+          if (line <= 0) line = cs->sym->line();
+        }
+      }
     }
+    if ((!filename || !filename[0]) && fa->funs.n && fa->funs[0]->sym) filename = fa->funs[0]->sym->filename();
+
+    cchar *severity = fruntime_errors ? "warning" : "error";
+
+    if (filename && line > 0) {
+      if (col > 0)
+        fprintf(memfp, "%s:%d:%d: %s: ", filename, line, col, severity);
+      else
+        fprintf(memfp, "%s:%d: %s: ", filename, line, severity);
+    } else {
+      fprintf(memfp, "%s: ", severity);
+    }
+
     switch (v->kind) {
       default:
         assert(0);
       case ATypeViolation_kind::PRIMITIVE_ARGUMENT:
-        fprintf(fp, "illegal primitive argument type ");
-        show_illegal_type(fp, v);
+        fprintf(memfp, "illegal primitive argument type ");
+        show_illegal_type(memfp, v);
         break;
       case ATypeViolation_kind::SEND_ARGUMENT:
         if (v->av->var->sym->is_symbol && v->send->var->def->rvals[0] == v->av->var) {
-          fprintf(fp, "unresolved call '%s'", v->av->var->sym->name);
-          if (ifa_verbose) fprintf(fp, " send:%d", v->send->var->sym->id);
-          fprintf(fp, "\n");
-          show_candidates(fp, v->send->var->def, v->av->var->sym);
+          fprintf(memfp, "unresolved call '%s'", v->av->var->sym->name);
+          if (ifa_verbose) fprintf(memfp, " send:%d", v->send->var->sym->id);
+          fprintf(memfp, "\n");
+          show_candidates(memfp, v->send->var->def, v->av->var->sym);
         } else {
-          fprintf(fp, "illegal call argument type ");
-          show_illegal_type(fp, v);
+          fprintf(memfp, "illegal call argument type ");
+          show_illegal_type(memfp, v);
         }
         break;
       case ATypeViolation_kind::DISPATCH_AMBIGUITY:
-        fprintf(fp, "%s: ambiguous call '%s'", fruntime_errors ? "warning" : "error", v->av->var->sym->name);
-        if (ifa_verbose) fprintf(fp, " send:%d", v->send->var->sym->id);
-        fprintf(fp, "\n");
-        fprintf(fp, "note: candidates are:\n");
+        fprintf(memfp, "ambiguous call '%s'", v->av->var->sym->name);
+        if (ifa_verbose) fprintf(memfp, " send:%d", v->send->var->sym->id);
+        fprintf(memfp, "\n");
+        fprintf(memfp, "note: candidates are:\n");
         for (Fun *f : *v->funs) if (f) {
-          show_fun(f, fp);
-          fprintf(fp, "\n");
+          show_fun(f, memfp);
+          fprintf(memfp, "\n");
         }
         break;
       case ATypeViolation_kind::MEMBER:
         if (v->av->out->n == 1)
-          fprintf(fp, "unresolved member '%s'", v->av->out->v[0]->sym->name);
+          fprintf(memfp, "unresolved member '%s'", v->av->out->v[0]->sym->name);
         else {
-          fprintf(fp, "unresolved member\n");
-          for (CreationSet *selector : v->av->out->sorted) fprintf(fp, "  selector '%s'\n", selector->sym->name);
+          fprintf(memfp, "unresolved member\n");
+          for (CreationSet *selector : v->av->out->sorted) fprintf(memfp, "  selector '%s'\n", selector->sym->name);
         }
         if (v->type->n == 1)
-          fprintf(fp, "  class '%s'\n", v->type->v[0]->sym->name ? v->type->v[0]->sym->name : "<anonymous>");
+          fprintf(memfp, "  class '%s'\n", v->type->v[0]->sym->name ? v->type->v[0]->sym->name : "<anonymous>");
         else {
-          fprintf(fp, "  classes\n");
-          for (CreationSet *cs : v->type->sorted) fprintf(fp, "  class '%s'\n", cs->sym->name);
+          fprintf(memfp, "  classes\n");
+          for (CreationSet *cs : v->type->sorted) fprintf(memfp, "  class '%s'\n", cs->sym->name);
         }
         break;
       case ATypeViolation_kind::MATCH:
         if (v->av->var->sym->name)
-          fprintf(fp, "near '%s' unmatched type: ", v->av->var->sym->name);
+          fprintf(memfp, "near '%s' unmatched type: ", v->av->var->sym->name);
         else
-          fprintf(fp, "unmatched type: ");
-        show_type(*v->type, fp);
-        fprintf(fp, "\n");
+          fprintf(memfp, "unmatched type: ");
+        show_type(*v->type, memfp);
+        fprintf(memfp, "\n");
         break;
       case ATypeViolation_kind::NOTYPE:
-        show_name(fp, v->av);
-        fprintf(fp, "has no type\n");
+        show_name(memfp, v->av);
+        fprintf(memfp, "has no type\n");
         break;
       case ATypeViolation_kind::BOXING:
-        show_name(fp, v->av);
-        fprintf(fp, "has mixed basic types:");
-        show_type(*v->type, fp);
-        fprintf(fp, "\n");
+        show_name(memfp, v->av);
+        fprintf(memfp, "has mixed basic types:");
+        show_type(*v->type, memfp);
+        fprintf(memfp, "\n");
         break;
       case ATypeViolation_kind::CLOSURE_RECURSION:
-        show_name(fp, v->av);
-        fprintf(fp, "is recursive closure\n");
+        show_name(memfp, v->av);
+        fprintf(memfp, "is recursive closure\n");
         break;
     }
+
+    if (filename && line > 0) {
+      show_source_caret(memfp, filename, line, col);
+    }
+
     if (v->send)
-      show_call_tree(fp, v->send->var->def, (EntrySet *)v->send->contour);
+      show_call_tree(memfp, v->send->var->def, (EntrySet *)v->send->contour);
     else if (v->av->contour_is_entry_set)
-      show_avar_call_tree(fp, v->av);
+      show_avar_call_tree(memfp, v->av);
     else if (v->av->contour != GLOBAL_CONTOUR)
-      show_call_tree(fp, ((CreationSet *)v->av->contour)->defs.first()->var->def,
+      show_call_tree(memfp, ((CreationSet *)v->av->contour)->defs.first()->var->def,
                      (EntrySet *)((CreationSet *)v->av->contour)->defs.first()->contour, 1);
+
+    if (memfp != fp) {
+      fclose(memfp);
+      if (buf) {
+        bool dup = false;
+        for (cchar *p : printed) {
+          if (p && strcmp(p, buf) == 0) {
+            dup = true;
+            break;
+          }
+        }
+        if (!dup) {
+          printed.add(buf);
+          fputs(buf, fp);
+        } else {
+          free(buf);
+        }
+      }
+    }
   }
 }
 

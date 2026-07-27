@@ -37,7 +37,8 @@ EXTERN int ifa_narrow EXTERN_INIT(1);
 
 int show_error(cchar *str, IFAAST *a, ...);
 int show_error(cchar *str, Var *v, ...);
-char *get_file_line(char *filename, int lineno);
+cchar *get_file_line(cchar *filename, int lineno);
+void show_source_caret(FILE *fp, cchar *filename, int line, int col = 0);
 #define ASSERT(_x) ((_x) || myassert(__FILE__, __LINE__, #_x))
 int myassert(cchar *file, int line, cchar *str);
 

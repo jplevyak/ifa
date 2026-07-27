@@ -35,7 +35,7 @@ int show_error(cchar *str, Var *v, ...) {
   return -1;
 }
 
-char *get_file_line(cchar *filename, int lineno) {
+cchar *get_file_line(cchar *filename, int lineno) {
   static char *last_filename = 0;
   static Vec<char *> last_lines;
 
@@ -56,8 +56,34 @@ char *get_file_line(cchar *filename, int lineno) {
     }
   }
   lineno--;  // 0 based
-  if (lineno < 0 || lineno > last_lines.n) return NULL;
+  if (lineno < 0 || lineno >= last_lines.n) return NULL;
   return last_lines[lineno];
+}
+
+void show_source_caret(FILE *fp, cchar *filename, int line, int col) {
+  if (!filename || line <= 0) return;
+  cchar *line_text = get_file_line(filename, line);
+  if (!line_text) return;
+
+  fprintf(fp, "    %s\n", line_text);
+
+  int caret_pos = 0;
+  if (col > 0) {
+    caret_pos = col - 1;
+  } else {
+    while (line_text[caret_pos] == ' ' || line_text[caret_pos] == '\t') {
+      caret_pos++;
+    }
+  }
+
+  fprintf(fp, "    ");
+  for (int i = 0; i < caret_pos && line_text[i]; i++) {
+    if (line_text[i] == '\t')
+      fputc('\t', fp);
+    else
+      fputc(' ', fp);
+  }
+  fprintf(fp, "^\n");
 }
 
 int myassert(cchar *file, int line, cchar *str) {
