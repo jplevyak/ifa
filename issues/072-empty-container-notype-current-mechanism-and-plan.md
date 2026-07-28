@@ -1,28 +1,32 @@
 # 072 — Empty/imprecise-container element inference (the 043 family): shedskin comparison + backward-pass design
 
-**Status:** design + **negative implementation result** (2026-07-28).
+**Status:** design + **negative prototype result** (2026-07-28).
 Re-diagnoses the [043](closed/043-empty-container-inference-options.md)
 family, compares pyc to shedskin (same base algorithm), designs a
-backward pass, and **implements its seeding half behind
-`--empty_elem_split` (default OFF)** — which measured as a net negative
-(see "Implementation result" below), re-confirming 043's option-4
-finding with concrete numbers. The flag stays off; the design section is
-kept for the real fix (backward flow from use sites, not a fixed seed).
+backward pass, and records the outcome of **prototyping its seeding
+half** — a net negative (see "Prototype result" below), re-confirming
+043's option-4 finding with concrete numbers. The prototype was
+**removed** (no code in tree, per 043's own "withdrew the prototype"
+precedent); the design section is kept for the real fix (backward flow
+from use sites, not a fixed seed).
 
-## Implementation result (2026-07-28) — read this before extending
+## Prototype result (2026-07-28) — read this before re-attempting
 
-The seeding half of the design landed behind `--empty_elem_split`
-(default off; a true no-op when off — suite 234/0 both backends).
-`fa_seed_empty_container_elements()` (fa.cc), called from the frontend
-`reanalyze()` hook, seeds `nil` into the element AVar of every live
-container CreationSet whose generic element is bottom AND whose
-positional slots carry no value (the `[]`/`{}`/never-appended shape —
-the positional-slot check is required to avoid poisoning a `[1,2,3]`
-literal, whose generic element is *also* bottom at quiescence because
-its elements sit in `cs->vars`, not yet flowed to the generic element).
+The seeding half of the design was prototyped behind a
+`--empty_elem_split` flag (default off): a
+`fa_seed_empty_container_elements()` in `fa.cc`, called from the
+frontend `reanalyze()` monotone-repair hook, that seeded `nil` into the
+element AVar of every live container CreationSet whose generic element
+was bottom AND whose positional slots carried no value (the
+`[]`/`{}`/never-appended shape — the positional-slot check was required
+to avoid poisoning a `[1,2,3]` literal, whose generic element is *also*
+bottom at quiescence because its elements sit in `cs->vars`, not yet
+flowed to the generic element). Default-off was a true no-op (suite
+234/0 both backends); **the code was then removed** once the on-measured
+result came back negative.
 
-**It is a net NEGATIVE when on:**
-- Suite: regresses `str_join`, `set_*`, `logical_operators`, … — empty
+**It measured a net NEGATIVE when on:**
+- Suite: regressed `str_join`, `set_*`, `logical_operators`, … — empty
   containers flowing into `str.join` / concat / set-ops. Those ops
   already handle a **bottom** element correctly (join of `[]` → `""`);
   seeding `nil` makes the element a real `None` that the unboxed typed
@@ -35,13 +39,24 @@ boxes everything (a `nil` object joins to `""` like any other). In pyc a
 fixed default element poisons every typed op the empty container flows
 into. A fixed seed is therefore the *wrong lever* — the element type
 must come **backward from the use site** (str for `join`, int for
-arithmetic; nil only when *nothing* constrains it), which this forward
-seed cannot do. `void` as the default fared worse (doesn't resolve the
-read and still poisons). So the entangling blocker is pyc's unboxed
+arithmetic; nil only when *nothing* constrains it), which a forward seed
+cannot do. `void` as the default fared worse (doesn't resolve the read
+and still poisons). So the entangling blocker is pyc's unboxed
 representation, not the seeding logic — the same wall issue 018/030
-names. `git grep fa_seed_empty_container_elements` for the code; extend
-it by adding use-site backward constraint collection (below), or delete
-it if that path is abandoned.
+names.
+
+**Mechanics that DID work (for whoever re-attempts):** the hook point is
+right — the `reanalyze()` monotone-repair path runs at split-stage
+quiescence and does NOT `clear_results`, so a seed there rides the next
+pass's flow (a `run_split_stages` stage instead oscillates: its
+`update_gen` seed is wiped by `extend_analysis`'s post-split
+`clear_results` and re-fires forever). And the `[1,2,3]`-literal
+discriminator (generic-element-bottom AND all positional `cs->vars`
+bottom) correctly separates a genuinely-empty container from a literal.
+What's missing is the *backward* half: collecting the element type each
+use site requires and seeding THAT (falling back to nil only when no use
+constrains it) — which needs the unboxed-representation problem
+(018/030) solved in parallel for the heterogeneous cases.
 
 **Affects:** `ifa/analysis/fa.cc` — the CreationSet split machinery
 (`split_css`, `creation_point`, `get_element_avar`, `run_split_stages`,
@@ -213,11 +228,18 @@ ifa round; pyc's fixpoint is incremental, so the pass must only **widen**:
 
 ## Implementation order
 
+> NOTE: **Step 4 (seed a default) was prototyped in isolation and
+> removed** — a fixed `nil` default is net-negative (see "Prototype
+> result" above). The order below is for the FULL design; the open,
+> untried parts are Steps 1–3 (the backward partition/split) **plus** a
+> use-site backward constraint pass that supplies the *right* element
+> type instead of a fixed default. Do not re-attempt Step 4 alone.
+
 1. **Prereq trace** — instrument `split_css` on rubik / the `retval=[]`
    multi-site-read repro: confirm the empty/imprecise CS is (a) reachable
    as a split candidate and (b) currently left with a bottom element.
    This validates Steps 1–2 against real data before writing the split.
-2. **Step 1–4 behind a flag** (`--empty-elem-split`), measured on the
+2. **Step 1–4 behind a flag** (`--empty_elem_split`), measured on the
    determinism gate + full corpus sweep + `test_pyc.py` both backends.
 3. **Ledger integration** (Step 3) — reuse `cs_group_signature`; verify
    no new `cs_dup_split` oscillation on dijkstra2/fysphun (063 canaries).
