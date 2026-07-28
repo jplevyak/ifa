@@ -1,0 +1,11 @@
+;; phase: fa-converge
+
+(pass-counts
+  rc:                -1
+  total-passes:      0
+  events:            0
+)
+
+(history
+  (no events — converged in one pass)
+)

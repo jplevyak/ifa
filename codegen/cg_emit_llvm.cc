@@ -327,7 +327,16 @@ void declare_globals(FA *fa) {
 // Build (or fetch from cache) a pyc-layout string global:
 // `{ i64 len, [N x i8] body }` packed.  Returns a GEP to
 // the first body byte.  Length is at offset -8 from that ptr.
-llvm::Value *materialize_pyc_string(cchar *raw) {
+// `len`: true byte length of `raw` (ifa/issues/070) -- -1 (default)
+// means "unknown, fall back to strlen(raw)". Without an explicit
+// length, `std::string text = raw;` below (the NUL-terminated
+// constructor) truncates a literal constant that contains an embedded
+// NUL from a \x00/\0 escape, same failure mode the C backend had via
+// _CG_String's strlen(). Real literal-constant callers (below) now
+// pass the Sym's imm.v_len; the one caller building purely synthetic,
+// always-NUL-free text (a "<class 'Foo'>"-style repr) is left on the
+// strlen() fallback since it has no Immediate to source a length from.
+llvm::Value *materialize_pyc_string(cchar *raw, int len = -1) {
   if (!raw) raw = "";
   if (llvm::GlobalVariable *cached = g_string_globals.get(raw)) {
     llvm::StructType *sty =
@@ -339,7 +348,7 @@ llvm::Value *materialize_pyc_string(cchar *raw) {
           llvm::ConstantInt::get(i32_ty, 1),
           llvm::ConstantInt::get(i32_ty, 0) });
   }
-  std::string text = raw;
+  std::string text = (len >= 0) ? std::string(raw, (size_t)len) : std::string(raw);
   if (text.size() >= 2 && text.front() == '"' && text.back() == '"') {
     text = text.substr(1, text.size() - 2);
   }
@@ -428,12 +437,12 @@ llvm::Value *value_for_var(EmitCtx &ctx, Var *v) {
         // String literal → pyc-layout global; GEP to first char.
         // Length prefix is at offset -8 from that pointer so
         // runtime helpers (_CG_string_len etc.) can read it.
-        cv = materialize_pyc_string(s->imm.v_string);
+        cv = materialize_pyc_string(s->imm.v_string, s->imm.v_len);
         break;
       case IF1_CONST_KIND_BYTES:
         // bytes shares str's exact buffer layout (sym_bytes
         // registration, ifa/if1/ast.cc) -- same materialization.
-        cv = materialize_pyc_string(s->imm.v_string);
+        cv = materialize_pyc_string(s->imm.v_string, s->imm.v_len);
         break;
       case IF1_CONST_KIND_SYMBOL:
         // Symbol constants — landed in the materialized side
@@ -2052,7 +2061,7 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
       if (is_str) {
         llvm::Value *str_val = nullptr;
         if (cs && cs->imm.const_kind == IF1_CONST_KIND_STRING && cs->imm.v_string)
-          str_val = materialize_pyc_string(cs->imm.v_string);
+          str_val = materialize_pyc_string(cs->imm.v_string, cs->imm.v_len);
         if (!str_val) str_val = value_for_var(ctx, v);
         if (str_val) {
           cchar *fmt = last_nl ? "%s\n" : "%s";

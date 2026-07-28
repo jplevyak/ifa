@@ -106,6 +106,17 @@ that:
   rename fallback, giving pyc a real compile-time analogue of
   CPython's `UnboundLocalError`. Found verifying issue 023's capture-
   pattern fix; not specific to `match`/`case`.
+- [070-embedded-nul-literal-truncation.md](070-embedded-nul-literal-truncation.md) —
+  a compile-time `str`/`bytes` literal containing an embedded NUL
+  (`"a\x00b"`) is silently truncated at the NUL — four separate
+  `strlen()`/NUL-terminated touch points in the literal pipeline
+  (decode, intern, `escape_string`, and `_CG_String`'s runtime
+  materialization), the last of which can't be fixed without codegen
+  passing an explicit length (a C string literal is fundamentally
+  NUL-terminated regardless of internal representation). Runtime data
+  (file reads, `bytes([...])`) is unaffected — literals only. Found
+  while adding a `bytes` type; pre-existing, reproduces on plain `str`
+  too.
 
 ## Closed (archive)
 

@@ -143,5 +143,10 @@ int getifaddrname(struct sockaddr_in *addr, int *pmtu = 0, char *ifname = 0, int
 
 char *quote_string(cchar *s);
 char *escape_string(cchar *s);
+// Length-aware variant (ifa/issues/070): escapes exactly `len` bytes
+// starting at `s` instead of stopping at the first NUL, so a
+// str/bytes literal constant containing an embedded NUL (from a
+// \x00/\0 escape) round-trips into the generated C source correctly.
+char *escape_string(cchar *s, int len);
 
 #endif

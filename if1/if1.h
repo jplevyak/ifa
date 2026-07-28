@@ -36,7 +36,11 @@ class IF1 : public gc {
 };
 
 Sym *if1_register_sym(IF1 *p, Sym *, cchar *name = 0);
-Sym *if1_const(IF1 *p, Sym *typ, cchar *value, Immediate *imm = 0, Sym *asym = 0);
+// `len`: explicit byte length of `value` when it's a string/bytes
+// literal that may contain an embedded NUL (ifa/issues/070) -- -1
+// (default) means "not provided, fall back to strlen(value)",
+// preserving existing callers' behavior unchanged.
+Sym *if1_const(IF1 *p, Sym *typ, cchar *value, Immediate *imm = 0, Sym *asym = 0, int len = -1);
 Sym *if1_make_symbol(IF1 *p, cchar *name, cchar *end = 0);
 void if1_set_builtin(IF1 *p, Sym *s, cchar *name, cchar *end = 0);
 Sym *if1_get_builtin(IF1 *p, cchar *name, cchar *end = 0);

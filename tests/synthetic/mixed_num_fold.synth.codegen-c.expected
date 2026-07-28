@@ -1,6 +1,6 @@
 ;; phase: codegen-c
 
-(summary fa_rc=-1 clone_rc=0 funs=1 bytes=350)
+(summary fa_rc=-1 clone_rc=0 funs=1 bytes=344)
 
 ;; c-output (#include line stripped):
 
@@ -9,7 +9,7 @@
 */
 
 typedef _CG_function _CG_pf0;
-_CG_nil_type _CG_f_81_0/*__main__*/();
+_CG_void _CG_f_88_0/*__main__*/();
 
 
 /*
@@ -21,13 +21,13 @@ _CG_nil_type _CG_f_81_0/*__main__*/();
  Functions
 */
 
-_CG_nil_type _CG_f_81_0/*__main__*/() {
-  return 0;
+_CG_void _CG_f_88_0/*__main__*/() {
+  return 3.5;
   return 0;
 }
 
 int main(int argc, char *argv[]) { (void)argc; (void) argv;
   MEM_INIT();
-  _CG_f_81_0/*__main__*/();
+  _CG_f_88_0/*__main__*/();
   return 0;
 }

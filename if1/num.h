@@ -33,6 +33,18 @@ class Immediate : public gc {
  public:
   unsigned int const_kind : 4;
   unsigned int num_index : 3;
+  // True byte length of v_string, meaningful whenever const_kind is
+  // IF1_CONST_KIND_STRING/BYTES/SYMBOL. Needed because v_string itself is a
+  // bare interned cchar* -- without a length alongside it, every consumer
+  // (interning, C-source escaping, runtime materialization) falls back to
+  // strlen() and silently truncates a literal at an embedded NUL byte
+  // (ifa/issues/070). Every constructor below zero-initializes the whole
+  // struct via memset (so plain field declaration order/defaults here
+  // don't matter) and explicitly sets v_len alongside v_string wherever it
+  // sets a string value -- there is no "unset" sentinel; a string-kind
+  // Immediate whose v_len wasn't explicitly set is a bug at the
+  // construction site, not something callers should paper over.
+  int v_len;
   union {
     bool v_bool;
     int8 v_int8;
@@ -132,6 +144,7 @@ class Immediate : public gc {
   Immediate &operator=(char *s) {
     const_kind = IF1_CONST_KIND_STRING;
     v_string = s;
+    v_len = s ? (int)strlen(s) : 0;
     return *this;
   }
   Immediate(bool b) {
@@ -144,6 +157,7 @@ class Immediate : public gc {
     memset((void *)this, 0, sizeof(*this));
     const_kind = IF1_CONST_KIND_STRING;
     v_string = s;
+    v_len = s ? (int)strlen(s) : 0;
   }
   Immediate();
   Immediate(const Immediate &im);

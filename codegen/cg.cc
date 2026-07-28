@@ -208,11 +208,13 @@ static cchar *c_rhs(Var *v) {
           return dupstr(ss);
         }
         if (s->constant && (v->type == sym_string || v->type == sym_bytes)) {
-          char *x = escape_string(s->constant);
-          char *r = (char *)MALLOC(strlen(x) + 20);
-          STRCPYZ(r, "_CG_String(");
+          char *x = escape_string(s->constant, s->imm.v_len);
+          char *r = (char *)MALLOC(strlen(x) + 40);
+          STRCPYZ(r, "_CG_String_n(");
           STRCAT(r, x);
-          STRCAT(r, ")");
+          char lenbuf[24];
+          snprintf(lenbuf, sizeof(lenbuf), ",%d)", s->imm.v_len);
+          STRCAT(r, lenbuf);
           return r;
         }
       }
@@ -2012,11 +2014,13 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
       // producing garbage (e.g. a `bytes[i]` constant folding to the
       // decimal ASCII value of one byte instead of the buffer pointer).
       if (v->type == sym_string || v->type == sym_bytes) {
-        char *x = escape_string(s->constant);
-        cg_set_string(v, (char *)MALLOC(strlen(x) + 20));
-        STRCPYZ(cg_get_string(v), "_CG_String(");
+        char *x = escape_string(s->constant, s->imm.v_len);
+        cg_set_string(v, (char *)MALLOC(strlen(x) + 40));
+        STRCPYZ(cg_get_string(v), "_CG_String_n(");
         STRCAT(cg_get_string(v), x);
-        STRCAT(cg_get_string(v), ")");
+        char lenbuf[24];
+        snprintf(lenbuf, sizeof(lenbuf), ",%d)", s->imm.v_len);
+        STRCAT(cg_get_string(v), lenbuf);
       } else
         cg_set_string(v, s->constant);
     } else if (s->is_symbol) {

@@ -9,7 +9,7 @@
 */
 
 typedef _CG_function _CG_pf0;
-_CG_nil_type _CG_f_101_0/*__main__*/();
+_CG_nil_type _CG_f_102_0/*__main__*/();
 
 
 /*
@@ -21,13 +21,13 @@ _CG_nil_type _CG_f_101_0/*__main__*/();
  Functions
 */
 
-_CG_nil_type _CG_f_101_0/*__main__*/() {
+_CG_nil_type _CG_f_102_0/*__main__*/() {
   return 0;
   return 0;
 }
 
 int main(int argc, char *argv[]) { (void)argc; (void) argv;
   MEM_INIT();
-  _CG_f_101_0/*__main__*/();
+  _CG_f_102_0/*__main__*/();
   return 0;
 }

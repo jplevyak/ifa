@@ -1,0 +1,8 @@
+;; phase: argpos
+
+;; Fun %top
+(positions %top
+  pos[1] -> #top :positional
+  rets: %t1
+)
+

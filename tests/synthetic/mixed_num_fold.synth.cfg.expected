@@ -1,0 +1,15 @@
+;; phase: cfg
+
+;; Fun %top
+(fun %top
+  entry:  %p0
+  exit:   %p3
+  pnodes: 4
+)
+(pnodes %top
+  %p0  SEND  prim_add @operator %c0 #+ %c1 -> %t2  succ:[%p1]
+  %p1  SEND  prim_add @operator %c2 #+ %c3 -> %t3  succ:[%p2]  pred:[%p0]
+  %p2  MOVE  %t2 -> %t1  succ:[%p3]  pred:[%p1]
+  %p3  SEND  prim_reply @primitive @reply %t0 %t1  pred:[%p2]
+)
+

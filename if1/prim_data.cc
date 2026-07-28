@@ -442,7 +442,7 @@ void prim_init(Primitives *p, IF1 *if1) {
 
   static PrimType prim_await_arg_types[] = {PRIM_TYPE_ANY};
   static PrimType prim_await_ret_types[] = {PRIM_TYPE_ANY};
-  prim_await = new Prim(57, "await", "prim_await", -3, 0, 1, prim_await_arg_types, prim_await_ret_types, PRIM_NON_FUNCTIONAL);
+  prim_await = new Prim(57, "await", "prim_await", -2, 0, 1, prim_await_arg_types, prim_await_ret_types, PRIM_NON_FUNCTIONAL);
   n = (char *)if1->strings.put((char *)"await");
   p->prims.add(prim_await);
   p->prim_map[0][0].put(n, prim_await);
@@ -459,14 +459,14 @@ void prim_init(Primitives *p, IF1 *if1) {
   // .send() would provide; always None in v1 scope).
   static PrimType prim_yield_arg_types[] = {PRIM_TYPE_ANY};
   static PrimType prim_yield_ret_types[] = {PRIM_TYPE_ANY};
-  prim_yield = new Prim(59, "yield", "prim_yield", -3, 0, 1, prim_yield_arg_types, prim_yield_ret_types, PRIM_NON_FUNCTIONAL);
+  prim_yield = new Prim(59, "yield", "prim_yield", -2, 0, 1, prim_yield_arg_types, prim_yield_ret_types, PRIM_NON_FUNCTIONAL);
   n = (char *)if1->strings.put((char *)"yield");
   p->prims.add(prim_yield);
   p->prim_map[0][0].put(n, prim_yield);
 
   static PrimType prim_id_arg_types[] = {PRIM_TYPE_ANY};
   static PrimType prim_id_ret_types[] = {PRIM_TYPE_ANY};
-  prim_id = new Prim(60, "id", "prim_id", -3, 0, 1, prim_id_arg_types, prim_id_ret_types, 0);
+  prim_id = new Prim(60, "id", "prim_id", -2, 0, 1, prim_id_arg_types, prim_id_ret_types, 0);
   n = (char *)if1->strings.put((char *)"id");
   p->prims.add(prim_id);
   p->prim_map[0][0].put(n, prim_id);

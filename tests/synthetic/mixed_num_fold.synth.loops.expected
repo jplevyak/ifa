@@ -1,0 +1,7 @@
+;; phase: loops
+
+;; Fun %top
+(loops %top
+  (none)
+)
+

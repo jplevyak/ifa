@@ -676,6 +676,21 @@ void ChainHashMap<K, AHashFns, C, A>::get_values(Vec<C> &values) {
 
 template <class F, class A>
 inline cchar *StringChainHash<F, A>::canonicalize(cchar *s, cchar *e) {
+  // ifa/issues/070: the fallback dedup below (ChainHash::put, via F =
+  // StringHashFns by default) hashes/compares with strcmp -- it stops at
+  // the first NUL. Two different buffers that happen to share a prefix up
+  // to an embedded NUL (e.g. two distinct bytes literals "a\x00b" and
+  // "a\x00c") hash equal and strcmp-equal there, so put() silently returns
+  // the *other* buffer's pointer instead of inserting this one -- callers
+  // that asked to canonicalize "a\x00c" would get back "a\x00b"'s content.
+  // Every other user of this table (symbol names, etc.) never carries an
+  // embedded NUL, so route only that case around the shared dedup table:
+  // skip interning, just return a fresh length-exact copy. Less deduping
+  // for that rare case, but never wrong.
+  if (e) {
+    for (cchar *p = s; p != e; p++)
+      if (!*p) return _dupstr<A>(s, e);
+  }
   uintptr_t h = 0;
   cchar *a = s;
   // 31 changed to 27, to avoid prime2 in vec.cpp

@@ -92,6 +92,11 @@ void print_clone_normalized(FILE *fp, IF1 *p) {
   // ---------- CS equivalence classes ----------
   // cs->equiv groups CSes that ended up sharing a concrete type.
   // We pick the rep (first member of the class) and dedupe.
+  // clone.cc:443 only assigns `->equiv = s` to non-null members of `s`
+  // (`for (CreationSet *cs : *s) if (cs) cs->equiv = s;`) -- meaning the
+  // equiv Vec itself can legitimately contain null slots (e.g. a
+  // merged-away CS), so `equiv->v[0]` isn't guaranteed non-null. Segfaulted
+  // in compar_cs_by_sym on a null rep before this guard was added.
   Vec<CreationSet *> reps;
   for (CreationSet *cs : fa->css) {
     if (!cs->equiv || cs->equiv->n == 0) {
@@ -99,7 +104,11 @@ void print_clone_normalized(FILE *fp, IF1 *p) {
       if (!reps.in(cs)) reps.add(cs);
       continue;
     }
-    CreationSet *rep = cs->equiv->v[0];
+    CreationSet *rep = nullptr;
+    for (CreationSet *m : *cs->equiv) {
+      if (m) { rep = m; break; }
+    }
+    if (!rep) rep = cs;
     if (!reps.in(rep)) reps.add(rep);
   }
   if (reps.n > 1) qsort(reps.v, reps.n, sizeof(CreationSet *), compar_cs_by_sym);

@@ -39,7 +39,7 @@ Sym *if1_register_sym(IF1 *p, Sym *sy, cchar *name) {
   return sy;
 }
 
-Sym *if1_const(IF1 *p, Sym *type, cchar *constant, Immediate *imm, Sym *asym) {
+Sym *if1_const(IF1 *p, Sym *type, cchar *constant, Immediate *imm, Sym *asym, int len) {
   assert(type);
   Immediate t;
   if (!imm) imm = &t;
@@ -56,7 +56,13 @@ Sym *if1_const(IF1 *p, Sym *type, cchar *constant, Immediate *imm, Sym *asym) {
     else
       assert(!"bad const");
   }
-  cchar *c = if1_cannonicalize_string(p, constant);
+  // ifa/issues/070: intern by explicit length when the caller has one
+  // (a str/bytes literal that may contain an embedded NUL from a
+  // \x00/\0 escape) instead of always falling back to the
+  // NUL-terminated single-arg canonicalize -- otherwise two literals
+  // that differ only after an embedded NUL would wrongly intern to the
+  // same truncated pointer.
+  cchar *c = (len >= 0) ? if1_cannonicalize_string(p, constant, constant + len) : if1_cannonicalize_string(p, constant);
   // For strings, bytes, and symbols, set the v_string field to the
   // cannonicalized string so that the hash and equality functions work
   // correctly. IF1_CONST_KIND_BYTES is distinct from IF1_CONST_KIND_STRING
@@ -66,6 +72,11 @@ Sym *if1_const(IF1 *p, Sym *type, cchar *constant, Immediate *imm, Sym *asym) {
   if (imm->const_kind == IF1_CONST_KIND_STRING || imm->const_kind == IF1_CONST_KIND_BYTES ||
       imm->const_kind == IF1_CONST_KIND_SYMBOL) {
     imm->v_string = c;
+    // True length, not strlen(c) -- c may contain an embedded NUL when
+    // `len` was given explicitly. Falls back to strlen for callers that
+    // didn't pass one (unchanged behavior -- plain symbol names etc.,
+    // never expected to contain a NUL).
+    imm->v_len = (len >= 0) ? len : (int)strlen(c);
   }
   Sym *sym = p->constants.get(imm);
   if (type) type = unalias_type(type);
