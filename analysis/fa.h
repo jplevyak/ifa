@@ -739,6 +739,12 @@ void flow_var_type_permit(AVar *v, AType *t);
 // (clear_results) so the re-run re-derives flow with the
 // annotations in force. Call from IFACallbacks::reanalyze.
 int fa_coerce_numeric_confluences(Vec<ATypeViolation *> &violations);
+// ifa/issues/072: seed a default (nil) element into container
+// CreationSets whose element was read but never written (a bottom
+// element that would NOTYPE the read). Monotone/idempotent; gated on
+// ifa_empty_elem_split. Call from IFACallbacks::reanalyze alongside
+// fa_coerce_numeric_confluences. Returns nonzero when it seeded.
+int fa_seed_empty_container_elements();
 // Set / install a predicate restrict on `v`.  cls is only
 // used for RP_IsInstanceOf / RP_NotInstanceOf.  Idempotent:
 // re-installing the same predicate is a no-op; installing a

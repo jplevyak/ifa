@@ -1,11 +1,48 @@
 # 072 — Empty/imprecise-container element inference (the 043 family): shedskin comparison + backward-pass design
 
-**Status:** planning (2026-07-28). Re-diagnoses the
-[043](closed/043-empty-container-inference-options.md) family against the
-current tree, compares pyc's approach to shedskin's (same base algorithm),
-and designs a concrete **backward pass** for never-written / element-
-imprecise allocation sites. 043 is closed with a partly-stale option
-survey; this issue carries the design forward.
+**Status:** design + **negative implementation result** (2026-07-28).
+Re-diagnoses the [043](closed/043-empty-container-inference-options.md)
+family, compares pyc to shedskin (same base algorithm), designs a
+backward pass, and **implements its seeding half behind
+`--empty_elem_split` (default OFF)** — which measured as a net negative
+(see "Implementation result" below), re-confirming 043's option-4
+finding with concrete numbers. The flag stays off; the design section is
+kept for the real fix (backward flow from use sites, not a fixed seed).
+
+## Implementation result (2026-07-28) — read this before extending
+
+The seeding half of the design landed behind `--empty_elem_split`
+(default off; a true no-op when off — suite 234/0 both backends).
+`fa_seed_empty_container_elements()` (fa.cc), called from the frontend
+`reanalyze()` hook, seeds `nil` into the element AVar of every live
+container CreationSet whose generic element is bottom AND whose
+positional slots carry no value (the `[]`/`{}`/never-appended shape —
+the positional-slot check is required to avoid poisoning a `[1,2,3]`
+literal, whose generic element is *also* bottom at quiescence because
+its elements sit in `cs->vars`, not yet flowed to the generic element).
+
+**It is a net NEGATIVE when on:**
+- Suite: regresses `str_join`, `set_*`, `logical_operators`, … — empty
+  containers flowing into `str.join` / concat / set-ops. Those ops
+  already handle a **bottom** element correctly (join of `[]` → `""`);
+  seeding `nil` makes the element a real `None` that the unboxed typed
+  primitive (`_CG_strcat`, set-add) then rejects.
+- Corpus sweep: **COMPILED 23 → 19, FAIL 25 → 31** (net −4 to −6).
+
+**Root cause of the negative result:** pyc is **unboxed**. shedskin's
+identical `empty → <class>[nil]` seed is harmless only because shedskin
+boxes everything (a `nil` object joins to `""` like any other). In pyc a
+fixed default element poisons every typed op the empty container flows
+into. A fixed seed is therefore the *wrong lever* — the element type
+must come **backward from the use site** (str for `join`, int for
+arithmetic; nil only when *nothing* constrains it), which this forward
+seed cannot do. `void` as the default fared worse (doesn't resolve the
+read and still poisons). So the entangling blocker is pyc's unboxed
+representation, not the seeding logic — the same wall issue 018/030
+names. `git grep fa_seed_empty_container_elements` for the code; extend
+it by adding use-site backward constraint collection (below), or delete
+it if that path is abandoned.
+
 **Affects:** `ifa/analysis/fa.cc` — the CreationSet split machinery
 (`split_css`, `creation_point`, `get_element_avar`, `run_split_stages`,
 the `AVar::backward`/`setters` edges).

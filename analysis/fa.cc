@@ -4996,6 +4996,65 @@ int fa_coerce_numeric_confluences(Vec<ATypeViolation *> &violations) {
   return annotated;
 }
 
+// ifa/issues/072: backward element-split pass (seeding half). Seed a
+// default (nil) element type into every LIVE container CreationSet
+// whose element AVar was accessed (read) but never written -- a bottom
+// element that would otherwise NOTYPE the read (`x[0]` on a `[]` that
+// nothing ever appends to). The pyc analog of shedskin's `emptycsites`
+// separation + `empty -> <class>[nil]` seeding.
+//
+// EXPERIMENTAL, default OFF (`--empty_elem_split`). Measured 2026-07-28
+// to be a NET NEGATIVE when on: it regresses the suite (empty
+// containers flowing into `str.join`/concat/set-ops -- ops that already
+// handle a BOTTOM element correctly, e.g. join of `[]` -> "") and the
+// corpus (COMPILED 23->19, FAIL 25->31). Root: pyc is UNBOXED, so a nil
+// element poisons those typed ops; shedskin's identical seed is
+// harmless only because it boxes everything (a nil object joins to "").
+// So a fixed default is the wrong lever -- the element type must come
+// BACKWARD from the USE site (str for join, int for arithmetic), which
+// this forward seed cannot do. Kept behind the flag as a reproducible
+// experiment; see the issue for the negative-result writeup and what a
+// real fix needs. This re-confirms 043's option-4 prototype finding
+// with concrete numbers.
+//
+// Mechanics (for whoever extends it): called from the frontend
+// reanalyze() hook -- the monotone-repair path (like promote_field),
+// which runs at split-stage quiescence and does NOT clear_results, so
+// the seed rides the next pass's flow. A `run_split_stages` stage would
+// instead oscillate: its update_gen seed is wiped by extend_analysis's
+// post-split clear_results and re-fires forever. Monotone/idempotent;
+// only accessed elements (`cs->added_element_var`) with no positional
+// slot values are touched (the `[1,2,3]`-literal discriminator below).
+int fa_seed_empty_container_elements() {
+  if (!ifa_empty_elem_split) return 0;
+  int seeded = 0;
+  for (CreationSet *cs : fa->css) {
+    if (!cs || !cs->sym || !cs->sym->element) continue;  // containers only
+    if (!cs->added_element_var) continue;                // element never accessed
+    AVar *elem = get_element_avar(cs);
+    if (!elem) continue;
+    if (elem->out != fa->type_world.bottom_type) continue;  // element already typed
+    // A genuinely-empty container: the generic element reached no
+    // write AND no positional slot carries a value. This is the key
+    // discriminator vs a literal like `[1,2,3]`, whose generic element
+    // is ALSO bottom at this quiescence (its elements sit in the
+    // positional `cs->vars`, not yet flowed to the generic element) --
+    // seeding those would poison the literal's storage layout to
+    // void* and break the int slot writes. `[]` / `{}` and a
+    // never-appended accumulator have no positional element types, so
+    // only they are seeded.
+    bool has_positional = false;
+    for (AVar *pv : cs->vars)
+      if (pv && pv->out != fa->type_world.bottom_type) { has_positional = true; break; }
+    if (has_positional) continue;
+    update_gen(elem, fa->type_world.nil_type);
+    seeded = 1;
+    log(LOG_SPLITTING, "[empty-elem] seed nil into cs %d (%s) element av %d\n", cs->id,
+        cs->sym->name ? cs->sym->name : "(anon)", elem->id);
+  }
+  return seeded;
+}
+
 static Setters *setters_cannonicalize(Setters *s) {
   assert(!s->sorted.n);
   for (AVar *x : *s) if (x) s->sorted.add(x);

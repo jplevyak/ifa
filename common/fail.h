@@ -35,6 +35,17 @@ EXTERN int ifa_fa_inline EXTERN_INIT(1);
 // narrowing, mid-FA inlining, or both.
 EXTERN int ifa_narrow EXTERN_INIT(1);
 
+// Enable the backward element-split pass (ifa/issues/072):
+// on full quiescence of the split stages, seed a default
+// (nil) element type into container CreationSets whose
+// element was never written (a `[]`/`{}` that reaches no
+// element assignment), so a downstream read / shared-method
+// branch over it type-checks instead of NOTYPE-ing.  The
+// pyc analog of shedskin's `emptycsites` separation +
+// `empty -> <class>[nil]` seeding.  Default OFF while it is
+// validated against the corpus + determinism gate.
+EXTERN int ifa_empty_elem_split EXTERN_INIT(0);
+
 int show_error(cchar *str, IFAAST *a, ...);
 int show_error(cchar *str, Var *v, ...);
 cchar *get_file_line(cchar *filename, int lineno);
