@@ -2,13 +2,20 @@
 
 **Status:** design + **negative prototype result** (2026-07-28).
 Re-diagnoses the [043](closed/043-empty-container-inference-options.md)
-family, compares pyc to shedskin (same base algorithm), designs a
-backward pass, and records the outcome of **prototyping its seeding
-half** — a net negative (see "Prototype result" below), re-confirming
-043's option-4 finding with concrete numbers. The prototype was
-**removed** (no code in tree, per 043's own "withdrew the prototype"
-precedent); the design section is kept for the real fix (backward flow
-from use sites, not a fixed seed).
+family, compares pyc to shedskin (same base algorithm), and records the
+outcome of **prototyping element seeding** — a net negative (see
+"Prototype result" below), re-confirming 043's option-4 finding with
+concrete numbers. The prototype was **removed** (no code in tree, per
+043's own "withdrew the prototype" precedent). Key correction from the
+prototype: shedskin does NOT infer empty-container element types from
+uses — its inference is forward/write-driven and it sidesteps the
+`join([])`-style case by **boxing**, which pyc already matches for a
+BOTTOM element. So the residual is narrow (a read that returns the
+element as a value, `x[0]`) and its honest fixes are the 043-option-1
+codegen trap or the 018/030 boxing work, **not** element seeding. The
+`ifa()`/shedskin design section below is retained as reference for the
+data-polymorphism splitting (which pyc's `split_css` already does), not
+as a seeding recipe.
 
 ## Prototype result (2026-07-28) — read this before re-attempting
 
@@ -33,30 +40,46 @@ result came back negative.
   primitive (`_CG_strcat`, set-add) then rejects.
 - Corpus sweep: **COMPILED 23 → 19, FAIL 25 → 31** (net −4 to −6).
 
-**Root cause of the negative result:** pyc is **unboxed**. shedskin's
-identical `empty → <class>[nil]` seed is harmless only because shedskin
-boxes everything (a `nil` object joins to `""` like any other). In pyc a
-fixed default element poisons every typed op the empty container flows
-into. A fixed seed is therefore the *wrong lever* — the element type
-must come **backward from the use site** (str for `join`, int for
-arithmetic; nil only when *nothing* constrains it), which a forward seed
-cannot do. `void` as the default fared worse (doesn't resolve the read
-and still poisons). So the entangling blocker is pyc's unboxed
-representation, not the seeding logic — the same wall issue 018/030
-names.
+**Root cause of the negative result — and a correction about shedskin.**
+pyc is **unboxed**; shedskin **boxes everything**. That is the whole
+difference, and it means the "seed a default element" framing was the
+wrong lens on both sides:
 
-**Mechanics that DID work (for whoever re-attempts):** the hook point is
-right — the `reanalyze()` monotone-repair path runs at split-stage
-quiescence and does NOT `clear_results`, so a seed there rides the next
-pass's flow (a `run_split_stages` stage instead oscillates: its
-`update_gen` seed is wiped by `extend_analysis`'s post-split
-`clear_results` and re-fires forever). And the `[1,2,3]`-literal
-discriminator (generic-element-bottom AND all positional `cs->vars`
-bottom) correctly separates a genuinely-empty container from a literal.
-What's missing is the *backward* half: collecting the element type each
-use site requires and seeding THAT (falling back to nil only when no use
-constrains it) — which needs the unboxed-representation problem
-(018/030) solved in parallel for the heterogeneous cases.
+- shedskin does **not** infer an empty container's element type from its
+  use sites, and its own inference does not need `join([])`'s element to
+  be `str`. shedskin's constraint graph is **forward and write-driven**
+  (`in_out(a,b)` is a directed edge; `unit` receives types only from
+  literal elements / `append` / `setitem` / writes through an aliased
+  param; reads flow *out* of `unit`, never back in — verified in
+  `shedskin/infer.py` + `graph.py`). An `x = []` that is only *read*
+  keeps an empty `unit`; join-of-empty is `""` at the C++ level
+  **because it is boxed**, not because shedskin worked out the element
+  type. (The `ifa()` "backward phase" traces from *write* sites
+  `assign_target` to allocation points for data-polymorphism splitting —
+  it is not a use-site pass.)
+- pyc, unboxed, *already* handles a **bottom**-element container
+  correctly for those same ops (join/concat/set/`len`) — which is
+  exactly why seeding a concrete `nil` REGRESSED them: it replaced a
+  working "no element" with a poisoning `None`. `void` fared worse.
+
+So the seeding idea is misguided regardless of direction: a fixed
+default poisons the ops pyc already handles, and there is nothing to
+infer "backward from the use site" that shedskin itself infers. The
+genuine residual is narrow — a *read that returns the element as a
+value* (`x[0]` on a never-written `[]`) has no type. shedskin makes that
+a boxed `None`/traps; pyc's honest analog is **043 option 1** (emit a
+runtime trap for the dead read) or the **boxing** work (018/030) for the
+heterogeneous cases — **not** element-type seeding.
+
+**Mechanics that DID work (salvage, if a DIFFERENT element pass is ever
+built):** the hook point is right — the `reanalyze()` monotone-repair
+path runs at split-stage quiescence and does NOT `clear_results`, so a
+between-pass element change rides the next pass's flow (a
+`run_split_stages` stage instead oscillates: its `update_gen` is wiped by
+`extend_analysis`'s post-split `clear_results` and re-fires forever). And
+the `[1,2,3]`-literal discriminator (generic-element-bottom AND all
+positional `cs->vars` bottom) correctly separates a genuinely-empty
+container from a literal. Neither salvages the *seeding* idea itself.
 
 **Affects:** `ifa/analysis/fa.cc` — the CreationSet split machinery
 (`split_css`, `creation_point`, `get_element_avar`, `run_split_stages`,
@@ -146,10 +169,22 @@ phase** `ifa()` → `ifa_flow_graph()`:
 | representation | everything boxed (object ptrs) — unions free | scalars unboxed → heterogeneous unions need boxing (018/030) |
 
 **pyc already has every building block** — `CreationSet`, `AVar::backward`,
-`AVar::setters`, `get_element_avar`, `split_css`. The two missing pieces
-are exactly shedskin's `emptycsites` step and its default seeding.
+`AVar::setters`, `get_element_avar`, `split_css`. shedskin's two extra
+steps over pyc are the `emptycsites` separation and the
+`empty → <class>[nil]` default seed — but note (per the Prototype result
+above) the **default seed does not transfer to pyc**: shedskin gets away
+with it only because it is boxed. The transferable half is the
+`emptycsites`/write-attribution *split*, which pyc's `split_css` already
+largely does.
 
 ## Design: a backward element-split pass for pyc
+
+> SUPERSEDED (see "Prototype result" at the top): the seeding step
+> (Step 4) of this design was prototyped and disproved — a fixed default
+> element is net-negative in pyc's unboxed world. This section is kept
+> for the *write-attribution split* (Steps 1–3), which is the part that
+> is actually shedskin-like and useful; ignore Step 4's "seed a
+> default." The genuine residual belongs to 043-option-1 / 018/030.
 
 Add a new stage to `run_split_stages`, run **on quiescence** of the
 violation-driven stages (same slot as `PER_CS_RECEIVER`, so it never
@@ -221,19 +256,22 @@ ifa round; pyc's fixpoint is incremental, so the pass must only **widen**:
   needs boxing (018/030). This pass makes the element *typed*; a separate
   effort makes it *representable*.
 - The **`(null)*` C-backend codegen** for a nil/bottom element
-  ([061](061-c-backend-multi-tuple-list-null-element-type.md)) — seeding
-  `nil` should sidestep most of it, but the C emitter's null-element path
-  should still be hardened to trap rather than emit `(null)*`
-  (043 option 1 / the 056/063 convention).
+  ([061](061-c-backend-multi-tuple-list-null-element-type.md)) — the C
+  emitter's null-element path should be hardened to trap rather than
+  emit `(null)*` (043 option 1 / the 056/063 convention). This, not
+  seeding, is the honest fix for the `x[0]`-on-`[]` residual.
 
 ## Implementation order
 
 > NOTE: **Step 4 (seed a default) was prototyped in isolation and
-> removed** — a fixed `nil` default is net-negative (see "Prototype
-> result" above). The order below is for the FULL design; the open,
-> untried parts are Steps 1–3 (the backward partition/split) **plus** a
-> use-site backward constraint pass that supplies the *right* element
-> type instead of a fixed default. Do not re-attempt Step 4 alone.
+> removed** — a fixed `nil`/`void` default is net-negative (see
+> "Prototype result" above), and there is nothing to seed "from the use
+> site" that shedskin itself infers (shedskin is forward/write-driven +
+> boxed). Do not re-attempt element seeding. The only open, useful parts
+> of the design below are Steps 1–3 (the backward *write*-attribution
+> split — which pyc's `split_css` largely already does); the genuine
+> residual (`x[0]` on a never-written `[]`) belongs to 043-option-1
+> (codegen trap) or 018/030 (boxing), not here.
 
 1. **Prereq trace** — instrument `split_css` on rubik / the `retval=[]`
    multi-site-read repro: confirm the empty/imprecise CS is (a) reachable
