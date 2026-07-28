@@ -32,6 +32,20 @@ that:
 
 ## Current open issues
 
+- [072-empty-container-notype-current-mechanism-and-plan.md](072-empty-container-notype-current-mechanism-and-plan.md)
+  — re-diagnoses the empty-container "no type" family (the
+  [043](closed/043-empty-container-inference-options.md) /
+  [052](052-shared-method-branch-reopens-empty-list-fragility.md)
+  family) against the current post-045 tree and lays out a **tiered fix
+  plan**. Core mechanism (re-traced 2026-07-28): a branch inside a
+  *shared* method dispatched over a possibly-empty container CS NOTYPEs,
+  because 045's per-CS cloning covers a container's *own* methods but not
+  *inherited* `object`/`__pyc_any_type__` ones — chess.py:314's
+  `not <list>` → the shared `object.__not__`'s `if` is the cheap witness.
+  Tier 0 (container-owned `__not__`, cheap), Tier 1 (per-CS contours for
+  inherited methods — the durable 052 fix), Tier 2 (empty-container
+  absorption + issue-018/030 boxing — the corpus-wide lever for
+  amaze/rubik/dijkstra2).
 - [071-chess-accumulated-union-notype-cascade.md](071-chess-accumulated-union-notype-cascade.md)
   — `shedskin_examples/chess/chess.py`'s `squares` global goes NOTYPE
   and its `range(128)` iterator collapses at runtime (`matching
