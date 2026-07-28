@@ -71,6 +71,15 @@ a boxed `None`/traps; pyc's honest analog is **043 option 1** (emit a
 runtime trap for the dead read) or the **boxing** work (018/030) for the
 heterogeneous cases — **not** element-type seeding.
 
+Minimal repro (compile-only warning golden):
+**`tests/empty_container_elem.py`** — `x = []; print(x[0])` NOTYPEs the
+read (and CPython `IndexError`s on the same line — a mutual-error case,
+which is *why* there is no valid program to "fix" here). Every valid
+guarded/iterated shape (`if lst: lst[0]`, `for x in lst`, `sum(lst)`,
+`len(x)>0`-guarded read) already types and runs correctly today. The
+test's `.check` captures the current NOTYPE diagnostics; when the
+residual is addressed (043 option 1), refresh it.
+
 **Mechanics that DID work (salvage, if a DIFFERENT element pass is ever
 built):** the hook point is right — the `reanalyze()` monotone-repair
 path runs at split-stage quiescence and does NOT `clear_results`, so a
