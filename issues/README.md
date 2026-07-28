@@ -37,14 +37,16 @@ that:
   and its `range(128)` iterator collapses at runtime (`matching
   function not found`). Delta-debugged to a multi-root cascade, NOT a
   setter-stage bug (an earlier draft's hypothesis, corrected in the
-  file): two contributing correctness bugs found and **fixed**
-  (`e544f6aa` — bool had no ordering dunders; the LLVM backend
-  sign-extended `int(bool)` to -1), and two left open (`raise <str>`
-  polluting the `__pyc_exc__` slot; the issue-043 empty-list element
-  gap), all amplified by the [033](033-splitter-non-idempotent-divergence.md)
-  splitter churn so that any residual union salvages an unrelated
-  global rather than reporting a local error. The generated
-  fieldless/argless `range` is a salvage artifact, not the root.
+  file): **three** contributing correctness bugs found and fixed
+  (`e544f6aa` — bool had no ordering dunders, and the LLVM backend
+  sign-extended `int(bool)` to -1; `4cfe9609` — `raise <str>` leaked a
+  str into the `__pyc_exc__` slot). With those, the `squares` NOTYPE
+  is gone and chess advances to its **one** remaining blocker, the
+  issue-043 empty-list element gap at chess.py:314. All amplified by
+  the [033](033-splitter-non-idempotent-divergence.md) splitter churn
+  so that any residual union salvages an unrelated global rather than
+  reporting a local error; the generated fieldless/argless `range` is
+  a salvage artifact, not the root.
 - [007-mark-type-stage-coverage.md](007-mark-type-stage-coverage.md)
   — **partial.** 3 of 7 splitter stages reached (`type`,
   `setter`, `violation`).  Remaining: `mark-type`,

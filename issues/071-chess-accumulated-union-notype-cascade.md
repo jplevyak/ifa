@@ -1,10 +1,13 @@
 # 071 — chess.py: `squares` NOTYPE is a downstream salvage of accumulated union churn, not a setter-stage root
 
-**Status:** open. Deeply root-caused 2026-07-28 via delta-debugging
-the actual chess source; two contributing root bugs found and **fixed**
-(`e544f6aa`), two more identified and left open. The remaining chess
-failure is the issue-033 splitter-churn family, tipped over by an
-accumulation of small union sources — no single "the bug".
+**Status:** open (chess still FAILs). Deeply root-caused 2026-07-28 via
+delta-debugging the actual chess source; **three** contributing root
+bugs found and **fixed** (`e544f6aa`, `4cfe9609`), one left open. With
+the three fixed, chess's `squares` NOTYPE is gone and the failure has
+advanced to a single, unrelated blocker (the issue-043 empty-list
+element gap at chess.py:314). The overall shape is the issue-033
+splitter-churn family, tipped over by an accumulation of small union
+sources — no single "the bug".
 
 **History correction:** the first draft of this file (same day, earlier)
 hypothesised the root was a *setter-stage FA gap* — `range`'s
@@ -83,43 +86,52 @@ zero-extending an i1 source in `emit_send_coerce`. `tests/bool_to_int.py`.
 (The dunders were then rewritten to avoid `int()` entirely, but the
 sign-extension bug is real and independently affects any `int(bool)`.)
 
-### (3) `raise <str>` pollutes the `__pyc_exc__` slot — OPEN
+### (3) `raise <str>` pollutes the `__pyc_exc__` slot — FIXED (`4cfe9609`)
 
 The single decisive experiment: with (1) fixed, changing chess's
 `raise "no move found"` / `raise "faulty castling"` (Python-2-style
 string raises) to `raise ValueError(...)` **clears the `squares`
-NOTYPE**. `PY_raise_stmt` (`python_ifa_build_if1.cc:3713`) moves the
-raised value straight into the `__pyc_exc__` global slot; a `str`
-literal is not `Type_RECORD`, so it is stored as-is, making
-`__pyc_exc__` a `{None, str, <exceptions...>}` union that the
-program-wide `if __pyc_exc__ is not None` can-raise checks then thread
-everywhere. In Python 3 `raise "str"` is itself a TypeError, so a
-defensible fix is to reject it at build time; a corpus-friendlier one is
-to wrap a non-BaseException raise operand (`raise Exception(value)`),
-keeping the slot exception-typed. Isolated `raise "str"` does *not*
-repro — it needs the accumulation, consistent with the churn model.
+NOTYPE**. `PY_raise_stmt` moved the raised value straight into the
+`__pyc_exc__` global slot; a `str` literal is not `Type_RECORD`, so it
+was stored as-is, making `__pyc_exc__` a `{None, str, <exceptions...>}`
+union that the program-wide `if __pyc_exc__ is not None` can-raise
+checks then thread everywhere. In Python 3 `raise "str"` is itself a
+TypeError; the fix wraps a raise operand whose static type is
+string/bytes in `Exception(...)`, keeping the slot exception-typed
+(`str(Exception("m")) == "m"` preserves the message, and the result is
+catchable). `tests/raise_string.py`. Isolated `raise "str"` does *not*
+repro the cascade — it needs the accumulation, consistent with the
+churn model, which is why this was invisible until (1) was fixed and
+the reduction narrowed to it.
 
-### (4) empty-list element inference — OPEN (issue 043)
+### (4) empty-list element inference — OPEN (issue 043) — chess's remaining blocker
 
-With (1)+(3) both worked around, `squares` types and the failure moves
-to `legalMoves`'s
+With (1) and (3) fixed, `squares` types cleanly and chess's *sole*
+remaining failure is `legalMoves`'s
 `[i for i in pseudoLegalCaptures(board2) if board2[i&0xff] == kingVal]`
 (chess.py:314) — the classic `retval = []` filled-later element-type
 gap ([043](closed/043-empty-container-inference-options.md) /
-[063](063-no-type-bucket-triage.md)). This is the deep, known FA root.
+[063](063-no-type-bucket-triage.md)). This is the deep, known FA root
+and is now the only thing between chess and a clean compile.
 
 ## What actually lands vs. what remains
 
 - **Landed (`e544f6aa`):** bool ordering + LLVM int(bool) — both are
   genuine correctness bugs on their own (fix `True > False`,
   `max/min/sorted` over bools, `int(True)`), independent of chess.
-  Corpus sweep buckets unchanged (no regressions); suite 232/0 both
-  backends.
-- **Open, in rough order of leverage for chess:** (3) `raise <str>`
-  slot pollution (a bounded frontend change), then (4) the issue-043
-  empty-container element typing, then the underlying issue-033
-  splitter non-idempotency that turns any residual union into a
-  program-wide NOTYPE cascade rather than a local, attributable error.
+- **Landed (`4cfe9609`):** `raise <str>` wrapping — chess's `squares`
+  NOTYPE is now gone; the failure advanced to the single issue-043
+  blocker at chess.py:314.
+- **Open — chess's last blocker:** (4) the issue-043 empty-container
+  element typing (`retval = []` filled later). Behind it, structurally,
+  is the issue-033 splitter non-idempotency that turns any residual
+  union into a program-wide NOTYPE cascade rather than a local,
+  attributable error — the reason each of (1)/(3) individually looked
+  scale-dependent and invisible until reduced.
+- Suite 233/0 both backends after all three fixes; corpus sweep buckets
+  within parallel-timeout noise (the three fixes touch only bool
+  ordering, `int(bool)`, and `raise <str/bytes>` — no other example's
+  behavior changes).
 
 ## Verification plan
 
