@@ -32,6 +32,22 @@ that:
 
 ## Current open issues
 
+- [071-range-more-vtable-slot-unresolved-setter-stage.md](071-range-more-vtable-slot-unresolved-setter-stage.md)
+  — a `clone_methods_per_cs` class (`range`) used exactly once, at
+  module scope, through a filtered list comprehension has its
+  `__pyc_more__` method-pointer prototype-init setter resolve to
+  NOTYPE — codegen then emits a field-store reading an
+  **uninitialized C local** (UB, not the usual controlled runtime
+  trap). Root cause: the same setter/mark-stage FA precision gap
+  [063](063-no-type-bucket-triage.md) already left open ("setter-
+  class-keyed routing ledger" follow-up), now confirmed on a second
+  class of setter (prototype method-pointer install, not a
+  container's `__setitem__`). Blocks
+  `shedskin_examples/chess/chess.py` (compiles with one warning,
+  aborts at runtime on the first line of `main`). Two independent
+  fix directions identified (the deep FA routing fix, and a smaller
+  codegen-robustness fix turning the UB into a loud trap); neither
+  attempted yet.
 - [007-mark-type-stage-coverage.md](007-mark-type-stage-coverage.md)
   — **partial.** 3 of 7 splitter stages reached (`type`,
   `setter`, `violation`).  Remaining: `mark-type`,
