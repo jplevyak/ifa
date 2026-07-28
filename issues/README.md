@@ -33,19 +33,22 @@ that:
 ## Current open issues
 
 - [072-empty-container-notype-current-mechanism-and-plan.md](072-empty-container-notype-current-mechanism-and-plan.md)
-  — re-diagnoses the empty-container "no type" family (the
-  [043](closed/043-empty-container-inference-options.md) /
-  [052](052-shared-method-branch-reopens-empty-list-fragility.md)
-  family) against the current post-045 tree and lays out a **tiered fix
-  plan**. Core mechanism (re-traced 2026-07-28): a branch inside a
-  *shared* method dispatched over a possibly-empty container CS NOTYPEs,
-  because 045's per-CS cloning covers a container's *own* methods but not
-  *inherited* `object`/`__pyc_any_type__` ones — chess.py:314's
-  `not <list>` → the shared `object.__not__`'s `if` is the cheap witness.
-  Tier 0 (container-owned `__not__`, cheap), Tier 1 (per-CS contours for
-  inherited methods — the durable 052 fix), Tier 2 (empty-container
-  absorption + issue-018/030 boxing — the corpus-wide lever for
-  amaze/rubik/dijkstra2).
+  — the empty/imprecise-container element-inference family
+  ([043](closed/043-empty-container-inference-options.md) /
+  [052](052-shared-method-branch-reopens-empty-list-fragility.md)):
+  compares pyc to shedskin (same base algorithm — Plevyak's IFA) and
+  **designs a backward element-split pass**. shedskin runs a proactive
+  backward trace (`backflow_path`) each round that attributes element
+  types to allocation sites and separates never-written sites
+  (`emptycsites`), seeding them `→ <class>[nil]`; pyc has every building
+  block (`CreationSet`, `AVar::backward`/`setters`, `get_element_avar`,
+  `split_css`) but splits reactively and leaves empty elements bottom.
+  The design extends `split_css` with an empty-site partition + default
+  seeding, run on quiescence. (Corrects an earlier draft that
+  mis-attributed chess.py:314 to this family — that was a plain
+  `not <container>` dispatch gap, fixed in `8644be59`, unrelated to
+  emptiness.) Real corpus targets: rubik, dijkstra2, the `retval=[]`
+  filled-later shape; amaze additionally needs issue-018/030 boxing.
 - [071-chess-accumulated-union-notype-cascade.md](071-chess-accumulated-union-notype-cascade.md)
   — `shedskin_examples/chess/chess.py`'s `squares` global goes NOTYPE
   and its `range(128)` iterator collapses at runtime (`matching

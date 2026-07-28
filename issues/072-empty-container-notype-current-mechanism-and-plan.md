@@ -1,183 +1,199 @@
-# 072 — Empty-container "no type" (the 043 family): current mechanism + tiered fix plan
+# 072 — Empty/imprecise-container element inference (the 043 family): shedskin comparison + backward-pass design
 
 **Status:** planning (2026-07-28). Re-diagnoses the
-[043](closed/043-empty-container-inference-options.md) family against
-the *current* tree (post-[045](closed/045-receiver-cs-method-cloning.md))
-and lays out a concrete, tiered implementation plan. 043 is closed with
-a partly-stale characterization (its option-4 prototype "had nothing to
-do"; 045 landed afterward) — this issue supersedes its **plan**, not its
-option survey.
-**Affects:** `__pyc__/00_runtime.py` / `04_sequence.py` (container
-truthiness methods) for Tier 0; `ifa/analysis/fa.cc`'s
-`clone_methods_per_cs` / `PER_CS_RECEIVER` machinery for Tier 1; the
-type-world (`type_union`, clone, codegen) for Tier 2.
+[043](closed/043-empty-container-inference-options.md) family against the
+current tree, compares pyc's approach to shedskin's (same base algorithm),
+and designs a concrete **backward pass** for never-written / element-
+imprecise allocation sites. 043 is closed with a partly-stale option
+survey; this issue carries the design forward.
+**Affects:** `ifa/analysis/fa.cc` — the CreationSet split machinery
+(`split_css`, `creation_point`, `get_element_avar`, `run_split_stages`,
+the `AVar::backward`/`setters` edges).
 **Related:** [040](closed/040-empty-list-shared-clone-type-inference.md),
-[052](052-shared-method-branch-reopens-empty-list-fragility.md) (the
-shared-method-branch fragility — this issue's core mechanism),
-[043](closed/043-empty-container-inference-options.md) (option survey),
-[063](063-no-type-bucket-triage.md) (the corpus "no type" bucket),
-[018](../../issues/018-dict-mixed-key-types-boxing-failure.md) /
+[052](052-shared-method-branch-reopens-empty-list-fragility.md),
+[045](closed/045-receiver-cs-method-cloning.md) (the existing per-CS
+lever), [063](063-no-type-bucket-triage.md) (the corpus "no type"
+bucket), [018](../../issues/018-dict-mixed-key-types-boxing-failure.md) /
 [030](030-polymorphic-dispatch-fat-pointers.md) (heterogeneous boxing —
-Tier 2's co-blocker), [071](071-chess-accumulated-union-notype-cascade.md)
-(chess, whose line-314 warning is this family's cheap end).
+the co-blocker for amaze/dijkstra2), [061](061-c-backend-multi-tuple-list-null-element-type.md)
+(the `(null)*` C-backend sibling).
 
-## The mechanism, re-traced 2026-07-28 (grounded, current)
+## Correction: chess.py:314 was NOT this family (mis-attributed here earlier)
 
-The 040/052 root, restated precisely from a fresh bisection:
+An earlier draft of this file used chess.py:314's
+`if not [i for i in pseudoLegalCaptures(...) ...]:` as this family's
+"cheap witness," with a mechanism story about a shared `object.__not__`
+branch NOTYPE-ing over an empty list. **That was wrong.** The real cause
+was a plain dispatch gap: containers don't derive from `object` (builtin
+classes are exempt from the implicit `object` base), and
+`__pyc_any_type__` — their actual root — had **no `__not__` at all**, so
+`not <list/tuple/dict/set/str>` dispatched to nothing for *every*
+container, **empty or not** (`not [1,2,3]` failed identically to
+`not []`). Fixed by adding `__not__` to `__pyc_any_type__` (`8644be59`,
+`tests/not_container.py`). This has nothing to do with element inference;
+it is deleted from this issue's scope. The lesson (again, per 043's own
+history) is that "no type near a possibly-empty container" is easy to
+mis-attribute — verify the failure reproduces with a **non-empty**
+container before blaming element inference.
 
-> **A branch/comparison inside a *shared* method, dispatched over a
-> container CreationSet that may be empty (bottom element type in some
-> contour), fails to type** — the empty and non-empty CSs merge in the
-> shared method's receiver formal and the branch body is analyzed
-> against the merged/bottom state, producing NOTYPE.
+## What this family actually is (the real corpus cases)
 
-045's `clone_methods_per_cs` gives per-receiver-CS contours to methods
-defined **on** the flagged container (list / range / `__list_iter__`),
-so the empty-CS clone's branch folds independently — that is why
-`if some_list:` (→ `list.__pyc_to_bool__`, list's own, which list
-overrides) and `some_list == other` (→ `list.__eq__`, list's own) both
-compile fine over a possibly-empty list today.
+A container's element type is not inferred at its allocation site, so
+element reads elsewhere are NOTYPE. Grounded manifestations:
 
-**The gap:** *inherited* methods on `object` / `__pyc_any_type__` are NOT
-covered — `object` is not `clone_methods_per_cs`, so an inherited method
-dispatched over a container is a single shared clone across every
-container CS (empty and non-empty merged). If that inherited method
-contains a branch, it reopens 040.
+- **The `retval = []` filled-later shape** — `pseudoLegalCaptures`-style
+  functions that allocate `[]`, `append` in a loop, and return it; a
+  *polymorphic or multi-site* read of the result reads a bottom element.
+- **rubik** (`rubik.py:86` `self.struc[x][y]`) — nested-container element
+  bottom: `struc` is a list-of-lists whose inner element type isn't
+  attributed to the inner allocation.
+- **amaze** (`(tuple __pyc_None_type__ int64 float64 str)`) — element is a
+  genuinely **heterogeneous** union; even with element typing solved, the
+  representation needs boxing ([018](../../issues/018-dict-mixed-key-types-boxing-failure.md) /
+  [030](030-polymorphic-dispatch-fat-pointers.md)) — a *separate*
+  co-blocker, not solved by element inference alone.
+- **dijkstra2** — dict/heap element cross-product (063's canary).
 
-### Witness (chess.py:314, minimal)
+## How shedskin solves it (the design north star)
 
-`not <list>` lowers to `list.__not__()`; `list` has no `__not__`, so it
-dispatches the inherited `object.__not__`:
+shedskin's inference is literally **Plevyak's IFA** (its own docstring)
+— the same algorithm pyc is built on — plus Agesen's CPA. Its
+`shedskin/infer.py` runs, after each forward convergence, a **backward
+phase** `ifa()` → `ifa_flow_graph()`:
 
-```python
-def __not__(self):          # __pyc__/00_runtime.py, on `object`
-  if self.__pyc_to_bool__():  #   <-- a branch, in a shared non-per-CS method
-    return False
-  return True
-```
+1. **`backflow_path()`** (infer.py:2031) — the backward trace. From each
+   *assignment target* (a site that writes a concrete element type into
+   the container), walk incoming (`in_`) edges **backward**, following
+   only edges where the container type flows, collecting the path back to
+   allocation points (`alloc = [n for n in path if not n.in_]`). This
+   attributes "element type X is written into containers allocated at
+   sites S."
+2. **`emptycsites = allcsites - csites`** (infer.py:1766) — the key move:
+   allocation sites that flow to **no** assignment are the never-written
+   containers, identified as a first-class set.
+3. **`ifa_split_no_confusion` / `ifa_split_class`** — partition allocation
+   sites by the assignment-set (element type) reaching them, giving each
+   partition its own class-duplicate (`dcpa`). Empty sites are grouped in
+   the "no confusion" set and **split off into their own contour** — an
+   empty `[]` never shares a contour with a written `[int]`.
+4. **`ifa_seed_template`** distributes the deduced element types across the
+   newly-split allocation points and re-runs the forward phase.
 
-Over a possibly-empty list (a comprehension result whose element is
-bottom in the empty contour) this shared `if` NOTYPEs. Minimal repro
-(`/tmp` during the dig, reproducible):
+## pyc vs shedskin (architecture map)
 
-```python
-def caps(b):
-    r = []
-    if b: r.append(1)
-    return r
-def outer(b):
-    c = [i for i in caps(b)]
-    if not c:        # NOTYPE here; `if c:` and `len(c)==0` are both clean
-        return 0
-    return 1
-```
-
-Adding a container-owned `__not__` (`return self.__len__() == 0`) makes
-`not c` dispatch list's own (per-CS) method and **fixes it** (verified,
-both this repro and the fuller chess-line-314 shape). Confirmed: none of
-`list/tuple/dict/set/str/bytes` define `__not__` today — all six inherit
-the fragile shared `object.__not__`; and `if c:` works only because they
-each override `__pyc_to_bool__`.
-
-## Difficulty spectrum — this family is not one bug
-
-| Manifestation | Example | Tier |
+| Concept | shedskin | pyc |
 |---|---|---|
-| `not <container>` (inherited branchy `object.__not__`) | chess.py:314 | 0 |
-| any inherited branchy shared method over an empty container | 052's `list.__getitem__` `key<0` no-op-branch repro | 1 |
-| empty-field element back-propagation (`self.x=[]` filled later, then `self.x[i]`) | chull, rubik `struc[x][y]` | 2 |
-| heterogeneous-union element (boxing) | amaze `(tuple None int64 float64 str)`, dijkstra2 | 2 (+ issue 018/030) |
+| allocation contour | `dcpa` (class duplicate) | **CreationSet** (`creation_point`) |
+| function duplicate | `cpa` (CPA) | **EntrySet** |
+| container element var | class type-var `var` | `get_element_avar(cs)` |
+| backward edge | `node.in_` | **`AVar::backward`** (`fa.cc:376`) |
+| assignment set | `assignsets` (writes into a slot) | **`AVar::setters`** (append/setitem/merge) |
+| split a contour | `ifa_split_class` | **`split_css`** |
+| CS-split trigger | **proactive** backward pass every round; empty sites separated as `emptycsites` | **reactive**, violation-driven; empty sites are invisible (no setter → not a "starter") |
+| empty container | first-class, split + seeded `→ <class>[nil]` | no concept; empty element stays **bottom** |
+| representation | everything boxed (object ptrs) — unions free | scalars unboxed → heterogeneous unions need boxing (018/030) |
 
-Tier-0/1 fixes do **not** touch amaze/rubik/dijkstra2 — those are the
-deep element-typing + boxing end and need Tier 2 (and issue 018/030).
+**pyc already has every building block** — `CreationSet`, `AVar::backward`,
+`AVar::setters`, `get_element_avar`, `split_css`. The two missing pieces
+are exactly shedskin's `emptycsites` step and its default seeding.
 
-## Plan
+## Design: a backward element-split pass for pyc
 
-### Tier 0 — container-owned `__not__` (cheap, targeted, semantically exact)
+Add a new stage to `run_split_stages`, run **on quiescence** of the
+violation-driven stages (same slot as `PER_CS_RECEIVER`, so it never
+perturbs their trajectories). Call it `split_element_imprecise_css`.
+It is a focused extension of `split_css`, NOT a from-scratch tracer.
 
-Add `__not__` (`return self.__len__() == 0`) to `list`, `tuple`, `dict`,
-`set`, `str`, `bytes`. Each is (or is on the same footing as) a per-CS
-class, so its own method's branch folds per receiver CS. Audit the other
-inherited `object`/`__pyc_any_type__` methods a container can dispatch —
-they already override `__pyc_to_bool__`, `__str__`, `__eq__`, `__len__`;
-`__repr__`/`__format__` route to `__str__`, `__deepcopy__` has a
-fallback — so `__not__` is the one live gap, but confirm by grepping for
-branchy `object` methods without a container override.
+**Step 1 — collect element-imprecise container CSs.** Scan `fa->css` for
+`cs` where `cs->sym->element` (it is a container) and either:
+(a) `get_element_avar(cs)->out->type` is bottom (never-written), or
+(b) `cs->defs` mixes allocation sites some of which are element-written
+    and some not (an empty and a written `[]` sharing one CS).
 
-- **Effort:** ~1–2 h. **Risk:** low, but must run the full suite (both
-  backends) *and* the determinism gate + corpus sweep — adding methods
-  to per-CS container classes can perturb splitter trajectories (025
-  round-3 fragility; issue 033).
-- **Unblocks:** chess.py:314 (chess still needs its *other* blocker, the
-  bool|None representation — [071](071-chess-accumulated-union-notype-cascade.md));
-  any `if not <container>:` over a possibly-empty container in the
-  corpus.
-- **Verify:** the `not c` repro above; `b=[2,3];print(b);k=[];print(k)`
-  (040); the 052 no-op-`if key<0:pass` repro; suite 233/0 both backends;
-  determinism + sweep buckets stable.
+**Step 2 — backward-partition `cs->defs` by reaching element-writes.**
+For each container def AVar in `cs->defs`, determine which element-write
+setters reach it, by walking `AVar::backward` from the element AVar's
+`setters` (the shedskin `backflow_path`, but pyc already has the reverse
+edges, so it is a bounded BFS over `backward`). Partition:
+  - **written sites**, keyed by the element type(s) that reach them
+    (data polymorphism — same as `split_css`'s setter-equivalence key);
+  - **empty sites** = defs reached by **no** element write (shedskin's
+    `emptycsites`).
 
-### Tier 1 — general 052 fix: per-CS contours for *inherited* methods over flagged containers (the real root fix)
+**Step 3 — split.** Mint a new CS per partition via the existing
+`split_css` machinery (reusing the issue-033/066 `cs_group_signature`
+ledger for cross-pass identity — mandatory, or this oscillates). Empty
+sites get their own CS, distinct from any written sibling.
 
-Extend the `PER_CS_RECEIVER` machinery so that a `clone_methods_per_cs`
-container's dispatch of an **inherited** shared method (`object.__not__`,
-`__pyc_any_type__.*`) also gets per-receiver-CS contours — today the
-stage splits only the container's *own* methods. Then the empty-CS clone
-of *any* branchy shared method folds independently, and Tier 0's hand
-overrides become unnecessary. Prerequisite: the FA trace 052 explicitly
-left open — *why* a branch over an empty-element CS NOTYPEs inside a
-merged contour (union computation / CS-split / EntrySet-merge for that
-exact shape) — needed to target the split precisely.
+**Step 4 — seed the empty CS's element with a DEFAULT** (`nil`) rather
+than leaving it bottom — the analog of shedskin's `empty → <class>[nil]`.
+This is the crux: a concrete default lets every downstream read and
+shared-method branch over the empty container type-check and concretize
+(as `list[nil]`, a never-used buffer — runtime-invisible). Seed via
+`update_gen(get_element_avar(empty_cs), nil_type)`.
 
-- **Effort:** multi-day (FA splitter; the 045/`PER_CS_RECEIVER`
-  extension). **Risk:** medium-high — issue-033 splitter churn; re-check
-  the dijkstra2/fysphun canaries per 063's checklist.
-- **Unblocks:** the 052 fragility class program-wide (every future
-  branchy change to a shared/`__pyc__` container method), and removes the
-  Tier-0 maintenance burden.
+**Step 5 — return `analyze_again = 1`** to drive another forward round;
+converge as usual.
 
-### Tier 2 — empty-container absorption + heterogeneous boxing (deep, corpus-wide)
+### Why this is monotone / fixpoint-safe (the hard part)
 
-043's **option 2**: an `empty-<class>` lattice element that ABSORBS on
-union (`empty_list ∪ list[int] = list[int]`) with a post-convergence
-default (`empty → <class>[nil]`); monotone, so stable inside the
-fixpoint. Fixes field-element back-propagation (chull, rubik). **Plus**
-[018](../../issues/018-dict-mixed-key-types-boxing-failure.md) /
-[030](030-polymorphic-dispatch-fat-pointers.md) heterogeneous boxing for
-amaze's `(tuple None int64 float64 str)` element — a co-occurring, distinct
-blocker (tagged dispatch / fat pointers), not solved by absorption alone.
+shedskin restarts the whole analysis (`restore_network` + re-run) each
+ifa round; pyc's fixpoint is incremental, so the pass must only **widen**:
+- Seeding `nil` into an empty element only adds a type (never removes) →
+  monotone.
+- The split partitions existing defs; it mints no new element types, so
+  re-running finds the same partition (idempotent) — provided the ledger
+  routes a re-derived group back to its first CS (exactly `split_css`'s
+  existing issue-066 discipline; reuse it verbatim).
+- Running only on quiescence keeps it out of the violation stages'
+  trajectories (the PER_CS_RECEIVER precedent, 045).
 
-- **Effort:** weeks; a type-world change (`type_union`/canonicalization,
-  clone equivalence, codegen must know the new CS kind). **Risk:** high.
-  043's numeric analog needed the annotate-and-re-run architecture after
-  three shortcut attempts — budget accordingly; share the absorption
-  machinery with the untyped-numeric-constant work.
-- **Unblocks:** amaze, rubik, othello2, dijkstra2 — the bulk of 063's
-  "no type" bucket.
+### Relationship to prior attempts (why this differs)
 
-### Orthogonal, do-regardless — option 1's codegen half
+- 043's **option 4** (confluence seeding) was prototyped and "had nothing
+  to do" because it seeded where empty *meets* non-empty at a flow-
+  connected confluence — the case union flow already handles. This design
+  seeds at the **allocation site** after a **backward** attribution and an
+  explicit **empty-site split**, so it covers the empty site that is read
+  *without* meeting a sibling (through a shared method, a never-written
+  field, a polymorphic multi-site read) — 043's actual failing shapes.
+- It generalizes **045** (`clone_methods_per_cs`, which hard-splits per
+  *constant* for list/range) to the empty-vs-written distinction for
+  *every* container class (dict/set/tuple/str), driven by writes rather
+  than constants.
 
-Independent of all tiers: make a residual no-type / dead branch emit a
-runtime **trap** (assert) instead of raw un-compilable C (undeclared
-label, `(null)*` element, `expected expression`). Turns every remaining
-no-type branch in the corpus from a *build* failure into a *running*
-program with a precise trap (the 056/063 convention). Highest-leverage
-honest mitigation for the whole family; already partly landed in 063.
+### What it does NOT solve
 
-## Recommendation
+- **Heterogeneous element representation** (amaze's `tuple|None|int|float|
+  str`) — element *typing* is only half; the unboxed-scalar union still
+  needs boxing (018/030). This pass makes the element *typed*; a separate
+  effort makes it *representable*.
+- The **`(null)*` C-backend codegen** for a nil/bottom element
+  ([061](061-c-backend-multi-tuple-list-null-element-type.md)) — seeding
+  `nil` should sidestep most of it, but the C emitter's null-element path
+  should still be hardened to trap rather than emit `(null)*`
+  (043 option 1 / the 056/063 convention).
 
-Tier 0 now — bounded, correct, unblocks chess's 043 manifestation and a
-class of `if not <container>:` corpus sites. Tier 1 as the durable 052
-fix when someone is inside the FA splitter. Tier 2 as the long-term
-corpus lever, filed jointly with issue 018/030 (they must land together
-for amaze/dijkstra2). Option 1's codegen trap is worth doing on its own
-schedule.
+## Implementation order
 
-## Verification targets (cumulative)
+1. **Prereq trace** — instrument `split_css` on rubik / the `retval=[]`
+   multi-site-read repro: confirm the empty/imprecise CS is (a) reachable
+   as a split candidate and (b) currently left with a bottom element.
+   This validates Steps 1–2 against real data before writing the split.
+2. **Step 1–4 behind a flag** (`--empty-elem-split`), measured on the
+   determinism gate + full corpus sweep + `test_pyc.py` both backends.
+3. **Ledger integration** (Step 3) — reuse `cs_group_signature`; verify
+   no new `cs_dup_split` oscillation on dijkstra2/fysphun (063 canaries).
+4. Flip default on once the sweep shows net-positive with zero suite
+   regressions.
 
-1. Tier 0: the `not c` repro, 040's `empty_list_print.py`, 052's no-op
-   branch repro — all clean; suite 233/0 both backends; determinism +
-   sweep stable.
-2. Tier 1: 052's repro tolerant of an *arbitrary* added branch in any
-   shared container method; dijkstra2/fysphun unchanged.
-3. Tier 2: amaze / rubik / othello2 past their element/boxing walls;
-   dijkstra2 past its dict/heap wall; no suite regressions.
+## Verification targets
+
+1. The `retval = []` multi-site-read repro (a `[]`-filled function return
+   read polymorphically) — clean, both backends.
+2. `b=[2,3];print(b);k=[];print(k)` (040) and the 052 no-op-branch repro
+   — still clean.
+3. rubik past `struc[x][y]`; dijkstra2 past its dict/heap wall (element
+   half — boxing may still block until 018/030).
+4. `test_pyc.py` 234/0 both backends; determinism gate + sweep buckets
+   net-positive, no regressions; dijkstra2/fysphun pass-count unchanged.

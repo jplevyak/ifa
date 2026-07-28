@@ -1,13 +1,13 @@
 # 071 — chess.py: `squares` NOTYPE is a downstream salvage of accumulated union churn, not a setter-stage root
 
 **Status:** open (chess still FAILs). Deeply root-caused 2026-07-28 via
-delta-debugging the actual chess source; **three** contributing root
-bugs found and **fixed** (`e544f6aa`, `4cfe9609`), one left open. With
-the three fixed, chess's `squares` NOTYPE is gone and the failure has
-advanced to a single, unrelated blocker (the issue-043 empty-list
-element gap at chess.py:314). The overall shape is the issue-033
-splitter-churn family, tipped over by an accumulation of small union
-sources — no single "the bug".
+delta-debugging the actual chess source; **four** contributing bugs
+found and **fixed** (`e544f6aa`, `4cfe9609`, `8644be59`). With those,
+chess's `squares` NOTYPE and its line-314 warning are both gone; the
+fatal blocker is back to #1's territory — the bool|None representation
+mismatch (issue 018/030), **not** element inference. The overall shape
+is the issue-033 splitter-churn family, tipped over by an accumulation
+of small union sources — no single "the bug".
 
 **History correction:** the first draft of this file (same day, earlier)
 hypothesised the root was a *setter-stage FA gap* — `range`'s
@@ -20,11 +20,12 @@ a fieldless, argless `range` (`__new__()` with no args, struct with only
 subtree to void — because `squares` went NOTYPE for an entirely
 different, upstream reason. The evidence below supersedes that draft.
 
-**Affects (real roots):** `__pyc__/00_runtime.py` (bool ordering — now
-fixed), `ifa/codegen/cg_emit_llvm.cc` (int(bool) sign-extension — now
-fixed), `python_ifa_build_if1.cc` raise lowering (`raise <str>` — open),
-the empty-container element-inference family (issue 043 — open), all
-amplified by the issue-033 non-idempotent splitter.
+**Affects (real roots):** `__pyc__/00_runtime.py` (bool ordering + the
+`__pyc_any_type__.__not__` gap — both fixed),
+`ifa/codegen/cg_emit_llvm.cc` (int(bool) sign-extension — fixed),
+`python_ifa_build_if1.cc` raise lowering (`raise <str>` — fixed); the
+remaining fatal blocker is the bool|None representation mismatch
+(issue 018/030), all amplified by the issue-033 non-idempotent splitter.
 **Surfaced while:** digging into `shedskin_examples/chess/chess.py`
 (user request, following the
 [chaos.py `== None` dig](../../issues/closed/031-eq-none-dispatch-crash.md)).
@@ -104,34 +105,53 @@ repro the cascade — it needs the accumulation, consistent with the
 churn model, which is why this was invisible until (1) was fixed and
 the reduction narrowed to it.
 
-### (4) empty-list element inference — OPEN (issue 043) — chess's remaining blocker
+### (4) chess.py:314 `not <list>` — FIXED (`8644be59`)
 
-With (1) and (3) fixed, `squares` types cleanly and chess's *sole*
-remaining failure is `legalMoves`'s
-`[i for i in pseudoLegalCaptures(board2) if board2[i&0xff] == kingVal]`
-(chess.py:314) — the classic `retval = []` filled-later element-type
-gap ([043](closed/043-empty-container-inference-options.md) /
-[063](063-no-type-bucket-triage.md)). This is the deep, known FA root
-and is now the only thing between chess and a clean compile.
+With (1) and (3) fixed, `squares` types cleanly and the failure moved to
+`legalMoves`'s
+`if not [i for i in pseudoLegalCaptures(board2) if board2[i&0xff] == kingVal]:`
+(chess.py:314). This was **initially mis-attributed to the empty-list
+element-inference family (issue 043)** — but it was a plain
+`not <container>` dispatch gap: containers don't derive from `object` and
+`__pyc_any_type__` had no `__not__`, so `not <list>` dispatched to
+nothing for *every* list, empty or not (`not [1,2,3]` failed identically).
+Fixed by adding `__not__` to `__pyc_any_type__` (`tests/not_container.py`).
+
+### Chess's remaining blockers, current
+
+After (1)–(4), chess's fatal blocker is again **#1's territory**: the
+bool|None representation mismatch (`rowAttack`'s implicit-`None` →
+`max([...])` → a list-element / closure field mixing `bool`(1) and
+`None`(8)), plus the `(null)*` C-backend null-element error behind it
+([061](061-c-backend-multi-tuple-list-null-element-type.md)). Those are
+representation/boxing problems (issue 018/030), **not** element
+inference. The genuine empty-container element-inference family
+(issue 043 / [072](072-empty-container-notype-current-mechanism-and-plan.md))
+turned out **not** to be a chess blocker at all once #4 was correctly
+diagnosed.
 
 ## What actually lands vs. what remains
 
 - **Landed (`e544f6aa`):** bool ordering + LLVM int(bool) — both are
   genuine correctness bugs on their own (fix `True > False`,
   `max/min/sorted` over bools, `int(True)`), independent of chess.
-- **Landed (`4cfe9609`):** `raise <str>` wrapping — chess's `squares`
-  NOTYPE is now gone; the failure advanced to the single issue-043
-  blocker at chess.py:314.
-- **Open — chess's last blocker:** (4) the issue-043 empty-container
-  element typing (`retval = []` filled later). Behind it, structurally,
-  is the issue-033 splitter non-idempotency that turns any residual
-  union into a program-wide NOTYPE cascade rather than a local,
-  attributable error — the reason each of (1)/(3) individually looked
-  scale-dependent and invisible until reduced.
-- Suite 233/0 both backends after all three fixes; corpus sweep buckets
-  within parallel-timeout noise (the three fixes touch only bool
-  ordering, `int(bool)`, and `raise <str/bytes>` — no other example's
-  behavior changes).
+- **Landed (`4cfe9609`):** `raise <str>` wrapping — cleared chess's
+  `squares` NOTYPE.
+- **Landed (`8644be59`):** `__pyc_any_type__.__not__` — cleared chess's
+  line-314 (`not <list>`), a plain dispatch gap affecting every
+  `not <container>`, initially mis-attributed here to issue 043.
+- **Open — chess's fatal blocker:** the bool|None representation
+  mismatch (#1: `rowAttack`'s implicit `None` → `max([...])` → a
+  list-element/closure field mixing `bool`(1) and `None`(8)), plus the
+  `(null)*` C-backend null-element error behind it (issue 061). These
+  are representation/boxing problems (issue 018/030), not element
+  inference. Structurally behind everything is the issue-033 splitter
+  non-idempotency that turns any residual union into a program-wide
+  NOTYPE cascade rather than a local, attributable error.
+- Suite 234/0 both backends after all four fixes; corpus sweep buckets
+  within parallel-timeout noise (the fixes touch only bool ordering,
+  `int(bool)`, `raise <str/bytes>`, and `not <container>` — no other
+  example's behavior changes).
 
 ## Verification plan
 
