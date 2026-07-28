@@ -1283,6 +1283,13 @@ static bool emit_send_coerce(EmitCtx &ctx, PNode *pn) {
       if (dst_ty->isIntegerTy(1)) {
         res = Builder->CreateICmpNE(src,
             llvm::ConstantInt::get(src_ty, 0));
+      } else if (src_ty->isIntegerTy(1)) {
+        // Widening FROM i1 (bool) must ZERO-extend: bool is an
+        // unsigned 0/1 value, so sign-extending True (i1 1) would
+        // yield all-ones = -1 (`int(True) == -1` on the LLVM backend).
+        // i1 is only ever bool in this codegen; every other integer
+        // source is signed and keeps SExt below.
+        res = Builder->CreateZExtOrTrunc(src, dst_ty);
       } else {
         res = Builder->CreateSExtOrTrunc(src, dst_ty);
       }
