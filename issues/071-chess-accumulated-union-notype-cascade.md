@@ -4,91 +4,106 @@
 prototypes; a deeper *runtime* blocker remains). Deeply root-caused
 2026-07-28 via delta-debugging the actual chess source; **four**
 contributing bugs found and **fixed** (`e544f6aa`, `4cfe9609`,
-`8644be59`), then the two fatal-compile blockers each addressed behind a
-flag:
-- `bool | None` from **implicit fall-off-the-end returns** (`rowAttack`
-  et al.) → `--no_implicit_none` (shedskin-style: don't inject `None`
-  when the fn has an explicit value return).
-- `--module_lambda_as_def` (lower a single-assignment `NAME = lambda`
-  like a `def`, so calls resolve directly) makes *full* chess compile
-  even though `--no_implicit_none` alone doesn't. **This is NOT a second
-  `None` source** (see the 2026-07-29 correction block just below): the sole `None`
-  is `rowAttack`'s fall-off; the lambda form and a `def` form fail
-  identically in isolation. The flag only perturbs issue-033 splitting so
-  the (already-present) union stops landing in a *shared* closure field.
-  Superseded framing kept below for history.
+`8644be59`), then the fatal-compile blocker traced to **two independent
+`None` sources**, each addressed behind a flag:
 
-**With both flags on, unmodified chess compiles CLEAN (0 warnings, exit
-0); suite 235/0 both backends, and each flag is a no-op when off.**
-Verified against shedskin: it compiles the identical implicit-`None`
-shape because it does NOT model implicit-`None` (native/unboxable
-scalars in both). The remaining chess blocker is now a **runtime**
-`matching function not found` on the heterogeneous `linePieces`
-tuple-of-tuples (issue-018/047), not a compile error. The overall shape
-is the issue-033 splitter-churn family, tipped over by an accumulation
-of small union sources — no single "the bug".
+- **Source A — implicit fall-off-the-end returns** (`rowAttack`): a
+  `for` loop that can complete without returning gets an injected
+  `return None`, typing the function `bool | None`. → `--no_implicit_none`
+  (shedskin-style: don't inject the fall-off `None` when the fn has an
+  explicit value return).
+- **Source B — the module-level lambda-closure dispatch**
+  (`nonpawnBlackAttacks`/`…White`, chess.py:133): calling a lambda
+  *through its closure value in the global* injects a `None` into the
+  lambda's return that is **entirely separate** from Source A. →
+  `--module_lambda_as_def` (lower a single-assignment `NAME = lambda`
+  like a `def`, so the call resolves directly and never builds the
+  closure-value contour).
 
-## Correction (2026-07-29) — the `None` is *solely* `rowAttack`'s fall-off; and/or is innocent; the union is irreducible because CPA splits on *inputs*, not return paths
+**Both flags are needed** because the two `None`s are independent:
+`--no_implicit_none` alone still fails (Source B survives);
+`--module_lambda_as_def` alone still fails (Source A survives). With
+**both on, unmodified chess compiles CLEAN (0 warnings, exit 0); suite
+235/0 both backends, and each flag is a no-op when off.** The remaining
+chess blocker is then a **runtime** `matching function not found` on the
+heterogeneous `linePieces` tuple-of-tuples (issue-018/047), not a
+compile error. Structurally this is the issue-033 splitter-churn family,
+tipped over by an accumulation of small union sources — no single "the
+bug".
 
-Earlier drafts of this file (below) repeatedly called the fatal
-`{None, bool}` carrier "the **partial-application closure pyc builds for
-the VALUE of an `and`/`or` chain**." **That is an overstatement — the
-and/or chain neither introduces nor is required to carry the `None`.**
-Delta-debugged a faithful minimal repro of chess's `nonpawnAttacks`
-structure and pinned all three questions the earlier drafts left open:
+## Correction history (read this before the older mechanism prose)
 
-- **Where the `None` comes from:** *entirely* `rowAttack`'s implicit
-  fall-off-the-end return. Its `for` loop can complete without any
-  truthy `board[k]`, so pyc injects `return None` → `rowAttack : bool |
-  None`. **Proof:** giving `rowAttack` a terminal `return False`
-  (killing the fall-off `None`) makes the whole repro **compile clean**;
-  keeping the fall-off `None` but **deleting the entire `or`-chain**
-  (single `max([rowAttack(...) …])`) **still fails identically.** So the
-  `or`-chain is innocent, exactly as expected — and/or does not
-  introduce `None`.
-- **Why it lands in a closure field:** the `bool | None` flows
-  `rowAttack → [rowAttack(...) for line in lines] → max(a) → x > m →
-  bool.__gt__ → not x`. `not x` lowers to `x.__not__()`; a method access
-  `recv.m` is modeled as a **partial application** (the method curried on
-  its receiver — `make_period_closure`, `fa.cc:2134`), so the bound
-  method captures the `bool | None` receiver as a closure field. The
-  failing `<anon>` closure in the minimal repro is at
-  `__pyc__/00_runtime.py:204` — the `return not x` inside `bool.__gt__`,
-  *not* an and/or site. The carrier can be **any** partial application
-  that captures the union (a bound method here; an and/or value carrier
-  in some contours) — the union, not the and/or, is what's fatal.
-- **Why it can't be split out:** CPA / the issue-033 splitter is
-  **input-driven** — it clones a function once per distinct tuple of
-  *argument* creation-sets. `rowAttack`'s `bool` and `None` are produced
-  by **two different control-flow paths within one and the same argument
-  contour** (same `board`/`dir` *types*; they differ by runtime data,
-  not by input type). There is no *input* distinction to key a split on,
-  so `rowAttack`'s return is an **irreducible `bool | None` at the
-  source**. Downstream can't rescue it either: `[rowAttack(...) …]` is a
-  single list allocation whose element write receives both CSes, and the
-  splitter separates *allocation sites*, not *values within one site*.
-- **The lambda→def flag does NOT remove a `None` source.** In the
-  minimal repro the lambda form and the `def` form fail *identically* —
-  both carry `rowAttack`'s `bool | None`. In *full* chess
-  `--module_lambda_as_def` does make it compile, but that is a
-  **secondary splitting effect**: a `def` resolves calls directly
-  (`def_internal_fn`) instead of through the global's value, reshaping
-  the contour graph enough that the union no longer lands in a *shared*
-  closure field. It removes the *failure*, not a `None` *source* — which
-  is why the honest fix is `--no_implicit_none` (attack the `None` at
-  `rowAttack`), and why the lambda-path "second `None` contributor"
-  framing in the drafts below is misleading.
+This file went through two *wrong* mechanism drafts before the traced
+finding above. Both are called out here so the superseded prose below
+isn't mistaken for current:
 
-Net: **the only real `None` is the implicit fall-off return.** It is
-fatal because it is (a) irreducible at the source (CPA can't split a
-return by path) and (b) unboxed (`bool`=1 byte, `None`=8-byte pointer
-can't share a struct slot). The two durable fixes remain
-`--no_implicit_none` (shedskin-style: don't inject the fall-off `None`)
-or scalar|None boxing (option 2). The `and`/`or`-value-form and
-lambda-path discussion in the older sections below is superseded by
-this block.
+- **Draft 1 (wrong):** the `{None, bool}` carrier is "the
+  partial-application closure pyc builds for the VALUE of an `and`/`or`
+  chain." **False** — the `and`/`or` chain neither introduces nor is
+  required to carry the `None` (a single `max([rowAttack(…) …])` with no
+  `or` fails identically). The carrier is a *bound-method* partial
+  application (`recv.__not__()` capturing its receiver,
+  `make_period_closure`, `fa.cc:2134`), fed by whatever produces the
+  union — not an and/or value closure.
+- **Draft 2 (wrong, commit `b7a80efd`):** "the `None` is *solely*
+  `rowAttack`'s fall-off; the lambda→def flag only perturbs issue-033
+  splitting, not a `None` source." **False for full chess** — traced
+  2026-07-29 (below): the lambda dispatch is a *genuine, independent*
+  second `None` source, not a splitting side-effect. Draft 2 was based
+  on minimal repros that never build the full-scale lambda contour, so
+  they only ever exercised Source A.
 
-**History correction:** the first draft of this file (same day, earlier)
+## The traced finding (2026-07-29) — two independent `None` sources
+
+Instrumented `clone.cc:determine_layouts` at the layout failure to (a)
+walk the offending closure field backward and flag every AVar whose
+`out` carries `__pyc_None_type__`, and traced `gen_fun_pyda`'s nil-move
+decision. On **full chess under `--no_implicit_none` only** (the
+one-flag failing case):
+
+1. **`--no_implicit_none` is working.** Trace: `rowAttack
+   returns_value=1 → SKIP nil-move`. Source A's fall-off `None` is
+   suppressed for `rowAttack`.
+2. **`rowAttack` and `nonpawnAttacks` return pure `bool`.** The backward
+   walk (14,685 AVars, graph exhausted) found **zero** None-carriers
+   anywhere in their bodies (lines 120–131). So under the flag the
+   fall-off `None` really is gone — it does **not** well up from
+   `rowAttack`'s return into the failure.
+3. **The residual `None` originates at exactly one frontier: the lambda,
+   chess.py:133.** It is the single AVar whose `out = {None, bool}` but
+   whose backward *dataflow* neighbors carry no `None`. The `bool` is the
+   body (`nonpawnAttacks`) result; the `None` arrives via a
+   **dispatch/call-return edge** (not `gen`, not backward dataflow),
+   alongside an **empty/NOTYPE sibling write** into the lambda's return.
+4. **The global cell holds just the closure**, not `{None, closure}`
+   (`SYMDUMP nonpawnBlackAttacks … GLOBAL -> <closure>`), so the naive
+   "uninitialised global carries `None`" story is also not it.
+5. The failing closure the layout check reports is at **chess.py:167** —
+   the `not nonpawnBlackAttacks(board, N)` bound-method (a
+   `make_period_closure` receiver capture). It captures the lambda's
+   `{None, bool}` result from (3); that receiver field is the 8-byte
+   `None` / 1-byte `bool` mix `clone.cc` rejects.
+
+**Mechanism of Source B (confident on *where*/*that*; the exact FA edge
+is one layer deeper than fully pinned):** calling the lambda through its
+closure value is a `partial_application`/closure dispatch. That dispatch
+produces an analysis contour whose body result is empty/NOTYPE (the
+typeless sibling write in (3)), and the closure-reply machinery
+contributes a nil there, which unions with the real `bool` →
+`{None, bool}`. A `def` call resolves **directly** (`def_internal_fn`),
+never builds that closure-value contour, and so never gets the injected
+`None` — which is why `--module_lambda_as_def` fixes Source B. This is a
+genuinely different dispatch *path*, **not** a splitter accident.
+
+**One real splitter red herring:** adding an explicit `return False` to
+`rowAttack` *also* makes full chess compile under `--no_implicit_none`
+alone — but since `rowAttack` is already pure `bool` under the flag (see
+(2)), that "fix" works only by perturbing the issue-033 contour graph so
+the NOTYPE lambda contour of (3) doesn't form. It removes Source B's
+*trigger conditions*, not a `None` at `rowAttack`. Do not read it as
+evidence that Source A is the culprit.
+
+**History correction:** the first draft of this file (2026-07-27)
 hypothesised the root was a *setter-stage FA gap* — `range`'s
 `__pyc_more__` method-pointer prototype-init slot resolving to NOTYPE
 for `clone_methods_per_cs` classes, with codegen then emitting an
@@ -102,11 +117,12 @@ different, upstream reason. The evidence below supersedes that draft.
 **Affects (real roots):** `__pyc__/00_runtime.py` (bool ordering + the
 `__pyc_any_type__.__not__` gap — both fixed),
 `ifa/codegen/cg_emit_llvm.cc` (int(bool) sign-extension — fixed),
-`python_ifa_build_if1.cc` raise lowering (`raise <str>` — fixed) and its
-implicit-return-`None` injection (the remaining fatal blocker — a
-`bool | None` union pyc can't lay out unboxed; `ifa/analysis/clone.cc`
-`determine_layouts` is where it fails), all amplified by the issue-033
-non-idempotent splitter.
+`python_ifa_build_if1.cc` raise lowering (`raise <str>` — fixed);
+`python_ifa_build_syms.cc` implicit-return-`None` injection (Source A)
+and the lambda-closure dispatch (Source B) are the remaining fatal
+blocker — a `bool | None` union pyc can't lay out unboxed
+(`ifa/analysis/clone.cc` `determine_layouts` is where it fails), all
+amplified by the issue-033 non-idempotent splitter.
 **Surfaced while:** digging into `shedskin_examples/chess/chess.py`
 (user request, following the
 [chaos.py `== None` dig](../../issues/closed/031-eq-none-dispatch-crash.md)).
@@ -141,13 +157,13 @@ identical `squares` line compiles and runs correctly in isolation and
 in every small/medium reduction — `range` only collapses inside the
 full program.
 
-## Real root cause: accumulated union sources tip the issue-033 splitter
+## The four landed contributor fixes
 
 Delta-debugging the *chess source* (not the consumer of `squares`)
-pinned three independent contributors, each of which alone is survivable
-but which together push FA into the issue-033 dup-split churn (24 passes,
-stuck ~38 violations across passes 7–17, then 18 dup_splits at pass 19)
-that eventually salvages `squares`:
+pinned four independent contributors, each survivable alone but which
+together push FA into the issue-033 dup-split churn (24 passes, stuck
+~38 violations across passes 7–17, then 18 dup_splits at pass 19) that
+eventually salvages `squares`:
 
 ### (1) bool had no ordering dunders — FIXED (`e544f6aa`)
 
@@ -198,27 +214,29 @@ element-inference family (issue 043)** — but it was a plain
 nothing for *every* list, empty or not (`not [1,2,3]` failed identically).
 Fixed by adding `__not__` to `__pyc_any_type__` (`tests/not_container.py`).
 
-### (5) chess's fatal blocker — `bool | None` from an implicit-`None` return
+## (5) The fatal blocker — a `bool | None` closure field from two `None` sources
 
-After (1)–(4), chess dies on ONE hard error at chess.py:167:
+After (1)–(4), chess dies on ONE hard error:
 
 ```
 mismatched field members: __pyc_None_type__(8) bool(1)
 fail: mismatched field sizes: class 'closure' field '<anon>' mixes 8- and 1-byte members ('bool')
 ```
 
-**The mechanism (minimal, confirmed — see the 2026-07-29 correction
-above for the fully-traced version):** a function that returns a bool or
-**falls off the end** (pyc injects `None` for the missing return) is
-typed `bool | None`; flowing that through a list comprehension / `max`
-reaches a method dispatch on the union (`bool.__gt__`'s `not x` →
-`x.__not__()`) whose receiver-binding **partial application** captures
-the `bool | None` as a closure field. `bool` is a 1-byte unboxed scalar;
-`None` (`__pyc_None_type__`) is an 8-byte pointer — one unboxed struct
-slot can't be both, so `clone.cc:determine_layouts` fails hard. (The
-carrier is a bound-method partial application, not an and/or value
-closure — the older "and/or value-form" wording below is superseded.)
-Minimal standalone repro:
+`bool` is a 1-byte unboxed scalar; `None` (`__pyc_None_type__`) is an
+8-byte pointer — one unboxed struct slot can't be both, so
+`clone.cc:determine_layouts` fails hard. The union reaches a closure
+field via a bound-method partial application (`recv.__not__()` /
+`recv.__gt__(...)` capturing a `bool | None` receiver). As traced above,
+the `bool | None` has **two independent origins in chess**, and **both
+must be removed**:
+
+### Source A — implicit fall-off-the-end return (`--no_implicit_none`)
+
+A function that returns a bool but can also **fall off the end** gets an
+injected `None` → `bool | None`. Minimal standalone repro (fixed
+completely by `--no_implicit_none` alone — this repro only ever
+exercises Source A):
 
 ```python
 def maybe(k):
@@ -230,16 +248,8 @@ def f(vals):
 print(f([1, 2, 3]))
 ```
 
-**But it is NOT a single-function fix — chess has MULTIPLE implicit-`None`
-sources.** `rowAttack` is one (its `for` loop can complete without
-returning). Adding `return False` to `rowAttack` clears the error *in
-isolation* (and in the minimal repro), but **full chess still fails with
-the identical `bool | None` field error**, just attributed to the next
-fall-off-the-end function in the search's call graph. So per-function
-patching is a losing game; the fix has to be the general one (below).
-
 **Proximate cause (shedskin-verified) — implicit-`None` modeling, not a
-missing boxing subsystem.** Ran shedskin (0.9.13) on the minimal repro:
+missing boxing subsystem.** Ran shedskin (0.9.13) on this repro:
 
 - *Implicit* fall-off-the-end (chess's shape): shedskin types the
   function `__ss_bool` and fills the missing path with `return False` —
@@ -252,145 +262,82 @@ missing boxing subsystem.** Ran shedskin (0.9.13) on the minimal repro:
   `scalar | None` union — emits `void *` (None = null pointer, bool
   boxed).
 
-So the entangling cost is pyc injecting `None` for an implicit
-fall-off-the-end return, **then** the unboxed representation. Fix
-options, cheapest first:
+**Fix — IMPLEMENTED behind `--no_implicit_none` (default off).**
+`gen_fun_pyda` (`python_ifa_build_syms.cc`) normally moves `sym_nil`
+into `fn->ret` for the fall-off path; when the flag is set and the
+function is a non-generator with an explicit value `return`
+(`fun_returns_value`), that move is **skipped**, so `fn->ret` is the
+union of the explicit returns only (no `None`). Same principle
+`goto_exc_target` already uses on the raise edge (its `!fun_returns_value`
+guard). Deliberate CPython divergence for a program that reaches the end
+and *uses* the `None` (it gets an arbitrary-but-typed value) — hence
+opt-in. **Measured:** fixes the minimal repro and drops `rowAttack`'s
+`None` in full chess (trace-confirmed); suite **235/0 both backends with
+the flag on AND off**. Does **not** touch bare `return`/`return None`
+(explicit, routed through `PY_return_stmt`) or lambdas (`gen_lambda_pyda`
+injects no nil of its own).
 
-1. **Match shedskin's implicit-return handling — IMPLEMENTED behind
-   `--no_implicit_none` (default off).** `gen_fun_pyda`
-   (`python_ifa_build_syms.cc`) normally moves `sym_nil` into `fn->ret`
-   for the fall-off path; when the flag is set and the function is a
-   non-generator with an explicit value `return` (`fun_returns_value`),
-   that move is **skipped**, so `fn->ret` is the union of the explicit
-   returns only (no `None`). Same principle `goto_exc_target` already
-   uses on the raise edge (its `!fun_returns_value` guard). Deliberate
-   CPython divergence for a program that reaches the end and *uses* the
-   `None` (it gets an arbitrary-but-typed value) — hence opt-in.
-   **Measured:** fixes the minimal repro above and the isolated
-   `nonpawnAttacks` (rowAttack's `None` dropped); suite **235/0 both
-   backends with the flag on AND off** (no test relies on the implicit
-   `None` in a breaking way). Does **not** touch bare `return`/`return
-   None` (explicit, routed through `PY_return_stmt`) or lambdas
-   (`gen_lambda_pyda` injects no nil).
+### Source B — the module-level lambda-closure dispatch (`--module_lambda_as_def`)
 
-   *It gets chess most of the way but not all:* with the flag on **and**
-   chess's two module-level lambdas (`nonpawnBlackAttacks`/`…White`)
-   rewritten as `def`s, full chess compiles **clean (0 warnings, exit
-   0)**. Unmodified, chess still fails on those lambdas — a *second*
-   `None` contributor to the same `and`/`or` value-form union (see the
-   Plan section below for the corrected mechanism; the earlier
-   "`{None, closure}` global" story was wrong). Not minimally reproduced
-   (`nb = lambda k: base(k); max([not nb(v) …])` compiles fine — it is
-   scale/context-specific). Closing chess needs that lambda-path `None`
-   handled too, or option 2.
-2. **Box the `bool | None` union** — the general
-   [018](../../issues/018-dict-mixed-key-types-boxing-failure.md) /
-   [030](030-polymorphic-dispatch-fat-pointers.md) /
-   [060](closed/060-none-branch-dropped-mixed-with-literal-bool-sequence.md)
-   work (tagged / fat-pointer scalar|None), which also handles genuine
-   `x = None; x = 5` and the lambda-path `None`. Bigger, but the
-   principled fix.
+`nonpawnBlackAttacks = lambda board, ix: nonpawnAttacks(board, ix, -1)`
+(chess.py:133) is a closure value bound to a module global and called via
+that value. Under `--no_implicit_none` (Source A gone), the residual
+`None` originates **here** (trace: sole None-frontier at chess.py:133,
+`out = {None, bool}`, `None` in via a dispatch edge with an empty/NOTYPE
+sibling write; `rowAttack`/`nonpawnAttacks` bodies carry no `None`). The
+closure-value dispatch builds a contour whose body result is
+empty/NOTYPE and the closure reply contributes nil → `{None, bool}`; the
+`not nonpawnBlackAttacks(...)` bound method at chess.py:167 then captures
+that as its un-layout-able receiver field.
 
-### Plan — closing the residual compile blocker with `--no_implicit_none` on
+**Fix — PROTOTYPED behind `--module_lambda_as_def` (default off).** An
+AST pre-pass (`rewrite_module_lambdas_as_defs`,
+`python_ifa_build_syms.cc`, before `build_syms_pyda`) rewrites a
+top-level `NAME = lambda p: body` into `def NAME(p): return body` when
+`NAME` is bound exactly once at module scope (`top_level_binding_count
+== 1`; else left alone). A `def` resolves calls directly
+(`ctx.def_internal_fn`) instead of through the global's closure value, so
+the NOTYPE closure-dispatch contour never forms and no `None` is
+injected. **Measured:** with this flag **and** `--no_implicit_none`,
+unmodified chess compiles **clean (0 warnings, exit 0)**; suite 235/0
+both backends; default-off no-op. chess then *runs* to a **deeper,
+separate** runtime `matching function not found` in
+`pseudoLegalCapturesWhite` iterating `linePieces` (issue-018/047), not a
+compile error.
 
-> **SUPERSEDED (2026-07-29):** this section framed the residual blocker
-> as a "second `bool | None` *contributor* on the lambda path," carried
-> by "the partial-application closure pyc builds for the VALUE of an
-> `and`/`or` chain." Both claims are wrong — see the 2026-07-29
-> correction block near the top. The `None` is *solely* `rowAttack`'s
-> fall-off; the and/or chain is innocent (a single `max([rowAttack(…)
-> …])` with no `or` fails identically); the carrier in the minimal repro
-> is a **bound-method** partial application (`bool.__gt__`'s `not x` at
-> `00_runtime.py:204`), not an and/or value closure; and
-> `--module_lambda_as_def` removes the *failure* via a splitting
-> perturbation, **not a `None` source**. The text below is retained for
-> history only.
+### The durable general fix (subsumes both flags)
 
-**What it is (traced 2026-07-28, `PYC_DBG_LAYOUT` + minimal repro):** the
-residual fatal error with `--no_implicit_none` on is a `{None, bool}`
-union in a synthesized `closure` class's anonymous field, defined at
-chess.py:167. **The carrier is the partial-application closure pyc builds
-for the VALUE of an `and`/`or` chain used in a non-boolean context** —
-NOT the lambda's closure (an earlier draft wrongly said "the global is
-`{None, closure}`"; a plain module global does not carry `None`).
-`nonpawnAttacks` does `return (max([… == …]) or max([rowAttack(…) …]) or
-…)`; outside a bool context PY_bool_and/or unions every operand's value
-(`python_ifa_build_if1.cc`), and one operand is `bool | None`, so the
-field is `{None, bool}` — 1-byte bool vs 8-byte None, un-layout-able.
-Minimal repro: `return (max([…]) or max([maybe(v) …]))` with `maybe`
-falling off the end fails; the same expression inside an `if` (bool
-context) is clean. Two `None` contributors must both be removed:
-`rowAttack`'s implicit fall-off (`--no_implicit_none`) and a
-lambda-path one that `--module_lambda_as_def` removes by resolving the
-call as a `def` — but *why* that removes a `None` is scale-dependent
-(issue-033 family: the full call graph, not `pseudoLegalMovesWhite`
-alone) and **not fully traced**.
+**Box the `bool | None` union** — the general
+[018](../../issues/018-dict-mixed-key-types-boxing-failure.md) /
+[030](030-polymorphic-dispatch-fat-pointers.md) /
+[060](closed/060-none-branch-dropped-mixed-with-literal-bool-sequence.md)
+work (tagged / fat-pointer `scalar | None`, None = null pointer). This
+handles *both* chess `None` sources and genuine dynamic `x = None; x = 5`
+without either CPython divergence, at the cost of the representation. A
+narrower codegen mitigation is possible: a nullable-scalar / boxed
+representation for a *single* field that mixes exactly one pointer-`None`
+with one scalar, localizing the representation problem to where it
+occurs.
 
-**Options, feasibility/risk ascending:**
+## Status
 
-1. **Lower a single-assignment module-level `NAME = lambda …` like a
-   `def`** (frontend) — **PROTOTYPED, works, behind `--module_lambda_as_def`
-   (default off).** An AST pre-pass (`rewrite_module_lambdas_as_defs`,
-   `python_ifa_build_syms.cc`, before `build_syms_pyda`) rewrites a
-   top-level `NAME = lambda p: body` into `def NAME(p): return body` when
-   `NAME` is bound exactly once at module scope (`top_level_binding_count
-   == 1`; else left alone). Mechanism (corrected — an earlier draft's
-   "dispatch through the name's `{None, closure}` global" was wrong; a
-   plain module global does NOT carry `None`, and a non-method `def`
-   *also* binds its name via `if1_move`): the real carrier of the
-   `{None, bool}` is not the lambda's closure at all — it is the
-   **partial-application closure pyc synthesizes for the VALUE of an
-   `and`/`or` chain used in a NON-boolean context** (see PY_bool_and/or
-   in `python_ifa_build_if1.cc`: outside a bool context the result var
-   unions every operand's value; `nonpawnAttacks` `return (max(...) or
-   max([rowAttack(...) …]) or …)` is exactly this). One operand is
-   `bool | None`, so the field is `{None, bool}` — un-layout-able. The
-   two `None` contributors are the implicit fall-off return
-   (`--no_implicit_none`) and a lambda-path one that
-   `--module_lambda_as_def` empirically removes by making the call
-   resolve as a `def` (`ctx.def_internal_fn`, direct) rather than
-   through the global's value — but the exact contour-level reason it
-   removes a `None` is scale-dependent and **not fully traced**.
-   Minimal repro of the carrier: `return (max([...]) or
-   max([maybe(v) …]))` where `maybe` falls off the end (`{None, bool}`
-   closure); the same expression inside an `if` is clean (bool context).
-   **Measured: with this flag AND `--no_implicit_none`,
-   unmodified chess compiles CLEAN (0 warnings, exit 0)** — the
-   scale-dependent `bool|None` did *not* re-form. Suite 235/0 both
-   backends with both flags on, and default-off no-op. chess then
-   *runs* to a **deeper, separate** runtime `matching function not
-   found` in `pseudoLegalCapturesWhite` iterating `linePieces` (a
-   heterogeneous tuple-of-tuples: empty `()` mixed with
-   `bishopLines`/`rookLines`) — the issue-018/047 heterogeneous-dispatch
-   family, unrelated to this fix. So chess is now **compile-clean**,
-   blocked only on that runtime dispatch.
-2. **Suppress the None-initializer arm for a provably-assigned-before-use
-   closure global** (issue 002 refinement, FA-level). More general than
-   (1) but runs against flow-insensitivity; the None-init is there for a
-   reason.
-3. **Box `scalar | None`** (option 2 above) — the durable general fix;
-   subsumes (1)/(2) and the implicit-`None` cases; large.
-4. **Codegen mitigation: nullable-scalar / boxed representation for a
-   single `{None, scalar}` field** — narrower than full boxing; box or
-   tag only a field that mixes exactly one pointer-`None` with one
-   scalar, localizing the representation problem to where it occurs.
-
-**Status:** option (1) is prototyped and clears the compile (see above);
-`--no_implicit_none` + `--module_lambda_as_def` make chess compile-clean.
-Both are opt-in prototypes — before defaulting either on, weigh the
-CPython divergences (implicit-`None` → arbitrary value; the lambda→def
-rewrite assumes single-assignment) against the corpus, or land the
-durable general fix (3, scalar|None boxing) which subsumes both. The
-next chess blocker is now a **runtime** one — the issue-018/047
-heterogeneous `linePieces` dispatch (a tuple-of-tuples mixing `()` with
-`bishopLines`/`rookLines`), not a compile error.
-
-Once that clears, a `(null)*` C-backend null-element error may also
-surface ([061](061-c-backend-multi-tuple-list-null-element-type.md)). The
-genuine empty-container element-inference family (issue 043 /
+Both flags are opt-in prototypes; **together** they make chess
+compile-clean. Before defaulting either on, weigh the CPython
+divergences (`--no_implicit_none`: fall-off path yields an
+arbitrary-but-typed value instead of `None`; `--module_lambda_as_def`:
+assumes single-assignment) against the corpus, or land the durable
+`scalar | None` boxing which subsumes both. The next chess blocker is a
+**runtime** one — the issue-018/047 heterogeneous `linePieces` dispatch
+(a tuple-of-tuples mixing `()` with `bishopLines`/`rookLines`). Once that
+clears, a `(null)*` C-backend null-element error may also surface
+([061](061-c-backend-multi-tuple-list-null-element-type.md)). The genuine
+empty-container element-inference family (issue 043 /
 [072](072-empty-container-notype-current-mechanism-and-plan.md)) turned
-out **not** to be a chess blocker at all once #4 was correctly
-diagnosed.
+out **not** to be a chess blocker once #4 was correctly diagnosed.
+
+Structurally behind everything is the issue-033 splitter non-idempotency
+that turns any residual union into a program-wide NOTYPE cascade rather
+than a local, attributable error.
 
 ## What actually lands vs. what remains
 
@@ -402,26 +349,21 @@ diagnosed.
 - **Landed (`8644be59`):** `__pyc_any_type__.__not__` — cleared chess's
   line-314 (`not <list>`), a plain dispatch gap affecting every
   `not <container>`, initially mis-attributed here to issue 043.
-- **Open — chess's fatal blocker (#5 above):** a `bool | None` closure
-  field pyc can't lay out unboxed, whose *proximate* cause is pyc
-  injecting `None` for the *several* chess functions that fall off the
-  end (rowAttack is one — but patching it alone just shifts the error to
-  the next). shedskin-verified: the general fix is to match shedskin's
-  implicit-return handling (don't inject `None` when the function has an
-  explicit non-`None` return), or scalar|None boxing (018/030/060).
-  Behind it, a `(null)*` C-backend null-element error (issue 061).
-  Structurally behind everything is the issue-033 splitter
-  non-idempotency that turns any residual union into a program-wide
-  NOTYPE cascade rather than a local, attributable error.
-- Suite 234/0 both backends after all four fixes; corpus sweep buckets
-  within parallel-timeout noise (the fixes touch only bool ordering,
-  `int(bool)`, `raise <str/bytes>`, and `not <container>` — no other
-  example's behavior changes).
+- **Open — chess's fatal blocker (#5):** a `bool | None` closure field
+  pyc can't lay out unboxed, from **two independent `None` sources** —
+  `rowAttack`'s implicit fall-off (`--no_implicit_none`) and the
+  lambda-closure dispatch at chess.py:133 (`--module_lambda_as_def`).
+  Both flags are prototyped and clear the compile together; the durable
+  fix is `scalar | None` boxing (018/030/060). Behind it, a `(null)*`
+  C-backend null-element error (issue 061).
+- Suite 235/0 both backends after all four fixes and with both flags on
+  or off; corpus sweep buckets within parallel-timeout noise.
 
 ## Verification plan
 
-1. `chess.py` compiles warning-free and
-   `./shedskin_examples/chess/chess` runs to completion.
+1. `chess.py` compiles warning-free with `--no_implicit_none
+   --module_lambda_as_def` and `./shedskin_examples/chess/chess` runs to
+   completion (currently blocked on the issue-018/047 runtime dispatch).
 2. Regression for (3): a `clone_methods_per_cs`-adjacent global
    (`squares`-style range comprehension) plus a helper that does
    `raise "some string"`, in a non-`__main__` function — the shape that
