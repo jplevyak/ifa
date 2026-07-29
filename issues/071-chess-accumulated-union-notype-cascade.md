@@ -178,23 +178,44 @@ missing boxing subsystem.** Ran shedskin (0.9.13) on the minimal repro:
   `scalar | None` union — emits `void *` (None = null pointer, bool
   boxed).
 
-So the entangling cost is pyc's `python_ifa_build_if1.cc` injecting
-`None` for an implicit fall-off-the-end return, **then** the unboxed
-representation. Fix options, cheapest first:
+So the entangling cost is pyc injecting `None` for an implicit
+fall-off-the-end return, **then** the unboxed representation. Fix
+options, cheapest first:
 
-1. **Match shedskin's implicit-return handling** — when a function has
-   at least one explicit non-`None` return AND only *falls off the end*
-   on the other paths, do not inject `None` (or inject the return
-   type's default). Scoped, runtime-safe for chess, and much smaller
-   than boxing. Risk: a real CPython divergence for code that *uses*
-   the fall-off `None` — gate it (only when the fall-off path is
-   provably dead, or only for scalar-returning funcs).
+1. **Match shedskin's implicit-return handling — IMPLEMENTED behind
+   `--no_implicit_none` (default off).** `gen_fun_pyda`
+   (`python_ifa_build_syms.cc`) normally moves `sym_nil` into `fn->ret`
+   for the fall-off path; when the flag is set and the function is a
+   non-generator with an explicit value `return` (`fun_returns_value`),
+   that move is **skipped**, so `fn->ret` is the union of the explicit
+   returns only (no `None`). Same principle `goto_exc_target` already
+   uses on the raise edge (its `!fun_returns_value` guard). Deliberate
+   CPython divergence for a program that reaches the end and *uses* the
+   `None` (it gets an arbitrary-but-typed value) — hence opt-in.
+   **Measured:** fixes the minimal repro above and the isolated
+   `nonpawnAttacks` (rowAttack's `None` dropped); suite **235/0 both
+   backends with the flag on AND off** (no test relies on the implicit
+   `None` in a breaking way). Does **not** touch bare `return`/`return
+   None` (explicit, routed through `PY_return_stmt`) or lambdas
+   (`gen_lambda_pyda` injects no nil).
+
+   *It gets chess most of the way but not all:* with the flag on **and**
+   chess's two module-level lambdas (`nonpawnBlackAttacks`/`…White`)
+   rewritten as `def`s, full chess compiles **clean (0 warnings, exit
+   0)**. Unmodified, chess still fails on those lambdas — a separate
+   blocker: a module-level `lambda` global is `{None, closure}`
+   (issue 002's None-initializer) and its result field still mixes in
+   `None` in a way the flag doesn't reach (not minimally reproduced —
+   `nb = lambda k: base(k); max([not nb(v) …])` compiles fine, so it is
+   scale/context-specific). Closing chess needs that lambda-global-None
+   handled too, or option 2.
 2. **Box the `bool | None` union** — the general
    [018](../../issues/018-dict-mixed-key-types-boxing-failure.md) /
    [030](030-polymorphic-dispatch-fat-pointers.md) /
    [060](closed/060-none-branch-dropped-mixed-with-literal-bool-sequence.md)
    work (tagged / fat-pointer scalar|None), which also handles genuine
-   `x = None; x = 5`. Bigger, but the principled fix.
+   `x = None; x = 5` and the lambda-global-None. Bigger, but the
+   principled fix.
 
 Behind #5, once cleared, is a `(null)*` C-backend null-element error
 ([061](061-c-backend-multi-tuple-list-null-element-type.md)). The

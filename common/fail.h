@@ -35,6 +35,19 @@ EXTERN int ifa_fa_inline EXTERN_INIT(1);
 // narrowing, mid-FA inlining, or both.
 EXTERN int ifa_narrow EXTERN_INIT(1);
 
+// Shedskin-style implicit-return handling (ifa/issues/071 fix
+// option 1). Default OFF (CPython-faithful). When set, a function
+// that has at least one explicit value `return` does NOT get an
+// implicit `None` injected for its fall-off-the-end path -- so a
+// `bool`/`int`-returning function that also falls off the end is
+// typed `bool`/`int` rather than `bool | None`, which pyc cannot lay
+// out in one unboxed field (chess's fatal blocker). This is a
+// deliberate CPython divergence for the fall-off path (matches
+// shedskin, which fills that path with the return type's default):
+// code that actually reaches the end and USES the `None` gets an
+// arbitrary-but-typed value instead.
+EXTERN int ifa_no_implicit_none EXTERN_INIT(0);
+
 int show_error(cchar *str, IFAAST *a, ...);
 int show_error(cchar *str, Var *v, ...);
 cchar *get_file_line(cchar *filename, int lineno);
