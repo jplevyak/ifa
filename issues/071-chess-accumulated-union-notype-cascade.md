@@ -1,22 +1,28 @@
 # 071 — chess.py: `squares` NOTYPE is a downstream salvage of accumulated union churn, not a setter-stage root
 
-**Status:** open (chess still FAILs). Deeply root-caused 2026-07-28 via
-delta-debugging the actual chess source; **four** contributing bugs
-found and **fixed** (`e544f6aa`, `4cfe9609`, `8644be59`). With those,
-chess's `squares` NOTYPE and its line-314 warning are both gone; the
-fatal blocker is a single hard error — `class 'closure' field '<anon>'
-mixes 8- and 1-byte members` (chess.py:167). Its **proximate cause is
-that pyc models an implicit fall-off-the-end return as `None`** (chess
-has several such functions — e.g. `rowAttack` — that return a bool on
-some paths and fall off the end on others), forming a `bool | None`
-union that pyc cannot lay out in one unboxed field. Verified against
-shedskin (below): shedskin compiles the identical shape because it does
-NOT model implicit-`None` — so the fix is a general, mechanism-level one
-(match shedskin's implicit-return handling, or box scalar|None), smaller
-than a full boxing subsystem; per-function patching does NOT work (see
-"Chess's remaining blockers"). The
-overall shape is the issue-033 splitter-churn family, tipped over by an
-accumulation of small union sources — no single "the bug".
+**Status:** open (chess now **compiles clean** behind two opt-in
+prototypes; a deeper *runtime* blocker remains). Deeply root-caused
+2026-07-28 via delta-debugging the actual chess source; **four**
+contributing bugs found and **fixed** (`e544f6aa`, `4cfe9609`,
+`8644be59`), then the two fatal-compile blockers each addressed behind a
+flag:
+- `bool | None` from **implicit fall-off-the-end returns** (`rowAttack`
+  et al.) → `--no_implicit_none` (shedskin-style: don't inject `None`
+  when the fn has an explicit value return).
+- `bool | None` leaking through **module-level lambda globals**
+  (`nonpawnBlackAttacks`/`…White`, `{None, closure}` dispatch) →
+  `--module_lambda_as_def` (lower a single-assignment `NAME = lambda`
+  like a `def`, so calls resolve directly).
+
+**With both flags on, unmodified chess compiles CLEAN (0 warnings, exit
+0); suite 235/0 both backends, and each flag is a no-op when off.**
+Verified against shedskin: it compiles the identical implicit-`None`
+shape because it does NOT model implicit-`None` (native/unboxable
+scalars in both). The remaining chess blocker is now a **runtime**
+`matching function not found` on the heterogeneous `linePieces`
+tuple-of-tuples (issue-018/047), not a compile error. The overall shape
+is the issue-033 splitter-churn family, tipped over by an accumulation
+of small union sources — no single "the bug".
 
 **History correction:** the first draft of this file (same day, earlier)
 hypothesised the root was a *setter-stage FA gap* — `range`'s
@@ -239,17 +245,26 @@ implicit-`None` may survive the flag in those contours). **Not easy.**
 **Options, feasibility/risk ascending:**
 
 1. **Lower a single-assignment module-level `NAME = lambda …` like a
-   `def`** (frontend). Bind the name directly to the lambda's function
-   value instead of a None-initialized global slot — exactly what the
-   known-good manual rewrite does. **Gate:** only when `NAME` has one
-   module-scope assignment (the lambda) and is never reassigned (else
-   keep the current global-slot behavior; the None-init is load-bearing
-   for forward refs / conditional definition). *Prototype behind a flag
-   and VERIFY on chess first* — the union is scale-dependent, so
-   removing this `None` source may or may not fully clear it (other
-   fall-off functions reachable only via the lambda dispatch could
-   re-form a `T|None`). Cheapest if it works; medium if the union
-   re-forms.
+   `def`** (frontend) — **PROTOTYPED, works, behind `--module_lambda_as_def`
+   (default off).** An AST pre-pass (`rewrite_module_lambdas_as_defs`,
+   `python_ifa_build_syms.cc`, before `build_syms_pyda`) rewrites a
+   top-level `NAME = lambda p: body` into `def NAME(p): return body` when
+   `NAME` is bound exactly once at module scope (`top_level_binding_count
+   == 1`; else left alone). Mechanism (traced): the real difference
+   isn't the None-init — a non-method `def` *also* binds its name via
+   `if1_move` — it's that a `def` registers `ctx.def_internal_fn`, so
+   calls resolve **directly** instead of dispatching through the name's
+   `{None, closure}` global value, whose `None` arm is what leaked into
+   the `bool` union. **Measured: with this flag AND `--no_implicit_none`,
+   unmodified chess compiles CLEAN (0 warnings, exit 0)** — the
+   scale-dependent `bool|None` did *not* re-form. Suite 235/0 both
+   backends with both flags on, and default-off no-op. chess then
+   *runs* to a **deeper, separate** runtime `matching function not
+   found` in `pseudoLegalCapturesWhite` iterating `linePieces` (a
+   heterogeneous tuple-of-tuples: empty `()` mixed with
+   `bishopLines`/`rookLines`) — the issue-018/047 heterogeneous-dispatch
+   family, unrelated to this fix. So chess is now **compile-clean**,
+   blocked only on that runtime dispatch.
 2. **Suppress the None-initializer arm for a provably-assigned-before-use
    closure global** (issue 002 refinement, FA-level). More general than
    (1) but runs against flow-insensitivity; the None-init is there for a
@@ -261,14 +276,18 @@ implicit-`None` may survive the flag in those contours). **Not easy.**
    tag only a field that mixes exactly one pointer-`None` with one
    scalar, localizing the representation problem to where it occurs.
 
-**Recommendation:** prototype (1) behind a flag and measure on chess; if
-the scale-dependent union re-forms, escalate to (3)/(4). Do NOT attempt
-per-function patching (proven a losing game for the implicit-`None`
-half). This blocker could also be split out into its own issue (it is
-really issue-002 + issue-018 territory, not chess-specific).
+**Status:** option (1) is prototyped and clears the compile (see above);
+`--no_implicit_none` + `--module_lambda_as_def` make chess compile-clean.
+Both are opt-in prototypes — before defaulting either on, weigh the
+CPython divergences (implicit-`None` → arbitrary value; the lambda→def
+rewrite assumes single-assignment) against the corpus, or land the
+durable general fix (3, scalar|None boxing) which subsumes both. The
+next chess blocker is now a **runtime** one — the issue-018/047
+heterogeneous `linePieces` dispatch (a tuple-of-tuples mixing `()` with
+`bishopLines`/`rookLines`), not a compile error.
 
-Behind #5, once cleared, is a `(null)*` C-backend null-element error
-([061](061-c-backend-multi-tuple-list-null-element-type.md)). The
+Once that clears, a `(null)*` C-backend null-element error may also
+surface ([061](061-c-backend-multi-tuple-list-null-element-type.md)). The
 genuine empty-container element-inference family (issue 043 /
 [072](072-empty-container-notype-current-mechanism-and-plan.md)) turned
 out **not** to be a chess blocker at all once #4 was correctly

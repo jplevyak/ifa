@@ -48,6 +48,18 @@ EXTERN int ifa_narrow EXTERN_INIT(1);
 // arbitrary-but-typed value instead.
 EXTERN int ifa_no_implicit_none EXTERN_INIT(0);
 
+// Lower a single-assignment module-level `NAME = lambda ...` as if it
+// were `def NAME(...): return <body>` (ifa/issues/071 fix option 1,
+// prototype). Default OFF. A module-level lambda bound to a name that
+// is assigned exactly once is semantically a named function; binding it
+// as a `def` makes calls resolve directly (via def_internal_fn) instead
+// of dispatching through the name's flow-insensitive `{None, closure}`
+// global cell (issue 002/031) -- whose `None` arm is what leaves chess's
+// `nonpawnBlackAttacks` result a `bool | None` union pyc can't lay out
+// unboxed. Skipped when the name is reassigned anywhere at module scope
+// (then the `{None, closure}` variable semantics are load-bearing).
+EXTERN int ifa_module_lambda_as_def EXTERN_INIT(0);
+
 int show_error(cchar *str, IFAAST *a, ...);
 int show_error(cchar *str, Var *v, ...);
 cchar *get_file_line(cchar *filename, int lineno);
