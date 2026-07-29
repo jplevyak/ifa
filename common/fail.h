@@ -52,12 +52,12 @@ EXTERN int ifa_no_implicit_none EXTERN_INIT(0);
 // were `def NAME(...): return <body>` (ifa/issues/071 fix option 1,
 // prototype). Default OFF. A module-level lambda bound to a name that
 // is assigned exactly once is semantically a named function; binding it
-// as a `def` makes calls resolve directly (via def_internal_fn) instead
-// of dispatching through the name's flow-insensitive `{None, closure}`
-// global cell (issue 002/031) -- whose `None` arm is what leaves chess's
-// `nonpawnBlackAttacks` result a `bool | None` union pyc can't lay out
-// unboxed. Skipped when the name is reassigned anywhere at module scope
-// (then the `{None, closure}` variable semantics are load-bearing).
+// as a `def` makes calls resolve directly (via def_internal_fn) rather
+// than through the name's global variable value. Empirically this
+// removes one of the two `None` contributors to chess's `bool | None`
+// closure-field union (the other is the implicit fall-off return, above)
+// -- the exact contour-level reason is scale-dependent and not fully
+// traced. Skipped when the name is reassigned anywhere at module scope.
 EXTERN int ifa_module_lambda_as_def EXTERN_INIT(0);
 
 int show_error(cchar *str, IFAAST *a, ...);

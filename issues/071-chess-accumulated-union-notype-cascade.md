@@ -9,10 +9,12 @@ flag:
 - `bool | None` from **implicit fall-off-the-end returns** (`rowAttack`
   et al.) → `--no_implicit_none` (shedskin-style: don't inject `None`
   when the fn has an explicit value return).
-- `bool | None` leaking through **module-level lambda globals**
-  (`nonpawnBlackAttacks`/`…White`, `{None, closure}` dispatch) →
-  `--module_lambda_as_def` (lower a single-assignment `NAME = lambda`
-  like a `def`, so calls resolve directly).
+- a second `bool | None` contributor on the **module-level lambda-global**
+  path (`nonpawnBlackAttacks`/`…White`) → `--module_lambda_as_def` (lower
+  a single-assignment `NAME = lambda` like a `def`, so calls resolve
+  directly). The carrier of the union is the `and`/`or` value-form
+  closure (below), not the lambda; the lambda's `None` contribution is
+  empirically removed but not fully traced.
 
 **With both flags on, unmodified chess compiles CLEAN (0 warnings, exit
 0); suite 235/0 both backends, and each flag is a no-op when off.**
@@ -208,39 +210,42 @@ options, cheapest first:
    *It gets chess most of the way but not all:* with the flag on **and**
    chess's two module-level lambdas (`nonpawnBlackAttacks`/`…White`)
    rewritten as `def`s, full chess compiles **clean (0 warnings, exit
-   0)**. Unmodified, chess still fails on those lambdas — a separate
-   blocker: a module-level `lambda` global is `{None, closure}`
-   (issue 002's None-initializer) and its result field still mixes in
-   `None` in a way the flag doesn't reach (not minimally reproduced —
-   `nb = lambda k: base(k); max([not nb(v) …])` compiles fine, so it is
-   scale/context-specific). Closing chess needs that lambda-global-None
+   0)**. Unmodified, chess still fails on those lambdas — a *second*
+   `None` contributor to the same `and`/`or` value-form union (see the
+   Plan section below for the corrected mechanism; the earlier
+   "`{None, closure}` global" story was wrong). Not minimally reproduced
+   (`nb = lambda k: base(k); max([not nb(v) …])` compiles fine — it is
+   scale/context-specific). Closing chess needs that lambda-path `None`
    handled too, or option 2.
 2. **Box the `bool | None` union** — the general
    [018](../../issues/018-dict-mixed-key-types-boxing-failure.md) /
    [030](030-polymorphic-dispatch-fat-pointers.md) /
    [060](closed/060-none-branch-dropped-mixed-with-literal-bool-sequence.md)
    work (tagged / fat-pointer scalar|None), which also handles genuine
-   `x = None; x = 5` and the lambda-global-None. Bigger, but the
+   `x = None; x = 5` and the lambda-path `None`. Bigger, but the
    principled fix.
 
-### Plan — the lambda-global-`None` blocker (chess's last one, with option 1 on)
+### Plan — the second `bool | None` contributor (lambda path; chess's last compile blocker with option 1 on)
 
-**What it is (traced 2026-07-28, `PYC_DBG_LAYOUT`):** the residual fatal
-error with `--no_implicit_none` on is a `{None, bool}` union in a
-synthesized `closure` class's anonymous field, defined at chess.py:167
-(`... and not nonpawnBlackAttacks(board, 2) and ...`). Both members are
-*abstract* types (no specific creation site) flowing into the field. It
-forms **only at full-program scale** — main = `pseudoLegalMovesWhite`
-alone gives a *different* (null-element C) error, and small
-lambda-in-`not`/`max` repros compile clean. So it is a scale-dependent
-union (issue-033 family) whose `None` enters through the module-level
-`lambda` globals: `nonpawnBlackAttacks`/`…White` are `NAME = lambda …`
-at module scope, so the global is `{None, closure}` (issue 002's
-None-initializer, flow-insensitive); rewriting both as `def`s clears it.
-The exact path by which that global-`None` reaches the `bool` field's
-union is not fully traced (the dispatch through `{None, closure}`
-creates different contours than a direct `def` call — some function's
-implicit-`None` may survive the flag in those contours). **Not easy.**
+**What it is (traced 2026-07-28, `PYC_DBG_LAYOUT` + minimal repro):** the
+residual fatal error with `--no_implicit_none` on is a `{None, bool}`
+union in a synthesized `closure` class's anonymous field, defined at
+chess.py:167. **The carrier is the partial-application closure pyc builds
+for the VALUE of an `and`/`or` chain used in a non-boolean context** —
+NOT the lambda's closure (an earlier draft wrongly said "the global is
+`{None, closure}`"; a plain module global does not carry `None`).
+`nonpawnAttacks` does `return (max([… == …]) or max([rowAttack(…) …]) or
+…)`; outside a bool context PY_bool_and/or unions every operand's value
+(`python_ifa_build_if1.cc`), and one operand is `bool | None`, so the
+field is `{None, bool}` — 1-byte bool vs 8-byte None, un-layout-able.
+Minimal repro: `return (max([…]) or max([maybe(v) …]))` with `maybe`
+falling off the end fails; the same expression inside an `if` (bool
+context) is clean. Two `None` contributors must both be removed:
+`rowAttack`'s implicit fall-off (`--no_implicit_none`) and a
+lambda-path one that `--module_lambda_as_def` removes by resolving the
+call as a `def` — but *why* that removes a `None` is scale-dependent
+(issue-033 family: the full call graph, not `pseudoLegalMovesWhite`
+alone) and **not fully traced**.
 
 **Options, feasibility/risk ascending:**
 
@@ -250,12 +255,27 @@ implicit-`None` may survive the flag in those contours). **Not easy.**
    `python_ifa_build_syms.cc`, before `build_syms_pyda`) rewrites a
    top-level `NAME = lambda p: body` into `def NAME(p): return body` when
    `NAME` is bound exactly once at module scope (`top_level_binding_count
-   == 1`; else left alone). Mechanism (traced): the real difference
-   isn't the None-init — a non-method `def` *also* binds its name via
-   `if1_move` — it's that a `def` registers `ctx.def_internal_fn`, so
-   calls resolve **directly** instead of dispatching through the name's
-   `{None, closure}` global value, whose `None` arm is what leaked into
-   the `bool` union. **Measured: with this flag AND `--no_implicit_none`,
+   == 1`; else left alone). Mechanism (corrected — an earlier draft's
+   "dispatch through the name's `{None, closure}` global" was wrong; a
+   plain module global does NOT carry `None`, and a non-method `def`
+   *also* binds its name via `if1_move`): the real carrier of the
+   `{None, bool}` is not the lambda's closure at all — it is the
+   **partial-application closure pyc synthesizes for the VALUE of an
+   `and`/`or` chain used in a NON-boolean context** (see PY_bool_and/or
+   in `python_ifa_build_if1.cc`: outside a bool context the result var
+   unions every operand's value; `nonpawnAttacks` `return (max(...) or
+   max([rowAttack(...) …]) or …)` is exactly this). One operand is
+   `bool | None`, so the field is `{None, bool}` — un-layout-able. The
+   two `None` contributors are the implicit fall-off return
+   (`--no_implicit_none`) and a lambda-path one that
+   `--module_lambda_as_def` empirically removes by making the call
+   resolve as a `def` (`ctx.def_internal_fn`, direct) rather than
+   through the global's value — but the exact contour-level reason it
+   removes a `None` is scale-dependent and **not fully traced**.
+   Minimal repro of the carrier: `return (max([...]) or
+   max([maybe(v) …]))` where `maybe` falls off the end (`{None, bool}`
+   closure); the same expression inside an `if` is clean (bool context).
+   **Measured: with this flag AND `--no_implicit_none`,
    unmodified chess compiles CLEAN (0 warnings, exit 0)** — the
    scale-dependent `bool|None` did *not* re-form. Suite 235/0 both
    backends with both flags on, and default-off no-op. chess then
