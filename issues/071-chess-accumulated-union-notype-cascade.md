@@ -217,6 +217,56 @@ options, cheapest first:
    `x = None; x = 5` and the lambda-global-None. Bigger, but the
    principled fix.
 
+### Plan — the lambda-global-`None` blocker (chess's last one, with option 1 on)
+
+**What it is (traced 2026-07-28, `PYC_DBG_LAYOUT`):** the residual fatal
+error with `--no_implicit_none` on is a `{None, bool}` union in a
+synthesized `closure` class's anonymous field, defined at chess.py:167
+(`... and not nonpawnBlackAttacks(board, 2) and ...`). Both members are
+*abstract* types (no specific creation site) flowing into the field. It
+forms **only at full-program scale** — main = `pseudoLegalMovesWhite`
+alone gives a *different* (null-element C) error, and small
+lambda-in-`not`/`max` repros compile clean. So it is a scale-dependent
+union (issue-033 family) whose `None` enters through the module-level
+`lambda` globals: `nonpawnBlackAttacks`/`…White` are `NAME = lambda …`
+at module scope, so the global is `{None, closure}` (issue 002's
+None-initializer, flow-insensitive); rewriting both as `def`s clears it.
+The exact path by which that global-`None` reaches the `bool` field's
+union is not fully traced (the dispatch through `{None, closure}`
+creates different contours than a direct `def` call — some function's
+implicit-`None` may survive the flag in those contours). **Not easy.**
+
+**Options, feasibility/risk ascending:**
+
+1. **Lower a single-assignment module-level `NAME = lambda …` like a
+   `def`** (frontend). Bind the name directly to the lambda's function
+   value instead of a None-initialized global slot — exactly what the
+   known-good manual rewrite does. **Gate:** only when `NAME` has one
+   module-scope assignment (the lambda) and is never reassigned (else
+   keep the current global-slot behavior; the None-init is load-bearing
+   for forward refs / conditional definition). *Prototype behind a flag
+   and VERIFY on chess first* — the union is scale-dependent, so
+   removing this `None` source may or may not fully clear it (other
+   fall-off functions reachable only via the lambda dispatch could
+   re-form a `T|None`). Cheapest if it works; medium if the union
+   re-forms.
+2. **Suppress the None-initializer arm for a provably-assigned-before-use
+   closure global** (issue 002 refinement, FA-level). More general than
+   (1) but runs against flow-insensitivity; the None-init is there for a
+   reason.
+3. **Box `scalar | None`** (option 2 above) — the durable general fix;
+   subsumes (1)/(2) and the implicit-`None` cases; large.
+4. **Codegen mitigation: nullable-scalar / boxed representation for a
+   single `{None, scalar}` field** — narrower than full boxing; box or
+   tag only a field that mixes exactly one pointer-`None` with one
+   scalar, localizing the representation problem to where it occurs.
+
+**Recommendation:** prototype (1) behind a flag and measure on chess; if
+the scale-dependent union re-forms, escalate to (3)/(4). Do NOT attempt
+per-function patching (proven a losing game for the implicit-`None`
+half). This blocker could also be split out into its own issue (it is
+really issue-002 + issue-018 territory, not chess-specific).
+
 Behind #5, once cleared, is a `(null)*` C-backend null-element error
 ([061](061-c-backend-multi-tuple-list-null-element-type.md)). The
 genuine empty-container element-inference family (issue 043 /
