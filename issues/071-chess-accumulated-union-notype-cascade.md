@@ -9,12 +9,14 @@ flag:
 - `bool | None` from **implicit fall-off-the-end returns** (`rowAttack`
   et al.) → `--no_implicit_none` (shedskin-style: don't inject `None`
   when the fn has an explicit value return).
-- a second `bool | None` contributor on the **module-level lambda-global**
-  path (`nonpawnBlackAttacks`/`…White`) → `--module_lambda_as_def` (lower
-  a single-assignment `NAME = lambda` like a `def`, so calls resolve
-  directly). The carrier of the union is the `and`/`or` value-form
-  closure (below), not the lambda; the lambda's `None` contribution is
-  empirically removed but not fully traced.
+- `--module_lambda_as_def` (lower a single-assignment `NAME = lambda`
+  like a `def`, so calls resolve directly) makes *full* chess compile
+  even though `--no_implicit_none` alone doesn't. **This is NOT a second
+  `None` source** (see the 2026-07-29 correction block just below): the sole `None`
+  is `rowAttack`'s fall-off; the lambda form and a `def` form fail
+  identically in isolation. The flag only perturbs issue-033 splitting so
+  the (already-present) union stops landing in a *shared* closure field.
+  Superseded framing kept below for history.
 
 **With both flags on, unmodified chess compiles CLEAN (0 warnings, exit
 0); suite 235/0 both backends, and each flag is a no-op when off.**
@@ -25,6 +27,66 @@ scalars in both). The remaining chess blocker is now a **runtime**
 tuple-of-tuples (issue-018/047), not a compile error. The overall shape
 is the issue-033 splitter-churn family, tipped over by an accumulation
 of small union sources — no single "the bug".
+
+## Correction (2026-07-29) — the `None` is *solely* `rowAttack`'s fall-off; and/or is innocent; the union is irreducible because CPA splits on *inputs*, not return paths
+
+Earlier drafts of this file (below) repeatedly called the fatal
+`{None, bool}` carrier "the **partial-application closure pyc builds for
+the VALUE of an `and`/`or` chain**." **That is an overstatement — the
+and/or chain neither introduces nor is required to carry the `None`.**
+Delta-debugged a faithful minimal repro of chess's `nonpawnAttacks`
+structure and pinned all three questions the earlier drafts left open:
+
+- **Where the `None` comes from:** *entirely* `rowAttack`'s implicit
+  fall-off-the-end return. Its `for` loop can complete without any
+  truthy `board[k]`, so pyc injects `return None` → `rowAttack : bool |
+  None`. **Proof:** giving `rowAttack` a terminal `return False`
+  (killing the fall-off `None`) makes the whole repro **compile clean**;
+  keeping the fall-off `None` but **deleting the entire `or`-chain**
+  (single `max([rowAttack(...) …])`) **still fails identically.** So the
+  `or`-chain is innocent, exactly as expected — and/or does not
+  introduce `None`.
+- **Why it lands in a closure field:** the `bool | None` flows
+  `rowAttack → [rowAttack(...) for line in lines] → max(a) → x > m →
+  bool.__gt__ → not x`. `not x` lowers to `x.__not__()`; a method access
+  `recv.m` is modeled as a **partial application** (the method curried on
+  its receiver — `make_period_closure`, `fa.cc:2134`), so the bound
+  method captures the `bool | None` receiver as a closure field. The
+  failing `<anon>` closure in the minimal repro is at
+  `__pyc__/00_runtime.py:204` — the `return not x` inside `bool.__gt__`,
+  *not* an and/or site. The carrier can be **any** partial application
+  that captures the union (a bound method here; an and/or value carrier
+  in some contours) — the union, not the and/or, is what's fatal.
+- **Why it can't be split out:** CPA / the issue-033 splitter is
+  **input-driven** — it clones a function once per distinct tuple of
+  *argument* creation-sets. `rowAttack`'s `bool` and `None` are produced
+  by **two different control-flow paths within one and the same argument
+  contour** (same `board`/`dir` *types*; they differ by runtime data,
+  not by input type). There is no *input* distinction to key a split on,
+  so `rowAttack`'s return is an **irreducible `bool | None` at the
+  source**. Downstream can't rescue it either: `[rowAttack(...) …]` is a
+  single list allocation whose element write receives both CSes, and the
+  splitter separates *allocation sites*, not *values within one site*.
+- **The lambda→def flag does NOT remove a `None` source.** In the
+  minimal repro the lambda form and the `def` form fail *identically* —
+  both carry `rowAttack`'s `bool | None`. In *full* chess
+  `--module_lambda_as_def` does make it compile, but that is a
+  **secondary splitting effect**: a `def` resolves calls directly
+  (`def_internal_fn`) instead of through the global's value, reshaping
+  the contour graph enough that the union no longer lands in a *shared*
+  closure field. It removes the *failure*, not a `None` *source* — which
+  is why the honest fix is `--no_implicit_none` (attack the `None` at
+  `rowAttack`), and why the lambda-path "second `None` contributor"
+  framing in the drafts below is misleading.
+
+Net: **the only real `None` is the implicit fall-off return.** It is
+fatal because it is (a) irreducible at the source (CPA can't split a
+return by path) and (b) unboxed (`bool`=1 byte, `None`=8-byte pointer
+can't share a struct slot). The two durable fixes remain
+`--no_implicit_none` (shedskin-style: don't inject the fall-off `None`)
+or scalar|None boxing (option 2). The `and`/`or`-value-form and
+lambda-path discussion in the older sections below is superseded by
+this block.
 
 **History correction:** the first draft of this file (same day, earlier)
 hypothesised the root was a *setter-stage FA gap* — `range`'s
@@ -145,14 +207,18 @@ mismatched field members: __pyc_None_type__(8) bool(1)
 fail: mismatched field sizes: class 'closure' field '<anon>' mixes 8- and 1-byte members ('bool')
 ```
 
-**The mechanism (minimal, confirmed):** a function that returns a bool
-or **falls off the end** (pyc injects `None` for the missing return) is
+**The mechanism (minimal, confirmed — see the 2026-07-29 correction
+above for the fully-traced version):** a function that returns a bool or
+**falls off the end** (pyc injects `None` for the missing return) is
 typed `bool | None`; flowing that through a list comprehension / `max`
-makes pyc lower the comprehension to a synthesized `closure` carrier
-whose anonymous element field must hold `bool | None`. `bool` is a
-1-byte unboxed scalar; `None` (`__pyc_None_type__`) is an 8-byte
-pointer — one unboxed struct slot can't be both, so
-`clone.cc:determine_layouts` fails hard. Minimal standalone repro:
+reaches a method dispatch on the union (`bool.__gt__`'s `not x` →
+`x.__not__()`) whose receiver-binding **partial application** captures
+the `bool | None` as a closure field. `bool` is a 1-byte unboxed scalar;
+`None` (`__pyc_None_type__`) is an 8-byte pointer — one unboxed struct
+slot can't be both, so `clone.cc:determine_layouts` fails hard. (The
+carrier is a bound-method partial application, not an and/or value
+closure — the older "and/or value-form" wording below is superseded.)
+Minimal standalone repro:
 
 ```python
 def maybe(k):
@@ -225,7 +291,20 @@ options, cheapest first:
    `x = None; x = 5` and the lambda-path `None`. Bigger, but the
    principled fix.
 
-### Plan — the second `bool | None` contributor (lambda path; chess's last compile blocker with option 1 on)
+### Plan — closing the residual compile blocker with `--no_implicit_none` on
+
+> **SUPERSEDED (2026-07-29):** this section framed the residual blocker
+> as a "second `bool | None` *contributor* on the lambda path," carried
+> by "the partial-application closure pyc builds for the VALUE of an
+> `and`/`or` chain." Both claims are wrong — see the 2026-07-29
+> correction block near the top. The `None` is *solely* `rowAttack`'s
+> fall-off; the and/or chain is innocent (a single `max([rowAttack(…)
+> …])` with no `or` fails identically); the carrier in the minimal repro
+> is a **bound-method** partial application (`bool.__gt__`'s `not x` at
+> `00_runtime.py:204`), not an and/or value closure; and
+> `--module_lambda_as_def` removes the *failure* via a splitting
+> perturbation, **not a `None` source**. The text below is retained for
+> history only.
 
 **What it is (traced 2026-07-28, `PYC_DBG_LAYOUT` + minimal repro):** the
 residual fatal error with `--no_implicit_none` on is a `{None, bool}`
