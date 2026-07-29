@@ -48,18 +48,6 @@ EXTERN int ifa_narrow EXTERN_INIT(1);
 // arbitrary-but-typed value instead.
 EXTERN int ifa_no_implicit_none EXTERN_INIT(0);
 
-// Lower a single-assignment module-level `NAME = lambda ...` as if it
-// were `def NAME(...): return <body>` (ifa/issues/071 fix option 1,
-// prototype). Default OFF. A module-level lambda bound to a name that
-// is assigned exactly once is semantically a named function; binding it
-// as a `def` makes calls resolve directly (via def_internal_fn) rather
-// than through the name's global variable value. Empirically this
-// removes one of the two `None` contributors to chess's `bool | None`
-// closure-field union (the other is the implicit fall-off return, above)
-// -- the exact contour-level reason is scale-dependent and not fully
-// traced. Skipped when the name is reassigned anywhere at module scope.
-EXTERN int ifa_module_lambda_as_def EXTERN_INIT(0);
-
 int show_error(cchar *str, IFAAST *a, ...);
 int show_error(cchar *str, Var *v, ...);
 cchar *get_file_line(cchar *filename, int lineno);
