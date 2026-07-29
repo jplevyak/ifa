@@ -8,14 +8,15 @@ outcome of **prototyping element seeding** — a net negative (see
 concrete numbers. The prototype was **removed** (no code in tree, per
 043's own "withdrew the prototype" precedent). Key correction from the
 prototype: shedskin does NOT infer empty-container element types from
-uses — its inference is forward/write-driven and it sidesteps the
-`join([])`-style case by **boxing**, which pyc already matches for a
-BOTTOM element. So the residual is narrow (a read that returns the
-element as a value, `x[0]`) and its honest fixes are the 043-option-1
-codegen trap or the 018/030 boxing work, **not** element seeding. The
-`ifa()`/shedskin design section below is retained as reference for the
-data-polymorphism splitting (which pyc's `split_css` already does), not
-as a seeding recipe.
+uses (its inference is forward/write-driven), and it does NOT "box
+everything" — scalars are native/unboxable in both compilers;
+`join([])` just works because a container's element is a *pointer* type
+(null-absorbing), not because it's boxed. So the residual is narrow (a
+read that returns the element as a value, `x[0]`) and its honest fix is
+the 043-option-1 codegen trap — **not** element seeding and **not** a
+boxing subsystem. The `ifa()`/shedskin design section below is retained
+as reference for the data-polymorphism splitting (which pyc's
+`split_css` already does), not as a seeding recipe.
 
 ## Prototype result (2026-07-28) — read this before re-attempting
 
@@ -41,35 +42,41 @@ result came back negative.
 - Corpus sweep: **COMPILED 23 → 19, FAIL 25 → 31** (net −4 to −6).
 
 **Root cause of the negative result — and a correction about shedskin.**
-pyc is **unboxed**; shedskin **boxes everything**. That is the whole
-difference, and it means the "seed a default element" framing was the
-wrong lens on both sides:
+shedskin does **not** "box everything" (an earlier version of this note
+said so — wrong). Verified in `shedskin/typestr.py`: scalars
+(`int`/`float`/`bool`/`complex`) are **native/unboxable** (`__ss_int`,
+`__ss_bool`, …), exactly like pyc. shedskin represents **str/list/dict/
+class as pointers** (`T *`), which are *nullable*, so `None` mixed with a
+pointer type is just a null pointer — free, no separate representation.
+It boxes to a generic `void *`/`pyobj *` **only** for a genuine dynamic
+`scalar | None` (or otherwise-heterogeneous) union — and even then it
+first tries to *avoid* forming such a union (see the chess note below /
+[071](071-chess-accumulated-union-notype-cascade.md)). The real
+pyc↔shedskin differences here are two, and neither is "boxing vs not":
 
-- shedskin does **not** infer an empty container's element type from its
-  use sites, and its own inference does not need `join([])`'s element to
-  be `str`. shedskin's constraint graph is **forward and write-driven**
-  (`in_out(a,b)` is a directed edge; `unit` receives types only from
-  literal elements / `append` / `setitem` / writes through an aliased
-  param; reads flow *out* of `unit`, never back in — verified in
-  `shedskin/infer.py` + `graph.py`). An `x = []` that is only *read*
-  keeps an empty `unit`; join-of-empty is `""` at the C++ level
-  **because it is boxed**, not because shedskin worked out the element
-  type. (The `ifa()` "backward phase" traces from *write* sites
-  `assign_target` to allocation points for data-polymorphism splitting —
-  it is not a use-site pass.)
-- pyc, unboxed, *already* handles a **bottom**-element container
-  correctly for those same ops (join/concat/set/`len`) — which is
-  exactly why seeding a concrete `nil` REGRESSED them: it replaced a
-  working "no element" with a poisoning `None`. `void` fared worse.
+- **Use-site inference: neither does it.** shedskin does **not** infer an
+  empty container's element type from its uses, and its inference does
+  not need `join([])`'s element to be `str`. Its constraint graph is
+  **forward and write-driven** (`in_out(a,b)` is a directed edge; `unit`
+  receives types only from literal elements / `append` / `setitem` /
+  writes through an aliased param; reads flow *out* of `unit`, never back
+  in — `shedskin/infer.py` + `graph.py`). An `x = []` only *read* keeps
+  an empty `unit`; join-of-empty is `""` because the element is a
+  *pointer* type (null-absorbing), not because everything is boxed.
+- **pyc already matches this for the container ops.** pyc, unboxed,
+  *already* handles a **bottom**-element container correctly for
+  join/concat/set/`len` — which is exactly why seeding a concrete `nil`
+  REGRESSED them: it replaced a working "no element" with a poisoning
+  `None`. `void` fared worse.
 
 So the seeding idea is misguided regardless of direction: a fixed
 default poisons the ops pyc already handles, and there is nothing to
 infer "backward from the use site" that shedskin itself infers. The
 genuine residual is narrow — a *read that returns the element as a
-value* (`x[0]` on a never-written `[]`) has no type. shedskin makes that
-a boxed `None`/traps; pyc's honest analog is **043 option 1** (emit a
-runtime trap for the dead read) or the **boxing** work (018/030) for the
-heterogeneous cases — **not** element-type seeding.
+value* (`x[0]` on a never-written `[]`) has no type. pyc's honest analog
+is **043 option 1** (emit a runtime trap for the dead read) — **not**
+element-type seeding, and **not** a boxing subsystem (the residual is a
+scalar read, not a heterogeneous union).
 
 Minimal repro (compile-only warning golden):
 **`tests/empty_container_elem.py`** — `x = []; print(x[0])` NOTYPEs the
@@ -175,16 +182,17 @@ phase** `ifa()` → `ifa_flow_graph()`:
 | split a contour | `ifa_split_class` | **`split_css`** |
 | CS-split trigger | **proactive** backward pass every round; empty sites separated as `emptycsites` | **reactive**, violation-driven; empty sites are invisible (no setter → not a "starter") |
 | empty container | first-class, split + seeded `→ <class>[nil]` | no concept; empty element stays **bottom** |
-| representation | everything boxed (object ptrs) — unions free | scalars unboxed → heterogeneous unions need boxing (018/030) |
+| representation | scalars native/unboxable; str/list/dict/class are **pointers** (nullable → None-absorbing); dynamic `scalar\|None` unions boxed to `void *` | scalars unboxed; None is an 8-byte ptr, so a `scalar\|None` union needs boxing (018/030) |
 
 **pyc already has every building block** — `CreationSet`, `AVar::backward`,
 `AVar::setters`, `get_element_avar`, `split_css`. shedskin's two extra
 steps over pyc are the `emptycsites` separation and the
 `empty → <class>[nil]` default seed — but note (per the Prototype result
-above) the **default seed does not transfer to pyc**: shedskin gets away
-with it only because it is boxed. The transferable half is the
-`emptycsites`/write-attribution *split*, which pyc's `split_css` already
-largely does.
+above) the **default seed does not transfer to pyc**: pyc *already*
+handles a bottom-element container correctly for the container ops
+(join/len/concat), so seeding a concrete `nil` only poisons them. The
+transferable half is the `emptycsites`/write-attribution *split*, which
+pyc's `split_css` already largely does.
 
 ## Design: a backward element-split pass for pyc
 

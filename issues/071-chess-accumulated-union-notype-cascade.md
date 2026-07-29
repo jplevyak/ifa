@@ -4,10 +4,16 @@
 delta-debugging the actual chess source; **four** contributing bugs
 found and **fixed** (`e544f6aa`, `4cfe9609`, `8644be59`). With those,
 chess's `squares` NOTYPE and its line-314 warning are both gone; the
-fatal blocker is back to #1's territory — the bool|None representation
-mismatch (issue 018/030), **not** element inference. The overall shape
-is the issue-033 splitter-churn family, tipped over by an accumulation
-of small union sources — no single "the bug".
+fatal blocker is a single hard error — `class 'closure' field '<anon>'
+mixes 8- and 1-byte members` (chess.py:167). Its **proximate cause is
+that pyc models an implicit fall-off-the-end return as `None`**
+(`rowAttack` returns a bool or falls off the end), forming a
+`bool | None` union that pyc cannot lay out in one unboxed field.
+Verified against shedskin (below): shedskin compiles the identical shape
+because it does NOT model implicit-`None` — so the fix is smaller than
+"add boxing" (two options in "Chess's remaining blockers" below). The
+overall shape is the issue-033 splitter-churn family, tipped over by an
+accumulation of small union sources — no single "the bug".
 
 **History correction:** the first draft of this file (same day, earlier)
 hypothesised the root was a *setter-stage FA gap* — `range`'s
@@ -23,9 +29,11 @@ different, upstream reason. The evidence below supersedes that draft.
 **Affects (real roots):** `__pyc__/00_runtime.py` (bool ordering + the
 `__pyc_any_type__.__not__` gap — both fixed),
 `ifa/codegen/cg_emit_llvm.cc` (int(bool) sign-extension — fixed),
-`python_ifa_build_if1.cc` raise lowering (`raise <str>` — fixed); the
-remaining fatal blocker is the bool|None representation mismatch
-(issue 018/030), all amplified by the issue-033 non-idempotent splitter.
+`python_ifa_build_if1.cc` raise lowering (`raise <str>` — fixed) and its
+implicit-return-`None` injection (the remaining fatal blocker — a
+`bool | None` union pyc can't lay out unboxed; `ifa/analysis/clone.cc`
+`determine_layouts` is where it fails), all amplified by the issue-033
+non-idempotent splitter.
 **Surfaced while:** digging into `shedskin_examples/chess/chess.py`
 (user request, following the
 [chaos.py `== None` dig](../../issues/closed/031-eq-none-dispatch-crash.md)).
@@ -117,17 +125,64 @@ element-inference family (issue 043)** — but it was a plain
 nothing for *every* list, empty or not (`not [1,2,3]` failed identically).
 Fixed by adding `__not__` to `__pyc_any_type__` (`tests/not_container.py`).
 
-### Chess's remaining blockers, current
+### (5) chess's fatal blocker — `bool | None` from an implicit-`None` return
 
-After (1)–(4), chess's fatal blocker is again **#1's territory**: the
-bool|None representation mismatch (`rowAttack`'s implicit-`None` →
-`max([...])` → a list-element / closure field mixing `bool`(1) and
-`None`(8)), plus the `(null)*` C-backend null-element error behind it
-([061](061-c-backend-multi-tuple-list-null-element-type.md)). Those are
-representation/boxing problems (issue 018/030), **not** element
-inference. The genuine empty-container element-inference family
-(issue 043 / [072](072-empty-container-notype-current-mechanism-and-plan.md))
-turned out **not** to be a chess blocker at all once #4 was correctly
+After (1)–(4), chess dies on ONE hard error at chess.py:167:
+
+```
+mismatched field members: __pyc_None_type__(8) bool(1)
+fail: mismatched field sizes: class 'closure' field '<anon>' mixes 8- and 1-byte members ('bool')
+```
+
+**Chain (reduced + confirmed):** `rowAttack` returns a bool or **falls
+off the end** (returns nothing → pyc injects `None`), so pyc types it
+`bool | None`. `nonpawnAttacks` does `max([rowAttack(...) for ... in
+bishopLines])`, a list comprehension → pyc lowers the comprehension to a
+synthesized `closure` carrier whose anonymous element field must hold
+`bool | None`. `bool` is a 1-byte unboxed scalar; `None`
+(`__pyc_None_type__`) is an 8-byte pointer — one unboxed struct slot
+can't be both, so `clone.cc:determine_layouts` fails hard. Making
+`rowAttack` always return a bool removes the error; minimal standalone
+repro: a function with an implicit fall-off-the-end return, `max` over a
+comprehension of it.
+
+**Proximate cause (shedskin-verified) — implicit-`None` modeling, not a
+missing boxing subsystem.** Ran shedskin (0.9.13) on the minimal repro:
+
+- *Implicit* fall-off-the-end (chess's shape): shedskin types the
+  function `__ss_bool` and fills the missing path with `return False` —
+  it does **NOT** model an implicit fall-off as `None`, so **no union
+  forms and nothing is boxed** (a deliberate CPython divergence:
+  `maybe(-1)` is `False`, not `None` — safe here because the path is
+  runtime-dead). Scalars are native/unboxable in *both* compilers
+  (`typestr.py:unboxable`); shedskin is not "box everything."
+- *Explicit* `return None`: shedskin *does* box the genuine
+  `scalar | None` union — emits `void *` (None = null pointer, bool
+  boxed).
+
+So the entangling cost is pyc's `python_ifa_build_if1.cc` injecting
+`None` for an implicit fall-off-the-end return, **then** the unboxed
+representation. Fix options, cheapest first:
+
+1. **Match shedskin's implicit-return handling** — when a function has
+   at least one explicit non-`None` return AND only *falls off the end*
+   on the other paths, do not inject `None` (or inject the return
+   type's default). Scoped, runtime-safe for chess, and much smaller
+   than boxing. Risk: a real CPython divergence for code that *uses*
+   the fall-off `None` — gate it (only when the fall-off path is
+   provably dead, or only for scalar-returning funcs).
+2. **Box the `bool | None` union** — the general
+   [018](../../issues/018-dict-mixed-key-types-boxing-failure.md) /
+   [030](030-polymorphic-dispatch-fat-pointers.md) /
+   [060](closed/060-none-branch-dropped-mixed-with-literal-bool-sequence.md)
+   work (tagged / fat-pointer scalar|None), which also handles genuine
+   `x = None; x = 5`. Bigger, but the principled fix.
+
+Behind #5, once cleared, is a `(null)*` C-backend null-element error
+([061](061-c-backend-multi-tuple-list-null-element-type.md)). The
+genuine empty-container element-inference family (issue 043 /
+[072](072-empty-container-notype-current-mechanism-and-plan.md)) turned
+out **not** to be a chess blocker at all once #4 was correctly
 diagnosed.
 
 ## What actually lands vs. what remains
@@ -140,14 +195,15 @@ diagnosed.
 - **Landed (`8644be59`):** `__pyc_any_type__.__not__` — cleared chess's
   line-314 (`not <list>`), a plain dispatch gap affecting every
   `not <container>`, initially mis-attributed here to issue 043.
-- **Open — chess's fatal blocker:** the bool|None representation
-  mismatch (#1: `rowAttack`'s implicit `None` → `max([...])` → a
-  list-element/closure field mixing `bool`(1) and `None`(8)), plus the
-  `(null)*` C-backend null-element error behind it (issue 061). These
-  are representation/boxing problems (issue 018/030), not element
-  inference. Structurally behind everything is the issue-033 splitter
-  non-idempotency that turns any residual union into a program-wide
-  NOTYPE cascade rather than a local, attributable error.
+- **Open — chess's fatal blocker (#5 above):** a `bool | None` closure
+  field pyc can't lay out unboxed, whose *proximate* cause is pyc
+  injecting `None` for `rowAttack`'s implicit fall-off-the-end return.
+  shedskin-verified: the cheap fix is to match shedskin's
+  implicit-return handling (don't inject `None`); the general fix is
+  scalar|None boxing (018/030/060). Behind it, a `(null)*` C-backend
+  null-element error (issue 061). Structurally behind everything is the
+  issue-033 splitter non-idempotency that turns any residual union into
+  a program-wide NOTYPE cascade rather than a local, attributable error.
 - Suite 234/0 both backends after all four fixes; corpus sweep buckets
   within parallel-timeout noise (the fixes touch only bool ordering,
   `int(bool)`, `raise <str/bytes>`, and `not <container>` — no other
