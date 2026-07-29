@@ -322,16 +322,16 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         for (int i = 3; i < n->rvals.n; i++)
           fprintf(fp, "  %s->e%d = %s;\n", cg_get_string(n->lvals[0]), i - 3, cg_get_string(n->rvals.v[i]));
       } else if (sym_list->specializers.set_in(n->rvals[2]->sym) || n->rvals[2]->sym->is_vector) {
-        Sym *t = n->lvals.v[0]->type, *e = t->element->type;
-        if (t->type_kind == Type_RECORD) goto Ltuple;
+        Sym *t = n->lvals.v[0]->type, *e = t && t->element ? t->element->type : nullptr;
+        if (t && t->type_kind == Type_RECORD) goto Ltuple;
         fputs("  ", fp);
         assert(n->lvals.n == 1);
-        e = e ? e : sym_void_type;
+        cchar *ety = c_type(e);
         assert(cg_get_string(n->lvals[0]));
         fprintf(fp, "%s = ", cg_get_string(n->lvals[0]));
-        fprintf(fp, "(_CG_list)_CG_prim_list(%s,%d);\n", cg_get_string(e), n->rvals.n - 3);
+        fprintf(fp, "(_CG_list)_CG_prim_list(%s,%d);\n", ety, n->rvals.n - 3);
         for (int i = 3; i < n->rvals.n; i++) {
-          fprintf(fp, "  ((%s*)(_CG_list_ptr(%s)))[%d] = ", cg_get_string(e), cg_get_string(n->lvals[0]), i - 3);
+          fprintf(fp, "  ((%s*)(_CG_list_ptr(%s)))[%d] = ", ety, cg_get_string(n->lvals[0]), i - 3);
           fputs(cg_get_string(n->rvals[i]), fp);
           fprintf(fp, ";\n");
         }
@@ -453,7 +453,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       if (t->is_vector) {
         fprintf(fp, "%s = %s->v[%s];\n", cg_get_string(n->lvals[0]), cg_get_string(n->rvals[o]), cg_get_string(n->rvals[o + 1]));
       } else if (t->type_kind != Type_RECORD || !n->rvals[o + 1]->sym->constant) {
-        if (n->lvals[0]->live) fprintf(fp, "%s = ", cg_get_string(n->lvals[0]));
+        if (n->lvals[0]->live) fprintf(fp, "%s = (%s)", cg_get_string(n->lvals[0]), c_type(n->lvals[0]));
         // Negative-index normalization (issues/025): only the common
         // single-index case, where "this object's length" is
         // unambiguous. A dynamically (non-constant) indexed
@@ -474,7 +474,8 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
           else
             fprintf(fp, "_CG_int_from_string(%s,%s);\n", cg_get_string(n->rvals[o]), cg_get_string(n->rvals[o + 1]));
         } else {
-          fprintf(fp, "((%s", cg_get_string(e));
+          cchar *ety = c_type(e);
+          fprintf(fp, "((%s", ety);
           for (int i = o + 1; i < n->rvals.n; i++) fprintf(fp, "*");
           if (t->type_kind == Type_RECORD)
             fprintf(fp, ")(%s))", cg_get_string(n->rvals[o]));
@@ -570,7 +571,9 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         // Mirrors P_prim_index_object's negative-index normalization
         // above (issues/025) -- same single-index-only scope.
         bool single_idx = (n->rvals.n - 1) - (o + 1) == 1;
-        fprintf(fp, "((%s", cg_get_string(n->lvals[0]->type));
+        Sym *e = t && t->element ? t->element->type : nullptr;
+        cchar *ety = c_type(e);
+        fprintf(fp, "((%s", ety);
         for (int i = o + 1; i < n->rvals.n - 1; i++) fprintf(fp, "*");
         if (t->type_kind == Type_RECORD)
           fprintf(fp, ")(%s))", cg_get_string(n->rvals[o]));
@@ -585,7 +588,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
           else
             fprintf(fp, "[%s-%d]", cg_get_string(n->rvals[i]), fa->tuple_index_base);
         }
-        fprintf(fp, " = %s;\n", cg_get_string(n->rvals[n->rvals.n - 1]));
+        fprintf(fp, " = (%s)%s;\n", ety, cg_get_string(n->rvals[n->rvals.n - 1]));
       } else {
         // issues/025: same negative-constant-index normalization as
         // P_prim_index_object's Type_RECORD branch above (`a[-1] =

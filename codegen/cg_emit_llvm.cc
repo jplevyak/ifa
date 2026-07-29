@@ -898,11 +898,19 @@ bool emit_send_binop(EmitCtx &ctx, PNode *pn) {
   llvm::Value *rhs = value_for_var(ctx, rhs_v);
   if (!lhs || !rhs) return false;
 
-  bool is_float = lhs->getType()->isFloatingPointTy();
-  // Coerce rhs to lhs type (best-effort int↔int width match).
+  bool is_float = lhs->getType()->isFloatingPointTy() || rhs->getType()->isFloatingPointTy();
+  // Coerce rhs/lhs types to match (int<->float or int<->int width match).
   if (lhs->getType() != rhs->getType()) {
-    if (lhs->getType()->isIntegerTy() && rhs->getType()->isIntegerTy()) {
-      rhs = Builder->CreateSExtOrTrunc(rhs, lhs->getType());
+    if (lhs->getType()->isFloatingPointTy() && rhs->getType()->isIntegerTy()) {
+      rhs = Builder->CreateSIToFP(rhs, lhs->getType());
+    } else if (lhs->getType()->isIntegerTy() && rhs->getType()->isFloatingPointTy()) {
+      lhs = Builder->CreateSIToFP(lhs, rhs->getType());
+    } else if (lhs->getType()->isIntegerTy() && rhs->getType()->isIntegerTy()) {
+      if (lhs->getType()->getIntegerBitWidth() < rhs->getType()->getIntegerBitWidth()) {
+        lhs = Builder->CreateSExt(lhs, rhs->getType());
+      } else {
+        rhs = Builder->CreateSExt(rhs, lhs->getType());
+      }
     }
   }
 
