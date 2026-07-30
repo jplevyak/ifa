@@ -87,6 +87,15 @@ the mechanism 073's `check_split` fix now **hard-gates** (it ties a
 recursive knot only on `edge_type_compatible == 1`, and the same soft
 merge was what regressed `match_seq` before I required the hard match).
 
+> **RESOLVED 2026-07-30 (see "Stage 0 result" below): the second branch
+> holds.** Dropping the display still re-fuses `recursive_polymorphic`
+> (suite 231/4), because `check_split`'s hard-gate covers only the
+> recursion-*routing* branch, while the container methods `len`/
+> `__getitem__` that actually re-fuse are *normally dispatched* and still
+> re-merge through `find_best_entry_sets`'s soft type match. The CS
+> partition (Stages 1-2) is required — though a "hard method-dispatch type
+> gate" sub-experiment might substitute (see Stage 0 result).
+
 **So the single most decisive experiment for this plan is to re-run
 064's `nesting_depth 0` prototype *with* the `check_split` fix in place**
 and measure `recursive_polymorphic`. Two outcomes, each collapsing the
@@ -105,10 +114,43 @@ Do this experiment first; it decides how much of the rest is needed.
 
 ## The build (in order; each step gated on full verification)
 
-### Stage 0 — the pivotal experiment (above)
-Re-run 064's method-`nesting_depth 0` with the `check_split` fix; measure
-`recursive_polymorphic`, the suite (both backends), and the oscillating
-set. Record which branch we're on before writing anything larger.
+### Stage 0 — the pivotal experiment — DONE 2026-07-30: display still load-bearing
+
+Ran it (a clean FA-side proxy for "methods `nd 0`" that avoids 064's
+make_AVar resolution desync: behind an env flag, `edge_nest_compatible_
+with_entry_set` / `group_display_ok` / `edge_display_compatible` all
+ignore the display and `update_display` tolerates differences, so the
+display is dropped from contour *identity* but still built for
+resolution; reverted after). **Result: suite 231/4** —
+`recursive_polymorphic` (level-refusion), `match_none`, `match_map_star`,
+`match_seq`. **So the `check_split` fix did NOT make the display
+droppable; the second branch holds — the CS partition must carry the
+separation (Stages 1-2 required).**
+
+Mechanism (confirmed from the errors): `recursive_polymorphic`'s
+`flatten_sum` is `nd 1` (display `[module]`, already always-compatible —
+so it was never the display's job). The separation the display provided
+was for the *normally-dispatched container methods* it calls — `len` /
+`__getitem__` (`nd 2`), whose `display[1]` = the per-level `flatten_sum`
+contour kept `len(list[list])` and `len(list[int])` in distinct
+contours. `check_split`'s type-identity knot-tying only covers the
+*recursion-routing* (`e->from->split`) branch, **not** normal method
+dispatch, so it does not replace this. With the display gone, the
+re-fusion happens through `find_best_entry_sets`'s **soft** type match
+(`val−4` reuse of a type-incompatible contour), so `x[i]` unions
+`list ∪ int` and feeds back into the recursive formal `x` → the illegal
+`'x' illegal: int64`/`list`.
+
+**Refinement worth a follow-up sub-experiment (before committing to the
+full Stage 2):** since the re-fusion is specifically a *soft* type merge,
+"drop the display **and** make method-dispatch type matching *hard*"
+(harden `entry_set_compatibility`'s `val−4` type case toward a split for
+these container methods) might separate the levels by *type* without the
+display — a much smaller change than the CS fan-out. It has its own
+risk (eager contour fan-out; the 040/033 reason it was left soft), but if
+it holds it could collapse Stages 2+4 into one type-gate change. Test it
+(nodisp + hard type gate → `recursive_polymorphic` + suite) before
+building the full CS-directed fan-out.
 
 ### Stage 1 — stable, creation-site-keyed durable CS/setter identity (066)
 Independently of Stage 0, key the durable split decision on the **stable
@@ -138,11 +180,16 @@ re-open an already-decided ES split. The `e->to` durability already nearly
 gives this for ESs; the missing half is not re-deriving a decided ES split
 from a CS change.
 
-### Stage 4 — drop the method display (only if Stage 0 permits)
-With per-level separation now on the CS/type axis, set genuine methods'
-`nesting_depth` to 0 (distinguishing them from the issue-001 synthesized
-closure carriers, which keep it), dissolving 064 and simplifying the
-display machinery. Skip if Stage 0 shows the display is still load-bearing.
+### Stage 4 — drop the method display (gated: Stage 0 showed it is NOT yet safe)
+Stage 0 confirmed the display is still load-bearing *today*, so this is
+**blocked on Stage 1-2** actually moving the per-recursion-level
+container-method separation onto the CS/type axis. Once they do (verify
+by re-running the Stage-0 nodisp probe: `recursive_polymorphic` must stay
+green with the display ignored), set genuine methods' `nesting_depth` to
+0 (distinguishing them from the issue-001 synthesized closure carriers,
+which keep it), dissolving 064 and simplifying the display machinery.
+The Stage-0 "hard method-dispatch type gate" sub-experiment is the
+cheaper alternative path to this same end — try it first.
 
 ## Verification plan (per step — issue-033 fragility demands it)
 
