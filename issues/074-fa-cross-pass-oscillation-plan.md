@@ -233,6 +233,29 @@ fix and is not yet built.
   (`d->product`), sibling to the **CS** self-product (`d->cs_product ==
   cs`) 066 part 1 deferred — the same disease on both axes.
 
+- **Naive complement-eviction attempt — DONE 2026-07-30: does NOT work
+  (needs the stable keying).** Behind a `PYC_SELFPROD` flag, on a
+  self-product re-derivation (`d->product == es`) the group's re-split was
+  *suppressed* (its edges left durably where they are, via `continue` in
+  `apply_entry_set_split` after `gsig`). Measured (probe removed):
+  - **pygmy 49 → 102 passes (worse)**, still 0 violations. Suppressing the
+    group removes its `dup` signal, which *disables* increment 1a's
+    zero-viol stall (it keys on `dup>0`), so pygmy runs to the hard cap —
+    and the confluence is simply re-detected every pass without being
+    resolved. The skip *relocates* the churn; it does not stop it.
+  - **dijkstra2 identical** (43 passes, 170 violations) — no help, but
+    (unlike 065's reverted "keep the group in `es`", 37→605) **no
+    regression**: `continue` does not *move* edges into `es`, so it never
+    makes `es` polymorphic. It just leaves the confluence unresolved.
+
+  Conclusion: suppression is not eviction. Correct eviction has to move
+  the *widening complement* off `es` so `es` re-monomorphises to its
+  recorded group — which requires knowing *which* current edges are that
+  recorded group, i.e. **stable per-edge/creation-site identity ((ii))**.
+  That identity is the prerequisite; the self-product handling cannot be
+  done first. So the build order is fixed: **(ii) stable creation-site
+  keying → then complement eviction on both the ES and CS self-product**.
+
 ### Stage 2 — main-loop CS-directed ES fan-out (065's linchpin)
 A new split stage in `run_split_stages`, running **every pass** (not on
 quiescence — that is the circularity break), on a **demand signal** (so no
