@@ -56,9 +56,28 @@ merged contours it shouldn't and **regressed `match_seq`**. Requiring
 
 **Newly exposed downstream blockers (separate issues, not FA):** now
 that adatron reaches codegen it fails on `t2 = NULL; t0 =
-(_CG_float64)t2;` — a nil/None cast to `double` (the 061/072/018
-nil-element-to-scalar family). plcfrs hits its pre-existing 055/053 type
-violation. Neither is this fix's concern.
+(_CG_float64)t2;`. Investigated 2026-07-30 — this is **issue 071 Source A**
+(implicit fall-off-the-end `None`): `calculate_error`'s `return 1.0 *
+error / len(kernel_table)` sits **inside** the `for col_counter in
+range(len(kernel_table))` loop, so an empty `kernel_table` falls off the
+end → injected `return None` → return type `float64 | None`. codegen's
+`simple_move` (`ifa/codegen/cg.cc:918`) has a guard for a nil *lhs*
+(`:910`) but none for a nil *rhs* into a scalar *lhs*, so it emits the
+illegal `(_CG_float64)NULL`.
+- **`--no_implicit_none 1`** (the opt-in issue-071 mechanism, a
+  deliberate CPython divergence) makes adatron **compile clean AND run
+  correctly** — verified end-to-end on a reduced dataset: error `0.025`,
+  identical to CPython modulo float-repr formatting. Same resolution
+  chess uses.
+- Independent of the flag, `simple_move` should not emit an illegal
+  `(scalar)NULL` cast for a dead nil→scalar move — the 072 "043 option 1"
+  honest fix is a trap (or a typed-zero placeholder), which would let
+  such programs compile under the default (implicit-None) too. Not done
+  here; it is the 061/072/018 nil-scalar codegen family, not this fix's
+  concern.
+
+plcfrs hits its pre-existing 055/053 type violation. Neither is this
+FA fix's concern.
 
 ### Theorem: caller display/nesting cannot generate unbounded EntrySets
 

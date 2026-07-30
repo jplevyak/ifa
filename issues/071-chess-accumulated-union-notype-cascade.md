@@ -362,6 +362,18 @@ than a local, attributable error.
 3. Keep suite green both backends and re-check dijkstra2/fysphun per
    issue 063's checklist (the issue-033 canaries).
 
+## Other Source-A instances
+
+- **`shedskin_examples/adatron/adatron.py`** (2026-07-30, after its FA
+  non-convergence was fixed — [073](073-teach-splitter-productive-vs-inert-context.md)):
+  `calculate_error`'s `return 1.0 * error / len(kernel_table)` is nested
+  **inside** a `for` loop, so an empty `kernel_table` falls off the end →
+  injected `None` → `float64 | None`. codegen then emits the illegal
+  `t0 = (_CG_float64)NULL` (`simple_move`, `cg.cc:918` guards a nil *lhs*
+  at `:910` but not a nil *rhs* into a scalar *lhs*). `--no_implicit_none
+  1` makes it compile clean and run correctly (error `0.025`, matches
+  CPython). Same shape and resolution as chess's `rowAttack`.
+
 ## What this unblocks
 
 - `shedskin_examples/chess/chess.py` (a corpus benchmark).
