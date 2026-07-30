@@ -129,6 +129,59 @@ re-flow reproduces the identical partition — productive (each round
 strictly adds decisions) instead of oscillating. pyc currently keys the
 CS split on the *re-created per-pass CS*, which is why it churns.
 
+## Prereq trace — adatron's EXACT mechanism, measured 2026-07-29 (corrects the Stage-1 framing below)
+
+Before implementing, adatron was traced (temporary getenv-gated probes
+in `set_entry_set`, `split_css`, and `make_entry_set`, all removed). The
+result **refines and partly corrects** the "Stage 1 = CS creation-site
+split" framing below — the CS side is not adatron's direct actor:
+
+- **adatron reaches pass 6** (it is not an intra-pass-1 hang). It
+  progresses through several split passes, then a *later* pass diverges.
+- **`split_css` performs ZERO splits** on adatron (CS/data-polymorphism
+  side is quiet). So 066-part-2's CS-creation-site keying, taken
+  literally, is **not** what adatron trips.
+- **The divergence is the [065](065-mark-stage-es-split-routing-and-growing-product.md)
+  "growing product" on the ES side.** `Fun::ess` for the comparison/bool
+  cluster grows into the thousands and keeps climbing
+  (`__pyc_to_bool__` 6866, `__ge__` 3634, `__lt__`/`__getitem__` ~1000+
+  and rising) — the same ES contour re-minted every pass.
+- **The direct actor is `group_display_ok` blocking the ES-split ROUTE**
+  (`fa.cc:4646-4647`). ROUTE is the idempotence mechanism: a re-derived
+  split group is supposed to route back to its recorded product instead
+  of minting a fresh one. For these `nesting_depth==2` methods the group
+  spans multiple caller displays, `group_display_ok` returns false,
+  ROUTE is skipped, and a fresh product is minted **every pass** → the
+  growing product. **This is exactly [064](064-method-phantom-display-blocks-es-split-routing.md)'s
+  mechanism**, now shown to be the concrete cause of an actual corpus
+  non-convergence, not just a dijkstra2 routing statistic.
+- **Productivity lens (measured):** at the fresh-mint site, the count of
+  mints that are type-compatible-but-only-nest-incompatible with an
+  existing ES is **flat (~244)** while total mints climb past 24000 — so
+  the growth is **not** a type/display redundancy; the products are
+  distinguished by **setter class** (data), and the churn is ROUTE being
+  display-blocked, not a type over-split.
+- **Hard constraint on the fix:** the ROUTE path calls
+  `set_entry_set → update_display`, which **asserts** display consistency
+  (`fa.cc:958-962`). That assert is *why* `group_display_ok` gates ROUTE.
+  So relaxing the gate for inert display slots REQUIRES co-modifying
+  `update_display` (Stage 2 item 3 / 064 item 2) — they cannot be
+  separated.
+
+**Consequence for the plan.** For adatron the operative lever is Stage 2
+(demote the inert display from the ES-split ROUTE gate + co-modify
+`update_display`), NOT split_css. Stage 1's role is unchanged but its
+*purpose* is sharpened: it must supply, on the deterministic type/data
+axis, whatever per-caller precision `group_display_ok` currently
+provides for the shared container methods (064's `len`/`__getitem__`
+level-descending case) so that demoting the display in the ROUTE gate
+does not reproduce 064's regression. The open measurement that decides
+how much Stage 1 adatron itself needs: are adatron's comparison-method
+products distinguished by **genuinely different, stable setter classes**
+(productive → Stage 1 must absorb them first) or **redundant/unstable**
+ones (non-productive → relaxing the ROUTE gate alone converges adatron)?
+That is the first thing to settle when implementation resumes.
+
 ## Plan (two stages — order is load-bearing)
 
 Stage 1 must land before Stage 2. Stage 2 alone is 064's measured
