@@ -285,16 +285,33 @@ fix and is not yet built.
     product merges genuinely-different-typed complement edges into a
     polymorphic contour (065's own hazard, moved off `es` onto the comp).
 
-  *Refinement (the next build).* Evict each complement edge to **its own**
-  ledger home, not a single shared product: for each edge not in the
-  kept group, compute its group signature and route it to that decision's
-  product (mint only if unrecorded) — i.e. re-home the complement
-  per-signature, exactly the ledger the kept group already uses. That
-  keeps `es` monomorphic to its recorded group AND keeps each evicted
-  sub-group with its own kind, which is what should fix amaze/linalg while
-  preserving pygmy's convergence. This is a bounded, well-scoped change to
-  `apply_entry_set_split` (needs the per-edge/-subgroup signature routing);
-  it is the concrete Stage-1 build to attempt next.
+  *Refinement — LANDED 2026-07-30 as increment 1b.* The refinement first
+  tried was "evict `stay_edges` to their own product, separate from the
+  other groups" — but it **still** regressed amaze/linalg (884→915,
+  170→187). That disproved the merge hypothesis and revealed the real
+  discriminator: the self-product ledger decision is only valid when types
+  have **converged**. pygmy oscillates at **0 violations** (a spurious
+  precision flip-flop — eviction is safe); amaze/linalg carry many
+  violations (union still widening — the recorded `home == es` is stale,
+  so eviction mis-homes real content). **The fix that landed gates the
+  eviction on `nviol_this_pass == 0`.** With that gate:
+  - **pygmy converges naturally** — `pass_limit_hit` 1 → **0** (first
+    oscillation *resolved*, not merely bounded).
+  - **amaze / linalg / dijkstra2 and the rest of the set: unchanged**
+    (regression gone).
+  - **Suite 235/0 on BOTH backends; full corpus sweep identical to
+    baseline (zero per-example changes).**
+
+  Landed unconditional in `apply_entry_set_split` (`fa.cc`): on a
+  type-stage (`avpos && gsig`), zero-violation, self-product
+  (`d->product == es`) group, keep the group in `es` and evict the
+  compatible `stay_edges` (now carried on `ESSplitDecision`) to a fresh
+  product, once. Soundness: at 0 violations all types are consistent, so
+  which contour holds the flip-flopping edges is a pure precision choice —
+  resolving it cannot change codegen correctness. The **`v>0`
+  self-product** (amaze/linalg/dijkstra2 — the majority of the oscillating
+  set) still needs the genuine stale-vs-valid discrimination, i.e. Stage-1
+  (ii)'s stable keying; that remains the next build.
 
 ### Stage 2 — main-loop CS-directed ES fan-out (065's linchpin)
 A new split stage in `run_split_stages`, running **every pass** (not on

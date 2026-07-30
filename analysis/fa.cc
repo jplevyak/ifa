@@ -4427,6 +4427,9 @@ struct ESSplitDecision : public gc {
   // group is dropped here (it keeps the original ES as its home),
   // matching the old loop's single-group-exhausted short-circuit.
   Vec<Vec<AEdge *> *> groups;
+  // Issue 074 Stage 1: the type-compatible "stay" set (edges that keep
+  // es). Carried so the self-product complement eviction can re-home it.
+  Vec<AEdge *> stay_edges;
 };
 
 static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark) {
@@ -4561,6 +4564,7 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
   dec->fsetters = fsetters;
   dec->fmark = fmark;
   dec->all_edges.copy(all_edges);
+  dec->stay_edges.copy(stay_edges);  // issue 074: for self-product complement eviction
   while (do_edges.n) {
     Vec<AEdge *> these_edges, next_edges;
     AEdge *e = do_edges[0];
@@ -4612,6 +4616,14 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
         map_set_add(pending_es_backedge_map, x->key, x->value);
   }
   int split = 0;
+  bool stay_evicted = false;  // issue 074: self-product complement eviction, once per apply
+  // Issue 074: the self-product eviction is only sound when types have
+  // CONVERGED (0 violations): then the self-product is a spurious precision
+  // flip-flop (pygmy) and resolving it cannot change correctness. With
+  // residual violations the union is still widening, so the recorded
+  // "home == es" decision is stale and eviction mis-homes real content
+  // (amaze/linalg regressed 884->915 / 170->187 without this gate).
+  int nviol_this_pass = fa->type_violations.set_count();
   for (Vec<AEdge *> *gp : dec->groups) {
     Vec<AEdge *> &these_edges = *gp;
     AEdge *e = these_edges[0];
@@ -4653,6 +4665,39 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
       if (part != fa->type_world.bottom_type) gsig = group_signature(these_edges, es->fun);
     } else {
       gsig = setter_site_signature(these_edges, es->fun);
+    }
+    // Issue 074 Stage 1 / issue 065 gap 2: self-product complement eviction.
+    // When this group's ledger home is es ITSELF, the group is es's recorded
+    // canonical content and the current detach-the-group path re-derives it
+    // forever (pygmy's period-2 flip-flop). Instead keep the group in es and
+    // evict the type-compatible COMPLEMENT (stay_edges) to its OWN fresh
+    // product, once, so es re-monomorphises to the recorded group. The other
+    // do-groups are routed to their own homes by the loop below, so only
+    // stay_edges needs re-homing here -- and it goes to a SEPARATE product
+    // (never merged with the other groups), avoiding the amaze/linalg
+    // regression of the "evict everything into one contour" first cut.
+    if (avpos && gsig && nviol_this_pass == 0) {
+      SplitDecision *dd = fa->ledger_find(es->fun, cur_split_stage, avpos, part, gsig);
+      if (dd && dd->pass_made != analysis_pass && dd->product == es) {
+        if (!stay_evicted) {
+          stay_evicted = true;
+          EntrySet *scomp = nullptr;
+          for (AEdge *x : dec->stay_edges) if (x && x->from && x->to == es) {
+            x->to = 0;
+            x->filtered_args.clear();
+            es->edges.del(x);
+            if (!scomp) {
+              set_entry_set(x);
+              scomp = x->to;
+              if (!scomp->split) scomp->split = es;
+            } else
+              set_entry_set(x, scomp);
+            record_backedges(x, es, pending_es_backedge_map);
+            split = 1;
+          }
+        }
+        continue;  // keep this (self-product) group in es
+      }
     }
     if (avpos && gsig) {
       SplitDecision *d = fa->ledger_find(es->fun, cur_split_stage, avpos, part, gsig);
