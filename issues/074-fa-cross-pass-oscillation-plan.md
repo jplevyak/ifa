@@ -205,6 +205,34 @@ fix and is not yet built.
   (i)/(ii) work is what makes such passes not re-derive in the first
   place.
 
+- **Root of pygmy's re-derivation — FOUND 2026-07-30: issue 065 gap 2
+  (self-product ES re-mint).** Instrumented the two ES-type ledger dup
+  sites (probe removed). In the frozen state pygmy's 3 dups/pass are all
+  `shade`/`getreflected` (a softrender's `Shaderinfo` shading path) at a
+  **monomorphic** partition `part=[Shaderinfo]` — i.e. there is *no real
+  type union* to separate; the split is a pure non-idempotence artifact.
+  The signature: `shade` es=430 logs `DUP-MINT product=430`, i.e.
+  `d->product == es` — the ledger recorded `es` as its *own* product, so
+  the ROUTE guard `d->product != es` (`fa.cc:4659`) fails, there is
+  nothing to route to, and it re-mints; its sibling es=431 `DUP-ROUTE ->
+  430`; and the group's edge count `ngrp` alternates 1↔2 pass-to-pass — a
+  **period-2 flip-flop** of the edge partition between the two sibling
+  ESs. This is exactly the **065 "gap 2 — self-product re-minting"**
+  case, and the one 066 part 1 left **NOT enforced** (its ROUTE only
+  fires when `d->cs_product != cs`). pygmy is the *stable* variant of it
+  (frozen, 0 violations) rather than 065's growing-union variant.
+  **Fix direction (065/066's deferred half):** on the self-product case
+  (`d->product == es`), do not re-mint — recognize the group's home *is*
+  `es` and instead **evict the complement** (the flip-flopping sibling
+  edges) to *their* recorded home, so `es` re-monomorphises to its
+  recorded group and the partition stops oscillating. 065 measured that
+  the naive "just keep the group in `es`" makes things far worse (37→605
+  on dijkstra2 / 227→226 crash on `pyc_declare`), so the eviction must be
+  paired with the stable creation/site keying (this Stage's (ii)); that
+  pairing is the concrete next build. Note this is the **ES** self-product
+  (`d->product`), sibling to the **CS** self-product (`d->cs_product ==
+  cs`) 066 part 1 deferred — the same disease on both axes.
+
 ### Stage 2 — main-loop CS-directed ES fan-out (065's linchpin)
 A new split stage in `run_split_stages`, running **every pass** (not on
 quiescence — that is the circularity break), on a **demand signal** (so no

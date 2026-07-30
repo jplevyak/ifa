@@ -47,6 +47,19 @@ downstream. The correct behavior would be to split the *complement*
 to its recorded group, but the split machinery currently detaches the
 recorded group instead.
 
+**Confirmed stable instance — pygmy (2026-07-30, see
+[074](074-fa-cross-pass-oscillation-plan.md) Stage-1 root finding).**
+pygmy hits this gap in its *non-growing* form: instrumenting the two
+ES-type dup sites shows its cap-hitting oscillation (0 violations,
+frozen `ess`/`css`) is 3 dups/pass on `shade`/`getreflected` at a
+**monomorphic** `part=[Shaderinfo]` — no union widening at all. es=430
+logs `d->product == es` (self-product, can't route → re-mint), its
+sibling es=431 routes into 430, and the group's edge count flip-flops
+1↔2 pass-to-pass (period-2). So the self-product gap re-derives even when
+the union is *not* growing — it is a pure partition-instability /
+non-idempotence artifact, which makes pygmy the cleanest repro for the
+complement-eviction fix (no union-growth confound to untangle first).
+
 ## The deeper reason it doesn't converge
 
 `d->product == es` re-minting is a symptom: the underlying union is
