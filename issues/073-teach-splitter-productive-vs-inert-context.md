@@ -68,13 +68,25 @@ illegal `(_CG_float64)NULL`.
   deliberate CPython divergence) makes adatron **compile clean AND run
   correctly** — verified end-to-end on a reduced dataset: error `0.025`,
   identical to CPython modulo float-repr formatting. Same resolution
-  chess uses.
-- Independent of the flag, `simple_move` should not emit an illegal
-  `(scalar)NULL` cast for a dead nil→scalar move — the 072 "043 option 1"
-  honest fix is a trap (or a typed-zero placeholder), which would let
-  such programs compile under the default (implicit-None) too. Not done
-  here; it is the 061/072/018 nil-scalar codegen family, not this fix's
-  concern.
+  chess uses. This remains the way to actually *run* adatron.
+- **`simple_move` illegal-cast trap (LANDED 2026-07-30, `cg.cc`):** the
+  emitted `(_CG_float64)(void *)NULL` is ill-formed C++, so `simple_move`
+  now degrades a `void *`→floating/complex move to the issue-056 salvage
+  trap (`assert(!"runtime error: None coerced to a floating-point
+  value")`) instead of emitting uncompilable code — keyed on the emitted
+  C types (the union sym has num_kind NONE; `c_type` collapses `None | T`
+  to T). This makes adatron (and the class) **compile under the default**
+  (FAIL→COMPILED in the sweep; suite 235/0 both backends; corpus +1, zero
+  regressions). It can only turn a currently-uncompilable program into a
+  compilable one (`void *`→floating never compiles today), never change a
+  compiling one. **But adatron still does not *run* under the default:**
+  the `float64 | None` return then reaches `print`'s repr dispatch, which
+  can't resolve the union → a *separate*, pre-existing runtime trap
+  (`"matching function not found"`, the 018/030 heterogeneous-union
+  boxing family). My cast-trap is on a genuinely dead path here (never
+  reached — adatron aborts earlier on that dispatch). So the cast trap is
+  a real codegen robustness fix, but making adatron *work* under the
+  default still needs union boxing (018/030) or `--no_implicit_none`.
 
 plcfrs hits its pre-existing 055/053 type violation. Neither is this
 FA fix's concern.

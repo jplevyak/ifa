@@ -368,11 +368,18 @@ than a local, attributable error.
   non-convergence was fixed — [073](073-teach-splitter-productive-vs-inert-context.md)):
   `calculate_error`'s `return 1.0 * error / len(kernel_table)` is nested
   **inside** a `for` loop, so an empty `kernel_table` falls off the end →
-  injected `None` → `float64 | None`. codegen then emits the illegal
-  `t0 = (_CG_float64)NULL` (`simple_move`, `cg.cc:918` guards a nil *lhs*
-  at `:910` but not a nil *rhs* into a scalar *lhs*). `--no_implicit_none
-  1` makes it compile clean and run correctly (error `0.025`, matches
-  CPython). Same shape and resolution as chess's `rowAttack`.
+  injected `None` → `float64 | None`. `--no_implicit_none 1` makes it
+  compile clean and **run** correctly (error `0.025`, matches CPython) —
+  same shape/resolution as chess's `rowAttack`.
+  - The `simple_move` illegal `(_CG_float64)(void *)NULL` cast this
+    produced under the default was separately fixed 2026-07-30 (degrade
+    `void *`→floating to the issue-056 salvage trap; `cg.cc`), so adatron
+    now *compiles* under the default too. But it still does not *run*
+    there: the `float64 | None` return reaches `print`'s repr dispatch,
+    which can't resolve the union → a separate `"matching function not
+    found"` runtime trap (018/030 heterogeneous-union boxing). So under
+    the default adatron compiles-but-aborts; `--no_implicit_none` (or
+    union boxing) is still required to run it.
 
 ## What this unblocks
 

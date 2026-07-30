@@ -915,9 +915,29 @@ static void simple_move(FILE *fp, Var *lhs, Var *rhs) {
   if (get_constant(lhs)) return;
   if (!rhs->sym->fun) {
     ASSERT(cg_get_string(rhs));
-    if (rhs->type != lhs->type)
-      fprintf(fp, "  %s = (%s)%s;\n", cg_get_string(lhs), c_type(lhs), cg_get_string(rhs));
-    else
+    if (rhs->type != lhs->type) {
+      // Issue 073/072/071: FA can keep a fall-off `None` in a union whose
+      // other arm is a floating scalar -- e.g. adatron's `calculate_error`,
+      // whose `return` sits INSIDE a loop, so an empty iterable falls off
+      // the end and the fn is typed `float64 | None` (issue 071 Source A).
+      // The `None` arm is a dead/impossible path, but the emitted coercion
+      // `(_CG_float64)(void *)NULL` is ill-formed C++ (a hard compile
+      // error). Degrade the dead nil->floating move to a runtime-error
+      // trap (the issue-056 salvage convention) instead of emitting
+      // uncompilable code. Keyed on the emitted C types (the union sym
+      // itself has num_kind NONE; `c_type` collapses `None | T` to T's C
+      // type): only `void *` -> floating/complex is a guaranteed
+      // ill-formed C-style cast -- a same-size integer or `bool` target is
+      // well-formed -- so this only turns a currently-uncompilable program
+      // into a compilable one, never changes a compiling one's behavior.
+      // __assert_fail is noreturn, so downstream reads of `lhs` stay
+      // unreachable.
+      cchar *lt = c_type(lhs), *rt = c_type(rhs);
+      if (!strcmp(rt, "_CG_nil_type") && (!strncmp(lt, "_CG_float", 9) || !strncmp(lt, "_CG_complex", 11)))
+        fprintf(fp, "  assert(!\"runtime error: None coerced to a floating-point value\");\n");
+      else
+        fprintf(fp, "  %s = (%s)%s;\n", cg_get_string(lhs), lt, cg_get_string(rhs));
+    } else
       fprintf(fp, "  %s = %s;\n", cg_get_string(lhs), cg_get_string(rhs));
   } else if (cg_get_string(rhs))
     fprintf(fp, "  %s = (_CG_function)&%s;\n", cg_get_string(lhs), cg_get_string(rhs));
