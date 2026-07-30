@@ -96,6 +96,15 @@ illegal: int64`). So the method display is genuine precision, and
 distinct caller displays (that would merge per-caller contours and lose
 that precision).
 
+**See also [073](073-teach-splitter-productive-vs-inert-context.md)**
+(2026-07-29), which folds this issue into a staged plan: the display's
+correctness job (variable resolution) vs its precision job (contour
+separation) are separated, a static per-slot liveness mask decides where
+the display is load-bearing, and — critically — the deterministic
+type/data split (066 part 2 + 072 steps 1–3) must land *first* so that
+demoting the display (this issue's item 1+2) no longer regresses the
+per-recursion-level precision described below.
+
 **Consequence for the plan:** 064 as "give methods nesting_depth 0" is a
 dead end — the routing block is a symptom of a genuinely-needed
 per-caller display, not a bug. The oscillation's real root is the

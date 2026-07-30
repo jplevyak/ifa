@@ -112,6 +112,21 @@ point — not just "a lot of legitimate work."
   attempted (out of scope for a same-day investigation on top of
   053).
 
+## Fix direction (2026-07-29)
+
+See [057](057-sorted-tolist-fa-nonconvergence.md)'s "Fix direction —
+AUTHORITATIVE" section: this same non-convergence class is fixed by
+(1) monomorphizing the affected functions so no polluting type union
+forms and (2) enforcing that every new contour is *productive* (must
+realize a monomorphic specialization that does not already exist) —
+NOT by widening / a CPA_LIMIT valve. The signature this issue records
+(`ess.n` flat at 501 while worklist pops climb without bound) is the
+same non-productive-contour-creation disease: the same contours are
+re-constrained / re-derived rather than the analysis refining toward a
+finite monomorphic fixed point. Whoever fixes 057 should re-test this
+`plcfrs.py` + `set.__sub__` repro; the fix is expected to help here
+too (or reveal the one extra dimension `plcfrs.py`'s scale adds).
+
 ## Why not fixed now
 
 Root-causing *why* FA fails to converge (as opposed to observing

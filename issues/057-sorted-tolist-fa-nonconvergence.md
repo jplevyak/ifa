@@ -31,6 +31,81 @@ needed — making this the better issue to use for the real fix.
 tried before (and able to bypass) `find_best_entry_sets`'s general
 search. See "Root cause" below.
 
+## Fix direction — AUTHORITATIVE (2026-07-29): monomorphization + productivity, NOT widening
+
+This section supersedes the "CPA_LIMIT-style deferral valve" /
+widening framing that appears both later in this file (issue 033's
+S4-D, referenced under "Root cause") and in
+[033](033-splitter-non-idempotent-divergence.md)'s §D/§M6. **Widening
+is the wrong tool for this bug class and must not be used to "fix" it.**
+The correct solution has two parts:
+
+1. **Produce monomorphic contours for the functions involved in
+   `sorted()`.** The entire blow-up exists only because `sorted` gets a
+   single *shared* contour that sees both `list[str]` (from
+   `.keys()`/a str literal) and `list[tuple[...]]` (from `.items()`).
+   That shared contour makes `sorted`'s internal element `x = r[i]`
+   a **union** (`str ∪ tuple`), and it is that union — not any real
+   recursive type — that lets `x < …` speculatively dispatch into
+   `tuple.__lt__` on a value that "might be a tuple of tuples." Split
+   `sorted` (and the `<`/`__lt__`/`__getitem__`/`__pyc_to_bool__`/
+   iterator chain it drives) into genuinely monomorphic contours —
+   one per concrete element type — and the union never forms, the
+   speculative recursion never arises, and each function in the
+   cluster settles into a **finite** set of monomorphic contours.
+
+2. **Every newly created contour MUST be productive** — i.e. it must
+   realize a monomorphic type specialization *that does not already
+   exist*. This is the real convergence invariant, and its violation
+   *is* the bug. CPA terminates precisely because the set of distinct
+   monomorphic argument-type tuples is finite; a fresh contour is only
+   justified when it refines the analysis with a new monomorphic
+   specialization. What the splitter is actually doing here (measured
+   2026-07-29, see adatron evidence below) is minting contours that
+   are **type-identical to an existing contour of the same function
+   and differ only in nesting *display*** — pure call-context
+   multiplication with zero type refinement. That is non-productive
+   by construction, so it never terminates. The fix is to **refuse the
+   redundant split** (reuse the existing monomorphic contour when the
+   candidate would not produce a new monomorphic specialization), which
+   both terminates AND *preserves full precision*. Widening, by
+   contrast, terminates only by *discarding* precision — solving a
+   problem we do not have (the type domain here is finite) at a real
+   cost we do not want to pay.
+
+**When is widening actually needed?** Only for a genuinely **infinite
+monomorphic type domain** — unbounded recursive *type* construction
+(e.g. a function that builds `tuple[tuple[tuple[…]]]` to unbounded
+depth, so there is an infinite family of distinct monomorphic types,
+each productive). adatron / this issue's repro have no such thing: the
+types are finite (`str`, `float`, `tuple[str,float]`, and lists
+thereof); the "recursion" is a *false path* manufactured by the union
+in (1). So the widening valve (033 §D/§M6) is at most a last-resort
+backstop for that separate, genuinely-infinite-type case — and even
+then it is a **type-domain depth cap, not a contour-count cap** — and
+it is emphatically NOT the fix for 055/057. Do not implement widening
+as the primary remedy; implement (1)+(2).
+
+**Where (2) lives in the code.** The productivity check belongs at the
+contour-creation decision — `make_entry_set` / `find_best_entry_sets`
+/ `check_split` (`ifa/analysis/fa.cc`). The blocker today is that
+`edge_nest_compatible_with_entry_set` is a *hard* gate (used both in
+`check_split`'s `e->from->split` branch and inside
+`entry_set_compatibility`): a display mismatch forces a fresh contour
+even when the type signature is identical to an existing contour, so
+the analysis over-splits on context that carries no new type
+information. Reuse must be driven by *monomorphic-type identity*, with
+the nesting display only distinguishing contours when the distinction
+is semantically load-bearing (a nested function genuinely capturing a
+different enclosing contour), not for leaf methods like the comparison
+dunders that capture nothing.
+
+**The staged implementation plan** for exactly this — the
+productive-vs-inert context distinction, its static criterion, and the
+mandatory ordering (deterministic type/data split first, display
+demotion second) — is
+[073](073-teach-splitter-productive-vs-inert-context.md).
+
 ## Symptom
 
 ```python
@@ -384,7 +459,48 @@ picked up for the actual fix.
 
 ## Impact so far
 
-None of the real shedskin corpus examples that motivated the
+**CONFIRMED corpus hit (2026-07-29): `shedskin_examples/adatron/adatron.py`.**
+`./pyc shedskin_examples/adatron/adatron.py` reproduces this exactly.
+`Protein.create_vector()` does both halves of the trigger in one
+method:
+
+```python
+for key, value in sorted(self.local_composition.items()):   # sorted() over list[tuple[str,float]]
+    vector.append(value)
+for key in sorted(self.global_composition.keys()):          # sorted() over list[str]
+    vector.append(value)
+```
+
+(`local_composition`/`global_composition` are `dict[str,float]`.)
+It runs ~120s / ~660K edges / ~1.7GB RSS, then trips the stall guard
+with the exact `... non-convergent input (see
+ifa/issues/057-...)` diagnostic. This is the *ordinary real-corpus
+program* this issue predicted ("`sorted()` on both string and
+dict-items()-derived data ... is a plausible, fairly ordinary thing
+to write").
+
+**Refined evidence (2026-07-29), differs from the minimal repro's hot
+path.** Instrumenting `set_entry_set`'s fresh-creation branch (the
+common choke point) with a per-`Fun` histogram, the unbounded growth
+for adatron is dominated by the **comparison/bool cluster**:
+`__pyc_to_bool__` (~20K fresh contours in 40s), `__ge__` (~12K),
+`__getitem__` (~10K), `__lt__` (~4K) — consistent with round 3's
+cluster finding. But the dominant *creation path* is
+`make_entry_set`'s general **fall-through mint** (`fa.cc`, the
+`set_entry_set(e, es)` after `find_best_entry_sets` returns 0), NOT
+`check_split`'s `e->from->split` branch — that branch fires only
+~300× over the same window here. `find_best_entry_sets` returns 0
+because every live call arrives with a *distinct nesting display*, so
+`entry_set_compatibility`'s hard `edge_nest_compatible_with_entry_set`
+gate rejects every existing (type-identical) contour → fresh mint,
+cascading up from the polluted `sorted` contour. Same disease as the
+minimal repro (non-productive, display-driven over-splitting), just
+reached through the general path rather than `check_split`. This is
+direct support for the "productivity" half of the authoritative fix
+direction above: those thousands of contours are type-redundant and
+must never have been created.
+
+None of the OTHER real shedskin corpus examples that motivated the
 dict-methods fix (`loop.py`, `mastermind2.py`, `plcfrs.py`,
 `sunfish.py`) hit this — each only does a single, simple, unsorted
 `.keys()`/`.values()`/`.items()` access, not this specific

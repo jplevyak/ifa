@@ -587,7 +587,27 @@ pattern_match — collapsing must not change the SEQUENCE of
 distinct concrete ->type values a candidate sees).
 
 **D. CPA_LIMIT-style deferral valve (safety net for sketch (d);
-small).** In pattern_match, before find_best_matches: compute
+small).**
+
+> **DIRECTION CORRECTION (2026-07-29, see
+> [057](057-sorted-tolist-fa-nonconvergence.md)'s "Fix direction —
+> AUTHORITATIVE" section):** widening / CPA_LIMIT is the WRONG primary
+> remedy for the 055/057 non-convergence class. Those hangs are not
+> genuine CPA product explosions over an infinite type domain — they
+> are *non-productive* contour creation: the splitter mints contours
+> that are type-identical to existing ones and differ only in nesting
+> *display*, refining nothing. The fix is (1) monomorphize the
+> `sorted()` cluster so the polluting union never forms, and (2)
+> enforce a productivity invariant — a new contour is created only
+> when it realizes a monomorphic specialization that does not already
+> exist — which terminates *and preserves full precision*. Widening
+> terminates only by discarding precision. Keep this valve on the
+> table ONLY for a genuinely infinite monomorphic type domain
+> (unbounded recursive *type* construction), where it should be a
+> type-domain **depth** cap, not a contour-count cap. Do not reach for
+> it to close 055 or 057.
+
+In pattern_match, before find_best_matches: compute
 `candidates x prod(per-position class counts)`; if above a limit,
 return 0 through the `incomplete_call` path (the send re-fires
 when types change). Escalate at quiescence: when extend_analysis
@@ -1817,6 +1837,13 @@ universe scale every pass") may no longer hold — unattempted, and
 there is currently no motivating input.
 
 ### M6. Deferral valve (S4-D; safety net, independent)
+
+> **See the DIRECTION CORRECTION under §D above (2026-07-29):** this
+> valve is a safety net for *genuine* product explosions over an
+> infinite type domain ONLY. It is NOT the fix for the 055/057
+> non-convergence class, which is non-productive display-driven
+> over-splitting and is fixed by monomorphization + a productivity
+> invariant, not by widening.
 
 The CPA_LIMIT analog for sketch (d)'s genuine product explosions,
 through the existing `incomplete_call` deferral path, with
