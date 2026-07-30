@@ -93,8 +93,9 @@ merge was what regressed `match_seq` before I required the hard match).
 > recursion-*routing* branch, while the container methods `len`/
 > `__getitem__` that actually re-fuse are *normally dispatched* and still
 > re-merge through `find_best_entry_sets`'s soft type match. The CS
-> partition (Stages 1-2) is required — though a "hard method-dispatch type
-> gate" sub-experiment might substitute (see Stage 0 result).
+> partition (Stages 1-2) is required; the cheaper "hard method-dispatch
+> type gate" substitute was tested and **ruled out** (it breaks
+> convergence — see Stage 0 result). So Stage 2 is unavoidable.
 
 **So the single most decisive experiment for this plan is to re-run
 064's `nesting_depth 0` prototype *with* the `check_split` fix in place**
@@ -141,16 +142,28 @@ re-fusion happens through `find_best_entry_sets`'s **soft** type match
 `list ∪ int` and feeds back into the recursive formal `x` → the illegal
 `'x' illegal: int64`/`list`.
 
-**Refinement worth a follow-up sub-experiment (before committing to the
-full Stage 2):** since the re-fusion is specifically a *soft* type merge,
-"drop the display **and** make method-dispatch type matching *hard*"
-(harden `entry_set_compatibility`'s `val−4` type case toward a split for
-these container methods) might separate the levels by *type* without the
-display — a much smaller change than the CS fan-out. It has its own
-risk (eager contour fan-out; the 040/033 reason it was left soft), but if
-it holds it could collapse Stages 2+4 into one type-gate change. Test it
-(nodisp + hard type gate → `recursive_polymorphic` + suite) before
-building the full CS-directed fan-out.
+**Hard-type-gate sub-experiment — DONE 2026-07-30: DEAD END.** Tested
+"drop the display **and** make method-dispatch type matching hard"
+(`entry_set_compatibility`'s `case 0: val−=4` → `return 0` behind a
+`PYC_HARDTYPE` flag, so `find_best_entry_sets` never soft-reuses a
+type-incompatible contour). Result: **`recursive_polymorphic` times out
+(non-convergence) — and it does so with `HARDTYPE` alone, display kept**
+(a currently-*passing* program). So a *global* hard type gate is strictly
+worse than the status quo. The reason is the deep one 040/033 gestured at
+and this makes explicit: **soft type matching is load-bearing for
+convergence, not just laziness.** `val−4` lets a contour *absorb* type
+widening as it flows (an EntrySet is a widening point); forbidding that
+mints a fresh contour per intermediate type state, so the contour set
+churns as types converge and the flow fixpoint never settles. Making the
+type gate hard is exactly the eager fan-out `#if 0 // eager splitting
+doesn't help` already disables one line above the edited case.
+
+**Consequence:** the display's per-level separation *cannot* be replaced
+by a cheap global type-gate change; the separation must be **scoped and
+demand-driven** — created only where a same-type receiver's element types
+actually diverge, and only for the affected container methods. That is
+precisely Stage 2 (the CS-directed fan-out). The shortcut is ruled out;
+Stage 2 is required.
 
 ### Stage 1 — stable, creation-site-keyed durable CS/setter identity (066)
 Independently of Stage 0, key the durable split decision on the **stable
@@ -188,8 +201,9 @@ by re-running the Stage-0 nodisp probe: `recursive_polymorphic` must stay
 green with the display ignored), set genuine methods' `nesting_depth` to
 0 (distinguishing them from the issue-001 synthesized closure carriers,
 which keep it), dissolving 064 and simplifying the display machinery.
-The Stage-0 "hard method-dispatch type gate" sub-experiment is the
-cheaper alternative path to this same end — try it first.
+(The cheaper "hard method-dispatch type gate" alternative was tested and
+ruled out — it breaks convergence; see the Stage 0 result. Stage 2 is
+the only path.)
 
 ## Verification plan (per step — issue-033 fragility demands it)
 
