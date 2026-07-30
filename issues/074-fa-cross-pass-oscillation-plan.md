@@ -177,6 +177,34 @@ partition reproduce deterministically across passes → the ledger has a
 stable target → the setter/mark stages can route (065 gap 1) without the
 wrong-merge hazard.
 
+**Started 2026-07-30 — measurement corrected the target; a churn-bound
+landed as increment 1a.** Instrumenting per-pass stage/dup counts
+(probe removed) showed **pygmy is NOT a CS-side case** (`cs_dup=0`): it is
+the **ES type-split re-deriving the *same* 3 decisions every pass**
+(`win=type_confluence dup=3`), with a completely frozen state
+(`ess=466 css=1599 viol=0` identical from pass ~40 to the cap). So Stage 1
+has two independent targets: (i) the **ES type-split** re-derivation
+(pygmy, and the machinery behind the `dup_split_attempts` ledger at the
+`TYPE_CONFLUENCE` stage), and (ii) the **CS creation-site keying** (066,
+for the container-union-growth `v>0` oscillators, which show `cs_dup`
+activity). The determinism root — *why* `collect_type_confluences` +
+`decide_entry_set_split` re-detect and re-split the identical 3 groups
+every pass after `clear_results`, and why the ES ledger ROUTE stops the
+`ess` growth but not the `analyze_again=1` signal — is the real (ii)/(i)
+fix and is not yet built.
+
+- **Increment 1a — LANDED (churn bound, not the root):** the stall guard
+  was gated `if (v > 0)` (`fa.cc`), so a *zero-violation* pass that
+  re-derives a split (`dup>0`) yet adds no new contours (`ess`/`css`
+  unchanged) — pure issue-033 churn — was never bounded and ran to the
+  hard pass cap. Added a symmetric zero-violation branch (same
+  `stall_limit`, reset on `ess`/`css` growth): pygmy 102 → 48 passes,
+  same result. **Suite 235/0 both backends; full corpus sweep identical
+  (zero category changes).** This is a *bound* on the pure-churn case,
+  not the determinism fix — pygmy still sets `pass_limit_hit`; the root
+  (i)/(ii) work is what makes such passes not re-derive in the first
+  place.
+
 ### Stage 2 — main-loop CS-directed ES fan-out (065's linchpin)
 A new split stage in `run_split_stages`, running **every pass** (not on
 quiescence — that is the circularity break), on a **demand signal** (so no

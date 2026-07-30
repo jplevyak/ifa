@@ -6052,7 +6052,14 @@ static bool cs_is_per_cs_method_class(CreationSet *cs) {
     // the last link -- the unconditional counter stopped it at 8
     // with the violation stranded.
     int v = fa->type_violations.set_count();
+    // Issue 074 Stage 1: did this pass add any new contours? Productive
+    // precision splitting grows ess/css; a re-deriving pass that grows
+    // neither is pure issue-033 non-idempotent churn.
+    bool grew = fa->ess.n != fa->prev_ess_n || fa->css.n != fa->prev_css_n;
+    fa->prev_ess_n = fa->ess.n;
+    fa->prev_css_n = fa->css.n;
     if (v > 0) {
+      fa->zero_viol_stall_passes = 0;
       if (v < fa->best_violations) {
         fa->best_violations = v;
         fa->stall_passes = 0;
@@ -6071,6 +6078,23 @@ static bool cs_is_per_cs_method_class(CreationSet *cs) {
           analyze_again = 0;
         }
       }
+    } else {
+      // v == 0: types have converged. A pass that RE-DERIVED a split
+      // (dup>0) yet added no new contours is non-idempotent churn, not
+      // productive precision splitting -- the v>0 guard above skips it
+      // (`if (v > 0)`), so pygmy et al. run to the hard cap. Bound it
+      // with the same stall_limit; a genuinely productive zero-violation
+      // pass grows ess/css (or splits dup-free) and resets the counter.
+      bool rederived = fa->dup_split_attempts + fa->cs_dup_split_attempts > 0;
+      if (rederived && !grew) {
+        if (++fa->zero_viol_stall_passes >= fa->stall_limit) {
+          fa->pass_limit_hit = true;
+          analyze_again = 0;
+          log(LOG_SPLITTING, "ZERO-VIOL STALL at pass %d: %d re-deriving no-growth passes (limit %d); stopping\n",
+              analysis_pass, fa->zero_viol_stall_passes, fa->stall_limit);
+        }
+      } else
+        fa->zero_viol_stall_passes = 0;
     }
   }
   if (analysis_pass > fa->pass_limit) {

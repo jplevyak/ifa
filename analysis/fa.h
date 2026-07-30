@@ -568,6 +568,12 @@ class FA : public gc {
                         // dup-aware note)
   int nonimprove_passes;  // consecutive passes of ANY kind at or above
                           // best_violations (IFA_NONIMPROVE_LIMIT cap)
+  // Issue 074 Stage 1: consecutive ZERO-violation passes that RE-DERIVED
+  // a split (dup>0) yet added no new contours (ess/css unchanged) --
+  // pure issue-033 non-idempotent churn (pygmy). The v>0 stall guard
+  // above skips these (its `if (v > 0)`); this bounds them too.
+  int zero_viol_stall_passes = 0;
+  int prev_ess_n = -1, prev_css_n = -1;  // for the ess/css-growth check
   // Print FA's accumulated type violations to stderr at the end of
   // `FA::analyze`. Default true (production behavior); the test
   // harness sets it to false because fixtures are designed to
