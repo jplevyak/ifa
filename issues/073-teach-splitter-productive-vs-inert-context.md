@@ -182,6 +182,51 @@ products distinguished by **genuinely different, stable setter classes**
 ones (non-productive → relaxing the ROUTE gate alone converges adatron)?
 That is the first thing to settle when implementation resumes.
 
+### Correction (2026-07-29, second probe): it is INTRA-pass `check_split`, not cross-pass ROUTE
+
+The "operative lever is the ES-split ROUTE gate (`group_display_ok`)"
+claim just above was an inference from the growing `Fun::ess`; a direct
+per-pass/intra-pass EntrySet-count probe **corrects it**:
+
+- **Cross-pass durable state PLATEAUS.** `total_ess` at each pass start:
+  597 (p1) → 461 (p2) → 492 (p3) → **490, 490, 490** (p4,5,6), and the
+  leaf-method counts are *identical* across p3–p6 (`__lt__`=20,
+  `__ge__`=30, `__pyc_to_bool__`=18, `__getitem__`=96). So the
+  between-pass splitter is **convergent/idempotent** here — this is NOT
+  the 065/066 cross-pass growing-product oscillation, and **adatron does
+  NOT need Stage 1** (the data axis is already stable).
+- **The explosion is INTRA-pass.** Within pass 6, `total_ess` climbs
+  ~linearly (15.9k → 31k → 48k over successive 100k-edge windows),
+  concentrated in the leaf comparison methods (`__pyc_to_bool__`,
+  `__getitem__`, `__ge__`, `__lt__`). The **root callers stay bounded**
+  (`sorted`/`max`/`min`/`list` = 0–2, flat) — so it is emphatically NOT
+  a growing caller set.
+- **The mint path is `check_split`'s `e->from->split` branch
+  (`fa.cc:1163`), ~exclusively.** Counting the two intra-pass mint
+  sites: `check_split`(1163) = 19,002 → 37,487 → **59,699** and climbing,
+  vs `make_entry_set` find_best_entry_sets-fall-through = **658 (flat)**.
+  So ~99% of the unbounded creation is `check_split` minting a fresh
+  orphaned EntrySet per recursive invocation, gated by
+  `!edge_nest_compatible_with_entry_set(e, ee->to)` — **exactly issue
+  057's original rounds-5–7 root cause, now quantified**, and happening
+  *during flow*, not between passes.
+
+**Revised consequence.** For adatron the fix site is precisely
+`check_split`'s `e->from->split` branch (`fa.cc:1162-1168`): when the
+candidate `ee->to` is type-admissible (`check_edge` already passed at
+1160) and the nest-incompatibility is only on **inert** display slots,
+the branch must **reuse `ee->to`** (the existing `else` →
+`set_or_copy_AEdge`) instead of minting at 1163 — tying the recursive
+knot. The `update_display` assert (`fa.cc:958`) still couples in: the
+reuse path calls `set_entry_set → update_display`, so inert slots must be
+skipped there too. 064's level-descending `len`/`__getitem__` case is
+guarded here by the `check_edge` type filter at 1160 (different-type
+levels are skipped, not reused) — **but that filter is loose
+(empty-intersection only), so this must be verified against 064's
+regressor list, not assumed.** Stage 1 (cross-pass CS determinism) is
+orthogonal to adatron and deferred; it remains the fix for the
+*genuinely* cross-pass-oscillating programs (dijkstra2 / 065 / 066).
+
 ## Plan (two stages — order is load-bearing)
 
 Stage 1 must land before Stage 2. Stage 2 alone is 064's measured
