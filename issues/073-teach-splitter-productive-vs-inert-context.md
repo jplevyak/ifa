@@ -1,8 +1,9 @@
 # 073 — Teaching the splitter the productive-vs-inert context distinction (contour identity = type/data, not caller display)
 
-**Status:** design / plan, framed 2026-07-29, **substantially revised
-2026-07-30 — see "## Conclusion" immediately below, which SUPERSEDES the
-"inert mask / two-stage" plan in the rest of this file.** The inert-mask
+**Status:** **IMPLEMENTED + verified 2026-07-30** (see "### Landed"
+under the Conclusion). Framed 2026-07-29, substantially revised
+2026-07-30; the "## Conclusion" below SUPERSEDES the "inert mask /
+two-stage" plan in the rest of this file. The inert-mask
 framing (most of this doc) turned out to be the wrong lever: a proof
 below shows caller display/nesting *cannot* generate unbounded
 EntrySets, so masking it is at best a bounded-factor patch. The real
@@ -18,6 +19,46 @@ branch + `pending_es_backedge_map`), `entry_set_compatibility`,
 `maybe_synthesize_closure_pyda`.
 
 ## Conclusion (2026-07-30): the fix and why — AUTHORITATIVE
+
+### Landed (2026-07-30): `check_split` type-identity knot-tying
+
+The fix is a single-site change in `check_split`'s `e->from->split`
+branch (`ifa/analysis/fa.cc`). On the normal (flow-time, `avoid == null`,
+non-`split_unique`) call path, instead of minting a fresh split-lineage
+link when `edge_nest_compatible` fails, it ties the recursive knot by
+**exact type identity**: it reuses the lowest-id existing contour of the
+fun that is nest-compatible AND a *hard* type match
+(`edge_type_compatible_with_entry_set(e, x) == 1`); only if none exists
+does it fall back to the original lineage mint. A genuinely new
+monomorphic arg-type tuple still mints its own contour (bounded by the
+finite type domain); the `split_unique` and split-detach (`avoid`) paths
+are unchanged.
+
+The hard type match is load-bearing: an earlier version let the edge
+fall through to `find_best_entry_sets`, whose type matching is *soft*
+(reuses a type-incompatible contour with a `val−4` penalty) — that
+merged contours it shouldn't and **regressed `match_seq`**. Requiring
+`== 1` (exact type equality) never merges type-different contours, so
+064's level-descending precision is preserved *by type*, not by display.
+
+**Measured results:**
+- adatron FA: **120s+ stall / 1.7 GB → 0.54 s / 149 MB** (converges).
+  The 4-line 057 repro now compiles fully (exit 0). plcfrs FA also
+  converges (`-x 1`: 1.3 s, then its *pre-existing* type violation — no
+  longer a hang). All three divergent programs fixed.
+- Suite: **235 passed / 0 failed on both the C and LLVM backends**
+  (identical to the pre-change baseline).
+- Corpus sweep (84 examples): **+1 (`genetic2`: FAIL → COMPILED),
+  zero regressions** — exactly one example changed category. The whole
+  064 regressor list (`match_seq`/`match_none`/`recursive_polymorphic`/
+  `exception_propagation` in the suite; `chaos`/`chess`/`mastermind2`/
+  `pisang`/`sat` in the corpus) is untouched.
+
+**Newly exposed downstream blockers (separate issues, not FA):** now
+that adatron reaches codegen it fails on `t2 = NULL; t0 =
+(_CG_float64)t2;` — a nil/None cast to `double` (the 061/072/018
+nil-element-to-scalar family). plcfrs hits its pre-existing 055/053 type
+violation. Neither is this fix's concern.
 
 ### Theorem: caller display/nesting cannot generate unbounded EntrySets
 

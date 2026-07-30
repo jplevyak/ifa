@@ -1,13 +1,18 @@
 # 057 — Generic `sorted()` across differing element types + `list()`-materialization causes FA non-convergence
 
-**Status:** root cause FOUND 2026-07-19 (see "Root cause" below, and
-especially the "Dedicated instrumentation on the precise flow path"
-subsection — the first pass at root-causing named the wrong function;
-corrected the same day via direct instrumentation of the actual
-path). Not fixed — the real fix is narrower than first thought: a
-recursion-convergence bug in `check_split`'s `e->from->split` branch
-(`ifa/analysis/fa.cc`), not a generic "CPA-style cap" across all of
-`find_best_entry_sets`, though the latter (issue
+**Status:** **FA NON-CONVERGENCE FIXED 2026-07-30** — the recursion-
+convergence bug in `check_split`'s `e->from->split` branch was root-caused
+here (2026-07-19) and the fix landed via
+[073](073-teach-splitter-productive-vs-inert-context.md) ("### Landed"):
+that branch now ties the recursive knot by exact type identity instead
+of minting an unbounded split-lineage per invocation. adatron FA
+120s-stall → 0.54 s; the 4-line repro compiles fully; suite 235/0 both
+backends; corpus +1 (`genetic2`)/−0. adatron itself still fails *after*
+FA on a separate nil→`float64` codegen cast (061/072 family). The
+prior root-cause narrative below remains the derivation trail. The
+original 2026-07-19 finding, kept for history: the real fix is narrower
+than a generic "CPA-style cap" across all of `find_best_entry_sets`,
+though the latter (issue
 [033](033-splitter-non-idempotent-divergence.md)'s S4-D section) is
 still relevant as the general-purpose fix shape. The *symptom*
 (unbounded hang + unbounded memory growth) is separately MITIGATED as

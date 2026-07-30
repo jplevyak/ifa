@@ -1160,6 +1160,38 @@ static int check_split(AEdge *e, Vec<AEdge *> &ees, EntrySet *avoid = nullptr) {
         if (!check_edge(e, ee->to)) continue;
         if (ee->match->fun == e->match->fun) {
           if (e->match->fun->split_unique || !edge_nest_compatible_with_entry_set(e, ee->to)) {
+            // Issue 073: this split-lineage mint is the sole unbounded
+            // EntrySet generator (measured: ~all divergence-time mints on
+            // adatron/057/plcfrs came from here). It fires once per
+            // recursive invocation because the candidate `ee->to` carries
+            // the split-PARENT's display while `e->from` is the CHILD, so
+            // `edge_nest_compatible` fails by construction every level, and
+            // each mint links a new `->split` — an unbounded call-context
+            // chain that bypasses the ordinary `(type x data)` dedup.
+            //
+            // On the normal (flow-time) call path, tie the recursive knot
+            // by *exact type identity* instead: if an existing contour of
+            // this fun is a HARD type match (edge_type_compatible == 1) and
+            // nest-compatible (so update_display won't assert and no
+            // type-different contours merge — a soft find_best_entry_sets
+            // reuse would, regressing match_seq), reuse it; recursion of
+            // same-depth methods shares one display, so once its arg types
+            // stabilize (finite type domain) such a sibling exists and the
+            // knot ties. A genuinely new monomorphic arg-type tuple finds no
+            // hard match and still mints its own contour. `split_unique`
+            // keeps its forced-fresh contract; a split-detach (`avoid`)
+            // keeps the lineage mint (find_best is skipped there anyway).
+            if (!avoid && !e->match->fun->split_unique) {
+              EntrySet *knot = nullptr;
+              for (EntrySet *x : e->match->fun->ess)
+                if (x && edge_nest_compatible_with_entry_set(e, x) &&
+                    edge_type_compatible_with_entry_set(e, x) == 1)
+                  if (!knot || x->id < knot->id) knot = x;  // deterministic (issue 035)
+              if (knot) {
+                set_or_copy_AEdge(e, knot, ees);
+                return 1;
+              }
+            }
             set_entry_set(e);
             e->to->split = ee->to;
             ees.add(e);
