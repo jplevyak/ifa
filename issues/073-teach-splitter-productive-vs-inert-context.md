@@ -1,24 +1,164 @@
 # 073 — Teaching the splitter the productive-vs-inert context distinction (contour identity = type/data, not caller display)
 
-**Status:** design / plan, framed 2026-07-29 (from the adatron
-non-convergence, [057](057-sorted-tolist-fa-nonconvergence.md), and a
-request to make the splitter distinguish load-bearing from inert
-context). This is a **synthesis + sequencing** doc: it ties the
-"monomorphization + productivity" fix direction (057's authoritative
-section) to the already-measured mechanism work in
-[066](066-cs-split-decision-keyed-per-pass-not-per-creation-site.md) /
-[072](072-empty-container-notype-current-mechanism-and-plan.md) /
-[064](064-method-phantom-display-blocks-es-split-routing.md) /
-[065](065-mark-stage-es-split-routing-and-growing-product.md), and adds
-the one piece those didn't state cleanly: the **static criterion** for
-when a display context is correctness-load-bearing vs a pure
-context-multiplier, and the **order** the two halves must land in
-(getting it backwards is exactly 064's measured revert).
-**Affects:** `ifa/analysis/fa.cc` — `edge_nest_compatible_with_entry_set`,
-`entry_set_compatibility`, `check_split`, `group_display_ok`,
-`edge_display_compatible`, `update_display`, `split_css`,
-`creation_point`; `ifa/clone.cc` `ES_FN::equivalent`;
-`python_ifa_build_syms.cc` `def_fun_pyda` / `maybe_synthesize_closure_pyda`.
+**Status:** design / plan, framed 2026-07-29, **substantially revised
+2026-07-30 — see "## Conclusion" immediately below, which SUPERSEDES the
+"inert mask / two-stage" plan in the rest of this file.** The inert-mask
+framing (most of this doc) turned out to be the wrong lever: a proof
+below shows caller display/nesting *cannot* generate unbounded
+EntrySets, so masking it is at best a bounded-factor patch. The real
+generator is `check_split`'s split-lineage routing, and the real fix is
+to route recursive edges through the ordinary `(type × data)` dedup.
+The rest of the file is kept as the derivation trail (measured prereq
+traces remain valid).
+**Affects:** `ifa/analysis/fa.cc` — `check_split` (the `e->from->split`
+branch + `pending_es_backedge_map`), `entry_set_compatibility`,
+`find_best_entry_sets`, `edge_nest_compatible_with_entry_set`,
+`group_display_ok`, `update_display`; `ifa/analysis/clone.cc`
+`ES_FN::equivalent`; `python_ifa_build_syms.cc` `def_fun_pyda` /
+`maybe_synthesize_closure_pyda`.
+
+## Conclusion (2026-07-30): the fix and why — AUTHORITATIVE
+
+### Theorem: caller display/nesting cannot generate unbounded EntrySets
+
+Under `(type × display)` identity the contour set is finite for a finite
+type domain, by induction on lexical depth:
+
+- **nd 0** (module): exactly 1 contour.
+- **nd 1** (top-level fn): `display = [module]`, a *constant* — so its
+  contours are keyed purely on argument types, bounded by the finite
+  type domain. This holds *even for a recursive* top-level function: its
+  display never varies, so recursion ties its knot by type identity.
+- **nd 2** (method): `display[0] = module`; `display[1]` is the caller
+  contour, which is either an nd-1 contour (bounded, above) or — within
+  a same-depth cluster — *inherited* by `update_display` (`fa.cc:950`,
+  slot `i < caller.nd` copies the caller's slot). Either way it ranges
+  over a finite set. Bounded.
+
+So `(type × display)` has a finite fixpoint regardless of recursion.
+**The display is not, and cannot be, the source of the explosion.**
+Corollary: the unbounded generator must mint contours *without* going
+through the `(type × display)` dedup — i.e. *not* through
+`find_best_entry_sets` (`fa.cc:1080`), which is that dedup.
+
+### The sole unbounded generator: `check_split`'s split-lineage routing
+
+`check_split` (`fa.cc:1123`) runs *before* `find_best_entry_sets` in
+`make_entry_set` (`1185` vs `1188`) and routes by the **split lineage**,
+bypassing the dedup:
+
+- It searches the caller's split-*parent* `e->from->split->out_edge_map`
+  (`1152`) — or `pending_es_backedge_map` (`1125`) — for a prior call at
+  this PNode. The candidate `ee->to` passes `check_edge` (the type
+  filter, `1160`), so it is **type-admissible**.
+- Gate at `1162`: `!edge_nest_compatible_with_entry_set(e, ee->to)`.
+  `ee->to`'s display was stamped when the split-*parent* made the call,
+  so it records the *parent's* context; `e->from` is the *child*.
+  Parent ≠ child **by construction**, so the nest check fails *every*
+  level → mint fresh at `1163` and set `e->to->split = ee->to`, extending
+  the lineage one link. Next recursion level repeats against a new
+  parent → a fresh contour per level, unbounded.
+
+So "type-identical contour considered incompatible" = `check_edge`
+passes but `edge_nest_compatible` fails on a parent-vs-child display
+mismatch that can never reconcile. What is actually unbounded is not the
+display (bounded, above) but the **`->split` lineage chain** — a
+call-string context that skips the dedup. The display is merely the gate
+this router consults. Measured on adatron (probe removed): `check_split`
+mint at `1163` = 19,002 → 37,487 → 59,699 and climbing across a single
+pass, vs a *flat 658* for the `find_best_entry_sets` fall-through.
+
+### Every non-type dimension that makes a type-compatible contour "incompatible"
+
+`entry_set_compatibility` (`fa.cc:1029`) — the reuse decision:
+
+| dim | site | strength | bounded? |
+|---|---|---|---|
+| `split_unique` flag | `1031` (also `check_split:1162`) | hard `return 0` | bounded — set only on `sym_new_object` (`ast_to_if1.cc:1874`), per-call-site allocator contexts |
+| display / nesting | `1032` `edge_nest_compatible` | hard `return 0` | **bounded** (theorem) |
+| setter / sset classes | `1047` `edge_sset_compatible` | soft `val−=2` | finite domain, but **cross-pass-unstable keying** (066) |
+| constants | `1048` `edge_constant_compatible` | hard for `clone_methods_per_cs`, else soft `−1` | bounded (constant cap) |
+
+`check_split` (`fa.cc:1123`) — runs *before* the above:
+
+| dim | site | bounded? |
+|---|---|---|
+| split-lineage `e->from->split`→`out_edge_map`, display-gated | `1151-1168` | **UNBOUNDED — the `->split` chain grows per recursion level** |
+| `pending_es_backedge_map` | `1125` | same lineage family |
+
+`split_edges` — the split *decision* / product routing:
+
+| dim | site | bounded? |
+|---|---|---|
+| display | `group_display_ok` `~4355`, `edge_display_compatible` `~974` | bounded |
+| setter *site* signature | `setter_site_signature` `~4299` | finite sites (066: unstable) |
+| marks (SPLIT_MARK) | `different_marked_args` `~803`, `mark_map` | finite domain, but mark *distance* may grow with recursion depth — **plausibly a second unbounded channel, UNVERIFIED** |
+| type (SPLIT_TYPE) | `group_signature` | (the axis we keep) |
+
+`ifa/analysis/clone.cc` `ES_FN::equivalent` (`221`) — the *post-FA*
+merge that collapses over-splits (display-parent equiv, constants,
+escape, ivars, per-Var out types, per-PNode + creation-point CS equiv,
+prim period/cast). This is a safety net that *would* re-merge redundant
+display-distinct contours — **but it only runs if FA terminates**, so it
+never rescues a divergent FA.
+
+**Verdict:** display (bounded), `split_unique` (bounded), constants
+(bounded) are all harmless to termination. The setter axis is a finite
+domain with unstable cross-pass keying (066's growing product; not
+adatron's problem — adatron's cross-pass state is stable at 490). Marks
+are an open question. **The only *genuinely* unbounded generator is
+`check_split`'s split-lineage/backedge routing.**
+
+### The general fix
+
+Route recursive/backedge calls through the **same `(type × data)` dedup
+as every other call** instead of the split lineage:
+
+1. In `check_split`'s `e->from->split` branch, when a type-admissible
+   candidate exists, do not mint on a parent-vs-child display mismatch —
+   fall through to (or defer to) `find_best_entry_sets`, so a recursive
+   edge whose argument types match an existing contour **reuses it**
+   (knot tied by type identity). A genuinely new monomorphic arg-type
+   tuple still gets its own contour — bounded by the finite type domain.
+2. Retire the split-lineage/backedge context (`e->from->split`
+   out-edge routing, `pending_es_backedge_map`) and the display from
+   *identity*; keep the display only for `make_AVar` variable resolution
+   (`fa.cc:204`), which for the Python frontend is the module singleton
+   only (closures are lowered to explicit classes —
+   `maybe_synthesize_closure_pyda`).
+3. Keep the finite **data** axes (setter/CS = shedskin's `dcpa`,
+   constants) but with stable *source-site* keying (066) so they are
+   productive across passes — needed by the genuinely cross-pass
+   oscillators (dijkstra2/065/066), though *not* by adatron.
+
+This is shedskin's model: identity = `cpa` (arg-type cartesian product)
+× `dcpa` (data/allocation context), **no call-context/display
+dimension**. Termination follows from type-domain finiteness. A widening
+/ CPA_LIMIT deferral is a backstop *only* for a genuinely infinite type
+domain (unbounded recursive type construction), never for 055/057.
+
+**Why this supersedes the inert-mask plan (below).** The inert mask only
+neutralizes the display *gate* (b), and there are ≤ `nesting_depth` such
+slots — a bounded factor. It "fixes" adatron only because adatron's
+recursion happens to funnel entirely through that gate (making
+`check_split` take its reuse branch); it does nothing about the lineage
+*generator* and cannot bound a recursion routed through a non-display
+dimension. Type-identity routing addresses the generator directly and is
+precision-preserving: 064's level-descending `len`/`__getitem__` stay
+separated because their levels have *different argument types*, not
+because of the display.
+
+### Open verification items (do before implementing)
+
+1. **Marks:** confirm `SPLIT_MARK` distance cannot grow unboundedly under
+   recursion — i.e. `check_split`'s lineage is the *sole* unbounded
+   generator, not one of two.
+2. **Corpus scope:** confirm `check_split`(`1163`) is the dominant
+   unbounded mint on the other non-convergent programs (055/plcfrs,
+   dijkstra2), not just adatron.
+3. **Data-axis stability:** the cross-pass oscillators still need 066's
+   source-site CS keying even after the `check_split` fix; sequence
+   accordingly.
 
 ## The question
 

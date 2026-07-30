@@ -96,14 +96,18 @@ illegal: int64`). So the method display is genuine precision, and
 distinct caller displays (that would merge per-caller contours and lose
 that precision).
 
-**See also [073](073-teach-splitter-productive-vs-inert-context.md)**
-(2026-07-29), which folds this issue into a staged plan: the display's
-correctness job (variable resolution) vs its precision job (contour
-separation) are separated, a static per-slot liveness mask decides where
-the display is load-bearing, and — critically — the deterministic
-type/data split (066 part 2 + 072 steps 1–3) must land *first* so that
-demoting the display (this issue's item 1+2) no longer regresses the
-per-recursion-level precision described below.
+**See also [073](073-teach-splitter-productive-vs-inert-context.md)**,
+whose 2026-07-30 "## Conclusion" sharpens this issue's framing:
+the "phantom display blocks routing" symptom is real, but the display is
+**not** the root — a proof there shows `(type × display)` identity has a
+finite fixpoint, so caller display/nesting *cannot* generate unbounded
+EntrySets. The `group_display_ok` block is a *gate*; the actual
+unbounded *generator* is `check_split`'s split-lineage routing
+(`fa.cc:1163`), which mints per recursive level while bypassing the
+`(type × data)` dedup. So the fix is not display surgery
+(`nesting_depth`-zeroing, this issue's dead end) nor an inert mask —
+it is routing recursion through the type/data dedup so the knot ties by
+*type* identity, at which point the phantom-display block is moot.
 
 **Consequence for the plan:** 064 as "give methods nesting_depth 0" is a
 dead end — the routing block is a symptom of a genuinely-needed

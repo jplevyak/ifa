@@ -100,11 +100,18 @@ is semantically load-bearing (a nested function genuinely capturing a
 different enclosing contour), not for leaf methods like the comparison
 dunders that capture nothing.
 
-**The staged implementation plan** for exactly this — the
-productive-vs-inert context distinction, its static criterion, and the
-mandatory ordering (deterministic type/data split first, display
-demotion second) — is
-[073](073-teach-splitter-productive-vs-inert-context.md).
+**The implementation design is [073](073-teach-splitter-productive-vs-inert-context.md)**
+(see its "## Conclusion", 2026-07-30, which is authoritative). Key
+refinement proven there: caller display/nesting *cannot* generate
+unbounded EntrySets (finite fixpoint for a finite type domain), so the
+fix is **not** a display/inert-mask patch. The sole unbounded generator
+is `check_split`'s split-lineage routing (`fa.cc:1163`), which mints a
+fresh contour per recursive level because it bypasses the ordinary
+`(type × data)` dedup (`find_best_entry_sets`). The fix routes recursive
+edges through that dedup so recursion ties its knot by *type* identity —
+which for adatron also eliminates the union at the source (monomorphic
+`sorted` contours), so the speculative `tuple.__lt__` recursion never
+forms.
 
 ## Symptom
 
