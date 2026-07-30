@@ -256,6 +256,46 @@ fix and is not yet built.
   done first. So the build order is fixed: **(ii) stable creation-site
   keying → then complement eviction on both the ES and CS self-product**.
 
+- **Scoping + working prototype — 2026-07-30. The eviction DIRECTION is
+  correct; the crude form regresses; the refinement is identified.**
+
+  *Lifecycle facts (grounding the "stable key" question).* `clear_edge`
+  (`fa.cc`) clears an edge's *flow* (args/rets/filters) but **not**
+  `e->to` (its product ES), `e->from`, `e->pnode`, or `e->match`; and the
+  `split_ledger` is **not** in `clear_results`. So the durable substrate
+  already exists — edge structure + `e->to` + the ledger survive passes;
+  only AVar types and `cs->defs` re-derive. Consequence for the ES side:
+  the ledger's `group_signature` (arg/ret types) is *already* a stable
+  key when types have converged (pygmy's do — `[Shaderinfo]`), so the ES
+  self-product does **not** need a new keying map; it needs the eviction.
+  (The CS side / 066 is separate: `creation_point` re-derives `cs->defs`
+  each pass and *does* need creation-site keying — that is Stage-1 (ii)
+  proper, still unbuilt.)
+
+  *Prototype (PYC_SELFPROD2, reverted).* On a self-product group
+  (`d->product == es`), keep the group in `es` and evict the **complement**
+  (all other edges currently in `es`) to a fresh product, so `es`
+  re-monomorphises. Measured:
+  - **pygmy converges NATURALLY** — `pass_limit_hit` 1 → **0** (43 passes,
+    0 violations); the flip-flop is gone. **Suite 235/0** (C).
+  - **dijkstra2 identical** (no regression) — unlike 065's reverted
+    "keep the group in `es`" (37→605); this evicts rather than accreting.
+  - **But amaze (v884→915) and linalg (170→187) REGRESS** — more
+    violations. Cause: evicting the *entire* complement into **one**
+    product merges genuinely-different-typed complement edges into a
+    polymorphic contour (065's own hazard, moved off `es` onto the comp).
+
+  *Refinement (the next build).* Evict each complement edge to **its own**
+  ledger home, not a single shared product: for each edge not in the
+  kept group, compute its group signature and route it to that decision's
+  product (mint only if unrecorded) — i.e. re-home the complement
+  per-signature, exactly the ledger the kept group already uses. That
+  keeps `es` monomorphic to its recorded group AND keeps each evicted
+  sub-group with its own kind, which is what should fix amaze/linalg while
+  preserving pygmy's convergence. This is a bounded, well-scoped change to
+  `apply_entry_set_split` (needs the per-edge/-subgroup signature routing);
+  it is the concrete Stage-1 build to attempt next.
+
 ### Stage 2 — main-loop CS-directed ES fan-out (065's linchpin)
 A new split stage in `run_split_stages`, running **every pass** (not on
 quiescence — that is the circularity break), on a **demand signal** (so no
