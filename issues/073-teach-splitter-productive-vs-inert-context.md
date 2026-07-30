@@ -148,17 +148,42 @@ precision-preserving: 064's level-descending `len`/`__getitem__` stay
 separated because their levels have *different argument types*, not
 because of the display.
 
-### Open verification items (do before implementing)
+### Verification (2026-07-30): both probes RESOLVED
 
-1. **Marks:** confirm `SPLIT_MARK` distance cannot grow unboundedly under
-   recursion — i.e. `check_split`'s lineage is the *sole* unbounded
-   generator, not one of two.
-2. **Corpus scope:** confirm `check_split`(`1163`) is the dominant
-   unbounded mint on the other non-convergent programs (055/plcfrs,
-   dijkstra2), not just adatron.
-3. **Data-axis stability:** the cross-pass oscillators still need 066's
-   source-site CS keying even after the `check_split` fix; sequence
-   accordingly.
+Instrumented `set_entry_set` (total fresh mints), `check_split:1163`,
+`make_entry_set` fall-through, and `build_type_mark`/`build_setter_mark`
+(max mark distance); ran to the stall on every known-divergent program
+(instrumentation removed after). `OTHER = total − check_split −
+fall-through`:
+
+| program | pass | total mint | check_split | fall-through | OTHER | max_mark |
+|---|---|---|---|---|---|---|
+| adatron | 6 | 60,357 | 59,699 | 658 | **0** | **18** |
+| 057 4-line repro | 1 | 50,502 | 50,399 | 103 | **0** | **0** |
+| plcfrs (055, `set`-based) | 1 | 50,627 | 49,849 | 778 | **0** | **0** |
+
+1. **Marks — NOT a second channel (confirmed).** `max_mark` is bounded
+   and *constant* (18 for adatron, 0 for the others) while contours grow
+   by tens of thousands. Structural reason: `build_type_mark`
+   (`fa.cc:4708`) is a min-keeping shortest-distance relaxation
+   (`mark+1` per hop, stop-at-already-marked) over the pass's *finite*
+   AVar graph, so mark distances are bounded by graph size per pass — a
+   bounded function of the contour set, never an independent generator.
+2. **Sole generator — confirmed corpus-wide (both classes).** `OTHER = 0`
+   exactly on all three: every fresh mint is either `check_split`(`1163`)
+   or the flat fall-through. `check_split` is 97–99.6% and the only path
+   that grows; the fall-through is flat (≤778). Holds on the non-sorted
+   `set`/`plcfrs` divergence (055), not just the sorted/tuple class —
+   `check_split`'s split-lineage is the single unbounded generator.
+   (dijkstra2 does *not* diverge — it fails fast with an unrelated
+   `sizeof_element` codegen error — so it is not a test case here.)
+
+### Still open (sequencing, not blocking the fix)
+
+- **Data-axis stability:** the cross-pass oscillators (065/066) still
+  need 066's source-site CS keying even after the `check_split` fix;
+  adatron/057/plcfrs do not (their cross-pass state is stable). Sequence
+  the two independently.
 
 ## The question
 
