@@ -313,6 +313,49 @@ fix and is not yet built.
   set) still needs the genuine stale-vs-valid discrimination, i.e. Stage-1
   (ii)'s stable keying; that remains the next build.
 
+- **Dup-category scoping — 2026-07-30. REDIRECTS the target: the
+  oscillators are ES-side, NOT CS-side.** Before building the CS
+  creation-site keying (Stage-1 (ii) / 066), categorized every cross-pass
+  dup (probe removed) across the 17-program set into: `es_self`
+  (self-product, 1b's case), `es_route` (ES route to a *different*
+  product), `es_othermint` (ES group that *has* a recorded product but
+  re-mints anyway), `filt`, `cs`. Cumulative over all passes:
+
+  | prog | viol | es_self | es_route | es_othermint | cs |
+  |---|---|---|---|---|---|
+  | dijkstra2 | 170 | 3 | 27 | **83** | **0** |
+  | sudoku5 | 511 | 12 | 112 | **154** | 0 |
+  | rubik | 417 | 13 | **147** | 1 | 0 |
+  | chess | 63 | 0 | 19 | 31 | 0 |
+  | amaze | 884 | 21 | 68 | 2 | 0 |
+  | linalg | 170 | 4 | 37 | 17 | 0 |
+  | loop | 64 | 1 | 18 | 40 | 2 |
+
+  **`cs ≈ 0` for the ENTIRE set** (max 6, on pygmy). So **066's CS
+  creation-site keying is the wrong lever for the oscillation** — none of
+  these programs churn on the CS side. The dominant churn is two ES-side
+  categories:
+  - **`es_othermint`** (dijkstra2 83, sudoku5 154, chess 31, loop 40 …):
+    a group that *has* a recorded product but re-mints because the ES
+    ROUTE (`fa.cc:4664`) is blocked by **`group_display_ok`** — i.e.
+    **issue 064's phantom method display** (065 gap 1). This is the same
+    load-bearing display Stage 0 proved cannot simply be dropped (it
+    supplies container-method per-recursion-level separation), so
+    unblocking the route needs that separation moved onto the CS/type axis
+    first — **Stage 2**, not a keying map.
+  - **`es_route`** (rubik 147, sudoku5 112, dijkstra2 27 …): a group that
+    routes *successfully* to its recorded product every pass (no growth)
+    yet still signals `analyze_again=1`. Candidate independent lever: make
+    a re-route that reproduces an already-applied assignment (all edges
+    already at their product) **not** signal progress — an
+    idempotent-route fix, smaller than Stage 2, worth measuring next.
+
+  **Consequence for the plan:** Stage-1 (ii) as "066 CS creation-site
+  keying" is **deprioritized for the oscillation** (the CS side is quiet);
+  it stays relevant only for genuine CS re-derivation (pyc_declare/pygmy's
+  CS ROUTE, 066's own repros). The oscillation's real poles are **064 (via
+  Stage 2)** and the **`es_route` idempotence** lever. Re-target here.
+
 ### Stage 2 — main-loop CS-directed ES fan-out (065's linchpin)
 A new split stage in `run_split_stages`, running **every pass** (not on
 quiescence — that is the circularity break), on a **demand signal** (so no
