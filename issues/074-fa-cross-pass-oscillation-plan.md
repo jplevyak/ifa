@@ -534,6 +534,66 @@ ruled out — it breaks convergence; see the Stage 0 result.)
 > trajectory-stabilizing refinement. Kept behind the flag as a verified,
 > documented partial.
 
+### Lever (b) — dispatch coherence — MEASURED, PREMISE OVERTURNED 2026-07-31
+The plan (and 073's es_route note) framed lever (b) as a **flow↔split
+bounce**: the split routes an edge es→product, then flow re-dispatches the
+*same* call back to es, so the split "moves it out again" every pass —
+fixable by redirecting the caller's dispatch to the product. A temporary
+per-edge probe (`PYC_DBG_ROUTE` in the ES-split ROUTE, removed after)
+tracking whether the **same edge** is routed on consecutive passes
+**overturns that premise on rubik** (the canonical es_route case):
+
+- **216 of 217 route events are DISTINCT edge ids** (only edge 362 ever
+  routed twice; **zero** consecutive-pass bounces). So the same edge is
+  *not* bouncing es↔product — essentially every route is a *fresh* edge.
+- The routes are a **tapering transient**, not steady: a burst at pass 17
+  (138), decaying 38 → 3 → 2 as the run proceeds — not the "~200/pass
+  forever" a bounce implies. (The earlier "moved=200, noop=0" is fully
+  consistent with fresh distinct edges each genuinely moved *once*; it was
+  mis-read as one edge bouncing.)
+- The recurring target `es 59 → product 213` (35 routes) is fed by **35
+  distinct edges from ~11 distinct caller contours** (from-ids 98, 200,
+  355, 357, 361, 371, 392–397). So the driver is **caller-contour
+  MULTIPLICATION**: a shared method's contour `es` receives one fresh edge
+  from each newly-minted caller contour, and each is routed once to the
+  recorded product. As caller multiplication settles, the routes stop.
+- **Stage 4 barely changes it** (217 → 204 routes), and rubik's violations
+  still dropped 417 → 128 — so the route transient is *not* what drives
+  rubik's residual violations.
+
+**Consequence — lever (b) as "dispatch coherence to stop the bounce" is
+attacking a bounce that does not exist.** There is nothing to make "stick":
+the routed edges already stay on their product (`make_entry_set`
+early-returns on a set `e->to`; `clear_edge` preserves it). The es_route
+"churn" is a bounded, converging transient of caller multiplication. So the
+residual violations that keep rubik/dijkstra2/sudoku5 at the pass cap
+(after Stage 4 removes the es_othermint re-mints) are **not oscillation
+churn at all** — they are either the caller-multiplication transient not
+yet quiesced when the stall guard fires, or **genuine unresolved type
+violations** (the 063 "no type" bucket: shared dispatch methods over
+heterogeneous object unions that never monomorphise). Both point away from
+a splitter-idempotence fix:
+
+1. **Caller multiplication** is the *display/type caller-context* axis —
+   the same root Stage 4 attacks at the *identity* level. The remaining
+   per-fresh-caller route is bounded and self-limiting; reducing the
+   multiplication itself (fewer caller contours) is the lever, i.e. *more*
+   display demotion / a caller-side analog of Stage 4, not dispatch
+   redirection.
+2. **Genuine residual violations** are not an oscillation problem — they
+   are the 063 "no type" limitation, tracked there; a converging FA would
+   still report them. Re-measure each capped program to split its residual
+   into (transient vs genuine) before treating it as an oscillation.
+
+**Net for the plan:** both levers the plan named for the `v>0` residual are
+now measured away — Stage 2 (no growing container union) and lever (b) (no
+dispatch bounce). Stage 4 (display-identity demotion) is the one mechanism
+that measurably reduces the churn, and the remaining residual is caller
+multiplication + genuine "no type" violations, not a fixable non-idempotence
+oscillation. pygmy (the pure 0-violation cap-hitter) remains the one clean
+idempotence case, resolved by increment 1b except for the Stage-4
+interaction that slows it (43 → 77 passes).
+
 ## Verification plan (per step — issue-033 fragility demands it)
 
 1. **Oscillation gate:** the measured oscillating set (all 17
