@@ -378,7 +378,7 @@ fix and is not yet built.
   large. The session's tractable wins (1a, 1b) are landed; the remainder
   is the genuine 033/064 core.
 
-### Stage 2 — main-loop CS-directed ES fan-out (065's linchpin)
+### Stage 2 — main-loop CS-directed ES fan-out (065's linchpin) — MEASURED, RULED OUT 2026-07-30
 A new split stage in `run_split_stages`, running **every pass** (not on
 quiescence — that is the circularity break), on a **demand signal** (so no
 explosion): when a method ES's receiver arg is a union of **same-TYPE CSs
@@ -388,23 +388,107 @@ CS-creation-site signature for issue-033 idempotence. This is what
 `PER_CS_RECEIVER` cannot do (it separates at creation, not a union
 receiver) and what stops the union from growing at its source.
 
+> **Measure-first result 2026-07-30: Stage 2 does NOT address the
+> oscillation; do NOT build it.** Before prototyping, a temporary probe
+> (`PYC_DBG_STAGE2`, in `apply_entry_set_split`, removed after)
+> characterized every re-minting group (`othermint`/`route`/`self`) across
+> 7 oscillators by (a) its cross-pass category and (b) the CS-union shape
+> at the **split position** `avpos` (n CSs, all-same-container-type?,
+> element-type union, elements-divergent?). Three findings, each fatal to
+> the Stage-2 premise:
+>
+> 1. **The Stage-2 demand signal is a small minority of the churn.**
+>    Re-mints whose split position is a *same-type container union with
+>    divergent elements* (the exact fan-out target), as a fraction of all
+>    re-mints: dijkstra2 **1/113**, sudoku5 **3/278**, rubik **5/161**,
+>    amaze 9/91, loop 7/59, softrender 8/65 — only **linalg 19/58 (33%)**
+>    is non-trivial (and those are mostly `len`/`deepcopy` over a container
+>    arg, not a *receiver* fan-out). The dominant split shapes are instead
+>    **unions of NON-container objects** (`cont=0`: sudoku5 200/278, rubik
+>    120/161, amaze 49/91 — polymorphic object dispatch) and **pure-display
+>    monomorphic re-mints** (`nCS≤1`: dijkstra2 62/113, softrender 45%,
+>    loop 44%).
+> 2. **There is no growing union for Stage 2 to stop.** Tracking the split
+>    union's size across passes: sudoku5 `__eq__` *shrinks* 22→18→8→2 as
+>    separation proceeds; rubik's 112 `__getitem__` re-routes are a
+>    **single-pass burst** (pass 17) at a stable `nCS 2-3`. The 043-shape-B
+>    "genuinely growing container-element union" 065 gap 2 posited is **not
+>    present** in the measured oscillators — the unions are small and
+>    static-or-shrinking; the re-derivation is pure cross-pass
+>    non-idempotence, not growth.
+> 3. **The churn reduces to the two mechanisms already named in the
+>    Stage-1 dup-category scoping, both display/dispatch — neither a
+>    container fan-out.** (a) **`es_othermint`** (dijkstra2 55% of re-mints
+>    are `mono`, all **stage-0/TYPE_CONFLUENCE**, 60 across 32 contours;
+>    sudoku5 `__getitem__` 66 + `__eq__` 46): the ES-split ROUTE is blocked
+>    by **`group_display_ok`** on type-identical or type-partition-matching
+>    groups whose edges span different caller displays = **064's phantom
+>    display / 073**. (b) **`es_route`** (rubik `__getitem__` **×112**,
+>    sudoku5/dijkstra2 `len`): the split routes to its recorded product but
+>    *flow* re-dispatches the call to the original ES next pass = the
+>    **flow↔split dispatch-coherence** oscillation.
+>
+> **Consequence.** The plan's premise chain for Stage 2 — "the display is
+> load-bearing (Stage 0) *because* it supplies container-method
+> per-recursion-level separation, so move that job to the CS axis (Stage 2)
+> and the display goes inert" — **breaks at the middle link for the
+> oscillators**: in the oscillators the display is NOT doing container
+> separation (their re-mints are non-container/pure-display), so a
+> receiver-CS fan-out cannot make their displays inert. Stage 0's
+> load-bearing evidence (`recursive_polymorphic`) is a *separate, passing*
+> program whose display genuinely does element separation; that program is
+> a Stage-4 *regression guard*, not a member of the oscillating set. So the
+> two are decoupled: **the oscillation's real levers are (a) the display in
+> the ES-split ROUTE gate `group_display_ok` — extend 073's landed
+> type-identity knot-tying (which fixed the `check_split` recursion branch)
+> to the ROUTE, co-modifying `update_display`, so a type-partition-matching
+> group routes across inert displays — and (b) dispatch coherence for the
+> `route` population (the deep 033 core: redirect the caller's dispatch to
+> the split product so flow stops undoing the split).** Stage 2 is retired
+> from this plan.
+
 ### Stage 3 — compose with the existing stages / phase ordering (066)
 Reach the ES-split fixpoint, then the CS split, and do not let a CS split
 re-open an already-decided ES split. The `e->to` durability already nearly
 gives this for ESs; the missing half is not re-deriving a decided ES split
 from a CS change.
 
-### Stage 4 — drop the method display (gated: Stage 0 showed it is NOT yet safe)
-Stage 0 confirmed the display is still load-bearing *today*, so this is
-**blocked on Stage 1-2** actually moving the per-recursion-level
-container-method separation onto the CS/type axis. Once they do (verify
-by re-running the Stage-0 nodisp probe: `recursive_polymorphic` must stay
-green with the display ignored), set genuine methods' `nesting_depth` to
-0 (distinguishing them from the issue-001 synthesized closure carriers,
-which keep it), dissolving 064 and simplifying the display machinery.
+### Stage 4 — demote the display from the ES-split ROUTE gate (the real lever, per the Stage-2 measurement)
+With Stage 2 retired (see its measure-first result above), this is the
+**primary remaining lever** for the oscillation's dominant `es_othermint`
+population, not a Stage-1/2-blocked cleanup. The measurement decoupled the
+two display roles the plan had conflated:
+- **In the oscillators**, `group_display_ok` blocks the ES-split ROUTE for
+  groups whose *type partition already matches* a recorded product but
+  whose edges span different caller displays (dijkstra2's 60 stage-0
+  `mono` re-mints; sudoku5's `__getitem__`/`__eq__`). The display here is
+  **inert** — it separates nothing the type partition doesn't already.
+- **In `recursive_polymorphic`** (a passing program, NOT an oscillator —
+  it is the Stage-4 *regression guard*), the display separates genuinely
+  different element types through normally-dispatched `len`/`__getitem__`
+  (Stage 0). That separation must survive.
+
+073's landed `check_split` fix already resolved the analogous split in the
+**recursion-routing** branch by reusing a contour only on a **hard type
+match** (`edge_type_compatible == 1`), which preserves
+`recursive_polymorphic` *by type*. The concrete Stage-4 build is the same
+move one level up, in `apply_entry_set_split`'s ROUTE: when a group's
+`(avpos, part, gsig)` matches a prior-pass product (already a type-partition
+match), **route to it even when `group_display_ok` fails**, co-modifying
+`update_display` (fa.cc:958 assert) to rebuild the display from the routed
+edge rather than assert equality (064 item 2 / 073's "hard constraint on
+the fix"). Because the ROUTE already keys on the type partition, relaxing
+*only* the display gate there cannot merge type-different groups — the
+exact safety `recursive_polymorphic` needs, and stronger than Stage 0's
+blanket display-drop (which regressed via the *soft* `find_best_entry_sets`
+match, a different site the ROUTE does not use). Verify by re-running the
+Stage-0 nodisp probe and the full regressor list; a later cleanup can then
+set genuine methods' `nesting_depth` to 0 (distinguishing the issue-001
+synthesized closure carriers, which keep it). The `es_route` /
+dispatch-coherence population (rubik) is *not* fixed by this and remains
+the separate 033-core lever (b).
 (The cheaper "hard method-dispatch type gate" alternative was tested and
-ruled out — it breaks convergence; see the Stage 0 result. Stage 2 is
-the only path.)
+ruled out — it breaks convergence; see the Stage 0 result.)
 
 ## Verification plan (per step — issue-033 fragility demands it)
 

@@ -6546,6 +6546,9 @@ static void analyze_to_convergence() {
     // 0 but a frontend annotator that never quiesces could
     // otherwise drive flow passes forever.
   } while ((extend_analysis() || if1->callback->reanalyze(fa->type_violations)) && analysis_pass <= fa->pass_limit);
+  if (getenv("PYC_DBG_OSC"))
+    fprintf(stderr, "OSC final_pass=%d pass_limit_hit=%d violations=%d ess=%d css=%d\n", analysis_pass,
+            fa->pass_limit_hit ? 1 : 0, fa->type_violations.set_count(), fa->ess.n, fa->css.n);
 }
 
 int FA::analyze(Fun *top) {
