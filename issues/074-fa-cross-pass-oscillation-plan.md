@@ -344,17 +344,39 @@ fix and is not yet built.
     unblocking the route needs that separation moved onto the CS/type axis
     first — **Stage 2**, not a keying map.
   - **`es_route`** (rubik 147, sudoku5 112, dijkstra2 27 …): a group that
-    routes *successfully* to its recorded product every pass (no growth)
-    yet still signals `analyze_again=1`. Candidate independent lever: make
-    a re-route that reproduces an already-applied assignment (all edges
-    already at their product) **not** signal progress — an
-    idempotent-route fix, smaller than Stage 2, worth measuring next.
+    routes to its recorded product every pass yet still signals
+    `analyze_again=1`. **Idempotent-route lever investigated 2026-07-30 —
+    it does NOT exist.** Instrumenting the route application (probe
+    removed): every routed edge is a **genuine move** (`es → product`);
+    rubik measured `noop=0, moved=200`. So there are no "already-applied"
+    re-routes to skip. The churn is a genuine **flow↔split oscillation**:
+    the split routes the edge to `product`, then next pass *flow*
+    re-dispatches the same call to `es` (the caller's dispatch target was
+    never redirected to `product`), so the split moves it out again. The
+    split *outcome* is identical every pass, but the edge really bounces,
+    so it can't be recognized as a no-op. It is already **stall-bounded**
+    (the `v>0` guard fires after `stall_limit` re-deriving passes) — so
+    there is no unbounded growth here; the residual is that the split
+    can't *resolve* its violations because its product never becomes the
+    dispatch target. The real fix is **dispatch coherence** (redirect the
+    caller's dispatch to the split product so flow stops undoing the
+    split) — the `check_split` / `pending_es_backedge` / `out_edge_map`
+    machinery — which is the deep 033 core, not a small idempotence tweak.
 
   **Consequence for the plan:** Stage-1 (ii) as "066 CS creation-site
   keying" is **deprioritized for the oscillation** (the CS side is quiet);
   it stays relevant only for genuine CS re-derivation (pyc_declare/pygmy's
-  CS ROUTE, 066's own repros). The oscillation's real poles are **064 (via
-  Stage 2)** and the **`es_route` idempotence** lever. Re-target here.
+  CS ROUTE, 066's own repros). Both cheap ES-side levers are now ruled
+  out — `es_othermint` is 064's load-bearing phantom display (needs Stage
+  2 first), and `es_route` is a genuine flow↔split dispatch-coherence
+  oscillation (already bounded; needs the `check_split` dispatch-coherence
+  fix, not a signal tweak). **So the oscillation's residual (`v>0`) has no
+  small remaining lever: it reduces to (a) Stage 2 — move container-method
+  separation onto the CS/type axis so 064's display becomes inert and the
+  `es_othermint` routes unblock — and/or (b) making the ES-split product
+  the caller's dispatch target so `es_route` splits stick.** Both are
+  large. The session's tractable wins (1a, 1b) are landed; the remainder
+  is the genuine 033/064 core.
 
 ### Stage 2 — main-loop CS-directed ES fan-out (065's linchpin)
 A new split stage in `run_split_stages`, running **every pass** (not on
