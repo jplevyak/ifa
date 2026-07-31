@@ -90,6 +90,11 @@ class Fun : public gc {
   Vec<PNode *> fa_phy_PNodes;
   Vec<PNode *> fa_send_PNodes;
 
+  // issue 074 Stage 4: cached highest display slot index this fun's body
+  // actually consumes for free-variable resolution (make_AVar); slots
+  // above it are inert. -2 = uncomputed. See fun_max_live_display_slot.
+  int max_live_display_slot = -2;
+
   // pattern
   Vec<MPosition *> arg_positions;
   Vec<MPosition *> positional_arg_positions;

@@ -490,6 +490,50 @@ the separate 033-core lever (b).
 (The cheaper "hard method-dispatch type gate" alternative was tested and
 ruled out — it breaks convergence; see the Stage 0 result.)
 
+> **Prototype built + measured 2026-07-30 (behind `PYC_STAGE4`,
+> flag-gated, not landed).** Implemented the display-liveness demotion:
+> a per-`Fun` cached `max_live_display_slot` (`fun.h` +
+> `fun_max_live_display_slot` in `fa.cc`) = the highest display slot the
+> fun's body actually consumes in `make_AVar` (a referenced Var at
+> `nesting_depth` k+1 owned by a proper ancestor scope); slots above it
+> are inert. `group_display_ok` (type-stage ROUTE only, `!fsetters &&
+> !fmark`) enforces only the live slots, and `update_display` asserts
+> only the live slots, so a type-partition-matching group ROUTEs across
+> inert (caller-context) display slots instead of re-minting. For the
+> Python frontend the mask is empty above the module singleton (captures
+> are lowered to explicit closure classes), so a genuine method's caller
+> slot is inert; genuine V closures / issue-001 carriers reference an
+> ancestor free var and keep a live slot, so their enforcement is
+> unchanged.
+>
+> **Correctness/determinism gate — CLEAN:** suite **235/0 on BOTH
+> backends** with the flag on; corpus sweep **identical 53-compiled set**
+> (zero COMPILED→FAIL, zero swaps, diffed); `recursive_polymorphic`
+> compiles clean (the type-partition `gsig` gate protects it — its
+> contours differ by type, not just display). Flag-off is byte-identical
+> to baseline (all logic gated on `stage4_enabled()`).
+>
+> **Oscillation gate — NET-POSITIVE BUT NOT PRECISION-NEUTRAL (so not
+> yet landable):** violations at the cap — rubik **417 → 128** (−289;
+> passes 33 → 21), sudoku5 **511 → 434**, dijkstra2 **170 → 140** (passes
+> 43 → 36), loop **64 → 53**; amaze/linalg neutral. **Regressions:**
+> softrender **881 → 895 (+14)** and pygmy compile-time **43 → 77 passes**
+> (still converges, `pass_limit_hit=0`, 0 violations). **No oscillator
+> reaches `pass_limit_hit=0`** — Stage 4 removes the `es_othermint`
+> re-mint churn but the `es_route`/dispatch-coherence residual (lever b)
+> still caps every program. The softrender/pygmy regressions are the
+> issue-033 mint→route trajectory sensitivity, NOT lost data separation
+> (`group_signature` keys on `->type`, which preserves non-constant CS
+> identity, so the ROUTE cannot merge CS-different groups): routing a
+> group into a *durable accumulated* product vs. minting a *fresh* one
+> reaches a different frozen state — program-specifically better (rubik)
+> or worse (softrender). So Stage 4 alone meets correctness but violates
+> the "none regress" precision gate for two programs; landing it wants
+> either lever (b) composed in (so the routed splits actually stick and
+> converge, likely dissolving the trajectory noise) or a
+> trajectory-stabilizing refinement. Kept behind the flag as a verified,
+> documented partial.
+
 ## Verification plan (per step — issue-033 fragility demands it)
 
 1. **Oscillation gate:** the measured oscillating set (all 17

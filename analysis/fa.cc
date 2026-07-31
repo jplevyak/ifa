@@ -947,6 +947,9 @@ static bool edge_constant_compatible_with_entry_set(AEdge *e, EntrySet *es) {
   return true;
 }
 
+static int fun_max_live_display_slot(Fun *f);
+static int stage4_enabled();
+
 static void update_display(AEdge *e, EntrySet *es) {
   // add any we need
   for (int i = es->display.n; i < es->fun->sym->nesting_depth; i++)
@@ -955,7 +958,19 @@ static void update_display(AEdge *e, EntrySet *es) {
     else
       es->display.add(e->from);
   // verify everything
-  for (int i = 0; i < es->fun->sym->nesting_depth; i++)
+  // issue 074 Stage 4: only the LIVE display slots must stay consistent.
+  // Inert slots (above fun_max_live_display_slot) are never read by
+  // make_AVar, so an edge routed into es by the Stage-4 display-demoted
+  // ROUTE may legitimately carry a different inert slot -- es keeps the
+  // value its first edge stamped and nothing ever reads the difference.
+  // Live slots (module singleton at 0; genuine V-closure ancestor slots)
+  // still assert, preserving the desync guard where it matters.
+  int nd = es->fun->sym->nesting_depth;
+  if (stage4_enabled()) {
+    int live = fun_max_live_display_slot(es->fun);
+    if (live + 1 < nd) nd = live + 1;
+  }
+  for (int i = 0; i < nd; i++)
     if (i < e->from->display.n)
       assert(es->display[i] == e->from->display.v[i]);
     else
@@ -4384,9 +4399,58 @@ static uint group_signature(Vec<AEdge *> &these_edges, Fun *f) {
   return h ? h : 1;  // 0 is reserved for "no identity" / filtered-path keys
 }
 
-static bool group_display_ok(Vec<AEdge *> &these_edges, EntrySet *product, Fun *f) {
+// issue 074 Stage 4 / 073: the highest display slot index [0, nd) this
+// fun's body actually consumes for free-variable resolution in make_AVar
+// -- i.e. it references a Var at nesting_depth k+1 owned by a proper
+// ancestor scope (k+1 <= nd). Slots above this are INERT: build_display
+// still fills them, but make_AVar never reads them, so two contours that
+// differ ONLY in an inert slot are the same contour for correctness.
+// This is 064's "phantom method display": a Python method's slots >= 1
+// are inert because captures are lowered to explicit closure classes
+// (maybe_synthesize_closure_pyda), so only display[0] (the module
+// singleton) is ever consumed. Genuine V nested functions / issue-001
+// synthesized closure carriers reference an ancestor free var and so
+// keep a live slot >= 1 -- for them the enforcement below is unchanged.
+// -1 = no slot consumed. Cached; dynamic fa_all_Vars additions are own
+// locals (nd == f->nd+1), which never lower this bound.
+static int fun_max_live_display_slot(Fun *f) {
+  if (f->max_live_display_slot != -2) return f->max_live_display_slot;
+  int nd = f->sym->nesting_depth, mx = -1;
+  for (Var *v : f->fa_all_Vars) {
+    int d = v->sym->nesting_depth;
+    if (d >= 1 && d <= nd && d - 1 > mx) mx = d - 1;
+  }
+  f->max_live_display_slot = mx;
+  return mx;
+}
+
+// issue 074 Stage 4: enable the display-demotion (ROUTE across inert
+// display slots + non-asserting inert slots in update_display). Behind a
+// flag for the prototype/measurement.
+static int stage4_enabled() {
+  static int e = -1;
+  if (e < 0) e = getenv("PYC_STAGE4") ? 1 : 0;
+  return e;
+}
+
+static bool group_display_ok(Vec<AEdge *> &these_edges, EntrySet *product, Fun *f, bool allow_demote = false) {
   int nd = f->sym->nesting_depth;
   if (!nd) return true;
+  // Stage 4: only the LIVE display slots gate the route. Inert slots
+  // (above fun_max_live_display_slot) are never consumed by make_AVar,
+  // so a group whose edges differ only in inert slots is safe to route
+  // together -- the exact 064/othermint case (the varying slot is the
+  // caller contour at index nd-1, inert for a genuine method). The type
+  // partition (gsig/part) still gates the ROUTE, so this never merges
+  // type-different groups (recursive_polymorphic stays separated by type).
+  // Scoped to the TYPE stage (allow_demote): the setter/mark-stage groups
+  // key on setter_site_signature (not a type partition), so demoting their
+  // display could merge element-class-separated contours (softrender).
+  if (allow_demote && stage4_enabled()) {
+    int live = fun_max_live_display_slot(f);
+    if (live < nd) nd = live + 1;  // enforce only slots [0, live]
+    if (nd <= 0) return true;
+  }
   Vec<EntrySet *> disp;
   if (product) disp.copy(product->display);
   AEdge *e0 = these_edges[0];
@@ -4702,7 +4766,7 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
     if (avpos && gsig) {
       SplitDecision *d = fa->ledger_find(es->fun, cur_split_stage, avpos, part, gsig);
       if (d && d->pass_made != analysis_pass && d->product && d->product != es &&
-          group_display_ok(these_edges, d->product, es->fun)) {
+          group_display_ok(these_edges, d->product, es->fun, !fsetters && !fmark)) {
         product = d->product;
         ++fa->dup_split_attempts;
         log(LOG_SPLITTING, "[ledger] ROUTE group es %d fun %s %d pos %p part %p/%d sig %u -> product %d (first pass %d)\n",
