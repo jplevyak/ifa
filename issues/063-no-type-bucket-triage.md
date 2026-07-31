@@ -323,3 +323,102 @@ win, 242→37) **and (b) add setter-class-keyed product routing** for the
 residual setter-stage splits. (a) is gated on cleanly separating methods
 from closure-carriers; both are real but bounded follow-ups. All
 experiments reverted; suite 227/0.
+
+## Update 2026-07-31: why shedskin types the genuine no-type, and the corrected fix (from [074](074-fa-cross-pass-oscillation-plan.md)'s measurements)
+
+[074](074-fa-cross-pass-oscillation-plan.md) measured the cross-pass
+oscillation and **decoupled two things this issue had run together**: the
+*oscillation* (hits the pass cap) and the *genuine no-type violations* (the
+residual). They are NOT the same problem and do NOT share a fix:
+
+- **The oscillation** (dijkstra2 hits the cap) is **display/dispatch
+  caller-multiplication**, not a growing container union. 074 ruled out the
+  container-fan-out lever for it (the same-type container-element union is
+  ≤3% of the re-mint churn; the split-position union *shrinks*, not grows)
+  and the "dispatch bounce" lever (216/217 rubik routes are distinct fresh
+  edges — no bounce). The one mechanism that reduces that churn is the
+  Stage-4 display-identity demotion (rubik 417→128; flag-gated,
+  `PYC_STAGE4`).
+- **The genuine no-type** (`illegal ... ( list Vertex )`) is *this* issue's
+  043-shape-B container-element merge — and it is a **separate** lever.
+
+### The concrete case (dijkstra2, re-confirmed 2026-07-31)
+
+`illegal primitive argument type 'x' illegal: ( list Vertex )` reaching
+`heapq`'s `<tuple_cmp>`. dijkstra2 holds parallel same-keyed containers
+with different value types — `dists`/`seen` are `list[dict[Vertex→float]]`,
+`paths` is `list[dict[Vertex→list[Vertex]]]`, `fringe` is
+`list[list[(float,Vertex)]]`. `Vertex` (a dict key) and `list[Vertex]` (a
+`paths` value) flow through the **same shared `dict`/`list` method
+contours**, merging into the representation-incompatible union
+`list ∪ Vertex`, which a single tuple comparison genuinely cannot do.
+
+### Why pyc can't type it — the precise code-level gap
+
+pyc's contour identity is **(type × display)**, not (type × data-context):
+
+1. `split_css` DOES separate the CreationSets by element type (measured
+   here: 3 dict + 4 list splits on dijkstra2, stable) — the *data* is
+   separated.
+2. **But nothing clones the shared `list`/`dict` *methods* per element-CS.**
+   Confirmed at the source: the only per-CS-method track,
+   `clone_methods_per_cs` → `split_for_per_cs_method_receivers`
+   (`PER_CS_RECEIVER`), is set **only** on classes whose `__init__` uses
+   `__pyc_clone_constants__` (`python_ifa_build_syms.cc:1940`: `range`,
+   `__list_iter__`, `slice`) — **never on `list`/`dict`**. So the single
+   `dict.__getitem__` contour reads one element AVar that is the union of
+   *every* same-type container's element (`float ∪ list[Vertex]`),
+   regardless of which CS called it.
+3. Even that mechanism runs **only on quiescence** of stages 1-5 (065's
+   circularity: quiescence needs the per-CS split, the per-CS split needs
+   quiescence), which dijkstra2 never reaches.
+
+So pyc separates the data but keeps the *code operating on the data*
+shared, and the element types merge straight back.
+
+### Why shedskin *can* — the reference mechanism (`shedskin/infer.py`)
+
+Shedskin's constraint-node identity is **`(thing, dcpa, cpa)`** — `dcpa` is
+the container-variant (data-polymorphism) index, part of *every* node's
+identity, **including the nodes inside container methods**:
+
+1. **`class_copy`/`func_copy` (infer.py ~1114-1173) clone the container's
+   *methods* per `dcpa`.** `list.__getitem__` on variant `dcpa=2` reads its
+   element from `(list.unit, 2, 0)` — physically separate from
+   `(list.unit, 1, 0)`. `dists`'s dict-of-floats and `paths`'s
+   dict-of-lists are different dcpas, so their `__getitem__` clones **never
+   share an element type**. This is the piece pyc lacks.
+2. **`ifa()` splits by element type as a deterministic, demand-driven
+   step** on the *converged* graph each round (decide-then-restart, NOT
+   violation-driven, NOT quiescence-gated within a pass): `ifa_flow_graph`
+   groups a container var's writes by merged element type, `backflow_path`
+   traces each back to allocation sites, `ifa_confluence_point` finds where
+   sites mix types, `ifa_split_class` mints a fresh dcpa per partition.
+3. **`gx.alloc_info` keys the split on `(func.ident, cartesian-ctx,
+   alloc-AST-node)`** — the stable allocation node — so every round
+   reproduces the same dcpa (new splits inherit from the "mother"
+   contour). CPA_LIMIT/widening is only a backstop for *function*-template
+   explosion, never the primary mechanism.
+
+### The one-line difference
+
+> Shedskin puts the element-type partition (`dcpa`) into contour identity
+> and clones the container's **methods** per partition — always,
+> deterministically, keyed on the allocation site. pyc splits the
+> CreationSet but keeps the **method** contour shared (keyed on
+> type×display), and its one per-CS-method mechanism doesn't cover
+> `list`/`dict` and is gated behind a quiescence the union-churn prevents.
+
+### The corrected fix (a re-scoped "Stage 2", targeting the no-type NOT the oscillation)
+
+Clone `list`/`dict` (container) methods per **element-CS** — pyc's analog
+of shedskin's `func_copy`-per-dcpa. Concretely, extend
+`split_for_per_cs_method_receivers` (or a sibling stage) to fire the
+existing demand-driven per-CS edge fan-out (`split_edges`) when a container
+method ES's **receiver** is a union of **same-TYPE container CSs with
+divergent element types**, and run it **every pass** (breaking 065's
+quiescence circularity) rather than only on quiescence, keyed for
+idempotence on the stable creation site (066). This is **not** the
+oscillation lever (074 measured that away); it is the container-element
+separation this issue has pointed at since the 040/043/052 family. Prototype
++ measurement tracked in the follow-up below / [074](074-fa-cross-pass-oscillation-plan.md).
