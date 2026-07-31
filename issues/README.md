@@ -32,6 +32,18 @@ that:
 
 ## Current open issues
 
+- [075-element-cs-method-split-idempotent-plan.md](075-element-cs-method-split-idempotent-plan.md)
+  — **concrete build plan** to escape the "no type" local maximum:
+  clone shared `list`/`dict` methods per element-CS (shedskin's
+  `func_copy`-per-`dcpa`), fanned per `(CS × display)`, applied
+  decide-then-apply, keyed on the stable allocation site
+  ([066](066-cs-split-decision-keyed-per-pass-not-per-creation-site.md)).
+  A validated prototype already gets dijkstra2 + pylife **FAIL→COMPILED**
+  ([063](063-no-type-bucket-triage.md) 2026-07-31); this plan makes the
+  application idempotent so it stops backsliding. Keeps the display in
+  identity ([073](073-teach-splitter-productive-vs-inert-context.md):
+  bounded multiplier, not necessary to remove). Step-by-step, with code
+  anchors, for a fresh engineer.
 - [072-empty-container-notype-current-mechanism-and-plan.md](072-empty-container-notype-current-mechanism-and-plan.md)
   — the empty/imprecise-container element-inference family
   ([043](closed/043-empty-container-inference-options.md) /

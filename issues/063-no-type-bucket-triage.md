@@ -473,3 +473,16 @@ deterministically and re-applies verbatim across passes instead of
 re-deriving. The mechanism is proven; the durable-keying + decide-then-apply
 application is the remaining build. (Flag-off is byte-identical to baseline;
 the prototype code was reverted, this measurement is the artifact.)
+
+**Correction (2026-07-31): the display does NOT need removing; drop Stage 4
+from the necessary set.** [073](073-teach-splitter-productive-vs-inert-context.md)
+proves `(type × display)` is bounded (a constant multiplier), so
+display-out-of-identity is never a *correctness* requirement — it was only a
+shortcut to stop `split_edges`' `redispatch` orphaning display-incompatible
+products (the CSM-alone segfault). The correct fix is to fan the container
+receiver out per **`(CS × display)`** (each display-distinct edge gets its
+own product; no orphan), leaving the display in identity. The full,
+concrete, step-by-step build — CSM fanned per `(CS × display)` +
+decide-then-apply + stable-site keying, with code anchors and a
+combination-sweep fitness function — is
+**[075](075-element-cs-method-split-idempotent-plan.md)**.
