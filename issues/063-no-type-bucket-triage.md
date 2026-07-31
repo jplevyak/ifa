@@ -422,3 +422,54 @@ idempotence on the stable creation site (066). This is **not** the
 oscillation lever (074 measured that away); it is the container-element
 separation this issue has pointed at since the 040/043/052 family. Prototype
 + measurement tracked in the follow-up below / [074](074-fa-cross-pass-oscillation-plan.md).
+
+### Prototype 2026-07-31: the mechanism is VALIDATED (dijkstra2 FAIL→COMPILED), the naive application is NOT landable
+
+Built the corrected Stage 2 behind `PYC_CSM` (a `split_container_methods_
+per_element_cs` stage in `run_split_stages`, running every pass, one split
+per pass, on the demand signal "receiver = union of same-TYPE container CSs
+with divergent element types", firing the existing `split_edges` per-CS
+fan-out) together with 074's `PYC_STAGE4` display demotion. **Reverted after
+measuring — the tree is clean — but the result is decisive both ways.**
+
+**It WORKS — the shedskin-derived design resolves the genuine no-type.**
+With `PYC_CSM=2 PYC_STAGE4=1`, dijkstra2:
+- `( list Vertex )` illegal-union violations: **gone (0)** — the
+  container-element merge this whole issue is about is *resolved*.
+- **`pass_limit_hit` 1 → 0** (converges — no longer caps), `final_pass`
+  42 → 23, violations **170 → 44** (residual is a *different*, smaller
+  root: 24 `has no type`), `ess` **946 → 111**.
+- **FAIL → COMPILED** (emits `dijkstra2.py.c`). `pylife` also gained.
+
+That is direct confirmation that **element-CS method cloning + demoting the
+display from contour identity is the correct fix** — pyc's analog of
+shedskin's `(thing, dcpa, cpa)` identity with `func_copy`-per-dcpa.
+
+**The coupling is real: CSM REQUIRES Stage 4, at `split_edges` too.** CSM
+alone (no Stage 4) **segfaults**: `split_edges`' per-CS `redispatch` is
+gated by `edge_display_compatible`, so a display-spanning container receiver
+creates filtered product ESs that no edge can redispatch into → an orphan
+bare ES whose empty `display[]` a later `make_AVar` derefs out of bounds
+(the pystone/tictactoe/amaze SIGSEGV family this very function's comment
+warns about). The fix was to extend Stage 4's inert-slot demotion into
+`edge_display_compatible` as well; with that, CSM+Stage 4 runs to completion.
+
+**But the naive application is catastrophically fragile — do NOT land it as
+built.** Full gate with both flags on: suite **235 → 217** (19 fails,
+container-heavy: deepcopy/dict/list/genexpr/set), corpus **53 → 22**
+(**+2 dijkstra2/pylife, −33** — ac_encode, adatron, bh, chull, life,
+mastermind2, othello, pygmy, sat, sha, sieve, voronoi2 …, plus 1 segfault).
+The cause is the **application**, not the mechanism: driving the *dynamic*
+`split_edges` every pass, mid-oscillation, on unsettled contours churns and
+breaks container-heavy programs — the exact issue-033 non-idempotence /
+unflowed-contour hazard (M2b) that stage 1's *decide-then-apply* path and the
+fysphun stage-2 revert exist to avoid.
+
+**The refinement is exactly what shedskin does (and 066 specified):** run the
+element-CS split as a **decide-then-apply** step against the *converged*
+graph (not the dynamic per-pass `split_edges`), keyed on the **stable
+allocation/creation site** (066's `alloc_info` analog) so it reproduces
+deterministically and re-applies verbatim across passes instead of
+re-deriving. The mechanism is proven; the durable-keying + decide-then-apply
+application is the remaining build. (Flag-off is byte-identical to baseline;
+the prototype code was reverted, this measurement is the artifact.)
