@@ -233,7 +233,50 @@ struct EmitCtx {
   llvm::Value *coro_hdl = nullptr;
   llvm::BasicBlock *coro_suspend_bb = nullptr;
   llvm::BasicBlock *coro_destroy_bb = nullptr;
+  // issues/014 (LLVM backend): is_generator's side channel for the
+  // yielded/sent value -- see gen_state_struct_type() below for why
+  // this can't just be the coroutine's own LLVM promise.
+  llvm::Value *gen_state = nullptr;
 };
+
+// issues/014 (LLVM backend): a Python generator's coroutine body is
+// an LLVM coroutine (llvm.coro.* intrinsics), same family async/await
+// already uses successfully (verified: async_simple.py/async_suspend.py
+// pass on -b). But unlike C++20 coroutines -- where
+// std::coroutine_handle<promise_type>::promise() lets *any* code
+// holding a handle reach a typed promise object -- LLVM's
+// llvm.coro.promise intrinsic only resolves to a real frame offset
+// when CoroSplit processes the *defining* coroutine function itself;
+// it can't be used from a separately-compiled, generic C runtime
+// helper (pyc_runtime.c) that only has an opaque int64 handle, no
+// compile-time link to any particular coro.id. So instead of relying
+// on the coroutine frame's own (inaccessible-from-outside) storage,
+// pyc allocates a small heap struct alongside the raw LLVM coroutine
+// handle -- {coro_hdl, value, sent, done} -- and that struct's
+// address (not the raw coro.begin handle) is what flows through
+// Python as __pyc_generator__.handle. _CG_generator_advance/_CG_
+// generator_send/_CG_generator_value (pyc_runtime.c) read/write this
+// struct directly with ordinary field access, then resume the real
+// coroutine via the same raw vtable-call convention _CG_resume_coro
+// already uses for async. GC_malloc zero-initializes, so only
+// coro_hdl needs an explicit store at allocation time.
+static llvm::StructType *gen_state_struct_type() {
+  if (llvm::StructType *st =
+          llvm::StructType::getTypeByName(*TheContext, "_CG_gen_state"))
+    return st;
+  llvm::StructType *st =
+      llvm::StructType::create(*TheContext, "_CG_gen_state");
+  llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
+  llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+  st->setBody({ptr_ty, i64, i64, i64}, /*isPacked=*/false);
+  return st;
+}
+
+enum GenStateField { GenState_CoroHdl = 0, GenState_Value = 1, GenState_Sent = 2, GenState_Done = 3 };
+
+static llvm::Value *gen_state_field(EmitCtx &ctx, GenStateField field) {
+  return Builder->CreateStructGEP(gen_state_struct_type(), ctx.gen_state, (unsigned)field);
+}
 
 // emit_phy_moves/emit_phi_moves are called by emit_block_terminator but defined later.
 void emit_phy_moves(EmitCtx &ctx, PNode *pn, int isucc);
@@ -563,47 +606,72 @@ llvm::Function *get_gc_malloc() {
 
 // Get-or-create the two per-function coroutine exit blocks shared by
 // every suspend point in the function (the initial suspend right
-// after coro.begin, plus every mid-body await/wait_read/wait_write):
+// after coro.begin, plus every mid-body await/yield/wait_read/
+// wait_write), AND by the function's own normal-completion epilogue
+// (P_prim_reply, emit_block_terminator) -- one shared landing pad
+// for "this invocation of the coroutine function/.resume()/.destroy()
+// is over" in every sense: genuinely suspended, explicitly destroyed,
+// or run to completion. It does NOT distinguish those cases (no
+// coro.free/GC_free call) -- pyc's GC (Boehm) reclaims the coroutine
+// frame and gen_state struct once nothing references them, matching
+// this codebase's memory model everywhere else (pyc_c_runtime.h's
+// `_CG_Memory_Free` is a no-op by design).
 //
-// - suspend_ret_bb: reached whenever the coroutine genuinely
-//   suspends, waiting to be resumed later (by the event loop, or
-//   simply because it hasn't been resumed yet). This is NOT an end
-//   of the coroutine -- it must just return the handle to the
-//   caller, never call llvm.coro.end.
-// - destroy_bb: reached on early cancellation (the coroutine is
-//   destroyed before running to completion). Performs cleanup and
-//   calls coro.end marked IsUnwind=true, so it isn't a second
-//   "fallthrough" end -- the epilogue's own coro.end (emitted at
-//   normal completion, see the P_prim_reply handling) is the
-//   function's one true (IsUnwind=false) end. LLVM's coro-split pass
-//   rejects more than one fallthrough coro.end per function.
+// issues/014 empirical finding: giving "genuinely suspended" (a
+// coro.suspend switch's default arm) and "explicitly destroyed"
+// (i8 1) SEPARATE landing blocks -- each computing/returning a value
+// via `ret <value>` -- makes LLVM's CoroSplit (confirmed on LLVM
+// 18/20/22 alike, reproduced down to a ~30-line hand-written repro
+// independent of pyc) silently mark that block `unreachable` in the
+// .resume()/.destroy() clones instead of correctly emitting a plain
+// void return there, which then cascades (via later dead-code elimination
+// treating the "genuinely suspended" branch as unreachable) into
+// skipping the coroutine's actual body between suspends entirely --
+// observed as a generator whose yields never store their value and
+// whose second-and-later `.__next__()` calls silently return nothing
+// (`__pyc_more__` false, `.resume()` running straight through
+// coro_start's own logic and into the completion path on the FIRST
+// resume). Real clang++-compiled C++20 coroutines never hit this: a
+// close read of clang's own coroutine lowering (`-Xclang
+// -disable-llvm-passes` dump) shows every suspend's "genuinely
+// suspended" and "destroy" arms funnel into ONE shared block that
+// calls coro.end unconditionally and returns -- exactly the shape
+// restored here. (`llvm.coro.free`-based freeing was ALSO part of
+// the original broken design; independently, giving genuinely-
+// suspended and destroy their own coro.free-based split caused the
+// *ramp* itself to mis-evaluate which case it was in and free the
+// frame immediately on construction -- dropped both problems at once
+// by relying on GC instead.)
+//
+// issues/014: a generator function's declared return type is int64
+// (build_fun_signature), not a pointer -- so wherever async returns
+// the raw coro.begin handle directly, a generator must instead return
+// its gen_state struct's address (ptrtoint'd to i64). That struct,
+// not the bare LLVM coroutine handle, is what __pyc_generator__.handle
+// holds and what _CG_generator_advance/_send/_value operate on.
+static llvm::Value *coro_return_value(EmitCtx &ctx) {
+  if (ctx.fn && ctx.fn->sym && ctx.fn->sym->is_generator && ctx.gen_state) {
+    return Builder->CreatePtrToInt(ctx.gen_state, ctx.llvm_fn->getReturnType());
+  }
+  return ctx.coro_hdl;
+}
+
 void ensure_coro_suspend_destroy_bbs(EmitCtx &ctx) {
-  if (ctx.coro_suspend_bb && ctx.coro_destroy_bb) return;
+  if (ctx.coro_suspend_bb) {
+    ctx.coro_destroy_bb = ctx.coro_suspend_bb;
+    return;
+  }
   llvm::BasicBlock *old = Builder->GetInsertBlock();
 
-  if (!ctx.coro_suspend_bb) {
-    ctx.coro_suspend_bb =
-        llvm::BasicBlock::Create(*TheContext, "suspend_ret", ctx.llvm_fn);
-    Builder->SetInsertPoint(ctx.coro_suspend_bb);
-    Builder->CreateRet(ctx.coro_hdl);
-  }
-
-  if (!ctx.coro_destroy_bb) {
-    ctx.coro_destroy_bb =
-        llvm::BasicBlock::Create(*TheContext, "destroy", ctx.llvm_fn);
-    Builder->SetInsertPoint(ctx.coro_destroy_bb);
-    llvm::Function *coro_free_fn = get_intrinsic_decl(llvm::Intrinsic::coro_free);
-    llvm::Value *mem = Builder->CreateCall(coro_free_fn, {ctx.coro_id, ctx.coro_hdl});
-    llvm::Function *gc_free = get_runtime_helper(
-        "GC_free", llvm::Type::getVoidTy(*TheContext),
-        {llvm::PointerType::getUnqual(*TheContext)});
-    Builder->CreateCall(gc_free, {mem});
-    llvm::Function *coro_end_fn = get_intrinsic_decl(llvm::Intrinsic::coro_end);
-    Builder->CreateCall(coro_end_fn,
-                         {ctx.coro_hdl, Builder->getTrue(),
-                          llvm::ConstantTokenNone::get(*TheContext)});
-    Builder->CreateRet(ctx.coro_hdl);
-  }
+  ctx.coro_suspend_bb =
+      llvm::BasicBlock::Create(*TheContext, "coro_cleanup", ctx.llvm_fn);
+  ctx.coro_destroy_bb = ctx.coro_suspend_bb;
+  Builder->SetInsertPoint(ctx.coro_suspend_bb);
+  llvm::Function *coro_end_fn = get_intrinsic_decl(llvm::Intrinsic::coro_end);
+  Builder->CreateCall(coro_end_fn,
+                       {ctx.coro_hdl, Builder->getFalse(),
+                        llvm::ConstantTokenNone::get(*TheContext)});
+  Builder->CreateRet(coro_return_value(ctx));
 
   if (old) Builder->SetInsertPoint(old);
 }
@@ -2302,6 +2370,59 @@ class LLVMEmitter : public VirtualCGEmitter {
       }
       return true;
     }
+    if (pn->prim->index == P_prim_yield) {
+      // issues/014 (LLVM backend): same suspend/resume shape as
+      // P_prim_await above, but a yield also carries a value out
+      // (rvals[2], the yielded expression) and receives one back in
+      // (lvals[0], what `x = yield foo` evaluates to on the next
+      // resume) -- via ctx.gen_state's value/sent fields, since
+      // there's no reachable-from-outside promise for LLVM
+      // coroutines (see gen_state_struct_type). Mirrors
+      // pyc_c_runtime.h's yield_value/yield_awaiter for the C
+      // backend.
+      if (ctx.coro_hdl && ctx.gen_state) {
+        llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+
+        if (pn->rvals.n >= 3 && pn->rvals.v[2]) {
+          llvm::Value *yval = value_for_var(ctx, pn->rvals.v[2]);
+          if (yval) {
+            llvm::Value *yval64;
+            if (yval->getType()->isPointerTy())
+              yval64 = Builder->CreatePtrToInt(yval, i64);
+            else if (yval->getType()->isIntegerTy())
+              yval64 = Builder->CreateZExtOrTrunc(yval, i64);
+            else
+              // Today's generator support only exercises int-valued
+              // yields (__pyc_generator__.nextval is int-typed,
+              // 09_generator.py) -- match the C backend's identical
+              // v1 scope rather than guess at a float/other bitcast.
+              yval64 = Builder->getInt64(0);
+            Builder->CreateStore(yval64, gen_state_field(ctx, GenState_Value));
+          }
+        }
+
+        llvm::Function *save_fn = get_intrinsic_decl(llvm::Intrinsic::coro_save);
+        llvm::Value *save_res = Builder->CreateCall(save_fn, {ctx.coro_hdl});
+        llvm::Function *suspend_fn = get_intrinsic_decl(llvm::Intrinsic::coro_suspend);
+        llvm::Value *suspend_res = Builder->CreateCall(suspend_fn, {save_res, Builder->getFalse()});
+
+        ensure_coro_suspend_destroy_bbs(ctx);
+
+        llvm::BasicBlock *resume_bb = llvm::BasicBlock::Create(*TheContext, "resume", ctx.llvm_fn);
+
+        llvm::SwitchInst *sw = Builder->CreateSwitch(suspend_res, ctx.coro_suspend_bb, 2);
+        sw->addCase(Builder->getInt8(0), resume_bb);
+        sw->addCase(Builder->getInt8(1), ctx.coro_destroy_bb);
+
+        Builder->SetInsertPoint(resume_bb);
+
+        if (pn->lvals.n > 0 && pn->lvals.v[0]) {
+          llvm::Value *sent = Builder->CreateLoad(i64, gen_state_field(ctx, GenState_Sent));
+          put_result(ctx, pn->lvals.v[0], sent);
+        }
+      }
+      return true;
+    }
     return false;
   }
 };
@@ -2843,20 +2964,28 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
     case Code_SEND: {
       if (closer->prim && closer->prim->index == P_prim_reply) {
         if (ctx.fn->sym && ctx.fn->sym->is_async && ctx.coro_hdl && ctx.coro_id) {
-          // Emitting coroutine epilogue
-          llvm::Function *coro_free_fn = get_intrinsic_decl(llvm::Intrinsic::coro_free);
-          llvm::Value *mem = Builder->CreateCall(coro_free_fn, {ctx.coro_id, ctx.coro_hdl});
-          
-          llvm::Function *free_fn = TheModule->getFunction("GC_free");
-          if (!free_fn) {
-            llvm::FunctionType *free_ty = llvm::FunctionType::get(llvm::Type::getVoidTy(*TheContext), {llvm::PointerType::getUnqual(*TheContext)}, false);
-            free_fn = llvm::Function::Create(free_ty, llvm::Function::ExternalLinkage, "GC_free", TheModule.get());
-          }
-          Builder->CreateCall(free_fn, {mem});
-          
-          llvm::Function *coro_end_fn = get_intrinsic_decl(llvm::Intrinsic::coro_end);
-          Builder->CreateCall(coro_end_fn, {ctx.coro_hdl, Builder->getFalse(), llvm::ConstantTokenNone::get(*TheContext)});
-          Builder->CreateRet(ctx.coro_hdl);
+          // issues/014: normal-completion exit branches into the
+          // same shared cleanup block every suspend/destroy arm
+          // uses (ensure_coro_suspend_destroy_bbs) -- see that
+          // function's comment for why a separate, duplicated
+          // coro.free/coro.end/ret sequence here broke multi-suspend
+          // coroutines (this fix applies to async too, sharing the
+          // same underlying machinery, though no existing async test
+          // happens to exercise more than one suspend point).
+          ensure_coro_suspend_destroy_bbs(ctx);
+          Builder->CreateBr(ctx.coro_suspend_bb);
+          break;
+        }
+        if (ctx.fn->sym && ctx.fn->sym->is_generator && ctx.coro_hdl && ctx.coro_id && ctx.gen_state) {
+          // issues/014: normal (fall-through or bare `return`) exit --
+          // mirrors cg.cc's plain `co_return;` for is_generator: the
+          // real return value (rvals[3], gen_fun_pyda's int64
+          // placeholder) is never meaningful and is ignored here too.
+          // Mark done BEFORE branching to the shared cleanup block so
+          // a subsequent _CG_generator_advance/_send sees it.
+          Builder->CreateStore(Builder->getInt64(1), gen_state_field(ctx, GenState_Done));
+          ensure_coro_suspend_destroy_bbs(ctx);
+          Builder->CreateBr(ctx.coro_suspend_bb);
           break;
         }
         llvm::Type *ret_ty = ctx.llvm_fn->getReturnType();
@@ -3283,6 +3412,17 @@ llvm::Function *build_fun_signature(EmitCtx &ctx, Fun *f) {
   if (f->sym && f->sym->is_async) {
     ret_ty = llvm::PointerType::getUnqual(*TheContext);
   }
+  // issues/014: the coroutine body's real return value is a synthetic
+  // int64 placeholder (gen_fun_pyda) that only exists so FA infers an
+  // int return type -- force it explicitly rather than trusting that
+  // inference, exactly like cg.cc's write_c_fun_proto does for the C
+  // backend ("regardless of what FA inferred for f->rets[0]"). What
+  // actually flows out at this type is a pointer (gen_state) smuggled
+  // through int64, via ptrtoint at every return site (emit_fun,
+  // ensure_coro_suspend_destroy_bbs).
+  if (f->sym && f->sym->is_generator) {
+    ret_ty = llvm::Type::getInt64Ty(*TheContext);
+  }
 
   // Collect param types from positional formals, skipping
   // dead and is_fun (closure-self) formals.  Sub-positions
@@ -3311,7 +3451,7 @@ llvm::Function *build_fun_signature(EmitCtx &ctx, Fun *f) {
   llvm::Function *llvm_fn = llvm::Function::Create(
       ft, llvm::Function::ExternalLinkage, name, TheModule.get());
 
-  if (f->sym && f->sym->is_async) {
+  if (f->sym && (f->sym->is_async || f->sym->is_generator)) {
     llvm_fn->addFnAttr(llvm::Attribute::PresplitCoroutine);
   }
 
@@ -3362,7 +3502,7 @@ void emit_fun(EmitCtx &ctx, Fun *f) {
   }
   Builder->SetInsertPoint(entry_bb);
   
-  if (f->sym && f->sym->is_async) {
+  if (f->sym && (f->sym->is_async || f->sym->is_generator)) {
     llvm::Function *coro_id_fn = get_intrinsic_decl(llvm::Intrinsic::coro_id);
     ctx.coro_id = Builder->CreateCall(coro_id_fn, {
         Builder->getInt32(0),
@@ -3385,6 +3525,23 @@ void emit_fun(EmitCtx &ctx, Fun *f) {
 
     llvm::Function *coro_begin_fn = get_intrinsic_decl(llvm::Intrinsic::coro_begin);
     ctx.coro_hdl = Builder->CreateCall(coro_begin_fn, {ctx.coro_id, alloc});
+
+    // issues/014: allocate the side state struct that smuggles the
+    // yielded/sent value across suspension (see gen_state_struct_type
+    // for why this can't be the coroutine's own C++-style promise).
+    // GC_malloc zero-inits, so value/sent/done start correctly at 0;
+    // only coro_hdl needs an explicit store. This struct's *address*,
+    // not the raw coro.begin handle, is what P_prim_reply/
+    // ensure_coro_suspend_destroy_bbs return as this function's int64
+    // result -- __pyc_generator__.handle (09_generator.py) holds it.
+    if (f->sym->is_generator) {
+      llvm::StructType *gs_ty = gen_state_struct_type();
+      llvm::Value *gs_size = Builder->getInt64(
+          TheModule->getDataLayout().getTypeAllocSize(gs_ty).getFixedValue());
+      llvm::Value *gs_mem = Builder->CreateCall(malloc_fn, {gs_size});
+      ctx.gen_state = gs_mem;
+      Builder->CreateStore(ctx.coro_hdl, gen_state_field(ctx, GenState_CoroHdl));
+    }
 
     // Initial suspend: calling an async function must build and
     // suspend its coroutine frame WITHOUT running any of the body --
