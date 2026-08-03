@@ -237,6 +237,9 @@ struct EmitCtx {
   // yielded/sent value -- see gen_state_struct_type() below for why
   // this can't just be the coroutine's own LLVM promise.
   llvm::Value *gen_state = nullptr;
+  // issues/022 (LLVM backend): is_async's side channel -- see
+  // async_state_struct_type() below.
+  llvm::Value *async_state = nullptr;
 };
 
 // issues/014 (LLVM backend): a Python generator's coroutine body is
@@ -286,6 +289,55 @@ enum GenStateField { GenState_CoroHdl = 0, GenState_Value = 1, GenState_Sent = 2
 
 static llvm::Value *gen_state_field(EmitCtx &ctx, GenStateField field) {
   return Builder->CreateStructGEP(gen_state_struct_type(), ctx.gen_state, (unsigned)field);
+}
+
+// issues/022 (LLVM backend): an `async def` function's side channel,
+// same rationale as gen_state_struct_type above (no promise reachable
+// from outside the defining coroutine's own IR) -- {coro_hdl, value,
+// awaiter, done}. `value` is the async function's *return* value
+// (what `await EXPR` evaluates to once EXPR's coroutine finishes) --
+// there's no yield/sent pair here, just a single result. `awaiter` is
+// the async_state pointer of whichever coroutine is currently
+// `await`ing THIS one (null if none, e.g. a bare top-level
+// `main()`/`_CG_run_coro(...)` call with nothing awaiting it) --
+// P_prim_await sets it on the AWAITED coroutine right before handing
+// it to the event loop; the is_async P_prim_reply epilogue reads it
+// on completion to wake whoever's waiting. This is what was missing
+// before this fix: the raw llvm.coro.* intrinsics have no built-in
+// awaiter protocol the way C++20 coroutines do (an await_suspend that
+// returns a handle triggers the language's own symmetric transfer,
+// and a promise's `awaiter` field plus final_suspend chains the
+// wakeup automatically) -- P_prim_await used to just suspend the
+// awaiting coroutine and return, with nothing anywhere resuming the
+// awaited one OR re-scheduling the awaiter once it's done. Chaining
+// through the EXISTING event loop (_CG_event_loop_spawn/_CG_event_
+// loop_run, already used for real I/O awaits like
+// __pyc_net_wait_read__) sidesteps hand-rolling LLVM's symmetric-
+// transfer (musttail-based) pattern, at the cost of one extra
+// ready-queue round-trip per await compared to true symmetric
+// transfer -- correct and far lower-risk than a hand-rolled tail-call
+// chain given how easy this session's LLVM-coroutine work has shown
+// it is to introduce subtle miscompiles at this level.
+static llvm::StructType *async_state_struct_type() {
+  if (llvm::StructType *st =
+          llvm::StructType::getTypeByName(*TheContext, "_CG_async_state"))
+    return st;
+  llvm::StructType *st =
+      llvm::StructType::create(*TheContext, "_CG_async_state");
+  llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
+  llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+  st->setBody({ptr_ty, i64, ptr_ty, i64}, /*isPacked=*/false);
+  return st;
+}
+
+enum AsyncStateField { AsyncState_CoroHdl = 0, AsyncState_Value = 1, AsyncState_Awaiter = 2, AsyncState_Done = 3 };
+
+// Takes an explicit base pointer (not just ctx.async_state) -- unlike
+// gen_state_field, P_prim_await needs to read/write fields of the
+// AWAITED coroutine's async_state, not just the currently-emitting
+// function's own.
+static llvm::Value *async_state_field(llvm::Value *base, AsyncStateField field) {
+  return Builder->CreateStructGEP(async_state_struct_type(), base, (unsigned)field);
 }
 
 // emit_phy_moves/emit_phi_moves are called by emit_block_terminator but defined later.
@@ -662,6 +714,17 @@ llvm::Function *get_gc_malloc() {
 static llvm::Value *coro_return_value(EmitCtx &ctx) {
   if (ctx.fn && ctx.fn->sym && ctx.fn->sym->is_generator && ctx.gen_state) {
     return Builder->CreatePtrToInt(ctx.gen_state, ctx.llvm_fn->getReturnType());
+  }
+  // issues/022: an is_async Fun's declared return type is already a
+  // bare `ptr` (build_fun_signature), matching async_state's own
+  // type directly -- no ptrtoint needed, unlike is_generator's int64
+  // return type above. Every caller of an is_async Fun (a plain
+  // call, e.g. `step(n)`) receives this pointer smuggled through
+  // whatever int64 type FA inferred for the call's result (the same
+  // implicit ptr<->int conversion put_result already does for any
+  // mismatched-type store) -- see P_prim_await, which reverses it.
+  if (ctx.fn && ctx.fn->sym && ctx.fn->sym->is_async && ctx.async_state) {
+    return ctx.async_state;
   }
   return ctx.coro_hdl;
 }
@@ -2357,13 +2420,40 @@ class LLVMEmitter : public VirtualCGEmitter {
       return true;
     }
     if (pn->prim->index == P_prim_await) {
+      // issues/022: chain into the awaited coroutine via the event
+      // loop instead of just suspending and hoping (see
+      // async_state_struct_type's comment for the full rationale and
+      // why this, not hand-rolled symmetric transfer). rvals[2] is
+      // the awaited expression -- an is_async call's result, which
+      // coro_return_value makes a `ptr` to the AWAITED coroutine's
+      // own async_state, smuggled through whatever int64 type FA
+      // inferred for the call (mirrors P_prim_yield's int64
+      // smuggling below, reversed here).
+      if (ctx.coro_hdl && ctx.async_state && pn->rvals.n >= 3 && pn->rvals.v[2]) {
+        llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
+        llvm::Value *awaited = value_for_var(ctx, pn->rvals.v[2]);
+        if (awaited && awaited->getType()->isIntegerTy())
+          awaited = Builder->CreateIntToPtr(awaited, ptr_ty);
 
-      if (ctx.coro_hdl) {
+        if (awaited) {
+          // Tell the awaited coroutine who to wake up once it's done.
+          Builder->CreateStore(ctx.async_state, async_state_field(awaited, AsyncState_Awaiter));
+          // Hand it to the event loop -- it does not run inline here.
+          llvm::Value *awaited_hdl = Builder->CreateLoad(ptr_ty, async_state_field(awaited, AsyncState_CoroHdl));
+          llvm::Function *spawn_fn = get_runtime_helper(
+              "_CG_event_loop_spawn", llvm::Type::getVoidTy(*TheContext), {ptr_ty});
+          Builder->CreateCall(spawn_fn, {awaited_hdl});
+        }
+
+        // Genuinely suspend myself -- do NOT enqueue myself; the
+        // awaited coroutine's own completion (the P_prim_reply
+        // epilogue, emit_block_terminator) does that once it's done,
+        // via the `awaiter` link just stored above.
         llvm::Function *save_fn = get_intrinsic_decl(llvm::Intrinsic::coro_save);
         llvm::Value *save_res = Builder->CreateCall(save_fn, {ctx.coro_hdl});
         llvm::Function *suspend_fn = get_intrinsic_decl(llvm::Intrinsic::coro_suspend);
         llvm::Value *suspend_res = Builder->CreateCall(suspend_fn, {save_res, Builder->getFalse()});
-        
+
         // See ensure_coro_suspend_destroy_bbs: suspend_ret_bb must not
         // call llvm.coro.end (it isn't a real end, just "suspended,
         // resume me later"), and destroy_bb gets its own
@@ -2375,8 +2465,34 @@ class LLVMEmitter : public VirtualCGEmitter {
         llvm::SwitchInst *sw = Builder->CreateSwitch(suspend_res, ctx.coro_suspend_bb, 2);
         sw->addCase(Builder->getInt8(0), resume_bb);
         sw->addCase(Builder->getInt8(1), ctx.coro_destroy_bb);
-        
+
         Builder->SetInsertPoint(resume_bb);
+
+        // Resumed (by the awaited coroutine waking me on its own
+        // completion) -- its result is ready in its own async_state,
+        // smuggled through i64 the same way the epilogue stored it
+        // (coro_return_value/the P_prim_reply handling: ptrtoint for
+        // a pointer-typed return, e.g. a string). Convert back to
+        // the await expression's own declared type explicitly here
+        // -- put_result's implicit ptr<->int fixup only applies when
+        // storing into an alloca or global slot; a plain SSA-cached
+        // result (the common case for a non-loop-carried `val =
+        // await ...`) skips that path entirely, so an unconverted
+        // i64 handed to a pointer-typed consumer (e.g. `print()` on
+        // an awaited string) is a real type mismatch, not just a
+        // style nit -- confirmed via LLVM's own verifier rejecting
+        // it ("Call parameter type does not match function
+        // signature") once a non-int await result was tested.
+        if (awaited && pn->lvals.n > 0 && pn->lvals.v[0]) {
+          llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+          llvm::Value *result = Builder->CreateLoad(i64, async_state_field(awaited, AsyncState_Value));
+          llvm::Type *want = sym_to_llvm_type(pn->lvals.v[0]->type);
+          if (want && want->isPointerTy())
+            result = Builder->CreateIntToPtr(result, want);
+          else if (want && want->isIntegerTy() && want != i64)
+            result = Builder->CreateSExtOrTrunc(result, want);
+          put_result(ctx, pn->lvals.v[0], result);
+        }
       }
       return true;
     }
@@ -2973,15 +3089,59 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
     }
     case Code_SEND: {
       if (closer->prim && closer->prim->index == P_prim_reply) {
-        if (ctx.fn->sym && ctx.fn->sym->is_async && ctx.coro_hdl && ctx.coro_id) {
+        if (ctx.fn->sym && ctx.fn->sym->is_async && ctx.coro_hdl && ctx.coro_id && ctx.async_state) {
           // issues/014: normal-completion exit branches into the
           // same shared cleanup block every suspend/destroy arm
           // uses (ensure_coro_suspend_destroy_bbs) -- see that
           // function's comment for why a separate, duplicated
           // coro.free/coro.end/ret sequence here broke multi-suspend
-          // coroutines (this fix applies to async too, sharing the
-          // same underlying machinery, though no existing async test
-          // happens to exercise more than one suspend point).
+          // coroutines.
+          //
+          // issues/022: also store the real return value into
+          // async_state (what `await` reads once this coroutine
+          // finishes -- rvals[3] is real, the user's actual `return
+          // X` expression's value, or the FA-required default for a
+          // bare `return`/fall-through), then wake whoever's
+          // `await`ing THIS coroutine, if anyone is (async_state.
+          // awaiter is null otherwise, e.g. a bare top-level
+          // `main()`/`_CG_run_coro(...)` call with nothing awaiting
+          // it) -- this is the piece that was missing entirely
+          // before: nothing ever re-scheduled an awaiter once the
+          // coroutine it was waiting on finished, so any function
+          // with 2+ sequential/nested real awaits silently stopped
+          // executing after the first suspend.
+          llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+          llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
+          if (closer->rvals.n >= 4 && closer->rvals.v[3]) {
+            llvm::Value *rv = value_for_var(ctx, closer->rvals.v[3]);
+            if (rv) {
+              llvm::Value *rv64;
+              if (rv->getType()->isPointerTy())
+                rv64 = Builder->CreatePtrToInt(rv, i64);
+              else if (rv->getType()->isIntegerTy())
+                rv64 = Builder->CreateZExtOrTrunc(rv, i64);
+              else
+                rv64 = Builder->getInt64(0);
+              Builder->CreateStore(rv64, async_state_field(ctx.async_state, AsyncState_Value));
+            }
+          }
+          Builder->CreateStore(Builder->getInt64(1), async_state_field(ctx.async_state, AsyncState_Done));
+
+          llvm::Value *awaiter = Builder->CreateLoad(ptr_ty, async_state_field(ctx.async_state, AsyncState_Awaiter));
+          llvm::Value *has_awaiter = Builder->CreateICmpNE(
+              awaiter, llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptr_ty)));
+          llvm::BasicBlock *wake_bb = llvm::BasicBlock::Create(*TheContext, "wake_awaiter", ctx.llvm_fn);
+          llvm::BasicBlock *after_wake_bb = llvm::BasicBlock::Create(*TheContext, "after_wake", ctx.llvm_fn);
+          Builder->CreateCondBr(has_awaiter, wake_bb, after_wake_bb);
+
+          Builder->SetInsertPoint(wake_bb);
+          llvm::Value *awaiter_hdl = Builder->CreateLoad(ptr_ty, async_state_field(awaiter, AsyncState_CoroHdl));
+          llvm::Function *spawn_fn = get_runtime_helper(
+              "_CG_event_loop_spawn", llvm::Type::getVoidTy(*TheContext), {ptr_ty});
+          Builder->CreateCall(spawn_fn, {awaiter_hdl});
+          Builder->CreateBr(after_wake_bb);
+
+          Builder->SetInsertPoint(after_wake_bb);
           ensure_coro_suspend_destroy_bbs(ctx);
           Builder->CreateBr(ctx.coro_suspend_bb);
           break;
@@ -3568,6 +3728,23 @@ void emit_fun(EmitCtx &ctx, Fun *f) {
       llvm::Value *gs_mem = Builder->CreateCall(malloc_fn, {gs_size});
       ctx.gen_state = gs_mem;
       Builder->CreateStore(ctx.coro_hdl, gen_state_field(ctx, GenState_CoroHdl));
+    }
+
+    // issues/022: same rationale as is_generator's gen_state above --
+    // allocate the side struct that carries this async function's
+    // return value and its `awaiter` link (who to wake on
+    // completion). GC_malloc zero-inits, so value/awaiter/done start
+    // correctly at 0/null; only coro_hdl needs an explicit store.
+    // This struct's address, not the raw coro.begin handle, is what
+    // every return site (coro_return_value) returns, and what
+    // P_prim_await/the P_prim_reply epilogue operate on.
+    if (f->sym->is_async) {
+      llvm::StructType *as_ty = async_state_struct_type();
+      llvm::Value *as_size = Builder->getInt64(
+          TheModule->getDataLayout().getTypeAllocSize(as_ty).getFixedValue());
+      llvm::Value *as_mem = Builder->CreateCall(malloc_fn, {as_size});
+      ctx.async_state = as_mem;
+      Builder->CreateStore(ctx.coro_hdl, async_state_field(ctx.async_state, AsyncState_CoroHdl));
     }
 
     // Initial suspend: calling an async function must build and

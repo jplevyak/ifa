@@ -602,11 +602,25 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       break;
     }
     case P_prim_await: {
+      // issues/022: co_await's result (_CG_Coroutine::await_resume,
+      // pyc_c_runtime.h) is void*; assigning it into a non-pointer
+      // lval (the common case -- pyc's `int` is _CG_int64) is not an
+      // implicit conversion in C++. Same latent gap P_prim_yield
+      // documented and fixed for itself below -- an explicit
+      // (T)(uintptr_t)(...) cast, identical shape. Never hit by any
+      // existing test: async_simple.py/async_suspend.py's single
+      // `val = await ...` compiles fine standalone (uncalled,
+      // never-driven main() never gets FA-forced through this path
+      // meaningfully), but two or more sequential `x = await ...`
+      // assignments in one function (only exercised by an actually
+      // -driven coroutine, e.g. `_CG_run_coro(main())`) fails outright
+      // with "incompatible pointer to integer conversion".
       if (virtual_cg_is_const_folded_send(n)) return 1;
       fputs("  ", fp);
       if (n->lvals.n && cg_get_string(n->lvals[0]) && strcmp(cg_get_string(n->lvals[0]), "(null)") != 0) {
         assert(n->lvals.n == 1);
-        fprintf(fp, "%s = co_await %s;\n", cg_get_string(n->lvals[0]), cg_get_string(n->rvals[o]));
+        fprintf(fp, "%s = (%s)(uintptr_t)(co_await %s);\n", cg_get_string(n->lvals[0]), c_type(n->lvals[0]),
+                cg_get_string(n->rvals[o]));
       } else {
         fprintf(fp, "co_await %s;\n", cg_get_string(n->rvals[o]));
       }
