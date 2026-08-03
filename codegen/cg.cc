@@ -1737,8 +1737,20 @@ static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done
         // (ifa/issues/030 dispatch) still consume the return value.
         // c_rhs returns the constant literal in that case ("0" as
         // before when there is genuinely no value).
+        //
+        // issues/014: an infinite-loop generator body (`while True:
+        // yield i`, no `break`) never falls through to its own
+        // fall-off-the-end reply -- that reply is genuinely dead here.
+        // A plain `return`, even in unreachable code, is a hard C++
+        // syntax error inside a function containing `co_yield`
+        // ("return statement not allowed in coroutine"); this arm was
+        // missing the `is_generator` case the live-reply arm above
+        // already has, so a dead generator reply fell through to the
+        // plain `return` branch and broke compilation.
         if (f->sym->is_async)
           fprintf(fp, "  co_return %s;\n", c_rhs(n->rvals[3]));
+        else if (f->sym->is_generator)
+          fputs("  co_return;\n", fp);
         else
           fprintf(fp, "  return %s;\n", c_rhs(n->rvals[3]));
       else
