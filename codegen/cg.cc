@@ -1667,16 +1667,14 @@ static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done
       }
       case Code_SEND: {
         if (n->prim && n->prim->index == P_prim_reply) {
-          if (f->sym->is_async) {
+          if (f->sym->is_async || f->sym->is_generator) {
+            // issues/014: is_generator's reply value is real and
+            // observable now (StopIteration.value, pyc_c_runtime.h's
+            // _CG_Generator::promise_type::return_value) -- both the
+            // bare/fall-through placeholder and an explicit `return X`
+            // already flow a genuine value through fn->ret (gen_fun_
+            // pyda / PY_return_stmt), so this is identical to is_async.
             fprintf(fp, "  co_return %s;\n", c_rhs(n->rvals[3]));
-          } else if (f->sym->is_generator) {
-            // issues/014: the coroutine's real return value (whatever
-            // FA computed for fn->ret, see gen_fun_pyda) is a
-            // synthetic int64 placeholder, not meaningful to the
-            // _CG_Generator promise type's return_void() -- and not
-            // yet observable to Python code anyway (no `.send()`/
-            // StopIteration.value in v1 scope).
-            fputs("  co_return;\n", fp);
           } else {
             fprintf(fp, "  return %s;\n", c_rhs(n->rvals[3]));
           }
@@ -1746,11 +1744,11 @@ static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done
         // ("return statement not allowed in coroutine"); this arm was
         // missing the `is_generator` case the live-reply arm above
         // already has, so a dead generator reply fell through to the
-        // plain `return` branch and broke compilation.
-        if (f->sym->is_async)
+        // plain `return` branch and broke compilation. Mirrors
+        // is_async (and the live-reply arm above): the value is real
+        // and observable (StopIteration.value), not discarded.
+        if (f->sym->is_async || f->sym->is_generator)
           fprintf(fp, "  co_return %s;\n", c_rhs(n->rvals[3]));
-        else if (f->sym->is_generator)
-          fputs("  co_return;\n", fp);
         else
           fprintf(fp, "  return %s;\n", c_rhs(n->rvals[3]));
       else

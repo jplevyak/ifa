@@ -252,14 +252,24 @@ struct EmitCtx {
 // compile-time link to any particular coro.id. So instead of relying
 // on the coroutine frame's own (inaccessible-from-outside) storage,
 // pyc allocates a small heap struct alongside the raw LLVM coroutine
-// handle -- {coro_hdl, value, sent, done} -- and that struct's
+// handle -- {coro_hdl, value, sent, done, retval} -- and that struct's
 // address (not the raw coro.begin handle) is what flows through
 // Python as __pyc_generator__.handle. _CG_generator_advance/_CG_
-// generator_send/_CG_generator_value (pyc_runtime.c) read/write this
-// struct directly with ordinary field access, then resume the real
-// coroutine via the same raw vtable-call convention _CG_resume_coro
-// already uses for async. GC_malloc zero-initializes, so only
-// coro_hdl needs an explicit store at allocation time.
+// generator_send/_CG_generator_value/_CG_generator_return_value
+// (pyc_runtime.c) read/write this struct directly with ordinary field
+// access, then resume the real coroutine via the same raw vtable-call
+// convention _CG_resume_coro already uses for async. GC_malloc
+// zero-initializes, so only coro_hdl needs an explicit store at
+// allocation time.
+//
+// issues/014: `retval` holds the generator's `return value`
+// (StopIteration.value in real Python) -- for both a bare/fall-
+// through exit (gen_fun_pyda's int64 placeholder) and an explicit
+// `return X` (X itself); both already flow a real value through
+// fn->ret at the IF1 level (only the bare case needed FA-type-
+// anchoring help), so the P_prim_reply epilogue below stores
+// whichever one applies uniformly, mirroring the C backend's
+// _CG_Generator::promise_type::return_value.
 static llvm::StructType *gen_state_struct_type() {
   if (llvm::StructType *st =
           llvm::StructType::getTypeByName(*TheContext, "_CG_gen_state"))
@@ -268,11 +278,11 @@ static llvm::StructType *gen_state_struct_type() {
       llvm::StructType::create(*TheContext, "_CG_gen_state");
   llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
   llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
-  st->setBody({ptr_ty, i64, i64, i64}, /*isPacked=*/false);
+  st->setBody({ptr_ty, i64, i64, i64, i64}, /*isPacked=*/false);
   return st;
 }
 
-enum GenStateField { GenState_CoroHdl = 0, GenState_Value = 1, GenState_Sent = 2, GenState_Done = 3 };
+enum GenStateField { GenState_CoroHdl = 0, GenState_Value = 1, GenState_Sent = 2, GenState_Done = 3, GenState_RetVal = 4 };
 
 static llvm::Value *gen_state_field(EmitCtx &ctx, GenStateField field) {
   return Builder->CreateStructGEP(gen_state_struct_type(), ctx.gen_state, (unsigned)field);
@@ -2978,9 +2988,26 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
         }
         if (ctx.fn->sym && ctx.fn->sym->is_generator && ctx.coro_hdl && ctx.coro_id && ctx.gen_state) {
           // issues/014: normal (fall-through or bare `return`) exit --
-          // mirrors cg.cc's plain `co_return;` for is_generator: the
-          // real return value (rvals[3], gen_fun_pyda's int64
-          // placeholder) is never meaningful and is ignored here too.
+          // store the real return value (StopIteration.value) into
+          // gen_state before marking done. rvals[3] is real either
+          // way: gen_fun_pyda's int64 placeholder for a bare/fall-
+          // through exit, or the user's actual `return X` value --
+          // both already flow through fn->ret at the IF1 level.
+          // Mirrors cg.cc's `co_return %s;` (same value, C backend).
+          if (closer->rvals.n >= 4 && closer->rvals.v[3]) {
+            llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+            llvm::Value *rv = value_for_var(ctx, closer->rvals.v[3]);
+            if (rv) {
+              llvm::Value *rv64;
+              if (rv->getType()->isPointerTy())
+                rv64 = Builder->CreatePtrToInt(rv, i64);
+              else if (rv->getType()->isIntegerTy())
+                rv64 = Builder->CreateZExtOrTrunc(rv, i64);
+              else
+                rv64 = Builder->getInt64(0);
+              Builder->CreateStore(rv64, gen_state_field(ctx, GenState_RetVal));
+            }
+          }
           // Mark done BEFORE branching to the shared cleanup block so
           // a subsequent _CG_generator_advance/_send sees it.
           Builder->CreateStore(Builder->getInt64(1), gen_state_field(ctx, GenState_Done));
