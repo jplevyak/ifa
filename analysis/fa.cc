@@ -4197,6 +4197,40 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
   return res;
 }
 
+// ifa/issues/075 Piece 3 (scoped): a durable, cross-pass-reusable
+// (cs_es_map target x display) sibling. `tes` already carries the
+// filters find_or_make_filtered_entry_set gives every caller sharing
+// its CS partition; a display-incompatible edge needs a SEPARATE
+// product with those SAME filters but a display of its own. Search
+// tes->fun->ess (the same persistent list find_or_make_filtered_
+// entry_set already reuses products from across passes) for an
+// existing one before minting a fresh one -- mirrors that function's
+// own `!filters.some_disjunction(...)` reuse test, plus a display
+// check. Without this, a call scoped to ONE apply (the original Piece
+// 1/2 shape) has no memory of a sibling it minted last pass, so a
+// recurring incompatibility re-mints a NEW one every pass instead of
+// reusing the last one -- confirmed empirically to cause unbounded
+// EntrySet growth once Piece 2 applies more than one decision per
+// pass (fa->ess.n 123 -> 2747 in <8s on dijkstra2, non-terminating;
+// see the CSMSplitDecision comment below). `tes` itself is always
+// found first by any future find_or_make_filtered_entry_set call on
+// the same filters (f->ess iterates in insertion order and tes was
+// inserted before any of its siblings), so siblings sharing tes's
+// exact filters never shadow it.
+static EntrySet *find_or_make_display_variant(AEdge *ee, EntrySet *tes) {
+  for (EntrySet *es2 : tes->fun->ess) {
+    if (!es2 || es2 == tes) continue;
+    if (es2->filters.some_disjunction(tes->filters)) continue;
+    if (!edge_display_compatible(ee, es2)) continue;
+    return es2;
+  }
+  EntrySet *fresh = new EntrySet(tes->fun);
+  tes->fun->ess.add(fresh);
+  fresh->filters.copy(tes->filters);
+  fresh->split = tes->split;
+  return fresh;
+}
+
 [[nodiscard]] static int split_edges(AVar *av, int fsetters, int fmark) {
   int again = 0;
   EntrySet *es = (EntrySet *)av->contour;
@@ -4235,35 +4269,20 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
   // contour (the pystone/tictactoe/amaze/othello/score4/voronoi2
   // SIGSEGV family, pyc issue 025), and guarding just that moves the
   // crash to the rets[i] flow below it.
-  // ifa/issues/075 Piece 1: a bare cs_es_map product can be display-
+  // ifa/issues/075 Piece 1+3: a bare cs_es_map product can be display-
   // incompatible with some of the edges that share its CS (the same
   // list/dict method called from multiple lexical displays) -- the
   // pre-075 behavior below just leaves such an edge un-split, which is
   // exactly what keeps a container-method's element AVar a cross-
   // instance union (063/075). When csm_enabled(), fan an incompatible
   // edge into its OWN product instead: keyed on (cs_es_map target x
-  // this edge's display), reusing an existing sibling if one already
-  // matches so edges that genuinely share a display still land in ONE
-  // product, not one each. 073 proved (type x display) is bounded, so
-  // this is a finite fan-out, not a new divergence source. Flag off
-  // (default): identical to the original skip-on-incompatible behavior.
-  // NOTE: these siblings are minted directly (not via
-  // find_or_make_filtered_entry_set), so they do not get a ledger
-  // entry -- cross-pass re-derivation of the SAME sibling is not yet
-  // guaranteed deterministic (that is Piece 3, durable alloc-site
-  // keying, not yet built).
-  Vec<EntrySet *> variant_parents, variant_products;
-  auto pick_display_variant = [&](AEdge *ee, EntrySet *tes) -> EntrySet * {
-    for (int vi = 0; vi < variant_parents.n; vi++)
-      if (variant_parents[vi] == tes && edge_display_compatible(ee, variant_products[vi])) return variant_products[vi];
-    EntrySet *fresh = new EntrySet(tes->fun);
-    tes->fun->ess.add(fresh);
-    fresh->filters.copy(tes->filters);
-    fresh->split = tes->split;
-    variant_parents.add(tes);
-    variant_products.add(fresh);
-    return fresh;
-  };
+  // this edge's display), via find_or_make_display_variant (above),
+  // which reuses an existing sibling -- durably, across passes, since
+  // it searches tes->fun->ess exactly like find_or_make_filtered_
+  // entry_set does -- rather than one each. 073 proved (type x
+  // display) is bounded, so this is a finite fan-out, not a new
+  // divergence source. Flag off (default): identical to the original
+  // skip-on-incompatible behavior.
   // Resolve cs_es_map's target for THIS edge: the shared product if
   // display-compatible (or already where the edge is), else -- CSM only
   // -- a per-display sibling of it; else null (caller must leave the
@@ -4272,7 +4291,7 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
     EntrySet *tes = cs_es_map.get(cs);
     if (!tes || tes == ee->to || edge_display_compatible(ee, tes)) return tes;
     if (!csm_enabled()) return nullptr;
-    return pick_display_variant(ee, tes);
+    return find_or_make_display_variant(ee, tes);
   };
   // Re-pointing an edge at a different ES must go through the full
   // re-entry recipe apply_entry_set_split uses (null `to`, clear the
@@ -6074,22 +6093,17 @@ static CSMSplitDecision *decide_csm_split(AVar *av) {
     EntrySet *tes = find_or_make_filtered_entry_set(es, filters);
     cs_es_map.put(cs, tes);
   }
-  Vec<EntrySet *> variant_parents, variant_products;
-  auto pick_display_variant = [&](AEdge *ee, EntrySet *tes) -> EntrySet * {
-    for (int vi = 0; vi < variant_parents.n; vi++)
-      if (variant_parents[vi] == tes && edge_display_compatible(ee, variant_products[vi])) return variant_products[vi];
-    EntrySet *fresh = new EntrySet(tes->fun);
-    tes->fun->ess.add(fresh);
-    fresh->filters.copy(tes->filters);
-    fresh->split = tes->split;
-    variant_parents.add(tes);
-    variant_products.add(fresh);
-    return fresh;
-  };
   auto resolve_target = [&](AEdge *ee, CreationSet *cs) -> EntrySet * {
     EntrySet *tes = cs_es_map.get(cs);
     if (!tes || tes == ee->to || edge_display_compatible(ee, tes)) return tes;
-    return pick_display_variant(ee, tes);  // csm_enabled() == 2 is guaranteed here (only caller)
+    // ifa/issues/075 Piece 3: durable, cross-pass sibling reuse (see
+    // find_or_make_display_variant above) -- without it this scoped-
+    // to-one-call lookup had no memory of a sibling minted last pass,
+    // so a recurring incompatibility re-minted a NEW one every pass
+    // instead of reusing the last one. Confirmed to cause unbounded
+    // EntrySet growth once more than one decision applies per pass
+    // (fa->ess.n 123 -> 2747 in <8s on dijkstra2, non-terminating).
+    return find_or_make_display_variant(ee, tes);  // csm_enabled() == 2 is guaranteed here (only caller)
   };
   auto redispatch = [](AEdge *ee, EntrySet *tes) {
     if (!tes || ee->to == tes) return;
@@ -6217,19 +6231,24 @@ static CSMSplitDecision *decide_csm_split(AVar *av) {
     int r = apply_csm_split(dec);
     log(LOG_SPLITTING, "[csm] av %d es %d fun %s %d apply -> %d\n", dec->av->id, dec->es->id,
         dec->es->fun->sym->name ? dec->es->fun->sym->name : "", dec->es->fun->sym->id, r);
-    // Piece 2 as documented (batch every decided ES this pass) is
-    // UNSAFE without Piece 3: pick_display_variant's siblings (in
-    // apply_csm_split above) have no cross-pass identity -- each pass
-    // that finds the "same" incompatibility re-mints a NEW sibling
-    // instead of reusing the last pass's, so applying more than one
-    // decision per pass compounds this into unbounded EntrySet growth
-    // (confirmed: fa->ess.n 123 -> 2747 in under 8s on dijkstra2,
-    // before this cap was restored). Capping at one, like Piece 1, is
-    // what keeps this terminating; the decide-batch above is still
-    // worth keeping for its OWN benefit (every decision this pass is
-    // computed from one consistent snapshot, not a graph other
-    // decisions may have already mid-mutated) even though the apply
-    // side can't yet exploit batching until Piece 3 lands.
+    // ifa/issues/075 Piece 3 (scoped): find_or_make_display_variant
+    // (used by apply_csm_split above) durably reuses an existing
+    // sibling across passes instead of minting a new one every time,
+    // which DOES fix the unbounded-growth hang this cap originally
+    // guarded against (confirmed: fa->ess.n plateaus, e.g. at 435 on
+    // dijkstra2, instead of climbing unboundedly to 2747+ in <8s).
+    // But it does not yet make batching SAFE to enable: once fun->ess
+    // stabilizes at that scale, find_or_make_display_variant's linear
+    // scan over it, called from every edge of every decision, makes
+    // each pass take on the order of a minute (confirmed on
+    // dijkstra2: 10 CSM invocations in the first 10s, only 1 more in
+    // the next 50s) -- ~1000x too slow to be practically usable
+    // (compile timeouts everywhere a program needs more than a
+    // handful of such passes). Fixing that needs an indexed lookup
+    // (e.g. keyed on (tes, display) instead of a linear fun->ess scan)
+    // and re-validating the growth bound holds at THAT reduced cost;
+    // not yet built. Keep the one-apply-per-pass cap as the shipped
+    // default until it is.
     if (r) {
       analyze_again = 1;
       break;

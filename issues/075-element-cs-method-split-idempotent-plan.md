@@ -1,13 +1,19 @@
 # 075 — Escaping the local maximum: idempotent element-CS container-method separation (the shedskin `dcpa` model)
 
 **Status:** Piece 1 built and validated 2026-08-04; Piece 2 built and
-found INSUFFICIENT the same day (see "Update 2026-08-04" at the end --
-Piece 3 is a hard prerequisite for Piece 2 to add anything, not an
-optional refinement). Both pieces are landed in the tree behind
+found INSUFFICIENT the same day; a SCOPED Piece 3 (durable display-
+variant sibling reuse, not the full allocation-site keying this section
+originally specified) built and found INSUFFICIENT the same day too --
+it fixes the unbounded-growth hang but replaces it with an ~1000x
+per-pass slowdown once EntrySet count stabilizes (see "Update
+2026-08-04" at the end for both). All landed in the tree behind
 `PYC_CSM` (0 default/byte-identical, 2 = Piece 1+2 capped to one apply
-per pass), safe but not corpus-positive on their own. Piece 3 (durable
-alloc-site keying) is unbuilt. Concrete build plan for the genuine "no
-type" root ([063](063-no-type-bucket-triage.md)), synthesizing
+per pass -- the only combination confirmed safe), not corpus-positive
+on their own. The general, allocation-site/creation_point-keyed Piece 3
+this section describes below is still unbuilt; an indexed (not linear-
+scan) sibling lookup is the more narrowly-scoped remaining gap. Concrete
+build plan for the genuine "no type" root
+([063](063-no-type-bucket-triage.md)), synthesizing
 [066](066-cs-split-decision-keyed-per-pass-not-per-creation-site.md)
 (durable keying), [073](073-teach-splitter-productive-vs-inert-context.md)
 (the display-is-bounded theorem), and [074](074-fa-cross-pass-oscillation-plan.md)
@@ -409,9 +415,66 @@ optional, and should specifically stress-test the batched-apply path
 (not just the single-apply path this session's `PYC_CSM=2` capped
 itself back down to) once it's in place.
 
+### Piece 3 attempt, same day: fixes the hang, exposes a performance wall instead
+
+Given the load-bearing finding above, built a SCOPED Piece 3 --
+narrower than this section's original "persistent map keyed on the
+stable allocation site, hooked into `creation_point`" -- targeting
+specifically the mechanism that was actually observed growing
+unboundedly: `apply_csm_split`'s per-display sibling minting.
+
+**The fix.** A new shared function `find_or_make_display_variant(ee,
+tes)` (`fa.cc`, right after `find_or_make_filtered_entry_set`, which it
+mirrors): before minting a fresh sibling product for a display-
+incompatible edge, search `tes->fun->ess` -- the SAME persistent list
+`find_or_make_filtered_entry_set` already reuses products from across
+passes -- for an existing one with matching filters
+(`!filters.some_disjunction(...)`, the identical reuse test) that's
+ALSO display-compatible with this edge. Both `split_edges`' `redispatch`
+(Piece 1) and `apply_csm_split` (Piece 2) now call this instead of each
+keeping its own call-scoped (and therefore cross-pass-blind) sibling
+list.
+
+**Result: real, confirmed, but insufficient.** With the cap removed
+(batching every decision per pass again), dijkstra2's `fa->ess.n` no
+longer grows unboundedly -- it climbs 123 → 136 → 139 → 140 → 359 → 419
+→ 435 and then PLATEAUS at 435 for as many passes as observed. That is
+a genuine fix of the specific bug: siblings ARE now being reused
+instead of re-minted every pass. But the run still doesn't finish:
+once `fa->ess.n` stabilizes around 435, each pass takes on the order of
+a minute (10 CSM invocations traced in the first 10 seconds; only 1
+more in the following 50). `find_or_make_display_variant`'s linear scan
+over `tes->fun->ess`, called from every edge of every decision, every
+pass, is O(n) against a list that's now ~3.5x its original size and
+concentrated on a handful of heavily-shared container methods
+(`list.__getitem__` etc.) -- cheap per call at n≈123, ruinous at n≈435
+called this many times. A program needing dozens of such passes to
+converge would need many minutes, which is ~1000x too slow to be
+practically usable (every compile-time test harness in this repo times
+out at 60s).
+
+**What this changes about the diagnosis.** The "unbounded growth"
+finding in the update above was two coupled problems, not one:
+identity instability (fixed here) AND an O(n) lookup that was masked by
+the identity bug making n unbounded in the first place. Fixing identity
+without also indexing the lookup just moves the wall from "never
+terminates" to "terminates too slowly to matter." Whoever picks this up
+next needs BOTH: an indexed structure (e.g. a map keyed on `(tes,
+display)`, not a linear `Vec` scan) AND should re-check whether the
+general, `creation_point`-keyed version of Piece 3 this section
+originally specifies (which would also address CreationSet identity
+instability across `clear_cs` re-derivation, not just the sibling-reuse
+layer this session's narrower fix covers) is needed on top, or whether
+the indexed sibling-reuse fix alone is sufficient once it's fast.
+
 **What's landed, current state:** `PYC_CSM=2` on `main` runs Piece 1+2
-exactly as described above, capped to one apply per pass for safety.
-Suite: 239/0 flag-off both backends (byte-identical), 222/18 flag-on.
-Corpus: 54 → 22 compiled flag-on (+1 pylife, −32, 1 crash). Not a
-corpus win; landed as validated, safe, well-documented groundwork for a
-future Piece 3 attempt, not as a fix.
+capped to one apply per pass -- the only combination confirmed safe
+AND practically fast. `find_or_make_display_variant` is live and used
+even in the capped path, and it does move the corpus number slightly on
+its own (reusing siblings across the few passes the cap allows, even
+without batching): corpus 54 → 23 compiled flag-on (+2 pylife /
+tonyjpegdecoder, −31, 1 crash) -- one better than Piece 1/2's 54 → 22
+(+1/−32) measured before this fix. Suite: 239/0 flag-off both backends
+(byte-identical), 222/18 flag-on (both backends, unchanged). Still net
+negative overall and not a corpus win worth landing on its own merits;
+landed as validated, safe, well-documented groundwork, not as a fix.
