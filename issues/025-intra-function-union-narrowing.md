@@ -2,10 +2,15 @@
 
 **Status:** open — partial progress 2026-08-03: `isinstance(x, C)` on a
 union receiver against **user classes** (Case 2's most common shape)
-fixed; the broader intra-function narrowing problem (Cases 1/3) and a
-newly-found sibling bug (`isinstance` on a union against a **builtin/
-primitive** type like `list`) remain open — see "Fixed (2026-08-03)"
-and "Still open" near the bottom.
+fixed; the broader intra-function narrowing problem (Cases 1/3)
+remains open. A second apparent gap (`isinstance` against a
+**builtin/primitive** type like `list`) turned out on investigation
+NOT to be an isinstance bug at all — it's issue 018's BOXING gap
+reached through a list literal's own mixed-basic-type elements;
+reclassified and cross-referenced into
+[018](../../issues/018-dict-mixed-key-types-boxing-failure.md) rather
+than tracked here. See "Fixed (2026-08-03)" and the reclassification
+note near the bottom.
 **Affects:** `ifa/analysis/fa.cc` (splitter), the FA-level
 EntrySet/AVar specialization machinery; `python_ifa_build_if1.cc`'s
 `build_builtin_call_pyda` (the 2026-08-03 fix's location).
@@ -679,7 +684,7 @@ shedskin-corpus programs that call `isinstance` directly
 before and after this change, for pre-existing, unrelated reasons —
 confirmed via a stash/rebuild A/B, not just re-reading old warnings).
 
-### Still open — `isinstance` against a builtin/primitive type on a union
+### Still open, RECLASSIFIED (2026-08-03) — not an isinstance bug at all, moved to issues/018
 
 Found while verifying the fix above, via `tests/isinstance_dynamic.py`
 (pre-existing, no `.exec.check`, so nothing had ever caught this):
@@ -695,28 +700,39 @@ for v in lst:
     print(check(v))
 ```
 
-CPython: `1` / `0`. pyc (**both backends, before and after the fix
-above** — confirmed via the same stash/rebuild A/B, so this is
-genuinely pre-existing, not introduced by the change above): `0` / `0`
-— `isinstance(v, list)` is always `False`, even when `v` really is a
-list.
+CPython: `1` / `0`. pyc: `0` / `0` — `isinstance(v, list)` is always
+`False`. Initially assumed (previous revision of this section) to be
+an isinstance-specific gap in FA's `P_prim_isinstance` transfer
+function, distinct from the fix above. **Attempted a fix, then
+retracted the framing once the actual root cause surfaced**: it is
+not an isinstance bug at all.
 
-This is a **different bug** from the one fixed above, not another
-instance of it: `list`/`str` are core IFA primitive types
-(`sym_list`/`sym_string`), not `Type_RECORD` user classes with a
-`__pyc_tag` classtag header (per
-[030](030-polymorphic-dispatch-fat-pointers.md)'s own design, tagging
-deliberately excludes raw-layout types) — so `isinstance(x,
-list)` was never going through classtag comparison, or the
-shared-wrapper-clone mechanism this fix removed, in the first place.
-The generated C shows the raw `sym_primitive`/`"isinstance"` send
-itself — even after routing it directly per the fix above, no shared
-clone involved at all — still constant-folded inline to `t4 = 0;`
-inside `check`'s own body. So whatever's wrong here is in how FA's
-transfer function for `P_prim_isinstance` (or a downstream constant-
-folding pass) handles a union operand against a *primitive* type
-specifically, not in the call-routing layer the fix above addressed.
-Not investigated further — worth instrumenting the same
-`mark_var_constant`/`get_constant` path suggested above, but on this
-shape (primitive-type isinstance, union receiver) rather than the
-user-class shape that turned out to have a different, shallower fix.
+Isolated by removing `isinstance` from the repro entirely:
+
+```python
+lst = [1, "hello"]
+for v in lst:
+    print(v)
+```
+
+This **crashes** (`assert(!"runtime error: matching function not
+found")`), with the compile stage already showing `warning: 'v' has
+mixed basic types:( int64 str )` — [018](../../issues/018-dict-mixed-key-types-boxing-failure.md)'s
+exact BOXING violation, previously only confirmed for `dict`/`set`
+key-type mixing across separate instances. This is the same
+mechanism, just reached through a *list literal's own elements*
+mixing basic types within one instance, a shape 018's filing didn't
+originally cover (018's repro has two internally-consistent
+containers of different key types; this repro has one container whose
+own elements are already a mixed-basic-type union). `isinstance(v,
+list)` returning `False` is a **downstream symptom** of `v` never
+having a coherent runtime representation to check in the first place
+— the crash happens even for the simplest possible touch of `v`
+(`print(v)`), with no `isinstance` call anywhere. Fixing `isinstance`
+in isolation here is not possible: there is nothing sound to check
+until the underlying container/BOXING representation gap (018, and
+the element-CS container-method work in
+[063](063-no-type-bucket-triage.md)/[075](075-element-cs-method-split-idempotent-plan.md))
+is addressed. Cross-referenced back into 018 rather than tracked here
+or attempted as a quick fix — see that issue's own file for the
+updated scope note.
