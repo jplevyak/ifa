@@ -3,30 +3,31 @@
 **Status:** Piece 1 built and validated 2026-08-04; Piece 2 built and
 found INSUFFICIENT the same day; a SCOPED Piece 3 (durable display-
 variant sibling reuse) built the same day, then made O(1)-per-lookup
-via an index the day after (2026-08-05) -- both steps confirmed
-genuine fixes for what they targeted (unbounded EntrySet growth, then
-per-call cost). Investigated what was left the same day (2026-08-05):
-root cause is NOT `copy_AEdge` itself but this stage's placement --
-it runs first, every pass, and (like every stage here) short-circuits
-the rest of the pipeline whenever it applies anything, which on this
-program means it starves stages 1-6 almost completely (traced: stage 1
-reached 4 times in an 8s window vs. dozens of this stage's own
-decisions) and re-processes a same-divergence, ever-regrowing edge set
-every turn it gets, which `copy_AEdge`'s per-CS fan-out (correctly)
-duplicates every time -- hence the geometric edge growth (2 → 4 → ...
-→ 3240 → 19440 in one traced sequence, ES count flat at 435
-throughout). See "Update 2026-08-04" and its "Indexed lookup attempt"
-/ "Edge-explosion investigation" subsections at the end for the full
-trail. All landed in the tree behind `PYC_CSM` (0 default/byte-
-identical, 2 = Piece 1+2+3 capped to one apply per pass -- still the
-only combination confirmed both safe and practically fast), not
-corpus-positive on their own. Three separate, now-identified gaps
-remain for whoever continues this: the general allocation-site/
-creation_point-keyed identity this section originally specifies
-(unbuilt), progress detection for this stage's own splits (found
-2026-08-05, unbuilt), and/or a placement change so it stops
-unconditionally preempting the rest of the pipeline (found 2026-08-05,
-unbuilt). Concrete build plan for the genuine "no type" root
+via an index the day after (2026-08-05); investigation the same day
+found the remaining non-termination was pipeline starvation (this
+stage ran first, unconditionally, every pass, starving stages 1-6);
+**the placement fix for that (2026-08-05) is the actual breakthrough
+of this whole investigation** -- moving the stage to run only on
+quiescence of stages 1-6 (mirroring `PER_CS_RECEIVER`) took
+dijkstra2 from non-terminating to ~4s, and the net corpus effect from
+catastrophic (-31/-32 across three earlier measurements) to a
+near-wash (**-3 uncapped, -4 capped**, 0 gained either way), with a
+genuine suite improvement (222/18 → **229/10**, both backends). See
+"Update 2026-08-04" and its "Indexed lookup attempt" / "Edge-explosion
+investigation" / "Placement change" subsections at the end for the
+full trail. All landed in the tree behind `PYC_CSM` (0 default/byte-
+identical, 2 = Piece 1+2+3 + the placement fix, capped to one apply
+per pass -- costs nothing measured vs. uncapped and remains the only
+configuration with no observed case of unbounded, as opposed to merely
+slow, growth). Still net negative, not yet worth flipping on by
+default, but for the first time in this investigation genuinely close.
+Two gaps remain for whoever continues this: the general allocation-
+site/creation_point-keyed identity this section originally specifies
+(unbuilt, would likely close the gap further), and `sha`'s specific
+new failure mode (a program CSM already broke pre-placement-fix, that
+the placement fix turned from a fast wrong answer into a slow
+non-terminating one; not root-caused). Concrete build plan for the
+genuine "no type" root
 ([063](063-no-type-bucket-triage.md)), synthesizing
 [066](066-cs-split-decision-keyed-per-pass-not-per-creation-site.md)
 (durable keying), [073](073-teach-splitter-productive-vs-inert-context.md)
@@ -628,3 +629,75 @@ this** (not attempted -- this was scoped as investigation):
 Neither was built or measured this session; both are plausible and
 would need their own combination-sweep verification (§5/§6) before
 landing, same as everything else in this doc.
+
+### Placement change, same day: built, and it works -- the biggest gain of this whole investigation
+
+Per request, built direction 2 (placement) from the pair above.
+`split_container_methods_per_element_cs` moved from stage 0
+(unconditional, first, every pass) to stage 7 -- immediately after
+`PER_CS_RECEIVER`, gated the identical way: `if (!analyze_again)`,
+i.e. only on full quiescence of stages 1-6. No other code changed.
+
+**dijkstra2, uncapped (uncapped meaning: the one-apply-per-pass safety
+cap from Piece 2/3 removed, batching every decided ES in a pass):**
+previously non-terminating (>90s, `fa->ess.n` climbing unboundedly or,
+post-identity-fix, ~50s/pass once it plateaued at 435). With the
+placement change alone, **finishes in ~4 seconds** -- both capped and
+uncapped now complete in the same ~3.7s, producing byte-identical
+output (same 589 diagnostic lines, same terminal `sizeof_element`
+internal error). Placement, not identity or lookup cost, was the
+actual fix for non-termination; those were real, necessary bugs but
+not sufficient on their own (confirmed by having fixed them first and
+still hitting the wall -- see the two subsections above).
+
+**Full-scale result, uncapped:**
+- Suite: 222/18 (previous best) → **229/10** (both backends).
+- Corpus: 54 baseline compiled → **51 compiled** (0 gained, **only 3
+  lost**: `ant`, `chull`, `sha`) -- net **-3**, drastically better than
+  every prior measurement in this doc (-31, -32 twice more).
+- `dijkstra2` and `pylife` themselves are STILL in the FAIL bucket,
+  unchanged from baseline (same diagnostic lines) -- the placement
+  change stops this stage from making things WORSE on programs whose
+  divergence doesn't resolve in one split, it doesn't make THIS
+  specific residual violation resolve. Consistent with the Piece-1
+  gate-check earlier in this doc (the target violation genuinely
+  clears; a different one appears in its place).
+
+**The remaining losses, checked individually:**
+- `ant`, `chull`: regress to `FAIL` with "has no type" / "expression
+  has no type" diagnostics -- the same general shape as everything
+  else in this doc's corpus losses, not investigated further this
+  session.
+- `sha`: **still non-terminating** -- confirmed a fresh 90s timeout,
+  uncapped AND capped both. This is a genuinely different case from
+  dijkstra2: at baseline (flag off) `sha` compiles cleanly, and even
+  under the PRE-placement-change capped CSM it only failed fast (a
+  quick "'x' has no type" diagnostic, not a timeout) -- so CSM was
+  already breaking `sha` before this fix; the placement change turned
+  that fast, wrong-but-terminating failure into a slow, still-wrong,
+  non-terminating one for this one program. Not root-caused this
+  session.
+
+**Capped vs uncapped, final comparison:** with the one-apply-per-pass
+cap restored (on top of the placement fix), suite is **identical**
+(229/10, both backends) and corpus is **-4** instead of -3 (`kanoodle`
+additionally lost, within noise of a 77-program sweep) -- the cap costs
+essentially nothing now that placement stops the pathological growth
+case it originally existed to bound. It does NOT fix `sha`'s timeout
+either (confirmed: still ~90s+ capped), so it is not safer than
+uncapped on the one known-bad case, just no worse, and it remains the
+only configuration with no case of UNBOUNDED (rather than merely slow)
+growth ever observed. **Kept as the shipped default** on that basis --
+revisit removing it only after `sha`'s specific timeout is root-caused.
+
+**Updated bottom line for this issue.** Of the three problems
+identified across this investigation (CreationSet/allocation-site
+identity instability -- the plan's original Piece 3 scope, still
+unbuilt; display-variant sibling identity -- fixed; pipeline placement
+-- fixed), fixing the latter two took the net corpus effect from a
+catastrophic -31/-32 to a near-wash -3/-4, and genuinely improved the
+suite (222/18 → 229/10). This is close enough to net-neutral that the
+remaining allocation-site identity work (or a fix for `sha`'s specific
+new failure mode) could plausibly tip it positive -- unlike every
+earlier state in this doc, where CSM=2 was unambiguously not worth
+enabling by any measure.

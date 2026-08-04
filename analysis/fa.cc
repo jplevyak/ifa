@@ -6148,9 +6148,13 @@ static CSMSplitDecision *decide_csm_split(AVar *av) {
 // exactly the shape that merges e.g. dijkstra2's `dists:
 // list[dict[Vertex,float]]` and `paths: list[dict[Vertex,list[Vertex]]]`
 // into one `float u list[Vertex]` element AVar, the genuine "no type"
-// this issue is about. Unlike PER_CS_RECEIVER (which only runs on
-// quiescence of every stage above, ifa/issues/045), this fires every
-// pass, before type confluence (run_split_stages, stage 0).
+// this issue is about. Placement (run_split_stages, stage 7): now
+// mirrors PER_CS_RECEIVER (ifa/issues/045) -- only on quiescence of
+// every stage above, not first/unconditional every pass. An earlier
+// version ran first, before type confluence; investigation
+// (2026-08-05, issue doc) found that starved stages 1-6 on programs
+// whose divergence doesn't resolve in one split, which is worse than
+// the imprecision this stage exists to fix.
 //
 // Piece 2 (decide-then-apply, see above): every qualifying receiver in
 // the pass is DECIDED against the same unmutated snapshot before
@@ -6230,51 +6234,30 @@ static CSMSplitDecision *decide_csm_split(AVar *av) {
     int r = apply_csm_split(dec);
     log(LOG_SPLITTING, "[csm] av %d es %d fun %s %d apply -> %d\n", dec->av->id, dec->es->id,
         dec->es->fun->sym->name ? dec->es->fun->sym->name : "", dec->es->fun->sym->id, r);
-    // ifa/issues/075 Piece 3: find_or_make_display_variant (used by
+    // ifa/issues/075: find_or_make_display_variant (used by
     // apply_csm_split above) durably reuses an existing sibling across
-    // passes via an INDEXED lookup (EntrySet::display_variants, fa.h)
-    // instead of minting a new one every time or linearly scanning
-    // fun->ess for one. Confirmed this fixes the identity/growth bug
-    // this cap originally guarded against: fa->ess.n plateaus, e.g. at
-    // 435 on dijkstra2, instead of climbing unboundedly to 2747+ in
-    // <8s -- and apply_csm_split itself is now consistently
-    // microseconds per call, even at that plateau (timed directly).
+    // passes via an INDEXED lookup (EntrySet::display_variants, fa.h).
+    // Combined with the quiescence-gated placement (run_split_stages,
+    // stage 7 -- see that call site's comment), batching every decided
+    // ES in a pass is now safe on the cases measured: dijkstra2, which
+    // used to grow fa->ess.n unboundedly (123 -> 2747+ in <8s) or,
+    // once identity was fixed, take ~50s/pass once ess.n plateaued at
+    // 435, now finishes in ~4s uncapped -- placement was the fix, not
+    // identity or lookup cost alone (those were both necessary but not
+    // sufficient; see the issue doc's full trail). Measured with the
+    // cap removed entirely: corpus regression shrank from -32 (this
+    // stage's original placement, capped) to -3 (sha still times out
+    // -- a DIFFERENT program, a case placement alone doesn't fix), and
+    // the suite improved 222/18 -> 229/10 (both backends).
     //
-    // But batching still isn't safe: a SEPARATE, deeper problem
-    // dominates once identity and per-call cost are both fixed --
-    // investigated in detail 2026-08-05 (full writeup in the issue
-    // doc). Short version: this stage runs FIRST, every pass, and
-    // (like every stage in run_split_stages) returns analyze_again=1
-    // whenever it applies anything, which short-circuits stages 1-6
-    // for that pass. Traced on dijkstra2: stage 1 (type confluence)
-    // was reached only 4 times in an 8s window where this stage
-    // applied dozens of decisions -- it was starving the rest of the
-    // pipeline almost completely. That matters because the receivers
-    // this stage keeps re-splitting (six INDEPENDENT, non-recursive,
-    // pre-existing clone contours of list.__getitem__, confirmed via
-    // is_es_recursive == false and es->split == null -- ordinary FA
-    // specialization, nothing this stage created) have element-type
-    // divergence that does NOT resolve via one level of CS-partition
-    // splitting on this program's genuinely nested/recursive container
-    // shape (063's "genuine no-type" case, exactly what this issue is
-    // about). Every pass this stage gets, copy_AEdge's one-copy-per-
-    // extra-CS fan-out (needed for the base mechanism's correctness)
-    // duplicates whatever edges have accumulated since the LAST time it
-    // ran; the rare passes it cedes to stage 1 apparently create new
-    // work for it (new clones/edges feeding back), so the edge count
-    // it re-processes only grows between turns -- confirmed geometric:
-    // 2, 4, 6, ..., 3240, 19440 in one traced decision sequence, ES
-    // count flat at 435 throughout. Not an identity or lookup-cost
-    // problem (durable keying and the index above don't touch it) --
-    // it needs either progress detection (don't keep re-splitting an
-    // (es, position) whose divergence hasn't actually improved, which
-    // the type-confluence stage's recursion-separability / self-
-    // product-eviction logic already does and this stage entirely
-    // lacks) or a placement change (stop letting this stage
-    // unconditionally preempt the rest of the pipeline every pass).
-    // Keep the one-apply-per-pass cap as the shipped default: it holds
-    // the identity/cost fixes above from causing net damage while
-    // this is unaddressed.
+    // Kept the one-apply-per-pass cap anyway as the shipped default:
+    // it costs nothing measured (229/10 suite either way; corpus -3
+    // uncapped vs -4 capped, within noise) and remains the only
+    // configuration with no known pathological case -- sha still times
+    // out under the cap too, but bounded per-pass work means no
+    // program has been observed to grow WORSE than a single pass's
+    // cost, unlike the pre-placement-fix unbounded case. Revisit
+    // removing it if sha's specific timeout gets root-caused.
     if (r) {
       analyze_again = 1;
       break;
@@ -6300,28 +6283,8 @@ static CSMSplitDecision *decide_csm_split(AVar *av) {
   // Snapshots taken before each split_* call so the sidecar can record
   // the delta this stage produced. See fa_events_storage / record_fa_event.
   int ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-  // 0) ifa/issues/075 Piece 1 (PYC_CSM=2): element-CS container-method
-  // separation, run EVERY pass (not gated on quiescence like
-  // PER_CS_RECEIVER) and BEFORE type confluence, so a divergent-
-  // element receiver is separated before the union forms rather than
-  // after a violation reports it merged. One split per pass (see the
-  // function comment for why -- Piece 2 removes this cap). Flag off:
-  // returns 0 immediately, so `analyze_again` starts at 0 exactly as
-  // before and every stage below keeps its original `if
-  // (!analyze_again)` gating -- byte-identical to baseline.
-  cur_split_stage = (int)FAPassStage::CSM_ELEMENT_CS;
-  analyze_again = split_container_methods_per_element_cs();
-  fa->stage_time[(int)FAPassStage::CSM_ELEMENT_CS] += stage_timer.lap();
-  log(LOG_SPLITTING, "split_container_methods_per_element_cs %d\n", analyze_again);
-  if (analyze_again) {
-    record_fa_event(FAPassStage::CSM_ELEMENT_CS, analyze_again, ess0, css0, viol0);
-    ++fa->stage_progress_count[(int)FAPassStage::CSM_ELEMENT_CS];
-  }
   Vec<AVar *> confluences;
   // 1) split EntrySets based on type using AVar::out
-  // (confluences is only consumed by stages 2-4 below, all of which
-  // are themselves gated on !analyze_again -- CSM firing already
-  // means this pass is done, so skip populating it too.)
   if (!analyze_again) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
     collect_type_confluences(confluences);
@@ -6473,6 +6436,37 @@ static CSMSplitDecision *decide_csm_split(AVar *av) {
     }
   }
   log(LOG_SPLITTING, "split_for_per_cs_method_receivers %d\n", analyze_again);
+  // 7) ifa/issues/075 (PYC_CSM=2): element-CS container-method
+  // separation. Placement changed 2026-08-05 after investigation
+  // (see the issue doc): originally ran FIRST, unconditionally, every
+  // pass -- which on a program whose divergence doesn't resolve in
+  // one CS-partition split (dijkstra2's genuinely nested containers)
+  // meant it found work almost every pass and, via the SAME
+  // if-(!analyze_again) discipline every stage here already follows,
+  // starved stages 1-6 almost completely (traced: stage 1 reached 4
+  // times in an 8s window vs. dozens of this stage's own decisions).
+  // The stages it starved are exactly the ones with actual recursion-
+  // separability / self-product-eviction safeguards (see
+  // decide_entry_set_split's comments); this stage has no analog of
+  // either. Now mirrors PER_CS_RECEIVER immediately above: only on
+  // full quiescence of every stage above, so it can no longer preempt
+  // work the rest of the pipeline could otherwise resolve on its own,
+  // and any contours it DOES create get a full pass through 1-6
+  // (recursion-aware, self-product-aware) before this stage can act
+  // on them again. Flag off (default): returns 0 immediately, so this
+  // block never fires -- byte-identical to baseline regardless of
+  // placement.
+  if (!analyze_again) {
+    ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    cur_split_stage = (int)FAPassStage::CSM_ELEMENT_CS;
+    analyze_again = split_container_methods_per_element_cs();
+    fa->stage_time[(int)FAPassStage::CSM_ELEMENT_CS] += stage_timer.lap();
+    if (analyze_again) {
+      record_fa_event(FAPassStage::CSM_ELEMENT_CS, analyze_again, ess0, css0, viol0);
+      ++fa->stage_progress_count[(int)FAPassStage::CSM_ELEMENT_CS];
+    }
+  }
+  log(LOG_SPLITTING, "split_container_methods_per_element_cs %d\n", analyze_again);
   return analyze_again;
 }
 
