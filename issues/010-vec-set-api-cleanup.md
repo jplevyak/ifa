@@ -189,6 +189,243 @@ measured workload. Instrumentation kept in the tree (not reverted)
 as a cheap, permanent, opt-in tool for re-measuring after any future
 change that might shift this distribution.
 
+## Design sketch (2026-08-04): `BaseVecSet` + `Vec` + `Set` — option C, revisited
+
+Raised as a stronger alternative to Task A: instead of *renaming*
+`.n` to make the capacity-vs-count footgun compile-error-detectable
+(Task A), *split the type* so array-mode and set-mode aren't the same
+class at all — a caller literally cannot call `set_add` on something
+declared `Vec`, or `add`/`operator[]` on something declared `Set`.
+This is option C from
+[../notes/004-plib-vec-pointer-set-hashing.md](../notes/004-plib-vec-pointer-set-hashing.md),
+given a concrete shape: a shared, non-virtual base (`BaseVecSet`)
+owning the storage/growth mechanics, with `Vec` and `Set` as sibling
+subclasses each exposing only the API for their own role.
+
+### Blast-radius findings (before designing further, so the design
+### accounts for the real shape of usage, not a guess)
+
+- **475** `set_add`/`set_in`-family call sites across **27 files** —
+  same order of magnitude as Task A's own ~1000+ `.n`-read audit, not
+  smaller.
+- **~467** distinct `Vec<...>` declarations found by a rough grep
+  (undercounts multi-line/nested-template declarations, so treat as a
+  floor).
+- **The complication that matters most: `set_to_vec()` has 50+ call
+  sites** (`fa.cc`, `clone.cc`, `pattern.cc`, `graph.cc`, `cfg.cc`,
+  `dom.cc`, `html.cc`, `map.h`, `fun.cc`). This is not an edge case —
+  it's a core, idiomatic pattern in this codebase: build a
+  deduplicated collection via `set_add`, then compact it *in place*
+  into a dense array to iterate/sort/return. `vec_to_set()` (the
+  reverse) has a handful of sites too. Any design that makes `Vec`
+  and `Set` genuinely separate types has to give this idiom a real,
+  first-class replacement — it can't be waved off as rare.
+- [issue 010's own instrumentation](#cardinality-instrumentation-2026-08-04-container-swap-question-settled-empirically)
+  (added answering a related "would a different container be faster"
+  question) already showed the *performance* case for touching this
+  area is weak — 97.5% of sets never reach the hash-table code path
+  at all. So the motivation for this design is **API clarity and
+  compile-time misuse prevention**, not speed. That's a legitimate
+  reason to do it, but it changes the priority calculus versus, say,
+  the FA-convergence work dominating `ifa/issues/` right now — this
+  competes on code-health grounds, not urgency.
+
+### Proposed type structure
+
+```cpp
+// Shared storage + mechanics only. No array-only or set-only public
+// API lives here. Non-virtual (no vtable — matches Vec's existing
+// zero-overhead style; Vec/Set are never used polymorphically through
+// a BaseVecSet* the way, say, PycCallbacks is).
+template <class C, class A = DefaultAlloc, int S = VEC_INTEGRAL_SHIFT_DEFAULT>
+class BaseVecSet : public gc {
+ protected:
+  int n;      // Vec: live count. Set: table capacity (unchanged meaning
+              // from today's Vec::n -- Task A's rename still applies
+              // here, now scoped to a class where the ambiguity is at
+              // least no longer ALSO an array-vs-set ambiguity).
+  int i;      // size index (sets) / reserve (vecs) -- unchanged.
+  C *v;
+  C e[VEC_INTEGRAL_SIZE];
+
+  BaseVecSet();
+  ~BaseVecSet();
+  void free();
+  void reset();
+  void addx();                      // internal growth, shared by both
+  C *set_add_internal(C c);         // internal open-addressing insert
+  C *set_in_internal(C c);          // internal open-addressing lookup
+  void set_expand();
+  void move_internal(BaseVecSet &v);
+  void copy_internal(const BaseVecSet &v);
+
+ public:
+  // Genuinely mode-agnostic operations -- same meaning either way.
+  void clear();
+  int length() const { return n; }
+  int write(int fd);
+  int read(int fd);
+  ValuesRange values() const;       // hole-skipping iteration; already
+                                     // safe for both modes today
+};
+
+template <class C, class A = DefaultAlloc, int S = VEC_INTEGRAL_SHIFT_DEFAULT>
+class Vec : public BaseVecSet<C, A, S> {
+ public:
+  // Sequential/positional API -- everything that assumes no holes and
+  // a meaningful index: add, add(), push, insert, remove_index,
+  // remove, operator[], get, first, last, pop, reverse, qsort/sort,
+  // fill, append, prepend, index, in, add_exclusive, begin, end,
+  // copy, move, operator=.
+};
+
+template <class C, class A = DefaultAlloc, int S = VEC_INTEGRAL_SHIFT_DEFAULT>
+class Set : public BaseVecSet<C, A, S> {
+ public:
+  // Dedup/membership API: set_add, set_in, set_remove, set_union,
+  // set_intersection (both overloads), some_intersection,
+  // some_disjunction, some_difference, set_disjunction,
+  // set_difference, set_count, first_in_set, set_clear, copy, move,
+  // operator=.
+};
+```
+
+`is_vec()`/`is_set()` (today's *runtime* predicates, checked by
+reading `i`/`n` state) become unnecessary and should simply not exist
+on the new types — which class a given object is IS the answer, known
+at compile time, everywhere. That's the main compile-time-safety win
+made concrete.
+
+### The conversion problem, resolved: free functions, not methods
+
+Mirrors the existing `sorted_view` precedent (`ifa/analysis/fa.h`) —
+a free function template that builds and returns a *different*
+`Vec`-family type by value, rather than a same-type in-place mutation:
+
+```cpp
+// Replaces Vec::set_to_vec(). Compacts s's live members into a dense
+// Vec (stable order is NOT guaranteed, same as today's set_to_vec --
+// callers that need a specific order already go through sorted_view
+// or qsort_by_id separately). Leaves s empty, mirroring the
+// "consuming transfer" feel of Vec::move() elsewhere in this file.
+template <class C, class A, int S>
+Vec<C, A, S> drain_to_vec(Set<C, A, S> &s);
+
+// Replaces Vec::vec_to_set(). Moves v's elements into a new Set via
+// set_add (deduplicating). Leaves v empty.
+template <class C, class A, int S>
+Set<C, A, S> drain_to_set(Vec<C, A, S> &v);
+```
+
+**Migration cost per call site, honestly stated:** this is *not* a
+one-line rename. Because C++ doesn't allow redeclaring a name with a
+different type in the same scope, `x.set_to_vec();` becomes something
+like:
+
+```cpp
+// before:
+Set<T> x;
+... x.set_add(...) ...
+x.set_to_vec();
+... x.v[i] / x.n used as a dense array from here on ...
+
+// after:
+Set<T> x;
+... x.set_add(...) ...
+Vec<T> x_vec = drain_to_vec(x);
+... x_vec[i] / x_vec.n used from here on ...
+```
+
+i.e. a new variable plus a rename of every downstream use in that
+scope — bounded and mechanical per site, but real work multiplied
+across 50+ sites, not a sed script.
+
+### What moves where — full placement, so the audit is checkable against this table
+
+| Stays on `BaseVecSet` (protected/shared) | Moves to `Vec` | Moves to `Set` |
+|---|---|---|
+| storage (`v`, `n`, `i`, `e[]`), `free`, `reset`, `clear`, `addx`, `set_add_internal`, `set_in_internal`, `set_expand`, `move_internal`, `copy_internal`, `write`, `read`, `values()`, `length()` | `add`, `add()`, `push`, `insert` (both overloads), `remove_index`, `remove`, `operator[]`, `get`, `first`, `last`, `pop`, `reverse`, `qsort`, `fill`, `append`, `prepend`, `index`, `in`, `add_exclusive`, `begin`, `end`, `copy`, `move`, `operator=` | `set_add`, `set_in`, `set_remove`, `set_union`, `set_intersection` ×2, `some_intersection`, `some_disjunction`, `some_difference`, `set_disjunction`, `set_difference`, `set_count`, `first_in_set`, `set_clear`, `copy`, `move`, `operator=` |
+
+`copy`/`move`/`operator=` appear on both `Vec` and `Set` because their
+*implementation* differs by mode (array copy vs. set copy_internal's
+capacity-aware path) even though the shape is the same — each just
+calls the shared `copy_internal`/`move_internal` on `BaseVecSet`.
+
+`Accum<C,A,S>` (`vec.h`) becomes the motivating "this was always two
+different things" example: `Vec<C> asvec; Vec<C> asset;` today reads
+as two of the same type; under this design it's honestly
+`Vec<C> asvec; Set<C> asset;` — no `.n`-vs-count ambiguity left to
+even audit there.
+
+### Migration strategy
+
+Given the scale (475 call sites, 50+ conversions needing real design
+attention), land this incrementally, not as one sweep:
+
+1. **Land `BaseVecSet`/`Vec`/`Set`/`drain_to_vec`/`drain_to_set` as new,
+   additive types** in `vec.h`, alongside the existing `Vec` (kept
+   as-is, unrenamed, so nothing breaks). Zero migration in this step —
+   pure addition, verified by `make` + full suite staying green.
+2. **Pilot in one subsystem.** `ifa/optimize/` is a reasonable first
+   target — smaller than `analysis/fa.cc` (which has the bulk of the
+   475 sites and the majority of `set_to_vec` call sites, so it's the
+   highest-risk, do-it-last file, not the pilot), self-contained, and
+   already exercises both roles (`dom.cc`'s `front.set_to_vec()` is
+   exactly the idiom that needs the `drain_to_vec` treatment).
+   Gate: full suite green, `./ifa --test` green, no golden-output
+   drift (this is a pure type change, output must be byte-identical).
+3. **Expand file-by-file**, `analysis/fa.cc` last (highest call-site
+   density, highest risk of an ambiguous "is this really a set"
+   judgment call, and where the FA-convergence work already in flight
+   elsewhere in `ifa/issues/` makes merge conflicts most likely — best
+   to sequence after that work settles, not race it).
+4. **Once every `set_add`/`set_in` site's declaration has moved to
+   `Set`**, the old dual-mode `Vec` collapses to *be* the new `Vec`
+   (drop the now-dead `set_*` methods from it) — no separate rename
+   step needed, the split *is* the rename.
+
+Each step's own regression gate: full `test_pyc.py` (both backends) +
+`ifa --test` + `ifa`'s own `make test` phases, byte-identical output
+(this is a pure refactor, no behavior is supposed to change anywhere).
+
+### Open questions / risks
+
+- **Is any single object genuinely used with *interleaved* array and
+  set operations** (not sequential-via-`set_to_vec`, but literally
+  alternating `add()`/`set_add()` calls on the same instance over its
+  lifetime)? Not checked yet — if this exists anywhere, that call site
+  needs its own design (probably: it was relying on set semantics
+  throughout and the `add()` calls are either a latent bug or provably
+  only run before any `set_add()`, i.e. same idiom as `set_to_vec`
+  read backward). Worth a targeted grep-and-read pass before Step 2.
+- **Compile-time/binary-size cost** of the extra template
+  instantiation layer — expected small (no vtable, same code shape,
+  just split across two classes instead of one), but not measured.
+- **`reserve()`/`fill()`** are Vec-only in the table above but touch
+  fields (`i`, capacity growth) that overlap with `Set`'s use of `i` as
+  a size *index* rather than a reserve count — double-check
+  `BaseVecSet`'s protected fields don't let a `Vec`-only method
+  accidentally corrupt a `Set`'s invariants if some shared internal
+  helper is reused incorrectly during implementation.
+- Naming: `Set` and `BaseVecSet` don't collide with anything in the
+  tree today (checked) — but `Set` is a common enough name that it's
+  worth a final check against any in-flight branches before landing.
+
+### Verification plan
+
+1. Step 1 (additive) lands with zero output diff anywhere — pure new
+   code, nothing calls it yet.
+2. Pilot subsystem (Step 2): full suite + `ifa --test` byte-identical
+   before/after; specifically re-run the `dom.cc`/`front.set_to_vec()`
+   path (dominator-frontier computation) since it's exactly the
+   `drain_to_vec` idiom and touches FA-adjacent correctness.
+3. Before declaring any file "migrated," grep it for `set_add`,
+   `set_in`, `set_to_vec`, `vec_to_set`, and `.n` reads and confirm
+   every one now resolves against the correct type (compiler enforces
+   most of this automatically — a `Vec` with no `set_*` calls left and
+   a `Set` with no positional calls left is the exit criterion, and a
+   failed build is the audit).
+
 ## See also
 
 - [../notes/004-plib-vec-pointer-set-hashing.md](../notes/004-plib-vec-pointer-set-hashing.md)
