@@ -56,6 +56,7 @@ type char __name "char" = uint8;
 type size __name "size" = uint32;
 type true __name "true"; type false __name "false"; type bool __name "bool" = true | false;
 type string __name "string";
+type bytes __name "bytes";
 type enum_element __name "enum_element" = int;
 
 // global data
