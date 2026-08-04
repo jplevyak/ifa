@@ -2,6 +2,78 @@
 /* UnionFind after Tarjan */
 
 #include "common.h"
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <fcntl.h>
+#include <unistd.h>
+
+// issues/010 follow-up: cardinality-distribution instrumentation. See
+// the extended comment in vec.h next to the declarations this backs.
+bool ifa_vec_stats_enabled = getenv("IFA_VEC_STATS") != nullptr;
+
+namespace {
+
+// Linear resolution up to 1023 so the "objects reaching >= k" ==>
+// "exactly-k count" subtraction (each size crossed at most once during
+// monotonic growth) stays valid for the vast majority of real Vecs;
+// only genuinely large (>=1024) structures fall into the saturating
+// overflow bucket, where every insertion past 1024 lands in the same
+// slot (so that slot's raw count is a total-event count, not a
+// distinct-object count -- expected and fine for characterizing the
+// tail, not for a per-size breakdown there).
+const int kVecStatsBuckets = 1024;  // index kVecStatsBuckets = overflow, ">= kVecStatsBuckets"
+uint64_t g_append_hist[kVecStatsBuckets + 1];
+uint64_t g_set_member_hist[kVecStatsBuckets + 1];
+bool g_dump_registered = false;
+
+void vec_stats_dump() {
+  char buf[65536];
+  int off = 0;
+  off += snprintf(buf + off, sizeof(buf) - off, "APPEND");
+  for (int i = 1; i <= kVecStatsBuckets && off < (int)sizeof(buf); i++)
+    if (g_append_hist[i]) off += snprintf(buf + off, sizeof(buf) - off, " %d=%llu", i, (unsigned long long)g_append_hist[i]);
+  off += snprintf(buf + off, sizeof(buf) - off, "\n");
+  off += snprintf(buf + off, sizeof(buf) - off, "SET_MEMBER");
+  for (int i = 1; i <= kVecStatsBuckets && off < (int)sizeof(buf); i++)
+    if (g_set_member_hist[i]) off += snprintf(buf + off, sizeof(buf) - off, " %d=%llu", i, (unsigned long long)g_set_member_hist[i]);
+  off += snprintf(buf + off, sizeof(buf) - off, "\n");
+  if (off <= 0) return;
+  if (off > (int)sizeof(buf)) off = sizeof(buf);
+
+  const char *path = getenv("IFA_VEC_STATS_FILE");
+  if (!path) path = "/tmp/ifa_vec_stats.log";
+  // O_APPEND: each process's write() is atomic w.r.t. the shared file
+  // offset (POSIX guarantees this for writes below PIPE_BUF, and this
+  // dump is far smaller), so concurrent pyc processes appending to the
+  // same path don't interleave/corrupt each other's lines.
+  int fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0644);
+  if (fd < 0) return;
+  ssize_t ignored = write(fd, buf, (size_t)off);
+  (void)ignored;
+  close(fd);
+}
+
+inline void ensure_dump_registered() {
+  if (!g_dump_registered) {
+    atexit(vec_stats_dump);
+    g_dump_registered = true;
+  }
+}
+
+}  // namespace
+
+void ifa_vec_stats_record_append(int n) {
+  ensure_dump_registered();
+  int b = n < kVecStatsBuckets ? n : kVecStatsBuckets;
+  if (b >= 1) g_append_hist[b]++;
+}
+
+void ifa_vec_stats_record_set_member(int n) {
+  ensure_dump_registered();
+  int b = n < kVecStatsBuckets ? n : kVecStatsBuckets;
+  if (b >= 1) g_set_member_hist[b]++;
+}
 
 uintptr_t prime2[] = {1,
                       3,

@@ -140,6 +140,55 @@ Three reasons (per the discussion in notes/004):
    guaranteed-stable first, then do Task B with full attention
    on any shifts.
 
+## Cardinality instrumentation (2026-08-04): container-swap question settled, empirically
+
+A container-choice discussion prompted by this issue ("would a
+standard vector/set library do better than `Vec`?") led to adding
+opt-in instrumentation rather than guessing: `ifa_vec_stats_enabled`
+(env var `IFA_VEC_STATS`, off by default — a single well-predicted
+branch per `add`/`set_add` call, zero behavior/perf change when unset)
+records a per-process histogram of "size reached" events, dumped via
+one `write()` to `IFA_VEC_STATS_FILE` (default `/tmp/ifa_vec_stats.log`)
+at exit. See the comment block in `vec.h` next to the declarations for
+the full design (why two separate histograms, why they overlap at
+small sizes, the saturating-bucket caveat at the tail).
+
+Measured across the full `test_pyc.py` suite (both backends),
+`ifa --test`, and a full shedskin corpus sweep (~1,050 process
+invocations, ~212.8M distinct `Vec`-as-array growth episodes and
+~35.1M distinct `Vec`-as-set growth episodes):
+
+- **99.01%** of `Vec`-as-array usage never exceeds the embedded
+  4-slot inline buffer — never heap-allocates at all.
+- **97.51%** of `Vec`-as-set usage never exceeds cardinality 4 —
+  never leaves the linear-scan fast path, never touches the
+  open-addressing hash table (`PointerHash`, probing, prime-sized
+  resize) at all.
+- For sets specifically: 63.1% end at exactly 1 member, 24.1% at
+  exactly 2, 9.5% at exactly 3 — 96.7% at cardinality ≤3.
+- For general `Vec::add` growth, cardinality **2** (not 1) is the
+  single most common final size (62.1% vs. 26.1% at exactly 1) — a
+  mild surprise relative to the "mostly cardinality 1" prior, but the
+  overall shape is the same story.
+- A real but tiny tail exists (a handful of structures — likely FA
+  worklists/AVar sets — pushing past 1,000+ elements, generating
+  16-17M raw insert events each in the corpus sweep) but represents
+  well under 0.1% of distinct objects.
+
+**Conclusion this settles:** the open-addressing hash-table code path
+in `Vec::set_add_internal` — the part a "better" standard hash-set
+implementation (Abseil's swisstable, LLVM's `DenseSet`, etc.) would
+actually improve on — is cold: ~97.5% of all `Vec`-as-set instances
+never reach it. Swapping containers would optimize a path the vast
+majority of usage never touches, while the *actual* remaining
+problems here (Task A/B above) are API-clarity and correctness
+issues a container swap doesn't fix for free either way. Reinforces:
+this issue's existing scope (rename + `sorted_view` migration) is the
+right-sized fix; a container replacement is not warranted by the
+measured workload. Instrumentation kept in the tree (not reverted)
+as a cheap, permanent, opt-in tool for re-measuring after any future
+change that might shift this distribution.
+
 ## See also
 
 - [../notes/004-plib-vec-pointer-set-hashing.md](../notes/004-plib-vec-pointer-set-hashing.md)
