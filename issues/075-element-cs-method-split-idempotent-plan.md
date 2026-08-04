@@ -5,20 +5,28 @@ found INSUFFICIENT the same day; a SCOPED Piece 3 (durable display-
 variant sibling reuse) built the same day, then made O(1)-per-lookup
 via an index the day after (2026-08-05) -- both steps confirmed
 genuine fixes for what they targeted (unbounded EntrySet growth, then
-per-call cost), but a THIRD, previously-masked problem was found
-underneath: `copy_AEdge`'s per-CS duplication grows the EDGE count
-geometrically pass over pass on wide-union receivers (confirmed:
-2 → 4 → ... → 3240 → 19440 edges in one traced decision sequence),
-independent of ES identity or lookup cost. See "Update 2026-08-04" and
-its "Indexed lookup attempt" subsection at the end for all three
-findings. All landed in the tree behind `PYC_CSM` (0 default/byte-
+per-call cost). Investigated what was left the same day (2026-08-05):
+root cause is NOT `copy_AEdge` itself but this stage's placement --
+it runs first, every pass, and (like every stage here) short-circuits
+the rest of the pipeline whenever it applies anything, which on this
+program means it starves stages 1-6 almost completely (traced: stage 1
+reached 4 times in an 8s window vs. dozens of this stage's own
+decisions) and re-processes a same-divergence, ever-regrowing edge set
+every turn it gets, which `copy_AEdge`'s per-CS fan-out (correctly)
+duplicates every time -- hence the geometric edge growth (2 → 4 → ...
+→ 3240 → 19440 in one traced sequence, ES count flat at 435
+throughout). See "Update 2026-08-04" and its "Indexed lookup attempt"
+/ "Edge-explosion investigation" subsections at the end for the full
+trail. All landed in the tree behind `PYC_CSM` (0 default/byte-
 identical, 2 = Piece 1+2+3 capped to one apply per pass -- still the
 only combination confirmed both safe and practically fast), not
-corpus-positive on their own. Three separate, now-identified problems
+corpus-positive on their own. Three separate, now-identified gaps
 remain for whoever continues this: the general allocation-site/
 creation_point-keyed identity this section originally specifies
-(unbuilt), and the edge-count explosion (found 2026-08-05, unbuilt).
-Concrete build plan for the genuine "no type" root
+(unbuilt), progress detection for this stage's own splits (found
+2026-08-05, unbuilt), and/or a placement change so it stops
+unconditionally preempting the rest of the pipeline (found 2026-08-05,
+unbuilt). Concrete build plan for the genuine "no type" root
 ([063](063-no-type-bucket-triage.md)), synthesizing
 [066](066-cs-split-decision-keyed-per-pass-not-per-creation-site.md)
 (durable keying), [073](073-teach-splitter-productive-vs-inert-context.md)
@@ -537,3 +545,86 @@ now identified for whoever continues this: CreationSet/allocation-site
 identity instability (the plan's original Piece 3 scope, unbuilt),
 display-variant sibling identity (fixed, this session), and edge-count
 explosion via `copy_AEdge` on wide unions (found this session, unbuilt).
+
+### Edge-explosion investigation, 2026-08-05: root cause is pipeline starvation, not `copy_AEdge` per se
+
+Per request, investigated the third problem (edge-count explosion)
+found the day before. Traced `apply_csm_split` on dijkstra2 with the
+one-apply-per-pass cap removed (same setup as before), logging
+`es->id`, `es->fun`, `ety->sorted.n`, `dec->all_edges.n`,
+`es->split`, `es->display.n`, and per-edge `is_es_recursive`/self-loop
+checks on every call.
+
+**The six parallel siblings are NOT this stage's own products.**
+`list.__getitem__`'s edge count grows in lockstep across six DIFFERENT
+EntrySets (traced as `es=400..405`), all with `es->split == null` --
+i.e. none of them are cs_es_map products or display variants of
+anything; they are six independent, pre-existing clone contours from
+ordinary (pre-CSM) FA specialization. `is_es_recursive` was false and
+no edge's `from` traced back to its own `es` for every edge checked --
+this is not direct self-recursion in the sense
+`decide_entry_set_split`'s recursion-separability logic already guards
+against.
+
+**The actual mechanism: this stage starves the rest of the pipeline,
+and the rare turns it cedes feed it more work.** `run_split_stages`
+short-circuits stage 1 (type confluence) through stage 6 whenever an
+earlier stage's `analyze_again` is 1 -- exactly the discipline every
+stage already follows, and this stage now follows it too (§4's own
+spec: hook it *before* type confluence). But because this stage runs
+FIRST, every pass, and reliably finds SOME qualifying receiver on this
+program, `analyze_again` is 1 almost every pass -- traced directly:
+stage 1 was reached only 4 times in an 8-second window during which
+this stage applied dozens of decisions. The rest of the pipeline
+(including the type-confluence machinery's own careful recursion-
+separability and self-product-eviction logic -- see
+`decide_entry_set_split`'s comments -- none of which this stage has an
+analog of) gets almost no chance to run. On the RARE passes stage 1
+*does* get a turn, its own splitting of `__getitem__`'s CALLERS
+apparently creates new work for this stage (new clone contours / edges
+feeding into `__getitem__`) -- consistent with the edge count only
+ever growing between this stage's dominant stretches, never
+shrinking. Every time this stage does get a turn, `copy_AEdge`'s
+one-copy-per-extra-CS fan-out (needed for the base mechanism's
+correctness -- it is how a polymorphic call site gets represented in
+every specialized target it can reach) re-duplicates whatever has
+accumulated across the ~11-member union since the last turn. That is
+what produces the geometric sequence (2, 4, 6, ..., 3240, 19440) with
+the EntrySet count staying flat at 435 throughout: it is not
+`copy_AEdge` being wrong, and not an identity or lookup-cost problem
+(Piece 3 as built, and its indexed form, don't touch this) -- it is
+this stage's total lack of a notion of "am I actually making progress
+on this (es, position), or just re-processing a regrowing set that
+never resolves."
+
+**Why the divergence never resolves here.** This is the same "genuine
+no-type" case 063 already diagnosed: dijkstra2's containers are
+genuinely nested (`list[dict[Vertex,X]]`), so separating a receiver by
+its OWN CreationSet does not separate the divergence in what THAT
+CreationSet's element itself contains -- confirmed independently in
+the Piece 1 gate-check earlier in this doc (the target `(list Vertex)`
+violation went 30 -> 0, but new "mixed basic types" violations appeared
+elsewhere; the underlying heterogeneity didn't go away, it moved).
+
+**Two independent, complementary directions for whoever continues
+this** (not attempted -- this was scoped as investigation):
+
+1. **Progress detection.** Don't keep re-deciding an (es, position)
+   whose element-type divergence hasn't measurably improved since the
+   last time this stage split it -- the demand signal (`av->out->
+   type->sorted` divergent) is necessary but not sufficient; it needs
+   a "did the LAST split actually monomorphize anything" check, the
+   CSM analog of what self-product eviction and recursion-
+   separability already give the type-confluence stage.
+2. **Placement / priority.** This stage does not have to run
+   unconditionally first, every pass, forever. It could instead run
+   only when the rest of the pipeline is ALSO quiescent (mirroring
+   PER_CS_RECEIVER's existing "only on quiescence of every stage
+   above" gating, ifa/issues/045) -- trading "separate receivers before
+   the union forms" (this doc's original rationale for running it
+   first) for "don't starve the stages whose own progress this stage's
+   candidates apparently depend on."
+
+Neither was built or measured this session; both are plausible and
+would need their own combination-sweep verification (§5/§6) before
+landing, same as everything else in this doc.

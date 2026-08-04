@@ -6241,25 +6241,40 @@ static CSMSplitDecision *decide_csm_split(AVar *av) {
     // microseconds per call, even at that plateau (timed directly).
     //
     // But batching still isn't safe: a SEPARATE, deeper problem
-    // dominates once identity and per-call cost are both fixed. A
-    // receiver whose union has many CreationSets (`ety->sorted.n > 1`)
-    // routes each edge through split_edges'/apply_csm_split's
-    // copy_AEdge fan-out -- one copy per extra CS the edge's own type
-    // spans. When most edges into a heavily-shared method (e.g.
-    // list.__getitem__) span MOST of an 11-member union, that is up to
-    // ~10x edges per pass, and the copies feed the NEXT pass's decision
-    // as its own all_edges snapshot: confirmed geometric growth on
-    // dijkstra2 (a traced sequence of decisions: 2, 4, 6, ..., 3240,
-    // 19440 edges -- unbounded in edge count even though the ES count
-    // itself stayed at 435). This is not an identity problem
-    // (durable keying doesn't touch it) and not this session's scoped
-    // Piece 3 -- it needs its own investigation (e.g. whether
-    // copy_AEdge's per-CS duplication is even the right strategy once
-    // a union gets this wide, or whether something should consolidate
-    // same-outcome copies instead of growing one per CS every pass).
+    // dominates once identity and per-call cost are both fixed --
+    // investigated in detail 2026-08-05 (full writeup in the issue
+    // doc). Short version: this stage runs FIRST, every pass, and
+    // (like every stage in run_split_stages) returns analyze_again=1
+    // whenever it applies anything, which short-circuits stages 1-6
+    // for that pass. Traced on dijkstra2: stage 1 (type confluence)
+    // was reached only 4 times in an 8s window where this stage
+    // applied dozens of decisions -- it was starving the rest of the
+    // pipeline almost completely. That matters because the receivers
+    // this stage keeps re-splitting (six INDEPENDENT, non-recursive,
+    // pre-existing clone contours of list.__getitem__, confirmed via
+    // is_es_recursive == false and es->split == null -- ordinary FA
+    // specialization, nothing this stage created) have element-type
+    // divergence that does NOT resolve via one level of CS-partition
+    // splitting on this program's genuinely nested/recursive container
+    // shape (063's "genuine no-type" case, exactly what this issue is
+    // about). Every pass this stage gets, copy_AEdge's one-copy-per-
+    // extra-CS fan-out (needed for the base mechanism's correctness)
+    // duplicates whatever edges have accumulated since the LAST time it
+    // ran; the rare passes it cedes to stage 1 apparently create new
+    // work for it (new clones/edges feeding back), so the edge count
+    // it re-processes only grows between turns -- confirmed geometric:
+    // 2, 4, 6, ..., 3240, 19440 in one traced decision sequence, ES
+    // count flat at 435 throughout. Not an identity or lookup-cost
+    // problem (durable keying and the index above don't touch it) --
+    // it needs either progress detection (don't keep re-splitting an
+    // (es, position) whose divergence hasn't actually improved, which
+    // the type-confluence stage's recursion-separability / self-
+    // product-eviction logic already does and this stage entirely
+    // lacks) or a placement change (stop letting this stage
+    // unconditionally preempt the rest of the pipeline every pass).
     // Keep the one-apply-per-pass cap as the shipped default: it holds
-    // the SAME identity/cost fixes from causing net damage while this
-    // second problem is unaddressed.
+    // the identity/cost fixes above from causing net damage while
+    // this is unaddressed.
     if (r) {
       analyze_again = 1;
       break;
