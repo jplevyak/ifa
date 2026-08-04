@@ -4197,37 +4197,36 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
   return res;
 }
 
-// ifa/issues/075 Piece 3 (scoped): a durable, cross-pass-reusable
-// (cs_es_map target x display) sibling. `tes` already carries the
-// filters find_or_make_filtered_entry_set gives every caller sharing
-// its CS partition; a display-incompatible edge needs a SEPARATE
-// product with those SAME filters but a display of its own. Search
-// tes->fun->ess (the same persistent list find_or_make_filtered_
-// entry_set already reuses products from across passes) for an
-// existing one before minting a fresh one -- mirrors that function's
-// own `!filters.some_disjunction(...)` reuse test, plus a display
-// check. Without this, a call scoped to ONE apply (the original Piece
-// 1/2 shape) has no memory of a sibling it minted last pass, so a
-// recurring incompatibility re-mints a NEW one every pass instead of
-// reusing the last one -- confirmed empirically to cause unbounded
-// EntrySet growth once Piece 2 applies more than one decision per
-// pass (fa->ess.n 123 -> 2747 in <8s on dijkstra2, non-terminating;
-// see the CSMSplitDecision comment below). `tes` itself is always
-// found first by any future find_or_make_filtered_entry_set call on
-// the same filters (f->ess iterates in insertion order and tes was
-// inserted before any of its siblings), so siblings sharing tes's
-// exact filters never shadow it.
+// ifa/issues/075 Piece 3: a durable, cross-pass-reusable (cs_es_map
+// target x display) sibling. `tes` already carries the filters
+// find_or_make_filtered_entry_set gives every caller sharing its CS
+// partition; a display-incompatible edge needs a SEPARATE product
+// with those SAME filters but a display of its own.
+//
+// Indexed on tes->display_variants (fa.h), NOT found by scanning
+// tes->fun->ess: an earlier version searched fun->ess directly
+// (mirroring find_or_make_filtered_entry_set's own
+// `!filters.some_disjunction(...)` reuse scan) and that DID fix the
+// original bug -- without ANY cross-pass memory, a call scoped to one
+// apply re-minted a new sibling every pass for the same recurring
+// incompatibility, confirmed to grow fa->ess.n unboundedly (123 ->
+// 2747 in <8s on dijkstra2, non-terminating). But searching the
+// WHOLE of fun->ess is O(every ES the function has ever split into,
+// across every position and partition) -- fine at fun->ess.n ~123,
+// ruinous once the fix let it stabilize around 435: each pass then
+// took on the order of a minute (measured: 10 CSM invocations in the
+// first 10s, only 1 more in the next 50s). tes->display_variants
+// scopes the search to just THIS cs_es_map entry's own siblings --
+// bounded by the number of distinct displays that actually flow into
+// this one CS partition (073's "display is bounded" theorem), not by
+// the function's total split history.
 static EntrySet *find_or_make_display_variant(AEdge *ee, EntrySet *tes) {
-  for (EntrySet *es2 : tes->fun->ess) {
-    if (!es2 || es2 == tes) continue;
-    if (es2->filters.some_disjunction(tes->filters)) continue;
-    if (!edge_display_compatible(ee, es2)) continue;
-    return es2;
-  }
+  for (EntrySet *es2 : tes->display_variants) if (es2 && edge_display_compatible(ee, es2)) return es2;
   EntrySet *fresh = new EntrySet(tes->fun);
   tes->fun->ess.add(fresh);
   fresh->filters.copy(tes->filters);
   fresh->split = tes->split;
+  tes->display_variants.add(fresh);
   return fresh;
 }
 
@@ -6231,24 +6230,36 @@ static CSMSplitDecision *decide_csm_split(AVar *av) {
     int r = apply_csm_split(dec);
     log(LOG_SPLITTING, "[csm] av %d es %d fun %s %d apply -> %d\n", dec->av->id, dec->es->id,
         dec->es->fun->sym->name ? dec->es->fun->sym->name : "", dec->es->fun->sym->id, r);
-    // ifa/issues/075 Piece 3 (scoped): find_or_make_display_variant
-    // (used by apply_csm_split above) durably reuses an existing
-    // sibling across passes instead of minting a new one every time,
-    // which DOES fix the unbounded-growth hang this cap originally
-    // guarded against (confirmed: fa->ess.n plateaus, e.g. at 435 on
-    // dijkstra2, instead of climbing unboundedly to 2747+ in <8s).
-    // But it does not yet make batching SAFE to enable: once fun->ess
-    // stabilizes at that scale, find_or_make_display_variant's linear
-    // scan over it, called from every edge of every decision, makes
-    // each pass take on the order of a minute (confirmed on
-    // dijkstra2: 10 CSM invocations in the first 10s, only 1 more in
-    // the next 50s) -- ~1000x too slow to be practically usable
-    // (compile timeouts everywhere a program needs more than a
-    // handful of such passes). Fixing that needs an indexed lookup
-    // (e.g. keyed on (tes, display) instead of a linear fun->ess scan)
-    // and re-validating the growth bound holds at THAT reduced cost;
-    // not yet built. Keep the one-apply-per-pass cap as the shipped
-    // default until it is.
+    // ifa/issues/075 Piece 3: find_or_make_display_variant (used by
+    // apply_csm_split above) durably reuses an existing sibling across
+    // passes via an INDEXED lookup (EntrySet::display_variants, fa.h)
+    // instead of minting a new one every time or linearly scanning
+    // fun->ess for one. Confirmed this fixes the identity/growth bug
+    // this cap originally guarded against: fa->ess.n plateaus, e.g. at
+    // 435 on dijkstra2, instead of climbing unboundedly to 2747+ in
+    // <8s -- and apply_csm_split itself is now consistently
+    // microseconds per call, even at that plateau (timed directly).
+    //
+    // But batching still isn't safe: a SEPARATE, deeper problem
+    // dominates once identity and per-call cost are both fixed. A
+    // receiver whose union has many CreationSets (`ety->sorted.n > 1`)
+    // routes each edge through split_edges'/apply_csm_split's
+    // copy_AEdge fan-out -- one copy per extra CS the edge's own type
+    // spans. When most edges into a heavily-shared method (e.g.
+    // list.__getitem__) span MOST of an 11-member union, that is up to
+    // ~10x edges per pass, and the copies feed the NEXT pass's decision
+    // as its own all_edges snapshot: confirmed geometric growth on
+    // dijkstra2 (a traced sequence of decisions: 2, 4, 6, ..., 3240,
+    // 19440 edges -- unbounded in edge count even though the ES count
+    // itself stayed at 435). This is not an identity problem
+    // (durable keying doesn't touch it) and not this session's scoped
+    // Piece 3 -- it needs its own investigation (e.g. whether
+    // copy_AEdge's per-CS duplication is even the right strategy once
+    // a union gets this wide, or whether something should consolidate
+    // same-outcome copies instead of growing one per CS every pass).
+    // Keep the one-apply-per-pass cap as the shipped default: it holds
+    // the SAME identity/cost fixes from causing net damage while this
+    // second problem is unaddressed.
     if (r) {
       analyze_again = 1;
       break;

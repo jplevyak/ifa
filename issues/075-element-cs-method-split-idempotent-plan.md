@@ -2,17 +2,23 @@
 
 **Status:** Piece 1 built and validated 2026-08-04; Piece 2 built and
 found INSUFFICIENT the same day; a SCOPED Piece 3 (durable display-
-variant sibling reuse, not the full allocation-site keying this section
-originally specified) built and found INSUFFICIENT the same day too --
-it fixes the unbounded-growth hang but replaces it with an ~1000x
-per-pass slowdown once EntrySet count stabilizes (see "Update
-2026-08-04" at the end for both). All landed in the tree behind
-`PYC_CSM` (0 default/byte-identical, 2 = Piece 1+2 capped to one apply
-per pass -- the only combination confirmed safe), not corpus-positive
-on their own. The general, allocation-site/creation_point-keyed Piece 3
-this section describes below is still unbuilt; an indexed (not linear-
-scan) sibling lookup is the more narrowly-scoped remaining gap. Concrete
-build plan for the genuine "no type" root
+variant sibling reuse) built the same day, then made O(1)-per-lookup
+via an index the day after (2026-08-05) -- both steps confirmed
+genuine fixes for what they targeted (unbounded EntrySet growth, then
+per-call cost), but a THIRD, previously-masked problem was found
+underneath: `copy_AEdge`'s per-CS duplication grows the EDGE count
+geometrically pass over pass on wide-union receivers (confirmed:
+2 → 4 → ... → 3240 → 19440 edges in one traced decision sequence),
+independent of ES identity or lookup cost. See "Update 2026-08-04" and
+its "Indexed lookup attempt" subsection at the end for all three
+findings. All landed in the tree behind `PYC_CSM` (0 default/byte-
+identical, 2 = Piece 1+2+3 capped to one apply per pass -- still the
+only combination confirmed both safe and practically fast), not
+corpus-positive on their own. Three separate, now-identified problems
+remain for whoever continues this: the general allocation-site/
+creation_point-keyed identity this section originally specifies
+(unbuilt), and the edge-count explosion (found 2026-08-05, unbuilt).
+Concrete build plan for the genuine "no type" root
 ([063](063-no-type-bucket-triage.md)), synthesizing
 [066](066-cs-split-decision-keyed-per-pass-not-per-creation-site.md)
 (durable keying), [073](073-teach-splitter-productive-vs-inert-context.md)
@@ -467,14 +473,67 @@ instability across `clear_cs` re-derivation, not just the sibling-reuse
 layer this session's narrower fix covers) is needed on top, or whether
 the indexed sibling-reuse fix alone is sufficient once it's fast.
 
+**Correction:** an earlier version of this update claimed the sibling-
+reuse fix alone moved the corpus number to 54 → 23 (+2 pylife /
+tonyjpegdecoder). That was a bad comparison -- two flag-on sweeps
+against each other, not against the true flag-off baseline.
+`tonyjpegdecoder` already compiles WITH warnings at baseline; it was
+never gained. Rechecked directly against the baseline sweep: corpus is
+54 → 23 compiled (+1 pylife, −32, 1 crash), i.e. `25 + 29` down to
+`9 + 14`, identical to the number recorded for Piece 1/2 before this
+fix. The sibling-reuse fix does not change which programs compile
+under the one-apply-per-pass cap -- it only changes the identity/cost
+of the ESs minted while getting there, which the cap already made
+irrelevant to outcomes at this scale.
+
+### Indexed lookup attempt, same day: fixes identity AND its own cost, uncovers a THIRD, deeper problem
+
+Per request, replaced `find_or_make_display_variant`'s linear scan over
+`tes->fun->ess` with an index: a new field
+`EntrySet::display_variants` (`fa.h`) holds just THIS cs_es_map entry's
+own siblings, so the lookup is O(siblings of one CS partition) instead
+of O(every ES the function has ever split into). Both confirmed
+independently, with the one-apply-per-pass cap removed again:
+
+- **Identity/growth: still fixed**, as expected (the index doesn't
+  change WHAT gets reused, only how fast). `fa->ess.n` still plateaus
+  at 435 on dijkstra2 rather than climbing unboundedly.
+- **Per-call cost: fixed**, confirmed by direct timing.
+  `apply_csm_split`'s `cs_es_map` construction (which still calls the
+  pre-existing `find_or_make_filtered_entry_set`, itself a linear scan,
+  once per CreationSet) now runs in single-digit microseconds per call,
+  even once `fa->ess.n` has stabilized at 435. The indexed lookup is
+  not the bottleneck anymore.
+
+**But the run still doesn't finish -- a third, previously-masked
+problem.** With both of the above fixed, dijkstra2 still times out at
+60s. Tracing `dec->all_edges.n` per decision shows why: 2, 4, 6, ...,
+216, 540, 1296, 3240, **19440** -- geometric growth in EDGE count, not
+EntrySet count. Root cause: when a receiver's union spans many
+CreationSets (`ety->sorted.n > 1`, seen up to 11 on dijkstra2), every
+edge whose own type touches more than one of them gets duplicated via
+`copy_AEdge`, once per extra CS -- and those copies become part of the
+NEXT pass's `all_edges` snapshot for whatever they land on, compounding
+pass over pass. This is unrelated to identity or lookup cost; durable
+keying (however implemented) does not touch it. It needs its own
+investigation -- e.g. whether `copy_AEdge`'s one-copy-per-CS strategy
+is even right once a union gets this wide, or whether same-outcome
+copies should consolidate instead of accumulating.
+
 **What's landed, current state:** `PYC_CSM=2` on `main` runs Piece 1+2
-capped to one apply per pass -- the only combination confirmed safe
-AND practically fast. `find_or_make_display_variant` is live and used
-even in the capped path, and it does move the corpus number slightly on
-its own (reusing siblings across the few passes the cap allows, even
-without batching): corpus 54 → 23 compiled flag-on (+2 pylife /
-tonyjpegdecoder, −31, 1 crash) -- one better than Piece 1/2's 54 → 22
-(+1/−32) measured before this fix. Suite: 239/0 flag-off both backends
-(byte-identical), 222/18 flag-on (both backends, unchanged). Still net
-negative overall and not a corpus win worth landing on its own merits;
-landed as validated, safe, well-documented groundwork, not as a fix.
+capped to one apply per pass -- the only combination confirmed both
+safe and practically fast. `find_or_make_display_variant`'s indexed
+form is live even in the capped path (a strict improvement over the
+linear-scan version it replaced: correct and fast, at every scale
+measured), but the cap itself is still what keeps this usable -- not
+the indexed lookup by itself, and not one bug away from removable
+either, per the edge-explosion finding above. Suite: 239/0 flag-off
+both backends (byte-identical), 222/18 flag-on (both backends,
+unchanged from every measurement in this doc). Corpus: 54 → 23
+compiled flag-on (+1 pylife, −32, 1 crash), unchanged from the
+corrected number above. Not a corpus win; landed as validated, safe,
+well-documented groundwork, not as a fix. Three coupled problems are
+now identified for whoever continues this: CreationSet/allocation-site
+identity instability (the plan's original Piece 3 scope, unbuilt),
+display-variant sibling identity (fixed, this session), and edge-count
+explosion via `copy_AEdge` on wide unions (found this session, unbuilt).

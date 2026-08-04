@@ -192,6 +192,17 @@ class EntrySet : public gc {
   PendingAEdgeEntrySetsMap pending_es_backedge_map;
   Vec<EntrySet *> *equiv;  // clone.cpp
 
+  // ifa/issues/075 Piece 3: this ES's own per-display siblings, when
+  // it's a cs_es_map product some edges couldn't share because their
+  // lexical display didn't match (find_or_make_display_variant, fa.cc,
+  // next to find_or_make_filtered_entry_set). Indexed here -- not
+  // found by scanning fun->ess -- so the lookup stays O(siblings of
+  // THIS one CS partition) instead of O(every ES the whole function
+  // has ever split into, across every position and partition), which
+  // measured ruinous once fun->ess reached a few hundred entries (see
+  // the issue doc's Piece-3 update).
+  Vec<EntrySet *> display_variants;
+
   // Escape annotation per positional formal arg.  Populated
   // by IFA's escape transfer (Phase 2+).  In Phase 1 the
   // vector stays empty; codegen reads from `Fun::arg_escapes`
