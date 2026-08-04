@@ -32,12 +32,21 @@ accumulated TYPE compatibility only -- it never reads `es->filters`,
 so it can't tell a CSM-narrowed product apart from the wide, unfiltered
 original those products were split FROM, and routinely re-routes edges
 straight back into the original whenever a caller re-produces the
-wide-typed argument. This is a real, scoped fix (make that scoring
-filter-aware, or give CSM's products the same route-back veto
-`apply_entry_set_split`'s `avoid` gives type-driven splits) in code
-shared far beyond CSM (`find_best_entry_sets`/`entry_set_compatibility`)
--- intentionally left unbuilt this session; root-cause only, per
-request. Concrete build plan for the genuine "no type" root
+wide-typed argument. The filter-aware fix WAS attempted (2026-08-05,
+see "Filter-aware attempt" below): landed as a genuine, verified-safe
+correctness improvement (zero regression anywhere, `PYC_CSM` on or
+off) that closes a real gap (a filters-mismatched candidate can no
+longer be selected at all) -- but it does NOT fix `sha`, because
+`sha`'s failure isn't a wrongly-admitted candidate, it's a **scoring
+preference** between two admissible ones (a hard-reject gate can't
+change that). The real fix is structural -- a multi-CS-typed edge
+needs `split_edges`-style fan-out, not `find_best_entry_sets`'s
+single-target reuse -- and was reasoned through but not attempted,
+given the risk/scope relative to what a scoring tweak could plausibly
+buy (see that section for why a simpler "penalize the unfiltered
+candidate" idea was considered and rejected as likely to relocate
+the problem rather than fix it). Concrete build plan for the genuine
+"no type" root
 ([063](063-no-type-bucket-triage.md)), synthesizing
 [066](066-cs-split-decision-keyed-per-pass-not-per-creation-site.md)
 (durable keying), [073](073-teach-splitter-productive-vs-inert-context.md)
@@ -827,3 +836,73 @@ Either is a real, scoped change to shared, heavily-used FA routing
 code (`find_best_entry_sets`/`entry_set_compatibility` are used far
 beyond CSM) and would need its own careful regression sweep before
 landing -- this was intentionally left unbuilt this session.
+
+### Filter-aware attempt, 2026-08-05: landed, verified safe, but does not fix `sha`
+
+Per request, built the more general of the two directions above.
+Moved `check_edge` (fa.cc) to before `entry_set_compatibility` and
+added a call to it as a hard-reject gate, so a candidate ES whose
+`filters` have zero type-overlap with the edge's actual arguments can
+no longer be selected at all -- the exact gap the trace above
+identified (this scoring function previously never read `es->filters`).
+
+**Verified safe, unconditionally** (this is NOT behind `PYC_CSM` --
+`entry_set_compatibility`/`find_best_entry_sets` run for every edge in
+every pass, flag on or off): `ifa --test` 58/58; `test_pyc.py` 239/0
+both backends with `PYC_CSM` unset (byte-identical to pre-fix); full
+corpus sweep with `PYC_CSM` unset diffs to **zero** changes from the
+true baseline (`diff` exit 0 against the very first sweep in this
+doc). This is a real, if narrow, correctness fix worth keeping on its
+own merits -- filters were being silently ignored by a widely-used
+routing fallback, for every filtered ES in the codebase, not just
+CSM's.
+
+**Does not fix `sha`.** Re-traced with the fix active: `es=468`'s edge
+count still doubles exactly as before (4, 8, 16, ..., 65536,
+`fa->ess.n` still flat). `PYC_CSM=2` corpus and suite numbers are
+identical to the pre-fix measurement (suite 229/10 both backends;
+corpus 50 compiled, same four losses: `ant`, `chull`, `kanoodle`,
+`sha`) -- zero change, not even a partial improvement.
+
+**Why not, on reflection.** `check_edge`'s test is "does the filter
+have ANY overlap with the edge's actual type" -- not "is the edge's
+type fully CONTAINED by the filter." A wide, two-CS-union-typed edge
+has non-empty intersection with EITHER CS-partition's filter (rejecting
+neither) AND with the unfiltered original (which has no filter at all,
+trivially passing). So the hard-reject gate never fires for this case
+at all; `entry_set_compatibility`'s SCORING is still what decides, and
+that part is unchanged -- the unfiltered original's accumulated type is
+still an exact match (case 1) for a still-union-typed edge, while
+either CS-partitioned sibling is only ever a partial match (case 0,
+lower score). The fix closes a real gap (a filter that DISQUALIFIES a
+candidate now does), but sha's specific failure isn't a disqualified-
+candidate-wrongly-admitted case -- it's a **scoring preference**
+problem between two admissible candidates.
+
+**Considered, not attempted: penalizing an unfiltered candidate when
+the edge's type is itself a multi-CS union.** This would flip the
+score ordering and make e.g. `466` win instead of `468`. Reasoned
+through why this likely doesn't fix anything, only relocates it:
+`find_best_entry_sets` binds a matched edge to exactly ONE target --
+it has no fan-out capability the way `split_edges`/CSM's own
+`copy_AEdge` mechanism does. Forcing a still-union-typed edge into a
+single CS-filtered sibling doesn't narrow it; it just widens THAT
+sibling's own accumulated type to include the full union instead,
+recreating the identical problem one hop over (CSM would then find
+`466` divergent next pass instead of `468`, with no reason to expect
+the cycle wouldn't just continue there). Not built or tested, given
+this reasoning suggests it trades one non-fix for a differently-shaped
+non-fix, at real risk to code shared far beyond CSM, for no expected
+gain.
+
+**The real fix is structural, not a scoring tweak.** A multi-CS-typed
+edge needs to be FANNED OUT across every CS-partitioned target it
+overlaps (what `split_edges` already does), not routed through
+`find_best_entry_sets`'s single-target reuse heuristic at all.
+`find_best_entry_sets`/`make_entry_set` would need to recognize this
+shape (edge type spans >1 sibling's filter) and either defer to
+`split_edges`-style handling or gain fan-out capability of their own --
+a materially larger change than a scoring adjustment, touching the
+same shared, heavily-used routing code, and warranting its own
+design + combination-sweep verification before landing. Not attempted
+this session.

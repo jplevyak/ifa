@@ -1042,10 +1042,49 @@ static AEdge *copy_AEdge(AEdge *ee, EntrySet *to) {
   return e;
 }
 
+static bool check_edge(AEdge *e, EntrySet *es) {
+  form_MPositionAVar(x, e->args) {
+    if (!x->key->is_positional()) continue;
+    AType *filter = e->match->formal_filters.get(x->key);
+    AType *es_filter = es->filters.get(x->key);
+    if (filter) {
+      if (es_filter) filter = type_intersection(filter, es_filter);
+    } else
+      filter = es_filter;
+    if (filter && type_intersection(x->value->out, filter) == fa->type_world.bottom_type) return false;
+  }
+  return true;
+}
+
 static int entry_set_compatibility(AEdge *e, EntrySet *es) {
   int val = INT_MAX;
   if (e->match->fun->split_unique) return 0;
   if (!edge_nest_compatible_with_entry_set(e, es)) return 0;
+  // ifa/issues/075: `es->filters` (the restriction
+  // find_or_make_filtered_entry_set applies -- e.g. CSM's "only this
+  // CreationSet") was otherwise invisible here: a candidate whose
+  // filters have ZERO type-overlap with the edge's actual arguments
+  // could still be selected, purely on accumulated-type score.
+  // find_best_entry_sets (the caller) is the general-purpose fallback
+  // for "where does an edge with unresolved ->to go" -- reachable any
+  // time a route gets nulled (redispatch, apply_entry_set_split, CSM's
+  // own machinery) -- and had none of check_edge's filter awareness
+  // that check_split's recursive-knot reuse already applies a few
+  // lines below. Genuine correctness fix, verified zero-regression
+  // (PYC_CSM on or off) -- but NOT sufficient on its own to stop a
+  // filtered product from being outscored by the wider, unfiltered
+  // original it was split FROM: this only rejects a ZERO-overlap
+  // candidate, and a still-union-typed edge has non-empty overlap with
+  // EITHER a CS-partitioned sibling OR the unfiltered original (which
+  // has no filter to conflict with at all), so this gate never fires
+  // for that case and the SCORING (unchanged) still picks the
+  // original's exact type match over a sibling's partial one. Traced
+  // and confirmed on sha.py: this fix does not change its outcome
+  // (still fails to converge) -- see the issue doc's "Filter-aware
+  // attempt" update for the full trace and why a further scoring
+  // tweak was considered and rejected as likely to relocate rather
+  // than fix that specific case.
+  if (!check_edge(e, es)) return 0;
   switch (edge_type_compatible_with_entry_set(e, es)) {
     case 1:
       break;
@@ -1109,20 +1148,6 @@ static int find_best_entry_sets(AEdge *e, Vec<AEdge *> &edges) {
     return 1;
   }
   return 0;
-}
-
-static bool check_edge(AEdge *e, EntrySet *es) {
-  form_MPositionAVar(x, e->args) {
-    if (!x->key->is_positional()) continue;
-    AType *filter = e->match->formal_filters.get(x->key);
-    AType *es_filter = es->filters.get(x->key);
-    if (filter) {
-      if (es_filter) filter = type_intersection(filter, es_filter);
-    } else
-      filter = es_filter;
-    if (filter && type_intersection(x->value->out, filter) == fa->type_world.bottom_type) return false;
-  }
-  return true;
 }
 
 // `avoid` (when non-null) is the EntrySet a type-driven split is
