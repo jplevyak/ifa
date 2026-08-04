@@ -21,13 +21,23 @@ per pass -- costs nothing measured vs. uncapped and remains the only
 configuration with no observed case of unbounded, as opposed to merely
 slow, growth). Still net negative, not yet worth flipping on by
 default, but for the first time in this investigation genuinely close.
-Two gaps remain for whoever continues this: the general allocation-
-site/creation_point-keyed identity this section originally specifies
-(unbuilt, would likely close the gap further), and `sha`'s specific
-new failure mode (a program CSM already broke pre-placement-fix, that
-the placement fix turned from a fast wrong answer into a slow
-non-terminating one; not root-caused). Concrete build plan for the
-genuine "no type" root
+`sha`'s specific failure mode (a program CSM already broke pre-
+placement-fix, that the placement fix turned from a fast wrong answer
+into a slow non-terminating one) IS now root-caused (2026-08-05, see
+"Root cause found" below): allocation-site identity was investigated
+and ruled OUT (CS ids stable throughout); the real cause is that
+`find_best_entry_sets`, the general-purpose fallback for routing an
+edge whose `->to` is unresolved, scores candidate EntrySets by
+accumulated TYPE compatibility only -- it never reads `es->filters`,
+so it can't tell a CSM-narrowed product apart from the wide, unfiltered
+original those products were split FROM, and routinely re-routes edges
+straight back into the original whenever a caller re-produces the
+wide-typed argument. This is a real, scoped fix (make that scoring
+filter-aware, or give CSM's products the same route-back veto
+`apply_entry_set_split`'s `avoid` gives type-driven splits) in code
+shared far beyond CSM (`find_best_entry_sets`/`entry_set_compatibility`)
+-- intentionally left unbuilt this session; root-cause only, per
+request. Concrete build plan for the genuine "no type" root
 ([063](063-no-type-bucket-triage.md)), synthesizing
 [066](066-cs-split-decision-keyed-per-pass-not-per-creation-site.md)
 (durable keying), [073](073-teach-splitter-productive-vs-inert-context.md)
@@ -739,3 +749,81 @@ this session; explicitly NOT an allocation-site/CS-identity problem, so
 not fix it even if built. Where the growth is actually originating
 (which caller function, and why its clone count doubles) is the open
 question for whoever investigates `sha` specifically next.
+
+### Root cause found, 2026-08-05: CSM's filtered products are invisible to the general-purpose edge-routing fallback
+
+Continued digging per request. Traced the actual mechanism putting
+edges back into `es=468` with `set_entry_set` itself instrumented
+(fires whenever an edge's `->to` becomes 468): confirmed these are the
+SAME two edge objects (and, over time, new ones) getting their `->to`
+explicitly re-set to 468 -- `old_to=-1` every time, meaning something
+resets them to unrouted before re-routing them back.
+
+Ruled out, with direct evidence, before landing on the real cause:
+- **Not `get_AEdges` creating new edges.** Instrumented it directly:
+  after the initial bootstrap (pass 3), every subsequent call for this
+  (pnode, caller) pair is a "reuse" of what's already cached, never a
+  fresh `new_AEdge`.
+- **Not `find_or_make_filtered_entry_set` matching 468 from another
+  decision's request.** Instrumented it to fire whenever it returns
+  468 for a DIFFERENT orig_es than 468 itself -- zero hits.
+- **Not `check_split`'s "recursive knot" reuse** (the `e->from->split`
+  branch, fa.cc ~1172-1219) -- doesn't even apply here, since the
+  caller (`es=137`) is not itself a split product (`from->split == -1`,
+  confirmed directly).
+
+**The actual mechanism: `find_best_entry_sets`** (fa.cc ~1101), the
+fallback `make_entry_set` calls when an edge's `->to` is unresolved and
+`check_split` found nothing. It scores every existing EntrySet of the
+callee (`entry_set_compatibility`, fa.cc ~1044) by TYPE compatibility
+(`edge_type_compatible_with_entry_set`), sset compatibility, and
+constant compatibility, and picks the highest-scoring one --
+**`entry_set_compatibility` never reads `es->filters` at all.** CSM's
+whole mechanism is filter-based (`find_or_make_filtered_entry_set`
+restricts a product to one CreationSet via `es->filters`), but that
+restriction is completely invisible to this scoring function. It only
+"sees" what type has ALREADY flowed into each candidate's own args --
+and `es=468` (the original, unfiltered contour) is precisely where
+BOTH CreationSets' data lived before CSM ever touched it, so its
+accumulated type is (or re-becomes) the full two-CS union -- an exact
+type match for any edge whose actual argument is still that union.
+CSM's narrower products (466, 467) each carry only one CS's worth of
+accumulated type, so they score lower or get rejected outright for a
+still-wide-typed edge. Whenever `sha`'s caller structure produces that
+wide-typed argument again (this session did not pin down why it keeps
+recurring -- `es=137` isn't a split product, so it isn't the
+`check_split` recursive-knot path above; the argument's own
+production, upstream of this call, is where that would need to be
+traced next), the edge falls back to 468 -- undoing CSM's split -- and
+CSM, revisiting a re-grown 468, dutifully re-fans it via `copy_AEdge`,
+compounding it further.
+
+**Why this is architecturally deeper than allocation-site identity.**
+This is not CS-identity churn (ruled out earlier) and not really an
+"identity" problem at all -- it's that CSM operates a SEPARATE
+partitioning scheme (`es->filters`) layered on top of the general FA
+routing machinery, and that machinery's own fallback for "where should
+an unresolved edge go" has no notion of filters, only accumulated
+type. Every other user of `es->filters` that matters for CORRECTNESS
+goes through `check_edge` or `find_or_make_filtered_entry_set` (both
+of which DO consult `filters`) -- `find_best_entry_sets` is the one
+general-purpose path that doesn't, and it is reachable for any edge
+that loses its route (which routinely happens: `redispatch`,
+`apply_entry_set_split`, and CSM's own machinery all null `e->to`
+before re-routing).
+
+**What fixing this would take** (not attempted -- root-cause only, per
+request): either make `entry_set_compatibility`/`find_best_entry_sets`
+filter-aware (treat a `filters`-mismatch as a hard rejection, the way
+`check_edge` already does, so a CSM product is never outscored by the
+wider original it was split FROM), or give CSM's products the same
+"detach, don't just filter" protection `apply_entry_set_split`'s
+`avoid` parameter gives type-driven splits (so a route back into the
+just-split-away contour is vetoed, not merely outscored). The former
+is more general (fixes this for ANY filter-based product, not just
+CSM's); the latter is more surgical but only protects CSM specifically
+and only immediately after a split, not against later re-derivation.
+Either is a real, scoped change to shared, heavily-used FA routing
+code (`find_best_entry_sets`/`entry_set_compatibility` are used far
+beyond CSM) and would need its own careful regression sweep before
+landing -- this was intentionally left unbuilt this session.
