@@ -1,6 +1,12 @@
 # 075 — Escaping the local maximum: idempotent element-CS container-method separation (the shedskin `dcpa` model)
 
-**Status:** plan, 2026-07-31. Concrete build plan for the genuine "no
+**Status:** Piece 1 built and validated 2026-08-04; Piece 2 built and
+found INSUFFICIENT the same day (see "Update 2026-08-04" at the end --
+Piece 3 is a hard prerequisite for Piece 2 to add anything, not an
+optional refinement). Both pieces are landed in the tree behind
+`PYC_CSM` (0 default/byte-identical, 2 = Piece 1+2 capped to one apply
+per pass), safe but not corpus-positive on their own. Piece 3 (durable
+alloc-site keying) is unbuilt. Concrete build plan for the genuine "no
 type" root ([063](063-no-type-bucket-triage.md)), synthesizing
 [066](066-cs-split-decision-keyed-per-pass-not-per-creation-site.md)
 (durable keying), [073](073-teach-splitter-productive-vs-inert-context.md)
@@ -318,3 +324,94 @@ theorem makes that unnecessary).
   display caller-multiplication (Stage 2 container-fan-out ≤3% of churn;
   no dispatch bounce — 216/217 rubik routes distinct). This plan targets
   the *genuine no-type violations*, a separate lever from the oscillation.
+
+## Update 2026-08-04: Piece 1 built and validated; Piece 2 built and found insufficient — Piece 3 is load-bearing, not optional
+
+Built fresh (the 2026-07-31 prototype was never committed — "doc-only,
+code reverted" per `74adab9c`). `ifa/analysis/fa.h`/`fa.cc`, behind
+`PYC_CSM` (0 default, 2 = split), flag-off verified byte-identical
+(`ifa --test` 58/58, `test_pyc.py` 239/0 both backends).
+
+**Piece 1 (element-CS fan per `(CS × display)`), built as specified:**
+`split_edges`'s `redispatch` now mints a fresh per-display sibling
+product instead of skipping a display-incompatible edge
+(`pick_display_variant`, reusing an existing sibling when one already
+matches the edge's display); a new stage
+`split_container_methods_per_element_cs` fires it on the documented
+demand signal (receiver = union of same-container-type CSs with
+divergent element types), before type confluence, one split per pass.
+
+Gate result: **passes exactly as specified.** dijkstra2's `(list
+Vertex)` violation count 30 → 0, no crash, no Stage 4 needed (073's
+"display is bounded" holds — the `(CS × display)` fan is what the
+2026-07-31 prototype used Stage 4 to work around). dijkstra2 itself
+still doesn't finish compiling (new "mixed basic types" violations
+appear elsewhere, same eventual internal fail as baseline) — expected,
+matches the plan's own "Gate for Piece 1 alone" (§4).
+
+Full-scale result: **reproduces the 2026-07-31 prototype's "not
+landable" finding almost exactly**, from an independent
+implementation. Suite 239 → 222 (18 fails, vs. their 235 → 217/19).
+Corpus 54 → 22 compiled (+1 pylife, −32, 1 crash — vs. their 53 → 22,
++2/−33). This independent reproduction is itself useful confirmation
+that the plan's diagnosis (M2b unflowed-contour corruption from driving
+dynamic `split_edges` on unsettled state) is correct, not an artifact
+of the original prototype's specific implementation.
+
+**Piece 2 (decide-then-apply), built as a CS-identity analog of
+`decide_entry_set_split`/`apply_entry_set_split`
+(`CSMSplitDecision`/`decide_csm_split`/`apply_csm_split`):** DECIDE
+snapshots each qualifying receiver's union type and edge set before any
+mutation; APPLY runs Piece 1's cs_es_map + `(CS × display)` fan-out
+against that frozen snapshot, with a per-ES dedup mirroring
+`split_ess_for_type`'s stage-1 discipline (first decision touching an
+ES wins the pass; later ones defer to the next pass's re-decision).
+
+Two bugs found and fixed along the way, both instructive:
+
+1. **A real, separate correctness bug**, not part of the plan's own
+   scope: batching means the demand-signal scan visits *every*
+   qualifying receiver each pass, not just the first (Piece 1's shape)
+   — and the divergence check called `get_element_avar` unconditionally,
+   which *creates* the element AVar as a side effect. Doing that across
+   every candidate on every pass perturbed `collect_type_confluences`
+   broadly enough to drop the C-backend suite to 9/241 — not a CSM-
+   specific regression, just badly-behaved almost everywhere. Fixed by
+   making the scan read-only (gated on `cs->added_element_var`,
+   matching the dump-mode discipline §4 already specifies for the probe
+   flag value this plan never got to building).
+
+2. **The load-bearing finding.** With that fixed, applying *more than
+   one* decided split per pass is separately, actively unsafe:
+   `pick_display_variant`'s freshly-minted siblings have no cross-pass
+   identity (unlike `find_or_make_filtered_entry_set`'s CS-level
+   products, already reused via `!filters.some_disjunction(...)`), so a
+   recurring incompatibility re-mints a *new* sibling every pass instead
+   of reusing the last one. Batching many decisions per pass compounds
+   this into unbounded growth: confirmed empirically, `fa->ess.n` went
+   123 → 2747 in under 8 seconds on dijkstra2 (killed; did not
+   terminate on its own). Capping the apply side back to one per pass
+   (Piece 1's shape, just now decided against a cleaner snapshot) is
+   what makes it terminate again — and at that point the result is
+   **numerically identical** to Piece 1 alone (222/18 suite, +1/−32
+   corpus, same programs both ways).
+
+**Conclusion, sharper than the plan's original framing:** §4 Piece 3
+("durable alloc-site keying") is described mainly as a determinism /
+cross-pass-churn improvement layered on top of a working Piece 1+2.
+That undersells it for CSM specifically — **without Piece 3, Piece 2
+cannot safely apply more than one decision per pass, which makes it
+provide zero additional value over Piece 1 alone.** Piece 3 is not the
+third item in a sequence you could stop before; it's a prerequisite for
+Piece 2 to do anything Piece 1 didn't already do. Piece 3 is unbuilt.
+Whoever attempts it should budget for that dependency being real, not
+optional, and should specifically stress-test the batched-apply path
+(not just the single-apply path this session's `PYC_CSM=2` capped
+itself back down to) once it's in place.
+
+**What's landed, current state:** `PYC_CSM=2` on `main` runs Piece 1+2
+exactly as described above, capped to one apply per pass for safety.
+Suite: 239/0 flag-off both backends (byte-identical), 222/18 flag-on.
+Corpus: 54 → 22 compiled flag-on (+1 pylife, −32, 1 crash). Not a
+corpus win; landed as validated, safe, well-documented groundwork for a
+future Piece 3 attempt, not as a fix.

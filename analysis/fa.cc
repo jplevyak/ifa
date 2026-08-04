@@ -65,8 +65,8 @@ const Vec<FAPassEvent *> &fa_events_get() {
 // output. Order matches the enum in fa.h.
 static const char *fa_pass_stage_name(FAPassStage stage) {
   static const char *names[FA::kNumFAPassStages] = {
-      "type_confluence", "mark_type", "setter", "setter_of_setter", "mark_setter", "mark_setter_of_setter",
-      "violation",
+      "type_confluence", "mark_type",   "setter",         "setter_of_setter", "mark_setter",
+      "mark_setter_of_setter", "violation", "per_cs_receiver", "csm_element_cs",
   };
   int i = (int)stage;
   return (i >= 0 && i < FA::kNumFAPassStages) ? names[i] : "?";
@@ -949,6 +949,7 @@ static bool edge_constant_compatible_with_entry_set(AEdge *e, EntrySet *es) {
 
 static int fun_max_live_display_slot(Fun *f);
 static int stage4_enabled();
+static int csm_enabled();
 
 static void update_display(AEdge *e, EntrySet *es) {
   // add any we need
@@ -4234,18 +4235,63 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
   // contour (the pystone/tictactoe/amaze/othello/score4/voronoi2
   // SIGSEGV family, pyc issue 025), and guarding just that moves the
   // crash to the rets[i] flow below it.
+  // ifa/issues/075 Piece 1: a bare cs_es_map product can be display-
+  // incompatible with some of the edges that share its CS (the same
+  // list/dict method called from multiple lexical displays) -- the
+  // pre-075 behavior below just leaves such an edge un-split, which is
+  // exactly what keeps a container-method's element AVar a cross-
+  // instance union (063/075). When csm_enabled(), fan an incompatible
+  // edge into its OWN product instead: keyed on (cs_es_map target x
+  // this edge's display), reusing an existing sibling if one already
+  // matches so edges that genuinely share a display still land in ONE
+  // product, not one each. 073 proved (type x display) is bounded, so
+  // this is a finite fan-out, not a new divergence source. Flag off
+  // (default): identical to the original skip-on-incompatible behavior.
+  // NOTE: these siblings are minted directly (not via
+  // find_or_make_filtered_entry_set), so they do not get a ledger
+  // entry -- cross-pass re-derivation of the SAME sibling is not yet
+  // guaranteed deterministic (that is Piece 3, durable alloc-site
+  // keying, not yet built).
+  Vec<EntrySet *> variant_parents, variant_products;
+  auto pick_display_variant = [&](AEdge *ee, EntrySet *tes) -> EntrySet * {
+    for (int vi = 0; vi < variant_parents.n; vi++)
+      if (variant_parents[vi] == tes && edge_display_compatible(ee, variant_products[vi])) return variant_products[vi];
+    EntrySet *fresh = new EntrySet(tes->fun);
+    tes->fun->ess.add(fresh);
+    fresh->filters.copy(tes->filters);
+    fresh->split = tes->split;
+    variant_parents.add(tes);
+    variant_products.add(fresh);
+    return fresh;
+  };
+  // Resolve cs_es_map's target for THIS edge: the shared product if
+  // display-compatible (or already where the edge is), else -- CSM only
+  // -- a per-display sibling of it; else null (caller must leave the
+  // edge alone, the pre-075 behavior).
+  auto resolve_target = [&](AEdge *ee, CreationSet *cs) -> EntrySet * {
+    EntrySet *tes = cs_es_map.get(cs);
+    if (!tes || tes == ee->to || edge_display_compatible(ee, tes)) return tes;
+    if (!csm_enabled()) return nullptr;
+    return pick_display_variant(ee, tes);
+  };
+  // Re-pointing an edge at a different ES must go through the full
+  // re-entry recipe apply_entry_set_split uses (null `to`, clear the
+  // stale per-edge filtered_args whose AVars are contoured on the
+  // OLD to, remove the edge from the old ES's edge set, then
+  // set_entry_set) — NOT a bare `ee->to = tes` assignment. The
+  // find_or_make_filtered_entry_set products routed into here are
+  // BARE EntrySets (filters + split lineage only; no display, args,
+  // or rets — set_entry_set is the only thing that populates those),
+  // and analyze_edge's make_entry_set early-returns on a non-null
+  // e->to, so nothing downstream ever repairs one. A direct
+  // assignment therefore ships analyze_edge an ES whose empty
+  // display/rets it indexes blindly: make_AVar(formal, es) reads
+  // es->display[depth-1] out of bounds and derefs the garbage as a
+  // contour (the pystone/tictactoe/amaze/othello/score4/voronoi2
+  // SIGSEGV family, pyc issue 025), and guarding just that moves the
+  // crash to the rets[i] flow below it.
   auto redispatch = [](AEdge *ee, EntrySet *tes) {
     if (!tes || ee->to == tes) return;
-    // Issue 034 family (sudoku5): a bare product ES's display is
-    // stamped by the FIRST edge routed into it (set_entry_set ->
-    // update_display); a later edge whose lexical display differs then
-    // trips update_display's consistency assert. Only redispatch when
-    // the edge is display-compatible with the (possibly already-
-    // stamped) target -- an unstamped ES fits any edge, so the first
-    // edge still routes and stamps it. An incompatible edge stays on
-    // its current contour (sound: no crash, no mis-stamped display; a
-    // later pass re-decides it against settled state).
-    if (!edge_display_compatible(ee, tes)) return;
     if (ee->to) ee->to->edges.del(ee);
     ee->to = 0;
     ee->filtered_args.clear();
@@ -4264,30 +4310,31 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
     // Issue 034 family (sudoku5): every product ES this edge would be
     // routed or COPIED into must be display-compatible, or the
     // set_entry_set -> update_display these paths call asserts.
-    // cs_es_map maps CS -> one product ES, which cannot separate two
-    // edges that share a CS but differ in lexical display; when even
-    // one target conflicts, leave the WHOLE edge on its current contour
+    // resolve_target either returns a display-compatible target (the
+    // shared one, or -- CSM only -- a per-display sibling) or null; a
+    // null anywhere means leave the WHOLE edge on its current contour
     // (sound -- a later pass re-decides it against settled state)
     // rather than mis-stamping a shared product's display. The copies
     // share ee->from, so the original edge's display gates them all.
     bool all_compat = true;
+    Vec<EntrySet *> targets;
     for (int i = 0; i < ety->sorted.n; i++) {
-      EntrySet *tes = cs_es_map.get(ety->sorted[i]);
-      if (tes && tes != ee->to && !edge_display_compatible(ee, tes)) {
+      EntrySet *tes = resolve_target(ee, ety->sorted[i]);
+      if (!tes) {
         all_compat = false;
         break;
       }
+      targets.add(tes);
     }
     if (!all_compat) continue;
     if (ety->sorted.n == 1)
-      redispatch(ee, cs_es_map.get(ety->sorted.v[0]));
+      redispatch(ee, targets.v[0]);
     else {
       for (int i = 0; i < ety->sorted.n; i++) {
-        CreationSet *cs = ety->sorted[i];
         if (!i)
-          redispatch(ee, cs_es_map.get(cs));
+          redispatch(ee, targets[i]);
         else
-          ee = copy_AEdge(ee, cs_es_map.get(cs));
+          ee = copy_AEdge(ee, targets[i]);
       }
     }
     if (ee->to != old) {
@@ -4430,6 +4477,21 @@ static int fun_max_live_display_slot(Fun *f) {
 static int stage4_enabled() {
   static int e = -1;
   if (e < 0) e = getenv("PYC_STAGE4") ? 1 : 0;
+  return e;
+}
+
+// ifa/issues/075: element-CS container-method separation (pyc's analog
+// of shedskin's func_copy-per-dcpa). 0 off (default, byte-identical to
+// baseline), 2 split (fans split_edges per (CS x display), Piece 1; the
+// demand-driven stage itself is split_container_methods_per_element_cs
+// below). 1 is reserved for a future side-effect-free dump/probe mode
+// (see 075 Piece 1) -- not yet built, treated as off.
+static int csm_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_CSM");
+    e = v ? atoi(v) : 0;
+  }
   return e;
 }
 
@@ -5930,6 +5992,252 @@ static bool cs_is_per_cs_method_class(CreationSet *cs) {
   return analyze_again;
 }
 
+// ifa/issues/075 Piece 2: decide-then-apply for CSM. CSM partitions by
+// CS IDENTITY, not by type compatibility, so this cannot reuse
+// ESSplitDecision/decide_entry_set_split verbatim (075's own note) --
+// it is the CS-identity analog: DECIDE snapshots the receiver union
+// and its edges before any mutation; APPLY (mirroring split_edges'
+// cs_es_map + (CS x display) fan-out, Piece 1 above) acts ONLY on that
+// frozen snapshot, never on live state another decision in the same
+// batch may
+//
+// MEASURED RESULT, corrected from the plan's framing: decide-then-
+// apply alone does NOT remove failure-class 2. Applying more than one
+// decision per pass is actively unsafe without Piece 3 (durable
+// alloc-site keying) -- apply_csm_split's pick_display_variant mints a
+// FRESH sibling EntrySet whenever it doesn't find a compatible one
+// among the ones it minted so far THIS call; nothing gives those
+// siblings a stable cross-pass identity the way
+// find_or_make_filtered_entry_set's CS-level products already have
+// (reused via `!es->filters.some_disjunction(filters)`). So a
+// recurring incompatibility re-mints a NEW sibling every pass instead
+// of reusing the last one, and batching many decisions per pass
+// compounds that into unbounded EntrySet growth -- confirmed
+// empirically: fa->ess.n went 123 -> 2747 in under 8 seconds on
+// dijkstra2 before the per-pass apply cap below was restored, and a
+// naive "scan every candidate, not just the first" version separately
+// dropped the suite from 222/18 (Piece 1's number) to 9/241 by forcing
+// get_element_avar's side effect broadly (fixed: the demand signal
+// below is now read-only, gated on cs->added_element_var, exactly like
+// 075's own dump-mode discipline required). Piece 3 is therefore a
+// hard prerequisite for Piece 2 to add anything beyond Piece 1's
+// already-capped behavior, not an optional refinement -- see the apply
+// loop below.
+// have already moved.
+struct CSMSplitDecision : public gc {
+  AVar *av = nullptr;
+  EntrySet *es = nullptr;
+  MPosition *p = nullptr;
+  AType *ety = nullptr;    // av->out->type at decide time (frozen)
+  Vec<AEdge *> all_edges;  // es->edges at decide time (frozen)
+};
+
+static CSMSplitDecision *decide_csm_split(AVar *av) {
+  EntrySet *es = (EntrySet *)av->contour;
+  if (!av->out || !av->out->type) return nullptr;
+  MPosition *p = nullptr;
+  form_MPositionAVar(x, es->args) {
+    if (x->value == av) {
+      p = x->key;
+      break;
+    }
+  }
+  if (!p) return nullptr;
+  CSMSplitDecision *dec = new CSMSplitDecision;
+  dec->av = av;
+  dec->es = es;
+  dec->p = p;
+  dec->ety = av->out->type;
+  for (AEdge *ee : es->edges) if (ee) dec->all_edges.add(ee);
+  qsort_by_id(dec->all_edges);
+  if (!dec->all_edges.n) return nullptr;
+  return dec;
+}
+
+// Mirrors split_edges' body (cs_es_map + Piece 1's (CS x display) fan-
+// out in its redispatch) exactly, EXCEPT it reads the receiver's type
+// and edge set from the frozen `dec` snapshot instead of live AVar/ES
+// state -- the only change decide-then-apply requires, since dec->es
+// is guaranteed untouched-this-batch by the caller's per-ES dedup
+// (split_container_methods_per_element_cs below), so `dec->all_edges`
+// still all point at dec->es when this runs.
+[[nodiscard]] static int apply_csm_split(CSMSplitDecision *dec) {
+  int again = 0;
+  EntrySet *es = dec->es;
+  MPosition *p = dec->p;
+  AType *ety = dec->ety;
+  Map<CreationSet *, EntrySet *> cs_es_map;
+  for (CreationSet *cs : ety->sorted) {
+    Map<MPosition *, AType *> filters;
+    filters.copy(es->filters);
+    filters.put(p, make_AType(cs));
+    EntrySet *tes = find_or_make_filtered_entry_set(es, filters);
+    cs_es_map.put(cs, tes);
+  }
+  Vec<EntrySet *> variant_parents, variant_products;
+  auto pick_display_variant = [&](AEdge *ee, EntrySet *tes) -> EntrySet * {
+    for (int vi = 0; vi < variant_parents.n; vi++)
+      if (variant_parents[vi] == tes && edge_display_compatible(ee, variant_products[vi])) return variant_products[vi];
+    EntrySet *fresh = new EntrySet(tes->fun);
+    tes->fun->ess.add(fresh);
+    fresh->filters.copy(tes->filters);
+    fresh->split = tes->split;
+    variant_parents.add(tes);
+    variant_products.add(fresh);
+    return fresh;
+  };
+  auto resolve_target = [&](AEdge *ee, CreationSet *cs) -> EntrySet * {
+    EntrySet *tes = cs_es_map.get(cs);
+    if (!tes || tes == ee->to || edge_display_compatible(ee, tes)) return tes;
+    return pick_display_variant(ee, tes);  // csm_enabled() == 2 is guaranteed here (only caller)
+  };
+  auto redispatch = [](AEdge *ee, EntrySet *tes) {
+    if (!tes || ee->to == tes) return;
+    if (ee->to) ee->to->edges.del(ee);
+    ee->to = 0;
+    ee->filtered_args.clear();
+    set_entry_set(ee, tes);
+  };
+  for (AEdge *ee : dec->all_edges) if (ee) {
+    EntrySet *old = ee->to;
+    bool all_compat = true;
+    Vec<EntrySet *> targets;
+    for (int i = 0; i < ety->sorted.n; i++) {
+      EntrySet *tes = resolve_target(ee, ety->sorted[i]);
+      if (!tes) {
+        all_compat = false;
+        break;
+      }
+      targets.add(tes);
+    }
+    if (!all_compat) continue;
+    if (ety->sorted.n == 1)
+      redispatch(ee, targets.v[0]);
+    else {
+      for (int i = 0; i < ety->sorted.n; i++) {
+        if (!i)
+          redispatch(ee, targets[i]);
+        else
+          ee = copy_AEdge(ee, targets[i]);
+      }
+    }
+    if (ee->to != old) again = 1;
+  }
+  return again;
+}
+
+// ifa/issues/075: element-CS container-method separation -- pyc's
+// analog of shedskin's func_copy-per-dcpa (063's 2026-07-31 update,
+// "Why shedskin can and pyc can't"). Demand signal: a container-method
+// receiver whose live type is a union of >=2 CreationSets that are all
+// the SAME container type (cs->sym->element non-null; the unaliased
+// type equal across the group) but whose ELEMENT types diverge --
+// exactly the shape that merges e.g. dijkstra2's `dists:
+// list[dict[Vertex,float]]` and `paths: list[dict[Vertex,list[Vertex]]]`
+// into one `float u list[Vertex]` element AVar, the genuine "no type"
+// this issue is about. Unlike PER_CS_RECEIVER (which only runs on
+// quiescence of every stage above, ifa/issues/045), this fires every
+// pass, before type confluence (run_split_stages, stage 0).
+//
+// Piece 2 (decide-then-apply, see above): every qualifying receiver in
+// the pass is DECIDED against the same unmutated snapshot before
+// anything is APPLIED, with a per-ES dedup -- first decision touching
+// a given ES wins, later ones this pass defer to next pass (mirrors
+// split_ess_for_type's stage-1 discipline exactly). Piece 1 alone (one
+// split per pass, decide-and-apply interleaved) reproduced the
+// 2026-07-31 prototype's "not landable" regression almost exactly
+// (suite -17/+18 fails, corpus +1/-32) -- this batched form is what
+// the plan calls the actual fix for that failure class. Gated on
+// csm_enabled() == 2 (PYC_CSM=2); flag off is a no-op, byte-identical
+// to baseline.
+[[nodiscard]] static int split_container_methods_per_element_cs() {
+  if (csm_enabled() != 2) return 0;
+  int n_ess = fa->ess.n;
+  Vec<CSMSplitDecision *> decisions;
+  for (int i = 0; i < n_ess; i++) {
+    EntrySet *es = fa->ess[i];
+    if (!es) continue;
+    if (!es->fun || !es->fun->sym) continue;
+    bool has_edges = false;
+    for (AEdge *ee : es->edges) if (ee) { has_edges = true; break; }
+    if (!has_edges) continue;
+    for (MPosition *p : es->fun->positional_arg_positions) {
+      AVar *av = es->args.get(p);
+      if (!av || !av->out || !av->out->type || av->out->type->sorted.n < 2) continue;
+      // Same container type across the whole receiver union.
+      Sym *container_type = 0;
+      bool all_same_container = true;
+      for (CreationSet *cs : av->out->type->sorted) {
+        if (!cs->sym || !cs->sym->element) { all_same_container = false; break; }
+        Sym *t = cs->sym->type ? unalias_type(cs->sym->type) : cs->sym;
+        if (!container_type) container_type = t;
+        else if (container_type != t) { all_same_container = false; break; }
+      }
+      if (!all_same_container) continue;
+      // Divergent element types across that same union -- the demand
+      // signal. Piece 2 (decide-then-apply) scans EVERY qualifying
+      // receiver in fa->ess each pass, not just the first (Piece 1's
+      // shape) -- so, unlike a single decide-and-apply call where
+      // "we're about to act on this receiver" justified forcing the
+      // element AVar into existence, this scan must stay read-only
+      // exactly like 075's dump-mode discipline requires: read a CS's
+      // element only when cs->added_element_var is already set.
+      // Calling get_element_avar unconditionally here perturbs
+      // collect_type_confluence broadly across the WHOLE program on
+      // EVERY pass (confirmed: dropped the C-backend suite from
+      // 222/18 fails, Piece 1's number, to 9/241 -- essentially every
+      // test's FA trajectory changed). A CS whose element AVar isn't
+      // added yet just isn't decidable YET; it becomes so once
+      // something else in the flow (e.g. the method's own `self[i]`)
+      // creates it, same as any other pass.
+      AType *first_elem = 0;
+      bool divergent = false;
+      bool all_added = true;
+      for (CreationSet *cs : av->out->type->sorted) {
+        if (!cs->added_element_var) { all_added = false; break; }
+        AVar *elem = get_element_avar(cs);
+        AType *et = elem && elem->out ? elem->out->type : 0;
+        if (!first_elem) first_elem = et;
+        else if (first_elem != et) divergent = true;
+      }
+      if (!all_added || !divergent) continue;
+      CSMSplitDecision *dec = decide_csm_split(av);
+      if (dec) decisions.add(dec);
+    }
+  }
+  Vec<EntrySet *> applied;
+  int analyze_again = 0;
+  for (CSMSplitDecision *dec : decisions) {
+    if (applied.set_in(dec->es)) {
+      log(LOG_SPLITTING, "[csm] av %d es %d DEFERRED: es already split this pass (next pass re-decides)\n",
+          dec->av->id, dec->es->id);
+      continue;
+    }
+    applied.set_add(dec->es);
+    int r = apply_csm_split(dec);
+    log(LOG_SPLITTING, "[csm] av %d es %d fun %s %d apply -> %d\n", dec->av->id, dec->es->id,
+        dec->es->fun->sym->name ? dec->es->fun->sym->name : "", dec->es->fun->sym->id, r);
+    // Piece 2 as documented (batch every decided ES this pass) is
+    // UNSAFE without Piece 3: pick_display_variant's siblings (in
+    // apply_csm_split above) have no cross-pass identity -- each pass
+    // that finds the "same" incompatibility re-mints a NEW sibling
+    // instead of reusing the last pass's, so applying more than one
+    // decision per pass compounds this into unbounded EntrySet growth
+    // (confirmed: fa->ess.n 123 -> 2747 in under 8s on dijkstra2,
+    // before this cap was restored). Capping at one, like Piece 1, is
+    // what keeps this terminating; the decide-batch above is still
+    // worth keeping for its OWN benefit (every decision this pass is
+    // computed from one consistent snapshot, not a graph other
+    // decisions may have already mid-mutated) even though the apply
+    // side can't yet exploit batching until Piece 3 lands.
+    if (r) {
+      analyze_again = 1;
+      break;
+    }
+  }
+  return analyze_again;
+}
+
 // The five split stages (extend_analysis minus its stall/pass-cap
 // bookkeeping), extracted so the sticky stall guard in
 // extend_analysis can skip them wholesale once the guard has fired.
@@ -5947,16 +6255,39 @@ static bool cs_is_per_cs_method_class(CreationSet *cs) {
   // Snapshots taken before each split_* call so the sidecar can record
   // the delta this stage produced. See fa_events_storage / record_fa_event.
   int ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+  // 0) ifa/issues/075 Piece 1 (PYC_CSM=2): element-CS container-method
+  // separation, run EVERY pass (not gated on quiescence like
+  // PER_CS_RECEIVER) and BEFORE type confluence, so a divergent-
+  // element receiver is separated before the union forms rather than
+  // after a violation reports it merged. One split per pass (see the
+  // function comment for why -- Piece 2 removes this cap). Flag off:
+  // returns 0 immediately, so `analyze_again` starts at 0 exactly as
+  // before and every stage below keeps its original `if
+  // (!analyze_again)` gating -- byte-identical to baseline.
+  cur_split_stage = (int)FAPassStage::CSM_ELEMENT_CS;
+  analyze_again = split_container_methods_per_element_cs();
+  fa->stage_time[(int)FAPassStage::CSM_ELEMENT_CS] += stage_timer.lap();
+  log(LOG_SPLITTING, "split_container_methods_per_element_cs %d\n", analyze_again);
+  if (analyze_again) {
+    record_fa_event(FAPassStage::CSM_ELEMENT_CS, analyze_again, ess0, css0, viol0);
+    ++fa->stage_progress_count[(int)FAPassStage::CSM_ELEMENT_CS];
+  }
   Vec<AVar *> confluences;
   // 1) split EntrySets based on type using AVar::out
-  collect_type_confluences(confluences);
-  cur_split_stage = (int)FAPassStage::TYPE_CONFLUENCE;
-  analyze_again = split_ess_for_type(confluences, SPLIT_EDGES);
-  fa->stage_time[(int)FAPassStage::TYPE_CONFLUENCE] += stage_timer.lap();
-  log(LOG_SPLITTING, "split_ess_for_type %d\n", analyze_again);
-  if (analyze_again) {
-    record_fa_event(FAPassStage::TYPE_CONFLUENCE, analyze_again, ess0, css0, viol0);
-    ++fa->stage_progress_count[(int)FAPassStage::TYPE_CONFLUENCE];
+  // (confluences is only consumed by stages 2-4 below, all of which
+  // are themselves gated on !analyze_again -- CSM firing already
+  // means this pass is done, so skip populating it too.)
+  if (!analyze_again) {
+    ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    collect_type_confluences(confluences);
+    cur_split_stage = (int)FAPassStage::TYPE_CONFLUENCE;
+    analyze_again = split_ess_for_type(confluences, SPLIT_EDGES);
+    fa->stage_time[(int)FAPassStage::TYPE_CONFLUENCE] += stage_timer.lap();
+    log(LOG_SPLITTING, "split_ess_for_type %d\n", analyze_again);
+    if (analyze_again) {
+      record_fa_event(FAPassStage::TYPE_CONFLUENCE, analyze_again, ess0, css0, viol0);
+      ++fa->stage_progress_count[(int)FAPassStage::TYPE_CONFLUENCE];
+    }
   }
   // 2) split EntrySets based on type using marks
   // Issue 033 S5 M2: REVERTED to the original short-circuit

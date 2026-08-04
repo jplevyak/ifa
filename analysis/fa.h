@@ -652,7 +652,7 @@ class FA : public gc {
   // one may have found work too, on a batched extend (see issue 033
   // S5 M2). Sized to FAPassStage's cardinality (kept as a plain
   // constant since FAPassStage is declared after this class).
-  static constexpr int kNumFAPassStages = 8;
+  static constexpr int kNumFAPassStages = 9;
   double stage_time[kNumFAPassStages] = {};
   long stage_progress_count[kNumFAPassStages] = {};
 
@@ -703,6 +703,11 @@ enum class FAPassStage {
                           // method contours per receiver CS for
                           // clone_methods_per_cs classes; runs only
                           // on quiescence of all stages above)
+  CSM_ELEMENT_CS,          // split_container_methods_per_element_cs
+                          // (ifa/issues/075, PYC_CSM: element-CS
+                          // container-method split for list/dict
+                          // receivers with divergent element types;
+                          // runs every pass, before TYPE_CONFLUENCE)
 };
 
 struct FAPassEvent {
