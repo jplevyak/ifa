@@ -85,7 +85,23 @@ static void mark_live_avars(FA *fa) {
       // must be live
       Vec<Fun *> *calls = f->calls.get(p);
       if (p->live && !calls) {
-        for (Var *v : p->rvals) if (!v->constant) {
+        // issues/022: a `P_prim_await` operand must stay live even
+        // when FA has proven the awaited RESULT is a compile-time
+        // constant (constant-propagated through the awaited
+        // function's body) -- the operand itself is the coroutine
+        // handle a real call constructed, and awaiting it is what
+        // actually RUNS that coroutine's body (including any side
+        // effects). Every other nonfunctional send's "consumer
+        // inlines the literal instead" assumption (the `!v->constant`
+        // guard below) is sound because evaluating a pure operand and
+        // observing its value are the same thing -- for `await`
+        // they're not: skipping backward liveness here starved the
+        // awaited call's own result Var of a real C variable, so
+        // codegen (cg.cc/cg_emit_llvm.cc) had nothing but a bare,
+        // orphaned coroutine construction to work with and the
+        // suspend/resume never happened at all.
+        bool is_await = p->code && p->code->kind == Code_SEND && p->prim && p->prim->index == P_prim_await;
+        for (Var *v : p->rvals) if (is_await || !v->constant) {
           form_AVarMapElem(x, v->avars) {
             AVar *av = x->value;
             if (!av->live) mark_live_avar(av);

@@ -163,6 +163,23 @@ static Var *new_live_Var(Sym *s) {
 }
 
 static void sub_constants(PNode *p) {
+  // issues/022: an `await`'s operand must keep its REAL Var identity
+  // -- the one whose `.def` still points back at the call that
+  // constructed the awaited coroutine -- even when its abstract
+  // value is provably constant. Every other send is safe to
+  // substitute here because "the value" and "the effect" are the
+  // same thing for a pure operation; for `await`, running the
+  // awaited coroutine's body IS the effect, and swapping in a bare
+  // constant Var (no `.def`, never touched by FA's own avars/backward
+  // graph -- see codegen_common.cc's virtual_cg_is_const_folded_send)
+  // orphans the real call from the only thing that would ever drive
+  // it, silently skipping the coroutine's body -- including any of
+  // its own side effects -- entirely.
+  if (p->code && p->code->kind == Code_SEND && p->prim && p->prim->index == P_prim_await) {
+    for (PNode *n : p->phi) sub_constants(n);
+    for (PNode *n : p->phy) sub_constants(n);
+    return;
+  }
   Vec<Var *> rvals;
   rvals.move(p->rvals);
   for (Var *v : rvals) {

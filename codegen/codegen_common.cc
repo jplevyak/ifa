@@ -574,6 +574,37 @@ bool virtual_cg_is_const_folded_send(PNode *pn) {
   if (pn->lvals.n != 1) return false;
   Var *lv = pn->lvals.v[0];
   if (!lv) return false;
+  if (pn->prim->index == P_prim_await) {
+    // issues/022: `await`'s RESULT can be a provable compile-time
+    // constant (FA constant-propagates through the awaited function's
+    // body) even when the OPERAND is a genuine, dynamically
+    // constructed coroutine whose body still has to actually run --
+    // suspending/resuming it isn't optional just because its return
+    // value is known ahead of time. Checking the operand's OWN
+    // constant-ness doesn't distinguish the two cases (FA's abstract
+    // value for a real async call's result is exactly as constant as
+    // a literal's -- that's the whole reason the result folds at
+    // all); have to look at *how* the operand was produced instead:
+    // if it's the result of a real call (Code_SEND with no prim --
+    // `emit_send_call`'s case, per virtual_cg_emit_send below), it's
+    // a genuine coroutine construction and must not be skipped. Only
+    // a non-call operand (e.g. `await 42`, a literal -- not really
+    // awaitable in real Python either, `co_await`ing one wouldn't
+    // even compile; this is the sole reason P_prim_await is exempted
+    // from the `nonfunctional` early-out above at all) is safe to
+    // fold away. This check only sees the real call's Var (with a
+    // proper `.def`) rather than a disconnected constant stand-in
+    // because ifa/optimize/inline.cc's sub_constants leaves an
+    // await's own operand alone -- and ifa/optimize/dead.cc's
+    // mark_live_avars keeps it genuinely live even though it's
+    // constant -- both carrying the identical exemption rationale.
+    int o = (pn->rvals.n && pn->rvals.v[0]->sym == sym_primitive) ? 2 : 1;
+    if (o >= pn->rvals.n) return false;
+    Var *operand = pn->rvals.v[o];
+    if (operand && operand->def && operand->def->code && operand->def->code->kind == Code_SEND &&
+        !operand->def->prim)
+      return false;
+  }
   return get_constant(lv) != nullptr;
 }
 

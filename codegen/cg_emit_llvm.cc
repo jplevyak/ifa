@@ -2121,6 +2121,47 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
       return true;
     }
 
+    // issues/022 follow-up: mirrors the __pyc_net_wait_read__/
+    // __pyc_net_wait_write__ suspend/resume shape immediately above,
+    // but registers a timed wakeup (_CG_event_loop_sleep) instead of
+    // an fd -- same C-backend counterpart, _CG_Await_Sleep in
+    // pyc_c_runtime.h.
+    if (strcmp(fn_name, "__pyc_sleep__") == 0) {
+      if (args.size() < 1) return false;
+      llvm::Value *seconds = args[0];
+      llvm::Type *dbl_ty = llvm::Type::getDoubleTy(*TheContext);
+      if (seconds->getType() != dbl_ty) {
+        if (!seconds->getType()->isFloatingPointTy()) return false;
+        seconds = Builder->CreateFPExt(seconds, dbl_ty);
+      }
+
+      llvm::Type *void_ty = llvm::Type::getVoidTy(*TheContext);
+      std::vector<llvm::Type *> sleep_tys = {llvm::PointerType::getUnqual(*TheContext), dbl_ty};
+      llvm::Function *sleep_fn = get_runtime_helper("_CG_event_loop_sleep", void_ty, sleep_tys);
+      Builder->CreateCall(sleep_fn, {ctx.coro_hdl, seconds});
+
+      llvm::Function *save_fn = get_intrinsic_decl(llvm::Intrinsic::coro_save);
+      llvm::Value *save_res = Builder->CreateCall(save_fn, {ctx.coro_hdl});
+      llvm::Function *suspend_fn = get_intrinsic_decl(llvm::Intrinsic::coro_suspend);
+      llvm::Value *suspend_res = Builder->CreateCall(suspend_fn, {save_res, Builder->getFalse()});
+
+      ensure_coro_suspend_destroy_bbs(ctx);
+
+      llvm::BasicBlock *resume_bb = llvm::BasicBlock::Create(*TheContext, "resume", ctx.llvm_fn);
+
+      llvm::SwitchInst *sw = Builder->CreateSwitch(suspend_res, ctx.coro_suspend_bb, 2);
+      sw->addCase(Builder->getInt8(0), resume_bb);
+      sw->addCase(Builder->getInt8(1), ctx.coro_destroy_bb);
+
+      Builder->SetInsertPoint(resume_bb);
+
+      if (pn->lvals.n > 0 && pn->lvals.v[0] && !ret_ty->isVoidTy()) {
+        llvm::Value *zero = llvm::ConstantInt::get(ret_ty, 0);
+        put_result(ctx, pn->lvals.v[0], zero);
+      }
+      return true;
+    }
+
     llvm::Function *fn = get_runtime_helper(fn_name, ret_ty, param_tys);
     llvm::Value *res = Builder->CreateCall(fn, args);
     if (pn->lvals.n > 0 && pn->lvals.v[0] && !ret_ty->isVoidTy()) {
