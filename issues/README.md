@@ -169,7 +169,7 @@ commit ref recorded in each file's status line.  They stay in
 the tree as history — a code-search for the affected file finds
 the trail of investigation even after the fix has landed.
 
-Currently 36 closed issues:
+Currently 37 closed issues:
 [001](closed/001-keepalive-vs-explicit-reply.md),
 [002](closed/002-codegen-llvm-normalizer.md),
 [003](closed/003-fa-converge-determinism.md),
@@ -205,7 +205,8 @@ Currently 36 closed issues:
 [053](closed/053-tuple-unpack-target-heterogeneous-arity-segfault.md),
 [058](closed/058-polymorphic-classtag-dispatch-drops-extra-arguments.md),
 [059](closed/059-narrowing-peel-wrapper-boolean-collapse-gap.md),
-[060](closed/060-none-branch-dropped-mixed-with-literal-bool-sequence.md).
+[060](closed/060-none-branch-dropped-mixed-with-literal-bool-sequence.md),
+[069](closed/069-per-arity-tuple-types-scope.md).
 
 ## When to file an issue here vs fix it now
 

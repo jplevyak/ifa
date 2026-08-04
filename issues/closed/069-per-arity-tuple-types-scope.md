@@ -80,7 +80,24 @@
 > (per-program, still tiny). This retires **option 1 below** unless the
 > fixed bound proves unacceptable.
 
-**Status:** scoping, 2026-07-24. This is "option 1" from the
+**Status: CLOSED** — LANDED 2026-07-24 as "option 2'" (see the blockquote
+above), **not** the per-arity-type "option 1" this file was originally
+scoped around — option 1's design below is kept as documented history/a
+fallback if option 2's fixed unroll bound ever proves unacceptable, but
+was never built. Re-verified against HEAD 2026-08-03: `tuple_lt`/
+`tuple_eq` primitives and their FA/codegen support confirmed deleted
+(zero references outside removal comments); `inject_tuple_compare`
+(`python_ifa_main.cc`) confirmed present and wired into the build;
+`__pyc__/04_sequence.py`'s tuple class confirmed to no longer hand-write
+`__eq__`/`__lt__`. All tuple tests (12, +1 expected CPython-divergence
+XFAIL) pass clean on both backends; `shedskin_examples/stereo` (16-tuple
+stress case) compiles clean. `dijkstra2` still fails to compile, exactly
+as this file's own landing note anticipated — that's unrelated "layers
+1/2/4" (the 063/075 no-type/BOXING family), not a tuple-comparison
+regression.
+
+Original scoping text below (2026-07-24), superseded by option 2' but
+kept for context: this was "option 1" from the
 [067](067-dijkstra2-heap-tuple-precision-and-use-before-def.md) /
 [068](068-derive-structural-ops-record-field-fold.md) discussion: give each
 tuple **arity** its own dispatchable record type so the class-side derive
