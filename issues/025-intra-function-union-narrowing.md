@@ -15,6 +15,12 @@ code generated that way — confirmed via a clean `IFA_NARROW=0`-vs-`1`
 A/B test showing byte-identical output either way, contrasted with
 the identical union written by hand (which IS narrowing-dependent).
 Root-caused, not fixed.
+[030](030-polymorphic-dispatch-fat-pointers.md) (the classtag
+dispatch/`isinstance` mechanism this issue's Case 2 sits on top of —
+030 confirmed 2026-08-03 that its own classtag comparison is sound
+in isolation; the bug is specifically in `isinstance()`'s shared
+wrapper clone when a union receiver is involved, see "Confirmed
+reproducing" below).
 
 ## Symptom
 
@@ -531,3 +537,108 @@ symptom section) is still gated on items 3 and 4 — the
 present commit handles the specific `is None` shape, not
 arbitrary isinstance-on-runtime-union patterns.  Those
 remain follow-on work.
+
+## Confirmed reproducing: `isinstance(v, T)` on a union receiver, real (non-None) classes (2026-08-03)
+
+Found while checking [030](030-polymorphic-dispatch-fat-pointers.md)'s
+"isinstance support" claim (classtag comparison) — moved here since
+030's own mechanism turns out not to be at fault; this is Case 2 from
+this issue's own symptom section, now with a concrete minimal repro
+and a traced root cause, neither of which existed before.
+
+### Repro
+
+```python
+class Animal:
+    pass
+class Dog(Animal):
+    pass
+class Cat(Animal):
+    pass
+
+def describe(a):
+    if isinstance(a, Dog):
+        return "dog"
+    elif isinstance(a, Cat):
+        return "cat"
+    return "unknown"
+
+animals = [Dog(), Cat()]
+for a in animals:
+    print(describe(a))
+```
+
+CPython: `dog` / `cat`. pyc (**both backends**): `unknown` / `unknown`
+— every `isinstance` check inside `describe` returns `False`
+regardless of the real runtime object.
+
+### Isolation — it's specifically the union-receiver shape
+
+- `isinstance(x, Foo)` for a single monomorphic instance: **works**
+  (`True`).
+- `isinstance(x, Dog)` / `isinstance(x, Animal)` for a monomorphic
+  `Dog` instance (inheritance involved, no union): **works** (`True`
+  / `True`).
+- Two *separate, monomorphic* `isinstance` checks anywhere else in
+  the same program (`isinstance(d, Dog)` on a `Dog`,
+  `isinstance(c, Cat)` on a `Cat`, no shared receiver): **works**
+  (`True` / `True`) — so merely checking two different classes
+  *somewhere* in one program isn't the trigger either.
+- Only the exact shape above — a function parameter whose static type
+  is a genuine union (`Dog | Cat`, arising from iterating a
+  heterogeneous list) checked against two different classes *inside
+  that function* — reproduces the bug. This is precisely Case 2's
+  "isinstance on a runtime union" shape, just with a loop-derived
+  union instead of an `if`/`else`-branch-derived one.
+
+### Root cause (traced via generated C, not yet fixed)
+
+The C backend's generated code for `describe`'s two `isinstance`
+calls both go through one **shared clone** of the `isinstance()`
+Python wrapper (`__pyc__/05_builtins.py`) — exactly the sharing risk
+already flagged in a `python_ifa_build_if1.cc` comment (`PY_try_stmt`'s
+except-clause dispatch, which deliberately avoids this shared-wrapper
+path for exactly this reason: *"a single function FA can (and,
+empirically, does once two DIFFERENT classes are ever checked anywhere
+in the program... generalize into ONE shared clone taking a runtime
+class value, rather than a separate monomorphic clone per distinct
+class arg"*). The shared clone itself, though, isn't merely
+imprecise — it's **wrong**:
+
+```c
+_CG_bool _CG_f_3292_8/*isinstance*/(_CG_any a1, _CG_any a2) {
+  _CG_bool t0;
+  _CG_bool t4;
+  _CG_bool t1;
+  _CG_any t2;
+  _CG_any t3;
+
+  t2 = a1;
+  t3 = a2;
+  t1 = 0;
+  t0 = t1;
+  return t0;
+}
+```
+
+Both arguments are read into locals and then **never used** — the
+function is hardcoded to `return 0` (`False`) unconditionally. FA has
+(incorrectly) proven this shared clone's result is a compile-time
+constant `False`, and codegen dutifully emits the constant instead of
+the real classtag comparison — the same general "constant-folded a
+send whose real behavior depends on runtime state, not just its
+provable value" shape this session's issue-022 async work hit for a
+different primitive (`P_prim_await`), except here it's a genuine FA
+type-inference mistake (the clone really can return `True`), not a
+codegen-level over-eager fold of a provably-correct constant. Not
+traced further than generated-C — the actual FA misinference (which
+pass/AVar concludes the union case is constant, and why) is
+unestablished; worth instrumenting `mark_var_constant`/`get_constant`
+on this specific clone's result AVar as the next step.
+
+### Verified
+
+Reproduces identically on **both** backends (C and LLVM), confirmed
+via direct compile+run, not just reading generated code. No fix
+attempted — this section documents the confirmed repro and root-cause
+trace so a future attempt doesn't have to re-establish either.

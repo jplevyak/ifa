@@ -172,6 +172,75 @@ issue 029.  That sketch assumed method pointers are already in instance
 structs; this design makes them explicit and handles the full dispatch
 spectrum.
 
+## Status check (2026-08-03)
+
+Re-verified against current HEAD rather than trusting this file's own
+staleness (last touched `20da3f8d`, 2026-07-18). Core mechanism is
+solid: all 5 `tests/poly_dispatch_*.py` (`low`, `high`, `swapped`,
+`partial_override`, `shared_method_extra_args`) pass on **both**
+backends today — including `poly_dispatch_high.py`'s FA-fixpoint case,
+which `issues/007-decorators-not-applied.md` (edited later, 2026-07-21)
+still describes as an open gap; that's stale phrasing in 007, not a
+regression here — this file's own "What landed" section already
+documents that gap fixed 2026-07-04.
+
+**Missing cross-reference, added now:**
+[closed/058](closed/058-polymorphic-classtag-dispatch-drops-extra-arguments.md)
+(found+fixed 2026-07-19, one day after this file's last edit) — a real
+bug in the exact classtag-dispatch code paths this issue built: the
+polymorphic-dispatch branch in both `cg.cc` and `cg_emit_llvm.cc`
+hardcoded a single-`self`-argument call, silently dropping every
+formal beyond `self` for an inherited (not overridden) method reached
+through a genuinely polymorphic receiver. Both backends, same root
+cause, same day. Worth knowing about when touching this dispatch
+machinery again — it's evidence the if/else-chain path itself can have
+latent bugs independent of the two structural gaps below.
+
+**Both of this file's own "remaining open scope" items reconfirmed
+still open, via fresh repros against current HEAD (not just re-reading
+the doc):**
+- **(a) Closure-carrier + raw-function mixed dispatch.** A call site
+  whose candidate set mixes a plain function and a `@double`-wrapped
+  closure-carrier instance still crashes exactly as described:
+  `assert(!"runtime error: polymorphic dispatch: no branch matched")`.
+  (Note: stacking the *same* decorator twice on one uniformly-decorated
+  function, e.g. `@double @double def f(): ...`, works fine on its
+  own — there's no dispatch ambiguity there, since every reference
+  resolves to the same concrete carrier type. The trigger specifically
+  needs a *mixed* candidate set, e.g. a function returning either a
+  plain function or a decorated one depending on a runtime condition.)
+- **(b) Table-based emission for very high fan-out.** No
+  `DISPATCH_THRESHOLD`/table-lookup code exists anywhere in `cg.cc` or
+  `cg_emit_llvm.cc` — still an unconditional if/else chain regardless
+  of fan-out. Severity downgrade based on today's check:
+  `tests/poly_dispatch_shared_method_extra_args.py` (11 subclasses,
+  058's regression test) passes correctly on both backends, so the
+  chain is *functionally* correct at high fan-out today — this is now
+  confirmed a pure **performance** gap (O(n) branches per call site),
+  not a correctness one.
+
+**Stale test plan:** this file's own "Tests to add" (bottom of doc —
+`poly_dispatch_small.py`, `poly_dispatch_large.py`,
+`isinstance_class.py`) were never added under those names. Related
+coverage exists today under different names
+(`poly_dispatch_shared_method_extra_args.py` covers large-fanout
+territory; `tests/isinstance_dynamic.py` covers `isinstance` against a
+builtin type, not a user class) but nothing directly replaces the
+planned `isinstance_class.py`.
+
+**Found while checking this file's "isinstance support" claim, does
+NOT belong here — moved to
+[025](025-intra-function-union-narrowing.md):** `isinstance(x, C)`
+against a union-typed `x` (e.g. iterating a heterogeneous list) is
+currently broken, root-caused to the shared `isinstance()` wrapper
+clone collapsing to a hardcoded `return 0`. This is a manifestation of
+025's own already-documented "Case 2" (isinstance on a runtime union),
+not one of *this* issue's two listed gaps above — the classtag
+comparison mechanism itself isn't implicated (monomorphic and directly
+single-class isinstance checks both work correctly; only the
+union-receiver shape fails) — so the concrete repro and root-cause
+trace live in 025 now, not duplicated here.
+
 ## Core idea
 
 A **fat pointer** is a `(data*, vtable*)` pair (or equivalently a
