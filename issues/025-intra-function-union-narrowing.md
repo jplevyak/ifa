@@ -1,8 +1,14 @@
 # Issue 025: IFA doesn't narrow runtime union types intra-function on conditional branches
 
-**Status:** open.
+**Status:** open — partial progress 2026-08-03: `isinstance(x, C)` on a
+union receiver against **user classes** (Case 2's most common shape)
+fixed; the broader intra-function narrowing problem (Cases 1/3) and a
+newly-found sibling bug (`isinstance` on a union against a **builtin/
+primitive** type like `list`) remain open — see "Fixed (2026-08-03)"
+and "Still open" near the bottom.
 **Affects:** `ifa/analysis/fa.cc` (splitter), the FA-level
-EntrySet/AVar specialization machinery.
+EntrySet/AVar specialization machinery; `python_ifa_build_if1.cc`'s
+`build_builtin_call_pyda` (the 2026-08-03 fix's location).
 **Related:** [024-is-comparison-narrowing.md](closed/024-is-comparison-narrowing.md)
 (specific to `is`/`is not`) — this issue is the broader
 underlying problem. [059](closed/059-narrowing-peel-wrapper-boolean-collapse-gap.md)
@@ -636,9 +642,81 @@ pass/AVar concludes the union case is constant, and why) is
 unestablished; worth instrumenting `mark_var_constant`/`get_constant`
 on this specific clone's result AVar as the next step.
 
-### Verified
+### Fixed (2026-08-03) — for user-class receivers
 
-Reproduces identically on **both** backends (C and LLVM), confirmed
-via direct compile+run, not just reading generated code. No fix
-attempted — this section documents the confirmed repro and root-cause
-trace so a future attempt doesn't have to re-establish either.
+Rather than instrumenting FA to find why the shared clone's result
+AVar gets mis-folded, sidestepped the shared clone entirely — the
+same way every *other* isinstance check in this codebase already
+does (is-None lowering, `match`/`case`, `except`-clause dispatch,
+`yield from`'s `StopIteration` check: all build a raw
+`sym_primitive`/`"isinstance"` send directly at their own AST node,
+never routing through `__pyc__/05_builtins.py`'s shared Python-level
+wrapper). `build_builtin_call_pyda` (`python_ifa_build_if1.cc`)
+already had an established pattern for exactly this — intercepting
+specific builtin-name calls (`str(x)`, `bytes(x)`, `list(x)`,
+`open(path, mode)`, ...) before they fall through to the general,
+shared-clone-risky call-resolution path. Added `isinstance(obj, cls)`
+to that same interception point: a direct 2-positional-arg call to
+the name `isinstance` now builds
+`if1_send(..., sym_primitive, "isinstance", obj_rval, cls_rval,
+result)` right there, so every call site gets its own genuinely
+monomorphic send with a compile-time-constant class operand — there
+is no shared function left for FA to (mis-)fold across call sites.
+
+**Verified fixed** on both backends: the repro at the top of this
+section now prints `dog` / `cat`, matching CPython exactly. Added
+`tests/isinstance_union.py` (+ `.exec.check`) covering the
+heterogeneous-list repro plus two direct, non-union isinstance checks
+against different classes in the same function (confirming the fix
+doesn't merely mask the union case while still relying on the
+now-removed shared clone for the monomorphic case). Full regression
+suite clean on both: `test_pyc.py` and `PYC_FLAGS=-b test_pyc.py` each
+239 passed / 0 failed / 11 expected fails / 4 skipped. `ifa`'s own
+unit suite (`./ifa --test`, 58 tests) also clean. Spot-checked the 3
+shedskin-corpus programs that call `isinstance` directly
+(`richards.py`, `dijkstra.py`, `scripts/mv_eg.py`) — unaffected
+(`richards.py` compiles identically; the other two fail identically
+before and after this change, for pre-existing, unrelated reasons —
+confirmed via a stash/rebuild A/B, not just re-reading old warnings).
+
+### Still open — `isinstance` against a builtin/primitive type on a union
+
+Found while verifying the fix above, via `tests/isinstance_dynamic.py`
+(pre-existing, no `.exec.check`, so nothing had ever caught this):
+
+```python
+def check(v):
+    if isinstance(v, list):
+        return 1
+    return 0
+
+lst = [[1, 2], "hello"]
+for v in lst:
+    print(check(v))
+```
+
+CPython: `1` / `0`. pyc (**both backends, before and after the fix
+above** — confirmed via the same stash/rebuild A/B, so this is
+genuinely pre-existing, not introduced by the change above): `0` / `0`
+— `isinstance(v, list)` is always `False`, even when `v` really is a
+list.
+
+This is a **different bug** from the one fixed above, not another
+instance of it: `list`/`str` are core IFA primitive types
+(`sym_list`/`sym_string`), not `Type_RECORD` user classes with a
+`__pyc_tag` classtag header (per
+[030](030-polymorphic-dispatch-fat-pointers.md)'s own design, tagging
+deliberately excludes raw-layout types) — so `isinstance(x,
+list)` was never going through classtag comparison, or the
+shared-wrapper-clone mechanism this fix removed, in the first place.
+The generated C shows the raw `sym_primitive`/`"isinstance"` send
+itself — even after routing it directly per the fix above, no shared
+clone involved at all — still constant-folded inline to `t4 = 0;`
+inside `check`'s own body. So whatever's wrong here is in how FA's
+transfer function for `P_prim_isinstance` (or a downstream constant-
+folding pass) handles a union operand against a *primitive* type
+specifically, not in the call-routing layer the fix above addressed.
+Not investigated further — worth instrumenting the same
+`mark_var_constant`/`get_constant` path suggested above, but on this
+shape (primitive-type isinstance, union receiver) rather than the
+user-class shape that turned out to have a different, shallower fix.
