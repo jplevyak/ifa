@@ -701,3 +701,41 @@ remaining allocation-site identity work (or a fix for `sha`'s specific
 new failure mode) could plausibly tip it positive -- unlike every
 earlier state in this doc, where CSM=2 was unambiguously not worth
 enabling by any measure.
+
+### Allocation-site identity investigation, 2026-08-05: ruled out as `sha`'s blocker
+
+Per request, investigated whether the general allocation-site/
+`creation_point`-keyed identity this section originally specifies (and
+which [066](066-cs-split-decision-keyed-per-pass-not-per-creation-site.md)
+already partially built for `split_css`, landing an enforced ROUTE case
+but explicitly deferring the harder "self-product" case as needing its
+own phase-ordering fix) is what's blocking `sha`'s remaining timeout.
+Traced `apply_csm_split` on `sha.py` (uncapped, placement-fixed) logging
+every CreationSet id feeding a decision, the `EntrySet` id each one
+resolves to via `find_or_make_filtered_entry_set`, and whether either
+target equals the ES being split.
+
+**Result: CreationSet identity is not the problem here.** The receiver
+in question (`es=468`, `__setitem__`) sees the exact same two
+CreationSet ids (1094, 1138) resolve to the exact same two target
+EntrySets (466, 467) across 15+ consecutive appearances spanning 30+
+passes -- completely stable, no churn, no self-target (neither 466 nor
+467 is 468 itself). `find_or_make_filtered_entry_set`'s existing scan-
+based reuse plus this session's `display_variants` index are already
+giving this case fully durable identity.
+
+**What's actually happening: `es=468`'s edge count doubles exactly
+every time CSM revisits it** -- 2, 4, 8, 16, 32, ..., 65536, tracked
+directly via `dec->all_edges.n`. This is a different phenomenon than
+dijkstra2's growth (which came from `copy_AEdge`'s N-way fan-out on a
+wide, 11-member union): here `ncs` is a constant 2, so the doubling
+isn't fan-out width -- new edges are arriving into `es=468` from
+elsewhere between CSM's turns (most likely caller-side re-cloning,
+possibly `sha`'s own iterative/round-based structure producing a fresh
+caller clone -- or a doubling of them -- each cycle), which CSM's own
+per-CS fan-out then duplicates further on top. Not root-caused further
+this session; explicitly NOT an allocation-site/CS-identity problem, so
+066's deferred part 2 (`split_css`'s self-product phase-ordering) would
+not fix it even if built. Where the growth is actually originating
+(which caller function, and why its clone count doubles) is the open
+question for whoever investigates `sha` specifically next.
