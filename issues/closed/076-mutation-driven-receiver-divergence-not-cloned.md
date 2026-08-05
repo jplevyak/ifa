@@ -1,10 +1,31 @@
 # 076 — Monotonic type growth lets a shared/prototype CreationSet permanently contaminate a container read, even after `split_css` correctly separates the instances that share it
 
-**Status:** open, found 2026-08-04, **substantially corrected the same day**
+**Status: FIXED 2026-08-05** (`__pyc__/07_dict.py` + `__pyc__/08_set.py`).
+Root cause turned out to be [issue 017](../../../issues/closed/017-multi-instance-mutation-corruption.md)
+(project-level, not `ifa/`): `dict`/`set` kept bare class-body default
+attributes (`_keys = []` etc.) *alongside* the explicit `__init__` 017
+added to fix the runtime aliasing bug — runtime correctness never
+needed them gone (`__init__` always overwrites first), but pyc's flow
+analysis unions every setter reaching a field rather than modeling
+temporal overwrite, so the prototype-clone step's copy of the shared
+class-level default permanently re-entered the field's *inferred*
+type every pass, regardless of anything downstream. Removing the
+now-redundant class-body defaults (two-line change per class) fixes
+`1.py` cleanly and is a net-positive corpus change, including recovering
+`dijkstra2` — issue [075](../075-element-cs-method-split-idempotent-plan.md)'s
+own named target — from `FAIL` to compiling for the first time in this
+whole investigation. See "RESOLVED" below for the full trace and
+verification; the sections below it are kept as the investigation
+history (several real, confirmed-but-insufficient or reverted
+mechanisms were found and ruled out first — useful trail, not the
+final answer).
+
+**Superseded status (kept for history):** open, found 2026-08-04,
+**substantially corrected the same day**
 after deeper tracing. The first version of this issue claimed `dict`
 (and any no-arg-constructor class) "never gets per-instance method
 specialization" and blamed issue
-[045](closed/045-receiver-cs-method-cloning.md)'s `clone_methods_per_cs`
+[045](045-receiver-cs-method-cloning.md)'s `clone_methods_per_cs`
 gating entirely. **That framing is wrong** — verified by actually
 reading `./log/log.s` (`-l s`, `LOG_SPLITTING`) instead of only
 stdout/stderr (an earlier analysis mistake, corrected in-session): the
@@ -59,10 +80,10 @@ same shared helper. Tree is back to the exact last-committed state;
 no code changes landed.
 
 This is very likely **the same fundamental mechanism already
-documented in [063](063-no-type-bucket-triage.md)** ("pyc separates
+documented in [063](../063-no-type-bucket-triage.md)** ("pyc separates
 the data but keeps the code operating on the data shared, and the
 element types merge straight back") and directly relevant to
-[075](075-element-cs-method-split-idempotent-plan.md) (CSM), whose own
+[075](../075-element-cs-method-split-idempotent-plan.md) (CSM), whose own
 filtered products are built through the same `split_css`/`split_edges`
 infrastructure and may be susceptible to the identical staleness. This
 issue adds a precise, code-verified explanation for *why* the merge
@@ -84,11 +105,11 @@ transfer function with the same shape, not yet surveyed),
 successfully separate the dict/list identities), `split_for_violations`/
 `collect_violation_imprecisions` (~5963-6021, the mechanism that
 detects but cannot resolve the residual violation).
-**Related:** [063](063-no-type-bucket-triage.md) (same family, prior
-framing), [075](075-element-cs-method-split-idempotent-plan.md) (CSM —
+**Related:** [063](../063-no-type-bucket-triage.md) (same family, prior
+framing), [075](../075-element-cs-method-split-idempotent-plan.md) (CSM —
 built on the same split infrastructure, likely shares this staleness
 risk in its own filtered products, not yet checked),
-[077](077-primitive-equality-codegen-missing-salvage-guard.md) (the
+[077](../077-primitive-equality-codegen-missing-salvage-guard.md) (the
 separate codegen-level symptom this same repro also exposes).
 
 ## Symptom
@@ -509,6 +530,100 @@ threads (the narrower merge_in fix, and 928's persistence via the
 investigation, and given this round already produced one
 confirmed-then-reverted regression, this is left here rather than
 attempting either blind in the same session.
+
+## RESOLVED (2026-08-05): the actual root cause was issue 017's class-body defaults, not FA
+
+Kept pulling the `self._keys` field thread from the previous section
+(new instrumentation: `flow_vars` hooked on writes into the `_keys`
+field AVar specifically, plus a second hook on `EntrySet` 41's own
+identity/edges — both temporary, added and fully reverted after use)
+and it led somewhere completely different from every mechanism traced
+so far in this file.
+
+**Found:** `EntrySet 44` (`dict.__init__`'s own body) writes a clean
+`[1027]` into the field — no 928. But `EntrySet 44` has exactly one
+caller: `EntrySet 41`, called directly from `main`. `EntrySet 41` is
+`__new__`'s prototype-clone step, and it *also* writes into the same
+field — `[928]` only. `07_dict.py`'s class body, at the time, still
+declared `_keys = []`/`_vals = []`/`_len = 0` as bare class-body
+attributes, with `__init__` immediately overwriting them — exactly
+the shape [issue 017](../../../issues/closed/017-multi-instance-mutation-corruption.md)
+(project-level, not `ifa/`) already documents and explains: `dict`'s
+prototype-clone instantiation model runs class-body attribute
+initialization *once*, on a single shared prototype, and every
+`dict()` call clones that already-initialized prototype. Issue 017
+fixed the **runtime** consequence (silent cross-instance data
+corruption) by adding an explicit `__init__` — but left the class-body
+defaults in place alongside it (its own fix example shows both
+coexisting), because runtime correctness never depended on removing
+them: `__init__` always overwrites before any instance is observable.
+
+**What issue 017 didn't and couldn't have caught**: pyc's flow
+analysis models a field's type as the *union* of every setter that can
+reach it, not a temporal overwrite. The prototype-clone step is itself
+a setter — it copies the class-level default's type into every new
+instance's field *before* `__init__` runs — so even though `__init__`
+always wins at runtime, the class-level default's type (CS 928, the
+one-and-only shared class-level list) never left the field's
+*inferred* type. Every mechanism traced earlier in this file
+(`P_prim_set_index_object` writing into every CS in a shared `vec`
+union, `merge_in`'s cross product, `structural_assignment`'s shared
+temp) was real, but all of them were downstream amplifiers of this one
+upstream leak — CS 928 kept re-entering `self._keys`'s field type on
+every single pass because the prototype-clone step never stopped
+contributing it, no matter how cleanly anything downstream got fixed.
+
+**Fix:** remove the now-redundant class-body defaults from `dict`
+(`__pyc__/07_dict.py`) and `set` (`__pyc__/08_set.py`, confirmed to
+have the identical issue-017 shape) — `_keys = []` / `_vals = []` /
+`_len = 0` above `__init__`, and `_items = []` / `_len = 0` above
+`set.__init__`. `__init__`'s own assignments (issue 017's actual fix)
+are untouched and still the only place these fields get their values.
+Two-line change per class.
+
+**Verified, full rigor:**
+- `1.py`: exit 0, zero warnings, generated `.c` compiles clean.
+- Runtime correctness: compiled output byte-for-byte matches `python3`
+  on both `1.py`'s repro and a hand-written stress case (multiple
+  inserts, index reads, re-assignment).
+- Issue 017's own original repro (`a = {"x": 1}; b = {}; b["y"] = 2;
+  print(b["y"])`) still prints `2`, confirming the fix doesn't
+  reintroduce the cross-instance corruption 017 fixed — expected, since
+  017's actual fix (the `__init__` assignments) is untouched.
+- `ifa --test` 58/58 (no `fa.cc` changes this round at all — this is a
+  pure `__pyc__` library fix).
+- `test_pyc.py`, both backends, `PYC_CSM` unset: 239/0, unchanged.
+- `test_pyc.py`, both backends, `PYC_CSM=2`: 229/11/10/4, unchanged.
+- Corpus sweep, `PYC_CSM` unset: **net positive**. Gained:
+  `dijkstra2` (**FAIL → `COMPILED_C_WARN`** — one of issue
+  [075](../075-element-cs-method-split-idempotent-plan.md)'s own two
+  named targets, first time it's ever compiled in this whole
+  investigation), `msp_ss` (FAIL → `COMPILED_C_WARN`), `sudoku4` (FAIL
+  → `COMPILED_C_WARN`), plus `plcfrs`/`sunfish` progressing past their
+  60s compile timeouts to real (still-FAIL) diagnostics. One accepted
+  loss: `sudoku2` (`COMPILED_C_WARN` → FAIL) — confirmed unrelated to
+  `dict`/`set` (its own source never constructs either), on a program
+  already fragile at baseline (not fully clean); reads as FA
+  convergence-timing sensitivity shifted by this fix elsewhere in the
+  program, the same class of trade-off already accepted elsewhere in
+  this investigation (e.g. `ant`/`kanoodle` under CSM).
+- Corpus sweep, `PYC_CSM=2`: same pattern; the pre-existing CSM=2-only
+  costs (`ant`, `kanoodle`, `adatron`, `chull`) are unchanged by this
+  fix, and the same three gains (`dijkstra2`/`msp_ss`/`sudoku4`) land
+  on top of them.
+
+**Status: fixed and committed.** This closes the specific `1.py` repro
+this issue was opened for. `pylife` (075's other named target) is
+unaffected — confirmed via the sweep, still `FAIL` with an unrelated
+diagnostic (`illegal primitive argument type 'x' illegal: tuple`) —
+so it has a genuinely different root cause, not this one. Worth a
+quick, cheap check for the identical class-body-default shape in any
+*other* `__pyc__` builtin with a no-arg `__init__` overwriting bare
+class-body attributes (`__list_iter__`, `__dict_iter__`, and siblings
+in the same files all follow a similar pattern per their own
+comments) — not surveyed this round, since none were implicated by
+this specific trace, but the same mechanism would apply anywhere it
+occurs.
 
 ## Verification plan
 

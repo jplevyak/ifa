@@ -32,39 +32,19 @@ that:
 
 ## Current open issues
 
-- [076-mutation-driven-receiver-divergence-not-cloned.md](076-mutation-driven-receiver-divergence-not-cloned.md)
-  — **corrected same-day after deeper tracing** (the first draft's
-  "receiver never gets split" claim was wrong — caught by actually
-  reading `./log/log.s` instead of only stdout/stderr). Two dicts with
-  different key types (`{1: 1}` and `{"a": 1}`) hard-fail the build even
-  though the ordinary setter-confluence splitter genuinely DOES separate
-  both instances at the CreationSet level and DOES mint per-call-site
-  `EntrySet` clones — confirmed via extensive `log.s` tracing. The real,
-  instrumentation-verified root cause is deeper: pyc's flow analysis is
-  monotonic (`AType` unions only grow, never shrink, pass over pass), so
-  a `list.__getitem__` clone that observed the SHARED prototype
-  CreationSet in an early pass keeps drawing element data from it
-  forever, even after `split_css` later refines that identity into
-  clean per-instance sub-CS's — confirmed by direct instrumentation
-  showing one such clone's argument spanning 5 different list
-  CreationSets simultaneously. Likely the same underlying mechanism as
-  [063](063-no-type-bucket-triage.md)'s "no type" family and directly
-  relevant to whether [075](075-element-cs-method-split-idempotent-plan.md)
-  (CSM)'s own filtered products share this staleness risk (not yet
-  checked). Three fix directions sketched, no recommendation made yet.
 - [077-primitive-equality-codegen-missing-salvage-guard.md](077-primitive-equality-codegen-missing-salvage-guard.md)
-  — same repro as 076 also exposes a second, separate bug: when a
-  dispatched comparison dunder's operand types mismatch (076's
-  mechanism, or any other salvage path), the C-call/primitive-operator
-  codegen (`c_call_codegen`, `python_ifa_main.cc:58`; the
-  `P_prim_primitive` fallback, `cg.cc:857`) prints both operands
-  verbatim with no type-agreement check, producing a raw C compile
-  error instead of the runtime-assert-guard convention established by
+  — found alongside [076](closed/076-mutation-driven-receiver-divergence-not-cloned.md)
+  (now fixed, see below): when a dispatched comparison dunder's operand
+  types mismatch (076's original mechanism, or any other salvage path),
+  the C-call/primitive-operator codegen (`c_call_codegen`,
+  `python_ifa_main.cc:58`; the `P_prim_primitive` fallback,
+  `cg.cc:857`) prints both operands verbatim with no type-agreement
+  check, producing a raw C compile error instead of the
+  runtime-assert-guard convention established by
   [056](056-degraded-index-type-raw-c-compile-error.md) (at least the
-  fourth known occurrence of this same gap class). Fixing this doesn't
-  fix 076's imprecision, only turns the hard build failure into a
-  degrade-gracefully warning, matching how the equivalent user-class
-  case already behaves today.
+  fourth known occurrence of this same gap class). 076's fix means the
+  original repro no longer demonstrates this, but the gap itself is
+  general and still open.
 - [075-element-cs-method-split-idempotent-plan.md](075-element-cs-method-split-idempotent-plan.md)
   — **concrete build plan** to escape the "no type" local maximum:
   clone shared `list`/`dict` methods per element-CS (shedskin's
@@ -76,7 +56,13 @@ that:
   application idempotent so it stops backsliding. Keeps the display in
   identity ([073](073-teach-splitter-productive-vs-inert-context.md):
   bounded multiplier, not necessary to remove). Step-by-step, with code
-  anchors, for a fresh engineer.
+  anchors, for a fresh engineer. Update 2026-08-05: `dijkstra2` now
+  compiles (`COMPILED_C_WARN`) independent of this plan entirely — its
+  blocker turned out to be [issue 017](../../issues/closed/017-multi-instance-mutation-corruption.md)'s
+  class-body-default leak (fixed via
+  [076](closed/076-mutation-driven-receiver-divergence-not-cloned.md)),
+  not the element-CS method-split gap this issue targets. `pylife`
+  remains open and unaffected (confirmed a different root cause).
 - [072-empty-container-notype-current-mechanism-and-plan.md](072-empty-container-notype-current-mechanism-and-plan.md)
   — the empty/imprecise-container element-inference family
   ([043](closed/043-empty-container-inference-options.md) /
@@ -202,7 +188,7 @@ commit ref recorded in each file's status line.  They stay in
 the tree as history — a code-search for the affected file finds
 the trail of investigation even after the fix has landed.
 
-Currently 37 closed issues:
+Currently 38 closed issues:
 [001](closed/001-keepalive-vs-explicit-reply.md),
 [002](closed/002-codegen-llvm-normalizer.md),
 [003](closed/003-fa-converge-determinism.md),
@@ -239,7 +225,8 @@ Currently 37 closed issues:
 [058](closed/058-polymorphic-classtag-dispatch-drops-extra-arguments.md),
 [059](closed/059-narrowing-peel-wrapper-boolean-collapse-gap.md),
 [060](closed/060-none-branch-dropped-mixed-with-literal-bool-sequence.md),
-[069](closed/069-per-arity-tuple-types-scope.md).
+[069](closed/069-per-arity-tuple-types-scope.md),
+[076](closed/076-mutation-driven-receiver-divergence-not-cloned.md).
 
 ## When to file an issue here vs fix it now
 

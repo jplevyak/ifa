@@ -1,12 +1,17 @@
 # 077 — Dunder-dispatched comparison codegen assumes both operands share the dispatch-selected type; no guard when they don't
 
 **Status:** open, found 2026-08-04 alongside
-[076](076-mutation-driven-receiver-divergence-not-cloned.md) (same
+[076](closed/076-mutation-driven-receiver-divergence-not-cloned.md) (same
 repro exposes both — 076 is the precision root cause that *produces*
 a type-mismatched comparison; this issue is the separate codegen gap
 that turns it into a **hard C compile error** instead of the
-established "degrade to a runtime assert" convention). Not fixed —
-filed rather than fixed because, like
+established "degrade to a runtime assert" convention). **076 is now
+fixed (2026-08-05)** — the specific `1.py` repro that motivated this
+issue no longer reaches a type mismatch at all, so it no longer
+exercises this gap either. That doesn't close this issue: the missing
+guard is general (any other salvage path reaching these two call
+sites hits the same hard C error), just no longer demonstrated by the
+original repro. Not fixed — filed rather than fixed because, like
 [056](056-degraded-index-type-raw-c-compile-error.md) (the same bug
 class at a different call site), the two fix sites below are shared,
 hot codegen paths (every `str` comparison; every numeric-dunder-style
@@ -18,8 +23,9 @@ with full regression verification — more than a quick patch.
 see below) and `ifa/codegen/cg.cc:857-873` (`case P_prim_primitive`'s
 generic fallback, used when `__pyc_operator__` names a primitive with
 no `RegisteredPrim::cgfn` — this is the `_CG_prim_equal` call site).
-**Related:** [076](076-mutation-driven-receiver-divergence-not-cloned.md)
-(root cause of *why* the operand types mismatch in the first place),
+**Related:** [076](closed/076-mutation-driven-receiver-divergence-not-cloned.md)
+(root cause of *why* the operand types mismatch in the first place —
+now fixed, see that file's "RESOLVED" section),
 [056](056-degraded-index-type-raw-c-compile-error.md) (the established
 precedent and convention this issue extends to a new call site — read
 its "What a fix would look like" section, the same shape applies
