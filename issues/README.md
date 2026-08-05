@@ -33,19 +33,25 @@ that:
 ## Current open issues
 
 - [076-mutation-driven-receiver-divergence-not-cloned.md](076-mutation-driven-receiver-divergence-not-cloned.md)
-  — `dict`/`set` (and any no-arg-constructor class) never get
-  per-instance method specialization: issue
-  [045](closed/045-receiver-cs-method-cloning.md)'s
-  `clone_methods_per_cs` trigger only fires off a constructor-constant
-  argument, but these classes diverge later, via mutation, with no
-  constructor argument to hang the flag on. Two dicts with different
-  key types in the same program (`{1: 1}` and `{"a": 1}`) merge into
-  one shared `__setitem__`/`__getitem__` contour and hard-fail the
-  build. Confirmed general (reproduces on a plain user class with the
-  same shape) and confirmed NOT fixed by 075's CSM (byte-identical
-  with `PYC_CSM=2`, zero splitting activity) — CSM assumes the
-  receiver is already separated; here it never was. Three fix options
-  sketched, no recommendation made yet.
+  — **corrected same-day after deeper tracing** (the first draft's
+  "receiver never gets split" claim was wrong — caught by actually
+  reading `./log/log.s` instead of only stdout/stderr). Two dicts with
+  different key types (`{1: 1}` and `{"a": 1}`) hard-fail the build even
+  though the ordinary setter-confluence splitter genuinely DOES separate
+  both instances at the CreationSet level and DOES mint per-call-site
+  `EntrySet` clones — confirmed via extensive `log.s` tracing. The real,
+  instrumentation-verified root cause is deeper: pyc's flow analysis is
+  monotonic (`AType` unions only grow, never shrink, pass over pass), so
+  a `list.__getitem__` clone that observed the SHARED prototype
+  CreationSet in an early pass keeps drawing element data from it
+  forever, even after `split_css` later refines that identity into
+  clean per-instance sub-CS's — confirmed by direct instrumentation
+  showing one such clone's argument spanning 5 different list
+  CreationSets simultaneously. Likely the same underlying mechanism as
+  [063](063-no-type-bucket-triage.md)'s "no type" family and directly
+  relevant to whether [075](075-element-cs-method-split-idempotent-plan.md)
+  (CSM)'s own filtered products share this staleness risk (not yet
+  checked). Three fix directions sketched, no recommendation made yet.
 - [077-primitive-equality-codegen-missing-salvage-guard.md](077-primitive-equality-codegen-missing-salvage-guard.md)
   — same repro as 076 also exposes a second, separate bug: when a
   dispatched comparison dunder's operand types mismatch (076's

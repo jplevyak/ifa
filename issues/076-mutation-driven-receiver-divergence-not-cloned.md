@@ -1,29 +1,57 @@
-# 076 — Receiver-CS method cloning (issue 045) doesn't cover classes whose instances diverge by mutation, not constructor arguments
+# 076 — Monotonic type growth lets a shared/prototype CreationSet permanently contaminate a container read, even after `split_css` correctly separates the instances that share it
 
-**Status:** open, found 2026-08-04 triaging a minimal repro
-(`squares = {1: 1, 2: 4, 3: 9}; words = {"a": 1, "b": 2}`) that
-produces a hard C compile error. Not fixed — filed because the fix
-requires a design decision about how far to widen an intentionally
-scoped opt-in mechanism (issue
-[045](closed/045-receiver-cs-method-cloning.md)), and because it's a
-program-wide-blast-radius change (touches every `dict`/`set`
-instance, or every class it's extended to) needing full corpus
-verification, not a quick patch.
-**Affects:** `python_ifa_build_syms.cc` (~2033-2050, the
-`clone_methods_per_cs` trigger), `ifa/analysis/fa.cc`
-(`cs_is_per_cs_method_class` ~6067, `split_for_per_cs_method_receivers`
-~6074 — the PER_CS_RECEIVER stage from issue 045), and, if `dict`
-specifically is chosen as a fix target, `__pyc__/07_dict.py`.
-**Related:** [045](closed/045-receiver-cs-method-cloning.md) (the
-mechanism this issue proposes widening — read that first, its "Design"
-section explains the existing trigger and why it's scoped the way it
-is), [056](056-degraded-index-type-raw-c-compile-error.md) and
+**Status:** open, found 2026-08-04, **substantially corrected the same day**
+after deeper tracing. The first version of this issue claimed `dict`
+(and any no-arg-constructor class) "never gets per-instance method
+specialization" and blamed issue
+[045](closed/045-receiver-cs-method-cloning.md)'s `clone_methods_per_cs`
+gating entirely. **That framing is wrong** — verified by actually
+reading `./log/log.s` (`-l s`, `LOG_SPLITTING`) instead of only
+stdout/stderr (an earlier analysis mistake, corrected in-session): the
+ordinary setter-confluence machinery **does** separate `squares`'s and
+`words`'s dict/list identities, with no `clone_methods_per_cs` flag
+needed at all. The real mechanism, root-caused by instrumenting
+`P_prim_index_object` directly, is deeper and more general: pyc's flow
+analysis is **monotonic** (`AType` unions only grow, never shrink or
+get re-attributed, pass over pass — a foundational invariant of the
+whole framework), and `split_css` has no way to retract a
+now-superseded creation-set membership from an `AVar` that observed it
+in an earlier, less-refined pass. See "What actually happens" below
+for the full, log-verified trace, and "Root cause" for the
+instrumented proof.
+
+This is very likely **the same fundamental mechanism already
+documented in [063](063-no-type-bucket-triage.md)** ("pyc separates
+the data but keeps the code operating on the data shared, and the
+element types merge straight back") and directly relevant to
+[075](075-element-cs-method-split-idempotent-plan.md) (CSM), whose own
+filtered products are built through the same `split_css`/`split_edges`
+infrastructure and may be susceptible to the identical staleness. This
+issue adds a precise, code-verified explanation for *why* the merge
+persists even when both CreationSet-level and EntrySet-level splitting
+demonstrably succeed — 063's "the method isn't cloned per element-CS"
+framing turns out to be necessary but not sufficient; **even a cleanly
+isolated per-call-site clone still routes its internal reads through a
+separately-dispatched sub-method clone that can be independently
+contaminated**, as traced below.
+
+**Affects:** `ifa/analysis/fa.cc` — `split_css` (~5544, esp. the
+`CreationSet` copy-constructor at ~183 and its `added_element_var(0)`
+reset), `get_element_avar` (~1395), `P_prim_index_object` (~2139, the
+`for (CreationSet *cs : vec->out->sorted) ... flow_vars(get_element_avar(cs), result)`
+loop at ~2143-2156 — and, very likely, every other "container[i]"-style
+transfer function with the same shape, not yet surveyed),
+`collect_cs_setter_confluences`/`split_for_setters`/
+`split_for_setters_of_setters` (~5633-5752, the mechanism that *does*
+successfully separate the dict/list identities), `split_for_violations`/
+`collect_violation_imprecisions` (~5963-6021, the mechanism that
+detects but cannot resolve the residual violation).
+**Related:** [063](063-no-type-bucket-triage.md) (same family, prior
+framing), [075](075-element-cs-method-split-idempotent-plan.md) (CSM —
+built on the same split infrastructure, likely shares this staleness
+risk in its own filtered products, not yet checked),
 [077](077-primitive-equality-codegen-missing-salvage-guard.md) (the
-separate, shallower codegen-level symptom this same repro also
-exposes — a missing salvage guard turns the *imprecision* below into
-a hard build failure specifically for `dict`; fixing 077 makes this
-degrade gracefully instead of failing the build, but does not fix the
-imprecision itself).
+separate codegen-level symptom this same repro also exposes).
 
 ## Symptom
 
@@ -32,155 +60,175 @@ squares = {1: 1, 2: 4, 3: 9}
 words = {"a": 1, "b": 2}
 ```
 
-fails to compile:
+fails with `expression has mixed basic types:( int64 str )` on
+`self._keys[i] == key` inside `dict.__setitem__`
+(`__pyc__/07_dict.py:89`), producing a hard C compile error (see 077).
+
+## What actually happens (log-verified, corrected from the first draft)
+
+Tracing `./log/log.s` (`-l s`) for this compile:
+
+1. **Setter-confluence detection splits the dict's own CreationSet**:
+   `SPLIT CS 965 dict 3893 -> 1026` — `squares` and `words` get
+   genuinely separate dict-object identities. No `clone_methods_per_cs`
+   flag involved.
+2. **The backing list's CreationSet splits too**, more than once:
+   `SPLIT CS 970 list 61 -> 1027` (and, per the instrumented trace
+   below, earlier generations `928 -> 970/929` also occurred).
+3. **Dozens of per-call-site `EntrySet` splits** happen for
+   `__setitem__`, `__getitem__`, `__eq__`, `append` (e.g. `SPLIT ES 45
+   __setitem__ ... -> 55/56/57/58`, one product per individual literal
+   key-value insertion).
+4. By the pass where stage 5 (`split_for_violations`) finally runs,
+   `self`'s dict-CS ambiguity is **already fully resolved**
+   (`[scss] cs 965 starter_set=1`, `cs 1026 starter_set=1` — each a
+   single definition) and `self`'s `EntrySet` splits cleanly two more
+   times (`[stage1] av 2768/3691 ES/formal split_entry_set -> 1`).
+5. **And yet the violation count never moves** — flat at 13 from
+   stage 5's first check straight through to convergence (pass 11, per
+   the `-v` stage-timing summary: `type_confluence` progress on 5
+   passes, `setter` on 3, `violation` on 1, **`per_cs_receiver` on 0,
+   `csm_element_cs` on 0** — confirming both 045's and 075's mechanisms
+   genuinely contribute nothing here, but also confirming they are not
+   what's missing).
+
+So the receiver-splitting the first draft of this issue claimed never
+happens, demonstrably does happen — repeatedly, at both the CS and ES
+level — and it *still* doesn't clear the violation.
+
+## Root cause (instrumented, code-verified)
+
+Adding temporary instrumentation to `P_prim_index_object` (the
+primitive behind `self._keys[i]`) to print `vec`'s (i.e.
+`self._keys`'s) resolved `CreationSet` union at each of its call
+contours gave a direct answer:
 
 ```
-1.py:1:9: warning: expression has mixed basic types:( int64 str )
-    squares = {1: 1, 2: 4, 3: 9}
-            ^
-  called from __pyc__.py:1624
-...
-1.py.c:114:8: error: comparison between pointer and integer ('_CG_int64' (aka 'long long') and 'char *')
-  114 |   t1 = _CG_prim_equal(t2, _CG_Symbol(6488, "=="), _CG_String_n("b",1));
-1.py.c:310:8: error: no matching function for call to '_CG_str_eq'
-  310 |   t1 = _CG_str_eq(t2, t3);
+TMPDBG-idx es:51 vec_av:2768 vec_css:[928(list) 1027(list)]
+TMPDBG-idx es:51 vec_av:2768 vec_css:[928(list) 929(list) 970(list) 971(list)]
+TMPDBG-idx es:51 vec_av:2768 vec_css:[928(list) 970(list) 1027(list)]
+TMPDBG-idx es:51 vec_av:2768 vec_css:[928(list) 970(list)]
+TMPDBG-idx es:80 vec_av:3691 vec_css:[928(list) 970(list)]
+TMPDBG-idx es:82 vec_av:3708 vec_css:[1027(list)]   <- clean, single-CS
+TMPDBG-idx es:83 vec_av:3712 vec_css:[970(list)]    <- clean, single-CS
 ```
 
-`PYC_CSM=2` (issue [075](075-element-cs-method-split-idempotent-plan.md)'s
-element-CS container-method split) produces **byte-for-byte identical**
-output — it does not touch this case at all, and `-l s` (the
-`LOG_SPLITTING` log) shows zero splitting activity of any kind for
-this program.
+`list.__getitem__`'s clone at `es:51` (reached, per the dispatch log,
+by *all three* of squares's separately-isolated `__setitem__` clones —
+`DISPATCH ES 45/55/56:8051, __getitem__ -> 51`) has a `vec` argument
+whose resolved type spans **five different list `CreationSet`s
+simultaneously** — `928` (the shared prototype, predating any split at
+all), `970`/`1027` (the first split generation), `929`/`971` (a
+second). Some *other* `list.__getitem__` clones (`es:82`, `es:83`) DO
+end up cleanly isolated to exactly one CS each — proof the mechanism
+*can* work — but `es:51`/`es:80`/`es:81` never do, because they are
+long-lived clones, reused across multiple calls spanning many analysis
+passes, and each pass's `AType` union only ever **adds** to what came
+before.
 
-## Root cause
+**Why this happens, mechanically:**
 
-`__pyc__/07_dict.py`'s `dict` class is a single, unspecialized method
-contour: `__setitem__`/`__getitem__`/`get` each run through **one**
-`EntrySet` shared by every `dict` instance in the whole program,
-regardless of how many distinct dict *objects* exist. `squares`'s and
-`words`'s `__setitem__` calls both land in that one contour, so the
-`key` parameter's type is the union `(int64, str)` there — and
-`__setitem__`'s own internal scan, `self._keys[i] == key`
-(`__pyc__/07_dict.py:89`, mirrored at :82/:100), compares that
-union-typed `key` against `self._keys[i]`, which is itself unioned for
-the same reason. `int == str` at that primitive level is what produces
-the hard C error above (see 077 for why it's a *hard* error rather
-than a warning + runtime guard).
+1. `split_css` (fa.cc:5544) reassigns which `CreationSet` a *going
+   forward* field lookup resolves to (`v->cs_map->put(cs->sym,
+   new_cs)`), and mints the new CS via `CreationSet`'s copy constructor
+   (fa.cc:183), which explicitly resets `added_element_var(0)` — a
+   deliberately fresh start for the new CS's own element tracking.
+2. **But nothing migrates or invalidates data an `AVar` had *already*
+   flowed from the OLD, shared CS in an earlier pass.** `flow_vars`
+   edges, once established, are permanent — this is not a bug in
+   isolation, it's the monotonic fixed-point model every stage in this
+   file relies on for convergence (the same invariant issue 033/074's
+   stall-guard machinery is built around).
+3. `P_prim_index_object`'s transfer function (fa.cc:2143) iterates
+   `vec->out->sorted` — literally every CS `vec` has *ever* resolved to
+   across the whole pass history — and calls
+   `flow_vars(get_element_avar(cs), result)` **for each one**. A read
+   that was first evaluated against the shared prototype CS in an
+   early pass keeps drawing from that prototype's (permanently mixed,
+   int+str) element data forever, even once later passes correctly
+   refine `self._keys` down to a single, per-instance CS.
 
-Per-instance method specialization already exists — issue 045's
-`PER_CS_RECEIVER` stage, gated by a class flag `clone_methods_per_cs`
-— but that flag is set **only** when the class's `__init__` has a
-parameter marked `__pyc_clone_constants__`
-(`python_ifa_build_syms.cc:2044`, `wf->clone_for_constants` check).
-`dict.__init__(self)` takes no such parameter — a dict starts empty;
-its instances only diverge *later*, via the sequence of `__setitem__`
-calls each one happens to receive. There is no constructor argument to
-hang the marker on, so 045's trigger is structurally blind to this
-shape. It was never meant to cover it: 045's own doc says the flag is
-"opt-in, class-gated... first user: `range`" — the mechanism was
-purpose-built for classes whose per-instance identity is visible *at
-construction* (`range(0, 2)` vs `range(0, 0)`), not classes whose
-divergence only shows up in later mutating calls.
+**Why per-call-site `EntrySet` isolation alone doesn't save it:**
+`self._keys[i]` is not evaluated inline inside `__setitem__`'s own
+contour — it's a dynamically-dispatched sub-call to
+`list.__getitem__` (confirmed via the dispatch log: `DISPATCH ES
+45:8051, __getitem__ 2226 -> 51`), which gets its *own*, separately
+managed set of clones. Even though `__setitem__`'s own clone (`es:45`)
+is perfectly isolated (exactly one caller, squares's first insertion),
+the `list.__getitem__` clone it dispatches to (`es:51`) is a **shared,
+long-lived** contour reused across squares's later insertions too (and
+was first touched before the list's CS had finished splitting) — so
+the caller-side isolation this session's earlier `find_fanout_entry_sets`/
+filter-inheritance work (issue 075, commit `5fff3e12`) achieves doesn't
+reach into this callee-side contamination at all; they're separate
+mechanisms operating on separate contours.
 
-**Confirmed general, not `dict`-specific.** An ordinary user-defined
-class with the identical shape reproduces the same underlying merge:
+## Relationship to 063 and 075
 
-```python
-class Box:
-    def __init__(self):
-        self.v = 0
-    def set(self, x):
-        self.v = x
-    def get(self):
-        return self.v
+063 already establishes that pyc keeps shared container methods
+operating on merged element data even after `split_css` separates the
+data — but frames the fix as "clone the methods per element-CS" (CSM,
+built as issue 075). This issue's trace shows that framing is
+necessary but **not sufficient on its own**: CSM's own filtered
+products are minted through the same `split_css`/`split_edges`/
+`find_or_make_filtered_entry_set` machinery this issue just showed can
+leave a *reused* clone permanently contaminated by a CS it observed
+before an upstream split refined things further. Whether CSM's
+specific products are actually vulnerable to this (as opposed to being
+protected by some property of `decide_csm_split`'s divergence check)
+has not been checked — worth a follow-up trace on `dijkstra2`/`pylife`
+(075's still-unresolved targets) instrumented the same way this issue
+was.
 
-a = Box(); a.set(1)
-b = Box(); b.set("hi")
-print(a.get()); print(b.get())
-```
+## Proposed fix directions (design decision needed — no recommendation made)
 
-produces the same `expression has mixed basic types:( int64 str )`
-warning on `self.v` — `Box.set`/`Box.get` are just as unspecialized
-per-instance as `dict.__setitem__`/`__getitem__`, for the identical
-reason (no-arg constructor, divergence via later mutation). The only
-difference from the `dict` case: `Box`'s path degrades to a warning +
-`assert(!"runtime error: matching function not found")` guard instead
-of a hard compile error, because the generic dispatch codegen path
-happens to have that fallback and `dict`'s raw-primitive-`==` path
-doesn't (issue 077).
+**Option A — retroactively invalidate/re-flow on split.** When
+`split_css` mints a new CS from an old one, explicitly find and
+re-derive every `AVar` that had already flowed data from the old CS's
+element tracking, rather than leaving those edges permanent. Directly
+attacks the mechanism, but works against the monotonic-growth
+invariant the whole fixed-point convergence design depends on —
+substantial architectural risk, needs a termination argument as
+careful as issue 033's.
 
-**Why issue 075 (CSM) doesn't help.** CSM splits a method that
-*accesses an already-per-CS-diverging **contained** field* (e.g. a
-`list` field holding different element types per creation site) —
-it assumes the *receiver* itself is already properly separated per
-instance, and only patches up residual divergence nested inside one
-such receiver. Here the receiver itself (the `dict`/`Box` object) was
-never separated to begin with — the union is on the method's own
-formal parameter (`key`, `x`), not on a nested container field CSM's
-`decide_csm_split` looks at (`av->out->type->sorted` per-CS
-`added_element_var` divergence). That's a structurally different
-starting point, which is why CSM shows zero engagement on this repro.
+**Option B — prune stale CS membership at the read site.** Teach
+`P_prim_index_object` (and any sibling "container[i]"-shaped transfer
+function — not yet surveyed) to filter `vec->out->sorted` down to CS
+identities still reachable from `vec`'s *current* resolved field
+identity, rather than flowing from the full historical accumulation.
+Needs a notion of "still live" vs. "was true in some earlier pass" that
+doesn't currently exist on `AType`/`CreationSet`.
 
-## Proposed fix (design decision needed — options, not a recommendation)
-
-**Option A — widen `clone_methods_per_cs`'s trigger to a
-divergence-observed condition**, not just a constructor-constant
-condition: if `PER_CS_RECEIVER`'s existing scan
-(`split_for_per_cs_method_receivers`) ever finds an EntrySet whose
-positional arg holds ≥2 same-class CreationSets *and* a later stage
-would otherwise report a violation inside that method, treat it the
-same way as a flagged class instead of requiring the flag at all.
-Risk: this is close to removing the class gate entirely, which 045's
-design deliberately kept narrow "to bound the blast radius" — needs
-re-verification against 045's own stability reasoning (termination:
-does a violation-triggered split still only route through *existing*
-CSs, per 045's argument, or can it manufacture new ones each pass —
-issue 033's non-idempotence concern).
-
-**Option B — mark specific builtin classes (`dict`, `set`) unconditionally
-`clone_methods_per_cs`**, narrower and lower-risk than A: these are
-exactly the "grows heterogeneously via mutation, not construction"
-shape by design (unlike most user classes, which usually *do* set
-their diverging fields from constructor arguments and are already
-covered once A or an equivalent lands, or aren't diverging at all).
-Doesn't fix the general `Box`-shaped case, only the two builtin
-containers most likely to hit it in practice (shedskin-style corpus
-programs lean on `dict`/`set` heavily). Cheapest to build and verify;
-punts on the general case.
-
-**Option C — do nothing structural; rely on 077's codegen-guard fix
-alone.** Turns the hard failure into a warning + runtime-crash risk
-(matching `Box`'s current degraded-but-building behavior) without
-improving precision. Lowest risk, but leaves the underlying
-imprecision — and the *possibility* of a runtime crash on first
-`dict[str,X]`-vs-`dict[int,Y]` collision anywhere in a compiled
-program — unaddressed.
+**Option C — accept it, fix the scheduling instead.** Treat this as
+the same class of conclusion issue 033/074 reached about other
+oscillation families: monotonicity is load-bearing, so instead of
+un-doing accumulated unions, prevent a consumer from ever observing the
+shared prototype CS before its first split — i.e. run the relevant
+`split_css` pass(es) to quiescence *before* any container-read transfer
+function gets a chance to run against the still-shared identity. Similar
+in spirit to this session's CSM placement fix (issue 075, "run only on
+quiescence of stages 1-6"), but would need to apply far more broadly
+(to ordinary `split_css`, not just CSM's own stage).
 
 ## Verification plan
 
-1. The two repros above (`1.py`'s dict case, the `Box` case) — both
-   should compile cleanly with correctly separated `int`/`str`
-   handling per instance, no warnings.
-2. `ifa --test` full unit suite.
-3. `test_pyc.py`, both backends, `PYC_CSM` unset and `=2` — should be
-   unchanged or strictly improved (this is a distinct mechanism from
-   075's CSM; verify neither regresses the other — 045's stage and
-   CSM's stage both live in `run_split_stages` and need to keep
-   composing correctly).
-4. Full shedskin corpus sweep for regressions — this touches
-   `dict`/`set` (Option B) or every multi-instance class program-wide
-   (Option A), so needs the same rigor as 045's and 075's own landings
-   (both required full-corpus verification before shipping).
-5. fysphun (the many-pass numeric splitter-stress canary, per 045's
-   own verification plan) — confirm no new non-termination.
+1. `1.py`'s repro — after a fix, `list.__getitem__`'s clones should
+   show single-CS `vec` types (verifiable by re-adding the temporary
+   `P_prim_index_object` instrumentation used for this trace), and the
+   compile should be clean.
+2. Re-run the instrumented trace on `dijkstra2`/`pylife` (075's
+   still-open targets) to check whether the same staleness shows up in
+   CSM's own filtered products.
+3. Full `ifa --test` + `test_pyc.py` both backends both `PYC_CSM`
+   settings + full corpus sweep — any fix here touches core, always-on
+   FA machinery (`split_css`, `P_prim_index_object`), not something
+   flag-gated.
 
 ## What this unblocks
 
-`dict`/`set` (and any no-arg-constructor class) instances that
-legitimately hold different key/value or field types across separate
-instances currently either hard-fail the build (`dict`, today) or
-silently degrade to a runtime-crash-risking union (`Box`-shaped user
-classes, today) instead of compiling with full precision. This is a
-completely ordinary Python pattern (two dicts with different key
-types in the same program) — likely affects real shedskin-corpus
-programs beyond the two probe cases above, not yet surveyed.
+If confirmed to generalize (not yet checked beyond this minimal
+repro), this could be the single most foundational open gap in pyc's
+"no type" family (063/072/073/074/075) — a fix here might improve or
+resolve `dijkstra2`/`pylife`/`sha` (075's targets) and any shedskin
+corpus program with genuinely heterogeneous same-type containers, not
+just this dict/list corner case.
