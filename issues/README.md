@@ -32,6 +32,21 @@ that:
 
 ## Current open issues
 
+- [078-class-body-default-plus-init-override-permanently-unions.md](078-class-body-default-plus-init-override-permanently-unions.md)
+  — the general pattern behind [076](closed/076-mutation-driven-receiver-divergence-not-cloned.md)'s
+  `dict`/`set` fix: any class with **both** a class-body-level
+  attribute default and an `__init__` that unconditionally reassigns
+  the same field permanently unions the class-body default's type into
+  every instance's field type — because the prototype-clone
+  construction step (`gen_class_pyda`) is itself a field setter FA's
+  union-based modeling can't distinguish from one that's provably,
+  unconditionally overwritten. Runtime-identical, static-analysis-only
+  effect: 076's fix was two `dict`/`set`-specific lines; this issue is
+  the standalone repro (`MiniDict`, no `dict`/`set` involved) plus
+  three fix directions (auto-elide the redundant class-body write at
+  synthesis time; a general dead-setter refinement in FA's field
+  model; or just document the hazard) for closing the whole bug class
+  at once instead of per-instance. Not attempted.
 - [077-primitive-equality-codegen-missing-salvage-guard.md](077-primitive-equality-codegen-missing-salvage-guard.md)
   — found alongside [076](closed/076-mutation-driven-receiver-divergence-not-cloned.md)
   (now fixed, see below): when a dispatched comparison dunder's operand

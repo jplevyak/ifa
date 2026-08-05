@@ -1,0 +1,198 @@
+# 078 — A class-body default attribute permanently unions into a field's inferred type even when `__init__` unconditionally overwrites it first
+
+**Status:** open, filed 2026-08-05. Not a hypothetical: this is the
+general form of the bug fixed in
+[076](closed/076-mutation-driven-receiver-divergence-not-cloned.md)
+for `dict`/`set` specifically (see that issue's "RESOLVED" section for
+the full original trace). Filed separately because 076's fix was a
+per-class workaround (delete the two redundant lines in
+`__pyc__/07_dict.py`/`08_set.py`), not a fix to the mechanism itself —
+the same pattern will reproduce in any other class, `__pyc__`-builtin
+or user-written, with the same shape. No fix attempted here; this
+issue exists to name the general pattern, give a minimal standalone
+repro independent of `dict`/`set`, and lay out fix directions for
+whoever picks it up.
+**Affects:** `python_ifa_build_syms.cc`'s `gen_class_pyda` (~1803-2065,
+the prototype + `___init___` + `__new__`/`sym_clone` construction
+described below) and, more fundamentally, `ifa/analysis/fa.cc`'s
+field-write modeling — every field write (`P_prim_setter`) is treated
+as a `flow_vars` contribution that unions into the field's AVar,
+with no notion of "this write is provably dead, superseded by a later
+one on every path." Not a single fixable line; an architectural
+property of how fields are modeled.
+**Related:** [076](closed/076-mutation-driven-receiver-divergence-not-cloned.md)
+(the concrete `dict`/`set` instance and fix — read that issue's
+"RESOLVED" section first, this issue is its generalization),
+[017](../../issues/closed/017-multi-instance-mutation-corruption.md)
+(project-level; the *runtime* half of the same class-body-default
+footgun, already fixed — this issue is entirely about the *residual
+static-analysis* consequence 017's fix didn't and couldn't address).
+
+## Symptom (minimal, standalone repro — no `dict`/`set` involved)
+
+```python
+class MiniDict:
+    keys = []              # class-body default -- ALSO a "setter" of `keys`, from FA's view
+    def __init__(self):
+        self.keys = []      # always overwrites the class-body default before any instance is observed
+    def put(self, key):
+        i = 0
+        while i < len(self.keys):
+            if self.keys[i] == key:
+                return
+            i += 1
+        self.keys = self.keys.append(key)
+
+a = MiniDict()
+a.put(1)
+b = MiniDict()
+b.put("hello")
+```
+
+Fails:
+
+```
+warning: expression has mixed basic types:( int64 str )
+  if self.keys[i] == key:
+...
+minidict_buggy.py.c:102:8: error: comparison between pointer and integer ('_CG_int64' (aka 'long long') and 'char *')
+  t1 = _CG_prim_equal(t2, _CG_Symbol(6483, "=="), _CG_String_n("hello",5));
+minidict_buggy.py.c:286:8: error: no matching function for call to '_CG_str_eq'
+  t1 = _CG_str_eq(t2, 1);
+```
+
+Delete the one class-body line (`keys = []`), keeping only `__init__`'s
+`self.keys = []`, and the identical program compiles clean and runs
+correctly. **The two versions are runtime-identical** — `__init__`
+always overwrites `keys` before `a` or `b` is observable by any other
+code, on every execution path, unconditionally. Confirmed by testing
+two *other*, simpler shapes first that did *not* isolate this
+specifically (a bare scalar field with direct external assignment,
+and a method-based mutator with no internal comparison) — both failed
+identically whether or not the class-body default was present, because
+they hit a *different*, more basic gap (the two instances' receivers
+never get CS-split from each other at all in those shapes). This
+repro needed the internal `==` comparison specifically, because that's
+what triggers the setter-confluence splitting that separates `a` and
+`b` into distinct instances in the first place — a prerequisite for
+the class-body-default leak to be the *only* remaining variable. See
+[076](closed/076-mutation-driven-receiver-divergence-not-cloned.md)'s
+"RESOLVED" section for why: the receiver-splitting mechanism triggers
+reactively, off a detected violation, and a program with no internal
+comparison never produces one for FA to react to.
+
+## Root cause (established in 076, restated generally here)
+
+Every class in pyc gets one compile-time singleton **prototype**
+(`cls->self`, `gen_class_pyda:1960`). At program start the generated
+code allocates it once (`sym_new`) and runs the class body's implicit
+initializer (`___init___`, triple-underscore, synthesized from
+class-body-level assignment statements) on it exactly once — for
+`MiniDict` above, that means running `keys = []` once, ever, against
+the prototype. Every actual `MiniDict()` call site does *not* repeat
+that work: the synthesized `__new__` wrapper (`gen_class_pyda:2054`)
+clones the prototype —
+
+```cpp
+if1_send(if1, &body, 3, 1, sym_primitive, sym_clone, proto, t);
+...
+if1_send(if1, &body, 2, 1, sym___init__, t, new_sym(ast));
+```
+
+— a shallow, memberwise struct copy, into a fresh instance `t`, then
+calls the user's `__init__` on `t`.
+
+pyc's flow analysis doesn't model "the clone happens, then gets
+overwritten by `__init__`" as sequential replacement. It computes a
+field's type as the **union of every setter that can reach it**, with
+no notion of temporal ordering or dominance. The prototype-clone step
+*is* a setter of the new instance's `keys` field (copying whatever
+type the prototype's own `keys` field has — one specific, class-level-
+shared CreationSet). `__init__`'s own assignment is a *second* setter
+of the same field. FA unions them regardless of the fact that one
+unconditionally overwrites the other at runtime. Because the prototype
+is one singleton shared by *every* instance of the class, that one
+CreationSet feeds into every instance's field type on every pass,
+independent of how cleanly the per-instance data is otherwise
+separated downstream.
+
+## Scope
+
+Any class with **both** a class-body-level attribute assignment
+(`attr = <expr>`) **and** an `__init__` (or other always-runs-first
+method) that unconditionally reassigns the same attribute is affected,
+whenever that field later needs genuinely divergent per-instance
+typing to type-check precisely. This is a common, unremarkable Python
+idiom — declaring a class-level default for documentation/IDE purposes
+and then setting the real per-instance value in `__init__` — not an
+edge case. `__pyc__`'s own library had exactly this shape in `dict`
+and `set` (issue 017's fix pattern, applied to both) until 076 removed
+it; other `__pyc__` classes with a no-arg `__init__` overwriting bare
+class-body defaults were not surveyed for the same shape (`AGENTS.md`/
+issue 017's own writeup calls out `__list_iter__`, `__dict_iter__`,
+and siblings in the same files as following a similar pattern — worth
+a quick check, not done as part of filing this issue). User-written
+classes are affected identically; nothing about this is `__pyc__`-
+specific.
+
+## Proposed fix directions (no recommendation made)
+
+**Option A — teach `gen_class_pyda` to skip the redundant class-body
+write during `___init___` synthesis when the same field is
+unconditionally reassigned in `__init__`.** Effectively automates
+076's by-hand fix for every class, at compile time, rather than
+requiring library/user authors to notice and avoid the pattern
+manually. Needs a "definitely reassigned before any use" analysis at
+the point `___init___`/`__new__`/`__init__` are synthesized — probably
+tractable given `__init__`'s body is available at that point, but the
+analysis itself (dominance of the reassignment over every path where
+the field could be observed) hasn't been designed. Closest in spirit
+to how `structural_assignment`/`merge_in`'s cross product was reasoned
+about and partially fixed in 076's investigation, but this would live
+in the class-synthesis frontend rather than a runtime FA transfer
+function.
+
+**Option B — teach FA's field-setter modeling to recognize a
+provably-dead write and exclude it from the union**, i.e. a general
+"last write on every path wins" refinement for `P_prim_setter`
+targets, not scoped to class-body/prototype specifically. Strictly
+harder and more invasive than Option A (touches the core field-flow
+model used everywhere, not just the class-construction synthesis
+path) but would also catch the same *shape* of bug for any two setters
+of a field where one always precedes and is superseded by the other,
+not just the prototype-clone case.
+
+**Option C — accept it as a documented style hazard.** Cheapest:
+note in `__pyc__`'s own contribution guidance (or a project-level doc)
+that a class-body default coexisting with an `__init__` override of
+the same attribute is a latent precision hazard, and that `__pyc__`
+library code should prefer one or the other. Doesn't fix user code
+hitting the same pattern, and doesn't fix it automatically for future
+`__pyc__` additions, but requires no FA/frontend changes and no design
+work.
+
+## Verification plan
+
+1. The `MiniDict` repro above (and its `dict`/`set` analog, already
+   fixed by 076) — should compile clean with either Option A or B; C
+   wouldn't fix this repro at all, only prevent *new* instances of the
+   pattern from landing in `__pyc__` un-noticed.
+2. Survey `__pyc__/*.py` for other classes with a bare class-body
+   default immediately overwritten by a no-arg `__init__` (not done
+   for this filing) — confirm whether any are load-bearing for corpus
+   precision the way `dict`/`set` were for `dijkstra2`.
+3. Whichever of A/B is attempted: full `ifa --test`, `test_pyc.py`
+   both backends both `PYC_CSM` settings, and a full corpus sweep both
+   settings — this touches either class-construction synthesis (used
+   by every class in every program) or core field-flow modeling (used
+   by every field write in every program), the same safety bar every
+   `fa.cc`-level change in 076's investigation was held to.
+
+## What this unblocks
+
+076's fix was necessarily narrow (two `__pyc__` files, hand-identified
+by tracing one specific corpus failure). A real fix here would close
+the entire bug *class* at once — for every current and future
+`__pyc__` builtin, and for user-written classes with the same
+ordinary, unremarkable shape, without requiring anyone to notice the
+hazard and work around it by hand the way 076's investigation had to.
