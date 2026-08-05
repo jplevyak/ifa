@@ -43,7 +43,20 @@ mint-then-split-on-divergence approach every splitting mechanism in
 this codebase currently uses. That's a standalone design effort
 comparable in scope to issue 075's own multi-session build, not a
 follow-on patch — stopping here, fully traced, for a dedicated future
-effort rather than attempting it blind this session.**
+effort rather than attempting it blind this session.** **A fourth
+round the same day ("A fourth root cause found and fixed in isolation,
+then reverted", below) found and fixed — then, on full verification,
+REVERTED — a real, independent, fourth contamination mechanism in
+`P_prim_merge`/`P_prim_merge_in` (`list.append`'s
+`merge_in(self, self)` resize step). Confirmed via instrumentation
+that removing it stops that specific contamination, but (a) `1.py`
+still doesn't compile — a fifth, still-not-root-caused mechanism
+(the shared prototype CS being written directly by the ordinary write
+primitive) remains — and (b) the fix as implemented regressed the
+`PYC_CSM`-off corpus baseline (`chull`: clean compile → hard C error),
+because it also suppressed load-bearing non-list-type behavior in the
+same shared helper. Tree is back to the exact last-committed state;
+no code changes landed.
 
 This is very likely **the same fundamental mechanism already
 documented in [063](063-no-type-bucket-triage.md)** ("pyc separates
@@ -401,6 +414,101 @@ future dedicated design effort rather than attempted blind. The two
 small, genuinely-safe fixes found along the way (the `DISPATCH`
 logging bug, this file's corrected root-cause analysis) are kept; no
 further code changes attempted this round.
+
+## A fourth root cause found and fixed in isolation, then reverted: `P_prim_merge`/`P_prim_merge_in`'s shared temp (2026-08-05)
+
+Per request ("work out and implement the fix"), picked this back up
+with fresh, targeted instrumentation (`flow_vars` itself hooked to
+watch every write into `get_element_avar(1027)`/`(970)`, added and
+fully reverted afterward) and found a THIRD distinct contamination
+mechanism, independent of the write-primitive staleness this file
+already documents.
+
+**Found:** `list.append`'s resize step calls
+`__pyc_primitive__(__pyc_symbol__("merge_in"), self, self)`
+(`04_sequence.py:147`). `P_prim_merge_in`'s transfer function
+(`fa.cc`) does a full cross product over `self`'s own type union with
+itself: `for cs : thing1->out->sorted: for cs2 : thing2->out->sorted:
+if cs->sym==cs2->sym: structural_assignment(cs, cs2, ..., mix=true)`.
+When `self` spans >1 CreationSet (because its receiver hasn't been
+isolated per-instance — the same underlying condition as the rest of
+this file), this pairs every CS with every OTHER CS in the same union,
+and `structural_assignment`'s `mix=true` path explicitly flows each
+CS's element data into every other's — a second, independent
+cross-contamination mechanism from the write-primitive staleness
+already documented above.
+
+**First attempt (restrict to same-CS pairs) was insufficient**, also
+confirmed by instrumentation: `structural_assignment`'s internal
+"elem" intermediate (`fill_tvals`/`p->tvals[0]`) is keyed by
+`(PNode, EntrySet)`, not per-CS, so calling it once per CS in a
+multi-CS self-union — even restricted to `cs2==cs` pairs — still
+routes every call's element data through the *same* shared temp,
+re-introducing the exact contamination the restriction was meant to
+prevent.
+
+**Second attempt: skip `structural_assignment` entirely when
+`thing1==thing2`** (merging a CS with itself changes nothing, so why
+call it at all). Verified via direct instrumentation that this
+genuinely worked as intended: `get_element_avar(1027)` and `(970)`
+became clean, receiving only their own instance's contribution, no
+cross-instance data, across every pass checked.
+
+**But `1.py` still didn't compile — and full verification then found
+this fix unsafe anyway.** Two independent problems:
+
+1. Even with `get_element_avar(1027)`/`(970)` clean, the compile still
+   failed identically. Re-instrumented and found a *fourth*
+   contamination path: `P_prim_set_index_object` (the ordinary
+   write primitive, already documented above) writes into
+   `get_element_avar(cs)` for *every* `cs` in `vec`'s own union — and
+   `vec` (self, inside each `append`/`__setitem__` write clone) still
+   includes the shared prototype CS (928) *alongside* each side's own
+   descendant (1027 or 970), even in single-caller-isolated clones.
+   Since 928 is common to both sides' unions, every write — squares'
+   and words' alike — lands directly in `get_element_avar(928)`
+   through the ordinary write path, no `merge_in` involved. Traced
+   this back toward `self._keys`'s own field-read/field-write cycle
+   (`__init__`'s `self._keys = []` plus `append`'s return value
+   feeding back into the same field) without fully resolving where 928
+   first enters that cycle — tested and ruled out `creation_point`'s
+   documented "split parent CS reuse" (fa.cc:437-444, the same
+   mechanism issue 045 bypasses for `clone_methods_per_cs` classes) as
+   the source: forcing `dict`/`list` through that bypass path directly
+   had zero effect on the output.
+2. Independently of (1), full verification caught a real regression:
+   with `PYC_CSM` unset, the corpus sweep is supposed to diff to zero
+   against true baseline (every fix in this file so far has held that
+   bar). This one didn't — `chull` went from a clean `COMPILED_C` to a
+   hard C compile error (`incompatible pointer types assigning to
+   struct pointer`), and `loop`/`softrender` (already `FAIL` at
+   baseline) hit different diagnostics at different lines. Skipping
+   `structural_assignment` entirely for the self-merge case also skips
+   its `has`-field and `vars`-index processing (the parts of
+   `structural_assignment` this file hadn't previously had reason to
+   look at) and its `get_element_avar` call's side effect of setting
+   `cs->added_element_var` — both load-bearing for non-list types
+   (records/structs) that also route through `merge`/`merge_in(self,
+   self)`, which `chull` evidently exercises. A correct fix needs to
+   suppress only the specific cross-CS *element* flow, not the whole
+   call.
+
+**Reverted in full** — `git diff` on `fa.cc` is empty; rebuilt,
+`ifa --test` 58/58 confirms the tree matches the last commit exactly.
+No code changes landed this round.
+
+**Where this leaves the investigation:** the merge_in/merge
+cross-contamination is a real, confirmed, independent bug (distinct
+from the write-primitive staleness already documented) but is not
+safely fixable by removing the call outright, and even a correct,
+narrower fix to it would not be sufficient on its own — `1.py`'s
+928-via-ordinary-writes path is a fourth, still-not-root-caused
+mechanism that would need to be fixed too. Given both remaining
+threads (the narrower merge_in fix, and 928's persistence via the
+`self._keys` field cycle) are each their own non-trivial
+investigation, and given this round already produced one
+confirmed-then-reverted regression, this is left here rather than
+attempting either blind in the same session.
 
 ## Verification plan
 
