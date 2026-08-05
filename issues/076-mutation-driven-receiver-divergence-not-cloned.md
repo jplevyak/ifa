@@ -18,7 +18,23 @@ whole framework), and `split_css` has no way to retract a
 now-superseded creation-set membership from an `AVar` that observed it
 in an earlier, less-refined pass. See "What actually happens" below
 for the full, log-verified trace, and "Root cause" for the
-instrumented proof.
+instrumented proof. **A follow-up round the same day (also below, "Why
+CSM specifically can't help here") confirmed and then ruled out the
+most natural-looking fix**: extending CSM's own divergence-detection
+to also catch this "uniformly, identically pre-contaminated" shape.
+Implemented, verified safe, and empirically tested — it does not fix
+`1.py` (and adds new violations), because CSM's decision runs *after*
+the poisoning write has already happened, and the poisoning is
+permanent under monotonic growth. Reverted (see that section for the
+full trace); a genuine, small, unrelated logging bug found along the
+way (`DISPATCH`'s log line silently dropped its actual target and
+printed the pre-redispatch one instead) **is fixed and kept**. The
+real fix now has a narrower, better-understood shape: it must touch
+`P_prim_index_object`/`P_prim_set_index_object`'s poisoning mechanism
+directly (Option B) or the scheduling that lets a receiver be written
+through while still multi-CS (Option C) — not any reactive decision
+logic, which is structurally unable to see the problem by the time it
+runs.
 
 This is very likely **the same fundamental mechanism already
 documented in [063](063-no-type-bucket-triage.md)** ("pyc separates
@@ -180,6 +196,93 @@ has not been checked — worth a follow-up trace on `dijkstra2`/`pylife`
 (075's still-unresolved targets) instrumented the same way this issue
 was.
 
+## Why CSM specifically can't help here (confirmed, tested, 2026-08-04)
+
+Per request ("fix the underlying monotonic issue"), pursued this
+further: instrumented `split_container_methods_per_element_cs`
+(CSM's own decision loop) directly to see why it reports zero progress
+on this repro despite the receiver shape (`list.__getitem__`'s `self`
+spanning multiple same-container CSs) looking exactly like what CSM's
+own trigger targets.
+
+**Confirmed:** every candidate CSM considers here passes the
+`all_added` gate (`cs->added_element_var` is true for every CS in the
+union) — the earlier hypothesis that a freshly-split, never-touched CS
+was blocking things was wrong. What actually blocks it is the
+`divergent` check immediately after: CSM only decides to split when
+member CSs' element types *differ*. Direct instrumentation showed the
+element types are not just equal-looking but the **identical
+canonicalized `AType*` pointer** across every member CS — e.g. CS `928`
+(the shared prototype) and CS `1027` (the split product) both point at
+the exact same `(int64, str)` union object. There is nothing to
+diverge: `P_prim_set_index_object`'s `for cs : vec->out->sorted:
+flow_vars(val, get_element_avar(cs))` loop (the same mechanism
+identified in "Root cause" above, now confirmed for the *write* side
+too, not just the read side traced there) writes every value into
+*every* CS a write's receiver has ever accumulated — so once two
+sibling CSs have both been written through the same shared clone,
+their element AVars converge to the identical polluted union, and
+CSM's pairwise-divergence check can never see a difference again. This
+is a chicken-and-egg the existing "not decidable YET" comment
+(`split_container_methods_per_element_cs`, the `all_added` rationale)
+doesn't cover — it's not that an element AVar is *missing*, it's that
+it's already wrong, identically, everywhere the receiver's union
+reaches.
+
+**Attempted, tested, and reverted**: added a narrowly-scoped
+additional trigger — when `all_added` holds and the (uniform,
+non-divergent) shared element type is itself `mixed_basics`-positive,
+treat that as a decision-worthy signal too, alongside the existing
+`divergent` check. Deliberately conservative: reuses `AVar`s the
+existing loop already forces into existence (via `get_element_avar`),
+adds no new forced creation, so it does not reproduce the "forcing
+`get_element_avar` broadly" regression the surrounding comment already
+documents (222/18 → 9/241 fails) from an earlier, unrelated experiment.
+
+**Verified safe** (`ifa --test` 58/58; `test_pyc.py` 239/0 and
+229/11/10/4, both backends, unchanged) **but empirically ineffective**:
+with the extra trigger active, `1.py` still fails to compile — and
+picks up *two new* "mixed basic types" violations it didn't have
+before, rather than fewer. Root cause: CSM's stage runs last, on
+quiescence — by the time it can act, every write that will ever
+execute for this program has already happened through the shared,
+unsplit clone, and `get_element_avar`'s accumulated type is permanent
+under monotonic growth. Splitting the receiver at this point only
+changes routing for writes that haven't happened yet (there are none
+left, for this program) — it cannot retroactively clean already-mixed
+element data. Reverted; `git diff` on this specific change is empty.
+
+**What this establishes:** a real fix cannot live in CSM's (or any
+similar reactive, quiescence-gated) *decision* logic at all — the
+signal CSM needs is destroyed by the same write that would have
+justified acting on it. It has to either (a) prevent the poisoning
+write from ever reaching a shared, multi-CS receiver in the first
+place (Option C below, structurally the same class of fix as this
+session's earlier CSM placement work, but would need to apply far
+earlier/more broadly than a single quiescence-gated stage can reach),
+or (b) stop flowing a write's value into every CS a receiver has
+*ever* accumulated and instead flow only into the CS(s) actually live
+for that specific edge (Option B below) — which requires
+restructuring `P_prim_index_object`/`P_prim_set_index_object` to
+reason per-edge rather than on the aggregate, cross-call-site `AVar`
+these primitives currently read (`vec = make_AVar(p->rvals[o], es)`,
+one shared value per `(Var, EntrySet)` pair, not per calling edge) —
+a materially larger change than anything landed this session, touching
+every list/dict/tuple/str element access and write in the corpus.
+
+**A small, genuinely-fixed bug found along the way**: the `DISPATCH`
+log line in `split_edges` (fa.cc, ~4459) passed 6 arguments for 5
+format placeholders (`"DISPATCH ES %d:%d, %s %d -> %d\n"`) —
+`vfprintf` silently drops the trailing argument, so the printed
+`"-> N"` was always `old->id` (the *pre*-redispatch target), never the
+actual new target (`ee->to->id`, the argument that was being dropped).
+Every trace read against this line in this investigation (and
+presumably in every earlier one) had the redispatch direction
+backwards. Fixed (now prints `old -> new` correctly) — pure logging,
+verified safe (`ifa --test` 58/58; `test_pyc.py` 239/0 and 229/11/10/4,
+both backends, byte-identical, as expected for a diagnostics-only
+change).
+
 ## Proposed fix directions (design decision needed — no recommendation made)
 
 **Option A — retroactively invalidate/re-flow on split.** When
@@ -191,13 +294,18 @@ invariant the whole fixed-point convergence design depends on —
 substantial architectural risk, needs a termination argument as
 careful as issue 033's.
 
-**Option B — prune stale CS membership at the read site.** Teach
-`P_prim_index_object` (and any sibling "container[i]"-shaped transfer
-function — not yet surveyed) to filter `vec->out->sorted` down to CS
-identities still reachable from `vec`'s *current* resolved field
-identity, rather than flowing from the full historical accumulation.
-Needs a notion of "still live" vs. "was true in some earlier pass" that
-doesn't currently exist on `AType`/`CreationSet`.
+**Option B — prune stale CS membership at the read/write site.** Teach
+`P_prim_index_object` **and `P_prim_set_index_object`** (confirmed this
+round: the write side has the identical `for cs : vec->out->sorted`
+shape and is the actual poisoning mechanism, not just the read side
+originally traced) to filter `vec->out->sorted` down to CS identities
+still reachable from `vec`'s *current* resolved field identity, rather
+than flowing from the full historical accumulation. Needs a notion of
+"still live" vs. "was true in some earlier pass" that doesn't currently
+exist on `AType`/`CreationSet`. Would need to operate per-edge rather
+than on the aggregate `AVar` these primitives currently read — a
+materially larger restructuring than it first looked (see "Why CSM
+specifically can't help here" above).
 
 **Option C — accept it, fix the scheduling instead.** Treat this as
 the same class of conclusion issue 033/074 reached about other
@@ -209,6 +317,15 @@ function gets a chance to run against the still-shared identity. Similar
 in spirit to this session's CSM placement fix (issue 075, "run only on
 quiescence of stages 1-6"), but would need to apply far more broadly
 (to ordinary `split_css`, not just CSM's own stage).
+
+**Ruled out (tested empirically this round): a CSM-style reactive
+decision fix.** Any fix that *decides* to split based on observing
+already-mixed element data cannot work, regardless of how that
+decision is triggered — see "Why CSM specifically can't help here"
+above. This rules out the most natural-looking "quick" fix (extend an
+existing decision loop's trigger condition) entirely; both remaining
+options (A, B) require touching the mechanism that *produces* the
+poisoning, not the mechanism that *detects* it.
 
 ## Verification plan
 

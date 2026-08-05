@@ -4456,8 +4456,14 @@ static EntrySet *find_or_make_display_variant(AEdge *ee, EntrySet *tes) {
     }
     if (ee->to != old) {
       again = 1;
-      log(LOG_SPLITTING, "DISPATCH ES %d:%d, %s %d -> %d\n", ee->from->id, ee->pnode->lvals[0]->sym->id,
-          es->fun->sym->name ? es->fun->sym->name : "", es->fun->sym->id, old->id, ee->to->id);
+      // ifa/issues/076: was missing a %d for `ee->to->id` (6 args,
+      // 5 placeholders) -- vfprintf silently drops the trailing arg,
+      // so this printed `old->id` (the PRE-redispatch target) as the
+      // "-> N" value, never the actual new target. Traces read against
+      // this line before the fix (issue 076's own investigation
+      // included) had the redispatch destination backwards.
+      log(LOG_SPLITTING, "DISPATCH ES %d:%d, %s %d, %d -> %d\n", ee->from->id, ee->pnode->lvals[0]->sym->id,
+          es->fun->sym->name ? es->fun->sym->name : "", es->fun->sym->id, old ? old->id : -1, ee->to->id);
     }
   }
   return again;
