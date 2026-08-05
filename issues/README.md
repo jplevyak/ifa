@@ -32,6 +32,33 @@ that:
 
 ## Current open issues
 
+- [076-mutation-driven-receiver-divergence-not-cloned.md](076-mutation-driven-receiver-divergence-not-cloned.md)
+  — `dict`/`set` (and any no-arg-constructor class) never get
+  per-instance method specialization: issue
+  [045](closed/045-receiver-cs-method-cloning.md)'s
+  `clone_methods_per_cs` trigger only fires off a constructor-constant
+  argument, but these classes diverge later, via mutation, with no
+  constructor argument to hang the flag on. Two dicts with different
+  key types in the same program (`{1: 1}` and `{"a": 1}`) merge into
+  one shared `__setitem__`/`__getitem__` contour and hard-fail the
+  build. Confirmed general (reproduces on a plain user class with the
+  same shape) and confirmed NOT fixed by 075's CSM (byte-identical
+  with `PYC_CSM=2`, zero splitting activity) — CSM assumes the
+  receiver is already separated; here it never was. Three fix options
+  sketched, no recommendation made yet.
+- [077-primitive-equality-codegen-missing-salvage-guard.md](077-primitive-equality-codegen-missing-salvage-guard.md)
+  — same repro as 076 also exposes a second, separate bug: when a
+  dispatched comparison dunder's operand types mismatch (076's
+  mechanism, or any other salvage path), the C-call/primitive-operator
+  codegen (`c_call_codegen`, `python_ifa_main.cc:58`; the
+  `P_prim_primitive` fallback, `cg.cc:857`) prints both operands
+  verbatim with no type-agreement check, producing a raw C compile
+  error instead of the runtime-assert-guard convention established by
+  [056](056-degraded-index-type-raw-c-compile-error.md) (at least the
+  fourth known occurrence of this same gap class). Fixing this doesn't
+  fix 076's imprecision, only turns the hard build failure into a
+  degrade-gracefully warning, matching how the equivalent user-class
+  case already behaves today.
 - [075-element-cs-method-split-idempotent-plan.md](075-element-cs-method-split-idempotent-plan.md)
   — **concrete build plan** to escape the "no type" local maximum:
   clone shared `list`/`dict` methods per element-CS (shedskin's
