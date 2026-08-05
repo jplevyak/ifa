@@ -41,13 +41,27 @@ class MiniDict:
             if self.keys[i] == key:
                 return
             i += 1
-        self.keys = self.keys.append(key)
+        self.keys.append(key)
 
 a = MiniDict()
 a.put(1)
 b = MiniDict()
 b.put("hello")
+print(a.keys)
+print(b.keys)
 ```
+
+This is ordinary, portable Python — verified against real `python3`,
+which prints `[1]` / `['hello']`. (An earlier draft of this repro used
+`self.keys = self.keys.append(key)` instead of the plain statement
+above, mirroring `dict.__setitem__`'s own internal idiom — but that
+relies on pyc's `list.append()` deliberately returning `self` rather
+than `None` (issue 017's documented workaround for the *runtime* half
+of this footgun); real Python's `list.append()` returns `None`, so
+that form would silently set `b.keys` to `None` on real Python. Caught
+during review and replaced with the plain, CPython-verified statement
+above, which reproduces the identical failure without relying on any
+pyc-specific behavior.)
 
 Fails:
 
@@ -62,8 +76,9 @@ minidict_buggy.py.c:286:8: error: no matching function for call to '_CG_str_eq'
 ```
 
 Delete the one class-body line (`keys = []`), keeping only `__init__`'s
-`self.keys = []`, and the identical program compiles clean and runs
-correctly. **The two versions are runtime-identical** — `__init__`
+`self.keys = []`, and the identical program compiles clean and its
+output matches `python3` byte-for-byte (`[1]` / `['hello']`). **The two
+versions are runtime-identical** — `__init__`
 always overwrites `keys` before `a` or `b` is observable by any other
 code, on every execution path, unconditionally. Confirmed by testing
 two *other*, simpler shapes first that did *not* isolate this
