@@ -1132,7 +1132,60 @@ static AEdge *set_or_copy_AEdge(AEdge *e, EntrySet *es, Vec<AEdge *> &ees) {
   }
 }
 
+// ifa/issues/075: when an edge's actual argument type at some position
+// is itself a union spanning >=2 EntrySets that are each filtered
+// (find_or_make_filtered_entry_set) to a DIFFERENT, non-overlapping
+// CreationSet-based AType at that position -- genuine CS-partition
+// siblings, e.g. CSM's element-CS split products -- binding the edge
+// to a SINGLE "best" target (find_best_entry_sets' only mode, below)
+// necessarily widens THAT target's accumulated type to include the
+// whole union, undoing the partition; the sibling that loses the
+// score contest never sees this edge at all. Confirmed on sha.py this
+// is what silently undoes CSM's split every time a caller reproduces
+// the wide-typed argument (see the issue doc's "root cause" trail).
+//
+// Fan the edge out across every sibling it overlaps instead, mirroring
+// split_edges' own redispatch+copy_AEdge shape (set_or_copy_AEdge,
+// just above, already implements "first bind, rest copy" -- unused
+// for more than one target until now). Only fires when the candidate
+// siblings' filters JOINTLY COVER the edge's whole effective type at
+// that position: a partial match (some CS in the union has no
+// matching filtered sibling) falls through to the single-best logic
+// unchanged, since fanning across an incomplete partition would drop
+// the uncovered remainder's representation entirely -- worse than not
+// fanning. entry_set_compatibility (already filter-aware) is reused
+// per candidate, so nest/type/sset/constant compatibility are all
+// still enforced exactly as the single-best path enforces them.
+static bool find_fanout_entry_sets(AEdge *e, Vec<AEdge *> &edges) {
+  form_MPositionAVar(pa, e->args) {
+    if (!pa->key->is_positional()) continue;
+    AVar *a = pa->value;
+    if (!a || !a->out) continue;
+    MPosition *p = pa->key;
+    AType *filter = e->match->formal_filters.get(p);
+    AType *eff = filter ? type_intersection(a->out, filter) : a->out;
+    if (eff->sorted.n < 2) continue;
+    Vec<EntrySet *> cands;
+    AType *covered = fa->type_world.bottom_type;
+    for (EntrySet *x : e->match->fun->ess) {
+      AType *es_filter = x->filters.get(p);
+      if (!es_filter) continue;  // only genuine CS-partition siblings
+      AType *ov = type_intersection(eff, es_filter);
+      if (ov == fa->type_world.bottom_type) continue;
+      if (entry_set_compatibility(e, x) <= 0) continue;
+      cands.add(x);
+      covered = type_union(covered, ov);
+    }
+    if (cands.n < 2 || covered != eff) continue;
+    qsort_by_id(cands);
+    for (int i = 0; i < cands.n; i++) set_or_copy_AEdge(e, cands[i], edges);
+    return true;
+  }
+  return false;
+}
+
 static int find_best_entry_sets(AEdge *e, Vec<AEdge *> &edges) {
+  if (find_fanout_entry_sets(e, edges)) return 1;
   EntrySet *es = nullptr;
   int val = -1;
   for (EntrySet *x : e->match->fun->ess) {
@@ -1262,7 +1315,28 @@ static void make_entry_set(AEdge *e, Vec<AEdge *> &edges, EntrySet *split = null
   }
   if (!es) es = preference;
   set_entry_set(e, es);
-  if (!es) e->to->split = split;
+  if (!es) {
+    e->to->split = split;
+    // ifa/issues/075: this is the "leftover group" mint -- an edge
+    // being detached FROM `split` that neither the ledger nor a
+    // preference could route, so a fresh ES is minted for it (and
+    // whatever other leftovers this same detach's later edges share
+    // `e->to` as their own `preference`, above). Without this, the
+    // fresh ES defaults to EntrySet's ctor: no filters at all, even
+    // though every edge landing here is, by construction, still an
+    // edge of `split` -- so if `split` itself was filtered (e.g. one
+    // of CSM's element-CS products), this silently DISCARDS that
+    // restriction, recreating an unfiltered catch-all that reabsorbs
+    // whatever union `split`'s own filter was keeping apart. Confirmed
+    // as the actual seed of sha.py's non-termination: traced split
+    // with filters.n==1 minting a leftover ES with filters.n==0,
+    // which CSM then finds "divergent" and re-splits every pass,
+    // forever (see the issue doc's "structural leak" update for the
+    // full trace). Copying split's filters here is the direct fix --
+    // this leftover home is still a subset of split's own scope, so
+    // inheriting its restriction is always correct, never a widening.
+    if (split) e->to->filters.copy(split->filters);
+  }
   edges.add(e);
 }
 
@@ -6263,26 +6337,21 @@ static CSMSplitDecision *decide_csm_split(AVar *av) {
     // apply_csm_split above) durably reuses an existing sibling across
     // passes via an INDEXED lookup (EntrySet::display_variants, fa.h).
     // Combined with the quiescence-gated placement (run_split_stages,
-    // stage 7 -- see that call site's comment), batching every decided
-    // ES in a pass is now safe on the cases measured: dijkstra2, which
-    // used to grow fa->ess.n unboundedly (123 -> 2747+ in <8s) or,
-    // once identity was fixed, take ~50s/pass once ess.n plateaued at
-    // 435, now finishes in ~4s uncapped -- placement was the fix, not
-    // identity or lookup cost alone (those were both necessary but not
-    // sufficient; see the issue doc's full trail). Measured with the
-    // cap removed entirely: corpus regression shrank from -32 (this
-    // stage's original placement, capped) to -3 (sha still times out
-    // -- a DIFFERENT program, a case placement alone doesn't fix), and
-    // the suite improved 222/18 -> 229/10 (both backends).
-    //
-    // Kept the one-apply-per-pass cap anyway as the shipped default:
-    // it costs nothing measured (229/10 suite either way; corpus -3
-    // uncapped vs -4 capped, within noise) and remains the only
-    // configuration with no known pathological case -- sha still times
-    // out under the cap too, but bounded per-pass work means no
-    // program has been observed to grow WORSE than a single pass's
-    // cost, unlike the pre-placement-fix unbounded case. Revisit
-    // removing it if sha's specific timeout gets root-caused.
+    // stage 7 -- see that call site's comment) and make_entry_set's
+    // filter-inheriting leftover-ES mint (fa.cc, near check_split),
+    // termination no longer depends on this cap -- both capped
+    // (one-apply-per-pass, below) and uncapped (batch every decided ES)
+    // now terminate on the full corpus. They were NOT equally good,
+    // though: measured head-to-head, capped is the more faithful
+    // choice. Uncapped nets one MORE compiled program (53 vs. 52: it
+    // recovers `kanoodle`, capped doesn't), but at the cost of THREE
+    // programs that capped matches baseline on EXACTLY dropping to a
+    // noisier COMPILED_C_WARN under uncapped -- and one of the three is
+    // sha.py itself, the program this whole apply-batching investigation
+    // was chasing (see the issue doc's full trail). Capped reproduces
+    // baseline's clean sha.py output byte-for-byte; uncapped does not.
+    // Kept the cap for that reason -- exact fidelity on the target case
+    // over one extra loosely-"compiled" program elsewhere.
     if (r) {
       analyze_again = 1;
       break;

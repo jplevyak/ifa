@@ -11,42 +11,39 @@ of this whole investigation** -- moving the stage to run only on
 quiescence of stages 1-6 (mirroring `PER_CS_RECEIVER`) took
 dijkstra2 from non-terminating to ~4s, and the net corpus effect from
 catastrophic (-31/-32 across three earlier measurements) to a
-near-wash (**-3 uncapped, -4 capped**, 0 gained either way), with a
-genuine suite improvement (222/18 → **229/10**, both backends). See
-"Update 2026-08-04" and its "Indexed lookup attempt" / "Edge-explosion
-investigation" / "Placement change" subsections at the end for the
-full trail. All landed in the tree behind `PYC_CSM` (0 default/byte-
-identical, 2 = Piece 1+2+3 + the placement fix, capped to one apply
-per pass -- costs nothing measured vs. uncapped and remains the only
-configuration with no observed case of unbounded, as opposed to merely
-slow, growth). Still net negative, not yet worth flipping on by
-default, but for the first time in this investigation genuinely close.
+near-wash (-3 uncapped, -4 capped at that point in the investigation),
+with a genuine suite improvement (222/18 → **229/10**, both backends).
 `sha`'s specific failure mode (a program CSM already broke pre-
 placement-fix, that the placement fix turned from a fast wrong answer
-into a slow non-terminating one) IS now root-caused (2026-08-05, see
-"Root cause found" below): allocation-site identity was investigated
-and ruled OUT (CS ids stable throughout); the real cause is that
-`find_best_entry_sets`, the general-purpose fallback for routing an
-edge whose `->to` is unresolved, scores candidate EntrySets by
-accumulated TYPE compatibility only -- it never reads `es->filters`,
-so it can't tell a CSM-narrowed product apart from the wide, unfiltered
-original those products were split FROM, and routinely re-routes edges
-straight back into the original whenever a caller re-produces the
-wide-typed argument. The filter-aware fix WAS attempted (2026-08-05,
-see "Filter-aware attempt" below): landed as a genuine, verified-safe
-correctness improvement (zero regression anywhere, `PYC_CSM` on or
-off) that closes a real gap (a filters-mismatched candidate can no
-longer be selected at all) -- but it does NOT fix `sha`, because
-`sha`'s failure isn't a wrongly-admitted candidate, it's a **scoring
-preference** between two admissible ones (a hard-reject gate can't
-change that). The real fix is structural -- a multi-CS-typed edge
-needs `split_edges`-style fan-out, not `find_best_entry_sets`'s
-single-target reuse -- and was reasoned through but not attempted,
-given the risk/scope relative to what a scoring tweak could plausibly
-buy (see that section for why a simpler "penalize the unfiltered
-candidate" idea was considered and rejected as likely to relocate
-the problem rather than fix it). Concrete build plan for the genuine
-"no type" root
+into a slow non-terminating one) is now **fully root-caused and fixed**
+(2026-08-04, see "Root cause found" / "Filter-aware attempt" / "Fan-out
+fix" below for the full trail): THREE independent leaks, each masking
+or causing a different non-termination or precision failure, all had
+to be fixed together -- (1) `find_best_entry_sets` never fanned a
+multi-CS-typed edge out across the filtered siblings it overlapped,
+routing it to a single "best" (usually the wide, unfiltered original)
+instead, fixed by `find_fanout_entry_sets`; (2)
+`apply_entry_set_split`'s "leftover group" fallback minted a fresh,
+completely UNFILTERED EntrySet when detaching from a filtered source
+with no ledger route -- the actual seed of the infinite doubling
+cascade -- fixed by copying the split source's filters into the new
+ES in `make_entry_set`; (3) the CSM apply loop's one-decision-per-pass
+cap, measured head-to-head both ways once (1) and (2) landed, and kept
+because it reproduces baseline's exact clean `sha` output while
+uncapped does not (uncapped trades that fidelity for one extra
+loosely-"compiled"-but-warned program elsewhere). With all three,
+`sha` now **matches baseline exactly** (0 warnings, ~1.5s) for the
+first time in this investigation, and the corpus net-loss improved to
+**-2** (`ant`, `kanoodle`; two more, `adatron`/`chull`, gain a
+non-fatal warning) -- the best figure measured across this whole
+investigation, though still net negative and not yet worth flipping on
+by default. See "Update 2026-08-04" and its "Indexed lookup attempt" /
+"Edge-explosion investigation" / "Placement change" / "Root cause
+found" / "Filter-aware attempt" / "Fan-out fix" subsections at the end
+for the full trail. All landed in the tree behind `PYC_CSM` (0
+default/byte-identical, 2 = Piece 1+2+3 + placement fix + fan-out fix +
+filter-inheritance fix, capped to one apply per pass). Concrete build
+plan for the genuine "no type" root
 ([063](063-no-type-bucket-triage.md)), synthesizing
 [066](066-cs-split-decision-keyed-per-pass-not-per-creation-site.md)
 (durable keying), [073](073-teach-splitter-productive-vs-inert-context.md)
@@ -906,3 +903,144 @@ a materially larger change than a scoring adjustment, touching the
 same shared, heavily-used routing code, and warranting its own
 design + combination-sweep verification before landing. Not attempted
 this session.
+
+### Fan-out fix, 2026-08-04: built the structural fix above -- necessary but insufficient alone; the actual hang-fix is a THIRD, separate leak
+
+Per request, built the structural fix the previous section reasoned
+through but did not attempt: `find_fanout_entry_sets` (fa.cc, just
+above `find_best_entry_sets`), called first from
+`find_best_entry_sets`. Detects when an edge's actual type at some
+argument position is itself a union spanning >=2 EntrySets that are
+each filtered to a different, non-overlapping CS-based `AType` at that
+position (genuine CS-partition siblings, e.g. CSM's element-CS split
+products) -- and, only when the candidate siblings' filters JOINTLY
+COVER the edge's whole effective type at that position (a partial
+match falls through to the pre-existing single-best logic unchanged,
+since fanning across an incomplete partition would drop the uncovered
+remainder entirely), fans the edge out to ALL of them via
+`set_or_copy_AEdge` instead of picking one. Reuses
+`entry_set_compatibility` (already filter-aware, previous section) per
+candidate, so nest/type/sset/constant compatibility are all still
+enforced exactly as the single-best path enforces them.
+
+**Verified safe, unconditionally** (same reasoning as the filter-aware
+fix -- this is not behind `PYC_CSM`): `ifa --test` 58/58; `test_pyc.py`
+239/0 both backends with `PYC_CSM` unset (byte-identical); full corpus
+sweep with `PYC_CSM` unset diffs to zero against true baseline.
+
+**Tested on `sha`: still hangs.** `PYC_CSM=2`, 30s timeout, exit=124 --
+unchanged from every measurement before this fix. Re-tracing (rather
+than assuming the fan-out fix was simply insufficient and stopping)
+found a THIRD, separate leak, downstream of both prior fixes:
+`apply_entry_set_split` (the pre-existing, non-CSM stage 1-5
+type-confluence/setter/mark split-application machinery) routes each
+"leftover" group -- edges detached from a filtered source `split` that
+neither the ledger nor a `preference` could route -- through
+`make_entry_set(x, new_edges, es=split, preference=e->to)`. Inside
+`make_entry_set`, when `split` is set, `find_best_entry_sets` (and
+therefore the fan-out fix) is SKIPPED ENTIRELY BY DESIGN, to avoid
+re-binding an edge into the very ES it's being detached from. When
+neither `es` nor `preference` resolves, `make_entry_set` falls through
+to `set_entry_set(e)`, which MINTS A FRESH EntrySet via `new
+EntrySet(...)` -- and that constructor gives the new ES **empty
+filters by default**, with no mechanism to inherit `split`'s own
+filters. So every "leftover" mint from a filtered `split` silently
+DISCARDS the CS-restriction and recreates exactly the unfiltered
+catch-all CSM was trying to keep separated -- confirmed by tracing
+`es=468`: `split->filters.n == 1`, the freshly-minted leftover ES's
+`filters.n == 0`. CSM then finds this new, unfiltered ES "divergent"
+(its element types disagree) and re-splits it next pass -- producing
+another filtered product, whose OWN later leftover-mint repeats the
+same leak, forever. This is a different, and more fundamental, failure
+than either previous section's: it doesn't happen in
+`find_best_entry_sets` at all, so no amount of scoring or fan-out logic
+there could have caught it -- it happens on the SPLIT-APPLICATION path,
+which explicitly bypasses that entire routing function by design.
+
+**The fix:** in `make_entry_set`'s mint-fresh path, when `split` is
+non-null, copy `split->filters` into the newly-minted `e->to->filters`
+before returning. This leftover home is by construction still a subset
+of `split`'s own scope (every edge landing here IS an edge of `split`
+being detached from it), so inheriting `split`'s restriction is always
+correct -- never a widening, only closing a leak.
+
+**Verified safe, unconditionally:** `ifa --test` 58/58; `test_pyc.py`
+239/0 both backends with `PYC_CSM` unset (byte-identical); full corpus
+sweep with `PYC_CSM` unset diffs to zero against true baseline (this
+touches `make_entry_set`, used for every edge in every pass, flag on
+or off -- same safety bar as the previous two fixes).
+
+**Fixes `sha`.** With both this fix and the fan-out fix active,
+`PYC_CSM=2 pyc sha.py` now exits 0 in ~1.5s (previously: non-terminating
+past a 30s timeout).
+
+**Isolation test: which of the two new fixes actually stops the hang,
+vs. which is needed for full precision?** Added a temporary
+`PYC_NOFANOUT` env-gate around the `find_fanout_entry_sets` call
+(diagnostic only, since removed) and re-ran `sha` with it set (fan-out
+disabled, filter-inheritance fix still active): **exit 0, 1.5s** -- the
+hang is gone either way. But the output isn't clean: 16 lines, four
+distinct `illegal call argument type expression illegal: list` warnings
+on `self.count[0] = ...` (each duplicated across its two call sites,
+`sha.py:378` and `sha.py:310`). Re-enabling fan-out (both fixes active)
+drops this to 0 lines, matching baseline exactly. Conclusion: the
+filter-inheritance fix is what stops the non-termination; the fan-out
+fix is what closes the remaining precision gap on top of that --
+consistent with the two fixes addressing genuinely different leaks
+(split-application leftover-minting vs. general-purpose edge routing).
+The `PYC_NOFANOUT` gate has been removed; `find_best_entry_sets` now
+unconditionally tries fan-out first, as designed.
+
+**One-apply-per-pass cap: measured both ways, kept it.** With both
+fixes landed, the CSM apply loop's pre-existing per-pass cap
+(`if (r) { analyze_again = 1; break; }`, one decided split applied per
+pass, next pass re-decides the rest) was tried removed (batch every
+decided split in a pass) since termination no longer depends on it
+either way. Head-to-head corpus sweep, `PYC_CSM=2`, both against true
+baseline:
+
+| | compiled | vs. baseline (54) | exact-clean matches lost |
+|---|---|---|---|
+| capped | 52 | `ant`, `kanoodle` → FAIL | `adatron`, `chull` → WARN |
+| uncapped | 53 | `ant` → FAIL (`kanoodle` recovers to WARN) | `adatron`, `chull`, **`sha`**, `rubik2` → WARN |
+
+Uncapped nets one more nominally-"compiled" program (`kanoodle` moves
+FAIL→WARN), but at the cost of two ADDITIONAL programs dropping from
+an exact clean baseline match to a noisier `COMPILED_C_WARN` --
+including **`sha` itself**, the program this entire investigation was
+chasing (uncapped: 16 residual warning lines, same four as the
+isolation test above; capped: 0, byte-for-byte the same as CSM off).
+`rubik2` shows the identical pattern. Kept the cap: exact fidelity on
+the target case, and on one more program besides, was judged worth
+more than one extra loosely-"compiled" (warned, not clean) corpus
+entry elsewhere. The cap stays as the shipped, unconditional default
+(not flag-gated; applies whenever `PYC_CSM=2`).
+
+**Final verified state (this update), everything combined -- fan-out
+fix + filter-inheritance fix + cap retained:**
+- `ifa --test`: 58/58.
+- `test_pyc.py`, `PYC_CSM` unset, both backends: **239/0**, byte-identical
+  to pre-this-round.
+- `test_pyc.py`, `PYC_CSM=2`, both backends: **229/11/10/4** -- unchanged
+  from every measurement across this whole investigation; the standard
+  suite doesn't exercise `sha`-style cases, so this round's gains show
+  up only in the corpus sweep.
+- Corpus sweep, `PYC_CSM` unset: diffs to **zero** against true baseline.
+- Corpus sweep, `PYC_CSM=2`: **52 compiled** vs. baseline's 54 (`ant`,
+  `kanoodle` newly FAIL; `adatron`, `chull` newly WARN) -- net **-2**,
+  the best net-loss figure measured in this entire investigation (prior
+  figures: -31/-32 pre-placement-fix, -3/-4 post-placement-fix,
+  pre-this-round). **`sha` now matches baseline exactly** (`COMPILED_C`,
+  0 warnings) for the first time in this investigation -- previously
+  the explicit, named target of "keep digging, root-cause the growth in
+  sha."
+- `sha.py` in isolation: exit 0, ~1.5s, 0 warnings, byte-for-byte
+  baseline match.
+
+`ant` and `kanoodle` remain unresolved corpus regressions -- not
+investigated this round (out of scope for "try the fan-out fix"), left
+as open follow-on work. `dijkstra2`/`pylife` remain unresolved with
+their original, unchanged diagnostic lines -- the separate, deeper
+"genuine no-type" residual case this doc's build plan (sections 1-8,
+top of file) already targets; CSM stops making these worse without
+resolving them, as designed.
