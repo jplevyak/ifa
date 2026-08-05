@@ -34,7 +34,16 @@ real fix now has a narrower, better-understood shape: it must touch
 directly (Option B) or the scheduling that lets a receiver be written
 through while still multi-CS (Option C) — not any reactive decision
 logic, which is structurally unable to see the problem by the time it
-runs.
+runs. **A third round the same day ("Why Options B and C both collapse
+to the same wall") traced both remaining options one level further and
+found they aren't independent — both require dispatch to route a
+container-mutating method's very first call by creation-site identity,
+immediately and unconditionally, rather than the reactive
+mint-then-split-on-divergence approach every splitting mechanism in
+this codebase currently uses. That's a standalone design effort
+comparable in scope to issue 075's own multi-session build, not a
+follow-on patch — stopping here, fully traced, for a dedicated future
+effort rather than attempting it blind this session.**
 
 This is very likely **the same fundamental mechanism already
 documented in [063](063-no-type-bucket-triage.md)** ("pyc separates
@@ -326,6 +335,72 @@ above. This rules out the most natural-looking "quick" fix (extend an
 existing decision loop's trigger condition) entirely; both remaining
 options (A, B) require touching the mechanism that *produces* the
 poisoning, not the mechanism that *detects* it.
+
+## Why Options B and C both collapse to the same wall (2026-08-05, reasoned through, not yet attempted)
+
+Per request ("follow the most promising bigger fix"), traced both
+remaining options one level further before writing any code, to find
+out which one is actually more tractable. They turn out not to be
+independent — both bottom out in the identical requirement.
+
+**Option B, scoped down.** Checked whether `AEdge::filtered_args` (a
+genuine, existing per-edge argument mechanism, fa.h:127 —
+`get_filtered`, fa.cc:2965) could let a scoped version of Option B
+avoid a full primitive rewrite. It doesn't: `filtered_args` flows a
+per-edge-*constrained* view **into** the shared ES-level formal
+(`analyze_edge`, fa.cc:3000: `flow_vars(actual, filtered);
+flow_vars(filtered, formal)`) — it narrows what's contributed, but the
+shared `formal` (what `P_prim_index_object`/`P_prim_set_index_object`
+actually read via `make_AVar(p->rvals[o], es)`) still ends up as the
+union of everything every edge ever contributed. Nothing in the
+current architecture gives a transfer function access to "just this
+edge's" argument — transfer functions are called per `(PNode,
+EntrySet)`, not per edge, full stop. A real per-edge fix means
+changing that calling convention everywhere, not adding a lookup.
+
+**Option C, re-examined.** The obvious objection to "isolate the
+receiver before any write reaches it" is: isolate it *when*? Traced
+through what happens on `1.py`'s very first pass: `dict()`'s two
+literal calls have nothing yet to distinguish them from dispatch's
+point of view — `find_best_entry_sets`/`entry_set_compatibility`
+(the general-purpose "route this edge to the best existing `EntrySet`,
+mint fresh only if none match" logic used everywhere, including by
+045's own `PER_CS_RECEIVER`) has no signal to route them differently
+until *something* about their arguments has already diverged — and
+divergence can't be observed until the callee's body has already been
+evaluated at least once. `1.py` is straight-line code with no
+recursion, so `__setitem__`'s internal loop, and its writes, run to
+completion within that same first pass — before setter-confluence
+splitting, `PER_CS_RECEIVER`, or CSM have had a single opportunity to
+run. Marking `dict`/`list` unconditionally `clone_methods_per_cs`
+would not change this: `PER_CS_RECEIVER` only runs once stages 1-5
+report no progress (`run_split_stages` stage 6, quiescence-gated,
+mirroring CSM's own placement) — strictly after the poisoning write.
+
+**The wall both hit:** for a receiver to be isolated before it's ever
+written through, dispatch has to route a container-mutating method's
+very first call by creation-site identity, immediately and
+unconditionally — not "mint one shared contour, split reactively once
+divergence is observed," which is what every splitting mechanism in
+this codebase (setter-confluence, `PER_CS_RECEIVER`, CSM) currently
+does, uniformly, by design. That's not an extension of the existing
+reactive-splitting architecture — it's a different default for at
+least this one class of method, and it would need its own termination
+argument (an unconditional per-creation-site contour for every
+`dict`/`list`/`set` mutation call, with no reactive-splitting
+safety net to fall back on) before it could even be prototyped safely.
+
+**Decision (2026-08-05): stopping here rather than attempting it.**
+Both a full per-edge primitive rewrite (B) and an unconditional,
+immediate per-creation-site dispatch default for container mutators
+(C) are substantial, standalone design efforts — comparable in scope
+to 075's own multi-session build, not a follow-on patch to it — and
+neither has a scoped, low-risk starting point the way the (ultimately
+ineffective) CSM-trigger attempt did. Left here, fully traced, for a
+future dedicated design effort rather than attempted blind. The two
+small, genuinely-safe fixes found along the way (the `DISPATCH`
+logging bug, this file's corrected root-cause analysis) are kept; no
+further code changes attempted this round.
 
 ## Verification plan
 
