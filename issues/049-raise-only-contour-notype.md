@@ -247,45 +247,48 @@ likely the same underlying "raise path contributes nothing to
 cross-function interaction the single-function analysis didn't
 anticipate, but that's a hypothesis, not a confirmed trace.
 
-**Status:** open, undiagnosed at the FA level. Blocks
-`shedskin_examples/sudoku2/sudoku2.py` from running (compiles clean,
-segfaults at runtime) even after its own two independent blockers
-were fixed — see `issues/037` for the full sudoku2 writeup. Whoever
-picks this up next should start from the minimal repro above (10
-lines, zero corpus dependencies) rather than sudoku2 itself.
+**Status, updated 2026-08-06:** the `f`/`Foo.m` repro immediately
+above no longer reproduces on current HEAD — retested directly while
+closing out the correction below, and it now compiles and runs
+correctly (propagates `ValueError: neg` to an unhandled-exception exit
+for `f(-1)`, matches CPython). It was NOT fixed by design; nothing in
+this session touched the `fn->ret`/zero-reaching-defs mechanism the
+root-cause section above describes. Most likely an incidental
+side-effect of unrelated FA-splitting-trajectory changes elsewhere
+this session (`issues/037`'s two fixes) — this codebase's splitter is
+already documented elsewhere (issue 033) as sensitive to unrelated
+changes in exactly this way. Treat this repro as **not currently
+reproducing, not confirmed fixed** — the underlying mechanism
+(described in this doc's root-cause section, confirmed via direct
+`goto_exc_target` instrumentation on the ORIGINAL single-function
+`risky` repro at the top of this file, which still reproduces
+unchanged) is presumably still latent and could resurface with a
+different arrangement of code. Whoever picks this up next should
+re-derive a fresh two-raiser repro rather than trust this exact one.
 
-**A third shape, even simpler — one call site, argument varies at
-runtime (a loop), not two static call sites:** the two-function repro
-above still has each raiser called from two *static, literal*
-call sites (`f(5)`/`f(-1)`), matching the shape 049's original fix
-verification already covers ("adding `risky(3)` before `risky(9)`"
-— two distinct literal contours). This is different:
+### Correction, 2026-08-06: sudoku2's actual runtime blocker was NOT this bug
 
-```python
-s = "2....64.1"
-n = 0
-for digit in "123456789":
-    try:
-        n += s.index(digit)   # str.index, added in issues/037 --
-                               # raises ValueError when digit is absent
-    except ValueError:
-        n -= 1
-print(n)
-```
-
-One call site (`s.index(digit)`), `digit` a loop variable, not a
-literal — some iterations hit the raising branch, some don't, all
-through the same textual call. Compiles with **zero warnings**
-(unlike the other two repros here, which both show NOTYPE
-diagnostics at compile time) but silently returns **garbage** at
-runtime (a large uninitialized-looking integer) instead of ever
-executing the `except` branch — no assert, no crash, just a wrong
-answer. Found while writing `tests/str_index.py`'s regression test
-for `issues/037`'s `str.index()` addition; the test file was
-deliberately trimmed to only the non-raising path once this surfaced,
-rather than asserting behavior that doesn't work yet. Not
-diagnosed further — flagging as a data point since "zero warnings,
-wrong answer" is a strictly worse failure mode than the other two
-shapes' loud NOTYPE/assert, and whoever roots-causes this issue
-should check whether the loop/runtime-varying-argument shape is the
-same mechanism or a fourth one.
+The "third shape" this section used to describe here (a
+`try`/`except` around `s.index(digit)` in a loop, compiling clean but
+silently returning garbage) — and the claim that it was blocking
+`shedskin_examples/sudoku2/sudoku2.py` from running — turned out to be
+a **completely different, unrelated bug**, now root-caused and fixed:
+[issues/038](../../issues/closed/038-pyc-program-has-raise-builtin-call-gap.md).
+Root cause: `pyc_program_has_raise` (the whole-program gate deciding
+whether ANY exception-checking code gets emitted at all) is armed by
+five specific user-code AST shapes (`raise`/`assert`/the three `yield`
+forms) — none of which cover an ordinary method call into a builtin
+that raises, the exact shape `str.index()` ([037](../../issues/closed/037-sudoku2-str-ne-void-cast-and-str-index.md))
+introduced. A program whose only raise is reachable that way never
+armed the gate, so no exception-checking code existed anywhere —
+including around the user's own `try`/`except` — and the raise's own,
+correct-in-isolation "leave `fn->ret` undefined on this path" behavior
+(this doc's own root-cause mechanism, working exactly as designed)
+became an uninitialized-memory read with nothing to short-circuit it
+first. That's a build-time gate-arming gap, unrelated to the
+zero-reaching-defs FA mechanism this doc is actually about — this
+doc's own root-cause repro (`risky`, top of file) still reproduces
+identically after issue 038's fix, confirming the two are separate.
+**With issue 038 fixed, `sudoku2.py` now runs to completion, output
+byte-identical to `python3`** — it was never blocked by this issue's
+mechanism at all, only by 038's.
