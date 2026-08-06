@@ -32,6 +32,19 @@ that:
 
 ## Current open issues
 
+- [079-single-candidate-dispatch-unchecked-cast.md](079-single-candidate-dispatch-unchecked-cast.md)
+  — polymorphic method dispatch's "single candidate" fast path
+  (`cg.cc`, `directs.n == 1`) emits an unchecked cast + direct call
+  when the receiver's static type union has *another* member that
+  implements the method not at all (as opposed to its own, tag-
+  compared implementation) — that member was never a dispatch
+  "candidate" to begin with, so it's silently uncovered. `bh.py`:
+  `b.hack_gravity(...)` where `b: Body | Cell` and only `Body`
+  implements `hack_gravity` compiles to a raw cast straight to
+  `Body::hack_gravity`, segfaulting when the runtime layout mismatch
+  bites. Same "missing salvage guard" pattern class as 077/034/035/
+  037, a new call site. Not attempted — touches the hottest dispatch
+  path in codegen (every single-implementation method call).
 - [075-element-cs-method-split-idempotent-plan.md](075-element-cs-method-split-idempotent-plan.md)
   — **concrete build plan** to escape the "no type" local maximum:
   clone shared `list`/`dict` methods per element-CS (shedskin's
