@@ -196,3 +196,96 @@ or fix it.
   and prevent regression).
 - Full suites (`./test_pyc.py`, `PYC_FLAGS=-b ./test_pyc.py`,
   `make test-unit`, `make test-ir`) stay green.
+
+## A second, distinct trigger: TWO independently-raising functions, each individually fine (found 2026-08-06, sudoku2 dig)
+
+While investigating `shedskin_examples/sudoku2/sudoku2.py`
+(`issues/037`), found a shape this doc's stated mechanism does NOT
+cover: two SEPARATE functions (or a free function and an unrelated
+record-class method), each with its own `if cond: raise ...; return
+x` body, each called with BOTH a raising and a non-raising argument
+(so neither is "reached only via its raising branch" — the specific
+condition this doc's root-cause section names) — fail to type when
+BOTH exist in the same program, even though each compiles and runs
+cleanly completely alone:
+
+```python
+def f(x):
+    if x < 0:
+        raise ValueError("neg")
+    return x
+
+class Foo:
+    def m(self, x):
+        if x < 0:
+            raise ValueError("neg")
+        return x
+
+print(f(5)); print(f(-1))              # f alone: fine
+print(Foo().m(5)); print(Foo().m(-1))  # Foo.m alone: fine
+# f AND Foo.m together in one program: "expression has no type",
+# then a runtime assert (getter not resolved / matching function not
+# found, seen both ways depending on exact shape) if forced through
+# with -r.
+```
+
+Confirmed pre-existing on unmodified HEAD (`5bec10ac`-era, well before
+any 2026-08-06 changes) via direct isolation — not a regression from
+that day's `str.index()`/`_CG_str_ne` fixes, which happened to be
+what surfaced it in `sudoku2.py` (`fread()`'s `try/except ValueError`
+around `str.index()`, once `str.index()` existed and could raise,
+became sudoku2's second independent raiser alongside... actually just
+itself across two call sites within `fread`'s loop — the minimal
+repro above shows the SAME class of failure needs only two *separate*
+raising call sites, function identity doesn't matter). Not yet
+root-caused to the same precision as the single-function case above
+(no FA trace done); given how closely it rhymes — two contours whose
+`fn->ret` AVars each depend on the raise-vs-return branch structure,
+now interacting across TWO different Funs instead of one — this is
+likely the same underlying "raise path contributes nothing to
+`fn->ret`" design (see root-cause section above) hitting a
+cross-function interaction the single-function analysis didn't
+anticipate, but that's a hypothesis, not a confirmed trace.
+
+**Status:** open, undiagnosed at the FA level. Blocks
+`shedskin_examples/sudoku2/sudoku2.py` from running (compiles clean,
+segfaults at runtime) even after its own two independent blockers
+were fixed — see `issues/037` for the full sudoku2 writeup. Whoever
+picks this up next should start from the minimal repro above (10
+lines, zero corpus dependencies) rather than sudoku2 itself.
+
+**A third shape, even simpler — one call site, argument varies at
+runtime (a loop), not two static call sites:** the two-function repro
+above still has each raiser called from two *static, literal*
+call sites (`f(5)`/`f(-1)`), matching the shape 049's original fix
+verification already covers ("adding `risky(3)` before `risky(9)`"
+— two distinct literal contours). This is different:
+
+```python
+s = "2....64.1"
+n = 0
+for digit in "123456789":
+    try:
+        n += s.index(digit)   # str.index, added in issues/037 --
+                               # raises ValueError when digit is absent
+    except ValueError:
+        n -= 1
+print(n)
+```
+
+One call site (`s.index(digit)`), `digit` a loop variable, not a
+literal — some iterations hit the raising branch, some don't, all
+through the same textual call. Compiles with **zero warnings**
+(unlike the other two repros here, which both show NOTYPE
+diagnostics at compile time) but silently returns **garbage** at
+runtime (a large uninitialized-looking integer) instead of ever
+executing the `except` branch — no assert, no crash, just a wrong
+answer. Found while writing `tests/str_index.py`'s regression test
+for `issues/037`'s `str.index()` addition; the test file was
+deliberately trimmed to only the non-raising path once this surfaced,
+rather than asserting behavior that doesn't work yet. Not
+diagnosed further — flagging as a data point since "zero warnings,
+wrong answer" is a strictly worse failure mode than the other two
+shapes' loud NOTYPE/assert, and whoever roots-causes this issue
+should check whether the loop/runtime-varying-argument shape is the
+same mechanism or a fourth one.
