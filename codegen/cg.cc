@@ -1257,17 +1257,39 @@ class CBackendEmitter : public VirtualCGEmitter {
     // distinct Symbol-typed constant, never expected to match the
     // real operands' type.
     if (prim_is_binary_operator(pn->prim->index)) {
-      cchar *operand_ct = nullptr;
+      // issue 077 follow-up: comparing raw c_type() STRINGS (the
+      // original form of this check) false-positived on ordinary,
+      // correct mixed-numeric arithmetic -- e.g. `2 * x` for a float
+      // `x` reaches this fallback as int64/float64, "_CG_int64" !=
+      // "_CG_float64", flagged as a mismatch even though C's own
+      // arithmetic promotion makes int-times-float completely valid
+      // (found via shedskin_examples/yopyra/yopyra.py: int.__mul__'s
+      // `__pyc_operator__` fallback aborted at runtime on a genuine
+      // `2 * <float>`). Two scalar operands of ANY kind/width
+      // (num_kind truthy on both) are always safely C-castable --
+      // mirrors both cg_emit_llvm.cc's emit_send_binop (which
+      // actively coerces int<->float/int-width pairs rather than
+      // erroring) and c_call_codegen's own num_kind-based tolerance
+      // (python_ifa_main.cc, same issue). Only a scalar paired with a
+      // non-numeric (pointer-like) operand -- or two non-numeric
+      // operands with genuinely different C representations -- is a
+      // real mismatch.
+      Var *operand_v = nullptr;
       bool mismatch = false;
       int chk_start = (pn->rvals[0]->sym == sym_primitive) ? 2 : 1;
       for (int i = chk_start; i < pn->rvals.n; i++) {
         if (pn->rvals[i]->sym && pn->rvals[i]->sym->is_symbol) continue;
-        cchar *ct = c_type(pn->rvals[i]);
-        if (!operand_ct) operand_ct = ct;
-        else if (strcmp(operand_ct, ct)) {
-          mismatch = true;
-          break;
+        if (!operand_v) {
+          operand_v = pn->rvals[i];
+          continue;
         }
+        Sym *ot = operand_v->type, *nt = pn->rvals[i]->type;
+        if (ot == nt) continue;
+        if (ot && nt && ot->num_kind && nt->num_kind) continue;  // both scalar -- any kind/width is C-castable
+        cchar *oc = c_type(operand_v), *nc = c_type(pn->rvals[i]);
+        if (oc && nc && !strcmp(oc, nc)) continue;
+        mismatch = true;
+        break;
       }
       if (mismatch) {
         if (!fruntime_errors) fail("primitive operand type mismatch '_CG_%s'", pn->prim->name);
