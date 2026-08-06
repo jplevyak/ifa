@@ -32,19 +32,6 @@ that:
 
 ## Current open issues
 
-- [077-primitive-equality-codegen-missing-salvage-guard.md](077-primitive-equality-codegen-missing-salvage-guard.md)
-  — found alongside [076](closed/076-mutation-driven-receiver-divergence-not-cloned.md)
-  (now fixed, see below): when a dispatched comparison dunder's operand
-  types mismatch (076's original mechanism, or any other salvage path),
-  the C-call/primitive-operator codegen (`c_call_codegen`,
-  `python_ifa_main.cc:58`; the `P_prim_primitive` fallback,
-  `cg.cc:857`) prints both operands verbatim with no type-agreement
-  check, producing a raw C compile error instead of the
-  runtime-assert-guard convention established by
-  [056](056-degraded-index-type-raw-c-compile-error.md) (at least the
-  fourth known occurrence of this same gap class). 076's fix means the
-  original repro no longer demonstrates this, but the gap itself is
-  general and still open.
 - [075-element-cs-method-split-idempotent-plan.md](075-element-cs-method-split-idempotent-plan.md)
   — **concrete build plan** to escape the "no type" local maximum:
   clone shared `list`/`dict` methods per element-CS (shedskin's
@@ -188,7 +175,7 @@ commit ref recorded in each file's status line.  They stay in
 the tree as history — a code-search for the affected file finds
 the trail of investigation even after the fix has landed.
 
-Currently 39 closed issues:
+Currently 40 closed issues:
 [001](closed/001-keepalive-vs-explicit-reply.md),
 [002](closed/002-codegen-llvm-normalizer.md),
 [003](closed/003-fa-converge-determinism.md),
@@ -227,6 +214,7 @@ Currently 39 closed issues:
 [060](closed/060-none-branch-dropped-mixed-with-literal-bool-sequence.md),
 [069](closed/069-per-arity-tuple-types-scope.md),
 [076](closed/076-mutation-driven-receiver-divergence-not-cloned.md),
+[077](closed/077-primitive-equality-codegen-missing-salvage-guard.md),
 [078](closed/078-class-body-default-plus-init-override-permanently-unions.md).
 
 ## When to file an issue here vs fix it now

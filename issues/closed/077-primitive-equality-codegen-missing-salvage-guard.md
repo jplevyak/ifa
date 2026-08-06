@@ -1,17 +1,16 @@
 # 077 — Dunder-dispatched comparison codegen assumes both operands share the dispatch-selected type; no guard when they don't
 
-**Status: PARTIALLY FIXED 2026-08-05.** The `_CG_prim_equal`-family
-call site (numeric dunders, `cg.cc`'s `emit_send_default_prim`, C
-backend) is fixed and verified, **plus a parity fix for the LLVM
-backend** at the same call family — which turned out to have a
-*worse* version of this bug (crashes the compiler itself via an LLVM
-internal assertion, not just a raw C error; see "RESOLVED (partial)"
-below). The `_CG_str_eq`-family call site (`c_call_codegen`,
-`python_ifa_main.cc`) is **still open** — two different fix attempts
-both produced widespread false positives on the corpus and were
-reverted; see "RESOLVED (partial)" for the full trace and why a third
-attempt wasn't made in this session. Originally found 2026-08-04
-alongside
+**Status: FIXED 2026-08-05.** Both call sites the issue named are now
+guarded: the `_CG_prim_equal`-family (numeric dunders, `cg.cc`'s
+`emit_send_default_prim`, C backend, plus a parity fix for the LLVM
+backend, which turned out to have a *worse* version of this bug —
+crashes the compiler itself via an LLVM internal assertion, not just
+a raw C error) and the `_CG_str_eq`-family (`c_call_codegen`,
+`python_ifa_main.cc`) — the latter took three attempts across two
+sessions before landing safely; see "RESOLVED" below for the full
+trace, including why it's deliberately scoped to a small whitelist of
+call targets rather than every `__pyc_c_call__` site. Originally found
+2026-08-04 alongside
 [076](closed/076-mutation-driven-receiver-divergence-not-cloned.md) (same
 repro exposes both — 076 is the precision root cause that *produces*
 a type-mismatched comparison; this issue is the separate codegen gap
@@ -163,7 +162,7 @@ consistent with the rest of the codebase and turns a hard build
 failure into a compile-clean-but-may-runtime-assert program, matching
 `runtime_errors`' documented semantics.
 
-## RESOLVED (partial), 2026-08-05
+## RESOLVED, 2026-08-05
 
 **What actually reaches `_CG_prim_equal`.** The original "Root cause"
 section above attributes this to `cg.cc`'s `case P_prim_primitive`
@@ -238,18 +237,15 @@ false-positived on ~200 corpus programs (`test_pyc.py` dropped from
 membership check (mirroring the C backend's `prim_is_binary_operator`)
 as an early-return before any type inspection at all.
 
-**`_CG_str_eq`/`c_call_codegen`: two attempts, both reverted.** This
-call site's convention is different from the numeric family above —
+**`_CG_str_eq`/`c_call_codegen`: three attempts (two reverted in the
+first session, a third landed in a follow-up session).** This call
+site's convention is different from the numeric family above —
 `__pyc_c_call__(ret_type, name, type1, arg1, type2, arg2, ...)`
 declares each argument's expected type *explicitly*, as a
 compile-time meta-type-constant argument, rather than requiring
-peer-argument agreement. Two strategies for checking "does argument i
-actually match its declared type_i" were tried, in the same session,
-and **both produced widespread false positives**, for the same root
-reason (a bare type-name reference like `str` resolves to the
-*abstract* class Sym — never itself a concrete specialization — while
-any *real* value's resolved type is always some concrete
-specialization of it):
+peer-argument agreement. Three strategies for checking "does argument
+i actually match its declared type_i" were tried:
+
 1. Compare `declared->cg_string` (the declared-type argument's own
    Sym, unwrapped via `->sym->meta_type` the same way
    `c_call_transfer_function` right above already does for the
@@ -266,56 +262,76 @@ specialization of it):
 2. Switched to `declared->specializers.set_in(actual)` — the same
    membership-check idiom already established throughout `cg.cc`
    (e.g. `sym_string->specializers.set_in(t)`) for exactly "is t a
-   variant of X", which should in principle handle the abstract-vs-
-   concrete relationship correctly. **Also** false-positived, far
-   worse (239 → 62 passed, 188 failures) — traced to
-   `int.__str__`
+   variant of X". **Also** false-positived, far worse (239 → 62
+   passed, 188 failures) — traced to `int.__str__`
    (`__pyc__/02_numeric.py:111`:
-   `__pyc_c_call__(str, "_CG_str_from_int", int, ...)`): whatever
-   relationship `specializers` actually encodes here, a concrete
-   `int64` contour isn't registered as `int`'s specializer the way
-   the analogous `str` case seemed to suggest it should be. Not
-   diagnosed further — the pattern (two independently-reasonable
-   comparison strategies, two different large-scale false-positive
-   failures) was read as a sign this needs a real understanding of
-   how declared-vs-concrete type identity works in this codebase's
-   Sym model, not a third guess under time pressure.
+   `__pyc_c_call__(str, "_CG_str_from_int", int, ...)`).
 
-Both attempts were reverted (`git checkout -- python_ifa_main.cc`)
-before commit; nothing shipped for this call site. `c_call_codegen`
-is unchanged from before this issue. This means: `str.__eq__` and any
-other `__pyc_c_call__`-based dunder (there are several — `_CG_ord`,
-`_CG_str_from_int`, `_CG_format_int_spec`, ... — see
-`__pyc__/01_str.py`, `02_numeric.py`, `05_builtins.py` for the full
-set) can still hit a raw C compile error on this exact salvage shape.
-Whoever picks this up next should start by understanding *why*
-`specializers.set_in()` didn't hold for the `int`/`int64` case before
-trying another comparison strategy — that's the load-bearing question
-attempts 1 and 2 both ran into from different angles.
+Both were reverted; the session ended there with the finding recorded
+for whoever picked it up next. That turned out to be the same
+investigation, continued: the fix for attempt 2's exact failure was
+`unalias_type()` (`ifa/if1/sym.cc`) — **not previously used at this
+call site**. `int` (unlike `str`) is a `Type_ALIAS` Sym (Python's
+arbitrary-precision int aliased to pyc's fixed-width `int64`), not
+itself a concrete specialization at all, so neither `cg_string` nor
+`specializers` comparisons against the raw declared Sym could ever
+have worked for it — `unalias_type(int)` resolves to a Sym that
+matches a real `int64` value's `->type` *exactly* (name, `type_kind`,
+`num_kind`, `num_index`, `cg_string` all identical, confirmed via
+debug print). Rebuilding the check around `unalias_type()` plus a
+`num_kind`-based tolerance (compatible if BOTH sides are numeric,
+*regardless* of exact width/precision — two scalars are always safely
+C-castable, mirroring how `cg_emit_llvm.cc`'s `emit_send_binop`
+already treats int↔float and int-width differences as coercible, not
+an error) got the corpus from 188 failures down to 14, uncovering two
+more real false-positive categories along the way:
+- **`_CG_any`** (pyc's boxed/generic placeholder, a `void*`) paired
+  with any other non-numeric type — C freely, implicitly converts
+  `void*` to/from any object pointer type, so this is never a real
+  mismatch. Hit via `__pyc__/04_sequence.py`'s `merge`/`merge_in`
+  family (`list.__add__` etc.) — a `list`-declared argument can
+  resolve to a boxed `_CG_any` element type at a real call site.
+- **Deliberate type erasure.** `list.__add__`'s own `__pyc_c_call__`
+  to `_CG_list_add` declares `int, l` for `l` — an entire *list*
+  operand labeled `int` — because the underlying macro
+  (`_CG_list_add(_l1, _l2, _s1, _s2)` in `pyc_c_runtime.h`) runs both
+  sides through `_CG_to_list(...)` regardless of the nominal declared
+  type. This is the load-bearing finding: **a per-argument type check
+  cannot be a blanket rule across every `__pyc_c_call__` site**, full
+  stop — some sites declare a type that doesn't match what's actually
+  passed *on purpose*, relying on the target macro's own internal
+  conversion, and nothing in the IR distinguishes "this declared type
+  is a real constraint" from "this declared type is a placeholder."
 
-**Verified** (the shipped C-backend + LLVM-backend fix only,
-`c_call_codegen` unchanged):
+**Final design: an explicit whitelist, not a general rule.** Given
+that finding, checking every `__pyc_c_call__` site was abandoned in
+favor of only checking the specific target names issue 077 actually
+named — `str`'s comparison family (`_CG_str_eq`, `_CG_str_ne`,
+`_CG_str_lt`, `_CG_str_le`, `_CG_str_gt`, `_CG_str_ge`,
+`__pyc__/01_str.py`), all of which declare their argument types
+literally (real `const char *` C parameters, no internal-conversion
+macro) and are the actual repro shape this issue documents. Every
+other `__pyc_c_call__` site (`_CG_list_add`, `_CG_ord`,
+`_CG_str_from_int`, `_CG_format_string`, ...) is completely unchecked
+and unaffected — matches current, pre-issue-077 behavior exactly, by
+construction (the check is gated on `strict_c_call`, computed once
+from `name` before the loop even starts).
+
+**Verified** (now covering both call sites — the numeric family from
+the prior session's fix, plus this session's `_CG_str_eq` family):
 - `ifa --test`: 58/58.
 - `test_pyc.py`, C and LLVM backends, `PYC_CSM` unset: 239/11/0/4
   both — unchanged from baseline.
 - `test_pyc.py`, C and LLVM backends, `PYC_CSM=2`: 235/11/4/4 both —
-  unchanged from the post-issue-078 baseline (same 4 failing tests,
-  verified by name).
-- `shedskin_sweep.sh`, both `PYC_CSM` settings: one clean gain in
-  each, zero regressions, diffed directly against saved pre-fix
-  `results.tsv` baselines — `pylife.py` moves from `FAIL` (hard `.c`
-  compile error) to `COMPILED_C_WARN` (compiles clean, degrades to a
-  runtime warning/assert) in both `off` (56→57 compiled, 21→20
-  failed) and `PYC_CSM=2` (54→55 compiled, 23→22 failed) sweeps.
-  Every other example's classification is byte-identical to baseline.
-- This issue's own repro (a `MiniDict` variant with a conditional
-  `__init__` so issue 078's auto-elision doesn't apply, deliberately
-  reproducing 076's original union-based contamination independent of
-  both 076 and 078 being otherwise fixed): the `_CG_prim_equal`
-  occurrence no longer reaches raw codegen (C backend: degrades to
-  `assert(!"runtime error: primitive operand type mismatch")`,
-  compiles clean, runs and aborts cleanly at that assert; LLVM
-  backend: fails the compile cleanly with a `codegen:` diagnostic
-  instead of crashing). The `_CG_str_eq` occurrence in the same repro
-  still hits the original raw C compile error, as expected given
-  `c_call_codegen` is unchanged.
+  unchanged from the post-issue-078 baseline (same 4 failing tests).
+- `shedskin_sweep.sh`, both `PYC_CSM` settings: byte-identical
+  (`diff` against the prior session's post-numeric-fix `results.tsv`)
+  — the corpus doesn't happen to exercise this exact `str`-comparison
+  mismatch shape, so no further corpus-level change, but critically
+  zero NEW regressions either.
+- This issue's own repro (the conditional-`__init__` `MiniDict`
+  variant, reproducing 076's mechanism independent of both 076 and
+  078 being otherwise fixed): **both** the `_CG_prim_equal` and
+  `_CG_str_eq` occurrences now degrade to
+  `assert(!"runtime error: ...")` instead of a raw compile error;
+  compiles clean, runs, and aborts cleanly at a runtime assert.
