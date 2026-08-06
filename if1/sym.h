@@ -200,6 +200,29 @@ class Sym : public BasicSym {
                             // pattern args (`case Point(0, 0):`) to
                             // attribute names           *type*
 
+  Vec<cchar *> clone_elides_fields;  // pyc frontend (issues/078): set ONLY
+                            // on a class's prototype Sym (`cls->self`).
+                            // Field names this class's own __init__
+                            // unconditionally overwrites (proven by a
+                            // static, pre-FA AST check -- see
+                            // compute_init_elidable_fields in
+                            // python_ifa_build_syms.cc) before any
+                            // instance is observable. fa.cc's
+                            // structural_assignment consults this to
+                            // skip copying these fields when cloning
+                            // FROM this exact Sym -- which can only ever
+                            // be the one sym_clone(proto, t) PNode
+                            // gen_class_pyda synthesizes in __new__,
+                            // never a user clone() call (the prototype
+                            // Sym is never reachable from Python
+                            // source). Does NOT affect this class's OWN
+                            // field (still seeded normally by the
+                            // class-body statement), so subclass
+                            // prototype-inheritance copies and direct
+                            // `ClassName.attr` reads are unaffected --
+                            // see issue 078's "Attempt 1" for why that
+                            // distinction matters.      *type*
+
   void *temp;  // algorithmic temp             *type*
   llvm::Type *llvm_type;
   llvm::DIType *llvm_type_di_cache; // Cache for debug information type

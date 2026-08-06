@@ -1907,8 +1907,21 @@ AType *make_constant(Immediate &imm, Sym *t) {
 
 // merge adds the vars in cs but not in new_cs to new_cs.
 // mix causes the vars from cs and new_cs to also flow to new_cs->element
+// elide_source (issue 078, Option D): the raw Sym operand `cs`'s value
+// came from, if the caller can identify one -- P_prim_clone passes the
+// literal Sym referenced at its clone-source operand (p->rvals[o]->sym).
+// When that Sym is a class's own prototype (cls->self), it may carry a
+// non-empty clone_elides_fields (set by gen_class_pyda when the class's
+// OWN __init__ unconditionally overwrites the field -- see issue 078)
+// naming fields safe to skip copying into new_cs: the prototype Sym is
+// never reachable from Python source, so this can only be non-null and
+// non-empty for the __new__-synthesized clone(proto, t), never a user
+// clone() call on some other, already-constructed instance -- checking
+// cs->sym here instead would be wrong, since cs->sym is the CLASS Sym,
+// identical for the prototype and for every other instance of the same
+// class.
 static void structural_assignment(CreationSet *new_cs, CreationSet *cs, PNode *p, EntrySet *es, bool merge = false,
-                                  bool mix = false) {
+                                  bool mix = false, Sym *elide_source = nullptr) {
   AVar *result = p->lvals.n ? make_AVar(p->lvals[0], es) : 0;
   AVar *elem = get_element_avar(cs);
   int o = elem ? 1 : 0;
@@ -1943,7 +1956,18 @@ static void structural_assignment(CreationSet *new_cs, CreationSet *cs, PNode *p
     flow_vars(iv, tval);
     set_container(tval, result);
     AVar *niv = unique_AVar(h->var, new_cs);
-    flow_vars(tval, niv);
+    // issue 078 (Option D): skip crediting `niv` with this field's
+    // clone-time copy when elide_source (the clone's literal source
+    // operand Sym, e.g. a class's own prototype) says its class's
+    // OWN __init__ unconditionally overwrites this field before any
+    // instance built this way is observable. Purely a type-precision
+    // decision -- doesn't change what runtime code clone() emits
+    // (cg.cc's P_prim_clone is a single whole-struct
+    // _CG_prim_clone_dst call, not per-field, so the real value is
+    // still physically copied at runtime regardless).
+    if (!elide_source || !elide_source->clone_elides_fields.n ||
+        !elide_source->clone_elides_fields.in(if1_cannonicalize_string(if1, h->name)))
+      flow_vars(tval, niv);
     if (mix) flow_vars(tval, get_element_avar(new_cs));
   }
   for (int i = cs->sym->has.n; i < cs->vars.n; i++) {
@@ -2361,9 +2385,17 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
       case P_prim_clone_vector:
       case P_prim_clone: {
         AVar *thing = make_AVar(p->rvals[o], es);
+        // issue 078 (Option D): the literal Sym referenced at the
+        // clone-source operand -- for the __new__-synthesized
+        // clone(proto, t), this is always cls->self, the class's own
+        // prototype; for any other clone() call it's whatever Sym the
+        // source expression resolves to (never a class prototype, per
+        // structural_assignment's comment above). Passed through so
+        // the per-field copy can consult its clone_elides_fields.
+        Sym *clone_source_sym = p->rvals[o]->sym;
         for (CreationSet *cs : thing->out->sorted) {
           CreationSet *new_cs = creation_point(result, cs->sym);
-          structural_assignment(new_cs, cs, p, es);
+          structural_assignment(new_cs, cs, p, es, false, false, clone_source_sym);
         }
         break;
       }

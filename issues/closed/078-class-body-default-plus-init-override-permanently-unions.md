@@ -1,23 +1,29 @@
 # 078 — A class-body default attribute permanently unions into a field's inferred type even when `__init__` unconditionally overwrites it first
 
-**Status:** open, filed 2026-08-05. **Option A attempted and reverted
-2026-08-05** — see "Attempt 1" below: the naive form of the rule
-(elide a class-body default whenever `__init__`'s entire body is
-self-independent field-literal assignments) is unsound. It missed a
-whole *second* way a prototype's field is observed besides
+**Status: RESOLVED 2026-08-05.** "Option D" (below) is implemented,
+verified, and landed — see "RESOLVED" section at the end for the full
+trace. Two earlier attempts are kept in place because they're
+genuinely instructive: **Option A, attempted and reverted 2026-08-05**
+(see "Attempt 1" below) — the naive form of the rule (elide a
+class-body default whenever `__init__`'s entire body is
+self-independent field-literal assignments) turned out to be unsound.
+It missed a second way a prototype's field is observed besides
 "`__init__` runs on every real instance before user code can see it":
 `gen_class_pyda`'s own inherited-field copy loop reads a **base
-class's prototype fields directly**, bypassing `__init__` entirely,
-to seed every subclass's prototype. Reverted before commit; no fix
-currently landed. Not a hypothetical: this is the general form of the
-general form of the bug fixed in
+class's prototype fields directly**, bypassing `__init__` entirely, to
+seed every subclass's prototype. And **Option B, scoped (not
+attempted) 2026-08-05** (see "Scoping Option B" below) — the general
+form (a live dominance/supersession notion inside FA's fixed point)
+was found to be substantially riskier than this issue originally
+implied, which is what led to Option D instead. Not a hypothetical:
+this is the general form of the bug fixed in
 [076](closed/076-mutation-driven-receiver-divergence-not-cloned.md)
 for `dict`/`set` specifically (see that issue's "RESOLVED" section for
 the full original trace). Filed separately because 076's fix was a
 per-class workaround (delete the two redundant lines in
 `__pyc__/07_dict.py`/`08_set.py`), not a fix to the mechanism itself —
 the same pattern will reproduce in any other class, `__pyc__`-builtin
-or user-written, with the same shape. No fix attempted here; this
+or user-written, with the same shape. This
 issue exists to name the general pattern, give a minimal standalone
 repro independent of `dict`/`set`, and lay out fix directions for
 whoever picks it up.
@@ -465,3 +471,90 @@ the entire bug *class* at once — for every current and future
 `__pyc__` builtin, and for user-written classes with the same
 ordinary, unremarkable shape, without requiring anyone to notice the
 hazard and work around it by hand the way 076's investigation had to.
+
+## RESOLVED (2026-08-05) — Option D implemented and verified
+
+Prototyped the design from "Scoping Option B" above. Three pieces:
+
+1. **`ifa/if1/sym.h`**: added `Vec<cchar *> clone_elides_fields` to
+   `Sym`, documented as set only on a class's prototype Sym
+   (`cls->self`).
+2. **`python_ifa_build_syms.cc`**: re-added the three static helpers
+   from Attempt 1 (`pyast_references_self`,
+   `simple_self_field_overwrite`, `compute_init_elidable_fields`),
+   unchanged in logic. `gen_class_pyda`, right after building the
+   prototype (`Sym *proto = cls->self`), now scans the class's own
+   body for a literal `__init__` `PY_funcdef` (own-textual only —
+   inherited `__init__` is out of scope for this cut, see "Scope"
+   above) and, for record, non-vector classes, stores the computed
+   elidable-fields set on `proto->clone_elides_fields`. Crucially,
+   this does **not** touch the class-body statement loop at all — the
+   class-body default is still emitted and still seeds the prototype's
+   own field normally.
+3. **`ifa/analysis/fa.cc`**: `structural_assignment` gained an
+   `elide_source` parameter — the literal Sym referenced at a clone's
+   source operand. `P_prim_clone`'s handler passes
+   `p->rvals[o]->sym` through. In the per-field copy loop, when
+   `elide_source->clone_elides_fields` names the current field, the
+   `flow_vars(tval, niv)` step (crediting the freshly cloned
+   instance's field with the source's value) is skipped.
+
+**A real correctness bug found and fixed during implementation, not
+just design:** the original "Scoping Option B" write-up assumed
+`cs->sym == cls->self` could identify "this clone's source is the
+prototype" from *inside* `structural_assignment`. Empirically false —
+`P_prim_new`'s FA handling (`creation_point(result,
+cs->sym->meta_type)`) sets a CreationSet's `->sym` to the *class* Sym,
+not the *instance* Sym, and `P_prim_clone` propagates that same
+`->sym` onto the cloned CreationSet too (`creation_point(result,
+cs->sym)`) — so *every* instance of a class, prototype or otherwise,
+shares the identical `cs->sym`. Checking it would have fired on any
+user `clone()` call on an ordinary instance, not just the
+`__new__`-synthesized one — exactly the false-positive risk the
+scoping doc set out to avoid, undetected until first implementation
+attempt (the MiniDict repro simply didn't get fixed; no crash, just
+silently inert). Fixed by threading the raw *operand* Sym
+(`p->rvals[o]->sym`, available directly from the IF1 send, no
+CreationSet indirection needed) through as `elide_source` instead —
+that Sym is compile-time-literally `cls->self` for the `__new__`
+clone and never that for a real user `clone()` call, which is what
+the scoping doc's safety argument actually needed.
+
+**Verified:**
+- `MiniDict` repro: compiles clean with **no manual editing** (the
+  original ask) — `keys = []` auto-elided, output `[1]` / `['hello']`
+  matches `python3` byte-for-byte.
+- `hello.py` (Attempt 1's regression trigger): 0 `expression has no
+  type` warnings, confirmed still 0 after this fix.
+- `SystemExit("bye").args` (the specific inheritance path Attempt 1
+  broke): resolves correctly, prints `bye`.
+- `ifa --test`: 58/58.
+- `test_pyc.py`, C and LLVM backends, `PYC_CSM` unset: 239/11/0/4
+  both — unchanged from baseline.
+- `test_pyc.py`, C and LLVM backends, `PYC_CSM=2`: 235/11/**4**/4 both
+  — up from the established 229/11/**10**/4 baseline. The 4 still-
+  failing (`deepcopy_objects`, `genetic2_idioms`,
+  `list_element_type_union`, `star_unpack`) are identical to baseline;
+  the 6 newly passing (`dict_comprehension_basic`,
+  `defaultdict_keys_values`, `dict_items_keys_values`,
+  `match_map_star`, `set_literal_basic`, `set_operations`) are pure
+  gains — confirmed by diffing the exact failure-name sets against a
+  freshly-reproduced pre-fix baseline (`git stash`, rebuild, rerun),
+  not just comparing counts.
+- Corpus sweep (`shedskin_sweep.sh`), `PYC_CSM` off: 56 compiled/21
+  failed, identical to the saved post-076 baseline
+  (`sweep-setdictfix-off`); `diff` against its `results.tsv` shows
+  exactly one line, a cosmetic line-number shift inside `tictactoe`'s
+  still-failing error message.
+- Corpus sweep, `PYC_CSM=2`: 54 compiled/23 failed (same as the saved
+  `sweep-setdictfix-csm2` baseline) but 31-with-warnings instead of
+  32 — `adatron.py` now compiles with **zero** warnings (was
+  `expression has no type`; see [[ifa-issue-057-fix-direction]] for
+  adatron's other history in this project). The other two line diffs
+  (`loop`, `sunfish`) are message shifts inside examples that were
+  already failing both before and after — no new failures anywhere in
+  the corpus, nothing previously passing broke.
+
+Net effect across every verification axis run this investigation:
+strictly positive, zero regressions. Committed, not yet pushed as of
+this writing.
