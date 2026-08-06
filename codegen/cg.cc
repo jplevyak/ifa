@@ -573,22 +573,44 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         bool single_idx = (n->rvals.n - 1) - (o + 1) == 1;
         Sym *e = t && t->element ? t->element->type : nullptr;
         cchar *ety = c_type(e);
-        fprintf(fp, "((%s", ety);
-        for (int i = o + 1; i < n->rvals.n - 1; i++) fprintf(fp, "*");
-        if (t->type_kind == Type_RECORD)
-          fprintf(fp, ")(%s))", cg_get_string(n->rvals[o]));
-        else
-          fprintf(fp, ")(_CG_list_ptr(%s)))", cg_get_string(n->rvals[o]));
-        for (int i = o + 1; i < n->rvals.n - 1; i++) {
-          if (single_idx && t->type_kind != Type_RECORD)
-            fprintf(fp, "[_CG_norm_idx(%s,(int32)_CG_prim_len(0,%s))-%d]", cg_get_string(n->rvals[i]),
-                    cg_get_string(n->rvals[o]), fa->tuple_index_base);
-          else if (!fa->tuple_index_base)
-            fprintf(fp, "[%s]", cg_get_string(n->rvals[i]));
+        // issue 035 (056/077-class guard, this time on the VALUE
+        // rather than the index): a salvage-degraded (or genuinely
+        // heterogeneous) list element type can end up
+        // pointer-representable (_CG_void, this list's real storage
+        // layout) while the value actually being stored resolved to
+        // a scalar, or vice versa. Casting a scalar directly to a
+        // pointer type (or a pointer to a scalar) is invalid C --
+        // unlike two pointer types, or two scalars of different
+        // width/kind, which are always castable (mirrors 034's same
+        // num_kind-based tolerance) -- so emitting it unconditionally
+        // produced a raw compile error instead of the established
+        // runtime-assert convention 056 already set for this same
+        // call site's INDEX argument. Found via
+        // shedskin_examples/tictactoe/tictactoe.py.
+        Var *val_v = n->rvals[n->rvals.n - 1];
+        bool value_mismatch = e && val_v->type && ((e->num_kind != 0) != (val_v->type->num_kind != 0));
+        if (value_mismatch) {
+          if (!fruntime_errors)
+            fail("list element type mismatch storing a '%s' into a '%s'-element list", c_type(val_v), ety);
+          fputs("assert(!\"runtime error: list element type mismatch\");\n", fp);
+        } else {
+          fprintf(fp, "((%s", ety);
+          for (int i = o + 1; i < n->rvals.n - 1; i++) fprintf(fp, "*");
+          if (t->type_kind == Type_RECORD)
+            fprintf(fp, ")(%s))", cg_get_string(n->rvals[o]));
           else
-            fprintf(fp, "[%s-%d]", cg_get_string(n->rvals[i]), fa->tuple_index_base);
+            fprintf(fp, ")(_CG_list_ptr(%s)))", cg_get_string(n->rvals[o]));
+          for (int i = o + 1; i < n->rvals.n - 1; i++) {
+            if (single_idx && t->type_kind != Type_RECORD)
+              fprintf(fp, "[_CG_norm_idx(%s,(int32)_CG_prim_len(0,%s))-%d]", cg_get_string(n->rvals[i]),
+                      cg_get_string(n->rvals[o]), fa->tuple_index_base);
+            else if (!fa->tuple_index_base)
+              fprintf(fp, "[%s]", cg_get_string(n->rvals[i]));
+            else
+              fprintf(fp, "[%s-%d]", cg_get_string(n->rvals[i]), fa->tuple_index_base);
+          }
+          fprintf(fp, " = (%s)%s;\n", ety, cg_get_string(val_v));
         }
-        fprintf(fp, " = (%s)%s;\n", ety, cg_get_string(n->rvals[n->rvals.n - 1]));
       } else {
         // issues/025: same negative-constant-index normalization as
         // P_prim_index_object's Type_RECORD branch above (`a[-1] =
@@ -596,8 +618,24 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         // invalid C field name `->e-1`).
         int fidx = atoi(n->rvals[o + 1]->sym->constant);
         if (fidx < 0) fidx += t->has.n;
-        fprintf(fp, "((%s)%s)->e%d = %s;\n", cg_get_string(t), cg_get_string(n->rvals[o]), fidx,
-                cg_get_string(n->rvals[n->rvals.n - 1]));
+        // issue 035 (same guard as the non-Type_RECORD branch above,
+        // needed a second time -- a fixed-size tuple-list's constant-
+        // index field can independently end up pointer-representable
+        // while the assigned value resolved to a scalar, or vice
+        // versa. Found via tests/list_element_type_mismatch_salvage.py
+        // itself hitting this exact branch, not the one above.
+        Var *val_v2 = n->rvals[n->rvals.n - 1];
+        Sym *field_ty = (fidx >= 0 && fidx < t->has.n && t->has[fidx]) ? t->has[fidx]->type : nullptr;
+        bool field_mismatch = field_ty && val_v2->type && ((field_ty->num_kind != 0) != (val_v2->type->num_kind != 0));
+        if (field_mismatch) {
+          if (!fruntime_errors)
+            fail("tuple-list field type mismatch storing a '%s' into a '%s' field", c_type(val_v2),
+                 c_type(field_ty));
+          fputs("assert(!\"runtime error: list element type mismatch\");\n", fp);
+        } else {
+          fprintf(fp, "((%s)%s)->e%d = %s;\n", cg_get_string(t), cg_get_string(n->rvals[o]), fidx,
+                  cg_get_string(val_v2));
+        }
       }
       break;
     }
