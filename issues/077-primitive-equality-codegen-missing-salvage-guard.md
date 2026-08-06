@@ -1,6 +1,17 @@
 # 077 — Dunder-dispatched comparison codegen assumes both operands share the dispatch-selected type; no guard when they don't
 
-**Status:** open, found 2026-08-04 alongside
+**Status: PARTIALLY FIXED 2026-08-05.** The `_CG_prim_equal`-family
+call site (numeric dunders, `cg.cc`'s `emit_send_default_prim`, C
+backend) is fixed and verified, **plus a parity fix for the LLVM
+backend** at the same call family — which turned out to have a
+*worse* version of this bug (crashes the compiler itself via an LLVM
+internal assertion, not just a raw C error; see "RESOLVED (partial)"
+below). The `_CG_str_eq`-family call site (`c_call_codegen`,
+`python_ifa_main.cc`) is **still open** — two different fix attempts
+both produced widespread false positives on the corpus and were
+reverted; see "RESOLVED (partial)" for the full trace and why a third
+attempt wasn't made in this session. Originally found 2026-08-04
+alongside
 [076](closed/076-mutation-driven-receiver-divergence-not-cloned.md) (same
 repro exposes both — 076 is the precision root cause that *produces*
 a type-mismatched comparison; this issue is the separate codegen gap
@@ -151,3 +162,160 @@ underlying imprecision (076's job) but does make the failure mode
 consistent with the rest of the codebase and turns a hard build
 failure into a compile-clean-but-may-runtime-assert program, matching
 `runtime_errors`' documented semantics.
+
+## RESOLVED (partial), 2026-08-05
+
+**What actually reaches `_CG_prim_equal`.** The original "Root cause"
+section above attributes this to `cg.cc`'s `case P_prim_primitive`
+generic fallback (~857-873) — that turned out to be wrong (or stale;
+unclear which). Traced empirically (added a debug print at that
+branch's entry, ran the repro, `name` was never `"equal"` — only
+`__pyc_c_call__`/`write`/`writeln` reached it). `P_prim_equal` is its
+own `prim_data.h` index (15), entirely separate from
+`P_prim_primitive` (34). The real call chain: `virtual_cg_emit_send`
+(`codegen_common.cc:611`) tries a fixed sequence of emitter hooks per
+send (`emit_send_any_prim`, `..._unaryop`, `..._binop`, `..._period`,
+...) and falls through to `emit_send_default_prim` — a **pure
+virtual** every backend must implement — when none claim it. The C
+backend doesn't override `emit_send_binop` (base default: `return
+false`), so `P_prim_equal` and every sibling binary op falls all the
+way through to `emit_send_default_prim` (`cg.cc:1207`, not 857-873),
+which is where `fprintf(fp, "_CG_%s(", pn->prim->name)` actually
+lives — `pn->prim->name` is already the full `"prim_equal"` etc.,
+not assembled from a separate operation-name argument the way
+`P_prim_primitive`'s OWN fallback works. Recorded here so the next
+person doesn't re-walk this the same way.
+
+**C backend fix.** `emit_send_default_prim` (`cg.cc:1243`, shifted
+from 1207 by this fix's own added code) now checks, for the binary
+arithmetic/comparison family specifically (`prim_is_binary_operator`,
+a new helper listing exactly the `prim_data.h` indices with the
+`(_a, _op, _b)`-shaped macros in `pyc_c_runtime.h` — deliberately
+**not** every index reaching this fallback, since others like
+`isinstance`/`issubclass` have their own special-cased, legitimately
+heterogeneous argument shape right below), whether all non-operator-
+symbol arguments (`->sym->is_symbol` excludes the operator-symbol
+constant itself, e.g. `__pyc_symbol__("==")`'s value) share one
+`c_type()`. On mismatch: `fail(...)` when `fruntime_errors` is off
+(pyc's own default is **on** — `defs.h`: `EXTERN_INIT(true)` — so
+this path is mostly theoretical for `pyc` itself, but matches the
+two-tier convention used everywhere else in `cg.cc`), else emit
+`assert(!"runtime error: primitive operand type mismatch")`.
+
+**LLVM backend: found a worse bug while checking for parity, fixed
+it too.** The issue's own "What a fix would look like" flagged this
+as worth checking. It was worse than expected: `cg_emit_llvm.cc`'s
+`emit_send_binop` (its own override, the LLVM backend's equivalent of
+the C backend's fallback) already *does* coerce operand types before
+building the LLVM instruction — but only for the legitimate int↔float
+/ int-width-mismatch cases. A pointer-vs-scalar mismatch (this
+issue's actual repro shape) hits none of those coercion branches and
+falls straight into `Builder->CreateICmpEQ(lhs, rhs)` with genuinely
+different LLVM types — which LLVM's own `IRBuilder` asserts on
+internally. Confirmed directly: `llvm::ICmpInst::AssertOK(): Assertion
+'getOperand(0)->getType() == getOperand(1)->getType() ...' failed`,
+**crashing the pyc process itself** (`Aborted (core dumped)`) rather
+than just producing a bad C file — a strictly worse failure mode than
+the one this issue set out to fix. Fixed by adding a same-type check
+before the switch that builds the LLVM instruction, calling
+`codegen_fail(pn, ...)` (a clean, `noreturn`, location-aware compiler
+error — already used one function up, `emit_send_unaryop`'s
+"unsupported operand type" case) instead of proceeding. No LLVM-
+backend runtime-trap mechanism (an LLVM IR sequence that aborts at
+*program* runtime, mirroring the C backend's `assert(!"...")`) exists
+anywhere in this codebase yet — building one is real, standalone
+design work, not attempted here. So LLVM parity is: crash → clean
+compile-time failure (a real, verified improvement), not yet crash →
+runtime-degrade (full parity with the C backend's new behavior).
+**First implementation of this LLVM fix had a bug**, caught by full
+verification, not by inspection: the same-type check ran
+unconditionally, before confirming `pn->prim->index` was even one of
+the binary-op family `emit_send_binop` is responsible for — since
+this function is invoked for *every* prim send (`P_prim_primitive`
+included, whose "operands" aren't a same-typed pair by design), it
+false-positived on ~200 corpus programs (`test_pyc.py` dropped from
+239 passed to 42). Fixed by adding an explicit `is_binop_family(idx)`
+membership check (mirroring the C backend's `prim_is_binary_operator`)
+as an early-return before any type inspection at all.
+
+**`_CG_str_eq`/`c_call_codegen`: two attempts, both reverted.** This
+call site's convention is different from the numeric family above —
+`__pyc_c_call__(ret_type, name, type1, arg1, type2, arg2, ...)`
+declares each argument's expected type *explicitly*, as a
+compile-time meta-type-constant argument, rather than requiring
+peer-argument agreement. Two strategies for checking "does argument i
+actually match its declared type_i" were tried, in the same session,
+and **both produced widespread false positives**, for the same root
+reason (a bare type-name reference like `str` resolves to the
+*abstract* class Sym — never itself a concrete specialization — while
+any *real* value's resolved type is always some concrete
+specialization of it):
+1. Compare `declared->cg_string` (the declared-type argument's own
+   Sym, unwrapped via `->sym->meta_type` the same way
+   `c_call_transfer_function` right above already does for the
+   *return*-type position) against `actual->cg_string` directly.
+   False-positived immediately (`test_pyc.py`: 239 → 238, one
+   failure) — traced with a debug print to `ord(x)`
+   (`__pyc__/05_builtins.py:116`:
+   `__pyc_c_call__(int, "_CG_ord", str, x)`): declared `str`'s own
+   `cg_string` is the generic placeholder `_CG_any` (it's the
+   abstract class, never itself laid out concretely), while `x`'s
+   *actual* resolved type is some concrete `str` specialization with
+   `cg_string` `_CG_string` — legitimately the same type, differently
+   represented, not a real mismatch.
+2. Switched to `declared->specializers.set_in(actual)` — the same
+   membership-check idiom already established throughout `cg.cc`
+   (e.g. `sym_string->specializers.set_in(t)`) for exactly "is t a
+   variant of X", which should in principle handle the abstract-vs-
+   concrete relationship correctly. **Also** false-positived, far
+   worse (239 → 62 passed, 188 failures) — traced to
+   `int.__str__`
+   (`__pyc__/02_numeric.py:111`:
+   `__pyc_c_call__(str, "_CG_str_from_int", int, ...)`): whatever
+   relationship `specializers` actually encodes here, a concrete
+   `int64` contour isn't registered as `int`'s specializer the way
+   the analogous `str` case seemed to suggest it should be. Not
+   diagnosed further — the pattern (two independently-reasonable
+   comparison strategies, two different large-scale false-positive
+   failures) was read as a sign this needs a real understanding of
+   how declared-vs-concrete type identity works in this codebase's
+   Sym model, not a third guess under time pressure.
+
+Both attempts were reverted (`git checkout -- python_ifa_main.cc`)
+before commit; nothing shipped for this call site. `c_call_codegen`
+is unchanged from before this issue. This means: `str.__eq__` and any
+other `__pyc_c_call__`-based dunder (there are several — `_CG_ord`,
+`_CG_str_from_int`, `_CG_format_int_spec`, ... — see
+`__pyc__/01_str.py`, `02_numeric.py`, `05_builtins.py` for the full
+set) can still hit a raw C compile error on this exact salvage shape.
+Whoever picks this up next should start by understanding *why*
+`specializers.set_in()` didn't hold for the `int`/`int64` case before
+trying another comparison strategy — that's the load-bearing question
+attempts 1 and 2 both ran into from different angles.
+
+**Verified** (the shipped C-backend + LLVM-backend fix only,
+`c_call_codegen` unchanged):
+- `ifa --test`: 58/58.
+- `test_pyc.py`, C and LLVM backends, `PYC_CSM` unset: 239/11/0/4
+  both — unchanged from baseline.
+- `test_pyc.py`, C and LLVM backends, `PYC_CSM=2`: 235/11/4/4 both —
+  unchanged from the post-issue-078 baseline (same 4 failing tests,
+  verified by name).
+- `shedskin_sweep.sh`, both `PYC_CSM` settings: one clean gain in
+  each, zero regressions, diffed directly against saved pre-fix
+  `results.tsv` baselines — `pylife.py` moves from `FAIL` (hard `.c`
+  compile error) to `COMPILED_C_WARN` (compiles clean, degrades to a
+  runtime warning/assert) in both `off` (56→57 compiled, 21→20
+  failed) and `PYC_CSM=2` (54→55 compiled, 23→22 failed) sweeps.
+  Every other example's classification is byte-identical to baseline.
+- This issue's own repro (a `MiniDict` variant with a conditional
+  `__init__` so issue 078's auto-elision doesn't apply, deliberately
+  reproducing 076's original union-based contamination independent of
+  both 076 and 078 being otherwise fixed): the `_CG_prim_equal`
+  occurrence no longer reaches raw codegen (C backend: degrades to
+  `assert(!"runtime error: primitive operand type mismatch")`,
+  compiles clean, runs and aborts cleanly at that assert; LLVM
+  backend: fails the compile cleanly with a `codegen:` diagnostic
+  instead of crashing). The `_CG_str_eq` occurrence in the same repro
+  still hits the original raw C compile error, as expected given
+  `c_call_codegen` is unchanged.

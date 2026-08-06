@@ -1052,6 +1052,43 @@ static void write_send_arg(FILE *fp, Fun *f, PNode *n, MPosition *p, int &wrote_
   }
 }
 
+// issue 077: the binary arithmetic/comparison primitive family --
+// every one of these has the (_a, _op, _b) macro shape in
+// pyc_c_runtime.h (_op an unused operator-symbol constant, e.g.
+// __pyc_symbol__("==")) and assumes _a and _b share one C type.
+// Deliberately NOT every prim_data.h index that can reach
+// emit_send_default_prim -- isinstance/issubclass (their own
+// &_CG_type_%s special case just below), merge/merge_in/coerce/is/...
+// have argument shapes this check was never designed to reason
+// about, so they're excluded rather than risk a false-positive
+// assert on a legitimately heterogeneous argument pair.
+static bool prim_is_binary_operator(int idx) {
+  switch (idx) {
+    case P_prim_pow:
+    case P_prim_mult:
+    case P_prim_div:
+    case P_prim_mod:
+    case P_prim_add:
+    case P_prim_subtract:
+    case P_prim_lsh:
+    case P_prim_rsh:
+    case P_prim_less:
+    case P_prim_lessorequal:
+    case P_prim_greater:
+    case P_prim_greaterorequal:
+    case P_prim_equal:
+    case P_prim_notequal:
+    case P_prim_and:
+    case P_prim_xor:
+    case P_prim_or:
+    case P_prim_land:
+    case P_prim_lor:
+      return true;
+    default:
+      return false;
+  }
+}
+
 class CBackendEmitter : public VirtualCGEmitter {
   FILE *fp;
   FA *fa;
@@ -1205,6 +1242,39 @@ class CBackendEmitter : public VirtualCGEmitter {
     return true;
   }
   bool emit_send_default_prim(PNode *pn) override {
+    // issue 077: dispatch that picked a binary arithmetic/comparison
+    // dunder (e.g. numeric __eq__) only checked ONE operand's type
+    // (classtag dispatch on the receiver) -- nothing has verified the
+    // OTHER operand still matches by the time this generic fallback
+    // prints both verbatim. A salvage-degraded operand (issue 076's
+    // mechanism, or similar) can let them diverge, producing C this
+    // macro was never built to accept (e.g. comparing a pointer to an
+    // int64). Degrade to the established runtime-assert convention
+    // (issue 056) instead of emitting it. The operator-symbol operand
+    // itself (e.g. __pyc_symbol__("==")'s value) is excluded from the
+    // comparison the same way P_prim_setter already identifies a
+    // selector argument (->sym->is_symbol, ~line 381) -- it's a
+    // distinct Symbol-typed constant, never expected to match the
+    // real operands' type.
+    if (prim_is_binary_operator(pn->prim->index)) {
+      cchar *operand_ct = nullptr;
+      bool mismatch = false;
+      int chk_start = (pn->rvals[0]->sym == sym_primitive) ? 2 : 1;
+      for (int i = chk_start; i < pn->rvals.n; i++) {
+        if (pn->rvals[i]->sym && pn->rvals[i]->sym->is_symbol) continue;
+        cchar *ct = c_type(pn->rvals[i]);
+        if (!operand_ct) operand_ct = ct;
+        else if (strcmp(operand_ct, ct)) {
+          mismatch = true;
+          break;
+        }
+      }
+      if (mismatch) {
+        if (!fruntime_errors) fail("primitive operand type mismatch '_CG_%s'", pn->prim->name);
+        fputs("  assert(!\"runtime error: primitive operand type mismatch\");\n", fp);
+        return true;
+      }
+    }
     fputs("  ", fp);
     if (pn->lvals.n && cg_get_string(pn->lvals[0])) {
       fprintf(fp, "%s = ", cg_get_string(pn->lvals[0]));

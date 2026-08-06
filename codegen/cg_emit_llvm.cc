@@ -1027,9 +1027,44 @@ bool emit_send_unaryop(EmitCtx &ctx, PNode *pn) {
   return true;
 }
 
+// issue 077: the set of prim indices THIS function's switch below
+// actually handles. Needed up front (not just as the switch's own
+// dispatch) because the type-mismatch guard below must only fire for
+// operators this function is responsible for -- emit_send_binop is
+// called for EVERY prim send (virtual_cg_emit_send's chain), and an
+// unrelated one (e.g. P_prim_primitive, a generic "call this by
+// name" node whose "operands" aren't a same-typed pair by design)
+// reaches here too, on its way to `default: return false` and
+// whatever emitter actually owns it. Checking types before confirming
+// membership false-positived on ~200 corpus programs in testing.
+static bool is_binop_family(int idx) {
+  switch (idx) {
+    case P_prim_add:
+    case P_prim_subtract:
+    case P_prim_mult:
+    case P_prim_div:
+    case P_prim_mod:
+    case P_prim_lsh:
+    case P_prim_rsh:
+    case P_prim_and:
+    case P_prim_or:
+    case P_prim_xor:
+    case P_prim_less:
+    case P_prim_lessorequal:
+    case P_prim_greater:
+    case P_prim_greaterorequal:
+    case P_prim_equal:
+    case P_prim_notequal:
+      return true;
+    default:
+      return false;
+  }
+}
+
 bool emit_send_binop(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim) return false;
   int idx = pn->prim->index;
+  if (!is_binop_family(idx)) return false;
   if (pn->rvals.n < 4 || pn->lvals.n < 1) return false;
   Var *lhs_v = pn->rvals.v[pn->rvals.n - 3];
   Var *rhs_v = pn->rvals.v[pn->rvals.n - 1];
@@ -1054,6 +1089,27 @@ bool emit_send_binop(EmitCtx &ctx, PNode *pn) {
       }
     }
   }
+
+  // issue 077: dispatch that picked this binary op (e.g. numeric
+  // __eq__) only checked ONE operand's type; nothing verified the
+  // other still matches. The coercions above handle the legitimate
+  // int<->float / int-width-mismatch cases; anything else left
+  // mismatched here (e.g. a pointer vs a scalar -- a salvage-degraded
+  // operand, issue 076's mechanism or similar) would reach
+  // CreateICmpEQ/CreateAdd/etc below with mismatched LLVM types,
+  // which LLVM's own IRBuilder asserts on -- crashing the COMPILER
+  // itself (confirmed via this exact repro: llvm::ICmpInst::AssertOK
+  // "Both operands to ICmp instruction are not of the same type!"),
+  // a worse failure mode than the C backend's raw-C-compile-error
+  // version of this same gap (which now degrades to a runtime assert
+  // for this same binary-operator family -- see
+  // emit_send_default_prim, cg.cc). No LLVM-backend runtime-trap
+  // mechanism exists yet to mirror that degrade (would need its own
+  // design -- not attempted here); fail the compile cleanly instead
+  // of crashing it, matching codegen_fail's existing use one function
+  // up (emit_send_unaryop's "unsupported operand type" case).
+  if (lhs->getType() != rhs->getType())
+    codegen_fail(pn, "primitive operand type mismatch (prim index %d)", idx);
 
   llvm::Value *res = nullptr;
   switch (idx) {
