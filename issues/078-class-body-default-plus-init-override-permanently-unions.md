@@ -319,6 +319,127 @@ rediscover this the same way — Option A's design needs to fold in
 independent notion of "observable," not just "observed via a real
 constructed instance," before the elision condition above is sound.
 
+## Scoping Option B (2026-08-05)
+
+Read `ifa/analysis/fa.cc`'s actual field-write machinery to scope
+Option B as originally proposed ("teach FA's field-setter modeling to
+recognize a provably-dead write and exclude it from the union",
+general, not scoped to prototype/class-body). Conclusion: **as
+originally framed, it's substantially harder and riskier than the
+issue doc implied — but scoping it surfaced a much narrower, safer
+variant (below, "Option D") that isn't a general FA change at all.**
+
+**Why the general form is hard.** Every field write in this analysis
+— `P_prim_setter` (fa.cc:2294, an ordinary `self.x = ...`) and
+`structural_assignment` (fa.cc:1910, the per-field struct-copy
+`P_prim_clone` uses at fa.cc:2362 to implement `clone()`) — bottoms
+out in the exact same call: `flow_vars(value, field_avar)`. A field's
+AVar (`iv`/`niv` in the code) is keyed by `(CreationSet, field name)`
+only — it carries no notion of program point, call site, or ordering;
+it's a flat, monotone accumulator that every reachable writer, from
+anywhere in the whole program, contributes to across the fixed
+point. That's not incidental: CreationSets are flow-*insensitive* by
+design (one summary per allocation site, shared by however many real
+runtime objects that site produces), which is what makes the whole-
+program analysis tractable at all. Giving `flow_vars`/AVar itself a
+notion of "this contribution is dominated and can be excluded" means
+teaching the single most foundational primitive in the entire engine
+(used for locals, returns, everything, not just fields) a kind of
+flow sensitivity it fundamentally doesn't have.
+
+**Why it's not just hard but risky.** [[ifa-issue-057-fix-direction]]
+already burned the project once on adding cleverness to the FA fixed
+point (widening/CPA_LIMIT) that broke convergence guarantees. The
+fixed point's soundness argument depends on monotonicity — types only
+ever grow across iterations. A live "is this write dominated?" check
+computed *during* the fixed point is inherently at risk of exactly
+that: early on, before all call edges are discovered (e.g. before
+`__init__`'s dispatch target is resolved), the analysis can't yet
+prove a write is dominated, so it includes the contribution; if it
+later becomes provable and the mechanism *retracts* that earlier
+contribution, that's non-monotonic. Any sound version has to compute
+"is this write dead" *before* the fixed point starts (a static,
+syntactic pre-pass — structurally the same shape as Option A's
+analysis) or as a separate, later refinement pass outside the live
+fixed point (mirroring [[ifa-issue-050-general-const-prop]]'s "3a"
+tier — a post-FA, non-fixed-point refinement, not a change to the
+fixed point's own transfer functions). A change to `P_prim_setter`'s
+transfer function itself is neither of those — it's live, in the
+fixed point, exactly the shape that's already caused problems here.
+
+**The narrower variant that scoping surfaced (call it Option D).**
+Traced *why* `structural_assignment` is the actual mechanism behind
+076/078 specifically: `gen_class_pyda`'s `__new__` wrapper does
+`sym_clone(proto, t)` then unconditionally calls `__init__` on `t`
+(fa.cc's `P_prim_clone` case, 2362-2369) — `structural_assignment`
+copies every field of `proto`'s CreationSet into `t`'s NEW CreationSet
+field-by-field (fa.cc:1938-1948, `flow_vars(tval, niv)` per field),
+and `__init__`'s own `P_prim_setter` write lands on that *same* `niv`.
+Two independent observations narrow this a lot:
+
+1. **The elision condition only needs to hold for `__init__`, exactly
+   as Option A already worked out** (`compute_init_elidable_fields`,
+   Attempt 1's now-reverted helper) — reusable as-is.
+2. **The clone call this applies to is structurally unambiguous and
+   local to check.** `clone()` is a general builtin real Python code
+   can call too (`__pyc__/02_numeric.py`'s `clone(self)`), so a class-
+   wide "skip field X on every clone of this class" rule would be
+   wrong — a user calling `clone(existing_instance)` on an already-
+   `__init__`'d object legitimately wants that instance's *current*
+   field value copied, not suppressed. But `cls->self` (the
+   prototype Sym) is never syntactically reachable from Python source
+   — the *only* PNode in the whole program that ever clones a
+   CreationSet whose `->sym` **is** a class's own prototype is the one
+   `sym_clone(proto, t)` send `gen_class_pyda` itself synthesizes
+   inside `__new__` (python_ifa_build_syms.cc:2054). So the guard
+   "only apply this to a clone whose source CS's `->sym` equals the
+   owning class's `self`" is exactly, structurally, the `__new__`
+   clone and nothing else — no per-PNode tagging or metadata plumbing
+   needed to distinguish it from an ordinary user `clone()` call.
+
+Combining both: keep the class-body statement exactly as-is (so the
+*prototype's own* field, and everything that reads it directly —
+`gen_class_pyda`'s inherited-field copy loop that seeded
+`SystemExit`'s prototype from `BaseException`'s, and the `ClassName.attr`
+direct-read path found at python_ifa_build_if1.cc:3328 — keeps working
+unmodified, which is exactly what Attempt 1's regression needed and
+didn't have). Instead, in `structural_assignment`'s per-field loop
+(fa.cc:1938-1948), when the source CS's `->sym` is the owning class's
+own prototype, skip the `flow_vars(tval, niv)` step for field names in
+a new `cls->clone_elides_fields` set — computed once, by the frontend,
+with the exact same static pre-pass Attempt 1 already built and
+reverted, just stored as class metadata instead of used to suppress
+code generation. This changes what a *freshly cloned instance's*
+field is credited with, not what the prototype (or anything reading
+it) sees — which is precisely the distinction Attempt 1's failure
+showed was missing.
+
+Scope, deliberately conservative for a first cut (mirrors Attempt 1's
+"don't try to be clever" posture): only apply when the class being
+`__new__`'d defines its **own** textual `__init__` matching the
+existing safe-shape check (not an inherited one) — `SystemExit`-style
+`pass`-only subclasses that dispatch to a base's `__init__` simply
+don't qualify and are left at current (unregressed, if imprecise)
+behavior; extending to inherited `__init__` bodies would need a way to
+walk from a resolved `init_sym` (a `Sym`) back to the *originating*
+`PyDAST` funcdef, which wasn't checked and isn't needed for `dict`/
+`set`/`MiniDict`, the three confirmed real cases. `cls->is_vector`
+classes (which clone via `sym_clone_vector`/a presumed
+`P_prim_clone_vector` case, not plain `P_prim_clone`) weren't checked
+either — exclude from scope until confirmed.
+
+**Not implemented yet.** This is a scoping conclusion, not a built
+and verified fix — the next step would be prototyping it (re-add the
+Attempt-1 pre-pass, but store its result on `cls` instead of using it
+to skip codegen; add the `cs->sym == <owning class>->self` guard plus
+the per-field skip in `structural_assignment`), then the same full
+verification bar as every other `fa.cc`-touching change this
+investigation has used: `ifa --test`, `test_pyc.py` both backends both
+`PYC_CSM` settings, full corpus sweep both settings, *plus* a direct
+regression check that `hello.py`'s `BaseException`/`SystemExit` path
+still produces 0 `expression has no type` warnings (the exact check
+that caught Attempt 1).
+
 ## Verification plan
 
 1. The `MiniDict` repro above (and its `dict`/`set` analog, already
