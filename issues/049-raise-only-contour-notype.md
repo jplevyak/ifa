@@ -9,6 +9,22 @@ original exception-handling implementation, not a regression from
 [011](../../issues/closed/011-exception-handling-unimplemented.md)'s
 Tier 1/Tier 2 gating.
 
+**2026-08-06 update:** the mechanism is now precisely pinned (the
+violating AVar is the raising function's OWN return var, made
+`live_arg` by its own unconditional `reply` — never anything
+caller-side; see "Two prototypes attempted and reverted" near the
+bottom of this file). Two concrete fix attempts were built, tested
+against more than the headline repro, and reverted — neither is safe
+to land as implemented, though attempt 2 got the recognition condition
+right and just needs its replacement-value half finished. Practical
+stakes are also lower than this doc originally documented: the
+headline minimal repro already compiles-with-warnings and RUNS
+CORRECTLY on the current baseline (issue 038 alone, no fix from this
+issue applied) — what's demonstrated to remain is a spurious
+compile-time warning on an otherwise-working program for that shape,
+not confirmed silent corruption. Read the 2026-08-06 section before
+attempting a third fix.
+
 ## Symptom
 
 Compiling a program where a function that can raise is called ONLY
@@ -159,30 +175,51 @@ exception-handling support, independent of the can_raise gating work
 don't touch this return-type convergence path at all and can't cause
 or fix it.
 
-## Proposed fix directions (not attempted)
+## Proposed fix directions
 
-1. Treat a return-position `Var` with zero reaching definitions for a
-   given contour as **provably unreachable** (like a function that
-   never returns — `NoReturn`) rather than `NOTYPE`: skip the NOTYPE
-   check when `av->live_arg` is true solely because of a caller that
-   itself never observes the value along any live path (would need
-   confirming the caller's own use of the result is provably
-   downstream of a will-always-propagate check — nontrivial to prove
-   in general, but the common case here is exactly "the only use is
-   the pending-exception check itself").
-2. Alternatively, give the raise path a typed-but-dead contribution to
-   `fn->ret` that CANNOT merge into other contours' live type (e.g. a
-   dedicated "never" CreationSet used only for this purpose) instead
-   of contributing nothing — would need to verify it doesn't
-   resurrect the original bug the current no-contribution design was
-   built to avoid (the `PY_try_stmt` "spurious extra type arm" issue
-   documented in `python_ifa_build_if1.cc`).
+1. ~~Treat a return-position `Var` with zero reaching definitions for a
+   given contour as **provably unreachable**... skip the NOTYPE check
+   when `av->live_arg` is true solely because of a caller that itself
+   never observes the value along any live path.~~ **This framing was
+   wrong** — see "Two prototypes attempted and reverted" below.
+   `av->live_arg` is NOT set by any caller's use of the result; it's
+   set by the raising FUNCTION's OWN unconditional `reply` (every
+   function has exactly one, reading `fn->ret` regardless of which
+   edge reached it). No caller-side reachability fact, however
+   precise, can affect this violation — confirmed empirically, not
+   just by re-reading the code, so treat this as settled, not merely
+   suspected.
+2. Give the raise path a typed-but-dead contribution to `fn->ret` that
+   CANNOT merge into other contours' live type (e.g. a dedicated
+   "never" CreationSet used only for this purpose) instead of
+   contributing nothing. **Attempted 2026-08-06, reverted** — see
+   below. The `_CG_any`-typed placeholder tried does NOT stay
+   harmlessly inert the way this direction assumed: once a real return
+   value and the placeholder share a contour (any function that's
+   *sometimes* called with a raising argument and sometimes not — the
+   ordinary case, not an edge case), the placeholder's type unions
+   into the real one and corrupts it. A "never" CreationSet that's
+   genuinely inert under FA's union operation (not just `_CG_any`, a
+   real but generic type) might avoid this, but that's a different,
+   unimplemented idea, not what was tried.
 3. Extend `PycCompiler::reanalyze` with a case that recognizes "AVar
    has zero reaching defs, and its `Var`'s only def-providing PNode is
    unreachable under the current contour's constraints" and converts
    the violation to void locally, mirroring what `-r`'s
    `convert_NOTYPE_to_void` does globally but scoped early enough to
-   let `ifa_analyze` succeed without requiring `-r`.
+   let `ifa_analyze` succeed without requiring `-r`. **A close relative
+   was attempted 2026-08-06 (as a new `IFACallbacks` hook rather than a
+   `reanalyze` case) and reverted** — see below. The direction (exempt
+   `fn->ret` specifically, recognized precisely, when the contour
+   `can_raise`) is the ONE thing that actually matched the real
+   mechanism, but suppressing the violation report alone isn't enough:
+   it also has to be UNIONED with `void_type` (mirroring what
+   `convert_NOTYPE_to_void` already does for every OTHER bottom AVar)
+   rather than just skipped, or codegen inherits a genuinely-bottom
+   AVar it was never built to handle. Untried refinement: call the
+   equivalent of `av->out = fa->type_world.void_type;` directly inside
+   the new hook (or ensure `convert_NOTYPE_to_void`'s own sweep still
+   catches this AVar) instead of only suppressing the report.
 
 ## Verification plan
 
@@ -292,3 +329,160 @@ identically after issue 038's fix, confirming the two are separate.
 **With issue 038 fixed, `sudoku2.py` now runs to completion, output
 byte-identical to `python3`** — it was never blocked by this issue's
 mechanism at all, only by 038's.
+
+## Two prototypes attempted and reverted, 2026-08-06 — read this before attempting a third
+
+User asked to dig into "more/less DCE" as a possible fix direction.
+Two concrete prototypes were built, tested, and reverted (working tree
+is clean; neither landed). Documenting both in full because the
+process of building and breaking them pinned down the actual
+mechanism this doc's original root-cause section only partially had
+right, and because both failure modes are non-obvious enough that a
+future attempt should start from here, not from scratch.
+
+### Prior surprise: the baseline (issue 038 alone) already salvages the minimal repro
+
+Before either prototype: retested `risky(9)`-only (the exact repro at
+the top of this file) against current HEAD with neither prototype
+applied. It **compiles with the same 4 warnings as always documented
+here, exits 0, and RUNS CORRECTLY** — `Unhandled exception: too big`,
+matching CPython's `ValueError: too big` exactly. `fruntime_errors`'s
+existing `convert_NOTYPE_to_void` salvage (on by default in a plain
+`pyc file.py` invocation, no `-r` needed — confirmed empirically, not
+matching this doc's own older assumption that `-r` was required and
+insufficient) already downgrades the NOTYPE violation to a harmless
+`void`-typed AVar, and since the value is genuinely never read (the
+caller's pending-exception check, correctly emitted now that issue
+038 closed the gate-arming gap, always fires first), the program is
+already CORRECT — just noisy at compile time. This substantially
+lowers this issue's remaining practical stakes: what's left, for the
+shapes tested, is a spurious compile-time warning on an
+otherwise-working program, not silent corruption. (Whether that holds
+for every shape this doc documents — the two-raiser repro, `sudoku2`
+before its own two other fixes — wasn't re-audited; only the minimal
+`risky` repro was rechecked here.)
+
+### Attempt 1 (Option 2 — "less DCE", the generator-placeholder idea): reverted
+
+Mirrored issue 014's generator fix exactly: instead of
+`goto_exc_target` leaving `fn->ret` undefined on the raise edge
+(current behavior, when `fun_returns_value`), give it an
+unconditionally-reachable, FA-opaque placeholder move — an opaque
+`__pyc_c_call__` to a new `_CG_raise_placeholder_return()`
+(`pyc_c_runtime.h`), declared type `any` (`sym_any`, chosen over a
+literal like `sym_nil` specifically to avoid resurrecting issue 071's
+`T|None` union problem).
+
+**Result on the exact minimal repro (`risky(9)`, no sibling call):
+worked.** Compiled clean, ran correctly, `Unhandled exception: too
+big`.
+
+**Result once the same function also has a genuine successful return
+elsewhere — the common case, not an edge case — two failure modes:**
+
+- `print(risky(3)); print(risky(9))` (two static call sites, one safe
+  one not — this doc's own "the fix is one call away" shape):
+  **segfaults the compiler itself.** Backtrace lands in
+  `optimize/dom.cc`'s `df_traversal`/`build_dominators`
+  (dominator-tree construction, called from `find_recursive_loops` /
+  `frequency_estimation`, well AFTER FA itself converges) — a null
+  vertex during dominance computation. Looks like a latent bug in that
+  pass, newly exposed by the CFG shape the extra opaque call site
+  creates (a call immediately followed by a jump out of the function),
+  not a bug in FA's type lattice itself. Not chased further.
+- `try: risky(9) except ValueError: ...` followed by the genuinely
+  successful `risky(2)`: doesn't crash, but **`risky(2)`'s real return
+  value prints as `<instance>` instead of `2`.** The `any`-typed
+  placeholder unions into the SAME contour's `fn->ret` as the real
+  `int` return (both calls end up sharing one contour here), widening
+  the whole thing to a boxed/generic type — so the genuinely-used
+  value gets corrupted, not just the dead one.
+
+That second failure mode is disqualifying on its own: it silently
+mishandles exactly the pattern real "validate or return" code uses
+most, trading a loud compile-time NOTYPE for a silently wrong answer —
+a strictly worse failure mode. Reverted (`pyc_c_runtime.h`,
+`python_ifa_build_if1.cc`'s `goto_exc_target`) — confirmed clean via
+`git diff`/grep for the added symbol names, rebuilt, reconfirmed the
+minimal repro back to its original (documented) warning-emitting
+state.
+
+### Attempt 2 (Option 1, corrected — "more DCE", but the RIGHT mechanism this time): reverted
+
+The first thing this attempt found, before writing any code: **the
+original "Option 1" framing above (skip the NOTYPE check when the
+CALLER never observes the value) targets the wrong variable.**
+`PYC_DBG_NOTYPE=1` on the minimal repro shows the violating AVar's
+`fun`/`es` as `risky` itself, never `__main__`/the caller. Confirmed
+directly: implementing exactly that framing (extending
+`provably_constant_isinstance` to return `false_type` for a
+provably-always-raising callee, so the CALLER's post-call
+`isinstance(__pyc_exc__, NoneType)` true-arm — and therefore its use
+of the call result — becomes unreachable) compiles and runs
+**identically, warning for warning**, whether the extension is present
+or not. Zero effect. The reason: `av->live_arg` for `fn->ret` is set
+by `risky`'s OWN unconditional `reply` statement (`gen_fun_pyda`,
+every function has exactly one, and it reads `fn->ret` regardless of
+which edge — raise or normal return — reached it), not by anything in
+any particular caller's control flow. Pruning a caller's branch can't
+touch that.
+
+Corrected the target: added a new
+`IFACallbacks::notype_violation_is_benign(AVar *av, EntrySet *es)`
+hook (`ifa/ifa.h`, mirroring
+`provably_constant_isinstance`'s existing contract exactly — default
+`false`/conservative, frontend gets first refusal), called from
+`collect_var_type_violations` (`ifa/analysis/fa.cc`) right before it
+would report a NOTYPE violation. pyc's implementation
+(`python_ifa_sym.cc`): true when `av` IS this contour's own return
+AVar (matches some `es->rets[i]`) AND `es->can_raise`.
+
+**Result: made things WORSE, deterministically, on the exact minimal
+repro that already worked on the unmodified baseline.** `risky(9)`-only
+went from "compiles with 4 warnings, runs correctly" (see the prior
+section above) to a **hard compile failure** —
+`repro.py.c: error: use of undeclared identifier '_CG_String_n'` and
+`error: unexpected type name '_CG_ps1032': expected expression`,
+reproduced identically across repeated runs (not flaky). Root cause,
+understood after the fact: suppressing the violation REPORT doesn't
+give the AVar a real type — it stays genuinely `bottom_type`. The
+EXISTING salvage step, `convert_NOTYPE_to_void`
+(`ifa/analysis/fa.cc`), is what normally converts a bottom AVar to
+harmless `void` — and it runs independently, so in principle it should
+still have caught this one. It's possible `type_violations`'
+presence/absence feeds back into `analyze_to_convergence`'s own
+pass-count / `reanalyze` scheduling in a way that changed how many
+passes ran or which ones, leaving this AVar in a state
+`convert_NOTYPE_to_void`'s own sweep didn't visit the same way — not
+confirmed, the interaction wasn't traced further once the regression
+was clear. Reverted (`ifa/ifa.h`, `ifa/analysis/fa.cc`,
+`python_ifa_int.h`, `python_ifa_sym.cc`) and reconfirmed the minimal
+repro back to its working-with-warnings state.
+
+### Takeaways for whoever picks this up next
+
+- The mechanism IS now precisely pinned: `fn->ret`'s `live_arg` for a
+  raise-only contour comes from the function's own `reply`, not any
+  caller. Direction 1 above only makes sense reframed around that.
+- A `reanalyze`-style fix (direction 3) that suppresses the violation
+  needs to ALSO union `void_type` into the AVar itself (or otherwise
+  ensure `convert_NOTYPE_to_void`'s own sweep still reaches it) — not
+  just skip the report — or codegen inherits a value it can't handle.
+  This is the most promising remaining direction: it's the one closest
+  to actually working (attempt 2 got the *recognition* condition
+  right, just not the *replacement* value).
+- A placeholder-value fix (direction 2) needs a genuinely inert "never"
+  type — one FA's own union operation absorbs without widening a
+  sibling contour's real type — not `_CG_any`, which is a real,
+  generic type that DOES participate in unions.
+- Both prototypes' failure modes only showed up once tested against
+  shapes beyond the single minimal repro (a sibling successful call,
+  in attempt 1's case; nothing beyond the minimal repro even needed to
+  break it, in attempt 2's case). Test broadly (this doc's own
+  variants, the full suite, a corpus sweep) before trusting a fix that
+  only looks correct on the headline repro.
+- Given the practical stakes are now lower than this doc originally
+  documented (the minimal repro already runs correctly on today's
+  baseline — see above), a third attempt should be weighed against
+  that: is landing this worth the FA-internals risk, for what may now
+  mostly be a cosmetic warning rather than a correctness bug?
