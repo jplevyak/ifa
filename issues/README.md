@@ -265,15 +265,6 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   `sitofp`/`sext` promotion is inserted, producing a verifier
   failure. C backend is unaffected (implicit conversions). Root cause
   and fix template (`llvm_num_unify`) both identified, not yet built.
-- [080-LLVM-index-type-mismatch-no-salvage-guard.md](080-LLVM-index-type-mismatch-no-salvage-guard.md)
-  — the LLVM-parity gap closed-056 left open: `emit_send_index_load`/
-  `emit_send_index_store` have no equivalent of `cg.cc`'s new
-  `scalar_ct` salvage guard, so a salvage-degraded index/element Var
-  that the C backend now degrades to a runtime assert instead hard-
-  fails LLVM's own compile entirely (`codegen: primitive operand type
-  mismatch`, no binary produced).
-  `tests/list_index_type_mismatch_salvage.py` documents this via its
-  `.expect_fail` sidecar (LLVM only — passes clean on the C backend).
 
 ### CLEANUP
 
@@ -291,7 +282,7 @@ commit ref (or date) recorded in each file's status line.  They
 stay in the tree as history — a code-search for the affected file
 finds the trail of investigation even after the fix has landed.
 
-Currently 57 closed issues:
+Currently 58 closed issues:
 [001](closed/001-keepalive-vs-explicit-reply.md),
 [002](closed/002-codegen-llvm-normalizer.md),
 [003](closed/003-fa-converge-determinism.md),
@@ -348,7 +339,8 @@ Currently 57 closed issues:
 [073](closed/073-teach-splitter-productive-vs-inert-context.md),
 [076](closed/076-mutation-driven-receiver-divergence-not-cloned.md),
 [077](closed/077-primitive-equality-codegen-missing-salvage-guard.md),
-[078](closed/078-class-body-default-plus-init-override-permanently-unions.md).
+[078](closed/078-class-body-default-plus-init-override-permanently-unions.md),
+[080](closed/080-LLVM-index-type-mismatch-no-salvage-guard.md).
 
 ## When to file an issue here vs fix it now
 

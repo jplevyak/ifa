@@ -1,5 +1,14 @@
 # 080 — LLVM backend's index/element type mismatch has no salvage guard (`emit_send_index_load`/`emit_send_index_store`), unlike the C backend since issue 056
 
+**Status: CLOSED** — fixed 2026-08-07.
+
+### Resolution Summary
+Added `emit_salvage_trap` helper in `ifa/codegen/cg_emit_llvm.cc` and invoked it from `emit_send_index_load`, `emit_send_index_store`, and `emit_send_binop`. When flow analysis degrades an index Var or binary op operand to a non-scalar/mismatched LLVM type, the LLVM backend now emits a `@llvm.trap()` call and binds a typed null constant to the destination Var instead of calling `codegen_fail(...)` or triggering an LLVM IRBuilder assertion failure during compilation.
+
+Confirmed `tests/list_index_type_mismatch_salvage.py` now compiles and executes cleanly with `pyc -b`, removed its `.expect_fail` sidecar, and verified that both backends pass the full test suite with 0 regressions.
+
+**Original filing follows.**
+
 **Status:** open, found 2026-08-07 while independently verifying commit
 `fa683610` ("issue 056: add index type mismatch salvage guard to
 P_prim_index_object and P_prim_set_index_object"). That commit fixed

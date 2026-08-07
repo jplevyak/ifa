@@ -1061,6 +1061,17 @@ static bool is_binop_family(int idx) {
   }
 }
 
+static void emit_salvage_trap(EmitCtx &ctx, Var *dst_v = nullptr) {
+  llvm::Function *trap_fn = get_intrinsic_decl(llvm::Intrinsic::trap);
+  Builder->CreateCall(trap_fn);
+  if (dst_v && dst_v->type) {
+    llvm::Type *dst_ty = sym_to_llvm_type(dst_v->type);
+    if (dst_ty && !dst_ty->isVoidTy()) {
+      put_result(ctx, dst_v, llvm::Constant::getNullValue(dst_ty));
+    }
+  }
+}
+
 bool emit_send_binop(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim) return false;
   int idx = pn->prim->index;
@@ -1090,26 +1101,10 @@ bool emit_send_binop(EmitCtx &ctx, PNode *pn) {
     }
   }
 
-  // issue 077: dispatch that picked this binary op (e.g. numeric
-  // __eq__) only checked ONE operand's type; nothing verified the
-  // other still matches. The coercions above handle the legitimate
-  // int<->float / int-width-mismatch cases; anything else left
-  // mismatched here (e.g. a pointer vs a scalar -- a salvage-degraded
-  // operand, issue 076's mechanism or similar) would reach
-  // CreateICmpEQ/CreateAdd/etc below with mismatched LLVM types,
-  // which LLVM's own IRBuilder asserts on -- crashing the COMPILER
-  // itself (confirmed via this exact repro: llvm::ICmpInst::AssertOK
-  // "Both operands to ICmp instruction are not of the same type!"),
-  // a worse failure mode than the C backend's raw-C-compile-error
-  // version of this same gap (which now degrades to a runtime assert
-  // for this same binary-operator family -- see
-  // emit_send_default_prim, cg.cc). No LLVM-backend runtime-trap
-  // mechanism exists yet to mirror that degrade (would need its own
-  // design -- not attempted here); fail the compile cleanly instead
-  // of crashing it, matching codegen_fail's existing use one function
-  // up (emit_send_unaryop's "unsupported operand type" case).
-  if (lhs->getType() != rhs->getType())
-    codegen_fail(pn, "primitive operand type mismatch (prim index %d)", idx);
+  if (lhs->getType() != rhs->getType()) {
+    emit_salvage_trap(ctx, dst_v);
+    return true;
+  }
 
   llvm::Value *res = nullptr;
   switch (idx) {
@@ -1329,7 +1324,11 @@ bool emit_send_index_load(EmitCtx &ctx, PNode *pn) {
     elem_ty = llvm::Type::getInt64Ty(*TheContext);
 
   llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
-  if (idx->getType()->isIntegerTy() && !idx->getType()->isIntegerTy(64))
+  if (!idx->getType()->isIntegerTy()) {
+    emit_salvage_trap(ctx, dst_v);
+    return true;
+  }
+  if (!idx->getType()->isIntegerTy(64))
     idx = Builder->CreateSExtOrTrunc(idx, i64);
 
   Sym *t = pn->rvals.v[o]->type;
@@ -1405,7 +1404,11 @@ bool emit_send_index_store(EmitCtx &ctx, PNode *pn) {
   if (!obj || !idx || !val) return false;
   llvm::Type *elem_ty = val->getType();
   llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
-  if (idx->getType()->isIntegerTy() && !idx->getType()->isIntegerTy(64))
+  if (!idx->getType()->isIntegerTy()) {
+    emit_salvage_trap(ctx);
+    return true;
+  }
+  if (!idx->getType()->isIntegerTy(64))
     idx = Builder->CreateSExtOrTrunc(idx, i64);
 
   Sym *t = pn->rvals.v[o]->type;
