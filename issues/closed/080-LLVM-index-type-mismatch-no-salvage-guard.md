@@ -5,6 +5,22 @@
 ### Resolution Summary
 Added `emit_salvage_trap` helper in `ifa/codegen/cg_emit_llvm.cc` and invoked it from `emit_send_index_load`, `emit_send_index_store`, and `emit_send_binop`. When flow analysis degrades an index Var or binary op operand to a non-scalar/mismatched LLVM type, the LLVM backend now emits a `@llvm.trap()` call and binds a typed null constant to the destination Var instead of calling `codegen_fail(...)` or triggering an LLVM IRBuilder assertion failure during compilation.
 
+**Traced, closing the "not yet traced" gap the original filing below
+left open**: "prim index 15" was `emit_send_binop`'s own
+`codegen_fail(pn, "primitive operand type mismatch (prim index
+%d)", idx)` call (`idx = pn->prim->index`, one of the binop-family
+primitives — comparison/arithmetic — not `P_prim_index_object`
+itself), reached via whatever internal negative-index normalization
+expands into a comparison/subtraction against the salvaged index —
+**not** `emit_send_index_load`/`emit_send_index_store` as the
+original filing's "Affects"/"Proposed fix" sections hypothesized.
+Those two functions' own non-integer-index checks are real,
+independently-needed hardening (a salvage-degraded index that never
+even reaches a binop would otherwise flow into a GEP with the wrong
+operand type) — but they are not what the originally-observed crash
+actually hit. All three sites needed the guard; only `emit_send_binop`
+needed it to fix *this issue's own reproducer*.
+
 Confirmed `tests/list_index_type_mismatch_salvage.py` now compiles and executes cleanly with `pyc -b`, removed its `.expect_fail` sidecar, and verified that both backends pass the full test suite with 0 regressions.
 
 **Original filing follows.**
@@ -21,7 +37,7 @@ backend's independent emission for list/string/tuple-list indexing.
 Neither function has anything resembling `cg.cc`'s new
 `scalar_ct(c_type(...))` check.
 
-**Related:** [056](closed/056-CGEN-degraded-index-type-raw-c-compile-error.md)
+**Related:** [056](056-CGEN-degraded-index-type-raw-c-compile-error.md)
 — the C-backend fix this issue is the LLVM-parity follow-up to. That
 issue's own "What a fix would look like" section explicitly named
 this as required scope ("should be checked against the LLVM
