@@ -228,10 +228,12 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
 
 - [030-DISPATCH-polymorphic-dispatch-fat-pointers.md](030-DISPATCH-polymorphic-dispatch-fat-pointers.md)
   — core classtag dispatch implemented on both backends. Mixed
-  plain-function/closure-carrier dispatch **fixed on the C backend**
+  plain-function/closure-carrier dispatch **fixed on both backends**
   2026-08-06 (classtag compare + direct call, no method-pointer-slot
-  infrastructure needed); the LLVM backend has no mixed-dispatch chain
-  at all yet, a larger separate prerequisite, left open. Remaining
+  infrastructure needed; the LLVM half also required restructuring
+  `emit_send_call`'s per-candidate loop to stop bailing to a wholly
+  separate, uninitialized-alloca-reading bare-callable pass, bringing
+  it to parity with `cg.cc`'s general classtag+plain mixing). Remaining
   open: high-fan-out table dispatch (vs. if/else chain) was never
   built (now a perf concern, not correctness — 11-subclass fanout
   works).

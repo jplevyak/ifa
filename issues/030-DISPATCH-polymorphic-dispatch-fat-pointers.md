@@ -7,12 +7,15 @@ passes strictly (its `check_fail` sidecar removed). See "What
 landed (classtag dispatch)" below. Remaining open scope after
 2026-07-05's bare-callable landing (value-identity dispatch on raw
 function addresses, mixed classtag+address chains, both backends —
-see issues/007): (a) **FIXED on the C backend, 2026-08-06** — a
+see issues/007): (a) **FIXED on both backends, 2026-08-06** — a
 mixed plain-function/closure-carrier candidate set now dispatches by
-classtag compare + direct call instead of crashing (narrower than
-the method-pointer-slot design originally sketched here; see the
-"Status check" section's (a) entry below for the fix and its
-LLVM-backend caveat); (b) table-based emission for very high fan-out
+classtag compare + direct call instead of crashing (C) or silently
+reading uninitialized memory (LLVM); narrower than the
+method-pointer-slot design originally sketched here. The LLVM fix
+also brings that backend to parity with `cg.cc`'s long-standing
+(pre-existing) classtag+plain-function mixing support in general, not
+just the closure-carrier case — see the "Status check" section's (a)
+entry below for both fixes; (b) table-based emission for very high fan-out
 (the if/else chain is O(n_branches) per site today, still open, a
 performance gap only — see (b) below).
 
@@ -199,8 +202,8 @@ latent bugs independent of the two structural gaps below.
 **Status of this file's two "remaining open scope" items, as of
 2026-08-06:**
 
-**(a) Closure-carrier + raw-function mixed dispatch — FIXED on the C
-backend, 2026-08-06.** Confirmed live via a fresh repro
+**(a) Closure-carrier + raw-function mixed dispatch — FIXED on both
+backends, 2026-08-06.** Confirmed live via a fresh repro
 (`make_dispatcher` returning either a plain `add_one` or
 `double(add_one)` depending on a runtime flag, then calling the
 result): crashed exactly as described,
@@ -236,29 +239,86 @@ matching this function's existing conservative convention (e.g.
 `directs.n > 1`).
 
 New regression test `tests/poly_dispatch_carrier_mixed.py`
-(`.exec.check` verifies `12`/`6`, matching CPython). Verified: full
-`test_pyc.py` 250/0 (was 249/0, new test included),
-`PYC_FLAGS=-b test_pyc.py` 250/0, `ifa --test` 58/0, clean
-before/after `shedskin_sweep.sh` (stash/rebuild/sweep from the same
-commit) — byte-identical `results.tsv` except `pygasus`'s FAIL mode
-(crash vs. timeout), reproduced as pre-existing flakiness on repeated
-runs of the *same* (fixed) binary, unrelated to dispatch/closures.
+(`.exec.check` verifies `12`/`6`, matching CPython). C-backend
+verification: full `test_pyc.py` 250/0 (was 249/0, new test
+included), `ifa --test` 58/0, clean before/after `shedskin_sweep.sh`
+(stash/rebuild/sweep from the same commit) — byte-identical
+`results.tsv` except `pygasus`'s FAIL mode (crash vs. timeout),
+reproduced as pre-existing flakiness on repeated runs of the *same*
+(fixed) binary, unrelated to dispatch/closures.
 
-*C backend only* — deliberately did not attempt the LLVM backend.
-Per the "mixing" divergence already documented above,
-`cg_emit_llvm.cc` doesn't support *any* mixed classtag+plain-function
-dispatch chain today (it bails entirely to a separate bare-callable
-pass) — that's a larger, separate prerequisite gap, not a small
-extension of this fix. Confirmed empirically: the new test's LLVM
-compile doesn't crash, but silently prints garbage for the carrier
-call (`123705560219568` instead of `12`) via that other, untouched
-pass — arguably worse than the C backend's pre-fix behavior (a
-crash) since it's silently wrong rather than caught. Marked with a
-`.check_fail` sidecar (matching this project's existing convention
-for a known-broken backend, e.g. `poly_dispatch_low.py`'s sidecar
-before LLVM slot-store support landed) rather than skipped outright,
-so the gap stays visible and the sidecar can be removed once LLVM
-grows the same mixed-dispatch chain.
+**LLVM backend — FIXED same day, 2026-08-06, as a second, larger
+change** (originally deferred as "a larger, separate prerequisite,"
+then done anyway once the shape of the required change became
+clear). Confirmed empirically before fixing: the C-backend fix's own
+new test compiled clean on LLVM but silently printed garbage for the
+carrier call (`123705560219568` instead of `12`, a fresh garbage
+value each run) — worse than the C backend's pre-fix behavior (a
+controlled crash) since it read uninitialized stack memory rather
+than trapping.
+
+Root cause, once traced: `cg_emit_llvm.cc`'s per-candidate
+resolution loop is (was) all-or-nothing — the moment ANY candidate
+failed to find a named-field classtag slot, it set `ok = false;
+break` and abandoned classtag dispatch for the *entire call site*,
+falling through to a wholly separate "bare callable value" pass that
+dispatches every candidate (including tagged ones) by pure
+address-identity. That pass's `fres_slot` is an uninitialized
+`alloca`; when no candidate's address matched (the carrier case,
+same fundamental mismatch as the C-backend bug), execution reached
+the merge block without ever storing into it, and the subsequent
+load read garbage. This is a real, general gap independent of
+closures specifically: any bare-callable dispatch site where no
+candidate matches at runtime hits the same uninitialized read.
+
+Debugging this surfaced a second, more precise finding beyond the
+original "LLVM has no mixed-dispatch chain at all" framing: even
+after adding carrier-direct detection (mirroring the C fix) inside
+the `if (!rts.n)` branch, the fix still didn't take effect. Traced via
+targeted `fprintf` instrumentation (added, verified, then fully
+removed — not left in the tree) to `poly_dispatch_classtag_targets`
+returning a *non-empty* `rts` for `add_one` (it scans every formal
+position for a field named after the candidate, not just the self
+position, so a plain function can incidentally get a non-empty-but-
+useless hit) whose sole entry wasn't classtag-eligible — and the
+LLVM loop's `if (!added_any) { ok = false; break; }` bailed on that
+case unconditionally, unlike `cg.cc`'s `if (rts.n) { ...; if
+(added_any) continue; }` shape, which falls through to try the
+plain-function route regardless of *why* nothing was added.
+
+Fixed by restructuring `emit_send_call`'s per-candidate loop to match
+`cg.cc`'s actual control flow one-for-one: merge into `classes[]`
+first whenever `rts.n` is nonzero, and only *then* — regardless of
+whether `rts.n` was originally zero or nonzero-but-useless — fall
+through to try nil-receiver, then the new carrier-direct check, then
+a new `plains[]` value-identity partition (ported from `cg.cc`,
+sharing the same `recv`/`res_slot`/`merge_bb` LLVM IR structure via a
+new `emit_direct_call` lambda, rather than the separate bare-callable
+pass). A call site with zero classtag-eligible candidates at all is
+provably unaffected (the new code still falls through unchanged to
+the old bare-callable pass, since the combined-chain emission is
+gated on `classes.n > 0`) — the only call sites that now behave
+differently are the ones that used to bail immediately due to this
+exact gap.
+
+Verified: generated `.ll` confirmed on the `poly.hit`/`poly.next` →
+`poly.phit`/`poly.pnext` → `poly.merge` structure (the new
+`plains[]` chain sharing the classtag chain's merge block, not the
+old separate `fnid.*` pass). Binary re-run 5× directly (bypassing the
+test harness's separate build directory, which caught a first-pass
+false-positive from a stale binary) — deterministic, correct `12`/`6`
+every time. Full suites: `test_pyc.py` 250/0, `PYC_FLAGS=-b
+test_pyc.py` 250/0 (both backends now share the exact same pass
+count), `ifa --test` 58/0. Corpus: the existing `shedskin_sweep.sh`
+is C-backend-only (hardcoded, checks for a `.py.c` artifact) and
+therefore not meaningful for this change on its own — swept the
+corpus under the LLVM backend via a one-off script variant (`-b` flag,
+`.py.ll` artifact check) instead: byte-identical `results.tsv`
+before/after (stash/rebuild/sweep from the same commit), zero
+regressions, zero incidental fixes (no corpus example happens to hit
+this exact mixed shape). The `.check_fail` sidecar on
+`poly_dispatch_carrier_mixed.py` is removed — both backends now pass
+strictly.
 
 *Deliberately not done:* the general "method-pointer slot on every
 carrier + unique per-site carrier names" design this file originally

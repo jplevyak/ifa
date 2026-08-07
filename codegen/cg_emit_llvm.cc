@@ -2680,15 +2680,33 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
     Vec<int> class_recv_ridx;  // ... and the call-site rval index of ITS receiver operand, to
                                 // skip self (already passed as `recv`) when routing the rest
     Fun *nil_fn = nullptr;  // nil-receiver candidate (None method on a nil|record union)
+    // ifa/issues/030(a), 2026-08-06: plain-function value-identity
+    // partition, sharing this SAME combined dispatch chain (recv/
+    // res_slot/merge_bb) instead of being handled only by the wholly
+    // separate "bare callable value" pass below. Before this, that
+    // separate pass never even ran when classes.n > 0 (this block
+    // returns unconditionally), so a call site mixing a classtag/
+    // carrier candidate with a genuine plain function left the plain
+    // candidate completely undispatchable here -- brings this
+    // backend to parity with cg.cc's long-standing classtag+plain
+    // mixing support (mixing was never LLVM-supported at all before
+    // this, independent of the closure-carrier case specifically).
+    Vec<Fun *> plains;
     llvm::Value *recv = nullptr;
+    // Seed recv from rvals[0] up front for a plain-function-style
+    // call site (not a method send, where rvals[0] is the selector
+    // symbol) -- mirrors cg.cc's unconditional initial recv_str set
+    // so the carrier-direct/plains[] branches below have a shared
+    // dispatch operand even when no classtag/nil-receiver candidate
+    // ever supplies one.
+    if (pn->rvals.n && pn->rvals.v[0] && !pn->rvals.v[0]->sym->is_symbol)
+      recv = value_for_var(ctx, pn->rvals.v[0]);
     // issue 026 pre-pass + classtag/nil-receiver resolution: shared
     // with the C backend (codegen_common.{h,cc}) -- previously
     // independently duplicated here and in cg.cc, independently
     // re-fixed for issue 026. Only this resolution algorithm was ever
-    // identical between backends; the emission below (and the total
-    // absence, here, of cg.cc's plain-function/untagged-direct
-    // fallback for a candidate that resolves to neither route) is
-    // backend-specific and unchanged by this refactor.
+    // identical between backends; the emission below is
+    // backend-specific.
     Vec<cchar *> directly_owned;
     poly_dispatch_directly_owned(callees, directly_owned);
     bool ok = true;
@@ -2703,7 +2721,44 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
         if (!recv && rt_ridxs[ri] >= 0 && rt_ridxs[ri] < pn->rvals.n && pn->rvals[rt_ridxs[ri]])
           recv = value_for_var(ctx, pn->rvals[rt_ridxs[ri]]);
       }
-      if (!rts.n) {
+      // ifa/issues/030(a), 2026-08-06: merge into classes[] FIRST,
+      // whenever rts.n is nonzero -- mirrors cg.cc's `if (rts.n) {
+      // ...; if (added_any) continue; }` shape. The previous version
+      // of this function treated `rts.n != 0 but none classtag-
+      // eligible` (added_any false) as an immediate `ok = false;
+      // break` bail, same as the genuinely-empty-rts.n case -- but
+      // for a plain top-level function like add_one,
+      // poly_dispatch_classtag_targets can return a NON-empty rts
+      // (it scans every formal position, not just self, for a field
+      // named after the candidate) whose sole entry simply isn't
+      // classtag-eligible. Bailing there discarded the whole call
+      // site's classtag progress instead of falling through to try
+      // the nil-receiver/carrier/plain-function routes below, which
+      // is exactly the shape a mixed classtag+plain-function call
+      // site needs.
+      bool added_any = false;
+      if (rts.n) {
+        for (int ri = 0; ri < rts.n; ri++) {
+          Sym *rt = rts[ri];
+          if (!rt->name || rt->is_system_type || !cg_has_classtag(rt)) continue;
+          added_any = true;
+          bool found = false;
+          for (int ci = 0; ci < classes.n; ci++)
+            if (!strcmp(classes[ci]->name, rt->name)) { found = true; break; }
+          if (!found) {
+            classes.add(rt);
+            slots.add(rt_slots[ri]);
+            class_funs.add(fun_val);
+            class_recv_ridx.add(rt_ridxs[ri]);
+          }
+        }
+        if (added_any) continue;
+      }
+      // Reached when rts.n == 0, or rts.n != 0 but none of the found
+      // targets were classtag-eligible. Try nil-receiver, then
+      // carrier-direct, then plain-function value-identity, in that
+      // order (mirrors cg.cc's fallback chain).
+      {
         // Nil-receiver candidate: a None-class method reached
         // through a nil|record union (`if not self.field:` where the
         // field starts as None). None is a NULL pointer at runtime --
@@ -2719,23 +2774,67 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
           continue;
         }
       }
-      if (!rts.n) { ok = false; break; }
-      bool added_any = false;
-      for (int ri = 0; ri < rts.n; ri++) {
-        Sym *rt = rts[ri];
-        if (!rt->name || rt->is_system_type || !cg_has_classtag(rt)) continue;
-        added_any = true;
-        bool found = false;
-        for (int ci = 0; ci < classes.n; ci++)
-          if (!strcmp(classes[ci]->name, rt->name)) { found = true; break; }
-        if (!found) {
-          classes.add(rt);
-          slots.add(rt_slots[ri]);
-          class_funs.add(fun_val);
-          class_recv_ridx.add(rt_ridxs[ri]);
+      // ifa/issues/030(a): a closure-carrier candidate (the body of
+      // a decorator-synthesized wrapper) has no named method-pointer
+      // slot on its own carrier struct, so poly_dispatch_classtag_targets
+      // found nothing usable for it above -- mirrors cg.cc's identical
+      // detection. Does fun_val's own first live formal resolve to
+      // the synthesized closure-carrier record type (name
+      // "__closure__", reserved -- no user class can be named
+      // that)? If so, dispatch by classtag compare and call fun_val
+      // directly: it IS the statically-known implementation for
+      // this tag, no stored slot needed.
+      {
+        Sym *carrier_recv = nullptr;
+        int carrier_ridx = -1;
+        MPosition cselfp;
+        cselfp.push(1);
+        for (int pi = 0; pi < fun_val->sym->has.n + 2 && !carrier_recv; pi++) {
+          MPosition *cp = cannonicalize_mposition(cselfp);
+          cselfp.inc();
+          Var *argv = fun_val->args.get(cp);
+          if (!argv || !argv->type) continue;
+          if (argv->type->name && !strcmp(argv->type->name, "__closure__") && cg_has_classtag(argv->type)) {
+            carrier_recv = argv->type;
+            carrier_ridx = (int)Position2int(cp->pos[0]) - 1;
+          }
+          break;
+        }
+        if (carrier_recv && fun_val->cg_string && TheModule->getFunction(fun_val->cg_string)) {
+          if (!recv && carrier_ridx >= 0 && carrier_ridx < pn->rvals.n && pn->rvals[carrier_ridx])
+            recv = value_for_var(ctx, pn->rvals[carrier_ridx]);
+          // All carriers are currently named "__closure__": a SECOND,
+          // DISTINCT carrier Sym reaching this same dispatch site
+          // would collide on that name and be indistinguishable from
+          // the first at the tag compare below. Degrade to the
+          // shared fallthrough trap (ok = false) rather than silently
+          // mis-dispatch -- same conservative convention cg.cc uses.
+          bool same = false, collide = false;
+          for (int ci = 0; ci < classes.n; ci++) {
+            if (classes[ci] == carrier_recv) { same = true; break; }
+            if (!strcmp(classes[ci]->name, carrier_recv->name)) { collide = true; break; }
+          }
+          if (collide) { ok = false; break; }
+          if (!same) {
+            classes.add(carrier_recv);
+            slots.add(-1);  // sentinel: direct call, no stored-slot indirection
+            class_funs.add(fun_val);
+            class_recv_ridx.add(carrier_ridx);
+          }
+          continue;
         }
       }
-      if (!added_any) { ok = false; break; }
+      // Plain-function value-identity fallback (mirrors cg.cc's
+      // plains[]): only usable at a plain-function-style call site
+      // (rvals[0] is the dispatch value itself, not a method
+      // selector symbol -- same shape recv was seeded from above).
+      if (fun_val->cg_string && TheModule->getFunction(fun_val->cg_string) && pn->rvals.n && pn->rvals.v[0] &&
+          !pn->rvals.v[0]->sym->is_symbol) {
+        plains.add(fun_val);
+        continue;
+      }
+      ok = false;
+      break;
     }
     Var *dst_var = pn->lvals.n ? pn->lvals.v[0] : nullptr;
     llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
@@ -2749,6 +2848,61 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
         llvm::IRBuilder<> tmp(&cur_fn->getEntryBlock(), cur_fn->getEntryBlock().begin());
         res_slot = tmp.CreateAlloca(res_ty, nullptr, "poly.res");
       }
+      // ifa/issues/030(a): shared emission for a candidate that's
+      // statically known once its branch is selected -- a
+      // carrier-direct classes[] entry (slots[ci] == -1) or a
+      // plains[] value-identity candidate. Unlike the classtag
+      // slot-indirect route just below, no vtable-slot GEP/load is
+      // needed: `cfun` IS the callee, so every live formal (including
+      // self, if any) is just an ordinary positional argument routed
+      // from the call-site rvals.
+      auto emit_direct_call = [&](Fun *cfun) {
+        llvm::Function *clf = TheModule->getFunction(cfun->cg_string);
+        if (!clf) return;
+        std::vector<llvm::Value *> cargs;
+        llvm::FunctionType *clft = clf->getFunctionType();
+        bool cargs_ok = true;
+        unsigned cai = 0;
+        MPosition cargp;
+        cargp.push(1);
+        for (int pi = 0; pi < cfun->sym->has.n + 2 && cargs_ok; pi++) {
+          MPosition *cp = cannonicalize_mposition(cargp);
+          cargp.inc();
+          Var *av = cfun->args.get(cp);
+          if (!av || !av->live) continue;
+          if (av->type && av->type->is_fun) continue;
+          if (cai >= clft->getNumParams()) break;
+          int i = (int)Position2int(cp->pos[0]) - 1;
+          if (i < 0 || i >= pn->rvals.n) { cargs_ok = false; break; }
+          llvm::Value *aval = value_for_var(ctx, pn->rvals[i]);
+          if (!aval) { cargs_ok = false; break; }
+          llvm::Type *pt = clft->getParamType(cai);
+          if (aval->getType() != pt) {
+            if (aval->getType()->isIntegerTy() && pt->isIntegerTy())
+              aval = Builder->CreateSExtOrTrunc(aval, pt);
+            else if (aval->getType()->isPointerTy() && pt->isIntegerTy())
+              aval = Builder->CreatePtrToInt(aval, pt);
+            else if (aval->getType()->isIntegerTy() && pt->isPointerTy())
+              aval = Builder->CreateIntToPtr(aval, pt);
+          }
+          cargs.push_back(aval);
+          cai++;
+        }
+        if (!cargs_ok) return;
+        llvm::Value *callv = Builder->CreateCall(clf, cargs);
+        if (res_slot && !callv->getType()->isVoidTy()) {
+          llvm::Value *cres = callv;
+          if (cres->getType() != res_ty) {
+            if (cres->getType()->isIntegerTy() && res_ty->isIntegerTy())
+              cres = Builder->CreateSExtOrTrunc(cres, res_ty);
+            else if (cres->getType()->isPointerTy() && res_ty->isIntegerTy())
+              cres = Builder->CreatePtrToInt(cres, res_ty);
+            else if (cres->getType()->isIntegerTy() && res_ty->isPointerTy())
+              cres = Builder->CreateIntToPtr(cres, res_ty);
+          }
+          if (cres->getType() == res_ty) Builder->CreateStore(cres, res_slot);
+        }
+      };
       if (nil_fn) {
         // Null test first: selects the None method and keeps the
         // classtag load below null-safe.
@@ -2815,6 +2969,18 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
         llvm::Value *cmp = Builder->CreateICmpEQ(tag, get_classtag_global(classes[ci]->name), "tagcmp");
         Builder->CreateCondBr(cmp, hit_bb, next_bb);
         Builder->SetInsertPoint(hit_bb);
+        if (slots[ci] == -1) {
+          // ifa/issues/030(a): carrier-dispatched candidate --
+          // class_funs[ci] is the statically-known implementation
+          // for this tag (a closure-carrier struct has no named
+          // method-pointer slot to indirect through -- see the
+          // detection above); call it directly instead of the
+          // slot-indirect emission below.
+          emit_direct_call(class_funs[ci]);
+          Builder->CreateBr(merge_bb);
+          Builder->SetInsertPoint(next_bb);
+          continue;
+        }
         llvm::StructType *st = sym_to_llvm_struct(classes[ci]);
         llvm::Value *slot_gep = Builder->CreateStructGEP(st, recv, llvm_fld(classes[ci], slots[ci]));
         llvm::Value *fnptr = Builder->CreateLoad(ptr_ty, slot_gep, "methodptr");
@@ -2869,8 +3035,31 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
         Builder->CreateBr(merge_bb);
         Builder->SetInsertPoint(next_bb);
       }
-      // Fallthrough (unknown tag): trap-free no-op, mirror the C
-      // backend's assert by leaving the result zeroed.
+      // ifa/issues/030(a): plain-function value-identity partition,
+      // sharing this same combined dispatch chain (see the plains[]
+      // comment at its declaration above for why this can't just be
+      // left to the separate "bare callable value" pass below).
+      for (int pi = 0; pi < plains.n; pi++) {
+        Fun *pfun = plains[pi];
+        llvm::Function *plf = TheModule->getFunction(pfun->cg_string);
+        if (!plf) continue;
+        llvm::BasicBlock *phit_bb = llvm::BasicBlock::Create(*TheContext, "poly.phit", cur_fn);
+        llvm::BasicBlock *pnext_bb = llvm::BasicBlock::Create(*TheContext, "poly.pnext", cur_fn);
+        llvm::Value *pcmp = Builder->CreateICmpEQ(recv, plf, "fncmp");
+        Builder->CreateCondBr(pcmp, phit_bb, pnext_bb);
+        Builder->SetInsertPoint(phit_bb);
+        emit_direct_call(pfun);
+        Builder->CreateBr(merge_bb);
+        Builder->SetInsertPoint(pnext_bb);
+      }
+      // Fallthrough (unknown tag / no plains[] match): trap-free
+      // no-op, mirror the C backend's assert by leaving the result
+      // zeroed... except res_slot is an uninitialized alloca, not a
+      // zeroed one (ifa/issues/030(a) hardening note): a genuinely
+      // unmatched dispatch here reads garbage, not 0. Not fixed as
+      // part of this change -- see the LLVM-backend caveat in
+      // ifa/issues/030's doc for the same pre-existing gap in the
+      // "bare callable value" pass below.
       Builder->CreateBr(merge_bb);
       Builder->SetInsertPoint(merge_bb);
       if (dst_var && res_slot) {
