@@ -1,5 +1,14 @@
 # 056 — A salvage-degraded (non-integer) index Var produces a raw C compile error instead of a runtime-error guard
 
+**Status: CLOSED** — fixed 2026-08-06.
+
+### Resolution Summary
+Added `scalar_ct(c_type(...))` salvage guards to `P_prim_index_object` and `P_prim_set_index_object` in `ifa/codegen/cg.cc`. When flow analysis degrades an index operand to a non-scalar pointer/void type (`_CG_any` / `void*`), codegen now emits a clean runtime `assert(!"runtime error: list index type mismatch");` statement up front instead of passing non-scalar values into `_CG_norm_idx(...)` (which produced invalid C++ conversions during `clang++` compilation).
+
+Confirmed that `shedskin_examples/loop/loop.py` now compiles cleanly without C++ compiler errors, and the entire test suite passes on both backends with 0 regressions.
+
+**Original filing follows.**
+
 **Status:** open, found 2026-07-19 while digging into the shedskin
 corpus's `RUN_FAIL` bucket (triage requested as a followup to
 [053](closed/053-tuple-unpack-target-heterogeneous-arity-segfault.md)/[055](055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md)).

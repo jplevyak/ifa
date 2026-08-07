@@ -251,11 +251,6 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   list-header unconditionally, even when never needed. Deliberately
   deferred (safe but imprecise) — revisit only if profiling shows it
   matters.
-- [056-CGEN-degraded-index-type-raw-c-compile-error.md](056-CGEN-degraded-index-type-raw-c-compile-error.md)
-  — a salvage-degraded (non-integer) index Var reaching
-  `_CG_norm_idx` produces a raw uncompilable `.c` file instead of
-  the usual runtime-assert degrade. Filed rather than fixed — hot,
-  shared call site, needs get+set+LLVM-parity coverage.
 - [061-CGEN-multi-tuple-list-null-element-type.md](061-CGEN-multi-tuple-list-null-element-type.md)
   — a list of tuples emits `(null)*` or an incompatible-pointer cast
   when several distinct tuple record types coexist and get
@@ -292,7 +287,7 @@ commit ref (or date) recorded in each file's status line.  They
 stay in the tree as history — a code-search for the affected file
 finds the trail of investigation even after the fix has landed.
 
-Currently 56 closed issues:
+Currently 57 closed issues:
 [001](closed/001-keepalive-vs-explicit-reply.md),
 [002](closed/002-codegen-llvm-normalizer.md),
 [003](closed/003-fa-converge-determinism.md),
@@ -335,6 +330,7 @@ Currently 56 closed issues:
 [047](closed/047-different-arity-tuple-iteration-shared-cs.md),
 [051](closed/051-LLVM-nested-list-index-mixed-union-crash.md),
 [053](closed/053-tuple-unpack-target-heterogeneous-arity-segfault.md),
+[056](closed/056-CGEN-degraded-index-type-raw-c-compile-error.md),
 [057](closed/057-sorted-tolist-fa-nonconvergence.md),
 [058](closed/058-polymorphic-classtag-dispatch-drops-extra-arguments.md),
 [059](closed/059-narrowing-peel-wrapper-boolean-collapse-gap.md),

@@ -71,6 +71,11 @@ static void write_c_fun_proto(FILE *fp, Fun *f, int type = 0) {
 
 static void write_c_type(FILE *fp, Var *v) { fprintf(fp, "%s", c_type(v)); }
 
+static inline bool scalar_ct(cchar *t) {
+  return t && (!strncmp(t, "_CG_int", 7) || !strncmp(t, "_CG_uint", 8) || !strncmp(t, "_CG_float", 9) ||
+               !strcmp(t, "_CG_bool"));
+}
+
 static int application_depth(PNode *n) {
   if (n->rvals[0]->type->fun)
     return 1;
@@ -453,15 +458,18 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       if (t->is_vector) {
         fprintf(fp, "%s = %s->v[%s];\n", cg_get_string(n->lvals[0]), cg_get_string(n->rvals[o]), cg_get_string(n->rvals[o + 1]));
       } else if (t->type_kind != Type_RECORD || !n->rvals[o + 1]->sym->constant) {
-        if (n->lvals[0]->live) fprintf(fp, "%s = (%s)", cg_get_string(n->lvals[0]), c_type(n->lvals[0]));
-        // Negative-index normalization (issues/025): only the common
-        // single-index case, where "this object's length" is
-        // unambiguous. A dynamically (non-constant) indexed
-        // Type_RECORD (tuple) and the multi-index case (nested
-        // trailers sharing one SEND) are left as-is -- rare shapes,
-        // and "length" isn't well-defined the same way for either.
         bool single_idx = n->rvals.n - (o + 1) == 1;
-        if (sym_string->specializers.set_in(t)) {
+        bool index_mismatch = false;
+        for (int i = o + 1; i < n->rvals.n; i++) {
+          if (!scalar_ct(c_type(n->rvals[i]))) { index_mismatch = true; break; }
+        }
+        if (index_mismatch) {
+          if (!fruntime_errors)
+            fail("list index is not an integer type");
+          fputs("assert(!\"runtime error: list index type mismatch\");\n", fp);
+        } else {
+          if (n->lvals[0]->live) fprintf(fp, "%s = (%s)", cg_get_string(n->lvals[0]), c_type(n->lvals[0]));
+          if (sym_string->specializers.set_in(t)) {
           if (single_idx)
             fprintf(fp, "_CG_char_from_string(%s,_CG_norm_idx(%s,(int32)_CG_string_len(%s)));\n",
                     cg_get_string(n->rvals[o]), cg_get_string(n->rvals[o + 1]), cg_get_string(n->rvals[o]));
@@ -490,6 +498,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
               fprintf(fp, "[%s-%d]", cg_get_string(n->rvals[i]), fa->tuple_index_base);
           }
           fprintf(fp, ";\n");
+        }
         }
       } else {
         if (fruntime_errors && t->type_kind == Type_RECORD && !t->has.n)
@@ -589,10 +598,17 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         // shedskin_examples/tictactoe/tictactoe.py.
         Var *val_v = n->rvals[n->rvals.n - 1];
         bool value_mismatch = e && val_v->type && ((e->num_kind != 0) != (val_v->type->num_kind != 0));
-        if (value_mismatch) {
+        bool index_mismatch = false;
+        for (int i = o + 1; i < n->rvals.n - 1; i++) {
+          if (!scalar_ct(c_type(n->rvals[i]))) { index_mismatch = true; break; }
+        }
+        if (value_mismatch || index_mismatch) {
           if (!fruntime_errors)
-            fail("list element type mismatch storing a '%s' into a '%s'-element list", c_type(val_v), ety);
-          fputs("assert(!\"runtime error: list element type mismatch\");\n", fp);
+            fail("list element or index type mismatch");
+          if (value_mismatch)
+            fputs("assert(!\"runtime error: list element type mismatch\");\n", fp);
+          else
+            fputs("assert(!\"runtime error: list index type mismatch\");\n", fp);
         } else {
           fprintf(fp, "((%s", ety);
           for (int i = o + 1; i < n->rvals.n - 1; i++) fprintf(fp, "*");
@@ -1420,10 +1436,6 @@ class CBackendEmitter : public VirtualCGEmitter {
         //    dereferencing a code address for the tag read is
         //    harmless -- mapped readable, never equal to a tag
         //    object's address.)
-        auto scalar_ct = [](cchar *t) {
-          return t && (!strncmp(t, "_CG_int", 7) || !strncmp(t, "_CG_uint", 8) || !strncmp(t, "_CG_float", 9) ||
-                       !strcmp(t, "_CG_bool"));
-        };
         cchar *recv_str = nullptr;  // shared dispatch operand
         if (!pn->rvals[0]->sym->is_symbol && cg_get_string(pn->rvals[0])) recv_str = cg_get_string(pn->rvals[0]);
         Vec<Sym *> classes;  // classtag partition, grouped by class
