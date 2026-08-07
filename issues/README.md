@@ -227,11 +227,14 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
 ### DISPATCH
 
 - [030-DISPATCH-polymorphic-dispatch-fat-pointers.md](030-DISPATCH-polymorphic-dispatch-fat-pointers.md)
-  — core classtag dispatch implemented on both backends. Two
-  confirmed open gaps: mixed plain-function/closure-carrier dispatch
-  still crashes, and high-fan-out table dispatch (vs. if/else chain)
-  was never built (now a perf concern, not correctness — 11-subclass
-  fanout works).
+  — core classtag dispatch implemented on both backends. Mixed
+  plain-function/closure-carrier dispatch **fixed on the C backend**
+  2026-08-06 (classtag compare + direct call, no method-pointer-slot
+  infrastructure needed); the LLVM backend has no mixed-dispatch chain
+  at all yet, a larger separate prerequisite, left open. Remaining
+  open: high-fan-out table dispatch (vs. if/else chain) was never
+  built (now a perf concern, not correctness — 11-subclass fanout
+  works).
 - [047-DISPATCH-different-arity-tuple-iteration-shared-cs.md](047-DISPATCH-different-arity-tuple-iteration-shared-cs.md)
   — iterating two different-arity tuples in one program segfaults:
   all tuple iteration shares one `__tuple_iter__` CreationSet, so

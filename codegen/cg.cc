@@ -1506,6 +1506,80 @@ class CBackendEmitter : public VirtualCGEmitter {
               nil_fn = fun_val;
               continue;
             }
+            // ifa/issues/030(a): a closure-carrier candidate (the
+            // body of a decorator-synthesized wrapper) has no named
+            // method-pointer slot on its own carrier struct --
+            // poly_dispatch_classtag_targets found nothing for it
+            // above (rts.n == 0), so without this check it falls
+            // into the plain-function value-identity route below and
+            // compares the runtime value (a HEAP POINTER to the
+            // carrier instance) against fun_val's own code address,
+            // which a carrier instance can never equal -- the
+            // "mixed plain-function/closure-carrier dispatch"
+            // crash. Detect it directly: does fun_val's own first
+            // live formal resolve to the synthesized closure-carrier
+            // record type (name "__closure__", reserved -- no user
+            // class can be named that)? If so, dispatch by classtag
+            // compare and call fun_val directly: no stored slot is
+            // needed because fun_val IS the statically-known
+            // implementation for this tag (unlike the classes[]
+            // route above, which exists for genuine runtime
+            // polymorphism across several implementations sharing a
+            // slot layout).
+            Sym *carrier_recv = nullptr;
+            int carrier_ridx = -1;
+            {
+              MPosition cselfp;
+              cselfp.push(1);
+              for (int pi = 0; pi < fun_val->sym->has.n + 2 && !carrier_recv; pi++) {
+                MPosition *cp = cannonicalize_mposition(cselfp);
+                cselfp.inc();
+                Var *argv = fun_val->args.get(cp);
+                if (!argv || !argv->type) continue;
+                if (argv->type->name && !strcmp(argv->type->name, "__closure__") && cg_has_classtag(argv->type)) {
+                  carrier_recv = argv->type;
+                  carrier_ridx = (int)Position2int(cp->pos[0]) - 1;
+                }
+                break;
+              }
+            }
+            if (carrier_recv && cg_get_string(fun_val) && carrier_ridx >= 0 && carrier_ridx < pn->rvals.n &&
+                pn->rvals[carrier_ridx] && cg_get_string(pn->rvals[carrier_ridx])) {
+              bool compat = true;
+              for (MPosition *p : fun_val->positional_arg_positions) {
+                Var *av = fun_val->args.get(p);
+                if (!av->live) continue;
+                int i = (int)Position2int(p->pos[0]) - 1;
+                if (i < 0 || i >= pn->rvals.n || !cg_get_string(pn->rvals[i])) { compat = false; break; }
+                cchar *ft = c_type(av), *at = c_type(pn->rvals[i]);
+                if (strcmp(ft, at) && scalar_ct(ft) != scalar_ct(at)) { compat = false; break; }
+              }
+              if (compat) {
+                // All carriers are currently named "__closure__"
+                // (ifa/issues/030's known naming gap): a SECOND,
+                // DISTINCT carrier Sym reaching this same dispatch
+                // site would collide on that name and be
+                // indistinguishable from the first at the tag
+                // compare below. Degrade to the shared "no branch
+                // matched" runtime assert (ok = false) rather than
+                // silently mis-dispatch -- same conservative
+                // convention this function already uses for
+                // `directs.n > 1` below.
+                bool same = false, collide = false;
+                for (int ci = 0; ci < classes.n; ci++) {
+                  if (classes[ci] == carrier_recv) { same = true; break; }
+                  if (!strcmp(classes[ci]->name, carrier_recv->name)) { collide = true; break; }
+                }
+                if (collide) { ok = false; break; }
+                if (!same) {
+                  if (!recv_str) recv_str = cg_get_string(pn->rvals[carrier_ridx]);
+                  classes.add(carrier_recv);
+                  slots.add(-1);  // sentinel: direct call, no stored-slot indirection
+                  class_funs.add(fun_val);
+                }
+                continue;
+              }
+            }
           }
           if (rts.n) {
             // Merge each found receiver class into a per-class-name
@@ -1655,6 +1729,43 @@ class CBackendEmitter : public VirtualCGEmitter {
             fprintf(fp, "  %sif ((*(_CG_TypeObject**)(void*)%s) == &_CG_type_%s) {\n", nb ? "else " : "", recv_str,
                     classes[ci]->name);
             fputs("    ", fp);
+            if (slots[ci] == -1) {
+              // ifa/issues/030(a): carrier-dispatched candidate --
+              // class_funs[ci] is the statically-known implementation
+              // for this tag (a closure-carrier struct has no named
+              // method-pointer slot to indirect through -- see the
+              // detection above), so call it directly instead of the
+              // slot-indirect emission below. Cast the call
+              // expression itself to lhs's union type (mirroring how
+              // the slot-indirect path below casts through the
+              // function-pointer type) rather than emitting a second
+              // `lhs = ` prefix.
+              Fun *cfun = class_funs[ci];
+              if (lhs) {
+                if (scalar_ct(ret_type_str))
+                  fprintf(fp, "%s = (%s)", lhs, ret_type_str);
+                else
+                  fprintf(fp, "%s = (%s)(void*)", lhs, ret_type_str);
+              }
+              fprintf(fp, "%s(", cg_get_string(cfun));
+              int wrote_one = 0;
+              for (MPosition *p : cfun->positional_arg_positions) {
+                Var *av = cfun->args.get(p);
+                if (!av->live) continue;
+                int i = (int)Position2int(p->pos[0]) - 1;
+                cchar *ft = c_type(av), *at = c_type(pn->rvals[i]);
+                if (wrote_one) fputs(", ", fp);
+                wrote_one = 1;
+                if (!strcmp(ft, at))
+                  fputs(cg_get_string(pn->rvals[i]), fp);
+                else if (scalar_ct(ft))
+                  fprintf(fp, "(%s)%s", ft, cg_get_string(pn->rvals[i]));
+                else
+                  fprintf(fp, "(%s)(void*)%s", ft, cg_get_string(pn->rvals[i]));
+              }
+              fputs(");\n  }\n", fp);
+              continue;
+            }
             if (lhs) fprintf(fp, "%s = ", lhs);
             // issues/025 kanoodle: this branch used to hardcode the
             // function pointer type to a single `void*` (self) param

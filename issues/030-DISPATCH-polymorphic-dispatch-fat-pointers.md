@@ -7,14 +7,14 @@ passes strictly (its `check_fail` sidecar removed). See "What
 landed (classtag dispatch)" below. Remaining open scope after
 2026-07-05's bare-callable landing (value-identity dispatch on raw
 function addresses, mixed classtag+address chains, both backends —
-see issues/007): (a) closure-CARRIER candidates mixed with
-per-creation-site clone selection (stacked applications of the same
-closure-wrapping decorator): carrier classes need a method-pointer
-slot like __new__-built classes have, plus unique class names (all
-carriers are currently named `__closure__`, so the by-name tag
-grouping and `_CG_type_<name>` globals would collide); (b)
-table-based emission for very high fan-out (the if/else chain is
-O(n_branches) per site today).
+see issues/007): (a) **FIXED on the C backend, 2026-08-06** — a
+mixed plain-function/closure-carrier candidate set now dispatches by
+classtag compare + direct call instead of crashing (narrower than
+the method-pointer-slot design originally sketched here; see the
+"Status check" section's (a) entry below for the fix and its
+LLVM-backend caveat); (b) table-based emission for very high fan-out
+(the if/else chain is O(n_branches) per site today, still open, a
+performance gap only — see (b) below).
 
 Supersedes the simpler "indirect call through struct slot" sketch in
 issue 029.
@@ -196,20 +196,89 @@ cause, same day. Worth knowing about when touching this dispatch
 machinery again — it's evidence the if/else-chain path itself can have
 latent bugs independent of the two structural gaps below.
 
-**Both of this file's own "remaining open scope" items reconfirmed
-still open, via fresh repros against current HEAD (not just re-reading
-the doc):**
-- **(a) Closure-carrier + raw-function mixed dispatch.** A call site
-  whose candidate set mixes a plain function and a `@double`-wrapped
-  closure-carrier instance still crashes exactly as described:
-  `assert(!"runtime error: polymorphic dispatch: no branch matched")`.
-  (Note: stacking the *same* decorator twice on one uniformly-decorated
-  function, e.g. `@double @double def f(): ...`, works fine on its
-  own — there's no dispatch ambiguity there, since every reference
-  resolves to the same concrete carrier type. The trigger specifically
-  needs a *mixed* candidate set, e.g. a function returning either a
-  plain function or a decorated one depending on a runtime condition.)
-- **(b) Table-based emission for very high fan-out.** No
+**Status of this file's two "remaining open scope" items, as of
+2026-08-06:**
+
+**(a) Closure-carrier + raw-function mixed dispatch — FIXED on the C
+backend, 2026-08-06.** Confirmed live via a fresh repro
+(`make_dispatcher` returning either a plain `add_one` or
+`double(add_one)` depending on a runtime flag, then calling the
+result): crashed exactly as described,
+`assert(!"runtime error: polymorphic dispatch: no branch matched")`.
+Root cause pinned precisely: the generated dispatch chain compared
+the runtime value against `wrapper`'s own code address
+(`(void*)t8 == (void*)&wrapper`) via the plain-function
+value-identity route — but a closure value is never that address,
+it's a heap pointer to the carrier struct `double()` allocates, so
+that branch could never match. `poly_dispatch_classtag_targets`
+(`codegen_common.cc`) only routes a candidate into the classtag
+partition when its receiver type has a *named field* matching the
+candidate's own method name; carrier structs only hold captured
+variables, never a field named after themselves, so the carrier
+candidate fell through to the (wrong) plain-function route instead.
+
+Fixed in `cg.cc`'s dispatch-emission loop (`ifa/codegen/cg.cc`, the
+per-candidate loop inside the `fns->n > 1` branch): when
+`poly_dispatch_classtag_targets` finds no slot, and the candidate's
+own first live formal resolves to the synthesized closure-carrier
+record (name `"__closure__"`, reserved), route it into the
+*existing* `classes[]` partition with a new sentinel
+(`slots[ci] == -1`) meaning "call `class_funs[ci]` directly, no
+stored-slot indirection" — no slot is needed since, unlike the
+classes[] route's original purpose (runtime polymorphism across
+several implementations sharing a slot layout), a carrier candidate
+IS the statically-known implementation for its own tag. Two distinct
+carrier Syms colliding on the shared `"__closure__"` name at the same
+dispatch site (a real risk this design deliberately did NOT solve —
+see "deliberately not done" below) degrades to the shared `ok =
+false` → runtime-assert path rather than silently mis-dispatching,
+matching this function's existing conservative convention (e.g.
+`directs.n > 1`).
+
+New regression test `tests/poly_dispatch_carrier_mixed.py`
+(`.exec.check` verifies `12`/`6`, matching CPython). Verified: full
+`test_pyc.py` 250/0 (was 249/0, new test included),
+`PYC_FLAGS=-b test_pyc.py` 250/0, `ifa --test` 58/0, clean
+before/after `shedskin_sweep.sh` (stash/rebuild/sweep from the same
+commit) — byte-identical `results.tsv` except `pygasus`'s FAIL mode
+(crash vs. timeout), reproduced as pre-existing flakiness on repeated
+runs of the *same* (fixed) binary, unrelated to dispatch/closures.
+
+*C backend only* — deliberately did not attempt the LLVM backend.
+Per the "mixing" divergence already documented above,
+`cg_emit_llvm.cc` doesn't support *any* mixed classtag+plain-function
+dispatch chain today (it bails entirely to a separate bare-callable
+pass) — that's a larger, separate prerequisite gap, not a small
+extension of this fix. Confirmed empirically: the new test's LLVM
+compile doesn't crash, but silently prints garbage for the carrier
+call (`123705560219568` instead of `12`) via that other, untouched
+pass — arguably worse than the C backend's pre-fix behavior (a
+crash) since it's silently wrong rather than caught. Marked with a
+`.check_fail` sidecar (matching this project's existing convention
+for a known-broken backend, e.g. `poly_dispatch_low.py`'s sidecar
+before LLVM slot-store support landed) rather than skipped outright,
+so the gap stays visible and the sidecar can be removed once LLVM
+grows the same mixed-dispatch chain.
+
+*Deliberately not done:* the general "method-pointer slot on every
+carrier + unique per-site carrier names" design this file originally
+sketched for (a). That's real, larger vtable-style infrastructure;
+the landed fix is narrower and lower-risk — since a carrier
+candidate's implementation is always statically known at a given
+dispatch site, direct-call-by-tag needs no slot at all, and the rare
+same-call-site multi-carrier collision degrades safely instead of
+needing a naming overhaul. If a real program hits that collision
+case, revisit unique carrier naming then.
+
+(Note: stacking the *same* decorator twice on one uniformly-decorated
+function, e.g. `@double @double def f(): ...`, was already known to
+work fine on its own — there's no dispatch ambiguity there, since
+every reference resolves to the same concrete carrier type. This fix
+targets the genuinely *mixed* candidate-set shape, e.g. a function
+returning either a plain function or a decorated one depending on a
+runtime condition — not stacking.)
+
+**(b) Table-based emission for very high fan-out.** No
   `DISPATCH_THRESHOLD`/table-lookup code exists anywhere in `cg.cc` or
   `cg_emit_llvm.cc` — still an unconditional if/else chain regardless
   of fan-out. Severity downgrade based on today's check:
