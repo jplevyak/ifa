@@ -11,7 +11,7 @@ Re-testing revealed that this bug was already resolved by subsequent codegen and
 
 **Status:** open, found 2026-07-18 while fixing issue 025's rubik2
 sizeof_element bug (see that entry's continuation in
-[../../issues/025-shedskin-examples-coverage.md](../../issues/025-shedskin-examples-coverage.md)).
+[../../issues/025-shedskin-examples-coverage.md](../../../issues/025-shedskin-examples-coverage.md)).
 **Affects:** `ifa/codegen/cg_emit_llvm.cc` (LLVM backend only — the
 C backend, `ifa/codegen/cg.cc`, handles the same program correctly).
 **Related:** the `P_prim_sizeof_element` fix in this same commit

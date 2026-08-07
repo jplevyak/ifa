@@ -22,7 +22,7 @@ exercises this gap either. That doesn't close this issue: the missing
 guard is general (any other salvage path reaching these two call
 sites hits the same hard C error), just no longer demonstrated by the
 original repro. Not fixed — filed rather than fixed because, like
-[056](../056-CGEN-degraded-index-type-raw-c-compile-error.md) (the same bug
+[056](056-CGEN-degraded-index-type-raw-c-compile-error.md) (the same bug
 class at a different call site), the two fix sites below are shared,
 hot codegen paths (every `str` comparison; every numeric-dunder-style
 primitive operator, program-wide) and a correct fix needs both
@@ -36,7 +36,7 @@ no `RegisteredPrim::cgfn` — this is the `_CG_prim_equal` call site).
 **Related:** [076](076-mutation-driven-receiver-divergence-not-cloned.md)
 (root cause of *why* the operand types mismatch in the first place —
 now fixed, see that file's "RESOLVED" section),
-[056](../056-CGEN-degraded-index-type-raw-c-compile-error.md) (the established
+[056](056-CGEN-degraded-index-type-raw-c-compile-error.md) (the established
 precedent and convention this issue extends to a new call site — read
 its "What a fix would look like" section, the same shape applies
 here).

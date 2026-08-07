@@ -11,7 +11,7 @@ Confirmed that `shedskin_examples/loop/loop.py` now compiles cleanly without C++
 
 **Status:** open, found 2026-07-19 while digging into the shedskin
 corpus's `RUN_FAIL` bucket (triage requested as a followup to
-[053](closed/053-tuple-unpack-target-heterogeneous-arity-segfault.md)/[055](055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md)).
+[053](053-tuple-unpack-target-heterogeneous-arity-segfault.md)/[055](../055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md)).
 Not fixed — filed rather than fixed because the fix site
 (`P_prim_index_object`/`P_prim_set_index_object` in
 `ifa/codegen/cg.cc`) is a hot, heavily-shared codegen path for *all*
@@ -28,7 +28,7 @@ for the index argument.
 ## Symptom
 
 Found via `shedskin_examples/loop/loop.py` (specifically exposed by
-[the same-day dict.items()/.keys()/.values() fix](../../issues/025-shedskin-examples-coverage.md)
+[the same-day dict.items()/.keys()/.values() fix](../../../issues/025-shedskin-examples-coverage.md)
 progressing `loop.py` further than before — not caused by that fix,
 just newly visible once `loop.py`'s earlier blocker, at line 250,
 stopped masking it). Once FA salvages some earlier violation to
@@ -52,10 +52,10 @@ crash) — the compiler considers the program to type (with salvage),
 writes `.c`, and only `clang` on the generated code catches the
 mismatch. That's the same *class* of bug already found and fixed
 twice today in the sibling constant-field-getter path
-([053](closed/053-tuple-unpack-target-heterogeneous-arity-segfault.md)'s
+([053](053-tuple-unpack-target-heterogeneous-arity-segfault.md)'s
 `resolve_uniform_size` + destination-cast fix, and the earlier
 "minpng's and plcfrs's C-compile-error bugs" entry in
-[../../issues/025](../../issues/025-shedskin-examples-coverage.md))
+[../../issues/025](../../../issues/025-shedskin-examples-coverage.md))
 — established convention in this codebase is that every
 salvage-reachable codegen site should degrade to a runtime
 `assert(!"runtime error: ...")` guard (matching `P_prim_period`'s
@@ -91,7 +91,7 @@ not deliberately kept in sync).
 
 `shedskin_examples/loop/loop.py`, compiled with dict.items()/.keys()/
 .values() support present (see
-[../../issues/025](../../issues/025-shedskin-examples-coverage.md)'s
+[../../issues/025](../../../issues/025-shedskin-examples-coverage.md)'s
 2026-07-19 entry) — `./pyc -D . loop.py` produces `loop.py.c` with the
 compile error above at (approximately) line 6696. A minimal synthetic
 repro wasn't isolated in this triage pass; whoever picks this up

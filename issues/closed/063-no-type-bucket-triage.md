@@ -60,7 +60,7 @@ known, deep, partially-fixed FA problem, not a new one.
 Once FA salvages the untypable values to void/any (the `runtime_errors`
 default), the salvaged shapes reached three codegen sites that emitted
 **raw, unsalvageable C** instead of degrading to a runtime-error assert
-(the convention established in [056](../056-CGEN-degraded-index-type-raw-c-compile-error.md)).
+(the convention established in [056](056-CGEN-degraded-index-type-raw-c-compile-error.md)).
 Each was fixed to degrade, per that convention:
 
 1. **Unresolved tuple comparison → runtime assert** (not a compile

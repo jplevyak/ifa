@@ -259,17 +259,21 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
 
 ### LLVM backend
 
-- [051-LLVM-nested-list-index-mixed-union-crash.md](051-LLVM-nested-list-index-mixed-union-crash.md)
-  — indexing into a list-of-lists whose element type is a mixed
-  `Type_SUM` segfaults on LLVM (C backend is fine on the identical
-  FA-computed types). Three unstraced hypotheses offered, nothing
-  attempted.
 - [062-LLVM-mixed-int-float-scalar-coercion.md](062-LLVM-mixed-int-float-scalar-coercion.md)
   — LLVM scalar binary-op emission assumes both operands already
   share a type; when FA leaves one `int` and one `float`, no
   `sitofp`/`sext` promotion is inserted, producing a verifier
   failure. C backend is unaffected (implicit conversions). Root cause
   and fix template (`llvm_num_unify`) both identified, not yet built.
+- [080-LLVM-index-type-mismatch-no-salvage-guard.md](080-LLVM-index-type-mismatch-no-salvage-guard.md)
+  — the LLVM-parity gap closed-056 left open: `emit_send_index_load`/
+  `emit_send_index_store` have no equivalent of `cg.cc`'s new
+  `scalar_ct` salvage guard, so a salvage-degraded index/element Var
+  that the C backend now degrades to a runtime assert instead hard-
+  fails LLVM's own compile entirely (`codegen: primitive operand type
+  mismatch`, no binary produced).
+  `tests/list_index_type_mismatch_salvage.py` documents this via its
+  `.expect_fail` sidecar (LLVM only — passes clean on the C backend).
 
 ### CLEANUP
 

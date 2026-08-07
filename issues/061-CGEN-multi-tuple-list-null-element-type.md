@@ -31,7 +31,7 @@ sort_a.py.c:600:42: error: incompatible pointer types assigning to
 
 Both are genuine pyc-produced C compile errors (the program "types",
 `.c` is written, only `clang` rejects it), the same *class* of bug as
-[056](056-CGEN-degraded-index-type-raw-c-compile-error.md).
+[056](closed/056-CGEN-degraded-index-type-raw-c-compile-error.md).
 
 ## Root cause (working theory)
 
@@ -78,7 +78,7 @@ Give the merged list-of-tuples element type a real C struct name (emit a
 tagged-union or a common struct for the sorted-list contour), or split
 the `list.sort` clone per concrete element type so each sorted list
 keeps its monomorphic tuple struct. Either way, add the guard convention
-from [056](056-CGEN-degraded-index-type-raw-c-compile-error.md): never emit a
+from [056](closed/056-CGEN-degraded-index-type-raw-c-compile-error.md): never emit a
 `(null)*` cast — if the element type has no C name, degrade to a runtime
 error rather than malformed C. Keep the LLVM backend (which is correct)
 as the behavioural oracle.
