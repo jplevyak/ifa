@@ -237,12 +237,6 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   open: high-fan-out table dispatch (vs. if/else chain) was never
   built (now a perf concern, not correctness — 11-subclass fanout
   works).
-- [047-DISPATCH-different-arity-tuple-iteration-shared-cs.md](047-DISPATCH-different-arity-tuple-iteration-shared-cs.md)
-  — iterating two different-arity tuples in one program segfaults:
-  all tuple iteration shares one `__tuple_iter__` CreationSet, so
-  per-arity method clones overwrite each other's slots on the shared
-  prototype. Exposes a gap in closed-045's per-CS cloning (doesn't
-  cover prototype-based instantiation).
 - [079-DISPATCH-single-candidate-dispatch-unchecked-cast.md](079-DISPATCH-single-candidate-dispatch-unchecked-cast.md)
   — dispatch's "single candidate" fast path emits an unchecked cast
   when the receiver's union has *another* member that doesn't
@@ -304,7 +298,7 @@ commit ref (or date) recorded in each file's status line.  They
 stay in the tree as history — a code-search for the affected file
 finds the trail of investigation even after the fix has landed.
 
-Currently 53 closed issues:
+Currently 54 closed issues:
 [001](closed/001-keepalive-vs-explicit-reply.md),
 [002](closed/002-codegen-llvm-normalizer.md),
 [003](closed/003-fa-converge-determinism.md),
@@ -343,6 +337,7 @@ Currently 53 closed issues:
 [044](closed/044-mixed-length-tuple-list-len-miscompile.md),
 [045](closed/045-receiver-cs-method-cloning.md),
 [046](closed/046-optional-none-field-inline-type-sum-assert.md),
+[047](closed/047-different-arity-tuple-iteration-shared-cs.md),
 [053](closed/053-tuple-unpack-target-heterogeneous-arity-segfault.md),
 [057](closed/057-sorted-tolist-fa-nonconvergence.md),
 [058](closed/058-polymorphic-classtag-dispatch-drops-extra-arguments.md),
