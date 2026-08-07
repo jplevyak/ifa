@@ -1,5 +1,14 @@
 # 062 — LLVM backend: mixed int/float scalar arithmetic isn't coerced to a common type (verifier failure)
 
+**Status: CLOSED** — already fixed 2026-08-07.
+
+### Resolution Summary
+Verified that mixed int/float arithmetic and comparisons on the LLVM backend are fully supported and pass verification. `emit_send_binop` in `ifa/codegen/cg_emit_llvm.cc` (lines 1090–1102) was previously updated in commit `77915b19` ("issue 077") to automatically insert `Builder->CreateSIToFP` int-to-float conversions and `Builder->CreateSExt` integer width promotions before emitting binary operations and comparisons. Combined with issue 080's `emit_salvage_trap` for non-scalar type mismatches, programs with mixed int/float expressions (including `shedskin_examples/tictactoe/tictactoe.py`) compile and execute cleanly on `-b`.
+
+Added `tests/mixed_int_float.py` and `tests/mixed_int_float.py.exec.check` to the test suite, confirming 100% execution parity across both backends.
+
+**Original filing follows.**
+
 **Status:** open, found 2026-07-22 while verifying the tuple-comparison
 primitive work on both backends (issue 025 / tictactoe). Filed rather
 than fixed: it is an independent, pre-existing LLVM-backend numeric

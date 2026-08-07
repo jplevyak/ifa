@@ -259,13 +259,6 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
 
 ### LLVM backend
 
-- [062-LLVM-mixed-int-float-scalar-coercion.md](062-LLVM-mixed-int-float-scalar-coercion.md)
-  — LLVM scalar binary-op emission assumes both operands already
-  share a type; when FA leaves one `int` and one `float`, no
-  `sitofp`/`sext` promotion is inserted, producing a verifier
-  failure. C backend is unaffected (implicit conversions). Root cause
-  and fix template (`llvm_num_unify`) both identified, not yet built.
-
 ### CLEANUP
 
 - [010-CLEANUP-vec-set-api-cleanup.md](010-CLEANUP-vec-set-api-cleanup.md)
@@ -282,7 +275,7 @@ commit ref (or date) recorded in each file's status line.  They
 stay in the tree as history — a code-search for the affected file
 finds the trail of investigation even after the fix has landed.
 
-Currently 58 closed issues:
+Currently 59 closed issues:
 [001](closed/001-keepalive-vs-explicit-reply.md),
 [002](closed/002-codegen-llvm-normalizer.md),
 [003](closed/003-fa-converge-determinism.md),
@@ -330,6 +323,7 @@ Currently 58 closed issues:
 [058](closed/058-polymorphic-classtag-dispatch-drops-extra-arguments.md),
 [059](closed/059-narrowing-peel-wrapper-boolean-collapse-gap.md),
 [060](closed/060-none-branch-dropped-mixed-with-literal-bool-sequence.md),
+[062](closed/062-LLVM-mixed-int-float-scalar-coercion.md),
 [063](closed/063-no-type-bucket-triage.md),
 [064](closed/064-method-phantom-display-blocks-es-split-routing.md),
 [065](closed/065-mark-stage-es-split-routing-and-growing-product.md),
