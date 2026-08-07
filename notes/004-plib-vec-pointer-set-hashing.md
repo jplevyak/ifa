@@ -278,7 +278,7 @@ codegen-c, codegen-llvm, inline, fa-converge 17/17); top-level
   `sorted_view()` — and eventual deletion of `qsort_by_id`.
 
 Both are now tracked in
-[../issues/010-vec-set-api-cleanup.md](../issues/010-vec-set-api-cleanup.md).
+[../issues/010-CLEANUP-vec-set-api-cleanup.md](../issues/010-CLEANUP-vec-set-api-cleanup.md).
 The motivating correctness issue (non-determinism) is resolved by
 the changes that landed; the deferred items are cleanup, not
 fixes.

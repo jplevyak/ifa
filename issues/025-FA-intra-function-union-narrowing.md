@@ -26,7 +26,7 @@ code generated that way — confirmed via a clean `IFA_NARROW=0`-vs-`1`
 A/B test showing byte-identical output either way, contrasted with
 the identical union written by hand (which IS narrowing-dependent).
 Root-caused, not fixed.
-[030](030-polymorphic-dispatch-fat-pointers.md) (the classtag
+[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) (the classtag
 dispatch/`isinstance` mechanism this issue's Case 2 sits on top of —
 030 confirmed 2026-08-03 that its own classtag comparison is sound
 in isolation; the bug is specifically in `isinstance()`'s shared
@@ -551,7 +551,7 @@ remain follow-on work.
 
 ## Confirmed reproducing: `isinstance(v, T)` on a union receiver, real (non-None) classes (2026-08-03)
 
-Found while checking [030](030-polymorphic-dispatch-fat-pointers.md)'s
+Found while checking [030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md)'s
 "isinstance support" claim (classtag comparison) — moved here since
 030's own mechanism turns out not to be at fault; this is Case 2 from
 this issue's own symptom section, now with a concrete minimal repro
@@ -732,7 +732,7 @@ having a coherent runtime representation to check in the first place
 in isolation here is not possible: there is nothing sound to check
 until the underlying container/BOXING representation gap (018, and
 the element-CS container-method work in
-[063](063-no-type-bucket-triage.md)/[075](075-element-cs-method-split-idempotent-plan.md))
+[063](closed/063-no-type-bucket-triage.md)/[075](075-FA-element-cs-method-split-idempotent-plan.md))
 is addressed. Cross-referenced back into 018 rather than tracked here
 or attempted as a quick fix — see that issue's own file for the
 updated scope note.

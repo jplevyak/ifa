@@ -13,7 +13,7 @@ looks — adding so much as a no-op comparison (`if key < 0: pass`) to
 `list.__getitem__` reopens the *exact* failure on this issue's own
 `tests/empty_list_print.py` repro, with no other change to the
 program. See
-[052](../052-shared-method-branch-reopens-empty-list-fragility.md).
+[052](../052-FA-shared-method-branch-reopens-empty-list-fragility.md).
 
 ## Complete mechanism (2026-07-15)
 
@@ -84,11 +84,11 @@ retired-codegen-backend bug, `cg_normalize_v2.cc`/
 overlap in which runtime method it happened to exercise,
 `list.__str__`'s `self[k].__repr__()`, nothing else in common).
 Plausibly the SAME underlying class of problem as
-[025-intra-function-union-narrowing.md](../025-intra-function-union-narrowing.md)
+[025-FA-intra-function-union-narrowing.md](../025-FA-intra-function-union-narrowing.md)
 (FA's specialization/narrowing being imprecise for cases outside its
 one well-handled shape, clone-per-call-boundary-type) and
-[033-splitter-non-idempotent-divergence.md](../033-splitter-non-idempotent-divergence.md)
-/ [032-fa-survey-findings.md](../032-fa-survey-findings.md) (the
+[033-splitter-non-idempotent-divergence.md](033-splitter-non-idempotent-divergence.md)
+/ [032-fa-survey-findings.md](032-fa-survey-findings.md) (the
 broader "FA's iterative splitting/cloning has precision gaps"
 family) — not confirmed to share a root cause with either, but the
 shape (a per-receiver CFG path that's reachable for one clone

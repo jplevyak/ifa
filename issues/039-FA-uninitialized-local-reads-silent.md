@@ -171,8 +171,8 @@ rather than a special case bolted onto renaming. Concretely:
   dependent garbage, the same general class of nondeterminism this
   project has already chased down twice this year in unrelated
   subsystems (see
-  [033](033-splitter-non-idempotent-divergence.md) and
-  [035](035-nondeterministic-codegen-clone-order.md) — different
+  [033](closed/033-splitter-non-idempotent-divergence.md) and
+  [035](closed/035-nondeterministic-codegen-clone-order.md) — different
   root causes, same "silent, layout-dependent wrongness" shape).
 
 ## Effort estimate

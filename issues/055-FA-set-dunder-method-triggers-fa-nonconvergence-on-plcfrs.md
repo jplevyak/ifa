@@ -18,7 +18,7 @@ bisection below.
 (this was found while following up on that issue — `plcfrs.py` is the
 same corpus program; 053's fix itself is unaffected and was verified
 clean once `__pyc__/08_set.py` was reverted). See also
-[057](057-sorted-tolist-fa-nonconvergence.md), found later the same
+[057](closed/057-sorted-tolist-fa-nonconvergence.md), found later the same
 day: the identical FA non-convergence signature (worklist churn
 without bound, EntrySet count flat), but with a dramatically smaller
 (4-line, no 500-line real program needed) and dict/`sorted()`-based
@@ -114,7 +114,7 @@ point — not just "a lot of legitimate work."
 
 ## Fix direction (2026-07-29)
 
-See [057](057-sorted-tolist-fa-nonconvergence.md)'s "Fix direction —
+See [057](closed/057-sorted-tolist-fa-nonconvergence.md)'s "Fix direction —
 AUTHORITATIVE" section: this same non-convergence class is fixed by
 (1) monomorphizing the affected functions so no polluting type union
 forms and (2) enforcing that every new contour is *productive* (must

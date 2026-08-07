@@ -51,7 +51,7 @@ pointer type is just a null pointer — free, no separate representation.
 It boxes to a generic `void *`/`pyobj *` **only** for a genuine dynamic
 `scalar | None` (or otherwise-heterogeneous) union — and even then it
 first tries to *avoid* forming such a union (see the chess note below /
-[071](071-chess-accumulated-union-notype-cascade.md)). The real
+[071](071-FA-chess-accumulated-union-notype-cascade.md)). The real
 pyc↔shedskin differences here are two, and neither is "boxing vs not":
 
 - **Use-site inference: neither does it.** shedskin does **not** infer an
@@ -101,12 +101,12 @@ container from a literal. Neither salvages the *seeding* idea itself.
 (`split_css`, `creation_point`, `get_element_avar`, `run_split_stages`,
 the `AVar::backward`/`setters` edges).
 **Related:** [040](closed/040-empty-list-shared-clone-type-inference.md),
-[052](052-shared-method-branch-reopens-empty-list-fragility.md),
+[052](052-FA-shared-method-branch-reopens-empty-list-fragility.md),
 [045](closed/045-receiver-cs-method-cloning.md) (the existing per-CS
-lever), [063](063-no-type-bucket-triage.md) (the corpus "no type"
+lever), [063](closed/063-no-type-bucket-triage.md) (the corpus "no type"
 bucket), [018](../../issues/018-dict-mixed-key-types-boxing-failure.md) /
-[030](030-polymorphic-dispatch-fat-pointers.md) (heterogeneous boxing —
-the co-blocker for amaze/dijkstra2), [061](061-c-backend-multi-tuple-list-null-element-type.md)
+[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) (heterogeneous boxing —
+the co-blocker for amaze/dijkstra2), [061](061-CGEN-multi-tuple-list-null-element-type.md)
 (the `(null)*` C-backend sibling).
 
 ## Correction: chess.py:314 was NOT this family (mis-attributed here earlier)
@@ -141,7 +141,7 @@ element reads elsewhere are NOTYPE. Grounded manifestations:
 - **amaze** (`(tuple __pyc_None_type__ int64 float64 str)`) — element is a
   genuinely **heterogeneous** union; even with element typing solved, the
   representation needs boxing ([018](../../issues/018-dict-mixed-key-types-boxing-failure.md) /
-  [030](030-polymorphic-dispatch-fat-pointers.md)) — a *separate*
+  [030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md)) — a *separate*
   co-blocker, not solved by element inference alone.
 - **dijkstra2** — dict/heap element cross-product (063's canary).
 
@@ -273,7 +273,7 @@ ifa round; pyc's fixpoint is incremental, so the pass must only **widen**:
   needs boxing (018/030). This pass makes the element *typed*; a separate
   effort makes it *representable*.
 - The **`(null)*` C-backend codegen** for a nil/bottom element
-  ([061](061-c-backend-multi-tuple-list-null-element-type.md)) — the C
+  ([061](061-CGEN-multi-tuple-list-null-element-type.md)) — the C
   emitter's null-element path should be hardened to trap rather than
   emit `(null)*` (043 option 1 / the 056/063 convention). This, not
   seeding, is the honest fix for the `x[0]`-on-`[]` residual.

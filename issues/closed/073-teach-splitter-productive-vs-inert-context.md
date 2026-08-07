@@ -1,6 +1,7 @@
 # 073 — Teaching the splitter the productive-vs-inert context distinction (contour identity = type/data, not caller display)
 
-**Status:** **IMPLEMENTED + verified 2026-07-30** (see "### Landed"
+**Status: CLOSED — IMPLEMENTED + verified 2026-07-30**
+(archived 2026-08-06; see "### Landed"
 under the Conclusion). Framed 2026-07-29, substantially revised
 2026-07-30; the "## Conclusion" below SUPERSEDES the "inert mask /
 two-stage" plan in the rest of this file. The inert-mask
@@ -256,7 +257,7 @@ fall-through`:
   need 066's source-site CS keying even after the `check_split` fix;
   adatron/057/plcfrs do not (their cross-pass state is stable). Sequence
   the two independently. **The build plan for that distinct cross-pass
-  oscillation is [074](074-fa-cross-pass-oscillation-plan.md)** (measured
+  oscillation is [074](../074-FA-cross-pass-oscillation-plan.md)** (measured
   2026-07-30: 17 of ~77 corpus programs still hit the pass cap).
 
 ## The question
@@ -330,7 +331,7 @@ unioned all depths. So (B) is *sometimes genuinely productive*.
 The lesson is not "keep the display." It is: **that productive
 separation is data polymorphism and belongs on the type/data axis, not
 the caller-display axis.** 064's correction and
-[066](066-cs-split-decision-keyed-per-pass-not-per-creation-site.md) both
+[066](../066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md) both
 reach this: once the container's element partition (CreationSet split) is
 pinned deterministically, "level-descending recursion's per-level
 separation comes from the CS partition (not the method display), so 064
@@ -476,8 +477,8 @@ display, so together they are precision-neutral and convergent.
 
 Make the container-element partition (the union that actually drives
 adatron's blow-up) **monomorphic and deterministic**. This is
-[066](066-cs-split-decision-keyed-per-pass-not-per-creation-site.md)
-part 2 + [072](072-empty-container-notype-current-mechanism-and-plan.md)
+[066](../066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md)
+part 2 + [072](../072-FA-empty-container-notype-current-mechanism-and-plan.md)
 steps 1–3 (the *write-attribution split*, NOT 072's disproved step-4
 seeding):
 

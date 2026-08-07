@@ -17,7 +17,7 @@ form (a live dominance/supersession notion inside FA's fixed point)
 was found to be substantially riskier than this issue originally
 implied, which is what led to Option D instead. Not a hypothetical:
 this is the general form of the bug fixed in
-[076](closed/076-mutation-driven-receiver-divergence-not-cloned.md)
+[076](076-mutation-driven-receiver-divergence-not-cloned.md)
 for `dict`/`set` specifically (see that issue's "RESOLVED" section for
 the full original trace). Filed separately because 076's fix was a
 per-class workaround (delete the two redundant lines in
@@ -35,7 +35,7 @@ as a `flow_vars` contribution that unions into the field's AVar,
 with no notion of "this write is provably dead, superseded by a later
 one on every path." Not a single fixable line; an architectural
 property of how fields are modeled.
-**Related:** [076](closed/076-mutation-driven-receiver-divergence-not-cloned.md)
+**Related:** [076](076-mutation-driven-receiver-divergence-not-cloned.md)
 (the concrete `dict`/`set` instance and fix — read that issue's
 "RESOLVED" section first, this issue is its generalization),
 [017](../../issues/closed/017-multi-instance-mutation-corruption.md)
@@ -106,7 +106,7 @@ repro needed the internal `==` comparison specifically, because that's
 what triggers the setter-confluence splitting that separates `a` and
 `b` into distinct instances in the first place — a prerequisite for
 the class-body-default leak to be the *only* remaining variable. See
-[076](closed/076-mutation-driven-receiver-divergence-not-cloned.md)'s
+[076](076-mutation-driven-receiver-divergence-not-cloned.md)'s
 "RESOLVED" section for why: the receiver-splitting mechanism triggers
 reactively, off a detected violation, and a program with no internal
 comparison never produces one for FA to react to.

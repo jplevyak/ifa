@@ -99,7 +99,7 @@ regression.
 Original scoping text below (2026-07-24), superseded by option 2' but
 kept for context: this was "option 1" from the
 [067](067-dijkstra2-heap-tuple-precision-and-use-before-def.md) /
-[068](068-derive-structural-ops-record-field-fold.md) discussion: give each
+[068](../068-FA-derive-structural-ops-record-field-fold.md) discussion: give each
 tuple **arity** its own dispatchable record type so the class-side derive
 (landed in 068) applies to tuples verbatim — retiring the `tuple_lt`/
 `tuple_eq` primitives and 067's whole layer-3 problem. **Affects (shared V

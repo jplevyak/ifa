@@ -1,14 +1,14 @@
 # 074 — Plan: solve the FA cross-pass splitter oscillation (033/063/065/066 master plan)
 
 **Status:** plan, 2026-07-30. Synthesizes and *sequences* the existing
-diagnostic work in [033](033-splitter-non-idempotent-divergence.md) /
-[063](063-no-type-bucket-triage.md) /
-[064](064-method-phantom-display-blocks-es-split-routing.md) /
-[065](065-mark-stage-es-split-routing-and-growing-product.md) /
-[066](066-cs-split-decision-keyed-per-pass-not-per-creation-site.md) into
+diagnostic work in [033](closed/033-splitter-non-idempotent-divergence.md) /
+[063](closed/063-no-type-bucket-triage.md) /
+[064](closed/064-method-phantom-display-blocks-es-split-routing.md) /
+[065](closed/065-mark-stage-es-split-routing-and-growing-product.md) /
+[066](066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md) into
 one actionable build order, **re-grounded on current measurements** and
 updated for the one thing that changed since that work (2026-07-23): the
-[073](073-teach-splitter-productive-vs-inert-context.md) `check_split`
+[073](closed/073-teach-splitter-productive-vs-inert-context.md) `check_split`
 type-identity fix (2026-07-30), which ties recursion knots by *type*
 identity and may have dissolved the central obstacle those issues hit.
 **Affects:** `ifa/analysis/fa.cc` — `run_split_stages` (the 8-stage

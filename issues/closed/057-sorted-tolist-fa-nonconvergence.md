@@ -1,6 +1,11 @@
 # 057 — Generic `sorted()` across differing element types + `list()`-materialization causes FA non-convergence
 
-**Status:** **FA NON-CONVERGENCE FIXED 2026-07-30** — the recursion-
+**Status: CLOSED — FA NON-CONVERGENCE FIXED 2026-07-30**
+(archived 2026-08-06). Note: [055](../055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md)
+was hypothesized to share this root cause but was explicitly
+retested against this fix afterward and confirmed **not** resolved
+by it — 055 remains open as a separate, unconfirmed repro in the
+same disease family. — the recursion-
 convergence bug in `check_split`'s `e->from->split` branch was root-caused
 here (2026-07-19) and the fix landed via
 [073](073-teach-splitter-productive-vs-inert-context.md) ("### Landed"):
@@ -22,11 +27,11 @@ forever (see "Mitigation landed" below) — this mitigation predates
 the root cause finding and its own write-up contains one inaccuracy
 about *why* it works, corrected in the root-cause section. Found
 2026-07-19 while testing the same-day `dict.keys()`/`.values()`/
-`.items()` fix ([../../issues/025](../../issues/025-shedskin-examples-coverage.md)).
+`.items()` fix ([../../issues/025](../../../issues/025-shedskin-examples-coverage.md)).
 Not `dict`-specific and not caused by that fix — it's a pre-existing,
 general FA architecture gap that a natural "exercise every code path"
 test for the new dict methods happened to trip. Same *class* of bug
-as [055](055-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md)
+as [055](../055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md)
 (FA's fixed-point loop churns worklists without bound), but this
 repro is dramatically smaller — 4 lines, no `plcfrs.py`-scale program
 needed — making this the better issue to use for the real fix.

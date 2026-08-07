@@ -1,6 +1,16 @@
 # 065 — ES-split product routing: mark-stage exclusion, and self-product re-minting on a growing union
 
-**Status:** open, investigated 2026-07-23 (pursuing the dijkstra2 /
+**Status: CLOSED — superseded by 066 (archived 2026-08-06).**
+[066](../066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md)
+explicitly reframes and corrects this issue's premise (pyc's split
+loop already IS decide-then-durable; the real bug is CS-identity
+re-derivation, not architecture), and this file's own later dated
+updates converge toward the same "setter-site signature" mechanism
+that 066 formalizes as the canonical fix. Real landed progress here
+(the setter/mark-stage re-mint fix, dijkstra2 242→72 violations) is
+preserved below; all forward work continues under 066.
+
+Original status line, superseded: open, investigated 2026-07-23 (pursuing the dijkstra2 /
 "no type" oscillation, [063](063-no-type-bucket-triage.md)). Two routing
 gaps identified; **both attempted fixes reverted as net-negative**.
 **Affects:** `ifa/analysis/fa.cc` issue-033 product routing (~4448-4520),
@@ -48,7 +58,7 @@ to its recorded group, but the split machinery currently detaches the
 recorded group instead.
 
 **Confirmed stable instance — pygmy (2026-07-30, see
-[074](074-fa-cross-pass-oscillation-plan.md) Stage-1 root finding).**
+[074](../074-FA-cross-pass-oscillation-plan.md) Stage-1 root finding).**
 pygmy hits this gap in its *non-growing* form: instrumenting the two
 ES-type dup sites shows its cap-hitting oscillation (0 violations,
 frozen `ess`/`css`) is 3 dups/pass on `shade`/`getreflected` at a
@@ -65,7 +75,7 @@ complement-eviction fix (no union-growth confound to untangle first).
 `d->product == es` re-minting is a symptom: the underlying union is
 **genuinely growing** on dijkstra2+`object.__eq__`. The container-element
 union (shared `dict`/`list` methods over `Vertex→float` / `Vertex→list`
-mixes, [043](closed/043-empty-container-inference-options.md) shape B)
+mixes, [043](043-empty-container-inference-options.md) shape B)
 keeps widening as more of the program resolves, so the split products
 never stop widening. Routing stabilizes the *bookkeeping* but cannot stop
 a growing union. The only thing that fully converged this repro was

@@ -348,7 +348,7 @@ closed). Each tier-3 item is its own multi-week project.
   surfaced). The remaining deferred work — the API rename
   (`Vec::n` → `Vec::capacity`, add `Vec::size`) and the
   migration of the 17 `qsort_by_id` call sites to `sorted_view`
-  — is filed as [issue 010](../issues/010-vec-set-api-cleanup.md).
+  — is filed as [issue 010](../issues/010-CLEANUP-vec-set-api-cleanup.md).
   Verified: `./ifa --test` (52/0), full `make test` (all
   phases clean), `make test_llvm`, `./test_pyc` (73 pass / 2
   expected fail), 5× determinism check on every fa-converge

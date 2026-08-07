@@ -2,7 +2,7 @@
 
 **Status:** open, found 2026-07-19 while digging into the shedskin
 corpus's `RUN_FAIL` bucket (triage requested as a followup to
-[053](closed/053-tuple-unpack-target-heterogeneous-arity-segfault.md)/[055](055-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md)).
+[053](closed/053-tuple-unpack-target-heterogeneous-arity-segfault.md)/[055](055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md)).
 Not fixed — filed rather than fixed because the fix site
 (`P_prim_index_object`/`P_prim_set_index_object` in
 `ifa/codegen/cg.cc`) is a hot, heavily-shared codegen path for *all*

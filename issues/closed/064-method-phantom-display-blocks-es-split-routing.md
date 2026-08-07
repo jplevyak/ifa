@@ -1,6 +1,17 @@
 # 064 — Methods carry a phantom `nesting_depth`, blocking issue-033 ES-split product routing
 
-**Status:** open, root-caused 2026-07-23 (pursuing the dijkstra2 /
+**Status: CLOSED — dead end, confirmed (archived 2026-08-06).**
+The file's own "Correction 2026-07-23" section reverses the initial
+framing: the display gate is not phantom, `group_display_ok` is
+correctly protecting real precision, and the actual unbounded
+generator is `check_split`'s split-lineage routing (root-caused and
+fixed in [073](073-teach-splitter-productive-vs-inert-context.md)).
+The closing "Consequence for the plan" section explicitly calls this
+issue's proposed fix "a dead end." Superseded by
+[074](../074-FA-cross-pass-oscillation-plan.md) (Stage 0 re-runs this
+exact experiment; Stage 4 is framed as what retires this issue).
+
+Original status line, superseded: open, root-caused 2026-07-23 (pursuing the dijkstra2 /
 "no type" oscillation, [063](063-no-type-bucket-triage.md)). A direct
 fix was prototyped and **reverted: it is net-negative** (see "Why the
 obvious fix regresses"). Filed so the correct fix (co-modifying the
@@ -72,7 +83,7 @@ co-reducing the built display array desynchronizes them.
 Both are real but larger than a one-line `nesting_depth` change. The
 payoff is unblocking the ES-split routing for shared methods (the
 242→37 win), which is a prerequisite for the dijkstra2 / "no type"
-convergence — see [065](065-mark-stage-es-split-routing.md) for the
+convergence — see [065](065-mark-stage-es-split-routing-and-growing-product.md) for the
 routing side and [063](063-no-type-bucket-triage.md) for the whole
 chain.
 

@@ -1,7 +1,19 @@
 # 067 — dijkstra2's "no type" is a use-before-def masking a heap-tuple positional-precision loss, NOT a CS-keying case
 
-**Status:** root-caused 2026-07-23 by direct measurement, while
-preparing to implement [066](066-cs-split-decision-keyed-per-pass-not-per-creation-site.md).
+**Status: CLOSED (archived 2026-08-06).** Part B (the codegen fix
+for user-class tuple-element comparison) landed, commit `9ef52f82`,
+zero regressions. Part A (FA clone instantiation for tuple
+structural ops when no clone exists yet) was attempted and reverted
+as too risky — but its remaining scope turned out to be exactly
+[068](../068-FA-derive-structural-ops-record-field-fold.md)'s
+unbuilt "tuple side" derive design, so it isn't tracked separately
+here; pick it up there instead. The erratum content below (correcting
+063/064/065/066's shared dijkstra2 attribution, and identifying the
+057 family as dijkstra2's real remaining root) stands as-is and
+remains the reference for that correction.
+
+Original status line: root-caused 2026-07-23 by direct measurement, while
+preparing to implement [066](../066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md).
 Filed to correct the record: dijkstra2 was used as the headline repro
 for the "no type" / oscillation bucket in
 [063](063-no-type-bucket-triage.md)/[064](064-method-phantom-display-blocks-es-split-routing.md)/[065](065-mark-stage-es-split-routing-and-growing-product.md)/066,

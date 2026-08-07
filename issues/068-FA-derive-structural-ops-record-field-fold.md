@@ -1,7 +1,7 @@
 # 068 — Derive structural ops (comparison/eq/hash/repr/copy) as a record field-fold: a `derive`-style macro expansion unifying classes and tuples
 
 **Status:** design, 2026-07-24. Proposes the generic mechanism that
-subsumes [067](067-dijkstra2-heap-tuple-precision-and-use-before-def.md)
+subsumes [067](closed/067-dijkstra2-heap-tuple-precision-and-use-before-def.md)
 layer 3 (tuple/user-class-element comparison) and retires the
 `tuple_lt`/`tuple_eq` primitives and their custom codegen. Grew out of
 tracing why shedskin compiles these programs and pyc does not (see the

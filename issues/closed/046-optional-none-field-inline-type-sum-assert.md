@@ -1,13 +1,17 @@
 # 046 — Optional-None list-of-self field crashes inline_prim_chain (Type_SUM assert)
 
-**Status:** FIXED 2026-07-17 (fix sketch point 1): inline.cc's
+**Status: CLOSED — FIXED 2026-07-17** (archived 2026-08-06; fix
+sketch point 1): inline.cc's
 chain inliner now pre-checks substitutions
 (`prim_chain_substitution_safe`) and leaves the call un-inlined when
 both an actual's and a formal's types are Type_SUM, instead of
 asserting mid-mutation. The minimal repro below compiles AND runs
 correctly (the deepcopy work in issues/029 gave the nil arms typed
-methods). Point 2 (field narrowing) remains open as a precision
-item.
+methods). Point 2 (field narrowing) is an optional precision
+enhancement, not a bug — folded into
+[025](../025-FA-intra-function-union-narrowing.md)'s open narrowing
+scope as a possible future case rather than tracked as its own
+issue.
 
 Original report follows.
 

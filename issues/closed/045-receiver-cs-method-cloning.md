@@ -44,7 +44,7 @@ Preds with `semi < 0` are now skipped: no semidominator path can run
 through a root-unreachable vertex (same universe-mismatch family as
 build_cfg_dominators' edge pruning).
 **Related:** [040](040-empty-list-shared-clone-type-inference.md)
-(the trace that motivates this), [033](../033-splitter-non-idempotent-divergence.md)
+(the trace that motivates this), [033](033-splitter-non-idempotent-divergence.md)
 (the splitter stability rules this must respect),
 [043](043-empty-container-inference-options.md) (option survey).
 

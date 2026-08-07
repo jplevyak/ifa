@@ -12,7 +12,7 @@ class-level default permanently re-entered the field's *inferred*
 type every pass, regardless of anything downstream. Removing the
 now-redundant class-body defaults (two-line change per class) fixes
 `1.py` cleanly and is a net-positive corpus change, including recovering
-`dijkstra2` — issue [075](../075-element-cs-method-split-idempotent-plan.md)'s
+`dijkstra2` — issue [075](../075-FA-element-cs-method-split-idempotent-plan.md)'s
 own named target — from `FAIL` to compiling for the first time in this
 whole investigation. See "RESOLVED" below for the full trace and
 verification; the sections below it are kept as the investigation
@@ -80,10 +80,10 @@ same shared helper. Tree is back to the exact last-committed state;
 no code changes landed.
 
 This is very likely **the same fundamental mechanism already
-documented in [063](../063-no-type-bucket-triage.md)** ("pyc separates
+documented in [063](063-no-type-bucket-triage.md)** ("pyc separates
 the data but keeps the code operating on the data shared, and the
 element types merge straight back") and directly relevant to
-[075](../075-element-cs-method-split-idempotent-plan.md) (CSM), whose own
+[075](../075-FA-element-cs-method-split-idempotent-plan.md) (CSM), whose own
 filtered products are built through the same `split_css`/`split_edges`
 infrastructure and may be susceptible to the identical staleness. This
 issue adds a precise, code-verified explanation for *why* the merge
@@ -105,11 +105,11 @@ transfer function with the same shape, not yet surveyed),
 successfully separate the dict/list identities), `split_for_violations`/
 `collect_violation_imprecisions` (~5963-6021, the mechanism that
 detects but cannot resolve the residual violation).
-**Related:** [063](../063-no-type-bucket-triage.md) (same family, prior
-framing), [075](../075-element-cs-method-split-idempotent-plan.md) (CSM —
+**Related:** [063](063-no-type-bucket-triage.md) (same family, prior
+framing), [075](../075-FA-element-cs-method-split-idempotent-plan.md) (CSM —
 built on the same split infrastructure, likely shares this staleness
 risk in its own filtered products, not yet checked),
-[077](../077-primitive-equality-codegen-missing-salvage-guard.md) (the
+[077](077-primitive-equality-codegen-missing-salvage-guard.md) (the
 separate codegen-level symptom this same repro also exposes).
 
 ## Symptom
@@ -596,7 +596,7 @@ Two-line change per class.
 - `test_pyc.py`, both backends, `PYC_CSM=2`: 229/11/10/4, unchanged.
 - Corpus sweep, `PYC_CSM` unset: **net positive**. Gained:
   `dijkstra2` (**FAIL → `COMPILED_C_WARN`** — one of issue
-  [075](../075-element-cs-method-split-idempotent-plan.md)'s own two
+  [075](../075-FA-element-cs-method-split-idempotent-plan.md)'s own two
   named targets, first time it's ever compiled in this whole
   investigation), `msp_ss` (FAIL → `COMPILED_C_WARN`), `sudoku4` (FAIL
   → `COMPILED_C_WARN`), plus `plcfrs`/`sunfish` progressing past their

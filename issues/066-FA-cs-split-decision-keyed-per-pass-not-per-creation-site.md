@@ -9,10 +9,10 @@ wrong** — pyc already IS decide-then-durable. The real bug is narrower and
 lives inside the existing loop: the durable identity of a CreationSet
 split is keyed on the re-created per-pass CS, not on the stable
 creation site, so re-flow re-derives it (the issue-033/065 oscillation).
-This reframes [063](063-no-type-bucket-triage.md) /
-[064](064-method-phantom-display-blocks-es-split-routing.md) /
-[065](065-mark-stage-es-split-routing-and-growing-product.md) /
-[033](033-splitter-non-idempotent-divergence.md).
+This reframes [063](closed/063-no-type-bucket-triage.md) /
+[064](closed/064-method-phantom-display-blocks-es-split-routing.md) /
+[065](closed/065-mark-stage-es-split-routing-and-growing-product.md) /
+[033](closed/033-splitter-non-idempotent-divergence.md).
 **Affects:** `ifa/analysis/fa.cc` — `clear_results`/`clear_cs`,
 `creation_point`'s split-parent CS reuse, the `cs->split` lineage, and the
 issue-033 product-routing ledger (incl. the landed `setter_site_signature`).
@@ -46,7 +46,7 @@ via `creation_point`'s split-parent reuse plus the `cs->split` lineage.
 When that re-derivation lands differently, or a re-triggered split mints a
 fresh product instead of recognizing the prior decision, the partition
 churns — the re-mint / growing-union oscillation of
-[065](065-mark-stage-es-split-routing-and-growing-product.md).
+[065](closed/065-mark-stage-es-split-routing-and-growing-product.md).
 
 The issue-033 ledger and the landed `setter_site_signature` are attempts
 to stabilize that re-derivation, but they key on the **shifting per-pass
@@ -105,7 +105,7 @@ With the CS partition pinned by creation site, a container's method
 receiver becomes monomorphic in its element type, so: dijkstra2's
 container-element union never forms, level-descending recursion's
 per-level separation comes from the CS partition (not the method display,
-so [064](064-method-phantom-display-blocks-es-split-routing.md) dissolves
+so [064](closed/064-method-phantom-display-blocks-es-split-routing.md) dissolves
 and methods can be `nesting_depth 0`), and [043](closed/043-empty-container-inference-options.md)
 shape B is subsumed.
 
@@ -128,7 +128,7 @@ the case it can do **without regression**:
   on reflow, collapsing a dispatch distinction (`pyc_declare` then
   crashes at runtime with *"matching function not found"*; full suite
   227/0 → 226/1). The self-product case is the **CS-side analog of
-  [065](065-mark-stage-es-split-routing-and-growing-product.md) gap 2**
+  [065](closed/065-mark-stage-es-split-routing-and-growing-product.md) gap 2**
   (the ES `d->product == es` self-product re-mint) and needs the
   phase-ordering half (part 2) — evict the remainder to *its* home and
   pin the home group by creation site — not a peel-order hack.

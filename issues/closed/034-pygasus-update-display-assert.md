@@ -23,7 +23,7 @@ Original filing follows.
 the splitting loop and timed out before ever reaching this state.
 **Affects:** `ifa/analysis/fa.cc:update_display()` (assert at
 fa.cc:909, `es->display[i] == e->fun` invariant).
-**Related:** [033-splitter-non-idempotent-divergence.md](../033-splitter-non-idempotent-divergence.md)
+**Related:** [033-splitter-non-idempotent-divergence.md](033-splitter-non-idempotent-divergence.md)
 (the guard that exposed it); possibly the emptied-split-ES crash
 family (pyc issue 025: pystone, tictactoe, sudoku2's unique_AVar
 assert) — all are "stale contour structure after aggressive

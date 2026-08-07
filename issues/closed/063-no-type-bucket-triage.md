@@ -1,15 +1,31 @@
 # 063 — The "no type" corpus bucket: root cause + three codegen-robustness fixes + residual triage
 
-**Status:** partially addressed 2026-07-22 (investigation requested as
+**Status: CLOSED — superseded (archived 2026-08-06).** The three
+codegen-robustness fixes below landed directly. The FA-root
+investigation is thorough but was left open-ended here; every
+forward-looking action item it generated has since been forked into
+a still-open issue with a narrower, non-overlapping scope: the
+concrete build plan → [075](../075-FA-element-cs-method-split-idempotent-plan.md),
+the dijkstra2 repro-attribution correction →
+[067](067-dijkstra2-heap-tuple-precision-and-use-before-def.md)
+(also closed, folded into
+[068](../068-FA-derive-structural-ops-record-field-fold.md)), and the
+oscillation-vs-genuine-no-type distinction →
+[074](../074-FA-cross-pass-oscillation-plan.md). Kept here as the
+historical diagnosis/derivation trail (including a since-corrected
+"oscillation" framing in the pre-07-31 sections — see 074 for the
+correction).
+
+Original status line, superseded: partially addressed 2026-07-22 (investigation requested as
 a follow-up to the tuple-comparison work). Three surface codegen-
 robustness gaps fixed here (commits below). The bucket is **multi-
 rooted** on the FA side — the "Update 2026-07-22 (pm)" section shows
 one significant root (chull-family) is *missing default object
 `__eq__`/`__ne__`*, distinct from the empty-container / None-field
 inference family
-([040](closed/040-empty-list-shared-clone-type-inference.md) /
-[043](closed/043-empty-container-inference-options.md) /
-[052](052-shared-method-branch-reopens-empty-list-fragility.md)); both
+([040](040-empty-list-shared-clone-type-inference.md) /
+[043](043-empty-container-inference-options.md) /
+[052](../052-FA-shared-method-branch-reopens-empty-list-fragility.md)); both
 FA roots remain open and both reduce to the same lever —
 **CreationSet-level (element-type) splitting of shared container
 methods**, NOT anything receiver-specific (a mid-investigation draft
@@ -44,7 +60,7 @@ known, deep, partially-fixed FA problem, not a new one.
 Once FA salvages the untypable values to void/any (the `runtime_errors`
 default), the salvaged shapes reached three codegen sites that emitted
 **raw, unsalvageable C** instead of degrading to a runtime-error assert
-(the convention established in [056](056-degraded-index-type-raw-c-compile-error.md)).
+(the convention established in [056](../056-CGEN-degraded-index-type-raw-c-compile-error.md)).
 Each was fixed to degrade, per that convention:
 
 1. **Unresolved tuple comparison → runtime assert** (not a compile
@@ -84,7 +100,7 @@ After the three fixes, the remaining "no type" examples fail on:
   root, or a broad "trap when an arithmetic primitive gets a
   void/incompatible operand" codegen guard (higher risk — deferred).
 - **`(null)*` list element type** (chull) — a list whose element type
-  is None/unresolved; this is [061](061-c-backend-multi-tuple-list-null-element-type.md)'s
+  is None/unresolved; this is [061](../061-CGEN-multi-tuple-list-null-element-type.md)'s
   sibling for None elements.
 - **member access on a void value** (rubik: `no member named 'e0'`),
   **invalid C++ cast** (yopyra), **generator returns void**
@@ -324,9 +340,9 @@ residual setter-stage splits. (a) is gated on cleanly separating methods
 from closure-carriers; both are real but bounded follow-ups. All
 experiments reverted; suite 227/0.
 
-## Update 2026-07-31: why shedskin types the genuine no-type, and the corrected fix (from [074](074-fa-cross-pass-oscillation-plan.md)'s measurements)
+## Update 2026-07-31: why shedskin types the genuine no-type, and the corrected fix (from [074](../074-FA-cross-pass-oscillation-plan.md)'s measurements)
 
-[074](074-fa-cross-pass-oscillation-plan.md) measured the cross-pass
+[074](../074-FA-cross-pass-oscillation-plan.md) measured the cross-pass
 oscillation and **decoupled two things this issue had run together**: the
 *oscillation* (hits the pass cap) and the *genuine no-type violations* (the
 residual). They are NOT the same problem and do NOT share a fix:
@@ -421,7 +437,7 @@ quiescence circularity) rather than only on quiescence, keyed for
 idempotence on the stable creation site (066). This is **not** the
 oscillation lever (074 measured that away); it is the container-element
 separation this issue has pointed at since the 040/043/052 family. Prototype
-+ measurement tracked in the follow-up below / [074](074-fa-cross-pass-oscillation-plan.md).
++ measurement tracked in the follow-up below / [074](../074-FA-cross-pass-oscillation-plan.md).
 
 ### Prototype 2026-07-31: the mechanism is VALIDATED (dijkstra2 FAIL→COMPILED), the naive application is NOT landable
 
@@ -485,4 +501,4 @@ own product; no orphan), leaving the display in identity. The full,
 concrete, step-by-step build — CSM fanned per `(CS × display)` +
 decide-then-apply + stable-site keying, with code anchors and a
 combination-sweep fitness function — is
-**[075](075-element-cs-method-split-idempotent-plan.md)**.
+**[075](../075-FA-element-cs-method-split-idempotent-plan.md)**.

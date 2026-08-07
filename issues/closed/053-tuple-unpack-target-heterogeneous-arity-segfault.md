@@ -43,7 +43,7 @@ still-unresolved line-591 violation). A *separate* attempt to close
 that remaining gap (adding `set.__sub__` to support `set(...) -
 set(...)`, which `plcfrs.py` uses) was found to independently
 segfault/hang the *compiler itself* on `plcfrs.py`'s full complexity
-— tracked as [055](../055-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md),
+— tracked as [055](../055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md),
 reverted rather than shipped.
 **Affects:** whatever `emit_assign_to_target`
 (`python_ifa_build_if1.cc`)'s tuple-destructuring branch lowers to

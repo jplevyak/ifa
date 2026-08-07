@@ -304,7 +304,7 @@ rewriting the lambda to a `def`) is retired.
 
 **Box the `bool | None` union** — the general
 [018](../../issues/018-dict-mixed-key-types-boxing-failure.md) /
-[030](030-polymorphic-dispatch-fat-pointers.md) /
+[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) /
 [060](closed/060-none-branch-dropped-mixed-with-literal-bool-sequence.md)
 work (tagged / fat-pointer `scalar | None`, None = null pointer). This
 would handle Source A (and genuine dynamic `x = None; x = 5`) without the
@@ -323,9 +323,9 @@ None` boxing which subsumes it. The next chess blocker is a **runtime**
 one — the issue-018/047 heterogeneous `linePieces` dispatch (a
 tuple-of-tuples mixing `()` with `bishopLines`/`rookLines`). Once that
 clears, a `(null)*` C-backend null-element error may also surface
-([061](061-c-backend-multi-tuple-list-null-element-type.md)). The genuine
+([061](061-CGEN-multi-tuple-list-null-element-type.md)). The genuine
 empty-container element-inference family (issue 043 /
-[072](072-empty-container-notype-current-mechanism-and-plan.md)) turned
+[072](072-FA-empty-container-notype-current-mechanism-and-plan.md)) turned
 out **not** to be a chess blocker once #4 was correctly diagnosed.
 
 Structurally behind everything is the issue-033 splitter non-idempotency
@@ -365,7 +365,7 @@ than a local, attributable error.
 ## Other Source-A instances
 
 - **`shedskin_examples/adatron/adatron.py`** (2026-07-30, after its FA
-  non-convergence was fixed — [073](073-teach-splitter-productive-vs-inert-context.md)):
+  non-convergence was fixed — [073](closed/073-teach-splitter-productive-vs-inert-context.md)):
   `calculate_error`'s `return 1.0 * error / len(kernel_table)` is nested
   **inside** a `for` loop, so an empty `kernel_table` falls off the end →
   injected `None` → `float64 | None`. `--no_implicit_none 1` makes it
@@ -517,9 +517,9 @@ tuples too before this could land safely).
 
 ## Related
 
-- [063-no-type-bucket-triage.md](063-no-type-bucket-triage.md) — the
+- [063-no-type-bucket-triage.md](closed/063-no-type-bucket-triage.md) — the
   multi-rooted NOTYPE bucket and setter/mark-stage churn.
-- [033-splitter-non-idempotent-divergence.md](033-splitter-non-idempotent-divergence.md)
+- [033-splitter-non-idempotent-divergence.md](closed/033-splitter-non-idempotent-divergence.md)
   — the non-idempotent splitting that amplifies these unions.
 - [closed/043-empty-container-inference-options.md](closed/043-empty-container-inference-options.md)
   — chess's residual (4).

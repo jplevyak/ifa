@@ -1,9 +1,9 @@
 # 070 — compile-time str/bytes literals containing an embedded NUL are silently truncated
 
-**Status:** fixed 2026-07-27, verification passed (both backends'
+**Status: CLOSED — FIXED 2026-07-27** (`fe2330df`, archived
+2026-08-06), verification passed (both backends'
 `test_pyc.py`, `shedskin_sweep.sh` no-regression, and the direct
-repros below all match `python3` reference output). Pending commit;
-move to `closed/` with the commit ref once committed. Found while
+repros below all match `python3` reference output). Found while
 adding a `bytes` type to the pyc frontend (`__pyc__/01b_bytes.py`,
 `sym_bytes` in `ifa/if1/ast.cc`) and testing it against realistic
 binary-data literals. Pre-existing, predates that work — confirmed on

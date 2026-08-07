@@ -7,7 +7,7 @@ vs. LLVM-backend behavioral divergence for `async`/`await`.
 *any* async function with two or more suspend points — which, after
 the initial-suspend fix below, is every async function that awaits
 anything at all.
-**Related:** [022-async-await-syntax.md](../../issues/022-async-await-syntax.md)
+**Related:** [022-async-await-syntax.md](../../issues/closed/022-async-await-syntax.md)
 (pyc-frontend issue tracking `async`/`await` generally),
 commit `a6e58b0e` (added the missing coroutine initial suspend —
 correct in isolation, but is what turns *every* driven async
@@ -292,7 +292,7 @@ coroutine with `presplitcoroutine`."
 This is the second bug in three days found only by actually
 *running* driven async code rather than trusting compile success —
 matching this session's other recurring lesson (see
-[033](033-splitter-non-idempotent-divergence.md)'s "process lesson"
+[033](closed/033-splitter-non-idempotent-divergence.md)'s "process lesson"
 callouts about `extend_analysis` changes needing real corpus runs,
 not just compile/suite-pass checks). `test_async_net.py` and
 friends have no `.exec.check` goldens; they only assert compile

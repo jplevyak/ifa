@@ -1,8 +1,25 @@
 # Issue 033: Splitting loop has no fixed point on some inputs (non-idempotent, order-dependent split decisions)
 
-**Status:** open, fix in progress. Divergence is *mitigated* (stall
-guard, commit `21dbdad4`) so affected programs terminate quickly
-instead of timing out; the root cause — split decisions that are
+**Status: CLOSED (archived 2026-08-06).** This header was stale —
+the body's own 2026-07-10+ "RESOLUTION UPDATE" and milestone log
+show the non-idempotent-divergence symptom that motivated filing
+this is gone on main (M1/M2b/M3 landed; M5 explicitly "CLOSED BY
+ITS OWN GATE (2026-07-14): the re-measured evidence pointed away
+from the round structure entirely"). Only M6 (a deferral valve) and
+general match-phase performance (S4-E follow-on) remain, and both
+are lower-priority than when filed. Rather than leave a
+mostly-resolved epic open, its forward scope — the broader FA
+cross-pass convergence question — now lives under
+[074](../074-FA-cross-pass-oscillation-plan.md), which is explicitly
+titled as this issue's sequel/master plan and re-measures against
+current main. Kept here as the historical derivation trail,
+including a since-repudiated framing (§D/§M6 widening/CPA_LIMIT,
+corrected by [073](073-teach-splitter-productive-vs-inert-context.md)).
+
+Original status line, superseded: open, fix in progress. Divergence
+was *mitigated* (stall guard, commit `21dbdad4`) so affected
+programs terminate quickly instead of timing out; the root cause —
+split decisions that are
 not idempotent across passes — is untouched. **S5**
 (shedskin's round structure: decide-from-converged-state, persist
 decisions outside the graph) **remains the intended shape of the
@@ -27,7 +44,7 @@ audit) is summarized in [Completed stages](#completed-stages); the
 [its own section](#issue033-stage-c-branch). Full implementation
 detail for that earlier landed work, and the original stage-by-stage
 ledger design S5 supersedes, is archived at
-[closed/033-ledger-design-detail.md](closed/033-ledger-design-detail.md).
+[closed/033-ledger-design-detail.md](033-ledger-design-detail.md).
 
 **UPDATE (2026-07-13): M3's blocker is dissolved — the bh
 divergence was a latent hole in MAIN's stall guard, not a stage-C
@@ -82,12 +99,12 @@ contract.
 **Related:** [032-fa-survey-findings.md](032-fa-survey-findings.md)
 (survey umbrella; B4/P3 fixed one instance of the same class inside
 stage 4), closed
-[009-fa-violations-nondeterminism.md](closed/009-fa-violations-nondeterminism.md)
-and [021-v2-call-arg-swap.md](closed/021-v2-call-arg-swap.md) (the
+[009-fa-violations-nondeterminism.md](009-fa-violations-nondeterminism.md)
+and [021-v2-call-arg-swap.md](021-v2-call-arg-swap.md) (the
 "iteration-order dependence" family this belongs to),
-[034-pygasus-update-display-assert.md](closed/034-pygasus-update-display-assert.md)
+[034-pygasus-update-display-assert.md](034-pygasus-update-display-assert.md)
 (crash unmasked by the mitigation),
-[037-matcher-cartesian-cs-product.md](closed/037-matcher-cartesian-cs-product.md)
+[037-matcher-cartesian-cs-product.md](037-matcher-cartesian-cs-product.md)
 (S4-C's sibling on the match side, landed — see S3(a)).
 
 ## Symptom
@@ -231,7 +248,7 @@ Three pieces of prerequisite work landed before S5 was written.
 They're summarized here because they directly motivate S5's shape;
 full detail (code sites, exact findings, log excerpts) is archived
 as D2 / D6 / D7 in
-[closed/033-ledger-design-detail.md](closed/033-ledger-design-detail.md).
+[closed/033-ledger-design-detail.md](033-ledger-design-detail.md).
 
 - **Ledger record-only + `dup_splits` observability** (landed
   2026-07-10). Added a persistent `(fun, stage, position,
@@ -270,7 +287,7 @@ original "stage C" design — cross-pass ledger routing for
 `split_entry_set`'s greedy groups, keyed on a full per-position/
 per-ret `group_signature` (not just one position) with wildcard
 rejection and display-feasibility checks (full spec archived as D4
-in [closed/033-ledger-design-detail.md](closed/033-ledger-design-detail.md)).
+in [closed/033-ledger-design-detail.md](033-ledger-design-detail.md)).
 **UPDATE (2026-07-11): rebased and tested to completion against the
 full corpus (see the M3 section below for the full account) — it
 is NOT sound.** It breaks the stall guard on `bh`: the same
@@ -435,7 +452,7 @@ this sketch's prediction), regression test
 exact sketch — the literal code above triggers an unrelated
 pre-existing runtime crash mixing int/float/str through one
 `print()` call, tracked in
-[030-polymorphic-dispatch-fat-pointers.md](030-polymorphic-dispatch-fat-pointers.md);
+[030-DISPATCH-polymorphic-dispatch-fat-pointers.md](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md);
 the landed test keeps return types homogeneous per receiver to
 avoid it while still exercising the collapsing).
 
@@ -835,7 +852,7 @@ existing single-candidate guard.
   return types through one `print()` call; reproduced identically
   with this change reverted, so it predates M1 and is out of scope
   here — the same assert class tracked in
-  [030-polymorphic-dispatch-fat-pointers.md](030-polymorphic-dispatch-fat-pointers.md))
+  [030-DISPATCH-polymorphic-dispatch-fat-pointers.md](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md))
   — the landed test avoids that by keeping return types homogeneous
   per receiver while still exercising heterogeneous argument
   unions.
@@ -844,7 +861,7 @@ existing single-candidate guard.
   exercise the matcher directly) unchanged; shedskin corpus sweep
   member set identical (23 compiled, same names) to the pre-change
   baseline; `bh` still fails on its known pre-existing issue
-  ([pyc issues/028](../../issues/028-raise-exception-regression-qualified-dispatch.md)),
+  ([pyc issues/028](../../../issues/028-raise-exception-regression-qualified-dispatch.md)),
   not a new failure.
 
 ### M2. Batch-stage extend (immutable-snapshot property, step 1) — REVERTED TWICE (crash, then a pygasus hang/severe slowdown after the crash was fixed; see status below). No part of M2a is on main. Do not retry cross-stage batching without M4 first, or without testing pygasus. The reverted diff is preserved on branch [`issue033-stage2-batching`](https://github.com/jplevyak/pyc/tree/issue033-stage2-batching) (checkpoint only, not mergeable as-is — see its note near the end of this section). **UPDATE 2026-07-13: M2b (decide-then-apply WITHIN stage 1) is LANDED — see the M2b status block at the end of this section. The M2a (cross-stage) verdict above stands unchanged.**
@@ -871,7 +888,7 @@ the SAME snapshot's collected confluences. Two sub-steps:
   "apply_split(decision)" function, whose decision record is the
   already-landed `SplitDecision` struct (fun, stage, position,
   canonical partition AType; full field/hashing spec archived as D1
-  in [closed/033-ledger-design-detail.md](closed/033-ledger-design-detail.md)).
+  in [closed/033-ledger-design-detail.md](033-ledger-design-detail.md)).
 - Acceptance: fa-converge sidecar fixtures re-blessed and stable
   under two consecutive runs (byte-identical); stage-progress
   histogram (M0) shows first-stage-wins truncation gone; full
@@ -1408,7 +1425,7 @@ an assert-under-fixture that it doesn't.
 
 Key shapes to carry over unchanged from the branch/original design
 (full spec archived as D1/D4/D5 in
-[closed/033-ledger-design-detail.md](closed/033-ledger-design-detail.md)):
+[closed/033-ledger-design-detail.md](033-ledger-design-detail.md)):
 ES/group keys are `(fun, stage, position, canonical partition
 AType)`, with groups additionally keyed by the FULL per-position/
 per-ret `group_signature` (not one position) plus lexical-display
@@ -1822,7 +1839,7 @@ already whole-graph, so union semantics change nothing there);
 sweep member set unchanged; deterministic across repeated runs.
 (One verification run crashed in the `-v` type dump — the second
 sighting of a pre-existing intermittent, now filed as
-[041](041-verbose-type-dump-intermittent-segfault.md).)
+[041](../041-FA-verbose-type-dump-intermittent-segfault.md).)
 
 **Verdict:** the round structure's premise — an extend plateau that
 per-pass re-derivation makes unavoidable — no longer exists on any
@@ -1878,7 +1895,7 @@ The original stage-by-stage per-pass ledger design (background
 mechanics, the `SplitDecision` struct, stage A-F specs, the
 termination argument, and a change-inventory/sizing table) has been
 moved to
-[closed/033-ledger-design-detail.md](closed/033-ledger-design-detail.md).
+[closed/033-ledger-design-detail.md](033-ledger-design-detail.md).
 It predates the shedskin comparison above and is superseded as the
 land order by S5, but its key shapes and empirically-established
 corrections (particularly D1 and D4) remain the implementation

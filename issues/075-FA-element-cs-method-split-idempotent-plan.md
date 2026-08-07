@@ -44,10 +44,10 @@ for the full trail. All landed in the tree behind `PYC_CSM` (0
 default/byte-identical, 2 = Piece 1+2+3 + placement fix + fan-out fix +
 filter-inheritance fix, capped to one apply per pass). Concrete build
 plan for the genuine "no type" root
-([063](063-no-type-bucket-triage.md)), synthesizing
-[066](066-cs-split-decision-keyed-per-pass-not-per-creation-site.md)
-(durable keying), [073](073-teach-splitter-productive-vs-inert-context.md)
-(the display-is-bounded theorem), and [074](074-fa-cross-pass-oscillation-plan.md)
+([063](closed/063-no-type-bucket-triage.md)), synthesizing
+[066](066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md)
+(durable keying), [073](closed/073-teach-splitter-productive-vs-inert-context.md)
+(the display-is-bounded theorem), and [074](074-FA-cross-pass-oscillation-plan.md)
 (this session's measurements), and grounded on a **validated prototype**
 (dijkstra2 FAIL→COMPILED — see 063's 2026-07-31 update).
 **Affects:** `ifa/analysis/fa.cc` — `split_edges` (4199),
@@ -59,7 +59,7 @@ plan for the genuine "no type" root
 edits.)*
 
 > **Audience note.** This is written to be executed by an engineer who has
-> NOT done the prior investigation. Read [063](063-no-type-bucket-triage.md)'s
+> NOT done the prior investigation. Read [063](closed/063-no-type-bucket-triage.md)'s
 > "Update 2026-07-31" section first (the shedskin comparison + the
 > prototype result); everything here builds on it. The one-paragraph
 > orientation to the codebase is [ifa/AGENTS.md](../AGENTS.md) and
@@ -117,7 +117,7 @@ the container method per element-CS) is correct and validated.
 ## 3. The correction that shrinks the set — the display stays in identity
 
 The earlier plan put "display-out-of-identity" (Stage 4) in the necessary
-set. **It is not necessary.** [073](073-teach-splitter-productive-vs-inert-context.md)
+set. **It is not necessary.** [073](closed/073-teach-splitter-productive-vs-inert-context.md)
 proves `(type × display)` has a *finite* fixpoint for a finite type domain
 — the display is a **bounded multiplier**, never a source of divergence.
 Adding the element-CS partition keeps it bounded (`type × display × dcpa`,
@@ -722,7 +722,7 @@ enabling by any measure.
 
 Per request, investigated whether the general allocation-site/
 `creation_point`-keyed identity this section originally specifies (and
-which [066](066-cs-split-decision-keyed-per-pass-not-per-creation-site.md)
+which [066](066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md)
 already partially built for `split_css`, landing an enforced ROUTE case
 but explicitly deferring the harder "self-product" case as needing its
 own phase-ordering fix) is what's blocking `sha`'s remaining timeout.

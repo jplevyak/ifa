@@ -230,7 +230,7 @@ planned `isinstance_class.py`.
 
 **Found while checking this file's "isinstance support" claim, does
 NOT belong here — moved to
-[025](025-intra-function-union-narrowing.md):** `isinstance(x, C)`
+[025](025-FA-intra-function-union-narrowing.md):** `isinstance(x, C)`
 against a union-typed `x` (e.g. iterating a heterogeneous list) is
 currently broken, root-caused to the shared `isinstance()` wrapper
 clone collapsing to a hardcoded `return 0`. This is a manifestation of

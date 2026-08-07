@@ -1,11 +1,11 @@
 # Issue 033: original per-pass split-decision ledger design (archived)
 
-**This is not a closed issue** — [033](../033-splitter-non-idempotent-divergence.md)
+**This is not a closed issue** — [033](033-splitter-non-idempotent-divergence.md)
 is still open. This file is an archived *design document*: the
 original stage-by-stage ledger plan (D0-D11 below), written before
 the shedskin architectural comparison. It is superseded as the land
 order by
-[033's S5 merge plan](../033-splitter-non-idempotent-divergence.md#s5-merge-plan-adopting-shedskins-round-structure-into-ifa),
+[033's S5 merge plan](033-splitter-non-idempotent-divergence.md#s5-merge-plan-adopting-shedskins-round-structure-into-ifa),
 which restructures *when* split decisions are made (from a
 converged snapshot, batched, rather than per-pass/first-stage-wins)
 while reusing this design's key shapes, data structures, and
@@ -567,7 +567,7 @@ introduce new keys, so the same finiteness bound applies.
 | tests | fa-converge fixture + determinism double-run + corpus greps | — |
 
 Land order **as originally conceived** (superseded by S5 — see
-[033's S5 section](../033-splitter-non-idempotent-divergence.md#s5-merge-plan-adopting-shedskins-round-structure-into-ifa)
+[033's S5 section](033-splitter-non-idempotent-divergence.md#s5-merge-plan-adopting-shedskins-round-structure-into-ifa)
 for the current order, M0-M6): A (record-only) → D6 → B → C → E →
 (D5 if ever needed). D7 landed out of order (audit-only, no
 behavior change beyond removing two nondeterminism sources) since

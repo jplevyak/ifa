@@ -197,7 +197,7 @@ specific known gap being caught by a specific known fact today.
 
    The full realization: not a boolean fact, but making *any* global
    Sym's read resolve to a call-graph-precise value, the way issue
-   [031](031-globals-outside-fa-precision.md) explicitly deferred
+   [031](closed/031-globals-outside-fa-precision.md) explicitly deferred
    ("load CSE, a real dataflow optimization, not a contour question")
    when it landed per-read local temps for globals (Steps 1-2, 2026-07-04).
    Steps 1-2 gave each global *read* its own EntrySet-contoured,
@@ -284,7 +284,7 @@ specific known gap being caught by a specific known fact today.
    - *Performance*: an extra state dimension threaded through FA's
      already convergence-sensitive fixed point, on top of documented
      existing stall/performance issues
-     ([048](048-deepcopy-flow-divergence-genetic2.md)'s `genetic2`
+     ([048](048-FA-deepcopy-flow-divergence-genetic2.md)'s `genetic2`
      divergence).
    - *Interacts with issue 031's existing scar tissue*: ~15 scattered
      `GLOBAL_CONTOUR` guards already exist to keep that sentinel safe;

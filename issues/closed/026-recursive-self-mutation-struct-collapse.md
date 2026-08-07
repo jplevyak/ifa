@@ -1,7 +1,18 @@
 # Issue 026: recursive types with >1 self-typed field lose value field in C struct
 
-**Status:** **four fixes landed June 2026; remaining
-issue diagnosed as inter-procedural propagation gap.**
+**Status: CLOSED — FIXED (June 2026).** This header was stale
+(it predated the Bug 5 revision below and was never updated after
+the real fix landed); closed 2026-08-06 during the ifa/issues
+triage after confirming the file's own later content shows full
+resolution. Five fixes landed total: (1)-(4) [allocation size,
+struct holes, eager iv promotion, liveness/constness orthogonality]
+documented below, plus Bug 5 (recursive-return CS narrowing) traced
+to a stale `AVar::restrict` snapshot and fixed via a type-predicate-
+based restrict mechanism (`RP_IsNilType` etc.) that re-evaluates at
+each `update_in`. Regression test `tests/bst_insert.py` (8, 15, 16)
+passes. See "### Status: **FIXED** (June 2026)" below for the full
+writeup.
+
 Fixes (1)-(4) [allocation size, struct holes, eager iv
 promotion, liveness/constness orthogonality] documented
 below.  The recursive `insert` pattern still returns the
@@ -288,7 +299,7 @@ Verified:
   setter is fully elided from the C output.
 - Manual tree (`tests/tree_manual.py` not added because
   v2 LLVM has a separate GEP-on-ptr issue tracked in
-  [issue 027](closed/027-v2-llvm-narrowed-loop-loses-struct-type.md))
+  [issue 027](027-v2-llvm-narrowed-loop-loses-struct-type.md))
   works on the C backend.
 - Linked-list tests, recursive_alloc tests, suite
   remained 88/0.
@@ -751,13 +762,13 @@ comes from narrowing, not from inlining.
 
 ## Related
 
-- [`issues/004-is-operator-unimplemented.md`](../../issues/closed/004-is-operator-unimplemented.md)
+- [`issues/004-is-operator-unimplemented.md`](../../../issues/closed/004-is-operator-unimplemented.md)
   — the `is None` fix that unblocked recursive type
   narrowing.  This issue is the next layer down.
-- [`ifa/issues/025-intra-function-union-narrowing.md`](025-intra-function-union-narrowing.md)
+- [`ifa/issues/025-FA-intra-function-union-narrowing.md`](../025-FA-intra-function-union-narrowing.md)
   — the broader narrowing infrastructure that
   prim_isinstance rewrites use.
-- [`ifa/issues/027-v2-llvm-narrowed-loop-loses-struct-type.md`](closed/027-v2-llvm-narrowed-loop-loses-struct-type.md)
+- [`ifa/issues/027-v2-llvm-narrowed-loop-loses-struct-type.md`](027-v2-llvm-narrowed-loop-loses-struct-type.md)
   — v2 LLVM has a related struct-tracking issue.
 - `ifa/CLONE.md` — pyc's clone-time specialization where
   per-CS layouts are determined.

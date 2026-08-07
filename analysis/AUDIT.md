@@ -628,7 +628,7 @@ test-harness is reliable enough to validate them.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — top-level IFA structure.
 - [issue 003](../issues/003-fa-converge-determinism.md) — the
   earlier convergence-determinism note (FA pass events).
-- [issue 007](../issues/007-mark-type-stage-coverage.md) — the
+- [issue 007](../issues/007-FA-mark-type-stage-coverage.md) — the
   splitter-stage coverage gap.
 - [issue 008](../issues/008-fa-crash-on-nested-iterator-shape.md) — the
   intermittent crash (likely same root cause as 009).

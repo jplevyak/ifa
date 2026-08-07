@@ -13,7 +13,7 @@ cross-referenced, not repeated. Line numbers are as of commit
 Confirmed items are labeled **B*n*** (bug), design-level items
 **D*n***, precision/soundness gaps **S*n***, performance items
 **P*n***. Actionable confirmed bugs are also filed as
-[issues/032-fa-survey-findings.md](../issues/032-fa-survey-findings.md).
+[issues/032-fa-survey-findings.md](../issues/closed/032-fa-survey-findings.md).
 
 ---
 

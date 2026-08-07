@@ -7,7 +7,7 @@ every single-implementation method call in every program).
 around line 1725 (the `directs.n == 1` branch quoted below). Almost
 certainly also `ifa/codegen/cg_emit_llvm.cc`'s equivalent path (not
 checked — this issue was found and confirmed on the C backend only).
-**Related:** [030](030-polymorphic-dispatch-fat-pointers.md) — the
+**Related:** [030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) — the
 classtag/fat-pointer dispatch design this call site is part of; that
 issue's own "core implemented" status covers the `fns->n > 1,
 multiple implementations` case (tag-compare branches, verified
@@ -16,7 +16,7 @@ mixed dispatch, high-fan-out table emission) — **neither of those is
 this bug**; this is a third, previously-undocumented gap in the same
 subsystem, found via [issues/039](../../issues/039-list-mul-shared-element-type-cross-contamination.md)'s
 `bh.py` investigation.
-[077](closed/077-primitive-equality-codegen-missing-salvage-guard.md)/[../../issues/closed/034](../../issues/closed/034-iadd-fallback-and-mixed-numeric-regression.md)/[../../issues/035](../../issues/035-list-element-cast-salvage-guard-and-set-item-union.md)/[../../issues/037](../../issues/037-sudoku2-str-ne-void-cast-and-str-index.md)
+[077](closed/077-primitive-equality-codegen-missing-salvage-guard.md)/[../../issues/closed/034](../../issues/closed/034-iadd-fallback-and-mixed-numeric-regression.md)/[../../issues/035](../../issues/035-list-element-cast-salvage-guard-and-set-item-union.md)/[../../issues/037](../../issues/closed/037-sudoku2-str-ne-void-cast-and-str-index.md)
 — the established "degrade a genuinely-incompatible-type situation to
 a runtime assert instead of emitting unsafe C" convention this call
 site should follow but doesn't.

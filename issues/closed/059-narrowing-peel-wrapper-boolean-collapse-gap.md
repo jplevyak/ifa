@@ -21,7 +21,7 @@ recognizer. The motivating symptom lives in pyc's frontend
 infrastructure — no frontend changes were needed.
 **Related:** [../../issues/023-structural-pattern-matching.md](../../../issues/closed/023-structural-pattern-matching.md)
 (the `case None:`-combination crash this fixes, partially — see
-"What's still blocked"); [025](../025-intra-function-union-narrowing.md)
+"What's still blocked"); [025](../025-FA-intra-function-union-narrowing.md)
 (the per-branch narrowing feature this extends — read that file first,
 especially "Investigation notes" and "Refinement", which this builds
 on directly); [060](060-none-branch-dropped-mixed-with-literal-bool-sequence.md)
