@@ -1,5 +1,14 @@
 # 051 — LLVM backend: nested list indexing crashes when the outer list's element type is a mixed Type_SUM
 
+**Status: CLOSED (Already Fixed / Resolved)** — verified 2026-08-06.
+
+### Resolution Summary
+Re-testing revealed that this bug was already resolved by subsequent codegen and dispatch fixes (such as augmented-assign to subscript handling and `sizeof_element` for non-record boxed unions).
+
+`tests/list_element_type_union.py` now compiles and executes cleanly on both the C backend and the LLVM backend (`./pyc -b`), producing output matching CPython byte-for-byte (`0 15 16\n1 125 141\n2 576 717`). Added `tests/list_element_type_union.py.exec.check` to promote it from a compile-only test to a fully execution-verified test in the suite.
+
+**Original filing follows.**
+
 **Status:** open, found 2026-07-18 while fixing issue 025's rubik2
 sizeof_element bug (see that entry's continuation in
 [../../issues/025-shedskin-examples-coverage.md](../../issues/025-shedskin-examples-coverage.md)).

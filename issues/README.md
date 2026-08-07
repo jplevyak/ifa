@@ -292,7 +292,7 @@ commit ref (or date) recorded in each file's status line.  They
 stay in the tree as history — a code-search for the affected file
 finds the trail of investigation even after the fix has landed.
 
-Currently 55 closed issues:
+Currently 56 closed issues:
 [001](closed/001-keepalive-vs-explicit-reply.md),
 [002](closed/002-codegen-llvm-normalizer.md),
 [003](closed/003-fa-converge-determinism.md),
@@ -333,6 +333,7 @@ Currently 55 closed issues:
 [045](closed/045-receiver-cs-method-cloning.md),
 [046](closed/046-optional-none-field-inline-type-sum-assert.md),
 [047](closed/047-different-arity-tuple-iteration-shared-cs.md),
+[051](closed/051-LLVM-nested-list-index-mixed-union-crash.md),
 [053](closed/053-tuple-unpack-target-heterogeneous-arity-segfault.md),
 [057](closed/057-sorted-tolist-fa-nonconvergence.md),
 [058](closed/058-polymorphic-classtag-dispatch-drops-extra-arguments.md),
