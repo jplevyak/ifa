@@ -391,6 +391,130 @@ than a local, attributable error.
   *local, attributable* diagnostic instead of salvaging an unrelated
   global's construction into an uninitialised-memory crash.
 
+## Status re-check + shedskin comparison, 2026-08-06
+
+Re-verified against current HEAD at the user's request. **This file's
+headline claim is now stale**: `chess.py --no_implicit_none 1` does
+**not** compile clean — it now hits a *hard compile-time failure*
+before reaching the runtime `linePieces` dispatch trap:
+
+```
+chess.py:243: warning: illegal call argument type 'line' illegal: int64
+              for k in line:
+...
+fail: __pyc__.py:945: internal: sizeof_element of non-container type
+'int64' (in __add__) -- FA specialized a container method against a
+scalar (see issues/025 type-resolution)
+```
+
+**Confirmed pre-existing, not a regression from anything in this
+session**: reproduces identically against the pre-session baseline
+commit `5bec10ac`, built in a disposable `git worktree` (removed after
+testing). So either this file's "compiles clean" claim was from a
+slightly different setup than a plain `pyc --no_implicit_none 1
+chess.py`, or something shifted between this file's own 2026-08-03
+status check and `5bec10ac` — not bisected further, since the root
+cause traces to the *same* already-named blocker either way (see
+below), not a new one.
+
+**Traced to the exact `linePieces` heterogeneity this file already
+names**, one level more precisely than before. `linePieces` (chess.py:33)
+is a 13-element tuple literal:
+
+```python
+bishopLines = (tuple(range(17, 120, 17)), tuple(range(-17, -120, -17)), ...)  # 4-tuple of lists
+rookLines   = (tuple(range(1, 8)), ...)                                       # 4-tuple of lists
+queenLines  = bishopLines + rookLines   # dynamic tuple `+` -> degrades to a LIST (04_sequence.py)
+linePieces  = ((), (), (), bishopLines, rookLines, queenLines, (), (), queenLines, rookLines, bishopLines, (), ())
+```
+
+`linePieces[b]` (a variable-index read, chess.py:242) needs one C type
+that covers all 13 members: three different tuple *arities* (0- and
+4-element tuple-structs) plus a `list` (`queenLines`, from
+`tuple.__add__`'s dynamic-concat-degrades-to-list compromise). pyc has
+no such type — hence `line`'s resolved type collapsing to something
+degenerate (`int64`) and the downstream `__add__`/`sizeof_element`
+internal failure once that degenerate value reaches a container-method
+call.
+
+### How shedskin represents this — checked directly, `../shedskin/examples/chess/chess.cpp`
+
+Shedskin's tuple runtime (`shedskin/lib/builtin/tuple.hpp`) has exactly
+two class templates:
+
+- `tuple2<A, B>` (general, `A != B`) — a true fixed-arity heterogeneous
+  pair: two named fields, `first`/`second`. This is shedskin's *only*
+  mechanism for genuine element-type heterogeneity, and it tops out at
+  2 elements (no `tuple3`/`tuple4`/...).
+- `tuple2<T, T>` (the same-type specialization, what shedskin's
+  generated code prints as `tuple<T>`) — `public pyseq<T>`, backed by
+  `__GC_VECTOR(T) units;`. **Arity is not part of the type** — only the
+  element type `T` is a template parameter; length is a runtime
+  property (`units.size()`), exactly like `list<T>` (also `public
+  pyseq<T>`, same base, same vector-backed shape).
+
+Generated chess.cpp confirms this is exactly what happens here:
+
+```cpp
+tuple<tuple<__ss_int> *> *bishopLines, *queenLines, *rookLines;   // same C++ type for all three
+tuple<tuple<tuple<__ss_int> *> *> *linePieces;                    // uniform element type
+
+queenLines = bishopLines->__add__(rookLines);   // vector-concat, still tuple<tuple<__ss_int>*>*
+linePieces = new tuple<tuple<tuple<__ss_int>*>*>(13,
+    new tuple<tuple<__ss_int>*>(), new tuple<tuple<__ss_int>*>(), new tuple<tuple<__ss_int>*>(),
+    bishopLines, rookLines, queenLines, ..., bishopLines, ...);
+```
+
+`bishopLines` (4 elements), `queenLines` (8, from vector-concat), and
+the empty `()` literals (0) are all **the same C++ type**,
+`tuple<tuple<__ss_int>*>*` — shedskin's whole-program inference
+determined all 13 `linePieces` members share one *recursive element
+type* (`int`, at the bottom) and never encoded arity into the type at
+all. `linePieces[b]` is therefore an ordinary vector index into a
+uniformly-typed container: no union, no boxing, no ambiguity, because
+the ambiguity pyc hits (three different arities, one of them actually
+a `list`) was never a distinct-*type* question for shedskin to begin
+with.
+
+### Proposed fix direction for pyc (not attempted, not designed in detail)
+
+pyc already has the right instinct for *dynamic* `tuple(iterable)`
+(fixed-arity can't work at runtime, so it degrades to a list-shaped
+representation — the exact compromise `tuple.__add__`'s own comment in
+`04_sequence.py` cites `queenLines = bishopLines + rookLines` for).
+Shedskin's model suggests generalizing that compromise rather than
+reserving it for dynamic construction specifically: **whenever a
+tuple's element types all unify to one shape — regardless of whether
+it's built as a literal, via `+`/`*`, or dynamically — represent it as
+a homogeneous, variable-length structure** (in pyc's terms, essentially
+reusing the existing `list` backing representation, tagged
+tuple-vs-list only where semantics differ — hashability, mutability)
+**instead of minting a new fixed-arity struct type per distinct
+arity**. Only fall back to the fixed-arity-struct representation (or
+true boxing) when a tuple is *genuinely* heterogeneous in element type
+at a *fixed*, small arity — mirroring shedskin's own `tuple2<A,B>`
+carve-out for exactly the 2-element heterogeneous case, generalized to
+whatever arity pyc's own `try_fold_tuple_arity`/per-arity-unrolled
+`__eq__`/`__lt__` machinery (issue 069) already needs to handle.
+
+This is squarely 018/030's boxing-representation territory, not a
+narrow fix — flagging the concrete design precedent (shedskin already
+solved this, and its solution is simpler than full generic boxing:
+"same element type → vector, regardless of arity" is a much smaller
+lever than "box every heterogeneous value") for whoever scopes that
+work, rather than attempting it here. Would need to answer, at least:
+how does this interact with `try_fold_tuple_arity`'s existing
+compile-time literal folding (which relies on arity being
+statically-known and would presumably still apply first, before this
+representation choice matters); how does per-arity tuple `__eq__`/
+`__lt__` (issue 069) work against a variable-length backing store; and
+whether "all element types unify" needs to be decided per-allocation-
+site or per-declared-tuple-type globally (interacting with
+[039](../../issues/039-list-mul-shared-element-type-cross-contamination.md)'s
+finding that pyc's *list* element-type sharing is already not scoped
+per allocation site — the same question would need a real answer for
+tuples too before this could land safely).
+
 ## Related
 
 - [063-no-type-bucket-triage.md](063-no-type-bucket-triage.md) — the
