@@ -264,12 +264,6 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
 
 ### LLVM backend
 
-- [038-LLVM-coro-split-second-suspend-unreachable.md](038-LLVM-coro-split-second-suspend-unreachable.md)
-  — any driven async function with 2+ suspend points segfaults or
-  infinite-loops. Root-caused to LLVM's `coro-split` pass incorrectly
-  marking the second suspend's genuine-suspend path unreachable;
-  reproduced with a minimal, pyc-independent `.ll` file on LLVM 20 and
-  22 — likely an upstream LLVM bug, not filed there yet.
 - [051-LLVM-nested-list-index-mixed-union-crash.md](051-LLVM-nested-list-index-mixed-union-crash.md)
   — indexing into a list-of-lists whose element type is a mixed
   `Type_SUM` segfaults on LLVM (C backend is fine on the identical
@@ -298,7 +292,7 @@ commit ref (or date) recorded in each file's status line.  They
 stay in the tree as history — a code-search for the affected file
 finds the trail of investigation even after the fix has landed.
 
-Currently 54 closed issues:
+Currently 55 closed issues:
 [001](closed/001-keepalive-vs-explicit-reply.md),
 [002](closed/002-codegen-llvm-normalizer.md),
 [003](closed/003-fa-converge-determinism.md),
@@ -331,6 +325,7 @@ Currently 54 closed issues:
 [035](closed/035-nondeterministic-codegen-clone-order.md),
 [036](closed/036-llvm-phy-lowering-wrong-value.md),
 [037](closed/037-matcher-cartesian-cs-product.md),
+[038](closed/038-LLVM-coro-split-second-suspend-unreachable.md),
 [040](closed/040-empty-list-shared-clone-type-inference.md),
 [042](closed/042-null-meta-type-build-type-hierarchy-segfault.md),
 [043](closed/043-empty-container-inference-options.md),

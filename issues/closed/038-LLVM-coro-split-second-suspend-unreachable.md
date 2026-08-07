@@ -1,5 +1,59 @@
 # Issue 038: LLVM `coro-split` marks a coroutine's second suspend point's genuine-suspend path as `unreachable`, corrupting driven async execution
 
+**Status: CLOSED — not exploitable in pyc's current codegen** —
+resolved 2026-08-06, re-verified 2026-08-07.
+
+### Resolution Summary
+The original minimal reproducer (`coro_repro.ll`) omits `llvm.coro.end`
+on its suspend-fallthrough paths and gives the suspend and destroy
+arms separate landing blocks. Re-verified 2026-08-07 against LLVM's
+own documentation and source (a local `llvm-project` checkout, not
+just the prose docs): `Coroutines.rst` describes `llvm.coro.end` as
+the marker `CoroSplit` uses to know where a resume/destroy funclet
+should be truncated to `ret void`, and `Coroutines.cpp:257` /
+`CoroEarly.cpp:193-194` hard-assert "only one fallthrough coro.end"
+as a precondition the pass assumes. So the reproducer's IR genuinely
+doesn't satisfy `CoroSplit`'s documented contract:
+
+1. **`llvm.coro.end` is required on suspension paths:** In LLVM's Coroutine ABI, `llvm.coro.end(hdl, false, token)` must be executed before returning from both normal coroutine completion and suspension points (the `default` arm of `switch i8 %suspend`). In `.resume` subfunctions, `llvm.coro.end` lowers to `ret void`. If a suspension return block omits `llvm.coro.end`, `coro-split` assumes execution cannot legally exit the coroutine from that point and marks the block `unreachable`.
+2. **Uniqueness of Fallthrough `coro.end`:** LLVM strictly enforces that **only one** `llvm.coro.end` with `is_unwind = false` (the fallthrough end) can exist per coroutine. Placing duplicate `llvm.coro.end(hdl, false, ...)` calls in separate blocks triggers `LLVM ERROR: Only one coro.end can be marked as fallthrough`.
+3. **Required Control Flow Structure:** All `llvm.coro.suspend` default branches and the final completion branch MUST flow into a single shared cleanup return block (`coro_cleanup`) containing `call void @llvm.coro.end(ptr %hdl, i1 false, token none); ret ...`.
+
+That said, "the input IR was non-conformant" is not the same claim
+as "CoroSplit's behavior on non-conformant input is fine." Silently
+deleting a provably-reachable, live block and replacing it with
+`unreachable` — rather than erroring out or leaving the block alone
+— is a real miscompile, not a diagnostic. Whether that's worth an
+upstream robustness report is a separate, still-open question from
+"does pyc need to change anything" (it doesn't — see below); this
+doc takes no position on it beyond flagging it as unresolved.
+
+**pyc's own codegen was never actually at risk once the 2026-08-03
+generator work landed.** `cg_emit_llvm.cc`'s `ensure_coro_suspend_destroy_bbs`
+already implements the required single shared `coro_cleanup`
+structure — the same fix landed in commit `5872fafc` (**issue
+[014](../../../issues/closed/014-generators-yield-unimplemented.md)**,
+"LLVM backend for generators, plus a shared CoroSplit fix**"), found
+independently while adding LLVM generator support and root-caused as
+"a genuine, reproducible LLVM CoroSplit bug" against the identical
+mechanism this issue describes — that doc's framing is the more
+careful one; this issue is downstream of the same fix, not a
+separate investigation with a separate conclusion. Re-verified
+2026-08-07 at every layer: pyc's actual generated IR for a real
+4-suspend-point function funnels all nine suspend/destroy edges into
+one `coro_cleanup` block; `tests/async_driven.py` (three sequential
+`await`s plus 3-level-deep nested `await`s, a richer case than this
+issue's own reproducer, with a real `.exec.check` golden already in
+the automated suite) passes on both backends, output matching
+CPython; `tests/test_async_net.py` (this issue's own cited evidence,
+still lacking an automated `.exec.check` — the gap the *original*
+filing's own "Process note" flagged and which remains unresolved)
+was run directly and completes a real HTTP round-trip to
+`example.com` with no crash or hang, the exact scenario that used to
+fail.
+
+**Original filing follows.**
+
 **Status:** open. **Found:** 2026-07-12, digging into a C-backend
 vs. LLVM-backend behavioral divergence for `async`/`await`.
 **Affects:** the LLVM backend's coroutine lowering
@@ -9,6 +63,12 @@ the initial-suspend fix below, is every async function that awaits
 anything at all.
 **Related:** [022-async-await-syntax.md](../../issues/closed/022-async-await-syntax.md)
 (pyc-frontend issue tracking `async`/`await` generally),
+[014-generators-yield-unimplemented.md](../../../issues/closed/014-generators-yield-unimplemented.md)
+(landed the actual fix, commit `5872fafc`, while adding LLVM
+generator support — its "A genuine, reproducible LLVM CoroSplit bug
+found and worked around" section is the authoritative writeup of the
+mechanism this issue also hit, independently, from the `is_async`
+side; not cross-linked here until the 2026-08-07 re-verification),
 commit `a6e58b0e` (added the missing coroutine initial suspend —
 correct in isolation, but is what turns *every* driven async
 function into a 2-suspend-point function, which is what exposes
