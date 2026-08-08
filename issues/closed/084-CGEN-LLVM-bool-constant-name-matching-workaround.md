@@ -1,9 +1,64 @@
 # 084 — LLVM backend materializes `bool` constants by matching the Sym's *name* string, not its immediate value
 
-**Status:** open, found 2026-08-07 during the same audit that produced
-[082](closed/082-narrowing-wrapper-names-hardcoded-in-fa.md) and
-[083](closed/083-CGEN-print-println-name-collision-risk.md) (closed —
-turned out not to be a real cross-frontend risk, see its resolution).
+**Status: CLOSED** — fixed 2026-08-07.
+
+### Resolution Summary
+
+Confirmed the working theory from the original filing (below) with
+instrumentation rather than guesswork: added a temporary debug print at
+the top of `value_for_var`'s constant-materialization branch logging
+`s->name`, `s->imm.const_kind`, `s->imm.v_int64`, and which of
+`t->isIntegerTy()/isPointerTy()/isFloatingPointTy()` was true, then ran
+the **entire** `test_pyc.py` suite on `-b` and grepped every hit where
+the name-matched branch fired (`name=True`/`name=true`/`name=False`/
+`name=false`).
+
+Result, across the whole suite: **every single hit** had
+`const_kind=IF1_NUM_KIND_INT`, `v_int64` correctly `0` or `1`, and
+`isInt=1` — never once `isPtr=1` or `isFloat=1`. This confirms:
+1. `sym_true`/`sym_false`'s `imm.const_kind`/`v_int64` genuinely are
+   already correct by the time this runs (as the original filing
+   suspected) — the generic `switch (s->imm.const_kind)`'s
+   `IF1_NUM_KIND_INT`/`UINT` case, which already handles
+   `t->isIntegerTy()` identically to what the name-matched branch did,
+   was fully redundant for every case actually exercised.
+2. The `t->isPointerTy()`/`isFloatingPointTy()` branches inside the
+   name-matched special case were **dead code** — unexercised by any
+   test in the suite.
+
+Separately tried to reproduce the "literal int boxed into a
+pointer-typed slot" hypothesis from the original filing with
+`def f(x): print(x)` called as both `f(True)` and `f(5)` — didn't
+reproduce; pyc's cloning/monomorphization gives each call site its own
+concretely-typed specialization here, so no boxing is forced. **Did
+not find a live repro that exercises the pointer/float branches either
+way** — the broader gap remains unconfirmed, not ruled out.
+
+**Fix applied regardless**, since it's strictly safer either way and
+costs nothing: extended the generic `switch`'s
+`IF1_NUM_KIND_INT`/`UINT` case to also handle `t->isPointerTy()`
+(`ConstantExpr::getIntToPtr`, mirroring what the special case did) and
+`t->isFloatingPointTy()` (mirroring the special case's bool-to-float
+branch, generalized to derive the actual value from `v_int64`/`v_uint64`
+instead of hardcoding `1.0`/`0.0`) — then deleted the name-matched
+`"True"`/`"true"`/`"False"`/`"false"` special case entirely. Every
+int-kind constant (not just bool) now gets the same treatment the
+special case gave only to these two Syms, so if the broader gap is ever
+hit by some future construct, it's already covered — no more special
+case needed at all, matching the fully-generic form the original filing
+proposed as the "if confirmed" fix.
+
+**Verified:** full clean rebuild, debug instrumentation removed, both
+the bool repro and `def f(x): print(x); f(True); f(5); f(3.5)` produce
+byte-identical output to before the change and to CPython. Full
+`test_pyc.py` both backends (255/11/0/4, unchanged baseline — this
+exercises `tests/bool_ordering.py`/`bool_to_int.py`, the existing
+bool-materialization-heavy fixtures), `ifa --test` (58/58), and `ifa`'s
+own `make test_llvm` all clean.
+
+---
+
+## Original filing (2026-08-07) — superseded by the resolution above, kept for history
 
 **Affects:** `ifa/codegen/cg_emit_llvm.cc`'s `value_for_var` (the
 generic "materialize an LLVM value for this ifa `Var`" function — not

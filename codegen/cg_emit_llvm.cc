@@ -509,30 +509,33 @@ llvm::Value *value_for_var(EmitCtx &ctx, Var *v) {
   if (s && s->is_constant && v->type) {
     llvm::Type *t = sym_to_llvm_type(v->type);
     if (!t) return nullptr;
-    if (s->name && (!strcmp(s->name, "True") || !strcmp(s->name, "true"))) {
-      if (t->isIntegerTy()) return llvm::ConstantInt::get(t, 1);
-      if (t->isPointerTy()) {
-        llvm::Constant *int_val = llvm::ConstantInt::get(llvm::Type::getInt64Ty(*TheContext), 1);
-        return llvm::ConstantExpr::getIntToPtr(int_val, t);
-      }
-      if (t->isFloatingPointTy()) return llvm::ConstantFP::get(t, 1.0);
-    }
-    if (s->name && (!strcmp(s->name, "False") || !strcmp(s->name, "false"))) {
-      if (t->isIntegerTy()) return llvm::ConstantInt::get(t, 0);
-      if (t->isPointerTy()) {
-        llvm::Constant *int_val = llvm::ConstantInt::get(llvm::Type::getInt64Ty(*TheContext), 0);
-        return llvm::ConstantExpr::getIntToPtr(int_val, t);
-      }
-      if (t->isFloatingPointTy()) return llvm::ConstantFP::get(t, 0.0);
-    }
-
     llvm::Value *cv = nullptr;
     switch (s->imm.const_kind) {
       case IF1_NUM_KIND_INT:
       case IF1_NUM_KIND_UINT:
+        // ifa/issues/084: this case now also covers what used to be a
+        // separate name-matched special case for just sym_true/
+        // sym_false ("True"/"true"/"False"/"false") -- their
+        // imm.const_kind/v_int64 are already correctly populated
+        // (confirmed empirically: always IF1_NUM_KIND_INT, v_int64
+        // 0 or 1, across the full test suite) by the same
+        // if1_const/if1_set_primitive_types machinery every other
+        // int-kind constant goes through, so singling bool out by
+        // name was redundant for the isIntegerTy() case and,
+        // wherever a bool constant needs to become a pointer- or
+        // float-typed value (e.g. boxed into an `any` slot, or
+        // widened into a float-typed slot via issue 081/082's bool
+        // numeric-lattice membership), any other int-kind constant
+        // needs the identical treatment -- not just bool.
         if (t->isIntegerTy())
           cv = llvm::ConstantInt::get(t, (uint64_t)s->imm.v_int64,
                                       s->imm.const_kind == IF1_NUM_KIND_INT);
+        else if (t->isPointerTy())
+          cv = llvm::ConstantExpr::getIntToPtr(
+              llvm::ConstantInt::get(llvm::Type::getInt64Ty(*TheContext), (uint64_t)s->imm.v_int64), t);
+        else if (t->isFloatingPointTy())
+          cv = llvm::ConstantFP::get(t, s->imm.const_kind == IF1_NUM_KIND_INT ? (double)s->imm.v_int64
+                                                                              : (double)s->imm.v_uint64);
         break;
       case IF1_NUM_KIND_FLOAT:
         if (t->isFloatingPointTy())

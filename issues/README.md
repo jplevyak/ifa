@@ -256,14 +256,8 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   when several distinct tuple record types coexist and get
   `.sort()`ed together. Same bug *class* as 056 (malformed C instead
   of a guarded degrade); not a duplicate.
-### LLVM backend
 
-- [084-CGEN-LLVM-bool-constant-name-matching-workaround.md](084-CGEN-LLVM-bool-constant-name-matching-workaround.md)
-  — `value_for_var` materializes `bool` constants by matching the
-  Sym's *name* string ("True"/"False") instead of via the generic
-  `imm.const_kind` switch every other constant type uses. May be
-  masking a broader, unconfirmed gap: boxing *any* numeric literal
-  into a pointer-typed (`any`/boxed) slot, not just bool.
+### LLVM backend
 
 ### CLEANUP
 
@@ -343,7 +337,8 @@ Currently 59 closed issues:
 [080](closed/080-LLVM-index-type-mismatch-no-salvage-guard.md),
 [081](closed/081-FA-int-mult-bool-constant-fold-segfault.md),
 [082](closed/082-narrowing-wrapper-names-hardcoded-in-fa.md),
-[083](closed/083-CGEN-print-println-name-collision-risk.md).
+[083](closed/083-CGEN-print-println-name-collision-risk.md),
+[084](closed/084-CGEN-LLVM-bool-constant-name-matching-workaround.md).
 
 ## When to file an issue here vs fix it now
 
