@@ -289,6 +289,16 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   branch on LLVM. Confirmed real via a corpus+suite sweep (3 live
   occurrences, one backed by a genuine compiler warning); no confirmed
   live repro of actual wrong output yet.
+- [090-CGEN-tuple-arity-cant-vary-across-loop-iterations.md](090-CGEN-tuple-arity-cant-vary-across-loop-iterations.md)
+  — a loop-carried variable whose tuple arity changes each iteration
+  (`t = t + (i, i+1)`) or whose type spans `None`/tuple (`move = None`
+  then reassigned inside the loop) fails with "unable to resolve to a
+  single function at call site" — a clean compile-time reject, not a
+  crash, but possibly a genuine architectural limit (tuples are
+  fixed-arity types, per closed-069) rather than a bug with a real
+  fix. sunfish's real blocker (past the stale "sizeof_element"
+  claim and the `sum()`-missing-`start`-arg gap, both resolved this
+  session).
 
 ### LLVM backend
 
