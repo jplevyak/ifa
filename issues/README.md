@@ -256,6 +256,14 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   when several distinct tuple record types coexist and get
   `.sort()`ed together. Same bug *class* as 056 (malformed C instead
   of a guarded degrade); not a duplicate.
+- [085-CGEN-dead-if-unresolved-condition-no-guard.md](085-CGEN-dead-if-unresolved-condition-no-guard.md)
+  — a `Code_IF` whose own condition FA couldn't resolve (not
+  constant-folded, genuinely unresolved) gets no salvage guard on
+  either backend when exactly one successor is live: silently falls
+  through with no runtime check on C, `unreachable`/unconditional
+  branch on LLVM. Confirmed real via a corpus+suite sweep (3 live
+  occurrences, one backed by a genuine compiler warning); no confirmed
+  live repro of actual wrong output yet.
 
 ### LLVM backend
 
