@@ -282,6 +282,15 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
 
 ### LLVM backend
 
+- [088-llvm-class-list-field-plus-construct-segfault.md](088-llvm-class-list-field-plus-construct-segfault.md)
+  — `pyc -b` segfaults constructing a class whose `__init__` has a
+  default-`None` parameter, when the same program instantiates it
+  both with and without that argument (e.g. `node()` and
+  `node([5])`). C backend unaffected. Minimal 8-line repro, no list
+  ops or loops required (list `+` and a loop were in the original
+  repro but confirmed unnecessary). No debug-symbol backtrace
+  obtained yet (`ptrace_scope` blocks live attach in this sandbox).
+
 ### CLEANUP
 
 - [010-CLEANUP-vec-set-api-cleanup.md](010-CLEANUP-vec-set-api-cleanup.md)
