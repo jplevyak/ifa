@@ -223,14 +223,6 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   Root cause not isolated past bisection; **explicitly retested
   against closed-057's fix and confirmed NOT resolved by it** — a
   distinct repro in the same disease family.
-- [081-FA-int-mult-bool-constant-fold-segfault.md](081-FA-int-mult-bool-constant-fold-segfault.md)
-  — `n * b` (`int` times `bool`) segfaults the compiler itself inside
-  `add_send_edges_pnode`'s constant-folding, before either backend's
-  codegen is ever reached — confirmed via gdb backtrace, backend-
-  agnostic. Found while independently verifying closed-062's fix;
-  unrelated to it (this is FA-level constant-folding, not codegen
-  scalar coercion). No workaround available to the pyc user short of
-  avoiding the literal combination, with no diagnostic pointing at it.
 
 ### DISPATCH
 
@@ -342,7 +334,8 @@ Currently 59 closed issues:
 [076](closed/076-mutation-driven-receiver-divergence-not-cloned.md),
 [077](closed/077-primitive-equality-codegen-missing-salvage-guard.md),
 [078](closed/078-class-body-default-plus-init-override-permanently-unions.md),
-[080](closed/080-LLVM-index-type-mismatch-no-salvage-guard.md).
+[080](closed/080-LLVM-index-type-mismatch-no-salvage-guard.md),
+[081](closed/081-FA-int-mult-bool-constant-fold-segfault.md).
 
 ## When to file an issue here vs fix it now
 

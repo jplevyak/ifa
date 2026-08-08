@@ -154,6 +154,15 @@ void init_default_builtin_types() {
 
   new_builtin_lub_type(sym_anyint, "anyint", 0, sym_int8, sym_uint8, sym_int16, sym_uint16, sym_int32, sym_uint32,
                        sym_int64, sym_uint64, NULL);
+  // ifa/issues/081: opt-in only (IFACallbacks::bool_is_numeric, ifa.h).
+  // ifa's own default keeps `bool` a primitive type disjoint from the
+  // numeric lattice; a frontend whose language treats bool as an int
+  // subtype (pyc/Python: isinstance(True, int) is True) can ask for
+  // `bool` to be a real specializer of `anyint` here, so it participates
+  // in FA's numeric constant-fold/coercion (coerce_num, type_num_fold)
+  // instead of vanishing from it (which used to produce an empty,
+  // unindexable AType and crash the compiler on e.g. `n * True`).
+  if (if1->callback && if1->callback->bool_is_numeric()) sym_bool->inherits_add(sym_anyint);
 
   new_builtin_lub_type(sym_anyfloat, "anyfloat", 0, sym_float32, sym_float64, sym_float128, NULL);
   new_builtin_lub_type(sym_anycomplex, "anycomplex", 0, sym_complex32, sym_complex64, sym_complex128, NULL);

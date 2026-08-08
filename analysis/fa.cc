@@ -2047,7 +2047,16 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
           if (a->out->n == 1 && b->out->n == 1 && a->out->v[0]->sym->imm.const_kind &&
               b->out->v[0]->sym->imm.const_kind) {
             Immediate imm;
-            if (!fold_constant(p->prim->index, &a->out->v[0]->sym->imm, &b->out->v[0]->sym->imm, &imm))
+            // ifa/issues/081: nt can be an empty AType here -- e.g. one
+            // operand's type falls outside fa->type_world.anynum_kind
+            // (a bool operand, unless the frontend opted bool into the
+            // numeric lattice via IFACallbacks::bool_is_numeric) -- in
+            // which case nt->v[0] would index off the end of an empty
+            // Vec. Salvage the same way the other "can't fully fold"
+            // cases in this function already do, rather than crash.
+            if (!nt->n)
+              update_in(res, nt);
+            else if (!fold_constant(p->prim->index, &a->out->v[0]->sym->imm, &b->out->v[0]->sym->imm, &imm))
               update_in(res, make_constant(imm, nt->v[0]->sym));
             else
               update_in(res, nt);
@@ -2067,7 +2076,11 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
           AType *nt = p->prim->ret_types[i] == PRIM_TYPE_BOOL ? fa->type_world.bool_type : type_num_fold(p->prim, a->out, a->out);
           if (a->out->n == 1 && a->out->v[0]->sym->imm.const_kind) {
             Immediate imm;
-            if (!fold_constant(p->prim->index, &a->out->v[0]->sym->imm, 0, &imm))
+            // ifa/issues/081: see the binary-op case above -- nt can be
+            // empty here too (e.g. an un-opted-in bool operand).
+            if (!nt->n)
+              update_in(res, nt);
+            else if (!fold_constant(p->prim->index, &a->out->v[0]->sym->imm, 0, &imm))
               update_in(res, make_constant(imm, nt->v[0]->sym));
             else
               update_in(res, nt);

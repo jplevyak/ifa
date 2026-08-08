@@ -63,6 +63,24 @@ class IFACallbacks : public gc {
   virtual void finalize_functions() {}
   virtual Sym *new_Sym(cchar *name) = 0;  // { return (new IFASymbol)->sym; }
   virtual Sym *make_LUB_type(Sym *s) { return s; }
+  // Called once from init_default_builtin_types() (if1/ast.cc), right
+  // after the builtin `anyint`/`anynum` numeric lattice is built.
+  // Returning true makes `bool` a specializer of `anyint` (transitively
+  // `anynum`/`any`), so FA's numeric constant-folding and coercion
+  // (analysis/fa.cc: coerce_num, type_num_fold) treat a bool operand as
+  // a 1-bit-wide int instead of a type disjoint from all numerics.
+  // Default false: ifa's own generic semantics keep `bool` a fully
+  // separate primitive type outside the numeric lattice -- appropriate
+  // for a frontend/language whose boolean is not an int subtype. Python
+  // *is* one (`isinstance(True, int)` is true), so pyc's callbacks
+  // (PycCallbacks, python_ifa.h) override this to true. This only grants
+  // lattice *membership* (bool becomes intersectable with anynum, which
+  // is what int/bool arithmetic needs to avoid folding to an empty,
+  // unindexable AType -- ifa/issues/081); it does not by itself encode
+  // Python's per-operator result-type rule (e.g. `True + True` widens to
+  // `int` but `True & True` stays `bool`) -- see issue 081 for the
+  // current, still-open state of that finer policy.
+  virtual bool bool_is_numeric() { return false; }
   virtual int formal_to_generic(Sym *s, Sym **ret_generic, int *ret_bind_to_value) { return false; }
   virtual Sym *instantiate(Sym *, Map<Sym *, Sym *> &substitutions) { return 0; }
   virtual Fun *order_wrapper(Fun *, Map<MPosition *, MPosition *> &substitutions) { return 0; }
