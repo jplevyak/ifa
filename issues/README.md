@@ -223,6 +223,13 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   Root cause not isolated past bisection; **explicitly retested
   against closed-057's fix and confirmed NOT resolved by it** — a
   distinct repro in the same disease family.
+- [086-FA-self-recursive-copy-arg-notype-cascade.md](086-FA-self-recursive-copy-arg-notype-cascade.md)
+  — a self-recursive function whose recursive call passes
+  `arg.copy()` (not the parameter directly) degrades entirely to
+  NOTYPE and crashes at runtime on its first call, every time.
+  Minimal 3-line repro, not container-specific. Real-world trigger:
+  the classic Norvig sudoku-solver backtracking idiom
+  (`shedskin_examples/sudoku2`, `sudoku4`).
 
 ### DISPATCH
 
