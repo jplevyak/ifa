@@ -81,6 +81,21 @@ class IFACallbacks : public gc {
   // `int` but `True & True` stays `bool`) -- see issue 081 for the
   // current, still-open state of that finer policy.
   virtual bool bool_is_numeric() { return false; }
+  // Called by FA's issue-025 per-branch type-narrowing recognizer
+  // (analysis/fa.cc's add_pnode_constraints, the `if cond:` handling)
+  // to identify the callee-Sym *names* this frontend's `if cond:`
+  // lowering can use as an isinstance()-style / `is None` / `is not
+  // None` discriminator wrapper call, so FA can narrow the operand's
+  // type on the True/False branches. Return nullptr (the default) for
+  // any of these a frontend doesn't have -- ifa's own generic default
+  // recognizes none of them, so an ordinary function that some other,
+  // non-Python frontend happens to name "isinstance"/"__is__"/
+  // "__nis__" for an unrelated purpose is never silently (mis)narrowed
+  // by ifa's own core FA. PycCallbacks (python_ifa.h) supplies
+  // Python's actual wrapper names.
+  virtual cchar *narrowing_isinstance_name() { return nullptr; }
+  virtual cchar *narrowing_is_none_name() { return nullptr; }
+  virtual cchar *narrowing_is_not_none_name() { return nullptr; }
   virtual int formal_to_generic(Sym *s, Sym **ret_generic, int *ret_bind_to_value) { return false; }
   virtual Sym *instantiate(Sym *, Map<Sym *, Sym *> &substitutions) { return 0; }
   virtual Fun *order_wrapper(Fun *, Map<MPosition *, MPosition *> &substitutions) { return 0; }

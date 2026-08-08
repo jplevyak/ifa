@@ -121,6 +121,24 @@ static int cg_writeln(FILE *fp, Vec<Var *> &vars, int ln) {
   return 0;
 }
 
+// ifa/issues/083: ifa's own generic print/println primitives
+// (print_symbol/println_symbol, registered with cgfn=0 in
+// ast_to_if1.cc's add_primitive_transfer_functions -- the frontend
+// layer owns *that* they exist and their FA transfer function, not
+// how the C backend implements them) get their actual cgfn supplied
+// here instead, so the P_prim_primitive dispatch below can go through
+// the same generic prim_get(name)->cgfn path every other registered
+// primitive already uses, instead of special-casing these two names
+// ahead of it.
+static void print_codegen(FILE *fp, PNode *n, Fun *f) { cg_writeln(fp, n->rvals, 0); }
+static void println_codegen(FILE *fp, PNode *n, Fun *f) { cg_writeln(fp, n->rvals, 1); }
+
+static void cg_register_print_cgfns() {
+  RegisteredPrim *p;
+  if ((p = prim_get("print"))) p->cgfn = print_codegen;
+  if ((p = prim_get("println"))) p->cgfn = println_codegen;
+}
+
 // num_string(Sym*) — moved to codegen_common.{h,cc}.
 
 // Issue 026: dead-field aware slot lookup.
@@ -904,26 +922,20 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         fprintf(fp, "  ");
       cchar *name = n->rvals[1]->sym->name;
       if (!name) name = n->rvals[1]->sym->constant;
-      if (!strcmp("print", name))
-        cg_writeln(fp, n->rvals, 0);
-      else if (!strcmp("println", name))
-        cg_writeln(fp, n->rvals, 1);
+      RegisteredPrim *p = prim_get(name);
+      if (p && p->cgfn)
+        p->cgfn(fp, n, f);
       else {
-        RegisteredPrim *p = prim_get(name);
-        if (p && p->cgfn)
-          p->cgfn(fp, n, f);
-        else {
-          fprintf(fp, "_CG_%s_%s(", n->prim->name, name);
-          bool first = true;
-          for (int i = 2; i < n->rvals.n; i++) {
-            if (cg_get_string(n->rvals[i])) {
-              if (!first) fprintf(fp, ", ");
-              fputs(cg_get_string(n->rvals[i]), fp);
-              first = false;
-            }
+        fprintf(fp, "_CG_%s_%s(", n->prim->name, name);
+        bool first = true;
+        for (int i = 2; i < n->rvals.n; i++) {
+          if (cg_get_string(n->rvals[i])) {
+            if (!first) fprintf(fp, ", ");
+            fputs(cg_get_string(n->rvals[i]), fp);
+            first = false;
           }
-          fputs(");\n", fp);
         }
+        fputs(");\n", fp);
       }
       break;
     }
@@ -2282,6 +2294,7 @@ static void build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
 }
 
 void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
+  cg_register_print_cgfns();
   Vec<Var *> globals;
   int index = 0;
   if (!if1->callback->c_codegen_pre_file(fp)) fprintf(fp, "#include \"c_runtime.h\"\n\n");

@@ -2780,8 +2780,13 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
       // Two cases handled:
       //  (a) direct prim_isinstance call (rare — Python
       //      `isinstance` is a wrapper function),
-      //  (b) call to the isinstance wrapper (recognized by
-      //      callee sym name == "isinstance" with two args).
+      //  (b) call to the isinstance/is-None/is-not-None wrapper,
+      //      recognized by callee sym name matching whatever
+      //      IFACallbacks::narrowing_isinstance_name() /
+      //      narrowing_is_none_name() / narrowing_is_not_none_name()
+      //      (ifa.h) the frontend supplies -- nullptr (ifa's own
+      //      default) means this frontend has none, so nothing here
+      //      matches. ifa/issues/082.
       //
       // Status: the narrowing successfully targets the
       // per-branch SSU AVars (v_v1 / v_v2), but pyc's
@@ -2845,13 +2850,23 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
           Var *fn_var = iso_def->rvals[0];
           cchar *fname = (fn_var && fn_var->sym && fn_var->sym->name)
                              ? fn_var->sym->name : nullptr;
-          if (fname && !strcmp(fname, "isinstance") &&
+          // ifa/issues/082: the specific names recognized here are a
+          // frontend policy (IFACallbacks::narrowing_isinstance_name /
+          // narrowing_is_none_name / narrowing_is_not_none_name,
+          // ifa.h), not baked into ifa's own generic FA -- a frontend
+          // that doesn't override them (nullptr default) gets none of
+          // this narrowing, so an unrelated same-named function is
+          // never misinterpreted.
+          cchar *isinstance_name = if1->callback->narrowing_isinstance_name();
+          cchar *is_none_name = if1->callback->narrowing_is_none_name();
+          cchar *is_not_none_name = if1->callback->narrowing_is_not_none_name();
+          if (fname && isinstance_name && !strcmp(fname, isinstance_name) &&
               iso_def->rvals.n >= 3) {
             operand_var = iso_def->rvals[1];
             type_var = iso_def->rvals[2];
           } else if (fname &&
-                     (!strcmp(fname, "__is__") ||
-                      !strcmp(fname, "__nis__")) &&
+                     ((is_none_name && !strcmp(fname, is_none_name)) ||
+                      (is_not_none_name && !strcmp(fname, is_not_none_name))) &&
                      iso_def->rvals.n >= 3) {
             // rvals[1] = self, rvals[2] = x.  Narrow whichever
             // operand isn't the None constant.  If both or
@@ -2872,7 +2887,7 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
               operand_var = self_v;
             }
             if (operand_var) {
-              if (!strcmp(fname, "__is__")) is_none_check = true;
+              if (is_none_name && !strcmp(fname, is_none_name)) is_none_check = true;
               else is_not_none_check = true;
             }
           }
