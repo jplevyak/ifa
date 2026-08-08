@@ -2243,6 +2243,34 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
     llvm::Value *fmt = value_for_var(ctx, fmt_var);
     if (!fmt) return false;
     llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
+    // issues/040: same fix as format_string_codegen (python_ifa_main.cc)
+    // -- a %d/%i/.../%c spec receiving a float value (or %f/%e/.../%G
+    // receiving an int) is UB in C varargs (wrong register class on
+    // x86-64 SysV); coerce when the format string is a compile-time
+    // constant we can parse here. See that function's comment for the
+    // full rationale; kept in sync rather than shared, matching how
+    // the two backends' emitters already duplicate this primitive's
+    // core logic independently.
+    cchar *cfmt = fmt_var->sym ? fmt_var->sym->constant : nullptr;
+    Vec<char> convs;
+    if (cfmt) {
+      for (cchar *p = cfmt; *p; p++) {
+        if (*p != '%') continue;
+        p++;
+        if (*p == '%') continue;
+        while (*p && (strchr("-+ #0", *p) || (*p >= '0' && *p <= '9') || *p == '.')) p++;
+        if (*p) convs.add(*p);
+      }
+    }
+    auto coerce = [&](llvm::Value *v, Sym *val_ty, char conv) -> llvm::Value * {
+      if (!v || !val_ty) return v;
+      if (strchr("diouxXc", conv) && val_ty->num_kind == IF1_NUM_KIND_FLOAT)
+        return Builder->CreateFPToSI(v, llvm::Type::getInt64Ty(*TheContext));
+      if (strchr("feEgGF", conv) &&
+          (val_ty->num_kind == IF1_NUM_KIND_INT || val_ty->num_kind == IF1_NUM_KIND_UINT))
+        return Builder->CreateSIToFP(v, llvm::Type::getDoubleTy(*TheContext));
+      return v;
+    };
     // Collect args: fmt + expanded tuple fields (or single arg).
     std::vector<llvm::Value *> args;
     args.push_back(fmt);
@@ -2254,11 +2282,15 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
       for (int fi = 0; fi < (int)rec_ty->getNumElements(); fi++) {
         llvm::Type *ft = rec_ty->getElementType(fi);
         llvm::Value *gep = Builder->CreateStructGEP(rec_ty, rec, fi);
-        args.push_back(Builder->CreateLoad(ft, gep));
+        llvm::Value *fv = Builder->CreateLoad(ft, gep);
+        if (fi < convs.n && fi < arg_var->type->has.n)
+          fv = coerce(fv, arg_var->type->has[fi]->type, convs[fi]);
+        args.push_back(fv);
       }
     } else {
       llvm::Value *av = value_for_var(ctx, arg_var);
       if (!av) return false;
+      if (convs.n == 1) av = coerce(av, arg_var->type, convs[0]);
       args.push_back(av);
     }
     // Declare as varargs: ptr (char *str, ...)
