@@ -258,6 +258,16 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   (`pattern_match`/`Matcher::find_all_matches`) is order-sensitive.
   Fails safely (a guarded trap, not a miscompile or whole-program
   crash); not traced to the exact line.
+- [089-DISPATCH-closure-pyc-to-bool-no-candidate.md](089-DISPATCH-closure-pyc-to-bool-no-candidate.md)
+  — a first-class function/closure value has no `__pyc_to_bool__`
+  dispatch candidate: `if some_function:` / `bool(some_function)`
+  fails to type for *any* closure (not just builtins). `__str__` on
+  the same receiver resolves fine, so it's specifically this one
+  symbol, not a total absence of closure method support. Blocks
+  `collections.defaultdict(int)` et al. (`pyc_lib/collections.py`'s
+  `if self.factory:`) — mastermind2's real, current blocker (the
+  `int`/`float` mixed `-=` gap the doc originally cited turned out to
+  be stale; the program no longer reaches that line at all).
 
 ### CGEN (C backend)
 
