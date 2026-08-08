@@ -76,6 +76,25 @@ entry, not an active complaint. Landing the narrow version also isn't
 free: it adds a new per-Sym FA flag and a new codegen branch, i.e.
 real surface area, for a benefit that's currently only theoretical.
 
+## Complexity and Research Findings (2026-08-07 Audit)
+
+A deep-dive audit of the codebase confirms that this is **not a simple fix** and involves several non-trivial architectural trade-offs across FA and both codegen backends:
+
+1. **Granularity Dilemma (`CreationSet` vs `Sym`):**
+   - Placing a `needs_header` flag on a shared tuple type `Sym*` is over-conservative: if `(int, int)` is instantiated at Site A (monomorphic use) and Site B (unions with `(int, int, int)`), Site A would also be forced to allocate a header.
+   - Placing the flag on the `CreationSet` (`cs`) requires `P_prim_make` in both `cg.cc` and `cg_emit_llvm.cc` to map the creation PNode contour back to its specific `CreationSet`, requiring additional lookups in codegen.
+
+2. **Backward Propagation in FA:**
+   - Heterogeneous-arity unions (`Type_SUM` of `Type_RECORD`s with differing `has.n`) are formed dynamically during FA convergence when an `AVar` receives multiple `CreationSet`s.
+   - FA would need a post-pass or incremental propagation phase to mark all `CreationSet`s contributing to such a union with `needs_header = true`.
+
+3. **Backend Parity Risk:**
+   - Both `cg.cc` (`P_prim_make`) and `cg_emit_llvm.cc` (`emit_send_make`) as well as index/length primitives (`emit_norm_idx`, `_CG_prim_len`) must consume the exact same flag identically to prevent backend divergence (the exact root cause of Issues 053, 076, and 080).
+
+4. **Conclusion:**
+   - The current universal 16-byte header strategy is 100% sound, provably safe, and introduces zero failures across the entire 254-test suite and `shedskin` benchmark corpus.
+   - Unless profiling demonstrates measurable memory/GC overhead in a tuple-allocation-heavy program, the complexity and risk of adding backward FA propagation outweigh the theoretical 16-byte saving.
+
 ## What this unblocks
 
 Nothing currently blocked on this. Revisit if: (a) a tuple-heavy hot
