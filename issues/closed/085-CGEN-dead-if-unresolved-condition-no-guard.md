@@ -1,7 +1,7 @@
 # 085 — `Code_IF` whose own condition is unresolved has no salvage guard when exactly one successor is live (both backends)
 
-**Status:** open, filed 2026-08-07. Supersedes/corrects
-[issues/025](../../issues/025-shedskin-examples-coverage.md)'s
+**Status:** fixed 2026-08-08. Filed 2026-08-07. Supersedes/corrects
+[issues/025](../../../issues/025-shedskin-examples-coverage.md)'s
 `rsync.py` entry, which claimed this was "filed as a known gap" — no
 such issue was ever actually filed (found via a full coverage audit of
 that document, see its own TODO list item 6).
@@ -157,3 +157,110 @@ urgent — no currently-known program actually demonstrates wrong output
 or a crash traceable to this specific mechanism — but worth tracking
 properly now that it's been isolated, rather than leaving it as an
 undocumented claim the way it sat in issues/025 since 2026-07-19.
+
+## Fix (2026-08-08)
+
+Took the precise option from "What a fix needs" above, not the
+conservative unconditional-guard fallback — distinguishing the two
+`!fa_live` cases turned out to be cheap, reusing a field the code
+already reads.
+
+**The distinguishing signal, confirmed empirically first.** Temporary
+instrumentation in `write_c_pnode`'s vulnerable branch (since removed)
+printed `n->rvals[0]->type` for every `Code_IF` hitting it with at
+least one independently-live successor, run against this file's own
+three known instances:
+
+| Case | `Var::type` | 
+|---|---|
+| `msp_ss.py`'s confirmed genuine unresolved `__eq__` | `fa->type_world.void_type`'s Sym, exactly |
+| `tests/my_bool4.py`'s `test_cond` (confirmed benign constant-fold) | `bool` — a real, distinct type |
+| `tests/with_exception.py`'s `raises_comma_form_inner_suppresses` | `fa->type_world.void_type`'s Sym too (see note below) |
+
+`Var::type` gets this value because `-r`/`--runtime_errors` is a
+**negative** flag (confirmed via `pyc.cc`'s `ArgumentDescription`: type
+code `'f'`, "set off, default true" — the opposite of what its name
+suggests) — the default, non-`-r` mode is the *tolerant* one, and
+`fa.cc`'s `convert_NOTYPE_to_void()` (which only runs in that default
+mode) rewrites every genuinely-bottom AVar to `void_type` before
+`clone.cc`'s per-clone "concretize" pass commits that onto `Var::type`.
+This is exactly why the scenario is only reachable by default (a
+strict/`-r` compile aborts on the violation before codegen ever runs)
+— and why the signal is sitting right there on the `Var`, no
+`EntrySet`/`AVar` lookup needed at codegen time.
+
+**The fix**, in both `write_c_pnode` (`cg.cc`) and
+`emit_block_terminator` (`cg_emit_llvm.cc`): a small `is_unresolved_condition`
+helper (one independent copy per backend, matching how the existing
+`true_type`/`false_type` identity checks are already duplicated rather
+than shared) checks `cond->type == fa->type_world.void_type->v[0]->type`.
+When true, emit a real trap instead of falling through — `assert(!"runtime
+error: unresolved if condition")` on the C backend (mirroring
+`emit_goto_or_trap`'s existing salvage convention); an actual `abort()`
+call followed by `CreateUnreachable()` on the LLVM backend (deliberately
+not bare `CreateUnreachable()`, which the rest of that function's
+`Code_IF` handling already falls back to elsewhere — `unreachable` is
+an optimizer license, UB if the block genuinely is reached, not a
+runtime-checked trap; this case *can* be reached, so it needs the real
+thing).
+
+**A false positive, caught by process, not luck.** The first version
+of this fix applied the check unconditionally — reasoning (wrongly)
+that since `emit_goto_or_trap` already traps unconditionally at its
+own call sites, doing the same here was consistent. A full pre/post-fix
+regression sweep (`shedskin_sweep.sh` for compile-level parity, plus a
+custom old-vs-new binary comparison script for *runtime* parity across
+the same ~51 examples) caught it immediately: `astar.py` went from a
+clean `exit 0` to aborting on the **first line** of `__main__`. Root
+cause: `write_c_pnode`'s own dispatch loop visits every `PNode`
+reachable via `cfg_succ` regardless of *that* `PNode`'s own liveness —
+so a `Code_IF` belonging to genuinely, permanently dead code (astar's
+entire module body was one `if False: AStar(...).findPath(...)`
+statement, never executed by CPython either) still gets visited, and
+its condition `Var` can carry the exact same `void_type` as a
+truly-attempted-and-failed one, simply because FA never bothered typing
+dead code at all. The fix needed the same successor-liveness guard the
+*original* investigation's own instrumentation used and this file's own
+"what a fix needs" section specified ("at least one independently-live
+successor") — re-added, re-verified: `astar.py` runs clean again,
+`msp_ss.py` still traps correctly.
+
+**Verified:**
+- `msp_ss.py`: trap now present in generated C (was absent before this
+  fix); `astar.py`: no trap, runs clean (was the false-positive case
+  above, now fixed).
+- `tests/my_bool4.py` / `tests/logical_operators.py`: no trap, unaffected
+  (benign constant-fold case, confirmed distinguishable by `Var::type`).
+- `tests/with_exception.py`: still embeds the trap (has a live
+  successor, per the table above) but its own test still passes on
+  both backends — the trap is present but dormant on this file's
+  exercised code path, consistent with "static pattern confirmed, not
+  proven to misbehave at runtime" from this issue's original write-up.
+  Left open whether this specific instance is actually benign or a
+  second real occurrence — not chased further.
+- Full `test_pyc.py`, both backends: 261/11/0/4, clean.
+- Full corpus regression sweep, two passes: `shedskin_sweep.sh`
+  (compile-level) shows identical 65 compiled / 12 failed before and
+  after. A custom runtime comparison (compile + run every example that
+  embeds the new trap text under both a pre-fix and post-fix binary,
+  ~51 examples) shows **zero** exit-code differences after the
+  successor-liveness guard was restored — every remaining
+  output-level difference has a matching exit code and is explainable
+  noise (a `TIME N.NN s` timing trailer; a pre-existing, unrelated
+  crash shifted by two source lines because this fix added a few lines
+  of generated C earlier in the same file).
+
+**Not done**: a clean, minimal, runtime-triggering synthetic repro
+(this issue's own original verification plan asked for one) still
+doesn't exist — `msp_ss.py` needs hardware to actually execute past
+the guarded line, so only the *static* pattern (the warning, the
+embedded trap) is confirmed there, not a before/after runtime
+divergence on a truly minimal case. The `astar.py` false positive
+substituted for this as the fix's real-world check instead. No new
+`tests/*.py` regression test was added for the same reason — the
+standard `.exec.check`-against-CPython harness doesn't have a natural
+way to assert "this specific trap fires," and constructing one that
+reliably reaches this exact codegen shape (not intercepted by some
+other, earlier guard first, as happened in several hand-built attempts
+during this session) proved just as hard as the original investigation
+found it.

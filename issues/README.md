@@ -281,14 +281,6 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   when several distinct tuple record types coexist and get
   `.sort()`ed together. Same bug *class* as 056 (malformed C instead
   of a guarded degrade); not a duplicate.
-- [085-CGEN-dead-if-unresolved-condition-no-guard.md](085-CGEN-dead-if-unresolved-condition-no-guard.md)
-  — a `Code_IF` whose own condition FA couldn't resolve (not
-  constant-folded, genuinely unresolved) gets no salvage guard on
-  either backend when exactly one successor is live: silently falls
-  through with no runtime check on C, `unreachable`/unconditional
-  branch on LLVM. Confirmed real via a corpus+suite sweep (3 live
-  occurrences, one backed by a genuine compiler warning); no confirmed
-  live repro of actual wrong output yet.
 - [090-CGEN-tuple-arity-cant-vary-across-loop-iterations.md](090-CGEN-tuple-arity-cant-vary-across-loop-iterations.md)
   — a loop-carried variable whose tuple arity changes each iteration
   (`t = t + (i, i+1)`) or whose type spans `None`/tuple (`move = None`
@@ -327,7 +319,7 @@ commit ref (or date) recorded in each file's status line.  They
 stay in the tree as history — a code-search for the affected file
 finds the trail of investigation even after the fix has landed.
 
-Currently 59 closed issues:
+Currently 60 closed issues:
 [001](closed/001-keepalive-vs-explicit-reply.md),
 [002](closed/002-codegen-llvm-normalizer.md),
 [003](closed/003-fa-converge-determinism.md),
@@ -390,7 +382,8 @@ Currently 59 closed issues:
 [081](closed/081-FA-int-mult-bool-constant-fold-segfault.md),
 [082](closed/082-narrowing-wrapper-names-hardcoded-in-fa.md),
 [083](closed/083-CGEN-print-println-name-collision-risk.md),
-[084](closed/084-CGEN-LLVM-bool-constant-name-matching-workaround.md).
+[084](closed/084-CGEN-LLVM-bool-constant-name-matching-workaround.md),
+[085](closed/085-CGEN-dead-if-unresolved-condition-no-guard.md).
 
 ## When to file an issue here vs fix it now
 

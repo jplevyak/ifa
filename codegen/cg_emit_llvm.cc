@@ -3327,6 +3327,33 @@ static int const_if_successor(EmitCtx &ctx, PNode *n) {
   return -1;
 }
 
+// issues/085: mirrors is_unresolved_condition in cg.cc (the C
+// backend's own copy of this check -- kept independent, matching how
+// the two backends already duplicate const_if_successor's Sym-identity
+// checks above rather than sharing them). A Code_IF condition whose
+// Var::type is exactly fa->type_world.void_type's Sym never resolved
+// at all (FA gave up, salvaged to NOTYPE); unlike a provably-dead
+// constant fold (const_if_successor above), this is NOT proven
+// unreachable and must not be branched into/past silently.
+static bool is_unresolved_condition(EmitCtx &ctx, Var *cond) {
+  return cond && cond->type && ctx.fa && ctx.fa->type_world.void_type && ctx.fa->type_world.void_type->n > 0 &&
+         cond->type == ctx.fa->type_world.void_type->v[0]->type;
+}
+
+// issues/085: a real, controlled trap (an actual abort() call) for the
+// unresolved-condition case -- deliberately not CreateUnreachable(),
+// which the rest of this function's Code_IF handling already falls
+// back to for other "can't happen" shapes. Unlike those, the
+// unresolved-condition case CAN genuinely be reached at runtime (the
+// condition was never evaluated, not proven dead), and `unreachable`
+// is an optimizer license (UB if actually hit), not a runtime check.
+static void emit_abort_trap(EmitCtx &ctx) {
+  llvm::FunctionType *abort_ty = llvm::FunctionType::get(llvm::Type::getVoidTy(*TheContext), {}, false);
+  llvm::FunctionCallee abort_fn = TheModule->getOrInsertFunction("abort", abort_ty);
+  Builder->CreateCall(abort_fn);
+  Builder->CreateUnreachable();
+}
+
 // -------------------------------------------------------------
 // Block-terminator emit: given a "closer" PNode (one whose cfg_succ
 // exits the current block), emit the LLVM terminator.
@@ -3381,6 +3408,32 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
       }
       if (closer->cfg_succ.n > 1 && closer->cfg_succ.v[1]) {
         f_bb = ctx.label_bb.get(closer->cfg_succ.v[1]);
+      }
+      // issues/085: a genuinely unresolved condition (FA gave up,
+      // salvaged to NOTYPE/void_type -- not proven dead the way
+      // const_if_successor's true_type/false_type check above
+      // handles) must not silently branch into, or fall through
+      // past, whichever successor happened to have its own basic
+      // block -- that would run code that assumed the (never
+      // evaluated) condition held. Trapping here is more specific/
+      // better-diagnosed than the generic null-cond handling below
+      // (cond is nullptr anyway for this case -- an unresolved value
+      // can't be materialized).
+      //
+      // Gated on (t_bb || f_bb), same as the C backend's mirrored
+      // successor-liveness check: discover_blocks only allocates a
+      // block for a genuinely live successor, so neither existing
+      // means this Code_IF itself belongs to permanently dead code
+      // that just happened to get visited (e.g. an `if False:` body
+      // whose condition was simply never typed, not attempted and
+      // failed) -- confirmed necessary by this session's own
+      // pre/post-fix regression sweep (astar.py's entire, never-
+      // executed `if False:` module body tripped an earlier,
+      // ungated version of this check on the very first line of its
+      // __main__).
+      if ((t_bb || f_bb) && closer->rvals.n > 0 && is_unresolved_condition(ctx, closer->rvals.v[0])) {
+        emit_abort_trap(ctx);
+        break;
       }
       if (t_bb && f_bb) {
         if (cond) {

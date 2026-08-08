@@ -1934,6 +1934,25 @@ static void emit_goto_or_trap(FILE *fp, PNode *target, int label_id) {
     fputs("  assert(!\"runtime error: jump to unreachable block\");\n", fp);
 }
 
+// issues/085: a Code_IF whose condition genuinely never resolved (FA
+// gave up, salvaged to NOTYPE -- convert_NOTYPE_to_void's placeholder
+// type; only reachable at all under the default, non-strict
+// runtime_errors mode, since a strict compile aborts on the
+// violation before codegen runs) is NOT proven unreachable, unlike a
+// provably-dead constant fold (the true_type/false_type identity
+// checks in write_c_pnode's Code_IF case already handle that one).
+// Confirmed empirically (temporary instrumentation, since removed):
+// a genuinely-unresolved condition's Var::type is exactly
+// fa->type_world.void_type's Sym, while a benign constant-folded-but-
+// not-Sym-identical condition (e.g. `a and b and c` folded one layer
+// earlier than the true_type/false_type check normally catches)
+// resolves to a real, distinct type (`bool`, confirmed via
+// tests/my_bool4.py's test_cond).
+static bool is_unresolved_condition(FA *fa, Var *cond) {
+  return cond && cond->type && fa->type_world.void_type && fa->type_world.void_type->n > 0 &&
+         cond->type == fa->type_world.void_type->v[0]->type;
+}
+
 static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done) {
   if (n->live && n->fa_live) switch (n->code->kind) {
       case Code_LABEL:
@@ -1998,6 +2017,31 @@ static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done
           fputs("  }\n", fp);
         }
       } else {
+        // issues/085: falling through here with no check would run
+        // whichever successor's own (unrelated) reachability
+        // happened to mark it live, as if the never-evaluated
+        // condition held. Trap first when that's what's actually
+        // happening -- same salvage convention emit_goto_or_trap
+        // above already uses for the analogous dead-label case.
+        //
+        // The successor-liveness guard is required, not optional:
+        // write_c_pnode's own dispatch visits every PNode reachable
+        // via cfg_succ regardless of that PNode's OWN liveness (so a
+        // Code_IF belonging to genuinely, permanently dead code --
+        // e.g. an `if False:` block whose condition was never typed
+        // at all, simply because nothing ever analyzed it -- gets
+        // visited too, and its condition Var can carry the same
+        // void_type as a truly-attempted-and-failed one). Without
+        // this check the trap fired unconditionally on such dead
+        // code (confirmed: astar.py's entire, never-executed
+        // `if False: AStar(...).findPath(...)` module body, which
+        // this session's own regression sweep against a pre-fix
+        // baseline caught -- astar went from a clean exit to
+        // aborting on the very first line of __main__).
+        bool succ_live = (n->cfg_succ.n > 0 && n->cfg_succ[0] && n->cfg_succ[0]->live && n->cfg_succ[0]->fa_live) ||
+                          (n->cfg_succ.n > 1 && n->cfg_succ[1] && n->cfg_succ[1]->live && n->cfg_succ[1]->fa_live);
+        if (succ_live && is_unresolved_condition(fa, n->rvals[0]))
+          fputs("  assert(!\"runtime error: unresolved if condition\");\n", fp);
         do_phy_nodes(fp, n, 0);
         do_phi_nodes(fp, n, 0);
       }
