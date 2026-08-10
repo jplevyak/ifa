@@ -74,7 +74,7 @@ This needs a genuine FA/dispatch investigation (why does adding a
 when the crash site is nowhere near the `max`/`min` call itself) —
 the same kind of digging
 [ifa/issues/090](../090-CGEN-tuple-arity-cant-vary-across-loop-iterations.md)
-and [ifa/issues/091](../091-DISPATCH-nonrecord-builtin-constructor-not-first-class.md)
+and [ifa/issues/091](091-DISPATCH-nonrecord-builtin-constructor-not-first-class.md)
 were also deferred for, and this session was already several layers
 deep chasing issues/041's colorsys port when this was found. A
 working, correct colorsys shim was more valuable to land now than a

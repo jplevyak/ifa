@@ -258,17 +258,6 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   (`pattern_match`/`Matcher::find_all_matches`) is order-sensitive.
   Fails safely (a guarded trap, not a miscompile or whole-program
   crash); not traced to the exact line.
-- [091-DISPATCH-nonrecord-builtin-constructor-not-first-class.md](091-DISPATCH-nonrecord-builtin-constructor-not-first-class.md)
-  — `int`/`float`/`list`/`tuple`/`bool` stored as a plain callable
-  value (`factory = int; factory()`) have no real `__new__` to
-  dispatch to — their zero-arg "constructor" is a pure frontend
-  syntactic special-case at the direct call site, with no backing
-  `Fun`. `dict`/`set` (real `Type_RECORD` classes) and user-defined
-  classes don't have this gap. Found verifying closed-089's fix
-  against `defaultdict(int)` — this is the *next* layer
-  `pyc_lib/collections.py`'s `self.factory()` hits, confirmed via a
-  fresh mastermind2.py compile.
-
 ### CGEN (C backend)
 
 - [054-CGEN-remove-unconditional-tuple-list-header.md](054-CGEN-remove-unconditional-tuple-list-header.md)
@@ -319,7 +308,7 @@ commit ref (or date) recorded in each file's status line.  They
 stay in the tree as history — a code-search for the affected file
 finds the trail of investigation even after the fix has landed.
 
-Currently 62 closed issues:
+Currently 63 closed issues:
 [001](closed/001-keepalive-vs-explicit-reply.md),
 [002](closed/002-codegen-llvm-normalizer.md),
 [003](closed/003-fa-converge-determinism.md),
@@ -385,6 +374,7 @@ Currently 62 closed issues:
 [084](closed/084-CGEN-LLVM-bool-constant-name-matching-workaround.md),
 [085](closed/085-CGEN-dead-if-unresolved-condition-no-guard.md),
 [089](closed/089-DISPATCH-closure-pyc-to-bool-no-candidate.md),
+[091](closed/091-DISPATCH-nonrecord-builtin-constructor-not-first-class.md),
 [092](closed/092-DISPATCH-3arg-minmax-plus-multi-shape-return-crash.md).
 
 ## When to file an issue here vs fix it now

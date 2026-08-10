@@ -175,7 +175,7 @@ only connects to `sym_any` — that don't.
   fixed. That next gap is a different, deeper mechanism (non-record
   builtin types like `int` have no real `__new__` to call indirectly)
   — root-caused and filed separately as
-  [ifa/091](../091-DISPATCH-nonrecord-builtin-constructor-not-first-class.md)
+  [ifa/091](091-DISPATCH-nonrecord-builtin-constructor-not-first-class.md)
   rather than folded into this fix, and **not fixed** — so
   `defaultdict(int)`/`defaultdict(list)` still don't work end-to-end
   yet.
