@@ -1,7 +1,7 @@
 # 089 — a first-class function/closure value has no `__pyc_to_bool__` dispatch candidate: `if some_function:` fails to type
 
-**Status:** open, found 2026-08-08 while diagnosing
-[issues/025](../../issues/025-shedskin-examples-coverage.md)'s TODO
+**Status:** fixed 2026-08-08. Found 2026-08-08 while diagnosing
+[issues/025](../../../issues/025-shedskin-examples-coverage.md)'s TODO
 list item 3 (mastermind2's blocker). The doc's own item 3 text
 ("int/float mixed `-=`/`*` gap... at its own line 77, not investigated
 further") is **stale** — re-verified today, `mastermind2.py` no
@@ -111,7 +111,7 @@ deserves its own focused pass rather than a rushed guess.
   case.
 - `defaultdict(int)`/`defaultdict(list)` usage
   (`tests/defaultdict_keys_values.py` already exists per
-  [issues/025](../../issues/025-shedskin-examples-coverage.md)'s
+  [issues/025](../../../issues/025-shedskin-examples-coverage.md)'s
   history — extend it, or add a new test, for the `b[k] += 1`
   auto-vivify shape specifically) should get further than today.
 - `shedskin_examples/mastermind2/mastermind2.py` — re-run `pyc -r`
@@ -131,3 +131,57 @@ this on its very first `__getitem__`) currently cannot compile at
 all. More generally, any program passing a function/class reference
 around as a plain value and testing it for truthiness (a common
 `if callback:` optional-callback idiom) hits this.
+
+## Fix (2026-08-08)
+
+Root cause, found by comparing why `__str__` resolves for a closure
+receiver but `__pyc_to_bool__` doesn't (the exact question this
+issue's own "why not root-caused further" section left open):
+`__pyc_any_type__` isn't an ordinary Python class at all —
+`python_ifa_sym.cc:96`: `sym_any->name =
+cannonicalize_string("__pyc_any_type__");`. It's pyc's Python-syntax
+way of attaching methods directly to ifa's own universal top type
+(`sym_any`, `ifa/if1/ast.cc`), which *every* type in the lattice
+specializes, including closures/functions — they're a core ifa
+concept and never go through `python_ifa_build_syms.cc`'s "a bare
+`class X:` implicitly inherits `object`" rule, since that rule only
+applies to user/builtin-module Python classes. `object` (the
+Python-specific root regular classes actually descend from) defines
+`__pyc_to_bool__`; `__pyc_any_type__`/`sym_any` did not — so a closure,
+reachable only through the latter, had no candidate at all.
+`__str__`, defined on *both* `object` and `__pyc_any_type__`,
+resolved for closures via the latter — confirmed by the generated
+C for `str(factory)`: the whole call collapses at compile time to
+`__pyc_any_type__.__str__`'s body (`_CG_String("<instance>")`), not
+`object.__str__`'s `"<object>"`.
+
+**The fix**: add a default `__pyc_to_bool__` directly to
+`class __pyc_any_type__:` in `__pyc__/00_runtime.py`, returning `True`
+unconditionally — matching CPython's real default (any object,
+including any callable, is truthy unless it overrides `__bool__`/
+`__len__`, which a bare function never does). `object`'s own, more
+specific `bool()`+`len()`-based `__pyc_to_bool__` still wins for
+anything that reaches it (ordinary class instances); this is only the
+fallback for receivers — closures, and presumably anything else that
+only connects to `sym_any` — that don't.
+
+**Verified:**
+- Both this issue's repros (`if factory:`, and the `self.factory()`
+  call-through-a-field case) now print `yes`/`0` correctly, matching
+  CPython, on both backends.
+- `defaultdict(int)`'s own `if self.factory:` (`pyc_lib/collections.py:33`)
+  no longer warns — the compile progresses to the *next* gap
+  (`self.factory()`, line 34), confirming this specific mechanism is
+  fixed. That next gap is a different, deeper mechanism (non-record
+  builtin types like `int` have no real `__new__` to call indirectly)
+  — root-caused and filed separately as
+  [ifa/091](../091-DISPATCH-nonrecord-builtin-constructor-not-first-class.md)
+  rather than folded into this fix, and **not fixed** — so
+  `defaultdict(int)`/`defaultdict(list)` still don't work end-to-end
+  yet.
+- Editing `__pyc__/00_runtime.py` shifted line numbers in the
+  concatenated `__pyc__.py` bundle; updated
+  `tests/list_index_type_mismatch_salvage.py.check` accordingly (pure
+  line-number drift in an unrelated pinned warning, not a behavior
+  change).
+- Full `test_pyc.py`, both backends: 261/11/0/4, clean.

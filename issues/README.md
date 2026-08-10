@@ -258,16 +258,25 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   (`pattern_match`/`Matcher::find_all_matches`) is order-sensitive.
   Fails safely (a guarded trap, not a miscompile or whole-program
   crash); not traced to the exact line.
-- [089-DISPATCH-closure-pyc-to-bool-no-candidate.md](089-DISPATCH-closure-pyc-to-bool-no-candidate.md)
-  — a first-class function/closure value has no `__pyc_to_bool__`
-  dispatch candidate: `if some_function:` / `bool(some_function)`
-  fails to type for *any* closure (not just builtins). `__str__` on
-  the same receiver resolves fine, so it's specifically this one
-  symbol, not a total absence of closure method support. Blocks
-  `collections.defaultdict(int)` et al. (`pyc_lib/collections.py`'s
-  `if self.factory:`) — mastermind2's real, current blocker (the
-  `int`/`float` mixed `-=` gap the doc originally cited turned out to
-  be stale; the program no longer reaches that line at all).
+- [091-DISPATCH-nonrecord-builtin-constructor-not-first-class.md](091-DISPATCH-nonrecord-builtin-constructor-not-first-class.md)
+  — `int`/`float`/`list`/`tuple`/`bool` stored as a plain callable
+  value (`factory = int; factory()`) have no real `__new__` to
+  dispatch to — their zero-arg "constructor" is a pure frontend
+  syntactic special-case at the direct call site, with no backing
+  `Fun`. `dict`/`set` (real `Type_RECORD` classes) and user-defined
+  classes don't have this gap. Found verifying closed-089's fix
+  against `defaultdict(int)` — this is the *next* layer
+  `pyc_lib/collections.py`'s `self.factory()` hits, confirmed via a
+  fresh mastermind2.py compile.
+- [092-DISPATCH-3arg-minmax-plus-multi-shape-return-crash.md](092-DISPATCH-3arg-minmax-plus-multi-shape-return-crash.md)
+  — a function using 3-arg `max`/`min` that also has more than one
+  `return` statement crashes its *caller* at runtime ("matching
+  function not found") — the crash site is nowhere near the
+  `max`/`min` call itself. 2-arg `max`/`min` and single-return
+  functions are both unaffected. Found porting `issues/041`'s
+  `colorsys` shim (CPython's own `rgb_to_hls`/`rgb_to_hsv` use exactly
+  this shape); worked around there with hand-written 3-value-
+  comparison helpers instead of the builtin, not root-caused.
 
 ### CGEN (C backend)
 
@@ -319,7 +328,7 @@ commit ref (or date) recorded in each file's status line.  They
 stay in the tree as history — a code-search for the affected file
 finds the trail of investigation even after the fix has landed.
 
-Currently 60 closed issues:
+Currently 61 closed issues:
 [001](closed/001-keepalive-vs-explicit-reply.md),
 [002](closed/002-codegen-llvm-normalizer.md),
 [003](closed/003-fa-converge-determinism.md),
@@ -383,7 +392,8 @@ Currently 60 closed issues:
 [082](closed/082-narrowing-wrapper-names-hardcoded-in-fa.md),
 [083](closed/083-CGEN-print-println-name-collision-risk.md),
 [084](closed/084-CGEN-LLVM-bool-constant-name-matching-workaround.md),
-[085](closed/085-CGEN-dead-if-unresolved-condition-no-guard.md).
+[085](closed/085-CGEN-dead-if-unresolved-condition-no-guard.md),
+[089](closed/089-DISPATCH-closure-pyc-to-bool-no-candidate.md).
 
 ## When to file an issue here vs fix it now
 

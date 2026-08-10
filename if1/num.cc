@@ -553,6 +553,68 @@ bool check_coerce_immediate(Immediate *from, Immediate *to) {
       break;                                              \
   }
 
+// issues/041: `%`'s own dedicated fold, found while porting the
+// colorsys shim -- P_prim_mod used to fold via DO_FOLDI, whose FLOAT
+// case is a deliberate stub (raw C `%` is invalid on floats), so any
+// compile-time-constant float modulo (e.g. `hue % 1.0`) hit
+// assert(!"case") in the compiler itself, not generated/runtime code.
+// float uses fmod() instead of `%`; both int and float then apply the
+// same truncated-to-floored sign adjustment pyc_c_runtime.h's
+// _CG_prim_mod / cg_emit_llvm.cc's P_prim_mod case now use for the
+// non-constant-folded path (confirmed separately broken: pyc's `%`
+// gave C's -1 for `-7 % 3` instead of Python's 2, even for plain
+// integers) -- constant folding must match runtime behavior exactly,
+// or the same expression could evaluate differently depending on
+// whether FA happened to fold it.
+#define DO_FOLDMOD_INT(_ta, _va)                             \
+  {                                                          \
+    _ta r = im1._va % im2._va;                               \
+    if (r != 0 && ((r < 0) != (im2._va < 0))) r += im2._va;   \
+    imm->_va = r;                                             \
+  }
+#define DO_FOLDMOD_UINT(_ta, _va) imm->_va = im1._va % im2._va
+#define DO_FOLDMOD_FLOAT(_ta, _va)                                        \
+  {                                                                        \
+    _ta r = (_ta)fmod((double)im1._va, (double)im2._va);                  \
+    if (r != 0 && ((r < 0) != (im2._va < 0))) r += im2._va;               \
+    imm->_va = r;                                                         \
+  }
+#define DO_FOLDMOD()                                                       \
+  switch (imm->const_kind) {                                               \
+    case IF1_NUM_KIND_NONE:                                                \
+      break;                                                               \
+    case IF1_NUM_KIND_UINT: {                                              \
+      switch (imm->num_index) {                                           \
+        case IF1_INT_TYPE_1: DO_FOLDMOD_UINT(bool, v_bool); break;         \
+        case IF1_INT_TYPE_8: DO_FOLDMOD_UINT(uint8, v_uint8); break;       \
+        case IF1_INT_TYPE_16: DO_FOLDMOD_UINT(uint16, v_uint16); break;    \
+        case IF1_INT_TYPE_32: DO_FOLDMOD_UINT(uint32, v_uint32); break;    \
+        case IF1_INT_TYPE_64: DO_FOLDMOD_UINT(uint64, v_uint64); break;    \
+        default: assert(!"case");                                         \
+      }                                                                    \
+      break;                                                               \
+    }                                                                      \
+    case IF1_NUM_KIND_INT: {                                               \
+      switch (imm->num_index) {                                           \
+        case IF1_INT_TYPE_1: DO_FOLDMOD_UINT(bool, v_bool); break;         \
+        case IF1_INT_TYPE_8: DO_FOLDMOD_INT(int8, v_int8); break;          \
+        case IF1_INT_TYPE_16: DO_FOLDMOD_INT(int16, v_int16); break;       \
+        case IF1_INT_TYPE_32: DO_FOLDMOD_INT(int32, v_int32); break;       \
+        case IF1_INT_TYPE_64: DO_FOLDMOD_INT(int64, v_int64); break;       \
+        default: assert(!"case");                                         \
+      }                                                                    \
+      break;                                                               \
+    }                                                                      \
+    case IF1_NUM_KIND_FLOAT:                                               \
+      switch (imm->num_index) {                                           \
+        case IF1_FLOAT_TYPE_32: DO_FOLDMOD_FLOAT(float32, v_float32); break;    \
+        case IF1_FLOAT_TYPE_64: DO_FOLDMOD_FLOAT(float64, v_float64); break;    \
+        case IF1_FLOAT_TYPE_128: DO_FOLDMOD_FLOAT(float128, v_float128); break; \
+        default: assert(!"case");                                              \
+      }                                                                        \
+      break;                                                                   \
+  }
+
 #define DO_FOLD1(_op)                           \
   switch (imm->const_kind) {                    \
     case IF1_NUM_KIND_NONE:                     \
@@ -832,7 +894,7 @@ int fold_constant(int op, Immediate *aim1, Immediate *aim2, Immediate *imm) {
       break;
     case P_prim_mod:
       if (aim2 && imm_int_is_zero(im2)) return -1;  // leave for runtime
-      DO_FOLDI(%);
+      DO_FOLDMOD();
       break;
     case P_prim_add:
       DO_FOLD(+);

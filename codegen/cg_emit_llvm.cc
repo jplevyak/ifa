@@ -1127,10 +1127,30 @@ bool emit_send_binop(EmitCtx &ctx, PNode *pn) {
       res = is_float ? Builder->CreateFDiv(lhs, rhs)
                      : Builder->CreateSDiv(lhs, rhs);
       break;
-    case P_prim_mod:
-      res = is_float ? Builder->CreateFRem(lhs, rhs)
-                     : Builder->CreateSRem(lhs, rhs);
+    case P_prim_mod: {
+      // Same fix as pyc_c_runtime.h's _CG_prim_mod (issues/041): LLVM's
+      // frem/srem are truncated-toward-zero, like C's `%`/fmod -- the
+      // wrong sign convention vs. Python's floored modulo (result
+      // takes the divisor's sign, not the dividend's; confirmed
+      // pre-existing and separate from any type-support gap via
+      // `-7 % 3` giving -1 instead of Python's 2). Apply the standard
+      // truncated-to-floored adjustment via select, no new blocks
+      // needed.
+      llvm::Value *rem = is_float ? Builder->CreateFRem(lhs, rhs)
+                                   : Builder->CreateSRem(lhs, rhs);
+      llvm::Value *zero = is_float ? (llvm::Value *)llvm::ConstantFP::get(lhs->getType(), 0.0)
+                                    : (llvm::Value *)llvm::ConstantInt::get(lhs->getType(), 0);
+      llvm::Value *rem_nonzero = is_float ? Builder->CreateFCmpONE(rem, zero)
+                                           : Builder->CreateICmpNE(rem, zero);
+      llvm::Value *rem_neg = is_float ? Builder->CreateFCmpOLT(rem, zero)
+                                       : Builder->CreateICmpSLT(rem, zero);
+      llvm::Value *rhs_neg = is_float ? Builder->CreateFCmpOLT(rhs, zero)
+                                       : Builder->CreateICmpSLT(rhs, zero);
+      llvm::Value *need_adjust = Builder->CreateAnd(rem_nonzero, Builder->CreateXor(rem_neg, rhs_neg));
+      llvm::Value *adjusted = is_float ? Builder->CreateFAdd(rem, rhs) : Builder->CreateAdd(rem, rhs);
+      res = Builder->CreateSelect(need_adjust, adjusted, rem);
       break;
+    }
     case P_prim_lsh:  res = Builder->CreateShl(lhs, rhs);  break;
     case P_prim_rsh:  res = Builder->CreateAShr(lhs, rhs); break;
     case P_prim_and:  res = Builder->CreateAnd(lhs, rhs);  break;

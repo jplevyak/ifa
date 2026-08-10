@@ -109,8 +109,16 @@ void prim_init(Primitives *p, IF1 *if1) {
   n = (char *)if1->strings.put((char *)"/");
   p->prims.add(prim_div);
   p->prim_map[1][1].put(n, prim_div);
-  static PrimType prim_mod_arg_types[] = {PRIM_TYPE_ANY_INT_A, PRIM_TYPE_ANY_INT_B};
-  static PrimType prim_mod_ret_types[] = {PRIM_TYPE_ANY_INT_A};
+  // issues/041: was ANY_INT-only, stale relative to _CG_prim_mod
+  // (pyc_c_runtime.h) / P_prim_mod (cg_emit_llvm.cc) actually
+  // supporting float operands (via fmod + Python's floored-sign
+  // adjustment) -- every other arithmetic prim here (*, /, +, -, **)
+  // already declares ANY_NUM, matching real support for both; % was
+  // simply never updated. Left as ANY_INT under -r (strict mode)
+  // before this fix, float `%` was a hard compile-time error despite
+  // running correctly in the default/tolerant mode.
+  static PrimType prim_mod_arg_types[] = {PRIM_TYPE_ANY_NUM_A, PRIM_TYPE_ANY_NUM_B};
+  static PrimType prim_mod_ret_types[] = {PRIM_TYPE_ANY_NUM_AB};
   prim_mod = new Prim(6, "%", "prim_mod", 3, 1, 1, prim_mod_arg_types, prim_mod_ret_types, 0);
   n = (char *)if1->strings.put((char *)"%");
   p->prims.add(prim_mod);
