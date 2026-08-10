@@ -268,15 +268,6 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   against `defaultdict(int)` — this is the *next* layer
   `pyc_lib/collections.py`'s `self.factory()` hits, confirmed via a
   fresh mastermind2.py compile.
-- [092-DISPATCH-3arg-minmax-plus-multi-shape-return-crash.md](092-DISPATCH-3arg-minmax-plus-multi-shape-return-crash.md)
-  — a function using 3-arg `max`/`min` that also has more than one
-  `return` statement crashes its *caller* at runtime ("matching
-  function not found") — the crash site is nowhere near the
-  `max`/`min` call itself. 2-arg `max`/`min` and single-return
-  functions are both unaffected. Found porting `issues/041`'s
-  `colorsys` shim (CPython's own `rgb_to_hls`/`rgb_to_hsv` use exactly
-  this shape); worked around there with hand-written 3-value-
-  comparison helpers instead of the builtin, not root-caused.
 
 ### CGEN (C backend)
 
@@ -328,7 +319,7 @@ commit ref (or date) recorded in each file's status line.  They
 stay in the tree as history — a code-search for the affected file
 finds the trail of investigation even after the fix has landed.
 
-Currently 61 closed issues:
+Currently 62 closed issues:
 [001](closed/001-keepalive-vs-explicit-reply.md),
 [002](closed/002-codegen-llvm-normalizer.md),
 [003](closed/003-fa-converge-determinism.md),
@@ -393,7 +384,8 @@ Currently 61 closed issues:
 [083](closed/083-CGEN-print-println-name-collision-risk.md),
 [084](closed/084-CGEN-LLVM-bool-constant-name-matching-workaround.md),
 [085](closed/085-CGEN-dead-if-unresolved-condition-no-guard.md),
-[089](closed/089-DISPATCH-closure-pyc-to-bool-no-candidate.md).
+[089](closed/089-DISPATCH-closure-pyc-to-bool-no-candidate.md),
+[092](closed/092-DISPATCH-3arg-minmax-plus-multi-shape-return-crash.md).
 
 ## When to file an issue here vs fix it now
 

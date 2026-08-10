@@ -109,6 +109,74 @@ scoped to its own mechanism.
   new test) for the `b[k] += 1` auto-vivify shape.
 - Full `test_pyc.py`, both backends.
 
+## Attempted fix (2026-08-10), reverted — load-site substitution is unsafe
+
+Tried the narrowest-looking fix that avoids touching
+`python_ifa_build_syms.cc`'s type registration at all: give each of
+int/float/bool/list/tuple an ordinary `__pyc_<type>_new__` wrapper
+function in `__pyc__/05_builtins.py` (ordinary 0-arg `def`s returning
+the type's zero value — a real, storable, callable `Fun` from the
+start, exactly like a bare user `def` reference already is), then in
+`build_if1_pyda`'s `PY_name` case (`python_ifa_build_if1.cc`, the
+final `else if (load && ast->sym)` branch before the closing
+`return 0;`) substitute `ast->rval` with the matching wrapper Sym
+whenever one of these five names is loaded as a plain value.
+
+**This broke on two levels, both instructive:**
+
+1. **First version was unconditionally slow *and* wrong**: it called
+   `make_PycSymbol(ctx, name, PYC_USE)` for all 5 candidate names on
+   *every* bare-name load in the entire program (gating the
+   substitution only *after* the lookup, not before it) — `make_PycSymbol`
+   is not read-only, so this corrupted scope resolution broadly
+   (`test_pyc.py` went from 263/12/0/4 to ~35 new FAILs spanning
+   totally unrelated tests: `dict_str`, `match_map`, `scope_*`, etc.).
+   Fixed by gating on a cheap `strcmp(ast->sym->name, ...)` *before*
+   calling `make_PycSymbol` at all.
+
+2. **Even after that fix, ~30 unrelated tests still failed** (`dict_str`,
+   `dict_eq_ne`, `match_map`, `match_map_star`, `str_index`,
+   `tuple_compare`, `random_module`, etc. — none of these test files
+   reference `int`/`float`/`bool`/`list`/`tuple` as a bare name
+   directly). Root cause: `__pyc__/02_numeric.py:19` (`isinstance(x,
+   list)`) and `__pyc__/04_sequence.py:100` (`isinstance(l, tuple)`)
+   — both inside the *shared, bundled* builtin module compiled into
+   *every* program — also load `list`/`tuple` as a bare name to pass
+   as `isinstance`'s second (`cls`) argument
+   (`build_builtin_call_pyda`'s `isinstance` special case at line 678
+   uses `getAST(pos_args[1], ctx)->rval` directly as the primitive's
+   `cls` operand). The substitution silently replaced the real class
+   Sym with the `__pyc_list_new__`/`__pyc_tuple_new__` wrapper *Fun*
+   there too, so `isinstance(x, list)` inside the builtin module's own
+   dunder methods started checking against the wrong "type" — and
+   because that module is bundled into every compile, the corruption
+   was systemic, not confined to programs that use these names
+   directly.
+
+**Why this rules out load-site substitution as a strategy, not just
+this specific bug**: a bare `int`/`float`/`bool`/`list`/`tuple`
+reference is loaded as a *type descriptor* (isinstance checks, and
+plausibly other class-Sym-as-value uses not yet audited) far more
+often than as a *factory to store and call later*, and by the time a
+name is loaded there is no way to know which use it's headed for —
+that information doesn't exist yet at load time in this pass. Any fix
+that changes what loading one of these names *means* will hit the
+same conflict. Reverted cleanly (`git checkout --
+__pyc__/05_builtins.py python_ifa_build_if1.cc`); confirmed back to
+clean 263/12/0/4 baseline.
+
+**What this narrows the real fix to**: the "why not fixed here"
+section's original instinct was right — the fix has to make
+`int`/`float`/`bool`/`list`/`tuple`'s *existing* class Sym itself
+callable (a real `__new__`/`__init__` `Fun` attached to its
+`meta_type`, `must_implement_and_specialize`-style, exactly how
+`dict`/`set` already get theirs in `python_ifa_build_syms.cc`), so
+the Sym loaded by `isinstance(x, list)` and the Sym loaded by
+`factory = list` stay the *same* Sym and both uses keep working
+through their existing, independent dispatch paths. A parallel
+wrapper Sym that has to be swapped in at load time can't satisfy both
+uses at once.
+
 ## What this unblocks
 
 `collections.defaultdict(int)` / `defaultdict(list)` / `defaultdict(set)`
