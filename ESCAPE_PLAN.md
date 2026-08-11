@@ -39,7 +39,7 @@ coexist for phases 1-4; phase 5 deletes the legacy path.
 - Env var: `IFA_ESCAPE_IN_FA=1` enables the new in-FA
   analysis.  Default off — codegen still reads from Stage 3's
   `cg_normalize_v2:compute_arg_escapes`.
-- CLI flag on `pyc` / `ifa`: `--escape_in_fa` mirrors the env.
+- CLI flag on `pyc`: `--escape-in-fa` mirrors the env.
 - IFA-internal: `bool ifa_escape_in_fa` (declared next to
   other phase toggles in `fa.h` or `defs.h`); FA reads at
   init time.
@@ -162,7 +162,7 @@ verifiable.
 
 - Add `EscapeStatus` enum + `escape` field on `AVar`.
 - Add `arg_escapes` vector on `EntrySet` and `Fun`.
-- Wire the `--escape_in_fa` / `IFA_ESCAPE_IN_FA` flag.
+- Wire the `--escape-in-fa` / `IFA_ESCAPE_IN_FA` flag.
 - Initialize everything to `Escape` (conservative top).
 - Codegen reads from IFA fields when the flag is on; no
   analysis yet — so the flag-on path produces identical

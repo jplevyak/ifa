@@ -257,12 +257,12 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
 
   // Verify the module.  verifyModule was always a hard gate; the
   // change here is the .ll reorder above and the optional
-  // per-function attribution under --strict-verify.
+  // per-function attribution under --verify-each.
   std::string error_str;
   llvm::raw_string_ostream rso(error_str);
   bool broken = llvm::verifyModule(*TheModule, &rso);
 
-  // --strict-verify (PYC_STRICT_VERIFY=1): scan user functions
+  // --verify-each (PYC_VERIFY_EACH=1): scan user functions
   // for `undef` operands.  verifyModule accepts `undef` (it's
   // valid LLVM IR), but pyc's codegen should never emit it: an
   // undef value typically means "the FA didn't narrow this rval
@@ -274,9 +274,9 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
   // class from "wrong output via UB" to "compile error".
   // Declarations and emit-builtin externals are skipped.  Read
   // the env var directly — the ifa library doesn't see pyc's
-  // defs.h globals (the --strict-verify flag in pyc.cc sets the
+  // defs.h globals (the --verify-each flag in pyc.cc sets the
   // env so both flag forms work).
-  const char *sv = getenv("PYC_STRICT_VERIFY");
+  const char *sv = getenv("PYC_VERIFY_EACH");
   bool strict = sv && sv[0] && sv[0] != '0';
   if (strict) {
     int undef_count = 0;
@@ -311,7 +311,7 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
     }
     if (undef_count > 0) {
       broken = true;
-      rso << "  strict-verify: " << undef_count
+      rso << "  verify-each: " << undef_count
           << " undef operand(s) in user functions; first: "
           << sample << "\n";
     }
@@ -363,6 +363,14 @@ int llvm_codegen_compile(cchar *input_filename) {
   else strcat(obj_file, ".o");
   char *dot_exe = strrchr(exe_file, '.');
   if (dot_exe) *dot_exe = '\0';
+
+  // -o / --output: use the requested path verbatim for the final
+  // executable instead of the one derived from the input filename.
+  // The intermediate .ll/.o still land next to the input file.
+  if (codegen_output[0]) {
+    if (snprintf(exe_file, sizeof(exe_file), "%s", codegen_output) >= (int)sizeof(exe_file))
+      fail("llvm_codegen_compile: -o path too long: %s", codegen_output);
+  }
 
   // The compiler driving .ll -> .o -> exe. C++ (not C) since the
   // coroutine-lowered IR links against C++ runtime pieces. The

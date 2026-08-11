@@ -25,6 +25,11 @@ EXTERN char system_dir[512] EXTERN_INIT(".");
 EXTERN int parser_verbose_non_prelude EXTERN_INIT(0);
 EXTERN int codegen_optimize EXTERN_INIT(0);
 EXTERN int codegen_debug EXTERN_INIT(0);
+// -o / --output: overrides the derived target/executable path in
+// c_codegen_compile (cg.cc) and llvm_codegen_compile (llvm.cc) when
+// non-empty. Empty by default -- falls back to deriving the name from
+// the input filename, same as always.
+EXTERN char codegen_output[512] EXTERN_INIT("");
 
 #include "ast.h"
 #include "builtin.h"

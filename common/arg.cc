@@ -201,6 +201,15 @@ void usage(ArgumentState *arg_state, char *arg) {
   for (i = 0;; i++) {
     if (!desc[i].name) break;
     if (!desc[i].description) continue;
+    // Section-header row: name is "" (not NULL, so it doesn't terminate
+    // the table) and there's no type/location/pfn. Prints the
+    // description alone as a divider; never matches real input (see
+    // process_args -- an empty name only matches the literal "--",
+    // which resolves to a no-op).
+    if (desc[i].name[0] == '\0' && desc[i].key == ' ' && !desc[i].type) {
+      fprintf(stderr, "\n%s\n", desc[i].description);
+      continue;
+    }
     fprintf(stderr, "  %c%c%c %s%s%s%s", desc[i].key != ' ' ? '-' : ' ', desc[i].key,
             (desc[i].key != ' ' && desc[i].name && desc[i].name[0]) ? ',' : ' ',
             (desc[i].name && desc[i].name[0] != '\0') ? "--" : "  ", desc[i].name,

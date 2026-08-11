@@ -2,8 +2,8 @@
 
 A working reference for `ifa/codegen/{llvm,llvm_codegen,llvm_primitives}.cc`
 plus `llvm_internal.h`. This is the experimental LLVM IR backend,
-selected by `-b` / `IFA_LLVM=1` / `PYC_LLVM=1`. The default backend is
-the C emitter in [CODEGEN_C.md](CODEGEN_C.md).
+selected by `-b` / `--emit-llvm` / `IFA_LLVM=1` / `PYC_LLVM=1`. The default
+backend is the C emitter in [CODEGEN_C.md](CODEGEN_C.md).
 
 Sister docs: [CODEGEN_C.md](CODEGEN_C.md) (default backend with the
 same overall structure), [IR.md](IR.md), [PRIMITIVES.md](PRIMITIVES.md),
@@ -493,11 +493,12 @@ reliable production path.
 
 ## 12. The CLI flags
 
-From `pyc.cc:45`:
+From `pyc.cc`:
 
 ```
--b / --llvm    PYC_LLVM=1      Use LLVM backend (USE_LLVM build only)
--j / --jit     PYC_JIT=1       JIT execute (skips disk compile)
+-b / --emit-llvm  PYC_LLVM=1        Use LLVM backend (USE_LLVM build only)
+-j / --jit        PYC_JIT=1         JIT execute (skips disk compile)
+     --verify-each PYC_VERIFY_EACH=1  Strict per-fn LLVM verifier; emit .ll on failure
 ```
 
 Conditional on `#ifdef USE_LLVM` which is set by the build system if

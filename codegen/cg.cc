@@ -2425,11 +2425,18 @@ void c_codegen_write_c(FA *fa, Fun *main, cchar *filename) {
 
 int c_codegen_compile(cchar *filename) {
   char target[FILENAME_MAX];
-  int n = snprintf(target, sizeof(target), "%s", filename);
-  if (n < 0 || (size_t)n >= sizeof(target)) fail("c_codegen_compile: filename too long: %s", filename);
-  char *dot = strrchr(target, '.');
-  if (!dot) fail("c_codegen_compile: filename has no extension: %s", filename);
-  *dot = 0;
+  if (codegen_output[0]) {
+    // -o / --output: use the requested path verbatim instead of
+    // deriving one from the input filename.
+    int n = snprintf(target, sizeof(target), "%s", codegen_output);
+    if (n < 0 || (size_t)n >= sizeof(target)) fail("c_codegen_compile: -o path too long: %s", codegen_output);
+  } else {
+    int n = snprintf(target, sizeof(target), "%s", filename);
+    if (n < 0 || (size_t)n >= sizeof(target)) fail("c_codegen_compile: filename too long: %s", filename);
+    char *dot = strrchr(target, '.');
+    if (!dot) fail("c_codegen_compile: filename has no extension: %s", filename);
+    *dot = 0;
+  }
 
   // Build argv for posix_spawn (no shell, no quoting concerns).
   char makefile_arg[FILENAME_MAX];

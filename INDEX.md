@@ -59,7 +59,7 @@ frontend see [../PIPELINE.md](../PIPELINE.md).
   ([closed/023](issues/closed/023-v2-is-value-type-consumer.md)
   Stage 3) into IFA proper as a first-class lattice with
   per-call cloning.  Currently Phase 1 landed; opt-in via
-  `--escape_in_fa` / `IFA_ESCAPE_IN_FA=1`.
+  `--escape-in-fa` / `IFA_ESCAPE_IN_FA=1`.
 - [CFG_SSU.md](CFG_SSU.md) — Control flow, SSU form, dominators,
   and loops (`optimize/{cfg,ssu,dom,loop}.cc`): the four passes
   triggered by `Fun(Sym*)`, phi/phy placement, Tarjan + Cytron
