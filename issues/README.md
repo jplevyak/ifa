@@ -297,6 +297,15 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   no `sitofp`, producing a completely wrong value
   (`4.94...e-324`). Found via `7.py`'s real-argv-triggered branch.
 
+### LLVM
+
+- [095-LLVM-str-or-none-union-wrong-value.md](095-LLVM-str-or-none-union-wrong-value.md)
+  — a `str | None` local's `is not None` check misbehaves and reads
+  back a garbage value on the `None` branch, LLVM-only (C backend
+  correct). Found implementing a real `getopt.py`. Not yet traced past
+  a minimal repro; possibly related to 093's union-storage family, not
+  confirmed the same mechanism (no numeric coercion needed here).
+
 ### CLEANUP
 
 - [010-CLEANUP-vec-set-api-cleanup.md](010-CLEANUP-vec-set-api-cleanup.md)
