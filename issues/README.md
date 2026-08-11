@@ -250,14 +250,6 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   implement the method at all (never a dispatch candidate, so
   silently uncovered). `bh.py` segfaults this way. Not attempted —
   touches the hottest dispatch path in codegen.
-- [087-DISPATCH-out-of-order-keyword-args.md](087-DISPATCH-out-of-order-keyword-args.md)
-  — `f(high=9, low=2)` (keyword args given out of declaration order)
-  fails to dispatch; `f(low=2, high=9)` (in order) works. Confirmed
-  not a pyc-frontend bug — every keyword argument is tagged with its
-  name at the SEND regardless of call-site order — the matcher itself
-  (`pattern_match`/`Matcher::find_all_matches`) is order-sensitive.
-  Fails safely (a guarded trap, not a miscompile or whole-program
-  crash); not traced to the exact line.
 ### CGEN (C backend)
 
 - [054-CGEN-remove-unconditional-tuple-list-header.md](054-CGEN-remove-unconditional-tuple-list-header.md)
@@ -362,6 +354,7 @@ Currently 64 closed issues:
 [083](closed/083-CGEN-print-println-name-collision-risk.md),
 [084](closed/084-CGEN-LLVM-bool-constant-name-matching-workaround.md),
 [085](closed/085-CGEN-dead-if-unresolved-condition-no-guard.md),
+[087](closed/087-DISPATCH-out-of-order-keyword-args.md),
 [088](closed/088-llvm-class-list-field-plus-construct-segfault.md),
 [089](closed/089-DISPATCH-closure-pyc-to-bool-no-candidate.md),
 [091](closed/091-DISPATCH-nonrecord-builtin-constructor-not-first-class.md),
