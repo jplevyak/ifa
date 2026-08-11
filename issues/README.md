@@ -296,6 +296,13 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   `1`); LLVM backend stores the raw int bits into the float slot with
   no `sitofp`, producing a completely wrong value
   (`4.94...e-324`). Found via `7.py`'s real-argv-triggered branch.
+- [096-CGEN-extend-c-call-salvage-guard-past-str-comparisons.md](096-CGEN-extend-c-call-salvage-guard-past-str-comparisons.md)
+  — closed-077's own documented remainder (the `__pyc_c_call__`
+  salvage guard only covers the `str`-comparison whitelist) now has a
+  live, currently-failing trigger: `msp_ss.py` hits it at
+  `_CG_fopen`/`_CG_chr`/`_CG_str_to_int64_base`. Filed rather than
+  reopening 077, whose shipped fix is complete and correct for its own
+  narrower scope.
 
 ### LLVM
 

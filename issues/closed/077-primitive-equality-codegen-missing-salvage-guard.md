@@ -317,7 +317,7 @@ and unaffected — matches current, pre-issue-077 behavior exactly, by
 construction (the check is gated on `strict_c_call`, computed once
 from `name` before the loop even starts).
 
-## New trigger of the known remaining gap (2026-08-11)
+## New trigger of the known remaining gap — filed as ifa/issues/096 (2026-08-11)
 
 `shedskin_examples/msp_ss/msp_ss.py` (after fixing
 [issues/041](../../issues/041-stdlib-shim-stubs-silently-wrong.md)'s
@@ -329,9 +329,13 @@ first time, and some of them hit this) fails to compile with several
 call sites. Not a new bug — exactly the deliberately-unfixed remainder
 this issue's own "Final design" section already documents ("every
 other `__pyc_c_call__` site ... is completely unchecked and
-unaffected"). Recorded here as a real-world trigger in case whoever
-picks this remainder up next wants a corpus repro instead of a
-synthetic one. Cross-referenced from
+unaffected"). This is now a *live, currently-failing* corpus program
+rather than only a theoretical remainder, so it's tracked as its own
+open issue —
+[096](../096-CGEN-extend-c-call-salvage-guard-past-str-comparisons.md)
+— rather than reopening this one (this issue's own fix is complete and
+correct for the narrow scope it set out to cover; 096 is the next
+scoped piece of the same convention). Cross-referenced from
 [issues/018](../../issues/018-dict-mixed-key-types-boxing-failure.md),
 where a second, unrelated `rdb.py` failure found the same session is
 tracked.
