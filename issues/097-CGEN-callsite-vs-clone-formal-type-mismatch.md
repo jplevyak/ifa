@@ -1,6 +1,16 @@
-# 097 — An ordinary call site's argument type can diverge from the specific callee clone's formal parameter type, with no guard (msp_ss.py's last two compile errors)
+# 097 — An ordinary call site's argument type can diverge from the specific callee clone's formal parameter type (msp_ss.py's last two compile errors; now guarded, root cause still open)
 
-**Status:** open, found 2026-08-11 while implementing
+**Status: PARTIAL, guard landed 2026-08-11.** The compile-blocking
+symptom (hard C++ overload-resolution error) is fixed — see
+"RESOLVED (partial)" below. The underlying question this doc's "Root
+cause" section poses — *why* does clone/dispatch selection route an
+edge to a target whose formal type doesn't match that edge's actual
+argument? — is still completely untraced. Left open (not moved to
+`closed/`) rather than spun into a fresh issue, since there's nothing
+to add to the evidence/hypotheses already below; a future investigator
+picking this up starts exactly here.
+
+**Original status:** open, found 2026-08-11 while implementing
 [096](closed/096-extend-c-call-salvage-guard-past-str-comparisons.md).
 Not root-caused — filed with concrete evidence and hypotheses, per
 this directory's convention for something not yet deeply
@@ -188,3 +198,74 @@ dispatch rather than container-element access — which would be
 significant: 076 already flagged its own mechanism as possibly "the
 single most foundational open gap in pyc's 'no type' family," and this
 would be evidence it generalizes beyond containers.
+
+## RESOLVED (partial), 2026-08-11: compile symptom guarded, root cause still open
+
+Per this doc's own verification plan step 2 ("or degrade cleanly to
+the established runtime-assert convention if a type-safe general fix
+isn't reachable this round") — pursued step 1 (instrument to
+distinguish the two hypotheses) far enough to confirm the mismatch is
+real and edge-specific (see the `str::__eq__`/`chr` evidence already
+above, gathered via direct inspection of the generated `.c` rather
+than added instrumentation — the three-clones-but-wrong-one-called and
+one-clone-reused-with-an-uncast-move shapes were already conclusive
+enough without needing to add temporary logging to `fa.cc`/`clone.cc`).
+Did **not** trace further into *why* clone/dispatch selection produces
+this — confirmed via `clone_functions()` (`ifa/analysis/clone.cc:1081`)
+that `Fun::calls` is built by iterating every `EntrySet` and adding
+each one's resolved edge target into a `Vec<Fun*>` keyed by
+(cloned-)`PNode`, deduped by pointer identity
+(`vf->set_add(ee->to->fun)`) — so if the wrong target is the *only*
+one ever added for this specific `(Fun clone, PNode)` pair, the bug is
+upstream of this loop (in whatever routes a specific edge to a
+specific `EntrySet` during FA proper, e.g. `find_best_entry_sets`/
+`entry_set_compatibility`, matching this doc's hypothesis 1) — but
+this was reasoned from reading the code, not confirmed by an actual
+instrumented run. That deeper trace is exactly the scope closed/076
+warns is multi-session; not attempted.
+
+**What was actually fixed**: a general codegen-level guard, not scoped
+to `msp_ss.py` specifically — `ifa/codegen/cg.cc`'s `emit_send_call`
+now pre-checks, for every ordinary (non-primitive, non-`__pyc_c_call__`)
+call site with simple (non-closure, non-tuple-projection) positional
+arguments, whether the resolved target's formal parameter is voidish
+(`_CG_any`/`_CG_void`/`_CG_nil_type`) while the actual argument is a
+concrete *scalar* (`num_kind` true). Only that direction is unsafe — a
+real pointer type flowing into a voidish formal already compiles fine
+as-is (implicit pointer-to-`void*` conversion), matching
+`write_send_arg`'s existing opposite-direction cast just below (arg
+voidish, formal concrete: cast, since `void*`-to-anything is always a
+legitimate reinterpretation). A scalar's bit pattern reinterpreted as
+a pointer would not be a real value, so this guards (`assert(!"...")`
+permissive / `fail(...)` strict, the same 056/077/096 convention)
+instead of emitting either malformed C or a silently-wrong cast. This
+is a genuine "same bug class, different codegen path" case, not a
+one-off patch for these two call sites — the `str::__eq__` clone `312`
+and `chr`'s clone are both still used correctly by their *other*,
+non-mismatched call sites in the same generated file (verified: lines
+2422/2476 still call `_CG_f_627_312` directly, line 32800 still calls
+`_CG_f_3483_261` directly — only the two specific mismatched edges at
+9274/32892 got redirected to the guard).
+
+**Verified:**
+- `msp_ss.py` now compiles clean: `pyc -D. msp_ss.py` exits 0, binary
+  produced, zero compile errors (down from 097's original 2, from
+  096's original 9).
+- `ifa --test`: 58/58.
+- `test_pyc.py`, both backends: 265/14/0/4, unchanged.
+- `shedskin_sweep.sh`: diffed directly against the pre-fix FAIL list —
+  exactly one line changed, `msp_ss FAIL` removed (now
+  `COMPILED_C_WARN`), nothing else regressed or changed.
+- Sanity-ran the compiled `msp_ss` binary: it hits a *different*,
+  pre-existing runtime assert unrelated to this fix ("list element
+  type mismatch", not "call argument type mismatch") on its `--help`
+  path — expected and out of scope; this issue was always about the
+  compile-time failure, not `msp_ss.py`'s full runtime correctness
+  (never claimed or tested), and plenty of corpus programs are
+  `COMPILED_C_WARN`-not-runtime-verified already.
+
+**What's still open**: the root-cause question above — left as this
+doc's own unresolved thread, exactly where a future investigator
+should pick up (start with the `find_best_entry_sets`/
+`entry_set_compatibility`-family instrumentation this section
+describes, not a fresh investigation from scratch).

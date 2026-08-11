@@ -297,14 +297,15 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   no `sitofp`, producing a completely wrong value
   (`4.94...e-324`). Found via `7.py`'s real-argv-triggered branch.
 - [097-CGEN-callsite-vs-clone-formal-type-mismatch.md](097-CGEN-callsite-vs-clone-formal-type-mismatch.md)
-  — 096 (now closed) extended the `__pyc_c_call__`/generic-primitive
-  salvage guards far enough to fix 7 of `msp_ss.py`'s 9 original
-  compile errors; the remaining 2 are a different mechanism — an
-  ordinary call site whose actual argument type diverges from the
-  specific callee *clone's* formal parameter type, with no guard.
-  Not root-caused; may be the same "shared clone reused across
-  incompatible edges" family closed-076 found for container-element
-  access, now possibly generalizing to function dispatch.
+  — **PARTIAL**: an ordinary call site's actual argument type can
+  diverge from the specific callee *clone's* formal parameter type
+  (`emit_send_call` now guards the unsafe scalar-into-voidish-formal
+  direction, same 056/077/096 convention — `msp_ss.py` compiles clean
+  as of this fix). Root cause of *why* dispatch/clone selection routes
+  an edge to a mismatched target is still untraced; may be the same
+  "shared clone reused across incompatible edges" family closed-076
+  found for container-element access, now possibly generalizing to
+  function dispatch.
 
 ### LLVM
 

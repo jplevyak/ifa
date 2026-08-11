@@ -1402,6 +1402,50 @@ class CBackendEmitter : public VirtualCGEmitter {
   void emit_send_call(PNode *pn) override {
     Fun *target = get_target_fun(pn, f);
     if (target) {
+      // ifa/issues/097: the resolved target CLONE's own formal
+      // parameter type can be coarser (_CG_any) than what THIS
+      // specific call edge's actual argument resolves to (a
+      // concrete scalar) -- root cause not traced (suspected the
+      // same "shared clone reused across incompatible edges" family
+      // closed/076 root-caused for container-element flow, now
+      // possibly for call-target/clone selection instead; see 097).
+      // Only the scalar-into-voidish direction is unsafe: a real
+      // pointer type flowing into a voidish (`_CG_any`/void*) formal
+      // always compiles fine as-is (any object pointer implicitly
+      // converts to void*), matching write_send_arg's own opposite-
+      // direction cast just below (voidish arg -> concrete pointer
+      // formal). Casting a scalar's raw bit pattern into a pointer
+      // slot the way that direction casts a pointer INTO a scalar
+      // would just be silently wrong, not a real value -- so this
+      // guards (056/077/096's established assert/fail convention)
+      // rather than emitting either malformed C or a garbage cast.
+      bool arg_mismatch = false;
+      for (MPosition *p : target->positional_arg_positions) {
+        if (p->pos.n != 1) continue;  // closure/tuple-projection arg: not handled by this check
+        Var *formal = target->args.get(p);
+        if (!formal || !formal->live) continue;
+        cchar *formal_t = c_type(formal);
+        bool formal_is_voidish = formal_t && (!strcmp(formal_t, "_CG_any") || !strcmp(formal_t, "_CG_void") ||
+                                               !strcmp(formal_t, "_CG_nil_type"));
+        if (!formal_is_voidish) continue;
+        int i = Position2int(p->pos[0]) - 1;
+        if (i < 0 || i >= pn->rvals.n) continue;
+        Var *actual = pn->rvals[i];
+        if (!actual || !actual->type || !actual->type->num_kind) continue;
+        arg_mismatch = true;
+        break;
+      }
+      if (arg_mismatch) {
+        if (!fruntime_errors)
+          fail("call argument type mismatch calling '%s'", target->sym->name ? target->sym->name : "?");
+        fputs("  ", fp);
+        if (pn->lvals.n && cg_get_string(pn->lvals[0]))
+          fprintf(fp, "%s = (assert(!\"runtime error: call argument type mismatch\"), (%s)0);\n",
+                  cg_get_string(pn->lvals[0]), c_type(pn->lvals[0]));
+        else
+          fputs("(assert(!\"runtime error: call argument type mismatch\"), 0);\n", fp);
+        return;
+      }
       fputs("  ", fp);
       if (pn->lvals.n && cg_get_string(pn->lvals[0])) {
         fprintf(fp, "%s = ", cg_get_string(pn->lvals[0]));
