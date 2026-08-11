@@ -317,6 +317,25 @@ and unaffected — matches current, pre-issue-077 behavior exactly, by
 construction (the check is gated on `strict_c_call`, computed once
 from `name` before the loop even starts).
 
+## New trigger of the known remaining gap (2026-08-11)
+
+`shedskin_examples/msp_ss/msp_ss.py` (after fixing
+[issues/041](../../issues/041-stdlib-shim-stubs-silently-wrong.md)'s
+`getopt` stub, unrelated to this issue directly — real `getopt`
+parsing made previously-dead-code-eliminated branches live for the
+first time, and some of them hit this) fails to compile with several
+"no matching function... cannot convert argument of incomplete type
+`_CG_any`" errors at `_CG_fopen`/`_CG_chr`/`_CG_str_to_int64_base`
+call sites. Not a new bug — exactly the deliberately-unfixed remainder
+this issue's own "Final design" section already documents ("every
+other `__pyc_c_call__` site ... is completely unchecked and
+unaffected"). Recorded here as a real-world trigger in case whoever
+picks this remainder up next wants a corpus repro instead of a
+synthetic one. Cross-referenced from
+[issues/018](../../issues/018-dict-mixed-key-types-boxing-failure.md),
+where a second, unrelated `rdb.py` failure found the same session is
+tracked.
+
 **Verified** (now covering both call sites — the numeric family from
 the prior session's fix, plus this session's `_CG_str_eq` family):
 - `ifa --test`: 58/58.

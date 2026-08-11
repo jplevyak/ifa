@@ -875,14 +875,16 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       Sym *t = n->rvals[o]->type;
       // A non-container operand type (no `element`) means FA
       // specialized a container method against a scalar receiver or
-      // argument -- an upstream precision failure (issue 025's
-      // type-resolution family; observed: score4's list.__add__
-      // specialized with an int64 right operand). The generated code
-      // would be wrong regardless; fail with a location instead of
-      // dereferencing null.
+      // argument -- an upstream precision failure (issues/018's
+      // shared-container-method-not-cloned-per-element-type family;
+      // observed: score4's list.__add__ specialized with an int64
+      // right operand, rdb.py's str.__add__ specialized against a
+      // container clone). The generated code would be wrong
+      // regardless; fail with a location instead of dereferencing
+      // null.
       if (!t->element)
         fail("%s:%d: internal: sizeof_element of non-container type '%s' (in %s) -- FA specialized a container "
-             "method against a scalar (see issues/025 type-resolution)",
+             "method against a scalar (see ifa/issues/018 type-resolution)",
              n->code->ast ? n->code->ast->pathname() : "?", n->code->ast ? n->code->ast->line() : 0,
              t->name ? t->name : "<anonymous>", f->sym->name ? f->sym->name : "<anonymous>");
       int sz = t->element->type->size;
