@@ -281,17 +281,6 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   claim and the `sum()`-missing-`start`-arg gap, both resolved this
   session).
 
-### LLVM backend
-
-- [088-llvm-class-list-field-plus-construct-segfault.md](088-llvm-class-list-field-plus-construct-segfault.md)
-  — `pyc -b` segfaults constructing a class whose `__init__` has a
-  default-`None` parameter, when the same program instantiates it
-  both with and without that argument (e.g. `node()` and
-  `node([5])`). C backend unaffected. Minimal 8-line repro, no list
-  ops or loops required (list `+` and a loop were in the original
-  repro but confirmed unnecessary). No debug-symbol backtrace
-  obtained yet (`ptrace_scope` blocks live attach in this sandbox).
-
 ### CLEANUP
 
 - [010-CLEANUP-vec-set-api-cleanup.md](010-CLEANUP-vec-set-api-cleanup.md)
@@ -308,7 +297,7 @@ commit ref (or date) recorded in each file's status line.  They
 stay in the tree as history — a code-search for the affected file
 finds the trail of investigation even after the fix has landed.
 
-Currently 63 closed issues:
+Currently 64 closed issues:
 [001](closed/001-keepalive-vs-explicit-reply.md),
 [002](closed/002-codegen-llvm-normalizer.md),
 [003](closed/003-fa-converge-determinism.md),
@@ -373,6 +362,7 @@ Currently 63 closed issues:
 [083](closed/083-CGEN-print-println-name-collision-risk.md),
 [084](closed/084-CGEN-LLVM-bool-constant-name-matching-workaround.md),
 [085](closed/085-CGEN-dead-if-unresolved-condition-no-guard.md),
+[088](closed/088-llvm-class-list-field-plus-construct-segfault.md),
 [089](closed/089-DISPATCH-closure-pyc-to-bool-no-candidate.md),
 [091](closed/091-DISPATCH-nonrecord-builtin-constructor-not-first-class.md),
 [092](closed/092-DISPATCH-3arg-minmax-plus-multi-shape-return-crash.md).

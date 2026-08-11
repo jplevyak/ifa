@@ -2738,6 +2738,21 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
     Vec<int> class_recv_ridx;  // ... and the call-site rval index of ITS receiver operand, to
                                 // skip self (already passed as `recv`) when routing the rest
     Fun *nil_fn = nullptr;  // nil-receiver candidate (None method on a nil|record union)
+    // ifa/issues/088: a candidate whose receiver formal resolves to a
+    // type with no runtime classtag at all -- list/tuple/int/float/
+    // bool, the same five ifa-core-registered primitive types
+    // issues/091 root-caused for constructor synthesis (never
+    // Type_RECORD, so cg_has_classtag structurally rejects them no
+    // matter what method they respond to). Not eligible for
+    // classtag/nil-receiver/carrier-direct/plains[] (a method-
+    // selector call site, not a bare-value one) -- but if it's the
+    // ONLY candidate left unclassified once every other bucket has
+    // had its turn, it must be correct: there is nothing else for it
+    // to be confused with. Claimed once, like nil_fn; a SECOND
+    // unclassifiable candidate is genuine ambiguity this mechanism
+    // can't resolve and still falls back to the conservative
+    // `ok = false` bail below.
+    Fun *default_fn = nullptr;
     // ifa/issues/030(a), 2026-08-06: plain-function value-identity
     // partition, sharing this SAME combined dispatch chain (recv/
     // res_slot/merge_bb) instead of being handled only by the wholly
@@ -2891,6 +2906,51 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
         plains.add(fun_val);
         continue;
       }
+      // ifa/issues/088: last resort before bailing -- see default_fn's
+      // declaration comment above. A REAL compatibility check is
+      // required here, not just "has a real LLVM function": unlike
+      // nil_fn/classtag/carrier-direct, nothing upstream already
+      // confirmed fun_val's formals correspond to THIS call site's
+      // rvals by position -- first version of this fix skipped this
+      // and claimed whatever candidate came last, regardless of
+      // signature, which silently mispaired an unrelated candidate at
+      // a DIFFERENT call site sharing the same PNode-visit shape
+      // (adatron.py: a `double`-formal candidate got called with a
+      // `ptr` argument, caught only by the LLVM verifier rejecting
+      // the mismatched .ll -- confirmed via full shedskin-corpus
+      // before/after sweep, not by test_pyc.py, which didn't happen
+      // to exercise this shape). Mirrors cg.cc's OWN identical
+      // pre-check for its `directs[]` route (~line 1666): every live,
+      // non-fun formal must have an in-range rval whose declared type
+      // is compatible (identical, or both integer, or pointer<->
+      // integer -- the same coercions emit_direct_call itself
+      // performs; anything else, e.g. float vs pointer, is a genuine
+      // signature mismatch, not a representable argument).
+      if (!default_fn && fun_val->cg_string && TheModule->getFunction(fun_val->cg_string)) {
+        bool compat = true;
+        MPosition dcargp;
+        dcargp.push(1);
+        for (int dpi = 0; dpi < fun_val->sym->has.n + 2 && compat; dpi++) {
+          MPosition *dcp = cannonicalize_mposition(dcargp);
+          dcargp.inc();
+          Var *dav = fun_val->args.get(dcp);
+          if (!dav || !dav->live) continue;
+          if (dav->type && dav->type->is_fun) continue;
+          int di = (int)Position2int(dcp->pos[0]) - 1;
+          if (di < 0 || di >= pn->rvals.n || !pn->rvals.v[di] || !pn->rvals.v[di]->type) { compat = false; break; }
+          llvm::Type *dft = sym_to_llvm_type(dav->type);
+          llvm::Type *dat = sym_to_llvm_type(pn->rvals.v[di]->type);
+          if (!dft || !dat) { compat = false; break; }
+          if (dft == dat) continue;
+          bool both_int = dft->isIntegerTy() && dat->isIntegerTy();
+          bool int_ptr = (dft->isIntegerTy() && dat->isPointerTy()) || (dft->isPointerTy() && dat->isIntegerTy());
+          if (!both_int && !int_ptr) { compat = false; break; }
+        }
+        if (compat) {
+          default_fn = fun_val;
+          continue;
+        }
+      }
       ok = false;
       break;
     }
@@ -2899,7 +2959,18 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
     llvm::Type *res_ty = (dst_var && dst_var->type) ? sym_to_llvm_type(dst_var->type) : nullptr;
     if (res_ty && res_ty->isVoidTy()) res_ty = nullptr;
     llvm::Function *cur_fn = ctx.llvm_fn;
-    if (ok && classes.n && recv) {
+    // ifa/issues/088: previously required classes.n > 0 -- so a pure
+    // nil_fn/default_fn dispatch (no real classtag-bearing candidate
+    // at all, e.g. None|list) never entered this whole mechanism,
+    // silently skipping straight to the "bare callable value"
+    // extension below (which doesn't apply to a method-selector call
+    // site either) with nothing ever computed for the result. `recv`
+    // is still required: it's only ever populated via the classtag
+    // rts loop or the nil-receiver check above, so this still can't
+    // (and shouldn't) fire for a default_fn claimed with neither of
+    // those -- see default_fn's declaration comment for why that
+    // narrower case is deliberately left alone.
+    if (ok && (classes.n || nil_fn || default_fn) && recv) {
       llvm::BasicBlock *merge_bb = llvm::BasicBlock::Create(*TheContext, "poly.merge", cur_fn);
       llvm::AllocaInst *res_slot = nullptr;
       if (res_ty) {
@@ -3110,14 +3181,18 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
         Builder->CreateBr(merge_bb);
         Builder->SetInsertPoint(pnext_bb);
       }
-      // Fallthrough (unknown tag / no plains[] match): trap-free
-      // no-op, mirror the C backend's assert by leaving the result
-      // zeroed... except res_slot is an uninitialized alloca, not a
-      // zeroed one (ifa/issues/030(a) hardening note): a genuinely
-      // unmatched dispatch here reads garbage, not 0. Not fixed as
-      // part of this change -- see the LLVM-backend caveat in
-      // ifa/issues/030's doc for the same pre-existing gap in the
-      // "bare callable value" pass below.
+      // Fallthrough (unknown tag / no plains[] match): call
+      // default_fn unconditionally if one was claimed (ifa/issues/088
+      // -- see its declaration comment: the only candidate left once
+      // nil/classtag/carrier/plains have all had their turn, so
+      // nothing else could be the answer here). Otherwise still the
+      // pre-existing trap-free no-op -- res_slot stays an
+      // uninitialized alloca, not a zeroed one (ifa/issues/030(a)
+      // hardening note): a genuinely unmatched dispatch reads garbage,
+      // not 0. Not fixed as part of this change -- see the
+      // LLVM-backend caveat in ifa/issues/030's doc for the same
+      // pre-existing gap in the "bare callable value" pass below.
+      if (default_fn) emit_direct_call(default_fn);
       Builder->CreateBr(merge_bb);
       Builder->SetInsertPoint(merge_bb);
       if (dst_var && res_slot) {
