@@ -1,494 +1,265 @@
-# 030 — Polymorphic dispatch via fat-pointer backward flow analysis
+# 030 — Polymorphic dispatch via classtag comparison
 
-**Status:** core implemented (2026-07-04) — classtag dispatch works
-end-to-end on BOTH backends; `tests/poly_dispatch_high.py` executes
-its full expected output (3 3 6 7 11 18) and `poly_dispatch_low.py`
-passes strictly (its `check_fail` sidecar removed). See "What
-landed (classtag dispatch)" below. Remaining open scope after
-2026-07-05's bare-callable landing (value-identity dispatch on raw
-function addresses, mixed classtag+address chains, both backends —
-see issues/007): (a) **FIXED on both backends, 2026-08-06** — a
-mixed plain-function/closure-carrier candidate set now dispatches by
-classtag compare + direct call instead of crashing (C) or silently
-reading uninitialized memory (LLVM); narrower than the
-method-pointer-slot design originally sketched here. The LLVM fix
-also brings that backend to parity with `cg.cc`'s long-standing
-(pre-existing) classtag+plain-function mixing support in general, not
-just the closure-carrier case — see the "Status check" section's (a)
-entry below for both fixes; (b) table-based emission for very high fan-out
-(the if/else chain is O(n_branches) per site today, still open, a
-performance gap only — see (b) below).
+**Status:** partial / open. Core mechanism (classtag dispatch)
+implemented and correct on both backends since 2026-07-04, with a
+closure-carrier mixing gap fixed 2026-08-06. The one remaining item
+is a performance gap (if/else chain instead of table dispatch at high
+fan-out), not a correctness one.
 
-Supersedes the simpler "indirect call through struct slot" sketch in
-issue 029.
+## Problem
 
-## Current state (issue 029 implemented; FA fixpoint sub-bug fixed 2026-07-04)
+When FA's type inference produces a union-typed receiver at a call
+site (`f->calls.get(n)` has more than one candidate `Fun`,
+`get_target_fun_core` returns null — e.g. `lhs.eval()` where `lhs` is
+`Const | BinOp`), codegen must choose the right concrete
+implementation at runtime instead of emitting a single direct call.
+This issue covers how that choice gets emitted, on both backends, for
+every shape such a call site can take: ordinary receiver-polymorphic
+method dispatch, a nil-typed member of the receiver union, a bare
+callable value with no receiver at all, and a closure-carrier value
+(the object a decorator like `@double` synthesizes to hold captured
+state).
 
-`tests/poly_dispatch_low.py` passes: vtable slot dispatch works for
-`Branch.val()` where `Branch.l` and `Branch.r` can be Leaf or Branch.
-At creation time, `__new__` stores the concrete val function pointer in
-the struct's `e2` slot.  At dispatch sites where `fns->n > 1`, the
-emitter reads `obj->e2` via the common struct cast and calls it.
+Supersedes the simpler "indirect call through a single fixed struct
+slot" sketch in [closed/029](closed/029-polymorphic-dispatch.md) —
+that assumed every class in a union shares one layout, which per-class
+dead-field elision breaks.
 
-**The FA fixpoint sub-bug is fixed** (2026-07-04). The old symptom:
-the clones for `Inner(N1,N2)` and `Inner(N2,N1)` ended up with
-void/dead result vars ("expression has no type" violations, then
-`convert_NOTYPE_to_void()` papering them over). Root cause, traced
-via env-gated tracing of the period-closure lifecycle: bound-method
-closure CreationSets persist across analysis passes (cached in the
-result AVar's `cs_map`), but every pass clears all AVar state
+## Mechanism as built (classtag dispatch)
+
+Every class-like record gets a `__pyc_tag` header field at offset 0
+(C: a real struct member; LLVM: a leading pointer field, with
+`llvm_fld()` shifting all other field GEP indices by one), stamped
+once into the class prototype at `prim_new` (instances inherit it
+through clone's memcpy) and pointing at that class's own
+`_CG_type_<name>` object (LLVM: an internal global; only address
+identity matters — see `cg_has_classtag`, `codegen_common.cc`).
+
+**Excluded from tagging** (identified structurally: unnamed fields
+only, plus the tuple/list/vector predicates): tuples, list-backed
+tuples, vectors. `_CG_TUPLE_TO_LIST_FUN`'s memcpy and `_CG_list_ptr`
+indexing treat these as bare element arrays with no header — tagging
+them broke a 15-test regression, then (after fixing that) a 2-test
+tuple regression from tuple clones missing from
+`sym_tuple->specializers`. If you're ever tempted to add a classtag to
+a raw-layout type, re-derive why these two things needed re-fixing
+first.
+
+At each polymorphic call site, codegen emits an if/else chain on the
+tag: each branch casts the receiver to that class's own layout and
+calls through that class's own stored method slot (kept from 029's
+per-instance stored-pointer mechanism — same-class clones need no
+extra branches, only cross-class union members do). A closure-carrier
+candidate (see "closure-carrier mixing" below) skips the slot
+entirely and calls the statically-known implementation directly,
+since a carrier's implementation is never ambiguous at a given
+dispatch site. A nil-typed union member (`if not self.field:` where
+the field starts as `None`) gets its own branch, tested before any
+tag dereference so the tag reads stay null-safe.
+
+Shared candidate-resolution algorithm, `codegen_common.{h,cc}`:
+`poly_dispatch_directly_owned`, `poly_dispatch_classtag_targets`,
+`poly_dispatch_is_nil_receiver` — both backends call these to turn a
+call site's candidate `Fun`s into concrete `(receiver class, method
+slot, call-site rval index)` triples; each backend still does its own
+filtering and emission around the shared result (see "Known backend
+divergences" below — the two are not identical).
+
+This is a materially simpler mechanism than the fat-pointer / indirect
+vtable-slot design originally sketched for this issue (kept below,
+"Original design sketch," since it's still the fallback plan for the
+one open item). The if/else-chain + per-class stored-slot approach
+handles every fan-out tested so far correctly —
+`poly_dispatch_shared_method_extra_args.py` dispatches 11 subclasses
+correctly on both backends — it's simply O(n_branches) per call site
+rather than O(1).
+
+## Root causes worth remembering
+
+**FA fixpoint sub-bug (fixed 2026-07-04, `fa.cc:make_closure_var`).**
+Before this fix, clones of a polymorphic receiver ended up with
+void/dead result vars ("expression has no type," papered over by
+`convert_NOTYPE_to_void`). Root cause: bound-method closure
+`CreationSet`s persist across analysis passes (cached in the result
+`AVar`'s `cs_map`), but every pass clears all `AVar` state
 (`clear_results`, including `closure_used`) and re-derives it.
 `make_closure_var` flowed each field's value into
-`unique_AVar(av->var, cs)` — keyed by whichever Var carries the
-value *this* pass — while consumers (`partial_application`'s
-`fun = cs->vars[0]`) read the *positional* slots created by the
-pass that built the CS. After the receiver CS split between passes,
-the method value arrived via a different Var, the re-derived flow
-landed in an orphan AVar, `cs->vars[0]` stayed bottom, the closure's
-call site returned "incomplete" forever, `closure_used` was never
-re-set on the final pass, and `remove_unused_closures()` stripped
-the closure — hence the void results. Fix in
-`fa.cc:make_closure_var`: when the CS's positional slots already
-exist and `iv != cs->vars[i]`, also flow into `cs->vars[i]`, keeping
-the positional slot fed regardless of which Var carries the value.
+`unique_AVar(av->var, cs)` — keyed by whichever `Var` carries the
+value *this* pass — while consumers (`partial_application`'s `fun =
+cs->vars[0]`) read the *positional* slot created by the pass that
+built the CS. After the receiver CS split between passes, the method
+value arrived via a different `Var`, the re-derived flow landed in an
+orphan `AVar`, `cs->vars[0]` stayed bottom, and the closure's call
+site returned "incomplete" forever. Fix: when the CS's positional
+slots already exist and `iv != cs->vars[i]`, also flow into
+`cs->vars[i]`, keeping the positional slot fed regardless of which
+`Var` carries the value that pass. This is a general FA-correctness
+fix, not specific to dispatch — worth knowing if a similar
+"positional slot goes stale across passes" symptom shows up elsewhere.
 
-After the fix: the minimal two-creation-site swapped-children case
-compiles clean and executes correctly on both backends — new
-regression test `tests/poly_dispatch_swapped.py`. The full
-`poly_dispatch_high.py` now compiles with **zero** FA warnings
-(its `.check` updated to empty); at runtime the leaf-leaf and
-mixed clones behave, and what remains is the genuine high-fan-out
-dispatch gap: the `Inner`-receiver clone with polymorphic children
-still hits the `matching function not found` runtime assert — that
-is this issue's actual fat-pointer/classtag work, not a fixpoint
-problem.
+**Closure-carrier mixing (fixed 2026-08-06, both backends).** A
+function value that's sometimes a plain top-level function and
+sometimes a decorator-synthesized closure carrier (e.g. `make_dispatcher()`
+returning either `add_one` or `double(add_one)` depending on a runtime
+flag) crashed on the C backend
+(`assert(!"runtime error: polymorphic dispatch: no branch matched")`)
+and silently read garbage on LLVM (uninitialized `alloca`, a fresh
+wrong value every run — worse than the C crash). Root cause: a carrier
+struct only holds captured variables, never a field named after
+itself, so `poly_dispatch_classtag_targets` (which looks for a live
+field matching the candidate's own method name) always returns empty
+for it — the carrier candidate fell through to the plain-function
+*value-identity* route, which compares the runtime value against the
+candidate's own code address. A carrier value is a heap pointer to
+what `double()` allocated, never that address, so the branch could
+never match.
 
-`tests/poly_dispatch_high.py.exec.check.TODO` held the expected
-execution output (3 3 6 7 11 18); it is now the live
-`.exec.check`, passing on both backends.
+Fix: when a candidate's own first live formal resolves to the
+synthesized closure-carrier record (name `"__closure__"`, reserved —
+no user class can be named that), route it into the classtag
+`classes[]` partition with a sentinel (`slots[ci] == -1`) meaning
+"call this candidate directly, no stored-slot indirection" — no slot
+is needed because, unlike the classtag route's original purpose
+(runtime polymorphism across implementations sharing a layout), a
+carrier candidate *is* the statically-known implementation for its
+own tag. Two distinct carrier `Sym`s colliding on the shared
+`"__closure__"` name at the same call site (not solved by this fix —
+see "Deliberately not done" below) degrades to the existing
+`ok = false` → runtime-assert path instead of silently mis-dispatching.
 
-## What landed (classtag dispatch, 2026-07-04)
+The LLVM half needed a second, structural fix beyond porting the
+carrier-direct check: `cg_emit_llvm.cc`'s per-candidate loop was
+all-or-nothing — the moment `poly_dispatch_classtag_targets` returned
+a *nonempty-but-not-classtag-eligible* `rts` (which happens for an
+ordinary plain function too, since the resolver scans every formal
+position for a same-named field, not just `self`), the loop bailed
+(`ok = false; break`) and abandoned classtag dispatch for the entire
+call site — unlike `cg.cc`'s shape, which falls through to try
+nil-receiver/carrier/plain-function regardless of *why* nothing was
+added. Fixed by restructuring `emit_send_call`'s loop to match
+`cg.cc`'s control flow: merge into `classes[]` whenever `rts.n != 0`,
+then unconditionally try nil-receiver, then carrier-direct, then a new
+`plains[]` value-identity partition (ported from `cg.cc`'s bare-value
+route, sharing IR structure via a new `emit_direct_call` lambda,
+rather than the old separate fully-independent bare-callable pass). A
+call site with zero classtag-eligible candidates at all is unaffected
+— it still falls through unchanged to the pre-existing bare-callable
+pass.
 
-The failing piece after the fixpoint fix was isolated to three
-independent gaps, each fixed:
+New regression test: `tests/poly_dispatch_carrier_mixed.py`.
 
-1. **Liveness** (`ifa/optimize/dead.cc` `mark_live_avars`): a
-   polymorphic call site (calls->n > 1) now keeps its dispatch
-   operand (rvals[0]) live even when no candidate's body reads its
-   formals — with `l: N2|N4` and both leaf `val()`s ignoring self,
-   the *choice* of callee still depends on the operand's runtime
-   type, but the whole period-load chain used to go dead and
-   codegen had nothing to dispatch on.
-2. **Classtag** (both backends): 029's fixed-slot indirect call was
-   unsound across a union of classes with different layouts (leaf
-   structs carried `val` at e1, Inner at e2 — the "inherited from
-   the base ⇒ same slot" assumption does not survive per-class
-   dead-field elision). Every class-like record now carries a
-   `__pyc_tag` header at offset 0 (C: struct member; LLVM: leading
-   ptr field with `llvm_fld()` shifting all has-index GEPs),
-   stamped once into the class prototype at `prim_new` (instances
-   inherit it through clone's memcpy), pointing at the existing
-   per-class `_CG_type_<name>` object (LLVM: an internal global
-   with matching name; only address identity matters). Dispatch
-   emits an if/else chain on the tag; each class branch casts to
-   THAT class's layout and calls through THAT class's own stored
-   method slot — so the per-creation-site clone selection keeps
-   riding the 029 stored-pointer mechanism, and same-class clones
-   need no extra branches. Excluded from tagging (raw-layout
-   types, identified structurally by having only unnamed fields
-   plus the tuple/list/vector predicates): tuples, list-backed
-   tuples, vectors — `_CG_TUPLE_TO_LIST_FUN`'s memcpy and
-   `_CG_list_ptr` indexing treat those as bare element arrays
-   (found the hard way: 15-test regression, then a 2-test tuple
-   regression from tuple clones missing from
-   `sym_tuple->specializers`).
-3. **Constant returns through indirect calls** (C backend
-   `c_rhs` + the dead-reply emission): a constant-folded result
-   deadens the reply under the "consumers inline the literal"
-   protocol — but a caller reaching the clone through a stored
-   method pointer cannot inline a per-clone constant. Dead replies
-   now return the formatted literal (`sprint_imm`/string/nil
-   handling) instead of a bare `0`. (The LLVM path already
-   materialized constants in `value_for_var`.)
-
-Shared infrastructure moved to `codegen_common.{h,cc}`:
-`cg_has_classtag`, `cg_field_live`, `PolymorphicSlot`,
-`cg_new_to_val_map`, `cg_build_new_to_val_map` (the LLVM backend
-previously had NO slot-store emission at all — that, plus the
-dispatch chain, is why `poly_dispatch_low` was `check_fail` on
-LLVM; it now passes strictly on both backends and the sidecar is
-removed).
-
-**Classtag/nil-receiver call-site resolution unified (2026-07-18)**:
-`cg.cc`'s and `cg_emit_llvm.cc`'s `emit_send_call` polymorphic
-branches had independently duplicated (and, for issue 026's
-`directly_owned` override-priority guard, independently re-fixed) the
-~120-line algorithm that resolves a poly call site's candidate `Fun`s
-to concrete `(receiver class, method slot)` pairs — unpacking
-`Type_SUM` (inherited-method) receivers into member classes and
-detecting the nil-receiver candidate. Extracted the identical portion
-into three shared functions (`poly_dispatch_directly_owned`,
-`poly_dispatch_classtag_targets`, `poly_dispatch_is_nil_receiver`,
-`codegen_common.{h,cc}`) that return call-site rval *indices* rather
-than resolved backend values — each backend still looks up its own
-representation of `pn->rvals[idx]`. Deliberately did NOT unify the
-surrounding compat filtering / fallback control flow: reading both
-backends closely during this refactor surfaced that they already
-diverge there in ways worth knowing about, not touching silently:
-- `cg.cc`'s "which resolved classes actually become classtag
-  targets" filter is `cg_has_classtag(rt) && cg_get_string(rt)`;
-  `cg_emit_llvm.cc`'s is `rt->name && !rt->is_system_type &&
-  cg_has_classtag(rt)` — different conditions today, left
-  backend-specific rather than silently homogenized.
-- `cg.cc` supports MIXING classtag, nil-receiver, plain-function, and
-  untagged-direct candidates in one combined dispatch chain for the
-  same call site. `cg_emit_llvm.cc` does not: if any candidate at a
-  poly call site resolves to neither classtag nor nil-receiver, the
-  whole classtag-dispatch branch bails (`ok = false`) and falls
-  through to a completely separate "bare callable value" pass that
-  re-scans all candidates by value identity — a real, pre-existing
-  behavioral difference between the backends for mixed candidate
-  sets, not something this refactor introduced or fixed. Worth its
-  own investigation (does a program exist that actually hits this
-  gap on the LLVM backend today?) but out of scope here.
-- `cg.cc` also skips the classtag route for unnamed (lambda)
-  candidates via an explicit `method_name &&` guard; `cg_emit_llvm.cc`
-  never reaches that point for an unnamed candidate at all (it bails
-  earlier, unconditionally, for ANY candidate with no `sym->name`).
-  The shared functions replicate both call sites' existing behavior
-  exactly (verified below), they don't reconcile it.
-
-Verified via generated-code diffing: `.c` and `.ll` output for every
-`tests/poly_dispatch_*`, `multi_candidate_dispatch.py`,
-`polymorphic_function.py`, `polymorphic_list.py`, and
-`recursive_polymorphic.py` fixture is byte-identical before and after
-this refactor (git-worktree A/B comparison), on both backends. Full
-suites 203/0 × 2 backends, unit 58/0, IR 20/0, shedskin corpus sweep
-unchanged from baseline.
-
-Verification: `./test_pyc` 132/0, `PYC_FLAGS=-b` 132/0,
-`ifa/ifa-test` 14/14; poly_dispatch_{low,high,swapped} pass
-strictly on both backends.
-
-Supersedes the simpler "indirect call through struct slot" sketch in
-issue 029.  That sketch assumed method pointers are already in instance
-structs; this design makes them explicit and handles the full dispatch
-spectrum.
-
-## Status check (2026-08-03)
-
-Re-verified against current HEAD rather than trusting this file's own
-staleness (last touched `20da3f8d`, 2026-07-18). Core mechanism is
-solid: all 5 `tests/poly_dispatch_*.py` (`low`, `high`, `swapped`,
-`partial_override`, `shared_method_extra_args`) pass on **both**
-backends today — including `poly_dispatch_high.py`'s FA-fixpoint case,
-which `issues/007-decorators-not-applied.md` (edited later, 2026-07-21)
-still describes as an open gap; that's stale phrasing in 007, not a
-regression here — this file's own "What landed" section already
-documents that gap fixed 2026-07-04.
-
-**Missing cross-reference, added now:**
+**Unrelated bug found in the same code path:**
 [closed/058](closed/058-polymorphic-classtag-dispatch-drops-extra-arguments.md)
-(found+fixed 2026-07-19, one day after this file's last edit) — a real
-bug in the exact classtag-dispatch code paths this issue built: the
-polymorphic-dispatch branch in both `cg.cc` and `cg_emit_llvm.cc`
-hardcoded a single-`self`-argument call, silently dropping every
-formal beyond `self` for an inherited (not overridden) method reached
-through a genuinely polymorphic receiver. Both backends, same root
-cause, same day. Worth knowing about when touching this dispatch
-machinery again — it's evidence the if/else-chain path itself can have
-latent bugs independent of the two structural gaps below.
+(2026-07-19) — both backends' classtag-dispatch branch hardcoded a
+single-`self`-argument call, silently dropping every formal beyond
+`self` for an inherited (not overridden) method reached through a
+genuinely polymorphic receiver. Independent of this issue's two
+structural gaps, but evidence the if/else-chain path can have its own
+latent bugs — worth a second look if touching this code again.
 
-**Status of this file's two "remaining open scope" items, as of
-2026-08-06:**
+## What's still open
 
-**(a) Closure-carrier + raw-function mixed dispatch — FIXED on both
-backends, 2026-08-06.** Confirmed live via a fresh repro
-(`make_dispatcher` returning either a plain `add_one` or
-`double(add_one)` depending on a runtime flag, then calling the
-result): crashed exactly as described,
-`assert(!"runtime error: polymorphic dispatch: no branch matched")`.
-Root cause pinned precisely: the generated dispatch chain compared
-the runtime value against `wrapper`'s own code address
-(`(void*)t8 == (void*)&wrapper`) via the plain-function
-value-identity route — but a closure value is never that address,
-it's a heap pointer to the carrier struct `double()` allocates, so
-that branch could never match. `poly_dispatch_classtag_targets`
-(`codegen_common.cc`) only routes a candidate into the classtag
-partition when its receiver type has a *named field* matching the
-candidate's own method name; carrier structs only hold captured
-variables, never a field named after themselves, so the carrier
-candidate fell through to the (wrong) plain-function route instead.
+**Table/indirect dispatch for high fan-out.** No
+`DISPATCH_THRESHOLD` or table-lookup code exists in either backend —
+every polymorphic call site still emits an unconditional if/else
+chain regardless of fan-out. Confirmed functionally correct up to
+11-way fan-out (`poly_dispatch_shared_method_extra_args.py`), so this
+is purely an O(n_branches)-per-call-site cost today, not a correctness
+gap. Revisit if profiling shows it matters; "Original design sketch"
+below (fat pointer + vtable slot indexed by classtag) is the fallback
+plan.
 
-Fixed in `cg.cc`'s dispatch-emission loop (`ifa/codegen/cg.cc`, the
-per-candidate loop inside the `fns->n > 1` branch): when
-`poly_dispatch_classtag_targets` finds no slot, and the candidate's
-own first live formal resolves to the synthesized closure-carrier
-record (name `"__closure__"`, reserved), route it into the
-*existing* `classes[]` partition with a new sentinel
-(`slots[ci] == -1`) meaning "call `class_funs[ci]` directly, no
-stored-slot indirection" — no slot is needed since, unlike the
-classes[] route's original purpose (runtime polymorphism across
-several implementations sharing a slot layout), a carrier candidate
-IS the statically-known implementation for its own tag. Two distinct
-carrier Syms colliding on the shared `"__closure__"` name at the same
-dispatch site (a real risk this design deliberately did NOT solve —
-see "deliberately not done" below) degrades to the shared `ok =
-false` → runtime-assert path rather than silently mis-dispatching,
-matching this function's existing conservative convention (e.g.
-`directs.n > 1`).
+**Deliberately not done:** unique per-call-site naming for
+closure-carrier candidates, to disambiguate two distinct carriers that
+both land on the shared reserved name `"__closure__"` at the same
+dispatch site. That's real vtable-style infrastructure with its own
+design cost; today's collision case degrades safely (runtime assert)
+rather than mis-dispatching, so it's deferred until a real program
+hits it.
 
-New regression test `tests/poly_dispatch_carrier_mixed.py`
-(`.exec.check` verifies `12`/`6`, matching CPython). C-backend
-verification: full `test_pyc.py` 250/0 (was 249/0, new test
-included), `ifa --test` 58/0, clean before/after `shedskin_sweep.sh`
-(stash/rebuild/sweep from the same commit) — byte-identical
-`results.tsv` except `pygasus`'s FAIL mode (crash vs. timeout),
-reproduced as pre-existing flakiness on repeated runs of the *same*
-(fixed) binary, unrelated to dispatch/closures.
+## Known backend divergences
 
-**LLVM backend — FIXED same day, 2026-08-06, as a second, larger
-change** (originally deferred as "a larger, separate prerequisite,"
-then done anyway once the shape of the required change became
-clear). Confirmed empirically before fixing: the C-backend fix's own
-new test compiled clean on LLVM but silently printed garbage for the
-carrier call (`123705560219568` instead of `12`, a fresh garbage
-value each run) — worse than the C backend's pre-fix behavior (a
-controlled crash) since it read uninitialized stack memory rather
-than trapping.
+`cg.cc` and `cg_emit_llvm.cc` share the candidate-resolution algorithm
+(`codegen_common.cc`) but still apply different filters/guards around
+its result — confirmed current, not historical:
 
-Root cause, once traced: `cg_emit_llvm.cc`'s per-candidate
-resolution loop is (was) all-or-nothing — the moment ANY candidate
-failed to find a named-field classtag slot, it set `ok = false;
-break` and abandoned classtag dispatch for the *entire call site*,
-falling through to a wholly separate "bare callable value" pass that
-dispatches every candidate (including tagged ones) by pure
-address-identity. That pass's `fres_slot` is an uninitialized
-`alloca`; when no candidate's address matched (the carrier case,
-same fundamental mismatch as the C-backend bug), execution reached
-the merge block without ever storing into it, and the subsequent
-load read garbage. This is a real, general gap independent of
-closures specifically: any bare-callable dispatch site where no
-candidate matches at runtime hits the same uninitialized read.
+- **Classtag-eligibility filter** on a resolved receiver type: `cg.cc`
+  requires `cg_has_classtag(rt) && cg_get_string(rt)` (`cg.cc:1621`);
+  `cg_emit_llvm.cc` requires `rt->name && !rt->is_system_type &&
+  cg_has_classtag(rt)` (`cg_emit_llvm.cc:2816`).
+- **Unnamed (lambda) candidates**: `cg.cc`'s per-candidate loop only
+  requires `fun_val->sym` to proceed (`cg.cc:1487`), so an unnamed
+  candidate still reaches `poly_dispatch_classtag_targets` (which
+  itself returns empty for it) and falls through to the plain-function
+  route; `cg_emit_llvm.cc`'s loop bails the *entire call site*
+  (`ok = false`) the moment any candidate has no `sym->name`
+  (`cg_emit_llvm.cc:2787`).
 
-Debugging this surfaced a second, more precise finding beyond the
-original "LLVM has no mixed-dispatch chain at all" framing: even
-after adding carrier-direct detection (mirroring the C fix) inside
-the `if (!rts.n)` branch, the fix still didn't take effect. Traced via
-targeted `fprintf` instrumentation (added, verified, then fully
-removed — not left in the tree) to `poly_dispatch_classtag_targets`
-returning a *non-empty* `rts` for `add_one` (it scans every formal
-position for a field named after the candidate, not just the self
-position, so a plain function can incidentally get a non-empty-but-
-useless hit) whose sole entry wasn't classtag-eligible — and the
-LLVM loop's `if (!added_any) { ok = false; break; }` bailed on that
-case unconditionally, unlike `cg.cc`'s `if (rts.n) { ...; if
-(added_any) continue; }` shape, which falls through to try the
-plain-function route regardless of *why* nothing was added.
+Neither has a known failing repro today — recorded because the next
+person touching this dispatch machinery should know the backends
+aren't identical here before assuming a fix in one applies to the
+other.
 
-Fixed by restructuring `emit_send_call`'s per-candidate loop to match
-`cg.cc`'s actual control flow one-for-one: merge into `classes[]`
-first whenever `rts.n` is nonzero, and only *then* — regardless of
-whether `rts.n` was originally zero or nonzero-but-useless — fall
-through to try nil-receiver, then the new carrier-direct check, then
-a new `plains[]` value-identity partition (ported from `cg.cc`,
-sharing the same `recv`/`res_slot`/`merge_bb` LLVM IR structure via a
-new `emit_direct_call` lambda, rather than the separate bare-callable
-pass). A call site with zero classtag-eligible candidates at all is
-provably unaffected (the new code still falls through unchanged to
-the old bare-callable pass, since the combined-chain emission is
-gated on `classes.n > 0`) — the only call sites that now behave
-differently are the ones that used to bail immediately due to this
-exact gap.
+## Cross-references
 
-Verified: generated `.ll` confirmed on the `poly.hit`/`poly.next` →
-`poly.phit`/`poly.pnext` → `poly.merge` structure (the new
-`plains[]` chain sharing the classtag chain's merge block, not the
-old separate `fnid.*` pass). Binary re-run 5× directly (bypassing the
-test harness's separate build directory, which caught a first-pass
-false-positive from a stale binary) — deterministic, correct `12`/`6`
-every time. Full suites: `test_pyc.py` 250/0, `PYC_FLAGS=-b
-test_pyc.py` 250/0 (both backends now share the exact same pass
-count), `ifa --test` 58/0. Corpus: the existing `shedskin_sweep.sh`
-is C-backend-only (hardcoded, checks for a `.py.c` artifact) and
-therefore not meaningful for this change on its own — swept the
-corpus under the LLVM backend via a one-off script variant (`-b` flag,
-`.py.ll` artifact check) instead: byte-identical `results.tsv`
-before/after (stash/rebuild/sweep from the same commit), zero
-regressions, zero incidental fixes (no corpus example happens to hit
-this exact mixed shape). The `.check_fail` sidecar on
-`poly_dispatch_carrier_mixed.py` is removed — both backends now pass
-strictly.
+- [closed/029](closed/029-polymorphic-dispatch.md) — superseded by
+  this issue; the simpler fixed-slot sketch.
+- [closed/058](closed/058-polymorphic-classtag-dispatch-drops-extra-arguments.md)
+  — extra-args-dropped bug found in this dispatch code, unrelated root
+  cause.
+- [079-DISPATCH-single-candidate-dispatch-unchecked-cast.md](079-DISPATCH-single-candidate-dispatch-unchecked-cast.md)
+  — a distinct, separate gap in the *single*-candidate fast path (not
+  the polymorphic classtag chain this issue covers): an unchecked cast
+  when the receiver's union has another member that doesn't implement
+  the method at all. Not attempted.
+- [025-FA-intra-function-union-narrowing.md](025-FA-intra-function-union-narrowing.md)
+  — `isinstance(x, C)` against a union-typed `x` is broken, but the
+  root cause is 025's own union-narrowing gap in the shared
+  `isinstance()` wrapper clone, not this issue's classtag mechanism
+  (monomorphic and single-class `isinstance` checks both work
+  correctly).
+- `../../issues/007-decorators-not-applied.md` — bare callable-value
+  dispatch (no receiver at all, e.g. a plain function variable
+  reassigned by a decorator) is handled by the plain-function
+  value-identity route described above, landed as part of 007's own
+  fix; not a gap in this issue.
 
-*Deliberately not done:* the general "method-pointer slot on every
-carrier + unique per-site carrier names" design this file originally
-sketched for (a). That's real, larger vtable-style infrastructure;
-the landed fix is narrower and lower-risk — since a carrier
-candidate's implementation is always statically known at a given
-dispatch site, direct-call-by-tag needs no slot at all, and the rare
-same-call-site multi-carrier collision degrades safely instead of
-needing a naming overhaul. If a real program hits that collision
-case, revisit unique carrier naming then.
+## Original design sketch (kept for the still-open table-dispatch item)
 
-(Note: stacking the *same* decorator twice on one uniformly-decorated
-function, e.g. `@double @double def f(): ...`, was already known to
-work fine on its own — there's no dispatch ambiguity there, since
-every reference resolves to the same concrete carrier type. This fix
-targets the genuinely *mixed* candidate-set shape, e.g. a function
-returning either a plain function or a decorated one depending on a
-runtime condition — not stacking.)
-
-**(b) Table-based emission for very high fan-out.** No
-  `DISPATCH_THRESHOLD`/table-lookup code exists anywhere in `cg.cc` or
-  `cg_emit_llvm.cc` — still an unconditional if/else chain regardless
-  of fan-out. Severity downgrade based on today's check:
-  `tests/poly_dispatch_shared_method_extra_args.py` (11 subclasses,
-  058's regression test) passes correctly on both backends, so the
-  chain is *functionally* correct at high fan-out today — this is now
-  confirmed a pure **performance** gap (O(n) branches per call site),
-  not a correctness one.
-
-**Stale test plan:** this file's own "Tests to add" (bottom of doc —
-`poly_dispatch_small.py`, `poly_dispatch_large.py`,
-`isinstance_class.py`) were never added under those names. Related
-coverage exists today under different names
-(`poly_dispatch_shared_method_extra_args.py` covers large-fanout
-territory; `tests/isinstance_dynamic.py` covers `isinstance` against a
-builtin type, not a user class) but nothing directly replaces the
-planned `isinstance_class.py`.
-
-**Found while checking this file's "isinstance support" claim, does
-NOT belong here — moved to
-[025](025-FA-intra-function-union-narrowing.md):** `isinstance(x, C)`
-against a union-typed `x` (e.g. iterating a heterogeneous list) is
-currently broken, root-caused to the shared `isinstance()` wrapper
-clone collapsing to a hardcoded `return 0`. This is a manifestation of
-025's own already-documented "Case 2" (isinstance on a runtime union),
-not one of *this* issue's two listed gaps above — the classtag
-comparison mechanism itself isn't implicated (monomorphic and directly
-single-class isinstance checks both work correctly; only the
-union-receiver shape fails) — so the concrete repro and root-cause
-trace live in 025 now, not duplicated here.
-
-## Core idea
+The mechanism actually built (above) uses a simpler if/else chain with
+per-class stored method slots, not the indirect vtable design below.
+This section is retained because it's the design to pick back up if
+the O(n_branches) fan-out cost above is ever worth fixing.
 
 A **fat pointer** is a `(data*, vtable*)` pair (or equivalently a
-tagged union pointer).  Instead of emitting an unconditional direct
-call when `get_target_fun_core` finds multiple candidate Funs, we:
+tagged union pointer). Instead of an if/else chain at every fan-out,
+choose the emission strategy by fan-out:
 
-1. **Backward-flow from dispatch points** to find where the
-   union-typed value was created (allocation sites / join points).
-2. At each creation site, materialize the fat pointer: tag the
-   allocation with the concrete type, or store a pointer to the
-   appropriate dispatch row.
-3. At the dispatch site, emit code chosen by fan-out:
+- **Low fan-out (≤ N, say 4):** conditional tree (today's mechanism) —
+  full compiler visibility per branch, enables inlining.
+- **High fan-out (> N):** table lookup or indirect call through a
+  vtable pointer indexed by classtag. O(1) dispatch cost, no
+  per-branch code-size growth.
 
-   - **Low fan-out (≤ N, say 4):** emit a conditional tree
-     (if/elif/else) that checks the tag and calls the concrete Fun
-     directly.  Gives the compiler full visibility of each branch,
-     enabling inlining and type specialization.
-   - **High fan-out (> N):** emit a table lookup or indirect call
-     through the vtable pointer.  O(1) dispatch cost, no code-size
-     explosion.
+The classtag this issue already materializes at allocation time is
+exactly the discriminant a table-lookup implementation would index by
+— no new backward-flow analysis is needed to build the tag; only the
+table-emission side (in `cg.cc` / `cg_emit_llvm.cc`) is unbuilt.
 
-## Why backward flow rather than forward
+## Verification
 
-FA already propagates types forward and splits ESes.  The multi-target
-problem arises when two ESes merge at a call site (e.g. `lhs` that is
-`Const | BinOp` at the `eval()` call).  Rather than trying to split
-ESes further (the "FA per-receiver-CS splitter" in issue 029, which can
-explode specialization), backward analysis from the dispatch point
-identifies the exact AVar chain that caused the union and knows the
-full set of concrete types.
+`tests/poly_dispatch_{low,high,swapped,partial_override,
+carrier_mixed,shared_method_extra_args}.py` — all pass strictly (no
+`.check_fail` sidecars) on **both** backends (`./test_pyc.py` and
+`PYC_FLAGS=-b ./test_pyc.py`). Regression-swept against the shedskin
+corpus (`shedskin_sweep.sh`, both backends) with zero behavior
+changes outside the targeted fix each time. `ifa --test` unaffected
+(pure codegen change, no IF1/FA surface).
 
-## Relationship to existing FA machinery
+## What this unblocks
 
-- `AVar::out` at the dispatch receiver already enumerates the concrete
-  `CreationSet`s — that IS the set of candidate Funs.
-- Backward flow means walking `AVar::in` edges from the receiver AVar
-  back to the allocation sites.  The path is already computed by FA;
-  we just need to tag each allocation with a class discriminant.
-- The tag can be a small integer written at allocation time
-  (`GC_malloc` + `->classtag = K`), which also satisfies
-  `isinstance(x, Class)` (see issue 029's related-issue section).
-
-## Dispatch emission in codegen
-
-In `write_send` (`ifa/codegen/cg.cc`) / `emit_send` (LLVM path),
-when `get_target_fun_core` returns null:
-
-```
-candidates = f->calls.get(n)   // Vec<Fun*>, n > 1
-fan_out = candidates->n
-
-if fan_out <= DISPATCH_THRESHOLD:
-    emit if/elif chain on receiver->classtag
-    each branch: direct call to candidates[k]
-else:
-    emit indirect call through vtable slot
-    (vtable indexed by classtag, slot by method index)
-```
-
-`DISPATCH_THRESHOLD` is a tunable (suggest 4 as default).
-
-## isinstance support
-
-Once `classtag` is materialized at allocation sites, `isinstance(x, C)`
-lowers to `x->classtag == C_tag || is_subclass(x->classtag, C_tag)`.
-For the common single-concrete-type check this is a single comparison.
-The subclass walk can be a small precomputed table (class hierarchy is
-known at compile time).
-
-## What needs to change
-
-| Layer | Change |
-|---|---|
-| Runtime (`pyc_c_runtime.h`) | Add `classtag` field to `_CG_object` base struct |
-| IF1 / codegen_common | `get_target_fun_core` → `get_target_funs` returning `Vec<Fun*>*` |
-| `cg.cc` `write_send` | Conditional-tree or vtable-indirect emit for fan-out > 1 |
-| LLVM `cg_emit_llvm.cc` | Same, in the LLVM IR emit path |
-| `build_syms` / `gen_class_pyda` | Assign a unique `classtag` integer per concrete class |
-| `pyc_runtime.c` | `_CG_prim_isinstance` using classtag comparison |
-
-## Fan-out threshold rationale
-
-- Conditional trees ≤ 4: branch predictor handles well; each call
-  site remains monomorphic after branch prediction warms up; compiler
-  can inline the bodies.
-- Table / indirect > 4: avoids O(N) code size; matches what a
-  traditional vtable dispatch emits; acceptable for highly polymorphic
-  sites.
-
-## Relation to issue 029
-
-Issue 029 recorded the symptom and a simpler "struct slot indirect
-call" sketch.  This issue records the full design agreed in conversation
-(backward flow + fat pointer materialization + fan-out-adaptive
-dispatch).  029 can be closed in favour of this issue once implementation
-begins.
-
-## Related: bare callable-value dispatch (no receiver)
-
-`../../issues/007-decorators-not-applied.md`'s re-check (2026-07)
-found the same `get_target_fun_core`-returns-null gap for a call site
-with no receiver at all — a plain function-typed variable (e.g.
-reassigned by a decorator to one of two different closures) called
-directly (`g(5)`), rather than a method called through an instance
-(`obj.method()`). The fat-pointer/classtag design above is framed
-entirely around receiver objects (`obj->classtag`, `obj->e<N>` method
-slots); extending it to bare callable values would need first-class
-function values to carry the same kind of taggable/dispatchable
-representation, even when they were never wrapped in a user-visible
-class. Not scoped or designed here — flagging as a needed extension
-to this issue's design before it can unblock issue 007.
-
-## Tests to add
-
-- `tests/poly_dispatch_small.py` — 2-way dispatch (fan-out ≤ threshold):
-  `Const | BinOp` receiver, `eval()` call, assert correct values.
-- `tests/poly_dispatch_large.py` — fan-out > threshold: 5+ subclasses,
-  same method name, table path exercised.
-- `tests/isinstance_class.py` — `isinstance(x, Const)` for non-None
-  class, both true and false branches.
-- Existing `tests/expr_evaluator.py` should continue to pass (workaround
-  path); eventually replace with the OOP version as a regression guard.
+Any Python program using ordinary OOP polymorphism (a method called
+through a variable/field/return value typed as a union of sibling
+classes) — which is most of the shedskin example corpus and any
+realistic class hierarchy. Without this, such call sites either failed
+to compile or picked one clone arbitrarily.
