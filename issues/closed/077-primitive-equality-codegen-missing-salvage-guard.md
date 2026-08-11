@@ -332,7 +332,7 @@ other `__pyc_c_call__` site ... is completely unchecked and
 unaffected"). This is now a *live, currently-failing* corpus program
 rather than only a theoretical remainder, so it's tracked as its own
 open issue —
-[096](../096-CGEN-extend-c-call-salvage-guard-past-str-comparisons.md)
+[096](096-extend-c-call-salvage-guard-past-str-comparisons.md)
 — rather than reopening this one (this issue's own fix is complete and
 correct for the narrow scope it set out to cover; 096 is the next
 scoped piece of the same convention). Cross-referenced from

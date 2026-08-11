@@ -296,13 +296,15 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   `1`); LLVM backend stores the raw int bits into the float slot with
   no `sitofp`, producing a completely wrong value
   (`4.94...e-324`). Found via `7.py`'s real-argv-triggered branch.
-- [096-CGEN-extend-c-call-salvage-guard-past-str-comparisons.md](096-CGEN-extend-c-call-salvage-guard-past-str-comparisons.md)
-  — closed-077's own documented remainder (the `__pyc_c_call__`
-  salvage guard only covers the `str`-comparison whitelist) now has a
-  live, currently-failing trigger: `msp_ss.py` hits it at
-  `_CG_fopen`/`_CG_chr`/`_CG_str_to_int64_base`. Filed rather than
-  reopening 077, whose shipped fix is complete and correct for its own
-  narrower scope.
+- [097-CGEN-callsite-vs-clone-formal-type-mismatch.md](097-CGEN-callsite-vs-clone-formal-type-mismatch.md)
+  — 096 (now closed) extended the `__pyc_c_call__`/generic-primitive
+  salvage guards far enough to fix 7 of `msp_ss.py`'s 9 original
+  compile errors; the remaining 2 are a different mechanism — an
+  ordinary call site whose actual argument type diverges from the
+  specific callee *clone's* formal parameter type, with no guard.
+  Not root-caused; may be the same "shared clone reused across
+  incompatible edges" family closed-076 found for container-element
+  access, now possibly generalizing to function dispatch.
 
 ### LLVM
 
@@ -398,7 +400,8 @@ Currently 64 closed issues:
 [088](closed/088-llvm-class-list-field-plus-construct-segfault.md),
 [089](closed/089-DISPATCH-closure-pyc-to-bool-no-candidate.md),
 [091](closed/091-DISPATCH-nonrecord-builtin-constructor-not-first-class.md),
-[092](closed/092-DISPATCH-3arg-minmax-plus-multi-shape-return-crash.md).
+[092](closed/092-DISPATCH-3arg-minmax-plus-multi-shape-return-crash.md),
+[096](closed/096-extend-c-call-salvage-guard-past-str-comparisons.md).
 
 ## When to file an issue here vs fix it now
 

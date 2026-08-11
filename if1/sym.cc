@@ -210,6 +210,26 @@ Sym *unalias_type(Sym *s) {
   return s;
 }
 
+bool c_call_arg_type_mismatch(Sym *declared_raw, Sym *actual) {
+  Sym *declared = unalias_type(declared_raw);
+  if (!declared || !actual || declared == actual) return false;
+  // Any two numeric types are safely C-castable regardless of
+  // width/precision (int vs int64, int vs float, ...) -- only a
+  // pointer-representable type (num_kind == 0: str, bytes, records,
+  // `_CG_any`, ...) paired with a numeric one is the actual danger (a
+  // straight C assignment/comparison between a pointer and an
+  // integer).
+  if (declared->num_kind || actual->num_kind) return !(declared->num_kind && actual->num_kind);
+  // Two non-numeric types: require their C representations to agree
+  // exactly. No `_CG_any` exemption -- `_CG_any` is `void*`, which C++
+  // converts implicitly FROM any other pointer type but never TO one,
+  // so an actual `_CG_any` reaching a call declared to take a real
+  // pointer type (str's `char*`, ...) is exactly the unsafe direction
+  // C++ refuses to convert implicitly.
+  cchar *dc = declared->cg_string, *ac = actual->cg_string;
+  return dc && ac && strcmp(dc, ac) != 0;
+}
+
 void if1_set_int_type(IF1 *p, Sym *t, int signd, int size) {
   int ss = 0;
   size >>= 3;

@@ -2150,6 +2150,50 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
     // called from the frontend's new assert-fail lowering).
     if (fn_name[0] == ':' && fn_name[1] == ':') fn_name += 2;
 
+    // ifa/issues/096: parity with python_ifa_main.cc's c_call_codegen
+    // (C backend) guard. Below, `param_tys` is built from each ARG's
+    // own actual LLVM type (get_runtime_helper declares the extern
+    // to match), not from __pyc_c_call__'s declared types -- and with
+    // opaque pointers, a salvage-degraded `_CG_any` and a real `str`
+    // are both just `ptr` at the LLVM type level, so this wouldn't
+    // even fail to compile like the C backend's mismatched-pointer-
+    // type error would; it would link and run, handing the target
+    // function (e.g. `_CG_fopen`) a garbage/wrongly-typed value.
+    // Reuses c_call_arg_type_mismatch (ifa/if1/sym.{h,cc}) so the two
+    // false-positive fixes 077 found the hard way (Type_ALIAS declared
+    // types, numeric width/precision tolerance) aren't re-derived here.
+    // Same target whitelist as the C backend, duplicated rather than
+    // shared across the two files -- matches how this primitive's
+    // core logic is already kept in sync rather than shared elsewhere
+    // in this function (see __pyc_format_string__ below). Traps
+    // unconditionally on mismatch, not gated on fruntime_errors: none
+    // of this backend's other guarded-degrade paths (emit_salvage_trap's
+    // other call sites above) consult that flag either -- LLVM codegen
+    // isn't currently threaded through strict/permissive mode at all.
+    static cchar *checked_c_call_targets[] = {
+        "_CG_str_eq",  "_CG_str_ne", "_CG_str_lt", "_CG_str_le",
+        "_CG_str_gt",  "_CG_str_ge", "_CG_fopen",  "_CG_chr",
+        "_CG_ord",     "_CG_str_to_int64_base", "_CG_strcat", 0,
+    };
+    bool checked_target = false;
+    for (int ti = 0; checked_c_call_targets[ti]; ti++) {
+      if (!strcmp(fn_name, checked_c_call_targets[ti])) {
+        checked_target = true;
+        break;
+      }
+    }
+    if (checked_target) {
+      for (int i = 5; i < pn->rvals.n; i += 2) {
+        Var *tv = pn->rvals.v[i - 1];
+        Var *av = pn->rvals.v[i];
+        if (!tv || !av) continue;
+        if (c_call_arg_type_mismatch(tv->sym, av->type)) {
+          emit_salvage_trap(ctx, pn->lvals.n > 0 ? pn->lvals.v[0] : nullptr);
+          return true;
+        }
+      }
+    }
+
     llvm::Type *ret_ty = llvm::Type::getVoidTy(*TheContext);
     if (pn->lvals.n > 0 && pn->lvals.v[0] && pn->lvals.v[0]->type) {
       ret_ty = sym_to_llvm_type(pn->lvals.v[0]->type);

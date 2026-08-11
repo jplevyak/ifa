@@ -260,6 +260,19 @@ template <> struct PointerHash<Sym *> {
 
 
 Sym *unalias_type(Sym *s);
+
+// ifa/issues/096 (extends closed/077): shared by both codegen backends
+// (python_ifa_main.cc's c_call_codegen for C, cg_emit_llvm.cc's
+// emit_send_primitive for LLVM) so a __pyc_c_call__ site's declared
+// argument type vs. the actual resolved type -- a real, unsafe
+// mismatch (e.g. a salvage-degraded `_CG_any` reaching a call that
+// declares `str`) vs. one of the two categories 077 found aren't real
+// mismatches (a bare `Type_ALIAS` declared type like `int`; two
+// numeric types of different width/precision) -- is judged identically
+// by both, rather than each backend rediscovering the same false
+// positives independently.
+bool c_call_arg_type_mismatch(Sym *declared, Sym *actual);
+
 void convert_constant_to_immediate(Sym *sym);
 int compar_syms(const void *ai, const void *aj);  // for use with qsort
 Sym *size_constant(int n);

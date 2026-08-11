@@ -1138,6 +1138,16 @@ static bool prim_is_binary_operator(int idx) {
     case P_prim_mod:
     case P_prim_add:
     case P_prim_subtract:
+    // ifa/issues/096: prim_strcat (str.__add__'s primitive-level "+"
+    // dispatch, prim_data.cc's PRIM_TYPE_STRING/PRIM_TYPE_STRING pair,
+    // the same uniform-two-operand (_a, _op, _b) macro shape as its
+    // siblings above) was missing from this original 077 set --
+    // msp_ss.py's getopt-gated code (issue 041) is the first corpus
+    // program observed to reach it with a salvage-degraded operand
+    // (`_CG_prim_strcat(str, "::", _CG_any)`, a hard C++ overload
+    // error identical in shape to what this whole switch already
+    // guards for its included members).
+    case P_prim_strcat:
     case P_prim_lsh:
     case P_prim_rsh:
     case P_prim_less:
