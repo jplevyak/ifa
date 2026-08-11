@@ -200,7 +200,17 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
 - [041-FA-verbose-type-dump-intermittent-segfault.md](041-FA-verbose-type-dump-intermittent-segfault.md)
   — two unreproduced-on-demand segfaults in the `-v` per-pass type
   dump, both under machine load; likely the same null-guard bug
-  class 033 found and fixed elsewhere in `fa.cc`, unconfirmed.
+  class 033 found and fixed elsewhere in `fa.cc`, unconfirmed. Its own
+  filed ASAN-soak verification plan hit a blocker — see 094.
+- [094-FA-asan-heisenbug-blocks-sanitizer-diagnostics.md](094-FA-asan-heisenbug-blocks-sanitizer-diagnostics.md)
+  — found attempting 041's own ASAN soak: an intermittent
+  `PycModule::filename` corruption/segfault on the simplest possible
+  ASAN-built input, which stopped reproducing the moment any
+  debugger or debug print looked at it. Suspected (not confirmed)
+  Boehm GC conservative-scan root miss under ASAN's altered stack
+  layout — the same disease class 041 itself suspects, caught
+  elsewhere. Calls into question whether an ASAN soak is a reliable
+  technique for this codebase's intermittent-segfault bugs at all.
 - [048-FA-deepcopy-flow-divergence-genetic2.md](048-FA-deepcopy-flow-divergence-genetic2.md)
   — genetic2's repeated-deepcopy-and-graft pattern produces
   ever-longer copy-of-copy CS chains, each re-matched against a

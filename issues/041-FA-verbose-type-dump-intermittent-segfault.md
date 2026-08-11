@@ -57,6 +57,40 @@ and pygasus under artificial memory pressure until it fires; the
 first symbolized trace almost certainly identifies a one-line
 guard, as it did for the two issue-033 crashes.
 
+**Attempted 2026-08-11, blocked before reaching bh/pygasus at all** —
+see [094](094-FA-asan-heisenbug-blocks-sanitizer-diagnostics.md). The
+ASAN build itself hit a different, unrelated-looking intermittent
+segfault on the simplest possible input (`hello_world.py`), and every
+attempt to localize *that* one changed whether it reproduced (a
+heisenbug on top of a heisenbug). If 094's suspicion is right — Boehm
+GC's conservative stack scanner occasionally missing a root under
+ASAN's altered stack layout — then this issue's own filed verification
+plan may not be reliable as written; a core-dump-based approach
+(no sanitizer, real memory pressure, `ulimit -c unlimited`) is the
+fallback being tried next, both for 094's blocker and, opportunistically,
+for this issue's own crash if it turns up first.
+
+**Core-dump attempt, same day, also no reproduction (but see caveat).**
+`/proc/sys/kernel/core_pattern` on this machine pipes to `apport`
+(not usable in a sandboxed session, and not something to repoint
+system-wide without cause) — used a `gdb -batch -ex run -ex "bt full"
+-ex quit` live wrapper around each compile instead, functionally
+equivalent (catches SIGSEGV in place with a full backtrace, no core
+file needed) without touching any system-wide setting. Ran `pyc -v`
+on `bh.py` and `pygasus.py` alternately, 15 iterations each (30 total
+`-v` compiles) over ~23 minutes, concurrently with a second background
+loop continuously re-running the full `shedskin_sweep.sh` corpus sweep
+(`nproc`-wide parallel, `TIMEOUT=30`) the whole time to approximate the
+"under machine load" condition both original sightings shared. **Zero
+crashes.** Not strong evidence of anything either way: the original
+two sightings happened across many months of general project activity
+— this session's 30-compile, 23-minute sample is nowhere near large
+enough to expect a hit even if the load-generation approach is exactly
+right. Recorded so the next attempt doesn't have to re-derive the
+`core_pattern`/apport dead end or the gdb-live-wrapper workaround —
+just re-run `soak.sh`'s approach (bh/pygasus alternating under gdb,
+concurrent corpus-sweep load) for hours instead of minutes.
+
 ## Impact
 
 `-v` is used heavily for issue-033-style analysis work (per-pass
