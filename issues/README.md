@@ -165,9 +165,16 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   nothing in the *same* pass).
 - [025-FA-intra-function-union-narrowing.md](025-FA-intra-function-union-narrowing.md)
   — IFA's "narrowing" is clone-time specialization, not true
-  flow-sensitive refinement. The `is None` / `isinstance`-on-union
-  cases are fixed; phi-merge re-discrimination and `==`-constant
-  narrowing remain open.
+  flow-sensitive refinement. `is None` on a class-or-None union works
+  end-to-end; `isinstance` picking the right branch over a union of
+  user classes also works, but via an unrelated shared-clone-mis-fold
+  fix, not real narrowing. The other three originally-filed cases
+  (phi-merge re-discrimination, real narrowed-value use, `==`-constant
+  return-type narrowing) all turn out to be
+  [018](../../issues/018-dict-mixed-key-types-boxing-failure.md)'s gap
+  in disguise — a raw scalar union has no coherent runtime
+  representation at all, so narrowing (even if built out further)
+  wouldn't fix them; tracked there now, not here.
 - [068-FA-derive-structural-ops-record-field-fold.md](068-FA-derive-structural-ops-record-field-fold.md)
   — treat classes and tuples uniformly as "records" and derive
   `__eq__`/`__lt__`/`__hash__`/etc. as field-folds over ordinary
