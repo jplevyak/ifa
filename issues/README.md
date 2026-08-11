@@ -301,11 +301,14 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   diverge from the specific callee *clone's* formal parameter type
   (`emit_send_call` now guards the unsafe scalar-into-voidish-formal
   direction, same 056/077/096 convention — `msp_ss.py` compiles clean
-  as of this fix). Root cause of *why* dispatch/clone selection routes
-  an edge to a mismatched target is still untraced; may be the same
-  "shared clone reused across incompatible edges" family closed-076
-  found for container-element access, now possibly generalizing to
-  function dispatch.
+  as of this fix). Root cause traced and confirmed **not a duplicate**
+  of 076/030/018: `entry_set_compatibility`'s type check
+  (`fa.cc:874`) can't distinguish an `EntrySet` formal position that's
+  never had any edge contribute a type from one whose only
+  contributors were constants whose type never propagated there —
+  either way it reads as "empty" and gets treated as compatible with
+  any edge's actual type. Fix (teaching that check the difference)
+  not yet implemented — real, scoped FA work, precisely located.
 
 ### LLVM
 

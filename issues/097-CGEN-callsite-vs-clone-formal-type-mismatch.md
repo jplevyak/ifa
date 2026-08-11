@@ -1,14 +1,18 @@
-# 097 — An ordinary call site's argument type can diverge from the specific callee clone's formal parameter type (msp_ss.py's last two compile errors; now guarded, root cause still open)
+# 097 — An ordinary call site's argument type can diverge from the specific callee clone's formal parameter type (msp_ss.py's last two compile errors; guarded, root cause found and precisely located, fix not yet implemented)
 
-**Status: PARTIAL, guard landed 2026-08-11.** The compile-blocking
-symptom (hard C++ overload-resolution error) is fixed — see
-"RESOLVED (partial)" below. The underlying question this doc's "Root
-cause" section poses — *why* does clone/dispatch selection route an
-edge to a target whose formal type doesn't match that edge's actual
-argument? — is still completely untraced. Left open (not moved to
-`closed/`) rather than spun into a fresh issue, since there's nothing
-to add to the evidence/hypotheses already below; a future investigator
-picking this up starts exactly here.
+**Status: PARTIAL, guard landed 2026-08-11, root cause found
+2026-08-11.** The compile-blocking symptom (hard C++ overload-
+resolution error) is fixed — see "RESOLVED (partial)" below. The
+underlying mechanism — *why* clone/dispatch selection routes an edge
+to a target whose formal type doesn't match that edge's actual
+argument — is now traced to a specific, precisely-located gap: see
+"ROOT CAUSE FOUND (not a duplicate)" at the bottom. Confirmed **not a
+duplicate** of 076, 030, or 018 (each checked and ruled out explicitly
+with reasoning). Left open (not moved to `closed/`) since the actual
+fix — teaching `edge_type_compatible_with_entry_set`
+(`ifa/analysis/fa.cc:874`) to distinguish "never touched" from "only
+ever touched by constants whose type never propagated" — is real,
+scoped work not yet attempted, not just an open question.
 
 **Original status:** open, found 2026-08-11 while implementing
 [096](closed/096-extend-c-call-salvage-guard-past-str-comparisons.md).
@@ -210,19 +214,22 @@ above, gathered via direct inspection of the generated `.c` rather
 than added instrumentation — the three-clones-but-wrong-one-called and
 one-clone-reused-with-an-uncast-move shapes were already conclusive
 enough without needing to add temporary logging to `fa.cc`/`clone.cc`).
-Did **not** trace further into *why* clone/dispatch selection produces
-this — confirmed via `clone_functions()` (`ifa/analysis/clone.cc:1081`)
-that `Fun::calls` is built by iterating every `EntrySet` and adding
-each one's resolved edge target into a `Vec<Fun*>` keyed by
-(cloned-)`PNode`, deduped by pointer identity
-(`vf->set_add(ee->to->fun)`) — so if the wrong target is the *only*
-one ever added for this specific `(Fun clone, PNode)` pair, the bug is
-upstream of this loop (in whatever routes a specific edge to a
-specific `EntrySet` during FA proper, e.g. `find_best_entry_sets`/
-`entry_set_compatibility`, matching this doc's hypothesis 1) — but
-this was reasoned from reading the code, not confirmed by an actual
-instrumented run. That deeper trace is exactly the scope closed/076
-warns is multi-session; not attempted.
+At the time this guard landed, did **not** trace further into *why*
+clone/dispatch selection produces this — confirmed via
+`clone_functions()` (`ifa/analysis/clone.cc:1081`) that `Fun::calls` is
+built by iterating every `EntrySet` and adding each one's resolved
+edge target into a `Vec<Fun*>` keyed by (cloned-)`PNode`, deduped by
+pointer identity (`vf->set_add(ee->to->fun)`) — so if the wrong target
+is the *only* one ever added for this specific `(Fun clone, PNode)`
+pair, the bug is upstream of this loop (in whatever routes a specific
+edge to a specific `EntrySet` during FA proper, e.g.
+`find_best_entry_sets`/`entry_set_compatibility`, matching this doc's
+hypothesis 1) — but this was reasoned from reading the code, not
+confirmed by an actual instrumented run at that point. **Update:** that
+deeper trace was done in a follow-up pass the same day — see "ROOT
+CAUSE FOUND" below. It confirms hypothesis 1's general shape but with
+a much more specific mechanism than either original hypothesis
+guessed.
 
 **What was actually fixed**: a general codegen-level guard, not scoped
 to `msp_ss.py` specifically — `ifa/codegen/cg.cc`'s `emit_send_call`
@@ -269,3 +276,130 @@ doc's own unresolved thread, exactly where a future investigator
 should pick up (start with the `find_best_entry_sets`/
 `entry_set_compatibility`-family instrumentation this section
 describes, not a fresh investigation from scratch).
+
+## ROOT CAUSE FOUND (not a duplicate), 2026-08-11
+
+Traced with temporary instrumentation in `clone_functions()`
+(`ifa/analysis/clone.cc:1081`, added and fully reverted after —
+`git diff` on this file is empty; same discipline closed/076 used).
+Printed, for every edge whose target `EntrySet` was one of the two
+`str::__eq__` EntrySets involved (607, the wrongly-shared one; 737,
+the correctly-typed one), the calling `EntrySet`'s owning function name
+and the target's own formal-parameter types. Answer, directly:
+
+```
+ES 607 (-> codegen _CG_any):  reached by strip (x2), loadTIText (x1)
+ES 737 (-> codegen _CG_int64): reached by loadTIText (x1), __getitem__ (x1)
+```
+
+`msp_ss.py`'s `str.strip()` (`__pyc__/01_str.py:147-151`) compares
+`self[i]` against four string literals (`" "`, `"\t"`, `"\n"`, `"\r"`);
+`loadTIText` (`msp_ss.py:748-749`) compares `l[0]` against
+`ord('q')`/`ord('@')` — two adjacent, structurally identical `if`/
+`elif` branches in the same function, same loop, same receiver shape.
+One (`ord('@')`) correctly got its own `_CG_int64`-typed `EntrySet`
+(737); the other (`ord('q')`) landed on `strip`'s pre-existing,
+string-literal-only `EntrySet` (607) instead of getting (or reusing)
+one shaped like 737's.
+
+**Confirmed exact mechanism, not just the general shape**: ES 607's
+own formal `AVar` for the `x` position has an **empty** `AType`
+(`->out->type->n == 0`) even though `strip`'s two calling edges both
+pass a real `str` actual — the type never flowed into the formal at
+all, evidently because `strip`'s call sites pass **compile-time string
+constants**, which take a different, constant-specific path through FA
+(consistent with codegen's own evidence: a *separate*, single-argument
+`str::__eq__` clone, `_CG_f_627_4`, exists in the same output purely
+for a constant-folded comparison — this codebase already special-cases
+constant arguments elsewhere, e.g. `Fun::clone_for_constants`,
+`edge_constant_compatible_with_entry_set` below). `entry_set_
+compatibility`'s type check, `edge_type_compatible_with_entry_set`
+(`ifa/analysis/fa.cc:874`):
+
+```cpp
+if (etype->n && es_arg->out->type->n && etype != es_arg->out->type) return 0;
+```
+
+only rejects a candidate `EntrySet` when **both** the edge's actual
+type (`etype->n`) **and** the ES's own accumulated type
+(`es_arg->out->type->n`) are non-empty and disagree. When the ES's own
+formal type is empty — as ES 607's `x` position always was, because
+its only prior contributors were constants that bypassed normal type
+flow — this check is silently skipped, so ES 607 reads as compatible
+with *any* edge's actual argument at that position, typed or not. This
+is indistinguishable, to this check, from "a brand-new `EntrySet` with
+no edges yet" (which legitimately must accept its first edge's type
+unconditionally) — the check has no way to tell "genuinely first-use,
+safe to accept anything" apart from "has been used, but by constants
+whose types never propagated here, so still reads as empty." `loadTIText`'s
+`ord('q')` edge scored well enough against ES 607 (an existing,
+receiver-compatible candidate needing no new `EntrySet`) to win over
+minting/reusing a properly `int64`-typed one, exactly the way ES 737
+correctly did for the very next line.
+
+**Not a duplicate of any existing issue.** Ruled out explicitly:
+- **Not closed/076.** 076's root cause (fully resolved, see its own
+  "RESOLVED" section) was `dict`/`set`'s specific class-body-default-
+  plus-`__init__` double-initialization pattern feeding a shared
+  prototype `CreationSet` into every instance's field type,
+  permanently, via `P_prim_index_object`/`P_prim_set_index_object`'s
+  "flow into every CS the receiver has ever seen" loop. None of that
+  applies here: no class-body defaults, no `CreationSet` accumulation,
+  no container element flow at all — this is call-target `EntrySet`
+  selection for an ordinary two-argument method, gated by a totally
+  different piece of code (`entry_set_compatibility` in `fa.cc`, not
+  `P_prim_index_object`). The two bugs share only a family
+  resemblance ("a reused/shared analysis object's staleness lets
+  incompatible data through") common to a whole class of FA bugs in
+  this codebase (063, 072-075 are named siblings in that family too) —
+  not the same mechanism, not the same fix location, not a duplicate.
+- **Not 030.** 030 is ambiguous dispatch among *multiple* candidate
+  `Fun`s at a call site (`f->calls.get(n)->n > 1`, resolved via
+  classtag/vtable emission). Here `get_target_fun_core` always returns
+  exactly one candidate — confirmed both by the earlier codegen
+  investigation (097's original evidence: a direct, unconditional call
+  is emitted, never a dispatch chain) and by this trace (each edge has
+  exactly one target `EntrySet`, no ambiguity at the `Fun::calls`
+  level at all). The bug is *which one* `EntrySet` gets selected
+  upstream in FA, not how multiple candidates get resolved at
+  codegen time.
+- **Not 018.** 018 is `sizeof_element` being computed against a
+  non-container type (a container method's clone shared across a
+  scalar and a real container). Unrelated position, unrelated
+  primitive, unrelated formal.
+- **Closest relative: closed/075/063's "no type bucket" family and
+  045's `clone_for_constants`/`clone_methods_per_cs` machinery** — not
+  a duplicate of either, but this bug's actual mechanism sits exactly
+  at the seam between them: `edge_constant_compatible_with_entry_set`
+  (`fa.cc:938`, quoted above `entry_set_compatibility`) already
+  special-cases constant-vs-constant incompatibility for
+  `clone_for_constants` formals specifically — this bug is the
+  same general shape (a constant-argument formal position needs
+  different compatibility handling than an ordinary one) but for
+  `str.__eq__`, which isn't a `clone_for_constants` function, hitting
+  the *unguarded* general-purpose check instead
+  (`edge_type_compatible_with_entry_set`'s `es_arg->out->type->n`
+  emptiness gap, not `edge_constant_compatible_with_entry_set`'s own,
+  narrower, already-handled one).
+
+**What a real fix would need**: `edge_type_compatible_with_entry_set`
+(`fa.cc:874`) would need to distinguish "this `EntrySet`'s formal
+position has never had ANY edge contribute a type" (genuinely safe to
+accept anything — the bootstrapping case this check's current shape
+protects) from "this position's contributing edges were all constants
+whose types bypass the normal `AVar` flow, so it LOOKS empty but isn't
+actually untouched." That distinction doesn't exist anywhere in the
+current data model (`AType.n == 0` conflates both cases) — adding it
+is exactly the kind of core, always-on, every-call-site-affecting FA
+change 076 itself flagged as carrying serious regression risk without
+a careful termination/scope argument first. Not attempted this
+session; left here, precisely located, for whoever picks this up next.
+
+**Verified no regression from the investigation itself**: after
+reverting the temporary instrumentation, rebuilt and re-ran the full
+battery — `ifa --test` 58/58, `test_pyc.py` 265/14/0/4 both backends,
+`msp_ss.py` still compiles clean (exit 0). The `emit_send_call` guard
+from the "RESOLVED (partial)" section above is unaffected by this
+trace; it remains the right fix for the compile-blocking *symptom*
+regardless of which upstream mechanism (now known precisely) produces
+the mismatched edge.
