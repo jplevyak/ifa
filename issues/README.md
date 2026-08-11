@@ -272,6 +272,13 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   fix. sunfish's real blocker (past the stale "sizeof_element"
   claim and the `sum()`-missing-`start`-arg gap, both resolved this
   session).
+- [093-CGEN-int-float-union-move-not-coerced.md](093-CGEN-int-float-union-move-not-coerced.md)
+  — a plain MOVE (not a binop — see closed-062) storing an int-typed
+  value into a variable FA unified to `float64` isn't coerced. C
+  backend gets the value right but the wrong `__str__` (`1.0` not
+  `1`); LLVM backend stores the raw int bits into the float slot with
+  no `sitofp`, producing a completely wrong value
+  (`4.94...e-324`). Found via `7.py`'s real-argv-triggered branch.
 
 ### CLEANUP
 

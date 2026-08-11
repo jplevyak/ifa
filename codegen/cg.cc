@@ -2405,8 +2405,9 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
   for (Fun *f : fa->funs) if (f != init && !f->is_external) write_c(fp, fa, f);
   write_c(fp, fa, init, &globals);
   fprintf(fp,
-          "\nint main(int argc, char *argv[]) { (void)argc; (void) argv;\n"
+          "\nint main(int argc, char *argv[]) {\n"
           "  MEM_INIT();\n"
+          "  _CG_set_argv(argc, argv);\n"
           "  %s();\n"
           "  return 0;\n"
           "}\n",

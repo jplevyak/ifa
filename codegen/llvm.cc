@@ -180,17 +180,35 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
   // TODO: Implement PNode translation for each function's body
   // For now, functions will be declared but not defined (if not external)
 
-  // Create a simple main function that calls the IF1 main_fun
-  // This assumes the IF1 main_fun doesn't take argc, argv
-  llvm::FunctionType *main_func_type = llvm::FunctionType::get(llvm::Type::getInt32Ty(*TheContext), false);
+  // Create a simple main function that calls the IF1 main_fun.
+  // Takes the real (argc, argv) and threads them into _CG_set_argv
+  // before anything else runs, so pyc_lib/sys.py's `sys.argv` (built
+  // via _CG_argc()/_CG_argv_at() c-calls) reflects the actual
+  // invocation instead of the fixed one-element stub it used to be --
+  // mirrors the C backend's generated main() (cg.cc).
+  llvm::Type *i32_ty = llvm::Type::getInt32Ty(*TheContext);
+  llvm::Type *i64_ty = llvm::Type::getInt64Ty(*TheContext);
+  llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
+  llvm::FunctionType *main_func_type = llvm::FunctionType::get(i32_ty, {i32_ty, ptr_ty}, false);
   llvm::Function *llvm_main =
       llvm::Function::Create(main_func_type, llvm::Function::ExternalLinkage, "main", TheModule.get());
+  llvm_main->getArg(0)->setName("argc");
+  llvm_main->getArg(1)->setName("argv");
   llvm::BasicBlock *main_entry_bb = llvm::BasicBlock::Create(*TheContext, "entry", llvm_main);
   Builder->SetInsertPoint(main_entry_bb);
 
+  {
+    llvm::FunctionType *set_argv_ty = llvm::FunctionType::get(llvm::Type::getVoidTy(*TheContext), {i64_ty, ptr_ty}, false);
+    llvm::Function *set_argv_fn = TheModule->getFunction("_CG_set_argv");
+    if (!set_argv_fn)
+      set_argv_fn = llvm::Function::Create(set_argv_ty, llvm::Function::ExternalLinkage, "_CG_set_argv", TheModule.get());
+    llvm::Value *argc64 = Builder->CreateSExt(llvm_main->getArg(0), i64_ty);
+    Builder->CreateCall(set_argv_fn, {argc64, llvm_main->getArg(1)});
+  }
+
   if (cg_get_llvm(main_fun)) {  // If IF1 main function was generated
     Builder->CreateCall(cg_get_llvm(main_fun));
-    
+
     // Inject a call to _CG_event_loop_run(NULL) at the end of main
     llvm::Function *loop_run_fn = TheModule->getFunction("_CG_event_loop_run");
     if (!loop_run_fn) {
