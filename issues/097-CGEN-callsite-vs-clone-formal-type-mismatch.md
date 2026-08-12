@@ -1,18 +1,29 @@
 # 097 — An ordinary call site's argument type can diverge from the specific callee clone's formal parameter type (msp_ss.py's last two compile errors; guarded, root cause found and precisely located, fix not yet implemented)
 
-**Status: PARTIAL, guard landed 2026-08-11, root cause found
-2026-08-11.** The compile-blocking symptom (hard C++ overload-
-resolution error) is fixed — see "RESOLVED (partial)" below. The
-underlying mechanism — *why* clone/dispatch selection routes an edge
-to a target whose formal type doesn't match that edge's actual
-argument — is now traced to a specific, precisely-located gap: see
-"ROOT CAUSE FOUND (not a duplicate)" at the bottom. Confirmed **not a
-duplicate** of 076, 030, or 018 (each checked and ruled out explicitly
-with reasoning). Left open (not moved to `closed/`) since the actual
-fix — teaching `edge_type_compatible_with_entry_set`
-(`ifa/analysis/fa.cc:874`) to distinguish "never touched" from "only
-ever touched by constants whose type never propagated" — is real,
-scoped work not yet attempted, not just an open question.
+**Status: PARTIAL, guard landed 2026-08-11, root cause found and
+confirmed 2026-08-11.** The compile-blocking symptom (hard C++
+overload-resolution error) is fixed — see "RESOLVED (partial)" below.
+The underlying mechanism is now traced and confirmed via two rounds of
+instrumentation (added and fully reverted both times): `entry_set_
+compatibility` (`ifa/analysis/fa.cc:1059`) scores a candidate
+`EntrySet`'s compatibility against a **momentary snapshot** of its
+accumulated formal-parameter type — and that snapshot can be taken
+*before* the ES's own already-committed callers (here, `str.strip()`'s
+constant-string comparisons) have had their contribution (re-)flowed
+into it in the current pass, making it look emptier — and thus more
+"compatible" — than it truly is. Directly confirmed, not inferred: the
+specific edge in question was checked against 7 candidate `EntrySet`s
+and scored fully compatible with exactly 1 of them, the one whose type
+happened to be momentarily unpopulated. See "ROOT CAUSE FOUND (not a
+duplicate)" at the bottom for the full trace, including a correction
+to this doc's own first (wrong) draft of the mechanism. Confirmed
+**not a duplicate** of 076, 030, 018, or 045's `clone_for_constants`
+machinery (each checked and ruled out explicitly with reasoning). Left
+open (not moved to `closed/`) since the actual fix — either a reactive
+re-check when a routed edge's target ES later accumulates an
+incompatible type, or resequencing so an ES's committed contributors
+are flowed before new edges are scored against it — is real, scoped
+work not yet attempted, not just an open question.
 
 **Original status:** open, found 2026-08-11 while implementing
 [096](closed/096-extend-c-call-salvage-guard-past-str-comparisons.md).
@@ -302,40 +313,62 @@ One (`ord('@')`) correctly got its own `_CG_int64`-typed `EntrySet`
 string-literal-only `EntrySet` (607) instead of getting (or reusing)
 one shaped like 737's.
 
-**Confirmed exact mechanism, not just the general shape**: ES 607's
-own formal `AVar` for the `x` position has an **empty** `AType`
-(`->out->type->n == 0`) even though `strip`'s two calling edges both
-pass a real `str` actual — the type never flowed into the formal at
-all, evidently because `strip`'s call sites pass **compile-time string
-constants**, which take a different, constant-specific path through FA
-(consistent with codegen's own evidence: a *separate*, single-argument
-`str::__eq__` clone, `_CG_f_627_4`, exists in the same output purely
-for a constant-folded comparison — this codebase already special-cases
-constant arguments elsewhere, e.g. `Fun::clone_for_constants`,
-`edge_constant_compatible_with_entry_set` below). `entry_set_
-compatibility`'s type check, `edge_type_compatible_with_entry_set`
-(`ifa/analysis/fa.cc:874`):
+**Confirmed exact mechanism (corrected from an earlier, wrong draft of
+this section — see "Correction" below).** A follow-up instrumentation
+pass traced this to a precise **timing** bug, not a data-representation
+gap:
 
-```cpp
-if (etype->n && es_arg->out->type->n && etype != es_arg->out->type) return 0;
-```
+1. **Constants get real types, exactly as expected — confirmed
+   directly.** `add_var_constraint` (`fa.cc:1387-1389`) runs
+   `update_gen(av, make_abstract_type(s))` for any constant `Sym`, and
+   `make_abstract_type` (`fa.cc:220-226`) builds a genuine singleton
+   `CreationSet(s)` for it — precisely the "constant type symbol,
+   subtype of the primitive type, singleton CS" mechanism this issue
+   should have assumed from the start. Instrumenting `analyze_edge`
+   (`fa.cc:3080-3090`, added and reverted) confirmed this empirically:
+   `strip`'s constant-`"\r"`-etc. edges flow a real, non-empty,
+   singleton-CS-backed type into ES 607's `x` formal exactly like any
+   other value would.
+2. **The formal's abstract type is a real, correct 2-member union —
+   also confirmed directly.** The same trace watched ES 607's `x`
+   formal's accumulated `AType` grow from size 1 (after `strip`'s
+   constant edges) to size 2 once `loadTIText`'s `edge=3623` (the
+   `ord('q')` edge) also flowed through it — i.e. FA's own abstract
+   layer correctly recorded "this formal has been fed both a `str`
+   constant and an `int64`," a real, honest union, not a lost/dropped
+   fact.
+3. **The actual bug: `entry_set_compatibility` scored the ROUTING
+   decision against a snapshot of ES 607 taken BEFORE that union
+   existed.** Instrumenting `entry_set_compatibility` itself
+   (`fa.cc:1059`, added and reverted) for every `__eq__`-targeting
+   candidate check gave a direct, unambiguous answer for
+   `loadTIText`'s `edge=3623`: it was scored against **7** candidate
+   `EntrySet`s (153, 602, 603, 604, 605, 606, 607) — **6 of them
+   (153, 602-606) correctly detected a type conflict** (`etc=0`, the
+   soft-penalty branch of `edge_type_compatible_with_entry_set`,
+   `fa.cc:874`) — **only 607 scored fully compatible** (`etc=1`, no
+   conflict detected at all). That's only possible if 607's own
+   accumulated `x` type was still *empty at that specific moment* —
+   i.e. this routing check ran **before** `strip`'s own constant edges
+   had been (re-)flowed into 607 in this pass, even though they are
+   607's real, permanent, already-committed contributors. `find_best_
+   entry_sets` (`fa.cc:1191`) picks the single best-scoring existing
+   candidate with no comparison against "mint a fresh, unpenalized
+   `EntrySet` instead" — 607's momentary, artifactual full-compatibility
+   score won outright, and the edge was routed there **permanently**.
+   Only afterward did `analyze_edge` catch 607's formal back up to its
+   real, accumulated union (the size 1→2 growth in point 2) — by which
+   time the routing decision was already fixed and nothing revisits it.
 
-only rejects a candidate `EntrySet` when **both** the edge's actual
-type (`etype->n`) **and** the ES's own accumulated type
-(`es_arg->out->type->n`) are non-empty and disagree. When the ES's own
-formal type is empty — as ES 607's `x` position always was, because
-its only prior contributors were constants that bypassed normal type
-flow — this check is silently skipped, so ES 607 reads as compatible
-with *any* edge's actual argument at that position, typed or not. This
-is indistinguishable, to this check, from "a brand-new `EntrySet` with
-no edges yet" (which legitimately must accept its first edge's type
-unconditionally) — the check has no way to tell "genuinely first-use,
-safe to accept anything" apart from "has been used, but by constants
-whose types never propagated here, so still reads as empty." `loadTIText`'s
-`ord('q')` edge scored well enough against ES 607 (an existing,
-receiver-compatible candidate needing no new `EntrySet`) to win over
-minting/reusing a properly `int64`-typed one, exactly the way ES 737
-correctly did for the very next line.
+**Correction to this section's first draft**: it originally claimed
+constants "bypass normal type flow" entirely and never reach the
+formal — that's wrong, per point 1/2 above; a follow-up trace,
+requested and done the same day, disproved it directly rather than
+leaving it stand. The real gap is narrower and, in a sense, worse: the
+type information is all there and correctly unioned — the compatibility
+check just runs at a **stale point in time relative to the ES's own
+already-committed contributors**, not because constants are invisible
+to it.
 
 **Not a duplicate of any existing issue.** Ruled out explicitly:
 - **Not closed/076.** 076's root cause (fully resolved, see its own
@@ -344,15 +377,26 @@ correctly did for the very next line.
   prototype `CreationSet` into every instance's field type,
   permanently, via `P_prim_index_object`/`P_prim_set_index_object`'s
   "flow into every CS the receiver has ever seen" loop. None of that
-  applies here: no class-body defaults, no `CreationSet` accumulation,
-  no container element flow at all — this is call-target `EntrySet`
-  selection for an ordinary two-argument method, gated by a totally
-  different piece of code (`entry_set_compatibility` in `fa.cc`, not
-  `P_prim_index_object`). The two bugs share only a family
-  resemblance ("a reused/shared analysis object's staleness lets
-  incompatible data through") common to a whole class of FA bugs in
-  this codebase (063, 072-075 are named siblings in that family too) —
-  not the same mechanism, not the same fix location, not a duplicate.
+  applies here: no class-body defaults, no container element flow at
+  all, and (per the corrected trace above) this isn't even a
+  "permanently accumulates incompatible data and no one notices"
+  bug the way 076's was — 607's accumulated type is *correct*, the
+  bug is that a routing decision was scored and frozen against it
+  *before* its already-committed contributors had been (re-)flowed in
+  this pass. Different code path (`entry_set_compatibility` in
+  `fa.cc`, not `P_prim_index_object`), different data (`EntrySet`
+  routing, not container-element `AVar`s), different timing shape
+  (a one-time stale snapshot at routing, not permanent monotonic
+  accumulation after the fact). Real family resemblance — both are, at
+  bottom, "this codebase's reactive/quiescence-driven splitting can
+  make a decision using data that's momentarily behind reality, and
+  nothing revisits it once better data exists" — the same structural
+  class 076 itself named as possibly foundational (063, 072-075 are
+  its other named siblings). Not the same mechanism, not the same fix
+  location, not a duplicate — but worth flagging as the *second*
+  independently-found instance of that structural class within this
+  one session, for whoever eventually scopes a general fix for the
+  family.
 - **Not 030.** 030 is ambiguous dispatch among *multiple* candidate
   `Fun`s at a call site (`f->calls.get(n)->n > 1`, resolved via
   classtag/vtable emission). Here `get_target_fun_core` always returns
@@ -367,33 +411,38 @@ correctly did for the very next line.
   non-container type (a container method's clone shared across a
   scalar and a real container). Unrelated position, unrelated
   primitive, unrelated formal.
-- **Closest relative: closed/075/063's "no type bucket" family and
-  045's `clone_for_constants`/`clone_methods_per_cs` machinery** — not
-  a duplicate of either, but this bug's actual mechanism sits exactly
-  at the seam between them: `edge_constant_compatible_with_entry_set`
-  (`fa.cc:938`, quoted above `entry_set_compatibility`) already
-  special-cases constant-vs-constant incompatibility for
-  `clone_for_constants` formals specifically — this bug is the
-  same general shape (a constant-argument formal position needs
-  different compatibility handling than an ordinary one) but for
-  `str.__eq__`, which isn't a `clone_for_constants` function, hitting
-  the *unguarded* general-purpose check instead
-  (`edge_type_compatible_with_entry_set`'s `es_arg->out->type->n`
-  emptiness gap, not `edge_constant_compatible_with_entry_set`'s own,
-  narrower, already-handled one).
+- **Not 045's `clone_for_constants` machinery either** — checked and
+  ruled out directly, correcting this section's own first draft, which
+  wrongly invoked it. `Sym::clone_for_constants` is set in exactly one
+  place (`python_ifa_build_if1.cc:961`), only via an explicit, opt-in
+  `__pyc_clone_constants__(...)` builtin marker used by specific
+  library code — `str.__eq__`'s ordinary `x` parameter never carries
+  it. `edge_constant_compatible_with_entry_set` (`fa.cc:938`) is real,
+  narrower machinery for that opt-in category specifically; this bug
+  hits a completely different, unguarded check
+  (`edge_type_compatible_with_entry_set`) that runs for *every* call,
+  constant-flagged or not.
 
-**What a real fix would need**: `edge_type_compatible_with_entry_set`
-(`fa.cc:874`) would need to distinguish "this `EntrySet`'s formal
-position has never had ANY edge contribute a type" (genuinely safe to
-accept anything — the bootstrapping case this check's current shape
-protects) from "this position's contributing edges were all constants
-whose types bypass the normal `AVar` flow, so it LOOKS empty but isn't
-actually untouched." That distinction doesn't exist anywhere in the
-current data model (`AType.n == 0` conflates both cases) — adding it
-is exactly the kind of core, always-on, every-call-site-affecting FA
-change 076 itself flagged as carrying serious regression risk without
-a careful termination/scope argument first. Not attempted this
-session; left here, precisely located, for whoever picks this up next.
+**What a real fix would need**: `entry_set_compatibility`
+(`fa.cc:1059`, specifically its `edge_type_compatible_with_entry_set`
+call) makes a one-shot, frozen routing decision for each edge based on
+whatever the candidate `EntrySet`'s accumulated type happens to be at
+that exact moment — with no mechanism to revisit it once that ES's
+*own already-committed* contributors are (re-)flowed and the
+accumulated type changes underneath the decision. A real fix needs
+either (a) a reactive re-check — if an already-routed edge's target ES
+later accumulates a type that's genuinely incompatible with what was
+scored at routing time, un-route and re-decide (comparable to 076's
+"Option A: retroactively invalidate/re-flow on split") — or (b)
+sequencing FA so a candidate ES's own committed contributors are fully
+flowed *before* any new edge is scored against it, closing the window
+where it can look emptier than it really is (comparable to 076's
+"Option C: fix the scheduling instead"). Both are exactly the class of
+core, always-on, every-call-site-affecting FA change 076 itself found
+carries serious regression risk without a careful termination/scope
+argument first — not attempted this session; left here, precisely
+located and with the exact confirming trace above, for whoever picks
+this up next.
 
 **Verified no regression from the investigation itself**: after
 reverting the temporary instrumentation, rebuilt and re-ran the full

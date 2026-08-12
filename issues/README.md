@@ -302,13 +302,14 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   (`emit_send_call` now guards the unsafe scalar-into-voidish-formal
   direction, same 056/077/096 convention — `msp_ss.py` compiles clean
   as of this fix). Root cause traced and confirmed **not a duplicate**
-  of 076/030/018: `entry_set_compatibility`'s type check
-  (`fa.cc:874`) can't distinguish an `EntrySet` formal position that's
-  never had any edge contribute a type from one whose only
-  contributors were constants whose type never propagated there —
-  either way it reads as "empty" and gets treated as compatible with
-  any edge's actual type. Fix (teaching that check the difference)
-  not yet implemented — real, scoped FA work, precisely located.
+  of 076/030/018/045: `entry_set_compatibility` (`fa.cc:1059`) scores
+  a candidate `EntrySet`'s compatibility against a momentary snapshot
+  of its accumulated formal type, taken *before* the ES's own
+  already-committed callers had their contribution (re-)flowed in that
+  pass — directly confirmed by instrumentation (a `str.__eq__` edge
+  scored fully compatible with exactly 1 of 7 candidate `EntrySet`s:
+  the one whose type happened to be momentarily unpopulated). Fix not
+  yet implemented — real, scoped FA work, precisely located.
 
 ### LLVM
 
