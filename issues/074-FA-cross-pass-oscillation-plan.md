@@ -1,10 +1,15 @@
 # 074 — Plan: solve the FA cross-pass splitter oscillation (033/063/065/066 master plan)
 
-**Status:** plan, 2026-07-30; **re-measured 2026-08-12 after
-[098](098-FA-per-pass-reset-scoped-to-reachable-set.md) landed — see the
-section immediately below, which corrects one of Stage 1's premises and
-shows the headline `pass_limit_hit` metric is partly measuring the stall
-guard rather than the analysis.** Synthesizes and *sequences* the existing
+**Status:** plan, 2026-07-30; **re-measured and RE-BASED 2026-08-12
+after [098](098-FA-per-pass-reset-scoped-to-reachable-set.md) landed.
+See the two sections immediately below: the headline `pass_limit_hit`
+metric was partly measuring the stall guard rather than the analysis, and
+re-basing with the guards disabled cuts the target set from 17 programs
+to **8** — while exposing a separate, smaller and independently
+actionable defect: the stall guard's re-arm heuristic is **causing
+miscompiles** (sudoku5 and msp_ss compile to crashing binaries today and
+to correct ones when their descent is allowed to finish). One of Stage
+1's premises is also corrected.** Synthesizes and *sequences* the existing
 diagnostic work in [033](closed/033-splitter-non-idempotent-divergence.md) /
 [063](closed/063-no-type-bucket-triage.md) /
 [064](closed/064-method-phantom-display-blocks-es-split-routing.md) /
@@ -76,9 +81,118 @@ post-098 the same pass lands at 160 (not below 129 → no re-arm → stop).
 **One pass's arithmetic decides set membership.** So the 17-program table
 above, the 2026-07-30 one it replaces, and the dup-category tables derived
 from that set are all measuring guard calibration mixed with analysis
-behavior. Before more design work goes into this plan, re-base its
-measurements with the guards raised (or record both numbers), or the
-target set is partly noise.
+behavior. **The re-base is done — see the next section; the genuine
+target set is 8 programs, not 17.**
+
+## THE RE-BASED TARGET SET (2026-08-12)
+
+Same corpus, same `PYC_DBG_OSC` probe, with `IFA_STALL_LIMIT` and
+`IFA_NONIMPROVE_LIMIT` raised to 1000 (temporary; reverted) so **only the
+hard `IFA_PASS_LIMIT` (100) bounds the outer loop**. That splits the 17
+cleanly: a program that still ends `pass_limit_hit=1` is genuinely
+non-convergent within 100 passes; one that ends `pass_limit_hit=0` was
+only ever being cut off.
+
+### Group C — genuinely non-convergent (8). This is the real target set.
+
+| program | shipped guards | guards off | note |
+|---|---|---|---|
+| rubik | p19, 165 viol | p102, **1730** viol, ess 1406 | guard *helps*: diverges without it |
+| plcfrs | p47, 5517 viol | p102, 135 viol, ess 3074 | far better, still caps |
+| pylife | p41, 90 viol | p102, 90 viol, ess 393 | **stable residual** |
+| linalg | p16, 79 viol | p102, 79 viol, ess 1089 | **stable residual** |
+| go | p25, 59 viol | p102, 51 viol, ess 979 | |
+| yopyra | p102, 0 viol | p102, 36 viol, ess 820 | guard *helps*: see below |
+| bh | p52, 2 viol | p102, 2 viol, ess 526 | **stable residual** |
+| loop | p38, 2 viol | p102, 2 viol, ess 1150 | **stable residual** |
+
+The four **stable-residual** members (pylife, linalg, bh, loop) are the
+cleanest specimens this plan has ever had: identical violation counts with
+and without the guards, `.c` byte sizes within 0.02%, and — for the three
+that produce a binary (pylife, bh, loop) — byte-identical program output
+either way. So the guard costs them nothing, there is no descent to
+confound the signal, and they are pure "splitter churns forever against a
+fixed residual". Prefer these over dijkstra2/sudoku5 as the next
+investigation's subjects.
+
+### Group B — guard cutoff, not non-convergence (9)
+
+These reach `pass_limit_hit=0` once the guards stop firing. **The
+violation counts alone are a trap** — a program can "converge" by losing
+the program, so every row below was checked by generated-C size and, where
+both configs produced a binary, by *running* it:
+
+| program | shipped | guards off | .c size | runtime |
+|---|---|---|---|---|
+| **sudoku5** | p23, 381 viol | p33, 30 viol | 0.83× | **crash → correct (`TIME 1.00`)** |
+| **msp_ss** | p22, 947 viol | p67, 537 viol | 0.95× | **crash → correct (prints its banner)** |
+| genetic2 | p50, 3 viol | p56, 3 viol | 1.00× | identical |
+| timsort | p17, 66 viol | p18, 66 viol | 1.00× | identical |
+| sudoku4 | p27, 160 viol | p53, 26 viol | 0.92× | crashes both ways |
+| rubik* | p19, 165 viol | p102, 1730 viol | 2.36× | crashes both ways |
+| chess | p39, 63 viol | p80, **0** viol | 1.00× | fails in codegen both ways |
+| softrender | p57, 1029 viol | p90, 13 viol | 0.91× | `rc=134` both ways |
+| ~~rdb~~ | p26, 602 viol | p53, 1 viol | **0.01×** | **false win — program pruned** |
+| ~~amaze~~ | p17, 632 viol | p64, 8 viol | 0.92× | **false win — compiles, then crashes** |
+
+(*rubik is in Group C; listed here for the comparison.)
+
+Two rows are real, verified wins: **sudoku5 and msp_ss go from a runtime
+assertion failure (`matching function not found` / `list element type
+mismatch` — i.e. FA's residual violations surviving into codegen) to
+running correctly.** So the guard is not only distorting this doc's
+measurements; on those two it is **causing a miscompile**.
+
+Two rows are traps, and they are why "just raise the constant" is not the
+fix: **rdb** "converges" to 1 violation by emitting a 3.2 KB `.c` from a
+19 KB source — the `if __name__=="__main__":` guard loses its type, the
+whole main body is pruned, and the binary dies on `getter not resolved`;
+**amaze** compiles where it previously didn't, and then core-dumps.
+
+Group A (converged both ways) is 56 programs, of which exactly one
+(tictactoe) changes at all (p34 → p30, 0 violations either way). 11
+directories produce no FA result (data/script dirs, or they fail earlier).
+
+### What the re-base changes about this plan
+
+1. **The target set is 8, not 17**, and half of it is a *stable residual*
+   rather than a descent — a much sharper signal for the dup-category
+   and self-product work than the mixed set the 2026-07-30 tables used.
+   Those tables (`es_self`/`es_route`/`es_othermint`/`cs` per program)
+   should be re-taken over Group C only.
+2. **A separate lever exists, and it is currently causing miscompiles:
+   the guard's own termination/re-arm heuristic.** `sudoku5` and `msp_ss`
+   compile to *crashing* binaries today and to *correct* ones when the
+   descent is allowed to finish — no splitter change required. That makes
+   this a correctness issue, not just a precision one, and it is a
+   smaller, better-isolated problem than the splitter core.
+
+   It is **not** a constant to bump. Raising the limits regresses four
+   programs, in three distinct ways: `rdb` and `amaze` "converge" by
+   losing the program (rdb emits 1% of its former C and crashes; amaze
+   compiles and core-dumps), `yopyra` goes `rc=0 → rc=1`, and `rubik`'s
+   violations grow 10× (165 → 1730) with a 2.4× larger `.c`. What is
+   needed is a better *progress* signal than "strictly improved on best in
+   the last 8 re-deriving passes" — one that recognizes a plateau which
+   still precedes a collapse (softrender sat at 429 for ten passes before
+   dropping to 13) without licensing the runaway cases.
+
+   Ready-made test set for any such change: **must improve** {sudoku5,
+   msp_ss}; **must not regress** {rdb, amaze, yopyra, rubik}; **must stay
+   byte-identical** {chess, timsort, genetic2, pylife, bh, loop, and the
+   56 Group-A programs}.
+3. **The guard is load-bearing for escaping a flip-flop.** yopyra with
+   guards off freezes in exactly the `ess=820 css=1590↔1591 viol=36`
+   period-2 state documented below and never leaves; with the shipped
+   guard, firing suppresses the splitter, the flip-flop stops being
+   driven, and the re-arm lets it escape to 0 violations. Any redesign of
+   the guard has to preserve that escape, and it is a hint about the
+   flip-flop's own mechanism: it is *driven* by the splitter re-deciding,
+   and stops when the splitter stops.
+
+Wall time with guards off stayed modest (most Group C members 8-15 s;
+rubik 103 s, chess 61 s, plcfrs 51 s at 6-way parallelism), so the hard
+cap, not cost, is what bounds these runs.
 
 **3. One premise in Stage 1 was false when written, and is true now.**
 The "Lifecycle facts" paragraph under Stage 1 argues that the ES side
