@@ -18,12 +18,15 @@ happened to be momentarily unpopulated. See "ROOT CAUSE FOUND (not a
 duplicate)" at the bottom for the full trace, including a correction
 to this doc's own first (wrong) draft of the mechanism. Confirmed
 **not a duplicate** of 076, 030, 018, or 045's `clone_for_constants`
-machinery (each checked and ruled out explicitly with reasoning). Left
-open (not moved to `closed/`) since the actual fix — either a reactive
-re-check when a routed edge's target ES later accumulates an
-incompatible type, or resequencing so an ES's committed contributors
-are flowed before new edges are scored against it — is real, scoped
-work not yet attempted, not just an open question.
+machinery (each checked and ruled out explicitly with reasoning).
+**A fix (resequencing) was attempted and reverted** — see "Fix
+attempted, implemented, regressed 3 tests, reverted" below — it
+correctly implemented the resequencing option but tripped a
+pre-existing, more fundamental gap: FA's per-pass fixed point is
+order-dependent, filed separately as
+[098](098-FA-per-pass-fixed-point-is-order-dependent.md). Left open
+(not moved to `closed/`) since neither this issue's own fix nor 098's
+prerequisite work has landed.
 
 **Original status:** open, found 2026-08-11 while implementing
 [096](closed/096-extend-c-call-salvage-guard-past-str-comparisons.md).
@@ -65,6 +68,26 @@ already returns non-null) but close enough in territory to check.
 [018](../../issues/018-dict-mixed-key-types-boxing-failure.md) — same
 session's other `msp_ss`/`rdb`-adjacent finding, a different mechanism
 (container-method-vs-scalar `sizeof_element` gap), not a duplicate.
+[closed/073](closed/073-teach-splitter-productive-vs-inert-context.md)
+— found via a later survey (2026-08-11): direct, already-landed
+precedent that `entry_set_compatibility`'s *soft* type scoring
+(`val -= 4` for a mismatch, not outright rejection — the exact
+mechanism this issue's own root cause exploits) is a known correctness
+hazard on a **different** call path through the same function:
+`check_split`'s recursion-routing branch used to fall through to
+`find_best_entry_sets` on a nest-compatibility failure, and that soft
+match "merged contours it shouldn't" (regressed `match_seq`) until the
+fix required *hard* type equality for that specific path instead. Worth
+reading in full before designing 097's own fix — it's evidence this
+function's soft-matching behavior has bitten before, in a sibling
+mechanism, and was fixed with the same kind of "require exact match,
+don't just penalize" tool this issue's own options reach for.
+[098](098-FA-per-pass-fixed-point-is-order-dependent.md)'s own survey
+has more: [closed/057](closed/057-sorted-tolist-fa-nonconvergence.md)
+(same function's soft-matching also caused thousands of non-productive
+contour mints, before 073's fix — different direction, same root
+cause family) and [055](055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md)
+(still open, same convergence-loop family, different trigger).
 
 ## Symptom
 
@@ -452,3 +475,51 @@ from the "RESOLVED (partial)" section above is unaffected by this
 trace; it remains the right fix for the compile-blocking *symptom*
 regardless of which upstream mechanism (now known precisely) produces
 the mismatched edge.
+
+## Fix attempted, implemented, regressed 3 tests, reverted (2026-08-11)
+
+Per the "What a real fix would need" section above, option (b) was
+attempted: defer an edge's routing decision (`entry_set_compatibility`/
+`find_best_entry_sets`) whenever other, already-discovered edges are
+still pending in `fa->edge_worklist`, so every already-committed
+contributor to a candidate `EntrySet` gets a chance to flow before that
+candidate is scored. Design (worked out collaboratively): a new
+`FA::deferred_edge_worklist`; `analyze_edge` defers instead of routing
+when `!e->to && fa->edge_worklist.head`; `analyze_to_convergence`'s
+loop retries the deferred queue once `edge_worklist`/`send_worklist`
+both drain, forcing exactly one deferred edge through (unconditionally,
+no further deferral) when *only* deferred edges remain, to guarantee
+termination without a live-lock (requeuing the whole batch at once was
+considered and rejected first — the first edge popped would see the
+rest still pending and immediately re-defer, forever).
+
+**Implemented, compiled clean, terminated correctly** (`deferred_edge_
+worklist` verified empty at every `complete_pass()`) — **but regressed
+3 existing tests**: `generator_basic.py`, `raise_string.py`,
+`list_index_type_mismatch_salvage.py`, all newly producing "expression
+has no type" where they previously compiled clean. Root-caused in
+full — the mechanism is real and general, not specific to this fix:
+filed as [098](098-FA-per-pass-fixed-point-is-order-dependent.md).
+Summary: FA's per-pass value-flow fixed point turns out to depend on
+the *order* dispatch attempts happen to run in, not just on eventual
+convergence — a dispatch that would succeed if retried can permanently
+fail if its one attempt lands at the wrong moment relative to when its
+dependency resolves, with nothing in `analyze_to_convergence` checking
+whether that's what just happened before declaring the pass done. This
+fix's reordering (harmless in every way the design reasoned about —
+correct termination, no lost edges, no stale-cache violation) was
+still enough to trip that pre-existing gap on at least one real call
+shape (`generator_basic.py`'s `for`-loop iterator-protocol dispatch,
+traced in detail in 098).
+
+**Reverted in full** — `git diff` on `ifa/analysis/fa.cc`/`fa.h` is
+clean; rebuilt, `ifa --test` 58/58 and `test_pyc.py` 265/14/0/4 both
+backends confirm the tree matches the last commit exactly (no
+instrumentation or partial changes left behind).
+
+**Where this leaves 097**: the root cause traced above (`entry_set_
+compatibility` scoring a stale snapshot) is unchanged and still
+precisely located. A correct fix for *it* specifically needs 098's gap
+closed first — otherwise any scheduling change aimed at 097 risks
+tripping the same order-dependence 098 documents, exactly as this
+attempt did. Not something to retry blind a second time.
