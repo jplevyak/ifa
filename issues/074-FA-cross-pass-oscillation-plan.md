@@ -1,6 +1,10 @@
 # 074 — Plan: solve the FA cross-pass splitter oscillation (033/063/065/066 master plan)
 
-**Status:** plan, 2026-07-30. Synthesizes and *sequences* the existing
+**Status:** plan, 2026-07-30; **re-measured 2026-08-12 after
+[098](098-FA-per-pass-reset-scoped-to-reachable-set.md) landed — see the
+section immediately below, which corrects one of Stage 1's premises and
+shows the headline `pass_limit_hit` metric is partly measuring the stall
+guard rather than the analysis.** Synthesizes and *sequences* the existing
 diagnostic work in [033](closed/033-splitter-non-idempotent-divergence.md) /
 [063](closed/063-no-type-bucket-triage.md) /
 [064](closed/064-method-phantom-display-blocks-es-split-routing.md) /
@@ -16,6 +20,100 @@ sequence), `split_for_per_cs_method_receivers`, `split_ess_setters`/
 `split_css`/`creation_point`, the issue-033 ledger (`ledger_*`,
 `cs_group_signature`, `setter_site_signature`); `python_ifa_build_syms.cc`
 `def_fun_pyda` (method `nesting_depth`).
+
+## Re-measured 2026-08-12, post-[098](098-FA-per-pass-reset-scoped-to-reachable-set.md) — and the headline metric is partly measuring the stall guard
+
+098 (FA's per-pass reset was scoped to the *previous* pass's reachable
+set, so 19-24% of edges per pass carried an older pass's
+`args`/`rets`/`formal_filters`) is now fixed. Three consequences for this
+plan, in order of how much they change it.
+
+**1. It does not dissolve the oscillation.** Re-running this doc's own
+`PYC_DBG_OSC` measurement on the fixed tree: **17 of the 73 examples that
+reach FA** still end with `pass_limit_hit=1`. Set membership has moved a
+lot since 2026-07-30 (dijkstra2, sudoku3 and pygmy now converge; msp_ss,
+plcfrs and rdb are new), but the phenomenon is intact — as this doc
+predicted, it is a distinct mechanism.
+
+| program | final_pass | violations | ess | | program | final_pass | violations | ess |
+|---|---|---|---|---|---|---|---|
+| plcfrs | 47 | 5517 | 2724 | | pylife | 41 | 90 | 393 |
+| softrender | 57 | 1029 | 847 | | linalg | 16 | 79 | 1089 |
+| msp_ss | 22 | 947 | 1097 | | timsort | 17 | 66 | 367 |
+| amaze | 17 | 632 | 723 | | chess | 39 | 63 | 3035 |
+| rdb | 26 | 602 | 1714 | | go | 25 | 59 | 730 |
+| sudoku5 | 23 | 381 | 789 | | genetic2 | 50 | 3 | 639 |
+| rubik | 19 | 165 | 754 | | bh | 52 | 2 | 526 |
+| sudoku4 | 27 | 160 | 1317 | | loop | 38 | 2 | 1150 |
+| **yopyra** | **102** | **0** | **2086** | | | | | |
+
+**2. `pass_limit_hit` is not a precision fact — it is substantially a
+stall-guard artifact, and this doc's tables inherit that.** `softrender`
+and `sudoku4` are "new" oscillators only in that sense. Relax
+`IFA_STALL_LIMIT` / `IFA_NONIMPROVE_LIMIT` and both converge on the fixed
+tree to **exactly the pre-098 final violation counts**:
+
+| program | pre-098 | post-098, guards as shipped | post-098, guards relaxed |
+|---|---|---|---|
+| sudoku4 | 53 passes, 26 viol, `plh=0` | 27 passes, 160 viol, `plh=1` | 54 passes, **26** viol, `plh=0` |
+| softrender | 77 passes, 13 viol, `plh=0` | 57 passes, 1029 viol, `plh=1` | 90 passes, **13** viol, `plh=0` |
+
+No precision was lost; the descent simply got longer than the guard
+tolerates. The reason is the shape of these descents — a long flat
+plateau followed by a sudden collapse. softrender's tail, post-098,
+guards relaxed:
+
+```
+429 429 429 429 429 429 429 427 443 443 443 1015 207 24 24 24 24 24 24 13
+```
+
+The guard is **sticky** and re-arms only on a *strictly* improving pass
+(`v < best_violations`), so a program whose collapse lands one pass after
+the guard fires is recorded as oscillating, while the same program with a
+two-pass-shorter plateau is recorded as converging. Pre-098 sudoku4 hit
+117 violations at p26 (below its best of 129 → re-armed → ran on to 26);
+post-098 the same pass lands at 160 (not below 129 → no re-arm → stop).
+**One pass's arithmetic decides set membership.** So the 17-program table
+above, the 2026-07-30 one it replaces, and the dup-category tables derived
+from that set are all measuring guard calibration mixed with analysis
+behavior. Before more design work goes into this plan, re-base its
+measurements with the guards raised (or record both numbers), or the
+target set is partly noise.
+
+**3. One premise in Stage 1 was false when written, and is true now.**
+The "Lifecycle facts" paragraph under Stage 1 argues that the ES side
+needs no new keying map because "`clear_edge` clears an edge's flow
+(args/rets/filters) ... so the ledger's `group_signature` (arg/ret types)
+is *already* a stable key when types have converged". `clear_edge` did
+not in fact run on every edge — that is exactly 098 — so
+`group_signature` was being computed partly from *other passes'* argument
+types on the edges that escaped the reset. The conclusion may well still
+hold, but it was not established by that argument; it is worth re-deriving
+now that the premise is actually true.
+
+**New canary: `yopyra`** replaces pygmy as the pure case (pygmy converges
+at 43 passes, `plh=0`). yopyra hits the *hard* cap at 102 passes with **0
+violations**, so there is no union confound at all, and its trajectory
+shows the textbook signature twice:
+
+```
+p37 ess=820  css=1591 viol=36 dup=1     p57 ess=1296 css=1900 viol=25 dup=2
+p38 ess=820  css=1590 viol=36 dup=2     p58 ess=1296 css=1901 viol=25 dup=2
+p39 ess=820  css=1591 viol=36 dup=2     p59 ess=1296 css=1900 viol=25 dup=2
+p40 ess=820  css=1590 viol=36 dup=2     ... through p64
+```
+
+`ess` and violations frozen, `css` alternating by **exactly ±1**,
+`dup=2` every pass — a period-2 flip-flop of a single CreationSet, the
+065-gap-2 shape at its smallest possible size. Both flip-flops break on
+their own (p45, p64), after which yopyra grows `ess` 1015 → 2529 across
+~50 passes at **zero violations**, punctuated by `cs_dups` bursts (9, 12,
+6, 9, 9). Two notes for the plan: (a) that late stretch is bounded only
+by the hard pass cap — increment 1a's zero-violation stall requires
+`!grew`, and yopyra grows; (b) yopyra is the one member with real CS-side
+dup activity, which the 7-program dup-category scoping ("`cs ≈ 0` for the
+ENTIRE set") did not cover — worth including before Stage-1 (ii) is
+written off entirely.
 
 ## The problem, measured (2026-07-30, post-`check_split`-fix)
 
