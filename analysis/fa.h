@@ -540,6 +540,26 @@ class FA : public gc {
   Vec<EntrySet *> ess_set;  // all used entry sets as set
   Vec<Sym *> basic_types;
   Vec<CreationSet *> css, css_set;
+  // ---- ifa/issues/098: authoritative per-object registries ----
+  // `ess`/`css`/`funs` above are the contours/creation-sets/functions
+  // the LAST COMPLETED PASS reached (collect_results copies them out of
+  // entry_set_done). They are the right answer for consumers asking
+  // "what did the analysis find", and the WRONG answer for
+  // clear_results, whose job is to reset per-pass state on every object
+  // that could still be read this pass. The difference is not small or
+  // theoretical: the splitter (run_split_stages, which runs BEFORE the
+  // reset) re-homes edges into contours minted after `ess` was
+  // snapshotted, and contours that go dead keep their bindings, so
+  // 19-24% of edges per pass were escaping the reset and carrying an
+  // older pass's args/rets/formal_filters -- and a stale
+  // `Match::formal_filters` makes analyze_edge's gate skip a live edge
+  // permanently. These lists are append-only, populated by the
+  // respective constructors, and never pruned: FA already retains every
+  // one of these objects for the whole run (via Fun::ess, out_edge_map,
+  // Sym::creators), so this adds one pointer each, not lifetime.
+  Vec<AEdge *> all_aedges;
+  Vec<EntrySet *> all_entry_sets;
+  Vec<CreationSet *> all_creation_sets;
   Vec<AVar *> global_avars;
   // The distinguished global contour (see GLOBAL_CONTOUR above).
   // Created once at FA::analyze entry; fun points at the top-level

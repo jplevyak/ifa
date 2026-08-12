@@ -130,20 +130,29 @@ type, and split decisions aren't stably keyed across passes), per
 the [033](closed/033-splitter-non-idempotent-divergence.md) →
 [063](closed/063-no-type-bucket-triage.md) investigation lineage.
 
-- [098-FA-per-pass-fixed-point-is-order-dependent.md](098-FA-per-pass-fixed-point-is-order-dependent.md)
-  — one level more basic than 033/074's splitting-oscillation focus:
-  a single pass's ordinary value-flow/dispatch resolution isn't
-  verified to reach a genuine, order-independent fixed point before
-  `analyze_to_convergence` declares the pass done. Traced via a
-  concrete repro (`generator_basic.py`, under 097's reverted defer/force
-  scheduling attempt): a dispatch site that always succeeds on its
-  first attempt under today's scheduling — zero natural retry margin —
-  permanently failed once under a provably-safe reordering, because
-  nothing checks whether an empty worklist actually means "everything
-  settled" versus "the one thing that would have retried a failed
-  dispatch didn't happen to fire yet." Could be upstream of some of
-  033/074's own oscillation findings if it generalizes. Not fixed;
-  three design options sketched, no recommendation made.
+- [098-FA-per-pass-reset-scoped-to-reachable-set.md](098-FA-per-pass-reset-scoped-to-reachable-set.md)
+  — **mostly fixed 2026-08-12**, and it was upstream of 033/074's
+  splitting-oscillation work, so their measurements are worth
+  re-taking. FA re-derived flow state each pass over the subgraph *this*
+  pass reaches, but `clear_results` reset it over the subgraph the
+  *previous* pass reached (`fa->ess` is just `entry_set_done`), and
+  didn't run at all on a `reanalyze()`-driven pass. 19-24% of edges per
+  pass therefore carried an older pass's `args`/`rets`/`formal_filters`
+  into the current one, and a stale `formal_filter` made `analyze_edge`
+  skip a live edge permanently — leaving bound call edges with no values
+  at their arguments at quiescence, which no reachable call can have.
+  Fixed by resetting over authoritative registries (`FA::all_aedges` et
+  al.) before every pass; also fixed a latent null-deref in
+  `check_split` that the new trajectory exposed. Zero exit-code changes
+  across the shedskin sweep, `test_pyc.py` unchanged on both backends,
+  invariant now 0 on every pass everywhere (was up to 1207 on `chess`),
+  and a permanent `IFA_DBG_EDGEARGS` audit guards it. **Still open:**
+  `EntrySet::out_edge_map` is never reset, which makes a total dispatch
+  failure invisible to `collect_argument_type_violations` — clearing the
+  map is not viable (`get_AEdges` needs it for cross-pass edge
+  identity), so the collector needs the fix instead. Supersedes the
+  original "order-dependent per-pass fixed point" diagnosis, which the
+  measurements refute.
 - [074-FA-cross-pass-oscillation-plan.md](074-FA-cross-pass-oscillation-plan.md)
   — the current master plan, sequencing and re-measuring the whole
   cluster (033/063/064/065/066) after
@@ -325,7 +334,7 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   the one whose type happened to be momentarily unpopulated). A
   resequencing fix was implemented and **reverted** — it regressed 3
   tests by tripping a more fundamental, pre-existing gap, now filed
-  separately as [098](098-FA-per-pass-fixed-point-is-order-dependent.md).
+  separately as [098](098-FA-per-pass-reset-scoped-to-reachable-set.md).
   This issue's own fix is blocked on 098 landing first.
 
 ### LLVM

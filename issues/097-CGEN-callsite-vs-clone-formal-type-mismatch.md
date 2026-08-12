@@ -22,11 +22,16 @@ machinery (each checked and ruled out explicitly with reasoning).
 **A fix (resequencing) was attempted and reverted** — see "Fix
 attempted, implemented, regressed 3 tests, reverted" below — it
 correctly implemented the resequencing option but tripped a
-pre-existing, more fundamental gap: FA's per-pass fixed point is
-order-dependent, filed separately as
-[098](098-FA-per-pass-fixed-point-is-order-dependent.md). Left open
-(not moved to `closed/`) since neither this issue's own fix nor 098's
-prerequisite work has landed.
+pre-existing, more fundamental gap, filed separately as
+[098](098-FA-per-pass-reset-scoped-to-reachable-set.md). (098 was
+initially diagnosed as per-pass order-dependence; it was re-root-caused
+on 2026-08-12 as FA's per-pass reset being scoped to the *previous*
+pass's reachable set, so edges carry stale per-pass state forward. The
+reordering here most likely changed which contours a pass reaches, and
+therefore which edges the reset covers. **098's fix landed 2026-08-12**,
+so this resequencing attempt is now worth repeating — its regression
+should be gone.) Left open (not moved to `closed/`) since this issue's
+own fix has not landed.
 
 **Original status:** open, found 2026-08-11 while implementing
 [096](closed/096-extend-c-call-salvage-guard-past-str-comparisons.md).
@@ -82,7 +87,7 @@ reading in full before designing 097's own fix — it's evidence this
 function's soft-matching behavior has bitten before, in a sibling
 mechanism, and was fixed with the same kind of "require exact match,
 don't just penalize" tool this issue's own options reach for.
-[098](098-FA-per-pass-fixed-point-is-order-dependent.md)'s own survey
+[098](098-FA-per-pass-reset-scoped-to-reachable-set.md)'s own survey
 has more: [closed/057](closed/057-sorted-tolist-fa-nonconvergence.md)
 (same function's soft-matching also caused thousands of non-productive
 contour mints, before 073's fix — different direction, same root
@@ -499,18 +504,19 @@ worklist` verified empty at every `complete_pass()`) — **but regressed
 `list_index_type_mismatch_salvage.py`, all newly producing "expression
 has no type" where they previously compiled clean. Root-caused in
 full — the mechanism is real and general, not specific to this fix:
-filed as [098](098-FA-per-pass-fixed-point-is-order-dependent.md).
-Summary: FA's per-pass value-flow fixed point turns out to depend on
-the *order* dispatch attempts happen to run in, not just on eventual
-convergence — a dispatch that would succeed if retried can permanently
-fail if its one attempt lands at the wrong moment relative to when its
-dependency resolves, with nothing in `analyze_to_convergence` checking
-whether that's what just happened before declaring the pass done. This
-fix's reordering (harmless in every way the design reasoned about —
-correct termination, no lost edges, no stale-cache violation) was
-still enough to trip that pre-existing gap on at least one real call
-shape (`generator_basic.py`'s `for`-loop iterator-protocol dispatch,
-traced in detail in 098).
+filed as [098](098-FA-per-pass-reset-scoped-to-reachable-set.md).
+Summary **as re-root-caused 2026-08-12** (the original wording here,
+"the per-pass fixed point depends on dispatch order", is superseded —
+see 098): `clear_results` resets per-pass state only over the contours
+the *previous* pass reached, and not at all on a `reanalyze()`-driven
+pass, so a large fraction of edges carry an older pass's `args` /
+`rets` / `formal_filters` into the current one; a stale `formal_filter`
+then makes `analyze_edge`'s gate skip a live edge permanently, and
+everything downstream of it stays bottom. This fix's reordering
+(harmless in every way the design reasoned about — correct
+termination, no lost edges, no stale-cache violation) changed which
+contours a pass reaches, which is enough to change which edges get
+reset.
 
 **Reverted in full** — `git diff` on `ifa/analysis/fa.cc`/`fa.h` is
 clean; rebuilt, `ifa --test` 58/58 and `test_pyc.py` 265/14/0/4 both
@@ -520,6 +526,7 @@ instrumentation or partial changes left behind).
 **Where this leaves 097**: the root cause traced above (`entry_set_
 compatibility` scoring a stale snapshot) is unchanged and still
 precisely located. A correct fix for *it* specifically needs 098's gap
-closed first — otherwise any scheduling change aimed at 097 risks
-tripping the same order-dependence 098 documents, exactly as this
-attempt did. Not something to retry blind a second time.
+closed first — otherwise any change aimed at 097 that shifts which
+contours a pass reaches risks tripping the same stale-state gap 098
+documents, exactly as this attempt did. Not something to retry blind a
+second time.

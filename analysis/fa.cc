@@ -96,7 +96,10 @@ static void record_fa_event(FAPassStage stage, int splits, int ess_before, int c
   fa->fa_events_storage.add(e);
 }
 
-AEdge::AEdge() : from(nullptr), to(nullptr), pnode(nullptr), fun(nullptr), match(nullptr), in_edge_worklist(0) { id = fa->aedge_id++; }
+AEdge::AEdge() : from(nullptr), to(nullptr), pnode(nullptr), fun(nullptr), match(nullptr), in_edge_worklist(0) {
+  id = fa->aedge_id++;
+  fa->all_aedges.add(this);  // ifa/issues/098: authoritative list for clear_results
+}
 
 uint PendingMapHash::hash(AEdge *e) {
   return (uint)(uintptr_t)(e->fun ? e->fun->id : 0) +
@@ -178,6 +181,7 @@ CreationSet::CreationSet(Sym *s)
       equiv(nullptr),
       type(nullptr) {
   id = fa->creation_set_id++;
+  fa->all_creation_sets.add(this);  // ifa/issues/098: authoritative list for clear_results
 }
 
 CreationSet::CreationSet(CreationSet *cs)
@@ -185,6 +189,7 @@ CreationSet::CreationSet(CreationSet *cs)
       atype(nullptr), equiv(nullptr), type(nullptr) {
   sym = cs->sym;
   id = fa->creation_set_id++;
+  fa->all_creation_sets.add(this);  // ifa/issues/098: authoritative list for clear_results
   clone_for_constants = cs->clone_for_constants;
   for (AVar *v : cs->vars) {
     AVar *iv = unique_AVar(v->var, this);
@@ -198,6 +203,7 @@ CreationSet::CreationSet(CreationSet *cs)
 EntrySet::EntrySet(Fun *af)
     : fun(af), dfs_color(DFS_white), in_es_worklist(0), can_raise(0), split(nullptr), equiv(nullptr) {
   id = fa->entry_set_id++;
+  fa->all_entry_sets.add(this);  // ifa/issues/098: authoritative list for clear_results
 }
 
 AVar *make_AVar(Var *v, EntrySet *es) {
@@ -1250,6 +1256,18 @@ static int check_split(AEdge *e, Vec<AEdge *> &ees, EntrySet *avoid = nullptr) {
       for (AEdge *ee : *m) if (ee) sorted_m.add(ee);
       qsort_by_id(sorted_m);
       for (AEdge *ee : sorted_m) if (ee) {
+        // A candidate is only a routing target if it currently HAS a
+        // target. `out_edge_map` is not a set of live, bound edges: it
+        // also holds edges get_AEdges minted but dispatch never bound,
+        // and — the case that bites here — the edges of a group
+        // apply_entry_set_split has just detached (`x->to = 0` for the
+        // whole group, then re-bind one at a time), which are visible
+        // in this map for the duration of that second loop. Both
+        // deref null below (`ee->to->filters` inside check_edge,
+        // `ee->match->fun`). Latent since the split-lineage path was
+        // written; exposed by ifa/issues/098's reset fix shifting
+        // dijkstra's contour trajectory onto it.
+        if (!ee->to || !ee->match) continue;
         if (ee->to == avoid) continue;
         if (!check_edge(e, ee->to)) continue;
         if (ee->match->fun == e->match->fun) {
@@ -5261,12 +5279,16 @@ static void clear_edge(AEdge *e) {
   e->es_cs_backedge = 0;
   e->args.clear();
   e->rets.clear();
-  e->match->formal_filters.clear();
+  // `match` is null on an edge get_AEdges minted for a (pnode, fun)
+  // pair that dispatch has not bound yet -- reachable now that
+  // clear_results walks fa->all_aedges rather than only the edges of
+  // reached contours (ifa/issues/098). Such an edge has nothing else
+  // per-pass on it, but the null check has to be here.
+  if (e->match) e->match->formal_filters.clear();
   form_MPositionAVar(x, e->filtered_args) clear_avar(x->value);
 }
 
 static void clear_es(EntrySet *es) {
-  for (AEdge *ee : es->edges) if (ee) clear_edge(ee);
   es->out_edges.clear();
   es->backedges.clear();
   es->cs_backedges.clear();
@@ -5284,19 +5306,36 @@ static void clear_cs(CreationSet *cs) {
   cs->unknown_vars.clear();
 }
 
+// ifa/issues/098: `fa->pdb->funs`, not `fa->funs`. The latter is the
+// set of functions the last completed pass REACHED, so a function that
+// drops out of the call graph for a pass and comes back later kept its
+// AVars' values across the gap. pdb->funs is every function FA can
+// dispatch to (build_patterns/build_arg_positions are built from it),
+// so it is the correct domain for a reset -- and a strict superset, so
+// the post-convergence users of foreach_var (set_void_lub_types_to_void,
+// remove_unused_closures) just visit some extra bottom-typed AVars,
+// which are no-ops for both.
 static void foreach_var(void (*pfn)(Var *)) {
   for (Sym *s : fa->pdb->if1->allsyms) if (s->var) pfn(s->var);
-  for (Fun *f : fa->funs) for (Var *v : f->fa_all_Vars) pfn(v);
+  for (Fun *f : fa->pdb->funs) for (Var *v : f->fa_all_Vars) pfn(v);
 }
 
 struct ClearVarFn {
   static void F(Var *v) { clear_var(v); }
 };
 
+// Reset every piece of state a pass derives, so the next pass starts
+// from bottom everywhere. See FA::all_aedges (fa.h) for why this walks
+// the authoritative registries rather than `fa->ess`/`fa->css` (which
+// describe what the last pass reached, not what needs resetting), and
+// analyze_to_convergence for why it now runs before EVERY pass rather
+// than only after a splitting one. Identity-carrying state that must
+// survive a pass is listed in clear_avar's comment.
 static void clear_results() {
   foreach_var(clear_var);
-  for (CreationSet *cs : fa->css) clear_cs(cs);
-  for (EntrySet *es : fa->ess) clear_es(es);
+  for (CreationSet *cs : fa->all_creation_sets) clear_cs(cs);
+  for (EntrySet *es : fa->all_entry_sets) clear_es(es);
+  for (AEdge *e : fa->all_aedges) clear_edge(e);
   fa->type_world.cannonical_setters.clear();
 }
 
@@ -5375,10 +5414,12 @@ int fa_coerce_numeric_confluences(Vec<ATypeViolation *> &violations) {
   }
   // The re-run must re-derive flow from scratch: unlike the
   // monotone-growth reanalyze repairs (field promotion), coercion
-  // changes what an existing out computes, which is only legal from
-  // a clean slate. Same phase as extend_analysis's clear (fa.cc
-  // "if (analyze_again) clear_results()").
-  if (annotated) clear_results();
+  // changes what an existing out computes, which is only legal from a
+  // clean slate. That is no longer this function's job -- since
+  // ifa/issues/098, analyze_to_convergence clears before EVERY pass, so
+  // returning nonzero is sufficient to get the clean slate (and the
+  // explicit clear here would have been a redundant second pass over
+  // every Var, contour and edge).
   return annotated;
 }
 
@@ -6753,7 +6794,14 @@ static CSMSplitDecision *decide_csm_split(AVar *av) {
     fa->pass_limit_hit = true;
     analyze_again = 0;
   }
-  if (analyze_again) clear_results();
+  // NOTE (ifa/issues/098): the per-pass reset used to live here, gated
+  // on `analyze_again`. That made it conditional on the SPLITTER having
+  // work to do, so a pass the frontend requested through
+  // IFACallbacks::reanalyze() (pyc's field promotion) ran on top of the
+  // previous pass's fully populated flow state. analyze_to_convergence
+  // now clears before every pass instead, which is also the only place
+  // that can do it without wiping the converged results the caller
+  // needs when this returns 0.
   pass_timer.stop();
   ++analysis_pass;
   if (ifa_verbose) {
@@ -7024,7 +7072,46 @@ static void remove_unused_closures(Var *v) {
 
 static void remove_unused_closures() { foreach_var(remove_unused_closures); }
 
+// ifa/issues/098's invariant check, gated on IFA_DBG_EDGEARGS (same
+// zero-cost-when-off shape as the PYC_DBG_* probes elsewhere in this
+// file). If a call is reachable then some execution schedule reaches
+// it, and in that schedule every actual argument holds a value -- so a
+// call edge whose arguments this pass RECORDED must, at quiescence,
+// have a non-bottom `out` at every one of them. Non-empty `e->args` is
+// exactly the "recorded this pass" test: clear_results empties it
+// before every pass and only record_args_rets (reached through a
+// successful dispatch) refills it. A survivor is therefore an edge
+// holding some OTHER pass's actuals, which is precisely the failure 098
+// documents -- its worst-pass reading on the old reset scheme was 1207
+// (chess), 599 (rdb), 382 (sudoku5), 252 (msp_ss), 235 (mastermind2);
+// it is 0 on every pass of every shedskin example now. Kept because the fix (see clear_results /
+// analyze_to_convergence) is easy to silently undo: anything that
+// re-narrows the reset's domain, or re-introduces a pass that skips it,
+// shows up here immediately.
+//   IFA_DBG_EDGEARGS=1 ./pyc prog.py 2>&1 | grep EDGEARG
+static void audit_edge_arg_values() {
+  if (!getenv("IFA_DBG_EDGEARGS")) return;
+  int bad = 0;
+  for (AEdge *e : fa->all_aedges) {
+    if (!e->to || !e->from || !e->match) continue;
+    Vec<MPosition *> positions;
+    positional_arg_positions_in_order(e, positions);
+    for (MPosition *p : positions) {
+      AVar *actual = e->args.get(p);
+      if (!actual || actual->out != fa->type_world.bottom_type) continue;
+      bad++;
+      fprintf(stderr, "EDGEARG pass=%d e=%d %s -> %s pos=%d actual=av%d\n", analysis_pass, e->id,
+              e->from->fun && e->from->fun->sym && e->from->fun->sym->name ? e->from->fun->sym->name : "?",
+              e->to->fun && e->to->fun->sym && e->to->fun->sym->name ? e->to->fun->sym->name : "?",
+              (int)Position2int(p->last()), actual->id);
+    }
+  }
+  fprintf(stderr, "EDGEARG SUMMARY pass=%d stale_bottom_args=%d edges=%d\n", analysis_pass, bad,
+          fa->all_aedges.n);
+}
+
 static void complete_pass() {
+  audit_edge_arg_values();
   collect_results();
   collect_argument_type_violations();
   collect_var_type_violations();
@@ -7100,7 +7187,20 @@ static const long STALL_CHECK_INTERVAL = 20000;
 static const time_t STALL_TIMEOUT_SECONDS = 120;
 
 static void analyze_to_convergence() {
+  // ifa/issues/098: the per-pass reset belongs here, unconditionally,
+  // for two reasons. (1) Every pass must start from bottom, whether the
+  // splitter or the frontend's reanalyze() asked for it -- the old
+  // placement (extend_analysis, gated on `analyze_again`) skipped the
+  // reset entirely for reanalyze()-driven passes. (2) This is the only
+  // place that can reset without destroying the result: when the loop
+  // exits, the converged state must still be there for clone/codegen,
+  // so the reset has to happen BEFORE a pass, never after one.
+  // `analysis_pass == 0` has nothing to reset (initialize() just built
+  // the world), and clearing there would drop the seeded globals.
+  bool first_pass = true;
   do {
+    if (!first_pass) clear_results();
+    first_pass = false;
     compute_es_can_raise();
     initialize_pass();
     fa->edge_worklist.enqueue(fa->top_edge);
