@@ -153,6 +153,104 @@ Group A (converged both ways) is 56 programs, of which exactly one
 (tictactoe) changes at all (p34 → p30, 0 violations either way). 11
 directories produce no FA result (data/script dirs, or they fail earlier).
 
+## CENSUS 2026-08-13 — what is actually churning: new edges, or edges losing their mapping? new EntrySets, or new CreationSets?
+
+Per-pass census over Group C plus slow-but-converging controls, counting
+edge births, re-bindings, contour mints, CS mints, `copy_AEdge` fan-outs,
+and splitter detaches (probe removed). Four findings, all corpus-wide.
+
+**1. CreationSets are never the driver.** `split_css`-side CS mints are
+**0** on every program measured (max 2 over a whole run). Every CS mint
+comes from `creation_point` and tracks new contours: a fresh EntrySet
+gives fresh AVars, and each fresh AVar mints its own CS. **CS growth is
+downstream of ES growth, not a cause of it.** This retires the "is it CS
+or ES?" question in favour of ES.
+
+**2. `copy_AEdge` (the split fan-out path) fires zero times** anywhere in
+the corpus, so the edge population is not growing through split copies.
+
+**3. New edges are a *consequence* of new contours, not an independent
+source.** Of the edges born each pass, the fraction whose `from` contour
+was itself minted in the same or the previous pass:
+
+| program | edges born/pass | from a contour ≤1 pass old | ES mints/pass |
+|---|---|---|---|
+| yopyra | 112 | 112 (100%) | 40 |
+| loop | 30 | 30 (100%) | 22 |
+| rubik | 518 | 469 (91%) | 110 |
+| plcfrs | 1189 | 873 (73%) | 131 |
+| go | 35 | 22 (63%) | 11 |
+
+So the chain is **new EntrySet → its body's call sites need fresh AEdges
+→ each dispatches → possibly more EntrySets**, amplified by the number of
+call sites per body (yopyra ≈2.8 edges per new contour, plcfrs ≈9).
+
+**4. Almost every re-binding in the corpus comes from the splitter's
+detach path, and that path *cannot* reuse an existing contour.** Route
+mix over a whole run (`split-*` = reached from `apply_entry_set_split`,
+`flow-*` = ordinary dispatch):
+
+| program | split-fresh | split-pref | pend | lineage-reuse | best | flow-fresh |
+|---|---|---|---|---|---|---|
+| yopyra | 723 | 1718 | 122 | 6 | 4 | 1 |
+| plcfrs | 763 | 563 | – | 4 | 4 | 0 |
+| loop | 399 | 112 | – | 8 | 1 | 1 |
+| go | 341 | 121 | – | 7 | 13 | 0 |
+| bh | 258 | 290 | 245 | 30 | 4 | 0 |
+| chull *(converges)* | 444 | 316 | – | 8 | 19 | 0 |
+| sat *(converges)* | 408 | 310 | – | 7 | 16 | 1 |
+
+`flow-fresh` is ~0 — ordinary flow-time dispatch essentially never mints
+a contour at this stage. The mints are all splitter-driven, and the
+reason they are *mints* rather than reuse is structural:
+
+```cpp
+static void make_entry_set(AEdge *e, ..., EntrySet *split, EntrySet *preference) {
+  if (e->to) { edges.add(e); return; }
+  if (check_split(e, edges, split)) return;
+  EntrySet *es = nullptr;
+  if (!split) { if (find_best_entry_sets(e, edges)) return; }   // SKIPPED during a split
+  if (!es) es = preference;
+  set_entry_set(e, es);   // fresh contour, or the group's preference
+```
+
+**When `split` is non-null, `find_best_entry_sets` is never consulted**,
+so a detached edge has no "re-bind me to an existing compatible contour"
+option at all: it takes the pending/lineage route, or it gets a brand-new
+contour (the first of a group) or that contour as `preference` (the
+rest). Each split cycle therefore manufactures contours *by
+construction*. Combined with a splitter that re-decides every pass, that
+is the growth.
+
+**Slow convergence is the same machinery, not a different one.** chull
+and sat show the identical route mix and the identical
+mint-edges-follow-contours chain; they differ only in that their bursts
+are small (1-11 functions) and the work runs out. Contour minting is
+bursty everywhere: many passes mint nothing, then one mints 85-170.
+Split-lineage chains stay **shallow** (max depth 1-2), so this is *not*
+the unbounded call-context chain
+[closed/073](closed/073-teach-splitter-productive-vs-inert-context.md)
+closed.
+
+**One program repeats verbatim; the rest do not.** Only `yopyra` re-mints
+the *same* burst signature over and over (`__getitem__#2878=6
+pEscalar#10435=4 __mul__#1928=4 __mul__#10604=6`, identical at passes 82,
+83, 84, 97, 99, 101 — 36% of all its contour mints land in a repeated
+burst). Every other program, oscillating or converging, is at 0% by that
+measure. So "re-splitting the same thing forever" is a yopyra-specific
+finding, **not** the general shape — worth stating explicitly because the
+opposite is easy to assume from 033's framing.
+
+**The stable-residual members are a different disease entirely** and are
+now filed separately as
+[099](099-FA-pending-backedge-avoid-veto-forces-period-2.md): bh, pylife
+and linalg have *no* growth at all (0 new edges, 0 new ES, 0 new CS per
+pass) — a fixed set of edges swapping between a fixed pair of contours,
+forced by `check_split`'s pending-backedge route interacting with the
+`avoid` veto. pylife's entire non-convergence is **one edge**. Fixing 099
+should shrink Group C from 8 to 5 and leave this plan with only the
+growth shape.
+
 ### What the re-base changes about this plan
 
 1. **The target set is 8, not 17**, and half of it is a *stable residual*

@@ -130,6 +130,18 @@ type, and split decisions aren't stably keyed across passes), per
 the [033](closed/033-splitter-non-idempotent-divergence.md) →
 [063](closed/063-no-type-bucket-triage.md) investigation lineage.
 
+- [099-FA-pending-backedge-avoid-veto-forces-period-2.md](099-FA-pending-backedge-avoid-veto-forces-period-2.md)
+  — a *structurally forced* period-2 oscillation, and the entire
+  non-convergence of three programs (bh, pylife, linalg — 074's
+  "stable residual" group). `check_split`'s pending-backedge route
+  binds an edge to the lowest-id recorded contour after vetoing
+  `avoid`, and `avoid` is exactly the contour the splitter is
+  detaching the edge *from*; when the recorded set has two members
+  the veto leaves precisely the one just vacated, so the edge swaps
+  every pass forever with zero growth (0 new edges/EntrySets/
+  CreationSets per pass). pylife's whole non-convergence is **one
+  edge**. Root-caused with traces on all three; four fix options
+  sketched, each with its hazard, none tried.
 - [098-FA-per-pass-reset-scoped-to-reachable-set.md](098-FA-per-pass-reset-scoped-to-reachable-set.md)
   — **mostly fixed 2026-08-12**, and it was upstream of 033/074's
   splitting-oscillation work, so their measurements are worth
