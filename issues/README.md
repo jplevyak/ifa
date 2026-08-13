@@ -120,6 +120,100 @@ Net: 38 open → 25 open (13 closed, 0 net new files), a stale README
 index replaced with one that actually lists every open issue,
 grouped by category and by epic-vs-targeted scope.
 
+## 2026-08-12/13 — the FA convergence session: what changed and what it invalidated
+
+Five days of work in this area landed in two days; because it moved
+several long-standing premises, here is the consolidated trail. Source
+changes are four commits; everything else is measurement.
+
+**What landed (source).**
+
+1. **[098](098-FA-per-pass-reset-scoped-to-reachable-set.md) — the
+   per-pass reset was scoped to the *previous* pass's reachable set.**
+   `clear_results` reset per-edge/contour/CS state by walking `fa->ess`
+   (which is just the last pass's `entry_set_done`) and did not run at
+   all on a `reanalyze()`-driven pass. 19-24% of edges per pass carried
+   an older pass's `args`/`rets`/`formal_filters` into the current one,
+   and a stale `Match::formal_filters` made `analyze_edge`'s gate skip a
+   live edge permanently. Fixed by resetting over authoritative
+   registries (`FA::all_aedges` et al.) before *every* pass. Also fixed a
+   latent null-deref in `check_split` that the new trajectory exposed.
+   An `IFA_DBG_EDGEARGS` audit now guards the invariant.
+2. **[099](099-FA-pending-backedge-avoid-veto-forces-period-2.md)
+   (partial) — a structurally forced period-2 flip-flop.**
+   `record_backedges` re-homed an inherited pending entry's KEY onto the
+   split product but copied its VALUE verbatim, so each of two contours
+   kept a route to the other; `check_split`'s `avoid` veto then left
+   exactly the one just vacated. `pylife`'s entire non-convergence was
+   **one edge**. Fixed the asymmetry; `loop` converges. Still open: the
+   churn *relocated* into slow growth for bh/pylife/linalg.
+3. **[100](100-FA-display-removed-from-contour-identity.md) — the
+   lexical display is no longer contour identity.** Design decision. The
+   display now serves only `make_AVar`'s enclosing-scope resolution (and
+   clone's equivalence). `edge_nest_compatible_with_entry_set`,
+   `edge_display_compatible`, `find_or_make_display_variant`,
+   `EntrySet::display_variants`, `group_display_ok`,
+   `fun_max_live_display_slot`, `stage4_enabled`, `PYC_STAGE4`,
+   `Fun::max_live_display_slot` and `update_display`'s consistency assert
+   are all gone. Contour counts drop 40-80% corpus-wide; `yopyra`
+   converges. Cost: precision falls widely and oscillators net 16 → 20.
+4. **`flow_var_to_var` must re-assert `b->in >= a->out`.** A
+   *pre-existing* dropped-value bug the display removal exposed: the
+   early return on an already-established link skipped the re-assert
+   forever, so a value arriving after the link was created was never
+   delivered. 098's own probe had measured this at zero — the display
+   checks were keeping the affected contours apart. This is what fixed
+   100's two exception-path miscompiles.
+
+**Premises this invalidated.** Several long-standing conclusions rested
+on things that turned out not to hold:
+
+- **[074](074-FA-cross-pass-oscillation-plan.md)'s headline metric was
+  partly measuring the stall guard.** Re-basing with
+  `IFA_STALL_LIMIT`/`IFA_NONIMPROVE_LIMIT` disabled cut the genuine
+  target set from 17 programs to **8**, and showed the guard is *causing
+  miscompiles* (`sudoku5`, `msp_ss` compile to crashing binaries and to
+  correct ones when their descent is allowed to finish). Violation counts
+  alone are not a quality metric — `rdb` "converges" to 1 violation by
+  emitting 1% of its former C.
+- **074's Stage 1 "lifecycle facts" argument was false when written**
+  (it assumed `clear_edge` ran on every edge — that is exactly 098).
+- **074's Stage 0 and Stage 4 are retired**, and the basis on which it
+  ruled out Stage 2 is stale.
+- **[075](075-FA-element-cs-method-split-idempotent-plan.md)'s Piece 3 no
+  longer exists** — its machinery was deleted with the display gate it
+  worked around.
+- **[066](066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md)
+  is not the oscillation's lever**: CreationSet *splitting* measures ~0
+  corpus-wide (twice), and `copy_AEdge` is 0 everywhere.
+- **[097](097-CGEN-callsite-vs-clone-formal-type-mismatch.md)'s mechanism
+  got wider**: `entry_set_compatibility` lost its nest gate, so its soft
+  `val -= 4` type score is now more load-bearing, not less.
+
+**Where the oscillation actually stands.** Two distinct diseases, both
+now measured rather than inferred:
+
+- *Assignment churn, no growth* — a fixed edge set swapping between a
+  fixed contour set. 099 explains and fixes the period-2 form; `hq2x` is
+  the current extreme (~250 edges detached and re-parked per pass, ~1 new
+  edge, 102 passes).
+- *Contour growth* — and it has **moved**. The old driver
+  (`check_split`'s lineage-mint, blocked by the display) is gone; the
+  remaining one is the *detach* route: `make_entry_set` skips
+  `find_best_entry_sets` whenever `split` is non-null, so a detached edge
+  is never offered an existing contour. `sudoku4`/`genetic2` show a
+  byte-identical `split-fresh=2` leak every pass to the pass cap.
+  Two repairs measured and rejected (soft reuse: 59 test failures; hard
+  type-identity reuse: 6, including `recursive_polymorphic` and
+  `match_map_star`). **Exact type identity is not sufficient evidence
+  that a contour is not what the split is separating** — the detach route
+  needs a positive grouping reason, which is Stage 1 (ii) with a much
+  sharper target than when it was written.
+
+Tree state at the end: `test_pyc.py` 265 passed / 14 expected fails / 0
+failed / 4 skipped (both backends), `ifa --test` 58/0, zero exit-code
+changes across the 84-program shedskin sweep.
+
 ## Current open issues
 
 ### FA — large, open-ended (the convergence / container-element-precision cluster)

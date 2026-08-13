@@ -264,7 +264,7 @@ If you're hunting for a specific concept, this table maps concept → home.
 | Numeric type promotion | `if1/num.cc` + `fa.cc:coerce_num` |
 | Type casts / boxing | `if1/cast_code.cc` (generated), `if1/check_cast.cc` |
 | Scope chain (V) | `frontend/scope.cc` |
-| Lexical display (closures) | `analysis/fa.cc` `EntrySet::display` + `update_display` |
+| Lexical display (closures) | `analysis/fa.cc` `EntrySet::display` + `update_display` — resolution only, **not** contour identity (issues/100) |
 | Loops (loop detection) | `optimize/loop.cc` |
 | Dominators | `optimize/dom.cc` |
 | Phi/phy insertion (SSU) | `optimize/ssu.cc` |

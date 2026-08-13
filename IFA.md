@@ -315,8 +315,15 @@ inherits its parent's recursion bookkeeping. `is_es_recursive`,
 recursion SCC" so the splitter doesn't try to split inside a cycle (paper
 §6.1 — recursion limits splitting on recursive structures).
 
-`update_display` (`fa.cc:755`) keeps the lexical display correct as ESes
-get cloned for nested functions.
+`update_display` keeps the lexical display correct as ESes get cloned
+for nested functions. Since
+[issues/100](issues/100-FA-display-removed-from-contour-identity.md) that
+is *all* it does: the display is built from the first edge to reach a
+contour and consumed only by `make_AVar`'s enclosing-scope resolution
+(and `clone.cc`'s equivalence). It is deliberately **not** part of
+contour identity — there is no consistency assert and no compatibility
+check keyed on it, so two edges with different lexical displays may share
+a contour and resolve enclosing-scope Vars through the first stamp.
 
 ---
 

@@ -1,7 +1,15 @@
 # 097 — An ordinary call site's argument type can diverge from the specific callee clone's formal parameter type (msp_ss.py's last two compile errors; guarded, root cause found and precisely located, fix not yet implemented)
 
 **Status: PARTIAL, guard landed 2026-08-11, root cause found and
-confirmed 2026-08-11.** The compile-blocking symptom (hard C++
+confirmed 2026-08-11. NOTE 2026-08-13: `entry_set_compatibility` has
+changed under this issue —
+[100](100-FA-display-removed-from-contour-identity.md) removed its
+`edge_nest_compatible_with_entry_set` gate, so the candidate set it
+scores is strictly wider now, and its soft `val -= 4` type score is
+correspondingly more load-bearing. That is this issue's exact mechanism,
+so the trace below should be re-taken before the fix is designed; two
+attempts to make the detach route reuse contours (074's 2026-08-13
+census) failed precisely on that soft score.** The compile-blocking symptom (hard C++
 overload-resolution error) is fixed — see "RESOLVED (partial)" below.
 The underlying mechanism is now traced and confirmed via two rounds of
 instrumentation (added and fully reverted both times): `entry_set_

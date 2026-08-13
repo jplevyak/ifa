@@ -57,13 +57,14 @@ Low-effort fixes with no semantic risk. Safe to bundle. **Landed.**
 Self-contained changes; easy to review; no cross-file ripple.
 
 - [x] **`int` → `bool` for two-valued predicates.** Audit each:
-  `same_eq_classes`, `edge_nest_compatible_with_entry_set`,
-  `sset_compatible`, `edge_sset_compatible_with_edge/_entry_set`,
+  `same_eq_classes`, `sset_compatible`, `edge_sset_compatible_with_edge/_entry_set`,
   `edge_constant_compatible_with_entry_set`, `check_edge`,
   `is_fa_Var`, `is_return_value`, `is_call_result`,
   `mixed_basics`, `back_reaching`, `result_is_different`,
   `empty_type_minus_partial_applications`,
-  `get_obj_index`. Skip the three-valued returns
+  `get_obj_index`. (`edge_nest_compatible_with_entry_set` was on this
+  list and no longer exists — ifa/issues/100 removed the display from
+  contour identity.) Skip the three-valued returns
   (`application`, `all_applications`, `entry_set_compatibility`,
   `edge_type_compatible_with_*` returning `-1`/`0`/`1`) — those
   need renaming + documentation instead.

@@ -1,6 +1,15 @@
 # 066 — The split oscillation is a durable-decision *keying* bug, not an architecture gap: CS identity is per-pass, should be per-creation-site
 
-**Status:** open, framed 2026-07-23 (reading shedskin's `shedskin/infer.py`
+**Status:** open, but **the oscillation is not its use case** — measured
+twice (2026-07-30's dup-category scoping, and again in
+[074](074-FA-cross-pass-oscillation-plan.md)'s 2026-08-13 census, both
+before and after [100](100-FA-display-removed-from-contour-identity.md)):
+CreationSet *splitting* is ~0 across the whole oscillating corpus
+(`csSplit` 0-2 per run, `copy_AEdge` 0 everywhere), and every CS mint
+tracks a new contour rather than driving one. So this issue stands on its
+own repros (pygmy/pyc_declare's CS ROUTE) and should not be built "for
+the oscillation" — 074's remaining growth is on the ES *detach* route.
+Framed 2026-07-23 (reading shedskin's `shedskin/infer.py`
 to see how it handles the same data-polymorphism problem), **corrected
 2026-07-23** after tracing pyc's actual pass structure. The first draft
 claimed pyc splits "in place during the fixpoint" and needs an

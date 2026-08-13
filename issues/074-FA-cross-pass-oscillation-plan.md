@@ -923,7 +923,16 @@ re-open an already-decided ES split. The `e->to` durability already nearly
 gives this for ESs; the missing half is not re-deriving a decided ES split
 from a CS change.
 
-### Stage 4 — demote the display from the ES-split ROUTE gate (the real lever, per the Stage-2 measurement)
+### Stage 4 — demote the display from the ES-split ROUTE gate — RETIRED 2026-08-13 by [100](100-FA-display-removed-from-contour-identity.md)
+> **Superseded, and more than this stage asked for.** 100 removed the
+> display from contour identity outright, so `group_display_ok`,
+> `fun_max_live_display_slot`, `stage4_enabled` and `PYC_STAGE4` no
+> longer exist and the ROUTE has no display gate to demote. The
+> `es_othermint` population this stage targeted is gone with them (see
+> the 2026-08-13 growth re-census above); the growth that remains is on
+> the *detach* route, which this stage never addressed. Kept for the
+> measurement trail only.
+
 With Stage 2 retired (see its measure-first result above), this is the
 **primary remaining lever** for the oscillation's dominant `es_othermint`
 population, not a Stage-1/2-blocked cleanup. The measurement decoupled the

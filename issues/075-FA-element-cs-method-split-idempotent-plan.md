@@ -1,5 +1,19 @@
 # 075 — Escaping the local maximum: idempotent element-CS container-method separation (the shedskin `dcpa` model)
 
+> **PIECE 3 NO LONGER EXISTS (2026-08-13).**
+> [100](100-FA-display-removed-from-contour-identity.md) removed the
+> display from contour identity, which deleted this plan's Piece-3
+> machinery outright: `find_or_make_display_variant`,
+> `EntrySet::display_variants` and `edge_display_compatible` are all
+> gone, and `split_edges`' `resolve_target` now routes to the
+> `cs_es_map` product unconditionally instead of minting a per-display
+> sibling. Piece 3 existed *only* to work around the display gate it
+> now has no reason to work around, so it is retired rather than
+> broken — but the durability argument it made (a cross-pass sibling
+> index, not a per-call lookup) is the kind of thing the *detach* route
+> still needs; see 074's 2026-08-13 growth re-census. Pieces 1/2 and
+> the placement fix are unaffected. Everything below predates this.
+
 **Status:** Piece 1 built and validated 2026-08-04; Piece 2 built and
 found INSUFFICIENT the same day; a SCOPED Piece 3 (durable display-
 variant sibling reuse) built the same day, then made O(1)-per-lookup
