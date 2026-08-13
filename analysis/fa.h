@@ -179,6 +179,19 @@ class EntrySet : public gc {
   Map<MPosition *, AVar *> args;
   Vec<AVar *> rets;
   Map<MPosition *, AType *> filters;
+  // ifa/issues/074: DURABLE per-position type key (PYC_TYPEKEY). Captured
+  // from this contour's converged formal types at the end of each pass
+  // and NOT cleared by clear_es, so compatibility matching can be done
+  // against a stable, whole-pass-invariant value instead of the
+  // momentary mid-pass accumulation `es->args[p]->out->type` -- which is
+  // issue 097's "compatibility scored against a snapshot taken before
+  // the contour's own callers had re-flowed" hazard, and which also
+  // makes reuse decisions depend on *when* in the pass they are asked.
+  // Canonical ATypes are hash-consed for the life of the FA
+  // (`cannonical_atypes` is never cleared), so these pointers stay
+  // comparable by identity across passes.
+  Map<MPosition *, AType *> type_key;
+  int type_key_pass = -1;
   EdgeHash edges;
   EdgeMap out_edge_map;
   Vec<CreationSet *> creates;

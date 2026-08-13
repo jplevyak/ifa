@@ -872,6 +872,8 @@ static int edge_type_compatible_with_edge(AEdge *e, AEdge *ee, EntrySet *es, int
   return 1;
 }
 
+static int typekey_enabled();
+
 static int edge_type_compatible_with_entry_set(AEdge *e, EntrySet *es, int fmark = 0) {
   assert(e->args.n && es->args.n);
   if (!es->split) {
@@ -880,7 +882,12 @@ static int edge_type_compatible_with_entry_set(AEdge *e, EntrySet *es, int fmark
       if (!e_arg) continue;
       AType *etype = type_intersection(e_arg->out->type, e->match->formal_filters.get(p));
       if (!fmark) {
-        if (etype->n && es_arg->out->type->n && etype != es_arg->out->type) return 0;
+        AType *stype = es_arg->out->type;
+        if (typekey_enabled() && es->type_key_pass >= 0) {
+          AType *k = es->type_key.get(p);
+          if (k) stype = k;  // durable key wins over the mid-pass value
+        }
+        if (etype->n && stype->n && etype != stype) return 0;
       } else if (different_marked_args(e_arg, es_arg, 2))
         return 0;
     }
@@ -1350,6 +1357,37 @@ static void make_entry_set(AEdge *e, Vec<AEdge *> &edges, EntrySet *split = null
     if (find_best_entry_sets(e, edges)) return;
   } else if (hard_reuse_enabled()) {
     EntrySet *hard = nullptr;
+    if (hard_reuse_enabled() >= 4) {
+      // Route by the contour's durable type key: find the contour whose
+      // recorded (converged, previous-pass) formal types EQUAL this
+      // edge's filtered actuals. A lookup, not a score -- so the answer
+      // does not depend on when in the pass it is asked, and there is no
+      // symmetric "anything but `split`" choice to ping-pong between.
+      for (EntrySet *x : e->match->fun->ess) {
+        if (!x || x == split || x->type_key_pass < 0 || !x->args.n) continue;
+        bool all = true;
+        int matched = 0;
+        for (MPosition *p : e->match->fun->positional_arg_positions) {
+          AVar *e_arg = e->args.get(p);
+          if (!e_arg) continue;
+          AType *k = x->type_key.get(p);
+          AType *etype = type_intersection(e_arg->out->type, e->match->formal_filters.get(p));
+          if (!k || !etype->n || k != etype) { all = false; break; }
+          matched++;
+        }
+        if (all && matched && (!hard || x->id < hard->id)) hard = x;
+      }
+      if (hard) {
+        if (getenv("IFA_DBG_HARDREUSE"))
+          fprintf(stderr, "HARDREUSE4 p=%d fun=%s#%d e=%d split=es%d -> es%d (fun has %d ess)\n", analysis_pass,
+                  e->match->fun->sym && e->match->fun->sym->name ? e->match->fun->sym->name : "?",
+                  e->match->fun->sym ? e->match->fun->sym->id : -1, e->id, split ? split->id : -1, hard->id,
+                  e->match->fun->ess.n);
+        set_or_copy_AEdge(e, hard, edges);
+        return;
+      }
+      hard = nullptr;
+    }
     for (EntrySet *x : e->match->fun->ess)
       // `fun->ess` on this route also holds BARE products (filters +
       // split lineage only; set_entry_set is what populates args/rets),
@@ -1357,7 +1395,8 @@ static void make_entry_set(AEdge *e, Vec<AEdge *> &edges, EntrySet *split = null
       // (`edge_type_compatible_with_entry_set`'s `assert(e->args.n &&
       // es->args.n)` -- kanoodle aborts without this). The flow-time
       // caller never sees them, so the assert has always held there.
-      if (x && x != split && x->args.n && e->args.n && entry_set_compatibility(e, x) == INT_MAX &&
+      if (hard_reuse_enabled() < 4 && x && x != split && x->args.n && e->args.n &&
+          entry_set_compatibility(e, x) == INT_MAX &&
           (hard_reuse_enabled() < 2 ||
            edge_type_identical_to_entry_set(e, x, hard_reuse_enabled() >= 3)))
         if (!hard || x->id < hard->id) hard = x;  // deterministic (issue 035)
@@ -4734,7 +4773,21 @@ static int csm_enabled() {
 // separating; the flag exists to keep investigating that.
 // 0 off (default); 1 = entry_set_compatibility == INT_MAX; 2 = that AND
 // a POSITIVE type-level match; 3 = that AND a positive CreationSet-level
-// match (see edge_type_identical_to_entry_set).
+// match (see edge_type_identical_to_entry_set); 4 = LOOKUP BY DURABLE
+// TYPE KEY -- shedskin's model, where the type tuple names the contour
+// rather than being a property compatibility-tested against it. Requires
+// PYC_TYPEKEY.
+// ifa/issues/074: match compatibility against EntrySet::type_key (the
+// previous pass's CONVERGED formal types) rather than the contour's
+// momentary mid-pass accumulation. The point is durability: shedskin
+// binds a contour to a fixed type tuple and keeps that binding across
+// passes, so routing is a lookup rather than a race. Off by default.
+static int typekey_enabled() {
+  static int e = -1;
+  if (e < 0) e = getenv("PYC_TYPEKEY") ? 1 : 0;
+  return e;
+}
+
 static int hard_reuse_enabled() {
   static int e = -1;
   if (e < 0) {
@@ -7121,7 +7174,23 @@ static void audit_edge_arg_values() {
           fa->all_aedges.n);
 }
 
+// ifa/issues/074: freeze each reached contour's converged formal types
+// into its durable type key, for the NEXT pass's compatibility matching.
+// Taken here, after the flow fixpoint, so the value is whole-pass
+// invariant rather than a mid-pass snapshot.
+static void capture_type_keys() {
+  if (!typekey_enabled()) return;
+  for (EntrySet *es : fa->entry_set_done) if (es && es->fun) {
+    form_MPositionAVar(x, es->args) {
+      if (!x->key->is_positional() || !x->value) continue;
+      es->type_key.put(x->key, x->value->out->type);
+    }
+    es->type_key_pass = analysis_pass;
+  }
+}
+
 static void complete_pass() {
+  capture_type_keys();
   audit_edge_arg_values();
   collect_results();
   collect_argument_type_violations();

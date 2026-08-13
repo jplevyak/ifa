@@ -486,6 +486,74 @@ sees BARE products (filters + lineage only, no args/rets) that the
 flow-time caller never does, and `edge_type_compatible_with_entry_set`'s
 `assert(e->args.n && es->args.n)` aborts on them (`kanoodle`).
 
+### Durable type keys (`PYC_TYPEKEY`) — shedskin's model, tried; necessary but NOT sufficient
+
+Premise (author's, 2026-08-13): shedskin does not have this problem
+because its contours are bound to particular *types* and those bindings
+persist between passes. Can pyc store the compatible types on the
+EntrySet and match against that?
+
+**Two enablers were already true**, which makes it cheap: `clear_es` does
+**not** clear `EntrySet::filters` (durable per-contour type restrictions
+already exist), and `clear_results` clears only `cannonical_setters`, so
+`cannonical_atypes` persists and canonical `AType *` pointers stay
+comparable by identity across passes. `find_or_make_filtered_entry_set`
+is already "find the ES with this type key, else mint one" — just scoped
+to the CS-partition path.
+
+**Landed as `PYC_TYPEKEY=1`** (off by default): `EntrySet::type_key`, a
+per-position map captured at `complete_pass` from each reached contour's
+*converged* formal types and never cleared;
+`edge_type_compatible_with_entry_set` matches against it in preference to
+the momentary mid-pass `es->args[p]->out->type`. That directly removes
+issue 097's "scored against a snapshot taken before this contour's own
+callers re-flowed" hazard — the value is now whole-pass invariant.
+
+**Suite: 265/0 — the only experiment in this whole investigation that
+does not break anything.** So the substrate is sound.
+
+**But on its own it does not fix the oscillation.** Corpus, against the
+current baseline:
+
+| | oscillators | total ess | total violations |
+|---|---|---|---|
+| off | 20 | 30362 | 11384 |
+| `PYC_TYPEKEY=1` | 21 | 30237 | 12423 |
+
+Real wins (`rdb` 3181 → 2297, `sudoku5` 488 → 237, `plcfrs` 2442 → 2189)
+and real losses (`sunfish` 199 → 1741, `msp_ss` 514 → 873, `rubik`
+166 → 368). Roughly a wash.
+
+**And key-based *routing* still flip-flops** — `PYC_HARDREUSE=4` routes a
+detached edge to the contour whose durable key EQUALS its filtered
+actuals (a lookup, not a score). `builtin_type_factory`:
+
+```
+p42 __setitem__#2330 es88  -> es189
+p43 __setitem__#2330 es189 -> es88
+p44 __setitem__#2330 es88  -> es189      ... to the pass cap
+```
+
+Mode 4 requires exact key equality, so matching `es189` while in `es88`
+and `es88` while in `es189` proves **both contours carry the same key**.
+
+**That is the missing half, and it is the real difference from shedskin.**
+A durable key makes matching stable *in time*; it does not make it
+unique *in space*. pyc happily holds several contours of one function
+with identical keys, so a key match is still symmetric, and the
+`x != split` veto then forces the same alternation. Shedskin cannot get
+here because its contour lookup is **total and canonical**: the type
+tuple *names* the contour (find-by-key, create on miss), so two contours
+can never share a key and there is no "detach from this one" step to veto
+in the first place.
+
+**Concrete next step**, now well-posed: canonicalize contour creation on
+the durable key — route every mint through a find-by-key-else-create, the
+way `find_or_make_filtered_entry_set` already does for CS partitions —
+so duplicate-keyed contours cannot exist. Then the `x != split` veto
+becomes unnecessary rather than needing a smarter tie-break, and both
+this route's flip-flop and 099's have nothing to alternate between.
+
 ### Two earlier dead ends on that cause (both reverted)
 
 1. **Let `find_best_entry_sets` run on the detach route, vetoing only
