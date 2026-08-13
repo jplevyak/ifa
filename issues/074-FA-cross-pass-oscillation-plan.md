@@ -396,20 +396,52 @@ a progressively stricter test:
 - **2** — that **and** a *positive* type match: `edge_type_identical_to_
   entry_set`, requiring every positional argument to be typed on BOTH
   sides and identical. Mode 1 is not that: `edge_type_compatible_with_
-  entry_set` only rejects when both sides are non-empty, so an
-  unpopulated contour is trivially "compatible" (issue 097's mechanism),
-  and that is how mode 1 merged `defaultdict(int)` with
-  `defaultdict(list)`.
+  entry_set` only rejects when both sides are non-empty
+  (`etype->n && es_arg->out->type->n && ...`), so a candidate whose
+  formal-parameter AVar is *bottom-typed at the compared position* is
+  vacuously "compatible" — issue 097's mechanism. (Note this is a
+  different thing from a **bare** ES, which has no arg AVars at all;
+  that one trips the assert, see below.)
 - **3** — the same at CreationSet granularity rather than the type-level
   (CS-stripped) view.
 
 Suite: off 265/0, mode 1 **260/6**, modes 2 and 3 **261/5**. Mode 2
 recovers `tuple_compare`; CS granularity buys nothing further.
 
-**Why the strictness doesn't help, and what that means.** On
-`recursive_polymorphic` the whole run makes just *three* reuses — `len`,
-`__getitem__`, `flatten_sum` — and the test fails on `deep_copy_list`,
-which is never reused. The damage is a knock-on: `deep_copy_list`'s two
+**Why the strictness doesn't help — and a correction.** An earlier draft
+of this section blamed mode 1's vacuous-compatibility hole above for the
+`defaultdict(int)`/`defaultdict(list)` merge. **That is not supported**:
+mode 2 rejects exactly that case and `builtin_type_factory` still fails,
+with the same symptom. Logging the reuses (`IFA_DBG_HARDREUSE=1`) shows
+what is really happening, and it is the same in three of the four
+failures:
+
+```
+builtin_type_factory  p40 __str__#1880 es50  -> es193
+                      p41 __str__#1880 es193 -> es50
+                      p42 __str__#1880 es50  -> es193      ... to the cap
+dict_iter_cross_...   p31/32/33  __str__#1880 es66  <-> es99
+match_map_star        p28..p33   __str__#1880 es229 <-> es89
+```
+
+**Hard reuse manufactures a period-2 flip-flop of its own**, structurally
+identical to [099](099-FA-pending-backedge-avoid-veto-forces-period-2.md)'s
+and for the same reason: the splitter detaches the edge from contour A,
+the `x != split` veto makes the reuse pick sibling B, and next pass it
+detaches from B and picks A. It is *inevitable* — if A and B are
+type-identical enough for hard reuse to accept, then whichever contour
+the edge currently occupies, the other is an equally valid target, and
+the veto forces the swap. The `x != split` veto is thus the same design
+error 099 found in `check_split`'s pending-backedge route, reproduced in
+a second place. It also explains the corpus numbers below far better than
+the empty-contour story did: hard reuse mints 099-shaped flip-flops
+wherever a function has two mutually compatible contours.
+
+`recursive_polymorphic` is the genuinely *different* failure of the four,
+and the informative one for the timing question. The whole run makes just
+*three* reuses — `len`, `__getitem__`, `flatten_sum`, all in passes 1 and
+4, with no flip-flop — and the test fails on `deep_copy_list`, which is
+never reused. The damage is a knock-on: `deep_copy_list`'s two
 recursion levels are **both `list`** (list-of-list vs list-of-int) and
 both `defaultdict`s are `defaultdict`, so they are type-identical *and*
 CS-identical at the compared positions **at the moment the detach route
@@ -434,8 +466,13 @@ converged (`ant`, `circle`, `collatz`, `fysphun`, `path_tracing`,
 `rubik2`, `sha`, `sieve`, `stereo`, `tonyjpegdecoder`) now run to the
 hard 102-pass cap with **zero violations** — the pure churn shape.
 
-That is the real lesson: **the fresh mint on the detach route is not
-waste, it is what makes the split stick.** Reusing an existing contour
+Two lessons, then. **(a) The `x != split` veto cannot be combined with a
+symmetric reuse test** — that combination is a flip-flop generator, in
+`check_split`'s pending route (099) and here alike; any reuse rule needs
+an asymmetric tie-break (lowest id *including* `split`, a recorded home,
+anything that is stable under "which one am I in right now"). **(b) The
+fresh mint on the detach route is not waste, it is what makes the split
+stick.** Reusing an existing contour
 makes the split a no-op, so the splitter re-derives the same decision
 every pass — "suppression is not eviction" (this plan's own Stage-1
 finding) now measured at corpus scale. The growth this census identified
