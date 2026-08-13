@@ -130,6 +130,20 @@ type, and split decisions aren't stably keyed across passes), per
 the [033](closed/033-splitter-non-idempotent-divergence.md) →
 [063](closed/063-no-type-bucket-triage.md) investigation lineage.
 
+- [100-FA-display-removed-from-contour-identity.md](100-FA-display-removed-from-contour-identity.md)
+  — the lexical display is now used ONLY for what it is for: `make_AVar`
+  resolving an enclosing-scope Var (nested functions), plus clone's
+  equivalence. Every use of it as *contour identity* is gone
+  (`edge_nest_compatible_with_entry_set`, `edge_display_compatible`,
+  `find_or_make_display_variant`, `group_display_ok`, Stage 4's
+  live-slot machinery, and `update_display`'s consistency assert).
+  Design decision, taken knowing the cost. Benefit: the display was a
+  major contour-growth driver (074's census: 34-68 fresh contours per
+  pass on yopyra from the lineage-mint alone) — ess drops 40-80%
+  corpus-wide and yopyra converges. Cost: precision falls widely, the
+  oscillator count nets 16 → 20, and **two exception-path tests now
+  miscompile and are knowingly left failing**. Retires 074's Stage 0/4
+  and invalidates the basis on which it ruled out Stage 2.
 - [099-FA-pending-backedge-avoid-veto-forces-period-2.md](099-FA-pending-backedge-avoid-veto-forces-period-2.md)
   — a *structurally forced* period-2 oscillation, and the entire
   non-convergence of three programs (bh, pylife, linalg — 074's

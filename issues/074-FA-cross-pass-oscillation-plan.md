@@ -1,6 +1,14 @@
 # 074 — Plan: solve the FA cross-pass splitter oscillation (033/063/065/066 master plan)
 
-**Status:** plan, 2026-07-30; **re-measured and RE-BASED 2026-08-12
+**Status:** plan, 2026-07-30. **OVERTAKEN IN PART 2026-08-13 by
+[100](100-FA-display-removed-from-contour-identity.md)**: the lexical
+display has been removed from contour identity by design decision, which
+retires this plan's Stage 0 and Stage 4 (both prototyped exactly that and
+concluded it could not be done) and invalidates the measurements Stage 2
+was ruled out on — the contour growth Stage 2 was competing against is
+largely gone (ess down 40-80% corpus-wide; yopyra converges). Re-derive
+Stage 2 against the new baseline before building anything here.
+Previously: **re-measured and RE-BASED 2026-08-12
 after [098](098-FA-per-pass-reset-scoped-to-reachable-set.md) landed.
 See the two sections immediately below: the headline `pass_limit_hit`
 metric was partly measuring the stall guard rather than the analysis, and

@@ -795,17 +795,6 @@ static bool same_eq_classes(Setters *s, Setters *ss) {
   return true;
 }
 
-static bool edge_nest_compatible_with_entry_set(AEdge *e, EntrySet *es) {
-  if (!es->fun->sym->nesting_depth) return true;
-  int ef_nd = e->from->fun->sym->nesting_depth, es_nd = es->fun->sym->nesting_depth;
-  int n = ef_nd < es_nd ? ef_nd : es_nd;  // MIN
-  for (int i = 0; i < n; i++)
-    if (e->from->display[i] != es->display.v[i]) return false;
-  if (ef_nd < es_nd)  // down call
-    if (es->display[es_nd - 1] != e->from) return false;
-  return true;
-}
-
 static int different_marked_args(AVar *a1, AVar *a2, int offset, AVar *basis = 0) {
   Vec<void *> marks1, marks2;
   AVar *basis1 = basis ? basis : a2;
@@ -953,54 +942,34 @@ static bool edge_constant_compatible_with_entry_set(AEdge *e, EntrySet *es) {
   return true;
 }
 
-static int fun_max_live_display_slot(Fun *f);
-static int stage4_enabled();
 static int csm_enabled();
 
+// Build `es`'s lexical display from the first edge that reaches it.
+//
+// The display exists for ONE consumer: make_AVar's resolution of a Var
+// belonging to an enclosing scope (`es->display[nesting_depth - 1]`),
+// i.e. genuine nested functions. It is deliberately NOT part of contour
+// identity any more: the consistency assert that used to live here
+// enforced "one lexical display per contour", which is what made
+// `edge_nest_compatible_with_entry_set` reject an otherwise-perfect
+// routing candidate and forced check_split's lineage branch to mint a
+// fresh contour per recursion level (073's "sole unbounded EntrySet
+// generator"; measured on yopyra at 34-68 new contours per pass,
+// forever -- see ifa/issues/074). pyc gives every method a
+// nesting_depth it does not need, so that identity constraint was
+// mostly enforcing a *phantom* display (issue 064).
+//
+// A contour therefore keeps whatever display its first edge stamped,
+// and a later edge with a different lexical display now shares the
+// contour. The consequence is a precision loss, not unsoundness: an
+// enclosing-scope Var resolves through the first stamp, so two callers'
+// captured variables union rather than staying separate.
 static void update_display(AEdge *e, EntrySet *es) {
-  // add any we need
   for (int i = es->display.n; i < es->fun->sym->nesting_depth; i++)
     if (i < e->from->display.n)
       es->display.add(e->from->display[i]);
     else
       es->display.add(e->from);
-  // verify everything
-  // issue 074 Stage 4: only the LIVE display slots must stay consistent.
-  // Inert slots (above fun_max_live_display_slot) are never read by
-  // make_AVar, so an edge routed into es by the Stage-4 display-demoted
-  // ROUTE may legitimately carry a different inert slot -- es keeps the
-  // value its first edge stamped and nothing ever reads the difference.
-  // Live slots (module singleton at 0; genuine V-closure ancestor slots)
-  // still assert, preserving the desync guard where it matters.
-  int nd = es->fun->sym->nesting_depth;
-  if (stage4_enabled()) {
-    int live = fun_max_live_display_slot(es->fun);
-    if (live + 1 < nd) nd = live + 1;
-  }
-  for (int i = 0; i < nd; i++)
-    if (i < e->from->display.n)
-      assert(es->display[i] == e->from->display.v[i]);
-    else
-      assert(es->display[i] == e->from);
-}
-
-// Non-asserting form of update_display's consistency check: would
-// routing edge `e` into `es` keep `es`'s ALREADY-STAMPED display
-// entries consistent? A bare/unstamped product ES (display.n == 0)
-// has no existing entries to conflict, so the first edge always fits
-// (it stamps the display); only entries the ES already holds
-// constrain a later edge. Used by split_edges' dynamic redispatch to
-// avoid tripping update_display's assert when two edges with different
-// lexical displays would land in the same product ES (issue 034
-// family; shedskin sudoku5).
-static bool edge_display_compatible(AEdge *e, EntrySet *es) {
-  int nd = es->fun->sym->nesting_depth;
-  int lim = es->display.n < nd ? es->display.n : nd;
-  for (int i = 0; i < lim; i++) {
-    EntrySet *want = (i < e->from->display.n) ? e->from->display[i] : e->from;
-    if (es->display[i] != want) return false;
-  }
-  return true;
 }
 
 static void set_entry_set(AEdge *e, EntrySet *es = 0) {
@@ -1065,7 +1034,6 @@ static bool check_edge(AEdge *e, EntrySet *es) {
 static int entry_set_compatibility(AEdge *e, EntrySet *es) {
   int val = INT_MAX;
   if (e->match->fun->split_unique) return 0;
-  if (!edge_nest_compatible_with_entry_set(e, es)) return 0;
   // ifa/issues/075: `es->filters` (the restriction
   // find_or_make_filtered_entry_set applies -- e.g. CSM's "only this
   // CreationSet") was otherwise invisible here: a candidate whose
@@ -1271,7 +1239,7 @@ static int check_split(AEdge *e, Vec<AEdge *> &ees, EntrySet *avoid = nullptr) {
         if (ee->to == avoid) continue;
         if (!check_edge(e, ee->to)) continue;
         if (ee->match->fun == e->match->fun) {
-          if (e->match->fun->split_unique || !edge_nest_compatible_with_entry_set(e, ee->to)) {
+          if (e->match->fun->split_unique) {
             // Issue 073: this split-lineage mint is the sole unbounded
             // EntrySet generator (measured: ~all divergence-time mints on
             // adatron/057/plcfrs came from here). It fires once per
@@ -1296,8 +1264,7 @@ static int check_split(AEdge *e, Vec<AEdge *> &ees, EntrySet *avoid = nullptr) {
             if (!avoid && !e->match->fun->split_unique) {
               EntrySet *knot = nullptr;
               for (EntrySet *x : e->match->fun->ess)
-                if (x && edge_nest_compatible_with_entry_set(e, x) &&
-                    edge_type_compatible_with_entry_set(e, x) == 1)
+                if (x && edge_type_compatible_with_entry_set(e, x) == 1)
                   if (!knot || x->id < knot->id) knot = x;  // deterministic (issue 035)
               if (knot) {
                 set_or_copy_AEdge(e, knot, ees);
@@ -4396,38 +4363,6 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
   return res;
 }
 
-// ifa/issues/075 Piece 3: a durable, cross-pass-reusable (cs_es_map
-// target x display) sibling. `tes` already carries the filters
-// find_or_make_filtered_entry_set gives every caller sharing its CS
-// partition; a display-incompatible edge needs a SEPARATE product
-// with those SAME filters but a display of its own.
-//
-// Indexed on tes->display_variants (fa.h), NOT found by scanning
-// tes->fun->ess: an earlier version searched fun->ess directly
-// (mirroring find_or_make_filtered_entry_set's own
-// `!filters.some_disjunction(...)` reuse scan) and that DID fix the
-// original bug -- without ANY cross-pass memory, a call scoped to one
-// apply re-minted a new sibling every pass for the same recurring
-// incompatibility, confirmed to grow fa->ess.n unboundedly (123 ->
-// 2747 in <8s on dijkstra2, non-terminating). But searching the
-// WHOLE of fun->ess is O(every ES the function has ever split into,
-// across every position and partition) -- fine at fun->ess.n ~123,
-// ruinous once the fix let it stabilize around 435: each pass then
-// took on the order of a minute (measured: 10 CSM invocations in the
-// first 10s, only 1 more in the next 50s). tes->display_variants
-// scopes the search to just THIS cs_es_map entry's own siblings --
-// bounded by the number of distinct displays that actually flow into
-// this one CS partition (073's "display is bounded" theorem), not by
-// the function's total split history.
-static EntrySet *find_or_make_display_variant(AEdge *ee, EntrySet *tes) {
-  for (EntrySet *es2 : tes->display_variants) if (es2 && edge_display_compatible(ee, es2)) return es2;
-  EntrySet *fresh = new EntrySet(tes->fun);
-  tes->fun->ess.add(fresh);
-  fresh->filters.copy(tes->filters);
-  fresh->split = tes->split;
-  tes->display_variants.add(fresh);
-  return fresh;
-}
 
 [[nodiscard]] static int split_edges(AVar *av, int fsetters, int fmark) {
   int again = 0;
@@ -4485,12 +4420,11 @@ static EntrySet *find_or_make_display_variant(AEdge *ee, EntrySet *tes) {
   // display-compatible (or already where the edge is), else -- CSM only
   // -- a per-display sibling of it; else null (caller must leave the
   // edge alone, the pre-075 behavior).
-  auto resolve_target = [&](AEdge *ee, CreationSet *cs) -> EntrySet * {
-    EntrySet *tes = cs_es_map.get(cs);
-    if (!tes || tes == ee->to || edge_display_compatible(ee, tes)) return tes;
-    if (!csm_enabled()) return nullptr;
-    return find_or_make_display_variant(ee, tes);
-  };
+  // The display no longer gates this route: it is built for make_AVar's
+  // enclosing-scope resolution, not used as contour identity, so an edge
+  // whose lexical display differs from the product's is routed into the
+  // product anyway (it keeps the display its first edge stamped).
+  auto resolve_target = [&](AEdge *ee, CreationSet *cs) -> EntrySet * { return cs_es_map.get(cs); };
   // Re-pointing an edge at a different ES must go through the full
   // re-entry recipe apply_entry_set_split uses (null `to`, clear the
   // stale per-edge filtered_args whose AVars are contoured on the
@@ -4683,25 +4617,10 @@ static uint group_signature(Vec<AEdge *> &these_edges, Fun *f) {
 // keep a live slot >= 1 -- for them the enforcement below is unchanged.
 // -1 = no slot consumed. Cached; dynamic fa_all_Vars additions are own
 // locals (nd == f->nd+1), which never lower this bound.
-static int fun_max_live_display_slot(Fun *f) {
-  if (f->max_live_display_slot != -2) return f->max_live_display_slot;
-  int nd = f->sym->nesting_depth, mx = -1;
-  for (Var *v : f->fa_all_Vars) {
-    int d = v->sym->nesting_depth;
-    if (d >= 1 && d <= nd && d - 1 > mx) mx = d - 1;
-  }
-  f->max_live_display_slot = mx;
-  return mx;
-}
 
 // issue 074 Stage 4: enable the display-demotion (ROUTE across inert
 // display slots + non-asserting inert slots in update_display). Behind a
 // flag for the prototype/measurement.
-static int stage4_enabled() {
-  static int e = -1;
-  if (e < 0) e = getenv("PYC_STAGE4") ? 1 : 0;
-  return e;
-}
 
 // ifa/issues/075: element-CS container-method separation (pyc's analog
 // of shedskin's func_copy-per-dcpa). 0 off (default, byte-identical to
@@ -4718,36 +4637,6 @@ static int csm_enabled() {
   return e;
 }
 
-static bool group_display_ok(Vec<AEdge *> &these_edges, EntrySet *product, Fun *f, bool allow_demote = false) {
-  int nd = f->sym->nesting_depth;
-  if (!nd) return true;
-  // Stage 4: only the LIVE display slots gate the route. Inert slots
-  // (above fun_max_live_display_slot) are never consumed by make_AVar,
-  // so a group whose edges differ only in inert slots is safe to route
-  // together -- the exact 064/othermint case (the varying slot is the
-  // caller contour at index nd-1, inert for a genuine method). The type
-  // partition (gsig/part) still gates the ROUTE, so this never merges
-  // type-different groups (recursive_polymorphic stays separated by type).
-  // Scoped to the TYPE stage (allow_demote): the setter/mark-stage groups
-  // key on setter_site_signature (not a type partition), so demoting their
-  // display could merge element-class-separated contours (softrender).
-  if (allow_demote && stage4_enabled()) {
-    int live = fun_max_live_display_slot(f);
-    if (live < nd) nd = live + 1;  // enforce only slots [0, live]
-    if (nd <= 0) return true;
-  }
-  Vec<EntrySet *> disp;
-  if (product) disp.copy(product->display);
-  AEdge *e0 = these_edges[0];
-  for (int i = disp.n; i < nd; i++) disp.add(i < e0->from->display.n ? e0->from->display[i] : e0->from);
-  for (int i = 0; i < nd; i++) if (!disp[i]) return false;
-  for (AEdge *x : these_edges)
-    for (int i = 0; i < nd; i++) {
-      EntrySet *want = i < x->from->display.n ? x->from->display.v[i] : x->from;
-      if (disp[i] != want) return false;
-    }
-  return true;
-}
 
 // Issue 033 M2b: decide-then-apply. The grouping DECISION (which
 // edges of an EntrySet partition away from it, and into which
@@ -5050,8 +4939,11 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
     }
     if (avpos && gsig) {
       SplitDecision *d = fa->ledger_find(es->fun, cur_split_stage, avpos, part, gsig);
-      if (d && d->pass_made != analysis_pass && d->product && d->product != es &&
-          group_display_ok(these_edges, d->product, es->fun, !fsetters && !fmark)) {
+      // The display no longer gates this ROUTE either (see update_display):
+      // it was the dominant reason a group with a recorded product
+      // re-minted instead of routing (074's `es_othermint`, 064's
+      // phantom method display).
+      if (d && d->pass_made != analysis_pass && d->product && d->product != es) {
         product = d->product;
         ++fa->dup_split_attempts;
         log(LOG_SPLITTING, "[ledger] ROUTE group es %d fun %s %d pos %p part %p/%d sig %u -> product %d (first pass %d)\n",
@@ -6320,18 +6212,8 @@ static CSMSplitDecision *decide_csm_split(AVar *av) {
     EntrySet *tes = find_or_make_filtered_entry_set(es, filters);
     cs_es_map.put(cs, tes);
   }
-  auto resolve_target = [&](AEdge *ee, CreationSet *cs) -> EntrySet * {
-    EntrySet *tes = cs_es_map.get(cs);
-    if (!tes || tes == ee->to || edge_display_compatible(ee, tes)) return tes;
-    // ifa/issues/075 Piece 3: durable, cross-pass sibling reuse (see
-    // find_or_make_display_variant above) -- without it this scoped-
-    // to-one-call lookup had no memory of a sibling minted last pass,
-    // so a recurring incompatibility re-minted a NEW one every pass
-    // instead of reusing the last one. Confirmed to cause unbounded
-    // EntrySet growth once more than one decision applies per pass
-    // (fa->ess.n 123 -> 2747 in <8s on dijkstra2, non-terminating).
-    return find_or_make_display_variant(ee, tes);  // csm_enabled() == 2 is guaranteed here (only caller)
-  };
+  auto resolve_target = [&](AEdge *ee, CreationSet *cs) -> EntrySet * { return cs_es_map.get(cs); };
+
   auto redispatch = [](AEdge *ee, EntrySet *tes) {
     if (!tes || ee->to == tes) return;
     if (ee->to) ee->to->edges.del(ee);
