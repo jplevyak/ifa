@@ -100,13 +100,9 @@ Suite: **263 passed / 14 expected fails / 2 failed / 4 skipped** (was
 
 ## Follow-on work
 
-1. **Fix the two exception-path miscompiles.** They are the concrete
-   price of the merge and the first thing to recover. The shape — a
-   contour merge making an exception field's type NOTYPE — suggests the
-   exception carrier's contour is one where the display was doing real
-   work, i.e. a genuine nested-function/closure case rather than a
-   phantom method display. If so the right repair is to distinguish
-   those, not to restore the blanket check.
+1. **Fix the two exception-path miscompiles — diagnosed 2026-08-13,
+   see below.** They are the concrete price of the merge and the first
+   thing to recover.
 2. **The precision losses are the same question at corpus scale.** The
    display was substituting for a type/CS-based separation that does not
    exist yet; that separation is 074's Stage 2 (CS-directed fan-out),
@@ -119,6 +115,77 @@ Suite: **263 passed / 14 expected fails / 2 failed / 4 skipped** (was
    out of contour identity, giving methods `nd 0` is now a much smaller
    change than 064 found it, and would remove the phantom display at the
    source instead of ignoring it in FA.
+
+
+## Diagnosis of the two crashes (2026-08-13)
+
+Both failing tests are the *same shape* — a `try` whose handler binds the
+exception and then uses it:
+
+```python
+try:
+    print(check(5))          # exception_assert.py
+except AssertionError as e:
+    print("caught assertion: " + str(e))
+```
+
+```python
+try:
+    print(task_id(3))        # raise_exception_qualified.py
+except Exception as e:
+    print("caught:", e)
+```
+
+Traced on `exception_assert.py` (probes removed). The chain, from the
+crash back to its cause:
+
+1. Codegen emits, in `__main__`:
+   ```c
+   t25 = t24;                                        /* check(5)'s result */
+   assert(!"runtime error: getter not resolved");    /* t25.__str__      */
+   assert(!"runtime error: matching function not found");
+   ```
+   where the working build emitted
+   `t31 = _CG_f_1880_3/*int64::__str__*/(t24);`.
+2. `int64::__mul__` is **byte-identical** before and after, and the
+   [098](098-FA-per-pass-reset-scoped-to-reachable-set.md) invariant
+   audit reports `stale_bottom_args=0` on every pass — so this is not
+   the stale-edge failure and not an arithmetic-contour problem. The
+   pass-0 NOTYPEs inside `__mul__` are ordinary pre-convergence noise.
+3. At the converged pass the only starved contour is `__main__` itself.
+   Its bottom-typed temps are all `__str__` sends whose single out-edge
+   is bound but **never analyzed** — and *not* because
+   `analyze_edge`'s filter gate rejected it (replaying the gate produces
+   no rejection). The send is simply never re-dispatched.
+4. `add_send_edges_pnode` returns **-1** for those sends — `pattern_match`
+   finds **zero candidates** — even though the callee operand has exactly
+   one CreationSet.
+5. That CreationSet is the bound-method **closure**, and its captured
+   receiver slot is empty:
+   ```
+   cs={closure#936(defs=1 closure=1 vars=[ av751/n1{__str__}   av753/n0{} ])}
+                                            ^ function slot ok  ^ captured self: EMPTY
+   ```
+   `application()` therefore takes `partial_application`, which dispatches
+   `__str__` with an empty `self`; every `__str__` overload dispatches on
+   `self`'s type, so nothing matches, the send yields no edge, its result
+   stays bottom, and codegen emits the two asserts.
+
+**So the receiver of `.__str__` — the caught exception variable `e` — has
+no type.** That is the single thing the display was protecting here, and
+it is *not* a phantom method display: the exception value reaches the
+handler through pyc's `__pyc_exc__` slot, and the contour separation that
+kept each handler's `e` distinct was being carried by the display. With
+the display out of contour identity, the handler contours merge and `e`
+is left empty.
+
+**Fix direction.** Give the exception-handler binding its own separation
+that does not depend on the lexical display — the value flows through a
+global-ish carrier, so it needs either a per-handler filter/CS partition
+or an explicit contour key. Restoring the blanket display check would
+undo this issue's benefit; the narrow repair is to make `__pyc_exc__`'s
+hand-off contour-aware. Until then these two tests stay red, and any
+program using `except ... as e:` and then *using* `e` is exposed.
 
 ## Verification plan
 
