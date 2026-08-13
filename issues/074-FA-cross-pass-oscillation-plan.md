@@ -256,6 +256,76 @@ into *this* plan's growth shape (bh now grows ~3 contours/pass where it
 used to swap in place). The churn relocated rather than stopped, matching
 this plan's own Stage-1 experience ("suppression is not eviction").
 
+## GROWTH MECHANISM 2026-08-13 — yes, ES splits beget ES splits, via `check_split`'s lineage-mint
+
+The census above established *that* growth is EntrySet-driven (new edges
+and CSs follow contours). This measures *why* contours keep being minted,
+by recording the routing decision of every **newly born** edge — the
+earlier route census only covered re-bindings of existing edges, which is
+the wrong population for a growth question.
+
+The "map back to the contour you split from, and put a new edge where its
+pre-split counterpart went" idea is **already implemented**:
+`EntrySet::split` records the parent and `check_split`'s second branch
+looks up `e->from->split->out_edge_map.get(e->pnode)` and reuses that
+edge's `to`. Where it fires, it works exactly as intended — `rubik`
+passes 15/16 route **1155 and 1624** new edges by `lineage-reuse` with
+essentially no new contours. It fails two ways:
+
+| program | pass | new edges | lineage_reuse | knot | **lineage_mint** | best | fresh | miss: no_split | miss: nest |
+|---|---|---|---|---|---|---|---|---|---|
+| yopyra | 93 | 146 | 4 | 74 | **68** | 0 | 0 | 1 | **142** |
+| yopyra | 92/94 | 73 | 2 | 37 | **34** | 0 | 0 | 1 | **71** |
+| plcfrs | 41 | 5710 | 659 | 0 | 30 | 4235 | **740** | **4961** | 30 |
+| plcfrs | 43 | 4662 | 46 | 0 | 0 | 4283 | **333** | **4616** | 0 |
+| rubik | 14 | 2356 | 0 | 0 | 0 | 2275 | 81 | **2356** | 0 |
+| go | 22 | 172 | 89 | 0 | 1 | 74 | 8 | 107 | 1 |
+
+1. **`no_split` — the parent isn't recorded.** `e->from->split` is null,
+   so there is nothing to map back to. Dominant on plcfrs (≈4600-5000 per
+   pass), rubik and go. These edges fall through to
+   `find_best_entry_sets`, which mostly binds to an existing contour
+   (`best`) — but the residue mints (`fresh` 333-740/pass on plcfrs).
+   A contour minted at *flow* time (`make_entry_set` with `split == null`)
+   never gets a parent, by construction.
+2. **`nest` — the parent's target is rejected by display compatibility.**
+   Dominant on yopyra: 71-142 candidates per pass enter the
+   `split_unique || !edge_nest_compatible_with_entry_set` branch. 073's
+   type-identity knot catches about half; **the other half mints a fresh
+   contour and sets `e->to->split = ee->to`, extending the lineage
+   chain** — 073's own comment calls this "the sole unbounded EntrySet
+   generator", and on yopyra it is 34-68 new contours per pass, forever.
+   This is 064's phantom method display doing exactly what Stage 0
+   predicted it would.
+
+So **yes: on yopyra (the pure growth case) ES splits beget ES splits**,
+through the lineage-mint, and the blocker on reusing the pre-split
+mapping is the display check, not a missing map.
+
+### Measured dead end — routing the lineage-mint to a bounded display variant does NOT work
+
+The natural repair for (2): instead of minting and chaining, route to
+`find_or_make_display_variant(e, ee->to)` — a per-display sibling of the
+*same* product, which reuses an existing sibling and, when it mints,
+inherits `tes->split` rather than chaining, so the fan-out is bounded by
+(product × display), which 073 proved finite. Prototyped behind a flag
+and measured (reverted):
+
+| program | before | with display-variant routing |
+|---|---|---|
+| **loop** | `plh=0` p58, **0** viol | `plh=1` p34, 3 viol — **undoes 099's win** |
+| **linalg** | `plh=1` p16, 79 viol | `plh=1` p15, **283** viol, ess 1089→2243 |
+| plcfrs | 5494 viol | 6204 viol |
+| yopyra | `plh=1` p102, 0 viol | `plh=1` p56, 3 viol, ess 2151→3683 |
+| chess | 63 viol | 70 viol |
+| sudoku4 | `plh=1` p27, 142 viol | **`plh=0` p33, 26 viol** |
+
+One real win (sudoku4 converges) against several regressions including
+undoing `loop`'s convergence. **Net negative — not landed.** Consistent
+with this plan's history on this surface: the display is load-bearing in
+ways a uniform substitution does not capture, and any fix for (2) has to
+distinguish the cases rather than treat them alike.
+
 ### What the re-base changes about this plan
 
 1. **The target set is 8, not 17**, and half of it is a *stable residual*
