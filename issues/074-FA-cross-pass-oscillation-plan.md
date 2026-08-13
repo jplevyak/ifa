@@ -334,6 +334,83 @@ with this plan's history on this surface: the display is load-bearing in
 ways a uniform substitution does not capture, and any fix for (2) has to
 distinguish the cases rather than treat them alike.
 
+## GROWTH RE-CENSUSED 2026-08-13, post-[100](100-FA-display-removed-from-contour-identity.md)
+
+The display is out of contour identity, so the mechanism the previous
+census found (`check_split`'s lineage-mint, blocked from reuse by
+`edge_nest_compatible_with_entry_set`) is **gone**: across the whole
+oscillating set, `lineage-mint` and `split-fresh` no longer appear among
+*newly born* edges at all. New edges now route almost entirely through
+`lineage-reuse` and `best` — both of which reuse an existing contour —
+with a small `flow-fresh` residue:
+
+| program | newborn edges (8 passes) | routes |
+|---|---|---|
+| rubik | 5092 | lineage-reuse 2728, best 2284, flow-fresh 80 |
+| chess | 2348 | lineage-reuse 2340, best 5 |
+| plcfrs | 3129 | best 2841, lineage-reuse 178, flow-fresh 83 |
+| sudoku4 | 1088 | lineage-reuse 1072, pend 16 |
+
+**The minting moved to RE-BOUND edges.** Splitting the route census by
+newborn vs re-bound shows where the contours now come from:
+
+```
+sudoku4    routes: lineage-reuse=134 pend=2  || REBOUND: split-fresh=2
+genetic2   routes: lineage-reuse=42  pend=2  || REBOUND: split-fresh=2
+hq2x       routes: (almost nothing)          || REBOUND: split-fresh=2 split-pref=248..261
+rubik      routes: lineage-reuse=1626        || REBOUND: split-fresh=201 split-pref=211 best=15
+```
+
+`sudoku4` and `genetic2` are the clean specimens: that line is **byte-identical
+every pass** — 2 edges detached and given 2 fresh contours, then ~134/42
+new edges minted for those contours' bodies, forever, to the pass cap (93
+and 53 passes). `hq2x` is the pure-churn extreme: ~250 edges detached and
+re-parked every pass with essentially no new edges, for 102 passes.
+
+**The cause is structural and now dominant.** In `make_entry_set`:
+
+```cpp
+if (check_split(e, edges, split)) return;
+EntrySet *es = nullptr;
+if (!split) { if (find_best_entry_sets(e, edges)) return; }   // SKIPPED on the detach route
+if (!es) es = preference;
+set_entry_set(e, es);                                          // fresh contour, or the group's preference
+```
+
+A detached edge is never offered an existing contour: it takes the
+pending/lineage route, or it gets a brand-new one. The display machinery
+used to mask this; with the display gone it *is* the growth.
+
+Also unchanged from the previous census, and worth restating: **`csSplit`
+is ~0 and `copy_AEdge` is 0 everywhere** — CreationSet splitting and split
+fan-out still play no part.
+
+### Two measured dead ends on that cause (both reverted)
+
+1. **Let `find_best_entry_sets` run on the detach route, vetoing only
+   `split`.** Semantically the split's claim is "not this contour", not
+   "no contour at all". **59 test failures.** The soft score
+   (`val -= 4` for a type-incompatible candidate) re-merges precisely
+   what the split just separated — the same hazard
+   [closed/073](closed/073-teach-splitter-productive-vs-inert-context.md)
+   hit on `match_seq`.
+2. **Reuse only on a HARD type match** (`entry_set_compatibility ==
+   INT_MAX`, i.e. no penalties at all), still vetoing `split`. Much
+   closer — **6 failures** — but they include `recursive_polymorphic` and
+   `match_map_star`, exactly this plan's Stage 0 canaries, plus a hard
+   compile failure (`builtin_type_factory`). So even exact type identity
+   is not sufficient to show a contour is not what the split is
+   separating: the recursion levels this plan has always tripped over are
+   type-identical and must still be kept apart by something else.
+
+**What that leaves.** The detach route needs a *positive* reason to reuse
+a contour, not merely the absence of a type conflict — i.e. evidence that
+this edge belongs with that contour's group. That is the stable
+per-group/creation-site identity Stage 1 (ii) was always about, now with a
+much sharper target than when it was written: it only has to serve the
+detach route in `make_entry_set`, and the thing it must not merge is
+recursion levels.
+
 ### What the re-base changes about this plan
 
 1. **The target set is 8, not 17**, and half of it is a *stable residual*
