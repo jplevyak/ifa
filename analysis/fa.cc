@@ -904,6 +904,42 @@ static int edge_type_compatible_with_entry_set(AEdge *e, EntrySet *es, int fmark
   return 1;
 }
 
+// ifa/issues/074 (detach-route reuse, PYC_HARDREUSE=2). A POSITIVE type
+// match, as opposed to `edge_type_compatible_with_entry_set`'s "no
+// conflict": that one only rejects when BOTH sides are non-empty
+// (`etype->n && es_arg->out->type->n && ...`), so a contour whose
+// argument types are unpopulated is trivially "compatible" -- issue
+// 097's exact mechanism. On the detach route that is how mode 1 merged
+// `defaultdict(int)` with `defaultdict(list)`: it reused an empty
+// contour, which then accumulated both. Here every positional argument
+// must be typed on BOTH sides and identical, and there must be at least
+// one such argument, so reuse needs evidence rather than the absence of
+// counter-evidence.
+// `cs_granular` (PYC_HARDREUSE=3) compares the CreationSet sets rather
+// than the type-level view. The type-level view is what defeats mode 2:
+// `deep_copy_list`'s recursion levels are BOTH `list` (list-of-list vs
+// list-of-int) and both defaultdicts are `defaultdict` -- type-identical
+// at every positional argument, yet they must stay apart, which is
+// precisely the separation the lexical display used to supply
+// (issues/100). The CreationSets differ where the types do not.
+static bool edge_type_identical_to_entry_set(AEdge *e, EntrySet *es, bool cs_granular) {
+  if (!e->args.n || !es->args.n) return false;
+  if (es->split) return false;  // a split product is characterized by its edges, not its own args
+  if (es->rets.n != e->rets.n) return false;
+  int matched = 0;
+  for (MPosition *p : e->match->fun->positional_arg_positions) {
+    AVar *es_arg = es->args.get(p), *e_arg = e->args.get(p);
+    if (!e_arg || !es_arg) return false;
+    AType *eview = cs_granular ? e_arg->out : e_arg->out->type;
+    AType *sview = cs_granular ? es_arg->out : es_arg->out->type;
+    AType *etype = type_intersection(eview, e->match->formal_filters.get(p));
+    if (!etype->n || !sview->n) return false;
+    if (etype != sview) return false;
+    matched++;
+  }
+  return matched > 0;
+}
+
 static bool sset_compatible(AVar *av1, AVar *av2) {
   if (!same_eq_classes(av1->setters, av2->setters)) return false;
   if (av1->lvalue && av2->lvalue)
@@ -957,6 +993,7 @@ static bool edge_constant_compatible_with_entry_set(AEdge *e, EntrySet *es) {
 }
 
 static int csm_enabled();
+static int hard_reuse_enabled();
 
 // Build `es`'s lexical display from the first edge that reaches it.
 //
@@ -1311,6 +1348,28 @@ static void make_entry_set(AEdge *e, Vec<AEdge *> &edges, EntrySet *split = null
   EntrySet *es = nullptr;
   if (!split) {
     if (find_best_entry_sets(e, edges)) return;
+  } else if (hard_reuse_enabled()) {
+    EntrySet *hard = nullptr;
+    for (EntrySet *x : e->match->fun->ess)
+      // `fun->ess` on this route also holds BARE products (filters +
+      // split lineage only; set_entry_set is what populates args/rets),
+      // which entry_set_compatibility asserts on
+      // (`edge_type_compatible_with_entry_set`'s `assert(e->args.n &&
+      // es->args.n)` -- kanoodle aborts without this). The flow-time
+      // caller never sees them, so the assert has always held there.
+      if (x && x != split && x->args.n && e->args.n && entry_set_compatibility(e, x) == INT_MAX &&
+          (hard_reuse_enabled() < 2 ||
+           edge_type_identical_to_entry_set(e, x, hard_reuse_enabled() >= 3)))
+        if (!hard || x->id < hard->id) hard = x;  // deterministic (issue 035)
+    if (hard) {
+      if (getenv("IFA_DBG_HARDREUSE"))
+        fprintf(stderr, "HARDREUSE p=%d fun=%s#%d e=%d from=es%d split=es%d -> es%d (fun has %d ess)\n",
+                analysis_pass, e->match->fun->sym && e->match->fun->sym->name ? e->match->fun->sym->name : "?",
+                e->match->fun->sym ? e->match->fun->sym->id : -1, e->id, e->from ? e->from->id : -1,
+                split ? split->id : -1, hard->id, e->match->fun->ess.n);
+      set_or_copy_AEdge(e, hard, edges);
+      return;
+    }
   }
   if (!es) es = preference;
   set_entry_set(e, es);
@@ -4646,6 +4705,40 @@ static int csm_enabled() {
   static int e = -1;
   if (e < 0) {
     cchar *v = getenv("PYC_CSM");
+    e = v ? atoi(v) : 0;
+  }
+  return e;
+}
+
+// ifa/issues/074 (detach-route growth): on the DETACH route
+// (`make_entry_set` with a non-null `split`), offer the edge an existing
+// contour when that contour is a HARD match -- `entry_set_compatibility`
+// == INT_MAX, i.e. no penalty of any kind: type-compatible, sset-
+// compatible, constant-compatible, filters admit it. `split` itself is
+// vetoed.
+//
+// Motivation: skipping the scoring path entirely on this route means a
+// detached edge is never offered an existing contour -- it takes the
+// pending/lineage route or gets a BRAND-NEW one. With the display out of
+// contour identity (issues/100) that is now the dominant growth source:
+// sudoku4/genetic2 leak an exactly steady `split-fresh=2` plus ~134/42
+// new edges for the fresh contours' bodies every pass, to the pass cap;
+// hq2x re-manufactures ~250 edges a pass the same way.
+//
+// OFF by default: it regresses 6 tests (see issues/074's 2026-08-13
+// census). Using the *soft* score here is far worse (59 failures) -- it
+// re-merges what the split just separated, 073's match_seq hazard -- so
+// only the hard match is worth carrying as an experiment. The 6 include
+// recursive_polymorphic and match_map_star, i.e. exact type identity is
+// NOT sufficient evidence that a contour is not what the split is
+// separating; the flag exists to keep investigating that.
+// 0 off (default); 1 = entry_set_compatibility == INT_MAX; 2 = that AND
+// a POSITIVE type-level match; 3 = that AND a positive CreationSet-level
+// match (see edge_type_identical_to_entry_set).
+static int hard_reuse_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_HARDREUSE");
     e = v ? atoi(v) : 0;
   }
   return e;

@@ -385,7 +385,71 @@ Also unchanged from the previous census, and worth restating: **`csSplit`
 is ~0 and `copy_AEdge` is 0 everywhere** — CreationSet splitting and split
 fan-out still play no part.
 
-### Two measured dead ends on that cause (both reverted)
+### The detach-route reuse experiment — LANDED AS A FLAG (`PYC_HARDREUSE`), and it overturns the premise
+
+Available for further work: `PYC_HARDREUSE=1|2|3` (off by default,
+`make_entry_set`; `IFA_DBG_HARDREUSE=1` logs each reuse). Each mode
+offers a detached edge an existing contour instead of a fresh one, under
+a progressively stricter test:
+
+- **1** — `entry_set_compatibility == INT_MAX` (no penalty of any kind).
+- **2** — that **and** a *positive* type match: `edge_type_identical_to_
+  entry_set`, requiring every positional argument to be typed on BOTH
+  sides and identical. Mode 1 is not that: `edge_type_compatible_with_
+  entry_set` only rejects when both sides are non-empty, so an
+  unpopulated contour is trivially "compatible" (issue 097's mechanism),
+  and that is how mode 1 merged `defaultdict(int)` with
+  `defaultdict(list)`.
+- **3** — the same at CreationSet granularity rather than the type-level
+  (CS-stripped) view.
+
+Suite: off 265/0, mode 1 **260/6**, modes 2 and 3 **261/5**. Mode 2
+recovers `tuple_compare`; CS granularity buys nothing further.
+
+**Why the strictness doesn't help, and what that means.** On
+`recursive_polymorphic` the whole run makes just *three* reuses — `len`,
+`__getitem__`, `flatten_sum` — and the test fails on `deep_copy_list`,
+which is never reused. The damage is a knock-on: `deep_copy_list`'s two
+recursion levels are **both `list`** (list-of-list vs list-of-int) and
+both `defaultdict`s are `defaultdict`, so they are type-identical *and*
+CS-identical at the compared positions **at the moment the detach route
+runs** — the evidence that separates them (element types, per-level CSs)
+only arrives later in the pass. Reusing one `__getitem__` contour across
+the two levels then re-fuses the element types, exactly the mechanism
+Stage 0 documented for the display. So this is issue 097's timing hazard
+one level deeper: *no* predicate over the current snapshot can decide
+this, because the distinguishing information does not exist yet.
+
+**The corpus result overturns the premise this stage was built on.**
+Mode 3 across all 84 examples, against the current baseline:
+
+| | oscillators | total ess | total violations |
+|---|---|---|---|
+| off | 20 | 30362 | 11384 |
+| `PYC_HARDREUSE=3` | **49** | **24471** | **18389** |
+
+It *does* attack the growth — contour count drops 19% — but **oscillators
+more than double and violations rise 62%**, and ten programs that
+converged (`ant`, `circle`, `collatz`, `fysphun`, `path_tracing`,
+`rubik2`, `sha`, `sieve`, `stereo`, `tonyjpegdecoder`) now run to the
+hard 102-pass cap with **zero violations** — the pure churn shape.
+
+That is the real lesson: **the fresh mint on the detach route is not
+waste, it is what makes the split stick.** Reusing an existing contour
+makes the split a no-op, so the splitter re-derives the same decision
+every pass — "suppression is not eviction" (this plan's own Stage-1
+finding) now measured at corpus scale. The growth this census identified
+is therefore the *price of the split taking effect*, not a leak to be
+plugged, and the lever is not "reuse instead of mint" but "stop the
+splitter needing to re-decide" (Stage 1) or "make the split productive
+enough that it does not".
+
+One real bug fell out and is fixed on the flag path: the detach route
+sees BARE products (filters + lineage only, no args/rets) that the
+flow-time caller never does, and `edge_type_compatible_with_entry_set`'s
+`assert(e->args.n && es->args.n)` aborts on them (`kanoodle`).
+
+### Two earlier dead ends on that cause (both reverted)
 
 1. **Let `find_best_entry_sets` run on the detach route, vetoing only
    `split`.** Semantically the split's claim is "not this contour", not
