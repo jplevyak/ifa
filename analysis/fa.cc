@@ -375,11 +375,25 @@ void update_gen(AVar *v, AType *t) {
   update_in(v, v->gen);
 }
 
+// The invariant every consumer of the flow graph relies on is
+// `b->in >= a->out` for each link a -> b. Returning early when the link
+// already exists breaks it: the link is created once, at whatever moment
+// the constraint generator first ran, and if `a` was empty then, the
+// re-assert is skipped forever after -- `propagate_out_change` only
+// pushes on a CHANGE to `a->out`, so a value that arrived in between is
+// never delivered. Measured on ifa/issues/100's exception repro: a
+// bound-method closure's captured-receiver slot sat at `in = {}` while
+// its feeder held a concrete type and the link was present, so
+// `partial_application` dispatched with an empty `self`, pattern_match
+// found nothing, and the call went NOTYPE. Re-assert unconditionally --
+// `update_in` is a no-op when nothing changes, so this costs a union
+// test on an already-established edge.
 static void flow_var_to_var(AVar *a, AVar *b) {
   if (a == b) return;
-  if (a->forward.set_in(b)) return;
-  a->forward.set_add(b);
-  b->backward.set_add(a);
+  if (!a->forward.set_in(b)) {
+    a->forward.set_add(b);
+    b->backward.set_add(a);
+  }
   update_in(b, a->out);
 }
 

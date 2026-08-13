@@ -2,8 +2,10 @@
 
 **Status:** landed 2026-08-13, by explicit design decision: *the display
 exists for nested functions; it must not be used for anything else.*
-Two pyc tests regress to a **runtime crash** and are knowingly left
-failing — they are tracked here, not papered over. Supersedes
+The two runtime regressions it caused were **root-caused and fixed the
+same day** (see "The two crashes" below — the real cause was a
+pre-existing dropped-value bug in `flow_var_to_var`, not the display
+removal itself); the suite is back to its full 265/14/0/4. Supersedes
 [074](074-FA-cross-pass-oscillation-plan.md)'s Stage 0 and Stage 4, which
 prototyped this behind flags and concluded the display could not be
 dropped; that conclusion is now overridden as a policy choice rather than
@@ -82,21 +84,16 @@ that were kept apart by display now merge: `rdb` 602 → 3181, `mastermind2`
 **Compile outcomes are unchanged**: zero exit-code differences across the
 84-program shedskin sweep. `ifa --test` 58/0.
 
-**Two pyc tests now miscompile — knowingly left failing:**
+**Two pyc tests initially miscompiled** — `exception_assert.py` and
+`raise_exception_qualified.py`, both dying on
+`Assertion !"runtime error: getter not resolved"`. **Fixed**; see the
+next section. Three further tests changed compile output only, with
+runtime behavior unaffected, and their `.check` goldens were updated:
+`match_none.py`, `match_seq.py`, `minmax_3arg.py` (its `.exec.check`
+still matches exactly).
 
-- `exception_assert.py` and `raise_exception_qualified.py` both emit
-  `warning: expression has no type` and then die at runtime on
-  `Assertion !"runtime error: getter not resolved"`. Both are exception
-  paths: the NOTYPE is converted to void (`convert_NOTYPE_to_void`) and
-  the exception object's field getter is then unresolved.
-
-Three further tests changed compile output only, with runtime behavior
-unaffected, and their `.check` goldens were updated: `match_none.py`,
-`match_seq.py`, `minmax_3arg.py` (its `.exec.check` still matches
-exactly).
-
-Suite: **263 passed / 14 expected fails / 2 failed / 4 skipped** (was
-265/14/0/4).
+Suite after the follow-up fix: **265 passed / 14 expected fails / 0
+failed / 4 skipped** — the full pre-change baseline.
 
 ## Follow-on work
 
@@ -117,75 +114,76 @@ Suite: **263 passed / 14 expected fails / 2 failed / 4 skipped** (was
    source instead of ignoring it in FA.
 
 
-## Diagnosis of the two crashes (2026-08-13)
+## The two crashes — root cause and fix (2026-08-13)
 
-Both failing tests are the *same shape* — a `try` whose handler binds the
-exception and then uses it:
+**The display removal was the trigger, not the cause.** Minimizing the
+failure moved the target twice, and both intermediate readings were
+wrong:
+
+- first read: "the caught exception variable `e` has no type" — refuted,
+  because `print("after")` *outside* the try/except also failed;
+- second read: "`__str__` dispatch on the print argument" — refuted by
+  `v5` below, which has no `print` at all.
+
+Minimal repro (10 lines, from a six-variant matrix):
 
 ```python
+def f(n):
+    assert n > 0, "must be positive"
+    return n * 2
+
 try:
-    print(check(5))          # exception_assert.py
+    a = f(5)
+    b = f(6)          # <-- a SECOND call is required
 except AssertionError as e:
-    print("caught assertion: " + str(e))
+    print("c1")
+print("done")         # <-- this is what goes NOTYPE
 ```
 
-```python
-try:
-    print(task_id(3))        # raise_exception_qualified.py
-except Exception as e:
-    print("caught:", e)
+One call converges; `raise` instead of `assert` converges; the `as e`
+binding is irrelevant (a bare `except AssertionError:` fails too).
+
+**The chain**, traced on that repro:
+
+1. `print("done")`'s callee is a bound-method closure whose captured
+   receiver slot is **empty** — for a *string constant* receiver:
+   `closure#933 vars=[av739/__str__/n1, av741/-/n0]`.
+2. `application()` therefore takes `partial_application`, which
+   dispatches `__str__` with an empty `self`; every overload dispatches
+   on `self`, so `pattern_match` returns zero candidates, the send
+   produces no edge, and its result goes NOTYPE.
+3. `make_period_closure` **is** called every pass with a typed receiver,
+   and `make_closure_var` runs `flow_var_to_var(cav, iv)` with `cav`
+   holding a concrete type. Yet `iv` (the slot) stays empty, with
+   `iv->in == 0` and no restrict — and the probe shows the link
+   `cav -> iv` **already exists**.
+
+So the actual bug is in `flow_var_to_var`:
+
+```cpp
+if (a->forward.set_in(b)) return;    // <-- drops the value
 ```
 
-Traced on `exception_assert.py` (probes removed). The chain, from the
-crash back to its cause:
+The invariant every consumer relies on is `b->in >= a->out` for each
+link. The early return breaks it: the link is created once, at whatever
+moment the constraint generator first ran, and if `a` was empty then, the
+re-assert is skipped forever after — `propagate_out_change` only pushes
+on a *change* to `a->out`, so a value that arrives in between is never
+delivered. **Fix:** re-assert unconditionally (`update_in` is a no-op
+when nothing changes, so this costs one union test on an established
+edge).
 
-1. Codegen emits, in `__main__`:
-   ```c
-   t25 = t24;                                        /* check(5)'s result */
-   assert(!"runtime error: getter not resolved");    /* t25.__str__      */
-   assert(!"runtime error: matching function not found");
-   ```
-   where the working build emitted
-   `t31 = _CG_f_1880_3/*int64::__str__*/(t24);`.
-2. `int64::__mul__` is **byte-identical** before and after, and the
-   [098](098-FA-per-pass-reset-scoped-to-reachable-set.md) invariant
-   audit reports `stale_bottom_args=0` on every pass — so this is not
-   the stale-edge failure and not an arithmetic-contour problem. The
-   pass-0 NOTYPEs inside `__mul__` are ordinary pre-convergence noise.
-3. At the converged pass the only starved contour is `__main__` itself.
-   Its bottom-typed temps are all `__str__` sends whose single out-edge
-   is bound but **never analyzed** — and *not* because
-   `analyze_edge`'s filter gate rejected it (replaying the gate produces
-   no rejection). The send is simply never re-dispatched.
-4. `add_send_edges_pnode` returns **-1** for those sends — `pattern_match`
-   finds **zero candidates** — even though the callee operand has exactly
-   one CreationSet.
-5. That CreationSet is the bound-method **closure**, and its captured
-   receiver slot is empty:
-   ```
-   cs={closure#936(defs=1 closure=1 vars=[ av751/n1{__str__}   av753/n0{} ])}
-                                            ^ function slot ok  ^ captured self: EMPTY
-   ```
-   `application()` therefore takes `partial_application`, which dispatches
-   `__str__` with an empty `self`; every `__str__` overload dispatches on
-   `self`'s type, so nothing matches, the send yields no edge, its result
-   stays bottom, and codegen emits the two asserts.
+This is a *pre-existing* bug — 098's investigation had probed for exactly
+this condition and measured it at zero, because the display checks were
+keeping the affected contours apart. Removing them exposed it.
 
-**So the receiver of `.__str__` — the caught exception variable `e` — has
-no type.** That is the single thing the display was protecting here, and
-it is *not* a phantom method display: the exception value reaches the
-handler through pyc's `__pyc_exc__` slot, and the contour separation that
-kept each handler's `e` distinct was being carried by the display. With
-the display out of contour identity, the handler contours merge and `e`
-is left empty.
-
-**Fix direction.** Give the exception-handler binding its own separation
-that does not depend on the lexical display — the value flows through a
-global-ish carrier, so it needs either a per-handler filter/CS partition
-or an explicit contour key. Restoring the blanket display check would
-undo this issue's benefit; the narrow repair is to make `__pyc_exc__`'s
-hand-off contour-aware. Until then these two tests stay red, and any
-program using `except ... as e:` and then *using* `e` is exposed.
+**Result:** all six repro variants fixed; `exception_assert.py` and
+`raise_exception_qualified.py` pass; suite back to **265/14/0/4**;
+`ifa --test` 58/0; **zero exit-code changes** across the 84-program
+sweep; and the oscillation/ess tables above are unchanged except `chaos`,
+whose contour count recovers 44 -> 566 (44 was a lost program; it now
+compiles and runs to completion — it is simply slow, CPython times out on
+it too).
 
 ## Verification plan
 

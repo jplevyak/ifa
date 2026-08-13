@@ -141,9 +141,13 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   major contour-growth driver (074's census: 34-68 fresh contours per
   pass on yopyra from the lineage-mint alone) — ess drops 40-80%
   corpus-wide and yopyra converges. Cost: precision falls widely, the
-  oscillator count nets 16 → 20, and **two exception-path tests now
-  miscompile and are knowingly left failing**. Retires 074's Stage 0/4
-  and invalidates the basis on which it ruled out Stage 2.
+  oscillator count nets 16 → 20. It also briefly broke two
+  exception-path tests, which turned out to expose a *pre-existing*
+  dropped-value bug in `flow_var_to_var` (an early return on an
+  already-established link skipped the `b->in >= a->out` re-assert, so a
+  value arriving after the link was created was never delivered); fixed
+  the same day, suite back to 265/14/0/4. Retires 074's Stage 0/4 and
+  invalidates the basis on which it ruled out Stage 2.
 - [099-FA-pending-backedge-avoid-veto-forces-period-2.md](099-FA-pending-backedge-avoid-veto-forces-period-2.md)
   — a *structurally forced* period-2 oscillation, and the entire
   non-convergence of three programs (bh, pylife, linalg — 074's
