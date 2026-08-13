@@ -1,11 +1,11 @@
 # 099 — `check_split`'s pending-backedge route + the `avoid` veto force a period-2 flip-flop when the recorded candidate set has two members
 
-**Status:** open, root-caused 2026-08-13 while answering "why is the
-system oscillating?" for [074](074-FA-cross-pass-oscillation-plan.md).
-The mechanism is *structural* — not a heuristic misfiring, not a timing
-race — and is mechanically forced whenever two conditions coincide. Not
-fixed: the obvious repairs each have a plausible failure mode (below) and
-this is the most-reverted surface in the tree.
+**Status:** **partial** — the flip-flop itself is fixed (2026-08-13); the
+three programs it was blocking still do not converge, because their churn
+relocated rather than stopped. Root-caused 2026-08-13 while answering "why
+is the system oscillating?" for
+[074](074-FA-cross-pass-oscillation-plan.md). The mechanism is
+*structural* — not a heuristic misfiring, not a timing race.
 
 **Affects:** `ifa/analysis/fa.cc` — `check_split`'s pending-backedge
 branch (~1231), `record_backedges` (~4333),
@@ -110,10 +110,80 @@ byte-identical program output with and without the stall guards): the
 flip-flop changes nothing observable, it just never stops, so the guards
 are all that terminate the compile.
 
-## Fix options (none tried; each has a specific hazard)
+## The fix that landed (2026-08-13) — and what it did NOT fix
+
+The bug is an **asymmetry in `record_backedges`**: when an inherited
+entry is re-homed from the contour being split away from (`es`) onto the
+split product (`e->to`), the code rewrites the entry's **key**
+(`new_AEdge(m->key->fun, m->key->pnode, e->to)`) but copies its **value**
+verbatim. A recorded route pointing at `es` therefore survived into the
+product's own map as "a recursive call from `e->to` may go back to `es`"
+— precisely the binding the split exists to undo. Once the two contours
+each held a route to the other, `check_split`'s veto (which only knows
+about the contour being detached *this* pass) left exactly the one just
+vacated.
+
+Traced directly (probe removed), pylife pass 35, product `es507`,
+splitting away from `es524`:
+
+```
+PENDREC p=35 owner=es507 key=(fun11041,pn9461,from es507) val=es524 [inherit]
+PENDREC p=35 owner=es507 key=(fun11041,pn9461,from es507) val=es507 [inherit-rekey]
+PENDREC p=35 owner=es507 key=(fun11041,pn9461,from es507) val=es524 [inherit-rekey]
+PENDREC p=35 owner=es507 key=(fun11041,pn9461,from es507) val=es507 [self]
+```
+
+The key is correctly re-homed to `es507` while the values still carry
+`es524`, giving the two-element set `{507, 524}` the veto then alternates
+over.
+
+**Landed:** re-home the value with the key — for an entry that is *about*
+the split product (its key is being re-keyed from `es`, or already names
+`e->to`), map any value `== es` to `e->to`. Entries about other contours
+are left alone: this split only re-homes its own group, `es` still exists
+and may still hold unrelated edges, so redirecting their routes would
+over-reach.
+
+**Result: the flip-flop is gone** (candidate sets collapse to one member
+and `check_split`'s "every route was the avoided ES" fall-through takes
+over), and it is measurably net-positive:
+
+| program | before | after |
+|---|---|---|
+| **loop** | `plh=1` p38, 2 viol | **`plh=0` p58, 0 viol** — converges |
+| pylife | `plh=1` p41, 90 viol | `plh=1` p41, **54** viol |
+| sudoku4 | `plh=1` p27, 160 viol | `plh=1` p27, **142** viol |
+| plcfrs | `plh=1` p47, 5517 viol | `plh=1` p47, 5494 viol |
+| sudoku5 | `plh=1` p23, 381 viol | `plh=1` p23, 390 viol |
+| bh | `plh=1` p52, 2 viol | `plh=1` p32, 2 viol |
+
+Oscillators 17 → 16. `ifa --test` 58/0; `test_pyc.py` 265 passed / 14
+expected fails / 0 failed / 4 skipped; **zero exit-code changes** across
+the 84-program shedskin sweep. `sudoku5`'s +9 violations are not a real
+regression (identical runtime crash at the identical site, `.c` within
+0.3%). One golden file was removed:
+`tests/list_index_type_mismatch_salvage.py.check` pinned two
+`Basic_block` warnings that the test's own header documents as "a
+separate issue, not this one" — they are gone because the contours they
+came from now separate properly (the test is `loop.py`, the program that
+now converges), and its generated C grew from 1321 to 1364 distinct
+function signatures, so this is added precision, not lost coverage.
+
+**What it did NOT fix — this issue stays open.** 099's verification goal
+was `bh`, `pylife` and `linalg` reaching `pass_limit_hit=0`. Only `loop`
+flipped. On `bh` the period-2 swap is replaced by **slow contour growth**
+(`ess` 482 → 526 over 13 passes, ~3/pass, `dup` 1-2/pass) which the stall
+guard stops at p32 instead of p52; `linalg` is unchanged. So removing the
+flip-flop moved these programs out of 074's "stable residual" shape and
+into its *growth* shape — the churn relocated rather than stopped, which
+is the same outcome 074 records for its own Stage-1 attempts
+("suppression is not eviction"). The remaining cause is condition 1
+below (the splitter re-deciding every pass), i.e. 074's territory.
+
+## Remaining fix options for condition 1 (none tried)
 
 **A — don't bind to a candidate the veto reduced to a single
-just-vacated contour.** If, after removing `avoid`, the survivors are a
+just-vacated contour.** *(Partly subsumed by the landed fix.)* If, after removing `avoid`, the survivors are a
 strict subset that the edge has already occupied in a previous pass, fall
 through to the split/fresh path instead of binding. Needs a per-edge
 "contours I have been bound to" record; hazard: that record is exactly
@@ -147,9 +217,11 @@ precisely because they break the loop at the other condition.
 1. `bh`, `pylife`, `linalg` must reach `pass_limit_hit=0`, and their
    program output must stay byte-identical (it is currently unaffected by
    the flip-flop — see 074's re-base table — so any output change is a
-   regression, not a win).
+   regression, not a win). **Not met by the landed fix: only `loop`
+   flipped.**
 2. Re-run 074's re-based classification: Group C should shrink from 8 to
-   5; nothing may move from Group A into B or C.
+   5; nothing may move from Group A into B or C. **Landed fix: 8 → 7
+   (`loop` out); nothing moved the wrong way.**
 3. `test_pyc.py` both backends and the full shedskin sweep, diffed
    against a baseline — `check_split` is the surface 073, 064 and 065 all
    reverted changes on.
@@ -158,7 +230,10 @@ precisely because they break the loop at the other condition.
 
 ## What this unblocks
 
-Three of the eight genuinely non-convergent programs, and it removes the
+**Delivered so far:** `loop` converges, and pylife/sudoku4/plcfrs improve
+their residual violation counts. **Still outstanding:** the other two
+"stable residual" programs. Fully fixing this would take three of the
+eight genuinely non-convergent programs, and it removes the
 "stable residual" shape from 074's target set entirely — leaving 074 to
 deal with only the *growth* shape (plcfrs, rubik, yopyra, loop, go),
 which has a different mechanism (see 074's census: growth is driven by

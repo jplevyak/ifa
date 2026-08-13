@@ -247,9 +247,14 @@ now filed separately as
 and linalg have *no* growth at all (0 new edges, 0 new ES, 0 new CS per
 pass) — a fixed set of edges swapping between a fixed pair of contours,
 forced by `check_split`'s pending-backedge route interacting with the
-`avoid` veto. pylife's entire non-convergence is **one edge**. Fixing 099
-should shrink Group C from 8 to 5 and leave this plan with only the
-growth shape.
+`avoid` veto. pylife's entire non-convergence is **one edge**. **099 is now partially
+fixed (2026-08-13)**: the flip-flop is gone, which converges `loop`
+(Group C 8 → 7) and improves pylife (90 → 54 violations) and sudoku4
+(160 → 142) — but bh/pylife/linalg still do not converge, because
+removing the flip-flop moved them out of the stable-residual shape and
+into *this* plan's growth shape (bh now grows ~3 contours/pass where it
+used to swap in place). The churn relocated rather than stopped, matching
+this plan's own Stage-1 experience ("suppression is not eviction").
 
 ### What the re-base changes about this plan
 

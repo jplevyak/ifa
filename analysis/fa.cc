@@ -4326,10 +4326,32 @@ static void record_backedges(AEdge *e, EntrySet *es, PendingAEdgeEntrySetsMap &u
   form_Map(MapElemAEdgeEntrySets, m, up_map) elems.add(m);
   if (elems.n > 1) qsort(elems.v, elems.n, sizeof(elems[0]), compar_pending_key);
   for (MapElemAEdgeEntrySets *m : elems) {
+    // ifa/issues/099: an inherited entry that is ABOUT the split product
+    // (its key is being re-homed from `es` onto `e->to`, or already names
+    // `e->to`) must have its VALUE re-homed with its key. The key was
+    // rewritten `es` -> `e->to` here and the value was not, so a recorded
+    // route pointing at `es` survived into the product's own map as "a
+    // recursive call from `e->to` may go back to `es`" -- precisely the
+    // binding this split exists to undo. check_split then vetoes only the
+    // contour it is detaching from on THIS pass, so once the two contours
+    // each hold a route to the other, the veto leaves exactly the one
+    // just vacated and the edge swaps contours every pass, forever, with
+    // nothing growing (bh: 10 edges over two contour pairs; pylife: ONE
+    // edge; linalg: one). Entries about OTHER contours are left alone --
+    // this split only re-homes its own group, `es` still exists and may
+    // still hold unrelated edges, so redirecting their routes would
+    // over-reach.
+    bool about_product = m->key->from == es || m->key->from == e->to;
+    Vec<EntrySet *> rehomed;
+    Vec<EntrySet *> *value = m->value;
+    if (about_product) {
+      for (EntrySet *v : *m->value) if (v) rehomed.set_add(v == es ? e->to : v);
+      value = &rehomed;
+    }
     if (m->key->from == es)
-      map_set_add(e->to->pending_es_backedge_map, new_AEdge(m->key->fun, m->key->pnode, e->to), m->value);
+      map_set_add(e->to->pending_es_backedge_map, new_AEdge(m->key->fun, m->key->pnode, e->to), value);
     else
-      map_set_add(e->to->pending_es_backedge_map, m->key, m->value);
+      map_set_add(e->to->pending_es_backedge_map, m->key, value);
   }
   Vec<AEdge *> *backedges = &es->backedges;
   if (es->split) backedges = &es->split->backedges;

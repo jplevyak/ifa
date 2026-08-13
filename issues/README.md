@@ -140,8 +140,16 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   the veto leaves precisely the one just vacated, so the edge swaps
   every pass forever with zero growth (0 new edges/EntrySets/
   CreationSets per pass). pylife's whole non-convergence is **one
-  edge**. Root-caused with traces on all three; four fix options
-  sketched, each with its hazard, none tried.
+  edge**. **Partially fixed 2026-08-13**: the flip-flop came from
+  `record_backedges` re-homing an inherited entry's KEY onto the split
+  product but copying its VALUE verbatim, so each contour kept a route
+  back to its sibling. Re-homing the value with the key removes it —
+  `loop` now converges (`plh=1` p38/2 viol → `plh=0` p58/0 viol),
+  pylife 90→54 and sudoku4 160→142 violations, oscillators 17→16, zero
+  exit-code changes on the sweep. But bh/pylife/linalg still do not
+  converge: their churn RELOCATED into slow contour growth (074's other
+  shape) rather than stopping, so the issue stays open on its second
+  condition — the splitter re-deciding every pass.
 - [098-FA-per-pass-reset-scoped-to-reachable-set.md](098-FA-per-pass-reset-scoped-to-reachable-set.md)
   — **mostly fixed 2026-08-12**, and it was upstream of 033/074's
   splitting-oscillation work, so their measurements are worth
