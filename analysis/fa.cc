@@ -818,6 +818,13 @@ static bool same_eq_classes(Setters *s, Setters *ss) {
   return true;
 }
 
+static long mark_cs_differ = 0, mark_cs_same = 0;
+static int mark_why_enabled() {
+  static int e = -1;
+  if (e < 0) e = getenv("IFA_DBG_MARKWHY") ? 1 : 0;
+  return e;
+}
+
 static int different_marked_args(AVar *a1, AVar *a2, int offset, AVar *basis = 0) {
   Vec<void *> marks1, marks2;
   AVar *basis1 = basis ? basis : a2;
@@ -849,7 +856,26 @@ static int different_marked_args(AVar *a1, AVar *a2, int offset, AVar *basis = 0
       }
     }
   }
-  return found1 && found2 && marks1.some_disjunction(marks2);
+  int diff = found1 && found2 && marks1.some_disjunction(marks2);
+  // ifa/issues/074 (IFA_DBG_MARKWHY): mark_map is keyed by CreationSet, so
+  // the test above is a CS-SET comparison -- the same question a
+  // cartesian-product contour name asks -- but taken over only the CSs
+  // that pass the distance filter `m - offset == x->value`. This counts
+  // how often that filter changes the answer: `cs_differ` = the raw CS
+  // sets differ too (a CPA name would separate these as well), `cs_same`
+  // = identical CS sets separated purely by depth-from-generator, i.e.
+  // a split no type-tuple naming would ever make.
+  if (diff && mark_why_enabled()) {
+    Vec<void *> all1, all2;
+    if (a1->mark_map) form_Map(MarkElem, x, *a1->mark_map)
+        if (basis1->mark_map && basis1->mark_map->get(x->key)) all1.set_add(x->key);
+    if (a2->mark_map) form_Map(MarkElem, x, *a2->mark_map) {
+        if (!basis) all2.set_add(x->key);
+        else if (basis->mark_map && basis->mark_map->get(x->key)) all2.set_add(x->key);
+      }
+    if (all1.some_disjunction(all2)) ++mark_cs_differ; else ++mark_cs_same;
+  }
+  return diff;
 }
 
 // ifa/issues/074 (IFA_DBG_INCOMPAT): which CLAUSE of the compatibility
@@ -7515,6 +7541,12 @@ static void report_incompat() {
   tc_seen = tc_skip_rval = tc_skip_lval = tc_skip_cs = tc_dec = tc_defer = 0;
 }
 
+static void report_markwhy() {
+  if (!mark_why_enabled()) return;
+  fprintf(stderr, "MARKWHY p=%d cs_differ=%ld cs_same=%ld\n", analysis_pass, mark_cs_differ, mark_cs_same);
+  mark_cs_differ = mark_cs_same = 0;
+}
+
 static void report_keydrift() {
   if (!getenv("IFA_DBG_KEYDRIFT")) return;
   fprintf(stderr, "KEYDRIFT p=%d stable=%ld grew=%ld shrank=%ld flip=%ld new=%ld", analysis_pass, kd_stable, kd_grew,
@@ -7621,6 +7653,7 @@ static void complete_pass() {
   report_keyspace();
   capture_type_keys();
   report_keydrift();
+  report_markwhy();
   report_incompat();
   audit_edge_arg_values();
   collect_results();

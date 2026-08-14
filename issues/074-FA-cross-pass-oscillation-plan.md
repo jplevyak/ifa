@@ -254,7 +254,54 @@ finding.** Both are consequences of naming contours by tuples of type
   available symmetry-breaker for a union fixed point.
 
 Marks are too aggressive *and* load-bearing because they are a provenance
-proxy for a naming problem. So the fix for the five regressors is **not**
+proxy for a naming problem.
+
+#### Why "proxy" is the literal description, not a metaphor
+
+`AVar::mark_map` is `Map<CreationSet *, int>`, and `different_marked_args`
+builds two `Vec<void *>` of `x->key` — CreationSets — returning "different"
+iff those two **CS sets** are disjoint. That is exactly the question a
+cartesian-product contour name asks: *which single CreationSet is at this
+position?* Marks are already a CPA-style comparison.
+
+The proxy is the **distance filter** wrapped around it: only CSs
+satisfying `m - offset == x->value` are admitted — "this contributor is
+exactly `offset` steps closer to a generator of that CS than the basis
+is". So instead of comparing CS identity, it compares CS identity *as
+sampled at one depth*. The filter exists because comparing raw CS sets at
+a confluence is precisely what `TYPE_CONFLUENCE` already does, and that
+goes blind on a union (`etype == stype`); depth re-introduces an ordering
+the set-join destroyed. `build_type_mark`'s own comment says so: *"To
+handle recursion, mark value*AVar distances from the nearest AVar
+generating the value. Dataflow is considered to be only from lower to
+higher distances for the purpose of splitting."*
+
+`IFA_DBG_MARKWHY=1` counts, for every verdict of "different", whether the
+**unfiltered** CS sets differ too (`cs_differ` — a CPA name would separate
+these as well) or are identical (`cs_same` — separated purely by
+depth-from-generator, a split no type-tuple naming would ever make):
+
+| program | cs_differ | cs_same | pure-distance |
+|---|---|---|---|
+| the 33-line repro (marks load-bearing) | 245 | 6 | **2%** |
+| hq2x (marks gratuitous) | 3989 | 205440 | **98%** |
+
+The two populations separate almost perfectly, and in the direction the
+theory predicts. Where marks earn their keep, 98% of their verdicts are
+backed by a genuine CreationSet difference — they are doing the CPA job
+that set-naming cannot. Where they are pathological, 98% of their
+verdicts separate contributors carrying **identical** CreationSets, purely
+because those contributors sit at different depths — which is how a
+monomorphic one-line helper like `PIXEL00_20` (setkey=1, cpakey=1) ends
+up with one contour per call site.
+
+So the split rule that *should* apply is CS identity — the CPA name.
+Marks approximate it with (CS identity ∧ depth). The `∧ depth` term is
+the approximation: needed only because set-naming lost the per-CS view,
+and harmful because depth is not a semantic property of the program — it
+is a property of the contour graph, which splitting itself changes. That
+is also why marks self-fuel: each split perturbs the distances that
+produced it. So the fix for the five regressors is **not**
 to restore them: it is cartesian-product naming. Note `PYC_CANON` does
 not supply it — `edge_canon_key` builds one `AType *` per position, i.e.
 set-naming again; a CPA variant must key on single CreationSets. That is
