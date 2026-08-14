@@ -180,6 +180,34 @@ is the same outcome 074 records for its own Stage-1 attempts
 ("suppression is not eviction"). The remaining cause is condition 1
 below (the splitter re-deciding every pass), i.e. 074's territory.
 
+## Stage attribution of the relocated churn (2026-08-13)
+
+After the fix, this issue's three subjects still churn — and
+`IFA_DBG_STAGE` (see [074](074-FA-cross-pass-oscillation-plan.md)) now
+says which splitter stage does it. Detaches over the last 10 passes:
+
+| program | attribution |
+|---|---|
+| pylife | **`MARK_TYPE` 100%** — 30 detaches, 30 mints |
+| bh | **`MARK_TYPE` 80%**, `TYPE_CONFLUENCE` 20% — 50 detaches |
+| linalg | **`TYPE_CONFLUENCE` 100%** — 487 detaches, 167 mints |
+
+So the relocation split the group: `pylife` and `bh` moved into the
+`MARK_TYPE` re-assignment shape, `linalg` into the `TYPE_CONFLUENCE`
+detach-and-mint shape. Condition 1 above ("the splitter keeps
+re-deciding to split this contour") is therefore not one problem but
+two, owned by two different stages — which is a materially better
+starting point than "the splitter re-decides" was.
+
+Note also that this issue's own mechanism — a symmetric candidate test
+combined with the `x != split` / `avoid` veto — was independently
+reproduced in a *second* place during the same session: every
+`PYC_HARDREUSE` mode manufactures the identical period-2 flip-flop on
+the detach route, including the durable-key lookup (`=4`). The design
+rule that came out of it is recorded in 074: **the veto cannot be paired
+with a symmetric matching rule**; any reuse or routing decision needs a
+tie-break that is stable under "which contour am I in right now".
+
 ## Remaining fix options for condition 1 (none tried)
 
 **A — don't bind to a candidate the veto reduced to a single

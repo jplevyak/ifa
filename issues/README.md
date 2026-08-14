@@ -210,6 +210,29 @@ now measured rather than inferred:
   needs a positive grouping reason, which is Stage 1 (ii) with a much
   sharper target than when it was written.
 
+**Investigation flags landed (all off by default, all measured).** These
+exist so the next attempt starts from evidence rather than a rebuild:
+
+| flag | what it does | result |
+|---|---|---|
+| `PYC_HARDREUSE=1..4` | offer a detached edge an existing contour (progressively stricter tests; 4 = lookup by durable key) | 260-261/265 — every mode manufactures a period-2 flip-flop of its own |
+| `PYC_TYPEKEY=1` | durable per-contour type key, captured converged, matched against instead of the mid-pass value | **265/0** — the only clean one; corpus a wash |
+| `PYC_CANON=1\|2` | canonicalize contour creation on that key (find-by-key-else-create) | 259/7 and 237/32; the conflict log is the real output |
+| `IFA_DBG_STAGE=1` | attribute every detach/mint to the splitter stage that caused it | — |
+| `IFA_DBG_EDGEARGS=1` | 098's invariant audit (bound edges must have values at recorded args) | — |
+
+**Which splits actually oscillate.** `IFA_DBG_STAGE` answers the question
+the whole cluster has been circling: of the nine splitter stages, only
+**`TYPE_CONFLUENCE`** and **`MARK_TYPE`** produce the steady-state churn.
+`SETTER` and `SETTER_OF_SETTER` contribute single digits corpus-wide, and
+`MARK_SETTER`, `MARK_SETTER_OF_SETTER`, `VIOLATION`, `PER_CS_RECEIVER`
+and `CSM_ELEMENT_CS` contribute **zero** — though `run_split_stages` is a
+first-stage-wins cascade, so the later stages are partly *starved* rather
+than proven innocent. The two implicated stages fail differently:
+`MARK_TYPE` tends to pure re-assignment (`hq2x`: 2755 detaches per 10
+passes, 24 mints), `TYPE_CONFLUENCE` tends to detach *and* mint (`rdb`
+2022:712). Full table in 074.
+
 Tree state at the end: `test_pyc.py` 265 passed / 14 expected fails / 0
 failed / 4 skipped (both backends), `ifa --test` 58/0, zero exit-code
 changes across the 84-program shedskin sweep.
@@ -286,14 +309,16 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   original "order-dependent per-pass fixed point" diagnosis, which the
   measurements refute.
 - [074-FA-cross-pass-oscillation-plan.md](074-FA-cross-pass-oscillation-plan.md)
-  — the current master plan, sequencing and re-measuring the whole
-  cluster (033/063/064/065/066) after
-  [073](closed/073-teach-splitter-productive-vs-inert-context.md)'s
-  fix landed. 17/77 corpus programs still oscillate; Stage 4
-  (display-liveness demotion) built but not landed (net positive,
-  regresses 2 programs); "lever b" redirected the residual to
-  caller-contour multiplication and genuine no-type violations, not
-  a fixable splitter bug.
+  — the master plan, **substantially re-measured 2026-08-12/13** (see the
+  dated session section above). Target set re-based from 17 programs to
+  8 by disabling the stall guards; growth mechanism re-censused after
+  [100](100-FA-display-removed-from-contour-identity.md); Stage 0 and
+  Stage 4 retired, and the basis for ruling out Stage 2 invalidated.
+  **The churn is now stage-attributed: only `TYPE_CONFLUENCE` and
+  `MARK_TYPE` produce it** — nothing measurable from the other seven
+  stages (with the caveat that the first-stage-wins cascade starves
+  them). Four investigation flags landed off-by-default:
+  `PYC_HARDREUSE`, `PYC_TYPEKEY`, `PYC_CANON`, `IFA_DBG_STAGE`.
 - [075-FA-element-cs-method-split-idempotent-plan.md](075-FA-element-cs-method-split-idempotent-plan.md)
   — concrete build plan (successor to 063) to clone shared
   `list`/`dict` methods per element-CS, shedskin's `func_copy`-per-

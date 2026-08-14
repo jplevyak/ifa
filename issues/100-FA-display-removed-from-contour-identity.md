@@ -106,7 +106,16 @@ failed / 4 skipped** — the full pre-change baseline.
    which 074 ruled out on the *old* measurements. Those measurements are
    now stale — the growth it was competing against is gone — so Stage 2
    is worth re-deriving against this baseline.
-3. **`Sym::nesting_depth` for methods.** The deeper fix is that pyc's
+3. **`hq2x` is the sharpest subject the corpus now offers, and it is one
+   this change created.** It entered the oscillating set here (`plh=0` →
+   `plh=1`), and two later measurements converge on it: it is **pure
+   `MARK_TYPE`** (2755 detaches per 10 passes against just 24 mints — it
+   moves the same edges rather than growing, `IFA_DBG_STAGE`), and it has
+   by far the highest duplicate-contour rate in the corpus (**58%** of
+   its keyed mints find an existing same-keyed contour, versus 2-12%
+   elsewhere, `PYC_CANON`). One stage, one disease, no growth to
+   confound it. See [074](074-FA-cross-pass-oscillation-plan.md).
+4. **`Sym::nesting_depth` for methods.** The deeper fix is that pyc's
    `def_fun_pyda` gives methods a nesting depth they do not need
    (`python_ifa_build_syms.cc:1917`, `:2030`, `:2154`). With the display
    out of contour identity, giving methods `nd 0` is now a much smaller
