@@ -17,6 +17,10 @@
 #include "prim.h"
 #include "timer.h"
 #include "var.h"
+
+#include <set>
+#include <string>
+
 bool fgraph_pass_contours = false;
 int write_code_exit = 0;
 int analysis_pass = 0;
@@ -4888,6 +4892,25 @@ static int hard_reuse_enabled() {
   return e;
 }
 
+// ifa/issues/074: disable mark-based splitting stages, as an
+// investigable option.
+//   1 = skip MARK_TYPE (stage 2)
+//   2 = also skip MARK_SETTER / MARK_SETTER_OF_SETTER (stage 4)
+// Marks exist to separate two contours that carry the SAME argument
+// types but different value origins (IFA.md §6.2, "recursion-meets-
+// polymorphism without k-CFA"). That is by construction a
+// distinction no type-tuple contour name can express -- so if
+// contours are canonicalized on their type key, mark splits are
+// unnameable. IFA_DBG_KEYSPACE=1 measures the gap they open.
+static int nomark_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_NOMARK");
+    e = v ? atoi(v) : 0;
+  }
+  return e;
+}
+
 
 // Issue 033 M2b: decide-then-apply. The grouping DECISION (which
 // edges of an EntrySet partition away from it, and into which
@@ -5909,7 +5932,7 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
   Vec<AVar *> setter_confluences, setter_starters;
   collect_setter_confluences(avs, setter_confluences, setter_starters);
   if (split_ess_setters(setter_confluences)) return 1;
-  if (split_ess_setters_marks(setter_confluences)) return 1;
+  if (nomark_enabled() < 2 && split_ess_setters_marks(setter_confluences)) return 1;
   if (analyze_again) return 1;
   if (split_css(setter_starters)) return 1;
   return analyze_again;
@@ -6680,7 +6703,7 @@ static CSMSplitDecision *decide_csm_split(AVar *av) {
   if (!analyze_again) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
     cur_split_stage = (int)FAPassStage::MARK_TYPE;
-    analyze_again = split_ess_for_mark_type(confluences);
+    analyze_again = nomark_enabled() >= 1 ? 0 : split_ess_for_mark_type(confluences);
     fa->stage_time[(int)FAPassStage::MARK_TYPE] += stage_timer.lap();
     if (analyze_again) {
       record_fa_event(FAPassStage::MARK_TYPE, analyze_again, ess0, css0, viol0);
@@ -7291,6 +7314,67 @@ static void report_canon_stats() {
   canon_hit = canon_miss = canon_conflict = canon_conflict_honored = 0;
 }
 
+// ifa/issues/074: how many contours would each NAMING scheme give this
+// function, versus how many IFA actually built?
+//
+//   ess    -- contours IFA built (splitters included)
+//   setkey -- distinct tuples of argument type SETS (what PYC_CANON
+//             names by, and what entry_set_compatibility compares)
+//   cpakey -- distinct tuples of SINGLE CreationSets over all the
+//             function's call edges: the cartesian-product naming
+//             shedskin's dcpa uses
+//
+// The question this answers: is mark-based splitting recovering a
+// distinction that cartesian-product naming already makes structurally
+// (cpakey ~ ess >> setkey), or one that no type-tuple naming can make
+// (ess >> cpakey)?
+static void keyspace_cpa(AEdge *e, Vec<MPosition *> &pos, int i, std::string &tup, std::set<std::string> &out,
+                         int &budget) {
+  if (budget <= 0) return;
+  if (i == pos.n) {
+    out.insert(tup);
+    --budget;
+    return;
+  }
+  AVar *a = e->args.get(pos[i]);
+  if (!a) return keyspace_cpa(e, pos, i + 1, tup, out, budget);
+  AType *t = type_intersection(a->out->type, e->match->formal_filters.get(pos[i]));
+  size_t keep = tup.size();
+  for (CreationSet *cs : t->sorted) {
+    tup += std::to_string(cs ? cs->id : -1) + ",";
+    keyspace_cpa(e, pos, i + 1, tup, out, budget);
+    tup.resize(keep);
+  }
+}
+
+static void report_keyspace() {
+  if (!getenv("IFA_DBG_KEYSPACE")) return;
+  const char *only = getenv("IFA_DBG_KEYSPACE_FUN");
+  for (Fun *f : fa->pdb->funs) {
+    if (f->ess.n < 2) continue;
+    if (only && !(f->sym->name && strstr(f->sym->name, only))) continue;
+    std::set<std::string> setkeys, cpakeys;
+    Vec<MPosition *> pos;
+    for (MPosition *p : f->positional_arg_positions) pos.add(p);
+    int budget = 20000;
+    for (EntrySet *es : f->ess) if (es) {
+      std::string k;
+      for (MPosition *p : pos) {
+        AVar *a = es->args.get(p);
+        k += std::to_string((uintptr_t)(a ? (void *)a->out->type : nullptr)) + "|";
+      }
+      setkeys.insert(k);
+      for (AEdge *e : es->edges) if (e && e->args.n && e->match) {
+        std::string tup;
+        keyspace_cpa(e, pos, 0, tup, cpakeys, budget);
+      }
+    }
+    fprintf(stderr, "KEYSPACE p=%d fun=%s#%d ess=%d setkey=%d cpakey=%d%s\n", analysis_pass,
+            f->sym->name ? f->sym->name : "?", f->sym->id, f->ess.n, (int)setkeys.size(), (int)cpakeys.size(),
+            budget <= 0 ? " (cpa truncated)" : "");
+  }
+}
+
 static const char *kStageName[9] = {"TYPE_CONFL", "MARK_TYPE", "SETTER", "SETTER_OF_SETTER",
                                     "MARK_SETTER", "MARK_SET_OF_SET", "VIOLATION", "PER_CS_RECV", "CSM_ELEM_CS"};
 
@@ -7309,6 +7393,7 @@ static void report_stage_churn() {
 static void complete_pass() {
   report_stage_churn();
   report_canon_stats();
+  report_keyspace();
   capture_type_keys();
   audit_edge_arg_values();
   collect_results();

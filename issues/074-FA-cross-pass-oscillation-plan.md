@@ -697,6 +697,127 @@ it the sharpest available subject: one stage, one disease, no growth to
 confound it, and a measurement showing over half its mints are duplicates
 of contours that already exist.
 
+### hq2x, and why type marks and canonicalization are mutually exclusive (2026-08-13)
+
+The question that opened this: *why do we need type marks at all, if we
+are canonicalizing the function contours?*
+
+**They answer contradictory questions, so you cannot have both.**
+Canonicalization says a contour's name IS its argument type tuple — two
+edges with the same key go to the same contour. `MARK_TYPE` exists
+specifically to separate two edges that *have* the same key. From
+`build_type_mark`'s own comment and IFA.md §6.2: *"two contributors that
+share a type but differ in their origin (different `mark_map` entries)
+still split… this is how IFA handles the recursion-meets-polymorphism
+case without falling back to k-CFA."* A split on origin-at-equal-type is
+by construction unnameable in a type-tuple scheme. That is exactly what
+`PYC_CANON`'s `CANON-CONFLICT` counter has been counting.
+
+**Why the original design needed them.** pyc names contours by tuples of
+argument type **sets** — `edge_canon_key` builds one hash-consed `AType*`
+per position, and `collect_type_confluence` fires on
+`type_diff(av->in->type, x->out->type) != bottom`. Inside a dataflow
+cycle every contributor carries the same union, so that test goes blind
+and plain type splitting cannot separate anything. Marks (min distance
+from a generating AVar) restore an ordering the union destroyed.
+Shedskin never needs the mechanism because CPA names contours by
+*singletons*: there is no union to hide in, so recursion is separated
+structurally by the product at the call site.
+
+**But that is not what marks are doing here.** New probe
+`IFA_DBG_KEYSPACE=1` reports, per function per pass, `ess` (contours IFA
+built) vs `setkey` (distinct tuples of argument type sets — what
+canonicalization would name by) vs `cpakey` (distinct tuples of single
+CreationSets over all its call edges — what shedskin's dcpa would build).
+
+hq2x, `__setitem__#2330` — the function the canon log fingered:
+
+| pass | ess | setkey | cpakey |
+|---|---|---|---|
+| 7 | 20 | 8 | 17 |
+| 12 | 22 | 8 | 17 |
+| 30 | 94 | 8 | 17 |
+| 60 | 190 | 8 | 17 |
+| 100 | 285 | 8 | 17 |
+
+**The type keyspace is stationary from pass 7 onward while the contour
+count grows 14×.** Every one of those contours past the 17th is a
+distinction no type-tuple naming — set-based *or* cartesian-product —
+can express.
+
+Sharper still, the `PIXELxx_yy` family (~24 one-line functions,
+`def PIXEL00_20(rgb_out, pOut, BpL, c): rgb_out[pOut] = Interp2(...)`):
+
+| fun | ess | setkey | cpakey | call sites in source |
+|---|---|---|---|---|
+| PIXEL00_20 | 36 | **1** | **1** | 38 |
+| PIXEL01_20 | 36 | **1** | **1** | 38 |
+| PIXEL00_0 | 28 | **1** | **1** | 29 |
+
+These are **monomorphic** — one argument type tuple, no polymorphism, no
+recursion — and `MARK_TYPE` builds **exactly one contour per call site,
+adding exactly one per pass** from pass 12 until it saturates at the call
+count. That is 1-CFA by accretion, discovered one call site at a time,
+paid for at 36× code duplication, on a function with a single type. The
+mark distance is a proxy for depth-from-generator, so splitting changes
+the distances, which manufactures new mark differences, which drives more
+splitting: this is the concrete form of "splits beget splits" for
+`MARK_TYPE`.
+
+Whole-program at pass 101: **ess=1579, setkey=188, cpakey=521** — 1065
+contours beyond anything CPA would name.
+
+### `PYC_NOMARK` — landed as a flag, and marks are a net loss on this corpus
+
+`PYC_NOMARK=1` skips `MARK_TYPE`; `=2` also skips
+`MARK_SETTER`/`MARK_SETTER_OF_SETTER`. The `VIOLATION` stage's
+`split_with_type_marks(av, SPLIT_DYNAMIC)` is deliberately left armed, so
+marks survive as *demand-driven repair* when a type violation actually
+appears — just not as a prophylactic.
+
+hq2x with `PYC_NOMARK=1`: **102 passes → 14** (and it stops hitting the
+stall guard: `pass_limit_hit` 1 → 0), ess 1664 → 620, analysis 374s → 35s,
+generated C 1192 KB → 583 KB, **0 violations both ways**, and the compiled
+binary's output is byte-identical to baseline except the benchmark's own
+`TIME` line. `PYC_NOMARK=2` is identical to `=1` here — setter-marks were
+contributing nothing.
+
+84-program corpus sweep, marks-off vs marks-on:
+
+| metric | marks on | marks off | |
+|---|---|---|---|
+| total analysis time | 1600s | 1183s | **−26%** |
+| total EntrySets | 30362 | 26741 | **−12%** |
+| total generated C | 16.57 MB | 15.63 MB | **−5.6%** |
+| exit-code changes | — | **mastermind2 1 → 0** | one program starts compiling |
+
+Passes drop nearly everywhere: hq2x 102→14, sudoku4 93→31, webserver
+49→22, yopyra 46→23, chess 39→15, pygasus 27→16, neural1 46→21.
+
+Violations, 12 better / 5 worse:
+
+- **better**: chess 331→**0**, mastermind2 554→60, pylife 54→**0**,
+  bh 2→**0**, sudoku3 143→111, timsort 61→40, neural1 53→39,
+  dijkstra2 10→6, go 161→146, sudoku4 30→26, rubik 166→164, plcfrs 2442→2412
+- **worse**: softrender 1043→1272, webserver 0→8, kmeanspp 2→8,
+  sat 401→417, chull 0→2
+
+`test_pyc.py` with `PYC_NOMARK=1`: **265 passed / 14 expected fails / 0
+failed / 4 skipped** — identical to baseline, both backends.
+`ifa --test` 58/0.
+
+**Reading.** Marks do buy real precision on five programs, so they are not
+dead code — but on this corpus they cost more than they earn, and the
+programs where they cost the most are exactly the non-convergent ones. The
+five regressions are the actual specification of what a replacement has to
+recover; they are the next thing to look at, not the flag's default.
+
+> Do NOT read "violations down" as "precision up" on its own — see the
+> `rdb` trap recorded above. The corroboration here is that the exit-code
+> change goes the right way (mastermind2 starts compiling, and its C grows
+> 46 KB → 286 KB), generated C shrinks without any program losing output
+> fidelity, and the full test suite is unchanged.
+
 ### Two earlier dead ends on that cause (both reverted)
 
 1. **Let `find_best_entry_sets` run on the detach route, vetoing only

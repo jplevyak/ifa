@@ -218,8 +218,28 @@ exist so the next attempt starts from evidence rather than a rebuild:
 | `PYC_HARDREUSE=1..4` | offer a detached edge an existing contour (progressively stricter tests; 4 = lookup by durable key) | 260-261/265 — every mode manufactures a period-2 flip-flop of its own |
 | `PYC_TYPEKEY=1` | durable per-contour type key, captured converged, matched against instead of the mid-pass value | **265/0** — the only clean one; corpus a wash |
 | `PYC_CANON=1\|2` | canonicalize contour creation on that key (find-by-key-else-create) | 259/7 and 237/32; the conflict log is the real output |
+| `PYC_NOMARK=1\|2` | skip mark-based ES splitting (`MARK_TYPE`; `2` also the setter-mark stages), leaving marks armed only on the `VIOLATION` repair path | **265/0**; corpus −26% time, −12% ess, −5.6% C, mastermind2 starts compiling; 12 programs fewer violations, 5 more |
 | `IFA_DBG_STAGE=1` | attribute every detach/mint to the splitter stage that caused it | — |
+| `IFA_DBG_KEYSPACE=1` | per function per pass: contours built vs. distinct type-set tuples vs. distinct cartesian-product tuples | the measurement that indicted `MARK_TYPE` |
 | `IFA_DBG_EDGEARGS=1` | 098's invariant audit (bound edges must have values at recorded args) | — |
+
+**Type marks and canonicalization are mutually exclusive.** `MARK_TYPE`
+exists to split two edges that carry the *same* argument types but
+different value origins (IFA.md §6.2, "recursion-meets-polymorphism
+without k-CFA") — a distinction no type-tuple contour name can express,
+which is precisely what `PYC_CANON`'s conflict counter counts. It is the
+price of naming contours by type *sets*: inside a dataflow cycle every
+contributor carries the same union, so plain type splitting goes blind
+and marks restore the ordering the union destroyed. Shedskin needs no
+equivalent because CPA names by singletons.
+
+`IFA_DBG_KEYSPACE` shows marks are not doing that job. On `hq2x`,
+`__setitem__`'s type keyspace is **stationary from pass 7** (8 type-set
+tuples, 17 CPA tuples) while its contour count grows 20 → 287; and the
+~24 monomorphic one-line `PIXELxx_yy` functions (setkey=1, cpakey=1) get
+**one contour per call site, one added per pass**, up to 36. That is
+1-CFA by accretion on a function with a single argument type. Details
+and the corpus numbers in 074.
 
 **Which splits actually oscillate.** `IFA_DBG_STAGE` answers the question
 the whole cluster has been circling: of the nine splitter stages, only
@@ -317,8 +337,12 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   **The churn is now stage-attributed: only `TYPE_CONFLUENCE` and
   `MARK_TYPE` produce it** — nothing measurable from the other seven
   stages (with the caveat that the first-stage-wins cascade starves
-  them). Four investigation flags landed off-by-default:
-  `PYC_HARDREUSE`, `PYC_TYPEKEY`, `PYC_CANON`, `IFA_DBG_STAGE`.
+  them). Investigation flags landed off-by-default: `PYC_HARDREUSE`,
+  `PYC_TYPEKEY`, `PYC_CANON`, `PYC_NOMARK`, `IFA_DBG_STAGE`,
+  `IFA_DBG_KEYSPACE`. **`MARK_TYPE`'s splits are shown unnameable by any
+  type-tuple scheme, and a net loss on this corpus** — `PYC_NOMARK=1`
+  gives −26% analysis time, −12% contours, one more program compiling,
+  and an unchanged test suite, at the cost of precision on five programs.
 - [075-FA-element-cs-method-split-idempotent-plan.md](075-FA-element-cs-method-split-idempotent-plan.md)
   — concrete build plan (successor to 063) to clone shared
   `list`/`dict` methods per element-CS, shedskin's `func_copy`-per-
