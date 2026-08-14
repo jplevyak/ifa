@@ -200,6 +200,10 @@ class EntrySet : public gc {
   // to alternate between.
   Map<MPosition *, AType *> canon_key;
   int canon_key_set = 0;
+  // ifa/issues/074 (IFA_DBG_KEYDRIFT): last two passes' type_key hashes,
+  // so a period-2 flip-flop (key(N) == key(N-2) != key(N-1)) can be told
+  // from a key that is merely still moving. Probe-only.
+  unsigned int key_hash[2] = {0, 0};
   EdgeHash edges;
   EdgeMap out_edge_map;
   Vec<CreationSet *> creates;
@@ -604,6 +608,9 @@ class FA : public gc {
   // splitter may run without improving on the best violation count
   // seen so far before the loop is force-terminated.
   int stall_limit;
+  // ifa/issues/074: overridable via IFA_NONIMPROVE_LIMIT so the guard can
+  // be taken out of the measurement (see stall_limit).
+  int nonimprove_limit = IFA_NONIMPROVE_LIMIT;
   int best_violations;  // best (lowest) nonzero-pass violation count seen
   int stall_passes;     // consecutive RE-DERIVING (dup>0) passes at or
                         // above best_violations (see IFA_STALL_LIMIT's
@@ -699,6 +706,7 @@ class FA : public gc {
   long dbg_stage_detach[9] = {};   // edges this stage detached (x->to = 0)
   long dbg_stage_mint[9] = {};     // contours this stage minted fresh
   long dbg_stage_reuse[9] = {};    // edges this stage re-bound to an existing contour
+  long dbg_stage_csmint[9] = {};   // CreationSets this stage minted (ifa/issues/074)
   double stage_time[kNumFAPassStages] = {};
   long stage_progress_count[kNumFAPassStages] = {};
 

@@ -219,8 +219,11 @@ exist so the next attempt starts from evidence rather than a rebuild:
 | `PYC_TYPEKEY=1` | durable per-contour type key, captured converged, matched against instead of the mid-pass value | **265/0** — the only clean one; corpus a wash |
 | `PYC_CANON=1\|2` | canonicalize contour creation on that key (find-by-key-else-create) | 259/7 and 237/32; the conflict log is the real output |
 | `PYC_NOMARK=1\|2` | skip mark-based ES splitting (`MARK_TYPE`; `2` also the setter-mark stages), leaving marks armed only on the `VIOLATION` repair path | **265/0**; corpus −26% time, −12% ess, −5.6% C, mastermind2 starts compiling; 12 programs fewer violations, 5 more |
-| `IFA_DBG_STAGE=1` | attribute every detach/mint to the splitter stage that caused it | — |
+| `IFA_DBG_STAGE=1` | attribute every edge detach/mint/reuse **and CreationSet mint** to the splitter stage that caused it | showed the CS-minting stages drive `TYPE_CONFLUENCE` |
 | `IFA_DBG_KEYSPACE=1` | per function per pass: contours built vs. distinct type-set tuples vs. distinct cartesian-product tuples | the measurement that indicted `MARK_TYPE` |
+| `IFA_DBG_KEYDRIFT=1` | per pass: contours whose type key was stable / grew / shrank non-monotonically / flip-flopped | separates "still converging" from "oscillating" |
+| `IFA_DBG_INCOMPAT=1` | which clause of the compatibility test separates edges (`arg` vs `ret`), stage-1 confluence disposition, and `REDERIVE` ROUTE-vs-FILTER | `ret`=0 everywhere; re-derivation is 100% ledger recovery |
+| `IFA_STALL_LIMIT`, `IFA_NONIMPROVE_LIMIT` | override the divergence guards (were compile-time constants) | takes the guard out of the measurement |
 | `IFA_DBG_EDGEARGS=1` | 098's invariant audit (bound edges must have values at recorded args) | — |
 
 **Type marks and canonicalization are mutually exclusive.** `MARK_TYPE`
@@ -241,17 +244,34 @@ tuples, 17 CPA tuples) while its contour count grows 20 → 287; and the
 1-CFA by accretion on a function with a single argument type. Details
 and the corpus numbers in 074.
 
-**Which splits actually oscillate.** `IFA_DBG_STAGE` answers the question
-the whole cluster has been circling: of the nine splitter stages, only
-**`TYPE_CONFLUENCE`** and **`MARK_TYPE`** produce the steady-state churn.
-`SETTER` and `SETTER_OF_SETTER` contribute single digits corpus-wide, and
-`MARK_SETTER`, `MARK_SETTER_OF_SETTER`, `VIOLATION`, `PER_CS_RECEIVER`
-and `CSM_ELEMENT_CS` contribute **zero** — though `run_split_stages` is a
-first-stage-wins cascade, so the later stages are partly *starved* rather
-than proven innocent. The two implicated stages fail differently:
-`MARK_TYPE` tends to pure re-assignment (`hq2x`: 2755 detaches per 10
-passes, 24 mints), `TYPE_CONFLUENCE` tends to detach *and* mint (`rdb`
-2022:712). Full table in 074.
+**Which splits actually oscillate.** Of the nine splitter stages, only
+**`TYPE_CONFLUENCE`** and **`MARK_TYPE`** produce steady-state *edge*
+churn — but that framing turned out to be an artifact of metering only
+edges. `IFA_DBG_STAGE` now also counts **CreationSet** mints, and the two
+halves have completely different causes:
+
+- **`MARK_TYPE` is the cause of its own churn**, building contours no
+  type-tuple can name (see above).
+- **`TYPE_CONFLUENCE` is a responder.** It mints **no CreationSets at
+  all**; `SETTER`, `SETTER_OF_SETTER` and `CSM_ELEMENT_CS` mint them while
+  moving zero edges — which is why they scored ~0 under the old meter. A
+  new CreationSet widens types, which re-opens type confluences, which
+  restarts `TYPE_CONFLUENCE`. Because `run_split_stages` gates every stage
+  on `if (!analyze_again)`, the two can never progress on the same pass —
+  they are forced to **alternate**. `linalg` does this as an exact
+  **period-10 limit cycle**: `SETTER` mints 2 CreationSets, nine passes of
+  `TYPE_CONFLUENCE` re-partitioning add 34 contours and 46 CreationSets,
+  `SETTER` fires again — identical numbers every cycle, zero progress on
+  the residual violations.
+
+Two corrections fell out. **The stall guard counts its own fix as
+divergence**: its `dup_split_attempts` term is 100% ledger *ROUTE
+recoveries* (edges re-routed to the product recorded on an earlier pass)
+and 0% fresh re-splits, across all 11 programs measured. And
+`cur_split_stage` was never reset after `run_split_stages`, so the next
+pass's flow-time contours were attributed to whichever stage ran last —
+that is what made `reuse` read in the thousands for stages that re-bind
+nothing. Full tables in 074.
 
 Tree state at the end: `test_pyc.py` 265 passed / 14 expected fails / 0
 failed / 4 skipped (both backends), `ifa --test` 58/0, zero exit-code

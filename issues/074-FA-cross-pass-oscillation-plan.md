@@ -818,6 +818,141 @@ recover; they are the next thing to look at, not the flag's default.
 > 46 KB → 286 KB), generated C shrinks without any program losing output
 > fidelity, and the full test suite is unchanged.
 
+### THE TYPE_CONFLUENCE PROGRAMS: it is not self-fuelling, it is the responder (2026-08-13)
+
+`MARK_TYPE` turned out to build contours no type-tuple can name. The
+`TYPE_CONFLUENCE` half is the opposite in every respect, and the cause is
+architectural rather than algorithmic.
+
+**First, its contours ARE nameable.** `IFA_DBG_KEYSPACE` at the last pass:
+
+| program | ess | setkey | cpakey |
+|---|---|---|---|
+| rdb | 1200 | 638 | 12873 |
+| plcfrs | 742 | 515 | 35597 |
+| msp_ss | 1073 | 450 | 765 |
+| linalg | 468 | 288 | 410 |
+| tictactoe | 389 | 271 | 337 |
+
+`ess ≈ cpakey`, and on rdb/plcfrs *far below* it — IFA builds fewer
+contours than cartesian-product naming would. Nothing like `hq2x`'s
+287-contours-for-8-keys. And `IFA_DBG_INCOMPAT` shows **every single
+incompatibility verdict comes from the `arg` clause**: `ret` and `retn`
+are exactly 0 on all 11 programs, tens of thousands of verdicts each. So
+this stage separates edges on precisely the thing a canonical naming
+scheme keys on. (An earlier reading of this table that had the `rets`
+clause dominating was a column-offset mistake in the aggregation; the
+"contour identity depends on its own result" hypothesis it suggested is
+dead.)
+
+**Second, most of them were never oscillating.** Of 11, eight reach
+`dup_es=0` with no edge churn before they stop — but those trailing quiet
+passes are the stall guard's doing, not convergence: once
+`pass_limit_hit` is set, `extend_analysis` never calls `run_split_stages`
+again. The splitter is gagged, not finished. This matches the Group B/C
+re-base above; the genuinely non-convergent `TYPE_CONFLUENCE` members are
+**rubik, plcfrs, linalg, go**.
+
+**And `PYC_NOMARK` moves rubik out of Group C entirely** (guards off):
+
+| program | guards off | guards off + `PYC_NOMARK=1` |
+|---|---|---|
+| rubik | p102, 1729 viol, ess 1456 | **p27, `pass_limit_hit=0`**, 104 viol, ess 728 |
+| plcfrs | p102, 1353 viol | p102, **62** viol |
+| linalg | p102, 78 viol | p102, **31** viol |
+| go | p102, 103 viol | p102, 107 viol |
+
+**Third, the stall guard's oscillation test is measuring the wrong thing.**
+The guard advances `stall_passes` only on non-improving passes that
+"re-derived" a split (`dup_split_attempts > 0`). New `REDERIVE` logging
+breaks that counter down by kind:
+
+| | rdb | rubik | linalg | amaze | msp_ss | plcfrs | sat | softrender | chull | sudoku5 | tictactoe |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| ROUTE | 119 | 35 | 70 | 94 | 67 | 43 | 43 | 34 | 12 | 26 | 19 |
+| FILTER | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+**100% ROUTE, zero FILTER, everywhere.** Every "re-derivation" is the
+ledger finding the product it recorded on an earlier pass and routing the
+edge back into it — the anti-oscillation machinery *succeeding*. The guard
+reads its own recovery mechanism as evidence of divergence.
+
+#### The actual mechanism: cascade serialization
+
+`run_split_stages` gates every stage on `if (!analyze_again)`, so a later
+stage runs only on a pass where every earlier stage found nothing. The
+later stages mint **CreationSets**, which widen types wherever they flow,
+which re-opens type confluences, which restarts `TYPE_CONFLUENCE` — and
+`TYPE_CONFLUENCE` must go fully quiet again before the later stage gets
+another turn. The two can never make progress on the same pass; they are
+forced to alternate.
+
+`linalg` (guards off, `PYC_NOMARK=1`) is the specimen — an **exact
+period-10 limit cycle**, repeating verbatim from pass 64 to the cap:
+
+```
+p=64  SETTER      det=0  mint=0  reuse=0  csmint=2   ess=739 css=1832
+p=65  TYPE_CONFL  det=4  mint=4  reuse=0  csmint=0   ess=739 css=1834
+p=66  TYPE_CONFL  det=14 mint=8  reuse=6  csmint=0   ess=743 css=1853
+p=67  TYPE_CONFL  det=15 mint=10 reuse=5  csmint=0   ess=751 css=1862
+p=68  TYPE_CONFL  det=8  mint=2  reuse=6  csmint=0   ess=761 css=1864
+p=69  TYPE_CONFL  det=4  mint=3  reuse=1  csmint=0   ess=763 css=1869
+p=70  TYPE_CONFL  det=4  mint=0  reuse=4  csmint=0   ess=766 css=1875
+p=71  TYPE_CONFL  det=3  mint=3  reuse=0  csmint=0   ess=766 css=1875
+p=72  TYPE_CONFL  det=3  mint=2  reuse=1  csmint=0   ess=769 css=1877
+p=73  TYPE_CONFL  det=2  mint=2  reuse=0  csmint=0   ess=771 css=1878
+p=74  SETTER      det=0  mint=0  reuse=0  csmint=2   ess=773 css=1878   <- repeats
+```
+
+`SETTER` mints **2 CreationSets and moves no edges**; `TYPE_CONFLUENCE`
+then spends nine passes re-partitioning around them, minting 34 contours
+and 46 CreationSets; then `SETTER` fires again. Identical numbers every
+cycle. `KEYDRIFT` repeats too (`p=64` and `p=74` both `grew=13 shrank=29`).
+Net per cycle: **+34 ess, +46 css, zero progress on the 31 residual
+violations.** That is the growth and the oscillation in one object.
+
+`plcfrs` and `go` have the same alternation without the exact periodicity
+(`plcfrs`: `SETTER csmint=6` → 4-pass storm → `SETTER csmint=2` → storm →
+`SETTER_OF_SETTER`; `go`: `CSM_ELEM_CS csmint=48` → `TYPE_CONFL det=82` →
+7-pass storm → `SETTER csmint=6` → …). The Group B programs are the
+one-shot version of the same thing: a single `CSM_ELEM_CS` event costing
+3-8 passes of storm, then done (`rubik` p15 `csmint`→ `det=983 mint=661`
+at p16; `seen` jumps 180 → 1701 in one pass).
+
+#### This corrects the stage-attribution table above
+
+That table metered only **edge** detach/mint, so stages whose entire
+effect is to mint CreationSets scored ~0 and were read as innocent. Adding
+a `csmint` column (`IFA_DBG_STAGE`) shows `SETTER`, `SETTER_OF_SETTER` and
+`CSM_ELEMENT_CS` minting CreationSets with *zero* edge churn — and those
+mints are what drives `TYPE_CONFLUENCE`. **`TYPE_CONFLUENCE` mints no
+CreationSets at all.** It is the downstream responder, not the cause.
+
+Also fixed while measuring: `cur_split_stage` was never reset after
+`run_split_stages`, so every contour and CreationSet the *next pass's
+flow* created was attributed to whichever stage ran last. That is what
+made the `reuse` column read in the thousands for stages that re-bind
+nothing (`CSM_ELEMENT_CS reuse=2280` on rubik was flow). With the reset,
+linalg's storm passes drop from `reuse=39/18/11` to `0/6/5`.
+
+#### Where this points
+
+The target is no longer "make `TYPE_CONFLUENCE` idempotent". It is
+**let CS-minting and type-partitioning converge together instead of
+alternating** — either by running the CS-minting stages to their own fixed
+point before type partitioning starts, or by dropping the first-stage-wins
+gate for stages that move no edges (they cannot violate the unflowed-
+contour hazard the gate exists to prevent, since they detach nothing).
+The second is much the smaller change and is directly testable: on
+`linalg` it should collapse a 10-pass cycle to one pass.
+
+Secondary, and independent: **the stall guard should not count ledger
+ROUTE recoveries as re-derivation.** `dup_split_attempts` conflates
+"re-split into a new contour" (real churn, and it never happens here) with
+"re-routed to the recorded product" (the fix working). Splitting the
+counter would stop the guard firing on programs that are converging, which
+is what causes the `sudoku5`/`msp_ss` miscompiles recorded above.
+
 ### Two earlier dead ends on that cause (both reverted)
 
 1. **Let `find_best_entry_sets` run on the detach route, vetoing only

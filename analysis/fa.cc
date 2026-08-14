@@ -21,6 +21,9 @@
 #include <set>
 #include <string>
 
+// ifa/issues/074: which splitter stage is running, for the per-stage
+// churn probes (IFA_DBG_STAGE). -1 outside extend_analysis.
+static int cur_split_stage = -1;
 bool fgraph_pass_contours = false;
 int write_code_exit = 0;
 int analysis_pass = 0;
@@ -232,6 +235,7 @@ AType *make_abstract_type(Sym *s) {
   AType *a = s->abstract_type;
   if (a) return a;
   CreationSet *cs = new CreationSet(s);
+  if (cur_split_stage >= 0 && cur_split_stage < 9) ++fa->dbg_stage_csmint[cur_split_stage];
   return s->abstract_type = make_AType(cs);
 }
 
@@ -464,6 +468,7 @@ Lcreators:;
 Lunique:
   // new creation set
   cs = new CreationSet(s);
+  if (cur_split_stage >= 0 && cur_split_stage < 9) ++fa->dbg_stage_csmint[cur_split_stage];
   s->creators.add(cs);
   for (Sym *h : s->has) {
     assert(h->var);
@@ -847,6 +852,19 @@ static int different_marked_args(AVar *a1, AVar *a2, int offset, AVar *basis = 0
   return found1 && found2 && marks1.some_disjunction(marks2);
 }
 
+// ifa/issues/074 (IFA_DBG_INCOMPAT): which CLAUSE of the compatibility
+// test separates edges from contours. The `rets` clause compares the
+// CALLER's return-destination types -- which are downstream of what this
+// very contour returns, so a contour's identity partly depends on its own
+// result. If that clause is doing the work, the naming is circular by
+// construction.
+static long ic_arg = 0, ic_ret = 0, ic_retn = 0;
+// ifa/issues/074: of the stage-1 splits that actually fire, how many were
+// triggered by a FORMAL confluence versus a RETURN-VALUE confluence.
+static long tc_formal = 0, tc_return = 0;
+static int ld_dup_es = 0, ld_dup_cs = 0;
+static long tc_seen = 0, tc_skip_rval = 0, tc_skip_lval = 0, tc_skip_cs = 0, tc_dec = 0, tc_defer = 0;
+
 static int edge_type_compatible_with_edge(AEdge *e, AEdge *ee, EntrySet *es, int fmark = 0) {
   assert(e->args.n && ee->args.n);
   for (MPosition *p : e->match->fun->positional_arg_positions) {
@@ -855,21 +873,22 @@ static int edge_type_compatible_with_edge(AEdge *e, AEdge *ee, EntrySet *es, int
     AType *etype = type_intersection(e_arg->out->type, e->match->formal_filters.get(p));
     AType *eetype = type_intersection(ee_arg->out->type, ee->match->formal_filters.get(p));
     if (!fmark) {
-      if (etype->n && eetype->n && etype != eetype) return 0;
+      if (etype->n && eetype->n && etype != eetype) return ++ic_arg, 0;
     } else {
       AVar *es_arg = es->args.get(p);
-      if (different_marked_args(ee_arg, e_arg, 2, es_arg)) return 0;
+      if (different_marked_args(ee_arg, e_arg, 2, es_arg)) return ++ic_arg, 0;
     }
   }
-  if (e->rets.n != ee->rets.n) return 0;
+  if (e->rets.n != ee->rets.n) return ++ic_retn, 0;
   for (int i = 0; i < e->rets.n; i++) {
     if (ee->rets[i]->lvalue && e->rets.v[i]->lvalue) {
       if (!fmark) {
         if (ee->rets[i]->lvalue->out->type->n && e->rets.v[i]->lvalue->out->type->n &&
             ee->rets[i]->lvalue->out->type != e->rets.v[i]->lvalue->out->type)
-          return 0;
+          return ++ic_ret, 0;
       } else {
-        if (different_marked_args(ee->rets[i]->lvalue, e->rets.v[i]->lvalue, 1, es->rets[i]->lvalue)) return 0;
+        if (different_marked_args(ee->rets[i]->lvalue, e->rets.v[i]->lvalue, 1, es->rets[i]->lvalue))
+          return ++ic_ret, 0;
       }
     }
   }
@@ -878,7 +897,6 @@ static int edge_type_compatible_with_edge(AEdge *e, AEdge *ee, EntrySet *es, int
 
 static int typekey_enabled();
 static int canon_enabled();
-static int cur_split_stage = -1;
 
 static int edge_type_compatible_with_entry_set(AEdge *e, EntrySet *es, int fmark = 0) {
   assert(e->args.n && es->args.n);
@@ -893,19 +911,19 @@ static int edge_type_compatible_with_entry_set(AEdge *e, EntrySet *es, int fmark
           AType *k = es->type_key.get(p);
           if (k) stype = k;  // durable key wins over the mid-pass value
         }
-        if (etype->n && stype->n && etype != stype) return 0;
+        if (etype->n && stype->n && etype != stype) return ++ic_arg, 0;
       } else if (different_marked_args(e_arg, es_arg, 2))
-        return 0;
+        return ++ic_arg, 0;
     }
-    if (es->rets.n != e->rets.n) return 0;
+    if (es->rets.n != e->rets.n) return ++ic_retn, 0;
     for (int i = 0; i < e->rets.n; i++) {
       if (es->rets[i]->lvalue && e->rets.v[i]->lvalue) {
         if (!fmark) {
           if (es->rets[i]->lvalue->out->type->n && e->rets.v[i]->lvalue->out->type->n &&
               es->rets[i]->lvalue->out->type != e->rets.v[i]->lvalue->out->type)
-            return 0;
+            return ++ic_ret, 0;
         } else if (different_marked_args(es->rets[i]->lvalue, e->rets.v[i]->lvalue, 1))
-          return 0;
+          return ++ic_ret, 0;
       }
     }
   } else {
@@ -4238,6 +4256,11 @@ static void initialize_pass() {
   fa->type_violations.clear();
   fa->type_world.type_violation_hash.clear();
   fa->entry_set_done.clear();
+  // ifa/issues/074 (IFA_DBG_INCOMPAT): these are incremented by
+  // extend_analysis, which runs AFTER complete_pass, so shadow them here
+  // for the probe before the reset wipes the previous pass's tally.
+  ld_dup_es = fa->dup_split_attempts;
+  ld_dup_cs = fa->cs_dup_split_attempts;
   fa->dup_split_attempts = 0;  // issue 033 stage A per-pass counter
   fa->cs_dup_split_attempts = 0;  // issue 033 D5 per-pass counter
   fa->dirty_avar_count = 0;    // issue 033 M4 probe
@@ -4539,6 +4562,10 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
       fa->ledger_add(f, cur_split_stage, x->key, x->value, res);
     else if (d->pass_made != analysis_pass) {  // intra-pass repeats aren't re-derivation
       ++fa->dup_split_attempts;
+      if (getenv("IFA_DBG_INCOMPAT"))
+        fprintf(stderr, "REDERIVE p=%d FILTER fun=%s#%d es=%d pos=%p part=%d/%d first_pass=%d\n", analysis_pass,
+                f->sym->name ? f->sym->name : "?", f->sym->id, orig_es->id, (void *)x->key, x->value->sorted.n,
+                x->value->n, d->pass_made);
       log(LOG_SPLITTING, "[ledger] DUP filtered fun %s %d stage %d pos %p part %p/%d (first pass %d, product %d)\n",
           f->sym->name ? f->sym->name : "", f->sym->id, cur_split_stage, (void *)x->key, (void *)x->value,
           x->value->sorted.n, d->pass_made, d->product ? d->product->id : -1);
@@ -5221,6 +5248,10 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
       if (d && d->pass_made != analysis_pass && d->product && d->product != es) {
         product = d->product;
         ++fa->dup_split_attempts;
+        if (getenv("IFA_DBG_INCOMPAT"))
+          fprintf(stderr, "REDERIVE p=%d ROUTE fun=%s#%d es=%d -> product=%d first_pass=%d\n", analysis_pass,
+                  es->fun->sym->name ? es->fun->sym->name : "?", es->fun->sym->id, es->id, d->product->id,
+                  d->pass_made);
         log(LOG_SPLITTING, "[ledger] ROUTE group es %d fun %s %d pos %p part %p/%d sig %u -> product %d (first pass %d)\n",
             es->id, es->fun->sym->name ? es->fun->sym->name : "", es->fun->sym->id, (void *)avpos, (void *)part,
             part->sorted.n, gsig, d->product->id, d->pass_made);
@@ -5894,6 +5925,7 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
               cs->id, cs->sym->name ? cs->sym->name : "", cs->sym->id, csig, new_cs->id, d->pass_made);
         } else {
           new_cs = new CreationSet(cs);
+          if (cur_split_stage >= 0 && cur_split_stage < 9) ++fa->dbg_stage_csmint[cur_split_stage];
           new_cs->split = cs;
         }
         for (AVar *v : compatible_set) if (v) {
@@ -6070,19 +6102,20 @@ static void collect_cs_setter_confluences(Vec<AVar *> &setters_confluences) {
   // mutations, the exact thing M2b exists to prevent.
   Vec<ESSplitDecision *> decisions;
   for (AVar *av : imprecisions) {
+    ++tc_seen;
     if (av->contour_is_entry_set) {
       AVar *target = nullptr;
       if (!av->is_lvalue) {
         if (av->var->is_formal)
           target = av;
         else
-          log(LOG_SPLITTING, "[stage1] av %d ES/non-formal-rval skipped\n", av->id);
+          ++tc_skip_rval, log(LOG_SPLITTING, "[stage1] av %d ES/non-formal-rval skipped\n", av->id);
       } else {
         AVar *aav = unique_AVar(av->var, av->contour);
         if (is_return_value(aav))
           target = aav;
         else
-          log(LOG_SPLITTING, "[stage1] av %d ES/lval-non-return skipped\n", av->id);
+          ++tc_skip_lval, log(LOG_SPLITTING, "[stage1] av %d ES/lval-non-return skipped\n", av->id);
       }
       if (!target) continue;
       if (fdynamic) {
@@ -6094,15 +6127,17 @@ static void collect_cs_setter_confluences(Vec<AVar *> &setters_confluences) {
         ESSplitDecision *dec = decide_entry_set_split(target, SPLIT_TYPE, SPLIT_VALUE);
         log(LOG_SPLITTING, "[stage1] av %d ES/%s decide -> %d groups\n", av->id, av->is_lvalue ? "return" : "formal",
             dec ? dec->groups.n : 0);
-        if (dec) decisions.add(dec);
+        if (dec) ++tc_dec, decisions.add(dec);
       }
     } else {
+      ++tc_skip_cs;
       log(LOG_SPLITTING, "[stage1] av %d CS-contour skipped (passes to stage2)\n", av->id);
     }
   }
   Vec<EntrySet *> applied;
   for (ESSplitDecision *dec : decisions) {
     if (applied.set_in(dec->es)) {
+      ++tc_defer;
       log(LOG_SPLITTING, "[stage1] av %d es %d DEFERRED: es already split this pass (next pass re-decides)\n",
           dec->av->id, dec->es->id);
       continue;
@@ -6114,6 +6149,7 @@ static void collect_cs_setter_confluences(Vec<AVar *> &setters_confluences) {
     applied.set_add(dec->es);
     int r = apply_entry_set_split(dec);
     log(LOG_SPLITTING, "[stage1] av %d es %d apply -> %d\n", dec->av->id, dec->es->id, r);
+    if (r) (dec->av->is_lvalue ? tc_return : tc_formal)++;
     analyze_again |= r;
   }
   return analyze_again;
@@ -6850,6 +6886,12 @@ static CSMSplitDecision *decide_csm_split(AVar *av) {
     }
   }
   log(LOG_SPLITTING, "split_container_methods_per_element_cs %d\n", analyze_again);
+  // ifa/issues/074: back to "no stage running". Without this, every
+  // contour/CreationSet the NEXT pass's flow creates was attributed to
+  // whichever stage happened to run last -- which is what made the
+  // per-stage `reuse` column read in the thousands for stages that
+  // re-bind nothing (CSM_ELEMENT_CS's reuse=2280 on rubik was flow).
+  cur_split_stage = -1;
   return analyze_again;
 }
 
@@ -6930,13 +6972,13 @@ static CSMSplitDecision *decide_csm_split(AVar *av) {
         bool rederived = fa->dup_split_attempts + fa->cs_dup_split_attempts > 0;
         if (rederived) ++fa->stall_passes;
         ++fa->nonimprove_passes;
-        if (fa->stall_passes >= fa->stall_limit || fa->nonimprove_passes >= IFA_NONIMPROVE_LIMIT) {
+        if (fa->stall_passes >= fa->stall_limit || fa->nonimprove_passes >= fa->nonimprove_limit) {
           fa->pass_limit_hit = true;
           log(LOG_SPLITTING,
               "STALL LIMIT reached at pass %d, %d violations (best %d): %d re-deriving (limit %d), "
               "%d non-improving (limit %d); stopping\n",
               analysis_pass, v, fa->best_violations, fa->stall_passes, fa->stall_limit, fa->nonimprove_passes,
-              IFA_NONIMPROVE_LIMIT);
+              fa->nonimprove_limit);
           analyze_again = 0;
         }
       }
@@ -7296,15 +7338,88 @@ static void audit_edge_arg_values() {
 // into its durable type key, for the NEXT pass's compatibility matching.
 // Taken here, after the flow fixpoint, so the value is whole-pass
 // invariant rather than a mid-pass snapshot.
+// ifa/issues/074: is a contour's NAME stable from pass to pass?
+//
+// A splitter that keeps firing on the same contour is doing one of two
+// very different things. If the contour's converged formal types GREW,
+// the analysis is discovering polymorphism and will stop once the type
+// lattice tops out -- slow, but terminating. If they CHANGED
+// non-monotonically -- the contour lost a CreationSet it held last pass
+// -- the naming itself is oscillating, and no amount of extra passes
+// converges it. IFA_DBG_KEYDRIFT=1 separates the two.
+static long kd_stable = 0, kd_grew = 0, kd_shrank = 0, kd_new = 0, kd_flip = 0;
+static Vec<Fun *> kd_flip_funs;
+
 static void capture_type_keys() {
-  if (!typekey_enabled()) return;
+  bool drift = getenv("IFA_DBG_KEYDRIFT") != nullptr;
+  if (!typekey_enabled() && !drift) return;
   for (EntrySet *es : fa->entry_set_done) if (es && es->fun) {
+    int grew = 0, shrank = 0, fresh = es->type_key_pass < 0;
+    unsigned int h = 0;
+    int i = 0;
     form_MPositionAVar(x, es->args) {
       if (!x->key->is_positional() || !x->value) continue;
-      es->type_key.put(x->key, x->value->out->type);
+      AType *now = x->value->out->type;
+      if (drift) {
+        h += (unsigned int)(uintptr_t)now * open_hash_primes[i++ % 256];
+        if (!fresh) {
+          AType *was = es->type_key.get(x->key);
+          if (was && was != now) {
+            // lost something it held last pass == non-monotone rename
+            if (type_diff(was, now) != fa->type_world.bottom_type) shrank = 1;
+            else grew = 1;
+          }
+        }
+      }
+      es->type_key.put(x->key, now);
     }
     es->type_key_pass = analysis_pass;
+    if (!drift) continue;
+    // key(N) == key(N-2) != key(N-1): a period-2 flip-flop, which no
+    // number of further passes resolves. Distinct from a key that is
+    // still moving monotonically toward a fixed point.
+    int flip = !fresh && h != es->key_hash[0] && h == es->key_hash[1];
+    es->key_hash[1] = es->key_hash[0];
+    es->key_hash[0] = h;
+    if (fresh) ++kd_new;
+    else if (flip) {
+      ++kd_flip;
+      kd_flip_funs.set_add(es->fun);
+    } else if (shrank)
+      ++kd_shrank;
+    else if (grew)
+      ++kd_grew;
+    else
+      ++kd_stable;
   }
+}
+
+static void report_incompat() {
+  if (!getenv("IFA_DBG_INCOMPAT")) return;
+  fprintf(stderr,
+          "INCOMPAT p=%d arg=%ld ret=%ld retn=%ld | stage1 seen=%ld skip(rval=%ld lval=%ld cs=%ld) dec=%ld "
+          "defer=%ld split(formal=%ld return=%ld)\n",
+          analysis_pass, ic_arg, ic_ret, ic_retn, tc_seen, tc_skip_rval, tc_skip_lval, tc_skip_cs, tc_dec, tc_defer,
+          tc_formal, tc_return);
+  fprintf(stderr, "LEDGER p=%d dup_es=%d dup_cs=%d\n", analysis_pass, ld_dup_es, ld_dup_cs);
+  ic_arg = ic_ret = ic_retn = tc_formal = tc_return = 0;
+  tc_seen = tc_skip_rval = tc_skip_lval = tc_skip_cs = tc_dec = tc_defer = 0;
+}
+
+static void report_keydrift() {
+  if (!getenv("IFA_DBG_KEYDRIFT")) return;
+  fprintf(stderr, "KEYDRIFT p=%d stable=%ld grew=%ld shrank=%ld flip=%ld new=%ld", analysis_pass, kd_stable, kd_grew,
+          kd_shrank, kd_flip, kd_new);
+  if (kd_flip) {
+    kd_flip_funs.set_to_vec();  // set_add leaves null holes
+    qsort_by_id(kd_flip_funs);
+    fprintf(stderr, " flip_funs=");
+    for (Fun *f : kd_flip_funs)
+      if (f && f->sym) fprintf(stderr, "%s#%d,", f->sym->name ? f->sym->name : "?", f->sym->id);
+  }
+  fprintf(stderr, "\n");
+  kd_stable = kd_grew = kd_shrank = kd_new = kd_flip = 0;
+  kd_flip_funs.clear();
 }
 
 static void report_canon_stats() {
@@ -7383,11 +7498,12 @@ static void report_stage_churn() {
   if (!getenv("IFA_DBG_STAGE")) return;
   fprintf(stderr, "STAGE p=%d", analysis_pass);
   for (int i = 0; i < 9; i++)
-    if (fa->dbg_stage_detach[i] || fa->dbg_stage_mint[i] || fa->dbg_stage_reuse[i])
-      fprintf(stderr, " %s(det=%ld mint=%ld reuse=%ld)", kStageName[i], fa->dbg_stage_detach[i],
-              fa->dbg_stage_mint[i], fa->dbg_stage_reuse[i]);
-  fprintf(stderr, "\n");
-  for (int i = 0; i < 9; i++) fa->dbg_stage_detach[i] = fa->dbg_stage_mint[i] = fa->dbg_stage_reuse[i] = 0;
+    if (fa->dbg_stage_detach[i] || fa->dbg_stage_mint[i] || fa->dbg_stage_reuse[i] || fa->dbg_stage_csmint[i])
+      fprintf(stderr, " %s(det=%ld mint=%ld reuse=%ld csmint=%ld)", kStageName[i], fa->dbg_stage_detach[i],
+              fa->dbg_stage_mint[i], fa->dbg_stage_reuse[i], fa->dbg_stage_csmint[i]);
+  fprintf(stderr, " | ess=%d css=%d\n", fa->ess.n, fa->css.n);
+  for (int i = 0; i < 9; i++)
+    fa->dbg_stage_detach[i] = fa->dbg_stage_mint[i] = fa->dbg_stage_reuse[i] = fa->dbg_stage_csmint[i] = 0;
 }
 
 static void complete_pass() {
@@ -7395,6 +7511,8 @@ static void complete_pass() {
   report_canon_stats();
   report_keyspace();
   capture_type_keys();
+  report_keydrift();
+  report_incompat();
   audit_edge_arg_values();
   collect_results();
   collect_argument_type_violations();
@@ -7531,6 +7649,11 @@ static void analyze_to_convergence() {
 
 int FA::analyze(Fun *top) {
   ::fa = this;
+  // ifa/issues/074: the stall guard SUPPRESSES the splitter for the rest
+  // of the run once it fires, so its limit decides whether a program is
+  // "non-convergent" or merely slow. Overridable so that can be measured.
+  if (cchar *sl = getenv("IFA_STALL_LIMIT")) stall_limit = atoi(sl);
+  if (cchar *nl = getenv("IFA_NONIMPROVE_LIMIT")) nonimprove_limit = atoi(nl);
   if (!global_es) {
     // The distinguished global contour (see GLOBAL_CONTOUR in
     // fa.h). A real EntrySet so `(EntrySet *)contour` derefs on
