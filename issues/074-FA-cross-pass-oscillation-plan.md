@@ -941,11 +941,11 @@ Correcting the ROUTE/FILTER table above: it covered only two of the three
 sites that bump `dup_split_attempts`. With the third (the "DUP group"
 record site in `apply_entry_set_split`) instrumented too:
 
-| | rdb | rubik | sudoku5 | linalg | tictactoe | amaze | msp_ss | plcfrs | sat | softrender | chull |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| ROUTE | 119 | 35 | 26 | 70 | 19 | 94 | 67 | 43 | 43 | 34 | 12 |
-| GROUP | 43 | 14 | 12 | 17 | 11 | 22 | 26 | 10 | 12 | 23 | 11 |
-| FILTER | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| | rdb | rubik | sudoku5 | linalg | tictactoe | amaze | msp_ss | plcfrs | sat | softrender | chull | sunfish |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| ROUTE | 119 | 35 | 26 | 70 | 19 | 94 | 67 | 43 | 43 | 34 | 12 | 55 |
+| GROUP | 43 | 14 | 12 | 17 | 11 | 22 | 26 | 10 | 12 | 23 | 11 | 6 |
+| FILTER | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 
 So it is ~75% ROUTE (recovery) / ~25% GROUP, not 100% recovery. And the
 GROUP quarter is sharply characterised — on **every** program:
@@ -955,7 +955,9 @@ GROUP quarter is sharply characterised — on **every** program:
 - **100% of them have `recorded == es`** — the recorded product for the
   key *is* the contour being split.
 
-That is exactly the self-product case increment 1b handles, gated on
+That holds on all **12** programs measured, `sunfish` included — which
+matters, because `sunfish` is the subject named below. That is exactly the
+self-product case increment 1b handles, gated on
 `nviol_this_pass == 0`. Since every program here carries residual
 violations, the gate is closed and the fallthrough mints a fresh contour
 every pass, forever (`__ge__#1851`: es 352→550, 353→551, 354→552, … one
