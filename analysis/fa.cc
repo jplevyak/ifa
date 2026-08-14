@@ -874,6 +874,7 @@ static int edge_type_compatible_with_edge(AEdge *e, AEdge *ee, EntrySet *es, int
 
 static int typekey_enabled();
 static int canon_enabled();
+static int cur_split_stage = -1;
 
 static int edge_type_compatible_with_entry_set(AEdge *e, EntrySet *es, int fmark = 0) {
   assert(e->args.n && es->args.n);
@@ -1033,6 +1034,9 @@ static void update_display(AEdge *e, EntrySet *es) {
 
 static void set_entry_set(AEdge *e, EntrySet *es = 0) {
   EntrySet *new_es = es;
+  if (cur_split_stage >= 0 && cur_split_stage < 9) {
+    if (es) ++fa->dbg_stage_reuse[cur_split_stage]; else ++fa->dbg_stage_mint[cur_split_stage];
+  }
   if (!es) {
     new_es = new EntrySet(e->match->fun);
     e->match->fun->ess.add(new_es);
@@ -4345,7 +4349,6 @@ int is_es_cs_recursive(CreationSet *cs) {
 // Issue 033 (stage A): which extend_analysis stage is currently
 // driving splits (an FAPassStage value). Set by extend_analysis
 // before each split_* stage; forms part of the split-ledger key.
-static int cur_split_stage = -1;
 
 SplitDecision *FA::ledger_find(Fun *afun, int stage, MPosition *pos, AType *partition, uint sig) {
   SplitDecision probe;
@@ -4622,6 +4625,7 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
     if (!tes || ee->to == tes) return;
     if (ee->to) ee->to->edges.del(ee);
     ee->to = 0;
+    if (cur_split_stage >= 0 && cur_split_stage < 9) ++fa->dbg_stage_detach[cur_split_stage];
     ee->filtered_args.clear();
     set_entry_set(ee, tes);
   };
@@ -5169,6 +5173,7 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
           EntrySet *scomp = nullptr;
           for (AEdge *x : dec->stay_edges) if (x && x->from && x->to == es) {
             x->to = 0;
+            if (cur_split_stage >= 0 && cur_split_stage < 9) ++fa->dbg_stage_detach[cur_split_stage];
             x->filtered_args.clear();
             es->edges.del(x);
             if (!scomp) {
@@ -5202,6 +5207,7 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
       if (!product->split) product->split = es;
       for (AEdge *x : these_edges) {
         x->to = 0;
+        if (cur_split_stage >= 0 && cur_split_stage < 9) ++fa->dbg_stage_detach[cur_split_stage];
         x->filtered_args.clear();
         es->edges.del(x);
         set_entry_set(x, product);
@@ -5214,6 +5220,7 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
     } else {
       for (AEdge *x : these_edges) {
         x->to = 0;
+        if (cur_split_stage >= 0 && cur_split_stage < 9) ++fa->dbg_stage_detach[cur_split_stage];
         x->filtered_args.clear();
         es->edges.del(x);
       }
@@ -6465,6 +6472,7 @@ static CSMSplitDecision *decide_csm_split(AVar *av) {
     if (!tes || ee->to == tes) return;
     if (ee->to) ee->to->edges.del(ee);
     ee->to = 0;
+    if (cur_split_stage >= 0 && cur_split_stage < 9) ++fa->dbg_stage_detach[cur_split_stage];
     ee->filtered_args.clear();
     set_entry_set(ee, tes);
   };
@@ -7283,7 +7291,23 @@ static void report_canon_stats() {
   canon_hit = canon_miss = canon_conflict = canon_conflict_honored = 0;
 }
 
+static const char *kStageName[9] = {"TYPE_CONFL", "MARK_TYPE", "SETTER", "SETTER_OF_SETTER",
+                                    "MARK_SETTER", "MARK_SET_OF_SET", "VIOLATION", "PER_CS_RECV", "CSM_ELEM_CS"};
+
+// TEMP probe: which splitter STAGE is producing the per-pass churn.
+static void report_stage_churn() {
+  if (!getenv("IFA_DBG_STAGE")) return;
+  fprintf(stderr, "STAGE p=%d", analysis_pass);
+  for (int i = 0; i < 9; i++)
+    if (fa->dbg_stage_detach[i] || fa->dbg_stage_mint[i] || fa->dbg_stage_reuse[i])
+      fprintf(stderr, " %s(det=%ld mint=%ld reuse=%ld)", kStageName[i], fa->dbg_stage_detach[i],
+              fa->dbg_stage_mint[i], fa->dbg_stage_reuse[i]);
+  fprintf(stderr, "\n");
+  for (int i = 0; i < 9; i++) fa->dbg_stage_detach[i] = fa->dbg_stage_mint[i] = fa->dbg_stage_reuse[i] = 0;
+}
+
 static void complete_pass() {
+  report_stage_churn();
   report_canon_stats();
   capture_type_keys();
   audit_edge_arg_values();

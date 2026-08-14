@@ -626,6 +626,77 @@ has always been about, now with a concrete measurement of what has to go
 into it and a program (`hq2x`) where the current key already explains
 most of the churn.
 
+### WHICH SPLIT STAGES CAUSE THE OSCILLATION (2026-08-13)
+
+Per-stage attribution of the steady-state churn: every edge detach
+(`x->to = 0`) and every contour mint is tagged with `cur_split_stage`,
+summed over the last 10 passes (`IFA_DBG_STAGE=1`, landed).
+
+**Only two of the nine stages produce it: `TYPE_CONFLUENCE`
+(`split_ess_for_type`) and `MARK_TYPE` (`split_ess_for_mark_type`).**
+
+| program | osc | detaches / 10 passes | attribution |
+|---|---|---|---|
+| hq2x | C | 2755 | **MARK_TYPE 100%** (2755 det, only 24 mint) |
+| rdb | C | 2022 | **TYPE_CONFL 100%** (2022 det, 712 mint) |
+| rubik | C | 1763 | TYPE_CONFL 98%, MARK_TYPE 1% |
+| amaze | C | 1295 | TYPE_CONFL 100% |
+| msp_ss | C | 1119 | TYPE_CONFL 100% |
+| sudoku5 | C | 702 | TYPE_CONFL 100% |
+| plcfrs | C | 631 | TYPE_CONFL 100% |
+| linalg | C | 487 | TYPE_CONFL 100% |
+| chess | C | 419 | **MARK_TYPE 100%** (419 det, 301 mint) |
+| tictactoe | C | 358 | TYPE_CONFL 100% |
+| softrender | C | 248 | TYPE_CONFL 100% |
+| timsort | C | 97 | MARK_TYPE 57%, TYPE_CONFL 42% |
+| mastermind2 | C | 88 | MARK_TYPE 51%, TYPE_CONFL 48% |
+| sat | C | 88 | TYPE_CONFL 82%, MARK_TYPE 12%, SETTER 4% |
+| bh | C | 50 | MARK_TYPE 80%, TYPE_CONFL 20% |
+| pylife | C | 30 | MARK_TYPE 100% |
+| sunfish | C | 29 | TYPE_CONFL 79%, SETTER_OF_SETTER 20% |
+| genetic2 / sudoku4 | C | 20 | MARK_TYPE 100% |
+
+Converging programs show the *same two stages* at lower volume (`chull`
+15 det/10p TYPE_CONFL; `adatron` 34 TYPE_CONFL; `yopyra` 61 MARK_TYPE
+80%; `loop` 57 MARK_TYPE 87%) — more evidence this is one mechanism at
+different amplitudes, not a distinct pathology.
+
+**Essentially nothing comes from the other seven stages**: `SETTER` 4
+(sat), `SETTER_OF_SETTER` 6 (sunfish) / 2 (loop), and **zero** from
+`MARK_SETTER`, `MARK_SETTER_OF_SETTER`, `VIOLATION`, `PER_CS_RECEIVER`
+and `CSM_ELEMENT_CS`.
+
+> **Caveat, and it matters:** `run_split_stages` is a first-stage-wins
+> cascade — every stage is gated on `if (!analyze_again)`. So stages 3-9
+> only run at all on a pass where TYPE_CONFLUENCE *and* MARK_TYPE both
+> find nothing, which in an oscillating program is never. Their ~0
+> contribution is therefore partly **starvation**, not evidence that they
+> are well behaved. What the table does establish is that the churn which
+> keeps these programs from converging is entirely stages 1-2's, and that
+> fixing those two is both necessary and sufficient to let the rest even
+> run.
+
+**The two stages fail differently**, which is a useful split of the
+problem:
+
+- **`MARK_TYPE` tends to pure re-assignment.** `hq2x` detaches 2755 edges
+  per 10 passes and mints **24** contours — it is moving the same edges
+  around, not growing. `pylife`, `genetic2` and `sudoku4` are 1:1
+  det:mint at low volume. This is the assignment-churn disease.
+- **`TYPE_CONFLUENCE` tends to detach *and* mint.** `rdb` 2022:712,
+  `rubik` 1737:996, `amaze` 1295:497 — roughly a third to a half of its
+  detaches manufacture a contour. This is the growth disease.
+
+`chess` is the exception to that split (MARK_TYPE at 419:301, mint-heavy),
+so the correlation is a tendency, not a rule.
+
+**Consequence for this plan.** Both remaining shapes now have a named
+owner. `hq2x` — already singled out by the canonicalization census for
+its 58% duplicate-key rate — is a *pure `MARK_TYPE`* problem, which makes
+it the sharpest available subject: one stage, one disease, no growth to
+confound it, and a measurement showing over half its mints are duplicates
+of contours that already exist.
+
 ### Two earlier dead ends on that cause (both reverted)
 
 1. **Let `find_best_entry_sets` run on the detach route, vetoing only

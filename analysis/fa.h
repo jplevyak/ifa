@@ -695,6 +695,10 @@ class FA : public gc {
   // S5 M2). Sized to FAPassStage's cardinality (kept as a plain
   // constant since FAPassStage is declared after this class).
   static constexpr int kNumFAPassStages = 9;
+  // TEMP probe: per-splitter-stage attribution of the per-pass churn.
+  long dbg_stage_detach[9] = {};   // edges this stage detached (x->to = 0)
+  long dbg_stage_mint[9] = {};     // contours this stage minted fresh
+  long dbg_stage_reuse[9] = {};    // edges this stage re-bound to an existing contour
   double stage_time[kNumFAPassStages] = {};
   long stage_progress_count[kNumFAPassStages] = {};
 
