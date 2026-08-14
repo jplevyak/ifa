@@ -4930,14 +4930,23 @@ static int hard_reuse_enabled() {
 // contours are canonicalized on their type key, mark splits are
 // unnameable. IFA_DBG_KEYSPACE=1 measures the gap they open.
 // ifa/issues/074: extend the self-product complement eviction to the
-// `v > 0` case (residual violations), evicting only the stay_edges whose
-// type at the split position is DISJOINT from the recorded group's
-// partition. See the comment at the eviction site.
+// `v > 0` case (residual violations). See the comment at the eviction
+// site for what each mode tests.
+//
+//   0 = off: eviction only at whole-program convergence (pre-074 shape)
+//   1 = evict only the type-disjoint complement          (unsound)
+//   2 = keep the group, evict nothing                    (unsound)
+//   3,4 = durable key == the recorded partition          (never fires)
+//   5 = durable key stable across two passes: per-contour convergence
+//
+// **5 is the default.** The eviction's real precondition is that THIS
+// CONTOUR has stopped moving, which `nviol_this_pass == 0` only ever
+// approximated whole-program-wide.
 static int selfprod_enabled() {
   static int e = -1;
   if (e < 0) {
     cchar *v = getenv("PYC_SELFPROD");
-    e = v ? atoi(v) : 0;
+    e = v ? atoi(v) : 5;
   }
   return e;
 }

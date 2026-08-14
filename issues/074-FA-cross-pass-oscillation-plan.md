@@ -1076,7 +1076,13 @@ Two programs newly converge *naturally* (`pass_limit_hit` 1→0):
 program is not lost) and **sunfish**. `test_pyc.py` **265/14/0/4** on both
 backends under `PYC_SELFPROD=5`, identical to baseline; `ifa --test` 58/0.
 
-**Not yet default-on.** Two things must be settled first:
+**Landed default-on 2026-08-14** (`PYC_SELFPROD` still overrides;
+`PYC_SELFPROD=0` restores the pre-074 shape exactly — verified on
+tictactoe: rc=1, 137 violations, `final_pass=25`, byte-identical to
+baseline). The default sweep reproduces the `=5` sweep above; suite
+265/14/0/4 both backends, `ifa --test` 58/0.
+
+Two things remain open, neither a blocker for the default:
 
 1. **`msp_ss` regresses**: violations 514→617, and it now fails *earlier*
    and differently — pyc aborts in `sizeof_element of non-container type
@@ -1090,12 +1096,56 @@ backends under `PYC_SELFPROD=5`, identical to baseline; `ifa --test` 58/0.
    to explain.
 2. **Neither newly-compiling program actually runs.** `sunfish` aborts on
    `matching function not found` (its 11 residual violations reaching
-   codegen); `tictactoe` compiles at **0** violations and then aborts on
-   `list element type mismatch` — which is pyc
-   [issues/035](../../issues/035-list-element-cast-salvage-guard-and-set-item-union.md)'s
-   pre-existing int/float in-place list-mutation boxing gap, unrelated to
-   this change. So `=5` is a *convergence* fix; the residual failures it
-   exposes are separate, already-tracked precision gaps.
+   codegen). `tictactoe` is diagnosed in full below.
+
+##### tictactoe: what the newly-exposed failure actually is
+
+It compiles at **0 violations** and aborts on `list element type
+mismatch`. This is *not* a regression — it is pyc
+[issues/035](../../issues/035-list-element-cast-salvage-guard-and-set-item-union.md)'s
+pre-existing int/float list gap, and the change only moved which site is
+reached first.
+
+**Source.** `tictactoe.py:103` builds `scores = [self.edge * [0] for i in
+range(self.edge)]` — inner lists of `int64`. Then two kinds of in-place
+update land in the same slots:
+
+```python
+ 97:  scores[rown][coln] += 15 * sig(...)   # sig() returns float
+100:  scores[rown][coln] += 15 * fields.count(...) / float(self.edge)
+118:  scores[rown][coln] += 1               # int
+126:  scores[rown][coln] += 1
+```
+
+So the element type becomes `int64 ∪ float64`. Two scalars of different
+`num_kind` have no common scalar C representation, so the element
+degrades to pointer-representable (`_CG_void`), and every store of a
+scalar into it trips `cg.cc`'s issue-035 guard
+(`(e->num_kind != 0) != (val->type->num_kind != 0)`), which emits the
+established runtime-assert rather than invalid C.
+
+**Where.** 11 asserts in the generated C: 8 in `rectBoard::doRow` (lines
+97/100), 2 in `rectBoard::makeAImove` (lines 118/126) — and 1 in
+`list::append`, reached from `set::add` → `self._items.append(v)`. That
+last one is the "set was just the first victim" observation from issue
+035 seen directly: FA emits **19** distinct `list::append` contours here,
+and **10 of them take a boxed `_CG_any` receiver** while being
+specialized on a *scalar* value type. `_CG_f_2533_204(_CG_any,
+_CG_int64)` is one of those — value specialized to `int64`, receiver
+still boxed, so the element slot is pointer-representable. That is the
+container-method-vs-element-type gap this cluster tracks
+([075](075-FA-element-cs-method-split-idempotent-plan.md)), not anything
+the self-product change introduced.
+
+**What changed vs baseline.** Baseline reached the *read* side first —
+`t54 = (_CG_any)((_CG_ps12800)t62)->e1;`, casting a `_CG_float64` field
+to a pointer — which has **no** guard, so clang rejected it and pyc
+exited rc=1 with 137 violations. With the self-product fix, FA converges
+to 0 violations and the first site reached is the *write* side, which
+does have the guard, so the program compiles and asserts at run time. Same
+underlying defect, different face: **the convergence fix removed 137
+violations and exposed a codegen gap that was always there**, one whose
+read path still needs the same guard its write path already has.
 
 What is settled: **the durable type key is the right substrate, and
 per-contour key stability is the discriminator the `v>0` self-product

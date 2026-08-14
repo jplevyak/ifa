@@ -222,7 +222,7 @@ exist so the next attempt starts from evidence rather than a rebuild:
 | `IFA_DBG_STAGE=1` | attribute every edge detach/mint/reuse **and CreationSet mint** to the splitter stage that caused it | showed the CS-minting stages drive `TYPE_CONFLUENCE` |
 | `IFA_DBG_KEYSPACE=1` | per function per pass: contours built vs. distinct type-set tuples vs. distinct cartesian-product tuples | the measurement that indicted `MARK_TYPE` |
 | `IFA_DBG_KEYDRIFT=1` | per pass: contours whose type key was stable / grew / shrank non-monotonically / flip-flopped | separates "still converging" from "oscillating" |
-| `PYC_SELFPROD=1..5` | extend the self-product complement eviction to the `v>0` case. `1` evict type-disjoint complement, `2` evict nothing, `3`/`4` durable key == the recorded partition, **`5` durable key stable for two passes (per-contour convergence)** | 1/2 break linalg's cycle but damage the corpus; 3/4 never fire; **`5` is the one** — sunfish 1200 s timeout → 43 s compile, tictactoe 137 violations → 0, **zero exit-code regressions** |
+| `PYC_SELFPROD=0..5` | self-product complement eviction in the `v>0` case. `0` off (pre-074), `1` evict type-disjoint complement, `2` evict nothing, `3`/`4` durable key == recorded partition, **`5` durable key stable for two passes (per-contour convergence) — NOW THE DEFAULT** | 1/2 break linalg's cycle but damage the corpus; 3/4 never fire; **`5` landed default-on** — sunfish 1200 s timeout → 43 s compile, tictactoe 137 violations → 0, **zero exit-code regressions** |
 | `IFA_DBG_INCOMPAT=1` | which clause of the compatibility test separates edges (`arg` vs `ret`), stage-1 confluence disposition, and `REDERIVE` ROUTE/GROUP/FILTER | `ret`=0 everywhere; the GROUP quarter is 100% `v>0` self-product |
 | `IFA_STALL_LIMIT`, `IFA_NONIMPROVE_LIMIT` | override the divergence guards (were compile-time constants) | takes the guard out of the measurement |
 | `IFA_DBG_EDGEARGS=1` | 098's invariant audit (bound edges must have values at recorded args) | — |
@@ -277,8 +277,13 @@ for a per-CONTOUR property**, and a contour whose durable type key is
 unchanged across two consecutive passes has settled even when the program
 has not. Corpus: zero exit-code regressions, sunfish's 900 s timeout
 becomes a 43 s compile, tictactoe converges naturally at 0 violations.
-Still not default-on (msp_ss/softrender lose precision, and neither
-newly-compiling program *runs* — separate, already-tracked gaps). And
+**Landed default-on 2026-08-14**; `PYC_SELFPROD=0` restores the old shape.
+Two programs newly converge naturally. Still open, but not blockers:
+msp_ss/softrender lose some precision, and neither newly-compiling program
+*runs* — tictactoe now reaches codegen at 0 violations and trips pyc
+[issues/035](../../issues/035-list-element-cast-salvage-guard-and-set-item-union.md)'s
+int/float list gap (its read path lacks the guard its write path has),
+which the convergence fix exposed rather than caused. And
 `cur_split_stage` was never reset after `run_split_stages`, so the next
 pass's flow-time contours were attributed to whichever stage ran last —
 that is what made `reuse` read in the thousands for stages that re-bind
