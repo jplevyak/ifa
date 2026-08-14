@@ -92,6 +92,77 @@ from that set are all measuring guard calibration mixed with analysis
 behavior. **The re-base is done — see the next section; the genuine
 target set is 8 programs, not 17.**
 
+## STATUS 2026-08-14 — where oscillation and growth stand after this session
+
+Re-measured on current HEAD (self-product fix default-on), **not** carried
+over from the 08-12 re-base, which predates it.
+
+**Shipped config:** 18 of 84 programs end `pass_limit_hit=1`, down from 20.
+Whole-corpus deltas over the session: analysis time **−54%**, total ess
+**+1.0%**, generated C **−0.9%**, and two exit-code improvements
+(`sunfish` 124→0, `tictactoe` 1→0) with **no regressions**.
+
+**With the divergence guards off** (`IFA_STALL_LIMIT` /
+`IFA_NONIMPROVE_LIMIT` = 1000, so only the hard 100-pass cap bounds the
+loop), **9 of the 73 programs that produce an FA result fail to
+converge**: bh, genetic2, go, hq2x, linalg, plcfrs, pylife, rubik,
+sudoku4.
+
+### The 9 split cleanly by cause
+
+`PYC_NOMARK=1`, guards off — **6 of them are non-convergent solely
+because of `MARK_TYPE`**:
+
+| program | marks on | marks off | |
+|---|---|---|---|
+| hq2x | p102, 0 viol, ess 1664 | **p14**, 0 viol, ess 620 | converges |
+| pylife | p102, 54 viol, ess 539 | **p27**, **0** viol, ess 389 | converges |
+| rubik | p102, 1729 viol, ess 1448 | **p26**, 104 viol, ess 724 | converges |
+| sudoku4 | p102, 70 viol, ess 675 | **p31**, 26 viol, ess 470 | converges |
+| genetic2 | p102, 3 viol, ess 371 | **p43**, 3 viol, ess 396 | converges |
+| bh | p102, 2 viol, ess 651 | **p53**, **0** viol, ess 381 | converges |
+| go | p102, 103 viol, ess 686 | p102, 107 viol, ess 674 | **resists** |
+| linalg | p102, 78 viol, ess 586 | p102, 43 viol, ess 944 | **resists** |
+
+(`plcfrs` resists too — measured p102 either way.)
+
+Note pylife and bh reach **zero** violations with marks off: for them
+`MARK_TYPE` is not merely non-terminating, it is actively *losing*
+precision.
+
+### Growth vs. pure oscillation
+
+ess over the last ten passes before the cap (p92 → p101), guards off:
+
+| still growing | | plateaued, still churning | |
+|---|---|---|---|
+| bh | 611 → 639 (+28) | rubik | 1443 → 1443 |
+| go | 667 → 686 (+19) | sudoku4 | 675 → 675 |
+| hq2x | 1639 → 1657 (+18) | genetic2 | 371 → 371 |
+| pylife | 519 → 537 (+18) | linalg | 586 → 585 |
+
+So the two diseases are now separable per program: **four still grow
+without bound; four have stopped growing but keep re-deciding**. Three of
+the four growers (bh, hq2x, pylife) are in the `MARK_TYPE` group, so
+`MARK_TYPE` accounts for most of the remaining *growth* as well as most
+of the remaining non-convergence.
+
+### What that leaves
+
+1. **`MARK_TYPE` (6 programs).** Cause fully characterised: it builds
+   contours no type-tuple can name (see the `hq2x` section below).
+   `PYC_NOMARK=1` is a complete fix for convergence *and* usually for
+   precision — held back only by the five programs that lose precision
+   when it is off (softrender, webserver, kmeanspp, sat, chull). Those
+   five are the entire remaining specification.
+2. **Cascade serialization (go, linalg, plcfrs).** CS-minting stages and
+   `TYPE_CONFLUENCE` are forced to alternate by the first-stage-wins
+   gate. The self-product mint — which used to be the growth term here —
+   is fixed; what is left is the alternation itself.
+3. The stall guard still counts ledger ROUTE recoveries as divergence,
+   which is why the shipped config stops 18 programs, several of them
+   converging.
+
 ## THE RE-BASED TARGET SET (2026-08-12)
 
 Same corpus, same `PYC_DBG_OSC` probe, with `IFA_STALL_LIMIT` and
