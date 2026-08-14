@@ -4921,7 +4921,8 @@ static int hard_reuse_enabled() {
 
 // ifa/issues/074: disable mark-based splitting stages, as an
 // investigable option.
-//   1 = skip MARK_TYPE (stage 2)
+//   0 = mark-based splitting on (pre-2026-08-14 behaviour)
+//   1 = skip MARK_TYPE (stage 2)  -- THE DEFAULT
 //   2 = also skip MARK_SETTER / MARK_SETTER_OF_SETTER (stage 4)
 // Marks exist to separate two contours that carry the SAME argument
 // types but different value origins (IFA.md §6.2, "recursion-meets-
@@ -4951,11 +4952,23 @@ static int selfprod_enabled() {
   return e;
 }
 
+//
+// **On by default from 2026-08-14.** Same design rule the lexical display
+// got in issue 100: a contour merge may be prevented by types or CS
+// partitioning, never by provenance -- and mark distance IS provenance
+// (depth from a generating AVar), which is why no type tuple can name
+// what it separates. This is NOT widening (issue 057's prohibition): it
+// merges no type-distinct contours; it refuses exactly the redundant
+// split 057 itself names, contours "type-identical to existing ones" --
+// hq2x's monomorphic PIXELxx_yy helpers get setkey=1, cpakey=1 and 36
+// contours, one per call site. The VIOLATION stage still calls
+// split_with_type_marks(SPLIT_DYNAMIC), so marks stay available as
+// demand-driven repair where a type violation actually appears.
 static int nomark_enabled() {
   static int e = -1;
   if (e < 0) {
     cchar *v = getenv("PYC_NOMARK");
-    e = v ? atoi(v) : 0;
+    e = v ? atoi(v) : 1;
   }
   return e;
 }

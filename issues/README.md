@@ -218,7 +218,7 @@ exist so the next attempt starts from evidence rather than a rebuild:
 | `PYC_HARDREUSE=1..4` | offer a detached edge an existing contour (progressively stricter tests; 4 = lookup by durable key) | 260-261/265 — every mode manufactures a period-2 flip-flop of its own |
 | `PYC_TYPEKEY=1` | durable per-contour type key, captured converged, matched against instead of the mid-pass value | **265/0** — the only clean one; corpus a wash |
 | `PYC_CANON=1\|2` | canonicalize contour creation on that key (find-by-key-else-create) | 259/7 and 237/32; the conflict log is the real output |
-| `PYC_NOMARK=1\|2` | skip mark-based ES splitting (`MARK_TYPE`; `2` also the setter-mark stages), leaving marks armed only on the `VIOLATION` repair path | **265/0**; corpus −26% time, −12% ess, −5.6% C, mastermind2 starts compiling; 12 programs fewer violations, 5 more |
+| `PYC_NOMARK=0\|1\|2` | skip mark-based ES splitting (`1` = `MARK_TYPE`, **the default**; `2` also the setter-mark stages; `0` restores the old behaviour), leaving marks armed only on the `VIOLATION` repair path | **default-on 2026-08-14** — guard trips 18→10, −55% time, −12.3% ess, −6.8% C, mastermind2 starts compiling; 12 programs fewer violations, 5 more |
 | `IFA_DBG_STAGE=1` | attribute every edge detach/mint/reuse **and CreationSet mint** to the splitter stage that caused it | showed the CS-minting stages drive `TYPE_CONFLUENCE` |
 | `IFA_DBG_KEYSPACE=1` | per function per pass: contours built vs. distinct type-set tuples vs. distinct cartesian-product tuples | the measurement that indicted `MARK_TYPE` |
 | `IFA_DBG_KEYDRIFT=1` | per pass: contours whose type key was stable / grew / shrank non-monotonically / flip-flopped | separates "still converging" from "oscillating" |

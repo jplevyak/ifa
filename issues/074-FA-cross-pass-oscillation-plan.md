@@ -152,12 +152,18 @@ of the remaining non-convergence.
 
 ### What that leaves
 
-1. **`MARK_TYPE` (6 programs).** Cause fully characterised: it builds
-   contours no type-tuple can name (see the `hq2x` section below).
-   `PYC_NOMARK=1` is a complete fix for convergence *and* usually for
-   precision — held back only by the five programs that lose precision
-   when it is off (softrender, webserver, kmeanspp, sat, chull). Those
-   five are the entire remaining specification.
+1. ~~**`MARK_TYPE` (6 programs).**~~ **Resolved 2026-08-14 — `PYC_NOMARK`
+   is now the default.** Holding it back on the five precision
+   regressions was applying the wrong standard: this project's recorded
+   rule for the structurally identical case (the lexical display, issue
+   100) is the author's *"remove any other uses **even if it causes
+   regressions**"*, accepted there at a steeper price — precision fell on
+   several programs **and** oscillators went 16 → 20. Mark distance is
+   provenance (depth from a generating AVar), exactly the category 100
+   ruled out of contour identity; and this is not the widening
+   [057](closed/057-sorted-tolist-fa-nonconvergence.md) prohibits, since
+   it merges no type-distinct contours — it refuses the redundant split
+   057 itself names. See the sweep below.
 2. **Cascade serialization (go, linalg, plcfrs).** CS-minting stages and
    `TYPE_CONFLUENCE` are forced to alternate by the first-stage-wins
    gate. The self-product mint — which used to be the growth term here —
@@ -168,6 +174,29 @@ of the remaining non-convergence.
 3. The stall guard still counts ledger ROUTE recoveries as divergence,
    which is why the shipped config stops 18 programs, several of them
    converging.
+
+### `PYC_NOMARK` default-on, 2026-08-14 — measured against the previous default
+
+| | before | after |
+|---|---|---|
+| programs ending `pass_limit_hit=1` | 18 | **10** |
+| total analysis time | 738 s | **334 s** (−55%) |
+| total EntrySets | 30675 | **26898** (−12.3%) |
+| total generated C | 16.42 MB | **15.31 MB** (−6.8%) |
+| exit codes | — | **mastermind2 1 → 0**, no regressions |
+
+Violations better on 12 (chess 331→**0**, pylife 54→**0**, bh 2→**0**,
+mastermind2 554→60, timsort 66→40, sudoku3 143→111, neural1 53→39,
+dijkstra2 10→6, go 161→146, plcfrs 2442→2412, sudoku4 30→26, rubik
+120→118), worse on 5 (softrender 1137→1380, sat 364→377, webserver 0→8,
+kmeanspp 2→8, chull 0→2). `test_pyc.py` 265/14/0/4 both backends;
+`ifa --test` 58/0. `PYC_NOMARK=0` restores the old behaviour.
+
+The five regressors are now the follow-up, and they are **not** the
+unnameable-contour disease — their keyspaces are roughly CPA-nameable
+already (softrender ess 703 / cpakey 579, sat 537 / 558, chull 516 /
+384), so marks were not what was making their contours. Whatever
+separation they lose has another source, which makes it findable.
 
 ## THE RE-BASED TARGET SET (2026-08-12)
 
