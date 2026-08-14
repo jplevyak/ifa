@@ -935,6 +935,87 @@ made the `reuse` column read in the thousands for stages that re-bind
 nothing (`CSM_ELEMENT_CS reuse=2280` on rubik was flow). With the reset,
 linalg's storm passes drop from `reuse=39/18/11` to `0/6/5`.
 
+#### The re-derivation is entirely the `v>0` SELF-PRODUCT case
+
+Correcting the ROUTE/FILTER table above: it covered only two of the three
+sites that bump `dup_split_attempts`. With the third (the "DUP group"
+record site in `apply_entry_set_split`) instrumented too:
+
+| | rdb | rubik | sudoku5 | linalg | tictactoe | amaze | msp_ss | plcfrs | sat | softrender | chull |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| ROUTE | 119 | 35 | 26 | 70 | 19 | 94 | 67 | 43 | 43 | 34 | 12 |
+| GROUP | 43 | 14 | 12 | 17 | 11 | 22 | 26 | 10 | 12 | 23 | 11 |
+| FILTER | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+So it is ~75% ROUTE (recovery) / ~25% GROUP, not 100% recovery. And the
+GROUP quarter is sharply characterised — on **every** program:
+
+- **100% of GROUP re-derivations produce a DIFFERENT contour** than the
+  ledger recorded (`recorded != now`, zero exceptions), and
+- **100% of them have `recorded == es`** — the recorded product for the
+  key *is* the contour being split.
+
+That is exactly the self-product case increment 1b handles, gated on
+`nviol_this_pass == 0`. Since every program here carries residual
+violations, the gate is closed and the fallthrough mints a fresh contour
+every pass, forever (`__ge__#1851`: es 352→550, 353→551, 354→552, … one
+new contour per source contour per pass). **The `v>0` self-product is not
+a corner case of the `TYPE_CONFLUENCE` re-derivation — it is all of it.**
+
+#### `PYC_SELFPROD` — two discriminators tried, both break the cycle, neither is sound
+
+Landed off by default, as a recorded negative result.
+
+- **`=1`** — extend the eviction to `v>0`, but evict only the `stay_edges`
+  whose type at the split position is **disjoint** from the group's
+  partition, on the theory that a disjoint edge can never belong to the
+  recorded group.
+- **`=2`** — keep the group in `es` and evict **nothing**, dropping the
+  mint without re-homing anything.
+
+On `linalg` (guards off, `PYC_NOMARK=1`), both **break the period-10 limit
+cycle**:
+
+| | passes | `pass_limit_hit` | violations | ess | css |
+|---|---|---|---|---|---|
+| base | 102 | 1 | 31 | 871 | 2015 |
+| `=1` | **55** | **0** | **3** | 570 | 1623 |
+| `=2` | 79 | **0** | 495 | 724 | 1877 |
+
+But neither survives the corpus (`=1`, shipped guards, vs baseline):
+exit codes **sunfish 124→0** (a 900 s timeout becomes a 47 s compile),
+mastermind2 1→0, tictactoe 1→0 — against **adatron 0→1, dijkstra 0→1,
+genetic2 0→1, sudoku2 0→139** (segfault; its `.c` drops 252 KB → 57 KB,
+i.e. the program is pruned). Violations rise on ~25 programs, several from
+0 (sudoku2 0→205, rubik2 0→101, pygmy 0→90, genetic 0→75). Total ess
++5.3%, generated C +8.6%. `=2` is worse still: on linalg alone, violations
+31 → 495 — leaving the group in `es` without evicting the complement keeps
+`es` polymorphic, which is 065's original "keep the group in es"
+regression (dijkstra2 37→605) reproduced.
+
+**Why `=1` fails, stated precisely so it is not retried:** type sets only
+grow across passes, so "disjoint from `part` on this pass" does *not*
+imply "disjoint from `part` at the fixed point". An edge evicted while
+temporarily disjoint acquires one of `part`'s CreationSets a pass later
+and is then stranded in the complement contour. That is the same
+mis-homing the 2026-07-30 attempt hit (amaze 884→915, linalg 170→187),
+reached by a different route — the disjointness test is not a
+stale-vs-valid discriminator, it is just a narrower version of the same
+unsound eviction.
+
+What the pair does establish: **the self-product mint is the growth**, and
+removing it is sufficient to break the cycle in both directions. The open
+problem is unchanged and now much better bounded — a *stable* criterion
+for whether a recorded `home == es` is still valid while types widen. The
+durable type key (`PYC_TYPEKEY`, landed since 1b was written) is the
+obvious substrate: it is captured post-convergence, so it is whole-pass
+invariant, unlike the mid-pass `->out->type` both attempts tested against.
+That comparison has not been built.
+
+`sunfish` is the sharpest subject for it: its 900 s timeout is entirely
+this mechanism, and it is the one program where removing the mint is an
+unambiguous win.
+
 #### Where this points
 
 The target is no longer "make `TYPE_CONFLUENCE` idempotent". It is

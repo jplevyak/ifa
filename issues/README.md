@@ -222,7 +222,8 @@ exist so the next attempt starts from evidence rather than a rebuild:
 | `IFA_DBG_STAGE=1` | attribute every edge detach/mint/reuse **and CreationSet mint** to the splitter stage that caused it | showed the CS-minting stages drive `TYPE_CONFLUENCE` |
 | `IFA_DBG_KEYSPACE=1` | per function per pass: contours built vs. distinct type-set tuples vs. distinct cartesian-product tuples | the measurement that indicted `MARK_TYPE` |
 | `IFA_DBG_KEYDRIFT=1` | per pass: contours whose type key was stable / grew / shrank non-monotonically / flip-flopped | separates "still converging" from "oscillating" |
-| `IFA_DBG_INCOMPAT=1` | which clause of the compatibility test separates edges (`arg` vs `ret`), stage-1 confluence disposition, and `REDERIVE` ROUTE-vs-FILTER | `ret`=0 everywhere; re-derivation is 100% ledger recovery |
+| `PYC_SELFPROD=1\|2` | extend the self-product complement eviction to the `v>0` case (`1` = evict only the type-disjoint complement, `2` = evict nothing) | breaks linalg's limit cycle both ways (`pass_limit_hit` 1→0) but neither is sound — see 074 |
+| `IFA_DBG_INCOMPAT=1` | which clause of the compatibility test separates edges (`arg` vs `ret`), stage-1 confluence disposition, and `REDERIVE` ROUTE/GROUP/FILTER | `ret`=0 everywhere; the GROUP quarter is 100% `v>0` self-product |
 | `IFA_STALL_LIMIT`, `IFA_NONIMPROVE_LIMIT` | override the divergence guards (were compile-time constants) | takes the guard out of the measurement |
 | `IFA_DBG_EDGEARGS=1` | 098's invariant audit (bound edges must have values at recorded args) | — |
 
@@ -264,10 +265,13 @@ halves have completely different causes:
   `SETTER` fires again — identical numbers every cycle, zero progress on
   the residual violations.
 
-Two corrections fell out. **The stall guard counts its own fix as
-divergence**: its `dup_split_attempts` term is 100% ledger *ROUTE
-recoveries* (edges re-routed to the product recorded on an earlier pass)
-and 0% fresh re-splits, across all 11 programs measured. And
+Two corrections fell out. The guard's `dup_split_attempts` term is ~75%
+ledger *ROUTE recoveries* (edges re-routed to the product recorded on an
+earlier pass), 0% filter re-derivation, and ~25% **`v>0` self-product** —
+and that last quarter is 100% of it on every program: the ledger's
+recorded product for the key IS the contour being split, the
+`nviol_this_pass == 0` gate closes, and the fallthrough mints a fresh
+contour every pass forever. That is the `TYPE_CONFLUENCE` growth. And
 `cur_split_stage` was never reset after `run_split_stages`, so the next
 pass's flow-time contours were attributed to whichever stage ran last —
 that is what made `reuse` read in the thousands for stages that re-bind

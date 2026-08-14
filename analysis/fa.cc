@@ -4929,6 +4929,19 @@ static int hard_reuse_enabled() {
 // distinction no type-tuple contour name can express -- so if
 // contours are canonicalized on their type key, mark splits are
 // unnameable. IFA_DBG_KEYSPACE=1 measures the gap they open.
+// ifa/issues/074: extend the self-product complement eviction to the
+// `v > 0` case (residual violations), evicting only the stay_edges whose
+// type at the split position is DISJOINT from the recorded group's
+// partition. See the comment at the eviction site.
+static int selfprod_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_SELFPROD");
+    e = v ? atoi(v) : 0;
+  }
+  return e;
+}
+
 static int nomark_enabled() {
   static int e = -1;
   if (e < 0) {
@@ -5215,13 +5228,41 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
     // stay_edges needs re-homing here -- and it goes to a SEPARATE product
     // (never merged with the other groups), avoiding the amaze/linalg
     // regression of the "evict everything into one contour" first cut.
-    if (avpos && gsig && nviol_this_pass == 0) {
+    //
+    // ifa/issues/074 (PYC_SELFPROD): the `v > 0` case, which is the
+    // majority of the oscillating set and was left as "needs the genuine
+    // stale-vs-valid discrimination". Measured 2026-08-14: on all 11
+    // TYPE_CONFLUENCE programs, EVERY cross-pass GROUP re-derivation has
+    // `recorded == es` -- i.e. it is this case, disabled by the gate, and
+    // the fallthrough mints a fresh contour every pass forever.
+    //
+    // The discriminator the earlier attempt lacked: with types still
+    // widening, a recorded "home == es" may be stale, and evicting a
+    // stay_edge that legitimately belongs mis-homes real content
+    // (amaze 884->915, linalg 170->187). But an edge whose type at this
+    // position is DISJOINT from the group's partition cannot belong to
+    // the recorded group under any later widening -- type sets only grow,
+    // and a disjoint set stays disjoint from `part` only if it never
+    // acquires one of part's CSs. So evict only the disjoint complement
+    // and leave every overlapping (hence possibly-valid) stay_edge alone.
+    if (avpos && gsig && (nviol_this_pass == 0 || selfprod_enabled())) {
       SplitDecision *dd = fa->ledger_find(es->fun, cur_split_stage, avpos, part, gsig);
       if (dd && dd->pass_made != analysis_pass && dd->product == es) {
+        bool conservative = nviol_this_pass != 0;
+        // Mode 2: keep the group in `es` but evict NOTHING. This drops the
+        // fresh-contour mint (the growth) without re-homing any edge, so it
+        // cannot mis-home content the way an eviction can.
+        if (conservative && selfprod_enabled() >= 2) continue;
         if (!stay_evicted) {
           stay_evicted = true;
           EntrySet *scomp = nullptr;
           for (AEdge *x : dec->stay_edges) if (x && x->from && x->to == es) {
+            if (conservative) {
+              AVar *xa = x->args.get(avpos);
+              if (!xa) continue;
+              AType *xt = type_intersection(xa->out->type, x->match->formal_filters.get(avpos));
+              if (!xt->n || type_intersection(xt, part) != fa->type_world.bottom_type) continue;
+            }
             x->to = 0;
             if (cur_split_stage >= 0 && cur_split_stage < 9) ++fa->dbg_stage_detach[cur_split_stage];
             x->filtered_args.clear();
@@ -5307,6 +5348,10 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
             fa->ledger_add(es->fun, cur_split_stage, avpos, part, gproduct, gsig);
           else if (d->pass_made != analysis_pass) {  // intra-pass repeats aren't re-derivation
             ++fa->dup_split_attempts;
+            if (getenv("IFA_DBG_INCOMPAT"))
+              fprintf(stderr, "REDERIVE p=%d GROUP fun=%s#%d es=%d recorded=%d now=%d first_pass=%d\n",
+                      analysis_pass, es->fun->sym->name ? es->fun->sym->name : "?", es->fun->sym->id, es->id,
+                      d->product ? d->product->id : -1, gproduct->id, d->pass_made);
             log(LOG_SPLITTING,
                 "[ledger] DUP group es %d fun %s %d stage %d pos %p part %p/%d (first pass %d, product %d)\n",
                 es->id, es->fun->sym->name ? es->fun->sym->name : "", es->fun->sym->id, cur_split_stage,
