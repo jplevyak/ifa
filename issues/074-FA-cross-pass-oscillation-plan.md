@@ -1144,8 +1144,17 @@ exited rc=1 with 137 violations. With the self-product fix, FA converges
 to 0 violations and the first site reached is the *write* side, which
 does have the guard, so the program compiles and asserts at run time. Same
 underlying defect, different face: **the convergence fix removed 137
-violations and exposed a codegen gap that was always there**, one whose
-read path still needs the same guard its write path already has.
+violations and exposed a codegen gap that was always there**.
+
+*Read-path guard added 2026-08-14* — see pyc
+[issues/035](../../issues/035-list-element-cast-salvage-guard-and-set-item-union.md)'s
+"The READ side" section. `P_prim_index_object`'s constant-index record
+branch now applies the writer's `num_kind` test, so the unguarded cast
+becomes the established runtime assert: `tictactoe` under
+`PYC_SELFPROD=0` goes rc=1 → rc=0. The sibling non-record read branch
+deliberately keeps no guard — it casts storage to the *destination* type,
+which is a legitimate reinterpretation; guarding it cost 39 suite
+failures.
 
 What is settled: **the durable type key is the right substrate, and
 per-contour key stability is the discriminator the `v>0` self-product

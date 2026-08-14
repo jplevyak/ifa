@@ -481,6 +481,19 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         for (int i = o + 1; i < n->rvals.n; i++) {
           if (!scalar_ct(c_type(n->rvals[i]))) { index_mismatch = true; break; }
         }
+        // NOTE (issue 035, read side): this branch deliberately gets NO
+        // element-vs-destination guard, unlike its writer sibling. The two
+        // cast to different types: the writer casts to the ELEMENT type
+        // (`(ety)value`, so an element/value num_kind mismatch is invalid
+        // C and must be rejected), while this reader casts the storage to
+        // the DESTINATION type (`((dst*)_CG_list_ptr(x))[i]`), which is a
+        // deliberate reinterpretation -- FA narrowed this contour's
+        // element even where the container's declared element type stayed
+        // boxed. Guarding on that mismatch here rejects ordinary code:
+        // measured 39 suite failures, e.g. `__list_iter__::__next__`
+        // emitting a correct `(_CG_int64)((_CG_int64*)(t2))[t3]`. The
+        // constant-index record branch below is the one that needs it,
+        // because there the field IS read at its own declared type.
         if (index_mismatch) {
           if (!fruntime_errors)
             fail("list index is not an integer type");
@@ -580,9 +593,25 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
             // (a plain-assignment C error, "incompatible type", when
             // they don't -- confirmed: tests/tuple_arity_union.py's
             // own repro). A no-op when they already matched.
-            cchar *dst_ty = c_type(n->lvals[0]);
-            fprintf(fp, "%s = (%s)((%s)%s)->e%d;\n", cg_get_string(n->lvals[0]), dst_ty, cg_get_string(t),
-                    cg_get_string(n->rvals[o]), fidx);
+            // issue 035, READ side (same guard as the sibling branch
+            // above, needed a second time -- and this is the exact site
+            // tictactoe hit: a fixed-size tuple-list's constant-index
+            // field can be a scalar while the destination Var resolved
+            // to a pointer, or the reverse, which the cast below cannot
+            // express. The pointer-to-pointer reinterpretation the cast
+            // exists for stays unaffected.
+            bool field_mismatch =
+                field_type && n->lvals[0]->type && ((field_type->num_kind != 0) != (n->lvals[0]->type->num_kind != 0));
+            if (field_mismatch) {
+              if (!fruntime_errors)
+                fail("tuple-list field type mismatch reading a '%s' field into a '%s'", c_type(field_type),
+                     c_type(n->lvals[0]));
+              fputs("assert(!\"runtime error: list element type mismatch\");\n", fp);
+            } else {
+              cchar *dst_ty = c_type(n->lvals[0]);
+              fprintf(fp, "%s = (%s)((%s)%s)->e%d;\n", cg_get_string(n->lvals[0]), dst_ty, cg_get_string(t),
+                      cg_get_string(n->rvals[o]), fidx);
+            }
           }
         }
       }
