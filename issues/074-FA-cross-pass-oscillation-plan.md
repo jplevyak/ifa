@@ -1018,6 +1018,89 @@ That comparison has not been built.
 this mechanism, and it is the one program where removing the mint is an
 unambiguous win.
 
+#### The durable key as the discriminator — and the property it has to test is LOCAL convergence
+
+Tried on `sunfish`, two readings of "is the recorded `home == es` still
+valid", both using `EntrySet::type_key` (captured in `complete_pass`,
+after the flow fixpoint, hence whole-pass invariant — unlike the
+`->out->type` modes 1/2 and the 2026-07-30 attempt tested against):
+
+- **`=3`/`=4` — is `es` still exactly the recorded partition's home?**
+  `es->type_key.get(avpos) == part`. **Refuted.** It fires almost never
+  (linalg: 2 VALID / 14 stale), and on `sunfish` both modes are
+  *byte-identical to baseline* — same rc=124 timeout, same
+  `final_pass=22 violations=199 ess=540 css=1603`. The test is
+  near-vacuous because `es` is being split precisely when its union has
+  grown past any single group's partition, so equality with `part` is a
+  coincidence, not the invariant.
+
+- **`=5` — has `es` LOCALLY converged?** `es->key_hash[0] ==
+  es->key_hash[1]`: the contour's durable type key is identical on two
+  consecutive passes. **This is the one.** It fires 14/15 on linalg, the
+  near-inverse of `=3`.
+
+The insight `=5` encodes: **1b's `nviol_this_pass == 0` gate is a
+whole-program proxy for a per-CONTOUR property.** A contour whose key has
+stopped moving has settled, so its self-product is a stable flip-flop
+(pygmy's case, where eviction is safe) rather than a union still widening
+(amaze/linalg's case, where it mis-homes) — regardless of whether the rest
+of the program still has violations. Global convergence was never the
+requirement; it was just the only stable signal available before the
+durable key existed.
+
+`sunfish`, the subject:
+
+| | rc | secs | passes | `pass_limit_hit` | violations | ess |
+|---|---|---|---|---|---|---|
+| baseline | **124** (timeout) | 1200 | 22 | 1 | 199 | 540 |
+| `=1` | 0 | 44 | 36 | **0** | 11 | 583 |
+| `=3`, `=4` | 124 (timeout) | 1200 | 22 | 1 | 199 | 540 |
+| **`=5`** | **0** | **43** | 36 | **0** | **11** | 582 |
+
+`=5` reaches `=1`'s result (their generated C differs by 2 lines — two
+`len` contour ids swapped) **without `=1`'s corpus damage**. 84-program
+sweep, shipped guards, vs baseline:
+
+| | mode 1 | **mode 5** |
+|---|---|---|
+| exit-code regressions | adatron, dijkstra, genetic2, sudoku2 (**4**) | **none** |
+| exit-code improvements | sunfish, mastermind2, tictactoe | **sunfish 124→0, tictactoe 1→0** |
+| programs with more violations | ~25, several from 0 | 4 (msp_ss 514→617, softrender 1043→1137, timsort 61→66, rdb 3181→3183) |
+| programs with fewer | 5 | 6 (**tictactoe 137→0**, sunfish 199→11, sudoku5 488→390, rubik 166→120, sat 401→364, amaze 693→689) |
+| total ess | +5.3% | **+1.0%** |
+| total generated C | +8.6% | **−0.9%** |
+| total analysis time | −52% | **−54%** |
+
+Two programs newly converge *naturally* (`pass_limit_hit` 1→0):
+**tictactoe** (48 passes, **0 violations**, `.c` 253 KB→252 KB — the
+program is not lost) and **sunfish**. `test_pyc.py` **265/14/0/4** on both
+backends under `PYC_SELFPROD=5`, identical to baseline; `ifa --test` 58/0.
+
+**Not yet default-on.** Two things must be settled first:
+
+1. **`msp_ss` regresses**: violations 514→617, and it now fails *earlier*
+   and differently — pyc aborts in `sizeof_element of non-container type
+   'int64' (in __add__)`, i.e. pyc [issues/018](../../issues/018-dict-mixed-key-types-boxing-failure.md)'s
+   container-method-against-a-scalar, where baseline got as far as
+   emitting C that clang then rejected. (Its `.c` dropping 843 KB→116 KB
+   is that earlier abort's partial output, **not** a pruned program — the
+   two configs fail at different stages, so the sizes are not comparable.
+   Worth stating explicitly because a `.c` collapse is normally the
+   losing-the-program trap.) `softrender` +94 violations is the other one
+   to explain.
+2. **Neither newly-compiling program actually runs.** `sunfish` aborts on
+   `matching function not found` (its 11 residual violations reaching
+   codegen); `tictactoe` compiles at **0** violations and then aborts on
+   `list element type mismatch` — which is pyc
+   [issues/035](../../issues/035-list-element-cast-salvage-guard-and-set-item-union.md)'s
+   pre-existing int/float in-place list-mutation boxing gap, unrelated to
+   this change. So `=5` is a *convergence* fix; the residual failures it
+   exposes are separate, already-tracked precision gaps.
+
+What is settled: **the durable type key is the right substrate, and
+per-contour key stability is the discriminator the `v>0` self-product
+needed.** That was the open problem at the top of this section.
+
 #### Where this points
 
 The target is no longer "make `TYPE_CONFLUENCE` idempotent". It is

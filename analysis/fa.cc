@@ -5249,15 +5249,53 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
       SplitDecision *dd = fa->ledger_find(es->fun, cur_split_stage, avpos, part, gsig);
       if (dd && dd->pass_made != analysis_pass && dd->product == es) {
         bool conservative = nviol_this_pass != 0;
-        // Mode 2: keep the group in `es` but evict NOTHING. This drops the
-        // fresh-contour mint (the growth) without re-homing any edge, so it
-        // cannot mis-home content the way an eviction can.
-        if (conservative && selfprod_enabled() >= 2) continue;
+        int mode = selfprod_enabled();
+        // Modes 3/4: the DURABLE TYPE KEY as the stale-vs-valid test.
+        // `es->type_key` is captured in complete_pass, after the flow
+        // fixpoint, so it is the whole-pass-invariant converged type at
+        // this position -- unlike `->out->type`, which is this pass's
+        // still-widening value and is what modes 1 and 2 (and the
+        // 2026-07-30 attempt) tested against. The recorded decision
+        // "partition `part` lives in `es`" is still VALID exactly when
+        // `es` converged to `part` and nothing else; if its key has moved
+        // off `part`, the contour is no longer the recorded partition's
+        // home and the decision is stale, so fall through to a normal
+        // split. Mode 3 then keeps the group and evicts nothing; mode 4
+        // also evicts the complement, which is 1b's full action.
+        if (conservative && mode >= 3) {
+          bool ok;
+          if (mode <= 4) {
+            // 3/4: is `es` still exactly the recorded partition's home?
+            AType *k = es->type_key_pass >= 0 ? es->type_key.get(avpos) : nullptr;
+            ok = k == part;
+          } else {
+            // 5: has `es` LOCALLY converged? 1b's `nviol_this_pass == 0`
+            // is a whole-program convergence proxy for "the recorded
+            // home == es decision is settled"; the property it actually
+            // needs is per-CONTOUR. A contour whose durable type key is
+            // identical on two consecutive passes has stopped moving
+            // even though the program has not, so its self-product is a
+            // stable flip-flop (pygmy's case) rather than a union still
+            // widening -- which is exactly the discrimination the
+            // 2026-07-30 attempt lacked.
+            ok = es->type_key_pass == analysis_pass && es->key_hash[0] && es->key_hash[0] == es->key_hash[1];
+          }
+          if (getenv("IFA_DBG_INCOMPAT"))
+            fprintf(stderr, "SELFPROD p=%d fun=%s#%d es=%d %s\n", analysis_pass,
+                    es->fun->sym->name ? es->fun->sym->name : "?", es->fun->sym->id, es->id,
+                    ok ? "VALID" : "stale");
+          if (!ok) goto Lnormal_split;  // stale: today's behaviour
+          if (mode == 3) continue;      // valid: keep the group, evict nothing
+        } else if (conservative && mode == 2) {
+          // Mode 2: keep the group in `es` but evict NOTHING. Drops the
+          // fresh-contour mint without re-homing any edge.
+          continue;
+        }
         if (!stay_evicted) {
           stay_evicted = true;
           EntrySet *scomp = nullptr;
           for (AEdge *x : dec->stay_edges) if (x && x->from && x->to == es) {
-            if (conservative) {
+            if (conservative && mode == 1) {
               AVar *xa = x->args.get(avpos);
               if (!xa) continue;
               AType *xt = type_intersection(xa->out->type, x->match->formal_filters.get(avpos));
@@ -5280,6 +5318,7 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
         continue;  // keep this (self-product) group in es
       }
     }
+  Lnormal_split:;
     if (avpos && gsig) {
       SplitDecision *d = fa->ledger_find(es->fun, cur_split_stage, avpos, part, gsig);
       // The display no longer gates this ROUTE either (see update_display):
@@ -7397,7 +7436,7 @@ static Vec<Fun *> kd_flip_funs;
 
 static void capture_type_keys() {
   bool drift = getenv("IFA_DBG_KEYDRIFT") != nullptr;
-  if (!typekey_enabled() && !drift) return;
+  if (!typekey_enabled() && !drift && selfprod_enabled() < 3) return;
   for (EntrySet *es : fa->entry_set_done) if (es && es->fun) {
     int grew = 0, shrank = 0, fresh = es->type_key_pass < 0;
     unsigned int h = 0;
@@ -7405,8 +7444,8 @@ static void capture_type_keys() {
     form_MPositionAVar(x, es->args) {
       if (!x->key->is_positional() || !x->value) continue;
       AType *now = x->value->out->type;
+      h += (unsigned int)(uintptr_t)now * open_hash_primes[i++ % 256];
       if (drift) {
-        h += (unsigned int)(uintptr_t)now * open_hash_primes[i++ % 256];
         if (!fresh) {
           AType *was = es->type_key.get(x->key);
           if (was && was != now) {
@@ -7419,13 +7458,16 @@ static void capture_type_keys() {
       es->type_key.put(x->key, now);
     }
     es->type_key_pass = analysis_pass;
-    if (!drift) continue;
     // key(N) == key(N-2) != key(N-1): a period-2 flip-flop, which no
     // number of further passes resolves. Distinct from a key that is
-    // still moving monotonically toward a fixed point.
+    // still moving monotonically toward a fixed point. key_hash[0] is
+    // this pass's, [1] the previous pass's -- PYC_SELFPROD=5 reads them
+    // as a per-contour "has stopped moving" test, so they are maintained
+    // whenever the key is captured at all, not only under the probe.
     int flip = !fresh && h != es->key_hash[0] && h == es->key_hash[1];
     es->key_hash[1] = es->key_hash[0];
     es->key_hash[0] = h;
+    if (!drift) continue;
     if (fresh) ++kd_new;
     else if (flip) {
       ++kd_flip;
