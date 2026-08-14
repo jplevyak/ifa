@@ -295,13 +295,55 @@ because those contributors sit at different depths — which is how a
 monomorphic one-line helper like `PIXEL00_20` (setkey=1, cpakey=1) ends
 up with one contour per call site.
 
+#### Swapping the CPA name in for the mark: REFUTED (`PYC_CPAMARK`, 2026-08-14)
+
+The obvious move from the above is to drop the distance filter and let
+`different_marked_args` compare the CS sets directly — "which
+CreationSet is here", no depth term. `PYC_CPAMARK=1` does exactly that.
+**It makes `MARK_TYPE` contribute nothing at all:**
+
+| | marks ON | marks OFF | marks ON + `PYC_CPAMARK=1` |
+|---|---|---|---|
+| hq2x | p102, 0 viol, ess 1664 | p14, 0 viol, ess 620 | **p14, 0 viol, ess 620** |
+| listcomp repro | 0 viol | 1 viol | **1 viol** |
+| chull | 0 viol | 2 viol | **2 viol** |
+
+`PYC_CPAMARK` ≡ `PYC_NOMARK`, on the pathological case and both precision
+cases alike. **100% of `MARK_TYPE`'s distinct contribution is the distance
+term**; the CS-set comparison it performs is entirely redundant with
+`TYPE_CONFLUENCE`, which already compares types — and CS sets *are* types.
+
+This also corrects an over-reading of the `IFA_DBG_MARKWHY` table above.
+That the repro's verdicts are 98% `cs_differ` does **not** mean CPA naming
+would recover its precision: those verdicts fire elsewhere in the program
+and are redundant. The *decisive* verdict — the one that breaks the
+`{A,B}` union at pass 8 — is necessarily in the 2% `cs_same` bucket,
+because **inside a union the CS sets are equal by construction**, so depth
+is the only thing left that can tell the two contributors apart. An
+aggregate percentage hid the single verdict that mattered.
+
 So the split rule that *should* apply is CS identity — the CPA name.
 Marks approximate it with (CS identity ∧ depth). The `∧ depth` term is
 the approximation: needed only because set-naming lost the per-CS view,
 and harmful because depth is not a semantic property of the program — it
 is a property of the contour graph, which splitting itself changes. That
 is also why marks self-fuel: each split perturbs the distances that
-produced it. So the fix for the five regressors is **not**
+produced it.
+
+**But the CPA fix has to be applied to the NAME, not to the comparison.**
+`PYC_CPAMARK` changed how a confluence is *tested*, which cannot help: by
+the time a union exists, every comparison inside it sees equal CS sets.
+Real cartesian-product naming acts earlier — it fans a multi-CS actual
+out into one contour per single CS at the call site, so the union never
+becomes a contour name and there is nothing to break. The hook for that
+already exists in shape: `split_container_methods_per_element_cs` scans
+`es->args` for positions with `av->out->type->sorted.n >= 2` and fans via
+`set_or_copy_AEdge`; general CPA is that same scan without the
+`all_same_container` narrowing. **Not attempted yet, and not obviously
+safe:** that function *is* the nearest existing analogue, and enabling it
+on `chull` (`PYC_CSM=2`) took violations 2 → 12. Fan-out also multiplies
+across positions, which is the blowup shedskin bounds with its `dcpa`
+limit. This wants its own build with its own budget. So the fix for the five regressors is **not**
 to restore them: it is cartesian-product naming. Note `PYC_CANON` does
 not supply it — `edge_canon_key` builds one `AType *` per position, i.e.
 set-naming again; a CPA variant must key on single CreationSets. That is

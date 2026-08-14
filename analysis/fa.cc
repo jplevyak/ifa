@@ -819,6 +819,23 @@ static bool same_eq_classes(Setters *s, Setters *ss) {
 }
 
 static long mark_cs_differ = 0, mark_cs_same = 0;
+
+// ifa/issues/074 (PYC_CPAMARK): swap the cartesian-product name in for the
+// mark. different_marked_args already compares two sets of CreationSets --
+// the CPA question -- but only over CSs admitted by the distance filter
+// `m - offset == x->value`. With this on, the filter is dropped and the CS
+// sets are compared directly, so the split rule becomes "which CreationSet
+// is here", with no depth term. IFA_DBG_MARKWHY predicts the effect: it is
+// exactly the `cs_same` verdicts (98% of hq2x's, 2% of the listcomp
+// repro's) that stop firing.
+static int cpa_mark_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_CPAMARK");
+    e = v ? atoi(v) : 0;
+  }
+  return e;
+}
 static int mark_why_enabled() {
   static int e = -1;
   if (e < 0) e = getenv("IFA_DBG_MARKWHY") ? 1 : 0;
@@ -835,7 +852,7 @@ static int different_marked_args(AVar *a1, AVar *a2, int offset, AVar *basis = 0
         int m = basis1->mark_map->get(x->key);
         if (m) {
           found1 = 1;
-          if (m - offset == x->value) marks1.set_add(x->key);
+          if (cpa_mark_enabled() || m - offset == x->value) marks1.set_add(x->key);
         }
       }
     }
@@ -847,7 +864,7 @@ static int different_marked_args(AVar *a1, AVar *a2, int offset, AVar *basis = 0
           int m = basis->mark_map->get(x->key);
           if (m) {
             found2 = 1;
-            if (m - offset == x->value) marks2.set_add(x->key);
+            if (cpa_mark_enabled() || m - offset == x->value) marks2.set_add(x->key);
           }
         }
       } else {
