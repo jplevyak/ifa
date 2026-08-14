@@ -124,7 +124,9 @@ because of `MARK_TYPE`**:
 | go | p102, 103 viol, ess 686 | p102, 107 viol, ess 674 | **resists** |
 | linalg | p102, 78 viol, ess 586 | p102, 43 viol, ess 944 | **resists** |
 
-(`plcfrs` resists too — measured p102 either way.)
+`plcfrs` resists too — p102 either way — but it improves sharply all the
+same: violations **1319 → 85** and it stops exhausting its time budget
+(rc=124 at a 1800 s timeout → rc=1, analysis completes).
 
 Note pylife and bh reach **zero** violations with marks off: for them
 `MARK_TYPE` is not merely non-terminating, it is actively *losing*
@@ -140,9 +142,10 @@ ess over the last ten passes before the cap (p92 → p101), guards off:
 | go | 667 → 686 (+19) | sudoku4 | 675 → 675 |
 | hq2x | 1639 → 1657 (+18) | genetic2 | 371 → 371 |
 | pylife | 519 → 537 (+18) | linalg | 586 → 585 |
+| | | plcfrs | 1299 → 1300 |
 
 So the two diseases are now separable per program: **four still grow
-without bound; four have stopped growing but keep re-deciding**. Three of
+without bound; five have stopped growing but keep re-deciding**. Three of
 the four growers (bh, hq2x, pylife) are in the `MARK_TYPE` group, so
 `MARK_TYPE` accounts for most of the remaining *growth* as well as most
 of the remaining non-convergence.
@@ -158,7 +161,10 @@ of the remaining non-convergence.
 2. **Cascade serialization (go, linalg, plcfrs).** CS-minting stages and
    `TYPE_CONFLUENCE` are forced to alternate by the first-stage-wins
    gate. The self-product mint — which used to be the growth term here —
-   is fixed; what is left is the alternation itself.
+   is fixed, and it shows: **linalg and plcfrs have both stopped growing**
+   (586→585 and 1299→1300 over ten passes) and now only re-decide. `go`
+   is the one member of this group still adding contours at the cap, and
+   is therefore the group's sharpest subject.
 3. The stall guard still counts ledger ROUTE recoveries as divergence,
    which is why the shipped config stops 18 programs, several of them
    converging.
