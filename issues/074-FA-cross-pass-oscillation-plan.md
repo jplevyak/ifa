@@ -192,11 +192,77 @@ dijkstra2 10→6, go 161→146, plcfrs 2442→2412, sudoku4 30→26, rubik
 kmeanspp 2→8, chull 0→2). `test_pyc.py` 265/14/0/4 both backends;
 `ifa --test` 58/0. `PYC_NOMARK=0` restores the old behaviour.
 
-The five regressors are now the follow-up, and they are **not** the
-unnameable-contour disease — their keyspaces are roughly CPA-nameable
-already (softrender ess 703 / cpakey 579, sat 537 / 558, chull 516 /
-384), so marks were not what was making their contours. Whatever
-separation they lose has another source, which makes it findable.
+### Where the lost separation comes from: SET-NAMING, not provenance
+
+Traced on `chull` (0 → 2 violations), the smallest regressor. Both new
+violations are the same shape:
+
+```
+chull.py:281: warning: illegal call argument type 'f0' illegal: Edge
+              self.edges.extend(f0.InitEdges())
+```
+
+`f0` comes from `self.faces[-1]` yet carries `Edge`. Source: lines 424
+and 432 are two structurally identical list comprehensions,
+`self.edges = [e for e in self.edges if not e.delete]` and
+`self.faces = [f for f in self.faces if not f.visible]`.
+
+**Reduced to 33 lines** — `tests/listcomp_element_separation.py`. Two
+list comprehensions over lists of different element types; reading the
+first list's element afterwards yields the union. Narrowed by variants:
+
+| variant | marks on | marks off |
+|---|---|---|
+| two comprehensions | 0 viol | **1 viol** |
+| …without the `if` filter | 0 | **1** |
+| …in two different methods | 0 | **1** |
+| …via a local before the store | 0 | **1** |
+| equivalent explicit `for`/`append` loops | 0 | 0 |
+| one comprehension + one loop | 0 | 0 |
+| two loops sharing one `[]` from a helper | 0 | 0 |
+
+So it is not the filter, not scope, not the store, and **not
+creation-site sharing** — the helper control shares one literal `[]`
+across both uses and still separates cleanly.
+
+`IFA_DBG_KEYSPACE` on `list.append` gives the mechanism outright:
+
+| pass | marks ON | marks OFF |
+|---|---|---|
+| 7 | ess=3 setkey=3 **cpakey=6** | ess=3 setkey=3 **cpakey=6** |
+| 8 | `MARK_TYPE` fires → ess=4 setkey=4 cpakey=6 | *unchanged, forever* |
+| 9 | **cpakey 6 → 4** — the union breaks | |
+| 10 | ess=4 setkey=4 cpakey=4, monomorphic | ess=3 setkey=3 cpakey=6 |
+
+**Three contours are covering six distinct argument-type combinations,
+and no type-based test can see it.** The two `append` call edges *do*
+carry different types, but once `{A, B}` forms at the value formal it is
+a **fixed point under set-naming**: every edge then carries `{A, B}`, so
+`etype == stype` and `collect_type_confluence` finds no confluence at
+all. `MARK_TYPE` is the only stage that can see through it, because
+marks separate contributors by provenance even when their type *sets* are
+identical — it mints one contour, that breaks the symmetry, and the
+types re-derive monomorphically (cpakey 6 → 4).
+
+**This is the set-naming cost, and it is the other half of the `hq2x`
+finding.** Both are consequences of naming contours by tuples of type
+*sets* rather than by the cartesian product of single types:
+
+- `hq2x`: marks split what CPA would **not** (ess 287 vs cpakey 17) —
+  gratuitous, unnameable over-splitting.
+- `chull`: marks split what CPA **would** (ess 3 vs cpakey 6) — the only
+  available symmetry-breaker for a union fixed point.
+
+Marks are too aggressive *and* load-bearing because they are a provenance
+proxy for a naming problem. So the fix for the five regressors is **not**
+to restore them: it is cartesian-product naming. Note `PYC_CANON` does
+not supply it — `edge_canon_key` builds one `AType *` per position, i.e.
+set-naming again; a CPA variant must key on single CreationSets. That is
+the same conclusion the shedskin comparison pointed at from the start,
+now with a 33-line repro and a stage-by-stage trace behind it.
+
+(`PYC_CSM=2` was tried on `chull` first and is not the answer: violations
+2 → 12, and both original violations survive.)
 
 ## THE RE-BASED TARGET SET (2026-08-12)
 
