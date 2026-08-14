@@ -873,6 +873,7 @@ static int edge_type_compatible_with_edge(AEdge *e, AEdge *ee, EntrySet *es, int
 }
 
 static int typekey_enabled();
+static int canon_enabled();
 
 static int edge_type_compatible_with_entry_set(AEdge *e, EntrySet *es, int fmark = 0) {
   assert(e->args.n && es->args.n);
@@ -1343,6 +1344,45 @@ static int check_split(AEdge *e, Vec<AEdge *> &ees, EntrySet *avoid = nullptr) {
   return 0;
 }
 
+// ifa/issues/074 canonicalization stats (IFA_DBG_CANON).
+static long canon_hit = 0, canon_miss = 0, canon_conflict = 0, canon_conflict_honored = 0;
+
+// This edge's type tuple: the filtered actual type at each positional
+// argument. Canonical ATypes are hash-consed for the life of the FA, so
+// these pointers compare by identity and stay valid across passes.
+static bool edge_canon_key(AEdge *e, Map<MPosition *, AType *> &key) {
+  if (!e->args.n) return false;
+  int n = 0;
+  for (MPosition *p : e->match->fun->positional_arg_positions) {
+    AVar *a = e->args.get(p);
+    if (!a) continue;
+    AType *t = type_intersection(a->out->type, e->match->formal_filters.get(p));
+    if (!t->n) return false;  // no evidence yet -- do not canonicalize on it
+    key.put(p, t);
+    n++;
+  }
+  return n > 0;
+}
+
+static bool same_canon_key(Map<MPosition *, AType *> &a, Map<MPosition *, AType *> &b) {
+  int na = 0, nb = 0;
+  form_MPositionAType(x, a) if (x->key) {
+    na++;
+    if (b.get(x->key) != x->value) return false;
+  }
+  form_MPositionAType(x, b) if (x->key) nb++;
+  return na && na == nb;
+}
+
+// Find the contour of this edge's callee already named by `key`.
+static EntrySet *find_canonical_entry_set(AEdge *e, Map<MPosition *, AType *> &key) {
+  EntrySet *found = nullptr;
+  for (EntrySet *x : e->match->fun->ess)
+    if (x && x->canon_key_set && same_canon_key(key, x->canon_key))
+      if (!found || x->id < found->id) found = x;  // deterministic (issue 035)
+  return found;
+}
+
 static void make_entry_set(AEdge *e, Vec<AEdge *> &edges, EntrySet *split = nullptr, EntrySet *preference = 0) {
   if (e->to) {
     edges.add(e);
@@ -1411,7 +1451,32 @@ static void make_entry_set(AEdge *e, Vec<AEdge *> &edges, EntrySet *split = null
     }
   }
   if (!es) es = preference;
+  Map<MPosition *, AType *> ckey;
+  bool have_key = canon_enabled() && !e->match->fun->split_unique && edge_canon_key(e, ckey);
+  if (have_key && !es) {
+    EntrySet *canon = find_canonical_entry_set(e, ckey);
+    if (canon && canon == split) {
+      // The canonical home for this edge's types IS the contour the
+      // splitter is detaching it from: the split is asking for a
+      // separation the type tuple says does not exist. This is the
+      // measurement the canonicalization exists to produce.
+      ++canon_conflict;
+      if (getenv("IFA_DBG_CANON"))
+        fprintf(stderr, "CANON-CONFLICT p=%d fun=%s#%d e=%d split=es%d (fun has %d ess)\n", analysis_pass,
+                e->match->fun->sym && e->match->fun->sym->name ? e->match->fun->sym->name : "?",
+                e->match->fun->sym ? e->match->fun->sym->id : -1, e->id, split->id, e->match->fun->ess.n);
+      if (canon_enabled() >= 2) es = canon; else ++canon_conflict_honored;
+    } else if (canon) {
+      ++canon_hit;
+      es = canon;
+    } else
+      ++canon_miss;
+  }
   set_entry_set(e, es);
+  if (have_key && !e->to->canon_key_set) {
+    e->to->canon_key.copy(ckey);
+    e->to->canon_key_set = 1;
+  }
   if (!es) {
     e->to->split = split;
     // ifa/issues/075: this is the "leftover group" mint -- an edge
@@ -4788,6 +4853,28 @@ static int typekey_enabled() {
   return e;
 }
 
+// ifa/issues/074: canonicalize contour creation on the durable type key
+// -- at most one contour per (fun, type tuple), found by lookup and
+// created on miss, the way find_or_make_filtered_entry_set already works
+// for CS partitions. Durable keys alone (PYC_TYPEKEY) proved necessary
+// but not sufficient: they make matching stable in TIME but not unique
+// in SPACE, so two same-keyed contours still let the `x != split` veto
+// alternate. Canonicalization removes the duplicates, so there is
+// nothing to alternate between.
+//   1 = canonicalize, but never hand an edge back to the contour the
+//       splitter is detaching it FROM (conflicts logged, split honored)
+//   2 = full canonicalization: reuse even then, so a split that
+//       disagrees with the canonical key becomes a no-op
+// IFA_DBG_CANON=1 logs every conflict and prints per-pass stats.
+static int canon_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_CANON");
+    e = v ? atoi(v) : 0;
+  }
+  return e;
+}
+
 static int hard_reuse_enabled() {
   static int e = -1;
   if (e < 0) {
@@ -7189,7 +7276,15 @@ static void capture_type_keys() {
   }
 }
 
+static void report_canon_stats() {
+  if (!canon_enabled() || !getenv("IFA_DBG_CANON")) return;
+  fprintf(stderr, "CANON p=%d hit=%ld miss=%ld conflict=%ld conflict_honored=%ld\n", analysis_pass, canon_hit,
+          canon_miss, canon_conflict, canon_conflict_honored);
+  canon_hit = canon_miss = canon_conflict = canon_conflict_honored = 0;
+}
+
 static void complete_pass() {
+  report_canon_stats();
   capture_type_keys();
   audit_edge_arg_values();
   collect_results();

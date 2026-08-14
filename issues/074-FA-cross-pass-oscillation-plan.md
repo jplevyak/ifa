@@ -554,6 +554,78 @@ so duplicate-keyed contours cannot exist. Then the `x != split` veto
 becomes unnecessary rather than needing a smarter tie-break, and both
 this route's flip-flop and 099's have nothing to alternate between.
 
+### Canonicalization on the durable key (`PYC_CANON`) — built, and the conflict log is the interesting output
+
+Follows directly from the type-key result above: if duplicate-keyed
+contours are what let the veto alternate, remove the duplicates. Contour
+creation becomes find-by-key-else-create — the type tuple *names* the
+contour, as in shedskin.
+
+`PYC_CANON=1|2`, off by default (`IFA_DBG_CANON=1` logs each conflict and
+per-pass stats). `EntrySet::canon_key` is stamped at creation and is
+immutable, unlike `type_key` which is refreshed each pass.
+
+- **1** — canonicalize, but never hand an edge back to the contour the
+  splitter is detaching it FROM. Conflicts are counted and honored (the
+  split wins). Suite **259/7**.
+- **2** — full canonicalization: reuse even then, so a split that
+  disagrees with the canonical key becomes a no-op. Suite **237/32**.
+
+**Scope limit, stated up front:** only `make_entry_set`'s tail mint is
+canonicalized. `check_split`'s lineage-mint and
+`apply_entry_set_split`'s self-product eviction still create contours
+without a key, so duplicates can still arise there. The numbers below are
+a lower bound.
+
+**The conflict measurement** — how often the splitter wants to separate
+edges that the argument type tuple says belong together (mode 1, so
+splits are honored):
+
+| program | osc | dedup rate | conflicts/pass | top conflicting funs |
+|---|---|---|---|---|
+| hq2x | C | **58%** | **8.1** | `__setitem__` 92, `PIXEL11_20` 35 |
+| chess | C | 10% | 6.1 | `__add__` 16, `append` 14, `len` 11 |
+| rdb | C | 5% | 4.0 | `__ge__` 7, `len` 7, `__lt__` 7 |
+| adatron | – | 11% | 3.0 | `__getitem__` 23/15, `__lt__` 13 |
+| msp_ss | C | 7% | 2.8 | `len` 9, `__eq__` 8, `__lt__` 6 |
+| bh | C | 10% | 2.5 | `__getitem__` 8, `__sub__` 7 |
+| softrender | C | 9% | 2.1 | `__getitem__` 43, `__iadd__` 11 |
+| rubik | C | 2% | 1.8 | `__pyc_to_bool__` 6, `__lt__` 5 |
+| chull | – | 4% | 1.1 | `__getitem__` 17, `__add__` 6 |
+
+Three things fall out of it:
+
+1. **The conflicting functions are almost entirely container and
+   comparison builtins** — `__setitem__`, `__getitem__`, `len`,
+   `__lt__`, `__eq__`, `__ge__`, `append`, `__pyc_to_bool__`, `__add__`.
+   So **the splitter's separations are mostly not argument-type-driven**:
+   it is separating on setters, marks and element CSs, which the argument
+   type tuple does not capture at all. Canonicalizing on argument types
+   is therefore structurally at odds with what the splitter is doing —
+   which is why mode 2 costs 32 tests rather than a handful.
+2. **Conflicts are not a property of the oscillators.** `chull` (1.1/pass)
+   and `adatron` (3.0/pass) converge; `go` (0.6/pass) does not. The rate
+   alone does not predict convergence, so "the splitter disagrees with
+   the canonical key" is normal behavior, not the pathology.
+3. **`hq2x` is the exception that fits.** It is the pure-churn oscillator
+   (102 passes, ~250 edges detached and re-parked per pass, ~1 new edge)
+   and it has both the highest conflict rate (8.1/pass) *and* by far the
+   highest dedup rate (**58%** — canonicalization finds an existing
+   same-keyed contour for well over half its keyed mints, versus 2-12%
+   everywhere else). That is a strong, specific signal that hq2x's churn
+   really is duplicate-contour manufacturing, and it is the right first
+   subject for the canonicalization work.
+
+**Where that leaves the idea.** Canonicalization by *argument type tuple*
+cannot be the whole naming scheme, because most of what the splitter
+separates on is not in that tuple. Making it total would need the
+contour's name to include the other split dimensions (setter classes,
+marks, element CSs) — i.e. the name has to be whatever the splitter would
+have split on, which is the same "stable per-group identity" Stage 1 (ii)
+has always been about, now with a concrete measurement of what has to go
+into it and a program (`hq2x`) where the current key already explains
+most of the churn.
+
 ### Two earlier dead ends on that cause (both reverted)
 
 1. **Let `find_best_entry_sets` run on the detach route, vetoing only

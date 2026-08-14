@@ -192,6 +192,14 @@ class EntrySet : public gc {
   // comparable by identity across passes.
   Map<MPosition *, AType *> type_key;
   int type_key_pass = -1;
+  // ifa/issues/074 (PYC_CANON): the type tuple this contour was CREATED
+  // for. Immutable once stamped, unlike `type_key` which is refreshed
+  // each pass. Canonicalization keeps at most one contour per (fun,
+  // canon_key), so the type tuple NAMES the contour -- shedskin's model
+  // -- and a routing decision becomes a lookup with no symmetric choice
+  // to alternate between.
+  Map<MPosition *, AType *> canon_key;
+  int canon_key_set = 0;
   EdgeHash edges;
   EdgeMap out_edge_map;
   Vec<CreationSet *> creates;
