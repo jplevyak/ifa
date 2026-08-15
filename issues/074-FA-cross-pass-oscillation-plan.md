@@ -501,10 +501,40 @@ plan documented as *guard-caused miscompiles* (`msp_ss` "crash → correct,
 prints its banner"; `rdb` now emits 674 KB of C where the pruned version
 emitted 170 KB, the opposite of the trap). The other two move from
 compile-failure to runtime-failure, which is not a regression — neither
-worked before — but must not be counted as a win either. `amaze`
-core-dumping is the same behaviour this plan recorded when the guards
-were disabled wholesale, so its underlying defect is untouched by this
-change and is still open.
+worked before — but must not be counted as a win either.
+
+**Both runtime failures root-caused (2026-08-15), and neither is an FA
+convergence problem:**
+
+- **`sat`** dies on an unhandled `AssertionError`. Its
+  `enqueue(self, lit, reason=None, reason_txt=None)` has call sites that
+  pass `reason=` at some points and `reason_txt=` at others, and
+  `cause = var_info.reason` comes out typed `Clause ∪ str`. Reduced to a
+  29-line **silent wrong-answer miscompile** — CPython prints 0, pyc
+  prints 7 — filed as pyc
+  [issues/046](../../issues/046-default-arg-omitted-differently-silently-wrong.md)
+  with `tests/default_arg_omitted_differently.py`. **Trigger: two call
+  sites of the same function that omit *different* defaulted parameters**
+  (narrowed: not `__slots__`, not `None`-as-default, not keyword syntax —
+  passing both explicitly, or always omitting the same one, is clean).
+  Independent of, and older than, the guard change; it only surfaced
+  because `sat` began compiling.
+
+- **`amaze`** segfaults. Backtrace: `list::__contains__` →
+  `tuple::__eq__(a1=0x100000001, …)` → `tuple::__len__` → `_CG_prim_len`
+  on `0x100000001`, i.e. an **int used as a container**. The receiver is
+  `_CG_any` — a boxed element read out of a list whose element type is a
+  union, with dispatch choosing `tuple::__eq__` for an element that is
+  actually an int. That is the container-element-union family
+  ([035](../../issues/035-list-element-cast-salvage-guard-and-set-item-union.md),
+  [075](075-FA-element-cs-method-split-idempotent-plan.md)) — the same
+  root cause as `chull`, `tictactoe` and
+  `tests/listcomp_element_separation.py`, reached from `while point in
+  points2` at amaze.py:321. Not a new defect and not guard-related.
+
+A third bug fell out of the narrowing: `write_c_prim` **aborts the
+compiler** on a nameless primitive destination (`cg.cc:389`), filed as
+[issues/047](../../issues/047-cg-nameless-lvalue-assert-on-prim.md).
 
 ## THE RE-BASED TARGET SET (2026-08-12)
 
