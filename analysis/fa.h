@@ -701,12 +701,12 @@ class FA : public gc {
   // one may have found work too, on a batched extend (see issue 033
   // S5 M2). Sized to FAPassStage's cardinality (kept as a plain
   // constant since FAPassStage is declared after this class).
-  static constexpr int kNumFAPassStages = 9;
+  static constexpr int kNumFAPassStages = 10;
   // TEMP probe: per-splitter-stage attribution of the per-pass churn.
-  long dbg_stage_detach[9] = {};   // edges this stage detached (x->to = 0)
-  long dbg_stage_mint[9] = {};     // contours this stage minted fresh
-  long dbg_stage_reuse[9] = {};    // edges this stage re-bound to an existing contour
-  long dbg_stage_csmint[9] = {};   // CreationSets this stage minted (ifa/issues/074)
+  long dbg_stage_detach[kNumFAPassStages] = {};   // edges this stage detached (x->to = 0)
+  long dbg_stage_mint[kNumFAPassStages] = {};     // contours this stage minted fresh
+  long dbg_stage_reuse[kNumFAPassStages] = {};    // edges this stage re-bound to an existing contour
+  long dbg_stage_csmint[kNumFAPassStages] = {};   // CreationSets this stage minted (ifa/issues/074)
   double stage_time[kNumFAPassStages] = {};
   long stage_progress_count[kNumFAPassStages] = {};
 
@@ -762,6 +762,12 @@ enum class FAPassStage {
                           // container-method split for list/dict
                           // receivers with divergent element types;
                           // runs every pass, before TYPE_CONFLUENCE)
+  CARTESIAN_PRODUCT,      // split_ess_cartesian_product (ifa/issues/074,
+                          // PYC_CPA: fan a positional formal whose type
+                          // is a union of >=2 CreationSets into one
+                          // contour per single CS -- shedskin's dcpa
+                          // naming, so a union never becomes a contour
+                          // name in the first place)
 };
 
 struct FAPassEvent {

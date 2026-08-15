@@ -235,7 +235,7 @@ AType *make_abstract_type(Sym *s) {
   AType *a = s->abstract_type;
   if (a) return a;
   CreationSet *cs = new CreationSet(s);
-  if (cur_split_stage >= 0 && cur_split_stage < 9) ++fa->dbg_stage_csmint[cur_split_stage];
+  if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
   return s->abstract_type = make_AType(cs);
 }
 
@@ -468,7 +468,7 @@ Lcreators:;
 Lunique:
   // new creation set
   cs = new CreationSet(s);
-  if (cur_split_stage >= 0 && cur_split_stage < 9) ++fa->dbg_stage_csmint[cur_split_stage];
+  if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
   s->creators.add(cs);
   for (Sym *h : s->has) {
     assert(h->var);
@@ -1099,7 +1099,7 @@ static void update_display(AEdge *e, EntrySet *es) {
 
 static void set_entry_set(AEdge *e, EntrySet *es = 0) {
   EntrySet *new_es = es;
-  if (cur_split_stage >= 0 && cur_split_stage < 9) {
+  if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) {
     if (es) ++fa->dbg_stage_reuse[cur_split_stage]; else ++fa->dbg_stage_mint[cur_split_stage];
   }
   if (!es) {
@@ -4699,7 +4699,7 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
     if (!tes || ee->to == tes) return;
     if (ee->to) ee->to->edges.del(ee);
     ee->to = 0;
-    if (cur_split_stage >= 0 && cur_split_stage < 9) ++fa->dbg_stage_detach[cur_split_stage];
+    if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_detach[cur_split_stage];
     ee->filtered_args.clear();
     set_entry_set(ee, tes);
   };
@@ -5367,7 +5367,7 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
               if (!xt->n || type_intersection(xt, part) != fa->type_world.bottom_type) continue;
             }
             x->to = 0;
-            if (cur_split_stage >= 0 && cur_split_stage < 9) ++fa->dbg_stage_detach[cur_split_stage];
+            if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_detach[cur_split_stage];
             x->filtered_args.clear();
             es->edges.del(x);
             if (!scomp) {
@@ -5406,7 +5406,7 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
       if (!product->split) product->split = es;
       for (AEdge *x : these_edges) {
         x->to = 0;
-        if (cur_split_stage >= 0 && cur_split_stage < 9) ++fa->dbg_stage_detach[cur_split_stage];
+        if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_detach[cur_split_stage];
         x->filtered_args.clear();
         es->edges.del(x);
         set_entry_set(x, product);
@@ -5419,7 +5419,7 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
     } else {
       for (AEdge *x : these_edges) {
         x->to = 0;
-        if (cur_split_stage >= 0 && cur_split_stage < 9) ++fa->dbg_stage_detach[cur_split_stage];
+        if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_detach[cur_split_stage];
         x->filtered_args.clear();
         es->edges.del(x);
       }
@@ -6074,7 +6074,7 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
               cs->id, cs->sym->name ? cs->sym->name : "", cs->sym->id, csig, new_cs->id, d->pass_made);
         } else {
           new_cs = new CreationSet(cs);
-          if (cur_split_stage >= 0 && cur_split_stage < 9) ++fa->dbg_stage_csmint[cur_split_stage];
+          if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
           new_cs->split = cs;
         }
         for (AVar *v : compatible_set) if (v) {
@@ -6680,7 +6680,7 @@ static CSMSplitDecision *decide_csm_split(AVar *av) {
     if (!tes || ee->to == tes) return;
     if (ee->to) ee->to->edges.del(ee);
     ee->to = 0;
-    if (cur_split_stage >= 0 && cur_split_stage < 9) ++fa->dbg_stage_detach[cur_split_stage];
+    if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_detach[cur_split_stage];
     ee->filtered_args.clear();
     set_entry_set(ee, tes);
   };
@@ -6710,6 +6710,95 @@ static CSMSplitDecision *decide_csm_split(AVar *av) {
     if (ee->to != old) again = 1;
   }
   return again;
+}
+
+// ifa/issues/074: CARTESIAN-PRODUCT contour naming (PYC_CPA), pyc's
+// analog of shedskin's dcpa -- the fix the mark investigation converged
+// on. `PYC_CPAMARK` established that no *comparison* can help once a
+// union exists (inside it the CreationSet sets are equal by
+// construction, so only depth discriminates -- which is what MARK_TYPE
+// was doing and why it both over-splits and is load-bearing). The union
+// has to be prevented from becoming a contour NAME at all: when a
+// positional formal's live type is a union of >= 2 CreationSets, fan the
+// contour into one filtered contour per single CS and re-dispatch every
+// edge across them. Each product is pinned to one CS at that position,
+// so it cannot re-fire there.
+//
+// The decide/apply pair is 075's, unchanged -- `decide_csm_split` and
+// `apply_csm_split` are already generic (record av/es/position/type,
+// then `find_or_make_filtered_entry_set` per CS and fan the edges with
+// `copy_AEdge`). ONLY the demand signal differs: 075 additionally
+// requires the union to be same-container-with-divergent-elements,
+// which is one special case of this.
+//
+// PYC_CPA=N caps the union size fanned (N is the cap, so PYC_CPA=4 fans
+// unions of 2..4 CSs); 0 is off. The cap is the analog of shedskin's own
+// dcpa limit -- the product multiplies across argument positions, and
+// only one position per contour is fanned per pass so that growth is
+// paced rather than taken all at once.
+static int cpa_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_CPA");
+    e = v ? atoi(v) : 0;
+  }
+  return e;
+}
+
+[[nodiscard]] static int split_ess_cartesian_product() {
+  int limit = cpa_enabled();
+  if (limit < 2) return 0;
+  int n_ess = fa->ess.n;
+  Vec<CSMSplitDecision *> decisions;
+  for (int i = 0; i < n_ess; i++) {
+    EntrySet *es = fa->ess[i];
+    if (!es || !es->fun || !es->fun->sym) continue;
+    if (es->fun->split_unique) continue;
+    bool has_edges = false;
+    for (AEdge *ee : es->edges) if (ee) { has_edges = true; break; }
+    if (!has_edges) continue;
+    for (MPosition *p : es->fun->positional_arg_positions) {
+      AVar *av = es->args.get(p);
+      if (!av || !av->out || !av->out->type) continue;
+      int n = av->out->type->sorted.n;
+      if (n < 2 || n > limit) continue;
+      // Already pinned to a single CS here by an earlier fan (or by any
+      // other filtered split): the product exists, do not re-derive it.
+      AType *f = es->filters.get(p);
+      if (f && f->sorted.n == 1) continue;
+      // Fan ONLY a union that is a fixed point -- one where every
+      // incoming edge carries the whole union, so `etype == stype` and
+      // TYPE_CONFLUENCE has nothing to see. If some edge carries a
+      // strict subset, stage 1 can separate it on types alone and will;
+      // fanning there is the over-approximation that costs contours for
+      // nothing (measured: without this, the listcomp repro's
+      // `list.append` went to 13 contours for 4 type combinations).
+      bool fixpoint = true;
+      for (AEdge *ee : es->edges) if (ee && ee->args.n && ee->match) {
+        AVar *ea = ee->args.get(p);
+        if (!ea) continue;
+        AType *et = type_intersection(ea->out->type, ee->match->formal_filters.get(p));
+        if (et->n && et != av->out->type) { fixpoint = false; break; }
+      }
+      if (!fixpoint) continue;
+      CSMSplitDecision *dec = decide_csm_split(av);
+      if (dec) {
+        decisions.add(dec);
+        break;  // one position per contour per pass -- pace the product
+      }
+    }
+  }
+  Vec<EntrySet *> applied;
+  int analyze_again = 0;
+  for (CSMSplitDecision *dec : decisions) {
+    if (applied.set_in(dec->es)) continue;
+    applied.set_add(dec->es);
+    int r = apply_csm_split(dec);
+    log(LOG_SPLITTING, "[cpa] av %d es %d fun %s %d apply -> %d\n", dec->av->id, dec->es->id,
+        dec->es->fun->sym->name ? dec->es->fun->sym->name : "", dec->es->fun->sym->id, r);
+    if (r) analyze_again = 1;
+  }
+  return analyze_again;
 }
 
 // ifa/issues/075: element-CS container-method separation -- pyc's
@@ -6864,6 +6953,25 @@ static CSMSplitDecision *decide_csm_split(AVar *av) {
       record_fa_event(FAPassStage::TYPE_CONFLUENCE, analyze_again, ess0, css0, viol0);
       ++fa->stage_progress_count[(int)FAPassStage::TYPE_CONFLUENCE];
     }
+  }
+  // 1b) ifa/issues/074 (PYC_CPA): cartesian-product naming. Placed right
+  // after stage 1 and gated the same way, because this is exactly the
+  // situation it exists for: TYPE_CONFLUENCE found no confluence, yet a
+  // formal still holds a union -- which is the union-as-a-contour-name
+  // fixed point (every edge carries the union, so etype == stype and
+  // there is nothing for a type test to see). Fanning here also puts it
+  // where MARK_TYPE used to act, which is the point: it replaces the
+  // depth proxy with the name.
+  if (!analyze_again) {
+    ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    cur_split_stage = (int)FAPassStage::CARTESIAN_PRODUCT;
+    analyze_again = split_ess_cartesian_product();
+    fa->stage_time[(int)FAPassStage::CARTESIAN_PRODUCT] += stage_timer.lap();
+    if (analyze_again) {
+      record_fa_event(FAPassStage::CARTESIAN_PRODUCT, analyze_again, ess0, css0, viol0);
+      ++fa->stage_progress_count[(int)FAPassStage::CARTESIAN_PRODUCT];
+    }
+    log(LOG_SPLITTING, "split_ess_cartesian_product %d\n", analyze_again);
   }
   // 2) split EntrySets based on type using marks
   // Issue 033 S5 M2: REVERTED to the original short-circuit
@@ -7648,19 +7756,20 @@ static void report_keyspace() {
   }
 }
 
-static const char *kStageName[9] = {"TYPE_CONFL", "MARK_TYPE", "SETTER", "SETTER_OF_SETTER",
-                                    "MARK_SETTER", "MARK_SET_OF_SET", "VIOLATION", "PER_CS_RECV", "CSM_ELEM_CS"};
+static const char *kStageName[FA::kNumFAPassStages] = {
+    "TYPE_CONFL",  "MARK_TYPE",   "SETTER",      "SETTER_OF_SETTER", "MARK_SETTER",
+    "MARK_SET_OF_SET", "VIOLATION", "PER_CS_RECV", "CSM_ELEM_CS",  "CPA"};
 
 // TEMP probe: which splitter STAGE is producing the per-pass churn.
 static void report_stage_churn() {
   if (!getenv("IFA_DBG_STAGE")) return;
   fprintf(stderr, "STAGE p=%d", analysis_pass);
-  for (int i = 0; i < 9; i++)
+  for (int i = 0; i < FA::kNumFAPassStages; i++)
     if (fa->dbg_stage_detach[i] || fa->dbg_stage_mint[i] || fa->dbg_stage_reuse[i] || fa->dbg_stage_csmint[i])
       fprintf(stderr, " %s(det=%ld mint=%ld reuse=%ld csmint=%ld)", kStageName[i], fa->dbg_stage_detach[i],
               fa->dbg_stage_mint[i], fa->dbg_stage_reuse[i], fa->dbg_stage_csmint[i]);
   fprintf(stderr, " | ess=%d css=%d\n", fa->ess.n, fa->css.n);
-  for (int i = 0; i < 9; i++)
+  for (int i = 0; i < FA::kNumFAPassStages; i++)
     fa->dbg_stage_detach[i] = fa->dbg_stage_mint[i] = fa->dbg_stage_reuse[i] = fa->dbg_stage_csmint[i] = 0;
 }
 

@@ -339,11 +339,7 @@ becomes a contour name and there is nothing to break. The hook for that
 already exists in shape: `split_container_methods_per_element_cs` scans
 `es->args` for positions with `av->out->type->sorted.n >= 2` and fans via
 `set_or_copy_AEdge`; general CPA is that same scan without the
-`all_same_container` narrowing. **Not attempted yet, and not obviously
-safe:** that function *is* the nearest existing analogue, and enabling it
-on `chull` (`PYC_CSM=2`) took violations 2 → 12. Fan-out also multiplies
-across positions, which is the blowup shedskin bounds with its `dcpa`
-limit. This wants its own build with its own budget. So the fix for the five regressors is **not**
+`all_same_container` narrowing. Built 2026-08-14 as `PYC_CPA` — see below. So the fix for the five regressors is **not**
 to restore them: it is cartesian-product naming. Note `PYC_CANON` does
 not supply it — `edge_canon_key` builds one `AType *` per position, i.e.
 set-naming again; a CPA variant must key on single CreationSets. That is
@@ -352,6 +348,62 @@ now with a 33-line repro and a stage-by-stage trace behind it.
 
 (`PYC_CSM=2` was tried on `chull` first and is not the answer: violations
 2 → 12, and both original violations survive.)
+
+### `PYC_CPA` — cartesian-product naming, built and measured: the callee-side half is not enough
+
+`PYC_CPA=N` adds a `CARTESIAN_PRODUCT` stage right after
+`TYPE_CONFLUENCE` (same `!analyze_again` gate — the slot where
+`MARK_TYPE` used to act, which is the point). Demand signal: a positional
+formal whose live type is a union of 2..N CreationSets **and** which is a
+*fixed point* — every incoming edge carries the whole union, so
+`etype == stype` and stage 1 has nothing to see. It then fans the contour
+into one filtered contour per single CS and re-dispatches. The
+decide/apply pair is 075's `decide_csm_split` / `apply_csm_split`
+unchanged: those were already generic, and only CSM's demand signal was
+container-specific.
+
+**The mechanism works.** On the listcomp repro, `list.append` goes
+`ess=3 setkey=3 cpakey=6` → `cpakey=4`: the union breaks, exactly as
+`MARK_TYPE` achieved, and **the target violation disappears** (`'a'
+illegal: B` is gone). So a union *can* be prevented from being a contour
+name, and marks are not the only way to do it.
+
+**But callee-side fanning alone is a clear net loss.** 84-program sweep at
+`PYC_CPA=4` vs the current default:
+
+| | |
+|---|---|
+| newly failing to compile | **10** — ant, dijkstra, fysphun, genetic2, kanoodle, kmeanspp, pisang, sudoku2, sudoku4, tictactoe |
+| newly compiling | 2 — plcfrs, sat |
+| analysis time | **+78%** |
+| `chull` | 2 → **121** violations, ess 570 → 422 |
+
+The failure mode is uniform and diagnostic: `_CG_void_type` assigned to a
+concrete type (`ant`: *"incompatible pointer to integer conversion
+assigning to '_CG_int64' … from '_CG_void_type'"*; `dijkstra` the same
+shape ×13). `_CG_void` is the no-type representation, and `chull`'s ess
+*falling* while violations explode is the same story: **fanned contours
+that never receive an edge.** Their bodies analyse with untyped vars, and
+codegen emits `_CG_void`.
+
+**Why, and what it means for a next attempt.** Fanning the callee makes
+each product's filter admit exactly one CS. A call site whose actual at
+that position is genuinely a *union* then matches none of them — so the
+edge cannot dispatch, some products go unreached, and the imprecision is
+replaced by a dispatch failure. Real CPA does the product **at the call
+site**: the caller is split so that every call carries a single CS per
+position, and only then is a per-CS callee well-defined. This build has
+only the callee half.
+
+So the remaining work is not a refinement of this stage — it is the
+caller-side fan, which is the part that actually multiplies (and which
+shedskin bounds with its `dcpa` limit). The `!fixpoint` restriction was
+added during this build and made **no difference** (identical numbers on
+the repro), which is itself informative: every union it fanned already
+was a fixed point, so over-fanning is not coming from firing too widely.
+It is coming from fanning only one side.
+
+Flag off by default; suite 266/14/0/4, `ifa --test` 58/0.
 
 ## THE RE-BASED TARGET SET (2026-08-12)
 
