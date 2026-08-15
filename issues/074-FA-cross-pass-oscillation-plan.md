@@ -405,6 +405,61 @@ It is coming from fanning only one side.
 
 Flag off by default; suite 266/14/0/4, `ifa --test` 58/0.
 
+#### Should the full call-site version be built? Measured answer: not now
+
+The case for it rests entirely on the five programs that lose precision
+with marks off, so the first question is what that precision loss
+actually costs. Compiled and **run** both ways:
+
+| program | marks ON | marks OFF | difference in behaviour |
+|---|---|---|---|
+| kmeanspp | compiles, **hangs** (>400 s, 0 bytes; CPython finishes in 114 s) | compiles, **aborts** on an assertion | both broken, different failure |
+| chull | compiles, hangs (0 bytes) | compiles, hangs — identical | **none** |
+| webserver | compiles, runs (it is a server) | same | **none** |
+| sat | rc=1, does not compile | rc=1 | **none** |
+| softrender | rc=134 | rc=134 | **none** |
+
+**Not one of the five goes from working to broken.** `kmeanspp` changes
+how it fails; the other four are indistinguishable at the program level.
+The entire measurable cost of marks-off is the violation counter.
+
+Against building it now:
+
+1. **The benefit is undemonstrated.** Those five are the whole case, and
+   none of them changes behaviour.
+2. **The remaining non-convergence is not set-naming.** `go`, `linalg`
+   and `plcfrs` resist `PYC_NOMARK` and are cascade serialization
+   (measured above); CPA does not address them.
+3. **The cost signal is already bad.** The callee half alone costs +78%
+   analysis time and 10 newly-failing programs. The caller half is the
+   one that multiplies.
+4. **pyc has more splitting axes than shedskin** — `clone_for_constants`,
+   per-CS receivers, setters, element CSs. CPA multiplies with all of
+   them, and shedskin's `dcpa` bound exists precisely because unbounded
+   CPA is not viable; pyc would need an equivalent bound designed against
+   those interactions, which is a research task, not a port.
+5. It would want to reach its own fixed point ahead of type partitioning
+   — which is exactly the cascade-serialization pathology that causes the
+   non-convergence still on the board.
+
+Better next steps, in order:
+
+1. **The stall guard's `dup_split_attempts` accounting.** Small, and it is
+   *causing miscompiles* — `sudoku5` and `msp_ss` go from a runtime
+   assertion to running correctly with the guard off (Group B above), and
+   ~75% of what the guard counts as divergence is the ledger recovering.
+2. **`go`** — the only program still adding contours at the cap, and the
+   representative of the cascade-serialization group.
+3. If the five ever matter, attack them with the narrow tool (the
+   comprehension / element-CS separation of
+   [075](075-FA-element-cs-method-split-idempotent-plan.md)), not general
+   CPA — the `tests/listcomp_element_separation.py` repro is a specific
+   structural merge, not a general polymorphism problem.
+
+The groundwork is in the tree either way: the stage, the flag, the
+`_CG_void`-from-unreached-contours diagnosis, and the finding that the
+fan must happen caller-side.
+
 ## THE RE-BASED TARGET SET (2026-08-12)
 
 Same corpus, same `PYC_DBG_OSC` probe, with `IFA_STALL_LIMIT` and
