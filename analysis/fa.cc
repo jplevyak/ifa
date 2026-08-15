@@ -905,7 +905,7 @@ static long ic_arg = 0, ic_ret = 0, ic_retn = 0;
 // ifa/issues/074: of the stage-1 splits that actually fire, how many were
 // triggered by a FORMAL confluence versus a RETURN-VALUE confluence.
 static long tc_formal = 0, tc_return = 0;
-static int ld_dup_es = 0, ld_dup_cs = 0;
+static int ld_dup_es = 0, ld_dup_cs = 0, ld_churn = 0;
 static long tc_seen = 0, tc_skip_rval = 0, tc_skip_lval = 0, tc_skip_cs = 0, tc_dec = 0, tc_defer = 0;
 
 static int edge_type_compatible_with_edge(AEdge *e, AEdge *ee, EntrySet *es, int fmark = 0) {
@@ -4304,8 +4304,10 @@ static void initialize_pass() {
   // for the probe before the reset wipes the previous pass's tally.
   ld_dup_es = fa->dup_split_attempts;
   ld_dup_cs = fa->cs_dup_split_attempts;
+  ld_churn = fa->rederive_churn;
   fa->dup_split_attempts = 0;  // issue 033 stage A per-pass counter
   fa->cs_dup_split_attempts = 0;  // issue 033 D5 per-pass counter
+  fa->rederive_churn = 0;         // issue 074: the guard's real input
   fa->dirty_avar_count = 0;    // issue 033 M4 probe
   fa->examined_avar_count = 0;  // issue 033 M4 probe
   refresh_top_edge(fa->top_edge);
@@ -4605,6 +4607,7 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
       fa->ledger_add(f, cur_split_stage, x->key, x->value, res);
     else if (d->pass_made != analysis_pass) {  // intra-pass repeats aren't re-derivation
       ++fa->dup_split_attempts;
+      ++fa->rederive_churn;  // re-derived a filter the ledger already had
       if (getenv("IFA_DBG_INCOMPAT"))
         fprintf(stderr, "REDERIVE p=%d FILTER fun=%s#%d es=%d pos=%p part=%d/%d first_pass=%d\n", analysis_pass,
                 f->sym->name ? f->sym->name : "?", f->sym->id, orig_es->id, (void *)x->key, x->value->sorted.n,
@@ -5452,6 +5455,7 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
             fa->ledger_add(es->fun, cur_split_stage, avpos, part, gproduct, gsig);
           else if (d->pass_made != analysis_pass) {  // intra-pass repeats aren't re-derivation
             ++fa->dup_split_attempts;
+            ++fa->rederive_churn;  // minted a product the ledger already named
             if (getenv("IFA_DBG_INCOMPAT"))
               fprintf(stderr, "REDERIVE p=%d GROUP fun=%s#%d es=%d recorded=%d now=%d first_pass=%d\n",
                       analysis_pass, es->fun->sym->name ? es->fun->sym->name : "?", es->fun->sym->id, es->id,
@@ -6098,6 +6102,7 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
                 cs->sym->name ? cs->sym->name : "", cs->sym->id, csig, new_cs->id);
           } else if (d->pass_made != analysis_pass) {  // intra-pass repeats aren't re-derivation
             ++fa->cs_dup_split_attempts;
+            ++fa->rederive_churn;  // minted a CS the ledger already named
             log(LOG_SPLITTING, "[ledger] DUP CS split cs %d sym %s %d sig %u (first pass %d, product cs %d)\n", cs->id,
                 cs->sym->name ? cs->sym->name : "", cs->sym->id, csig, d->pass_made,
                 d->cs_product ? d->cs_product->id : -1);
@@ -7226,7 +7231,7 @@ static int cpa_enabled() {
         fa->stall_passes = 0;
         fa->nonimprove_passes = 0;
       } else {
-        bool rederived = fa->dup_split_attempts + fa->cs_dup_split_attempts > 0;
+        bool rederived = fa->rederive_churn > 0;
         if (rederived) ++fa->stall_passes;
         ++fa->nonimprove_passes;
         if (fa->stall_passes >= fa->stall_limit || fa->nonimprove_passes >= fa->nonimprove_limit) {
@@ -7246,7 +7251,7 @@ static int cpa_enabled() {
       // (`if (v > 0)`), so pygmy et al. run to the hard cap. Bound it
       // with the same stall_limit; a genuinely productive zero-violation
       // pass grows ess/css (or splits dup-free) and resets the counter.
-      bool rederived = fa->dup_split_attempts + fa->cs_dup_split_attempts > 0;
+      bool rederived = fa->rederive_churn > 0;
       if (rederived && !grew) {
         if (++fa->zero_viol_stall_passes >= fa->stall_limit) {
           fa->pass_limit_hit = true;
@@ -7661,7 +7666,7 @@ static void report_incompat() {
           "defer=%ld split(formal=%ld return=%ld)\n",
           analysis_pass, ic_arg, ic_ret, ic_retn, tc_seen, tc_skip_rval, tc_skip_lval, tc_skip_cs, tc_dec, tc_defer,
           tc_formal, tc_return);
-  fprintf(stderr, "LEDGER p=%d dup_es=%d dup_cs=%d\n", analysis_pass, ld_dup_es, ld_dup_cs);
+  fprintf(stderr, "LEDGER p=%d dup_es=%d dup_cs=%d churn=%d\n", analysis_pass, ld_dup_es, ld_dup_cs, ld_churn);
   ic_arg = ic_ret = ic_retn = tc_formal = tc_return = 0;
   tc_seen = tc_skip_rval = tc_skip_lval = tc_skip_cs = tc_dec = tc_defer = 0;
 }

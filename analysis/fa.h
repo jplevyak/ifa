@@ -647,6 +647,17 @@ class FA : public gc {
   // per-pass contour re-manufacturing the ES ledger routes away.
   // Reported in the -v PASS line; reset with dup_split_attempts.
   int cs_dup_split_attempts = 0;
+  // ifa/issues/074: the divergence guard's actual input. Both counters
+  // above conflate two opposite things -- the ledger ROUTING a group back
+  // into the product it recorded on an earlier pass (the anti-oscillation
+  // machinery WORKING; the graph is reconverging on the same answer) and
+  // the ledger finding its key but minting a fresh contour anyway (real
+  // non-idempotent churn). Measured on the 11-program oscillating set,
+  // routes outnumber mints 85-99% to 1, so a guard fed by the sum fires
+  // on programs that are converging -- which is what stops sudoku5 and
+  // msp_ss mid-flight and turns them into runtime assertion failures.
+  // This counts only the mint-anyway half.
+  int rederive_churn = 0;
   // Issue 033 M4 probe (measurement only): how many AVars had `dirty`
   // set (via propagate_out_change) during this pass's flow-to-fixpoint,
   // vs. how many the existing full-scan collectors visit regardless.

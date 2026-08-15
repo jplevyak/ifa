@@ -444,10 +444,8 @@ Against building it now:
 
 Better next steps, in order:
 
-1. **The stall guard's `dup_split_attempts` accounting.** Small, and it is
-   *causing miscompiles* — `sudoku5` and `msp_ss` go from a runtime
-   assertion to running correctly with the guard off (Group B above), and
-   ~75% of what the guard counts as divergence is the ledger recovering.
+1. ~~**The stall guard's `dup_split_attempts` accounting.**~~ **DONE
+   2026-08-15 — see below.**
 2. **`go`** — the only program still adding contours at the cap, and the
    representative of the cascade-serialization group.
 3. If the five ever matter, attack them with the narrow tool (the
@@ -459,6 +457,54 @@ Better next steps, in order:
 The groundwork is in the tree either way: the stage, the flag, the
 `_CG_void`-from-unreached-contours diagnosis, and the finding that the
 fan must happen caller-side.
+
+### The divergence guard now counts churn, not recovery (2026-08-15)
+
+Every one of the four sites that bumped `dup_split_attempts` /
+`cs_dup_split_attempts` has the same two-branch shape: the ledger finds
+its key and either **routes** the group/CS into the product it recorded
+on an earlier pass — the anti-oscillation machinery *working*, the graph
+reconverging on the same answer — or **mints a fresh one anyway**, which
+is the real non-idempotent churn. The guard was fed the sum. Re-measured
+on current HEAD, routes outnumber mints by 85-99%:
+
+| | rdb | rubik | sudoku5 | linalg | tictactoe | amaze | msp_ss | plcfrs | sat | softrender | chull |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| ROUTE (recovery) | 121 | 35 | 39 | 72 | 38 | 91 | 69 | 44 | 45 | 32 | 11 |
+| GROUP/CS (churn) | 29 | 7 | 5 | 1 | 11 | 8 | 14 | 8 | 4 | 8 | 6 |
+| FILTER | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+New `FA::rederive_churn` counts only the mint-anyway half, and the guard
+reads it. `dup_split_attempts` is unchanged for the `-v` line.
+
+**Result — programs ending `pass_limit_hit=1`: 10 → 4.** Four newly
+compile, with no exit-code regressions, and violations fall sharply:
+amaze 689→15, rdb 3183→146, sat 377→9, softrender 1380→35, linalg 73→27,
+msp_ss 617→452, sudoku5 390→303, rubik 118→104. Worse: plcfrs 2412→5237
+(it now emits C where it previously emitted none), go 146→164. Cost:
++10.5% analysis time, +2.4% ess, +10.4% generated C. Suite 266/14/0/4;
+`ifa --test` 58/0.
+
+**The four newly-compiling programs, actually run** — because "compiles"
+is not the claim that matters here, and 074's own `rdb`/`amaze` traps are
+exactly this:
+
+| program | run | vs CPython |
+|---|---|---|
+| **msp_ss** | rc=0 | **byte-identical** ✅ |
+| **rdb** | rc=1 (its own "no iPod attached" path) | **byte-identical** ✅ |
+| amaze | **segfault** | differs — compiles now, crashes |
+| sat | rc=1, "Unhandled exception" | differs |
+
+So two are genuine correctness wins — and they are precisely the two this
+plan documented as *guard-caused miscompiles* (`msp_ss` "crash → correct,
+prints its banner"; `rdb` now emits 674 KB of C where the pruned version
+emitted 170 KB, the opposite of the trap). The other two move from
+compile-failure to runtime-failure, which is not a regression — neither
+worked before — but must not be counted as a win either. `amaze`
+core-dumping is the same behaviour this plan recorded when the guards
+were disabled wholesale, so its underlying defect is untouched by this
+change and is still open.
 
 ## THE RE-BASED TARGET SET (2026-08-12)
 
