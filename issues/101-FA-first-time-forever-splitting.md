@@ -372,7 +372,82 @@ quality**: `go`, `linalg` and `plcfrs` exit 1 — they fail to compile.
 That, not `pass_limit_hit`, is what closing this issue has to fix.
 
 The next thing to test is the swapping-groups hypothesis directly: log the
-edge sets behind the two signatures and confirm they are disjoint. If they
-are, the question becomes why two groups each prefer the other's contour,
-which is a symmetric-preference problem rather than a stale-record one —
-and none of the ledger machinery built so far addresses it.
+edge sets behind the two signatures and confirm they are disjoint. **Done
+below — it is refuted.**
+
+## The swapping hypothesis is wrong; the churn is benign
+
+Logging the edge identities behind both signatures:
+
+```
+[churn-look] p=100 es=792 gsig=567572480  product=692 edges=1 [ 2633 ] from=[ 797 ]
+[churn-look] p=101 es=692 gsig=3499186688 product=792 edges=1 [ 2633 ] from=[ 797 ]
+```
+
+**The same single edge** (2633, from contour 797) in both. So it is one
+group cycling, not two swapping. Combined with the inert `PYC_GSIGRET=0`
+result, the alternating term must be the *argument* type — and
+`__deepcopy__` is **recursive**, so its result flows back into the
+caller's variable and feeds the next call's argument. The group therefore
+has two argument-type states that each name the other's contour. **No
+signature computed from current types can be stable through that.**
+
+`PYC_ROUTECYCLE=2` accordingly tries to *pin* rather than decline: on
+detecting `A↔B`, rewrite the ledger to the canonical (lower-id) contour
+so both signatures agree, and leave the group alone when it is already
+there. It is **worse than mode 1**:
+
+| | baseline | mode 1 (decline) | mode 2 (pin) |
+|---|---|---|---|
+| `linalg` ess | 722 | 901 | **1002** |
+| `linalg` violations | 48 | 55 | **96** |
+
+`go`, `plcfrs` and `sudoku5` are unmoved by either. Two independent ways
+of breaking the cycle both degrade `linalg`, which is consistent evidence
+that **the ten redispatches per pass are load-bearing, not waste**. The
+state they cycle between is flat (ess/css/violations identical from pass
+80), and at default settings the stall guard terminates it. The churn is
+benign.
+
+## Scope correction: 018, not convergence, is what blocks these programs
+
+At default guards all four programs terminate. What they actually do is
+**fail to compile**, and all three of the genuine set fail in the *same*
+family — [018](../issues/018-dict-mixed-key-types-boxing-failure.md) /
+[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md), a union with no
+codegen representation:
+
+| program | failure |
+|---|---|
+| `go` | `member reference type '_CG_int64' is not a pointer` (×10) |
+| `linalg` | `no matching function for call to '_CG_list_mult_internal'` (×5) |
+| `plcfrs` | `sizeof_element of non-container type 'float64' (in __add__)` |
+
+`linalg`'s failing contour is
+`_CG_f_2524_16 /*list::__mul__*/(_CG_any a1, _CG_any a2)` — **both**
+parameters unresolved, one of the 75 contours of `__mul__#2524`. Two
+things ruled out about it:
+
+- It is **not** a dead contour. Dumping all 193 `__mul__` contours found
+  **zero** with `edges=0`, so this is not the "callee-side fan leaves
+  unreachable contours" failure that `PYC_CPA` has.
+- It is **not** purely a precision problem that more passes would fix.
+  With the guards raised, `go`'s C errors halve (11 → 5) but do not reach
+  zero, and `linalg`'s do not improve at all (5 → 6).
+
+So convergence work alone cannot close this issue. **The remaining
+blocker for `go`, `linalg` and `plcfrs` is the 018/030 representation
+gap** — a `{scalar, container}` union reaching codegen — and it would
+still block them if FA converged perfectly. 101's splitting behaviour and
+these programs' failures are two separate problems that happened to
+co-occur on the same three programs.
+
+### Revised fix direction
+
+Split the work:
+
+1. **To make `go`/`linalg`/`plcfrs` compile** — 018/030. That is a
+   representation change (tagged or boxed unions), not an FA change.
+2. **To close 101 as stated** (unbounded first-time splitting on `go` and
+   `plcfrs`, which still grow) — the productivity invariant from 057.
+   `linalg` has already left this class thanks to `PYC_HARDREUSE=5`.

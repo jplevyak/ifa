@@ -5555,11 +5555,21 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
     bool home_ok = true;
     if (avpos && gsig) {
       SplitDecision *d = fa->ledger_find(es->fun, cur_split_stage, avpos, part, gsig);
-      if (getenv("IFA_DBG_CHURN"))
-        fprintf(stderr, "[churn-look] p=%d fun=%s es=%d gsig=%u found=%d pass_made=%d product=%d self=%d\n",
+      if (getenv("IFA_DBG_CHURN")) {
+        fprintf(stderr, "[churn-look] p=%d fun=%s es=%d gsig=%u found=%d pass_made=%d product=%d self=%d",
                 analysis_pass, es->fun->sym->name ? es->fun->sym->name : "?", es->id, gsig, d ? 1 : 0,
                 d ? d->pass_made : -1, (d && d->product) ? d->product->id : -1,
                 (d && d->product == es) ? 1 : 0);
+        // ifa/issues/101: the EDGE SET behind the signature. Two ledger
+        // records naming each other's contour are either one group
+        // cycling (same edges) or two groups swapping (disjoint edges);
+        // only the edge identities tell them apart.
+        fprintf(stderr, " edges=%d [", these_edges.n);
+        for (AEdge *x : these_edges) fprintf(stderr, " %d", x->id);
+        fprintf(stderr, " ] from=[");
+        for (AEdge *x : these_edges) fprintf(stderr, " %d", x->from ? x->from->id : -1);
+        fprintf(stderr, " ]\n");
+      }
       // The display no longer gates this ROUTE either (see update_display):
       // it was the dominant reason a group with a recorded product
       // re-minted instead of routing (074's `es_othermint`, 064's
@@ -5596,11 +5606,32 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
         if (routecycle_enabled()) {
           EntrySet *back = fa->route_last.get(product);
           if (back == es) {
+            // A <-> B. Measured on linalg's __deepcopy__: ONE edge (2633,
+            // from contour 797), one group, two signatures -- the callee
+            // is recursive, so its result flows back into the caller's
+            // variable and feeds the next call's argument, giving the
+            // group two argument-type states that each name the other's
+            // contour. No signature computed from current types can be
+            // stable through that; the period-2 cycle IS the settled
+            // state, exactly as for PYC_SELFPROD=6.
+            EntrySet *canon = (es->id < product->id) ? es : product;
             if (getenv("IFA_DBG_CHURN"))
               fprintf(stderr, "[churn-cycle] p=%d fun=%s es=%d <-> product=%d, pinning to %d\n", analysis_pass,
-                      es->fun->sym->name ? es->fun->sym->name : "?", es->id, product->id,
-                      es->id < product->id ? es->id : product->id);
-            if (es->id < product->id) product = nullptr;  // keep the group here
+                      es->fun->sym->name ? es->fun->sym->name : "?", es->id, product->id, canon->id);
+            if (routecycle_enabled() >= 2) {
+              // Pin the ledger to the canonical contour so BOTH
+              // signatures agree from here on, then leave the group
+              // alone when it is already there. Mode 1 instead declined
+              // the route, which only sent the group down the mint path
+              // and regrew contours (linalg ess 722 -> 901).
+              d->product = canon;
+              if (canon == es) {
+                fa->route_last.put(es, es);
+                continue;  // already home: no route, no split
+              }
+              product = canon;
+            } else if (es->id < product->id)
+              product = nullptr;  // mode 1: keep the group here (measured: worse)
           }
           if (product) fa->route_last.put(es, product);
         }
