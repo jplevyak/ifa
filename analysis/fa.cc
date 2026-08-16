@@ -7992,6 +7992,12 @@ int FA::analyze(Fun *top) {
   // not per-pass counts -- the counts move with every FA change, but "did
   // this program need the setter splitter at all" is a stable, meaningful
   // property of the program, and is what tests/splitter_*.py pin.
+  // ifa/issues/074: the one stable bit a convergence test can assert.
+  // PYC_DBG_OSC's line carries pass counts and contour totals, which move
+  // with every FA change; "did the analysis reach a fixed point" does
+  // not, and is the actual property under test. See
+  // tests/deepcopy_recursive_nested_growth.py.
+  if (getenv("PYC_DBG_CONVERGED")) fprintf(stderr, "CONVERGED=%d\n", pass_limit_hit ? 0 : 1);
   if (getenv("PYC_DBG_STAGES")) {
     fprintf(stderr, "STAGES:");
     for (int i = 0; i < kNumFAPassStages; i++)

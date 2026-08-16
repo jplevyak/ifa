@@ -92,6 +92,64 @@ from that set are all measuring guard calibration mixed with analysis
 behavior. **The re-base is done — see the next section; the genuine
 target set is 8 programs, not 17.**
 
+## MINIMAL GROWTH REPRODUCER (2026-08-16) — 13 lines
+
+Until now this plan had no small test case: everything was measured on
+corpus programs, and `issues/README`'s own note said convergence issues
+"want a different kind of test" because "no small program reproduces 102
+passes". That turns out to be wrong — one does.
+
+`tests/deepcopy_recursive_nested_growth.py`:
+
+```python
+import copy
+
+def shrink(M):
+    M1 = copy.deepcopy(M)
+    del M1[0]
+    return M1
+
+def total(M):
+    if len(M) == 0:
+        return 0.0
+    return M[0][0] + total(shrink(M))
+
+print(total([[1.0], [2.0], [3.0]]))
+```
+
+With the guards off it never reaches a fixed point, and the growth is
+**dead linear**:
+
+| pass | 20 | 40 | 60 | 80 | 101 |
+|---|---|---|---|---|---|
+| ess | 136 | 193 | 249 | 305 | 364 |
+| css | 628 | 688 | 748 | 808 | 875 |
+
++2.8 contours and +3 CreationSets per pass, for as long as it is allowed
+to run. It demands only `TYPE_CONFL` and `SETTER` — the same
+cascade-serialization signature as `go`, `linalg` and `plcfrs`. Distilled
+from `linalg.py`'s `determinant`/`Minor` pair, which is why it shares
+their profile.
+
+**The trigger needs all three of `deepcopy`, recursion, and a NESTED
+container.** Remove any one and it converges:
+
+| variant | |
+|---|---|
+| deepcopy + recursion + nested | **no** — p102, growing |
+| manual element copy instead of `deepcopy` | yes — p13 |
+| `deepcopy`, no recursion | yes — p23 |
+| `deepcopy` + recursion, flat list | yes — p10 |
+
+That is a much sharper handle than "go/linalg/plcfrs are non-convergent",
+and it runs in 1.2 s.
+
+New probe `PYC_DBG_CONVERGED=1` prints exactly `CONVERGED=0` or
+`CONVERGED=1` — the one bit a convergence test can assert without pinning
+pass counts or contour totals, which move with every FA change. The test's
+`.check` holds `CONVERGED=1`; pyc prints `CONVERGED=0` today, which is
+what its `.known_issue` tag records.
+
 ## STATUS 2026-08-16 — the current numbers
 
 Re-measured on HEAD. Supersedes the 08-14 section below, which was taken
