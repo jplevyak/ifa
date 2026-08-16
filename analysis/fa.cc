@@ -5784,22 +5784,24 @@ int fa_coerce_numeric_confluences(Vec<ATypeViolation *> &violations) {
   for (CreationSet *cs : fa->css) {
     if (!cs || !cs->sym) continue;
     bool eligible = cs->sym == sym_closure || (cs->sym->type && cs->sym->type->type_kind == Type_RECORD);
-    if (!eligible) continue;
-    for (AVar *av : cs->vars) annotated += coerce_annotate(av);
-    // issues/035: a container's ELEMENT wants exactly this treatment too
-    // -- `x = n * [0]` then `x[i] += 1.5` leaves the element a pure
-    // `int64|float64` mix with no single C type, and codegen then trips
-    // the element/value num_kind guard at run time. Adding
-    // `coerce_annotate(get_element_avar(cs))` here DOES fix it (measured:
-    // the repro goes from a runtime abort to `[1.5, 0.0, 0.0]`, which is
-    // byte-for-byte what shedskin produces for the same program), but it
-    // costs **+92% analysis time corpus-wide** -- and not through the
-    // annotations, which is the surprise: chull slows 5s -> 20s while
-    // firing ZERO of them. The cost is `get_element_avar` itself, the
-    // same program-wide perturbation
-    // split_container_methods_per_element_cs documents. Reading
-    // `cs->vars` instead is free but does not reach the element AVar, so
-    // there is no cheap route from here. See issues/035.
+    if (eligible)
+      for (AVar *av : cs->vars) annotated += coerce_annotate(av);
+    // issues/035: a container's ELEMENT gets the same treatment --
+    // deliberately OUTSIDE the `eligible` test above, since a list's
+    // CreationSet is neither a closure frame nor a Type_RECORD. `x = n
+    // * [0]` then `x[i] += 1.5` leaves the element a pure `int64|float64`
+    // mix with no single C type, and codegen then trips the
+    // element/value num_kind guard at run time. Widening it to float
+    // makes the program run, and produces byte-for-byte what shedskin
+    // gives for the same source -- its typestr.py has the identical
+    // special case (`{int_, float_}` -> `float_`) ahead of its
+    // "dynamic (sub)type" rejection. `cs->vars` does not reach the
+    // element AVar, hence get_element_avar.
+    // Guarded on `added_element_var` so this never MATERIALISES one --
+    // calling get_element_avar unconditionally perturbs
+    // collect_type_confluence program-wide on every pass (see
+    // split_container_methods_per_element_cs's note).
+    if (cs->added_element_var) annotated += coerce_annotate(get_element_avar(cs));
   }
   // The re-run must re-derive flow from scratch: unlike the
   // monotone-growth reanalyze repairs (field promotion), coercion
