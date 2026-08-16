@@ -92,6 +92,77 @@ from that set are all measuring guard calibration mixed with analysis
 behavior. **The re-base is done — see the next section; the genuine
 target set is 8 programs, not 17.**
 
+## THE TARGET (2026-08-16): what FA should produce for the minimal reproducer
+
+The 13-line reproducer below is the concrete objective for this plan.
+Stating what *correct* looks like, because "make it converge" is not a
+specification and a fix that converges by losing precision would satisfy
+it.
+
+### The program is monomorphic. Every function has exactly one type.
+
+```python
+def shrink(M):  M1 = copy.deepcopy(M); del M1[0]; return M1
+def total(M):   return 0.0 if len(M) == 0 else M[0][0] + total(shrink(M))
+total([[1.0], [2.0], [3.0]])
+```
+
+`shrink: list[list[float]] -> list[list[float]]` and
+`total: list[list[float]] -> float`, at every recursion depth — the
+recursion is **type-invariant**, which is the whole point. Exactly two
+structural list types exist in the program: the outer `list[list[float]]`
+and the inner `list[float]`.
+
+### Target contour counts
+
+| | optimal | why |
+|---|---|---|
+| `total` | **1** | one argument type, all depths |
+| `shrink` | **1** | same |
+| `deepcopy` (module wrapper) | **1** | same |
+| `list.__deepcopy__` | **2** | outer list, inner list |
+| `list.__getitem__` / `__len__` / `len` | **2** each | one per receiver element type |
+| `list.append` / `__setitem__` | **2** each | same |
+| iterator methods | **2** each | same |
+| `float.__deepcopy__`, scalar ops | **1** each | |
+
+**Order of 20 contours in total, and — the property that actually
+matters — a count that does not depend on recursion depth.**
+
+### Measured today
+
+| | now | target |
+|---|---|---|
+| total contours | **236, growing +2.8/pass without bound** | ~20, constant |
+| distinct type keys | **189, also growing** | ~20 |
+| `total` alone | **ess 11, setkey 11** | 1 |
+
+### The diagnosis this forces, and it is not the splitter
+
+`total` has 11 contours and **11 distinct type keys**. The contours are
+each individually *justified* by a distinct type — so the splitter is
+behaving. What is wrong is that FA has invented 11 distinct **types** for
+what is semantically one.
+
+The loop: `list.__deepcopy__` is written `r = []` / append / return
+(`__pyc__/04_sequence.py`). Every contour of it therefore owns a distinct
+allocation site, so it mints a **fresh CreationSet**. That CS is
+structurally identical to its predecessor but has its own identity, so
+the caller sees a new type key, so a new contour of `total`/`shrink` is
+minted, which calls `__deepcopy__` with a new receiver type, which mints
+another CS — for ever, one level per pass.
+
+That explains the trigger table exactly: `deepcopy` supplies the fresh
+allocation, recursion supplies the unbounded depth, and nesting supplies
+the second level that compounds it.
+
+**So the work is CreationSet identity, not contour splitting** — two
+structurally identical lists minted at the same allocation site should
+share a CS, or at minimum share a type key. That is
+[066](066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md)'s
+creation-site keying, which this plan's Stage 1 (ii) named and never
+built. The reproducer makes it testable in 1.2 s.
+
 ## MINIMAL GROWTH REPRODUCER (2026-08-16) — 13 lines
 
 Until now this plan had no small test case: everything was measured on
