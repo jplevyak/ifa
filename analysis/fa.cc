@@ -5786,6 +5786,20 @@ int fa_coerce_numeric_confluences(Vec<ATypeViolation *> &violations) {
     bool eligible = cs->sym == sym_closure || (cs->sym->type && cs->sym->type->type_kind == Type_RECORD);
     if (!eligible) continue;
     for (AVar *av : cs->vars) annotated += coerce_annotate(av);
+    // issues/035: a container's ELEMENT wants exactly this treatment too
+    // -- `x = n * [0]` then `x[i] += 1.5` leaves the element a pure
+    // `int64|float64` mix with no single C type, and codegen then trips
+    // the element/value num_kind guard at run time. Adding
+    // `coerce_annotate(get_element_avar(cs))` here DOES fix it (measured:
+    // the repro goes from a runtime abort to `[1.5, 0.0, 0.0]`, which is
+    // byte-for-byte what shedskin produces for the same program), but it
+    // costs **+92% analysis time corpus-wide** -- and not through the
+    // annotations, which is the surprise: chull slows 5s -> 20s while
+    // firing ZERO of them. The cost is `get_element_avar` itself, the
+    // same program-wide perturbation
+    // split_container_methods_per_element_cs documents. Reading
+    // `cs->vars` instead is free but does not reach the element AVar, so
+    // there is no cheap route from here. See issues/035.
   }
   // The re-run must re-derive flow from scratch: unlike the
   // monotone-growth reanalyze repairs (field promotion), coercion
