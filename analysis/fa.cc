@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <map>
+#include <set>
 #include <vector>
 #include "fa.h"
 #include "ast.h"
@@ -8210,6 +8211,50 @@ static void report_cs_population() {
   fprintf(stderr, "\n");
 }
 
+// ifa/issues/101: for each CONTAINER CreationSet, its ELEMENT type. The
+// question this answers: CreationSets exist to carry container
+// parameterization (shedskin's `list<T>`), so how many DISTINCT element
+// types are there, against how many CreationSets? A large gap means CS
+// identity is over-discriminating -- keyed on allocation site x contour
+// rather than on the parameter it is supposed to capture.
+static void report_element_types() {
+  if (!getenv("IFA_DBG_ELEMTYPE")) return;
+  std::map<std::string, std::pair<int, std::set<void *>>> by_sym;
+  for (CreationSet *cs : fa->css) if (cs && cs->sym && cs->sym->element) {
+    AVar *e = get_element_avar(cs);
+    if (!e) continue;
+    std::string k = cs->sym->name ? cs->sym->name : "(anon)";
+    auto &slot = by_sym[k];
+    slot.first++;
+    slot.second.insert((void *)e->out->type);
+  }
+  if (getenv("IFA_DBG_ELEMTYPE_DUMP")) {
+    // Print each container CS with its element type spelled out as the
+    // SYMS of the element CreationSets, plus their ids. If the distinct
+    // element types collapse to a handful of sym-shapes, the extra
+    // discrimination is inner-CS identity, not a real type difference.
+    std::map<std::string, int> shape;
+    for (CreationSet *cs : fa->css) if (cs && cs->sym && cs->sym->element) {
+      AVar *e = get_element_avar(cs);
+      if (!e) continue;
+      std::string byid, bysym;
+      for (CreationSet *c : e->out->type->sorted) {
+        bysym += std::string(" ") + (c->sym && c->sym->name ? c->sym->name : "?");
+        byid += " " + std::to_string(c->id);
+      }
+      fprintf(stderr, "  [elem] cs=%d %s elem_syms=[%s ] elem_ids=[%s ]\n", cs->id,
+              cs->sym->name ? cs->sym->name : "?", bysym.c_str(), byid.c_str());
+      shape[bysym]++;
+    }
+    fprintf(stderr, "  [elem] distinct SYM-shapes: %d\n", (int)shape.size());
+    for (auto &kv : shape) fprintf(stderr, "  [elem]   %-40s x%d\n", kv.first.c_str(), kv.second);
+  }
+  fprintf(stderr, "ELEMTYPE p=%d |", analysis_pass);
+  for (auto &kv : by_sym)
+    fprintf(stderr, " %s: %d CS / %d elemtypes;", kv.first.c_str(), kv.second.first, (int)kv.second.second.size());
+  fprintf(stderr, "\n");
+}
+
 static void report_stage_churn() {
   if (!getenv("IFA_DBG_STAGE")) return;
   fprintf(stderr, "STAGE p=%d", analysis_pass);
@@ -8230,6 +8275,7 @@ static void report_stage_churn() {
 static void complete_pass() {
   report_stage_churn();
   report_cs_population();
+  report_element_types();
   report_canon_stats();
   report_keyspace();
   capture_type_keys();

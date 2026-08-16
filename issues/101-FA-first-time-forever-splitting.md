@@ -522,3 +522,90 @@ pointer is required. This is the 048/052 shape exactly.
   function per contour. It would dissolve the `__getitem__`/`len`/`__mul__`
   splitting pressure that is 75-88 % of the splits measured above, rather
   than trying to make that splitting converge.
+
+
+## Why CreationSets do not deliver the parameterization they exist for
+
+The obvious objection to the shedskin comparison above: CreationSets
+*are* pyc's container parameterization. A container CS carries an element
+AVar (`get_element_avar`) whose type is the element type — that is
+`list<T>`. So why does it not behave like one?
+
+`IFA_DBG_ELEMTYPE` / `_DUMP` (new) answer it. On `linalg` at the final
+pass:
+
+```
+ELEMTYPE p=50 | bytearray: 1 CS / 1 elemtypes; list: 56 CS / 14 elemtypes;
+  [elem] distinct SYM-shapes: 5
+  [elem]                            x24     (empty element type)
+  [elem]    int64                   x10
+  [elem]    int64 list list         x12
+  [elem]    list                    x9
+  [elem]    list list               x2
+```
+
+**56 CreationSets. 14 distinct element types. 5 distinct element
+shapes.** shedskin needs 3 list types for this program.
+
+Three distinct failures are visible in that one table.
+
+### 1. CS identity is the creation site, not the parameter
+
+A `CreationSet` is minted per *allocation site × contour*
+(`creation_point`), with the element type as an **attribute** of the CS
+rather than its **identity**. shedskin's `list<T>` is keyed on `T`. So
+ten CSs that are all `list<int64>` stay ten CSs in pyc and are one type
+in shedskin — and the 24 with an empty element type, which are
+indistinguishable by any observable property, stay 24.
+
+That is roughly an 11× over-discrimination before anything else happens.
+
+### 2. It compounds through nesting, because the element type is a SET OF CSs
+
+This is the part that makes it more than a constant factor. An element
+type is an `AType` — a *set of CreationSets* — not a canonical type. So
+distinct-but-equivalent inner CSs produce distinct outer element types,
+which produce distinct outer CSs, which produce distinct element types
+one level up.
+
+The `list list` shape is exactly this: an element type holding **two**
+`list` CreationSets where shedskin has the single type
+`list<list<__ss_int>>`. `linalg`'s `list<list<list<int>>>` is one type in
+shedskin and a combinatorial family here.
+
+### 3. The set-of-CSs element type can express what a template parameter cannot
+
+`int64 list list` (12 CSs) is an element type containing **both** a
+scalar and containers — `list<int | list<…>>`. A C++ template parameter
+cannot be that, so shedskin must either prove the container monomorphic
+or report a dynamic type and stop. pyc carries the union forward, and
+codegen then has no representation to pick — which is precisely the
+`list::__mul__(_CG_any a1, _CG_any a2)` contour that makes `linalg` fail
+to build, and the same shape as
+[018](../issues/018-dict-mixed-key-types-boxing-failure.md).
+
+### So the mechanism is right and the keying is wrong
+
+CreationSets capture the parameterization *value* perfectly well. What
+they do not do is give two containers with the same parameter the same
+*identity* — and because the parameter is itself expressed in terms of CS
+identities, that error feeds back into the parameter. The container
+methods are then split per CS rather than per element type, which is
+where `__getitem__`'s 236 contours (48 distinct type tuples) and
+`__mul__`'s 75 come from.
+
+### The experiment this suggests
+
+Canonicalize container CreationSet identity on the **element type**
+rather than the creation site — the CS-level analogue of what
+`PYC_CANON` does for contours. The measurement to run first is cheap and
+already available: `IFA_DBG_ELEMTYPE` across the corpus, to see whether
+the 56 → 5 ratio on `linalg` is typical. If it is, the reduction is
+multiplicative with nesting depth and would attack the splitting pressure
+at its source rather than downstream of it.
+
+Note the ordering constraint: element types are only meaningful once
+flowed, so any such canonicalization has to key on a durable/converged
+element type, not a mid-pass one — the same lesson as
+[066](066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md)'s
+`s->out->type`.
