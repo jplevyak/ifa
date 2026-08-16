@@ -203,7 +203,11 @@ class EntrySet : public gc {
   // ifa/issues/074 (IFA_DBG_KEYDRIFT): last two passes' type_key hashes,
   // so a period-2 flip-flop (key(N) == key(N-2) != key(N-1)) can be told
   // from a key that is merely still moving. Probe-only.
-  unsigned int key_hash[2] = {0, 0};
+  // [0] this pass, [1] previous, [2] the one before that. Three deep so a
+  // period-2 flip-flop (key(N) == key(N-2) != key(N-1)) can be told from
+  // stability (key(N) == key(N-1)) -- PYC_SELFPROD=6 accepts both, see
+  // ifa/issues/074.
+  unsigned int key_hash[3] = {0, 0, 0};
   EdgeHash edges;
   EdgeMap out_edge_map;
   Vec<CreationSet *> creates;

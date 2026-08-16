@@ -156,6 +156,12 @@ That explains the trigger table exactly: `deepcopy` supplies the fresh
 allocation, recursion supplies the unbounded depth, and nesting supplies
 the second level that compounds it.
 
+**BOTH HALVES FIXED for this reproducer, 2026-08-16.** The assignment
+churn is gone too, and the reproducer's analysis now **converges**:
+`final_pass=46, pass_limit_hit=0, violations=0`, against mode 5's pass
+102 with 4 violations. The fix is `PYC_SELFPROD=6` (default). Root cause
+and measurements in the section below.
+
 **Growth half FIXED 2026-08-16** — the durable setter type
 (`PYC_CSKEY=3`, default) makes this reproducer's contour count flat:
 144/617 at pass 36 and still 144/617 at pass 102, where the baseline
@@ -2584,3 +2590,85 @@ phantom display (064) is retired, simplifying the splitter long-term. The
 corpus evidence that the *decide-then-durable-with-stable-keys* shape
 converges is shedskin, which compiles the whole corpus this bucket is
 drawn from.
+
+
+## The assignment churn, root-caused and fixed 2026-08-16
+
+With growth fixed the reproducer still would not settle, and the stage
+trace was unambiguous — every pass from 36 to 101 byte-identical:
+
+```
+STAGE p=99  TYPE_CONFL(det=1 mint=0 reuse=1 csmint=0) | ess=144 css=617
+STAGE p=100 TYPE_CONFL(det=1 mint=0 reuse=1 csmint=0) | ess=144 css=617
+```
+
+One edge moved per pass, re-attached to an existing contour, zero mints:
+assignment churn in its pure form. `IFA_DBG_CHURN` (new, probe-only)
+traced it to a single edge of `total` and a single ledger entry,
+`gsig=4284937216`, recorded at **pass 11** with `product=119`:
+
+- **odd pass** — the group sits in ES 119, its own recorded home. The
+  `SELFPROD` validity test returns *stale*, so it falls through to a
+  normal split and is ejected to ES 138.
+- **even pass** — the ledger sees `d->product != es` and routes it back
+  138 → 119.
+
+ES 119 also holds `stay_edges` the group is type-incompatible with, so
+the splitter is **right** to eject it. The ledger is holding a home that
+went stale at pass 11 and is never revised — the record path only
+*counts* a re-derived-elsewhere group as a DUP, it never updates
+`d->product`.
+
+### Why the existing guard could not fire
+
+Decisive measurement: **40 SELFPROD evaluations on ES 119, every one
+"stale", not one VALID.** Mode 5 asks "has this contour stopped moving?"
+via `key_hash[0] == key_hash[1]` — but the contour cannot stop moving
+while the test's own remedy is what keeps moving it. The test is
+diagnosing instability that it is itself generating; it can never fire
+inside the disease it names.
+
+### The fix: accept a period-2 flip-flop as settled
+
+A flip-flop **is** settled, just not constant: the contour has two states
+and alternates. `PYC_SELFPROD=6` accepts either
+`key(N) == key(N-1)` (stable) **or**
+`key(N) == key(N-2) != key(N-1)` (period-2). This needed `key_hash`
+widened from 2 entries to 3. It is not a new idea — `capture_type_keys`
+already computed exactly this predicate for its `kd_flip` counter, and
+mode 5's own comment describes wanting to catch "a stable flip-flop
+rather than a union still widening".
+
+The trace confirms it fires precisely where diagnosed: p=31 es 119 still
+"stale" (only one prior key yet), p=33 **VALID**, churn stops at p=32,
+analysis converges at 46. VALID fires exactly once in the whole run.
+
+| | mode 5 | **mode 6** |
+|---|---|---|
+| repro final_pass | 102 | **46** |
+| repro pass_limit_hit | 1 | **0** |
+| repro violations | 4 | **0** |
+| corpus, 77 programs | — | **exactly inert: 0 changes to rc / violations / ess / css / final_pass / pass_limit_hit** |
+| analysis time | — | **-0.3%** |
+| test suite | 273/14/10/0/4 | **273/14/10/0/4** |
+
+### Rejected: gating the route (`PYC_ROUTEGATE`, off by default)
+
+The first fix attacked the other end — refuse to route a group into a
+recorded home it is no longer compatible with (`=1`), and additionally
+refresh the stale entry (`=2`). Both stop the churn, and both are
+**worse overall**: declining a route only means minting instead, so the
+growth comes straight back — repro `ess` 144 → 279 (mode 1) and 257
+(mode 2). Kept as a measured control, off by default.
+
+### What is left
+
+Mode 6 is *exactly* inert on the corpus, so it fixes this reproducer and
+helps no corpus program: the **4 of 77 that still hit the pass limit are
+unchanged**, and their non-convergence therefore has a different shape
+than the period-2 flip-flop. That is the next thing to characterise.
+
+The reproducer also still fails to compile — on the
+[018](../issues/018-dict-mixed-key-types-boxing-failure.md) boxing gap it
+is `.known_issue`-tagged for (`sizeof_element of non-container type`),
+which is unrelated to convergence and unaffected by any of this.

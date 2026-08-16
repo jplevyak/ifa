@@ -4708,6 +4708,13 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
   // crash to the rets[i] flow below it.
   auto redispatch = [](AEdge *ee, EntrySet *tes) {
     if (!tes || ee->to == tes) return;
+    // ifa/issues/074: identify the single edge that TYPE_CONFLUENCE
+    // redispatches every pass once contour counts have gone flat --
+    // assignment churn, as distinct from growth. Probe-only.
+    if (getenv("IFA_DBG_CHURN"))
+      fprintf(stderr, "[churn] p=%d stage=%d fun=%s edge=%p from_es=%d to_es=%d -> %d\n", analysis_pass,
+              cur_split_stage, ee->match && ee->match->fun && ee->match->fun->sym->name ? ee->match->fun->sym->name : "?",
+              (void *)ee, ee->from ? ee->from->id : -1, ee->to ? ee->to->id : -1, tes->id);
     if (ee->to) ee->to->edges.del(ee);
     ee->to = 0;
     if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_detach[cur_split_stage];
@@ -4997,11 +5004,34 @@ static int hard_reuse_enabled() {
 // **5 is the default.** The eviction's real precondition is that THIS
 // CONTOUR has stopped moving, which `nviol_this_pass == 0` only ever
 // approximated whole-program-wide.
+// ifa/issues/074: gate the ES ledger ROUTE on the recorded product still
+// being a compatible home for the group; =2 also refreshes an entry
+// proven stale. OFF by default, and kept only as a measured control:
+// both modes do stop the churn, but by declining a route you only mint
+// instead, so the growth comes straight back (repro ess 144 -> 279 for
+// mode 1, 257 for mode 2). PYC_SELFPROD=6 fixes the same oscillation
+// from the other end without that cost.
+static int routegate_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_ROUTEGATE");
+    e = v ? atoi(v) : 0;
+  }
+  return e;
+}
+
+// Defaults to 6 as of 2026-08-16 (was 5): accept a period-2 flip-flop as
+// a settled contour, not just a constant one. Measured over the whole
+// shedskin corpus as EXACTLY inert -- 77 programs, zero changes to
+// rc/violations/ess/css/final_pass/pass_limit_hit, -0.3% time -- while
+// making tests/deepcopy_recursive_nested_growth.py converge outright
+// (pass 46, pass_limit_hit=0, 0 violations, against mode 5's pass 102
+// with 4 violations). See the mode-6 comment at the use site.
 static int selfprod_enabled() {
   static int e = -1;
   if (e < 0) {
     cchar *v = getenv("PYC_SELFPROD");
-    e = v ? atoi(v) : 5;
+    e = v ? atoi(v) : 6;
   }
   return e;
 }
@@ -5354,7 +5384,27 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
             // stable flip-flop (pygmy's case) rather than a union still
             // widening -- which is exactly the discrimination the
             // 2026-07-30 attempt lacked.
-            ok = es->type_key_pass == analysis_pass && es->key_hash[0] && es->key_hash[0] == es->key_hash[1];
+            // 5: stability only. 6: stability OR a period-2 flip-flop.
+            //
+            // ifa/issues/074: mode 5 cannot fire inside the very disease
+            // it names. Measured on
+            // tests/deepcopy_recursive_nested_growth.py: es 119 of `total`
+            // is evaluated 40 times and returns "stale" on every one,
+            // because the group this test would pin keeps being ejected
+            // to es 138 and dragged back by the ledger route -- and that
+            // motion is what changes 119's key each pass. A test that
+            // demands "has stopped moving" can never hold while its own
+            // remedy is what keeps the contour moving.
+            //
+            // A period-2 flip-flop IS settled, just not constant: the
+            // contour has two states and alternates. That is exactly the
+            // "stable flip-flop rather than a union still widening"
+            // the mode-5 comment above describes, and capture_type_keys
+            // already computes the predicate for its own `kd_flip`
+            // counter.
+            ok = es->type_key_pass == analysis_pass && es->key_hash[0] &&
+                 (es->key_hash[0] == es->key_hash[1] ||
+                  (mode >= 6 && es->key_hash[0] == es->key_hash[2] && es->key_hash[0] != es->key_hash[1]));
           }
           if (getenv("IFA_DBG_INCOMPAT"))
             fprintf(stderr, "SELFPROD p=%d fun=%s#%d es=%d %s\n", analysis_pass,
@@ -5377,6 +5427,10 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
               AType *xt = type_intersection(xa->out->type, x->match->formal_filters.get(avpos));
               if (!xt->n || type_intersection(xt, part) != fa->type_world.bottom_type) continue;
             }
+            if (getenv("IFA_DBG_CHURN"))
+              fprintf(stderr, "[churn-evict] p=%d stage=%d fun=%s es=%d edge_to=%d scomp=%d\n", analysis_pass,
+                      cur_split_stage, es->fun->sym->name ? es->fun->sym->name : "?", es->id, x->to ? x->to->id : -1,
+                      scomp ? scomp->id : -1);
             x->to = 0;
             if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_detach[cur_split_stage];
             x->filtered_args.clear();
@@ -5395,13 +5449,43 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
       }
     }
   Lnormal_split:;
+    // ifa/issues/074: set when the ledger's recorded home is proven to be
+    // no longer a home for this group. Read again in the record path
+    // below, where mode 2 refreshes the entry.
+    bool home_ok = true;
     if (avpos && gsig) {
       SplitDecision *d = fa->ledger_find(es->fun, cur_split_stage, avpos, part, gsig);
+      if (getenv("IFA_DBG_CHURN"))
+        fprintf(stderr, "[churn-look] p=%d fun=%s es=%d gsig=%u found=%d pass_made=%d product=%d self=%d\n",
+                analysis_pass, es->fun->sym->name ? es->fun->sym->name : "?", es->id, gsig, d ? 1 : 0,
+                d ? d->pass_made : -1, (d && d->product) ? d->product->id : -1,
+                (d && d->product == es) ? 1 : 0);
       // The display no longer gates this ROUTE either (see update_display):
       // it was the dominant reason a group with a recorded product
       // re-minted instead of routing (074's `es_othermint`, 064's
       // phantom method display).
-      if (d && d->pass_made != analysis_pass && d->product && d->product != es) {
+      // ifa/issues/074: is the recorded home still a home for THIS
+      // group? The self-product branch above has an elaborate staleness
+      // test (SELFPROD modes 3/4/5, on the durable type key); this ROUTE
+      // had none at all, and the asymmetry is a period-2 generator.
+      // Measured on tests/deepcopy_recursive_nested_growth.py: the
+      // ledger routes a group of `total` into es 119 every even pass,
+      // and the splitter -- correctly, because 119 also holds
+      // stay_edges the group is type-incompatible with -- ejects it
+      // again every odd pass, for ever. Re-check the group against what
+      // actually lives in the product now, and treat an incompatible
+      // home as a stale entry.
+      if (routegate_enabled() && d && d->product && d->product != es && these_edges.n && these_edges[0]->args.n) {
+        for (AEdge *y : d->product->edges) if (y && y->args.n) {
+          bool c = fsetters ? edge_sset_compatible_with_edge(these_edges[0], y)
+                            : (bool)edge_type_compatible_with_edge(these_edges[0], y, d->product, fmark);
+          if (!c) { home_ok = false; break; }
+        }
+        if (getenv("IFA_DBG_CHURN") && !home_ok)
+          fprintf(stderr, "[churn-stale] p=%d fun=%s es=%d product=%d INCOMPATIBLE-HOME\n", analysis_pass,
+                  es->fun->sym->name ? es->fun->sym->name : "?", es->id, d->product->id);
+      }
+      if (d && d->pass_made != analysis_pass && d->product && d->product != es && home_ok) {
         product = d->product;
         ++fa->dup_split_attempts;
         if (getenv("IFA_DBG_INCOMPAT"))
@@ -5416,6 +5500,10 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
     if (product) {
       if (!product->split) product->split = es;
       for (AEdge *x : these_edges) {
+        if (getenv("IFA_DBG_CHURN"))
+          fprintf(stderr, "[churn] p=%d stage=%d fun=%s es=%d edge_to=%d product=%d noop=%d\n", analysis_pass,
+                  cur_split_stage, es->fun->sym->name ? es->fun->sym->name : "?", es->id, x->to ? x->to->id : -1,
+                  product->id, x->to == product ? 1 : 0);
         x->to = 0;
         if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_detach[cur_split_stage];
         x->filtered_args.clear();
@@ -5429,6 +5517,10 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
       }
     } else {
       for (AEdge *x : these_edges) {
+        if (getenv("IFA_DBG_CHURN"))
+          fprintf(stderr, "[churn-mint] p=%d stage=%d fun=%s es=%d edge_to=%d gsig=%u\n", analysis_pass,
+                  cur_split_stage, es->fun->sym->name ? es->fun->sym->name : "?", es->id, x->to ? x->to->id : -1,
+                  gsig);
         x->to = 0;
         if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_detach[cur_split_stage];
         x->filtered_args.clear();
@@ -5437,6 +5529,8 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
       for (AEdge *x : these_edges) {
         Vec<AEdge *> new_edges;
         make_entry_set(x, new_edges, es, e->to);
+        if (getenv("IFA_DBG_CHURN"))
+          fprintf(stderr, "[churn-mint-to] p=%d es=%d -> %d\n", analysis_pass, es->id, x->to ? x->to->id : -1);
         if (x->to != es) {
           record_backedges(x, es, pending_es_backedge_map);
           split = 1;
@@ -5464,6 +5558,24 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
           else if (d->pass_made != analysis_pass) {  // intra-pass repeats aren't re-derivation
             ++fa->dup_split_attempts;
             ++fa->rederive_churn;  // minted a product the ledger already named
+            // ifa/issues/074 mode 2: the recorded home was proven stale
+            // above (the group is type-incompatible with what now lives
+            // in it), and the splitter has just re-homed the group
+            // somewhere that IS compatible. Freezing the pass-11 answer
+            // is what makes the oscillation permanent -- the route drags
+            // the group back every other pass and the splitter correctly
+            // ejects it again. Adopt the new home instead. Deliberately
+            // NOT an unconditional refresh: the ledger's value is that a
+            // decision is durable, so it is only revised on proof that
+            // it has become wrong.
+            if (routegate_enabled() >= 2 && !home_ok) {
+              if (getenv("IFA_DBG_CHURN"))
+                fprintf(stderr, "[churn-refresh] p=%d fun=%s es=%d %d -> %d\n", analysis_pass,
+                        es->fun->sym->name ? es->fun->sym->name : "?", es->id, d->product ? d->product->id : -1,
+                        gproduct->id);
+              d->product = gproduct;
+              d->pass_made = analysis_pass;
+            }
             if (getenv("IFA_DBG_INCOMPAT"))
               fprintf(stderr, "REDERIVE p=%d GROUP fun=%s#%d es=%d recorded=%d now=%d first_pass=%d\n",
                       analysis_pass, es->fun->sym->name ? es->fun->sym->name : "?", es->fun->sym->id, es->id,
@@ -6831,6 +6943,9 @@ static CSMSplitDecision *decide_csm_split(AVar *av) {
   auto redispatch = [](AEdge *ee, EntrySet *tes) {
     if (!tes || ee->to == tes) return;
     if (ee->to) ee->to->edges.del(ee);
+    if (getenv("IFA_DBG_CHURN"))
+      fprintf(stderr, "[churn-csm] p=%d stage=%d edge_to=%d tes=%d\n", analysis_pass, cur_split_stage,
+              ee->to ? ee->to->id : -1, tes->id);
     ee->to = 0;
     if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_detach[cur_split_stage];
     ee->filtered_args.clear();
@@ -7790,6 +7905,7 @@ static void capture_type_keys() {
     // as a per-contour "has stopped moving" test, so they are maintained
     // whenever the key is captured at all, not only under the probe.
     int flip = !fresh && h != es->key_hash[0] && h == es->key_hash[1];
+    es->key_hash[2] = es->key_hash[1];
     es->key_hash[1] = es->key_hash[0];
     es->key_hash[0] = h;
     if (!drift) continue;
