@@ -6030,18 +6030,28 @@ static void collect_setter_confluences(Accum<AVar *> &avs, Vec<AVar *> &setter_c
 // so Vec-set iteration order cannot perturb the hash.
 // ifa/issues/066: drop the per-pass term from the CS split signature so
 // the ledger can recognise a re-derived split. See the use below.
-// Defaults to 2 (durable split-chain root) as of 2026-08-16: measured
-// over the whole shedskin corpus at ZERO exit-code changes and zero
-// changes to violations/ess/css/final_pass on all 77 programs, +1.6%
-// analysis time, with the full test suite unchanged -- while cutting
-// tests/deepcopy_recursive_nested_growth.py's runaway contour growth by
-// 40% (ess 272 -> 164 at pass 102). 0 restores the old per-pass key, 1
-// is the drop-the-type control; both are kept for investigation.
+// Defaults to 3 (the durable setter type: canonical SET of split-chain
+// roots) as of 2026-08-16. Measured over the whole shedskin corpus at
+// ZERO exit-code changes and zero changes to violations/ess/css/
+// final_pass on all 77 programs, +1.1% analysis time, with the full test
+// suite unchanged -- while cutting
+// tests/deepcopy_recursive_nested_growth.py's runaway contour growth to
+// the best figure any mode reaches (ess 272 -> 144 at pass 102, CS mints
+// 20 -> 4).
+//
+// The other modes are kept as controls, and the pair of them is the
+// argument for 3: mode 1 (drop the setter type outright) reaches the
+// same 144 but pays for it in precision -- linalg 27 -> 74 violations,
+// plcfrs losing 173 contours' worth -- while mode 0 keeps the precision
+// and none of the convergence. Mode 3 is the first to get both, which is
+// what makes it defaultable. Mode 2 is superseded: same idea, but hashed
+// over the raw `sorted` sequence, so it was order- and
+// multiplicity-sensitive and only got half way (164).
 static int cskey_enabled() {
   static int e = -1;
   if (e < 0) {
     cchar *v = getenv("PYC_CSKEY");
-    e = v ? atoi(v) : 2;
+    e = v ? atoi(v) : 3;
   }
   return e;
 }
@@ -6076,8 +6086,9 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
         // as the control that proves which term is at fault.
         h += (uint)combine_hash((uintptr_t)s->var->sym->id, (uintptr_t)s->var->sym->id);
       } else if (cskey_enabled() == 2) {
-        // 2: keep the type, but identify each of its CreationSets by the
-        // ROOT of its split chain. A CS and its clones then hash alike --
+        // 2: SUPERSEDED BY 3, kept as the intermediate control. Keep the
+        // type, but identify each of its CreationSets by the ROOT of its
+        // split chain. A CS and its clones then hash alike --
         // which is the whole point, since the clone chain is what makes
         // the signature drift -- while two genuinely different lists
         // still differ.
@@ -6094,6 +6105,37 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
           CreationSet *root = c->split_origin ? c->split_origin : c;
           th += (uintptr_t)root->id * open_hash_primes[i2++ % 256];
         }
+        h += (uint)combine_hash((uintptr_t)s->var->sym->id, th);
+      } else if (cskey_enabled() == 3) {
+        // 3: the durable setter type. Mode 2's idea -- identify the
+        // type's CreationSets by their split-chain root -- but hashed as
+        // a canonical SET rather than the raw `sorted` sequence. Mode 2
+        // got that wrong twice, and the trace showed both:
+        //
+        //  * ORDER. `sorted` is ordered by CS *id*, so mapping to roots
+        //    permutes it: at p10 the roots were [1005, 1038] and at p20
+        //    the same two roots arrived as [1038, 1091->1005]. With
+        //    position-indexed primes the identical set hashed
+        //    differently, and the p20 split could not match p10's.
+        //  * MULTIPLICITY. As the clone chain grows a setter's type
+        //    accumulates several clones of ONE original (p39:
+        //    `1091(r1005) 1112(r1005)`). Mapping to roots turns that
+        //    into {1005, 1005}, which must be the same identity as
+        //    {1005} -- the clones are the very thing being collapsed.
+        //
+        // So: dedupe the roots, sort them, then hash. Note the
+        // set_to_vec() -- Vec::set_add leaves null holes that iteration
+        // would otherwise walk into.
+        Vec<CreationSet *> roots;
+        for (CreationSet *c : s->out->type->sorted) roots.set_add(c->split_origin ? c->split_origin : c);
+        roots.set_to_vec();
+        Vec<int> rids;
+        for (CreationSet *r : roots) if (r) rids.add(r->id);
+        qsort(rids.v, rids.n, sizeof(rids[0]),
+              [](const void *a, const void *b) { return *(const int *)a - *(const int *)b; });
+        uintptr_t th = 0;
+        int i2 = 0;
+        for (int rid : rids) th += (uintptr_t)rid * open_hash_primes[i2++ % 256];
         h += (uint)combine_hash((uintptr_t)s->var->sym->id, th);
       } else
         h += (uint)combine_hash((uintptr_t)s->var->sym->id, (uintptr_t)s->out->type);
@@ -6149,6 +6191,23 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
         // self-product falls back to the original mint + record-only DUP
         // count (the 065-gap-2 analog, left to the phase-ordering half).
         bool route = d && d->pass_made != analysis_pass && d->cs_product && d->cs_product != cs;
+        // ifa/issues/066: dump the SETTER TYPE composition behind csig, so
+        // a csig that drifted between two passes can be attributed --
+        // genuinely new CreationSets flowing in, vs. clone identity that
+        // split_origin should already have collapsed. Probe-only.
+        if (getenv("IFA_DBG_CSTYPE")) {
+          fprintf(stderr, "[cstype] p=%d cs=%d csig=%u", analysis_pass, cs->id, csig);
+          for (AVar *v : compatible_set) if (v && v->setters)
+            for (AVar *st : *v->setters) if (st) {
+              fprintf(stderr, " | sv%d:", st->var->sym->id);
+              for (CreationSet *c : st->out->type->sorted) {
+                CreationSet *r = c->split_origin ? c->split_origin : c;
+                fprintf(stderr, " %d%s", c->id, r != c ? "" : "*");
+                if (r != c) fprintf(stderr, "(r%d)", r->id);
+              }
+            }
+          fprintf(stderr, "\n");
+        }
         if (getenv("IFA_DBG_CSSPLIT"))
           fprintf(stderr, "[csledger] p=%d cs=%d csig=%u found=%d pass_made=%d product=%d self=%d route=%d\n",
                   analysis_pass, cs->id, csig, d ? 1 : 0, d ? d->pass_made : -1,

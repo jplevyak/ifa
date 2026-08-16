@@ -1,12 +1,18 @@
 # 066 — The split oscillation is a durable-decision *keying* bug, not an architecture gap: CS identity is per-pass, should be per-creation-site
 
-> **PARTIAL FIX LANDED 2026-08-16** — `PYC_CSKEY=2` (durable
-> `CreationSet::split_origin`) is now the **default**. Corpus-neutral by
-> measurement (77 programs, zero exit-code changes, zero changes to
-> violations/ess/css/final_pass, +1.6% analysis time; test suite
-> unchanged) and it cuts the reproducer's runaway growth by 40%. The
-> issue stays **open**: growth is reduced, not eliminated — see
-> "What is left" below.
+> **FIXED 2026-08-16** — `PYC_CSKEY=3`, the **durable setter type**, is
+> now the default: the setter type is identified by the canonical *set*
+> of its CreationSets' split-chain roots. Corpus-neutral by measurement
+> (77 programs: zero exit-code changes, zero changes to
+> violations/ess/css/final_pass; +1.1% analysis time; test suite
+> unchanged at 273/14/10/0/4) — and on the reproducer the contour count
+> is now **flat**: 144/617 at pass 36 and still 144/617 at pass 102,
+> against a baseline that climbs to 272/760. CS mints 20 → 4.
+>
+> This is the figure mode 1 reaches by discarding the setter type
+> outright, but without mode 1's precision cost (linalg 27 → 74). Mode 3
+> is the first formulation to get both, which is what made it
+> defaultable.
 
 > **Diagnosis proven and localised, 2026-08-16** — see the section
 > immediately below. `cs_group_signature`'s `s->out->type` term is the
@@ -112,9 +118,75 @@ Measured, guards raised so the growth is visible:
 
 Mode 2 buys ~60% of mode 1's growth reduction at none of its cost.
 
+### The durable setter type (mode 3) — what mode 2 got wrong
+
+Mode 2 was the right idea implemented twice-wrong, and `IFA_DBG_CSTYPE`
+(added for exactly this) showed both defects in one trace:
+
+```
+[cstype] p=10 cs=1005 csig=1585812914 | sv10913: 1005* 1038* | sv10915: 1005*
+[cstype] p=20 cs=1091 csig=38347730   | sv10913: 1038* 1091(r1005) | sv10915: 1091(r1005)
+[cstype] p=39 cs=1111 csig=703215965  | sv10913: 1091(r1005) 1112(r1005) | ...
+```
+
+1. **Order.** p10's roots are `{1005, 1038}` and p20's are the same set —
+   yet the csigs differ. `sorted` is ordered by *CreationSet id*, so
+   mapping to roots permutes it (`1091 → 1005` lands second, not first),
+   and position-indexed primes hash an identical set two different ways.
+   p20 could therefore never match p10.
+2. **Multiplicity.** By p39 a single setter's type holds
+   `1091(r1005) 1112(r1005)` — two clones of *one* original. Mapping to
+   roots yields the multiset `{1005, 1005}`, which must be the same
+   identity as `{1005}`: those clones are precisely what the
+   canonicalization exists to collapse.
+
+Mode 3 dedupes the roots, sorts them, and only then hashes. (Note the
+`set_to_vec()` — `Vec::set_add` leaves null holes that iteration would
+otherwise walk into, a trap this codebase has hit before.) The ledger
+then recognises the repeat directly:
+
+```
+[csledger] p=10 cs=1005 csig=3215355314 found=0 ...
+[csledger] p=20 cs=1091 csig=3215355314 found=1 pass_made=10 product=1090 route=1
+```
+
+| | base (`=0`) | drop-type (`=1`) | root-seq (`=2`) | **durable set (`=3`)** |
+|---|---|---|---|---|
+| repro ess/css @p102 | 272 / 760 | 144 / 617 | 164 / 638 | **144 / 617** |
+| repro CS mints | 20 | — | 6 | **4** |
+| linalg violations | 27 | **74** | 27 | **27** |
+| plcfrs violations | 5237 | 4528 (precision lost) | 5237 | **5237** |
+| go | 164/505/1544 | unchanged | unchanged | **unchanged** |
+| corpus (77 programs) | — | — | 0 changes | **0 changes** |
+| analysis time | — | — | +1.6% | **+1.1%** |
+
 ### What is left
 
-**Growth is reduced, not eliminated.** At the default guards the
+The reproducer's contour count is flat, but it still trips the guard at
+pass 36 with `pass_limit_hit=1`, so **something else** is keeping the
+analysis from settling — assignment churn between a fixed set of
+contours, not growth. That is the other half of
+[074](074-FA-cross-pass-oscillation-plan.md), and this fix does not
+address it.
+
+Two residual split decisions survive on the reproducer, both visible in
+the `[csledger]` trace above:
+
+- a genuinely new signature at p29 (`csig=1613924812 found=0`), and
+- the **self-product** case at p20 (`found=1 … self=1 route=0`), where
+  the ledger's recorded home *is* the CS being split and the
+  `d->cs_product != cs` veto declines to route. That is the same shape
+  `PYC_SELFPROD` addresses on the ES side and it remains unaddressed
+  here.
+
+Also worth recording: the reproducer's violations go 2 → 4 under mode 3.
+It does **not** change any outcome — the program fails to compile under
+mode 0 and mode 3 alike (it is `.known_issue`-tagged for
+[018](../issues/018-dict-mixed-key-types-boxing-failure.md)) — and the
+77-program corpus showed *zero* violation changes. But it is a real
+number that moved, so it is written down rather than rounded off.
+
+### Superseded: "growth is reduced, not eliminated" At the default guards the
 reproducer still stops at pass 36 with `pass_limit_hit=1`, and with
 guards raised `ess` still climbs 148 → 164 between pass 36 and 102. So
 `split_origin` removes one generator of per-pass identity drift; at least

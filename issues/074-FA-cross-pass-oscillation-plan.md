@@ -156,6 +156,13 @@ That explains the trigger table exactly: `deepcopy` supplies the fresh
 allocation, recursion supplies the unbounded depth, and nesting supplies
 the second level that compounds it.
 
+**Growth half FIXED 2026-08-16** — the durable setter type
+(`PYC_CSKEY=3`, default) makes this reproducer's contour count flat:
+144/617 at pass 36 and still 144/617 at pass 102, where the baseline
+climbs to 272/760. Corpus-neutral over 77 programs. It still trips the
+guard, so what remains here is *churn*, not growth. Details in
+[066](066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md).
+
 **Partly fixed 2026-08-16** — a durable `CreationSet::split_origin` now
 canonicalises the setter type's CreationSets onto their split-chain root
 (`PYC_CSKEY=2`, default). Corpus-neutral over 77 programs and it cuts
