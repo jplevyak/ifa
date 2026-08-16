@@ -1,5 +1,12 @@
 # 101 — the residual non-convergence is *first-time-forever* splitting, not re-derivation
 
+> **PARTLY FIXED 2026-08-16** — `PYC_HARDREUSE=5` (durable-type-key reuse
+> on the detach route, restricted to type-driven splits) is now the
+> **default**. Corpus violations **7435 → 6399 (-13.9 %)**, `ess` lower on
+> 41 of 77 programs, zero exit-code changes, zero `pass_limit_hit`
+> changes, +1.5 % analysis time. `go`, `linalg` and `plcfrs` still do not
+> converge, so the issue stays open — see "What the fix does not do".
+
 **Status:** open, characterized 2026-08-16 after
 [074](074-FA-cross-pass-oscillation-plan.md)'s two fixes
 ([066](066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md)'s
@@ -156,3 +163,102 @@ The last three non-convergent corpus programs, and with them the ability
 to treat `pass_limit_hit` as a genuine red flag rather than a mixed
 signal. It also gates raising the stall guard: `sudoku5` shows the guard
 is currently *masking* convergence that would happen a few passes later.
+
+
+## Dug in 2026-08-16: half the contours are not justified by types
+
+`IFA_DBG_KEYSPACE` compares each function's contour count (`ess`) against
+its distinct argument-type tuples (`setkey`) and against a full
+cartesian-product specialization (`cpakey`). On `linalg`:
+
+| pass | ess | setkey | cpakey | redundant |
+|---|---|---|---|---|
+| 1 | 154 | 106 | — | 31 % |
+| 40 | 676 | 370 | 536 | 45 % |
+| 101 | 1290 | 648 | 957 | **50 %** |
+
+Two conclusions, and the second is the sharp one:
+
+1. Redundancy **grows** with pass count — by pass 101 half of `linalg`'s
+   contours share an argument-type tuple with some other contour.
+2. **`ess` (1290) exceeds full CPA (957) by 35 %.** CPA is the maximally
+   precise per-callsite scheme, so a contour count above it cannot be
+   justified by argument types at all. This is a hard upper bound being
+   overshot.
+
+The worst offenders are unambiguous — `__pyc_to_bool__#425` has **14
+contours sharing one type tuple**, `__add__#1407` has 17. Dumping them:
+
+```
+[key] es=53   edges=188 filters=0 split=-1 | __pyc_to_bool__#56 | bool#3
+[key] es=164  edges=170 filters=0 split=1128 | __pyc_to_bool__#56 | bool#3
+[key] es=725  edges=1   filters=0 split=-1 | __pyc_to_bool__#56 | bool#3
+...
+```
+
+All fourteen are **live** (1–188 edges), all `filters=0`, all
+byte-identical types. Not dead leftovers, not filter-distinguished — just
+callers scattered across interchangeable contours.
+
+### Mechanism: the detach route
+
+`make_entry_set` does `if (!split) find_best_entry_sets(...)`, so an edge
+detached by a split is **never offered an existing contour**. Every
+caller split therefore cascades into fresh callee contours, and nothing
+ever merges them back.
+
+### Why the previous repair failed, and what fixes it
+
+`PYC_HARDREUSE=4` — reuse a contour whose durable type key matches — was
+measured and rejected before. Re-measured under the current defaults it
+breaks 1 test rather than 6, but on the corpus it is still not safe:
+
+| | baseline | HR=4 | **HR=5** |
+|---|---|---|---|
+| `linalg` | ess 1195, viol 100 | 489, 78 | **722, 48** |
+| `go` | 675, 107 | 534, **201** | 645, 107 |
+| `plcfrs` | 1346, 85 | 1335, **269** | 1291, **74** |
+| `sudoku5` | converges p47, 26 | **pass-limited, 273** | converges **p44**, 26 |
+
+(guards raised, so every column runs to the same pass cap)
+
+Mode 4 destroys `sudoku5`'s convergence outright. The reason is the one
+already recorded in 074: *exact type identity is not evidence that a
+contour is not what the split separated*. A **setter**- or **mark**-driven
+split deliberately produces contours with identical argument types.
+
+**`PYC_HARDREUSE=5` adds exactly that condition** — reuse only when the
+split's own discriminator was argument types (`!fsetters && !fmark`, via
+`cur_split_type_only`). Every mode-4 regression disappears, and three of
+the four programs come out ahead of baseline.
+
+Full corpus, default guards, 77 programs:
+
+- **zero exit-code changes**, zero `pass_limit_hit` changes
+- **violations 7435 → 6399 (-13.9 %)** — `plcfrs` -882, `sudoku5` -134,
+  `sudoku3` -32, `kmeanspp` -2
+- `ess` lower on **41** programs, higher on 1 (`ac_encode` +1); -2.3 %
+- +1.5 % analysis time
+
+The two apparent violation regressions are both benign. `softrender` is
++1 with *fewer* contours and an unchanged exit code. `linalg` reads 27 →
+40 only because its stall guard fires nine passes earlier (pass 51 vs
+60) — on equal footing, guards raised, it is **100 → 48**.
+
+### What the fix does not do
+
+`go`, `linalg` and `plcfrs` still hit the pass limit. Hard reuse removes
+redundant contours; it does not stop the splitter inventing new
+partitions, which is this issue's actual subject and is still
+95–98 % first-time. The productivity invariant described above remains
+the open work.
+
+One test changed and was deliberately re-recorded rather than papered
+over: `tests/splitter_cartesian_product.py` pinned
+`STAGES: TYPE_CONFL VIOLATION PER_CS_RECV CPA` and now reads
+`TYPE_CONFL CPA`. `VIOLATION` and `PER_CS_RECEIVER` are desperation
+stages that run when earlier ones failed to resolve a violation; with the
+redundant contours gone there is no longer a violation for them to chase.
+Fewer stages is the improvement. The test's assertion is now "CPA fires,
+reached through TYPE_CONFLUENCE alone", and a reappearance of the
+desperation stages means something upstream regressed.

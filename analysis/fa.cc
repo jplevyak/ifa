@@ -1460,6 +1460,14 @@ static EntrySet *find_canonical_entry_set(AEdge *e, Map<MPosition *, AType *> &k
   return found;
 }
 
+// ifa/issues/101: what DISCRIMINATOR the split currently being applied
+// used. Hard reuse matches candidate contours on argument types, so it is
+// only sound evidence when types are what the split separated on -- a
+// setter- or mark-driven split can produce two contours with identical
+// argument types on purpose, and reusing across them undoes it. Set
+// around the split route's make_entry_set call; 0 outside.
+static int cur_split_type_only = 0;
+
 static void make_entry_set(AEdge *e, Vec<AEdge *> &edges, EntrySet *split = nullptr, EntrySet *preference = 0) {
   if (e->to) {
     edges.add(e);
@@ -1474,7 +1482,9 @@ static void make_entry_set(AEdge *e, Vec<AEdge *> &edges, EntrySet *split = null
     if (find_best_entry_sets(e, edges)) return;
   } else if (hard_reuse_enabled()) {
     EntrySet *hard = nullptr;
-    if (hard_reuse_enabled() >= 4) {
+    // Mode 5: mode 4, but only when the split's own discriminator was
+    // argument types. See cur_split_type_only.
+    if (hard_reuse_enabled() >= 4 && !(hard_reuse_enabled() >= 5 && !cur_split_type_only)) {
       // Route by the contour's durable type key: find the contour whose
       // recorded (converged, previous-pass) formal types EQUAL this
       // edge's filtered actuals. A lookup, not a score -- so the answer
@@ -4971,11 +4981,32 @@ static int canon_enabled() {
   return e;
 }
 
+// Defaults to 5 as of 2026-08-16 (was 0 -- off). Mode 5 is mode 4's
+// durable-type-key reuse on the detach route, RESTRICTED to splits whose
+// own discriminator was argument types (see cur_split_type_only).
+//
+// ifa/issues/101: the detach route (`if (!split) find_best_entry_sets`)
+// never offers a detached edge an existing contour, so every caller split
+// cascades into fresh callee contours. Measured on linalg: half its 1290
+// contours share an argument-type tuple with another, and the total
+// EXCEEDS full cartesian-product specialization (957) by 35% --
+// `__pyc_to_bool__` alone had 14 live contours with one type tuple
+// between them.
+//
+// Mode 4 (types alone) was measured and is NOT safe: it breaks sudoku5's
+// convergence outright (26 -> 273 violations) and worsens go and plcfrs,
+// because a setter- or mark-driven split can produce two contours with
+// identical argument types on purpose. Mode 5 adds exactly that
+// condition and every one of those regressions disappears.
+//
+// Corpus, 77 programs: zero exit-code changes, zero pass_limit_hit
+// changes, corpus violations 7435 -> 6399 (-13.9%), ess lower on 41
+// programs (-2.3% overall), +1.5% analysis time.
 static int hard_reuse_enabled() {
   static int e = -1;
   if (e < 0) {
     cchar *v = getenv("PYC_HARDREUSE");
-    e = v ? atoi(v) : 0;
+    e = v ? atoi(v) : 5;
   }
   return e;
 }
@@ -5528,7 +5559,9 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
       }
       for (AEdge *x : these_edges) {
         Vec<AEdge *> new_edges;
+        cur_split_type_only = (!fsetters && !fmark) ? 1 : 0;
         make_entry_set(x, new_edges, es, e->to);
+        cur_split_type_only = 0;
         if (getenv("IFA_DBG_CHURN"))
           fprintf(stderr, "[churn-mint-to] p=%d es=%d -> %d\n", analysis_pass, es->id, x->to ? x->to->id : -1);
         if (x->to != es) {
@@ -8014,7 +8047,10 @@ static void report_keyspace() {
       }
       setkeys.insert(k);
       if (only && getenv("IFA_DBG_KEYSPACE_DUMP")) {
-        fprintf(stderr, "  [key] es=%d", es->id);
+        int nedges = 0;
+        for (AEdge *ee : es->edges) if (ee) ++nedges;
+        fprintf(stderr, "  [key] es=%d edges=%d filters=%d split=%d", es->id, nedges, es->filters.n,
+                es->split ? es->split->id : -1);
         for (MPosition *p : pos) {
           AVar *a = es->args.get(p);
           fprintf(stderr, " |");
