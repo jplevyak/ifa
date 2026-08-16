@@ -451,3 +451,74 @@ Split the work:
 2. **To close 101 as stated** (unbounded first-time splitting on `go` and
    `plcfrs`, which still grow) — the productivity invariant from 057.
    `linalg` has already left this class thanks to `PYC_HARDREUSE=5`.
+
+
+## How shedskin handles the same three programs (2026-08-16)
+
+They are shedskin's own examples, so the comparison is direct. Recipe:
+
+```sh
+PYTHONPATH=/home/jplevyak/projects/shedskin python3 -m shedskin translate go.py && make
+```
+
+**All three translate and build cleanly.** And the reason is
+architectural, not a better flow analysis:
+
+| linalg | shedskin | pyc |
+|---|---|---|
+| generated lines | **520** | 14 469 (**28×**) |
+| container-method definitions emitted | **0** | 26 `list::__mul__` clones |
+| distinct list types needed | **3** | 75 `__mul__` contours, 236 `__getitem__` |
+
+shedskin emits the failing site as
+
+```cpp
+list<__ss_int> *types;
+types = ((new list<__ss_int>(1,__ss_int(0))))->__mul__(__ss_int(1025));
+```
+
+`__mul__` appears **once** in the whole file, because the body lives in
+the runtime's `list<T>` template and the C++ compiler instantiates it.
+`linalg` needs exactly three list types — `list<__ss_int>`,
+`list<list<__ss_int>>`, `list<list<list<__ss_int>>>`. `go` needs five,
+`plcfrs` fourteen.
+
+**shedskin delegates monomorphization to the C++ type system.** Its
+analysis only has to answer *"what is the element type of this
+container?"* — three answers for `linalg`. pyc's analysis is answering
+*"which clone of each container method does each call site reach?"* —
+hundreds. That is what the splitter is grinding on in this issue, and it
+is a job shedskin never has to do.
+
+### But shedskin does NOT solve the union problem
+
+Run against pyc's own 018 reproducers, shedskin **detects the unions more
+precisely and then fails at essentially the same place**:
+
+| test | shedskin analysis | shedskin build |
+|---|---|---|
+| `branch_merged_scalar_union` | `*WARNING* Variable 'x' has dynamic (sub)type: {int, str}` | **fails**: `invalid conversion from '__ss_int' to 'pyobj*'` |
+| `none_int_field_pair` | `*WARNING* … dynamic (sub)type: {None, int}` | **fails**, same conversion error |
+| `dict_mixed_key_types` | no warning | **fails** inside shedskin's own `compare.hpp` |
+| `list_mul_heterogeneous_element` | no warning | builds; prints `[1.5, 0.0, 0.0]` where CPython prints `[1.5, 0, 0]` — **pyc diverges identically**, already recorded on that test's `.known_issue` tag |
+
+shedskin's representation for a union is `pyobj*`, and it does not box the
+scalar — so `{None, int}` hits *the same wall pyc does*, a scalar where a
+pointer is required. This is the 048/052 shape exactly.
+
+### What to take and what not to
+
+- **Take the diagnostics.** `*WARNING* Variable (Class V, 'a') has
+  dynamic (sub)type: {None, int}` names the variable, the class and the
+  union. pyc currently emits `sizeof_element of non-container type
+  'float64'` from inside `__pyc__.py`. That is a cheap, self-contained
+  improvement to [018](../issues/018-dict-mixed-key-types-boxing-failure.md).
+- **Do not go looking for shedskin's union representation.** It does not
+  have one. Boxing/tagging (030) remains genuinely unsolved work, not
+  something to copy.
+- **The template architecture is the real lesson for this issue**, and it
+  is a large change: it would mean emitting container methods as C++/C
+  templates parameterised on element type instead of cloning one C
+  function per contour. It would dissolve the `__getitem__`/`len`/`__mul__`
+  splitting pressure that is 75-88 % of the splits measured above, rather
+  than trying to make that splitting converge.
