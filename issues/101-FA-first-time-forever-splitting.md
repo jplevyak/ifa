@@ -601,34 +601,59 @@ CreationSets against distinct element types and distinct element
 sym-shapes:
 
 ```
-CORPUS: 1999 container CS / 554 elemtypes / 426 shapes
-  CS per elemtype 3.61x    CS per shape 4.69x
-  EMPTY element type:  1001 CS  (50% of all container CSs)
-  MIXED scalar+container: 41 CS  (2.1%), in 2 of 74 programs
+CORPUS: 1994 container CS total
+        1567 with an element AVar / 469 elemtypes / 341 shapes
+        CS per shape 4.60x
+  EMPTY element type (AVar exists, type bottom):  569 CS  (29%)
+  NO element AVar ever created:                   427 CS  (21%)
+    -> 996 CS, HALF the corpus, carry no element information at all
+  MIXED scalar+container: 41 CS (2.6%), in exactly 2 of 73 programs
 ```
+
+> **Numbers corrected 2026-08-16 — the first version of this probe was
+> perturbing its own measurement.** `get_element_avar()` is not an
+> accessor: it calls `unique_AVar` (which *creates* the AVar when absent)
+> and sets `cs->added_element_var`, a flag that gates element numeric
+> coercion in `fa_coerce_numeric_confluences`. Calling it on every
+> container CS every pass manufactured ~5 element AVars per program and
+> one spurious "empty" shape. The aggregate FA outcome was verified
+> **unaffected** (byte-identical `final_pass`/`violations`/`ess`/`css`
+> with the probe on and off), but the counts were inflated, and the
+> earlier "50 % have an empty element type" conflated genuinely-empty
+> with never-given-an-AVar. The probe is now read-only and reports the
+> two separately. **The 4.6× headline is unchanged** (was 4.69×) and the
+> mixed count is *exactly* unchanged.
 
 **`linalg` is mid-pack, not an outlier** — only **2 of 74** programs are
 anywhere near 1:1, and several are far worse:
 
 | program | container CS | elemtypes | shapes | ratio |
 |---|---|---|---|---|
-| `stereo` | **190** | 3 | **3** | **63×** |
-| `kanoodle` | 167 | 42 | 6 | 28× |
-| `tonyjpegdecoder` | 51 | 5 | 5 | 10× |
-| `linalg` | 57 | 15 | 6 | 9.5× |
-| `plcfrs` | 77 | 27 | 9 | 8.6× |
+| `stereo` | **185** | 2 | **2** | **92×** |
+| `kanoodle` | 162 | 41 | 5 | 32× |
+| `linalg` | 52 | 14 | 5 | 10.4× |
+| `pygasus` | 109 | 15 | 11 | 9.9× |
+| `tonyjpegdecoder` | 36 | 4 | 4 | 9× |
+| `plcfrs` | 69 | 26 | 8 | 8.6× |
 
-`stereo` is the cleanest possible demonstration: **190 container
-CreationSets covering exactly two shapes** — 120 `list<float64>` and 70
-with no element type at all.
+`stereo` is the cleanest possible demonstration: **185 container
+CreationSets covering exactly two shapes** — `list<float64>` and one with
+no element type at all.
 
-### Half of all container CreationSets have an EMPTY element type
+### Half of all container CreationSets carry no element information
 
-1001 of 1999, and up to 77 % within a program (`pygasus` 89/116,
-`tonyjpegdecoder` 38/51, `kanoodle` 111/167). A container CS whose
-element type is bottom has *no observable property distinguishing it from
-any other*. This is the single largest and lowest-risk collapse
-available.
+996 of 1994, split into two kinds, and the distinction matters for a fix:
+
+- **569 (29 %)** have an element AVar whose type is bottom — a container
+  the analysis tracked but that never received an element.
+- **427 (21 %)** never had an element AVar created at all — the container
+  was never indexed, appended to, or iterated in a way that demanded one.
+
+Either way the CS has *no observable property distinguishing it from any
+other* container CS of the same sym. Within a program it runs to
+`pygasus` 82/109 empty, `kanoodle` 106/162, `tonyjpegdecoder` 23/36 empty
+plus 15 with no AVar. This is the single largest and lowest-risk collapse
+available, and the `novar` half is the clearer of the two.
 
 The safety caveat is the ordering one already flagged, and it is real:
 during analysis every container CS *starts* empty and acquires elements
@@ -646,8 +671,8 @@ appears in only two programs**:
 
 | program | mixed CSs | builds? |
 |---|---|---|
-| `plcfrs` | 29 / 77 | **no** — `sizeof_element of non-container type 'float64'` |
-| `linalg` | 12 / 57 | **no** — `list::__mul__(_CG_any, _CG_any)` |
+| `plcfrs` | 29 / 69 | **no** — `sizeof_element of non-container type 'float64'` |
+| `linalg` | 12 / 52 | **no** — `list::__mul__(_CG_any, _CG_any)` |
 | every other program | 0 | — |
 
 It occurs in exactly the container-related programs that fail to build,

@@ -8228,9 +8228,20 @@ static void report_element_types() {
   // all, so indistinguishable from one another by any observable
   // property. n_mixed: element types holding both a scalar and a
   // container, i.e. the shape a template parameter cannot express (018).
-  int n_empty = 0, n_mixed = 0;
+  // n_novar: container CSs for which the analysis never created an
+  // element AVar at all -- reported separately from n_empty (element AVar
+  // exists, type is bottom) because this probe must NOT create one. See
+  // the read-only note in the loop.
+  int n_empty = 0, n_mixed = 0, n_novar = 0;
   for (CreationSet *cs : fa->css) if (cs && cs->sym && cs->sym->element) {
-    AVar *e = get_element_avar(cs);
+    // READ-ONLY. get_element_avar() is not an accessor: it calls
+    // unique_AVar (which CREATES the AVar when absent) and sets
+    // cs->added_element_var, and that flag gates element numeric
+    // coercion in fa_coerce_numeric_confluences. A probe that called it
+    // would be mutating the analysis it is measuring. Skip any CS that
+    // has not already had one created, and count it separately.
+    if (!cs->added_element_var) { ++n_novar; continue; }
+    AVar *e = unique_AVar(cs->sym->element->var, cs);
     if (!e) continue;
     std::string k = cs->sym->name ? cs->sym->name : "(anon)";
     auto &slot = by_sym[k];
@@ -8257,7 +8268,8 @@ static void report_element_types() {
     // discrimination is inner-CS identity, not a real type difference.
     std::map<std::string, int> shape;
     for (CreationSet *cs : fa->css) if (cs && cs->sym && cs->sym->element) {
-      AVar *e = get_element_avar(cs);
+      if (!cs->added_element_var) continue;  // read-only, see above
+      AVar *e = unique_AVar(cs->sym->element->var, cs);
       if (!e) continue;
       std::string byid, bysym;
       for (CreationSet *c : e->out->type->sorted) {
@@ -8275,7 +8287,7 @@ static void report_element_types() {
   for (auto &kv : by_sym)
     fprintf(stderr, " %s: %d CS / %d elemtypes / %d shapes;", kv.first.c_str(), kv.second.first,
             (int)kv.second.second.size(), (int)shapes[kv.first].size());
-  fprintf(stderr, " || empty=%d mixed=%d\n", n_empty, n_mixed);
+  fprintf(stderr, " || empty=%d mixed=%d novar=%d\n", n_empty, n_mixed, n_novar);
 }
 
 static void report_stage_churn() {
