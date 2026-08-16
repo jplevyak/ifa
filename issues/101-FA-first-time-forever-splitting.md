@@ -779,3 +779,106 @@ merge machinery to build on. It is also where `split_css`'s direct
 
 The flag and its probes are kept as the record of why the cheap version
 does not work.
+
+## How shedskin avoids the ordering problem (read from its source, 2026-08-16)
+
+shedskin runs the *same algorithm family* — `shedskin/infer.py` has
+`ifa()`, `ifa_split_class`, `ifa_confluence_point`, `ifa_determine_split`,
+`ifa_classes_to_split`, direct analogues of pyc's splitter. So the
+difference is not the algorithm. It is **when an instance is created.**
+
+### 1. Start merged, split on demand
+
+`ifa_classes_to_split` is a fixed whitelist — `list`, `tuple`, `tuple2`,
+`dict`, `defaultdict`, `set`, `frozenset`, `deque`, `__iter`, `array`.
+**User classes are never split at all.** A class carries a counter
+`cl.dcpa`, and the *only* thing that increments it is `ifa_split_class`,
+called when `ifa()` has found a concrete imprecision at a confluence
+point:
+
+```python
+def ifa_split_class(cl, dcpa, things, split):
+    split.append((cl, dcpa, things, cl.newdcpa))
+    cl.splits[cl.newdcpa] = dcpa     # durable lineage: new instance -> mother
+    cl.newdcpa += 1
+```
+
+By the time a split is considered, the element types are already known —
+**the split is driven by them**. There is never a moment where shedskin
+must decide a container's identity before knowing what it holds.
+
+### 2. A new contour INHERITS its mother's allocation instance
+
+This is the exact situation pyc's `creation_point` faces, and
+`ifa_seed_template` answers it explicitly:
+
+```python
+# --- contour is newly split: copy allocation type for 'mother' contour
+for id, c, thing in gx.alloc_info:
+    if id == parent.ident and thing is node.thing:
+        for a, b in zip(cart, c):
+            if a != b and not (a[0] is b[0] and a[1] in a[0].splits
+                               and a[0].splits[a[1]] == b[1]):
+                break                      # ^ a split instance == its mother
+        else:
+            mother_alloc_id = (id, c, thing); break
+if mother_alloc_id in gx.alloc_info:
+    gx.alloc_info[alloc_id] = gx.alloc_info[mother_alloc_id]
+elif gx.orig_types[node]:
+    gx.alloc_info[alloc_id] = list(gx.orig_types[node])[0]   # the dcpa=0 mold
+```
+
+A newly split contour takes the **mother's** instance, and failing that
+the allocation's type from the `dcpa=0/cpa=0` mold — the same instance
+every other contour of that function uses. Note the inner condition: the
+mother search treats a split instance as equal to its mother, following
+`cl.splits` transitively.
+
+So shedskin is **one container instance per allocation SITE**, shared by
+every contour, until IFA proves it must be split. pyc is **one
+CreationSet per allocation site × contour**, always, from pass 0.
+
+### The one place pyc already has this — and it is not durable
+
+`creation_point` contains the same inheritance:
+
+```cpp
+if (es && es->split) {
+  AVar *oldv = make_AVar(v->var, es->split);
+  cs = oldv->cs_map ? oldv->cs_map->get(s) : 0;
+  if (cs) goto Lfound;
+}
+```
+
+But `es->split` is wiped by `clear_splits()` at the top of every
+`extend_analysis()`. Tracing the loop — flow → `complete_pass` →
+`extend_analysis` [`clear_splits`, then split] → flow — the field is
+readable for **exactly one pass** after the split that set it. A contour
+split at pass 5 has `split == nullptr` by pass 7, so an allocation site
+first reached in it at pass 7 mints fresh instead of inheriting.
+
+shedskin's `cl.splits` is permanent and its mother lookup follows it
+transitively. This is the *same defect* as `CreationSet::split` vs the
+durable `split_origin` added in
+[066](066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md) —
+the EntrySet side of the inheritance path still has it.
+
+### What this means for the fix
+
+The `PYC_CSELEM` result above said creation-time canonicalization is
+impossible because identity precedes the element type. shedskin shows
+that is the wrong thing to want: **it never canonicalizes, because it
+never over-discriminates in the first place.** The two candidate
+directions, in increasing order of size:
+
+1. **A durable `EntrySet::split_origin`**, mirroring the CreationSet fix,
+   so the existing inheritance path works across passes instead of within
+   one. Small, local, and directly testable — it is the same patch shape
+   that worked in 066.
+2. **Inherit from the mold, not just the split parent.** shedskin falls
+   back to `gx.orig_types[node]` — the allocation's instance in the base
+   contour — whenever no mother is found. pyc has no such fallback: a
+   contour with no live `split` mints unconditionally. This is what makes
+   `stereo` create 185 CreationSets for 2 element shapes on pass 0 alone.
+
+Neither requires the merge machinery that post-hoc coalescing would.
