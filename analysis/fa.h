@@ -259,6 +259,18 @@ class CreationSet : public gc {
   // clone of. Already collapsed to the root at construction time, so one
   // deref suffices; nullptr for an original.
   CreationSet *split_origin = nullptr;
+  // ifa/issues/101 (PYC_CSELEM): the DURABLE element type of this
+  // container CS -- captured in complete_pass, after the flow fixpoint,
+  // exactly like EntrySet::type_key. Container CSs are minted per
+  // allocation-site x contour but their element types collapse to far
+  // fewer distinct values (corpus: 1994 CS -> 341 element shapes, 4.6x;
+  // `stereo` 185 -> 2), so this is the key a container CS *should* have
+  // been identified by. nullptr until first captured.
+  AType *elem_key = nullptr;
+  int elem_key_pass = -1;
+  // The Var whose creation_point minted this CS, so a later pass can ask
+  // "what element type did this site converge to?".
+  Var *creation_var = nullptr;
   Vec<CreationSet *> *equiv;     // used by clone.cpp & fa.cpp
   Vec<CreationSet *> not_equiv;  // used by clone.cpp
   Sym *type;                     // used by clone.cpp & fa.capp
@@ -668,6 +680,13 @@ class FA : public gc {
   // home=792, and the group alternates 792->692->792 to the pass cap.
   // A route A->B whose reverse B->A is already recorded here is a cycle.
   Map<EntrySet *, EntrySet *> route_last;
+  // ifa/issues/101 (PYC_CSELEM): per creation-site durable element type,
+  // rebuilt each pass from CreationSet::elem_key. A Var whose CSs
+  // converged to DIFFERENT element types maps to null (ambiguous) and is
+  // never canonicalized -- those are the sites where the extra
+  // CreationSets are earning their keep.
+  Map<Var *, AType *> var_elem_key;
+  Map<Var *, int> var_elem_ambig;
   // ifa/issues/074: the divergence guard's actual input. Both counters
   // above conflate two opposite things -- the ledger ROUTING a group back
   // into the product it recorded on an earlier pass (the anti-oscillation

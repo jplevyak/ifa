@@ -707,3 +707,75 @@ flowed, so any such canonicalization has to key on a durable/converged
 element type, not a mid-pass one — the same lesson as
 [066](066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md)'s
 `s->out->type`.
+
+
+## PYC_CSELEM: canonicalizing container CS identity on the element type
+
+Built it (off by default) and it is **inert by construction**. The
+negative result is structural and worth stating precisely, because it
+rules out a whole family of fixes.
+
+### What was built
+
+- `CreationSet::elem_key` / `elem_key_pass` — the container's **durable**
+  element type, captured in `complete_pass` after the flow fixpoint,
+  exactly as `EntrySet::type_key` is. Read-only with respect to element
+  AVars (see the probe trap above).
+- `CreationSet::creation_var` — the Var whose `creation_point` minted it.
+- `FA::var_elem_key` / `var_elem_ambig` — per creation site, the element
+  type its CreationSets converged to, with sites whose CSs converged to
+  *different* element types marked ambiguous and never canonicalized.
+- In `creation_point`, immediately before `Lunique`: reuse an existing CS
+  of the same sym whose durable `elem_key` matches this site's recorded
+  key, instead of minting.
+
+Deliberately keyed on the converged element type and never the current
+one — every container CS starts empty, so canonicalizing on "currently
+empty" would merge a list that becomes `list<int>` with one that becomes
+`list<str>`.
+
+### Result: zero reuses, on every program
+
+| program | container mint attempts | on pass 0 | reuses |
+|---|---|---|---|
+| `stereo` | 192 | **192 (100 %)** | **0** |
+| `linalg` | 37 | **37 (100 %)** | **0** |
+| `kanoodle` | 146 | 105 (71 %) | **0** |
+| `go` | 20 | 10 (50 %) | **0** |
+| `plcfrs` | 72 | 25 (34 %) | **0** |
+
+Two independent reasons, both structural:
+
+1. **Container CreationSets are minted before their element types
+   exist.** For `stereo` and `linalg` *every single one* is created on
+   pass 0, when no element has flowed anywhere and no durable key has
+   been captured. A creation-time decision cannot consult information
+   that is only produced by the flow it precedes.
+2. **Even on later passes the per-site key is unavailable.** Every
+   attempt logs `want=(nil)` — at `plcfrs` pass 10 there were 26
+   creators of which only 15 were keyed at all, because a container CS
+   that never had an element AVar created (the 427 `novar` CSs above) can
+   never contribute one.
+
+`PYC_CSELEM=1` is therefore byte-identical to the default everywhere,
+and the suite passes identically with it on (273/14/10/0/4).
+
+### What this rules out, and what is left
+
+**Creation-time canonicalization cannot work at all.** The identity
+decision happens strictly before the information it would need. No
+amount of refining the key helps; this is an ordering fact, not a tuning
+problem.
+
+The only remaining route is **post-hoc merging** — coalescing
+CreationSets whose durable element types agree once those types have
+converged, at the end of a pass. That is a genuinely different operation
+from anything FA does today: it means rewriting every `cs_map` entry that
+names the duplicate and every `AType` that contains it, and there is no
+merge machinery to build on. It is also where `split_css`'s direct
+`new CreationSet(cs)` clones would have to be handled, since those bypass
+`creation_point` entirely — `linalg` has 52 container CSs against only 37
+`creation_point` mint attempts, so roughly a third arrive by that route.
+
+The flag and its probes are kept as the record of why the cheap version
+does not work.

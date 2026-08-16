@@ -434,6 +434,8 @@ void flow_vars_assign(AVar *rhs, AVar *lhs) {
   if (lhs->lvalue) flow_var_to_var(rhs, lhs->lvalue);
 }
 
+static int cselem_enabled();  // ifa/issues/101, defined with the other flags
+
 CreationSet *creation_point(AVar *v, Sym *s, int nvars) {
   CreationSet *cs = v->cs_map ? v->cs_map->get(s) : 0;
   EntrySet *es = (EntrySet *)v->contour;
@@ -471,6 +473,48 @@ Lcreators:;
     cs = x;
     goto Lfound;
   }
+  // ifa/issues/101 (PYC_CSELEM): before minting another container CS for
+  // this site, ask what element type the site converged to on the
+  // PREVIOUS pass, and reuse an existing CS of the same sym that
+  // converged to the same thing. Container CSs are minted per
+  // allocation-site x contour but their element types collapse to far
+  // fewer distinct values -- corpus-wide 1994 CS for 341 element shapes,
+  // and `stereo` alone is 185 CS for 2. shedskin gets this for free
+  // because its `list<T>` is keyed on T; here the element type is an
+  // ATTRIBUTE of a CS identified by its creation site, so equivalent
+  // containers stay distinct and every container METHOD is then split
+  // per CS rather than per element type.
+  //
+  // Deliberately keyed on the durable, converged element type and never
+  // on the current one: every container CS starts empty and acquires
+  // elements later, so canonicalizing on "currently empty" would merge a
+  // list that will become list<int> with one that will become list<str>.
+  // Sites whose CSs converged to DIFFERENT element types are marked
+  // ambiguous and left alone -- there the extra CreationSets are earning
+  // their keep.
+  if (cselem_enabled() && s != sym_closure && s->element) {
+    AType *want = v->var ? fa->var_elem_key.get(v->var) : nullptr;
+    bool ambig = v->var && fa->var_elem_ambig.get(v->var);
+    if (getenv("IFA_DBG_CSELEM"))
+      fprintf(stderr, "[cselem-try] p=%d sym=%s var=%s want=%p ambig=%d creators=%d keyed=%d\n", analysis_pass,
+              s->name ? s->name : "?", (v->var && v->var->sym->name) ? v->var->sym->name : "?", (void *)want,
+              ambig ? 1 : 0, s->creators.n, [&] {
+                int n = 0;
+                for (CreationSet *x : s->creators) if (x && x->elem_key_pass >= 0) ++n;
+                return n;
+              }());
+    if (want && !ambig) {
+      for (CreationSet *x : s->creators)
+        if (x && x->elem_key_pass >= 0 && x->elem_key == want &&
+            !(s->abstract_type && x == s->abstract_type->v[0])) {
+          if (getenv("IFA_DBG_CSELEM"))
+            fprintf(stderr, "[cselem] p=%d sym=%s var=%s -> reuse cs=%d (elem_key %p)\n", analysis_pass,
+                    s->name ? s->name : "?", v->var->sym->name ? v->var->sym->name : "?", x->id, (void *)want);
+          cs = x;
+          goto Lfound;
+        }
+    }
+  }
 Lunique:
   // new creation set
   if (getenv("IFA_DBG_CSMINT"))
@@ -480,6 +524,7 @@ Lunique:
             (es && es->split) ? (make_AVar(v->var, es->split)->cs_map ? 1 : 0) : -1, s == sym_closure ? 1 : 0,
             (s->clone_methods_per_cs || (s->type && unalias_type(s->type)->clone_methods_per_cs)) ? 1 : 0);
   cs = new CreationSet(s);
+  cs->creation_var = v->var;  // ifa/issues/101: for the per-site element key
   if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
   s->creators.add(cs);
   for (Sym *h : s->has) {
@@ -5084,6 +5129,18 @@ static int hard_reuse_enabled() {
 // instead, so the growth comes straight back (repro ess 144 -> 279 for
 // mode 1, 257 for mode 2). PYC_SELFPROD=6 fixes the same oscillation
 // from the other end without that cost.
+// ifa/issues/101: canonicalize CONTAINER CreationSet identity on the
+// durable element type instead of the creation site x contour. Off by
+// default. See capture_elem_keys() and creation_point's Lcanon.
+static int cselem_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_CSELEM");
+    e = v ? atoi(v) : 0;
+  }
+  return e;
+}
+
 // ifa/issues/101: detect and break 2-cycles in the ES split ledger.
 static int routecycle_enabled() {
   static int e = -1;
@@ -8025,6 +8082,39 @@ static void audit_edge_arg_values() {
 static long kd_stable = 0, kd_grew = 0, kd_shrank = 0, kd_new = 0, kd_flip = 0;
 static Vec<Fun *> kd_flip_funs;
 
+// ifa/issues/101: stamp each container CreationSet with its converged
+// element type, then roll those up per creation site. Runs in
+// complete_pass, AFTER the flow fixpoint, so the value is the
+// whole-pass-invariant element type rather than a mid-pass accumulation
+// -- the same discipline EntrySet::type_key needs (066).
+//
+// READ-ONLY with respect to element AVars: get_element_avar() would
+// CREATE one and set added_element_var (which gates numeric coercion),
+// so only CSs that already have one are considered.
+static void capture_elem_keys() {
+  if (!cselem_enabled()) return;
+  int n_keyed = 0, n_sites = 0;
+  fa->var_elem_key.clear();
+  fa->var_elem_ambig.clear();
+  for (CreationSet *cs : fa->css) if (cs && cs->sym && cs->sym->element) {
+    if (!cs->added_element_var) continue;
+    AVar *e = unique_AVar(cs->sym->element->var, cs);
+    if (!e) continue;
+    cs->elem_key = e->out->type;
+    cs->elem_key_pass = analysis_pass;
+    ++n_keyed;
+    if (!cs->creation_var) continue;
+    ++n_sites;
+    AType *prev = fa->var_elem_key.get(cs->creation_var);
+    if (!prev)
+      fa->var_elem_key.put(cs->creation_var, cs->elem_key);
+    else if (prev != cs->elem_key)
+      fa->var_elem_ambig.put(cs->creation_var, 1);  // site is genuinely polymorphic
+  }
+  if (getenv("IFA_DBG_CSELEM"))
+    fprintf(stderr, "[cselem-cap] p=%d keyed=%d with_var=%d\n", analysis_pass, n_keyed, n_sites);
+}
+
 static void capture_type_keys() {
   bool drift = getenv("IFA_DBG_KEYDRIFT") != nullptr;
   if (!typekey_enabled() && !drift && selfprod_enabled() < 3) return;
@@ -8314,6 +8404,7 @@ static void complete_pass() {
   report_canon_stats();
   report_keyspace();
   capture_type_keys();
+  capture_elem_keys();
   report_keydrift();
   report_markwhy();
   report_incompat();
