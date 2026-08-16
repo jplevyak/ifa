@@ -247,6 +247,14 @@ class CreationSet : public gc {
   Vec<EntrySet *> ess;           // entry sets restricted by this creation set
   Vec<EntrySet *> es_backedges;  // entry sets restricted by this creation set
   CreationSet *split;            // creation set this one was split from
+  // ifa/issues/066: DURABLE lineage, unlike `split` above, which
+  // clear_splits() wipes at the top of every pass -- it is a within-pass
+  // scratch marker, not a record of where this CreationSet came from.
+  // Set once in the clone constructor and never cleared, so a CS minted
+  // by split_css on pass 40 still knows on pass 90 which original it is a
+  // clone of. Already collapsed to the root at construction time, so one
+  // deref suffices; nullptr for an original.
+  CreationSet *split_origin = nullptr;
   Vec<CreationSet *> *equiv;     // used by clone.cpp & fa.cpp
   Vec<CreationSet *> not_equiv;  // used by clone.cpp
   Sym *type;                     // used by clone.cpp & fa.capp

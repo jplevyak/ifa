@@ -156,6 +156,13 @@ That explains the trigger table exactly: `deepcopy` supplies the fresh
 allocation, recursion supplies the unbounded depth, and nesting supplies
 the second level that compounds it.
 
+**Partly fixed 2026-08-16** — a durable `CreationSet::split_origin` now
+canonicalises the setter type's CreationSets onto their split-chain root
+(`PYC_CSKEY=2`, default). Corpus-neutral over 77 programs and it cuts
+this reproducer's growth 40% (ess 272 -> 164 at pass 102). It does not
+eliminate the growth; details and what remains in
+[066](066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md).
+
 **Traced to a single term, 2026-08-16.** The generator is `split_css`
 cloning that list CS every ~10 passes, each clone parenting the next; the
 CS ledger never recognises the repeat (`found=0`, a different `csig`

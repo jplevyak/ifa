@@ -1,5 +1,13 @@
 # 066 — The split oscillation is a durable-decision *keying* bug, not an architecture gap: CS identity is per-pass, should be per-creation-site
 
+> **PARTIAL FIX LANDED 2026-08-16** — `PYC_CSKEY=2` (durable
+> `CreationSet::split_origin`) is now the **default**. Corpus-neutral by
+> measurement (77 programs, zero exit-code changes, zero changes to
+> violations/ess/css/final_pass, +1.6% analysis time; test suite
+> unchanged) and it cuts the reproducer's runaway growth by 40%. The
+> issue stays **open**: growth is reduced, not eliminated — see
+> "What is left" below.
+
 > **Diagnosis proven and localised, 2026-08-16** — see the section
 > immediately below. `cs_group_signature`'s `s->out->type` term is the
 > only per-pass input to the CS split key, and removing it stops the
@@ -71,6 +79,51 @@ of its split chain**, so a CS and its clones hash alike. **No effect at
 all** — byte-identical to the default on the reproducer. So the drift is
 not the clone identity of the CSs *inside the setter's type*; something
 else in that type changes per pass.
+
+### The fix that landed: durable lineage (`split_origin`)
+
+Mode 2's first version was **inert** — byte-identical to the default —
+and the reason is a trap worth stating plainly:
+
+> **`CreationSet::split` is wiped every pass.** `clear_splits()`
+> (`fa.cc:6584`) zeroes it at the top of each splitter round. It is a
+> *within-pass scratch marker*, not lineage. The clone chain that needs
+> collapsing advances one link per ~10 passes, so walking `split` across
+> passes always finds `nullptr` immediately.
+
+So `CreationSet` now carries **`split_origin`**: set once in the clone
+constructor as `cs->split_origin ? cs->split_origin : cs`, never
+cleared, and already collapsed to the root so one deref suffices.
+`cs_group_signature` identifies each CreationSet in the setter's type by
+that root, and clones of one original hash alike while two genuinely
+different lists still differ.
+
+Measured, guards raised so the growth is visible:
+
+| | baseline (`=0`) | drop-type (`=1`) | **durable root (`=2`)** |
+|---|---|---|---|
+| repro ess / css @p102 | 272 / 760 | 144 / 617 | **164 / 638** |
+| linalg violations | 27 | **74** | 27 |
+| plcfrs violations | 5237 | 4528 (precision lost) | 5237 |
+| go | 164 / 505 / 1544 | unchanged | unchanged |
+| corpus (77 programs) | — | — | **0 exit-code, 0 metric changes** |
+| analysis time | — | — | **+1.6%** |
+| test suite | 273/14/10/0/4 | — | **273/14/10/0/4** |
+
+Mode 2 buys ~60% of mode 1's growth reduction at none of its cost.
+
+### What is left
+
+**Growth is reduced, not eliminated.** At the default guards the
+reproducer still stops at pass 36 with `pass_limit_hit=1`, and with
+guards raised `ess` still climbs 148 → 164 between pass 36 and 102. So
+`split_origin` removes one generator of per-pass identity drift; at least
+one more remains in `s->out->type`, since mode 1 (which discards that
+term wholesale) still goes flatter, at 144.
+
+Note also that the reproducer's violations go **2 → 4** at pass 102 under
+raised guards (mode 1 does the same). At the shipping default guards it
+stays at 2. Worth watching if the guards are ever raised.
 
 ### What the next attempt should be
 

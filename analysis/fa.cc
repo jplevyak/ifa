@@ -195,6 +195,8 @@ CreationSet::CreationSet(CreationSet *cs)
     : dfs_color(DFS_white), added_element_var(0), closure_used(0), tuple_able(0),
       atype(nullptr), equiv(nullptr), type(nullptr) {
   sym = cs->sym;
+  // ifa/issues/066: durable lineage, collapsed to the root as we go.
+  split_origin = cs->split_origin ? cs->split_origin : cs;
   id = fa->creation_set_id++;
   fa->all_creation_sets.add(this);  // ifa/issues/098: authoritative list for clear_results
   clone_for_constants = cs->clone_for_constants;
@@ -6028,11 +6030,18 @@ static void collect_setter_confluences(Accum<AVar *> &avs, Vec<AVar *> &setter_c
 // so Vec-set iteration order cannot perturb the hash.
 // ifa/issues/066: drop the per-pass term from the CS split signature so
 // the ledger can recognise a re-derived split. See the use below.
+// Defaults to 2 (durable split-chain root) as of 2026-08-16: measured
+// over the whole shedskin corpus at ZERO exit-code changes and zero
+// changes to violations/ess/css/final_pass on all 77 programs, +1.6%
+// analysis time, with the full test suite unchanged -- while cutting
+// tests/deepcopy_recursive_nested_growth.py's runaway contour growth by
+// 40% (ess 272 -> 164 at pass 102). 0 restores the old per-pass key, 1
+// is the drop-the-type control; both are kept for investigation.
 static int cskey_enabled() {
   static int e = -1;
   if (e < 0) {
     cchar *v = getenv("PYC_CSKEY");
-    e = v ? atoi(v) : 0;
+    e = v ? atoi(v) : 2;
   }
   return e;
 }
@@ -6060,9 +6069,11 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
       // type is still required to have FLOWED (the guard above); it just
       // does not get to be part of the identity.
       if (cskey_enabled() == 1) {
-        // 1: drop the type entirely. Durable, but too blunt -- it merges
-        // splits the setter type legitimately separated (linalg: 43 ->
-        // 651 violations).
+        // 1: drop the type entirely. Durable, and it does stop the
+        // growth -- but too blunt: it merges splits the setter type
+        // legitimately separated, taking linalg from 27 to 74 violations
+        // and plcfrs's contour count down with its precision. Kept only
+        // as the control that proves which term is at fault.
         h += (uint)combine_hash((uintptr_t)s->var->sym->id, (uintptr_t)s->var->sym->id);
       } else if (cskey_enabled() == 2) {
         // 2: keep the type, but identify each of its CreationSets by the
@@ -6070,11 +6081,17 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
         // which is the whole point, since the clone chain is what makes
         // the signature drift -- while two genuinely different lists
         // still differ.
+        //
+        // This reads `split_origin`, NOT `split`. The first attempt walked
+        // `split` and was inert -- byte-identical to mode 0 -- because
+        // clear_splits() zeroes `split` at the top of every pass: it is a
+        // within-pass scratch marker, and the chain we need to collapse
+        // spans ~10 passes per link. `split_origin` is set once in the
+        // clone constructor and never cleared.
         uintptr_t th = 0;
         int i2 = 0;
         for (CreationSet *c : s->out->type->sorted) {
-          CreationSet *root = c;
-          while (root->split) root = root->split;
+          CreationSet *root = c->split_origin ? c->split_origin : c;
           th += (uintptr_t)root->id * open_hash_primes[i2++ % 256];
         }
         h += (uint)combine_hash((uintptr_t)s->var->sym->id, th);
