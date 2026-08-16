@@ -669,3 +669,5 @@ Fix it now when:
   one you're already writing.
 - The current PR is the natural place for it (the reviewer would
   spot the workaround and ask why).
+
+- [101](101-FA-first-time-forever-splitting.md) — the residual non-convergence (`go`, `linalg`, `plcfrs`) is first-time-forever splitting, not re-derivation.

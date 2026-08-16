@@ -2664,9 +2664,14 @@ growth comes straight back — repro `ess` 144 → 279 (mode 1) and 257
 ### What is left
 
 Mode 6 is *exactly* inert on the corpus, so it fixes this reproducer and
-helps no corpus program: the **4 of 77 that still hit the pass limit are
-unchanged**, and their non-convergence therefore has a different shape
-than the period-2 flip-flop. That is the next thing to characterise.
+helps no corpus program. **That set is now characterized in
+[101](101-FA-first-time-forever-splitting.md):** it is three programs,
+not four (`sudoku5` converges once the guards are raised — it was only
+ever stall-guard-limited), and their disease is the *opposite* of this
+one. 95–98 % of their split decisions are FIRST-TIME signatures the
+ledger has never seen, where this reproducer re-derived a single
+signature for ninety passes. Nothing that keys on a repeat can help
+them, which is exactly why mode 6 measured as inert.
 
 The reproducer also still fails to compile — on the
 [018](../issues/018-dict-mixed-key-types-boxing-failure.md) boxing gap it

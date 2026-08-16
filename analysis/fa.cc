@@ -8047,6 +8047,11 @@ static void report_stage_churn() {
     if (fa->dbg_stage_detach[i] || fa->dbg_stage_mint[i] || fa->dbg_stage_reuse[i] || fa->dbg_stage_csmint[i])
       fprintf(stderr, " %s(det=%ld mint=%ld reuse=%ld csmint=%ld)", kStageName[i], fa->dbg_stage_detach[i],
               fa->dbg_stage_mint[i], fa->dbg_stage_reuse[i], fa->dbg_stage_csmint[i]);
+  // NOTE deliberately no violation count here: type_violations is
+  // collected by collect_var_type_violations() inside extend_analysis(),
+  // which runs AFTER complete_pass, so reading it at this point reports
+  // 0 (or a stale tally) rather than this pass's. See the VIOL line
+  // emitted at the collection site instead.
   fprintf(stderr, " | ess=%d css=%d\n", fa->ess.n, fa->css.n);
   for (int i = 0; i < FA::kNumFAPassStages; i++)
     fa->dbg_stage_detach[i] = fa->dbg_stage_mint[i] = fa->dbg_stage_reuse[i] = fa->dbg_stage_csmint[i] = 0;
@@ -8064,6 +8069,11 @@ static void complete_pass() {
   collect_results();
   collect_argument_type_violations();
   collect_var_type_violations();
+  // ifa/issues/074: sample the violation count HERE, at the collection
+  // point -- this is the only place in the pass where it is meaningful.
+  if (getenv("IFA_DBG_STAGE"))
+    fprintf(stderr, "VIOL p=%d n=%d ess=%d css=%d\n", analysis_pass, fa->type_violations.set_count(), fa->ess.n,
+            fa->css.n);
   pass_timer.stop();
 }
 
