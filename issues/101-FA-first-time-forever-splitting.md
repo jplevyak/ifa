@@ -882,3 +882,72 @@ directions, in increasing order of size:
    `stereo` create 185 CreationSets for 2 element shapes on pass 0 alone.
 
 Neither requires the merge machinery that post-hoc coalescing would.
+
+## Direction 2 built: the mold fallback (`PYC_CSMOLD`, default 1)
+
+pyc's analogue of shedskin's `gx.orig_types[node]` fallback: when a
+contour has no live split parent to inherit from, reuse the CreationSet
+minted at the **same allocation site** in any other contour instead of
+minting unconditionally. `clone_methods_per_cs` classes are excluded —
+issue 045 established their instances must stay per-contour.
+
+**Corpus, 77 programs — strictly better or equal on every metric:**
+
+| | baseline | `PYC_CSMOLD=1` |
+|---|---|---|
+| exit codes | — | **no changes** |
+| `pass_limit_hit` | — | **no changes** |
+| violations | 6399 | **4276 (−33.2 %)** |
+| `ess` | 27044 | 26367 — 3 better, **0 worse** |
+| `css` | 91859 | 90367 — 4 better, **0 worse** |
+| analysis time | 709 s | **690 s (−2.8 %)** |
+
+Nearly all of the violation win is `plcfrs`, which **halves**: 4355 →
+2232, with `ess` 1262 → 850 and `css` 4034 → 2709. `kanoodle` drops `ess`
+752 → 488 (−35 %) and converges a pass earlier. Suite unchanged at
+273/14/10/0/4.
+
+Mode 2 (apply to every sym, not just containers) was measured and
+rejected: it costs `plcfrs` 2232 → 4353 violations for a few `css`
+elsewhere.
+
+### A correction to this issue's framing
+
+I had been describing the over-discrimination as "one CreationSet per
+allocation site **× contour**". Printing the Var identity at each mint
+shows that is only half true, and not the half that dominates on the
+worst program:
+
+```
+[csmint] p=0 sym=list varid=8829 varsym=8570 es=10 split=-1
+[csmint] p=0 sym=list varid=9093 varsym=8646 es=11 split=-1
+```
+
+`stereo`'s 191 list CreationSets sit at **191 distinct Vars with 191
+distinct Var syms** — genuinely different allocation sites (in `__pyc__`
+library code; `stereo.py` itself has about two list constructs). There is
+no per-contour duplication there to collapse, which is exactly why
+`PYC_CSMOLD` is inert on `stereo` and on `linalg` while transforming
+`plcfrs` and `kanoodle`.
+
+So the 4.6× "CS per element shape" figure conflates two things:
+
+- **per-contour duplication** — real, and what the mold fallback removes;
+- **per-site multiplicity** — also real, but *correct* for a site-based
+  analysis, and not something CS identity should be collapsing.
+
+That also re-identifies what shedskin's advantage on `stereo` actually
+is. It is **not** the mold fallback — shedskin's `alloc_info` is per-site
+too. It is that shedskin's *codegen type* is `list<double>`, so all 191
+sites share one C++ type and one `__getitem__` instantiation, whereas
+pyc's `__getitem__` is TYPE_CONFLUENCE-split per receiver CreationSet into
+236 contours.
+
+### What that leaves
+
+The remaining work is narrower than "CreationSet identity", and it is a
+**splitting** rule rather than an identity one: *do not split a container
+method per receiver CreationSet when the receivers agree on element
+type.* That is the direct analogue of what a template instantiation gives
+shedskin for free, and unlike CS re-keying it needs neither merge
+machinery nor information that does not exist yet at the decision point.

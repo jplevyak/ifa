@@ -435,6 +435,7 @@ void flow_vars_assign(AVar *rhs, AVar *lhs) {
 }
 
 static int cselem_enabled();  // ifa/issues/101, defined with the other flags
+static int csmold_enabled();  // ifa/issues/101, ditto
 
 CreationSet *creation_point(AVar *v, Sym *s, int nvars) {
   CreationSet *cs = v->cs_map ? v->cs_map->get(s) : 0;
@@ -515,11 +516,33 @@ Lcreators:;
         }
     }
   }
+  // ifa/issues/101 direction 2: the mold fallback (see csmold_enabled).
+  // Last resort before minting -- every earlier path (cs_map memo, split
+  // parent inheritance) has already declined. clone_methods_per_cs
+  // classes are excluded: issue 045 established that their instances
+  // MUST stay per-contour, since the per-constant contours exist exactly
+  // to give each constant binding its own instance CS.
+  if (csmold_enabled() && s != sym_closure && v->var &&
+      (csmold_enabled() >= 2 || s->element)) {
+    Sym *cmc0 = s->clone_methods_per_cs ? s : (s->type ? unalias_type(s->type) : 0);
+    if (!(cmc0 && cmc0->clone_methods_per_cs)) {
+      for (CreationSet *x : s->creators)
+        if (x && x->creation_var == v->var && !(s->abstract_type && x == s->abstract_type->v[0])) {
+          if (getenv("IFA_DBG_CSMOLD"))
+            fprintf(stderr, "[csmold] p=%d sym=%s var=%s es=%d -> reuse cs=%d\n", analysis_pass,
+                    s->name ? s->name : "?", v->var->sym->name ? v->var->sym->name : "?", es ? es->id : -1, x->id);
+          cs = x;
+          goto Lfound;
+        }
+    }
+  }
 Lunique:
   // new creation set
   if (getenv("IFA_DBG_CSMINT"))
-    fprintf(stderr, "[csmint] p=%d sym=%s var=%s es=%d split=%d parent_had=%d closure=%d cmc=%d\n", analysis_pass,
-            s->name ? s->name : "?", v->var && v->var->sym && v->var->sym->name ? v->var->sym->name : "?",
+    fprintf(stderr, "[csmint] p=%d sym=%s varid=%d varsym=%d var=%s es=%d split=%d parent_had=%d closure=%d cmc=%d\n",
+            analysis_pass, s->name ? s->name : "?", v->var ? v->var->id : -1,
+            (v->var && v->var->sym) ? v->var->sym->id : -1,
+            v->var && v->var->sym && v->var->sym->name ? v->var->sym->name : "?",
             es ? es->id : -1, (es && es->split) ? es->split->id : -1,
             (es && es->split) ? (make_AVar(v->var, es->split)->cs_map ? 1 : 0) : -1, s == sym_closure ? 1 : 0,
             (s->clone_methods_per_cs || (s->type && unalias_type(s->type)->clone_methods_per_cs)) ? 1 : 0);
@@ -5137,6 +5160,38 @@ static int cselem_enabled() {
   if (e < 0) {
     cchar *v = getenv("PYC_CSELEM");
     e = v ? atoi(v) : 0;
+  }
+  return e;
+}
+
+// ifa/issues/101: shedskin's MOLD FALLBACK. When a contour has no live
+// split parent to inherit an allocation instance from, shedskin does not
+// mint -- ifa_seed_template falls back to `gx.orig_types[node]`, the
+// allocation's instance in the dcpa=0/cpa=0 mold, i.e. the one every
+// other contour of that function uses. It therefore keeps ONE container
+// instance per allocation SITE, shared across contours, and lets `ifa()`
+// split it later when it finds a concrete imprecision -- by which time
+// the element types are known.
+//
+// pyc has no such fallback: `creation_point` mints unconditionally, so a
+// site allocates once per (site x contour) from pass 0 onward. That is
+// what makes `stereo` create 185 container CreationSets covering 2
+// element shapes on pass 0 alone.
+//
+// 1 = containers only (s->element), the DEFAULT from 2026-08-16.
+// 2 = every eligible sym; measured and rejected -- it costs plcfrs
+// dearly (violations 2232 -> 4353, ess 850 -> 1213) for a few css on
+// other programs. 0 restores the old mint-unconditionally behaviour.
+//
+// Corpus at mode 1, 77 programs: zero exit-code changes, zero
+// pass_limit_hit changes, violations 6399 -> 4276 (-33.2%, plcfrs alone
+// 4355 -> 2232), ess and css lower on 3 and 4 programs and HIGHER ON
+// NONE, analysis time -2.8%.
+static int csmold_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_CSMOLD");
+    e = v ? atoi(v) : 1;
   }
   return e;
 }
