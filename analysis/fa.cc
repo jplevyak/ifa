@@ -7971,6 +7971,17 @@ int FA::analyze(Fun *top) {
   if1->callback->report_analysis_errors(type_violations);
   if (show_violation_output) show_violations(fa, stderr);
   if (fruntime_errors) convert_NOTYPE_to_void();
+  // ifa/issues/074: WHICH splitter stages this program actually demanded,
+  // in cascade order, once for the whole analysis. Deliberately a SET and
+  // not per-pass counts -- the counts move with every FA change, but "did
+  // this program need the setter splitter at all" is a stable, meaningful
+  // property of the program, and is what tests/splitter_*.py pin.
+  if (getenv("PYC_DBG_STAGES")) {
+    fprintf(stderr, "STAGES:");
+    for (int i = 0; i < kNumFAPassStages; i++)
+      if (stage_progress_count[i]) fprintf(stderr, " %s", kStageName[i]);
+    fprintf(stderr, "\n");
+  }
   return (!fruntime_errors && type_violations.set_count()) ? -1 : 0;
 }
 

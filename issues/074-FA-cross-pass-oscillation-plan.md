@@ -536,6 +536,47 @@ A third bug fell out of the narrowing: `write_c_prim` **aborts the
 compiler** on a nameless primitive destination (`cg.cc:389`), filed as
 [issues/047](../../issues/047-cg-nameless-lvalue-assert-on-prim.md).
 
+### Per-splitter demonstration tests, and three stages nothing triggers (2026-08-15)
+
+`PYC_DBG_STAGES=1` prints one line at the end of analysis naming the
+stages that made progress — a *set*, not per-pass counts, because the
+counts move with every FA change while "did this program need the setter
+splitter at all" is a stable property of the program. `tests/splitter_*.py`
+pin one stage each; the harness gained a `.env` sidecar so a test can
+request the probe and the off-by-default flags.
+
+| test | `.env` | STAGES |
+|---|---|---|
+| `splitter_type_confluence.py` | — | `TYPE_CONFL` |
+| `splitter_setter.py` | — | `TYPE_CONFL SETTER` |
+| `splitter_setter_of_setter.py` | — | `TYPE_CONFL SETTER SETTER_OF_SETTER` |
+| `splitter_mark_type.py` | `PYC_NOMARK=0` | `TYPE_CONFL MARK_TYPE` |
+| `splitter_cartesian_product.py` | `PYC_CPA=4` | `TYPE_CONFL VIOLATION PER_CS_RECV CPA` |
+
+**Three of the ten stages could not be triggered at all**:
+`MARK_SETTER`, `MARK_SETTER_OF_SETTER` and `CSM_ELEMENT_CS`. That is not
+for want of trying small programs, and it is corroborated by the corpus:
+across the twelve `IFA_DBG_STAGE` runs of the oscillating set, the union
+of every stage that ever fires at the default settings is just
+
+```
+TYPE_CONFL (230)   SETTER (23)   SETTER_OF_SETTER (16)   VIOLATION (2, softrender only)
+```
+
+So under the shipped configuration **four stages carry all the work and
+three never run**. `MARK_SETTER` / `MARK_SETTER_OF_SETTER` are enabled by
+default (`PYC_NOMARK=1` only disables `MARK_TYPE`) and still never fire;
+`CSM_ELEMENT_CS` is off by default and additionally sits behind stage 7's
+full-quiescence gate.
+
+The `PYC_CPA=4` row is the sharpest evidence for the starvation reading
+of that: the *same program* that demands only `TYPE_CONFL` at default
+settings demands `VIOLATION` and `PER_CS_RECEIVER` as well once CPA
+perturbs it — those stages were never unreachable in principle, they were
+simply never reached, because `run_split_stages` is first-stage-wins and
+stage 1 is essentially never quiet. Any future attempt to justify a stage
+by "it contributes nothing" has to clear this bar first.
+
 ## THE RE-BASED TARGET SET (2026-08-12)
 
 Same corpus, same `PYC_DBG_OSC` probe, with `IFA_STALL_LIMIT` and
