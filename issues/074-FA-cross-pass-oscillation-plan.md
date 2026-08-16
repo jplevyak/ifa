@@ -92,6 +92,46 @@ from that set are all measuring guard calibration mixed with analysis
 behavior. **The re-base is done — see the next section; the genuine
 target set is 8 programs, not 17.**
 
+## STATUS 2026-08-16 — the current numbers
+
+Re-measured on HEAD. Supersedes the 08-14 section below, which was taken
+before `PYC_NOMARK` became the default.
+
+**Shipped config: 4 of 84 programs end `pass_limit_hit=1`** — `go`,
+`linalg`, `plcfrs`, `sudoku5` — against **20** at the start of the
+08-13 session.
+
+**Guards off (only the 100-pass cap): 3 of the 73 programs that produce
+an FA result fail to converge** — `go`, `linalg`, `plcfrs`. `sudoku5`
+converges once the guards stop firing, so it is a guard cutoff, not
+non-convergence.
+
+The six that left the list since 08-14 (`bh`, `genetic2`, `hq2x`,
+`pylife`, `rubik`, `sudoku4`) did so because **`PYC_NOMARK=1` is now the
+default**, not because of anything later. Verified directly: `hq2x` at
+`PYC_NOMARK=0` with guards off is still p102 / ess 1664, and at the
+default is p14 / ess 620. (The "9 of 73" figure in the 08-14 section was
+measured against a marks-on binary and should be read as the marks-on
+number.)
+
+**The remaining three are one group — cascade serialization.** All three
+demand only `TYPE_CONFL` + `SETTER` (+ `SETTER_OF_SETTER` for `go` and
+`plcfrs`); `MARK_TYPE` is out of the picture entirely. Growth over the
+last ten passes before the cap:
+
+| | ess p92 → p101 | |
+|---|---|---|
+| linalg | 867 → 943 | **+76**, still growing |
+| go | 641 → 669 | **+28**, still growing |
+| plcfrs | 1340 → 1342 | +2, plateaued |
+
+`linalg` is worth a note: at 08-14 it was *flat* (586 → 585) and is now
+the fastest grower. Its trajectory changed with marks-off plus the
+element numeric coercion — it converges toward a larger contour set
+(ess 944 vs 586) and is still climbing at the cap. So the group did not
+just shrink; its composition moved, and `linalg` is now the sharpest
+subject rather than `go`.
+
 ## STATUS 2026-08-14 — where oscillation and growth stand after this session
 
 Re-measured on current HEAD (self-product fix default-on), **not** carried
