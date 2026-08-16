@@ -1,5 +1,8 @@
 #include "ifadefs.h"
 
+#include <algorithm>
+#include <map>
+#include <vector>
 #include "fa.h"
 #include "ast.h"
 #include "builtin.h"
@@ -4857,6 +4860,27 @@ static uint setter_site_signature(Vec<AEdge *> &these_edges, Fun *f) {
   return h ? h : 1;
 }
 
+// ifa/issues/101: include the return types in group_signature. 1 is the
+// historical behaviour and stays the DEFAULT; 0 drops the term.
+//
+// Dropping it was the obvious repair for the ledger cycle described at
+// the use site, and it measured EXACTLY INERT -- byte-identical
+// final_pass/violations/ess/css on go, linalg, plcfrs and sudoku5. So the
+// two cycling signatures do NOT differ in their return term, and the
+// hypothesis behind this flag is wrong: the difference is in the argument
+// term, which means linalg's 792/692 pair is most likely two distinct
+// groups SWAPPING contours rather than one group cycling. Kept as a
+// measured negative result, defaulted to the historical behaviour since
+// it buys nothing and has not been swept.
+static int gsigret_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_GSIGRET");
+    e = v ? atoi(v) : 1;
+  }
+  return e;
+}
+
 static uint group_signature(Vec<AEdge *> &these_edges, Fun *f) {
   uint h = 0;
   int i = 0;
@@ -4872,16 +4896,33 @@ static uint group_signature(Vec<AEdge *> &these_edges, Fun *f) {
     }
     h += (uint)(uintptr_t)t * open_hash_primes[i++ % 256];
   }
-  int nrets = these_edges[0]->rets.n;
-  for (int r = 0; r < nrets; r++) {
-    AType *t = fa->type_world.bottom_type;
-    for (AEdge *x : these_edges)
-      if (r < x->rets.n && x->rets[r]->lvalue) {
-        AType *rt = x->rets[r]->lvalue->out->type;
-        if (!rt->n) return 0;  // wildcard: no identity yet
-        t = type_union(t, rt);
-      }
-    h += (uint)(uintptr_t)t * open_hash_primes[i++ % 256];
+  // ifa/issues/101: the RETURN term makes this signature depend on which
+  // contour the group is CURRENTLY routed to -- `x->rets[r]->lvalue` gets
+  // its type from the callee, so the same group hashes differently
+  // depending on where it already sits. That lets the ledger hold a
+  // CYCLE: measured on linalg's __deepcopy__, gsig 16821760 (recorded
+  // p40) says the home is es 692 and gsig 33861632 (p58) says it is es
+  // 792, so the group alternates 792 -> 692 -> 792 to the pass cap with
+  // no growth and no progress.
+  //
+  // A group's identity should be a property of the GROUP -- the callers,
+  // their argument types, the callee function -- not of the routing
+  // decision already made about it. For a fixed `f` and fixed argument
+  // types the return type is a consequence of the analysis, not an
+  // independent discriminator, so dropping the term collapses the two
+  // signatures into one. PYC_GSIGRET=1 restores the old behaviour.
+  if (gsigret_enabled()) {
+    int nrets = these_edges[0]->rets.n;
+    for (int r = 0; r < nrets; r++) {
+      AType *t = fa->type_world.bottom_type;
+      for (AEdge *x : these_edges)
+        if (r < x->rets.n && x->rets[r]->lvalue) {
+          AType *rt = x->rets[r]->lvalue->out->type;
+          if (!rt->n) return 0;  // wildcard: no identity yet
+          t = type_union(t, rt);
+        }
+      h += (uint)(uintptr_t)t * open_hash_primes[i++ % 256];
+    }
   }
   return h ? h : 1;  // 0 is reserved for "no identity" / filtered-path keys
 }
@@ -5042,6 +5083,16 @@ static int hard_reuse_enabled() {
 // instead, so the growth comes straight back (repro ess 144 -> 279 for
 // mode 1, 257 for mode 2). PYC_SELFPROD=6 fixes the same oscillation
 // from the other end without that cost.
+// ifa/issues/101: detect and break 2-cycles in the ES split ledger.
+static int routecycle_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_ROUTECYCLE");
+    e = v ? atoi(v) : 0;
+  }
+  return e;
+}
+
 static int routegate_enabled() {
   static int e = -1;
   if (e < 0) {
@@ -5325,6 +5376,24 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
         AVar *a = x->args.get(avpos);
         if (a) part = type_union(part, a->out->type);
       }
+    // ifa/issues/101: what KIND of CreationSet is the splitter actually
+    // partitioning on? `closure` CSs are minted unique per site x contour
+    // (creation_point's `if (s == sym_closure) goto Lunique` bypasses
+    // reuse), so a position receiving closures has a type that grows with
+    // the contour count and every partition it yields is necessarily
+    // first-time. Probe-only.
+    if (getenv("IFA_DBG_SPLITSYM") && avpos) {
+      int nclosure = 0, ntotal = 0;
+      for (CreationSet *c : part->sorted) {
+        ++ntotal;
+        if (c->sym == sym_closure) ++nclosure;
+      }
+      fprintf(stderr, "SPLITSYM p=%d stage=%d fun=%s n=%d closure=%d |", analysis_pass, cur_split_stage,
+              es->fun->sym->name ? es->fun->sym->name : "?", ntotal, nclosure);
+      for (CreationSet *c : part->sorted)
+        fprintf(stderr, " %s", c->sym && c->sym->name ? c->sym->name : "?");
+      fprintf(stderr, "\n");
+    }
     // Issue 033 stage C (D4, revised): when a type-value group's
     // (position, partition) key was already split for in an EARLIER
     // pass, route the group to that decision's product contour
@@ -5518,6 +5587,23 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
       }
       if (d && d->pass_made != analysis_pass && d->product && d->product != es && home_ok) {
         product = d->product;
+        // ifa/issues/101: break a ledger cycle. If `product` was itself
+        // routed to `es` earlier, the two contours are, by the ledger's
+        // own testimony, homes for the same group; following both
+        // records alternates for ever. Pin deterministically to the
+        // lower id -- and when that is `es`, decline the route entirely
+        // so the group simply stays put.
+        if (routecycle_enabled()) {
+          EntrySet *back = fa->route_last.get(product);
+          if (back == es) {
+            if (getenv("IFA_DBG_CHURN"))
+              fprintf(stderr, "[churn-cycle] p=%d fun=%s es=%d <-> product=%d, pinning to %d\n", analysis_pass,
+                      es->fun->sym->name ? es->fun->sym->name : "?", es->id, product->id,
+                      es->id < product->id ? es->id : product->id);
+            if (es->id < product->id) product = nullptr;  // keep the group here
+          }
+          if (product) fa->route_last.put(es, product);
+        }
         ++fa->dup_split_attempts;
         if (getenv("IFA_DBG_INCOMPAT"))
           fprintf(stderr, "REDERIVE p=%d ROUTE fun=%s#%d es=%d -> product=%d first_pass=%d\n", analysis_pass,
@@ -8076,6 +8162,23 @@ static const char *kStageName[FA::kNumFAPassStages] = {
     "MARK_SET_OF_SET", "VIOLATION", "PER_CS_RECV", "CSM_ELEM_CS",  "CPA"};
 
 // TEMP probe: which splitter STAGE is producing the per-pass churn.
+// ifa/issues/101: per-pass CreationSet population, grouped by the SYM of
+// the allocation site. Tests whether contour growth is feeding CS growth
+// -- creation_point mints one CS per (site x contour), so a self-
+// amplifying loop would show a handful of syms with CS counts tracking
+// the contour count. Probe-only.
+static void report_cs_population() {
+  if (!getenv("IFA_DBG_CSPOP")) return;
+  std::map<std::string, int> by_sym;
+  for (CreationSet *cs : fa->css) if (cs)
+    by_sym[cs->sym && cs->sym->name ? cs->sym->name : "(anon)"]++;
+  std::vector<std::pair<std::string, int>> v(by_sym.begin(), by_sym.end());
+  std::sort(v.begin(), v.end(), [](auto &a, auto &b) { return a.second > b.second; });
+  fprintf(stderr, "CSPOP p=%d css=%d syms=%d |", analysis_pass, fa->css.n, (int)v.size());
+  for (int i = 0; i < 8 && i < (int)v.size(); i++) fprintf(stderr, " %s:%d", v[i].first.c_str(), v[i].second);
+  fprintf(stderr, "\n");
+}
+
 static void report_stage_churn() {
   if (!getenv("IFA_DBG_STAGE")) return;
   fprintf(stderr, "STAGE p=%d", analysis_pass);
@@ -8095,6 +8198,7 @@ static void report_stage_churn() {
 
 static void complete_pass() {
   report_stage_churn();
+  report_cs_population();
   report_canon_stats();
   report_keyspace();
   capture_type_keys();

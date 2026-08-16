@@ -659,6 +659,15 @@ class FA : public gc {
   // per-pass contour re-manufacturing the ES ledger routes away.
   // Reported in the -v PASS line; reset with dup_split_attempts.
   int cs_dup_split_attempts = 0;
+  // ifa/issues/101: last ledger ROUTE target per source contour,
+  // persistent across passes. The ledger can hold a CYCLE -- two
+  // signatures for what is really one group, each recording the other
+  // contour as its home -- and following it moves the group back and
+  // forth for ever with no growth. Measured on linalg's __deepcopy__:
+  // gsig 16821760 (recorded p40) says home=692, gsig 33861632 (p58) says
+  // home=792, and the group alternates 792->692->792 to the pass cap.
+  // A route A->B whose reverse B->A is already recorded here is a cycle.
+  Map<EntrySet *, EntrySet *> route_last;
   // ifa/issues/074: the divergence guard's actual input. Both counters
   // above conflate two opposite things -- the ledger ROUTING a group back
   // into the product it recorded on an earlier pass (the anti-oscillation

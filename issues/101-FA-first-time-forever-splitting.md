@@ -262,3 +262,117 @@ redundant contours gone there is no longer a violation for them to chase.
 Fewer stages is the improvement. The test's assertion is now "CPA fires,
 reached through TYPE_CONFLUENCE alone", and a reappearance of the
 desperation stages means something upstream regressed.
+
+
+## Dug into the new-partitions problem, 2026-08-16
+
+Four measurements, two of them negative results worth keeping.
+
+### 1. Closure CreationSets dominate the population — and are irrelevant
+
+`IFA_DBG_CSPOP` (new) reports the per-pass CreationSet population grouped
+by allocation-site sym. On `linalg`:
+
+```
+CSPOP p=5   css=1262 syms=226 | closure:560  continuation:124 (anon):51 list:36
+CSPOP p=60  css=1825 syms=224 | closure:1112 continuation:115 list:57 (anon):47
+CSPOP p=101 css=1843 syms=224 | closure:1129 continuation:115 list:57 (anon):47
+```
+
+`closure` is **61 %** of all CreationSets and the only sym that grows —
+everything else is flat, and the *number of allocation sites* never moves.
+That is `creation_point`'s `if (s == sym_closure) goto Lunique`: closures
+bypass CS reuse and get a unique CS per site × contour.
+
+It looked like the engine. **It is not.** `IFA_DBG_SPLITSYM` reports the
+CreationSet syms in each split's partition:
+
+| program | splits | partitions containing a closure |
+|---|---|---|
+| `linalg` | 1207 | **0** |
+| `go` | 474 | **0** |
+| `plcfrs` | 2565 | **2** |
+
+The splitter never partitions on closures. Their population is a
+red herring for this issue.
+
+### 2. What it does partition on: single container CreationSets
+
+| program | size-1 partitions | top syms | top funs split |
+|---|---|---|---|
+| `linalg` | 903 / 1207 (**75 %**) | list 2067, int64 333 | `__getitem__` 292, `len` 155 |
+| `go` | 417 / 474 (**88 %**) | list 203, int64 96 | `__getitem__` 60, `__eq__` 38 |
+| `plcfrs` | 1452 / 2565 (**57 %**) | tuple 10103, list 3964 | `__getitem__` 625, `__eq__` 596 |
+
+So the overwhelmingly common split is *"separate the edges whose argument
+is exactly this one container CreationSet"*, at the generic accessors
+`__getitem__` / `len` / `__eq__`. This is receiver monomorphization: one
+contour per container instance per accessor.
+
+### 3. Hard reuse moved `linalg` out of this class entirely
+
+With `PYC_HARDREUSE=5` (previous section) `linalg` now **plateaus**:
+
+```
+pass:      1     10     20     40     60     80    100
+ess :    235    469    499    598    700    722    722
+css :   1106   1327   1544   1666   1833   1843   1843
+viol:    193     69     90     62     42     48     48
+```
+
+Flat from pass 80. `go` and `plcfrs` still grow (565→633 and 1079→1274
+over the same span), so they remain growth cases, but `linalg` is now a
+**churn** case — and its stage trace is byte-identical every pass,
+`TYPE_CONFL(det=10 mint=0 reuse=10)`, exactly the 074 reproducer's
+signature at ten edges instead of one.
+
+### 4. The ES ledger can hold a CYCLE
+
+`IFA_DBG_CHURN` on `linalg`'s `__deepcopy__`:
+
+```
+[churn-look] p=98  es=792 gsig=16821760 found=1 pass_made=40 product=692
+[churn-look] p=99  es=692 gsig=33861632 found=1 pass_made=58 product=792
+[churn-look] p=100 es=792 gsig=16821760 found=1 pass_made=40 product=692
+[churn-look] p=101 es=692 gsig=33861632 found=1 pass_made=58 product=792
+```
+
+Two signatures, each recording the **other** contour as its home. Both
+records are individually honest; together they alternate to the pass cap.
+Nothing detects or breaks this.
+
+### Two repairs tried, both rejected
+
+**`PYC_ROUTECYCLE=1`** — remember the last route target per contour and
+break an `A→B` whose reverse `B→A` is already recorded, pinning to the
+lower id. It detects the cycles, and it makes `linalg` **worse**: `ess`
+722 → 901, violations 48 → 55, with `go`/`plcfrs`/`sudoku5` unmoved. Same
+lesson as `PYC_ROUTEGATE` earlier in 074: **declining a route only means
+minting instead** — keeping the group in place is not a no-op, because
+the splitter still wants it split and takes the mint path.
+
+**`PYC_GSIGRET=0`** — drop the return-type term from `group_signature`.
+The term reads `x->rets[r]->lvalue->out->type`, which comes from whichever
+callee contour the group currently points at, so it makes a group's
+identity depend on the routing decision already made about it. That is a
+real design smell and the obvious cause of two signatures for one group.
+It measured **exactly inert** — byte-identical `final_pass`,
+`violations`, `ess` and `css` on all four programs.
+
+That negative result is informative: the two cycling signatures do **not**
+differ in their return term, so they differ in the *argument* term — which
+means `792`/`692` is most likely **two distinct groups swapping contours**
+each pass, not one group cycling. Both flags default off/historical.
+
+### Where that leaves it
+
+At default guards all four programs terminate (passes 40–51), so the
+practical cost of this issue is not the pass count but the **result
+quality**: `go`, `linalg` and `plcfrs` exit 1 — they fail to compile.
+That, not `pass_limit_hit`, is what closing this issue has to fix.
+
+The next thing to test is the swapping-groups hypothesis directly: log the
+edge sets behind the two signatures and confirm they are disjoint. If they
+are, the question becomes why two groups each prefer the other's contour,
+which is a symmetric-preference problem rather than a stale-record one —
+and none of the ledger machinery built so far addresses it.
