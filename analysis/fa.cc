@@ -467,6 +467,12 @@ Lcreators:;
   }
 Lunique:
   // new creation set
+  if (getenv("IFA_DBG_CSMINT"))
+    fprintf(stderr, "[csmint] p=%d sym=%s var=%s es=%d split=%d parent_had=%d closure=%d cmc=%d\n", analysis_pass,
+            s->name ? s->name : "?", v->var && v->var->sym && v->var->sym->name ? v->var->sym->name : "?",
+            es ? es->id : -1, (es && es->split) ? es->split->id : -1,
+            (es && es->split) ? (make_AVar(v->var, es->split)->cs_map ? 1 : 0) : -1, s == sym_closure ? 1 : 0,
+            (s->clone_methods_per_cs || (s->type && unalias_type(s->type)->clone_methods_per_cs)) ? 1 : 0);
   cs = new CreationSet(s);
   if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
   s->creators.add(cs);
@@ -6020,6 +6026,17 @@ static void collect_setter_confluences(Accum<AVar *> &avs, Vec<AVar *> &setter_c
 // stable identity this pass — return 0, caller must neither record
 // nor count. Setter contributions accumulate commutatively (sum),
 // so Vec-set iteration order cannot perturb the hash.
+// ifa/issues/066: drop the per-pass term from the CS split signature so
+// the ledger can recognise a re-derived split. See the use below.
+static int cskey_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_CSKEY");
+    e = v ? atoi(v) : 0;
+  }
+  return e;
+}
+
 static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
   Vec<int> def_ids;
   for (AVar *v : compatible_set) if (v) def_ids.add(v->var->sym->id);
@@ -6032,7 +6049,37 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
     if (!v->setters) continue;
     for (AVar *s : *v->setters) if (s) {
       if (!s->out->type->n) return 0;  // unflowed setter: no identity yet
-      h += (uint)combine_hash((uintptr_t)s->var->sym->id, (uintptr_t)s->out->type);
+      // ifa/issues/066 (PYC_CSKEY): the setter's TYPE is the only
+      // per-pass term in this signature -- every other input is a
+      // source-level Sym id. Including it means a CS split re-derived on
+      // a later pass hashes differently and the ledger cannot recognise
+      // it, so `split_css` clones the same CreationSet again, each clone
+      // becoming the next parent. Measured on
+      // tests/deepcopy_recursive_nested_growth.py: 20 splits, `found=0`
+      // on every one, a fresh `list` CS every ~10 passes for ever. The
+      // type is still required to have FLOWED (the guard above); it just
+      // does not get to be part of the identity.
+      if (cskey_enabled() == 1) {
+        // 1: drop the type entirely. Durable, but too blunt -- it merges
+        // splits the setter type legitimately separated (linalg: 43 ->
+        // 651 violations).
+        h += (uint)combine_hash((uintptr_t)s->var->sym->id, (uintptr_t)s->var->sym->id);
+      } else if (cskey_enabled() == 2) {
+        // 2: keep the type, but identify each of its CreationSets by the
+        // ROOT of its split chain. A CS and its clones then hash alike --
+        // which is the whole point, since the clone chain is what makes
+        // the signature drift -- while two genuinely different lists
+        // still differ.
+        uintptr_t th = 0;
+        int i2 = 0;
+        for (CreationSet *c : s->out->type->sorted) {
+          CreationSet *root = c;
+          while (root->split) root = root->split;
+          th += (uintptr_t)root->id * open_hash_primes[i2++ % 256];
+        }
+        h += (uint)combine_hash((uintptr_t)s->var->sym->id, th);
+      } else
+        h += (uint)combine_hash((uintptr_t)s->var->sym->id, (uintptr_t)s->out->type);
     }
   }
   return h ? h : 1;  // 0 is reserved for "no identity"
@@ -6085,6 +6132,11 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
         // self-product falls back to the original mint + record-only DUP
         // count (the 065-gap-2 analog, left to the phase-ordering half).
         bool route = d && d->pass_made != analysis_pass && d->cs_product && d->cs_product != cs;
+        if (getenv("IFA_DBG_CSSPLIT"))
+          fprintf(stderr, "[csledger] p=%d cs=%d csig=%u found=%d pass_made=%d product=%d self=%d route=%d\n",
+                  analysis_pass, cs->id, csig, d ? 1 : 0, d ? d->pass_made : -1,
+                  (d && d->cs_product) ? d->cs_product->id : -1,
+                  (d && d->cs_product == cs) ? 1 : 0, route ? 1 : 0);
         cs->defs.move(new_defs);
         CreationSet *new_cs;
         if (route) {
@@ -6094,6 +6146,9 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
               cs->id, cs->sym->name ? cs->sym->name : "", cs->sym->id, csig, new_cs->id, d->pass_made);
         } else {
           new_cs = new CreationSet(cs);
+          if (getenv("IFA_DBG_CSSPLIT"))
+            fprintf(stderr, "[cssplit] p=%d sym=%s cs=%d -> %d\n", analysis_pass,
+                    cs->sym && cs->sym->name ? cs->sym->name : "?", cs->id, new_cs->id);
           if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
           new_cs->split = cs;
         }
@@ -7766,6 +7821,17 @@ static void report_keyspace() {
         k += std::to_string((uintptr_t)(a ? (void *)a->out->type : nullptr)) + "|";
       }
       setkeys.insert(k);
+      if (only && getenv("IFA_DBG_KEYSPACE_DUMP")) {
+        fprintf(stderr, "  [key] es=%d", es->id);
+        for (MPosition *p : pos) {
+          AVar *a = es->args.get(p);
+          fprintf(stderr, " |");
+          if (a && a->out && a->out->type)
+            for (CreationSet *cs : a->out->type->sorted)
+              fprintf(stderr, " %s#%d", cs->sym && cs->sym->name ? cs->sym->name : "?", cs->id);
+        }
+        fprintf(stderr, "\n");
+      }
       for (AEdge *e : es->edges) if (e && e->args.n && e->match) {
         std::string tup;
         keyspace_cpa(e, pos, 0, tup, cpakeys, budget);

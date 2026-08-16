@@ -156,6 +156,18 @@ That explains the trigger table exactly: `deepcopy` supplies the fresh
 allocation, recursion supplies the unbounded depth, and nesting supplies
 the second level that compounds it.
 
+**Traced to a single term, 2026-08-16.** The generator is `split_css`
+cloning that list CS every ~10 passes, each clone parenting the next; the
+CS ledger never recognises the repeat (`found=0`, a different `csig`
+every time); and the reason is that `cs_group_signature`'s
+`s->out->type` is its only per-pass input, drifting with the very chain it
+should be collapsing. Dropping that term (`PYC_CSKEY=1`) makes the ledger
+fire and **stops the growth dead** — ess/css flat at 144/617 from pass 40
+on — but merges distinctions it was carrying (`linalg` 43 → 651
+violations), so it is a proof of diagnosis rather than a fix. Full
+measurements, and the two formulations tried, in
+[066](066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md).
+
 **So the work is CreationSet identity, not contour splitting** — two
 structurally identical lists minted at the same allocation site should
 share a CS, or at minimum share a type key. That is

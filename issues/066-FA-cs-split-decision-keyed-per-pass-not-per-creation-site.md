@@ -1,5 +1,11 @@
 # 066 — The split oscillation is a durable-decision *keying* bug, not an architecture gap: CS identity is per-pass, should be per-creation-site
 
+> **Diagnosis proven and localised, 2026-08-16** — see the section
+> immediately below. `cs_group_signature`'s `s->out->type` term is the
+> only per-pass input to the CS split key, and removing it stops the
+> contour growth outright. What is not yet found is a durable replacement
+> that keeps the distinctions that term was carrying.
+
 **Status:** open, but **the oscillation is not its use case** — measured
 twice (2026-07-30's dup-category scoping, and again in
 [074](074-FA-cross-pass-oscillation-plan.md)'s 2026-08-13 census, both
@@ -25,6 +31,62 @@ This reframes [063](closed/063-no-type-bucket-triage.md) /
 **Affects:** `ifa/analysis/fa.cc` — `clear_results`/`clear_cs`,
 `creation_point`'s split-parent CS reuse, the `cs->split` lineage, and the
 issue-033 product-routing ledger (incl. the landed `setter_site_signature`).
+
+## MEASURED 2026-08-16 on tests/deepcopy_recursive_nested_growth.py
+
+That 13-line reproducer (ifa/issues/074) grows contours linearly for
+ever. Traced end to end:
+
+1. The generator is **`split_css`**: it clones the same `list`
+   CreationSet every ~10 passes, and each clone becomes the next
+   clone's parent — 1217 → 1238 → 1259 → 1279, twenty splits in 101
+   passes, all `sym=list`.
+2. Those clones are what the contours are keyed on. `shrink`'s eleven
+   contours differ **only** by that CS id:
+   `list#940, #1090, #1111, #1132, … #1259`. Their `setkey` tracks their
+   `ess` exactly, so every contour is individually justified by a real
+   type — the splitter is behaving; FA has invented eleven *types* for
+   one.
+3. **The ledger never sees any of it.** All twenty splits log `found=0`,
+   with a different `csig` each time.
+4. The reason is one term. `cs_group_signature` hashes `cs->sym`, the
+   compatible set's **Var sym ids** — all stable, source-level — and then
+   `combine_hash(s->var->sym->id, s->out->type)`. **`s->out->type` is the
+   only per-pass value in the key**, and it drifts precisely because the
+   clone chain keeps changing the type.
+
+### Two fixes tried (`PYC_CSKEY`, off by default)
+
+**`=1`, drop the type from the key.** It works, and it proves the
+diagnosis: the ledger starts firing (`found=1`, `route=1`), CS splits
+fall 20 → 4, and **ess/css go flat** — 144/617 at passes 40, 60, 80 and
+101, where the default is still climbing at 272/760. Growth is gone.
+
+But it is too blunt: it merges splits the setter type legitimately
+separated. `linalg` goes **43 → 651 violations**; `go` and `plcfrs` are
+unmoved. So it is not shippable, and it is not the answer.
+
+**`=2`, keep the type but identify each of its CreationSets by the root
+of its split chain**, so a CS and its clones hash alike. **No effect at
+all** — byte-identical to the default on the reproducer. So the drift is
+not the clone identity of the CSs *inside the setter's type*; something
+else in that type changes per pass.
+
+### What the next attempt should be
+
+A *durable* setter type, not a canonicalised one — the same move that
+worked on the ES side, where `EntrySet::type_key` (captured in
+`complete_pass`, after the flow fixpoint) gave `PYC_SELFPROD=5` a stable
+comparand where every mid-pass formulation had failed. The CS side has no
+equivalent; giving setter AVars a durable per-pass type snapshot and
+hashing *that* is the direct analogue, and is a real build rather than a
+hash tweak.
+
+Note also, from the same logs, that the CS side has the **self-product**
+case too (`p=29 cs=1090 … product=1090 self=1 route=0`): the ledger's
+recorded product is the CS being split, the `d->cs_product != cs` veto
+declines to route, and a fresh clone is minted. That is the exact shape
+`PYC_SELFPROD` addresses on the ES side, unaddressed here.
 
 ## pyc is already decide-then-durable (the corrected picture)
 
