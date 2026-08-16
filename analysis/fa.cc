@@ -8219,7 +8219,16 @@ static void report_cs_population() {
 // rather than on the parameter it is supposed to capture.
 static void report_element_types() {
   if (!getenv("IFA_DBG_ELEMTYPE")) return;
+  // per container sym: CS count, distinct element ATypes, distinct
+  // element SYM-SHAPES (the sym multiset of the element type's CSs --
+  // the closest thing to shedskin's `T` in `list<T>`).
   std::map<std::string, std::pair<int, std::set<void *>>> by_sym;
+  std::map<std::string, std::set<std::string>> shapes;
+  // n_empty: container CSs whose element type is BOTTOM -- no elements at
+  // all, so indistinguishable from one another by any observable
+  // property. n_mixed: element types holding both a scalar and a
+  // container, i.e. the shape a template parameter cannot express (018).
+  int n_empty = 0, n_mixed = 0;
   for (CreationSet *cs : fa->css) if (cs && cs->sym && cs->sym->element) {
     AVar *e = get_element_avar(cs);
     if (!e) continue;
@@ -8227,6 +8236,19 @@ static void report_element_types() {
     auto &slot = by_sym[k];
     slot.first++;
     slot.second.insert((void *)e->out->type);
+    std::string bysym;
+    bool has_scalar = false, has_container = false;
+    for (CreationSet *c : e->out->type->sorted) {
+      cchar *n = c->sym && c->sym->name ? c->sym->name : "?";
+      bysym += std::string(" ") + n;
+      if (c->sym && c->sym->element)
+        has_container = true;
+      else if (c->sym && c->sym->type && c->sym->type->num_kind)
+        has_scalar = true;
+    }
+    shapes[k].insert(bysym);
+    if (bysym.empty()) ++n_empty;
+    if (has_scalar && has_container) ++n_mixed;
   }
   if (getenv("IFA_DBG_ELEMTYPE_DUMP")) {
     // Print each container CS with its element type spelled out as the
@@ -8251,8 +8273,9 @@ static void report_element_types() {
   }
   fprintf(stderr, "ELEMTYPE p=%d |", analysis_pass);
   for (auto &kv : by_sym)
-    fprintf(stderr, " %s: %d CS / %d elemtypes;", kv.first.c_str(), kv.second.first, (int)kv.second.second.size());
-  fprintf(stderr, "\n");
+    fprintf(stderr, " %s: %d CS / %d elemtypes / %d shapes;", kv.first.c_str(), kv.second.first,
+            (int)kv.second.second.size(), (int)shapes[kv.first].size());
+  fprintf(stderr, " || empty=%d mixed=%d\n", n_empty, n_mixed);
 }
 
 static void report_stage_churn() {

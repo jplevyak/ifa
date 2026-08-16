@@ -594,7 +594,80 @@ methods are then split per CS rather than per element type, which is
 where `__getitem__`'s 236 contours (48 distinct type tuples) and
 `__mul__`'s 75 come from.
 
-### The experiment this suggests
+### The experiment, run 2026-08-16 across all 77 programs
+
+`IFA_DBG_ELEMTYPE` over the corpus, counting per container sym the
+CreationSets against distinct element types and distinct element
+sym-shapes:
+
+```
+CORPUS: 1999 container CS / 554 elemtypes / 426 shapes
+  CS per elemtype 3.61x    CS per shape 4.69x
+  EMPTY element type:  1001 CS  (50% of all container CSs)
+  MIXED scalar+container: 41 CS  (2.1%), in 2 of 74 programs
+```
+
+**`linalg` is mid-pack, not an outlier** — only **2 of 74** programs are
+anywhere near 1:1, and several are far worse:
+
+| program | container CS | elemtypes | shapes | ratio |
+|---|---|---|---|---|
+| `stereo` | **190** | 3 | **3** | **63×** |
+| `kanoodle` | 167 | 42 | 6 | 28× |
+| `tonyjpegdecoder` | 51 | 5 | 5 | 10× |
+| `linalg` | 57 | 15 | 6 | 9.5× |
+| `plcfrs` | 77 | 27 | 9 | 8.6× |
+
+`stereo` is the cleanest possible demonstration: **190 container
+CreationSets covering exactly two shapes** — 120 `list<float64>` and 70
+with no element type at all.
+
+### Half of all container CreationSets have an EMPTY element type
+
+1001 of 1999, and up to 77 % within a program (`pygasus` 89/116,
+`tonyjpegdecoder` 38/51, `kanoodle` 111/167). A container CS whose
+element type is bottom has *no observable property distinguishing it from
+any other*. This is the single largest and lowest-risk collapse
+available.
+
+The safety caveat is the ordering one already flagged, and it is real:
+during analysis every container CS *starts* empty and acquires elements
+later, so collapsing on "currently empty" would merge a list that will
+become `list<int>` with one that will become `list<str>`. The key has to
+be the **durable, converged** element type — the same lesson as
+[066](066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md)'s
+`s->out->type` and `PYC_SELFPROD=5`'s `type_key`.
+
+### The two problems are almost disjoint — which fixes the sequencing
+
+The mixed scalar+container element type — `list<int | list<…>>`, the
+shape no template parameter can express — is **2.1 % of container CSs and
+appears in only two programs**:
+
+| program | mixed CSs | builds? |
+|---|---|---|
+| `plcfrs` | 29 / 77 | **no** — `sizeof_element of non-container type 'float64'` |
+| `linalg` | 12 / 57 | **no** — `list::__mul__(_CG_any, _CG_any)` |
+| every other program | 0 | — |
+
+It occurs in exactly the container-related programs that fail to build,
+and nowhere else. Meanwhile the worst over-discriminators (`stereo`,
+`kanoodle`, `tonyjpegdecoder`) have **no** mixed shapes at all and build
+fine.
+
+So:
+
+- **Re-keying container CS identity on the durable element type** would
+  attack a pervasive 4.69× (locally up to 63×) contour explosion — but it
+  would **not** have made `linalg` or `plcfrs` compile.
+- **018/030** is what makes them fail, it is narrow (2.1 %), and it is
+  unaffected by the re-keying.
+
+They are separate pieces of work with separate payoffs, and the earlier
+framing that treated CS re-keying as the route to making these programs
+build was wrong.
+
+### The experiment this suggested
 
 Canonicalize container CreationSet identity on the **element type**
 rather than the creation site — the CS-level analogue of what
