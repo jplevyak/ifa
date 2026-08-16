@@ -76,6 +76,17 @@ static inline bool scalar_ct(cchar *t) {
                !strcmp(t, "_CG_bool"));
 }
 
+// issues/048: a FLOATING-POINT C type. Narrower than scalar_ct on
+// purpose. An integer and a pointer round-trip through each other
+// bit-for-bit -- `(void*)(int64)x` back to `(int64)(void*)y` is legal C
+// and preserves the value, which is exactly how a `{None, int}` field
+// works today (tests/polymorphic_list.py stores small int tags into a
+// `_CG_void` slot and reads them back correctly). A double does not:
+// `(void*)2.5` is not even legal C. So only the float/pointer crossing is
+// a representation failure at the store or load itself; the int/pointer
+// one only fails later, at a dispatch that has to tell 0 from None.
+static inline bool float_ct(cchar *t) { return t && !strncmp(t, "_CG_float", 9); }
+
 static int application_depth(PNode *n) {
   if (n->rvals[0]->type->fun)
     return 1;
@@ -298,6 +309,29 @@ static void destruct_prim(FILE *fp, Var *l, Var *r) {
 // emit_tuple_lt/eq_expr, and the issue-067 user-class-element clone
 // matching -- were removed.)
 
+// issues/048: one diagnostic for every "this union has no C
+// representation" site. pyc used to print NOTHING at compile time in
+// permissive mode -- the program aborted at run time (or, for a float,
+// died inside clang) with no hint which field or element was at fault.
+// shedskin's equivalent is the model: it names the variable AND the
+// union ("Variable (Class V, 'a') has dynamic (sub)type: {None, int}")
+// at translate time, which is most of why its failures on these programs
+// are easier to act on than pyc's were.
+//
+// `kind` is what is being written ("field", "element"), `name` its
+// source-level name where there is one.
+static void warn_no_representation_ct(PNode *n, cchar *kind, cchar *name, cchar *dest, cchar *val) {
+  if (!n || !n->code || !n->code->ast) return;
+  char what[256];
+  if (name)
+    snprintf(what, sizeof(what), "%s '%s'", kind, name);
+  else
+    snprintf(what, sizeof(what), "%s", kind);
+  show_error("warning: %s has no single representation: cannot store a '%s' into a '%s' "
+             "-- a None-with-scalar or mixed-basic union (issues/048)",
+             n->code->ast, what, val ? val : "?", dest ? dest : "?");
+}
+
 static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
   int o = (n->rvals.v[0]->sym == sym_primitive) ? 2 : 1;
   switch (n->prim->index) {
@@ -387,8 +421,27 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         for (int i = 0; i < obj->has.n; i++) {
           if (symbol == obj->has[i]->name && cg_field_live(obj, i)) {
             assert(cg_get_string(n->lvals[0]));
-            fprintf(fp, "  %s = (%s)((%s)%s)->e%d; /* %s */\n", cg_get_string(n->lvals[0]), t, cg_get_string(obj),
-                    cg_get_string(n->rvals[1]), i, symbol);
+            // issues/048: mirror of the setter guard below. The field is
+            // read at its DECLARED type and cast to the destination's, so
+            // a `_CG_void` field feeding a `_CG_float64` destination is
+            // an illegal C cast -- which reached clang raw. (The int case
+            // casts silently, so only float exposed this.) Same num_kind
+            // test as every other representation guard here.
+            // Compare the C types the cast actually spans: the field is
+            // read at its DECLARED type and cast to `t`. Using the Syms'
+            // num_kind instead is wrong here -- both the field and
+            // lvals[0] carry the UNION Sym (`_CG_void`), while `t` is the
+            // narrowed destination the cast targets, which is exactly
+            // where the illegality is.
+            cchar *fct = c_type(obj->has[i]);
+            if (float_ct(t) != float_ct(fct) && (!scalar_ct(t) || !scalar_ct(fct))) {
+              warn_no_representation_ct(n, "field", symbol, t, fct);
+              if (!fruntime_errors)
+                fail("field type mismatch reading a '%s' field into a '%s'", fct, t);
+              fputs("  assert(!\"runtime error: field type mismatch\");\n", fp);
+            } else
+              fprintf(fp, "  %s = (%s)((%s)%s)->e%d; /* %s */\n", cg_get_string(n->lvals[0]), t, cg_get_string(obj),
+                      cg_get_string(n->rvals[1]), i, symbol);
             goto Lgetter_found;
           }
         }
@@ -419,10 +472,25 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
           // dead by definition — no downstream code reads
           // the value — so skipping the write is sound.
           if (cg_field_live(obj, i)) {
-            fprintf(fp, "  ((%s)%s)->e%d = (%s)%s;\n",
-                    cg_get_string(obj), cg_get_string(n->rvals[1]),
-                    i, c_type(obj->has[i]),
-                    c_rhs(n->rvals.v[4]));
+            // issues/048: the same scalar-vs-pointer representation
+            // guard P_prim_set_index_object already applies to list
+            // elements, now on record FIELDS. A `{None, float}` field is
+            // declared `_CG_void`, and `(_CG_void)2.5` is not a legal C
+            // cast -- that reached clang as a raw error with no pyc
+            // diagnostic at all. `{None, int}` casts silently (int to
+            // pointer is legal) and aborted later at dispatch instead;
+            // both now fail here, in one place, with a message.
+            cchar *fct = c_type(obj->has[i]), *vct = c_type(n->rvals.v[4]);
+            if (float_ct(fct) != float_ct(vct) && (!scalar_ct(fct) || !scalar_ct(vct))) {
+              warn_no_representation_ct(n, "field", obj->has[i]->name, fct, vct);
+              if (!fruntime_errors)
+                fail("field type mismatch storing a '%s' into a '%s' field", vct, fct);
+              fputs("  assert(!\"runtime error: field type mismatch\");\n", fp);
+            } else
+              fprintf(fp, "  ((%s)%s)->e%d = (%s)%s;\n",
+                      cg_get_string(obj), cg_get_string(n->rvals[1]),
+                      i, c_type(obj->has[i]),
+                      c_rhs(n->rvals.v[4]));
           }
           // P_prim_setter's analyzer (fa.cc:1781) flows val
           // (rvals[4]) into the lvalue — the lvalue carries
