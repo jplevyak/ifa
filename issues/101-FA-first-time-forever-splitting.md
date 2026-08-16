@@ -122,6 +122,29 @@ for `go` on every pass while the `OSC` line for the same run said 104.
 The `VIOL` line is now emitted at the collection site, which is the only
 point in the pass where the count means anything.
 
+**A second trap, same session:** the corpus sweep script captured
+`rc=$?` after a pipeline —
+
+```sh
+osc=$(pyc ... | grep '^OSC' | tail -1); rc=$?   # WRONG: this is tail's status
+```
+
+— so `rc` was always 0 and the "zero exit-code changes" reported for the
+066 and `PYC_SELFPROD` sweeps was measuring nothing. The metric columns
+(`violations`/`ess`/`css`/`final_pass`/`pass_limit_hit`) come from the
+`OSC` line and were unaffected, so those A/B conclusions stand. Re-run
+with the exit code captured before the pipe, comparing the old defaults
+(`PYC_CSKEY=0 PYC_SELFPROD=5`) against the new (`=3` / `=6`):
+
+- **77 programs, zero exit-code changes**, distribution 68 `rc=0`,
+  8 `rc=1`, 1 `rc=134`;
+- zero changes to violations / ess / css / final_pass / pass_limit_hit;
+- +0.1 % analysis time.
+
+So the claim was correct, but it had not actually been measured until
+this re-run. Sweep scripts must capture `$?` directly from the command,
+never through a pipe.
+
 The same off-by-one already applies by design to the `STAGE` line's
 stage counters (they are incremented by `extend_analysis`, so the line
 printed at pass N reports pass N-1's splitting); that one is documented
