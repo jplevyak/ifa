@@ -466,3 +466,87 @@ minority of cases. **Contour separation for the shared container
 accessors (101) is the recommendation** — it is what shedskin gets for
 free from template instantiation, and it addresses the union at its
 source on all three programs.
+
+## Attempting option 1 (2026-08-17): the hypothesis was wrong, but the
+## experiment found something better
+
+Option 1 was "separate the shared container accessors by receiver type,
+the way template instantiation does". `PYC_RECVFAN` was built to test it.
+
+### Where the union actually comes from
+
+`edge_type_compatible_with_edge` already separates two edges whose
+receiver types differ (`etype != eetype` → incompatible). So the
+`{list, tuple}` mix is **not** two edges being grouped — it is a *single*
+edge whose receiver type is already the union, i.e. one call site passing
+a variable that holds both. Grouping cannot fix that; the edge has to be
+**fanned per receiver CreationSet**.
+
+pyc has that: `split_for_per_cs_method_receivers` (`PER_CS_RECEIVER`,
+issue 045). It bails on a mixed-class receiver — `cls != t →
+all_flagged = false`, *"one class per split"* — which is exactly the
+`{list, tuple}` case.
+
+### `PYC_RECVFAN=1` and `=2`: the list/tuple fan is inert
+
+Relaxing that rule for mixed **container** receivers changed nothing
+(`=1`). Nor did lifting the stage's quiescence gate *for the
+mixed-container case only* (`=2`): byte-identical on `plcfrs`, `rdb`,
+`sudoku5`, `go`, `linalg`. **The `{list, tuple}` fan never fires.** So
+this issue's premise — that separating list from tuple at the accessors
+is what these programs need — is **not supported**.
+
+### What did work: the stage is starved
+
+`PER_CS_RECEIVER` runs only `if (!analyze_again)` — on full quiescence of
+stages 1–5, deliberately, "so it cannot perturb their trajectories". On
+these programs `TYPE_CONFLUENCE` fires every pass, so **the stage never
+runs at all**.
+
+`PYC_RECVFAN=3` lifts that gate for everything the stage already handles:
+
+| | gate on | **gate lifted** |
+|---|---|---|
+| `plcfrs` | pass 30, **limit hit**, viol **2232**, ess 850, css 2709 | pass **22**, **CONVERGES**, viol **66**, ess **328**, css **1153** |
+| `go` | pass 47, limit hit, viol 164, ess 488 | pass 46, limit hit, viol **94**, ess **390**, css 1246 |
+| `linalg` | pass 51, limit hit, viol **40**, ess 668 | pass 32, limit hit, viol **222** ✗, ess 577, css 1618 |
+
+**`plcfrs` converges** — one of the three programs from
+[101](101-FA-first-time-forever-splitting.md) — with violations down 97 %
+and contours down 61 %. `go` improves. `linalg` gets much worse on
+violations.
+
+### The cost
+
+**14 real test failures** (plus 5 `splitter_*` characterization tests
+that merely gain `PER_CS_RECV` in their pinned `STAGES:` line):
+
+```
+builtins  builtin_type_factory  bool_ordering  deepcopy_list
+dict_from_iterable  genetic2_idioms  genexpr_basic
+list_index_type_mismatch_salvage  itertools_module  minmax_3arg
+match_seq  recursive_polymorphic  scope_read_before_write
+set_from_iterable
+```
+
+Most are COMPILE-OUT against `tests/empty` — the early fan emits warnings
+where none were expected, i.e. it costs precision elsewhere. That is
+exactly what the quiescence gate was put there to prevent.
+
+### Conclusion
+
+The list/tuple framing of this issue is a dead end: the fan for it never
+fires. But the experiment localises something more valuable — **the
+first-stage-wins cascade is starving `PER_CS_RECEIVER`, and that
+starvation is what keeps `plcfrs` from converging.** Running it earlier
+converges `plcfrs` outright and helps `go`, at the price of 14 tests and
+a large `linalg` regression.
+
+That is a much better lead than anything in this issue, and it belongs in
+101 rather than here. The next step is not "lift the gate" but "let
+`PER_CS_RECEIVER` run early *only where it pays*" — the same
+earn-your-contours question 101 already frames, now with a concrete
+stage and a program that flips.
+
+`PYC_RECVFAN` is kept off by default: 1 and 2 are the (inert) list/tuple
+fan, 3 is the gate lift.

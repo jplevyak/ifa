@@ -7102,12 +7102,43 @@ static void clear_splits() {
 // every stage above found nothing, and reuses split_edges'
 // find_or_make_filtered_entry_set routing, so products are re-FOUND
 // (not re-minted) across passes -- the issue 033 stability rule.
+// ifa/issues/104 option 1: fan a receiver position per CreationSet even
+// when the CSs are of DIFFERENT container classes. The stage below
+// otherwise bails on a mixed-class receiver ("one class per split"), and
+// `{list, tuple}` is exactly that case -- which is why the union survives
+// into the shared accessors. Measured on plcfrs: 61 of the mixed
+// partitions are `__getitem__`, plus __eq__/len/__len__/__iter__/__lt__.
+//
+// This is what shedskin gets for free: list<T>::__getitem__ and
+// tuple2<A,B>::__getitem__ are separate template instantiations, so no
+// single __getitem__ ever sees a union.
+static int recvfan_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_RECVFAN");
+    e = v ? atoi(v) : 0;
+  }
+  return e;
+}
+
+// A container CreationSet: has an element, i.e. list/tuple/dict/set.
+static bool cs_is_container(CreationSet *cs) {
+  return cs && cs->sym && cs->sym->element;
+}
+
 static bool cs_is_per_cs_method_class(CreationSet *cs) {
   if (!cs || !cs->sym) return false;
   if (cs->sym->clone_methods_per_cs) return true;
   Sym *t = cs->sym->type ? unalias_type(cs->sym->type) : 0;
   return t && t->clone_methods_per_cs;
 }
+
+// ifa/issues/104: when true, this stage is running OUTSIDE its usual
+// quiescence gate and must restrict itself to the mixed-container
+// receivers it was lifted for -- fanning the ordinary
+// per-cs-method-class receivers early perturbs stages 1-5, which is what
+// the gate exists to prevent (measured: 19 suite failures).
+static int per_cs_forced = 0;
 
 [[nodiscard]] static int split_for_per_cs_method_receivers() {
   int analyze_again = 0;
@@ -7130,12 +7161,31 @@ static bool cs_is_per_cs_method_class(CreationSet *cs) {
       if (!av || !av->out || !av->out->type || av->out->type->sorted.n < 2) continue;
       bool all_flagged = true;
       Sym *cls = 0;
+      // ifa/issues/104: a receiver that is a MIXED-CLASS set of
+      // containers (the `{list, tuple}` case) is fanned per CS when
+      // PYC_RECVFAN is on, bypassing both the per-cs-method-class gate
+      // and the one-class-per-split rule below.
+      bool mixed_container = false;
+      if (recvfan_enabled()) {
+        mixed_container = true;
+        Sym *c0 = 0;
+        for (CreationSet *cs : av->out->type->sorted) {
+          if (!cs_is_container(cs)) { mixed_container = false; break; }
+          if (!c0) c0 = cs->sym;
+          else if (c0 != cs->sym) c0 = (Sym *)-1;
+        }
+        if (c0 != (Sym *)-1) mixed_container = false;  // all one class: existing rules apply
+      }
+      if (!mixed_container)
       for (CreationSet *cs : av->out->type->sorted) {
         if (!cs_is_per_cs_method_class(cs)) { all_flagged = false; break; }
         Sym *t = cs->sym->clone_methods_per_cs ? cs->sym : unalias_type(cs->sym->type);
         if (!cls) cls = t;
         else if (cls != t) { all_flagged = false; break; }  // one class per split
       }
+      if (mixed_container) all_flagged = true;
+      // Outside the quiescence gate, do the mixed-container fan only.
+      if (per_cs_forced == 1 && !mixed_container) continue;
       if (!all_flagged) continue;
       if (split_edges(av, 0, 0)) {
         analyze_again = 1;
@@ -7659,10 +7709,20 @@ static int cpa_enabled() {
   // clone_methods_per_cs classes (ifa/issues/045). Only on full
   // quiescence of stages 1-5 so it cannot perturb their
   // trajectories within a pass.
-  if (!analyze_again) {
+  // ifa/issues/104: PYC_RECVFAN=2 also lifts the quiescence gate. The
+  // stage is otherwise STARVED on the programs this is aimed at --
+  // TYPE_CONFLUENCE fires every pass on plcfrs/rdb/sudoku5, so
+  // `!analyze_again` is never true and the receiver fan never runs at
+  // all. That is why RECVFAN=1 measured byte-identical to baseline.
+  if (!analyze_again || recvfan_enabled() >= 2) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
     cur_split_stage = (int)FAPassStage::PER_CS_RECEIVER;
-    analyze_again = split_for_per_cs_method_receivers();
+    // 2 = lifted gate, mixed-container receivers only (measured INERT --
+    // the {list,tuple} fan never fires). 3 = lifted gate, fan everything
+    // the stage already handles, which is where the win actually is.
+    per_cs_forced = analyze_again ? (recvfan_enabled() >= 3 ? 2 : 1) : 0;
+    analyze_again = split_for_per_cs_method_receivers() || analyze_again;
+    per_cs_forced = 0;
     fa->stage_time[(int)FAPassStage::PER_CS_RECEIVER] += stage_timer.lap();
     if (analyze_again) {
       record_fa_event(FAPassStage::PER_CS_RECEIVER, analyze_again, ess0, css0, viol0);
