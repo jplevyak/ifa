@@ -389,6 +389,23 @@ static inline void make_not_equiv(CreationSet *a, CreationSet *b) {
   b->not_equiv.set_add(a);
 }
 
+static int tuple_as_list_enabled();
+static bool monomorphic_tuple(CreationSet *cs);
+
+// ifa/issues/104: may these two take the SAME list-represented type
+// despite differing arity? Both must be monomorphic tuples whose generic
+// element is populated (i.e. actually used as a sequence -- see
+// group_monomorphic_tuple) and agree on it. When that holds, arity is not
+// part of their type: they are `tuple<T>`, not `tuple2<A,B>`.
+static bool list_form_compatible(CreationSet *cs1, CreationSet *cs2) {
+  if (!tuple_as_list_enabled()) return false;
+  if (!monomorphic_tuple(cs1) || !monomorphic_tuple(cs2)) return false;
+  AVar *e1 = get_element_avar(cs1), *e2 = get_element_avar(cs2);
+  if (!e1 || !e2) return false;
+  if (e1->out == fa->type_world.bottom_type || e2->out == fa->type_world.bottom_type) return false;
+  return basic_type(fa, e1->out, (Sym *)-1) == basic_type(fa, e2->out, (Sym *)-2);
+}
+
 static void determine_basic_clones(Vec<Vec<CreationSet *> *> &css_sets_by_sym) {
   Vec<Vec<CreationSet *> *> xx;
   sets_by_f_transitive<CreationSet, CS_SYM_FN>(fa->css, css_sets_by_sym);
@@ -406,7 +423,17 @@ static void determine_basic_clones(Vec<Vec<CreationSet *> *> &css_sets_by_sym) {
         }
         // if different number of instance variables
         if (cs1->vars.n != cs2->vars.n) {
-          make_not_equiv(cs1, cs2);
+          // ifa/issues/104: unless they are monomorphic tuples that agree
+          // on element type -- then arity is NOT part of their type and
+          // they may share one list-represented type. This guard is why
+          // group_monomorphic_tuple never fired: two tuples of different
+          // arity were made non-equivalent here, before element type was
+          // ever consulted, so no equivalence class could ever contain a
+          // multi-arity monomorphic group. The per-index comparison below
+          // is skipped either way -- with differing arities there is
+          // nothing to compare pairwise; the element comparison in
+          // list_form_compatible is what stands in for it.
+          if (!list_form_compatible(cs1, cs2)) make_not_equiv(cs1, cs2);
           continue;
         }
         // for each variable
@@ -659,8 +686,14 @@ static bool monomorphic_tuple(CreationSet *cs) {
   int n = 0;
   for (AVar *fv : cs->vars) if (fv) {
     ++n;
-    Sym *t = fv->out && fv->out->type && fv->out->type->sorted.n == 1 ? fv->out->type->sorted.v[0]->sym : nullptr;
-    if (!t) return false;  // unresolved or a union: not monomorphic
+    if (!fv->out || !fv->out->n) return false;  // unresolved
+    // Compare BASIC TYPES, not CreationSet identity. An earlier version
+    // required `sorted.n == 1` per field, which no real tuple satisfies:
+    // numeric constants each get their own CreationSet, so a field
+    // holding 1 and 2 has two CSs and one basic type. This is the same
+    // comparison determine_basic_clones uses to decide equivalence.
+    Sym *t = basic_type(fa, fv->out, (Sym *)-1);
+    if (!t) return false;
     if (!first) first = t;
     else if (first != t) return false;
   }
@@ -685,7 +718,8 @@ static bool group_monomorphic_tuple(Vec<CreationSet *> *eqcss) {
     // unnecessary.
     AVar *elem = get_element_avar(cs);
     if (!elem || elem->out == fa->type_world.bottom_type) return false;
-    Sym *t = cs->vars[0]->out->type->sorted.v[0]->sym;
+    Sym *t = basic_type(fa, cs->vars[0]->out, (Sym *)-1);
+    if (!t) return false;
     if (!first) first = t;
     else if (first != t) return false;
   }

@@ -732,3 +732,69 @@ The measured target (109/172/117 partitions) is real, but reaching it
 needs the monomorphic-group test applied to the grouping the splitter
 actually uses, not to `clone.cc`'s equivalence classes — and it needs the
 element sym without its current side effects on container-keyed paths.
+
+## Why the merge never fired — and the stage mismatch behind it (2026-08-17)
+
+Two real blockers, both found and both fixed:
+
+**1. Different arity was made non-equivalent unconditionally.**
+`determine_basic_clones`:
+
+```cpp
+// if different number of instance variables
+if (cs1->vars.n != cs2->vars.n) { make_not_equiv(cs1, cs2); continue; }
+```
+
+Two CreationSets of differing arity are separated **before element type is
+ever consulted**, so no equivalence class could ever hold a multi-arity
+monomorphic group. Relaxed via `list_form_compatible(cs1, cs2)` — both
+monomorphic tuples, elements populated and agreeing — in which case arity
+is not part of their type.
+
+**2. `monomorphic_tuple` compared CreationSet identity.** It required
+`sorted.n == 1` per field, which no real tuple satisfies: numeric
+constants each get their own CreationSet, so a field holding `1` and `2`
+has two CSs and one basic type. Changed to compare `basic_type(...)`,
+the same comparison `determine_basic_clones` itself uses.
+
+With both fixed the merge **fires** — `tuplist_groups=5` on `plcfrs`.
+
+### But it cannot deliver the measured benefit, for a structural reason
+
+`plcfrs`'s FA metrics are **byte-identical** with the merge firing
+(violations 4353, `ess` 1213, `css` 3949 — exactly the `PYC_TUPELEM`-only
+numbers). That is not a bug: **`clone.cc` runs after FA.** Violations,
+`ess`, `css` and split counts are all FA-time; the representation choice
+is post-FA and cannot move any of them.
+
+So the target metric and the mechanism are at **different stages**. The
+109/172/117 same-element-different-arity split partitions are an
+FA-level count, and no post-FA representation choice can reduce them.
+Choosing that metric for a `clone.cc` change was a mistake — it should
+have been caught when the metric was picked, not after building all four
+pieces.
+
+What a post-FA merge *can* buy is fewer distinct generated types and
+smaller output. Measured on `plcfrs`: it does not get that far —
+`PYC_TUPELEM=1` alone emits 157 424 bytes of C and fails on the
+[018](../issues/018-dict-mixed-key-types-boxing-failure.md) union, while
+adding `PYC_TUPLE_AS_LIST=1` makes the **compiler abort (rc=134) with no
+C at all**. The merge fires and then something downstream cannot handle
+the merged type.
+
+### Where this leaves it
+
+Suite is clean in every configuration (273 / 0, default and both flags),
+so nothing is broken by default. All four pieces are implemented and the
+two real blockers are removed, which is genuine progress on the
+mechanism. But:
+
+- to reduce **splits**, the arity-independent type must exist **during
+  FA**, not in `clone.cc` — a much larger change than this one;
+- the post-FA merge, which is what was built, currently crashes the
+  compiler on the one corpus program where it fires.
+
+Both flags stay off. The next step is to debug the `plcfrs` abort under
+`PYC_TUPLE_AS_LIST` (the merge fires 5 times, so the failing group is
+findable via `IFA_DBG_TUPLIST`), and separately to decide whether an
+FA-level arity-independent tuple type is worth pricing.
