@@ -211,3 +211,67 @@ Two consequences to design around:
 Until that is built, `PYC_UNIFY_SEQ` stays off. It is kept because it is
 the cheapest way to re-measure the idea, and because the 13-test failure
 list is a precise specification of what a correct version must preserve.
+
+## The benefit measurement, run at last (2026-08-17)
+
+The "partitions mixing list+tuple" table above is a **proxy**, and it was
+never checked against the thing it was standing in for. Running
+`PYC_UNIFY_SEQ` and measuring the actual effect:
+
+| program | splits | violations | ess | css | passes |
+|---|---|---|---|---|---|
+| `plcfrs` | 665 → **1053** ✗ | 2232 → 1769 ✓ | 850 → 1060 ✗ | 2709 → 2581 ✓ | 30 → 38 ✗ |
+| `rdb` | 1920 → 1539 ✓ | 136 → 146 ✗ | 1113 → 1149 ✗ | 2667 → 2698 ✗ | 39 → 38 |
+| `sudoku5` | 723 → **468** ✓ | 180 → 187 | 492 → **421** ✓ | 1596 → **1135** ✓ | 40 → **28** ✓ |
+
+**The proxy was misleading.** `plcfrs` had the highest mix (19 %) and
+gets *more* splits, more contours and eight more passes. `rdb` is roughly
+neutral. Only `sudoku5` is a clear win — and a good one (`css` −29 %,
+passes 40 → 28).
+
+So the payoff is inconsistent and program-dependent, which changes the
+cost/benefit: it does **not** currently justify the `repr` redesign
+described above. The right order of work is to understand why `plcfrs`
+gets worse before building the provenance machinery.
+
+## On avoiding the runtime tag
+
+The observation that a runtime tag is unnecessary is **correct**, with
+one caveat about which form of unification it applies to.
+
+A tuple literal and a list literal are different creation sites, so
+`creation_point` mints them different CreationSets and nothing merges
+across sites (`PYC_CSMOLD`'s reuse is keyed on `creation_var`). A
+`{tuple-built, list-built}` union is therefore a union of two *distinct
+CSs*, and dispatch already fans per CS — each branch statically knows its
+own layout. **No runtime tag is needed to pick a representation.**
+
+The caveat is `repr` specifically. It is not a codegen decision — it is
+an ordinary Python-level method, `tuple.__str__` in
+`__pyc__/04_sequence.py`, looked up **by sym**:
+
+```python
+class tuple:
+  def __str__(self):
+    x = "("
+    ...
+```
+
+So the two options are not equivalent:
+
+- **Two symbols** preserves `repr` for free, because dispatch still finds
+  `tuple.__str__`. But then the unification has to happen somewhere other
+  than the type — at the *representation* level, so that a `{list,
+  tuple}` union is representable without splitting. That is a different
+  (and probably smaller) change than merging the syms.
+- **CS separation with a unified sym** keeps the layouts distinguishable
+  but **not** `repr`: with one sym there is one `__str__`, and the
+  per-CS bit has no way to reach method lookup. To recover it, the
+  concrete type `clone.cc` already mints per CS group would have to carry
+  the tuple method set — which is close to re-introducing two symbols,
+  late.
+
+Given the measurement above, the "two symbols, unify the representation"
+direction is the one worth pricing first: it keeps `repr` working by
+construction, and the 13-test failure list stops being a cost to pay
+down.
