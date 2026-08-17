@@ -322,6 +322,8 @@ homogeneous → list layout". Plus verification that `tuple.__str__`'s
 Estimate: tens of lines, one afternoon, low risk — **but** aimed at 6 % of
 the cases on two of the three programs that motivated it.
 
+> **That estimate is wrong. Attempted 2026-08-17 — see below.**
+
 ### Verdict
 
 Cheap to build, and it keeps `repr` correct by construction, which is the
@@ -395,3 +397,72 @@ Ranking, corrected:
 3. **Boxing (018/030)**: still needed for genuinely dynamic unions like
    `{None, int}`, but **not** for this — and it should not have been
    offered as the answer here.
+
+## Attempting option 2 (2026-08-17): the estimate was wrong
+
+Implemented `PYC_TUPLE_AS_LIST`: compute `homogeneous_tuple(cs)` (every
+field the same `AType`), and for an equivalence class of homogeneous
+tuples route it past the record branch in `define_concrete_types` so it
+takes the ordinary sequence path.
+
+**The compiler segfaults** on the simplest homogeneous tuple
+(`t = (n, n+1)`).
+
+### Why — and why it is not a condition flip
+
+The non-record path ends in
+
+```cpp
+name = cs->sym->type->name;
+```
+
+and `sym_tuple` is an **ifa-core primitive type**
+(`new_builtin_primitive_type(sym_tuple, "tuple")`), not a `__pyc__` class
+like `list`, so `->type` is not a class sym. That is the crash.
+
+Guarding it would not help, because the branch would then produce **a
+clone of `sym_tuple`** with an inherited `type_kind` — an unformed tuple
+type, not a list. "Give the tuple list layout" actually requires:
+
+1. obtaining (or synthesizing) the **`list` concrete type for element
+   type `T`**, which is derived per-CreationSet elsewhere and is not
+   simply `sym_list`;
+2. making codegen emit sequence operations against it — `_CG_list_ptr`
+   and friends rather than `->e0`;
+3. checking `tuple.__str__`'s body (`len(self)`, `self[k]`) against that
+   layout — method resolution has already happened by `clone.cc`, so the
+   body is fixed and must work as written.
+
+So the correct price is **not** "one condition in `define_concrete_types`".
+It is a new path that mints list concrete types for tuple CreationSets,
+in a subsystem (`define_concrete_types`) whose two-pass clone/no-clone
+structure and `sym_tuple`/`sym_closure` special cases are load-bearing.
+
+**Revised estimate: days, not an afternoon, and medium risk** — against a
+payoff already measured at 6 % of mixed partitions on `plcfrs` and
+`sudoku5`.
+
+The attempt was reverted rather than left behind a flag, since a
+segfaulting flag is worse than none. The `homogeneous_tuple` predicate is
+recorded here rather than in code:
+
+```cpp
+static bool homogeneous_tuple(CreationSet *cs) {
+  if (!cs || cs->sym != sym_tuple) return false;
+  AType *first = nullptr; int n = 0;
+  for (AVar *fv : cs->vars) if (fv) {
+    ++n;
+    if (!first) first = fv->out->type;
+    else if (fv->out->type != first) return false;
+  }
+  return n > 0;
+}
+```
+
+### This strengthens the corrected ranking
+
+Option 2 is now *more* expensive than option 1 and still reaches only the
+minority of cases. **Contour separation for the shared container
+accessors (101) is the recommendation** — it is what shedskin gets for
+free from template instantiation, and it addresses the union at its
+source on all three programs.
