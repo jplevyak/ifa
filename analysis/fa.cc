@@ -1759,6 +1759,15 @@ static void make_kind(PNode *p, EntrySet *es, Sym *kind, AVar *container, Vec<Va
     set_container(atv, container);
     flow_vars(av, atv);
     flow_vars(atv, iv);
+    // ifa/issues/104: also flow the field into the container's GENERIC
+    // element, so a tuple carries both views -- per-index vars for the
+    // record layout, and an element type that is monomorphic exactly
+    // when every field agrees. `list` already gets this; `tuple` only
+    // does when PYC_TUPELEM gave it an element sym.
+    if (kind == sym_tuple && kind->element) {
+      AVar *elem = get_element_avar(cs);
+      if (elem) flow_vars(atv, elem);
+    }
     if (iv->var->sym->name) cs->var_map.put(iv->var->sym->name, iv);
   }
 }
@@ -5500,6 +5509,37 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
     // HOMOGENEOUS (all fields the same type). Representation unification
     // can only merge a tuple into a list layout when it is homogeneous;
     // a heterogeneous tuple is a record and has no list form. Probe-only.
+    // ifa/issues/104 (revised goal): how many split partitions contain
+    // TUPLES OF THE SAME ELEMENT TYPE BUT DIFFERENT ARITY? Those are
+    // distinct record types in pyc today, so any variable holding both
+    // is a union -- yet they are ONE type under a list representation
+    // (element type T, runtime length), which is exactly shedskin's
+    // variable-length homogeneous `tuple<T>`. This is the population a
+    // tuple-to-list representation would collapse.
+    if (getenv("IFA_DBG_TUPARITY") && avpos) {
+      std::map<void *, std::set<int>> arities_by_elem;  // element AType -> arities
+      int nhomo = 0, nhet = 0;
+      for (CreationSet *c : part->sorted) {
+        if (!c->sym || c->sym != sym_tuple) continue;
+        AType *first = nullptr;
+        bool homo = true;
+        int n = 0;
+        for (AVar *fv : c->vars) if (fv) {
+          ++n;
+          if (!first) first = fv->out->type;
+          else if (fv->out->type != first) { homo = false; break; }
+        }
+        if (!n) continue;
+        if (!homo) { ++nhet; continue; }
+        ++nhomo;
+        arities_by_elem[(void *)first].insert(n);
+      }
+      int multi = 0;
+      for (auto &kv : arities_by_elem) if (kv.second.size() > 1) ++multi;
+      if (multi)
+        fprintf(stderr, "TUPARITY fun=%s homo=%d het=%d elemtypes=%d MULTIARITY=%d\n",
+                es->fun->sym->name ? es->fun->sym->name : "?", nhomo, nhet, (int)arities_by_elem.size(), multi);
+    }
     if (getenv("IFA_DBG_TUPHOMO") && avpos) {
       int nlist = 0, ntuple = 0, nhomo = 0, nhet = 0;
       for (CreationSet *c : part->sorted) {

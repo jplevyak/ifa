@@ -550,3 +550,88 @@ stage and a program that flips.
 
 `PYC_RECVFAN` is kept off by default: 1 and 2 are the (inert) list/tuple
 fan, 3 is the gate lift.
+
+## The actual goal, sharpened (2026-08-17)
+
+> *Allow tuples of monomorphic elements but different sizes to convert to
+> the list runtime representation.*
+
+That is a much better target than "unify list and tuple", and it is the
+one shedskin actually implements: `tuple2<A,B>` for heterogeneous fixed
+pairs, and a **variable-length homogeneous `tuple<T>`** for the rest
+(`plcfrs`: 110 `tuple2<>` instantiations against 86 `tuple<>`).
+
+In pyc every tuple is a fixed-arity record, so `(a,b)` and `(a,b,c)` with
+the same element type are **different types**, and any variable holding
+both is a union. Under a list representation they are one type.
+
+### The right metric — measured
+
+`IFA_DBG_TUPARITY` counts split partitions holding tuples with the **same
+element type but different arity**:
+
+| program | such partitions | of total splits |
+|---|---|---|
+| `plcfrs` | **109** | 665 (16 %) |
+| `rdb` | **172** | 1920 (9 %) |
+| `sudoku5` | **117** | 723 (16 %) |
+| `go` | 0 | — |
+| `linalg` | 0 | — |
+
+This is the population a tuple→list representation collapses, and it is
+a different (and better-motivated) population than the "mixed list+tuple"
+one this issue started from.
+
+### The blocker, found
+
+```cpp
+sym_list->element = new_sym();     // python_ifa_sym.cc:108
+sym_vector->element = new_sym();
+                                   // sym_tuple->element is NEVER SET
+```
+
+A tuple CreationSet therefore has **no generic element AVar at all**:
+`get_element_avar()` returns 0, `tuple_able()` is unconditionally false
+for tuples, and nothing can even ask "is this tuple monomorphic?". Lists
+carry both views — per-index vars *and* an element type; tuples carry
+only the first. That is the prerequisite for everything above.
+
+### `PYC_TUPELEM`: prerequisite implemented, and where it stands
+
+Giving `sym_tuple` an element sym and flowing each field into it in
+`make_kind` works mechanically — `plcfrs`'s tuples now report
+`68 CS / 37 elemtypes / 19 shapes`, so monomorphicity is now a question
+the analysis can answer.
+
+It costs **11 tests**, and they are all one thing:
+
+```
+tuple_mixed_types.py:4: warning: expression has mixed basic types:( int64 float64 str )
+    print(a[1])
+```
+
+A **heterogeneous** tuple's generic element is the union of its fields,
+and that union leaks into **constant-index reads** that were previously
+precise per-field. The other failures are the same shape
+(`tuple_compare`, `tuple_list_mix`, `destructuring_targets`,
+`dict_*`, `test_heapq`).
+
+### What remains
+
+The element must be an **analysis-only query** — "do all fields agree?" —
+and must not participate in indexing or in violation collection. Concretely:
+
+1. Keep the field→element flow, but ensure `prim_index_object` with a
+   **constant** index still resolves through `cs->vars[i]`, never the
+   element. The per-index precision is the thing that must not regress.
+2. Exclude the tuple element AVar from BOXING/mixed-basics collection —
+   a union there is expected and means only "not monomorphic", not "needs
+   a boxed representation".
+3. Then, in `define_concrete_types`, a group of tuple CSs whose element
+   type is monomorphic and identical may share **one list-represented
+   type regardless of arity** — which is the goal, and which the earlier
+   `PYC_TUPLE_AS_LIST` attempt could not even express because there was
+   no element to test.
+
+Steps 1–2 are the real work and are bounded; step 3 is the payoff.
+`PYC_TUPELEM` is kept off by default with the prerequisite in place.
