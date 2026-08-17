@@ -275,3 +275,64 @@ Given the measurement above, the "two symbols, unify the representation"
 direction is the one worth pricing first: it keeps `repr` working by
 construction, and the 13-test failure list stops being a cost to pay
 down.
+
+## Pricing "two symbols, unify the representation" (2026-08-17)
+
+### Feasibility gate: are the tuples homogeneous?
+
+Representation unification can only give a tuple a list layout when the
+tuple is **homogeneous** — a heterogeneous tuple is a record and has no
+list form. `IFA_DBG_TUPHOMO` counts, among split partitions that mix list
+and tuple, how many contain a heterogeneous tuple:
+
+| program | mixed partitions | containing a heterogeneous tuple |
+|---|---|---|
+| `plcfrs` | 109 | **102 (94 %)** |
+| `sudoku5` | 70 | **66 (94 %)** |
+| `rdb` | 267 | 126 (**47 %**) |
+
+So layout unification could address **6 %** of the mixed partitions on
+`plcfrs` and `sudoku5`, and **53 %** on `rdb`.
+
+**The dominant case is a heterogeneous tuple unioned with a list.** That
+is not a layout problem at all — it is the
+[018](../issues/018-dict-mixed-key-types-boxing-failure.md) /
+[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) boxing problem,
+and no amount of unifying `list` with `tuple` touches it.
+
+### Implementation cost, if pursued anyway
+
+Small and contained, because keeping two symbols means `repr` and the
+method sets keep working by ordinary sym dispatch — the 13-test failure
+list from `PYC_UNIFY_SEQ` simply does not arise.
+
+The change is one condition in `clone.cc`'s `define_concrete_types`,
+which today reads
+
+```cpp
+s->type_kind = (sym == sym_tuple || tup) ? Type_RECORD : Type_FUN;
+```
+
+and would become "`sym_tuple` **and heterogeneous** → `Type_RECORD`;
+homogeneous → list layout". Plus verification that `tuple.__str__`'s
+`len(self)` and `self[k]` still work against a list-laid-out receiver
+(they go through `index_object`, so probably yes), and untangling
+`get_sym_tup`'s `sym != sym_tuple` special case.
+
+Estimate: tens of lines, one afternoon, low risk — **but** aimed at 6 % of
+the cases on two of the three programs that motivated it.
+
+### Verdict
+
+Cheap to build, and it keeps `repr` correct by construction, which is the
+right shape. But the measurement says it is aimed at the minority of the
+target: on `plcfrs` and `sudoku5`, 94 % of the mixed partitions need
+boxing, not layout unification. `rdb` is the only program where it would
+reach half the cases, and `rdb` was already neutral-to-worse under full
+unification.
+
+**Recommendation: do not build it yet.** The same effort spent on
+018/030 addresses the 94 % directly, and would also close the
+[102](102-corpus-programs-compile-then-abort-at-runtime.md) class-B
+dispatch failures. Revisit if boxing lands and the residual mixes turn
+out to be homogeneous.

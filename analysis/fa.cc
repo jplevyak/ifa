@@ -5495,6 +5495,34 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
     // reuse), so a position receiving closures has a type that grows with
     // the contour count and every partition it yields is necessarily
     // first-time. Probe-only.
+    // ifa/issues/104 pricing: for each split partition, report whether it
+    // mixes list and tuple, and whether the TUPLE CreationSets in it are
+    // HOMOGENEOUS (all fields the same type). Representation unification
+    // can only merge a tuple into a list layout when it is homogeneous;
+    // a heterogeneous tuple is a record and has no list form. Probe-only.
+    if (getenv("IFA_DBG_TUPHOMO") && avpos) {
+      int nlist = 0, ntuple = 0, nhomo = 0, nhet = 0;
+      for (CreationSet *c : part->sorted) {
+        if (!c->sym) continue;
+        if (c->sym == sym_tuple) {
+          ++ntuple;
+          AType *first = nullptr;
+          bool homo = true;
+          for (AVar *fv : c->vars) {
+            if (!fv) continue;
+            if (!first)
+              first = fv->out->type;
+            else if (fv->out->type != first) { homo = false; break; }
+          }
+          if (c->vars.n <= 1) homo = true;
+          if (homo) ++nhomo; else ++nhet;
+        } else if (c->sym->name && !strcmp(c->sym->name, "list"))
+          ++nlist;
+      }
+      if (nlist && ntuple)
+        fprintf(stderr, "TUPHOMO mixed fun=%s list=%d tuple=%d homo=%d het=%d\n",
+                es->fun->sym->name ? es->fun->sym->name : "?", nlist, ntuple, nhomo, nhet);
+    }
     if (getenv("IFA_DBG_SPLITSYM") && avpos) {
       int nclosure = 0, ntotal = 0;
       for (CreationSet *c : part->sorted) {
