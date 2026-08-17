@@ -672,3 +672,4 @@ Fix it now when:
 
 - [101](101-FA-first-time-forever-splitting.md) — the residual non-convergence (`go`, `linalg`, `plcfrs`) is first-time-forever splitting, not re-derivation.
 - [102](102-corpus-programs-compile-then-abort-at-runtime.md) — 27 of 68 corpus programs compile cleanly and then abort at runtime on unresolved dispatch; no sweep or harness in this repo sees it.
+- [104](104-unify-list-and-tuple-in-analysis.md) — design: unify `list`/`tuple` in analysis and let the existing `tuple_able` decision pick the layout; measured 19%/14%/10% of splits mix the two on plcfrs/rdb/sudoku5, 0% on linalg.
