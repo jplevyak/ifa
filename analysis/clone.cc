@@ -673,6 +673,18 @@ static bool group_monomorphic_tuple(Vec<CreationSet *> *eqcss) {
   Sym *first = nullptr;
   for (CreationSet *cs : *eqcss) if (cs) {
     if (!monomorphic_tuple(cs)) return false;
+    // Mirror how `list` degrades. A container whose GENERIC ELEMENT is
+    // bottom is never used as a sequence -- only constant-index reads
+    // touched it -- and `tuple_able` gives such a list a RECORD layout,
+    // which is both more precise and needs no element type. So the
+    // void-element case never arises for lists, and must not for tuples:
+    // a bottom-element tuple stays a record too. List representation is
+    // for containers actually used generically (iteration, dynamic
+    // index, len), and those have a resolved element type ALREADY, from
+    // the use that populated it. This is what makes seeding the element
+    // unnecessary.
+    AVar *elem = get_element_avar(cs);
+    if (!elem || elem->out == fa->type_world.bottom_type) return false;
     Sym *t = cs->vars[0]->out->type->sorted.v[0]->sym;
     if (!first) first = t;
     else if (first != t) return false;
@@ -857,18 +869,6 @@ static int define_concrete_types(CSSS &css_sets) {
         cs->type = sym;
         sym->creators.add(cs);
       }
-    }
-    // ifa/issues/104: a monomorphic tuple group that took the list
-    // representation needs an ELEMENT TYPE, and its element AVar is
-    // deliberately bottom (nothing flows there at construction, exactly
-    // as for lists, so constant-index reads stay precise per-field). At
-    // this point the type is known -- it is the common type of the
-    // per-index vars -- so seed it here, where the representation choice
-    // was made. Without this the emitted list has a `void*` element.
-    if (tuple_as_list_enabled() && group_monomorphic_tuple(eqcss)) {
-      Sym *elem = eqcss->first_in_set()->vars[0]->out->type->sorted.v[0]->sym;
-      for (CreationSet *cs : *eqcss) if (cs && cs->type && cs->type->element)
-        cs->type->element->type = to_concrete_type(elem);
     }
   }
   return 0;

@@ -674,7 +674,7 @@ symmetric case — a **tuple** that took list representation — is now
 `goto Llist`. (The locals had to be hoisted above both branches for the
 jump to be legal.)
 
-### Piece 4 — element TYPE ❌ not done
+### Piece 4 — resolved by mirroring how `list` degrades ✅
 
 The emitted list has a `void*` element:
 
@@ -688,13 +688,47 @@ Because the element AVar is deliberately bottom, `concretize_avar` derives
 does **not** survive — `resolve_concrete_types` runs afterwards and
 re-derives from the AVar.
 
-**The remaining work is to give the element AVar a type, not the element
-Sym.** At the point the representation is chosen the type is known (the
-common type of `cs->vars`), so the fix is to seed the element AVar's
-`out` with that CreationSet — or to have `concretize_avar` respect an
-already-seeded element — rather than seeding the Sym and being
-overwritten.
+**Seeding was the wrong idea — `list` never needs it.** A container whose
+generic element is bottom was only ever touched by constant-index reads,
+and `tuple_able` gives such a list a **record** layout, which is both more
+precise and needs no element type. So the void-element case *cannot arise*
+for lists. Tuples must degrade the same way: a bottom-element tuple stays
+a record. List representation is only for containers actually used
+generically (iteration, dynamic index, `len`) — and those already have a
+resolved element type, from the use that populated it.
 
-That is a single, well-localised step, and everything before it is done
-and green. Flags stay off: `PYC_TUPELEM=1` alone is clean;
-`PYC_TUPLE_AS_LIST=1` needs piece 4.
+Adding `if (!elem || elem->out == bottom) return false;` to
+`group_monomorphic_tuple` fixes it with no seeding at all. All four pieces
+now compile and run, and the **full suite is clean with both flags on:
+273 passed, 0 failed.**
+
+## But it does not pay off, and the prerequisite is not free
+
+| program | flags off | `PYC_TUPELEM=1` alone | both flags |
+|---|---|---|---|
+| `plcfrs` | viol **2232**, ess 850, css 2709 | viol **4353**, ess 1213, css 3949 | identical to TUPELEM-only |
+| `rdb` | viol 136, ess 1113 | unchanged | unchanged |
+| `sudoku5` | viol 180, ess 492 | unchanged | unchanged |
+
+Two things, both negative:
+
+1. **`tuplist_groups=0` on all three** — the representation choice never
+   fires. The 109/172/117 same-element-different-arity partitions are
+   counted over *split partitions*, but `group_monomorphic_tuple` is asked
+   of `clone.cc` **equivalence classes**, which group differently; no class
+   comes out wholly monomorphic with a populated, agreeing element.
+2. **`PYC_TUPELEM` alone costs `plcfrs`** — violations 2232 → 4353, `ess`
+   +43 %. Giving `sym_tuple` an element sym makes tuples answer
+   `cs->sym->element`, so every path keyed on "is this a container"
+   (`sizeof_element`, iteration, the element numeric coercion gated on
+   `added_element_var`) now includes them. The suite does not see this;
+   the corpus does.
+
+So the prerequisite is clean on the test suite and **expensive on the
+program this was aimed at**, and the payoff it unlocks never fires. Both
+flags stay off.
+
+The measured target (109/172/117 partitions) is real, but reaching it
+needs the monomorphic-group test applied to the grouping the splitter
+actually uses, not to `clone.cc`'s equivalence classes — and it needs the
+element sym without its current side effects on container-keyed paths.
