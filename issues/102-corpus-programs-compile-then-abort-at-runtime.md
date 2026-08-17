@@ -36,30 +36,68 @@ pyc:
 | `amaze` | rc=0 | **SIGSEGV** |
 | `mwmatching` | rc=0 | **SIGABRT** |
 
-## Cause: pyc's own dispatch stubs, firing at runtime
+## Why a "compile-time" issue shows up at runtime
 
-The aborts are assertions pyc itself emits where FA failed to resolve a
-call:
+`cg.cc:2055` is the mechanism. When codegen reaches a call site it cannot
+emit, it does **not** fail the build:
 
-```
-life:       Assertion `!"runtime error: matching function not found"' failed.
-kmeanspp:   Assertion `!"runtime error: matching function not found"' failed.
-othello:    Assertion `!"runtime error: getter not resolved"' failed.
-mwmatching: Assertion `!"runtime error: getter not resolved"' failed.
-rubik:      Assertion `!"runtime error: getter not resolved"' failed.
+```cpp
+fputs("  assert(!\"runtime error: matching function not found\");\n", fp);
 ```
 
-So this is the
-[018](../issues/018-dict-mixed-key-types-boxing-failure.md) /
-[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) family — an
-unresolved polymorphic dispatch — but reaching **runtime** rather than
-stopping the build. Codegen emits an abort stub for the unresolved case,
-the program compiles, and it dies when that path is first taken.
+It writes an abort stub into the generated C. So the program compiles
+cleanly and dies if and when that path executes. The *same message* also
+appears as a hard compile-time `fail()` on other paths (018's own
+reproducers stop at `sizeof_element of non-container type` inside
+`__pyc__.py`), which is why 018 is written up as a compilation issue.
 
-`solitaire` is a different shape worth separating: it allocates
-runaway memory (`GC Warning: Repeated allocation of very large block
-(appr. size 3517100 KiB)` — 3.5 GB) and then SIGSEGVs, where CPython
-completes in 35 s.
+**The shared string is what makes this misleading, and it misled the
+first version of this issue.** `PYC_DBG_DISPATCH` shows the corpus aborts
+are mostly *not* 018's problem.
+
+## Three distinct causes, measured
+
+`PYC_DBG_DISPATCH` over 14 crashers, 120 dispatch failures total:
+
+| class | count | what it is |
+|---|---|---|
+| **A** | **114 (95 %)** | `fns=-1` — **no candidates at all**, operand typed `void_type` (bottom). FA gave the value no type. |
+| **B** | 6 | `fns=2` with two same-named candidates on an identical receiver type, e.g. kmeanspp `cand=append cand=append r1=_:list` — two *clones* of one container method that codegen cannot discriminate. |
+
+Class A dominates and is a **NOTYPE / bottom-typed operand** problem, not
+a union-representation problem. `life` is representative — iterating a
+tuple leaves `__next__`'s result untyped, so every downstream use becomes
+a stub, and the loop *is* entered at runtime:
+
+```c
+t13 = __tuple_iter__::__pyc_more__(t14);
+if (t13) {
+  t15 = t14;
+  __tuple_iter__::__next__(t15);
+  assert(!"runtime error: matching function not found");   /* result untyped */
+  ...
+  assert(!"runtime error: getter not resolved");
+```
+
+Class B *is* the 018/030/[101](101-FA-first-time-forever-splitting.md)
+shape — container methods split per receiver CreationSet into clones with
+the same C-level signature. It is real but rare (kmeanspp 5, adatron 1).
+
+Two further programs crash with **zero** dispatch failures, so they are a
+third cause again:
+
+- `pisang` — `Assertion !"runtime error: list element type mismatch"`
+- `block` — SIGSEGV with no diagnostic
+- `solitaire` — runaway allocation (3.5 GB) then SIGSEGV; CPython
+  finishes in 35 s
+
+## Correction to the first version of this issue
+
+It attributed all 27 crashes to the 018/030 family on the strength of the
+assertion text. That is wrong: **95 % are bottom-typed operands (class
+A)**, which is the NOTYPE family
+([049](049-FA-raise-only-contour-bottom-return.md) territory), and only
+~5 % are the union/clone-discrimination problem 018 and 030 describe.
 
 ## Why nothing caught this
 
@@ -87,11 +125,18 @@ earlier in this session.
 
 Two separable pieces:
 
-1. **The dispatch failures themselves** are 018/030. Nothing new is
-   needed to characterise them — but their scale is new information: this
-   is not a couple of edge-case programs, it is 39 % of everything that
-   compiles.
-2. **The measurement gap** is independently worth closing, and is cheap:
+1. **Class A — bottom-typed operands — is the bulk of the work** and is
+   NOT 018. Something is leaving values with `void_type` where the code
+   is genuinely reachable; either FA wrongly concludes a path is dead, or
+   it fails to propagate a type through container iteration. `life` is
+   the cheapest reproducer (9 failures, all class A, small program,
+   clean CPython run).
+2. **Codegen should not silently emit an abort stub.** Whatever the
+   upstream cause, `cg.cc:2055` turning "I cannot emit this call" into a
+   runtime assert is what converts a diagnosable compile failure into a
+   39 %-of-corpus runtime crash rate. At minimum it should be reportable
+   (a count at end of compilation, or an opt-in hard error).
+3. **The measurement gap** is independently worth closing, and is cheap:
    a corpus runner that records compile status *and* run status, so a
    change that turns a working binary into a crashing one is visible.
    Without it, no sweep in this repo can distinguish "compiles" from
