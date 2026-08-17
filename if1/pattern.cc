@@ -744,6 +744,19 @@ Fun *Matcher::build(PMatch *m, Vec<Fun *> &done_matches) {
     m = build_PMatch(f, m);
   }
   if (m->default_args.n) {
+    // issues/103: which actual positions ended up mapped to which
+    // formals, and which formals are being defaulted. Probe-only.
+    if (getenv("PYC_DBG_BADKW")) {
+      fprintf(stderr, "[kwmap] fun=%s defaults=%d |", f->sym && f->sym->name ? f->sym->name : "?",
+              m->default_args.n);
+      for (int i = 0; i < m->actual_to_formal_position.n; i++) {
+        MPosition *k = m->actual_to_formal_position[i].key, *v = m->actual_to_formal_position[i].value;
+        if (!k) continue;
+        fprintf(stderr, " a%d->f%d", k->last_is_positional() ? (int)Position2int(k->last()) : -1,
+                (v && v->last_is_positional()) ? (int)Position2int(v->last()) : -1);
+      }
+      fprintf(stderr, " nactuals=%d\n", m->actuals.n);
+    }
     qsort(m->default_args.v, m->default_args.n, sizeof(void *), compar_last_position);
     DefaultCache *c = f->default_cache;
     Fun *oldf = f;
@@ -1618,6 +1631,55 @@ int pattern_match(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_clo
   log_dispatch_pattern_match(partial_matches, matcher.function_values, send);
   MPosition app;
   matcher.find_all_matches(0, args, names, &partial_matches, app, 0);
+  // issues/103: a candidate with no formal of a given actual's NAME is
+  // not a match. Without this the named actual keeps its positional slot
+  // and is bound through the identity position map -- so
+  // `f([1,2], nosuchkw=99)` against `def f(A, B=None, C=None)` resolves
+  // with nactuals=3, an empty actual->formal map and one defaulted
+  // formal, and `default_wrapper` duly assigns 99 to B. CPython raises
+  // TypeError instead.
+  //
+  // Done HERE, at the top-level entry point, rather than inside
+  // find_all_matches: the named path there already rejects correctly (by
+  // the time the named actual is processed the candidate list is
+  // measured empty), so the surviving match comes from the positional
+  // route, and this is where both the candidate list and `names` are in
+  // scope.
+  //
+  // ON by default from 2026-08-16. Corpus, 77 programs: ZERO exit-code
+  // changes, and only `life` changes at all (violations 30 -> 35, ess
+  // 135 -> 117, css 708 -> 688) -- so the generated code for the other 76
+  // is identical and their runtime behaviour cannot have moved. Suite
+  // unchanged. PYC_KWSTRICT=0 restores the old silent misbinding.
+  //
+  // Note what this does and does not buy. It replaces a silent wrong
+  // binding with a diagnostic at the call site, which is the important
+  // part. It does NOT yet produce CPython's message ("f() got an
+  // unexpected keyword argument 'nosuchkw'"): the call simply has no
+  // match, so the report is the generic "illegal call argument type",
+  // and cg.cc:2055 still emits a runtime abort stub rather than failing
+  // the build (ifa/issues/102). Improving both is follow-up work in
+  // issues/103.
+  if (getenv("PYC_KWSTRICT") ? atoi(getenv("PYC_KWSTRICT")) : 1) if (partial_matches && partial_matches->n) {
+    Vec<Fun *> keep;
+    for (Fun *f : *partial_matches) if (f) {
+      bool ok = true;
+      for (int i = 0; i < names.n; i++) {
+        if (!names[i]) continue;
+        MPosition fnp;
+        fnp.push(names[i]);
+        if (!f->named_to_positional.get(cannonicalize_mposition(fnp))) {
+          if (getenv("PYC_DBG_BADKW"))
+            fprintf(stderr, "[kwstrict] reject %s: no formal named '%s'\n",
+                    f->sym && f->sym->name ? f->sym->name : "?", names[i]);
+          ok = false;
+          break;
+        }
+      }
+      if (ok) keep.add(f);
+    }
+    partial_matches->move(keep);
+  }
   if (!partial_matches || !partial_matches->n) return 0;
 
   {
