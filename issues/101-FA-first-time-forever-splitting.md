@@ -891,7 +891,12 @@ minted at the **same allocation site** in any other contour instead of
 minting unconditionally. `clone_methods_per_cs` classes are excluded —
 issue 045 established their instances must stay per-contour.
 
-**Corpus, 77 programs — strictly better or equal on every metric:**
+> **Read the verification section below before trusting the table that
+> follows.** The compile-only sweep's headline (violations −33 %) is
+> almost entirely `plcfrs`, a program that does not compile under either
+> setting, so that number means much less than it appears to.
+
+**Corpus, 77 programs — compile-only metrics:**
 
 | | baseline | `PYC_CSMOLD=1` |
 |---|---|---|
@@ -951,3 +956,60 @@ method per receiver CreationSet when the receivers agree on element
 type.* That is the direct analogue of what a template instantiation gives
 shedskin for free, and unlike CS re-keying it needs neither merge
 machinery nor information that does not exist yet at the decision point.
+
+### Verification: compiling is not evidence — the binaries were run
+
+The sweep above only compiles. `ifa-fa-convergence-state`'s first
+measurement trap says exactly why that is not enough: *"violation count
+is not a quality metric — `rdb` converges to 1 violation by emitting 1 %
+of its former C. Check exit code, generated-C size, and run the binary."*
+`PYC_CSMOLD` is a **precision-reducing** change, so fewer contours and
+fewer violations is the expected shape of both a real improvement and a
+silent loss.
+
+So every corpus program was compiled under both settings and **run**,
+comparing generated-C size and an md5 of actual output. 70 of 77 were
+output-checked (the rest do not build for unrelated reasons — missing
+modules, pre-existing aborts).
+
+**Seven programs initially showed different output — all seven are
+nondeterministic**, verified individually by re-running the *same* binary:
+
+| program | cause |
+|---|---|
+| `pystone` | prints `1000000.000000` vs `inf` pystones/second |
+| `score4` | prints a `TIME 55.00` line; its actual results (`3` ×10) match CPython |
+| `brainfuck` | 99 001 lines when allowed to finish; the harness timeout truncated it at 22 585 / 23 098 lines on successive runs. **Full runs are byte-identical** (md5 `946cb14639a5` both) |
+| `ac_encode` | identical once timing is stripped (40 414 lines) |
+| `mandelbrot2`, `oliva2`, `solitaire` | differ run-to-run with the same binary |
+
+**No verified behavioural change on any program.**
+
+Generated-C size changed on exactly three:
+
+| program | C bytes | verdict |
+|---|---|---|
+| `kanoodle` | 368 679 → **295 466 (−19.9 %)** | **genuine win** — 20 % less code, identical output |
+| `rdb` | 693 326 → 693 764 (+0.1 %) | noise |
+| `plcfrs` | 161 341 → **0** | **a real cost, see below** |
+
+### The cost: `plcfrs` changes failure mode
+
+| mode | result |
+|---|---|
+| 0 | `sizeof_element of non-container type 'float64' (in __add__)` — emits 161 KB of C, then fails ([018](../issues/018-dict-mixed-key-types-boxing-failure.md)) |
+| 1 | `mismatched field sizes: class 'closure' field 'x' mixes 8- and 1-byte members ('bool')` — **fails earlier, emits no C at all** |
+
+It does not compile either way, so this is not a regression in working
+behaviour. But it *is* a demonstrated precision loss: sharing a
+CreationSet across contours unions field types, and a closure field that
+held `int` in one contour and `bool` in another now mixes 8- and 1-byte
+members. The new diagnostic is also less useful — it points at closure
+layout rather than at the actual union problem.
+
+And it means **the "violations −33 %" headline should be discarded**:
+4355 → 2232 of that reduction is `plcfrs` alone, whose violation count is
+meaningless because it never reaches a working binary. The defensible
+claims are narrower: no behavioural change anywhere, `kanoodle` emits
+20 % less C for identical output, `ess`/`css` lower on a handful of
+programs and higher on none, and analysis is 2.8 % faster.
