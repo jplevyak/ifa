@@ -331,8 +331,67 @@ boxing, not layout unification. `rdb` is the only program where it would
 reach half the cases, and `rdb` was already neutral-to-worse under full
 unification.
 
-**Recommendation: do not build it yet.** The same effort spent on
-018/030 addresses the 94 % directly, and would also close the
-[102](102-corpus-programs-compile-then-abort-at-runtime.md) class-B
-dispatch failures. Revisit if boxing lands and the residual mixes turn
-out to be homogeneous.
+**Recommendation: do not build it yet.** — but see the correction below;
+the reason given here ("spend the effort on boxing instead") was wrong.
+
+## CORRECTION: boxing is not the answer, and was never checked
+
+The paragraph above asserted that the 94 % heterogeneous mixes "need
+boxing". That was asserted, not measured, and **shedskin disproves it**:
+
+| | generated lines | `pyobj*` (boxed) | `pyseq<T>` (common base) | `tuple2<>` instantiations |
+|---|---|---|---|---|
+| `plcfrs` | 1830 | **2** | **0** | **110** |
+| `go` | 1184 | **2** | **0** | 1 |
+| `linalg` | 520 | **0** | **0** | 0 |
+
+shedskin compiles all three with **essentially no boxing** and **zero
+uses of its `pyseq<T>` common base** — even though that base exists
+(`template <class T> class pyseq : public pyiter<T>`, with `list<T>` and
+`tuple2<A,B>` under it). It neither boxes nor falls back to a shared
+representation.
+
+**It simply never has a variable holding both.** `list<T>::__getitem__`
+and `tuple2<A,B>::__getitem__` are separate template instantiations, so
+the C++ compiler produces one per receiver type and no single
+`__getitem__` ever sees a union.
+
+### Where pyc's union actually comes from
+
+The functions carrying the `{list, tuple}` mix in `plcfrs` are precisely
+the shared generic accessors:
+
+```
+61 __getitem__   10 __eq__   9 len   8 __len__   8 __iter__   5 __lt__
+```
+
+pyc clones these and relies on **contour splitting** to give each
+receiver type its own copy. The union appearing inside them means the
+splitting has not separated them — which is
+[101](101-FA-first-time-forever-splitting.md), not a representation
+problem.
+
+So the union is a **pyc contour-separation artifact**, not an inherent
+property of these programs. There is nothing here that requires boxing,
+a fat pointer, or a unified layout.
+
+### The option that was missing from this issue
+
+**Third option: make the analysis precise enough that the union never
+arises.** That is what shedskin does, it is what the earlier shedskin
+comparison in 101 already concluded ("the remaining work is a splitting
+rule — do not split a container method per receiver CS when the receivers
+agree on element type; the template architecture is the real lesson"),
+and this issue then contradicted it by recommending boxing.
+
+Ranking, corrected:
+
+1. **Contour separation for shared container accessors** (101). What
+   shedskin gets for free from template instantiation. Addresses the
+   union at its source, on all three programs.
+2. **Two symbols, unify the representation** (priced above): cheap, keeps
+   `repr` correct by construction, but reaches only the homogeneous
+   minority — 6 % on `plcfrs`/`sudoku5`.
+3. **Boxing (018/030)**: still needed for genuinely dynamic unions like
+   `{None, int}`, but **not** for this — and it should not have been
+   offered as the answer here.
