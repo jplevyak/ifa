@@ -1,5 +1,12 @@
 # 104 — unify `list` and `tuple` in analysis, specialize at implementation
 
+> **ATTEMPTED 2026-08-17 and the naive form does not work.** `PYC_UNIFY_SEQ=1`
+> (build tuple literals as lists, let `tuple_able` pick the layout) is
+> implemented and off by default. It breaks **13 tests**, and the reason
+> is one my assessment below missed: **`repr`**. See "What the experiment
+> found" at the end — the design needs a provenance bit, not a plain
+> merge.
+
 **Status:** open design proposal, assessed 2026-08-17. **The
 specialize-at-implementation half already exists and works**; what is
 proposed is removing the a-priori split in the analysis. Measurements
@@ -135,3 +142,72 @@ machinery.
 - Full corpus: no exit-code changes **and** no run-status changes
   (`ifa/issues/runstatus.sh` — compile status alone is not evidence, see
   [102](102-corpus-programs-compile-then-abort-at-runtime.md)).
+
+
+## What the experiment found (2026-08-17)
+
+`PYC_UNIFY_SEQ` makes `PY_tuple` emit `sym_list` instead of `sym_tuple`.
+The two literal cases in `python_ifa_build_if1.cc` are otherwise
+character-for-character identical, so this is the whole change.
+
+**It breaks 13 tests** (263 passed / 13 failed, against 273 / 0):
+
+```
+builtin_type_factory  colorsys_module  dict_items_keys_values
+genexpr_basic  kwarg_out_of_order  itertools_module  match_seq
+minmax_3arg  tuple_compare  test_heapq  tuple_arity_union
+tuple_unpack_target_arity_union  tuple_eq_str
+```
+
+### The blocker my assessment missed: `repr`
+
+Most failures are exactly this:
+
+| | expected | got |
+|---|---|---|
+| `tuple_eq_str` | `(1, 2, 3)` / `(1,)` | `[1, 2, 3]` / `[1]` |
+| `minmax_3arg` | `(0.9, 0.5, 1.0)` | `[0.9, 0.5, 1.0]` |
+| `dict_items_keys_values` | `[('a','x'), …]` | `[['a','x'], …]` |
+
+The assessment above checked the two distinctions pyc *fails* to enforce
+— tuple immutability and list unhashability — and concluded the semantic
+cost was ~zero. **It never checked `repr`, which pyc does implement
+correctly**, and which is an observable difference on every tuple that
+reaches output. That was the wrong conclusion drawn from an incomplete
+check.
+
+### And at least one genuine dispatch regression
+
+`genexpr_basic` is not a printing difference:
+
+```
+Assertion `!"runtime error: matching function not found"' failed.
+```
+
+`match_seq`, `test_heapq` and `tuple_compare` also fail at compile-out
+rather than on output, so the merge disturbs dispatch beyond `repr`.
+Those were not characterised further.
+
+## Revised design
+
+Unification has to keep a **provenance bit on the CreationSet** —
+`built_as_tuple` — that codegen consults for `repr`/`str`, while the
+*type* is unified for analysis and dispatch. That fits the
+"specialize at implementation" framing exactly: the bit is an
+implementation detail, not part of the type, and so must not enter
+contour identity (see
+[100](100-FA-display-removed-from-contour-identity.md)'s rule).
+
+Two consequences to design around:
+
+1. A union of a tuple-built and a list-built CreationSet would need a
+   runtime tag to print correctly. That is not a new cost — such a union
+   *already* requires polymorphic dispatch today — but it does mean the
+   bit cannot always be resolved statically.
+2. The dispatch regressions (`genexpr_basic` et al.) must be understood
+   before assuming the bit is sufficient. `repr` is the *majority* of the
+   breakage, not all of it.
+
+Until that is built, `PYC_UNIFY_SEQ` stays off. It is kept because it is
+the cheapest way to re-measure the idea, and because the 13-test failure
+list is a precise specification of what a correct version must preserve.
