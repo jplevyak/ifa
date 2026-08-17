@@ -427,6 +427,12 @@ void Matcher::find_all_matches(CreationSet *cs, Vec<AVar *> &args, Vec<cchar *> 
   app.push(1);
   for (AVar *av : args) {
     MPosition anp;
+    if (getenv("PYC_DBG_BADKW")) {
+      int i = Position2int(app.last()) - 1;
+      if (i >= 0 && i < names.n && names[i])
+        fprintf(stderr, "[kwseen] named actual '%s' at pos %d (cs=%s)\n", names[i], i + 1,
+                cs && cs->sym && cs->sym->name ? cs->sym->name : "?");
+    }
     if (positional_to_named(send->var->def, cs, names, app, &anp)) {
       MPosition *acpp = cannonicalize_mposition(app);
       if (acpp) {
