@@ -126,11 +126,15 @@ earlier in this session.
 Two separable pieces:
 
 1. **Class A — bottom-typed operands — is the bulk of the work** and is
-   NOT 018. Something is leaving values with `void_type` where the code
-   is genuinely reachable; either FA wrongly concludes a path is dead, or
-   it fails to propagate a type through container iteration. `life` is
-   the cheapest reproducer (9 failures, all class A, small program,
-   clean CPython run).
+   NOT 018. **`life`'s nine class-A failures are now root-caused, and the
+   cause is a frontend argument-binding bug, not FA:**
+   [issues/103](../issues/103-unknown-kwarg-silently-bound-positionally.md).
+   `life` calls `product((0,1), repeat=...)`; `pyc_lib`'s `product` has no
+   `repeat` parameter; pyc silently binds the value to `B` instead of
+   raising `TypeError`; the body then iterates an **int**, which has no
+   `__iter__` candidate, so FA types everything downstream bottom. Worth
+   checking how many other class-A programs have the same upstream cause
+   before assuming FA is at fault anywhere.
 2. **Codegen should not silently emit an abort stub.** Whatever the
    upstream cause, `cg.cc:2055` turning "I cannot emit this call" into a
    runtime assert is what converts a diagnosable compile failure into a
