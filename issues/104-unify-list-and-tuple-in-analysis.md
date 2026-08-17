@@ -635,3 +635,66 @@ and must not participate in indexing or in violation collection. Concretely:
 
 Steps 1–2 are the real work and are bounded; step 3 is the payoff.
 `PYC_TUPELEM` is kept off by default with the prerequisite in place.
+
+## Building it (2026-08-17) — three of four pieces done
+
+Correcting the previous section: **heterogeneous short lists have no
+problem with constant-index reads, so tuples do not need one either.**
+The reason lists keep per-field precision is that `make_kind` **never
+flows fields into the generic element** — the element stays bottom, which
+is exactly what `tuple_able()` tests for; it is populated on *use*
+(dynamic index, iteration, append), not on construction. The first
+`PYC_TUPELEM` added a construction-time flow lists do not have, and that
+alone caused all 11 failures.
+
+With that flow removed, **`PYC_TUPELEM=1` is clean: 273 passed, 0
+failed.** Monomorphicity is asked of `cs->vars`, never of the element.
+
+### Piece 1 — element sym for `tuple` ✅
+
+`sym_tuple->element = new_sym()`. Free.
+
+### Piece 2 — representation choice ✅
+
+`clone.cc`: `monomorphic_tuple(cs)` (all per-index vars one type) and
+`group_monomorphic_tuple(eqcss)`, used to **exclude** the group from the
+record branch so it takes the arity-independent path.
+
+One trap worth recording: this must be part of the record branch's
+*condition*. Written as a branch of its own it exits the `else if` chain
+and leaves `cs->type` null, which segfaults later in
+`resolve_concrete_types` — that was the earlier `PYC_TUPLE_AS_LIST`
+crash, misdiagnosed at the time as "the path needs a list concrete type".
+
+### Piece 3 — construction codegen ✅
+
+`cg.cc`'s `P_prim_make` already had the *opposite* mirror: a **list**
+whose CreationSet came out record-shaped does `goto Ltuple`. The missing
+symmetric case — a **tuple** that took list representation — is now
+`goto Llist`. (The locals had to be hoisted above both branches for the
+jump to be legal.)
+
+### Piece 4 — element TYPE ❌ not done
+
+The emitted list has a `void*` element:
+
+```
+sem.py.c:582: error: incompatible integer to pointer conversion assigning
+to '_CG_void_type' from '_CG_int64'
+```
+
+Because the element AVar is deliberately bottom, `concretize_avar` derives
+`void` for it. Seeding `cs->type->element->type` in `define_concrete_types`
+does **not** survive — `resolve_concrete_types` runs afterwards and
+re-derives from the AVar.
+
+**The remaining work is to give the element AVar a type, not the element
+Sym.** At the point the representation is chosen the type is known (the
+common type of `cs->vars`), so the fix is to seed the element AVar's
+`out` with that CreationSet — or to have `concretize_avar` respect an
+already-seeded element — rather than seeding the Sym and being
+overwritten.
+
+That is a single, well-localised step, and everything before it is done
+and green. Flags stay off: `PYC_TUPELEM=1` alone is clean;
+`PYC_TUPLE_AS_LIST=1` needs piece 4.

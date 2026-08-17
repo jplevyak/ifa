@@ -337,8 +337,18 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
   switch (n->prim->index) {
     default:
       return 0;
-    case P_prim_make:
+    case P_prim_make: {
+      // ifa/issues/104: declared before either branch so the tuple branch
+      // may `goto Llist`. That jump is the mirror of the existing
+      // `goto Ltuple` below: that one handles a LIST whose CreationSet
+      // came out record-shaped (tuple_able), this one a TUPLE whose group
+      // was monomorphic and so took the list representation, letting
+      // tuples of different arity share one type. Without it we emit
+      // `->eN` stores into something that is no longer a record.
+      Sym *lt = n->lvals.v[0]->type;
+      Sym *le = lt && lt->element ? lt->element->type : nullptr;
       if (sym_tuple->specializers.set_in(n->rvals[2]->sym)) {
+        if (lt && lt->type_kind != Type_RECORD && lt->element) goto Llist;
       Ltuple:
         fputs("  ", fp);
         cchar *t = c_type(n->lvals[0]);
@@ -379,14 +389,20 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         for (int i = 3; i < n->rvals.n; i++)
           fprintf(fp, "  %s->e%d = %s;\n", cg_get_string(n->lvals[0]), i - 3, cg_get_string(n->rvals.v[i]));
       } else if (sym_list->specializers.set_in(n->rvals[2]->sym) || n->rvals[2]->sym->is_vector) {
-        Sym *t = n->lvals.v[0]->type, *e = t && t->element ? t->element->type : nullptr;
-        if (t && t->type_kind == Type_RECORD) goto Ltuple;
+        if (lt && lt->type_kind == Type_RECORD) goto Ltuple;
+        goto Llist;
+      } else
+        break;
+      break;
+      {
+      Llist:;
         fputs("  ", fp);
         assert(n->lvals.n == 1);
-        cchar *ety = c_type(e);
+        cchar *ety = c_type(le);
         assert(cg_get_string(n->lvals[0]));
         fprintf(fp, "%s = ", cg_get_string(n->lvals[0]));
         fprintf(fp, "(_CG_list)_CG_prim_list(%s,%d);\n", ety, n->rvals.n - 3);
+        (void)lt;
         for (int i = 3; i < n->rvals.n; i++) {
           fprintf(fp, "  ((%s*)(_CG_list_ptr(%s)))[%d] = ", ety, cg_get_string(n->lvals[0]), i - 3);
           fputs(cg_get_string(n->rvals[i]), fp);
@@ -394,6 +410,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         }
       }
       break;
+    }
     case P_prim_period: {
       cchar *t = c_type(n->lvals[0]);
       cchar *symbol = 0;

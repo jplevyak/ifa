@@ -1759,15 +1759,15 @@ static void make_kind(PNode *p, EntrySet *es, Sym *kind, AVar *container, Vec<Va
     set_container(atv, container);
     flow_vars(av, atv);
     flow_vars(atv, iv);
-    // ifa/issues/104: also flow the field into the container's GENERIC
-    // element, so a tuple carries both views -- per-index vars for the
-    // record layout, and an element type that is monomorphic exactly
-    // when every field agrees. `list` already gets this; `tuple` only
-    // does when PYC_TUPELEM gave it an element sym.
-    if (kind == sym_tuple && kind->element) {
-      AVar *elem = get_element_avar(cs);
-      if (elem) flow_vars(atv, elem);
-    }
+    // ifa/issues/104: deliberately NO flow into the container's generic
+    // element here. `list` does not do it either, and that is exactly why
+    // a heterogeneous list read only by constant indices keeps precise
+    // per-field types: its element stays BOTTOM, which is what
+    // tuple_able() tests for. The element is populated on USE -- dynamic
+    // indexing, iteration, append -- not on construction. An earlier
+    // version of PYC_TUPELEM added the flow here and broke 11 tests by
+    // leaking a heterogeneous tuple's field union into its constant-index
+    // reads. Monomorphicity is asked of `cs->vars`, not of the element.
     if (iv->var->sym->name) cs->var_map.put(iv->var->sym->name, iv);
   }
 }

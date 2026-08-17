@@ -632,6 +632,54 @@ static int compute_member_types(Vec<CreationSet *> *eqcss) {
   return 0;
 }
 
+// ifa/issues/104: a MONOMORPHIC tuple -- every per-index var the same
+// type -- has a list form; a heterogeneous one is a record and does not.
+// Giving the monomorphic ones list representation is what lets tuples of
+// DIFFERENT ARITY but the same element type share a single type, instead
+// of being one record type per arity. That is shedskin's variable-length
+// `tuple<T>` versus its fixed `tuple2<A,B>`.
+//
+// Monomorphicity is asked of cs->vars (the per-index vars), NOT of the
+// generic element: the element is deliberately left bottom by
+// construction, exactly as for lists, so that constant-index reads keep
+// precise per-field types. Requires PYC_TUPELEM, which gives sym_tuple an
+// element sym for the list form to use.
+static int tuple_as_list_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    const char *v = getenv("PYC_TUPLE_AS_LIST");
+    e = v ? atoi(v) : 0;
+  }
+  return e;
+}
+
+static bool monomorphic_tuple(CreationSet *cs) {
+  if (!cs || cs->sym != sym_tuple || !cs->sym->element) return false;
+  Sym *first = nullptr;
+  int n = 0;
+  for (AVar *fv : cs->vars) if (fv) {
+    ++n;
+    Sym *t = fv->out && fv->out->type && fv->out->type->sorted.n == 1 ? fv->out->type->sorted.v[0]->sym : nullptr;
+    if (!t) return false;  // unresolved or a union: not monomorphic
+    if (!first) first = t;
+    else if (first != t) return false;
+  }
+  return n > 0;
+}
+
+// Whole equivalence class monomorphic and agreeing on element type.
+static bool group_monomorphic_tuple(Vec<CreationSet *> *eqcss) {
+  if (!tuple_as_list_enabled()) return false;
+  Sym *first = nullptr;
+  for (CreationSet *cs : *eqcss) if (cs) {
+    if (!monomorphic_tuple(cs)) return false;
+    Sym *t = cs->vars[0]->out->type->sorted.v[0]->sym;
+    if (!first) first = t;
+    else if (first != t) return false;
+  }
+  return first != nullptr;
+}
+
 static bool tuple_able(CreationSet *cs) {
 #ifdef CONVERT_LISTS_TO_TUPLES
   AVar *elem = get_element_avar(cs);
@@ -722,7 +770,16 @@ static int define_concrete_types(CSSS &css_sets) {
             def = (AVar *)-1;
         }
       }
-      if (sym == sym_tuple || sym == sym_closure || tup) {
+      // ifa/issues/104: a monomorphic tuple group is EXCLUDED from the
+      // record branch so it falls through to the ordinary paths below,
+      // which are arity-independent. Note this must be part of the
+      // record CONDITION, not a branch of its own -- an empty branch
+      // exits the else-if chain and leaves cs->type null, which
+      // segfaults later in resolve_concrete_types.
+      bool mono_tuple = sym == sym_tuple && group_monomorphic_tuple(eqcss);
+      if (mono_tuple && getenv("IFA_DBG_TUPLIST"))
+        fprintf(stderr, "[tuplist] group of %d monomorphic tuple CS -> list form\n", eqcss->n);
+      if (!mono_tuple && (sym == sym_tuple || sym == sym_closure || tup)) {
         // tuples use record type
         cchar *name = nullptr;
         IFAAST *ast = nullptr;
@@ -778,9 +835,15 @@ static int define_concrete_types(CSSS &css_sets) {
           sym->creators.set_to_vec();
           for (CreationSet *cs : *eqcss) if (cs) {
             cs->type = s;
+            // ifa/issues/104: a tuple CreationSet's `sym` IS sym_tuple,
+            // not an instance sym whose ->type is a class (which is what
+            // every list/class CS has here), so ->type can be null on
+            // this path. Fall back to the sym's own name rather than
+            // dereferencing null.
+            cchar *tn = cs->sym->type ? cs->sym->type->name : cs->sym->name;
             if (!name)
-              name = cs->sym->type->name;
-            else if (cs->sym->type->name != name)
+              name = tn;
+            else if (tn != name)
               name = BAD_NAME;
           }
           if (name && name != BAD_NAME) s->name = name;
@@ -794,6 +857,18 @@ static int define_concrete_types(CSSS &css_sets) {
         cs->type = sym;
         sym->creators.add(cs);
       }
+    }
+    // ifa/issues/104: a monomorphic tuple group that took the list
+    // representation needs an ELEMENT TYPE, and its element AVar is
+    // deliberately bottom (nothing flows there at construction, exactly
+    // as for lists, so constant-index reads stay precise per-field). At
+    // this point the type is known -- it is the common type of the
+    // per-index vars -- so seed it here, where the representation choice
+    // was made. Without this the emitted list has a `void*` element.
+    if (tuple_as_list_enabled() && group_monomorphic_tuple(eqcss)) {
+      Sym *elem = eqcss->first_in_set()->vars[0]->out->type->sorted.v[0]->sym;
+      for (CreationSet *cs : *eqcss) if (cs && cs->type && cs->type->element)
+        cs->type->element->type = to_concrete_type(elem);
     }
   }
   return 0;
