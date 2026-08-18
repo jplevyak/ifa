@@ -280,3 +280,46 @@ rejects the attempt-1 output. Reduction restarted against it.
 **Rule for any future Python reduction in this repo:** validate candidates
 with `ast.parse` first. pyc's parser is not a proxy for Python's, and a
 reducer will find that gap and exploit it.
+
+## Reduction, attempt 2: also invalid — undefined names
+
+Oracle v2 (`ast.parse` + target error) ran 638 → **94 lines** of *valid*
+Python. Still not a reproducer:
+
+- it calls a dozen **undefined names** (`Edge`, `Rule`, `lexical`,
+  `process_edge`, …) whose class definitions the reducer deleted;
+- the reducer gutted `__main__`, so the program **executes nothing** —
+  **0 bytes** of stdout against the original's **3456**.
+
+**pyc accepts undefined names silently** — `return NoSuchClass(x)`
+compiles with no diagnostic at all. So a reducer will delete every class
+and leave the calls, and pyc will then infer over garbage. Since the type
+being chased is a union of *everything*, undefined names are a plausible
+way to manufacture exactly that, which would have made the "reproducer"
+actively misleading.
+
+### Oracle v3
+
+A candidate must be **a working Python program that pyc miscompiles**:
+
+1. `ast.parse` succeeds;
+2. `python3 cand.py` runs to completion **and produces non-empty stdout**;
+3. pyc still fails with `mixes 8- and 1-byte members`.
+
+It correctly rejects both earlier results and holds on the original.
+
+Early behaviour confirms the constraint bites: v1/v2 reached 93/94 lines
+quickly, while v3 is cutting slowly (638 → 619 in its first sweep),
+because most cuts now break execution rather than merely breaking the
+program's meaning.
+
+### Standing rules for reduction in this repo
+
+1. **Validate with `ast.parse`** — pyc's parser is not a proxy for
+   Python's ([106](../../issues/106-empty-if-body-silently-accepted.md)).
+2. **Require the program to still run and produce output** — otherwise
+   the reducer deletes the execution and leaves dead code that pyc
+   analyses in a vacuum.
+3. **Beware undefined names** — pyc tolerates them silently, so they are
+   invisible to a compile-only oracle and can fabricate the very type
+   degeneration under investigation.
