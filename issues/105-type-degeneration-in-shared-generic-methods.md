@@ -1,9 +1,14 @@
 # 105 — type degeneration in shared generic container methods
 
 **Status:** open, opened 2026-08-18 as the successor to
-[104](closed/104-unify-list-and-tuple-in-analysis.md), whose motivating
-problem turned out to be this one. Repro:
-`tests/generic_method_type_degeneration.py` (passing — see below).
+[104](closed/104-unify-list-and-tuple-in-analysis.md).
+
+**Two reproducers, and only the second one matters:**
+
+| test | what it does |
+|---|---|
+| `tests/container_scalar_union_add.py` | **reproduces the failure** — three lines, `plcfrs`'s exact compile error. `.known_issue`. |
+| `tests/generic_method_type_degeneration.py` | reproduces *degeneration metrics* but **passes cleanly** — see the correction below |
 
 ## Symptom
 
@@ -99,3 +104,79 @@ gives it a direct, cheap measurement.
 - Corpus: no exit-code **or run-status** changes
   (`ifa/issues/runstatus.sh` — see
   [102](102-corpus-programs-compile-then-abort-at-runtime.md)).
+
+
+## CORRECTION: the degeneration reproducer is not a failure reproducer
+
+A program that type-checks cleanly has, by definition, no type problem —
+so `tests/generic_method_type_degeneration.py` (74 degenerate AVars, 0
+violations, correct output) does **not** reproduce what breaks `plcfrs`.
+Its 74 "degenerate sites" are unions FA went on to resolve. The metric
+measures something real but not, on its own, harmful.
+
+### The actual failure, in three lines
+
+```python
+import sys
+x = [1] if len(sys.argv) > 1 else 3.5
+print(x + x)
+```
+
+```
+internal: sizeof_element of non-container type '...' (in __add__)
+-- FA specialized a container method against a scalar
+```
+
+That is `plcfrs`'s compile failure exactly, in a program with no grammar,
+no tuples, no recursion and no scale. CPython prints `7.0`.
+
+### The essential ingredient: the union must form in ONE VARIABLE
+
+The same two types reaching `__add__` through **separate call sites**
+compile and run correctly:
+
+```python
+def add(a, b): return a + b
+add([1, 2], [3])    # fine
+add(3.5, 1.5)       # fine
+```
+
+So this is not "pyc cannot mix `list` and `float`". FA separates those
+into distinct contours without difficulty. What defeats it is the
+**branch merge**: once one variable holds `{list, float}`, every use of
+it is a use of the union, and `+` resolves to a container method whose
+receiver may be a scalar.
+
+### What that means for this issue's theory
+
+The "shared generic method with a local accumulator" story is a real
+mechanism — `__add__`'s `r` does merge both operands' element types, and
+the degenerate sites are at exactly the `__pyc__` lines `plcfrs` shows.
+But it is **not** what makes `plcfrs` fail. The failure needs no
+accumulator and no sharing at all; it needs a single variable holding a
+container and a scalar.
+
+So `plcfrs`'s 2779 degenerate sites are, most likely, *downstream* of
+branch-merged container/scalar unions rather than their cause — the same
+correlation trap that [104](closed/104-unify-list-and-tuple-in-analysis.md)
+fell into. **Do not assume the degeneration metric points at the fix
+until that direction is established**, e.g. by finding the branch merges
+in `plcfrs` and checking whether the degenerate sites disappear when they
+are typed apart.
+
+### Revised fix direction
+
+This is [018](../issues/018-dict-mixed-key-types-boxing-failure.md) — a
+`{scalar, pointer}` union with no representation — reached through a
+control-flow merge rather than a container. Either:
+
+1. **Represent it** (018/030: boxing or a fat pointer), which is the
+   general answer and is unsolved; or
+2. **Split the merge**: give the variable a per-branch contour so the
+   union never forms. That is [101](101-FA-first-time-forever-splitting.md)
+   again, and it is what makes the separate-call-site version work
+   already.
+
+Option 2 is attractive precisely because the working `add()` version
+proves FA can already do it — the question is why the branch merge is
+treated differently from the call-site split.
