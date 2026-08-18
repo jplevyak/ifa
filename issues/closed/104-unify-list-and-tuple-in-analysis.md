@@ -1,16 +1,28 @@
 # 104 — unify `list` and `tuple` in analysis, specialize at implementation
 
-> **ATTEMPTED 2026-08-17 and the naive form does not work.** `PYC_UNIFY_SEQ=1`
-> (build tuple literals as lists, let `tuple_able` pick the layout) is
-> implemented and off by default. It breaks **13 tests**, and the reason
-> is one my assessment below missed: **`repr`**. See "What the experiment
-> found" at the end — the design needs a provenance bit, not a plain
-> merge.
+**Status: CLOSED 2026-08-18.** The representation rule landed and is
+correct; the problem it was built for turned out not to exist.
 
-**Status:** open design proposal, assessed 2026-08-17. **The
-specialize-at-implementation half already exists and works**; what is
-proposed is removing the a-priori split in the analysis. Measurements
-below.
+**What landed** (off by default, `PYC_TUPELEM` + `PYC_TUPLE_AS_LIST`):
+tuples now follow `list`'s existing `get_sym_tup` rule — differing arity
+or a populated generic element means list layout, all-same-arity with a
+bottom element means record. Tuples had been excluded from it by nothing
+but a hardcoded `sym == sym_tuple`. Removing that exclusion deleted 115
+lines and works better than the machinery it replaced (−2.9 % generated C
+on `plcfrs`, corpus-neutral, suite clean).
+
+**Why it is closed rather than defaulted:** pyc already handles
+mixed-arity homogeneous tuples correctly — six reproducer shapes all
+compile and run matching CPython. The motivating measurement (2083 of
+`plcfrs`'s 2232 violations "involve mixed-arity tuples") was a
+**correlation artifact**: those violations are BOXING violations on
+fully degenerated types containing bool, int, str, float, list, dict and
+half a dozen user classes, with tuples of every arity as incidental
+passengers. And the prerequisite `PYC_TUPELEM` costs `plcfrs` 2232 → 4353
+violations by pulling tuples into every container-keyed path.
+
+**Successor:** the real problem is type degeneration —
+[105](105-type-degeneration-repro.md).
 
 ## What already exists
 

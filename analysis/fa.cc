@@ -8274,6 +8274,34 @@ static Vec<Fun *> kd_flip_funs;
 // READ-ONLY with respect to element AVars: get_element_avar() would
 // CREATE one and set added_element_var (which gates numeric coercion),
 // so only CSs that already have one are considered.
+// ifa/issues/105: find the ORIGIN of type degeneration. Report AVars
+// whose type spans more than N distinct SYMS (not CreationSets) --
+// a variable holding bool+int+str+float+list+dict+user-classes at once.
+// Reported with the defining function and source line so the smallest,
+// earliest one can be read in the source. Probe-only.
+static void report_degenerate_avars() {
+  const char *v = getenv("IFA_DBG_DEGEN");
+  if (!v) return;
+  int thresh = atoi(v) > 0 ? atoi(v) : 6;
+  std::map<std::string, int> by_site;
+  for (EntrySet *es : fa->entry_set_done) if (es && es->fun) {
+    for (Var *var : es->fun->fa_all_Vars) {
+      AVar *av = make_AVar(var, es);
+      if (!av->out || !av->out->type) continue;
+      std::set<Sym *> syms;
+      for (CreationSet *c : av->out->type->sorted) if (c->sym) syms.insert(c->sym);
+      if ((int)syms.size() < thresh) continue;
+      char buf[512];
+      snprintf(buf, sizeof buf, "fun=%s var=%s line=%d nsyms=%d",
+               es->fun->sym->name ? es->fun->sym->name : "?",
+               var->sym->name ? var->sym->name : "_",
+               var->sym->ast ? var->sym->ast->line() : -1, (int)syms.size());
+      by_site[buf]++;
+    }
+  }
+  for (auto &kv : by_site) fprintf(stderr, "[degen] %s x%d\n", kv.first.c_str(), kv.second);
+}
+
 static void capture_elem_keys() {
   if (!cselem_enabled()) return;
   int n_keyed = 0, n_sites = 0;
@@ -8588,6 +8616,7 @@ static void complete_pass() {
   report_keyspace();
   capture_type_keys();
   capture_elem_keys();
+  report_degenerate_avars();
   report_keydrift();
   report_markwhy();
   report_incompat();
