@@ -8630,6 +8630,21 @@ static void complete_pass() {
           if (!homo) break;
         }
         if (homo) ++nhomo_arity;
+        if (getenv("IFA_DBG_ARITYWHERE")) {
+          Var *vr = v->av->var;
+          fprintf(stderr, "[aritywhere] fun=%s var=%s kind=%d arities=", 
+                  vr && vr->sym && vr->sym->in && vr->sym->in->name ? vr->sym->in->name : "?",
+                  vr && vr->sym && vr->sym->name ? vr->sym->name : "_", (int)v->kind);
+          for (CreationSet *c : v->av->out->type->sorted)
+            if (c->sym == sym_tuple) fprintf(stderr, "%d,", c->vars.n);
+          // ALSO the non-tuple syms in the same type: if a violation's
+          // type mixes tuples with scalars/other classes, the boxing
+          // problem is that mix, not the tuple arity.
+          fprintf(stderr, " others=");
+          for (CreationSet *c : v->av->out->type->sorted)
+            if (c->sym != sym_tuple) fprintf(stderr, "%s,", c->sym && c->sym->name ? c->sym->name : "?");
+          fprintf(stderr, "\n");
+        }
       }
     }
     fprintf(stderr, "ARITYVIOL p=%d violations=%d with_multi_tuple=%d WITH_MIXED_ARITY=%d homogeneous=%d\n",

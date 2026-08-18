@@ -1069,3 +1069,63 @@ Fixing `plcfrs` needs the arity-independent tuple type to exist **during
 FA** (option 1 above). The measured prize for that is now known: ~90 % of
 one program's 2232 violations, in a program that is also one of the three
 non-convergent ones. Nothing else in the corpus would benefit.
+
+## CORRECTION: the mixed-arity finding above is a correlation artifact
+
+Trying to build a minimal reproducer disproved the previous section. Six
+shapes were tried, **all of which pyc compiles and runs correctly**,
+matching CPython, with **zero** violations:
+
+| shape | result |
+|---|---|
+| bare union `("S","VP2","VMFIN")` / `("VP2","VP2")`, iterated + `len` | ✅ |
+| list of mixed-arity tuples, iterated and indexed | ✅ |
+| plcfrs's nested shape `(tuple-of-str, tuple-of-int-tuples)` | ✅ |
+| `tuple(a[: len(a)-1])` — arity not statically known | ✅ |
+| mixed-arity tuples as **dict keys** + across a function boundary | ✅ |
+| nested, dict-keyed, four distinct arities | ✅ |
+
+**pyc handles mixed-arity homogeneous tuples.** That is why no repro
+could be built: there is no bug to reproduce.
+
+Printing the *rest* of each violating type shows what those violations
+actually are:
+
+```
+[aritywhere] kind=6(BOXING) arities=4,4,2,3,3,4,2,3,... others=
+   bool,int64,str,float64,list,list,list,dict,list,...,ChartItem,Edge,Rule,Entry,...
+```
+
+The type is not "tuples of differing arity" — it is a **fully degenerated
+union of everything in the program**: bool, int, str, float, list, dict
+and half a dozen user classes, *plus* 25 tuple CreationSets that happen
+to span arities 2–4. The BOXING violation is caused by mixing scalars
+with pointers — [018](../issues/018-dict-mixed-key-types-boxing-failure.md) /
+[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) — and the tuples
+are incidental passengers.
+
+`with_multi_tuple=2083` equalling `WITH_MIXED_ARITY=2083` should have been
+the tell: it is not that mixed arity accompanies every tuple violation
+because arity matters, but that plcfrs has a handful of catastrophically
+degenerate types which appear in thousands of violations and contain
+*everything*, tuples of every arity included.
+
+So the corrected answer to "do mixed-arity tuples cause failures in the
+corpus": **no.** Not in plcfrs, not anywhere. The measurement was real;
+the causal reading of it was wrong.
+
+### What a minimal repro should target instead
+
+Not arity. plcfrs's real problem is **type degeneration** — how a
+variable comes to hold `{bool, int64, str, float64, list, dict,
+ChartItem, Edge, Rule, Entry, …}` at all. That is the 018/030 boxing
+family compounded by [101](101-FA-first-time-forever-splitting.md)'s
+contour explosion, and a reproducer for *that* would be worth having.
+
+### Status of this issue
+
+Closeable as a line of work. The representation rule landed (tuples now
+follow `list`'s `get_sym_tup` rule when `PYC_TUPLE_AS_LIST` is on, 115
+lines deleted), it is correct and corpus-neutral, and it buys −2.9 %
+generated C on one program. The motivating problem it was built for does
+not exist.
