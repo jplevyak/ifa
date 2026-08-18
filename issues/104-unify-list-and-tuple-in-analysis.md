@@ -945,3 +945,68 @@ built:
 The post-FA merge already built is option 2 and is measured at −1.5 % C
 on one program. Option 1 is the one that would move FA-level numbers, and
 its cost is a capability regression, not an implementation risk.
+
+
+## The list rule already IS the unified rule — tuples were just excluded
+
+pyc's `list` already handles **both** cases this issue was trying to
+build:
+
+- *heterogeneous, fixed arity* → record layout with per-field types
+  (`tuple_able`: generic element stayed bottom);
+- *single type, mixed arity* → ordinary list layout.
+
+And the rule that decides is `get_sym_tup`, which has been there all
+along:
+
+```cpp
+if (n < 0) n = cs->vars.n;
+else if (n != cs->vars.n) tup = false;   // differing arity -> NOT a record
+tup = tup && cs->tuple_able;             // populated element -> NOT a record
+```
+
+That is exactly the wanted semantics, stated once. **Tuples were excluded
+from it by nothing but the hardcoded `sym == sym_tuple`** in the two
+branch conditions of `define_concrete_types`:
+
+```cpp
+if (sym != sym_tuple && sym != sym_closure && !tup) { /* no clone, share base sym */ }
+...
+if (sym == sym_tuple || sym == sym_closure || tup) { /* record */ }
+```
+
+So the whole apparatus built above — `monomorphic_tuple`,
+`group_monomorphic_tuple`, `list_form_compatible`, the
+`determine_basic_clones` arity relaxation, the `compute_member_types`
+special case — was **reimplementing `tup`**. Replacing all of it with
+"stop excluding tuples" is:
+
+```
+ifa/analysis/clone.cc | 15 insertions(+), 115 deletions(-)
+```
+
+and it works *better*: the list layout is chosen **25** times on `plcfrs`
+against 5 before, and generated C drops to **152 921** bytes — against
+155 078 for the complex version and 157 424 for `PYC_TUPELEM` alone
+(−2.9 %).
+
+Note also why `determine_basic_clones`'s arity guard never needed
+relaxing: mixed-arity **lists** do not share an equivalence class either.
+Both classes independently take the no-clone path and land on the same
+base sym, so they are one type without ever being merged. That is why
+mixed-arity lists have always worked, and it is the same reason tuples
+now do.
+
+### What the flags actually buy, restated
+
+Mixed-arity tuples **already work by default** — `(n,n+1)` / `(n,n+1,n+2)`
+through one variable, iterated and `len`-ed, matches CPython with no
+flags. What `PYC_TUPLE_AS_LIST` changes is only the *representation*, and
+therefore only generated code size (−2.9 % on `plcfrs`, nothing on
+`rdb`/`sudoku5`). FA metrics are untouched, as they must be: `clone.cc`
+runs after FA.
+
+The cost remains `PYC_TUPELEM`, the prerequisite: giving `sym_tuple` an
+element sym takes `plcfrs` from 2232 to 4353 violations by pulling tuples
+into every container-keyed path. That, not the representation rule, is
+what keeps both flags off by default.

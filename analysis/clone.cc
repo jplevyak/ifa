@@ -389,24 +389,6 @@ static inline void make_not_equiv(CreationSet *a, CreationSet *b) {
   b->not_equiv.set_add(a);
 }
 
-static int tuple_as_list_enabled();
-static bool monomorphic_tuple(CreationSet *cs);
-static bool group_monomorphic_tuple(Vec<CreationSet *> *eqcss);
-
-// ifa/issues/104: may these two take the SAME list-represented type
-// despite differing arity? Both must be monomorphic tuples whose generic
-// element is populated (i.e. actually used as a sequence -- see
-// group_monomorphic_tuple) and agree on it. When that holds, arity is not
-// part of their type: they are `tuple<T>`, not `tuple2<A,B>`.
-static bool list_form_compatible(CreationSet *cs1, CreationSet *cs2) {
-  if (!tuple_as_list_enabled()) return false;
-  if (!monomorphic_tuple(cs1) || !monomorphic_tuple(cs2)) return false;
-  AVar *e1 = get_element_avar(cs1), *e2 = get_element_avar(cs2);
-  if (!e1 || !e2) return false;
-  if (e1->out == fa->type_world.bottom_type || e2->out == fa->type_world.bottom_type) return false;
-  return basic_type(fa, e1->out, (Sym *)-1) == basic_type(fa, e2->out, (Sym *)-2);
-}
-
 static void determine_basic_clones(Vec<Vec<CreationSet *> *> &css_sets_by_sym) {
   Vec<Vec<CreationSet *> *> xx;
   sets_by_f_transitive<CreationSet, CS_SYM_FN>(fa->css, css_sets_by_sym);
@@ -424,17 +406,7 @@ static void determine_basic_clones(Vec<Vec<CreationSet *> *> &css_sets_by_sym) {
         }
         // if different number of instance variables
         if (cs1->vars.n != cs2->vars.n) {
-          // ifa/issues/104: unless they are monomorphic tuples that agree
-          // on element type -- then arity is NOT part of their type and
-          // they may share one list-represented type. This guard is why
-          // group_monomorphic_tuple never fired: two tuples of different
-          // arity were made non-equivalent here, before element type was
-          // ever consulted, so no equivalence class could ever contain a
-          // multi-arity monomorphic group. The per-index comparison below
-          // is skipped either way -- with differing arities there is
-          // nothing to compare pairwise; the element comparison in
-          // list_form_compatible is what stands in for it.
-          if (!list_form_compatible(cs1, cs2)) make_not_equiv(cs1, cs2);
+          make_not_equiv(cs1, cs2);
           continue;
         }
         // for each variable
@@ -640,29 +612,6 @@ static int compute_member_types(Vec<CreationSet *> *eqcss) {
   Sym *sym = eqcss->first_in_set()->type;
   Sym *orig_sym = eqcss->first_in_set()->sym;
   if (sym->is_fun) return 0;
-  // ifa/issues/104: a LIST-FORM group -- monomorphic tuples deliberately
-  // merged across ARITY -- has no indexed members. Its type is described
-  // by its ELEMENT alone, exactly as a list's is. The per-index loop
-  // below builds sym->has[i] from cs->vars[i] across every member and so
-  // asserts they all share one arity, which such a group violates by
-  // construction; that assert is the plcfrs abort. Element type is the
-  // union of every member's fields (any of them is reachable through the
-  // generic element) together with whatever use already populated.
-  if (group_monomorphic_tuple(eqcss)) {
-    sym->has.clear();
-    Sym *&ss = sym->element;
-    ss = ss ? ss->clone() : new_Sym();
-    Vec<Sym *> t;
-    for (CreationSet *cs : *eqcss) if (cs) {
-      AVar *e = get_element_avar(cs);
-      if (e)
-        for (CreationSet *x : *e->out->type) if (x) t.set_add(to_concrete_type(x->type ? x->type : x->sym));
-      for (AVar *av : cs->vars) if (av)
-        for (CreationSet *x : *av->out->type) if (x) t.set_add(to_concrete_type(x->type ? x->type : x->sym));
-    }
-    if (!(ss->type = concrete_type_set_to_type(t))) return -1;
-    return 0;
-  }
   int n = 0;
   for (CreationSet *cs : *eqcss) if (cs) {
     assert(!n || n == cs->vars.n);
@@ -683,18 +632,15 @@ static int compute_member_types(Vec<CreationSet *> *eqcss) {
   return 0;
 }
 
-// ifa/issues/104: a MONOMORPHIC tuple -- every per-index var the same
-// type -- has a list form; a heterogeneous one is a record and does not.
-// Giving the monomorphic ones list representation is what lets tuples of
-// DIFFERENT ARITY but the same element type share a single type, instead
-// of being one record type per arity. That is shedskin's variable-length
-// `tuple<T>` versus its fixed `tuple2<A,B>`.
-//
-// Monomorphicity is asked of cs->vars (the per-index vars), NOT of the
-// generic element: the element is deliberately left bottom by
-// construction, exactly as for lists, so that constant-index reads keep
-// precise per-field types. Requires PYC_TUPELEM, which gives sym_tuple an
-// element sym for the list form to use.
+// ifa/issues/104: let `tuple` use the SAME representation rule as `list`.
+// get_sym_tup already computes it: a group whose members differ in arity,
+// or any of whose members has a populated generic element, is NOT a
+// record and takes list layout; all-same-arity with a bottom element is a
+// record. That is exactly "heterogeneous fixed arity -> record, single
+// type mixed arity -> list", and lists have had it all along. Tuples were
+// excluded only by the hardcoded `sym == sym_tuple` in the two branch
+// conditions below. Requires PYC_TUPELEM so a tuple HAS a generic element
+// for tuple_able() to test.
 static int tuple_as_list_enabled() {
   static int e = -1;
   if (e < 0) {
@@ -702,52 +648,6 @@ static int tuple_as_list_enabled() {
     e = v ? atoi(v) : 0;
   }
   return e;
-}
-
-static bool monomorphic_tuple(CreationSet *cs) {
-  if (!cs || cs->sym != sym_tuple || !cs->sym->element) return false;
-  Sym *first = nullptr;
-  int n = 0;
-  for (AVar *fv : cs->vars) if (fv) {
-    ++n;
-    if (!fv->out || !fv->out->n) return false;  // unresolved
-    // Compare BASIC TYPES, not CreationSet identity. An earlier version
-    // required `sorted.n == 1` per field, which no real tuple satisfies:
-    // numeric constants each get their own CreationSet, so a field
-    // holding 1 and 2 has two CSs and one basic type. This is the same
-    // comparison determine_basic_clones uses to decide equivalence.
-    Sym *t = basic_type(fa, fv->out, (Sym *)-1);
-    if (!t) return false;
-    if (!first) first = t;
-    else if (first != t) return false;
-  }
-  return n > 0;
-}
-
-// Whole equivalence class monomorphic and agreeing on element type.
-static bool group_monomorphic_tuple(Vec<CreationSet *> *eqcss) {
-  if (!tuple_as_list_enabled()) return false;
-  Sym *first = nullptr;
-  for (CreationSet *cs : *eqcss) if (cs) {
-    if (!monomorphic_tuple(cs)) return false;
-    // Mirror how `list` degrades. A container whose GENERIC ELEMENT is
-    // bottom is never used as a sequence -- only constant-index reads
-    // touched it -- and `tuple_able` gives such a list a RECORD layout,
-    // which is both more precise and needs no element type. So the
-    // void-element case never arises for lists, and must not for tuples:
-    // a bottom-element tuple stays a record too. List representation is
-    // for containers actually used generically (iteration, dynamic
-    // index, len), and those have a resolved element type ALREADY, from
-    // the use that populated it. This is what makes seeding the element
-    // unnecessary.
-    AVar *elem = get_element_avar(cs);
-    if (!elem || elem->out == fa->type_world.bottom_type) return false;
-    Sym *t = basic_type(fa, cs->vars[0]->out, (Sym *)-1);
-    if (!t) return false;
-    if (!first) first = t;
-    else if (first != t) return false;
-  }
-  return first != nullptr;
 }
 
 static bool tuple_able(CreationSet *cs) {
@@ -809,7 +709,7 @@ static int define_concrete_types(CSSS &css_sets) {
     for (CreationSet *cs : *eqcss) if (cs) cs->tuple_able = tup;
     // same sym
     if (sym != (Sym *)-1) {
-      if (sym != sym_tuple && sym != sym_closure && !tup) {
+      if ((sym != sym_tuple || tuple_as_list_enabled()) && sym != sym_closure && !tup) {
         Vec<CreationSet *> creators;
         if (sym->abstract_type)
           eqcss->set_difference(*sym->abstract_type, creators);
@@ -846,10 +746,10 @@ static int define_concrete_types(CSSS &css_sets) {
       // record CONDITION, not a branch of its own -- an empty branch
       // exits the else-if chain and leaves cs->type null, which
       // segfaults later in resolve_concrete_types.
-      bool mono_tuple = sym == sym_tuple && group_monomorphic_tuple(eqcss);
-      if (mono_tuple && getenv("IFA_DBG_TUPLIST"))
-        fprintf(stderr, "[tuplist] group of %d monomorphic tuple CS -> list form\n", eqcss->n);
-      if (!mono_tuple && (sym == sym_tuple || sym == sym_closure || tup)) {
+      bool tuple_is_record = sym == sym_tuple && !tuple_as_list_enabled();
+      if (sym == sym_tuple && tuple_as_list_enabled() && !tup && getenv("IFA_DBG_TUPLIST"))
+        fprintf(stderr, "[tuplist] tuple group of %d CS -> list layout (arity or element)\n", eqcss->n);
+      if (tuple_is_record || sym == sym_closure || tup) {
         // tuples use record type
         cchar *name = nullptr;
         IFAAST *ast = nullptr;
