@@ -391,6 +391,7 @@ static inline void make_not_equiv(CreationSet *a, CreationSet *b) {
 
 static int tuple_as_list_enabled();
 static bool monomorphic_tuple(CreationSet *cs);
+static bool group_monomorphic_tuple(Vec<CreationSet *> *eqcss);
 
 // ifa/issues/104: may these two take the SAME list-represented type
 // despite differing arity? Both must be monomorphic tuples whose generic
@@ -639,6 +640,29 @@ static int compute_member_types(Vec<CreationSet *> *eqcss) {
   Sym *sym = eqcss->first_in_set()->type;
   Sym *orig_sym = eqcss->first_in_set()->sym;
   if (sym->is_fun) return 0;
+  // ifa/issues/104: a LIST-FORM group -- monomorphic tuples deliberately
+  // merged across ARITY -- has no indexed members. Its type is described
+  // by its ELEMENT alone, exactly as a list's is. The per-index loop
+  // below builds sym->has[i] from cs->vars[i] across every member and so
+  // asserts they all share one arity, which such a group violates by
+  // construction; that assert is the plcfrs abort. Element type is the
+  // union of every member's fields (any of them is reachable through the
+  // generic element) together with whatever use already populated.
+  if (group_monomorphic_tuple(eqcss)) {
+    sym->has.clear();
+    Sym *&ss = sym->element;
+    ss = ss ? ss->clone() : new_Sym();
+    Vec<Sym *> t;
+    for (CreationSet *cs : *eqcss) if (cs) {
+      AVar *e = get_element_avar(cs);
+      if (e)
+        for (CreationSet *x : *e->out->type) if (x) t.set_add(to_concrete_type(x->type ? x->type : x->sym));
+      for (AVar *av : cs->vars) if (av)
+        for (CreationSet *x : *av->out->type) if (x) t.set_add(to_concrete_type(x->type ? x->type : x->sym));
+    }
+    if (!(ss->type = concrete_type_set_to_type(t))) return -1;
+    return 0;
+  }
   int n = 0;
   for (CreationSet *cs : *eqcss) if (cs) {
     assert(!n || n == cs->vars.n);

@@ -798,3 +798,71 @@ Both flags stay off. The next step is to debug the `plcfrs` abort under
 `PYC_TUPLE_AS_LIST` (the merge fires 5 times, so the failing group is
 findable via `IFA_DBG_TUPLIST`), and separately to decide whether an
 FA-level arity-independent tuple type is worth pricing.
+
+## The crash, root-caused and fixed (2026-08-17)
+
+```
+analysis/clone.cc:644: compute_member_types: Assertion `!n || n == cs->vars.n' failed.
+```
+
+`compute_member_types` builds `sym->has[i]` from `cs->vars[i]` across
+every member of an equivalence class, so it **requires all members to
+share one arity** — which the arity merge violates by construction.
+
+The fix is the same principle that resolved piece 4: **a list-form group
+has no indexed members.** Its type is described by its element alone,
+exactly as a list's is.
+
+```cpp
+if (group_monomorphic_tuple(eqcss)) {
+  sym->has.clear();
+  // element = union of every member's fields, plus whatever use populated
+  ...
+  return 0;
+}
+```
+
+No guard bolted onto the assert, no arity special-case — the group simply
+takes the description a list-represented container should have.
+
+### Result
+
+| | before fix | after |
+|---|---|---|
+| `plcfrs` | **rc=134**, 0 bytes of C | rc=1, **155 078 bytes**, failing only on the pre-existing 018 union |
+| suite, both flags | — | **273 passed / 0 failed** |
+| corpus, 77 programs | — | **zero exit-code changes** |
+| `plcfrs` C size | 157 424 (`TUPELEM` alone) | **155 078 (−1.5 %)** |
+| `sudoku2` | 235 886 | 235 770 |
+| `rdb`, `sudoku5`, `tictactoe` | — | byte-identical |
+
+So the mechanism is complete and correct end to end, and the merge does
+real work — just modest work.
+
+## Final status: complete, correct, and not worth defaulting
+
+All four pieces are implemented, both blockers to the merge firing are
+removed, and the crash is fixed. What the flags buy, measured:
+
+- **Payoff:** −1.5 % generated C on `plcfrs`, −116 bytes on `sudoku2`,
+  nothing on the other 75 programs.
+- **Cost:** `PYC_TUPELEM` — the prerequisite, not the merge — takes
+  `plcfrs` from 2232 to 4353 violations and `ess` 850 → 1213, because
+  giving `sym_tuple` an element makes every container-keyed path
+  (`sizeof_element`, iteration, the `added_element_var` numeric coercion)
+  include tuples.
+
+**Both flags stay off.** The honest summary is that this line of work
+produced a correct mechanism aimed at the wrong stage: the benefit that
+motivated it (109/172/117 split partitions) is FA-level, and everything
+built here runs *after* FA in `clone.cc`, so it can only ever affect
+generated code. Reducing those splits requires an arity-independent tuple
+type **during** FA, which is a substantially larger change and has not
+been priced.
+
+What is worth keeping from it: the mechanism itself (should an FA-level
+version ever be built, the representation half is done and tested), the
+three structural facts it uncovered — `sym_tuple` had no element sym;
+differing arity was made non-equivalent before element type was
+consulted; `monomorphic_tuple` must compare basic types, not CreationSet
+identity — and the `IFA_DBG_TUPARITY` probe.
