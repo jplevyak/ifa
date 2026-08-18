@@ -1013,3 +1013,19 @@ meaningless because it never reaches a working binary. The defensible
 claims are narrower: no behavioural change anywhere, `kanoodle` emits
 20 % less C for identical output, `ess`/`css` lower on a handful of
 programs and higher on none, and analysis is 2.8 % faster.
+
+## Note: issues/107 changed three of these programs (2026-08-18)
+
+[107](../../issues/107-undefined-names-warn-then-segfault.md) made an
+undefined name a compile error, and `rdb`, `sunfish` and `voronoi2` all
+reference CPython builtins pyc does not implement (`EOFError`, `divmod`,
+`property`). **They no longer compile at all**, so any generated-C
+measurement above that involves them — notably `rdb`'s 693 326 → 693 764
+bytes in the `PYC_CSMOLD` table — is no longer reproducible.
+
+This is not a regression: all three were already in
+[102](102-corpus-programs-compile-then-abort-at-runtime.md)'s
+compile-then-crash list, so the failure moved from runtime to compile
+time, which is 102's goal. But it does mean the corpus baseline for
+FA-level comparisons is now 74 programs, not 77, and a re-run is needed
+before trusting any before/after that includes them.

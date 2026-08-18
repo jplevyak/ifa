@@ -10,20 +10,33 @@ harness or in any sweep used on this project sees these failures.**
 Surveying the whole shedskin corpus, recording the compiler's exit status
 **and the binary's** separately:
 
-| outcome | count |
-|---|---|
-| compile fails | 8 |
-| **compile OK, binary crashes** | **27** |
-| compile OK, 60 s timeout (not classified) | 23 |
-| compile OK, runs clean | 18 |
+| outcome | 2026-08-16 | **2026-08-18** |
+|---|---|---|
+| compile fails | 8 | **12** |
+| **compile OK, binary crashes** | **27** | **24** |
+| compile OK, 60 s timeout (not classified) | 23 | 23 |
+| compile OK, runs clean | 18 | 18 |
 
-**Of the 68 programs that compile, 27 — 39 % — crash when run.**
+**Of the 65 programs that compile, 24 — 37 % — crash when run.**
+
+> **Re-measured 2026-08-18 after
+> [issues/107](../../issues/107-undefined-names-warn-then-segfault.md).**
+> Three programs moved from *crash* to *compile-fail* — `rdb`, `sunfish`
+> and `voronoi2`, which reference CPython builtins pyc does not implement
+> (`EOFError`, `divmod`, `property`). **Nothing newly crashes**, and the
+> clean and timeout sets are unchanged. That is this issue's fix
+> direction #2 working in miniature: a runtime crash became a
+> compile-time diagnostic. (`tarsalzp`, a pre-existing multi-module
+> failure, was missing from the first survey, which is why compile-fail
+> reads +4 rather than +3.)
 
 ```
 adatron amaze bh block doom genetic2 kmeanspp life lz2 mastermind2
-mwmatching neural1 othello othello2 path_tracing pisang pygasus rdb
-rsync rubik sat solitaire sudoku3 sudoku4 sudoku5 sunfish voronoi2
+mwmatching neural1 othello othello2 path_tracing pisang pygasus
+rsync rubik sat solitaire sudoku3 sudoku4 sudoku5
 ```
+(`rdb`, `sunfish` and `voronoi2` left this list on 2026-08-18 — they now
+fail to compile, see above.)
 
 Verified as genuine miscompiles rather than environment problems — these
 run to completion under CPython in the same directory and crash under
@@ -138,8 +151,14 @@ Two separable pieces:
 2. **Codegen should not silently emit an abort stub.** Whatever the
    upstream cause, `cg.cc:2055` turning "I cannot emit this call" into a
    runtime assert is what converts a diagnosable compile failure into a
-   39 %-of-corpus runtime crash rate. At minimum it should be reportable
+   37 %-of-corpus runtime crash rate. At minimum it should be reportable
    (a count at end of compilation, or an opt-in hard error).
+
+   **Precedent, 2026-08-18:** `issues/107` did exactly this for undefined
+   names — a condition the compiler had already detected and merely
+   warned about, which then segfaulted. Making it an error moved three
+   programs out of the crash column with no other change. The same
+   argument applies to the abort stubs.
 3. **The measurement gap** is independently worth closing, and is cheap:
    a corpus runner that records compile status *and* run status, so a
    change that turns a working binary into a crashing one is visible.
