@@ -36,7 +36,7 @@ degenerate "reproducer":
 | v3 + non-empty stdout | 182 lines | printed 7 bytes, then **died of `NameError`** |
 | v4 + CPython `rc == 0` | 187 lines | exited 0, but **10 undefined names** survived in never-executed paths |
 | v5 + *flat* undefined-name check | 212 lines | **6 functions read names bound only in OTHER functions** — the checker was scope-insensitive |
-| **v6 + scope-aware check** | *running* | — |
+| v6 + scope-aware check | — | superseded: see below |
 
 The v4 loophole is the subtle one and the reason `nameck.py` exists:
 CPython resolves names at runtime, so deleted definitions are invisible if
@@ -56,3 +56,28 @@ needs statement-level (AST) reduction, or manual inspection of what in
 these 212 lines manufactures the degenerate type.
 
 Reproduce with: `python3 ddmin.py <input.py>` (edit `CHECK`/`dst`).
+
+
+## Superseded by the issues/107 fix
+
+`nameck.py` is no longer required. pyc now reports an undefined name as a
+**compile error** (issues/107), so a candidate containing one is rejected
+by the compiler itself, in the same run that checks for the target
+failure. The oracle reduces to: `ast.parse` + CPython `rc == 0` with
+output + the target error.
+
+The scripts are kept as the record of the failure modes -- each oracle
+here was defeated by a different degenerate program, and that history is
+the reason the checks exist.
+
+Verifying the point: `105-plcfrs-reduced.py` (the withdrawn artifact) now
+fails to compile with
+
+```
+error line 18, name 'tolabel' is not defined
+error line 22, name 'A' is not defined
+error line 26, name 'unary' is not defined
+```
+
+— exactly the unbound reads found by reading the file, now caught
+automatically.

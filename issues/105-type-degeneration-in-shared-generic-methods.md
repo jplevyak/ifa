@@ -323,3 +323,30 @@ program's meaning.
 3. **Beware undefined names** — pyc tolerates them silently, so they are
    invisible to a compile-only oracle and can fabricate the very type
    degeneration under investigation.
+
+## Reduction is now much simpler — pyc enforces the invariant itself
+
+[107](../../issues/107-undefined-names-warn-then-segfault.md) is fixed: an
+undefined name is a **compile error** rather than a silently-minted
+never-assigned global. That removes the loophole every reduction oracle
+here was built to close.
+
+The oracle chain existed only because pyc accepted degenerate programs:
+
+| oracle | guarded against | still needed? |
+|---|---|---|
+| v1 target error | — | yes |
+| v2 `ast.parse` | invalid Python (pyc accepts an empty `if:` body) | **yes** — [106](../../issues/106-empty-if-body-silently-accepted.md) is still open |
+| v3 non-empty stdout | reducer deleting all execution | yes |
+| v4 CPython `rc == 0` | program crashing after partial output | yes |
+| v5/v6 `nameck.py` | **undefined names** | **NO — pyc now rejects these itself** |
+
+So `ifa/issues/repro/nameck.py` is retained only as documentation of the
+failure mode; a fresh reduction does not need it, and any candidate with
+an unbound name is now rejected by the compiler in the same run that
+checks the target error.
+
+Note this also means **the earlier reductions were not merely unusable,
+they were uncompilable** under current pyc — the 212-line artifact now
+reports `name 'tolabel' is not defined` and friends, which is precisely
+the six functions found by reading it.
