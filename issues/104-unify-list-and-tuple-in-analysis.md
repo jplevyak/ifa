@@ -1010,3 +1010,62 @@ The cost remains `PYC_TUPELEM`, the prerequisite: giving `sym_tuple` an
 element sym takes `plcfrs` from 2232 to 4353 violations by pulling tuples
 into every container-keyed path. That, not the representation rule, is
 what keeps both flags off by default.
+## Do mixed-arity tuples cause real failures in the corpus? Yes — one program, decisively
+
+`IFA_DBG_ARITYVIOL` asks the direct question: of the violations FA
+actually records, how many are on an AVar whose type holds tuples of
+**differing arity**?
+
+| program | violations | with ≥2 tuples | **with MIXED ARITY** | of those, homogeneous |
+|---|---|---|---|---|
+| **`plcfrs`** | 2232 | 2083 | **2083 (93 %)** | **2016 (97 %)** |
+| `sudoku5` | 180 | 53 | **0** | — |
+| `rdb`, `go`, `linalg`, `chess`, `othello2`, `life` | — | 0 | **0** | — |
+
+So mixed-arity tuples are **not** a corpus-wide problem. They are
+`plcfrs`'s problem, and they are essentially *all* of it: **90 % of
+`plcfrs`'s violations (2016 of 2232) are on unions of homogeneous tuples
+that differ only in length** — precisely the case a variable-length
+`tuple<T>` collapses to one type.
+
+None of the corpus's other failures are arity-related. The compile
+failures are all other families:
+
+```
+chess    mismatched field sizes: closure field mixes 1- and 8-byte ('__pyc_None_type__')
+go       assigning to '_CG_int64' from incompatible type 'void'
+linalg   no matching function for call to '_CG_list_mult_internal'
+plcfrs   mismatched field sizes: closure field 'x' mixes 8- and 1-byte ('bool')
+othello3 FA made no EntrySet progress for 120s
+```
+
+### The source, concretely
+
+`plcfrs.py` is a grammar parser, and its rules are tuples of nonterminals
+of *varying length*:
+
+```python
+(("S", "VP2", "VMFIN"), ((0, 1, 0),)),      # 3 strings
+(("VP2", "VP2", "VAINF"), ((0,), (0, 1))),  # 3 strings
+(("VP2", "VP2"),         ((0,), (0,))),     # 2 strings  <-- same element type, different arity
+(("PROAV", "Epsilon"),   "Darueber"),       # 2 strings
+```
+
+Every rule LHS is a homogeneous `tuple<str>` of length 2 or 3, and the
+inner `((0,1,0),)` / `((0,),(0,1))` are homogeneous tuples of int-tuples,
+again of differing length. shedskin compiles this as `tuple<str *>` — one
+type — which is why it has 86 `tuple<>` instantiations alongside its 110
+`tuple2<>`.
+
+### What this settles
+
+The target is **real, measurable and concentrated**, which the earlier
+proxy metrics never established. But it also confirms the stage
+conclusion: these are **FA-time violations**, so the post-FA
+representation work in `clone.cc` cannot touch them — and indeed the
+flags produce zero exit-code changes across all 77 programs.
+
+Fixing `plcfrs` needs the arity-independent tuple type to exist **during
+FA** (option 1 above). The measured prize for that is now known: ~90 % of
+one program's 2232 violations, in a program that is also one of the three
+non-convergent ones. Nothing else in the corpus would benefit.

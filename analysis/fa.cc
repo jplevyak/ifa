@@ -8595,6 +8595,46 @@ static void complete_pass() {
   collect_results();
   collect_argument_type_violations();
   collect_var_type_violations();
+  // ifa/issues/104: of the VIOLATIONS actually recorded, how many are on
+  // an AVar whose type holds tuples of DIFFERING ARITY? That is the
+  // direct "do mixed-arity tuples cause real failures here" question --
+  // as opposed to merely occurring. Probe-only.
+  if (getenv("IFA_DBG_ARITYVIOL")) {
+    int nviol = 0, narity = 0, ntuple = 0, nhomo_arity = 0;
+    for (ATypeViolation *v : fa->type_violations) {
+      if (!v || !v->av || !v->av->out || !v->av->out->type) continue;
+      ++nviol;
+      int ntup = 0, n0 = -1;
+      bool mixed = false;
+      for (CreationSet *c : v->av->out->type->sorted) {
+        if (!c->sym || c->sym != sym_tuple) continue;
+        ++ntup;
+        if (n0 < 0) n0 = c->vars.n;
+        else if (n0 != c->vars.n) mixed = true;
+      }
+      if (ntup > 1) ++ntuple;
+      if (mixed) {
+        ++narity;
+        // Would one variable-length homogeneous tuple<T> cover this? Only
+        // if every tuple in the union is monomorphic AND they agree.
+        Sym *e0 = nullptr;
+        bool homo = true;
+        for (CreationSet *c : v->av->out->type->sorted) {
+          if (!c->sym || c->sym != sym_tuple) continue;
+          for (AVar *fv : c->vars) if (fv) {
+            Sym *t = fv->out ? basic_type(fa, fv->out, (Sym *)-1) : nullptr;
+            if (!t) { homo = false; break; }
+            if (!e0) e0 = t;
+            else if (e0 != t) { homo = false; break; }
+          }
+          if (!homo) break;
+        }
+        if (homo) ++nhomo_arity;
+      }
+    }
+    fprintf(stderr, "ARITYVIOL p=%d violations=%d with_multi_tuple=%d WITH_MIXED_ARITY=%d homogeneous=%d\n",
+            analysis_pass, nviol, ntuple, narity, nhomo_arity);
+  }
   // ifa/issues/074: sample the violation count HERE, at the collection
   // point -- this is the only place in the pass where it is meaningful.
   if (getenv("IFA_DBG_STAGE"))
