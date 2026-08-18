@@ -196,3 +196,76 @@ a `{tuple, str}` slice receiver has no single representation. shedskin
 avoids it because `str` and `tuple<T>` are separate C++ types with
 separate `__slice__` instantiations, and its analysis keeps the receiver
 monomorphic.
+
+## Root cause of sunfish's remaining failure: `tuple | tuple` at the receiver
+
+`PYC_DBG_SIZEOF` (new, probe-only) prints the type that reaches
+`sizeof_element`:
+
+```
+[sizeof] type='<anon>' kind=2 has=2 in fun=__pyc_getslice__
+         members= tuple(kind=3,elem=1) tuple(kind=3,elem=1)
+```
+
+`kind=2` is **`Type_SUM`**. So the receiver of `__pyc_getslice__` is a
+**union of two distinct concrete tuple types** — each individually a
+`Type_RECORD` *with* an element (`elem=1`), but their sum has none, so
+`sizeof_element(self)` has nothing to read.
+
+It is not `{tuple, str}` — that case works. Verified directly: both a
+branch-merged `(1,2,3,4) if n else "abcd"` sliced, and a shared
+`def sl(v): return v[0:2]` called with a tuple and a str, compile and run
+correctly.
+
+**This is a dispatch problem, and pyc has the machinery for it.**
+`split_for_per_cs_method_receivers` (`PER_CS_RECEIVER`, issue 045) fans a
+receiver position per CreationSet, which would give each clone a
+monomorphic receiver. It does not fire here for two reasons:
+
+1. it is gated on `cs_is_per_cs_method_class` — `tuple` is not flagged
+   `clone_methods_per_cs`;
+2. `PYC_RECVFAN`'s container relaxation required the classes to **differ**
+   ("mixed container"), and here both are `tuple`.
+
+### Widening the fan: measured, and it does not work
+
+Dropping the differ-classes requirement makes the fan fire on
+`sunfish`. Results:
+
+| `PYC_RECVFAN` | `sunfish` |
+|---|---|
+| 0 (default) | compile error — `sizeof_element of non-container` |
+| 1 | fires, then **aborts the compiler** — `split_edges` asserted `p` |
+| 1, after fixing that assert | compile error (unchanged) |
+| 2 (gate lifted) | **FA non-convergence** — no progress for 120 s, 8 060 000 edges |
+
+So fanning every same-class container receiver per CreationSet is too
+aggressive: it explodes the analysis rather than resolving it. The
+principled direction is right — a monomorphic receiver per clone is
+exactly what dispatch should provide — but "fan every container receiver"
+is not a workable formulation of it.
+
+One real fix did come out of it, and is kept: `split_edges` asserted that
+the AVar handed to it is still at an argument position of the ES. The
+caller walks `positional_arg_positions` and can split an earlier position
+in the same pass, rewriting `es->args` underneath the later ones — so
+that is "nothing to split here", not a broken invariant. It now returns 0
+instead of aborting. Unreachable at default settings, which is why it had
+survived as an assert.
+
+### What would actually fix it
+
+The receiver needs to be monomorphic *at the call site*, which means
+either splitting the **caller's** contour so `self` is one tuple type
+(the [101](101-FA-first-time-forever-splitting.md) splitting rule), or
+giving the two tuple types one representation so the sum never forms —
+shedskin's answer, since its `pst` is `dict<str*, tuple<__ss_int>*>` with
+both lengths as one type.
+
+Note the second is what `PYC_TUPLE_AS_LIST` was built for and it does not
+reach this case, because it is a post-FA `clone.cc` decision while this
+sum is formed during FA. That is the same stage mismatch
+[104](closed/104-unify-list-and-tuple-in-analysis.md) closed on.
+
+**Default is unaffected throughout: 275 passed / 15 known / 0 failed**,
+and `sunfish`/`plcfrs`/`go` are unchanged at `rc=1`.

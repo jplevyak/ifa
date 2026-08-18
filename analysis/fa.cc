@@ -4733,7 +4733,14 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
       break;
     }
   }
-  assert(p);
+  // ifa/issues/109: the caller may hand us an AVar that is no longer at
+  // an argument position of `es` -- split_for_per_cs_method_receivers
+  // walks positional_arg_positions and can split earlier positions in the
+  // same pass, which rewrites es->args underneath the later ones. That is
+  // "nothing to split here", not a broken invariant, so skip rather than
+  // assert. (Before the receiver fan was widened to same-class container
+  // receivers this was unreachable, which is why it was an assert.)
+  if (!p) return 0;
   Map<CreationSet *, EntrySet *> cs_es_map;
   for (CreationSet *cs : av->out->type->sorted) {
     Map<MPosition *, AType *> filters;
@@ -7214,7 +7221,14 @@ static int per_cs_forced = 0;
           if (!c0) c0 = cs->sym;
           else if (c0 != cs->sym) c0 = (Sym *)-1;
         }
-        if (c0 != (Sym *)-1) mixed_container = false;  // all one class: existing rules apply
+        // NOTE deliberately NOT requiring the classes to DIFFER. sunfish
+        // slices a receiver whose type is `tuple | tuple` -- two distinct
+        // CONCRETE tuple types, same class. Each has an element; their
+        // SUM does not, so __pyc_getslice__'s `sizeof_element(self)`
+        // fails at codegen with "non-container type". Fanning the
+        // receiver per CreationSet gives each clone a monomorphic
+        // receiver, which is what dispatch is for -- ifa/issues/109.
+        (void)c0;
       }
       if (!mixed_container)
       for (CreationSet *cs : av->out->type->sorted) {

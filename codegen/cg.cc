@@ -996,6 +996,15 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       // container clone). The generated code would be wrong
       // regardless; fail with a location instead of dereferencing
       // null.
+      if (!t->element && getenv("PYC_DBG_SIZEOF"))
+      {
+        fprintf(stderr, "[sizeof] type='%s' kind=%d has=%d in fun=%s members=",
+                t->name ? t->name : "<anon>", (int)t->type_kind, t->has.n, f->sym->name ? f->sym->name : "?");
+        for (Sym *m : t->has)
+          fprintf(stderr, " %s(kind=%d,elem=%d)", m && m->name ? m->name : "<anon>", m ? (int)m->type_kind : -1,
+                  (m && m->element) ? 1 : 0);
+        fprintf(stderr, "\n");
+      }
       if (!t->element)
         fail("%s:%d: internal: sizeof_element of non-container type '%s' (in %s) -- FA specialized a container "
              "method against a scalar (see ifa/issues/018 type-resolution)",
