@@ -1141,3 +1141,17 @@ follow `list`'s `get_sym_tup` rule when `PYC_TUPLE_AS_LIST` is on, 115
 lines deleted), it is correct and corpus-neutral, and it buys −2.9 %
 generated C on one program. The motivating problem it was built for does
 not exist.
+
+
+## The 2026-08-18 retraction of this issue's conclusion is itself retracted
+
+[109](../109-mixed-arity-tuple-slice-dispatch.md) was briefly filed as
+proof that mixed-arity tuples *do* cause a corpus failure (`sunfish`),
+contradicting this issue. **That was wrong.** Controls showed the same
+program aborts with *uniform* arity, and that a plain `(1,2,3,4)[0:2]`
+aborts too: the bug is that **tuple slicing is unimplemented**, not
+anything about arity.
+
+So this issue's finding stands as originally written — pyc handles
+mixed-arity homogeneous tuples, and the six reproducer shapes built here
+all run correctly.

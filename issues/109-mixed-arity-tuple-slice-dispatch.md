@@ -1,91 +1,80 @@
-# 109 — slicing a `{tuple(N), tuple(M)}` union aborts: sunfish's crash
+# 109 — tuple slicing is unimplemented: `t[0:2]` aborts
 
-**Status:** open, found 2026-08-18 while digging into `sunfish`'s runtime
-crash. Repro: `tests/tuple_arity_union_slice.py` (`.known_issue`), seven
-lines.
+**Status:** open, found 2026-08-18 while digging into `sunfish`'s crash.
+Repro: `tests/tuple_arity_union_slice.py` (`.known_issue`) — and a much
+smaller one below.
 
-**This corrects [104](closed/104-unify-list-and-tuple-in-analysis.md)**,
-which concluded mixed-arity tuples "cause no failures in the corpus".
-They do — `sunfish` is one.
+> **CORRECTION.** This issue was first filed as *"slicing a
+> `{tuple(N), tuple(M)}` union aborts"*, blaming mixed arity. **That was
+> wrong**, and the correction is the whole point of the issue:
 
-## Symptom
+## Two lines are enough
 
 ```python
-pst = {"P": (1, 2, 3, 4), "N": (5, 6, 7, 8)}
-for k, table in list(pst.items()):
-    pst[k] = table[0:2]
-    pst[k] = (0,) + pst[k] + (0,)
-print(pst["P"], pst["N"])
+t = (1, 2, 3, 4)
+print(t[0:2])
 ```
 
 | | result |
 |---|---|
-| CPython | `(0, 1, 2, 0) (0, 5, 6, 0)` |
-| **pyc** | compiles, then **SIGABRT**: `runtime error: matching function not found` |
+| CPython | `(1, 2)` |
+| **pyc** | **SIGABRT** — `runtime error: list index type mismatch` |
+
+No union. No dict. No differing arity. **A plain tuple, a constant
+slice.**
 
 ## Cause
 
-`pst[k]` is reassigned with a **different-length** tuple inside the loop,
-so the dict's value type — and therefore `table` — becomes
-`{tuple(N), tuple(M)}`: *same element type, different arity*. In pyc each
-arity is a distinct fixed-arity record type, so slicing that value has
-two candidate clones:
+`__pyc_getslice__` is defined **only on `class list`** in
+`__pyc__/04_sequence.py`. `class tuple` has `__getitem__`, `__setitem__`,
+`__iter__`, `__len__`, `__contains__` — but no slice method — so `t[i:j]`
+resolves to something that cannot index a tuple and the emitted guard
+fires.
 
-```
-DISPATCH FAIL in __main__: fns=2 | cand=__pyc_getslice__ cand=__pyc_getslice__ r1=_:?
-```
+`list` slicing works fine (`[1,2,3,4][0:2]` → `[1, 2]`).
 
-Codegen cannot discriminate them (their C-level receiver type is the
-same), so `cg.cc:2055` emits an abort stub and the program dies when the
-slice executes — [102](102-corpus-programs-compile-then-abort-at-runtime.md)'s
-class B.
+## What the mixed-arity theory got wrong
 
-In `sunfish` the same shape appears at `sunfish.py:74-77`: a table of
-64-element tuples padded to 120 elements in place.
+The original diagnosis came from `sunfish`, where the sliced value *does*
+have unioned arity, and from a `DISPATCH FAIL` line showing two
+`__pyc_getslice__` candidates. But the controls disprove it:
 
-```python
-for k, table in list(pst.items()):
-    pst[k] = sum((padrow(table[i*8:i*8+8]) for i in range(8)), ())
-    pst[k] = (0,)*20 + pst[k] + (0,)*20
-```
+| variant | result |
+|---|---|
+| mixed-arity tuples in a dict, sliced | aborts |
+| **same-arity** tuples in a dict, sliced | **also aborts** |
+| **plain tuple, constant slice, no union at all** | **also aborts** |
+| mixed-arity tuples, *iterated* and `len`-ed (no slice) | **works** |
 
-## Why 104 missed it
+Arity is not the variable; **slicing** is. The union in `sunfish` is
+incidental, exactly as the tuples in
+[104](closed/104-unify-list-and-tuple-in-analysis.md) turned out to be
+incidental passengers in a degenerate type.
 
-104 measured mixed-arity impact with `IFA_DBG_ARITYVIOL`, which counts
-**violations** whose operand type holds tuples of differing arity. This
-failure produces **no violation at all** — it is a *dispatch* failure,
-resolved at codegen. The probe was looking in the wrong place, and the
-resulting "no corpus failures" conclusion was wrong.
+So [104](closed/104-unify-list-and-tuple-in-analysis.md)'s conclusion —
+that mixed-arity tuples cause no corpus failures — **stands after all**.
+The correction I made to it on the strength of this issue has itself been
+retracted.
 
-The lesson generalises: a violation count does not see failures that
-codegen turns into abort stubs. `PYC_DBG_DISPATCH` sees them; violation
-probes do not.
+## Attempted fix, and why it is not one line
 
-## Fix direction
+Adding a `tuple.__pyc_getslice__` mirroring `list`'s — on the reasoning
+that `cg.cc` builds every tuple with `_CG_prim_tuple_list`, which sets a
+real list header, so `_CG_list_getslice` should apply — **crashes the
+compiler** (SIGSEGV during compilation). Reverted.
 
-This is precisely the case for a **variable-length homogeneous tuple**
-— shedskin's `tuple<T>` versus its fixed `tuple2<A,B>`. If tuples of the
-same element type shared one type regardless of arity, `table` would have
-a single type and one `__pyc_getslice__`.
-
-[104](closed/104-unify-list-and-tuple-in-analysis.md) built exactly that
-representation (`PYC_TUPELEM` + `PYC_TUPLE_AS_LIST`, both off) and closed
-as "correct mechanism, no demonstrated need". **The need is now
-demonstrated**, so it is worth re-testing those flags against this
-reproducer — with the caveat recorded there that the mechanism is
-post-FA in `clone.cc`, while this failure is a *dispatch* decision, so it
-may well not be reached by them.
+The real difficulty is the return type. `list.__pyc_getslice__` returns a
+`list`; a tuple slice must return a **tuple**, and with a runtime range
+its arity is unknown — which pyc's fixed-arity record tuples cannot
+express. `sunfish`'s `table[i*8:i*8+8]` has a runtime start and a
+constant length, so a constant-length special case would cover it, but
+the general case wants the variable-length tuple representation
+[104](closed/104-unify-list-and-tuple-in-analysis.md) prototyped.
 
 ## Verification plan
 
-- `tests/tuple_arity_union_slice.py` prints `(0, 1, 2, 0) (0, 5, 6, 0)`;
-  delete its `.known_issue` tag.
-- `sunfish` compiles **and runs** (it already compiles as of the
-  `divmod` fix).
-- ~~Re-check `PYC_TUPELEM=1 PYC_TUPLE_AS_LIST=1` against the reproducer~~
-  **Done, 2026-08-18: they do NOT fix it** — the reproducer still aborts
-  (`run_rc=134`) with both flags on. The caveat above was right: those
-  flags change the *representation* in `clone.cc`, after FA, whereas this
-  is a **dispatch** decision made from the FA-level type. An
-  arity-independent tuple type would have to exist *during* FA for
-  `__pyc_getslice__` to have one candidate instead of two.
+- `t = (1, 2, 3, 4); print(t[0:2])` prints `(1, 2)`.
+- `tests/tuple_arity_union_slice.py` prints
+  `(0, 1, 2, 0) (0, 5, 6, 0)`; delete its `.known_issue` tag.
+- `sunfish` compiles **and runs**.
+- `list` slicing is unaffected.

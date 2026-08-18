@@ -674,4 +674,4 @@ Fix it now when:
 - [102](102-corpus-programs-compile-then-abort-at-runtime.md) — 27 of 68 corpus programs compile cleanly and then abort at runtime on unresolved dispatch; no sweep or harness in this repo sees it.
 - [104](closed/104-unify-list-and-tuple-in-analysis.md) **(closed)** — design: unify `list`/`tuple` in analysis and let the existing `tuple_able` decision pick the layout; measured 19%/14%/10% of splits mix the two on plcfrs/rdb/sudoku5, 0% on linalg.
 - [105](105-type-degeneration-in-shared-generic-methods.md) — shared generic container methods (`__add__`, `__lt__`, `__getitem__`) merge every caller's element types into one local; the real cause of plcfrs's 2232 violations.
-- [109](109-mixed-arity-tuple-slice-dispatch.md) — slicing a `{tuple(N), tuple(M)}` union aborts (sunfish's crash); corrects 104's "mixed arity causes no failures".
+- [109](109-mixed-arity-tuple-slice-dispatch.md) — tuple slicing is unimplemented: `t = (1,2,3,4); t[0:2]` aborts. sunfish's crash.
