@@ -180,3 +180,78 @@ control-flow merge rather than a container. Either:
 Option 2 is attractive precisely because the working `add()` version
 proves FA can already do it — the question is why the branch merge is
 treated differently from the call-site split.
+
+
+## CORRECTION 2: the three-line repro is not plcfrs's shape either
+
+The decisive test — *does shedskin handle it?* — says no:
+
+```
+$ shedskin translate f3.py
+*WARNING* Variable 'x' has dynamic (sub)type: {float, list}
+$ make
+f3.cpp:18:51: error: expected type-specifier before '__ss_floa'
+```
+
+**shedskin rejects the three-liner too** — its generated C++ does not even
+compile. And shedskin compiles `plcfrs`. Therefore **`plcfrs` does not
+contain a branch-merged container/scalar union**, and the three-line test
+reproduces the *message* but not the *situation*. It has been re-labelled
+as a plain [018](../issues/018-dict-mixed-key-types-boxing-failure.md)
+instance.
+
+That is the second time in this issue, and the third across
+[104](closed/104-unify-list-and-tuple-in-analysis.md) + 105, that a
+constructed reproducer matched a symptom without matching the cause.
+
+## What plcfrs's failure actually is
+
+```
+mismatched field members: list(8) list(8) tuple(8) bool(1) tuple(8) ...
+  def: <anon> __pyc__.py:1446           <-- `def len(x): return x.__len__()`
+fail: mismatched field sizes: class 'closure' field 'x' mixes 8- and 1-byte members ('bool')
+```
+
+and the warnings point at:
+
+```
+plcfrs.py:605  batch(argv[1], argv[2], argv[3])
+plcfrs.py:637  % argv[0]
+```
+
+with type `( list tuple bool int64 float64 str dict ChartItem Edge Rule
+Entry )` — i.e. **`sys.argv`'s elements have acquired the type of
+everything in the program**, and the closure field for `len`'s parameter
+`x` then cannot be laid out because `bool` is 1 byte and the rest are 8.
+
+`pyc_lib/sys.py` builds `argv` by appending only `str`, so this union is
+**manufactured by the analysis**, not written by the program. That is the
+real defect and it is pyc-specific — exactly as the question implied.
+
+### Constructed reproducers that do NOT trigger it
+
+All of these compile and run correctly, so none is the mechanism:
+
+| hypothesis | result |
+|---|---|
+| `sys.argv` contaminated by other list types in the program | ✅ clean |
+| `len()` called on 7 different types including `bool` | ✅ clean |
+| `len` passed as a **value** to `map` (plcfrs.py:134) *and* called directly | ✅ clean |
+| six element types through `+`/`sort` (74 degenerate AVars) | ✅ clean, 0 violations |
+| branch-merged `{list, float}` | ✗ fails — but shedskin fails it too |
+
+## Revised approach: reduce, do not construct
+
+Five constructed hypotheses have now failed to reproduce it. The failure
+is emergent at `plcfrs`'s scale, so the productive move is **delta
+reduction from `plcfrs` itself** — cut the program down while the
+`mismatched field sizes` failure persists — rather than more guessing
+from the symptom.
+
+Concretely: `plcfrs.py` is 640 lines; bisect it against the invariant
+"still fails with `closure field 'x' mixes 8- and 1-byte members`". The
+`argv` trail suggests starting by cutting `main`/`batch`/argument
+handling, since that is where the degenerate type surfaces.
+
+That reduction is the next task, and it should be done before any further
+theory.
