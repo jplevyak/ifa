@@ -139,3 +139,60 @@ the general case wants the variable-length tuple representation
   `(0, 1, 2, 0) (0, 5, 6, 0)`; delete its `.known_issue` tag.
 - `sunfish` compiles **and runs**.
 - `list` slicing is unaffected.
+
+
+## How shedskin handles sunfish — and a regression my fix caused
+
+shedskin translates and **builds** `sunfish` cleanly, no warnings. The
+generated C++ says exactly what it does with the table:
+
+```cpp
+dict<str *, tuple<__ss_int> *> *directions, *pst;
+...
+table->__slice__(3, i*8, i*8+8, 0)
+```
+
+`pst` is a dict of **variable-length homogeneous `tuple<__ss_int>`** — the
+64-element and 120-element tuples are *the same type* — and `__slice__`
+returns that same type. That is precisely the representation pyc now uses
+for a sliced tuple, so the approach is confirmed correct by the reference
+implementation.
+
+### But sunfish went backwards under pyc
+
+| | `sunfish` |
+|---|---|
+| before the `divmod` fix | compile error (missing builtin) |
+| after `divmod`, before tuple slicing | **compiled**, then SIGABRT at runtime |
+| **after tuple slicing (now)** | **compile error** — `sizeof_element of non-container type '<anonymous>' (in __pyc_getslice__)` |
+
+Verified by rebuilding at the previous commit: `compile_rc=0` there,
+`compile_rc=1` now. The failure is inside the **new**
+`tuple.__pyc_getslice__` (`__pyc__.py:1251` maps to it), where a
+`<anonymous>` union receiver reaches `sizeof_element`. `sunfish` slices
+both tuples (`table[i*8:i*8+8]`) and **strings** (`board[:i]`,
+`self.board[::-1]`), so a slice site whose receiver FA could not separate
+now lands in the tuple method.
+
+### Why the corpus sweep missed it
+
+The sweep compared against `rc_107.txt`, taken **before** the `divmod`
+fix — when `sunfish` was already `rc=1` for a different reason. So
+"no exit-code changes" was true and useless: the program had regressed
+between the two snapshots and back to the same code. **A baseline must be
+re-taken after every landed change**, not reused across them.
+
+### Is it a net loss?
+
+Arguably not, by
+[102](102-corpus-programs-compile-then-abort-at-runtime.md)'s own
+argument — a compile-time diagnostic beats a runtime SIGABRT, and
+`sunfish` produced no useful output either way. But it is a real
+behaviour change in the wrong direction for that program, it was not
+caught by the sweep, and it should not be discovered later as a surprise.
+
+The underlying cause is [018](../../issues/018-dict-mixed-key-types-boxing-failure.md):
+a `{tuple, str}` slice receiver has no single representation. shedskin
+avoids it because `str` and `tuple<T>` are separate C++ types with
+separate `__slice__` instantiations, and its analysis keeps the receiver
+monomorphic.
