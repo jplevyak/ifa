@@ -179,3 +179,36 @@ Two separable pieces:
 An honest baseline. At present the project can report "68 of 76 corpus
 programs compile" while fewer than 18 are known to actually run, and no
 regression in that gap would be detected by any existing check.
+
+
+## Methodology correction: `run_rc=1` is not a crash (2026-08-18)
+
+This issue's survey classified any non-zero run status as a crash. That
+is wrong for **exit code 1**, which is an ordinary Python failure exit —
+an uncaught exception, `sys.exit(1)`, or a program's own error path.
+
+`rdb` is the worked example. It was counted as a crasher on `run_rc=1`;
+measured against CPython it is **fully working**:
+
+```
+CPython rc=1   pyc rc=1   output IDENTICAL
+```
+
+It exits 1 because there is no iPod directory to read — exactly as
+CPython does. (It reached this state via
+[issues/107](../../issues/107-undefined-names-warn-then-segfault.md)'s
+`EOFError` fix; before that it did not compile.)
+
+Re-classifying the current survey:
+
+| | count |
+|---|---|
+| **SIGNAL crashes** (SIGSEGV/SIGABRT — unambiguous) | **23** |
+| `run_rc=1` (ambiguous, must be compared to CPython) | 1 — `sat`, genuinely broken (`Unhandled exception`, where CPython runs on) |
+
+So the headline should be **"23 programs crash with a signal"**, and any
+`rc=1` must be diffed against CPython before being counted. The earlier
+27 and 24 figures both included at least one working program.
+
+This is the same class of error as the `rc=$?`-after-a-pipe bug recorded
+above: a status code was read as more meaningful than it is.
