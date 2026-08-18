@@ -255,3 +255,28 @@ handling, since that is where the degenerate type surfaces.
 
 That reduction is the next task, and it should be done before any further
 theory.
+
+
+## Reduction, attempt 1: invalid — and it found a parser bug
+
+Line-granularity delta reduction of `plcfrs` against the invariant
+*"still fails with `mixes 8- and 1-byte members`"* ran **638 → 93 lines**.
+
+**The 93-line result is not valid Python.** CPython rejects it with
+`IndentationError: expected an indented block after 'if' statement`, yet
+pyc parsed it, analysed it, and produced the target failure — so the
+oracle happily accepted malformed intermediates all the way down.
+
+That is a methodology error (the oracle checked only for the error
+string, never that the candidate was a legal program), and it surfaced a
+real pyc bug on the way: **pyc accepts an `if:` with no body inside a
+function and silently drops the branch** —
+[issues/106](../../issues/106-empty-if-body-silently-accepted.md),
+reproduced in five lines. The same shape at module level *is* rejected.
+
+Oracle v2 validates with `ast.parse` before consulting pyc, and correctly
+rejects the attempt-1 output. Reduction restarted against it.
+
+**Rule for any future Python reduction in this repo:** validate candidates
+with `ast.parse` first. pyc's parser is not a proxy for Python's, and a
+reducer will find that gap and exploit it.
