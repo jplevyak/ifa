@@ -269,3 +269,78 @@ sum is formed during FA. That is the same stage mismatch
 
 **Default is unaffected throughout: 275 passed / 15 known / 0 failed**,
 and `sunfish`/`plcfrs`/`go` are unchanged at `rc=1`.
+
+## Splitting the caller instead: the right mechanism, blocked by stage starvation
+
+The suggestion was that a receiver union should split the **caller's**
+contour automatically, via backward analysis. That is the correct
+architecture, and pyc already has the wiring. The reason it does nothing
+here is more specific than "it is missing".
+
+### FA never knew there was a problem
+
+`P_prim_sizeof_element`'s constraint (`fa.cc`) simply unions the element
+sizes across every receiver CreationSet:
+
+```cpp
+for (CreationSet *cs : t->out->sorted) {
+  AVar *elem = get_element_avar(cs);
+  if (elem) for (CreationSet *cs2 : elem->out->sorted) rtype = type_union(rtype, ...);
+}
+```
+
+No violation, ever. A `tuple | tuple` receiver is a perfectly good AType
+to FA; only **codegen** chokes, because the sum has no `element`. So the
+violation-driven splitter had nothing to act on — the backward analysis
+was not failing, it was never invoked.
+
+`PYC_SIZEOF_VIOL=1` records a `BOXING` violation when the receiver spans
+CreationSets that cannot share one concrete container type (different
+sym, or different arity — which for a record-shaped tuple *is* a
+different type). It works: `sunfish` goes from 10 to **11 violations**.
+
+### But the VIOLATION stage is starved
+
+```
+STAGES: TYPE_CONFL SETTER SETTER_OF_SETTER
+```
+
+Stage 5 (`VIOLATION`) **never runs on sunfish**. It is gated on
+`if (!analyze_again)` — full quiescence of the earlier stages — and the
+first-stage-wins cascade never gets there. So the violation is recorded
+faithfully and nothing ever splits on it: `ess` and `css` are unchanged
+(534 / 1586) and the failure is identical.
+
+This is the same starvation [101](101-FA-first-time-forever-splitting.md)
+found keeping `PER_CS_RECEIVER` from running, now with a second concrete
+victim.
+
+### Lifting the gate destabilises FA
+
+`PYC_SIZEOF_VIOL=2` also lifts stage 5's quiescence gate:
+
+```
+fail: FA flow analysis made no EntrySet progress for 120s (5 640 000 edges)
+      -- non-convergent input
+```
+
+**The same outcome as the receiver fan** (`PYC_RECVFAN=2`, 8 060 000
+edges). Two independent, principled routes to the same fix both explode
+the analysis the moment their stage is allowed to run early.
+
+### What this establishes
+
+The quiescence gates are **load-bearing for convergence**, not
+conservatism to be relaxed. Both fixes here are correct in principle and
+neither is reachable while the cascade starves the stage that implements
+it — and un-starving it costs convergence.
+
+So this is not a missing mechanism but
+[101](101-FA-first-time-forever-splitting.md)'s productivity problem:
+splitting must *earn* its contours, so that a stage can run early without
+diverging. Until that exists, `sizeof_element`'s violation is correct
+information the splitter cannot safely use.
+
+Both flags are off by default (`PYC_SIZEOF_VIOL`, `PYC_RECVFAN`);
+default is **275 passed / 15 known / 0 failed**, `sunfish` and `plcfrs`
+unchanged at `rc=1`.

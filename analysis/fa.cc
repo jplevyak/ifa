@@ -1772,6 +1772,17 @@ static void make_kind(PNode *p, EntrySet *es, Sym *kind, AVar *container, Vec<Va
   }
 }
 
+// ifa/issues/109: record a violation when sizeof_element's receiver spans
+// CreationSets that cannot share one concrete container type.
+static int sizeof_viol_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_SIZEOF_VIOL");
+    e = v ? atoi(v) : 0;
+  }
+  return e;
+}
+
 void prim_make_constraints(PNode *p, EntrySet *es) {
   AVar *container = make_AVar(p->lvals[0], es);
   Sym *kind = p->rvals[2]->sym;
@@ -2872,6 +2883,30 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
       case P_prim_sizeof_element: {
         AVar *t = make_AVar(p->rvals[2], es);
         AType *rtype = fa->type_world.bottom_type;
+        // ifa/issues/109: sizeof_element needs ONE container layout. If
+        // the receiver spans CreationSets that will become distinct
+        // concrete types -- different sym, or different arity, which for
+        // a record-shaped tuple means a different type -- their sum has
+        // no `element` and codegen fails with "sizeof_element of
+        // non-container type". FA used to just union the sizes and say
+        // nothing, so the splitter had no reason to separate them.
+        //
+        // Recording a violation here is what makes the EXISTING backward
+        // machinery do the work: split_for_violations (stage 5) splits
+        // the offending AVar, and that split propagates back to the
+        // caller's contour automatically. No annotation, no special case
+        // in codegen -- FA simply has to know the constraint.
+        if (sizeof_viol_enabled() && t->out->sorted.n > 1) {
+          Sym *sym0 = nullptr;
+          int arity0 = -1;
+          bool uniform = true;
+          for (CreationSet *cs : t->out->sorted) {
+            if (!cs->sym) continue;
+            if (!sym0) { sym0 = cs->sym; arity0 = cs->vars.n; }
+            else if (sym0 != cs->sym || arity0 != cs->vars.n) { uniform = false; break; }
+          }
+          if (!uniform) type_violation(ATypeViolation_kind::BOXING, t, t->out, nullptr, nullptr);
+        }
         for (CreationSet *cs : t->out->sorted) {
           AVar *elem = get_element_avar(cs);
           if (elem) {
@@ -7746,12 +7781,18 @@ static int cpa_enabled() {
     log(LOG_SPLITTING, "split_for_setters_of_setters with marks %d\n", analyze_again);
     clear_marks(acc);
   }
-  if (!analyze_again) {
+  // ifa/issues/109: PYC_SIZEOF_VIOL >= 2 also lifts this stage's
+  // quiescence gate. Recording the sizeof_element violation is useless
+  // while VIOLATION is STARVED by the first-stage-wins cascade -- measured
+  // on sunfish, whose STAGES line is `TYPE_CONFL SETTER SETTER_OF_SETTER`
+  // and never reaches stage 5, so the violation is recorded and nothing
+  // ever splits on it.
+  if (!analyze_again || sizeof_viol_enabled() >= 2) {
     // 5) split AEdges(s) and EntrySet(s) for violations based on type using
     // dynamic dispatch
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
     cur_split_stage = (int)FAPassStage::VIOLATION;
-    analyze_again = split_for_violations(fa->type_violations);
+    analyze_again = split_for_violations(fa->type_violations) || analyze_again;
     fa->stage_time[(int)FAPassStage::VIOLATION] += stage_timer.lap();
     if (analyze_again) {
       record_fa_event(FAPassStage::VIOLATION, analyze_again, ess0, css0, viol0);
