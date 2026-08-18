@@ -1,5 +1,16 @@
 # ifa/issues/105 reduction artifacts
 
+> **WITHDRAWN 2026-08-18 — `105-plcfrs-reduced.py` is NOT a valid
+> reproducer.** Reading it revealed six functions that read names bound
+> nowhere in scope (`parse` reads `A`, `tolabel`, `unary`; also `getmpd`,
+> `pprint_chart`, `do`, `nextunset`, `__init__`). The original assigns all
+> of them locally — the reducer deleted the assignments and kept the uses.
+> `nameck.py` missed this because it was **scope-insensitive**: it
+> collected every `Store` in the file into one flat set, so a name
+> assigned inside *another function* counted as defined. It is now
+> scope-aware, correctly rejects this artifact, and passes the original.
+> The file is kept only as the worked example of the failure mode.
+
 `105-plcfrs-reduced.py` — `shedskin_examples/plcfrs.py` delta-reduced
 from **638 to 212 lines** while preserving its compile failure:
 
@@ -24,7 +35,8 @@ degenerate "reproducer":
 | v2 + `ast.parse` | 94 lines | **executed nothing** — 0 bytes stdout vs the original's 3456 |
 | v3 + non-empty stdout | 182 lines | printed 7 bytes, then **died of `NameError`** |
 | v4 + CPython `rc == 0` | 187 lines | exited 0, but **10 undefined names** survived in never-executed paths |
-| **v5 + static undefined-name check** | **212 lines** | ✅ valid |
+| v5 + *flat* undefined-name check | 212 lines | **6 functions read names bound only in OTHER functions** — the checker was scope-insensitive |
+| **v6 + scope-aware check** | *running* | — |
 
 The v4 loophole is the subtle one and the reason `nameck.py` exists:
 CPython resolves names at runtime, so deleted definitions are invisible if
