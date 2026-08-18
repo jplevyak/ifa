@@ -866,3 +866,82 @@ three structural facts it uncovered — `sym_tuple` had no element sym;
 differing arity was made non-equivalent before element type was
 consulted; `monomorphic_tuple` must compare basic types, not CreationSet
 identity — and the `IFA_DBG_TUPARITY` probe.
+## How shedskin handles it: the choice is SYNTACTIC, by arity, before inference
+
+Answering "does it start with all tuples in the same contour?" — not
+quite, but the effect is stronger than that. **shedskin picks the
+representation at graph-build time from the literal's arity alone**, so
+the fixed-arity types this issue tries to merge are mostly never created.
+
+`shedskin/graph.py`:
+
+```python
+def visit_Tuple(self, node, func=None):
+    if len(node.elts) == 2:
+        self.constructor(node, "tuple2", func)
+    else:
+        self.constructor(node, "tuple", func)
+```
+
+and `shedskin/python.py`'s `tvar_names`:
+
+| class | type variables |
+|---|---|
+| `list`, `set`, `deque`, `array`, **`tuple`** | `["unit"]` |
+| `dict` | `["unit", "value"]` |
+| **`tuple2`** | `["first", "second"]` |
+
+So **`tuple` has exactly one type variable, `unit` — the same shape as
+`list`.** Every tuple of length ≠ 2 is variable-length homogeneous from
+the moment it is built, before any inference runs. Two such tuples of
+different arity and the same element type are therefore *literally the
+same type from the start*; there is nothing to merge, ever.
+
+Pairs are the special case, and they carry **both views at once**
+(`graph.py`'s `constructor`):
+
+```python
+self.add_dynamic_constraint(node, elem0, "unit", func)    # union view
+self.add_dynamic_constraint(node, elem1, "unit", func)
+self.add_dynamic_constraint(node, elem0, "first", func)   # per-index view
+self.add_dynamic_constraint(node, elem1, "second", func)
+```
+
+### The price: heterogeneous tuples longer than 2 are unsupported
+
+That is an explicit, named limitation — `typestr.py:387`:
+
+```
+"tuple with length > 2 and different types of elements"
+```
+
+Verified directly:
+
+| | shedskin |
+|---|---|
+| `(n, "two")` — heterogeneous **pair** | clean, no warnings |
+| `(n, "two", 3.5)` — heterogeneous **triple** | `*WARNING* Variable 't' has dynamic (sub)type: {float, int, str}` + `*WARNING* tuple with length > 2 and different types of elements`, falls back to `pyobj *` |
+
+### What this means for pyc
+
+pyc is **more capable here**: it represents a heterogeneous N-tuple as a
+record with per-field types, which shedskin simply cannot do
+(`tests/tuple_mixed_types.py` pins this). That capability is precisely
+what creates the problem this issue chased — pyc makes one fixed-arity
+record type per arity, and then has to merge them back.
+
+So the two viable directions are now clear, and neither is what was
+built:
+
+1. **shedskin's trade, adopted knowingly** — lower tuple literals of
+   arity ≠ 2 to the list shape at `build_if1` time (arity is syntactic,
+   so no inference is needed), accepting the same loss: heterogeneous
+   N-tuples stop working. This makes different-arity tuples one type *by
+   construction*, at the stage where it actually reduces splits.
+2. **Keep the capability and decide later** — which is what
+   `PYC_TUPLE_AS_LIST` does, and it is post-FA in `clone.cc`, so it can
+   only shrink generated code, never split counts.
+
+The post-FA merge already built is option 2 and is measured at −1.5 % C
+on one program. Option 1 is the one that would move FA-level numbers, and
+its cost is a capability regression, not an implementation risk.
