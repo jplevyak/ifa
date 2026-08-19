@@ -340,9 +340,46 @@ Sym *closure_fun_type(Var *v) {
 
 int is_closure_var(Var *v) { return closure_fun_type(v) != nullptr; }
 
+// issues/112: two clones of one source function can reach a call site
+// with IDENTICAL C signatures -- same Sym, and every argument the same
+// `type` POINTER, element type included. They differ only in FA contour
+// identity, which C has no way to discriminate and no reason to: either
+// one is a correct callee for these argument types. Measured on a
+// copy-of-copy of a tuple, where `self[k]` inside tuple.__deepcopy__
+// drew two clones of tuple::__getitem__ whose receivers were both
+// `tuple` with element `T` at the same addresses.
+//
+// Deliberately strict: same Sym, same arity, same type pointer at every
+// position, same return type. Candidates that differ anywhere are still
+// a genuine polymorphic call and still fall through to the dispatch
+// machinery (and, failing that, the "matching function not found"
+// assert), so this cannot paper over a real ambiguity.
+static bool identical_c_signature(Fun *a, Fun *b) {
+  if (!a || !b || a->sym != b->sym) return false;
+  if (a->args.n != b->args.n) return false;
+  if (a->sym->ret != b->sym->ret) return false;
+  if (a->rets.n != b->rets.n) return false;
+  for (int i = 0; i < a->rets.n; i++)
+    if ((a->rets[i] ? a->rets[i]->type : nullptr) != (b->rets[i] ? b->rets[i]->type : nullptr)) return false;
+  for (int i = 0; i < a->args.n; i++) {
+    if (!a->args[i].key) continue;
+    Var *va = a->args[i].value;
+    Var *vb = b->args.get(a->args[i].key);
+    if (!va || !vb) return false;
+    if (va->type != vb->type) return false;
+  }
+  return true;
+}
+
 Fun *get_target_fun_core(PNode *n, Fun *f) {
   Vec<Fun *> *fns = f->calls.get(n);
-  if (!fns || fns->n != 1) return nullptr;
+  if (!fns || !fns->n) return nullptr;
+  if (fns->n == 1) return fns->v[0];
+  for (int i = 1; i < fns->n; i++)
+    if (!identical_c_signature(fns->v[0], fns->v[i])) return nullptr;
+  if (getenv("PYC_DBG_DISPATCH"))
+    fprintf(stderr, "[dispatch] %d indistinguishable clones of %s collapsed\n", fns->n,
+            fns->v[0]->sym->name ? fns->v[0]->sym->name : "?");
   return fns->v[0];
 }
 
