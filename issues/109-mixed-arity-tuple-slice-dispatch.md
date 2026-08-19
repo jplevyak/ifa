@@ -385,11 +385,29 @@ asking, from information it already had.
 
 ### Still open
 
-`sunfish` now aborts at *runtime* — `matching function not found` at a
-different site — so it is past the type-representation wall but not
-finished. That is [102](102-corpus-programs-compile-then-abort-at-runtime.md)
-class B (a dispatch pyc cannot discriminate), and it is a separate
-problem from this issue.
+`sunfish` now aborts at *runtime* — `matching function not found` — and
+that has been followed up: the receiver is a **`{list, tuple}` union**,
+reduced to four lines in `tests/list_tuple_union_method.py`. The two
+candidates have the same C-level receiver type and there is no runtime
+tag to pick between them:
+
+```
+_CG_any  list::__pyc_getslice__(_CG_any a1, ...)
+_CG_void tuple::__pyc_getslice__(_CG_any a1, ...)
+assert(!"runtime error: matching function not found");
+```
+
+It is **not slice-specific** — `len(x)`, `x[0]` and `for v in x` fail
+identically on the same union. It is
+[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) /
+[102](102-corpus-programs-compile-then-abort-at-runtime.md) class B, a
+separate problem from this issue.
+
+Worth recording why a `{tuple, str}` union does **not** fail: FA
+constant-folds the `str` branch — its `__pyc_getslice__` is emitted with
+*no parameters* and a hardcoded literal — so no union ever reaches one
+call site. That case working is an accident of constant propagation, not
+evidence that polymorphic dispatch works.
 
 The two failed approaches above (widening the receiver fan, and recording
 a `sizeof_element` violation so backward splitting fires) are left
