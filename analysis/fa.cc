@@ -1976,13 +1976,19 @@ static void add_send_constraints(PNode *p, EntrySet *es) {
           for (CreationSet *scs : src->out->sorted) {
             AVar *selem = get_element_avar(scs);
             if (selem) flow_vars(selem, elem);
-            // NOTE deliberately NOT flowing scs->vars (a record-shaped
-            // source's per-index vars) into the element: those AVars are
-            // CS-contoured, and feeding them into an element var trips
+            // A LITERAL source has a bottom generic element -- that is
+            // the tuple_able design: `make` fills per-index vars and
+            // leaves the element unpopulated, so it stays record-shaped
+            // until something uses it generically. `tuple([1,2,3])` must
+            // still get an element type, so take it from the per-index
+            // vars.
+            //
+            // update_gen, NOT flow_vars: those AVars are CS-contoured,
+            // and a flow EDGE from one into an element var trips
             // compute_setters' `x->contour_is_entry_set` assertion
-            // (measured: genetic2_idioms aborts the compiler). A source
-            // that is a fixed-arity tuple therefore contributes no
-            // element type here -- see the issue for that gap.
+            // (measured: genetic2_idioms aborted the compiler).
+            // update_gen contributes the type without creating a setter.
+            for (AVar *fv : scs->vars) if (fv && fv->out) update_gen(elem, fv->out);
           }
         }
         break;
