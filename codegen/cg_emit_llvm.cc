@@ -2782,6 +2782,7 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
     Vec<int> class_recv_ridx;  // ... and the call-site rval index of ITS receiver operand, to
                                 // skip self (already passed as `recv`) when routing the rest
     Fun *nil_fn = nullptr;  // nil-receiver candidate (None method on a nil|record union)
+    Var *recv_var = nullptr;  // issues/048: the Var `recv` came from, for the scalar guard
     // ifa/issues/088: a candidate whose receiver formal resolves to a
     // type with no runtime classtag at all -- list/tuple/int/float/
     // bool, the same five ifa-core-registered primitive types
@@ -2884,8 +2885,10 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
         // null-safe).
         int nil_ridx = -1;
         bool is_nil_recv = poly_dispatch_is_nil_receiver(fun_val, pn, &nil_ridx);
-        if (is_nil_recv && !recv && nil_ridx >= 0 && nil_ridx < pn->rvals.n && pn->rvals[nil_ridx])
+        if (is_nil_recv && !recv && nil_ridx >= 0 && nil_ridx < pn->rvals.n && pn->rvals[nil_ridx]) {
           recv = value_for_var(ctx, pn->rvals[nil_ridx]);
+          recv_var = pn->rvals[nil_ridx];
+        }
         if (is_nil_recv && !nil_fn && fun_val->cg_string && TheModule->getFunction(fun_val->cg_string)) {
           nil_fn = fun_val;
           continue;
@@ -3014,6 +3017,40 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
     // (and shouldn't) fire for a default_fn claimed with neither of
     // those -- see default_fn's declaration comment for why that
     // narrower case is deliberately left alone.
+    // issues/048: a null test cannot tell None from 0 / 0.0 / False.
+    // The nil branch below is `icmp eq ptr %recv, null`, and a scalar
+    // member of the union reaches it through inttoptr -- `inttoptr
+    // (i64 0)` IS null, so zero silently takes the None branch:
+    //
+    //   v.a = 0 ; print(v.a)   ->  None      (CPython: 0)
+    //   v.a = 0.0 ; print(v.a) ->  None      (CPython: 0.0)
+    //
+    // which is issues/052. The C backend already declines to emit this
+    // (cg.cc, "A nil test on a SCALAR-typed operand can't distinguish
+    // None from 0/0.0/False"); refusing is strictly better than a
+    // wrong answer, so refuse here too, and say why at compile time
+    // rather than deferring to a runtime abort.
+    //
+    // EXCEPTION, same as the C backend's: the truthiness selectors,
+    // where None and zero give the SAME answer (both falsy) so the
+    // conflation is semantically invisible -- `if f():` on a function
+    // whose fall-through implicitly returns None is genetic2's shape.
+    if (ok && nil_fn && recv_var && recv_var->type && recv_var->type->type_kind == Type_SUM) {
+      bool has_nil = false;
+      Sym *scalar_member = nullptr;
+      for (Sym *m : recv_var->type->has) {
+        if (!m) continue;
+        if (m == sym_nil_type) has_nil = true;
+        else if (m->num_kind) scalar_member = m;
+      }
+      cchar *sel = (pn->rvals.n && pn->rvals[0]->sym->is_symbol) ? pn->rvals[0]->sym->name : nullptr;
+      bool truthiness = sel && (!strcmp(sel, "__pyc_to_bool__") || !strcmp(sel, "__bool__") ||
+                                !strcmp(sel, "__not__"));
+      if (has_nil && scalar_member && !truthiness)
+        codegen_fail(pn, "'%s' on a {None, %s} union has no representation: a null test cannot "
+                         "distinguish None from 0/0.0/False (issues/048)",
+                     sel ? sel : "call", scalar_member->name ? scalar_member->name : "scalar");
+    }
     if (ok && (classes.n || nil_fn || default_fn) && recv) {
       llvm::BasicBlock *merge_bb = llvm::BasicBlock::Create(*TheContext, "poly.merge", cur_fn);
       llvm::AllocaInst *res_slot = nullptr;
