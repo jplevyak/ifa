@@ -1972,10 +1972,20 @@ static void add_send_constraints(PNode *p, EntrySet *es) {
         CreationSet *cs = creation_point(container, kind);
         AVar *elem = get_element_avar(cs);
         if (elem) {
-          // every element type the source can yield flows into ours
+          // Every element type the source can yield flows into ours.
+          //
+          // EVERY source AVar goes through vector_elems, including the
+          // source's own generic element: both it and the per-index vars
+          // are CS-contoured, and a raw CS -> CS flow edge puts a
+          // CS-contoured var in elem->backward, which is exactly what
+          // compute_setters asserts against (`x->contour_is_entry_set`;
+          // measured: genetic2_idioms aborts the compiler). vector_elems
+          // lands each value in a fresh entry-set-contoured tval of this
+          // pnode first, so every edge reaching elem starts at an ES var.
+          int slot = 0;
           for (CreationSet *scs : src->out->sorted) {
             AVar *selem = get_element_avar(scs);
-            if (selem) flow_vars(selem, elem);
+            if (selem) vector_elems(0, p, selem, elem, container, slot++);
             // A LITERAL source has a bottom generic element -- that is
             // the tuple_able design: `make` fills per-index vars and
             // leaves the element unpopulated, so it stays record-shaped
@@ -1983,12 +1993,27 @@ static void add_send_constraints(PNode *p, EntrySet *es) {
             // still get an element type, so take it from the per-index
             // vars.
             //
-            // update_gen, NOT flow_vars: those AVars are CS-contoured,
-            // and a flow EDGE from one into an element var trips
-            // compute_setters' `x->contour_is_entry_set` assertion
-            // (measured: genetic2_idioms aborted the compiler).
-            // update_gen contributes the type without creating a setter.
-            for (AVar *fv : scs->vars) if (fv && fv->out) update_gen(elem, fv->out);
+            // vector_elems, NOT a bare update_gen: these AVars are
+            // CS-contoured, and a flow EDGE straight from one into an
+            // element var trips compute_setters' `contour_is_entry_set`
+            // assertion. vector_elems is the sanctioned trampoline for
+            // exactly that -- it lands the value in a fresh entry-set-
+            // contoured tval of this pnode and flows THAT into elem.
+            //
+            // A durable edge is REQUIRED, not a nicety. update_gen takes
+            // a SNAPSHOT of fv->out, and nothing orders this constraint
+            // after the source literal's own `make` within a pass, nor
+            // re-runs it when the source is repopulated after the
+            // per-pass clear_avar. Measured on a recursive class with a
+            // {None, tuple} field: the source var read SET on pass 3 and
+            // bottom again on pass 4, the LAST pass, so the element
+            // finished bottom, the CS stayed tuple_able, and clone.cc
+            // gave it RECORD layout with ZERO members -- the empty
+            // record cg.cc reports as "runtime error: bad getter".
+            // arg_of_send alone does not fix it: the source var never
+            // changes during the final pass, so nothing re-enqueues.
+            for (int i = 0; i < scs->vars.n; i++)
+              if (scs->vars[i]) vector_elems(0, p, scs->vars[i], elem, container, slot++);
           }
         }
         break;
