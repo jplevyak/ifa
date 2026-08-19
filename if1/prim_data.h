@@ -139,6 +139,16 @@ extern Prim *prim_yield;
 // in __pyc__/05_builtins.py (issue 025: timsort, pylife).
 extern Prim *prim_id;
 #define P_prim_id 60
-// (indices 61/62 were prim_tuple_lt/prim_tuple_eq -- removed once tuple
+// (index 62 was prim_tuple_lt/prim_tuple_eq -- removed once tuple
 // __lt__/__eq__ became plain-Python constant-index folds, issue 069.)
+
+// issues/110: the DYNAMIC-LENGTH counterpart of prim_make. Given an
+// iterable, produce a tuple CreationSet whose generic ELEMENT is seeded
+// from that iterable's element, rather than one field per fixed
+// argument. Populating the element is what makes tuple_able() false, so
+// clone.cc lays the CreationSet out as a list -- variable length, known
+// element type -- which is the representation a dynamic `tuple(xs)`
+// needs and which shedskin spells `tuple<T>`. Reuses freed index 61.
+extern Prim *prim_make_seq;
+#define P_prim_make_seq 61
 #endif

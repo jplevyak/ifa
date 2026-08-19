@@ -1958,6 +1958,35 @@ static void add_send_constraints(PNode *p, EntrySet *es) {
       case P_prim_make:
         prim_make_constraints(p, es);
         break;
+      case P_prim_make_seq: {
+        // issues/110: make_seq(kind, src) -- a container of `kind` with
+        // NO fixed arity, whose generic element is seeded from `src`'s
+        // element. This is prim_make's dynamic-length counterpart:
+        // make_kind fills cs->vars one per argument, which names a fixed
+        // arity; here there are no per-index vars at all, only the
+        // element. Populating it is exactly what makes tuple_able()
+        // false, so clone.cc gives the CreationSet LIST LAYOUT.
+        AVar *container = make_AVar(p->lvals[0], es);
+        Sym *kind = p->rvals[2]->sym;
+        AVar *src = make_AVar(p->rvals[3], es);
+        CreationSet *cs = creation_point(container, kind);
+        AVar *elem = get_element_avar(cs);
+        if (elem) {
+          // every element type the source can yield flows into ours
+          for (CreationSet *scs : src->out->sorted) {
+            AVar *selem = get_element_avar(scs);
+            if (selem) flow_vars(selem, elem);
+            // NOTE deliberately NOT flowing scs->vars (a record-shaped
+            // source's per-index vars) into the element: those AVars are
+            // CS-contoured, and feeding them into an element var trips
+            // compute_setters' `x->contour_is_entry_set` assertion
+            // (measured: genetic2_idioms aborts the compiler). A source
+            // that is a fixed-arity tuple therefore contributes no
+            // element type here -- see the issue for that gap.
+          }
+        }
+        break;
+      }
       case P_prim_vector:
         prim_make_vector_constraints(p, es);
         break;

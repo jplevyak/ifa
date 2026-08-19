@@ -59,6 +59,7 @@ Prim *prim_typeof_element = 0;
 Prim *prim_is = 0;
 Prim *prim_await = 0;
 Prim *prim_copy = 0;
+Prim *prim_make_seq = 0;  // issues/110
 Prim *prim_yield = 0;
 Prim *prim_id = 0;
 
@@ -307,6 +308,15 @@ void prim_init(Primitives *p, IF1 *if1) {
   n = (char *)if1->strings.put((char *)"make");
   p->prims.add(prim_make);
   p->prim_map[0][0].put(n, prim_make);
+  // issues/110: make_seq(kind, iterable) -- a container of `kind` whose
+  // element type is the iterable's element type, with no fixed arity.
+  static PrimType prim_make_seq_arg_types[] = {PRIM_TYPE_ANY, PRIM_TYPE_ANY};
+  static PrimType prim_make_seq_ret_types[] = {PRIM_TYPE_ANY};
+  prim_make_seq =
+      new Prim(61, "make_seq", "prim_make_seq", -3, 0, 1, prim_make_seq_arg_types, prim_make_seq_ret_types, 0);
+  n = (char *)if1->strings.put((char *)"make_seq");
+  p->prims.add(prim_make_seq);
+  p->prim_map[0][0].put(n, prim_make_seq);
   static PrimType prim_vector_arg_types[] = {PRIM_TYPE_ANY};
   static PrimType prim_vector_ret_types[] = {PRIM_TYPE_ANY};
   prim_vector = new Prim(37, "make_vector", "prim_vector", -2, 0, 1, prim_vector_arg_types, prim_vector_ret_types, 0);

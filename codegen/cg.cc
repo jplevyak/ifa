@@ -337,6 +337,18 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
   switch (n->prim->index) {
     default:
       return 0;
+    case P_prim_make_seq: {
+      // issues/110: copy the source's storage into a fresh container of
+      // the result's type. Both are `_CG_prim_tuple_list` shaped -- cg
+      // builds every tuple with a real list header precisely so the
+      // generic runtime path works -- so the list slicer is the copy.
+      cchar *ety = c_type(n->lvals[0]->type && n->lvals[0]->type->element ? n->lvals[0]->type->element->type
+                                                                          : nullptr);
+      fprintf(fp, "  %s = (_CG_list)_CG_list_getslice(%s, sizeof(%s), 0, _CG_prim_len(0,%s), 1);\n",
+              cg_get_string(n->lvals[0]), cg_get_string(n->rvals[3]), ety ? ety : "void*",
+              cg_get_string(n->rvals[3]));
+      break;
+    }
     case P_prim_make: {
       // ifa/issues/104: declared before either branch so the tuple branch
       // may `goto Llist`. That jump is the mirror of the existing
