@@ -1001,9 +1001,56 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         fprintf(stderr, "[sizeof] type='%s' kind=%d has=%d in fun=%s members=",
                 t->name ? t->name : "<anon>", (int)t->type_kind, t->has.n, f->sym->name ? f->sym->name : "?");
         for (Sym *m : t->has)
-          fprintf(stderr, " %s(kind=%d,elem=%d)", m && m->name ? m->name : "<anon>", m ? (int)m->type_kind : -1,
-                  (m && m->element) ? 1 : 0);
+          fprintf(stderr, " %s(kind=%d,elem=%d,esz=%d,eus=%d,has=%d)", m && m->name ? m->name : "<anon>",
+                  m ? (int)m->type_kind : -1, (m && m->element) ? 1 : 0,
+                  (m && m->element && m->element->type) ? m->element->type->size : -1,
+                  (m && m->element) ? resolve_uniform_size(m->element->type) : -1, m ? m->has.n : -1);
         fprintf(stderr, "\n");
+      }
+      // ifa/issues/109: `t` itself may be a UNION OF CONTAINER TYPES --
+      // sunfish slices a receiver typed `tuple | tuple`, two distinct
+      // record-shaped tuples that differ only in arity. The SUM has no
+      // `element` of its own, but the question sizeof_element asks still
+      // has an answer: the element slot must hold any member's element,
+      // so ONE size works exactly when every member agrees on it. That is
+      // the same reasoning resolve_uniform_size already applies to a
+      // union ELEMENT type, lifted one level to a union CONTAINER type.
+      if (!t->element && t->type_kind == Type_SUM && t->has.n) {
+        int usz = 0;
+        bool uniform = true;
+        for (Sym *m : t->has) {
+          if (!m) continue;
+          int msz = 0;
+          if (m->element) {
+            msz = m->element->type ? m->element->type->size : 0;
+            if (!msz) msz = resolve_uniform_size(m->element->type);
+          }
+          // a record-shaped member (a fixed-arity tuple) stores its
+          // fields directly; they must agree too, which for `tuple<T>`
+          // built from one element type they do.
+          if (!msz && m->type_kind == Type_RECORD && m->has.n) {
+            for (Sym *fld : m->has) {
+              if (!fld || !fld->type) { uniform = false; break; }
+              int fsz = fld->type->size ? fld->type->size : resolve_uniform_size(fld->type);
+              if (!fsz) { uniform = false; break; }
+              if (!msz) msz = fsz;
+              else if (msz != fsz) { uniform = false; break; }
+            }
+          }
+          // An EMPTY container imposes no constraint: sunfish's union is
+          // {tuple(64 fields), tuple(0 fields)} because `sum(gen, ())`
+          // seeds with the empty tuple. `()` has no elements, so it has
+          // no element size to agree about -- skip it rather than
+          // treating it as a conflict.
+          if (!msz && m->type_kind == Type_RECORD && m->has.n == 0) continue;
+          if (!uniform || !msz) { uniform = false; break; }
+          if (!usz) usz = msz;
+          else if (usz != msz) { uniform = false; break; }
+        }
+        if (uniform && usz) {
+          fprintf(fp, "%d;\n", usz);
+          break;
+        }
       }
       if (!t->element)
         fail("%s:%d: internal: sizeof_element of non-container type '%s' (in %s) -- FA specialized a container "

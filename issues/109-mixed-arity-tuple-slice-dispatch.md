@@ -344,3 +344,55 @@ information the splitter cannot safely use.
 Both flags are off by default (`PYC_SIZEOF_VIOL`, `PYC_RECVFAN`);
 default is **275 passed / 15 known / 0 failed**, `sunfish` and `plcfrs`
 unchanged at `rc=1`.
+
+## FIXED: the element type is the union of the components' — and codegen can use it
+
+The observation that unblocked it: for a receiver typed
+`tuple | tuple`, the element slot must hold *any* member's element, so
+**one size is correct exactly when every member agrees on it**. The sum
+having no `element` of its own does not make the question unanswerable.
+
+That is the same reasoning `resolve_uniform_size` already applies to a
+union ELEMENT type; it just had to be lifted one level, to a union
+CONTAINER type. `cg.cc` now does that before failing.
+
+### The empty tuple was the real blocker
+
+`PYC_DBG_SIZEOF` showed the union is not two same-shaped tuples:
+
+```
+members= tuple(kind=3,elem=1,esz=0,eus=0,has=64)   <- 64 fields
+         tuple(kind=3,elem=1,esz=0,eus=0,has=0)    <- ZERO fields
+```
+
+The second member is `()`, from `sunfish`'s `sum(gen, ())`. An **empty
+container has no elements, so it has no element size to agree about** —
+counting it as a conflict is what failed the uniformity test. It is now
+skipped, which is a statement about empty containers rather than a
+special case for this program.
+
+### Result
+
+| | |
+|---|---|
+| **`sunfish`** | compile error → **compiles** |
+| corpus, 77 programs | **the only exit-code change is `sunfish` 1 → 0** |
+| `violations` / `ess` / `css` | **byte-identical on all 72 programs that reach FA** |
+| suite | 275 passed / 15 known / 0 failed |
+
+No annotation and no hack: codegen answers the question it was already
+asking, from information it already had.
+
+### Still open
+
+`sunfish` now aborts at *runtime* — `matching function not found` at a
+different site — so it is past the type-representation wall but not
+finished. That is [102](102-corpus-programs-compile-then-abort-at-runtime.md)
+class B (a dispatch pyc cannot discriminate), and it is a separate
+problem from this issue.
+
+The two failed approaches above (widening the receiver fan, and recording
+a `sizeof_element` violation so backward splitting fires) are left
+documented and off by default. They remain the *right* architecture for
+the general case; this fix resolves the specific question codegen was
+asking without needing either.
