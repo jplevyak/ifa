@@ -201,6 +201,7 @@ CreationSet::CreationSet(CreationSet *cs)
       no_static_arity(0), atype(nullptr), equiv(nullptr), type(nullptr) {
   sym = cs->sym;
   no_static_arity = cs->no_static_arity;  // issues/110: durable, so splits inherit it
+  seq_src.copy(cs->seq_src);              // issues/110: durable source memory too
   // ifa/issues/066: durable lineage, collapsed to the root as we go.
   split_origin = cs->split_origin ? cs->split_origin : cs;
   id = fa->creation_set_id++;
@@ -1985,8 +1986,20 @@ static void add_send_constraints(PNode *p, EntrySet *es) {
           // measured: genetic2_idioms aborts the compiler). vector_elems
           // lands each value in a fresh entry-set-contoured tval of this
           // pnode first, so every edge reaching elem starts at an ES var.
+          // src->out is a per-pass snapshot like everything else, and a
+          // single pass where it reads empty would discard every element
+          // edge built below (measured: correct on pass 3, empty on pass
+          // 4 -- the last -- so the element ended bottom). Remember the
+          // last NON-EMPTY set on the CreationSet and drive the loop
+          // from that. Sound over-approximation: the element is a union,
+          // so keeping a source that has genuinely gone away can only
+          // widen it, never drop a type that is still live.
+          if (src->out->sorted.n) {
+            cs->seq_src.clear();
+            for (CreationSet *scs : src->out->sorted) cs->seq_src.add(scs);
+          }
           int slot = 0;
-          for (CreationSet *scs : src->out->sorted) {
+          for (CreationSet *scs : cs->seq_src) {
             AVar *selem = get_element_avar(scs);
             if (selem) vector_elems(0, p, selem, elem, container, slot++);
             // A LITERAL source has a bottom generic element -- that is

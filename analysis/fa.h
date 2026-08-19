@@ -252,6 +252,15 @@ class CreationSet : public gc {
   // of HOW the container was made, so it is known at constraint time and
   // cannot be lost to a pass-ordering race.
   uint no_static_arity : 1;
+  // issues/110: the source CreationSets make_seq last saw NON-EMPTY.
+  // `src->out` is a per-pass snapshot like everything else, and a
+  // single pass where it reads empty would otherwise discard every
+  // element edge the constraint had built -- measured: correct on
+  // pass 3, empty on pass 4 (the last), element bottom. Remembering
+  // the last non-empty set is a sound over-approximation: the element
+  // is a union, so keeping a source that has genuinely gone away can
+  // only widen it, never drop a type that is still live.
+  Vec<CreationSet *> seq_src;
   Vec<AVar *> defs;
   AType *atype;  // the type that this creation set belongs to
   Vec<AVar *> vars;
