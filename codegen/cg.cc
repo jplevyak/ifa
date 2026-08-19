@@ -449,7 +449,16 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       } else {
         for (int i = 0; i < obj->has.n; i++) {
           if (symbol == obj->has[i]->name && cg_field_live(obj, i)) {
-            assert(cg_get_string(n->lvals[0]));
+            // issues/047: a DEAD destination has no name, and this
+            // asserted rather than diagnosing -- pyc aborted (SIGABRT)
+            // on ordinary Python. The read itself is pure (a struct
+            // field access), so with nothing to assign it to there is
+            // simply nothing to emit; P_prim_index_object's record
+            // branch already skips on the same `cg_get_string(lvals[0])`
+            // condition. Reached when FA leaves the destination contour
+            // untyped -- two setter METHODS writing sibling fields of
+            // one record, tests/method_setter_field_pair_compiler_abort.
+            if (!cg_get_string(n->lvals[0])) goto Lgetter_found;
             // issues/048: mirror of the setter guard below. The field is
             // read at its DECLARED type and cast to the destination's, so
             // a `_CG_void` field feeding a `_CG_float64` destination is
