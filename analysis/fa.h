@@ -244,6 +244,14 @@ class CreationSet : public gc {
   uint added_element_var : 1;
   uint closure_used : 1;
   uint tuple_able : 1;
+  // issues/110: this container was created by make_seq, so its length is
+  // a RUNTIME value and it has no per-index vars at all. Everything that
+  // reads `vars.n` as an arity must consult this first -- P_prim_len was
+  // folding len() to the constant 0, and tuple_able() was electing RECORD
+  // layout with zero members. Unlike the element type, this is a property
+  // of HOW the container was made, so it is known at constraint time and
+  // cannot be lost to a pass-ordering race.
+  uint no_static_arity : 1;
   Vec<AVar *> defs;
   AType *atype;  // the type that this creation set belongs to
   Vec<AVar *> vars;

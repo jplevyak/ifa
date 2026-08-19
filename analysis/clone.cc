@@ -652,6 +652,10 @@ static int tuple_as_list_enabled() {
 
 static bool tuple_able(CreationSet *cs) {
 #ifdef CONVERT_LISTS_TO_TUPLES
+  // issues/110: a make_seq container has no per-index vars, so RECORD
+  // layout would give it zero members -- the empty record behind both
+  // "incomplete type 'void'" and "runtime error: bad getter".
+  if (cs->no_static_arity) return false;
   AVar *elem = get_element_avar(cs);
   return elem && elem->out == fa->type_world.bottom_type;
 #else

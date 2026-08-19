@@ -188,6 +188,7 @@ CreationSet::CreationSet(Sym *s)
       added_element_var(0),
       closure_used(0),
       tuple_able(0),
+      no_static_arity(0),
       atype(nullptr),
       equiv(nullptr),
       type(nullptr) {
@@ -197,8 +198,9 @@ CreationSet::CreationSet(Sym *s)
 
 CreationSet::CreationSet(CreationSet *cs)
     : dfs_color(DFS_white), added_element_var(0), closure_used(0), tuple_able(0),
-      atype(nullptr), equiv(nullptr), type(nullptr) {
+      no_static_arity(0), atype(nullptr), equiv(nullptr), type(nullptr) {
   sym = cs->sym;
+  no_static_arity = cs->no_static_arity;  // issues/110: durable, so splits inherit it
   // ifa/issues/066: durable lineage, collapsed to the root as we go.
   split_origin = cs->split_origin ? cs->split_origin : cs;
   id = fa->creation_set_id++;
@@ -1970,6 +1972,7 @@ static void add_send_constraints(PNode *p, EntrySet *es) {
         Sym *kind = p->rvals[2]->sym;
         AVar *src = make_AVar(p->rvals[3], es);
         CreationSet *cs = creation_point(container, kind);
+        cs->no_static_arity = 1;
         AVar *elem = get_element_avar(cs);
         if (elem) {
           // Every element type the source can yield flows into ours.
@@ -2919,8 +2922,8 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
         for (CreationSet *cs : t->out->sorted) {
           AVar *elem = get_element_avar(cs);
           if (elem) elem->arg_of_send.add(result);
-          if ((elem && elem->out != fa->type_world.bottom_type) || sym_string->specializers.set_in(cs->sym) ||
-              sym_bytes->specializers.set_in(cs->sym))
+          if (cs->no_static_arity || (elem && elem->out != fa->type_world.bottom_type) ||
+              sym_string->specializers.set_in(cs->sym) || sym_bytes->specializers.set_in(cs->sym))
             rtype = type_union(rtype, fa->type_world.size_type);
           else
             rtype = type_union(rtype, make_size_constant_type(cs->vars.n));
