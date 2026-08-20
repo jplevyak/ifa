@@ -198,6 +198,19 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
   Builder->SetInsertPoint(main_entry_bb);
 
   {
+    // ifa/issues/051: initialise the collector FIRST, mirroring the C
+    // backend's MEM_INIT(). GC_INIT registers the static data segment
+    // as roots; without it the module globals emitted below are not
+    // scanned and objects reachable only from them are collected while
+    // live (use-after-free, surfacing as a crash inside GC).
+    llvm::FunctionType *gc_init_ty = llvm::FunctionType::get(llvm::Type::getVoidTy(*TheContext), {}, false);
+    llvm::Function *gc_init_fn = TheModule->getFunction("_CG_gc_init");
+    if (!gc_init_fn)
+      gc_init_fn = llvm::Function::Create(gc_init_ty, llvm::Function::ExternalLinkage, "_CG_gc_init", TheModule.get());
+    Builder->CreateCall(gc_init_fn, {});
+  }
+
+  {
     llvm::FunctionType *set_argv_ty = llvm::FunctionType::get(llvm::Type::getVoidTy(*TheContext), {i64_ty, ptr_ty}, false);
     llvm::Function *set_argv_fn = TheModule->getFunction("_CG_set_argv");
     if (!set_argv_fn)
