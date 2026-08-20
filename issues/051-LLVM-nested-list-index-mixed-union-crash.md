@@ -124,13 +124,63 @@ allocation and the heap is corrupted before the crash surfaces.
   concatenated" do not reproduce; the mixed `{list, cube_state}`
   element union is required as well.
 
+## It is GC memory corruption (2026-08-20) — still NOT fixed
+
+The breakpoint comparison worked. `_CG_list_add` is called 12 times in
+both builds; the first eleven are identical. The twelfth — the BFS
+`self.route + [move]` — differs:
+
+| call #12 | `total_len` | `len` | `ptr` |
+|---|---|---|---|
+| good | 0 | 0 | `l1` ✓ |
+| **bad** | `0xf7deb9f1` | `0x00007fff` | `l1` ✓ |
+
+The `ptr` field is intact and self-pointing, but the two length words
+before it hold the value `l1 + 1`. `len` = 32767 × 8 bytes is the
+262KB allocation, and the segfault follows inside GC.
+
+A hardware watchpoint on that word catches GC itself writing there —
+`GC_build_fl_clear4`, then `GC_clear_fl_marks(q=0x2 <cannot access>)`
+inside `GC_finish_collection`. **Boehm's own free list is corrupt.**
+
+### The decisive measurement
+
+    ./w2                        rc=139   (segfault, no output)
+    GC_DONT_GC=1 ./w2           rc=0     0 1 1   correct
+    GC_INITIAL_HEAP_SIZE=512M   rc=0     0 1 1   correct
+
+Remove collection and the program is correct. So this is memory
+corruption interacting with the collector — either an object collected
+while live, or an out-of-bounds write that only matters once GC threads
+free lists through the same memory. **`GC_DONT_GC=1` cannot tell those
+two apart**, which is the current impasse.
+
+### Hypotheses tested and REJECTED
+
+- **Missing `GC_INIT` in the LLVM main.** Real asymmetry — the C
+  backend calls `MEM_INIT()`, the LLVM backend called nothing — and it
+  is now fixed (`7cb32ac1`). It does **not** fix this: the crash is
+  unchanged with the call emitted and `GC_init` linked. Linux's lazy
+  init already registers the data-segment roots.
+- **Empty lists returning a one-past-the-end pointer.**
+  `_CG_prim_tuple_list_internal(8, 0)` does `GC_MALLOC(0 + 16)` and
+  returns `base + 16`, exactly past its own allocation, which Boehm
+  need not treat as a reference. Padding it to a minimum of one data
+  byte changes nothing. (Left unfixed — the concern may still be real,
+  but nothing here demonstrates it.)
+- **Interior pointers.** `GC_ALL_INTERIOR_POINTERS=0` and `=1` both
+  still crash.
+
 ### Next step
 
-Find what `self.route` actually holds at the first BFS `apply_move`.
-The reliable way, given buffering and the perturbation problem, is a
-debugger breakpoint on `_CG_list_add` in the reduced repro
-(`scratchpad/r51/w2.py` shape) comparing `l1`'s header under the two
-settings — not more source-level probing.
+Distinguish premature collection from an out-of-bounds write, which
+`GC_DONT_GC` cannot. Options: build bdwgc with `GC_DEBUG` and use
+`GC_MALLOC_DEBUG`-style redzones on the list allocations, or register
+the suspect list with `GC_general_register_disappearing_link` and see
+whether it is cleared (proving collection). If it is NOT collected,
+hunt the writer with a watchpoint set on the list's `len` word
+immediately after `_CG_prim_tuple_list_internal` returns it — the
+address is stable across runs (`0x7ffff7deb9f0` here).
 
 ## Lesson for the closure notes
 
