@@ -53,11 +53,84 @@ Inside `__list_iter__.__next__`, inlined into `__main__`, on the
   and not the nested `affected_cubies[face][i]` read the original
   symptom pointed at: the crash is on the plain `states` iteration.
 
-So a bogus VALUE reaches `thelist`, in a module whose IR is internally
-consistent. The two builds differ in which contour clones exist (the
-IR diff is ~1000 lines, mostly renumbering), so the next step is to
-find which clone of `__iter__`/`__next__` the `states` loop actually
-binds to under NOMARK and what it was handed.
+So a bogus VALUE reaches the list, in a module whose IR is internally
+consistent.
+
+## Narrowed further 2026-08-20 (still NOT fixed)
+
+### The trigger is one line
+
+Delta-reduced to 36 lines (line-minimal), then narrowed by hand. With
+the BFS cut to a single level it still crashes, so it is the FIRST
+`cur_state.apply_move()` — the ten warm-up `apply_move` calls before it
+are fine. And deleting exactly one line makes the crash disappear:
+
+```python
+state.route = []        # <- remove this and NOMARK=1 runs correctly
+```
+
+An **empty list literal assigned to a record field**, which is then
+used in `self.route + [move]` inside the merged `apply_move`. So this
+sits with the empty-container representation family (ifa/072), not
+with nested indexing as the title says.
+
+### Which clones merged
+
+`PYC_NOMARK=1` gives strictly fewer clones. On the reduced program:
+
+    funid   good  bad
+    10530   4     3     cube_state::__init__
+    10555   2     1     cube_state::apply_move
+    10829   4     3     __new__
+
+The C backend gets the SAME merged counts (3 / 1 / 3) and still runs
+correctly, which is what proves this is codegen and not inference.
+
+In the bad build `_CG_f_10530_34` (a 3-arg `__init__`) is DEFINED but
+has no call site at all; the good build calls it. That may be harmless
+dead code or may be the thread to pull.
+
+### Symptom mechanics
+
+`_CG_list_add` (from `self.route + [move]`) asks GC for **262176
+bytes** for a `route` of length ≤ 10, and the segfault lands later
+inside `GC_finish_collection` — i.e. a bad length reaches the
+allocation and the heap is corrupted before the crash surfaces.
+
+### Ruled out mechanically (all identical between the two builds)
+
+- call/definition arity across the whole module
+- the list header layout and its offsets (`ptr` at `l-8`, `len` at
+  `l-12`, matching `_CG_list_struct` and `_CG_LIST_HDR_*`)
+- element sizes passed to `_CG_list_add` / `_CG_getslice` /
+  `_CG_list_resize` / `_CG_list_mult` (all `i64 8`)
+- empty-list construction sizes (`_CG_prim_tuple_list_internal(i32 8,
+  i32 0)`)
+- the `cube_state` struct type and the field indices used for `route`
+  (15 and 16 in both)
+- valgrind reports no invalid read/write in generated code (its output
+  is otherwise drowned by the conservative GC's deliberate
+  uninitialised-stack reads)
+
+### What did not work as an investigation route
+
+- **Truncating the program** to inspect intermediate state: removing
+  later code changes inference, and the truncated version reports
+  `len(state.state) == 0` under BOTH settings. Any probe that deletes
+  code is measuring a different program.
+- **Printing from inside the loop**: stdout is buffered and lost on
+  the segfault, so absence of output proves nothing.
+- **Hand-written minimal repros** of "empty list into a field, then
+  concatenated" do not reproduce; the mixed `{list, cube_state}`
+  element union is required as well.
+
+### Next step
+
+Find what `self.route` actually holds at the first BFS `apply_move`.
+The reliable way, given buffering and the perturbation problem, is a
+debugger breakpoint on `_CG_list_add` in the reduced repro
+(`scratchpad/r51/w2.py` shape) comparing `l1`'s header under the two
+settings — not more source-level probing.
 
 ## Lesson for the closure notes
 
