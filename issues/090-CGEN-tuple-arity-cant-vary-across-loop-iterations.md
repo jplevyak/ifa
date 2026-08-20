@@ -225,3 +225,72 @@ be known before step 2 — the information exists (`v->avars`), it is
 simply consulted a phase later. Note the scan must reach module-level
 globals: `t` is one, and globals are not in any Fun's `fa_all_Vars`,
 which is why the per-Fun version of the pass found nothing.
+
+
+## Fix attempted in three stages — two work, the third does not (2026-08-20)
+
+Acting on the analysis above, the fix was built and measured stage by
+stage against repro 1 under `PYC_MAKESEQ=1 PYC_TUPLE_AS_LIST=1`. All of
+it is REVERTED; this records exactly how far it got.
+
+### Stage 1 — mark the Var, not the group ✅
+
+A pass before `set_tuple_able` walking each Var **across its contours**
+(the same nesting `concretize_var_type` uses) and marking every tuple
+CreationSet `no_static_arity` when their arities differ:
+
+    [marity] var 'self': tuple cs=948  arity=0 -> list layout
+    [marity] var 'self': tuple cs=1009 arity=2 -> list layout
+
+Both CreationSets take LIST layout. **The loop nesting is the whole
+trick**: a first version scanned *within* one AVar's type and matched
+nothing at all, because the arities live in different AVars of one Var,
+never in one type. (A variant scanning all 587 CreationSets' `atype`
+also matched nothing, for the same reason.)
+
+### Stage 2 — derive the element from the per-index vars ✅
+
+Stage 1 alone produces `error: incompatible integer to pointer
+conversion assigning to '_CG_void_type' from '_CG_int64'`. A tuple
+forced to list layout has real per-index vars but a **bottom generic
+element** — `make` fills the vars and leaves the element alone, which is
+the tuple_able design. `compute_member_types` derives the element from
+that bottom, so the list gets a `void*` element.
+
+Taking the union of `cs->vars` instead when the CreationSet is
+`no_static_arity` fixes it; the C compiles.
+
+### Stage 3 — make the groups share one type ❌
+
+Still `runtime error: matching function not found`. Each group is
+cloned into its OWN concrete Sym, so the Var's type is *still* a
+`Type_SUM` — now of two list-layout tuples instead of two records. No
+improvement at the call site.
+
+Merging the groups before type assignment was then implemented:
+`merge_multi_arity_tuple_groups` folds every group holding a member of
+one recorded set into a single group. This needs two supporting
+changes, both of which were made and both of which are correct:
+
+- every per-group loop must tolerate an **empty** group, since merging
+  empties rather than compacts (otherwise `get_sym_tup` returns a null
+  sym and `clone()` segfaults the compiler);
+- `compute_member_types`' `assert(!n || n == cs->vars.n)` must allow a
+  mixed-arity group when it is `no_static_arity`, filling only the
+  element and no `has` slots — and neither lookup (`get_element_avar`,
+  `cs->vars[i]`) is guaranteed for every member any more.
+
+With all of that, the compiler no longer crashes and repro 1 still
+fails identically. Something downstream of the merge continues to see
+two candidates; that was not chased further.
+
+### Where the next attempt should start
+
+Stages 1 and 2 are believed right and are cheap to re-create from the
+description above. Stage 3 is the open question: **why merging the
+CreationSet groups does not collapse the call site's candidate set.**
+Look at what `f->calls` holds for the `__add__` pnode after the merge,
+and whether the per-arity `__add__` clones (which FA made, per contour,
+before any of this runs) are what actually need collapsing — in which
+case the group merge is treating a symptom and the real lever is
+upstream in cloning, not in layout.
