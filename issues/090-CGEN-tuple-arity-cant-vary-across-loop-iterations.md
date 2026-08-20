@@ -1,7 +1,8 @@
 # 090 — a variable whose tuple arity (or None-vs-tuple shape) changes across loop iterations can't resolve a call site
 
-**Status:** open — **still reproduces 2026-08-20, and the symptoms
-have got WORSE**; see "Re-measured" below. Found 2026-08-08 while diagnosing
+**Status:** repro 1 **FIXED** 2026-08-20 (`370c8806`); repro 2 still
+open. The "arity" framing was wrong for repro 1 — see "What repro 1
+actually was" below. Symptoms re-measured 2026-08-20; see "Re-measured" below. Found 2026-08-08 while diagnosing
 [issues/025](../../issues/025-shedskin-examples-coverage.md)'s TODO
 list item 4 (sunfish's blocker — the doc's own "`sizeof_element of
 non-container type` internal fail in `__add__`" claim is **stale**;
@@ -294,3 +295,71 @@ and whether the per-arity `__add__` clones (which FA made, per contour,
 before any of this runs) are what actually need collapsing — in which
 case the group merge is treating a symptom and the real lever is
 upstream in cloning, not in layout.
+
+
+## What repro 1 actually was — not arity (2026-08-20)
+
+```python
+t = ()
+for i in range(3):
+    t = t + (i, i+1)
+```
+
+`tuple.__add__` built a **list** and returned it (the old compromise:
+a fixed-arity struct cannot concatenate at runtime). So `t` was a
+`{tuple, list}` UNION — two different classes at one call site — and
+that is what could not resolve. The varying arity was incidental.
+
+Measured directly, before any fix: the two tuple CreationSets
+**already shared one concrete type** (identical Sym pointer). The
+receiver `_:?` in the dispatch trace was the tuple/list union, not a
+union of two arities.
+
+`make_seq` removes the constraint the compromise was built around — it
+yields a tuple whose arity IS a runtime value (issues/110) — so
+`tuple.__add__` now returns a tuple. Repro 1 prints
+`(0, 1, 1, 2, 2, 3)`, matching CPython, **with no analysis change at
+all**.
+
+### The three-stage layout work above was chasing the wrong thing
+
+Stages 1 and 2 (mark a Var's tuple CreationSets across contours; derive
+the element from the per-index vars) are real and do what they say, but
+they were **not needed**: reverting all of them and keeping only the
+one-line `__add__` change fixes repro 1 on its own. Stage 3 failed
+because there was nothing to merge — the types were already identical.
+
+Kept in this file as a record of a wrong turn, not as work to resume.
+The lesson is narrow and worth stating: **the dispatch probe printed
+`r1=_:?` and I read "union of two arities" into it without checking
+what was in the union.**
+
+### What landed
+
+- `tuple.__add__` returns a tuple via `make_seq`.
+- The LLVM backend gained a `make_seq` case; it had none, so the shared
+  dispatcher fell through to a generic `_CG_prim_<name>` external and
+  the link failed with an undefined `_CG_prim_make_seq`. That was
+  invisible while make_seq was reachable only behind `PYC_MAKESEQ`.
+
+Two known issues resolved at DEFAULT settings, both being
+`(0,) + tuple(...) + (0,)` — sunfish's `padrow` shape:
+`tests/tuple_from_iterable_is_list` (issues/110) and
+`tests/tuple_arity_union_slice` (ifa/issues/109).
+
+    C backend      285 passed / 0 failed   (was 283)
+    LLVM backend   285 passed / 0 failed
+    corpus         70 compiled / 7 failed of 77, per-program identical
+
+## Repro 2 is still open and is a DIFFERENT mechanism
+
+```python
+move = None
+while move not in gen_moves():
+    move = (1, 2)
+```
+
+still prints `None` on both backends where CPython prints `(1, 2)`,
+with `warning: unresolved call '__not__'`. That is a `{None, tuple}`
+receiver reaching `__contains__`/`__not__`, not a tuple/list union and
+not an arity problem. It remains sunfish's blocker (line 448).
