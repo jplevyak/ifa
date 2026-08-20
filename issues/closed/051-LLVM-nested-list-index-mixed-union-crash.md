@@ -1,6 +1,69 @@
 # 051 — LLVM backend: nested list indexing crashes when the outer list's element type is a mixed Type_SUM
 
-**Status: REOPENED 2026-08-20 — REGRESSED.** Was closed 2026-08-06 after
+**Status: FIXED 2026-08-20 (`c77045b7`).** Reopened earlier the same
+day after regressing; root-caused and fixed. Original reopen notes
+follow.
+
+## The fix
+
+`emit_send_call` routes actuals by MPosition and bailed out of the
+WHOLE call when `value_for_var` returned no value for one:
+
+```cpp
+llvm::Value *val = value_for_var(ctx, actual);
+if (!val) return;          // emitted nothing at all
+```
+
+That happens for the **defaulted argument of a call that omits it** --
+`cube_state(state)` against `__init__(self, state, route=None)`. The C
+backend emits a literal 0 there (`_CG_f_10530_34(t1, t2, 0)`); the LLVM
+backend emitted no call, so `__new__` allocated the object, memcpy'd
+the prototype, and **never ran `__init__`**.
+
+The chain from there: the object kept the prototype's null fields, so
+`self.state` was NULL, `self.state[:]` produced a zero-length list, and
+`apply_move` stored at element 26 of it -- 208 bytes past a 16-byte
+allocation, into the neighbouring list's header. That list's `len` read
+back as 32767, `list.__add__` asked GC for 262KB, and the process died
+inside `GC_finish_collection` with Boehm's free list corrupt. Not one
+diagnostic anywhere along the way.
+
+Now the formal's zero value is substituted, matching the C backend.
+
+    C backend      283 passed / 0 failed / 16 known  (unchanged)
+    LLVM backend   283 passed / 0 failed / 16 known  (was 282 / 1)
+    LLVM corpus    58 compiled / 19 failed, measured with AND without
+                   the change -- identical
+
+**The two backends now agree on every test in the suite.**
+
+### Why NOMARK exposed it
+
+The bug is older than `8cc8434f` and has nothing to do with marks.
+Coarser contours changed which `__new__`/`__init__` clone that
+construction bound to, and the clone it landed on is the one that needs
+the defaulted argument synthesised. `cube_state::__init__` goes 4
+clones -> 3 under NOMARK; the C backend gets the same counts and was
+always correct, which is what pointed at codegen.
+
+### What actually found it
+
+Six probes, in order, each ruling out the previous guess:
+line-granularity delta reduction to 36 lines; cutting the BFS to one
+level (still crashes, so it is the first iteration); deleting
+`state.route = []` (crash disappears); a gdb breakpoint comparing
+`_CG_list_add`'s twelfth call between builds (headers differ); a
+hardware watchpoint on the clobbered word (**generated code**, not GC,
+writes it); and finally a breakpoint on the store itself, which showed
+a length-0 destination being written at index 26.
+
+The decisive step was the watchpoint: it moved the diagnosis from
+"premature collection" to "out-of-bounds write", which `GC_DONT_GC=1`
+had been unable to distinguish.
+
+**Original reopen notes follow.**
+
+### Reopen header (2026-08-20) Was closed 2026-08-06 after
 being verified fixed; it came back, and the closure notes below are what
 made the return easy to miss.
 
