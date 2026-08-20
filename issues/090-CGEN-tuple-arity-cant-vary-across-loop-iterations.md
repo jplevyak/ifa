@@ -161,3 +161,67 @@ change at all.
 
 Not bisected: no attempt was made here to find which commit turned the
 `fail` into a warning.
+
+
+## Why loop-carried variables are "special" — they are not (2026-08-20)
+
+pyc CAN represent a tuple of runtime arity: a CreationSet whose
+`tuple_able()` is false takes LIST layout, the same "unknown arity,
+known element type" representation a list has (issues/110). So why does
+a loop-carried variable not get it?
+
+**Because the decision is made one phase too early, and at the wrong
+granularity.** Measured on repro 1:
+
+    [tupgrp] group=449 size=1 cs=948  arity=0 elem=bottom able=1
+    [tupgrp] group=458 size=1 cs=1009 arity=2 elem=bottom able=1
+
+Two CreationSet groups, each of size **1**. The escape hatch lives in
+`get_sym_tup`:
+
+```cpp
+if (n < 0) n = cs->vars.n;
+else if (n != cs->vars.n) tup = false;   // differing arity -> not a record
+```
+
+— and it only fires when the differing arities are in the **same
+group**. `()` and `(i, i+1)` are two creation sites, so two groups,
+each internally uniform (one arity, unpopulated element), each
+independently electing RECORD.
+
+### The two arities never meet until it is too late
+
+A cross-group pass was written to catch exactly this: scan for any type
+holding two tuple CreationSets of differing arity and mark them
+`no_static_arity`. It marked **nothing** — first over every Fun's
+`fa_all_Vars` (71 funs), then over every CreationSet's own `atype`
+(587 CreationSets). There is no such type at that point.
+
+The reason is `concretize_var_type`, which runs AFTER
+`define_concrete_types`:
+
+```cpp
+for (int i = 0; i < v->avars.n; i++)          // across CONTOURS
+  for (CreationSet *cs : *v->avars[i].value->out)
+    if (sym != cs->type) { type = new_Sym(); type->type_kind = Type_SUM; ... }
+```
+
+FA keeps the arities apart per contour; the `Type_SUM` that forces one
+static type on `t` is **manufactured here**, after layout is already
+fixed. That is the `_:?` receiver the dispatch probe reports, with one
+`__add__` clone per arity and nothing to discriminate on.
+
+### So the ordering is the defect, not the representation
+
+1. FA — the two arities live in separate contours, never in one AType.
+2. `define_concrete_types` — record-vs-list chosen **per CreationSet
+   group**; each group sees one arity and picks RECORD.
+3. `concretize_var_type` — merges the per-contour types into a
+   `Type_SUM`. First moment anyone knows `t` needs both.
+
+A fix does not need the representational change this issue originally
+assumed. It needs the arity spread of a **Var across its contours** to
+be known before step 2 — the information exists (`v->avars`), it is
+simply consulted a phase later. Note the scan must reach module-level
+globals: `t` is one, and globals are not in any Fun's `fa_all_Vars`,
+which is why the per-Fun version of the pass found nothing.
