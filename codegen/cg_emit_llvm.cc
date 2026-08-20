@@ -3390,7 +3390,6 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
   if (!target || !target->cg_string) return;
   llvm::Function *target_fn =
       TheModule->getFunction(target->cg_string);
-
   if (!target_fn) return;
 
   // Closure detection: rvals[0] is a closure receiver when
@@ -3447,6 +3446,29 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
     if (!actual) continue;
     llvm::Value *val = value_for_var(ctx, actual);
     if (!val) {
+      // ifa/issues/051: an actual with no materialisable value is the
+      // DEFAULTED argument of a call that omits it -- `cube_state(s)`
+      // against `__init__(self, state, route=None)`. The C backend
+      // emits a literal 0 for it (`_CG_f_10530_34(t1, t2, 0)`).
+      //
+      // This used to `return`, abandoning the ENTIRE call and emitting
+      // nothing at all: __new__ allocated the object, memcpy'd the
+      // prototype, and never ran __init__. The object kept the
+      // prototype's null fields, so `self.state` was NULL, `self.state[:]`
+      // produced a zero-length list, and apply_move then stored at
+      // element 26 of it -- 208 bytes past a 16-byte allocation, into
+      // the neighbouring list's header. The program corrupted the heap
+      // and crashed inside GC, with no diagnostic anywhere.
+      //
+      // Substitute the formal's zero value, matching the C backend.
+      // Only when the position is real: falling off the end of the
+      // signature is a different bug and still bails.
+      unsigned idx = (unsigned)args.size();
+      llvm::FunctionType *fty = target_fn->getFunctionType();
+      if (idx < fty->getNumParams()) {
+        args.push_back(llvm::Constant::getNullValue(fty->getParamType(idx)));
+        continue;
+      }
       return;
     }
     args.push_back(val);
