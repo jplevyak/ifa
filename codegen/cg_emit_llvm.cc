@@ -1903,8 +1903,54 @@ static bool emit_send_new(EmitCtx &ctx, PNode *pn) {
 //      _CG_prim_tuple_list_internal(sizeof(elem), n) → dst,
 //      then per-index GEP+Store for rvals[3..].
 
+// issues/110 / ifa/issues/090: make_seq -- a container of `kind` with
+// no fixed arity, copied from `src`. The C backend emits
+//
+//   dst = (_CG_list)_CG_list_getslice(src, sizeof(elem), 0, len(src), 1)
+//
+// and the LLVM backend had no case at all, so the shared dispatcher
+// fell through to the generic `_CG_prim_<name>` external and the link
+// failed with an undefined `_CG_prim_make_seq`. That was invisible
+// while make_seq was only reachable behind PYC_MAKESEQ; making
+// tuple.__add__ use it put the prim in EVERY program.
+//
+// A full slice with the sentinel bounds is the copy -- _CG_list_getslice
+// clamps them to the list, which is exactly how `[:]` is already
+// emitted -- so no separate length read is needed here.
+static bool emit_send_make_seq(EmitCtx &ctx, PNode *pn) {
+  if (!pn || !pn->prim || pn->prim->index != P_prim_make_seq) return false;
+  if (pn->lvals.n < 1 || pn->rvals.n < 4) return false;
+  Var *dst_var = pn->lvals.v[0];
+  if (!dst_var || !dst_var->type) return false;
+  llvm::Value *src = value_for_var(ctx, pn->rvals.v[3]);
+  if (!src) return false;
+
+  llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+  llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
+  const llvm::DataLayout &DL = TheModule->getDataLayout();
+
+  uint64_t esz = 8;
+  Sym *dt = dst_var->type;
+  if (dt && dt->element && dt->element->type) {
+    llvm::Type *et = sym_to_llvm_type(dt->element->type);
+    if (et && et->isSized()) esz = DL.getTypeAllocSize(et);
+  }
+
+  llvm::FunctionType *gs_ty = llvm::FunctionType::get(ptr_ty, {ptr_ty, i64, i64, i64, i64}, false);
+  llvm::Function *gs = TheModule->getFunction("_CG_list_getslice");
+  if (!gs)
+    gs = llvm::Function::Create(gs_ty, llvm::Function::ExternalLinkage, "_CG_list_getslice", TheModule.get());
+  llvm::Value *res = Builder->CreateCall(gs, {src, llvm::ConstantInt::get(i64, esz),
+                                              llvm::ConstantInt::get(i64, INT32_MIN),
+                                              llvm::ConstantInt::get(i64, INT32_MAX),
+                                              llvm::ConstantInt::get(i64, 1)});
+  put_result(ctx, dst_var, res);
+  return true;
+}
+
 bool emit_send_make(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim) return false;
+  if (pn->prim->index == P_prim_make_seq) return emit_send_make_seq(ctx, pn);
   if (pn->prim->index != P_prim_make) return false;
   if (pn->lvals.n < 1 || pn->rvals.n < 3) return false;
   if (!pn->rvals.v[2] || !pn->rvals.v[2]->sym) return false;
