@@ -1,6 +1,7 @@
 # 090 — a variable whose tuple arity (or None-vs-tuple shape) changes across loop iterations can't resolve a call site
 
-**Status:** open, found 2026-08-08 while diagnosing
+**Status:** open — **still reproduces 2026-08-20, and the symptoms
+have got WORSE**; see "Re-measured" below. Found 2026-08-08 while diagnosing
 [issues/025](../../issues/025-shedskin-examples-coverage.md)'s TODO
 list item 4 (sunfish's blocker — the doc's own "`sizeof_element of
 non-container type` internal fail in `__add__`" claim is **stale**;
@@ -102,3 +103,61 @@ loop, both idiomatic, common shapes (flatten-via-`sum`, "no selection
 yet" sentinel-then-loop). More generally, any program that grows a
 tuple's arity across loop iterations or lets a loop-carried variable's
 type span `None`/tuple.
+
+
+## Re-measured 2026-08-20 — the clean rejection is gone
+
+The underlying limitation is unchanged: a loop-carried variable that
+needs more than one concrete tuple-family type still cannot resolve.
+What changed is what pyc *does* about it. Both repros used to be a
+clean compile-time `fail`. Neither is now.
+
+| repro | filed 2026-08-08 | C backend now | LLVM backend now | CPython |
+|---|---|---|---|---|
+| 1, arity grows in a loop | compile-time `fail` | compiles, **runtime abort** | compiles, **prints nothing** | `(0, 1, 1, 2, 2, 3)` |
+| 2, `None`-or-tuple | compile-time `fail` | compiles, **prints `None`** | compiles, **prints `None`** | `(1, 2)` |
+
+Repro 2 is now a **silent wrong answer on both backends** — the worst
+of the three possible outcomes, and the one this issue's own
+verification plan explicitly rules out:
+
+> Both repros above should either compile and match CPython, or (if
+> ruled architecturally infeasible) get a clean, documented,
+> compile-time diagnostic explaining why, rather than the generic
+> "unable to resolve to a single function at call site" message.
+
+### Why repro 2 prints `None`
+
+The dispatch does not fail loudly any more, it degrades. pyc reports
+
+    sunfish.py:448: warning: unresolved call '__not__'
+
+and carries on. `move not in gen_moves()` therefore evaluates to
+something the loop body never runs on, `move` keeps its initial
+`None`, and `print(move)` faithfully prints it. The wrong answer is a
+direct consequence of a warning where there used to be an error.
+
+### sunfish
+
+Also changed: sunfish now **compiles** (rc=0, 6 warnings) where it
+used to fail, and aborts at runtime instead —
+
+    sunfish: assert(!"runtime error: matching function not found")
+
+so this is still its blocker, just relocated from compile time to run
+time. Line 448 is still the first site reported.
+
+### What to do about it
+
+The architectural question this issue raised — whether per-arity tuple
+types can accommodate a loop-carried variable at all — is untouched and
+still needs someone with FA context to make the call. But that question
+is now *separable* from a defect that is worth fixing regardless:
+**an unresolved call must not be downgraded to a warning that yields a
+silently wrong program.** Restoring the compile-time error for this
+shape would put both repros back on the "clean documented rejection"
+branch of the verification plan without needing the representational
+change at all.
+
+Not bisected: no attempt was made here to find which commit turned the
+`fail` into a warning.
