@@ -1,8 +1,77 @@
 # 051 — LLVM backend: nested list indexing crashes when the outer list's element type is a mixed Type_SUM
 
-**Status: CLOSED (Already Fixed / Resolved)** — verified 2026-08-06.
+**Status: REOPENED 2026-08-20 — REGRESSED.** Was closed 2026-08-06 after
+being verified fixed; it came back, and the closure notes below are what
+made the return easy to miss.
 
-### Resolution Summary
+## Regression, bisected
+
+`tests/list_element_type_union.py` segfaults again under `-b` (rc=139,
+no output at all — it dies before the first `print`). `git bisect` over
+the 195 commits since the closure, with a probe that builds, compiles
+under `-b`, runs, and compares to the recorded output:
+
+    first bad commit: 8cc8434f
+    "ifa: enable PYC_NOMARK by default -- provenance is not contour identity"
+
+Confirmed directly on today's HEAD:
+
+| | LLVM backend |
+|---|---|
+| `PYC_NOMARK=1` (the default since 8cc8434f) | **segfault** |
+| `PYC_NOMARK=0` | `0 15 16 / 1 125 141 / 2 576 717` ✓ |
+
+The C backend compiles the same FA output correctly under BOTH settings,
+so this is not the mark change producing wrong types — it is an LLVM
+codegen assumption that the coarser contour partitioning violates.
+
+## Where it dies
+
+Inside `__list_iter__.__next__`, inlined into `__main__`, on the
+`for cur_state in states:` loop of the BFS:
+
+```
+=> mov (%rdx,%rcx,8),%rax     rdx = 0x8, rcx = 0
+   mov %rax, cur_state
+```
+
+`__next__` loads the list data pointer from `thelist - 8` and gets `8`
+— i.e. `thelist` (field 6 of the iterator) is not a list. Address
+`0x8` is a null base plus the header offset.
+
+## What has been RULED OUT
+
+- **Not an arity/signature mismatch.** Every `call` in the emitted
+  module matches its callee's definition, in both the good and bad
+  builds (checked mechanically across the whole module).
+- **Not the iterator's layout.** `%__list_iter__` is the same type in
+  both builds; the constructor stores `thelist` at field 6 and
+  `__next__` reads field 6 in both.
+- **Not the `states` construction.** Identical IR in both builds —
+  `_CG_prim_tuple_list_internal` then `_CG_to_list_runtime`.
+- **Not `sizeof_element`** (the original 2026-07-18 filing's suspicion),
+  and not the nested `affected_cubies[face][i]` read the original
+  symptom pointed at: the crash is on the plain `states` iteration.
+
+So a bogus VALUE reaches `thelist`, in a module whose IR is internally
+consistent. The two builds differ in which contour clones exist (the
+IR diff is ~1000 lines, mostly renumbering), so the next step is to
+find which clone of `__iter__`/`__next__` the `states` loop actually
+binds to under NOMARK and what it was handed.
+
+## Lesson for the closure notes
+
+The 2026-08-06 closure said "already resolved by subsequent codegen and
+dispatch fixes" without identifying WHICH fix. Nothing then pinned the
+behaviour except the test itself — and the test is `.exec.check`-verified
+only on the C backend path in `make test-e2e`'s first phase. The LLVM
+phase's failure sat in the second summary, which is easy not to read
+(see the note in the test-status memory). **A closure that cannot name
+the fix cannot tell you when it comes undone.**
+
+### Original closure text (2026-08-06), kept for the record
+
+#### Resolution Summary
 Re-testing revealed that this bug was already resolved by subsequent codegen and dispatch fixes (such as augmented-assign to subscript handling and `sizeof_element` for non-record boxed unions).
 
 `tests/list_element_type_union.py` now compiles and executes cleanly on both the C backend and the LLVM backend (`./pyc -b`), producing output matching CPython byte-for-byte (`0 15 16\n1 125 141\n2 576 717`). Added `tests/list_element_type_union.py.exec.check` to promote it from a compile-only test to a fully execution-verified test in the suite.
