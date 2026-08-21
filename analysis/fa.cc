@@ -1956,6 +1956,39 @@ static void add_send_constraints(PNode *p, EntrySet *es) {
         for (int i = 3; i < p->rvals.n; i++) {
           AVar *r = make_AVar(p->rvals[i], es);
           flow_vars(r, es->rets[i - 3]);
+          // issues/114: a GENERATOR's return may never be a singleton
+          // constant, however certain FA is of the value.
+          //
+          // For every other function, "FA proved the return is 5" and
+          // "the C call produces 5" are the same statement. For a
+          // generator they are not: the backends discard the emitted
+          // return entirely and hand back the coroutine handle instead
+          // (cg.cc's `return (%s)(uintptr_t)__g_1014.handle.address()`,
+          // and cg_emit_llvm.cc's counterpart), while fn->ret carries
+          // whatever the body's yields and returns put there -- a type
+          // channel, not a value. So a body that yields ONE constant
+          // (`yield 1`, then a raise or a fall-through) looked like a
+          // function certain to return 1, and dead.cc's get_constant
+          // let every consumer inline that literal in place of the
+          // handle: the generator object was built around the address
+          // 1 and the first resume segfaulted, with nothing visibly
+          // wrong in the emitted C.
+          //
+          // Unioning in the constant's own abstract type is enough --
+          // two distinct CreationSets is exactly what get_constant
+          // refuses to fold -- and it costs nothing else: the widened
+          // arm is the type the constant already had. Done here rather
+          // than at the fold because SSU gives the call's result and
+          // each later use separate Vars AND separate Syms, so there is
+          // no single downstream thing to exempt; the type is.
+          //
+          // Same root as issues/022's P_prim_await liveness exception:
+          // a coroutine handle is not a value the optimizer may reason
+          // about through its contents.
+          if (es->fun->sym->is_generator)
+            for (CreationSet *cs : r->out->sorted)
+              if (cs->sym->is_constant && cs->sym->type)
+                update_gen(es->rets[i - 3], make_abstract_type(cs->sym->type));
         }
         break;
       case P_prim_make:
