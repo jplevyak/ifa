@@ -2935,7 +2935,19 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
         for (CreationSet *cs : t->out->sorted) {
           AVar *elem = get_element_avar(cs);
           if (elem) elem->arg_of_send.add(result);
-          if (cs->no_static_arity || (elem && elem->out != fa->type_world.bottom_type) ||
+          // issues/114: a CreationSet with NO DEFS was not built by any
+          // creation site in this program -- it is abstract, or
+          // synthesised for the result of an opaque `__pyc_c_call__`
+          // (a generator's value channel is exactly that). Its
+          // `vars.n` is 0 because nothing ever filled it, NOT because
+          // the container is empty, so folding len() to 0 is simply
+          // wrong. Measured: a tuple arriving through a generator had
+          // correct contents -- `len(x)` and `x[0]` were right at the
+          // use site -- but inside tuple::__eq__, whose formal carries
+          // the synthesised CS, `len(self)` folded to 0, so the very
+          // first `n != len(t)` check returned False and `x == (1, 2)`
+          // was silently False for a tuple that WAS (1, 2).
+          if (cs->no_static_arity || !cs->defs.n || (elem && elem->out != fa->type_world.bottom_type) ||
               sym_string->specializers.set_in(cs->sym) || sym_bytes->specializers.set_in(cs->sym))
             rtype = type_union(rtype, fa->type_world.size_type);
           else

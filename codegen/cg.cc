@@ -33,12 +33,16 @@ static void write_c_fun_proto(FILE *fp, Fun *f, int type = 0) {
     fputs("_CG_Coroutine", fp);
   else if (f->sym->is_generator)
     // issues/014: the real coroutine mechanics live in a local lambda
-    // inside this function's body (write_c below); the function
-    // itself is ordinary from here out, returning the raw coroutine
-    // handle as a plain int64 -- regardless of what FA inferred for
-    // f->rets[0] (see gen_fun_pyda's comment on the int64-typed
-    // default reply this relies on).
-    fputs("_CG_int64", fp);
+    // inside this function's body (write_c below); the function itself
+    // is ordinary from here out, returning the raw coroutine handle.
+    //
+    // issues/114: emit FA's INFERRED type rather than a hardcoded
+    // _CG_int64. fn->ret now carries the yielded types (each `yield`
+    // moves its value in), which is how __pyc_generator__ types its
+    // value channel per generator instead of pinning it to int. The
+    // returned value is still the handle -- a machine word -- so the
+    // tail in write_c casts it to whatever this type is.
+    fputs(c_type(f->rets[0]), fp);
   else
     fputs(c_type(f->rets[0]), fp);
   if (type)
@@ -2465,7 +2469,9 @@ static void write_c(FILE *fp, FA *fa, Fun *f, Vec<Var *> *globals = 0) {
   if (f->sym->is_generator) {
     fputs("  });\n", fp);
     fputs("  _CG_Generator __g_1014 = (*__coro_1014)();\n", fp);
-    fputs("  return (_CG_int64)(uintptr_t)__g_1014.handle.address();\n", fp);
+    // issues/114: cast to the function's own (FA-inferred) return
+    // type, which is no longer necessarily _CG_int64.
+    fprintf(fp, "  return (%s)(uintptr_t)__g_1014.handle.address();\n", c_type(f->rets[0]));
   }
   fputs("}\n", fp);
 }
