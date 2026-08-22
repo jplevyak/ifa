@@ -735,7 +735,7 @@ convergence problem:**
 
 A third bug fell out of the narrowing: `write_c_prim` **aborts the
 compiler** on a nameless primitive destination (`cg.cc:389`), filed as
-[issues/047](../../issues/047-cg-nameless-lvalue-assert-on-prim.md).
+[issues/047](../../issues/closed/047-cg-nameless-lvalue-assert-on-prim.md).
 
 ### Per-splitter demonstration tests, and three stages nothing triggers (2026-08-15)
 
