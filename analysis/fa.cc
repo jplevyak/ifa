@@ -33,6 +33,19 @@ int write_code_exit = 0;
 int analysis_pass = 0;
 FA *fa = nullptr;
 static Timer pass_timer, match_timer, extend_timer;
+// ifa/issues/111: selective (closure-scoped) per-pass invalidation
+// instead of clear_results()'s full from-bottom reset. Default OFF --
+// M2 landed this switch and the differential harness BEFORE any
+// behaviour change, deliberately: the failure mode that matters here
+// is silent precision drift, not a crash, so the equivalence check has
+// to exist before there is anything to check.
+//
+// File-local rather than an EXTERN in common/fail.h beside ifa_narrow:
+// adding a global there makes ifa-test pull main.o out of libifa_gc.a
+// to resolve it, which then collides on log_tag and wants
+// compile_one_file. Nothing outside fa.cc needs to see this.
+static int ifa_selective = 0;
+
 // ifa/issues/111 M1: EntrySets whose incoming-edge set changed this
 // pass. `es->split` alone is NOT the full seed: split_edges signals
 // `again` on a REDISPATCH (`ee->to != old`), which retargets an
@@ -9060,8 +9073,8 @@ static void analyze_to_convergence() {
     // otherwise drive flow passes forever.
   } while ((extend_analysis() || if1->callback->reanalyze(fa->type_violations)) && analysis_pass <= fa->pass_limit);
   if (getenv("PYC_DBG_OSC"))
-    fprintf(stderr, "OSC final_pass=%d pass_limit_hit=%d violations=%d ess=%d css=%d\n", analysis_pass,
-            fa->pass_limit_hit ? 1 : 0, fa->type_violations.set_count(), fa->ess.n, fa->css.n);
+    fprintf(stderr, "OSC final_pass=%d pass_limit_hit=%d violations=%d ess=%d css=%d selective=%d\n", analysis_pass,
+            fa->pass_limit_hit ? 1 : 0, fa->type_violations.set_count(), fa->ess.n, fa->css.n, ifa_selective);
 }
 
 int FA::analyze(Fun *top) {
@@ -9069,6 +9082,10 @@ int FA::analyze(Fun *top) {
   // ifa/issues/074: the stall guard SUPPRESSES the splitter for the rest
   // of the run once it fires, so its limit decides whether a program is
   // "non-convergent" or merely slow. Overridable so that can be measured.
+  // ifa/issues/111: read here, beside the other FA loop knobs, so the
+  // differential harness can flip it per run without a rebuild. M2:
+  // the flag exists and is reported; it changes nothing until M3.
+  if (cchar *sv = getenv("IFA_SELECTIVE")) ifa_selective = atoi(sv);
   if (cchar *sl = getenv("IFA_STALL_LIMIT")) stall_limit = atoi(sl);
   if (cchar *nl = getenv("IFA_NONIMPROVE_LIMIT")) nonimprove_limit = atoi(nl);
   if (!global_es) {

@@ -1,6 +1,6 @@
 # 111 — every FA pass re-derives the whole program from bottom, so a pass that changes nothing costs full price
 
-**Status:** open, filed 2026-08-22. **M1 DONE — green, proceed to M2.**
+**Status:** open, filed 2026-08-22. **M1 DONE (green). M2 DONE — harness landed, and it found a compiler bug on its first run.**
 **Affects:** `ifa/analysis/fa.cc` — `clear_results` / `clear_avar` /
 `clear_es` / `clear_cs` / `clear_edge`, `analyze_to_convergence`,
 `extend_analysis`, `run_split_stages` / `clear_splits`.
@@ -105,11 +105,11 @@ last pass. Hence:
   decides whether the rest is worth building**: if closures are
   routinely near-total (one split landing on a shared builtin would do
   it), stop here.
-- [ ] **M2 — differential harness, BEFORE any behaviour change.**
-  `IFA_SELECTIVE=0|1`; run both on the same program; assert identical
-  final `ess` / `css` / `violations` / emitted C. Corpus + both suites.
-  Built first because the failure mode that matters is silent precision
-  drift, not a crash.
+- [x] **M2 — differential harness, BEFORE any behaviour change.** DONE
+  2026-08-22: `ifa/tests/selective_diff.sh`, `IFA_SELECTIVE` flag
+  (file-local in fa.cc, default 0, reported on the `PYC_DBG_OSC` line so
+  a run can prove the flag reached FA). Result below — including
+  ifa/issues/112, which the harness found immediately.
 - [ ] **M3 — selective clear.** Closure-scoped clear; seed the worklist
   with affected ESs' edges instead of `top_edge`. Hazards, each needing
   an explicit answer:
@@ -191,6 +191,41 @@ the single point where `e->to` changes, into `fa_pass_retargeted`
 this vec as well as from `->split`, or it will preserve state that a
 redispatch invalidated — a silent precision bug of exactly the ifa/098
 family.
+
+### 2026-08-22 — M2: harness landed, and the control earned its keep
+
+`ifa/tests/selective_diff.sh [-q] <prog>... | --corpus` compiles each
+program under `IFA_SELECTIVE=0` and `=1` and compares exit code, FA's
+converged state (`final_pass` / `violations` / `ess` / `css` via
+`PYC_DBG_OSC`) and the emitted C byte for byte.
+
+`IFA_SELECTIVE` is a **no-op at M2** by design, so the run is a control:
+any divergence means the COMPILER is not reproducible, which would make
+this harness useless at M3.
+
+**It found exactly that on its first corpus run.** `msp_ss` emitted
+different C on two identical invocations — same FA state
+(`violations=454 ess=891 css=2726`), same 40211 lines, but temps
+renumbered and one getter relocated between functions. Filed as
+[112](112-CGEN-nondeterministic-emitted-c.md).
+
+That drove two design corrections worth recording, because the naive
+harness would have been actively misleading at M3:
+
+1. **A determinism control is mandatory, not nice-to-have.** Each
+   program is compiled under sel=0 TWICE. Without it every unstable
+   program reads as a regression caused by the change under test, and
+   points the investigation at the wrong code.
+2. **One control run is not enough — 112 is INTERMITTENT.** The first
+   version reported msp_ss as a genuine divergence because its two
+   sel=0 runs happened to agree. The harness now ESCALATES: on a C
+   mismatch it runs two further sel=0 compiles before concluding, and
+   only calls it a divergence if all four agree with each other. Cost
+   is paid only when there is something to explain.
+
+Unstable programs are reported `UNSTABLE` and compared on FA state
+alone, which is reproducible for msp_ss and is the property M3 most
+needs to preserve anyway.
 
 ## Verification plan
 
