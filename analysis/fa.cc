@@ -33,6 +33,14 @@ int write_code_exit = 0;
 int analysis_pass = 0;
 FA *fa = nullptr;
 static Timer pass_timer, match_timer, extend_timer;
+// ifa/issues/111 M1: EntrySets whose incoming-edge set changed this
+// pass. `es->split` alone is NOT the full seed: split_edges signals
+// `again` on a REDISPATCH (`ee->to != old`), which retargets an
+// existing edge to an ALREADY-EXISTING EntrySet -- no new contour, no
+// split mark. Both the old and new target lose/gain an input, so both
+// (and their forward closures) are invalidated. Cleared by
+// clear_splits() alongside the split marks.
+static Vec<EntrySet *> fa_pass_retargeted;
 
 static int application(PNode *p, EntrySet *es, AVar *fun, CreationSet *s, Vec<AVar *> &args, Vec<cchar *> &names,
                        int is_closure, Partial_kind partial, PNode *visibility_point, Vec<CreationSet *> *closures);
@@ -1189,6 +1197,8 @@ static void set_entry_set(AEdge *e, EntrySet *es = 0) {
     new_es = new EntrySet(e->match->fun);
     e->match->fun->ess.add(new_es);
   }
+  if (e->to && e->to != new_es) fa_pass_retargeted.set_add(e->to);  // ifa/111 M1: old target
+  if (new_es) fa_pass_retargeted.set_add(new_es);                   // ifa/111 M1: new target
   e->to = new_es;
   new_es->edges.put(e);
   if (new_es->fun->sym->nesting_depth) update_display(e, new_es);
@@ -7264,6 +7274,7 @@ static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Ve
 static void clear_splits() {
   for (EntrySet *es : fa->ess) es->split = 0;
   for (CreationSet *cs : fa->css) cs->split = 0;
+  fa_pass_retargeted.clear();  // ifa/issues/111 M1
 }
 
 // NOTE deliberately takes no confluence input: the loop's first
@@ -7986,6 +7997,68 @@ static int cpa_enabled() {
   return analyze_again;
 }
 
+// ifa/issues/111 M1: how much of the program does a pass's splitting
+// actually invalidate?
+//
+// Selective invalidation is only worth building if the answer is
+// "a small fraction". The soundness rule it would rest on (see the
+// issue) is: a split ES's AVars must reset to bottom, because a split
+// REFINES and the intra-pass fixed point only ever GROWS -- so must
+// everything transitively reachable via `forward`, since a value
+// derived from the old, wider one would never shrink. Everything else
+// has unchanged inputs and could be preserved.
+//
+// So the closure measured here IS the set the fix would have to clear.
+// Seed: contours this pass split. `clear_splits()` zeroes es->split /
+// cs->split at the top of run_split_stages, and splitting sets them,
+// so immediately after it returns those marks are exactly this pass's
+// changes -- no new bookkeeping.
+//
+// Probe only: walks the graph, prints, changes nothing. Enable with
+// IFA_DBG_CLOSURE=1.
+static void probe_invalidation_closure() {
+  if (!getenv("IFA_DBG_CLOSURE")) return;
+
+  // Every AVar that exists, and the seed set in one walk.
+  Vec<AVar *> all, seed;
+  Vec<void *> split_contours;
+  for (EntrySet *es : fa->ess) if (es->split) split_contours.set_add((void *)es);
+  for (CreationSet *cs : fa->css) if (cs->split) split_contours.set_add((void *)cs);
+  int n_marked = split_contours.count();
+  for (EntrySet *es : fa_pass_retargeted) if (es) split_contours.set_add((void *)es);
+  int n_retarget = split_contours.count() - n_marked;
+
+  auto collect = [&](Var *v) {
+    for (int i = 0; i < v->avars.n; i++) {
+      if (!v->avars[i].key) continue;
+      AVar *av = v->avars[i].value;
+      all.add(av);
+      if (split_contours.set_in(av->contour)) seed.add(av);
+    }
+  };
+  for (Sym *sy : fa->pdb->if1->allsyms) if (sy->var) collect(sy->var);
+  for (Fun *f : fa->pdb->funs) for (Var *v : f->fa_all_Vars) collect(v);
+  // A split CreationSet's own field AVars live on the CS, not on a Var.
+  for (CreationSet *cs : fa->css) if (cs->split)
+    for (AVar *av : cs->vars) if (av) seed.add(av);
+
+  // Forward closure: BFS over av->forward, the same graph
+  // flow_var_to_var maintains for every value flow (including edge
+  // args/rets). Intact here because clear_avar has not run yet.
+  Vec<AVar *> reached, work;
+  for (AVar *av : seed) if (reached.set_add(av)) work.add(av);
+  int head = 0;
+  while (head < work.n) {
+    AVar *av = work.v[head++];
+    for (AVar *nx : av->forward) if (nx && reached.set_add(nx)) work.add(nx);
+  }
+
+  int n_all = all.n, n_seed = seed.n, n_closure = reached.count();
+  fprintf(stderr, "CLOSURE pass=%d marked=%d retargeted=%d seed_avars=%d closure=%d all=%d pct=%d\n",
+          analysis_pass, n_marked, n_retarget, n_seed, n_closure, n_all,
+          n_all ? (int)((double)n_closure * 100.0 / (double)n_all) : 0);
+}
+
 [[nodiscard]] static int extend_analysis() {
   int analyze_again = 0;
   extend_timer.restart();
@@ -8023,6 +8096,7 @@ static int cpa_enabled() {
     }
   }
   if (!fa->pass_limit_hit) analyze_again = run_split_stages();
+  probe_invalidation_closure();  // ifa/issues/111 M1 (IFA_DBG_CLOSURE)
   extend_timer.stop();
   if (analyze_again) {
     // Divergence (stall) guard. Split decisions are not idempotent

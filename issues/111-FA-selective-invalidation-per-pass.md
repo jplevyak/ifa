@@ -1,6 +1,6 @@
 # 111 — every FA pass re-derives the whole program from bottom, so a pass that changes nothing costs full price
 
-**Status:** open, filed 2026-08-22. **M1 in progress.**
+**Status:** open, filed 2026-08-22. **M1 DONE — green, proceed to M2.**
 **Affects:** `ifa/analysis/fa.cc` — `clear_results` / `clear_avar` /
 `clear_es` / `clear_cs` / `clear_edge`, `analyze_to_convergence`,
 `extend_analysis`, `run_split_stages` / `clear_splits`.
@@ -99,7 +99,7 @@ last pass. Hence:
 
 ## Milestones
 
-- [ ] **M1 — measure the closure. No behaviour change.** After
+- [x] **M1 — measure the closure. No behaviour change.** DONE 2026-08-22, result below: median 0%, p90 3%, max 16%. After
   `run_split_stages()`, walk `forward` from the split ESs'/CSs' AVars;
   report `|closure| / |all AVars|` per pass. Corpus sweep. **This number
   decides whether the rest is worth building**: if closures are
@@ -143,6 +143,54 @@ last pass. Hence:
   `/home/jplevyak/projects/shedskin` via PYTHONPATH — the installed
   `~/bin/shedskin` is broken (`ModuleNotFoundError`). Single runs, not
   averaged.
+
+### 2026-08-22 — M1 result: GREEN (median 0%, p90 3%, max 16%)
+
+`probe_invalidation_closure()` (fa.cc, `IFA_DBG_CLOSURE=1`) walks
+`av->forward` from the seed after `run_split_stages()` and reports
+`|closure| / |all AVars|`. Seven programs, 254 passes:
+
+    program   passes  pct=0  median  max   worst pass (closure/all)
+    amaze         43     27       0    9   p9:   5553/58441
+    bh            50     46       0    8   p4:   3079/37779
+    chull         56     52       0    7   p13:  2755/38278
+    hq2x          15     11       0   16   p6:  15644/95854
+    msp_ss        35     28       0    8   p9:  12730/157827
+    rdb           29     16       0   11   p8:  18494/163304
+    rubik         26     22       0   10   p8:  13190/127306
+
+    TOTAL 254 passes; pct=0 on 202 (79%); median 0%; p90 3%; max 16%.
+
+**79% of passes invalidate nothing at all, and no pass anywhere
+exceeded 16%.** The feared case — a split landing on a shared builtin
+and dirtying the world — does not occur in this corpus.
+
+hq2x's expensive tail is the sharpest illustration:
+
+    pass 11  3.35s  closure=6      of 99994 AVars
+    pass 12  3.39s  closure=3      of 100045
+    pass 13  3.31s  closure=0      of 100049
+    pass 14  3.26s  closure=0      of 100837
+
+Four passes, 13.3 s, to re-derive ~100 000 AVars when **at most six**
+could have changed.
+
+### M1 also corrected the seed set
+
+The plan above asserted `{es : es->split}` was the full seed. **It is
+not**, and the probe caught it: hq2x passes 8-13 reported ZERO split
+marks while still costing a full pass, and `reanalyze()` was not even
+reached (it is only consulted when `extend_analysis` returns 0). The
+missing path is `split_edges`, which sets `again = 1` on a **redispatch**
+(`ee->to != old`) — retargeting an existing edge to an ALREADY-EXISTING
+EntrySet. No contour is minted, so nothing is marked.
+
+Fixed by recording both the old and the new target in `set_entry_set()`,
+the single point where `e->to` changes, into `fa_pass_retargeted`
+(cleared by `clear_splits()` beside the split marks). M3 must seed from
+this vec as well as from `->split`, or it will preserve state that a
+redispatch invalidated — a silent precision bug of exactly the ifa/098
+family.
 
 ## Verification plan
 
