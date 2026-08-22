@@ -1,7 +1,7 @@
 # 112 — two identical pyc invocations emit different C
 
-**Status:** open, found 2026-08-22 while building ifa/issues/111's
-differential harness.
+**Status:** open, **root-caused** 2026-08-22 (see below); not yet
+fixed. Found while building ifa/issues/111's differential harness.
 **Affects:** codegen emission order (`ifa/codegen/cg.cc` and/or the
 clone ordering feeding it). NOT flow analysis — FA's converged state is
 reproducible on the affected program.
@@ -68,19 +68,75 @@ whatever is unordered lives downstream of the fixed point.
    codegen change to an unstable program cannot be distinguished from
    its own noise.
 
-## Suspected cause
+## Root cause (traced 2026-08-22)
 
-Iteration over a pointer-keyed hash container somewhere between clone
-and emission — the classic shape for this, and the one
+`ifa/optimize/cfg.cc:106` builds the reverse CFG edges with **`set_add`**:
+
+```c
+for (PNode *p : pn->cfg_succ) p->cfg_pred.set_add(pn);
+```
+
+A `set_add`-populated `Vec<T*>` iterates in **heap-layout order**
+(`vec.h` says so explicitly), and pointer values move run to run — so
+`cfg_pred` iteration order is nondeterministic. That is the same family
+as issue 035's `forward` open-hash set, which `propagate_out_change`
+already sorts around for exactly this reason.
+
+It reaches the emitted C through `Fun::collect_Vars` (`if1/fun.cc:111`),
+whose worklist walks `cfg_pred`:
+
+```c
+for (PNode *p : nodes->v[i]->cfg_pred) if (sv.set_add(p)) nodes->add(p);
+```
+
+so `vars` comes back in a run-dependent order. `cg.cc:2374` then numbers
+temporaries in exactly that order —
+
+```c
+snprintf(s, sizeof(s), "t%d", index++);
+```
+
+— which explains the renumbering. And the declarations are sorted
+afterwards by `defs.qsort(lt_type_id)`, a **type-id** comparison: for
+the many vars sharing a type id the sort is not a total order, so their
+relative order still falls back to the (nondeterministic) input order.
+That explains the reordering, and plausibly the relocated getter.
+
+## Fix direction
+
+Two candidates, deliberately not chosen yet — this was diagnosed while
+deciding whether to fix it before ifa/issues/111 M3, and the answer was
+no (see below).
+
+1. **Sort `cfg_pred` once after CFG construction.** Most fundamental:
+   any consumer of reverse-CFG order becomes deterministic. Also the
+   riskier one — dominators, liveness and inlining all read `cfg_pred`,
+   so this can shift emitted C broadly and needs its own full
+   re-verification.
+2. **Sort `vars` by id in `collect_Vars` before numbering.** Narrower,
+   fixes the naming and (with a tie-break added to `lt_type_id`) the
+   ordering, without touching analysis order.
+
+Option 2 is the smaller blast radius; option 1 is the honest fix. Decide
+with a measurement of how much emitted C option 1 moves.
+
+### Sequencing (2026-08-22)
+
+**Not fixed before ifa/issues/111 M3, on purpose.** Only 1 of 41 corpus
+programs measured so far is UNSTABLE, so 111's harness still covers
+~97% of the corpus, and for unstable programs it falls back to
+comparing FA state — which is precisely what M3 changes. Fixing this
+first means changing CFG or var ordering, which can move emitted C
+across many programs and would force re-baselining M1's measurements
+immediately before M3 perturbs FA. One change at a time.
+
+## Superseded suspicion (kept: it was right in family, wrong in place)
+
+First guess was clone/emission ordering — the shape
 [closed/035](closed/035-nondeterministic-codegen-clone-order.md) fixed
-before for clone order. `Vec::set_add`-populated vectors iterate in
-heap-layout order unless explicitly sorted (`vec.h` says so), and
-`fa.cc` already sorts in several places for exactly this reason
-(`qsort_by_id`, and issue 035's note in `propagate_out_change` about
-`forward` being an open-hash set).
-
-Not yet traced to the specific container. The `comTxRx` getter above is
-a concrete probe point.
+before. Right family (a `set_add`-populated `Vec` iterating in
+heap-layout order), wrong stage: it is the reverse-CFG edge set, built
+during CFG construction, well upstream of clone.
 
 ## Verification plan
 
