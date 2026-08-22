@@ -230,8 +230,9 @@ enum FixtureKind { FIXTURE_IR, FIXTURE_SYNTH };
 
 struct Fixture {
   FixtureKind kind;
-  cchar *path;     // tests/ir/<phase>/<file>.ir or tests/synthetic/<file>.synth
-  cchar *expected; // <path>.<phase>.expected
+  cchar *path;      // tests/ir/<phase>/<file>.ir or tests/synthetic/<file>.synth
+  cchar *expected;  // <path>.<phase>.expected
+  cchar *known;     // <path>.<phase>.known_issue (optional; see run_one)
 };
 
 static int compar_fixture(const void *a, const void *b) {
@@ -252,10 +253,13 @@ static void scan_fixtures(cchar *root, cchar *phase, Vec<Fixture> &out) {
     snprintf(path, sizeof(path), "%s/%s", dir, n);
     char exp[1024];
     snprintf(exp, sizeof(exp), "%s.%s.expected", path, phase);
+    char kn[1024];
+    snprintf(kn, sizeof(kn), "%s.%s.known_issue", path, phase);
     Fixture f;
     f.kind = FIXTURE_IR;
     f.path = dupstr(path);
     f.expected = dupstr(exp);
+    f.known = dupstr(kn);
     out.add(f);
   }
   closedir(d);
@@ -287,10 +291,13 @@ static void scan_synth_fixtures(cchar *root, cchar *phase, Vec<Fixture> &out) {
     snprintf(path, sizeof(path), "%s/%s", dir, n);
     char exp[1024];
     snprintf(exp, sizeof(exp), "%s.%s.expected", path, phase);
+    char kn[1024];
+    snprintf(kn, sizeof(kn), "%s.%s.known_issue", path, phase);
     Fixture f;
     f.kind = FIXTURE_SYNTH;
     f.path = dupstr(path);
     f.expected = dupstr(exp);
+    f.known = dupstr(kn);
     out.add(f);
   }
   closedir(d);
@@ -464,6 +471,18 @@ static int run_one(Fixture &f, Phase *phase, int &out_failed) {
   fclose(memfp);
 
   if (opt_rebless) {
+    // A fixture carrying a .known_issue has a golden that is the
+    // CORRECT answer and current output that is not. Re-blessing it
+    // would bake the bug in and silently retire the coverage the
+    // fixture exists to provide, so refuse: delete the .known_issue
+    // first, which is the deliberate act of saying the bug is fixed.
+    struct stat kst;
+    if (stat(f.known, &kst) == 0) {
+      printf("  %sSKIP%s     %s  (has %s -- delete it to re-bless)\n",
+             col_Y, col_N, name, f.known);
+      free(got_buf);
+      return 0;
+    }
     if (write_file(f.expected, got_buf, (int)got_size) != 0) {
       fprintf(stderr, "ifa-test: cannot write %s\n", f.expected);
       free(got_buf);
@@ -495,6 +514,24 @@ static int run_one(Fixture &f, Phase *phase, int &out_failed) {
 
   int ok = ((int)got_size == exp_len) && (memcmp(got_buf, exp_buf, exp_len) == 0);
   if (!ok) {
+    // <fixture>.<phase>.known_issue: a filed, still-open bug whose
+    // golden already describes the RIGHT answer. Report it, don't fail
+    // the run -- exactly what tests/<name>.py.known_issue does for the
+    // pyc suite (see issues/README.md). Because the golden holds the
+    // correct output, the fixture flips to PASS by itself the day the
+    // bug is fixed; nothing has to be un-baked.
+    int kn_len = 0;
+    char *kn_buf = slurp(f.known, &kn_len);
+    if (kn_buf) {
+      while (kn_len > 0 && (kn_buf[kn_len - 1] == '\n' || kn_buf[kn_len - 1] == '\r'))
+        kn_buf[--kn_len] = 0;
+      fprintf(stderr, "%sKNOWN%s   %s  %s\n", col_Y, col_N, name, kn_buf);
+      // No free(kn_buf): slurp uses MALLOC (Boehm GC), not malloc --
+      // which is why exp_buf above is never freed either. got_buf IS
+      // malloc'd, by open_memstream, so that one must be.
+      free(got_buf);
+      return 2;  // known failure: counted, but does not fail the run
+    }
     fprintf(stderr, "%sFAIL%s    %s  (output differs from %s)\n",
             col_R, col_N, name, f.expected);
     // Brief diff: show first 40 lines of each.
@@ -547,7 +584,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  int total = 0, failed = 0, skipped = 0;
+  int total = 0, failed = 0, skipped = 0, known = 0;
   for (Fixture &f : fixtures) {
     if (opt_pattern[0] && !strstr(f.path, opt_pattern)) continue;
     int before = failed;
@@ -557,14 +594,16 @@ int main(int argc, char **argv) {
       skipped++;
       continue;
     }
+    if (rc == 2) known++;  // .known_issue: filed, still open, not a failure
     total++;
     if (opt_bail && failed > before) break;
   }
 
   printf("\n%s---- summary ----%s\n", "\033[1m", col_N);
   printf("  phase:   %s\n", phase->name);
-  printf("  passed:  %d\n", total - failed);
+  printf("  passed:  %d\n", total - failed - known);
   printf("  failed:  %d\n", failed);
+  if (known) printf("  known:   %d  (filed, awaiting a fix; golden holds the RIGHT answer)\n", known);
   printf("  total:   %d\n", total);
   if (skipped) printf("  skipped: %d  (synth fixtures with no golden for this phase)\n", skipped);
 

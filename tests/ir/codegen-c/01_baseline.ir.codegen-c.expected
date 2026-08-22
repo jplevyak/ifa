@@ -1,6 +1,6 @@
 ;; phase: codegen-c
 
-(summary fa_rc=0 clone_rc=0 funs=1 bytes=338)
+(summary fa_rc=0 clone_rc=0 funs=1 bytes=341)
 
 ;; c-output (#include line stripped):
 
@@ -25,8 +25,9 @@ _CG_nil_type _CG_f_82_0/*__main__*/() {
   return 0;
 }
 
-int main(int argc, char *argv[]) { (void)argc; (void) argv;
+int main(int argc, char *argv[]) {
   MEM_INIT();
+  _CG_set_argv(argc, argv);
   _CG_f_82_0/*__main__*/();
   return 0;
 }

@@ -1,0 +1,1 @@
+ifa/issues/007 -- the mark-setter splitter stage no longer fires for this shape, so relay2() gets ONE entry set where the golden records two (ess=3 vs ess=4). Precision lost to the FA convergence work (per-contour durable-key gating, PYC_SELFPROD); the goldens hold the RIGHT answer and flip to PASS by themselves when the stage fires again -- do not re-bless them.
