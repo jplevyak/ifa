@@ -255,6 +255,20 @@ nothing is dirty, the splitter sees no progress, and the outer loop
 stops long before the analysis is actually done. This is a design
 problem, not a small bug.
 
+#### A note on the corpus harness run of 2026-08-22 — DISCARD IT
+
+A `--corpus` run was started during M2 and reported
+`compared 72 / diverged 34 / unstable 1`. **Those numbers are void.**
+The run was launched while `IFA_SELECTIVE` was still a no-op, and `pyc`
+was rebuilt underneath it several times while M3 was being written, so
+the later programs were compared against a half-implemented selective
+path. The 34 divergences are M3's own breakage, not an M2 result.
+
+Recorded because a stale log with a plausible-looking summary is worse
+than no log: the only defensible reading is that the pre-M3 portion
+agreed and found `msp_ss` unstable. A clean corpus control needs a
+stable binary, which means re-running it whenever M3 is next touched.
+
 ### Three things learned, each a constraint on the next attempt
 
 1. **Do not clear edge or ES containers — only AVars and constraint
