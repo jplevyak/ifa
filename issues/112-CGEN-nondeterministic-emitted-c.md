@@ -142,8 +142,26 @@ during CFG construction, well upstream of clone.
 
 - The three-run md5 check above yields one hash.
 - `ifa/tests/selective_diff.sh` reports `unstable: 0` corpus-wide.
-- A corpus-wide N-run reproducibility sweep, since msp_ss was found by
-  accident and the true population is unmeasured.
+- A corpus-wide N-run reproducibility sweep. **Done 2026-08-22** — see
+  "Population" below; re-run it to confirm a fix.
+
+## Population (measured 2026-08-22)
+
+Every corpus program compiled THREE times at default settings, emitted
+C compared. Three rather than two because this is intermittent — two
+runs can coincidentally agree, which is how the first version of
+ifa/111's harness mis-reported msp_ss as a flag divergence.
+
+    77 programs:  66 stable,  2 NONDETERMINISTIC,  9 skipped (do not compile)
+
+    msp_ss    3 distinct outputs of 3 runs   (always differs)
+    timsort   2 distinct outputs of 3 runs   (intermittent)
+
+So the blast radius is **2 of 68 compiling programs, ~3%** — small, and
+that is what justified sequencing this AFTER ifa/111 M3 rather than
+before it (see "Sequencing" above). `timsort` is the more informative
+of the two: at 2-of-3 it would pass a two-run determinism check about a
+third of the time, so any check for this must use three runs or more.
 
 ## What this unblocks
 
