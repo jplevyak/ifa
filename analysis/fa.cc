@@ -6343,6 +6343,95 @@ struct ClearVarFn {
 // analyze_to_convergence for why it now runs before EVERY pass rather
 // than only after a splitting one. Identity-carrying state that must
 // survive a pass is listed in clear_avar's comment.
+// ifa/issues/111 M3: the set the NEXT pass must clear. Computed here,
+// at end of pass, because clear_avar destroys `forward` -- by the time
+// analyze_to_convergence wants it, the graph it is derived from is
+// gone. Empty means "clear nothing", which is only correct after a
+// pass that changed nothing; analyze_to_convergence checks
+// fa_selective_armed rather than emptiness so the very first pass
+// (which has no predecessor state to preserve) still clears fully.
+static Vec<AVar *> fa_invalidate_avars;
+static bool fa_selective_armed = false;
+
+// ifa/issues/111 M3: clear only what the last pass's splitting could
+// have invalidated, instead of the whole program.
+//
+// The set is fa_invalidate_avars, computed by
+// probe_invalidation_closure() at END of the previous pass (it must be:
+// clear_avar destroys `forward`, the graph the closure is derived
+// from). Soundness rests on the invariant in the issue -- within a pass
+// the fixed point only GROWS, a split REFINES, so a split contour's
+// AVars can end lower and must go to bottom, as must anything
+// transitively forward-reachable from them; everything else has
+// unchanged inputs and its old value is still its fixed point.
+//
+// Returns false when it declines, so the caller falls back to the full
+// reset rather than silently doing less.
+static bool clear_results_selective() {
+  if (!ifa_selective || !fa_selective_armed) return false;
+
+  // Any AVar the closure named, plus every AVar of an EntrySet the LAST
+  // pass did not reach. That second set is ifa/issues/098's trap: such
+  // an ES holds values from whenever it was last reached, which no
+  // amount of forward-reachability from THIS pass's splits will find.
+  // `ess_set` is the reached set; `all_entry_sets` is authoritative.
+  Vec<EntrySet *> dirty_es;
+  Vec<CreationSet *> dirty_cs;
+  Vec<AVar *> to_clear;
+  for (AVar *av : fa_invalidate_avars) if (av) to_clear.set_add(av);
+  for (EntrySet *es : fa->all_entry_sets) {
+    if (!es || fa->ess_set.set_in(es)) continue;
+    dirty_es.set_add(es);
+    for (Var *v : es->fun->fa_Vars) to_clear.set_add(make_AVar(v, es));
+  }
+
+  // An AVar's owner has to be re-derived too: clear_avar drops its flow
+  // edges, and only add_es_constraints rebuilds them.
+  for (AVar *av : to_clear) {
+    if (!av) continue;
+    clear_avar(av);
+    for (EntrySet *es : fa->all_entry_sets)
+      if (es && (void *)es == av->contour) { dirty_es.set_add(es); break; }
+    for (CreationSet *cs : fa->all_creation_sets)
+      if (cs && (void *)cs == av->contour) { dirty_cs.set_add(cs); break; }
+  }
+
+  // Only the per-pass CONSTRAINT state, not the edge structure.
+  //
+  // clear_es/clear_edge empty containers (out_edges, creates, e->args,
+  // e->rets) that only the edge-CREATION path refills -- set_entry_set's
+  // fill_rets, get_AEdges' arg wiring. Enqueueing a cleared edge does
+  // not go through that path, so analyze_edge dereferenced an emptied
+  // e->rets against a non-empty pnode->lvals and segfaulted at
+  // fa.cc:3606. The values in those containers are AVars, which the
+  // closure already clears individually -- so the structure can and
+  // must stay.
+  //
+  // live_pnodes IS cleared: clear_avar dropped the flow edges, and
+  // add_es_constraints is the only thing that rebuilds them, and it
+  // is a no-op for an ES that still believes its pnodes are live.
+  for (EntrySet *es : dirty_es) if (es) {
+    es->live_pnodes.clear();
+    if (!es->in_es_worklist) { es->in_es_worklist = 1; fa->es_worklist.enqueue(es); }
+  }
+  for (CreationSet *cs : dirty_cs) if (cs) {
+    cs->closure_used = 0;
+    cs->unknown_vars.clear();
+  }
+  // Re-flow every edge into a dirty contour, WITHOUT clearing it: the
+  // args are already-cleared AVars, so re-running analyze_edge refills
+  // them from the caller side.
+  for (AEdge *e : fa->all_aedges) if (e && e->to && dirty_es.set_in(e->to)) {
+    if (!e->in_edge_worklist) { e->in_edge_worklist = 1; fa->edge_worklist.enqueue(e); }
+  }
+
+  fa->type_world.cannonical_setters.clear();
+  if (getenv("IFA_DBG_CLOSURE"))
+    fprintf(stderr, "SELCLEAR pass=%d avars=%d ess=%d css=%d\n",
+            analysis_pass, to_clear.count(), dirty_es.count(), dirty_cs.count());
+  return true;
+}
+
 static void clear_results() {
   foreach_var(clear_var);
   for (CreationSet *cs : fa->all_creation_sets) clear_cs(cs);
@@ -8030,7 +8119,8 @@ static int cpa_enabled() {
 // Probe only: walks the graph, prints, changes nothing. Enable with
 // IFA_DBG_CLOSURE=1.
 static void probe_invalidation_closure() {
-  if (!getenv("IFA_DBG_CLOSURE")) return;
+  const bool dbg = getenv("IFA_DBG_CLOSURE") != nullptr;
+  if (!dbg && !ifa_selective) return;
 
   // Every AVar that exists, and the seed set in one walk.
   Vec<AVar *> all, seed;
@@ -8067,9 +8157,16 @@ static void probe_invalidation_closure() {
   }
 
   int n_all = all.n, n_seed = seed.n, n_closure = reached.count();
-  fprintf(stderr, "CLOSURE pass=%d marked=%d retargeted=%d seed_avars=%d closure=%d all=%d pct=%d\n",
-          analysis_pass, n_marked, n_retarget, n_seed, n_closure, n_all,
-          n_all ? (int)((double)n_closure * 100.0 / (double)n_all) : 0);
+  if (dbg)
+    fprintf(stderr, "CLOSURE pass=%d marked=%d retargeted=%d seed_avars=%d closure=%d all=%d pct=%d\n",
+            analysis_pass, n_marked, n_retarget, n_seed, n_closure, n_all,
+            n_all ? (int)((double)n_closure * 100.0 / (double)n_all) : 0);
+
+  // Hand the closure to the next pass. `reached` is a set-Vec, so copy
+  // the dense members out.
+  fa_invalidate_avars.clear();
+  for (AVar *av : reached) if (av) fa_invalidate_avars.add(av);
+  fa_selective_armed = true;
 }
 
 [[nodiscard]] static int extend_analysis() {
@@ -9031,10 +9128,32 @@ static void analyze_to_convergence() {
   // the world), and clearing there would drop the seeded globals.
   bool first_pass = true;
   do {
-    if (!first_pass) clear_results();
+    // ifa/issues/111 M3: clear only the closure the last pass
+    // invalidated, when that is armed and enabled. Falls back to the
+    // full reset whenever it declines -- including the first pass,
+    // which has no predecessor state to preserve.
+    bool first_pass_full_reset = true;
+    if (!first_pass && clear_results_selective())
+      first_pass_full_reset = false;
+    else if (!first_pass)
+      clear_results();
     first_pass = false;
     compute_es_can_raise();
     initialize_pass();
+    // The top edge is enqueued even under selective invalidation, and
+    // that is deliberate. Skipping it (seeding only the affected edges)
+    // leaves the STRUCTURE unrebuilt -- fa->ess, es->out_edges,
+    // es->creates are all repopulated by this traversal -- and
+    // build_call_dominators then walked a call graph with null nodes
+    // and segfaulted (optimize/dom.cc:19).
+    //
+    // The saving does not come from skipping the walk. It comes from
+    // what the walk finds already done: a preserved ES keeps its
+    // live_pnodes, so add_es_constraints is a no-op for it, and its
+    // AVars keep last pass's values, so update_in changes nothing and
+    // propagate_out_change never fires. Re-walking a settled contour is
+    // the cheap part -- hq2x pass 15 walked ~30 000 AVars with 79 dirty
+    // in 0.081s.
     fa->edge_worklist.enqueue(fa->top_edge);
     long edge_count = 0;
     int last_ess_check = fa->ess.n;

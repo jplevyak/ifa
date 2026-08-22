@@ -1,6 +1,6 @@
 # 111 — every FA pass re-derives the whole program from bottom, so a pass that changes nothing costs full price
 
-**Status:** open, filed 2026-08-22. **M1 DONE (green). M2 DONE — harness landed, and it found a compiler bug on its first run.**
+**Status:** open, filed 2026-08-22. **M1 DONE (green). M2 DONE (harness landed; found ifa/112). M3 STARTED — first cut runs but is WRONG; default-off, see below.**
 **Affects:** `ifa/analysis/fa.cc` — `clear_results` / `clear_avar` /
 `clear_es` / `clear_cs` / `clear_edge`, `analyze_to_convergence`,
 `extend_analysis`, `run_split_stages` / `clear_splits`.
@@ -110,7 +110,7 @@ last pass. Hence:
   (file-local in fa.cc, default 0, reported on the `PYC_DBG_OSC` line so
   a run can prove the flag reached FA). Result below — including
   ifa/issues/112, which the harness found immediately.
-- [ ] **M3 — selective clear.** Closure-scoped clear; seed the worklist
+- [~] **M3 — selective clear. IN PROGRESS**, first cut committed default-off; three findings below. Closure-scoped clear; seed the worklist
   with affected ESs' edges instead of `top_edge`. Hazards, each needing
   an explicit answer:
   - `clear_edge` drops `e->args` / `e->rets` and `match->formal_filters`
@@ -226,6 +226,77 @@ harness would have been actively misleading at M3:
 Unstable programs are reported `UNSTABLE` and compared on FA state
 alone, which is reproducible for msp_ss and is the property M3 most
 needs to preserve anyway.
+
+### 2026-08-22 — M3 first cut: runs, is wrong, and the harness said so immediately
+
+`clear_results_selective()` in fa.cc, behind `IFA_SELECTIVE=1`
+(**default 0 — the shipped path is untouched**, all five CI gates green,
+294 passed / 0 failed both backends).
+
+Shape: `probe_invalidation_closure()` now stores its closure in
+`fa_invalidate_avars` at END of pass (it must be there: `clear_avar`
+destroys `forward`, so by the time the next pass wants the closure the
+graph it comes from is gone). `analyze_to_convergence` then calls
+`clear_results_selective()` instead of `clear_results()`, falling back
+to the full reset whenever it declines.
+
+**It does not work yet.** `selective_diff.sh collatz sieve loop`:
+3 of 3 diverge.
+
+    sieve  sel=0: final_pass=8  violations=0    ess=243 css=863
+           sel=1: final_pass=7  violations=864  ess=112 css=815
+    loop   sel=0: final_pass=26 violations=0    ess=353 css=1128
+           sel=1: final_pass=6  violations=4    ess=53  css=599   (+ SIGSEGV)
+
+The signature is consistent and diagnostic: **selective terminates far
+too early with far fewer entry sets and more violations.** Preserving
+state changes what "converged" means — the worklists drain because
+nothing is dirty, the splitter sees no progress, and the outer loop
+stops long before the analysis is actually done. This is a design
+problem, not a small bug.
+
+### Three things learned, each a constraint on the next attempt
+
+1. **Do not clear edge or ES containers — only AVars and constraint
+   state.** The first cut called `clear_edge`/`clear_es`, which empty
+   `e->args`, `e->rets`, `out_edges`, `creates`. Only the edge-CREATION
+   path refills those (`set_entry_set`'s `fill_rets`, `get_AEdges`), and
+   enqueueing a cleared edge does not go through it: `analyze_edge`
+   dereferenced an emptied `e->rets` against a non-empty
+   `pnode->lvals` and segfaulted (fa.cc:3606). The values in those
+   containers ARE AVars, which the closure clears individually, so the
+   structure can and must be left alone.
+
+2. **The top edge must still be enqueued.** Seeding only the affected
+   edges leaves the STRUCTURE unrebuilt — `fa->ess`, `es->out_edges`,
+   `es->creates` are all repopulated by that traversal — and
+   `build_call_dominators` then walked a call graph with null nodes and
+   segfaulted (dom.cc:19). The saving was never meant to come from
+   skipping the walk: it comes from what the walk finds already done
+   (a preserved ES keeps `live_pnodes`, so `add_es_constraints` is a
+   no-op, and its AVars keep their values, so `update_in` changes
+   nothing). hq2x pass 15 is the proof that re-walking a settled contour
+   is cheap: ~30 000 AVars, 79 dirty, 0.081 s.
+
+3. **`live_pnodes` must be cleared for a dirty ES.** `clear_avar` drops
+   the flow edges and `add_es_constraints` is the only thing that
+   rebuilds them — and it is a no-op for an ES that still believes its
+   pnodes are live.
+
+### Where to resume
+
+The early-termination signature points at CreationSet state, which the
+first cut barely touches: it resets only `closure_used` and
+`unknown_vars`, while `clear_cs` also clears `cs->defs` and `cs->ess` —
+a CS's membership in contours. Preserving those across a split leaves a
+CS claiming membership in a contour it no longer belongs to, which
+would plausibly both suppress new splits and under-report reachable
+ESs. That is the first thing to test.
+
+Also unresolved: the interaction with `extend_analysis`'s progress
+detection. With state preserved, `grew`/`rederive_churn` no longer mean
+what they meant, and the outer loop's termination has to be re-derived
+rather than assumed.
 
 ## Verification plan
 
