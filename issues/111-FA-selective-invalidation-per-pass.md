@@ -297,15 +297,67 @@ stable binary, which means re-running it whenever M3 is next touched.
    rebuilds them — and it is a no-op for an ES that still believes its
    pnodes are live.
 
+### 2026-08-22 — second cut: the CreationSet hypothesis was wrong, and what replaced it
+
+The recorded next suspect (preserved `cs->defs` / `cs->ess`) was tested
+and is **not** the cause on its own — but testing it produced the
+structural insight the first cut lacked:
+
+**Per-pass state divides by WHAT REBUILDS IT, not by affected vs
+unaffected.**
+
+- **Structural** bookkeeping — `cs->defs`, `cs->ess`, `es->out_edges`,
+  `es->creates`, backedges — is rebuilt by the top-edge TRAVERSAL,
+  which still runs in full. So it must be cleared in full: left alone
+  it does not go stale, it **accumulates**, because the traversal
+  appends. Clearing it is cheap (container resets, not a fixed point).
+- **Value** state — AVar `in`/`out`/`gen`/`forward`/`backward` — is
+  rebuilt by PROPAGATION. That is the expensive part and the only part
+  worth scoping.
+
+That split is implemented and is the right shape. It is still not
+sufficient.
+
+### The blocker: setter equivalence classes cannot be scoped
+
+`same_eq_classes` (fa.cc) asserts every AVar in a `Setters` set carries
+a `setter_class`. `setter_class` is assigned by a SPLITTER STAGE, and
+`Setters` objects are interned in the global
+`type_world.cannonical_setters`. Under a full reset every AVar starts
+classless and the stage assigns them all; under a scoped reset a
+preserved AVar that is never re-derived never gets one, and a surviving
+interned `Setters` still names it. Clearing the table alone fails the
+assert from one side, resetting the per-AVar pair alone fails it from
+the other; doing both is necessary and STILL not sufficient.
+
+### The real obstacle, and the design change it implies
+
+AVar state has **at least four distinct populations**, and
+`clear_results` is the only code that knows all of them:
+
+1. `Var::avars` reached via `allsyms` + `pdb->funs` (`foreach_var`)
+2. `cs->vars` (`clear_cs`)
+3. `e->filtered_args` (`clear_edge`)
+4. the CreationSet ELEMENT AVar via `get_element_avar` (`clear_cs`'s
+   `added_element_var` line)
+
+Each was found the same way: implement, hit the assert, discover
+another population. Population 4 was the one the diagnostic finally
+named — an unnamed AVar on a contour outside the reached set.
+
+**So the next attempt should not write a parallel enumeration at all.**
+Refactor `clear_results` to take a predicate — "clear this AVar?" —
+so there is exactly ONE walk over the four populations and the
+selective path cannot drift from it. Every failure above is a
+consequence of maintaining a second, incomplete copy of that walk. That
+is the concrete change to make before trying again.
+
 ### Where to resume
 
-The early-termination signature points at CreationSet state, which the
-first cut barely touches: it resets only `closure_used` and
-`unknown_vars`, while `clear_cs` also clears `cs->defs` and `cs->ess` —
-a CS's membership in contours. Preserving those across a split leaves a
-CS claiming membership in a contour it no longer belongs to, which
-would plausibly both suppress new splits and under-report reachable
-ESs. That is the first thing to test.
+Refactor `clear_results` to take a per-AVar predicate first (see
+above), then re-express the selective path as that predicate. Only then
+re-test the setter-class interaction, which is the one piece that may
+genuinely resist scoping and might have to stay globally reset.
 
 Also unresolved: the interaction with `extend_analysis`'s progress
 detection. With state preserved, `grew`/`rederive_churn` no longer mean

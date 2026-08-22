@@ -6376,7 +6376,6 @@ static bool clear_results_selective() {
   // amount of forward-reachability from THIS pass's splits will find.
   // `ess_set` is the reached set; `all_entry_sets` is authoritative.
   Vec<EntrySet *> dirty_es;
-  Vec<CreationSet *> dirty_cs;
   Vec<AVar *> to_clear;
   for (AVar *av : fa_invalidate_avars) if (av) to_clear.set_add(av);
   for (EntrySet *es : fa->all_entry_sets) {
@@ -6385,50 +6384,118 @@ static bool clear_results_selective() {
     for (Var *v : es->fun->fa_Vars) to_clear.set_add(make_AVar(v, es));
   }
 
-  // An AVar's owner has to be re-derived too: clear_avar drops its flow
-  // edges, and only add_es_constraints rebuilds them.
+  // Which contours own a cleared AVar? Those need their constraints
+  // rebuilt, so identify them BEFORE anything is cleared.
+  Vec<void *> es_ptrs;
+  for (EntrySet *es : fa->all_entry_sets) if (es) es_ptrs.set_add((void *)es);
   for (AVar *av : to_clear) {
-    if (!av) continue;
-    clear_avar(av);
-    for (EntrySet *es : fa->all_entry_sets)
-      if (es && (void *)es == av->contour) { dirty_es.set_add(es); break; }
-    for (CreationSet *cs : fa->all_creation_sets)
-      if (cs && (void *)cs == av->contour) { dirty_cs.set_add(cs); break; }
+    if (!av || !av->contour) continue;
+    if (es_ptrs.set_in(av->contour)) dirty_es.set_add((EntrySet *)av->contour);
   }
 
-  // Only the per-pass CONSTRAINT state, not the edge structure.
+  // The split that took three attempts to get right.
   //
-  // clear_es/clear_edge empty containers (out_edges, creates, e->args,
-  // e->rets) that only the edge-CREATION path refills -- set_entry_set's
-  // fill_rets, get_AEdges' arg wiring. Enqueueing a cleared edge does
-  // not go through that path, so analyze_edge dereferenced an emptied
-  // e->rets against a non-empty pnode->lvals and segfaulted at
-  // fa.cc:3606. The values in those containers are AVars, which the
-  // closure already clears individually -- so the structure can and
-  // must stay.
+  // Per-pass state divides in two, and the division is NOT "affected vs
+  // unaffected" -- it is what rebuilds it:
   //
-  // live_pnodes IS cleared: clear_avar dropped the flow edges, and
-  // add_es_constraints is the only thing that rebuilds them, and it
-  // is a no-op for an ES that still believes its pnodes are live.
+  //   STRUCTURAL bookkeeping (cs->defs, cs->ess, es->out_edges,
+  //   es->creates, backedges) is rebuilt by the top-edge TRAVERSAL,
+  //   which still runs in full. So it must be cleared in full too: left
+  //   alone it does not go stale, it ACCUMULATES, because the traversal
+  //   appends to it. Clearing it is cheap -- these are container resets,
+  //   not the fixed point.
+  //
+  //   VALUE state (AVar in/out/gen/forward/backward) is rebuilt by
+  //   PROPAGATION, which is the expensive part and the only part worth
+  //   scoping. This is where the closure applies.
+  //
+  // The first cut scoped both and preserved cs->defs/cs->ess, so the
+  // reached-set bookkeeping grew across passes; the analysis then
+  // terminated at pass 6 instead of 26 with a third of the entry sets.
+  for (CreationSet *cs : fa->all_creation_sets) if (cs) {
+    cs->defs.clear();
+    cs->ess.clear();
+    cs->es_backedges.clear();
+    cs->closure_used = 0;
+    cs->unknown_vars.clear();
+  }
+  for (EntrySet *es : fa->all_entry_sets) if (es) {
+    es->out_edges.clear();
+    es->backedges.clear();
+    es->cs_backedges.clear();
+    es->creates.clear();
+  }
+  for (AEdge *e : fa->all_aedges) if (e) {
+    e->es_backedge = 0;
+    e->es_cs_backedge = 0;
+    if (e->match) e->match->formal_filters.clear();
+  }
+  // NOT cleared: e->args / e->rets and es->live_pnodes. The first two
+  // are AVar CONTAINERS refilled only by the edge-creation path
+  // (set_entry_set's fill_rets, get_AEdges) -- emptying them left
+  // analyze_edge dereferencing an empty e->rets against a non-empty
+  // pnode->lvals (fa.cc:3606). Their contents are AVars, cleared
+  // individually below when the closure names them.
+  //
+  // live_pnodes is the actual lever: an ES that keeps it skips
+  // add_es_constraints entirely, which is the per-pass work being
+  // saved. A dirty ES must lose it, because clear_avar just dropped
+  // the flow edges only add_es_constraints rebuilds.
+  // Setter equivalence classes are global and cross-AVar: a PRESERVED
+  // AVar's `setters` set can name a CLEARED one, and same_eq_classes
+  // asserts every member has a setter_class (fa.cc:914). So this pair
+  // cannot be scoped -- reset it on every AVar. Cheap: two stores each,
+  // not a re-derivation, and the pass recomputes them anyway.
+  {
+    auto reset_setters = [](Var *v) {
+      for (int i = 0; i < v->avars.n; i++) {
+        if (!v->avars[i].key) continue;
+        AVar *a = v->avars[i].value;
+        a->setters = 0;
+        a->setter_class = 0;
+        if (a->lvalue) { a->lvalue->setters = 0; a->lvalue->setter_class = 0; }
+      }
+    };
+    for (Sym *sy : fa->pdb->if1->allsyms) if (sy->var) reset_setters(sy->var);
+    for (Fun *f : fa->pdb->funs) for (Var *v : f->fa_all_Vars) reset_setters(v);
+    for (CreationSet *cs : fa->all_creation_sets) if (cs) {
+      for (AVar *a : cs->vars) if (a) { a->setters = 0; a->setter_class = 0; }
+      // The element AVar is a FOURTH population, reachable only through
+      // get_element_avar -- clear_cs has its own line for it, and it is
+      // the one that actually tripped the assert (an unnamed AVar on a
+      // contour outside the reached set).
+      if (cs->added_element_var) {
+        AVar *ev = get_element_avar(cs);
+        if (ev) { ev->setters = 0; ev->setter_class = 0; }
+      }
+    }
+    // Edge filtered_args AVars are a SEPARATE population -- they live
+    // on the edge, not in any Var::avars map, which is why clear_edge
+    // has its own clear_avar loop over them.
+    for (AEdge *e : fa->all_aedges) if (e)
+      form_MPositionAVar(x, e->filtered_args) if (x->value) {
+        x->value->setters = 0;
+        x->value->setter_class = 0;
+      }
+  }
+  for (AVar *av : to_clear) if (av) clear_avar(av);
   for (EntrySet *es : dirty_es) if (es) {
     es->live_pnodes.clear();
     if (!es->in_es_worklist) { es->in_es_worklist = 1; fa->es_worklist.enqueue(es); }
   }
-  for (CreationSet *cs : dirty_cs) if (cs) {
-    cs->closure_used = 0;
-    cs->unknown_vars.clear();
-  }
-  // Re-flow every edge into a dirty contour, WITHOUT clearing it: the
-  // args are already-cleared AVars, so re-running analyze_edge refills
-  // them from the caller side.
-  for (AEdge *e : fa->all_aedges) if (e && e->to && dirty_es.set_in(e->to)) {
-    if (!e->in_edge_worklist) { e->in_edge_worklist = 1; fa->edge_worklist.enqueue(e); }
-  }
 
+  // cannonical_setters MUST be cleared, together with the per-AVar
+  // setters/setter_class reset above -- the two are complementary and
+  // neither works alone. A surviving Setters object holds AVars from
+  // last pass; setter_class is assigned by a SPLITTER stage, so a
+  // preserved AVar that is not re-derived this pass never gets one, and
+  // same_eq_classes asserts every member has one. Clearing the table
+  // without the per-AVar reset fails the same assert from the other
+  // side, which is how this cost two attempts.
   fa->type_world.cannonical_setters.clear();
   if (getenv("IFA_DBG_CLOSURE"))
-    fprintf(stderr, "SELCLEAR pass=%d avars=%d ess=%d css=%d\n",
-            analysis_pass, to_clear.count(), dirty_es.count(), dirty_cs.count());
+    fprintf(stderr, "SELCLEAR pass=%d cleared_avars=%d rebuilt_ess=%d of %d\n",
+            analysis_pass, to_clear.count(), dirty_es.count(), fa->all_entry_sets.n);
   return true;
 }
 
