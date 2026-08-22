@@ -1,6 +1,7 @@
 # 110 — a method override gets a SECOND member slot, shifting every field after it
 
-**Status:** FIXED 2026-08-22 — see the FIXED section at the bottom.
+**Status:** CLOSED — fixed 2026-08-22 by `f923f168`; see the FIXED
+section at the bottom.
 Found the same day while verifying issues/116's inheritance cases, and
 **pre-existing**: reproduced unchanged on `888cb499`, the commit before
 that work.

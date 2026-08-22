@@ -582,7 +582,9 @@ commit ref (or date) recorded in each file's status line.  They
 stay in the tree as history — a code-search for the affected file
 finds the trail of investigation even after the fix has landed.
 
-Currently 64 closed issues:
+Currently 72 closed issues (`closed/` also holds
+`033-ledger-design-detail.md`, an archived design document rather
+than an issue, which is why the file count is one higher):
 [001](closed/001-keepalive-vs-explicit-reply.md),
 [002](closed/002-codegen-llvm-normalizer.md),
 [003](closed/003-fa-converge-determinism.md),
@@ -652,7 +654,9 @@ Currently 64 closed issues:
 [089](closed/089-DISPATCH-closure-pyc-to-bool-no-candidate.md),
 [091](closed/091-DISPATCH-nonrecord-builtin-constructor-not-first-class.md),
 [092](closed/092-DISPATCH-3arg-minmax-plus-multi-shape-return-crash.md),
-[096](closed/096-extend-c-call-salvage-guard-past-str-comparisons.md).
+[096](closed/096-extend-c-call-salvage-guard-past-str-comparisons.md),
+[104](closed/104-unify-list-and-tuple-in-analysis.md),
+[110](closed/110-override-duplicates-member-slot.md).
 
 ## When to file an issue here vs fix it now
 
