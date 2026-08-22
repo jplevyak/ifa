@@ -506,14 +506,70 @@ static void collect_includes(Sym *s, Vec<Sym *> &include_set, Vec<Sym *> &includ
   }
 }
 
+// ifa/issues/110: append src's members to dst, skipping any NAME dst
+// already carries. Two things duplicate without this:
+//
+//   - the recursion below descends into a base's own includes even
+//     though that base's `has` was already flattened (include_
+//     instance_variables walks collect_includes' post-order, so bases
+//     are processed first) -- so a grandparent's members arrive twice;
+//   - two bases of a multiple-inheritance class can define one name.
+//
+// First writer wins, which for the second case is Python's MRO rule.
+static void append_new_members(Sym *dst, Sym *src) {
+  for (Sym *m : src->has) {
+    if (m->name) {
+      bool dup = false;
+      for (Sym *e : dst->has)
+        if (e->name == m->name) {
+          dup = true;
+          break;
+        }
+      if (dup) continue;
+    }
+    dst->has.add(m);
+  }
+}
+
+// ifa/issues/110: a class's own member that OVERRIDES an inherited one
+// must land on the inherited member's INDEX, not after it.
+//
+// `has` indices are the emitted struct's field suffixes (cg.cc writes
+// `eN` for has[N], and every method/field lookup in codegen_common.cc
+// scans has by name for the first live match). A method shared between
+// a base and a subclass is emitted ONCE, taking `_CG_any` and blind-
+// casting to the base's struct type -- which is sound only while the
+// subclass's layout is a prefix-compatible extension of the base's.
+// Appending an override at the end broke exactly that: `class S(B)`
+// overriding one method got a SECOND slot for it, pushing every field
+// after it down one, so a sibling method inherited from B read the
+// override's function pointer where the field should be. 19 lines with
+// no iterator protocol in them hung forever (see this issue's repro).
+//
+// Replacing in place keeps both properties: most-derived wins (the
+// subclass's Sym is what any name lookup finds), and the index still
+// matches the base's.
 static void collect_include_vars(Sym *s, Sym *in = 0) {
   Vec<Sym *> saved;
   if (!in)
     saved.move(s->has);
   else
-    in->has.append(s->has);
+    append_new_members(in, s);
   for (Sym *ss : s->includes) if (ss->type_kind == Type_RECORD) collect_include_vars(ss, in ? in : s);
-  if (!in) s->has.append(saved);
+  if (!in)
+    for (Sym *own : saved) {
+      int at = -1;
+      if (own->name)
+        for (int i = 0; i < s->has.n; i++)
+          if (s->has[i]->name == own->name) {
+            at = i;
+            break;
+          }
+      if (at >= 0)
+        s->has[at] = own;
+      else
+        s->has.add(own);
+    }
 }
 
 static void include_instance_variables(IF1 *i) {
