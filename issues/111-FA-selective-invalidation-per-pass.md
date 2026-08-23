@@ -352,7 +352,62 @@ selective path cannot drift from it. Every failure above is a
 consequence of maintaining a second, incomplete copy of that walk. That
 is the concrete change to make before trying again.
 
-### Where to resume
+### 2026-08-23 — third cut: the predicate refactor works; the setter machinery blocks
+
+The recorded next step is **done and was right**: `clear_avar` and
+`clear_es` now take the scoping decision themselves, via
+`fa_clear_only` / `fa_rebuild_only`, and `clear_results_selective()`
+sets those and calls **the same `clear_results()` the full reset uses**.
+One enumeration, so the selective path can no longer miss an AVar
+population — which was the previous cut's whole failure mode. That
+part should be kept.
+
+It exposed a harder blocker underneath.
+
+### The blocker, stated precisely
+
+`setter_class` is assigned **only** by `split_eq_class`, driven by the
+splitter over what the propagation re-derived. `same_eq_classes`
+asserts every AVar in a `Setters` set has one. Selective invalidation
+deliberately re-derives less, so the full reset's invariant —
+*everything in a Setters set was classed this pass* — no longer holds.
+
+**Setter-set membership is determined DURING a pass, while the
+preserve/clear decision must be made BEFORE it.** That is the
+irreducible conflict, and it defeats every scoping strategy:
+
+| approach | outcome |
+|---|---|
+| Zero `setters`/`setter_class` on all AVars | assert: preserved AVars land in sets rebuilt this pass, unclassed |
+| Preserve both, and the `cannonical_setters` interning table with them | assert: *cleared* AVars re-enter sets unclassed |
+| Make `same_eq_classes` answer `false` for unclassed (conservative) | no assert, but it refuses EntrySet merges — contours grow without bound and `collatz` never converges (120 s timeout) |
+| Pre-add every live `Setters` member to the closure | assert: membership is decided during the next pass, so a closure computed at the end of this one cannot cover it |
+
+The conservative variant was reverted deliberately: a loud assert is
+more diagnosable than silent non-convergence, and the note stays in
+`same_eq_classes` so the next person does not re-try it.
+
+### Where to resume — attack the classing, not the scoping
+
+Three options, in the order they look promising:
+
+1. **Class lazily.** Give `same_eq_classes` a path that CLASSES an
+   unclassed AVar on demand instead of asserting. Different from the
+   conservative variant that failed: compute the answer rather than
+   refuse it. This decouples classing from what the propagation
+   re-derived, which is the actual conflict.
+2. **Run the setter stage over all AVars**, regardless of re-derivation.
+   `extend` is only ~0.4% of FA time (M1), so covering everything may
+   simply be affordable — worth measuring before assuming otherwise.
+3. **Coarsen the granularity** so a `Setters` set cannot span the
+   preserve/clear boundary. Least attractive: it makes the closure a
+   function of setter topology rather than value flow, and M1's small
+   closures are what make this worth doing at all.
+
+Do NOT resume by scoping harder. Four attempts say the scoping is not
+where the problem is.
+
+### Superseded resume note
 
 Refactor `clear_results` to take a per-AVar predicate first (see
 above), then re-express the selective path as that predicate. Only then
