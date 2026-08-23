@@ -6268,6 +6268,31 @@ static void clear_marks(Accum<AVar *> &acc) { for (AVar *x : acc.asvec) x->mark_
 //     MUST survive: it has to be in force from the first instant
 //     of the next pass so type_coerce_numeric_constants is
 //     element-wise monotone for the whole pass.
+// ifa/issues/111: the four populations AVar state lives in. Named once
+// here because every attempt that open-coded them missed one:
+//   1. Var::avars, reached via allsyms + pdb->funs (as foreach_var)
+//   2. cs->vars
+//   3. the CreationSet ELEMENT AVar (get_element_avar)
+//   4. e->filtered_args
+// clear_results reaches all four through clear_var/clear_cs/clear_edge;
+// anything else that needs them should use this rather than a fifth
+// hand-rolled walk.
+template <class F>
+static void foreach_avar(F f) {
+  auto do_var = [&](Var *v) {
+    for (int i = 0; i < v->avars.n; i++)
+      if (v->avars[i].key) f(v->avars[i].value);
+  };
+  for (Sym *sy : fa->pdb->if1->allsyms) if (sy->var) do_var(sy->var);
+  for (Fun *fn : fa->pdb->funs) for (Var *v : fn->fa_all_Vars) do_var(v);
+  for (CreationSet *cs : fa->all_creation_sets) if (cs) {
+    for (AVar *a : cs->vars) if (a) f(a);
+    if (cs->added_element_var) { AVar *ev = get_element_avar(cs); if (ev) f(ev); }
+  }
+  for (AEdge *e : fa->all_aedges) if (e)
+    form_MPositionAVar(x, e->filtered_args) if (x->value) f(x->value);
+}
+
 // ifa/issues/111 M3 (third cut): scope the VALUE reset with a predicate
 // applied HERE, instead of maintaining a second enumeration.
 //
@@ -6466,6 +6491,23 @@ static bool clear_results_selective() {
   for (AVar *av : to_clear)
     if (av && av->contour && es_ptrs.set_in(av->contour))
       to_rebuild.set_add((EntrySet *)av->contour);
+
+  // ifa/issues/111 M3 option 2: setter state is only valid while every
+  // member of a Setters set carries a class, and classes come ONLY from
+  // compute_setters over THIS pass's confluences. Clearing AVar X
+  // therefore invalidates the setter state of every AVar whose set
+  // NAMES X -- a backward step the forward closure cannot supply. Zero
+  // those sets (not their values) so the pass rebuilds them; the
+  // alternative is same_eq_classes asserting on a classless member.
+  foreach_avar([&](AVar *a) {
+    if (!a || !a->setters) return;
+    for (AVar *m : *a->setters)
+      if (m && to_clear.set_in(m)) {
+        a->setters = 0;
+        a->setter_class = 0;
+        return;
+      }
+  });
 
   // One walk, the SAME walk the full reset uses -- the predicates are
   // applied inside clear_avar and clear_es. That is the whole point of
@@ -7997,7 +8039,25 @@ static int cpa_enabled() {
   // 3) split based on setters of type
   if (!analyze_again) {
     Accum<AVar *> avs;
-    for (AVar *av : confluences) (void)compute_setters(av, avs, AKIND_TYPE);
+    // ifa/issues/111 M3 option 2: under selective invalidation, class
+    // EVERY CS-contoured AVar, not just this pass's confluences.
+    //
+    // setter_class comes only from here, so with the full reset the
+    // invariant "every member of a Setters set was classed this pass"
+    // holds because every set is also BUILT this pass. Selective
+    // invalidation preserves sets across passes, so members can survive
+    // that this pass's confluence list never reaches, and
+    // same_eq_classes asserts on them. Widening the coverage restores
+    // the invariant by brute force. Affordable in principle: M1
+    // measured the whole `extend` phase at ~0.4% of FA time.
+    if (ifa_selective) {
+      Vec<AVar *> all_cs_avars;
+      foreach_avar([&](AVar *a) {
+        if (a && !a->contour_is_entry_set && a->contour != GLOBAL_CONTOUR) all_cs_avars.set_add(a);
+      });
+      for (AVar *av : all_cs_avars) if (av) (void)compute_setters(av, avs, AKIND_TYPE);
+    } else
+      for (AVar *av : confluences) (void)compute_setters(av, avs, AKIND_TYPE);
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
     cur_split_stage = (int)FAPassStage::SETTER;
     if (split_for_setters(avs, analyze_again)) analyze_again = 1;

@@ -387,6 +387,47 @@ The conservative variant was reverted deliberately: a loud assert is
 more diagnosable than silent non-convergence, and the note stays in
 `same_eq_classes` so the next person does not re-try it.
 
+### 2026-08-23 — option 2 tried (widen setter-stage coverage): does NOT fix it
+
+Two forms, both implemented and both still asserting:
+
+- **Backward invalidation.** Clearing AVar X invalidates the setter
+  state of every AVar whose set NAMES X — a backward step the forward
+  closure cannot supply. Implemented via the new `foreach_avar` helper.
+  Still asserts.
+- **Literal option 2**: run `compute_setters(.., AKIND_TYPE)` over
+  EVERY CS-contoured AVar instead of just this pass's confluences
+  (kept in the tree, gated on `ifa_selective`). Still asserts.
+
+Diagnostic from the surviving case: `av#5979`, `setters=(nil)`, no
+class, appearing as a MEMBER of another AVar's set at pass 10. So it is
+neither reached by the widened classing nor covered by the backward
+invalidation — the coupling is not a coverage problem, which is what
+option 2 assumed.
+
+**Six approaches have now failed for the same underlying reason.** Two
+things follow, and the second matters more than the first:
+
+1. Option 2 is closed. Do not re-try coverage widening.
+2. The remaining option (1: class lazily in `same_eq_classes` — compute
+   rather than refuse or assert) is the only one that attacks the
+   actual conflict, since it removes the dependency on *when* an AVar
+   was classed. It is also the one that changes shared code rather than
+   the selective path, so it needs its own justification independent of
+   this issue.
+
+### A note on cost, before anyone resumes
+
+M1 said closures are tiny (median 0%, p90 3%) and hq2x's four wasted
+passes touch at most 6 AVars of ~100 000. That upside is real and
+unchanged. But the six failures are all in ONE subsystem — setter
+equivalence — and none of them is about the closure being wrong. A
+reasonable reading is that the value/structure split this issue is
+built on is sound, and setter equivalence is simply not expressible in
+it as written. If option 1 also fails, the honest conclusion is that
+selective invalidation needs the setter machinery reworked FIRST, as a
+separate piece of work, rather than more attempts here.
+
 ### Where to resume — attack the classing, not the scoping
 
 Three options, in the order they look promising:
