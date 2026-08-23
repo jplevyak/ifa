@@ -466,12 +466,13 @@ the value/structure split is sound. They are all about one subsystem:
 > from global), or widened (coverage is not the gap).**
 
 So selective invalidation is blocked on a prerequisite, not on its own
-design. The next piece of work is not another attempt here — it is
+design. Filed as
+**[113](113-FA-setter-equivalence-is-a-global-batch-partition.md)** —
 making setter equivalence incremental, or per-contour, or otherwise
-independent of "everything classed in one batch this pass". That
-deserves its own issue and its own justification; it is FA redesign,
-not an optimisation, and it is a materially different decision from
-the one that started this issue.
+independent of "everything classed in one batch this pass". That is FA
+redesign, not an optimisation, and it should be justified on its own
+terms rather than merely as a prerequisite for this issue. **Resume
+here only after 113.**
 
 Everything landed here is default-off and keeps its value for that
 work: `foreach_avar` (the four AVar populations named once), the
@@ -529,6 +530,7 @@ stops being expensive.
 
 ## Related
 
+- [113](113-FA-setter-equivalence-is-a-global-batch-partition.md) — **the blocker**, extracted from M3.
 - [074](074-FA-cross-pass-oscillation-plan.md), [101](101-FA-first-time-forever-splitting.md)
   — non-convergence. Distinct problem: `amaze`'s profile is 43 CHEAP
   passes that never converge, which selective invalidation does not
