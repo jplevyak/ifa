@@ -906,9 +906,37 @@ static void fill_rets(EntrySet *es, int n) {
     }
 }
 
+static void recompute_eq_classes(Vec<Setters *> &ss);  // ifa/issues/111 M3 option 1
+
 static bool same_eq_classes(Setters *s, Setters *ss) {
   if (s == ss) return true;
   if (!s || !ss) return false;
+  // ifa/issues/111 M3 option 1: class LAZILY rather than assert.
+  //
+  // setter_class is normally assigned by compute_setters over a pass's
+  // confluences, which works because the full reset rebuilds every
+  // Setters set in the same pass -- so every member was classed here.
+  // Selective invalidation preserves sets across passes, so a member
+  // can survive that this pass's classing never reached.
+  //
+  // recompute_eq_classes is exactly the primitive that assigns a class
+  // to unclassed members (and repartitions existing classes around
+  // them), so calling it here computes the SAME answer the stage would
+  // have, rather than inventing one. Answering `false` for unclassed
+  // instead was tried and refuses EntrySet merges, which costs
+  // convergence -- see the note below.
+  if (ifa_selective) {
+    bool unclassed = false;
+    for (AVar *av : *s) if (av && !av->setter_class) { unclassed = true; break; }
+    if (!unclassed)
+      for (AVar *av : *ss) if (av && !av->setter_class) { unclassed = true; break; }
+    if (unclassed) {
+      Vec<Setters *> both;
+      both.add(s);
+      both.add(ss);
+      recompute_eq_classes(both);
+    }
+  }
   Vec<Setters *> sc1, sc2;
   // NOTE (ifa/issues/111 M3): answering `false` here for an unclassed
   // AVar instead of asserting was tried, so that selective

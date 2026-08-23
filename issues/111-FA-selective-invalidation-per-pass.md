@@ -428,7 +428,57 @@ it as written. If option 1 also fails, the honest conclusion is that
 selective invalidation needs the setter machinery reworked FIRST, as a
 separate piece of work, rather than more attempts here.
 
-### Where to resume — attack the classing, not the scoping
+### 2026-08-23 — option 1 tried (lazy classing): past the assert, but not correct
+
+`same_eq_classes` now calls `recompute_eq_classes` on demand when a
+member is unclassed, instead of asserting (gated on `ifa_selective`,
+kept in the tree). That is the right primitive — it is exactly what
+assigns classes to unclassed members and repartitions around them, so
+it computes the same KIND of answer the stage would, rather than
+inventing one.
+
+The assert is gone. The results are still wrong:
+
+    t1.py (4 lines)   converges, but 8 "mixed basic types" warnings vs 1
+    collatz           does not converge -- 18 passes and still going at
+                      150 s, where sel=0 finishes in 6. cleared_avars
+                      oscillates 182 / 3175 / 850 / 1526: churn, not
+                      progress.
+
+**The reason connects option 1 to option 2 and closes both.**
+`recompute_eq_classes(both)` sees TWO Setters sets; the stage sees the
+whole collection at once. Equivalence classing is a global partition,
+so computing it from a local pair gives a different partition, which
+gives different split decisions, which gives churn and precision loss.
+Making the lazy version faithful means giving it the full collection —
+which is option 2, already closed.
+
+### Conclusion: stop, and rework the setter machinery first
+
+Seven approaches, one cause. The failures are not about the closure
+being wrong — M1's measurement stands (median 0%, p90 3%, max 16%) and
+the value/structure split is sound. They are all about one subsystem:
+
+> **`setter_class` is a global partition, computed in a batch over a
+> whole pass's confluences, and every member of every live `Setters`
+> set is required to carry one. That cannot be scoped (the preserve
+> decision precedes membership), deferred (local classing diverges
+> from global), or widened (coverage is not the gap).**
+
+So selective invalidation is blocked on a prerequisite, not on its own
+design. The next piece of work is not another attempt here — it is
+making setter equivalence incremental, or per-contour, or otherwise
+independent of "everything classed in one batch this pass". That
+deserves its own issue and its own justification; it is FA redesign,
+not an optimisation, and it is a materially different decision from
+the one that started this issue.
+
+Everything landed here is default-off and keeps its value for that
+work: `foreach_avar` (the four AVar populations named once), the
+predicate-threaded `clear_results` (one enumeration), the closure
+computation, and `selective_diff.sh`.
+
+### Superseded: where to resume — attack the classing, not the scoping
 
 Three options, in the order they look promising:
 
