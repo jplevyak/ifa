@@ -1,6 +1,8 @@
 # Issue 039: Reading a local that's unassigned on some CFG path is silent undefined behavior — no lattice element for "uninitialized"
 
-**Status:** open. **Found:** 2026-07-12, verifying the issue-023
+**Status:** open, **design settled 2026-08-24** (see "Design decision"
+below, which supersedes parts of "Proposed direction"). **Found:**
+2026-07-12, verifying the issue-023
 `match`/`case` capture-pattern fix (`9b73ed62`).
 **Affects:** `ifa/optimize/ssu.cc` (phi placement / rename — the
 mechanism), `ifa/analysis/fa.h`/`fa.cc` (`TypeWorld`'s canonical
@@ -153,6 +155,84 @@ rather than a special case bolted onto renaming. Concretely:
    same `uninitialized_type` tag to decide where a guard is needed
    — but the compile-time diagnostic is the main win and doesn't
    need the runtime piece to be useful on its own.
+
+## Design decision (2026-08-24)
+
+Re-verified first: the repro still reproduces exactly as filed. `pyc`
+compiles it clean (rc=0, no warnings) and prints `5 5` — the second call
+reads stack garbage that happens to be 5 — where CPython raises
+`UnboundLocalError`.
+
+### Two levels, mapped onto flags that already exist
+
+- **strict** (`--strict`) — a possibly-unbound read is a hard compile
+  error.
+- **non-strict** (`--permissive`, the default) — the slot is
+  default-initialized and the program runs.
+
+**No new flags.** pyc already has `--strict` / `--permissive` wired to
+`runtime_errors`, and `show_violations` already prints `error` vs
+`warning` off that. So modelling this as an
+`ATypeViolation_kind` gives the two levels for free; the only extra work
+in non-strict is the initializing codegen.
+
+### THREE lattice facts, not two — this is the crux
+
+"Unknown" and "unbound" are different, they are currently BOTH
+unmodelled, and they demand OPPOSITE treatment in non-strict mode:
+
+| fact | element | status today |
+|---|---|---|
+| **bottom** — no type reaches here at all | `bottom_type` | live; drives `NOTYPE` (`'x' has no type`) |
+| **unknown** — a value definitely EXISTS, its type is not modelled | `unknown_type` / `sym_unknown` | element exists but is **never produced as a value** — `sym_unknown` has exactly two references, its creation and `initialize_global`. Its one live use is `dispatch_type` returning `sym_unknown_type` for OUT params (`pattern.cc:150`), and **pyc never creates an OUT sym**, so in pyc it is entirely dead |
+| **unbound** — no value on THIS path, though the variable has a type on others | — | **not modelled at all.** This issue |
+
+**So do NOT reuse `unknown` for this**, even though it is dead weight
+and even though `type_union` is set-union over CreationSets (so
+`{int64, unknown}` would stay a detectable 2-element set rather than
+collapsing — that objection does not apply). The reason is semantic and
+it bites in non-strict mode:
+
+- `unknown` — a value exists; we merely cannot dispatch on it.
+  Zero-initializing it would be **wrong**: it silently replaces a real
+  inbound value with 0.
+- `unbound` — no value exists. Non-strict MUST materialize one.
+
+Two secondary reasons: `sym_unknown_type` already means "OUT parameter"
+to `dispatch_type`, so reuse makes an unbound local and an OUT param
+indistinguishable at every dispatch site; and `sym_any` implements and
+specializes `sym_unknown_type`, putting unknown at the TOP of the
+hierarchy, whereas absence-of-value belongs near the bottom. Neither
+affects `type_union`, but both affect pattern matching.
+
+### A fourth case, deliberately routed elsewhere
+
+A variable unbound on EVERY path (`del x; print(x)`, or a name assigned
+only in dead code) is `bottom`, not unbound-on-a-path. CPython also
+raises `UnboundLocalError` there, but it should reuse `NOTYPE`'s
+existing machinery rather than the new element.
+
+### What non-strict initializes to
+
+**The zero of the type inferred from the ASSIGNING paths** — not `None`
+/ nil.
+
+`y` is `int` on its assigning path, so fill `0` and the type stays
+`int`, introducing no new union member. Injecting `None` instead would
+create `{None, int64}`, which is exactly the union pyc now REFUSES as
+unrepresentable ([../../issues/048](../../issues/048-none-int-field-pair-runtime-abort.md),
+and [018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md),
+closed 2026-08-24). Non-strict would then reject programs that strict
+merely warned about — backwards.
+
+This is well-defined precisely BECAUSE `uninitialized` is a distinct
+union member sitting alongside the real types, rather than having
+replaced them.
+
+Note the deliberate CPython divergence: CPython raises
+`UnboundLocalError`, non-strict pyc yields a defined default. Same shape
+as the documented `{int,float}` coercion compromise
+([../../issues/035](../../issues/035-list-element-cast-salvage-guard-and-set-item-union.md)).
 
 ## What this unblocks
 
