@@ -1,6 +1,10 @@
 # Issue 039: Reading a local that's unassigned on some CFG path is silent undefined behavior — no lattice element for "uninitialized"
 
-**Status:** open, **design settled 2026-08-24** (see "Design decision"
+**Status:** open. **Design settled 2026-08-24; first implementation
+landed DEFAULT OFF the same day and does not yet converge — see "Where
+it stands".**
+
+**Design settled 2026-08-24** (see "Design decision"
 below, which supersedes parts of "Proposed direction"). **Found:**
 2026-07-12, verifying the issue-023
 `match`/`case` capture-pattern fix (`9b73ed62`).
@@ -233,6 +237,80 @@ Note the deliberate CPython divergence: CPython raises
 `UnboundLocalError`, non-strict pyc yields a defined default. Same shape
 as the documented `{int,float}` coercion compromise
 ([../../issues/035](../../issues/035-list-element-cast-salvage-guard-and-set-item-union.md)).
+
+## Where it stands (2026-08-24)
+
+### The proposed mechanism is WRONG — measured, not argued
+
+"Proposed direction" item 2 says to hook `get_Var`'s
+no-reaching-definition fallback (`ssu.cc:101-105`). That fallback is not
+the signal it looks like, **in both directions**, on this issue's own
+four-line repro:
+
+- **It fires for BOUND values.** 77 hits on that program, including
+  `self`, `item` and `key` — formal parameters, always bound. The
+  renaming environment is scoped, so a formal's binding is not visible
+  at every point a phi argument is resolved.
+- **It does not fire for the actual unbound local.** `y`'s phi resolved
+  with `env_hit=1` on **both** predecessor edges. The push/pop is
+  conditional (`if (d->cfg_succ.n != 1 && d->cfg_pred.n != 1)`), so a
+  plain `if` with no `else` leaks the assigning branch's renaming onto
+  the non-assigning edge. There is no fallback to hook for the very
+  shape the issue is about.
+
+So the fact is **not recoverable from renaming state**. Item 2 should be
+struck.
+
+### Nor is a lattice element needed
+
+"Proposed direction" item 1 (an 18th canonical `AType`) was implemented
+and then **reverted**. Definite assignment is a CFG property, not a type
+property, so it rides on `Var::maybe_unbound` instead.
+
+Reverting was not just tidiness: adding `sym_unbound` / `sym_unbound_type`
+to `builtin_symbols.h` **renumbers every Sym id**, which broke 16 `dce`
+ir-goldens. `ATypeViolation_kind::MAYBE_UNBOUND` is likewise appended
+LAST, since inserting mid-enum renumbers `CLOSURE_RECURSION`.
+
+### What is implemented
+
+- `Var::maybe_unbound` (`if1/var.h`).
+- `find_maybe_unbound` (`optimize/ssu.cc`), a forward MUST analysis:
+  `assigned_out[n] = assigned_in[n] u lvals(n)`, `assigned_in[n]` the
+  intersection over predecessors, entry seeded empty (formals arrive as
+  entry's own lvals), initialised optimistically and shrunk. Dense
+  bitmaps — a `Vec<Var*>` set with a linear `set_in` inside the fixed
+  point did not finish on the builtin library.
+- `ATypeViolation_kind::MAYBE_UNBOUND`, collected in
+  `collect_var_type_violations` and reported by `show_violations`.
+  Reporting it as an ATypeViolation is what buys the two levels with no
+  new flags: error under `--strict`, warning under `--permissive`.
+
+### THE BLOCKER: the fixed point does not converge
+
+**Default OFF (`IFA_UNBOUND=1` to enable), hard-bounded at 200 sweeps,
+and exhausting the bound abandons the result rather than reporting a
+wrong one.** With it off, all five CI gates pass (296 passed / 0
+failed).
+
+Enabled, ~42 functions in the builtin library never reach a fixed point.
+Measured on `__pyc_tolist__` (19 nodes, 13 locals, so ≤247 bit-changes
+should suffice): the total popcount descends monotonically
+1152 → 1090 → 1028 → … → 111, and then **flips bits forever at constant
+popcount 111** — a genuine cycle, not slowness.
+
+Ruled out, each by direct probe: duplicate nodes in the node list (0),
+predecessors missing from the map (0), self-loops (0), unreachable
+non-entry nodes (0), and the map failing to return what was stored (0
+mismatches). The update is monotone by inspection — `in` is the
+intersection of predecessors' current `out`, `out := in u gen`, `gen`
+constant, everything initialised to top — so a bit should never be able
+to come back on. It does. **That contradiction is the thing to debug
+next**, and it is the whole remaining blocker.
+
+Also unverified as a consequence: whether the flag reaches
+`show_violations` end to end, and the non-strict zero-init codegen,
+which was not started.
 
 ## What this unblocks
 

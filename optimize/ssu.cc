@@ -91,6 +91,115 @@ static void approximate_liveness(Fun *f, Vec<PNode *> &nodes) {
   }
 }
 
+// ifa/issues/039: definite assignment -- mark every local with a USE
+// reachable by a path that does not assign it. CPython raises
+// UnboundLocalError for exactly this; pyc reads stack garbage silently
+// on both backends.
+//
+// DEFAULT OFF (IFA_UNBOUND=1 to enable). The fixed point below does not
+// converge on some functions; see "Where it stands" in the issue. It is
+// hard-bounded so an enabled run cannot hang, and exhausting the bound
+// abandons the result rather than reporting a wrong one.
+//
+// Why a separate pass, and not the hook the issue originally proposed.
+// `get_Var`'s "no entry in the renaming environment" fallback looks like
+// the right signal for "no reaching definition" and is not, in BOTH
+// directions -- measured on the issue's own four-line repro:
+//
+//   * it FIRES for bound values: 77 hits, including `self`, `item` and
+//     `key`, which are formal parameters and always bound. The env is
+//     scoped, so a formal's binding is not visible at every point a phi
+//     argument is resolved.
+//   * it does NOT fire for the actual unbound local. `y`'s phi got
+//     env_hit=1 on BOTH predecessor edges, because the push/pop is
+//     conditional (`cfg_succ.n != 1 && cfg_pred.n != 1`) -- so a plain
+//     `if` with no `else` leaks the assigning branch's renaming onto the
+//     non-assigning edge.
+//
+// The fact is therefore not recoverable from renaming state at all. It
+// is an ordinary forward MUST analysis:
+//
+//     assigned_out[n] = assigned_in[n] u lvals(n)
+//     assigned_in[n]  = INTERSECTION over preds of assigned_out
+//     assigned_in[entry] = {}     (formals arrive as entry's own lvals)
+//
+// initialised optimistically (every non-entry node starts with every
+// local assigned) and shrunk, the standard way to get the greatest
+// solution.
+static const int kUnboundMaxSweeps = 200;
+
+static void find_maybe_unbound(Fun *f, Vec<PNode *> &nodes, Vec<Var *> &locals) {
+  static int enabled = -1;
+  if (enabled < 0) enabled = getenv("IFA_UNBOUND") ? 1 : 0;
+  if (!enabled) return;
+  if (!f->entry || !locals.n || !nodes.n) return;
+
+  // Dense bit indices: a Vec-of-Var set with a linear set_in inside the
+  // fixed point did not finish on the builtin library.
+  Map<Var *, int> idx;
+  for (int i = 0; i < locals.n; i++) idx.put(locals[i], i + 1);  // 1-based; get() gives 0 for absent
+  int nbits = locals.n, nwords = (nbits + 63) / 64;
+  Map<PNode *, uint64_t *> outmap;
+  for (PNode *n : nodes) {
+    uint64_t *w = (uint64_t *)MALLOC(nwords * sizeof(uint64_t));
+    uint64_t fill = (n == f->entry) ? 0 : ~(uint64_t)0;
+    for (int i = 0; i < nwords; i++) w[i] = fill;
+    outmap.put(n, w);
+  }
+
+  uint64_t *in = (uint64_t *)MALLOC(nwords * sizeof(uint64_t));
+  bool changed = true;
+  int sweeps = 0;
+  while (changed) {
+    changed = false;
+    if (++sweeps > kUnboundMaxSweeps) {
+      for (PNode *n : nodes) for (Var *v : n->rvals) if (v) v->maybe_unbound = 0;
+      return;
+    }
+    for (PNode *n : nodes) {
+      bool first = true;
+      for (int i = 0; i < nwords; i++) in[i] = 0;
+      if (n != f->entry) {
+        for (PNode *p : n->cfg_pred) {
+          uint64_t *po = outmap.get(p);
+          if (!po) continue;
+          if (first) {
+            for (int i = 0; i < nwords; i++) in[i] = po[i];
+            first = false;
+          } else
+            for (int i = 0; i < nwords; i++) in[i] &= po[i];
+        }
+      }
+      for (Var *v : n->lvals) if (v && v->sym->is_local) {
+        int b = idx.get(v);
+        if (b) { --b; in[b >> 6] |= ((uint64_t)1 << (b & 63)); }
+      }
+      uint64_t *cur = outmap.get(n);
+      for (int i = 0; i < nwords; i++)
+        if (in[i] != cur[i]) { cur[i] = in[i]; changed = true; }
+    }
+  }
+
+  for (PNode *n : nodes) {
+    bool first = true;
+    for (int i = 0; i < nwords; i++) in[i] = 0;
+    if (n != f->entry) {
+      for (PNode *p : n->cfg_pred) {
+        uint64_t *po = outmap.get(p);
+        if (!po) continue;
+        if (first) { for (int i = 0; i < nwords; i++) in[i] = po[i]; first = false; }
+        else for (int i = 0; i < nwords; i++) in[i] &= po[i];
+      }
+    }
+    for (Var *v : n->rvals) if (v && v->sym->is_local) {
+      int b = idx.get(v);
+      if (!b) continue;
+      --b;
+      if (!(in[b >> 6] & ((uint64_t)1 << (b & 63)))) v->maybe_unbound = 1;
+    }
+  }
+}
+
 static inline Var *new_Var(Var *v, VarEnv &e, Fun *f) {
   if (!v->sym->is_local) return v;
   Var *vv = new Var(v->sym);
@@ -197,6 +306,7 @@ void Fun::build_ssu() {
     for (Var *v : p->lvals) if (v->sym->is_local) v->ssu->defs.add(p);
     for (Var *v : p->rvals) if (v->sym->is_local) v->ssu->uses.add(p);
   }
+  find_maybe_unbound(this, pnodes, vrs);  // ifa/issues/039 (default off)
   // Phi placement and phy placement feed each other: a
   // new phy creates new defs (its lvals at branch entries
   // — see `place_phy` line `defs.append(y->cfg_succ)`),

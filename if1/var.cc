@@ -15,6 +15,7 @@ Var::Var(Sym *s)
       is_filtered(0),
       is_formal(0),
       live(0),
+      maybe_unbound(0),  // ifa/issues/039
       constant(0),
       cg_string(0) {
   id = var_id++;

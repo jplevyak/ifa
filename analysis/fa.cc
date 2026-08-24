@@ -4209,6 +4209,12 @@ static void show_violations(FA *fa, FILE *fp) {
         show_type(*v->type, memfp);
         fprintf(memfp, "\n");
         break;
+      case ATypeViolation_kind::MAYBE_UNBOUND:
+        show_name(memfp, v->av);
+        fprintf(memfp, "may be used before assignment on some path; type is:");
+        show_type(*v->type, memfp);
+        fprintf(memfp, "\n");
+        break;
       case ATypeViolation_kind::CLOSURE_RECURSION:
         show_name(memfp, v->av);
         fprintf(memfp, "is recursive closure\n");
@@ -4478,6 +4484,22 @@ static void collect_var_type_violations() {
         AVar *av = make_AVar(v, es);
         if (!is_only_used_by_phy_or_phi(av->var) && mixed_basics(av))
           type_violation(ATypeViolation_kind::BOXING, av, av->out, nullptr, nullptr);
+      }
+    }
+    // ifa/issues/039: report the definite-assignment fact computed by
+    // find_maybe_unbound (ssu.cc). It is a CFG property, not a type
+    // one, so it rides on Var rather than on the AVar's type -- but it
+    // is reported as an ATypeViolation so it inherits the existing
+    // severity plumbing: error under --strict, warning under
+    // --permissive, with no new flags. The phi/phy carriers are skipped
+    // for the same reason BOXING skips them: they are plumbing, and
+    // reporting one names an internal Var instead of the user's.
+    for (EntrySet *es : fa->ess) {
+      for (Var *v : es->fun->fa_all_Vars) {
+        AVar *av = make_AVar(v, es);
+        if (is_only_used_by_phy_or_phi(av->var)) continue;
+        if (av->var && av->var->maybe_unbound && av->var->live)
+          type_violation(ATypeViolation_kind::MAYBE_UNBOUND, av, av->out, nullptr, nullptr);
       }
     }
     for (CreationSet *cs : fa->css) {

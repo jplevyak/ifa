@@ -461,7 +461,13 @@ enum class ATypeViolation_kind {
   MATCH,
   NOTYPE,
   BOXING,
-  CLOSURE_RECURSION
+  CLOSURE_RECURSION,
+  // ifa/issues/039. Appended LAST on purpose: inserting it mid-enum
+  // renumbers CLOSURE_RECURSION, and adding builtin symbols for this
+  // renumbered every Sym id in the ir goldens (16 dce fixtures failed).
+  // The fact is a CFG property carried on Var::maybe_unbound, not a
+  // type, so it needs no lattice element at all.
+  MAYBE_UNBOUND
 };
 
 class ATypeViolation : public gc {
