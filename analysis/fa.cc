@@ -4128,7 +4128,17 @@ static void show_violations(FA *fa, FILE *fp) {
     }
     if ((!filename || !filename[0]) && fa->funs.n && fa->funs[0]->sym) filename = fa->funs[0]->sym->filename();
 
-    cchar *severity = fruntime_errors ? "warning" : "error";
+    // issues/018: a BOXING violation is an ERROR even in permissive
+    // mode. Permissive mode's bargain is "warn, and insert a runtime
+    // check" -- but a variable whose type mixes basic types (int64 and
+    // str, say) has NO RUNTIME REPRESENTATION at all, so there is no
+    // check to insert and nothing downstream can recover. Reporting it
+    // as a warning produced the worst available outcome: 8 warnings,
+    // exit 0, and a binary that aborts with "matching function not
+    // found" the moment the value is used. shedskin reaches the same
+    // wall and at least fails at build time (its generated C++ gets
+    // `invalid conversion from '__ss_int' to 'pyobj*'`).
+    cchar *severity = (fruntime_errors && v->kind != ATypeViolation_kind::BOXING) ? "warning" : "error";
 
     if (filename && line > 0) {
       if (col > 0)
@@ -9415,7 +9425,15 @@ int FA::analyze(Fun *top) {
       if (stage_progress_count[i]) fprintf(stderr, " %s", kStageName[i]);
     fprintf(stderr, "\n");
   }
-  return (!fruntime_errors && type_violations.set_count()) ? -1 : 0;
+  // issues/018: BOXING is fatal regardless of permissive mode -- see
+  // the severity note in show_violations. Boxing the value is
+  // deliberately NOT an option here (project decision), so a mixed
+  // basic-type union cannot be represented at all and refusing is the
+  // only honest answer.
+  int n_boxing = 0;
+  for (ATypeViolation *v : type_violations)
+    if (v && v->kind == ATypeViolation_kind::BOXING) ++n_boxing;
+  return ((!fruntime_errors && type_violations.set_count()) || n_boxing) ? -1 : 0;
 }
 
 static Var *info_var(IFAAST *a, Sym *s) {
