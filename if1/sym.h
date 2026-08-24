@@ -68,6 +68,13 @@ class BasicSym : public gc {
   unsigned int is_constant : 1;     // Sym is a constant
   unsigned int is_lvalue : 1;       // Sym is an lvalue
   unsigned int is_local : 1;        // Sym is local (can be converted into SSU)
+  // ifa/issues/039: some USE of this local is reachable by a path that
+  // does not assign it. Lives on the Sym, not the Var, because SSU
+  // RENAMES Vars (`new Var(v->sym)`) after find_maybe_unbound runs, so
+  // a flag on the pre-rename Var never reaches FA. The sym is shared
+  // across every renamed copy and is per-function for a local, which is
+  // exactly the granularity this fact has.
+  unsigned int maybe_unbound : 1;
   unsigned int is_default_arg : 1;  // Sym is a default argument
   unsigned int is_exact_match : 1;  // must_specialize/implement is must_BE_EXACT
   unsigned int is_module : 1;       // Sym is a module

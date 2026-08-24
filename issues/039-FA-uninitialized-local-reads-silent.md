@@ -1,8 +1,8 @@
 # Issue 039: Reading a local that's unassigned on some CFG path is silent undefined behavior — no lattice element for "uninitialized"
 
-**Status:** open. **Design settled 2026-08-24; first implementation
-landed DEFAULT OFF the same day and does not yet converge — see "Where
-it stands".**
+**Status:** open. **Design settled 2026-08-24. Implementation lands
+DEFAULT OFF: it now converges and both levels work end to end, but it
+over-reports — see "Where it stands".**
 
 **Design settled 2026-08-24** (see "Design decision"
 below, which supersedes parts of "Proposed direction"). **Found:**
@@ -286,31 +286,84 @@ LAST, since inserting mid-enum renumbers `CLOSURE_RECURSION`.
   Reporting it as an ATypeViolation is what buys the two levels with no
   new flags: error under `--strict`, warning under `--permissive`.
 
-### THE BLOCKER: the fixed point does not converge
+### The convergence bug: FIXED — it was iteration order
 
-**Default OFF (`IFA_UNBOUND=1` to enable), hard-bounded at 200 sweeps,
-and exhausting the bound abandons the result rather than reporting a
-wrong one.** With it off, all five CI gates pass (296 passed / 0
-failed).
+The fixed point failed on ~42 builtin functions. Cause: the sweep
+visited `nodes` in collection order. Measured on `__pyc_tolist__`, a
+single bit travelled around a cycle forever at constant total popcount
+(node 275 lost bit 8, 273 gained it, then 275 gained it back).
 
-Enabled, ~42 functions in the builtin library never reach a fixed point.
-Measured on `__pyc_tolist__` (19 nodes, 13 locals, so ≤247 bit-changes
-should suffice): the total popcount descends monotonically
-1152 → 1090 → 1028 → … → 111, and then **flips bits forever at constant
-popcount 111** — a genuine cycle, not slowness.
+**Iterating in REVERSE POSTORDER fixes it.** A forward analysis visits
+every predecessor before its successors in RPO, so one sweep propagates
+a change the whole length of an acyclic path instead of one edge per
+sweep. Ruled out before finding this, each by direct probe: duplicate
+nodes, missing predecessors, self-loops, unreachable nodes, and the map
+failing to return what was stored — all zero.
 
-Ruled out, each by direct probe: duplicate nodes in the node list (0),
-predecessors missing from the map (0), self-loops (0), unreachable
-non-entry nodes (0), and the map failing to return what was stored (0
-mismatches). The update is monotone by inspection — `in` is the
-intersection of predecessors' current `out`, `out := in u gen`, `gen`
-constant, everything initialised to top — so a bit should never be able
-to come back on. It does. **That contradiction is the thing to debug
-next**, and it is the whole remaining blocker.
+### Three ordering traps, all the same shape
 
-Also unverified as a consequence: whether the flag reaches
-`show_violations` end to end, and the non-strict zero-init codegen,
-which was not started.
+Each cost a wrong result that looked like a different bug:
+
+1. **`Var::is_formal` is not set at SSU time** — `build_patterns` sets
+   it, and that runs inside FA. Seeding formals from it seeded nothing,
+   and the analysis reported essentially every parameter in the builtin
+   library as possibly unbound (485 in `___init___` alone). Read formals
+   from `f->sym->has` instead.
+2. **`Var::live` is not set at `collect_var_type_violations` time** —
+   dead-code elimination sets it, later still. Requiring it silently
+   suppressed every report.
+3. **SSU RENAMES Vars** (`new Var(v->sym)`) after this pass runs, so a
+   flag on the pre-rename Var never reaches FA. The flag lives on
+   `Sym::maybe_unbound`; the sym is shared across renamed copies and is
+   per-function for a local, which is the right granularity.
+
+(Adding that Sym bit also produced `fail: no instance for type 'int'`
+until a `make clean` — the header-rebuild gotcha, not a code bug.)
+
+### Both levels work, end to end
+
+    $ pyc u1.py                 # non-strict, the default
+    u1.py:2:11: warning: 'y' may be used before assignment on some path; type is:int64
+    rc=0
+
+    $ pyc --strict u1.py
+    u1.py:2:11: error: 'y' may be used before assignment on some path; type is:int64
+    rc=1
+
+No new flags, exactly as designed — reporting it as an ATypeViolation
+inherits `show_violations`' existing severity logic.
+
+### THE BLOCKER NOW: it over-reports
+
+Enabled, 8 suite tests fail. 549 of the 550 raw flags on the repro are
+unnamed compiler temporaries (already filtered out of the diagnostic —
+the FLAG stays set on them because non-strict initialisation wants
+exactly those slots). What remains is two distinct categories:
+
+**(a) match/case capture lowering — 7 tests.** `case [[a, b], c]:`
+warns about `a` at a use INSIDE its own branch, where the pattern has
+certainly bound it. A false positive, and the shape is 039's own second
+repro, so the lowering needs looking at before this can be trusted.
+
+**(b) A TRUE positive that must not be an error.**
+`tests/scope_read_before_write.py` does
+`if first or d < bd:` and its own comment says it "reads bd before its
+first write". The analysis is right — and the program is **valid
+Python**, because `or` short-circuits so the read never happens on the
+first iteration. CPython accepts it.
+
+**(b) is a design finding, not a bug.** It means strict mode cannot
+simply error on may-be-unbound, or it rejects legitimate programs.
+Either the analysis must model short-circuit evaluation, or strict must
+only reject where the read is unbound on a path it can prove
+*reachable*. That decision has to be made before this is enabled by
+default, and it was not visible until the analysis worked.
+
+### Not started
+
+The non-strict default-initialisation codegen (fill with the zero of the
+type inferred from the assigning paths). It waits on (a) and (b),
+because initialising on a false positive is a silent semantic change.
 
 ## What this unblocks
 

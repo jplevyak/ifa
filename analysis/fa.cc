@@ -4498,7 +4498,19 @@ static void collect_var_type_violations() {
       for (Var *v : es->fun->fa_all_Vars) {
         AVar *av = make_AVar(v, es);
         if (is_only_used_by_phy_or_phi(av->var)) continue;
-        if (av->var && av->var->maybe_unbound && av->var->live)
+        // Named locals only. 549 of the 550 flags on the issue's repro
+        // are compiler-generated temporaries with no name -- normal in
+        // lowered code, and reporting one names an internal Var rather
+        // than anything the user wrote. The FLAG stays set on them,
+        // because the non-strict default-initialisation wants exactly
+        // those slots; it is only the diagnostic that filters.
+        // No `av->var->live` test: Var::live is set by dead-code
+        // elimination, which runs AFTER this -- it is 0 for everything
+        // here, so requiring it silently suppressed every report. Same
+        // ordering trap as Var::is_formal (set by build_patterns, also
+        // later), which is why the SSU pass reads formals from
+        // f->sym->has instead.
+        if (av->var && av->var->sym && av->var->sym->maybe_unbound && av->var->sym->name)
           type_violation(ATypeViolation_kind::MAYBE_UNBOUND, av, av->out, nullptr, nullptr);
       }
     }

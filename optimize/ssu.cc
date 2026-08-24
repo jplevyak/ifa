@@ -147,6 +147,54 @@ static void find_maybe_unbound(Fun *f, Vec<PNode *> &nodes, Vec<Var *> &locals) 
     outmap.put(n, w);
   }
 
+  // Iterate in REVERSE POSTORDER. The first cut swept `nodes` in
+  // collection order with in-place updates, and never reached a fixed
+  // point on ~42 builtin functions: a bit travelled around a cycle
+  // forever (measured on __pyc_tolist__ -- node 275 lost bit 8, 273
+  // gained it, then 275 gained it back, at constant total popcount).
+  // A forward analysis visits every predecessor before its successors
+  // in RPO, so one sweep propagates a change the whole length of an
+  // acyclic path instead of one edge per sweep.
+  Vec<PNode *> rpo;
+  {
+    Vec<PNode *> stack, post, seen;
+    stack.add(f->entry);
+    Vec<PNode *> visiting;
+    // iterative DFS postorder
+    Vec<int> next_child;
+    stack.clear();
+    stack.add(f->entry);
+    next_child.add(0);
+    seen.set_add(f->entry);
+    while (stack.n) {
+      PNode *n = stack[stack.n - 1];
+      int &ci = next_child[next_child.n - 1];
+      if (ci < n->cfg_succ.n) {
+        PNode *c = n->cfg_succ[ci++];
+        if (c && seen.set_add(c)) { stack.add(c); next_child.add(0); }
+      } else {
+        post.add(n);
+        stack.n--;
+        next_child.n--;
+      }
+    }
+    for (int i = post.n - 1; i >= 0; i--) rpo.add(post[i]);
+    // anything unreachable from entry still needs a slot in the sweep
+    for (PNode *n : nodes) if (!seen.set_in(n)) rpo.add(n);
+  }
+
+  // Formals are bound on entry BY DEFINITION, and must be seeded --
+  // they do NOT arrive as the entry node's own lvals, and assuming they
+  // did made the analysis report essentially every parameter in the
+  // builtin library as possibly unbound (485 hits in ___init___ alone,
+  // plus self, x, l, t ...).
+  //
+  // Read from f->sym->has, NOT Var::is_formal: that bit is set by
+  // build_patterns, which runs inside FA, long after build_ssu -- so at
+  // this point it is always 0 and seeding from it seeds nothing.
+  Vec<Var *> formals;
+  for (Sym *a : f->sym->has) if (a && a->var) formals.set_add(a->var);
+
   uint64_t *in = (uint64_t *)MALLOC(nwords * sizeof(uint64_t));
   bool changed = true;
   int sweeps = 0;
@@ -156,9 +204,16 @@ static void find_maybe_unbound(Fun *f, Vec<PNode *> &nodes, Vec<Var *> &locals) 
       for (PNode *n : nodes) for (Var *v : n->rvals) if (v) v->maybe_unbound = 0;
       return;
     }
-    for (PNode *n : nodes) {
+    for (PNode *n : rpo) {
       bool first = true;
       for (int i = 0; i < nwords; i++) in[i] = 0;
+      if (n == f->entry) {
+        // entry's IN is the formals, not the empty set
+        for (Var *v : formals) {
+          int b = idx.get(v);
+          if (b) { --b; in[b >> 6] |= ((uint64_t)1 << (b & 63)); }
+        }
+      }
       if (n != f->entry) {
         for (PNode *p : n->cfg_pred) {
           uint64_t *po = outmap.get(p);
@@ -176,13 +231,21 @@ static void find_maybe_unbound(Fun *f, Vec<PNode *> &nodes, Vec<Var *> &locals) 
       }
       uint64_t *cur = outmap.get(n);
       for (int i = 0; i < nwords; i++)
-        if (in[i] != cur[i]) { cur[i] = in[i]; changed = true; }
+        if (in[i] != cur[i]) {
+          cur[i] = in[i];
+          changed = true;
+        }
     }
   }
 
   for (PNode *n : nodes) {
     bool first = true;
     for (int i = 0; i < nwords; i++) in[i] = 0;
+    if (n == f->entry)
+      for (Var *v : formals) {
+        int b = idx.get(v);
+        if (b) { --b; in[b >> 6] |= ((uint64_t)1 << (b & 63)); }
+      }
     if (n != f->entry) {
       for (PNode *p : n->cfg_pred) {
         uint64_t *po = outmap.get(p);
@@ -195,7 +258,10 @@ static void find_maybe_unbound(Fun *f, Vec<PNode *> &nodes, Vec<Var *> &locals) 
       int b = idx.get(v);
       if (!b) continue;
       --b;
-      if (!(in[b >> 6] & ((uint64_t)1 << (b & 63)))) v->maybe_unbound = 1;
+      if (!(in[b >> 6] & ((uint64_t)1 << (b & 63)))) {
+        v->maybe_unbound = 1;
+        v->sym->maybe_unbound = 1;
+      }
     }
   }
 }
