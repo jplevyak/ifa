@@ -1078,10 +1078,8 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         }
       }
       if (!t->element)
-        fail("%s:%d: internal: sizeof_element of non-container type '%s' (in %s) -- FA specialized a container "
-             "method against a scalar (see ifa/issues/018 type-resolution)",
-             n->code->ast ? n->code->ast->pathname() : "?", n->code->ast ? n->code->ast->line() : 0,
-             t->name ? t->name : "<anonymous>", f->sym->name ? f->sym->name : "<anonymous>");
+        cg_fail_unrepresentable_container_union(t, f->sym, n->code->ast ? n->code->ast->pathname() : nullptr,
+                                                n->code->ast ? n->code->ast->line() : 0);
       int sz = t->element->type->size;
       if (!sz && t->type_kind == Type_RECORD && t->has.n) sz = t->has[0]->type->size;
       // A generic list's element type is the program-wide union of

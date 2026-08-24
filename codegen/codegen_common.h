@@ -346,4 +346,17 @@ static inline void                   cg_set_llvm_debug_var(Var *v, llvm::DILocal
 static inline llvm::Function *cg_get_llvm(Fun *f) { return f->llvm; }
 static inline void            cg_set_llvm(Fun *f, llvm::Function *fn) { f->llvm = fn; }
 
+// issues/018: one variable holding a {container, scalar} union has no
+// representation -- `+` resolves to the CONTAINER method whose receiver
+// may be the scalar, and a scalar has no element size. pyc does not
+// box, so this is refused rather than miscompiled.
+//
+// Shared by BOTH backends on purpose. The C backend used to fail here
+// while the LLVM backend silently emitted element size 0, which
+// compiled, ran, and printed NOTHING where CPython prints 7.0 -- a
+// silent wrong answer, the worst outcome available. One helper keeps
+// the two emitters from drifting again, and keeps the message
+// identical so a single test .check pins both.
+void cg_fail_unrepresentable_container_union(Sym *outer, Sym *fn_sym, cchar *path, int line);
+
 #endif  // _codegen_common_H_

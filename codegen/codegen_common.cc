@@ -103,6 +103,41 @@ bool cg_has_classtag(Sym *s) {
   return false;
 }
 
+// See codegen_common.h.
+void cg_fail_unrepresentable_container_union(Sym *outer, Sym *fn_sym, cchar *path, int line) {
+  char un[512];
+  un[0] = 0;
+  if (outer && outer->type_kind == Type_SUM && outer->has.n) {
+    int off = 0;
+    off += snprintf(un + off, sizeof(un) - off, "{");
+    for (int i = 0; i < outer->has.n && off < (int)sizeof(un) - 8; i++) {
+      Sym *m = outer->has[i];
+      off += snprintf(un + off, sizeof(un) - off, "%s%s", i ? ", " : "", m && m->name ? m->name : "?");
+    }
+    snprintf(un + off, sizeof(un) - off, "}");
+  } else
+    snprintf(un, sizeof(un), "'%s'", outer && outer->name ? outer->name : "?");
+
+  // Deliberately no file:line when the only location available is the
+  // BUILTIN's -- `__pyc__.py:1155`, where `__add__` is defined. Printing
+  // it reads as "the bug is in the library", which sent at least one
+  // investigation the wrong way. The user's own line is already named by
+  // the FA warning that precedes this ("illegal primitive argument type
+  // 'x'"), so no location beats a misleading one.
+  bool in_builtin = path && strstr(path, "__pyc__");
+  cchar *fname = fn_sym && fn_sym->name ? fn_sym->name : "?";
+  if (in_builtin || !path)
+    fail("a variable holding %s has no representation: '%s' resolved to the CONTAINER method, whose receiver "
+         "may be a scalar. pyc does not box, so a {container, scalar} union cannot be represented "
+         "(issues/018)",
+         un, fname);
+  else
+    fail("%s:%d: a variable holding %s has no representation: '%s' resolved to the CONTAINER method, whose "
+         "receiver may be a scalar. pyc does not box, so a {container, scalar} union cannot be represented "
+         "(issues/018)",
+         path, line, un, fname);
+}
+
 int cg_field_live(Sym *s, int i) {
   if (!s || i < 0 || i >= s->has.n) return 0;
   if (!s->has[i]->type) return 0;

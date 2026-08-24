@@ -1240,16 +1240,43 @@ bool emit_send_sizeof(EmitCtx &ctx, PNode *pn) {
       int common = 0;
       bool uniform = true;
       for (Sym *m : t_sym->has) if (m) {
-        Sym *mt = m->type ? m->type : m;
-        if (!mt->size) { uniform = false; break; }
-        if (!common) common = mt->size;
-        else if (common != mt->size) { uniform = false; break; }
+        // issues/018: this is sizeof_ELEMENT, so a member contributes
+        // its ELEMENT's size, not its own. Asking for `mt->size`
+        // instead accepted {list, float64} as "uniform" because both
+        // are pointer-sized -- and a float64 has no elements at all.
+        // The union then got element size 8, the program compiled and
+        // ran and printed NOTHING where CPython prints 7.0, while the
+        // C backend refused the same program (cg.cc applies the
+        // element rule). An EMPTY container imposes no constraint and
+        // is skipped, mirroring cg.cc exactly.
+        int msz = 0;
+        if (m->element) {
+          Sym *et = m->element->type ? m->element->type : m->element;
+          msz = et->size;
+        }
+        if (!msz && m->type_kind == Type_RECORD && m->has.n == 0) continue;
+        if (!msz && m->type_kind == Type_RECORD && m->has.n)
+          msz = m->has.v[0]->type ? m->has.v[0]->type->size : 0;
+        if (!msz) { uniform = false; break; }
+        if (!common) common = msz;
+        else if (common != msz) { uniform = false; break; }
       }
       if (uniform && common) {
         put_result(ctx, pn->lvals.v[0], llvm::ConstantInt::get(dst_ty, common));
         return true;
       }
     }
+    // issues/018: mirrors cg.cc. Without this the fallthrough below
+    // emitted element size 0 for a {container, scalar} union, which
+    // compiled and ran and printed NOTHING where CPython prints 7.0 --
+    // a silent wrong answer, while the C backend refused the same
+    // program. Shared helper so the two cannot drift and one test
+    // .check pins both.
+    if (!outer->element)
+      cg_fail_unrepresentable_container_union(
+          outer, ctx.fn ? ctx.fn->sym : nullptr,
+          pn->code && pn->code->ast ? pn->code->ast->pathname() : nullptr,
+          pn->code && pn->code->ast ? pn->code->ast->line() : 0);
   }
   if (!t_sym) {
     put_result(ctx, pn->lvals.v[0],
