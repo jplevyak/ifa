@@ -14,6 +14,7 @@ Var::Var(Sym *s)
       is_internal(0),
       is_filtered(0),
       is_formal(0),
+      is_unbound_fill(0),  // ifa/issues/039
       live(0),
       constant(0),
       cg_string(0) {

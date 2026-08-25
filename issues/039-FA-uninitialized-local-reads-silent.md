@@ -642,3 +642,88 @@ in both backends, and that is not written.
 - analysis-level fill so the unassigned path survives FA — **not done**
 - runtime check for `possibly` — **not done** (hook exists, no callers)
 - LLVM backend for any of the above — **not done**
+
+## The fill works (2026-08-25) — as an IF1 rewrite, not a transfer node
+
+`--safe` now produces the right answer on the case the last section
+said it could not:
+
+```python
+def g(c):
+    if c: x = 2.5
+    return x
+print(g(1)); print(g(0))
+```
+
+    default   2.5 2.5     (unchanged)
+    --safe    2.5 0.0     C backend AND LLVM backend
+
+int, float, and a string case that correctly declines:
+
+    safe1 (int)     42 0
+    safe3 (float)   2.5 0.0
+    safe2 (str)     hi hi     -- no language-neutral zero, so ifa
+                                 declines rather than inventing one
+
+### How, and why not the transfer node
+
+The sketch above proposed a `zero_of` primitive in the fixed-point
+engine. It is not needed, and the thing that replaced it is smaller and
+lands in a far less dangerous place.
+
+**`mark_unbound_phi_operands`** (optimize/ssu.cc) runs after
+`rename_vars` and replaces each "control got here without ever assigning
+it" phi operand with a *fresh* Var flagged `is_unbound_fill`. It is a
+second MUST dataflow, keyed on Sym, in which a phi lval counts as a def
+(that is what concentrates unboundness onto the operand edges) and a phy
+lval does not (a phy renames a value without giving it one). A fresh Var
+per operand rather than a flag on the shared one, because `get_Var`'s
+env-miss hands the SAME original Var to several operand slots.
+
+**`apply_unbound_fills`** (analysis/fa.cc) then runs BETWEEN passes, in
+the `extend_analysis() || reanalyze() || ...` chain, and rewrites those
+operands to a typed zero constant. Between-pass IF1 rewriting is sound
+because `analyze_to_convergence` clears every Var, contour and edge
+before EVERY pass (ifa/issues/098), so the next pass re-reads the
+rewritten code. That is also precisely why this is neither a flow edge
+nor an `update_gen`: a snapshot taken during one pass can be lost on the
+final one, whereas rewritten IF1 is re-read every pass by construction.
+
+The bootstrap is the point of doing it between passes: pass 1 gives the
+marked operand nothing, so the merge carries only the assigning paths'
+type — which is exactly the type the zero must have. Pass 2 sees
+`{0, 42}` and no longer folds. From then on the operand is an ordinary
+constant, `apply_unbound_fills` reports no change, and the loop settles.
+
+Both backends get it for free because it is an IF1 rewrite, not a
+codegen feature. `cg.cc`'s `T x = {};` stays as a safety net for the
+locals the fill declines.
+
+### Two bugs worth remembering
+
+**A constant created between passes is invisible unless registered.**
+Constants get their value through `fa_Vars` -> `add_var_constraint`, and
+`collect_Vars_PNodes` builds that list ONCE per Fun (`fa_collected`).
+A constant introduced later contributes bottom, the merge stays a single
+value, and the function folds exactly as before — silently. It is also
+*type-dependent*, which is what made it confusing: `0` is usually
+already in the program from somewhere else, so int cases worked while
+float ones did not. The fix registers the Var in `fa_all_Vars` (re-sorted
+by id) and `fa_Vars`.
+
+**A set-mode `Vec` yields its empty slots as nulls.** `formals` is built
+with `set_add`, and iterating it hands back nulls once it grows into
+hash-table mode. `find_maybe_unbound`'s equivalent loop never showed the
+fault because it keys on the Var and `Map::get` tolerates a null key;
+this pass keys on `v->sym` and segfaulted on 3 tests.
+
+### Status
+
+- analysis, both facts, both severities — **done**
+- `--safe`: IF1-level typed-zero fill, both backends — **done**
+  (numeric types; other types decline, awaiting the frontend hook)
+- runtime check for `possibly` — **not done** (hook exists, no callers)
+
+Full suite under `--safe`: 288 passed, 8 failed, and all 8 are the
+COMPILE-OUT warning diffs of the section above — no behaviour failures.
+Five CI gates green with defaults.

@@ -128,6 +128,37 @@ static void approximate_liveness(Fun *f, Vec<PNode *> &nodes) {
 // initialised optimistically (every non-entry node starts with every
 // local assigned) and shrunk, the standard way to get the greatest
 // solution.
+// Reverse postorder over the CFG, for the forward analyses below. A
+// forward analysis visits every predecessor before its successors in
+// RPO, so one sweep propagates a change the whole length of an acyclic
+// path instead of one edge per sweep. Sweeping in collection order
+// instead never reached a fixed point on ~42 builtin functions: a bit
+// travelled around a cycle forever (measured on __pyc_tolist__ -- node
+// 275 lost bit 8, 273 gained it, then 275 gained it back, at constant
+// total popcount).
+static void compute_rpo(Fun *f, Vec<PNode *> &nodes, Vec<PNode *> &rpo) {
+  Vec<PNode *> stack, post, seen;
+  Vec<int> next_child;
+  stack.add(f->entry);
+  next_child.add(0);
+  seen.set_add(f->entry);
+  while (stack.n) {
+    PNode *n = stack[stack.n - 1];
+    int &ci = next_child[next_child.n - 1];
+    if (ci < n->cfg_succ.n) {
+      PNode *c = n->cfg_succ[ci++];
+      if (c && seen.set_add(c)) { stack.add(c); next_child.add(0); }
+    } else {
+      post.add(n);
+      stack.n--;
+      next_child.n--;
+    }
+  }
+  for (int i = post.n - 1; i >= 0; i--) rpo.add(post[i]);
+  // anything unreachable from entry still needs a slot in the sweep
+  for (PNode *n : nodes) if (!seen.set_in(n)) rpo.add(n);
+}
+
 static const int kUnboundMaxSweeps = 200;
 
 static void find_maybe_unbound(Fun *f, Vec<PNode *> &nodes, Vec<Var *> &locals) {
@@ -174,32 +205,7 @@ static void find_maybe_unbound(Fun *f, Vec<PNode *> &nodes, Vec<Var *> &locals) 
   // in RPO, so one sweep propagates a change the whole length of an
   // acyclic path instead of one edge per sweep.
   Vec<PNode *> rpo;
-  {
-    Vec<PNode *> stack, post, seen;
-    stack.add(f->entry);
-    Vec<PNode *> visiting;
-    // iterative DFS postorder
-    Vec<int> next_child;
-    stack.clear();
-    stack.add(f->entry);
-    next_child.add(0);
-    seen.set_add(f->entry);
-    while (stack.n) {
-      PNode *n = stack[stack.n - 1];
-      int &ci = next_child[next_child.n - 1];
-      if (ci < n->cfg_succ.n) {
-        PNode *c = n->cfg_succ[ci++];
-        if (c && seen.set_add(c)) { stack.add(c); next_child.add(0); }
-      } else {
-        post.add(n);
-        stack.n--;
-        next_child.n--;
-      }
-    }
-    for (int i = post.n - 1; i >= 0; i--) rpo.add(post[i]);
-    // anything unreachable from entry still needs a slot in the sweep
-    for (PNode *n : nodes) if (!seen.set_in(n)) rpo.add(n);
-  }
+  compute_rpo(f, nodes, rpo);
 
   // Formals are bound on entry BY DEFINITION, and must be seeded --
   // they do NOT arrive as the entry node's own lvals, and assuming they
@@ -235,6 +241,7 @@ static void find_maybe_unbound(Fun *f, Vec<PNode *> &nodes, Vec<Var *> &locals) 
       }
       if (n != f->entry) {
         for (PNode *p : n->cfg_pred) {
+          if (!p) continue;
           uint64_t *po = outmap.get(p);
           if (!po) continue;
           if (first) {
@@ -310,6 +317,145 @@ static void find_maybe_unbound(Fun *f, Vec<PNode *> &nodes, Vec<Var *> &locals) 
       if (!may) v->sym->definitely_unbound = 1;  // no path assigns it at all
     }
   }
+}
+
+// ifa/issues/039, the `safe` environment. Give the "control got here
+// without ever assigning it" edge of a phi a value of its own, so the
+// analysis stops treating that path as unreachable.
+//
+// This is what the codegen-level `T x = {};` cannot do by itself. FA
+// sees an unassigned path contribute *bottom*, so for
+//
+//     def f(c):
+//         if c: y = 42
+//         return y
+//
+// the union reaching `return y` is the single constant {42}: the whole
+// function folds to a literal and there is no slot left to initialize.
+// f(0) returned 42. Marking the operand here is what keeps the merge
+// alive long enough for FA to give it a type -- the typed zero itself
+// is substituted later, by the repair in fa.cc, which is the first
+// point at which the type is known.
+//
+// Runs after rename_vars, on the final Var objects, and keys on Sym:
+// each SSU name is a distinct Var but "assigned" is a property of the
+// original local. A fresh Var per operand (rather than a flag on the
+// shared one) keeps the marking unambiguous -- `get_Var`'s env-miss
+// fallback hands the SAME original Var to several operand slots.
+//
+// Note this cannot be read off the renaming state, which is why it is a
+// second dataflow rather than a hook in rename_edge: measured on the
+// repro, `get_Var`'s env miss fires for BOUND values (77 hits, incl.
+// formals) and does NOT fire for the actual unbound local, because the
+// push/pop is conditional (`cfg_succ.n != 1 && cfg_pred.n != 1`), so a
+// plain `if` with no `else` leaks the assigning branch's renaming onto
+// the non-assigning edge.
+static void mark_unbound_phi_operands(Fun *f, Vec<PNode *> &nodes) {
+  if (!fauto_init_unbound) return;
+  if (!f->entry || !nodes.n) return;
+
+  Map<Sym *, int> idx;  // 1-based; get() gives 0 for absent
+  int nbits = 0;
+  auto note = [&](Var *v) {
+    if (v && v->sym && v->sym->is_local && !idx.get(v->sym)) idx.put(v->sym, ++nbits);
+  };
+  for (PNode *n : nodes) {
+    for (Var *v : n->lvals) note(v);
+    for (Var *v : n->rvals) note(v);
+    for (PNode *p : n->phi) { for (Var *v : p->lvals) note(v); for (Var *v : p->rvals) note(v); }
+  }
+  if (!nbits) return;
+  int nwords = (nbits + 63) / 64;
+
+  Vec<PNode *> rpo;
+  compute_rpo(f, nodes, rpo);
+
+  Map<PNode *, uint64_t *> outmap;
+  for (PNode *n : nodes) {
+    uint64_t *w = (uint64_t *)MALLOC(nwords * sizeof(uint64_t));
+    // optimistic init (everything assigned) everywhere but entry, then
+    // shrink -- the standard way to get the greatest solution of a MUST
+    // analysis.
+    uint64_t fill = (n == f->entry) ? 0 : ~(uint64_t)0;
+    for (int i = 0; i < nwords; i++) w[i] = fill;
+    outmap.put(n, w);
+  }
+
+  Vec<Var *> formals;
+  for (Sym *a : f->sym->has) if (a && a->var) formals.set_add(a->var);
+
+  uint64_t *in = (uint64_t *)MALLOC(nwords * sizeof(uint64_t));
+  bool changed = true;
+  int sweeps = 0;
+  while (changed) {
+    changed = false;
+    if (++sweeps > kUnboundMaxSweeps) return;  // abandon rather than spin
+    for (PNode *n : rpo) {
+      bool first = true;
+      for (int i = 0; i < nwords; i++) in[i] = 0;
+      if (n == f->entry) {
+        // `formals` is a set-mode Vec: iterating it yields the hash
+        // table's EMPTY SLOTS as nulls too, so this must guard before
+        // dereferencing. (find_maybe_unbound's equivalent loop keys on
+        // the Var itself, and Map::get tolerates a null key, which is
+        // why it never showed the fault.)
+        for (Var *v : formals) {
+          if (!v) continue;
+          int b = idx.get(v->sym);
+          if (b) { --b; in[b >> 6] |= ((uint64_t)1 << (b & 63)); }
+        }
+      } else
+        for (PNode *p : n->cfg_pred) {
+          if (!p) continue;
+          uint64_t *po = outmap.get(p);
+          if (!po) continue;
+          if (first) { for (int i = 0; i < nwords; i++) in[i] = po[i]; first = false; }
+          else for (int i = 0; i < nwords; i++) in[i] &= po[i];
+        }
+      // A phi DEFINES the variable at the merge, so everything after it
+      // is assigned. That is what concentrates unboundness onto the
+      // operand edges instead of leaving it smeared over every later
+      // read. phy lvals are deliberately NOT defs: a phy renames a value
+      // across a branch split without giving it one, so counting it
+      // would report an unassigned local as assigned.
+      for (PNode *p : n->phi)
+        for (Var *v : p->lvals) {
+          int b = idx.get(v->sym);
+          if (b) { --b; in[b >> 6] |= ((uint64_t)1 << (b & 63)); }
+        }
+      for (Var *v : n->lvals) {
+        int b = idx.get(v->sym);
+        if (b) { --b; in[b >> 6] |= ((uint64_t)1 << (b & 63)); }
+      }
+      uint64_t *cur = outmap.get(n);
+      for (int i = 0; i < nwords; i++)
+        if (in[i] != cur[i]) { cur[i] = in[i]; changed = true; }
+    }
+  }
+
+  int marked = 0;
+  for (PNode *n : nodes) {
+    if (!n->phi.n) continue;
+    for (PNode *ph : n->phi) {
+      if (!ph->lvals.n || !ph->lvals[0]) continue;
+      int b = idx.get(ph->lvals[0]->sym);
+      if (!b) continue;
+      --b;
+      for (PNode *pred : n->cfg_pred) {
+        if (!pred) continue;
+        int di = n->cfg_pred_index.get(pred);
+        if (di < 0 || di >= ph->rvals.n) continue;
+        uint64_t *po = outmap.get(pred);
+        if (po && (po[b >> 6] & ((uint64_t)1 << (b & 63)))) continue;  // assigned on this edge
+        Var *nv = new Var(ph->lvals[0]->sym);
+        nv->is_unbound_fill = 1;
+        ph->rvals[di] = nv;
+        ++marked;
+      }
+    }
+  }
+  if (marked && getenv("IFA_DBG_UNBOUND_FILL"))
+    fprintf(stderr, "UNBOUND_FILL %s: %d operand(s)\n", f->sym->name ? f->sym->name : "?", marked);
 }
 
 static inline Var *new_Var(Var *v, VarEnv &e, Fun *f) {
@@ -451,6 +597,7 @@ void Fun::build_ssu() {
     for (Var *v : n->lvals) v->def = n;
     for (PNode *p : n->phy) for (Var *v : p->lvals) v->def = n;
   }
+  mark_unbound_phi_operands(this, pnodes);  // ifa/issues/039 (--safe only)
   for (Var *v : vrs) v->ssu = 0;
   print_ssu(this, pnodes);
 }

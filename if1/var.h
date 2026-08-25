@@ -33,6 +33,13 @@ class Var : public gc {
   unsigned int is_internal : 1;
   unsigned int is_filtered : 1;
   unsigned int is_formal : 1;
+  // ifa/issues/039: this Var is a synthetic phi operand standing for
+  // "control reached the merge without ever assigning the variable".
+  // Created by mark_unbound_phi_operands (optimize/ssu.cc) only under
+  // the `safe` environment. FA replaces it with a typed zero constant
+  // once it knows the merged type; until then it carries no value, and
+  // the flag is what lets the repair find it again.
+  unsigned int is_unbound_fill : 1;
   unsigned int live : 1;
   Sym *constant;     // valid after dead code elimination
   cchar *cg_string;  // used by cg.cpp

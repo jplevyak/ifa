@@ -9331,6 +9331,90 @@ static void compute_es_can_raise() {
 static const long STALL_CHECK_INTERVAL = 20000;
 static const time_t STALL_TIMEOUT_SECONDS = 120;
 
+// ifa/issues/039, the `safe` environment: substitute a typed zero for
+// the phi operands that mark "control reached this merge without ever
+// assigning the variable" (marked by mark_unbound_phi_operands,
+// optimize/ssu.cc).
+//
+// It has to happen HERE, between passes, because the zero's type is the
+// merged type, and that is exactly what the pass just computed. Pass 1
+// gives the marked operand nothing, so the merge carries only the
+// assigning paths' type; this reads that off, rewrites the operand to a
+// constant of it, and asks for another pass. From then on the operand is
+// an ordinary constant and this is a no-op, so the loop settles.
+//
+// Between-pass IF1 rewriting is sound because analyze_to_convergence
+// clears every Var, contour and edge before EVERY pass (ifa/issues/098),
+// so the next pass rebuilds all constraints from the rewritten code. It
+// is also why this is not a flow edge or an update_gen: a snapshot taken
+// during one pass can be lost on the final one, whereas rewritten IF1 is
+// re-read every pass by construction.
+static Sym *unbound_fill_constant(Var *lval) {
+  Vec<CreationSet *> css;
+  for (int i = 0; i < lval->avars.n; i++)
+    if (lval->avars[i].key && lval->avars[i].value) css.set_union(*lval->avars[i].value->out);
+  Sym *basic = nullptr;
+  for (CreationSet *cs : css) {
+    if (!cs || !cs->sym) continue;
+    Sym *t = cs->sym->is_constant ? cs->sym->type : cs->sym;
+    if (!t) return nullptr;
+    // ifa's own zero is the zero of a NUMBER. Anything else -- a
+    // record, a string, a closure -- has no language-neutral zero, so
+    // ifa declines rather than inventing one; that fill is the
+    // frontend's to supply (IFACallbacks).
+    if (t->num_kind != IF1_NUM_KIND_INT && t->num_kind != IF1_NUM_KIND_UINT && t->num_kind != IF1_NUM_KIND_FLOAT)
+      return nullptr;
+    if (basic && basic != t) return nullptr;  // more than one, no single zero
+    basic = t;
+  }
+  if (!basic) return nullptr;
+  return if1_const(if1, basic, basic->num_kind == IF1_NUM_KIND_FLOAT ? "0.0" : "0");
+}
+
+static bool apply_unbound_fills() {
+  if (!fauto_init_unbound) return false;
+  bool changed = false;
+  for (Fun *f : fa->funs) {
+    if (!f->entry) continue;
+    Vec<PNode *> nodes;
+    f->collect_PNodes(nodes);
+    for (PNode *p : nodes)
+      for (PNode *ph : p->phi) {
+        if (!ph->lvals.n || !ph->lvals[0]) continue;
+        for (int i = 0; i < ph->rvals.n; i++) {
+          Var *v = ph->rvals.v[i];
+          if (!v || !v->is_unbound_fill) continue;
+          Sym *z = unbound_fill_constant(ph->lvals[0]);
+          if (getenv("IFA_DBG_UNBOUND_FILL"))
+            fprintf(stderr, "UNBOUND_FILL %s: operand %d -> %s\n", f->sym->name ? f->sym->name : "?", i,
+                    z ? (z->type && z->type->name ? z->type->name : "const") : "DECLINED");
+          if (!z) continue;  // no zero for this type; leave the path as it was
+          Var *zv = z->var ? z->var : (z->var = new Var(z));
+          ph->rvals.v[i] = zv;
+          // A constant only acquires its value through fa_Vars ->
+          // add_var_constraint, and collect_Vars_PNodes builds that list
+          // ONCE per Fun (fa_collected), long before this runs. A
+          // constant introduced here is therefore invisible unless it is
+          // registered by hand -- it contributes bottom, the merge stays
+          // a single value, and the function folds exactly as it did
+          // before the fill. That failure is silent and type-dependent:
+          // `0` is usually already in the program from somewhere else,
+          // so int cases appeared to work while float ones did not.
+          if (f->fa_collected) {
+            if (!f->fa_all_Vars.in(zv)) {
+              f->fa_all_Vars.add(zv);
+              qsort_by_id(f->fa_all_Vars);  // keep the id order the rest of FA assumes
+            }
+            if (is_fa_Var(zv) && !f->fa_Vars.in(zv)) f->fa_Vars.add(zv);
+          }
+          changed = true;
+        }
+      }
+  }
+  if (changed && getenv("IFA_DBG_UNBOUND_FILL")) fprintf(stderr, "UNBOUND_FILL: substituted typed zeros\n");
+  return changed;
+}
+
 static void analyze_to_convergence() {
   // ifa/issues/098: the per-pass reset belongs here, unconditionally,
   // for two reasons. (1) Every pass must start from bottom, whether the
@@ -9406,7 +9490,8 @@ static void analyze_to_convergence() {
     // suppressed by the sticky stall guard, extend_analysis returns
     // 0 but a frontend annotator that never quiesces could
     // otherwise drive flow passes forever.
-  } while ((extend_analysis() || if1->callback->reanalyze(fa->type_violations)) && analysis_pass <= fa->pass_limit);
+  } while ((extend_analysis() || if1->callback->reanalyze(fa->type_violations) || apply_unbound_fills()) &&
+           analysis_pass <= fa->pass_limit);
   if (getenv("PYC_DBG_OSC"))
     fprintf(stderr, "OSC final_pass=%d pass_limit_hit=%d violations=%d ess=%d css=%d selective=%d\n", analysis_pass,
             fa->pass_limit_hit ? 1 : 0, fa->type_violations.set_count(), fa->ess.n, fa->css.n, ifa_selective);
