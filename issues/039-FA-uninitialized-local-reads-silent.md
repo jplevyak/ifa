@@ -544,3 +544,101 @@ is what goes on by default as an error.
 3. **The `IFACallbacks` hooks** that keep 1 and 2 general — what a check
    raises, what auto-init fills with. Nothing may name `UnboundLocalError`
    in ifa.
+
+## `safe` lands at codegen — and only half works (2026-08-25)
+
+`--safe` exists (pyc.cc `safe_mode_arg`, mirrored into ifa as
+`fauto_init_unbound`), turns the analysis on by itself, and makes
+`write_c` declare every flagged local as `T x = {};` — value-init, the
+one spelling that means "zero" for every representation the backend
+emits, so nothing there needs to know which it got.
+
+It works where the local survives to codegen:
+
+    pyc --safe tests/scope_read_before_write.py    39 zero-inits
+    pyc        tests/scope_read_before_write.py     0
+
+**But codegen is too late for the simplest case there is**, and this is
+the finding that matters:
+
+```python
+def f(c):
+    if c:
+        y = 42
+    return y
+print(f(1)); print(f(0))       # prints 42, 42
+```
+
+`f(0)` returns **42**, with or without `--safe`. There is no slot left
+to initialize: FA sees the unassigned path contribute *bottom*, so the
+union reaching `return y` is `{42}` — a single constant — and the whole
+function constant-folds away. Both call sites become
+`_CG_f_2087_0/*int64::__str__*/()` returning the literal 42.
+
+This is the original "silent" symptom of this issue seen from the other
+end. The unassigned path is not merely unreported, it is treated as
+*unreachable*, so it cannot be repaired downstream of the analysis that
+erased it.
+
+So auto-initialize has to be an **analysis-level** change: the
+unassigned path must contribute a real value, not nothing. Sketch —
+`y_entry = zero_of(y_phi)`, a primitive whose transfer maps an AType to
+the zero-constant CreationSet of each member. The self-reference is fine
+in a fixed-point engine: `{42}` → `{0}` → `{0,42}` → stable. That also
+answers "what type is the zero?" without a second FA run, which is what
+made the codegen-level version look attractive in the first place.
+
+The frontend still picks the fill (IFACallbacks); ifa's default stays
+the zero of the inferred type.
+
+### Where it goes, and why it is not a small change
+
+The join is one place -- `add_pnode_constraints` (analysis/fa.cc):
+
+```cpp
+for (PNode *n : p->phi) {
+  AVar *vv = make_AVar(n->lvals[0], es);
+  for (Var *v : n->rvals) flow_vars(make_AVar(v, es), vv);
+}
+```
+
+For an unbound operand the `flow_vars` becomes "contribute the zero of
+`vv`'s own type". Two things make that more than an edit:
+
+1. **It cannot be a snapshot.** Reading `vv->out` once and stuffing the
+   zero in is the `update_gen` trap -- a snapshot can be lost on the
+   final pass. It has to be a real transfer node that re-fires when
+   `vv` changes, i.e. a primitive in the fixed-point engine, not a flow
+   edge.
+2. **Marking the operand needs a second dataflow.** `find_maybe_unbound`
+   runs *before* `place_phi` (ssu.cc), so no phi exists when the facts
+   are computed, and `get_Var`'s env-miss is not the signal -- measured
+   wrong in both directions, see the pass comment. After phi placement
+   the structure is actually better (a phi *is* a def, so unboundness
+   concentrates exactly on the operand edges), so the marking pass wants
+   to run there and ask, per phi and per predecessor, whether that
+   pred's `assigned_out` carries the bit.
+
+Both are tractable; neither is a one-liner, and (1) lands in the part of
+FA this project has repeatedly found fragile (ifa/055, ifa/057,
+PYC_SELFPROD, ifa/111). It is gated behind `--safe`, so the blast radius
+is contained.
+
+The runtime check for `possibly` is blocked on the SAME erasure: if FA
+folds the function to a constant there is no read left to check, so the
+check would be optimized away exactly where it was needed.
+
+`unbound_read_handler()` is the hook for the other half — it returns the
+name of a `void f(const char *)` runtime function for the backends to
+call on a failed check, so nothing in ifa names `UnboundLocalError`.
+Nothing calls it yet: the runtime check needs per-read instrumentation
+(a shadow flag per flagged Sym, set at each write, tested at each read)
+in both backends, and that is not written.
+
+### Status
+
+- analysis, both facts, both severities — **done**
+- `--safe` plumbing + codegen zero-init — **done, insufficient alone**
+- analysis-level fill so the unassigned path survives FA — **not done**
+- runtime check for `possibly` — **not done** (hook exists, no callers)
+- LLVM backend for any of the above — **not done**

@@ -126,6 +126,16 @@ class IFACallbacks : public gc {
   // Must be conservative: an unrecognized pattern or unresolved call
   // info returns nullptr, never a forced (and possibly wrong) type.
   virtual AType *provably_constant_isinstance(AVar *operand_av, EntrySet *es, PNode *send_pnode) { return nullptr; }
+  // ifa/issues/039: what a frontend wants done when a POSSIBLY-unbound
+  // local is actually read at runtime. ifa computes the fact (a
+  // language-neutral definite-assignment dataflow, optimize/ssu.cc) but
+  // has no opinion on what "using an unbound variable" *means* -- Python
+  // raises UnboundLocalError, another language may have no such notion
+  // at all, and nothing in ifa may name either. Return the name of a
+  // runtime function of signature `void f(const char *varname)` for the
+  // backends to call on a failed check; nullptr (the default) means the
+  // frontend declines, and ifa emits its own generic abort instead.
+  virtual cchar *unbound_read_handler() { return nullptr; }
   virtual void report_analysis_errors(Vec<ATypeViolation *> &type_violations) {}
   virtual bool c_codegen_pre_file(FILE *fp) { return false; }
 };
@@ -152,6 +162,14 @@ void ifa_code(cchar *fn);
 extern bool fgraph_pass_contours;
 extern bool fdce_if1;
 extern bool fruntime_errors;
+// ifa/issues/039: the "safe" environment. When set, a local that the
+// definite-assignment analysis reports as POSSIBLY used before
+// assignment is initialized to the zero of its own representation
+// instead of being left to hold garbage. This is the third of the
+// three environments in 039's design (strict / permissive / safe);
+// "definitely unbound" is a compile error in all three and never
+// reaches codegen, so this only ever affects the possibly case.
+extern bool fauto_init_unbound;
 
 #include "ifadefs.h"
 

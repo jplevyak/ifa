@@ -1,5 +1,7 @@
 #include "ifadefs.h"
 
+#include "ifa.h"
+
 #include "ssu.h"
 #include "dom.h"
 #include "fail.h"
@@ -129,9 +131,11 @@ static void approximate_liveness(Fun *f, Vec<PNode *> &nodes) {
 static const int kUnboundMaxSweeps = 200;
 
 static void find_maybe_unbound(Fun *f, Vec<PNode *> &nodes, Vec<Var *> &locals) {
+  // The `safe` environment cannot auto-initialize what was never
+  // identified, so requesting it turns the analysis on regardless.
   static int enabled = -1;
   if (enabled < 0) enabled = getenv("IFA_UNBOUND") ? 1 : 0;
-  if (!enabled) return;
+  if (!enabled && !fauto_init_unbound) return;
   if (!f->entry || !locals.n || !nodes.n) return;
 
   // Dense bit indices: a Vec-of-Var set with a linear set_in inside the

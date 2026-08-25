@@ -2444,7 +2444,19 @@ static void write_c(FILE *fp, FA *fa, Fun *f, Vec<Var *> *globals = 0) {
     } else {
       write_c_type(fp, v);
     }
-    fprintf(fp, " %s;\n", cg_get_string(v));
+    // ifa/issues/039, the `safe` environment: a local the
+    // definite-assignment analysis flagged as POSSIBLY read before its
+    // first write gets the zero of its own representation rather than
+    // whatever the stack happened to hold. `= {}` is value-init and is
+    // the one form that spells "zero" for every representation the
+    // backend emits -- 0 for a scalar, nullptr for a pointer, all-zero
+    // members for a struct -- so nothing here needs to know which it
+    // got. Coroutine handles are excluded: _CG_Coroutine is not a slot
+    // this analysis reasons about, and it has its own initialization.
+    if (fauto_init_unbound && v->sym->maybe_unbound && !coro_vars.set_in(v))
+      fprintf(fp, " %s = {};\n", cg_get_string(v));
+    else
+      fprintf(fp, " %s;\n", cg_get_string(v));
   }
   if (defs.n) fprintf(fp, "\n");
   if (globals)
