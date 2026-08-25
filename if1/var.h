@@ -34,11 +34,6 @@ class Var : public gc {
   unsigned int is_filtered : 1;
   unsigned int is_formal : 1;
   unsigned int live : 1;
-  // ifa/issues/039: some USE of this local is reachable by a path that
-  // does not assign it (CPython raises UnboundLocalError). Computed by
-  // find_maybe_unbound (ssu.cc), a definite-assignment must-analysis
-  // over the CFG -- NOT derivable from SSU renaming, see that function.
-  unsigned int maybe_unbound : 1;
   Sym *constant;     // valid after dead code elimination
   cchar *cg_string;  // used by cg.cpp
   llvm::Value *llvm_value;

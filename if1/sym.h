@@ -75,6 +75,11 @@ class BasicSym : public gc {
   // across every renamed copy and is per-function for a local, which is
   // exactly the granularity this fact has.
   unsigned int maybe_unbound : 1;
+  // ifa/issues/039: NO path reaching some use assigns this local
+  // (`def f(): print(y); y = 1`). Strictly stronger than
+  // maybe_unbound, and a compile error in EVERY environment: there is
+  // no execution on which the program is correct.
+  unsigned int definitely_unbound : 1;
   unsigned int is_default_arg : 1;  // Sym is a default argument
   unsigned int is_exact_match : 1;  // must_specialize/implement is must_BE_EXACT
   unsigned int is_module : 1;       // Sym is a module

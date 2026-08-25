@@ -4138,7 +4138,24 @@ static void show_violations(FA *fa, FILE *fp) {
     // found" the moment the value is used. shedskin reaches the same
     // wall and at least fails at build time (its generated C++ gets
     // `invalid conversion from '__ss_int' to 'pyobj*'`).
-    cchar *severity = (fruntime_errors && v->kind != ATypeViolation_kind::BOXING) ? "warning" : "error";
+    // issues/018: BOXING has no representation, so it is an error in
+    // every environment. ifa/issues/039: DEFINITELY_UNBOUND likewise --
+    // no execution of the program is correct, so refusing costs
+    // nothing. MAYBE_UNBOUND is deliberately NOT here: it is a strict
+    // warning and otherwise a runtime check, because a "possibly
+    // unbound" read can be perfectly valid (a short-circuit guard --
+    // see the issue), and erroring on it would reject correct programs.
+    bool always_fatal = v->kind == ATypeViolation_kind::BOXING ||
+                        v->kind == ATypeViolation_kind::DEFINITELY_UNBOUND;
+    // ifa/issues/039: MAYBE_UNBOUND is a WARNING even under --strict,
+    // and deliberately so. A "possibly unbound" read can be perfectly
+    // correct -- `if first or d < bd:` short-circuits the read away
+    // (tests/scope_read_before_write.py) -- so erroring on it rejects
+    // valid programs. Its enforcement is a RUNTIME check, or an
+    // auto-initialisation under `safe`; the compile-time message is
+    // advisory in every environment.
+    bool always_warning = v->kind == ATypeViolation_kind::MAYBE_UNBOUND;
+    cchar *severity = always_fatal ? "error" : (always_warning || fruntime_errors) ? "warning" : "error";
 
     if (filename && line > 0) {
       if (col > 0)
@@ -4212,6 +4229,12 @@ static void show_violations(FA *fa, FILE *fp) {
       case ATypeViolation_kind::MAYBE_UNBOUND:
         show_name(memfp, v->av);
         fprintf(memfp, "may be used before assignment on some path; type is:");
+        show_type(*v->type, memfp);
+        fprintf(memfp, "\n");
+        break;
+      case ATypeViolation_kind::DEFINITELY_UNBOUND:
+        show_name(memfp, v->av);
+        fprintf(memfp, "is used before assignment on every path; type is:");
         show_type(*v->type, memfp);
         fprintf(memfp, "\n");
         break;
@@ -4510,8 +4533,10 @@ static void collect_var_type_violations() {
         // ordering trap as Var::is_formal (set by build_patterns, also
         // later), which is why the SSU pass reads formals from
         // f->sym->has instead.
-        if (av->var && av->var->sym && av->var->sym->maybe_unbound && av->var->sym->name)
-          type_violation(ATypeViolation_kind::MAYBE_UNBOUND, av, av->out, nullptr, nullptr);
+        if (av->var && av->var->sym && av->var->sym->name && av->var->sym->maybe_unbound)
+          type_violation(av->var->sym->definitely_unbound ? ATypeViolation_kind::DEFINITELY_UNBOUND
+                                                          : ATypeViolation_kind::MAYBE_UNBOUND,
+                         av, av->out, nullptr, nullptr);
       }
     }
     for (CreationSet *cs : fa->css) {
@@ -9464,10 +9489,15 @@ int FA::analyze(Fun *top) {
   // deliberately NOT an option here (project decision), so a mixed
   // basic-type union cannot be represented at all and refusing is the
   // only honest answer.
-  int n_boxing = 0;
+  int n_fatal = 0;
   for (ATypeViolation *v : type_violations)
-    if (v && v->kind == ATypeViolation_kind::BOXING) ++n_boxing;
-  return ((!fruntime_errors && type_violations.set_count()) || n_boxing) ? -1 : 0;
+    if (v && (v->kind == ATypeViolation_kind::BOXING ||
+              v->kind == ATypeViolation_kind::DEFINITELY_UNBOUND))
+      ++n_fatal;
+  int n_advisory = 0;
+  for (ATypeViolation *v : type_violations)
+    if (v && v->kind == ATypeViolation_kind::MAYBE_UNBOUND) ++n_advisory;
+  return ((!fruntime_errors && type_violations.set_count() > n_advisory) || n_fatal) ? -1 : 0;
 }
 
 static Var *info_var(IFAAST *a, Sym *s) {

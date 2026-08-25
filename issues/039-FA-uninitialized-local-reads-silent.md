@@ -1,8 +1,10 @@
 # Issue 039: Reading a local that's unassigned on some CFG path is silent undefined behavior — no lattice element for "uninitialized"
 
-**Status:** open. **Design settled 2026-08-24. Implementation lands
-DEFAULT OFF: it now converges and both levels work end to end, but it
-over-reports — see "Where it stands".**
+**Status:** open. **Design REVISED 2026-08-25: two severities
+(definitely / possibly) x three environments (strict / permissive /
+safe), and the policy must be language-neutral — see the top section.**
+Implementation is DEFAULT OFF; the `possibly` analysis converges and
+reports at two levels, `definitely` is not yet computed.
 
 **Design settled 2026-08-24** (see "Design decision"
 below, which supersedes parts of "Proposed direction"). **Found:**
@@ -159,6 +161,64 @@ rather than a special case bolted onto renaming. Concretely:
    same `uninitialized_type` tag to decide where a guard is needed
    — but the compile-time diagnostic is the main win and doesn't
    need the runtime piece to be useful on its own.
+
+## Design REVISED 2026-08-25 (author) — two severities x three environments
+
+This supersedes the 2026-08-24 section below wherever they disagree. The
+earlier design had one fact ("possibly unbound") and two environments,
+and that could not work: see (b) under the 2026-08-24 implementation
+notes — `if first or d < bd:` is a TRUE "possibly unbound" and a VALID
+Python program, so a strict compile error would reject legitimate code.
+
+### Two levels of the fact
+
+- **DEFINITELY** used unbound: NO path reaching this use assigns the
+  variable. `def f(): print(y); y = 1`.
+- **POSSIBLY** used unbound: some path assigns it, some does not.
+
+They fall out of the same dataflow with two different meets: MUST
+(intersection) gives "definitely assigned", MAY (union) gives "assigned
+on at least one path". Then
+
+    definitely_unbound = not may_assigned
+    possibly_unbound   = may_assigned and not must_assigned
+
+### Three environments
+
+| | definitely | possibly |
+|---|---|---|
+| **strict** | compile error | compile **warning**, plus the runtime check |
+| **permissive** | compile error | **runtime error** (inserted check) |
+| **safe** (auto-initialize) | compile error | **auto-initialize**, no check |
+
+So: **definitely is ALWAYS a compile error**, in every environment —
+there is no path on which the program is correct, so nothing is lost by
+refusing. **Possibly is a strict-mode warning and a runtime error**,
+unless auto-initialize is set, in which case the slot is initialized
+instead.
+
+That is what makes the short-circuit case work: `if first or d < bd:`
+is *possibly* unbound, so it compiles everywhere, gets a runtime check
+under strict/permissive that never fires (because `or` short-circuits
+the read away), and gets an initialization under safe. All three
+behaviours are correct for it.
+
+`safe` is a NEW environment. pyc today has only `--strict` /
+`--permissive`.
+
+### It must be GENERAL — ifa is not a Python compiler
+
+ifa targets more than Python, so none of the policy may be hardcoded:
+
+- The **analysis** (both meets, both facts) belongs in ifa and is
+  language-neutral.
+- The **diagnostic wording** may not say `UnboundLocalError`.
+- What a runtime check RAISES is a frontend decision and belongs behind
+  `IFACallbacks` — pyc raises `UnboundLocalError`, another frontend does
+  something else, and a frontend that wants neither can decline.
+- What auto-initialize FILLS WITH is likewise per-frontend, though the
+  ifa-level default (the zero of the type inferred from the assigning
+  paths — see 2026-08-24) is language-neutral and should stand.
 
 ## Design decision (2026-08-24)
 
@@ -415,3 +475,72 @@ small feature in its own right, not a quick fix:
    usual pattern) exercising: if-without-else, a loop that may run
    zero times, and the match/case capture shape, each checked for
    the new diagnostic.
+
+## Where it stands (2026-08-25) — both facts land; policy half-done
+
+Supersedes "Where it stands (2026-08-24)". Behind `IFA_UNBOUND=1`,
+default OFF. Five CI gates green with it off.
+
+### Landed
+
+- **Both meets, one sweep.** `find_maybe_unbound` in `optimize/ssu.cc`
+  runs a forward MUST (intersection, top-init) and a MAY (union,
+  bottom-init) over the same bitvectors, in **reverse postorder** —
+  RPO is not a tuning choice, collection order did not converge
+  (~42 builtin functions cycled forever at constant popcount).
+- **The facts live on `Sym`, not `Var`.** SSU renames Vars *after* this
+  pass runs (`new_Var` makes `new Var(v->sym)`), so a flag on the Var is
+  invisible to FA. `Sym::maybe_unbound` / `Sym::definitely_unbound`.
+- **Formals come from `f->sym->has`,** not `Var::is_formal` — that bit is
+  set by `build_patterns` *inside* FA, i.e. after SSU. Reading it here
+  gave 2158 flags instead of 550.
+- **No `Var::live` filter** at violation-collection time: that bit is set
+  by dead-code elimination, which runs after FA, so it is 0 for
+  everything and suppressed every diagnostic.
+- `ATypeViolation_kind::{MAYBE,DEFINITELY}_UNBOUND`, appended **last** in
+  the enum (inserting mid-enum renumbers `CLOSURE_RECURSION`).
+
+### Severity, as the revised design specifies
+
+| | permissive | strict |
+|---|---|---|
+| definitely | **error, rc=1** ✓ | **error, rc=1** ✓ |
+| possibly | warning, rc=0 ✓ | **warning, rc=0** ✓ |
+
+`DEFINITELY_UNBOUND` joins BOXING in `always_fatal`. `MAYBE_UNBOUND` is
+`always_warning` — it is *not* escalated by `--strict`, and is excluded
+from the fatal count in `FA::analyze` — because its enforcement is the
+runtime check, not a compile-time refusal.
+
+### The over-report is inherent, and it settles the default
+
+With the pass on, 8 of 296 tests differ, all COMPILE-OUT. Every one is a
+**correct** "possibly unbound" in the CFG and a **safe** program in fact:
+
+- `scope_read_before_write.py`: `if first or d < bd:` — `bd` is read only
+  when `first` is False, which is exactly when it was assigned.
+- `exception_propagation.py`: `v = risky(n)` in a `try`, `return v` after
+  the `finally`; the flagged path is the one where the exception
+  re-propagates and `return v` is never reached.
+- `match_seq.py` and 5 other match tests: `case [[a, b], c]` — captures
+  are bound exactly when the arm body is entered.
+
+All three are safe for a **correlation** reason — between a flag and a
+write, between an exception edge and a return, between a pattern test and
+its body — that a MUST/MAY dataflow structurally cannot represent. These
+are not lowering bugs to be fixed one by one; sharpening the analysis
+does not remove the category.
+
+So: **the "possibly" compile-time warning should stay off by default**
+(it is advisory and noisy), while the runtime check is what enforces it,
+and `definitely` — which has no false positives, since no path assigns —
+is what goes on by default as an error.
+
+### Not implemented
+
+1. **The runtime check for `possibly`.** The whole enforcement story.
+2. **`safe` / auto-initialize.** A new environment; pyc has only
+   `--strict` / `--permissive`.
+3. **The `IFACallbacks` hooks** that keep 1 and 2 general — what a check
+   raises, what auto-init fills with. Nothing may name `UnboundLocalError`
+   in ifa.

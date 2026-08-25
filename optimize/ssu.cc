@@ -139,12 +139,26 @@ static void find_maybe_unbound(Fun *f, Vec<PNode *> &nodes, Vec<Var *> &locals) 
   Map<Var *, int> idx;
   for (int i = 0; i < locals.n; i++) idx.put(locals[i], i + 1);  // 1-based; get() gives 0 for absent
   int nbits = locals.n, nwords = (nbits + 63) / 64;
-  Map<PNode *, uint64_t *> outmap;
+  // TWO analyses over the same CFG, differing only in the meet
+  // (ifa/issues/039, design 2026-08-25):
+  //   MUST (intersection, initialised to top) -> "definitely assigned"
+  //   MAY  (union, initialised to bottom)     -> "assigned on some path"
+  // from which
+  //   definitely_unbound = !may_assigned
+  //   possibly_unbound   = may_assigned && !must_assigned
+  // Definitely is a compile error in EVERY environment -- no path makes
+  // the program correct, so refusing costs nothing. Possibly is a
+  // strict-mode warning and otherwise a runtime check, or an
+  // auto-initialisation under `safe`.
+  Map<PNode *, uint64_t *> outmap, mayout;
   for (PNode *n : nodes) {
     uint64_t *w = (uint64_t *)MALLOC(nwords * sizeof(uint64_t));
     uint64_t fill = (n == f->entry) ? 0 : ~(uint64_t)0;
     for (int i = 0; i < nwords; i++) w[i] = fill;
     outmap.put(n, w);
+    uint64_t *m = (uint64_t *)MALLOC(nwords * sizeof(uint64_t));
+    for (int i = 0; i < nwords; i++) m[i] = 0;
+    mayout.put(n, m);
   }
 
   // Iterate in REVERSE POSTORDER. The first cut swept `nodes` in
@@ -196,14 +210,15 @@ static void find_maybe_unbound(Fun *f, Vec<PNode *> &nodes, Vec<Var *> &locals) 
   for (Sym *a : f->sym->has) if (a && a->var) formals.set_add(a->var);
 
   uint64_t *in = (uint64_t *)MALLOC(nwords * sizeof(uint64_t));
+  uint64_t *mayin = (uint64_t *)MALLOC(nwords * sizeof(uint64_t));
   bool changed = true;
   int sweeps = 0;
   while (changed) {
     changed = false;
-    if (++sweeps > kUnboundMaxSweeps) {
-      for (PNode *n : nodes) for (Var *v : n->rvals) if (v) v->maybe_unbound = 0;
-      return;
-    }
+    // Bail out rather than spin. Nothing has been flagged yet -- the
+    // flagging loop runs after this one -- so an unconverged sweep
+    // simply reports nothing, which is the safe direction.
+    if (++sweeps > kUnboundMaxSweeps) return;
     for (PNode *n : rpo) {
       bool first = true;
       for (int i = 0; i < nwords; i++) in[i] = 0;
@@ -235,16 +250,42 @@ static void find_maybe_unbound(Fun *f, Vec<PNode *> &nodes, Vec<Var *> &locals) 
           cur[i] = in[i];
           changed = true;
         }
+
+      // MAY, same node, UNION meet (grows from bottom).
+      for (int i = 0; i < nwords; i++) mayin[i] = 0;
+      if (n == f->entry) {
+        for (Var *v : formals) {
+          int b = idx.get(v);
+          if (b) { --b; mayin[b >> 6] |= ((uint64_t)1 << (b & 63)); }
+        }
+      } else
+        for (PNode *p : n->cfg_pred) {
+          uint64_t *po = mayout.get(p);
+          if (po) for (int i = 0; i < nwords; i++) mayin[i] |= po[i];
+        }
+      for (Var *v : n->lvals) if (v && v->sym->is_local) {
+        int b = idx.get(v);
+        if (b) { --b; mayin[b >> 6] |= ((uint64_t)1 << (b & 63)); }
+      }
+      uint64_t *mcur = mayout.get(n);
+      for (int i = 0; i < nwords; i++)
+        if (mayin[i] != mcur[i]) { mcur[i] = mayin[i]; changed = true; }
     }
   }
 
   for (PNode *n : nodes) {
     bool first = true;
     for (int i = 0; i < nwords; i++) in[i] = 0;
+    for (int i = 0; i < nwords; i++) mayin[i] = 0;
     if (n == f->entry)
       for (Var *v : formals) {
         int b = idx.get(v);
-        if (b) { --b; in[b >> 6] |= ((uint64_t)1 << (b & 63)); }
+        if (b) { --b; in[b >> 6] |= ((uint64_t)1 << (b & 63)); mayin[b >> 6] |= ((uint64_t)1 << (b & 63)); }
+      }
+    if (n != f->entry)
+      for (PNode *p : n->cfg_pred) {
+        uint64_t *po = mayout.get(p);
+        if (po) for (int i = 0; i < nwords; i++) mayin[i] |= po[i];
       }
     if (n != f->entry) {
       for (PNode *p : n->cfg_pred) {
@@ -258,10 +299,11 @@ static void find_maybe_unbound(Fun *f, Vec<PNode *> &nodes, Vec<Var *> &locals) 
       int b = idx.get(v);
       if (!b) continue;
       --b;
-      if (!(in[b >> 6] & ((uint64_t)1 << (b & 63)))) {
-        v->maybe_unbound = 1;
-        v->sym->maybe_unbound = 1;
-      }
+      bool must = (in[b >> 6] & ((uint64_t)1 << (b & 63))) != 0;
+      bool may = (mayin[b >> 6] & ((uint64_t)1 << (b & 63))) != 0;
+      if (must) continue;              // definitely assigned: fine
+      v->sym->maybe_unbound = 1;
+      if (!may) v->sym->definitely_unbound = 1;  // no path assigns it at all
     }
   }
 }

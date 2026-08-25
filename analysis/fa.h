@@ -467,7 +467,10 @@ enum class ATypeViolation_kind {
   // renumbered every Sym id in the ir goldens (16 dce fixtures failed).
   // The fact is a CFG property carried on Var::maybe_unbound, not a
   // type, so it needs no lattice element at all.
-  MAYBE_UNBOUND
+  MAYBE_UNBOUND,
+  // ifa/issues/039: no path reaching the use assigns it. A compile
+  // error in EVERY environment, unlike MAYBE_UNBOUND.
+  DEFINITELY_UNBOUND
 };
 
 class ATypeViolation : public gc {
