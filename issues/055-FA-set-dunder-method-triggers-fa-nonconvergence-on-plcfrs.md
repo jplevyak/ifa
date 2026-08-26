@@ -1095,3 +1095,86 @@ let the back-flow split its path. That keeps the stage demand-driven --
 which is what the splitter_*.py tests assert and what the gate is there
 to protect -- while letting a confluence the type splitter provably
 cannot resolve reach the machinery that can.
+
+
+## The real defect: a stage that claims progress and creates nothing
+
+The previous section's conclusion -- "move the setter stage earlier" --
+was treating a symptom. The right question was why the EARLIER stages
+never quiesce, and the answer is a two-line bug.
+
+### Measured
+
+From pass 24 to the cap at 50 on the 9-line repro:
+
+    total_ess = 189   total_css = 806    FLAT, 27 passes
+    STAGEDELTA TYPE_CONFL returned=1 confluences=104 d_ess=0 d_css=0
+
+`split_ess_for_type` reports "analyze again" on **every** pass while
+creating nothing at all. That keeps `analyze_again` true, and since
+every later stage sits behind `if (!analyze_again)`, all of them --
+SETTER, PER_CS_RECEIVER, CSM -- are starved. The zero-setters finding
+above is a CONSEQUENCE of this, not an independent problem.
+
+### Why it claims progress
+
+All three `split = 1` sites in `apply_entry_set_split` fire on an edge
+being RE-POINTED (`set_entry_set(x, scomp)`, `set_entry_set(x,
+product)`, `x->to != es`). None requires a contour to be created. So
+re-routing an edge between two EXISTING EntrySets counts as progress.
+
+### What is actually re-routing
+
+    [churn-ledger] p=45 e=400 es=147 -> 223
+    [churn-ledger] p=46 e=400 es=223 -> 147
+    [churn-ledger] p=47 e=400 es=147 -> 223
+
+One edge, `__contains__`, ping-ponging between two EntrySets forever.
+The `[churn-look]` lines give the cause: the SAME group signature
+`gsig=4103446528` is recorded in the split ledger **twice**, with each
+EntrySet as the other's product --
+
+    p=45  es=147  gsig=4103446528  found=1 pass_made=20  product=223
+    p=46  es=223  gsig=4103446528  found=1 pass_made=18  product=147
+
+so "route this group to its durable home" says 147 -> 223 AND
+223 -> 147. A cycle by construction, and the ledger is the thing that
+was supposed to make re-derived groups land somewhere stable.
+
+### Already had a fix, defaulted off
+
+`PYC_ROUTECYCLE` (ifa/issues/101, *"detect and break 2-cycles in the ES
+split ledger"*) is exactly this cycle-breaker. It was default 0. **Now
+default 1.**
+
+| | before | after |
+|---|---|---|
+| this repro | 51 passes, CONVERGED=0, 58 viol | **32 passes, CONVERGED=1, 0 viol, prints 2** |
+| set repro | converges | converges |
+| pyc suite | 297 passed / 14 known | **298 passed / 0 failed / 13 known**, both backends |
+| corpus | 67 of 77 | **67 of 77**, program for program; sunfish improves (400 s timeout -> clean failure) |
+| ifa-test goldens | -- | unchanged |
+| plcfrs | 45 passes, 2451 viol, ess 850 | 36 passes, **5353 viol, ess 1524**, still CONVERGED=0 |
+
+`tests/dict_pair_swap_setdiff_nonconvergence.py` passes and its
+`.known_issue` sidecar is removed.
+
+### The one thing that got worse
+
+plcfrs's violation count nearly doubles (2451 -> 5353) and its contour
+count rises, though it needs fewer passes (45 -> 36) and does not
+compile either way. Breaking the 2-cycle lets the analysis proceed
+further into territory it had never reached, and it finds more to
+complain about there. That is not evidence the change is wrong -- the
+corpus is at parity and the suite improved -- but plcfrs's remaining
+non-convergence is now a different, larger problem than before, and
+should be re-traced from scratch rather than compared to the old
+numbers.
+
+### What this retires
+
+`PYC_SETTERGATE` (added in the previous commit) is kept as a probe but
+is no longer a candidate fix: it worked by routing AROUND the churn
+rather than fixing it, and it broke the `splitter_*.py` stage-demand
+assertions in doing so. With the cycle broken, the setter stage is
+reachable on its own.

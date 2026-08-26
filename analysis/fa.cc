@@ -5589,11 +5589,33 @@ static int csmold_enabled() {
 }
 
 // ifa/issues/101: detect and break 2-cycles in the ES split ledger.
+//
+// DEFAULT 1 since ifa/issues/055. Without it the ledger can hold the
+// same group signature twice with each EntrySet recorded as the other's
+// product, so "route this group to its durable home" says 147 -> 223
+// AND 223 -> 147 -- a cycle by construction. One edge then ping-pongs
+// between the two forever, and because apply_entry_set_split sets
+// `split = 1` on edge RE-POINTING rather than on creating a contour,
+// split_ess_for_type reports progress every pass while creating
+// nothing. Measured on tests/dict_pair_swap_setdiff_nonconvergence.py:
+// ess and css pinned at 189/806 from pass 24 to the cap, confluences
+// pinned at 104, d_ess = d_css = 0, and the analysis never converges.
+//
+// That churn also STARVES every later stage, since they all sit behind
+// `if (!analyze_again)` -- which is why the setter back-flow that would
+// split the dict never ran (zero setters existed program-wide).
+//
+//   repro      51 passes CONVERGED=0 -> 32 passes CONVERGED=1, 0 viol
+//   suite      297 passed/14 known   -> 298 passed/0 failed/13 known
+//   corpus     67 of 77 compile either way, program for program, and
+//              sunfish improves (400s timeout -> clean failure)
+//   plcfrs     still does not converge; passes 45 -> 36 but violations
+//              2451 -> 5353 and ess 850 -> 1524
 static int routecycle_enabled() {
   static int e = -1;
   if (e < 0) {
     cchar *v = getenv("PYC_ROUTECYCLE");
-    e = v ? atoi(v) : 0;
+    e = v ? atoi(v) : 1;
   }
   return e;
 }
@@ -6106,6 +6128,9 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
             } else
               set_entry_set(x, scomp);
             record_backedges(x, es, pending_es_backedge_map);
+            if (getenv("IFA_DBG_CHURN"))
+              fprintf(stderr, "[churn-scomp] p=%d e=%d es=%d -> %d\n", analysis_pass, x->id, es->id,
+                      x->to ? x->to->id : -1);
             split = 1;
           }
         }
@@ -6222,6 +6247,9 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
         es->edges.del(x);
         set_entry_set(x, product);
         record_backedges(x, es, pending_es_backedge_map);
+        if (getenv("IFA_DBG_CHURN"))
+          fprintf(stderr, "[churn-ledger] p=%d e=%d es=%d -> %d\n", analysis_pass, x->id, es->id,
+                  product ? product->id : -1);
         split = 1;
         log(LOG_SPLITTING, "SPLIT ES %d (ledger) %s %d from %d -> %d\n", es->id,
             es->fun->sym->name ? es->fun->sym->name : "", es->fun->sym->id, x->pnode->lvals[0]->sym->id,
@@ -8182,6 +8210,12 @@ static int cpa_enabled() {
     cur_split_stage = (int)FAPassStage::TYPE_CONFLUENCE;
     analyze_again = split_ess_for_type(confluences, SPLIT_EDGES);
     fa->stage_time[(int)FAPassStage::TYPE_CONFLUENCE] += stage_timer.lap();
+    // ifa/issues/055: a stage that returns "made progress" while the
+    // contour counts do not move keeps the whole cascade alive and
+    // starves every later stage. Report the claim next to the effect.
+    if (getenv("PYC_DBG_STAGEDELTA"))
+      fprintf(stderr, "STAGEDELTA p=%d TYPE_CONFL returned=%d confluences=%d d_ess=%d d_css=%d\n", analysis_pass,
+              analyze_again, confluences.n, fa->ess.n - ess0, fa->css.n - css0);
     log(LOG_SPLITTING, "split_ess_for_type %d\n", analyze_again);
     if (analyze_again) {
       record_fa_event(FAPassStage::TYPE_CONFLUENCE, analyze_again, ess0, css0, viol0);
