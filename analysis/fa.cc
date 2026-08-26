@@ -9530,7 +9530,13 @@ static void dbg_dump_contours(int pass) {
     }
     char ret[192];
     dbg_atype_str(es->rets.n && es->rets.v[0] ? es->rets.v[0]->out : nullptr, ret, (int)sizeof ret, 1);
-    fprintf(stderr, "CONTOUR pass=%d %s es=%d args=[%s] ret=%s\n", pass, want, es->id, args, ret);
+    // ifa/issues/055: setters on the RETURN AVar -- that is the object
+    // AVar that split_css needs as a "setter starter" (setters are
+    // registered on x->container, i.e. the object, not on the field).
+    AVar *rv = es->rets.n ? es->rets.v[0] : nullptr;
+    fprintf(stderr, "CONTOUR pass=%d %s es=%d args=[%s] ret=%s ret_setters=%d ret_class=%d ret_cs_map=%d\n", pass,
+            want, es->id, args, ret, (rv && rv->setters) ? rv->setters->set_count() : -1,
+            (rv && rv->setter_class) ? rv->setter_class->set_count() : -1, (rv && rv->cs_map) ? 1 : 0);
   }
   // PYC_DBG_CONTOURS=* : which functions own the contour growth.
   if (!strcmp(want, "*")) {
@@ -9582,10 +9588,20 @@ static void dbg_dump_contours(int pass) {
       if (!fn || fn[0] != '_' || (fn[1] == '_' && fn[2])) continue;
       char t[192];
       dbg_atype_str(av->out, t, (int)sizeof t, 1);
-      fu += snprintf(flds + fu, (int)sizeof flds - fu, "%s%s=%s", fu ? " " : "", fn, t);
+      // ifa/issues/055: also report the setter state, since split_css
+      // (the demand-driven CS split) only ever sees AVars that carry
+      // setters -- an empty `setters` here means the back-flow never
+      // reached this field and the CS can never be split from it.
+      fu += snprintf(flds + fu, (int)sizeof flds - fu, "%s%s=%s[setters=%d class=%d]", fu ? " " : "", fn, t,
+                     av->setters ? av->setters->set_count() : -1,
+                     av->setter_class ? av->setter_class->set_count() : -1);
       if (fu >= (int)sizeof flds - 1) break;
     }
-    fprintf(stderr, "  %sCS pass=%d cs=%d %s\n", cssym, pass, cs->id, flds);
+    // ifa/issues/055: defs is the number of AVars that created this CS.
+    // split_css partitions THAT set, and its loop is `while
+    // (starter_set.n > 1)` -- so a CS with a single def can never be
+    // split, however the setters partition.
+    fprintf(stderr, "  %sCS pass=%d cs=%d defs=%d %s\n", cssym, pass, cs->id, cs->defs.set_count(), flds);
   }
   // ifa/issues/113 link: are the `_items` AVars of distinct set CSs in
   // ONE setter equivalence class? If so their values are merged by the
@@ -9631,8 +9647,18 @@ static void dbg_dump_contours(int pass) {
     fprintf(stderr, "  ITEMS pass=%d SUMMARY _items_avars=%d distinct_setter_classes=%d\n", pass, n_items,
             classes.n);
   }
-  fprintf(stderr, "CONTOUR pass=%d SUMMARY %s_contours=%d %s_CSs=%d total_ess=%d\n", pass, want, n_es,
-          cssym, n_cs, fa->ess.n);
+  // ifa/issues/055: how much of the setter machinery is engaged at all.
+  int with_setters = 0, with_class = 0, cs_with_multidef = 0;
+  foreach_avar([&](AVar *a) {
+    if (!a) return;
+    if (a->setters) ++with_setters;
+    if (a->setter_class) ++with_class;
+  });
+  for (CreationSet *c : fa->css) if (c && c->defs.set_count() > 1) ++cs_with_multidef;
+  fprintf(stderr,
+          "CONTOUR pass=%d SUMMARY %s_contours=%d %s_CSs=%d total_ess=%d avars_with_setters=%d "
+          "avars_with_setter_class=%d css_with_multiple_defs=%d\n",
+          pass, want, n_es, cssym, n_cs, fa->ess.n, with_setters, with_class, cs_with_multidef);
 }
 
 static bool apply_unbound_fills() {

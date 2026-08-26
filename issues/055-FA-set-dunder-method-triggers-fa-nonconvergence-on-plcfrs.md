@@ -907,3 +907,103 @@ CreationSet from one with those swapped -- which is precisely
 `dict<str*,int>` vs `dict<int,str*>`. That derives identity from the
 value flow, as shedskin does, instead of from the allocation context,
 and would not need the constructor to be split at all.
+
+
+## Why the demand-driven setter back-flow does not fire here
+
+The mechanism exists and is the right one. `update_setter` (fa.cc)
+propagates a setter **backward** along flow edges:
+
+```c
+av->setters = new_setters;
+for (AVar *x : av->backward) if (x) (void)update_setter(x, s, avs);
+```
+
+and `split_for_setters` then does exactly the two steps in order --
+split the entry sets along the path, then split the CreationSet:
+
+```c
+collect_setter_confluences(avs, setter_confluences, setter_starters);
+if (split_ess_setters(setter_confluences)) return 1;   // split the PATH
+...
+if (split_css(setter_starters)) return 1;              // split the CS
+```
+
+It does not fire on this repro, for three reasons that stack.
+
+### 1. Zero setters exist. The machinery never starts.
+
+Measured at convergence, same instrumentation both runs:
+
+| | avars with setters | with setter_class | CSs with >1 def |
+|---|---|---|---|
+| this repro (fails) | **0** | **0** | 1 |
+| the set repro (fixed) | 142 | 100 | 2 |
+
+Not one AVar in the failing program carries a setter.
+
+### 2. Why no setters: the field is not a type CONFLUENCE
+
+`compute_setters` is seeded only from the type-confluence list (the
+`ifa_selective` branch widens it to every CS-contoured AVar, but
+`selective=0` by default):
+
+```c
+if (ifa_selective) { ... every CS-contoured AVar ... }
+else
+  for (AVar *av : confluences) (void)compute_setters(av, avs, AKIND_TYPE);
+```
+
+and `collect_type_confluence` calls an AVar a confluence only when some
+*single* backward edge carries strictly less than the AVar's own
+incoming type:
+
+```c
+if (type_diff(av->in->type, x->out->type) != bottom) confluences.set_add(av);
+```
+
+dict#1182's `_keys` holds `list#1059|list#1184|list#1185` -- but the
+union is formed UPSTREAM and arrives whole on its edges, so no single
+edge is strictly smaller, and the field is not a confluence. No
+confluence, no `compute_setters`, no setter, no demand.
+
+### 3. Even with setters, `split_css` could not act: one def
+
+```c
+for (CreationSet *cs : css) {
+  Vec<AVar *> starter_set ...          // the CS's own defs
+  while (starter_set.n > 1) { ... }    // partition by setter class
+```
+
+`split_css` **partitions a CreationSet's existing creators**; it cannot
+manufacture one. dict#1182 has `defs=1` -- the single
+`dict::__new__` contour's result AVar -- so the loop body never runs
+however the setters class out. (In the fixed set repro the separation
+likewise came from having several set CSs each with `defs=1`, not from
+splitting one.)
+
+### The circularity
+
+    to split the CS   you need >= 2 defs
+    to get >= 2 defs  you need dict::__new__ split into >= 2 contours
+    to split __new__  the type-directed splitter needs differing formal
+                      types -- and `dict()` takes no arguments
+
+`split_ess_setters` is precisely the step that would break this by
+splitting the path, and it is ordered before `split_css` for exactly
+that reason. It is starved by (1): with no setters there are no setter
+confluences to split at.
+
+### Two things worth trying, in order
+
+1. **Seed setters more widely.** The `ifa_selective` branch already
+   computes setters for EVERY CS-contoured AVar rather than this pass's
+   confluences, and its comment says the wider coverage is affordable
+   ("M1 measured the whole `extend` phase at ~0.4% of FA time"). Running
+   that unconditionally would give the dict's fields setters and let the
+   back-flow start. Cheap to test.
+2. If the back-flow then reaches the creation point and still cannot
+   split it, the missing capability is duplicating a creation point
+   under caller-contour demand -- which is the same thing as splitting
+   `dict::__new__` per caller, and is what the field-typed CS identity
+   in the previous section achieves without any splitting at all.
