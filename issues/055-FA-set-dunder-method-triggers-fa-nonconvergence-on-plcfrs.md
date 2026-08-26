@@ -399,3 +399,100 @@ Find what re-admits the second receiver CS into an already-monomorphic
 contour on the following pass. `PYC_DBG_CONTOURS=add` narrows it to
 es=93/94 between passes 44 and 45, which is a two-contour, two-type
 window — small enough to trace edge by edge.
+
+
+## Traced to the field: `_items` cross-contaminates between instances
+
+`PYC_DBG_BIND=<fun>` (fa.cc, on `set_entry_set` -- the one chokepoint
+both the mint and reuse routes pass through) logs every edge->EntrySet
+binding with the edge's ACTUAL argument types. That moved the diagnosis
+upstream twice.
+
+### It is not the splitter, and not ES selection
+
+    pass 44   e=171 REUSE es=93  actuals=[add set int64]
+              e=226 REUSE es=94  actuals=[add set str]
+    pass 45   e=171 REUSE es=61  actuals=[add set int64|str]
+              e=226 REUSE es=61  actuals=[add set int64|str]
+
+Both edges' **actuals are already unioned** on the bad pass, at the call
+site `r.add(self._items[i])` inside `difference`. So the polymorphic
+contour is not chosen badly -- the value arriving is already wrong. And
+`append`'s contours widen with **no BIND line at all** on those passes:
+
+    pass 44   append es=115 [list, int64] -> list
+              append es=116 [list, str]   -> list
+    pass 45   append es=115 [list|list|list, int64|str] -> list|list|list
+              append es=116 [list|list|list, int64|str] -> list|list|list
+
+No rebinding: the widening arrives purely through the flow graph.
+
+### The field is what flips
+
+Dumping each `set` CreationSet's data fields with CreationSet ids:
+
+| set CS | pass 44 | pass 45 |
+|---|---|---|
+| 1032 | `_items=list#1034` | `_items=list#1034\|1171\|1172` |
+| 1138 | `_items=list#1171` | `_items=list#1034\|1171\|1172` |
+| 1140 | `_items=list#1172` | `_items=list#1034\|1171\|1172` |
+| 1139 | `_items=list#1171` | `_items=list#1171` (stays clean) |
+| 1141 | `_items=list#1173` | `_items=list#1173` (stays clean) |
+
+On the good pass every set instance owns its own backing list. On the
+bad pass three distinct instances all hold the *same three* lists. That
+union is where `int64|str` comes from, and everything above is
+downstream of it.
+
+So the causal chain, measured end to end:
+
+    _items cross-contaminates across set CSs
+      -> self._items[i] is int64|str
+      -> add / __contains__ / __eq__ actuals are unioned before dispatch
+      -> splitter splits them into monomorphic contours (the good pass)
+      -> field contamination re-forms next pass
+      -> period-2 limit cycle
+
+The splitter is chasing a symptom three levels downstream of the defect.
+
+### Not set-specific
+
+`dict` has the same write-back shape (`self._keys = self._keys.append(key)`,
+07_dict.py:150-151) and a dict analogue of the repro reproduces exactly:
+`final_pass=52 pass_limit_hit=1 CONVERGED=0`.
+
+The write-back is not a style choice and cannot simply be deleted:
+`list.append` calls `_CG_list_resize`, which may reallocate, so the
+field must be reassigned.
+
+### What did NOT reproduce (so the recipe is still incomplete)
+
+Hand-written user classes with the same shape all CONVERGE:
+
+| | passes | converged |
+|---|---|---|
+| `self.items = self.items + [x]`, chained copies | 20 | yes |
+| ... plus an element-dispatched `==` scan, as set has | 27 | yes |
+| ... using `self.items = self.items.append(x)` instead | 22 | yes |
+
+So "write-back + element compare + chain" is not sufficient on its own.
+The builtin containers carry some further ingredient this reconstruction
+does not, and identifying it would give a repro with no `__pyc__/`
+involvement at all.
+
+### ifa/113 checked, INCONCLUSIVE
+
+The obvious suspect for two instances' fields merging is
+[113](113-FA-setter-equivalence-is-a-global-batch-partition.md)'s global
+setter partition. Dumping `AVar::setter_class` for every `_items` AVar
+gives `nil` on both passes, with 0 distinct classes -- but that dump runs
+after `complete_pass()`, so it cannot distinguish "these AVars never
+participate in setter classing" from "the class was already cleared".
+**No link to 113 is claimed.** Re-check by sampling inside the pass.
+
+### Next step
+
+Find the assignment that writes the three-list union into `_items`:
+instrument the incoming flow edges of the `_items` AVar of set CS 1032
+and report, per pass, which source AVar contributes each of list#1034,
+#1171, #1172. That is one field, one CreationSet, one pass boundary.

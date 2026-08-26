@@ -1235,6 +1235,37 @@ static void update_display(AEdge *e, EntrySet *es) {
       es->display.add(e->from);
 }
 
+// ifa/issues/055: defined with the other contour-tracing helpers below.
+static void dbg_atype_str(AType *t, char *buf, int n, int depth);
+
+// ifa/issues/055: PYC_DBG_BIND=<fun name> logs every edge->EntrySet
+// binding for that function -- MINT vs REUSE, the chosen ES, and the
+// edge's ACTUAL argument types. set_entry_set is the one chokepoint
+// both routes go through, so nothing can bind behind its back. This is
+// what identifies the caller that re-admits a second receiver
+// CreationSet into an already-monomorphic contour.
+static void dbg_bind(AEdge *e, EntrySet *new_es, bool mint) {
+  static cchar *want = nullptr;
+  static int checked = 0;
+  if (!checked) { want = getenv("PYC_DBG_BIND"); checked = 1; }
+  if (!want || !e || !e->match || !e->match->fun || !e->match->fun->sym) return;
+  cchar *nm = e->match->fun->sym->name;
+  if (!nm || strcmp(nm, want)) return;
+  char args[512];
+  args[0] = 0;
+  int used = 0;
+  for (MPosition *p : e->match->fun->positional_arg_positions) {
+    AVar *av = e->args.get(p);
+    char t[160];
+    dbg_atype_str(av ? av->out : nullptr, t, (int)sizeof t, 0);
+    used += snprintf(args + used, (int)sizeof args - used, "%s%s", used ? " " : "", t);
+    if (used >= (int)sizeof args - 1) break;
+  }
+  fprintf(stderr, "BIND pass=%d %s e=%d %s es=%d from_es=%d line=%d actuals=[%s]\n", analysis_pass, want, e->id,
+          mint ? "MINT " : "REUSE", new_es ? new_es->id : -1, e->from ? e->from->id : -1,
+          e->pnode && e->pnode->code ? e->pnode->code->line() : -1, args);
+}
+
 static void set_entry_set(AEdge *e, EntrySet *es = 0) {
   EntrySet *new_es = es;
   if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) {
@@ -1246,6 +1277,7 @@ static void set_entry_set(AEdge *e, EntrySet *es = 0) {
   }
   if (e->to && e->to != new_es) fa_pass_retargeted.set_add(e->to);  // ifa/111 M1: old target
   if (new_es) fa_pass_retargeted.set_add(new_es);                   // ifa/111 M1: new target
+  dbg_bind(e, new_es, es == nullptr);
   e->to = new_es;
   new_es->edges.put(e);
   if (new_es->fun->sym->nesting_depth) update_display(e, new_es);
@@ -9400,7 +9432,7 @@ static void dbg_atype_str(AType *t, char *buf, int n, int depth) {
     if (used >= n - 1) break;
     Sym *ty = cs->sym->is_constant && cs->sym->type ? cs->sym->type : cs->sym;
     cchar *nm = ty->name ? ty->name : "?";
-    used += snprintf(buf + used, n - used, "%s", nm);
+    used += snprintf(buf + used, n - used, "%s#%d", nm, cs->id);
     if (depth > 0 && used < n - 1) {
       AVar *e = dbg_element_avar(cs);
       if (e) {
@@ -9473,13 +9505,37 @@ static void dbg_dump_contours(int pass) {
     for (AVar *av : cs->vars) {
       if (!av || !av->var || !av->var->sym) continue;
       cchar *fn = av->var->sym->name;
-      if (!fn) continue;
+      // Data fields only. The method slots (__and__, add, ...) are also
+      // in cs->vars and are long enough to overflow this buffer before
+      // reaching `_items`, which is the one that matters.
+      if (!fn || fn[0] != '_' || (fn[1] == '_' && fn[2])) continue;
       char t[192];
       dbg_atype_str(av->out, t, (int)sizeof t, 1);
       fu += snprintf(flds + fu, (int)sizeof flds - fu, "%s%s=%s", fu ? " " : "", fn, t);
       if (fu >= (int)sizeof flds - 1) break;
     }
     fprintf(stderr, "  SETCS pass=%d cs=%d %s\n", pass, cs->id, flds);
+  }
+  // ifa/issues/113 link: are the `_items` AVars of distinct set CSs in
+  // ONE setter equivalence class? If so their values are merged by the
+  // partition, which is what would make three separate sets appear to
+  // share all three backing lists.
+  {
+    Vec<void *> classes;
+    int n_items = 0;
+    for (CreationSet *cs : fa->css) {
+      if (!cs || !cs->sym || !cs->sym->name || strcmp(cs->sym->name, "set")) continue;
+      for (AVar *av : cs->vars) {
+        if (!av || !av->var || !av->var->sym || !av->var->sym->name) continue;
+        if (strcmp(av->var->sym->name, "_items")) continue;
+        ++n_items;
+        fprintf(stderr, "  ITEMS pass=%d setcs=%d av=%p setter_class=%p n=%d\n", pass, cs->id, (void *)av,
+                (void *)av->setter_class, av->setter_class ? av->setter_class->n : -1);
+        if (av->setter_class) classes.set_add((void *)av->setter_class);
+      }
+    }
+    fprintf(stderr, "  ITEMS pass=%d SUMMARY _items_avars=%d distinct_setter_classes=%d\n", pass, n_items,
+            classes.n);
   }
   fprintf(stderr, "CONTOUR pass=%d SUMMARY %s_contours=%d set_CSs=%d total_ess=%d\n", pass, want, n_es, n_cs,
           fa->ess.n);
