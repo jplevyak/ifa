@@ -1,6 +1,6 @@
 # 055 — Adding `set.__sub__` triggers FA non-convergence / compiler crash on plcfrs.py
 
-**Status:** open, found 2026-07-19 while attempting a followup to
+**Status:** open (re-verified 2026-08-26; symptom changed, leading hypothesis refuted, `__sub__` since SHIPPED), found 2026-07-19 while attempting a followup to
 [053](closed/053-tuple-unpack-target-heterogeneous-arity-segfault.md):
 `plcfrs.py` (line 300-301) calls `set(...) - set([...])`, and
 `__pyc__/08_set.py`'s `class set` had no `__sub__`/difference operator
@@ -150,3 +150,85 @@ needs `__sub__` to get past its next blocker after 053's fix (though
 per 053's own note, `plcfrs.py` has at least one more distinct
 "heterogeneous tuple arity" gap beyond this before it fully compiles
 regardless).
+
+
+## Re-verified 2026-08-26 — trigger unchanged, everything else stale
+
+### `set.__sub__` shipped
+
+The issue says "Reverted; NOT shipped. `set.__sub__` is still missing."
+That is no longer true: `__pyc__/08_set.py` now defines `difference`,
+`__sub__`, `intersection`, `__and__`, `union`, `__or__`, and they work
+in ordinary programs —
+
+```python
+a = set(); a.add(1); a.add(2); a.add(3)
+b = set(); b.add(2)
+print(len(a - b), len(a & b), len(a | b))   # 2 1 3, correct
+```
+
+So the feature landed and plcfrs was left as the casualty.
+
+### The symptom is no longer a crash
+
+`./pyc -D . plcfrs.py` does not segfault and does not hang. It finishes
+in ~13 s and reports. What it does *not* do is converge:
+
+| | final_pass | pass_limit_hit | CONVERGED | violations | ess | css |
+|---|---|---|---|---|---|---|
+| with `set.__sub__` | 39 | **1** | **0** | 4378 | 1246 | 4075 |
+| with it removed | 13 | 0 | **1** | 104 | 258 | 1100 |
+
+So the non-convergence this issue is about is intact; only its
+*presentation* improved (bounded failure instead of a crash), presumably
+from the pass cap and 073's splitter work.
+
+### Removing `__sub__` makes plcfrs COMPILE
+
+Without it: **rc=0**, warnings only. With it: 774 `has mixed basic types`
+errors and `fail: program does not type`. plcfrs still contains the
+`set(...) - set(["Epsilon", "ROOT"])` at line 301 either way — without
+`__sub__` that call has no candidate and is salvaged as one of the 34
+`illegal call argument type` warnings.
+
+Shipping the *correct* method is what turned plcfrs from compiling into
+failing. (Its failure is now dominated by BOXING, fatal in every mode
+since [../../issues/018](../../issues/closed), so even a convergence fix
+would not by itself make plcfrs compile.)
+
+### The leading hypothesis is REFUTED
+
+The issue proposes that adding `set.__sub__` gives every one of plcfrs's
+many unrelated arithmetic `a - b` sites one more polymorphic candidate.
+Tested directly, and it is wrong:
+
+- **`__sub__` on a class plcfrs never uses costs nothing.** With
+  `set.__sub__` removed and a trivial `bytearray.__sub__` added in its
+  place — the exact same "one more candidate at every `-` site" — plcfrs
+  converges identically to baseline: `final_pass=13`,
+  `pass_limit_hit=0`, `CONVERGED=1`, `violations=104`, `ess=258`.
+- **`set.__and__` is already defined and is harmless**, though plcfrs
+  has 6 `&` sites against 9 `-` sites — comparable fan-out, no effect.
+- **`set` is not in the degenerate union.** The 774 boxing errors all
+  name `( list tuple int64 float64 str dict ChartItem Edge Rule Entry )`
+  — no `set`. Whatever degenerates, it is not set polluting the
+  arithmetic sites.
+
+What survives is much narrower: it is `set.__sub__` **being reached from
+plcfrs's own `set - set`**, so that the set `difference` builds
+(`r = set()`, `r.add(self._items[i])`) flows onward — into `sorted(...)`
+and then `+` with a list, at line 299-302.
+
+### Where to look instead
+
+That is the shape of [057](closed/057-sorted-tolist-fa-nonconvergence.md)
+(generic `sorted()` across differing element types plus `list()`
+materialization) and [105](105-type-degeneration-in-shared-generic-methods.md),
+not generic operator dispatch. 057 is closed and its fix explicitly did
+not resolve this, but the *call shape* it describes is the one plcfrs
+hits here, and it is now reachable through a freshly-constructed set
+rather than through the operator table.
+
+Next step: trace what element type `difference`'s `r` acquires across
+passes on plcfrs, and what `sorted()` does with it — the operator-dispatch
+line of inquiry is closed off by the bytearray control above.
