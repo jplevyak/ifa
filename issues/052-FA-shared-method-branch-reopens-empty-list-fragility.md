@@ -1,6 +1,6 @@
 # 052 — Adding a branch to a shared clone_methods_per_cs method reopens issue 040's empty-list fragility
 
-**Status:** open, found 2026-07-19 while fixing negative-index
+**Status:** open (re-verified 2026-08-26), found 2026-07-19 while fixing negative-index
 support for `list.__getitem__` (see
 [../../issues/025-shedskin-examples-coverage.md](../../issues/025-shedskin-examples-coverage.md)'s
 "Plain negative indexing fixed" entry). Not fixed here — worked
@@ -134,3 +134,96 @@ Without this, every future PR touching a `clone_methods_per_cs`
 class's methods needs to be manually tested against an
 empty+non-empty-instance program, which nothing currently prompts
 anyone to remember to do.
+
+
+## Re-verified 2026-08-26 — still open, and the diagnosis above is wrong
+
+Still reproduces, but its severity has dropped and **three of the
+claims in this issue are measurably false**. Anyone picking this up
+from the text above would study 040's per-CS machinery, which this
+program never even runs.
+
+### Severity today
+
+    default (permissive)   compiles rc=0, 2 NOTYPE *warnings*,
+                           and the program prints the RIGHT answer:
+                           [2, 3] then []
+    --strict               fail: program does not type, rc=1
+
+When filed it was a hard `fail: program does not type` in both. The
+permissive salvage now carries it, so this is a strict-mode-only defect.
+
+### Wrong claim 1: it is not "adding a branch"
+
+There is no branch. This alone reproduces it:
+
+```python
+def __getitem__(self, key):
+    x = key < 0                     # no `if`, result unused
+    return __pyc_primitive__(...)
+```
+
+### Wrong claim 2: it is not comparisons, it is ONE expression
+
+Every one of these is CLEAN. Only `key < 0` fails:
+
+| fails | clean |
+|---|---|
+| `key < 0` | `key < 1`, `key < 100`, `key < -1`, `key < -5` |
+| `z = 0; key < z` | `key <= 0`, `key <= -1`, `key > 0`, `key > -1` |
+| | `key >= 0`, `key == 0`, `key == 999`, `key != 999` |
+| | `key > 1000`, `0 < key`, `key + 0`, `if key:` |
+| | `if True:`, `n = self.__len__()`, `if self.__len__() < 0:` |
+
+So it is not "a comparison", not "a comparison against 0" (`key == 0`,
+`key > 0`, `key <= 0` are all fine), not "a uniformly-false comparison"
+(`key < -1`, `key > 1000`, `key == 999` are all uniformly false for the
+actual index set {0,1} and all fine), and not the negation
+(`key >= 0` is fine). It is exactly the pair (`<`, `0`).
+
+Note this rules out constant-folding of the comparison as the mechanism:
+FA types a comparison as the abstract `bool_type`
+(`ret_types[i] == PRIM_TYPE_BOOL`, fa.cc), never as a folded True/False,
+so `key < 0` and `key < -1` are indistinguishable at that level.
+
+### Wrong claim 3: 040's fix stage is not involved
+
+`PYC_DBG_STAGES=1` reports `STAGES: TYPE_CONFL` for **both** the passing
+baseline and the failing variant. `PER_CS_RECEIVER` -- the stage
+[045](closed/045-receiver-cs-method-cloning.md) added as 040's fix, and
+which this issue names as the affected machinery -- **never fires on
+this program at all**, in either direction. Lifting its quiescence gate
+(`PYC_RECVFAN=2` and `=3`) does not change the outcome either.
+
+Whatever makes the baseline pass, it is not 040's fix.
+
+### What else was measured
+
+- **Both lists are required**, order irrelevant: `k = []` alone is
+  clean, `b = [2,3]` alone is clean, either order of both fails.
+- **Deterministic**, 3 runs each way -- not ifa/issues/112.
+- **The NOTYPE events are the same in the PASSING baseline.** With
+  `PYC_DBG_NOTYPE=1` the clean baseline emits 36 NOTYPE events in the
+  same two functions (`list.__str__`, `list.__getitem__`) that the
+  failing variant emits 48 in. So nothing new goes wrong; the same
+  NOTYPEs simply stop being *resolved* by later splitting.
+- **Not contour sharing.** The empty list has its own `__getitem__`
+  contour: at the violation the receiver dumps as one CreationSet,
+  `sym=list vars.n=0` (the element-less one), `out.sorted.n=1`.
+- **One extra EntrySet.** ess = 70 baseline, 71 for `key < -1` (clean),
+  72 for `key < 0` (fails). Both add contours; only one fails.
+
+### Is it a straightforward fix?
+
+**No.** There is no localized special case to correct: the trigger is a
+single (operator, constant) pair that produces one extra EntrySet, and
+the failure is that TYPE_CONFLUENCE's splitting trajectory stops
+resolving NOTYPEs it resolves in the baseline. That is the same splitter
+machinery tracked by [074](074-FA-cross-pass-oscillation-plan.md),
+[111](111-FA-selective-invalidation-per-pass.md) and
+[113](113-FA-setter-equivalence-is-a-global-batch-partition.md).
+
+Next step for whoever takes it: a per-pass trace of *which* NOTYPE
+violations `split_for_violations` clears and which it does not, baseline
+vs `key < 0`, rather than any further source-level bisection -- the
+source-level bisection is exhausted and is recorded in full above.
