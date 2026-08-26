@@ -314,3 +314,88 @@ plcfrs: 39 passes, 4378 violations, ess=1246, ~13 s, and a 500-line
 program to read. This: 52 passes, 56 violations, ess=149, 0.72 s, six
 lines. The plcfrs repro should stay as the integration check, but no
 root-cause work should start from it.
+
+
+## Instrumented: it is a period-2 limit cycle, and the splitter is chasing the symptom
+
+`PYC_DBG_CONTOURS=<fun>` (analysis/fa.cc, env-gated) prints, at the end
+of every pass, one line per EntrySet of that function with its formals'
+and return types; `PYC_DBG_CONTOURS='*'` prints the per-function contour
+counts and the ess/css totals. Run against
+`tests/set_ops_chained_mixed_elem_types.py`.
+
+### It does not diverge — it oscillates
+
+    pass 0..23   total_ess climbs 61 -> 148, css 532 -> 656
+    pass 24      total_ess=146  css=656
+    pass 25      total_ess=149  css=656
+    pass 26      total_ess=146  css=656
+    ...          146, 149, 146, 149, ... to the pass cap
+
+`total_css` is pinned at 656 from pass 20 on. Three EntrySets are
+created and destroyed on alternate passes, forever. This is a **period-2
+limit cycle**, not unbounded growth — the shape
+[099](099-FA-pending-backedge-avoid-veto-forces-period-2.md) and
+[074](074-FA-cross-pass-oscillation-plan.md) describe.
+
+### What flips
+
+The ideal contours here are obvious and small: `difference`,
+`add`, `__contains__`, `__eq__` each specialized per element type,
+`int64` and `str`. FA *derives* them — and then loses them again:
+
+| | pass 44 (good) | pass 45 (bad) |
+|---|---|---|
+| `add` es=93 | `[set, int64]` | `[set\|set, int64\|str]` |
+| `add` es=94 | `[set, str]` | `[set\|set, int64\|str]` |
+| `__contains__` es=98 | `[set, int64]` | `[set\|set, int64\|str]` |
+| `__contains__` es=99 | `[set, str]` | `[set\|set, int64\|str]` |
+| `__eq__` es=140 | `[int64, int64]` | `[int64, int64\|str]` |
+| `__eq__` es=145 | `[str, str]` | `[str, int64\|str]` |
+| `__eq__` es=148 | `[int64, int64]` | `[int64, int64\|str]` |
+
+On the good pass these are exactly the monomorphic contours we want. On
+the next pass the **receiver widens from ONE `set` CreationSet to two**
+(`set|set`), and the element argument unions to `int64|str` behind it.
+The splitter responds by splitting again — `__eq__` goes 8 contours ->
+11 — which restores the good state, and the cycle repeats.
+
+`difference` itself settles at 3 contours and `set_CSs` at 7 (ai, bi,
+as_, bs, plus one fresh `r` per difference contour), so the fresh-set
+creation sites ARE separated. The instability is downstream of that: an
+already-split contour is re-admitted a second receiver CS on the next
+pass.
+
+### Where the analysis fails, in one sentence
+
+**The split contours are not stable across the pass boundary** — a
+contour that was monomorphic on pass N accepts both receiver
+CreationSets on pass N+1, so every split is undone and re-made forever.
+The splitter keeps paying for `__eq__`/`__contains__`/`add` splits that
+cannot stick, which is the non-productive contour creation named in
+[057](closed/057-sorted-tolist-fa-nonconvergence.md)'s fix direction:
+a new contour must realize a monomorphic specialization that does not
+already exist, *and an existing one must not be re-widened*. The second
+half is what is missing here.
+
+That points at contour reuse/compatibility being scored against a
+per-pass snapshot — [097](097-CGEN-callsite-vs-clone-formal-type-mismatch.md)'s
+hazard and [098](098-FA-per-pass-reset-scoped-to-reachable-set.md)'s
+per-pass reset — rather than at anything about sets.
+
+### Why shedskin does not have this
+
+shedskin monomorphizes `difference` as a C++ template instantiated per
+element type, so there is no shared `r` and no union for a splitter to
+chase — see [[shedskin-template-monomorphization]] in the corpus notes:
+it has no union representation either, which is why its diagnostics, not
+its typing, are the part worth copying. The contours pyc needs here are
+the same ones a template instantiation would produce; pyc derives them
+and then throws them away.
+
+### Next step
+
+Find what re-admits the second receiver CS into an already-monomorphic
+contour on the following pass. `PYC_DBG_CONTOURS=add` narrows it to
+es=93/94 between passes 44 and 45, which is a two-contour, two-type
+window — small enough to trace edge by edge.

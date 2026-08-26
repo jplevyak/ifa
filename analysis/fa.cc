@@ -9371,6 +9371,120 @@ static Sym *unbound_fill_constant(Var *lval) {
   return if1_const(if1, basic, basic->num_kind == IF1_NUM_KIND_FLOAT ? "0.0" : "0");
 }
 
+// ifa/issues/055: per-pass contour trace. PYC_DBG_CONTOURS=<fun name>
+// prints, at the end of every pass, one line per EntrySet of that
+// function (its formals' and return's types) and one line per
+// CreationSet of the named container, with its element type. That is
+// exactly the information needed to see WHERE the ideal monomorphic
+// contours fail to be derived: the repro's ideal is two difference
+// contours, set<int64> and set<str>, each with its own `r`.
+static AVar *dbg_element_avar(CreationSet *cs) {
+  if (!cs || !cs->sym || !cs->sym->element) return nullptr;
+  // Scan rather than get_element_avar(): that one CREATES the AVar and
+  // sets added_element_var, which a debug path must not do.
+  for (AVar *av : cs->vars)
+    if (av && av->var && av->var->sym == cs->sym->element) return av;
+  return nullptr;
+}
+
+static void dbg_atype_str(AType *t, char *buf, int n, int depth) {
+  if (n <= 0) return;
+  buf[0] = 0;
+  if (!t) { snprintf(buf, n, "<null>"); return; }
+  if (t == fa->type_world.bottom_type) { snprintf(buf, n, "bottom"); return; }
+  int used = 0, count = 0;
+  for (CreationSet *cs : t->sorted) {
+    if (!cs || !cs->sym) continue;
+    if (used >= n - 1) break;
+    if (count++) used += snprintf(buf + used, n - used, "|");
+    if (used >= n - 1) break;
+    Sym *ty = cs->sym->is_constant && cs->sym->type ? cs->sym->type : cs->sym;
+    cchar *nm = ty->name ? ty->name : "?";
+    used += snprintf(buf + used, n - used, "%s", nm);
+    if (depth > 0 && used < n - 1) {
+      AVar *e = dbg_element_avar(cs);
+      if (e) {
+        char sub[128];
+        dbg_atype_str(e->out, sub, (int)sizeof sub, depth - 1);
+        used += snprintf(buf + used, n - used, "<%s>", sub);
+      }
+    }
+  }
+  if (!count) snprintf(buf, n, "{}");
+}
+
+static void dbg_dump_contours(int pass) {
+  static cchar *want = nullptr;
+  static int checked = 0;
+  if (!checked) { want = getenv("PYC_DBG_CONTOURS"); checked = 1; }
+  if (!want) return;
+  int n_es = 0;
+  for (EntrySet *es : fa->ess) {
+    if (!es || !es->fun || !es->fun->sym || !es->fun->sym->name) continue;
+    if (strcmp(es->fun->sym->name, want)) continue;
+    ++n_es;
+    char args[768];
+    args[0] = 0;
+    int used = 0;
+    for (int i = 0; i < es->args.n; i++) {
+      if (!es->args.v[i].key) continue;
+      AVar *av = es->args.v[i].value;
+      char t[192];
+      dbg_atype_str(av ? av->out : nullptr, t, (int)sizeof t, 1);
+      used += snprintf(args + used, (int)sizeof args - used, "%s%s", used ? " " : "", t);
+      if (used >= (int)sizeof args - 1) break;
+    }
+    char ret[192];
+    dbg_atype_str(es->rets.n && es->rets.v[0] ? es->rets.v[0]->out : nullptr, ret, (int)sizeof ret, 1);
+    fprintf(stderr, "CONTOUR pass=%d %s es=%d args=[%s] ret=%s\n", pass, want, es->id, args, ret);
+  }
+  // PYC_DBG_CONTOURS=* : which functions own the contour growth.
+  if (!strcmp(want, "*")) {
+    Vec<Fun *> funs;
+    Vec<int> counts;
+    for (EntrySet *es : fa->ess) {
+      if (!es || !es->fun) continue;
+      int at = -1;
+      for (int i = 0; i < funs.n; i++) if (funs.v[i] == es->fun) { at = i; break; }
+      if (at < 0) { funs.add(es->fun); counts.add(1); }
+      else counts.v[at]++;
+    }
+    for (int round = 0; round < 8; round++) {
+      int best = -1;
+      for (int i = 0; i < counts.n; i++) if (counts.v[i] > 0 && (best < 0 || counts.v[i] > counts.v[best])) best = i;
+      if (best < 0 || counts.v[best] < 2) break;
+      cchar *nm = funs.v[best]->sym && funs.v[best]->sym->name ? funs.v[best]->sym->name : "?";
+      fprintf(stderr, "  TOPFUN pass=%d %-24s contours=%d\n", pass, nm, counts.v[best]);
+      counts.v[best] = 0;
+    }
+    fprintf(stderr, "CONTOUR pass=%d SUMMARY total_ess=%d total_css=%d\n", pass, fa->ess.n, fa->css.n);
+    return;
+  }
+  int n_cs = 0;
+  for (CreationSet *cs : fa->css) {
+    if (!cs || !cs->sym || !cs->sym->name || strcmp(cs->sym->name, "set")) continue;
+    ++n_cs;
+    // pyc's `set` is a Python-level class, so there is no sym->element:
+    // the element type lives in the _items field. Dump the CS's member
+    // AVars instead.
+    char flds[512];
+    flds[0] = 0;
+    int fu = 0;
+    for (AVar *av : cs->vars) {
+      if (!av || !av->var || !av->var->sym) continue;
+      cchar *fn = av->var->sym->name;
+      if (!fn) continue;
+      char t[192];
+      dbg_atype_str(av->out, t, (int)sizeof t, 1);
+      fu += snprintf(flds + fu, (int)sizeof flds - fu, "%s%s=%s", fu ? " " : "", fn, t);
+      if (fu >= (int)sizeof flds - 1) break;
+    }
+    fprintf(stderr, "  SETCS pass=%d cs=%d %s\n", pass, cs->id, flds);
+  }
+  fprintf(stderr, "CONTOUR pass=%d SUMMARY %s_contours=%d set_CSs=%d total_ess=%d\n", pass, want, n_es, n_cs,
+          fa->ess.n);
+}
+
 static bool apply_unbound_fills() {
   if (!fauto_init_unbound) return false;
   bool changed = false;
@@ -9485,6 +9599,7 @@ static void analyze_to_convergence() {
       }
     }
     complete_pass();
+    dbg_dump_contours(analysis_pass);  // ifa/issues/055
     // The pass cap bounds the WHOLE loop, including passes kept
     // alive only by reanalyze() (issue 033): with the splitter
     // suppressed by the sticky stall guard, extend_analysis returns
