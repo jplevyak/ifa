@@ -706,6 +706,14 @@ class FA : public gc {
   // home=792, and the group alternates 792->692->792 to the pass cap.
   // A route A->B whose reverse B->A is already recorded here is a cycle.
   Map<EntrySet *, EntrySet *> route_last;
+  // ifa/issues/055: the GENERAL form of the same fact (PYC_ROUTECYCLE=3).
+  // route_last remembers one step, which detects A<->B and nothing
+  // longer; a ledger holding A->B->C->A is the same disease with three
+  // signatures instead of two. This records the whole route relation so
+  // a candidate route can be refused whenever it would close a cycle of
+  // ANY length -- i.e. the routing relation is kept acyclic by
+  // construction rather than by pattern-matching one shape.
+  Map<EntrySet *, Vec<EntrySet *> *> route_adj;
   // ifa/issues/101 (PYC_CSELEM): per creation-site durable element type,
   // rebuilt each pass from CreationSet::elem_key. A Var whose CSs
   // converged to DIFFERENT element types maps to null (ambiguous) and is

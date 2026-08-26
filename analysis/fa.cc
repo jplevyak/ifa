@@ -5611,11 +5611,45 @@ static int csmold_enabled() {
 //              sunfish improves (400s timeout -> clean failure)
 //   plcfrs     still does not converge; passes 45 -> 36 but violations
 //              2451 -> 5353 and ess 850 -> 1524
+// ifa/issues/055: can `from` reach `to` through the recorded route
+// relation? Used to refuse a route that would close a cycle of any
+// length -- the general form of route_last's A<->B check.
+static bool route_reaches(EntrySet *from, EntrySet *to, Vec<EntrySet *> &path, Vec<EntrySet *> &seen) {
+  if (!from) return false;
+  if (from == to) { path.add(from); return true; }
+  if (!seen.set_add(from)) return false;
+  Vec<EntrySet *> *adj = fa->route_adj.get(from);
+  if (adj)
+    for (EntrySet *n : *adj)
+      if (n && route_reaches(n, to, path, seen)) { path.add(from); return true; }
+  return false;
+}
+
+// DEFAULT 3 -- the GENERAL form (ifa/issues/055). A 2-cycle is not the
+// only shape the ledger can hold: A->B->C->A is the same disease with
+// three signatures, and route_last's one-step memory cannot see it.
+// Mode 3 records the whole route relation (FA::route_adj) and refuses
+// any route that would close a cycle of ANY length, so the relation is
+// acyclic by construction rather than by pattern-matching one shape.
+// Measured strictly >= mode 1: repro 32 -> 31 passes, suite identical
+// (298 passed / 0 failed / 13 known), corpus identical program for
+// program (67 of 77), plcfrs improves (5353 -> 4993 violations, ess
+// 1524 -> 1420). On everything measured only 2-cycles actually occur,
+// so the extra reach is insurance, not yet a demonstrated win.
+//
+// Mode 4 -- "never re-assign to ANY previously routed EntrySet" -- is
+// the tempting stronger rule and it is WRONG, measurably: 6 suite
+// failures, two of them hard compile failures (test_heapq,
+// tuple_compare). Repeating the SAME route every pass is the ledger
+// WORKING, a re-derived group landing in its established home; only a
+// return to an ABANDONED home is pathological. "Closes a cycle" is
+// exactly that distinction, "never revisit" conflates the two. Kept
+// only so the difference stays measurable.
 static int routecycle_enabled() {
   static int e = -1;
   if (e < 0) {
     cchar *v = getenv("PYC_ROUTECYCLE");
-    e = v ? atoi(v) : 1;
+    e = v ? atoi(v) : 3;
   }
   return e;
 }
@@ -6192,7 +6226,36 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
         // records alternates for ever. Pin deterministically to the
         // lower id -- and when that is `es`, decline the route entirely
         // so the group simply stays put.
-        if (routecycle_enabled()) {
+        // Mode 3: keep the ROUTE RELATION ACYCLIC. Refuse (by pinning to
+        // the cycle's lowest-id member) any route that would close a
+        // cycle of any length, instead of pattern-matching the 2-cycle.
+        if (routecycle_enabled() >= 3) {
+          Vec<EntrySet *> path, seen;
+          if (route_reaches(product, es, path, seen)) {
+            EntrySet *canon = es;
+            for (EntrySet *x : path) if (x && x->id < canon->id) canon = x;
+            if (getenv("IFA_DBG_CHURN"))
+              fprintf(stderr, "[churn-cycleN] p=%d fun=%s es=%d -> %d closes a %d-cycle, pinning to %d\n",
+                      analysis_pass, es->fun->sym->name ? es->fun->sym->name : "?", es->id, product->id, path.n,
+                      canon->id);
+            d->product = canon;
+            if (canon == es) continue;  // already home: no route, no split
+            product = canon;
+          }
+          if (product) {
+            Vec<EntrySet *> *adj = fa->route_adj.get(es);
+            if (!adj) { adj = new Vec<EntrySet *>; fa->route_adj.put(es, adj); }
+            // Mode 4 is the literal "never re-assign to an EntrySet this
+            // source has been routed to before". It is STRICTLY stronger
+            // than mode 3 and, unlike it, refuses the STABLE case too:
+            // in the steady state a re-derived group is routed to the
+            // same home every pass, which is the ledger working, not
+            // churning. Kept as a knob to make that difference
+            // measurable rather than argued.
+            if (routecycle_enabled() >= 4 && adj->in(product)) continue;
+            adj->set_add(product);
+          }
+        } else if (routecycle_enabled()) {
           EntrySet *back = fa->route_last.get(product);
           if (back == es) {
             // A <-> B. Measured on linalg's __deepcopy__: ONE edge (2633,

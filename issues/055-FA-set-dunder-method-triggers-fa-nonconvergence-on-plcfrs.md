@@ -1178,3 +1178,53 @@ is no longer a candidate fix: it worked by routing AROUND the churn
 rather than fixing it, and it broke the `splitter_*.py` stage-demand
 assertions in doing so. With the cycle broken, the setter stage is
 reachable on its own.
+
+
+## Generalizing the cycle breaker: acyclic routing, not "never revisit"
+
+Breaking a 2-cycle by pattern is not general -- `A->B->C->A` is the same
+disease with three signatures, and `route_last`'s one-step memory cannot
+see it. Two generalizations were implemented and measured.
+
+### Mode 3 (now the default): keep the route relation ACYCLIC
+
+`FA::route_adj` records the whole route relation; before routing
+`es -> product`, ask whether `product` already reaches `es`. If it does,
+the route would close a cycle of any length -- pin to the cycle's
+lowest-id member, the same policy mode 2 applies to the 2-cycle case.
+Mode 1's check is exactly the depth-1 special case of this.
+
+| | mode 1 | **mode 3** |
+|---|---|---|
+| the 9-line repro | 32 passes, CONVERGED=1 | **31 passes**, CONVERGED=1 |
+| pyc suite | 298 passed / 0 failed / 13 known | **identical** |
+| corpus | 67 of 77 | **67 of 77**, program for program |
+| plcfrs | 5353 viol, ess 1524 | **4993 viol, ess 1420** |
+| ifa-test goldens | -- | unchanged |
+
+Strictly >= mode 1 everywhere measured, so it is the default.
+
+**Honest limit: on every program measured, only 2-cycles actually
+occur.** m7 finds one, plcfrs finds two, both length 2. The extra reach
+is insurance against a shape not yet observed, not a demonstrated win.
+
+### Mode 4: "prevent any reassignment to a previous EntrySet" is WRONG
+
+The stronger and more obvious rule -- never route a source to an
+EntrySet it has been routed to before -- was implemented and it fails:
+
+    6 suite failures, including two HARD compile failures
+    (test_heapq.py, tuple_compare.py), plus
+    iterator_protocol_bridge, match_seq, match_map_star,
+    recursive_polymorphic
+
+The reason is worth keeping: **repeating the SAME route every pass is
+the ledger working**, not churning. In the steady state a re-derived
+group is routed to its established home on every pass; that is exactly
+what the ledger exists to do. Only a return to a home the group has
+ABANDONED is pathological -- and "would close a cycle" is precisely that
+distinction. "Never revisit" conflates the two and refuses the stable
+case along with the cyclic one.
+
+Mode 4 is kept behind the flag so the difference stays measurable rather
+than argued.
