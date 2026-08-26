@@ -195,7 +195,21 @@ static int prim_period_offset(PNode *p, EntrySet *es) {
       if (cs->sym->type == sym_nil_type) continue;
       AVar *iv = cs->var_map.get(symbol);
       if (iv) {
-        if (offset >= 0 && offset != iv->ivar_offset) fail("missmatched offsets");
+        if (offset >= 0 && offset != iv->ivar_offset) {
+          // Name what actually disagrees. Offsets are computed PER
+          // CreationSet (determine_layouts), so two CSs of the SAME
+          // class can diverge whenever a field's type differs in size
+          // between them -- and the more contours split, the more
+          // same-class CSs there are to disagree. Bare "missmatched
+          // offsets" said none of that.
+          fprintf(stderr, "mismatched offsets for field '%s': ", symbol);
+          for (CreationSet *y : *obj->out) if (y) {
+            AVar *yv = y->var_map.get(symbol);
+            if (yv) fprintf(stderr, " %s#%d@%d", y->sym->name ? y->sym->name : "?", y->id, yv->ivar_offset);
+          }
+          fprintf(stderr, "\n");
+          fail("missmatched offsets");
+        }
         offset = iv->ivar_offset;
       }
     }
@@ -445,6 +459,31 @@ static void determine_basic_clones(Vec<Vec<CreationSet *> *> &css_sets_by_sym) {
 }
 
 static void determine_layouts() {
+  // ifa/issues/055: a field's size is resolved from THIS CreationSet's
+  // own field type, so a field that is bottom in one contour contributed
+  // 0 bytes there and shifted every later field up -- giving two CSs of
+  // the SAME class different layouts. Measured on pylife: 13 LifeNode
+  // CSs, field `id` at offset 32 in eleven of them and 24 in two.
+  // prim_period_offset then rejects any union receiver mixing them
+  // ("missmatched offsets"), which is not a layout question at all --
+  // the class has one layout, one contour just failed to observe a
+  // field.
+  //
+  // A field's AVar is unique_AVar(h->var, cs) over the class's own
+  // `has`, so `iv->var->sym` is the SAME Sym for that field in every CS
+  // of the class. That makes it a sound key for resolving the size once,
+  // program-wide, and using it as the fallback wherever a contour has
+  // nothing to say. Only the zero case consults it; every CS that does
+  // observe the field keeps its own answer and its own consistency
+  // checks below.
+  Map<Sym *, unsigned int> field_size, field_align;
+  for (CreationSet *cs : fa->css) if (cs)
+    for (AVar *iv : cs->vars) if (iv && iv->var && iv->var->sym && iv->out && iv->out->type)
+      for (CreationSet *x : *iv->out->type) if (x && x->sym->size) {
+        field_size.put(iv->var->sym, x->sym->size);
+        field_align.put(iv->var->sym, x->sym->alignment);
+        break;
+      }
   for (CreationSet *cs : fa->css) {
     unsigned int offset = 0;
     // Canonical (name-sorted) field order, NOT cs->vars insertion
@@ -491,6 +530,13 @@ static void determine_layouts() {
                iv->var && iv->var->sym && iv->var->sym->name ? iv->var->sym->name : "<anon>", alignment,
                x->sym->alignment, x->sym->type && x->sym->type->name ? x->sym->type->name : "?");
         alignment = x->sym->alignment;
+      }
+      // Bottom in THIS contour: fall back to the size the field has
+      // wherever it was observed, so every CS of the class lays out
+      // identically.
+      if (!size && iv->var && iv->var->sym) {
+        size = field_size.get(iv->var->sym);
+        alignment = field_align.get(iv->var->sym);
       }
       if (alignment) offset = (offset + alignment - 1) & ~(alignment - 1);
       iv->ivar_offset = offset;

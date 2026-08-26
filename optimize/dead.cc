@@ -272,26 +272,53 @@ int mark_live_code(FA *fa) {
   return 0;
 }
 
+// ifa/issues/055: the propagation below can mark a callee live that is
+// NOT in fa->funs -- that list holds only the functions the LAST pass
+// reached (collect_results builds it from entry_set_done), while
+// `f->calls` names every callee FA ever resolved at a live PNode. The
+// old rebuild filtered the OLD list, so such a function stayed live and
+// UNLISTED, and every per-function structure keyed on fa->funs then read
+// null for it. Three crashes, one cause:
+//
+//   optimize/dom.cc     only fa->funs get a Dom      -> null succ entry
+//   optimize/inline.cc  only covered funs get a      -> null loop_node
+//                       loop_node
+//   codegen/cg.cc       only fa->funs get a name     -> fputs(NULL) on
+//                                                       a live call
+//
+// Latent: it needs a function that is live but absent from the final
+// pass's reached set, which is why it surfaced only once PYC_CSSPLIT
+// raised the contour count (pystone). Rebuilding from every function
+// seen live -- not from the incoming list -- makes fa->funs agree with
+// the `live` flags it just computed.
 void mark_live_funs(FA *fa) {
   for (Fun *f : fa->funs) f->live = 0;
   if1->top->fun->live = 1;
+  Vec<Fun *> seen;
+  for (Fun *f : fa->funs) if (f) seen.set_add(f);
+  seen.set_add(if1->top->fun);
   int changed = 1;
   while (changed) {
     changed = 0;
-    for (Fun *f : fa->funs) {
-      if (f->live) {
-        for (PNode *p : f->fa_all_PNodes) if (p->live) {
-          Vec<Fun *> *fns = f->calls.get(p);
-          if (fns) for (Fun *x : *fns) if (!x->live) {
-              x->live = 1;
-              changed = 1;
-            }
-        }
+    // Snapshot: `seen` grows inside the loop, and it is a set-mode Vec
+    // (iterating one yields its empty slots as nulls, hence the guards).
+    Vec<Fun *> cur;
+    for (Fun *f : seen) if (f) cur.add(f);
+    for (Fun *f : cur) {
+      if (!f->live) continue;
+      for (PNode *p : f->fa_all_PNodes) if (p->live) {
+        Vec<Fun *> *fns = f->calls.get(p);
+        if (fns) for (Fun *x : *fns) if (x && !x->live) {
+            x->live = 1;
+            seen.set_add(x);
+            changed = 1;
+          }
       }
     }
   }
-  Vec<Fun *> funs(fa->funs, Vec<Fun *>::MOVE);
-  for (Fun *f : funs) if (f->live) fa->funs.add(f);
+  fa->funs.clear();
+  for (Fun *f : seen) if (f && f->live) fa->funs.add(f);
+  qsort_by_id(fa->funs);  // collect_results' order, kept deterministic
 }
 
 // -------------------------------------------------------------
