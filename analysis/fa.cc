@@ -6941,7 +6941,18 @@ enum AKind { AKIND_TYPE, AKIND_SETTER, AKIND_MARK };
   }
   for (int i = 0; i < ss.n; i++) ss[i] = setters_cannonicalize(ss.v[i]);
   recompute_eq_classes(ss);
+  // ifa/issues/055 probe: does the seed actually reach update_setter?
+  static cchar *want = nullptr;
+  static int checked = 0;
+  if (!checked) { want = getenv("PYC_DBG_SETTERSEED"); checked = 1; }
+  int n_dir = 0, n_classed = 0, n_container = 0;
+  if (want) {
+    for (AVar *x : *dir) if (x) { ++n_dir; if (x->setter_class) ++n_classed; if (x->setter_class && x->container) ++n_container; }
+  }
   for (AVar *x : *dir) if (x && x->setter_class) setters_changed |= update_setter(x->container, x, avs);
+  if (want && av->var && av->var->sym && av->var->sym->name && !strcmp(av->var->sym->name, want))
+    fprintf(stderr, "SETSEED p=%d av=%d %s akind=%d dir=%d classed=%d with_container=%d changed=%d\n",
+            analysis_pass, av->id, want, akind, n_dir, n_classed, n_container, setters_changed);
   return setters_changed;
 }
 
@@ -8228,7 +8239,17 @@ static int cpa_enabled() {
   }
   log(LOG_SPLITTING, "split_ess_for_mark_type %d\n", analyze_again);
   // 3) split based on setters of type
-  if (!analyze_again) {
+  // ifa/issues/055: PYC_SETTERGATE=1 lifts the quiescence gate on the
+  // SETTER stage, the same way PYC_RECVFAN=2 lifts it on
+  // PER_CS_RECEIVER. Measured on the plcfrs 9-line repro: the field
+  // whose union needs splitting IS collected as a type confluence (30
+  // times), but split_ess_for_type finds work on every one of those
+  // passes, so `!analyze_again` is false and compute_setters is never
+  // called on it -- zero setters exist in the whole program, so the
+  // demand-driven back-flow never starts.
+  static int settergate = -1;
+  if (settergate < 0) settergate = getenv("PYC_SETTERGATE") ? atoi(getenv("PYC_SETTERGATE")) : 0;
+  if (!analyze_again || settergate) {
     Accum<AVar *> avs;
     // ifa/issues/111 M3 option 2: under selective invalidation, class
     // EVERY CS-contoured AVar, not just this pass's confluences.
@@ -9507,6 +9528,32 @@ static void dbg_atype_str(AType *t, char *buf, int n, int depth) {
   if (!count) snprintf(buf, n, "{}");
 }
 
+// ifa/issues/055: bounded backward walk from a CreationSet field, to
+// find WHERE a union is formed. Prints each AVar with its contour and
+// its out type; the first AVar whose out already holds the whole union
+// is the merge point, and the edge below it is where a split would have
+// to happen.
+static void dbg_backwalk(AVar *av, int depth, int maxdepth, Vec<AVar *> &seen) {
+  if (!av || depth > maxdepth || !seen.set_add(av)) return;
+  char t[224];
+  dbg_atype_str(av->out, t, (int)sizeof t, 0);
+  char where[96];
+  if (av->contour_is_entry_set) {
+    EntrySet *e = (EntrySet *)av->contour;
+    snprintf(where, sizeof where, "es%d:%s", e ? e->id : -1,
+             e && e->fun && e->fun->sym && e->fun->sym->name ? e->fun->sym->name : "?");
+  } else {
+    CreationSet *c = (CreationSet *)av->contour;
+    snprintf(where, sizeof where, "cs%d:%s", c ? c->id : -1,
+             c && c->sym && c->sym->name ? c->sym->name : "?");
+  }
+  int nback = 0;
+  for (AVar *b : av->backward) if (b) ++nback;
+  fprintf(stderr, "%*sBACK av=%d %s@%s nback=%d out=%s\n", depth * 2, "", av->id,
+          av->var && av->var->sym && av->var->sym->name ? av->var->sym->name : "?", where, nback, t);
+  for (AVar *b : av->backward) if (b) dbg_backwalk(b, depth + 1, maxdepth, seen);
+}
+
 static void dbg_dump_contours(int pass) {
   static cchar *want = nullptr;
   static int checked = 0;
@@ -9611,10 +9658,10 @@ static void dbg_dump_contours(int pass) {
     Vec<void *> classes;
     int n_items = 0;
     for (CreationSet *cs : fa->css) {
-      if (!cs || !cs->sym || !cs->sym->name || strcmp(cs->sym->name, "set")) continue;
+      if (!cs || !cs->sym || !cs->sym->name || strcmp(cs->sym->name, cssym)) continue;
       for (AVar *av : cs->vars) {
         if (!av || !av->var || !av->var->sym || !av->var->sym->name) continue;
-        if (strcmp(av->var->sym->name, "_items")) continue;
+        if (strcmp(av->var->sym->name, "_items") && strcmp(av->var->sym->name, "_keys")) continue;
         ++n_items;
         char ft[256];
         dbg_atype_str(av->out, ft, (int)sizeof ft, 0);
@@ -9642,6 +9689,10 @@ static void dbg_dump_contours(int pass) {
                   src->var && src->var->def && src->var->def->code ? src->var->def->code->line() : -1, st);
         }
         if (av->setter_class) classes.set_add((void *)av->setter_class);
+        if (getenv("PYC_DBG_BACKWALK")) {
+          Vec<AVar *> seen;
+          dbg_backwalk(av, 0, atoi(getenv("PYC_DBG_BACKWALK")), seen);
+        }
       }
     }
     fprintf(stderr, "  ITEMS pass=%d SUMMARY _items_avars=%d distinct_setter_classes=%d\n", pass, n_items,

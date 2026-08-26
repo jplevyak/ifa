@@ -1007,3 +1007,91 @@ confluences to split at.
    under caller-contour demand -- which is the same thing as splitting
    `dict::__new__` per caller, and is what the field-typed CS identity
    in the previous section achieves without any splitting at all.
+
+
+## Yes, it can be demand-driven — the demand is raised and then starved
+
+### The upstream AVar IS split-worthy, and IS collected
+
+Walking backward from the dict's `_keys` field (`PYC_DBG_BACKWALK`):
+
+```
+BACK av=6702 _keys@cs1182:dict nback=3 out=list#1059|list#1184|list#1185
+  BACK av=4274 ?@es116:__init__      out=list#1184                      <- strictly smaller
+  BACK av=6728 ?@es120:__setitem__   out=list#1059|list#1184|list#1185
+  BACK av=6776 ?@es203:__setitem__   out=list#1059|list#1184|list#1185
+```
+
+The `__init__` edge carries ONE list where the field holds three, so
+`type_diff(av->in->type, x->out->type) != bottom` and `_keys` is a
+genuine type confluence. The log confirms it -- av 6702 appears as
+`[confluence] av 6702 _keys [CS/other] list list list` **30 times**.
+
+So the earlier reading ("the union is formed upstream, so the field is
+not a confluence") was wrong. It is one. The demand IS raised.
+
+### What starves it: the quiescence gate
+
+`extend_analysis` runs its stages behind a cascade of
+`if (!analyze_again)`:
+
+```c
+if (!analyze_again) { collect_type_confluences(confluences);
+                      analyze_again = split_ess_for_type(confluences, ...); }
+if (!analyze_again) { CARTESIAN_PRODUCT }
+if (!analyze_again) { MARK_TYPE }
+if (!analyze_again) { ... compute_setters over confluences ...   // SETTER
+                      split_for_setters(...) }
+```
+
+The SETTER stage runs **only on a pass where the type splitter found
+nothing**. On this program the type splitter finds work on every pass
+that matters, so `compute_setters` is never called on av 6702 -- probe
+`PYC_DBG_SETTERSEED=_keys` counts **0** invocations across the whole
+run. Hence zero setters program-wide, hence no setter confluence, hence
+`split_ess_setters` splits no path and `split_css` gets no starters.
+
+This is the same starvation the PER_CS_RECEIVER comment already
+documents for stage 6 ("TYPE_CONFLUENCE fires every pass on
+plcfrs/rdb/sudoku5, so `!analyze_again` is never true and the receiver
+fan never runs at all") -- one stage earlier, and load-bearing.
+
+### Proof: lift the gate and the mechanism works
+
+`PYC_SETTERGATE=1` (added, **default 0**) lifts it exactly as
+`PYC_RECVFAN=2` lifts stage 6's:
+
+| | default | PYC_SETTERGATE=1 |
+|---|---|---|
+| compute_setters on `_keys` | 0 calls | **10 calls** |
+| this repro | 51 passes, CONVERGED=0, 58 viol | **26 passes, CONVERGED=1, 0 viol** |
+| set repro | converges | converges |
+| plcfrs | 2451 viol, CONVERGED=0 | 2455 viol, CONVERGED=0 (unchanged) |
+| pyc suite | 297 / 0 failed | 295 / **3 failed** |
+
+So the answer to "can we demand-drive it" is **yes** -- the back-flow
+does the right thing the moment it is allowed to run.
+
+### Why this is not the fix as it stands
+
+Two reasons, both real:
+
+1. **It does not fix plcfrs.** Whatever else is left there is not this.
+2. **The three failures are semantic, not stale fixtures.**
+   `tests/splitter_*.py` pin *which splitter stages a program demanded*
+   (ifa/074's "one stable bit a convergence test can assert").
+   `splitter_type_confluence.py` expects `STAGES: TYPE_CONFL` and gets
+   `TYPE_CONFL SETTER` -- because with the gate lifted the setter stage
+   runs unconditionally, so the recorded set stops meaning "demanded"
+   and starts meaning "ran". Re-blessing would destroy the property the
+   tests exist to measure.
+
+### The targeted version
+
+Do not lift the gate globally. Escalate **per confluence**: when
+`split_ess_for_type` makes progress but a given CS-contoured confluence
+is still un-split after N passes, run `compute_setters` on that one and
+let the back-flow split its path. That keeps the stage demand-driven --
+which is what the splitter_*.py tests assert and what the gate is there
+to protect -- while letting a confluence the type splitter provably
+cannot resolve reach the machinery that can.
