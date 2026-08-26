@@ -510,23 +510,26 @@ CreationSet *creation_point(AVar *v, Sym *s, int nvars) {
   // across passes (find_or_make_filtered_entry_set searches fun->ess)
   // and `cs_map` persists across clear_avar, so a split child mints its
   // instance once and memoizes it.
-  // DEFAULT 0 for now -- correct, and not yet shippable. With it on the
-  // pyc suite is clean (297 passed / 0 failed / 13 known: the 055 repro
-  // flips KNOWN->PASS) and plcfrs improves (violations 4378 -> 2451,
-  // ess 1246 -> 850, still non-convergent), but the corpus loses three
-  // programs that compile today: pylife and softrender to new type
-  // errors, pystone to a compiler crash. The crashes are pre-existing
-  // null-deref bugs in the phases AFTER FA, exposed by the extra
-  // contours rather than caused by them -- two are fixed alongside this
-  // (optimize/dom.cc's missing `ff->dom` guard, optimize/inline.cc's
-  // missing `loop_node` guard, both the "a Fun reachable through the
-  // call graph is not in fa->funs" family). The third is codegen:
-  // cg.cc's emit_send_call fputs()es a null name for a Var that reached
-  // it without one. See the issue for where that stands.
+  // DEFAULT 1. Measured against PYC_CSSPLIT=0 after the three defects it
+  // first exposed were fixed (all on the default path, all latent before
+  // this): optimize/dead.cc's fa->funs rebuild, analysis/clone.cc's
+  // per-CreationSet field layout, and codegen/cg.cc's uncast container
+  // subscript.
+  //
+  //   corpus     67 of 77 compile either way, program for program,
+  //              and sunfish improves (400s timeout -> clean failure)
+  //   pyc suite  296 passed / 14 known  ->  297 passed / 0 failed /
+  //              13 known (the 055 repro flips KNOWN -> PASS)
+  //   ifa/055    6-line repro: 52 passes pass_limit_hit CONVERGED=0
+  //              -> 28 passes CONVERGED=1, 0 violations, right answer
+  //   plcfrs     still does not converge, but 4378 -> 2451 violations
+  //              and ess 1246 -> 850
+  //
+  // Set to 0 to restore split-parent inheritance.
   static int cssplit = -1;
   if (cssplit < 0) {
     cchar *cv = getenv("PYC_CSSPLIT");
-    cssplit = cv ? atoi(cv) : 0;
+    cssplit = cv ? atoi(cv) : 1;
   }
   if (es && es->split && !cssplit) {
     AVar *oldv = make_AVar(v->var, es->split);

@@ -2,14 +2,12 @@
 
 (pass-counts
   rc:                -1
-  total-passes:      3
-  events:            3
+  total-passes:      2
+  events:            2
   splits[type]: 2
-  splits[setter]: 1
 )
 
 (history
   pass 1 type splits=1 ess=3→3 css=32→32 violations=6→6
-  pass 2 setter splits=1 ess=4→4 css=32→32 violations=7→7
-  pass 3 type splits=1 ess=4→4 css=33→33 violations=7→7
+  pass 2 type splits=1 ess=4→4 css=33→33 violations=7→7
 )

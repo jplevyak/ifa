@@ -1,6 +1,6 @@
 # 055 — Adding `set.__sub__` triggers FA non-convergence / compiler crash on plcfrs.py
 
-**Status:** open (re-verified 2026-08-26; symptom changed, leading hypothesis refuted, `__sub__` since SHIPPED), found 2026-07-19 while attempting a followup to
+**Status:** open — the ROOT CAUSE IS FIXED (`PYC_CSSPLIT`, default on, 2026-08-26) and the minimal repro converges; plcfrs itself still does not, so this stays open on that. Found 2026-07-19 while attempting a followup to
 [053](closed/053-tuple-unpack-target-heterogeneous-arity-segfault.md):
 `plcfrs.py` (line 300-301) calls `set(...) - set([...])`, and
 `__pyc__/08_set.py`'s `class set` had no `__sub__`/difference operator
@@ -677,3 +677,69 @@ the post-FA phases have never run at this contour count. Next: the
 cg.cc null name for pystone, then re-examine pylife's and softrender's
 new type errors, which may be real imprecision the extra CSs expose or
 may be the same class of latent gap one phase further on.
+
+
+## FIXED at the root: the CreationSet now follows the EntrySet split
+
+`PYC_CSSPLIT` **defaults to 1** as of 2026-08-26. Route 2 of
+`creation_point()` (split-parent inheritance) is skipped, so a split
+child mints its own instance CS instead of adopting its parent's.
+
+    6-line repro   52 passes, pass_limit_hit, CONVERGED=0, 56 violations
+                -> 28 passes, CONVERGED=1, 0 violations, prints 2 1 2
+    dict analogue  CONVERGED=0 -> CONVERGED=1
+    pyc suite      296 passed / 14 known -> 297 passed / 0 failed / 13
+                   known, both backends
+    corpus         67 of 77 compile, program for program, unchanged --
+                   and sunfish improves (400 s timeout -> clean failure)
+    plcfrs         STILL does not converge: 45 passes, pass_limit_hit,
+                   but 4378 -> 2451 violations and ess 1246 -> 850
+
+`tests/set_ops_chained_mixed_elem_types.py` passes and its
+`.known_issue` sidecar is removed; it stays as a regression test.
+
+Three `fa-converge` goldens were re-blessed (`iterator_copy`,
+`iterator_missing_field`, `vector_iterator`). All three changed the same
+way and all three are improvements: **3 passes -> 2**, the setter split
+stage no longer needed, with identical `rc`, final `css` and violation
+counts. Fewer passes to the same answer is exactly what this change is
+about, which is the "correct behaviour, stale fixture" case.
+
+### Three latent defects it exposed, all fixed, all on the default path
+
+Splitting more contours reached code paths the later phases had never
+run at. None of these were caused by the change; each was reachable
+before and simply had not been reached.
+
+1. **`optimize/dead.cc`, `mark_live_funs`.** Liveness propagates through
+   `f->calls` and marks callees live, including callees not in
+   `fa->funs` (which holds only the functions the LAST pass reached).
+   The rebuild then filtered the INCOMING list, so such a function
+   stayed live and UNLISTED. **One cause behind three crashes in three
+   phases**: no `Dom` (dom.cc), no `loop_node` (inline.cc), no name
+   (cg.cc's `fputs(NULL)` on a live call). Confirmed at the codegen
+   site: `target->live == 1`, name null, `Proc1` from `Proc0`.
+2. **`analysis/clone.cc`, `determine_layouts`.** Field sizes were
+   resolved per CreationSet, so a field bottom in one contour
+   contributed 0 bytes and shifted every later field -- two CSs of the
+   SAME class with different layouts. Measured on pylife: 13 `LifeNode`
+   CSs, field `id` at offset 32 in eleven and 24 in two, after which
+   `prim_period_offset` rejects any union receiver mixing them. Resolved
+   once per field Sym, which is shared across a class's CSs.
+   (`fail("missmatched offsets")` now names the class, field and each
+   CS's offset; it previously said nothing.)
+3. **`codegen/cg.cc`, both subscript prims.** A container subscript was
+   never cast. FA can give an index formal a float type -- softrender's
+   `(srcX + srcY * src.width) * 4` where FA cannot see through `int()`.
+   With one shared contour the float ACTUAL was cast to the int64 formal
+   at the call boundary; split per contour, the FORMAL is float64 and
+   the body emits `t0->v[t_float]`, which C rejects. Casting at the read
+   site is the same coercion the call boundary already performed.
+
+### What is still open
+
+plcfrs. It converges no better than before in kind -- still
+`pass_limit_hit` at 45 passes -- though with 44 % fewer violations and
+32 % fewer contours. Whatever remains there is not this defect, and the
+6-line repro no longer reproduces it, so plcfrs needs its own
+`PYC_DBG_CONTOURS` trace from scratch.
