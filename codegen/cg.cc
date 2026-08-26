@@ -91,6 +91,20 @@ static inline bool scalar_ct(cchar *t) {
 // one only fails later, at a dispatch that has to tell 0 from None.
 static inline bool float_ct(cchar *t) { return t && !strncmp(t, "_CG_float", 9); }
 
+// ifa/issues/055: a container subscript must be integral in C. FA can
+// give an index formal a float type -- softrender's `src.components[
+// srcIndex]`, where srcIndex is (srcX + srcY * width) * 4 and FA cannot
+// prove srcX/srcY integral through `int(...)`. With one shared
+// __getitem__ contour that never showed: the float ACTUAL was cast to
+// the int64 formal at the call boundary like any other argument. Split
+// per contour, the formal itself becomes float64 and the body emits
+// `t0->v[t_float]`, which the C compiler rejects outright.
+//
+// Casting here is not a new policy -- it is the same coercion the call
+// boundary already performs, applied at the one place that reads the
+// index instead of the one that passes it.
+static inline cchar *index_cast(Var *idx) { return float_ct(c_type(idx)) ? "(_CG_int64)" : ""; }
+
 static int application_depth(PNode *n) {
   if (n->rvals[0]->type->fun)
     return 1;
@@ -584,7 +598,8 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       Sym *t = n->rvals[o]->type;
       Sym *e = n->lvals[0]->type;
       if (t->is_vector) {
-        fprintf(fp, "%s = %s->v[%s];\n", cg_get_string(n->lvals[0]), cg_get_string(n->rvals[o]), cg_get_string(n->rvals[o + 1]));
+        fprintf(fp, "%s = %s->v[%s%s];\n", cg_get_string(n->lvals[0]), cg_get_string(n->rvals[o]),
+                index_cast(n->rvals[o + 1]), cg_get_string(n->rvals[o + 1]));
       } else if (t->type_kind != Type_RECORD || !n->rvals[o + 1]->sym->constant) {
         bool single_idx = n->rvals.n - (o + 1) == 1;
         bool index_mismatch = false;
@@ -731,8 +746,8 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       fputs("  ", fp);
       Sym *t = n->rvals[o]->type;
       if (t->is_vector) {
-        fprintf(fp, "%s->v[%s] = %s;\n", cg_get_string(n->rvals[o]), cg_get_string(n->rvals[o + 1]),
-                cg_get_string(n->rvals[n->rvals.n - 1]));
+        fprintf(fp, "%s->v[%s%s] = %s;\n", cg_get_string(n->rvals[o]), index_cast(n->rvals[o + 1]),
+                cg_get_string(n->rvals[o + 1]), cg_get_string(n->rvals[n->rvals.n - 1]));
       } else if (t->type_kind != Type_RECORD || !n->rvals[o + 1]->sym->constant) {
         // Mirrors P_prim_index_object's negative-index normalization
         // above (issues/025) -- same single-index-only scope.
