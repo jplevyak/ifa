@@ -743,3 +743,61 @@ plcfrs. It converges no better than before in kind -- still
 32 % fewer contours. Whatever remains there is not this defect, and the
 6-line repro no longer reproduces it, so plcfrs needs its own
 `PYC_DBG_CONTOURS` trace from scratch.
+
+
+## plcfrs reduced to 9 lines — and it is a DIFFERENT defect
+
+`tests/dict_pair_swap_setdiff_nonconvergence.py`, with a `.known_issue`
+sidecar; `.exec.check` holds CPython's `2`.
+
+```python
+def f(grammar):
+    nts = list(set(nt for rule, weight in grammar for nt in rule) - set(["a", "b"]))
+    pairs = list(enumerate(nts))
+    toid = dict((lhs, n) for n, lhs in pairs)
+    tolabel = dict((n, lhs) for n, lhs in pairs)
+    return toid
+
+rules = [(("S", "VP2"), 1.0)]
+print(len(f(rules)))
+```
+
+    final_pass=51  pass_limit_hit=1  CONVERGED=0  58 violations
+    deterministic across 3 runs
+
+Reduced from plcfrs.py by delta-debugging, 638 lines -> 9. The parser is
+not involved at all: everything reachable from `parse()` was cut, then
+`splitgrammar()` was cut to its first three statements.
+
+### Four ingredients, each verified necessary
+
+Removing any ONE of these converges:
+
+| ablation | result |
+|---|---|
+| `for rule in grammar` instead of `for rule, weight in grammar` | converges |
+| drop the set difference | converges |
+| drop `enumerate()` | converges |
+| drop the second dict | converges |
+| **both dicts the SAME orientation** | **converges** |
+
+That last row is the sharp one: it is not "two dicts", it is two dicts
+built from the SAME pairs with **swapped key/value** -- `dict[str,int]`
+and `dict[int,str]`. Not needed: `sorted()`, and the
+`["Epsilon","ROOT"] + ...` list concatenation plcfrs wraps around it.
+
+### It is not the defect this issue's other repro had
+
+`PYC_CSSPLIT` fixed the shared-`r = set()` CreationSet, and
+`tests/set_ops_chained_mixed_elem_types.py` passes. This one still
+fails with that fix in place, and shares only the set difference --
+which here is one of four necessary ingredients rather than the
+mechanism. Whatever drives it, splitting the CS with the ES does not
+address it.
+
+The plcfrs-scale numbers moved with the fix (violations 4378 -> 2451,
+ess 1246 -> 850) but the shape did not: still `pass_limit_hit` at 45
+passes. Its trajectory is a period-2 cycle at ess 545 <-> 575 for passes
+27-39, then a jump to 811 at pass 40 and growth to the cap -- so there
+may be more than one thing left in plcfrs itself. The 9-line repro is
+the place to start.
