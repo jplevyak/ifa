@@ -496,3 +496,89 @@ Find the assignment that writes the three-list union into `_items`:
 instrument the incoming flow edges of the `_items` AVar of set CS 1032
 and report, per pass, which source AVar contributes each of list#1034,
 #1171, #1172. That is one field, one CreationSet, one pass boundary.
+
+
+## ROOT CAUSE: one CreationSet for `r = set()` across all contours of `difference`
+
+### Correction to the previous section
+
+It said "difference itself settles at 3 contours and set_CSs at 7 (ai,
+bi, as_, bs, plus one fresh `r` per difference contour), so the
+fresh-set creation sites ARE separated". **That is wrong.** It was
+inferred from the count 7 without checking which CreationSet was which.
+Printing the ids says otherwise:
+
+    pass 44/45, identical:
+      difference es=49   [set#1138, set#1139]  ->  set#1032
+      difference es=137  [set#1140, set#1141]  ->  set#1032
+      difference es=138  [set#1032, set#1139]  ->  set#1032
+
+All three contours return **the same CreationSet, set#1032**. The seven
+set CSs are the four literals (ai/bi/as_/bs = #1138/#1139/#1140/#1141),
+the single shared `r` (#1032), and two field-less class/meta CSs
+(#689, #973). There is exactly ONE `r`, not one per contour.
+
+### The defect
+
+`r = set()` inside `difference` is a single creation site, and
+**contour splitting duplicates the EntrySet but not the CreationSet the
+site allocates.** So every specialization of `difference` -- the int one,
+the str one, and the chained one -- allocates the same abstract set.
+Two consequences, and the second is what makes it unfixable by
+splitting:
+
+1. set#1032's element type is necessarily `int64|str`: it is the union
+   of what every contour puts in it.
+2. es=138 takes set#1032 as its receiver AND returns set#1032. The
+   chain makes the shared creation site **its own input** -- which is
+   exactly why a chain is one of the two required ingredients, and why
+   one element type alone is harmless.
+
+### How that produces the period-2 cycle, end to end
+
+    r = set() shares ONE CreationSet across difference's contours
+      -> set#1032 carries int64|str and (via the chain) feeds itself
+      -> set#1032 leaks into the monomorphic `add` contours:
+             pass 44  add es=93 [set#1138]              es=94 [set#1140]
+             pass 45  add es=93 [set#1032|set#1138]     es=94 [set#1032|set#1140]
+      -> `self._items = self._items.append(item)` stores through a
+         TWO-CS receiver, so it writes BOTH sets' fields, merging their
+         backing lists:
+             pass 44  cs1032 _items=list#1034   cs1138 _items=list#1171
+             pass 45  cs1032 = cs1138 = cs1140 = list#1034|1171|1172
+      -> self._items[i] is int64|str, so add/__contains__/__eq__ take
+         unioned actuals
+      -> the splitter splits them back to monomorphic contours (pass 44)
+      -> set#1032 leaks in again next pass
+      -> 146 <-> 149 EntrySets, forever
+
+The splitter is working correctly at every step. It cannot win, because
+the thing that needs separating is a CreationSet at an allocation site,
+and it only ever separates EntrySets.
+
+### Why this is not what 040/045 fixed
+
+`clone_methods_per_cs` / PER_CS_RECEIVER (issue 045, 040's fix) key on
+the **receiver** CreationSet of a method. Here the receiver is fine --
+es=49 and es=137 have cleanly separated receivers on every pass. What
+is shared is the CreationSet the method **creates**. That is issue
+[072](072-FA-empty-container-notype-current-mechanism-and-plan.md)'s
+territory (a container CS shared across the call sites that allocate
+it), reached from a different direction.
+
+`creation_point()` (fa.cc) keys a CS on `(AVar, Sym)` with a split
+lookup through `es->split`; the question for a fix is why that lookup
+does not give the three `difference` contours three distinct `r`s.
+
+### Why shedskin does not have it
+
+A C++ template instantiation of `difference` per element type gives each
+instantiation its own `r` by construction -- the creation site is
+duplicated along with the code. pyc duplicates the contour but shares
+the allocation.
+
+### Next step
+
+Instrument `creation_point()` for the `r = set()` site: log the AVar,
+the contour, `es->split`, and the CS returned, per pass, and find why
+all three `difference` EntrySets resolve to CS #1032.

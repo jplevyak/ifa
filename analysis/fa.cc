@@ -9529,8 +9529,31 @@ static void dbg_dump_contours(int pass) {
         if (!av || !av->var || !av->var->sym || !av->var->sym->name) continue;
         if (strcmp(av->var->sym->name, "_items")) continue;
         ++n_items;
-        fprintf(stderr, "  ITEMS pass=%d setcs=%d av=%p setter_class=%p n=%d\n", pass, cs->id, (void *)av,
-                (void *)av->setter_class, av->setter_class ? av->setter_class->n : -1);
+        char ft[256];
+        dbg_atype_str(av->out, ft, (int)sizeof ft, 0);
+        fprintf(stderr, "  ITEMS pass=%d setcs=%d av=%d out=%s setter_class=%p\n", pass, cs->id, av->id, ft,
+                (void *)av->setter_class);
+        // ifa/issues/055 next step: WHO contributes each CreationSet.
+        // Walk the incoming flow edges and name each source AVar by its
+        // Var, its contour, and what it carries.
+        for (AVar *src : av->backward) {
+          if (!src) continue;
+          char st[192];
+          dbg_atype_str(src->out, st, (int)sizeof st, 0);
+          cchar *vn = src->var && src->var->sym && src->var->sym->name ? src->var->sym->name : "?";
+          char where[96];
+          if (src->contour_is_entry_set) {
+            EntrySet *ses = (EntrySet *)src->contour;
+            snprintf(where, sizeof where, "es%d:%s", ses ? ses->id : -1,
+                     ses && ses->fun && ses->fun->sym && ses->fun->sym->name ? ses->fun->sym->name : "?");
+          } else {
+            CreationSet *scs = (CreationSet *)src->contour;
+            snprintf(where, sizeof where, "cs%d:%s", scs ? scs->id : -1,
+                     scs && scs->sym && scs->sym->name ? scs->sym->name : "?");
+          }
+          fprintf(stderr, "    <- src av=%d %s@%s line=%d out=%s\n", src->id, vn, where,
+                  src->var && src->var->def && src->var->def->code ? src->var->def->code->line() : -1, st);
+        }
         if (av->setter_class) classes.set_add((void *)av->setter_class);
       }
     }
