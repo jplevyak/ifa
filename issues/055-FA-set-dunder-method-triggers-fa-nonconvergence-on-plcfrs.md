@@ -232,3 +232,85 @@ rather than through the operator table.
 Next step: trace what element type `difference`'s `r` acquires across
 passes on plcfrs, and what `sorted()` does with it — the operator-dispatch
 line of inquiry is closed off by the bytearray control above.
+
+
+## Minimal repro FOUND, 6 lines (2026-08-26)
+
+`tests/set_ops_chained_mixed_elem_types.py`, with a `.known_issue`
+sidecar; the `.exec.check` holds CPython's `2 / 1 / 2`, so it flips to
+PASS by itself when this is fixed. 0.72 s to compile.
+
+```python
+ai = set([1, 2, 3]); bi = set([2]); ci = ai - bi
+print(len(ci))
+as_ = set(["x", "y"]); bs = set(["x"]); cs = as_ - bs
+print(len(cs))
+di = ci - bi
+print(len(di))
+```
+
+    final_pass=52  pass_limit_hit=1  CONVERGED=0  violations=56
+
+This supersedes "Isolated minimal repros do NOT reproduce this" and
+"a scale/interaction effect specific to plcfrs.py's full complexity".
+It is not scale. The earlier attempts missed it because they were built
+from the operator-dispatch hypothesis (refuted above), so they varied
+the *number of `-` call sites* and never chained a result.
+
+### Two ingredients, both necessary
+
+| | passes | converged |
+|---|---|---|
+| 1 element type, chained | 13 | yes |
+| 2 element types, no chain | 32 | yes |
+| 4 element types, no chain | 35 | yes |
+| **2 element types, chained** | **52** | **no** |
+
+1. **Two or more element types** across the call sites, and
+2. **a chain** -- a difference *result* fed back into difference.
+
+### It has nothing to do with `__sub__`
+
+`&`, `|`, and a plain `.difference()` method call all reproduce the same
+6-line failure:
+
+    a - b     final_pass=52  CONVERGED=0
+    a & b     final_pass=52  CONVERGED=0
+    a | b     final_pass=56  CONVERGED=0
+    a.difference(b)  final_pass=53  CONVERGED=0
+
+So this issue's title is wrong: it is not a *dunder* and not operator
+dispatch. It is any set method that BUILDS AND RETURNS A FRESH SET.
+`difference`, `intersection` and `union` share one shape:
+
+```python
+def difference(self, other):
+    r = set()          # <-- ONE creation site, shared by every caller
+    ...
+    r.add(self._items[i])
+    return r
+```
+
+### Mechanism
+
+`r = set()` is a single creation site shared by every call site in the
+program, so with two element types flowing through `self`, `r`'s element
+type is their union. Chaining then makes that shared site's element type
+an input to itself: `r`'s elements come from `self`, and `self` at the
+second call site *is* a previous `r`. Each pass re-derives the union
+through the same shared CS, contours re-split, and no fixed point is
+reached.
+
+That is the empty/shared-container-CS family --
+[072](072-FA-empty-container-notype-current-mechanism-and-plan.md),
+[105](105-type-degeneration-in-shared-generic-methods.md) -- and the
+non-productive contour creation named in
+[057](closed/057-sorted-tolist-fa-nonconvergence.md)'s fix direction, now
+reachable in six lines instead of five hundred.
+
+### Do we need the repro? Yes
+
+plcfrs: 39 passes, 4378 violations, ess=1246, ~13 s, and a 500-line
+program to read. This: 52 passes, 56 violations, ess=149, 0.72 s, six
+lines. The plcfrs repro should stay as the integration check, but no
+root-cause work should start from it.
