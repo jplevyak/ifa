@@ -461,11 +461,16 @@ void flow_vars_assign(AVar *rhs, AVar *lhs) {
 static int cselem_enabled();  // ifa/issues/101, defined with the other flags
 static int csmold_enabled();  // ifa/issues/101, ditto
 
+static cchar *dbg_cs_route = nullptr;      // ifa/issues/055: which reuse route fired
+static cchar *dbg_cs_route_want = getenv("IFA_DBG_CSROUTE");
+
 CreationSet *creation_point(AVar *v, Sym *s, int nvars) {
+  dbg_cs_route = nullptr;
   CreationSet *cs = v->cs_map ? v->cs_map->get(s) : 0;
   EntrySet *es = (EntrySet *)v->contour;
   if (cs) {
     assert(cs->sym == s);
+    dbg_cs_route = "cs_map";
     goto Lfound;
   }
   if (s == sym_closure) goto Lunique;
@@ -536,6 +541,7 @@ CreationSet *creation_point(AVar *v, Sym *s, int nvars) {
     cs = oldv->cs_map ? oldv->cs_map->get(s) : 0;
     if (cs) {
       assert(cs->sym == s);
+      dbg_cs_route = "split_parent";
       goto Lfound;
     }
   }
@@ -544,6 +550,7 @@ Lcreators:;
     if (s->abstract_type && x == s->abstract_type->v[0]) continue;
     if (nvars != -1 || x->vars.n != nvars) continue;
     cs = x;
+    dbg_cs_route = "creators";
     goto Lfound;
   }
   // ifa/issues/101 (PYC_CSELEM): before minting another container CS for
@@ -584,6 +591,7 @@ Lcreators:;
             fprintf(stderr, "[cselem] p=%d sym=%s var=%s -> reuse cs=%d (elem_key %p)\n", analysis_pass,
                     s->name ? s->name : "?", v->var->sym->name ? v->var->sym->name : "?", x->id, (void *)want);
           cs = x;
+          dbg_cs_route = "cselem";
           goto Lfound;
         }
     }
@@ -604,6 +612,7 @@ Lcreators:;
             fprintf(stderr, "[csmold] p=%d sym=%s var=%s es=%d -> reuse cs=%d\n", analysis_pass,
                     s->name ? s->name : "?", v->var->sym->name ? v->var->sym->name : "?", es ? es->id : -1, x->id);
           cs = x;
+          dbg_cs_route = "csmold";
           goto Lfound;
         }
     }
@@ -618,6 +627,7 @@ Lunique:
             es ? es->id : -1, (es && es->split) ? es->split->id : -1,
             (es && es->split) ? (make_AVar(v->var, es->split)->cs_map ? 1 : 0) : -1, s == sym_closure ? 1 : 0,
             (s->clone_methods_per_cs || (s->type && unalias_type(s->type)->clone_methods_per_cs)) ? 1 : 0);
+  dbg_cs_route = "MINT";
   cs = new CreationSet(s);
   cs->creation_var = v->var;  // ifa/issues/101: for the per-site element key
   if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
@@ -630,6 +640,10 @@ Lunique:
     if (h->name) cs->var_map.put(h->name, iv);
   }
 Lfound:
+  if (dbg_cs_route_want && s->name && !strcmp(s->name, dbg_cs_route_want))
+    fprintf(stderr, "CSROUTE p=%d sym=%s var=%s es=%d split=%d -> cs=%d via %s\n", analysis_pass, s->name,
+            v->var && v->var->sym && v->var->sym->name ? v->var->sym->name : "?", es ? es->id : -1,
+            (es && es->split) ? es->split->id : -1, cs ? cs->id : -1, dbg_cs_route ? dbg_cs_route : "?");
   if (!v->cs_map) v->cs_map = new CSMap;
   v->cs_map->put(s, cs);
   cs->defs.set_add(v);
@@ -9540,9 +9554,18 @@ static void dbg_dump_contours(int pass) {
     fprintf(stderr, "CONTOUR pass=%d SUMMARY total_ess=%d total_css=%d\n", pass, fa->ess.n, fa->css.n);
     return;
   }
+  // PYC_DBG_CSSYM names the container whose CreationSets to dump
+  // (default "set"); its data fields are printed with CS ids.
+  static cchar *cssym = nullptr;
+  static int cssym_checked = 0;
+  if (!cssym_checked) {
+    cssym = getenv("PYC_DBG_CSSYM");
+    if (!cssym) cssym = "set";
+    cssym_checked = 1;
+  }
   int n_cs = 0;
   for (CreationSet *cs : fa->css) {
-    if (!cs || !cs->sym || !cs->sym->name || strcmp(cs->sym->name, "set")) continue;
+    if (!cs || !cs->sym || !cs->sym->name || strcmp(cs->sym->name, cssym)) continue;
     ++n_cs;
     // pyc's `set` is a Python-level class, so there is no sym->element:
     // the element type lives in the _items field. Dump the CS's member
@@ -9562,7 +9585,7 @@ static void dbg_dump_contours(int pass) {
       fu += snprintf(flds + fu, (int)sizeof flds - fu, "%s%s=%s", fu ? " " : "", fn, t);
       if (fu >= (int)sizeof flds - 1) break;
     }
-    fprintf(stderr, "  SETCS pass=%d cs=%d %s\n", pass, cs->id, flds);
+    fprintf(stderr, "  %sCS pass=%d cs=%d %s\n", cssym, pass, cs->id, flds);
   }
   // ifa/issues/113 link: are the `_items` AVars of distinct set CSs in
   // ONE setter equivalence class? If so their values are merged by the
@@ -9608,8 +9631,8 @@ static void dbg_dump_contours(int pass) {
     fprintf(stderr, "  ITEMS pass=%d SUMMARY _items_avars=%d distinct_setter_classes=%d\n", pass, n_items,
             classes.n);
   }
-  fprintf(stderr, "CONTOUR pass=%d SUMMARY %s_contours=%d set_CSs=%d total_ess=%d\n", pass, want, n_es, n_cs,
-          fa->ess.n);
+  fprintf(stderr, "CONTOUR pass=%d SUMMARY %s_contours=%d %s_CSs=%d total_ess=%d\n", pass, want, n_es,
+          cssym, n_cs, fa->ess.n);
 }
 
 static bool apply_unbound_fills() {

@@ -801,3 +801,109 @@ passes. Its trajectory is a period-2 cycle at ess 545 <-> 575 for passes
 27-39, then a jump to 811 at pass 40 and growth to the cap -- so there
 may be more than one thing left in plcfrs itself. The 9-line repro is
 the place to start.
+
+
+## The expected contours, why we do not get them, and what shedskin does
+
+### Expected
+
+For the 9-line repro, by hand:
+
+    __pyc_dict_from_iterable__  x2   pairs=list[tuple[str,int]]
+                                     pairs=list[tuple[int,str]]
+    dict::__new__               x2   one per caller contour
+    => two dict CSs: dict[str,int] and dict[int,str]
+
+### What we get
+
+    CONTOUR __pyc_dict_from_iterable__ es=113 args=[list#1053] ret=dict#1182
+    CONTOUR __pyc_dict_from_iterable__ es=157 args=[list#1178] ret=dict#1182
+    CONTOUR __new__                    es=115 args=[dict#663]  ret=dict#1182
+
+The CALLER splits correctly -- two contours, distinct argument lists.
+`dict::__new__` does **not**: one contour for the whole program, so one
+instance CS, and its fields conflate key with value --
+
+    dictCS cs=1182 _keys=list#1059|list#1184|list#1185
+                   _vals=list#1059|list#1184|list#1185
+
+identical unions in both slots.
+
+### Why
+
+Contour splitting is **type-directed on the callee's formals**, and at
+`dict::__new__` there is nothing to direct it. The bind trace:
+
+    BIND __new__ e=172 MINT  es=115 from_es=113 line=2152 actuals=[dict#663]
+    BIND __new__ e=277 REUSE es=115 from_es=157 line=2152 actuals=[dict#663]
+
+One call site (`d = dict()`, line 2152), two caller contours, **identical
+actuals**, differing only in `from_es`. `dict()` takes no arguments, so
+the two edges are indistinguishable to a type-based splitter. The
+information that would separate them -- what will later be stored into
+the instance -- does not exist at the constructor; it appears only after
+the instance flows back to the caller.
+
+Contrast `__list_iter__::__new__`, which gets **eight** contours in the
+same program: its argument is the list being iterated, so it differs per
+call and type-directed splitting separates it for free.
+
+`PYC_CSSPLIT` cannot help here. It makes a split CHILD mint its own CS,
+and there is no split: `IFA_DBG_CSROUTE=dict` reports 2 MINT and 91
+`cs_map`, and **zero** `split_parent`.
+
+### shedskin, for reference — it has no such contour to split
+
+Same file, `shedskin translate m7.py`, **1.62 s** (pyc hits the 51-pass
+cap):
+
+```cpp
+dict<str *, __ss_int> *toid;      // dict[str,int]
+dict<__ss_int, str *> *tolabel;   // dict[int,str]
+toid    = (new dict<str *, __ss_int>(new list_comp_1(pairs)));
+tolabel = (new dict<__ss_int, str *>(new list_comp_2(pairs)));
+```
+
+`dict<K,V>` is a template, so the allocation is emitted **at the use
+site with (K,V) already resolved from the value flow**. There is no
+shared constructor contour to split, because there is no shared
+constructor -- `new dict<str*,__ss_int>` and `new dict<__ss_int,str*>`
+are different types by construction. The comprehensions are likewise
+separate functions (`list_comp_1`, `list_comp_2`), monomorphic for the
+same reason.
+
+That is the difference in one line: **shedskin derives container
+identity from the element types; ifa derives it from the allocation
+context.** Where the two disagree -- an allocation whose context is
+identical but whose contents differ -- ifa has nothing to split on.
+
+### The two available policies pull in opposite directions
+
+|  | set repro | this repro | plcfrs |
+|---|---|---|---|
+| `PYC_CSSPLIT=1` (default; mint per split child) | **fixed** | not fixed | 2451 viol |
+| `PYC_CSMOLD=2` (share one CS per allocation SITE) | **breaks** | **fixed** | 4664 viol |
+
+`PYC_CSMOLD` is ifa's port of shedskin's *mold fallback* (its comment
+says so), but only the half that shares; at its default level 1 it is
+gated on `s->element`, which a Python-level class like `dict` or `set`
+does not have -- their element types live in the `_keys`/`_vals`/
+`_items` list FIELDS. Raising it to 2 lifts that gate and converges this
+repro, at the cost of the set one.
+
+Neither "always split" nor "always share" is right. The shedskin answer
+is neither: identity from the CONTENTS. ifa's nearest equivalent is
+`cselem` (ifa/issues/101), which keys a CS on its converged element
+type -- and it does not fire here for exactly the same reason
+(`PYC_CSELEM=1` and `=2` both still hit the cap), because `dict` has no
+`s->element`.
+
+### Fix direction
+
+Extend element-keyed CS identity (`cselem`) to class-based containers by
+keying on the FIELD types rather than on `s->element`, so a `dict` whose
+`_keys` is `list[str]` and `_vals` is `list[int]` is a different
+CreationSet from one with those swapped -- which is precisely
+`dict<str*,int>` vs `dict<int,str*>`. That derives identity from the
+value flow, as shedskin does, instead of from the allocation context,
+and would not need the constructor to be split at all.
