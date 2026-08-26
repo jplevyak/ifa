@@ -483,7 +483,52 @@ CreationSet *creation_point(AVar *v, Sym *s, int nvars) {
     Sym *cmc = s->clone_methods_per_cs ? s : (s->type ? unalias_type(s->type) : 0);
     if (cmc && cmc->clone_methods_per_cs) goto Lcreators;
   }
-  if (es && es->split) {
+  // ifa/issues/055: the CreationSet follows the EntrySet split.
+  //
+  // PYC_CSSPLIT=0 restores the old behaviour: a split child INHERITS its
+  // parent's instance CS, so every contour of a function shares the one
+  // CreationSet its allocation site produced. That is what made
+  // set.difference's `r = set()` a single CS across all three of its
+  // contours -- the int one, the str one, and the chained one -- which
+  // forced that CS's element type to int64|str and, because the chained
+  // contour takes it as receiver AND returns it, fed the shared site
+  // from itself. The splitter then chased the symptom forever: 146 <->
+  // 149 EntrySets, period 2, to the pass cap.
+  //
+  // The exemption for this already existed but was reachable only via
+  // `clone_methods_per_cs` (the `goto Lcreators` above), and that flag
+  // is set in exactly one place -- python_ifa_build_syms.cc, when a
+  // class's __init__ has a __pyc_clone_constants__ parameter. `set`
+  // and `dict` take no ctor arguments at all, so they could never
+  // qualify, even though their instances need separating by ELEMENT
+  // type rather than by constant. Splitting with the ES instead makes
+  // the exemption unnecessary: the other stages (TYPE_CONFLUENCE,
+  // SETTER, SETTER_OF_SETTER on this repro) already split the contour
+  // that contains the creation point, and the CS now follows.
+  //
+  // Bounded, not a new growth source: split products are found durably
+  // across passes (find_or_make_filtered_entry_set searches fun->ess)
+  // and `cs_map` persists across clear_avar, so a split child mints its
+  // instance once and memoizes it.
+  // DEFAULT 0 for now -- correct, and not yet shippable. With it on the
+  // pyc suite is clean (297 passed / 0 failed / 13 known: the 055 repro
+  // flips KNOWN->PASS) and plcfrs improves (violations 4378 -> 2451,
+  // ess 1246 -> 850, still non-convergent), but the corpus loses three
+  // programs that compile today: pylife and softrender to new type
+  // errors, pystone to a compiler crash. The crashes are pre-existing
+  // null-deref bugs in the phases AFTER FA, exposed by the extra
+  // contours rather than caused by them -- two are fixed alongside this
+  // (optimize/dom.cc's missing `ff->dom` guard, optimize/inline.cc's
+  // missing `loop_node` guard, both the "a Fun reachable through the
+  // call graph is not in fa->funs" family). The third is codegen:
+  // cg.cc's emit_send_call fputs()es a null name for a Var that reached
+  // it without one. See the issue for where that stands.
+  static int cssplit = -1;
+  if (cssplit < 0) {
+    cchar *cv = getenv("PYC_CSSPLIT");
+    cssplit = cv ? atoi(cv) : 0;
+  }
+  if (es && es->split && !cssplit) {
     AVar *oldv = make_AVar(v->var, es->split);
     cs = oldv->cs_map ? oldv->cs_map->get(s) : 0;
     if (cs) {

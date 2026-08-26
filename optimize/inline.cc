@@ -80,7 +80,15 @@ static void global_frequency_estimation(FA *fa) {
     for (PNode *n : nodes) n->execution_frequency *= freq;
     f->execution_frequency = 0;
     for (CallPoint *c : f->called) {
-      if (c->fun != f && f->loop_node->dfs_ancestor(c->fun->loop_node))
+      // dfs_order walks the CALL GRAPH from top, but loop_node is only
+      // assigned to the funs find_all_loops covers, so a fun reachable
+      // here without one derefs null. Same family as the Dom guard in
+      // optimize/dom.cc, and surfaced the same way -- more contours
+      // reach more funs (ifa/issues/055). Frequency estimation only
+      // feeds inlining heuristics, so skipping an unknown ancestry
+      // relation costs precision in the estimate, never correctness.
+      if (c->fun != f && f->loop_node && c->fun && c->fun->loop_node &&
+          f->loop_node->dfs_ancestor(c->fun->loop_node))
         f->execution_frequency += freq * c->pnode->execution_frequency;
     }
     if (f->execution_frequency < 1.0) f->execution_frequency = 1.0;

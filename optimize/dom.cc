@@ -201,9 +201,16 @@ void build_call_dominators(FA *fa) {
   for (Fun *f : fa->funs) {
     Vec<Fun *> calls;
     f->calls_funs(calls);
-    for (Fun *ff : calls) f->dom->succ.add(ff->dom);
+    // Only `fa->funs` were given a Dom above, but calls_funs /
+    // called_by_funs can name a Fun outside that set, whose `dom` is
+    // then null -- and df_traversal derefs every succ entry
+    // unconditionally. Guard exactly as the CFG loop above already does
+    // (`if (pp->dom)`). Latent: it needs a call graph big enough to
+    // reach such a Fun, which is why it surfaced only when contour
+    // splitting produced more of them (ifa/issues/055).
+    for (Fun *ff : calls) if (ff && ff->dom) f->dom->succ.add(ff->dom);
     f->called_by_funs(calls);
-    for (Fun *ff : calls) f->dom->pred.add(ff->dom);
+    for (Fun *ff : calls) if (ff && ff->dom) f->dom->pred.add(ff->dom);
   }
   build_dominators(if1->top->fun->dom);
 }

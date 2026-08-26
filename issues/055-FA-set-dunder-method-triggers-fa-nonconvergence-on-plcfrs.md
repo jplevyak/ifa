@@ -582,3 +582,98 @@ the allocation.
 Instrument `creation_point()` for the `r = set()` site: log the AVar,
 the contour, `es->split`, and the CS returned, per pass, and find why
 all three `difference` EntrySets resolve to CS #1032.
+
+
+## Why the CS is not split with the ES, and what happens when it is
+
+### The answer
+
+`creation_point()` (fa.cc) has six routes to a CreationSet. In order:
+
+1. `v->cs_map` memo -- per AVar, so per (Var, contour). Fine.
+2. **split-parent inheritance** -- `if (es && es->split)`, look up the
+   parent contour's CS and reuse it. **This is the one that fires.**
+3. the `s->creators` loop -- **dead code**:
+   `if (nvars != -1 || x->vars.n != nvars) continue;` always continues
+   (when `nvars == -1` the second test is `x->vars.n != -1`, true for
+   any `vars.n >= 0`), so it can never reach `cs = x`.
+4. cselem (ifa/101, `PYC_CSELEM`, default 0) -- needs `s->element`,
+   null for a Python-level class like `set`.
+5. csmold (ifa/101, `PYC_CSMOLD`, default 1) -- also needs `s->element`
+   at level 1, and excludes `clone_methods_per_cs` classes.
+6. mint.
+
+So route 2 hands every split child of `difference` its parent's
+CreationSet. The other splitter stages DO run and DO split the contour
+containing the creation point -- `PYC_DBG_STAGES` reports
+`TYPE_CONFL SETTER SETTER_OF_SETTER`, and `difference` ends with three
+EntrySets. The ES split happens; the CS just does not follow it.
+
+### The exemption existed but was unreachable
+
+Route 2's own comment says instances of `clone_methods_per_cs` classes
+must not take it, citing 040's `range(0,0)` vs `range(0,2)` merge. But
+that flag is set in exactly one place -- `python_ifa_build_syms.cc`,
+when a class's `__init__` has a `__pyc_clone_constants__` parameter --
+and `IFA_DBG_CSMINT` reports `cmc=0` for `set`. `set.__init__(self)`
+and `dict.__init__(self)` take no arguments at all, so they can never
+qualify, even though their instances need separating by ELEMENT type
+rather than by constant. The comment at the flag's assignment predicts
+the consequence exactly: *"otherwise shared method contours write
+through the union and widen every sibling's fields"*.
+
+### `PYC_CSSPLIT=1`: correct, and not yet shippable
+
+Added, **default 0**. At 1, route 2 is skipped so a split child mints
+its own instance CS.
+
+| | default | PYC_CSSPLIT=1 |
+|---|---|---|
+| the 6-line repro | 52 passes, CONVERGED=0, 56 violations | **28 passes, CONVERGED=1, 0 violations** |
+| its output | does not compile | **`2 1 2`** (= CPython) |
+| dict analogue | CONVERGED=0 | **CONVERGED=1** |
+| plcfrs | 4378 violations, ess 1246 | 2451 violations, ess 850 (still CONVERGED=0) |
+| pyc suite | 296 passed / 14 known | **297 passed / 0 failed / 13 known** |
+| corpus (77 programs) | 67 compile | **64 compile** |
+
+Bounded, not a new growth source: split products are found durably
+across passes (`find_or_make_filtered_entry_set` searches `fun->ess`)
+and `cs_map` survives `clear_avar`, so a split child mints once and
+memoizes. Cost on the repro is +16% CreationSets (656 -> 760).
+
+### The three corpus losses are latent bugs in the phases AFTER FA
+
+    pylife      rc=0 -> rc=1     new type errors
+    softrender  rc=0 -> rc=1     new type errors
+    pystone     rc=0 -> crash
+    sunfish     rc=124 -> rc=1   IMPROVED (was timing out)
+
+pystone crashes in three different places in succession, each a missing
+null guard reached only because there are now more Funs:
+
+1. `optimize/dom.cc` `build_call_dominators`: `f->dom->succ.add(ff->dom)`
+   with no guard, while the CFG loop 14 lines above already does
+   `if (pp->dom)`. Only `fa->funs` are given a Dom, but `calls_funs`
+   can name a Fun outside that set. **Fixed here** -- independently
+   correct.
+2. `optimize/inline.cc` `global_frequency_estimation`:
+   `f->loop_node->dfs_ancestor(...)` where `dfs_order` walks the call
+   graph from top but `loop_node` is only assigned to the funs
+   `find_all_loops` covers. **Fixed here** -- frequency estimation only
+   feeds inlining heuristics, so skipping an unknown ancestry relation
+   costs estimate precision, never correctness.
+3. `codegen/cg.cc` `emit_send_call`: `fputs()` of a null name for a Var
+   that reached codegen without one. **Not fixed** -- this is where
+   pystone stands.
+
+Both fixed guards are kept regardless of the flag: they are guarding
+against something that was already possible.
+
+### Where this leaves it
+
+The mechanism the issue needs now exists and is one flag away. What
+stands between `PYC_CSSPLIT=1` and default-on is not FA -- it is that
+the post-FA phases have never run at this contour count. Next: the
+cg.cc null name for pystone, then re-examine pylife's and softrender's
+new type errors, which may be real imprecision the extra CSs expose or
+may be the same class of latent gap one phase further on.
