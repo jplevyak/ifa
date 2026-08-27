@@ -5654,6 +5654,17 @@ static int routecycle_enabled() {
   return e;
 }
 
+// ifa/issues/055: treat "routed the same group to the same home as last
+// pass" as NOT progress. Default 0 while it is measured.
+static int routestable_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_ROUTESTABLE");
+    e = v ? atoi(v) : 0;
+  }
+  return e;
+}
+
 static int routegate_enabled() {
   static int e = -1;
   if (e < 0) {
@@ -5917,6 +5928,7 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
         map_set_add(pending_es_backedge_map, x->key, x->value);
   }
   int split = 0;
+  SplitDecision *route_d = nullptr;  // ifa/issues/055: the ledger decision that routed, if any
   bool stay_evicted = false;  // issue 074: self-product complement eviction, once per apply
   // Issue 074: the self-product eviction is only sound when types have
   // CONVERGED (0 violations): then the self-product is a spurious precision
@@ -6178,6 +6190,7 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
     bool home_ok = true;
     if (avpos && gsig) {
       SplitDecision *d = fa->ledger_find(es->fun, cur_split_stage, avpos, part, gsig);
+      route_d = d;  // ifa/issues/055: visible at the routing block below
       if (getenv("IFA_DBG_CHURN")) {
         fprintf(stderr, "[churn-look] p=%d fun=%s es=%d gsig=%u found=%d pass_made=%d product=%d self=%d",
                 analysis_pass, es->fun->sym->name ? es->fun->sym->name : "?", es->id, gsig, d ? 1 : 0,
@@ -6299,6 +6312,10 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
     }
     if (product) {
       if (!product->split) product->split = es;
+      // ifa/issues/055: is this the same route as last pass?
+      bool stable_route = route_d && (route_d->last_route_pass == analysis_pass - 1) &&
+                          (route_d->last_route_product == product);
+      if (route_d) { route_d->last_route_pass = analysis_pass; route_d->last_route_product = product; }
       for (AEdge *x : these_edges) {
         if (getenv("IFA_DBG_CHURN"))
           fprintf(stderr, "[churn] p=%d stage=%d fun=%s es=%d edge_to=%d product=%d noop=%d\n", analysis_pass,
@@ -6311,9 +6328,16 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
         set_entry_set(x, product);
         record_backedges(x, es, pending_es_backedge_map);
         if (getenv("IFA_DBG_CHURN"))
-          fprintf(stderr, "[churn-ledger] p=%d e=%d es=%d -> %d\n", analysis_pass, x->id, es->id,
-                  product ? product->id : -1);
-        split = 1;
+          fprintf(stderr, "[churn-ledger] p=%d e=%d es=%d -> %d%s\n", analysis_pass, x->id, es->id,
+                  product ? product->id : -1, stable_route ? " (stable, no progress)" : "");
+        // ifa/issues/055: routing a re-derived group to the SAME home it
+        // went to on the previous pass is the ledger working, not new
+        // information. Claiming progress for it keeps analyze_again true
+        // for ever: measured on plcfrs and its 36-line repro as
+        // `TYPE_CONFL returned=1 d_ess=0 d_css=0` on every pass to the
+        // cap, which starves SETTER and everything after it. Do the
+        // routing, but do not call it progress.
+        if (!stable_route || routestable_enabled() == 0) split = 1;
         log(LOG_SPLITTING, "SPLIT ES %d (ledger) %s %d from %d -> %d\n", es->id,
             es->fun->sym->name ? es->fun->sym->name : "", es->fun->sym->id, x->pnode->lvals[0]->sym->id,
             x->to->id);
@@ -8277,8 +8301,9 @@ static int cpa_enabled() {
     // contour counts do not move keeps the whole cascade alive and
     // starves every later stage. Report the claim next to the effect.
     if (getenv("PYC_DBG_STAGEDELTA"))
-      fprintf(stderr, "STAGEDELTA p=%d TYPE_CONFL returned=%d confluences=%d d_ess=%d d_css=%d\n", analysis_pass,
-              analyze_again, confluences.n, fa->ess.n - ess0, fa->css.n - css0);
+      fprintf(stderr, "STAGEDELTA p=%d TYPE_CONFL returned=%d confluences=%d d_ess=%d d_css=%d viol=%d\n",
+              analysis_pass, analyze_again, confluences.n, fa->ess.n - ess0, fa->css.n - css0,
+              fa->type_violations.set_count());
     log(LOG_SPLITTING, "split_ess_for_type %d\n", analyze_again);
     if (analyze_again) {
       record_fa_event(FAPassStage::TYPE_CONFLUENCE, analyze_again, ess0, css0, viol0);
@@ -8300,6 +8325,9 @@ static int cpa_enabled() {
     fa->stage_time[(int)FAPassStage::CARTESIAN_PRODUCT] += stage_timer.lap();
     if (analyze_again) {
       record_fa_event(FAPassStage::CARTESIAN_PRODUCT, analyze_again, ess0, css0, viol0);
+      if (getenv("PYC_DBG_STAGEDELTA"))
+        fprintf(stderr, "STAGEDELTA p=%d CARTESIAN_PRODUCT returned=%d d_ess=%d d_css=%d viol=%d\\n", analysis_pass,
+                analyze_again, fa->ess.n - ess0, fa->css.n - css0, fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::CARTESIAN_PRODUCT];
     }
     log(LOG_SPLITTING, "split_ess_cartesian_product %d\n", analyze_again);
@@ -8331,6 +8359,9 @@ static int cpa_enabled() {
     fa->stage_time[(int)FAPassStage::MARK_TYPE] += stage_timer.lap();
     if (analyze_again) {
       record_fa_event(FAPassStage::MARK_TYPE, analyze_again, ess0, css0, viol0);
+      if (getenv("PYC_DBG_STAGEDELTA"))
+        fprintf(stderr, "STAGEDELTA p=%d MARK_TYPE    returned=%d d_ess=%d d_css=%d viol=%d\\n", analysis_pass,
+                analyze_again, fa->ess.n - ess0, fa->css.n - css0, fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::MARK_TYPE];
     }
   }
@@ -8346,7 +8377,10 @@ static int cpa_enabled() {
   // demand-driven back-flow never starts.
   static int settergate = -1;
   if (settergate < 0) settergate = getenv("PYC_SETTERGATE") ? atoi(getenv("PYC_SETTERGATE")) : 0;
-  if (!analyze_again || settergate) {
+  // ifa/issues/055 probe: PYC_NOSETTER=1 skips the SETTER stage entirely.
+  static int nosetter = -1;
+  if (nosetter < 0) nosetter = getenv("PYC_NOSETTER") ? atoi(getenv("PYC_NOSETTER")) : 0;
+  if (nosetter) { /* skip */ } else if (!analyze_again || settergate) {
     Accum<AVar *> avs;
     // ifa/issues/111 M3 option 2: under selective invalidation, class
     // EVERY CS-contoured AVar, not just this pass's confluences.
@@ -8369,7 +8403,12 @@ static int cpa_enabled() {
       for (AVar *av : confluences) (void)compute_setters(av, avs, AKIND_TYPE);
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
     cur_split_stage = (int)FAPassStage::SETTER;
+    int viol_before_setter = fa->type_violations.set_count();
     if (split_for_setters(avs, analyze_again)) analyze_again = 1;
+    if (getenv("PYC_DBG_STAGEDELTA"))
+      fprintf(stderr, "STAGEDELTA p=%d SETTER      returned=%d d_ess=%d d_css=%d viol=%d (was %d)\n",
+              analysis_pass, analyze_again, fa->ess.n - ess0, fa->css.n - css0,
+              fa->type_violations.set_count(), viol_before_setter);
     fa->stage_time[(int)FAPassStage::SETTER] += stage_timer.lap();
     if (analyze_again) {
       record_fa_event(FAPassStage::SETTER, analyze_again, ess0, css0, viol0);
@@ -8383,6 +8422,9 @@ static int cpa_enabled() {
       fa->stage_time[(int)FAPassStage::SETTER_OF_SETTER] += stage_timer.lap();
       if (analyze_again) {
         record_fa_event(FAPassStage::SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
+      if (getenv("PYC_DBG_STAGEDELTA"))
+        fprintf(stderr, "STAGEDELTA p=%d SETTER_OF_SETTER returned=%d d_ess=%d d_css=%d viol=%d\\n", analysis_pass,
+                analyze_again, fa->ess.n - ess0, fa->css.n - css0, fa->type_violations.set_count());
         ++fa->stage_progress_count[(int)FAPassStage::SETTER_OF_SETTER];
       }
     }
@@ -8427,6 +8469,9 @@ static int cpa_enabled() {
     fa->stage_time[(int)FAPassStage::MARK_SETTER] += stage_timer.lap();
     if (analyze_again) {
       record_fa_event(FAPassStage::MARK_SETTER, analyze_again, ess0, css0, viol0);
+      if (getenv("PYC_DBG_STAGEDELTA"))
+        fprintf(stderr, "STAGEDELTA p=%d MARK_SETTER  returned=%d d_ess=%d d_css=%d viol=%d\\n", analysis_pass,
+                analyze_again, fa->ess.n - ess0, fa->css.n - css0, fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::MARK_SETTER];
     }
     log(LOG_SPLITTING, "split_for_setters with marks %d\n", analyze_again);
@@ -8437,6 +8482,9 @@ static int cpa_enabled() {
       fa->stage_time[(int)FAPassStage::MARK_SETTER_OF_SETTER] += stage_timer.lap();
       if (analyze_again) {
         record_fa_event(FAPassStage::MARK_SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
+      if (getenv("PYC_DBG_STAGEDELTA"))
+        fprintf(stderr, "STAGEDELTA p=%d MARK_SETTER_OF_SETTER returned=%d d_ess=%d d_css=%d viol=%d\\n", analysis_pass,
+                analyze_again, fa->ess.n - ess0, fa->css.n - css0, fa->type_violations.set_count());
         ++fa->stage_progress_count[(int)FAPassStage::MARK_SETTER_OF_SETTER];
       }
     }
@@ -8458,6 +8506,9 @@ static int cpa_enabled() {
     fa->stage_time[(int)FAPassStage::VIOLATION] += stage_timer.lap();
     if (analyze_again) {
       record_fa_event(FAPassStage::VIOLATION, analyze_again, ess0, css0, viol0);
+      if (getenv("PYC_DBG_STAGEDELTA"))
+        fprintf(stderr, "STAGEDELTA p=%d VIOLATION    returned=%d d_ess=%d d_css=%d viol=%d\\n", analysis_pass,
+                analyze_again, fa->ess.n - ess0, fa->css.n - css0, fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::VIOLATION];
     }
   }
@@ -8483,6 +8534,9 @@ static int cpa_enabled() {
     fa->stage_time[(int)FAPassStage::PER_CS_RECEIVER] += stage_timer.lap();
     if (analyze_again) {
       record_fa_event(FAPassStage::PER_CS_RECEIVER, analyze_again, ess0, css0, viol0);
+      if (getenv("PYC_DBG_STAGEDELTA"))
+        fprintf(stderr, "STAGEDELTA p=%d PER_CS_RECEIVER returned=%d d_ess=%d d_css=%d viol=%d\\n", analysis_pass,
+                analyze_again, fa->ess.n - ess0, fa->css.n - css0, fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::PER_CS_RECEIVER];
     }
   }
@@ -8514,6 +8568,9 @@ static int cpa_enabled() {
     fa->stage_time[(int)FAPassStage::CSM_ELEMENT_CS] += stage_timer.lap();
     if (analyze_again) {
       record_fa_event(FAPassStage::CSM_ELEMENT_CS, analyze_again, ess0, css0, viol0);
+      if (getenv("PYC_DBG_STAGEDELTA"))
+        fprintf(stderr, "STAGEDELTA p=%d CSM_ELEMENT_CS returned=%d d_ess=%d d_css=%d viol=%d\\n", analysis_pass,
+                analyze_again, fa->ess.n - ess0, fa->css.n - css0, fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::CSM_ELEMENT_CS];
     }
   }
@@ -9865,6 +9922,7 @@ static void analyze_to_convergence() {
   // `analysis_pass == 0` has nothing to reset (initialize() just built
   // the world), and clearing there would drop the seeded globals.
   bool first_pass = true;
+  bool loop_again = false;  // ifa/issues/055
   do {
     // ifa/issues/111 M3: clear only the closure the last pass
     // invalidated, when that is armed and enabled. Falls back to the
@@ -9929,8 +9987,17 @@ static void analyze_to_convergence() {
     // suppressed by the sticky stall guard, extend_analysis returns
     // 0 but a frontend annotator that never quiesces could
     // otherwise drive flow passes forever.
-  } while ((extend_analysis() || if1->callback->reanalyze(fa->type_violations) || apply_unbound_fills()) &&
-           analysis_pass <= fa->pass_limit);
+    // ifa/issues/055: which of the three actually asks for another pass?
+    {
+      int ext = extend_analysis();
+      int rea = ext ? 0 : (if1->callback->reanalyze(fa->type_violations) ? 1 : 0);
+      int fil = (ext || rea) ? 0 : (apply_unbound_fills() ? 1 : 0);
+      if (getenv("PYC_DBG_STAGEDELTA"))
+        fprintf(stderr, "PASSEND p=%d extend=%d reanalyze=%d fills=%d viol=%d\n", analysis_pass, ext, rea, fil,
+                fa->type_violations.set_count());
+      loop_again = (ext || rea || fil);
+    }
+  } while (loop_again && analysis_pass <= fa->pass_limit);
   if (getenv("PYC_DBG_OSC"))
     fprintf(stderr, "OSC final_pass=%d pass_limit_hit=%d violations=%d ess=%d css=%d selective=%d\n", analysis_pass,
             fa->pass_limit_hit ? 1 : 0, fa->type_violations.set_count(), fa->ess.n, fa->css.n, ifa_selective);

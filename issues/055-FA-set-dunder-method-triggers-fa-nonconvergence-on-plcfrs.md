@@ -1285,3 +1285,93 @@ the 2-cycle explanation no longer applies. The churn probe shows the
 ledger route still firing heavily in late passes (248 fires at p>=30)
 along with 2006 mint lookups. Whatever re-points those edges is the next
 thing to find, and the 36-line repro is where to find it.
+
+
+## What re-points the edges: NOTHING in the splitter — it is field promotion
+
+Traced on the 36-line repro (1.4 s), and it overturns the previous
+section's framing.
+
+### 1. It is not a hang, and not the pass limit
+
+    STALL LIMIT reached at pass 38, 56 violations (best 44):
+      3 re-deriving (limit 8), 32 non-improving (limit 32); stopping
+
+`IFA_PASS_LIMIT` is 100. The analysis stops at 38 because the **stall
+guard** fires: 32 consecutive passes that never improved on the best
+violation count. `pass_limit_hit` is the guard's flag, not a pass cap.
+
+### 2. The violation trajectory: it settles, then is wrecked, twice
+
+    p=0   78
+    p=4-6 44     <- settled
+    p=7   325    <- 7x worse
+    p=12  152 ... p=30 52   (20+ passes clawing back)
+    p=31  419    <- 8x worse again
+    p=34-38 57..56   -> stall guard stops
+
+### 3. At the moment it is wrecked, every splitter is quiescent
+
+    PASSEND p=6  extend=1  reanalyze=0  viol=44
+    REANALYZE again=1 notype_promote=2 eager_promote=0 coerce=0
+    PASSEND p=7  extend=0  reanalyze=1  viol=44     <- extend_analysis() = 0
+    PASSEND p=8  extend=1               viol=325
+
+`extend_analysis()` returns **0** at pass 7 -- TYPE_CONFLUENCE, SETTER
+and every other stage are settled at 44 violations. The pass happens
+because `IFACallbacks::reanalyze()` asks for it, and the flow that
+follows produces 325.
+
+So the ledger routing, the scomp path and the mint churn measured
+earlier are all DOWNSTREAM NOISE: the splitter is re-pointing edges
+because promotion keeps handing it a changed program, not because it is
+stuck.
+
+### 4. Proof
+
+`PYC_NOPROMOTE=1` (probe, skips both `promote_field` paths in
+`PycCompiler::reanalyze`, keeping the numeric coercion):
+
+| | default | NOPROMOTE=1 |
+|---|---|---|
+| the 36-line repro | 41 passes, stall, 152 viol, ess 415 | **8 passes, CONVERGED=1, 44 viol, ess 88** |
+| **plcfrs itself** | 37 passes, stall, 4993 viol, ess 1420 | **11 passes, CONVERGED=1, 138 viol, ess 257** |
+
+**plcfrs converges** without field promotion. This is the whole of its
+remaining non-convergence.
+
+### 5. But promotion cannot simply be removed
+
+    pyc suite, PYC_NOPROMOTE=1:  192 passed, 108 FAILED
+
+Promotion is load-bearing (issues/026's third bug: writes that land in
+`cs->unknown_vars` must reach `var_map` or dispatch over union receivers
+constant-folds). Turning it off trades non-convergence for 108 broken
+programs.
+
+### 6. Why it does not settle
+
+Promotion is individually monotone -- each field moves from
+`unknown_vars` to `var_map` once -- but each promotion re-runs the
+analysis, and the re-run exposes MORE fields to promote:
+`notype_promote=2`, then `7`, then `5`, ... Each round multiplies the
+violation count before it comes back down, and the stall guard's
+"non-improving" metric counts that as failure. Raising the budget does
+not help: `IFA_STALL_LIMIT=200` stops at the same pass with the same
+numbers, so the non-improving counter is not the only limiter.
+
+### Fix directions, in order of appeal
+
+1. **Promote to a fixed point BEFORE splitting matters.** The
+   promotions are discoverable from `cs->unknown_vars` without a full
+   re-analysis between each round; doing them all up front (or looping
+   promotion alone until quiescent) would remove the interleaving that
+   makes violations oscillate.
+2. **Make the stall guard aware of reanalyze.** A pass whose only
+   change came from a frontend repair is expected to look worse; it
+   should not advance the non-improving counter. This is a smaller
+   change but treats the symptom.
+3. Promotion currently fires from NOTYPE violations *and* eagerly over
+   every CS. If the eager path is complete, the NOTYPE-driven path is
+   redundant and is what ties promotion to the violation set -- worth
+   measuring whether path (1) alone suffices.

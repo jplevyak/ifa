@@ -535,6 +535,15 @@ struct SplitDecision : public gc {
   // 0 for single-position (filtered-path) keys.
   uint sig = 0;
   int pass_made = 0;            // analysis_pass at record time (diagnostics)
+  // ifa/issues/055: the pass on which this decision last ROUTED a group,
+  // and where it sent it. With the full per-pass reset the edges are
+  // rebuilt every pass, so a stable group is re-derived and re-routed to
+  // the same home for ever -- correct behaviour, but it was being
+  // reported as progress, which keeps analyze_again true and starves
+  // every later stage. Repeating last pass's routing is not new
+  // information.
+  int last_route_pass = -1;
+  EntrySet *last_route_product = nullptr;
   EntrySet *product = nullptr;  // ES created/selected (nullptr for CS splits)
   // Issue 033 D5: for split_css decisions (fun/pos/partition all
   // null, identity carried entirely by `sig` — see
