@@ -416,8 +416,22 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         // issues/044's own note on that literal).
         fprintf(fp, "%s = _CG_prim_tuple_list(%s, %d);\n", cg_get_string(n->lvals[0]), voidish ? "int*" : t,
                 n->rvals.n - 3);
-        for (int i = 3; i < n->rvals.n; i++)
+        // ifa/issues/055: the struct definition emits only LIVE fields
+        // (build_type_strings: `if (!cg_field_live(s, i)) continue`,
+        // keeping the has-index as the eN suffix so dead fields leave
+        // gaps). This construction site wrote every element regardless,
+        // so a record with a dead leading field got `t->e0 = ...`
+        // against a struct that starts at e3 -- "no member named 'e0'",
+        // measured on bh/block/chull/doom/rubik/softrender. Use the same
+        // test the struct used. Guarded on Type_RECORD with fields: a
+        // vector's has.n is 0, and cg_field_live would then report every
+        // index dead and elide the whole initialisation.
+        Sym *rec = n->lvals[0]->type;
+        bool rec_fields = rec && rec->type_kind == Type_RECORD && rec->has.n;
+        for (int i = 3; i < n->rvals.n; i++) {
+          if (rec_fields && !cg_field_live(rec, i - 3)) continue;
           fprintf(fp, "  %s->e%d = %s;\n", cg_get_string(n->lvals[0]), i - 3, cg_get_string(n->rvals.v[i]));
+        }
       } else if (sym_list->specializers.set_in(n->rvals[2]->sym) || n->rvals[2]->sym->is_vector) {
         if (lt && lt->type_kind == Type_RECORD) goto Ltuple;
         goto Llist;
@@ -2579,7 +2593,29 @@ static void build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
           // cg_field_live).  The struct definition and
           // field-access codegen stay consistent.
           for (int i = 0; i < s->has.n; i++) {
-            if (!cg_field_live(s, i)) continue;
+            // ifa/issues/055: a dead field gets a PLACEHOLDER member
+            // rather than a gap. Skipping it entirely relies on every
+            // access site eliding the same field by the same test, and
+            // they do not all do so -- the tuple constructor, the
+            // getter's field-mismatch path and the string builder all
+            // emit `->eN` unguarded, so a record with a dead leading
+            // field produced `t->e0 = ...` against a struct starting at
+            // e3 ("no member named 'e0'", measured on bh, block, chull,
+            // doom, rubik and softrender). Keeping the numbering dense
+            // removes the whole class of mismatch instead of requiring
+            // agreement at six sites. The member is unused; C field
+            // access is by name, so this is layout-transparent to
+            // everything that was already working.
+            // A field DCE called dead is still READ by several sites
+            // (measured: `t = (_CG_float64)((_CG_ps13984)x)->e1` in
+            // block/chull), so it must keep its real C type -- a
+            // `_CG_void` placeholder there is a cast error, not a fix.
+            // Only a field with NO type at all gets the placeholder,
+            // and that exists purely to hold the eN numbering.
+            if (!s->has[i]->type) {
+              fprintf(fp, "  _CG_void e%d; /* no type */\n", i);
+              continue;
+            }
             fputs("  ", fp);
             fputs(c_type(s->has[i]), fp);
             fprintf(fp, " e%d;", i);

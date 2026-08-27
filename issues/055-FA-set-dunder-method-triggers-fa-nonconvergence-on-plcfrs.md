@@ -1492,3 +1492,65 @@ layout and the access sites disagree about the numbering.
 
 That is one bug, not six, and it is the last thing between
 `PYC_PROMOTE_FIRST=2` and the default.
+
+
+## The struct-numbering bug: fixed, and it was 5 of the 7
+
+`build_type_strings` (codegen/cg.cc) skipped dead fields, leaving GAPS
+in the `eN` numbering:
+
+```c
+for (int i = 0; i < s->has.n; i++) {
+  if (!cg_field_live(s, i)) continue;   // gap
+  ... " e%d;", i ...
+}
+```
+
+Its comment says the gaps are safe because "the setter, getter, and
+other field-access sites use the SAME has-index `i` ... and elide
+accesses to dead fields (via cg_field_live)". **They do not all do so.**
+The tuple constructor, the getter's field-mismatch path and the string
+builder all emit `->eN` unguarded, so a record with a dead LEADING field
+produced `t->e0 = ...` against a struct that starts at `e3`.
+
+Two attempts, and the second is the fix:
+
+1. Guard the construction site as well. Correct as far as it goes -- bh
+   went from 9 C errors to 5 -- but it only fixes the sites you find,
+   and the READ sites remained.
+2. **Keep the numbering dense.** One change at the source removes the
+   whole class of mismatch instead of requiring agreement at six sites.
+
+A correction inside (2) worth keeping: emitting a `_CG_void` placeholder
+for every dead field produced `cast from '_CG_void' to '_CG_float64' is
+not allowed` in block/chull. The read sites are the evidence -- **a
+field DCE calls dead is still read, and still has a type**. So the
+placeholder is only right for a field with NO type at all; anything with
+a type keeps its real one, and only the numbering is preserved.
+
+### Result
+
+| | before | after |
+|---|---|---|
+| bh, block, chull, rubik, kmeanspp | fail under pf2 | **compile** |
+| doom | fail | fail -- DIFFERENT cause: `_CG_prim_tuple_list(int*, 0)` for a zero-element tuple |
+| softrender | fail | fail -- DIFFERENT cause: `_CG_prim_coerce(_CG_bool, ptr)` loses information |
+
+One bug accounted for 5 of the 7; the last two are unrelated codegen
+issues that were hiding behind it.
+
+### `PYC_PROMOTE_FIRST=2` is now at corpus parity
+
+    default, before this change   67 of 77
+    default, after                67 of 77   (sunfish improves,
+                                              400 s timeout -> rc=1)
+    PYC_PROMOTE_FIRST=2, after    67 of 77   (was 62)
+
+pf2 loses doom and softrender, gains quameon and rdb -- net zero. Suite
+298 passed / 0 failed / 14 known at both settings, both backends;
+ifa-test goldens unchanged.
+
+So the remaining objection to making promotion-before-splitting the
+default is down to two programs that fail for reasons unrelated to it,
+against plcfrs converging and the 36-line repro compiling to zero
+violations.
