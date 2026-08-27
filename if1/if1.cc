@@ -23,6 +23,7 @@ IF1 *if1 = 0;
 bool fdce_if1 = true;
 bool fruntime_errors = false;
 bool fauto_init_unbound = false;  // ifa/issues/039
+int ifa_reanalyze_phase = 0;      // ifa/issues/055
 
 IF1::IF1() {
   memset((void*)this, 0, sizeof *this);

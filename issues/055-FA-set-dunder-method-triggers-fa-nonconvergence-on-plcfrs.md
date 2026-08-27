@@ -1375,3 +1375,73 @@ numbers, so the non-improving counter is not the only limiter.
    every CS. If the eager path is complete, the NOTYPE-driven path is
    redundant and is what ties promotion to the violation set -- worth
    measuring whether path (1) alone suffices.
+
+
+## Both fixes tried. One works and is not yet shippable.
+
+### Experiment B — stall guard aware of reanalyze (`PYC_STALL_REANALYZE=1`)
+
+A pass the FRONTEND asked for does not advance `stall_passes` /
+`nonimprove_passes`. Implemented; **it barely helps**: the repro goes
+41 -> 43 passes, still stalls, 152 -> 137 violations. It treats the
+symptom. (It also explains why `IFA_STALL_LIMIT=200` did nothing
+earlier: that knob sets `stall_limit`, but the stop came from
+`nonimprove_passes` hitting `nonimprove_limit`.)
+
+### Experiment A — promotion to a fixed point before splitting
+
+`PYC_PROMOTE_FIRST=1` reorders the pass loop so `reanalyze()` runs
+BEFORE `extend_analysis()` instead of being short-circuited by it.
+
+    repro   41 passes, stall, 152 viol  ->  28 passes, CONVERGED=1, 16 viol
+    suite   298 passed / 0 failed       ->  289 passed / 11 FAILED
+
+The 11 failures were mostly EXEC (wrong output) and clustered on
+numerics -- `bool_ordering`, `modulo_float_and_sign`, `minmax_3arg`,
+`sum_start_arg`, `mixed_numeric_field`. That cluster is the diagnosis:
+`reanalyze` does THREE jobs, and the third (numeric-confluence
+coercion) **reads converged types**. Moving it before splitting makes it
+coerce prematurely. Structural repair wants to be early; type-reading
+repair must stay late.
+
+### `PYC_PROMOTE_FIRST=2` — split the two halves
+
+New `ifa_reanalyze_phase` (ifa.h): phase 1 = the frontend's structural
+repair only (pyc: field promotion), phase 2 = the rest (pyc: numeric
+coercion). The loop becomes **promotion to a fixed point -> splitting ->
+coercion**, the last exactly where it has always been.
+
+| | default | mode 1 | **mode 2** |
+|---|---|---|---|
+| the 36-line repro | stall, 152 viol | 28 passes, 16 viol | **29 passes, 0 violations, prints CPython's 3** |
+| **plcfrs** | stall, 4993 viol, ess 1420 | -- | **CONVERGED=1, 123 viol, ess 1084** |
+| the older repro | passes | -- | passes |
+| pyc suite | 298 / 0 failed | 289 / 11 failed | **298 / 0 failed** |
+| corpus | 67 of 77 | -- | **62 of 77** |
+
+**plcfrs converges.** That is the thing this issue has been about since
+2026-07-19, and the 36-line repro compiles to zero violations.
+
+### Why it is still default OFF
+
+The corpus loses 5 net -- 7 programs that compile today stop, 2 that
+fail today start:
+
+    lost:   bh, block, chull, doom, rubik, softrender  (rc=0 -> rc=1)
+            kmeanspp                                    (rc=0 -> CRASH)
+    gained: quameon, rdb                                (rc=1 -> rc=0)
+    sunfish improves (rc=124 timeout -> rc=1)
+
+The crash is another null-deref of the family already fixed three times
+in this issue -- `record_arg(pn, cs=0x0, a=0x0, ...)` at fa.cc:2249, via
+`record_args_rets` <- `make_AEdges` <- `function_dispatch`. Exposed by
+reaching code that had not run at this contour count, not caused by the
+reordering.
+
+### Next
+
+The reordering is right and the measurements say so; what stands between
+it and the default is the seven corpus programs. Start with kmeanspp's
+null `cs`/`a` in `record_arg` -- the previous three of these each turned
+out to be a missing guard on a path that had simply never been reached,
+and each was worth fixing on its own merits.

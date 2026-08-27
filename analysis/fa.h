@@ -667,6 +667,12 @@ class FA : public gc {
   // splitter may run without improving on the best violation count
   // seen so far before the loop is force-terminated.
   int stall_limit;
+  // ifa/issues/055 experiment: was the pass just completed requested by
+  // IFACallbacks::reanalyze() rather than by a splitter? Such a pass is
+  // EXPECTED to look worse -- promotion exposes fields, which exposes
+  // type flow -- so counting it as "non-improving" stops the analysis
+  // while the frontend repair is still making progress.
+  bool last_pass_reanalyze = false;
   // ifa/issues/074: overridable via IFA_NONIMPROVE_LIMIT so the guard can
   // be taken out of the measurement (see stall_limit).
   int nonimprove_limit = IFA_NONIMPROVE_LIMIT;

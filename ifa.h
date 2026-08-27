@@ -170,6 +170,13 @@ extern bool fruntime_errors;
 // "definitely unbound" is a compile error in all three and never
 // reaches codegen, so this only ever affects the possibly case.
 extern bool fauto_init_unbound;
+// ifa/issues/055: which half of IFACallbacks::reanalyze() to run.
+// 0 = everything (the historical behaviour), 1 = the frontend's
+// structural repair only (pyc: field promotion), 2 = the rest (pyc:
+// numeric-confluence coercion). Promotion wants to reach a fixed point
+// BEFORE splitting; coercion reads converged types and must stay after
+// it.
+extern int ifa_reanalyze_phase;
 
 #include "ifadefs.h"
 

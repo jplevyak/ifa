@@ -8730,8 +8730,19 @@ static void probe_invalidation_closure() {
         fa->nonimprove_passes = 0;
       } else {
         bool rederived = fa->rederive_churn > 0;
-        if (rederived) ++fa->stall_passes;
-        ++fa->nonimprove_passes;
+        // ifa/issues/055 experiment B (PYC_STALL_REANALYZE): a pass the
+        // FRONTEND asked for is expected to look worse -- field
+        // promotion exposes fields, which exposes type flow, and the
+        // violation count rises before it falls (measured 44 -> 325 ->
+        // 52 on the plcfrs repro). Counting that as non-improvement
+        // stops the analysis while the repair is still progressing.
+        static int stall_reanalyze = -1;
+        if (stall_reanalyze < 0)
+          stall_reanalyze = getenv("PYC_STALL_REANALYZE") ? atoi(getenv("PYC_STALL_REANALYZE")) : 0;
+        if (!(stall_reanalyze && fa->last_pass_reanalyze)) {
+          if (rederived) ++fa->stall_passes;
+          ++fa->nonimprove_passes;
+        }
         if (fa->stall_passes >= fa->stall_limit || fa->nonimprove_passes >= fa->nonimprove_limit) {
           fa->pass_limit_hit = true;
           log(LOG_SPLITTING,
@@ -9989,9 +10000,38 @@ static void analyze_to_convergence() {
     // otherwise drive flow passes forever.
     // ifa/issues/055: which of the three actually asks for another pass?
     {
-      int ext = extend_analysis();
-      int rea = ext ? 0 : (if1->callback->reanalyze(fa->type_violations) ? 1 : 0);
-      int fil = (ext || rea) ? 0 : (apply_unbound_fills() ? 1 : 0);
+      // ifa/issues/055 experiment A (PYC_PROMOTE_FIRST): drive the
+      // frontend repair to a FIXED POINT before any splitting. By
+      // default extend_analysis() runs first and short-circuits
+      // reanalyze, so splitting interleaves with promotion and each
+      // promotion re-perturbs contours the splitter had just settled.
+      static int promote_first = -1;
+      if (promote_first < 0) promote_first = getenv("PYC_PROMOTE_FIRST") ? atoi(getenv("PYC_PROMOTE_FIRST")) : 0;
+      int ext = 0, rea = 0, fil = 0;
+      if (promote_first >= 2) {
+        // Structural repair to a fixed point first, splitting next, and
+        // the type-reading half of the repair last -- where it has
+        // always been.
+        ifa_reanalyze_phase = 1;
+        rea = if1->callback->reanalyze(fa->type_violations) ? 1 : 0;
+        ifa_reanalyze_phase = 0;
+        if (!rea) {
+          ext = extend_analysis();
+          if (!ext) {
+            ifa_reanalyze_phase = 2;
+            rea = if1->callback->reanalyze(fa->type_violations) ? 1 : 0;
+            ifa_reanalyze_phase = 0;
+          }
+        }
+      } else if (promote_first) {
+        rea = if1->callback->reanalyze(fa->type_violations) ? 1 : 0;
+        if (!rea) ext = extend_analysis();
+      } else {
+        ext = extend_analysis();
+        if (!ext) rea = if1->callback->reanalyze(fa->type_violations) ? 1 : 0;
+      }
+      if (!ext && !rea) fil = apply_unbound_fills() ? 1 : 0;
+      fa->last_pass_reanalyze = (rea != 0);
       if (getenv("PYC_DBG_STAGEDELTA"))
         fprintf(stderr, "PASSEND p=%d extend=%d reanalyze=%d fills=%d viol=%d\n", analysis_pass, ext, rea, fil,
                 fa->type_violations.set_count());
