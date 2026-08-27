@@ -1445,3 +1445,50 @@ it and the default is the seven corpus programs. Start with kmeanspp's
 null `cs`/`a` in `record_arg` -- the previous three of these each turned
 out to be a missing guard on a path that had simply never been reached,
 and each was worth fixing on its own merits.
+
+
+## kmeanspp's crash fixed: actuals indexed by formal count
+
+`record_args_rets` (analysis/fa.cc) loops over the CALLEE's formals but
+indexes the CALLER's actuals:
+
+```c
+for (int i = 0; i < e->fun->sym->has.n; i++)
+  record_arg(e->pnode, 0, a[i], e->fun->sym->has.v[i], e, p);
+```
+
+The two need not agree. Measured at the crash: `e->fun->sym->name` is
+`__eq__` with `has.n = 5` (it has default parameters), entered from a
+call supplying `a.n = 3`, so `a[3]` read past the end and `record_arg`
+dereferenced null at `a->out`.
+
+A formal with no actual has nothing to record -- the default wrapper is
+what supplies it -- so the loop is now bounded by `a.n` as well, with a
+null guard inside for good measure. Latent, like the previous three of
+this family: it needs a dispatch that reaches such a callee directly,
+which is why it surfaced only once `PYC_PROMOTE_FIRST` changed which
+paths are reached.
+
+    kmeanspp   PYC_PROMOTE_FIRST=2: CRASH (rc=139) -> rc=0
+               default:             rc=0, unchanged
+
+Fix is on the DEFAULT path and kept regardless of the flag. Five CI
+gates green, suite 298 passed / 0 failed / 14 known.
+
+### The remaining six share ONE cause, and it is not this
+
+`bh`, `block`, `chull`, `doom`, `rubik` and `softrender` all fail the
+same way under `PYC_PROMOTE_FIRST=2` -- **C compile errors, `no member
+named`**:
+
+    bh.py.c:1496:8: error: no member named 'e0' in '_CG_s15923'
+    struct _CG_s15923 { _CG_TypeObject *__pyc_tag; _CG_void e3; _CG_void e4; };
+
+The struct is emitted with `e3`/`e4` but the code references `e0`/`e1`:
+a field-index/emission mismatch, the same family as ifa/issues/110.
+Running promotion to a fixed point before splitting changes which fields
+exist on a CreationSet by the time the struct layout is chosen, and the
+layout and the access sites disagree about the numbering.
+
+That is one bug, not six, and it is the last thing between
+`PYC_PROMOTE_FIRST=2` and the default.

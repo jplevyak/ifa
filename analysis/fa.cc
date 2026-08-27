@@ -2271,8 +2271,18 @@ static void record_args_rets(AEdge *e, Vec<AVar *> &a) {
   if (!e->args.n) {
     MPosition p;
     p.push(1);
-    for (int i = 0; i < e->fun->sym->has.n; i++) {
-      record_arg(e->pnode, 0, a[i], e->fun->sym->has.v[i], e, p);
+    // ifa/issues/055: the loop is over the callee's FORMALS but indexes
+    // the caller's ACTUALS, and the two need not agree -- a callee with
+    // default parameters is legitimately reached by a call that supplies
+    // fewer (measured on kmeanspp: `__eq__` with has.n=5 entered with
+    // a.n=3, so a[3] read past the end and record_arg dereferenced null).
+    // A formal with no actual has nothing to record; the default wrapper
+    // is what supplies it. Latent -- it needs a dispatch that reaches
+    // such a callee directly, which is why it only surfaced once
+    // PYC_PROMOTE_FIRST changed which paths are reached.
+    for (int i = 0; i < e->fun->sym->has.n && i < a.n; i++) {
+      if (!a.v[i]) { p.inc(); continue; }
+      record_arg(e->pnode, 0, a.v[i], e->fun->sym->has.v[i], e, p);
       p.inc();
     }
   }
