@@ -414,8 +414,19 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         // matter since _CG_prim_tuple ignored it, so it had been left
         // at the listish route's old, unrelated `- 2`, per
         // issues/044's own note on that literal).
-        fprintf(fp, "%s = _CG_prim_tuple_list(%s, %d);\n", cg_get_string(n->lvals[0]), voidish ? "int*" : t,
-                n->rvals.n - 3);
+        // ifa/issues/055: the macro casts its RESULT to its first
+        // argument, so the `int*` substitution also changed the result
+        // type -- `t1 = _CG_prim_tuple_list(int*, 0)` assigned an `int*`
+        // to a `_CG_psNNNN` (doom). The substitution itself has to stay:
+        // a zero-field record gets no struct body (build_type_strings
+        // emits one only `if (s->has.n)`), so it is an INCOMPLETE type
+        // and `sizeof(*((_CG_psNNNN)0))` will not compile. Keep `int*`
+        // for the sizeof and cast the result back to the destination's
+        // own type.
+        if (voidish)
+          fprintf(fp, "%s = (%s)_CG_prim_tuple_list(int*, %d);\n", cg_get_string(n->lvals[0]), t, n->rvals.n - 3);
+        else
+          fprintf(fp, "%s = _CG_prim_tuple_list(%s, %d);\n", cg_get_string(n->lvals[0]), t, n->rvals.n - 3);
         // ifa/issues/055: the struct definition emits only LIVE fields
         // (build_type_strings: `if (!cg_field_live(s, i)) continue`,
         // keeping the has-index as the eN suffix so dead fields leave
@@ -1614,6 +1625,21 @@ class CBackendEmitter : public VirtualCGEmitter {
       if (pn->prim->index == P_prim_isinstance && i == 3) {
         fprintf(fp, "&_CG_type_%s", s);
       } else {
+        // ifa/issues/055: `_CG_prim_coerce(_t, _v)` expands to
+        // `((_t)_v)`, and a POINTER value narrowed straight to a small
+        // scalar is a hard C error -- "cast from pointer to smaller type
+        // '_CG_bool' loses information" (softrender's
+        // `__coerce__(_CG_any) -> _CG_bool`). Route through uintptr_t,
+        // which is both legal and the right meaning: for a voidish
+        // operand the coercion IS the null test, so `(bool)(uintptr_t)p`
+        // is `p != 0`. Integers and pointers already round-trip
+        // bit-for-bit here (see float_ct's note).
+        if (pn->prim->index == P_prim_coerce && i == pn->rvals.n - 1 && i > start) {
+          cchar *vt = c_type(pn->rvals[i]);
+          cchar *tt = cg_get_string(pn->rvals[i - 1]->sym);
+          bool v_ptr = vt && (!strcmp(vt, "_CG_any") || !strcmp(vt, "_CG_void") || !strcmp(vt, "_CG_nil_type"));
+          if (v_ptr && scalar_ct(tt)) fputs("(uintptr_t)", fp);
+        }
         fputs(s, fp);
       }
     }
