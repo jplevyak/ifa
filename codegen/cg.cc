@@ -649,7 +649,16 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
             fail("list index is not an integer type");
           fputs("assert(!\"runtime error: list index type mismatch\");\n", fp);
         } else {
-          if (n->lvals[0]->live) fprintf(fp, "%s = (%s)", cg_get_string(n->lvals[0]), c_type(n->lvals[0]));
+          // ifa/issues/055: a DEAD destination drops the `lhs =` prefix
+          // but the read is still emitted, leaving a bare expression
+          // statement -- clang's -Wunused-value. Cast to void instead of
+          // dropping the statement: the index computation can still
+          // trap (_CG_norm_idx bounds-checks), so the expression has to
+          // stay evaluated.
+          if (n->lvals[0]->live)
+            fprintf(fp, "%s = (%s)", cg_get_string(n->lvals[0]), c_type(n->lvals[0]));
+          else
+            fputs("(void)", fp);
           if (sym_string->specializers.set_in(t)) {
           if (single_idx)
             fprintf(fp, "_CG_char_from_string(%s,_CG_norm_idx(%s,(int32)_CG_string_len(%s)));\n",

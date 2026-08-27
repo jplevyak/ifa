@@ -10015,8 +10015,36 @@ static void analyze_to_convergence() {
       // default extend_analysis() runs first and short-circuits
       // reanalyze, so splitting interleaves with promotion and each
       // promotion re-perturbs contours the splitter had just settled.
+      // DEFAULT 2 since ifa/issues/055. By default extend_analysis()
+      // ran first and short-circuited reanalyze, so splitting
+      // interleaved with the frontend's repair and every promotion
+      // re-perturbed contours the splitter had just settled -- measured
+      // on plcfrs's 36-line repro as violations settling at 44, being
+      // multiplied to 325 by a 2-field promotion, and never recovering
+      // their best before the stall guard stopped the analysis.
+      //
+      // Mode 2 orders it structural-repair -> splitting -> type-reading
+      // repair (ifa_reanalyze_phase). Mode 1, which moves ALL of
+      // reanalyze early, is wrong: pyc's numeric-confluence coercion
+      // reads CONVERGED types, and running it before splitting breaks 11
+      // tests, all EXEC and all numeric (bool_ordering,
+      // modulo_float_and_sign, minmax_3arg, sum_start_arg,
+      // mixed_numeric_field). Structural repair wants to be early; the
+      // type-reading half must stay late.
+      //
+      //   plcfrs   stall at 37 passes, 4993 violations -> CONVERGES,
+      //            and now COMPILES
+      //   corpus   67 of 77 -> 71 of 77, zero losses: plcfrs, quameon,
+      //            rdb and sunfish gained
+      //   suite    298 passed / 0 failed, unchanged, both backends
+      //
+      // Getting here needed four codegen/FA fixes for latent bugs this
+      // reordering exposed: the record_args_rets arity crash, sparse
+      // struct field numbering, the zero-element tuple cast, and the
+      // voidish coerce. All are on the default path and stand on their
+      // own.
       static int promote_first = -1;
-      if (promote_first < 0) promote_first = getenv("PYC_PROMOTE_FIRST") ? atoi(getenv("PYC_PROMOTE_FIRST")) : 0;
+      if (promote_first < 0) promote_first = getenv("PYC_PROMOTE_FIRST") ? atoi(getenv("PYC_PROMOTE_FIRST")) : 2;
       int ext = 0, rea = 0, fil = 0;
       if (promote_first >= 2) {
         // Structural repair to a fixed point first, splitting next, and

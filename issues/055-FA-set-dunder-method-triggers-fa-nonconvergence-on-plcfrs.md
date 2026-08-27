@@ -1,6 +1,6 @@
 # 055 — Adding `set.__sub__` triggers FA non-convergence / compiler crash on plcfrs.py
 
-**Status:** open — the ROOT CAUSE IS FIXED (`PYC_CSSPLIT`, default on, 2026-08-26) and the minimal repro converges; plcfrs itself still does not, so this stays open on that. Found 2026-07-19 while attempting a followup to
+**Status: CLOSED 2026-08-27 — plcfrs CONVERGES AND COMPILES.** `set.__sub__` shipped long ago; the non-convergence it triggered is fixed by three defaults landed here (`PYC_CSSPLIT`, `PYC_ROUTECYCLE=3`, `PYC_PROMOTE_FIRST=2`) plus six latent FA/codegen bugs they exposed. Both minimal repros are regression tests and pass. Found 2026-07-19 while attempting a followup to
 [053](closed/053-tuple-unpack-target-heterogeneous-arity-segfault.md):
 `plcfrs.py` (line 300-301) calls `set(...) - set([...])`, and
 `__pyc__/08_set.py`'s `class set` had no `__sub__`/difference operator
@@ -1554,3 +1554,67 @@ So the remaining objection to making promotion-before-splitting the
 default is down to two programs that fail for reasons unrelated to it,
 against plcfrs converging and the 36-line repro compiling to zero
 violations.
+
+
+## CLOSED 2026-08-27
+
+`PYC_PROMOTE_FIRST` defaults to **2**: structural repair (field
+promotion) to a fixed point, then splitting, then the type-reading half
+of the repair (numeric coercion) exactly where it always was.
+
+Mode 1 -- moving ALL of `reanalyze` early -- stays available and is
+documented as wrong: pyc's numeric-confluence coercion reads CONVERGED
+types, and running it before splitting breaks 11 tests, every one EXEC
+and every one numeric.
+
+One last fix was needed once the repro started compiling: its
+`.known_issue` came off and it immediately failed COMPILE-OUT on two
+`-Wunused-value` warnings. A dead destination drops the `lhs =` prefix
+but the read is still emitted, leaving a bare expression statement. Cast
+to `(void)` rather than dropped -- `_CG_norm_idx` bounds-checks, so the
+expression must stay evaluated.
+
+### Final state
+
+| | before | after |
+|---|---|---|
+| **plcfrs** | stall at 37 passes, 4993 violations, does not compile | **converges and COMPILES** |
+| corpus | 67 of 77 | **71 of 77** -- plcfrs, quameon, rdb, sunfish gained, zero lost |
+| pyc suite | 296 passed / 14 known | **299 passed / 0 failed / 13 known**, both backends |
+| both minimal repros | KNOWN | **PASS** (regression tests) |
+| ifa-test goldens | -- | unchanged |
+
+### What it took
+
+Three FA defaults:
+
+- `PYC_CSSPLIT=1` -- the CreationSet follows the EntrySet split
+- `PYC_ROUTECYCLE=3` -- the ES split-ledger route relation kept acyclic
+- `PYC_PROMOTE_FIRST=2` -- promotion to a fixed point before splitting
+
+and six latent bugs those exposed, every one on the default path and
+each correct on its own merits:
+
+1. `optimize/dead.cc` -- `mark_live_funs` rebuilt `fa->funs` from the
+   incoming list, so a function marked live during propagation stayed
+   unlisted. One cause behind three crashes in three phases.
+2. `analysis/clone.cc` -- field offsets resolved per CreationSet, so two
+   CSs of the same class disagreed on layout.
+3. `codegen/cg.cc` -- container subscripts were never cast.
+4. `analysis/fa.cc` -- `record_args_rets` indexed the caller's actuals
+   by the callee's formal count.
+5. `codegen/cg.cc` -- sparse struct field numbering; five corpus
+   programs.
+6. `codegen/cg.cc` -- zero-element tuple cast, voidish coerce, and the
+   dead-destination read.
+
+### What is NOT fixed
+
+`PYC_SETTERGATE` and `PYC_STALL_REANALYZE` remain default-off probes;
+neither is needed now. The `s->creators` loop in `creation_point` is
+still dead code (`if (nvars != -1 || x->vars.n != nvars) continue`
+always continues) -- noted here, not touched. And the deeper design
+question stands: ifa derives container identity from the ALLOCATION
+CONTEXT where shedskin derives it from the ELEMENT TYPES, which is why
+`dict::__new__` gets one contour for two dicts with swapped key/value.
+Nothing here changed that; it is worth its own issue.
