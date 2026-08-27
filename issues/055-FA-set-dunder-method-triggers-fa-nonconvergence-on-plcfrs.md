@@ -1228,3 +1228,60 @@ case along with the cyclic one.
 
 Mode 4 is kept behind the flag so the difference stays measurable rather
 than argued.
+
+
+## Second plcfrs repro, 36 lines — a different shape from the first
+
+`tests/plcfrs_grammar_tables_nonconvergence.py`, `.known_issue` sidecar,
+`.exec.check` holds CPython's `3`. Delta-debugged from plcfrs.py again,
+638 lines -> 36, AFTER `PYC_CSSPLIT` and `PYC_ROUTECYCLE` landed.
+
+    final_pass=41  pass_limit_hit=1  CONVERGED=0  152 violations
+    deterministic across 3 runs, 1.4 s
+
+The first repro (`dict_pair_swap_setdiff_nonconvergence.py`) now passes,
+and this one **does not need the set difference at all** -- so it is a
+genuinely different shape, not the same defect resurfacing.
+
+The reduction path also moved: the old ladder's 53-line rung now
+converges, while the 200-line rung still fails, so the surviving failure
+lives in the part of `splitgrammar()` the old reduction had cut -- the
+grammar loop that builds the tables, not the nonterminal prologue.
+
+### Seven ingredients, each verified necessary
+
+Removing any ONE converges:
+
+| | |
+|---|---|
+| nested tuple unpack `for (rule, yf), weight in grammar` | flattening it converges |
+| `enumerate()` over the nonterminal set | |
+| two dicts over the same pairs, **swapped** key/value | `dict[str,int]` + `dict[int,str]` |
+| `array("B", ...)` arity vector indexed by a Rule field | |
+| `Rule` as a **class** | a plain tuple in its place converges |
+| the round-trip comparison `yf == arraytoyf(args, lengths)` | |
+| the `zip()` generator inside `arraytoyf` | |
+
+Only the swapped-dict pair carries over from the first repro.
+
+### What is NOT needed, though plcfrs has it
+
+`sorted()`, the `["Epsilon","ROOT"] + ...` concatenation, **the set
+difference**, the lexicon loop, `Terminal`, the four per-nonterminal
+rule lists, the conditional third `Rule` argument, and -- notably --
+**distinct array typecodes**: making both arrays `"I"` instead of
+`"I"`/`"H"` still fails, so this is not the two-parameter-instantiation
+shape it first looked like.
+
+### Where the mechanism stands
+
+plcfrs still shows the same top-level signature as before the fixes:
+
+    STAGEDELTA TYPE_CONFL returned=1 confluences=301 d_ess=0 d_css=0
+
+`split_ess_for_type` again reports progress while creating nothing, so
+every later stage is starved -- but the ledger route is now acyclic, so
+the 2-cycle explanation no longer applies. The churn probe shows the
+ledger route still firing heavily in late passes (248 fires at p>=30)
+along with 2006 mint lookups. Whatever re-points those edges is the next
+thing to find, and the 36-line repro is where to find it.
