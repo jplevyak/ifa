@@ -2677,3 +2677,63 @@ The reproducer also still fails to compile — on the
 [018](../issues/018-dict-mixed-key-types-boxing-failure.md) boxing gap it
 is `.known_issue`-tagged for (`sizeof_element of non-container type`),
 which is unrelated to convergence and unaffected by any of this.
+
+## 2026-08-28: a BOUNDED sibling of this issue's reproducer, and a fix for it
+
+`tests/deepcopy_recursive_nested_growth.py` needs all three of deepcopy,
+recursion and a nested container, and its growth is unbounded. Reducing
+`shedskin_examples/linalg` independently landed on the same program
+(which is unsurprising -- this one was "distilled from linalg.py's
+determinant/Minor pair"), but it also turned up a **bounded** relative
+that needs neither recursion nor a user function:
+
+```python
+import copy
+
+m = [[1, 2], [3, 4]]
+a1 = copy.deepcopy(m)
+a2 = copy.deepcopy(a1)
+a3 = copy.deepcopy(a2)
+a4 = copy.deepcopy(a3)
+print(a4[0][0] + 1)
+```
+
+Three nested copies compiled; four did not. `tests/deepcopy_copy_of_copy_chain.py`.
+
+That cliff made it diagnosable in a way the unbounded version is not.
+`IFA_DBG_ELEMTYPE_DUMP`: at three levels every `list` CreationSet is
+monomorphic; at four, `cs=1037` comes back with
+`elem_syms=[ list int64 int64 list int64 ]` and contains *itself*.
+`IFA_DBG_CSROUTE=list`: that CS is minted once and then reused by SEVEN
+EntrySets through the `csmold` route -- every one of them a split CHILD
+(non-null `es->split`) of `list.__deepcopy__`, one per copy level.
+
+So [101](101-FA-first-time-forever-splitting.md)'s mold fallback
+(`PYC_CSMOLD`, default since 2026-08-16) was silently undoing
+[055](closed/055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md)'s
+CS split (`PYC_CSSPLIT`, default since a day earlier). The split exists
+so that "the CreationSet follows the EntrySet split"; the mold reuses any
+CS with a matching `creation_var` regardless of contour, and sits later
+in `creation_point`, so it wins. **`PYC_CSMOLD=3`** (containers only, and
+never for a split child) is now the default: the bounded family compiles
+and runs, the pyc suite goes 300/0/15 -> 301/0/14, and the corpus is
+unchanged program for program.
+
+**It does not move this issue's metric.** `CONVERGED` stays 0 on
+`deepcopy_recursive_nested_growth.py`, and with the mold declined the
+recursive program stops fusing and instead unrolls a fresh, perfectly
+monomorphic contour and CS every pass or two (`cs=1401 -> 1426 -> 1455 ->
+1480 -> ...`) until the pass limit. That is this issue exactly, and it
+confirms the framing above: **wrong sharing and no sharing are both
+wrong; what is missing is a terminating fixed point** -- recognising that
+`copy(list<int>)` IS `list<int>` and closing the loop on the element
+SHAPE rather than the creation site. `PYC_CSELEM` (105) is the existing
+machinery for that and does not fire here, because it keys on a per-VAR
+durable element key with an ambiguity veto and `r` in `list.__deepcopy__`
+converges to a different element type in every contour.
+
+One causal datum worth recording for the corpus half of this plan:
+replacing linalg's single `M1=copy.deepcopy(M)` with
+`M1=[row[:] for row in M]` takes it from 62 warnings plus a BOXING
+refusal to a clean rc=0 compile. `list.__deepcopy__` is the whole of
+linalg's failure, not a correlate of it.

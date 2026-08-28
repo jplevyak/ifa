@@ -350,88 +350,104 @@ Note this also means **the earlier reductions were not merely unusable,
 they were uncompilable** under current pyc — the 212-line artifact now
 reports `name 'tolabel' is not defined` and friends, which is precisely
 the six functions found by reading it.
-## linalg: the first CAUSAL demonstration of this issue's own mechanism
+## linalg, and a BOUNDED sibling that is now fixed
 
 Filed 2026-08-28, reducing `shedskin_examples/linalg` (239 lines) against
-the standing rules above. **`tests/deepcopy_nested_list_recursion.py`,
-10 lines**, `.known_issue`, `.exec.check` holds CPython's `4`:
+the standing rules above.
+
+### First, a correction to my own reduction
+
+The reduction landed on a 10-line program -- `copy.deepcopy` of a
+list-of-lists consumed by a self-recursive function -- which is
+**already** `tests/deepcopy_recursive_nested_growth.py`, filed under
+[074](074-FA-cross-pass-oscillation-plan.md) and itself described there
+as "distilled from linalg.py's determinant/Minor pair". Same shape, same
+three-ingredient control table (deepcopy + recursion + nested container,
+remove any one and it converges), same conclusion -- "the defect is
+CreationSet identity, not contour splitting". The duplicate test has been
+removed. **linalg's unbounded case is 074's, and was already diagnosed.**
+
+What the re-derivation does add is a *causal* check that 074 states as a
+target but does not demonstrate: replacing linalg's single
+`M1=copy.deepcopy(M)` with `M1=[row[:] for row in M]` takes it from 62
+warnings plus a BOXING refusal to a **clean rc=0 compile**, nothing else
+changed. (It then aborts at runtime on a separate `matching function not
+found` -- an [102](102-corpus-programs-compile-then-abort-at-runtime.md)
+member.) So `list.__deepcopy__` is not merely correlated with linalg's
+failure; it is the whole of it.
+
+### Second, a BOUNDED sibling nobody had: no recursion at all
+
+**`tests/deepcopy_copy_of_copy_chain.py`, 8 lines**, and it does not need
+recursion, a user function, or unbounded growth:
 
 ```python
 import copy
 
-def head_sum(M):
-    if len(M) == 1:
-        return M[0][0]
-    M1 = copy.deepcopy(M)
-    M1.pop(0)
-    return M[0][0] + head_sum(M1)
-
-print(head_sum([[1, 2], [3, 4]]))
+m = [[1, 2], [3, 4]]
+a1 = copy.deepcopy(m)
+a2 = copy.deepcopy(a1)
+a3 = copy.deepcopy(a2)
+a4 = copy.deepcopy(a3)
+print(a4[0][0] + 1)
 ```
 
-    fail: a variable holding {int64, list, list} has no representation:
-    '__add__' resolved to the CONTAINER method, whose receiver may be a
-    scalar.
+**Three nested copies compile; four do not.** That cliff is what makes
+it diagnosable where 074's unbounded version is not -- at three levels
+every `list` CreationSet is monomorphic (`elem=[list]` / `elem=[int64]`,
+`IFA_DBG_ELEMTYPE_DUMP`), at four, two of them go self-referential and
+mixed:
 
-The accumulator is `list.__deepcopy__` in `__pyc__/04_sequence.py`:
+    cs=1037 elem_syms=[ list int64 int64 list int64 ]   <- contains itself
 
-```python
-def __deepcopy__(self):
-  r = []
-  for k in range(len(self)):
-    r.append(self[k].__deepcopy__())
-  return r
-```
+### The cause: the mold fallback was undoing the CS split
 
-Structurally identical to the `list.__add__` accumulator this issue
-opened on -- one contour, one `r`, every receiver. Copying a
-list-of-lists enters it at TWO nesting levels: outer, `self[k]` is a
-`list`; inner, an `int64`; both append into the same `r`. The copy's
-element type comes back as their union, and `M[0][0] + ...` then
-resolves `__add__` against a receiver that may be either.
+`IFA_DBG_CSROUTE=list` on the 4-copy chain: `cs=1037` is minted ONCE, and
+then **seven** different EntrySets take it through the `csmold` route --
+and every one of those seven has a non-null `es->split`. They are split
+CHILDREN of `list.__deepcopy__`, one per copy level, and the mold
+fallback hands them all the same `r`.
 
-### Why this one is causal and the earlier three were not
+That is [101](101-FA-first-time-forever-splitting.md)'s mold fallback
+(`PYC_CSMOLD`, default 1 since 2026-08-16) silently undoing
+[055](closed/055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md)'s
+CS split (`PYC_CSSPLIT`, default 1 since a day earlier), whose entire
+point is that *"the CreationSet follows the EntrySet split"*. The mold
+reuses any CS whose `creation_var` matches, with no regard for contour,
+and it sits LATER in `creation_point`, so it wins. Two defaults added a
+day apart, in direct contradiction, and the contradiction is invisible
+until a program splits the same allocation site four ways.
 
-104 and 105's first two theories each matched a symptom and were then
-disproved. This one is settled by **substitution in the real program**:
-replacing linalg's single `M1=copy.deepcopy(M)` with `M1=[row[:] for row
-in M]` takes it from 62 warnings plus the refusal to a **clean rc=0
-compile**. Nothing else changes. (It then aborts at runtime on a
-separate `matching function not found` -- an
-[102](102-corpus-programs-compile-then-abort-at-runtime.md) member, not
-this.)
+### Fix: PYC_CSMOLD mode 3, now the default
 
-Three controls, each compiling cleanly, pin the ingredients:
+Mode 3 = containers only, **and never for a split child**. Measured:
 
-| variant | result |
-|---|---|
-| `M1 = M[:]` instead of `copy.deepcopy(M)` | clean -- **deepcopy is required** |
-| a FLAT list (`M[0]`, not `M[0][0]`) | clean -- **nesting is required** |
-| `return head_sum(M1)`, dropping the `+` | clean -- the `+` only *exposes* it |
+| | mode 1 (old default) | mode 3 (new default) |
+|---|---|---|
+| 4-, 5-, 6-copy chains | BOXING refusal | **compile and run correctly** |
+| 3-copy chain | fine | fine |
+| pyc suite | 300 / 0 / 15 | **301 / 0 / 14** |
+| corpus | 5 fail | **5 fail, same programs** |
+| 074's `CONVERGED` metric | 0 | 0 (unchanged) |
 
-The third is worth reading carefully: it changes nothing about the
-union, only about which check catches it. Swap the `+` for `*` and the
-same program emits `no matching function for call to
-'_CG_list_mult_internal'` -- broken C rather than a refusal. So codegen's
-container-union refusal is not a complete gate; it covers `__add__` and
-not its siblings.
+The mold's own rationale -- shedskin's `ifa_seed_template` falling back
+to the dcpa=0 mold "when a contour has no live split parent to inherit
+from" -- already implies this: a split child HAS a parent, and the split
+exists precisely because the contours differ.
 
-### What this changes
+### What is left, and it is 074's
 
-`shedskin_examples/linalg` was listed in
-[118](118-union-field-representation-and-polymorphic-field-offset.md) as
-a BOXING refusal in the [018](../issues/018-dict-mixed-key-types-boxing-failure.md)
-family -- "the genuine no-boxing wall". **It is not.** linalg never
-writes a `{container, scalar}` union; the analysis manufactures one
-inside a builtin method, which is this issue, and the fix is
-[101](101-FA-first-time-forever-splitting.md)'s splitting rule applied to
-`list.__deepcopy__` -- exactly the "shedskin gets it free from
-`list<T>` being a template instantiation" argument above. shedskin
-compiles linalg, and its generated C++ is fully monomorphic
-(`__ss_int inner_prod(list<__ss_int> *v1, list<__ss_int> *v2)`,
-`list<list<__ss_int> *> *Minor(...)`) -- no union anywhere to represent.
-
-### Verification target
-
-`tests/deepcopy_nested_list_recursion.py` flips from KNOWN to PASS
-(printing `4`), and `shedskin_examples/linalg` compiles unmodified.
+Mode 3 does not fix the unbounded case. With it, the recursive program
+stops fusing and instead **unrolls forever** -- a fresh contour and a
+fresh CS every pass or two (`cs=1401 -> 1426 -> 1455 -> 1480 -> ...`,
+each perfectly monomorphic) until the pass limit, where whatever state
+remains is mixed. Sharing was the wrong rule; having no rule is not
+better. What that needs is a terminating fixed point: recognising that
+`copy(list<int>)` is `list<int>` and closing the loop on the element
+SHAPE, which is 074's "the defect is CreationSet identity" and this
+issue's `cselem` (`PYC_CSELEM`, default 0). `cselem` does not fire here
+because it keys on a per-VAR durable element key with an ambiguity veto,
+and `r` in `list.__deepcopy__` converges to a different element type in
+every contour -- so the var is ambiguous and it bails. Keying on the
+RECEIVER's element shape instead is the direction, and it is exactly
+`list<T>`.

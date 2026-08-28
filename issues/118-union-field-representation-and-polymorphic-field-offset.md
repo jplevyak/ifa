@@ -194,4 +194,4 @@ issue does not simply flip the default.
 linalg is unaffected either way -- and per the correction above it does
 not belong here at all: its `{list, int64}` is manufactured inside
 `list.__deepcopy__`, not written by the program, and it is
-[105](105-type-degeneration-in-shared-generic-methods.md).
+[074](074-FA-cross-pass-oscillation-plan.md).

@@ -602,19 +602,40 @@ Lcreators:;
   // classes are excluded: issue 045 established that their instances
   // MUST stay per-contour, since the per-constant contours exist exactly
   // to give each constant binding its own instance CS.
-  if (csmold_enabled() && s != sym_closure && v->var &&
-      (csmold_enabled() >= 2 || s->element)) {
-    Sym *cmc0 = s->clone_methods_per_cs ? s : (s->type ? unalias_type(s->type) : 0);
-    if (!(cmc0 && cmc0->clone_methods_per_cs)) {
-      for (CreationSet *x : s->creators)
-        if (x && x->creation_var == v->var && !(s->abstract_type && x == s->abstract_type->v[0])) {
-          if (getenv("IFA_DBG_CSMOLD"))
-            fprintf(stderr, "[csmold] p=%d sym=%s var=%s es=%d -> reuse cs=%d\n", analysis_pass,
-                    s->name ? s->name : "?", v->var->sym->name ? v->var->sym->name : "?", es ? es->id : -1, x->id);
-          cs = x;
-          dbg_cs_route = "csmold";
-          goto Lfound;
-        }
+  //
+  // ifa/issues/105, MODE 3: the mold must not undo a SPLIT. PYC_CSSPLIT=1
+  // (ifa/055, default) exists so that "the CreationSet follows the
+  // EntrySet split"; handing a split CHILD the mold its parent already
+  // owns puts both contours back on one container instance and defeats
+  // exactly that. The two defaults were added a day apart and the mold,
+  // being later in creation_point, silently wins.
+  //
+  // Measured on a chain of four nested copy.deepcopy calls: SEVEN split
+  // children of list.__deepcopy__ took the mold (every csmold hit in the
+  // run had a non-null es->split), and the shared `r` came back with
+  // element type {list<itself>, int64, int64, list, int64} -- both
+  // self-referential and container/scalar mixed. Three copies is clean,
+  // four is not, and PYC_CSMOLD=0 makes every level monomorphic again.
+  {
+    // Block-scoped: the forward gotos above may not jump past an
+    // initialization, so these cannot live at function scope.
+    int mold = csmold_enabled();
+    bool split_child = v->contour_is_entry_set && es && es->split;
+    bool eligible = mold && (mold == 2 || s->element) && !(mold == 3 && split_child);
+    if (eligible && s != sym_closure && v->var) {
+      Sym *cmc0 = s->clone_methods_per_cs ? s : (s->type ? unalias_type(s->type) : 0);
+      if (!(cmc0 && cmc0->clone_methods_per_cs)) {
+        for (CreationSet *x : s->creators)
+          if (x && x->creation_var == v->var && !(s->abstract_type && x == s->abstract_type->v[0])) {
+            if (getenv("IFA_DBG_CSMOLD"))
+              fprintf(stderr, "[csmold] p=%d sym=%s var=%s es=%d split=%d -> reuse cs=%d\n", analysis_pass,
+                      s->name ? s->name : "?", v->var->sym->name ? v->var->sym->name : "?", es ? es->id : -1,
+                      split_child ? es->split->id : -1, x->id);
+            cs = x;
+            dbg_cs_route = "csmold";
+            goto Lfound;
+          }
+      }
     }
   }
 Lunique:
@@ -5584,6 +5605,13 @@ static int cselem_enabled() {
 // 2 = every eligible sym; measured and rejected -- it costs plcfrs
 // dearly (violations 2232 -> 4353, ess 850 -> 1213) for a few css on
 // other programs. 0 restores the old mint-unconditionally behaviour.
+// 3 = containers only AND never for a SPLIT CHILD contour, the DEFAULT
+// from 2026-08-28 (ifa/105); see the mode-3 note at the fallback itself.
+// Measured against mode 1: pyc suite identical (300 passed / 0 failed /
+// 15 known), corpus identical program for program (the same five fail:
+// chess, go, linalg, othello3, sudoku5), and the whole bounded
+// copy-of-copy family -- four or more nested copy.deepcopy calls --
+// goes from a BOXING refusal to compiling and running correctly.
 //
 // Corpus at mode 1, 77 programs: zero exit-code changes, zero
 // pass_limit_hit changes, violations 6399 -> 4276 (-33.2%, plcfrs alone
@@ -5593,7 +5621,7 @@ static int csmold_enabled() {
   static int e = -1;
   if (e < 0) {
     cchar *v = getenv("PYC_CSMOLD");
-    e = v ? atoi(v) : 1;
+    e = v ? atoi(v) : 3;
   }
   return e;
 }
