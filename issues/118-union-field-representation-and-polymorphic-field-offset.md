@@ -9,6 +9,44 @@ COMPILES, so neither runs.
 
 ## chess: a slot mixing `bool` (1 byte) with `None` (8 bytes)
 
+**Minimal repro: `tests/bool_or_none_fallthrough.py`, 7 lines**, reduced
+from chess (377 lines) by delta-debugging, with a `.known_issue`
+sidecar; `.exec.check` holds CPython's `False`.
+
+```python
+def f(xs):
+    for k in xs:
+        if k:
+            return False
+    # falls off the end -> None
+
+print(f([0, 1]))
+```
+
+`f` returns `False` on one path and falls off the end -- implicit `None`
+-- on another, so the result is `{bool, None}`: 1 byte against
+pointer-sized. Deterministic across runs.
+
+The **loop is load-bearing**. The same function written with a plain
+`if` and no loop COMPILES:
+
+```python
+def f(x):
+    if x:
+        return False        # compiles fine
+```
+
+so the implicit-None fall-through is collapsed there but survives as a
+separate path out of a loop. Also measured NOT required, though chess
+has all of them: the lambda (a plain `def` reproduces), the branch that
+merges two callers' results, a second caller, and the second `return
+<bool>` statement.
+
+This is exactly chess's shape -- its `rowAttack` returns `False`, or a
+bool, or falls off the end of its `for`, and that flows through the
+`nonpawnWhiteAttacks` lambda's closure slot.
+
+
     mismatched field members: bool(1) __pyc_None_type__(8)
       def: <anon> chess.py:167
     fail: mismatched field sizes: class 'closure' field '<anon>'
