@@ -509,7 +509,38 @@ static void determine_layouts() {
       });
     for (AVar *iv : ordered) {
       unsigned int size = 0, alignment = 0;
+      // issues/118 (PYC_WIDEN_UNION_FIELD, default OFF -- MEASURED
+      // INSUFFICIENT, kept to record where the wall actually is).
+      //
+      // The theory: a slot mixing a NARROW INTEGER with a pointer-sized
+      // member ought to be representable, since an integer and a pointer
+      // round-trip bit-for-bit -- which is exactly how {None, int64}
+      // already works (see float_ct's note in codegen/cg.cc). {None,
+      // bool} refuses only on WIDTH, so widening the slot to its largest
+      // member should make it work the same way.
+      //
+      // It does get past THIS check. It does not compile: chess then
+      // produces 18 C errors -- `sizeof` applied to an incomplete `void`,
+      // illegal indirection, and casts from pointer to smaller type --
+      // because the C member's declared TYPE is chosen elsewhere and
+      // comes out `void` for such a union. Widening the FA-side layout
+      // is therefore necessary but nowhere near sufficient; the real
+      // work is teaching codegen to pick a common pointer-width integer
+      // representation for the slot and coerce at every access.
+      // A FLOAT member stays a genuine representation failure either way.
+      static int widen = -1;
+      if (widen < 0) widen = getenv("PYC_WIDEN_UNION_FIELD") ? atoi(getenv("PYC_WIDEN_UNION_FIELD")) : 0;
+      bool any_float = false;
+      if (widen)
+        for (CreationSet *x : *iv->out->type) if (x && x->sym) {
+          Sym *t = x->sym->is_constant && x->sym->type ? x->sym->type : x->sym;
+          if (t->num_kind == IF1_NUM_KIND_FLOAT) any_float = true;
+        }
       for (CreationSet *x : *iv->out->type) if (x) {
+        if (widen && !any_float && size && x->sym->size != size) {
+          if (x->sym->size > size) { size = x->sym->size; alignment = x->sym->alignment; }
+          continue;  // keep the widest member; skip the refusal below
+        }
         if (size && x->sym->size != size) {
           fprintf(stderr, "mismatched field members:");
           for (CreationSet *y : *iv->out->type) if (y)
