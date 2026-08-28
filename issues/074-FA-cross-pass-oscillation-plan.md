@@ -2737,3 +2737,72 @@ replacing linalg's single `M1=copy.deepcopy(M)` with
 `M1=[row[:] for row in M]` takes it from 62 warnings plus a BOXING
 refusal to a clean rc=0 compile. `list.__deepcopy__` is the whole of
 linalg's failure, not a correlate of it.
+
+### How shedskin handles the same two programs — it never analyses deepcopy
+
+Both `tests/deepcopy_copy_of_copy_chain.py` and
+`tests/deepcopy_recursive_nested_growth.py` translate, build and RUN
+correctly under shedskin 0.9.13, matching CPython (`2` and `6.0`). The
+generated C++ says why, and it is not a better fixed point:
+
+```cpp
+list<list<__ss_int> *> *a1, *a2, *a3, *a4, *m;          // chain
+list<list<__ss_float> *> *shrink(list<list<__ss_float> *> *M);  // recursive
+```
+
+One monomorphic type at every level, at any chain length. shedskin's
+**type-analysis model of `copy.deepcopy` is the identity function** --
+`shedskin/lib/copy.py`, in full:
+
+```python
+def deepcopy(a):
+    a.__deepcopy__()
+    return a
+```
+
+It returns `a` itself, so `deepcopy(x)` HAS `x`'s type by construction.
+There is no fresh container for the analyser to give an identity to, no
+accumulator merging element types, and no copy-of-copy chain to bound.
+
+The actual copying is a C++ template in the runtime that the analyser
+never sees (`lib/builtin/copy.hpp`):
+
+```cpp
+template<class T> T __deepcopy(T t, dict<void *, pyobj *> *memo=0) {
+    ...  return (T)(t->__deepcopy__(memo));
+}
+template<class T> list<T> *list<T>::__deepcopy__(dict<void *, pyobj *> *memo) {
+    list<T> *c = new list<T>();
+    memo->__setitem__(this, c);
+    for (...) c->units[i] = __deepcopy(this->units[i], memo);
+    return c;
+}
+```
+
+Termination is C++ template instantiation over a **structurally
+shrinking type** (`list<list<int>>` -> `list<int>` -> `int`, and `int`
+has an explicit identity specialization), and cycles are handled by a
+runtime `memo` dict rather than by the type system.
+
+pyc's `list.__deepcopy__` is Python source in `__pyc__/04_sequence.py`
+that builds `r = []` and appends, so FA must *infer* that `r`'s element
+type equals `self`'s -- which needs a contour per nesting level and a
+CreationSet per contour, with no bound on levels. That is this issue.
+
+**This is not [048](048-FA-deepcopy-flow-divergence-genetic2.md)'s
+reverted experiment.** 048 tried making the copy's result SHARE the
+source's CreationSet, and that fed the copy's fresh element writes back
+into the source CS's fields. shedskin shares no identity at all: `list<T>`
+is a TYPE, and two `list<int>` objects are distinct allocations with the
+same type. pyc conflates the two -- the element type is an attribute of a
+CS identified by its creation site -- which is
+[101](101-FA-first-time-forever-splitting.md)'s framing exactly. So the
+shedskin-shaped move here is a fresh CS whose element type is
+**constrained equal to the source's** (`elem(result) = elem(source)`, a
+type-preserving signature for the copy) rather than accumulated from what
+gets appended. Distinct from CS sharing, and it does not create 048's
+feedback edge.
+
+For fairness: shedskin has no advantage on a CYCLIC container. `a =
+[1,2]; a.append(a)` gets `*WARNING* expression has dynamic (sub)type:
+{int, list}` there, and pyc refuses it too. That wall is shared.
