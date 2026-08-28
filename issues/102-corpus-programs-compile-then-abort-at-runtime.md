@@ -212,3 +212,38 @@ So the headline should be **"23 programs crash with a signal"**, and any
 
 This is the same class of error as the `rc=$?`-after-a-pipe bug recorded
 above: a status code was read as more meaningful than it is.
+## 2026-08-28: `block`'s crash was `del` being lowered as `pass`
+
+Hand-testing the "compiles with NO warnings and still fails" subset found
+`shedskin_examples/block` failing on both backends with a completely
+silent compile — one line of compiler output, no warning, no error, and
+not a single character printed before it died (SIGSEGV on the C backend,
+`Unhandled exception:` on LLVM).
+
+`gdb -batch -ex run -ex bt` gave it away immediately: 6800 identical
+frames of `iterate`, same argument each time. `iterate` is
+
+    del c[0]
+    root = iterate(c)
+
+and `python_ifa_build_if1.cc` had `case PY_del_stmt:` sitting next to
+`case PY_pass_stmt: return 0;`. **Every `del` in every program was
+discarded with no diagnostic**, so the list never shrank and the
+recursion never terminated. Now lowered (`__delitem__` / slice-assign of
+an empty list); `tests/del_subscript_and_slice.py` pins it.
+
+`block` no longer crashes and runs to completion. It is **still wrong**,
+for a second and unrelated reason that the crash was hiding: the tuples
+`findprobs` builds come back empty (`p[0]` is `""`, `p[1]` is `0.0`)
+while `len(answer)` is correct, so every Huffman node gets the default
+name and a zero count. Not reproducible in isolation — the same
+`answer.append((s, f**w1 * (1-f)**w0))` shape with the same `dec_to_bin`
+and `weight` compiles and runs correctly as a 25-line program, so it
+needs `block`'s whole-program context. That moves `block` from this
+issue's "crashes" bucket to a **silently wrong output** bucket, which is
+strictly worse and which nothing in the harness or in any sweep sees.
+
+`linalg` also changed: it has `del list1[lasti:n]`, and with `del` now
+real its warning count drops 62 -> 30 and its failure moves from the
+`{list, int64}` BOXING refusal to `no matching function for call to
+'_CG_list_mult_internal'`. Still failing, differently.
