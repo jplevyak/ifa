@@ -2806,3 +2806,76 @@ feedback edge.
 For fairness: shedskin has no advantage on a CYCLIC container. `a =
 [1,2]; a.append(a)` gets `*WARNING* expression has dynamic (sub)type:
 {int, list}` there, and pyc refuses it too. That wall is shared.
+
+## 2026-08-28: tried it -- keying container identity on the RECEIVER's element shape
+
+`PYC_CSELEM=3`, off by default. The `list<T>` move, made literal: give
+each container CreationSet an identity of (allocation site, structural
+shape of the enclosing contour's receiver), where the shape is spelled
+out recursively -- `list<list<float64>>` -- from the CreationSets'
+durable `elem_key`s, with `@` closing a cycle and a depth cap.
+
+### It removes this issue's headline defect
+
+`tests/deepcopy_recursive_nested_growth.py`, guards off, ess/css by pass:
+
+| pass | 0 | 20 | 40 | 60 | 80 | 100 |
+|---|---|---|---|---|---|---|
+| **mode 0** | 77/599 | 175/782 | 280/997 | 385/1212 | 490/1427 | 595/1642 |
+| **mode 3** | 77/599 | 159/749 | 157/740 | 211/852 | 223/877 | 207/850 |
+
+The default is dead linear at **+5.25 ess/pass, unbounded, for as long
+as it is allowed to run** -- which is what this issue opened on. Mode 3
+is **bounded**, oscillating in a band around 210: **-62% ess and -46%
+css at pass 101**. What is left is oscillation INSIDE a bounded band,
+which is a different and far smaller problem than divergence.
+
+It is not a fix yet: `CONVERGED` is still 0 and the repro still does not
+compile (its union changes shape but does not go away).
+
+### Why it is not the default
+
+| | mode 0 | mode 3 |
+|---|---|---|
+| pyc suite | 301 / 0 / 14 | **identical** |
+| corpus failing | 5 | **9** |
+
+kanoodle, plcfrs and rdb time out; quameon fails to compile.
+
+Two findings from chasing those:
+
+**1. A hot-path cost, fixed.** `atype_shape` walks the whole type
+structure building a `std::string`, and `creation_point` is hot. adatron
+hung INSIDE a single pass -- no pass summary in 150 seconds, with no
+contour growth at all -- until the shape was memoized per AType (they are
+hash-consed; cleared per pass because `elem_key` moves) and wide unions
+(> 4 members) were refused outright. That took adatron from a 400s
+timeout to 3s and removed 2 of the 6 original regressions. Worth
+remembering: a canonicalization that is cheap per decision is not cheap
+if it is consulted on every allocation.
+
+**2. The real limitation is [066](066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md).**
+The canon map is monotone and global, and the shape it keys on has to be
+read LIVE, because the pass on which a contour is created is the only
+moment `creation_point` is ever consulted for it -- `cs_map` answers ever
+after. Measured directly: `EntrySet::type_key_pass` is **-1 for every
+EntrySet that reaches this code** on the repro, so the durable receiver
+type is never available when the decision is made. A merge decided from
+an incomplete shape is therefore permanent, and the splitter has to work
+around it afterwards.
+
+So the next step is not a wider or narrower key. It is making the
+canonicalization **revisitable** -- letting a later pass re-canonicalize
+a CreationSet whose shape has since resolved -- which is 066 exactly.
+
+### Two smaller things worth keeping
+
+- The `_` placeholder for an unfilled element type must not be a
+  character that appears in identifiers. Using `_` rejected every Python
+  dunder (`__deepcopy__` "contains an unfilled element"), and the whole
+  mechanism silently did nothing. It is `%` now.
+- `self` is positional slot **2** and must be selected by position
+  NUMBER: `compar_mposition_path` does not order these numerically, and
+  measurement (`IFA_DBG_CSELEM=2`) showed sorted index 0 carrying pos=2
+  and index 1 carrying pos=1. Indexing the sorted vector read the
+  callee's type as the receiver's on every method in the program.

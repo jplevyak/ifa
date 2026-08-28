@@ -460,6 +460,11 @@ void flow_vars_assign(AVar *rhs, AVar *lhs) {
 
 static int cselem_enabled();  // ifa/issues/101, defined with the other flags
 static int csmold_enabled();  // ifa/issues/101, ditto
+// ifa/issues/074 (PYC_CSELEM=3): re-key container CreationSet identity on
+// the RECEIVER's structural element shape. Defined with capture_elem_keys.
+static bool cselem_shape_key(AVar *v, Sym *s, std::string &out);
+static CreationSet *cselem_shape_reuse(AVar *v, Sym *s);
+static void cselem_shape_claim(const std::string &key, CreationSet *cs);
 
 static cchar *dbg_cs_route = nullptr;      // ifa/issues/055: which reuse route fired
 static cchar *dbg_cs_route_want = getenv("IFA_DBG_CSROUTE");
@@ -572,7 +577,7 @@ Lcreators:;
   // Sites whose CSs converged to DIFFERENT element types are marked
   // ambiguous and left alone -- there the extra CreationSets are earning
   // their keep.
-  if (cselem_enabled() && s != sym_closure && s->element) {
+  if (cselem_enabled() && cselem_enabled() != 3 && s != sym_closure && s->element) {
     AType *want = v->var ? fa->var_elem_key.get(v->var) : nullptr;
     bool ambig = v->var && fa->var_elem_ambig.get(v->var);
     if (getenv("IFA_DBG_CSELEM"))
@@ -594,6 +599,35 @@ Lcreators:;
           dbg_cs_route = "cselem";
           goto Lfound;
         }
+    }
+  }
+  // ifa/issues/074 (PYC_CSELEM=3): re-key on the RECEIVER's element SHAPE.
+  //
+  // shedskin never has this problem because `list<T>` IS keyed on T: one
+  // template instantiation per element type, and `list<T>::__deepcopy__`
+  // returns `list<T>` by signature. Here the element type is an ATTRIBUTE
+  // of a CreationSet identified by its creation SITE x contour, so
+  // `list<int64>` built at one site in two contours is two CreationSets
+  // that nothing downstream can see as the same type -- which is why
+  // copy-of-copy-of-copy never closes: every level mints a fresh CS, that
+  // CS is a fresh element type for the level above, and the recursion has
+  // no fixed point to reach.
+  //
+  // Mode 1 (var_elem_key) cannot do this. It keys on the durable element
+  // type of the SITE and vetoes any site that converged to more than one
+  // -- and `r` in list.__deepcopy__ converges to a different element type
+  // in every contour, so it is exactly the case mode 1 declines.
+  //
+  // Keyed on (site, receiver shape) rather than on the shape alone: this
+  // canonicalizes the contours of ONE allocation site, it does not fuse
+  // unrelated sites.
+  if (cselem_enabled() == 3 && s != sym_closure && s->element) {
+    if (CreationSet *x = cselem_shape_reuse(v, s)) {
+      if (!(s->abstract_type && x == s->abstract_type->v[0])) {
+        cs = x;
+        dbg_cs_route = "csshape";
+        goto Lfound;
+      }
     }
   }
   // ifa/issues/101 direction 2: the mold fallback (see csmold_enabled).
@@ -651,6 +685,12 @@ Lunique:
   dbg_cs_route = "MINT";
   cs = new CreationSet(s);
   cs->creation_var = v->var;  // ifa/issues/101: for the per-site element key
+  // ifa/issues/074: claim this (site, receiver-shape) so the next contour
+  // with the same receiver shape reuses it instead of minting again.
+  if (cselem_enabled() == 3 && s != sym_closure && s->element) {
+    std::string shape_key;
+    if (cselem_shape_key(v, s, shape_key)) cselem_shape_claim(shape_key, cs);
+  }
   if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
   s->creators.add(cs);
   for (Sym *h : s->has) {
@@ -5578,6 +5618,34 @@ static int hard_reuse_enabled() {
 // ifa/issues/101: canonicalize CONTAINER CreationSet identity on the
 // durable element type instead of the creation site x contour. Off by
 // default. See capture_elem_keys() and creation_point's Lcanon.
+//
+// 3 = ifa/issues/074: key on the RECEIVER's structural element SHAPE
+// instead (`list<list<float64>>`), which is what shedskin gets free from
+// `list<T>` being keyed on T. Off by default, and MEASURED:
+//
+//   deepcopy_recursive_nested_growth.py, guards off, ess/css by pass
+//     mode 0   0:77/599  20:175/782  40:280/997  60:385/1212
+//              80:490/1427  100:595/1642      -- dead linear, +5.25/pass
+//     mode 3   0:77/599  20:159/749  40:157/740  60:211/852
+//              80:223/877  100:207/850        -- bounded, band ~210
+//
+// That is 074's headline defect gone: the growth is UNBOUNDED at the
+// default and BOUNDED here (-62% ess, -46% css at pass 101). What is
+// left is an oscillation inside the band, which is a different and much
+// smaller problem than divergence -- but CONVERGED is still 0, and the
+// repro still does not compile.
+//
+// Not the default because of the cost: pyc suite is identical
+// (301/0/14), corpus goes from 5 failing to 9 -- kanoodle, plcfrs and
+// rdb time out and quameon fails to compile. The likely reason is in
+// cselem_shape_key: the canon map is MONOTONE and global, and the shape
+// it keys on is read LIVE on the pass the contour is created, because
+// that is the only moment creation_point is ever consulted (`cs_map`
+// answers ever after). A merge decided from an incomplete shape can
+// never be revisited, and the splitter then has to work around it. That
+// is ifa/issues/066 -- the decision is keyed per pass, not per creation
+// site -- and making the canonicalization revisitable is the next step,
+// not a wider or narrower key.
 static int cselem_enabled() {
   static int e = -1;
   if (e < 0) {
@@ -9194,6 +9262,170 @@ static void report_degenerate_avars() {
     }
   }
   for (auto &kv : by_site) fprintf(stderr, "[degen] %s x%d\n", kv.first.c_str(), kv.second);
+}
+
+// ifa/issues/074: the structural shape of a type, spelled `list<list<int64>>`.
+//
+// Reads the DURABLE elem_key (captured at the end of the previous pass),
+// never the live element AVar: every container starts out empty and
+// acquires its elements later, so a live read would call two containers
+// equal merely because neither has filled in yet -- the same trap the
+// mode-1 key comments already record. A container holding itself closes
+// with `@`, and the depth is capped: an unbounded structural walk is the
+// very non-termination this is meant to fix.
+static const int kShapeDepth = 6;
+
+static void atype_shape(AType *t, std::string &out, int depth, Vec<CreationSet *> &seen) {
+  if (!t || !t->sorted.n) {
+    out += "%";  // NOT '_': Python dunder names are full of underscores, and
+    return;      // an unfilled-element test on '_' rejected every one of them
+  }
+  int n = 0;
+  for (CreationSet *cs : t->sorted) {
+    if (!cs || !cs->sym) continue;
+    if (n++) out += "|";
+    out += cs->sym->name ? cs->sym->name : "?";
+    if (!cs->sym->element) continue;
+    bool cycle = false;
+    for (CreationSet *x : seen)
+      if (x == cs) { cycle = true; break; }
+    if (cycle) { out += "<@>"; continue; }
+    if (depth >= kShapeDepth) { out += "<...>"; continue; }
+    seen.add(cs);
+    out += "<";
+    atype_shape(cs->elem_key, out, depth + 1, seen);
+    out += ">";
+    seen.pop();
+  }
+}
+
+// The `self` POSITION of an EntrySet -- positional slot 2. Slot 1 is the
+// callee itself.
+//
+// Selected by POSITION NUMBER, not by index into the sorted vector:
+// compar_mposition_path does not order these numerically, and measuring
+// (IFA_DBG_CSELEM=2) showed sorted index 0 carrying pos=2 and index 1
+// carrying pos=1 -- so keying on the index silently read the callee's
+// type as the receiver's on every method in the program.
+static MPosition *es_self_position(EntrySet *es) {
+  if (!es) return nullptr;
+  form_MPositionAVar(x, es->args) {
+    MPosition *p = x->key;
+    if (p && p->pos.n == 1 && p->is_positional() && Position2int(p->last()) == 2) return p;
+  }
+  return nullptr;
+}
+
+// (allocation site, receiver shape) -> the CreationSet that claimed it.
+// Deliberately NOT cleared per pass: shapes converge, so entries only
+// stabilize, and merging must be monotone or the canonicalization itself
+// becomes a source of churn.
+static std::map<std::string, CreationSet *> cselem_shape_canon;
+
+// creation_point is hot, and atype_shape walks the whole type structure
+// building a std::string every call. On a program with large unions
+// (adatron) that alone hung the analysis INSIDE a single pass -- no pass
+// summary in 150s -- with no contour growth at all. Two bounds: memoize
+// on the AType (they are hash-consed, and cleared per pass because
+// elem_key moves), and refuse outright to shape a wide union, where
+// canonicalization is least meaningful anyway.
+static const int kShapeMaxMembers = 4;
+static std::map<AType *, std::string> cselem_shape_memo;
+static int cselem_shape_memo_pass = -1;
+
+static bool atype_shape_cached(AType *t, std::string &out) {
+  if (!t) return false;
+  if (t->sorted.n > kShapeMaxMembers) return false;
+  if (cselem_shape_memo_pass != analysis_pass) {
+    cselem_shape_memo.clear();
+    cselem_shape_memo_pass = analysis_pass;
+  }
+  auto it = cselem_shape_memo.find(t);
+  if (it != cselem_shape_memo.end()) {
+    out = it->second;
+    return true;
+  }
+  Vec<CreationSet *> seen;
+  std::string shape;
+  atype_shape(t, shape, 0, seen);
+  cselem_shape_memo[t] = shape;
+  out = shape;
+  return true;
+}
+
+static bool cselem_shape_key(AVar *v, Sym *s, std::string &out) {
+  if (!v || !v->var || !v->contour_is_entry_set) return false;
+  EntrySet *es = (EntrySet *)v->contour;
+  // DURABLE receiver type (EntrySet::type_key, frozen after the previous
+  // pass's flow fixpoint), never the live `recv->out`. Reading the live
+  // one merged two levels that were both still empty and therefore both
+  // shaped `list<_>` -- and because the canon map is monotone, that merge
+  // was permanent. It cost the whole bounded copy-chain family.
+  static int dbg = getenv("IFA_DBG_CSELEM") ? atoi(getenv("IFA_DBG_CSELEM")) : 0;
+  if (dbg > 1) {
+    Vec<MPosition *> ps;
+    form_MPositionAVar(x, es->args) if (x->key->is_positional()) ps.add(x->key);
+    if (ps.n > 1) qsort(ps.v, ps.n, sizeof(ps[0]), compar_mposition_path);
+    for (int i = 0; i < ps.n; i++) {
+      AVar *a = es->args.get(ps.v[i]);
+      Vec<CreationSet *> sn;
+      std::string sh;
+      atype_shape(a && a->out ? a->out->type : nullptr, sh, 0, sn);
+      fprintf(stderr, "[csshape-pos] p=%d es=%d fun=%s i=%d pos=%d shape=%s\n", analysis_pass, es->id,
+              es->fun && es->fun->sym && es->fun->sym->name ? es->fun->sym->name : "?", i,
+              (int)Position2int(ps.v[i]->last()), sh.c_str());
+    }
+  }
+  MPosition *self = es_self_position(es);
+  if (!self) return false;
+  // Prefer the DURABLE receiver type (EntrySet::type_key, frozen after the
+  // previous pass's flow fixpoint). But the decision has to be made the
+  // moment the contour is FIRST asked for its container -- after that the
+  // `cs_map` memo answers and this code never runs again -- and a contour
+  // is asked on the very pass it is created, when nothing durable exists
+  // for it yet (`type_key_pass == -1` for every EntrySet that reached here
+  // on the recursive repro). So fall back to the live receiver type, with
+  // the `_` guard below carrying the weight the durable key otherwise
+  // would. That is ifa/066's shape -- the decision is keyed per pass
+  // rather than per creation site -- and this is how to live with it, not
+  // a fix for it.
+  AType *rt = es->type_key_pass >= 0 ? es->type_key.get(self) : nullptr;
+  if (!rt) {
+    AVar *recv = es->args.get(self);
+    rt = recv && recv->out ? recv->out->type : nullptr;
+  }
+  if (!rt) return false;
+  std::string shape;
+  if (!atype_shape_cached(rt, shape)) return false;
+  // Any `_` in the shape is an element type that has not arrived yet, and
+  // two shapes that differ only in what has not arrived are not known to
+  // be equal. Decline rather than guess; the next pass will have it.
+  if (shape.find('%') != std::string::npos) {
+    if (dbg) fprintf(stderr, "[csshape-no] p=%d es=%d shape=%s (unfilled)\n", analysis_pass, es->id, shape.c_str());
+    return false;
+  }
+  char pre[96];
+  snprintf(pre, sizeof pre, "v%d|%s|", v->var->id, s->name ? s->name : "?");
+  out = std::string(pre) + shape;
+  return true;
+}
+
+static CreationSet *cselem_shape_reuse(AVar *v, Sym *s) {
+  std::string key;
+  if (!cselem_shape_key(v, s, key)) return nullptr;
+  auto it = cselem_shape_canon.find(key);
+  if (it == cselem_shape_canon.end() || !it->second || it->second->sym != s) return nullptr;
+  if (getenv("IFA_DBG_CSELEM"))
+    fprintf(stderr, "[csshape] p=%d %s -> reuse cs=%d\n", analysis_pass, key.c_str(), it->second->id);
+  return it->second;
+}
+
+static void cselem_shape_claim(const std::string &key, CreationSet *cs) {
+  if (cselem_shape_canon.find(key) == cselem_shape_canon.end()) {
+    cselem_shape_canon[key] = cs;
+    if (getenv("IFA_DBG_CSELEM"))
+      fprintf(stderr, "[csshape] p=%d %s <- mint cs=%d\n", analysis_pass, key.c_str(), cs->id);
+  }
 }
 
 static void capture_elem_keys() {
