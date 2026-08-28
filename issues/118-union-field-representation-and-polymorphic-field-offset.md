@@ -119,3 +119,66 @@ not: `voronoi2` now compiles and runs; `othello3` is FA stagnation
 two. So chess and `sudoku5`/`linalg` are three faces of one thing -- pyc
 does not box, so a union it cannot represent is refused -- and go is the
 only one that is really about LAYOUT rather than representation.
+
+
+## What shedskin does with the repro — and pyc already has the mechanism
+
+`shedskin translate` compiles the 7-line repro, and the generated C++
+says how:
+
+```cpp
+__ss_bool f(list<__ss_int> *xs) {
+    FOR_IN(k,xs,0,2,3)
+        if (k) { return False; }
+    END_FOR
+    return False;      // <-- the implicit None became False
+}
+```
+
+It types `f` as returning `__ss_bool` and gives the fall-off path the
+other member's ZERO. There is no union, so there is nothing to
+represent. That is a deliberate CPython divergence -- `print(f([0,0]))`
+is `None` in CPython and `False` here -- and it is the whole trick.
+
+**pyc already has exactly this**, as `ifa_no_implicit_none`, described in
+pyc.cc as "a shedskin-style typed default". `pyc --strict` compiles and
+runs the repro, printing `False`, matching shedskin.
+
+### The two `--strict` knobs are orthogonal, and bundling them hides this
+
+`strict_mode_arg` sets `runtime_errors = false` AND
+`ifa_no_implicit_none = 1` together, and `permissive_mode_arg` clears
+both. But they address unrelated things: the first turns type violations
+from warnings-plus-runtime-checks into hard errors; the second is what
+removes the `{bool, None}` union. Wanting the second does not imply
+wanting the first, and under `--strict` chess clears the BOXING refusal
+only to die on `unable to resolve to a single function at call site`,
+which is fatal *because* of the first knob.
+
+`PYC_NO_IMPLICIT_NONE` (added) sets the second on its own. With it, in
+permissive mode:
+
+    chess     BOXING refusal -> COMPILES (still segfaults at runtime)
+    sudoku5   unchanged ("program does not type")
+    linalg    unchanged -- its union is {list, int64}, a CONTAINER vs
+              SCALAR mix, which implicit-None has nothing to do with
+
+Getting chess to compile also needed a second instance of the
+zero-element-tuple cast bug: `_CG_prim_tuple_list(_CG_void, 0)`, where
+the DESTINATION's type is voidish rather than the element's, and the
+macro's `sizeof(*((_c)0))` is illegal indirection on `void *`. Fixed the
+same way as the element-side case and on the default path.
+
+### So the boxing refusal has a shipped escape hatch
+
+Three of the five remaining corpus failures are BOXING refusals, and for
+the implicit-None flavour pyc can already do what shedskin does. What is
+missing is not a representation -- it is the DECISION about whether
+permissive mode should take the shedskin compromise by default, which
+trades CPython fidelity (`None` becomes `False`) for compiling. That is
+a language-semantics call, not an implementation gap, and it is why this
+issue does not simply flip the default.
+
+linalg is unaffected either way: `{list, int64}` needs a real
+representation for a container/scalar union, which is the genuine
+no-boxing wall.

@@ -423,7 +423,14 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         // and `sizeof(*((_CG_psNNNN)0))` will not compile. Keep `int*`
         // for the sizeof and cast the result back to the destination's
         // own type.
-        if (voidish)
+        // ifa/issues/118: the DESTINATION's own type can be voidish too
+        // (`_CG_prim_tuple_list(_CG_void, 0)` in chess), and the macro
+        // takes `sizeof(*((_c)0))` of whatever it is given -- illegal
+        // indirection on `void *`. Same remedy as the element-side case
+        // below it: size with `int*`, cast the result to the
+        // destination.
+        bool t_voidish = t && (!strcmp(t, "_CG_void") || !strcmp(t, "_CG_any") || !strcmp(t, "_CG_nil_type"));
+        if (voidish || t_voidish)
           fprintf(fp, "%s = (%s)_CG_prim_tuple_list(int*, %d);\n", cg_get_string(n->lvals[0]), t, n->rvals.n - 3);
         else
           fprintf(fp, "%s = _CG_prim_tuple_list(%s, %d);\n", cg_get_string(n->lvals[0]), t, n->rvals.n - 3);
