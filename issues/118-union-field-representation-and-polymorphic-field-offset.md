@@ -120,6 +120,18 @@ two. So chess and `sudoku5`/`linalg` are three faces of one thing -- pyc
 does not box, so a union it cannot represent is refused -- and go is the
 only one that is really about LAYOUT rather than representation.
 
+> **CORRECTION (2026-08-28): `linalg` is NOT one of them.** Reducing it
+> gives `tests/deepcopy_nested_list_recursion.py`, 10 lines, and the
+> `{list, int64}` union is manufactured by `list.__deepcopy__`'s shared
+> accumulator when it copies a list-of-lists -- the program itself never
+> writes a `{container, scalar}` union. Replacing linalg's one
+> `copy.deepcopy(M)` with `[row[:] for row in M]` makes it compile
+> cleanly. It belongs to
+> [105](105-type-degeneration-in-shared-generic-methods.md), which now
+> carries the full write-up, and it is a PRECISION bug with a known fix
+> direction, not a representation wall. Four faces, not three: only
+> `chess` and `sudoku5` remain in the 018 family here.
+
 
 ## What shedskin does with the repro — and pyc already has the mechanism
 
@@ -179,6 +191,7 @@ trades CPython fidelity (`None` becomes `False`) for compiling. That is
 a language-semantics call, not an implementation gap, and it is why this
 issue does not simply flip the default.
 
-linalg is unaffected either way: `{list, int64}` needs a real
-representation for a container/scalar union, which is the genuine
-no-boxing wall.
+linalg is unaffected either way -- and per the correction above it does
+not belong here at all: its `{list, int64}` is manufactured inside
+`list.__deepcopy__`, not written by the program, and it is
+[105](105-type-degeneration-in-shared-generic-methods.md).

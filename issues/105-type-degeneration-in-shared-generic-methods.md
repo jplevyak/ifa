@@ -350,3 +350,88 @@ Note this also means **the earlier reductions were not merely unusable,
 they were uncompilable** under current pyc — the 212-line artifact now
 reports `name 'tolabel' is not defined` and friends, which is precisely
 the six functions found by reading it.
+## linalg: the first CAUSAL demonstration of this issue's own mechanism
+
+Filed 2026-08-28, reducing `shedskin_examples/linalg` (239 lines) against
+the standing rules above. **`tests/deepcopy_nested_list_recursion.py`,
+10 lines**, `.known_issue`, `.exec.check` holds CPython's `4`:
+
+```python
+import copy
+
+def head_sum(M):
+    if len(M) == 1:
+        return M[0][0]
+    M1 = copy.deepcopy(M)
+    M1.pop(0)
+    return M[0][0] + head_sum(M1)
+
+print(head_sum([[1, 2], [3, 4]]))
+```
+
+    fail: a variable holding {int64, list, list} has no representation:
+    '__add__' resolved to the CONTAINER method, whose receiver may be a
+    scalar.
+
+The accumulator is `list.__deepcopy__` in `__pyc__/04_sequence.py`:
+
+```python
+def __deepcopy__(self):
+  r = []
+  for k in range(len(self)):
+    r.append(self[k].__deepcopy__())
+  return r
+```
+
+Structurally identical to the `list.__add__` accumulator this issue
+opened on -- one contour, one `r`, every receiver. Copying a
+list-of-lists enters it at TWO nesting levels: outer, `self[k]` is a
+`list`; inner, an `int64`; both append into the same `r`. The copy's
+element type comes back as their union, and `M[0][0] + ...` then
+resolves `__add__` against a receiver that may be either.
+
+### Why this one is causal and the earlier three were not
+
+104 and 105's first two theories each matched a symptom and were then
+disproved. This one is settled by **substitution in the real program**:
+replacing linalg's single `M1=copy.deepcopy(M)` with `M1=[row[:] for row
+in M]` takes it from 62 warnings plus the refusal to a **clean rc=0
+compile**. Nothing else changes. (It then aborts at runtime on a
+separate `matching function not found` -- an
+[102](102-corpus-programs-compile-then-abort-at-runtime.md) member, not
+this.)
+
+Three controls, each compiling cleanly, pin the ingredients:
+
+| variant | result |
+|---|---|
+| `M1 = M[:]` instead of `copy.deepcopy(M)` | clean -- **deepcopy is required** |
+| a FLAT list (`M[0]`, not `M[0][0]`) | clean -- **nesting is required** |
+| `return head_sum(M1)`, dropping the `+` | clean -- the `+` only *exposes* it |
+
+The third is worth reading carefully: it changes nothing about the
+union, only about which check catches it. Swap the `+` for `*` and the
+same program emits `no matching function for call to
+'_CG_list_mult_internal'` -- broken C rather than a refusal. So codegen's
+container-union refusal is not a complete gate; it covers `__add__` and
+not its siblings.
+
+### What this changes
+
+`shedskin_examples/linalg` was listed in
+[118](118-union-field-representation-and-polymorphic-field-offset.md) as
+a BOXING refusal in the [018](../issues/018-dict-mixed-key-types-boxing-failure.md)
+family -- "the genuine no-boxing wall". **It is not.** linalg never
+writes a `{container, scalar}` union; the analysis manufactures one
+inside a builtin method, which is this issue, and the fix is
+[101](101-FA-first-time-forever-splitting.md)'s splitting rule applied to
+`list.__deepcopy__` -- exactly the "shedskin gets it free from
+`list<T>` being a template instantiation" argument above. shedskin
+compiles linalg, and its generated C++ is fully monomorphic
+(`__ss_int inner_prod(list<__ss_int> *v1, list<__ss_int> *v2)`,
+`list<list<__ss_int> *> *Minor(...)`) -- no union anywhere to represent.
+
+### Verification target
+
+`tests/deepcopy_nested_list_recursion.py` flips from KNOWN to PASS
+(printing `4`), and `shedskin_examples/linalg` compiles unmodified.
