@@ -4034,6 +4034,29 @@ void fa_dump_types(FA *fa, FILE *fp) {
         gvars.set_add(v);
         continue;
       }
+      // make_AVar reads es->display[nesting_depth - 1] for a Var
+      // belonging to an ENCLOSING scope, and collect_Vars hands back
+      // every Var the Fun mentions regardless of whether THIS EntrySet's
+      // display covers it. Out of bounds there returns garbage that
+      // unique_AVar dereferences as a contour -- a real and documented
+      // SIGSEGV family here (see the note at
+      // find_or_make_filtered_entry_set: pyc issue 025's
+      // pystone/tictactoe/amaze/othello/score4/voronoi2 crashes).
+      //
+      // Investigated as the cause of ifa/issues/041's intermittent -v
+      // crash and MEASURED NOT TO FIRE on either of that issue's two
+      // sighting inputs (bh, pygasus: zero skips under
+      // IFA_DBG_DUMPSKIP). So this is hardening, not that fix: an
+      // unchecked index into a Vec, on a path where the consequence is
+      // known to be a wild dereference, is worth a bound test whether or
+      // not it is the bug someone is currently chasing.
+      int depth = v->sym->nesting_depth;
+      if (depth != f->sym->nesting_depth + 1 && (depth - 1) >= es->display.n) {
+        if (getenv("IFA_DBG_DUMPSKIP"))
+          fprintf(stderr, "[dumpskip] fun %s var %s depth=%d display=%d\n",
+                  f->sym->name ? f->sym->name : "?", v->sym->name ? v->sym->name : "?", depth, es->display.n);
+        continue;
+      }
       fa_dump_var_types(make_AVar(v, es), fp);
     }
   }

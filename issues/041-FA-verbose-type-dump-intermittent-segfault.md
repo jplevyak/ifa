@@ -99,3 +99,49 @@ large inputs costs real re-run time and — worse — can masquerade as
 a regression in whatever change is being verified (it did, twice,
 costing an investigation detour each time before the pattern was
 recognized).
+
+
+## 2026-08-29: two of the three filed hypotheses are ruled out
+
+Asked whether this is still an issue. It is — nothing has fixed it, and
+it has not been seen since either. But a static audit of the dump path
+eliminates two of the three candidates in "Where to look", which is what
+an unreproduced-on-demand crash most needs.
+
+**Ruled out: a set-mode `Vec` iterated without the null guard.** This was
+the leading suspect (issue 033's crash class, and the same shape as
+`cg_build_new_to_val_map`'s `Fun::ess` hole). It cannot be the top-level
+loop: `FA` has **two** members, `ess` ("all used entry sets as array") and
+`ess_set` ("as set"), and `fa_dump_types` iterates the ARRAY. It is built
+in `collect_results()` by `fa->ess.clear()` then `.add()` from
+`fa->entry_set_done` **with an `if (es)` guard**, so it holds no nulls.
+The dump's other iterations (`vars` from `collect_Vars`, and `gvars`
+after `set_to_vec()`) are plain vectors too.
+
+**Ruled out for these inputs: the `es->display[depth - 1]` out-of-bounds
+read.** This one is a genuine, documented crash family in this codebase —
+`make_AVar` indexes the display for a Var from an enclosing scope and
+`unique_AVar` dereferences whatever comes back as a contour (see the note
+at `find_or_make_filtered_entry_set`, pyc issue 025). And the dump is
+exactly the place it could bite, because `collect_Vars` returns every Var
+the Fun mentions with no relation to this EntrySet's display. It fits the
+symptom profile perfectly: `-v` only, mid-dump, and "does the garbage
+pointer happen to be mapped" is ASLR/GC-timing dependent, which is the
+1-in-5-under-load flakiness both sightings describe.
+
+**It does not happen.** A bound check plus `IFA_DBG_DUMPSKIP` reports
+**zero** skips on `bh` and on `pygasus` — the two programs that actually
+crashed. The guard is now in `fa_dump_types` as hardening (an unchecked
+index whose failure mode is a wild dereference deserves a bound test
+regardless), and is explicitly documented there as NOT this issue's fix.
+
+**Still standing: the third hypothesis.** `make_AVar` allocates on miss,
+so the dump is not read-only: it creates AVars at a pass boundary, in the
+middle of iterating structures the allocation can touch. That is now the
+only filed candidate left, and it is also the one that would explain why
+the crash is sensitive to GC timing rather than to input.
+
+Next attempt should start there — instrument how many AVars the dump
+CREATES (as opposed to finds) per pass on bh/pygasus, and if the count is
+non-zero, make the dump use a non-allocating lookup and see whether the
+sightings' conditions still produce anything.
