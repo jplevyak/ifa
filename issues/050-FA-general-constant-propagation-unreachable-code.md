@@ -605,3 +605,57 @@ establishes that pattern for 3a's fact.
 Not implemented; recorded because it is a materially smaller stage 1 than
 the SSU renaming, and because the reason DCE cannot be used is a specific
 ordering constraint worth knowing rather than a dead end.
+
+
+## Stage 1 IMPLEMENTED (2026-08-29)
+
+Both halves, exactly as the two walls above required.
+
+**Loads.** `IFACallbacks::provably_constant_load(AVar *src_av, EntrySet
+*es, PNode *move_pnode)` (`ifa.h`), consulted from `fa.cc`'s `Code_MOVE`
+transfer. pyc's implementation folds a global load to the nearest
+DOMINATING store iff **every** store to that cell program-wide is in the
+same Fun and dominates the load -- so no other store can reach, and in
+particular no call can write the cell, because a call that did would BE a
+store in another Fun and would fail the test.
+
+**Wall 1 (monotonicity) is handled by where the store set comes from.**
+It is built from `if1->allclosures` -- the static closure list, complete
+before `analyze()` is entered -- and NOT from `Fun::fa_move_PNodes` or
+`fa->funs`, both of which fill in as analysis proceeds. Measured with the
+lazy sources: `fa->funs` is EMPTY on the first call, the un-folded path
+runs on pass 0, and `update_gen()` unions the whole-program type into the
+load temp permanently. The static list gives the same answer on every
+pass, which is what the contract requires.
+
+**Wall 2 (the slot's own type) is handled by the consumer-aware BOXING
+check.** `fa.cc`'s BOXING collection now skips an AVar in `GLOBAL_CONTOUR`
+that nothing reads. Folding the load skips the `flow_vars_assign` edge,
+so a fully-folded cell has no consumers and is unobservable; its store
+union cannot be wrong. This is deliberately NOT a liveness test --
+`Var::live` is set by dead-code elimination, which runs after this -- but
+FA already knows the consumer set during analysis, and that is the
+property that matters. Only global cells: a local with no consumers is a
+different situation and still worth reporting.
+
+**Results.** `tests/global_slot_module_level_order.py` flips from
+`.known_issue` to PASS -- `g = 0; g = "five"; print(len(g))` prints 4.
+Two goldens moved, both verified as improvements rather than lost
+coverage:
+
+- `tests/listcomp_element_separation.py.check` becomes EMPTY. Its
+  `illegal call argument type 'a' illegal: B` warning is gone because `h`
+  is a module-level cell, and resolving its load keeps `aas`' element type
+  at `A`. The contour-naming limitation that test documents is unchanged;
+  the program no longer reaches it. An unlooked-for second win.
+- `ifa/tests/synthetic/vector_polymorphic_writes_2.synth.fa-converge.expected`
+  goes `violations=8→8` to `violations=7→7`: one unobservable global's
+  BOXING violation is no longer reported. Nothing else in the fixture
+  moved.
+
+Five CI gates green; suite 306 passed / 0 failed / 15 known on both
+backends.
+
+`tests/global_slot_call_graph_precision.py` stays a known issue by
+construction -- its store is in another function -- and is what stages 2
+and 3 are for.

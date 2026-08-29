@@ -126,6 +126,19 @@ class IFACallbacks : public gc {
   // Must be conservative: an unrecognized pattern or unresolved call
   // info returns nullptr, never a forced (and possibly wrong) type.
   virtual AType *provably_constant_isinstance(AVar *operand_av, EntrySet *es, PNode *send_pnode) { return nullptr; }
+  // ifa/issues/050 (3b, stage 1): `move_pnode` is a MOVE whose SOURCE is
+  // a mutable global cell -- a memory slot whose AVar is shared across
+  // the whole program, so FA's own type for it is the flow-insensitive
+  // union of every store anywhere. A frontend that can prove which store
+  // this load sees may return that store's AType; nullptr means "no
+  // opinion" and the load keeps the union.
+  //
+  // Folding HERE rather than in a post-analysis pass is deliberate: FA's
+  // worklist already iterates, so a fold made in a transfer function
+  // reflows for free. The contract that buys that is STABILITY: the
+  // answer must not sharpen across passes, because update_gen() unions
+  // rather than replaces, so an early imprecise answer is permanent.
+  virtual AType *provably_constant_load(AVar *src_av, EntrySet *es, PNode *move_pnode) { return nullptr; }
   // ifa/issues/039: what a frontend wants done when a POSSIBLY-unbound
   // local is actually read at runtime. ifa computes the fact (a
   // language-neutral definite-assignment dataflow, optimize/ssu.cc) but

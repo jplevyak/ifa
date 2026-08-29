@@ -3438,6 +3438,17 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
     case Code_MOVE:
       for (int i = 0; i < p->rvals.n; i++) {
         AVar *lhs = make_AVar(p->lvals[i], es), *rhs = make_AVar(p->rvals.v[i], es);
+        // ifa/issues/050 3b stage 1: first refusal on a load from a
+        // mutable global cell. See IFACallbacks::provably_constant_load.
+        // Skipping the flow below is the point, not a side effect: it is
+        // what leaves the cell with no consumer, which is what makes a
+        // write-only cell unobservable to the BOXING check.
+        if (if1->callback) {
+          if (AType *forced = if1->callback->provably_constant_load(rhs, es, p)) {
+            update_gen(lhs, forced);
+            continue;
+          }
+        }
         if (lhs->lvalue && rhs->lvalue)
           flow_vars(rhs, lhs);
         else
@@ -4670,6 +4681,21 @@ static void collect_var_type_violations() {
     for (EntrySet *es : fa->ess) {
       for (Var *v : es->fun->fa_all_Vars) {
         AVar *av = make_AVar(v, es);
+        // ifa/issues/050 3b: a global cell that NOTHING READS is
+        // unobservable, so the union of its stores cannot be wrong. This
+        // cannot be phrased as a liveness test -- Var::live is set by
+        // dead-code elimination, which runs after this (see the sibling
+        // check below for the same trap) -- but FA already knows the
+        // consumer set during analysis, and that is the property that
+        // actually matters here. Only global cells: a local with no
+        // consumers is a different situation and still worth reporting.
+        if (av->contour == GLOBAL_CONTOUR) {
+          int readers = 0;
+          for (AVar *c : av->forward) if (c) ++readers;
+          if (getenv("PYC_DBG_GCELL") && av->var && av->var->sym && av->var->sym->name)
+            fprintf(stderr, "[gcell] %s readers=%d mixed=%d\n", av->var->sym->name, readers, mixed_basics(av) ? 1 : 0);
+          if (!readers) continue;
+        }
         if (!is_only_used_by_phy_or_phi(av->var) && mixed_basics(av))
           type_violation(ATypeViolation_kind::BOXING, av, av->out, nullptr, nullptr);
       }
