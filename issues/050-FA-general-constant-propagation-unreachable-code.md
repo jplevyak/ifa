@@ -506,3 +506,57 @@ Stage 2 is unchanged and is what bounds the walk: it must stop at any
 call whose transitive mod-set contains the cell. Stage 3 (the
 interprocedural per-ES summary) is unchanged, and stages 1-2 remain its
 intra-procedural transfer function.
+
+
+### Prototyped stage 1 as a transfer-function fold. TWO walls, both measured.
+
+Built it: `IFACallbacks::provably_constant_load(AVar *src_av, EntrySet
+*es, PNode *move_pnode)`, consulted from `fa.cc`'s `Code_MOVE` transfer,
+with a pyc-side implementation that folds a global load to the nearest
+dominating store iff **every** store to that cell program-wide is in the
+same Fun and dominates the load. It compiles, the callback fires, and the
+dominating store is found (`[gload] g best=...`). The program still does
+not type, for two independent reasons, and both matter more than the
+mechanism does.
+
+**Wall 1: FA's lattice is MONOTONE, so an early answer is permanent.**
+`update_gen(lhs, forced)` — what 3a uses, and the only application
+available in a transfer function — *unions* into the destination. The set
+of stores this walk can see grows as analysis proceeds
+(`Fun::fa_move_PNodes` fills in as EntrySets are analysed), so an early
+pass folds to `int64`, a later one to `str`, and the destination ends up
+holding both. The fold poisons exactly what it was meant to sharpen.
+
+3a does not hit this because `can_raise` is a fact that is *stable* once
+the ES graph exists. **Any transfer-function fold must be computed from a
+fact that cannot sharpen across passes**, and "the stores I have seen so
+far" is not one. That is a real constraint on the whole
+fold-in-the-transfer-function idea, not an implementation slip.
+
+**Wall 2: folding loads does not fix the SLOT.** Even with every load
+folded, the diagnostics include:
+
+    error: 'g' has mixed basic types:( int64 str )
+
+The cell is a real storage slot in the emitted program, and it genuinely
+holds an `int64` at one point and a `str` at another. Folding *reads*
+cannot change that; the slot has to be SPLIT (or every read folded and
+the slot then proven dead, which nothing currently does). So the SSU
+renaming this section talked itself out of is necessary after all — the
+transfer-function fold is the *loads* half, and splitting the slot is the
+*stores* half, and the program needs both.
+
+### Corrected staging
+
+1. **Split the slot** — SSU-rename module-data cells within a function so
+   `g = 0; g = "five"` become two distinct slots. This is what makes the
+   program representable at all, and it makes the load resolution fall
+   out of SSU rather than needing a walk.
+2. **A per-Fun mod-set over module-data cells** (unchanged) — bounds
+   where a renaming chain must break.
+3. **The interprocedural per-ES summary** (unchanged).
+
+A transfer-function fold remains attractive for facts that are stable
+across passes, and the extension point is a clean two-line addition when
+one turns up — but it is not the road to 3b. The prototype is preserved
+at `wip_gload_callback.cc` in the session scratch.
