@@ -721,8 +721,20 @@ static int compute_member_types(Vec<CreationSet *> *eqcss) {
 static int tuple_as_list_enabled() {
   static int e = -1;
   if (e < 0) {
+    // Default ON since issues/119. With it OFF, a tuple equivalence class
+    // that is NOT record-able -- mixed arity, or a populated generic
+    // element -- was forced into RECORD layout anyway, and when its
+    // per-index vars never materialised that record had ZERO members:
+    // c_type() names it _CG_void and every getter on it becomes
+    // "runtime error: bad getter". A tuple SLICE lands there exactly
+    // (runtime arity, built by _CG_list_getslice). Enabling this does not
+    // make tuples lists -- line 793's `!tup` still keeps every
+    // record-able tuple a record -- it only supplies a valid layout where
+    // the bogus empty record used to go. Surfaced by unrolling
+    // __str__/__hash__ (python_ifa_main.cc): the old looped bodies
+    // indexed with a RUNTIME k, which never took the record getter path.
     const char *v = getenv("PYC_TUPLE_AS_LIST");
-    e = v ? atoi(v) : 0;
+    e = v ? atoi(v) : 1;
   }
   return e;
 }

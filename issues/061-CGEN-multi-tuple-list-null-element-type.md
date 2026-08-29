@@ -1,6 +1,6 @@
 # 061 — C backend: a list of tuples emits `(null)*` / incompatible-pointer element types when several distinct tuple record types coexist
 
-**Status:** open. Found 2026-07-22 while verifying the tuple-comparison
+**Status:** open, C-backend-only (the LLVM symptom recorded here was issues/119 and is fixed -- see the 2026-08-29 update at the bottom). Found 2026-07-22 while verifying the tuple-comparison
 primitive work (issue 025 / tictactoe, `tuple.__lt__`/`__eq__` →
 `P_prim_tuple_lt`/`P_prim_tuple_eq`). Filed rather than fixed: the fix
 site is the C backend's list-literal / list backing-store element-type
@@ -213,3 +213,23 @@ own with the same `matching function not found`, in the per-element
 one-line repro and `tests/nested_tuple_repr.py`. Worth knowing before
 anyone re-measures 061: its repro prints a list of NESTED tuples, so it
 trips 119 as well, and the two symptoms have to be told apart.
+
+## Update 2026-08-29 (later the same day): the LLVM half WAS 119
+
+[issues/119](../../issues/closed/119-nested-tuple-repr-aborts.md) is
+fixed, and with it the `[(, ), (, )]` above:
+
+| | C backend | LLVM backend |
+|---|---|---|
+| **2026-08-29 (after 119)** | `incompatible pointer types`, same site | **`[(2, (1, 9)), (1, (5, 5))]` — correct** |
+
+So the "LLVM side is now WORSE" reading was right about the symptom and
+wrong about the owner: the empty elements were `tuple.__str__`'s
+unresolvable per-element `__repr__` dispatch, not this issue's
+contaminated element type. 119 unrolled `__str__`/`__hash__` at constant
+indices, which resolves that dispatch.
+
+**061 is therefore C-backend-only again**, exactly as originally filed,
+and the cross-contamination root cause below is untouched. The
+`a.sort()`-removed runtime abort noted above is likewise gone — it was
+119 as suspected.
