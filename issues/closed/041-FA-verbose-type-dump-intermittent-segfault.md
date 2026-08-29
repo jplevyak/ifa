@@ -1,11 +1,25 @@
 # Issue 041: intermittent segfault inside the `-v` per-pass type dump (`fa_dump_types`)
 
-**Status:** open, unreproduced-on-demand. Two sightings, both under
-`-v`, both mid-way through `fa_dump_types`' output, on different
-code versions and different inputs — so it is a longstanding latent
-bug in the diagnostic dump path (or something the dump's read
-pattern exposes), not a regression from any recent change. **S4**
-(diagnostic-only path; no effect on non-`-v` compiles).
+**Status:** **closed 2026-08-29 — not reproducible.** Two sightings,
+2026-07-13 and 2026-07-14, and nothing since across six weeks of heavy
+`-v` use. Three deliberate reproduction attempts failed (an ASAN soak
+blocked by [094](094-FA-asan-heisenbug-blocks-sanitizer-diagnostics.md),
+a 30-compile gdb soak under corpus-sweep load, and the audit below).
+Of the three hypotheses filed here, two were ruled out and the third —
+the dump not being read-only — turned out to be a **real defect that
+was corrupting `-v` measurements**, and is fixed. Whether it was also
+the crash is unknowable without a recurrence.
+
+Closed rather than left open because there is nothing further to do
+without a new sighting: the actionable finding has landed, and this file
+stays in `closed/` as the derivation trail. **Reopen on any recurrence** —
+the remaining suspects are named at the end.
+
+Originally: two sightings, both under `-v`, both mid-way through
+`fa_dump_types`' output, on different code versions and different inputs
+— so a longstanding latent bug in the diagnostic dump path (or something
+the dump's read pattern exposes), not a regression from any recent
+change. **S4** (diagnostic-only path; no effect on non-`-v` compiles).
 
 ## Symptom
 
@@ -187,3 +201,15 @@ if it recurs, the remaining suspects are the print path itself
 (`show_type`) and the GC.
 
 Five CI gates green; 306 passed / 0 failed / 15 known on both backends.
+
+## Closing summary
+
+| hypothesis | outcome |
+|---|---|
+| a set-mode `Vec` iterated without the null guard | **ruled out** — `fa_dump_types` iterates `FA::ess`, the ARRAY, built with an `if (es)` guard |
+| `es->display[depth-1]` out of bounds | **ruled out for both sighting inputs** — zero occurrences on bh and pygasus; bound check kept as hardening |
+| the dump allocates (`make_AVar` on miss) | **confirmed as a defect and FIXED** — it was minting AVars mid-dump and shifting the analysis by one ES / one CS on bh |
+
+If the crash recurs, start from the two places this audit did not reach:
+the print path itself (`show_type`, `fa_dump_var_types`) and the GC. And
+note the dump is now read-only, so any recurrence is NOT the allocation.

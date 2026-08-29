@@ -1839,7 +1839,7 @@ already whole-graph, so union semantics change nothing there);
 sweep member set unchanged; deterministic across repeated runs.
 (One verification run crashed in the `-v` type dump — the second
 sighting of a pre-existing intermittent, now filed as
-[041](../041-FA-verbose-type-dump-intermittent-segfault.md).)
+[041](041-FA-verbose-type-dump-intermittent-segfault.md).)
 
 **Verdict:** the round structure's premise — an extend plateau that
 per-pass re-derivation makes unavoidable — no longer exists on any

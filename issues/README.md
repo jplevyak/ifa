@@ -440,11 +440,12 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   diagnostic (`place_phi` is liveness- not definite-assignment-
   driven). Proposed fix: an 18th canonical `AType`
   (`uninitialized_type`).
-- [041-FA-verbose-type-dump-intermittent-segfault.md](041-FA-verbose-type-dump-intermittent-segfault.md)
-  — two unreproduced-on-demand segfaults in the `-v` per-pass type
-  dump, both under machine load; likely the same null-guard bug
-  class 033 found and fixed elsewhere in `fa.cc`, unconfirmed. Its own
-  filed ASAN-soak verification plan hit a blocker — see 094.
+- [closed/041-FA-verbose-type-dump-intermittent-segfault.md](closed/041-FA-verbose-type-dump-intermittent-segfault.md)
+  — **closed 2026-08-29, not reproducible.** Two segfaults in the `-v`
+  per-pass type dump, July 2026, nothing since. Two of its three
+  hypotheses ruled out; the third was real but was a different defect —
+  the dump allocated AVars and so SHIFTED the analysis it measures
+  (bh: ess 415 vs 414 with `-v`) — now fixed, dump is read-only.
 - [094-FA-asan-heisenbug-blocks-sanitizer-diagnostics.md](094-FA-asan-heisenbug-blocks-sanitizer-diagnostics.md)
   — found attempting 041's own ASAN soak: an intermittent
   `PycModule::filename` corruption/segfault on the simplest possible

@@ -1,13 +1,20 @@
 # 094 — Intermittent `PycModule::filename` corruption under ASAN blocks the ASAN-soak diagnostic technique itself
 
 **Status:** open, found 2026-08-11 while attempting
-[041](041-FA-verbose-type-dump-intermittent-segfault.md)'s own filed
+[041](closed/041-FA-verbose-type-dump-intermittent-segfault.md)'s own filed
 ASAN-soak verification plan. Not the bug 041 describes — a different,
 apparently more fundamental one that made itself impossible to
 localize with the tools tried. Filed rather than root-caused: every
 diagnostic technique tried either failed to reproduce it or changed
 its behavior, and the ones left (proper GC root-tracing, or ditching
 ASAN for core dumps) need more setup than this session had budget for.
+
+> **NB 2026-08-29:** the consumer this was filed for --
+> [041](closed/041-FA-verbose-type-dump-intermittent-segfault.md)'s
+> ASAN soak -- is CLOSED as not reproducible, so nothing is currently
+> waiting on this. It stays open on its own terms: a sanitizer build
+> that segfaults on `hello_world.py` blocks every future memory
+> diagnostic, not just that one.
 
 **Affects:** unclear — the *observed* corruption is
 `PycModule::filename` (`python_ifa.h`), read from
@@ -100,7 +107,7 @@ letting the collector reclaim/reuse memory that's still logically
 live. This is speculative — not confirmed — but it's the only
 explanation found so far consistent with every observation above,
 *and* it's the same general disease class
-[041](041-FA-verbose-type-dump-intermittent-segfault.md) itself already
+[041](closed/041-FA-verbose-type-dump-intermittent-segfault.md) itself already
 suspects ("GC-timing / memory-pressure sensitivity... vanishes on
 quiet re-runs") — just caught somewhere else in the program (module-
 filename interning at process startup, not `fa_dump_types`).
@@ -112,7 +119,7 @@ reliable diagnostic tool for this codebase's intermittent-segfault
 class of bug** — the exact technique
 [closed/033](closed/033-splitter-non-idempotent-divergence.md) used
 successfully to root-cause its own two crashes, and the technique
-[041](041-FA-verbose-type-dump-intermittent-segfault.md) filed as its
+[041](closed/041-FA-verbose-type-dump-intermittent-segfault.md) filed as its
 own verification plan. Either ASAN got lucky in 033's case (a
 different code path, less exposed to whatever's fragile here), or
 something has changed since (~1 month of commits) that made this
@@ -156,7 +163,7 @@ between attempts) before and after any change.
 
 Confidence in ASAN as a diagnostic technique for this codebase's other
 intermittent-crash issues (currently just
-[041](041-FA-verbose-type-dump-intermittent-segfault.md), but the same
+[041](closed/041-FA-verbose-type-dump-intermittent-segfault.md), but the same
 methodology is referenced as precedent in
 [closed/033](closed/033-splitter-non-idempotent-divergence.md) and
 could reasonably be reached for again). Also, if the GC-conservative-
