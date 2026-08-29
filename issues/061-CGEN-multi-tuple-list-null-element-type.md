@@ -183,3 +183,33 @@ reference for "what correct looks like" would be wrong.
 Heterogeneous/nested tuple sorting on the C backend in programs that mix
 several tuple shapes (the general shedskin case), and any C program that
 puts more than one distinct tuple type into sorted lists.
+
+
+## Re-verified 2026-08-29: still open, and the LLVM side is now WORSE
+
+Re-ran the 2026-08-07 repro verbatim
+(`a = [(3,99),(1,22)]; a.sort(); b = [(2,(1,9)),(1,(5,5))]; print(b)`):
+
+| | C backend | LLVM backend |
+|---|---|---|
+| 2026-08-07 | `incompatible pointer types` | claim of "no bug" already noted as wrong |
+| **2026-08-29** | **same error, same site** | **compiles, runs, prints `[(, ), (, )]`** |
+
+CPython prints `[(2, (1, 9)), (1, (5, 5))]`. So the C backend still
+refuses honestly and **the LLVM backend now silently produces tuples with
+empty elements** — exit 0, no diagnostic, wrong output. That is the worse
+failure of the two, and it means this issue can no longer be described as
+C-backend-only in any sense.
+
+Removing `a.sort()` still makes the C backend compile clean, so the
+cross-contamination root cause described above is unchanged.
+
+**One thing that looked like a regression here is a separate bug.** With
+`a.sort()` removed, the C build compiles but then aborts at runtime. That
+is not this issue: `print((1, (2, 3)))` — no list, no sort — aborts on its
+own with the same `matching function not found`, in the per-element
+`__repr__` dispatch inside `tuple.__str__`. Filed as
+[issues/119](../../issues/119-nested-tuple-repr-aborts.md) with a
+one-line repro and `tests/nested_tuple_repr.py`. Worth knowing before
+anyone re-measures 061: its repro prints a list of NESTED tuples, so it
+trips 119 as well, and the two symptoms have to be told apart.
