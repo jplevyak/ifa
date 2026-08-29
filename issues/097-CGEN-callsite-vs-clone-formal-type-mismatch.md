@@ -99,7 +99,7 @@ don't just penalize" tool this issue's own options reach for.
 has more: [closed/057](closed/057-sorted-tolist-fa-nonconvergence.md)
 (same function's soft-matching also caused thousands of non-productive
 contour mints, before 073's fix — different direction, same root
-cause family) and [055](055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md)
+cause family) and [055](closed/055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md)
 (still open, same convergence-loop family, different trigger).
 
 ## Symptom

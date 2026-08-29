@@ -479,12 +479,11 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   empty-list fragility; re-measured, it no longer does (`rc=0`, correct
   output, where it used to be `fail: program does not type`). The two
   surviving warnings are 072's empty-container residual, not this.
-- [055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md](055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md)
-  — adding `set.__sub__` hangs/crashes compiling plcfrs.py (flat
-  EntrySet count, growing worklist — a non-convergence signature).
-  Root cause not isolated past bisection; **explicitly retested
-  against closed-057's fix and confirmed NOT resolved by it** — a
-  distinct repro in the same disease family.
+- [closed/055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md](closed/055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md)
+  — **closed 2026-08-27: plcfrs converges and compiles.** Adding
+  `set.__sub__` used to hang or crash the compiler on plcfrs.py. Fixed
+  by three FA defaults (`PYC_CSSPLIT=1`, `PYC_ROUTECYCLE=3`,
+  `PYC_PROMOTE_FIRST=2`) plus six latent bugs found behind them.
 - [086-FA-self-recursive-copy-arg-notype-cascade.md](086-FA-self-recursive-copy-arg-notype-cascade.md)
   — a self-recursive function whose recursive call passes
   `arg.copy()` (not the parameter directly) degrades entirely to

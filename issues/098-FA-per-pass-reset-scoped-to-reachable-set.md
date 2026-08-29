@@ -329,7 +329,7 @@ state-hygiene consequence, not a scheduling one.
 The prior-art survey collected in that filing
 ([closed/073](closed/073-teach-splitter-productive-vs-inert-context.md),
 [closed/057](closed/057-sorted-tolist-fa-nonconvergence.md),
-[055](055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md),
+[055](closed/055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md),
 [closed/035](closed/035-nondeterministic-codegen-clone-order.md),
 [closed/009](closed/009-fa-violations-nondeterminism.md),
 [closed/037](closed/037-matcher-cartesian-cs-product.md),

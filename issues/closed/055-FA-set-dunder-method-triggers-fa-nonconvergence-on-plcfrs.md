@@ -1,7 +1,7 @@
 # 055 — Adding `set.__sub__` triggers FA non-convergence / compiler crash on plcfrs.py
 
 **Status: CLOSED 2026-08-27 — plcfrs CONVERGES AND COMPILES.** `set.__sub__` shipped long ago; the non-convergence it triggered is fixed by three defaults landed here (`PYC_CSSPLIT`, `PYC_ROUTECYCLE=3`, `PYC_PROMOTE_FIRST=2`) plus six latent FA/codegen bugs they exposed. Both minimal repros are regression tests and pass. Found 2026-07-19 while attempting a followup to
-[053](closed/053-tuple-unpack-target-heterogeneous-arity-segfault.md):
+[053](053-tuple-unpack-target-heterogeneous-arity-segfault.md):
 `plcfrs.py` (line 300-301) calls `set(...) - set([...])`, and
 `__pyc__/08_set.py`'s `class set` had no `__sub__`/difference operator
 at all (a plain missing-feature gap, unrelated to 053's tuple-arity
@@ -14,11 +14,11 @@ __pyc__/08_set.py`); NOT shipped. `set.__sub__` is still missing.
 `analyze_to_convergence`), specifically whatever drives the
 edge/send/EntrySet worklists — root cause not yet isolated past the
 bisection below.
-**Related:** [053](closed/053-tuple-unpack-target-heterogeneous-arity-segfault.md)
+**Related:** [053](053-tuple-unpack-target-heterogeneous-arity-segfault.md)
 (this was found while following up on that issue — `plcfrs.py` is the
 same corpus program; 053's fix itself is unaffected and was verified
 clean once `__pyc__/08_set.py` was reverted). See also
-[057](closed/057-sorted-tolist-fa-nonconvergence.md), found later the same
+[057](057-sorted-tolist-fa-nonconvergence.md), found later the same
 day: the identical FA non-convergence signature (worklist churn
 without bound, EntrySet count flat), but with a dramatically smaller
 (4-line, no 500-line real program needed) and dict/`sorted()`-based
@@ -114,7 +114,7 @@ point — not just "a lot of legitimate work."
 
 ## Fix direction (2026-07-29)
 
-See [057](closed/057-sorted-tolist-fa-nonconvergence.md)'s "Fix direction —
+See [057](057-sorted-tolist-fa-nonconvergence.md)'s "Fix direction —
 AUTHORITATIVE" section: this same non-convergence class is fixed by
 (1) monomorphizing the affected functions so no polluting type union
 forms and (2) enforcing that every new contour is *productive* (must
@@ -221,9 +221,9 @@ and then `+` with a list, at line 299-302.
 
 ### Where to look instead
 
-That is the shape of [057](closed/057-sorted-tolist-fa-nonconvergence.md)
+That is the shape of [057](057-sorted-tolist-fa-nonconvergence.md)
 (generic `sorted()` across differing element types plus `list()`
-materialization) and [105](105-type-degeneration-in-shared-generic-methods.md),
+materialization) and [105](../105-type-degeneration-in-shared-generic-methods.md),
 not generic operator dispatch. 057 is closed and its fix explicitly did
 not resolve this, but the *call shape* it describes is the one plcfrs
 hits here, and it is now reachable through a freshly-constructed set
@@ -302,10 +302,10 @@ through the same shared CS, contours re-split, and no fixed point is
 reached.
 
 That is the empty/shared-container-CS family --
-[072](072-FA-empty-container-notype-current-mechanism-and-plan.md),
-[105](105-type-degeneration-in-shared-generic-methods.md) -- and the
+[072](../072-FA-empty-container-notype-current-mechanism-and-plan.md),
+[105](../105-type-degeneration-in-shared-generic-methods.md) -- and the
 non-productive contour creation named in
-[057](closed/057-sorted-tolist-fa-nonconvergence.md)'s fix direction, now
+[057](057-sorted-tolist-fa-nonconvergence.md)'s fix direction, now
 reachable in six lines instead of five hundred.
 
 ### Do we need the repro? Yes
@@ -335,8 +335,8 @@ counts and the ess/css totals. Run against
 `total_css` is pinned at 656 from pass 20 on. Three EntrySets are
 created and destroyed on alternate passes, forever. This is a **period-2
 limit cycle**, not unbounded growth — the shape
-[099](099-FA-pending-backedge-avoid-veto-forces-period-2.md) and
-[074](074-FA-cross-pass-oscillation-plan.md) describe.
+[099](../099-FA-pending-backedge-avoid-veto-forces-period-2.md) and
+[074](../074-FA-cross-pass-oscillation-plan.md) describe.
 
 ### What flips
 
@@ -373,14 +373,14 @@ contour that was monomorphic on pass N accepts both receiver
 CreationSets on pass N+1, so every split is undone and re-made forever.
 The splitter keeps paying for `__eq__`/`__contains__`/`add` splits that
 cannot stick, which is the non-productive contour creation named in
-[057](closed/057-sorted-tolist-fa-nonconvergence.md)'s fix direction:
+[057](057-sorted-tolist-fa-nonconvergence.md)'s fix direction:
 a new contour must realize a monomorphic specialization that does not
 already exist, *and an existing one must not be re-widened*. The second
 half is what is missing here.
 
 That points at contour reuse/compatibility being scored against a
-per-pass snapshot — [097](097-CGEN-callsite-vs-clone-formal-type-mismatch.md)'s
-hazard and [098](098-FA-per-pass-reset-scoped-to-reachable-set.md)'s
+per-pass snapshot — [097](../097-CGEN-callsite-vs-clone-formal-type-mismatch.md)'s
+hazard and [098](../098-FA-per-pass-reset-scoped-to-reachable-set.md)'s
 per-pass reset — rather than at anything about sets.
 
 ### Why shedskin does not have this
@@ -483,7 +483,7 @@ involvement at all.
 ### ifa/113 checked, INCONCLUSIVE
 
 The obvious suspect for two instances' fields merging is
-[113](113-FA-setter-equivalence-is-a-global-batch-partition.md)'s global
+[113](../113-FA-setter-equivalence-is-a-global-batch-partition.md)'s global
 setter partition. Dumping `AVar::setter_class` for every `_items` AVar
 gives `nil` on both passes, with 0 distinct classes -- but that dump runs
 after `complete_pass()`, so it cannot distinguish "these AVars never
@@ -562,7 +562,7 @@ and it only ever separates EntrySets.
 the **receiver** CreationSet of a method. Here the receiver is fine --
 es=49 and es=137 have cleanly separated receivers on every pass. What
 is shared is the CreationSet the method **creates**. That is issue
-[072](072-FA-empty-container-notype-current-mechanism-and-plan.md)'s
+[072](../072-FA-empty-container-notype-current-mechanism-and-plan.md)'s
 territory (a container CS shared across the call sites that allocate
 it), reached from a different direction.
 
