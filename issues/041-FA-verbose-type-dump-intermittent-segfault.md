@@ -145,3 +145,45 @@ Next attempt should start there — instrument how many AVars the dump
 CREATES (as opposed to finds) per pass on bh/pygasus, and if the count is
 non-zero, make the dump use a non-allocating lookup and see whether the
 sightings' conditions still produce anything.
+
+
+## The third hypothesis was right, and it is fixed
+
+`make_AVar`/`unique_AVar` create on miss, so the dump was never read-only.
+Counted it (`IFA_DBG_DUMPALLOC`):
+
+    bh        creates=27  finds=5443     (pass 1)
+              creates=82  finds=8392     (pass 2)
+              creates=8   finds=8542     (pass 3)
+    pygasus   creates=134 finds=32650    (every pass)
+
+**And it changed the answer.** Same input, same binary, `PYC_DBG_CONTOURS='*'`:
+
+    bh, no -v    pass=26 SUMMARY total_ess=414 total_css=1577
+    bh, -v       pass=26 SUMMARY total_ess=415 total_css=1578
+
+That is worse than the crash it was filed for. `-v` is this project's
+verification currency for splitter/convergence work, and it was reading a
+slightly *different* analysis from the one a real compile performs — one
+extra EntrySet and CreationSet on bh, from AVars the dump itself minted at
+a pass boundary.
+
+**Fix**: the dump looks up, never creates. `fa_dump_contour_for()`
+replicates `make_AVar`'s contour choice, `v->avars.get()` fetches, and a
+(Var, contour) pair with no AVar is skipped — it was never reached by the
+analysis, so it has no type to show. On pygasus that skips 134 of ~32,800
+entries (0.4%) and the dump still carries 14,429 function sections.
+
+    bh, -v (after)   pass=26 SUMMARY total_ess=414 total_css=1577   ✓ identical
+
+**Does this fix the segfault?** Unknown, and deliberately not claimed. It
+removes allocation from a dump that runs at pass boundaries where large
+garbage generations exist, which is the mechanism the "GC interaction"
+hypothesis proposed, and it is consistent with every property of the two
+sightings (`-v` only, mid-dump, load-sensitive, never reproducible on
+demand). But neither sighting has been reproduced since 2026-07-14, so
+there is nothing to re-run and confirm against. Left OPEN for that reason;
+if it recurs, the remaining suspects are the print path itself
+(`show_type`) and the GC.
+
+Five CI gates green; 306 passed / 0 failed / 15 known on both backends.

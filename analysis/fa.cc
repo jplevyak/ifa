@@ -4018,8 +4018,28 @@ void fa_dump_var_types(AVar *av, FILE *fp, int verbose = ifa_verbose) {
   fprintf(fp, "\n");
 }
 
+// ifa/issues/041, third hypothesis: the dump is supposed to be read-only,
+// but make_AVar/unique_AVar CREATE on miss -- so a -v run mutates FA
+// state at a pass boundary, in the middle of iterating structures the
+// allocation can touch. Count how often that actually happens before
+// changing anything: IFA_DBG_DUMPALLOC reports creations per dump.
+static void *fa_dump_contour_for(Var *v, EntrySet *es) {
+  if (v->sym->nesting_depth) {
+    if (v->sym->nesting_depth != es->fun->sym->nesting_depth + 1) {
+      int i = v->sym->nesting_depth - 1;
+      if (i >= es->display.n) return nullptr;  // caller has already skipped these
+      return (void *)es->display.v[i];
+    }
+    return (void *)es;
+  }
+  if (v->is_internal) return (void *)es;
+  return GLOBAL_CONTOUR;
+}
+
 void fa_dump_types(FA *fa, FILE *fp) {
   Vec<Var *> gvars;
+  int dump_creates = 0, dump_finds = 0;
+  bool dump_alloc_dbg = getenv("IFA_DBG_DUMPALLOC") != nullptr;
   for (EntrySet *es : fa->ess) {
     Fun *f = es->fun;
     if (f->sym->name)
@@ -4057,13 +4077,40 @@ void fa_dump_types(FA *fa, FILE *fp) {
                   f->sym->name ? f->sym->name : "?", v->sym->name ? v->sym->name : "?", depth, es->display.n);
         continue;
       }
-      fa_dump_var_types(make_AVar(v, es), fp);
+      // ifa/issues/041: LOOK UP, never create. make_AVar allocates on
+      // miss, so the dump was mutating FA state at a pass boundary --
+      // measured on bh: 27, 82 and 8 AVars created in the first three
+      // dumps, and `-v` ended the run with total_ess 415 vs 414 and
+      // total_css 1578 vs 1577 without it. The verbose dump was
+      // perturbing the analysis it exists to measure, which matters more
+      // than the crash it was being investigated for: every -v pass
+      // trajectory used to verify a change was reading a slightly
+      // different analysis than the real compile.
+      //
+      // A (Var, contour) pair with no AVar was never reached by the
+      // analysis, so it has no type to show; skipping it loses nothing.
+      void *c = fa_dump_contour_for(v, es);
+      AVar *av = c ? v->avars.get(c) : nullptr;
+      if (dump_alloc_dbg) {
+        if (!av) ++dump_creates;
+        else ++dump_finds;
+      }
+      if (!av) continue;
+      fa_dump_var_types(av, fp);
     }
   }
   gvars.set_to_vec();
   fprintf(fp, "globals\n");
-  for (Var *v : gvars) if (!v->sym->is_constant && !v->sym->is_symbol)
-      fa_dump_var_types(unique_AVar(v, GLOBAL_CONTOUR), fp);
+  for (Var *v : gvars) if (!v->sym->is_constant && !v->sym->is_symbol) {
+      AVar *gav = (AVar *)v->avars.get(GLOBAL_CONTOUR);
+      if (dump_alloc_dbg) {
+        if (!gav) ++dump_creates;
+        else ++dump_finds;
+      }
+      if (gav) fa_dump_var_types(gav, fp);
+  }
+  if (dump_alloc_dbg)
+    fprintf(stderr, "[dumpalloc] pass creates=%d finds=%d\n", dump_creates, dump_finds);
 }
 
 static void show_name(FILE *fp, AVar *av) {
