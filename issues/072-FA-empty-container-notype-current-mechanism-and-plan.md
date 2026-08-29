@@ -311,3 +311,51 @@ ifa round; pyc's fixpoint is incremental, so the pass must only **widen**:
    half — boxing may still block until 018/030).
 4. `test_pyc.py` 234/0 both backends; determinism gate + sweep buckets
    net-positive, no regressions; dijkstra2/fysphun pass-count unchanged.
+
+
+## 2026-08-29: a SECOND residual — a DISPATCH on the element, not a read
+
+This issue's residual is described throughout as "a read that returns
+the element as a value" (`x[0]` on a never-written `[]`), and
+`tests/empty_container_elem.py` pins exactly that. Work on
+[issues/118](../../issues/118-set-and-dict-are-linear-scans.md) found a
+second shape the write-up does not cover, and it is the one that blocks
+hashed `set`/`dict`:
+
+    set_from_iterable.py:20: warning: 'item' has no type
+        empty = set([])
+      called from __pyc__.py:2648      <- set.update's `for item in other`
+
+    dict_from_iterable.py:21: warning: 'pair' has no type
+        empty = dict([])
+
+The container is not being READ here. A METHOD IS BEING DISPATCHED on its
+element — `item.__hash__()`, which a hash table cannot avoid and which
+the linear scan it replaces never needed (`==` on an unknown-typed value
+is tolerated; a dispatch is not). So the residual is wider than "a scalar
+read": it is any operation that needs the element to have a type, and a
+codegen trap (043 option 1) does not address the dispatch half.
+
+### It reproduces only through the builtin containers
+
+Four user-level replicas all compile CLEANLY today:
+
+| program | result |
+|---|---|
+| `x = []` then `for v in x: print(v.__hash__())` | clean |
+| the same inside a function called with `[]` and with `[3, 4]` | clean |
+| a class whose `add(item)` does `item.__hash__()`, filled from `[]` | clean |
+| the same reached from a factory with BOTH a typed and an empty source | clean |
+
+So forward inference handles the ordinary cases, exactly as this issue
+says. What does not survive is the same dispatch inside `set`/`dict` —
+classes instantiated by every program, whose methods are one contour
+shared by every container in the program. There is no standalone
+reproducer today; the shape needs a hashed container, which is not in the
+tree (see issues/118 for why, and for the implementation preserved in
+scratch).
+
+That is worth knowing before anyone re-attempts seeding: the negative
+result recorded above was measured against the READ residual. The
+dispatch residual is a different consumer and might respond differently
+— but nothing here has measured that, and it should not be assumed.
