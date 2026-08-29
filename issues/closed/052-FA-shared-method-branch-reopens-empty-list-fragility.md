@@ -1,28 +1,32 @@
 # 052 — Adding a branch to a shared clone_methods_per_cs method reopens issue 040's empty-list fragility
 
-**Status:** **largely resolved 2026-08-29 — recommend closing as
-superseded by [072](072-FA-empty-container-notype-current-mechanism-and-plan.md)**;
-see the re-measurement at the end. The failure this issue is about — a
-no-op branch in a shared method breaking an unrelated program — no longer
-happens; what is left is the ordinary empty-container NOTYPE that 072
-already owns and pins.
+**Status:** **closed 2026-08-29 — superseded by
+[072](../072-FA-empty-container-notype-current-mechanism-and-plan.md).**
+The failure this issue is about — a no-op branch in a shared method
+breaking an unrelated program — no longer happens; see the re-measurement
+at the end. What is left is the ordinary empty-container NOTYPE that 072
+already owns and pins with `tests/empty_container_elem.py`.
+
+Reopen from here if a shared-method branch ever breaks an unrelated
+program again: the repro below is the regression test, and re-running it
+is a two-minute check.
 
 Previously: open (re-verified 2026-08-26), found 2026-07-19 while fixing negative-index
 support for `list.__getitem__` (see
-[../../issues/025-shedskin-examples-coverage.md](../../issues/025-shedskin-examples-coverage.md)'s
+[../../../issues/025-shedskin-examples-coverage.md](../../../issues/025-shedskin-examples-coverage.md)'s
 "Plain negative indexing fixed" entry). Not fixed here — worked
 around at the codegen level instead (see that entry) once this was
 found to be the same underlying class of issue as 040/043, not a new
 one with its own fix.
 **Affects:** whatever produces issue 040's fix (`ifa/analysis/fa.cc`'s
 `clone_methods_per_cs`/per-constant-CS/`PER_CS_RECEIVER` machinery,
-per [045](closed/045-receiver-cs-method-cloning.md)) — this issue is a
+per [045](045-receiver-cs-method-cloning.md)) — this issue is a
 *regression finder* for that machinery's actual scope, not a new
 subsystem.
-**Related:** [040](closed/040-empty-list-shared-clone-type-inference.md)
+**Related:** [040](040-empty-list-shared-clone-type-inference.md)
 (marked FIXED — this issue shows that fix's own verification repro
 reopens with an unrelated, trivial change to the method it's about);
-[043](closed/043-empty-container-inference-options.md) (same family, "every
+[043](043-empty-container-inference-options.md) (same family, "every
 candidate repro checked... works today" — this is a candidate that
 doesn't).
 
@@ -197,7 +201,7 @@ so `key < 0` and `key < -1` are indistinguishable at that level.
 
 `PYC_DBG_STAGES=1` reports `STAGES: TYPE_CONFL` for **both** the passing
 baseline and the failing variant. `PER_CS_RECEIVER` -- the stage
-[045](closed/045-receiver-cs-method-cloning.md) added as 040's fix, and
+[045](045-receiver-cs-method-cloning.md) added as 040's fix, and
 which this issue names as the affected machinery -- **never fires on
 this program at all**, in either direction. Lifting its quiescence gate
 (`PYC_RECVFAN=2` and `=3`) does not change the outcome either.
@@ -259,7 +263,7 @@ are gone entirely; the shared method can carry a branch.
 `expression has no type` on `print(k)` where `k = []`: `list.__str__`
 reaches `self[k].__repr__()` on an element of a provably-empty container,
 which is exactly the residual
-[072](072-FA-empty-container-notype-current-mechanism-and-plan.md)
+[072](../072-FA-empty-container-notype-current-mechanism-and-plan.md)
 describes and pins with `tests/empty_container_elem.py`. Nothing about it
 is specific to shared methods, `clone_methods_per_cs`, or the added
 branch — the same two warnings appear with `__getitem__` untouched.

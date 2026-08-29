@@ -25,7 +25,7 @@ one significant root (chull-family) is *missing default object
 inference family
 ([040](040-empty-list-shared-clone-type-inference.md) /
 [043](043-empty-container-inference-options.md) /
-[052](../052-FA-shared-method-branch-reopens-empty-list-fragility.md)); both
+[052](052-FA-shared-method-branch-reopens-empty-list-fragility.md)); both
 FA roots remain open and both reduce to the same lever —
 **CreationSet-level (element-type) splitting of shared container
 methods**, NOT anything receiver-specific (a mid-investigation draft

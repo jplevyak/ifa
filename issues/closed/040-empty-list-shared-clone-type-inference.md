@@ -13,7 +13,7 @@ looks — adding so much as a no-op comparison (`if key < 0: pass`) to
 `list.__getitem__` reopens the *exact* failure on this issue's own
 `tests/empty_list_print.py` repro, with no other change to the
 program. See
-[052](../052-FA-shared-method-branch-reopens-empty-list-fragility.md).
+[052](052-FA-shared-method-branch-reopens-empty-list-fragility.md).
 
 ## Complete mechanism (2026-07-15)
 

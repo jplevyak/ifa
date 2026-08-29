@@ -18,6 +18,13 @@ boxing subsystem. The `ifa()`/shedskin design section below is retained
 as reference for the data-polymorphism splitting (which pyc's
 `split_css` already does), not as a seeding recipe.
 
+> **Supersedes [052](closed/052-FA-shared-method-branch-reopens-empty-list-fragility.md)**
+> (closed 2026-08-29). 052 filed the case where adding a no-op branch to a
+> shared `clone_methods_per_cs` method broke an unrelated program; that no
+> longer reproduces, and its surviving two warnings are this issue's
+> residual — a read of an element of a provably-empty container. Its repro
+> is worth re-running as a regression check when this area changes.
+
 ## Prototype result (2026-07-28) — read this before re-attempting
 
 The seeding half of the design was prototyped behind a
@@ -101,7 +108,7 @@ container from a literal. Neither salvages the *seeding* idea itself.
 (`split_css`, `creation_point`, `get_element_avar`, `run_split_stages`,
 the `AVar::backward`/`setters` edges).
 **Related:** [040](closed/040-empty-list-shared-clone-type-inference.md),
-[052](052-FA-shared-method-branch-reopens-empty-list-fragility.md),
+[052](closed/052-FA-shared-method-branch-reopens-empty-list-fragility.md),
 [045](closed/045-receiver-cs-method-cloning.md) (the existing per-CS
 lever), [063](closed/063-no-type-bucket-triage.md) (the corpus "no type"
 bucket), [018](../../issues/018-dict-mixed-key-types-boxing-failure.md) /

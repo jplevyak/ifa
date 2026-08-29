@@ -473,11 +473,12 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   (`can_raise`). Direction 3a (native can-raise fact in FA's own
   fixed point) landed 2026-07-18; 1/2/3b remain open, 3b being a
   large general global-slot-propagation feature.
-- [052-FA-shared-method-branch-reopens-empty-list-fragility.md](052-FA-shared-method-branch-reopens-empty-list-fragility.md)
-  — adding *any* branch to a shared `clone_methods_per_cs` method
-  can reopen closed-040's empty-list fragility; worked around at the
-  codegen level, not fixed at the FA level. No test currently catches
-  this class of regression.
+- [closed/052-FA-shared-method-branch-reopens-empty-list-fragility.md](closed/052-FA-shared-method-branch-reopens-empty-list-fragility.md)
+  — **closed 2026-08-29, superseded by 072.** Adding *any* branch to a
+  shared `clone_methods_per_cs` method used to reopen closed-040's
+  empty-list fragility; re-measured, it no longer does (`rc=0`, correct
+  output, where it used to be `fail: program does not type`). The two
+  surviving warnings are 072's empty-container residual, not this.
 - [055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md](055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md)
   — adding `set.__sub__` hangs/crashes compiling plcfrs.py (flat
   EntrySet count, growing worklist — a non-convergence signature).
