@@ -328,3 +328,76 @@ so a genuinely cascading case (fact A's fold exposes fact B) doesn't
 silently under-optimize without anyone noticing, since nothing today
 would report that as a bug — it would just look like a missed, unnoticed
 optimization.
+
+
+## 2026-08-29: measured what FA already does, and what is left
+
+Asked the sharp version of this question — FA does constant propagation
+*in the type lattice*, so what is still required? Measured rather than
+reasoned:
+
+**FA's in-lattice propagation is already sparse and CONDITIONAL, and it
+cascades.**
+
+```python
+c = 0
+if c: x = "str"
+else: x = 5
+print(x + 1)          # compiles, prints 6
+```
+
+The dead arm contributes NOTHING to `x` — if it did, `x` would be
+`{int64, str}` and the program would be refused. Add a level and it still
+holds:
+
+```python
+c = 0
+if c: d = 1
+else: d = 0
+if d: x = "str"
+else: x = 5
+print(x + 1)          # compiles, prints 6
+```
+
+`c` folds, which folds `d`, which types `x`. That is the fold-then-refold
+cascade this issue asks for, and FA's own iterative worklist already
+delivers it *for facts FA can derive itself*. So the "no SCCP" framing
+above is too strong: what is missing is not conditional propagation and
+not iteration, it is (a) the layer above FA and (b) the facts FA cannot
+derive.
+
+**(a) The detector layer is still one hand-wired detector.** Still
+exactly one — `exc_check_fold.cc`'s `mark_exc_checks_constant`, wired by
+hand in `pyc.cc` after `compute_fun_can_raise()`. Nothing re-enters FA
+after it folds, so a fold that would expose a new FA-derivable fact does
+not get one. Directions 1 and 2 are about this layer only, and neither
+has a second fact to justify it yet.
+
+**(b) The substantive gap is 3b, and it now has a repro.**
+`tests/global_slot_call_graph_precision.py`, 8 lines, `.known_issue`:
+
+```python
+g = 0
+def setup():
+    global g
+    g = "five"
+def use():
+    return len(g)
+setup()
+print(use())
+```
+
+CPython prints `4`; pyc refuses with `program does not type`. `g` is
+written twice and read once, and the call graph proves the read sees a
+`str` — but the read gets the flow-insensitive union of every write,
+`{int64, str}`. issues/031 gave each global READ its own contoured temp;
+nothing gives the VALUE call-graph precision, which is exactly what 3b
+describes.
+
+Note this is NOT [018](../../issues/018-dict-mixed-key-types-boxing-failure.md):
+no valid program state has `g` holding both, so no representation is
+missing. It is interprocedural mem2reg for a scalar slot, as 3b says.
+
+**So the answer to "what is still required" is 3b, and only 3b** — plus
+directions 1/2 whenever a second foldable fact actually turns up. The
+constant propagation and the fixed point are already there.
