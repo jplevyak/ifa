@@ -659,3 +659,18 @@ backends.
 `tests/global_slot_call_graph_precision.py` stays a known issue by
 construction -- its store is in another function -- and is what stages 2
 and 3 are for.
+
+
+## The SCCP half is now its own issue
+
+Everything above about constant propagation and dead code — directions 1
+and 2, and the "no SCCP fixed point" framing this issue opened with — is
+split out to
+[119](119-sccp-as-an-outer-fixed-point-over-fa.md), with a staged plan
+grounded in what FA measurably already does (conditional propagation and
+cascades) and the one thing it does not (retractable executability, which
+119 solves by putting the fixed point OUTSIDE FA rather than making the
+lattice retractable).
+
+What remains here is 3b: interprocedural precision for a global slot.
+Stage 1 landed 2026-08-29 (above); stages 2 and 3 are open.
