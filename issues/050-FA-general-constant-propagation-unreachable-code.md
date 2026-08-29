@@ -456,3 +456,53 @@ Stage 1 alone would already type the common Python idiom of declaring a
 global with a placeholder (`g = None`, `count = 0`) and rewriting it with
 the real value before any read -- a shape that today poisons the cell's
 type for the whole program.
+
+
+### CORRECTION: fold in the TRANSFER FUNCTION, not by renaming — and then reflow is free
+
+The staging above says stage 1 is "SSU-rename module-data cells". That is
+the wrong shape, and it is bigger than it needs to be. Two facts settle
+it, both checked in the tree:
+
+**1. Reflow is only a problem ABOVE FA.** "Fold, then re-run to catch
+what the fold exposed" is the question the post-FA detector layer forces,
+because `exc_check_fold` runs once in a fixed pipeline slot. Inside FA
+there is nothing to arrange: its worklist already iterates, and folds
+already cascade — measured above, `c` folds, which folds `d`, which types
+`x`. So anything folded inside a transfer function gets reflow for free,
+and the whole "iterate the detector" design problem disappears rather
+than being solved.
+
+**2. There is already a precedent for folding in a transfer function,
+and it is 3a.** `IFACallbacks::provably_constant_isinstance(AVar
+*operand_av, EntrySet *es, PNode *send_pnode)` (`ifa.h:128`) is consulted
+by `fa.cc`'s `P_prim_isinstance` transfer function (`fa.cc:3117`) before
+its own logic. Exactly the ingredients a global load needs.
+
+**The hook already has what it needs.** A global read is
+`if1_move(cell_sym → temp)` (issues/031 step 2), and FA's `Code_MOVE`
+transfer (`fa.cc:3438`) runs with both `p` (the PNode) and `es` in hand:
+
+```cpp
+case Code_MOVE:
+  for (int i = 0; i < p->rvals.n; i++) {
+    AVar *lhs = make_AVar(p->lvals[i], es), *rhs = make_AVar(p->rvals.v[i], es);
+    ...
+```
+
+**And dominators are available during FA**, which is the fact that makes
+the walk possible without touching SSU: `build_ssu()` calls
+`build_cfg_dominators(this)` (`ssu.cc:552`) from the `Fun` constructor
+(`fun.cc:67`), long before `fa->analyze()`. The `build_cfg_dominators`
+loop in `ifa.cc:57` is a REBUILD after cloning, not the first one.
+
+So stage 1 becomes: **at a global-load MOVE, walk back over the PNode CFG
+to the nearest dominating write of that cell; if one is found, use its
+AVar's type instead of the shared cell's union.** No IR change, no SSU
+change, no new pass, no reflow plumbing -- one callback consulted from
+one existing transfer function, and FA's own fixed point does the rest.
+
+Stage 2 is unchanged and is what bounds the walk: it must stop at any
+call whose transitive mod-set contains the cell. Stage 3 (the
+interprocedural per-ES summary) is unchanged, and stages 1-2 remain its
+intra-procedural transfer function.
