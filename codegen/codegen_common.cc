@@ -239,6 +239,7 @@ void cg_build_new_to_val_map(FA *fa) {
     // (union-typed) self arg.
     MPosition *self_cp = nullptr;
     bool self_is_union = false;
+    Sym *self_type = nullptr;  // the concrete self formal, when it isn't a union
     int direct_slot = -1;  // slot found when self ISN'T a union -- old, single-slot behavior
     {
       MPosition argp;
@@ -264,13 +265,20 @@ void cg_build_new_to_val_map(FA *fa) {
           if (found_k >= 0) {
             self_cp = cp;
             self_is_union = from_union;
-            if (!from_union) direct_slot = found_k;
+            if (!from_union) {
+              direct_slot = found_k;
+              self_type = ccls;
+            }
             break;
           }
         }
       }
     }
-    if (!self_cp) continue;
+    static int dbg_slot = getenv("IFA_DBG_POLYSLOT") ? 1 : 0;
+    if (!self_cp) {
+      if (dbg_slot) fprintf(stderr, "[polyslot] %s: NO SELF ARG found (fun %d)\n", method_name, fun_val->id);
+      continue;
+    }
 
     // Walk every EntrySet for fun_val; look only at the self arg's AType.
     // Track specificity = sorted.n of the ES: lower means more specific.
@@ -300,6 +308,32 @@ void cg_build_new_to_val_map(FA *fa) {
         // registration instead -- see the directly_owned_by_name
         // pre-pass comment above for why.
         if (self_is_union && owned_by_others && owned_by_others->set_in(cs->sym->name)) continue;
+        // issues/118: a method clone may only implement a class's slot if
+        // the class it was DECLARED on is that class or an ancestor of
+        // it. FA's self AType for a clone carries every CreationSet that
+        // reached it, and a degenerate union puts foreign classes in
+        // there -- so on shedskin_examples/loop with a hashed dict,
+        // __pyc_None_type__::__eq__ (self typed {nil, Basic_block}) won
+        // Basic_block's __eq__ slot. That method is None's identity
+        // compare: it answers False for every non-None argument, so a
+        // dict lookup never matched its own key and the program silently
+        // computed the wrong answer.
+        //
+        // The declared owner is the method Sym's self formal's
+        // must_specialize -- the same thing assign_fun_cg_strings prints
+        // as the `Class::` half of a clone's name. `object::__eq__` still
+        // registers for every class, since object is everyone's ancestor;
+        // an inherited method whose self is a Type_SUM still registers
+        // for the members that specialize its owner (issue 026's case).
+        {
+          Sym *owner = (fun_val->sym->has.n > 1) ? fun_val->sym->has[1]->must_specialize : nullptr;
+          if (owner && cs->sym != owner && !owner->specializers.set_in(cs->sym)) {
+            if (dbg_slot)
+              fprintf(stderr, "[polyslot] %s: %s is not an ancestor of %s -- not registering\n", method_name,
+                      owner->name ? owner->name : "?", cs->sym->name ? cs->sym->name : "?");
+            continue;
+          }
+        }
         // Resolve the slot for THIS concrete class. When the self arg
         // wasn't a union, keep the ORIGINAL behavior exactly (reuse
         // direct_slot, found once above) -- only a union-typed self
@@ -318,12 +352,21 @@ void cg_build_new_to_val_map(FA *fa) {
           for (int k = 0; k < cs->sym->has.n; k++)
             if (cs->sym->has[k] && cs->sym->has[k]->name == method_name && cg_field_live(cs->sym, k)) { slot = k; break; }
         }
-        if (slot < 0) continue;
+        if (slot < 0) {
+          if (dbg_slot)
+            fprintf(stderr, "[polyslot] %s: cs %s has NO LIVE SLOT for it\n", method_name,
+                    cs->sym->name ? cs->sym->name : "?");
+          continue;
+        }
+        int n_defs = 0, n_es_defs = 0, n_live = 0;
         for (AVar *def_av : cs->defs) {
+          ++n_defs;
           if (!def_av || !def_av->contour_is_entry_set) continue;
+          ++n_es_defs;
           EntrySet *creator_es = (EntrySet *)def_av->contour;
           Fun *fun_new = creator_es->fun;
           if (!fun_new || !fun_new->live) continue;
+          ++n_live;
           Vec<PolymorphicSlot> *slots = cg_new_to_val_map.get(fun_new);
           if (!slots) {
             slots = new Vec<PolymorphicSlot>();
@@ -352,6 +395,11 @@ void cg_build_new_to_val_map(FA *fa) {
           ps.specificity = specificity;
           slots->add(ps);
         }
+        if (dbg_slot)
+          fprintf(stderr, "[polyslot] %s fun=%d selfunion=%d selftype=%s : cs %s slot %d defs=%d es_defs=%d live=%d\n",
+                  method_name, fun_val->id, self_is_union ? 1 : 0,
+                  (self_type && self_type->name) ? self_type->name : "-", cs->sym->name ? cs->sym->name : "?", slot,
+                  n_defs, n_es_defs, n_live);
       }
     }
   }
