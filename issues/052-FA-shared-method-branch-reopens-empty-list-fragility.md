@@ -1,6 +1,13 @@
 # 052 — Adding a branch to a shared clone_methods_per_cs method reopens issue 040's empty-list fragility
 
-**Status:** open (re-verified 2026-08-26), found 2026-07-19 while fixing negative-index
+**Status:** **largely resolved 2026-08-29 — recommend closing as
+superseded by [072](072-FA-empty-container-notype-current-mechanism-and-plan.md)**;
+see the re-measurement at the end. The failure this issue is about — a
+no-op branch in a shared method breaking an unrelated program — no longer
+happens; what is left is the ordinary empty-container NOTYPE that 072
+already owns and pins.
+
+Previously: open (re-verified 2026-08-26), found 2026-07-19 while fixing negative-index
 support for `list.__getitem__` (see
 [../../issues/025-shedskin-examples-coverage.md](../../issues/025-shedskin-examples-coverage.md)'s
 "Plain negative indexing fixed" entry). Not fixed here — worked
@@ -227,3 +234,44 @@ Next step for whoever takes it: a per-pass trace of *which* NOTYPE
 violations `split_for_violations` clears and which it does not, baseline
 vs `key < 0`, rather than any further source-level bisection -- the
 source-level bisection is exhausted and is recorded in full above.
+
+
+## Re-measured 2026-08-29: the fragility is gone
+
+Re-ran this issue's own repro verbatim — `if key < 0: pass` added to
+`list.__getitem__` in `__pyc__/04_sequence.py`, then
+`./pyc tests/empty_list_print.py`:
+
+| | 2026-08-26 | 2026-08-29 |
+|---|---|---|
+| exit | `fail: program does not type` | **rc=0** |
+| binary | none | produced |
+| output | — | `[2, 3]` / `[]`, correct |
+| diagnostics | 3 sites (`__pyc__` 662, 665, 852) + fail | **2 warnings**, both at `print(k)` |
+
+So the thing that made this worth filing — *"any future change that adds a
+branch/comparison to a `clone_methods_per_cs` class's shared method is at
+risk of silently breaking every program that has both an empty and a
+non-empty instance"* — does not reproduce. The internal `__pyc__` sites
+are gone entirely; the shared method can carry a branch.
+
+**What remains is 072, not this.** The two surviving warnings are
+`expression has no type` on `print(k)` where `k = []`: `list.__str__`
+reaches `self[k].__repr__()` on an element of a provably-empty container,
+which is exactly the residual
+[072](072-FA-empty-container-notype-current-mechanism-and-plan.md)
+describes and pins with `tests/empty_container_elem.py`. Nothing about it
+is specific to shared methods, `clone_methods_per_cs`, or the added
+branch — the same two warnings appear with `__getitem__` untouched.
+
+**Not attributed to a specific change**, and the obvious candidates were
+tested and are not it: `PYC_CSMOLD` (0/1/3), `PYC_PROMOTE_FIRST` (0/1/2)
+and the 050-stage-1 global-load fold all give the identical result, and
+breaking that fold's precondition (a second store to `k` from another
+function) does not bring the failure back. It resolved somewhere in the
+2026-08-26..29 FA/codegen work without a flag to bisect on.
+
+**Recommendation: close as superseded by 072.** The regression-finder role
+this issue was filed for is served by re-running the repro above; if a
+shared-method branch ever breaks an unrelated program again, reopen from
+`closed/`.
