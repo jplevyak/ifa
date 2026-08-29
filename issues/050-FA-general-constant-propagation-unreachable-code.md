@@ -401,3 +401,58 @@ missing. It is interprocedural mem2reg for a scalar slot, as 3b says.
 **So the answer to "what is still required" is 3b, and only 3b** — plus
 directions 1/2 whenever a second foldable fact actually turns up. The
 constant propagation and the fixed point are already there.
+
+
+## Pursuing 3b: where it actually starts, measured
+
+3b is written as one large interprocedural summary (per-ES global
+in/out threaded through `AEdge`). Measuring first shows it decomposes,
+and that the interprocedural half is NOT the first thing needed.
+
+**The cell is not ordered even inside ONE function.**
+
+```python
+g = 0
+g = "five"
+print(len(g))        # CPython: 4;  pyc: fail: program does not type
+```
+
+No call graph is involved. The second write kills the first, and the
+ordering is right there in the function's own PNode graph -- but a
+module-data cell lives in the single shared `GLOBAL_CONTOUR` AVar
+(fa.h's GLOBAL_CONTOUR note), so the read still gets `{int64, str}`.
+`tests/global_slot_module_level_order.py` pins it; the interprocedural
+version is `tests/global_slot_call_graph_precision.py`.
+
+That reframes the work. issues/031 step 2 gave each global READ an
+EntrySet-contoured, SSU-renamable temp and deliberately left the WRITES
+sharing one cell ("the cell's shared GLOBAL_CONTOUR AVar keeps the sound
+flow-insensitive union of all stores"). **The missing half is the writes.**
+
+### Staged plan, smallest first
+
+1. **Intra-function SSU for module-data cells.** Rename the cell inside a
+   function exactly as a local, so a read after a rewrite sees only the
+   last write. Reuses the SSU pass that already exists; needs no new
+   dataflow. Fixes `global_slot_module_level_order.py`.
+
+   Soundness bound: the chain must break at any call that could itself
+   write the cell. So it needs --
+
+2. **A per-Fun mod-set over module-data cells**, transitive over the call
+   graph. Structurally identical to `compute_fun_can_raise()` (post-clone,
+   over `Fun::calls`), which already computes exactly this shape for a
+   single boolean; this generalizes it from one bit to a small set. A call
+   whose mod-set contains the cell ends the current SSU chain and starts a
+   fresh one at the shared cell value.
+
+3. **Only then the interprocedural summary** 3b describes — per-ES
+   global in/out threaded through `AEdge`, an annotation over the ES graph
+   that never participates in ES equivalence. This is what
+   `global_slot_call_graph_precision.py` needs, and stages 1-2 are its
+   intra-procedural transfer function, so it cannot be built first anyway.
+
+Stage 1 alone would already type the common Python idiom of declaring a
+global with a placeholder (`g = None`, `count = 0`) and rewriting it with
+the real value before any read -- a shape that today poisons the cell's
+type for the whole program.
