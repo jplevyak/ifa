@@ -560,3 +560,48 @@ A transfer-function fold remains attractive for facts that are stable
 across passes, and the extension point is a clean two-line addition when
 one turns up — but it is not the road to 3b. The prototype is preserved
 at `wip_gload_callback.cc` in the session scratch.
+
+
+### The dead-code aspect: it cannot help TODAY, but it points at a cheaper Wall 2
+
+Wall 2 above ends with "or every read folded and the slot then proven
+dead, which nothing currently does". Checking why:
+
+**The BOXING violation is raised inside FA, and liveness does not exist
+yet.** `fa.cc`'s own comment on the sibling check says it outright:
+
+    // No `av->var->live` test: Var::live is set by dead-code
+    // elimination, which runs AFTER this -- it is 0 for everything
+    // here, so requiring it silently suppressed every report.
+
+and BOXING is `always_fatal` (`fa.cc:4313`), so the compile is already
+refused before `mark_live_code` or `reclaim_dead_producer_chain` ever
+run. A write-only global cell is dead by any reasonable definition, and
+no amount of DCE reaches it in time. That is an ORDERING fact, not a
+fundamental one.
+
+**But it suggests a cheaper Wall 2 than splitting the slot.** FA does
+know, during analysis, whether anything reads an AVar — `AVar::forward`
+is its consumer set. If the BOXING check skipped a cell whose AVar has no
+consumers, then folding every read (which skips the
+`flow_vars_assign(rhs, lhs)` edge, so the cell gains no consumer) would
+leave nothing to diagnose. No slot splitting, no SSU change, no
+dependence on DCE ordering.
+
+That reshapes the plan again:
+
+| obstacle | with slot splitting | with a consumer-aware BOXING check |
+|---|---|---|
+| Wall 2 (the slot's own type) | split the cell into two Vars | skip the check when nothing reads the cell |
+| Wall 1 (monotone fold) | still applies | still applies |
+
+So Wall 1 — a transfer-function fold must use a fact that cannot sharpen
+across passes — becomes the ONLY remaining obstacle, and it is the more
+tractable of the two: compute the cell's store set ONCE, after FA's
+EntrySet graph has stabilised, rather than incrementally as
+`Fun::fa_move_PNodes` fills in. `compute_es_can_raise()` already
+establishes that pattern for 3a's fact.
+
+Not implemented; recorded because it is a materially smaller stage 1 than
+the SSU renaming, and because the reason DCE cannot be used is a specific
+ordering constraint worth knowing rather than a dead end.
