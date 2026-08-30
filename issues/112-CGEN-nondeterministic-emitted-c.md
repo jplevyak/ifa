@@ -300,10 +300,81 @@ the index runs past the call site's rvals, so a varying `has` would flip
 exactly this decision — and issues/121 only canonicalised promotion
 order WITHIN a reanalyze round. It holds here.
 
-Still to identify: which input to the inlining decision varies. The
-remaining candidates are `f->calls`, the `single_send`/`chain_send`/
-`identity_send` maps, and the `p->rvals[i]->type == v->type` pointer
-comparisons.
+### ROOT CAUSE: union types are never interned
+
+Measured after `clone`, over 6 runs:
+
+| | distinct |
+|---|---|
+| Var ids in rvals/lvals | 1 — stable |
+| Var TYPE Sym **ids** | 5 |
+| Var type **identity RELATION** (renaming-invariant) | **3 — unstable** |
+
+The third row is the one that matters, and it needs the
+renaming-invariant hash (number each distinct type Sym by first
+encounter, hash the ordinals) — raw ids differ whenever `new_Sym()` is
+called in a different order, which is mere renaming. The relation
+itself — *which Vars share a type Sym* — genuinely varies.
+
+`IFACallbacks::make_LUB_type` is the **default no-op** (`ifa.h`:
+`virtual Sym *make_LUB_type(Sym *s) { return s; }`), and nothing
+overrides it. So `concretize_avar`/`concretize_var` (`clone.cc`) mint a
+**fresh Sym for every union** they build: two structurally identical
+unions are the same Sym only when they happened to be concretized
+together. Type identity is therefore a function of grouping order, not
+of structure.
+
+Both consumers compare types **by pointer**:
+
+- `inline_single_sends` guards with `p->rvals[i]->type == v->type` and
+  with `type_kind == Type_SUM` bail-outs, and
+- codegen selects C types and casts from the same Syms.
+
+Measured consequence: the second `simple_inlining` call makes **exactly
+2109 decisions in every run** but with a different hash of
+`(kind, caller, pnode, callee)` in 5 of 6 runs — the same NUMBER of
+inlines landing on different call sites.
+
+### The full chain, root to symptom
+
+1. `clone` concretizes union types without interning → which Vars share
+   a type Sym varies.
+2. `inline_single_sends`' `==` guards flip → same count, different call
+   sites inlined.
+3. Those rewrite different call sites' argument lists → `rvals` after
+   `ifa_optimize` differs (stable after `clone`, 4 distinct after).
+4. `Fun::collect_Vars` returns a different var SEQUENCE.
+5. `cg.cc` numbers temporaries in that order, and its `!cg_get_string(v)`
+   first-claimant rule picks which clone declares a Var shared between
+   clones; the getter emission skips a statement whose destination has
+   no C string.
+6. One `comTxRx` getter is emitted in a different clone, and every
+   later `t<N>` in both clones renumbers — ~700 changed lines from one
+   root.
+
+### Proposed fix
+
+**Intern union Syms by their component list.** The components are
+already sorted (`compar_syms`, above), so the sorted id list is a
+canonical key: build it, look it up, and return the existing Sym instead
+of minting a new one. Structurally equal unions then compare equal by
+pointer, and every `==` guard downstream becomes order-independent.
+
+Scope warning: this changes type identity globally, so it needs the full
+gate set plus a corpus `check` sweep, not just msp_ss.
+
+### Methodology note — id renaming fooled this investigation twice
+
+Two intermediate conclusions here were wrong because a hash over
+`->id` cannot distinguish "different order/content" from "same content,
+ids assigned in a different order":
+
+- "FA is nondeterministic" (it was two OSC lines misread as one), and
+- "collect_Vars returns different var COUNTS" (the counts and multiset
+  match at the FIRST divergence; the later differences are cascade).
+
+Any probe here must either compare a renaming-invariant projection, or
+be pinned to the FIRST diverging record rather than an aggregate.
 
 ### (superseded) It looked like a CODEGEN issue — the IR reaching codegen is stable
 

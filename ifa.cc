@@ -123,7 +123,30 @@ void ifa_dbg_bodies(cchar *tag) {
       for (Var *v : p->rvals) hr = (hr ^ (unsigned long)(v ? v->id : 0)) * 1099511628211UL;
       hr = (hr ^ 0x9e3779b9UL) * 1099511628211UL;  // node separator
     }
-    fprintf(stderr, "BODY %s fun=%d n=%d phi=%d phy=%d h=%lx rv=%lx\n", tag, f->id, ps.n, nphi, nphy, h, hr);
+    // Var TYPE identity: inline_single_sends decides with
+    // `p->rvals[i]->type == v->type`, a Sym POINTER compare, so if
+    // structurally-equal types are sometimes one Sym and sometimes two,
+    // that guard flips (ifa/112).
+    unsigned long ht = 1469598103934665603UL;
+    // RENAMING-INVARIANT: number each distinct type Sym by first
+    // encounter and hash those ordinals, not the ids. Raw ids differ
+    // whenever new_Sym() is called in a different order, which is mere
+    // renaming; what the `==` guard in inline_single_sends actually
+    // depends on is WHICH Vars share a type -- this relation.
+    Vec<Sym *> seen;
+    Vec<Var *> tv;
+    for (PNode *p : ps) {
+      for (Var *v : p->rvals) tv.add(v);
+      for (Var *v : p->lvals) tv.add(v);
+    }
+    for (Var *v : tv) {
+      Sym *t = v ? v->type : nullptr;
+      int ord = -1;
+      for (int i = 0; i < seen.n; i++) if (seen[i] == t) { ord = i; break; }
+      if (ord < 0) { ord = seen.n; seen.add(t); }
+      ht = (ht ^ (unsigned long)ord) * 1099511628211UL;
+    }
+    fprintf(stderr, "BODY %s fun=%d n=%d phi=%d phy=%d h=%lx rv=%lx ty=%lx\n", tag, f->id, ps.n, nphi, nphy, h, hr, ht);
   }
 }
 

@@ -23,6 +23,21 @@ void inline_events_disable() { inline_events_enabled = false; }
 void inline_events_reset() { inline_events_storage.clear(); }
 const Vec<InlineEvent *> &inline_events_get() { return inline_events_storage; }
 
+// ifa/issues/112: count/hash inlining DECISIONS independently of
+// inline_events_enabled, which is false in production -- so
+// inline_events_storage cannot be used to observe what actually fired.
+static unsigned long dbg_inl_hash = 1469598103934665603UL;
+static int dbg_inl_n = 0;
+static void dbg_note_inline(int k, Fun *caller, PNode *pnode, Fun *callee) {
+  static int on = -1;
+  if (on < 0) on = getenv("IFA_DBG_BODIES") ? 1 : 0;
+  if (!on) return;
+  ++dbg_inl_n;
+#define M(x) (dbg_inl_hash = (dbg_inl_hash ^ (unsigned long)(x)) * 1099511628211UL)
+  M(k); M(caller ? caller->id : 0); M(pnode ? pnode->id : 0); M(callee ? callee->id : 0);
+#undef M
+}
+
 static void record_inline_event(InlineEventKind k, Fun *caller, PNode *pnode, Fun *callee) {
   if (!inline_events_enabled) return;
   InlineEvent *e = new InlineEvent;
@@ -573,6 +588,46 @@ static int inline_single_sends(FA *fa) {
     single_send.put(f, p);
   Lskip:;
   }
+  // ifa/issues/112: which INPUT to the inlining decision varies? Hash
+  // the three, each in a canonical (id-sorted) walk so the probe cannot
+  // itself be the thing that moves.
+  static int dbg_inl = -1;
+  if (dbg_inl < 0) dbg_inl = getenv("IFA_DBG_BODIES") ? 1 : 0;
+  if (dbg_inl) {
+    Vec<Fun *> fs2;
+    for (Fun *f : fa->funs) if (f) fs2.add(f);
+    qsort_by_id(fs2);
+    unsigned long hc = 1469598103934665603UL, hss = 1469598103934665603UL, hid = 1469598103934665603UL;
+#define MIX(h, x) (h = (h ^ (unsigned long)(x)) * 1099511628211UL)
+    for (Fun *f : fs2) {
+      for (PNode *p : f->fa_all_PNodes) {
+        Vec<Fun *> *c = f->calls.get(p);
+        MIX(hc, p->id);
+        if (c) {
+          Vec<Fun *> t;
+          for (Fun *x : *c) if (x) t.add(x);
+          qsort_by_id(t);
+          for (Fun *x : t) MIX(hc, x->id);
+        }
+        MIX(hc, 0x9e3779b9UL);
+      }
+      PNode *ss = single_send.get(f);
+      MIX(hss, f->id);
+      MIX(hss, ss ? ss->id : 0);
+      MIX(hid, f->id);
+      MIX(hid, identity_send.get(f));
+    }
+#undef MIX
+    // chain_send too -- it gates the OTHER inlining arm.
+    unsigned long hch = 1469598103934665603UL;
+    for (Fun *f : fs2) {
+      Vec<PNode *> *ch = chain_send.get(f);
+      hch = (hch ^ (unsigned long)f->id) * 1099511628211UL;
+      if (ch) for (PNode *q : *ch) hch = (hch ^ (unsigned long)(q ? q->id : 0)) * 1099511628211UL;
+      hch = (hch ^ 0x9e3779b9UL) * 1099511628211UL;
+    }
+    fprintf(stderr, "INL calls=%lx single=%lx ident=%lx chain=%lx\n", hc, hss, hid, hch);
+  }
   for (Fun *f : fa->funs) {
     assert(f->live);
     for (PNode *p : f->fa_all_PNodes) {
@@ -587,17 +642,17 @@ static int inline_single_sends(FA *fa) {
           if (chain && !prim_chain_substitution_safe(fn, p, chain)) chain = nullptr;  // ifa/issues/046
           if (chain) {
             inline_prim_chain(f, p, fn, chain);
-            record_inline_event(INLINE_PRIM_CHAIN, f, p, fn);
+            record_inline_event(INLINE_PRIM_CHAIN, f, p, fn); dbg_note_inline(INLINE_PRIM_CHAIN, f, p, fn);
           } else {
             PNode *s = single_send.get(fn);
             if (s) {
               inline_single_pnode(f, p, fn, s);
-              record_inline_event(INLINE_SINGLE_SEND, f, p, fn);
+              record_inline_event(INLINE_SINGLE_SEND, f, p, fn); dbg_note_inline(INLINE_SINGLE_SEND, f, p, fn);
             }
             int i = identity_send.get(fn);
             if (i) {
               convert_to_move(p, i - 1);
-              record_inline_event(INLINE_IDENTITY, f, p, fn);
+              record_inline_event(INLINE_IDENTITY, f, p, fn); dbg_note_inline(INLINE_IDENTITY, f, p, fn);
             }
           }
         }
@@ -615,24 +670,24 @@ static int inline_single_sends(FA *fa) {
             for (Var *v : c->rvals) p->rvals.add(v);
           }
           for (int i = 1; i < rvals.n; i++) p->rvals.add(rvals[i]);
-          record_inline_event(INLINE_CLOSURE, f, p, 0);
+          record_inline_event(INLINE_CLOSURE, f, p, 0); dbg_note_inline(INLINE_CLOSURE, f, p, 0);
           if (calls && calls->n == 1) {
             Fun *fn = calls->v[0];
             Vec<PNode *> *chain = chain_send.get(fn);
             if (chain && !prim_chain_substitution_safe(fn, p, chain)) chain = nullptr;  // ifa/issues/046
             if (chain) {
               inline_prim_chain(f, p, fn, chain);
-              record_inline_event(INLINE_PRIM_CHAIN, f, p, fn);
+              record_inline_event(INLINE_PRIM_CHAIN, f, p, fn); dbg_note_inline(INLINE_PRIM_CHAIN, f, p, fn);
             } else {
               PNode *s = single_send.get(fn);
               if (s) {
                 inline_single_pnode(f, p, fn, s);
-                record_inline_event(INLINE_SINGLE_SEND, f, p, fn);
+                record_inline_event(INLINE_SINGLE_SEND, f, p, fn); dbg_note_inline(INLINE_SINGLE_SEND, f, p, fn);
               }
               int i = identity_send.get(fn);
               if (i) {
                 convert_to_move(p, i - 1);
-                record_inline_event(INLINE_IDENTITY, f, p, fn);
+                record_inline_event(INLINE_IDENTITY, f, p, fn); dbg_note_inline(INLINE_IDENTITY, f, p, fn);
               }
             }
           }
@@ -668,6 +723,19 @@ int simple_inlining(FA *fa) {
     int before = inline_events_storage.n;
     inline_single_sends(fa);
     if (inline_events_storage.n == before) break;
+  }
+  // ifa/issues/112: the DECISIONS themselves, in the order taken.
+  static int dbg_ev = -1;
+  if (dbg_ev < 0) dbg_ev = getenv("IFA_DBG_BODIES") ? 1 : 0;
+  if (dbg_ev) {
+    unsigned long he = 1469598103934665603UL;
+    for (InlineEvent *e : inline_events_storage) {
+      he = (he ^ (unsigned long)e->kind) * 1099511628211UL;
+      he = (he ^ (unsigned long)(e->caller ? e->caller->id : 0)) * 1099511628211UL;
+      he = (he ^ (unsigned long)(e->pnode ? e->pnode->id : 0)) * 1099511628211UL;
+      he = (he ^ (unsigned long)(e->callee ? e->callee->id : 0)) * 1099511628211UL;
+    }
+    fprintf(stderr, "INLEVENTS n=%d h=%lx | decisions n=%d h=%lx\n", inline_events_storage.n, he, dbg_inl_n, dbg_inl_hash);
   }
   return 0;
 }
