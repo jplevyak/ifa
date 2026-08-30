@@ -1,9 +1,11 @@
 # 112 — two identical pyc invocations emit different C
 
-**Status:** open, **partially fixed** 2026-08-30 — `timsort` and
-`deepcopy_objects` are now stable, `msp_ss` is not (4 distinct outputs
-of 8 runs, was 3 of 3). Three ordering sources fixed; see "Fixed
-2026-08-30" below. Originally **root-caused** 2026-08-22. Found while building ifa/issues/111's differential harness.
+**Status: FIXED 2026-08-30.** `msp_ss` (1 output of 10 runs, was 3 of
+3 and "always differs"), `timsort` (1 of 6) and `deepcopy_objects` (1 of
+6) are all deterministic, as are `richards`, `sudoku1`, `chess` and `go`
+on a 3-run spot check. Six ordering sources in total; the last and
+decisive one is in **"The root: remove_unused_closures"** at the bottom.
+Originally root-caused (partly wrongly) 2026-08-22. Found while building ifa/issues/111's differential harness.
 **Affects:** codegen emission order (`ifa/codegen/cg.cc` and/or the
 clone ordering feeding it). NOT flow analysis — FA's converged state is
 reproducible on the affected program.
@@ -544,3 +546,78 @@ body/emission-order fingerprints and the `collect_Vars` split.
 The population figure in the section below predates all of this and
 needs re-measuring: it was 2 of 68 unstable, and `timsort` has moved
 out of it.
+
+## The root: `remove_unused_closures` (2026-08-30)
+
+Found with the staged first-divergence trace, continued past
+`clone_functions` by adding the FA-state hash at the FA/clone
+boundaries:
+
+| point | distinct over 6 runs |
+|---|---|
+| `pass-13` (last FA pass) | 1 — stable |
+| **`after-analyze`** | **5 — diverged** |
+
+So the divergence was in FA's **epilogue**, after the pass loop — which
+is why every earlier probe found FA "stable": they all sampled *during*
+the pass loop, and the damage happens after it.
+
+```c
+static void remove_unused_closures(Var *v) {
+  for (int i = 0; i < v->avars.n; i++)        // ← hash-slot order
+    if (v->avars[i].key) {
+      AVar *av = v->avars[i].value;
+      for (CreationSet *cs : av->out->sorted)
+        if (cs->sym == sym_closure && !cs->closure_used) {
+          ...
+          av->out = make_AType(css);
+          return;                              // ← exits the WHOLE function
+        }
+    }
+}
+```
+
+`v->avars` is keyed by EntrySet **pointers**, so the walk follows heap
+layout; and because the body `return`s after the first AVar carrying an
+unused closure, **which** AVar got cleaned moved between runs. The
+observed symptom was one AVar coming out `{closure}` in some runs and
+`{void_type}` in others — the two values the epilogue's two cleanup
+passes produce.
+
+Fixed by walking in AVar-id order.
+
+**The `return` is still suspicious on its own terms** and was
+deliberately left alone: it means only ONE AVar per Var is ever cleaned,
+where `break` (clean every AVar) looks like the intent. That is a
+behaviour question, not a determinism one, and worth its own look.
+
+### The chain, end to end
+
+`remove_unused_closures` cleans a different AVar → that AVar's `out` is
+`{closure}` or `{void_type}` → its Var gets a different type in
+`concretize_var_type` → `inline_single_sends`, which compares types by
+POINTER, inlines a different set of call sites (same count, 2109) →
+different argument lists → `collect_Vars` returns a different sequence →
+`cg.cc` numbers temporaries in that order and its `!cg_get_string(v)`
+first-claimant rule picks a different clone to declare a shared Var →
+one `comTxRx` getter is emitted in a different clone, and ~700 lines
+renumber behind it.
+
+### What the earlier sections got wrong, and why
+
+Three intermediate conclusions in this issue were wrong, and all three
+failed the same way — a probe that could not observe what it certified:
+
+- "it is a codegen issue" — the probe hashed PNode membership, which
+  inlining does not change (it rewrites argument lists).
+- "union types are never interned" — real, but not the root; the
+  identity hash could not separate "same union, two Syms" from
+  "different unions".
+- "a Var kept 127 vs 251 AVars" — that was the map's TABLE CAPACITY
+  (`Vec::n` counts slots for a set, and capacity moves with probe
+  chains). The live counts matched. Counting live elements dropped the
+  apparent difference from 4 distinct to 2.
+
+The rule that survives all of it: **measure a renaming-invariant
+projection, pin to the FIRST diverging record, and never trust `.n` on
+a set.**

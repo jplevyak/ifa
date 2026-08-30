@@ -15,6 +15,8 @@
 #include "optimize/inline.h"
 
 void ifa_dbg_bodies(cchar *tag);  // ifa/issues/112 probe, defined below
+void dbg_trace_avar(cchar *where);  // ifa/issues/112, analysis/clone.cc
+void dbg_trace_fa_state(cchar *where);  // ifa/issues/112, analysis/fa.cc
 #include "log.h"
 #include "pattern.h"
 #include "pdb.h"
@@ -55,7 +57,11 @@ int ifa_analyze(cchar *fn) {
   // escape status (Phase 4).  No-op when
   // ifa_escape_in_fa==0; codegen then uses the Stage 3
   // fallback.
+  dbg_trace_avar("after-analyze");   // ifa/issues/112
+  dbg_trace_fa_state("after-analyze");
   compute_escape(fa);
+  dbg_trace_avar("after-escape");
+  dbg_trace_fa_state("after-escape");
   if (clone(fa) < 0) return -1;
   for (Fun *f : fa->funs) build_cfg_dominators(f);
   if (mark_live_code(fa) < 0) return -1;

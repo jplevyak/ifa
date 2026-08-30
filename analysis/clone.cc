@@ -1353,7 +1353,13 @@ static int clone_functions() {
     if (want && atoi(want) == ff->id) {
       for (Var *v : ff->fa_all_Vars) if (v) {
         Sym *t = v->type;
-        fprintf(stderr, "CVAR fun=%d var=%d navars=%d type=%s kind=%d", ff->id, v->id, v->avars.n,
+        // nslots is the map's TABLE CAPACITY (Vec::n for a set counts
+        // slots, holes included, and capacity moves with probe chains --
+        // see fa.cc's note on type_violations.n). nlive is the real
+        // element count. Reporting only nslots invents differences.
+        int nlive = 0;
+        for (int q = 0; q < v->avars.n; q++) if (v->avars[q].key) ++nlive;
+        fprintf(stderr, "CVAR fun=%d var=%d nlive=%d nslots=%d type=%s kind=%d", ff->id, v->id, nlive, v->avars.n,
                 t && t->name ? t->name : "?", t ? t->type_kind : -1);
         // Which AVar(s) survived fixup_var's filter, and what is in
         // their `out`? Distinguishes "same AVar, type computed
@@ -1483,6 +1489,33 @@ void log_test_fa(FA *fa) {
 // ORDINAL rather than a Sym id -- the relation "which things share a
 // type" is what the downstream `==` guards read, and it survives the
 // renaming that raw ids do not.
+// ifa/issues/112: follow ONE AVar's `out` across pipeline points.
+// IFA_DBG_AVAR=<id>. Answers when a given AVar's contents change, which
+// separates "FA produced it differently" from "clone changed it".
+void dbg_trace_avar(cchar *where) {
+  static int want = -2;
+  if (want == -2) { const char *e = getenv("IFA_DBG_AVAR"); want = e ? atoi(e) : -1; }
+  if (want < 0) return;
+  Vec<AVar *> avs;
+  for (Fun *f : fa->funs) if (f)
+    for (Var *v : f->fa_all_Vars) if (v)
+      form_AVarMapElem(x, v->avars) if (x->value) avs.add(x->value);
+  for (CreationSet *cs : fa->css) if (cs)
+    for (AVar *iv : cs->vars) if (iv) avs.add(iv);
+  for (AVar *av : avs) if (av->id == want) {
+    fprintf(stderr, "AVARTRACE %s #%d var=%d out={", where, av->id, av->var ? av->var->id : -1);
+    Vec<cchar *> nms;
+    if (av->out) for (CreationSet *c : *av->out) if (c) nms.add(c->sym && c->sym->name ? c->sym->name : "?");
+    if (nms.n > 1) qsort(nms.v, nms.n, sizeof(nms[0]), [](const void *a, const void *b) {
+      return strcmp(*(cchar *const *)a, *(cchar *const *)b);
+    });
+    for (cchar *nm : nms) fprintf(stderr, "%s,", nm);
+    fprintf(stderr, "}\n");
+    return;
+  }
+  fprintf(stderr, "AVARTRACE %s #%d NOT-FOUND\n", where, want);
+}
+
 static void dbg_clone_stage(cchar *stage) {
   static int on = -1;
   if (on < 0) on = getenv("IFA_DBG_CLONE") ? 1 : 0;
@@ -1518,15 +1551,23 @@ static void dbg_clone_stage(cchar *stage) {
 }
 
 int clone(FA *afa) {
+  dbg_trace_avar("clone-entry");
+  { extern void dbg_trace_fa_state(cchar *); dbg_trace_fa_state("clone-entry"); }
   initialize();
   dbg_clone_stage("00-initialize");
+  dbg_trace_avar("00-initialize");
+  { extern void dbg_trace_fa_state(cchar *); dbg_trace_fa_state("00-initialize"); }
   determine_layouts();
   dbg_clone_stage("10-layouts");
+  dbg_trace_avar("10-layouts");
   determine_clones();
   dbg_clone_stage("20-clones");
+  dbg_trace_avar("20-clones");
   if (build_concrete_types() < 0) return -1;
   dbg_clone_stage("30-concrete-types");
+  dbg_trace_avar("30-concrete-types");
   if (clone_functions() < 0) return -1;
   dbg_clone_stage("40-clone-functions");
+  dbg_trace_avar("40-clone-functions");
   return 0;
 }

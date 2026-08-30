@@ -128,6 +128,40 @@ static void record_fa_event(FAPassStage stage, int splits, int ess_before, int c
   fa->fa_events_storage.add(e);
 }
 
+// ifa/issues/112: hash FA's whole computed state -- every AVar's `out`
+// CreationSet set, in a canonical walk -- at a named point. Called per
+// pass and at the FA/clone boundaries, so two runs' traces can be
+// diffed and the FIRST differing label names the interval that
+// introduced the divergence.
+void dbg_trace_fa_state(cchar *where) {
+  static int on = -1;
+  if (on < 0) on = getenv("IFA_DBG_FATRACE") ? 1 : 0;
+  if (!on) return;
+  Vec<AVar *> avs;
+  for (Fun *f : fa->funs) if (f)
+    for (Var *v : f->fa_all_Vars) if (v)
+      form_AVarMapElem(x, v->avars) if (x->value) avs.add(x->value);
+  for (CreationSet *cs : fa->css) if (cs)
+    for (AVar *iv : cs->vars) if (iv) avs.add(iv);
+  if (avs.n > 1) qsort_by_id(avs);
+  unsigned long h = 1469598103934665603UL;
+#define FAMIX2(x) (h = (h ^ (unsigned long)(x)) * 1099511628211UL)
+  for (AVar *av : avs) {
+    FAMIX2(av->id);
+    if (av->out) {
+      Vec<int> ids;
+      for (CreationSet *c : *av->out) if (c) ids.add(c->id);
+      if (ids.n > 1) qsort(ids.v, ids.n, sizeof(ids[0]), [](const void *a, const void *b) {
+        int x = *(const int *)a, y = *(const int *)b; return (x > y) - (x < y);
+      });
+      for (int i : ids) FAMIX2(i);
+    }
+    FAMIX2(0x9e3779b9UL);
+  }
+#undef FAMIX2
+  fprintf(stderr, "FASTATE %s navars=%d h=%lx\n", where, avs.n, h);
+}
+
 AEdge::AEdge() : from(nullptr), to(nullptr), pnode(nullptr), fun(nullptr), match(nullptr), in_edge_worklist(0) {
   id = fa->aedge_id++;
   fa->all_aedges.add(this);  // ifa/issues/098: authoritative list for clear_results
@@ -9032,6 +9066,11 @@ static void probe_invalidation_closure() {
   static int dbg_fatrace = -1;
   if (dbg_fatrace < 0) dbg_fatrace = getenv("IFA_DBG_FATRACE") ? 1 : 0;
   if (dbg_fatrace) {
+    char lbl[64];
+    snprintf(lbl, sizeof(lbl), "pass-%d", analysis_pass);
+    dbg_trace_fa_state(lbl);
+  }
+  if (0) {
     Vec<AVar *> avs;
     for (Fun *f : fa->funs) if (f)
       for (Var *v : f->fa_all_Vars) if (v)
@@ -9055,6 +9094,12 @@ static void probe_invalidation_closure() {
     }
 #undef FAMIX
     fprintf(stderr, "FATRACE pass=%d navars=%d ess=%d css=%d h=%lx\n", analysis_pass, avs.n, fa->ess.n, fa->css.n, h);
+  }
+  {
+    extern void dbg_trace_avar(cchar *where);
+    char buf[64];
+    snprintf(buf, sizeof(buf), "fa-pass-%d", analysis_pass);
+    dbg_trace_avar(buf);
   }
   if (ifa_verbose) {
     double flow = pass_timer.time - extend_timer.time - match_timer.time;
@@ -9306,10 +9351,27 @@ static void set_void_lub_types_to_void(Var *v) {
 
 static void set_void_lub_types_to_void() { foreach_var(set_void_lub_types_to_void); }
 
+// ifa/issues/112: this used to walk `v->avars` by raw slot index. That
+// map is keyed by EntrySet POINTERS, so the walk followed heap layout --
+// and because the body `return`s after the FIRST AVar carrying an
+// unused closure, WHICH AVar got cleaned moved between runs of the same
+// compile. Measured on msp_ss: one AVar came out `{closure}` in some
+// runs and `{void_type}` in others, and that fed its Var's type, the
+// inlining decisions that compare types by pointer, and finally the
+// emitted C.
+//
+// Fixed by walking in AVar-id order. NOTE the `return` is still
+// suspicious on its own terms -- it means only ONE AVar per Var is ever
+// cleaned, where `break` (clean every AVar) looks like the intent. That
+// is a behaviour question, deliberately not changed here; this commit
+// only makes the existing choice reproducible.
 static void remove_unused_closures(Var *v) {
+  Vec<AVar *> avs;
   for (int i = 0; i < v->avars.n; i++)
-    if (v->avars[i].key) {
-      AVar *av = v->avars[i].value;
+    if (v->avars[i].key && v->avars[i].value) avs.add(v->avars[i].value);
+  if (avs.n > 1) qsort_by_id(avs);
+  for (AVar *av : avs)
+    {
       for (CreationSet *cs : av->out->sorted) if (cs->sym == sym_closure && !cs->closure_used) {
         Vec<CreationSet *> css;
         for (CreationSet *cs : av->out->sorted) {
