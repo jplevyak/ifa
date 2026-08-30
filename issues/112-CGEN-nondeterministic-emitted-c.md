@@ -222,20 +222,29 @@ same union, printed in the newly canonical order, stable across runs.
 consecutive runs now compare byte-identical, which never happened
 before.
 
-**There is exactly one structural difference.** Raw diff between two
-runs is ~700 lines; normalising every `t<N>` to `tN` collapses it to
-**4**:
+**There is exactly one structural difference**, and the raw diff hides
+it: normalising every `t<N>` to `tN` reduces ~700 changed lines to 4,
+but those 4 are a *deletion and an insertion of the same string* —
 
 ```
-39053 <   _CG_void_type tN;
-39276 <   tN = (_CG_void_type)((_CG_ps21729)tN)->e25; /* comTxRx */
-39418 >   _CG_void_type tN;
-39509 >   tN = (_CG_void_type)((_CG_ps21729)tN)->e25; /* comTxRx */
+<   tN = (_CG_void_type)((_CG_ps21729)tN)->e25; /* comTxRx */
+>   tN = (_CG_void_type)((_CG_ps21729)tN)->e25; /* comTxRx */
 ```
 
-One `comTxRx` getter is attributed to clone `_CG_f_13323_447` of
-`LowLevel::bslTxRx` in one run and to clone `_CG_f_13323_448` in the
-other. The ~700 lines of renumbering are a CONSEQUENCE of that single
+— so the diff on its own shows nothing. What differs is **which
+function the statement is in**. Counting occurrences per enclosing
+function definition:
+
+| run | function containing the `comTxRx` getter |
+|---|---|
+| A | `_CG_f_13323_447` — `bslTxRx(ps21729, int64, int64, int64, nil_type, int64)` |
+| B | `_CG_f_13323_448` — `bslTxRx(ps21729, bytes, int64)` |
+
+Exactly one occurrence in the file either way. Both clones exist in
+both runs and their SIGNATURES are byte-identical across runs, so the
+clone numbering is stable and this is a genuine re-homing of one
+statement between two differently-shaped clones of the same function —
+6 parameters versus 3. The ~700 lines of renumbering are a CONSEQUENCE of that single
 move — it adds a temporary to one clone and removes one from the other,
 shifting every later `t<N>` in both — not an independent source. The
 2026-08-22 reading ("almost all local temporary declarations reordered")
