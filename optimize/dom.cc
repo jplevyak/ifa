@@ -115,7 +115,18 @@ static void find_dominator_frontier_internal(Dom *n) {
 
 static void find_dominator_frontier(Dom *n, Vec<Dom *> &vertex) {
   find_dominator_frontier_internal(n);
-  for (Dom *x : vertex) if (x != VNULL) x->front.set_to_vec();
+  // ifa/issues/112: set_to_vec() compacts the hash slots but PRESERVES
+  // their order, so the frontier still came out heap-ordered even with
+  // issue 035's Dom::id serial. place_phi (ssu.cc) walks `front`, so
+  // that order decides the sequence phis are added in, hence each
+  // PNode's `phi` order, hence collect_Vars' var order, hence every
+  // t<N> name and -- via cg.cc's `!cg_get_string(v)` first-claimant
+  // rule -- WHICH clone declares a Var shared between clones. Sorting
+  // by the id 035 already added makes all of that reproducible.
+  for (Dom *x : vertex) if (x != VNULL) {
+    x->front.set_to_vec();
+    if (x->front.n > 1) qsort_by_id(x->front);
+  }
 }
 
 static void dom_replace(Dom *d, void *a, void *b) {

@@ -12,6 +12,8 @@
 #include "if1.h"
 #include "ifadefs.h"
 #include "optimize/inline.h"
+
+void ifa_dbg_bodies(cchar *tag);  // ifa/issues/112 probe, defined below
 #include "log.h"
 #include "pattern.h"
 #include "pdb.h"
@@ -58,7 +60,39 @@ int ifa_analyze(cchar *fn) {
   if (mark_live_code(fa) < 0) return -1;
   if (get_int_config("alog.test.fa") > 0) log_test_fa(fa);
   frequency_estimation(fa);
+  ifa_dbg_bodies("after-clone");
   return 0;
+}
+
+// ifa/issues/112 probe: fingerprint every live Fun's BODY MEMBERSHIP --
+// which PNodes belong to which Fun -- at a named pipeline point. Two
+// runs that agree at a point have a deterministic IR there, so any
+// emitted-C difference arises LATER. Answers "is this a codegen issue,
+// or does it predate codegen?" without reading either.
+void ifa_dbg_bodies(cchar *tag) {
+  if (!getenv("IFA_DBG_BODIES")) return;
+  Vec<Fun *> funs;
+  for (Fun *f : pdb->fa->funs) if (f) funs.add(f);
+  // The RAW order matters on its own: codegen emits bodies with
+  // `for (Fun *f : fa->funs)` (cg.cc), so fa->funs order is emission
+  // order. Print it before sorting, or a reordering here is invisible.
+  {
+    unsigned long ho = 1469598103934665603UL;
+    for (Fun *f : funs) ho = (ho ^ (unsigned long)f->id) * 1099511628211UL;
+    fprintf(stderr, "FUNORDER %s n=%d h=%lx\n", tag, funs.n, ho);
+  }
+  qsort_by_id(funs);
+  for (Fun *f : funs) {
+    Vec<PNode *> ps;
+    for (PNode *p : f->fa_all_PNodes) if (p) ps.add(p);
+    qsort_by_id(ps);
+    unsigned long h = 1469598103934665603UL;  // FNV-1a
+    for (PNode *p : ps) {
+      unsigned long v = (unsigned long)p->id * 31 + (unsigned long)(p->code ? p->code->kind : 0);
+      h = (h ^ v) * 1099511628211UL;
+    }
+    fprintf(stderr, "BODY %s fun=%d n=%d h=%lx\n", tag, f->id, ps.n, h);
+  }
 }
 
 void ifa_graph(cchar *fn) { graph(pdb->fa, fn); }
@@ -81,6 +115,9 @@ int ifa_optimize() {
   return 0;
 }
 
-void ifa_cg(cchar *fn) { c_codegen_write_c(pdb->fa, if1->top->fun, fn); }
+void ifa_cg(cchar *fn) {
+  ifa_dbg_bodies("before-cg");
+  c_codegen_write_c(pdb->fa, if1->top->fun, fn);
+}
 
 void ifa_compile(cchar *fn) { c_codegen_compile(fn); }

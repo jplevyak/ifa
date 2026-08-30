@@ -163,6 +163,7 @@ void ifa_init(IFACallbacks *callbacks);
 void ifa_reset();
 int ifa_analyze(cchar *fn);
 int ifa_optimize();
+void ifa_dbg_bodies(cchar *tag);  // ifa/issues/112: per-Fun body-membership fingerprint
 void ifa_cg(cchar *fn);
 void ifa_compile(cchar *fn);
 

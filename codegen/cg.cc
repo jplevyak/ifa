@@ -2442,6 +2442,16 @@ static void write_c(FILE *fp, FA *fa, Fun *f, Vec<Var *> *globals = 0) {
   int index = 0;
   Vec<Var *> vars, defs;
   f->collect_Vars(vars, 0, FUN_COLLECT_VARS_NO_TVALS);
+  // ifa/issues/112 probe: is collect_Vars' ORDER stable? It decides both
+  // t<N> numbering and, via the !cg_get_string(v) first-claimant rule
+  // below, WHICH function declares a Var shared between clones.
+  static int dbg_vars = -1;
+  if (dbg_vars < 0) dbg_vars = getenv("IFA_DBG_BODIES") ? 1 : 0;
+  if (dbg_vars) {
+    unsigned long h = 1469598103934665603UL;
+    for (Var *v : vars) h = (h ^ (unsigned long)v->id) * 1099511628211UL;
+    fprintf(stderr, "VARS fun=%d n=%d h=%lx\n", f->id, vars.n, h);
+  }
   for (Var *v : vars) if (v->sym->is_local || v->sym->is_fake) cg_set_string(v, 0);
   for (Var *v : vars) if (!v->is_internal && !v->sym->is_fake) {
     if (!cg_get_string(v) && v->live && !v->sym->is_symbol && v->type != sym_continuation) {

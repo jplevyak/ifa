@@ -261,11 +261,59 @@ had the causality backwards.
 | liveness / DCE | `mark_live_code` is a `do {...} while (mark_live_again)` fixed point over a transitive closure | order-independent by construction |
 | the getter being dropped | `grep -c comTxRx` per run | **4 in every run** — the statement is not lost or duplicated, only re-homed |
 
-So the partition, its order, and the ES identities are all stable, and
-the difference is inside clone BODY construction or the per-clone
-attribution of that one PNode. That is where the next session should
-start. `IFA_DBG_PARTITION=1` dumps the settled partition (per Fun, each
-equivalence class as an id list, in order).
+So the partition, its order, and the ES identities are all stable.
+
+### It is a CODEGEN issue — the IR reaching codegen is stable
+
+`IFA_DBG_BODIES=1` (added) fingerprints, at named pipeline points, both
+the per-Fun BODY MEMBERSHIP (which PNodes belong to which Fun) and
+`fa->funs` order — the latter matters on its own because `cg.cc:2761`
+emits bodies with `for (Fun *f : fa->funs)`, so it *is* emission order.
+
+| measured over 4 runs | result |
+|---|---|
+| body membership after `clone` | 1 hash — stable |
+| body membership after `ifa_optimize` (incl. `simple_inlining`) | 1 hash — stable |
+| `fa->funs` order at both points | 1 hash each — stable |
+| emitted C | 3-4 distinct |
+
+So inlining is not the cause and the IR handed to codegen is
+deterministic. The instability is **`Fun::collect_Vars`**
+(`if1/fun.cc`), whose var sequence codegen consumes twice over:
+
+- `cg.cc:2448` numbers temporaries `t0, t1, ...` in that order; and
+- the same loop's `!cg_get_string(v)` guard means the FIRST function to
+  reach a Var shared between clones is the one that declares it — and
+  the getter emission then SKIPS a statement whose destination has no
+  C string (`if (!cg_get_string(n->lvals[0])) goto Lgetter_found;`).
+
+That second point is how one statement changes clones: it is emitted
+wherever its destination Var was named first.
+
+Splitting `collect_Vars` into its two inputs (probe prints both):
+**the CFG walk (`nodes`) is stable** — the `cfg_pred` sort above works —
+while the var sequence is not. `rvals`/`lvals` are ordered Vecs and this
+caller passes `NO_TVALS`, which leaves `phi`/`phy` content and Var
+identity as the remaining candidates.
+
+**Tried and did NOT fix it:** sorting the dominance frontier
+(`dom.cc`, `x->front`) by `Dom::id` after its `set_to_vec()`. `place_phi`
+(`ssu.cc`) walks `front`, and issue 035 had already added `Dom::id`
+noting that frontier order drives "phi placement order, hence Var
+creation order and every downstream id" — so this looked exactly right
+and is kept (it is a real hash-order source in the same family), but
+msp_ss is unchanged by it.
+
+### Measurement caveat, learned the hard way
+
+**Three runs is not enough to call this stable.** One 3-run sample came
+back with a single hash; the very next 8-run sample of the same binary
+gave **7 distinct outputs**. Use 8+ runs before concluding anything is
+fixed here.
+
+`IFA_DBG_PARTITION=1` dumps the settled clone partition (per Fun, each
+equivalence class as an id list, in order). `IFA_DBG_BODIES=1` dumps the
+body/emission-order fingerprints and the `collect_Vars` split.
 
 The population figure in the section below predates all of this and
 needs re-measuring: it was 2 of 68 unstable, and `timsort` has moved

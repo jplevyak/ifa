@@ -121,6 +121,28 @@ void Fun::collect_Vars(Vec<Var *> &avars, Vec<PNode *> *nodes, int flags) {
     collect_Vars_PNode(nodes->v[i], vars, flags);
     for (PNode *p : nodes->v[i]->cfg_pred) if (sv.set_add(p)) nodes->add(p);
   }
+  // ifa/issues/112 probe: separate the two candidates. `nodes` is the
+  // CFG traversal (driven by cfg_pred order); `vars` is what
+  // collect_Vars_PNode pulls out of each node, including phi/phy. If
+  // nodes is stable and vars is not, the variance is inside the node,
+  // not in the walk.
+  static int dbg = -1;  // collect_Vars is hot; resolve the env once
+  if (dbg < 0) dbg = getenv("IFA_DBG_BODIES") ? 1 : 0;
+  if (dbg) {
+    unsigned long hn = 1469598103934665603UL, hv = 1469598103934665603UL;
+    for (PNode *p : *nodes) hn = (hn ^ (unsigned long)p->id) * 1099511628211UL;
+    for (Var *v : vars.asvec) hv = (hv ^ (unsigned long)v->id) * 1099511628211UL;
+    // SEQUENCE vs MULTISET: hv hashes the ids in order, hs hashes them
+    // sorted. If hs matches across runs but hv does not, the same Vars
+    // come out in a different ORDER. If hs differs too, the Var IDS
+    // themselves differ and the cause is upstream, in creation order.
+    Vec<Var *> sorted;
+    for (Var *v : vars.asvec) if (v) sorted.add(v);
+    qsort_by_id(sorted);
+    unsigned long hs = 1469598103934665603UL;
+    for (Var *v : sorted) hs = (hs ^ (unsigned long)v->id) * 1099511628211UL;
+    fprintf(stderr, "CV nodes=%lx vars=%lx sorted=%lx n=%d\n", hn, hv, hs, vars.asvec.n);
+  }
   for (MPosition *p : positional_arg_positions) vars.add(args.get(p));
   for (Var *v : rets) vars.add(v);
   avars.copy(vars.asvec);
