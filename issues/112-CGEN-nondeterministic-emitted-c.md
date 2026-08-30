@@ -263,7 +263,49 @@ had the causality backwards.
 
 So the partition, its order, and the ES identities are all stable.
 
-### It is a CODEGEN issue — the IR reaching codegen is stable
+### CORRECTION (later the same day): it is NOT a codegen issue
+
+**The section below is wrong and is kept only to show how.** It
+concluded "the IR reaching codegen is deterministic" from a probe that
+hashed per-Fun PNode MEMBERSHIP and phi/phy counts. `simple_inlining`
+rewrites a call site's ARGUMENT LIST in place (`inline.cc`: `rvals.move`
+then rebuild from the callee's send) — which changes `rvals` **without**
+changing which PNodes belong to which Fun. A membership-only hash cannot
+see that, so the probe reported "stable" for a stage that is not.
+
+Adding `rvals` to the same probe settles it:
+
+| across 6 runs | result |
+|---|---|
+| `rvals` after `clone` | 1 distinct — **stable** |
+| `rvals` after `ifa_optimize` | 4 distinct — **UNSTABLE** |
+
+So the nondeterminism is introduced by **`ifa_optimize` /
+`simple_inlining`**, upstream of codegen. Drilling into one diverging
+call (`IFA_DBG_CV_NODES=<node-set-hash>` dumps every node's rvals), the
+same SEND node comes out with a different ARGUMENT COUNT:
+
+```
+pnode=31752 kind=2 rvals=20521,66251,66249,66244,66247,   (5)
+pnode=31752 kind=2 rvals=66275,66249,66244,66247,          (4)
+```
+
+i.e. `inline_single_pnode` fires on that call site in some runs and not
+others.
+
+**Ruled out as the trigger:** a class's `has` order (78 record Syms
+hashed after clone: 1 distinct over 6 runs). That matters because
+`inline_single_sends` guards on `f->sym->has.index(fs)` and bails when
+the index runs past the call site's rvals, so a varying `has` would flip
+exactly this decision — and issues/121 only canonicalised promotion
+order WITHIN a reanalyze round. It holds here.
+
+Still to identify: which input to the inlining decision varies. The
+remaining candidates are `f->calls`, the `single_send`/`chain_send`/
+`identity_send` maps, and the `p->rvals[i]->type == v->type` pointer
+comparisons.
+
+### (superseded) It looked like a CODEGEN issue — the IR reaching codegen is stable
 
 `IFA_DBG_BODIES=1` (added) fingerprints, at named pipeline points, both
 the per-Fun BODY MEMBERSHIP (which PNodes belong to which Fun) and

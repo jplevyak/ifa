@@ -141,7 +141,46 @@ void Fun::collect_Vars(Vec<Var *> &avars, Vec<PNode *> *nodes, int flags) {
     qsort_by_id(sorted);
     unsigned long hs = 1469598103934665603UL;
     for (Var *v : sorted) hs = (hs ^ (unsigned long)v->id) * 1099511628211UL;
-    fprintf(stderr, "CV nodes=%lx vars=%lx sorted=%lx n=%d\n", hn, hv, hs, vars.asvec.n);
+    // Hash the phi/phy ORDER within each node. rvals/lvals are fixed
+    // Vecs and this caller may drop tvals, so if the node set and the
+    // var multiset both match while the sequence does not, a permuted
+    // `phi`/`phy` is the only thing left (ifa/112).
+    unsigned long hp = 1469598103934665603UL;
+    for (PNode *p : *nodes) {
+      for (PNode *q : p->phi) hp = (hp ^ (unsigned long)q->id) * 1099511628211UL;
+      for (PNode *q : p->phy) hp = (hp ^ ((unsigned long)q->id * 7)) * 1099511628211UL;
+    }
+    // Per-CATEGORY sequence hashes. nodes, phi order and the var
+    // multiset all match at the first divergence, so exactly one of
+    // these Vecs is being walked in a different order (ifa/112).
+    unsigned long hr = 1469598103934665603UL, hl = 1469598103934665603UL;
+    unsigned long ht = 1469598103934665603UL, hpv = 1469598103934665603UL;
+    for (PNode *p : *nodes) {
+      for (Var *v : p->rvals) if (v) hr = (hr ^ (unsigned long)v->id) * 1099511628211UL;
+      for (Var *v : p->lvals) if (v) hl = (hl ^ (unsigned long)v->id) * 1099511628211UL;
+      for (Var *v : p->tvals) if (v) ht = (ht ^ (unsigned long)v->id) * 1099511628211UL;
+      for (PNode *q : p->phi) {
+        for (Var *v : q->rvals) if (v) hpv = (hpv ^ (unsigned long)v->id) * 1099511628211UL;
+        for (Var *v : q->lvals) if (v) hpv = (hpv ^ ((unsigned long)v->id * 3)) * 1099511628211UL;
+      }
+      for (PNode *q : p->phy) {
+        for (Var *v : q->rvals) if (v) hpv = (hpv ^ ((unsigned long)v->id * 5)) * 1099511628211UL;
+        for (Var *v : q->lvals) if (v) hpv = (hpv ^ ((unsigned long)v->id * 7)) * 1099511628211UL;
+      }
+    }
+    fprintf(stderr, "CV nodes=%lx vars=%lx sorted=%lx n=%d phiord=%lx rv=%lx lv=%lx tv=%lx pv=%lx\n",
+            hn, hv, hs, vars.asvec.n, hp, hr, hl, ht, hpv);
+    // Drill-down: IFA_DBG_CV_NODES=<hn> dumps every node's rvals for the
+    // call whose node-set hash matches, so two runs can be diffed to the
+    // exact PNode whose rvals are permuted.
+    static const char *want = getenv("IFA_DBG_CV_NODES");
+    if (want && strtoul(want, nullptr, 16) == hn) {
+      for (PNode *p : *nodes) {
+        fprintf(stderr, "CVN pnode=%d kind=%d rvals=", p->id, p->code ? p->code->kind : -1);
+        for (Var *v : p->rvals) fprintf(stderr, "%d,", v ? v->id : -1);
+        fprintf(stderr, "\n");
+      }
+    }
   }
   for (MPosition *p : positional_arg_positions) vars.add(args.get(p));
   for (Var *v : rets) vars.add(v);

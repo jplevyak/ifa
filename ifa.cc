@@ -71,6 +71,22 @@ int ifa_analyze(cchar *fn) {
 // or does it predate codegen?" without reading either.
 void ifa_dbg_bodies(cchar *tag) {
   if (!getenv("IFA_DBG_BODIES")) return;
+  // inline_single_sends guards on `f->sym->has.index(fs)` and bails when
+  // that index runs past the call site's rvals -- so a class's `has`
+  // ORDER can flip an inlining decision. issues/121 canonicalised
+  // promotion order only WITHIN a reanalyze round, so this checks
+  // whether has order is actually stable run to run.
+  {
+    Vec<Sym *> recs;
+    for (Sym *s2 : if1->allsyms) if (s2 && s2->type_kind == Type_RECORD && s2->has.n) recs.add(s2);
+    qsort_by_id(recs);
+    unsigned long hh = 1469598103934665603UL;
+    for (Sym *s2 : recs) {
+      for (Sym *m : s2->has) hh = (hh ^ (unsigned long)(m ? m->id : 0)) * 1099511628211UL;
+      hh = (hh ^ 0x9e3779b9UL) * 1099511628211UL;
+    }
+    fprintf(stderr, "HASORDER %s nrec=%d h=%lx\n", tag, recs.n, hh);
+  }
   Vec<Fun *> funs;
   for (Fun *f : pdb->fa->funs) if (f) funs.add(f);
   // The RAW order matters on its own: codegen emits bodies with
@@ -91,7 +107,23 @@ void ifa_dbg_bodies(cchar *tag) {
       unsigned long v = (unsigned long)p->id * 31 + (unsigned long)(p->code ? p->code->kind : 0);
       h = (h ^ v) * 1099511628211UL;
     }
-    fprintf(stderr, "BODY %s fun=%d n=%d h=%lx\n", tag, f->id, ps.n, h);
+    // Count phi/phy too: they are NOT in fa_all_PNodes, so a hash over
+    // that list alone cannot see SSU placement differences (ifa/112 --
+    // this is what made the emitted-C instability look like a codegen
+    // issue when the phi COUNT was already varying).
+    int nphi = 0, nphy = 0;
+    for (PNode *p : ps) { nphi += p->phi.n; nphy += p->phy.n; }
+    // Hash rvals too. Membership and phi counts alone are NOT enough:
+    // simple_inlining rewrites a call site's ARGUMENT LIST in place
+    // (inline.cc), which changes rvals without changing which PNodes
+    // belong to which Fun -- invisible to a membership-only hash, and
+    // that gap is what made this look like a codegen issue (ifa/112).
+    unsigned long hr = 1469598103934665603UL;
+    for (PNode *p : ps) {
+      for (Var *v : p->rvals) hr = (hr ^ (unsigned long)(v ? v->id : 0)) * 1099511628211UL;
+      hr = (hr ^ 0x9e3779b9UL) * 1099511628211UL;  // node separator
+    }
+    fprintf(stderr, "BODY %s fun=%d n=%d phi=%d phy=%d h=%lx rv=%lx\n", tag, f->id, ps.n, nphi, nphy, h, hr);
   }
 }
 
