@@ -216,12 +216,48 @@ One golden moved and was re-blessed: `container_scalar_union_add.py`
 now reports `{float64, list}` where it said `{list, float64}` — the
 same union, printed in the newly canonical order, stable across runs.
 
-### Still open: msp_ss
+### Still open: msp_ss — narrowed to ONE statement
 
-4 distinct outputs of 8 runs (was 3 of 3, "always differs"), so the
-remaining source is narrower but real. Two consecutive runs now compare
-byte-identical, which never happened before, so whatever is left fires
-less often than the three above. Not yet traced.
+4 distinct outputs of 8 runs (was 3 of 3, "always differs"). Two
+consecutive runs now compare byte-identical, which never happened
+before.
 
-The population figure in the section below predates this and needs
-re-measuring: it was 2 of 68 unstable, and at least `timsort` has moved.
+**There is exactly one structural difference.** Raw diff between two
+runs is ~700 lines; normalising every `t<N>` to `tN` collapses it to
+**4**:
+
+```
+39053 <   _CG_void_type tN;
+39276 <   tN = (_CG_void_type)((_CG_ps21729)tN)->e25; /* comTxRx */
+39418 >   _CG_void_type tN;
+39509 >   tN = (_CG_void_type)((_CG_ps21729)tN)->e25; /* comTxRx */
+```
+
+One `comTxRx` getter is attributed to clone `_CG_f_13323_447` of
+`LowLevel::bslTxRx` in one run and to clone `_CG_f_13323_448` in the
+other. The ~700 lines of renumbering are a CONSEQUENCE of that single
+move — it adds a temporary to one clone and removes one from the other,
+shifting every later `t<N>` in both — not an independent source. The
+2026-08-22 reading ("almost all local temporary declarations reordered")
+had the causality backwards.
+
+**Ruled out by measurement, not by argument:**
+
+| candidate | how checked | result |
+|---|---|---|
+| FA convergence | `PYC_DBG_OSC` over 6 runs | identical: `final_pass`, `pass_limit_hit`, `violations`, `ess`, `css`. (`PYC_DBG_OSC` prints TWO OSC lines per run, 12 and 13 — reading them as one line is what made FA briefly look unstable here.) |
+| EntrySet ids | `IFA_DBG_PARTITION` (added, below) | identical |
+| clone partition | same probe, classes as sorted id lists | identical over 4 runs |
+| clone partition ORDER | same probe, classes UNSORTED — the order decides clone numbering, since `clone_functions` reuses the original `Fun` for the LAST set | identical over 4 runs |
+| liveness / DCE | `mark_live_code` is a `do {...} while (mark_live_again)` fixed point over a transitive closure | order-independent by construction |
+| the getter being dropped | `grep -c comTxRx` per run | **4 in every run** — the statement is not lost or duplicated, only re-homed |
+
+So the partition, its order, and the ES identities are all stable, and
+the difference is inside clone BODY construction or the per-clone
+attribution of that one PNode. That is where the next session should
+start. `IFA_DBG_PARTITION=1` dumps the settled partition (per Fun, each
+equivalence class as an id list, in order).
+
+The population figure in the section below predates all of this and
+needs re-measuring: it was 2 of 68 unstable, and `timsort` has moved
+out of it.

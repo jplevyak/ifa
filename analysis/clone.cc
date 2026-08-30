@@ -682,6 +682,39 @@ static void determine_clones() {
       }
     }
   }
+  // ifa/issues/112 probe: dump the settled clone partition -- per Fun,
+  // each EntrySet equivalence class as a sorted id list. Two runs that
+  // agree here have a deterministic partition, and any remaining
+  // emitted-C difference is downstream (var attribution / naming).
+  if (getenv("IFA_DBG_PARTITION")) {
+    Vec<Fun *> funs;
+    for (Fun *f : fa->funs) if (f) funs.add(f);
+    qsort_by_id(funs);
+    for (Fun *f : funs) {
+      Vec<Vec<EntrySet *> *> sets;
+      for (Vec<EntrySet *> *es : f->equiv_sets) if (es) sets.add(es);
+      Vec<cchar *> lines;
+      for (Vec<EntrySet *> *es : sets) {
+        Vec<EntrySet *> ids;
+        for (EntrySet *e : *es) if (e) ids.add(e);
+        qsort_by_id(ids);
+        char buf[4096];
+        int off = 0;
+        for (EntrySet *e : ids) {
+          if (off >= (int)sizeof(buf) - 16) { off += snprintf(buf + off, sizeof(buf) - off, "..."); break; }
+          off += snprintf(buf + off, sizeof(buf) - off, "%d,", e->id);
+        }
+        if (off > (int)sizeof(buf) - 1) off = sizeof(buf) - 1;
+        buf[off] = 0;
+        lines.add(dupstr(buf));
+      }
+      // NOT sorted: equiv_sets ORDER decides clone numbering
+      // (clone_functions reuses the original Fun for the LAST set), so
+      // the order is exactly what this probe has to observe.
+      int k = 0;
+      for (cchar *l : lines) fprintf(stderr, "PART fun=%d #%d [%s]\n", f->id, k++, l);
+    }
+  }
 }
 
 Sym *concrete_type_set_to_type(Vec<Sym *> &t) {
