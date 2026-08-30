@@ -586,10 +586,22 @@ passes produce.
 
 Fixed by walking in AVar-id order.
 
-**The `return` is still suspicious on its own terms** and was
-deliberately left alone: it means only ONE AVar per Var is ever cleaned,
-where `break` (clean every AVar) looks like the intent. That is a
-behaviour question, not a determinism one, and worth its own look.
+**The `return`**: it means only ONE AVar per Var is ever cleaned, where
+`break` (clean every AVar) looks like the intent. Changed to `break` and
+measured, since the gates alone cannot judge a behaviour change:
+
+- all five gates green, determinism preserved (msp_ss 1 of 4)
+- emitted C DOES change: 32 structural lines on msp_ss, all *additional*
+  getters (41367 -> 41383) — cleaning more AVars narrows more types,
+  which changes which clones emit those reads
+- corpus `check` A/B (`sweeps/`, both `de4ea252` rows): **neutral**, one
+  apparent difference and it is noise — `score4` flipped `rc=124` to
+  `rc=0`, but under the SAME build it gives 124/0/124 across three runs,
+  straddling the 120s limit
+
+So `break` is kept: it makes the code do what it reads as intending, at
+measured zero corpus cost. It is not what fixed the nondeterminism — the
+id-ordered walk above is — and the two are separable.
 
 ### The chain, end to end
 

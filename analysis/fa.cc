@@ -9379,7 +9379,7 @@ static void remove_unused_closures(Var *v) {
           css.add(cs);
         }
         av->out = make_AType(css);
-        return;
+        break;
       }
     }
 }
