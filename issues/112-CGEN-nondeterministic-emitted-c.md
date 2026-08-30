@@ -300,7 +300,45 @@ the index runs past the call site's rvals, so a varying `has` would flip
 exactly this decision — and issues/121 only canonicalised promotion
 order WITHIN a reanalyze round. It holds here.
 
-### ROOT CAUSE: union types are never interned
+### CORRECTION: interning is a real gap, but NOT the root
+
+The section below concluded the root was "union types are never
+interned". **Implemented and measured: it does not fix msp_ss.**
+
+The claim rested on a type-identity relation hashed by *Sym ordinal*,
+which cannot tell "same union, two Syms" (an interning failure) from
+"genuinely different unions". Distinguishing them needs a STRUCTURAL
+signature — and it has to be renaming-invariant all the way down, i.e.
+built from component NAMES, not ids, since an id-based "structural"
+hash walks straight back into the same trap one level lower.
+
+With that hash, after `clone`, over 6 runs:
+
+| | distinct |
+|---|---|
+| type identity relation (by Sym ordinal) | 5 |
+| type STRUCTURAL signature (by component names) | **5 — also unstable** |
+
+Both move together, so the types Vars receive after `clone` **genuinely
+differ in structure** between runs — a Var's union contains a different
+set of classes, not the same set behind two Sym objects. Interning
+cannot help with that, and measurement agrees: with interning in place
+the structural signature was still 5-of-6 distinct, and the emitted C
+6-of-8.
+
+The interning patch was therefore **reverted** rather than shipped: no
+demonstrated benefit, and it changes type identity globally. It remains
+worth doing once the real root is fixed (`make_LUB_type` is still a
+default no-op, so structurally equal unions really are distinct Syms) —
+key it on the sorted component list, which `compar_syms` already
+provides.
+
+**So the search moves upstream again:** what makes `clone` assign
+structurally different types to the same Var across runs, given that
+FA's converged counts, the CS/ES partitions, and Var ids are all stable?
+That is the open question.
+
+### (superseded) ROOT CAUSE: union types are never interned
 
 Measured after `clone`, over 6 runs:
 

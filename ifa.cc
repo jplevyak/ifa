@@ -146,7 +146,34 @@ void ifa_dbg_bodies(cchar *tag) {
       if (ord < 0) { ord = seen.n; seen.add(t); }
       ht = (ht ^ (unsigned long)ord) * 1099511628211UL;
     }
+    // STRUCTURAL signature of each Var's type, independent of Sym
+    // identity: kind plus the sorted component ordinals. If this is
+    // stable while the identity relation above is not, interning is
+    // failing (same structure, two Syms). If this is ALSO unstable, the
+    // types genuinely differ and the cause is upstream (ifa/112).
+    unsigned long hstruct = 1469598103934665603UL;
+    for (Var *v : tv) {
+      Sym *t = v ? v->type : nullptr;
+      hstruct = (hstruct ^ (unsigned long)(t ? t->type_kind : 0)) * 1099511628211UL;
+      // Hash NAMES, not ids: a Sym id moves whenever new_Sym() runs in
+      // a different order, so an id-based "structural" hash is not
+      // renaming-invariant either -- the same trap one level down.
+      if (t && t->type_kind == Type_SUM) {
+        Vec<cchar *> nms;
+        for (Sym *m : t->has) if (m) nms.add(m->name ? m->name : "?");
+        if (nms.n > 1) qsort(nms.v, nms.n, sizeof(nms[0]), [](const void *a, const void *b) {
+          return strcmp(*(cchar *const *)a, *(cchar *const *)b);
+        });
+        for (cchar *nm : nms)
+          for (cchar *c = nm; *c; c++) hstruct = (hstruct ^ (unsigned long)*c) * 1099511628211UL;
+      } else if (t) {
+        cchar *nm = t->name ? t->name : "?";
+        for (cchar *c = nm; *c; c++) hstruct = (hstruct ^ (unsigned long)*c) * 1099511628211UL;
+      }
+      hstruct = (hstruct ^ 0x9e3779b9UL) * 1099511628211UL;
+    }
     fprintf(stderr, "BODY %s fun=%d n=%d phi=%d phy=%d h=%lx rv=%lx ty=%lx\n", tag, f->id, ps.n, nphi, nphy, h, hr, ht);
+    fprintf(stderr, "TYSTRUCT %s fun=%d h=%lx\n", tag, f->id, hstruct);
   }
 }
 
