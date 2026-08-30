@@ -336,6 +336,20 @@ class CS_EQ_FN {
 // them, vary between identical runs (and some layouts bound
 // callers to the WRONG type specialization). Canonicalize the
 // input to id order locally so partitions are reproducible.
+// ifa/issues/112: a Vec used as a SET stores members at POINTER-hashed
+// slots, so `first_in_set()` returns a different member between runs of
+// the same compile. Every member of an equivalence class is
+// interchangeable by construction, so any is a correct answer -- but the
+// CHOICE has to be stable, or downstream Sym ids are minted in a
+// different order and the same source emits two different .c files.
+// `id` is assigned in analysis order, which is stable.
+template <class C>
+static C *canonical_in_set(Vec<C *> &s) {
+  C *best = nullptr;
+  for (C *x : s) if (x && (!best || x->id < best->id)) best = x;
+  return best ? best : s.first_in_set();
+}
+
 template <class C, class FN>
 static void sets_by_f(Vec<C *> &aset0, Vec<Vec<C *> *> &asetset) {
   Vec<C *> aset;
@@ -369,7 +383,7 @@ static void sets_by_f_transitive(Vec<C *> &aset0, Vec<Vec<C *> *> &asetset) {
   for (C *x : aset) if (x) {
     typedef Vec<C *> VecC;
     for (VecC *s : asetset) {
-      if (FN::equivalent(x, s->first_in_set())) {
+      if (FN::equivalent(x, canonical_in_set(*s))) {
         s->set_add(x);
         goto Lnext;
       }
@@ -685,9 +699,24 @@ Sym *concrete_type_set_to_type(Vec<Sym *> &t) {
   }
 }
 
+// ifa/issues/112: pick an equivalence class's representative CANONICALLY.
+//
+// `eqcss` is a Vec used as a SET, so `first_in_set()` returns whichever
+// member landed in the lowest slot -- a POINTER hash, which moves with
+// the heap and therefore between runs of the same compile. Every member
+// is equivalent by construction, so any of them is a correct answer;
+// only the CHOICE has to be stable, or the emitted struct ids swap and
+// the same source produces two different .c files.
+//
+// Surfaced by issues/121's canonical field promotion: once two sibling
+// subclasses stop getting different field ORDERS they become genuinely
+// equivalent, and this tiebreak starts deciding between them.
+// CreationSet::id is assigned in analysis order, so it is stable.
+static CreationSet *canonical_cs(Vec<CreationSet *> *eqcss) { return canonical_in_set(*eqcss); }
+
 static int compute_member_types(Vec<CreationSet *> *eqcss) {
-  Sym *sym = eqcss->first_in_set()->type;
-  Sym *orig_sym = eqcss->first_in_set()->sym;
+  Sym *sym = canonical_cs(eqcss)->type;
+  Sym *orig_sym = canonical_cs(eqcss)->sym;
   if (sym->is_fun) return 0;
   int n = 0;
   for (CreationSet *cs : *eqcss) if (cs) {
@@ -873,7 +902,7 @@ static int define_concrete_types(CSSS &css_sets) {
         if (name && name != BAD_NAME) s->name = name;
         if (ast && ast != BAD_AST) s->ast = ast;
       } else if (sym->type_kind == Type_PRIMITIVE || sym->type_kind == Type_TAGGED || sym->is_fun) {
-        AVar *elem = get_element_avar(eqcss->first_in_set());
+        AVar *elem = get_element_avar(canonical_cs(eqcss));
         Sym *s = sym;
         if (elem && elem->out != fa->type_world.bottom_type) {
           int abstract = eqcss->n == 1 && eqcss->v[0]->defs.n == 0;
@@ -1062,7 +1091,7 @@ static int resolve_concrete_types(CSSS &css_sets) {
       if (eav)
         if (concretize_avar(eav) < 0) return -1;
     }
-    Sym *sym = eqcss->first_in_set()->type;
+    Sym *sym = canonical_cs(eqcss)->type;
     switch (sym->type_kind) {
       case Type_NONE:
       case Type_UNKNOWN:
