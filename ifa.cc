@@ -1,3 +1,4 @@
+#include <string>
 #include "ifa.h"
 #include "ast.h"
 #include "cg.h"
@@ -86,6 +87,30 @@ void ifa_dbg_bodies(cchar *tag) {
       hh = (hh ^ 0x9e3779b9UL) * 1099511628211UL;
     }
     fprintf(stderr, "HASORDER %s nrec=%d h=%lx\n", tag, recs.n, hh);
+  }
+  // How many DISTINCT unions do the Type_SUM Syms actually represent?
+  // make_LUB_type is a default no-op, so each construction mints a fresh
+  // Sym; if the Sym count exceeds the count of distinct component-name
+  // signatures, structurally equal unions exist as separate Syms.
+  {
+    Vec<cchar *> sigs;
+    int nsum = 0;
+    for (Sym *s2 : if1->allsyms) {
+      if (!s2 || s2->type_kind != Type_SUM) continue;
+      ++nsum;
+      std::string key;
+      Vec<cchar *> nms;
+      for (Sym *m : s2->has) if (m) nms.add(m->name ? m->name : "?");
+      if (nms.n > 1) qsort(nms.v, nms.n, sizeof(nms[0]), [](const void *a, const void *b) {
+        return strcmp(*(cchar *const *)a, *(cchar *const *)b);
+      });
+      for (cchar *nm : nms) { key += nm; key += "|"; }
+      cchar *k = if1_cannonicalize_string(if1, key.c_str(), key.c_str() + key.size());
+      bool dup = false;
+      for (cchar *e : sigs) if (e == k) { dup = true; break; }
+      if (!dup) sigs.add(k);
+    }
+    fprintf(stderr, "SUMDUP %s sum_syms=%d distinct_unions=%d\n", tag, nsum, sigs.n);
   }
   Vec<Fun *> funs;
   for (Fun *f : pdb->fa->funs) if (f) funs.add(f);

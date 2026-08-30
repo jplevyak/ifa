@@ -331,7 +331,9 @@ demonstrated benefit, and it changes type identity globally. It remains
 worth doing once the real root is fixed (`make_LUB_type` is still a
 default no-op, so structurally equal unions really are distinct Syms) —
 key it on the sorted component list, which `compar_syms` already
-provides.
+provides. **Filed separately as
+[120](120-union-types-are-never-interned.md)**, with the measurement:
+1323 SUM Syms for 27 distinct unions on msp_ss.
 
 **So the search moves upstream again:** what makes `clone` assign
 structurally different types to the same Var across runs, given that
