@@ -1024,14 +1024,38 @@ static int concretize_avar(AVar *av) {
   return 0;
 }
 
+// ifa/issues/112: walk a Var's AVars in a CANONICAL order.
+//
+// `v->avars` is an AVarMap keyed by EntrySet POINTERS, so a raw
+// `for (i = 0; i < v->avars.n; i++)` walks hash slots in heap-layout
+// order, which moves between runs. Both concretize_var_type and
+// concretize_var_list_type decide a Var's type from that walk -- the
+// FIRST CreationSet seen becomes `sym`, and the union is accumulated in
+// visit order -- and they MINT Syms as they go, so the walk decides
+// which Vars end up sharing a type Sym. Downstream, inline_single_sends
+// compares types by pointer (`p->rvals[i]->type == v->type`) and
+// codegen selects C types from them.
+//
+// Measured: FA is deterministic (IFA_DBG_FATRACE) and every clone stage
+// up to and including build_concrete_types is deterministic
+// (IFA_DBG_CLONE); clone_functions -- which calls these two -- is where
+// the divergence appears.
+static void canonical_avars(Var *v, Vec<AVar *> &out) {
+  out.clear();
+  for (int i = 0; i < v->avars.n; i++)
+    if (v->avars[i].key && v->avars[i].value) out.add(v->avars[i].value);
+  if (out.n > 1) qsort_by_id(out);
+}
+
 static int concretize_var_list_type(Var *v) {
   Sym *sym = nullptr;
   // check if we even need to try to convert a list
   bool all_list = false;
   AType *etype = fa->type_world.bottom_type;
-  for (int i = 0; i < v->avars.n; i++) {
-    if (!v->avars[i].key) continue;
-    for (CreationSet *cs : *v->avars[i].value->out) if (cs) {
+  Vec<AVar *> cavs;
+  canonical_avars(v, cavs);
+  for (AVar *av : cavs) {
+    for (CreationSet *cs : *av->out) if (cs) {
       if (!sym)
         sym = cs->type;
       else if (sym != cs->type)
@@ -1085,18 +1109,18 @@ static int concretize_var_list_type(Var *v) {
 static int concretize_var_type(Var *v) {
   Sym *sym = nullptr, *type = nullptr;
   if (v->type) return 0;
-  for (int i = 0; i < v->avars.n; i++) {
-    if (!v->avars[i].key) continue;
-    if (v->avars[i].value->cs_map && v->def) {
+  Vec<AVar *> cavs;
+  canonical_avars(v, cavs);
+  for (AVar *av : cavs) {
+    if (av->cs_map && v->def) {
       if (!v->def->creates) v->def->creates = new Vec<Sym *>;
-      form_Map(CSMapElem, x, *v->avars[i].value->cs_map) v->def->creates->set_add(x->value->type);
+      form_Map(CSMapElem, x, *av->cs_map) v->def->creates->set_add(x->value->type);
     }
   }
   int ret = 0;
   if ((ret = concretize_var_list_type(v)) != 0) return ret;
-  for (int i = 0; i < v->avars.n; i++) {
-    if (!v->avars[i].key) continue;
-    for (CreationSet *cs : *v->avars[i].value->out) if (cs) {
+  for (AVar *av : cavs) {
+    for (CreationSet *cs : *av->out) if (cs) {
       if (!sym)
         sym = cs->type;
       else {
@@ -1209,9 +1233,20 @@ static void fixup_var(Var *v, Fun *f, Vec<EntrySet *> *ess) {
 static void fixup_clone_vars(Fun *f, Vec<EntrySet *> *ess) {
   for (Var *v : f->fa_all_Vars) if (v->sym->nesting_depth == f->sym->nesting_depth + 1) fixup_var(v, f, ess);
   else if (v->sym->nesting_depth) {
-    if (!v->sym->is_fun)  // these aren't fixed up... probably should be, but
-                          // they are constants
-      for (EntrySet *es : f->ess) if (es) {
+    if (!v->sym->is_fun) {  // these aren't fixed up... probably should be, but
+                            // they are constants
+      // ifa/issues/112: `f->ess` is a Vec used as a SET, so this walked
+      // EntrySets in POINTER-HASH order. The body REPLACES v->avars each
+      // iteration (`move`), so each pass re-filters the previous result
+      // and the LAST EntrySet decides what survives -- making the
+      // surviving AVar set depend on heap layout. Measured on msp_ss:
+      // the same Var in the same clone kept 127 AVars in one run and 251
+      // in another, which then feeds concretize_var_type and so decides
+      // the Var's TYPE. Walk in id order instead.
+      Vec<EntrySet *> ordered_ess;
+      for (EntrySet *es : f->ess) if (es) ordered_ess.add(es);
+      if (ordered_ess.n > 1) qsort_by_id(ordered_ess);
+      for (EntrySet *es : ordered_ess) if (es) {
         AVarMap avs;
         for (int i = 0; i < v->avars.n; i++) {
           EntrySet *x = (EntrySet *)v->avars[i].key;
@@ -1220,6 +1255,7 @@ static void fixup_clone_vars(Fun *f, Vec<EntrySet *> *ess) {
         }
         v->avars.move(avs);
       }
+    }
   }
 }
 
@@ -1285,11 +1321,76 @@ void fixup_clone_tree(Fun *f, Vec<EntrySet *> *ess, Vec<Fun *> &fs) {
 static int clone_functions() {
   Vec<Fun *> fs;
   fs.copy(fa->funs);
+  // ifa/issues/112: hash the INPUT order and the post-sort PROCESSING
+  // order. compar_fun_nesting keys on nesting_depth alone -- a coarse
+  // key with many ties -- and qsort is not stable, so if the input
+  // moves, the tie order moves with it. Processing order matters
+  // because concretize_types() below MINTS type Syms, so it decides
+  // which Vars end up sharing a type.
+  static int dbg_cf = -1;
+  if (dbg_cf < 0) dbg_cf = getenv("IFA_DBG_CLONE") ? 1 : 0;
+  unsigned long hin = 1469598103934665603UL;
+  if (dbg_cf) for (Fun *f : fs) hin = (hin ^ (unsigned long)(f ? f->id : 0)) * 1099511628211UL;
   qsort(fs.v, fs.n, sizeof(fs[0]), compar_fun_nesting);
+  if (dbg_cf) {
+    unsigned long hout = 1469598103934665603UL;
+    for (Fun *f : fs) hout = (hout ^ (unsigned long)(f ? f->id : 0)) * 1099511628211UL;
+    fprintf(stderr, "CLONEFUNS n=%d in=%lx sorted=%lx\n", fs.n, hin, hout);
+  }
+  // ifa/issues/112: per-fun record inside clone_functions, so the first
+  // differing line names the Fun whose types first diverge.
+  auto cfun_note = [&](Fun *ff, cchar *what) {
+    if (!dbg_cf || !ff) return;
+    unsigned long h = 1469598103934665603UL;
+    for (Var *v : ff->fa_all_Vars) if (v) {
+      h = (h ^ (unsigned long)v->id) * 1099511628211UL;
+      h = (h ^ (unsigned long)(v->type ? v->type->id : 0)) * 1099511628211UL;
+    }
+    fprintf(stderr, "CFUN %s fun=%d nvars=%d h=%lx\n", what, ff->id, ff->fa_all_Vars.n, h);
+    // IFA_DBG_CLONE_FUN=<id>: dump that Fun's per-Var types, so two runs
+    // can be diffed to the exact Var whose type differs.
+    static const char *want = getenv("IFA_DBG_CLONE_FUN");
+    if (want && atoi(want) == ff->id) {
+      for (Var *v : ff->fa_all_Vars) if (v) {
+        Sym *t = v->type;
+        fprintf(stderr, "CVAR fun=%d var=%d navars=%d type=%s kind=%d", ff->id, v->id, v->avars.n,
+                t && t->name ? t->name : "?", t ? t->type_kind : -1);
+        // Which AVar(s) survived fixup_var's filter, and what is in
+        // their `out`? Distinguishes "same AVar, type computed
+        // differently" from "a different AVar survived".
+        // SORTED by AVar id, and each `out` printed as a sorted name
+        // list: the map's own slot order is hash order, so an unsorted
+        // dump reports a difference on every line and hides the real
+        // one.
+        Vec<AVar *> sav;
+        canonical_avars(v, sav);
+        fprintf(stderr, " avars=[");
+        for (AVar *av : sav) {
+          fprintf(stderr, "#%d out={", av->id);
+          Vec<cchar *> nms;
+          if (av->out) for (CreationSet *c : *av->out) if (c)
+            nms.add(c->sym && c->sym->name ? c->sym->name : "?");
+          if (nms.n > 1) qsort(nms.v, nms.n, sizeof(nms[0]), [](const void *a, const void *b) {
+            return strcmp(*(cchar *const *)a, *(cchar *const *)b);
+          });
+          for (cchar *nm : nms) fprintf(stderr, "%s,", nm);
+          fprintf(stderr, "} ");
+        }
+        fprintf(stderr, "]");
+        if (t && t->type_kind == Type_SUM) {
+          fprintf(stderr, " sum=[");
+          for (Sym *m : t->has) fprintf(stderr, "%s,", m && m->name ? m->name : "?");
+          fprintf(stderr, "]");
+        }
+        fprintf(stderr, "\n");
+      }
+    }
+  };
   for (Fun *f : fs) {
     if (f->equiv_sets.n == 1) {
       fixup_clone(f, f->equiv_sets[0]);
       if (concretize_types(f) < 0) return -1;
+      cfun_note(f, "single");
     } else {
       Vec<Vec<EntrySet *> *> eqs(f->equiv_sets);
       for (int i = 0; i < eqs.n; i++) {
@@ -1297,9 +1398,11 @@ static int clone_functions() {
           Fun *ff = f->copy();
           fixup_clone_tree(ff, eqs[i], fs);
           if (concretize_types(ff) < 0) return -1;
+          cfun_note(ff, "clone");
         } else {
           fixup_clone(f, eqs[i]);
           if (concretize_types(f) < 0) return -1;
+          cfun_note(f, "last");
         }
       }
     }
@@ -1370,11 +1473,60 @@ void log_test_fa(FA *fa) {
                          !v->sym->is_fun) log_var_types(v, 0);
 }
 
+// ifa/issues/112: stage trace inside clone. FA is measured deterministic
+// (IFA_DBG_FATRACE: 13 passes, 160k AVars, identical across runs) while
+// the emitted C is not, so the divergence is in here. One record per
+// stage boundary; diff two runs and take the FIRST differing line.
+//
+// Hashes the type ASSIGNMENT: per CreationSet (id order) its cs->type,
+// and per AVar its ->type, both projected through a first-encounter
+// ORDINAL rather than a Sym id -- the relation "which things share a
+// type" is what the downstream `==` guards read, and it survives the
+// renaming that raw ids do not.
+static void dbg_clone_stage(cchar *stage) {
+  static int on = -1;
+  if (on < 0) on = getenv("IFA_DBG_CLONE") ? 1 : 0;
+  if (!on) return;
+  Vec<Sym *> seen;
+  unsigned long h = 1469598103934665603UL;
+#define CMIX(x) (h = (h ^ (unsigned long)(x)) * 1099511628211UL)
+  auto ordinal = [&](Sym *t) {
+    for (int i = 0; i < seen.n; i++) if (seen[i] == t) return i;
+    seen.add(t);
+    return seen.n - 1;
+  };
+  Vec<CreationSet *> css;
+  for (CreationSet *cs : fa->css) if (cs) css.add(cs);
+  if (css.n > 1) qsort_by_id(css);
+  for (CreationSet *cs : css) {
+    CMIX(cs->id);
+    CMIX(ordinal(cs->type));
+    CMIX(cs->sym ? cs->sym->id : 0);
+    for (AVar *iv : cs->vars) if (iv) CMIX(ordinal(iv->type));
+    CMIX(0x9e3779b9UL);
+  }
+  Vec<Fun *> fs;
+  for (Fun *f : fa->funs) if (f) fs.add(f);
+  if (fs.n > 1) qsort_by_id(fs);
+  for (Fun *f : fs) {
+    CMIX(f->id);
+    for (Var *v : f->fa_all_Vars) if (v) { CMIX(v->id); CMIX(ordinal(v->type)); }
+    CMIX(0x9e3779b9UL);
+  }
+#undef CMIX
+  fprintf(stderr, "CLONESTAGE %s ncss=%d ntypes=%d h=%lx\n", stage, css.n, seen.n, h);
+}
+
 int clone(FA *afa) {
   initialize();
+  dbg_clone_stage("00-initialize");
   determine_layouts();
+  dbg_clone_stage("10-layouts");
   determine_clones();
+  dbg_clone_stage("20-clones");
   if (build_concrete_types() < 0) return -1;
+  dbg_clone_stage("30-concrete-types");
   if (clone_functions() < 0) return -1;
+  dbg_clone_stage("40-clone-functions");
   return 0;
 }

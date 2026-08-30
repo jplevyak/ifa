@@ -336,9 +336,82 @@ provides. **Filed separately as
 1323 SUM Syms for 27 distinct unions on msp_ss.
 
 **So the search moves upstream again:** what makes `clone` assign
-structurally different types to the same Var across runs, given that
-FA's converged counts, the CS/ES partitions, and Var ids are all stable?
-That is the open question.
+structurally different types to the same Var across runs?
+
+### Staged first-divergence trace (2026-08-30) — it is `clone_functions`
+
+Built the trace the id-contamination argument implies: **id hashes are
+useless as an aggregate verdict but exactly right as a chronological
+tripwire**, because up to the first divergence every counter has handed
+out the same numbers to the same objects. So the first differing record
+IS the divergence rather than its wake.
+
+**Stage 1 — FA (`IFA_DBG_FATRACE`).** One record per pass, hashing every
+AVar's complete `out` CreationSet set (160k AVars, 13 passes):
+
+    6 runs -> 1 distinct trace
+
+**FA is deterministic** — not merely its five counters, which is all the
+2026-08-22 claim rested on, but its full converged per-AVar type state.
+That claim is now properly established rather than assumed.
+
+**Stage 2 — clone stages (`IFA_DBG_CLONE`).** One record per stage,
+hashing the type ASSIGNMENT (per-CS `cs->type`, per-Var `v->type`,
+projected through first-encounter ordinals):
+
+| stage | distinct over 6 runs |
+|---|---|
+| `initialize` / `layouts` / `clones` / `concrete-types` | 1 — stable |
+| **`clone-functions`** | **5** — matches the 5 distinct `.c` |
+
+**Stage 3 — inside `clone_functions`.** The fun processing order is
+stable (both the `fa->funs` input and the `compar_fun_nesting` result).
+A per-fun record puts the first divergence at record 652 of 711 — one
+specific clone, same fun id and var count, different types.
+
+**Stage 4 — per Var.** Dumping that clone's Vars, sorted (an unsorted
+dump reports a difference on every line, since the map's own order is
+hash order — the probe has to be canonicalised too, or it becomes the
+noisy thing):
+
+    var=11232  navars=127   (run 1)
+    var=11232  navars=251   (run 3)
+
+A genuinely different NUMBER of AVars survives clone fixup for the same
+Var in the same clone — a different set, not a different order. That set
+is what `concretize_var_type` reads to compute the Var's type.
+
+### Two more hash-order sources canonicalised (landed)
+
+Both are walks that *decide types*, and both were in hash order:
+
+1. **`concretize_var_type` / `concretize_var_list_type`** walked
+   `v->avars` — an `AVarMap` keyed by EntrySet POINTERS — by raw slot
+   index. The first CreationSet seen becomes the Var's type, and the
+   union is accumulated in visit order, while `new_Sym()` is called as
+   it goes. Now walked in AVar-id order (`canonical_avars`).
+2. **`fixup_clone_vars`** walked `f->ess`, a Vec-as-set, and its body
+   REPLACES `v->avars` each iteration (`move`), so each pass re-filters
+   the previous result and the LAST EntrySet decides what survives. Now
+   walked in id order.
+
+**Neither fixes msp_ss on its own** (still 7 distinct of 8), and that is
+expected rather than discouraging: timsort took two independent fixes
+before it fell, with no visible improvement after the first. Both are
+kept because they are the same class as the three already landed —
+canonicalising a hash-ordered walk that feeds a decision — and all five
+gates stay green with timsort still stable.
+
+Not yet confirmed: which of `fixup_clone_vars`' two branches produced
+the 127-vs-251 split (`fixup_var` for `nesting_depth == f+1`, or the
+`f->ess` loop for the rest). `fixup_var` filters by `ess->set_in(...)`,
+a membership test that should be order-free, so the `f->ess` loop is the
+better suspect — but the attribution is inference, not measurement.
+
+**Next step:** instrument `fixup_clone_vars` itself — record, per (Var,
+clone), the branch taken and the surviving AVar count, and diff. That
+names the branch, and from there whether the input set or the filter is
+what moves.
 
 ### (superseded) ROOT CAUSE: union types are never interned
 

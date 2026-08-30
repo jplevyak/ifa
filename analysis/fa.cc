@@ -9014,6 +9014,48 @@ static void probe_invalidation_closure() {
   // needs when this returns 0.
   pass_timer.stop();
   ++analysis_pass;
+  // ifa/issues/112: COARSE per-pass trace of FA's computed state, for
+  // locating the FIRST divergence between two runs.
+  //
+  // An id-based hash is useless as an aggregate verdict -- ids are
+  // creation-order counters, so everything downstream of a divergence
+  // looks different whether or not it is. But it is exactly right for a
+  // chronological trace: UP TO the first divergence, every counter has
+  // handed out the same numbers to the same objects, so the first
+  // differing line IS the divergence rather than its wake. Diff two
+  // runs' traces and take the first differing record.
+  //
+  // Reads only -- v->avars.get-style traversal via form_AVarMapElem and
+  // no make_AVar, because minting an AVar here would shift the very
+  // counters under test (cf. ifa/041, where the -v dump mutated the
+  // analysis it measured).
+  static int dbg_fatrace = -1;
+  if (dbg_fatrace < 0) dbg_fatrace = getenv("IFA_DBG_FATRACE") ? 1 : 0;
+  if (dbg_fatrace) {
+    Vec<AVar *> avs;
+    for (Fun *f : fa->funs) if (f)
+      for (Var *v : f->fa_all_Vars) if (v)
+        form_AVarMapElem(x, v->avars) if (x->value) avs.add(x->value);
+    for (CreationSet *cs : fa->css) if (cs)
+      for (AVar *iv : cs->vars) if (iv) avs.add(iv);
+    if (avs.n > 1) qsort_by_id(avs);
+    unsigned long h = 1469598103934665603UL;
+#define FAMIX(x) (h = (h ^ (unsigned long)(x)) * 1099511628211UL)
+    for (AVar *av : avs) {
+      FAMIX(av->id);
+      if (av->out) {
+        Vec<int> ids;
+        for (CreationSet *c : *av->out) if (c) ids.add(c->id);
+        if (ids.n > 1) qsort(ids.v, ids.n, sizeof(ids[0]), [](const void *a, const void *b) {
+          int x = *(const int *)a, y = *(const int *)b; return (x > y) - (x < y);
+        });
+        for (int i : ids) FAMIX(i);
+      }
+      FAMIX(0x9e3779b9UL);
+    }
+#undef FAMIX
+    fprintf(stderr, "FATRACE pass=%d navars=%d ess=%d css=%d h=%lx\n", analysis_pass, avs.n, fa->ess.n, fa->css.n, h);
+  }
   if (ifa_verbose) {
     double flow = pass_timer.time - extend_timer.time - match_timer.time;
     printf(
