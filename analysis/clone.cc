@@ -975,6 +975,14 @@ static int concretize_avar(AVar *av) {
     av->type = sym;
   else {
     type->has.set_to_vec();
+    // ifa/issues/112: `has` was built with set_add, so its components sit
+    // at POINTER-HASHED slots and come out in an order that moves between
+    // runs. codegen's resolve_union_receiver (cg.cc) returns the FIRST
+    // component carrying the field, so an unsorted union made the emitted
+    // cast name a different struct each run -- the last 12 lines of
+    // timsort's nondeterminism. The sibling site below already sorts with
+    // compar_syms for the same reason.
+    if (type->has.n > 1) qsort(type->has.v, type->has.n, sizeof(type->has[0]), compar_syms);
     if (type->has.n == 1)
       av->type = type->has[0];
     else if (!(av->type = if1->callback->make_LUB_type(type)))
@@ -1074,6 +1082,14 @@ static int concretize_var_type(Var *v) {
     v->type = sym;
   else {
     type->has.set_to_vec();
+    // ifa/issues/112: `has` was built with set_add, so its components sit
+    // at POINTER-HASHED slots and come out in an order that moves between
+    // runs. codegen's resolve_union_receiver (cg.cc) returns the FIRST
+    // component carrying the field, so an unsorted union made the emitted
+    // cast name a different struct each run -- the last 12 lines of
+    // timsort's nondeterminism. The sibling site below already sorts with
+    // compar_syms for the same reason.
+    if (type->has.n > 1) qsort(type->has.v, type->has.n, sizeof(type->has[0]), compar_syms);
     if (type->has.n == 1)
       v->type = type->has[0];
     else if (!(v->type = if1->callback->make_LUB_type(type)))

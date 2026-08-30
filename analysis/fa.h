@@ -923,6 +923,10 @@ void type_violation(ATypeViolation_kind akind, AVar *av, AType *type, AVar *send
 // recorded. Use this — not `type_violations.n`, which is the
 // underlying open-addressed table capacity (see issue 009).
 int type_violations_count();
+// ifa/issues/112: type_violations iterates in pointer-hash order; this
+// returns it in a stable, total order (compar_tv). Use it wherever the
+// ORDER affects the result, not just the display.
+void fa_sorted_type_violations(Vec<ATypeViolation *> &src, Vec<ATypeViolation *> &out);
 AType *type_cannonicalize(AType *t);
 AType *type_diff(AType *, AType *);
 AType *type_intersection(AType *, AType *);

@@ -56,6 +56,16 @@ static void finalize_cfg(Fun *f) {
   if (ifa_verbose > 2) printf("%d cfg nodes\n", nodes.n);
   for (PNode *p : nodes) {
     p->cfg_pred.set_to_vec();
+    // ifa/issues/112: cfg_pred is built with set_add, so it sits at
+    // POINTER-HASHED slots and set_to_vec() compacts them in that order
+    // -- which moves between runs of the same compile. Everything that
+    // walks the reverse CFG inherits the instability: Fun::collect_Vars
+    // (if1/fun.cc) returns `vars` in that order, cg.cc numbers
+    // temporaries in exactly that order, and the declaration sort
+    // (lt_type_id) is not a total order, so ties keep it. Sorting by id
+    // once, here, makes every consumer deterministic at the source
+    // rather than at each of them.
+    qsort_by_id(p->cfg_pred);
 #ifdef CONC_IMPLEMENTED
     p->conc_pred.set_to_vec();
 #endif

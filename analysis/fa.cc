@@ -4340,6 +4340,19 @@ static bool find_violation_user_loc(ATypeViolation *v, cchar **out_filename, int
   return false;
 }
 
+// ifa/issues/112 family: `fa->type_violations` is populated with
+// set_add, so a Vec-as-set iterates in POINTER-HASH order, which moves
+// between runs. show_violations already sorted around that to keep
+// diagnostics stable; the same order is needed by any consumer whose
+// WORK depends on it. PycCompiler::reanalyze promotes fields in this
+// order, and the promotion order decides struct slot assignment
+// (issues/121) -- so here it is a correctness matter, not cosmetics.
+void fa_sorted_type_violations(Vec<ATypeViolation *> &src, Vec<ATypeViolation *> &out) {
+  out.clear();
+  for (ATypeViolation *v : src) if (v) out.add(v);
+  if (out.n > 1) qsort(out.v, out.n, sizeof(out[0]), compar_tv);
+}
+
 static void show_violations(FA *fa, FILE *fp) {
   Vec<ATypeViolation *> vv;
   for (ATypeViolation *v : fa->type_violations) if (v) vv.add(v);

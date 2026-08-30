@@ -1,7 +1,9 @@
 # 112 — two identical pyc invocations emit different C
 
-**Status:** open, **root-caused** 2026-08-22 (see below); not yet
-fixed. Found while building ifa/issues/111's differential harness.
+**Status:** open, **partially fixed** 2026-08-30 — `timsort` and
+`deepcopy_objects` are now stable, `msp_ss` is not (4 distinct outputs
+of 8 runs, was 3 of 3). Three ordering sources fixed; see "Fixed
+2026-08-30" below. Originally **root-caused** 2026-08-22. Found while building ifa/issues/111's differential harness.
 **Affects:** codegen emission order (`ifa/codegen/cg.cc` and/or the
 clone ordering feeding it). NOT flow analysis — FA's converged state is
 reproducible on the affected program.
@@ -178,3 +180,48 @@ on, and reproducible builds generally.
   so this is not that.
 - [111](111-FA-selective-invalidation-per-pass.md) — found by its
   harness; that harness now works around this rather than waiting on it.
+
+## Fixed 2026-08-30 — three sources, and the one that was not cosmetic
+
+Prompted by issues/121, whose fix made two CreationSets genuinely
+equivalent and so handed this issue's tiebreaks something to decide.
+All three are the same family the root-cause section names — a
+`Vec`-as-set iterating in pointer-hash order — in three different
+places:
+
+**1. `fa->type_violations` (`fa.cc:2483`, `set_add`).** The one that
+was NOT cosmetic. `PycCompiler::reanalyze` promotes fields in this
+order, and promotion order assigns struct slots (issues/121), so this
+reached *layout*, not just temporary numbering. `show_violations`
+already sorted around it for stable diagnostics; that ordering is now
+available as `fa_sorted_type_violations` and `reanalyze` uses it.
+Fixes `deepcopy_objects`.
+
+**2. `cfg_pred` (`cfg.cc`, this issue's original root cause).**
+`finalize_cfg` already called `set_to_vec()`, which compacts the hash
+slots but *preserves their order* — so the documented fix was in the
+right place and simply absent. Now `qsort_by_id` right after, which is
+option 1 ("the honest fix") from the Fix direction section: one sort at
+the source rather than one per consumer. Necessary for `timsort` but
+not sufficient on its own.
+
+**3. Type_SUM component order (`clone.cc`, `concretize_avar` and its
+Var twin).** A union's `has` is built with `set_add`; codegen's
+`resolve_union_receiver` (`cg.cc:221`) returns the FIRST component
+carrying the field, so the emitted cast named a different struct each
+run. Both sites now sort with `compar_syms`, matching a third site that
+already did. This is what finished `timsort`.
+
+One golden moved and was re-blessed: `container_scalar_union_add.py`
+now reports `{float64, list}` where it said `{list, float64}` — the
+same union, printed in the newly canonical order, stable across runs.
+
+### Still open: msp_ss
+
+4 distinct outputs of 8 runs (was 3 of 3, "always differs"), so the
+remaining source is narrower but real. Two consecutive runs now compare
+byte-identical, which never happened before, so whatever is left fires
+less often than the three above. Not yet traced.
+
+The population figure in the section below predates this and needs
+re-measuring: it was 2 of 68 unstable, and at least `timsort` has moved.
