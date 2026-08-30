@@ -1,6 +1,8 @@
 # 120 — union types are never interned: ~1300 Syms for 27 distinct unions
 
-**Status:** open, filed 2026-08-30 out of
+**Status:** open — **naive interning is measured to SEGFAULT the
+compiler** (see "Attempted" below); the gap is real but the obvious fix
+is not safe without an ownership audit first. Filed 2026-08-30 out of
 [112](112-CGEN-nondeterministic-emitted-c.md), which tried interning as
 a fix, measured that it does not fix 112, and reverted it. The gap it
 found is real on its own and had no issue.
@@ -89,6 +91,47 @@ Two cautions from that prototype:
   also the risk: more `==` comparisons start succeeding, so more
   inlining fires. It needs the full gate set **plus** a corpus `check`
   sweep, not just the test suite.
+
+## ATTEMPTED 2026-08-30: naive interning SEGFAULTS the compiler
+
+Implemented exactly as proposed above — `canonical_sum_has()`
+(`set_to_vec()` + `compar_syms`) then a lookup keyed on the sorted
+component ids, applied at all five construction sites. Result:
+
+- `make test`: **303 passed, 5 failed** (from 308/0)
+- `tests/nested_tuple_repr.py`: **pyc segfaults**, rc=139, core dumped,
+  with no diagnostic output at all
+
+Narrowing: reverting the three sites that assign a STRUCTURAL role
+(`cs->type` in `resolve_concrete_types`, the member type from
+`concrete_type_set_to_type`, and the list-element SUM) and keeping
+interning **only** at the two `concretize_avar`/`concretize_var` sites —
+which merely set `av->type`/`v->type`, a type REFERENCE — still
+segfaults.
+
+So the blocker is not one bad site. **These Syms are owned and mutated
+after construction**, so returning a shared one corrupts unrelated
+state. Sharing a union Sym is only safe once every post-construction
+mutation of a `Type_SUM` Sym is gone.
+
+The crash does not reproduce under `gdb` (the run exits normally), which
+fits the rest of this investigation: the corruption is heap-layout
+dependent.
+
+**No corpus sweep was run.** The gates already answer "positive,
+neutral, or negative?" with negative — a compiler segfault is not a
+neutral change, and 80 minutes of A/B sweeping on a build that crashes
+would measure nothing.
+
+### What a safe version needs
+
+An ownership audit of `Type_SUM` Syms: find every write to a SUM's
+`has`, `element`, `name`, `ast`, `creators` and so on that happens after
+the Sym is handed out, and either eliminate it or make it produce a new
+Sym. Only then can identity be shared. Until that is done, the sorted
+`has` (already landed, see 112) is the part of this that is safe on its
+own — it makes each union's component list canonical without making two
+unions the same object.
 
 ## Verification plan
 
