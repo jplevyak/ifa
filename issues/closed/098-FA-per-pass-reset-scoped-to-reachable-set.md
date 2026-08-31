@@ -1,10 +1,11 @@
 # 098 — FA's per-pass reset is scoped to the PREVIOUS pass's reachable set, so bound call edges carry stale per-pass state into later passes
 
-**Status:** root-caused and **fixed** 2026-08-12; one follow-on
-(`out_edge_map` / silent dispatch-failure diagnostics) left open, see
-"The fix" below. Reproduced on **unmodified main** — the original
+**Status:** root-caused and **fixed** — the reset itself 2026-08-12,
+the `out_edge_map` / silent-dispatch-failure follow-on 2026-08-31 (see
+"The second defect's fix" below). **CLOSED.** Reproduced on
+**unmodified main** — the original
 2026-08-11 filing believed the only trigger was
-[097](097-CGEN-callsite-vs-clone-formal-type-mismatch.md)'s reverted
+[097](../097-CGEN-callsite-vs-clone-formal-type-mismatch.md)'s reverted
 defer/force patch, and diagnosed the mechanism as *per-pass scheduling
 order-dependence*. Both of those are wrong and are corrected below; the
 old diagnosis is kept at the end for the record, since the prior-art
@@ -212,17 +213,14 @@ are visible there for the duration of that second loop. Latent since the
 split-lineage path was written; `dijkstra`'s contour trajectory shifted
 onto it and segfaulted. Fixed with `if (!ee->to || !ee->match) continue;`.
 
-**Not done: `out_edge_map`'s own reset.** Clearing it per pass is *not*
-viable — `get_AEdges` reads it to reuse the same `AEdge` across passes,
-so clearing it would mint fresh edges every pass and destroy every
-`e->to` binding the splitter's cross-pass routing depends on. The
-"second defect" above therefore needs the other approach: teach
+**Deferred at the time: `out_edge_map`'s own reset.** Clearing it per
+pass is *not* viable — `get_AEdges` reads it to reuse the same `AEdge`
+across passes, so clearing it would mint fresh edges every pass and
+destroy every `e->to` binding the splitter's cross-pass routing depends
+on. The "second defect" above therefore needs the other approach: teach
 `collect_argument_type_violations` to treat "map entry exists but no
-edge in it was analyzed this pass" the same as "no map entry". That
-surfaces previously-silent dispatch failures as violations, which is a
-diagnostic behavior change of its own and wants its own investigation —
-left open, along with `mastermind2`'s six stuck `if`s (which are that
-defect plus a genuinely missing `list.__lt__`).
+edge in it was analyzed this pass" the same as "no map entry".
+**Landed 2026-08-31 — see "The second defect's fix" below.**
 
 **The invariant check is now permanent**, gated on `IFA_DBG_EDGEARGS`
 (`audit_edge_arg_values`, next to `complete_pass`; same zero-cost-when-off
@@ -279,13 +277,149 @@ pre-fix tree:
   two swapped struct ids and the clone indices, the 1321 emitted
   function signatures are byte-identical.
 
-**Still to do:** re-test 097's reverted defer/force patch — its
-regression should be gone if this was the load-bearing assumption it
-broke.
+**Handed to 097, not tracked here:** re-testing 097's reverted
+defer/force patch. Its regression should be gone if this was the
+load-bearing assumption it broke, but the retest is that issue's own
+fix, and 097 has changed underneath in the meantime
+([100](../100-FA-display-removed-from-contour-identity.md) removed
+`entry_set_compatibility`'s nest gate, so its trace wants re-taking
+first). Recorded in 097's status; nothing in 098 depends on it.
+
+## The second defect's fix (landed 2026-08-31)
+
+`collect_argument_type_violations` read "`out_edge_map` has an entry for
+this send" as "this send dispatched", and the map is never reset, so the
+entry survives from the FIRST pass in which dispatch succeeded. A pass
+in which dispatch fails *completely* still found `m` non-null, took the
+`else` arm, found no analyzed edge to inspect, and reported nothing.
+
+The map cannot be cleared (see "Deferred at the time" above), so the
+per-pass fact has to come from somewhere else. It already exists:
+**`EntrySet::out_edges` is emptied by `clear_es` every pass and re-added
+by `analyze_edge` only after the edge's filter gate passes.** So the
+test is one helper:
+
+```cpp
+static bool dispatched_this_pass(EntrySet *from, Vec<AEdge *> *m) {
+  if (!m) return false;
+  for (AEdge *me : *m) if (me && from->out_edges.set_in(me)) return true;
+  return false;
+}
+```
+
+and the collector's `if (!m)` becomes `if (!dispatched_this_pass(from, m))`.
+The `from->live_pnodes.set_in(p)` guard at the top of the loop already
+establishes that the send *was* walked this pass, so "walked, and not one
+of its edges survived dispatch" is exactly a dispatch failure — the same
+condition the `!m` arm reports, reached a different way.
+
+A probe reports it: `IFA_DBG_DISPATCHFAIL=1` prints, per pass,
+`total=` sends with a map entry, `sites=` those none of whose edges was
+analyzed this pass, and `reported=` the `Partial_NEVER` subset that
+therefore yields `SEND_ARGUMENT` violations.
+
+```
+$ cd shedskin_examples/<x> && IFA_DBG_DISPATCHFAIL=1 ../../pyc -D ../.. <x>.py
+```
+
+| example | total | sites (final pass) |
+|---|---|---|
+| `mastermind2` | 1064 | 7 |
+| `msp_ss` | 2367 | 10 |
+| `rdb` | 2905 | 8 |
+| `sudoku5` | 1950 | 8 |
+| `go` | 1519 | 0 |
+
+Every one of them is `Partial_NEVER`, so `sites == reported` throughout:
+these are all real, previously-invisible failures. On `mastermind2` the
+new diagnostics are precisely the ones predicted when the defect was
+filed —
+
+```
+mastermind2.py:19:220:  warning: unresolved call '__lt__'
+mastermind2.py:127:2384: warning: unresolved call '__lt__'
+```
+
+— `max([(utility(play, possibles), play) for play in plays])` compares
+`(float, list)` tuples, which falls through to comparing the `list`
+halves on a tie, and `__pyc__` has no `list.__lt__`. That missing
+builtin is the other half of this example's symptom and is now filed
+separately as [issues/122](../../../issues/122-list-ordering-comparisons-missing.md),
+with `tests/list_ordering.py` as its `.known_issue` repro. Warnings on
+the example go 45 → 54; it still compiles `rc=0`, because pyc is permissive
+by default and a `SEND_ARGUMENT` violation is a warning plus a runtime
+check there (it is a hard error under `--strict` and in the `ifa`
+binary, which defaults strict).
+
+### Regression testing
+
+All five CI steps green on the fixed tree: `ifa --test` 58/0; `test-ir`
+0 failed across all 16 phases with the 2 known `mark_*_skew` fixtures;
+`test_pyc.py` **308 passed / 0 failed / 14 expected fails / 15 known**,
+identical on the C backend and under `PYC_FLAGS=-b`; `make -C ifa
+test_llvm` and `make test_dparse` pass.
+
+**One golden re-blessed: `tests/match_seq.py.check`.** It gains 10
+warnings, every one of the *same class it already records*, at
+additional call sites — `case [[a, b], c]` reached from
+`classify([2, 50])` / `([5, 3])` / `([3, 5])` (element 0 is an `int`,
+so destructuring it as a sequence cannot dispatch), and
+`case [a, b] if a > b` reached from `classify([[1, 2], 3])`
+(`a` is a `list`, `b` an `int`; `list.__gt__` does not exist). All are
+genuine unresolvable dispatches that the analysis cannot rule out —
+proving the guard unreachable because an earlier `case` matched is
+[050](../050-FA-general-constant-propagation-unreachable-code.md)'s job,
+not this one. The runtime output is unchanged and still matches
+`match_seq.py.exec.check` exactly, and the test now passes on the LLVM
+backend too (307 → 308).
+
+### The corpus
+
+`sweeps/check__default__c8fbb054+2b9aa817.tsv`, A/B against
+`check__default__de4ea252+36eaaedb` (the cached sweep of HEAD's content):
+```
+programs=77 compile_fail=5 run_fail=41 stdout_differs=23 with_warnings=42   (both arms)
+```
+
+**Every difference across all 77 programs is in the `warns` column.**
+`compile_rc`, `run_rc`, `cpy_rc` and `stdout_match` are byte-identical
+program for program — no program newly fails or newly passes, and no
+program's output changes. So the splitter's `nviol_this_pass` gate did
+see more violations and the trajectory did not move anywhere that the
+corpus can observe.
+
+Warnings rise on 20 programs, 1615 → 2040 corpus-wide:
+
+| program | before | after | | program | before | after |
+|---|---|---|---|---|---|---|
+| `rubik` | 67 | 176 | | `sudoku5` | 68 | 82 |
+| `doom` | 92 | 210 | | `softrender` | 54 | 76 |
+| `plcfrs` | 82 | 123 | | `sunfish` | 33 | 55 |
+| `rdb` | 114 | 130 | | `lz2` | 27 | 39 |
+| `msp_ss` | 221 | 237 | | `mastermind2` | 45 | 54 |
+
+Spot-checked `rubik`, the largest jump: 46 dispatch-failure sites at the
+final pass, spread over **75 distinct source locations** — not one site
+reported repeatedly. Its three `unresolved call` messages are
+`key[0] == self.UP`, `DOWN[FRONT, 1] == upCol` and
+`FRONT[FRONT, 1] != FRONT[FRONT, 4]` — element reads whose type has
+degraded far enough that `__eq__`/`__ne__` no longer dispatch. `rubik`
+already aborted at run time in both arms (`run_rc=134`), so these are
+exactly the signal [102](../102-corpus-programs-compile-then-abort-at-runtime.md)
+is short of: a compile-then-crash program that was reporting nothing
+about the reason.
+
+### Note on blast radius
+
+This is not purely a diagnostic change: `fa->type_violations.set_count()`
+gates the splitter's self-product complement eviction
+(`nviol_this_pass`, issue 074) and is read by `clone.cc`, so surfacing
+more violations can move the FA trajectory. That is why it wanted the
+full corpus A/B above rather than the test suite alone.
 
 ## What this unblocks
 
-Directly: [097](097-CGEN-callsite-vs-clone-formal-type-mismatch.md)'s
+Directly: [097](../097-CGEN-callsite-vs-clone-formal-type-mismatch.md)'s
 own fix, which was blocked on this. More broadly, every analysis that
 reads `EntrySet::edges`, `AEdge::args` or `AEdge::match->formal_filters`
 was reading a mixture of the current pass and older ones — the
@@ -293,7 +427,7 @@ splitter's compatibility tests
 (`edge_type_compatible_with_edge`/`_entry_set`), `check_split`'s routing,
 and the violation collectors all do — and now reads only this pass's.
 That puts this upstream of
-[closed/033](closed/033-splitter-non-idempotent-divergence.md)/[074](074-FA-cross-pass-oscillation-plan.md)'s
+[closed/033](033-splitter-non-idempotent-divergence.md)/[074](../074-FA-cross-pass-oscillation-plan.md)'s
 cross-pass split oscillation: a split decision keyed on a stale edge's
 types was not evidence about the pass making it, so those
 investigations' measurements are worth re-taking on top of this fix
@@ -327,13 +461,13 @@ reaches*, and therefore which edges `clear_results` covers — a
 state-hygiene consequence, not a scheduling one.
 
 The prior-art survey collected in that filing
-([closed/073](closed/073-teach-splitter-productive-vs-inert-context.md),
-[closed/057](closed/057-sorted-tolist-fa-nonconvergence.md),
-[055](closed/055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md),
-[closed/035](closed/035-nondeterministic-codegen-clone-order.md),
-[closed/009](closed/009-fa-violations-nondeterminism.md),
-[closed/037](closed/037-matcher-cartesian-cs-product.md),
-[closed/003](closed/003-fa-converge-determinism.md)) remains accurate as
+([closed/073](073-teach-splitter-productive-vs-inert-context.md),
+[closed/057](057-sorted-tolist-fa-nonconvergence.md),
+[055](055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md),
+[closed/035](035-nondeterministic-codegen-clone-order.md),
+[closed/009](009-fa-violations-nondeterminism.md),
+[closed/037](037-matcher-cartesian-cs-product.md),
+[closed/003](003-fa-converge-determinism.md)) remains accurate as
 background on this loop and is worth reading before touching it —
 `closed/009`'s "verify before concluding order-dependence" caution in
 particular applied to the old diagnosis itself.

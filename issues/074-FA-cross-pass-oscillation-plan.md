@@ -9,7 +9,7 @@ was ruled out on — the contour growth Stage 2 was competing against is
 largely gone (ess down 40-80% corpus-wide; yopyra converges). Re-derive
 Stage 2 against the new baseline before building anything here.
 Previously: **re-measured and RE-BASED 2026-08-12
-after [098](098-FA-per-pass-reset-scoped-to-reachable-set.md) landed.
+after [098](closed/098-FA-per-pass-reset-scoped-to-reachable-set.md) landed.
 See the two sections immediately below: the headline `pass_limit_hit`
 metric was partly measuring the stall guard rather than the analysis, and
 re-basing with the guards disabled cuts the target set from 17 programs
@@ -34,7 +34,7 @@ sequence), `split_for_per_cs_method_receivers`, `split_ess_setters`/
 `cs_group_signature`, `setter_site_signature`); `python_ifa_build_syms.cc`
 `def_fun_pyda` (method `nesting_depth`).
 
-## Re-measured 2026-08-12, post-[098](098-FA-per-pass-reset-scoped-to-reachable-set.md) — and the headline metric is partly measuring the stall guard
+## Re-measured 2026-08-12, post-[098](closed/098-FA-per-pass-reset-scoped-to-reachable-set.md) — and the headline metric is partly measuring the stall guard
 
 098 (FA's per-pass reset was scoped to the *previous* pass's reachable
 set, so 19-24% of edges per pass carried an older pass's

@@ -128,7 +128,7 @@ changes are four commits; everything else is measurement.
 
 **What landed (source).**
 
-1. **[098](098-FA-per-pass-reset-scoped-to-reachable-set.md) — the
+1. **[098](closed/098-FA-per-pass-reset-scoped-to-reachable-set.md) — the
    per-pass reset was scoped to the *previous* pass's reachable set.**
    `clear_results` reset per-edge/contour/CS state by walking `fa->ess`
    (which is just the last pass's `entry_set_done`) and did not run at
@@ -138,7 +138,12 @@ changes are four commits; everything else is measurement.
    live edge permanently. Fixed by resetting over authoritative
    registries (`FA::all_aedges` et al.) before *every* pass. Also fixed a
    latent null-deref in `check_split` that the new trajectory exposed.
-   An `IFA_DBG_EDGEARGS` audit now guards the invariant.
+   An `IFA_DBG_EDGEARGS` audit now guards the invariant. **CLOSED
+   2026-08-31**, when its one follow-on landed: `out_edge_map` is never
+   reset, so `collect_argument_type_violations` read a surviving entry as
+   "dispatched" and a *total* dispatch failure reported nothing; it now
+   tests the per-pass `EntrySet::out_edges` instead. Corpus A/B: warnings
+   1615 → 2040, every other column identical on all 77 programs.
 2. **[099](099-FA-pending-backedge-avoid-veto-forces-period-2.md)
    (partial) — a structurally forced period-2 flip-flop.**
    `record_backedges` re-homed an inherited pending entry's KEY onto the
@@ -229,6 +234,7 @@ exist so the next attempt starts from evidence rather than a rebuild:
 | `IFA_DBG_INCOMPAT=1` | which clause of the compatibility test separates edges (`arg` vs `ret`), stage-1 confluence disposition, and `REDERIVE` ROUTE/GROUP/FILTER | `ret`=0 everywhere; the GROUP quarter is 100% `v>0` self-product |
 | `IFA_STALL_LIMIT`, `IFA_NONIMPROVE_LIMIT` | override the divergence guards (were compile-time constants) | takes the guard out of the measurement |
 | `IFA_DBG_EDGEARGS=1` | 098's invariant audit (bound edges must have values at recorded args) | — |
+| `IFA_DBG_DISPATCHFAIL=1` | 098's second defect: per pass, sends with an `out_edge_map` entry (`total=`) vs. those none of whose edges was analyzed this pass (`sites=`, i.e. dispatch failed and used to be silent) and the `Partial_NEVER` subset now reported (`reported=`) | mastermind2 7, msp_ss 10, rdb 8, sudoku5 8, go 0 — all `Partial_NEVER`; fixed 2026-08-31 |
 
 **Type marks and canonicalization are mutually exclusive.** `MARK_TYPE`
 exists to split two edges that carry the *same* argument types but
@@ -344,29 +350,6 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   converge: their churn RELOCATED into slow contour growth (074's other
   shape) rather than stopping, so the issue stays open on its second
   condition — the splitter re-deciding every pass.
-- [098-FA-per-pass-reset-scoped-to-reachable-set.md](098-FA-per-pass-reset-scoped-to-reachable-set.md)
-  — **mostly fixed 2026-08-12**, and it was upstream of 033/074's
-  splitting-oscillation work, so their measurements are worth
-  re-taking. FA re-derived flow state each pass over the subgraph *this*
-  pass reaches, but `clear_results` reset it over the subgraph the
-  *previous* pass reached (`fa->ess` is just `entry_set_done`), and
-  didn't run at all on a `reanalyze()`-driven pass. 19-24% of edges per
-  pass therefore carried an older pass's `args`/`rets`/`formal_filters`
-  into the current one, and a stale `formal_filter` made `analyze_edge`
-  skip a live edge permanently — leaving bound call edges with no values
-  at their arguments at quiescence, which no reachable call can have.
-  Fixed by resetting over authoritative registries (`FA::all_aedges` et
-  al.) before every pass; also fixed a latent null-deref in
-  `check_split` that the new trajectory exposed. Zero exit-code changes
-  across the shedskin sweep, `test_pyc.py` unchanged on both backends,
-  invariant now 0 on every pass everywhere (was up to 1207 on `chess`),
-  and a permanent `IFA_DBG_EDGEARGS` audit guards it. **Still open:**
-  `EntrySet::out_edge_map` is never reset, which makes a total dispatch
-  failure invisible to `collect_argument_type_violations` — clearing the
-  map is not viable (`get_AEdges` needs it for cross-pass edge
-  identity), so the collector needs the fix instead. Supersedes the
-  original "order-dependent per-pass fixed point" diagnosis, which the
-  measurements refute.
 - [074-FA-cross-pass-oscillation-plan.md](074-FA-cross-pass-oscillation-plan.md)
   — the master plan, **substantially re-measured 2026-08-12/13** (see the
   dated session section above). Target set re-based from 17 programs to
@@ -555,8 +538,10 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   the one whose type happened to be momentarily unpopulated). A
   resequencing fix was implemented and **reverted** — it regressed 3
   tests by tripping a more fundamental, pre-existing gap, now filed
-  separately as [098](098-FA-per-pass-reset-scoped-to-reachable-set.md).
-  This issue's own fix is blocked on 098 landing first.
+  separately as [098](closed/098-FA-per-pass-reset-scoped-to-reachable-set.md).
+  098 is now CLOSED (2026-08-31) and explicitly hands the retest of that
+  reverted patch here; re-take the trace first, since 100 widened
+  `entry_set_compatibility`'s candidate set underneath it.
 
 ### LLVM
 
@@ -583,7 +568,7 @@ commit ref (or date) recorded in each file's status line.  They
 stay in the tree as history — a code-search for the affected file
 finds the trail of investigation even after the fix has landed.
 
-Currently 72 closed issues (`closed/` also holds
+Currently 76 closed issues (`closed/` also holds
 `033-ledger-design-detail.md`, an archived design document rather
 than an issue, which is why the file count is one higher):
 [001](closed/001-keepalive-vs-explicit-reply.md),
@@ -620,6 +605,7 @@ than an issue, which is why the file count is one higher):
 [037](closed/037-matcher-cartesian-cs-product.md),
 [038](closed/038-LLVM-coro-split-second-suspend-unreachable.md),
 [040](closed/040-empty-list-shared-clone-type-inference.md),
+[041](closed/041-FA-verbose-type-dump-intermittent-segfault.md),
 [042](closed/042-null-meta-type-build-type-hierarchy-segfault.md),
 [043](closed/043-empty-container-inference-options.md),
 [044](closed/044-mixed-length-tuple-list-len-miscompile.md),
@@ -627,7 +613,9 @@ than an issue, which is why the file count is one higher):
 [046](closed/046-optional-none-field-inline-type-sum-assert.md),
 [047](closed/047-different-arity-tuple-iteration-shared-cs.md),
 [051](closed/051-LLVM-nested-list-index-mixed-union-crash.md),
+[052](closed/052-FA-shared-method-branch-reopens-empty-list-fragility.md),
 [053](closed/053-tuple-unpack-target-heterogeneous-arity-segfault.md),
+[055](closed/055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md),
 [056](closed/056-CGEN-degraded-index-type-raw-c-compile-error.md),
 [057](closed/057-sorted-tolist-fa-nonconvergence.md),
 [058](closed/058-polymorphic-classtag-dispatch-drops-extra-arguments.md),
@@ -656,6 +644,7 @@ than an issue, which is why the file count is one higher):
 [091](closed/091-DISPATCH-nonrecord-builtin-constructor-not-first-class.md),
 [092](closed/092-DISPATCH-3arg-minmax-plus-multi-shape-return-crash.md),
 [096](closed/096-extend-c-call-salvage-guard-past-str-comparisons.md),
+[098](closed/098-FA-per-pass-reset-scoped-to-reachable-set.md),
 [104](closed/104-unify-list-and-tuple-in-analysis.md),
 [110](closed/110-override-duplicates-member-slot.md).
 

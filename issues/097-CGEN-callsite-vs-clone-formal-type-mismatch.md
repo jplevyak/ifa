@@ -31,14 +31,19 @@ machinery (each checked and ruled out explicitly with reasoning).
 attempted, implemented, regressed 3 tests, reverted" below — it
 correctly implemented the resequencing option but tripped a
 pre-existing, more fundamental gap, filed separately as
-[098](098-FA-per-pass-reset-scoped-to-reachable-set.md). (098 was
+[098](closed/098-FA-per-pass-reset-scoped-to-reachable-set.md). (098 was
 initially diagnosed as per-pass order-dependence; it was re-root-caused
 on 2026-08-12 as FA's per-pass reset being scoped to the *previous*
 pass's reachable set, so edges carry stale per-pass state forward. The
 reordering here most likely changed which contours a pass reaches, and
-therefore which edges the reset covers. **098's fix landed 2026-08-12**,
+therefore which edges the reset covers. **098's fix landed 2026-08-12
+and 098 CLOSED 2026-08-31**, when its `out_edge_map` follow-on landed,
 so this resequencing attempt is now worth repeating — its regression
-should be gone.) Left open (not moved to `closed/`) since this issue's
+should be gone. 098 explicitly hands the retest here and no longer
+waits on it; re-take the trace first, per the 2026-08-13 NOTE at the
+top of this file about
+[100](100-FA-display-removed-from-contour-identity.md) widening
+`entry_set_compatibility`'s candidate set.) Left open (not moved to `closed/`) since this issue's
 own fix has not landed.
 
 **Original status:** open, found 2026-08-11 while implementing
@@ -95,7 +100,7 @@ reading in full before designing 097's own fix — it's evidence this
 function's soft-matching behavior has bitten before, in a sibling
 mechanism, and was fixed with the same kind of "require exact match,
 don't just penalize" tool this issue's own options reach for.
-[098](098-FA-per-pass-reset-scoped-to-reachable-set.md)'s own survey
+[098](closed/098-FA-per-pass-reset-scoped-to-reachable-set.md)'s own survey
 has more: [closed/057](closed/057-sorted-tolist-fa-nonconvergence.md)
 (same function's soft-matching also caused thousands of non-productive
 contour mints, before 073's fix — different direction, same root
@@ -512,7 +517,7 @@ worklist` verified empty at every `complete_pass()`) — **but regressed
 `list_index_type_mismatch_salvage.py`, all newly producing "expression
 has no type" where they previously compiled clean. Root-caused in
 full — the mechanism is real and general, not specific to this fix:
-filed as [098](098-FA-per-pass-reset-scoped-to-reachable-set.md).
+filed as [098](closed/098-FA-per-pass-reset-scoped-to-reachable-set.md).
 Summary **as re-root-caused 2026-08-12** (the original wording here,
 "the per-pass fixed point depends on dispatch order", is superseded —
 see 098): `clear_results` resets per-pass state only over the contours

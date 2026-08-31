@@ -535,9 +535,9 @@ stops being expensive.
   — non-convergence. Distinct problem: `amaze`'s profile is 43 CHEAP
   passes that never converge, which selective invalidation does not
   help. This issue is about the cost of a pass, not the number of them.
-- [098](098-FA-per-pass-reset-scoped-to-reachable-set.md) — why the
+- [098](closed/098-FA-per-pass-reset-scoped-to-reachable-set.md) — why the
   reset is where it is, and the stale-AVar bug that shaped it. Fixed
-  2026-08-12 (one follow-on left open), and directly adjacent: 098
+  2026-08-12, CLOSED 2026-08-31, and directly adjacent: 098
   scoped the reset to the REACHABLE set; this issue scopes it to the
   CHANGED set. Its post-mortem is the best available guide to what goes
   wrong when the scope is too narrow.

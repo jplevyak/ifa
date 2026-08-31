@@ -4680,6 +4680,26 @@ static AType *type_minus_partial_applications(AType *a) {
   return r;
 }
 
+// ifa/issues/098 (second defect): `EntrySet::out_edge_map` is never
+// reset -- `get_AEdges` reads it to reuse the same AEdge across passes,
+// so clearing it would mint fresh edges every pass and destroy every
+// `e->to` binding the splitter's cross-pass routing depends on. An
+// entry therefore survives from the FIRST pass in which the send
+// dispatched, and "entry exists" is NOT "dispatched this pass".
+// `EntrySet::out_edges` is the per-pass fact -- `clear_es` empties it
+// and `analyze_edge` re-adds an edge only after its filter gate passes
+// -- so an entry none of whose edges are in `from->out_edges` means
+// dispatch failed COMPLETELY this pass, and must be reported exactly
+// like a missing entry. Without this the `else` arm runs, finds no
+// analyzed edge to inspect, and reports nothing: dispatch failure is
+// silent (mastermind2 compiles rc=0 with `if`s stuck on bottom
+// conditions because `__pyc__` has no `list.__lt__` -- issues/122).
+static bool dispatched_this_pass(EntrySet *from, Vec<AEdge *> *m) {
+  if (!m) return false;
+  for (AEdge *me : *m) if (me && from->out_edges.set_in(me)) return true;
+  return false;
+}
+
 // for each call site, check that all args are covered
 static void collect_argument_type_violations() {
   for (Fun *f : fa->funs) {
@@ -4690,8 +4710,11 @@ static void collect_argument_type_violations() {
       for (EntrySet *from : ess) if (from) {
         if (!from->live_pnodes.set_in(p)) continue;
         Vec<AEdge *> *m = from->out_edge_map.get(p);
-        if (!m) {
+        if (m) fa->dbg_dispatch_total_sites++;
+        if (!dispatched_this_pass(from, m)) {
+          if (m) fa->dbg_dispatch_fail_sites++;
           if (p->code->partial == Partial_NEVER) {
+            if (m) fa->dbg_dispatch_fail_reported++;
             for (Var *v : p->rvals) {
               AVar *av = make_AVar(v, from);
               type_violation(ATypeViolation_kind::SEND_ARGUMENT, av, av->out, make_AVar(p->lvals[0], from));
@@ -4985,6 +5008,9 @@ static void initialize() {
 
 static void initialize_pass() {
   pass_timer.restart();
+  fa->dbg_dispatch_fail_sites = 0;      // ifa/issues/098 second defect
+  fa->dbg_dispatch_fail_reported = 0;
+  fa->dbg_dispatch_total_sites = 0;
   fa->type_violations.clear();
   fa->type_world.type_violation_hash.clear();
   fa->entry_set_done.clear();
@@ -9962,6 +9988,9 @@ static void complete_pass() {
   audit_edge_arg_values();
   collect_results();
   collect_argument_type_violations();
+  if (getenv("IFA_DBG_DISPATCHFAIL"))
+    fprintf(stderr, "DISPATCHFAIL pass=%d total=%ld sites=%ld reported=%ld\n", analysis_pass,
+            fa->dbg_dispatch_total_sites, fa->dbg_dispatch_fail_sites, fa->dbg_dispatch_fail_reported);
   collect_var_type_violations();
   // ifa/issues/104: of the VIOLATIONS actually recorded, how many are on
   // an AVar whose type holds tuples of DIFFERING ARITY? That is the

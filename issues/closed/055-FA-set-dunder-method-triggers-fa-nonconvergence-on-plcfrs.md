@@ -380,7 +380,7 @@ half is what is missing here.
 
 That points at contour reuse/compatibility being scored against a
 per-pass snapshot — [097](../097-CGEN-callsite-vs-clone-formal-type-mismatch.md)'s
-hazard and [098](../098-FA-per-pass-reset-scoped-to-reachable-set.md)'s
+hazard and [098](098-FA-per-pass-reset-scoped-to-reachable-set.md)'s
 per-pass reset — rather than at anything about sets.
 
 ### Why shedskin does not have this

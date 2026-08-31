@@ -809,6 +809,14 @@ class FA : public gc {
   long dbg_stage_csmint[kNumFAPassStages] = {};   // CreationSets this stage minted (ifa/issues/074)
   double stage_time[kNumFAPassStages] = {};
   long stage_progress_count[kNumFAPassStages] = {};
+  // ifa/issues/098 second defect: sends whose out_edge_map entry exists
+  // (a previous pass dispatched) but none of whose edges was analyzed
+  // this pass -- i.e. dispatch failed completely and used to be silent.
+  // _sites counts them; _reported counts the subset that is
+  // Partial_NEVER and therefore now yields SEND_ARGUMENT violations.
+  long dbg_dispatch_fail_sites = 0;
+  long dbg_dispatch_fail_reported = 0;
+  long dbg_dispatch_total_sites = 0;
 
   FA(PDB *apdb)
       : pdb(apdb),
