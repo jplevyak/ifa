@@ -304,16 +304,47 @@ storage removed** (tarsalzp 441, quameon 429, kanoodle 409). pygmy's
 rendered image is byte-identical and the `check` sweep is **identical on
 all 77 programs**. All five gates green.
 
-**Category 2 -- void-typed NAMED method slots. Left alone.** These are
-what the `vec` dump shows (`_CG_void e6; /* __not__ */`). They HAVE a
-type, so `cg_field_live` returns true and access sites are not elided --
-a dispatch path can legitimately read one. pygmy has 275, of which only
-**54 are never referenced** (432 bytes); the other 221 are live dispatch
-slots. Removing the 54 needs `cg_field_live` to also reject void-typed
-slots, which changes `cg_build_new_to_val_map`'s slot resolution and the
-dispatch emission -- a real change for 432 bytes, and it belongs with
+**Category 2 -- `_CG_void`-typed NAMED members. ATTEMPTED, and the
+premise was wrong.** These are what the `vec` dump shows
+(`_CG_void e6; /* __not__ */`). The reasoning was: a method slot's C
+type is the `_CG_pfN` structural name that `assign_fun_cg_strings`
+assigns per LIVE Fun, so `_CG_void` there ought to mean no live
+implementation exists -- nothing can be installed
+(`cg_build_new_to_val_map` registers only live `fun_val`s) and no
+dispatch can select it. Zero-widthing them was implemented so that a
+wrong premise would fail LOUDLY: assigning to or calling through a
+zero-length array is a C compile error, never a silent read of a dead
+slot.
+
+It failed loudly, immediately, on pygmy, and the errors say why the
+premise is wrong in two separate ways:
+
+```c
+((_CG_ps2457)t1)->e5  = (_CG_void)NULL;                       /* thelist */
+((_CG_ps15810)g8)->e11 = (_CG_void)((_CG_function*)_CG_f_11867_59/*plane::__init__*/);
+```
+
+- `e5 /* thelist */` is a **data field**, not a method slot -- its type
+  is `_CG_void` because FA gave it a None/void type, and it is
+  NULL-initialised. "Named" does not mean "method".
+- `e11` IS a method slot and IS installed, with a live
+  `plane::__init__`. So **`_CG_void` on a slot means "no single C
+  type"**, not "no implementation" -- it is the untyped-function-pointer
+  fallback for a slot whose implementations across classes have
+  different signatures, and every use casts at the access site.
+
+**This also corrects a number reported earlier in this issue.** The
+"54 of 275 never referenced (432 bytes)" figure came from a textual scan
+for `->eN` that was not scoped to the owning struct, so a slot named
+`e6` was credited with uses of `e6` on every other class. Treat it as
+withdrawn; the real unreferenced count is unmeasured.
+
+Deciding a `(class, slot)` pair is dead needs the semantic question --
+does any `cg_new_to_val_map` entry target it, and does any period/setter
+site in the IR access it? -- which is
 [030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md)'s per-instance
-method-slot design rather than here.
+method-slot design, not a codegen filter. Category 1 above is the part
+that was safely separable.
 
 ### ...and they do not "contribute to CS compatibility" in any way that matters
 
