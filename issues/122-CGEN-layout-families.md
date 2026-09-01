@@ -116,9 +116,19 @@ bh:  'Cell' blind-cast to 'Body', read at e28,
 [102](102-corpus-programs-compile-then-abort-at-runtime.md) members that
 now have a named, located, compile-time cause instead of only a crash.
 
-**Reported as a warning by default, fatal under `--strict`**, matching
-how `fruntime_errors` treats every other violation: being able to SEE
-the problem is a separate decision from failing builds that work today.
+**Fatal in every mode as of 2026-09-01.** It first landed as a warning
+under the default (permissive) mode, on the reasoning that seeing the
+problem is a separate decision from failing builds that work today. That
+reasoning does not survive
+[123](123-CGEN-union-receiver-field-access-has-no-discrimination.md):
+unlike a type violation, a layout violation has **no permissive
+meaning**. `--permissive` accepts a type violation and inserts a runtime
+check; there is no runtime check for reading one class's field through
+another's layout, only a wrong value or a segfault with no diagnostic.
+Corpus cost, measured: `compile_fail` **3 → 5** (`bh` and `go` join
+`chess`, `othello3`, `sudoku5`), `run_fail` **44 → 42**, nothing else
+affected. Neither program worked -- `go` segfaulted, `bh` corrupted the
+heap.
 Corpus `check` sweep vs the pre-Phase-0 tree is a two-line diff, both of
 them warning counts (bh 1 -> 2, go 30 -> 40); `compile_rc`, `run_rc`,
 `cpy_rc` and `stdout_match` are identical on all 77 programs. Gate green

@@ -1,6 +1,6 @@
 # 123 — a method whose receiver is a UNION of unrelated classes gets a `void*` receiver and blind-casts to ONE member's layout; field access has no runtime discrimination
 
-**Status:** open, **root-caused 2026-09-01** with the crash line pinned.
+**Status:** open (fix 1 outstanding); **root-caused 2026-09-01** with the crash line pinned, and **fix 2 landed** the same day -- the miscompile is now a compile error rather than a segfault.
 Found by [122](122-CGEN-layout-families.md) Phase 0's layout-contract
 check, which reported it at 20 sites in `go` and 1 in `bh` **at compile
 time** — both programs previously only crashed.
@@ -72,10 +72,12 @@ variable that genuinely holds either.
    receiver is a union with more than one member carrying the field,
    emit a tag switch and use each class's own slot. Correct, and the
    most direct; costs a branch per polymorphic field access.
-2. **Refuse instead of miscompiling.** 122 Phase 0 already reports the
-   violation; making it an error under the default (permissive) mode
-   turns two silent crashes into two compile errors. Cheap, honest, and
-   a regression in "programs that build" — `go` and `bh` currently do.
+2. **Refuse instead of miscompiling. DONE 2026-09-01.** 122 Phase 0's
+   check is now fatal in every mode, so these two silent crashes are two
+   compile errors naming the class pair and the slot. Corpus:
+   `compile_fail` 3 → 5, `run_fail` 44 → 42, nothing else affected. This
+   does not fix anything — it stops pyc emitting a program that lies,
+   and it is why the remaining options are worth doing.
 3. **Give unions a representation.** [118](118-union-field-representation-and-polymorphic-field-offset.md)
    is the same family; a union with a tag would make both dispatch and
    field access uniform.

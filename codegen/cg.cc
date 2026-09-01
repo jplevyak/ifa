@@ -361,24 +361,22 @@ static void cg_check_layout_contract() {
       snprintf(detail, sizeof(detail), " at e%d (%s vs %s)", at,
                cg_member_ctype(a, at) ? cg_member_ctype(a, at) : "<absent>",
                cg_member_ctype(b, at) ? cg_member_ctype(b, at) : "<absent>");
-    if (verbose || violations <= 10)
-      fprintf(stderr,
-              "%s: '%s' is blind-cast to '%s' and read at e%d, but %s%s\n",
-              fruntime_errors ? "warning: object layout" : "error: object layout",
-              b->name ? b->name : "?", a->name ? a->name : "?", slot, why, detail);
+    fprintf(stderr, "error: object layout: '%s' is blind-cast to '%s' and read at e%d, but %s%s\n",
+            b->name ? b->name : "?", a->name ? a->name : "?", slot, why, detail);
   }
   if (verbose)
     fprintf(stderr, "LAYOUT obligations=%d violations=%d\n", cg_bc_to.n, violations);
-  // Permissive by default, like every other violation pyc reports
-  // (`fruntime_errors`): these programs already build today and this
-  // check is new, so turning them into compile failures is a separate
-  // decision from being able to SEE the problem. Under `--strict` it is
-  // fatal, because the emitted code is genuinely unsound -- measured, the
-  // programs that violate it are the ones that crash (`go` reads a
-  // 1-byte `_CG_bool` where `Square` has an 8-byte `_CG_int64`, shifting
-  // every later field by 7, and segfaults).
-  if (violations && !fruntime_errors)
-    fail("object layout contract violated at %d blind cast(s) -- see ifa/issues/122", violations);
+  // FATAL, in every mode -- deliberately not gated on `fruntime_errors`
+  // like a type violation is. A type violation under `--permissive` has a
+  // defined meaning: the program is accepted and a runtime check fires.
+  // This has none. The emitted code reads one class's field through
+  // another's layout, and what happens next is a wrong value or a
+  // segfault with no diagnostic -- ifa/issues/123 traced `go`'s crash to
+  // exactly that, `UCTNode::select` reading `e26` as a list where a
+  // `Square` keeps an integer. There is nothing to be permissive about:
+  // the alternative to failing here is emitting a program that lies.
+  if (violations)
+    fail("object layout contract violated at %d blind cast(s) -- see ifa/issues/123", violations);
 }
 
 // cg_has_classtag / cg_field_live moved to codegen_common.{h,cc}
