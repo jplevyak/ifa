@@ -339,12 +339,56 @@ for `->eN` that was not scoped to the owning struct, so a slot named
 `e6` was credited with uses of `e6` on every other class. Treat it as
 withdrawn; the real unreferenced count is unmeasured.
 
-Deciding a `(class, slot)` pair is dead needs the semantic question --
-does any `cg_new_to_val_map` entry target it, and does any period/setter
-site in the IR access it? -- which is
-[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md)'s per-instance
-method-slot design, not a codegen filter. Category 1 above is the part
-that was safely separable.
+### The semantic version: analysis works, LAYOUT is the blocker
+
+Built and measured 2026-09-01. The analysis half is sound and cheap; it
+is the struct layout that cannot take it.
+
+**A sound oracle first.** Emitting each candidate as an EMPTY STRUCT
+(`struct { } eN;`) makes clang reject BOTH reads and writes -- unlike
+`char eN[0]`, which decays to `char *` and lets reads through silently,
+so the first attempt's 15 errors were only the writes. With
+`-ferror-limit=0`, whatever clang does not complain about is provably
+untouched by the emitted code. On pygmy: **275 candidates, 6 touched,
+269 provably dead** (2152 bytes). That also replaces the withdrawn
+"54 / 432 bytes" figure -- the real number is five times larger.
+
+**Then the analysis, recorded by the emitters.** `cg_note_field_use`
+was called from the ten `->eN` emission sites that have the record Sym
+in scope (getter, setter, the `prim_new`/clone initialisers, the
+tuple-list getter and setter, the `cg_new_to_val_map` install, the
+classtag dispatch call, the destruct copy), and the struct definitions
+were deferred: `build_type_strings` leaves a marker, everything that can
+touch a field is emitted first, and `c_codegen_print_c` splices the
+generated structs back over the marker at the end. Same discipline as
+the function DCE -- record what the emitters do rather than re-derive
+it. The reorder alone is behaviour-neutral (pygmy byte-identical), and
+with elision on it produced **exactly 269** -- the analysis agrees with
+clang to the slot.
+
+**And then `tests/method_override_field_offset.py` fails at run time**,
+printing `0` where both subclass loops should print `4`. That test is
+named for the invariant this breaks, and its own header states it: a
+method shared between a base and a subclass "is emitted once, taking a
+generic receiver and blind-casting to the base's layout. That is sound
+only while the subclass's layout is a prefix-compatible extension of the
+base's." **Per-class elision is a layout change**, so eliding a slot in
+one class and not another shifts every later field inside exactly that
+cast. Restricting elision to slots unused across `s->specializers` and
+`s->specializes` -- the class hierarchy -- does NOT fix it, so the set
+of classes that share a layout through blind casts is wider than the
+hierarchy, and pyc has no explicit notion of it.
+
+That notion is what
+[110](closed/110-override-duplicates-member-slot.md) and
+[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) are about. Until
+a layout family is something codegen can name, **no per-class field
+elision is safe**, and the failure mode is a silent wrong answer -- this
+one was caught only because a test asserts the output. Reverted; the
+measurement stands as the case for fixing the layout model.
+
+Category 1 above is the part that was safely separable, because
+`cg_field_live` already guaranteed no access site touches those members.
 
 ### ...and they do not "contribute to CS compatibility" in any way that matters
 
