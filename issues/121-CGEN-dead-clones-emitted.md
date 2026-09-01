@@ -219,9 +219,64 @@ ran, stops compiling** with `no matching function for call to
 '_CG_f_16022_133'` — [097](097-CGEN-callsite-vs-clone-formal-type-mismatch.md)'s
 exact signature, a call site whose argument type diverges from the merged
 callee's formal. CreationSet equivalence plus the offset check is still
-not sufficient evidence to merge; what is missing is formal-type
-compatibility at every in-edge, which is 097's own subject. The blanket
-split stays, with that reasoning recorded at the `return 0` itself.
+not sufficient evidence to merge.
+
+### Why B fails: `equivalent_es_vars` cannot see record types at all
+
+Root-caused 2026-09-01, and the finding outlives the experiment.
+`equivalent_es_vars` is the **only per-Var type check** in the whole
+equivalence predicate:
+
+```cpp
+if (basic_type(fa, va->out, (Sym *)-1) != basic_type(fa, vb->out, (Sym *)-2)) return 0;
+```
+
+`basic_type` builds its answer from `to_basic_type`, which returns
+non-zero only for symbol, string, numeric, constant and tagged types.
+Every record/class -- and `nil_type` -- falls into its `&non_basic`
+bucket, and the function's last line normalizes that to `nullptr`. So
+`nullptr == nullptr`: **`Edge` vs `Site`, `Halfedge` vs `tuple`,
+`SiteList` vs `list`, and record-vs-`None` all compare EQUIVALENT.** Its
+own comment says what it was for -- "clone for unboxing of basic types"
+-- it was never a type-equality test.
+
+Measured with `IFA_DBG_VAREQ` (kept, getenv cached -- it is a hot path),
+voronoi2 under B:
+
+```
+ 36  VAREQ-BLIND edge: __pyc_None_type__ vs Edge
+ 18  VAREQ-BLIND self: Edge vs Site
+112  VAREQ-BLIND ?: Halfedge vs tuple
+```
+
+The first line IS the failure: `__new__` merged a None-receiving contour
+with an `Edge`-receiving one, codegen typed the merged formal
+`_CG_ps18207`, and `_CG_f_16022_133(g1 /* None 101 */, 0)` has no
+conversion. **So the blanket `return 0` is not a redundant guard -- for
+any function that constructs anything, it is the clause keeping
+different record types apart.**
+
+**The blindness is not created by B.** On the DEFAULT path, unchanged,
+voronoi2 fires the probe 234 times and pygmy asks
+`self: everythingshader vs spotshader` **531 times** and is told
+"equivalent" every time. Today's compiler is correct only because the
+predicate's *other* clauses -- the creation-point split,
+`equivalent_es_pnode`'s call-target sets, the ivar and period-offset
+checks -- happen to reject those pairs. That is a latent fragility in
+the shipped compiler, not merely a blocked experiment, and it is the
+thing to fix before any future attempt at coarsening.
+
+**The obvious repair does not work.** Additionally requiring identical
+concrete type sets (`va->out->type != vb->out->type`) leaves voronoi2
+failing at a different call site (`_CG_f_2581_228`) and takes pygmy's
+clones **up**, 244 → 302: the added strictness costs more on paths where
+the blanket split was not the binding constraint than the coarsening
+gains. A stronger Var predicate bolted onto the existing structure is
+not the answer; what is missing is formal-type compatibility established
+at every in-edge, which is
+[097](097-CGEN-callsite-vs-clone-formal-type-mismatch.md)'s own subject.
+The blanket split stays, with this reasoning recorded at both code
+sites.
 
 **A dead end worth recording.** 75 of pygmy's 569 emitted struct fields
 are never referenced, at 8 bytes each (`_CG_void` is `void *`) -- `vec`,

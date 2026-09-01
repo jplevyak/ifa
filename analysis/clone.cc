@@ -135,10 +135,36 @@ Sym *basic_type(FA *fa, AType *t, Sym *fail) {
 }
 
 // clone for unboxing of basic types
+// ifa/issues/121: NOT a type-equality test, despite being the only
+// per-Var check in the clone equivalence predicate. `basic_type` maps
+// EVERY non-basic type to nullptr (its `&non_basic` sentinel is
+// normalized away at the end), so this distinguishes int from float and
+// nothing else: `Edge` vs `Site`, `Halfedge` vs `tuple`, `SiteList` vs
+// `list`, and record-vs-None all compare EQUAL here. Measured with
+// IFA_DBG_VAREQ below: pygmy asks `self: everythingshader vs
+// spotshader` 531 times on the DEFAULT path and this says yes every
+// time. Correctness of merging therefore rests on the predicate's OTHER
+// clauses -- above all the unconditional `return 0` in the
+// creation-point block, which covers any function that constructs
+// anything. Strengthening this to compare concrete type sets was tried
+// and does not work on its own (see the note at that `return 0`).
 static int equivalent_es_vars(Var *v, EntrySet *a, EntrySet *b) {
   AVar *va = make_AVar(v, a), *vb = make_AVar(v, b);
   if (va != vb) {
     if (basic_type(fa, va->out, (Sym *)-1) != basic_type(fa, vb->out, (Sym *)-2)) return 0;
+    // How often does the blindness above let a pair through? Hot path,
+    // so the getenv is cached.
+    static int dbg = -1;
+    if (dbg < 0) dbg = getenv("IFA_DBG_VAREQ") ? 1 : 0;
+    if (dbg) {
+      Sym *sa = nullptr, *sb = nullptr;
+      int na = 0, nb = 0;
+      for (CreationSet *cs : *va->out) if (cs) { sa = cs->sym; na++; }
+      for (CreationSet *cs : *vb->out) if (cs) { sb = cs->sym; nb++; }
+      if (na == 1 && nb == 1 && sa != sb && !to_basic_type(sa) && !to_basic_type(sb))
+        fprintf(stderr, "VAREQ-BLIND %s: %s vs %s\n", v->sym->name ? v->sym->name : "?",
+                sa->name ? sa->name : "?", sb->name ? sb->name : "?");
+    }
   }
   return 1;
 }
@@ -298,8 +324,12 @@ inline int ES_FN::equivalent(EntrySet *a, EntrySet *b) {
         // This `return 0` is UNCONDITIONAL, which makes the loop above
         // dead code: any pnode whose lval has a cs_map splits the two
         // contours whatever the loop just proved. That reads like a bug
-        // and is not -- ifa/issues/121 tried letting the loop decide,
-        // measured it, and rejected it. With the offset question made
+        // and is not -- it is load-bearing, and ifa/issues/121 root-caused
+        // WHY: `equivalent_es_vars` (above) cannot tell one record type
+        // from another, so for any function that constructs something,
+        // THIS is the clause keeping contours with different record
+        // types apart. Letting the loop decide merges a None-receiving
+        // `__new__` contour with an Edge-receiving one. With the offset question made
         // answerable (kOffsetAmbiguous, above) the merge no longer
         // aborts, and pygmy drops 244 -> 183 clones with a
         // byte-identical image; but the corpus says `voronoi2`, which
