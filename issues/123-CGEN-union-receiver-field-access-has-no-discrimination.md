@@ -1,12 +1,10 @@
 # 123 — a method whose receiver is a UNION of unrelated classes gets a `void*` receiver and blind-casts to ONE member's layout; field access has no runtime discrimination
 
-**Status:** open. The **20 reported violations are real** (`Square` and
-`UCTNode` genuinely disagree on every field index) and are now compile
-errors — **fix 2 landed 2026-09-01**. `go`'s CRASH is the same family
-but a DIFFERENT site, not one the check predicts; see the correction
-below. Root cause of the crash itself: **still open**, narrowed to a
-wrong-layout read of `UCTNode.unexplored` whose object arrives through an
-`_CG_any` parameter.
+**Status:** open (fix outstanding); **root-caused end to end
+2026-09-01**, and the miscompile is a compile error rather than a
+segfault as of the same day (fix 2). `go`'s crash is fully explained:
+`node.losses += 1` on a UCTNode is emitted through Square's layout and
+increments the `unexplored` POINTER instead.
 Found by [122](122-CGEN-layout-families.md) Phase 0's layout-contract
 check, which reported it at 20 sites in `go` and 1 in `bh` **at compile
 time** — both programs previously only crashed.
@@ -51,29 +49,66 @@ exactly that line, and that `e26` reads back **`0x7ffff7d609d2` — not
 null, and not 8-aligned**. No valid GC pointer looks like that, so the
 object is not shaped like `_CG_s17236`: it is a wrong-layout read.
 
-**CORRECTION (2026-09-01, same day): the crash site is NOT one of the
-violations the check reports.** All 20 reported obligations are casts TO
-`Square`; this one casts to `UCTNode`. The first draft of this issue
-claimed the crash line was the reported violation, and that was wrong.
-The two are the same FAMILY — a blind cast reading one class's field
-through another's layout — but the check did not predict this particular
-site, and saying it did overstated what Phase 0 delivered.
+## ROOT CAUSE, complete (2026-09-01)
 
-**Why it did not: the check validates DECLARED casts, not PROVENANCE.**
-Obligations are recorded from the receiver's static type at the access
-site. A cast that is locally consistent with FA's typing, but receives an
-object of another class through an `_CG_any` parameter from a caller, is
-invisible to it. Closing that gap means recording an obligation at every
-CALL SITE that widens a receiver to `_CG_any`, not only at field
-accesses — a concrete extension, and the next thing to do here.
+`go.py:378` is `node.losses += 1`, inside `UCTNode::update_path`. It is
+emitted as:
 
-**A second retraction.** An intermediate finding in this investigation
-held that `unexplored` was read seven times and never written. It is
+```c
+t89 = (_CG_int64)((_CG_ps17224)t86)->e26;   /* losses -- SQUARE's layout */
+t87 = _CG_prim_add(t89, _CG_Symbol(7441, "+"), 1);
+((_CG_ps17224)t86)->e26 = (_CG_int64)t87;
+```
+
+`t86` is a **UCTNode** (`__pyc_tag` confirms it at run time). The access
+uses `_CG_ps17224`, a **Square** clone, where `e26` is `losses`. On a
+UCTNode `e26` is `unexplored`. So `node.losses += 1` **reads the
+`unexplored` POINTER as an integer, adds 1, and writes it back.**
+
+Proven by watching the value, not inferred:
+
+```
+store   (computer_move:9696)  e26 <- 0x7ffff7d609d0   (a valid 8-aligned list)
+crash   (select:8438)         e26 == 0x7ffff7d609d2   (same object)
+```
+
+Two `losses += 1` updates, pointer +2, `_CG_list_ptr` on a misaligned
+pointer, SIGSEGV. The object at the fault is the ROOT `tree` node
+(`pos=-1`, `parent=NULL`, `wins=5`), and its neighbouring `pos_child`
+(`e25`) is still properly aligned — only the field Square's layout aims
+at is damaged.
+
+**Why Square's layout is used at all: field-name pollution.** `Square`'s
+member list contains `losses`, `wins` and `bestchild` — UCTNode's fields
+— and UCTNode's contains `color` and `used`. So when the receiver is a
+union, `resolve_union_receiver(union, "losses")` finds `losses` on
+`Square` and picks it. Either half of the fix stops this: do not merge
+the field-name sets, or discriminate the layout at run time.
+
+**What the check does and does not name.** This corrupting write IS one
+of the 20 reported violations ("`UCTNode` is blind-cast to `Square` and
+read at e26"). The check therefore names the CAUSE. It does not name the
+faulting line — the fault is one hop downstream in `select`, reading the
+field that was corrupted. That is the right behaviour for such a check,
+and worth stating because a first reading of the report looks like it
+missed the crash.
+
+### Two claims retracted along the way
+
+Recorded rather than quietly fixed; each was a plausible inference from
+the emitted C that a re-check disproved.
+
+**(a) "The crash LINE is the violation."** Wrong: all 20 obligations are casts TO `Square` and the
+faulting line casts to `UCTNode`. But the opposite over-correction —
+that the check did not predict the crash — is also wrong: it predicts
+the corrupting write, which is the cause.
+
+**(b) "`unexplored` is read seven times and never written."** Wrong. It is
 written — `((_CG_ps17243)t73)->e26 = (_CG_any)t71;` — and the claim was
 an artifact of grepping for a `/* unexplored */` comment that the SETTER
-does not emit while the getter does. Both retractions are recorded
-rather than quietly fixed because each was a plausible-looking inference
-from the emitted C that a re-check disproved.
+does not emit while the getter does. (A third dead end, also
+disproved: the setter's dead-field elision. A `PYC_DBG_DROPSTORE` probe
+showed it never fires for `UCTNode.unexplored`.)
 
 **The union has no runtime discrimination.** FA typed the receiver as
 `{Square, UCTNode}`; the C representation of that union is a bare
