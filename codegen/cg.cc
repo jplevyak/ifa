@@ -2768,8 +2768,99 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
     }
   }
   fputs("\n/*\n Functions\n*/\n", fp);
-  for (Fun *f : fa->funs) if (f != init && !f->is_external) write_c(fp, fa, f);
-  write_c(fp, fa, init, &globals);
+  // ifa/issues/121: drop function bodies that the emitted program never
+  // names. `mark_live_funs` (optimize/dead.cc) computes liveness over
+  // `Fun::calls` -- FA's CANDIDATE set at each call site -- and codegen
+  // then narrows every site to one target: a direct call takes
+  // `get_target_fun_core`'s answer, a polymorphic one goes through a
+  // method-pointer slot that `cg_build_new_to_val_map` fills with a
+  // single winner per (constructor, slot). Nothing recomputed liveness
+  // after that narrowing, so every clone it discarded stayed `live` and
+  // was emitted: 39 of pygmy's 244 functions, named nowhere in the
+  // output.
+  //
+  // The reference relation is read back out of the EMITTED BYTES rather
+  // than re-derived from codegen's decisions. That was not the first
+  // attempt -- hooking `cg_get_string(Fun*)`, the accessor that looks
+  // like the only way a function's name can reach the output, missed
+  // `c_rhs`, which emits a function-valued Var through
+  // `cg_get_string(Var*)` instead, and dropped 101 functions including 9
+  // that were still called. Reading the bytes cannot miss a path,
+  // whatever any future emitter does.
+  //
+  // Prototypes are deliberately left alone: an unreferenced extern
+  // declaration costs nothing, and keeping them all means this can never
+  // produce a call to something undeclared.
+  // The memstream buffers are libc-malloc'd and deliberately not freed:
+  // this runs once, at the end of a compile, and the process exits
+  // immediately after.
+  Vec<Fun *> body_funs;
+  Vec<char *> body_text;
+  Vec<size_t> body_size;
+  for (Fun *f : fa->funs) if (f != init && !f->is_external) {
+    char *buf = nullptr;
+    size_t len = 0;
+    FILE *mf = open_memstream(&buf, &len);
+    if (!mf) fail("c_codegen_print_c: open_memstream failed");
+    write_c(mf, fa, f);
+    fclose(mf);
+    body_funs.add(f);
+    body_text.add(buf);
+    body_size.add(len);
+  }
+  // `init` carries the global initializers, so it is the root and always
+  // emitted; buffering it too makes its references visible to the scan.
+  char *init_buf = nullptr;
+  size_t init_len = 0;
+  {
+    FILE *initf = open_memstream(&init_buf, &init_len);
+    if (!initf) fail("c_codegen_print_c: open_memstream failed");
+    write_c(initf, fa, init, &globals);
+    fclose(initf);
+  }
+
+  // assign_fun_cg_strings names the i'th live Fun `_CG_f_<symid>_<i>`,
+  // so the trailing index identifies the referent exactly -- including
+  // WHICH CLONE, which is the whole point here. (`_CG_pf<i>` is a type
+  // name and does not match this prefix.)
+  Vec<Fun *> by_index;
+  for (Fun *f : fa->funs) if (f->live) by_index.add(f);
+  Vec<int> keep, buf_of;  // index -> reached? / index -> position in body_text
+  Vec<int> work;
+  for (int i = 0; i < by_index.n; i++) { keep.add(0); buf_of.add(-1); }
+  for (int i = 0; i < body_funs.n; i++)
+    for (int k = 0; k < by_index.n; k++)
+      if (by_index.v[k] == body_funs.v[i]) { buf_of.v[k] = i; break; }
+  auto scan = [&](const char *buf, size_t len, int self_idx) {
+    for (const char *q = buf; (q = (const char *)memmem(q, (buf + len) - q, "_CG_f_", 6));) {
+      q += 6;
+      const char *r = q;
+      while (r < buf + len && isdigit((unsigned char)*r)) r++;
+      if (r == q || r >= buf + len || *r != '_') continue;
+      int idx = 0;
+      const char *d = ++r;
+      while (r < buf + len && isdigit((unsigned char)*r)) idx = idx * 10 + (*r++ - '0');
+      if (r == d) continue;
+      if (idx == self_idx || idx < 0 || idx >= by_index.n) continue;
+      if (!keep.v[idx]) { keep.v[idx] = 1; work.add(idx); }
+    }
+  };
+  scan(init_buf, init_len, -1);
+  for (int w = 0; w < work.n; w++) {
+    int b = buf_of.v[work.v[w]];
+    if (b >= 0) scan(body_text.v[b], body_size.v[b], work.v[w]);
+  }
+
+  int dropped = 0;
+  Vec<int> emit_it;
+  for (int i = 0; i < body_funs.n; i++) emit_it.add(1);
+  for (int k = 0; k < by_index.n; k++)
+    if (!keep.v[k] && buf_of.v[k] >= 0) { emit_it.v[buf_of.v[k]] = 0; dropped++; }
+  for (int i = 0; i < body_funs.n; i++)
+    if (emit_it.v[i]) fwrite(body_text.v[i], 1, body_size.v[i], fp);
+  fwrite(init_buf, 1, init_len, fp);
+  if (getenv("PYC_DBG_CGDCE"))
+    fprintf(stderr, "CGDCE emitted=%d dropped=%d (named by no emitted body)\n", body_funs.n + 1 - dropped, dropped);
   fprintf(fp,
           "\nint main(int argc, char *argv[]) {\n"
           "  MEM_INIT();\n"

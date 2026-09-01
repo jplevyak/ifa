@@ -496,6 +496,22 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   touches the hottest dispatch path in codegen.
 ### CGEN (C backend)
 
+- [121-CGEN-dead-clones-emitted.md](121-CGEN-dead-clones-emitted.md)
+  — **C backend fixed 2026-09-01, LLVM half open.** Liveness
+  (`mark_live_funs`) is computed over `Fun::calls`, FA's CANDIDATE set at
+  each call site; codegen then narrows every site to one target
+  (`get_target_fun_core`, or the single winner `cg_build_new_to_val_map`
+  installs per method slot) and nobody recomputes liveness after. Every
+  discarded candidate stayed `live` and was emitted: **39 of pygmy's 244
+  functions named nowhere in the output**. Fixed by buffering each body
+  and emitting only what `init` transitively NAMES, with the reference
+  relation read back out of the emitted bytes — hooking
+  `cg_get_string(Fun*)` instead is NOT sufficient (`c_rhs` goes through
+  `cg_get_string(Var*)`; that attempt dropped 9 functions that were still
+  called). pygmy 244 → 149 functions, C −57%, `.ppm` byte-identical;
+  corpus diff is one line and it is a win — **`linalg` compiles now**,
+  because all six of its C errors were inside dropped functions.
+
 - [054-CGEN-remove-unconditional-tuple-list-header.md](054-CGEN-remove-unconditional-tuple-list-header.md)
   — a same-day plcfrs fix made *every* tuple allocate a 16-byte
   list-header unconditionally, even when never needed. Deliberately
