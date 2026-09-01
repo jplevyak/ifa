@@ -496,6 +496,18 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   touches the hottest dispatch path in codegen.
 ### CGEN (C backend)
 
+- [123-CGEN-union-receiver-field-access-has-no-discrimination.md](123-CGEN-union-receiver-field-access-has-no-discrimination.md)
+  — **root-caused 2026-09-01**, found by 122 Phase 0's layout check and
+  traced to the faulting line. A method whose receiver FA typed as a
+  union of UNRELATED classes is emitted with an `_CG_any` (`void *`)
+  receiver and blind-casts to ONE member's layout. `go`'s
+  `UCTNode::select` reads `e26` as `unexplored` (a list); on a `Square`
+  that slot is `losses` (an integer), and `_CG_list_ptr` segfaults.
+  Method DISPATCH already solves this with a classtag switch
+  (`poly_dispatch_classtag_targets`); field ACCESS has no equivalent.
+  Explicitly ruled out as ifa/121's clone blindness — `IFA_DBG_VAREQ`
+  reports zero `Square vs UCTNode` pairs.
+
 - [122-CGEN-layout-families.md](122-CGEN-layout-families.md)
   — **plan.** Field access is by member NAME, but a method shared between
   a base and its subclasses is emitted once and BLIND-CASTS the receiver
