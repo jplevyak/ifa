@@ -1,6 +1,6 @@
 # 122 — name the LAYOUT FAMILY, so unused struct fields can be elided safely (and the blind-cast invariant becomes checkable)
 
-**Status:** open, plan. Written 2026-09-01 after
+**Status:** **Phase 0 LANDED 2026-09-01** (the contract is now recorded and checked; see "Phase 0 as built"). Phases 1-3 open. Written 2026-09-01 after
 [121](121-CGEN-dead-clones-emitted.md)'s category 2 measured the prize
 (**269 of pygmy's 275 candidate slots are provably dead**), built a
 working analysis for it, and then failed at run time on
@@ -74,6 +74,55 @@ It is enforced only by the accident of dense layout, which is exactly why
 
 Deliverable on its own: the first executable statement of pyc's
 object-layout contract.
+
+### Phase 0 as built (2026-09-01)
+
+`cg_note_blind_cast` is called from the three sites that emit one — the
+getter and setter (whose cast-to comes from `resolve_union_receiver`,
+deliberately not the static type) and each classtag dispatch branch —
+and `cg_check_layout_contract` runs at the end of `c_codegen_print_c`.
+
+**Corpus census: 74 programs, 12348 blind-cast obligations, 46
+violations in 3 programs; 71 programs completely clean.** Two
+calibrations were needed and both were false-positive directions, worth
+recording because the obvious formulation is wrong twice over:
+
+- **Compare WIDTH, not the typedef's spelling.** `plane.e12` is
+  `_CG_pf60` and `sphere.e12` is `_CG_pf64` -- two function-pointer
+  typedefs; `_CG_float64` and a `_CG_psN` are a double and a pointer.
+  All 8 bytes, so nothing after them moves. Spelling comparison reported
+  **81 phantom violations on pygmy alone**. `cg_ctype_width` mirrors
+  `pyc_c_runtime.h:353-384`; an unrecognised spelling falls back to
+  comparing names, which over-reports rather than under-reports.
+- **A union member that does not HAVE the field is not an obligation.**
+  `webserver` reaches a `{str, dict}` receiver where
+  `resolve_union_receiver` picks `dict`; `str` has no such field, so the
+  access never happens on one (and would be a type violation reported
+  elsewhere if it did). That was 23 of the 46 -- all of webserver's.
+
+What survives is specific, and it is in the programs that crash:
+
+```
+go:  'UCTNode' blind-cast to 'Square', read at e24-e28,
+     but member width differs at e24 (_CG_bool vs _CG_int64)   -- 20 sites
+bh:  'Cell' blind-cast to 'Body', read at e28,
+     but member absent at e27 (_CG_float64 vs <absent>)        --  1 site
+```
+
+`go` reads a **1-byte `_CG_bool` where `Square` has an 8-byte
+`_CG_int64`** -- every later field shifts by 7 -- and segfaults
+(`run_rc=139`). `bh` casts to a struct one member short, and aborts
+(`run_rc=139`). Both are
+[102](102-corpus-programs-compile-then-abort-at-runtime.md) members that
+now have a named, located, compile-time cause instead of only a crash.
+
+**Reported as a warning by default, fatal under `--strict`**, matching
+how `fruntime_errors` treats every other violation: being able to SEE
+the problem is a separate decision from failing builds that work today.
+Corpus `check` sweep vs the pre-Phase-0 tree is a two-line diff, both of
+them warning counts (bh 1 -> 2, go 30 -> 40); `compile_rc`, `run_rc`,
+`cpy_rc` and `stdout_match` are identical on all 77 programs. Gate green
+on all five steps.
 
 ### Phase 1 — name the family
 

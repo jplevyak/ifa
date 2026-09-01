@@ -237,6 +237,150 @@ static Sym *resolve_union_receiver(Sym *obj, cchar *symbol) {
   return obj;
 }
 
+// -------------------------------------------------------------
+// ifa/issues/122 Phase 0 -- the blind-cast layout contract
+//
+// Field access in the emitted C is by member NAME (`->eN` at the `has`
+// index), so a correctly typed access does not care about offsets. But a
+// method shared between a base and its subclasses is emitted ONCE, takes
+// a generic receiver and blind-casts it to one class's layout -- and C
+// computes the offset from the CAST-TO struct. That is sound only while
+// the two layouts agree on everything up to the accessed slot.
+//
+// Nothing stated that rule and nothing checked it. It held by the
+// accident of dense layout (every class emits a member per has-index),
+// which is why ifa/110 was able to append an override slot and shift
+// every later field, and why ifa/121's per-class field elision printed
+// wrong answers instead of failing to build.
+//
+// The check is deliberately SYNTACTIC: agreement on the emitted
+// `(index -> C type)` prefix, plus the classtag header, is sufficient
+// for offset agreement and needs no size model. Recorded BY the
+// emitters, so it cannot drift from the casts they actually write.
+// -------------------------------------------------------------
+
+static Vec<Sym *> cg_bc_to, cg_bc_actual;
+static Vec<int> cg_bc_slot;
+
+static void cg_note_blind_cast_1(Sym *cast_to, Sym *actual, int slot) {
+  if (!cast_to || !actual || slot < 0 || cast_to == actual) return;
+  cg_bc_to.add(cast_to);
+  cg_bc_actual.add(actual);
+  cg_bc_slot.add(slot);
+}
+
+// `actual` is often a union: the cast has to be sound for every member
+// the receiver can ACTUALLY hold at this access. A member that does not
+// even have the field being read is not one of them -- webserver reaches
+// a `{str, dict}` receiver where `resolve_union_receiver` picks `dict`,
+// and `str` has no such field, so the access never happens on a `str`
+// (and would be a type violation reported elsewhere if it did). Without
+// this filter that program alone reported 23 false violations.
+static void cg_note_blind_cast(Sym *cast_to, Sym *actual, int slot) {
+  if (!actual || !cast_to) return;
+  if (actual->type_kind == Type_SUM) {
+    cchar *fname = (slot >= 0 && slot < cast_to->has.n && cast_to->has[slot]) ? cast_to->has[slot]->name : nullptr;
+    for (Sym *m : actual->has) {
+      if (!m || m == sym_nil_type) continue;
+      if (fname) {
+        bool has_it = false;
+        for (Sym *f : m->has)
+          if (f && f->name == fname) { has_it = true; break; }
+        if (!has_it) continue;
+      }
+      cg_note_blind_cast_1(cast_to, m, slot);
+    }
+    return;
+  }
+  cg_note_blind_cast_1(cast_to, actual, slot);
+}
+
+// The C type of `s`'s emitted member `i` -- exactly what the struct
+// emitter writes. nullptr means the member is not emitted at all.
+static cchar *cg_member_ctype(Sym *s, int i) {
+  if (!s || i < 0 || i >= s->has.n || !s->has[i]) return nullptr;
+  if (!s->has[i]->type) return "<placeholder>";  // char eN[0], zero width
+  return c_type(s->has[i]);
+}
+
+// Offsets depend on a member's WIDTH, not on its typedef's spelling.
+// `plane.e12` is `_CG_pf60` and `sphere.e12` is `_CG_pf64` -- two
+// function-pointer typedefs; `_CG_float64` and `_CG_ps15822` are a
+// double and a pointer. All four are 8 bytes, so everything after them
+// sits at the same offset and none of it is a layout problem. Comparing
+// spellings reported 81 false violations on pygmy alone.
+//
+// Mirrors pyc_c_runtime.h:353-384. An unrecognised spelling returns -1
+// and falls back to comparing names, which over-reports rather than
+// under-reports.
+static int cg_ctype_width(cchar *t) {
+  if (!t) return -2;  // member absent
+  if (!strcmp(t, "<placeholder>")) return 0;
+  if (strchr(t, '*')) return 8;
+  if (!strncmp(t, "_CG_pf", 6) || !strncmp(t, "_CG_ps", 6)) return 8;
+  struct { cchar *n; int w; } kW[] = {
+      {"_CG_void", 8},   {"_CG_void_type", 8}, {"_CG_any", 8},    {"_CG_list", 8},
+      {"_CG_string", 8}, {"_CG_bytes", 8},     {"_CG_function", 8}, {"_CG_nil_type", 8},
+      {"_CG_int64", 8},  {"_CG_uint64", 8},    {"_CG_float64", 8},
+      {"_CG_int32", 4},  {"_CG_uint32", 4},    {"_CG_float32", 4}, {"_CG_int", 4},
+      {"_CG_int16", 2},  {"_CG_uint16", 2},
+      {"_CG_int8", 1},   {"_CG_uint8", 1},     {"_CG_bool", 1},    {nullptr, 0}};
+  for (int i = 0; kW[i].n; i++)
+    if (!strcmp(t, kW[i].n)) return kW[i].w;
+  return -1;  // unknown
+}
+
+static void cg_check_layout_contract() {
+  int violations = 0;
+  bool verbose = getenv("IFA_DBG_LAYOUT") != nullptr;
+  for (int k = 0; k < cg_bc_to.n; k++) {
+    Sym *a = cg_bc_to.v[k], *b = cg_bc_actual.v[k];
+    int slot = cg_bc_slot.v[k];
+    cchar *why = nullptr;
+    int at = -1;
+    if (cg_has_classtag(a) != cg_has_classtag(b))
+      why = "classtag header present in one and not the other";
+    else
+      for (int i = 0; i <= slot && !why; i++) {
+        cchar *ta = cg_member_ctype(a, i), *tb = cg_member_ctype(b, i);
+        int wa = cg_ctype_width(ta), wb = cg_ctype_width(tb);
+        if (wa == -2 || wb == -2) {
+          why = "member absent";
+          at = i;
+        } else if (wa == -1 || wb == -1) {
+          if (strcmp(ta, tb)) { why = "member type differs (width unknown)"; at = i; }
+        } else if (wa != wb) {
+          why = "member width differs";
+          at = i;
+        }
+      }
+    if (!why) continue;
+    violations++;
+    char detail[160] = "";
+    if (at >= 0)
+      snprintf(detail, sizeof(detail), " at e%d (%s vs %s)", at,
+               cg_member_ctype(a, at) ? cg_member_ctype(a, at) : "<absent>",
+               cg_member_ctype(b, at) ? cg_member_ctype(b, at) : "<absent>");
+    if (verbose || violations <= 10)
+      fprintf(stderr,
+              "%s: '%s' is blind-cast to '%s' and read at e%d, but %s%s\n",
+              fruntime_errors ? "warning: object layout" : "error: object layout",
+              b->name ? b->name : "?", a->name ? a->name : "?", slot, why, detail);
+  }
+  if (verbose)
+    fprintf(stderr, "LAYOUT obligations=%d violations=%d\n", cg_bc_to.n, violations);
+  // Permissive by default, like every other violation pyc reports
+  // (`fruntime_errors`): these programs already build today and this
+  // check is new, so turning them into compile failures is a separate
+  // decision from being able to SEE the problem. Under `--strict` it is
+  // fatal, because the emitted code is genuinely unsound -- measured, the
+  // programs that violate it are the ones that crash (`go` reads a
+  // 1-byte `_CG_bool` where `Square` has an 8-byte `_CG_int64`, shifting
+  // every later field by 7, and segfaults).
+  if (violations && !fruntime_errors)
+    fail("object layout contract violated at %d blind cast(s) -- see ifa/issues/122", violations);
+}
+
 // cg_has_classtag / cg_field_live moved to codegen_common.{h,cc}
 // (shared with the LLVM backend).
 
@@ -528,6 +672,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
                 fail("field type mismatch reading a '%s' field into a '%s'", fct, t);
               fputs("  assert(!\"runtime error: field type mismatch\");\n", fp);
             } else
+              cg_note_blind_cast(obj, n->rvals[1]->type, i),
               fprintf(fp, "  %s = (%s)((%s)%s)->e%d; /* %s */\n", cg_get_string(n->lvals[0]), t, cg_get_string(obj),
                       cg_get_string(n->rvals[1]), i, symbol);
             goto Lgetter_found;
@@ -575,6 +720,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
                 fail("field type mismatch storing a '%s' into a '%s' field", vct, fct);
               fputs("  assert(!\"runtime error: field type mismatch\");\n", fp);
             } else
+              cg_note_blind_cast(obj, n->rvals[1]->type, i),
               fprintf(fp, "  ((%s)%s)->e%d = (%s)%s;\n",
                       cg_get_string(obj), cg_get_string(n->rvals[1]),
                       i, c_type(obj->has[i]),
@@ -1772,6 +1918,7 @@ class CBackendEmitter : public VirtualCGEmitter {
         if (!pn->rvals[0]->sym->is_symbol && cg_get_string(pn->rvals[0])) recv_str = cg_get_string(pn->rvals[0]);
         Vec<Sym *> classes;  // classtag partition, grouped by class
         Vec<int> slots;      //   ... that class's method-slot index
+        Vec<Sym *> recv_types;  // ifa/122: the receiver's STATIC type at that branch
         Vec<Fun *> class_funs;  // ... and the candidate Fun bound at that slot (issues/025 kanoodle:
                                  // needed to pass this branch's OWN non-receiver arguments -- see emission below)
         Vec<Fun *> plains;   // plain-function partition
@@ -1919,6 +2066,7 @@ class CBackendEmitter : public VirtualCGEmitter {
                   if (!recv_str) recv_str = cg_get_string(pn->rvals[carrier_ridx]);
                   classes.add(carrier_recv);
                   slots.add(-1);  // sentinel: direct call, no stored-slot indirection
+                  recv_types.add(nullptr);
                   class_funs.add(fun_val);
                 }
                 continue;
@@ -1946,6 +2094,9 @@ class CBackendEmitter : public VirtualCGEmitter {
               if (!found) {
                 classes.add(rt);
                 slots.add(rt_slots[ri]);
+                recv_types.add(rt_ridxs[ri] >= 0 && rt_ridxs[ri] < pn->rvals.n && pn->rvals[rt_ridxs[ri]]
+                                   ? pn->rvals[rt_ridxs[ri]]->type
+                                   : nullptr);
                 class_funs.add(fun_val);
               }
             }
@@ -2150,6 +2301,7 @@ class CBackendEmitter : public VirtualCGEmitter {
                 call_args += cg_get_string(pn->rvals[i]);
               }
             }
+            if (ci < recv_types.n) cg_note_blind_cast(classes[ci], recv_types[ci], slots[ci]);
             fprintf(fp, "((%s(*)(%s))((%s)(void*)%s)->e%d)(%s);\n", ret_type_str, fnptr_args.c_str(),
                     cg_get_string(classes[ci]), recv_str, slots[ci], call_args.c_str());
             fputs("  }\n", fp);
@@ -2878,6 +3030,7 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
           "  return 0;\n"
           "}\n",
           cg_get_string(init));
+  cg_check_layout_contract();  // ifa/issues/122 Phase 0
 }
 
 void c_codegen_write_c(FA *fa, Fun *main, cchar *filename) {
