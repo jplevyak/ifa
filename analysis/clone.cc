@@ -172,6 +172,16 @@ static int equivalent_es_pnode(PNode *n, EntrySet *a, EntrySet *b) {
   return 1;
 }
 
+// ifa/issues/121: the receiver's CreationSets disagree about where this
+// field lives, so there is no single offset to report. That is an
+// ordinary situation -- a union receiver over two subclasses whose
+// dead-field elision produced different layouts (`plane#1398@8` vs
+// `sphere#1437@0` on pygmy's `renderobject.intersect`) -- and codegen
+// handles it, resolving the slot per concrete class in
+// cg_build_new_to_val_map. Only ES_FN::equivalent asks this question,
+// and the answer it needs is "not equivalent", not a dead compiler.
+static const int kOffsetAmbiguous = -2;
+
 static int prim_period_offset(PNode *p, EntrySet *es) {
   AVar *obj = make_AVar(p->rvals[1], es);
   AVar *selector = make_AVar(p->rvals[3], es);
@@ -202,13 +212,15 @@ static int prim_period_offset(PNode *p, EntrySet *es) {
           // between them -- and the more contours split, the more
           // same-class CSs there are to disagree. Bare "missmatched
           // offsets" said none of that.
-          fprintf(stderr, "mismatched offsets for field '%s': ", symbol);
-          for (CreationSet *y : *obj->out) if (y) {
-            AVar *yv = y->var_map.get(symbol);
-            if (yv) fprintf(stderr, " %s#%d@%d", y->sym->name ? y->sym->name : "?", y->id, yv->ivar_offset);
+          if (getenv("IFA_DBG_OFFSETS")) {
+            fprintf(stderr, "mismatched offsets for field '%s': ", symbol);
+            for (CreationSet *y : *obj->out) if (y) {
+              AVar *yv = y->var_map.get(symbol);
+              if (yv) fprintf(stderr, " %s#%d@%d", y->sym->name ? y->sym->name : "?", y->id, yv->ivar_offset);
+            }
+            fprintf(stderr, "\n");
           }
-          fprintf(stderr, "\n");
-          fail("missmatched offsets");
+          return kOffsetAmbiguous;
         }
         offset = iv->ivar_offset;
       }
@@ -283,6 +295,21 @@ inline int ES_FN::equivalent(EntrySet *a, EntrySet *b) {
           if (!acs || !bcs) return 0;
           if (acs->equiv != bcs->equiv) return 0;
         }
+        // This `return 0` is UNCONDITIONAL, which makes the loop above
+        // dead code: any pnode whose lval has a cs_map splits the two
+        // contours whatever the loop just proved. That reads like a bug
+        // and is not -- ifa/issues/121 tried letting the loop decide,
+        // measured it, and rejected it. With the offset question made
+        // answerable (kOffsetAmbiguous, above) the merge no longer
+        // aborts, and pygmy drops 244 -> 183 clones with a
+        // byte-identical image; but the corpus says `voronoi2`, which
+        // compiled AND ran, stops compiling with `no matching function
+        // for call to '_CG_f_16022_133'` -- issue 097's signature, a
+        // call site whose argument type diverges from the merged
+        // callee's formal. So CreationSet equivalence plus the offset
+        // check is still not sufficient evidence to merge, and the
+        // blanket split stays until something establishes formal-type
+        // compatibility at every in-edge too.
         return 0;
       }
     }
@@ -294,7 +321,12 @@ inline int ES_FN::equivalent(EntrySet *a, EntrySet *b) {
           AVar *av = make_AVar(n->rvals[3], a);
           AVar *bv = make_AVar(n->rvals[3], b);
           if (av->out != bv->out) return 0;
-          if (prim_period_offset(n, a) != prim_period_offset(n, b)) return 0;
+          int ao = prim_period_offset(n, a), bo = prim_period_offset(n, b);
+          // Ambiguous on either side: no single offset exists, so these
+          // contours cannot be shown equivalent. Conservative, and it
+          // used to `fail` the compile instead of answering.
+          if (ao == kOffsetAmbiguous || bo == kOffsetAmbiguous) return 0;
+          if (ao != bo) return 0;
           break;
         }
         case P_prim_cast: {

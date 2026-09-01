@@ -183,17 +183,45 @@ FA is not wrong about them. Their deadness is created by the decision to
 dispatch through one method-pointer slot per class, which is codegen's.
 
 **3. The obvious way to stop creating them is guarded, and the guard is
-load-bearing.** `ES_FN::equivalent`'s creation-point block
-(`clone.cc:276-287`) ends in an **unconditional `return 0`**, which makes
+load-bearing — now measured, not assumed.** `ES_FN::equivalent`'s
+creation-point block ends in an **unconditional `return 0`**, which makes
 the `cssyms` loop above it dead code: any pnode whose lval has a
 `cs_map` splits the two contours whatever the loop just proved. That
-reads exactly like the bug behind the duplicate clones. It is not --
-letting the loop decide makes pygmy fail with `fail: missmatched
-offsets`. The function's own header comment says why: merging also
-requires that "the layouts of the '.' targets are compatible at the
-symbol (same offset)", which CreationSet equivalence alone does not
-establish. **The scoped task is to add that offset check so the loop can
-decide**, not to delete the `return 0`.
+reads exactly like the bug behind the duplicate clones. Both halves were
+implemented and swept on 2026-09-01, with opposite verdicts.
+
+**A — the offset check was already there; it just aborted. LANDED.**
+Removing the blanket split first surfaced `fail: missmatched offsets`,
+which looks like the missing layout check the function's header comment
+describes. It is not missing: the `P_prim_period` case already compares
+`prim_period_offset(n, a)` against `(n, b)`. The defect is that
+`prim_period_offset` — whose ONLY caller is this predicate — called
+`fail()` when a union receiver's member classes disagree about a field's
+offset, killing the compile from inside an equivalence QUESTION. The
+case is ordinary: pygmy's `renderobject.intersect` is at offset 8 in
+`plane` and 0 in `sphere`, and codegen already resolves such a receiver
+per concrete class. It now returns `kOffsetAmbiguous` and the predicate
+answers "not equivalent" — conservative, strictly more splitting than a
+merge. Corpus: **one line of diff**, `go` `compile_rc 1 → 0` (it is the
+only program that hits the abort), compile failures **4 → 3**. `go` then
+core-dumps, joining
+[102](102-corpus-programs-compile-then-abort-at-runtime.md)'s bucket.
+
+**B — letting the `cssyms` loop decide. REJECTED, and the test suites
+could not see why.** With the offset question answerable, the blanket
+`return 0` comes out. pygmy drops **244 → 183 clones** (149 → 125
+emitted, 95 → 58 dead) with a **byte-identical rendered image**;
+`test_pyc.py` stays 308/0 on both backends; only two ifa-test goldens
+move (`clone` and `dce` on `iterator_missing_field`, `funs=4 → 3`) and
+`codegen-c` is unchanged, because the merged clone was one this issue's
+DCE already dropped. Then the corpus: **`voronoi2`, which compiled AND
+ran, stops compiling** with `no matching function for call to
+'_CG_f_16022_133'` — [097](097-CGEN-callsite-vs-clone-formal-type-mismatch.md)'s
+exact signature, a call site whose argument type diverges from the merged
+callee's formal. CreationSet equivalence plus the offset check is still
+not sufficient evidence to merge; what is missing is formal-type
+compatibility at every in-edge, which is 097's own subject. The blanket
+split stays, with that reasoning recorded at the `return 0` itself.
 
 **A dead end worth recording.** 75 of pygmy's 569 emitted struct fields
 are never referenced, at 8 bytes each (`_CG_void` is `void *`) -- `vec`,
