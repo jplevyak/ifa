@@ -1,6 +1,12 @@
 # 123 — a method whose receiver is a UNION of unrelated classes gets a `void*` receiver and blind-casts to ONE member's layout; field access has no runtime discrimination
 
-**Status:** open (fix 1 outstanding); **root-caused 2026-09-01** with the crash line pinned, and **fix 2 landed** the same day -- the miscompile is now a compile error rather than a segfault.
+**Status:** open. The **20 reported violations are real** (`Square` and
+`UCTNode` genuinely disagree on every field index) and are now compile
+errors — **fix 2 landed 2026-09-01**. `go`'s CRASH is the same family
+but a DIFFERENT site, not one the check predicts; see the correction
+below. Root cause of the crash itself: **still open**, narrowed to a
+wrong-layout read of `UCTNode.unexplored` whose object arrives through an
+`_CG_any` parameter.
 Found by [122](122-CGEN-layout-families.md) Phase 0's layout-contract
 check, which reported it at 20 sites in `go` and 1 in `bh` **at compile
 time** — both programs previously only crashed.
@@ -40,9 +46,34 @@ _CG_int64 _CG_f_12664_136/*UCTNode::select*/(_CG_any a1, _CG_ps17220 a2) {
 ```
 
 `a1` is `_CG_any` — a `void *`. The body blind-casts to `_CG_ps17236`
-(UCTNode) and reads `e26` expecting a list. When the object is a
-`Square`, `e26` is `losses`, an integer, and `_CG_list_ptr` on it
-faults. gdb confirms the crash at exactly that line.
+(UCTNode) and reads `e26` expecting a list; gdb confirms the crash at
+exactly that line, and that `e26` reads back **`0x7ffff7d609d2` — not
+null, and not 8-aligned**. No valid GC pointer looks like that, so the
+object is not shaped like `_CG_s17236`: it is a wrong-layout read.
+
+**CORRECTION (2026-09-01, same day): the crash site is NOT one of the
+violations the check reports.** All 20 reported obligations are casts TO
+`Square`; this one casts to `UCTNode`. The first draft of this issue
+claimed the crash line was the reported violation, and that was wrong.
+The two are the same FAMILY — a blind cast reading one class's field
+through another's layout — but the check did not predict this particular
+site, and saying it did overstated what Phase 0 delivered.
+
+**Why it did not: the check validates DECLARED casts, not PROVENANCE.**
+Obligations are recorded from the receiver's static type at the access
+site. A cast that is locally consistent with FA's typing, but receives an
+object of another class through an `_CG_any` parameter from a caller, is
+invisible to it. Closing that gap means recording an obligation at every
+CALL SITE that widens a receiver to `_CG_any`, not only at field
+accesses — a concrete extension, and the next thing to do here.
+
+**A second retraction.** An intermediate finding in this investigation
+held that `unexplored` was read seven times and never written. It is
+written — `((_CG_ps17243)t73)->e26 = (_CG_any)t71;` — and the claim was
+an artifact of grepping for a `/* unexplored */` comment that the SETTER
+does not emit while the getter does. Both retractions are recorded
+rather than quietly fixed because each was a plausible-looking inference
+from the emitted C that a re-check disproved.
 
 **The union has no runtime discrimination.** FA typed the receiver as
 `{Square, UCTNode}`; the C representation of that union is a bare
