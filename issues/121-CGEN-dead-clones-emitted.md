@@ -278,15 +278,60 @@ at every in-edge, which is
 The blanket split stays, with this reasoning recorded at both code
 sites.
 
-**A dead end worth recording.** 75 of pygmy's 569 emitted struct fields
-are never referenced, at 8 bytes each (`_CG_void` is `void *`) -- `vec`,
-a three-double vector, carries 31 fields. That looks like dead clones
-inflating field liveness, and it is not: every unreferenced one is
-already `_CG_void`-typed, meaning no live Fun was ever assigned to it.
-Pruning functions earlier would not remove them. That is a separate
-*field* liveness question on top of
-[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md)'s
-per-instance method-slot design.
+## Unreferenced struct fields: two categories, one fixed (2026-09-01)
+
+75 of pygmy's 569 emitted struct fields are never referenced, at 8 bytes
+each (`_CG_void` is `void *`) -- `vec`, a three-double vector, carries
+31 fields. It looks like dead clones inflating field liveness. It is
+not, and separating the two categories is what makes it actionable.
+
+**Category 1 -- typeless placeholders. FIXED.** The struct emitter emits
+a member for EVERY `has` index, with `_CG_void eN; /* no type */` where
+FA gave the field no type at all. That is deliberate and load-bearing:
+eliding them breaks the `eN` numbering, and several access sites compute
+`eN` independently (`"no member named 'e0'"`, measured on bh, block,
+chull, doom, rubik, softrender). The NUMBERING must stay dense; the
+STORAGE need not. They are now `char eN[0];` -- same name, same
+numbering, zero bytes, and any site that does touch one now fails to
+compile instead of silently reading a dead slot. Safe because
+`cg_field_live` already returns 0 for exactly this case
+(`if (!s->has[i]->type) return 0;`), so every guarded access site elides
+them today, and `_CG_prim_new` is `GC_MALLOC(sizeof(*((_c)0)))`, so
+allocations shrink with the structs rather than disagreeing with them.
+
+Corpus: **7078 placeholders across 60 programs, 56624 bytes of struct
+storage removed** (tarsalzp 441, quameon 429, kanoodle 409). pygmy's
+rendered image is byte-identical and the `check` sweep is **identical on
+all 77 programs**. All five gates green.
+
+**Category 2 -- void-typed NAMED method slots. Left alone.** These are
+what the `vec` dump shows (`_CG_void e6; /* __not__ */`). They HAVE a
+type, so `cg_field_live` returns true and access sites are not elided --
+a dispatch path can legitimately read one. pygmy has 275, of which only
+**54 are never referenced** (432 bytes); the other 221 are live dispatch
+slots. Removing the 54 needs `cg_field_live` to also reject void-typed
+slots, which changes `cg_build_new_to_val_map`'s slot resolution and the
+dispatch emission -- a real change for 432 bytes, and it belongs with
+[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md)'s per-instance
+method-slot design rather than here.
+
+### ...and they do not "contribute to CS compatibility" in any way that matters
+
+`ivar_offset` has exactly ONE consumer: `prim_period_offset`, i.e. the
+clone-equivalence question. It never reaches codegen, which addresses
+fields by NAME (`->eN` at the `has` index). So a dead field perturbing
+offsets can only cause extra SPLITTING, never a miscompile -- and since
+the `kOffsetAmbiguous` change above made that check non-fatal and
+conservative, the failure mode is precision, not correctness.
+
+The ambiguities that actually fire are **cross-class**, where
+disagreement is the right answer: `go` has `color` at 16 in `Square` and
+8 in `UCTNode`; pygmy has `intersect` at 8 in `plane` and 0 in `sphere`.
+Codegen resolves those per concrete class. The *same-class* divergence --
+the case that would be a genuine bug -- is what
+[055](closed/055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md)
+already fixed with the program-wide field-size fallback in
+`determine_layouts`.
 
 ## Verification plan
 

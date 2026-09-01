@@ -2665,7 +2665,16 @@ static void build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
             // Only a field with NO type at all gets the placeholder,
             // and that exists purely to hold the eN numbering.
             if (!s->has[i]->type) {
-              fprintf(fp, "  _CG_void e%d; /* no type */\n", i);
+              // ifa/issues/121: ZERO-WIDTH. The placeholder exists only
+              // to hold the eN numbering (see above); it has no type, so
+              // `cg_field_live` is false for it and every guarded access
+              // site already elides it. Giving it storage cost 8 bytes
+              // each (`_CG_void` is `void *`) -- 75 of pygmy's 569
+              // fields, 7 of the 31 on `vec`, a three-double vector.
+              // A zero-length array keeps the name and the numbering,
+              // and any site that DOES touch one now fails to compile
+              // rather than silently reading a dead slot.
+              fprintf(fp, "  char e%d[0]; /* no type */\n", i);
               continue;
             }
             fputs("  ", fp);
