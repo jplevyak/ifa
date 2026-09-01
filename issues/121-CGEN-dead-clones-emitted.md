@@ -135,6 +135,76 @@ splitter question — the `TYPE_CONFLUENCE` detach-and-mint growth that
 class hierarchy — not a codegen one. Fixing that would make this DCE
 mostly redundant; until then this keeps the excess out of the output.
 
+## Should the pruning move EARLIER? Measured 2026-09-01: no.
+
+The obvious follow-up is to prune before `simple_inlining` /
+`mark_live_types`, or to stop `clone` creating the clones at all. Three
+measurements say the first is not worth it and locate what the second
+actually needs.
+
+**1. How much dead code is there, corpus-wide?** `-m compile -e
+"PYC_DBG_CGDCE=1"` over all 77 programs, 73 of which reach codegen:
+
+```
+emitted 14320   dropped 415   = 2.8% of all clones were dead
+median per program: 1%      programs with zero dead clones: 2 of 73
+```
+
+| dropped | emitted | %dead | program |
+|---|---|---|---|
+| 99 | 430 | 19% | pygasus |
+| 95 | 149 | **39%** | pygmy |
+| 27 | 710 | 4% | plcfrs |
+| 24 | 1014 | 2% | linalg |
+| 23 | 190 | 11% | webserver |
+
+**pygmy is an outlier, not the norm.** Moving the pruning earlier would
+save the downstream passes ~3% of their input. Compile time already says
+the same: pygmy went 7.10 s → ~7.0 s across this fix while its `.c`
+shrank 57%, because its 43 FA passes dominate and clang was never the
+bottleneck. **The value of this fix is not bulk — it is that dead code
+can be WRONG code** (`linalg`'s six C errors were all inside dropped
+functions), and that argument does not get better by moving it earlier.
+
+Note the two outliers are not even the same mechanism. pygmy's excess is
+user methods on a two-level class hierarchy dispatched through per-class
+slots; pygasus's and webserver's is `__new__`, lambdas and **builtin
+container methods** (`list::append`, `range::__init__`,
+`dict::__setitem__`, `len` — 12-18 clones each), i.e. per-call-site
+element specialization.
+
+**2. Could it be done BEFORE cloning at all? No — the information does
+not exist yet.** Both narrowings need concrete C types, which
+`concretize_types` only produces *inside* `clone`: `get_target_fun_core`
+compares C signatures, and `cg_build_new_to_val_map` resolves a slot
+index per concrete class layout. Pre-clone, every one of those ten
+`parallellight::light` contours is genuinely reached by a real AEdge --
+FA is not wrong about them. Their deadness is created by the decision to
+dispatch through one method-pointer slot per class, which is codegen's.
+
+**3. The obvious way to stop creating them is guarded, and the guard is
+load-bearing.** `ES_FN::equivalent`'s creation-point block
+(`clone.cc:276-287`) ends in an **unconditional `return 0`**, which makes
+the `cssyms` loop above it dead code: any pnode whose lval has a
+`cs_map` splits the two contours whatever the loop just proved. That
+reads exactly like the bug behind the duplicate clones. It is not --
+letting the loop decide makes pygmy fail with `fail: missmatched
+offsets`. The function's own header comment says why: merging also
+requires that "the layouts of the '.' targets are compatible at the
+symbol (same offset)", which CreationSet equivalence alone does not
+establish. **The scoped task is to add that offset check so the loop can
+decide**, not to delete the `return 0`.
+
+**A dead end worth recording.** 75 of pygmy's 569 emitted struct fields
+are never referenced, at 8 bytes each (`_CG_void` is `void *`) -- `vec`,
+a three-double vector, carries 31 fields. That looks like dead clones
+inflating field liveness, and it is not: every unreferenced one is
+already `_CG_void`-typed, meaning no live Fun was ever assigned to it.
+Pruning functions earlier would not remove them. That is a separate
+*field* liveness question on top of
+[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md)'s
+per-instance method-slot design.
+
 ## Verification plan
 
 1. `pygmy` renders a byte-identical `.ppm` — the strongest available

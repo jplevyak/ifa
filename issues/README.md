@@ -511,6 +511,17 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   called). pygmy 244 → 149 functions, C −57%, `.ppm` byte-identical;
   corpus diff is one line and it is a win — **`linalg` compiles now**,
   because all six of its C errors were inside dropped functions.
+  **Measured and decided 2026-09-01: do NOT move the pruning earlier.**
+  Corpus-wide only **2.8% of clones are dead** (median 1%, pygmy's 39%
+  an outlier), and pre-clone the information does not exist at all —
+  both narrowings need the concrete C types `concretize_types` produces
+  inside `clone`. The value here is that dead code can be WRONG code,
+  not that there is much of it. The way to stop creating them runs
+  through `ES_FN::equivalent`'s creation-point block, whose
+  unconditional `return 0` LOOKS like the bug and is load-bearing:
+  letting its (dead) `cssyms` loop decide makes pygmy fail with
+  `fail: missmatched offsets`, because merging also needs the field
+  OFFSET compatibility the function's header comment describes.
 
 - [054-CGEN-remove-unconditional-tuple-list-header.md](054-CGEN-remove-unconditional-tuple-list-header.md)
   — a same-day plcfrs fix made *every* tuple allocate a 16-byte
