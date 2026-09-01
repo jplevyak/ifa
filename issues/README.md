@@ -496,6 +496,21 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   touches the hottest dispatch path in codegen.
 ### CGEN (C backend)
 
+- [122-CGEN-layout-families.md](122-CGEN-layout-families.md)
+  — **plan.** Field access is by member NAME, but a method shared between
+  a base and its subclasses is emitted once and BLIND-CASTS the receiver
+  to one class's layout, so C takes the offset from the cast-to struct.
+  That is sound only while layouts are prefix-compatible — an invariant
+  nothing states and nothing checks, held today only by the accident of
+  dense layout, and the reason ifa/110 happened. Phase 0 (worth landing
+  alone) records every blind cast the emitter performs and checks prefix
+  agreement on `(index → c_type)`, turning a silent miscompile into a
+  compile error. Phases 1-2 then name LAYOUT FAMILIES by union-find over
+  those casts and elide fields unused across a whole family — 121
+  measured 269 of pygmy's 275 candidate slots as provably dead, and its
+  per-class attempt failed precisely on this invariant. ifa/030's
+  per-class vtable would dissolve phases 1-2 entirely.
+
 - [121-CGEN-dead-clones-emitted.md](121-CGEN-dead-clones-emitted.md)
   — **C backend fixed 2026-09-01, LLVM half open.** Liveness
   (`mark_live_funs`) is computed over `Fun::calls`, FA's CANDIDATE set at
