@@ -1,8 +1,23 @@
 # 109 — tuple slicing is unimplemented: `t[0:2]` aborts
 
-**Status: FIXED 2026-08-18** (tuple slicing works; `sunfish` still needs
-[018](../../issues/018-dict-mixed-key-types-boxing-failure.md)). Found
-while digging into `sunfish`'s crash.
+**Status: CLOSED 2026-09-02** — fixed 2026-08-18, archived after
+re-verifying. Found while digging into `sunfish`'s crash.
+
+Re-verified on the current tree before archiving. Three of the four
+verification items below pass: `t = (1,2,3,4); t[0:2]` prints `(1, 2)`,
+`list` slicing is unaffected (`[1,2,3,4][0:2]` -> `[1, 2]`), and
+`tests/tuple_arity_union_slice.py` has had its `.known_issue` tag removed
+and passes in the suite. `tests/tuple_slice.py` pins the seven forms.
+
+The fourth — "`sunfish` compiles **and runs**" — is **half met and
+closed anyway**: sunfish compiles (`compile_rc=0`) and aborts at runtime
+(`run_rc=134`, sweep `check__default__635d26b6+c1a28ccc`). That abort is
+NOT tuple slicing. It is the `{list, tuple}` union receiver documented
+under "Still open" below, filed as
+[030](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md) and pinned by
+`tests/list_tuple_union_method.py` (`.known_issue`, still open). Closing
+here per the README's rule that remaining scope covered by another issue
+belongs to that issue, not to a second open doc.
 Repro: `tests/tuple_arity_union_slice.py` (`.known_issue`) — and a much
 smaller one below.
 
@@ -50,10 +65,10 @@ have unioned arity, and from a `DISPATCH FAIL` line showing two
 
 Arity is not the variable; **slicing** is. The union in `sunfish` is
 incidental, exactly as the tuples in
-[104](closed/104-unify-list-and-tuple-in-analysis.md) turned out to be
+[104](104-unify-list-and-tuple-in-analysis.md) turned out to be
 incidental passengers in a degenerate type.
 
-So [104](closed/104-unify-list-and-tuple-in-analysis.md)'s conclusion —
+So [104](104-unify-list-and-tuple-in-analysis.md)'s conclusion —
 that mixed-arity tuples cause no corpus failures — **stands after all**.
 The correction I made to it on the strength of this issue has itself been
 retracted.
@@ -71,7 +86,7 @@ that works is the point:
 The only thing missing was that `sym_tuple` had **no element sym to
 populate**, which is why the first attempt segfaulted the compiler:
 `sizeof_element` on a type with no element. `PYC_TUPELEM` — built in
-[104](closed/104-unify-list-and-tuple-in-analysis.md) as an experiment
+[104](104-unify-list-and-tuple-in-analysis.md) as an experiment
 and left off — supplies it, and is **now on by default** because it is
 load-bearing rather than experimental.
 
@@ -113,7 +128,7 @@ regressions. Worth it.
 
 The `sunfish` reproducer (`tests/tuple_arity_union_slice.py`) now fails
 **differently** — `sizeof_element of non-container type '<anonymous>'`,
-which is [018](../../issues/018-dict-mixed-key-types-boxing-failure.md),
+which is [018](../../../issues/closed/018-dict-mixed-key-types-boxing-failure.md),
 the scalar/container union family. Tuple slicing is fixed; that program
 needs 018 as well.
 
@@ -130,7 +145,7 @@ its arity is unknown — which pyc's fixed-arity record tuples cannot
 express. `sunfish`'s `table[i*8:i*8+8]` has a runtime start and a
 constant length, so a constant-length special case would cover it, but
 the general case wants the variable-length tuple representation
-[104](closed/104-unify-list-and-tuple-in-analysis.md) prototyped.
+[104](104-unify-list-and-tuple-in-analysis.md) prototyped.
 
 ## Verification plan
 
@@ -185,13 +200,13 @@ re-taken after every landed change**, not reused across them.
 ### Is it a net loss?
 
 Arguably not, by
-[102](102-corpus-programs-compile-then-abort-at-runtime.md)'s own
+[102](../102-corpus-programs-compile-then-abort-at-runtime.md)'s own
 argument — a compile-time diagnostic beats a runtime SIGABRT, and
 `sunfish` produced no useful output either way. But it is a real
 behaviour change in the wrong direction for that program, it was not
 caught by the sweep, and it should not be discovered later as a surprise.
 
-The underlying cause is [018](../../issues/018-dict-mixed-key-types-boxing-failure.md):
+The underlying cause is [018](../../../issues/closed/018-dict-mixed-key-types-boxing-failure.md):
 a `{tuple, str}` slice receiver has no single representation. shedskin
 avoids it because `str` and `tuple<T>` are separate C++ types with
 separate `__slice__` instantiations, and its analysis keeps the receiver
@@ -257,7 +272,7 @@ survived as an assert.
 
 The receiver needs to be monomorphic *at the call site*, which means
 either splitting the **caller's** contour so `self` is one tuple type
-(the [101](101-FA-first-time-forever-splitting.md) splitting rule), or
+(the [101](../101-FA-first-time-forever-splitting.md) splitting rule), or
 giving the two tuple types one representation so the sum never forms —
 shedskin's answer, since its `pst` is `dict<str*, tuple<__ss_int>*>` with
 both lengths as one type.
@@ -265,7 +280,7 @@ both lengths as one type.
 Note the second is what `PYC_TUPLE_AS_LIST` was built for and it does not
 reach this case, because it is a post-FA `clone.cc` decision while this
 sum is formed during FA. That is the same stage mismatch
-[104](closed/104-unify-list-and-tuple-in-analysis.md) closed on.
+[104](104-unify-list-and-tuple-in-analysis.md) closed on.
 
 **Default is unaffected throughout: 275 passed / 15 known / 0 failed**,
 and `sunfish`/`plcfrs`/`go` are unchanged at `rc=1`.
@@ -311,7 +326,7 @@ first-stage-wins cascade never gets there. So the violation is recorded
 faithfully and nothing ever splits on it: `ess` and `css` are unchanged
 (534 / 1586) and the failure is identical.
 
-This is the same starvation [101](101-FA-first-time-forever-splitting.md)
+This is the same starvation [101](../101-FA-first-time-forever-splitting.md)
 found keeping `PER_CS_RECEIVER` from running, now with a second concrete
 victim.
 
@@ -336,7 +351,7 @@ neither is reachable while the cascade starves the stage that implements
 it — and un-starving it costs convergence.
 
 So this is not a missing mechanism but
-[101](101-FA-first-time-forever-splitting.md)'s productivity problem:
+[101](../101-FA-first-time-forever-splitting.md)'s productivity problem:
 splitting must *earn* its contours, so that a stage can run early without
 diverging. Until that exists, `sizeof_element`'s violation is correct
 information the splitter cannot safely use.
@@ -399,8 +414,8 @@ assert(!"runtime error: matching function not found");
 
 It is **not slice-specific** — `len(x)`, `x[0]` and `for v in x` fail
 identically on the same union. It is
-[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) /
-[102](102-corpus-programs-compile-then-abort-at-runtime.md) class B, a
+[030](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md) /
+[102](../102-corpus-programs-compile-then-abort-at-runtime.md) class B, a
 separate problem from this issue.
 
 Worth recording why a `{tuple, str}` union does **not** fail: FA

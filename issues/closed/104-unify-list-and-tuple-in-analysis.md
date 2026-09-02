@@ -1145,7 +1145,7 @@ not exist.
 
 ## The 2026-08-18 retraction of this issue's conclusion is itself retracted
 
-[109](../109-mixed-arity-tuple-slice-dispatch.md) was briefly filed as
+[109](109-mixed-arity-tuple-slice-dispatch.md) was briefly filed as
 proof that mixed-arity tuples *do* cause a corpus failure (`sunfish`),
 contradicting this issue. **That was wrong.** Controls showed the same
 program aborts with *uniform* arity, and that a plain `(1,2,3,4)[0:2]`
