@@ -418,6 +418,15 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
 
 ### FA — targeted
 
+- [125-sunfish-degenerate-dict-setitem-clones.md](125-sunfish-degenerate-dict-setitem-clones.md)
+  — **sunfish compiles (rc=0) and aborts at runtime.** Every
+  `dict::__setitem__` clone in the emitted C has lost its key and value
+  formals — 12 of them, all arity 1 — so both `str`-keyed table literals
+  (`pst`, `directions`) collapse to `getter not resolved`. Succeeds 090,
+  whose "generator containment" claim was measured and refuted. No
+  minimal repro yet: four hypotheses tested and recorded so they are not
+  re-tested, and three neighbouring cuts of `main()` each produce a
+  DIFFERENT diagnostic, which is itself the finding.
 - [124-FA-refuse-imprecise-inference.md](124-FA-refuse-imprecise-inference.md)
   — **option landed 2026-09-01, off by default.** `--refuse-imprecise`
   reports (or rejects) every container element type and function
@@ -572,7 +581,9 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   when several distinct tuple record types coexist and get
   `.sort()`ed together. Same bug *class* as 056 (malformed C instead
   of a guarded degrade); not a duplicate.
-- [090-CGEN-tuple-arity-cant-vary-across-loop-iterations.md](090-CGEN-tuple-arity-cant-vary-across-loop-iterations.md)
+- [090-CGEN-tuple-arity-cant-vary-across-loop-iterations.md](closed/090-CGEN-tuple-arity-cant-vary-across-loop-iterations.md)
+  **(closed 2026-09-02 — both repros fixed; its sunfish claim refuted,
+  that scope is now [125](125-sunfish-degenerate-dict-setitem-clones.md))**
   — a loop-carried variable whose tuple arity changes each iteration
   (`t = t + (i, i+1)`) or whose type spans `None`/tuple (`move = None`
   then reassigned inside the loop) fails with "unable to resolve to a
@@ -713,6 +724,7 @@ than an issue, which is why the file count is one higher):
 [098](closed/098-FA-per-pass-reset-scoped-to-reachable-set.md),
 [104](closed/104-unify-list-and-tuple-in-analysis.md),
 [109](closed/109-mixed-arity-tuple-slice-dispatch.md),
+[090](closed/090-CGEN-tuple-arity-cant-vary-across-loop-iterations.md),
 [110](closed/110-override-duplicates-member-slot.md),
 [112](closed/112-CGEN-nondeterministic-emitted-c.md).
 

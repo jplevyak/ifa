@@ -12,7 +12,7 @@ or fixed here.
 **Affects:** unclear which layer — the crash fires at the *caller*
 site (`assert(!"runtime error: matching function not found")`,
 `ifa/codegen/cg.cc`'s `get_target_fun`, same site
-[ifa/issues/090](../090-CGEN-tuple-arity-cant-vary-across-loop-iterations.md)
+[ifa/issues/090](090-CGEN-tuple-arity-cant-vary-across-loop-iterations.md)
 hits), not inside the function using `max`/`min` itself — so this
 looks like a dispatch/clone-resolution issue triggered by something
 about how a function using 3-arg `max`/`min` gets specialized, not a
@@ -73,7 +73,7 @@ This needs a genuine FA/dispatch investigation (why does adding a
 3-arg `max`/`min` call change how the *caller's* dispatch resolves,
 when the crash site is nowhere near the `max`/`min` call itself) —
 the same kind of digging
-[ifa/issues/090](../090-CGEN-tuple-arity-cant-vary-across-loop-iterations.md)
+[ifa/issues/090](090-CGEN-tuple-arity-cant-vary-across-loop-iterations.md)
 and [ifa/issues/091](091-DISPATCH-nonrecord-builtin-constructor-not-first-class.md)
 were also deferred for, and this session was already several layers
 deep chasing issues/041's colorsys port when this was found. A

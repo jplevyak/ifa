@@ -12,11 +12,20 @@ and passes in the suite. `tests/tuple_slice.py` pins the seven forms.
 The fourth — "`sunfish` compiles **and runs**" — is **half met and
 closed anyway**: sunfish compiles (`compile_rc=0`) and aborts at runtime
 (`run_rc=134`, sweep `check__default__635d26b6+c1a28ccc`). That abort is
-NOT tuple slicing. It is the `{list, tuple}` union receiver documented
-under "Still open" below, filed as
-[030](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md) and pinned by
-`tests/list_tuple_union_method.py` (`.known_issue`, still open). Closing
-here per the README's rule that remaining scope covered by another issue
+NOT tuple slicing, which is what matters for closing this issue.
+
+**Correction (2026-09-02, same day):** the sentence that stood here
+attributed the abort to the `{list, tuple}` union receiver documented
+under "Still open" below —
+[030](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md), pinned by
+`tests/list_tuple_union_method.py`. That was inherited from this doc's
+older text, not measured. Running the binary shows the assert that
+actually FIRES is `getter not resolved`, in a degenerate
+`dict::__setitem__` clone; the `matching function not found` assert sits
+on the very next line of the same collapsed function body and is never
+reached. sunfish's residual failure is filed as
+[125](../125-sunfish-degenerate-dict-setitem-clones.md). Closing here
+per the README's rule that remaining scope covered by another issue
 belongs to that issue, not to a second open doc.
 Repro: `tests/tuple_arity_union_slice.py` (`.known_issue`) — and a much
 smaller one below.

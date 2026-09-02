@@ -1,22 +1,42 @@
 # 090 — a variable whose tuple arity (or None-vs-tuple shape) changes across loop iterations can't resolve a call site
 
-**Status:** BOTH REPROS FIXED 2026-08-20 (`370c8806`, `2756884d`).
+**Status: CLOSED 2026-09-02** — both repros fixed 2026-08-20
+(`370c8806`, `2756884d`), archived after re-verifying, and its one
+remaining claim REFUTED rather than inherited.
+
+Re-verified today: repro 1 (`t = (); for i in range(3): t = t + (i, i+1)`)
+prints `(0, 1, 1, 2, 2, 3)`, matching CPython; repro 2 is pinned by
+`tests/tuple_none_compare.py`, which is in the suite with no
+`.known_issue` sidecar.
+
+**The "sunfish is NOT fully cleared" section below is WRONG and is kept
+only as history.** It named sunfish's blocker as `sunfish.py:448`,
+`unresolved call '__not__'` — containment on a generator — and said that
+"wants its own issue". Measured 2026-09-02: `__not__` appears **0 times**
+in sunfish's compile output and nothing is reported at line 448 at all,
+and reproducing exactly that construct on the real `Position` compiles
+with zero diagnostics. sunfish's actual residual failure is a runtime
+`getter not resolved` in a degenerate `dict::__setitem__` clone, filed as
+[125](../125-sunfish-degenerate-dict-setitem-clones.md), which supersedes
+this issue as the holder of that scope.
+
+**BOTH REPROS FIXED 2026-08-20 (`370c8806`, `2756884d`).
 Neither was about tuple arity. sunfish is not fully cleared -- see the
 end. The "arity" framing was wrong for repro 1 — see "What repro 1
 actually was" below. Symptoms re-measured 2026-08-20; see "Re-measured" below. Found 2026-08-08 while diagnosing
-[issues/025](../../issues/025-shedskin-examples-coverage.md)'s TODO
+[issues/025](../../../issues/025-shedskin-examples-coverage.md)'s TODO
 list item 4 (sunfish's blocker — the doc's own "`sizeof_element of
 non-container type` internal fail in `__add__`" claim is **stale**;
 re-verified today, that specific fail no longer appears in sunfish's
 compile output at all, superseded by this one and by
-[ifa/issues/089](closed/089-DISPATCH-closure-pyc-to-bool-no-candidate.md)-adjacent
+[ifa/issues/089](089-DISPATCH-closure-pyc-to-bool-no-candidate.md)-adjacent
 gaps found along the way, see issues/025 for the full trace).
 
 **Affects:** `ifa/codegen/cg.cc`'s `get_target_fun` (~line 953),
 which hard-`fail`s the whole compile when a call site's receiver type
 has no single resolvable target function. Root cause is upstream —
 tuples are fixed-arity `Type_RECORD`s (one concrete type per arity,
-per [ifa/issues/closed/069](closed/069-per-arity-tuple-types-scope.md)) — so
+per [ifa/issues/closed/069](069-per-arity-tuple-types-scope.md)) — so
 a single `Var` that needs to hold *different arities* (or `None` vs.
 a tuple) across a loop's iterations has no single concrete type for
 FA to settle on, and codegen has nothing to call through.
@@ -40,7 +60,7 @@ This is the mechanism behind sunfish.py:75's
 `padrow = lambda row: (0,) + tuple(x+piece[k] for x in row) + (0,)`
 combined with `sum((padrow(...) for i in range(8)), ())` (line 76) —
 even after fixing `sum()`'s missing `start` parameter (this session,
-see [issues/025](../../issues/025-shedskin-examples-coverage.md)'s
+see [issues/025](../../../issues/025-shedskin-examples-coverage.md)'s
 item 4), the accumulator inside `sum()`'s shared loop body still needs
 to hold a growing tuple across iterations, hitting this exact wall
 (confirmed: re-running sunfish.py post-`sum()`-fix, this is now the
@@ -79,7 +99,7 @@ type across loop iterations), but this session's digging only
 confirmed the *symptom* and its call site, not why FA lets these
 programs reach codegen with an unresolved type instead of catching
 it earlier (or whether catching it earlier is even possible without
-a deeper representational change — [ifa/issues/closed/069](closed/069-per-arity-tuple-types-scope.md)'s
+a deeper representational change — [ifa/issues/closed/069](069-per-arity-tuple-types-scope.md)'s
 own history suggests per-arity tuple types are foundational and
 unlikely to change lightly). This may be a genuine architectural
 limit (Python's dynamic tuple-arity-changing-in-a-loop pattern is
