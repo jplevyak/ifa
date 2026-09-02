@@ -56,23 +56,59 @@ It runs **before** 122's layout-contract check deliberately: imprecision
 is the cause and the layout violation the consequence, and reporting the
 consequence first buries the cause.
 
+## Only constructors WITH elements count
+
+The first version flagged every `_CG_prim_list(_CG_void, ...)`, which
+over-reported badly: a comprehension, and any `xs = []` + `append`,
+legitimately builds an EMPTY list first and acquires its element type
+from the appends. An untyped element type there means nothing. The check
+now fires only when the constructor has elements in hand and still has
+no element type for them.
+
+That took `go` from five list sites to **one**, and it is the right one:
+
+```
+go.py:330:  path = [node]        <- the list behind ifa/123's crash
+```
+
+## MINIMAL REPRO: not yet, and here is what does NOT reproduce it
+
+Four reductions were tried against `go.py:330`'s shape. **All four
+compile cleanly and print the right answer**, so none of them is it:
+
+```python
+path = [a]                                  # one-element literal        CLEAN
+path = [a]; path.append(None)               # + a later None             CLEAN
+slots = [None for i in range(4)]            # go's pos_child shape:
+slots[0] = A(); path = [slots[0]]           #   None-list, index-assign  CLEAN
+xs = [A() for i in ...]; ys = [B() for ...] # two lists + shared helper  CLEAN
+def count(items): ...                       #   (reports imprecision at
+                                            #    the EMPTY constructors
+                                            #    only -- benign)
+```
+
+The last one is worth keeping in mind: two source-monomorphic lists
+sharing a helper DO both come out untyped at their empty constructors,
+but that is the benign case above and their uses are correctly typed —
+`A` and `B` keep their own member lists, no field-name pollution, and
+the program runs correctly.
+
+So `go.py:330` needs an ingredient not yet isolated. The untypedness
+propagates INTO the literal (`node` is already untyped when `[node]` is
+built), so the reduction has to reproduce whatever makes `node` untyped
+— plausibly the recursive tree (`UCTNode.pos_child` holds `UCTNode`s
+which hold `pos_child`...) rather than any of the flat shapes above.
+Reducing this is the next step, and these four are ruled out.
+
 ## What it says about `go` — 66 sites
 
-The five list sites are the interesting half:
+(66 was the first version's count, before the empty-constructor
+over-reporting was fixed above; the list half is now one site,
+`go.py:330`, and the rest are untyped function parameters.)
 
-```
-go.py:48    self.neighbours = []                                  empty literal
-go.py:163   self.squares = [Square(self, pos) for pos in ...]     ALL Squares
-go.py:177   self.history = []                                     empty literal
-go.py:323   self.pos_child = [None for x in ...]                  all None
-go.py:330   path = [node]                                         all UCTNodes
-```
-
-`go.py:163` is the tell. A comprehension producing **nothing but
-`Square`** gets an untyped element, and so does `path = [node]`, which
-produces nothing but `UCTNode`. Two lists that are each monomorphic in
-the source end up sharing an untyped element type — which is exactly
-what lets a `UCTNode` reach a `Square` layout.
+`path = [node]` produces nothing but `UCTNode` and still has no element
+type — the untypedness arrives with `node`, which is already untyped
+when the literal is built.
 
 FA already says so, in warnings that were previously just noise among
 go's 30 and are damning next to the above:

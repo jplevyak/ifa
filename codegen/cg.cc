@@ -655,7 +655,13 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         cchar *ety = c_type(le);
         assert(cg_get_string(n->lvals[0]));
         fprintf(fp, "%s = ", cg_get_string(n->lvals[0]));
-        if (cg_type_is_untyped(ety)) cg_note_imprecise(n, "a list's element type", ety);
+        // Only when the constructor HAS elements. A comprehension or an
+        // `xs = []` + `append` builds an empty list first, and an
+        // untyped element type there is expected -- the type arrives
+        // with the appends. `[node]` with an element in hand and still
+        // no element type is the real signal (go.py:330).
+        if (n->rvals.n - 3 > 0 && cg_type_is_untyped(ety))
+          cg_note_imprecise(n, "a list's element type", ety);
         fprintf(fp, "(_CG_list)_CG_prim_list(%s,%d);\n", ety, n->rvals.n - 3);
         (void)lt;
         for (int i = 3; i < n->rvals.n; i++) {
