@@ -9916,10 +9916,29 @@ static void report_element_types() {
     // only seeds a starter from an AVar with a `cs_map`. If an element
     // AVar has no setters and no container, no amount of splitting
     // pressure can reach it.
-    if (getenv("IFA_DBG_ELEMSETTER"))
-      fprintf(stderr, "ELEMSETTER cs=%d sym=%s elem_av=%d setters=%d container=%d lvalue=%d cs_map=%d ntypes=%d\n",
-              cs->id, cs->sym->name ? cs->sym->name : "?", e->id, e->setters ? e->setters->n : -1,
-              e->container ? e->container->id : -1, e->lvalue ? 1 : 0, e->cs_map ? 1 : 0, e->out->type->n);
+    // ifa/issues/124. Setters do NOT live on the element: update_setter()
+    // records them on the CONTAINER AVar and propagates BACKWARD to the
+    // creation point, so an element AVar with `setters == null` is
+    // NORMAL, not evidence of anything. What this prints instead is the
+    // element's backward writers (do they carry a container and a
+    // setter_class?) and the CS's creation points (did any setter reach
+    // them?) -- the side collect_setter_confluences actually reads,
+    // since it seeds a starter only from an AVar with a cs_map.
+    //
+    // What it showed on ifa/124's repro: the two lists that share a
+    // `list::append` contour have the SAME backward writers, so nothing
+    // at the element looks like a confluence to split. The split has to
+    // happen on the CALLEE side instead -- see recvfan_enabled().
+    if (getenv("IFA_DBG_ELEMSETTER")) {
+      fprintf(stderr, "ELEM cs=%d sym=%s elem_av=%d ntypes=%d nback=%d\n", cs->id,
+              cs->sym->name ? cs->sym->name : "?", e->id, e->out->type->n, e->backward.n);
+      for (AVar *b : e->backward) if (b)
+        fprintf(stderr, "   <- av=%d container=%d setter_class=%d\n", b->id,
+                b->container ? b->container->id : -1, b->setter_class ? 1 : 0);
+      for (AVar *d : cs->defs) if (d)
+        fprintf(stderr, "   def av=%d setters=%d cs_map=%d\n", d->id, d->setters ? d->setters->n : -1,
+                d->cs_map ? 1 : 0);
+    }
     std::string k = cs->sym->name ? cs->sym->name : "(anon)";
     auto &slot = by_sym[k];
     slot.first++;

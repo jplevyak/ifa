@@ -164,7 +164,63 @@ at all -- no shared contour, no merge, `path` typed. A constant index
 never calls `moves()`, so its comprehension is dead -- same result. Only
 the comprehension, whose construction goes through `append`, merges.
 
-### WHY the split does not happen: element AVars are outside the setter machinery
+### WHY the split does not happen: the receiver fan exists and is OFF
+
+The expected mechanism is the one that works for instance variables:
+back-flow the writes through the callee, reach the creation point, split
+the CreationSet. `list.append` writes an ELEMENT, so it should split the
+two lists the same way.
+
+**RETRACTION.** An earlier version of this section claimed element AVars
+are "outside the setter graph" because their `setters` and `container`
+are null. That is wrong, and the reasoning was backwards: `update_setter`
+records a setter on the **container** AVar and propagates **backward** to
+the creation point, so a null `setters` on the element is normal by
+design. `P_prim_set_index_object` -- which is what `append` lowers to --
+already does the full ivar-style wiring, `set_container(tval, vec)` then
+`flow_vars(tval, get_element_avar(cs))`. The wiring is not missing.
+
+What `IFA_DBG_ELEMSETTER` actually shows, per container CS:
+
+| CS | element types | backward writers | `setter_class` | creation point `setters` |
+|---|---|---|---|---|
+| 1041 | 2 | 3079, 3128 | 0 | none |
+| 1048 | 3 | 3188, 3189, 3219 | 1 | **4** |
+| 1051 | 2 | 3079, 3128 | 0 | none |
+
+The machinery works fine for `cs=1048`. The two lists sharing the
+`append` contour, 1041 and 1051, have **the same backward writers** --
+so nothing at the element looks like a confluence, and there is nothing
+for a setter-driven split to key on. The split has to happen on the
+**callee** side: `append` needs one contour per receiver CreationSet.
+
+**That mechanism exists, and it is disabled.** `recvfan_enabled()`
+(`fa.cc` ~8124) gates the PER_CS_RECEIVER fan, defaulting to 0, under a
+comment that names exactly this problem:
+
+> This is what shedskin gets for free: `list<T>::__getitem__` and
+> `tuple2<A,B>::__getitem__` are separate template instantiations, so no
+> single `__getitem__` ever sees a union.
+
+`PYC_RECVFAN=1` **fixes the repro completely**: `3 CS / 3 elemtypes /
+3 shapes` instead of `3 CS / 2 elemtypes`, no imprecision reported, and
+the program still prints 2.
+
+Two other gates were tried and are NOT the cause: `PYC_SETTERGATE=1`
+(lifts the SETTER stage's quiescence gate -- ifa/055's plcfrs fix)
+leaves the repro unchanged, and so does `PYC_RECVFAN=2`.
+
+**Why it is off: `PYC_RECVFAN=1` fails 25 of the suite** -- 8 COMPILE,
+10 COMPILE-OUT, 7 EXEC (`deepcopy_list`, `genexpr_basic`,
+`generator_yields_nonint`, `bytes_from_list`, ...). So the answer to
+"why isn't the CreationSet split happening" is not that the analysis
+lacks the mechanism, and not that a heuristic declines to fire: **the
+mechanism is implemented, correct on this repro, and switched off
+because it is not yet sound elsewhere.** Making those 25 pass is the
+work, and it is the same work as ifa/072's "data-polymorphism
+splitting" and shedskin's monomorphization.
+
+### Superseded: an earlier reading of the setter machinery
 
 The expected mechanism is the one that works for instance variables:
 back-flow the writes to a field through the callee, reach the creation
