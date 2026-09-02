@@ -1,6 +1,6 @@
 # CG_IR_019_DESIGN — v2 LLVM list-literal header alignment
 
-Plan to close [issue 019](../issues/019-v2-flat-list-header.md):
+Plan to close [issue 019](../issues/closed/019-v2-flat-list-header.md):
 pyc's runtime list helpers expect a 16-byte header at
 `ptr - 16` (total_len, len, payload-ptr), and the v2 LLVM
 backend's `CG2_ALLOC` doesn't carve that header out. Today

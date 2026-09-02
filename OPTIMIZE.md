@@ -7,7 +7,7 @@ code generation.
 Sister docs: [IFA.md](IFA.md) (produces the AVar/AType state DCE walks
 backward through), [CLONE.md](CLONE.md) (concretises types so DCE has
 concrete `Var::live` to operate on), [CFG_SSU.md](CFG_SSU.md)
-(provides dominators + loop trees used here), [PIPELINE.md](PIPELINE.md)
+(provides dominators + loop trees used here), [PIPELINE.md](../PIPELINE.md)
 (orchestration).
 
 ---

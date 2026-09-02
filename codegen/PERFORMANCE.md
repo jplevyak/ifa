@@ -42,7 +42,7 @@ to `cc`, so the `cc` time is part of the user-visible cost.
   path can't be measured from a default checkout. To bench LLVM, set
   `USE_LLVM=1` in the top-level Makefile or environment, rebuild,
   then re-run the commands in §1.3 below with `PYC_LLVM=1` prepended.
-  See [issue 013](../issues/013-pyc-llvm-default-off.md).
+  See [issue 013](../issues/closed/013-pyc-llvm-default-off.md).
 
 ### 1.3 Reproducing the numbers
 
@@ -178,5 +178,5 @@ enough that system noise eats ~5%. A 10% delta on the median of
 - [CODEGEN_LLVM.md §11](../CODEGEN_LLVM.md) — the LLVM backend's
   `clang -c` + link drive, currently dormant from a default build
   (issue 013).
-- [issues/013-pyc-llvm-default-off.md](../issues/013-pyc-llvm-default-off.md)
+- [issues/013-pyc-llvm-default-off.md](../issues/closed/013-pyc-llvm-default-off.md)
   — why §2 here doesn't include LLVM numbers.

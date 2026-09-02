@@ -66,7 +66,7 @@ flag to enable it.
 1. Stable, deterministic IDs for funs / classes / pnodes / entry
    sets / creation sets across recompiles. Today many of these IDs
    are allocation-order-dependent — fixing
-   [issue 009](../issues/009-fa-violations-nondeterminism.md) is a
+   [issue 009](../issues/closed/009-fa-violations-nondeterminism.md) is a
    prerequisite, since iteration-order non-determinism in the
    analysis would make cache hits randomly miss.
 2. Implement `write_cdb` (atomic tempfile + rename).

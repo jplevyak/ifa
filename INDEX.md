@@ -86,21 +86,13 @@ frontend see [../PIPELINE.md](../PIPELINE.md).
   structure, verification, runtime behavior), invariants
   assumed.  Phase 1 of the CODEGEN_PLAN cleanup —
   document is authoritative; code that diverges is a bug.
-- [codegen/CG_IR_SEMANTICS.md](codegen/CG_IR_SEMANTICS.md) —
+- [codegen/CG_IR_SEMANTICS.md](codegen/archive/CG_IR_SEMANTICS.md) —
   CG_IR_v2 definitive semantics: the five concepts, seven
   invariants, the issue-017 structural lemma, the frontend ↔
   backend contract, and the v1-retirement migration plan.
   Implementation in `codegen/cg_ir_v2*.cc/.h`. Provenance docs:
   CG_IR_META_PLAN.md, CG_IR_SURVEY.md, CG_IR_NEEDS.md,
   CG_IR_SKETCH.h, CG_IR_TEXT.md.
-- [codegen/CG_VIRTUAL_PLAN.md](codegen/CG_VIRTUAL_PLAN.md) —
-  Phased plan to replace `CGv2Program`'s materialized
-  IR with accessor-based views over IF1.  6 phases (A-F),
-  ~6-8 weeks of work, ~50% LLVM-side LOC reduction, behavior-
-  preserving throughout (diff-tested in Phases B-C).  Goal:
-  one source of truth (IF1 + accessors) instead of two
-  (IF1 + CGv2Program).
-
 ## Utility layer
 
 - [COMMON.md](COMMON.md) — Plib utility layer (`ifa/common/*`):

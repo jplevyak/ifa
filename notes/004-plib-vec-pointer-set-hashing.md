@@ -57,7 +57,7 @@ bucket:
 
 ## How 009 manifested the bug — and how it *didn't*
 
-[Issue 009](../issues/009-fa-violations-nondeterminism.md)
+[Issue 009](../issues/closed/009-fa-violations-nondeterminism.md)
 investigated alternating violation counts (13 vs 31 across runs)
 for the `nested_iterator` shape. The AUDIT hypothesis was that
 the *iteration-order* effect was the cause: a loop somewhere in
@@ -217,7 +217,7 @@ two roles separately.
   original "deeper fix" sketch.
 - [../analysis/AUDIT.md §3.3](../analysis/AUDIT.md) — the
   "sort by id before iterating" convention.
-- [../issues/009-fa-violations-nondeterminism.md](../issues/009-fa-violations-nondeterminism.md)
+- [../issues/009-fa-violations-nondeterminism.md](../issues/closed/009-fa-violations-nondeterminism.md)
   — the investigation that surfaced the capacity-reporting
   effect but not the iteration-order effect.
 - `ifa/common/vec.h:380` — `set_add_internal` implementation.
@@ -296,4 +296,4 @@ independent instance of the same underlying pattern —
 `PycScope::map` (`Map<cchar *, PycSymbol *>`, `python_ifa_int.h`) —
 which was never touched by options A + B and remains susceptible to
 the same class of nondeterminism. Tracked separately as
-[../../issues/021-scope-map-pointer-hash-nondeterminism.md](../../issues/021-scope-map-pointer-hash-nondeterminism.md).
+[../../issues/021-scope-map-pointer-hash-nondeterminism.md](../../issues/closed/021-scope-map-pointer-hash-nondeterminism.md).

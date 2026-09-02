@@ -192,10 +192,10 @@ Land each as its own PR; run the full §8 checklist.
 ## Tier 3 — high risk, multi-PR
 
 Don't attempt without a stable test harness (so: only after
-[issue 009](../issues/009-fa-violations-nondeterminism.md) is
+[issue 009](../issues/closed/009-fa-violations-nondeterminism.md) is
 closed). Each tier-3 item is its own multi-week project.
 
-- [x] **Fix [issue 009](../issues/009-fa-violations-nondeterminism.md)
+- [x] **Fix [issue 009](../issues/closed/009-fa-violations-nondeterminism.md)
   (non-deterministic violation count).** **Closed June 2026.**
   Diagnosis was a surprise: the symptom was a **measurement bug**
   in the printer, not an iteration-order non-determinism as the
@@ -235,13 +235,13 @@ closed). Each tier-3 item is its own multi-week project.
     IdSet container).
   - **Unexpected side observation**: 40 multi-fixture runs
     probing for
-    [issue 008](../issues/008-fa-crash-on-nested-iterator-shape.md)
+    [issue 008](../issues/closed/008-fa-crash-on-nested-iterator-shape.md)
     produced zero crashes (008 claimed 30-60% reproducibility).
     Not closing 008 unilaterally; flagged for separate
     investigation.
   ([AUDIT §3](AUDIT.md#3-determinism--the-cause-of-issue-009),
   [§10](AUDIT.md#10-suggested-first-steps-for-issue-009),
-  [Issue 009 §Verification plan](../issues/009-fa-violations-nondeterminism.md#verification-plan)
+  [Issue 009 §Verification plan](../issues/closed/009-fa-violations-nondeterminism.md)
   for the full trail)
 - [x] **Reentrancy step 1: sink worklists into `FA`.** Done
   June 2026. Seven globals moved onto `class FA` as members:

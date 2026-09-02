@@ -1,23 +1,23 @@
 # CG_IR_PLAN — Execution plan for the codegen-time IR
 
 The actionable plan for landing Option B from
-[`ifa/CODE_GEN_IR.md`](../CODE_GEN_IR.md): a separate
+[`ifa/CODE_GEN_IR.md`](../../CODE_GEN_IR.md): a separate
 `CGFun` / `CGBlock` / `CGInst` IR consumed by both the C and
 LLVM backends, with the LLVM backend treated as a **first-class
 production target** for the duration of and beyond this work.
 
 This is a plan, not a design document. For the design discussion,
 prior-art comparison, and decision rationale, see
-[CODE_GEN_IR.md](../CODE_GEN_IR.md). This doc assumes that
+[CODE_GEN_IR.md](../../CODE_GEN_IR.md). This doc assumes that
 design is settled and addresses *how* to land it.
 
 Sister docs:
-- [CODE_GEN_IR.md](../CODE_GEN_IR.md) — the investigation that
+- [CODE_GEN_IR.md](../../CODE_GEN_IR.md) — the investigation that
   motivates this plan.
-- [CODEGEN_PLAN.md](CODEGEN_PLAN.md) — the existing codegen
+- [CODEGEN_PLAN.md](../CODEGEN_PLAN.md) — the existing codegen
   improvement plan; this plan extends it as a new top-level
   phase (effectively Phase 7).
-- [CODEGEN_C.md](../CODEGEN_C.md) / [CODEGEN_LLVM.md](../CODEGEN_LLVM.md)
+- [CODEGEN_C.md](../../CODEGEN_C.md) / [CODEGEN_LLVM.md](../../CODEGEN_LLVM.md)
   — the current consumers, which get rewritten in stages 3-4.
 
 > **As of June 2026, the path of record is the CG_IR_v2 redesign**
@@ -479,7 +479,7 @@ cost across Phase 0 and makes Phase 5 a single-PR finale.
 
 ### 5.5 Resolve the Phase-5 `Codegen` base class — RECOMMENDED (1-2 days)
 
-Phase 5 of [CODEGEN_PLAN.md](CODEGEN_PLAN.md) landed `class
+Phase 5 of [CODEGEN_PLAN.md](../CODEGEN_PLAN.md) landed `class
 Codegen` as scaffolding for "the wholesale Codegen migration."
 It's never instantiated and never read. Phase 3 of *this* plan
 is exactly that wholesale migration; the LLVM emitter's
@@ -1415,19 +1415,19 @@ removes the now-unused caches.
 
 ## 16. Cross-references
 
-- [ifa/CODE_GEN_IR.md](../CODE_GEN_IR.md) — the investigation
+- [ifa/CODE_GEN_IR.md](../../CODE_GEN_IR.md) — the investigation
   motivating this plan. Read this first if you haven't.
-- [ifa/codegen/CODEGEN_PLAN.md](CODEGEN_PLAN.md) §8 (phase 5) —
+- [ifa/codegen/CODEGEN_PLAN.md](../CODEGEN_PLAN.md) §8 (phase 5) —
   the existing Codegen / PrimEmitter scaffolding work that
   this plan extends. CGFun's `CG_PRIM_CGFN` op dispatches via
   the existing `RegisteredPrim::cgfn` table.
-- [ifa/codegen/AUDIT.md](AUDIT.md) — known issues in the
+- [ifa/codegen/AUDIT.md](../AUDIT.md) — known issues in the
   current codegen; many close via this plan.
-- [ifa/codegen/PERFORMANCE.md](PERFORMANCE.md) — performance
+- [ifa/codegen/PERFORMANCE.md](../PERFORMANCE.md) — performance
   baseline. Gets an LLVM column added in Phase 3.
-- [ifa/issues/014-llvm-construction-flow-to-slots.md](../issues/014-llvm-construction-flow-to-slots.md) — closed in Phase 3.3.
-- [ifa/issues/016-llvm-ssu-formal-arg-binding.md](../issues/016-llvm-ssu-formal-arg-binding.md) — closed in Phase 3.3.
-- [ifa/CFG_SSU.md](../CFG_SSU.md) §4 — SSU's phi/phy
+- [ifa/issues/014-llvm-construction-flow-to-slots.md](../../issues/closed/014-llvm-construction-flow-to-slots.md) — closed in Phase 3.3.
+- [ifa/issues/016-llvm-ssu-formal-arg-binding.md](../../issues/closed/016-llvm-ssu-formal-arg-binding.md) — closed in Phase 3.3.
+- [ifa/CFG_SSU.md](../../CFG_SSU.md) §4 — SSU's phi/phy
   semantics, consumed by `cg_normalize`.
-- [ifa/PRIMITIVES.md](../PRIMITIVES.md) §15 — primitive
+- [ifa/PRIMITIVES.md](../../PRIMITIVES.md) §15 — primitive
   emission contract that `lower_send` honors.

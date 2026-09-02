@@ -10,7 +10,7 @@ directly?**
 Short answer: **yes, scoped tightly to the post-clone / post-DCE
 state**. Decided June 2026 — Option B will be landed in stages,
 with LLVM treated as a first-class production target. See
-[codegen/CG_IR_PLAN.md](codegen/CG_IR_PLAN.md) for the execution
+[codegen/CG_IR_PLAN.md](codegen/archive/CG_IR_PLAN.md) for the execution
 plan.
 
 The current dual-backend divergence is real and the issues filed
@@ -164,8 +164,8 @@ interpretation work above:
 
 | Issue | Symptom | What's actually wrong |
 |---|---|---|
-| [014](issues/014-llvm-construction-flow-to-slots.md) | `y = A()` SEGV — `@y` never receives the GC-malloc'd pointer | The IF1 emits `__new__()` as a void-returning side-effect, with no MOVE binding the result to `y`. Both backends have to recognise the pattern. C accidentally gets it via the `phi` side door; LLVM doesn't. |
-| [016](issues/016-llvm-ssu-formal-arg-binding.md) | Iterators read garbage `self` — `for i in range(3)` doesn't terminate | The SSU rename of the formal arg leaves the renamed local unbound. The C backend's `do_phi_nodes` runs unconditionally; the LLVM backend's runs inside the live gate. |
+| [014](issues/closed/014-llvm-construction-flow-to-slots.md) | `y = A()` SEGV — `@y` never receives the GC-malloc'd pointer | The IF1 emits `__new__()` as a void-returning side-effect, with no MOVE binding the result to `y`. Both backends have to recognise the pattern. C accidentally gets it via the `phi` side door; LLVM doesn't. |
+| [016](issues/closed/016-llvm-ssu-formal-arg-binding.md) | Iterators read garbage `self` — `for i in range(3)` doesn't terminate | The SSU rename of the formal arg leaves the renamed local unbound. The C backend's `do_phi_nodes` runs unconditionally; the LLVM backend's runs inside the live gate. |
 | Range field indexing | `for i in range(N): ...` GEPs the wrong field offsets | LLVM struct has more fields than the C struct (e.g. 7 vs 4); the IF1 names them e2, e3, e5, e6 (non-contiguous), and the LLVM `atoi("e5") = 5` fallback overshoots into a different slot than the position-in-`has[]` lookup would give. |
 | Tuple `a = (...)` not visible to `a[i]` | tuple_mixed_types SEGV; `@a` is `ptr null` after the assignment | The MOVE PNode binding the constructed tuple to the global `a` had `live=0`, so the LLVM gate dropped it. The C backend gates the same way but the dropped MOVE still materialises through the SSU phi list. |
 
@@ -579,7 +579,7 @@ and reversible.
 **Decided: Option B, with LLVM as a first-class target.**
 
 The execution plan lives at
-[codegen/CG_IR_PLAN.md](codegen/CG_IR_PLAN.md) — 5 phases,
+[codegen/CG_IR_PLAN.md](codegen/archive/CG_IR_PLAN.md) — 5 phases,
 12-15 PRs, 6-8 weeks elapsed. The plan is structured so:
 
 - C-backend stays at production parity throughout.
@@ -612,10 +612,10 @@ years of avoided bug duplication.
   becomes the per-op handler called by `lower_pnode`.
 - [PRIMITIVES.md](PRIMITIVES.md) §15 — the SEND PNode shape
   the normalization pass has to consume.
-- [issues/014-llvm-construction-flow-to-slots.md](issues/014-llvm-construction-flow-to-slots.md)
+- [issues/014-llvm-construction-flow-to-slots.md](issues/closed/014-llvm-construction-flow-to-slots.md)
   — closed structurally by Stage 3.
-- [issues/016-llvm-ssu-formal-arg-binding.md](issues/016-llvm-ssu-formal-arg-binding.md)
+- [issues/016-llvm-ssu-formal-arg-binding.md](issues/closed/016-llvm-ssu-formal-arg-binding.md)
   — closed structurally by Stage 3.
-- [issues/002-codegen-llvm-normalizer.md](issues/002-codegen-llvm-normalizer.md)
+- [issues/002-codegen-llvm-normalizer.md](issues/closed/002-codegen-llvm-normalizer.md)
   — a *different* normalizer (output-text post-processing for
   fixture stability). Don't confuse the two.

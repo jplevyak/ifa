@@ -6,7 +6,7 @@ mark-setter-of-setter, violation) using an in-tree IR generator
 rather than a specific frontend.
 
 Reference: [IFA.md](../../IFA.md) §splitter,
-[ifa/issues/003-fa-converge-determinism.md](../../issues/003-fa-converge-determinism.md).
+[ifa/issues/003-fa-converge-determinism.md](../../issues/closed/003-fa-converge-determinism.md).
 
 ---
 

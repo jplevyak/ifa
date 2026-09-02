@@ -270,7 +270,7 @@ the eventual lattice union doesn't gain precision from splitting.
    (blocks 2+3).
 5. Re-establish the per-pass goldens; the splitter is the most
    golden-sensitive part of the pipeline, so this depends on
-   [issue 009](../issues/009-fa-violations-nondeterminism.md) being
+   [issue 009](../issues/closed/009-fa-violations-nondeterminism.md) being
    closed first.
 
 ## What this would unblock

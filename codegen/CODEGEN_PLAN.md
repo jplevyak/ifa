@@ -639,13 +639,13 @@ sticks.
   - `make test`: `./ifa --test` + IR fixtures + `./test_pyc`
     (C backend).
   - `make -C ifa test_llvm`: V-language LLVM smoke test
-    (re-enabled after [issue 012](../issues/012-test-llvm-gc-link.md)
+    (re-enabled after [issue 012](../issues/closed/012-test-llvm-gc-link.md)
     closed).
   - `PYC_FLAGS=-b ./test_pyc`: LLVM-backend pyc e2e, with a
     floor at the current baseline pass count (8/74); a
     regression below that fails CI, but the still-failing
     tests don't gate (phase 3.5 territory; see
-    [issue 013](../issues/013-pyc-llvm-default-off.md) closing
+    [issue 013](../issues/closed/013-pyc-llvm-default-off.md) closing
     notes).
   - `make test_dparse`: DParser grammar validation.
 
@@ -709,7 +709,7 @@ sticks.
   passes is its own diff. See PERFORMANCE.md §1.2 and §3 for
   the path forward.
 - [-] **LLVM-side numbers** partly unblocked.
-  [Issue 013](../issues/013-pyc-llvm-default-off.md) closed
+  [Issue 013](../issues/closed/013-pyc-llvm-default-off.md) closed
   June 2026; `make USE_LLVM=1 && PYC_FLAGS=-b ./test_pyc`
   now actually exercises the LLVM path. The PERFORMANCE.md
   baseline tables remain C-only because only 8/74 fixtures
@@ -819,7 +819,7 @@ verifiable. The minimum viable subset is phases 0 + 1.
   — what each backend does today.
 - [PRIMITIVES.md](../PRIMITIVES.md) — the per-primitive contract.
   Phase 1.3 / 2.3 / 3 all touch this.
-- [Issue 011](../issues/011-setter-codegen-vs-analyzer-mismatch.md)
+- [Issue 011](../issues/closed/011-setter-codegen-vs-analyzer-mismatch.md)
   — the analyzer/codegen alignment that landed June 2026.
 - `ifa/analysis/AUDIT.md` and `ifa/analysis/CLEANUP.md` —
   precedent for the AUDIT + plan pattern.

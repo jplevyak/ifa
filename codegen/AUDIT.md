@@ -372,10 +372,10 @@ largest dividend.
   intends to do.
 - [PRIMITIVES.md](../PRIMITIVES.md) — per-primitive contract that
   both backends should satisfy.
-- [Issue 002](../issues/002-codegen-llvm-normalizer.md) — the
+- [Issue 002](../issues/closed/002-codegen-llvm-normalizer.md) — the
   destructor-ordering fix in `llvm_codegen_initialize`. Same
   shape as headline #2.
-- [Issue 011](../issues/011-setter-codegen-vs-analyzer-mismatch.md)
+- [Issue 011](../issues/closed/011-setter-codegen-vs-analyzer-mismatch.md)
   — the P_prim_setter analyzer/codegen alignment that recently
   landed.
 - `ifa/analysis/AUDIT.md` — companion review of the analysis

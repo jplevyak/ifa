@@ -5,8 +5,8 @@ lines across `fa.cc`, `fa.h`, `clone.cc`, `clone.h`, `graph.cc`,
 `graph.h`, `cdb.cc`, `cdb.h`, `pdb.cc`, `pdb.h`, `ifalog.cc`,
 `ifalog.h`), written as a working brief for the next person
 (human or LLM) about to touch this directory — likely starting
-with [issue 009](../issues/009-fa-violations-nondeterminism.md)
-and its sibling [issue 008](../issues/008-fa-crash-on-nested-iterator-shape.md).
+with [issue 009](../issues/closed/009-fa-violations-nondeterminism.md)
+and its sibling [issue 008](../issues/closed/008-fa-crash-on-nested-iterator-shape.md).
 
 This is paired with [IFA.md](../IFA.md), which describes *what
 the analysis does*, and with
@@ -28,7 +28,7 @@ what not to fix, and what to be aware of when refactoring.
 
 | # | Issue | Where | Why it matters now |
 |---|-------|-------|---|
-| 1 | Pointer-keyed hash iteration is non-deterministic | `Vec::set_add_internal` (plib) keyed on `(uintptr_t)c % n`; reached from `Vec::set_add`, every pointer-set, every `ChainHash`, every `Map<Ptr,*>` | **Root cause of [issue 009](../issues/009-fa-violations-nondeterminism.md) and almost certainly [issue 008](../issues/008-fa-crash-on-nested-iterator-shape.md).** Until you tame this you cannot reliably bless any FA golden. |
+| 1 | Pointer-keyed hash iteration is non-deterministic | `Vec::set_add_internal` (plib) keyed on `(uintptr_t)c % n`; reached from `Vec::set_add`, every pointer-set, every `ChainHash`, every `Map<Ptr,*>` | **Root cause of [issue 009](../issues/closed/009-fa-violations-nondeterminism.md) and almost certainly [issue 008](../issues/closed/008-fa-crash-on-nested-iterator-shape.md).** Until you tame this you cannot reliably bless any FA golden. |
 | 2 | Module-level `static` worklists + globals make `FA` non-reentrant | `fa.cc:54-66, 102-108`; `fa.h:435-453` | Two analyses in one process corrupt each other. Blocks: threaded compilation, in-process test harness reuse, embedding pyc as a library. The `fa_reset()` shim (`fa.cc:74-96`) is a band-aid — easy to add a new static and forget to reset it. |
 | 3 | `int` used as `bool` throughout, often with three-valued logic hidden in the type | `entry_set_compatibility` (`fa.cc:881-903`), `edge_type_compatible_with_entry_set` (`fa.cc:726`), `application` returns `{-1, 0, 1}` (`fa.cc:1382`), `split_entry_set` flags `fsetters/fmark/fdynamic` (`fa.cc:3130`), `all_applications` returns `-2/-1/0/1` (`fa.cc:1325`) | Hard to read; the meaning of `0` vs `-1` is undocumented at the call site. Every refactor here risks inverting a polarity. |
 | 4 | Hand-rolled hash functions with magic primes scattered across `fa.h` | `PendingMapHash` (`fa.h:75`), `ATypeViolationHashFuns` (`fa.h:252`), `ATypeFoldChainHashFns` (`fa.h:272`); primes `13`, `1009`, `100003`, `open_hash_primes[i % 256]` | Each new hashable type adds a fresh, slightly different, untested combiner. There's no `combine_hash(a, b)` helper. |
@@ -468,7 +468,7 @@ Recommended pre-merge checklist for any patch in this directory:
    suite. The pyc test suite (`make test_pyc` in the parent
    repo) exercises this via the Python frontend.
 5. **`fa-converge` goldens** — `ifa-test --phase fa-converge`
-   over the synthetic shapes. Per [issue 009](../issues/009-fa-violations-nondeterminism.md),
+   over the synthetic shapes. Per [issue 009](../issues/closed/009-fa-violations-nondeterminism.md),
    the `violations=X→Y` field has been dropped from the printer
    for now; the rest of the per-pass line is checked.
 6. **Run each fa-converge shape ≥3 times.** If your change
@@ -626,11 +626,11 @@ test-harness is reliable enough to validate them.
 - [IFA.md](../IFA.md) — what the analysis does (paper ↔ code).
 - [CLONE.md](../CLONE.md) — the post-analysis cloning pass.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — top-level IFA structure.
-- [issue 003](../issues/003-fa-converge-determinism.md) — the
+- [issue 003](../issues/closed/003-fa-converge-determinism.md) — the
   earlier convergence-determinism note (FA pass events).
 - [issue 007](../issues/007-FA-mark-type-stage-coverage.md) — the
   splitter-stage coverage gap.
-- [issue 008](../issues/008-fa-crash-on-nested-iterator-shape.md) — the
+- [issue 008](../issues/closed/008-fa-crash-on-nested-iterator-shape.md) — the
   intermittent crash (likely same root cause as 009).
-- [issue 009](../issues/009-fa-violations-nondeterminism.md) — the
+- [issue 009](../issues/closed/009-fa-violations-nondeterminism.md) — the
   non-deterministic violation count.

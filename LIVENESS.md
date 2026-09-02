@@ -10,7 +10,7 @@ backend ALSO runs phi/phy materialization OUTSIDE the live gate
 — is the structural difference that motivates issue 016.
 
 This doc is one of the Phase 0 mandatory prerequisites for
-[CG_IR_PLAN.md](codegen/CG_IR_PLAN.md) §7 (Phase 2). The
+[CG_IR_PLAN.md](codegen/archive/CG_IR_PLAN.md) §7 (Phase 2). The
 `pn_should_emit()` predicate inside `cg_normalize` must derive
 from documented semantics, not from a swing through gate
 variants under test.
@@ -124,7 +124,7 @@ SSU-renamed alias is consumed downstream. **SSU renames of
 formal args are often `live=0`** because the rename alias gets
 folded back to the original in some optimizer pass — but the
 binding MOVE is still necessary for the renamed local to hold
-the value. This is the proximate cause of [issue 016](issues/016-llvm-ssu-formal-arg-binding.md).
+the value. This is the proximate cause of [issue 016](issues/closed/016-llvm-ssu-formal-arg-binding.md).
 
 ---
 
