@@ -9909,6 +9909,17 @@ static void report_element_types() {
     if (!cs->added_element_var) { ++n_novar; continue; }
     AVar *e = unique_AVar(cs->sym->element->var, cs);
     if (!e) continue;
+    // ifa/issues/124: does the element AVar take part in the SETTER
+    // machinery at all? Setter-driven CS splitting -- the thing that
+    // separates two instances written with different ivar types -- keys
+    // on `av->setters` and `s->container`, and `collect_setter_confluences`
+    // only seeds a starter from an AVar with a `cs_map`. If an element
+    // AVar has no setters and no container, no amount of splitting
+    // pressure can reach it.
+    if (getenv("IFA_DBG_ELEMSETTER"))
+      fprintf(stderr, "ELEMSETTER cs=%d sym=%s elem_av=%d setters=%d container=%d lvalue=%d cs_map=%d ntypes=%d\n",
+              cs->id, cs->sym->name ? cs->sym->name : "?", e->id, e->setters ? e->setters->n : -1,
+              e->container ? e->container->id : -1, e->lvalue ? 1 : 0, e->cs_map ? 1 : 0, e->out->type->n);
     std::string k = cs->sym->name ? cs->sym->name : "(anon)";
     auto &slot = by_sym[k];
     slot.first++;

@@ -164,6 +164,53 @@ at all -- no shared contour, no merge, `path` typed. A constant index
 never calls `moves()`, so its comprehension is dead -- same result. Only
 the comprehension, whose construction goes through `append`, merges.
 
+### WHY the split does not happen: element AVars are outside the setter machinery
+
+The expected mechanism is the one that works for instance variables:
+back-flow the writes to a field through the callee, reach the creation
+point, and split the CreationSet so two objects written with different
+types get different contours. `list.append` writes an ELEMENT, so the
+same thing should split the two lists. It does not, and
+`IFA_DBG_ELEMSETTER` (added here) says why in one line per container CS:
+
+```
+ELEMSETTER cs=1041 sym=list elem_av=3076 setters=-1 container=-1 lvalue=0 cs_map=0 ntypes=2
+ELEMSETTER cs=1048 sym=list elem_av=2920 setters=-1 container=-1 lvalue=0 cs_map=0 ntypes=3
+ELEMSETTER cs=1051 sym=list elem_av=3147 setters=-1 container=-1 lvalue=0 cs_map=0 ntypes=2
+```
+
+**Every element AVar has `setters == null` and `container == null`.**
+Those are exactly the two fields the setter-driven splitter runs on:
+
+- `compute_setters` (`fa.cc` ~7320) drives `update_setter(x->container, x, avs)`
+  -- no `container`, no setter recorded;
+- `collect_setter_confluences` (~7349) only looks at `av->setters`, and
+  only seeds a `setter_starter` from an AVar that has a `cs_map`;
+- `build_setter_marks` (~6815) pairs `x == y->container`.
+
+So a write through `append` is **invisible** to the machinery that would
+split the CreationSet. The contrast is structural, not accidental: the
+ivar path calls `set_container(cav, result)` when it adds the ivar
+(`fa.cc` ~2108), and `vector_elems` sets one for tuple POSITIONAL
+elements (~2065), but the generic element AVar that
+`get_element_avar()` hands back is never given a container by anything.
+In `structural_assignment` (~2637) the container is even set on the
+temporary that carries the element value, `set_container(tval, result)`,
+and never on `get_element_avar(new_cs)` itself.
+
+That is the whole answer to "why isn't it happening": **not a heuristic
+declining to fire, and not a splitting decision going the wrong way --
+the element AVar is not wired into the setter graph at all**, so there
+is nothing for the splitter to see.
+
+The fix therefore is not in `split_css` or the splitter stages. It is to
+give a container's element AVar the same `container`/`lvalue` wiring an
+ivar gets, so element writes become setters of the container CS and the
+existing back-flow-and-split machinery applies unchanged. Whether that
+is safe for the generic element -- which, unlike an ivar, is written
+from many sites and read positionally as well -- is the open question,
+and `ifa/issues/072`'s prototype note is the warning to read first.
+
 ### How it was reduced, and the two oracle bugs found on the way
 
 `ddmin.py` (now parameterised by `DDMIN_CHECK`/`DDMIN_CAND`/`DDMIN_OUT`)
