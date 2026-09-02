@@ -12,8 +12,11 @@ understanding Python structure.
 import subprocess, sys, os, shutil
 
 R = os.path.dirname(os.path.abspath(__file__))
-CHECK = os.path.join(R, "check5.sh")
-CAND = os.path.join(R, "cand.py")
+# Parameterised so the same reducer serves other issues: DDMIN_CHECK is
+# the oracle, DDMIN_CAND a scratch candidate path (it must sit beside any
+# data files the program needs), DDMIN_OUT the result. Defaults are 105's.
+CHECK = os.environ.get("DDMIN_CHECK", os.path.join(R, "check5.sh"))
+CAND = os.environ.get("DDMIN_CAND", os.path.join(R, "cand.py"))
 
 
 def fails(lines):
@@ -45,7 +48,7 @@ if __name__ == "__main__":
     print(f"start: {len(lines)} lines", flush=True)
     assert fails(lines), "invariant does not hold on the input"
     out = reduce(lines)
-    dst = os.path.join(R, "reduced5.py")
+    dst = os.environ.get("DDMIN_OUT", os.path.join(R, "reduced5.py"))
     with open(dst, "w") as f:
         f.write("".join(out))
     print(f"done: {len(out)} lines -> {dst}", flush=True)

@@ -71,7 +71,72 @@ That took `go` from five list sites to **one**, and it is the right one:
 go.py:330:  path = [node]        <- the list behind ifa/123's crash
 ```
 
-## MINIMAL REPRO: not yet, and here is what does NOT reproduce it
+## MINIMAL REPRO (2026-09-02): 10 lines, and the trigger is the INDEX
+
+`ifa/issues/repro/124-comprehension-index-untypes-list.py`, reduced from
+`go` 635 -> 10 lines against this diagnostic:
+
+```python
+def moves():
+    return [p for p in range(4)]
+class N:
+    def __init__(self):
+        self.kids = [None for x in range(4)]
+    def play(self):
+        path = [self]                        # <- element type UNTYPED
+        path.append(self.kids[moves()[0]])
+        return len(path)
+print(N().play())
+```
+
+Three variants pin it. Only the third reports:
+
+| index expression | `moves()` returns | reports? |
+|---|---|---|
+| `self.kids[0]` | — | **no** |
+| `self.kids[moves()[0]]` | `[0, 1, 2, 3]` (literal) | **no** |
+| `self.kids[moves()[0]]` | `[p for p in range(4)]` | **YES** |
+
+So it is **not** `path = [self]` on its own, **not** the recursive tree,
+**not** the dynamically-added attribute (`go`'s `unexplored`), and **not**
+two class hierarchies interacting — every one of those was guessed during
+this investigation and every one is refuted by the table above. What is
+required is that the INDEX flows from a **comprehension built in another
+function**. Swap the comprehension for a list literal of the same values
+and the untypedness disappears.
+
+CPython prints 2 and so does pyc: this is imprecision, not yet a
+miscompile. `go` needs the additional layout divergence to crash.
+
+`ifa/issues/repro/124-go-reduced.py` is the 71-line intermediate, kept
+because it still exercises the shape through `Board`/`UCTNode` methods.
+
+### How it was reduced, and the two oracle bugs found on the way
+
+`ddmin.py` (now parameterised by `DDMIN_CHECK`/`DDMIN_CAND`/`DDMIN_OUT`)
+against `check124.sh`. **Three of the first four reduction runs produced
+INVALID results**, each caught only by building a sharper check:
+
+1. `nameck.py` alone was not enough. The reducer deleted
+   `Square.set_neighbours` and `Board.reset` while keeping
+   `square.neighbours` and `neighbour.color` -- undefined ATTRIBUTES, on
+   paths it had also made unreachable, so CPython never complained and
+   pyc inferred over the garbage. 7 orphans on the first pass. Hence
+   `attrck.py`.
+2. `attrck.py`'s first version used a stdlib allowlist, and
+   `Square.find` collides with `str.find`: a 132-line reduction passed
+   while `neighbour.find()` referred to a deleted method. Fixed by
+   comparing against the ORIGINAL -- an attribute the original defined,
+   the candidate reads, and the candidate no longer defines is drift by
+   construction. No allowlist, no guessing.
+
+A third hazard was checked and cleared rather than assumed: the reduced
+program still contains unreachable code, and pyc analyses dead code, so
+the signal could have come from there. Replacing the dead body of
+`useful()` with `return True` (-14 lines) leaves the diagnostic intact,
+so it does not.
+
+## Superseded: what does NOT reproduce it
 
 Four reductions were tried against `go.py:330`'s shape. **All four
 compile cleanly and print the right answer**, so none of them is it:
