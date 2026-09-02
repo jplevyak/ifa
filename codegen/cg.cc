@@ -523,6 +523,53 @@ static void cg_note_imprecise(PNode *n, cchar *what, cchar *detail) {
             detail ? detail : "?");
 }
 
+// ifa/issues/124: both imprecision sites, as a SCAN over the analysis
+// result rather than a hook in C emission.
+//
+// It has to be a scan because `--refuse-imprecise` must mean the same
+// thing on both backends, and the LLVM backend shares none of cg.cc's
+// emission path. What it does share is the cg type-string tables --
+// llvm.cc calls the same assign_type_cg_strings_pass1/2 -- so `c_type()`
+// is meaningful there and this scan is backend-independent. (Before
+// this, the flag was a silent no-op under `-b`: the 124 test "passed"
+// on LLVM purely because its assertion did not exist.)
+//
+// Two sites, and the second is the first one step further on:
+//   - a list constructor WITH elements whose element type is untyped;
+//   - a live FORMAL typed `void *`, which is how go's untyped list
+//     reaches the field access that guesses a layout
+//     (`update_path(..., _CG_any path)`).
+void cg_scan_imprecise(FA *fa) {
+  for (Fun *fn : fa->funs) {
+    if (!fn->live) continue;
+    for (PNode *n : fn->fa_all_PNodes) {
+      if (!n || !n->live || !n->prim || n->prim->index != P_prim_make) continue;
+      if (!n->lvals.n || n->rvals.n < 3) continue;
+      // Only when the constructor HAS elements. A comprehension or an
+      // `xs = []` + `append` builds an empty list first, and an untyped
+      // element type there is expected -- the type arrives with the
+      // appends. `[node]` with an element in hand and still no element
+      // type is the real signal (go.py:330).
+      if (n->rvals.n - 3 <= 0) continue;
+      // The list route only. A true tuple (Type_RECORD) stores its
+      // elements as separate `->eN` fields and has no single element
+      // type, so "untyped element" is not a signal there -- this
+      // mirrors the Ltuple/Llist split in write_c_prim's P_prim_make.
+      Sym *lt = n->lvals.v[0]->type;
+      if (!lt || !lt->element || lt->type_kind == Type_RECORD) continue;
+      cchar *ety = c_type(lt->element->type);
+      if (cg_type_is_untyped(ety)) cg_note_imprecise(n, "a list's element type", ety);
+    }
+    for (MPosition *mp : fn->positional_arg_positions) {
+      Var *av = fn->args.get(mp);
+      if (!av || !av->live || !av->type) continue;
+      if (av->sym && av->sym->is_symbol) continue;  // the method-name selector, never a value
+      if (cg_type_is_untyped(c_type(av)))
+        cg_note_imprecise(fn->entry, "a function parameter", fn->sym && fn->sym->name ? fn->sym->name : "?");
+    }
+  }
+}
+
 void cg_check_imprecise() {
   if (!cg_imprecise_count) return;
   if (getenv("PYC_DBG_IMPRECISE")) fprintf(stderr, "IMPRECISE sites=%d\n", cg_imprecise_count);
@@ -655,13 +702,6 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         cchar *ety = c_type(le);
         assert(cg_get_string(n->lvals[0]));
         fprintf(fp, "%s = ", cg_get_string(n->lvals[0]));
-        // Only when the constructor HAS elements. A comprehension or an
-        // `xs = []` + `append` builds an empty list first, and an
-        // untyped element type there is expected -- the type arrives
-        // with the appends. `[node]` with an element in hand and still
-        // no element type is the real signal (go.py:330).
-        if (n->rvals.n - 3 > 0 && cg_type_is_untyped(ety))
-          cg_note_imprecise(n, "a list's element type", ety);
         fprintf(fp, "(_CG_list)_CG_prim_list(%s,%d);\n", ety, n->rvals.n - 3);
         (void)lt;
         for (int i = 3; i < n->rvals.n; i++) {
@@ -3085,22 +3125,10 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
           "  return 0;\n"
           "}\n",
           cg_get_string(init));
-  // ifa/issues/124: a FORMAL typed `void *` is the same loss of precision
-  // one step further on -- `update_path(..., _CG_any path)` is how go's
-  // untyped list reaches the field access that guesses a layout.
-  for (Fun *fn : fa->funs) {
-    if (!fn->live) continue;
-    for (MPosition *mp : fn->positional_arg_positions) {
-      Var *av = fn->args.get(mp);
-      if (!av || !av->live || !av->type) continue;
-      if (av->sym && av->sym->is_symbol) continue;  // the method-name selector, never a value
-      if (cg_type_is_untyped(c_type(av)))
-        cg_note_imprecise(fn->entry, "a function parameter", fn->sym && fn->sym->name ? fn->sym->name : "?");
-    }
-  }
   // 124 before 122: imprecision is the CAUSE and the layout violation the
   // consequence -- go's untyped `path` element is why a field access has
   // a layout to guess at all. Reporting the consequence first buries it.
+  cg_scan_imprecise(fa);       // ifa/issues/124
   cg_check_imprecise();        // ifa/issues/124
   cg_check_layout_contract();  // ifa/issues/122 Phase 0
 }

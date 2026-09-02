@@ -64,6 +64,13 @@ bool cg_has_classtag(Sym *s);
 // polymorphic-slot discovery in cg_build_new_to_val_map.
 int cg_field_live(Sym *s, int i);
 
+// ifa/issues/124: `--refuse-imprecise`. Declared here, not in cg.cc, so
+// the LLVM backend can run the same check -- it shares the cg
+// type-string tables (assign_type_cg_strings_pass1/2), which is all the
+// scan needs. Call scan then check.
+void cg_scan_imprecise(FA *fa);
+void cg_check_imprecise();
+
 // ifa/issues/029/030: registry of method-pointer slot stores.
 // For each creator Fun (a __new__ clone), the (slot, method-clone)
 // pairs its instances must carry so polymorphic call sites can

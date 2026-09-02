@@ -123,6 +123,13 @@ void llvm_build_type_strings(FA *fa) {
   // struct types are built via getLLVMType when needed.
   assign_type_cg_strings_pass1(allsyms, /*fp=*/nullptr);
   assign_type_cg_strings_pass2(allsyms);
+  // ifa/issues/124: `--refuse-imprecise` has to mean the same thing on
+  // both backends. It was implemented only in cg.cc, so under `-b` it
+  // was a silent no-op and the 124 test "passed" on LLVM purely because
+  // its assertion did not exist. The scan needs nothing but the type
+  // strings just assigned above.
+  cg_scan_imprecise(fa);
+  cg_check_imprecise();
 }
 
 void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filename) {

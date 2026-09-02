@@ -505,3 +505,37 @@ precise, it just has no C representation, so this looks like a false
 positive of the check rather than residual imprecision. The test stays
 `.known_issue` and will flip on its own if the check learns to exempt
 nil-only formals.
+
+## 2026-09-02: `--refuse-imprecise` was a silent no-op on the LLVM backend
+
+The C/LLVM test counts differed (308/17 vs 309/16) and the whole
+difference was `comprehension_index_untypes_list.py` "passing" under
+`-b`. It was passing vacuously: `cg_note_imprecise` / `cg_check_imprecise`
+lived in `ifa/codegen/cg.cc` and were reached only from C emission, so
+under `-b` the flag emitted nothing and exited 0. The test's assertion
+did not exist on that backend.
+
+Fixed by turning the check into a backend-independent SCAN,
+`cg_scan_imprecise(FA *)`, declared in `codegen_common.h` and called from
+both `c_codegen_write_c` and `llvm_build_type_strings`. It works on the
+LLVM path because that path calls the same
+`assign_type_cg_strings_pass1/2` (llvm.cc:124), which is all `c_type()`
+needs — `c_type` is `cg_get_string(s->type)` with a `_CG_void` fallback,
+so running it against an unpopulated table would have reported EVERY
+site, which is why the scan is placed after that call and not earlier.
+
+The scan replaces both inline hooks, so there is one implementation and
+no double counting. The list-element predicate mirrors the Ltuple/Llist
+split in `write_c_prim`'s `P_prim_make`: elements present, `lt->element`
+set, and `type_kind != Type_RECORD` — a true tuple stores elements as
+separate `->eN` fields and has no single element type, so "untyped
+element" is not a signal there.
+
+Counts confirm the scan reproduces the hooks exactly: the 124 test
+reports 3 sites on BOTH backends (C unchanged), and `go` still reports
+39 on C. LLVM e2e is now 308 passed / 17 known / 0 failed, identical to
+C; CI's `LLVM_BASELINE_PASS=37` is unaffected. The only remaining
+C-vs-LLVM difference is four tests known on both backends that differ
+in the PHASE they fail at (`none_float_field`, `none_int_field_pair`,
+`none_int_field_zero`, `undefined_name_executed` — `COMPILE` on LLVM,
+`COMPILE-OUT`/`EXEC` on C), which does not affect any count.
