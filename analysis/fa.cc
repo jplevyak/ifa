@@ -1203,13 +1203,41 @@ static long tc_formal = 0, tc_return = 0;
 static int ld_dup_es = 0, ld_dup_cs = 0, ld_churn = 0;
 static long tc_seen = 0, tc_skip_rval = 0, tc_skip_lval = 0, tc_skip_cs = 0, tc_dec = 0, tc_defer = 0;
 
+// ifa/issues/124: `->type` strips a pure-nil AType to bottom (make_AType's
+// is_unique_type branch; the 060 carve-out that KEEPS nil only fires when
+// the same AType also carries a num_kind scalar, which a lone `{None}`
+// does not). The partitioner below guards every comparison with
+// `->n &&`, so an edge passing only None reads as "nothing known yet" and
+// is compatible with everything -- and it costs the split twice: the nil
+// edge stays in the ES, and then the genuinely-differing edges are pulled
+// back OUT of do_edges when re-tested against it (measured on
+// ifa/issues/124's repro: do=0 stay=2 groups=0 on every pass, forever).
+//
+// Give the SPLITTER a view that separates "not analyzed" (raw empty too)
+// from "carries only nil" (raw non-empty), without touching the ->type
+// projection every other consumer reads -- narrowing, defaulted params
+// and the recursion-separability gate all rely on nil being transparent
+// there (tests is_not_none_narrow / minmax_3arg / expr_evaluator each
+// regress if ->type itself is changed).
+//
+// Constants are deliberately NOT unstripped here: a raw single-element
+// out can be a constant CS ("3" rather than int64) and partitioning on
+// that is clone-per-constant (survey B5).
+static AType *split_type_view(AVar *a, AType *filter) {
+  AType *t = type_intersection(a->out->type, filter);
+  if (t->n || !a->out->n) return t;
+  for (CreationSet *c : a->out->sorted)
+    if (!c->sym || c->sym->type != sym_nil_type) return t;  // constants etc: unchanged
+  return type_intersection(a->out, filter);
+}
+
 static int edge_type_compatible_with_edge(AEdge *e, AEdge *ee, EntrySet *es, int fmark = 0) {
   assert(e->args.n && ee->args.n);
   for (MPosition *p : e->match->fun->positional_arg_positions) {
     AVar *e_arg = e->args.get(p), *ee_arg = ee->args.get(p);
     if (!e_arg || !ee_arg) continue;
-    AType *etype = type_intersection(e_arg->out->type, e->match->formal_filters.get(p));
-    AType *eetype = type_intersection(ee_arg->out->type, ee->match->formal_filters.get(p));
+    AType *etype = split_type_view(e_arg, e->match->formal_filters.get(p));
+    AType *eetype = split_type_view(ee_arg, ee->match->formal_filters.get(p));
     if (!fmark) {
       if (etype->n && eetype->n && etype != eetype) return ++ic_arg, 0;
     } else {
@@ -1242,9 +1270,9 @@ static int edge_type_compatible_with_entry_set(AEdge *e, EntrySet *es, int fmark
     for (MPosition *p : e->match->fun->positional_arg_positions) {
       AVar *es_arg = es->args.get(p), *e_arg = e->args.get(p);
       if (!e_arg) continue;
-      AType *etype = type_intersection(e_arg->out->type, e->match->formal_filters.get(p));
+      AType *etype = split_type_view(e_arg, e->match->formal_filters.get(p));
       if (!fmark) {
-        AType *stype = es_arg->out->type;
+        AType *stype = split_type_view(es_arg, nullptr);
         if (typekey_enabled() && es->type_key_pass >= 0) {
           AType *k = es->type_key.get(p);
           if (k) stype = k;  // durable key wins over the mid-pass value
@@ -5171,6 +5199,40 @@ SplitDecision *FA::ledger_add_cs(uint sig, CreationSet *product) {
   return existing ? existing : d;
 }
 
+// ifa/issues/124 probe: is a named function's FORMAL seen as a type
+// confluence at all? `append(self, x)` is called with an int from one
+// comprehension and None from another, so arg3 ought to be one.
+static void dbg_confluence_probe(AVar *av, bool added) {
+  static cchar *want = nullptr;
+  static int checked = 0;
+  if (!checked) { want = getenv("IFA_DBG_CONFLUENCE"); checked = 1; }
+  if (!want || !av->contour_is_entry_set) return;
+  EntrySet *es = (EntrySet *)av->contour;
+  if (!es->fun || !es->fun->sym || !es->fun->sym->name || strcmp(es->fun->sym->name, want)) return;
+  if (!av->var || !av->var->is_formal) return;
+  fprintf(stderr, "CONFL p=%d es=%d formal=%s added=%d in:", analysis_pass, es->id,
+          av->var->sym->name ? av->var->sym->name : "?", added ? 1 : 0);
+  for (CreationSet *c : av->in->type->sorted) fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+  fprintf(stderr, " out:");
+  for (CreationSet *c : av->out->type->sorted) fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+  // EVERY backward writer, including empty-typed ones the earlier probe
+  // filtered out -- the question is where `None` enters when no writer
+  // seems to carry it.
+  fprintf(stderr, " | writers(%d):", av->backward.n);
+  for (AVar *x : av->backward) if (x) {
+    EntrySet *xes = x->contour_is_entry_set ? (EntrySet *)x->contour : nullptr;
+    fprintf(stderr, " {av=%d %s/es%d:", x->id,
+            xes && xes->fun && xes->fun->sym && xes->fun->sym->name ? xes->fun->sym->name : "?",
+            xes ? xes->id : -1);
+    for (CreationSet *c : x->out->type->sorted) fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+    fprintf(stderr, " RAW:");
+    for (CreationSet *c : x->out->sorted)
+      fprintf(stderr, " %s#%d%s", c->sym->name ? c->sym->name : "?", c->id, c->sym->is_constant ? "(const)" : "");
+    fprintf(stderr, "}");
+  }
+  fprintf(stderr, "\n");
+}
+
 static void collect_type_confluence(AVar *av, Vec<AVar *> &confluences) {
   for (AVar *x : av->backward) if (x) {
     if (!x->out->type->n) continue;
@@ -5186,6 +5248,7 @@ static void collect_type_confluence(AVar *av, Vec<AVar *> &confluences) {
       }
     }
   }
+  dbg_confluence_probe(av, confluences.set_in(av) != 0);
 }
 
 static void collect_type_confluences(Vec<AVar *> &confluences) {
@@ -6077,6 +6140,25 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
     return a ? type_intersection(a->out->type, ee->match->formal_filters.get(avpos))
              : fa->type_world.bottom_type;
   };
+  // ifa/issues/124 probe: for a named function, dump each edge's actual
+  // type at the confluence position against the ES's, and the verdict.
+  if (const char *dn = getenv("IFA_DBG_DECIDE")) {
+    if (es->fun && es->fun->sym && es->fun->sym->name && !strcmp(es->fun->sym->name, dn)) {
+      AVar *es_arg = avpos ? es->args.get(avpos) : nullptr;
+      fprintf(stderr, "DECIDE p=%d es=%d av=%d nedges=%d es_type:", analysis_pass, es->id, av->id, all_edges.n);
+      if (es_arg) for (CreationSet *c : es_arg->out->type->sorted) fprintf(stderr, " %s#%d", c->sym->name?c->sym->name:"?", c->id);
+      fprintf(stderr, "\n");
+      for (AEdge *ee : all_edges) if (ee && ee->from) {
+        AType *t = ety_at(ee);
+        AVar *a = avpos ? ee->args.get(avpos) : nullptr;
+        fprintf(stderr, "   edge from_es=%d ety(n=%d):", ee->from->id, t->n);
+        for (CreationSet *c : t->sorted) fprintf(stderr, " %s#%d", c->sym->name?c->sym->name:"?", c->id);
+        fprintf(stderr, " RAW:");
+        if (a) for (CreationSet *c : a->out->sorted) fprintf(stderr, " %s#%d", c->sym->name?c->sym->name:"?", c->id);
+        fprintf(stderr, " compat=%d\n", edge_type_compatible_with_entry_set(ee, es, fmark));
+      }
+    }
+  }
   bool have_nonrec = false;
   if (!fsetters)
     for (AEdge *ee : all_edges) if (ee && ee->from && !is_es_recursive(ee)) { have_nonrec = true; break; }
@@ -6179,6 +6261,10 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
     dec->groups.add(g);
     do_edges.move(next_edges);
   }
+  if (const char *dn = getenv("IFA_DBG_DECIDE"))
+    if (es->fun && es->fun->sym && es->fun->sym->name && !strcmp(es->fun->sym->name, dn))
+      fprintf(stderr, "DECIDE-OUT p=%d es=%d av=%d do=%d stay=%d groups=%d\n", analysis_pass, es->id, av->id,
+              do_edges.n, stay_edges.n, dec->groups.n);
   if (!dec->groups.n) return nullptr;
   return dec;
 }
@@ -6218,11 +6304,18 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
     // The group's type partition at the confluence position, on the
     // constant-stripped ->type view (raw ->out re-derives constants
     // differently under the constant cap — issue 033 D4 note).
+    // ifa/issues/124: via split_type_view, so a group formed BY the
+    // nil distinction gets a filter that actually admits nil. Reading
+    // the bare ->type here made a pure-nil group's partition bottom,
+    // which starves the formal in the product contour (`illegal call
+    // argument type 'c' illegal:` with an empty type — minmax_3arg).
+    // The view unstrips nil only, never constants, so the D4 note
+    // above still holds.
     AType *part = fa->type_world.bottom_type;
     if (avpos)
       for (AEdge *x : these_edges) {
         AVar *a = x->args.get(avpos);
-        if (a) part = type_union(part, a->out->type);
+        if (a) part = type_union(part, split_type_view(a, nullptr));
       }
     // ifa/issues/101: what KIND of CreationSet is the splitter actually
     // partitioning on? `closure` CSs are minted unique per site x contour
@@ -7860,6 +7953,9 @@ static void collect_cs_setter_confluences(Vec<AVar *> &setters_confluences) {
     // a possibly-touched ES.
     applied.set_add(dec->es);
     int r = apply_entry_set_split(dec);
+    if (const char *dn = getenv("IFA_DBG_DECIDE"))
+      if (dec->es->fun && dec->es->fun->sym && dec->es->fun->sym->name && !strcmp(dec->es->fun->sym->name, dn))
+        fprintf(stderr, "APPLY p=%d es=%d av=%d -> %d\n", analysis_pass, dec->es->id, dec->av->id, r);
     log(LOG_SPLITTING, "[stage1] av %d es %d apply -> %d\n", dec->av->id, dec->es->id, r);
     if (r) (dec->av->is_lvalue ? tc_return : tc_formal)++;
     analyze_again |= r;
@@ -9902,6 +9998,27 @@ static void report_cs_population() {
 // types are there, against how many CreationSets? A large gap means CS
 // identity is over-discriminating -- keyed on allocation site x contour
 // rather than on the parameter it is supposed to capture.
+// ifa/issues/124: dump every EntrySet of a named function with the
+// CreationSets its positional formals hold. Answers "should ES
+// splitting have split this?" directly -- if one contour's receiver
+// formal holds two different container CSs, it should have.
+static void report_fun_contours() {
+  cchar *want = getenv("IFA_DBG_FUNCONTOURS");
+  if (!want) return;
+  for (EntrySet *es : fa->ess) if (es && es->fun && es->fun->sym && es->fun->sym->name) {
+    if (strcmp(es->fun->sym->name, want)) continue;
+    fprintf(stderr, "FUNC %s es=%d", want, es->id);
+    for (MPosition *p : es->fun->positional_arg_positions) {
+      AVar *a = es->args.get(p);
+      if (!a) continue;
+      fprintf(stderr, " | arg%d:", (int)Position2int(p->pos[0]));
+      for (CreationSet *c : a->out->sorted)
+        fprintf(stderr, " %s#%d", c->sym && c->sym->name ? c->sym->name : "?", c->id);
+    }
+    fprintf(stderr, "\n");
+  }
+}
+
 static void report_element_types() {
   if (!getenv("IFA_DBG_ELEMTYPE")) return;
   // per container sym: CS count, distinct element ATypes, distinct
@@ -9951,9 +10068,12 @@ static void report_element_types() {
     if (getenv("IFA_DBG_ELEMSETTER")) {
       fprintf(stderr, "ELEM cs=%d sym=%s elem_av=%d ntypes=%d nback=%d\n", cs->id,
               cs->sym->name ? cs->sym->name : "?", e->id, e->out->type->n, e->backward.n);
-      for (AVar *b : e->backward) if (b)
-        fprintf(stderr, "   <- av=%d container=%d setter_class=%d\n", b->id,
-                b->container ? b->container->id : -1, b->setter_class ? 1 : 0);
+      for (AVar *b : e->backward) if (b) {
+        EntrySet *bes = b->contour_is_entry_set ? (EntrySet *)b->contour : nullptr;
+        cchar *fn = bes && bes->fun && bes->fun->sym && bes->fun->sym->name ? bes->fun->sym->name : "?";
+        fprintf(stderr, "   <- av=%d in_fun=%s es=%d container=%d setter_class=%d\n", b->id, fn,
+                bes ? bes->id : -1, b->container ? b->container->id : -1, b->setter_class ? 1 : 0);
+      }
       for (AVar *d : cs->defs) if (d)
         fprintf(stderr, "   def av=%d setters=%d cs_map=%d\n", d->id, d->setters ? d->setters->n : -1,
                 d->cs_map ? 1 : 0);
@@ -10026,6 +10146,7 @@ static void complete_pass() {
   report_stage_churn();
   report_cs_population();
   report_element_types();
+  report_fun_contours();
   report_canon_stats();
   report_keyspace();
   capture_type_keys();

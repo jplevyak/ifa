@@ -401,3 +401,107 @@ A way to ask "is this program fully inferred?" and get source lines
 instead of a crash. Immediately: it turned `go` from "segfaults
 somewhere" into five named list literals, one of which is provably
 monomorphic in the source.
+
+---
+
+## ROOT CAUSE (2026-09-02): `->type` strips a pure-nil AType, and the
+## splitter's every comparison is guarded by `->n &&`
+
+Measured on the 10-line repro, on `list.append`'s shared contour
+(es=60). Two edges reach it, one passing `int64` and one passing
+`None`, and the splitter never separates them:
+
+```
+DECIDE   p=3 es=60 av=3065 nedges=2 es_type: int64#6 __pyc_None_type__#13
+   edge from_es=46 ety(n=0): RAW: __pyc_None_type__#13  compat=1
+   edge from_es=51 ety(n=1): int64#6                    compat=0
+DECIDE-OUT p=3 es=60 av=3065 do=0 stay=2 groups=0
+```
+
+`do=0 stay=2 groups=0`, identically on every pass. Two mechanisms
+compose to produce it:
+
+**1. `make_AType` projects a lone `{None}` to bottom.** `nil_type` is
+`is_unique_type`, so it lands in `nil_cs` rather than `nonconsts`; the
+issue-060 carve-out that KEEPS nil in `->type` fires only when the same
+AType also carries a `num_kind` scalar. A lone `{None}` has none, so
+`nonconsts.n == 0` and `tt->type = bottom_type`. The MERGED formal
+`{int64, None}` does keep nil (int64 supplies `has_scalar`) — which is
+why the confluence is *detected*: `type_diff({int64,None}, {int64})` is
+`{None}`. Detected, but with nothing to partition by.
+
+**2. Every edge-compatibility test treats a bottom `->type` as
+"compatible with anything"**, and it costs the split twice:
+
+```c
+// edge_type_compatible_with_entry_set
+if (etype->n && stype->n && etype != stype) return ++ic_arg, 0;
+// edge_type_compatible_with_edge
+if (etype->n && eetype->n && etype != eetype) return ++ic_arg, 0;
+```
+
+First the nil edge is judged compatible with the ES and put in
+`stay_edges`. Then the int edge — correctly placed in `do_edges` by the
+first loop — is re-tested against that stay edge by
+`edge_type_compatible_with_edge`, whose `eetype->n` is 0, so it is
+pulled back OUT into `stay_edges`. `do_edges` empties, no group forms.
+
+The `->n &&` guards are right in general: an unanalyzed edge has no type
+yet and must not force a split. The bug is that a bottom `->type` is
+overloaded — it means both "nothing known" and "carries only nil".
+
+## The fix (all five CI gates green)
+
+Do NOT change `->type` itself. Tried first, and it regresses three
+tests, all in places where nil is *meant* to be transparent:
+`is_not_none_narrow` (narrowing), `minmax_3arg` (a `None`-defaulted
+parameter), `expr_evaluator` (the recursion-separability gate — whose
+comment already records it regressing both ways).
+
+Instead give the SPLITTER a local view, `split_type_view()`, that
+distinguishes "not analyzed" (raw `out` empty too) from "carries only
+nil" (raw non-empty), and unstrips only in the latter case. Constants
+are deliberately left stripped — a raw single-element `out` can be a
+constant CS (`3` rather than `int64`) and partitioning on that is
+clone-per-constant (survey B5). Used at three sites:
+
+- `edge_type_compatible_with_edge` — both operands
+- `edge_type_compatible_with_entry_set` — the edge and the ES
+- `apply_entry_set_split`'s `part` — **required**: without it the
+  splitter decides to split on nil and then builds the product's filter
+  from the stripped view, so the pure-nil group's partition is bottom
+  and the formal STARVES in the product contour (`illegal call argument
+  type 'c' illegal:` with an empty type). Decide and apply must read the
+  same view.
+
+## Measured result
+
+| | baseline | with fix |
+|---|---|---|
+| `go` compile | **refuses** — 20 blind-cast layout violations (ifa/123) | rc=0 |
+| `go` run | no binary | **rc=0, plays a full game** |
+| `go` `--refuse-imprecise` sites | 55 | 39 |
+| repro `append` split | `do=0 stay=2 groups=0` forever | `groups=2` at p=0 |
+
+CI: `make test` rc=0 (308 passed / 17 known / 0 failed, unchanged),
+`ifa --test` + `test-ir` clean, `make -C ifa test_llvm` passed,
+`PYC_FLAGS=-b ./test_pyc.py` 309 passed / 16 known / 0 failed,
+`make test_dparse` all passed.
+
+**Not yet measured: the corpus `check` A/B.** This is a core FA
+behaviour change and `make test` is not sufficient evidence for one —
+run `./corpus_sweep.sh -m check` on this tree against
+`check__default__635d26b6+c1a28ccc` (compile_fail=5 run_fail=42
+stdout_differs=23 with_warnings=42) before treating it as settled.
+
+## Residual
+
+`tests/comprehension_index_untypes_list.py` still reports 3 imprecise
+sites under `--refuse-imprecise`, but they are DIFFERENT sites: the
+original `[self]` element-type site is gone, replaced by "function
+parameter untyped" on `append` and `len`. Those are the new pure-nil
+contours — a parameter that is provably always `None` is perfectly
+precise, it just has no C representation, so this looks like a false
+positive of the check rather than residual imprecision. The test stays
+`.known_issue` and will flip on its own if the check learns to exempt
+nil-only formals.
