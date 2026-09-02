@@ -22,6 +22,7 @@ static int mark_sym_live(Sym *s);
 IF1 *if1 = 0;
 bool fdce_if1 = true;
 bool fruntime_errors = false;
+bool frefuse_imprecise = false;
 bool fauto_init_unbound = false;  // ifa/issues/039
 int ifa_reanalyze_phase = 0;      // ifa/issues/055
 

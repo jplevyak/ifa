@@ -418,6 +418,18 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
 
 ### FA — targeted
 
+- [124-FA-refuse-imprecise-inference.md](124-FA-refuse-imprecise-inference.md)
+  — **option landed 2026-09-01, off by default.** `--refuse-imprecise`
+  reports (or rejects) every container element type and function
+  parameter that inference left untyped — the points where codegen stops
+  having a type and starts guessing a layout. Built because shedskin
+  compiles `go` to `list<UCTNode *>` and a plain `node->losses`, while
+  pyc emits `_CG_prim_list(_CG_void,1)` and then guesses; the difference
+  is that shedskin REFUSES where inference does not resolve. On `go` it
+  names five list literals, including `[Square(self,pos) for pos in ...]`
+  — monomorphic in the source, untyped in pyc — which is what lets a
+  UCTNode reach a Square layout and cause ifa/123's crash.
+
 - [039-FA-uninitialized-local-reads-silent.md](039-FA-uninitialized-local-reads-silent.md)
   — reading a local unassigned on some CFG path is silent UB, not a
   diagnostic (`place_phi` is liveness- not definite-assignment-

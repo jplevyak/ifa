@@ -176,6 +176,9 @@ void ifa_code(cchar *fn);
 extern bool fgraph_pass_contours;
 extern bool fdce_if1;
 extern bool fruntime_errors;
+// ifa/issues/124: refuse a program whose inference left a type untyped,
+// instead of emitting codegen's guess. shedskin's posture, made optional.
+extern bool frefuse_imprecise;
 // ifa/issues/039: the "safe" environment. When set, a local that the
 // definite-assignment analysis reports as POSSIBLY used before
 // assignment is initialized to the zero of its own representation

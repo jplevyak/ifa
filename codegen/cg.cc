@@ -480,6 +480,56 @@ static void destruct_prim(FILE *fp, Var *l, Var *r) {
 //
 // `kind` is what is being written ("field", "element"), `name` its
 // source-level name where there is one.
+// -------------------------------------------------------------
+// ifa/issues/124 -- refuse imprecisely-inferred programs
+//
+// shedskin compiles `go.py` to `list<UCTNode *> *` and a plain
+// `node->losses` member access. pyc emits `_CG_prim_list(_CG_void, 1)`
+// and then has to GUESS a layout for the untyped element, which is how
+// ifa/123's crash happens: `node.losses += 1` resolved against
+// `Square`'s layout and incremented `UCTNode`'s `unexplored` POINTER.
+//
+// The difference is not that shedskin handles unions better -- it has no
+// union representation either. It is that where inference does not
+// resolve, shedskin REFUSES and pyc guesses. This is the switch that
+// lets pyc refuse too: report (or reject) every place codegen falls back
+// to an untyped `void *` where a concrete type was wanted.
+//
+//   PYC_DBG_IMPRECISE=1   report every site, with source location
+//   --refuse-imprecise    (PYC_REFUSE_IMPRECISE=1) make it an error
+// -------------------------------------------------------------
+
+static int cg_imprecise_count = 0;
+
+bool cg_type_is_untyped(cchar *t) {
+  return t && (!strcmp(t, "_CG_void") || !strcmp(t, "_CG_any") || !strcmp(t, "_CG_void_type"));
+}
+
+static void cg_note_imprecise(PNode *n, cchar *what, cchar *detail) {
+  cg_imprecise_count++;
+  static int dbg = -1;
+  if (dbg < 0) dbg = getenv("PYC_DBG_IMPRECISE") ? 1 : 0;
+  bool refuse = frefuse_imprecise;
+  if (!dbg && !refuse) return;
+  if (n && n->code && n->code->ast) {
+    if (refuse)
+      show_error("error: inference left %s untyped (%s) -- codegen must guess its layout", n->code->ast, what,
+                 detail ? detail : "?");
+    else
+      show_error("warning: inference left %s untyped (%s) -- codegen must guess its layout", n->code->ast, what,
+                 detail ? detail : "?");
+  } else
+    fprintf(stderr, "%s: inference left %s untyped (%s)\n", refuse ? "error" : "warning", what,
+            detail ? detail : "?");
+}
+
+void cg_check_imprecise() {
+  if (!cg_imprecise_count) return;
+  if (getenv("PYC_DBG_IMPRECISE")) fprintf(stderr, "IMPRECISE sites=%d\n", cg_imprecise_count);
+  if (frefuse_imprecise)
+    fail("%d imprecisely-inferred site(s) -- see ifa/issues/124", cg_imprecise_count);
+}
+
 static void warn_no_representation_ct(PNode *n, cchar *kind, cchar *name, cchar *dest, cchar *val) {
   if (!n || !n->code || !n->code->ast) return;
   char what[256];
@@ -605,6 +655,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         cchar *ety = c_type(le);
         assert(cg_get_string(n->lvals[0]));
         fprintf(fp, "%s = ", cg_get_string(n->lvals[0]));
+        if (cg_type_is_untyped(ety)) cg_note_imprecise(n, "a list's element type", ety);
         fprintf(fp, "(_CG_list)_CG_prim_list(%s,%d);\n", ety, n->rvals.n - 3);
         (void)lt;
         for (int i = 3; i < n->rvals.n; i++) {
@@ -3028,6 +3079,23 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
           "  return 0;\n"
           "}\n",
           cg_get_string(init));
+  // ifa/issues/124: a FORMAL typed `void *` is the same loss of precision
+  // one step further on -- `update_path(..., _CG_any path)` is how go's
+  // untyped list reaches the field access that guesses a layout.
+  for (Fun *fn : fa->funs) {
+    if (!fn->live) continue;
+    for (MPosition *mp : fn->positional_arg_positions) {
+      Var *av = fn->args.get(mp);
+      if (!av || !av->live || !av->type) continue;
+      if (av->sym && av->sym->is_symbol) continue;  // the method-name selector, never a value
+      if (cg_type_is_untyped(c_type(av)))
+        cg_note_imprecise(fn->entry, "a function parameter", fn->sym && fn->sym->name ? fn->sym->name : "?");
+    }
+  }
+  // 124 before 122: imprecision is the CAUSE and the layout violation the
+  // consequence -- go's untyped `path` element is why a field access has
+  // a layout to guess at all. Reporting the consequence first buries it.
+  cg_check_imprecise();        // ifa/issues/124
   cg_check_layout_contract();  // ifa/issues/122 Phase 0
 }
 
