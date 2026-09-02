@@ -1,7 +1,10 @@
 # 124 — `--refuse-imprecise`: refuse a program whose inference left a type untyped, instead of emitting codegen's guess
 
-**Status:** option **landed 2026-09-01**, off by default. Filed with the
-`go` diagnosis it was built to produce.
+**Status:** option **landed 2026-09-01**, off by default. **Root-caused
+2026-09-02** with a 10-line repro (`ifa/issues/repro/`) and a regression
+test (`tests/comprehension_index_untypes_list.py`, `.known_issue`): two
+comprehensions with different element types share one `list::append`
+contour, so their element types unify. Fix not written.
 
 **Affects:** `ifa/codegen/cg.cc` (`cg_note_imprecise`,
 `cg_check_imprecise`, the list-creation site and the formal-parameter
@@ -110,6 +113,56 @@ miscompile. `go` needs the additional layout divergence to crash.
 
 `ifa/issues/repro/124-go-reduced.py` is the 71-line intermediate, kept
 because it still exercises the shape through `Board`/`UCTNode` methods.
+
+### ROOT CAUSE: two comprehensions share one `list::append` contour
+
+FA's own count settles it (`IFA_DBG_ELEMTYPE=1` on the 10-line repro):
+
+```
+ELEMTYPE p=3 | list: 3 CS / 2 elemtypes / 2 shapes
+```
+
+**Three list CreationSets, two element types.** The repro has exactly
+three lists -- `moves()`'s `[p for p in range(4)]` (ints), `kids`'s
+`[None for x in range(4)]` (None), and `path` -- so two of them have
+been given the SAME element type.
+
+Which two is visible in the emitted C. `list::append` gets two clones,
+and three call sites share them like this:
+
+| caller | appends | clone |
+|---|---|---|
+| `moves()` -- `[p for p in range(4)]` | an **int** | `_18` |
+| `N.__init__` -- `[None for x in range(4)]` | **None** | `_18` |
+| `N.play` -- `path.append(...)` | an **N** | `_2` |
+
+The int-appending comprehension and the None-appending comprehension
+**share one `append` contour**, so their element AVars unify. The shared
+clone's formal comes out `_CG_int64`, and the `None` append is emitted
+as `(_CG_int64)NULL`:
+
+```c
+t12 = _CG_f_2845_18/*list::append*/(t4, t13);            /* in moves()      */
+t12 = _CG_f_2845_18/*list::append*/(t4, (_CG_int64)NULL); /* in N::__init__ */
+```
+
+Note the direction: cloning runs AFTER flow analysis, so the shared
+clone is a CONSEQUENCE of FA having unified the two contours' types, not
+the cause. The cause is that FA did not split `list::append` per element
+type for these two calls -- the CS-element splitting
+[072](072-FA-empty-container-notype-current-mechanism-and-plan.md) refers
+to as "data-polymorphism splitting, which pyc's `split_css` already
+does" did not fire here.
+
+The merged element spans an int and None, which has no single C
+representation, so `c_type` yields `_CG_void`; `self.kids[...]` then
+carries that into `path.append(...)`, and `path = [self]` is reported.
+
+**This is exactly why the discriminator table looks as it does.** A list
+LITERAL (`[0, 1, 2, 3]`) is constructed positionally and calls `append`
+at all -- no shared contour, no merge, `path` typed. A constant index
+never calls `moves()`, so its comprehension is dead -- same result. Only
+the comprehension, whose construction goes through `append`, merges.
 
 ### How it was reduced, and the two oracle bugs found on the way
 
