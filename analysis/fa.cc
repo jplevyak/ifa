@@ -8674,8 +8674,27 @@ static int cpa_enabled() {
         if (a && !a->contour_is_entry_set && a->contour != GLOBAL_CONTOUR) all_cs_avars.set_add(a);
       });
       for (AVar *av : all_cs_avars) if (av) (void)compute_setters(av, avs, AKIND_TYPE);
-    } else
+    } else {
+      // ifa/issues/124: compute_setters only ever visits `confluences`.
+      // If a container's ELEMENT AVar is not collected as a type
+      // confluence, its writers never get a setter_class, no setter is
+      // recorded on the creation point, and the SETTER stage has
+      // nothing to split -- which is what happens to the two lists that
+      // share a `list::append` contour. Report the split of the
+      // confluence list so that is visible rather than inferred.
+      if (getenv("IFA_DBG_SETTERCONF")) {
+        int n_cs = 0, n_elem = 0;
+        for (AVar *av : confluences)
+          if (av && !av->contour_is_entry_set && av->contour != GLOBAL_CONTOUR) {
+            n_cs++;
+            CreationSet *c = (CreationSet *)av->contour;
+            if (c && c->sym && c->sym->element && c->sym->element->var == av->var) n_elem++;
+          }
+        fprintf(stderr, "SETTERCONF p=%d confluences=%d cs_contoured=%d container_elements=%d\n", analysis_pass,
+                confluences.n, n_cs, n_elem);
+      }
       for (AVar *av : confluences) (void)compute_setters(av, avs, AKIND_TYPE);
+    }
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
     cur_split_stage = (int)FAPassStage::SETTER;
     int viol_before_setter = fa->type_violations.set_count();

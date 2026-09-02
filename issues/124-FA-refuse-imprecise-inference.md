@@ -194,6 +194,37 @@ so nothing at the element looks like a confluence, and there is nothing
 for a setter-driven split to key on. The split has to happen on the
 **callee** side: `append` needs one contour per receiver CreationSet.
 
+**And it is NOT a quiescence problem.** `PYC_DBG_STAGEDELTA` shows the
+SETTER stage does run, twice:
+
+```
+STAGEDELTA p=2 TYPE_CONFL returned=0 confluences=40 ...
+STAGEDELTA p=2 SETTER      returned=0 ...
+STAGEDELTA p=3 TYPE_CONFL returned=0 confluences=40 ...
+STAGEDELTA p=3 SETTER      returned=0 ...
+```
+
+TYPE_CONFL reaches `returned=0` at pass 2, the gate opens, SETTER runs
+-- and finds nothing (`returned=0`). `IFA_DBG_SETTERCONF` says why:
+
+```
+SETTERCONF p=2 confluences=40 cs_contoured=27 container_elements=1
+```
+
+`compute_setters` only ever visits `confluences`, and of the three
+container CSs **exactly one** element AVar is collected as a type
+confluence -- `cs=1048`, the one that duly got `setter_class=1` and four
+setters. The two that need splitting are never collected, so their
+writers are never classed, no setter reaches their creation points, and
+the SETTER stage has nothing to key on.
+
+Why they are not confluences follows from the table above: 1041 and 1051
+have **the same two writers**. From either element's local view the
+incoming types are consistent -- the conflict is not *at* either
+element, it is *between* the two CreationSets, and a per-AVar confluence
+test cannot see it. That is precisely why the split has to happen at the
+callee's receiver, where the two lists are still distinguishable.
+
 **That mechanism exists, and it is disabled.** `recvfan_enabled()`
 (`fa.cc` ~8124) gates the PER_CS_RECEIVER fan, defaulting to 0, under a
 comment that names exactly this problem:
