@@ -209,7 +209,7 @@ cross-contamination root cause described above is unchanged.
 is not this issue: `print((1, (2, 3)))` — no list, no sort — aborts on its
 own with the same `matching function not found`, in the per-element
 `__repr__` dispatch inside `tuple.__str__`. Filed as
-[issues/119](../../issues/119-nested-tuple-repr-aborts.md) with a
+[issues/119](../../issues/closed/119-nested-tuple-repr-aborts.md) with a
 one-line repro and `tests/nested_tuple_repr.py`. Worth knowing before
 anyone re-measures 061: its repro prints a list of NESTED tuples, so it
 trips 119 as well, and the two symptoms have to be told apart.

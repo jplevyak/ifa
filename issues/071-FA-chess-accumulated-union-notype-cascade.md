@@ -303,7 +303,7 @@ rewriting the lambda to a `def`) is retired.
 ### The durable general fix (subsumes Source A)
 
 **Box the `bool | None` union** — the general
-[018](../../issues/018-dict-mixed-key-types-boxing-failure.md) /
+[018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md) /
 [030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) /
 [060](closed/060-none-branch-dropped-mixed-with-literal-bool-sequence.md)
 work (tagged / fat-pointer `scalar | None`, None = null pointer). This

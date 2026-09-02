@@ -72,7 +72,7 @@ EntrySet, not one merged with the non-empty list's. See "Root cause
 analysis (`ifa/analysis/fa.cc`, `collect_var_type_violations` and
 whatever schedules `PNode`s for analysis — not further traced).
 **Related:** checked against and ruled out as the same bug:
-[018-dict-mixed-key-types-boxing-failure.md](../../../issues/018-dict-mixed-key-types-boxing-failure.md)
+[018-dict-mixed-key-types-boxing-failure.md](../../../issues/closed/018-dict-mixed-key-types-boxing-failure.md)
 (pyc-frontend issue 018 — a genuinely different `ATypeViolation_kind`,
 `BOXING` not `NOTYPE`: that's two concrete, incompatible types
 unifying into one shared `dict`/`set` method body; this is one

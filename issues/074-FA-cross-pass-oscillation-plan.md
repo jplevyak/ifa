@@ -1772,7 +1772,7 @@ Two things remain open, neither a blocker for the default:
 
 1. **`msp_ss` regresses**: violations 514→617, and it now fails *earlier*
    and differently — pyc aborts in `sizeof_element of non-container type
-   'int64' (in __add__)`, i.e. pyc [issues/018](../../issues/018-dict-mixed-key-types-boxing-failure.md)'s
+   'int64' (in __add__)`, i.e. pyc [issues/018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md)'s
    container-method-against-a-scalar, where baseline got as far as
    emitting C that clang then rejected. (Its `.c` dropping 843 KB→116 KB
    is that earlier abort's partial output, **not** a pruned program — the
@@ -2674,7 +2674,7 @@ signature for ninety passes. Nothing that keys on a repeat can help
 them, which is exactly why mode 6 measured as inert.
 
 The reproducer also still fails to compile — on the
-[018](../issues/018-dict-mixed-key-types-boxing-failure.md) boxing gap it
+[018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md) boxing gap it
 is `.known_issue`-tagged for (`sizeof_element of non-container type`),
 which is unrelated to convergence and unaffected by any of this.
 

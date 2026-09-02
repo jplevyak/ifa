@@ -9,7 +9,7 @@ list item 4 (sunfish's blocker — the doc's own "`sizeof_element of
 non-container type` internal fail in `__add__`" claim is **stale**;
 re-verified today, that specific fail no longer appears in sunfish's
 compile output at all, superseded by this one and by
-[ifa/issues/089](089-DISPATCH-closure-pyc-to-bool-no-candidate.md)-adjacent
+[ifa/issues/089](closed/089-DISPATCH-closure-pyc-to-bool-no-candidate.md)-adjacent
 gaps found along the way, see issues/025 for the full trace).
 
 **Affects:** `ifa/codegen/cg.cc`'s `get_target_fun` (~line 953),

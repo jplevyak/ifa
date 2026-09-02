@@ -6,11 +6,11 @@ originally filed) is kept as-is for context.
 
 **Original status:** open, found 2026-08-11 as a live compile failure
 (`shedskin_examples/msp_ss/msp_ss.py`) while verifying
-[issues/041](../../issues/041-stdlib-shim-stubs-silently-wrong.md)'s
+[issues/041](../../../issues/041-stdlib-shim-stubs-silently-wrong.md)'s
 `getopt` fix — real `getopt` parsing made a previously-dead-code-
 eliminated branch in `msp_ss.py` live for the first time, and it hits
 this. Not a new bug: this is
-[closed/077](closed/077-primitive-equality-codegen-missing-salvage-guard.md)'s
+[closed/077](077-primitive-equality-codegen-missing-salvage-guard.md)'s
 own documented, deliberately-unfixed remainder, now with a concrete,
 currently-failing corpus trigger instead of only a synthetic repro.
 Filed as its own issue rather than reopening 077 — that issue's fix
@@ -26,7 +26,7 @@ convention, not a defect in that one.
 `_CG_format_string`, `_CG_list_add`, ...) is unchecked.
 
 **Related:**
-[closed/077](closed/077-primitive-equality-codegen-missing-salvage-guard.md)
+[closed/077](077-primitive-equality-codegen-missing-salvage-guard.md)
 — the precedent this issue extends; read its "Final design" section
 first, especially the two false-positive categories it already found
 and worked around (`_CG_any`/void* paired with any pointer type is
@@ -35,10 +35,10 @@ never a real mismatch; some sites, e.g. `list.__add__`'s call to
 passed because the target macro does its own internal conversion —
 **a blanket per-argument check is not safe**, which is exactly why 077
 shipped a whitelist instead of a general rule).
-[056](closed/056-CGEN-degraded-index-type-raw-c-compile-error.md) —
+[056](056-CGEN-degraded-index-type-raw-c-compile-error.md) —
 the original "malformed C instead of a guarded degrade" convention
 this whole family extends.
-[018](../../issues/018-dict-mixed-key-types-boxing-failure.md) — a
+[018](../../../issues/closed/018-dict-mixed-key-types-boxing-failure.md) — a
 different mechanism found the same session (`rdb.py`), not this one;
 cross-referenced there for context, not a duplicate.
 
@@ -200,7 +200,7 @@ call site* whose actual argument type diverges from the *specific
 callee clone's* formal parameter type (not a `__pyc_c_call__` or
 generic-primitive argument at all) — outside this issue's own stated
 scope (`python_ifa_main.cc`'s `c_call_codegen`). Filed separately:
-[097](097-CGEN-callsite-vs-clone-formal-type-mismatch.md).
+[097](../097-CGEN-callsite-vs-clone-formal-type-mismatch.md).
 
 **Verified:**
 - `ifa --test`: 58/58.

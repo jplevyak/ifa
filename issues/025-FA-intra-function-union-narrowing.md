@@ -9,7 +9,7 @@ intra-function") is no longer the defect. Narrowing *works* for the
 case that has a coherent runtime representation: `is None` on a
 class-or-None union, end-to-end on both backends. The three
 originally-filed scalar cases were reassigned to
-[issues/018](../../issues/018-dict-mixed-key-types-boxing-failure.md) in
+[issues/018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md) in
 2026-08-11 and re-confirmed there today. What remains is one thing:
 **branch correlation is not recognised as a discriminator**, and over a
 union of user *classes* that costs spurious diagnostics — not wrong
@@ -26,7 +26,7 @@ also retires one item this doc had been asserting without evidence.
 per-branch narrowing application, `flow_var_type_permit`);
 `python_ifa_build_if1.cc`'s `build_builtin_call_pyda` (where the
 unrelated isinstance-on-classes fix lives). For Cases 1-3's actual
-fix, see [018](../../issues/018-dict-mixed-key-types-boxing-failure.md)
+fix, see [018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md)
 instead.
 
 ## Problem
@@ -181,7 +181,7 @@ today shows it's not the *proximate* blocker: the minimal Case 1/3
 repros above have **no discriminating predicate anywhere nearby** for
 narrowing — built or hypothetical — to even engage with, and they fail
 exactly the same way Case 2 does. The actual, common mechanism (see
-[018](../../issues/018-dict-mixed-key-types-boxing-failure.md) for the
+[018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md) for the
 full trace) is that a raw scalar union has no coherent runtime
 representation *at all* — FA clones an inherently invalid
 specialization for one union member (e.g. `str.__add__` fed an `int`)
@@ -262,7 +262,7 @@ open"). Cases 1-3 don't get this far regardless.
 
 1. **Cases 1-3 (scalar/basic-type-union narrowing or plain
    consumption)** — now understood to be
-   [018](../../issues/018-dict-mixed-key-types-boxing-failure.md)'s
+   [018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md)'s
    gap, not this issue's own. Track status there; nothing in this
    issue's own per-branch narrowing mechanism blocks or unblocks them.
 2. **Branch-correlation recognition** — Case 1's literal original
@@ -359,14 +359,14 @@ failure does not reproduce.
   still fail (re-run 2026-08-22, now as a runtime abort rather than
   the compile error recorded in 2026-08-11) — no `tests/` fixtures
   exist for them; tracked under
-  [018](../../issues/018-dict-mixed-key-types-boxing-failure.md)
+  [018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md)
   going forward rather than here.
 - Full `test_pyc.py`, both backends, whenever this issue's own
   narrowing mechanism (not 018's) is touched again.
 
 ## Cross-references
 
-- [018](../../issues/018-dict-mixed-key-types-boxing-failure.md) —
+- [018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md) —
   **the actual blocker for Cases 1-3**; a raw scalar/basic-type union
   has no coherent runtime representation for any polymorphic consumer.
   Start there, not here, for that work.

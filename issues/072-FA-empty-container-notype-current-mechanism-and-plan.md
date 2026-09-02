@@ -111,7 +111,7 @@ the `AVar::backward`/`setters` edges).
 [052](closed/052-FA-shared-method-branch-reopens-empty-list-fragility.md),
 [045](closed/045-receiver-cs-method-cloning.md) (the existing per-CS
 lever), [063](closed/063-no-type-bucket-triage.md) (the corpus "no type"
-bucket), [018](../../issues/018-dict-mixed-key-types-boxing-failure.md) /
+bucket), [018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md) /
 [030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) (heterogeneous boxing —
 the co-blocker for amaze/dijkstra2), [061](061-CGEN-multi-tuple-list-null-element-type.md)
 (the `(null)*` C-backend sibling).
@@ -147,7 +147,7 @@ element reads elsewhere are NOTYPE. Grounded manifestations:
   attributed to the inner allocation.
 - **amaze** (`(tuple __pyc_None_type__ int64 float64 str)`) — element is a
   genuinely **heterogeneous** union; even with element typing solved, the
-  representation needs boxing ([018](../../issues/018-dict-mixed-key-types-boxing-failure.md) /
+  representation needs boxing ([018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md) /
   [030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md)) — a *separate*
   co-blocker, not solved by element inference alone.
 - **dijkstra2** — dict/heap element cross-product (063's canary).

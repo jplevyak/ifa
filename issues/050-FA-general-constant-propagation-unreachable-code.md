@@ -394,7 +394,7 @@ written twice and read once, and the call graph proves the read sees a
 nothing gives the VALUE call-graph precision, which is exactly what 3b
 describes.
 
-Note this is NOT [018](../../issues/018-dict-mixed-key-types-boxing-failure.md):
+Note this is NOT [018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md):
 no valid program state has `g` holding both, so no representation is
 missing. It is interprocedural mem2reg for a scalar slot, as 3b says.
 

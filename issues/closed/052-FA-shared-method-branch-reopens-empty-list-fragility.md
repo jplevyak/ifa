@@ -230,9 +230,9 @@ Whatever makes the baseline pass, it is not 040's fix.
 single (operator, constant) pair that produces one extra EntrySet, and
 the failure is that TYPE_CONFLUENCE's splitting trajectory stops
 resolving NOTYPEs it resolves in the baseline. That is the same splitter
-machinery tracked by [074](074-FA-cross-pass-oscillation-plan.md),
-[111](111-FA-selective-invalidation-per-pass.md) and
-[113](113-FA-setter-equivalence-is-a-global-batch-partition.md).
+machinery tracked by [074](../074-FA-cross-pass-oscillation-plan.md),
+[111](../111-FA-selective-invalidation-per-pass.md) and
+[113](../113-FA-setter-equivalence-is-a-global-batch-partition.md).
 
 Next step for whoever takes it: a per-pass trace of *which* NOTYPE
 violations `split_for_violations` clears and which it does not, baseline

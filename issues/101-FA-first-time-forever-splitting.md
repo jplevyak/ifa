@@ -94,7 +94,7 @@ essentially never reuses a contour.
 
 ## Fix direction
 
-This is the shape [057](057-FA-nonconvergence-monomorphization.md)
+This is the shape [057](closed/057-sorted-tolist-fa-nonconvergence.md)
 names, and the author's recorded correction there applies: the answer is
 **monomorphization plus a productivity invariant**, not widening and not
 a bigger `CPA_LIMIT`. Concretely, what is missing is a rule that makes
@@ -413,7 +413,7 @@ benign.
 
 At default guards all four programs terminate. What they actually do is
 **fail to compile**, and all three of the genuine set fail in the *same*
-family — [018](../issues/018-dict-mixed-key-types-boxing-failure.md) /
+family — [018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md) /
 [030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md), a union with no
 codegen representation:
 
@@ -512,7 +512,7 @@ pointer is required. This is the 048/052 shape exactly.
   dynamic (sub)type: {None, int}` names the variable, the class and the
   union. pyc currently emits `sizeof_element of non-container type
   'float64'` from inside `__pyc__.py`. That is a cheap, self-contained
-  improvement to [018](../issues/018-dict-mixed-key-types-boxing-failure.md).
+  improvement to [018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md).
 - **Do not go looking for shedskin's union representation.** It does not
   have one. Boxing/tagging (030) remains genuinely unsolved work, not
   something to copy.
@@ -582,7 +582,7 @@ or report a dynamic type and stop. pyc carries the union forward, and
 codegen then has no representation to pick — which is precisely the
 `list::__mul__(_CG_any a1, _CG_any a2)` contour that makes `linalg` fail
 to build, and the same shape as
-[018](../issues/018-dict-mixed-key-types-boxing-failure.md).
+[018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md).
 
 ### So the mechanism is right and the keying is wrong
 
@@ -997,7 +997,7 @@ Generated-C size changed on exactly three:
 
 | mode | result |
 |---|---|
-| 0 | `sizeof_element of non-container type 'float64' (in __add__)` — emits 161 KB of C, then fails ([018](../issues/018-dict-mixed-key-types-boxing-failure.md)) |
+| 0 | `sizeof_element of non-container type 'float64' (in __add__)` — emits 161 KB of C, then fails ([018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md)) |
 | 1 | `mismatched field sizes: class 'closure' field 'x' mixes 8- and 1-byte members ('bool')` — **fails earlier, emits no C at all** |
 
 It does not compile either way, so this is not a regression in working

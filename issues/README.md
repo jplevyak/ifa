@@ -397,7 +397,7 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   fix, not real narrowing. The other three originally-filed cases
   (phi-merge re-discrimination, real narrowed-value use, `==`-constant
   return-type narrowing) all turn out to be
-  [018](../../issues/018-dict-mixed-key-types-boxing-failure.md)'s gap
+  [018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md)'s gap
   in disguise — a raw scalar union has no coherent runtime
   representation at all, so narrowing (even if built out further)
   wouldn't fix them; tracked there now, not here.
@@ -713,7 +713,8 @@ than an issue, which is why the file count is one higher):
 [098](closed/098-FA-per-pass-reset-scoped-to-reachable-set.md),
 [104](closed/104-unify-list-and-tuple-in-analysis.md),
 [109](closed/109-mixed-arity-tuple-slice-dispatch.md),
-[110](closed/110-override-duplicates-member-slot.md).
+[110](closed/110-override-duplicates-member-slot.md),
+[112](closed/112-CGEN-nondeterministic-emitted-c.md).
 
 ## When to file an issue here vs fix it now
 
@@ -737,5 +738,5 @@ Fix it now when:
 - [105](105-type-degeneration-in-shared-generic-methods.md) — shared generic container methods (`__add__`, `__lt__`, `__getitem__`) merge every caller's element types into one local; the real cause of plcfrs's 2232 violations.
 - [109](closed/109-mixed-arity-tuple-slice-dispatch.md) **(closed)** — tuple slicing is unimplemented: `t = (1,2,3,4); t[0:2]` aborts. sunfish's crash. Fixed by giving `tuple` a `__pyc_getslice__` and an element sym (`PYC_TUPELEM` on by default); sunfish's *remaining* runtime abort is [030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md)'s `{list, tuple}` union receiver.
 - [111](111-FA-selective-invalidation-per-pass.md) — every FA pass re-derives the whole program from bottom, so a pass that changes nothing costs full price: hq2x spends 48% of its FA time on four passes that produce byte-identical output. Selective (closure-scoped) invalidation instead of `clear_results()`. M1 measures whether the affected closure is small enough to pay.
-- [112](112-CGEN-nondeterministic-emitted-c.md) — two identical pyc invocations emit different C: msp_ss produces three different files from three runs (same 40211 lines, temps renumbered, one getter relocated between functions). FA state is reproducible, so it is downstream of the fixed point. Found by ifa/111's differential harness, which it would otherwise have made useless.
+- [112](closed/112-CGEN-nondeterministic-emitted-c.md) **(closed)** — two identical pyc invocations emit different C: msp_ss produces three different files from three runs (same 40211 lines, temps renumbered, one getter relocated between functions). FA state is reproducible, so it is downstream of the fixed point. Found by ifa/111's differential harness, which it would otherwise have made useless.
 - [113](113-FA-setter-equivalence-is-a-global-batch-partition.md) — setter equivalence classing is a global, per-pass BATCH partition whose invariant is maintained by the full reset rather than by the machinery, so nothing incremental can be built on FA. Blocks 111; seven approaches there failed for this one reason.

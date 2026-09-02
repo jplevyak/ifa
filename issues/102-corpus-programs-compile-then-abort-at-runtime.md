@@ -109,7 +109,7 @@ third cause again:
 It attributed all 27 crashes to the 018/030 family on the strength of the
 assertion text. That is wrong: **95 % are bottom-typed operands (class
 A)**, which is the NOTYPE family
-([049](049-FA-raise-only-contour-bottom-return.md) territory), and only
+([049](049-FA-raise-only-contour-notype.md) territory), and only
 ~5 % are the union/clone-discrimination problem 018 and 030 describe.
 
 ## Why nothing caught this
@@ -141,7 +141,7 @@ Two separable pieces:
 1. **Class A — bottom-typed operands — is the bulk of the work** and is
    NOT 018. **`life`'s nine class-A failures are now root-caused, and the
    cause is a frontend argument-binding bug, not FA:**
-   [issues/103](../issues/103-unknown-kwarg-silently-bound-positionally.md).
+   [issues/103](../../issues/103-unknown-kwarg-silently-bound-positionally.md).
    `life` calls `product((0,1), repeat=...)`; `pyc_lib`'s `product` has no
    `repeat` parameter; pyc silently binds the value to `B` instead of
    raising `TypeError`; the body then iterates an **int**, which has no

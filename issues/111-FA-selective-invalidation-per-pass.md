@@ -207,7 +207,7 @@ this harness useless at M3.
 different C on two identical invocations — same FA state
 (`violations=454 ess=891 css=2726`), same 40211 lines, but temps
 renumbered and one getter relocated between functions. Filed as
-[112](112-CGEN-nondeterministic-emitted-c.md).
+[112](closed/112-CGEN-nondeterministic-emitted-c.md).
 
 That drove two design corrections worth recording, because the naive
 harness would have been actively misleading at M3:

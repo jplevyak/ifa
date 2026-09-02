@@ -182,7 +182,7 @@ the `[csledger]` trace above:
 Also worth recording: the reproducer's violations go 2 → 4 under mode 3.
 It does **not** change any outcome — the program fails to compile under
 mode 0 and mode 3 alike (it is `.known_issue`-tagged for
-[018](../issues/018-dict-mixed-key-types-boxing-failure.md)) — and the
+[018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md)) — and the
 77-program corpus showed *zero* violation changes. But it is a real
 number that moved, so it is written down rather than rounded off.
 

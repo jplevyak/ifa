@@ -3,7 +3,7 @@
 **Status:** open — **naive interning is measured to SEGFAULT the
 compiler** (see "Attempted" below); the gap is real but the obvious fix
 is not safe without an ownership audit first. Filed 2026-08-30 out of
-[112](112-CGEN-nondeterministic-emitted-c.md), which tried interning as
+[112](closed/112-CGEN-nondeterministic-emitted-c.md), which tried interning as
 a fix, measured that it does not fix 112, and reverted it. The gap it
 found is real on its own and had no issue.
 **Affects:** `ifa/ifa.h` (`IFACallbacks::make_LUB_type`),
@@ -60,7 +60,7 @@ its own `has` vector, carried through clone and codegen.
 
 ## What this is NOT
 
-Not [112](112-CGEN-nondeterministic-emitted-c.md)'s root cause —
+Not [112](closed/112-CGEN-nondeterministic-emitted-c.md)'s root cause —
 measured. With interning in place msp_ss's structural type signature was
 still 5-of-6 distinct across runs and its emitted C 6-of-8, because the
 types Vars receive after `clone` differ **structurally** between runs,

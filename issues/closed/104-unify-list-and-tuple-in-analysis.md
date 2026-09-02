@@ -22,7 +22,7 @@ passengers. And the prerequisite `PYC_TUPELEM` costs `plcfrs` 2232 → 4353
 violations by pulling tuples into every container-keyed path.
 
 **Successor:** the real problem is type degeneration —
-[105](105-type-degeneration-repro.md).
+[105](../105-type-degeneration-in-shared-generic-methods.md).
 
 ## What already exists
 
@@ -102,7 +102,7 @@ This is an *upper bound* on what unification could remove — a mixed
 partition may have other distinguishing content — but for the tuple-heavy
 programs it is a substantial fraction, and `plcfrs` is one of the three
 that still do not converge
-([101](101-FA-first-time-forever-splitting.md)).
+([101](../101-FA-first-time-forever-splitting.md)).
 
 Related, from 101's element-type survey: **~50 % of container
 CreationSets already have no generic element type** (569 with a bottom
@@ -153,7 +153,7 @@ machinery.
 - `plcfrs`, `rdb`, `sudoku5` show a measurable drop in split count.
 - Full corpus: no exit-code changes **and** no run-status changes
   (`ifa/issues/runstatus.sh` — compile status alone is not evidence, see
-  [102](102-corpus-programs-compile-then-abort-at-runtime.md)).
+  [102](../102-corpus-programs-compile-then-abort-at-runtime.md)).
 
 
 ## What the experiment found (2026-08-17)
@@ -208,7 +208,7 @@ Unification has to keep a **provenance bit on the CreationSet** —
 "specialize at implementation" framing exactly: the bit is an
 implementation detail, not part of the type, and so must not enter
 contour identity (see
-[100](100-FA-display-removed-from-contour-identity.md)'s rule).
+[100](../100-FA-display-removed-from-contour-identity.md)'s rule).
 
 Two consequences to design around:
 
@@ -308,8 +308,8 @@ So layout unification could address **6 %** of the mixed partitions on
 
 **The dominant case is a heterogeneous tuple unioned with a list.** That
 is not a layout problem at all — it is the
-[018](../issues/018-dict-mixed-key-types-boxing-failure.md) /
-[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) boxing problem,
+[018](../../../issues/closed/018-dict-mixed-key-types-boxing-failure.md) /
+[030](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md) boxing problem,
 and no amount of unifying `list` with `tuple` touches it.
 
 ### Implementation cost, if pursued anyway
@@ -382,7 +382,7 @@ the shared generic accessors:
 pyc clones these and relies on **contour splitting** to give each
 receiver type its own copy. The union appearing inside them means the
 splitting has not separated them — which is
-[101](101-FA-first-time-forever-splitting.md), not a representation
+[101](../101-FA-first-time-forever-splitting.md), not a representation
 problem.
 
 So the union is a **pyc contour-separation artifact**, not an inherent
@@ -524,7 +524,7 @@ runs at all**.
 | `linalg` | pass 51, limit hit, viol **40**, ess 668 | pass 32, limit hit, viol **222** ✗, ess 577, css 1618 |
 
 **`plcfrs` converges** — one of the three programs from
-[101](101-FA-first-time-forever-splitting.md) — with violations down 97 %
+[101](../101-FA-first-time-forever-splitting.md) — with violations down 97 %
 and contours down 61 %. `go` improves. `linalg` gets much worse on
 violations.
 
@@ -789,7 +789,7 @@ pieces.
 What a post-FA merge *can* buy is fewer distinct generated types and
 smaller output. Measured on `plcfrs`: it does not get that far —
 `PYC_TUPELEM=1` alone emits 157 424 bytes of C and fails on the
-[018](../issues/018-dict-mixed-key-types-boxing-failure.md) union, while
+[018](../../../issues/closed/018-dict-mixed-key-types-boxing-failure.md) union, while
 adding `PYC_TUPLE_AS_LIST=1` makes the **compiler abort (rc=134) with no
 C at all**. The merge fires and then something downstream cannot handle
 the merged type.
@@ -1112,8 +1112,8 @@ The type is not "tuples of differing arity" — it is a **fully degenerated
 union of everything in the program**: bool, int, str, float, list, dict
 and half a dozen user classes, *plus* 25 tuple CreationSets that happen
 to span arities 2–4. The BOXING violation is caused by mixing scalars
-with pointers — [018](../issues/018-dict-mixed-key-types-boxing-failure.md) /
-[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) — and the tuples
+with pointers — [018](../../../issues/closed/018-dict-mixed-key-types-boxing-failure.md) /
+[030](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md) — and the tuples
 are incidental passengers.
 
 `with_multi_tuple=2083` equalling `WITH_MIXED_ARITY=2083` should have been
@@ -1131,7 +1131,7 @@ the causal reading of it was wrong.
 Not arity. plcfrs's real problem is **type degeneration** — how a
 variable comes to hold `{bool, int64, str, float64, list, dict,
 ChartItem, Edge, Rule, Entry, …}` at all. That is the 018/030 boxing
-family compounded by [101](101-FA-first-time-forever-splitting.md)'s
+family compounded by [101](../101-FA-first-time-forever-splitting.md)'s
 contour explosion, and a reproducer for *that* would be worth having.
 
 ### Status of this issue

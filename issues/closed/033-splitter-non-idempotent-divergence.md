@@ -861,7 +861,7 @@ existing single-candidate guard.
   exercise the matcher directly) unchanged; shedskin corpus sweep
   member set identical (23 compiled, same names) to the pre-change
   baseline; `bh` still fails on its known pre-existing issue
-  ([pyc issues/028](../../../issues/028-raise-exception-regression-qualified-dispatch.md)),
+  ([pyc issues/028](../../../issues/closed/028-raise-exception-regression-qualified-dispatch.md)),
   not a new failure.
 
 ### M2. Batch-stage extend (immutable-snapshot property, step 1) — REVERTED TWICE (crash, then a pygasus hang/severe slowdown after the crash was fixed; see status below). No part of M2a is on main. Do not retry cross-stage batching without M4 first, or without testing pygasus. The reverted diff is preserved on branch [`issue033-stage2-batching`](https://github.com/jplevyak/pyc/tree/issue033-stage2-batching) (checkpoint only, not mergeable as-is — see its note near the end of this section). **UPDATE 2026-07-13: M2b (decide-then-apply WITHIN stage 1) is LANDED — see the M2b status block at the end of this section. The M2a (cross-stage) verdict above stands unchanged.**

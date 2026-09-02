@@ -3,7 +3,7 @@
 **Status:** **closed 2026-08-29 — not reproducible.** Two sightings,
 2026-07-13 and 2026-07-14, and nothing since across six weeks of heavy
 `-v` use. Three deliberate reproduction attempts failed (an ASAN soak
-blocked by [094](094-FA-asan-heisenbug-blocks-sanitizer-diagnostics.md),
+blocked by [094](../094-FA-asan-heisenbug-blocks-sanitizer-diagnostics.md),
 a 30-compile gdb soak under corpus-sweep load, and the audit below).
 Of the three hypotheses filed here, two were ruled out and the third —
 the dump not being read-only — turned out to be a **real defect that
@@ -72,7 +72,7 @@ first symbolized trace almost certainly identifies a one-line
 guard, as it did for the two issue-033 crashes.
 
 **Attempted 2026-08-11, blocked before reaching bh/pygasus at all** —
-see [094](094-FA-asan-heisenbug-blocks-sanitizer-diagnostics.md). The
+see [094](../094-FA-asan-heisenbug-blocks-sanitizer-diagnostics.md). The
 ASAN build itself hit a different, unrelated-looking intermittent
 segfault on the simplest possible input (`hello_world.py`), and every
 attempt to localize *that* one changed whether it reproduced (a

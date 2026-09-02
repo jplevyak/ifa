@@ -320,7 +320,7 @@ from `name` before the loop even starts).
 ## New trigger of the known remaining gap — filed as ifa/issues/096 (2026-08-11)
 
 `shedskin_examples/msp_ss/msp_ss.py` (after fixing
-[issues/041](../../issues/041-stdlib-shim-stubs-silently-wrong.md)'s
+[issues/041](../../../issues/041-stdlib-shim-stubs-silently-wrong.md)'s
 `getopt` stub, unrelated to this issue directly — real `getopt`
 parsing made previously-dead-code-eliminated branches live for the
 first time, and some of them hit this) fails to compile with several
@@ -336,7 +336,7 @@ open issue —
 — rather than reopening this one (this issue's own fix is complete and
 correct for the narrow scope it set out to cover; 096 is the next
 scoped piece of the same convention). Cross-referenced from
-[issues/018](../../issues/018-dict-mixed-key-types-boxing-failure.md),
+[issues/018](../../../issues/closed/018-dict-mixed-key-types-boxing-failure.md),
 where a second, unrelated `rdb.py` failure found the same session is
 tracked.
 

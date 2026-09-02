@@ -83,7 +83,7 @@ polymorphic-dispatch-target-selection mechanism; NOT obviously the
 same bug (that's about choosing among *multiple candidate Funs*; here
 there is exactly one resolved target, `get_target_fun_core` presumably
 already returns non-null) but close enough in territory to check.
-[018](../../issues/018-dict-mixed-key-types-boxing-failure.md) — same
+[018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md) — same
 session's other `msp_ss`/`rdb`-adjacent finding, a different mechanism
 (container-method-vs-scalar `sizeof_element` gap), not a duplicate.
 [closed/073](closed/073-teach-splitter-productive-vs-inert-context.md)

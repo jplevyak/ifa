@@ -1,6 +1,11 @@
 # 112 — two identical pyc invocations emit different C
 
-**Status: FIXED 2026-08-30.** `msp_ss` (1 output of 10 runs, was 3 of
+**Status: CLOSED 2026-09-02** — fixed 2026-08-30, archived after
+re-verifying: `msp_ss` compiled 6 consecutive times on the current tree
+produced 6 byte-identical `.c` files (`2ff0b4d15a10205e`), against
+"3 of 3 differ" when this was filed.
+
+**FIXED 2026-08-30.** `msp_ss` (1 output of 10 runs, was 3 of
 3 and "always differs"), `timsort` (1 of 6) and `deepcopy_objects` (1 of
 6) are all deterministic, as are `richards`, `sudoku1`, `chess` and `go`
 on a 3-run spot check. Six ordering sources in total; the last and
@@ -137,7 +142,7 @@ immediately before M3 perturbs FA. One change at a time.
 ## Superseded suspicion (kept: it was right in family, wrong in place)
 
 First guess was clone/emission ordering — the shape
-[closed/035](closed/035-nondeterministic-codegen-clone-order.md) fixed
+[closed/035](035-nondeterministic-codegen-clone-order.md) fixed
 before. Right family (a `set_add`-populated `Vec` iterating in
 heap-layout order), wrong stage: it is the reverse-CFG edge set, built
 during CFG construction, well upstream of clone.
@@ -174,13 +179,13 @@ on, and reproducible builds generally.
 
 ## Related
 
-- [closed/035](closed/035-nondeterministic-codegen-clone-order.md) —
+- [closed/035](035-nondeterministic-codegen-clone-order.md) —
   nondeterministic clone order, same family, fixed. Worth re-reading
   first: this may be a surviving path of the same defect.
-- [closed/009](closed/009-fa-violations-nondeterminism.md) — FA
+- [closed/009](009-fa-violations-nondeterminism.md) — FA
   violation-order nondeterminism, also fixed. FA state is stable here,
   so this is not that.
-- [111](111-FA-selective-invalidation-per-pass.md) — found by its
+- [111](../111-FA-selective-invalidation-per-pass.md) — found by its
   harness; that harness now works around this rather than waiting on it.
 
 ## Fixed 2026-08-30 — three sources, and the one that was not cosmetic
@@ -334,7 +339,7 @@ worth doing once the real root is fixed (`make_LUB_type` is still a
 default no-op, so structurally equal unions really are distinct Syms) —
 key it on the sorted component list, which `compar_syms` already
 provides. **Filed separately as
-[120](120-union-types-are-never-interned.md)**, with the measurement:
+[120](../120-union-types-are-never-interned.md)**, with the measurement:
 1323 SUM Syms for 27 distinct unions on msp_ss.
 
 **So the search moves upstream again:** what makes `clone` assign

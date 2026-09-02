@@ -81,7 +81,7 @@ through the degenerate methods, or the contour-count interaction from
 - It is a *precision* metric that is invisible in test output, so nothing
   in the suite currently guards it. `IFA_DBG_DEGEN` plus the reproducer's
   74/89 give a number a fix can be measured against.
-- It connects [018](../issues/018-dict-mixed-key-types-boxing-failure.md)
+- It connects [018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md)
   (no representation for `{scalar, pointer}`) to
   [101](101-FA-first-time-forever-splitting.md) (contours not separating
   shared container methods): 018 is the *symptom*, 101 is the *mechanism*,
@@ -166,7 +166,7 @@ are typed apart.
 
 ### Revised fix direction
 
-This is [018](../issues/018-dict-mixed-key-types-boxing-failure.md) — a
+This is [018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md) — a
 `{scalar, pointer}` union with no representation — reached through a
 control-flow merge rather than a container. Either:
 
@@ -197,7 +197,7 @@ f3.cpp:18:51: error: expected type-specifier before '__ss_floa'
 compile. And shedskin compiles `plcfrs`. Therefore **`plcfrs` does not
 contain a branch-merged container/scalar union**, and the three-line test
 reproduces the *message* but not the *situation*. It has been re-labelled
-as a plain [018](../issues/018-dict-mixed-key-types-boxing-failure.md)
+as a plain [018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md)
 instance.
 
 That is the second time in this issue, and the third across

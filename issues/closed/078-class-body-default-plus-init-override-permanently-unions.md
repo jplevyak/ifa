@@ -38,7 +38,7 @@ property of how fields are modeled.
 **Related:** [076](076-mutation-driven-receiver-divergence-not-cloned.md)
 (the concrete `dict`/`set` instance and fix — read that issue's
 "RESOLVED" section first, this issue is its generalization),
-[017](../../issues/closed/017-multi-instance-mutation-corruption.md)
+[017](../../../issues/closed/017-multi-instance-mutation-corruption.md)
 (project-level; the *runtime* half of the same class-body-default
 footgun, already fixed — this issue is entirely about the *residual
 static-analysis* consequence 017's fix didn't and couldn't address).
