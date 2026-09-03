@@ -878,6 +878,16 @@ void cg_report_slot_use(FA *fa) {
     fprintf(stderr, "[slotuse] BY EMISSION: method slots with no emitted access = %ld of %ld (%ld%%); "
                     "name-matching alone would have kept %ld of those alive\n",
             unemitted, methods, methods ? 100 * unemitted / methods : 0, name_only);
+    // Name the slots that ARE read: with a precise call graph these
+    // should be only the genuinely polymorphic dispatches.
+    for (int k = 0; k < cg_slot_use_cls.n; k++)
+      if (cg_slot_use_rd.v[k]) {
+        Sym *t = cg_slot_use_cls.v[k];
+        int i = cg_slot_use_idx.v[k];
+        cchar *nm = (t && i >= 0 && i < t->has.n && t->has[i] && t->has[i]->name) ? t->has[i]->name : "?";
+        if (!method_names.set_in(nm)) continue;  // data field read, not a slot
+        fprintf(stderr, "[slotuse] READ-METHOD %s.e%d /* %s */\n", t && t->name ? t->name : "?", i, nm);
+      }
     fprintf(stderr, "[slotuse] NEVER READ (only written, or untouched) = %ld of %ld method slots (%ld%%)\n",
             unread, methods, methods ? 100 * unread / methods : 0);
   }

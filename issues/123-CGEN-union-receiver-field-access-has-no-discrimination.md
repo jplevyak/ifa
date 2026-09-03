@@ -681,3 +681,46 @@ The measurement itself is unaffected and stands: 93-98% of method slots
 are never read, from the same instrumentation, in a single emission.
 
 Default `make test` 309 passed / 18 known / 0 failed; both flags off.
+
+### Why the surviving reads are not dead: they are the real dispatches
+
+Naming the read slots (`IFA_DBG_SLOTUSE=1`, `READ-METHOD` lines) answers
+it. Two things fell out.
+
+**Most "reads" are DATA fields, not slots at all** — `thelist`,
+`position`, `i`, `j`, `handle`, `args`, `seed`, `d0`. Filtering to
+members whose name matches a function leaves a very short list, and
+every entry on it is a genuine polymorphic dispatch:
+
+```
+bh (9)        Exception / SystemExit / StopIteration  .__str__
+              Body.e20 / Cell.e18   .load_tree
+              Body.e22 / Cell.e20   .walk_sub_tree
+              Body.e17 / Cell.e17   .hack_cofm
+go (4)        StopIteration / AssertionError  .__str__
+              UCTNode  .__not__ , .__pyc_to_bool__
+richards (7)  Exception / StopIteration / AssertionError  .__str__
+              DeviceTask / HandlerTask / IdleTask / WorkTask  .fn
+```
+
+So the vtable is not vestigial by accident — it is carrying exactly the
+sites where FA could not resolve a single target. bh's six are the
+octree walk over `subp`, a real `{Cell, Body}` union (`hack_cofm` reads
+`r.pos` and calls `r.hack_cofm()` on it); richards' four are the Task
+function dispatch over four subclasses; the `__str__` ones are `str()`
+on an exception whose class is not statically known. These are the
+"modulo OOP dispatch" cases, and they are irreducible without runtime
+type information.
+
+**And the two findings converge.** `Body.e20 load_tree` against
+`Cell.e18 load_tree` — the same method, reached through the same union,
+at DIFFERENT slot indices. That is the exact conflict
+`collect_prefix_groups` reports (`'load_tree' at Cell[18] vs Body[20]`).
+The handful of slots that survive elimination are precisely the ones on
+classes that need the prefix alignment, which is a good sign that the
+two pieces of work are aimed at the same small population rather than
+overlapping.
+
+The practical consequence: eliminating the 93-98% is not competing with
+dispatch — nothing reads those slots, and the ones that ARE read are
+few enough (4-9 per program) to enumerate and reason about individually.
