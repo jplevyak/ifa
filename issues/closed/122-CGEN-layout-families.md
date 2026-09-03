@@ -1,7 +1,12 @@
 # 122 — name the LAYOUT FAMILY, so unused struct fields can be elided safely (and the blind-cast invariant becomes checkable)
 
-**Status:** **Phase 0 LANDED 2026-09-01** (the contract is now recorded and checked; see "Phase 0 as built"). Phases 1-3 open. Written 2026-09-01 after
-[121](121-CGEN-dead-clones-emitted.md)'s category 2 measured the prize
+**Status: CLOSED 2026-09-03 — all phases landed and default-on.** Phase 0
+2026-09-01 (the contract; see "Phase 0 as built"); Phases 1-3 on
+2026-09-03, built under
+[123](../123-CGEN-union-receiver-field-access-has-no-discrimination.md)
+rather than here, and by a different route than planned — see "How it
+actually landed" at the bottom. Written 2026-09-01 after
+[121](../121-CGEN-dead-clones-emitted.md)'s category 2 measured the prize
 (**269 of pygmy's 275 candidate slots are provably dead**), built a
 working analysis for it, and then failed at run time on
 `tests/method_override_field_offset.py`.
@@ -50,7 +55,7 @@ Two things, and the first is worth landing on its own.
 
 Nothing today states the prefix-compatibility rule, let alone checks it.
 It is enforced only by the accident of dense layout, which is exactly why
-[110](closed/110-override-duplicates-member-slot.md) was able to happen
+[110](110-override-duplicates-member-slot.md) was able to happen
 (an override appended a second slot and shifted every later field).
 
 - **Record every blind cast the emitter performs**: at each site that
@@ -113,14 +118,14 @@ bh:  'Cell' blind-cast to 'Body', read at e28,
 `_CG_int64`** -- every later field shifts by 7 -- and segfaults
 (`run_rc=139`). `bh` casts to a struct one member short, and aborts
 (`run_rc=139`). Both are
-[102](102-corpus-programs-compile-then-abort-at-runtime.md) members that
+[102](../102-corpus-programs-compile-then-abort-at-runtime.md) members that
 now have a named, located, compile-time cause instead of only a crash.
 
 **Fatal in every mode as of 2026-09-01.** It first landed as a warning
 under the default (permissive) mode, on the reasoning that seeing the
 problem is a separate decision from failing builds that work today. That
 reasoning does not survive
-[123](123-CGEN-union-receiver-field-access-has-no-discrimination.md):
+[123](../123-CGEN-union-receiver-field-access-has-no-discrimination.md):
 unlike a type violation, a layout violation has **no permissive
 meaning**. `--permissive` accepts a type violation and inserts a runtime
 check; there is no runtime check for reading one class's field through
@@ -171,7 +176,7 @@ formality.
 ## The alternative that dissolves the problem
 
 Phases 1-2 exist only because method pointers live **in every instance**.
-[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) is about moving
+[030](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md) is about moving
 polymorphic dispatch off that model. With a per-class vtable, the dead
 method slots do not need eliding — **they do not exist**, `vec` stops
 carrying 23 method pointers next to its three doubles, and the
@@ -200,3 +205,62 @@ Directly: 121's category 2, the last measured source of emitted-but-dead
 output. More usefully, Phase 0 gives pyc a checked statement of the
 object-layout contract that three separate issues (110, 121, and this
 one) have each had to rediscover by debugging a miscompile.
+
+
+## How it actually landed (2026-09-03)
+
+All three phases are done and on by default. The route differed from the
+plan in three ways worth recording.
+
+**Phase 1 — naming the family.** Not union-find over Phase 0's cast
+pairs. `collect_prefix_groups` (clone.cc) groups classes that co-occur in
+a `P_prim_period` receiver, keeping only groups whose members disagree on
+a shared member's index. Published as `ifa_prefix_groups` for codegen.
+Very selective: 0-2 groups per program, and pygmy's three genuine sibling
+pairs need **nothing**, because equal member sets already align.
+
+**Phase 2 — family-consistent elision.** As specified: a slot is
+elidable iff no class in its family uses it, and the family then elides
+identically; the member becomes a zero-width `char eN[0]`. Two
+departures:
+
+- **No struct-definition deferral was needed.** The plan called for
+  `build_type_strings` to leave a marker and splice the structs back
+  later. Instead the elision runs BEFORE `build_type_strings` and nulls
+  `has[i]->type`, which is the existing issues/055 + issues/121
+  placeholder path — the emitter already writes `char eN[0]` for a
+  null-typed member, and `cg_field_live` already goes false, so every
+  guarded access site elides it by a test it already applies.
+- **The used-set is computed, not collected during emission.**
+  Discovery-by-emission was tried and fails: `write_c` is not
+  idempotent, and a throwaway pass corrupts compiler state (218 of 327
+  tests fail with the pass alone and the elision suppressed).
+  `cg_compute_slot_reads` derives it from the call graph instead,
+  calling codegen's own `symbol_info` / `resolve_union_receiver` /
+  `poly_dispatch_classtag_targets` rather than restating them.
+
+**Phase 3 — measured.** Against this issue's own calibration point:
+
+| pygmy | before | after |
+|---|---|---|
+| real struct members | 381 | **52** |
+| zero-width placeholders | 188 | 517 |
+
+~2632 bytes saved, exceeding the 2152 predicted. richards 1032 → 214
+members, go 787 → 120, bh 753 → 140 — 80-85% program-wide.
+
+Corpus `-m check` A/B: compile_fail 2 → 2, run_fail 43 → **40**,
+stdout_differs 24 → 24. No regressions; three programs that timed out
+now complete. The canary, `tests/method_override_field_offset.py`,
+passes with zero diagnostics and correct output.
+
+**On "the alternative that dissolves the problem".** This issue argued
+Phases 1-2 are throwaway if [030](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md)
+lands a per-class vtable soon. That reasoning still holds in principle,
+but the measurement changes the priority rather than the design:
+[126](../126-assess-residual-method-slot-reads.md) found that after this
+elision the surviving vtable is **4-9 slots per program** — one
+`__str__` per exception class (a `__pyc_unhandled_exception__`
+artifact), the genuinely polymorphic sibling dispatches, and one
+Optional-truthiness narrowing gap. There is very little left for 030 to
+dissolve.

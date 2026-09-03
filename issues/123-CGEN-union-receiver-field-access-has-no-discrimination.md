@@ -5,7 +5,7 @@
 segfault as of the same day (fix 2). `go`'s crash is fully explained:
 `node.losses += 1` on a UCTNode is emitted through Square's layout and
 increments the `unexplored` POINTER instead.
-Found by [122](122-CGEN-layout-families.md) Phase 0's layout-contract
+Found by [122](closed/122-CGEN-layout-families.md) Phase 0's layout-contract
 check, which reported it at 20 sites in `go` and 1 in `bh` **at compile
 time** — both programs previously only crashed.
 

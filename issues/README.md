@@ -529,7 +529,7 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   Explicitly ruled out as ifa/121's clone blindness — `IFA_DBG_VAREQ`
   reports zero `Square vs UCTNode` pairs.
 
-- [122-CGEN-layout-families.md](122-CGEN-layout-families.md)
+- [122-CGEN-layout-families.md](closed/122-CGEN-layout-families.md)
   — **plan.** Field access is by member NAME, but a method shared between
   a base and its subclasses is emitted once and BLIND-CASTS the receiver
   to one class's layout, so C takes the offset from the cast-to struct.
@@ -726,6 +726,7 @@ than an issue, which is why the file count is one higher):
 [109](closed/109-mixed-arity-tuple-slice-dispatch.md),
 [090](closed/090-CGEN-tuple-arity-cant-vary-across-loop-iterations.md),
 [110](closed/110-override-duplicates-member-slot.md),
+[122](closed/122-CGEN-layout-families.md),
 [112](closed/112-CGEN-nondeterministic-emitted-c.md).
 
 ## When to file an issue here vs fix it now
