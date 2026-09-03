@@ -2874,29 +2874,97 @@ static inline bool homogeneous_tuple(Sym *s) {
 // breaks bh/block/chull/doom/rubik/softrender), and `cg_field_live`
 // becomes false so the polymorphic-slot store, the getter and the setter
 // all elide it by the tests they already apply.
-static void cg_elide_unread_slots(FA *fa, Fun *init, Vec<Var *> *globals) {
-  if (!getenv("PYC_ELIDE_SLOTS")) return;
+// ifa/issues/123: compute which (class, slot) pairs are READ, WITHOUT
+// emitting.
+//
+// The first attempt discovered readership by emitting every body into a
+// throwaway buffer. That does not work: `write_c` is not idempotent, and
+// a second emission corrupts compiler state -- measured, 218 of 327
+// tests fail with the discovery pass alone and the elision suppressed.
+//
+// So compute it directly, reusing the SAME helpers codegen uses at each
+// read site rather than restating their logic, which is what makes this
+// safe from drift (the objection that retired the earlier name-matching
+// analysis). There are exactly two ways a class member is read:
+//
+//   1. the P_prim_period getter, whose receiver class is
+//      `resolve_union_receiver(n->rvals[1]->type, selector)` and whose
+//      selector comes from `symbol_info` -- both called here verbatim;
+//   2. the classtag dispatch, whose (class, slot) pairs come from
+//      `poly_dispatch_classtag_targets` -- called here verbatim, on the
+//      same `f->calls.get(pn)` candidate set with the same
+//      `poly_dispatch_directly_owned` filter.
+Vec<Vec<Sym *> *> cg_recv_groups;  // classes sharing one receiver
+
+static void cg_compute_slot_reads(FA *fa) {
+  cg_recv_groups.clear();
   cg_slot_use_cls.clear();
   cg_slot_use_idx.clear();
   cg_slot_use_rd.clear();
-  for (Fun *f : fa->funs) if (f != init && !f->is_external) {
-    char *b = nullptr;
-    size_t l = 0;
-    FILE *m = open_memstream(&b, &l);
-    if (!m) return;
-    write_c(m, fa, f);
-    fclose(m);
-    free(b);
+  for (Fun *f : fa->funs) {
+    if (!f->live) continue;
+    for (PNode *pn : f->fa_all_PNodes) {
+      if (!pn || !pn->live) continue;
+      if (pn->prim && pn->prim->index == P_prim_period && pn->rvals.n > 3) {
+        Vec<Sym *> symbols;
+        symbol_info(pn->rvals[3], symbols);
+        cchar *symbol = nullptr;
+        if (symbols.n == 1)
+          symbol = symbols[0]->name;
+        else if (pn->rvals[3]->sym && pn->rvals[3]->sym->is_symbol)
+          symbol = pn->rvals[3]->sym->name;
+        // Classes reached through ONE receiver must agree on which slots
+        // exist: eliding a name on one and not its sibling changes the
+        // byte offsets and breaks the blind cast (measured -- richards:
+        // "'HandlerTaskRec' is blind-cast to 'IdleTaskRec' ... member
+        // width differs at e12 (_CG_void vs <placeholder>)"). Record the
+        // co-occurring sets so readership can be unioned over them.
+        if (symbol && pn->rvals[1]->type && pn->rvals[1]->type->type_kind == Type_SUM) {
+          Vec<Sym *> *grp = new Vec<Sym *>;
+          for (Sym *mem : pn->rvals[1]->type->has) if (mem && mem->type_kind == Type_RECORD) grp->set_add(mem);
+          grp->set_to_vec();
+          if (grp->n > 1) cg_recv_groups.add(grp);
+        }
+        if (symbol && pn->rvals[1]->type) {
+          Sym *obj = resolve_union_receiver(pn->rvals[1]->type, symbol);
+          if (obj)
+            for (int i = 0; i < obj->has.n; i++)
+              if (obj->has[i] && obj->has[i]->name && symbol == obj->has[i]->name && cg_field_live(obj, i)) {
+                cg_note_slot_use(obj, i, 1);
+                break;
+              }
+        }
+      }
+      Vec<Fun *> *fns = f->calls.get(pn);
+      if (fns && fns->n > 1) {
+        Vec<cchar *> directly_owned;
+        poly_dispatch_directly_owned(fns, directly_owned);
+        for (Fun *cand : *fns) {
+          if (!cand || !cand->sym) continue;
+          Vec<Sym *> rts;
+          Vec<int> rt_slots, rt_ridxs;
+          poly_dispatch_classtag_targets(cand, pn, directly_owned, rts, rt_slots, rt_ridxs);
+          for (int ri = 0; ri < rts.n; ri++) cg_note_slot_use(rts[ri], rt_slots[ri], 1);
+        }
+      }
+    }
   }
-  {
-    char *b = nullptr;
-    size_t l = 0;
-    FILE *m = open_memstream(&b, &l);
-    if (!m) return;
-    write_c(m, fa, init, globals);
-    fclose(m);
-    free(b);
-  }
+}
+
+// ifa/issues/123: drop method slots nothing ever READS.
+//
+// The elision is `has[i]->type = nullptr`, which is the existing
+// issues/055 + issues/121 placeholder path rather than a new mechanism:
+// the struct emitter then writes a ZERO-WIDTH `char eN[0]`, keeping the
+// eN numbering dense (issues/055 measured that removing a slot outright
+// breaks bh/block/chull/doom/rubik/softrender), and `cg_field_live`
+// becomes false so the polymorphic-slot store, the getter and the setter
+// all elide it by tests they already apply. The struct emitter does NOT
+// consult cg_field_live -- it checks `!has[i]->type` -- so nulling the
+// type is the only lever that reaches it.
+static void cg_elide_unread_slots(FA *fa) {
+  if (!getenv("PYC_ELIDE_SLOTS")) return;
+  cg_compute_slot_reads(fa);
   Vec<cchar *> method_names;
   for (Fun *f : fa->funs)
     if (f && f->sym && f->sym->name) method_names.set_add(f->sym->name);
@@ -2912,11 +2980,23 @@ static void cg_elide_unread_slots(FA *fa, Fun *init, Vec<Var *> *globals) {
       bool read = false;
       for (int k = 0; k < cg_slot_use_cls.n; k++)
         if (cg_slot_use_cls.v[k] == t && cg_slot_use_idx.v[k] == i && cg_slot_use_rd.v[k]) { read = true; break; }
+      // Conservative and layout-safe: a name is elidable only if it is
+      // unread on EVERY class that has a member of that name. Anything
+      // narrower has to model which classes are blind-cast to each
+      // other, and that relation is only discovered during emission --
+      // restricting to Type_SUM receiver groups was tried and still left
+      // 26 contract violations on richards. Given 93-98% of slots are
+      // never read anywhere, the global rule keeps most of the win.
+      if (!read)
+        for (int k = 0; k < cg_slot_use_cls.n && !read; k++) {
+          if (!cg_slot_use_rd.v[k]) continue;
+          Sym *o = cg_slot_use_cls.v[k];
+          int j2 = cg_slot_use_idx.v[k];
+          if (o && j2 >= 0 && j2 < o->has.n && o->has[j2] && o->has[j2]->name &&
+              !strcmp(o->has[j2]->name, m->name))
+            read = true;
+        }
       if (read) continue;
-      // PYC_ELIDE_SLOTS=2: run the discovery pass but elide NOTHING, to
-      // separate "the double emission corrupts state" from "the elision
-      // is wrong".
-      if (atoi(getenv("PYC_ELIDE_SLOTS")) == 2) continue;
       m->type = nullptr;  // -> zero-width placeholder, cg_field_live false
       elided++;
     }
@@ -2926,6 +3006,7 @@ static void cg_elide_unread_slots(FA *fa, Fun *init, Vec<Var *> *globals) {
   cg_slot_use_idx.clear();
   cg_slot_use_rd.clear();
 }
+
 
 static void build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
 // build builtin map
@@ -3068,9 +3149,13 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
   Vec<Var *> globals;
   int index = 0;
   if (!if1->callback->c_codegen_pre_file(fp)) fprintf(fp, "#include \"c_runtime.h\"\n\n");
+  // ifa/issues/123: BEFORE build_type_strings -- the elision nulls
+  // has[i]->type so the struct emitter writes a zero-width placeholder,
+  // which only works if the structs have not been written yet. Placed
+  // after it, the members stayed and only their stores disappeared.
+  cg_elide_unread_slots(fa);
   build_type_strings(fp, fa, globals);
   cg_build_new_to_val_map(fa);
-  cg_elide_unread_slots(fa, init, &globals);
   if (globals.n) {
     fputs("\n/*\n Global Variables\n*/\n\n", fp);
   }

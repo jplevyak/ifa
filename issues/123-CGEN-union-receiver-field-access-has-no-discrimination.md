@@ -724,3 +724,67 @@ overlapping.
 The practical consequence: eliminating the 93-98% is not competing with
 dispatch — nothing reads those slots, and the ones that ARE read are
 few enough (4-9 per program) to enumerate and reason about individually.
+
+## 2026-09-03 (later still): the elision WORKS — as a separate analysis
+
+Discovery-by-emission is abandoned (`write_c` is not idempotent, above).
+`cg_compute_slot_reads` computes readership directly instead, reusing
+the SAME helpers codegen calls at each read site rather than restating
+their logic — which is what keeps it from drifting, the objection that
+retired the name-matching analysis:
+
+- the `P_prim_period` getter: `symbol_info` for the selector, then
+  `resolve_union_receiver(n->rvals[1]->type, symbol)` for the class,
+  both called verbatim;
+- the classtag dispatch: `poly_dispatch_classtag_targets` on the same
+  `f->calls.get(pn)` candidate set with the same
+  `poly_dispatch_directly_owned` filter, called verbatim.
+
+`PYC_ELIDE_SLOTS=1` then nulls `has[i]->type` for every method slot with
+no read, and the suite is **309 passed / 18 known / 0 failed** — the
+same as the default path. Placement matters: the call must come BEFORE
+`build_type_strings`, since nulling the type is what makes the emitter
+write the zero-width placeholder. Placed after it, the members stayed
+and only their stores vanished (richards: 108 fewer C lines, structs
+unchanged).
+
+On richards the structs go from **879 real members to 543** (359 → 695
+zero-width): 336 slots × 8 bytes.
+
+### And it is COUPLED to the prefix layout
+
+Eliding on the corpus fails where the suite does not:
+
+```
+error: 'HandlerTaskRec' is blind-cast to 'IdleTaskRec' and read at e17,
+       but member width differs at e12 (_CG_void vs <placeholder>)
+```
+
+Sibling classes hold the same names at DIFFERENT indices, so eliding
+per-name still diverges per-index — one class gets a real member at e12
+and its sibling a placeholder, and the blind cast breaks. Restricting
+elision to `Type_SUM` receiver groups did not help (26 violations), nor
+did the maximally conservative "elidable only if unread on EVERY class
+that has the name" (26 again), because neither addresses the index
+mismatch.
+
+What does address it is the prefix layout, and the measurement is clean:
+
+| richards | layout-contract violations |
+|---|---|
+| elide only | 26 |
+| **elide + prefix** | **0** |
+| prefix only | 0 |
+
+So the two features are one feature. Prefix alignment makes sibling
+classes agree on indices; elision then removes the same slot from all of
+them consistently. Neither the padding cost nor the slot waste is worth
+addressing alone — with both on, the suite is 309/0 and the pad is
+mostly eliding away.
+
+The layout contract (ifa/122) is what made this diagnosable: every
+divergence surfaced as a hard error naming the two classes and the slot,
+never as a silent miscompile.
+
+**Still owed before default-on:** the corpus A/B, now for the pair
+rather than for padding alone.
