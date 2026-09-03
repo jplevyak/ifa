@@ -275,3 +275,73 @@ sunfish, go. `make test` 309/18/0 with the flag off.
 So the criterion is now "split when the merge would actually cost
 something", not "split whenever the classes differ" — which is the same
 principle the prefix-layout analysis uses, applied one phase earlier.
+
+## Assessment complete (2026-09-03), with all three of ifa/123 default-on
+
+Residue re-measured with elision, prefix layout and class-aware
+equivalence all on. It is stable and small:
+
+```
+bh (9)        Exception / SystemExit / StopIteration  .__str__
+              Body/Cell  .load_tree , .walk_sub_tree , .hack_cofm
+go (4)        StopIteration / AssertionError  .__str__
+              UCTNode  .__not__ , .__pyc_to_bool__
+richards (7)  Exception / StopIteration / AssertionError  .__str__
+              DeviceTask / HandlerTask / IdleTask / WorkTask  .fn
+tictactoe (3) StopIteration / SpaceNotEmpty / MultiVictory  .__str__
+pygmy (6)     plane / sphere            .intersect
+              parallellight / pointlight .light
+              spotshader / everythingshader .shade
+```
+
+### Group 1 — `__str__` on exceptions: a LIBRARY ARTIFACT. Confirmed.
+
+Minimised: `try/except` alone produces **no** `__str__` dispatch; a bare
+`raise E()` produces one, *even with every `print` removed from the
+program*. Following it into the emitted C names the caller:
+
+```c
+_CG_nil_type _CG_f_5455_26/*__pyc_unhandled_exception__*/() { ... ->e10 ... }
+```
+
+The library's uncaught-exception handler calls `__str__` on the
+exception to report it. Every class that can be raised therefore flows
+into one union there, and printing it needs a real dispatch.
+
+So it is genuine polymorphism *of the library*, not of the user program
+— which makes it irreducible as long as the handler formats the
+exception, but it is also the whole reason every program carries a
+`__str__` slot on every exception class. Removing it means the handler
+not calling `__str__` (losing the message), or a classtag-switch in the
+handler rather than a slot. Not obviously worth it: after elision the
+cost is one slot on 2-3 classes.
+
+### Group 2 — genuine container/sibling polymorphism. Irreducible.
+
+bh's octree (`Cell.subp` really holds both `Cell` and `Body`) and all
+six of pygmy's are textbook: two shape classes behind `intersect`, two
+light classes behind `light`, two shader classes behind `shade`. Nothing
+to do here; this is what a vtable is for.
+
+### Group 3 — resolved, and it splits.
+
+- **richards' `.fn` is a real method**, not a data attribute holding a
+  function: `def fn(self, pkt, r)` is defined in all four Task
+  subclasses (richards.py:246, 267, 299, 322) and called from the base's
+  `return self.fn(msg, self.handle)` at :201. Irreducible, group 2 after
+  all.
+- **go's `UCTNode.__not__` / `__pyc_to_bool__` is NOT polymorphism.** It
+  comes from `if node.parent:` (go.py:379), a truthiness test on an
+  `Optional[UCTNode]`. The receiver is `{UCTNode, None}`, so pyc
+  dispatches through a slot where a NULL CHECK would do. This is the one
+  avoidable entry in the whole residue, and it wants Optional-narrowing
+  at the condition rather than anything in this issue.
+
+### Conclusion
+
+After ifa/123, the vtable is: one `__str__` per exception class (library
+artifact), the genuinely polymorphic sibling dispatches, and one
+Optional-truthiness case that narrowing should remove. That is a
+handful of slots per program against the 800-1000 now elided — the
+"eliminate unused slots" work has taken pyc from a vtable on every class
+to a vtable on the few sites that actually dispatch.
