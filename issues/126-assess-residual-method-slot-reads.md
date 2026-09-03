@@ -72,3 +72,44 @@ would exist for a handful of genuinely polymorphic containers, and
 "eliminate unused slots" (123) becomes close to "eliminate the vtable".
 That changes the cost/benefit of every other dispatch idea in
 [030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md).
+
+## Assessed: `Basic_block | Union_find_node` — shedskin says imprecision
+
+The union blocking slot elision in `tests/list_index_type_mismatch_salvage`
+(havlak loop finder) is **not in the program**. shedskin translates the
+same file cleanly and types everything concretely:
+
+```cpp
+class Union_find_node { Basic_block *bb_; Simple_loop *loop_;
+                        Union_find_node *parent_; __ss_int dfs_number_; };
+class Basic_block     { __ss_int name_;
+                        list<Basic_block *> *in_edges_, *out_edges_; };
+```
+
+There is exactly **one** `pyobj *` in the whole generated `.cpp` — i.e.
+essentially no unions anywhere, and certainly not between these two
+classes, which share no base but `object`.
+
+pyc's union appears at **`__eq__`**: `IFA_DBG_SLOTUSE=1` reports
+`READ-METHOD Basic_block.e1 /* __eq__ */` and
+`READ-METHOD Union_find_node.e1 /* __eq__ */`, plus
+`Basic_block.e6 /* __not__ */`. `__eq__` is declared on `object` and
+inherited by both, so one shared `object.__eq__` clone is receiving both
+callers — the shared-generic-method degeneration of
+[105](105-type-degeneration-in-shared-generic-methods.md), and the same
+family as [issues/039](../../issues/039-list-mul-shared-element-type-cross-contamination.md).
+shedskin does not have it because `list<Basic_block *>` and
+`list<Union_find_node *>` are separate template instantiations, so the
+`__eq__` each calls is a separate function.
+
+**Consequence for 123.** The one test blocking slot elision is blocked
+by an imprecision, not by real polymorphism — so the answer is not to
+teach elision about dispatch groups (three attempts, all measured worse
+than no constraint). It is either 105/039, or the classtag dispatch
+should not be generated for a union that FA should never have formed.
+
+That also sharpens this issue's group 1: the `__str__`-on-exceptions
+reads every program shows are the same shape — one shared `object`
+method receiving every caller. If 105 is fixed, group 1 and this case
+both disappear, and the irreducible residue is bh's octree and
+richards' Task `.fn`.
