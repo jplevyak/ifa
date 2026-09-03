@@ -113,3 +113,66 @@ reads every program shows are the same shape — one shared `object`
 method receiving every caller. If 105 is fixed, group 1 and this case
 both disappear, and the irreducible residue is bh's octree and
 richards' Task `.fn`.
+
+### CORRECTION: `__eq__` IS split. Clone equivalence merges it back.
+
+The section above blamed ifa/105's shared-generic-method degeneration.
+That is wrong, and the correction matters because it points at a
+different fix.
+
+**FA splits `__eq__` perfectly.** `IFA_DBG_FUNCONTOURS=__eq__` on the
+havlak test shows twelve contours, every one monomorphic:
+
+```
+es=350  Union_find_node × Union_find_node
+es=351  Basic_block     × Basic_block
+es=354  None            × Basic_block
+es=376  Basic_block     × Basic_block
+```
+
+There is no `{Basic_block, Union_find_node}` contour anywhere.
+
+**Codegen emits four clones, two of them unioned:**
+
+```
+_CG_bool _CG_f_307_3  /*object::__eq__*/(_CG_ps14321 a1, _CG_ps14321 a2)
+_CG_bool _CG_f_307_132/*object::__eq__*/(_CG_any a1, _CG_any a2)
+_CG_bool _CG_f_307_133/*object::__eq__*/(_CG_any a1, _CG_any a2)
+```
+
+So the union is manufactured between FA and codegen, by CLONE
+EQUIVALENCE. `equivalent_es_vars` (clone.cc) compares
+`basic_type(va->out)` against `basic_type(vb->out)`, and `to_basic_type`
+returns non-null only for `sym_symbol`, `sym_string`, `num_kind`
+scalars, constants, symbols and `Type_TAGGED`. **For a record class it
+returns 0**, so both sides collapse to the same `non_basic` marker and
+compare equal. Class identity is invisible to the predicate: any two
+pointer-shaped types are interchangeable for cloning.
+
+`IFA_DBG_VAREQ=1` — the probe that exists for exactly this question —
+counts it on this file:
+
+```
+128  VAREQ-BLIND  set vs Union_find_node
+103  VAREQ-BLIND  Union_find_node vs Basic_block
+ 88  VAREQ-BLIND  list vs Union_find_node
+ 48  VAREQ-BLIND  Basic_block vs Union_find_node
+ 36  VAREQ-BLIND  dict vs list
+```
+
+151 `Union_find_node`/`Basic_block` pairings pass blind, and even
+`dict vs list` does.
+
+**What this changes.** shedskin's advantage here is not better
+inference — pyc's FA reaches the same monomorphic answer. shedskin
+simply never merges, because `list<Basic_block *>` and
+`list<Union_find_node *>` are distinct template instantiations. pyc
+computes the precision and then discards it.
+
+So the fix candidate is making clone equivalence class-aware for record
+types, not chasing an FA imprecision that is not there. That is a real
+blast-radius question — it is exactly the merging that keeps the clone
+count down — but it is the actual root cause of this union, of the
+classtag dispatch it forces, and of the one test blocking
+[123](123-CGEN-union-receiver-field-access-has-no-discrimination.md)'s
+slot elision.
