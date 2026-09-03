@@ -173,3 +173,62 @@ compiles-then-crashes programs, with a named cause rather than a
 bisection. More broadly it is the first crash in that bucket traced end
 to end from a compile-time diagnostic to the faulting line — which is
 the case for keeping 122 Phase 0's check and making it louder.
+
+## 2026-09-03: bh needs a THIRD option — the base-class prefix
+
+bh's failure is the clearest instance of this issue, and it rules out
+"just fix the precision".
+
+`Cell.hack_cofm` (bh.py:420) walks its octree children:
+
+```python
+r = self.subp[i]
+if r is not None:
+    mr = r.hack_cofm()              # polymorphic method dispatch -- fine
+    tmpv.mult_scalar2(r.pos, mr)    # reads .pos on a GENUINE {Cell, Body}
+```
+
+`subp` legitimately holds both — internal `Cell`s and leaf `Body`s, both
+`Node` subclasses — and `pos` is a **`Node` field that both have**. So
+this is a shared-field read on a real union: precisely the "modulo OOP
+dispatch" case, not imprecision. No precision work removes it.
+
+What breaks is the offset. From the emitted C:
+
+| field | `Cell` (`_CG_s16269`) | `Body` (`_CG_s16263`) |
+|---|---|---|
+| `mass` (from `Node`) | e22 | e25 |
+| `pos`  (from `Node`) | **e23** | **e28** |
+| own | `subp` e24 | `acc` e24, `new_acc` e26, `phi` e27 |
+
+The inherited fields land at different indices because `Body`'s own
+fields sort in among them under per-class name-sorted assignment. Hence
+`'Cell' is blind-cast to 'Body' and read at e28, but member absent at
+e27` — e28 is `pos`, e27 is `phi`.
+
+Note [issues/121](../../issues/closed/121-sibling-subclass-field-layout.md)
+already made `promote_field` name-sort so siblings agree on ORDER. That
+is not sufficient: order agreement does not give offset agreement when
+one sibling declares extra fields that sort before or between the shared
+ones.
+
+### The third option
+
+This issue currently offers (1) per-class classtag dispatch on field
+access, or (2) a global slot assignment. shedskin's answer is neither:
+it emits real C++ classes, so `Node`'s fields sit at a **common prefix**
+in every subclass by single-inheritance layout rules, and a
+heterogeneous container is simply `list<Node *>` (confirmed — shedskin
+translates bh and types `subp` exactly that way, while typing
+`Tree.bodies` as `list<Body *>`).
+
+**Lay inherited fields first, in the base's order, then the class's own.**
+Then any shared-field read through a sibling union is a single `->eN`
+with no dispatch and no global constraint — option 2's benefit without
+option 2's cost of constraining every class in the program.
+
+It also subsumes bh's imprecision for this purpose: the phantom `acc`/
+`vel` promoted onto `Cell` (issues/039) would sit after the prefix and
+not disturb `mass`/`pos`. So bh compiles under this change **whether or
+not** the precision bug is fixed — which is the argument for doing this
+first and 039 on its own merits.
