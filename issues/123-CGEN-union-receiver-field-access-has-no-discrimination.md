@@ -1061,3 +1061,42 @@ null-deref (a default-path SIGSEGV in its own right) and using clone.cc's
 codegen.
 
 Corpus `-m check` A/B still owed before this defaults on.
+
+### The runtime regressions: `list`'s layout belongs to the RUNTIME
+
+The corpus sweep for `PYC_ELIDE_SLOTS=1` looked clean in aggregate —
+compile_fail 2, run_fail 43, stdout_differs 24 → **23** — but the
+PER-PROGRAM diff showed two runtime regressions hiding inside a flat
+total:
+
+```
+kanoodle  run 0 -> 139     (ran, now segfaults)
+richards  run 0 -> 139     (and richards is what classeq+prefix had just FIXED)
+```
+
+The aggregate was flat only because path_tracing and score4 improved
+(124 → 0) as those two regressed. **Never read a sweep by its totals.**
+
+Bisecting kanoodle per class (all-or-nothing per class; cutting the flat
+member list mid-class just leaves layouts inconsistent and fails the
+COMPILE) put it on class 164 of 165: **`list`**. Its layout is not
+codegen's to choose — `pyc_c_runtime.h`'s `_CG_list_ptr` and friends
+index the structure directly, so removing a member there corrupts the
+heap instead of shrinking a struct, and the crash surfaces in
+`GC_set_fl_marks` on a garbage free-list pointer.
+
+**"Records only" is the wrong fix.** Excluding all 109 non-record
+classes (leaving 56) still crashes; excluding `list` alone — 164 of 165
+classes elided — runs. Eliding the other non-records is NECESSARY, not
+merely harmless, because partial elision leaves layouts mutually
+inconsistent. The safe rule is "everything except what the runtime
+indexes", not "only what looks like a user class".
+
+With that: kanoodle and richards both back to rc=0, go/pygmy/tictactoe/
+nbody unchanged, `make test` 309/0.
+
+(One trap while checking: comparing raw stdout across the two builds
+reports DIFFERS for richards, go, pygmy and sieve — all of which print
+wall-clock timings or use unseeded `random`. `sieve` is not stable
+between two runs of the SAME binary. The sweep's `stdout_match` is the
+instrument; a raw diff is not.)

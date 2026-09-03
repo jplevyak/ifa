@@ -3016,6 +3016,8 @@ static void cg_compute_slot_reads(FA *fa) {
 // all elide it by tests they already apply. The struct emitter does NOT
 // consult cg_field_live -- it checks `!has[i]->type` -- so nulling the
 // type is the only lever that reaches it.
+extern Vec<Vec<Sym *> *> ifa_prefix_groups;
+
 static void cg_elide_unread_slots(FA *fa) {
   if (!getenv("PYC_ELIDE_SLOTS")) return;
   cg_compute_slot_reads(fa);
@@ -3124,7 +3126,6 @@ static void cg_elide_unread_slots(FA *fa) {
   // collect_prefix_groups, the analysis that already computes exactly
   // this relation; three attempts at rebuilding it here from receivers
   // were all wrong (302/7, 302/7, 300/9 against 308/1).
-  extern Vec<Vec<Sym *> *> ifa_prefix_groups;
   auto elidable_for_class = [&](Sym *csym, int i) {
     if (!elidable_bare(csym, i)) return false;
     for (Vec<Sym *> *g : ifa_prefix_groups) {
@@ -3147,6 +3148,7 @@ static void cg_elide_unread_slots(FA *fa) {
   // every (member Sym) to null first, mutate nothing until the whole
   // decision is made.
   Vec<Sym *> to_null;
+  Vec<Sym *> to_null_owner;  // parallel: the class each member belongs to
   long elided = 0;
   Vec<Sym *> seen;
   for (CreationSet *cs : fa->css) {
@@ -3159,7 +3161,45 @@ static void cg_elide_unread_slots(FA *fa) {
     // and would elide the closure's own function slot. Measured: doing
     // so breaks all seven closure tests. Excluded structurally on
     // type_kind, not by name.
+    // Only USER RECORDS. A builtin container (`list`, `dict`, `set`,
+    // `str` -- Type_PRIMITIVE) has a layout the C RUNTIME knows
+    // independently: `pyc_c_runtime.h`'s `_CG_list_ptr` and friends index
+    // the structure directly, so removing a member corrupts the heap
+    // rather than merely shrinking a struct. Bisecting kanoodle
+    // per class landed exactly there -- classes 0-163 (all Type_RECORD)
+    // elide cleanly and the 164th, `list`, is the one that segfaults.
+    // A closure (Type_FUN) is excluded for the separate reason that
+    // `write_c_apply_arg` reads its slots positionally.
+    // Exclude only the types whose layout the C RUNTIME knows
+    // independently: `pyc_c_runtime.h`'s `_CG_list_ptr` and friends index
+    // a list's structure directly, so removing a member there corrupts
+    // the heap rather than shrinking a struct. Bisecting kanoodle per
+    // class landed on exactly `list`.
+    //
+    // NOT "records only": eliding the other non-record classes turns out
+    // to be NECESSARY, not merely harmless. Excluding all 109 of them
+    // (leaving 56 records) crashes, while excluding `list` alone -- 164
+    // of 165 classes elided -- runs. Partial elision leaves layouts
+    // mutually inconsistent, so the safe configurations are "everything
+    // except what the runtime indexes", not "only what looks like a user
+    // class".
+    if (cs->sym == sym_list || cs->sym->is_vector || sym_list->specializers.set_in(cs->sym)) continue;
     if (t->type_kind == Type_FUN) continue;
+    // PYC_ELIDE_SLOTS=2 (experiment): skip any class that participates
+    // in a union receiver at all. Eliding shrinks a struct, and a blind
+    // cast to a LARGER sibling then writes past the allocation -- the
+    // layout contract only validates slots that are READ, so a write
+    // through the cast is uncovered. Tests whether that is what corrupts
+    // the GC free list on kanoodle and richards.
+    if (atoi(getenv("PYC_ELIDE_SLOTS")) == 2) {
+      bool grouped = false;
+      for (Vec<Sym *> *g : ifa_prefix_groups) {
+        if (!g) continue;
+        for (Sym *x : *g) if (x == cs->sym) { grouped = true; break; }
+        if (grouped) break;
+      }
+      if (grouped) continue;
+    }
     for (int i = 0; i < t->has.n; i++) {
       Sym *m = t->has[i];
       if (!m || !m->type) continue;
@@ -3177,6 +3217,7 @@ static void cg_elide_unread_slots(FA *fa) {
       bool read = !elidable_for_class(cs->sym, i);
       if (read) continue;
       to_null.add(m);  // applied below, after every verdict is decided
+      to_null_owner.add(cs->sym);
       elided++;
     }
   }
@@ -3196,8 +3237,44 @@ static void cg_elide_unread_slots(FA *fa) {
       }
     }
   }
-  for (Sym *m : to_null)
-    if (m) m->type = nullptr;  // -> zero-width placeholder, cg_field_live false
+  // PYC_ELIDE_LIMIT=N: apply only the first N elisions, to bisect which
+  // one introduces a runtime fault.
+  // Bisect PER CLASS, all-or-nothing. Cutting the flat member list at N
+  // leaves classes half-elided, and the layout contract then fails the
+  // COMPILE (rc=127, no binary) -- which made a by-count bisect useless:
+  // limit=800 ran, 900 and 1000 failed to build, and the full 1063
+  // compiled and then segfaulted.
+  int limit = getenv("PYC_ELIDE_LIMIT") ? atoi(getenv("PYC_ELIDE_LIMIT")) : -1;
+  Vec<Sym *> owners;
+  for (Sym *o : to_null_owner) {
+    bool dup = false;
+    for (Sym *x : owners) if (x == o) { dup = true; break; }
+    if (!dup) owners.add(o);
+  }
+  int applied = 0;
+  for (int k = 0; k < to_null.n; k++) {
+    if (limit >= 0) {
+      int oi = -1;
+      for (int j = 0; j < owners.n; j++) if (owners.v[j] == to_null_owner.v[k]) { oi = j; break; }
+      if (oi >= limit) continue;
+    }
+    if (to_null.v[k]) { to_null.v[k]->type = nullptr; applied++; }
+  }
+  if (getenv("IFA_DBG_SLOTUSE"))
+    {
+      fprintf(stderr, "[slotuse] classes=%d applied=%d of %d\n", owners.n, applied, to_null.n);
+      if (getenv("IFA_DBG_OWNER")) {
+        int want = atoi(getenv("IFA_DBG_OWNER"));
+        for (int j = 0; j < owners.n; j++)
+          if (j >= want) {
+            int cnt = 0;
+            for (int k = 0; k < to_null_owner.n; k++) if (to_null_owner.v[k] == owners.v[j]) cnt++;
+            fprintf(stderr, "[owner] %d: %s (kind=%d, %d slots)\n", j,
+                    owners.v[j] && owners.v[j]->name ? owners.v[j]->name : "?",
+                    owners.v[j] ? (int)owners.v[j]->type_kind : -1, cnt);
+          }
+      }
+    }
   if (getenv("IFA_DBG_SLOTUSE")) fprintf(stderr, "[slotuse] ELIDED %ld slots (neither read nor written)\n", elided);
   cg_slot_use_cls.clear();
   cg_slot_use_idx.clear();
