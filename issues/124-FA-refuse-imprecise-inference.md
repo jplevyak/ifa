@@ -539,3 +539,54 @@ C-vs-LLVM difference is four tests known on both backends that differ
 in the PHASE they fail at (`none_float_field`, `none_int_field_pair`,
 `none_int_field_zero`, `undefined_name_executed` — `COMPILE` on LLVM,
 `COMPILE-OUT`/`EXEC` on C), which does not affect any count.
+
+## Corpus `check` A/B, 2026-09-03 — the missing evidence
+
+The fix landed with `make test` green but no corpus measurement, which
+is not sufficient evidence for a core FA change. Taken now:
+
+| | baseline | with fix |
+|---|---|---|
+| key | `check__default__635d26b6+c1a28ccc` | `check__default__4b6a5f40+49d048d5` |
+| programs | 77 | 77 |
+| compile_fail | 5 | **4** |
+| run_fail | 42 | 42 |
+| stdout_differs | 23 | 24 |
+| with_warnings | 42 | 43 |
+
+**Exactly three programs changed in the whole corpus:**
+
+```
+go         compile 1->0   warns 30->15   run --->0   stdout --->NO
+msp_ss     compile 0->0   warns 237->264 run 0->0    stdout yes->yes
+tarsalzp   compile 0->0   warns 231->213 run 139->139 stdout --->-
+```
+
+- **`go`**: refused to compile → compiles, runs to completion (rc=0),
+  with half the warnings. This is the change the fix was for.
+- **`msp_ss`**: +27 warnings, but still compiles, still runs rc=0, and
+  its stdout still MATCHES CPython. A precision cost with no
+  behavioural one.
+- **`tarsalzp`**: −18 warnings; unchanged otherwise (still `run_rc=139`).
+
+Nothing else moved: no exit-code regressions, `run_fail` flat.
+
+**`stdout_differs` 23 → 24 is not a regression.** It is `go` entering
+the population of programs that RUN at all — it could not have an
+opinion about `go`'s stdout before, because there was no binary. Same
+for `with_warnings` 42 → 43.
+
+`go`'s stdout differs for a reason that has nothing to do with this
+fix: it prints its board with `print(board)` and `Board` defines
+`__repr__` but not `__str__`, and pyc's `object.__str__` returns
+`"<object>"` without consulting `__repr__`. Filed as
+[issues/123](../../issues/123-str-does-not-fall-back-to-repr.md) with a
+5-line repro. (`go`'s move choices also differ, but that is unseeded
+`random.randrange` and is not comparable.)
+
+**Baseline caveat.** The baseline arm was not re-run on this tree minus
+the fix; it is the most recent prior `check` measurement. Between the
+two, only `bbaa7716` (this fix) changes default-path behaviour — the
+other commits are docs, env-gated probes, and `--refuse-imprecise`
+plumbing that reports nothing unless enabled. Good enough to read the
+three-program delta from, but not a same-tree A/B.
