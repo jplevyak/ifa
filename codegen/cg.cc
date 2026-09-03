@@ -2853,6 +2853,80 @@ static inline bool homogeneous_tuple(Sym *s) {
 
 // Returns nothing; failure paths inside use fail() directly.
 // (Historically returned int; the caller's `< 0` check was dead.)
+// ifa/issues/123: drop method slots nothing ever READS.
+//
+// FA's call graph is precise, so a call it resolves to one target is
+// emitted as a DIRECT call and touches no slot. Measured: 93-98% of
+// method slots are written into the vtable and never read
+// (IFA_DBG_SLOTUSE). Those cost 8 bytes per instance plus the store that
+// initialises them.
+//
+// Readership can only be known by EMITTING, so this makes a throwaway
+// pass first -- every body into a memstream that is immediately
+// discarded -- purely to populate cg_slot_use_*. The bodies are already
+// buffered this way for function DCE further down, so the cost is one
+// extra emission of each function.
+//
+// The elision itself is `has[i]->type = nullptr`, which is the existing
+// issues/055 + issues/121 placeholder path, not a new mechanism: the
+// struct emitter then writes a ZERO-WIDTH `char eN[0]`, keeping the eN
+// numbering dense (issues/055 measured that removing the slot outright
+// breaks bh/block/chull/doom/rubik/softrender), and `cg_field_live`
+// becomes false so the polymorphic-slot store, the getter and the setter
+// all elide it by the tests they already apply.
+static void cg_elide_unread_slots(FA *fa, Fun *init, Vec<Var *> *globals) {
+  if (!getenv("PYC_ELIDE_SLOTS")) return;
+  cg_slot_use_cls.clear();
+  cg_slot_use_idx.clear();
+  cg_slot_use_rd.clear();
+  for (Fun *f : fa->funs) if (f != init && !f->is_external) {
+    char *b = nullptr;
+    size_t l = 0;
+    FILE *m = open_memstream(&b, &l);
+    if (!m) return;
+    write_c(m, fa, f);
+    fclose(m);
+    free(b);
+  }
+  {
+    char *b = nullptr;
+    size_t l = 0;
+    FILE *m = open_memstream(&b, &l);
+    if (!m) return;
+    write_c(m, fa, init, globals);
+    fclose(m);
+    free(b);
+  }
+  Vec<cchar *> method_names;
+  for (Fun *f : fa->funs)
+    if (f && f->sym && f->sym->name) method_names.set_add(f->sym->name);
+  long elided = 0;
+  Vec<Sym *> seen;
+  for (CreationSet *cs : fa->css) {
+    if (!cs || !cs->type || !seen.set_add(cs->type)) continue;
+    Sym *t = cs->type;
+    for (int i = 0; i < t->has.n; i++) {
+      Sym *m = t->has[i];
+      if (!m || !m->name || !m->type) continue;
+      if (!method_names.set_in(m->name)) continue;  // data field, never elided
+      bool read = false;
+      for (int k = 0; k < cg_slot_use_cls.n; k++)
+        if (cg_slot_use_cls.v[k] == t && cg_slot_use_idx.v[k] == i && cg_slot_use_rd.v[k]) { read = true; break; }
+      if (read) continue;
+      // PYC_ELIDE_SLOTS=2: run the discovery pass but elide NOTHING, to
+      // separate "the double emission corrupts state" from "the elision
+      // is wrong".
+      if (atoi(getenv("PYC_ELIDE_SLOTS")) == 2) continue;
+      m->type = nullptr;  // -> zero-width placeholder, cg_field_live false
+      elided++;
+    }
+  }
+  if (getenv("IFA_DBG_SLOTUSE")) fprintf(stderr, "[slotuse] ELIDED %ld never-read method slots\n", elided);
+  cg_slot_use_cls.clear();
+  cg_slot_use_idx.clear();
+  cg_slot_use_rd.clear();
+}
+
 static void build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
 // build builtin map
 #define S(_n) cg_set_string(if1_get_builtin(fa->pdb->if1, #_n), "_CG_" #_n);
@@ -2996,6 +3070,7 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
   if (!if1->callback->c_codegen_pre_file(fp)) fprintf(fp, "#include \"c_runtime.h\"\n\n");
   build_type_strings(fp, fa, globals);
   cg_build_new_to_val_map(fa);
+  cg_elide_unread_slots(fa, init, &globals);
   if (globals.n) {
     fputs("\n/*\n Global Variables\n*/\n\n", fp);
   }

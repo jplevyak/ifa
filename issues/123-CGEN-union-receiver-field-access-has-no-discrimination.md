@@ -635,3 +635,49 @@ prefix group, since dropping a member still moves the byte offsets of
 those after it.
 
 Default `make test` 309 passed / 18 known / 0 failed.
+
+### Attempting the elision: `write_c` is not idempotent
+
+The elision itself is one line — `has[i]->type = nullptr` — because that
+is the existing issues/055 + issues/121 placeholder path rather than a
+new mechanism: the struct emitter then writes a zero-width
+`char eN[0]`, keeping the `eN` numbering dense (issues/055 measured that
+removing a slot outright breaks bh/block/chull/doom/rubik/softrender),
+and `cg_field_live` becomes false so the polymorphic-slot store, the
+getter and the setter all elide it by tests they already apply. Note the
+struct emitter does NOT consult `cg_field_live` — it checks
+`!has[i]->type` — so nulling the type is the only lever that reaches it.
+
+Readership can only be known by emitting, and the struct definitions are
+written BEFORE the function bodies, so this needs a throwaway discovery
+pass: emit every body into a memstream that is discarded, purely to
+populate `cg_slot_use_*`. The bodies are already buffered that way for
+function DCE, so it looked like one extra emission per function.
+
+**It does not work, and not for the reason expected.**
+`PYC_ELIDE_SLOTS=1` fails 218 of 327 tests. `PYC_ELIDE_SLOTS=2` — the
+discovery pass with the elision suppressed, eliding NOTHING — fails
+**exactly the same 218**. So the elision criterion is not implicated at
+all: `write_c` is **not idempotent**, and emitting a function twice
+corrupts compiler state. The first casualty is
+`cg_get_string(pn->rvals[i])` returning null in
+`emit_send_default_prim`, i.e. a Var that had a codegen name during the
+first emission and lost it.
+
+That kills discovery-by-emission as a mechanism. Two ways forward, both
+untried:
+
+1. **Make `write_c` re-entrant** for the discovery pass. Needs the state
+   it mutates identified first — the `cg_get_string` loss above is one
+   thread to pull, and `cg_note_blind_cast` / `cg_note_imprecise` also
+   accumulate across the extra pass and would double-count.
+2. **Compute readership without emitting**, by replicating the two read
+   conditions: a `P_prim_period` whose receiver resolves to this class
+   with this selector, and the classtag dispatch's `(class, slot)`
+   pairs. This duplicates logic that codegen owns, so it can drift —
+   which is exactly the objection that retired the name-based analysis.
+
+The measurement itself is unaffected and stands: 93-98% of method slots
+are never read, from the same instrumentation, in a single emission.
+
+Default `make test` 309 passed / 18 known / 0 failed; both flags off.
