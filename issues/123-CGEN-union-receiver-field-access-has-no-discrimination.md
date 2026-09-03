@@ -985,3 +985,36 @@ defaulting them; it was started and stopped before producing results, so
 Note the baseline sweep now takes **60 minutes, not 11** — chess
 compiles and runs since its explicit `return False`, so it joins the run
 phase instead of failing fast.
+
+## 2026-09-03: prefix layout DEFAULTED ON
+
+Corpus `-m check` A/B, `PYC_CLASSEQ=2 PYC_PREFIX_LAYOUT=1` against
+baseline `check__default__2d90439e`... (key `d2742efa`):
+
+| | baseline | both on |
+|---|---|---|
+| compile_fail | 3 | **2** |
+| run_fail | 43 | 43 |
+| stdout_differs | 24 | **24** |
+| with_warnings | 43 | 44 |
+
+Exactly two programs move, both favourably:
+
+```
+bh        compile 1 -> 0    (now compiles; still segfaults at runtime, the
+                             pre-existing GC free-list corruption)
+richards  run_rc 139 -> 0   (was segfaulting; now runs to completion)
+```
+
+`run_fail` is flat only because bh enters as richards leaves.
+`stdout_differs` is unchanged, which is the number that matters — no
+program that produced a right answer now produces a wrong one.
+
+Both defaults flipped: `PYC_PREFIX_LAYOUT=0` and `PYC_CLASSEQ=0`
+disable. Full gate green with them on: `make test` 309/18/0,
+`ifa test_llvm` passed, `PYC_FLAGS=-b ./test_pyc.py` 309/0,
+`make test_dparse` passed, doc links clean.
+
+`PYC_ELIDE_SLOTS` stays OFF — see the sweep note above; it costs five
+corpus compile failures, four of which were a latent null-deref now
+fixed, and one cross-class divergence that is still open.

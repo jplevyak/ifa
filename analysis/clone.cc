@@ -148,9 +148,24 @@ Sym *basic_type(FA *fa, AType *t, Sym *fail) {
 // creation-point block, which covers any function that constructs
 // anything. Strengthening this to compare concrete type sets was tried
 // and does not work on its own (see the note at that `return 0`).
+// ifa/issues/126: ON BY DEFAULT since 2026-09-03, at level 2
+// (layout-incompatible only). Corpus `-m check` A/B against
+// check__default__2d89043e: compile_fail 3 -> 2 (bh compiles),
+// run_fail 43 -> 43 (bh enters as richards LEAVES -- richards went
+// run_rc 139 -> 0), stdout_differs 24 -> 24. Strictly better; nothing
+// regressed. `PYC_CLASSEQ=0` disables, `=1` is the blunt
+// identical-class-sets form.
 static int classeq_enabled() {
   static int e = -1;
-  if (e < 0) e = getenv("PYC_CLASSEQ") ? atoi(getenv("PYC_CLASSEQ")) : 0;
+  if (e < 0) e = getenv("PYC_CLASSEQ") ? atoi(getenv("PYC_CLASSEQ")) : 2;
+  return e;
+}
+
+// ifa/issues/123: prefix layout, ON BY DEFAULT since 2026-09-03, same
+// A/B. `PYC_PREFIX_LAYOUT=0` disables.
+static int prefix_layout_enabled() {
+  static int e = -1;
+  if (e < 0) e = getenv("PYC_PREFIX_LAYOUT") ? atoi(getenv("PYC_PREFIX_LAYOUT")) : 1;
   return e;
 }
 
@@ -2005,9 +2020,9 @@ int clone(FA *afa) {
   // cannot change which CSs are equivalent -- determine_basic_clones
   // keys on vars.n) and BEFORE compute_member_types, which builds each
   // struct from cs->vars positionally. Off by default.
-  if (getenv("PYC_PREFIX_LAYOUT") || getenv("IFA_DBG_PREFIX") || getenv("PYC_ELIDE_SLOTS")) {
+  if (prefix_layout_enabled() || getenv("IFA_DBG_PREFIX") || getenv("PYC_ELIDE_SLOTS")) {
     collect_prefix_groups(ifa_prefix_groups);
-    if (getenv("PYC_PREFIX_LAYOUT")) apply_prefix_layout(ifa_prefix_groups);
+    if (prefix_layout_enabled()) apply_prefix_layout(ifa_prefix_groups);
   }
   if (build_concrete_types() < 0) return -1;
   dbg_clone_stage("30-concrete-types");
