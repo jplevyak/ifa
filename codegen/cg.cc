@@ -2921,8 +2921,11 @@ static void cg_compute_slot_reads(FA *fa) {
         // co-occurring sets so readership can be unioned over them.
         if (symbol && pn->rvals[1]->type && pn->rvals[1]->type->type_kind == Type_SUM) {
           Vec<Sym *> *grp = new Vec<Sym *>;
-          for (Sym *mem : pn->rvals[1]->type->has) if (mem && mem->type_kind == Type_RECORD) grp->set_add(mem);
-          grp->set_to_vec();
+          for (Sym *mem : pn->rvals[1]->type->has) if (mem && mem->type_kind == Type_RECORD) {
+            bool dup = false;
+            for (Sym *x : *grp) if (x == mem) { dup = true; break; }
+            if (!dup) grp->add(mem);
+          }
           if (grp->n > 1) cg_recv_groups.add(grp);
         }
         if (symbol && pn->rvals[1]->type) {
@@ -2967,6 +2970,21 @@ static void cg_compute_slot_reads(FA *fa) {
           Vec<int> rt_slots, rt_ridxs;
           poly_dispatch_classtag_targets(cand, pn, directly_owned, rts, rt_slots, rt_ridxs);
           for (int ri = 0; ri < rts.n; ri++) cg_note_slot_use(rts[ri], rt_slots[ri], 1);
+          // The classes one dispatch spans are blind-cast to each other,
+          // so they must agree on which slots exist. clone.cc's
+          // collect_prefix_groups only inspects P_prim_period receivers
+          // and therefore misses a DISPATCH-only union -- measured:
+          // `PREFIX groups=0` on tests/list_index_type_mismatch_salvage,
+          // whose whole subject is a Basic_block|Union_find_node union.
+          if (rts.n > 1) {
+            Vec<Sym *> *grp = new Vec<Sym *>;
+            for (int ri = 0; ri < rts.n; ri++) {
+              bool dup = false;
+              for (Sym *x : *grp) if (x == rts[ri]) { dup = true; break; }
+              if (!dup && rts[ri]) grp->add(rts[ri]);
+            }
+            if (grp->n > 1) cg_recv_groups.add(grp);
+          }
         }
       }
     }
@@ -3004,20 +3022,101 @@ static void cg_elide_unread_slots(FA *fa) {
   // contract check reports as "'T' is blind-cast to 'T' ... member width
   // differs" (tests/deepcopy_objects). Grouped on `cs->sym`, the
   // original class, which is CreationSet identity rather than a name.
-  auto elidable_in_clone = [&](Sym *t, int i) {
-    if (i >= t->has.n) return false;
-    Sym *m = t->has[i];
-    if (!m || !m->type) return false;
-    if (m->type->type_kind != Type_FUN && m->type != sym_void) return false;
-    for (int k = 0; k < cg_slot_use_cls.n; k++)
-      if (cg_slot_use_cls.v[k] == t && cg_slot_use_idx.v[k] == i && cg_slot_use_rd.v[k]) return false;
-    return true;
+  // Decided per CLASS and applied to every clone, rather than requiring
+  // every clone to be independently elidable.
+  //
+  // Root cause of why that distinction matters (tests/deepcopy_objects):
+  // slot e15 of `T` is named `v` -- and `class T` has no field `v`. It
+  // is `Node`'s, promoted onto T as a PHANTOM by a union receiver
+  // reaching `.v` through the synthesized __deepcopy__. The same
+  // mechanism as bh's Cell.acc/vel (issues/039) and go's UCTNode.color.
+  // The clones then disagree only because the phantom is typed in the
+  // contours that saw the write and bottom in the others.
+  //
+  // So requiring all clones to agree was papering over an imprecision:
+  // it collapsed the elided count ~425 -> 5-28 to accommodate a field
+  // that should not exist. Eliding uniformly when NO clone reads the
+  // slot keeps every clone's layout identical -- which is what the
+  // blind cast needs -- and does not care whether the phantom happened
+  // to acquire a type.
+  // Is this member FUNCTION-VALUED, structurally?
+  //
+  // Measured on richards: only 26 of 1719 members are literally Type_FUN
+  // or sym_void, which is why the first filter elided almost nothing.
+  // The real shapes are a monomorphic method slot, whose type is the
+  // Fun's own Sym (type_kind Type_NONE, `fun` set), and a slot holding
+  // several clones, whose type is a Type_SUM of those -- 1194 and 60 of
+  // richards' members respectively.
+  auto is_fn_sym = [](Sym *x) { return x && (x->is_fun || x->fun || x->type_kind == Type_FUN); };
+  auto fn_valued = [&](Sym *t) {
+    if (!t) return false;
+    if (t == sym_void) return true;
+    if (is_fn_sym(t)) return true;
+    if (t->type_kind == Type_SUM && t->has.n) {
+      for (Sym *x : t->has)
+        if (!is_fn_sym(x)) return false;
+      return true;
+    }
+    return false;
   };
+  // One verdict per (class, slot), applied to EVERY clone -- the type
+  // test included. Testing the type per clone is what left the last
+  // divergence: `v` is int64 in the clones that saw the write and void
+  // in the others, so a per-clone type filter elided it in some and not
+  // others, which is the very layout split being fixed.
+  //
+  // A slot qualifies when no clone reads it AND some clone has it
+  // function-typed or bottom. Bottom in SOME clone but not others is
+  // the phantom's own signature: a field the class really declares is
+  // observed in every contour, whereas one promoted onto it by a union
+  // receiver is not.
+  // Elidable for ONE class, ignoring the union constraint.
+  auto elidable_bare = [&](Sym *csym, int i) {
+    bool any_voidish = false;
+    for (CreationSet *o : fa->css) {
+      if (!o || o->sym != csym || !o->type || i >= o->type->has.n) continue;
+      Sym *m = o->type->has[i];
+      if (!m || !m->type) continue;
+      if (fn_valued(m->type)) any_voidish = true;
+      for (int k = 0; k < cg_slot_use_cls.n; k++)
+        if (cg_slot_use_cls.v[k] == o->type && cg_slot_use_idx.v[k] == i && cg_slot_use_rd.v[k]) return false;
+    }
+    return any_voidish;
+  };
+  // A blind cast requires the classes it spans to AGREE on which slots
+  // exist. That relation is exactly the union receiver: resolving a
+  // Type_SUM to one member casts from every other member to it, so all
+  // record members of any such receiver must reach the same verdict at
+  // a given index. Without this, `Basic_block` was elided at e0 and
+  // `Union_find_node` was not, and the contract check reported the
+  // width mismatch (tests/list_index_type_mismatch_salvage).
+  // NOTE: a union-receiver group constraint was tried here twice (one
+  // group at a time, then merged into connected components) and made
+  // things WORSE both times -- 302/7 against 308/1 -- while introducing
+  // fresh generator/exception failures, because building the components
+  // mixes plib's set-mode and vector-mode Vec. Left out; the single
+  // remaining failure is root-caused below instead.
+  // The cross-class group constraint is NOT applied. Three attempts --
+  // per group, merged into connected components, and with plain vector
+  // ops after suspecting plib's set/vector duality -- all made things
+  // WORSE than none (302/7, 302/7, 300/9 against 308/1), which is not
+  // what a purely restrictive rule can do and means the constraint is
+  // not modelling the real relation. Recorded in ifa/issues/123; the
+  // one remaining failure is root-caused there rather than papered over.
+  auto elidable_for_class = [&](Sym *csym, int i) { return elidable_bare(csym, i); };
   long elided = 0;
   Vec<Sym *> seen;
   for (CreationSet *cs : fa->css) {
     if (!cs || !cs->type || !seen.set_add(cs->type)) continue;
     Sym *t = cs->type;
+    // A CLOSURE is not a vtable user. Its slots are read positionally by
+    // `write_c_apply_arg` (`->e0` chains and `->e1`) and written by the
+    // `P_prim_period`-creates-a-closure path -- neither goes through the
+    // getter or the classtag dispatch, so this analysis cannot see them
+    // and would elide the closure's own function slot. Measured: doing
+    // so breaks all seven closure tests. Excluded structurally on
+    // type_kind, not by name.
+    if (t->type_kind == Type_FUN) continue;
     for (int i = 0; i < t->has.n; i++) {
       Sym *m = t->has[i];
       if (!m || !m->type) continue;
@@ -3032,10 +3131,7 @@ static void cg_elide_unread_slots(FA *fa) {
       // method/data question entirely, and is too aggressive: 50 of 327
       // tests fail, because the WRITE side has paths not modelled here
       // (closure construction, the tuple-list stores, destruct_prim).
-      if (m->type->type_kind != Type_FUN && m->type != sym_void) continue;
-      bool read = false;
-      for (CreationSet *o : fa->css)
-        if (o && o->type && o->sym == cs->sym && !elidable_in_clone(o->type, i)) { read = true; break; }
+      bool read = !elidable_for_class(cs->sym, i);
       if (read) continue;
       m->type = nullptr;  // -> zero-width placeholder, cg_field_live false
       elided++;
@@ -3045,8 +3141,9 @@ static void cg_elide_unread_slots(FA *fa) {
     Vec<Sym *> seen2;
     for (CreationSet *cs : fa->css) {
       if (!cs || !cs->type || !cs->sym || !seen2.set_add(cs->type)) continue;
-      if (!cs->sym->name || strcmp(cs->sym->name, "Body")) continue;
-      for (int i = 0; i < cs->type->has.n && i < 40; i++) {
+      if (!cs->sym->name || strcmp(cs->sym->name, getenv("IFA_DBG_STRUCT"))) continue;
+      fprintf(stderr, "[struct] --- clone of %s (cs#%d) ---\n", cs->sym->name, cs->id);
+      for (int i = 12; i < cs->type->has.n && i < 20; i++) {
         Sym *cl = cs->type->has[i];
         Sym *orig = (i < cs->sym->has.n) ? cs->sym->has[i] : nullptr;
         fprintf(stderr, "[struct] e%-2d %-16s clone(is_fun=%d fun=%d in=%s) orig(is_fun=%d fun=%d)\n", i,

@@ -839,3 +839,87 @@ cast BETWEEN two clones of the same class legitimate? Either
 Either answer removes the conflict at its source and restores the full
 ~425. The clone-agreement rule stays only until one of them is settled,
 and should not be mistaken for the fix.
+
+## 2026-09-03: root-caused the retreat — 825-1043 slots, not 5-28
+
+The clone-agreement rule was a retreat (CLAUDE.md, "Be aggressive").
+Root-causing it produced two findings and a 40x better result.
+
+### 1. The clone divergence was a PHANTOM FIELD
+
+`tests/deepcopy_objects` failed with `'T' is blind-cast to 'T' ...
+member width differs at e15`. Slot e15 of `T` is named **`v`** — and
+`class T` has no field `v`. It is `Node`'s, promoted onto `T` by a union
+receiver reaching `.v` through the synthesized `__deepcopy__`. The same
+mechanism as bh's `Cell.acc`/`vel` (issues/039) and go's
+`UCTNode.color`. The clones only disagreed because the phantom is typed
+in the contours that saw the write and bottom in the others.
+
+So the fix is one verdict per (class, slot) applied to EVERY clone —
+including the type test, which was the part still being evaluated per
+clone. Requiring clones to *independently* agree was accommodating a
+field that should not exist.
+
+### 2. The type filter, not the clone rule, was costing everything
+
+Measured breakdown on richards (`IFA_DBG_SLOTUSE=1`):
+
+```
+pairs=1719  voidish=26  unread_per_clone=26  unread_per_class=26
+```
+
+Only **26 of 1719** members were `Type_FUN`-or-`sym_void`, and the
+per-class rule lost *nothing* (26 → 26). The clone rule was never the
+limiter. Histogramming the member type kinds says why:
+
+```
+1194  kind=0 (Type_NONE)   -- a monomorphic method slot: the type IS the Fun's Sym
+ 346  kind=7 (primitive)   -- real data
+  90  kind=2 (Type_SUM), not all functions
+  60  kind=2 (Type_SUM), ALL functions  -- a slot holding several clones
+  29  kind=3 (record)      -- real data
+```
+
+A method slot's type is the function's own Sym (`type_kind` `Type_NONE`,
+`fun` set) or a `Type_SUM` of clones — almost never literally
+`Type_FUN`. Testing `is_fun || fun || Type_FUN`, plus a `Type_SUM` whose
+members are all of those, is the structural predicate:
+
+| | before | after |
+|---|---|---|
+| richards | 7 | **1043** |
+| go | 28 | **870** |
+| bh | 20 | **825** |
+| pygmy | 5 | **908** |
+
+Suite 308 passed / 1 failed.
+
+### 3. Closures are excluded, structurally
+
+Widening the predicate broke all seven closure tests: a closure's slots
+are read positionally by `write_c_apply_arg` (`->e0` chains, `->e1`) and
+written by the `P_prim_period`-creates-a-closure path, neither of which
+goes through the getter or the classtag dispatch. A closure is not a
+vtable user; excluded on `type_kind == Type_FUN`, not by name.
+
+### The one remaining failure, and why the obvious fix is wrong
+
+`tests/list_index_type_mismatch_salvage`: `Basic_block` is blind-cast to
+`Union_find_node` and they disagree at e0. The test's own header says it
+is *about* a `Basic_block|Union_find_node` union.
+
+Root cause: **`collect_prefix_groups` reports `PREFIX groups=0` on this
+file.** It only inspects `P_prim_period` receivers, so a DISPATCH-only
+union is invisible to it — the classes never get their layouts aligned,
+and eliding a slot on one but not the other splits them.
+
+The obvious fix — constrain elision so classes sharing a dispatch agree
+— was tried three ways: per group, merged into connected components,
+and again with plain vector ops after suspecting plib's set/vector
+duality. All three made the suite WORSE than no constraint at all
+(302/7, 302/7, 300/9 against 308/1). **A purely restrictive rule cannot
+increase failures**, so the constraint is not modelling the real
+relation, and the answer is not in codegen: the grouping belongs in
+`collect_prefix_groups`, extended to dispatch receivers, where the
+prefix layout can actually align the two classes rather than merely
+refusing to elide.
