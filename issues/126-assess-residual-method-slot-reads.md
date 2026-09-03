@@ -176,3 +176,56 @@ count down — but it is the actual root cause of this union, of the
 classtag dispatch it forces, and of the one test blocking
 [123](123-CGEN-union-receiver-field-access-has-no-discrimination.md)'s
 slot elision.
+
+### Class-aware clone equivalence — implemented, `PYC_CLASSEQ=1`
+
+`equivalent_es_vars` now also compares the concrete CLASS SETS of the two
+contours' AVars, not just `basic_type`. Plain vectors with linear dedup
+throughout: plib's set-mode `Vec` carries NULL holes and mixing the two
+modes has bitten this work repeatedly.
+
+Deliberately additive — the creation-point block's unconditional
+`return 0` is untouched. The note there records that relaxing it while
+strengthening this check "does not work on its own" (voronoi2 stops
+compiling). Strengthening only this one can merge strictly fewer
+contours, never more.
+
+**Result on the havlak test:** the `_CG_any` formals are gone. All three
+`object::__eq__` clones now take concrete pointers, and the file
+compiles with zero errors.
+
+```
+before:  _CG_f_307_132(_CG_any a1,      _CG_any a2)
+after:   _CG_f_307_133(_CG_ps14321 a1,  _CG_ps14321 a2)
+```
+
+| | suite |
+|---|---|
+| `PYC_CLASSEQ=1` | **309 / 0** |
+| `PYC_CLASSEQ=1 PYC_ELIDE_SLOTS=1` | **309 / 0** |
+
+The second line is the point: slot elision alone was 308/1, blocked by
+exactly this manufactured union. Class-aware equivalence removes the
+blocker at its source rather than teaching elision to tolerate it —
+which is what three separate group-constraint attempts failed to do.
+
+**Cost is small.** The merging exists to keep clone counts down, so this
+is the number that matters:
+
+| | emitted functions | compile time |
+|---|---|---|
+| richards | 145 → 145 | 1.37s → 1.34s |
+| go | 310 → 314 | 6.92s → 6.88s |
+| pygmy | 79 → 103 | 7.14s → 6.94s |
+
+0-30% more clones, and compile time flat or slightly better. Corpus
+compile status unchanged on bh, chess, sudoku5, nbody, sieve, tictactoe
+and sunfish.
+
+Full gate green with the flag off: `make test` 309/18/0,
+`make -C ifa test_llvm` passed, `make test_dparse` passed, doc links
+clean.
+
+**Not yet default-on:** a core clone-equivalence change needs the corpus
+`check` A/B, which is owed for this, the prefix layout and slot elision
+together.

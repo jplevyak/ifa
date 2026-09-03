@@ -148,10 +148,51 @@ Sym *basic_type(FA *fa, AType *t, Sym *fail) {
 // creation-point block, which covers any function that constructs
 // anything. Strengthening this to compare concrete type sets was tried
 // and does not work on its own (see the note at that `return 0`).
+static int classeq_enabled() {
+  static int e = -1;
+  if (e < 0) e = getenv("PYC_CLASSEQ") ? atoi(getenv("PYC_CLASSEQ")) : 0;
+  return e;
+}
+
 static int equivalent_es_vars(Var *v, EntrySet *a, EntrySet *b) {
   AVar *va = make_AVar(v, a), *vb = make_AVar(v, b);
   if (va != vb) {
     if (basic_type(fa, va->out, (Sym *)-1) != basic_type(fa, vb->out, (Sym *)-2)) return 0;
+    // ifa/issues/126: CLASS-AWARE. `basic_type` maps every non-basic type
+    // to nullptr, so the check above distinguishes int from float and
+    // nothing else -- `Basic_block` vs `Union_find_node` compares EQUAL
+    // (measured: 151 such pairings on tests/list_index_type_mismatch_-
+    // salvage, plus set-vs-Union_find_node and even dict-vs-list).
+    //
+    // The creation-point block's unconditional `return 0` compensates
+    // for a function that CONSTRUCTS something, but `object.__eq__`
+    // constructs nothing, has no cs_map, and so merges: FA splits it
+    // into twelve monomorphic contours and codegen emits clones with
+    // `_CG_any` formals. That manufactured union is what forces classtag
+    // dispatch and blocks ifa/123's slot elision.
+    //
+    // Compare the concrete CLASS SETS. Plain vectors with linear dedup:
+    // plib's set-mode Vec carries NULL holes and mixing the two modes has
+    // bitten this work repeatedly.
+    if (classeq_enabled()) {
+      Vec<Sym *> ca, cb;
+      for (CreationSet *cs : *va->out) if (cs && cs->sym) {
+        bool dup = false;
+        for (Sym *x : ca) if (x == cs->sym) { dup = true; break; }
+        if (!dup) ca.add(cs->sym);
+      }
+      for (CreationSet *cs : *vb->out) if (cs && cs->sym) {
+        bool dup = false;
+        for (Sym *x : cb) if (x == cs->sym) { dup = true; break; }
+        if (!dup) cb.add(cs->sym);
+      }
+      if (ca.n != cb.n) return 0;
+      for (Sym *x : ca) {
+        bool found = false;
+        for (Sym *y : cb) if (x == y) { found = true; break; }
+        if (!found) return 0;
+      }
+    }
     // How often does the blindness above let a pair through? Hot path,
     // so the getenv is cached.
     static int dbg = -1;
