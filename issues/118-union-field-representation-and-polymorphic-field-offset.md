@@ -195,3 +195,22 @@ linalg is unaffected either way -- and per the correction above it does
 not belong here at all: its `{list, int64}` is manufactured inside
 `list.__deepcopy__`, not written by the program, and it is
 [074](074-FA-cross-pass-oscillation-plan.md).
+
+## 2026-09-03: chess's `printBoard` restored, and is waiting on this
+
+`shedskin_examples/chess/chess.py` had its board renderer commented out
+and never called. It has been restored and wired into `__main__`, so
+when this issue is fixed chess produces checkable output instead of only
+a nondeterministic `TIME %.2f` line.
+
+It changes nothing about chess's status here: still
+`fail: mismatched field sizes: class 'closure' field '<anon>' mixes 1-
+and 8-byte members ('__pyc_None_type__')`, at chess.py:177 rather than
+:167 purely because the restored function is 10 lines longer.
+
+The renderer itself is NOT blocked — pyc compiles and runs it with zero
+warnings and byte-identical output to CPython. `tests/chess_print_board.py`
+pins it standalone (0x88 indexing, `' '.join` over a list of str, and
+negative string indexing: black pieces are stored negative and index
+`pieces` from the end, so `pieces[-1] == 'P'`). So the only thing between
+chess and a printed board is this issue.
