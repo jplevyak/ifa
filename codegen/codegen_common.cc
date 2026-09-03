@@ -442,7 +442,38 @@ void cg_build_new_to_val_map(FA *fa) {
     Vec<cchar *> method_names;
     for (Fun *f : fa->funs)
       if (f && f->sym && f->sym->name) method_names.set_add(f->sym->name);
-    long members = 0, dead = 0, dead_bytes = 0, methods = 0;
+    // THE READ SIDE. A slot is also used when the member is read as an
+    // ATTRIBUTE -- `f = obj.method`, or any attribute access whose
+    // selector names a method -- which goes through cg.cc's generic
+    // P_prim_period getter and never appears in `poly_names` (built from
+    // polymorphic CALL sites) nor in the store registry. Eliminating a
+    // slot that is only read this way turns the access into the
+    // "getter not resolved" runtime assert.
+    // Tracked PER CLASS, not per name: a name-global set says `foo` read
+    // on ANY class marks `foo` used on EVERY class, which is far too
+    // coarse to decide elimination.
+    Vec<Sym *> read_cls;
+    Vec<cchar *> read_nm;
+    Vec<cchar *> read_names;  // the coarse set, kept only to contrast
+    for (Fun *f : fa->funs)
+      for (PNode *n : f->fa_all_PNodes) {
+        if (!n || !n->prim || n->prim->index != P_prim_period) continue;
+        if (n->rvals.n < 4 || !n->rvals[3]->sym || !n->rvals[3]->sym->is_symbol || !n->rvals[3]->sym->name) continue;
+        cchar *nm = n->rvals[3]->sym->name;
+        read_names.set_add(nm);
+        for (EntrySet *es : f->ess) {
+          if (!es) continue;
+          AVar *obj = make_AVar(n->rvals[1], es);
+          if (!obj || !obj->out) continue;
+          for (CreationSet *rcs : *obj->out) if (rcs && rcs->type) { read_cls.add(rcs->type); read_nm.add(nm); }
+        }
+      }
+    auto read_on = [&](Sym *cls, cchar *nm) {
+      for (int k = 0; k < read_cls.n; k++)
+        if (read_cls.v[k] == cls && read_nm.v[k] && !strcmp(read_nm.v[k], nm)) return true;
+      return false;
+    };
+    long members = 0, dead = 0, dead_bytes = 0, methods = 0, coarse_only = 0;
     Vec<Sym *> seen;
     for (CreationSet *cs : fa->css) {
       if (!cs || !cs->type || !seen.set_add(cs->type)) continue;
@@ -456,7 +487,9 @@ void cg_build_new_to_val_map(FA *fa) {
         methods++;
         bool is_poly = poly_names.set_in(m->name) != 0;
         bool is_stored = stored_slots.set_in(i) != 0;
-        if (!is_poly && !is_stored) { dead++; cdead++; dead_bytes += 8; }
+        bool is_read = read_on(t, m->name);
+        if (read_names.set_in(m->name) && !is_read) coarse_only++;
+        if (!is_poly && !is_stored && !is_read) { dead++; cdead++; dead_bytes += 8; }
       }
       if (cdead && t->name)
         fprintf(stderr, "[slotuse] %-24s live=%d never-dispatched=%ld\n", t->name, t->has.n, cdead);
@@ -466,6 +499,7 @@ void cg_build_new_to_val_map(FA *fa) {
             "(%ld%% of slots, %ld%% of members) ~%ld bytes\n",
             members, methods, dead, methods ? 100 * dead / methods : 0, members ? 100 * dead / members : 0,
             dead_bytes);
+    fprintf(stderr, "[slotuse] (name-global read set would have spared %ld more)\n", coarse_only);
   }
 }
 

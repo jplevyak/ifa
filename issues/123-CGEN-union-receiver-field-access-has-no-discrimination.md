@@ -516,3 +516,60 @@ Two further checks before it can be sound, neither done:
 Report-only for now; `IFA_DBG_SLOTUSE=1`, no behaviour change. Default
 path `make test` 309 passed / 18 known / 0 failed, and the flagged path
 matches it.
+
+### The two checks, done
+
+**Check 1 — the read side. It changes the answer by 2x, twice.**
+
+Every class-member site in codegen already consults `cg_field_live`:
+the getter (`cg.cc:740`), the setter (`:802`), tuple/list construction
+(`:689`), the polymorphic-slot store (`:1280`), struct emission
+(`:2892`), and all five slot lookups in `codegen_common.cc`. So making
+`cg_field_live` return 0 for a dead slot is in fact enough to elide it
+everywhere. The one unguarded walker, `destruct_prim` (`cg.cc:461`),
+copies every `->eN` without asking — but it `assert(0)`s on a non-tuple
+with named members, so it never sees a class with method slots.
+
+The failure modes are asymmetric, which is worth knowing before
+enabling anything: a wrongly-eliminated slot that is READ degrades to
+the `getter not resolved` runtime assert (loud), while one that is
+WRITTEN is silently skipped (quiet). For method slots the only writer is
+the polyslot store, which tests the same `cg_field_live` predicate, so
+the two stay consistent.
+
+What the analysis was missing is that a method slot is also used when
+the member is read as an ATTRIBUTE — `f = obj.method` and every
+attribute access whose selector names a method — through the generic
+`P_prim_period` getter, which appears in neither `poly_names` (built
+from polymorphic CALL sites) nor the store registry.
+
+Adding it name-globally collapsed the opportunity to **zero**: any class
+reading `foo` marked `foo` used on every class. Tracking it PER CLASS
+(receiver CreationSets × selector) gives the real figure:
+
+| | method slots | never used | a name-global set would have spared |
+|---|---|---|---|
+| bh | 134 | **55 (41%)** | 98 more |
+| richards | 176 | **96 (54%)** | 117 more |
+
+So the measurement went 65% → 59-85% → 0% → 41-54% as each correction
+landed. Only the last is trustworthy, and it is still a large win:
+richards' `HandlerTask` and friends drop real slots, and every remaining
+one is genuinely dispatched or read.
+
+**Check 2 — ordering against the pad. Eliminate FIRST; measured.**
+
+| bh | live members | method slots | never used |
+|---|---|---|---|
+| without padding | 214 | 134 | 55 |
+| with padding | 238 (+24) | 144 (+10) | 64 (**+9**) |
+
+Padding adds ten method slots to bh and **nine of them are dead** — it
+is manufacturing slots that elimination would immediately remove. Per
+class, `Body` goes 30 → 33 members (dead 6 → 8) and `Cell` 27 → 33
+(dead 4 → 8). Running elimination first shrinks the name union each
+prefix group has to agree on, so the pad that follows is smaller and
+almost none of it is dead weight.
+
+Both remain report-only (`IFA_DBG_SLOTUSE=1`); default `make test` is
+309 passed / 18 known / 0 failed.
