@@ -2020,7 +2020,7 @@ int clone(FA *afa) {
   // cannot change which CSs are equivalent -- determine_basic_clones
   // keys on vars.n) and BEFORE compute_member_types, which builds each
   // struct from cs->vars positionally. Off by default.
-  if (prefix_layout_enabled() || getenv("IFA_DBG_PREFIX") || getenv("PYC_ELIDE_SLOTS")) {
+  if (prefix_layout_enabled() || getenv("IFA_DBG_PREFIX") || 1 /* elision needs the groups */) {
     collect_prefix_groups(ifa_prefix_groups);
     if (prefix_layout_enabled()) apply_prefix_layout(ifa_prefix_groups);
   }

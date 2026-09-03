@@ -1100,3 +1100,46 @@ reports DIFFERS for richards, go, pygmy and sieve — all of which print
 wall-clock timings or use unseeded `random`. `sieve` is not stable
 between two runs of the SAME binary. The sweep's `stdout_match` is the
 instrument; a raw diff is not.)
+
+## 2026-09-03: slot elision DEFAULTED ON
+
+Re-swept after the two fixes. Corpus `-m check`, `PYC_ELIDE_SLOTS=1`
+against the defaults baseline
+(`check__PYC_CLASSEQ_2_PYC_PREFIX_LAYOUT_1__d2742efa`):
+
+| | defaults | + elide |
+|---|---|---|
+| compile_fail | 2 | 2 |
+| run_fail | 43 | **40** |
+| stdout_differs | 24 | 24 |
+| with_warnings | 44 | 44 |
+
+Per-program, **no regressions** — the only changes are three programs
+that were timing out and now complete:
+
+```
+chaos         run 124 -> 0
+path_tracing  run 124 -> 0
+score4        run 124 -> 0
+```
+
+kanoodle and richards, the two regressions of the previous attempt, are
+gone. That is consistent with the mechanism: richards' emitted struct
+members go 1032 -> 214, so instances are a fraction of their former size
+and the allocator sees correspondingly less pressure. (rc=124 is the one
+verdict a parallel sweep can fabricate, so treat "three programs got
+faster" as plausible rather than proven; what is solid is that nothing
+regressed.)
+
+Defaulted on; `PYC_ELIDE_SLOTS=0` disables. Full gate: `make test`
+309/18/0, `ifa test_llvm` passed, `PYC_FLAGS=-b ./test_pyc.py` 309/0,
+`make test_dparse` passed, doc links clean.
+
+### All three of this issue's features are now on by default
+
+`PYC_CLASSEQ=2`, `PYC_PREFIX_LAYOUT=1`, `PYC_ELIDE_SLOTS=1`. Net effect
+against where the corpus stood this morning: **bh compiles** (it was one
+of three compile failures and was this issue's motivating case),
+**richards' runtime segfault is fixed**, three timeouts complete, and
+struct members drop ~80% program-wide. `stdout_differs` never moved,
+which is the number that says none of it broke a right answer.

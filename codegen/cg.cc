@@ -3018,8 +3018,19 @@ static void cg_compute_slot_reads(FA *fa) {
 // type is the only lever that reaches it.
 extern Vec<Vec<Sym *> *> ifa_prefix_groups;
 
+// ifa/issues/123: ON BY DEFAULT since 2026-09-03. Corpus `-m check` A/B
+// against the defaults baseline (`check__PYC_CLASSEQ_2_PYC_PREFIX_LAYOUT_1__d2742efa`):
+// compile_fail 2 -> 2, run_fail 43 -> 40, stdout_differs 24 -> 24. Three
+// programs that timed out now complete (chaos, path_tracing, score4),
+// consistent with structs shrinking 80%. `PYC_ELIDE_SLOTS=0` disables.
+static int elide_slots_enabled() {
+  static int e = -1;
+  if (e < 0) e = getenv("PYC_ELIDE_SLOTS") ? atoi(getenv("PYC_ELIDE_SLOTS")) : 1;
+  return e;
+}
+
 static void cg_elide_unread_slots(FA *fa) {
-  if (!getenv("PYC_ELIDE_SLOTS")) return;
+  if (!elide_slots_enabled()) return;
   cg_compute_slot_reads(fa);
   // No name matching anywhere here (CLAUDE.md, "Never analyse or decide
   // by NAME"). The old filter asked "does some function share this
@@ -3191,7 +3202,7 @@ static void cg_elide_unread_slots(FA *fa) {
     // layout contract only validates slots that are READ, so a write
     // through the cast is uncovered. Tests whether that is what corrupts
     // the GC free list on kanoodle and richards.
-    if (atoi(getenv("PYC_ELIDE_SLOTS")) == 2) {
+    if (elide_slots_enabled() == 2) {
       bool grouped = false;
       for (Vec<Sym *> *g : ifa_prefix_groups) {
         if (!g) continue;
