@@ -232,3 +232,81 @@ It also subsumes bh's imprecision for this purpose: the phantom `acc`/
 not disturb `mass`/`pos`. So bh compiles under this change **whether or
 not** the precision bug is fixed — which is the argument for doing this
 first and 039 on its own merits.
+
+## 2026-09-03: the analysis, and three wrong levers
+
+Built the selective machinery: measure which hierarchies need a common
+prefix, and reorder only those. `PYC_PREFIX_LAYOUT=1`, off by default;
+`IFA_DBG_PREFIX=1` reports without changing anything.
+
+### The analysis works and is very selective
+
+`collect_prefix_groups` (clone.cc) walks every `P_prim_period` against
+every EntrySet, collects receivers spanning two or more record classes,
+and merges them into groups. A group is then kept only if two of its
+classes disagree on a shared member's index — being polymorphic is not
+by itself a reason to reorder.
+
+| program | groups needing a prefix |
+|---|---|
+| bh | 2 — `{Exception, StopIteration, SystemExit}`, `{Cell, Body}` |
+| go | 1 |
+| tictactoe | 1 |
+| chess | 1 |
+| pygmy | **0** |
+| sudoku1 | **0** |
+
+`pygmy` is the instructive one: it has *three* genuine sibling unions
+(`plane`/`sphere`, `spotshader`/`everythingshader`,
+`pointlight`/`parallellight`) and needs nothing, because each pair has
+an EQUAL member set and name-sorting already aligns them. The
+requirement bites only on unequal sets — bh's `Cell`(27) vs `Body`(30).
+
+### Three levers that look right and are not
+
+1. **Reordering `Sym::has`.** It is an OUTPUT.
+   `compute_member_types` rebuilds it from `cs->vars` positionally
+   (`AVar *av = cs->vars[i]` → `has[i]->type`). Reordering it directly
+   emitted `__str__` as `_CG_string` and then assigned a function
+   pointer to it — raw clang errors. `determine_layouts` already says
+   this: "cs->vars itself is left untouched (other code indexes it
+   positionally)". **`cs->vars` is the array that decides layout.**
+
+2. **Closing a group over its inheritance hierarchy.** Tempting after
+   codegen wrote `BaseException::__str__` into a struct that had been
+   reordered without it. But closure pulls in `object`, and since every
+   class descends from `object` the group becomes the whole program —
+   destroying exactly the selectivity this is for. The real cross-class
+   assumption is in codegen's slot lookup (below), not in the grouping.
+
+3. **`Vec::set_add` then iterating densely.** plib Vecs used as sets
+   carry NULL holes; `set_to_vec()` first. This segfaulted the compiler
+   inside a name `qsort`, which reads as a mysterious crash rather than
+   an API misuse.
+
+### Where it stands
+
+With `cs->vars` reordered, bh's **layout-contract violation is gone**
+and the exception-hierarchy errors with it — 4 clang errors down to 1:
+
+```
+bh.py.c: error: assigning to '_CG_ps16259' (aka Vec3*) from 'void *'
+  ((_CG_ps16263)t1)->e22 = (void*)_CG_f_12221_110/*Body::walk_sub_tree*/;
+```
+
+`Body`'s slots 21 and 22 (`sub_index`, `walk_sub_tree` — both methods)
+came out typed `Vec3*`. That is `compute_member_types` reading
+`cs->vars[i]` across an equivalence group whose members my reorder left
+mutually misaligned.
+
+**The remaining obstacle is structural, not a bug in the patch.**
+`Cell` and `Body` have different member COUNTS, and shared names can
+only occupy identical indices in both if the shorter class is PADDED at
+the positions the other fills. `cg_member_ctype` already has the
+representation for that — `if (!s->has[i]->type) return "<placeholder>"`,
+emitted as a zero-width `char eN[0]` — so the missing piece is creating
+the padding ivars, which is `promote_field` territory and carries its
+own FA consequences (a promoted field is a field FA then believes in).
+
+Default path is unmeasured-safe: flag off, bh fails identically, and
+`make test` is 309 passed / 18 known / 0 failed.

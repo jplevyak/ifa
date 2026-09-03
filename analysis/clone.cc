@@ -534,7 +534,235 @@ static void determine_basic_clones(Vec<Vec<CreationSet *> *> &css_sets_by_sym) {
   }
 }
 
+// ifa/issues/123: WHICH class hierarchies actually need a common
+// base-field prefix?
+//
+// Only those where a field access has a receiver spanning two or more
+// classes. bh is the motivating case: `Cell.hack_cofm` reads `r.pos` on
+// `self.subp[i]`, which genuinely holds both `Cell` and `Body` (both
+// `Node` subclasses), and `pos` is a `Node` field they share. Per-class
+// name-sorted member assignment puts it at e23 in Cell and e28 in Body,
+// so the single emitted `->eN` cannot serve both.
+//
+// The point of measuring rather than always applying a base-prefix
+// layout is blast radius: reordering `Sym::has` changes the emitted `eN`
+// of every member of every class it touches. Almost no class needs it,
+// so find the ones that do and leave the rest alone.
+//
+// Reports groups, not a flat set: two classes only have to agree with
+// EACH OTHER, and unrelated hierarchies stay independent.
+static void collect_prefix_groups(Vec<Vec<Sym *> *> &groups) {
+  Vec<Sym *> seen_pairs;  // flattened (a,b) pairs already recorded
+  // NOT filtered on Fun::live / PNode::live: liveness is computed after
+  // this point in the pipeline (measured: 1 of 178 funs marked live
+  // here), so filtering on it silently finds nothing. `f->ess` is
+  // already restricted to used entry sets by prep_for_clones.
+  for (Fun *f : fa->funs) {
+    for (PNode *n : f->fa_all_PNodes) {
+      if (!n || !n->prim || n->prim->index != P_prim_period) continue;
+      if (n->rvals.n < 2) continue;
+      for (EntrySet *es : f->ess) {
+        if (!es) continue;
+        AVar *obj = make_AVar(n->rvals[1], es);
+        if (!obj || !obj->out) continue;
+        Vec<Sym *> classes;
+        for (CreationSet *cs : *obj->out) if (cs && cs->sym) {
+          if (cs->sym->type == sym_nil_type) continue;  // same skip prim_period_offset makes
+          if (!cs->sym->has.n) continue;                // not a record-shaped receiver
+          classes.set_add(cs->sym);
+        }
+        if (classes.n < 2) continue;
+        // Merge into an existing group sharing any member, else start one.
+        Vec<Sym *> *g = nullptr;
+        for (Vec<Sym *> *x : groups) if (x) {
+          for (Sym *c : classes) if (x->set_in(c)) { g = x; break; }
+          if (g) break;
+        }
+        if (!g) { g = new Vec<Sym *>; groups.add(g); }
+        for (Sym *c : classes) g->set_add(c);
+      }
+    }
+  }
+  // Compact: plib Vecs built with set_add are HASH SETS with NULL
+  // holes, and every loop below walks them densely. (Skipping this
+  // segfaulted the compiler inside the name qsort on a NULL entry.)
+  //
+  // Deliberately NOT closed over the inheritance hierarchy. That was
+  // tried: it pulls in `object`, and since every class descends from it
+  // the group becomes the whole program -- which is exactly the blast
+  // radius this analysis exists to avoid. The cross-class assumption
+  // that made closure look necessary lived in codegen's slot lookup and
+  // is fixed there instead (codegen_common.cc, same issue).
+  for (Vec<Sym *> *g : groups) if (g) { g->set_to_vec(); qsort_by_id(*g); }
+
+  // Being in a group is NOT sufficient reason to reorder. Two classes
+  // that declare the same member set already agree, because promotion
+  // and the offset walk are both name-sorted (issues/121) -- measured on
+  // pygmy, whose plane/sphere, spotshader/everythingshader and
+  // pointlight/parallellight pairs are all genuine sibling unions with
+  // EQUAL member counts, and which compiles today. The requirement bites
+  // only when a shared member name lands at a DIFFERENT index in two
+  // classes of the group, which is what bh's Cell(27)/Body(30) does.
+  // Drop the groups that have no such conflict.
+  Vec<Vec<Sym *> *> conflicted;
+  for (Vec<Sym *> *g : groups) if (g && g->n > 1) {
+    bool conflict = false;
+    for (Sym *a : *g) {
+      for (int i = 0; i < a->has.n && !conflict; i++) {
+        Sym *m = a->has[i];
+        if (!m || !m->name) continue;
+        for (Sym *b : *g) {
+          if (b == a) continue;
+          for (int j = 0; j < b->has.n; j++) {
+            Sym *o = b->has[j];
+            if (o && o->name && !strcmp(o->name, m->name) && i != j) {
+              if (getenv("IFA_DBG_PREFIX"))
+                fprintf(stderr, "PREFIX conflict: '%s' at %s[%d] vs %s[%d]\n", m->name,
+                        a->name ? a->name : "?", i, b->name ? b->name : "?", j);
+              conflict = true;
+              break;
+            }
+          }
+          if (conflict) break;
+        }
+      }
+      if (conflict) break;
+    }
+    if (conflict) conflicted.add(g);
+  }
+  groups.move(conflicted);
+  if (getenv("IFA_DBG_PREFIX")) {
+    long nf=0, nlive=0, ness=0, nper=0, nrecv=0, nmulti=0;
+    for (Fun *f : fa->funs) { nf++; if (f->live) nlive++; ness += f->ess.n;
+      for (PNode *n : f->fa_all_PNodes)
+        if (n && n->prim && n->prim->index == P_prim_period) { nper++;
+          for (EntrySet *es : f->ess) if (es && n->rvals.n>1) {
+            AVar *o = make_AVar(n->rvals[1], es);
+            if (o && o->out) { nrecv++; int k=0;
+              for (CreationSet *c : *o->out) if (c && c->sym && c->sym->type != sym_nil_type && c->sym->has.n) k++;
+              if (k>1) nmulti++; } } } }
+    fprintf(stderr, "PREFIX scan: funs=%ld live=%ld ess=%ld period_nodes=%ld recv=%ld multi=%ld\n",
+            nf, nlive, ness, nper, nrecv, nmulti);
+    fprintf(stderr, "PREFIX groups=%d\n", groups.n);
+    for (Vec<Sym *> *g : groups) if (g) {
+      fprintf(stderr, "  {");
+      for (Sym *c : *g) fprintf(stderr, " %s(has=%d)", c->name ? c->name : "?", c->has.n);
+      fprintf(stderr, " }");
+      // Which of them share a base, and what does the base contribute?
+      for (Sym *c : *g) if (c->specializes.n)
+        fprintf(stderr, "  %s<:%s", c->name ? c->name : "?",
+                c->specializes[0] && c->specializes[0]->name ? c->specializes[0]->name : "?");
+      fprintf(stderr, "\n");
+    }
+  }
+}
+
+// ifa/issues/123: give a conflicted group a COMMON PREFIX.
+//
+// The array that decides the emitted layout is `cs->vars`, NOT
+// `cs->sym->has`. compute_member_types rebuilds the clone's `has` from
+// `cs->vars` POSITIONALLY (`AVar *av = cs->vars[i]` -> `has[i]->type`),
+// so `has` is an output. Reordering it directly was tried and produced
+// members with the wrong C types -- `__str__` emitted as `_CG_string`
+// and then assigned a function pointer, a raw clang error.
+// determine_layouts' own note says as much: "cs->vars itself is left
+// untouched (other code indexes it positionally)".
+//
+// Order each CS's vars as [names present in EVERY class of the group,
+// name-sorted] ++ [the rest, name-sorted]. The prefix is by construction
+// the same sequence in every class, so a shared member lands at the same
+// index -- which is the emitted `eN` -- and one `->eN` serves the whole
+// union.
+//
+// This generalises C++ single-inheritance layout rather than copying it.
+// Aligning only BASE-declared members would not fix bh: the conflict it
+// reports is `load_tree`, which Cell and Body each declare themselves
+// (Node's is commented out) and which is still reached through the
+// union. Intersecting on NAME covers the inherited and the
+// coincidentally-shared case alike.
+static void apply_prefix_layout(Vec<Vec<Sym *> *> &groups) {
+  for (Vec<Sym *> *g : groups) {
+    if (!g || g->n < 2) continue;
+    bool ok = true;
+    for (Sym *c : *g) if (!c || c->type_kind != Type_RECORD) ok = false;
+    if (!ok) continue;
+    // Per class, the union of ivar names over its CreationSets.
+    Vec<cchar *> shared;
+    bool first = true;
+    for (Sym *c : *g) {
+      Vec<cchar *> names;
+      for (CreationSet *cs : fa->css) if (cs && cs->sym == c)
+        for (AVar *iv : cs->vars) if (iv && iv->var && iv->var->sym && iv->var->sym->name)
+          names.set_add(iv->var->sym->name);
+      names.set_to_vec();
+      if (first) { for (cchar *n : names) if (n) shared.set_add(n); first = false; }
+      else {
+        Vec<cchar *> keep;
+        shared.set_to_vec();
+        for (cchar *n : shared) if (n) {
+          for (cchar *m : names) if (m && !strcmp(m, n)) { keep.set_add(n); break; }
+        }
+        shared.clear();
+        keep.set_to_vec();
+        for (cchar *n : keep) if (n) shared.set_add(n);
+      }
+    }
+    shared.set_to_vec();
+    if (!shared.n) continue;
+    if (shared.n > 1)
+      qsort(shared.v, shared.n, sizeof(shared[0]), [](const void *a, const void *b) {
+        return strcmp(*(cchar *const *)a, *(cchar *const *)b);
+      });
+    int nre = 0;
+    for (CreationSet *cs : fa->css) {
+      if (!cs || !g->in(cs->sym)) continue;
+      // Built directly rather than sorted with a comparator: the order
+      // depends on `shared`, and a capturing lambda is not a qsort
+      // function pointer.
+      Vec<AVar *> pre, post;
+      for (cchar *nm : shared) if (nm)
+        for (AVar *iv : cs->vars)
+          if (iv && iv->var && iv->var->sym && iv->var->sym->name && !strcmp(iv->var->sym->name, nm)) {
+            pre.add(iv);
+            break;
+          }
+      for (AVar *iv : cs->vars) if (iv && !pre.in(iv)) post.add(iv);
+      if (post.n > 1)
+        qsort(post.v, post.n, sizeof(post[0]), [](const void *a, const void *b) {
+          AVar *x = *(AVar **)a, *y = *(AVar **)b;
+          cchar *xn = x->var && x->var->sym && x->var->sym->name ? x->var->sym->name : "";
+          cchar *yn = y->var && y->var->sym && y->var->sym->name ? y->var->sym->name : "";
+          int r = strcmp(xn, yn);
+          return r ? r : (x->id > y->id) - (x->id < y->id);
+        });
+      if (pre.n + post.n != cs->vars.n) continue;  // paranoia: never drop an ivar
+      cs->vars.clear();
+      for (AVar *iv : pre) cs->vars.add(iv);
+      for (AVar *iv : post) cs->vars.add(iv);
+      nre++;
+    }
+    if (getenv("IFA_DBG_PREFIX")) {
+      fprintf(stderr, "PREFIX applied: shared=%d css_reordered=%d {", shared.n, nre);
+      for (Sym *c : *g) if (c) fprintf(stderr, " %s", c->name ? c->name : "?");
+      fprintf(stderr, " }\n");
+    }
+  }
+}
+
 static void determine_layouts() {
+  // ifa/issues/123: measure which hierarchies need a common base prefix
+  // (probe-only for now -- nothing consumes `prefix_groups` yet).
+  // ifa/issues/123: reorder members ONLY for hierarchies measured to
+  // need it (a union receiver whose classes disagree on a shared
+  // member's index). Off by default until the corpus A/B is in.
+  if (getenv("PYC_PREFIX_LAYOUT")) {
+    Vec<Vec<Sym *> *> prefix_groups;
+    collect_prefix_groups(prefix_groups);
+    apply_prefix_layout(prefix_groups);
+  } else if (getenv("IFA_DBG_PREFIX")) {
+    Vec<Vec<Sym *> *> prefix_groups;
+    collect_prefix_groups(prefix_groups);
+  }
   // ifa/issues/055: a field's size is resolved from THIS CreationSet's
   // own field type, so a field that is bottom in one contour contributed
   // 0 bytes there and shifted every later field up -- giving two CSs of
