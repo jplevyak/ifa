@@ -214,3 +214,84 @@ pins it standalone (0x88 indexing, `' '.join` over a list of str, and
 negative string indexing: black pieces are stored negative and index
 `pieces` from the end, so `pieces[-1] == 'P'`). So the only thing between
 chess and a printed board is this issue.
+
+## 2026-09-03: chess DOES compile monomorphically — and its board prints
+
+Re-measured end to end, because "chess should compile monomorphically,
+shedskin compiles it" is exactly right and worth pinning down.
+
+**The union is not in chess's data.** The author went out of their way to
+avoid one: `iNone = -999`, `iTrue = 1`, `iFalse = 0` (chess.py:20-22) are
+plain ints, so the 0x88 board stays a homogeneous `list[int]`.
+
+**It is in a return type.** `rowAttack` (chess.py:130) has three exits:
+
+```python
+def rowAttack(board, attackers, ix, dir):
+  own = attackers[0]
+  for k in [i + ix for i in dir]:
+    if k & 0x88:
+      return False                                           # bool
+    if board[k]:
+      return (board[k] * own < 0) and board[k] in attackers   # bool
+  # loop completes -> implicit `return None`
+```
+
+The third exit is the `for` running out. Whether it is REACHABLE depends
+on 0x88 ray arithmetic — every ray eventually leaves the board, so the
+programmer knows it is dead, and no flow analysis is going to prove it.
+That `None` flows out through `nonpawnAttacks`'s `or` chain and the
+`nonpawnBlackAttacks` lambda into the closure capture the diagnostic
+names, and `{bool, None}` is 1 byte unioned with 8.
+
+**So it compiles with the escape hatch this issue already documents:**
+
+```
+$ PYC_NO_IMPLICIT_NONE=1 pyc -D . shedskin_examples/chess/chess.py -o chess
+$ (no diagnostics at all)
+```
+
+which is precisely shedskin's trick — type the function `__ss_bool` and
+give the fall-off path the zero value — and precisely the CPython
+divergence it costs. Nothing about chess needs a new representation. The
+open question here remains the one this issue already states: whether
+permissive mode should take that compromise by default. That is a
+language-semantics call.
+
+### Two new facts from running it
+
+**1. The restored board renderer works, in chess itself.** Byte-identical
+to CPython:
+
+```
+R N B Q K B N R
+P P P P P P P P
+. . . . . . . .
+...
+r n b q k b n r
+```
+
+This retires the caveat in the section above: `printBoard` is no longer
+verified only by `tests/chess_print_board.py` standing in for it.
+
+**2. The runtime failure is HEAP CORRUPTION, not a type problem.** This
+issue previously recorded only "still segfaults at runtime". Located:
+
+```
+#0  GC_clear_fl_marks (q=0xc <error: Cannot access memory at address 0xc>)
+#1  clear_all_fl_marks ()
+#2  GC_finish_collection ()
+#3  GC_try_to_collect_inner ()
+...
+#6  GC_generic_malloc_inner_small ()
+```
+
+The crash is inside Boehm GC walking a free list, on a pointer of `0xc`.
+A free list does not corrupt itself: emitted code wrote through a bad
+pointer earlier and the GC is where it surfaces, so the stack is the
+symptom and not the site. Note stdout is buffered and lost on the
+segfault — the board only appears under `stdbuf -o0`, which is why this
+looked like "crashes before printing anything" at first.
+
+That is a separate defect from this issue's representation question, and
+it is the thing actually standing between chess and a working binary.
