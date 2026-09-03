@@ -3137,6 +3137,16 @@ static void cg_elide_unread_slots(FA *fa) {
     }
     return true;
   };
+  // DECIDE, then APPLY. Nulling `m->type` while still deciding makes a
+  // class's verdict depend on whether its group-mates were processed
+  // first: `elidable_bare` reads `m->type`, so a group-mate already
+  // nulled reads as not-elidable and the constraint answers differently
+  // depending on iteration order. That is how `Exception` kept e0 while
+  // `StopIteration` -- same prefix group, same slot -- lost it
+  // ("member width differs at e0, _CG_void vs <placeholder>"). Collect
+  // every (member Sym) to null first, mutate nothing until the whole
+  // decision is made.
+  Vec<Sym *> to_null;
   long elided = 0;
   Vec<Sym *> seen;
   for (CreationSet *cs : fa->css) {
@@ -3166,7 +3176,7 @@ static void cg_elide_unread_slots(FA *fa) {
       // (closure construction, the tuple-list stores, destruct_prim).
       bool read = !elidable_for_class(cs->sym, i);
       if (read) continue;
-      m->type = nullptr;  // -> zero-width placeholder, cg_field_live false
+      to_null.add(m);  // applied below, after every verdict is decided
       elided++;
     }
   }
@@ -3186,6 +3196,8 @@ static void cg_elide_unread_slots(FA *fa) {
       }
     }
   }
+  for (Sym *m : to_null)
+    if (m) m->type = nullptr;  // -> zero-width placeholder, cg_field_live false
   if (getenv("IFA_DBG_SLOTUSE")) fprintf(stderr, "[slotuse] ELIDED %ld slots (neither read nor written)\n", elided);
   cg_slot_use_cls.clear();
   cg_slot_use_idx.clear();

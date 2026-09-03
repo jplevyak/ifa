@@ -1018,3 +1018,46 @@ disable. Full gate green with them on: `make test` 309/18/0,
 `PYC_ELIDE_SLOTS` stays OFF — see the sweep note above; it costs five
 corpus compile failures, four of which were a latent null-deref now
 fixed, and one cross-class divergence that is still open.
+
+## 2026-09-03: elision root-caused — it was DECIDE-WHILE-MUTATING
+
+The remaining failure was not a missing constraint. The elision nulled
+`m->type` as it walked, and `elidable_bare` READS `m->type` — so a
+group-mate already nulled read as not-elidable, and a class's verdict
+depended on iteration order. `Exception` kept e0 while `StopIteration`,
+same prefix group and same slot, lost it:
+
+```
+'Exception' is blind-cast to 'StopIteration' and read at e13,
+  but member width differs at e0 (_CG_void vs <placeholder>)
+```
+
+Collecting every member to null first and applying nothing until the
+whole decision is made fixes it. The same decide-then-apply discipline
+`apply_prefix_layout` needed, and the same one `split_ess_for_type`'s
+M2b note describes for the splitter — third time in this issue that
+mutating mid-decision produced an order-dependent answer.
+
+### Result
+
+`make test` **309 / 0** with `PYC_ELIDE_SLOTS=1`, and every corpus
+program that the earlier attempt broke now compiles: chaos, chess,
+richards, solitaire, sunfish, plus bh, go, pygmy, tictactoe.
+
+Struct members emitted:
+
+| | before | after |
+|---|---|---|
+| richards | 1032 | **212** |
+| go | 787 | **120** |
+| bh | 753 | **140** |
+
+80-85% of members removed. They cost 8 bytes each per instance, plus the
+store that initialised them.
+
+The two earlier fixes stand as part of this: the latent `has[0]->type`
+null-deref (a default-path SIGSEGV in its own right) and using clone.cc's
+`collect_prefix_groups` rather than rebuilding the blind-cast relation in
+codegen.
+
+Corpus `-m check` A/B still owed before this defaults on.
