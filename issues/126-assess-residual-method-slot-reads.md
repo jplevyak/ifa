@@ -229,3 +229,49 @@ clean.
 **Not yet default-on:** a core clone-equivalence change needs the corpus
 `check` A/B, which is owed for this, the prefix layout and slot elision
 together.
+
+### Tightened: split only when the classes are LAYOUT-INCOMPATIBLE (`PYC_CLASSEQ=2`)
+
+Requiring the class sets to be *identical* is blunt. Merging two classes
+into one contour costs something only where codegen has to pick a
+representation or a slot — so if every member sits at the same offset
+with the same size in both, the blind cast is exact and any classtag
+dispatch finds its method at the same index. Splitting them buys nothing
+and costs a clone.
+
+`IFA_DBG_CLASSEQ=1` says what the blunt rule was actually splitting on
+pygmy:
+
+```
+406  everythingshader | spotshader     <- siblings, EQUAL member sets
+314  ? | ?
+  6  plane | sphere
+  6  tuple | vec
+```
+
+The dominant pair is exactly the one `collect_prefix_groups` already
+reports as conflict-free. `PYC_CLASSEQ=2` compares offsets and sizes
+(`determine_layouts` has run by then) and treats layout-compatible
+classes as equivalent — structurally, never by name.
+
+| emitted functions | default | `CLASSEQ=1` | `CLASSEQ=2` |
+|---|---|---|---|
+| pygmy | 79 | 103 | **79** |
+| go | 310 | 314 | **312** |
+| richards | 145 | 145 | **145** |
+
+pygmy's entire 30% increase disappears; go's halves. And it keeps the
+whole benefit: havlak still compiles with 0 errors and concrete
+`__eq__` formals (`_CG_ps14321`, `_CG_nil_type` — no `_CG_any`).
+
+| | suite |
+|---|---|
+| `PYC_CLASSEQ=2` | 309 / 0 |
+| `PYC_CLASSEQ=2 PYC_ELIDE_SLOTS=1` | 309 / 0 |
+
+Corpus compile status unchanged on bh, chess, sudoku5, nbody, tictactoe,
+sunfish, go. `make test` 309/18/0 with the flag off.
+
+So the criterion is now "split when the merge would actually cost
+something", not "split whenever the classes differ" — which is the same
+principle the prefix-layout analysis uses, applied one phase earlier.

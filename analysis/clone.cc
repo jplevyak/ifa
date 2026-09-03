@@ -186,11 +186,52 @@ static int equivalent_es_vars(Var *v, EntrySet *a, EntrySet *b) {
         for (Sym *x : cb) if (x == cs->sym) { dup = true; break; }
         if (!dup) cb.add(cs->sym);
       }
-      if (ca.n != cb.n) return 0;
-      for (Sym *x : ca) {
-        bool found = false;
-        for (Sym *y : cb) if (x == y) { found = true; break; }
-        if (!found) return 0;
+      bool differ = ca.n != cb.n;
+      if (!differ)
+        for (Sym *x : ca) {
+          bool found = false;
+          for (Sym *y : cb) if (x == y) { found = true; break; }
+          if (!found) { differ = true; break; }
+        }
+      // TIGHTEN (PYC_CLASSEQ=2): differing class sets are only a reason
+      // to split when the classes are not LAYOUT-COMPATIBLE. Merging two
+      // classes into one contour costs precision only where codegen has
+      // to pick a representation or a slot; if every member sits at the
+      // same offset with the same size in both, the blind cast is exact
+      // and any classtag dispatch finds its method at the same index.
+      //
+      // Measured on pygmy: 406 of the splits are
+      // everythingshader/spotshader, siblings whose member sets are
+      // equal (collect_prefix_groups reports no conflict for them), so
+      // splitting them buys nothing. Basic_block/Union_find_node, the
+      // case this whole change is for, have different fields and still
+      // split.
+      //
+      // Compared on offsets and sizes -- determine_layouts has already
+      // run at this point -- never on names.
+      if (differ && classeq_enabled() >= 2) {
+        bool all_compat = true;
+        for (CreationSet *x : *va->out) if (x && all_compat)
+          for (CreationSet *y : *vb->out) if (y) {
+            if (x->sym == y->sym) continue;
+            if (x->vars.n != y->vars.n) { all_compat = false; break; }
+            for (int i = 0; i < x->vars.n; i++) {
+              AVar *xi = x->vars[i], *yi = y->vars[i];
+              if (!xi || !yi || xi->ivar_offset != yi->ivar_offset) { all_compat = false; break; }
+            }
+            if (!all_compat) break;
+          }
+        if (all_compat) differ = false;
+      }
+      if (differ) {
+        if (getenv("IFA_DBG_CLASSEQ")) {
+          fprintf(stderr, "CLASSEQ-SPLIT %s:", v->sym->name ? v->sym->name : "?");
+          for (Sym *x : ca) fprintf(stderr, " %s", x->name ? x->name : "?");
+          fprintf(stderr, " |");
+          for (Sym *y : cb) fprintf(stderr, " %s", y->name ? y->name : "?");
+          fprintf(stderr, "\n");
+        }
+        return 0;
       }
     }
     // How often does the blindness above let a pair through? Hot path,
