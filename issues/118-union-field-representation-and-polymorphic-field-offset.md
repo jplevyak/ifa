@@ -295,3 +295,62 @@ looked like "crashes before printing anything" at first.
 
 That is a separate defect from this issue's representation question, and
 it is the thing actually standing between chess and a working binary.
+
+## 2026-09-03 (later): chess FIXED at the source, on the default path
+
+The flag was the wrong lever. `PYC_NO_IMPLICIT_NONE` is global and
+changes what `None` MEANS everywhere, to buy one program's compile; and
+pyc's goal is not to compile all Python, it is to compile what can be
+analyzed monomorphically. `rowAttack` could always be analyzed
+monomorphically — the source just did not say so.
+
+```python
+  for k in [i + ix for i in dir]:
+    if k & 0x88:
+      return False
+    if board[k]:
+      return (board[k] * own < 0) and board[k] in attackers
++ return False     # unreachable: every ray leaves the board
+```
+
+The fall-off path is dead — only 0x88 ray arithmetic says so, which is
+why FA cannot see it. **CPython never reaches it either**, and would
+`TypeError` inside `max()` if it did (`max([False, None])`), which is
+independent proof the path is dead in the program as written. So the
+explicit `return False` is a no-op semantically and, unlike the flag,
+costs **no CPython divergence at all**.
+
+Result, with no flags:
+
+    pyc -D . shedskin_examples/chess/chess.py     # zero diagnostics
+    corpus compile_fail: 4 -> 3
+
+and it prints its board byte-identically to CPython.
+
+### What is left is not a typing problem
+
+chess then segfaults inside the FIRST `alphaBeta` — it reaches **0 of
+the 2** `print(res)` lines CPython produces. The crash surfaces in Boehm
+GC walking a free list on a `0xc` pointer (`GC_clear_fl_marks` <-
+`clear_all_fl_marks` <- `GC_finish_collection` <- an allocation).
+
+Two things measured, so the next person does not repeat them:
+
+- **valgrind does not localize it.** 46 findings, every one inside
+  Boehm's conservative scan (27 uninitialised-value, 18 conditional
+  jump, 1 invalid read) and **zero** stacks mentioning emitted `_CG_f_`
+  code. Boehm is deliberately valgrind-hostile; this needs a GC built
+  with valgrind tracking before the tool says anything useful.
+- **A large `GC_INITIAL_HEAP_SIZE` does not avoid it**, so "collection
+  merely surfaces pre-existing corruption" is not sufficient as a
+  theory on its own.
+
+A single `speedTest()` reproduces, which makes the workload small enough
+to work with. Careful with that reduction: `t0` is only assigned when
+`m == 5`, so cutting the outer loop below 6 makes CPython raise
+`NameError` on the final TIME line — an artifact of the reduction, not a
+finding. pyc crashes long before that line either way.
+
+This is a runtime memory bug, unrelated to this issue's representation
+question, and it is now the only thing between chess and a working
+binary.
