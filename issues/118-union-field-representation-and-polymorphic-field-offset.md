@@ -1,11 +1,38 @@
 # 118 — the last two corpus compile failures: union-field width, and polymorphic field offsets
 
-**Status:** open, filed 2026-08-27. Both are REPRESENTATION limits, not
-analysis bugs, and each blocks exactly one corpus program.
-**Affects:** `ifa/analysis/clone.cc` (`determine_layouts`,
-`prim_period_offset`), `ifa/codegen/cg.cc` (member C-type selection).
-**Blocks:** `shedskin_examples/chess`, `shedskin_examples/go` — neither
-COMPILES, so neither runs.
+**Status: OPEN but RESCOPED 2026-09-03.** Only the `{bool, None}` width
+half survives. Every claim in the original status line has since failed,
+so it is restated here rather than left to mislead:
+
+- ~~"the last two corpus compile failures"~~ — **both now compile.**
+  `go` compiles AND RUNS (rc=0); `chess` compiles and segfaults at
+  runtime for an unrelated reason (see below).
+- ~~"each blocks exactly one corpus program"~~ — neither blocks one now.
+- ~~"Both are REPRESENTATION limits, not analysis bugs"~~ — **the `go`
+  half was an analysis bug.** It was imprecision, exactly as this
+  issue's own "worth checking first whether the union is genuine"
+  note suggested, and [124](124-FA-refuse-imprecise-inference.md)'s
+  splitter fix resolved it. Neither proposed representation change was
+  needed.
+
+**What actually remains:** the `{bool, None}` mixed-width slot. A
+1-byte `bool` unioned with a pointer-sized `None` has no unboxed
+representation, `determine_layouts` refuses it, and
+`tests/bool_or_none_fallthrough.py` still fails today with
+`mismatched field sizes: class 'closure' field '<anon>' mixes 1- and
+8-byte members`. That is real and unfixed.
+
+**`chess` no longer exercises it.** Its union came from `rowAttack`
+falling off the end of a `for` — an implicit `return None` against two
+`return <bool>`s — and the source now says `return False` explicitly on
+that (unreachable) path. So chess compiles on the DEFAULT path; the
+representation gap it used to hit is untouched, it simply stopped
+producing one. chess's remaining runtime SIGSEGV is heap corruption in
+the Boehm free list, the same signature `bh` shows, and is not this
+issue.
+
+**Affects:** `ifa/analysis/clone.cc` (`determine_layouts`).
+**Pinned by:** `tests/bool_or_none_fallthrough.py` (`.known_issue`).
 
 ## chess: a slot mixing `bool` (1 byte) with `None` (8 bytes)
 
