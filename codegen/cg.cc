@@ -2935,6 +2935,28 @@ static void cg_compute_slot_reads(FA *fa) {
               }
         }
       }
+      // Writes, computed the same way: the setter resolves its receiver
+      // with the very same symbol_info + resolve_union_receiver pair.
+      if (pn->prim && pn->prim->index == P_prim_setter && pn->rvals.n > 3) {
+        cchar *symbol = pn->rvals[3]->sym && pn->rvals[3]->sym->is_symbol ? pn->rvals[3]->sym->name : nullptr;
+        if (!symbol) {
+          Vec<Sym *> symbols;
+          symbol_info(pn->rvals[3], symbols);
+          if (symbols.n == 1) symbol = symbols[0]->name;
+        }
+        if (symbol && pn->rvals[1]->type) {
+          Sym *obj = resolve_union_receiver(pn->rvals[1]->type, symbol);
+          if (obj)
+            for (int i = 0; i < obj->has.n; i++)
+              if (obj->has[i] && symbol == obj->has[i]->name) { cg_note_slot_use(obj, i, 0); break; }
+        }
+      }
+      // Record construction writes every live field positionally.
+      if (pn->prim && pn->prim->index == P_prim_make && pn->lvals.n && pn->lvals[0]->type) {
+        Sym *rec = pn->lvals[0]->type;
+        if (rec->type_kind == Type_RECORD && rec->has.n)
+          for (int i = 3; i < pn->rvals.n; i++) cg_note_slot_use(rec, i - 3, 0);
+      }
       Vec<Fun *> *fns = f->calls.get(pn);
       if (fns && fns->n > 1) {
         Vec<cchar *> directly_owned;
@@ -2965,9 +2987,32 @@ static void cg_compute_slot_reads(FA *fa) {
 static void cg_elide_unread_slots(FA *fa) {
   if (!getenv("PYC_ELIDE_SLOTS")) return;
   cg_compute_slot_reads(fa);
-  Vec<cchar *> method_names;
-  for (Fun *f : fa->funs)
-    if (f && f->sym && f->sym->name) method_names.set_add(f->sym->name);
+  // No name matching anywhere here (CLAUDE.md, "Never analyse or decide
+  // by NAME"). The old filter asked "does some function share this
+  // member's name?" to guess method-vs-data, which counts a data field
+  // whose name coincides with a function and misses the converse. The
+  // method/data question does not need answering: a member that is
+  // NEITHER READ NOR WRITTEN is dead whichever it is, and both sides are
+  // computed structurally above -- reads from the getter's own
+  // resolve_union_receiver and from poly_dispatch_classtag_targets over
+  // the call graph's candidate sets, writes from the setter's identical
+  // resolution and from record construction.
+  // Clones of ONE class must agree. `compute_member_types` gives each
+  // clone its own member types, so a field that is bottom (sym_void) in
+  // one contour is `_CG_int64` in another -- eliding the first and not
+  // the second makes their layouts differ at that slot, which the
+  // contract check reports as "'T' is blind-cast to 'T' ... member width
+  // differs" (tests/deepcopy_objects). Grouped on `cs->sym`, the
+  // original class, which is CreationSet identity rather than a name.
+  auto elidable_in_clone = [&](Sym *t, int i) {
+    if (i >= t->has.n) return false;
+    Sym *m = t->has[i];
+    if (!m || !m->type) return false;
+    if (m->type->type_kind != Type_FUN && m->type != sym_void) return false;
+    for (int k = 0; k < cg_slot_use_cls.n; k++)
+      if (cg_slot_use_cls.v[k] == t && cg_slot_use_idx.v[k] == i && cg_slot_use_rd.v[k]) return false;
+    return true;
+  };
   long elided = 0;
   Vec<Sym *> seen;
   for (CreationSet *cs : fa->css) {
@@ -2975,33 +3020,43 @@ static void cg_elide_unread_slots(FA *fa) {
     Sym *t = cs->type;
     for (int i = 0; i < t->has.n; i++) {
       Sym *m = t->has[i];
-      if (!m || !m->name || !m->type) continue;
-      if (!method_names.set_in(m->name)) continue;  // data field, never elided
+      if (!m || !m->type) continue;
+      // Structural, not by name: only a member whose inferred TYPE is a
+      // function (a populated dispatch slot) or `void` (a slot the
+      // registry declared and never stored into) is a candidate. A data
+      // field has a concrete data type and is excluded by that alone --
+      // no need to ask the unanswerable "is this name a method", which
+      // counted data fields whose name coincided with a function.
+      //
+      // "Neither read nor written" was tried instead, to drop the
+      // method/data question entirely, and is too aggressive: 50 of 327
+      // tests fail, because the WRITE side has paths not modelled here
+      // (closure construction, the tuple-list stores, destruct_prim).
+      if (m->type->type_kind != Type_FUN && m->type != sym_void) continue;
       bool read = false;
-      for (int k = 0; k < cg_slot_use_cls.n; k++)
-        if (cg_slot_use_cls.v[k] == t && cg_slot_use_idx.v[k] == i && cg_slot_use_rd.v[k]) { read = true; break; }
-      // Conservative and layout-safe: a name is elidable only if it is
-      // unread on EVERY class that has a member of that name. Anything
-      // narrower has to model which classes are blind-cast to each
-      // other, and that relation is only discovered during emission --
-      // restricting to Type_SUM receiver groups was tried and still left
-      // 26 contract violations on richards. Given 93-98% of slots are
-      // never read anywhere, the global rule keeps most of the win.
-      if (!read)
-        for (int k = 0; k < cg_slot_use_cls.n && !read; k++) {
-          if (!cg_slot_use_rd.v[k]) continue;
-          Sym *o = cg_slot_use_cls.v[k];
-          int j2 = cg_slot_use_idx.v[k];
-          if (o && j2 >= 0 && j2 < o->has.n && o->has[j2] && o->has[j2]->name &&
-              !strcmp(o->has[j2]->name, m->name))
-            read = true;
-        }
+      for (CreationSet *o : fa->css)
+        if (o && o->type && o->sym == cs->sym && !elidable_in_clone(o->type, i)) { read = true; break; }
       if (read) continue;
       m->type = nullptr;  // -> zero-width placeholder, cg_field_live false
       elided++;
     }
   }
-  if (getenv("IFA_DBG_SLOTUSE")) fprintf(stderr, "[slotuse] ELIDED %ld never-read method slots\n", elided);
+  if (getenv("IFA_DBG_STRUCT")) {
+    Vec<Sym *> seen2;
+    for (CreationSet *cs : fa->css) {
+      if (!cs || !cs->type || !cs->sym || !seen2.set_add(cs->type)) continue;
+      if (!cs->sym->name || strcmp(cs->sym->name, "Body")) continue;
+      for (int i = 0; i < cs->type->has.n && i < 40; i++) {
+        Sym *cl = cs->type->has[i];
+        Sym *orig = (i < cs->sym->has.n) ? cs->sym->has[i] : nullptr;
+        fprintf(stderr, "[struct] e%-2d %-16s clone(is_fun=%d fun=%d in=%s) orig(is_fun=%d fun=%d)\n", i,
+                cl && cl->name ? cl->name : "?", cl ? cl->is_fun : -1, cl && cl->fun ? 1 : 0,
+                cl && cl->in && cl->in->name ? cl->in->name : "-", orig ? orig->is_fun : -1,
+                orig && orig->fun ? 1 : 0);
+      }
+    }
+  }
+  if (getenv("IFA_DBG_SLOTUSE")) fprintf(stderr, "[slotuse] ELIDED %ld slots (neither read nor written)\n", elided);
   cg_slot_use_cls.clear();
   cg_slot_use_idx.clear();
   cg_slot_use_rd.clear();

@@ -788,3 +788,54 @@ never as a silent miscompile.
 
 **Still owed before default-on:** the corpus A/B, now for the pair
 rather than for padding alone.
+
+## 2026-09-03: the analysis is now name-free — and the clone rule is a RETREAT
+
+Reworked per CLAUDE.md's "Never analyse or decide by NAME". Nothing in
+the read analysis matches identifier strings any more:
+
+- **reads** come from the call graph — `poly_dispatch_classtag_targets`
+  over `f->calls.get(pn)` candidate sets with `poly_dispatch_directly_owned`,
+  plus the getter's own `symbol_info` + `resolve_union_receiver`, all
+  CALLED rather than restated;
+- **method vs data** is decided by the member's inferred TYPE
+  (`Type_FUN`, or `sym_void` for a slot the registry declared and never
+  stored into), not by asking whether some function shares its name;
+- **cross-clone agreement** keys on `cs->sym`, i.e. CreationSet
+  identity.
+
+Suite is 309/0 with `PYC_ELIDE_SLOTS=1` alone and with `+PYC_PREFIX_LAYOUT=1`.
+Corpus violations: richards 0, go 0, pygmy 0, bh 1 alone / **0 with the
+prefix** — the coupling again.
+
+### The clone-agreement rule is a retreat and must be replaced
+
+Requiring every clone of a class to agree before eliding took the elided
+count from ~425 per program to **5-28**. That passes, and it delivers
+almost nothing. It was added to silence one failure:
+
+```
+tests/deepcopy_objects:
+  'T' is blind-cast to 'T' and read at e16,
+  but member width differs at e15 (_CG_int64 vs <placeholder>)
+```
+
+Two CLONES of class `T` disagree: a field is `sym_void` (bottom) in one
+contour and `_CG_int64` in another, so eliding the first and not the
+second changes the layout at that slot.
+
+**The question that was not asked, and is the actual work:** why do two
+clones of one class have divergent member types at all, and is a blind
+cast BETWEEN two clones of the same class legitimate? Either
+
+- the divergence is the bug — one contour simply failed to observe the
+  field, which is the shape `determine_layouts`' `field_size` fallback
+  already exists to paper over (issues/055, "the class has one layout,
+  one contour just failed to observe a field") — in which case the same
+  fallback should apply to the member TYPE, not just its size; or
+- the blind cast between two clones of one class is the bug, and the two
+  should not be interchangeable.
+
+Either answer removes the conflict at its source and restores the full
+~425. The clone-agreement rule stays only until one of them is settled,
+and should not be mistaken for the fix.
