@@ -1405,7 +1405,21 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         cg_fail_unrepresentable_container_union(t, f->sym, n->code->ast ? n->code->ast->pathname() : nullptr,
                                                 n->code->ast ? n->code->ast->line() : 0);
       int sz = t->element->type->size;
-      if (!sz && t->type_kind == Type_RECORD && t->has.n) sz = t->has[0]->type->size;
+      if (!sz && t->type_kind == Type_RECORD && t->has.n) {
+        // `has[0]->type` can be NULL: a member with no type is emitted as
+        // a zero-width `char eN[0]` placeholder (issues/055, issues/121),
+        // and this dereferenced it unguarded -- a latent SIGSEGV on the
+        // default path whenever the placeholder lands at index 0, and a
+        // reliable one under PYC_ELIDE_SLOTS, which creates placeholders
+        // deliberately (measured: it crashed the compiler on chaos,
+        // chess, richards, solitaire and sunfish).
+        //
+        // The intent is "the size of one of this record's members", and a
+        // zero-width placeholder is not one -- take the first member that
+        // actually has a type.
+        for (int i = 0; i < t->has.n; i++)
+          if (t->has[i] && t->has[i]->type) { sz = t->has[i]->type->size; break; }
+      }
       // A generic list's element type is the program-wide union of
       // element types. With 2+ distinct element types that is a
       // Type_SUM with no compile-time size -- but if every member
@@ -3103,7 +3117,26 @@ static void cg_elide_unread_slots(FA *fa) {
   // what a purely restrictive rule can do and means the constraint is
   // not modelling the real relation. Recorded in ifa/issues/123; the
   // one remaining failure is root-caused there rather than papered over.
-  auto elidable_for_class = [&](Sym *csym, int i) { return elidable_bare(csym, i); };
+  // Classes reached through one union receiver must agree on which slots
+  // exist, or eliding on one and not another splits their layouts --
+  // richards: "'HandlerTaskRec' is blind-cast to 'IdleTaskRec' ... member
+  // width differs at e13". The grouping comes from clone.cc's
+  // collect_prefix_groups, the analysis that already computes exactly
+  // this relation; three attempts at rebuilding it here from receivers
+  // were all wrong (302/7, 302/7, 300/9 against 308/1).
+  extern Vec<Vec<Sym *> *> ifa_prefix_groups;
+  auto elidable_for_class = [&](Sym *csym, int i) {
+    if (!elidable_bare(csym, i)) return false;
+    for (Vec<Sym *> *g : ifa_prefix_groups) {
+      if (!g) continue;
+      bool member = false;
+      for (Sym *x : *g) if (x == csym) { member = true; break; }
+      if (!member) continue;
+      for (Sym *o : *g)
+        if (o && o != csym && !elidable_bare(o, i)) return false;
+    }
+    return true;
+  };
   long elided = 0;
   Vec<Sym *> seen;
   for (CreationSet *cs : fa->css) {

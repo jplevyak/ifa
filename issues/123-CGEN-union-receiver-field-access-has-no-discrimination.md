@@ -923,3 +923,65 @@ relation, and the answer is not in codegen: the grouping belongs in
 `collect_prefix_groups`, extended to dispatch receivers, where the
 prefix layout can actually align the two classes rather than merely
 refusing to elide.
+
+## 2026-09-03: the corpus sweep says NO to defaulting elision on
+
+`make test` was 309/0 for all three flags. The corpus disagrees:
+
+| | baseline (`check__default__2d89043e`) | all three flags |
+|---|---|---|
+| compile_fail | 3 | **8** |
+| run_fail | 43 | 36 |
+| stdout_differs | 24 | 24 |
+
+New compile failures: chaos, chess, richards, solitaire, sunfish. This
+is precisely the case CLAUDE.md warns `make test` cannot see, and the
+reason a corpus `-m check` is required before a core change defaults on.
+
+### All five were `PYC_ELIDE_SLOTS`, and four were a LATENT BUG
+
+Bisected by direct compile rather than three more hour-long sweeps:
+`PYC_CLASSEQ=2` and `PYC_PREFIX_LAYOUT=1` are rc=0 on every one; elide
+segfaults the COMPILER (139) on all five, at `cg.cc`:
+
+```c
+if (!sz && t->type_kind == Type_RECORD && t->has.n) sz = t->has[0]->type->size;
+```
+
+`has[0]->type` is dereferenced unguarded, and a member with no type is
+emitted as a zero-width `char eN[0]` placeholder (issues/055,
+issues/121) — so this is a **latent SIGSEGV on the default path**
+whenever such a placeholder lands at index 0. Elision merely makes it
+reachable every time. Fixed by taking the first member that actually has
+a type, which is what the code means; that cleared four of the five.
+`make test` remains 309/18/0.
+
+### richards is not fixed, and elision is not ready
+
+It fails on cross-class layout divergence — `HandlerTaskRec` blind-cast
+to `IdleTaskRec` differing at e13, and with the prefix on, `Exception`
+vs `StopIteration` at e0.
+
+The elision now consults clone.cc's `collect_prefix_groups` (published
+as `ifa_prefix_groups`) rather than rebuilding the relation in codegen,
+which is the right source — three attempts at rebuilding it there were
+all wrong. That fixed the TaskRec case and not the exception one, so
+something about the exception group's index correspondence still does
+not hold. Unresolved.
+
+### Where each flag stands
+
+- **`PYC_CLASSEQ=2`** — clean on all five, ~zero clone cost, and with
+  the prefix it makes **bh compile** (rc 1 → 0), one of the three
+  remaining corpus compile failures.
+- **`PYC_PREFIX_LAYOUT=1`** — clean on all five, same bh result.
+- **`PYC_ELIDE_SLOTS=1`** — not ready. One latent bug fixed, one
+  cross-class divergence outstanding.
+
+A corpus sweep for the first two alone is the missing evidence for
+defaulting them; it was started and stopped before producing results, so
+**no numbers exist for that arm** and nothing has been defaulted.
+
+Note the baseline sweep now takes **60 minutes, not 11** — chess
+compiles and runs since its explicit `return False`, so it joins the run
+phase instead of failing fast.

@@ -633,6 +633,11 @@ static void determine_basic_clones(Vec<Vec<CreationSet *> *> &css_sets_by_sym) {
 //
 // Reports groups, not a flat set: two classes only have to agree with
 // EACH OTHER, and unrelated hierarchies stay independent.
+// ifa/issues/123: published so codegen's slot elision can use the SAME
+// grouping. Rebuilding it there from receivers was tried three times and
+// was wrong every time; this is the analysis that already gets it right.
+Vec<Vec<Sym *> *> ifa_prefix_groups;
+
 static void collect_prefix_groups(Vec<Vec<Sym *> *> &groups) {
   Vec<Sym *> seen_pairs;  // flattened (a,b) pairs already recorded
   // NOT filtered on Fun::live / PNode::live: liveness is computed after
@@ -2000,10 +2005,9 @@ int clone(FA *afa) {
   // cannot change which CSs are equivalent -- determine_basic_clones
   // keys on vars.n) and BEFORE compute_member_types, which builds each
   // struct from cs->vars positionally. Off by default.
-  if (getenv("PYC_PREFIX_LAYOUT") || getenv("IFA_DBG_PREFIX")) {
-    Vec<Vec<Sym *> *> prefix_groups;
-    collect_prefix_groups(prefix_groups);
-    if (getenv("PYC_PREFIX_LAYOUT")) apply_prefix_layout(prefix_groups);
+  if (getenv("PYC_PREFIX_LAYOUT") || getenv("IFA_DBG_PREFIX") || getenv("PYC_ELIDE_SLOTS")) {
+    collect_prefix_groups(ifa_prefix_groups);
+    if (getenv("PYC_PREFIX_LAYOUT")) apply_prefix_layout(ifa_prefix_groups);
   }
   if (build_concrete_types() < 0) return -1;
   dbg_clone_stage("30-concrete-types");
