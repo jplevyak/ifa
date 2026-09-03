@@ -464,3 +464,55 @@ change: padding costs 8 bytes per pad per instance (bh: 41 pads across 6
 CreationSets), and the analysis fires on 0–2 groups per program, so the
 population that changes at all is small but needs measuring for both
 exit codes and `ess`/`css`.
+
+## Unused method slots: measured (`IFA_DBG_SLOTUSE=1`)
+
+Padding costs 8 bytes per pad, which raises the obvious question — how
+many slots are carrying their weight at all? A member only needs a slot
+if something dispatches through it, and `cg_build_new_to_val_map`
+already computes both halves of that: `poly_names` (every method name at
+a POLYMORPHIC call site) and `cg_new_to_val_map` (every slot the
+registry stores into). A member in neither is reached only by direct
+calls.
+
+| | live members | of which method slots | never dispatched |
+|---|---|---|---|
+| bh | 238 | 144 | **86 — 59% of slots, 36% of members** |
+| richards | 452 | 224 | **191 — 85% of slots, 42% of members** |
+
+Per class: bh `Cell` 8 of 33, `HG` 1 of 18; richards `DeviceTask` and
+`HandlerTask` 15 of 42 each.
+
+**A correction worth keeping.** The first version of this measurement
+reported 65% for bh, because it counted any member that was neither
+polymorphic nor stored — which is also true of every DATA field
+(`mass`, `pos` are in neither set). Restricting to members whose name
+matches some function in the program gives the figures above. The
+inflated number would have oversold the change by ~2x.
+
+### Eliminating them is not just `cg_field_live` returning 0
+
+Dropping a member changes the BYTE OFFSETS of the members after it. The
+`eN` suffix keeps the has-index, so the numbering does not shift
+(issues/055), but the C struct layout does — so two classes reached
+through one union receiver must agree on the live SET, or the blind-cast
+contract (ifa/122) breaks in exactly the way this issue is about.
+Elimination therefore has to be decided **per prefix group**, using the
+same grouping already built here: drop a name only if it is dead in
+every class of the group.
+
+Two further checks before it can be sound, neither done:
+
+- **The read side.** "Never dispatched" is established from the
+  registry and the poly-call-site names. Other paths read a slot by
+  index — the struct-copy loop (`cg.cc`, `%s->e%d = %s->e%d`),
+  `__deepcopy__`, and any `getattr`-like route. Each must either skip
+  eliminated members or keep them alive.
+- **Interaction with padding.** Elimination shrinks the name union a
+  prefix group has to agree on, so it should be applied BEFORE the pad
+  is computed — the two are complementary, and doing them in the wrong
+  order pads slots that were about to be deleted.
+
+Report-only for now; `IFA_DBG_SLOTUSE=1`, no behaviour change. Default
+path `make test` 309 passed / 18 known / 0 failed, and the flagged path
+matches it.

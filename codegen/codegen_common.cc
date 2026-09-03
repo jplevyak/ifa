@@ -413,6 +413,60 @@ void cg_build_new_to_val_map(FA *fa) {
       }
     }
   }
+  // ifa/issues/123: WHICH method slots are actually needed?
+  //
+  // A member only has to occupy a slot if something dispatches through
+  // it. Two facts here already decide that: `poly_names` is every method
+  // name appearing at a POLYMORPHIC call site (fns->n > 1) anywhere, and
+  // `cg_new_to_val_map` is every (creator, slot) the registry will
+  // actually store into. A member that is in neither is reached only by
+  // direct calls, and its slot is pure overhead -- 8 bytes per instance.
+  //
+  // Report-only. Eliminating them is NOT simply cg_field_live returning
+  // 0: dropping a member changes the BYTE offsets of the members after
+  // it (the `eN` suffix keeps the has-index, so the numbering does not
+  // shift, but the C struct layout does), so two classes reached through
+  // one union receiver must agree on the live SET -- the ifa/122 layout
+  // contract. Elimination therefore has to be decided per prefix GROUP,
+  // not per class.
+  if (getenv("IFA_DBG_SLOTUSE")) {
+    Vec<int> stored_slots;  // flattened, per creator -- membership test only
+    for (int i = 0; i < cg_new_to_val_map.n; i++)
+      if (cg_new_to_val_map.v[i].key && cg_new_to_val_map.v[i].value)
+        for (PolymorphicSlot &ps : *cg_new_to_val_map.v[i].value) stored_slots.set_add(ps.slot);
+    // A member is only a METHOD slot if some function in the program
+    // bears that name. Without this filter every DATA field counts as
+    // "never dispatched" too -- mass/pos are not in poly_names and are
+    // not stored by the registry either -- which overstated the figure
+    // badly (bh read 65% before this line existed).
+    Vec<cchar *> method_names;
+    for (Fun *f : fa->funs)
+      if (f && f->sym && f->sym->name) method_names.set_add(f->sym->name);
+    long members = 0, dead = 0, dead_bytes = 0, methods = 0;
+    Vec<Sym *> seen;
+    for (CreationSet *cs : fa->css) {
+      if (!cs || !cs->type || !seen.set_add(cs->type)) continue;
+      Sym *t = cs->type;
+      long cdead = 0;
+      for (int i = 0; i < t->has.n; i++) {
+        Sym *m = t->has[i];
+        if (!m || !m->name || !cg_field_live(t, i)) continue;
+        members++;
+        if (!method_names.set_in(m->name)) continue;  // data field, not a slot
+        methods++;
+        bool is_poly = poly_names.set_in(m->name) != 0;
+        bool is_stored = stored_slots.set_in(i) != 0;
+        if (!is_poly && !is_stored) { dead++; cdead++; dead_bytes += 8; }
+      }
+      if (cdead && t->name)
+        fprintf(stderr, "[slotuse] %-24s live=%d never-dispatched=%ld\n", t->name, t->has.n, cdead);
+    }
+    fprintf(stderr,
+            "[slotuse] TOTAL live members=%ld of which method slots=%ld; never-dispatched=%ld "
+            "(%ld%% of slots, %ld%% of members) ~%ld bytes\n",
+            members, methods, dead, methods ? 100 * dead / methods : 0, members ? 100 * dead / members : 0,
+            dead_bytes);
+  }
 }
 
 Sym *closure_fun_type(Var *v) {
