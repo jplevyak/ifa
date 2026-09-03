@@ -346,12 +346,22 @@ void cg_build_new_to_val_map(FA *fa) {
         // PYC_DBG_DISPATCH that neither candidate there is Type_SUM at
         // all, so the bug was purely in this slot re-resolution, not
         // the union-unpacking it was meant to fix.
-        int slot = direct_slot;
-        if (self_is_union) {
-          slot = -1;
-          for (int k = 0; k < cs->sym->has.n; k++)
-            if (cs->sym->has[k] && cs->sym->has[k]->name == method_name && cg_field_live(cs->sym, k)) { slot = k; break; }
-        }
+        // ifa/issues/123: resolve the slot in `cs->sym` -- the class whose
+        // struct is actually stored into -- rather than reusing
+        // `direct_slot`, which was found in the self FORMAL's class and
+        // is equal only by luck. Under PYC_PREFIX_LAYOUT the two are
+        // deliberately reordered and the luck runs out: the stale index
+        // wrote a method pointer into a slot the struct declared
+        // `_CG_string`, as a raw clang error.
+        //
+        // Falling back to `direct_slot` when the name is not found keeps
+        // the behaviour the note above records -- recomputing
+        // UNCONDITIONALLY (leaving slot = -1) regressed
+        // poly_dispatch_low/high, where this lookup misses.
+        int slot = -1;
+        for (int k = 0; k < cs->sym->has.n; k++)
+          if (cs->sym->has[k] && cs->sym->has[k]->name == method_name && cg_field_live(cs->sym, k)) { slot = k; break; }
+        if (slot < 0 && !self_is_union) slot = direct_slot;
         if (slot < 0) {
           if (dbg_slot)
             fprintf(stderr, "[polyslot] %s: cs %s has NO LIVE SLOT for it\n", method_name,

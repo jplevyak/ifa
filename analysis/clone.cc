@@ -686,70 +686,134 @@ static void apply_prefix_layout(Vec<Vec<Sym *> *> &groups) {
     bool ok = true;
     for (Sym *c : *g) if (!c || c->type_kind != Type_RECORD) ok = false;
     if (!ok) continue;
-    // Per class, the union of ivar names over its CreationSets.
-    Vec<cchar *> shared;
-    bool first = true;
-    for (Sym *c : *g) {
-      Vec<cchar *> names;
-      for (CreationSet *cs : fa->css) if (cs && cs->sym == c)
-        for (AVar *iv : cs->vars) if (iv && iv->var && iv->var->sym && iv->var->sym->name)
-          names.set_add(iv->var->sym->name);
-      names.set_to_vec();
-      if (first) { for (cchar *n : names) if (n) shared.set_add(n); first = false; }
-      else {
-        Vec<cchar *> keep;
-        shared.set_to_vec();
-        for (cchar *n : shared) if (n) {
-          for (cchar *m : names) if (m && !strcmp(m, n)) { keep.set_add(n); break; }
-        }
-        shared.clear();
-        keep.set_to_vec();
-        for (cchar *n : keep) if (n) shared.set_add(n);
+    // The UNION of ivar names over every CreationSet of every class in
+    // the group -- not the intersection. Sorting a shared prefix is not
+    // enough: CSs of the SAME class have different member sets
+    // (measured on bh: Body#1170 has 24 vars, Body#1406 has 30), so a CS
+    // missing one shared name shifts every later slot. Every CS in the
+    // group is given the same full sequence, padding what it lacks.
+    Vec<cchar *> all;
+    for (CreationSet *cs : fa->css) if (cs && g->in(cs->sym))
+      for (AVar *iv : cs->vars) if (iv && iv->var && iv->var->sym && iv->var->sym->name)
+        all.set_add(iv->var->sym->name);
+    all.set_to_vec();
+    if (all.n < 2) continue;
+    qsort(all.v, all.n, sizeof(all[0]), [](const void *a, const void *b) {
+      return strcmp(*(cchar *const *)a, *(cchar *const *)b);
+    });
+    // A donor field Sym per name, taken from whichever class in the
+    // group declares it. `cs->sym->has` is still the ORIGINAL class's
+    // member list here (compute_member_types has not run), so this is
+    // the right source, and reusing the donor gives the pad ivar the
+    // correct name for the emitted struct.
+    Vec<Sym *> donor;
+    donor.fill(all.n);
+    for (int i = 0; i < all.n; i++)
+      for (Sym *c : *g) {
+        for (Sym *h : c->has)
+          if (h && h->name && !strcmp(h->name, all[i]) && h->var) { donor.v[i] = h; break; }
+        if (donor.v[i]) break;
       }
+    // A TYPE donor too: the ivar of some CS in the group that really has
+    // this field. A pad left at bottom becomes `sym_void`
+    // (concrete_type_set_to_type of the empty set), and a store that
+    // codegen previously SKIPPED -- because the CS had no such slot --
+    // then lands on a void* member and trips the "field type mismatch"
+    // guard. bh: `Node.EPS = 0.05` written into a padded Body clone.
+    // Giving the pad the type the field has elsewhere keeps the slot
+    // consistent with every other class in the group.
+    Vec<AVar *> donor_av;
+    donor_av.fill(all.n);
+    for (int i = 0; i < all.n; i++)
+      for (CreationSet *cs : fa->css) if (cs && g->in(cs->sym)) {
+        AVar *iv = cs->var_map.get(all[i]);
+        if (iv && iv->out && iv->out->type && iv->out->type->n) { donor_av.v[i] = iv; break; }
+      }
+    // `Sym::has` must be permuted with `cs->vars`, not instead of it.
+    // compute_member_types takes each member's NAME from `sym->has[i]`
+    // (it clones that entry) and its TYPE from `cs->vars[i]`. Moving
+    // only vars mismatches the two -- bh emitted `_CG_void e11 /* EPS */`
+    // where the baseline had `_CG_float64`, because slot 11 was named
+    // from the old order and typed from the new one. Moving only `has`
+    // was the first attempt and fails the other way round.
+    // ATOMIC per group: compute every class's new `has` first, and apply
+    // nothing unless all of them are complete. Skipping one class's
+    // `has` while still reordering its `vars` desynchronises the two,
+    // which is precisely the failure this reorder exists to fix -- it
+    // emitted `Boom`'s slot 12 named `__str__` but typed `_CG_string`,
+    // then stored a method pointer into it.
+    Vec<Vec<Sym *> *> new_has;
+    bool group_ok = true;
+    for (Sym *c : *g) {
+      Vec<Sym *> *nh = new Vec<Sym *>;
+      for (int i = 0; i < all.n; i++) {
+        Sym *m = nullptr;
+        for (Sym *h : c->has) if (h && h->name && !strcmp(h->name, all[i])) { m = h; break; }
+        if (!m) m = donor.v[i];  // donor names the slot when this class lacks it
+        if (!m) group_ok = false;
+        nh->add(m);
+      }
+      new_has.add(nh);
     }
-    shared.set_to_vec();
-    if (!shared.n) continue;
-    if (shared.n > 1)
-      qsort(shared.v, shared.n, sizeof(shared[0]), [](const void *a, const void *b) {
-        return strcmp(*(cchar *const *)a, *(cchar *const *)b);
-      });
-    int nre = 0;
+    if (!group_ok) {
+      if (getenv("IFA_DBG_PREFIX")) fprintf(stderr, "PREFIX skipped: no donor for some slot\n");
+      continue;
+    }
+    // Same atomicity for the CS side: build every CreationSet's new
+    // vars order first, and apply nothing unless all of them succeed.
+    // A CS skipped by its own guards while `has` was reordered
+    // desynchronises the pair exactly as the reverse does.
+    Vec<CreationSet *> csl;
+    Vec<Vec<AVar *> *> new_vars;
+    int npad = 0;
     for (CreationSet *cs : fa->css) {
       if (!cs || !g->in(cs->sym)) continue;
-      // Built directly rather than sorted with a comparator: the order
-      // depends on `shared`, and a capturing lambda is not a qsort
-      // function pointer.
-      Vec<AVar *> pre, post;
-      for (cchar *nm : shared) if (nm)
+      Vec<AVar *> *ord = new Vec<AVar *>;
+      for (int i = 0; i < all.n; i++) {
+        AVar *found = nullptr;
+        // By NAME, not `cs->var_map.get()`: the map is keyed by pointer,
+        // so an equal-but-distinct string misses and the CS's REAL ivar
+        // is replaced by a pad, silently losing its type (bh: `EPS`
+        // `_CG_float64` became `_CG_void`).
         for (AVar *iv : cs->vars)
-          if (iv && iv->var && iv->var->sym && iv->var->sym->name && !strcmp(iv->var->sym->name, nm)) {
-            pre.add(iv);
+          if (iv && iv->var && iv->var->sym && iv->var->sym->name && !strcmp(iv->var->sym->name, all[i])) {
+            found = iv;
             break;
           }
-      for (AVar *iv : cs->vars) if (iv && !pre.in(iv)) post.add(iv);
-      if (post.n > 1)
-        qsort(post.v, post.n, sizeof(post[0]), [](const void *a, const void *b) {
-          AVar *x = *(AVar **)a, *y = *(AVar **)b;
-          cchar *xn = x->var && x->var->sym && x->var->sym->name ? x->var->sym->name : "";
-          cchar *yn = y->var && y->var->sym && y->var->sym->name ? y->var->sym->name : "";
-          int r = strcmp(xn, yn);
-          return r ? r : (x->id > y->id) - (x->id < y->id);
-        });
-      if (pre.n + post.n != cs->vars.n) continue;  // paranoia: never drop an ivar
-      cs->vars.clear();
-      for (AVar *iv : pre) cs->vars.add(iv);
-      for (AVar *iv : post) cs->vars.add(iv);
-      nre++;
-    }
-    if (getenv("IFA_DBG_PREFIX")) {
-      for (CreationSet *cs : fa->css) if (cs && g->in(cs->sym)) {
-        fprintf(stderr, "  CS %s#%d vars=%d:", cs->sym->name ? cs->sym->name : "?", cs->id, cs->vars.n);
-        int k = 0;
-        for (AVar *iv : cs->vars) if (iv && iv->var && iv->var->sym && iv->var->sym->name && k++ < 40)
-          fprintf(stderr, " %s", iv->var->sym->name);
-        fprintf(stderr, "\n");
+        if (found) { ord->add(found); continue; }
+        if (!donor.v[i] || !donor.v[i]->var) { group_ok = false; break; }
+        // Pad. FA has converged (this runs inside clone(), after
+        // fa->analyze() returned), so no constraint is added and no
+        // EntrySet enqueued -- unlike promote_field, which does both
+        // because it runs DURING analysis.
+        AVar *pad = unique_AVar(donor.v[i]->var, cs);
+        if (donor_av.v[i] && donor_av.v[i]->out) pad->out = donor_av.v[i]->out;
+        ord->add(pad);
+        npad++;
       }
-      fprintf(stderr, "PREFIX applied: shared=%d css_reordered=%d {", shared.n, nre);
+      if (!group_ok) break;
+      for (AVar *iv : cs->vars) if (iv && !ord->in(iv)) { group_ok = false; break; }
+      if (!group_ok) break;
+      csl.add(cs);
+      new_vars.add(ord);
+    }
+    if (!group_ok) {
+      if (getenv("IFA_DBG_PREFIX")) fprintf(stderr, "PREFIX skipped: group not fully alignable\n");
+      continue;
+    }
+    for (int ci = 0; ci < g->n; ci++) {
+      Sym *c = (*g)[ci];
+      c->has.clear();
+      for (Sym *m : *new_has[ci]) c->has.add(m);
+    }
+    for (int k = 0; k < csl.n; k++) {
+      CreationSet *cs = csl[k];
+      cs->vars.clear();
+      for (AVar *iv : *new_vars[k]) { cs->vars.add(iv); cs->var_map.put(iv->var->sym->name, iv); }
+    }
+    int nre = csl.n;
+    if (getenv("IFA_DBG_PREFIX")) {
+      fprintf(stderr, "PREFIX applied: names=%d css=%d pads=%d {", all.n, nre, npad);
       for (Sym *c : *g) if (c) fprintf(stderr, " %s", c->name ? c->name : "?");
       fprintf(stderr, " }\n");
     }
@@ -759,17 +823,6 @@ static void apply_prefix_layout(Vec<Vec<Sym *> *> &groups) {
 static void determine_layouts() {
   // ifa/issues/123: measure which hierarchies need a common base prefix
   // (probe-only for now -- nothing consumes `prefix_groups` yet).
-  // ifa/issues/123: reorder members ONLY for hierarchies measured to
-  // need it (a union receiver whose classes disagree on a shared
-  // member's index). Off by default until the corpus A/B is in.
-  if (getenv("PYC_PREFIX_LAYOUT")) {
-    Vec<Vec<Sym *> *> prefix_groups;
-    collect_prefix_groups(prefix_groups);
-    apply_prefix_layout(prefix_groups);
-  } else if (getenv("IFA_DBG_PREFIX")) {
-    Vec<Vec<Sym *> *> prefix_groups;
-    collect_prefix_groups(prefix_groups);
-  }
   // ifa/issues/055: a field's size is resolved from THIS CreationSet's
   // own field type, so a field that is bottom in one contour contributed
   // 0 bytes there and shifted every later field up -- giving two CSs of
@@ -1860,6 +1913,16 @@ int clone(FA *afa) {
   determine_clones();
   dbg_clone_stage("20-clones");
   dbg_trace_avar("20-clones");
+  // ifa/issues/123 option 2: align member layout for the hierarchies
+  // MEASURED to need it, AFTER clone equivalence is decided (so padding
+  // cannot change which CSs are equivalent -- determine_basic_clones
+  // keys on vars.n) and BEFORE compute_member_types, which builds each
+  // struct from cs->vars positionally. Off by default.
+  if (getenv("PYC_PREFIX_LAYOUT") || getenv("IFA_DBG_PREFIX")) {
+    Vec<Vec<Sym *> *> prefix_groups;
+    collect_prefix_groups(prefix_groups);
+    if (getenv("PYC_PREFIX_LAYOUT")) apply_prefix_layout(prefix_groups);
+  }
   if (build_concrete_types() < 0) return -1;
   dbg_clone_stage("30-concrete-types");
   dbg_trace_avar("30-concrete-types");

@@ -389,3 +389,78 @@ field access. Does not fix bh, whose entire problem is unequal sets.
 
 **Recommendation: option 2**, with option 3 as the principled endpoint if
 the 8-byte-per-pad cost or a clone-order surprise turns out to matter.
+
+## 2026-09-03 (later): option 2 implemented — bh COMPILES
+
+Padding placed between `determine_clones()` and `build_concrete_types()`,
+so it is after clone equivalence is decided (it cannot change which CSs
+are equivalent) and before `compute_member_types` builds each struct.
+`PYC_PREFIX_LAYOUT=1`, still off by default.
+
+```
+PREFIX applied: names=15 css=6 pads=4  { StopIteration Exception SystemExit }
+PREFIX applied: names=33 css=6 pads=41 { Cell Body }
+```
+
+- **bh compiles**, no diagnostics. Corpus `compile_fail` 3 → 2.
+- Suite **with the flag on**: 309 passed / 18 known / 0 failed —
+  identical to the default path. `make test` green on default.
+
+### Four things the implementation needs, each found the hard way
+
+1. **`has` and `vars` must be permuted TOGETHER.**
+   `compute_member_types` takes a member's NAME from `sym->has[i]` (it
+   clones that entry) and its TYPE from `cs->vars[i]`. Moving only
+   `vars` emitted `_CG_void e11 /* EPS */` where the baseline had
+   `_CG_float64`; moving only `has` fails symmetrically. Neither array
+   alone is "the layout".
+
+2. **Match ivars by STRING, not `cs->var_map.get()`.** The map is keyed
+   by pointer, so a lookup with an equal-but-distinct string misses and
+   the CS's real ivar is replaced by a pad — silently losing its type
+   (`EPS` `_CG_float64` → `_CG_void`, `IMAX` `_CG_int64` → `_CG_void`).
+
+3. **The whole group must be ATOMIC.** Every class's `has` and every
+   CS's `vars` permutation is computed first, and nothing is applied
+   unless all of them succeed. Skipping one class or one CS by its own
+   guards desynchronises the pair just as surely — that is what left
+   `Boom` with slot 12 named `__str__` and typed `_CG_string`, then a
+   method pointer stored into it. This was the last of three failing
+   tests and fixing it took the flagged suite from 306/3 to 309/0.
+
+4. **Pads need a TYPE donor.** A pad left at bottom becomes `sym_void`
+   (`concrete_type_set_to_type` of the empty set), and a store codegen
+   previously SKIPPED — because the CS had no such slot — then lands on
+   a `void*` member and trips the "field type mismatch" guard
+   (`Node.EPS = 0.05` into a padded `Body` clone). The pad takes the
+   type the field has on some other CS in the group.
+
+One codegen change was needed alongside: the polymorphic-slot registry
+resolved a method's slot in the self FORMAL's class and stored it into a
+different class's struct, which is equal only by luck. It now resolves
+in `cs->sym`, falling back to the old value when the name is not found
+there — the fallback matters, since recomputing unconditionally is what
+the existing comment records as regressing `poly_dispatch_low/high`.
+
+### bh still segfaults, and it is not this
+
+```
+#0 GC_clear_fl_marks (q=0x... <_CG_type_Body>)
+#1 clear_all_fl_marks   #2 GC_finish_collection
+```
+
+A `_CG_type_Body` classtag pointer in a GC free list — the same shape as
+chess's crash (`GC_clear_fl_marks(q=0xc)`), which happens with none of
+this enabled. bh had never compiled before, so there is no baseline to
+compare against, but the signature says heap corruption from emitted
+code rather than a layout error. See ifa/118's chess section for the two
+diagnostic dead ends already measured (valgrind finds nothing in emitted
+code; a large `GC_INITIAL_HEAP_SIZE` does not avoid it).
+
+### Remaining before this can default on
+
+A corpus A/B. `make test` is not sufficient evidence for a layout
+change: padding costs 8 bytes per pad per instance (bh: 41 pads across 6
+CreationSets), and the analysis fires on 0–2 groups per program, so the
+population that changes at all is small but needs measuring for both
+exit codes and `ess`/`css`.
