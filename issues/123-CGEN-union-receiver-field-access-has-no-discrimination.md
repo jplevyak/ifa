@@ -310,3 +310,82 @@ own FA consequences (a promoted field is a field FA then believes in).
 
 Default path is unmeasured-safe: flag off, bh fails identically, and
 `make test` is 309 passed / 18 known / 0 failed.
+
+## Padding: where it can land, and what each choice costs
+
+**Can it be done without impacting analysis? Yes, by construction.**
+`determine_layouts` runs inside `clone()`, which runs after
+`fa->analyze()` has returned. FA has converged; `add_var_constraint` and
+the ES worklist are inert at that point. Any padding is post-analysis.
+
+The real question is which DOWNSTREAM stage absorbs it. Three land in
+different places.
+
+### Why padding is needed at all (measured)
+
+Shared-name-first ordering is not sufficient because CSs of the SAME
+class have different member sets:
+
+```
+Body#1170 vars=24     Cell#1171 vars=22
+Body#1406 vars=30     Cell#1611/#2111/#2114 vars=27
+```
+
+A CS missing one shared name shifts every later slot, which is exactly
+how `Body`'s `sub_index`/`walk_sub_tree` ended up typed `Vec3*`. Aligning
+requires every CS in the group to carry the SAME name sequence — i.e.
+padding to the union of names, not merely sorting.
+
+### Option 1 — pad `cs->vars` in `determine_layouts`
+
+- Analysis: unaffected.
+- **Cloning: AFFECTED.** `determine_basic_clones` runs after and uses
+  `vars.n` to keep CSs distinct; padding equalises it, so CSs currently
+  separate (the 22/27 and 24/30 pairs above) may merge.
+- Codegen: automatic. A bottom-typed pad yields `sym_void`
+  (`concrete_type_set_to_type` of an empty set is `sym_void`, not null),
+  so it emits an ordinary 8-byte `_CG_void` member.
+- Cost: 8 bytes per pad per instance.
+- Effort: smallest, ~30 lines. Risk concentrated in clone merging, which
+  needs a corpus A/B.
+
+### Option 2 — pad after clone equivalence, before `compute_member_types`
+
+Move the reorder+pad to between `determine_clones` and
+`build_concrete_types`.
+
+- Analysis: unaffected. **Cloning: unaffected** — equivalence is already
+  decided.
+- `compute_member_types` then sees a uniform name sequence and builds
+  each struct from it. Its `assert(!n || n == cs->vars.n)` is satisfied
+  because every CS in every affected eqcss group is padded to the same
+  sequence.
+- Cost: same 8 bytes per pad.
+- Effort: small-moderate. **The sweet spot: no analysis and no cloning
+  impact, and the layout still falls out of the existing positional
+  machinery rather than a parallel one.**
+
+### Option 3 — codegen-side slot map, `cs->vars` untouched
+
+Compute a per-group canonical name→slot map and have codegen consult it,
+emitting gaps for absent names.
+
+- Analysis, cloning, `compute_member_types`: all unaffected.
+- Cost: **zero** — `cg_member_ctype` already emits a null-typed entry as
+  a zero-width `char eN[0]`, so gaps take no space.
+- Effort: largest. Every place a member becomes an `eN` must use the map:
+  the struct emitter, `cg_member_ctype`, both `P_prim_period`
+  getter/setter paths, the polymorphic-slot registry, and the
+  blind-cast/layout contract check.
+- Semantically the cleanest and the only one with no memory cost; the
+  risk is breadth of call sites rather than depth.
+
+### Option 4 — do not pad
+
+Restrict alignment to groups whose classes already have equal member
+sets (which name-sorting handles today — pygmy), and leave unequal
+groups to option 1 of this issue's original list, classtag dispatch on
+field access. Does not fix bh, whose entire problem is unequal sets.
+
+**Recommendation: option 2**, with option 3 as the principled endpoint if
+the 8-byte-per-pad cost or a clone-order surprise turns out to matter.

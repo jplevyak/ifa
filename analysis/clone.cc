@@ -742,6 +742,13 @@ static void apply_prefix_layout(Vec<Vec<Sym *> *> &groups) {
       nre++;
     }
     if (getenv("IFA_DBG_PREFIX")) {
+      for (CreationSet *cs : fa->css) if (cs && g->in(cs->sym)) {
+        fprintf(stderr, "  CS %s#%d vars=%d:", cs->sym->name ? cs->sym->name : "?", cs->id, cs->vars.n);
+        int k = 0;
+        for (AVar *iv : cs->vars) if (iv && iv->var && iv->var->sym && iv->var->sym->name && k++ < 40)
+          fprintf(stderr, " %s", iv->var->sym->name);
+        fprintf(stderr, "\n");
+      }
       fprintf(stderr, "PREFIX applied: shared=%d css_reordered=%d {", shared.n, nre);
       for (Sym *c : *g) if (c) fprintf(stderr, " %s", c->name ? c->name : "?");
       fprintf(stderr, " }\n");
