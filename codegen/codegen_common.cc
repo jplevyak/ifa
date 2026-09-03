@@ -146,6 +146,10 @@ int cg_field_live(Sym *s, int i) {
 }
 
 Map<Fun *, Vec<PolymorphicSlot> *> cg_new_to_val_map;
+Vec<cchar *> poly_names;  // ifa/123: filled by cg_build_new_to_val_map, read by cg_report_slot_use
+extern Vec<Sym *> cg_slot_use_cls;
+extern Vec<int> cg_slot_use_idx;
+extern Vec<int> cg_slot_use_rd;
 
 // See codegen_common.h. For each live function that appears at any
 // poly call site (method name with fns->n > 1 anywhere), find its
@@ -160,7 +164,7 @@ void cg_build_new_to_val_map(FA *fa) {
   cg_new_to_val_map.clear();
 
   // Pass 1: collect method names that appear at any poly call site.
-  Vec<cchar *> poly_names;
+  poly_names.clear();
   for (Fun *f : fa->funs) {
     if (!f->live) continue;
     for (int ci = 0; ci < f->calls.n; ci++) {
@@ -413,94 +417,7 @@ void cg_build_new_to_val_map(FA *fa) {
       }
     }
   }
-  // ifa/issues/123: WHICH method slots are actually needed?
-  //
-  // A member only has to occupy a slot if something dispatches through
-  // it. Two facts here already decide that: `poly_names` is every method
-  // name appearing at a POLYMORPHIC call site (fns->n > 1) anywhere, and
-  // `cg_new_to_val_map` is every (creator, slot) the registry will
-  // actually store into. A member that is in neither is reached only by
-  // direct calls, and its slot is pure overhead -- 8 bytes per instance.
-  //
-  // Report-only. Eliminating them is NOT simply cg_field_live returning
-  // 0: dropping a member changes the BYTE offsets of the members after
-  // it (the `eN` suffix keeps the has-index, so the numbering does not
-  // shift, but the C struct layout does), so two classes reached through
-  // one union receiver must agree on the live SET -- the ifa/122 layout
-  // contract. Elimination therefore has to be decided per prefix GROUP,
-  // not per class.
-  if (getenv("IFA_DBG_SLOTUSE")) {
-    Vec<int> stored_slots;  // flattened, per creator -- membership test only
-    for (int i = 0; i < cg_new_to_val_map.n; i++)
-      if (cg_new_to_val_map.v[i].key && cg_new_to_val_map.v[i].value)
-        for (PolymorphicSlot &ps : *cg_new_to_val_map.v[i].value) stored_slots.set_add(ps.slot);
-    // A member is only a METHOD slot if some function in the program
-    // bears that name. Without this filter every DATA field counts as
-    // "never dispatched" too -- mass/pos are not in poly_names and are
-    // not stored by the registry either -- which overstated the figure
-    // badly (bh read 65% before this line existed).
-    Vec<cchar *> method_names;
-    for (Fun *f : fa->funs)
-      if (f && f->sym && f->sym->name) method_names.set_add(f->sym->name);
-    // THE READ SIDE. A slot is also used when the member is read as an
-    // ATTRIBUTE -- `f = obj.method`, or any attribute access whose
-    // selector names a method -- which goes through cg.cc's generic
-    // P_prim_period getter and never appears in `poly_names` (built from
-    // polymorphic CALL sites) nor in the store registry. Eliminating a
-    // slot that is only read this way turns the access into the
-    // "getter not resolved" runtime assert.
-    // Tracked PER CLASS, not per name: a name-global set says `foo` read
-    // on ANY class marks `foo` used on EVERY class, which is far too
-    // coarse to decide elimination.
-    Vec<Sym *> read_cls;
-    Vec<cchar *> read_nm;
-    Vec<cchar *> read_names;  // the coarse set, kept only to contrast
-    for (Fun *f : fa->funs)
-      for (PNode *n : f->fa_all_PNodes) {
-        if (!n || !n->prim || n->prim->index != P_prim_period) continue;
-        if (n->rvals.n < 4 || !n->rvals[3]->sym || !n->rvals[3]->sym->is_symbol || !n->rvals[3]->sym->name) continue;
-        cchar *nm = n->rvals[3]->sym->name;
-        read_names.set_add(nm);
-        for (EntrySet *es : f->ess) {
-          if (!es) continue;
-          AVar *obj = make_AVar(n->rvals[1], es);
-          if (!obj || !obj->out) continue;
-          for (CreationSet *rcs : *obj->out) if (rcs && rcs->type) { read_cls.add(rcs->type); read_nm.add(nm); }
-        }
-      }
-    auto read_on = [&](Sym *cls, cchar *nm) {
-      for (int k = 0; k < read_cls.n; k++)
-        if (read_cls.v[k] == cls && read_nm.v[k] && !strcmp(read_nm.v[k], nm)) return true;
-      return false;
-    };
-    long members = 0, dead = 0, dead_bytes = 0, methods = 0, coarse_only = 0;
-    Vec<Sym *> seen;
-    for (CreationSet *cs : fa->css) {
-      if (!cs || !cs->type || !seen.set_add(cs->type)) continue;
-      Sym *t = cs->type;
-      long cdead = 0;
-      for (int i = 0; i < t->has.n; i++) {
-        Sym *m = t->has[i];
-        if (!m || !m->name || !cg_field_live(t, i)) continue;
-        members++;
-        if (!method_names.set_in(m->name)) continue;  // data field, not a slot
-        methods++;
-        bool is_poly = poly_names.set_in(m->name) != 0;
-        bool is_stored = stored_slots.set_in(i) != 0;
-        bool is_read = read_on(t, m->name);
-        if (read_names.set_in(m->name) && !is_read) coarse_only++;
-        if (!is_poly && !is_stored && !is_read) { dead++; cdead++; dead_bytes += 8; }
-      }
-      if (cdead && t->name)
-        fprintf(stderr, "[slotuse] %-24s live=%d never-dispatched=%ld\n", t->name, t->has.n, cdead);
-    }
-    fprintf(stderr,
-            "[slotuse] TOTAL live members=%ld of which method slots=%ld; never-dispatched=%ld "
-            "(%ld%% of slots, %ld%% of members) ~%ld bytes\n",
-            members, methods, dead, methods ? 100 * dead / methods : 0, members ? 100 * dead / members : 0,
-            dead_bytes);
-    fprintf(stderr, "[slotuse] (name-global read set would have spared %ld more)\n", coarse_only);
-  }
+
 }
 
 Sym *closure_fun_type(Var *v) {
@@ -852,4 +769,116 @@ void virtual_cg_emit_send(VirtualCGEmitter *emitter, PNode *pn) {
     return;
   }
   emitter->emit_send_call(pn);
+}
+
+// ifa/issues/123: run AFTER emission -- cg_slot_use_* is populated by the
+// emitters, so reporting from inside cg_build_new_to_val_map (which runs
+// BEFORE them) saw an empty set and called every slot unused.
+void cg_report_slot_use(FA *fa) {
+  // ifa/issues/123: WHICH method slots are actually needed?
+  //
+  // A member only has to occupy a slot if something dispatches through
+  // it. Two facts here already decide that: `poly_names` is every method
+  // name appearing at a POLYMORPHIC call site (fns->n > 1) anywhere, and
+  // `cg_new_to_val_map` is every (creator, slot) the registry will
+  // actually store into. A member that is in neither is reached only by
+  // direct calls, and its slot is pure overhead -- 8 bytes per instance.
+  //
+  // Report-only. Eliminating them is NOT simply cg_field_live returning
+  // 0: dropping a member changes the BYTE offsets of the members after
+  // it (the `eN` suffix keeps the has-index, so the numbering does not
+  // shift, but the C struct layout does), so two classes reached through
+  // one union receiver must agree on the live SET -- the ifa/122 layout
+  // contract. Elimination therefore has to be decided per prefix GROUP,
+  // not per class.
+  if (!getenv("IFA_DBG_SLOTUSE")) return;
+  {
+    Vec<int> stored_slots;  // flattened, per creator -- membership test only
+    for (int i = 0; i < cg_new_to_val_map.n; i++)
+      if (cg_new_to_val_map.v[i].key && cg_new_to_val_map.v[i].value)
+        for (PolymorphicSlot &ps : *cg_new_to_val_map.v[i].value) stored_slots.set_add(ps.slot);
+    // A member is only a METHOD slot if some function in the program
+    // bears that name. Without this filter every DATA field counts as
+    // "never dispatched" too -- mass/pos are not in poly_names and are
+    // not stored by the registry either -- which overstated the figure
+    // badly (bh read 65% before this line existed).
+    Vec<cchar *> method_names;
+    for (Fun *f : fa->funs)
+      if (f && f->sym && f->sym->name) method_names.set_add(f->sym->name);
+    // THE READ SIDE. A slot is also used when the member is read as an
+    // ATTRIBUTE -- `f = obj.method`, or any attribute access whose
+    // selector names a method -- which goes through cg.cc's generic
+    // P_prim_period getter and never appears in `poly_names` (built from
+    // polymorphic CALL sites) nor in the store registry. Eliminating a
+    // slot that is only read this way turns the access into the
+    // "getter not resolved" runtime assert.
+    // Tracked PER CLASS, not per name: a name-global set says `foo` read
+    // on ANY class marks `foo` used on EVERY class, which is far too
+    // coarse to decide elimination.
+    Vec<Sym *> read_cls;
+    Vec<cchar *> read_nm;
+    Vec<cchar *> read_names;  // the coarse set, kept only to contrast
+    for (Fun *f : fa->funs)
+      for (PNode *n : f->fa_all_PNodes) {
+        if (!n || !n->prim || n->prim->index != P_prim_period) continue;
+        if (n->rvals.n < 4 || !n->rvals[3]->sym || !n->rvals[3]->sym->is_symbol || !n->rvals[3]->sym->name) continue;
+        cchar *nm = n->rvals[3]->sym->name;
+        read_names.set_add(nm);
+        for (EntrySet *es : f->ess) {
+          if (!es) continue;
+          AVar *obj = make_AVar(n->rvals[1], es);
+          if (!obj || !obj->out) continue;
+          for (CreationSet *rcs : *obj->out) if (rcs && rcs->type) { read_cls.add(rcs->type); read_nm.add(nm); }
+        }
+      }
+    auto read_on = [&](Sym *cls, cchar *nm) {
+      for (int k = 0; k < read_cls.n; k++)
+        if (read_cls.v[k] == cls && read_nm.v[k] && !strcmp(read_nm.v[k], nm)) return true;
+      return false;
+    };
+    long members = 0, dead = 0, dead_bytes = 0, methods = 0, coarse_only = 0, name_only = 0, unemitted = 0, unread = 0;
+    Vec<Sym *> seen;
+    for (CreationSet *cs : fa->css) {
+      if (!cs || !cs->type || !seen.set_add(cs->type)) continue;
+      Sym *t = cs->type;
+      long cdead = 0;
+      for (int i = 0; i < t->has.n; i++) {
+        Sym *m = t->has[i];
+        if (!m || !m->name || !cg_field_live(t, i)) continue;
+        members++;
+        if (!method_names.set_in(m->name)) continue;  // data field, not a slot
+        methods++;
+        bool is_poly = poly_names.set_in(m->name) != 0;
+        bool is_stored = stored_slots.set_in(i) != 0;
+        // Emission truth, not names: was an access to THIS slot of THIS
+        // class actually emitted anywhere?
+        bool emitted = false, emitted_read = false;
+        for (int k = 0; k < cg_slot_use_cls.n; k++)
+          if (cg_slot_use_cls.v[k] == t && cg_slot_use_idx.v[k] == i) {
+            emitted = true;
+            emitted_read = cg_slot_use_rd.v[k] != 0;
+            break;
+          }
+        if (!emitted_read) unread++;
+        bool is_read = read_on(t, m->name);
+        if (is_read && !emitted) name_only++;
+        if (read_names.set_in(m->name) && !is_read) coarse_only++;
+        if (!emitted) unemitted++;
+        if (!is_poly && !is_stored && !is_read) { dead++; cdead++; dead_bytes += 8; }
+      }
+      if (cdead && t->name)
+        fprintf(stderr, "[slotuse] %-24s live=%d never-dispatched=%ld\n", t->name, t->has.n, cdead);
+    }
+    fprintf(stderr,
+            "[slotuse] TOTAL live members=%ld of which method slots=%ld; never-dispatched=%ld "
+            "(%ld%% of slots, %ld%% of members) ~%ld bytes\n",
+            members, methods, dead, methods ? 100 * dead / methods : 0, members ? 100 * dead / members : 0,
+            dead_bytes);
+    fprintf(stderr, "[slotuse] (name-global read set would have spared %ld more)\n", coarse_only);
+    fprintf(stderr, "[slotuse] BY EMISSION: method slots with no emitted access = %ld of %ld (%ld%%); "
+                    "name-matching alone would have kept %ld of those alive\n",
+            unemitted, methods, methods ? 100 * unemitted / methods : 0, name_only);
+    fprintf(stderr, "[slotuse] NEVER READ (only written, or untouched) = %ld of %ld method slots (%ld%%)\n",
+            unread, methods, methods ? 100 * unread / methods : 0);
+  }
 }

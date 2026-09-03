@@ -69,6 +69,7 @@ int cg_field_live(Sym *s, int i);
 // type-string tables (assign_type_cg_strings_pass1/2), which is all the
 // scan needs. Call scan then check.
 void cg_scan_imprecise(FA *fa);
+void cg_report_slot_use(FA *fa);  // ifa/123, post-emission
 void cg_check_imprecise();
 
 // ifa/issues/029/030: registry of method-pointer slot stores.

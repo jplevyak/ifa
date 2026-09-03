@@ -573,3 +573,65 @@ almost none of it is dead weight.
 
 Both remain report-only (`IFA_DBG_SLOTUSE=1`); default `make test` is
 309 passed / 18 known / 0 failed.
+
+### Use the call graph, not string matching — 93-98% of method slots are never read
+
+The name-based analysis above is the wrong instrument, and the objection
+that motivated replacing it is right: FA's call graph is precise, so a
+call it resolves to one target is emitted as a DIRECT call and touches
+no slot at all. Matching `P_prim_period` selectors counts every `x.f()`
+as a slot read and therefore measures nothing useful.
+
+`cg_note_slot_use(class, slot, is_read)` records what codegen actually
+EMITS, at the five sites that touch a class member: the getter
+(`cg.cc:771`, read), the classtag dispatch calling through the slot
+(`:2418`, read), the setter (`:819`), the polymorphic-slot store
+(`:1282`), and record construction (`:690`). Reads and writes are kept
+apart deliberately — a slot only has to EXIST if something reads it, and
+the polyslot store writes a vtable entry whether or not any dispatch
+ever goes through it, so counting writes lets every stored slot justify
+itself.
+
+| | method slots | no access at all | **never read** |
+|---|---|---|---|
+| bh | 134 | 32 (23%) | **125 (93%)** |
+| richards | 176 | 65 (36%) | **169 (96%)** |
+| go | 208 | 57 (27%) | **204 (98%)** |
+
+Nine slots in bh, seven in richards, four in go are genuinely dispatched
+through. Everything else is written and never read.
+
+**The measurement history is the point.** It went
+
+    65%   of members   -- wrong: counted DATA fields
+    59-85% of slots    -- wrong: no read side at all
+    0%                 -- name-global reads, uselessly conservative
+    41-54%             -- per-class names; wrong in BOTH directions
+                          (23 slots it called dead are emitted; 22 it
+                          kept alive are never touched)
+    93-98% never read  -- emission truth, reads only
+
+Only the last is trustworthy, and every earlier figure was produced by
+string matching of one flavour or another. Names were never going to
+answer this: the question "is this slot dispatched through" is a
+property of the resolved call graph, and codegen already knows the
+answer because it decides direct-call versus dispatch itself.
+
+### What this means for elimination
+
+The win is far larger than the padding question that prompted it. If
+93-98% of method slots are never read, the vtable is very nearly
+vestigial: eliminating a never-read slot removes both the member AND the
+store that initialises it. bh's `Body` and `Cell` would carry a handful
+of slots instead of ~20 each, which also shrinks the name union a prefix
+group has to agree on — so this subsumes most of the padding cost rather
+than merely preceding it.
+
+Still report-only (`IFA_DBG_SLOTUSE=1`). Before enabling: the emission
+set must be confirmed complete for class members (the five sites above
+are believed to be all of them; `destruct_prim` reads `r->eN` but is
+tuple-only), and a never-read slot's elimination has to be decided per
+prefix group, since dropping a member still moves the byte offsets of
+those after it.
+
+Default `make test` 309 passed / 18 known / 0 failed.

@@ -452,6 +452,31 @@ static int resolve_uniform_size(Sym *t) {
   return common;
 }
 
+// ifa/issues/123: record every (class, slot) codegen actually EMITS an
+// access for. This is the ground truth the name-based analysis was
+// proxying: a call the precise call graph resolved to one target is
+// emitted as a DIRECT call and touches no slot at all, so counting
+// every `x.f()` as a slot read (which matching on P_prim_period
+// selectors does) massively overstates what is needed.
+// Reads and writes tracked separately: a slot only has to EXIST if
+// something reads it. The polymorphic-slot store writes a vtable entry
+// whether or not any dispatch ever goes through it, so counting a write
+// as "used" makes every stored slot justify itself.
+Vec<Sym *> cg_slot_use_cls;
+Vec<int> cg_slot_use_idx;
+Vec<int> cg_slot_use_rd;
+void cg_note_slot_use(Sym *t, int i, int is_read) {
+  if (!t || i < 0) return;
+  for (int k = 0; k < cg_slot_use_cls.n; k++)
+    if (cg_slot_use_cls.v[k] == t && cg_slot_use_idx.v[k] == i) {
+      if (is_read) cg_slot_use_rd.v[k] = 1;
+      return;
+    }
+  cg_slot_use_cls.add(t);
+  cg_slot_use_idx.add(i);
+  cg_slot_use_rd.add(is_read);
+}
+
 static void destruct_prim(FILE *fp, Var *l, Var *r) {
   int is_tuple = sym_tuple->specializers.set_in(l->sym) != 0;
   for (int i = 0; i < l->sym->has.n; i++) {
@@ -687,6 +712,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         bool rec_fields = rec && rec->type_kind == Type_RECORD && rec->has.n;
         for (int i = 3; i < n->rvals.n; i++) {
           if (rec_fields && !cg_field_live(rec, i - 3)) continue;
+          cg_note_slot_use(rec, i - 3, 0);
           fprintf(fp, "  %s->e%d = %s;\n", cg_get_string(n->lvals[0]), i - 3, cg_get_string(n->rvals.v[i]));
         }
       } else if (sym_list->specializers.set_in(n->rvals[2]->sym) || n->rvals[2]->sym->is_vector) {
@@ -767,7 +793,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
                 fail("field type mismatch reading a '%s' field into a '%s'", fct, t);
               fputs("  assert(!\"runtime error: field type mismatch\");\n", fp);
             } else
-              cg_note_blind_cast(obj, n->rvals[1]->type, i),
+              cg_note_blind_cast(obj, n->rvals[1]->type, i), cg_note_slot_use(obj, i, 1),
               fprintf(fp, "  %s = (%s)((%s)%s)->e%d; /* %s */\n", cg_get_string(n->lvals[0]), t, cg_get_string(obj),
                       cg_get_string(n->rvals[1]), i, symbol);
             goto Lgetter_found;
@@ -815,7 +841,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
                 fail("field type mismatch storing a '%s' into a '%s' field", vct, fct);
               fputs("  assert(!\"runtime error: field type mismatch\");\n", fp);
             } else
-              cg_note_blind_cast(obj, n->rvals[1]->type, i),
+              cg_note_blind_cast(obj, n->rvals[1]->type, i), cg_note_slot_use(obj, i, 0),
               fprintf(fp, "  ((%s)%s)->e%d = (%s)%s;\n",
                       cg_get_string(obj), cg_get_string(n->rvals[1]),
                       i, c_type(obj->has[i]),
@@ -1279,6 +1305,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
             Fun *fun_val = (*pslots)[si].fun_val;
             if (!cg_field_live(n->lvals[0]->type, slot)) continue;
             if (!cg_get_string(fun_val)) continue;
+            cg_note_slot_use(n->lvals[0]->type, slot, 0);
             fprintf(fp, "  ((%s)%s)->e%d = (void*)%s;\n",
                     dst_t, cg_get_string(n->lvals[0]), slot, cg_get_string(fun_val));
           }
@@ -2397,6 +2424,9 @@ class CBackendEmitter : public VirtualCGEmitter {
               }
             }
             if (ci < recv_types.n) cg_note_blind_cast(classes[ci], recv_types[ci], slots[ci]);
+            // The classtag dispatch CALLING through the slot -- the read
+            // side that makes a method slot necessary at all.
+            cg_note_slot_use(classes[ci], slots[ci], 1);
             fprintf(fp, "((%s(*)(%s))((%s)(void*)%s)->e%d)(%s);\n", ret_type_str, fnptr_args.c_str(),
                     cg_get_string(classes[ci]), recv_str, slots[ci], call_args.c_str());
             fputs("  }\n", fp);
@@ -3128,6 +3158,7 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
   // 124 before 122: imprecision is the CAUSE and the layout violation the
   // consequence -- go's untyped `path` element is why a field access has
   // a layout to guess at all. Reporting the consequence first buries it.
+  cg_report_slot_use(fa);      // ifa/issues/123 (post-emission)
   cg_scan_imprecise(fa);       // ifa/issues/124
   cg_check_imprecise();        // ifa/issues/124
   cg_check_layout_contract();  // ifa/issues/122 Phase 0
