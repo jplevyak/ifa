@@ -255,6 +255,40 @@ up front rather than merging and hoping to split later.
 
 *Verify:* corpus `check` neutral; step 1's ratio improves.
 
+**Sweep result, `check__PYC_CSELEM_3__40c21ff9+adf4abe8` vs
+`check__default__a935532b+adf4abe8`** (2026-09-04, `-j 12` inside a
+`MemoryMax=100G` scope, 702 s, **zero OOM kills**):
+
+```
+default    programs=77 compile_fail=2 run_fail=39 stdout_differs=24 with_warnings=44  cs/shapes=3748/626=5.99 pratio=3.92
+CSELEM=3   programs=77 compile_fail=3 run_fail=38 stdout_differs=24 with_warnings=43  cs/shapes=3081/626=4.92 pratio=3.25
+```
+
+**The ratio is the result: 5.99 → 4.92**, 3748 → 3081 container
+CreationSets, −667 (−17.8%), and `pratio` 3.92 → 3.25. That is step 1's
+number moving for the first time.
+
+Four rows differ across all 77 programs, and only one is a behaviour
+change:
+
+```
+linalg     warns 34 -> 28
+rdb        compile_rc 0 -> 1        warns 130 -> 120
+sudoku5    warns 82 -> 212          (already compile_fail in both)
+tarsalzp   warns 213 -> 231
+```
+
+Every exit code and every stdout verdict is otherwise identical. **`rdb`
+is the whole regression**: `'v' has mixed basic types:( int64 str )` — the
+mode merging two containers that must stay apart. Read the summary
+carefully: `run_fail` 39 → 38 and `with_warnings` 44 → 43 are **not**
+improvements, they are `rdb` leaving those denominators by failing earlier.
+
+So the gate on flipping the default is one program, and it is a real
+over-merge rather than a fabricated failure — worth root-causing before
+step 3 rather than capping around, since a demand-driven splitter has to
+get exactly this case right.
+
 #### `PYC_CSELEM=3` could not be swept at all until 2026-09-04 — `atype_shape` was exponential
 
 The sweep this step asks for OOM-killed the machine every time it was
@@ -376,7 +410,111 @@ still cannot collapse.
 reproduce their `check__default__a935532b+adf4abe8` rows exactly
 (`550/1844/152/8/23`, `1267/4024/186/17/32`, `1118/3669/167/15/35`). All six
 CI gates green; `PYC_FLAGS=-b ./test_pyc.py` 311/0/14/18/4, unchanged. The
-`-e "PYC_CSELEM=3"` sweep is now runnable and is still owed.
+`-e "PYC_CSELEM=3"` sweep is now runnable, and step 2 above records it.
+
+### Step 2b — three things worth taking from shedskin without step 4
+
+Part 1's audit is mostly a list of things that need step 4's reversibility.
+These three do not. Each is independently landable, and the first is
+arguably a defect in what step 2 already shipped.
+
+**1. Rebuild the canon index from the CURRENT contours; stop accumulating
+it forever.**
+
+`ifa_class_types` (`infer.py:1632`) rebuilds `classes_nr` from scratch on
+every call — `for dcpa in range(1, cl.dcpa)`, reading each contour's
+*current* `gx.cnode[var, dcpa, 0].types()`. It is called per class per
+`ifa()` iteration, so a stale entry cannot exist.
+
+pyc's `cselem_shape_canon` (`fa.cc:9799`) is never cleared.
+`cselem_shape_reuse` (`fa.cc:9887`) guards only on `it->second->sym != s`
+— it never re-checks that the CS still *has* the shape its key names — and
+`cselem_shape_claim` (`fa.cc:9895`) fills only absent keys, so nothing
+corrects an entry once it drifts. A CreationSet that claimed key K in pass
+3 keeps answering for K in pass 20 after its element type has moved.
+
+The code defends this: *"shapes converge, so entries only stabilize, and
+merging must be monotone or the canonicalization itself becomes a source of
+churn."* Convergence is exactly the assumption
+[074](074-FA-cross-pass-oscillation-plan.md) and the adatron oscillation
+say is false, on precisely the programs where the canon matters most.
+
+**This does not need step 4.** Rebuilding the INDEX is not unlearning a
+merge: a site already routed to CS X stays routed, and only *future*
+routing decisions change. The monotonicity the comment is protecting is a
+property of the CS graph, not of a lookup table over it.
+
+Unmeasured so far — instrument before changing anything: count reuses whose
+CS's current shape no longer equals the key it was found under, per pass,
+across the corpus. If that count is zero the comment is right and this
+closes; the four programs step 2's sweep can now reach
+(`kanoodle`, `plcfrs`, `quameon`, `rdb`) are where to look first.
+
+*Verify:* the stale-hit counter is zero after the change; step 1's ratio
+does not regress; `-e "PYC_CSELEM=3"` corpus `check` neutral or better.
+
+**2. Record CreationSet lineage.**
+
+`cl.splits` maps a new contour to the one it split from, and
+`ifa_seed_template`'s "mother" search (`infer.py:1994`) uses it to carry a
+decision into a context that did not exist when the decision was made,
+inheriting from an entry that differs only where a component contour is a
+split CHILD of the mother's. Part 1's flat statement stands: **pyc records
+no lineage.**
+
+Cheap, monotone-safe, and step 4 /
+[111](111-FA-selective-invalidation-per-pass.md) needs it regardless — so
+it is better landed as groundwork now than discovered inside the
+architecture change.
+
+*Verify:* lineage is recorded and dumpable; no behaviour change (it is
+data, nothing reads it yet).
+
+**3. Normalize `None` out of the key where `None` is free.**
+
+`merge_simple_types` (`infer.py:2116-2122`) drops `none` from a
+multi-member set unless the set also holds `int_`/`float_`/`bool_`. So
+`{None, str}` keys identically to `{str}`, while `{None, int}` keeps its
+`None`. pyc emits `__pyc_None_type__#63` as a full member of the shape, so
+those two get different shapes and therefore different contours despite
+having one representation — over-discrimination in the key itself, which
+is what step 1's ratio measures.
+
+The guard transfers intact, and it coincides with the representability
+boundary [048](../../issues/048-none-int-field-pair-runtime-abort.md)
+already documents: `None` is free next to a pointer and needs a tag next to
+a scalar.
+
+*Verify:* step 1's ratio improves on programs whose unions carry `None`;
+no new `mixed`; suite and corpus `check` neutral.
+
+#### …and 3 is not IFA's decision to make
+
+Whether `None` is free in a union is a question about what the TARGET
+language can represent. It is not a fact about flow analysis, and it does
+not belong in `fa.cc`.
+
+[`IFACallbacks`](../ifa.h) is the established seam for exactly this, and
+`bool_is_numeric()` is the precedent to copy: whether `bool` is a subtype
+of `int` is a language question, so ifa defaults to its own generic answer
+(`false`) and `PycCallbacks` overrides it because Python's
+`isinstance(True, int)` is true. The `narrowing_*_name()` hooks are the
+same shape, added for
+[082](closed/082-narrowing-wrapper-names-hardcoded-in-fa.md) so that FA does not
+hardcode one frontend's identifiers.
+
+So item 3 lands as a hook — an element-key canonicalizer, defaulting to no
+normalization, with `PycCallbacks` supplying Python's rule *and* its
+`int_`/`float_`/`bool_` guard. Baking the rule into `fa.cc` would
+reproduce the defect 082 files, one level down.
+
+The test to apply to anything else taken from shedskin: **does the rule
+encode what the deduced types ARE, or what the target can REPRESENT?**
+Deduction is core and belongs in `fa.cc`; representation is a callback.
+Items 1 and 2 pass it — "is this index entry still accurate?" and "what did
+this contour split from?" are questions about the analysis itself.
+Boxing, mixed-width unions (048), and `None`-in-a-union are all the other
+kind.
 
 ### Step 3 — implement the demand test and the ladder
 
