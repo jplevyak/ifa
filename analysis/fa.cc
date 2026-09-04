@@ -9881,13 +9881,29 @@ static bool cselem_shape_key(AVar *v, Sym *s, std::string &out) {
   return true;
 }
 
+// The trailing field of a shape key is the top-level shape id; render it so a
+// `[csshape]` trace says WHAT was judged equal, not just that something was.
+static cchar *cselem_key_shape_text(const std::string &key) {
+  size_t bar = key.rfind('|');
+  if (bar == std::string::npos) return "?";
+  return cselem_shape_text(atoi(key.c_str() + bar + 1));
+}
+
 static CreationSet *cselem_shape_reuse(AVar *v, Sym *s) {
   std::string key;
   if (!cselem_shape_key(v, s, key)) return nullptr;
   auto it = cselem_shape_canon.find(key);
   if (it == cselem_shape_canon.end() || !it->second || it->second->sym != s) return nullptr;
   if (getenv("IFA_DBG_CSELEM"))
-    fprintf(stderr, "[csshape] p=%d %s -> reuse cs=%d\n", analysis_pass, key.c_str(), it->second->id);
+  {
+    EntrySet *es = v->contour_is_entry_set ? (EntrySet *)v->contour : nullptr;
+    Sym *cmc0 = s->clone_methods_per_cs ? s : (s->type ? unalias_type(s->type) : 0);
+    fprintf(stderr, "[csshape] p=%d %s -> reuse cs=%d  var=%s shape=%s split=%d cmc=%d fun=%s\n", analysis_pass,
+            key.c_str(), it->second->id, (v->var && v->var->sym && v->var->sym->name) ? v->var->sym->name : "?",
+            cselem_key_shape_text(key), (es && es->split) ? es->split->id : -1,
+            (cmc0 && cmc0->clone_methods_per_cs) ? 1 : 0,
+            (es && es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?");
+  }
   return it->second;
 }
 
@@ -9895,7 +9911,8 @@ static void cselem_shape_claim(const std::string &key, CreationSet *cs) {
   if (cselem_shape_canon.find(key) == cselem_shape_canon.end()) {
     cselem_shape_canon[key] = cs;
     if (getenv("IFA_DBG_CSELEM"))
-      fprintf(stderr, "[csshape] p=%d %s <- mint cs=%d\n", analysis_pass, key.c_str(), cs->id);
+      fprintf(stderr, "[csshape] p=%d %s <- mint cs=%d  shape=%s\n", analysis_pass, key.c_str(), cs->id,
+              cselem_key_shape_text(key));
   }
 }
 
