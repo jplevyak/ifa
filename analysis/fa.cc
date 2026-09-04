@@ -507,7 +507,7 @@ static void cselem_shape_claim(const std::string &key, CreationSet *cs);
 static cchar *dbg_cs_route = nullptr;      // ifa/issues/055: which reuse route fired
 static cchar *dbg_cs_route_want = getenv("IFA_DBG_CSROUTE");
 
-CreationSet *creation_point(AVar *v, Sym *s, int nvars) {
+CreationSet *creation_point(AVar *v, Sym *s) {
   dbg_cs_route = nullptr;
   CreationSet *cs = v->cs_map ? v->cs_map->get(s) : 0;
   EntrySet *es = (EntrySet *)v->contour;
@@ -529,7 +529,7 @@ CreationSet *creation_point(AVar *v, Sym *s, int nvars) {
   // field constants the hard per-constant ES split had separated).
   {
     Sym *cmc = s->clone_methods_per_cs ? s : (s->type ? unalias_type(s->type) : 0);
-    if (cmc && cmc->clone_methods_per_cs) goto Lcreators;
+    if (cmc && cmc->clone_methods_per_cs) goto Lno_split_parent;
   }
   // ifa/issues/055: the CreationSet follows the EntrySet split.
   //
@@ -544,7 +544,7 @@ CreationSet *creation_point(AVar *v, Sym *s, int nvars) {
   // 149 EntrySets, period 2, to the pass cap.
   //
   // The exemption for this already existed but was reachable only via
-  // `clone_methods_per_cs` (the `goto Lcreators` above), and that flag
+  // `clone_methods_per_cs` (the `goto Lno_split_parent` above), and that flag
   // is set in exactly one place -- python_ifa_build_syms.cc, when a
   // class's __init__ has a __pyc_clone_constants__ parameter. `set`
   // and `dict` take no ctor arguments at all, so they could never
@@ -588,14 +588,30 @@ CreationSet *creation_point(AVar *v, Sym *s, int nvars) {
       goto Lfound;
     }
   }
-Lcreators:;
-  for (CreationSet *x : s->creators) {
-    if (s->abstract_type && x == s->abstract_type->v[0]) continue;
-    if (nvars != -1 || x->vars.n != nvars) continue;
-    cs = x;
-    dbg_cs_route = "creators";
-    goto Lfound;
-  }
+  // ifa/issues/129 step 2: a `creators` reuse route stood here and was
+  // DEAD -- `if (nvars != -1 || x->vars.n != nvars) continue;` continues
+  // on every iteration (nvars == -1 makes the second test always true,
+  // nvars != -1 makes the first). Dead since IFA 0.6, the commit that
+  // first published this file, so it never selected a CreationSet in the
+  // history of the code and `nvars` had no consumer but this loop.
+  //
+  // Deleted rather than repaired, because both repairs are whole-program
+  // merges and neither is the reuse a demand-driven splitter wants:
+  //
+  //   `&&`  with nvars == -1 (every caller but make_kind) it takes the
+  //         FIRST creator of the sym unconditionally -- one CreationSet
+  //         per class for the whole program.
+  //   `==`  ("no arity asked for -> skip this route") narrows it to
+  //         make_kind, but then fuses every record CS of one sym and
+  //         arity program-wide, which is exactly the per-position
+  //         precision ifa/issues/104 depends on tuples keeping.
+  //
+  // The reuse this route gestures at is real -- shedskin's
+  // `ifa_class_types`/`classes_nr` index, which MOVES an allocation site
+  // onto an existing contour whose deduced element types agree. That is
+  // keyed on the converged CONTENT, not on arity, and it is 129 step 3
+  // route 6. `cselem_shape_reuse` below is its per-site approximation.
+Lno_split_parent:;
   // ifa/issues/101 (PYC_CSELEM): before minting another container CS for
   // this site, ask what element type the site converged to on the
   // PREVIOUS pass, and reuse an existing CS of the same sym that
@@ -2024,7 +2040,7 @@ void fill_tvals(Fun *fn, PNode *p, int n) {
 
 static void make_kind(PNode *p, EntrySet *es, Sym *kind, AVar *container, Vec<Var *> *vars, Vec<AVar *> *avars,
                       int vstart, int tstart, int l) {
-  CreationSet *cs = creation_point(container, kind, l);
+  CreationSet *cs = creation_point(container, kind);
   cs->vars.fill(l);
   for (int i = 0; i < l; i++) {
     AVar *av = nullptr;
@@ -2168,7 +2184,7 @@ static void make_closure(AVar *result) {
   assert(result->contour_is_entry_set);
   PNode *pn = result->var->def;
   PNode *partial_application = result->var->def;
-  CreationSet *cs = creation_point(result, sym_closure, partial_application->rvals.n);
+  CreationSet *cs = creation_point(result, sym_closure);
   int add = !cs->vars.n;
   EntrySet *es = (EntrySet *)result->contour;
   pn->tvals.fill(partial_application->rvals.n);
@@ -2180,7 +2196,7 @@ static void make_period_closure(AVar *result, AVar *a, Vec<AVar *> &args) {
   assert(result->contour_is_entry_set);
   PNode *pn = result->var->def;
   PNode *partial_application = result->var->def;
-  CreationSet *cs = creation_point(result, sym_closure, partial_application->rvals.n);
+  CreationSet *cs = creation_point(result, sym_closure);
   flow_var_type_permit(result, make_AType(cs));
   EntrySet *es = (EntrySet *)result->contour;
   pn->tvals.fill(args.n);

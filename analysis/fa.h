@@ -924,7 +924,7 @@ int fa_coerce_numeric_confluences(Vec<ATypeViolation *> &violations);
 // different one is currently treated as a no-op (composing
 // predicates isn't needed by today's narrowing sites).
 void flow_var_permit_pred(AVar *v, AVarRestrictPred pred, Sym *cls = nullptr);
-CreationSet *creation_point(AVar *v, Sym *s, int nvars = -1);
+CreationSet *creation_point(AVar *v, Sym *s);
 void prim_make_constraints(PNode *p, EntrySet *es);
 void type_violation(ATypeViolation_kind akind, AVar *av, AType *type, AVar *send, Vec<Fun *> *funs = nullptr);
 // Live count of unique (kind, av, send) violation triples currently
