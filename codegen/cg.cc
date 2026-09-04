@@ -958,6 +958,25 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
             if (single_idx && t->type_kind != Type_RECORD)
               fprintf(fp, "[_CG_norm_idx(%s,(int32)_CG_prim_len(0,%s))-%d]", cg_get_string(n->rvals[i]),
                       cg_get_string(n->rvals[o]), fa->tuple_index_base);
+            else if (single_idx && t->type_kind == Type_RECORD && t->has.n)
+              // A RECORD (tuple) index was emitted RAW -- no negative-index
+              // normalisation -- while the list branch above normalises.
+              // `t[-1]` therefore indexed BACKWARDS off the front of the
+              // object instead of from its end.
+              //
+              // chess: `evals[board[i]]`, where a board square holds a
+              // negative code for a black piece (-1, -4, ...). `evals[-4]`
+              // read 32 bytes below the tuple's data, i.e. 16 bytes before
+              // its allocation -- exactly the address valgrind reported
+              // under PYC_NO_GC. Silent memory corruption under the
+              // collector, which only ever showed up later as a mangled GC
+              // free list.
+              //
+              // A record's arity is STATIC, so this is `_CG_norm_idx` with
+              // a constant length -- the C compiler folds it away for a
+              // constant index, which is the overwhelmingly common case.
+              fprintf(fp, "[_CG_norm_idx(%s,(int32)%d)-%d]", cg_get_string(n->rvals[i]), t->has.n,
+                      fa->tuple_index_base);
             else
               fprintf(fp, "[%s-%d]", cg_get_string(n->rvals[i]), fa->tuple_index_base);
           }

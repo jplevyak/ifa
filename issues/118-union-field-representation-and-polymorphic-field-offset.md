@@ -432,3 +432,52 @@ SLOT — floor it at `if1->pointer_size`. chess's call becomes
 gone, valgrind moves to an `Invalid read of size 8` in
 `_CG_f_12374_171` down a deep `alphaBeta` recursion chain. Same method
 applies; it just needs the next pass.
+
+### Second bug: a tuple index was never negative-normalised
+
+With the zero-size allocation fixed, valgrind moved straight to an
+`Invalid read of size 8` in `evaluate`, **16 bytes before** a 1368-byte
+block it had allocated itself. The emitted code shows two adjacent index
+expressions that do not agree:
+
+```c
+t23 = ((_CG_int64*)(_CG_list_ptr(t13)))[_CG_norm_idx(t24,_CG_prim_len(0,t13))-0];  /* board[i]        */
+t21 = ((_CG_int64*)(t10))[t23-0];                                                   /* evals[board[i]] */
+```
+
+`cg.cc` normalises a LIST index and emits a RECORD (tuple) index **raw**:
+
+```c
+if (single_idx && t->type_kind != Type_RECORD)   ... _CG_norm_idx(...) ...
+else                                             ... "[%s-%d]" ...
+```
+
+chess indexes `evals` with a board square, which holds a NEGATIVE code
+for a black piece (`-1`, `-4`, …). `evals[-4]` therefore read 32 bytes
+below the tuple's data — 16 bytes before its allocation, exactly the
+address valgrind named. Under the collector this was silent corruption
+that surfaced much later as a mangled GC free list, which is why it
+survived so long.
+
+A record's arity is STATIC, so the fix is `_CG_norm_idx` with a constant
+length; the C compiler folds it for a constant index, the common case.
+Pinned by `tests/tuple_negative_index.py`.
+
+### Result
+
+```
+chess:  SIGSEGV  ->  prints its board, runs the search, and reports
+                     (99999999, 17460) then "no move found" (rc=1)
+bh:     SIGSEGV  ->  runs to completion (rc=0)
+```
+
+`make test` 309/18/0; go, pygmy, richards, kanoodle unchanged.
+
+**chess is still wrong** — CPython gives `(0, 33571891)` — but it is now
+a wrong ANSWER rather than memory corruption, which is a different and
+much more tractable class of bug. `bh` is fixed outright.
+
+Two genuine codegen defects, both found by the same method: build with
+`PYC_NO_GC=1`, run under valgrind, read the first error. Neither was
+visible to `make test`, and neither was reachable at all while Boehm was
+absorbing the corruption.
