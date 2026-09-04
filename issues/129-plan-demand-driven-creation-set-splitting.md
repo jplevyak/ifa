@@ -825,6 +825,41 @@ the other three.
 
 ### Step 3 — implement the demand test and the ladder
 
+> **Read 2c first: this step presupposes step 4, and items 1-5 are inert
+> without it.**
+>
+> shedskin's demand test gates **splitting**: `len(csites) +
+> len(emptycsites) == 1: continue` refuses to split a contour that only one
+> site created. That is a test on an OBSERVED MERGE, and it presupposes
+> contours that start merged — `Class.dcpa = 1`, one per class program-wide
+> — so that "two sites in one contour" is an event there is something to
+> notice.
+>
+> pyc has no such event. `creation_point` mints one CreationSet per
+> (allocation site × contour) and stamps `cs->creation_var` with the single
+> site that made it; at the default every one of the five reuse routes is
+> inert (CLAUDE.md; [128](128-cs-identity-over-discriminates-vs-element-type.md)).
+> So "one site feeds it" is true by construction almost everywhere, the gate
+> fires everywhere, and it declines to split things that were never merged.
+> **Implementing items 1-5 would not move step 1's ratio at all**, because
+> the ratio is already fixed before any splitter runs — which is what step
+> 1's reading of `stereo` says in as many words: *"The CS excess is not
+> downstream of contour growth there — it is minted directly by
+> `creation_point`, one per allocation site."*
+>
+> That leaves **item 6, the reuse index, as the only part of this step that
+> can move the ratio** — and 2c measured its ceiling. Of 270 CreationSets
+> minted while the receiver shape was unknown, 125 (46%) still have no shape
+> when the analysis has converged, and only 29 would join an existing
+> contour if the decision were re-taken there. An index keyed on deduced
+> content cannot key on content that never arrives.
+>
+> So the honest sequencing is step 4 first: make contours start merged and
+> merges revisable. Only then does a demand test have merges to observe and
+> a reuse index have content to key on. Built in the current order, items
+> 1-5 will pass their verification and change nothing — which is the failure
+> mode worth naming in advance, because a green suite would read as success.
+
 The real work, and the step that makes the statement true. In FA, for
 each container CreationSet and its element AVar:
 
@@ -853,7 +888,11 @@ batching deliberately.
 Then `PYC_CSSPLIT` becomes the fallback rather than the driver: a CS
 follows an ES split only where the demand test also asks for it.
 
-*Verify:* `tests/deepcopy_copy_of_copy_chain.py` and
+*Verify, before writing any of it:* count container CreationSets with more
+than one creation site on the corpus today. If that count is ~0 the gate is
+vacuous by construction and items 1-5 cannot pay for themselves — do step 4
+first. Then, for the ladder itself:
+`tests/deepcopy_copy_of_copy_chain.py` and
 `tests/set_difference*` (the `PYC_CSSPLIT` motivating cases) still pass;
 corpus `check` neutral; ratio approaches 1; chess `ess` and compile time
 move toward the `PYC_CSMOLD=1` numbers (666 / 8.1 s) **without** its
