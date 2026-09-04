@@ -504,6 +504,22 @@ static bool cselem_shape_key(AVar *v, Sym *s, std::string &out);
 static CreationSet *cselem_shape_reuse(AVar *v, Sym *s);
 static void cselem_shape_claim(const std::string &key, CreationSet *cs);
 
+// ifa/129 step 2c: how much of the remaining over-discrimination is
+// IGNORANCE rather than evidence. A mode-3 mint taken while the receiver
+// shape was `unfilled` is a split caused by ABSENCE of evidence -- and
+// because `cs_map` survives every pass and creation_point is memo-first,
+// it is never revisited. After convergence the shape IS known, so we can
+// ask the counterfactual the guard cannot: would that CreationSet have
+// been reusable had the decision waited a pass?
+enum CselemDecline { kCselemOk = 0, kCselemUnfilled, kCselemOther };
+static CselemDecline cselem_last_decline = kCselemOther;
+struct CselemUnknownMint {
+  AVar *v;
+  Sym *s;
+  CreationSet *cs;
+};
+static std::vector<CselemUnknownMint> cselem_unknown_mints;
+
 static cchar *dbg_cs_route = nullptr;      // ifa/issues/055: which reuse route fired
 static cchar *dbg_cs_route_want = getenv("IFA_DBG_CSROUTE");
 
@@ -743,7 +759,10 @@ Lunique:
   // with the same receiver shape reuses it instead of minting again.
   if (cselem_enabled() == 3 && s != sym_closure && s->element) {
     std::string shape_key;
-    if (cselem_shape_key(v, s, shape_key)) cselem_shape_claim(shape_key, cs);
+    if (cselem_shape_key(v, s, shape_key))
+      cselem_shape_claim(shape_key, cs);
+    else if (cselem_last_decline == kCselemUnfilled)
+      cselem_unknown_mints.push_back({v, s, cs});  // minted on an unknown (ifa/129 2c)
   }
   if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
   s->creators.add(cs);
@@ -9816,6 +9835,7 @@ static bool atype_shape_cached(AType *t, ShapeId &out) {
 }
 
 static bool cselem_shape_key(AVar *v, Sym *s, std::string &out) {
+  cselem_last_decline = kCselemOther;
   if (!v || !v->var || !v->contour_is_entry_set) return false;
   EntrySet *es = (EntrySet *)v->contour;
   // DURABLE receiver type (EntrySet::type_key, frozen after the previous
@@ -9863,6 +9883,7 @@ static bool cselem_shape_key(AVar *v, Sym *s, std::string &out) {
   // it. The flag rides up from wherever `%` was emitted -- the old spelling
   // searched the unfolded text for it, which is the text that cannot be built.
   if (shape.unfilled) {
+    cselem_last_decline = kCselemUnfilled;
     if (dbg)
       fprintf(stderr, "[csshape-no] p=%d es=%d shape=%d:%s (unfilled)\n", analysis_pass, es->id, shape.id,
               cselem_shape_text(shape.id));
@@ -9878,6 +9899,7 @@ static bool cselem_shape_key(AVar *v, Sym *s, std::string &out) {
   char pre[128];
   snprintf(pre, sizeof pre, "v%d|%s#%d|%d", v->var->id, s->name ? s->name : "?", s->id, shape.id);
   out = pre;
+  cselem_last_decline = kCselemOk;
   return true;
 }
 
@@ -10826,17 +10848,40 @@ static bool apply_unbound_fills() {
 // `ess`/`css` are here because a change that improves the ratio by
 // splitting MORE somewhere else is not an improvement, and reading the
 // ratio alone would hide that.
+// ifa/129 step 2c: of the CreationSets minted while the receiver shape was
+// unknown, how many would now hit an existing canon entry -- i.e. exist
+// SOLELY because the decision could not wait. Recomputed post-convergence,
+// when every shape is filled.
+static void cselem_unknown_mint_census(int &minted, int &resolved, int &joinable, int &still_unfilled) {
+  minted = (int)cselem_unknown_mints.size();
+  resolved = joinable = still_unfilled = 0;
+  for (auto &u : cselem_unknown_mints) {
+    std::string key;
+    // Separate "the shape never became known" from "it became known and
+    // nothing matched" -- a zero joinable means very different things.
+    if (!cselem_shape_key(u.v, u.s, key)) {
+      if (cselem_last_decline == kCselemUnfilled) ++still_unfilled;
+      continue;
+    }
+    ++resolved;
+    auto it = cselem_shape_canon.find(key);
+    if (it != cselem_shape_canon.end() && it->second && it->second != u.cs && it->second->sym == u.s) ++joinable;
+  }
+}
+
 static void report_demand_ratio() {
   if (!getenv("IFA_DBG_DEMAND")) return;
   ElemCensus c;
   element_census(c);
   int shapes = c.total_shapes(), pshapes = c.total_pshapes();
+  int unkmint = 0, unkres = 0, unkjoin = 0, unkstill = 0;
+  cselem_unknown_mint_census(unkmint, unkres, unkjoin, unkstill);
   fprintf(stderr,
           "DEMAND passes=%d ess=%d css=%d container_cs=%d shapes=%d pshapes=%d ratio=%.2f pratio=%.2f "
-          "elemtypes=%d empty=%d mixed=%d novar=%d\n",
+          "elemtypes=%d empty=%d mixed=%d novar=%d unkmint=%d unkres=%d unkjoin=%d unkstill=%d\n",
           analysis_pass, fa->ess.n, fa->css.n, c.n_cs, shapes, pshapes,
           shapes ? (double)c.n_cs / shapes : 0.0, pshapes ? (double)c.n_cs / pshapes : 0.0, c.total_types(),
-          c.n_empty, c.n_mixed, c.n_novar);
+          c.n_empty, c.n_mixed, c.n_novar, unkmint, unkres, unkjoin, unkstill);
 }
 
 static void analyze_to_convergence() {

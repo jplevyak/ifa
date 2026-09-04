@@ -692,6 +692,131 @@ believing either number; do not present the result as a win or a
 regression until the split between "declined" and "merged more precisely"
 is counted.
 
+**Retracted: the stopgap above is wrong, and it is wrong in the direction
+that matters.**
+
+Today a `dict` or user-class receiver produces a shape that can never
+contain `%` — there is no content to be missing — so it always succeeds
+and always merges. That is the 74-of-81. Give those receivers content and
+they become `unfilled` at mint time, decline, and **mint**. It "fixes"
+`rdb` by splitting more, on less knowledge. Numbers get worse, suite goes
+green: the retreat CLAUDE.md names.
+
+The reason is that **declining is not the neutral branch — it mints, and
+the mint is permanent.**
+
+- `creation_point` is memo-first (`fa.cc:512-516`, route `"cs_map"`), and
+  `av->cs_map` deliberately SURVIVES every pass (`fa.cc:6937`: *"the
+  analysis re-derives flow state from scratch each pass, but
+  identity-carrying caches persist"*). So the decision is taken once, on
+  the pass the contour is created — precisely the pass when the receiver's
+  elements are empty by construction — and is never revisited.
+- Which makes the guard's own justification false as written. *"Decline
+  rather than guess; the next pass will have it"*: the next pass does have
+  the shape, but nothing re-asks for that site. The memo answers first, and
+  the shape only ever helps LATER contours.
+- Under monotone identity both answers are permanent — a wrong merge cannot
+  be unmade because the canon never revisits, and a wrong mint cannot be
+  unmade because nothing re-merges CreationSets. The guard is choosing
+  between two irreversible commitments and picks the one taken on **no
+  evidence**.
+
+**Minting on an unknown is a split caused by absence of evidence, which is
+the exact inversion of demand splitting**, and it is not confined to the
+`%` guard. `Class.dcpa = 1` (`python.py:159`): every shedskin class starts
+with ONE data contour program-wide, and `dcpa` grows only through
+`ifa_split_class`. pyc starts at one CS per (site × contour) — maximally
+split — and the reuse routes claw back. So an unknown resolves toward
+STAYING MERGED in shedskin and toward MORE SPLITTING in pyc. That is 128's
+inversion showing up as a systematic bias rather than a local wart, and it
+is the yardstick any change here has to be judged against.
+
+**Correction to Part 1's claim that pyc cannot move a site onto an existing
+contour.** It can, and does. `split_css` rewrites the memo across a whole
+group:
+
+```c
+for (AVar *v : compatible_set) if (v) {
+  assert(cs == v->cs_map->get(cs->sym));
+  v->cs_map->put(cs->sym, new_cs);
+}
+```
+
+and the [033](closed/033-splitter-non-idempotent-divergence.md) ledger
+routes into an ALREADY-RECORDED CreationSet rather than minting
+(`new_cs = d->cs_product`, counted as `cs_dup_split_attempts`). The
+primitive exists and is exercised every pass. What does not exist is any
+trigger that runs it in the MERGING direction — it only ever moves AVars
+onto a split-off child. The gap is a policy gap, not a missing mechanism,
+which makes step 4 cheaper than Part 1 implies.
+
+**So the bounded form of step 4 that this needs** is not "re-derive
+everything". It is: *invalidate exactly the `cs_map` entries whose decision
+was taken under `unfilled`* — a set the code already identifies, since it
+prints `[csshape-no]` for each. Record those AVars, clear those entries at
+the start of the next pass, let `creation_point` re-decide against a filled
+shape, and move the AVars with the machinery `split_css` already uses.
+Bounded, targeted, per-pass invalidation — literally
+[111](111-FA-selective-invalidation-per-pass.md)'s title.
+
+The known hazard is stated in the same comment that makes `cs_map`
+persistent: consumers hold positional slots into a CS (the issue-030
+fixpoint in `make_closure_var` — *"a CS's positional vars[i] must be fed by
+every pass that feeds the CS"*). Re-routing must preserve that, which is
+the problem `split_css` already solves for the split direction.
+
+**Measured: how much of the over-discrimination is ignorance.**
+
+`IFA_DBG_DEMAND` now carries four more columns, recorded under
+`PYC_CSELEM=3`. `unkmint` counts CreationSets minted while
+`cselem_shape_key` declined with `unfilled` — splits taken on absence of
+evidence. The other three are the counterfactual the guard itself cannot
+ask, recomputed AFTER convergence when the shapes are known: `unkstill` is
+how many are STILL unfilled at the end, `unkres` how many resolved to a
+known shape, and `unkjoin` how many of those would now hit an existing
+canon entry — i.e. would join an existing contour if the decision were
+re-taken at convergence. `unkjoin` is an upper bound on "would have joined
+at mint time": the entry it now matches may have been claimed after the
+mint, so it answers "could this CS be retired by re-deciding?" rather than
+"was a home already available?".
+
+| program | container CS | unkmint | unkstill | unkres | unkjoin |
+|---|---|---|---|---|---|
+| kanoodle | 149 | 12 | 11 | 1 | 0 |
+| quameon | 133 | 29 | 21 | 3 | 0 |
+| rdb | 141 | 57 | 25 | 15 | 2 |
+| chess | 87 | 69 | 19 | 48 | **20** |
+| linalg | 128 | 90 | 44 | 28 | 6 |
+| stereo | 192 | 4 | 3 | 0 | 0 |
+| rubik | 126 | 6 | 2 | 2 | 0 |
+| go | 38 | 3 | 0 | 1 | 1 |
+| **total** | | **270** | **125** | **98** | **29** |
+
+(`unkstill + unkres < unkmint`: the remaining 47 decline post-convergence
+for a different reason — no `self` position, no receiver type, or the
+depth-0 width cap.)
+
+Two things follow, and the second is the more important.
+
+**"Defer one pass and you would know" is false for most of them.** 125 of
+270 — 46% — have a receiver whose shape is STILL unfilled when the analysis
+has converged. The ignorance is not a timing artifact; for those sites the
+element type never arrives at all. Re-deciding later cannot help them,
+which bounds what the targeted `cs_map` invalidation above can recover.
+
+**Where the shape does resolve, roughly a third would have joined.** 29 of
+the 98 resolved cases hit an existing canon entry — CreationSets that exist
+*solely* because the decision was forced before the evidence existed. It is
+concentrated rather than spread: `chess` alone contributes 20, which is
+**23% of its 87 container CreationSets**.
+
+So the ledger on minting-on-unknown is: real, measurable, worth fixing, and
+NOT mostly fixable by waiting. The 46% is the sharper form of the point —
+for those receivers the analysis never learns anything, so no evidence for
+a split ever arrives, and a demand-driven identity must keep them merged
+rather than mint per contour. That is not a scheduling change; it is the
+default-direction change, and it is step 4.
+
 *Verify:* a reduced repro — two dicts with different key types in one
 program, a container allocated inside a shared `dict` method — fails under
 `PYC_CSELEM=3` and passes after the stopgap; rdb compiles; step 1's ratio
