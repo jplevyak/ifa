@@ -81,3 +81,90 @@ method contour selection appears not to. Answer that before narrowing.
 The 7.4× analysis-time gap in [111](111-FA-selective-invalidation-per-pass.md),
 and the emitted code size — chess is 2.1 MB / 108k lines of C against
 shedskin's 904 lines of templated C++.
+
+
+## Root cause (2026-09-04)
+
+### 1. CS creation is derived from ES splitting, never from demand
+
+`creation_point` memoizes on `v->cs_map`, and `v` is an AVar — a
+(variable × contour) pair. So the memo gives **exactly one CS per
+allocation site per contour**, which is the comment at fa.cc:9988's
+"mints one CS per (site × contour)". Nothing ever asks whether two of
+them could be the same.
+
+Measured with the existing `IFA_DBG_CSROUTE=list` probe on chess:
+
+```
+calls: 26728        cs_map 26581        MINT 147        (every other route: 0)
+```
+
+**Not one of the five reuse routes fires.** Each is inert for its own
+reason:
+
+| route | why it never fires |
+|---|---|
+| `creators` | **dead code.** `if (nvars != -1 \|\| x->vars.n != nvars) continue;` — if `nvars != -1` it continues; if `nvars == -1` then `x->vars.n != -1` is always true (`Vec::n` is a non-negative int) so it continues. Always. Almost certainly a `\|\|` that should be `&&`. Predates the 2026-02-27 subdirectory move. |
+| `split_parent` | needs `PYC_CSSPLIT=0`; default is 1 |
+| `cselem` / `csshape` | need `PYC_CSELEM != 0`; **default is 0** |
+| `csmold` | mode 3 (default) excludes split children — and under `PYC_CSSPLIT=1` essentially every container site in a split contour IS one |
+
+So the only active mechanism is the per-AVar memo, and it cannot merge
+anything by construction. There is no demand test anywhere.
+
+### 2. What sharing would buy — measured
+
+chess, same source, changing only the lever:
+
+| | list CS | ess | css | passes | compile |
+|---|---|---|---|---|---|
+| default | 95 | 1591 | 6433 | 32 | 48.2 s |
+| `PYC_CSELEM=3` | 36 | 985 | 4138 | 13 | **14.9 s** |
+| `PYC_CSMOLD=1` | **19** | **666** | **2789** | **10** | **8.1 s** |
+
+`PYC_CSMOLD=1` is shedskin's model (share one instance per allocation
+site, split later) and lands at **8.1 s against shedskin's 7.1 s —
+parity**. chess's output stays byte-identical to CPython.
+
+### 3. Why sharing cannot simply be turned on: merges are irreversible
+
+`PYC_CSMOLD=1` costs exactly one test, `deepcopy_copy_of_copy_chain`
+(ifa/105's case). The mechanism, measured:
+
+```
+mold=3   ELEMTYPE list: 11 CS / 9 elemtypes  mixed=0   12 passes, 0 violations
+mold=1   ELEMTYPE list:  8 CS / 6 elemtypes  mixed=2   31 passes, pass_limit_hit=1
+```
+
+Sharing gives `r` a container/scalar-mixed, self-referential element
+type, and **the splitter then runs to the pass cap without separating
+it**. It is not that the demand split is missing — ess climbs 117 → 148,
+so it is trying. It cannot succeed: pyc's ATypes are monotone, so once
+`r`'s element includes `list<itself>` the cycle is in the type and no
+later split recovers the acyclic structure.
+
+**That is the root cause.** Demand-driven splitting means starting
+merged and separating on evidence. That requires being able to UNLEARN a
+merge. pyc's analysis only accumulates, so a wrong merge is permanent —
+which leaves it no choice but to split eagerly and structurally, one CS
+per (site × contour), which is the 95-for-6 excess this issue opened on.
+
+shedskin can share aggressively for exactly the reason
+[111](111-FA-selective-invalidation-per-pass.md) documents:
+`restore_network` discards the derived types every iteration and
+re-derives them from `alloc_info`, so a merge that turns out wrong in
+one iteration is simply not present in the next. Its `ifa()` split is
+demand-driven because its network is disposable.
+
+**So 128 and 111 are one change, not two.** Cheap CS sharing is
+unreachable while the analysis is monotone and irreversible; it becomes
+straightforward once the derived structure can be discarded and rebuilt.
+
+### 4. Available now without that change
+
+`PYC_CSELEM=3` (element-shape-keyed CS identity, ifa/074) is
+**suite-clean**: `./test_pyc.py` 0 failed, zero new failures against the
+default, and it takes chess 48.2 s → 14.9 s with `ess` 1591 → 985. It
+does not need the reset because it keys identity on the element shape up
+front rather than merging and hoping to split later. Corpus sweep needed
+before flipping the default — `./corpus_sweep.sh -m check -e "PYC_CSELEM=3"`.
