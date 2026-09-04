@@ -1405,6 +1405,13 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         cg_fail_unrepresentable_container_union(t, f->sym, n->code->ast ? n->code->ast->pathname() : nullptr,
                                                 n->code->ast ? n->code->ast->line() : 0);
       int sz = t->element->type->size;
+      if (getenv("IFA_DBG_ELEMSZ"))
+        fprintf(stderr, "[elemsz] container=%s kind=%d elem=%s elem->type=%s size=%d kind=%d\n",
+                t->name ? t->name : "?", (int)t->type_kind,
+                t->element->name ? t->element->name : "?",
+                t->element->type && t->element->type->name ? t->element->type->name : "?",
+                t->element->type ? t->element->type->size : -1,
+                t->element->type ? (int)t->element->type->type_kind : -1);
       if (!sz && t->type_kind == Type_RECORD && t->has.n) {
         // `has[0]->type` can be NULL: a member with no type is emitted as
         // a zero-width `char eN[0]` placeholder (issues/055, issues/121),
@@ -1420,6 +1427,20 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         for (int i = 0; i < t->has.n; i++)
           if (t->has[i] && t->has[i]->type) { sz = t->has[i]->type->size; break; }
       }
+      // A pointer-shaped element type whose `size` is 0 must still take a
+      // POINTER SLOT. `void` (an unresolved element) and a `Type_SUM`
+      // (a unioned one) are both emitted as `void *`, but carry size 0 --
+      // so `_CG_list_mult_internal` computed `size * s1 * l + HEADER` as
+      // just the header and handed back a list with ZERO capacity, into
+      // which the very next `__setitem__` wrote.
+      //
+      // Found with PYC_NO_GC + valgrind on chess: `[None] * 0x80` emitted
+      // `_CG_list_mult(t2, 128, 0)`, a 16-byte block, then an 8-byte
+      // write 0 bytes past it. Under the collector that same overrun only
+      // ever surfaced as a corrupted free list inside GC_clear_fl_marks,
+      // naming nobody.
+      if (!sz && t->element->type && !t->element->type->num_kind)
+        sz = fa->pdb->if1->pointer_size;
       // A generic list's element type is the program-wide union of
       // element types. With 2+ distinct element types that is a
       // Type_SUM with no compile-time size -- but if every member
@@ -3661,6 +3682,9 @@ int c_codegen_compile(cchar *filename) {
   argv[ai++] = cg_files_arg;
   if (codegen_optimize) argv[ai++] = (char *)"OPTIMIZE=1";
   if (codegen_debug) argv[ai++] = (char *)"DEBUG=1";
+  // PYC_NO_GC: build the program with calloc in place of the collector,
+  // so valgrind can diagnose a heap bug in emitted code. Leaks.
+  if (getenv("PYC_NO_GC")) argv[ai++] = (char *)"NO_GC=1";
   argv[ai] = nullptr;
   return codegen_spawn("make", argv);
 }

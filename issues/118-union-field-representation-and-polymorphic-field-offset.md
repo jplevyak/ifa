@@ -381,3 +381,54 @@ finding. pyc crashes long before that line either way.
 This is a runtime memory bug, unrelated to this issue's representation
 question, and it is now the only thing between chess and a working
 binary.
+
+## 2026-09-04: PYC_NO_GC + valgrind — the first heap bug named
+
+Boehm is deliberately valgrind-hostile: it scans conservatively and reads
+uninitialised bytes by design, so a heap bug in emitted code only ever
+surfaced as a crash inside `GC_clear_fl_marks` / `GC_set_fl_marks` on a
+garbage free-list pointer, naming nobody. An earlier valgrind attempt on
+bh produced 46 findings, every one inside Boehm's own scan and **zero**
+mentioning emitted `_CG_f_` code.
+
+`PYC_NO_GC=1` (new) routes the generated program's allocations to
+`calloc` — `calloc`, not `malloc`, because `GC_MALLOC` returns ZEROED
+memory and emitted code relies on it. The collector stays linked and
+initialised for `pyc_runtime.o` / `libifa_gc.a`; it simply manages almost
+nothing. The mode LEAKS by construction and is for debugging only.
+Plumbed as `NO_GC=1` through `Makefile.cg`.
+
+chess still segfaults under it — so the bug is real and not a GC
+artifact — and valgrind names it in one line:
+
+```
+Invalid write of size 8
+  at _CG_f_2581_423   /* list::__setitem__ */
+Address is 0 bytes after a block of size 16 alloc'd by
+  _CG_list_mult_internal
+  by _CG_f_2779_22    /* list::__mul__ */
+```
+
+`SIZEOF_LIST_HEADER` is 16 and the block is exactly 16, so the list got
+**zero data bytes**. The emitted call says why:
+
+```c
+t3 = 0;
+t1 = (_CG_list)_CG_list_mult(t2, 128, t3);   /* clearCastlingOpportunities = [None] * 0x80 */
+```
+
+The element SIZE is emitted as 0. `IFA_DBG_ELEMSZ` (new) shows two
+shapes reaching that: an element type of `void` (unresolved) and a
+`Type_SUM` (unioned). Both are emitted as `void *` and both carry
+`size == 0`, so `size * s1 * l + HEADER` allocates only the header and
+the next `__setitem__` writes past it.
+
+**Fix:** a pointer-shaped element with size 0 still occupies a POINTER
+SLOT — floor it at `if1->pointer_size`. chess's call becomes
+`_CG_list_mult(t2, 128, 8)` and that overrun is gone. `make test`
+309/18/0; go, pygmy, richards and kanoodle all still run clean.
+
+**chess is not fixed — there is a second bug.** With the first one
+gone, valgrind moves to an `Invalid read of size 8` in
+`_CG_f_12374_171` down a deep `alphaBeta` recursion chain. Same method
+applies; it just needs the next pass.
