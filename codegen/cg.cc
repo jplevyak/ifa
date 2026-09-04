@@ -1342,7 +1342,16 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       } else
         fprintf(fp, "  ");
       Sym *t = n->rvals[o]->type;
-      fprintf(fp, "%d;\n", t->size);
+      // ifa/issues/127: `->size` is 0 for a Type_SUM and for anything
+      // unresolved, and emitting that 0 verbatim is the shape that has
+      // now gone wrong three times (issue 025's tuple-list soundness
+      // bug, rubik2, and chess's `[None] * 0x80`). Resolve a uniform
+      // union first, and fall back to a POINTER SLOT for anything
+      // pointer-shaped -- a boxed value still occupies one.
+      int psz = t->size;
+      if (!psz) psz = resolve_uniform_size(t);
+      if (!psz && !t->num_kind) psz = fa->pdb->if1->pointer_size;
+      fprintf(fp, "%d;\n", psz);
       break;
     }
     case P_prim_sizeof_element: {

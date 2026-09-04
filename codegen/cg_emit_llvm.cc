@@ -1278,15 +1278,27 @@ bool emit_send_sizeof(EmitCtx &ctx, PNode *pn) {
           pn->code && pn->code->ast ? pn->code->ast->pathname() : nullptr,
           pn->code && pn->code->ast ? pn->code->ast->line() : 0);
   }
+  // ifa/issues/127: a zero SIZE is never a correct answer here, and this
+  // file's own comments record it going wrong twice -- issue 025's
+  // tuple-list soundness bug and rubik2, both "emitting 0 made
+  // list::append resize with element size 0, so the storage never grew".
+  // The C backend hit the same thing a third time on chess in 2026-09-04
+  // (`[None] * 0x80` allocated header-only and was written past).
+  //
+  // An unresolved or unsized element is POINTER-SHAPED in pyc's
+  // representation, so it still occupies a pointer slot. Emit that
+  // rather than 0.
+  uint64_t ptr_sz = TheModule->getDataLayout().getPointerSize();
+  const bool is_element = pn->prim->index == P_prim_sizeof_element;
   if (!t_sym) {
     put_result(ctx, pn->lvals.v[0],
-               llvm::ConstantInt::get(dst_ty, 0));
+               llvm::ConstantInt::get(dst_ty, is_element ? ptr_sz : 0));
     return true;
   }
   llvm::Type *t = sym_to_llvm_type(t_sym);
   if (!t || !t->isSized()) {
     put_result(ctx, pn->lvals.v[0],
-               llvm::ConstantInt::get(dst_ty, 0));
+               llvm::ConstantInt::get(dst_ty, is_element ? ptr_sz : 0));
     return true;
   }
   uint64_t sz = TheModule->getDataLayout().getTypeAllocSize(t);
