@@ -600,3 +600,65 @@ tried. If it is large, this dies for the same reason as the others and
 should be recorded as attempt eight.
 
 Not yet run — it needs a build, and a corpus sweep was in flight.
+
+## 2026-09-04: how shedskin handles multiple passes — it does NOT cache
+
+Read `shedskin/infer.py` directly (the checkout at
+`~/projects/shedskin`), because shedskin translates hq2x in 14 s against
+pyc's 31 s and the obvious guess is that it memoises something. It does
+not. Its `iterative_dataflow_analysis` is:
+
+```
+backup = backup_network(gx)          # ONCE: snapshot the pristine graph
+while True:
+    propagate(gx)                    # forward CPA to fixpoint
+    split = ifa(gx)                  # backward phase: find imprecision
+    if not split: return
+    ... record split decisions in gx.alloc_info ...
+    restore_network(gx, backup)      # RESET to the pristine graph
+```
+
+`restore_network` copies the saved typesets, constraints and in/out sets
+back wholesale and clears every `func.cp`. So shedskin resets *harder*
+than pyc does — it returns to the original graph, not merely to bottom —
+and re-derives everything each round. The only thing carried across is
+`gx.alloc_info`: the allocation-site → class-duplicate assignment, i.e.
+the **decisions** the backward phase made, replayed onto a fresh graph.
+Same algorithms as pyc, by name (its docstring cites Agesen's CPA and
+Plevyak's IFA).
+
+**So caching contour results is not where shedskin's speed comes from.**
+Three other things are:
+
+| knob | value | effect |
+|---|---|---|
+| `INCREMENTAL_FUNCS` | **5** | at most five new functions admitted per round, growing from the call-graph root |
+| `INCREMENTAL_ALLOCS` | **1** | one new allocation site per round |
+| `CPA_LIMIT` | **10**, doubled on hit | caps cartesian-product duplication, relaxes only when it binds |
+| `MAXITERS` | **30**, `maxhits == 3` | gives up rather than running to convergence |
+
+Each round is cheap because the analysed SET is small, not because
+previous work was preserved. pyc analyses the whole program every pass
+and runs to convergence.
+
+### What this means for M3 and for the caching proposal
+
+The proposal above (cache a monomorphic contour's interface) and M3
+(preserve AVar values) are both bets on *incremental preservation*.
+shedskin is evidence that the alternative lever — **incremental
+admission**, plus hard caps and a willingness to stop — is enough to be
+2.2x faster on the same input with the same algorithms. It also
+sidesteps ifa/113 entirely: nothing derived survives a round, so
+setter classing is recomputed from scratch every time and its
+batch-partition invariant is never violated.
+
+That does not make M3 wrong, but it reframes the priority: an
+admission-order experiment (analyse the call-graph root first and widen)
+is cheap to try, needs no change to the setter machinery, and has a
+working implementation to compare against. It should be measured before
+more effort goes into preservation, which has now failed seven times for
+one reason.
+
+The monomorphic-contour measurement stated above is still worth running
+— it is the one thing that could unblock M3 — but it is no longer the
+only route to the 48%.
