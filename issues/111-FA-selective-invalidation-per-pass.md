@@ -920,8 +920,58 @@ shedskin iter 1      9,871 visits      iter 38     10,239 visits  (flat)
 pyc re-seeds `edge_worklist` from `top_edge` every pass and re-walks the
 whole accumulated contour graph; as `ess` goes 207 → 1591 the per-pass
 edge count goes up 48×. shedskin's per-iteration visit count does not
-move, because `restore_network` resets the graph to a bounded base and
-only the admitted subset is rebuilt.
+move — see "what actually persists" below for why.
 
 So the target is not per-edge efficiency and not the pass count. It is
 that pass N costs 48× pass 1 for the same program.
+
+
+### Correction: "rebuilds only the admitted subset" was wrong
+
+That phrasing conflated two things. `restore_network` runs at the end of
+**every iteration** of `iterative_dataflow_analysis`, not at round
+boundaries, and the reset is total and exact. Measured per iteration:
+
+```
+ITER  1  0.079s  base_in=20543 -> after=21742  contour_dups=9161  templates+=220  admitted= 0
+         after restore: cnodes=20543  contour_dups=8123
+ITER 38  0.113s  base_in=20543 -> after=21598  contour_dups=9025  templates+=133  admitted=19
+         after restore: cnodes=20543  contour_dups=8123
+```
+
+**`base_in` is 20543 on every one of 38 iterations, and the restore
+returns to exactly 20543 / 8123 every time.** There is no growing
+"admitted subset" living in the graph. Each iteration builds ~500-1400
+nodes and ~130 templates on top of a FIXED base and then discards them.
+
+So the per-iteration cost is bounded by construction, and admission is
+not what bounds it. Admission (`INCREMENTAL_FUNCS=5`,
+`INCREMENTAL_ALLOCS=1`, the `continue` at infer.py:1290) decides WHICH
+functions may be contoured during a rebuild — precision scheduling, and
+a cap on how much one rebuild can cost. What keeps cost flat across
+iterations is the reset.
+
+### What actually persists across the reset
+
+Not graph structure. Four things, all small:
+
+1. **`gx.alloc_info`** — `(func ident, cart, site) -> (class, dcpa)`, the
+   allocation decisions. Never walked by propagation.
+2. **Mutations of the backup snapshot itself.** `beforetypes = backup[0]`
+   is edited between iterations: constructor nodes in functions are
+   cleared (`beforetypes[node] = set()`) and split classes are seeded
+   onto global nodes (`beforetypes[n] = {(cl, newnr)}`). The reset target
+   evolves; its SIZE does not.
+3. **`cl.dcpa` / `cl.splits`** — the class-split table, which is also
+   what `ifa_seed_template`'s mother-lookup consults.
+4. **`gx.added_funcs_set` / `added_allocs_set`, `cpa_limit`, `maxhits`** —
+   admission and limit state.
+
+That is the shape pyc does not have: **knowledge in a side table,
+structure re-derived against a snapshot of fixed size.** pyc keeps the
+structure and re-walks it, which is why its per-pass cost tracks `ess`.
+
+(Incidental: shedskin's analysis is not run-to-run deterministic — three
+instrumented runs of the same file took 38, 38 and 39 iterations, from
+Python set iteration order over id-hashed objects. Iteration counts here
+are ±1.)
