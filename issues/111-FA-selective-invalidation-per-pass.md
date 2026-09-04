@@ -761,3 +761,69 @@ objects from that identity each round; pyc keeps them. The cost
 consequence stands (pyc re-walks every accumulated contour, shedskin
 only the admitted subset), but "shedskin discards the structure" was
 overstated: it discards the *representation*, not the *identity*.
+
+
+## Measured: chess, pyc vs shedskin, same source (2026-09-04)
+
+Both run on the identical file — pyc's `shedskin_examples/chess/chess.py`
+copied into a scratch dir for shedskin, so the added `printBoard` and
+`rowAttack` return are in both.
+
+| | pyc | shedskin |
+|---|---|---|
+| passes / iterations | **31** (+1 confirming) | **38** |
+| structure | 32 whole-program passes | 38 iterations over **26 incremental rounds** |
+| analysis time | ~29 s (FA only) | **6.7 s** (whole prebuild) |
+| total front-end | 47.8 s (C++ compile of the emitted code is 1.65 s of it) | 7.1 s |
+| final contours | ess=1591, css=6433 | 3987 templates (cumulative, not comparable) |
+
+**The pass counts are close. The cost per pass is not.** That is the
+finding — pyc is not iterating wildly more than shedskin; it is doing
+far more work per iteration.
+
+### pyc: 26 of 32 passes are pure splitting
+
+```
+  1   0.74s  ess=207   css=1769  viol=1340  examined=19342
+  2   1.19s  ess=579   css=3540  viol=6224  examined=48492
+  6      —   first pass with ZERO type violations
+  8   0.66s  ess=927   css=3835  viol=0     examined=54011
+ 16   0.99s  ess=1374  css=5557  viol=0     examined=82678
+ 24   1.10s  ess=1536  css=6191  viol=0     examined=92735
+ 28   1.24s  ess=1594  css=6573  viol=0     examined=99507
+ 31   1.04s  ess=1591  css=6433  viol=0     examined=96915
+```
+
+Type violations reach **zero at pass 6**. The remaining 25 passes carry
+no type errors at all — they are the splitter refining contours (ess
+927 → 1591, css 3835 → 6433). And the cost per pass **rises** over that
+stretch, 0.66 s → 1.24 s, because `examined` grows 54k → 100k avars:
+every pass re-walks the whole accumulated network to make a decision
+about a shrinking frontier.
+
+### shedskin: 26 rounds, most converging in one iteration
+
+```
+round  1: 4 iters      rounds 2-26: 1,1,1,2,1,2,2,1,1,2,1,1,3,
+                                    1,2,1,2,1,1,1,1,2,1,1,1
+```
+
+Only the first round needs 4 iterations. Twenty of the remaining 25
+converge in a **single** iteration, because `alloc_info` already holds
+the answer for everything admitted earlier and the round only has to
+propagate for the newly admitted 5 functions / 1 allocation site.
+
+### What this says about the proposal
+
+The gap is not iteration count, so a change that reduces pyc's pass
+count is aiming at the wrong quantity. The lever is the 25 zero-
+violation passes, each re-examining ~100k avars to service a frontier of
+a few dozen contours. Both directions in this issue attack that:
+selective invalidation (don't re-walk what cannot have changed) and
+incremental admission (don't have it in the network yet). The measured
+shape — violations gone at pass 6, cost per pass still climbing at pass
+28 — says the second is where the 4× lives.
+
+Caveat: the ~29 s FA figure is the sum of pyc's own per-pass timers
+under `-v`, whose symbol dump inflates the wall clock; the 47.8 s total
+is from a clean non-verbose run.
