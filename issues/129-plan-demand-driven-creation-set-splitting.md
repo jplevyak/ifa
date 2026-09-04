@@ -796,6 +796,39 @@ mint, so it answers "could this CS be retired by re-deciding?" rather than
 for a different reason — no `self` position, no receiver type, or the
 depth-0 width cap.)
 
+**Corpus-wide, and it cuts the other way.** The eight programs above
+over-represent `chess`. Re-run as a full sweep
+(`check__PYC_CSELEM_3__de9fca7d+adf4abe8`, verdicts byte-identical to the
+uninstrumented run, so the census is behaviour-neutral):
+
+| | total over 77 programs |
+|---|---|
+| container CreationSets | 3081 |
+| `unkmint` — minted while the shape was unknown | 793 |
+| `unkstill` — still unfilled at convergence | 402 (**51%** of unkmint) |
+| `unkres` — resolved to a known shape | 304 |
+| `unkjoin` — would join if re-decided at convergence | **36** (12% of resolved) |
+
+64 of 77 programs mint at least one CS on an unknown, so the bias is
+everywhere. But **`unkjoin` is 36 of 3081 container CreationSets — 1.2%**,
+and seven programs account for all of it (`chess` 20, `linalg` 6, `rubik2`
+5, `rdb` 2, `msp_ss` 1, `bh` 1, `go` 1). `chess` alone is 56% of the total;
+its 23% figure is an outlier, not a preview.
+
+**So the targeted `cs_map` invalidation proposed above is not worth
+building.** Its entire reachable win is that 1.2%, it carries the issue-030
+positional-slot hazard, and it leaves the 51% untouched by construction.
+Recorded here so the next person does not re-derive the idea and spend a
+week on it: the measurement was run specifically to size it, and the answer
+is that re-deciding later is not where the over-discrimination lives.
+
+What the numbers do support is the opposite reading. 793 CreationSets are
+minted on no evidence; only 304 ever acquire the evidence, and of those
+only 36 would have joined anything. The other 757 are contours that exist
+because pyc's default is to split when it does not know — and for the 402
+that never resolve, no evidence for a split ever arrives at all. Nothing
+scheduled later fixes that. It is the default direction, which is step 4.
+
 Two things follow, and the second is the more important.
 
 **"Defer one pass and you would know" is false for most of them.** 125 of
@@ -848,11 +881,12 @@ the other three.
 > `creation_point`, one per allocation site."*
 >
 > That leaves **item 6, the reuse index, as the only part of this step that
-> can move the ratio** — and 2c measured its ceiling. Of 270 CreationSets
-> minted while the receiver shape was unknown, 125 (46%) still have no shape
-> when the analysis has converged, and only 29 would join an existing
-> contour if the decision were re-taken there. An index keyed on deduced
-> content cannot key on content that never arrives.
+> can move the ratio** — and 2c measured its ceiling on the corpus. Of 793
+> CreationSets minted while the receiver shape was unknown, 402 (51%) still
+> have no shape when the analysis has converged, and only 36 would join an
+> existing contour if the decision were re-taken there — **1.2% of the 3081
+> container CreationSets.** An index keyed on deduced content cannot key on
+> content that never arrives.
 >
 > So the honest sequencing is step 4 first: make contours start merged and
 > merges revisable. Only then does a demand test have merges to observe and
