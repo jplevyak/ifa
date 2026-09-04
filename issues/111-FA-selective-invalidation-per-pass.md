@@ -618,14 +618,45 @@ while True:
     restore_network(gx, backup)      # RESET to the pristine graph
 ```
 
-`restore_network` copies the saved typesets, constraints and in/out sets
-back wholesale and clears every `func.cp`. So shedskin resets *harder*
-than pyc does — it returns to the original graph, not merely to bottom —
-and re-derives everything each round. The only thing carried across is
-`gx.alloc_info`: the allocation-site → class-duplicate assignment, i.e.
-the **decisions** the backward phase made, replayed onto a fresh graph.
 Same algorithms as pyc, by name (its docstring cites Agesen's CPA and
 Plevyak's IFA).
+
+### What each one actually keeps — the difference is STRUCTURE, not values
+
+"Resets harder" was too loose. The two differ on what survives, and it
+is not the types:
+
+| | pyc `clear_results()` | shedskin `restore_network()` |
+|---|---|---|
+| node/AVar types | cleared to **bottom**, re-derived by the walk | restored to the **original seeds** from the snapshot |
+| duplicate/contour STRUCTURE | **KEPT** — every EntrySet and CreationSet minted by an earlier split survives | **DISCARDED** — `func.cp = {}`; duplicates are rebuilt |
+| the split decisions | implicit, in the surviving contours' `filters` | explicit, in `gx.alloc_info` + `cl.dcpa` |
+| constraint graph | edge containers cleared, objects kept | `gx.constraints` / `gx.cnode` restored from the snapshot |
+| setter classing | `cannonical_setters` cleared | no equivalent |
+
+Concretely, `clear_es` zeroes `out_edges`, `backedges`, `cs_backedges`,
+`creates` and `live_pnodes` — and does **not** touch `filters`,
+`display` or `split`. So a contour that a previous pass split stays
+split, carrying the partition that made it. `clear_cs` and `clear_avar`
+are the same shape: containers emptied, values bottomed, identity and
+membership preserved.
+
+**pyc preserves the structure and clears the values; shedskin preserves
+the decisions and rebuilds the structure.** Both reach the same place —
+pyc re-derives the seed types by walking, shedskin restores them
+directly — so the types are a wash.
+
+The consequence is the cost model. pyc's per-pass work is proportional
+to the ACCUMULATED contour count, because every ES ever split is still
+there to be re-walked: hq2x carries `ess=615 css=2350` by pass 11 and
+pays for all of them on passes 12, 13 and 14 to add three entry sets.
+shedskin's per-round work is proportional to the ADMITTED SUBSET — five
+new functions and one new allocation site — with the duplicates for that
+subset rebuilt from a small decision table.
+
+So the thing pyc keeps is exactly the thing that makes its passes
+expensive, and the thing shedskin keeps (`alloc_info`) is small by
+construction.
 
 **So caching contour results is not where shedskin's speed comes from.**
 Three other things are:
