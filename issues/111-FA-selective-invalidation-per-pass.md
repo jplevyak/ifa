@@ -541,3 +541,62 @@ stops being expensive.
   scoped the reset to the REACHABLE set; this issue scopes it to the
   CHANGED set. Its post-mortem is the best available guide to what goes
   wrong when the scope is too narrow.
+
+## 2026-09-04: caching a MONOMORPHIC contour's interface — assessment
+
+Proposal: cache analysis at the ES/function level for monomorphic
+contours by recording the AVars with outgoing (non-internal) flow edges,
+and reflow those on an incoming call.
+
+### Where the cost actually is — a correction to the framing
+
+M3's constraint 2 already measured this: **re-walking a settled contour
+is cheap.** hq2x pass 15 is ~30 000 AVars, 79 dirty, **0.081 s**. The
+expense is not the traversal, and not re-deriving an interface — it is
+that `clear_results()` wipes every AVar's value first, so the walk has
+to rebuild what it just threw away.
+
+That matters for the proposal: recording interface AVars and reflowing
+them still requires the BODY's AVars to hold their values, or the reflow
+has nothing to propagate through. And once they hold their values, the
+ordinary walk is already the cheap thing — the interface record buys
+nothing on top. **The win is in preserving AVar values, not in
+memoising an interface.** So this reduces to M3, which is where the
+effort should go.
+
+### Does "monomorphic" dodge the blocker? Possibly — and for a reason
+### none of the seven attempts used
+
+The blocker ([113](113-FA-setter-equivalence-is-a-global-batch-partition.md))
+is that `same_eq_classes` asserts every member of a live `Setters` set
+carries a `setter_class` assigned THIS pass, while membership is decided
+DURING the pass and the preserve/clear decision must be made before it.
+
+But `compute_setters` is only ever called over **confluences** —
+`collect_cs_setter_confluences`, and the type-stage equivalent. ifa/124's
+note in `fa.cc` says so explicitly: *"compute_setters only ever visits
+`confluences`. If a container's ELEMENT AVar is not collected as a type
+confluence, its writers never get a setter_class."*
+
+A **settled monomorphic contour has no confluence by definition** —
+nothing disagrees at any of its AVars. So its AVars should never be
+classed and never enter a `Setters` set, and preserving them should not
+be able to trip the assert. That is a materially different precondition
+from the seven attempts, all of which scoped by *what changed* and so
+preserved contours that ARE confluences.
+
+### The risk that decides it, and the measurement
+
+`update_setter` records on the container and propagates **backward** to
+writers. A monomorphic contour's AVar can therefore be pulled into some
+OTHER contour's Setters set as a backward writer, without being a
+confluence itself. If that happens often, the restriction buys nothing.
+
+**The measurement:** at the end of a converged pass, count the AVars in
+live `Setters` sets whose `EntrySet`'s function has exactly one ES
+(monomorphic), against the total. If that count is ~0, preserving
+settled monomorphic contours is viable and M3 has a route it has not
+tried. If it is large, this dies for the same reason as the others and
+should be recorded as attempt eight.
+
+Not yet run — it needs a build, and a corpus sweep was in flight.
