@@ -708,10 +708,20 @@ alloc_id = (parent.ident, cart, node.thing)
 `cart` is the **cartesian product** — the tuple of `(class, dcpa)`
 argument types that defines the function duplicate. So the function
 split IS preserved, keyed by CONTENT (which argument types) rather than
-by the duplicate index. `func.cp` can be thrown away precisely because
-re-running CPA regenerates the same duplicates from the same argument
-tuples, and `alloc_info` re-attaches by `(name, argument-type tuple,
-site)`.
+by the duplicate index. `func.cp` can be thrown away because nothing that survives a
+round ever refers to a `cpa`. The number is a per-round ordinal —
+
+```python
+func.cp[dcpa][c] = cpa = len(func.cp[dcpa])     # infer.py:1401
+...
+for func in gx.allfuncs: func.cp = {}           # restore_network, :2108
+```
+
+— assigned in first-seen order, so it need not even AGREE between
+rounds. `gx.alloc_info`, the one table that crosses the reset, is keyed
+by `(name, argument-type tuple, site)` and never mentions it. The
+numbering is disposable exactly because the identity is
+content-addressed.
 
 That answers "how can it split the allocation site if the surrounding
 function contour is not split": the surrounding contour IS split, and is
