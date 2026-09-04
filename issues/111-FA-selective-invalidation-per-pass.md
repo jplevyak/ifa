@@ -693,3 +693,61 @@ one reason.
 The monomorphic-contour measurement stated above is still worth running
 — it is the one thing that could unblock M3 — but it is no longer the
 only route to the 48%.
+
+
+### Correction: shedskin DOES keep the function split — content-addressed
+
+"Discards the function duplicates" is right about the numbering and
+wrong about the information. The `alloc_info` key is:
+
+```python
+alloc_id = (parent.ident, cart, node.thing)
+#            function      CPA context   allocation site
+```
+
+`cart` is the **cartesian product** — the tuple of `(class, dcpa)`
+argument types that defines the function duplicate. So the function
+split IS preserved, keyed by CONTENT (which argument types) rather than
+by the duplicate index. `func.cp` can be thrown away precisely because
+re-running CPA regenerates the same duplicates from the same argument
+tuples, and `alloc_info` re-attaches by `(name, argument-type tuple,
+site)`.
+
+That answers "how can it split the allocation site if the surrounding
+function contour is not split": the surrounding contour IS split, and is
+identified by the very thing that makes it distinct.
+
+**Newly-split contours inherit from a "mother".** When a `cart` appears
+that has no `alloc_info` entry, `ifa_seed_template` searches for an
+existing entry for the same `(function, site)` whose `cart` differs
+*only* in ways a class split explains:
+
+```python
+if a != b and not (a[0] is b[0] and a[1] in a[0].splits
+                   and a[0].splits[a[1]] == b[1]):
+    break        # not the mother
+else:
+    mother_alloc_id = (id, c, thing)
+```
+
+and copies the mother's allocation type. So a freshly split function
+duplicate starts from the assignment of the contour it descends from —
+the split lineage is reconstructed from the class-split table rather
+than carried in objects.
+
+**A recursive tree copy resolves through the DATA half, not the function
+half.** Recursing on the same class gives the same `cart` at every
+depth, so CPA alone would not separate the levels. What separates them
+is IFA splitting the class into duplicates per allocation site; those
+duplicates change the `(class, dcpa)` pairs inside `cart`, which then
+produces distinct function duplicates. Data polymorphism drives function
+duplication — the same direction pyc's CS-driven ES splitting works.
+
+**So the real difference is narrower than stated above.** Both systems
+identify a contour by content — pyc's `find_or_make_filtered_entry_set`
+searches by `filters`, and ifa/100 made the display explicitly *not*
+part of contour identity for the same reason. shedskin rebuilds the
+objects from that identity each round; pyc keeps them. The cost
+consequence stands (pyc re-walks every accumulated contour, shedskin
+only the admitted subset), but "shedskin discards the structure" was
+overstated: it discards the *representation*, not the *identity*.
