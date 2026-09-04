@@ -33,6 +33,10 @@ int write_code_exit = 0;
 int analysis_pass = 0;
 FA *fa = nullptr;
 static Timer pass_timer, match_timer, extend_timer;
+// ifa/111 probe: the units the propagation worklists actually process.
+// `examined_avar_count` counts the SPLITTER's exhaustive sweep, not this,
+// so per-unit cost cannot be derived from it. PYC_DBG_WORK=1 to print.
+static long work_edges, work_sends, work_escons;
 // ifa/issues/111: selective (closure-scoped) per-pass invalidation
 // instead of clear_results()'s full from-bottom reset. Default OFF --
 // M2 landed this switch and the differential harness BEFORE any
@@ -5026,6 +5030,7 @@ static void initialize() {
   initialize_global(sym_empty_tuple);
   initialize_global(sym_unknown);
   initialize_global(sym_void);
+  work_edges = work_sends = work_escons = 0;  // ifa/111 probe
   fa->edge_worklist.clear();
   fa->send_worklist.clear();
   initialize_symbols();
@@ -9254,6 +9259,9 @@ static void probe_invalidation_closure() {
         fa->type_violations.set_count(), fa->dup_split_attempts, fa->cs_dup_split_attempts, fa->dirty_avar_count,
         fa->examined_avar_count);
   }
+  if (getenv("PYC_DBG_WORK"))  // ifa/111 probe
+    fprintf(stderr, "WORK pass=%d edges=%ld sends=%ld es_constraints=%ld pass_time=%f\n", analysis_pass, work_edges,
+            work_sends, work_escons, pass_timer.time);
   if (write_code_exit == analysis_pass) {
     if1_simple_dead_code_elimination(fa->pdb->if1);
     ifa_code("if1");
@@ -10650,6 +10658,7 @@ static void analyze_to_convergence() {
     while (fa->edge_worklist.head || fa->send_worklist.head) {
       while (AEdge *e = fa->edge_worklist.pop()) {
         e->in_edge_worklist = 0;
+        ++work_edges;  // ifa/111 probe
         analyze_edge(e);
         if ((++edge_count % STALL_CHECK_INTERVAL) == 0) {
           if (fa->ess.n > last_ess_check) {
@@ -10666,10 +10675,12 @@ static void analyze_to_convergence() {
       }
       while (AVar *send = fa->send_worklist.pop()) {
         send->in_send_worklist = 0;
+        ++work_sends;  // ifa/111 probe
         add_send_edges_pnode(send->var->def, (EntrySet *)send->contour);
       }
       while (EntrySet *es = fa->es_worklist.pop()) {
         es->in_es_worklist = 0;
+        ++work_escons;  // ifa/111 probe
         add_es_constraints(es);
       }
     }

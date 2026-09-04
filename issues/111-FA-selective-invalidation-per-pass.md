@@ -869,14 +869,9 @@ never walked during propagation.
 pyc does the opposite: contours accumulate IN the graph (`ess` 207 →
 1591, `css` 1769 → 6433) and every pass re-walks all of them.
 
-So the ~10× per-pass gap decomposes as roughly:
-
-- **~5× network size** — pyc's analysis state lives in the graph it must
-  traverse; shedskin's lives in a table it does not.
-- **~2× per-node cost** — 9.3 µs/avar for pyc against 4.4 µs/cnode for
-  shedskin. pyc's per-pass split shows where: `match` (dispatch
-  resolution) is 65% of pass 1 and still 22-33% of the late passes,
-  on top of `flow`.
+So the ~10× per-pass gap is **entirely work volume** — see the
+correction below. pyc's per-unit cost is BETTER than shedskin's, as C++
+against CPython should be.
 
 And shedskin's splitter is free: `ifa()` costs 0.005 s an iteration,
 0.19 s for the whole compile. pyc's equivalent work is spread through
@@ -889,3 +884,44 @@ pyc walk less of an ever-growing graph. shedskin's answer is that the
 graph should not grow: keep the decisions, discard the derived
 structure, re-derive it against a bounded base each round. That is a
 much larger change than M1/M2 contemplate, and it is what the 5× is.
+
+
+### Correction: the per-unit cost is not the problem — C++ is 9x faster
+
+Two earlier per-node figures in this issue were wrong, both from bad
+denominators. `examined_avar_count` counts `collect_type_confluences`'s
+exhaustive `ess x fa_all_Vars` sweep — a SPLITTER diagnostic — not the
+propagation worklist. Dividing pass time by it compares pyc's splitter
+scan against shedskin's propagation and means nothing.
+
+pyc's propagation unit is the **AEdge**. Counted directly
+(`PYC_DBG_WORK=1`, probe added with this entry):
+
+| | work units | time | per unit |
+|---|---|---|---|
+| pyc | **22,511,055** edge visits | 27.3 s | **1.21 µs** |
+| shedskin | **329,329** node visits | 3.7 s | **11.22 µs** |
+
+**pyc is ~9× cheaper per work unit and does ~68× more of them.**
+68 / 9.2 = 7.4×, which is exactly the measured wall-clock ratio. The
+implementation is not slow; it is asked to do too much.
+
+(The units are not strictly comparable — an AEdge visit is coarser than
+a CNode visit — so the 9× is indicative, not exact. The 68× and the
+growth curve below are the load-bearing numbers.)
+
+### The growth is within a single compile
+
+```
+pyc     pass  1     30,823 edges       pass 31  1,484,115 edges   (48x)
+shedskin iter 1      9,871 visits      iter 38     10,239 visits  (flat)
+```
+
+pyc re-seeds `edge_worklist` from `top_edge` every pass and re-walks the
+whole accumulated contour graph; as `ess` goes 207 → 1591 the per-pass
+edge count goes up 48×. shedskin's per-iteration visit count does not
+move, because `restore_network` resets the graph to a bounded base and
+only the admitted subset is rebuilt.
+
+So the target is not per-edge efficiency and not the pass count. It is
+that pass N costs 48× pass 1 for the same program.
