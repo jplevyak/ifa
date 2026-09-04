@@ -516,6 +516,188 @@ this contour split from?" are questions about the analysis itself.
 Boxing, mixed-width unions (048), and `None`-in-a-union are all the other
 kind.
 
+### Step 2c — what `rdb` says about the mode-3 key
+
+Step 2's sweep left exactly one behaviour regression, and it turned out to
+be worth more than its fix: `rdb` compile_rc 0 → 1, `'v' has mixed basic
+types:( int64 str )`.
+
+**The mechanism.** `atype_shape_id` recurses into a member's content only
+`if (cs->sym->element)`, and `Sym::element` is created for **`list`,
+`vector` and `tuple` only** (`python_ifa_sym.cc:109-110,129` — `tuple`'s
+added by [104](closed/104-unify-list-and-tuple-in-analysis.md)). `dict` never gets
+one. So a dict receiver serialises as the bare token `dict#4799`, carrying
+nothing: **75 of 75 occurrences in `rdb`, never once with a nested part.**
+
+Two split children of `dict.__init__` — one for an int-keyed dict, one for
+a str-keyed dict — therefore present the identical key:
+
+```
+[csshape] p=14 v10757|list#61|3 -> reuse cs=1266  shape=dict#4799 split=58 cmc=0 fun=__init__
+[csshape] p=14 v10759|list#61|3 -> reuse cs=1267  shape=dict#4799 split=58 cmc=0 fun=__init__
+```
+
+Their list contours are fused, the shared element becomes `{int64, str}`,
+and `__pyc__/04_sequence.py:115-116` — `for v in self` / `chunk = chunk +
+chr(v)`, inside `__pyc_tobytes__` — reads it, surfacing at the
+`bytes([...])` on `rdb.py:244`.
+
+pyc already knows this failure. `07_dict.py`'s own comment describes the
+same union from the other direction — *"self.mapSocks.keys() (int-keyed)
+and headers.keys() (str-keyed) share one CreationSet whose `_keys` unions
+int64 and str across BOTH, unrelated dicts"* — found on `webserver.py` and
+fixed there with `__pyc_clone_constants__` / `clone_methods_per_cs`. Mode 3
+re-creates it by a different route.
+
+**The obvious guard is the wrong fix, and the measurement says so.**
+`creation_point`'s mold route carries two guards mode 3 lacks
+(`fa.cc:714-716`): the `clone_methods_per_cs` exclusion (issue 045) and
+`!(mold == 3 && split_child)` — [105](105-type-degeneration-in-shared-generic-methods.md)'s
+*"the mold must not undo a SPLIT"*, whose recorded symptom is the same
+family as rdb's. Every rdb reuse is a split child, so porting it fixes rdb.
+
+Measured before recommending it:
+
+| | reuses | split children | cmc |
+|---|---|---|---|
+| rdb | 22 | **22** | 0 |
+| kanoodle | 3 | **3** | 0 |
+| quameon | 56 | **56** | 0 |
+
+**100% of shape-key reuses are split children.** Undoing splits IS the
+mechanism, not a side effect — so that guard would make `PYC_CSELEM=3` a
+corpus-wide no-op and take the whole −667 CS win with it. It is the retreat
+CLAUDE.md describes: numbers collapse, suite goes green, real question
+unasked. `cmc=0` throughout, so the 045 guard is irrelevant here.
+
+**What shedskin keys on instead — and it is not the receiver.** The direct
+analogue of `cselem_shape_canon` is `classes_nr`, consulted in
+`ifa_split_no_confusion` (`infer.py:1617-1624`):
+
+```python
+for subtype, csites in subtype_csites.items():
+    if subtype in classes_nr:          # reuse contour
+        nr = classes_nr[subtype]
+        split.append((cl, dcpa, csites, nr))
+        cl.splits[nr] = dcpa           # lineage, recorded right here
+    else:
+        classes_nr[subtype] = cl.newdcpa
+```
+
+`subtype` is the tvar types of **`cl` itself** — the container being
+allocated. The receiver of whatever method allocated it never enters the
+key. Where shedskin does mention `self` it is as ONE component of the
+enclosing contour's cartesian product, never instead of it: `cart =
+((parent.parent, n.dcpa),) + cart` before `gx.alloc_info[parent.ident,
+cart, n.thing]` (`infer.py:1904`).
+
+Two consequences for pyc's key, which is `v<site>|<class>|<receiver
+shape>`:
+
+- It is **blind** — `dict` has no content channel the shape can read, while
+  shedskin's `Class.tvar_names()` (`python.py:217`) gives
+  `dict/frozendict/defaultdict` → `["unit", "value"]`. Worth noting what
+  that unifies: `["unit"]` is pyc's `elem_key` and `tuple2`'s `["first",
+  "second"]` is pyc's per-position `cs->vars`. shedskin has ONE notion of
+  a class's type variables where pyc has two channels — and the shape key
+  reads only one. That is step 1's `shapes`/`pshapes` asymmetry appearing
+  as a defect rather than as a metric.
+- It is a **proxy**, and the wrong one. Even a perfectly content-aware
+  receiver shape does not determine what a list built inside
+  `dict.__init__` will hold. Fixing the blindness removes rdb's collision;
+  it does not make the key mean the right thing.
+
+**Why pyc uses the proxy at all**, and why that is the real finding: keying
+on the allocated container's own content requires knowing that content,
+which does not exist when the CS is first minted — hence "keyed on the
+durable, converged element type", the `%`-unfilled decline, and the
+per-pass dance. shedskin can key on deduced content because it MOVES a site
+onto an existing contour after the fact, and can do that because the round
+is discardable. That is step 4 /
+[111](111-FA-selective-invalidation-per-pass.md) again.
+
+**So `rdb` is evidence for step 4, not a bug with a local fix.** Two things
+follow, in order:
+
+1. *Stopgap, no reversibility needed:* remove the blindness so the mode is
+   safe to run — give the shape key dict's content, either as the second
+   channel step 2b item 3's sibling would add. Reachability and cost are
+   settled below.
+2. *The actual fix:* key the canonical contour on the allocated container's
+   own converged content, which needs the ability to re-route a site after
+   that content is known. Step 4.
+
+Do **not** flip the default on `PYC_CSELEM=3` while the key is a blind
+proxy: rdb is the one program that happens to notice, and 22/22 says the
+mechanism producing the −667 is the same one producing the miscompile.
+
+**Is the content reachable? Yes — and the blindness is not about `dict`.**
+
+pyc's `dict` is an ordinary Python class in `__pyc__/07_dict.py`, whose
+`__init__` is exactly `self._keys = []`, `self._vals = []`, `self._len =
+0`. So a dict CS's `vars` holds `_keys` and `_vals`, and those are `list`
+CSs with real `elem_key`s: the key and value types are reachable through
+the SECOND channel without giving `dict` an element sym at all. No repeat
+of 104 is needed.
+
+That also closes the loop on which lists were fused. `v10757` and `v10759`
+are the two `[]` literals in `dict.__init__` — **`_keys` and `_vals`
+themselves.** Fusing their contours unions the key types and the value
+types of two unrelated dicts, which is the bug the comment block right
+above those two lines documents: `{1:1}` and `{"a":1}` merging int/str and
+hard-failing the C build, fixed by
+[076](closed/076-mutation-driven-receiver-divergence-not-cloned.md) by removing the
+class-body defaults.
+
+**Mode 3 re-creates 076 by a different route**, and 076's own title is the
+sentence: *"Monotonic type growth lets a shared/prototype CreationSet
+permanently contaminate a container read, even after `split_css` correctly
+separates the instances that share it."* There the sharing came from a
+class-body default acting as a permanent setter; here it comes from the
+canon map handing two correctly-separated contours one CS. Same monotone
+trap, same contaminated container read, one layer up.
+
+But the blindness is much wider than `dict`. Every receiver shape observed
+across three programs:
+
+| program | reuses | receiver shapes |
+|---|---|---|
+| rdb | 22 | `dict#4799` ×18, `str#90` ×2, `int64#75` ×2 |
+| kanoodle | 3 | `list#61<23>` ×3 |
+| quameon | 56 | `box_nopbc#11509` ×12, `fermion#15937` ×11, `atomic_STO#14910` ×11, `LCAO#15172` ×10, `wave_func_single_det#16376` ×4, 6 more ×1-2 |
+
+quameon's are all **user classes**. They have no element sym either, so
+they shape as a bare `name#id` exactly like `dict` — content-blind in the
+same way, and for the same reason. Of the 81 reuse events measured, **74
+(91%) are decided on a receiver whose shape is nothing but its class
+name** while that receiver does have content the key cannot see. Four are
+scalars (`str`, `int64`), where bare is correct. Three carry real content.
+
+So for anything but `list`/`tuple`/`vector`, the mode-3 key degenerates to
+**(allocation site, receiver CLASS)**. That is what produces the 100%
+split-child figure above: a key that coarse fuses nearly every contour of a
+site that shares a receiver class. **Read step 2's −667 accordingly** — it
+is not evidence that a structural shape key works, it is what a very coarse
+key merges, and `rdb` is the one program that noticed the merge was wrong.
+
+**And the stopgap is not free.** Every content-carrying receiver shape in
+the `rdb` trace is already declined `(unfilled)` — `5:list#61<4>` ×38,
+`22:list#61<21>` ×20, and so on, where id 4 is `%`. A dict or user-class
+receiver read through `cs->vars` would meet the same fate at mint time,
+when `_keys`/`_vals` are empty and the fields have not arrived. The honest
+expectation is that making the key content-aware converts most of those 74
+reuses into declines rather than into finer merges — removing the bug by
+removing the reuse, and taking much of the −667 with it. Measure it before
+believing either number; do not present the result as a win or a
+regression until the split between "declined" and "merged more precisely"
+is counted.
+
+*Verify:* a reduced repro — two dicts with different key types in one
+program, a container allocated inside a shared `dict` method — fails under
+`PYC_CSELEM=3` and passes after the stopgap; rdb compiles; step 1's ratio
+holds up; corpus `check` at `-e "PYC_CSELEM=3"` regains rdb without losing
+the other three.
+
 ### Step 3 — implement the demand test and the ladder
 
 The real work, and the step that makes the statement true. In FA, for
