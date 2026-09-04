@@ -255,6 +255,129 @@ up front rather than merging and hoping to split later.
 
 *Verify:* corpus `check` neutral; step 1's ratio improves.
 
+#### `PYC_CSELEM=3` could not be swept at all until 2026-09-04 — `atype_shape` was exponential
+
+The sweep this step asks for OOM-killed the machine every time it was
+attempted. Nine kernel kills in one afternoon (08:44, 09:10, 10:36,
+10:58, 11:50, 12:10, 12:28, 12:40, 13:05), victim `pyc` every time, at
+39–47 GB RSS:
+
+```
+kernel: Out of memory: Killed process 937322 (pyc)
+        total-vm:63568240kB  anon-rss:47494512kB
+        constraint=CONSTRAINT_NONE  task_memcg=.../tmux-spawn-....scope
+```
+
+Global OOMs, not cgroup-local — at 12:40 the allocation that tripped it
+came from an unrelated Java process, and each kill took the sweep's whole
+`tmux` scope with it. The four attempts died at the same place with the
+same four programs in flight: **`kanoodle`, `plcfrs`, `quameon`, `rdb`** —
+the same set `sweeps/INDEX.md` rows 45-46 recorded as CSELEM=3 "timeouts"
+in the old compile-only sweeps. They were never timeouts. `compile` mode
+cannot tell a slow program from one that needs 47 GB, which is the same
+blind spot [102](102-corpus-programs-compile-then-abort-at-runtime.md) names from the other
+direction.
+
+**It was not contour explosion.** `ess=187 css=1154` stayed frozen for the
+whole run and pass 0 never completed; the process died asking Boehm for
+7.5 GiB in one step. The backtrace (`gdb` must SPAWN the process —
+`ptrace_scope` blocks attaching) is one `std::string`:
+
+```
+creation_point            fa.cc:679
+ → cselem_shape_reuse     fa.cc:9826
+ → cselem_shape_key       fa.cc:9803
+ → atype_shape_cached     fa.cc:9751
+ → atype_shape × 7        depth 0..6
+ → std::string::append("#")  _M_create(capacity=4026531840, old=2013265920)
+```
+
+**Root cause.** `atype_shape_cached` refused a union wider than
+`kShapeMaxMembers` (4) — but only at depth 0. The recursion had no width
+guard at all, and `seen` is a PATH stack, so it caught cycles and
+re-expanded every shared subtree. With `kShapeDepth = 6` the output is
+O(width^depth). Instrumented on `kanoodle`:
+
+```
+[csshape-wide] depth=1 width=93 out=8       [csshape-wide] depth=4 width=93 out=176
+[csshape-wide] depth=2 width=93 out=53      [csshape-wide] depth=5 width=93 out=254
+[csshape-wide] depth=3 width=93 out=109     [csshape-wide] depth=6 width=93 out=343
+[csshape-walk] calls=1000k out=1131001202 depth=6/6 width=93/93
+```
+
+**1.13 GB of string at 10^6 calls**, 1131 bytes per call, on a walk needing
+93^5 ≈ 7×10^9 calls — roughly 8 TB. It does not finish slowly; it does not
+finish.
+
+**The width is [128](128-cs-identity-over-discriminates-vs-element-type.md)
+arriving here as a number.** The 93 members are:
+
+```
+list x77   A B C D E F G H I J K L Column x1 each   int64 x1  str x1  __pyc_None_type__ x1
+```
+
+**77 of 93 are CreationSets of one class, `list`** — kanoodle's row in step
+1's table is 152 container CS for 8 shapes. So the mechanism that exists to
+*remove* over-discrimination was being defeated by it, on exactly the
+programs where it is worst, and nowhere else. That is worth keeping in view
+for step 3: any identity scheme that has to serialise a type structurally
+will meet the same width.
+
+**Fix (landed).** A sub-shape is emitted as an **id**, not as its text
+(`fa.cc:9686-9694`, `atype_shape_id` at `fa.cc:9721`). Ids are handed out by
+CONTENT, so two structurally equal sub-shapes always get the same id and two
+different ones never do — the key compares exactly as the unfolded string
+did, same merges and same splits, at O(width) per level. Content-keyed and
+not pointer-keyed on purpose: the shape deliberately erases CreationSet
+identity (it emits the CLASS, `name#id`), so two distinct `list` CSs with
+equal element shapes must land on one id, which is the whole point of the
+mode.
+
+`cselem_shape_ids` is global and monotone like the `cselem_shape_canon` it
+feeds — clearing it per pass would let id 7 name one structure in pass 3 and
+another in pass 5, and since the canon map never revisits an entry that is a
+permanent mis-merge, the same hazard [130](130-FA-identity-keyed-on-sym-name.md)
+A2 fixed for `Sym::name`. The `(AType, depth)` memo is the opposite and is
+cleared per pass, because `elem_key` moves.
+
+Two further notes on the shape of the fix:
+
+- The `<@>` cycle marker is **gone**. It is path-dependent, so a subtree
+  that used one is not a property of `(AType, depth)` and cannot be
+  memoized — keeping it fixed the memory and left the same exponential in
+  TIME (kanoodle: 4.0 GB peak, zero GC warnings, and still burning the full
+  600 s wall). `kShapeDepth` alone bounds the walk, so the marker was doing
+  no work the cap was not; dropping it makes the shape a pure function of
+  the type, which is what a shape should be.
+- `kShapeMaxNestedMembers = 256` (`fa.cc:9716`) is the structural net,
+  applied at every depth. Deliberately **not** `kShapeMaxMembers`: with the
+  id encoding a wide union costs O(width), so reusing 4 below depth 0 would
+  decline kanoodle's width-93 union and give up the entire win on the four
+  programs this is for. 4 stays at depth 0, where the question "is
+  canonicalizing this site meaningful?" is actually being asked.
+
+**After**, all four complete under a 12 GB cap, zero GC warnings:
+
+| program | before | after | container CS (default → CSELEM=3) |
+|---|---|---|---|
+| kanoodle | OOM 47 GB | rc=0, 3.5 s, 214 MB | 152 → 149 |
+| quameon | OOM 47 GB | rc=0, 18.5 s, 373 MB | 186 → **133** |
+| plcfrs | OOM 47 GB | rc=0, 85 s, 842 MB | 187 → 173 |
+| rdb | OOM 47 GB | rc=1, 16 s, 408 MB | 167 → 141 |
+
+`rdb` now fails with a real diagnostic instead of an OOM — `'v' has mixed
+basic types:( int64 str )` — which is CSELEM=3 over-merging two containers,
+and is a step-2 finding in its own right. Kanoodle barely moves (152 → 149):
+the 93-wide union that broke the walk is over-discrimination the shape key
+still cannot collapse.
+
+*Verify:* default path is unchanged, structurally (every call site is behind
+`cselem_enabled() == 3`) and empirically — `kanoodle`, `quameon` and `rdb`
+reproduce their `check__default__a935532b+adf4abe8` rows exactly
+(`550/1844/152/8/23`, `1267/4024/186/17/32`, `1118/3669/167/15/35`). All six
+CI gates green; `PYC_FLAGS=-b ./test_pyc.py` 311/0/14/18/4, unchanged. The
+`-e "PYC_CSELEM=3"` sweep is now runnable and is still owed.
+
 ### Step 3 — implement the demand test and the ladder
 
 The real work, and the step that makes the statement true. In FA, for

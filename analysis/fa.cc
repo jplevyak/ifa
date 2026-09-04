@@ -9648,20 +9648,106 @@ static void report_degenerate_avars() {
 // never the live element AVar: every container starts out empty and
 // acquires its elements later, so a live read would call two containers
 // equal merely because neither has filled in yet -- the same trap the
-// mode-1 key comments already record. A container holding itself closes
-// with `@`, and the depth is capped: an unbounded structural walk is the
-// very non-termination this is meant to fix.
+// mode-1 key comments already record. The depth is capped: an unbounded
+// structural walk is the very non-termination this is meant to fix, and the
+// cap alone bounds it -- a container that holds itself simply reaches
+// `<...>` like any other 6-deep nest.
 static const int kShapeDepth = 6;
 
-static void atype_shape(AType *t, std::string &out, int depth, Vec<CreationSet *> &seen) {
-  if (!t || !t->sorted.n) {
-    out += "%";  // NOT '_': Python dunder names are full of underscores, and
-    return;      // an unfilled-element test on '_' rejected every one of them
+// A sub-shape is emitted as an ID, never as its own text (ifa/issues/130).
+//
+// Unfolding the whole structure into one flat string is exponential in
+// (union width)^(depth) on any type whose members repeat, and the repeats
+// are not exotic -- they are ifa/128's over-discrimination arriving here as
+// type width. Measured on `kanoodle` under PYC_CSELEM=3: a 93-member union
+// at EVERY depth 1..6 (77 of the 93 are CreationSets of one class, `list`),
+// 1131 bytes of output per call, 1.13 GB of string at 10^6 calls, on a walk
+// needing 93^5 ~ 7e9 calls -- about 8 TB. It does not finish slowly, it does
+// not finish: one `pyc` reached 47 GB RSS and the kernel OOM-killer took the
+// whole corpus sweep with it, nine times over one afternoon. `plcfrs`,
+// `quameon` and `rdb` are the same failure.
+//
+// Ids are handed out by CONTENT, so two structurally equal sub-shapes always
+// get the same id and two different ones never do. The key therefore compares
+// exactly as the unfolded string did -- same merges, same splits -- at
+// O(width) per level instead of O(width^depth). Content-keyed and not
+// pointer-keyed on purpose: the shape deliberately erases CreationSet
+// identity (it emits the CLASS, `name#id`), so two distinct CSs of one class
+// with equal element shapes must land on one id. That is the whole point of
+// the mode, and a pointer-keyed table would miss exactly those.
+//
+// `cselem_shape_ids` is global and monotone ON PURPOSE, like the
+// `cselem_shape_canon` that consumes its output. Clearing it per pass would
+// let id 7 name one structure in pass 3 and a different one in pass 5, and
+// since the canon map never revisits an entry, that is a permanent mis-merge
+// -- the same hazard ifa/130 A2 fixed for `Sym::name`. The (AType, depth)
+// memo below is the opposite: it MUST be cleared per pass, because elem_key
+// moves.
+static std::map<std::string, int> cselem_shape_ids;
+static std::vector<std::string> cselem_shape_by_id;  // id -> text, diagnostics
+
+static int cselem_intern_shape(const std::string &text) {
+  auto it = cselem_shape_ids.find(text);
+  if (it != cselem_shape_ids.end()) return it->second;
+  int id = (int)cselem_shape_by_id.size();
+  cselem_shape_ids[text] = id;
+  cselem_shape_by_id.push_back(text);
+  return id;
+}
+
+// One LEVEL of a shape, with child levels named by id. Not the unfolded
+// tree -- that is the thing that cannot be built.
+static cchar *cselem_shape_text(int id) {
+  return (id >= 0 && id < (int)cselem_shape_by_id.size()) ? cselem_shape_by_id[id].c_str() : "?";
+}
+
+struct ShapeId {
+  int id = -1;
+  bool unfilled = false;  // an element has not arrived yet -> decline the key
+};
+
+// Safety net, and only that: a union this wide is not shaped at any depth.
+// With the id encoding a wide union costs O(width) rather than O(width^depth),
+// so this is not the routine policy decision -- that is kShapeMaxMembers, and
+// it still applies only at depth 0, where the question "is canonicalizing this
+// meaningful?" is actually being asked. Set far above what a real union
+// reaches (kanoodle's worst is 93) so that it bounds the pathological case
+// without silently declining the programs the mode exists for.
+static const int kShapeMaxNestedMembers = 256;
+
+static std::map<std::pair<AType *, int>, ShapeId> cselem_shape_memo;
+static int cselem_shape_memo_pass = -1;
+
+static ShapeId atype_shape_id(AType *t, int depth) {
+  ShapeId r;
+  // Per-pass reset lives here rather than in the caller so that every entry
+  // point gets it -- the IFA_DBG_CSELEM=2 probe below also shapes types, and
+  // reading a memo built against last pass's elem_key is exactly the stale
+  // merge this whole file keeps warning about.
+  if (!depth && cselem_shape_memo_pass != analysis_pass) {
+    cselem_shape_memo.clear();
+    cselem_shape_memo_pass = analysis_pass;
   }
+  if (!t || !t->sorted.n) {
+    // NOT '_': Python dunder names are full of underscores, and an
+    // unfilled-element test on '_' rejected every one of them.
+    r.id = cselem_intern_shape("%");
+    r.unfilled = true;
+    return r;
+  }
+  if (t->sorted.n > kShapeMaxNestedMembers) {
+    r.id = cselem_intern_shape("%wide");
+    r.unfilled = true;  // declines through the same path an unfilled element does
+    return r;
+  }
+  auto memo_key = std::make_pair(t, depth);
+  auto memo_it = cselem_shape_memo.find(memo_key);
+  if (memo_it != cselem_shape_memo.end()) return memo_it->second;
+  std::string text;
   int n = 0;
   for (CreationSet *cs : t->sorted) {
     if (!cs || !cs->sym) continue;
-    if (n++) out += "|";
+    if (n++) text += "|";
     // name#id, never the bare name (ifa/130 A2). `Sym::name` is interned, so
     // it is a fast key, but it is NOT unique: two classes in different
     // modules, a clone and its original, an override and what it overrides,
@@ -9670,21 +9756,23 @@ static void atype_shape(AType *t, std::string &out, int depth, Vec<CreationSet *
     // pass can revise -- it is a contour merge that can never be revisited.
     // The id makes the key structural; the name keeps IFA_DBG_CSELEM output
     // readable. Same rule, and the same spelling, as element_census().
-    out += cs->sym->name ? cs->sym->name : "?";
-    out += "#";
-    out += std::to_string(cs->sym->id);
+    text += cs->sym->name ? cs->sym->name : "?";
+    text += "#";
+    text += std::to_string(cs->sym->id);
     if (!cs->sym->element) continue;
-    bool cycle = false;
-    for (CreationSet *x : seen)
-      if (x == cs) { cycle = true; break; }
-    if (cycle) { out += "<@>"; continue; }
-    if (depth >= kShapeDepth) { out += "<...>"; continue; }
-    seen.add(cs);
-    out += "<";
-    atype_shape(cs->elem_key, out, depth + 1, seen);
-    out += ">";
-    seen.pop();
+    if (depth >= kShapeDepth) {
+      text += "<...>";
+      continue;
+    }
+    ShapeId c = atype_shape_id(cs->elem_key, depth + 1);
+    text += "<";
+    text += std::to_string(c.id);
+    text += ">";
+    r.unfilled |= c.unfilled;
   }
+  r.id = cselem_intern_shape(text);
+  cselem_shape_memo[memo_key] = r;
+  return r;
 }
 
 // The `self` POSITION of an EntrySet -- positional slot 2. Slot 1 is the
@@ -9710,34 +9798,20 @@ static MPosition *es_self_position(EntrySet *es) {
 // becomes a source of churn.
 static std::map<std::string, CreationSet *> cselem_shape_canon;
 
-// creation_point is hot, and atype_shape walks the whole type structure
-// building a std::string every call. On a program with large unions
-// (adatron) that alone hung the analysis INSIDE a single pass -- no pass
-// summary in 150s -- with no contour growth at all. Two bounds: memoize
-// on the AType (they are hash-consed, and cleared per pass because
-// elem_key moves), and refuse outright to shape a wide union, where
-// canonicalization is least meaningful anyway.
+// creation_point is hot, and the shape walk covers the whole type structure
+// every call. On a program with large unions (adatron) that alone hung the
+// analysis INSIDE a single pass -- no pass summary in 150s -- with no contour
+// growth at all. Two bounds: the (AType, depth) memo above, and refusing
+// outright to shape a wide union, where canonicalization is least meaningful
+// anyway. This second one is the POLICY cap and it belongs at depth 0, where
+// the mode is deciding whether canonicalizing this site is worth doing;
+// kShapeMaxNestedMembers is the separate structural net for what lies below.
 static const int kShapeMaxMembers = 4;
-static std::map<AType *, std::string> cselem_shape_memo;
-static int cselem_shape_memo_pass = -1;
 
-static bool atype_shape_cached(AType *t, std::string &out) {
+static bool atype_shape_cached(AType *t, ShapeId &out) {
   if (!t) return false;
   if (t->sorted.n > kShapeMaxMembers) return false;
-  if (cselem_shape_memo_pass != analysis_pass) {
-    cselem_shape_memo.clear();
-    cselem_shape_memo_pass = analysis_pass;
-  }
-  auto it = cselem_shape_memo.find(t);
-  if (it != cselem_shape_memo.end()) {
-    out = it->second;
-    return true;
-  }
-  Vec<CreationSet *> seen;
-  std::string shape;
-  atype_shape(t, shape, 0, seen);
-  cselem_shape_memo[t] = shape;
-  out = shape;
+  out = atype_shape_id(t, 0);
   return true;
 }
 
@@ -9756,12 +9830,10 @@ static bool cselem_shape_key(AVar *v, Sym *s, std::string &out) {
     if (ps.n > 1) qsort(ps.v, ps.n, sizeof(ps[0]), compar_mposition_path);
     for (int i = 0; i < ps.n; i++) {
       AVar *a = es->args.get(ps.v[i]);
-      Vec<CreationSet *> sn;
-      std::string sh;
-      atype_shape(a && a->out ? a->out->type : nullptr, sh, 0, sn);
-      fprintf(stderr, "[csshape-pos] p=%d es=%d fun=%s i=%d pos=%d shape=%s\n", analysis_pass, es->id,
+      ShapeId sh = atype_shape_id(a && a->out ? a->out->type : nullptr, 0);
+      fprintf(stderr, "[csshape-pos] p=%d es=%d fun=%s i=%d pos=%d shape=%d:%s\n", analysis_pass, es->id,
               es->fun && es->fun->sym && es->fun->sym->name ? es->fun->sym->name : "?", i,
-              (int)Position2int(ps.v[i]->last()), sh.c_str());
+              (int)Position2int(ps.v[i]->last()), sh.id, cselem_shape_text(sh.id));
     }
   }
   MPosition *self = es_self_position(es);
@@ -9783,13 +9855,17 @@ static bool cselem_shape_key(AVar *v, Sym *s, std::string &out) {
     rt = recv && recv->out ? recv->out->type : nullptr;
   }
   if (!rt) return false;
-  std::string shape;
+  ShapeId shape;
   if (!atype_shape_cached(rt, shape)) return false;
-  // Any `_` in the shape is an element type that has not arrived yet, and
-  // two shapes that differ only in what has not arrived are not known to
-  // be equal. Decline rather than guess; the next pass will have it.
-  if (shape.find('%') != std::string::npos) {
-    if (dbg) fprintf(stderr, "[csshape-no] p=%d es=%d shape=%s (unfilled)\n", analysis_pass, es->id, shape.c_str());
+  // An unfilled element ANYWHERE below is an element type that has not
+  // arrived yet, and two shapes that differ only in what has not arrived are
+  // not known to be equal. Decline rather than guess; the next pass will have
+  // it. The flag rides up from wherever `%` was emitted -- the old spelling
+  // searched the unfolded text for it, which is the text that cannot be built.
+  if (shape.unfilled) {
+    if (dbg)
+      fprintf(stderr, "[csshape-no] p=%d es=%d shape=%d:%s (unfilled)\n", analysis_pass, es->id, shape.id,
+              cselem_shape_text(shape.id));
     return false;
   }
   // The allocated class goes in by id too (ifa/130 A2). `cselem_shape_reuse`
@@ -9799,9 +9875,9 @@ static bool cselem_shape_key(AVar *v, Sym *s, std::string &out) {
   // absent key, so it could never be reused at all. Keying on the id gives
   // each class its own entry and makes that guard redundant rather than
   // load-bearing.
-  char pre[96];
-  snprintf(pre, sizeof pre, "v%d|%s#%d|", v->var->id, s->name ? s->name : "?", s->id);
-  out = std::string(pre) + shape;
+  char pre[128];
+  snprintf(pre, sizeof pre, "v%d|%s#%d|%d", v->var->id, s->name ? s->name : "?", s->id, shape.id);
+  out = pre;
   return true;
 }
 
