@@ -10027,97 +10027,155 @@ static void report_fun_contours() {
   }
 }
 
-static void report_element_types() {
-  if (!getenv("IFA_DBG_ELEMTYPE")) return;
-  // per container sym: CS count, distinct element ATypes, distinct
-  // element SYM-SHAPES (the sym multiset of the element type's CSs --
-  // the closest thing to shedskin's `T` in `list<T>`).
-  std::map<std::string, std::pair<int, std::set<void *>>> by_sym;
-  std::map<std::string, std::set<std::string>> shapes;
-  // n_empty: container CSs whose element type is BOTTOM -- no elements at
-  // all, so indistinguishable from one another by any observable
-  // property. n_mixed: element types holding both a scalar and a
-  // container, i.e. the shape a template parameter cannot express (018).
-  // n_novar: container CSs for which the analysis never created an
-  // element AVar at all -- reported separately from n_empty (element AVar
-  // exists, type is bottom) because this probe must NOT create one. See
-  // the read-only note in the loop.
-  int n_empty = 0, n_mixed = 0, n_novar = 0;
+// ifa/issues/129 step 1: the element-shape census, shared by the per-pass
+// ELEMTYPE probe and the end-of-analysis DEMAND ratio.
+//
+// The question it answers: CreationSets exist to carry container
+// parameterization (shedskin's `list<T>`), so how many DISTINCT element
+// types are there, against how many CreationSets? shedskin's data-contour
+// identity IS that element-class tuple (`ifa_class_types` / `classes_nr`,
+// audited in ifa/issues/129), so `shapes` is the contour count pyc would
+// have if CS identity were demand-driven, and `cs / shapes` is the factor
+// by which it over-discriminates today -- ifa/issues/128 measured 95 list
+// CSs standing for 6 element types on chess.
+//
+// It is READ-ONLY; see the note at the AVar read in element_census().
+//
+// Keyed on the container SYM POINTER, and the element shape on the element
+// CreationSets' SYM IDS -- never on names. Two classes can share a name
+// (CLAUDE.md), and a name-keyed census silently merges them; names here are
+// for display only.
+struct ElemCensus {
+  std::map<Sym *, int> cs_count;                   // container sym -> CSs
+  std::map<Sym *, std::set<void *>> types;         // -> distinct element ATypes
+  std::map<Sym *, std::set<std::string>> shapes;   // -> distinct MERGED content class-sets
+  std::map<Sym *, std::set<std::string>> pshapes;  // -> distinct POSITIONAL content shapes
+  int n_cs = 0;     // container CreationSets, all of them
+  int n_empty = 0;  // no content in either channel: indistinguishable by any observable
+  int n_mixed = 0;  // content holds both a scalar and a container (issue 018)
+  int n_novar = 0;  // no element AVar exists -- content, if any, is positional only
+  static int total(const std::map<Sym *, std::set<std::string>> &m) {
+    int n = 0;
+    for (auto &kv : m) n += (int)kv.second.size();
+    return n;
+  }
+  int total_shapes() const { return total(shapes); }
+  int total_pshapes() const { return total(pshapes); }
+  int total_types() const {
+    int n = 0;
+    for (auto &kv : types) n += (int)kv.second.size();
+    return n;
+  }
+};
+
+// A container's content lives in TWO channels, and a census that reads only
+// one is wrong. make_kind fills `cs->vars` per position and deliberately
+// does NOT flow it into the generic element (fa.cc, ifa/issues/104: a
+// heterogeneous tuple read by constant indices keeps precise per-field
+// types only because its element stays bottom, which is what tuple_able()
+// tests for). So `[1,2,3]` and `["x","y"]` BOTH present an empty element
+// AVar -- measured -- and an element-only census calls them one shape and
+// reports a 2x over-discrimination that is not there.
+//
+// Hence two denominators, and the honest answer is between them:
+//   shapes   content classes MERGED across the element and every position.
+//            This is shedskin's identity for a one-tvar container: two
+//            int lists of different lengths are ONE contour.
+//   pshapes  the element set plus the ORDERED per-position class-sets.
+//            This is record identity: arity and field order count.
+// A demand-driven splitter lands between `shapes` (list-like) and
+// `pshapes` (record-like), so cs/shapes bounds the over-discrimination
+// from above and cs/pshapes from below.
+static void element_census(ElemCensus &c) {
   for (CreationSet *cs : fa->css) if (cs && cs->sym && cs->sym->element) {
-    // READ-ONLY. get_element_avar() is not an accessor: it calls
-    // unique_AVar (which CREATES the AVar when absent) and sets
-    // cs->added_element_var, and that flag gates element numeric
+    ++c.n_cs;
+    c.cs_count[cs->sym]++;
+    // READ-ONLY, and it must stay that way. get_element_avar() is not an
+    // accessor: it calls unique_AVar (which CREATES the AVar when absent)
+    // and sets cs->added_element_var, and that flag gates element numeric
     // coercion in fa_coerce_numeric_confluences. A probe that called it
-    // would be mutating the analysis it is measuring. Skip any CS that
-    // has not already had one created, and count it separately.
-    if (!cs->added_element_var) { ++n_novar; continue; }
+    // would be mutating the analysis it is measuring. A CS with no element
+    // AVar is counted with a bottom element channel -- its content, if
+    // any, is in `vars` and is read below -- and tallied as `novar`.
+    AType *et = nullptr;
+    if (cs->added_element_var) {
+      if (AVar *e = unique_AVar(cs->sym->element->var, cs)) et = e->out ? e->out->type : nullptr;
+    } else {
+      ++c.n_novar;
+    }
+    c.types[cs->sym].insert((void *)et);
+    std::set<int> merged;
+    std::string pkey = "e:";
+    bool has_scalar = false, has_container = false;
+    auto absorb = [&](AType *t, std::string &into) {
+      if (!t) return;
+      for (CreationSet *x : t->sorted) {
+        int id = x->sym ? x->sym->id : -1;
+        merged.insert(id);
+        into += " " + std::to_string(id);
+        if (x->sym && x->sym->element)
+          has_container = true;
+        else if (x->sym && x->sym->type && x->sym->type->num_kind)
+          has_scalar = true;
+      }
+    };
+    absorb(et, pkey);
+    for (AVar *iv : cs->vars) {
+      pkey += "|";
+      absorb(iv && iv->out ? iv->out->type : nullptr, pkey);
+    }
+    std::string mkey;
+    for (int id : merged) mkey += " " + std::to_string(id);
+    c.shapes[cs->sym].insert(mkey);
+    c.pshapes[cs->sym].insert(pkey);
+    if (merged.empty()) ++c.n_empty;
+    if (has_scalar && has_container) ++c.n_mixed;
+  }
+}
+
+static void report_element_setters() {
+  if (!getenv("IFA_DBG_ELEMSETTER")) return;
+  for (CreationSet *cs : fa->css) if (cs && cs->sym && cs->sym->element) {
+    if (!cs->added_element_var) continue;  // read-only, see element_census()
     AVar *e = unique_AVar(cs->sym->element->var, cs);
     if (!e) continue;
-    // ifa/issues/124: does the element AVar take part in the SETTER
-    // machinery at all? Setter-driven CS splitting -- the thing that
-    // separates two instances written with different ivar types -- keys
-    // on `av->setters` and `s->container`, and `collect_setter_confluences`
-    // only seeds a starter from an AVar with a `cs_map`. If an element
-    // AVar has no setters and no container, no amount of splitting
-    // pressure can reach it.
-    // ifa/issues/124. Setters do NOT live on the element: update_setter()
-    // records them on the CONTAINER AVar and propagates BACKWARD to the
-    // creation point, so an element AVar with `setters == null` is
-    // NORMAL, not evidence of anything. What this prints instead is the
-    // element's backward writers (do they carry a container and a
-    // setter_class?) and the CS's creation points (did any setter reach
-    // them?) -- the side collect_setter_confluences actually reads,
-    // since it seeds a starter only from an AVar with a cs_map.
-    //
-    // What it showed on ifa/124's repro: the two lists that share a
-    // `list::append` contour have the SAME backward writers, so nothing
-    // at the element looks like a confluence to split. The split has to
-    // happen on the CALLEE side instead -- see recvfan_enabled().
-    if (getenv("IFA_DBG_ELEMSETTER")) {
-      fprintf(stderr, "ELEM cs=%d sym=%s elem_av=%d ntypes=%d nback=%d\n", cs->id,
-              cs->sym->name ? cs->sym->name : "?", e->id, e->out->type->n, e->backward.n);
-      for (AVar *b : e->backward) if (b) {
-        EntrySet *bes = b->contour_is_entry_set ? (EntrySet *)b->contour : nullptr;
-        cchar *fn = bes && bes->fun && bes->fun->sym && bes->fun->sym->name ? bes->fun->sym->name : "?";
-        fprintf(stderr, "   <- av=%d in_fun=%s es=%d container=%d setter_class=%d\n", b->id, fn,
-                bes ? bes->id : -1, b->container ? b->container->id : -1, b->setter_class ? 1 : 0);
-      }
-      for (AVar *d : cs->defs) if (d)
-        fprintf(stderr, "   def av=%d setters=%d cs_map=%d\n", d->id, d->setters ? d->setters->n : -1,
-                d->cs_map ? 1 : 0);
+    fprintf(stderr, "ELEM cs=%d sym=%s elem_av=%d ntypes=%d nback=%d\n", cs->id,
+            cs->sym->name ? cs->sym->name : "?", e->id, e->out->type->n, e->backward.n);
+    for (AVar *b : e->backward) if (b) {
+      EntrySet *bes = b->contour_is_entry_set ? (EntrySet *)b->contour : nullptr;
+      cchar *fn = bes && bes->fun && bes->fun->sym && bes->fun->sym->name ? bes->fun->sym->name : "?";
+      fprintf(stderr, "   <- av=%d in_fun=%s es=%d container=%d setter_class=%d\n", b->id, fn,
+              bes ? bes->id : -1, b->container ? b->container->id : -1, b->setter_class ? 1 : 0);
     }
-    std::string k = cs->sym->name ? cs->sym->name : "(anon)";
-    auto &slot = by_sym[k];
-    slot.first++;
-    slot.second.insert((void *)e->out->type);
-    std::string bysym;
-    bool has_scalar = false, has_container = false;
-    for (CreationSet *c : e->out->type->sorted) {
-      cchar *n = c->sym && c->sym->name ? c->sym->name : "?";
-      bysym += std::string(" ") + n;
-      if (c->sym && c->sym->element)
-        has_container = true;
-      else if (c->sym && c->sym->type && c->sym->type->num_kind)
-        has_scalar = true;
-    }
-    shapes[k].insert(bysym);
-    if (bysym.empty()) ++n_empty;
-    if (has_scalar && has_container) ++n_mixed;
+    for (AVar *d : cs->defs) if (d)
+      fprintf(stderr, "   def av=%d setters=%d cs_map=%d\n", d->id, d->setters ? d->setters->n : -1,
+              d->cs_map ? 1 : 0);
   }
+}
+
+// ifa/issues/101: per container sym, its CS count against the element
+// types and element class-shapes those CSs stand for.
+// ifa/issues/124: dump every EntrySet of a named function with the
+// CreationSets its positional formals hold (report_fun_contours, above).
+static void report_element_types() {
+  if (!getenv("IFA_DBG_ELEMTYPE")) return;
+  ElemCensus c;
+  element_census(c);
+  report_element_setters();
   if (getenv("IFA_DBG_ELEMTYPE_DUMP")) {
     // Print each container CS with its element type spelled out as the
     // SYMS of the element CreationSets, plus their ids. If the distinct
-    // element types collapse to a handful of sym-shapes, the extra
+    // element types collapse to a handful of shapes, the extra
     // discrimination is inner-CS identity, not a real type difference.
     std::map<std::string, int> shape;
     for (CreationSet *cs : fa->css) if (cs && cs->sym && cs->sym->element) {
-      if (!cs->added_element_var) continue;  // read-only, see above
+      if (!cs->added_element_var) continue;  // read-only, see element_census()
       AVar *e = unique_AVar(cs->sym->element->var, cs);
       if (!e) continue;
       std::string byid, bysym;
-      for (CreationSet *c : e->out->type->sorted) {
-        bysym += std::string(" ") + (c->sym && c->sym->name ? c->sym->name : "?");
-        byid += " " + std::to_string(c->id);
+      for (CreationSet *x : e->out->type->sorted) {
+        bysym += std::string(" ") + (x->sym && x->sym->name ? x->sym->name : "?");
+        byid += " " + std::to_string(x->id);
       }
       fprintf(stderr, "  [elem] cs=%d %s elem_syms=[%s ] elem_ids=[%s ]\n", cs->id,
               cs->sym->name ? cs->sym->name : "?", bysym.c_str(), byid.c_str());
@@ -10126,11 +10184,19 @@ static void report_element_types() {
     fprintf(stderr, "  [elem] distinct SYM-shapes: %d\n", (int)shape.size());
     for (auto &kv : shape) fprintf(stderr, "  [elem]   %-40s x%d\n", kv.first.c_str(), kv.second);
   }
+  // Sorted by name, then id: std::map over Sym* is POINTER order, which
+  // reorders the line run to run and makes two logs undiffable.
+  std::vector<Sym *> syms;
+  for (auto &kv : c.cs_count) syms.push_back(kv.first);
+  std::sort(syms.begin(), syms.end(), [](Sym *a, Sym *b) {
+    int r = strcmp(a->name ? a->name : "", b->name ? b->name : "");
+    return r ? r < 0 : a->id < b->id;
+  });
   fprintf(stderr, "ELEMTYPE p=%d |", analysis_pass);
-  for (auto &kv : by_sym)
-    fprintf(stderr, " %s: %d CS / %d elemtypes / %d shapes;", kv.first.c_str(), kv.second.first,
-            (int)kv.second.second.size(), (int)shapes[kv.first].size());
-  fprintf(stderr, " || empty=%d mixed=%d novar=%d\n", n_empty, n_mixed, n_novar);
+  for (Sym *s : syms)
+    fprintf(stderr, " %s: %d CS / %d elemtypes / %d shapes / %d pshapes;", s->name ? s->name : "(anon)",
+            c.cs_count[s], (int)c.types[s].size(), (int)c.shapes[s].size(), (int)c.pshapes[s].size());
+  fprintf(stderr, " || empty=%d mixed=%d novar=%d\n", c.n_empty, c.n_mixed, c.n_novar);
 }
 
 static void report_stage_churn() {
@@ -10611,6 +10677,42 @@ static bool apply_unbound_fills() {
   return changed;
 }
 
+// ifa/issues/129 step 1: the DEMAND RATIO -- one number for the goal
+// statement in CLAUDE.md, emitted once per converged analysis so a corpus
+// sweep can carry it (corpus_sweep.sh reads this line).
+//
+//   container_cs  container CreationSets the analysis ended with
+//   shapes        the content class-sets those CSs stand for, MERGED across
+//                 the element channel and every position -- the contour
+//                 count shedskin's one-tvar identity (`ifa_class_types`)
+//                 would produce
+//   pshapes       the same, but position-sensitive: record identity, where
+//                 arity and field order count
+//   ratio         container_cs / shapes -- the over-discrimination factor,
+//                 1.0 being demand-driven and higher being splitting driven
+//                 by structure (ifa/issues/128)
+//   pratio        container_cs / pshapes -- the same factor under the
+//                 strictest identity any demand-driven scheme could want,
+//                 so `pratio > 1` is splitting NO identity justifies
+//
+// Two ratios because a container's content lives in two channels and the
+// right identity for pyc is somewhere between them; see element_census().
+// `ess`/`css` are here because a change that improves the ratio by
+// splitting MORE somewhere else is not an improvement, and reading the
+// ratio alone would hide that.
+static void report_demand_ratio() {
+  if (!getenv("IFA_DBG_DEMAND")) return;
+  ElemCensus c;
+  element_census(c);
+  int shapes = c.total_shapes(), pshapes = c.total_pshapes();
+  fprintf(stderr,
+          "DEMAND passes=%d ess=%d css=%d container_cs=%d shapes=%d pshapes=%d ratio=%.2f pratio=%.2f "
+          "elemtypes=%d empty=%d mixed=%d novar=%d\n",
+          analysis_pass, fa->ess.n, fa->css.n, c.n_cs, shapes, pshapes,
+          shapes ? (double)c.n_cs / shapes : 0.0, pshapes ? (double)c.n_cs / pshapes : 0.0, c.total_types(),
+          c.n_empty, c.n_mixed, c.n_novar);
+}
+
 static void analyze_to_convergence() {
   // ifa/issues/098: the per-pass reset belongs here, unconditionally,
   // for two reasons. (1) Every pass must start from bottom, whether the
@@ -10762,6 +10864,7 @@ static void analyze_to_convergence() {
   if (getenv("PYC_DBG_OSC"))
     fprintf(stderr, "OSC final_pass=%d pass_limit_hit=%d violations=%d ess=%d css=%d selective=%d\n", analysis_pass,
             fa->pass_limit_hit ? 1 : 0, fa->type_violations.set_count(), fa->ess.n, fa->css.n, ifa_selective);
+  report_demand_ratio();
 }
 
 int FA::analyze(Fun *top) {

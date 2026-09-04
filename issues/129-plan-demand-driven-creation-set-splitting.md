@@ -171,17 +171,72 @@ Ordered so each step is independently verifiable and independently
 revertable. Steps 1-3 are reachable without the architecture change;
 step 4 is the architecture change.
 
-### Step 1 — make the demand ratio a reported number
+### Step 1 — make the demand ratio a reported number — **DONE 2026-09-04**
 
-`IFA_DBG_ELEMTYPE` already prints `N CS / M elemtypes / K shapes` per
-container sym. Promote it: report `sum(CS)` vs `sum(shapes)` corpus-wide
-as a single ratio, and record it in `sweeps/INDEX.md` alongside
-`ess`/`css`. Today chess is 95/6 for `list`, 69/2 for `tuple`; the
-corpus figure in `creation_point`'s own comment is 1994 CS for 341
-shapes. **Nothing below should be judged on `ess` alone — this ratio is
-the thing the goal statement is about.**
+`IFA_DBG_DEMAND` emits one line per converged analysis; `corpus_sweep.sh`
+records its columns per program (`ess css container_cs shapes pshapes`)
+and aggregates `cs/shapes=N/K=R` onto the summary row in
+`sweeps/INDEX.md`. It is set inside the worker rather than through `-e`,
+so it does not fork the cache key and every future sweep carries it for
+free. **Nothing below should be judged on `ess` alone — this ratio is the
+thing the goal statement is about.**
 
-*Verify:* the number exists, on the corpus, before and after each step.
+**The plan's element-only definition was wrong, and the code does not use
+it.** `make_kind` fills `cs->vars` per position and deliberately does NOT
+flow it into the generic element — ifa/issues/104: a heterogeneous tuple
+read by constant indices keeps precise per-field types only because its
+element stays bottom, which is exactly what `tuple_able()` tests for. So
+`[1,2,3]` and `["x","y"]` BOTH present an empty element AVar (measured),
+and an element-only census calls them one shape and reports a 2x
+over-discrimination that is not there. A container's content lives in two
+channels and the census reads both, giving two denominators:
+
+| | identity it stands for |
+|---|---|
+| `shapes` | content classes MERGED across the element and every position — shedskin's one-tvar contour, where two int lists of different lengths are ONE |
+| `pshapes` | the element set plus the ORDERED per-position class-sets — record identity, where arity and field order count |
+
+A demand-driven splitter lands between them, so `cs/shapes` bounds the
+over-discrimination from above and `cs/pshapes` from below. `cs/pshapes >
+1` is splitting that no identity justifies.
+
+The probe is READ-ONLY and must stay so: `get_element_avar()` is not an
+accessor — it calls `unique_AVar` (which CREATES the AVar) and sets
+`cs->added_element_var`, which gates element numeric coercion in
+`fa_coerce_numeric_confluences`. A CS with no element AVar is counted
+with a bottom element channel (its content, if any, is in `vars`) and
+tallied as `novar`.
+
+**Baseline, `check__default__5cf5baf7+1a013d49`, 76 of 77 programs:**
+
+```
+cs/shapes = 3748/626 = 5.99      pratio = 3.92
+```
+
+Higher than the 4.6x in `creation_point`'s own comment (1994 CS / 341
+shapes) because that count reads only the element channel and skips every
+CS without an element AVar. The corpus verdict is unchanged from the
+previous default sweep — compile_fail=2 run_fail=39 stdout_differs=24
+with_warnings=44, identical — confirming the change is diagnostics-only.
+
+The worst offenders are not the slowest programs:
+
+| program | container CS | shapes | pshapes | ratio | ess |
+|---|---|---|---|---|---|
+| linalg | 245 | 5 | 15 | **49.0** | 1981 |
+| stereo | 192 | 6 | 9 | **32.0** | 178 |
+| kanoodle | 152 | 8 | 23 | 19.0 | 550 |
+| rubik | 194 | 11 | 26 | 17.6 | 852 |
+| chess | 169 | 12 | 19 | 14.1 | 1591 |
+| go | 60 | 12 | 17 | 5.0 | 657 |
+| sunfish | 20 | 4 | 7 | 5.0 | 118 |
+
+`stereo` is the case to reason from: 192 container CreationSets for 6
+content shapes and only 178 EntrySets. The CS excess is not downstream of
+contour growth there — it is minted directly by `creation_point`, one per
+allocation site, which is the mechanism 128 names.
+
+*Verify:* the number exists, on the corpus, before and after each step. ✓
 
 ### Step 2 — land the keying that already works
 
