@@ -975,3 +975,47 @@ structure and re-walks it, which is why its per-pass cost tracks `ess`.
 instrumented runs of the same file took 38, 38 and 39 iterations, from
 Python set iteration order over id-hashed objects. Iteration counts here
 are ±1.)
+
+
+## Where the contour excess actually comes from (2026-09-04)
+
+Same chess run, final contour counts:
+
+| | pyc | shedskin |
+|---|---|---|
+| function contours | ess **1591** (715 survive cloning) | **135** (19 user, 116 builtin) |
+| class contours | css **6433** | **248** total `cl.dcpa` |
+
+The excess is concentrated in builtin container methods, counted from
+the emitted C (one definition per clone): `list::append` **110**, `len`
+69, `list::__iter__` 48, `__new__` 75. shedskin's `append` has **3**.
+
+`IFA_DBG_ELEMTYPE=1` names the cause in one line:
+
+```
+ELEMTYPE p=31 | list: 95 CS / 6 elemtypes / 6 shapes
+                tuple: 69 CS / 2 elemtypes / 2 shapes
+```
+
+95 CreationSets standing for 6 element types. CPA then gives a method
+contour per receiver CS, so a 16× CS excess becomes a ~37× `append`
+excess, which becomes the 12× `ess` gap, which is what drives the
+per-pass edge count this issue is about. Filed separately as
+[128](128-cs-identity-over-discriminates-vs-element-type.md) — it is
+the root, and this issue's 7.4× is one of its symptoms.
+
+Note this is NOT [066](066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md)'s
+churn (fixed) or [101](101-FA-first-time-forever-splitting.md)'s
+first-time-forever minting. 95-for-6 is the steady state after minting
+stabilises.
+
+### Probe note
+
+A first attempt at a per-file `ess` breakdown probe inside
+`report_fun_contours` **perturbed the analysis** — with it enabled,
+`fa->ess` read empty at `complete_pass` and the sibling
+`IFA_DBG_FUNCONTOURS` probe stopped producing output too. It used plib
+`set_add`/`set_to_vec` and pulled `<map>/<set>/<string>` in ahead of the
+GC headers. It was reverted, and the numbers above come from
+`IFA_DBG_ELEMTYPE` (existing) plus counting definitions in the emitted
+C. Worth remembering that a diagnostic in this path is not free.
