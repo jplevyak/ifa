@@ -481,3 +481,67 @@ Two genuine codegen defects, both found by the same method: build with
 `PYC_NO_GC=1`, run under valgrind, read the first error. Neither was
 visible to `make test`, and neither was reachable at all while Boehm was
 absorbing the corruption.
+
+### Third bug: `copy.copy` of a generic list returned an ALIAS
+
+With the memory corruption gone, chess ran but answered
+`(99999999, 17460)` against CPython's `(0, 33571891)` — `(beta, mv)`,
+i.e. the `value[0] >= beta` cutoff firing on the very first move.
+
+Bisected by comparing pieces against CPython rather than reading the
+search: `evaluate(initial)` = 0 ✓ and `len(legalMoves(b))` = 20 ✓ both
+matched, and so did every raw move integer and its `toString`. What did
+not match was the board AFTER calling `legalMoves`:
+
+```
+board unchanged by legalMoves:  CPython True,  pyc False
+  differs at 1:  2 -> 0        (the b1 knight vanished)
+```
+
+`legalMoves` does `board2 = copy(board)` and then mutates `board2`, so
+the copy was aliasing. Six-line repro:
+
+```python
+from copy import copy
+setup = (1, 2, 3, 4)
+b = list(setup); c = copy(b); c[1] = 99
+# CPython: b=[1,2,3,4]  c=[1,99,3,4]
+# pyc:     b=[1,99,3,4] c=[1,99,3,4]
+```
+
+**Cause.** `cg.cc`'s `P_prim_copy` emits plain assignment — identity —
+for any destination whose `type_kind` is not `Type_RECORD`:
+
+```c
+if (dt->type_kind != Type_RECORD) { ... "%s = %s;\n" ... break; }
+```
+
+Right for scalars and immutable strings, wrong for a `list`, which is
+`Type_PRIMITIVE`. It hid because a small list LITERAL gets record shape
+and copies correctly; only a list that stays generic — here
+`list(setup)` — aliased.
+
+**Fix.** `copy.copy` becomes one dispatch, exactly as `deepcopy`
+already is: `obj.__pyc_copy__()`, with the value-type fallback on
+`__pyc_any_type__` (the old primitive), identity on `__pyc_None_type__`,
+and a real element loop on `list`. Pinned by
+`tests/copy_generic_list.py`, which covers the generic list, the literal
+that already worked, and independence of two copies from each other.
+
+### chess is CORRECT
+
+```
+$ diff <(pyc-built chess) <(python3 chess.py)   # modulo the TIME line
+FULL OUTPUT MATCHES
+```
+
+`(0, 33571891)`, `(0, 33567556)`, … exactly CPython's, rc=0. From
+`SIGSEGV` at the start of the day to byte-identical output, via three
+codegen defects: a zero-size list allocation, an unnormalised negative
+tuple index, and an aliasing shallow copy.
+
+`tests/minmax_3arg.py.check` was re-blessed: the only diff is
+`__pyc__.py:1769` → `:1794`, a line shift from adding `__pyc_copy__` to
+the builtin library (issues/111, checks embed builtin-library line
+numbers). Full gate green — `make test` 310/18/0, LLVM e2e 310/0,
+`ifa test_llvm`, `test_dparse`.
