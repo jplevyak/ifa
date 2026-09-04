@@ -827,3 +827,65 @@ shape — violations gone at pass 6, cost per pass still climbing at pass
 Caveat: the ~29 s FA figure is the sum of pyc's own per-pass timers
 under `-v`, whose symbol dump inflates the wall clock; the 47.8 s total
 is from a clean non-verbose run.
+
+
+### Why shedskin's iterations are cheap: the graph does not grow
+
+Instrumented `propagate`/`ifa`/`restore_network` on the same chess run
+(driver in the session scratchpad; no changes to the shedskin checkout).
+
+```
+ITER   1 propagate 0.076s  cnodes=20049  admitted= 0  templates= 220
+ITER   7 propagate 0.083s  cnodes=19406  admitted= 3  templates= 758
+ITER  33 propagate 0.082s  cnodes=19845  admitted=16  templates=3349
+ITER  38 propagate 0.116s  cnodes=19915  admitted=19  templates=4007
+                                   propagate total 3.36 s / 38 iters
+                                   ifa total       0.19 s  (0.005 s each)
+```
+
+**The live node count does not move: 20049 → 19915 across 38
+iterations**, while templates grow 220 → 4007 (18×). Cost per iteration
+grows only 0.076 → 0.116 s.
+
+pyc over the same program:
+
+```
+pass  1  0.74s  examined=19342   ess=207
+pass 31  1.04s  examined=96915   ess=1591
+```
+
+**Both systems start at the same size** — 19342 examined avars vs 20049
+cnodes. pyc's grows 5×; shedskin's does not grow at all.
+
+### The mechanism
+
+`restore_network` resets `gx.types` / `gx.constraints` / `gx.cnode` to
+the pre-analysis snapshot every round. The templates a round builds are
+thrown away with it and rebuilt next round — which is why `gx.templates`
+reaches 4007 cumulative while the live graph stays at 20k. What survives
+is `gx.alloc_info`, a **side table** of allocation decisions that is
+never walked during propagation.
+
+pyc does the opposite: contours accumulate IN the graph (`ess` 207 →
+1591, `css` 1769 → 6433) and every pass re-walks all of them.
+
+So the ~10× per-pass gap decomposes as roughly:
+
+- **~5× network size** — pyc's analysis state lives in the graph it must
+  traverse; shedskin's lives in a table it does not.
+- **~2× per-node cost** — 9.3 µs/avar for pyc against 4.4 µs/cnode for
+  shedskin. pyc's per-pass split shows where: `match` (dispatch
+  resolution) is 65% of pass 1 and still 22-33% of the late passes,
+  on top of `flow`.
+
+And shedskin's splitter is free: `ifa()` costs 0.005 s an iteration,
+0.19 s for the whole compile. pyc's equivalent work is spread through
+the 25 zero-violation passes that cost ~25 s.
+
+### The design consequence
+
+This is the sharpest form of the issue. Selective invalidation makes
+pyc walk less of an ever-growing graph. shedskin's answer is that the
+graph should not grow: keep the decisions, discard the derived
+structure, re-derive it against a bounded base each round. That is a
+much larger change than M1/M2 contemplate, and it is what the 5× is.
