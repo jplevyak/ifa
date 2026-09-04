@@ -9662,7 +9662,17 @@ static void atype_shape(AType *t, std::string &out, int depth, Vec<CreationSet *
   for (CreationSet *cs : t->sorted) {
     if (!cs || !cs->sym) continue;
     if (n++) out += "|";
+    // name#id, never the bare name (ifa/130 A2). `Sym::name` is interned, so
+    // it is a fast key, but it is NOT unique: two classes in different
+    // modules, a clone and its original, an override and what it overrides,
+    // all carry one string. `cselem_shape_canon` is MONOTONE and global by
+    // design, so a name collision here is not a wrong answer that a later
+    // pass can revise -- it is a contour merge that can never be revisited.
+    // The id makes the key structural; the name keeps IFA_DBG_CSELEM output
+    // readable. Same rule, and the same spelling, as element_census().
     out += cs->sym->name ? cs->sym->name : "?";
+    out += "#";
+    out += std::to_string(cs->sym->id);
     if (!cs->sym->element) continue;
     bool cycle = false;
     for (CreationSet *x : seen)
@@ -9782,8 +9792,15 @@ static bool cselem_shape_key(AVar *v, Sym *s, std::string &out) {
     if (dbg) fprintf(stderr, "[csshape-no] p=%d es=%d shape=%s (unfilled)\n", analysis_pass, es->id, shape.c_str());
     return false;
   }
+  // The allocated class goes in by id too (ifa/130 A2). `cselem_shape_reuse`
+  // already refuses a hit whose `cs->sym != s`, so a name collision here
+  // could not MERGE two classes -- but the loser then never claimed an
+  // entry of its own either, because `cselem_shape_claim` only fills an
+  // absent key, so it could never be reused at all. Keying on the id gives
+  // each class its own entry and makes that guard redundant rather than
+  // load-bearing.
   char pre[96];
-  snprintf(pre, sizeof pre, "v%d|%s|", v->var->id, s->name ? s->name : "?");
+  snprintf(pre, sizeof pre, "v%d|%s#%d|", v->var->id, s->name ? s->name : "?", s->id);
   out = std::string(pre) + shape;
   return true;
 }
