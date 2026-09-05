@@ -1551,6 +1551,18 @@ evidence puts them:
    must not be re-blessed — it is a `.known_issue` until the splitter
    keeps those three calls direct.
 
+   *Deferred deliberately, because it is a symptom.* Every dynamic call in
+   both configurations is `list.append` — at the default one site with
+   three candidate clones, under the flag four sites with two each — i.e.
+   `append` clones that will not collapse on a shared `list`
+   CreationSet. That is the same cause as `list_append_is_amortized` and
+   `list_pop_insert`, which fail with `mixed basic types: (int64 str)`:
+   two lists of different element type sharing one contour. Those are the
+   HARD form (no representation exists); this is the SOFT form (it
+   compiles and runs, it just cannot pick one clone). Fix the element-type
+   merge first and re-measure; only if this survives is it a defect of its
+   own.
+
    *Two traps worth recording.* `IFA_DBG_DISPATCHFAIL`'s `sites=` is not
    this metric either: it reads 0 on `list_tuple_union_method` and
    `poly_dispatch_shared_method_extra_args`, both of which genuinely have
