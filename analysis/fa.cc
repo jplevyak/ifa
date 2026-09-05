@@ -11360,6 +11360,43 @@ static void constant_strip_census(int &nstrip, int &nmulti, int &nsame) {
 // A single creation point whose element holds both types means the
 // CONTOUR that creates it is shared, so the thing that has to come apart
 // is that EntrySet, not the CreationSet. This says which one.
+// ifa/133: VALIDATION for the forward-closure probe.
+//
+// The [fwd] measurement inside report_mixed_element_owners reported a
+// forward closure of 2 AVars against 153 that carry the CreationSet, and
+// that contradicts flow_var_to_var maintaining forward/backward
+// symmetrically. Before trusting either half, run the same computation on
+// every container CreationSet -- including programs with no mixed element
+// at all, where the answer is known by construction.
+//
+// If the probe is sound, a container created once and used locally should
+// show closure ~= claim: every AVar holding the CreationSet is reachable
+// forward from the creation point.
+static void report_forward_closure_all() {
+  if (!getenv("IFA_DBG_FWDALL")) return;
+  for (CreationSet *cs : fa->css) {
+    if (!cs || !cs->sym || !cs->sym->element) continue;
+    Vec<AVar *> fseen, fwork;
+    for (AVar *d : cs->defs)
+      if (d && fseen.set_add(d)) fwork.add(d);
+    int seeds = fwork.n, fh = 0, fsteps = 0;
+    while (fh < fwork.n && fsteps < 100000) {
+      AVar *a = fwork.v[fh++];
+      ++fsteps;
+      for (AVar *x : a->forward)
+        if (x && fseen.set_add(x)) fwork.add(x);
+    }
+    int claim = 0, claim_unreached = 0;
+    foreach_avar([&](AVar *a) {
+      if (!a || !a->out || !a->out->type || !a->out->type->set_in(cs)) return;
+      ++claim;
+      if (!fseen.set_in(a)) ++claim_unreached;
+    });
+    fprintf(stderr, "FWDALL p=%d cs=%d sym=%s defs=%d seeds=%d closure=%d claim=%d unreached=%d\n", analysis_pass,
+            cs->id, cs->sym->name ? cs->sym->name : "?", cs->defs.set_count(), seeds, fsteps, claim, claim_unreached);
+  }
+}
+
 static void report_mixed_element_owners() {
   if (!getenv("IFA_DBG_MIXELEM")) return;
   for (CreationSet *cs : fa->css) {
@@ -11497,6 +11534,7 @@ static void report_mixed_element_owners() {
 }
 
 static void report_demand_ratio() {
+  report_forward_closure_all();
   report_mixed_element_owners();
   if (!getenv("IFA_DBG_DEMAND")) return;
   ElemCensus c;

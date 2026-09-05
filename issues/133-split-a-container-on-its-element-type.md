@@ -558,13 +558,48 @@ Both cannot be true. Either types reach AVars by a channel that bypasses
 is one such write, and `update_gen(av, av->var->sym->abstract_type)` in
 `analyze_edge` is another — or the `[fwd]` probe is wrong.
 
-**Resolve that before building anything on either half.** The probe should
-be validated on a case whose answer is known by construction (a
-single-function program with one list and one write) rather than trusted
-on this one. Every split mechanism examined in this issue behaves
-correctly on the information it is given; whether that information is
-wrong is exactly what this contradiction decides, and it is currently
-undecided.
+### Resolved: the probe is sound and the inference from it was wrong
+
+`IFA_DBG_FWDALL` runs the same forward closure over **every** container
+CreationSet, so it can be checked against cases whose answer is known.
+
+*Known-good case*, one function, one list, one write
+(`l = [1,2]; l.append(3); print(l[0])`):
+
+```
+FWDALL cs=994 sym=list defs=1 seeds=1 closure=4 claim=6 unreached=0
+```
+
+`unreached=0` — every AVar carrying the CreationSet is reachable forward
+from its creation point. The probe measures what it claims to.
+
+*And the same program at the DEFAULT*, which compiles and runs correctly:
+
+```
+14 CreationSets with unreached=0
+ 3 CreationSets with unreached = 326, 314, 156
+```
+
+**`unreached > 0` occurs on a correct compile.** It is not a defect
+signal, and the "anomaly" recorded above — *two AVars carry `cs=995`
+while no flow path connects them to its creation point* — is a normal
+property of the analysis, reproduced on the arm that works.
+
+So the contradiction resolves in favour of the code: `flow_var_to_var`
+and `analyze_edge` are consistent, the data-flow graph IS interprocedural,
+and the faulty step was the inference that a type must arrive along a flow
+edge. It need not: `update_gen(av, av->var->sym->abstract_type)` in
+`analyze_edge` gives an abstractly-typed AVar **every** CreationSet of
+that sym with no edge at all, which is enough to account for the counts.
+
+**Nothing in this issue's chain now points at a defect in the flow graph.**
+The open question returns to where it was before that detour: one
+container, one creation point, monomorphic writers and monomorphic
+receivers, and an element that unions `int64` with `str`. That remains
+unexplained, and the next attempt should start from `cs=995`'s element
+`backward` list — the 31 writers, which ARE flow edges — rather than from
+type membership, which the abstract-type seeding makes unreliable as
+evidence.
 
 *What is kept:* `IFA_DBG_TCDROP`, which names every confluence the stage
 discards. That is the measurement this issue turned on, and nothing else
