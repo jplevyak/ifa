@@ -889,7 +889,10 @@ the other three.
 > content that never arrives.
 >
 > So the honest sequencing is step 4 first: make contours start merged and
-> merges revisable. Only then does a demand test have merges to observe and
+> merges revisable. Step 4's own entry is now unblocked — see the
+> amendment there, which retracts its "wait for step 3" gate and finds
+> both the re-pointing primitive and its invalidation closure already
+> built. Only then does a demand test have merges to observe and
 > a reuse index have content to key on. Built in the current order, items
 > 1-5 will pass their verification and change nothing — which is the failure
 > mode worth naming in advance, because a green suite would read as success.
@@ -937,20 +940,108 @@ structural splitting could, that is the monotonicity wall — do not add a
 conservative "split anyway" rule. Record which case hit it and go to
 step 4.
 
-### Step 4 — reversibility, i.e. [111](111-FA-selective-invalidation-per-pass.md)
+### Step 4 — re-decidable CS identity, i.e. [111](111-FA-selective-invalidation-per-pass.md)
 
-Aggressive sharing (`PYC_CSMOLD=1`, shedskin's actual default posture)
-is unreachable while merges are permanent. Making it reachable means
-being able to discard derived ATypes and re-derive them against a
-decision table — `backup_network`/`restore_network` plus `alloc_info`.
-pyc already has the table shape (`var_elem_key`); it has no snapshot.
+> **Amended 2026-09-04 (read this before the plan below it).** The
+> original text said pyc needs shedskin's `backup_network` /
+> `restore_network` because it "has no snapshot", and told you not to
+> start until step 3 had produced the list of cases needing it. Both are
+> wrong, and correcting them makes this step both smaller and earlier
+> than it was filed as. What follows is a code read, not a measurement —
+> nothing new was run for it.
 
-This is the only step that is a genuine architecture change, and 128 and
-111 collapse into it. Do not start it before step 3 has produced the
-list of cases that actually need it.
+**pyc does not need a snapshot: every pass already re-derives from
+bottom.** `analyze_to_convergence` resets before each pass, not after
+(`fa.cc:10904-10909`) — at the default (`ifa_selective = 0`, `fa.cc:51`,
+opt-in via `IFA_SELECTIVE`) that is an unconditional `clear_results()`
+for every pass but the first. shedskin needs `backup_network` /
+`restore_network` because it splits *speculatively inside* one iteration
+and rolls back; pyc's pass structure hands it the same power for free.
+Derived ATypes are not permanent here. **The decision is.**
+
+**What actually survives a pass is documented in one place** —
+`clear_results`'s header, `fa.cc:6953-6985` — and it lists five things.
+Four are not obstacles:
+
+| survivor | why it is not in the way |
+| --- | --- |
+| `av->container` | structural parenthood, not a decision |
+| `av->type` / `av->ivar_offset` | written post-convergence, by clone |
+| `av->match_cache` | keys on canonical AType pointers, so "a stale entry misses, never lies" |
+| `av->num_coerce` | a coercion target set between passes (issue 025); orthogonal |
+
+The fifth is the whole of step 4: **`av->cs_map`**. `creation_point` is
+memo-first (`fa.cc:526-532`) and `cs_map` is never cleared, so the
+site→CreationSet decision is taken once, on the first pass that reaches
+the site, and never revisited — which is precisely the state
+[2c](#step-2c--what-rdb-says-about-the-mode-3-key) measured: 793
+CreationSets minted while the receiver shape was unknown, 402 of them
+(51%) still unknown at convergence.
+
+**And the reason given for pinning it is a *feeding* invariant, not a
+*decision* invariant.** The comment says consumers hold positional slots
+into these CSs — "a CS's positional `vars[i]` must be fed by every pass
+that feeds the CS, regardless of which Var carries the value" (the
+issue-030 fixpoint fix in `make_closure_var`). That forbids a CS quietly
+losing a feeder. It does not forbid re-pointing a site at a different CS,
+provided the CS it lands on is fed.
+
+**The primitive that does exactly that is already built and shipping.**
+`split_css` (`fa.cc:7691`) rewrites `v->cs_map->put(cs->sym, new_cs)`
+across a `compatible_set` (`fa.cc:7775-7778`), and its `route` path
+(`fa.cc:7762-7766`) moves the group onto an **existing** CreationSet
+named by the durable ledger — `cs_group_signature` (`fa.cc:7603`) →
+`FA::ledger_find_cs` (`fa.cc:5231`). So "move a site onto a contour that
+already exists, across passes, keyed on stable IR" is not missing. What
+is missing is a *caller that runs it in the joining direction*: today
+`split_css` is the only caller of the re-point, and it only ever peels
+groups off.
+
+**The bounding mechanism is also already built** — this is ifa/111 M3.
+`probe_invalidation_closure` (`fa.cc:9037`) computes, at end of pass, the
+forward closure of every contour that pass changed;
+`clear_results_selective` (`fa.cc:7156`) clears exactly that closure and
+falls back to the full reset when it declines. A re-pointed CS is the
+same *kind* of event as a split, so the same closure bounds it. Note the
+direction: the closure was built for **splitting**, which narrows and is
+the harder direction for a growing fixed point. Joining widens, which the
+fixed point absorbs by construction.
+
+So step 4 is not "the only step that is a genuine architecture change".
+It is: **make the `cs_map` decision re-takable between passes, and route
+the re-decision through machinery that exists.** 128 and 111 still
+collapse into it.
+
+*Entry criterion, replacing "wait for step 3":* step 2c already produced
+the case list, and step 3's own preamble concludes the reverse ordering —
+items 1-5 there are inert until this lands. The cases are (a) the 402
+CreationSets that are still shape-unknown at convergence, and (b) `rdb`,
+which no static key can fix, because the key is needed at mint time and
+the content arrives passes later.
+
+*First increment, and it is small:* leave `creation_point` alone. Between
+passes — beside `capture_elem_keys` (`fa.cc:9941`), which already walks
+every CS and has the converged shape in hand — find CreationSets minted
+under `kCselemUnfilled` whose shape is now known and whose shape key
+already names a different CS in `cselem_shape_canon`, and re-point their
+creation site onto it via the `split_css` route path. That is the census
+from 2c, turned from a counterfactual into an action. 2c measured its
+corpus ceiling honestly and it is small — 36 CreationSets, 1.2% — so
+**this increment is the mechanism's proving ground, not its payoff**: it
+makes one re-decision happen, under the invalidation closure, and shows
+whether the analysis still converges and the corpus still checks. The
+payoff needs the mint side to stop deciding on ignorance at all, which is
+the increment after it.
+
+*Stop condition:* if a re-pointed CS cannot converge — the join is
+undone by the next pass's split and the two oscillate — that is the
+ledger's oscillation signal (`cs_dup_split_attempts`, `rederive_churn`,
+`fa.cc:7794-7797`) and it is a real answer, not a failure. Record the
+case. Do **not** answer it by pinning the decision again.
 
 *Verify:* `PYC_CSMOLD=1` becomes safe — `deepcopy_copy_of_copy_chain`
-converges with `mixed=0` — and chess reaches shedskin's ~7 s.
+converges with `mixed=0` — `PYC_CSELEM=3` stops regressing `rdb` and can
+become the default, and chess reaches shedskin's ~7 s.
 
 ## What this unblocks
 
