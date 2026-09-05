@@ -378,12 +378,44 @@ the wrong thing. The demand signal is not missing and not unroutable. **It
 is computed correctly and thrown away by the only stage that consumes
 it.**
 
-*First attempt at the fix, and why it is not in this commit:* hand the
-confluence's backward sources (which ARE on EntrySet contours) to the same
-splitter. It **segfaults** before reaching its own trace, both with and
-without null guards on `b->var`/`b->contour`. Reverted; the crash is in
-splitting an EntrySet reached this way and needs its own diagnosis, not a
-guard. `PYC_TCBACK` is not kept.
+### The crash was mine, and the route has no legal target
+
+*The segfault, diagnosed.* Not in the splitter. `gdb` (which must **spawn**
+here — `ptrace_scope` blocks attach) puts it in `qsort_by_id<AVar>`
+dereferencing a null:
+
+```
+#0 qsort_by_id<AVar> (...) at analysis/fa.h:983   while (i < j && (*i)->id < x->id) i++;
+#2 split_ess_for_type (...) at analysis/fa.cc
+```
+
+`Vec::set_add` builds the **sparse set representation**, whose backing
+store holds nulls, and `qsort_by_id` dereferences every slot. Every other
+caller compacts first — `split_css` does `css.set_to_vec(); qsort_by_id(css);`
+— and the new code did not. A general trap for anything that sorts a
+set-`Vec` in this file, and worth knowing before blaming the machinery
+being called.
+
+*With the crash fixed, the route runs and still cannot split.* Every
+writer behind the confluence reports `formal=0`: they are **non-formal
+temporaries**, the case `split_ess_for_type` already logs as
+`ES/non-formal-rval skipped`. It accepts only a formal or a return value
+as a target, so there is nothing legal to hand it. Reverted; `PYC_TCBACK`
+is not kept.
+
+*And the edge is not over-wide.* Each writer reports `fwd=1 fwd_cs=1` —
+30 `int64` writers, 6 `str` writers, and every one flows to exactly ONE
+container element. So the flow hypothesis above is also wrong: no single
+write reaches several containers.
+
+**Which leaves one question, and it is now the only one.** Every writer is
+monomorphic, single-target, and non-formal; the container has one
+creation point; and yet both `int64` and `str` writers target
+`cs=995`'s element. So distinct contours are writing different types into
+the *same* container, which means the RECEIVER identity is what is wrong —
+somewhere upstream, `l` and `l3` both resolve to `cs=995`. That is where
+to look next: not at the splitter, and not at the element edge, but at
+how the receiver of `__pyc_setslice__` is resolved to a CreationSet.
 
 *What is kept:* `IFA_DBG_TCDROP`, which names every confluence the stage
 discards. That is the measurement this issue turned on, and nothing else
