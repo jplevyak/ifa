@@ -7697,6 +7697,17 @@ static void collect_setter_confluences(Accum<AVar *> &avs, Vec<AVar *> &setter_c
   qsort_by_id(setter_confluences);
   setter_starters.set_to_vec();
   qsort_by_id(setter_starters);
+  // ifa/133 probe: split_css can only partition CreationSets that some
+  // starter's cs_map names, so an empty starter set means it never runs.
+  if (getenv("IFA_DBG_STARTERS")) {
+    int with_setters = 0, with_csmap = 0;
+    for (AVar *av : avs.asvec) {
+      if (av->setters) ++with_setters;
+      if (av->setters && av->cs_map) ++with_csmap;
+    }
+    fprintf(stderr, "[starters] p=%d avs=%d with_setters=%d with_csmap=%d -> confluences=%d starters=%d\n",
+            analysis_pass, avs.asvec.n, with_setters, with_csmap, setter_confluences.n, setter_starters.n);
+  }
 }
 
 [[nodiscard]] static int split_with_setter_marks(AVar *av) {
@@ -8002,10 +8013,22 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
 [[nodiscard]] static int split_for_setters(Accum<AVar *> &avs, int analyze_again) {
   Vec<AVar *> setter_confluences, setter_starters;
   collect_setter_confluences(avs, setter_confluences, setter_starters);
-  if (split_ess_setters(setter_confluences)) return 1;
-  if (nomark_enabled() < 2 && split_ess_setters_marks(setter_confluences)) return 1;
-  if (analyze_again) return 1;
-  if (split_css(setter_starters)) return 1;
+  const bool dbg = getenv("IFA_DBG_STARTERS") != nullptr;
+  if (split_ess_setters(setter_confluences)) {
+    if (dbg) fprintf(stderr, "[sfs] p=%d ess_setters WON (split_css not reached)\n", analysis_pass);
+    return 1;
+  }
+  if (nomark_enabled() < 2 && split_ess_setters_marks(setter_confluences)) {
+    if (dbg) fprintf(stderr, "[sfs] p=%d ess_setters_marks WON (split_css not reached)\n", analysis_pass);
+    return 1;
+  }
+  if (analyze_again) {
+    if (dbg) fprintf(stderr, "[sfs] p=%d analyze_again preempts split_css\n", analysis_pass);
+    return 1;
+  }
+  int r = split_css(setter_starters);
+  if (dbg) fprintf(stderr, "[sfs] p=%d split_css REACHED starters=%d -> %d\n", analysis_pass, setter_starters.n, r);
+  if (r) return 1;
   return analyze_again;
 }
 

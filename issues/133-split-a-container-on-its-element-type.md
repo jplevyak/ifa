@@ -187,9 +187,45 @@ the element unions.
 
 **No amount of EntrySet splitting can fix that**, because the writer
 contours are not what is shared. The eight defs of `cs=1016` are, and
-partitioning them is the action this issue opened with. The concrete
-target is now named: one CreationSet, eight creation points, partition by
-the element type each contributes.
+partitioning them is the action this issue opened with.
+
+### And `split_css` already runs — it partitions by the wrong setters
+
+The author's follow-up — *the setters are independent, so they can be
+used to split the CreationSet* — is right, and the machinery is already
+there and already running. Measured with a new `IFA_DBG_STARTERS` probe on
+`list_pop_insert` under `PYC_CSDCPA1=2`:
+
+```
+[sfs] split_css REACHED starters=25 -> 1
+[sfs] split_css REACHED starters=24 -> 0
+[sfs] split_css REACHED starters=5  -> 0   (x2)
+[sfs] split_css REACHED starters=4  -> 0
+```
+
+So `split_css` is not starved by the two EntrySet stages ahead of it in
+`split_for_setters`; it runs every pass with a live starter set and even
+splits once. It simply does not separate `cs=1016`.
+
+**Because of which setters it reads.** `split_css` builds its starter set
+from AVars whose `cs_map` names the CreationSet, and partitions with
+`same_eq_classes(v->setters, av->setters)` — the setters of the **def
+AVars**, i.e. of whoever assigned the list *variable*. Those do not
+discriminate: all eight creation points were assigned by their own
+literal and agree.
+
+The discriminator is one level in: the setters of the CreationSet's
+**element** — who wrote *into* the container. Those are exactly the
+writers the value split has already separated (`append es=113` carries
+`str`, `es=109-112,114` carry `int64`), so the partition is sitting there
+fully computed and is being read from the wrong AVar.
+
+**That makes the action concrete and small.** Partition `cs->defs` by
+element-setter class rather than by def-setter class, and hand the
+partition to `split_css`'s existing machinery, which already re-points
+`cs_map` across a group and ledgers the result for cross-pass identity.
+No new splitting primitive, no new demand signal — the signal is the one
+the setter flows already produce.
 
 **Bounding, and the stop condition.** If the program genuinely builds a
 heterogeneous list, no split helps: the union is real and today's refusal
