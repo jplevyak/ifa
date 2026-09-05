@@ -1333,6 +1333,88 @@ experiment; deleting them would lose the ability to re-run it, and the
 split-back is still the mechanism a future merge will need — with a
 different demand signal.
 
+
+### Step 4 — start merged: one CreationSet per sym (`PYC_CSDCPA1`)
+
+The architecture the goal statement describes, stated by the author
+2026-09-05 and now implemented behind a flag:
+
+> CreationSets should only be demand split. Pass 1 should have 1 creation
+> set per class/sym. Then they split by setter value (type). ESs are split
+> as necessary to separate the creation points so the CS can split. Pure
+> demand CS splitting. Minimal final creation sets.
+
+This inverts today's dependency, and that inversion is the point. Today
+`creation_point` mints one CS per *(allocation site × contour)*, so an
+EntrySet split MULTIPLIES CreationSets as a side effect — CS identity is
+decided by structure before any demand test runs. Under the flag nothing
+structural makes a contour: an ES split exists to separate creation points
+so that a CS split *becomes possible*.
+
+`creation_point` gains one route, placed before the split-parent, cselem
+and mold routes — those all answer "which of this site's contours should
+this be", a question that does not arise when a sym has one contour. It
+takes the first creator, the unsplit root (`new CreationSet(cs)` appends,
+so a split never displaces it); a site that belongs with a split child
+arrives on the root and is moved off by `split_css`.
+
+`PYC_CSDCPA1=1` is every sym; `=2` excludes `tuple`; default 0.
+
+**It works, on the numbers, and by a lot.** Against the DEFAULT (not mode
+3):
+
+| | `css` | `ess` | `container_cs` | `ratio` |
+| --- | --- | --- | --- | --- |
+| chess | 6433 → **3077** | 1591 → **967** | 169 → **66** | 14.08 → **5.50** |
+| rubik2 | 1511 → **1037** | 474 → 455 | 61 → **45** | 7.62 → **6.43** |
+| sieve | 1003 → **746** | 249 → 236 | 20 → **11** | 4.00 → **2.75** |
+
+chess: container CreationSets −61%, EntrySets −39%, total CreationSets
+−52%. **`ess` goes DOWN**, which is the signature of the inversion working
+— every key-side experiment in this issue drove it up (see the retracted
+`PYC_CSSITELESS` result, where chess went 985 → 1168).
+
+**What it costs, and how it decomposes.** `./test_pyc.py`, 311 tests:
+
+| | failed |
+| --- | --- |
+| default | 0 |
+| `PYC_CSDCPA1=1` | 49 |
+| `PYC_CSDCPA1=2` (tuples excluded) | 30 |
+
+*19 of the 49 are tuple arity and position*, and excluding `tuple` is not
+a concession to make a suite pass. A tuple's arity is observable (`len`,
+unpacking, indexing) and its content is per-INDEX in `cs->vars` with the
+element channel deliberately left bottom
+([104](closed/104-unify-list-and-tuple-in-analysis.md)), so arity and
+position are part of the tuple's TYPE. Setter-equivalence splitting cannot
+express either, so one contour per `tuple` sym merges positional slots that
+no demand test can separate again. Tuples need arity in CS identity, or a
+splitter that splits on it; they do not need a per-site contour.
+
+The remaining 30 are **14 EXEC, 9 COMPILE-OUT, 7 COMPILE** — and the kinds
+matter more than the count. All four `splitter_*` tests are in the
+COMPILE-OUT group, and `splitter_setter` **compiles clean and prints the
+right answer**: it fails only because its `.check` asserts
+`STAGES: TYPE_CONFL SETTER`, a mechanism assertion. Under one contour per
+sym the `{A, B}` receiver resolved by poly dispatch and no split was
+needed. So part of that group is "the mechanism did not have to fire",
+not "the answer is wrong". The 14 EXEC failures are the ones that are
+genuinely wrong output, and they are the real bill.
+
+**What is missing is the third clause.** "ESs are split as necessary to
+separate the creation points so the CS can split" is not implemented:
+today ES splitting runs on its own criteria and `split_css` splits only
+what the setter confluences already separate. Nothing asks *"this
+CreationSet needs to split, but its creation points share a contour —
+split that contour so it can"*. That is the mechanism the 14 EXEC failures
+are missing, and it is the next thing to build.
+
+*Not built, deliberately:* nothing here weakens the flag to make the suite
+pass. The flag is off by default, the default path is untouched
+(`make test` rc=0), and 30 failures is the honest state of an
+architecture with one of its three clauses missing.
+
 ## What this unblocks
 
 The goal statement, and with it: [128](128-cs-identity-over-discriminates-vs-element-type.md)'s

@@ -498,6 +498,7 @@ void flow_vars_assign(AVar *rhs, AVar *lhs) {
 
 static int cselem_enabled();  // ifa/issues/101, defined with the other flags
 static int cssiteless_enabled();  // ifa/129 step 4, ditto
+static int csdcpa1_enabled();     // ifa/128: one CreationSet per sym, ditto
 static int csmold_enabled();  // ifa/issues/101, ditto
 // ifa/issues/074 (PYC_CSELEM=3): re-key container CreationSet identity on
 // the RECEIVER's structural element shape. Defined with capture_elem_keys.
@@ -577,6 +578,30 @@ CreationSet *creation_point(AVar *v, Sym *s) {
     goto Lfound;
   }
   if (s == sym_closure) goto Lunique;
+  // ifa/128 start-merged route. Deliberately BEFORE the split-parent,
+  // cselem, and mold routes: those all answer "which of this site's
+  // contours should this be", a question that does not arise when a sym
+  // has one contour. Takes the FIRST creator, which is the unsplit root --
+  // `new CreationSet(cs)` appends, so splits never displace it. A site
+  // that belongs with a split child arrives on the root and is moved off
+  // by `split_css`, which is the whole point: start merged, separate on
+  // evidence.
+  // Mode 2 excludes `tuple`. Not a concession to make a suite pass: a
+  // tuple's ARITY is observable (len, unpacking, indexing) and its content
+  // is per-INDEX in `cs->vars` with the element channel deliberately left
+  // bottom (ifa/104), so arity and position are part of the tuple's TYPE,
+  // not provenance. Setter-equivalence splitting cannot express them, so
+  // one contour per `tuple` sym merges positional slots that no demand
+  // test can separate again. Measured: 11 of the 49 mode-1 suite failures
+  // are tuple arity/position.
+  if (csdcpa1_enabled() && !(csdcpa1_enabled() == 2 && s == sym_tuple)) {
+    for (CreationSet *x : s->creators)
+      if (x && !(s->abstract_type && x == s->abstract_type->v[0])) {
+        cs = x;
+        dbg_cs_route = "dcpa1";
+        goto Lfound;
+      }
+  }
   // `es` may be the distinguished global contour (fa->global_es);
   // its `split` is always null, so the split-lookup below
   // naturally no-ops for globals.
@@ -6031,6 +6056,30 @@ static int cssiteless_enabled() {
   static int e = -1;
   if (e < 0) {
     cchar *v = getenv("PYC_CSSITELESS");
+    e = v ? atoi(v) : 0;
+  }
+  return e;
+}
+
+// ifa/128, and the architecture CLAUDE.md's goal statement describes:
+// START MERGED. One CreationSet per sym, program-wide, and it multiplies
+// ONLY by demand splitting -- `split_css` peeling off a setter-equivalence
+// group. This is shedskin's `Class.dcpa = 1` posture.
+//
+// It inverts today's dependency. Today `creation_point` mints one CS per
+// *(allocation site x contour)*, so an EntrySet split MULTIPLIES
+// CreationSets as a side effect and CS identity is decided by structure
+// before any demand test runs. Under this flag nothing about the structure
+// makes a contour: an ES split separates creation points so that a CS
+// split BECOMES POSSIBLE, which is the opposite direction of service.
+//
+// Independent of PYC_CSELEM -- this is not a keying question. The shape
+// canon exists to canonicalize per-site contours, and with one contour per
+// sym there is nothing for it to canonicalize.
+static int csdcpa1_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_CSDCPA1");
     e = v ? atoi(v) : 0;
   }
   return e;
