@@ -227,6 +227,44 @@ partition to `split_css`'s existing machinery, which already re-points
 No new splitting primitive, no new demand signal — the signal is the one
 the setter flows already produce.
 
+### It was built, and it cannot fire — the merged CS is not the broken one
+
+Implemented as `split_css_by_element`, triggered on `mixed_basics` of the
+element and partitioning `cs->defs` by what each def's own writers
+contribute. **Inert: 16 failures under `PYC_CSDCPA1=2` with and without.**
+Reverted. Three things it established, each correcting a step above.
+
+1. **The element AVar of the merged container has no setters at all.**
+   `cs=1016 defs=8 elemvar=1` → `no_elem_setters`. The setter machinery
+   computes setters only for AVars inside a confluence closure, and a
+   merged container's element is not in one. So "partition by
+   element-setter class" has no data to read; `elem->backward` carries the
+   same flows without that dependency and is what any implementation
+   should use.
+
+2. **The merged CreationSet's element is not the mixed one.**
+   `cs=1016`, the one with eight creation points, reports
+   `elem_not_mixed`. Its element is representable.
+
+3. **The CreationSet that holds `{int64, str}` has ONE creation point.**
+   `cs=995 defs=1`. So there is no `cs->defs` partition to make — the
+   action this issue opened with cannot fire, because nothing is merged
+   at the container that is actually broken.
+
+**Where that leaves it.** A single creation point whose element holds both
+types means the *contour that creates it* is shared: the creation site
+sits inside a `__pyc__` helper, one CreationSet per sym gives it one CS,
+and every caller's container flows through it. Separating it requires
+splitting **that EntrySet** per caller, so the creation point becomes two
+AVars and two CreationSets follow.
+
+That is the goal statement's third clause — *"ESs are split as necessary
+to separate the creation points so the CS can split"* — and this is the
+first time it has a measured target rather than a guess: **the EntrySet
+owning `cs=995`'s single def.** The next step is to identify that
+EntrySet and ask why the existing type-driven ES splitting does not
+separate it, with `IFA_DBG_SESWHY` now able to answer.
+
 **Bounding, and the stop condition.** If the program genuinely builds a
 heterogeneous list, no split helps: the union is real and today's refusal
 is the right answer. So the split is *attempted*, and on failure control
