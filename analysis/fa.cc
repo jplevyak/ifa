@@ -11398,6 +11398,33 @@ static void report_mixed_element_owners() {
         if (b && b->container) conts.set_add(b->container);
       conts.set_to_vec();
       fprintf(stderr, "  [cpath] %d distinct container AVars\n", conts.n);
+      // ifa/133: walk FORWARD from the creation point. Which AVars
+      // legitimately receive this CreationSet? Anything that carries it in
+      // its type but is not in this closure got it without a flow edge.
+      {
+        Vec<AVar *> fseen, fwork;
+        for (AVar *d : cs->defs)
+          if (d && fseen.set_add(d)) fwork.add(d);
+        int fh = 0, fsteps = 0;
+        while (fh < fwork.n && fsteps < 20000) {
+          AVar *a = fwork.v[fh++];
+          ++fsteps;
+          for (AVar *x : a->forward)
+            if (x && fseen.set_add(x)) fwork.add(x);
+        }
+        int claim = 0, claim_unreached = 0;
+        foreach_avar([&](AVar *a) {
+          if (!a || !a->out || !a->out->type) return;
+          if (!a->out->type->set_in(cs)) return;
+          ++claim;
+          if (!fseen.set_in(a)) ++claim_unreached;
+        });
+        fprintf(stderr, "  [fwd] cs=%d forward_closure=%d claim_cs=%d claim_NOT_reached=%d conts_reached=", cs->id,
+                fsteps, claim, claim_unreached);
+        for (AVar *c2 : conts)
+          if (c2) fprintf(stderr, " av%d:%d", c2->id, fseen.set_in(c2) ? 1 : 0);
+        fprintf(stderr, "\n");
+      }
       for (AVar *c2 : conts)
         if (c2 && c2->out && c2->out->type) {
           fprintf(stderr, "  [cpath-recv] av=%d receiver spans %d CS:", c2->id, c2->out->type->sorted.n);

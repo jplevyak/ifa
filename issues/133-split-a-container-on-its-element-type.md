@@ -526,12 +526,45 @@ runs it with three separate lists).
 
 **That is the anomaly to explain next, and it is not a splitting
 question.** Two AVars carry `cs=995` in their type while no backward path
-connects them to `av=797`, the only AVar that creates it. Either the type
-reached them without a flow edge, or `av=797` is not the creation point
-the analysis associates with them. Resolving that comes before any
-further split work: every splitting mechanism examined in this issue is
-behaving correctly on the information it is given, and the information is
-wrong.
+connects them to `av=797`, the only AVar that creates it.
+
+### An unresolved contradiction — do not build on either half yet
+
+Walking FORWARD from the creation point:
+
+```
+[fwd] cs=995 forward_closure=2 claim_cs=153 claim_NOT_reached=150 conts_reached= av3287:0 av5749:0
+```
+
+The forward closure from `cs->defs` is **2 AVars**. **153 AVars carry
+`cs=995` in their type**, 150 of them outside that closure, including both
+containers. So the containers are disconnected from the creation point in
+*both* directions while holding its type.
+
+That result contradicts the structure of the code, and the contradiction
+is not resolved:
+
+- `flow_var_to_var` maintains `a->forward` and `b->backward`
+  **symmetrically** and calls `update_in(b, a->out)` in the same
+  breath — so wherever it is used, the type graph and the AVar flow graph
+  are the same graph.
+- `analyze_edge` routes arguments through it (`flow_vars(actual, filtered)`
+  then `flow_vars(filtered, formal)`), so interprocedural type flow IS in
+  `forward`/`backward`. The backward walk crossing into `__delitem__`,
+  `pop` and `__main__` confirms it directly.
+
+Both cannot be true. Either types reach AVars by a channel that bypasses
+`flow_var_to_var` — `creation_point`'s own `update_gen(v, make_AType(cs))`
+is one such write, and `update_gen(av, av->var->sym->abstract_type)` in
+`analyze_edge` is another — or the `[fwd]` probe is wrong.
+
+**Resolve that before building anything on either half.** The probe should
+be validated on a case whose answer is known by construction (a
+single-function program with one list and one write) rather than trusted
+on this one. Every split mechanism examined in this issue behaves
+correctly on the information it is given; whether that information is
+wrong is exactly what this contradiction decides, and it is currently
+undecided.
 
 *What is kept:* `IFA_DBG_TCDROP`, which names every confluence the stage
 discards. That is the measurement this issue turned on, and nothing else
