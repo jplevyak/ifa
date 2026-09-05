@@ -11386,6 +11386,45 @@ static void report_mixed_element_owners() {
               (des && des->fun && des->fun->sym && des->fun->sym->name) ? des->fun->sym->name : "(non-ES contour)",
               des ? des->edges.n : -1, d->backward.n);
     }
+    // ifa/133: the CONTAINER path. The value path is already split -- the
+    // writers are monomorphic. What nothing walks is the receiver: from
+    // each writer's container AVar, backward along the flow, to the
+    // creation point that made this CreationSet. Those are the EntrySets
+    // that must split so the creation point duplicates and the CS can
+    // split by creation point.
+    if (getenv("IFA_DBG_CPATH")) {
+      Vec<AVar *> conts;
+      for (AVar *b : elem->backward)
+        if (b && b->container) conts.set_add(b->container);
+      conts.set_to_vec();
+      fprintf(stderr, "  [cpath] %d distinct container AVars\n", conts.n);
+      for (AVar *c : conts) {
+        if (!c) continue;
+        // Walk back to the creation point: the AVar whose cs_map names cs.
+        Vec<AVar *> seen, work;
+        seen.set_add(c);
+        work.add(c);
+        int head = 0, steps = 0, creators = 0, es_on_path = 0, formals_on_path = 0;
+        while (head < work.n && steps < 400) {
+          AVar *a = work.v[head++];
+          ++steps;
+          if (a->cs_map && a->cs_map->get(cs->sym) == cs) ++creators;
+          if (a->contour_is_entry_set) {
+            ++es_on_path;
+            if (a->var && a->var->is_formal) ++formals_on_path;
+          }
+          for (AVar *x : a->backward)
+            if (x && seen.set_add(x)) work.add(x);
+        }
+        fprintf(stderr, "  [cpath] container av=%d es=%d fun=%s -> steps=%d creators=%d es_on_path=%d formals=%d\n",
+                c->id, c->contour_is_entry_set ? ((EntrySet *)c->contour)->id : -1,
+                (c->contour_is_entry_set && ((EntrySet *)c->contour)->fun && ((EntrySet *)c->contour)->fun->sym &&
+                 ((EntrySet *)c->contour)->fun->sym->name)
+                    ? ((EntrySet *)c->contour)->fun->sym->name
+                    : "?",
+                steps, creators, es_on_path, formals_on_path);
+      }
+    }
     // Who writes the element, and from which contour? That is the set the
     // ES split would have to separate.
     for (AVar *b : elem->backward) {

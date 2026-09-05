@@ -448,6 +448,54 @@ requires the setters that being one would produce.** Any future attempt to
 drive a split from a container's element channel has to supply that seed
 from somewhere, and `compute_setters` as written will not consume it.
 
+## The algorithm, and where it stands
+
+The author's formulation, which is the plan of record:
+
+> Setters will split the path to the source of the value; then do a
+> backward analysis along the path of the CONTAINER back to the creation
+> point and split those EntrySets; then split the CS by creation point
+> based on the split EntrySets.
+
+Phase 1 is **already done by the existing machinery** — the value path is
+split, measured: `append` has six contours and the `str` one takes a
+different receiver CreationSet from the five `int64` ones. Every writer
+behind the confluence is monomorphic and single-target
+(`fwd=1 fwd_cs=1`).
+
+Phase 2 is the missing walk, and `IFA_DBG_CPATH` measures it. From each
+writer's `container` AVar, backward along the flow, on `list_pop_insert`
+under `PYC_CSDCPA1=2`:
+
+```
+[cpath] 2 distinct container AVars
+[cpath] container av=3287 es=60  fun=__pyc_setslice__ steps=16 creators=0 es_on_path=13 formals=4
+[cpath] container av=5749 es=138 fun=__pyc_setslice__ steps=22 creators=0 es_on_path=17 formals=4
+```
+
+**Two findings, and they point in opposite directions.**
+
+*Encouraging:* there are **4 formals on each container path**. Those are
+legal split targets for `split_ess_for_type`, which is what phase 2 needs.
+It also corrects the earlier `imprecise=0` reading in this issue — that
+measured only the writers' OWN EntrySet formals, not the whole backward
+path, and concluded too quickly that nothing was left to split.
+
+*Blocking:* **`creators=0`**. The backward walk from the container never
+reaches an AVar whose `cs_map` names this CreationSet, in 16 and 22 steps
+respectively. So phase 3 — "split the CS by creation point" — has no
+anchor: the walk does not connect the container back to where it was
+created. Most likely the creation point reaches the container through a
+call edge's argument rather than a plain `backward` flow edge, so a pure
+`av->backward` closure cannot see it; `backflow_path` and `e->args` are
+where to look.
+
+**So the next increment is phase 2 on its own:** split the 4 path formals
+and observe whether the creation point duplicates as a consequence,
+rather than trying to locate it first. If it does, phase 3 becomes
+`split_css` keyed on creation point, which is machinery that already
+exists.
+
 *What is kept:* `IFA_DBG_TCDROP`, which names every confluence the stage
 discards. That is the measurement this issue turned on, and nothing else
 reports it.
