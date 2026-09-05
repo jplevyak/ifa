@@ -1186,6 +1186,55 @@ also the larger semantic change of the two, and it should not be attempted
 before the split-back direction above works, for the same reason ifa/105
 exists.
 
+**Which of the two is the straighter path to the goal: the 415 (drop the
+site component), and it is not close.** Measured with a counterfactual on
+the canon itself — strip the leading `v<id>|` from every claimed key and
+count what is left (sweep `compile__PYC_CSELEM_3__fc25f947+ca955581`, 76
+programs):
+
+```
+container_cs   3060
+canon          1670   distinct site|class|shape triples claimed
+canonsiteless   660   distinct class|shape pairs   -> 2.53x site fragmentation
+shapes          626   (the independent content census, element_census)
+```
+
+Three things follow.
+
+1. **The site component fragments contour identity 2.53×**, and that is a
+   floor, not a symptom: with `v<id>` in the key the fewest contours the
+   canon can ever name is the number of distinct (site, class, shape)
+   triples. Minimal creation sets is unreachable while it is there. The
+   380 are 12% of 3060 — realized in full they move `ratio` 4.89 → ~4.3,
+   and cannot go further.
+2. **`canonsiteless` (660) lands within 5% of `shapes` (626).** Those are
+   two independent computations of "how many distinct contents does this
+   program have" — one from the canon's own keys, one from
+   `element_census` walking every CS's channels. Their agreement is the
+   strongest evidence in this issue that ~626-660 is the demand-driven
+   contour count and 3060 is the over-discrimination
+   ([128](128-cs-identity-over-discriminates-vs-element-type.md)'s claim,
+   arrived at from a different direction).
+3. **`v<id>` is provenance.** Contour identity must key on types and CS
+   partitioning, never on where a value came from — the same rule that
+   keeps display state and marks out of it. `v->var->id` is exactly
+   where-it-came-from, so the per-site key is that defect, not a tuning
+   knob.
+
+The 380 also stop being their own project once this lands: mode 3's
+csshape route has **no split-child guard** (ifa/105's guard is on the
+*mold* route, `fa.cc:726`), so a split child whose shape is known and
+matching already reuses today. The 380 are blocked by ignorance, not by
+that guard being right, and a wider canon makes more of them findable
+later — exactly the way the first increment's 36 became findable.
+
+What does not change: the split-back direction is still required, and
+more so, because cross-site merging is a bigger merge than joining a
+split child to its parent. `tests/deepcopy_copy_of_copy_chain.py` and
+ifa/105's `{list<itself>, int64, int64, list, int64}` remain the
+acceptance test, and `pshapes` (948 today) is the meter for precision
+given back.
+
 *Also outstanding from the first increment:* `s->creators` hygiene — 36
 re-points removed only 21 CreationSets because the abandoned CS stays in
 `s->creators` and the mold route can hand it to a sibling contour.

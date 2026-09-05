@@ -11011,15 +11011,32 @@ static void report_demand_ratio() {
   // is vacuous on containers but not in general would be worth knowing about.
   int multidef_all = 0;
   for (CreationSet *x : fa->css) if (x && x->defs.set_count() > 1) ++multidef_all;
+  // ifa/129 step 4: how much of the canon's size is the PER-SITE component?
+  // cselem_shape_key composes `v<id>|name#id|shape`, so the canon is keyed
+  // per allocation site and the floor on CS count is the number of distinct
+  // (site, class, shape) triples rather than of (class, shape) pairs. Strip
+  // the leading `v<id>|` and count what is left: `canonsiteless` is the
+  // number of contours a site-free key would keep, and canon/canonsiteless
+  // is the fragmentation the site component costs. Counterfactual only --
+  // nothing here changes a decision.
+  int canon = (int)cselem_shape_canon.size(), canon_siteless = 0;
+  {
+    std::set<std::string> sl;
+    for (auto &kv : cselem_shape_canon) {
+      size_t bar = kv.first.find('|');
+      sl.insert(bar == std::string::npos ? kv.first : kv.first.substr(bar + 1));
+    }
+    canon_siteless = (int)sl.size();
+  }
   fprintf(stderr,
           "DEMAND passes=%d ess=%d css=%d container_cs=%d shapes=%d pshapes=%d ratio=%.2f pratio=%.2f "
           "elemtypes=%d empty=%d mixed=%d novar=%d unkmint=%d unkres=%d unkjoin=%d unkstill=%d "
-          "multidef=%d multidefall=%d rejoin=%d mintwhy=%d/%d/%d/%d\n",
+          "multidef=%d multidefall=%d rejoin=%d mintwhy=%d/%d/%d/%d canon=%d canonsiteless=%d\n",
           analysis_pass, fa->ess.n, fa->css.n, c.n_cs, shapes, pshapes,
           shapes ? (double)c.n_cs / shapes : 0.0, pshapes ? (double)c.n_cs / pshapes : 0.0, c.total_types(),
           c.n_empty, c.n_mixed, c.n_novar, unkmint, unkres, unkjoin, unkstill, c.n_multidef, multidef_all,
           cselem_rejoins, cselem_mint_why[kMintNoSiteCS], cselem_mint_why[kMintMoldSplitChild],
-          cselem_mint_why[kMintMoldCMC], cselem_mint_why[kMintMoldIneligible]);
+          cselem_mint_why[kMintMoldCMC], cselem_mint_why[kMintMoldIneligible], canon, canon_siteless);
 }
 
 static void analyze_to_convergence() {
