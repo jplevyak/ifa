@@ -248,6 +248,7 @@ CreationSet::CreationSet(Sym *s)
       closure_used(0),
       tuple_able(0),
       no_static_arity(0),
+      static_arity(-1),
       atype(nullptr),
       equiv(nullptr),
       type(nullptr) {
@@ -257,9 +258,10 @@ CreationSet::CreationSet(Sym *s)
 
 CreationSet::CreationSet(CreationSet *cs)
     : dfs_color(DFS_white), added_element_var(0), closure_used(0), tuple_able(0),
-      no_static_arity(0), atype(nullptr), equiv(nullptr), type(nullptr) {
+      no_static_arity(0), static_arity(-1), atype(nullptr), equiv(nullptr), type(nullptr) {
   sym = cs->sym;
   no_static_arity = cs->no_static_arity;  // issues/110: durable, so splits inherit it
+  static_arity = cs->static_arity;        // ifa/132: ditto -- a split child has its parent's arity
   seq_src.copy(cs->seq_src);              // issues/110: durable source memory too
   // ifa/issues/066: durable lineage, collapsed to the root as we go.
   split_origin = cs->split_origin ? cs->split_origin : cs;
@@ -568,7 +570,7 @@ static std::vector<CselemUnknownMint> cselem_unknown_mints;
 static cchar *dbg_cs_route = nullptr;      // ifa/issues/055: which reuse route fired
 static cchar *dbg_cs_route_want = getenv("IFA_DBG_CSROUTE");
 
-CreationSet *creation_point(AVar *v, Sym *s) {
+CreationSet *creation_point(AVar *v, Sym *s, int arity) {
   dbg_cs_route = nullptr;
   CreationSet *cs = v->cs_map ? v->cs_map->get(s) : 0;
   EntrySet *es = (EntrySet *)v->contour;
@@ -597,6 +599,19 @@ CreationSet *creation_point(AVar *v, Sym *s) {
   if (csdcpa1_enabled() && !(csdcpa1_enabled() == 2 && s == sym_tuple)) {
     for (CreationSet *x : s->creators)
       if (x && !(s->abstract_type && x == s->abstract_type->v[0])) {
+        // ifa/132: ARITY PARTICIPATES IN IDENTITY. A record-able
+        // container's arity fixes its C layout (a struct of exactly
+        // `vars.n` fields), so a contour whose creation points agree on a
+        // different arity cannot represent this one -- merging them gives
+        // `len()` a folded constant that is wrong for one of them. This is
+        // a TYPE distinction, not provenance: arity is observable through
+        // len, unpacking and indexing.
+        //
+        // A CS that has already lost its static arity absorbs any, because
+        // it is on list layout and reads its length at runtime -- the
+        // unknown-arity case, and the only one where merging arities is
+        // representable.
+        if (arity >= 0 && x->static_arity >= 0 && x->static_arity != arity && !x->no_static_arity) continue;
         cs = x;
         dbg_cs_route = "dcpa1";
         goto Lfound;
@@ -2135,7 +2150,7 @@ void fill_tvals(Fun *fn, PNode *p, int n) {
 
 static void make_kind(PNode *p, EntrySet *es, Sym *kind, AVar *container, Vec<Var *> *vars, Vec<AVar *> *avars,
                       int vstart, int tstart, int l) {
-  CreationSet *cs = creation_point(container, kind);
+  CreationSet *cs = creation_point(container, kind, l);
   // ifa/132: two creation points of DIFFERENT arity reaching one
   // CreationSet means it has NO STATIC ARITY. This is exactly the rule
   // get_sym_tup already applies ACROSS an equivalence class
@@ -2149,10 +2164,19 @@ static void make_kind(PNode *p, EntrySet *es, Sym *kind, AVar *container, Vec<Va
   // `no_static_arity` is what makes tuple_able() false, so clone gives the
   // CS list layout and `len` becomes a runtime read -- the same remedy
   // fa.cc:2398 already applies to prim_make's dynamic-length containers.
-  if (cs->vars.n && cs->vars.n != l) {
+  //
+  // Tested on `static_arity` and not `vars.n`: a zero-arity creation point
+  // calls `vars.fill(0)`, a no-op, so `vars.n` cannot tell an EMPTY
+  // container from an UNDECIDED one. With the arity-keyed identity in
+  // creation_point above, this is now the SAFETY NET -- it catches a merge
+  // that arrived by some other route (the cs_map memo, split-parent
+  // inheritance, the mold) and keeps it sound rather than silently wrong.
+  if (cs->static_arity < 0) {
+    cs->static_arity = l;
+  } else if (cs->static_arity != l) {
     if (!cs->no_static_arity && getenv("IFA_DBG_ARITY"))
       fprintf(stderr, "[arity] p=%d cs=%d sym=%s had=%d now=%d -> no_static_arity\n", analysis_pass, cs->id,
-              kind->name ? kind->name : "?", cs->vars.n, l);
+              kind->name ? kind->name : "?", cs->static_arity, l);
     cs->no_static_arity = 1;
   }
   cs->vars.fill(l);

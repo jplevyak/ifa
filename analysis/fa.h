@@ -252,6 +252,13 @@ class CreationSet : public gc {
   // of HOW the container was made, so it is known at constraint time and
   // cannot be lost to a pass-ordering race.
   uint no_static_arity : 1;
+  // ifa/132: the arity this CreationSet's creation points agree on, or -1
+  // before any has been seen. `vars.n` cannot serve: a zero-arity creation
+  // point calls `vars.fill(0)`, which is a no-op, so an empty container is
+  // indistinguishable from an undecided one. Arity is part of a
+  // record-able container's TYPE -- it fixes the layout -- so it belongs
+  // in CreationSet identity, not in the site the value came from.
+  int static_arity;
   // issues/110: the source CreationSets make_seq last saw NON-EMPTY.
   // `src->out` is a per-pass snapshot like everything else, and a
   // single pass where it reads empty would otherwise discard every
@@ -924,7 +931,7 @@ int fa_coerce_numeric_confluences(Vec<ATypeViolation *> &violations);
 // different one is currently treated as a no-op (composing
 // predicates isn't needed by today's narrowing sites).
 void flow_var_permit_pred(AVar *v, AVarRestrictPred pred, Sym *cls = nullptr);
-CreationSet *creation_point(AVar *v, Sym *s);
+CreationSet *creation_point(AVar *v, Sym *s, int arity = -1);
 void prim_make_constraints(PNode *p, EntrySet *es);
 void type_violation(ATypeViolation_kind akind, AVar *av, AType *type, AVar *send, Vec<Fun *> *funs = nullptr);
 // Live count of unique (kind, av, send) violation triples currently
