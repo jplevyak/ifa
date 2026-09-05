@@ -118,4 +118,6 @@ needed:
 Each was invisible while per-site CreationSet identity was separating
 things structurally. Removing that separation is what makes them ask to be
 demand-driven — which is
-[128](128-cs-identity-over-discriminates-vs-element-type.md)'s point.
+[128](128-cs-identity-over-discriminates-vs-element-type.md)'s point. The
+gating itself is tracked as
+[134](134-remove-the-frontend-forced-split-opt-in.md).
