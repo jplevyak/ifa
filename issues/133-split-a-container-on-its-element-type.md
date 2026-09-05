@@ -320,10 +320,46 @@ writer inside a shared helper satisfies neither. The violation is
 recorded and correct; nothing maps it onto the contour that must split.
 
 So the demand signal exists, is correct, is recorded, and reaches a stage
-that cannot address it. **B is the work**: give a BOXING violation on an
-AVar inside a shared contour a route to that contour's EntrySet, so the
-value split that already works for `append` and `insert` can apply to
-`setslice` too.
+that cannot address it.
+
+### B cannot be routed: there is nothing imprecise left to split
+
+Building the route establishes that it does not exist to be built. Two
+attempts, both measured and reverted.
+
+*Offer the violating AVar's own EntrySet formals.* Never fires. The
+BOXING violations land on locals in `pop`, `__getitem__`, `__main__` and
+`__str__` — never in `__pyc_setslice__` — and those contours' formals are
+already monomorphic. There is nothing there to separate.
+
+*Offer the formals of the EntrySets that WRITE the mixed element.* This
+is the chain `IFA_DBG_MIXELEM` traced by hand, and stage 5 does see the
+container:
+
+```
+[violform-cs] p=5 cs=995 back=31 on_es=12 formals=72 imprecise=0
+[violform-cs] p=6 cs=995 back=31 on_es=12 formals=72 imprecise=0
+```
+
+31 backward writers, 12 of them on EntrySet contours, **72 formals
+between them, and not one is imprecise** — every writer contour has
+exactly one CreationSet at every formal.
+
+**So every contour on the path is already monomorphic, and the container
+has a single creation point.** `split_ess_for_type` has no imprecise
+formal to accept; `split_css` has no second def to partition. The union
+is formed by many individually-precise writers all flowing into one
+CreationSet's element.
+
+**That reframes this issue.** It is not a splitting problem — there is no
+contour left to split. It is a FLOW problem: element writes from distinct,
+monomorphic contours are reaching a container they should not reach. The
+question to answer next is which flow edge carries `str` into `cs=995`'s
+element when every writer contour that could do so is monomorphic in a
+different receiver — most likely an element-channel trampoline that
+unions across CreationSets rather than per-CS
+(see [ifa-fa-snapshot-vs-durable-edge](111-FA-selective-invalidation-per-pass.md)'s
+`vector_elems` discussion). Splitting cannot fix an over-wide edge.
 
 A is a smaller, separate question — whether a stage that only runs once
 everything else is quiet is the right design, given that lifting the gate

@@ -8362,6 +8362,7 @@ static bool result_is_different(AVar *result, AEdge *e) {
 static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Vec<AVar *> &imprecisions) {
   for (ATypeViolation *v : violations) if (v) {
     if (v->av->container && v->av->container->out->n > 1) imprecisions.set_add(v->av->container);
+
     if (is_call_result(v->av)) {
       Vec<AVar *> dispatched;
       PNode *p = v->av->var->def;
