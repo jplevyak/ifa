@@ -588,9 +588,21 @@ property of the analysis, reproduced on the arm that works.
 So the contradiction resolves in favour of the code: `flow_var_to_var`
 and `analyze_edge` are consistent, the data-flow graph IS interprocedural,
 and the faulty step was the inference that a type must arrive along a flow
-edge. It need not: `update_gen(av, av->var->sym->abstract_type)` in
-`analyze_edge` gives an abstractly-typed AVar **every** CreationSet of
-that sym with no edge at all, which is enough to account for the counts.
+edge.
+
+> **The mechanism first offered for that was wrong.**
+> `update_gen(av, av->var->sym->abstract_type)` is in **`refresh_top_edge`**
+> — it seeds `__main__`'s one argument AVar on the program's top edge, once.
+> And `abstract_type` is a **single** CreationSet, not all of a sym's:
+> `make_abstract_type` mints one CS and caches it on the Sym as the "any
+> instance of this class" placeholder. It cannot account for 150-326
+> AVars, and no other `update_gen(..., abstract_type)` site is general
+> either — they seed specific primitive results (`sym_int64`, `sym_char`,
+> `sym_string`) or one element channel.
+>
+> So **why** `unreached` is large on a correct compile is still
+> unexplained. What is measured, and what matters here, is only that it
+> IS large on a correct compile, so it cannot be used as a defect signal.
 
 **Nothing in this issue's chain now points at a defect in the flow graph.**
 The open question returns to where it was before that detour: one
