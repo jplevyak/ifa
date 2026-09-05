@@ -1485,6 +1485,16 @@ evidence puts them:
    only for classes opted in by the frontend. Per-site CS identity has
    been hiding this: it separated constants structurally, so nothing ever
    had to ask for it by demand.
+
+   It cannot be answered per CLASS, because one class covers both cases —
+   some `list` and `tuple` values have a statically known arity and some
+   do not, and demanding a constant from a loop-built list fans out a
+   contour per iteration count. Planned as
+   [131](131-demand-driven-constant-splitting.md), whose demand signal is
+   the constant cap-strip itself (`fa.cc:1022`): when a strip is about to
+   lose constants that distinct creation points disagree on, split
+   instead; when they come from one creation point, strip as today, which
+   is exactly the unknown-arity case identifying itself.
 2. **The two `pyc` segfaults.** Independent of the rest.
 3. **Tuple arity in CreationSet identity**, so `=1` stops costing 19
    tests and the flag stops needing a tuple exception.
