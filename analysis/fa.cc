@@ -513,6 +513,49 @@ static void cselem_shape_claim(const std::string &key, CreationSet *cs);
 // been reusable had the decision waited a pass?
 enum CselemDecline { kCselemOk = 0, kCselemUnfilled, kCselemOther };
 static CselemDecline cselem_last_decline = kCselemOther;
+
+// ifa/129 step 4, second increment: WHY did a mint taken on an unknown
+// shape have nothing to join to?
+//
+// The first increment could only re-decide a mint AFTER the shape arrived,
+// and 2c measured that 390 of 795 such mints never get a shape at all --
+// unreachable that way. The remedy is to stop minting on absence of
+// evidence, which requires knowing what the alternative would have been.
+// creation_point cannot defer: it must return a CreationSet. So "do not
+// mint on an unknown" can only mean "return an existing one", and the
+// question is whether an existing one was available and a guard refused
+// it, or whether none existed at all.
+//
+// Measured, not guessed -- if most unknown mints are kMintNoSiteCS there
+// is nothing to join to at this site and relaxing a guard is the wrong
+// answer. Probe only.
+enum CselemMintWhy {
+  kMintNoSiteCS = 0,   // no CreationSet of this class exists for this site yet
+  kMintMoldSplitChild, // one exists; ifa/105's `mold == 3 && split_child` refused it
+  kMintMoldCMC,        // one exists; issue 045's clone_methods_per_cs refused it
+  kMintMoldIneligible, // one exists; the mold is off or not eligible otherwise
+  kMintWhyCount
+};
+static int cselem_mint_why[kMintWhyCount];  // reported as mintwhy=a/b/c/d, in enum order
+
+// Classify at the mint site, recomputing the mold predicates (they are
+// block-scoped there, and this must not perturb them).
+static CselemMintWhy cselem_classify_mint(AVar *v, Sym *s, EntrySet *es) {
+  bool have_site_cs = false;
+  if (v->var)
+    for (CreationSet *x : s->creators)
+      if (x && x->creation_var == v->var && !(s->abstract_type && x == s->abstract_type->v[0])) {
+        have_site_cs = true;
+        break;
+      }
+  if (!have_site_cs) return kMintNoSiteCS;
+  int mold = csmold_enabled();
+  bool split_child = v->contour_is_entry_set && es && es->split;
+  if (mold == 3 && split_child) return kMintMoldSplitChild;
+  Sym *cmc0 = s->clone_methods_per_cs ? s : (s->type ? unalias_type(s->type) : 0);
+  if (cmc0 && cmc0->clone_methods_per_cs) return kMintMoldCMC;
+  return kMintMoldIneligible;
+}
 struct CselemUnknownMint {
   AVar *v;
   Sym *s;
@@ -761,8 +804,10 @@ Lunique:
     std::string shape_key;
     if (cselem_shape_key(v, s, shape_key))
       cselem_shape_claim(shape_key, cs);
-    else if (cselem_last_decline == kCselemUnfilled)
+    else if (cselem_last_decline == kCselemUnfilled) {
       cselem_unknown_mints.push_back({v, s, cs});  // minted on an unknown (ifa/129 2c)
+      ++cselem_mint_why[cselem_classify_mint(v, s, es)];  // ...and why it had to (step 4)
+    }
   }
   if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
   s->creators.add(cs);
@@ -10969,11 +11014,12 @@ static void report_demand_ratio() {
   fprintf(stderr,
           "DEMAND passes=%d ess=%d css=%d container_cs=%d shapes=%d pshapes=%d ratio=%.2f pratio=%.2f "
           "elemtypes=%d empty=%d mixed=%d novar=%d unkmint=%d unkres=%d unkjoin=%d unkstill=%d "
-          "multidef=%d multidefall=%d rejoin=%d\n",
+          "multidef=%d multidefall=%d rejoin=%d mintwhy=%d/%d/%d/%d\n",
           analysis_pass, fa->ess.n, fa->css.n, c.n_cs, shapes, pshapes,
           shapes ? (double)c.n_cs / shapes : 0.0, pshapes ? (double)c.n_cs / pshapes : 0.0, c.total_types(),
           c.n_empty, c.n_mixed, c.n_novar, unkmint, unkres, unkjoin, unkstill, c.n_multidef, multidef_all,
-          cselem_rejoins);
+          cselem_rejoins, cselem_mint_why[kMintNoSiteCS], cselem_mint_why[kMintMoldSplitChild],
+          cselem_mint_why[kMintMoldCMC], cselem_mint_why[kMintMoldIneligible]);
 }
 
 static void analyze_to_convergence() {

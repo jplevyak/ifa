@@ -1119,11 +1119,76 @@ pinning the decision again. Measured on the first increment: no
 oscillation, `compile_fail` stayed at 3, no new `rc=124`, and every
 program that converged before still converged.
 
-*Next increment, and it is the one with the payoff:* stop the mint side
-deciding on ignorance at all. 2c measured 795 mints taken on an unknown
-shape, of which 390 are **still** unknown at convergence — those are not
-reachable by re-deciding after the fact, only by not minting on absence of
-evidence in the first place. Plus `s->creators` hygiene from (2) above.
+*Next increment — the mint side, and what it is actually made of.* The
+first increment could only re-decide a mint AFTER the shape arrived, and
+2c measured that 390 of 795 such mints never get a shape at all. Those are
+unreachable that way; the only remedy is to stop minting on absence of
+evidence. But `creation_point` cannot defer — it must return a
+CreationSet — so "do not mint on an unknown" can only mean "return an
+existing one", and the first question is whether an existing one was even
+available.
+
+Measured before touching anything (`mintwhy` on the `DEMAND` line, sweep
+`compile__PYC_CSELEM_3__0ec1632e+c4905f52`, 76 programs, 795 unknown
+mints):
+
+| why it had to mint | count | share |
+| --- | --- | --- |
+| `nosite` — no CreationSet of this class exists for this site yet | 415 | 52% |
+| `splitchild` — one exists; ifa/105's `mold == 3 && split_child` refused it | 380 | 48% |
+| `cmc` — one exists; issue 045's `clone_methods_per_cs` refused it | 0 | — |
+| `ineligible` — one exists; the mold is off or ineligible otherwise | 0 | — |
+
+Two populations, and they need different answers. The zeroes are worth as
+much as the counts: **ifa/105's split-child guard is the only thing that
+ever blocks a same-site join here.** Issue 045's exclusion never fires on
+this population, so it is not in the way.
+
+**The 380 (48%): ifa/105's guard, and why relaxing it is the wrong move.**
+The guard is not arbitrary — it measured a real failure: handing a split
+CHILD the mold its parent owns puts both contours back on one container
+instance, and on a chain of four nested `deepcopy`s the shared `r` came
+back with element type `{list<itself>, int64, int64, list, int64}`, both
+self-referential and container/scalar mixed. So this is exactly the case
+CLAUDE.md warns about — the tempting move is to weaken the guard, the
+numbers get better, and the deepcopy chain breaks.
+
+But notice WHAT the guard protects: `PYC_CSSPLIT=1` (ifa/055), the rule
+that *the CreationSet follows the EntrySet split*. That is splitting
+driven by structure, which is the defect in the goal statement, not a
+demand signal. ifa/105 is a conservative guard defending a structural
+rule, and the fix is not to relax the guard but to make the rule it
+defends demand-gated — which is step 3's own closing sentence: "`PYC_CSSPLIT`
+becomes the fallback rather than the driver: a CS follows an ES split only
+where the demand test also asks for it."
+
+So the increment is: **give the split child its parent's CreationSet
+(start merged) and split it back when the shapes diverge.** That is the
+goal statement verbatim, and the first increment establishes that the
+re-decision half is mechanically available. What it needs that the first
+increment did not is the SPLITTING direction — `split_css` is the
+primitive and ifa/111 M3's closure is the bound, but unlike joining it
+narrows, so it is the direction the fixed point does not absorb for free.
+`tests/deepcopy_copy_of_copy_chain.py` is the acceptance test, and
+ifa/105's element type is the exact thing that must not come back.
+
+**The 415 (52%): nothing exists at that site, and that is not ignorance.**
+A fresh allocation site genuinely needs a CreationSet, so minting is the
+right answer — *given the per-site key*. `cselem_shape_key` composes
+`v%d|name#id|shape`, keyed on `v->var->id` by deliberate design ("this
+canonicalizes the contours of ONE allocation site, it does not fuse
+unrelated sites"). Drop the `v%d` and a same-shape CS at a DIFFERENT site
+becomes reusable — which is shedskin's posture exactly (`Class.dcpa = 1`,
+one contour per class program-wide, split on demand) and the only route
+that can move ifa/128's complaint, since that complaint is about sites:
+95 `list` CSs standing for 6 element types are 95 different sites. It is
+also the larger semantic change of the two, and it should not be attempted
+before the split-back direction above works, for the same reason ifa/105
+exists.
+
+*Also outstanding from the first increment:* `s->creators` hygiene — 36
+re-points removed only 21 CreationSets because the abandoned CS stays in
+`s->creators` and the mold route can hand it to a sibling contour.
 
 *Verify:* `PYC_CSMOLD=1` becomes safe — `deepcopy_copy_of_copy_chain`
 converges with `mixed=0` — `PYC_CSELEM=3` stops regressing `rdb` and can
