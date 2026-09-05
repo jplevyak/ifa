@@ -6301,9 +6301,13 @@ struct ESSplitDecision : public gc {
   Vec<AEdge *> stay_edges;
 };
 
+static cchar *dec_why = "?";  // ifa/133 probe: which decline path fired
+
 static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark) {
   EntrySet *es = (EntrySet *)av->contour;
+  dec_why = "?";
   if (es->split) {
+    dec_why = "es_split";
     log(LOG_SPLITTING, "[ses] av %d es %d short-circuit: es->split set\n", av->id, es->id);
     return nullptr;
   }
@@ -6443,6 +6447,7 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
   // exhausted break below).
   if (fsetters && non_rec_edges == 1 && nedges != do_edges.n) {
     log(LOG_SPLITTING, "[ses] av %d es %d short-circuit: non_rec_edges==1 && nedges!=do_edges.n\n", av->id, es->id);
+    dec_why = "single_caller";
     return nullptr;
   }
   ESSplitDecision *dec = new ESSplitDecision;
@@ -6484,7 +6489,11 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
     if (es->fun && es->fun->sym && es->fun->sym->name && !strcmp(es->fun->sym->name, dn))
       fprintf(stderr, "DECIDE-OUT p=%d es=%d av=%d do=%d stay=%d groups=%d\n", analysis_pass, es->id, av->id,
               do_edges.n, stay_edges.n, dec->groups.n);
-  if (!dec->groups.n) return nullptr;
+  if (!dec->groups.n) {
+    dec_why = "no_groups";
+    return nullptr;
+  }
+  dec_why = "decided";
   return dec;
 }
 
@@ -7010,13 +7019,19 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
 
 [[nodiscard]] static int split_entry_set(AVar *av, int fsetters, int fmark, int fdynamic) {
   EntrySet *es = (EntrySet *)av->contour;
+  const bool dbg = getenv("IFA_DBG_SESWHY") != nullptr;
   if (es->split) {
     log(LOG_SPLITTING, "[ses] av %d es %d short-circuit: es->split set\n", av->id, es->id);
+    if (dbg) fprintf(stderr, "[seswhy] es=%d ALREADY_SPLIT\n", es->id);
     return 0;
   }
   if (fdynamic)
-    if (split_edges(av, fsetters, fmark)) return 1;
+    if (split_edges(av, fsetters, fmark)) {
+      if (dbg) fprintf(stderr, "[seswhy] es=%d split_edges\n", es->id);
+      return 1;
+    }
   ESSplitDecision *dec = decide_entry_set_split(av, fsetters, fmark);
+  if (dbg) fprintf(stderr, "[seswhy] es=%d %s %s\n", es->id, dec ? "DECIDED" : "NO_DECISION", dec_why);
   return dec ? apply_entry_set_split(dec) : 0;
 }
 

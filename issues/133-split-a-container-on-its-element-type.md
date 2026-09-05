@@ -106,13 +106,50 @@ element AVar), and `is_call_result(v->av)`, which wants a call PNode and
 casts `v->av->contour` to an `EntrySet *`. **A violation whose AVar lives
 on a CreationSet yields no imprecision at all, so stage 5 cannot see it.**
 
-That is the same shape as
-[129](129-plan-demand-driven-creation-set-splitting.md)'s finding about
-`split_ess_setters`, which likewise acts only when the confluence sits on
-an EntrySet — and it is why the `PYC_ESFORCS` experiment there was inert
-too. **Three separate mechanisms now stop at the same boundary: an AVar
-on a CreationSet contour has no route into the splitter.** That boundary,
-not the trigger, is what this issue has to cross.
+> **CORRECTED.** "No route into the splitter" is wrong, and the author
+> named the reason: **that is what the setter flows do.** `av->setters` on
+> a CS-contour AVar *are* the writers, and each is an AVar in an EntrySet,
+> so the route exists and `collect_cs_setter_confluences` already collects
+> the element AVar. What follows is what the route actually does when
+> taken, measured with a new `IFA_DBG_SESWHY` probe.
+
+### Taking the setter route, and what declines
+
+`split_entry_set` returns 0 for two very different reasons — the ES was
+already split this pass, or `decide_entry_set_split` found no partition —
+and they had never been distinguished. `IFA_DBG_SESWHY=1` now reports
+which, and `dec_why` names the decline path. Walking a CS-contour
+confluence's setters and asking each to split, on `list_pop_insert` under
+`PYC_CSDCPA1=2`:
+
+| route | result |
+| --- | --- |
+| `SPLIT_SETTER` | **45 of 45 `single_caller`** |
+| `SPLIT_TYPE` | 40 `no_groups`, 5 `single_caller` |
+
+`single_caller` is the short-circuit `fsetters && non_rec_edges == 1`,
+whose own comment says it "only applies to the setter path" — so those
+EntrySets have exactly ONE non-recursive caller and a setter split has
+nothing to partition. Switching to the type path clears that for 40 of
+them and they then decline with `no_groups`: **the callers do not differ
+in type at the confluence position either.**
+
+**So the setters' EntrySets are not where the distinction lives.** The
+writer contours are not shared — the CONTAINER is. Splitting a writer's
+ES cannot separate two containers that both flow into it, however the
+split is keyed.
+
+That is the argument for the original Action above rather than a way
+around it: the thing that must come apart is the CreationSet, by
+partitioning `cs->defs`, and `split_css` is the primitive for exactly
+that. The ES route was worth taking to the bottom because it is the one
+the existing machinery offers, and now it is measured rather than
+assumed.
+
+*Kept from the experiment:* `IFA_DBG_SESWHY` and `dec_why`, which answer
+"why did the splitter decline" in one line. This session needed that
+question answered three times and had to re-derive it each time. The
+`PYC_ESFORCS` route itself was inert both ways and is not kept.
 
 **Bounding, and the stop condition.** If the program genuinely builds a
 heterogeneous list, no split helps: the union is real and today's refusal
