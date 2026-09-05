@@ -1444,14 +1444,47 @@ The 18 new compile failures are not one kind:
 **What has to land before this can be turned on**, in the order the
 evidence puts them:
 
-1. **The third clause — a blocked-CS-split must be able to ask for an ES
-   split.** `split_for_setters` already runs `split_ess_setters` before
-   `split_css`, so the ORDER is right, but it is a fixed sequence rather
-   than a trigger: nothing says *"this CreationSet needs to split and
-   cannot, because its conflicting setters all flow through one def AVar
-   — split that def's EntrySet so the creation point becomes two."*
-   `split_entry_set(av, SPLIT_SETTER, ...)` is the primitive and already
-   exists. This is the main missing mechanism and most of the bill.
+1. **~~The third clause~~ — CONSTANTS in the demand test.** *(Revised
+   2026-09-05, after building the third clause and measuring it inert.)*
+
+   The author's observation — *"if the setters have a confluence it is
+   precisely the answer"* — is correct **and already implemented.**
+   `collect_cs_setter_confluences` collects confluences that sit on a
+   CreationSet field (`!av->contour_is_entry_set` is its guard), and the
+   ladder acts on them through the mark-setter rung. Under
+   `PYC_CSDCPA1=2`, `tests/splitter_setter.py` reports
+   `STAGES: TYPE_CONFL SETTER MARK_SETTER` against the default's
+   `TYPE_CONFL SETTER` — the splitter fires and escalates exactly one
+   rung, and the program prints the right answer. That test fails only
+   because its golden pins the stage list.
+
+   A `PYC_ESFORCS` route that split the setters' EntrySets directly from a
+   CS-field confluence was built and measured: **283/30 with it and
+   without it**, and all 64 targets it found were declined by
+   `split_entry_set`. Reverted rather than kept — it is dead code, and
+   the rung that does the work already exists.
+
+   The real EXEC bill is a different mechanism, root-caused on
+   `tests/empty_list_print.py`. `b = [2, 3]` and `k = []` share one `list`
+   CreationSet under the flag, and `k` prints `[0, 0]` instead of `[]`.
+   Both are `list<int>` — there is **no type distinction to observe**. The
+   distinction is a *constant*: length 2 against length 0. At the default
+   `TYPE_CONFL` separates them, but only because per-site CS identity had
+   already put the constants in different contours; under the flag only
+   `SETTER` fires and it does not separate them.
+
+   The reason is that **constants are stripped from contour identity** —
+   the ES split key uses the constant-stripped view of argument types
+   (`fa.cc:5675`) — *except* for classes explicitly marked
+   `clone_methods_per_cs`, which pyc sets only when a ctor param carries
+   `__pyc_clone_constants__` (`python_ifa_build_syms.cc:2855`, issues
+   040/045). `list` is not marked.
+
+   So the item is: **a constant difference at a creation point is an
+   observed distinction and must drive a split**, generally, rather than
+   only for classes opted in by the frontend. Per-site CS identity has
+   been hiding this: it separated constants structurally, so nothing ever
+   had to ask for it by demand.
 2. **The two `pyc` segfaults.** Independent of the rest.
 3. **Tuple arity in CreationSet identity**, so `=1` stops costing 19
    tests and the flag stops needing a tuple exception.
