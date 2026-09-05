@@ -282,21 +282,33 @@ which the value split separates cleanly, `setslice` is not split at all.
 So the shared helper is where the two element types meet, and it is the
 EntrySet that has to come apart.
 
-**Defect A — the VIOLATION stage is starved, and the code says so.**
-Stage 5 is gated on `!analyze_again`, i.e. it runs only in a pass where
-no earlier stage made progress. Our `STAGES:` line is
-`TYPE_CONFL SETTER`, so earlier stages progress every pass and stage 5
-never runs. The comment on that gate already describes this exactly, from
-issue 109:
+**Defect A — stage 5 is delayed, not starved, and only when FA
+converges.** Stage 5 is gated on `!analyze_again`: it runs only in a pass
+where no earlier stage progressed. The obvious reading is that it never
+runs — but FA does not progress forever. `IFA_DBG_STAGE5` on
+`list_pop_insert` under `PYC_CSDCPA1=2`:
 
-> *"Recording the sizeof_element violation is useless while VIOLATION is
-> STARVED by the first-stage-wins cascade — measured on sunfish, whose
-> STAGES line is `TYPE_CONFL SETTER SETTER_OF_SETTER` and never reaches
-> stage 5, so the violation is recorded and nothing ever splits on it."*
+```
+p=0..4   analyze_again=1  -> starved   (violations 26,47,63,25,27)
+p=5      analyze_again=0  -> RUNS      (violations=27)
+p=6      analyze_again=0  -> RUNS      (violations=27)
+```
 
-`PYC_SIZEOF_VIOL=2` lifts the gate, and it works: `STAGES:` becomes
-`TYPE_CONFL SETTER VIOLATION`. **The starvation is real, general, and
-already has an escape hatch** — but on its own it changes nothing here.
+FA converges at pass 7 (`pass_limit_hit=0`), so the quiescent pass
+arrives and **stage 5 gets two turns** — and makes no progress in either,
+which is why `VIOLATION` is absent from the `STAGES:` line. The gate is a
+delay, not a permanent block.
+
+It is a *real* delay: `PYC_SIZEOF_VIOL=2` lifts it, stage 5 then runs
+from pass 0 and **does** progress (`STAGES:` gains `VIOLATION`). So the
+gate genuinely suppresses splits that would otherwise happen — they just
+are not the splits this case needs, and the `mixed basic types` error
+survives either way.
+
+The permanent starvation the gate's own comment describes (issue 109,
+measured on sunfish) is the **non-convergent** case: if the pass limit is
+hit, quiescence never arrives and stage 5 never runs at all. That is a
+different program shape from this one, and worth keeping separate.
 
 **Defect B — the violation produces no imprecision, and this is the
 terminal blocker.** With the gate lifted, stage 5 runs and
@@ -311,9 +323,13 @@ So the demand signal exists, is correct, is recorded, and reaches a stage
 that cannot address it. **B is the work**: give a BOXING violation on an
 AVar inside a shared contour a route to that contour's EntrySet, so the
 value split that already works for `append` and `insert` can apply to
-`setslice` too. A is worth fixing alongside — a stage that only runs when
-everything else is quiet will keep hiding results like this — but A alone
-is measured insufficient.
+`setslice` too.
+
+A is a smaller, separate question — whether a stage that only runs once
+everything else is quiet is the right design, given that lifting the gate
+demonstrably produces splits it otherwise suppresses. But A is measured
+insufficient for this case, and on a converging program it is a delay
+rather than a block.
 
 **Bounding, and the stop condition.** If the program genuinely builds a
 heterogeneous list, no split helps: the union is real and today's refusal

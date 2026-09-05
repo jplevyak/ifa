@@ -9144,6 +9144,10 @@ static int cpa_enabled() {
   // on sunfish, whose STAGES line is `TYPE_CONFL SETTER SETTER_OF_SETTER`
   // and never reaches stage 5, so the violation is recorded and nothing
   // ever splits on it.
+  if (getenv("IFA_DBG_STAGE5"))
+    fprintf(stderr, "[stage5] p=%d analyze_again=%d -> %s (violations=%d)\n", analysis_pass, analyze_again,
+            (!analyze_again || sizeof_viol_enabled() >= 2) ? "RUNS" : "starved",
+            fa->type_violations.set_count());
   if (!analyze_again || sizeof_viol_enabled() >= 2) {
     // 5) split AEdges(s) and EntrySet(s) for violations based on type using
     // dynamic dispatch
