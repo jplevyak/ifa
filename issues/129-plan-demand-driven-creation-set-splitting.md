@@ -1410,6 +1410,62 @@ CreationSet needs to split, but its creation points share a contour —
 split that contour so it can"*. That is the mechanism the 14 EXEC failures
 are missing, and it is the next thing to build.
 
+**Corpus `check`, and it is nowhere near flippable yet.**
+`check__PYC_CSDCPA1_2__3c388f22+adf4abe8` against the default baseline
+`check__default__a935532b+adf4abe8`:
+
+| | default | `PYC_CSDCPA1=2` |
+| --- | --- | --- |
+| container CS / shapes | 3748 / 626 = **5.99** | 2540 / 570 = **4.46** |
+| `pratio` | 3.92 | **2.89** |
+| compile_fail | 2 | **20** |
+| run_fail | 39 | 33 |
+| stdout_differs | 24 | 17 |
+
+The contour win is real and corpus-wide: **−32% container CreationSets**,
+ratio 5.99 → 4.46, `pratio` 3.92 → 2.89. Everything else is a
+regression, and `run_fail` / `stdout_differs` falling is NOT an
+improvement — those columns shrank because 18 fewer programs got far
+enough to run.
+
+The 18 new compile failures are not one kind:
+
+- 13 ordinary `rc=1` diagnostics — chess, chull, dijkstra, kanoodle,
+  life, linalg, path_tracing, pygmy, rdb, richards, solitaire, sudoku2,
+  sudoku3, webserver.
+- **2 segfaults in `pyc` itself** — `plcfrs` and `softrender`, `rc=139`.
+  A crash under a flag is still a latent bug and has to be root-caused
+  whatever happens to this architecture.
+- **2 new timeouts** — `pygasus` and `quameon` at the 400 s cap, plus
+  `othello3` going `rc=1` → `rc=124`. Passes rise sharply everywhere
+  (chess 32 → 45, rubik2 12 → 39, sieve 7 → 17): with one contour per sym
+  the splitter has more to re-derive and takes more passes to settle.
+
+**What has to land before this can be turned on**, in the order the
+evidence puts them:
+
+1. **The third clause — a blocked-CS-split must be able to ask for an ES
+   split.** `split_for_setters` already runs `split_ess_setters` before
+   `split_css`, so the ORDER is right, but it is a fixed sequence rather
+   than a trigger: nothing says *"this CreationSet needs to split and
+   cannot, because its conflicting setters all flow through one def AVar
+   — split that def's EntrySet so the creation point becomes two."*
+   `split_entry_set(av, SPLIT_SETTER, ...)` is the primitive and already
+   exists. This is the main missing mechanism and most of the bill.
+2. **The two `pyc` segfaults.** Independent of the rest.
+3. **Tuple arity in CreationSet identity**, so `=1` stops costing 19
+   tests and the flag stops needing a tuple exception.
+4. **Convergence cost.** Two new timeouts and passes up 40-200%.
+   [111](111-FA-selective-invalidation-per-pass.md)'s selective
+   invalidation (`IFA_SELECTIVE`, still default 0) is the existing lever
+   and has never had a reason to pay for itself; this is that reason.
+5. **The `splitter_*` goldens**, decided deliberately. `splitter_setter`
+   prints the right answer under the flag and fails only its
+   `STAGES:` assertion, so the question is whether resolving `{A, B}` by
+   poly dispatch instead of splitting is acceptable *for codegen* — a
+   direct call is better than a dynamic one. Re-bless only if the split
+   is genuinely unnecessary; `.known_issue` if it hides a precision loss.
+
 *Not built, deliberately:* nothing here weakens the flag to make the suite
 pass. The flag is off by default, the default path is untouched
 (`make test` rc=0), and 30 failures is the honest state of an
