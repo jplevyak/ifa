@@ -412,10 +412,41 @@ write reaches several containers.
 monomorphic, single-target, and non-formal; the container has one
 creation point; and yet both `int64` and `str` writers target
 `cs=995`'s element. So distinct contours are writing different types into
-the *same* container, which means the RECEIVER identity is what is wrong —
-somewhere upstream, `l` and `l3` both resolve to `cs=995`. That is where
-to look next: not at the splitter, and not at the element edge, but at
-how the receiver of `__pyc_setslice__` is resolved to a CreationSet.
+the *same* container.
+
+### `compute_setters` does not run back from the set points
+
+The natural next move — *the setters are run back from the set points in
+the different EntrySets, so seed them on the element* — was tried, and it
+identifies a genuine cycle before failing for a different reason.
+
+**The cycle is real.** `collect_cs_setter_confluences` collects the
+element AVar only when `!same_eq_classes(av->setters, x->setters)` against
+a FORWARD neighbour. An element that has never been through
+`compute_setters` has no setters, and neither do its readers, so
+`same_eq_classes(null, null)` is true, the element is skipped,
+`compute_setters` never runs on it, and it never acquires setters.
+Measured: `cs=995` reports `elem_setters=-1 fwd=4 fwd_with_setters=0`.
+Seeding it from the condition that does hold — its backward sources
+disagree on type, the same test `collect_type_confluence` applies to this
+very AVar — breaks the cycle and the element *is* collected
+(`[csetback] cs=995 seeded from set points (back=31)`).
+
+**And it still gains no setters, because that is not what the function
+does.** For `AKIND_SETTER`, `compute_setters` walks
+`dir = &av->forward` — not backward — and its result goes to
+`update_setter(x->container, x, avs)`, the *container of each forward
+neighbour*. It never assigns `av->setters`. So setters do not propagate
+back from the set points to a CreationSet-contour AVar; for this `akind`
+the walk is forward, and only `AKIND_TYPE` reads `av->backward`.
+
+Seeding therefore changes nothing — 16 failures under `PYC_CSDCPA1=2`
+with and without — and `PYC_CSETBACK` is not kept. But the cycle it
+exposes is worth keeping on the record: **a container element cannot
+become a setter confluence on its own, because the test for being one
+requires the setters that being one would produce.** Any future attempt to
+drive a split from a container's element channel has to supply that seed
+from somewhere, and `compute_setters` as written will not consume it.
 
 *What is kept:* `IFA_DBG_TCDROP`, which names every confluence the stage
 discards. That is the measurement this issue turned on, and nothing else
