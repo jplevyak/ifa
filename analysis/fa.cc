@@ -2136,6 +2136,25 @@ void fill_tvals(Fun *fn, PNode *p, int n) {
 static void make_kind(PNode *p, EntrySet *es, Sym *kind, AVar *container, Vec<Var *> *vars, Vec<AVar *> *avars,
                       int vstart, int tstart, int l) {
   CreationSet *cs = creation_point(container, kind);
+  // ifa/132: two creation points of DIFFERENT arity reaching one
+  // CreationSet means it has NO STATIC ARITY. This is exactly the rule
+  // get_sym_tup already applies ACROSS an equivalence class
+  // (clone.cc:1268, `if (n != cs->vars.n) tup = false`), applied WITHIN a
+  // CreationSet -- where `cs->vars.n` is a single number that cannot
+  // express the disagreement and silently keeps the larger arity.
+  //
+  // Without it, `b = [2, 3]` and `k = []` sharing a CS (PYC_CSDCPA1) give
+  // that CS a 2-field RECORD layout, `len()` folds to the constant 2
+  // (`return 2;` in the emitted C), and `k` prints `[0, 0]`.
+  // `no_static_arity` is what makes tuple_able() false, so clone gives the
+  // CS list layout and `len` becomes a runtime read -- the same remedy
+  // fa.cc:2398 already applies to prim_make's dynamic-length containers.
+  if (cs->vars.n && cs->vars.n != l) {
+    if (!cs->no_static_arity && getenv("IFA_DBG_ARITY"))
+      fprintf(stderr, "[arity] p=%d cs=%d sym=%s had=%d now=%d -> no_static_arity\n", analysis_pass, cs->id,
+              kind->name ? kind->name : "?", cs->vars.n, l);
+    cs->no_static_arity = 1;
+  }
   cs->vars.fill(l);
   for (int i = 0; i < l; i++) {
     AVar *av = nullptr;
@@ -2161,6 +2180,18 @@ static void make_kind(PNode *p, EntrySet *es, Sym *kind, AVar *container, Vec<Va
     // leaking a heterogeneous tuple's field union into its constant-index
     // reads. Monomorphicity is asked of `cs->vars`, not of the element.
     if (iv->var->sym->name) cs->var_map.put(iv->var->sym->name, iv);
+    // ifa/132, the other half of the arity check above. ifa/104 leaves the
+    // generic element BOTTOM on purpose, because that is what tuple_able()
+    // tests and what keeps a record-able container's per-index types
+    // precise. But a container whose creation points disagree on arity is
+    // NOT record-able: clone gives it list layout, and list layout reads
+    // through the generic element. Leaving it bottom types every element
+    // `_CG_void_type` and codegen fails outright
+    // ("incompatible integer to pointer conversion ... from 'int'"). Seed
+    // it from the per-index vars, exactly as fa.cc's prim_make path seeds
+    // its dynamic-length containers from the source element.
+    if (cs->no_static_arity)
+      if (AVar *gelem = get_element_avar(cs)) flow_vars(iv, gelem);
   }
 }
 

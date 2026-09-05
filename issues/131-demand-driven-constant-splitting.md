@@ -75,7 +75,12 @@ at runtime, and `k` should print `[]`. That it prints `[0, 0]` is a **bug
 on the merged path**, not evidence that a split was owed.
 
 Which makes the next step root-causing the blind cast, not building a
-splitter — and only then asking whether any split is owed at all. Adding
+splitter — and only then asking whether any split is owed at all. **Done:
+[132](132-arity-is-representation-not-provenance.md).** The blind cast is
+ifa/055's correct handling of `sizeof` on a zero-field record; the defect
+is upstream, where `make_kind` lets two creation points of different
+arity share one CreationSet and the CS silently keeps the larger arity.
+Arity is representation, not provenance. Adding
 constant splitting to make this test pass would be the retreat this repo
 names: the numbers would improve and the real defect would stay.
 
