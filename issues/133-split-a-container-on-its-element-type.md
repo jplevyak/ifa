@@ -490,11 +490,48 @@ call edge's argument rather than a plain `backward` flow edge, so a pure
 `av->backward` closure cannot see it; `backflow_path` and `e->args` are
 where to look.
 
-**So the next increment is phase 2 on its own:** split the 4 path formals
-and observe whether the creation point duplicates as a consequence,
-rather than trying to locate it first. If it does, phase 3 becomes
-`split_css` keyed on creation point, which is machinery that already
-exists.
+### The graph IS interprocedural; the anomaly is elsewhere
+
+`creators=0` is not a limitation of `av->backward`. The walk crosses
+procedure boundaries freely — from `__pyc_setslice__` it reaches
+`__delitem__`, `pop` and `__main__`:
+
+```
+[cpath-funs] av=3287 reached=16 in_defs=0 funs: __delitem__ __main__ __pyc_setslice__ pop
+[cpath-funs] av=5749 reached=22 in_defs=0 funs: __delitem__ __main__ __pyc_setslice__ pop
+```
+
+So the earlier guess that the creation point arrives by a call-edge
+argument invisible to `backward` was wrong. Two measurements say where
+things actually stand:
+
+```
+[cpath-def]  def av=797 var=? es=2 fun=__main__ reached_by_walk=0 fwd=1 back=0
+[cpath-recv] av=3287 receiver spans 1 CS: list#995
+[cpath-recv] av=5749 receiver spans 1 CS: list#995
+```
+
+- `cs=995`'s single creation point is `av=797` in `__main__`. `back=0`
+  is right — it is a source. But the container walk **never reaches it**,
+  despite reaching `__main__`.
+- **Both writer receivers are monomorphic on `list#995`.** The container
+  path is already precise; there is nothing to split there either.
+
+**So all three phases are already precise, and the element still unions.**
+The value path is split, the receivers are monomorphic and both exactly
+`cs=995`, and the container has one creation point. On this evidence the
+analysis is asserting that one list, created once in `__main__`, receives
+both `int64` and `str` writes — which the program does not do (CPython
+runs it with three separate lists).
+
+**That is the anomaly to explain next, and it is not a splitting
+question.** Two AVars carry `cs=995` in their type while no backward path
+connects them to `av=797`, the only AVar that creates it. Either the type
+reached them without a flow edge, or `av=797` is not the creation point
+the analysis associates with them. Resolving that comes before any
+further split work: every splitting mechanism examined in this issue is
+behaving correctly on the information it is given, and the information is
+wrong.
 
 *What is kept:* `IFA_DBG_TCDROP`, which names every confluence the stage
 discards. That is the measurement this issue turned on, and nothing else

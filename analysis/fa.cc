@@ -11398,23 +11398,53 @@ static void report_mixed_element_owners() {
         if (b && b->container) conts.set_add(b->container);
       conts.set_to_vec();
       fprintf(stderr, "  [cpath] %d distinct container AVars\n", conts.n);
+      for (AVar *c2 : conts)
+        if (c2 && c2->out && c2->out->type) {
+          fprintf(stderr, "  [cpath-recv] av=%d receiver spans %d CS:", c2->id, c2->out->type->sorted.n);
+          for (CreationSet *x : c2->out->type->sorted)
+            if (x) fprintf(stderr, " %s#%d", (x->sym && x->sym->name) ? x->sym->name : "?", x->id);
+          fprintf(stderr, "\n");
+        }
       for (AVar *c : conts) {
         if (!c) continue;
         // Walk back to the creation point: the AVar whose cs_map names cs.
         Vec<AVar *> seen, work;
         seen.set_add(c);
         work.add(c);
-        int head = 0, steps = 0, creators = 0, es_on_path = 0, formals_on_path = 0;
-        while (head < work.n && steps < 400) {
+        int head = 0, steps = 0, creators = 0, es_on_path = 0, formals_on_path = 0, in_defs = 0;
+        std::set<std::string> funs;
+        while (head < work.n && steps < 20000) {
           AVar *a = work.v[head++];
           ++steps;
           if (a->cs_map && a->cs_map->get(cs->sym) == cs) ++creators;
+          if (cs->defs.set_in(a)) ++in_defs;
           if (a->contour_is_entry_set) {
             ++es_on_path;
+            EntrySet *aes = (EntrySet *)a->contour;
+            if (aes && aes->fun && aes->fun->sym && aes->fun->sym->name) funs.insert(aes->fun->sym->name);
             if (a->var && a->var->is_formal) ++formals_on_path;
           }
           for (AVar *x : a->backward)
             if (x && seen.set_add(x)) work.add(x);
+        }
+        {
+          std::string fl;
+          int n = 0;
+          for (auto &f : funs) {
+            if (n++ > 11) { fl += " ..."; break; }
+            fl += " " + f;
+          }
+          fprintf(stderr, "  [cpath-funs] av=%d reached=%d in_defs=%d funs:%s\n", c->id, steps, in_defs, fl.c_str());
+          for (AVar *d : cs->defs)
+            if (d)
+              fprintf(stderr, "  [cpath-def] def av=%d var=%s es=%d fun=%s reached_by_walk=%d fwd=%d back=%d\n",
+                      d->id, (d->var && d->var->sym && d->var->sym->name) ? d->var->sym->name : "?",
+                      d->contour_is_entry_set ? ((EntrySet *)d->contour)->id : -1,
+                      (d->contour_is_entry_set && ((EntrySet *)d->contour)->fun &&
+                       ((EntrySet *)d->contour)->fun->sym && ((EntrySet *)d->contour)->fun->sym->name)
+                          ? ((EntrySet *)d->contour)->fun->sym->name
+                          : "?",
+                      seen.set_in(d) ? 1 : 0, d->forward.n, d->backward.n);
         }
         fprintf(stderr, "  [cpath] container av=%d es=%d fun=%s -> steps=%d creators=%d es_on_path=%d formals=%d\n",
                 c->id, c->contour_is_entry_set ? ((EntrySet *)c->contour)->id : -1,
