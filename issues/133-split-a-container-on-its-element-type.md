@@ -151,6 +151,46 @@ assumed.
 question answered three times and had to re-derive it each time. The
 `PYC_ESFORCS` route itself was inert both ways and is not kept.
 
+### Why the setter split declines: it already succeeded
+
+The author's question — *the setters' EntrySets get split by the value
+being set, why isn't that happening?* — has a measurable answer: **it is
+happening, and correctly.** `PYC_CSDCPA1=2` on `list_pop_insert`:
+
+```
+append es=109..112,114   args=[... list#1003  int64…]      ret=list#1003
+append es=113            args=[... list#1016  str#953]     ret=list#1016
+insert es=86             args=[... list#1016  … str#953]
+```
+
+`append` has six contours, split per value type, and the `str` one takes a
+**different receiver CreationSet** from the five `int64` ones. The value
+split is doing exactly its job. That is also why asking those EntrySets to
+split again reports `single_caller` and `no_groups` — they are already
+monomorphic; there is nothing left to partition.
+
+**The merge is upstream of every write.** The CreationSets and their
+creation points:
+
+| | list CreationSets | defs |
+| --- | --- | --- |
+| default | 10 | one creation point each |
+| `PYC_CSDCPA1=2` | 3 live | `cs=995` 1, `cs=1003` 1, **`cs=1016` 8** |
+
+Eight creation points share `cs=1016`. They arrive there because, once a
+list is mutated it loses its static arity, and
+[132](132-arity-is-representation-not-provenance.md)'s rule — correctly —
+lets a CreationSet with no static arity absorb any arity. So the
+container is merged *before* any write happens; each write is then routed
+through a correctly-split writer contour into the *same* container, and
+the element unions.
+
+**No amount of EntrySet splitting can fix that**, because the writer
+contours are not what is shared. The eight defs of `cs=1016` are, and
+partitioning them is the action this issue opened with. The concrete
+target is now named: one CreationSet, eight creation points, partition by
+the element type each contributes.
+
 **Bounding, and the stop condition.** If the program genuinely builds a
 heterogeneous list, no split helps: the union is real and today's refusal
 is the right answer. So the split is *attempted*, and on failure control
