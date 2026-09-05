@@ -497,6 +497,7 @@ void flow_vars_assign(AVar *rhs, AVar *lhs) {
 }
 
 static int cselem_enabled();  // ifa/issues/101, defined with the other flags
+static int cssiteless_enabled();  // ifa/129 step 4, ditto
 static int csmold_enabled();  // ifa/issues/101, ditto
 // ifa/issues/074 (PYC_CSELEM=3): re-key container CreationSet identity on
 // the RECEIVER's structural element shape. Defined with capture_elem_keys.
@@ -6011,6 +6012,30 @@ static int csmold_enabled() {
   return e;
 }
 
+// ifa/129 step 4: drop the PER-SITE component from the mode-3 shape key.
+//
+// cselem_shape_key composes `v<id>|class#id|shape`. The leading `v<id>` is
+// `v->var->id` -- WHERE the value was allocated -- so the canon is keyed per
+// allocation site and the fewest contours it can ever name is the number of
+// distinct (site, class, shape) triples rather than of (class, shape) pairs.
+// Measured on the corpus: 1670 against 660, a 2.53x fragmentation, and the
+// 660 lands within 5% of `shapes` (626), the independent content census.
+// Contour identity is supposed to key on types and CS partitioning, never on
+// provenance, and `v->var->id` is provenance.
+//
+// OFF by default: it merges contours of UNRELATED allocation sites, which is
+// a bigger merge than anything mode 3 does today, and it is only safe with
+// cselem_resplit_diverged armed to take the merge back. Turn both on
+// together (PYC_CSSITELESS=1 PYC_CSRESPLIT=1) or neither.
+static int cssiteless_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_CSSITELESS");
+    e = v ? atoi(v) : 0;
+  }
+  return e;
+}
+
 // ifa/issues/101: detect and break 2-cycles in the ES split ledger.
 //
 // DEFAULT 1 since ifa/issues/055. Without it the ledger can hold the
@@ -9942,7 +9967,10 @@ static bool cselem_shape_key(AVar *v, Sym *s, std::string &out) {
   // each class its own entry and makes that guard redundant rather than
   // load-bearing.
   char pre[128];
-  snprintf(pre, sizeof pre, "v%d|%s#%d|%d", v->var->id, s->name ? s->name : "?", s->id, shape.id);
+  if (cssiteless_enabled())
+    snprintf(pre, sizeof pre, "%s#%d|%d", s->name ? s->name : "?", s->id, shape.id);
+  else
+    snprintf(pre, sizeof pre, "v%d|%s#%d|%d", v->var->id, s->name ? s->name : "?", s->id, shape.id);
   out = pre;
   cselem_last_decline = kCselemOk;
   return true;
@@ -10059,6 +10087,108 @@ static int cselem_rejoin_unknown_mints() {
   if (joined && getenv("IFA_DBG_DEMAND"))
     fprintf(stderr, "REJOIN p=%d joined=%d total=%d\n", analysis_pass, joined, cselem_rejoins);
   return joined ? 1 : 0;
+}
+
+// ifa/129 STEP 4, the SPLIT-BACK direction.
+//
+// cselem_rejoin_unknown_mints widens: it moves a site onto a CreationSet
+// that already exists. This narrows, and narrowing is the direction a
+// growing fixed point does NOT absorb for free -- which is exactly why it
+// has to exist before the merge is widened. Without it, a merge that later
+// turns out to be wrong is permanent, and that is ifa/105's measured
+// failure: a split child handed its parent's container came back with
+// element type {list<itself>, int64, int64, list, int64}, self-referential
+// and container/scalar mixed.
+//
+// The test is symmetric with the join's, and it is a DEMAND test: the join
+// merges two sites whose shapes are known and EQUAL; this separates the
+// defs of one CreationSet whose shapes are known and DIFFER. Divergence is
+// an observed distinction, so acting on it is demand splitting rather than
+// structural splitting.
+//
+// A def whose key is not known does not move and does not vote. Separating
+// on an unknown is the mint-side error running in the other direction, and
+// the whole point of this issue is not to make contours out of ignorance.
+static int csresplit_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_CSRESPLIT");
+    e = v ? atoi(v) : 0;  // see cssiteless_enabled: arm the two together
+  }
+  return e;
+}
+
+static int cselem_resplits = 0;   // defs moved off a diverged CS, cumulative
+static int cselem_resplit_mints = 0;  // of those, how many needed a NEW CS
+
+static int cselem_resplit_diverged() {
+  if (cselem_enabled() != 3 || !csresplit_enabled()) return 0;
+  const bool dbg = getenv("IFA_DBG_CSELEM") != nullptr;
+  int moved = 0;
+  Vec<CreationSet *> css;
+  for (CreationSet *cs : fa->css)
+    if (cs && cs->sym && cs->sym->element && cs->defs.set_count() > 1) css.add(cs);
+  qsort_by_id(css);  // decide in a stable order, like split_css
+  for (CreationSet *cs : css) {
+    std::map<std::string, Vec<AVar *>> groups;
+    for (AVar *d : cs->defs)
+      if (d) {
+        std::string key;
+        if (!cselem_shape_key(d, cs->sym, key)) continue;  // unknown: does not vote
+        groups[key].add(d);
+      }
+    if (groups.size() < 2) continue;  // no observed distinction
+    // The HOME group keeps `cs`: prefer the key the canon already points at
+    // this CreationSet, so the canon stays true without being rewritten;
+    // failing that, the largest group, so the fewest defs move.
+    std::string home;
+    for (auto &g : groups) {
+      auto it = cselem_shape_canon.find(g.first);
+      if (it != cselem_shape_canon.end() && it->second == cs) {
+        home = g.first;
+        break;
+      }
+    }
+    if (home.empty()) {
+      int best = -1;
+      for (auto &g : groups)
+        if (g.second.n > best) {
+          best = g.second.n;
+          home = g.first;
+        }
+    }
+    for (auto &g : groups) {
+      if (g.first == home) continue;
+      // Prefer JOINING the canon's existing owner for this shape over
+      // minting: a separation that mints when an equivalent contour already
+      // exists just trades one over-discrimination for another.
+      CreationSet *dest = nullptr;
+      auto it = cselem_shape_canon.find(g.first);
+      if (it != cselem_shape_canon.end() && it->second && it->second != cs && it->second->sym == cs->sym &&
+          fa->css_set.set_in(it->second))
+        dest = it->second;
+      if (!dest) {
+        dest = new CreationSet(cs);
+        dest->split = cs;
+        cselem_shape_claim(g.first, dest);
+        ++cselem_resplit_mints;
+      }
+      Vec<AVar *> rest;
+      cs->defs.set_difference(g.second, rest);
+      cs->defs.move(rest);
+      for (AVar *d : g.second)
+        if (d && d->cs_map) d->cs_map->put(cs->sym, dest);
+      moved += g.second.n;
+      if (dbg)
+        fprintf(stderr, "[csresplit] p=%d cs=%d -> cs=%d  n=%d shape=%s%s\n", analysis_pass, cs->id, dest->id,
+                g.second.n, cselem_key_shape_text(g.first), dest->split == cs ? " (new)" : " (joined)");
+    }
+  }
+  cselem_resplits += moved;
+  if (moved && getenv("IFA_DBG_DEMAND"))
+    fprintf(stderr, "RESPLIT p=%d moved=%d total=%d mints=%d\n", analysis_pass, moved, cselem_resplits,
+            cselem_resplit_mints);
+  return moved ? 1 : 0;
 }
 
 static void capture_elem_keys() {
@@ -11020,7 +11150,9 @@ static void report_demand_ratio() {
   // is the fragmentation the site component costs. Counterfactual only --
   // nothing here changes a decision.
   int canon = (int)cselem_shape_canon.size(), canon_siteless = 0;
-  {
+  if (cssiteless_enabled()) {
+    canon_siteless = canon;  // the key already is site-free; nothing to strip
+  } else {
     std::set<std::string> sl;
     for (auto &kv : cselem_shape_canon) {
       size_t bar = kv.first.find('|');
@@ -11031,12 +11163,13 @@ static void report_demand_ratio() {
   fprintf(stderr,
           "DEMAND passes=%d ess=%d css=%d container_cs=%d shapes=%d pshapes=%d ratio=%.2f pratio=%.2f "
           "elemtypes=%d empty=%d mixed=%d novar=%d unkmint=%d unkres=%d unkjoin=%d unkstill=%d "
-          "multidef=%d multidefall=%d rejoin=%d mintwhy=%d/%d/%d/%d canon=%d canonsiteless=%d\n",
+          "multidef=%d multidefall=%d rejoin=%d mintwhy=%d/%d/%d/%d canon=%d canonsiteless=%d resplit=%d/%d\n",
           analysis_pass, fa->ess.n, fa->css.n, c.n_cs, shapes, pshapes,
           shapes ? (double)c.n_cs / shapes : 0.0, pshapes ? (double)c.n_cs / pshapes : 0.0, c.total_types(),
           c.n_empty, c.n_mixed, c.n_novar, unkmint, unkres, unkjoin, unkstill, c.n_multidef, multidef_all,
           cselem_rejoins, cselem_mint_why[kMintNoSiteCS], cselem_mint_why[kMintMoldSplitChild],
-          cselem_mint_why[kMintMoldCMC], cselem_mint_why[kMintMoldIneligible], canon, canon_siteless);
+          cselem_mint_why[kMintMoldCMC], cselem_mint_why[kMintMoldIneligible], canon, canon_siteless, cselem_resplits,
+          cselem_resplit_mints);
 }
 
 static void analyze_to_convergence() {
@@ -11184,13 +11317,16 @@ static void analyze_to_convergence() {
       // LAST, and only when nothing else asked for a pass. See
       // cselem_rejoin_unknown_mints for why settling first is the point
       // rather than a concession.
-      int rej = 0;
-      if (!ext && !rea && !fil) rej = cselem_rejoin_unknown_mints();
+      // Narrowing runs BEFORE widening: a merge that evidence has already
+      // contradicted must come apart before another one is proposed.
+      int rsp = 0, rej = 0;
+      if (!ext && !rea && !fil) rsp = cselem_resplit_diverged();
+      if (!ext && !rea && !fil && !rsp) rej = cselem_rejoin_unknown_mints();
       fa->last_pass_reanalyze = (rea != 0);
       if (getenv("PYC_DBG_STAGEDELTA"))
-        fprintf(stderr, "PASSEND p=%d extend=%d reanalyze=%d fills=%d rejoin=%d viol=%d\n", analysis_pass, ext, rea,
-                fil, rej, fa->type_violations.set_count());
-      loop_again = (ext || rea || fil || rej);
+        fprintf(stderr, "PASSEND p=%d extend=%d reanalyze=%d fills=%d resplit=%d rejoin=%d viol=%d\n",
+                analysis_pass, ext, rea, fil, rsp, rej, fa->type_violations.set_count());
+      loop_again = (ext || rea || fil || rsp || rej);
     }
   } while (loop_again && analysis_pass <= fa->pass_limit);
   if (getenv("PYC_DBG_OSC"))

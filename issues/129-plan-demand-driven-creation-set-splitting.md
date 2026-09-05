@@ -1186,6 +1186,16 @@ also the larger semantic change of the two, and it should not be attempted
 before the split-back direction above works, for the same reason ifa/105
 exists.
 
+> **RETRACTED 2026-09-05 by the measurement in "Both paths were built and
+> both were measured" below.** The recommendation in this subsection was
+> made from a STATIC counterfactual on the canon's key space, and the
+> dynamic result is the opposite: dropping the site component makes the
+> CreationSet count WORSE on 4 of 5 programs. The numbers below are still
+> correct about what they measure — they just do not predict the outcome,
+> and inferring one from the other was the error. Left in place because
+> the 660 ≈ 626 agreement remains the best evidence in this issue for what
+> the demand-driven contour count actually is.
+
 **Which of the two is the straighter path to the goal: the 415 (drop the
 site component), and it is not close.** Measured with a counterfactual on
 the canon itself — strip the leading `v<id>|` from every claimed key and
@@ -1242,6 +1252,86 @@ re-points removed only 21 CreationSets because the abandoned CS stays in
 *Verify:* `PYC_CSMOLD=1` becomes safe — `deepcopy_copy_of_copy_chain`
 converges with `mixed=0` — `PYC_CSELEM=3` stops regressing `rdb` and can
 become the default, and chess reaches shedskin's ~7 s.
+
+
+### Step 4 — both paths were built, and both were measured
+
+Two flags, both **default off**, so mode 3's recorded baseline is unchanged:
+
+- `PYC_CSRESPLIT=1` — `cselem_resplit_diverged`, the split-back. Partitions
+  the defs of a container CreationSet by their current shape key and moves
+  every non-home group off, preferring to JOIN the canon's existing owner
+  for that shape over minting a new CS. A def whose key is unknown does not
+  move and does not vote — separating on an unknown is the mint-side error
+  running the other way.
+- `PYC_CSSITELESS=1` — drops the `v<id>|` prefix from `cselem_shape_key`,
+  making the canon key `class#id|shape`.
+
+They are armed together on purpose: the site-free key merges contours of
+unrelated allocation sites, and that merge is only defensible if it can be
+taken back.
+
+**Result: the site-free key makes the CreationSet count worse, on 4 of 5
+programs.**
+
+| program | mode 3 `container_cs` / `ess` / passes | `+CSSITELESS` |
+| --- | --- | --- |
+| chess | 75 / 985 / 14 | **103** / 1168 / 36 |
+| quameon | 133 / 1125 / 55 | **148** / 1223 / 64 |
+| rdb | 139 / 1083 / 22 | **143** / — / 35 |
+| rubik2 | 43 / 412 / 12 | **44** / 446 / 20 |
+| sieve | 20 / 249 / 7 | 14 / 237 / 10 |
+
+`sieve`, the only program that improved, is also the smallest.
+
+**Root cause, and it is not subtle.** chess under `PYC_DBG_OSC`:
+
+```
+mode 3                 final_pass=14  violations=0    ess=985   css=4126
+mode 3 + CSSITELESS    final_pass=36  violations=183  ess=1168  css=4785
+```
+
+Merging containers from unrelated sites widens their element types until
+use sites see a type violation. The splitter then splits EntrySets to
+recover the precision — and because CreationSet identity is
+*(allocation site × contour)*, **every EntrySet split mints fresh
+CreationSets**. The merge is paid for twice: once in the contour it saved,
+and again in the contours the induced ES splitting created. Net worse.
+
+**What this says about the static counterfactual.** `canon` 1670 against
+`canonsiteless` 660 is a true measurement of the identity space the key can
+*name*. It is not a prediction of the CS count, because widening the key
+CAUSES ES splitting that mints CSs the key never names. Reading a dynamic
+outcome off a static property was the error, and it is worth naming: the
+2.53× is real and the conclusion drawn from it was not.
+
+**And the split-back never fires** — `resplit=0` on every program but
+`quameon`, which moved one def. That is the second finding, and it is the
+more useful one: the distinction that gets observed here does **not**
+appear as *"the defs of this CreationSet have divergent shape keys"*. It
+appears as a type violation at a use site, which the existing splitter
+already acts on. So shape-key divergence among defs is the wrong demand
+signal; the right one is the signal the splitter already has.
+
+**Where that leaves the plan.** Both mint-side paths run into the same
+wall, and it is [128](128-cs-identity-over-discriminates-vs-element-type.md)'s,
+not either path's: while CS identity is per *(site × contour)*, any
+mechanism that merges contours pays for itself in ES splits, and any
+mechanism that splits EntrySets multiplies CreationSets. Widening the CS
+key cannot get ahead of that, because widening is what provokes the
+splitting. The 660 ≈ 626 agreement still says ~626-660 contours is the
+demand-driven answer; it just is not reachable from the key.
+
+So the next thing to attack is the *(site × contour)* product itself —
+`creation_point` minting one CS per contour of a site — rather than the
+key it is looked up by. That is ifa/128 as filed, and it is upstream of
+everything in this step.
+
+*Kept, not reverted:* both flags stay, default off, with this result
+recorded at their definitions. They are the reproduction of the
+experiment; deleting them would lose the ability to re-run it, and the
+split-back is still the mechanism a future merge will need — with a
+different demand signal.
 
 ## What this unblocks
 
