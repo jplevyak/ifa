@@ -126,7 +126,61 @@ chess, same source, changing only the lever:
 site, split later) and lands at **8.1 s against shedskin's 7.1 s —
 parity**. chess's output stays byte-identical to CPython.
 
-### 3. Why sharing cannot simply be turned on: merges are irreversible
+### 3. ~~Why sharing cannot simply be turned on: merges are irreversible~~
+
+> **CORRECTED 2026-09-05. The mechanism claimed below is wrong.** The
+> measurement in it stands; the explanation does not, and the conclusion
+> drawn from it ("128 and 111 are one change") is retracted. Read this
+> block before the section it heads.
+>
+> **Derived types are NOT permanent.** `analyze_to_convergence` resets
+> *before* each pass, not after: at the default (`ifa_selective = 0`) it
+> calls `clear_results()` unconditionally for every pass but the first, so
+> the analysis already re-derives all flow state from bottom every pass.
+> pyc does not need shedskin's `restore_network`; its pass structure gives
+> the same power for free.
+>
+> **What is permanent is the DECISION, not the types.** Of the five things
+> `clear_results`'s header documents as surviving a pass, exactly one is in
+> the way: `av->cs_map`. The others are structural parenthood,
+> post-convergence clone state, a cache that misses rather than lies, and a
+> coercion target. And the reason given for pinning `cs_map` is a *feeding*
+> invariant (issue 030: a CS's positional `vars[i]` must keep being fed),
+> which forbids a CS losing a feeder — not re-pointing a site onto a CS
+> that is fed.
+>
+> **Demonstrated twice, in code:**
+>
+> - `cselem_rejoin_unknown_mints` takes back 36 site→CreationSet decisions
+>   across the corpus and the analysis re-converges, with every verdict on
+>   all 77 programs byte-identical.
+> - `PYC_CSDCPA1` starts merged — one CreationSet per sym — and gives
+>   **−32% container CreationSets corpus-wide** (3748 → 2540 → 2716 with
+>   arity in identity), with `ess` going **down** rather than up.
+>
+> So sharing *can* be turned on, and 128 and 111 are **not** one change.
+> ifa/111's selective invalidation is a performance lever for the extra
+> passes this costs, not a precondition.
+>
+> **The `PYC_CSMOLD=1` measurement below is still real** — the deepcopy
+> chain does fail. Its cause is not monotonicity. It is that the mold
+> merges with no mechanism to separate afterwards, and this session found
+> the two that were missing:
+> [132](132-arity-is-representation-not-provenance.md) (arity is part of a
+> record-able container's type — landed, and it removed every compiler
+> crash and hang under the flag) and
+> [133](133-split-a-container-on-its-element-type.md) (an element union
+> with no representation must force a split — open).
+> `deepcopy_copy_of_copy_chain` is still failing under `PYC_CSDCPA1`, so
+> the re-diagnosis is not finished; what is settled is that "the types
+> cannot be unlearned" is not the reason.
+>
+> The plan and every measurement live in
+> [129](129-plan-demand-driven-creation-set-splitting.md); the frontend
+> annotations that force splits today are
+> [134](134-remove-the-frontend-forced-split-opt-in.md).
+
+### 3 (original). Why sharing cannot simply be turned on: merges are irreversible
 
 `PYC_CSMOLD=1` costs exactly one test, `deepcopy_copy_of_copy_chain`
 (ifa/105's case). The mechanism, measured:
@@ -168,3 +222,14 @@ default, and it takes chess 48.2 s → 14.9 s with `ess` 1591 → 985. It
 does not need the reset because it keys identity on the element shape up
 front rather than merging and hoping to split later. Corpus sweep needed
 before flipping the default — `./corpus_sweep.sh -m check -e "PYC_CSELEM=3"`.
+
+> **The sweep was run, 2026-09-04, and the answer is no.** `PYC_CSELEM=3`
+> regresses `rdb` (`compile_rc` 0 → 1) and **cannot be the default**. It
+> does reduce container CreationSets 3748 → 3081 (ratio 5.99 → 4.92), and
+> everything else on the corpus is unchanged. The cause is that its key is
+> evaluated at MINT time, when the receiver's element is unfilled by
+> construction — measured, 402 of 795 such mints never acquire a shape at
+> all. See [129](129-plan-demand-driven-creation-set-splitting.md) step 2c.
+> This is why the work moved to the start-merged posture above rather than
+> to a better key: keying cannot get ahead of a decision taken before the
+> evidence exists.
