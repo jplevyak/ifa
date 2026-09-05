@@ -1588,6 +1588,38 @@ pass. The flag is off by default, the default path is untouched
 (`make test` rc=0), and 30 failures is the honest state of an
 architecture with one of its three clauses missing.
 
+
+### Step 4 — the bill under `PYC_CSDCPA1=2`, triaged 2026-09-05
+
+16 suite failures, and they are not 16 problems:
+
+| group | n | tests |
+| --- | --- | --- |
+| **[133](133-split-a-container-on-its-element-type.md)** — element union with no representation | **5** | `builtins`, `plcfrs_grammar_tables_nonconvergence`, `list_append_is_amortized`, `list_pop_insert` (`mixed basic types: (int64 str)`), and `splitter_cartesian_product` (the soft form — compiles, loses 3 direct calls) |
+| **goldens, already decided** — route changed, `CALLS` verified equal | 3 | `splitter_setter`, `splitter_setter_of_setter`, `splitter_mark_type` |
+| **layout / member width** — `blind-cast … but member width differs` | 2 | `poly_dispatch_shared_method_extra_args`, `sibling_subclass_field_layout` |
+| **illegal call argument type** | 2 | `deepcopy_copy_of_copy_chain`, `listcomp_element_separation` |
+| **undiagnosed** | 4 | `match_seq_star` (`expression has no type`), `test_heapq`, `iterator_protocol_bridge`, `itertools_count_forloop` (the last three produce no diagnostic — they fail later) |
+
+**133 is the single biggest lever at 5 of 16**, and it is the core demand
+question besides. Do it first.
+
+The **layout pair is a sibling of
+[132](132-arity-is-representation-not-provenance.md)** and should be read
+that way: 132 found that *arity* is a representation property CreationSet
+identity must respect; member width is another one. It is also the exact
+failure CLAUDE.md's "be aggressive" section warns about — two clones of a
+class disagreeing on a slot — so the answer is to name the mechanism
+producing the disagreement, not to re-add a per-site contour.
+
+`PYC_CSDCPA1=1` (tuples included) is 19 against `=2`'s 16, so the tuple
+exception is three tests from being deletable.
+
+**On `PYC_CSELEM=3`: it is superseded, not a second default to flip.**
+It gives −18% container CreationSets and regresses `rdb`; `PYC_CSDCPA1=2`
+gives −27.5% and needs no key evaluated at mint time. There is no reason
+to carry both to the default.
+
 ## What this unblocks
 
 The goal statement, and with it: [128](128-cs-identity-over-discriminates-vs-element-type.md)'s
