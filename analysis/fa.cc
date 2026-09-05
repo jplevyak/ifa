@@ -11337,7 +11337,49 @@ static void constant_strip_census(int &nstrip, int &nmulti, int &nsame) {
     }
 }
 
+// ifa/133: name the container whose element has no representation, and
+// the EntrySet its creation point lives in.
+//
+// The element split could not fire because the CreationSet holding the
+// unrepresentable union has ONE creation point -- nothing to partition.
+// A single creation point whose element holds both types means the
+// CONTOUR that creates it is shared, so the thing that has to come apart
+// is that EntrySet, not the CreationSet. This says which one.
+static void report_mixed_element_owners() {
+  if (!getenv("IFA_DBG_MIXELEM")) return;
+  for (CreationSet *cs : fa->css) {
+    if (!cs || !cs->sym || !cs->sym->element || !cs->sym->element->var || !cs->added_element_var) continue;
+    AVar *elem = unique_AVar(cs->sym->element->var, cs);
+    if (!elem || !elem->out || !mixed_basics(elem)) continue;
+    fprintf(stderr, "MIXELEM p=%d cs=%d sym=%s defs=%d elem=", analysis_pass, cs->id,
+            cs->sym->name ? cs->sym->name : "?", cs->defs.set_count());
+    for (CreationSet *c : elem->out->type->sorted)
+      if (c && c->sym) fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+    fprintf(stderr, "\n");
+    for (AVar *d : cs->defs) {
+      if (!d) continue;
+      EntrySet *des = d->contour_is_entry_set ? (EntrySet *)d->contour : nullptr;
+      fprintf(stderr, "  def var=%s es=%d fun=%s edges=%d backward=%d\n",
+              (d->var && d->var->sym && d->var->sym->name) ? d->var->sym->name : "?", des ? des->id : -1,
+              (des && des->fun && des->fun->sym && des->fun->sym->name) ? des->fun->sym->name : "(non-ES contour)",
+              des ? des->edges.n : -1, d->backward.n);
+    }
+    // Who writes the element, and from which contour? That is the set the
+    // ES split would have to separate.
+    for (AVar *b : elem->backward) {
+      if (!b || !b->out || !b->out->type) continue;
+      EntrySet *bes = b->contour_is_entry_set ? (EntrySet *)b->contour : nullptr;
+      fprintf(stderr, "  writer var=%s es=%d fun=%s type=", (b->var && b->var->sym && b->var->sym->name) ? b->var->sym->name : "?",
+              bes ? bes->id : -1, (bes && bes->fun && bes->fun->sym && bes->fun->sym->name) ? bes->fun->sym->name : "?");
+      for (CreationSet *c : b->out->type->sorted)
+        if (c && c->sym) fprintf(stderr, " %s", c->sym->name ? c->sym->name : "?");
+      fprintf(stderr, "\n");
+    }
+  }
+}
+
 static void report_demand_ratio() {
+  report_mixed_element_owners();
   if (!getenv("IFA_DBG_DEMAND")) return;
   ElemCensus c;
   element_census(c);

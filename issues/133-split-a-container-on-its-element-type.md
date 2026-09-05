@@ -259,11 +259,61 @@ splitting **that EntrySet** per caller, so the creation point becomes two
 AVars and two CreationSets follow.
 
 That is the goal statement's third clause — *"ESs are split as necessary
-to separate the creation points so the CS can split"* — and this is the
-first time it has a measured target rather than a guess: **the EntrySet
-owning `cs=995`'s single def.** The next step is to identify that
-EntrySet and ask why the existing type-driven ES splitting does not
-separate it, with `IFA_DBG_SESWHY` now able to answer.
+to separate the creation points so the CS can split"*.
+
+### Located: `__pyc_setslice__`, and TWO defects on the path
+
+`IFA_DBG_MIXELEM` names the container, its creation point's EntrySet, and
+every writer of its element. On `list_pop_insert` under `PYC_CSDCPA1=2`:
+
+```
+MIXELEM cs=995 sym=list defs=1 elem= int64#6 str#8
+  def    es=2   fun=__main__
+  writer es=60  fun=__pyc_setslice__  type= str
+  writer es=60  fun=__pyc_setslice__  type= int64   (x5)
+  writer es=138 fun=__pyc_setslice__  type= str
+  writer es=138 fun=__pyc_setslice__  type= int64   (x5)
+```
+
+The container is created in `__main__` and its element is written by
+`__pyc_setslice__`, which has two contours — and **each carries both
+`str` and `int64` at the writing position.** Unlike `append` and `insert`,
+which the value split separates cleanly, `setslice` is not split at all.
+So the shared helper is where the two element types meet, and it is the
+EntrySet that has to come apart.
+
+**Defect A — the VIOLATION stage is starved, and the code says so.**
+Stage 5 is gated on `!analyze_again`, i.e. it runs only in a pass where
+no earlier stage made progress. Our `STAGES:` line is
+`TYPE_CONFL SETTER`, so earlier stages progress every pass and stage 5
+never runs. The comment on that gate already describes this exactly, from
+issue 109:
+
+> *"Recording the sizeof_element violation is useless while VIOLATION is
+> STARVED by the first-stage-wins cascade — measured on sunfish, whose
+> STAGES line is `TYPE_CONFL SETTER SETTER_OF_SETTER` and never reaches
+> stage 5, so the violation is recorded and nothing ever splits on it."*
+
+`PYC_SIZEOF_VIOL=2` lifts the gate, and it works: `STAGES:` becomes
+`TYPE_CONFL SETTER VIOLATION`. **The starvation is real, general, and
+already has an escape hatch** — but on its own it changes nothing here.
+
+**Defect B — the violation produces no imprecision, and this is the
+terminal blocker.** With the gate lifted, stage 5 runs and
+`split_entry_set` is called seven times — **none of them on `es=60` or
+`es=138`.** `collect_violation_imprecisions` turns a violation into
+refinable AVars by exactly two routes, `v->av->container` (needing
+`->out->n > 1`) and `is_call_result`, and a mixed-basic violation on a
+writer inside a shared helper satisfies neither. The violation is
+recorded and correct; nothing maps it onto the contour that must split.
+
+So the demand signal exists, is correct, is recorded, and reaches a stage
+that cannot address it. **B is the work**: give a BOXING violation on an
+AVar inside a shared contour a route to that contour's EntrySet, so the
+value split that already works for `append` and `insert` can apply to
+`setslice` too. A is worth fixing alongside — a stage that only runs when
+everything else is quiet will keep hiding results like this — but A alone
+is measured insufficient.
 
 **Bounding, and the stop condition.** If the program genuinely builds a
 heterogeneous list, no split helps: the union is real and today's refusal
