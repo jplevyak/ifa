@@ -875,7 +875,9 @@ the other three.
 > So "one site feeds it" is true by construction almost everywhere, the gate
 > fires everywhere, and it declines to split things that were never merged.
 > Measured 2026-09-04: not "almost" — `multidef=0` over 127 522
-> CreationSets on the whole corpus (see this step's *Verify*).
+> CreationSets on the whole corpus **at the default** (see this step's
+> *Verify*). Under `PYC_CSELEM=3` it is 229, because that mode's csshape
+> route does reuse; do not read the default's zero as a mode-3 baseline.
 > **Implementing items 1-5 would not move step 1's ratio at all**, because
 > the ratio is already fixed before any splitter runs — which is what step
 > 1's reading of `stereo` says in as many words: *"The CS excess is not
@@ -1035,32 +1037,93 @@ CreationSets that are still shape-unknown at convergence, and (b) `rdb`,
 which no static key can fix, because the key is needed at mint time and
 the content arrives passes later.
 
-*First increment, and it is small:* leave `creation_point` alone. Between
-passes — beside `capture_elem_keys` (`fa.cc:9941`), which already walks
-every CS and has the converged shape in hand — find CreationSets minted
-under `kCselemUnfilled` whose shape is now known and whose shape key
-already names a different CS in `cselem_shape_canon`, and re-point their
-creation site onto it via the `split_css` route path. That is the census
-from 2c, turned from a counterfactual into an action. 2c measured its
-corpus ceiling honestly and it is small — 36 CreationSets, 1.2% — so
-**this increment is the mechanism's proving ground, not its payoff**: it
-makes one re-decision happen, under the invalidation closure, and shows
-whether the analysis still converges and the corpus still checks. The
-payoff needs the mint side to stop deciding on ignorance at all, which is
-the increment after it.
+*First increment — **DONE 2026-09-05**.* Landed as
+`cselem_rejoin_unknown_mints` (`fa.cc`, beside `capture_elem_keys`), gated
+by `PYC_CSREJOIN` (default 1, but reachable only under `PYC_CSELEM=3`,
+which is itself opt-in — so the pyc default is bit-identical, verified on
+`chess`). `creation_point` is untouched.
 
-*Progress meter:* `multidef` on the `DEMAND` line, which is 0 corpus-wide
-today. A CreationSet reached by two creation sites is the definition of a
-merge pyc cannot currently express, so the first time this step makes
-`multidef` non-zero without breaking `check`, the mechanism works. It is a
-better signal than the ratio, which item-1-5 work can move for the wrong
-reasons.
+It walks `cselem_unknown_mints` — the CreationSets minted while the
+receiver shape was `unfilled` — recomputes each shape key now that the
+shape has arrived, and where `cselem_shape_canon` already names a
+different live CreationSet of the same class, does
+`u.v->cs_map->put(u.s, other)`. **That is the first place in pyc where a
+site→CreationSet decision is taken back.** Four guards, each borrowed
+rather than invented: skip a site `split_css` has since moved (never
+silently reverse a demand-driven split), require the canon target live in
+`fa->css_set` (`split_css`'s own test), require `other->sym == u.s`, and
+apply the `abstract_type` guard the csshape reuse route applies.
 
-*Stop condition:* if a re-pointed CS cannot converge — the join is
-undone by the next pass's split and the two oscillate — that is the
-ledger's oscillation signal (`cs_dup_split_attempts`, `rederive_churn`,
-`fa.cc:7794-7797`) and it is a real answer, not a failure. Record the
-case. Do **not** answer it by pinning the decision again.
+It runs **last** in the pass epilogue, only when `extend_analysis`,
+`reanalyze` and `apply_unbound_fills` have all declined. The question
+being answered is *"would this decision have been reusable had it
+waited"*, so waiting is the point rather than a concession — and it is
+also ifa/055's lesson about interleaving a decision change with the
+splitter. Termination is structural: after the re-point `cs_map` names
+the joined CS, so the `!= u.cs` test skips that entry forever, and the
+whole batch is done in one call.
+
+*Result.* Same-binary A/B over the corpus, `check` mode,
+`check__PYC_CSELEM_3_PYC_CSREJOIN_0__7e05207f+037f2f8f` against
+`check__PYC_CSELEM_3__7e05207f+037f2f8f`:
+
+| | ess | css | container_cs | multidef | rejoin |
+| --- | --- | --- | --- | --- | --- |
+| rejoin off | 29878 | 120250 | 3081 | 229 | 0 |
+| rejoin on | 29878 | 120229 | **3060** | 232 | **36** |
+
+Corpus `ratio` 4.92 → 4.89, `pratio` 3.25 → 3.23. **Every verdict column
+on all 77 rows is byte-identical** — `compile_rc`, `warns`, `run_rc`,
+`cpy_rc`, `stdout_match` — and `ess` is unchanged on every program, so
+nothing was paid for in EntrySet growth. Seven programs re-joined at all:
+chess 20, linalg 6, rubik2 5, rdb 2, and one each on `bh`, `go`, `msp_ss`.
+
+**`rejoin=36` is exactly the number 2c's counterfactual predicted.** That
+is the most load-bearing thing here: the census was measuring the right
+population, and the mechanism acted on all of it.
+
+*Three things this does NOT show, stated so they are not read into it:*
+
+1. **The `multidef` meter proposed above does not work, and the claim it
+   rested on was wrong.** `multidef` was already 229 corpus-wide with the
+   rejoin off — mode 3's own csshape reuse route produces those merges.
+   The measured `multidef=0` was taken at the **default**, where mode 3 is
+   off, and does not carry over to a mode-3 arm. The rejoin moved it 229 →
+   232, because `multidef` counts *CreationSets with >1 site*, and most
+   joins landed on a CS that already had two. The mechanism's evidence is
+   `rejoin=36` with `container_cs` −21, `ess` flat and verdicts identical
+   — not the +3.
+2. **36 re-points removed only 21 CreationSets.** The other 15 abandoned
+   CSs are still alive on another feeder: nothing removes them from
+   `s->creators`, so the mold route (`PYC_CSMOLD` defaults to 3) can hand
+   one to a sibling contour of the same Var. Not wrong — a sibling reusing
+   an existing CS is the goal — but it means the join's effect on the
+   count is partly given back, and `s->creators` hygiene is the first
+   thing to look at next.
+3. **`rdb` is unchanged** (`compile_rc=1`). Expected, and worth keeping on
+   the record: rdb's fusion happens at mint time on a bare `dict#4799`
+   receiver, which was never a minted-on-unknown case, so this increment
+   could not reach it. `PYC_CSELEM=3` still cannot be the default.
+
+*Where the precision went.* `linalg` lost one positional shape
+(`pshapes` 19 → 18) with `container_cs` flat — a join widened one CS's
+content until it coincided with another's. Corpus `pratio` still improved,
+so this is a local cost, but a merge is a merge and it did show up.
+
+*Stop condition — standing, and NOT hit by the first increment.* If a
+re-pointed CS cannot converge — the join is undone by the next pass's
+split and the two oscillate — that is the ledger's oscillation signal
+(`cs_dup_split_attempts`, `rederive_churn`, `fa.cc:7794-7797`) and it is a
+real answer, not a failure. Record the case. Do **not** answer it by
+pinning the decision again. Measured on the first increment: no
+oscillation, `compile_fail` stayed at 3, no new `rc=124`, and every
+program that converged before still converged.
+
+*Next increment, and it is the one with the payoff:* stop the mint side
+deciding on ignorance at all. 2c measured 795 mints taken on an unknown
+shape, of which 390 are **still** unknown at convergence — those are not
+reachable by re-deciding after the fact, only by not minting on absence of
+evidence in the first place. Plus `s->creators` hygiene from (2) above.
 
 *Verify:* `PYC_CSMOLD=1` becomes safe — `deepcopy_copy_of_copy_chain`
 converges with `mixed=0` — `PYC_CSELEM=3` stops regressing `rdb` and can

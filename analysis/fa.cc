@@ -9938,6 +9938,84 @@ static void cselem_shape_claim(const std::string &key, CreationSet *cs) {
   }
 }
 
+// ifa/129 STEP 4, first increment: RE-DECIDE a CreationSet that was minted
+// while the receiver shape was unknown.
+//
+// This is the first place in pyc where a site->CreationSet decision is taken
+// back. Everything it needs already existed:
+//
+//   - Flow state is not the obstacle. analyze_to_convergence resets BEFORE
+//     each pass, not after, so every pass re-derives from bottom already.
+//     The one thing that survives and is in the way is the DECISION,
+//     av->cs_map (see clear_results's header).
+//   - Re-pointing cs_map is a shipped primitive: split_css does exactly
+//     `v->cs_map->put(cs->sym, new_cs)`, and its ledger `route` path aims a
+//     group at a CreationSet that ALREADY EXISTS. It has simply never had a
+//     caller that runs in the joining direction. This is that caller.
+//   - The invariant the cs_map pin cites (issue 030 / make_closure_var: a
+//     CS's positional vars[i] must be fed by every pass that feeds the CS)
+//     is about a CS LOSING a feeder, not about a site being re-aimed. The
+//     CS joined here keeps every feeder it had and gains one; the CS
+//     abandoned here stops being fed at all, so it leaves `fa->css` and no
+//     consumer sees it.
+//
+// WHEN: only once the pass has otherwise settled (see the call site). The
+// question being answered is "would this decision have been reusable had it
+// waited", so waiting is the point, and running it against a half-derived
+// pass would just re-ask it on worse information. It is also the ifa/055
+// lesson -- interleaving a decision change with the splitter re-perturbs
+// contours the splitter had just settled.
+//
+// TERMINATION: each entry is re-decided at most once, because after the
+// re-point `cs_map` names the joined CS and the `!= u.cs` test below skips
+// it forever. The batch is done in one call, so this costs a bounded few
+// extra passes, not one per join.
+static int cselem_rejoin_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_CSREJOIN");
+    e = v ? atoi(v) : 1;  // on whenever mode 3 is; mode 3 is itself opt-in
+  }
+  return e;
+}
+
+static int cselem_rejoins = 0;  // cumulative, for the DEMAND line
+
+static int cselem_rejoin_unknown_mints() {
+  if (cselem_enabled() != 3 || !cselem_rejoin_enabled()) return 0;
+  const bool dbg = getenv("IFA_DBG_CSELEM") != nullptr;
+  int joined = 0;
+  for (auto &u : cselem_unknown_mints) {
+    if (!u.v || !u.s || !u.cs || !u.v->cs_map) continue;
+    // Re-point only a site that still points AT the CS we minted for it.
+    // split_css may have moved it since, and re-pointing then would undo
+    // that split -- a demand-driven separation, which is the one thing this
+    // must never quietly reverse.
+    if (u.v->cs_map->get(u.s) != u.cs) continue;
+    std::string key;
+    if (!cselem_shape_key(u.v, u.s, key)) continue;  // shape STILL not known
+    auto it = cselem_shape_canon.find(key);
+    if (it == cselem_shape_canon.end()) continue;
+    CreationSet *other = it->second;
+    if (!other || other == u.cs || other->sym != u.s) continue;
+    // The canon entry must still be live this pass, or the join aims at a
+    // CreationSet nothing feeds. Same test split_css uses.
+    if (!fa->css_set.set_in(other)) continue;
+    // Same abstract-type guard the csshape reuse route applies.
+    if (u.s->abstract_type && other == u.s->abstract_type->v[0]) continue;
+    u.v->cs_map->put(u.s, other);
+    ++joined;
+    if (dbg)
+      fprintf(stderr, "[csrejoin] p=%d %s  cs=%d -> cs=%d  shape=%s var=%s\n", analysis_pass, key.c_str(), u.cs->id,
+              other->id, cselem_key_shape_text(key),
+              (u.v->var && u.v->var->sym && u.v->var->sym->name) ? u.v->var->sym->name : "?");
+  }
+  cselem_rejoins += joined;
+  if (joined && getenv("IFA_DBG_DEMAND"))
+    fprintf(stderr, "REJOIN p=%d joined=%d total=%d\n", analysis_pass, joined, cselem_rejoins);
+  return joined ? 1 : 0;
+}
+
 static void capture_elem_keys() {
   if (!cselem_enabled()) return;
   int n_keyed = 0, n_sites = 0;
@@ -10891,10 +10969,11 @@ static void report_demand_ratio() {
   fprintf(stderr,
           "DEMAND passes=%d ess=%d css=%d container_cs=%d shapes=%d pshapes=%d ratio=%.2f pratio=%.2f "
           "elemtypes=%d empty=%d mixed=%d novar=%d unkmint=%d unkres=%d unkjoin=%d unkstill=%d "
-          "multidef=%d multidefall=%d\n",
+          "multidef=%d multidefall=%d rejoin=%d\n",
           analysis_pass, fa->ess.n, fa->css.n, c.n_cs, shapes, pshapes,
           shapes ? (double)c.n_cs / shapes : 0.0, pshapes ? (double)c.n_cs / pshapes : 0.0, c.total_types(),
-          c.n_empty, c.n_mixed, c.n_novar, unkmint, unkres, unkjoin, unkstill, c.n_multidef, multidef_all);
+          c.n_empty, c.n_mixed, c.n_novar, unkmint, unkres, unkjoin, unkstill, c.n_multidef, multidef_all,
+          cselem_rejoins);
 }
 
 static void analyze_to_convergence() {
@@ -11038,11 +11117,17 @@ static void analyze_to_convergence() {
         if (!ext) rea = if1->callback->reanalyze(fa->type_violations) ? 1 : 0;
       }
       if (!ext && !rea) fil = apply_unbound_fills() ? 1 : 0;
+      // ifa/129 step 4: re-decide the mints taken on an unknown shape --
+      // LAST, and only when nothing else asked for a pass. See
+      // cselem_rejoin_unknown_mints for why settling first is the point
+      // rather than a concession.
+      int rej = 0;
+      if (!ext && !rea && !fil) rej = cselem_rejoin_unknown_mints();
       fa->last_pass_reanalyze = (rea != 0);
       if (getenv("PYC_DBG_STAGEDELTA"))
-        fprintf(stderr, "PASSEND p=%d extend=%d reanalyze=%d fills=%d viol=%d\n", analysis_pass, ext, rea, fil,
-                fa->type_violations.set_count());
-      loop_again = (ext || rea || fil);
+        fprintf(stderr, "PASSEND p=%d extend=%d reanalyze=%d fills=%d rejoin=%d viol=%d\n", analysis_pass, ext, rea,
+                fil, rej, fa->type_violations.set_count());
+      loop_again = (ext || rea || fil || rej);
     }
   } while (loop_again && analysis_pass <= fa->pass_limit);
   if (getenv("PYC_DBG_OSC"))
