@@ -23,7 +23,63 @@ per-site CreationSet identity had already put the two constants in
 different contours; nothing asked for the separation by demand. With one
 contour per sym only `SETTER` fires and it does not separate them.
 
-## Root cause
+## Step 1 was run, and it FALSIFIED the root cause below
+
+*2026-09-05. The plan below is kept because its shape and its stop
+conditions are still right, but its premise — that the constant cap-strip
+is the demand signal — is measured wrong. Do not build steps 2-4 on it.*
+
+Two probes were added (`cstrip=strip/multi/same` and `capstrip`, both on
+the `DEMAND` line, both probe-only):
+
+| | `empty_list_print` default | `PYC_CSDCPA1=2` |
+| --- | --- | --- |
+| `cstrip` (CS fields losing a constant) | 0/0/0 | 0/0/0 |
+| `capstrip` (times the cap-strip fires) | 6 | **5** |
+
+No CreationSet field loses a constant to the cap, on the very program the
+mechanism was designed for. And the cap-strip fires **fewer** times under
+the flag than at the default, so it cannot be what the flag breaks.
+
+**What actually differs is in the emitted C.** At the default there are
+two `list::__str__` clones and the empty list's takes *no arguments at
+all* — it is fully folded:
+
+```c
+_CG_string _CG_f_3088_3 /*list::__str__*/ ();               // the [] clone
+_CG_string _CG_f_3088_11/*list::__str__*/(_CG_ps11690 a1);  // the [2,3] clone
+```
+
+Under `PYC_CSDCPA1=2` there is one clone, and the two literals are built
+as:
+
+```c
+t5 = _CG_prim_tuple_list(_CG_ps11690, 2);        // b = [2, 3]
+t1 = (_CG_ps11690)_CG_prim_tuple_list(int*, 0);  // k = []
+```
+
+The empty literal is constructed with element type `int*` and **blind-cast**
+to the merged list type. That is the
+[123](123-CGEN-union-receiver-field-access-has-no-discrimination.md)
+family — a representation mismatch between two things codegen was told
+are one type — and it is why
+`k` prints `[0, 0]`: the merged `__str__` reads a length through a value
+that was never laid out as that type.
+
+**So the question changes.** Nothing in FA observes a *type* distinction
+between `[]` and `[2, 3]`; both are `list<int>`. Their separation at the
+default is a side effect of per-site CreationSet identity, and clone then
+specialises per CS because they happen to be separate. Under a strict
+demand discipline the two SHOULD merge, `__str__` should read the length
+at runtime, and `k` should print `[]`. That it prints `[0, 0]` is a **bug
+on the merged path**, not evidence that a split was owed.
+
+Which makes the next step root-causing the blind cast, not building a
+splitter — and only then asking whether any split is owed at all. Adding
+constant splitting to make this test pass would be the retreat this repo
+names: the numbers would improve and the real defect would stay.
+
+## Root cause (as originally filed — see above, this is NOT confirmed)
 
 `num_constants_per_variable` is **1** (`fa.h:829`). When an AVar's type
 holds more constants than that, `type_cannonicalize` **strips every

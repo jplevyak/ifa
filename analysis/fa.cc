@@ -968,6 +968,8 @@ Lagain:
   }
 }
 
+static long fa_cap_strips = 0;  // ifa/131 step 1, probe only
+
 AType *type_cannonicalize(AType *t) {
   assert(!t->sorted.n);
   assert(!t->union_map.n);
@@ -1019,7 +1021,10 @@ AType *type_cannonicalize(AType *t) {
     else
       nulls = 1;  // pointer / other: strip nil as before
   }
-  if (consts > fa->num_constants_per_variable) rebuild = 1;
+  if (consts > fa->num_constants_per_variable) {
+    rebuild = 1;
+    ++fa_cap_strips;  // ifa/131 step 1: does the cap-strip fire at all?
+  }
   if (rebuild) {
     t->sorted.clear();
     t->sorted.append(nonconsts);
@@ -11179,6 +11184,66 @@ static void cselem_unknown_mint_census(int &minted, int &resolved, int &joinable
   }
 }
 
+// ifa/131 step 1: how often does the constant cap-strip lose a distinction
+// that distinct creation points disagreed on?
+//
+// type_cannonicalize keeps constants only while there are at most
+// num_constants_per_variable of them (1, fa.h:829); past that it rebuilds
+// the type from their BASE types (fa.cc:1022) and they are gone -- with no
+// violation, no warning and no stage. It takes a bare AType and has no
+// AVar, so the attribution has to be read where the constants land.
+//
+// For each CreationSet field, compare what the WRITERS carry against what
+// the field kept. A writer holding a single constant keeps it (one is
+// within the cap), so a field whose backward sources hold two or more
+// distinct constants while it kept fewer has been stripped. Whether that
+// strip was separable is then just: did they come from more than one
+// writer?
+//
+//   multi -- two or more writers disagree, so a demand split could recover
+//            it. This is `empty_list_print`: `[2, 3]` and `[]` write 2 and
+//            0 to one `list` CS's length under PYC_CSDCPA1.
+//   same  -- one writer, many constants: UNKNOWN ARITY. Nothing to split,
+//            and the strip is the right answer.
+//
+// Probe only. READ-ONLY on the element channel for the reason
+// element_census records: get_element_avar CREATES the AVar and sets
+// added_element_var, which gates numeric coercion, so a probe that called
+// it would mutate the analysis it is measuring.
+static void constant_strip_census(int &nstrip, int &nmulti, int &nsame) {
+  nstrip = nmulti = nsame = 0;
+  auto probe = [&](AVar *av) {
+    if (!av || !av->out || !av->out->type) return;
+    std::set<Sym *> arriving;
+    int srcs = 0;
+    for (AVar *x : av->backward)
+      if (x && x->out && x->out->type) {
+        bool had = false;
+        for (CreationSet *c : x->out->type->sorted)
+          if (c && c->sym && c->sym->is_constant) {
+            arriving.insert(c->sym);
+            had = true;
+          }
+        if (had) ++srcs;
+      }
+    if (arriving.size() < 2) return;  // the cap could not have dropped anything
+    size_t kept = 0;
+    for (CreationSet *c : av->out->type->sorted)
+      if (c && c->sym && c->sym->is_constant) ++kept;
+    if (kept >= arriving.size()) return;  // nothing was lost
+    ++nstrip;
+    if (srcs > 1)
+      ++nmulti;
+    else
+      ++nsame;
+  };
+  for (CreationSet *cs : fa->css)
+    if (cs) {
+      for (AVar *a : cs->vars) probe(a);
+      if (cs->added_element_var && cs->sym && cs->sym->element) probe(unique_AVar(cs->sym->element->var, cs));
+    }
+}
+
 static void report_demand_ratio() {
   if (!getenv("IFA_DBG_DEMAND")) return;
   ElemCensus c;
@@ -11198,6 +11263,8 @@ static void report_demand_ratio() {
   // number of contours a site-free key would keep, and canon/canonsiteless
   // is the fragmentation the site component costs. Counterfactual only --
   // nothing here changes a decision.
+  int nstrip = 0, nmulti = 0, nsame = 0;
+  constant_strip_census(nstrip, nmulti, nsame);
   int canon = (int)cselem_shape_canon.size(), canon_siteless = 0;
   if (cssiteless_enabled()) {
     canon_siteless = canon;  // the key already is site-free; nothing to strip
@@ -11212,13 +11279,13 @@ static void report_demand_ratio() {
   fprintf(stderr,
           "DEMAND passes=%d ess=%d css=%d container_cs=%d shapes=%d pshapes=%d ratio=%.2f pratio=%.2f "
           "elemtypes=%d empty=%d mixed=%d novar=%d unkmint=%d unkres=%d unkjoin=%d unkstill=%d "
-          "multidef=%d multidefall=%d rejoin=%d mintwhy=%d/%d/%d/%d canon=%d canonsiteless=%d resplit=%d/%d\n",
+          "multidef=%d multidefall=%d rejoin=%d mintwhy=%d/%d/%d/%d canon=%d canonsiteless=%d resplit=%d/%d cstrip=%d/%d/%d capstrip=%ld\n",
           analysis_pass, fa->ess.n, fa->css.n, c.n_cs, shapes, pshapes,
           shapes ? (double)c.n_cs / shapes : 0.0, pshapes ? (double)c.n_cs / pshapes : 0.0, c.total_types(),
           c.n_empty, c.n_mixed, c.n_novar, unkmint, unkres, unkjoin, unkstill, c.n_multidef, multidef_all,
           cselem_rejoins, cselem_mint_why[kMintNoSiteCS], cselem_mint_why[kMintMoldSplitChild],
           cselem_mint_why[kMintMoldCMC], cselem_mint_why[kMintMoldIneligible], canon, canon_siteless, cselem_resplits,
-          cselem_resplit_mints);
+          cselem_resplit_mints, nstrip, nmulti, nsame, fa_cap_strips);
 }
 
 static void analyze_to_convergence() {
