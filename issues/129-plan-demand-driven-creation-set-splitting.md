@@ -1502,12 +1502,47 @@ evidence puts them:
    [111](111-FA-selective-invalidation-per-pass.md)'s selective
    invalidation (`IFA_SELECTIVE`, still default 0) is the existing lever
    and has never had a reason to pay for itself; this is that reason.
-5. **The `splitter_*` goldens**, decided deliberately. `splitter_setter`
-   prints the right answer under the flag and fails only its
-   `STAGES:` assertion, so the question is whether resolving `{A, B}` by
-   poly dispatch instead of splitting is acceptable *for codegen* — a
-   direct call is better than a dynamic one. Re-bless only if the split
-   is genuinely unnecessary; `.known_issue` if it hides a precision loss.
+5. **The `splitter_*` goldens — MEASURED 2026-09-05, and they cost
+   nothing.** The author's requirement is *"we should get direct calls if
+   at all possible"*, so the question is not which stages fired but
+   whether any call became dynamic. Measured on the emitted C, default
+   against `PYC_CSDCPA1=2`:
+
+   | test | lines | direct calls | tag compares |
+   | --- | --- | --- | --- |
+   | `splitter_setter` | 52 → 52 | 3 → 3 | 0 → 0 |
+   | `splitter_setter_of_setter` | 655 → **589** | 69 → **71** | 4 → 4 |
+   | `splitter_mark_type` | 561 → **517** | 67 → 67 | 0 → 0 |
+   | `splitter_cartesian_product` | 561 → **517** | 67 → 67 | 0 → 0 |
+
+   **No call became dynamic.** Tag-compare dispatch is unchanged in every
+   case (and the metric is non-trivial — `splitter_setter_of_setter` has
+   four, so a zero elsewhere means zero, not "not measured"). Direct calls
+   are equal or higher, emitted code is smaller, `splitter_setter`'s C is
+   byte-identical, and `splitter_cartesian_product` emits the same single
+   warning. The goldens pin a **route**; the outcome is equal or better.
+
+   *A trap worth recording:* `IFA_DBG_DISPATCHFAIL`'s `sites=` is **not**
+   this metric. It reads 0 on `list_tuple_union_method` and
+   `poly_dispatch_shared_method_extra_args`, both of which genuinely have
+   union receivers — it counts dispatch *failures*, not dispatch sites.
+   The usable proxy is tag compares in the emitted C.
+
+   So when the flag flips these four are re-blessable, but **not with a
+   blanket `--rebless`**: `splitter_mark_type` loses its `MARK_TYPE`
+   firing and `splitter_cartesian_product` loses `CPA`, which retires the
+   only coverage those two stages have. That is the
+   `mark_distance_skew` situation CLAUDE.md names, with one difference —
+   here the outcome is verified equal, so it is a coverage loss rather
+   than a baked-in regression. Each needs a replacement assertion before
+   its golden moves.
+
+   *And the tests assert the wrong thing.* A stage list is a proxy for
+   "the splitter did its job" that breaks under any architecture change
+   while the property it stands for still holds. What is actually wanted
+   — and what the author asked for — is that the calls stay direct.
+   Nothing today lets a `.check` file assert that; adding it would make
+   this whole class of golden robust.
 
 *Not built, deliberately:* nothing here weakens the flag to make the suite
 pass. The flag is off by default, the default path is untouched
