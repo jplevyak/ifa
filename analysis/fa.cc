@@ -10202,6 +10202,13 @@ struct ElemCensus {
   int n_empty = 0;  // no content in either channel: indistinguishable by any observable
   int n_mixed = 0;  // content holds both a scalar and a container (issue 018)
   int n_novar = 0;  // no element AVar exists -- content, if any, is positional only
+  // ifa/129 step 3's stated precondition: shedskin's demand gate refuses to
+  // split a contour that only ONE site created, so it needs contours that
+  // more than one site reached. `cs->defs` IS that set -- creation_point
+  // does `cs->defs.set_add(v)` (fa.cc:783) for every site routed to the CS,
+  // and clear_cs empties it each pass, so at convergence it is this pass's
+  // site set. n_multidef == 0 means the gate is vacuous by construction.
+  int n_multidef = 0;
   static int total(const std::map<Sym *, std::set<std::string>> &m) {
     int n = 0;
     for (auto &kv : m) n += (int)kv.second.size();
@@ -10237,6 +10244,7 @@ struct ElemCensus {
 static void element_census(ElemCensus &c) {
   for (CreationSet *cs : fa->css) if (cs && cs->sym && cs->sym->element) {
     ++c.n_cs;
+    if (cs->defs.set_count() > 1) ++c.n_multidef;
     c.cs_count[cs->sym]++;
     // READ-ONLY, and it must stay that way. get_element_avar() is not an
     // accessor: it calls unique_AVar (which CREATES the AVar when absent)
@@ -10876,12 +10884,17 @@ static void report_demand_ratio() {
   int shapes = c.total_shapes(), pshapes = c.total_pshapes();
   int unkmint = 0, unkres = 0, unkjoin = 0, unkstill = 0;
   cselem_unknown_mint_census(unkmint, unkres, unkjoin, unkstill);
+  // Same question over EVERY CreationSet, not just containers: a gate that
+  // is vacuous on containers but not in general would be worth knowing about.
+  int multidef_all = 0;
+  for (CreationSet *x : fa->css) if (x && x->defs.set_count() > 1) ++multidef_all;
   fprintf(stderr,
           "DEMAND passes=%d ess=%d css=%d container_cs=%d shapes=%d pshapes=%d ratio=%.2f pratio=%.2f "
-          "elemtypes=%d empty=%d mixed=%d novar=%d unkmint=%d unkres=%d unkjoin=%d unkstill=%d\n",
+          "elemtypes=%d empty=%d mixed=%d novar=%d unkmint=%d unkres=%d unkjoin=%d unkstill=%d "
+          "multidef=%d multidefall=%d\n",
           analysis_pass, fa->ess.n, fa->css.n, c.n_cs, shapes, pshapes,
           shapes ? (double)c.n_cs / shapes : 0.0, pshapes ? (double)c.n_cs / pshapes : 0.0, c.total_types(),
-          c.n_empty, c.n_mixed, c.n_novar, unkmint, unkres, unkjoin, unkstill);
+          c.n_empty, c.n_mixed, c.n_novar, unkmint, unkres, unkjoin, unkstill, c.n_multidef, multidef_all);
 }
 
 static void analyze_to_convergence() {

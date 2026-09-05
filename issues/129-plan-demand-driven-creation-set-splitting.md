@@ -874,6 +874,8 @@ the other three.
 > inert (CLAUDE.md; [128](128-cs-identity-over-discriminates-vs-element-type.md)).
 > So "one site feeds it" is true by construction almost everywhere, the gate
 > fires everywhere, and it declines to split things that were never merged.
+> Measured 2026-09-04: not "almost" — `multidef=0` over 127 522
+> CreationSets on the whole corpus (see this step's *Verify*).
 > **Implementing items 1-5 would not move step 1's ratio at all**, because
 > the ratio is already fixed before any splitter runs — which is what step
 > 1's reading of `stereo` says in as many words: *"The CS excess is not
@@ -925,10 +927,24 @@ batching deliberately.
 Then `PYC_CSSPLIT` becomes the fallback rather than the driver: a CS
 follows an ES split only where the demand test also asks for it.
 
-*Verify, before writing any of it:* count container CreationSets with more
-than one creation site on the corpus today. If that count is ~0 the gate is
-vacuous by construction and items 1-5 cannot pay for themselves — do step 4
-first. Then, for the ladder itself:
+*Verify, before writing any of it:* **done, 2026-09-04, and the answer is
+zero.** `DEMAND` now carries `multidef` (container CreationSets whose
+`cs->defs` holds more than one creation site) and `multidefall` (the same
+over every CreationSet); `creation_point` does `cs->defs.set_add(v)` for
+every site routed to a CS (`fa.cc:783`) and `clear_cs` empties it each
+pass, so at convergence `defs` is exactly this pass's site set. Sweep
+`compile__default__8cceaa08+2e452100`, 76 programs:
+
+```
+container_cs=3748  all_cs=127522  multidef=0  multidefall=0
+```
+
+Not one CreationSet in 127 522 has a second creation site. So item 2 —
+"if one site feeds it, never split", the gate and *the whole point* —
+would decline every split in the corpus, and items 1-5 cannot pay for
+themselves. This is no longer an argument from `cs->creation_var` being a
+single field; it is measured. **Do step 4 first.** Then, for the ladder
+itself:
 `tests/deepcopy_copy_of_copy_chain.py` and
 `tests/set_difference*` (the `PYC_CSSPLIT` motivating cases) still pass;
 corpus `check` neutral; ratio approaches 1; chess `ess` and compile time
@@ -1032,6 +1048,13 @@ makes one re-decision happen, under the invalidation closure, and shows
 whether the analysis still converges and the corpus still checks. The
 payoff needs the mint side to stop deciding on ignorance at all, which is
 the increment after it.
+
+*Progress meter:* `multidef` on the `DEMAND` line, which is 0 corpus-wide
+today. A CreationSet reached by two creation sites is the definition of a
+merge pyc cannot currently express, so the first time this step makes
+`multidef` non-zero without breaking `check`, the mechanism works. It is a
+better signal than the ratio, which item-1-5 work can move for the wrong
+reasons.
 
 *Stop condition:* if a re-pointed CS cannot converge — the join is
 undone by the next pass's split and the two oscillate — that is the
