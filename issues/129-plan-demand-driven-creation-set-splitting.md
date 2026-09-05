@@ -1559,9 +1559,9 @@ evidence puts them:
    `list_pop_insert`, which fail with `mixed basic types: (int64 str)`:
    two lists of different element type sharing one contour. Those are the
    HARD form (no representation exists); this is the SOFT form (it
-   compiles and runs, it just cannot pick one clone). Fix the element-type
-   merge first and re-measure; only if this survives is it a defect of its
-   own.
+   compiles and runs, it just cannot pick one clone). Scoped as
+   [133](133-split-a-container-on-its-element-type.md) — fix that and
+   re-measure; only if this survives is it a defect of its own.
 
    *Two traps worth recording.* `IFA_DBG_DISPATCHFAIL`'s `sites=` is not
    this metric either: it reads 0 on `list_tuple_union_method` and
