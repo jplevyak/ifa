@@ -1515,18 +1515,48 @@ evidence puts them:
    | `splitter_mark_type` | 561 → **517** | 67 → 67 | 0 → 0 |
    | `splitter_cartesian_product` | 561 → **517** | 67 → 67 | 0 → 0 |
 
-   **No call became dynamic.** Tag-compare dispatch is unchanged in every
-   case (and the metric is non-trivial — `splitter_setter_of_setter` has
-   four, so a zero elsewhere means zero, not "not measured"). Direct calls
-   are equal or higher, emitted code is smaller, `splitter_setter`'s C is
-   byte-identical, and `splitter_cartesian_product` emits the same single
-   warning. The goldens pin a **route**; the outcome is equal or better.
+   > **CORRECTION.** The table above counts *tag compares* in the emitted
+   > C, and that proxy is incomplete: pyc also emits polymorphic calls
+   > through a **method-pointer slot**, which carries no tag compare. The
+   > conclusion drawn from it — "no call became dynamic" — is wrong for
+   > `splitter_cartesian_product`. See the proper observable below.
 
-   *A trap worth recording:* `IFA_DBG_DISPATCHFAIL`'s `sites=` is **not**
-   this metric. It reads 0 on `list_tuple_union_method` and
+   The goldens pin a **route**, and the outcome needed measuring
+   separately.
+
+   **The tests now assert the outcome, and it is not a proxy.**
+   `report_call_resolution` (`codegen_common.cc`, `PYC_DBG_CALLS=1`)
+   emits `CALLS: direct=N dynamic=M` over every live call site with
+   candidates: `direct` is one resolved target, `dynamic` is a call
+   through a method-pointer slot. All four `splitter_*` tests assert it
+   alongside their `STAGES:` line.
+
+   It is counted from `get_target_fun_core` and **not** in either emitter,
+   because the two backends decide with different predicates — `cg.cc`
+   asks `get_target_fun`, `cg_emit_llvm.cc` asks `callees->n > 1` — and a
+   golden is shared by both. Verified: the C and LLVM backends now report
+   identical numbers, and both suites are 311/0.
+
+   What that shows under `PYC_CSDCPA1=2`:
+
+   | test | `STAGES` | `CALLS` |
+   | --- | --- | --- |
+   | `splitter_setter` | changed | **54/0 → 54/0**, unchanged |
+   | `splitter_mark_type` | changed | **69/0 → 69/0**, unchanged |
+   | `splitter_setter_of_setter` | changed | 58/2 → 56/2 — two sites gone, none dynamic |
+   | `splitter_cartesian_product` | changed | 68/1 → **65/4** — three calls became DYNAMIC |
+
+   So three of the four are pure route changes and re-blessable when the
+   flag flips. **`splitter_cartesian_product` is a real regression** and
+   must not be re-blessed — it is a `.known_issue` until the splitter
+   keeps those three calls direct.
+
+   *Two traps worth recording.* `IFA_DBG_DISPATCHFAIL`'s `sites=` is not
+   this metric either: it reads 0 on `list_tuple_union_method` and
    `poly_dispatch_shared_method_extra_args`, both of which genuinely have
-   union receivers — it counts dispatch *failures*, not dispatch sites.
-   The usable proxy is tag compares in the emitted C.
+   union receivers, because it counts dispatch *failures*. And counting
+   tag compares in the emitted C misses slot-dispatch entirely, which is
+   how the regression above was missed the first time.
 
    So when the flag flips these four are re-blessable, but **not with a
    blanket `--rebless`**: `splitter_mark_type` loses its `MARK_TYPE`
@@ -1537,12 +1567,9 @@ evidence puts them:
    than a baked-in regression. Each needs a replacement assertion before
    its golden moves.
 
-   *And the tests assert the wrong thing.* A stage list is a proxy for
-   "the splitter did its job" that breaks under any architecture change
-   while the property it stands for still holds. What is actually wanted
-   — and what the author asked for — is that the calls stay direct.
-   Nothing today lets a `.check` file assert that; adding it would make
-   this whole class of golden robust.
+   The stage list stays as secondary coverage — it is still the only
+   thing pinning that `MARK_TYPE` and `CPA` fire at all — but it is no
+   longer the assertion that matters.
 
 *Not built, deliberately:* nothing here weakens the flag to make the suite
 pass. The flag is off by default, the default path is untouched

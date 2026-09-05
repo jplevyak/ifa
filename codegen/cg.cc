@@ -3652,6 +3652,7 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
   // 124 before 122: imprecision is the CAUSE and the layout violation the
   // consequence -- go's untyped `path` element is why a field access has
   // a layout to guess at all. Reporting the consequence first buries it.
+  report_call_resolution(fa);  // ifa/129 (backend-independent, see codegen_common.cc)
   cg_report_slot_use(fa);      // ifa/issues/123 (post-emission)
   cg_scan_imprecise(fa);       // ifa/issues/124
   cg_check_imprecise();        // ifa/issues/124

@@ -469,6 +469,42 @@ static bool identical_c_signature(Fun *a, Fun *b) {
   return true;
 }
 
+// ifa/129: how many call sites resolve to ONE target (a direct call) and
+// how many stay polymorphic (a call through a method-pointer slot).
+//
+// The `splitter_*.py` tests used to assert which splitter STAGES fired.
+// That pins the ROUTE the analysis took, not the property that matters, so
+// it breaks under any architecture change even when the emitted code is
+// identical or better -- measured under PYC_CSDCPA1, which changes all four
+// stage lists while three of the four emit the same calls. This is the
+// property itself: "we should get direct calls if at all possible."
+//
+// Counted HERE, from `get_target_fun_core`, and not in either emitter,
+// because the two backends decide with different predicates -- cg.cc asks
+// `get_target_fun`, cg_emit_llvm.cc asks `callees->n > 1` -- and a test
+// golden is shared by both. The resolver is what both consult, and
+// resolvability is a fact about the analysis result rather than about who
+// prints it.
+void report_call_resolution(FA *fa) {
+  if (!getenv("PYC_DBG_CALLS")) return;
+  long direct = 0, dynamic = 0;
+  for (Fun *f : fa->pdb->funs) {
+    if (!f->live) continue;
+    Vec<PNode *> nodes;
+    f->collect_PNodes(nodes);
+    for (PNode *n : nodes) {
+      if (n->code->kind != Code_SEND) continue;
+      Vec<Fun *> *fns = f->calls.get(n);
+      if (!fns || !fns->n) continue;  // no candidates: a primitive, not a call
+      if (get_target_fun_core(n, f))
+        ++direct;
+      else
+        ++dynamic;
+    }
+  }
+  fprintf(stderr, "CALLS: direct=%ld dynamic=%ld\n", direct, dynamic);
+}
+
 Fun *get_target_fun_core(PNode *n, Fun *f) {
   Vec<Fun *> *fns = f->calls.get(n);
   if (!fns || !fns->n) return nullptr;

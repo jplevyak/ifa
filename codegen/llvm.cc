@@ -378,6 +378,7 @@ void llvm_codegen_write_ir(FA *fa, Fun *main, cchar *input_filename) {
   }
   llvm_codegen_print_ir(fp, fa, main, input_filename);
   fclose(fp);
+  report_call_resolution(fa);  // ifa/129: same census as the C backend
   DEBUG_LOG("LLVM IR written to %s\n", fn);
 }
 
