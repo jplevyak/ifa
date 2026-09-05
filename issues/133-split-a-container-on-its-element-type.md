@@ -79,6 +79,41 @@ to the contour it first made instead of minting a fresh one each pass.
 What is new is the partition function — by element contribution rather
 than by setter equivalence.
 
+### The blocker, found 2026-09-05 — and it is not the trigger
+
+The obvious first move is ifa/109's pattern: raise the violation and let
+the existing machinery act, exactly as its comment promises —
+
+> *"Recording a violation here is what makes the EXISTING backward
+> machinery do the work: `split_for_violations` (stage 5) splits the
+> offending AVar... No annotation, no special case in codegen — FA simply
+> has to know the constraint."*
+
+There is even a real gap to close there. `collect_var_type_violations`
+walks `cs->vars`, the **positional fields**, and checks each for
+`mixed_basics` — but never the container's **generic element** AVar. So a
+list whose element is `{int64, str}` raises nothing at that site.
+
+**Adding it is inert, and it was measured: 0 / 16 / 19 failures at the
+default, `PYC_CSDCPA1=2` and `=1`, identical with and without.** Reverted
+rather than kept, but it is six lines and belongs in whatever lands here.
+
+The reason it is inert is the actual work item.
+`collect_violation_imprecisions` turns a violation into something
+refinable by exactly two routes: `v->av->container` (null for a
+CreationSet-contour AVar — nothing sets it for `cs->vars[i]` or the
+element AVar), and `is_call_result(v->av)`, which wants a call PNode and
+casts `v->av->contour` to an `EntrySet *`. **A violation whose AVar lives
+on a CreationSet yields no imprecision at all, so stage 5 cannot see it.**
+
+That is the same shape as
+[129](129-plan-demand-driven-creation-set-splitting.md)'s finding about
+`split_ess_setters`, which likewise acts only when the confluence sits on
+an EntrySet — and it is why the `PYC_ESFORCS` experiment there was inert
+too. **Three separate mechanisms now stop at the same boundary: an AVar
+on a CreationSet contour has no route into the splitter.** That boundary,
+not the trigger, is what this issue has to cross.
+
 **Bounding, and the stop condition.** If the program genuinely builds a
 heterogeneous list, no split helps: the union is real and today's refusal
 is the right answer. So the split is *attempted*, and on failure control
