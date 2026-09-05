@@ -351,15 +351,43 @@ formal to accept; `split_css` has no second def to partition. The union
 is formed by many individually-precise writers all flowing into one
 CreationSet's element.
 
-**That reframes this issue.** It is not a splitting problem — there is no
-contour left to split. It is a FLOW problem: element writes from distinct,
-monomorphic contours are reaching a container they should not reach. The
-question to answer next is which flow edge carries `str` into `cs=995`'s
-element when every writer contour that could do so is monomorphic in a
-different receiver — most likely an element-channel trampoline that
-unions across CreationSets rather than per-CS
-(see [ifa-fa-snapshot-vs-durable-edge](111-FA-selective-invalidation-per-pass.md)'s
-`vector_elems` discussion). Splitting cannot fix an over-wide edge.
+### The confluence exists, is detected, and is silently discarded
+
+*"There is a confluence — where is that?"* It is the element AVar of
+`cs=995`, and `collect_type_confluences` **already finds it**: that
+function walks `cs->vars` AND the element AVar for every CreationSet
+(`fa.cc`, `if (cs->added_element_var) collect_type_confluence(...)`), and
+`collect_type_confluence` compares `type_diff(av->in->type, x->out->type)`
+over the backward sources — exactly the `int64` vs `str` difference.
+
+`IFA_DBG_TCDROP` shows what happens to it:
+
+```
+[tcdrop] confluence on CS cs=995  sym=list defs=1 type= int64 str   (x7)
+[tcdrop] confluence on CS cs=1003 sym=list defs=1 type= int64 str   (x10)
+```
+
+**Collected every pass and discarded every pass.** `split_ess_for_type`
+opens with `if (av->contour_is_entry_set)` and has no `else`: a confluence
+on a CreationSet contour falls off the end with no counter, no log, and
+no other consumer. `tc_seen` counts it; `tc_skip_rval` and `tc_skip_lval`
+do not, so even the stage's own diagnostics do not report it.
+
+So the earlier conclusion — "no contour is left to split" — was measuring
+the wrong thing. The demand signal is not missing and not unroutable. **It
+is computed correctly and thrown away by the only stage that consumes
+it.**
+
+*First attempt at the fix, and why it is not in this commit:* hand the
+confluence's backward sources (which ARE on EntrySet contours) to the same
+splitter. It **segfaults** before reaching its own trace, both with and
+without null guards on `b->var`/`b->contour`. Reverted; the crash is in
+splitting an EntrySet reached this way and needs its own diagnosis, not a
+guard. `PYC_TCBACK` is not kept.
+
+*What is kept:* `IFA_DBG_TCDROP`, which names every confluence the stage
+discards. That is the measurement this issue turned on, and nothing else
+reports it.
 
 A is a smaller, separate question — whether a stage that only runs once
 everything else is quiet is the right design, given that lifting the gate

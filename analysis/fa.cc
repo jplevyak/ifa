@@ -8165,6 +8165,16 @@ static void collect_cs_setter_confluences(Vec<AVar *> &setters_confluences) {
   Vec<ESSplitDecision *> decisions;
   for (AVar *av : imprecisions) {
     ++tc_seen;
+    if (!av->contour_is_entry_set && getenv("IFA_DBG_TCDROP")) {
+      CreationSet *ccs = (CreationSet *)av->contour;
+      fprintf(stderr, "[tcdrop] p=%d confluence on CS cs=%d sym=%s defs=%d type=", analysis_pass,
+              ccs ? ccs->id : -1, (ccs && ccs->sym && ccs->sym->name) ? ccs->sym->name : "?",
+              ccs ? ccs->defs.set_count() : -1);
+      if (av->out && av->out->type)
+        for (CreationSet *c : av->out->type->sorted)
+          if (c && c->sym) fprintf(stderr, " %s", c->sym->name ? c->sym->name : "?");
+      fprintf(stderr, "\n");
+    }
     if (av->contour_is_entry_set) {
       AVar *target = nullptr;
       if (!av->is_lvalue) {
@@ -11356,8 +11366,15 @@ static void report_mixed_element_owners() {
     if (!cs || !cs->sym || !cs->sym->element || !cs->sym->element->var || !cs->added_element_var) continue;
     AVar *elem = unique_AVar(cs->sym->element->var, cs);
     if (!elem || !elem->out || !mixed_basics(elem)) continue;
-    fprintf(stderr, "MIXELEM p=%d cs=%d sym=%s defs=%d elem=", analysis_pass, cs->id,
-            cs->sym->name ? cs->sym->name : "?", cs->defs.set_count());
+    int fwd = 0, fwd_setters = 0;
+    for (AVar *x : elem->forward)
+      if (x) {
+        ++fwd;
+        if (x->setters) ++fwd_setters;
+      }
+    fprintf(stderr, "MIXELEM p=%d cs=%d sym=%s defs=%d elem_setters=%d fwd=%d fwd_with_setters=%d elem=",
+            analysis_pass, cs->id, cs->sym->name ? cs->sym->name : "?", cs->defs.set_count(),
+            elem->setters ? elem->setters->n : -1, fwd, fwd_setters);
     for (CreationSet *c : elem->out->type->sorted)
       if (c && c->sym) fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
     fprintf(stderr, "\n");
