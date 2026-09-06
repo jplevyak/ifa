@@ -2005,3 +2005,59 @@ default `-j 32`. Re-run at `-j 8 -J 4` with a memory monitor: **no memory
 warnings at all**, so the cause was concurrency, not a per-process
 blowup. Nothing partial was cached — checked before re-running, since a
 killed sweep can leave a result that looks real.
+
+### Step 4 — the remaining corpus failures are ONE family, and it needs the third clause after all (2026-09-06)
+
+After ifa/135's two fixes the flag arm is suite 4 / corpus compile_fail 10.
+Triaging the 10 by first diagnostic:
+
+| | n | |
+| --- | --- | --- |
+| **`'X' has no type`** | **8** | `linalg`, `othello2`, `plcfrs`, `pystone`, `quameon`, `rdb`, `sudoku3`, `sudoku5` |
+| no EntrySet progress (convergence) | 1 | `othello3` |
+| illegal call argument type | 1 | `richards` |
+
+**The 8 are one family and they are group A downstream.** On `sudoku3`,
+the `DEMAND` census:
+
+```
+default   passes=21  ess=470  container_cs=62  mixed=0
+flag      passes=38  ess=652  container_cs=54  mixed=18
+```
+
+18 CreationSets carry an irrepresentable element union under the flag and
+none at the default. `'ll' has no type` is the *downstream* symptom —
+`ll = __pyc_clone_constants__(len(l))` in `list.__eq__`, where `len` on a
+container whose element has been salvaged returns bottom.
+
+**Why the ifa/133 machinery does not reach them, measured.** On
+`sudoku3`, `CS_DEF_PARTITION` is entered on 37 passes, sees 36 candidates
+with more than one def, and performs 26 wholesale splits plus 1 ladder
+split. But the confluences being dropped are overwhelmingly **`defs=1`**:
+
+```
+474  sym=tuple  defs=1
+445  sym=list   defs=1
+```
+
+**A CreationSet with ONE creation point whose element is mixed cannot be
+split by creation point** — there is nothing to partition. The union comes
+from multiple WRITES into one container, not from merged containers, so
+every rung of the ladder correctly declines and the demand test correctly
+says "nothing merged here".
+
+**This corrects the retraction earlier in this file.** *"The third clause
+is already working"* was measured on four constructed cases (A-D above)
+where the creation point sits inside a function reachable by the setter
+ladder, and it is true for those. It is NOT true here: 445 `list`
+confluences with `defs=1` never separate. The accurate statement is that
+`SETTER`/`SETTER_OF_SETTER` implement the clause **for the shapes those
+rungs can reach**, and the corpus contains shapes they cannot.
+
+So the next target is the original third clause, stated precisely: *when a
+CreationSet's element is irrepresentable and it has ONE creation point,
+split the EntrySet that owns that creation point so the site duplicates —
+and only then can the CreationSet split.* That is the one ordering
+ifa/133's machinery cannot bootstrap on its own, and it is now the largest
+single item in the flag arm: 8 of 10 corpus failures and, via `builtins`,
+1 of 4 suite failures.
