@@ -292,6 +292,13 @@ class CreationSet : public gc {
   // been identified by. nullptr until first captured.
   AType *elem_key = nullptr;
   int elem_key_pass = -1;
+  // ifa/issues/133: how many CONSECUTIVE passes this CreationSet has been
+  // offered to CS_DEF_PARTITION and not acted on. Durable like the two
+  // above -- it is counting the analysis's own history, so it must survive
+  // clear_results. See split_css_by_defs for what "offered" means and why
+  // the count is the gate.
+  int defsplit_offers = 0;
+  int defsplit_last_pass = -2;
   // The Var whose creation_point minted this CS, so a later pass can ask
   // "what element type did this site converge to?".
   Var *creation_var = nullptr;

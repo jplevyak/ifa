@@ -514,3 +514,52 @@ right one. The result establishes reachability, not correctness.
 The 5 that remain need more than the gate: their unions carry `list`,
 `tuple` and `Char` alongside the scalars, so more than one merge is in
 play per program.
+
+### The per-candidate gate — implemented 2026-09-06
+
+`CreationSet::defsplit_offers` / `defsplit_last_pass` (durable, like
+`elem_key_pass` beside them) count the CONSECUTIVE passes a CreationSet
+has been offered to this stage without being acted on.
+`split_css_by_defs` is now called on every pass and takes `quiescent`:
+
+- a quiescent pass behaves exactly as before;
+- on a non-quiescent pass, only a candidate with
+  `defsplit_offers >= kCsDefSplitRipe` (3) may be partitioned.
+
+That is the local form of the protection the global gate was reaching
+for, and it is self-enforcing: **a conflict a finer route can separate
+stops recurring, so it never ripens.**
+
+| | before | after |
+| --- | --- | --- |
+| default suite, both backends | 311/0 | **311/0** |
+| `PYC_CSDCPA1=2` suite | 11 failed | **9 failed** |
+| ifa/129 group A (9 corpus programs) | 0 | **5 compile** |
+
+`sha`, `pisang`, `sudoku3`, `msp_ss`, `sudoku5` compile;
+`deepcopy_copy_of_copy_chain` and `plcfrs_grammar_tables_nonconvergence`
+join the suite. This issue's group is down to `splitter_cartesian_product`
+alone.
+
+Default corpus `check` (`check__default__af7176ef+ac5f4016`) is
+**byte-identical on all 77 programs** to the previous default arm —
+`compile_fail=2 run_fail=39 stdout_differs=24 with_warnings=44`,
+`3713/626 = 5.93`.
+
+**The ripeness gate beats the forced experiment, 5 of 9 against 4, and
+the reason matters.** Forcing also discarded `kCsDefSplitMax`. `sha`'s
+`cs=1054` carries `defs=18` at pass 1 — over the cap — but only `defs=6`
+by the time it ripens. Waiting does not merely find a safe moment; it
+lets the def count settle into the cap's range. The cap and the wait are
+complementary, so the earlier reading that the cap needed raising was
+wrong.
+
+*One bug introduced and caught by the goldens.* Removing the call-site
+gate made that block run every pass, so `if (analyze_again)` — which for
+every OTHER stage means "this stage found work", since they are all gated
+on `!analyze_again` — began attributing stage 1's progress to
+CS_DEF_PARTITION. `make test` failed with 15 `fa-converge` failures
+showing a phantom `pass 1 ? splits=1` event. The stage's own return value
+is now kept in a separate local. Worth recording that `fa-converge`
+caught two separate mistakes in this issue's work, and that the first
+instinct both times was that the goldens were stale. They were not.

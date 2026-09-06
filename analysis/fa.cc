@@ -8075,7 +8075,30 @@ static int csdefsplit_enabled() {
 // demand test, not ten contours.
 static const int kCsDefSplitMax = 10;
 
-[[nodiscard]] static int split_css_by_defs() {
+// ifa/133: how many CONSECUTIVE passes a CreationSet must carry the same
+// unactioned confluence before this stage will partition it on a pass that
+// is not quiescent.
+//
+// This replaces the global `if (!analyze_again)` gate for long-standing
+// candidates, and the reason is measured. That gate asks a GLOBAL question
+// -- "did anything anywhere in the program find work this pass?" -- to
+// answer a LOCAL one, which per the CSM_ELEMENT_CS placement comment is
+// "could a finer route separate THIS conflict with more precision?".
+// Program-wide quiescence is a bad proxy: on `sha` under PYC_CSDCPA1=2,
+// cs=1054 was dropped as a candidate on 26 of 28 passes and the gate
+// opened on ZERO of them, purely because unrelated functions were still
+// splitting. `builtins` reaches the stage twice on a comparable program.
+// The two differ only in how noisy the rest of the program is, which is
+// not a property either CreationSet has anything to do with.
+//
+// Consecutive recurrence is the local form of the same protection: a
+// candidate that is still here after N passes has been offered to every
+// finer stage N times and none of them took it. Precision-first is
+// preserved -- a conflict a finer route CAN separate stops recurring, so
+// it never ripens.
+static const int kCsDefSplitRipe = 3;
+
+[[nodiscard]] static int split_css_by_defs(int quiescent) {
   if (!csdefsplit_enabled()) return 0;
   const bool dbg = getenv("IFA_DBG_CSDEFSPLIT") != nullptr;
   // Entry trace. Absence of the per-CS lines below has THREE causes --
@@ -8099,15 +8122,30 @@ static const int kCsDefSplitMax = 10;
     Vec<AVar *> defs;
     for (AVar *d : cs->defs)
       if (d && d->cs_map && d->cs_map->get(cs->sym) == cs) defs.add(d);
-    // PYC_CSDEFSPLIT=2 is the EXPERIMENT arm (ifa/133): ignore the
-    // route-4 cap and the quiescence gate, to establish whether this
-    // mechanism can reach the cases it was built for at all. Not a
-    // shipping mode.
+    // PYC_CSDEFSPLIT=2 is the EXPERIMENT arm (ifa/133): ignore the cap
+    // and the ripeness wait, to establish what this mechanism can reach
+    // at all. Not a shipping mode. Measured 2026-09-06: it fixes 4 of
+    // ifa/129's 9 group-A corpus programs.
     const bool force = csdefsplit_enabled() >= 2;
     if (defs.n < 2 || (!force && defs.n >= kCsDefSplitMax)) {
       if (dbg)
         fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d DECLINED (%s)\n", analysis_pass, cs->id,
                 cs->sym->name ? cs->sym->name : "?", defs.n, defs.n < 2 ? "single creation point" : "over cap");
+      continue;
+    }
+    // Ripeness: consecutive passes this CreationSet has been offered here
+    // without being acted on. Counted for EVERY viable candidate, whether
+    // or not this pass will act, because the count is the history.
+    if (cs->defsplit_last_pass == analysis_pass - 1)
+      ++cs->defsplit_offers;
+    else if (cs->defsplit_last_pass != analysis_pass)
+      cs->defsplit_offers = 1;
+    cs->defsplit_last_pass = analysis_pass;
+    if (!quiescent && !force && cs->defsplit_offers < kCsDefSplitRipe) {
+      if (dbg)
+        fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d WAIT (offers=%d < %d, pass not quiescent)\n",
+                analysis_pass, cs->id, cs->sym->name ? cs->sym->name : "?", defs.n, cs->defsplit_offers,
+                kCsDefSplitRipe);
       continue;
     }
     qsort_by_id(defs);  // determinism: the harness asserts identical output
@@ -9426,19 +9464,30 @@ static int cpa_enabled() {
   // the position shedskin puts it: coarsest separation, tried last, so it
   // can never preempt a split that keeps more precision. Gated on full
   // quiescence for the same reason PER_CS_RECEIVER and CSM_ELEMENT_CS are.
-  if (!analyze_again || csdefsplit_enabled() >= 2) {
+  // Called on EVERY pass, not only on quiescence, so the ripeness count
+  // above sees every pass; `quiescent` decides whether an unripe candidate
+  // may be acted on. A quiescent pass behaves exactly as before.
+  {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
     stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::CS_DEF_PARTITION;
-    analyze_again = split_css_by_defs() || analyze_again;
+    // THIS stage's own result, kept separate from the running
+    // `analyze_again`. Every other stage here is gated on `!analyze_again`,
+    // so for them `if (analyze_again)` after the call means "this stage
+    // found work". This one runs on EVERY pass, so that test attributes
+    // stage 1's progress to this stage -- which it did, and the
+    // fa-converge goldens caught it as a phantom `pass 1 ? splits=1`.
+    int cs_def_r = split_css_by_defs(!analyze_again);
     fa->stage_time[(int)FAPassStage::CS_DEF_PARTITION] += stage_timer.lap();
-    if (analyze_again) {
-      record_fa_event(FAPassStage::CS_DEF_PARTITION, analyze_again, ess0, css0, viol0);
+    if (cs_def_r) {
+      record_fa_event(FAPassStage::CS_DEF_PARTITION, cs_def_r, ess0, css0, viol0);
       if (getenv("PYC_DBG_STAGEDELTA"))
         fprintf(stderr, "STAGEDELTA p=%d CS_DEF_PARTITION returned=%d d_ess=%d d_css=%d viol=%d\n", analysis_pass,
-                analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0, fa->type_violations.set_count());
+                cs_def_r, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0,
+                fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::CS_DEF_PARTITION];
     }
+    analyze_again = cs_def_r || analyze_again;
   }
   log(LOG_SPLITTING, "split_css_by_defs %d\n", analyze_again);
   // ifa/issues/074: back to "no stage running". Without this, every
