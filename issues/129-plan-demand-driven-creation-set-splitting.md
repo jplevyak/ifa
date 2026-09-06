@@ -1,10 +1,69 @@
 # 129 — plan: make CreationSet splitting demand-driven
 
-**Status:** open, filed 2026-09-04. A plan, with an audit of how shedskin
-does it. Root cause is [128](128-cs-identity-over-discriminates-vs-element-type.md);
-the architectural dependency is [111](111-FA-selective-invalidation-per-pass.md).
-**Goal:** make CLAUDE.md's first line true — *the primary purpose of IFA
-is the demand splitting of Creation Sets.*
+**Status:** open, filed 2026-09-04. Root cause is
+[128](128-cs-identity-over-discriminates-vs-element-type.md); the
+architectural dependency is
+[111](111-FA-selective-invalidation-per-pass.md). **Goal:** make
+CLAUDE.md's first line true — *the primary purpose of IFA is the demand
+splitting of Creation Sets.*
+
+## START HERE — status as of 2026-09-05
+
+The rest of this file is a chronological record and is long. It has four
+sections titled "Step 4" because the step was re-scoped three times; read
+them in file order or not at all. This block is what a cold start needs.
+
+**The lever is `PYC_CSDCPA1` — start merged, one CreationSet per sym.**
+Default off. It is the only thing measured that moves the goal number, and
+it takes `ess` DOWN rather than up, unlike every key-side experiment here:
+
+| | default | `PYC_CSDCPA1=2` |
+| --- | --- | --- |
+| container CS / shapes (corpus) | 3748 / 626 = 5.99 | 2716 / 595 = **4.56** |
+| `pyc` segfaults / compile timeouts | 0 / 1 | **0 / 0** |
+| corpus compile failures | 2 | 19 |
+| suite failures | 0 | 16 (`=1`, tuples included: 19) |
+
+**What has landed:** [132](132-arity-is-representation-not-provenance.md)
+— arity participates in CreationSet identity, which removed every compiler
+crash and hang under the flag.
+
+**The 16 suite failures, triaged** (full table at *Step 4 — the bill*):
+
+| group | n | state |
+| --- | --- | --- |
+| [133](133-split-a-container-on-its-element-type.md) element leak | 5 | root-caused, **blocked on a design choice** |
+| `splitter_*` goldens | 3 | decided — route changed, `CALLS` verified equal, re-blessable at flip |
+| layout / member width | 2 | untouched; a sibling of 132, likely the same shape |
+| illegal call argument type | 2 | untouched |
+| undiagnosed | 4 | untouched |
+
+**Next actions, in order:**
+
+1. **Decide [133](133-split-a-container-on-its-element-type.md)'s question**
+   — record provenance on element writes, or stop library and user
+   creation points sharing a contour. There is no narrow fix; the issue is
+   compacted to 166 lines and has a four-line reproducer.
+2. **The layout pair.** 132 found arity is a representation property CS
+   identity must respect; member width is another. Probably small.
+3. **The 4 undiagnosed**, three of which produce no diagnostic at all.
+4. **Corpus triage** — 19 compile failures against the default's 2. The
+   corpus catches what the 311-test suite does not.
+5. **Convergence cost** — passes up 40-200%.
+   [111](111-FA-selective-invalidation-per-pass.md)'s `IFA_SELECTIVE` is
+   the untouched lever and this is its first reason to pay.
+
+**Independent of all of the above:**
+[134](134-remove-the-frontend-forced-split-opt-in.md) — the frontend's
+`__pyc_clone_constants__` forced splits, worth 69 suite tests and
+**measured not to be subsumed** by start-merged.
+
+**Superseded, do not restart from these:** `PYC_CSELEM=3` (−18%, regresses
+`rdb`, keyed at mint time when the element is unfilled — dcpa1 supersedes
+it); `PYC_CSSITELESS` (made contours *worse*, 4 of 5 programs);
+`PYC_CSRESPLIT`, `PYC_CSREJOIN` (built, measured, inert or superseded).
+[131](131-demand-driven-constant-splitting.md)'s cap-strip premise is
+falsified.
 
 ## Part 1 — audit: how shedskin does it
 
