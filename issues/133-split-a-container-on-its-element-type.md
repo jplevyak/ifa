@@ -759,10 +759,50 @@ out, and they are the real design choice:
    nothing regardless of what else shares the contour. This is the
    narrowest of the three and does not need provenance at all.
 
-**Option 3 is the one to try next.** It attacks the specific
-over-approximation rather than the general identity question, it needs no
-new state, and `del a[0]` already demonstrates the analysis has the arity
-information at that site (`ifa/132` keys on it).
+### Correction: a set operation's `container` is not a creation point
+
+The attribution attempt above tested `b->container` for membership in
+`cs->defs`, and that is wrong by construction. Creation points are
+literally allocation sites. A set operation *writes into* an object, and
+its `container` is the **CreationSet-typed receiver** — reaching the
+creation points from it requires a **back flow**, not a membership test.
+
+Redone as a backward walk from each writer's container
+(`IFA_DBG_ATTRIB`):
+
+```
+ATTRIB cs=983 defs=6 writers=3
+  writer type= str  backflow_steps=10 reached_creation_points=0
+  writer type= str  backflow_steps=22 reached_creation_points=0
+  writer type= str  backflow_steps=11 reached_creation_points=0
+```
+
+Still 0, now for an unexplained reason rather than a conceptual error —
+10-22 steps of backward closure from the receiver reach none of the six
+creation points. Whether that is a defect in the walk or a real property
+of the graph is **not established**, and the probe deserves the same
+known-answer validation `IFA_DBG_FWDALL` got before it is trusted.
+
+What the run does establish: **all three writers into `cs=983` are
+`str`.** The shared empty-list contour holds `{str}` and nothing else,
+confirming the leak direction — the user's `"x"` enters `cs=983`, and
+`merge_in(a, cs983)` carries it into `cs=981`.
+
+### And that kills option 3
+
+`merge_in(self, …, [])` cannot be fixed by noticing the source is
+statically empty. The source's CreationSet **is** `cs=983`, whose
+`static_arity` is 0 *and* whose element is `{str}` — because the user's
+`b = []` shares it. Per-call-site emptiness is not representable while
+the contour is shared, so the over-approximation is not local to
+`merge_in` at all.
+
+**That leaves options 1 and 2, and both are architectural.** Either the
+analysis records which creation point an element write belongs to, or
+library and user creation points do not share a contour in the first
+place. There is no narrow fix here, and this issue should not be worked
+further until that choice is made — the four-line reproducer and the
+`del`/`append`/arity variants make it cheap to re-enter once it is.
 
 *Reproducer:* four lines, above. `del`/`append`/arity variants recorded
 here are the discriminating cases for whatever lands.

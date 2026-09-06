@@ -11397,6 +11397,43 @@ static void report_forward_closure_all() {
   }
 }
 
+// ifa/133: attribute element writes to CREATION POINTS by back flow.
+//
+// A set operation writes into an object; its `container` is the
+// CreationSet-typed receiver, NOT an allocation site. Reaching the
+// creation points requires a backward walk from that container -- testing
+// `container` for membership in `cs->defs` is wrong by construction and
+// reported 0 attributions every time.
+static void report_creation_attribution() {
+  if (!getenv("IFA_DBG_ATTRIB")) return;
+  for (CreationSet *cs : fa->css) {
+    if (!cs || !cs->sym || !cs->sym->element || !cs->sym->element->var || !cs->added_element_var) continue;
+    if (cs->defs.set_count() < 2) continue;
+    AVar *elem = unique_AVar(cs->sym->element->var, cs);
+    if (!elem || !elem->out) continue;
+    fprintf(stderr, "ATTRIB p=%d cs=%d defs=%d writers=%d\n", analysis_pass, cs->id, cs->defs.set_count(),
+            elem->backward.n);
+    for (AVar *b : elem->backward) {
+      if (!b || !b->container || !b->out || !b->out->type) continue;
+      Vec<AVar *> seen, work;
+      seen.set_add(b->container);
+      work.add(b->container);
+      int h = 0, reached_defs = 0, steps = 0;
+      while (h < work.n && steps < 50000) {
+        AVar *a = work.v[h++];
+        ++steps;
+        if (cs->defs.set_in(a)) ++reached_defs;
+        for (AVar *x : a->backward)
+          if (x && seen.set_add(x)) work.add(x);
+      }
+      fprintf(stderr, "  writer type=");
+      for (CreationSet *c : b->out->type->sorted)
+        if (c && c->sym) fprintf(stderr, " %s", c->sym->name ? c->sym->name : "?");
+      fprintf(stderr, "  backflow_steps=%d reached_creation_points=%d\n", steps, reached_defs);
+    }
+  }
+}
+
 static void report_mixed_element_owners() {
   if (!getenv("IFA_DBG_MIXELEM")) return;
   for (CreationSet *cs : fa->css) {
@@ -11534,6 +11571,7 @@ static void report_mixed_element_owners() {
 }
 
 static void report_demand_ratio() {
+  report_creation_attribution();
   report_forward_closure_all();
   report_mixed_element_owners();
   if (!getenv("IFA_DBG_DEMAND")) return;
