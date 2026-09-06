@@ -8076,8 +8076,15 @@ static int csdefsplit_enabled() {
 static const int kCsDefSplitMax = 10;
 
 [[nodiscard]] static int split_css_by_defs() {
-  if (!csdefsplit_enabled() || !tc_cs_dropped.n) return 0;
+  if (!csdefsplit_enabled()) return 0;
   const bool dbg = getenv("IFA_DBG_CSDEFSPLIT") != nullptr;
+  // Entry trace. Absence of the per-CS lines below has THREE causes --
+  // the stage was never reached (gated out by !analyze_again), it was
+  // reached with an empty candidate list, or every candidate was filtered
+  // as dead -- and they are not the same finding. Print on entry so the
+  // three can be told apart.
+  if (dbg) fprintf(stderr, "[csdefsplit] p=%d ENTER candidates=%d\n", analysis_pass, tc_cs_dropped.n);
+  if (!tc_cs_dropped.n) return 0;
   int analyze_again = 0;
   Vec<CreationSet *> css;
   for (CreationSet *cs : tc_cs_dropped)
@@ -8092,7 +8099,12 @@ static const int kCsDefSplitMax = 10;
     Vec<AVar *> defs;
     for (AVar *d : cs->defs)
       if (d && d->cs_map && d->cs_map->get(cs->sym) == cs) defs.add(d);
-    if (defs.n < 2 || defs.n >= kCsDefSplitMax) {
+    // PYC_CSDEFSPLIT=2 is the EXPERIMENT arm (ifa/133): ignore the
+    // route-4 cap and the quiescence gate, to establish whether this
+    // mechanism can reach the cases it was built for at all. Not a
+    // shipping mode.
+    const bool force = csdefsplit_enabled() >= 2;
+    if (defs.n < 2 || (!force && defs.n >= kCsDefSplitMax)) {
       if (dbg)
         fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d DECLINED (%s)\n", analysis_pass, cs->id,
                 cs->sym->name ? cs->sym->name : "?", defs.n, defs.n < 2 ? "single creation point" : "over cap");
@@ -9414,11 +9426,11 @@ static int cpa_enabled() {
   // the position shedskin puts it: coarsest separation, tried last, so it
   // can never preempt a split that keeps more precision. Gated on full
   // quiescence for the same reason PER_CS_RECEIVER and CSM_ELEMENT_CS are.
-  if (!analyze_again) {
+  if (!analyze_again || csdefsplit_enabled() >= 2) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
     stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::CS_DEF_PARTITION;
-    analyze_again = split_css_by_defs();
+    analyze_again = split_css_by_defs() || analyze_again;
     fa->stage_time[(int)FAPassStage::CS_DEF_PARTITION] += stage_timer.lap();
     if (analyze_again) {
       record_fa_event(FAPassStage::CS_DEF_PARTITION, analyze_again, ess0, css0, viol0);

@@ -450,3 +450,67 @@ Two traps worth keeping in mind when using them:
 - **`qsort_by_id` on a set-`Vec` segfaults.** `set_add` builds the sparse
   representation, whose backing store holds nulls; call `set_to_vec()`
   first, as `split_css` does.
+
+## The quiescence gate is the wrong gate (root-caused 2026-09-06)
+
+`CS_DEF_PARTITION` runs `if (!analyze_again)` — only on a pass where
+*nothing anywhere in the program* found work. On `sha` under
+`PYC_CSDCPA1=2` that never happens, so the stage never runs at all.
+
+**Measured, after an earlier version of this claim was wrong.** Absence of
+`IFA_DBG_CSDEFSPLIT` output has three causes — never reached, reached with
+an empty candidate list, or every candidate filtered as dead — and they
+are not the same finding. An `ENTER` line now distinguishes them, and it
+was needed: on `builtins` the stage IS reached (2 entries) and the
+"starvation" reading there was simply false; its 48 candidates are all
+`defs=1`, which is a different defect. Do not infer a gate problem from
+silence.
+
+With the instrument in place:
+
+| | `ENTER` passes | candidate available | outcome |
+| --- | --- | --- | --- |
+| `sha` | **0** of 28 | `cs=1054` dropped on **26** of 28 passes | never partitioned |
+| `builtins` | 2 | 48 candidates, all `defs=1` | nothing to partition; different cause |
+
+**26 offers, 0 openings.** And no finer stage claimed it in between — it
+is the *same* CreationSet recurring, so the protection the gate exists to
+provide had 26 chances to fire and did not.
+
+**The defect is that the gate asks a GLOBAL question to answer a LOCAL
+one.** Its purpose, per the `CSM_ELEMENT_CS` placement comment, is
+per-candidate: do not preempt a finer route that could separate *this*
+conflict with more precision. It is implemented per-pass and
+program-wide, so whether a needed decision is taken depends on unrelated
+activity in unrelated functions. `sha` and `builtins` differ only in how
+noisy the rest of the program is.
+
+The local form of the same protection: partition a CreationSet that has
+carried the same irrepresentable confluence for N consecutive passes with
+no finer stage claiming it. That preserves "finer routes first",
+terminates, and does not couple to unrelated work. It is not implemented.
+
+### The experiment: forcing the gate and the cap
+
+`PYC_CSDEFSPLIT=2` (default 1; **experiment arm, not a shipping mode**)
+ignores both the quiescence gate and `kCsDefSplitMax`. On ifa/129's
+group A — the nine corpus programs failing with a merged-container
+`mixed basic types` or `{scalar, list}`:
+
+| | |
+| --- | --- |
+| **compile fixed, rc 1 → 0** | `sha`, `pisang`, `sudoku3`, `msp_ss` — **4 of 9** |
+| still failing | `othello2`, `plcfrs`, `rdb`, `sudoku5`, `linalg` |
+
+So the mechanism can reach the cases it was built for, and splitting the
+CreationSet really does resolve them — 132's element-flow does **not**
+re-pollute the split contours, which was the open question.
+
+**Do not read the 4 as 4 programs made correct.** `sha` already printed
+the wrong answer at the DEFAULT (`compile_rc=0 run_rc=0 stdout_match=NO`),
+so fixing its compile returns it to the default's wrong state, not to a
+right one. The result establishes reachability, not correctness.
+
+The 5 that remain need more than the gate: their unions carry `list`,
+`tuple` and `Char` alongside the scalars, so more than one merge is in
+play per program.
