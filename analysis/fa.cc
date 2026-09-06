@@ -8154,6 +8154,9 @@ static const int kCsDefSplitMax = 10;
 // attribute that cost to closure-building vs diagnostics vs collect
 // vs the split machinery so the fix targets the real term.
 static double stage2_closure_time = 0, stage2_diag_time = 0, stage2_collect_time = 0, stage2_split_time = 0;
+// ifa/133: allocation-counter snapshots for PYC_DBG_STAGEDELTA. See the
+// two-snapshot note in run_split_stages.
+static int stage_aes0 = 0, stage_acs0 = 0;
 
 [[nodiscard]] static int split_with_type_marks(AVar *av, int fdynamic) {
   Timer s2_timer;
@@ -9054,11 +9057,43 @@ static int cpa_enabled() {
   tc_cs_dropped.clear();
   // Snapshots taken before each split_* call so the sidecar can record
   // the delta this stage produced. See fa_events_storage / record_fa_event.
+  //
+  // TWO snapshots, because the sidecar and the probe want different
+  // questions answered.
+  //
+  // `ess0`/`css0` are the LIVE population (`fa->ess` / `fa->css`), which is
+  // what the fa-converge goldens display. Those two vectors are rebuilt
+  // only by `collect_results` (fa.cc:4830),
+  // which runs once per pass BEFORE any splitting, so during this function
+  // they are a frozen snapshot and every delta computed from them is
+  // structurally zero WITHIN a pass -- before == after, always.
+  //
+  // So `PYC_DBG_STAGEDELTA`'s `d_ess`/`d_css` are computed off
+  // `stage_aes0`/`stage_acs0` instead, snapshots of `all_entry_sets` /
+  // `all_creation_sets`. Those are appended by the EntrySet and CreationSet
+  // constructors themselves, so they move the moment a stage creates a
+  // contour, which is the question the probe exists to answer.
+  //
+  // ifa/133, 2026-09-06: this was measured, not reasoned. CS_DEF_PARTITION
+  // minted five CreationSets on ifa/133's reproducer and the probe still
+  // printed `d_css=0`. **Any conclusion drawn from a pre-2026-09-06
+  // `d_ess`/`d_css` reading is void**, including "this stage claims
+  // progress but moves nothing" -- on `sha` that reading inverted once the
+  // meter worked (TYPE_CONFL turned out to be doing real work, d_ess=66).
+  //
+  // NOT unified deliberately: `all_*` never shrinks, so it is an allocation
+  // count, not a live population (measured: css 12 live vs 115 allocated on
+  // one fixture). Making the sidecar report it would change what the
+  // fa-converge goldens MEAN, which is a design decision and not this
+  // change. The goldens' own `ess=A→B` is a within-pass tautology and worth
+  // revisiting on its own terms.
   int ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
   Vec<AVar *> confluences;
   // 1) split EntrySets based on type using AVar::out
   if (!analyze_again) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
     collect_type_confluences(confluences);
     cur_split_stage = (int)FAPassStage::TYPE_CONFLUENCE;
     analyze_again = split_ess_for_type(confluences, SPLIT_EDGES);
@@ -9068,7 +9103,7 @@ static int cpa_enabled() {
     // starves every later stage. Report the claim next to the effect.
     if (getenv("PYC_DBG_STAGEDELTA"))
       fprintf(stderr, "STAGEDELTA p=%d TYPE_CONFL returned=%d confluences=%d d_ess=%d d_css=%d viol=%d\n",
-              analysis_pass, analyze_again, confluences.n, fa->ess.n - ess0, fa->css.n - css0,
+              analysis_pass, analyze_again, confluences.n, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0,
               fa->type_violations.set_count());
     log(LOG_SPLITTING, "split_ess_for_type %d\n", analyze_again);
     if (analyze_again) {
@@ -9086,6 +9121,7 @@ static int cpa_enabled() {
   // depth proxy with the name.
   if (!analyze_again) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::CARTESIAN_PRODUCT;
     analyze_again = split_ess_cartesian_product();
     fa->stage_time[(int)FAPassStage::CARTESIAN_PRODUCT] += stage_timer.lap();
@@ -9093,7 +9129,7 @@ static int cpa_enabled() {
       record_fa_event(FAPassStage::CARTESIAN_PRODUCT, analyze_again, ess0, css0, viol0);
       if (getenv("PYC_DBG_STAGEDELTA"))
         fprintf(stderr, "STAGEDELTA p=%d CARTESIAN_PRODUCT returned=%d d_ess=%d d_css=%d viol=%d\\n", analysis_pass,
-                analyze_again, fa->ess.n - ess0, fa->css.n - css0, fa->type_violations.set_count());
+                analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0, fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::CARTESIAN_PRODUCT];
     }
     log(LOG_SPLITTING, "split_ess_cartesian_product %d\n", analyze_again);
@@ -9120,6 +9156,7 @@ static int cpa_enabled() {
   // program.
   if (!analyze_again) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::MARK_TYPE;
     analyze_again = nomark_enabled() >= 1 ? 0 : split_ess_for_mark_type(confluences);
     fa->stage_time[(int)FAPassStage::MARK_TYPE] += stage_timer.lap();
@@ -9127,7 +9164,7 @@ static int cpa_enabled() {
       record_fa_event(FAPassStage::MARK_TYPE, analyze_again, ess0, css0, viol0);
       if (getenv("PYC_DBG_STAGEDELTA"))
         fprintf(stderr, "STAGEDELTA p=%d MARK_TYPE    returned=%d d_ess=%d d_css=%d viol=%d\\n", analysis_pass,
-                analyze_again, fa->ess.n - ess0, fa->css.n - css0, fa->type_violations.set_count());
+                analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0, fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::MARK_TYPE];
     }
   }
@@ -9187,12 +9224,13 @@ static int cpa_enabled() {
       for (AVar *av : confluences) (void)compute_setters(av, avs, AKIND_TYPE);
     }
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::SETTER;
     int viol_before_setter = fa->type_violations.set_count();
     if (split_for_setters(avs, analyze_again)) analyze_again = 1;
     if (getenv("PYC_DBG_STAGEDELTA"))
       fprintf(stderr, "STAGEDELTA p=%d SETTER      returned=%d d_ess=%d d_css=%d viol=%d (was %d)\n",
-              analysis_pass, analyze_again, fa->ess.n - ess0, fa->css.n - css0,
+              analysis_pass, analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0,
               fa->type_violations.set_count(), viol_before_setter);
     fa->stage_time[(int)FAPassStage::SETTER] += stage_timer.lap();
     if (analyze_again) {
@@ -9202,6 +9240,7 @@ static int cpa_enabled() {
     log(LOG_SPLITTING, "split_for_setters %d\n", analyze_again);
     if (!analyze_again) {
       ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
       cur_split_stage = (int)FAPassStage::SETTER_OF_SETTER;
       analyze_again = split_for_setters_of_setters();
       fa->stage_time[(int)FAPassStage::SETTER_OF_SETTER] += stage_timer.lap();
@@ -9209,7 +9248,7 @@ static int cpa_enabled() {
         record_fa_event(FAPassStage::SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
       if (getenv("PYC_DBG_STAGEDELTA"))
         fprintf(stderr, "STAGEDELTA p=%d SETTER_OF_SETTER returned=%d d_ess=%d d_css=%d viol=%d\\n", analysis_pass,
-                analyze_again, fa->ess.n - ess0, fa->css.n - css0, fa->type_violations.set_count());
+                analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0, fa->type_violations.set_count());
         ++fa->stage_progress_count[(int)FAPassStage::SETTER_OF_SETTER];
       }
     }
@@ -9249,6 +9288,7 @@ static int cpa_enabled() {
           av->var && av->var->sym && av->var->sym->name ? av->var->sym->name : "(anon)", r);
     }
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::MARK_SETTER;
     if (split_for_setters(avs, analyze_again)) analyze_again = 1;
     fa->stage_time[(int)FAPassStage::MARK_SETTER] += stage_timer.lap();
@@ -9256,12 +9296,13 @@ static int cpa_enabled() {
       record_fa_event(FAPassStage::MARK_SETTER, analyze_again, ess0, css0, viol0);
       if (getenv("PYC_DBG_STAGEDELTA"))
         fprintf(stderr, "STAGEDELTA p=%d MARK_SETTER  returned=%d d_ess=%d d_css=%d viol=%d\\n", analysis_pass,
-                analyze_again, fa->ess.n - ess0, fa->css.n - css0, fa->type_violations.set_count());
+                analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0, fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::MARK_SETTER];
     }
     log(LOG_SPLITTING, "split_for_setters with marks %d\n", analyze_again);
     if (!analyze_again) {
       ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
       cur_split_stage = (int)FAPassStage::MARK_SETTER_OF_SETTER;
       analyze_again = split_for_setters_of_setters();
       fa->stage_time[(int)FAPassStage::MARK_SETTER_OF_SETTER] += stage_timer.lap();
@@ -9269,7 +9310,7 @@ static int cpa_enabled() {
         record_fa_event(FAPassStage::MARK_SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
       if (getenv("PYC_DBG_STAGEDELTA"))
         fprintf(stderr, "STAGEDELTA p=%d MARK_SETTER_OF_SETTER returned=%d d_ess=%d d_css=%d viol=%d\\n", analysis_pass,
-                analyze_again, fa->ess.n - ess0, fa->css.n - css0, fa->type_violations.set_count());
+                analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0, fa->type_violations.set_count());
         ++fa->stage_progress_count[(int)FAPassStage::MARK_SETTER_OF_SETTER];
       }
     }
@@ -9290,6 +9331,7 @@ static int cpa_enabled() {
     // 5) split AEdges(s) and EntrySet(s) for violations based on type using
     // dynamic dispatch
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::VIOLATION;
     analyze_again = split_for_violations(fa->type_violations) || analyze_again;
     fa->stage_time[(int)FAPassStage::VIOLATION] += stage_timer.lap();
@@ -9297,7 +9339,7 @@ static int cpa_enabled() {
       record_fa_event(FAPassStage::VIOLATION, analyze_again, ess0, css0, viol0);
       if (getenv("PYC_DBG_STAGEDELTA"))
         fprintf(stderr, "STAGEDELTA p=%d VIOLATION    returned=%d d_ess=%d d_css=%d viol=%d\\n", analysis_pass,
-                analyze_again, fa->ess.n - ess0, fa->css.n - css0, fa->type_violations.set_count());
+                analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0, fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::VIOLATION];
     }
   }
@@ -9313,6 +9355,7 @@ static int cpa_enabled() {
   // all. That is why RECVFAN=1 measured byte-identical to baseline.
   if (!analyze_again || recvfan_enabled() >= 2) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::PER_CS_RECEIVER;
     // 2 = lifted gate, mixed-container receivers only (measured INERT --
     // the {list,tuple} fan never fires). 3 = lifted gate, fan everything
@@ -9325,7 +9368,7 @@ static int cpa_enabled() {
       record_fa_event(FAPassStage::PER_CS_RECEIVER, analyze_again, ess0, css0, viol0);
       if (getenv("PYC_DBG_STAGEDELTA"))
         fprintf(stderr, "STAGEDELTA p=%d PER_CS_RECEIVER returned=%d d_ess=%d d_css=%d viol=%d\\n", analysis_pass,
-                analyze_again, fa->ess.n - ess0, fa->css.n - css0, fa->type_violations.set_count());
+                analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0, fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::PER_CS_RECEIVER];
     }
   }
@@ -9352,6 +9395,7 @@ static int cpa_enabled() {
   // placement.
   if (!analyze_again) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::CSM_ELEMENT_CS;
     analyze_again = split_container_methods_per_element_cs();
     fa->stage_time[(int)FAPassStage::CSM_ELEMENT_CS] += stage_timer.lap();
@@ -9359,7 +9403,7 @@ static int cpa_enabled() {
       record_fa_event(FAPassStage::CSM_ELEMENT_CS, analyze_again, ess0, css0, viol0);
       if (getenv("PYC_DBG_STAGEDELTA"))
         fprintf(stderr, "STAGEDELTA p=%d CSM_ELEMENT_CS returned=%d d_ess=%d d_css=%d viol=%d\\n", analysis_pass,
-                analyze_again, fa->ess.n - ess0, fa->css.n - css0, fa->type_violations.set_count());
+                analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0, fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::CSM_ELEMENT_CS];
     }
   }
@@ -9372,6 +9416,7 @@ static int cpa_enabled() {
   // quiescence for the same reason PER_CS_RECEIVER and CSM_ELEMENT_CS are.
   if (!analyze_again) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::CS_DEF_PARTITION;
     analyze_again = split_css_by_defs();
     fa->stage_time[(int)FAPassStage::CS_DEF_PARTITION] += stage_timer.lap();
@@ -9379,7 +9424,7 @@ static int cpa_enabled() {
       record_fa_event(FAPassStage::CS_DEF_PARTITION, analyze_again, ess0, css0, viol0);
       if (getenv("PYC_DBG_STAGEDELTA"))
         fprintf(stderr, "STAGEDELTA p=%d CS_DEF_PARTITION returned=%d d_ess=%d d_css=%d viol=%d\n", analysis_pass,
-                analyze_again, fa->ess.n - ess0, fa->css.n - css0, fa->type_violations.set_count());
+                analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0, fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::CS_DEF_PARTITION];
     }
   }

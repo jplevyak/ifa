@@ -1845,3 +1845,91 @@ and the corpus says it does not pay for itself twice.
 *Correction to the headline table:* the previously recorded
 `2716 / 595 = 4.56` for the flag arm is superseded; the current tree is
 `2764 / 591 = 4.68`, and only +56 of the difference is this stage.
+
+### Step 4 — the 4 new compile failures, bisected (2026-09-06)
+
+`msp_ss`, `othello2`, `pisang`, `sha` fail to compile under
+`PYC_CSDCPA1=2` on `88c773c9` and did not on the recorded
+`3c388f22+adf4abe8` arm. Chased, because that arm was measured on a DIRTY
+tree and the regression might not have been against a real commit.
+
+**It is real.** All three of `sha`, `othello2`, `pisang` compile cleanly
+at a CLEAN `3c388f22`. Bisected on `sha` (4 s to fail), clean build at
+every step:
+
+| commit | `sha` under the flag |
+| --- | --- |
+| `2978653c` ifa/131 step 1 | **rc=0** |
+| `5e012d78` ifa/132 first half — `no_static_arity` in `make_kind` | **rc=134**, `pyc` aborts |
+| `6e8ede1d` ifa/132 second half — arity in CreationSet identity | **rc=1**, `'x' has mixed basic types:( int64 str )` |
+| … through `88c773c9` | rc=1, same diagnostic |
+
+**So the cause is [132](132-arity-is-representation-not-provenance.md),
+and it was recorded as such when it landed.** `5e012d78`'s own message
+says *"47 compile failures under the flag is a PRECISION problem. Tuning
+the guard would be the retreat… Recorded, not done."* The second half took
+47 → 16; these three are what it did not recover. `'x'` is `list.pop`'s
+local (`x = self[i]`), and the mechanism is 132's own second half —
+`no_static_arity` forces list layout, which reads through the generic
+element, so each per-index var is flowed into it and a container merging
+an int creation point with a str one gets `{int64, str}`.
+
+`msp_ss` is a different failure and not this: *"a variable holding
+{str, list} has no representation: `__add__` resolved to the CONTAINER
+method"* (issues/018).
+
+**`CS_DEF_PARTITION` cannot rescue them, for two independent reasons —
+both measured, neither a reason to weaken it.**
+
+1. **It is starved.** On `sha`, `TYPE_CONFL` returns progress on 19 of 27
+   passes, so the `!analyze_again` gate that makes this the last rung
+   never opens. `IFA_DBG_CSDEFSPLIT` prints **nothing at all** — the
+   stage never sees the CreationSet. This is the hazard the
+   `CSM_ELEMENT_CS` placement comment documents, running the other way:
+   the gate protects finer stages from preemption, and on a program where
+   stage 1 keeps finding real work it also makes the last rung
+   unreachable.
+2. **The cap.** The offending `cs=1054` carries `defs=18` at pass 1, over
+   `kCsDefSplitMax` (10, shedskin's route-4 cap).
+
+Worth stating what the first one is NOT: `TYPE_CONFL` is doing **real
+work** on `sha` (`d_ess=66, 32, 27, 13…`), not making hollow claims of
+progress. That distinction was only visible after fixing the meter —
+see below.
+
+*Options, not implemented, because the choice is a design one.* An
+irrepresentable element union is a correctness condition, not a precision
+one: deferring to a finer stage is right when the alternative is a
+coarser split, but wrong when the alternative is refusing to compile the
+program. Letting `CS_DEF_PARTITION` run when the confluence has no
+representation — rather than only on quiescence — is the principled
+version. Raising the cap is the other half. Neither should be done as
+tuning; both change what "last rung" means.
+
+#### `PYC_DBG_STAGEDELTA`'s `d_ess`/`d_css` were structurally zero
+
+Found while doing the above, and it inverted a conclusion mid-analysis, so
+it is worth its own note.
+
+`ess0`/`css0` were snapshotted from `fa->ess` / `fa->css`, which are
+rebuilt only by `collect_results` (`fa.cc:4830`) — once per pass, BEFORE
+splitting. Within `run_split_stages` they are frozen, so before == after
+always. **Measured, not reasoned:** `CS_DEF_PARTITION` minted five
+CreationSets on 133's reproducer and the probe still printed `d_css=0`.
+
+Fixed to compute the deltas from `all_entry_sets` / `all_creation_sets`,
+which the EntrySet and CreationSet constructors append to, so they move
+the moment a stage creates a contour. The probe now reads
+`CS_DEF_PARTITION returned=1 d_ess=0 d_css=5` on that reproducer.
+
+**Any conclusion drawn from a pre-2026-09-06 `d_ess`/`d_css` reading is
+void.** In this session it read as "TYPE_CONFL claims progress 19 times
+and moves nothing", which is exactly ifa/055's signature and exactly
+wrong: with the meter working, `d_ess=66` on pass 0.
+
+*The sidecar was deliberately NOT changed.* `all_*` never shrinks, so it
+is an allocation count, not a live population — 12 live vs 115 allocated
+on one `fa-converge` fixture. Reporting it in `record_fa_event` would
+change what all 15 `fa-converge` goldens MEAN rather than correct them,
+which is a separate design decision. Those goldens' `ess=A→B` is a
+within-pass tautology and worth revisiting on its own terms.
