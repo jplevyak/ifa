@@ -256,10 +256,14 @@ back only where nothing finer separates the conflict.
 
 ## Why the obvious fixes do not work
 
-**Splitting `cs=983` by element contribution is not computable.** That was
-this issue's original plan. The element channel records the union and
-nothing else — which creation point contributed which type is exactly
-what merging discards. Attribution was attempted two ways:
+**~~Splitting `cs=983` by element contribution is not computable.~~
+OVERSTATED — corrected 2026-09-06.** shedskin computes exactly this, and
+pyc has not implemented what it does. The accurate claim is the narrow
+one: *the two attribution attempts below failed, and the second was never
+validated.* Read the correction at the end of this section before citing
+this paragraph. The element channel does record only the union — that part
+stands — but the attribution is recoverable from the FLOW, which is where
+shedskin gets it. Attribution was attempted two ways:
 
 - `writer->container ∈ cs->defs` — wrong by construction. Creation points
   are allocation sites; a set operation *writes into* an object and its
@@ -270,6 +274,43 @@ what merging discards. Attribution was attempted two ways:
   of the graph is **not established**; the probe has not had the
   known-answer validation `IFA_DBG_FWDALL` received, and should get it
   before anything is built on it.
+
+**Correction 2026-09-06 — what shedskin actually computes, and how pyc's
+probe differs.** `ifa_flow_graph` (`infer.py:1715`) does three things
+`IFA_DBG_ATTRIB` (`fa.cc:11662`) does not:
+
+1. **Groups the incoming edges by assigned type first** —
+   `assignsets.setdefault(merge_simple_types(types), []).append(target)`,
+   giving `{int: [targets…], str: [targets…]}`. The question is asked per
+   TYPE, not per writer. Ladder routes 1 and 3 then use `n.paths` (which
+   assign-sets a node lies on), which exists only because of this
+   grouping.
+2. **Walks back from the ASSIGN TARGET**,
+   `gx.cnode[gx.assign_target[a.thing], …]` — the node for the container
+   being assigned into. pyc's probe starts at `b->container` for each
+   writer, and this issue already established (`ca11b67f`) that a set
+   operation's container is not a creation point. Different node.
+3. **Filters every hop**: `backflow_path` (`infer.py:2031`) follows
+   `node.in_` only `if t in gx.types[incoming]` — only through nodes
+   carrying this `(class, contour)`. It is a walk through the CONTAINER's
+   own flow. pyc's probe follows every `a->backward` edge unconditionally.
+
+Then `creation_points[assign_set] = [n for n in path if not n.in_]` — the
+roots of that filtered walk. That IS the attribution.
+
+The missing filter is the diagnostic detail: it makes pyc's walk strictly
+MORE permissive than shedskin's, so it cannot explain reaching FEWER
+nodes. `0 of 6` is not a walk that was too narrow; it is a walk that
+started somewhere else and grouped nothing.
+
+**So routes 1-3 are unattempted, not ruled out.** That matters for the
+cost recorded in ifa/129: wholesale route 4 buys compile fixes with +191
+CreationSets corpus-wide precisely because the finer routes that would
+separate the same conflicts with fewer contours have never been built.
+Implementing `backflow_path` properly — group the element's backward edges
+by merged type, walk back from each group through AVars carrying this
+CreationSet, take the roots — is the reconciliation, and nothing measured
+so far says it cannot work.
 
 **Making `merge_in` notice the source is statically empty does not work
 either.** The source's CreationSet *is* `cs=983`, whose `static_arity` is

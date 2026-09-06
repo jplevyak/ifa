@@ -1985,6 +1985,21 @@ the alternative was refusing to compile the programs at all — but it is
 not progress toward minimal creation sets, and should not be reported as
 such.
 
+**And the reconciliation is known: build shedskin's finer routes.**
+Wholesale is route 4, the LAST rung, and it is expensive by design —
+route 4 gives every creation point its own contour where routes 1-3 would
+have separated the same conflict into two. Those routes need per-type
+attribution, which this issue and
+[133](133-split-a-container-on-its-element-type.md) had recorded as "not
+computable". **That was overstated, corrected 2026-09-06:** shedskin
+computes it in `backflow_path` (`infer.py:2031`), and pyc's
+`IFA_DBG_ATTRIB` is a different algorithm — different start node, no
+`(class, contour)` filter on the hops, and no grouping of the incoming
+edges by assigned type, which is what routes 1 and 3 key on. Its `0 of 6`
+result says nothing about whether the real walk works. See 133's
+correction. **The +191 is the price of skipping rungs that were never
+built, not the price of demand splitting.**
+
 *Harness note:* the first attempt at this sweep was OOM-killed at the
 default `-j 32`. Re-run at `-j 8 -J 4` with a memory monitor: **no memory
 warnings at all**, so the cause was concurrency, not a per-process
