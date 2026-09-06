@@ -2161,6 +2161,16 @@ suite is unchanged at 4.
 
 *Kept, default off*, as the reproduction of this measurement — it is the
 third mechanism aimed at this family (`PYC_ESFORCS`, the type-side third
-clause, this) and the third to come back inert on the verdict. That
-pattern is itself the finding: **the 8 failures are not a contour-count
-problem**, and the next attempt should not be a fourth splitter.
+clause, this) and the third to come back inert on the verdict.
+
+**Corrected by the author, and the correction is
+[136](136-creation-point-identity-is-es-x-call-site.md).** This experiment
+used the right handle at the wrong stage. A creation point's IDENTITY
+should be (ES × call site); types decide only ASSIGNMENT to a CreationSet;
+and call-site difference must not make two creation points *incompatible*
+— it only makes them distinguishable, so that a demanded partition has
+something to partition. Splitting the EntrySet first, as this experiment
+does, turns identity into incompatibility, which is why it cost `ess` and
+contours and made `plcfrs` and `sudoku5` worse. The ES split belongs at
+the END of the chain, as the way to REALIZE a partition demand has already
+asked for.
