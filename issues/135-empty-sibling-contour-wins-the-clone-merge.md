@@ -145,7 +145,54 @@ between them is a distinction about what the values ARE, not about where
 they came from. Steps 3-5 are then unremarkable: they only bite because a
 contour that should not exist does.
 
-## Fix directions, none yet attempted
+## Fixed 2026-09-06 — the prototype is excluded from the dcpa1 route
+
+```c
+const bool making_proto = v->var && s->self && v->var->sym == s->self;
+for (CreationSet *x : s->creators) if (x && !(abstract)) {
+    const bool x_is_proto = x->creation_var && s->self && x->creation_var->sym == s->self;
+    if (x_is_proto != making_proto) continue;
+```
+
+Identified through `CreationSet::creation_var`, which already records the
+Var that minted a CreationSet — no struct change, and **not by name**.
+
+**Result.** Group B is fully fixed: both suite tests
+(`sibling_subclass_field_layout`, `poly_dispatch_shared_method_extra_args`)
+and all the corpus programs (`chull`, `kanoodle`, `path_tracing`,
+`pygmy`). Two `splitter_*` goldens stopped failing as well.
+
+| | before | after |
+| --- | --- | --- |
+| suite under `PYC_CSDCPA1=2 PYC_CSLADDER=3` | 9 | **7** |
+| corpus container CS / shapes | 2910 / 599 = 4.86 | **2825 / 602 = 4.69** |
+| corpus `pratio` | 3.17 | **3.03** |
+| corpus `with_warnings` | 37 | **35** |
+| corpus compile_fail | 12 | 12 — **3 fixed, 3 new** |
+
+Default path untouched: 311/0 on both backends, all six CI gates green.
+
+### The cost: ONE regression mechanism, five instances
+
+`'X' has no type`, on `builtin_type_factory` and `empty_list_print` in the
+suite and `sudoku2`, `sudoku3`, `sudoku5` on the corpus. All five carry
+the same diagnostic family, so this is one defect rather than five.
+
+Separating the prototype removes it from a value flow that something was
+relying on — the prototype's own fields ARE seeded normally and are read
+by `ClassName.attr` and by the inherited-field copy loop for subclasses
+(`python_ifa_build_syms.cc:2755-2760`), so a contour it no longer shares
+is a contour those reads no longer see. **Which class's prototype is not
+yet identified.**
+
+*Measured and rejected:* scoping the exclusion to classes with no element
+channel, on the theory that a container's instances come from `make_kind`
+rather than `clone(cls->self)` and its prototype is therefore not in this
+relationship. **Inert** — identical 7 failures — so it was reverted rather
+than kept as dead complexity. The cause is a record class's prototype, not
+a container's.
+
+## Superseded fix directions
 
 1. **Exclude the class prototype from the dcpa1 route** — the root fix,
    at step 2. Needs a structural test for "this CreationSet is a
@@ -153,11 +200,19 @@ contour that should not exist does.
    (`p->rvals[o]->sym`, issue 078's `clone_source_sym`) and
    `clone_elides_fields` is documented as non-empty only for it, so the
    handle exists. **Not by name.**
-2. **Union the member types when merging equivalent CreationSets**, rather
-   than picking one. A merge that silently drops one of two disagreeing
-   types is wrong however the CSs arose, and this is worth doing on its
-   own merits — it would have made this a precision bug rather than a
-   miscompile.
+2. ~~**Union the member types when merging equivalent CreationSets.**~~
+   **Already done — the earlier description of this bug was wrong.**
+   `compute_member_types` (`clone.cc`) already unions across an
+   equivalence class: it walks every CS in `eqcss`, collects
+   `av->out->type` for each, and calls `concrete_type_set_to_type`. The
+   typed and empty CreationSets were never merged in the first place —
+   `determine_basic_clones` compares
+   `basic_type(fa, av1->out, (Sym *)-1) != basic_type(fa, av2->out, (Sym *)-2)`,
+   and the two distinct sentinels make an EMPTY var compare unequal to
+   anything, so it correctly separated them into two clones. The claim
+   that "the merge picks one of two disagreeing member types" was wrong;
+   what actually happens is that the prototype's own clone reaches the
+   union at the read site.
 3. ~~Make equivalence compare member TYPES, not just `vars.n`.~~ The
    retreat CLAUDE.md names: it makes the symptom go away by adding
    contours, and leaves a contour that should not exist.

@@ -598,8 +598,37 @@ CreationSet *creation_point(AVar *v, Sym *s, int arity) {
   // test can separate again. Measured: 11 of the 49 mode-1 suite failures
   // are tuple arity/position.
   if (csdcpa1_enabled() && !(csdcpa1_enabled() == 2 && s == sym_tuple)) {
+    // ifa/135: a class's PROTOTYPE is not an instance of it, and must not
+    // share its contour.
+    //
+    // `S1(11)` lowers to the __new__-synthesized `clone(proto, t)` whose
+    // source is `cls->self` (issue 078, python_ifa_build_syms.cc:2744) --
+    // so the prototype object and every instance carry the SAME class Sym.
+    // structural_assignment's own comment (below, ~fa.cc:2834) already
+    // states the trap: "cs->sym is the CLASS Sym, identical for the
+    // prototype and for every other instance of the same class". This
+    // route is keyed on exactly that Sym, so without the test it hands
+    // instances the prototype's CreationSet.
+    //
+    // What that costs, measured on ifa/135's 9-line reproducer: the
+    // prototype takes no field writes and the instances do, so `split_css`
+    // separates them again a few passes later -- leaving the prototype
+    // contour ALIVE with a def and a promoted-but-unwritten field, where
+    // at the default it simply dies. It then reaches use sites inside the
+    // union, `determine_basic_clones` correctly refuses to make an empty
+    // var equivalent to a typed one, and the read blind-casts across two
+    // clones whose member widths differ.
+    //
+    // This is a TYPE distinction, not provenance: a prototype is never
+    // reachable from Python source and is a different object from any
+    // instance. The route already excludes `s->abstract_type->v[0]` for
+    // the same kind of reason. Identified structurally through
+    // `creation_var`, never by name.
+    const bool making_proto = v->var && s->self && v->var->sym == s->self;
     for (CreationSet *x : s->creators)
       if (x && !(s->abstract_type && x == s->abstract_type->v[0])) {
+        const bool x_is_proto = x->creation_var && s->self && x->creation_var->sym == s->self;
+        if (x_is_proto != making_proto) continue;
         // ifa/132: ARITY PARTICIPATES IN IDENTITY. A record-able
         // container's arity fixes its C layout (a struct of exactly
         // `vars.n` fields), so a contour whose creation points agree on a
