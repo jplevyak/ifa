@@ -708,10 +708,61 @@ conclusion in this issue that "the container has a single creation point,
 so `split_css` has nothing to partition": that measured `cs=981`, the
 list that *receives* the bad element, rather than the one that is merged.
 
-`cs=983` has 6 defs, so `split_css` **does** have something to partition,
-and this issue's original action applies unchanged: partition those
-creation points by the element type each contributes. The library's `[]`
-in `__delitem__` contributes nothing and must not absorb the user's `str`.
+`cs=983` has 6 defs, so `split_css` **does** have something to partition.
+
+### But the partition is not computable: the merge destroys the attribution
+
+Implemented — trigger on a container's element having no representation
+anywhere (downstream evidence), then partition every multi-creation-point
+container by what each creation point's writers contribute. It never
+fires, and the reason is decisive:
+
+```
+[csbyelem-attr] cs=983 defs=6 back=3 with_container=3 attributed_to_a_def=0
+```
+
+All three element writers have a `container`, and **not one of them is a
+creation point of the CreationSet.** `b->container` is the receiver formal
+inside the *writing* contour — `insert`'s `self` — not `b`'s creation
+point in `__main__`. There is no link from an element write back to the
+creation point responsible for it.
+
+**So "partition `cs->defs` by element contribution" — this issue's action
+from the beginning — is not computable after the merge.** The element
+channel records the union and nothing else; which creation point
+contributed which type is exactly the information merging discards. That
+is why every attempt in this issue failed, including the two that looked
+like different problems.
+
+### What that means for the architecture
+
+This is the sharpest form of
+[128](128-cs-identity-over-discriminates-vs-element-type.md)'s question
+found so far. Start-merged needs to separate on evidence, and the evidence
+for *this* separation is provenance the analysis does not keep. Three ways
+out, and they are the real design choice:
+
+1. **Record provenance on element writes** — attribute each write to the
+   creation point whose container it went through, so a merged container
+   can be partitioned afterwards. The honest cost is a per-write field and
+   its maintenance across passes.
+2. **Do not merge these in the first place.** The library's `[]` in
+   `__delitem__` and a user's `[]` are never the same object, and per-site
+   identity knew that for free — which is what `PYC_CSDCPA1` gives up. A
+   narrower rule (a creation point inside `__pyc__` never shares a contour
+   with one outside it) would fix this case, but it is provenance by
+   another name and it is exactly the frontend-driven splitting
+   [134](134-remove-the-frontend-forced-split-opt-in.md) exists to remove.
+3. **Make `merge_in` not over-approximate.** `__pyc_setslice__(self, …, [])`
+   merges a list that is statically empty at that call. If the analysis
+   could see arity 0 there — it is a literal — the merge would contribute
+   nothing regardless of what else shares the contour. This is the
+   narrowest of the three and does not need provenance at all.
+
+**Option 3 is the one to try next.** It attacks the specific
+over-approximation rather than the general identity question, it needs no
+new state, and `del a[0]` already demonstrates the analysis has the arity
+information at that site (`ifa/132` keys on it).
 
 *Reproducer:* four lines, above. `del`/`append`/arity variants recorded
 here are the discriminating cases for whatever lands.
