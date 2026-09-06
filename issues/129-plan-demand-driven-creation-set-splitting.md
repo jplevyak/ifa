@@ -32,7 +32,7 @@ crash and hang under the flag.
 
 | group | n | state |
 | --- | --- | --- |
-| [133](133-split-a-container-on-its-element-type.md) element leak | 5 | root-caused, **blocked on a design choice** |
+| [133](133-split-a-container-on-its-element-type.md) element leak | 5 → **4** | one fixed 2026-09-05 (`__delitem__`'s false `merge_in`); rest need a design choice, now with a **third option** |
 | `splitter_*` goldens | 3 | decided — route changed, `CALLS` verified equal, re-blessable at flip |
 | layout / member width | 2 | untouched; a sibling of 132, likely the same shape |
 | illegal call argument type | 2 | untouched |
@@ -40,10 +40,21 @@ crash and hang under the flag.
 
 **Next actions, in order:**
 
-1. **Decide [133](133-split-a-container-on-its-element-type.md)'s question**
-   — record provenance on element writes, or stop library and user
-   creation points sharing a contour. There is no narrow fix; the issue is
-   compacted to 166 lines and has a four-line reproducer.
+1. **Build [133](133-split-a-container-on-its-element-type.md)** — its
+   question is **answered, not open.** *Re-scoped 2026-09-05, unblocked
+   2026-09-06.* Its four-line reproducer turned out to be a FALSE
+   CONSTRAINT in `__pyc__` — `__delitem__` asserted, via
+   `merge_in(self, [])`, that a deletion adds an element type — and fixing
+   that clears the whole `pop`/`del`/`remove` family and
+   `tests/list_pop_insert.py`. The remaining three are the real issue, and
+   measuring one (`list_append_is_amortized`: `cs=995`, **`defs=7`**, all
+   user code) rules out the library-vs-user option on the evidence. The
+   author's directive then rules out the other: **provenance is never the
+   answer** (CLAUDE.md), and "record which creation point wrote this
+   element" is provenance. What is left, and what to build, is
+   **wholesale split by creation point** — shedskin's ladder route 4,
+   which needs no attribution at all, only a caller that partitions
+   `cs->defs` and hands the groups to `split_css`.
 2. **The layout pair.** 132 found arity is a representation property CS
    identity must respect; member width is another. Probably small.
 3. **The 4 undiagnosed**, three of which produce no diagnostic at all.
@@ -1654,7 +1665,7 @@ architecture with one of its three clauses missing.
 
 | group | n | tests |
 | --- | --- | --- |
-| **[133](133-split-a-container-on-its-element-type.md)** — element union with no representation | **5** | `builtins`, `plcfrs_grammar_tables_nonconvergence`, `list_append_is_amortized`, `list_pop_insert` (`mixed basic types: (int64 str)`), and `splitter_cartesian_product` (the soft form — compiles, loses 3 direct calls) |
+| **[133](133-split-a-container-on-its-element-type.md)** — element union with no representation | **5 → 4** | `builtins`, `plcfrs_grammar_tables_nonconvergence`, `list_append_is_amortized` (`mixed basic types: (int64 str)`), and `splitter_cartesian_product` (the soft form — compiles, loses 3 direct calls). **`list_pop_insert` FIXED 2026-09-05** — `__delitem__`'s `merge_in(self, [])` was a false constraint, not contour sharing |
 | **goldens, already decided** — route changed, `CALLS` verified equal | 3 | `splitter_setter`, `splitter_setter_of_setter`, `splitter_mark_type` |
 | **layout / member width** — `blind-cast … but member width differs` | 2 | `poly_dispatch_shared_method_extra_args`, `sibling_subclass_field_layout` |
 | **illegal call argument type** | 2 | `deepcopy_copy_of_copy_chain`, `listcomp_element_separation` |
