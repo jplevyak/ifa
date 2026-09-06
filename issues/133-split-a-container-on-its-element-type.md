@@ -604,3 +604,89 @@ showing a phantom `pass 1 ? splits=1` event. The stage's own return value
 is now kept in a separate local. Worth recording that `fa-converge`
 caught two separate mistakes in this issue's work, and that the first
 instinct both times was that the goldens were stale. They were not.
+
+## Plan — port shedskin's ladder routes 1-3
+
+**Feasibility measured 2026-09-06 before writing this**, with
+`IFA_DBG_ATTRIB2` (default off, beside the old `IFA_DBG_ATTRIB`), which
+adds the two differences the old probe was missing: group the element's
+backward edges by canonical `AType`, and filter every hop on
+`x->out->type->set_in(cs)`. On this issue's five-line reproducer:
+
+```
+ATTRIB2 cs=983 sym=list defs=6 assignsets=3
+  set[0] type= int64 str  targets=2 walked=12 roots=2 reached_defs=0/6
+  set[1] type= int64      targets=1 walked=12 roots=1 reached_defs=0/6
+  set[2] type= str        targets=1 walked=12 roots=1 reached_defs=0/6
+```
+
+**The attribution works.** Three assign sets, and the pure ones separate:
+`{int64}` walks back to root `av=785`, `{str}` to root `av=794`, and they
+are different nodes. That is exactly the per-type partition routes 1 and 3
+key on, and the old probe's `0 of 6` was an artifact of not grouping and
+not filtering.
+
+**One gap, and it is specific.** The roots are not `cs->defs` members, not
+their `lvalue`s, not forward neighbours of a def, and — measured —
+**carry no `cs_map` at all**. Both existing re-point mechanisms
+(`split_css`, `split_css_by_defs`) act by `v->cs_map->put(sym, new_cs)`,
+so a root cannot be re-pointed. shedskin does not have this problem
+because its creation points ARE its handles: `ifa_split_class(cl, dcpa,
+things, ...)` takes the nodes the walk found. pyc's handle is the def
+AVar, and the walk lands elsewhere.
+
+### Is it localized and compatible?
+
+**Localized: yes.** Every input already exists — `elem->backward`,
+`b->container`, `av->backward`, `av->forward`, `av->out->type`,
+`cs->defs`. `paths` and `csites` are per-invocation locals, so there is no
+new persistent state, no struct-layout change, no IR change, no frontend
+change. It is one function beside `split_css_by_defs`.
+
+**Compatible: yes except the handle gap**, and one deferral:
+
+- The **root → def bridge** is the only piece with no analogue. Use
+  forward closure from each def and assign a root to the def whose closure
+  contains it. That is `IFA_DBG_FWDALL`'s direction, and it is the one
+  probe this issue records as *validated on a known-answer case* — the
+  backward probe never was, which is what produced the retracted "not
+  computable" claim.
+- **Route 1 needs contour REUSE** — move sites onto an existing contour
+  keyed by deduced element types (`ifa_class_types` / `classes_nr`,
+  `infer.py:1632`). pyc has the machinery in `split_css`'s ledger route
+  (`cs_group_signature` → `ledger_find_cs`) but has never run it in the
+  joining direction. Deferrable: mint instead of joining, at a precision
+  cost, and revisit.
+
+### Steps
+
+1. **Bridge roots to defs.** Forward closure per def; map each root to its
+   def. *Verify:* on the reproducer, `{int64}` maps to one def and
+   `{str}` to a different one. If a root maps to zero or several defs,
+   stop and record that — it is the same class of finding as the `0 of 6`
+   and must not be worked around.
+2. **Build `ifa_flow_graph`'s outputs** as locals: `assignsets`, `paths`,
+   `creation_points` per assign set, `csites`, `emptycsites`
+   (`cs->defs - csites`), and `n.paths` per node. Nothing splits yet.
+   *Verify:* the census is stable across passes and the counts are sane
+   corpus-wide.
+3. **Route 1, `ifa_split_no_confusion`** (`infer.py:1585`): unconfused
+   sites (`len(n.paths) == 1`) plus empty csites, grouped by the
+   attribute-type tuple each would produce; split each group off. Mint
+   rather than reuse for now.
+4. **Route 3, partition csites across paths** (`infer.py:1571`): group
+   sites by the set of types on their paths; if that yields more than one
+   group, split the first off.
+5. **Demote route 4.** `split_css_by_defs` becomes the last rung it was
+   always meant to be — reached only when 1 and 3 decline.
+   *Verify:* the +191 corpus contours from route 4 fall, the six compile
+   fixes hold, `pratio` improves.
+6. **Route 1's contour reuse**, if step 3's precision cost shows up.
+
+### The stop condition
+
+If step 1 cannot bridge roots to defs, routes 1 and 3 are not reachable
+this way and **that is the answer** — record it, do not invent a handle by
+matching on names or positions. The retracted claim in this issue came
+from treating one failed probe as proof; the same mistake is available
+here in the other direction.

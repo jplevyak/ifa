@@ -11659,6 +11659,85 @@ static void report_forward_closure_all() {
 // `container` for membership in `cs->defs` is wrong by construction and
 // reported 0 attributions every time.
 static void report_creation_attribution() {
+  // ifa/133 FEASIBILITY PROBE for shedskin's ladder routes 1-3.
+  // IFA_DBG_ATTRIB below is NOT backflow_path (infer.py:2031): it walks
+  // per-writer, starts unfiltered, and groups nothing. This one adds the
+  // two differences that matter -- group the element's backward edges by
+  // their canonical AType (shedskin's `assignsets`, keyed by
+  // merge_simple_types), and filter every hop on "does this AVar carry
+  // this CreationSet" (shedskin's `if t in gx.types[incoming]`), so the
+  // walk stays inside the CONTAINER's own flow. Reports, per assign set,
+  // how many of cs->defs it reaches.
+  if (getenv("IFA_DBG_ATTRIB2")) {
+    for (CreationSet *cs : fa->css) {
+      if (!cs || !cs->sym || !cs->sym->element || !cs->sym->element->var || !cs->added_element_var) continue;
+      if (cs->defs.set_count() < 2) continue;
+      AVar *elem = unique_AVar(cs->sym->element->var, cs);
+      if (!elem || !elem->out) continue;
+      // assignsets: canonical AType -> the containers written through it.
+      Vec<AType *> keys;
+      Vec<Vec<AVar *> *> groups;
+      for (AVar *b : elem->backward) {
+        if (!b || !b->container || !b->out || !b->out->type) continue;
+        int gi = -1;
+        for (int i = 0; i < keys.n; i++) if (keys.v[i] == b->out->type) { gi = i; break; }
+        if (gi < 0) { keys.add(b->out->type); groups.add(new Vec<AVar *>); gi = keys.n - 1; }
+        groups.v[gi]->set_add(b->container);
+      }
+      if (!keys.n) continue;
+      fprintf(stderr, "ATTRIB2 p=%d cs=%d sym=%s defs=%d assignsets=%d\n", analysis_pass, cs->id,
+              cs->sym->name ? cs->sym->name : "?", cs->defs.set_count(), keys.n);
+      for (int i = 0; i < keys.n; i++) {
+        Vec<AVar *> seen, work;
+        for (AVar *t : *groups.v[i]) if (t && seen.set_add(t)) work.add(t);
+        int h = 0, steps = 0, reached = 0, roots = 0;
+        while (h < work.n && steps < 200000) {
+          AVar *a = work.v[h++];
+          ++steps;
+          if (cs->defs.set_in(a)) ++reached;
+          if (!a->backward.n) ++roots;
+          for (AVar *x : a->backward)
+            if (x && x->out && x->out->type && x->out->type->set_in(cs) && seen.set_add(x)) work.add(x);
+        }
+        fprintf(stderr, "  set[%d] type=", i);
+        for (CreationSet *c : keys.v[i]->sorted)
+          if (c && c->sym) fprintf(stderr, " %s", c->sym->name ? c->sym->name : "?");
+        fprintf(stderr, "  targets=%d walked=%d roots=%d reached_defs=%d/%d\n", groups.v[i]->n, steps, roots,
+                reached, cs->defs.set_count());
+        // What ARE the roots, and what are the defs? If the walk terminates
+        // somewhere other than the creation points, that difference is the
+        // finding, not the reach count.
+        for (AVar *a : seen)
+          if (a && !a->backward.n) {
+            EntrySet *aes = a->contour_is_entry_set ? (EntrySet *)a->contour : nullptr;
+            int lv_is_def = (a->lvalue && cs->defs.set_in(a->lvalue)) ? 1 : 0;
+            int fwd_is_def = 0;
+            for (AVar *f : a->forward) if (f && cs->defs.set_in(f)) fwd_is_def = 1;
+            fprintf(stderr, "      root av=%d var=%s fun=%s in_defs=%d lvalue=%d lvalue_is_def=%d fwd_is_def=%d\n",
+                    a->id, (a->var && a->var->sym && a->var->sym->name) ? a->var->sym->name : "?",
+                    (aes && aes->fun && aes->fun->sym && aes->fun->sym->name) ? aes->fun->sym->name : "(cs)",
+                    cs->defs.set_in(a) ? 1 : 0, a->lvalue ? a->lvalue->id : -1, lv_is_def, fwd_is_def);
+            // The re-point handle question: split_css and split_css_by_defs
+            // both act by `v->cs_map->put(sym, new_cs)`, so a node with no
+            // cs_map cannot be re-pointed. Measured on ifa/133's reproducer:
+            // the walk's roots have NO cs_map, are not in cs->defs, and are
+            // neither the lvalue nor a forward neighbour of a def. That gap
+            // is what a real routes-1/3 implementation has to bridge.
+            fprintf(stderr, "           csmap=%d maps_to_this=%d\n", a->cs_map ? 1 : 0,
+                    (a->cs_map && a->cs_map->get(cs->sym) == cs) ? 1 : 0);
+          }
+        if (i == 0)
+          for (AVar *d : cs->defs)
+            if (d) {
+              EntrySet *des = d->contour_is_entry_set ? (EntrySet *)d->contour : nullptr;
+              fprintf(stderr, "      DEF  av=%d var=%s fun=%s backward=%d\n", d->id,
+                      (d->var && d->var->sym && d->var->sym->name) ? d->var->sym->name : "?",
+                      (des && des->fun && des->fun->sym && des->fun->sym->name) ? des->fun->sym->name : "(cs)",
+                      d->backward.n);
+            }
+      }
+    }
+  }
   if (!getenv("IFA_DBG_ATTRIB")) return;
   for (CreationSet *cs : fa->css) {
     if (!cs || !cs->sym || !cs->sym->element || !cs->sym->element->var || !cs->added_element_var) continue;
