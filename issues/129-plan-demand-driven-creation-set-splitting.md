@@ -17,12 +17,16 @@ them in file order or not at all. This block is what a cold start needs.
 Default off. It is the only thing measured that moves the goal number, and
 it takes `ess` DOWN rather than up, unlike every key-side experiment here:
 
+*Numbers re-measured 2026-09-06 on `88c773c9`; both arms are current.*
+
 | | default | `PYC_CSDCPA1=2` |
 | --- | --- | --- |
-| container CS / shapes (corpus) | 3748 → **3713** / 626 = **5.93** | 2716 / 595 = **4.56** |
-| `pyc` segfaults / compile timeouts | 0 / 1 | **0 / 0** |
-| corpus compile failures | 2 | 19 |
-| suite failures | 0 | ~~16~~ → **11** (2026-09-06) |
+| container CS / shapes (corpus) | 3713 / 626 = **5.93** | 2764 / 591 = **4.68** |
+| `pratio` | 3.89 | **3.04** |
+| `pyc` segfaults / compile timeouts | 0 / 0 | **0 / 0** (was 2 / 3) |
+| corpus compile failures | 2 | **16** (was 20) |
+| corpus run_fail / stdout_differs | 39 / 24 | 34 / 20 |
+| suite failures | 0 | **11** at `=2`, **14** at `=1` (was 16 / 19) |
 
 **What has landed:** [132](132-arity-is-representation-not-provenance.md)
 — arity participates in CreationSet identity, which removed every compiler
@@ -1776,3 +1780,68 @@ not a flag regression; related to
 proof the clause is never needed. A longer chain, or one the setter ladder
 cannot reach, may exist. But the burden is now on producing such a case
 before building the mechanism, rather than on justifying not building it.
+
+### Step 4 — the flag arm re-measured on `88c773c9` (2026-09-06)
+
+`check__PYC_CSDCPA1_2__88c773c9+f3cb2d55` against the previously recorded
+`check__PYC_CSDCPA1_2__3c388f22+adf4abe8`:
+
+| | recorded | current |
+| --- | --- | --- |
+| compile_fail | 20 | **16** |
+| `pyc` segfaults (`rc=139`) | 2 — `plcfrs`, `softrender` | **0** |
+| compile timeouts (`rc=124`) | 3 — `pygasus`, `quameon`, `othello3` | **0** |
+| run_fail / stdout_differs | 33 / 17 | 34 / 20 |
+| container CS / ratio | 2540 / 4.46 | 2764 / 4.68 |
+
+**Every one of the 16 compile failures is now a plain `rc=1` diagnostic.**
+Two of the four things "What has to land" listed are therefore done:
+item 2 (the two `pyc` segfaults) and the compile half of item 4
+(convergence cost — no program now exceeds the 400 s cap). Eight programs
+newly compile: `chess`, `dijkstra`, `life`, `pygasus`, `softrender`,
+`solitaire`, `sudoku2`, `webserver`.
+
+**Read the run columns with ifa/102 in mind.** Several of those eight now
+abort at runtime (`rc=134`: `chess`, `life`, `sudoku2`, `pygasus`,
+`softrender`; `bh` goes 0 → 134). `run_fail` 33 → 34 and
+`stdout_differs` 17 → 20 are largely programs that got far enough to fail
+later. Compiling is not evidence.
+
+**Four programs newly FAIL to compile** — `msp_ss`, `othello2`, `pisang`,
+`sha` — and this is the open regression in the window. **Not caused by
+either 2026-09-06 change**, established two ways rather than assumed:
+`sha` fails identically with the pre-fix `__pyc__/04_sequence.py`, and all
+four fail with `PYC_CSDEFSPLIT=0` (the A/B below). Note also that the old
+arm's key is `3c388f22+adf4abe8` — a DIRTY tree — so that comparison was
+never purely commit-to-commit, and the uncommitted work it carried is
+gone. Root-cause before flipping.
+
+#### What CS_DEF_PARTITION itself costs and buys, isolated
+
+Same tree, same flag, `PYC_CSDEFSPLIT=0` vs `1`
+(`check__PYC_CSDCPA1_2_PYC_CSDEFSPLIT_0__88c773c9+f3cb2d55`):
+
+| | off | on |
+| --- | --- | --- |
+| compile_fail | 16 | 16 |
+| run_fail / stdout_differs | 35 / 20 | **34** / 20 |
+| with_warnings | 39 | **38** |
+| container CS / shapes | 2708 / 591 | 2764 / 591 |
+
+Exactly two programs move:
+
+```
+fysphun   run 134 -> 0    stdout -> yes    (aborted; now runs, output CORRECT)
+rubik2    run 134 -> 124  (abort became a timeout -- ambiguous, not a win)
+```
+
+So on the corpus the stage is worth one program made correct, for
+**+56 container CreationSets (+2.1%)**. That is the precision-for-contours
+trade stated plainly: this stage SPLITS, so it moves the goal ratio the
+wrong way (4.58 → 4.68) and is worth it only because the contours it adds
+are ones a demand test asked for. The suite is where it pays — 16 → 11 —
+and the corpus says it does not pay for itself twice.
+
+*Correction to the headline table:* the previously recorded
+`2716 / 595 = 4.56` for the flag arm is superseded; the current tree is
+`2764 / 591 = 4.68`, and only +56 of the difference is this stage.
