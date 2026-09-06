@@ -8391,6 +8391,60 @@ static CreationSet *cs_peel_group(CreationSet *cs, Vec<AVar *> &group, cchar *ro
   return cs_peel_group(cs, *groups.v[0], "path_partition", dbg, join) ? 1 : 0;
 }
 
+// How many contours does a given function have, and what is each one's
+// receiver? IFA_DBG_FUNES=<name> prints it at convergence. Added for ifa/133
+// group B: "two clones of one class disagree on a slot" is usually a question
+// about how many contours the WRITER got, and nothing printed that.
+// IFA_DBG_CSVARS=<sym name>: every CreationSet of that class with its
+// member AVars and their types, as FA leaves them. ifa/133 group B needs
+// exactly this: a `<placeholder>` member in the emitted C means
+// `has[i]->type` is null, and that is set from these AVars -- so this says
+// whether the analysis or the cloning lost the field.
+static void report_cs_vars() {
+  cchar *want = getenv("IFA_DBG_CSVARS");
+  if (!want) return;
+  for (CreationSet *cs : fa->css) {
+    if (!cs || !cs->sym || !cs->sym->name || strcmp(cs->sym->name, want)) continue;
+    fprintf(stderr, "CSVARS cs=%d sym=%s vars=%d defs=%d\n", cs->id, cs->sym->name, cs->vars.n,
+            cs->defs.set_count());
+    for (AVar *v : cs->vars) {
+      if (!v) continue;
+      fprintf(stderr, "  var=%s type=", (v->var && v->var->sym && v->var->sym->name) ? v->var->sym->name : "?");
+      if (v->out && v->out->type)
+        for (CreationSet *c : v->out->type->sorted)
+          if (c && c->sym) fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+      fprintf(stderr, "\n");
+    }
+  }
+}
+
+typedef MapElem<MPosition *, Var *> MapElemMPositionVarPair;
+static void report_fun_entry_sets() {
+  cchar *want = getenv("IFA_DBG_FUNES");
+  if (!want) return;
+  for (Fun *f : fa->funs) {
+    if (!f || !f->sym || !f->sym->name || strcmp(f->sym->name, want)) continue;
+    int n = 0;
+    for (EntrySet *es : fa->ess) if (es && es->fun == f) ++n;
+    fprintf(stderr, "FUNES fun=%s contours=%d\n", f->sym->name, n);
+    for (EntrySet *es : fa->ess) {
+      if (!es || es->fun != f) continue;
+      fprintf(stderr, "  es=%d args=", es->id);
+      form_Map(MapElemMPositionVarPair, mp, f->args) {
+        Var *v = mp->value;
+        if (!v || !v->sym) continue;
+        AVar *av = make_AVar(v, es);
+        if (!av || !av->out || !av->out->type) continue;
+        fprintf(stderr, " [");
+        for (CreationSet *c : av->out->type->sorted)
+          if (c && c->sym) fprintf(stderr, "%s#%d ", c->sym->name ? c->sym->name : "?", c->id);
+        fprintf(stderr, "]");
+      }
+      fprintf(stderr, "\n");
+    }
+  }
+}
+
 static void report_cs_flow_graphs() {
   if (!getenv("IFA_DBG_CSFLOW")) return;
   for (CreationSet *cs : fa->css) {
@@ -12262,6 +12316,8 @@ static void report_demand_ratio() {
   report_forward_closure_all();
   report_mixed_element_owners();
   report_cs_flow_graphs();
+  report_fun_entry_sets();
+  report_cs_vars();
   if (!getenv("IFA_DBG_DEMAND")) return;
   ElemCensus c;
   element_census(c);

@@ -46,7 +46,7 @@ the bill **16 → 11**.
 | --- | --- | --- |
 | [133](133-split-a-container-on-its-element-type.md) element leak | 5 → **1** | **fixed** — `__delitem__`'s false `merge_in`, then `CS_DEF_PARTITION` (`split_css_by_defs`, default on). Only `splitter_cartesian_product` remains |
 | `splitter_*` goldens | 3 | decided — route changed, `CALLS` verified equal, re-blessable at flip |
-| layout / member width | 2 | untouched; a sibling of 132, likely the same shape |
+| layout / member width | 2 | **root-caused 2026-09-06: [135](135-empty-sibling-contour-wins-the-clone-merge.md)** — an empty sibling CreationSet wins the clone merge. Same mechanism as 4 corpus programs, so 6 cases |
 | `builtins`, `plcfrs_*` | 2 | still `mixed basic types`, but NOT CS_DEF_PARTITION declining wrongly — see 133 |
 | undiagnosed | 4 → **2** | `test_heapq`, `match_seq_star`. The other two were 133, and produced no diagnostic *because* they were |
 | illegal call argument type | 2 → **1** | `listcomp_element_separation` fixed; `deepcopy_copy_of_copy_chain` remains |
