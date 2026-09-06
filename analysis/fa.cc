@@ -103,6 +103,7 @@ static const char *fa_pass_stage_name(FAPassStage stage) {
   static const char *names[FA::kNumFAPassStages] = {
       "type_confluence", "mark_type",   "setter",         "setter_of_setter", "mark_setter",
       "mark_setter_of_setter", "violation", "per_cs_receiver", "csm_element_cs",
+      "cartesian_product",     "cs_def_partition",
   };
   int i = (int)stage;
   return (i >= 0 && i < FA::kNumFAPassStages) ? names[i] : "?";
@@ -1332,6 +1333,15 @@ static long ic_arg = 0, ic_ret = 0, ic_retn = 0;
 static long tc_formal = 0, tc_return = 0;
 static int ld_dup_es = 0, ld_dup_cs = 0, ld_churn = 0;
 static long tc_seen = 0, tc_skip_rval = 0, tc_skip_lval = 0, tc_skip_cs = 0, tc_dec = 0, tc_defer = 0;
+// ifa/issues/133: CreationSets whose contour carried a type confluence
+// that stage 1 cannot act on -- `split_ess_for_type` only knows how to
+// split an ENTRYSET, so a confluence sitting on a CreationSet contour hit
+// its `else` and was counted and dropped. Its log line said "passes to
+// stage2", but stage 2 (`split_css`) is fed `setter_starters`, an entirely
+// different population, so nothing ever consumed these. Stashed here and
+// drained by `split_css_by_defs` as the pass's last rung. Reset per pass
+// in `run_split_stages`.
+static Vec<CreationSet *> tc_cs_dropped;
 
 // ifa/issues/124: `->type` strips a pure-nil AType to bottom (make_AType's
 // is_unique_type branch; the 060 carve-out that KEEPS nil only fires when
@@ -8010,6 +8020,112 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
   return analyze_again;
 }
 
+// ifa/issues/133: partition a CreationSet by its CREATION POINTS.
+//
+// The gap this closes. A type confluence on a container's element is
+// collected (`collect_type_confluences` covers `cs->vars` and the element
+// AVar) and then discarded, because `split_ess_for_type` can only split an
+// EntrySet and this confluence sits on a CreationSet contour. Measured on
+// ifa/133's five-line reproducer: the confluence arrives with everything
+// needed -- `cs=983 sym=list defs=6 type= int64 str` -- and nothing
+// consumes it. `split_css`, the only other CS splitter, is fed
+// `setter_starters` and never sees this CreationSet at all (its element
+// has no setters, so no starter's `cs_map` names it).
+//
+// Why partitioning `defs` is legal and needs no new state.
+// `creation_point` writes both halves from the same variable, back to
+// back (`v->cs_map->put(s, cs); cs->defs.set_add(v);`), so `cs->defs` IS
+// the set of AVars whose `cs_map` names `cs`, and `split_css`'s re-point
+// -- `v->cs_map->put(cs->sym, new_cs)` -- applies to them unchanged.
+//
+// Why WHOLESALE rather than a minimal partition. Which creation point
+// contributed which element type is exactly what the merge destroys;
+// ifa/133 measured two attempts to recover it and neither works. Wholesale
+// does not ask. It gives each creation point its own contour and lets the
+// next pass re-derive every element from the writers that actually reach
+// it -- sound because `analyze_to_convergence` resets before every pass,
+// so derived ATypes come back from bottom and only the DECISION persists.
+// Recovering the attribution instead would be provenance, which is never
+// the answer (CLAUDE.md).
+//
+// Why it is the LAST rung. This is shedskin's ladder route 4
+// (`infer.py:1576`), and there too it is tried only after no-confusion,
+// confluence-partition and path-partition have failed. It is the coarsest
+// separation available, so it must not preempt a finer one: the call site
+// is gated on quiescence of every stage above, exactly as PER_CS_RECEIVER
+// and CSM_ELEMENT_CS are.
+//
+// Termination is structural, not a cap. After the re-point `cs_map` names
+// the new CreationSet, and `creation_point` is memo-first, so the next
+// pass routes that site to its own contour and it is no longer among
+// `cs->defs`. A CreationSet that has been partitioned down to one creation
+// point fails the `defs > 1` test forever after.
+static int csdefsplit_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_CSDEFSPLIT");
+    e = v ? atoi(v) : 1;
+  }
+  return e;
+}
+
+// shedskin's route-4 fan-out cap (`infer.py:1576`: `1 < len(csites) < 10`).
+// A container merging ten or more creation points is not a case wholesale
+// separation should answer -- past this the right response is a finer
+// demand test, not ten contours.
+static const int kCsDefSplitMax = 10;
+
+[[nodiscard]] static int split_css_by_defs() {
+  if (!csdefsplit_enabled() || !tc_cs_dropped.n) return 0;
+  const bool dbg = getenv("IFA_DBG_CSDEFSPLIT") != nullptr;
+  int analyze_again = 0;
+  Vec<CreationSet *> css;
+  for (CreationSet *cs : tc_cs_dropped)
+    if (cs && fa->css_set.set_in(cs)) css.set_add(cs);
+  css.set_to_vec();
+  qsort_by_id(css);
+  for (CreationSet *cs : css) {
+    if (!cs->sym) continue;
+    // `defs` is a set-Vec: its backing store holds nulls, so copy out the
+    // live entries before sorting (qsort_by_id on the sparse form
+    // segfaults -- ifa/133's probe notes).
+    Vec<AVar *> defs;
+    for (AVar *d : cs->defs)
+      if (d && d->cs_map && d->cs_map->get(cs->sym) == cs) defs.add(d);
+    if (defs.n < 2 || defs.n >= kCsDefSplitMax) {
+      if (dbg)
+        fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d DECLINED (%s)\n", analysis_pass, cs->id,
+                cs->sym->name ? cs->sym->name : "?", defs.n, defs.n < 2 ? "single creation point" : "over cap");
+      continue;
+    }
+    qsort_by_id(defs);  // determinism: the harness asserts identical output
+    // The first creation point keeps the CreationSet; every other one
+    // gets its own. Which one stays is arbitrary and must be STABLE,
+    // hence the id sort above.
+    Vec<AVar *> moved;
+    for (int i = 1; i < defs.n; i++) {
+      AVar *v = defs.v[i];
+      CreationSet *new_cs = new CreationSet(cs);
+      new_cs->split = cs;
+      if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
+      v->cs_map->put(cs->sym, new_cs);
+      moved.set_add(v);
+      if (dbg)
+        fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s def av=%d -> cs=%d\n", analysis_pass, cs->id,
+                cs->sym->name ? cs->sym->name : "?", v->id, new_cs->id);
+      log(LOG_SPLITTING, "SPLIT CS BY DEF %d %s -> %d (av %d)\n", cs->id, cs->sym->name ? cs->sym->name : "",
+          new_cs->id, v->id);
+    }
+    if (moved.n) {
+      Vec<AVar *> new_defs;
+      cs->defs.set_difference(moved, new_defs);
+      cs->defs.move(new_defs);
+      analyze_again = 1;
+    }
+  }
+  return analyze_again;
+}
+
 [[nodiscard]] static int split_for_setters(Accum<AVar *> &avs, int analyze_again) {
   Vec<AVar *> setter_confluences, setter_starters;
   collect_setter_confluences(avs, setter_confluences, setter_starters);
@@ -8203,7 +8319,13 @@ static void collect_cs_setter_confluences(Vec<AVar *> &setters_confluences) {
       }
     } else {
       ++tc_skip_cs;
-      log(LOG_SPLITTING, "[stage1] av %d CS-contour skipped (passes to stage2)\n", av->id);
+      // ifa/133: hand it to the pass's last rung rather than dropping it.
+      // `av->contour` is the CreationSet whose element (or positional var)
+      // holds the irreconcilable union; its creation points are `defs`.
+      // The branch guarantees a CreationSet contour; liveness
+      // (`fa->css_set`) is re-checked at the point of use, as split_css does.
+      if (CreationSet *ccs = (CreationSet *)av->contour) tc_cs_dropped.set_add(ccs);
+      log(LOG_SPLITTING, "[stage1] av %d CS-contour deferred to CS_DEF_PARTITION\n", av->id);
     }
   }
   Vec<EntrySet *> applied;
@@ -8925,6 +9047,11 @@ static int cpa_enabled() {
   compute_recursive_entry_sets();
   compute_recursive_entry_creation_sets();
   clear_splits();
+  // ifa/133: this pass's crop of CS-contour type confluences. Cleared
+  // here rather than in split_ess_for_type, which runs twice a pass (once
+  // for stage 1, once for stage 5's refinable violations) -- clearing per
+  // call would drop stage 1's findings before the last rung sees them.
+  tc_cs_dropped.clear();
   // Snapshots taken before each split_* call so the sidecar can record
   // the delta this stage produced. See fa_events_storage / record_fa_event.
   int ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
@@ -9237,6 +9364,26 @@ static int cpa_enabled() {
     }
   }
   log(LOG_SPLITTING, "split_container_methods_per_element_cs %d\n", analyze_again);
+  // 8) ifa/issues/133: the LAST rung -- partition a CreationSet by its
+  // creation points when a type confluence landed on its contour and
+  // every finer stage above has declined. shedskin's ladder route 4, in
+  // the position shedskin puts it: coarsest separation, tried last, so it
+  // can never preempt a split that keeps more precision. Gated on full
+  // quiescence for the same reason PER_CS_RECEIVER and CSM_ELEMENT_CS are.
+  if (!analyze_again) {
+    ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    cur_split_stage = (int)FAPassStage::CS_DEF_PARTITION;
+    analyze_again = split_css_by_defs();
+    fa->stage_time[(int)FAPassStage::CS_DEF_PARTITION] += stage_timer.lap();
+    if (analyze_again) {
+      record_fa_event(FAPassStage::CS_DEF_PARTITION, analyze_again, ess0, css0, viol0);
+      if (getenv("PYC_DBG_STAGEDELTA"))
+        fprintf(stderr, "STAGEDELTA p=%d CS_DEF_PARTITION returned=%d d_ess=%d d_css=%d viol=%d\n", analysis_pass,
+                analyze_again, fa->ess.n - ess0, fa->css.n - css0, fa->type_violations.set_count());
+      ++fa->stage_progress_count[(int)FAPassStage::CS_DEF_PARTITION];
+    }
+  }
+  log(LOG_SPLITTING, "split_css_by_defs %d\n", analyze_again);
   // ifa/issues/074: back to "no stage running". Without this, every
   // contour/CreationSet the NEXT pass's flow creates was attributed to
   // whichever stage happened to run last -- which is what made the
@@ -10543,7 +10690,8 @@ static void report_keyspace() {
 
 static const char *kStageName[FA::kNumFAPassStages] = {
     "TYPE_CONFL",  "MARK_TYPE",   "SETTER",      "SETTER_OF_SETTER", "MARK_SETTER",
-    "MARK_SET_OF_SET", "VIOLATION", "PER_CS_RECV", "CSM_ELEM_CS",  "CPA"};
+    "MARK_SET_OF_SET", "VIOLATION", "PER_CS_RECV", "CSM_ELEM_CS",  "CPA",
+    "CS_DEF_PART"};
 
 // TEMP probe: which splitter STAGE is producing the per-pass churn.
 // ifa/issues/101: per-pass CreationSet population, grouped by the SYM of

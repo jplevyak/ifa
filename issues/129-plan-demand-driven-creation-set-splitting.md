@@ -19,24 +19,35 @@ it takes `ess` DOWN rather than up, unlike every key-side experiment here:
 
 | | default | `PYC_CSDCPA1=2` |
 | --- | --- | --- |
-| container CS / shapes (corpus) | 3748 / 626 = 5.99 | 2716 / 595 = **4.56** |
+| container CS / shapes (corpus) | 3748 → **3713** / 626 = **5.93** | 2716 / 595 = **4.56** |
 | `pyc` segfaults / compile timeouts | 0 / 1 | **0 / 0** |
 | corpus compile failures | 2 | 19 |
-| suite failures | 0 | 16 (`=1`, tuples included: 19) |
+| suite failures | 0 | ~~16~~ → **11** (2026-09-06) |
 
 **What has landed:** [132](132-arity-is-representation-not-provenance.md)
 — arity participates in CreationSet identity, which removed every compiler
-crash and hang under the flag.
+crash and hang under the flag. Then, 2026-09-06,
+[133](133-split-a-container-on-its-element-type.md)'s two fixes:
+`__delitem__`'s false `merge_in` (default path, worth −35 container
+CreationSets corpus-wide, 5.99 → 5.93, every verdict unchanged) and
+`FAPassStage::CS_DEF_PARTITION` / `split_css_by_defs` — the pass's last
+rung, which partitions a CreationSet by its creation points when a type
+confluence lands on its contour. Default on and measured inert at the
+default (zero splits on chess/rubik2/sieve/go); under the flag it takes
+the bill **16 → 11**.
 
-**The 16 suite failures, triaged** (full table at *Step 4 — the bill*):
+**The bill, 16 → 11 as of 2026-09-06** (full table at *Step 4 — the bill*):
 
 | group | n | state |
 | --- | --- | --- |
-| [133](133-split-a-container-on-its-element-type.md) element leak | 5 → **4** | one fixed 2026-09-05 (`__delitem__`'s false `merge_in`); rest need a design choice, now with a **third option** |
+| [133](133-split-a-container-on-its-element-type.md) element leak | 5 → **1** | **fixed** — `__delitem__`'s false `merge_in`, then `CS_DEF_PARTITION` (`split_css_by_defs`, default on). Only `splitter_cartesian_product` remains |
 | `splitter_*` goldens | 3 | decided — route changed, `CALLS` verified equal, re-blessable at flip |
 | layout / member width | 2 | untouched; a sibling of 132, likely the same shape |
-| illegal call argument type | 2 | untouched |
-| undiagnosed | 4 | untouched |
+| `builtins`, `plcfrs_*` | 2 | still `mixed basic types`, but NOT CS_DEF_PARTITION declining wrongly — see 133 |
+| undiagnosed | 4 → **2** | `test_heapq`, `match_seq_star`. The other two were 133, and produced no diagnostic *because* they were |
+| illegal call argument type | 2 → **1** | `listcomp_element_separation` fixed; `deepcopy_copy_of_copy_chain` remains |
+
+1 + 3 + 2 + 2 + 2 + 1 = 11.
 
 **Next actions, in order:**
 
@@ -1472,13 +1483,21 @@ needed. So part of that group is "the mechanism did not have to fire",
 not "the answer is wrong". The 14 EXEC failures are the ones that are
 genuinely wrong output, and they are the real bill.
 
-**What is missing is the third clause.** "ESs are split as necessary to
-separate the creation points so the CS can split" is not implemented:
-today ES splitting runs on its own criteria and `split_css` splits only
-what the setter confluences already separate. Nothing asks *"this
-CreationSet needs to split, but its creation points share a contour —
-split that contour so it can"*. That is the mechanism the 14 EXEC failures
-are missing, and it is the next thing to build.
+~~**What is missing is the third clause.**~~ **RETRACTED — measured
+2026-09-06, and the third clause is already working.** The claim below was
+that "ESs are split as necessary to separate the creation points so the CS
+can split" is not implemented and is what the EXEC failures need. Two
+independent measurements say otherwise; see *Step 4 — the third clause is
+not what is missing* at the end of this file. It was already half-retracted
+by item 1 of "What has to land" (the `PYC_ESFORCS` route measured inert);
+what is new is WHY, which makes the retraction complete.
+
+Original text, kept for the record: *today ES splitting runs on its own
+criteria and `split_css` splits only what the setter confluences already
+separate. Nothing asks "this CreationSet needs to split, but its creation
+points share a contour — split that contour so it can". That is the
+mechanism the 14 EXEC failures are missing, and it is the next thing to
+build.*
 
 **Corpus `check`, and it is nowhere near flippable yet.**
 `check__PYC_CSDCPA1_2__3c388f22+adf4abe8` against the default baseline
@@ -1696,3 +1715,64 @@ The goal statement, and with it: [128](128-cs-identity-over-discriminates-vs-ele
 16× CS excess, [111](111-FA-selective-invalidation-per-pass.md)'s 7.4×
 analysis-time gap and its 48×-per-compile work growth, and the emitted
 code size (chess: 2.1 MB / 108k lines of C against shedskin's 904 lines).
+
+### Step 4 — the third clause is not what is missing (measured 2026-09-06)
+
+An attempt to construct an example that *requires* "ESs are split as
+necessary to separate the creation points so the CS can split" failed:
+every shape built for it is already handled. The creation point is a
+single `[]` inside a function in all four, and the two calls disagree on
+element type; `PYC_CSDCPA1=2`, C backend:
+
+| | one creation point, reached via | result | `STAGES` |
+| --- | --- | --- | --- |
+| A | `return []` from a **no-argument** function | clean | `TYPE_CONFL SETTER` |
+| B | `self.items = []` in `__init__` | clean | `+ SETTER_OF_SETTER` |
+| C | `b.items = []` — a field of a **parameter** | clean | `+ SETTER_OF_SETTER` |
+| D | C, and filled inside the callee | clean | `+ SETTER_OF_SETTER` |
+
+A is the pure form of the clause: no argument, so CPA has nothing to split
+on, and the split happens anyway because the return value is a legal
+`split_ess_for_type` target. C and D are the long chain — the distinction
+travels `p`/`q` → `Box`'s CreationSet → `attach`'s receiver contour → the
+`[]` inside it — and it arrives. **The ladder already splits the EntrySet
+so that the creation point duplicates and the CreationSet can split.** It
+just does not announce itself under that name; it is `SETTER` and
+`SETTER_OF_SETTER`.
+
+**This explains the `PYC_ESFORCS` result** recorded in item 1 above — 64
+targets found, *all* declined by `split_entry_set`, 283/30 with and
+without. That read as the route being wrong. The reading now is that the
+ES splits it was asking for had already been made, so the declines were
+correct. Two measurements, taken for different reasons, agreeing.
+
+**What the failures actually need is the opposite shape.** Reduced from
+`tests/list_append_is_amortized.py`, and now
+[133](133-split-a-container-on-its-element-type.md)'s reproducer:
+
+```python
+a = []
+a.append(1)
+s = []
+s.append("x")
+print(a[0], s[0])
+```
+
+Two creation points that are **already distinct AVars in one EntrySet**.
+`IFA_DBG_MIXELEM` shows the value path fully split — `__setitem__` es=47
+carrying `int64`, es=51 carrying `str` — both writing into one element
+because the receiver CreationSet is one. There is nothing left to split on
+the EntrySet side; the CreationSet must partition its own `defs`. That is
+133 option 3, already the plan.
+
+*One shape genuinely cannot be split, and it is out of scope.* A single
+`inner = []` inside a loop whose iterations disagree fails on **both**
+arms (default `int64 str`, flag `list int64 str`) because loop iterations
+are not contours, so no ES split exists to make. Pre-existing limitation,
+not a flag regression; related to
+[131](131-demand-driven-constant-splitting.md)'s unknown-arity case.
+
+*Caveat, stated so this is not over-read:* four constructed cases are not
+proof the clause is never needed. A longer chain, or one the setter ladder
+cannot reach, may exist. But the burden is now on producing such a case
+before building the mechanism, rather than on justifying not building it.

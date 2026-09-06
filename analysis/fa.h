@@ -808,7 +808,7 @@ class FA : public gc {
   // one may have found work too, on a batched extend (see issue 033
   // S5 M2). Sized to FAPassStage's cardinality (kept as a plain
   // constant since FAPassStage is declared after this class).
-  static constexpr int kNumFAPassStages = 10;
+  static constexpr int kNumFAPassStages = 11;
   // TEMP probe: per-splitter-stage attribution of the per-pass churn.
   long dbg_stage_detach[kNumFAPassStages] = {};   // edges this stage detached (x->to = 0)
   long dbg_stage_mint[kNumFAPassStages] = {};     // contours this stage minted fresh
@@ -883,6 +883,16 @@ enum class FAPassStage {
                           // contour per single CS -- shedskin's dcpa
                           // naming, so a union never becomes a contour
                           // name in the first place)
+  CS_DEF_PARTITION,       // split_css_by_defs (ifa/issues/133): a type
+                          // confluence that landed on a CreationSet
+                          // contour, which stage 1 can only drop --
+                          // partition that CreationSet's creation points
+                          // (cs->defs) so the conflicting elements stop
+                          // sharing one contour. shedskin's ladder route
+                          // 4 (infer.py:1576), and like it the LAST rung:
+                          // runs only on quiescence of every stage above,
+                          // so anything a finer route can separate is
+                          // separated first.
 };
 
 struct FAPassEvent {
