@@ -11731,9 +11731,11 @@ static void report_creation_attribution() {
             int bw_all = a->backward.n, bw_carrying = 0, is_seed = groups.v[i]->set_in(a) ? 1 : 0;
             for (AVar *x : a->backward)
               if (x && x->out && x->out->type && x->out->type->set_in(cs)) ++bw_carrying;
-            fprintf(stderr, "           csmap=%d seed=%d backward_all=%d backward_carrying_cs=%d carries_cs=%d\n",
+            fprintf(stderr,
+                    "           csmap=%d seed=%d backward_all=%d backward_carrying_cs=%d carries_cs=%d global=%d\n",
                     a->cs_map ? 1 : 0, is_seed, bw_all, bw_carrying,
-                    (a->out && a->out->type && a->out->type->set_in(cs)) ? 1 : 0);
+                    (a->out && a->out->type && a->out->type->set_in(cs)) ? 1 : 0,
+                    (a->contour == GLOBAL_CONTOUR) ? 1 : 0);
           }
         if (i == 0)
           for (AVar *d : cs->defs)
