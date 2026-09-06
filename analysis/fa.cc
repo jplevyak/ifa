@@ -8098,9 +8098,22 @@ static const int kCsDefSplitMax = 10;
 // it never ripens.
 static const int kCsDefSplitRipe = 3;
 
-// ifa/133 steps 3-5: shedskin's finer ladder rungs, tried BEFORE the
-// wholesale partition. Default 0 while being measured -- flip once the
-// corpus says what it costs. See the plan in the issue.
+// ifa/133 steps 3-6: shedskin's finer ladder rungs, tried BEFORE the
+// wholesale partition. Default 0 while being measured. A BITMASK, because
+// the pieces had to be attributed separately once they started disagreeing:
+//
+//   1  route 1, ifa_split_no_confusion  (infer.py:1585)
+//   2  route 3, partition csites across paths (infer.py:1571)
+//   4  step 6, contour REUSE -- join an existing contour instead of minting
+//   8  key the emptycsites group on the BOTTOM AType rather than "no key",
+//      which is what makes the reuse lookup reachable for it
+//  16  peel EVERY group in route 1, as shedskin does, not just the first
+//
+// **3 is the measured-good configuration**: suite 9 under PYC_CSDCPA1=2,
+// -45 container CreationSets corpus-wide, and every verdict on all 77
+// programs identical. 27 and 31 both regress `deepcopy_copy_of_copy_chain`
+// -- ifa/105's acceptance test -- to 10. See the issue for why 4/8/16 do
+// not pay yet.
 static int csladder_enabled() {
   static int e = -1;
   if (e < 0) {
@@ -8202,7 +8215,56 @@ static CSFlowGraph *build_cs_flow_graph(CreationSet *cs) {
 // forced: at module scope the walk's roots have none (uncharacterized, see
 // the issue), and inventing a handle for them is exactly the move the issue
 // warns against.
-static CreationSet *cs_peel_group(CreationSet *cs, Vec<AVar *> &group, cchar *route, bool dbg) {
+// ifa/133 step 6: shedskin's contour REUSE (`classes_nr`, infer.py:1617-1624).
+//
+// This is the half that can take a contour AWAY. Routes 1 and 3 on their own
+// only ever mint for a peeled group, so they split less than wholesale would
+// but can never reduce the count -- measured as -45 against route 4's +191.
+// shedskin instead consults an index of the class's existing contours, keyed
+// on their deduced type-variable types, and MOVES the group onto a matching
+// one.
+//
+// Rebuilt from the CURRENT contours on every call, exactly as
+// `ifa_class_types` does (`for dcpa in range(1, cl.dcpa)`, reading each
+// contour's types now). ifa/129 step 2b item 1 records why that matters:
+// pyc's `cselem_shape_canon` never rebuilds, so an entry that drifts keeps
+// answering forever. There is no index here to go stale.
+//
+// Read-only on purpose: only contours that ALREADY have an element AVar are
+// considered (`x->added_element_var`), so this never calls the accessor that
+// creates one -- the hazard ifa/129 step 1 names for the census probes.
+static CreationSet *cs_reuse_contour(CreationSet *cs, AType *want, bool dbg) {
+  if (!want || !cs->sym || !cs->sym->element || !cs->sym->element->var) return nullptr;
+  int n_cand = 0, n_dead = 0, n_noelem = 0, n_arity = 0, n_mismatch = 0;
+  for (CreationSet *x : cs->sym->creators) {
+    if (!x || x == cs || x->sym != cs->sym) continue;
+    ++n_cand;
+    if (!fa->css_set.set_in(x)) { ++n_dead; continue; }
+    if (!x->added_element_var) { ++n_noelem; continue; }
+    if (cs->sym->abstract_type && x == cs->sym->abstract_type->v[0]) continue;
+    // ifa/132: arity is a representation property CreationSet identity must
+    // respect, so a contour of a different fixed arity cannot host this group.
+    if (cs->static_arity >= 0 && x->static_arity >= 0 && x->static_arity != cs->static_arity &&
+        !x->no_static_arity && !cs->no_static_arity) {
+      ++n_arity;
+      continue;
+    }
+    AVar *e = unique_AVar(cs->sym->element->var, x);
+    if (e && e->out && e->out->type == want) {
+      if (dbg) fprintf(stderr, "[csladder] p=%d cs=%d REUSE contour cs=%d\n", analysis_pass, cs->id, x->id);
+      return x;
+    }
+    ++n_mismatch;
+  }
+  if (dbg)
+    fprintf(stderr, "[csreuse] p=%d cs=%d sym=%s cand=%d dead=%d no_elem_var=%d arity=%d elem_mismatch=%d\n",
+            analysis_pass, cs->id, cs->sym->name ? cs->sym->name : "?", n_cand, n_dead, n_noelem, n_arity,
+            n_mismatch);
+  return nullptr;
+}
+
+static CreationSet *cs_peel_group(CreationSet *cs, Vec<AVar *> &group, cchar *route, bool dbg,
+                                  CreationSet *join_to = nullptr) {
   Vec<AVar *> movable;
   for (AVar *v : group)
     if (v && v->cs_map && v->cs_map->get(cs->sym) == cs) movable.set_add(v);
@@ -8215,9 +8277,12 @@ static CreationSet *cs_peel_group(CreationSet *cs, Vec<AVar *> &group, cchar *ro
               n_move, cs->defs.set_count());
     return nullptr;
   }
-  CreationSet *new_cs = new CreationSet(cs);
-  new_cs->split = cs;
-  if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
+  CreationSet *new_cs = join_to;
+  if (!new_cs) {
+    new_cs = new CreationSet(cs);
+    new_cs->split = cs;
+    if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
+  }
   Vec<AVar *> moved;
   for (AVar *v : movable)
     if (v) {
@@ -8228,8 +8293,8 @@ static CreationSet *cs_peel_group(CreationSet *cs, Vec<AVar *> &group, cchar *ro
   cs->defs.set_difference(moved, new_defs);
   cs->defs.move(new_defs);
   if (dbg)
-    fprintf(stderr, "[csladder] p=%d cs=%d %s SPLIT %d site(s) -> cs=%d\n", analysis_pass, cs->id, route, n_move,
-            new_cs->id);
+    fprintf(stderr, "[csladder] p=%d cs=%d %s %s %d site(s) -> cs=%d\n", analysis_pass, cs->id, route,
+            join_to ? "JOIN" : "SPLIT", n_move, new_cs->id);
   log(LOG_SPLITTING, "SPLIT CS LADDER %s cs %d -> %d (%d sites)\n", route, cs->id, new_cs->id, n_move);
   return new_cs;
 }
@@ -8257,12 +8322,32 @@ static CreationSet *cs_peel_group(CreationSet *cs, Vec<AVar *> &group, cchar *ro
   // folds emptycsites in here for the same reason: they constrain nothing, so
   // they belong with whatever else constrains nothing.
   if (g->emptycsites.set_count()) {
-    gkeys.add(nullptr);
+    // Their wanted element type is BOTTOM, not "no key". shedskin gives them
+    // `attr_types` with this tvar set to frozenset() and looks that up in
+    // classes_nr like any other subtype, so a contour whose element is
+    // already empty is a legitimate host. Keying them nullptr made the reuse
+    // lookup unreachable for the one group most likely to find a match --
+    // measured: on sha the ONLY ladder event was this group, and it minted.
+    gkeys.add((csladder_enabled() & 8) ? fa->type_world.bottom_type : nullptr);
     groups.add(new Vec<AVar *>);
     for (AVar *e : g->emptycsites) if (e) groups.v[groups.n - 1]->set_add(e);
   }
   if (groups.n < 2) return 0;  // one group is not a partition
-  return cs_peel_group(cs, *groups.v[0], "no_confusion", dbg) ? 1 : 0;
+  // Every group is offered, not just the first -- shedskin loops over all of
+  // subtype_csites, reusing or minting per group. And a group whose wanted
+  // element type ALREADY equals this contour's stays put: that is shedskin's
+  // `if attr_types[varnum] == assign_set: others += 1` (infer.py:1608), and
+  // without it the rung churns sites between contours that already agree.
+  AVar *own = unique_AVar(cs->sym->element->var, cs);
+  AType *own_t = (own && own->out) ? own->out->type : nullptr;
+  int did = 0;
+  for (int i = 0; i < groups.n; i++) {
+    if (i > 0 && !(csladder_enabled() & 16)) break;   // bit 16 = all groups
+    if (gkeys.v[i] && gkeys.v[i] == own_t) continue;  // already agrees; leave it
+    CreationSet *join = ((csladder_enabled() & 4) && gkeys.v[i]) ? cs_reuse_contour(cs, gkeys.v[i], dbg) : nullptr;
+    if (cs_peel_group(cs, *groups.v[i], "no_confusion", dbg, join)) did = 1;
+  }
+  return did;
 }
 
 // Route 3 -- shedskin's path partition (infer.py:1571). When every creation
@@ -8299,7 +8384,11 @@ static CreationSet *cs_peel_group(CreationSet *cs, Vec<AVar *> &group, cchar *ro
     groups.v[gi]->set_add(c);
   }
   if (groups.n < 2) return 0;
-  return cs_peel_group(cs, *groups.v[0], "path_partition", dbg) ? 1 : 0;
+  // shedskin peels only the FIRST group here (`list(prt.values())[0]`), unlike
+  // route 1 -- later passes re-derive and take the next. Kept faithful. Reuse
+  // still applies: the group's signature IS the element type it wants.
+  CreationSet *join = ((csladder_enabled() & 4) && sigs.v[0]) ? cs_reuse_contour(cs, sigs.v[0], dbg) : nullptr;
+  return cs_peel_group(cs, *groups.v[0], "path_partition", dbg, join) ? 1 : 0;
 }
 
 static void report_cs_flow_graphs() {

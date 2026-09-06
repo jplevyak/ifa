@@ -791,3 +791,64 @@ the `DEMAND` line without checking the exit status. With `rc` checked
 alongside, `sudoku3` is unchanged at 58 and the "improvement" was entirely
 the bug. **Never report a contour delta without the exit status beside
 it** — a broken analysis produces small numbers.
+
+## Step 6 — contour reuse: built, measured, does NOT pay
+
+`cs_reuse_contour` is shedskin's `classes_nr` lookup
+(`infer.py:1617-1624`): before minting for a peeled group, scan the live
+CreationSets of the same sym for one whose element AType already equals
+what the group wants, and JOIN it instead. Rebuilt from the current
+contours on every call, as `ifa_class_types` does — there is no index to
+go stale, which is ifa/129 step 2b item 1's complaint about
+`cselem_shape_canon`. Read-only: only contours that already have an
+element AVar are considered, so the accessor that CREATES one is never
+called.
+
+`PYC_CSLADDER` became a bitmask so the pieces could be attributed
+separately: `1` route 1, `2` route 3, `4` reuse, `8` key the emptycsites
+group on the bottom AType, `16` peel every group in route 1 as shedskin
+does.
+
+**Result: 3 is the measured-good configuration and 6 does not improve
+it.**
+
+| `PYC_CSLADDER` | suite under `PYC_CSDCPA1=2` |
+| --- | --- |
+| **3** — routes only, first group per pass | **9** |
+| 27 — + all groups + empties keyed bottom | 10 |
+| 31 — + reuse | 10 |
+
+The regression at 27/31 is **`deepcopy_copy_of_copy_chain`**, which is
+ifa/105's acceptance test and the exact case ifa/129 names as the thing
+that must not come back. It fails with `a variable holding 'int64' has no
+representation: '__add__' resolved to the CONTAINER method` — the same
+call-resolution-wearing-a-representation-message as `pystone`.
+
+**And the reuse itself is nearly inert.** Across nine programs it fires on
+two — `pisang` and `chull`, two joins each — and changes no contour total.
+The lookup is not blocked; it is instrumented and reports honestly. On
+`sha`: `cand=29 dead=0 no_elem_var=0 arity=7 elem_mismatch=22`. **No
+contour of that sym has the element type the group wants**, because under
+`PYC_CSDCPA1` the contours that exist hold merged element types and the
+group wants a pure one. shedskin's index finds hosts because its contours
+are re-derived to convergence every iteration; pyc's are not.
+
+**Why 16 (all groups) regresses, named rather than tuned away.** shedskin
+collects every group's decision into `split` and applies the whole list at
+the end of the iteration. This implementation peels as it goes, so the
+second group's `cs_peel_group` sees a `cs->defs` the first peel already
+shrank. That is exactly the discipline `split_ess_for_type`'s own M2b
+comment describes — *"DECIDE every confluence's split against the same
+unmutated, converged state, then APPLY"* — and it was not applied here.
+Fixing 16 means decide-then-apply, not a smaller cap.
+
+*Kept, default off, with the bits intact*, because they are the
+reproduction of this measurement. The landed behaviour is `3`.
+
+**What step 6 was supposed to buy and did not:** the ~146 CreationSets of
+route 4's +191 that routes 1 and 3 do not recover. Joining is still the
+only operation that can take a contour away, and it is still unavailable
+in practice — not for want of the mechanism, which now exists and runs,
+but because no host contour has the wanted element type. That is a
+statement about pyc's contour population, not about the reuse rule, and
+it is the thing to attack next.
