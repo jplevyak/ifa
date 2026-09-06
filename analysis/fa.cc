@@ -8563,6 +8563,41 @@ static void report_cs_flow_graphs() {
     // at all. Not a shipping mode. Measured 2026-09-06: it fixes 4 of
     // ifa/129's 9 group-A corpus programs.
     const bool force = csdefsplit_enabled() >= 2;
+    // ifa/129 third clause, FEASIBILITY PROBE. A CreationSet with ONE
+    // creation point and an irrepresentable element cannot be split by
+    // creation point -- there is nothing to partition. The separation has
+    // to come from splitting the EntrySet that OWNS the creation point, so
+    // the site duplicates and gives the next pass two defs.
+    //
+    // Whether that is possible is a question about the owning ES's
+    // formals: `decide_entry_set_split` groups the ES's in-edges by the
+    // type at a target AVar, so a split exists iff some formal's callers
+    // DISAGREE. Deciding is side-effect-free (split_ess_for_type decides
+    // then applies separately), so this measures without changing
+    // anything.
+    if (getenv("IFA_DBG_THIRD") && defs.n == 1) {
+      AVar *d = defs.v[0];
+      if (d && d->contour_is_entry_set) {
+        EntrySet *des = (EntrySet *)d->contour;
+        int formals = 0, splittable = 0;
+        cchar *last_why = "-";
+        if (des && des->fun) {
+          form_Map(MapElemMPositionVarPair, mp, des->fun->args) {
+            Var *fv = mp->value;
+            if (!fv || !fv->sym) continue;
+            AVar *fav = make_AVar(fv, des);
+            if (!fav) continue;
+            ++formals;
+            if (decide_entry_set_split(fav, SPLIT_TYPE, SPLIT_VALUE)) ++splittable;
+            else last_why = dec_why;
+          }
+        }
+        fprintf(stderr, "[third] p=%d cs=%d sym=%s es=%d fun=%s edges=%d formals=%d splittable=%d why=%s\n",
+                analysis_pass, cs->id, cs->sym->name ? cs->sym->name : "?", des ? des->id : -1,
+                (des && des->fun && des->fun->sym && des->fun->sym->name) ? des->fun->sym->name : "?",
+                des ? des->edges.n : -1, formals, splittable, last_why);
+      }
+    }
     if (defs.n < 2 || (!force && defs.n >= kCsDefSplitMax)) {
       if (dbg)
         fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d DECLINED (%s)\n", analysis_pass, cs->id,

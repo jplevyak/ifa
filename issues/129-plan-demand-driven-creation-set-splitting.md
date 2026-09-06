@@ -2061,3 +2061,59 @@ and only then can the CreationSet split.* That is the one ordering
 ifa/133's machinery cannot bootstrap on its own, and it is now the largest
 single item in the flag arm: 8 of 10 corpus failures and, via `builtins`,
 1 of 4 suite failures.
+
+### Step 4 — the third clause is NOT reachable for these cases (measured 2026-09-06)
+
+The clause as stated — *when a CreationSet's element is irrepresentable
+and it has one creation point, split the EntrySet that owns that creation
+point so the site duplicates* — was measured before being built, and it
+does not work.
+
+`decide_entry_set_split` groups an EntrySet's in-edges by the type at a
+target AVar, so a split exists **iff some formal's callers disagree**.
+Deciding is side-effect-free (`split_ess_for_type` decides, then applies
+separately), so `IFA_DBG_THIRD` walks every formal of the owning ES for
+each `defs=1` candidate and asks. On `sudoku3`:
+
+```
+[third] events                     428
+candidates with a splittable formal  1
+decline reason                     427 x no_groups
+```
+
+**427 of 428 decline because the callers AGREE at every formal.** There is
+nothing for an ES split to separate. This is the same wall
+`PYC_ESFORCS` hit — 64 targets, all declined — and now the reason is
+named rather than inferred.
+
+**And 126 of the 428 are in `__main__`.** A module-scope creation point
+has no call edges at all, so it cannot be duplicated by EntrySet splitting
+under any rule. That is a structural bound, not a tuning question: for
+those the third clause is not merely declining, it is inapplicable.
+
+| owning function | n |
+| --- | --- |
+| `__main__` | 126 |
+| `set_cell` | 114 |
+| `__pyc_getslice__` | 68 |
+| `check_for_last_in_row_col_` | 50 |
+
+**What this rules out, and what it leaves.** The element unions on these
+programs do not arise from callers passing different types into the
+function that allocates — if they did, a formal would disagree and the ES
+would split. They arise from one creation point whose container reaches
+uses that write different types, with the callers indistinguishable by
+argument type. Neither CS-side partitioning (nothing to partition, defs=1)
+nor ES-side splitting (nothing to split on, no_groups) can separate that.
+
+So the third clause is **not** the next step, and this is the second time
+it has been measured inert by a different route. The open question is
+narrower than the clause: *what distinction, visible to the analysis,
+separates two uses of one module-scope container?* Until something answers
+that, the 8 `'X' has no type` corpus failures have no mechanism aimed at
+them.
+
+*Probe kept, default off:* `IFA_DBG_THIRD` reports, per single-def
+candidate, the owning EntrySet, its edge count, how many formals it has,
+how many are splittable, and the decline reason. It is the measurement
+that should precede any future attempt at this clause.
