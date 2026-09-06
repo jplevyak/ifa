@@ -605,13 +605,61 @@ edge.
 > IS large on a correct compile, so it cannot be used as a defect signal.
 
 **Nothing in this issue's chain now points at a defect in the flow graph.**
-The open question returns to where it was before that detour: one
-container, one creation point, monomorphic writers and monomorphic
-receivers, and an element that unions `int64` with `str`. That remains
-unexplained, and the next attempt should start from `cs=995`'s element
-`backward` list — the 31 writers, which ARE flow edges — rather than from
-type membership, which the abstract-type seeding makes unreliable as
-evidence.
+
+## Reduced to four lines
+
+Every step above probed `tests/list_pop_insert.py` — 27 lines pulling in
+`setslice`, `delitem` and `pop` from `__pyc__` — and sampled it with
+instruments instead of reading it. Seven diagnoses were produced that way
+and every one was overturned. Reducing the case first, which is this
+repository's standard move, would have been cheaper than any of them.
+
+```python
+a = [1, 2]
+a.pop()
+b = []
+b.insert(0, "x")
+```
+
+Four lines, and it reproduces `mixed basic types: (int64 str)` under
+`PYC_CSDCPA1=2`. The bisection is sharp about what is required:
+
+| case | result |
+| --- | --- |
+| `a=[1]; b=["x"]` | clean |
+| `a=[1]; b=[]; b.insert(0,"x")` | clean |
+| `a=[1,2]; a.pop(); b=["x"]` | clean |
+| **`a=[1,2]; a.pop(); b=[]; b.insert(0,"x")`** | **reproduces** |
+
+So it needs *both* a popped non-empty int list **and** an EMPTY list that
+is later inserted into. A non-empty `b` literal is clean.
+
+**And the whole picture fits on one screen:**
+
+```
+cs=981 defs=1 elem={int64, str}   creation point av=780 in __main__
+  1 container AVar av=2961, es=56 = __pyc_setslice__, receiver spans 1 CS: list#981
+  writers in es=56:  str, int64, int64
+error at r6.py:2 `a.pop()`, called from __pyc__.py:1298
+```
+
+**A single `__pyc_setslice__` contour, with a monomorphic receiver, writes
+both `str` and `int64` into it.** One contour, three write sites, two
+types. That is the defect stated without any inference.
+
+Also settled by the reduction: **the arity guard never fires here**
+(`IFA_DBG_ARITY` counts 0), so
+[132](132-arity-is-representation-not-provenance.md)'s "a CreationSet with
+no static arity absorbs any" is not the mechanism, and the merged
+`cs=983 defs=6` is a different CreationSet from the broken one.
+
+**Next step, and it is now small:** read `__pyc_setslice__`'s body and
+`es=56`'s three write sites on this four-line program. Either the contour
+legitimately serves both calls and must be split per receiver — in which
+case the receiver being monomorphic on `list#981` is the thing to explain
+— or its source-sequence formal carries both types, in which case the
+merge is upstream in whatever supplies it. The program is small enough to
+answer that by reading rather than probing.
 
 *What is kept:* `IFA_DBG_TCDROP`, which names every confluence the stage
 discards. That is the measurement this issue turned on, and nothing else
