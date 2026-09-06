@@ -5,6 +5,22 @@ count exceeds shedskin's on the same program ([111](111-FA-selective-invalidatio
 **Area:** `ifa/analysis/fa.cc` — CreationSet identity and the ES splitting it drives.
 **Severity:** performance and code size, not correctness. No wrong answers; ~7× analysis time and ~5× emitted functions.
 
+**The rule this violates**, restated by the author 2026-09-06 because it
+keeps being forgotten:
+
+> IFA is a simultaneous data and control flow analysis based on abstract
+> interpretation against a type-value lattice. It starts with the minimum
+> function and data contours and proceeds in passes by splitting the
+> function and data contours to increase precision, by types, setters,
+> etc. **Contours should never be split simply because the surrounding
+> contour is split; they should only be split on demand.**
+
+That is this issue in one sentence. `creation_point` keys CS identity on
+*(allocation site × contour)*, so a CreationSet is created because the
+surrounding EntrySet split — structure, not demand — and pyc starts
+maximally split rather than minimal. Both halves of the rule are inverted.
+See CLAUDE.md and [IFA.md §1.1](../IFA.md).
+
 ## Measurement
 
 `IFA_DBG_ELEMTYPE=1` on `shedskin_examples/chess`, final pass:

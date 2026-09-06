@@ -12,18 +12,63 @@ re-derivation of the paper.
 
 ## 1. What IFA is, in one paragraph
 
-IFA performs whole-program **control + data flow analysis** for high-level
-object-oriented and functional languages where data flow and control flow
-are mutually dependent (object types decide dynamic dispatch targets, which
-decide which code runs, which produces the next round of object types).
-Classical k-CFA and OPS pre-commit to a fixed abstract representation
-(a fixed number of "contours" per program point) before the analysis runs.
-IFA starts with **one contour per program point (≈0-CFA)** and, when the
-result is too imprecise, **iteratively refines the abstract domain** —
-splitting functions, contours and data — and re-runs analysis until a fixed
-point is reached. The empirical result reported in the paper is much better
+**IFA is a simultaneous data and control flow analysis based on abstract
+interpretation against a type-value lattice.** It starts with the
+**minimum** function contours (`EntrySet`) and data contours
+(`CreationSet`) and proceeds **in passes**, splitting them to increase
+precision — by types, by setters, and so on.
+
+It is for high-level object-oriented and functional languages where data
+flow and control flow are mutually dependent: object types decide dynamic
+dispatch targets, which decide which code runs, which produces the next
+round of object types. Neither can be computed first, which is what
+*simultaneous* means here. Classical k-CFA and OPS pre-commit to a fixed
+abstract representation (a fixed number of contours per program point)
+before the analysis runs; IFA starts minimal (≈0-CFA) and, where the
+result is too imprecise, **iteratively refines the abstract domain** and
+re-runs until a fixed point is reached. The paper reports much better
 precision than 0-CFA/OPS at competitive cost (Tables/Figures 12-17), with
-80-100% of dynamic dispatch sites statically bound on the benchmark set.
+80-100% of dynamic dispatch sites statically bound.
+
+### 1.1 The splitting rule — the one that keeps getting forgotten
+
+**A contour is NEVER split because a surrounding contour was split.
+Splitting is only ever on demand.**
+
+A contour exists because something *observed a distinction that required
+it*. Splitting driven by structure — because the enclosing function
+contour split, because the allocation site is distinct, because the shape
+of the IR happened to fan out — is a defect, however well it converges,
+and however good the resulting precision looks. Precision bought
+structurally is contours nobody asked for.
+
+The rule constrains the two contour kinds in opposite directions, and the
+direction is easy to invert by accident:
+
+- Splitting an `EntrySet` must not, by itself, create `CreationSet`s.
+- Splitting an `EntrySet` **is** a legitimate *means* to an end: you split
+  a function contour **so that** creation points separate and a demanded
+  `CreationSet` split becomes possible. That is the ES split serving the
+  CS split, not causing it.
+
+**Two live violations in this tree**, named because they are what the rule
+is usually being forgotten in favour of:
+
+1. `creation_point` mints one CreationSet per *(allocation site ×
+   contour)*. CS identity is therefore decided by structure before any
+   demand test runs, and every ES split multiplies CreationSets as a side
+   effect. `ifa/issues/128` is this; `ifa/issues/129` is the plan and
+   `PYC_CSDCPA1` (start merged, one CS per sym) is the lever.
+2. `PYC_CSSPLIT=1` makes a CreationSet follow an EntrySet split by
+   construction — the inverted dependency stated directly as a mechanism.
+   It should be a fallback that fires only where a demand test also asks.
+
+**How to tell the difference when reviewing a change.** Ask what OBSERVED
+the distinction. A type violation at a use site, a setter confluence, an
+element union with no representation — those are demands. "The enclosing
+contour split", "this is a different allocation site", "the receiver
+differs" are not; they are structure, and two of them are also provenance
+(§11.0).
 
 ---
 
@@ -428,6 +473,49 @@ dominates, splitting is. The paper (§6.2) notes IFA is empirically
 ## 11. Commentary, gotchas, open issues
 
 These are notes for whoever maintains this code next.
+
+### 11.0 Contour identity keys on types only — provenance is never the answer
+
+**Author's directive.** Contour identity — `EntrySet` or `CreationSet` —
+may key on **deduced types and CreationSet partitioning only**. Where a
+value came from is never a component of it, and "record where it came from
+so we can separate it later" is never the design.
+
+Provenance is anything answering *where did this come from* rather than
+*what is this*: allocation site (`v->var->id`), the lexical display
+(`EntrySet::display`), mark distance, recursion depth, which module a
+creation point lives in, a per-write tag naming the container a value
+passed through.
+
+A third category is legitimate and is not provenance: what the target
+language can **represent** — arity, member width, `None` beside a scalar.
+Those may participate in identity, and language-specific ones belong
+behind `IFACallbacks` (the `bool_is_numeric()` precedent), not baked into
+`fa.cc`. `ifa/issues/132`'s title is exactly that distinction.
+
+The test: **does this rule encode what the deduced types ARE, where the
+value CAME FROM, or what the target can REPRESENT?** Only the middle one
+is banned.
+
+**Corollary.** A merge you cannot undo is not a reason to record
+provenance — it is a reason to split coarser and let the analysis
+re-derive. `analyze_to_convergence` resets *before* every pass
+(`fa.cc:10904-10909`), so derived ATypes are already re-derived from
+bottom; only the DECISION (`av->cs_map`) persists, and `split_css` can
+re-point it. Wholesale splitting by creation point therefore costs
+precision, not correctness. If the precision cost bites, the answer is a
+finer demand test (shedskin's ladder tries no-confusion, confluence
+partition and path partition before wholesale — all keyed on deduced
+types), never an attribution record.
+
+Every application of this rule has paid: removing the display from
+compatibility checks cut contours 40-80% corpus-wide (ifa/100); retiring
+mark-based splitting (`PYC_NOMARK`, default 1) gave −55% analysis time and
+−12.3% contours; and the per-site `v<id>|` prefix in `cselem_shape_key` is
+measured to fragment contour identity 2.53× (ifa/129).
+
+See CLAUDE.md's "Provenance is never the answer", and ifa/issues 100, 128,
+129, 132, 133.
 
 ### 11.1 Pointer-equality everywhere
 AType / Setters / SettersClasses are hash-consed. **All comparisons assume
