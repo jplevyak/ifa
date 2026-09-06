@@ -724,3 +724,70 @@ this way and **that is the answer** — record it, do not invent a handle by
 matching on names or positions. The retracted claim in this issue came
 from treating one failed probe as proof; the same mistake is available
 here in the other direction.
+
+## Steps 2-5 implemented 2026-09-06 — `PYC_CSLADDER`, default 0
+
+`CSFlowGraph` / `build_cs_flow_graph` is shedskin's `ifa_flow_graph`:
+assign sets (the element's backward edges grouped by canonical `AType` —
+pyc's hash-consing gives for free what `merge_simple_types` computes
+there), filtered backflow paths, per-set creation points, `csites`,
+`emptycsites`, and `site_set_count` for `n.paths`. Then:
+
+- **route 1**, `cs_ladder_no_confusion` — sites on exactly one assign set,
+  plus `emptycsites`, grouped by element type; peel one group;
+- **route 3**, `cs_ladder_path_partition` — group sites by the union of
+  the types across the assign sets they lie on;
+- **route 4 demoted** — `split_css_by_defs`'s wholesale partition now runs
+  only when 1 and 3 decline, which is the position shedskin gives it;
+- **the demand test** (`infer.py:1526`), `csites + emptycsites == 1 →
+  decline`, gating all of it.
+
+`cs_peel_group` re-points only members whose `cs_map` names the
+CreationSet, and declines a group that is ALL the defs (a rename, not a
+split). Module-scope roots have no `cs_map` and are skipped rather than
+forced.
+
+**Corpus result** (`check__PYC_CSDCPA1_2_PYC_CSLADDER_3__27ffb6e5+a58dbd70`
+against the same-tree ladder-off arm):
+
+| | off | on |
+| --- | --- | --- |
+| compile_fail / run_fail / stdout_differs | 12 / 35 / 23 | **identical** |
+| container CS / shapes | 2955 / 604 | **2910 / 599** |
+| ratio / pratio | 4.89 / 3.20 | **4.86 / 3.17** |
+
+**Every verdict on all 77 programs is unchanged** — `compile_rc`,
+`run_rc`, `stdout_match` — for −45 container CreationSets. Suite: default
+311/0 both backends, flag arm 9, both unchanged.
+
+**−45 against route 4's +191, and the reason is step 6.** Routes 1 and 3
+as built only ever MINT a new contour for a peeled group; they never JOIN
+one. shedskin's route 1 consults `classes_nr` first
+(`infer.py:1617-1624`) and *moves* the group onto an existing contour when
+the element types already match. Without that, the ladder can only split
+less than wholesale would — it cannot take a contour away. **That is where
+the rest of the +191 is, and it is step 6.**
+
+### Two bugs, recorded because of how they were caught
+
+**Route 3 was implemented from this issue's summary, not from the
+source, and it segfaulted the compiler.** The summary says "group sites by
+the set of types found on their paths"; shedskin does
+`for p in c.paths: tspaths.update(p)`, where each `p` is an assign-set KEY
+that is itself a set of types — so the signature is the UNION OF THE
+TYPES, not the set of assign sets by identity. Identity is strictly finer,
+so sites shedskin keeps together were separated; `sudoku3` came out with
+`self.squares[row][col]` typed `int64` instead of a list and codegen died
+on the untyped rval (`c_type(s=0x0)`, `cg.cc:1083`). Making the two rungs
+bit-selectable (`PYC_CSLADDER` 1 / 2 / 3) isolated it in one step.
+
+**The demand test was omitted entirely** — the one line the whole ladder
+exists for. Added.
+
+**And a contour measurement was taken from a crashed run.** The first A/B
+reported `sudoku3` 58 → 54 as an improvement; that run segfaulted, and
+`sudoku5`'s "+4" came from a failed compile. `container_cs` was read off
+the `DEMAND` line without checking the exit status. With `rc` checked
+alongside, `sudoku3` is unchanged at 58 and the "improvement" was entirely
+the bug. **Never report a contour delta without the exit status beside
+it** — a broken analysis produces small numbers.

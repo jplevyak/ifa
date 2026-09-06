@@ -8098,6 +8098,242 @@ static const int kCsDefSplitMax = 10;
 // it never ripens.
 static const int kCsDefSplitRipe = 3;
 
+// ifa/133 steps 3-5: shedskin's finer ladder rungs, tried BEFORE the
+// wholesale partition. Default 0 while being measured -- flip once the
+// corpus says what it costs. See the plan in the issue.
+static int csladder_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_CSLADDER");
+    e = v ? atoi(v) : 0;
+  }
+  return e;
+}
+
+// ifa/133 step 2: shedskin's `ifa_flow_graph` (infer.py:1715) for one
+// container CreationSet.
+//
+// This is the data the ladder's finer rungs run on, and pyc had no
+// equivalent. The two things that make it work, both absent from the
+// earlier IFA_DBG_ATTRIB probe:
+//
+//   - the element's incoming edges are GROUPED by the type being assigned
+//     (shedskin's `assignsets`, keyed by merge_simple_types; here the
+//     canonical AType pointer serves directly, since ATypes are hash-consed);
+//   - the backward walk is FILTERED to nodes carrying this CreationSet
+//     (`if t in gx.types[incoming]`), so it stays inside the container's
+//     own flow rather than wandering into the value graph.
+//
+// Measured on ifa/133's reproducer inside a function: each assign set's
+// walk terminates on a node that IS a creation point and DOES carry a
+// cs_map, so the roots are directly re-pointable and no def-bridge is
+// needed. At module scope the roots are neither, for reasons not yet
+// characterized (they are not GLOBAL_CONTOUR AVars -- measured); the
+// `in_defs` counts below exist to keep that visible.
+struct CSFlowGraph : public gc {
+  CreationSet *cs = nullptr;
+  Vec<AType *> keys;                    // one per assign set
+  Vec<Vec<AVar *> *> targets;           // containers written through each set
+  Vec<Vec<AVar *> *> paths;             // nodes reached walking back from them
+  Vec<Vec<AVar *> *> creation_points;   // per set: path nodes with no incoming edge
+  Vec<AVar *> csites;                   // creation points on ANY path
+  Vec<AVar *> emptycsites;              // cs->defs not on any path
+  // How many assign sets a given creation point lies on -- shedskin's
+  // `n.paths`, and the predicate route 1 keys on (`len(n.paths) == 1`).
+  int site_set_count(AVar *n) {
+    int c = 0;
+    for (int i = 0; i < paths.n; i++)
+      if (paths.v[i]->set_in(n)) ++c;
+    return c;
+  }
+};
+
+static CSFlowGraph *build_cs_flow_graph(CreationSet *cs) {
+  if (!cs || !cs->sym || !cs->sym->element || !cs->sym->element->var || !cs->added_element_var) return nullptr;
+  AVar *elem = unique_AVar(cs->sym->element->var, cs);
+  if (!elem || !elem->out) return nullptr;
+  CSFlowGraph *g = new CSFlowGraph;
+  g->cs = cs;
+  // --- assign sets: incoming edges of the element, grouped by assigned type
+  for (AVar *b : elem->backward) {
+    if (!b || !b->container || !b->out || !b->out->type) continue;
+    int gi = -1;
+    for (int i = 0; i < g->keys.n; i++)
+      if (g->keys.v[i] == b->out->type) { gi = i; break; }
+    if (gi < 0) {
+      g->keys.add(b->out->type);
+      g->targets.add(new Vec<AVar *>);
+      gi = g->keys.n - 1;
+    }
+    g->targets.v[gi]->set_add(b->container);
+  }
+  if (!g->keys.n) return nullptr;
+  // --- per assign set: backflow path, and its creation points
+  for (int i = 0; i < g->keys.n; i++) {
+    Vec<AVar *> *path = new Vec<AVar *>;
+    Vec<AVar *> *cps = new Vec<AVar *>;
+    Vec<AVar *> work;
+    for (AVar *t : *g->targets.v[i])
+      if (t && path->set_add(t)) work.add(t);
+    int h = 0, steps = 0;
+    while (h < work.n && steps < 200000) {
+      AVar *a = work.v[h++];
+      ++steps;
+      if (!a->backward.n) cps->set_add(a);
+      for (AVar *x : a->backward)
+        if (x && x->out && x->out->type && x->out->type->set_in(cs) && path->set_add(x)) work.add(x);
+    }
+    g->paths.add(path);
+    g->creation_points.add(cps);
+    for (AVar *c : *cps) if (c) g->csites.set_add(c);
+  }
+  // --- allocation sites of this contour reaching no assignment at all
+  for (AVar *d : cs->defs)
+    if (d && !g->csites.set_in(d)) g->emptycsites.set_add(d);
+  return g;
+}
+
+// ifa/133 steps 3-4: peel one group of creation points off a CreationSet.
+//
+// The re-point is `split_css`'s (fa.cc, `v->cs_map->put(cs->sym, new_cs)`),
+// which is legal on these nodes because a creation point IS the AVar whose
+// cs_map names the CreationSet -- `creation_point` writes both from the same
+// variable. A group member without such a cs_map is skipped rather than
+// forced: at module scope the walk's roots have none (uncharacterized, see
+// the issue), and inventing a handle for them is exactly the move the issue
+// warns against.
+static CreationSet *cs_peel_group(CreationSet *cs, Vec<AVar *> &group, cchar *route, bool dbg) {
+  Vec<AVar *> movable;
+  for (AVar *v : group)
+    if (v && v->cs_map && v->cs_map->get(cs->sym) == cs) movable.set_add(v);
+  int n_move = movable.set_count();
+  // Nothing to move, or moving EVERY def, which is a no-op rename rather
+  // than a split.
+  if (n_move < 1 || n_move >= cs->defs.set_count()) {
+    if (dbg)
+      fprintf(stderr, "[csladder] p=%d cs=%d %s DECLINED (movable=%d of defs=%d)\n", analysis_pass, cs->id, route,
+              n_move, cs->defs.set_count());
+    return nullptr;
+  }
+  CreationSet *new_cs = new CreationSet(cs);
+  new_cs->split = cs;
+  if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
+  Vec<AVar *> moved;
+  for (AVar *v : movable)
+    if (v) {
+      v->cs_map->put(cs->sym, new_cs);
+      moved.set_add(v);
+    }
+  Vec<AVar *> new_defs;
+  cs->defs.set_difference(moved, new_defs);
+  cs->defs.move(new_defs);
+  if (dbg)
+    fprintf(stderr, "[csladder] p=%d cs=%d %s SPLIT %d site(s) -> cs=%d\n", analysis_pass, cs->id, route, n_move,
+            new_cs->id);
+  log(LOG_SPLITTING, "SPLIT CS LADDER %s cs %d -> %d (%d sites)\n", route, cs->id, new_cs->id, n_move);
+  return new_cs;
+}
+
+// Route 1 -- shedskin's `ifa_split_no_confusion` (infer.py:1585). A creation
+// point lying on exactly ONE assign set is unconfused: everything it feeds
+// wants the same element type, so it can be separated with no loss. Those,
+// plus the sites that reach no assignment at all (`emptycsites`), are grouped
+// by the element type each would produce, and one group is peeled off.
+[[nodiscard]] static int cs_ladder_no_confusion(CSFlowGraph *g, bool dbg) {
+  CreationSet *cs = g->cs;
+  Vec<AType *> gkeys;
+  Vec<Vec<AVar *> *> groups;
+  for (AVar *c : g->csites) {
+    if (!c || g->site_set_count(c) != 1) continue;
+    AType *k = nullptr;
+    for (int i = 0; i < g->keys.n; i++)
+      if (g->paths.v[i]->set_in(c)) { k = g->keys.v[i]; break; }
+    int gi = -1;
+    for (int i = 0; i < gkeys.n; i++) if (gkeys.v[i] == k) { gi = i; break; }
+    if (gi < 0) { gkeys.add(k); groups.add(new Vec<AVar *>); gi = gkeys.n - 1; }
+    groups.v[gi]->set_add(c);
+  }
+  // Sites reaching no assignment share the "bottom element" group -- shedskin
+  // folds emptycsites in here for the same reason: they constrain nothing, so
+  // they belong with whatever else constrains nothing.
+  if (g->emptycsites.set_count()) {
+    gkeys.add(nullptr);
+    groups.add(new Vec<AVar *>);
+    for (AVar *e : g->emptycsites) if (e) groups.v[groups.n - 1]->set_add(e);
+  }
+  if (groups.n < 2) return 0;  // one group is not a partition
+  return cs_peel_group(cs, *groups.v[0], "no_confusion", dbg) ? 1 : 0;
+}
+
+// Route 3 -- shedskin's path partition (infer.py:1571). When every creation
+// point is confused (lies on more than one assign set), group them by WHICH
+// sets they lie on. Two sites feeding different combinations of element types
+// are still distinguishable even though neither is clean.
+[[nodiscard]] static int cs_ladder_path_partition(CSFlowGraph *g, bool dbg) {
+  CreationSet *cs = g->cs;
+  // The signature is the UNION OF THE TYPES across the assign sets this site
+  // lies on, which is what shedskin computes:
+  //
+  //     for p in c.paths: tspaths.update(p)      # p is a set of types
+  //     ts = frozenset(tspaths)
+  //
+  // NOT "which assign sets" by identity. The difference is not cosmetic: keying
+  // on identity is strictly finer, so two sites lying on different assign sets
+  // whose type unions coincide get separated when shedskin keeps them together.
+  // Measured -- the identity version split sudoku3 into a state where
+  // `self.squares[row][col]` came out int64 instead of a list, and codegen then
+  // segfaulted on the untyped rval (c_type(s=0x0), cg.cc:1083).
+  //
+  // ATypes are hash-consed, so type_union gives a canonical pointer and the
+  // grouping is a pointer compare.
+  Vec<AType *> sigs;
+  Vec<Vec<AVar *> *> groups;
+  for (AVar *c : g->csites) {
+    if (!c) continue;
+    AType *ts = nullptr;
+    for (int k = 0; k < g->keys.n; k++)
+      if (g->paths.v[k]->set_in(c)) ts = ts ? type_union(ts, g->keys.v[k]) : g->keys.v[k];
+    int gi = -1;
+    for (int i = 0; i < sigs.n; i++) if (sigs.v[i] == ts) { gi = i; break; }
+    if (gi < 0) { sigs.add(ts); groups.add(new Vec<AVar *>); gi = sigs.n - 1; }
+    groups.v[gi]->set_add(c);
+  }
+  if (groups.n < 2) return 0;
+  return cs_peel_group(cs, *groups.v[0], "path_partition", dbg) ? 1 : 0;
+}
+
+static void report_cs_flow_graphs() {
+  if (!getenv("IFA_DBG_CSFLOW")) return;
+  for (CreationSet *cs : fa->css) {
+    if (!cs || cs->defs.set_count() < 2) continue;
+    CSFlowGraph *g = build_cs_flow_graph(cs);
+    if (!g) continue;
+    int csites_in_defs = 0;
+    for (AVar *c : g->csites) if (c && cs->defs.set_in(c)) ++csites_in_defs;
+    // Sizes via set_count(), NOT .n: csites/emptycsites/paths/creation_points
+    // and targets are all built with set_add, so .n is the open-addressed
+    // table capacity rather than the element count -- the same trap the
+    // type_violations comment names. Reading .n here printed `empty=7` for a
+    // CreationSet with 6 defs, which is what caught it.
+    fprintf(stderr, "CSFLOW p=%d cs=%d sym=%s defs=%d sets=%d csites=%d (in_defs=%d) empty=%d\n", analysis_pass,
+            cs->id, cs->sym->name ? cs->sym->name : "?", cs->defs.set_count(), g->keys.n, g->csites.set_count(),
+            csites_in_defs, g->emptycsites.set_count());
+    for (int i = 0; i < g->keys.n; i++) {
+      fprintf(stderr, "  set[%d] type=", i);
+      for (CreationSet *c : g->keys.v[i]->sorted)
+        if (c && c->sym) fprintf(stderr, " %s", c->sym->name ? c->sym->name : "?");
+      fprintf(stderr, "  targets=%d path=%d cps=%d\n", g->targets.v[i]->set_count(),
+              g->paths.v[i]->set_count(), g->creation_points.v[i]->set_count());
+    }
+    // Route 1's predicate: a creation point on exactly one assign set is
+    // UNCONFUSED and can be split off cleanly.
+    int unconfused = 0, confused = 0;
+    for (AVar *c : g->csites)
+      if (c) { if (g->site_set_count(c) == 1) ++unconfused; else ++confused; }
+    fprintf(stderr, "  unconfused=%d confused=%d\n", unconfused, confused);
+  }
+}
+
 [[nodiscard]] static int split_css_by_defs(int quiescent) {
   if (!csdefsplit_enabled()) return 0;
   const bool dbg = getenv("IFA_DBG_CSDEFSPLIT") != nullptr;
@@ -8147,6 +8383,24 @@ static const int kCsDefSplitRipe = 3;
                 analysis_pass, cs->id, cs->sym->name ? cs->sym->name : "?", defs.n, cs->defsplit_offers,
                 kCsDefSplitRipe);
       continue;
+    }
+    // ifa/133 step 5: the finer rungs first. Wholesale is shedskin's route
+    // 4 and belongs LAST -- it gives every creation point its own contour
+    // where routes 1 and 3 separate the same conflict into two, which is
+    // where the corpus-wide +191 CreationSets came from.
+    if (csladder_enabled()) {
+      // Bit-selectable while measuring: 1 = route 1 only, 2 = route 3 only,
+      // 3 = both. Lets a regression be attributed to a rung.
+      if (CSFlowGraph *g = build_cs_flow_graph(cs)) {
+        // shedskin's demand test, and the point of the whole ladder
+        // (infer.py:1526): `if len(csites) + len(emptycsites) == 1: continue`.
+        // One creation site means nothing MERGED here, so there is nothing to
+        // separate and no split is justified at any rung.
+        if (g->csites.set_count() + g->emptycsites.set_count() > 1) {
+          if ((csladder_enabled() & 1) && cs_ladder_no_confusion(g, dbg)) { analyze_again = 1; continue; }
+          if ((csladder_enabled() & 2) && cs_ladder_path_partition(g, dbg)) { analyze_again = 1; continue; }
+        }
+      }
     }
     qsort_by_id(defs);  // determinism: the harness asserts identical output
     // The first creation point keeps the CreationSet; every other one
@@ -11918,6 +12172,7 @@ static void report_demand_ratio() {
   report_creation_attribution();
   report_forward_closure_all();
   report_mixed_element_owners();
+  report_cs_flow_graphs();
   if (!getenv("IFA_DBG_DEMAND")) return;
   ElemCensus c;
   element_census(c);
