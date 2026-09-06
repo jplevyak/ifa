@@ -2117,3 +2117,50 @@ them.
 candidate, the owning EntrySet, its edge count, how many formals it has,
 how many are splittable, and the decline reason. It is the measurement
 that should precede any future attempt at this clause.
+
+### Step 4 — call-site splitting: built, measured, fixes nothing (2026-09-06)
+
+The author's observation that unblocked this: *"this isn't strictly
+provenance if we have a reason to split which is demand driven but we need
+a way to distinguish the calls which isn't the es. the call site is that
+way, so it is a mechanism, not a reason."* Recorded as a refinement to
+CLAUDE.md's provenance rule — the rule governs the REASON to split, not
+the handle that names the parts. Demand decides whether; the call site
+decides only which.
+
+`PYC_CSCALLSITE` (default 0), `split_es_by_call_site`. Fires only when a
+CreationSet has ONE creation point, its element is irrepresentable, and
+type-side splitting has already declined — then it peels every caller of
+the owning EntrySet but the first onto its own contour. Capped at
+`kCsDefSplitMax` for the same reason route 4 is.
+
+**It works mechanically and achieves nothing.**
+
+| program | `mixed` off → on | rc |
+| --- | --- | --- |
+| `sudoku3` | 18 → **7** | unchanged |
+| `quameon` | 15 → 14 | unchanged |
+| `linalg`, `pystone` | unchanged | unchanged |
+| `plcfrs` | 30 → **39** | unchanged |
+| `sudoku5` | 22 → **31** | unchanged |
+| `othello2`, `rdb` | `mixed=0` already | unchanged |
+
+**0 of 8 programs fixed**, two improved, two made worse, and it costs:
+`sudoku3` goes passes 38 → 47, `ess` 652 → 797, container CS 54 → 64. The
+suite is unchanged at 4.
+
+**Two things it did establish.**
+
+1. **`othello2` and `rdb` have `mixed=0`.** Their `'X' has no type` is NOT
+   an irrepresentable element union, so the earlier claim that all 8
+   corpus failures are group A downstream is **too broad** — at least 2 are
+   a different defect and need their own triage.
+2. Halving `sudoku3`'s `mixed` without changing its verdict says the
+   remaining unions are not reachable by *any* amount of contour
+   separation at the allocating function. Something else is merging them.
+
+*Kept, default off*, as the reproduction of this measurement — it is the
+third mechanism aimed at this family (`PYC_ESFORCS`, the type-side third
+clause, this) and the third to come back inert on the verdict. That
+pattern is itself the finding: **the 8 failures are not a contour-count
+problem**, and the next attempt should not be a fourth splitter.

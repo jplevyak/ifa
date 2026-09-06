@@ -8457,6 +8457,72 @@ static CreationSet *cs_peel_group(CreationSet *cs, Vec<AVar *> &group, cchar *ro
 // exactly this: a `<placeholder>` member in the emitted C means
 // `has[i]->type` is null, and that is set from these AVars -- so this says
 // whether the analysis or the cloning lost the field.
+// ifa/129 third clause: split an EntrySet BY CALL SITE, because a container
+// it allocates has an irrepresentable element and nothing type-shaped can
+// name the contributors.
+//
+// The reason/mechanism distinction matters here and is the only thing that
+// makes this legal under CLAUDE.md's provenance rule. The REASON is demand:
+// an element union with no representation, on a CreationSet that CS-side
+// partitioning cannot touch (one creation point) and that type-side
+// splitting has already declined (`no_groups` -- every formal's callers
+// agree). The call site is only the HANDLE that says which caller goes
+// where. Take the demand away and nothing splits: this never fires on a
+// contour whose containers are representable, so it is not 1-CFA by the
+// back door.
+//
+// Measured on sudoku3 before building (IFA_DBG_THIRD): of 428 single-def
+// candidates, 427 decline type-side with `no_groups`, and 361 of those have
+// a single in-edge so there is no call site to split on either. This route
+// is aimed at the remaining 67 -- `__pyc_getslice__` (1 contour, 7 callers)
+// and `__pyc_tolist__` -- where the flag has FEWER contours than the
+// default (getslice: 2 -> 1), because dcpa1 merged the receiver
+// CreationSets that gave CPA its distinction.
+static int cscallsite_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_CSCALLSITE");
+    e = v ? atoi(v) : 0;
+  }
+  return e;
+}
+
+[[nodiscard]] static int split_es_by_call_site(EntrySet *es, AVar *demand_av, bool dbg) {
+  if (!es || es->split) return 0;
+  Vec<AEdge *> all_edges;
+  for (AEdge *ee : es->edges) if (ee && ee->args.n) all_edges.add(ee);
+  qsort_by_id(all_edges);
+  // One caller is not a partition, and the route-4 cap applies for the same
+  // reason it does there: past a handful, per-caller contours are a fan-out,
+  // not a separation.
+  if (all_edges.n < 2 || all_edges.n >= kCsDefSplitMax) {
+    if (dbg)
+      fprintf(stderr, "[cscallsite] p=%d es=%d fun=%s DECLINED edges=%d\n", analysis_pass, es->id,
+              (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?", all_edges.n);
+    return 0;
+  }
+  ESSplitDecision *dec = new ESSplitDecision;
+  dec->av = demand_av;
+  dec->es = es;
+  dec->avpos = nullptr;  // not an argument-position confluence; not ledgered
+  dec->fsetters = SPLIT_TYPE;
+  dec->fmark = SPLIT_VALUE;
+  dec->all_edges.copy(all_edges);
+  // edges[0] stays on the original contour; every other caller peels off
+  // into its own. Deterministic because all_edges is id-sorted.
+  for (int i = 1; i < all_edges.n; i++) {
+    Vec<AEdge *> *g = new Vec<AEdge *>;
+    g->add(all_edges.v[i]);
+    dec->groups.add(g);
+  }
+  if (dbg)
+    fprintf(stderr, "[cscallsite] p=%d es=%d fun=%s SPLIT edges=%d -> %d group(s)\n", analysis_pass, es->id,
+            (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?", all_edges.n,
+            dec->groups.n);
+  log(LOG_SPLITTING, "SPLIT ES BY CALL SITE es %d edges %d groups %d\n", es->id, all_edges.n, dec->groups.n);
+  return apply_entry_set_split(dec);
+}
+
 static void report_cs_vars() {
   cchar *want = getenv("IFA_DBG_CSVARS");
   if (!want) return;
@@ -8596,6 +8662,25 @@ static void report_cs_flow_graphs() {
                 analysis_pass, cs->id, cs->sym->name ? cs->sym->name : "?", des ? des->id : -1,
                 (des && des->fun && des->fun->sym && des->fun->sym->name) ? des->fun->sym->name : "?",
                 des ? des->edges.n : -1, formals, splittable, last_why);
+      }
+    }
+    // ifa/129 third clause. One creation point means CS-side partitioning
+    // has nothing to work with, so if the element is irrepresentable the
+    // separation must come from duplicating the SITE -- which means
+    // splitting the EntrySet that owns it. Type-side splitting has already
+    // declined for these (that is why the confluence reached this stage),
+    // so the caller identity is the only remaining handle. Demand decides
+    // whether; the call site decides only which.
+    if (cscallsite_enabled() && defs.n == 1) {
+      AVar *d = defs.v[0];
+      AVar *elem = cs->sym->element && cs->sym->element->var && cs->added_element_var
+                       ? unique_AVar(cs->sym->element->var, cs)
+                       : nullptr;
+      if (d && d->contour_is_entry_set && elem && mixed_basics(elem)) {
+        if (split_es_by_call_site((EntrySet *)d->contour, elem, dbg)) {
+          analyze_again = 1;
+          continue;
+        }
       }
     }
     if (defs.n < 2 || (!force && defs.n >= kCsDefSplitMax)) {
