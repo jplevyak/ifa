@@ -571,6 +571,16 @@ static std::vector<CselemUnknownMint> cselem_unknown_mints;
 static cchar *dbg_cs_route = nullptr;      // ifa/issues/055: which reuse route fired
 static cchar *dbg_cs_route_want = getenv("IFA_DBG_CSROUTE");
 
+// issue 045's test, factored out: is `s` (or the class it aliases) a
+// clone_methods_per_cs class? Their instances must stay per-contour --
+// the per-constant contours exist exactly to give each constant binding
+// its own instance CreationSet. Both the split-parent route and the mold
+// route already spell this out inline; the dcpa1 route needs it too.
+static bool is_clone_methods_per_cs(Sym *s) {
+  Sym *cmc = s->clone_methods_per_cs ? s : (s->type ? unalias_type(s->type) : 0);
+  return cmc && cmc->clone_methods_per_cs;
+}
+
 CreationSet *creation_point(AVar *v, Sym *s, int arity) {
   dbg_cs_route = nullptr;
   CreationSet *cs = v->cs_map ? v->cs_map->get(s) : 0;
@@ -597,7 +607,16 @@ CreationSet *creation_point(AVar *v, Sym *s, int arity) {
   // one contour per `tuple` sym merges positional slots that no demand
   // test can separate again. Measured: 11 of the 49 mode-1 suite failures
   // are tuple arity/position.
-  if (csdcpa1_enabled() && !(csdcpa1_enabled() == 2 && s == sym_tuple)) {
+  // ifa/issues/045: instances of a clone_methods_per_cs class MUST stay
+  // per-contour -- the per-constant contours exist exactly to give each
+  // constant binding its own instance CreationSet. The split-parent route
+  // (`Lno_split_parent` below) and the mold route both already refuse these;
+  // the dcpa1 route did not, which is a gap in the route rather than in the
+  // invariant. Measured (ifa/135): with the prototype excluded, the route
+  // merged `range`'s per-constant instances and `empty_list_print` lost the
+  // types on its empty list's `__str__` loop -- the exact failure issue 040
+  // filed and 045 fixed.
+  if (csdcpa1_enabled() && !(csdcpa1_enabled() == 2 && s == sym_tuple) && !is_clone_methods_per_cs(s)) {
     // ifa/135: a class's PROTOTYPE is not an instance of it, and must not
     // share its contour.
     //
@@ -628,7 +647,16 @@ CreationSet *creation_point(AVar *v, Sym *s, int arity) {
     for (CreationSet *x : s->creators)
       if (x && !(s->abstract_type && x == s->abstract_type->v[0])) {
         const bool x_is_proto = x->creation_var && s->self && x->creation_var->sym == s->self;
-        if (x_is_proto != making_proto) continue;
+        if (x_is_proto != making_proto) {
+          // ifa/135 probe: which syms does the prototype split actually
+          // separate? Absence of a skip means the rule is inert for that
+          // class, so this distinguishes "the rule fired here" from "the
+          // rule is merely enabled".
+          if (getenv("IFA_DBG_PROTOSPLIT"))
+            fprintf(stderr, "[protosplit] p=%d sym=%s skip cs=%d (x_proto=%d making_proto=%d)\n", analysis_pass,
+                    s->name ? s->name : "?", x->id, x_is_proto ? 1 : 0, making_proto ? 1 : 0);
+          continue;
+        }
         // ifa/132: ARITY PARTICIPATES IN IDENTITY. A record-able
         // container's arity fixes its C layout (a struct of exactly
         // `vars.n` fields), so a contour whose creation points agree on a

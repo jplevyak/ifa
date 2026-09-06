@@ -30,7 +30,15 @@ cchar *c_type(Var *v) {
 }
 
 cchar *c_type(Sym *s) {
-  if (!s->type || !cg_get_string(s->type)) return "_CG_void";
+  // Callers pass null deliberately: write_c_prim's index-store path
+  // computes `Sym *e = t && t->element ? t->element->type : nullptr` and
+  // hands the result straight here, so null means "this container has no
+  // element type" -- which is exactly the `_CG_void` the `!s->type` case
+  // below already returns. Without this the pairing segfaults on any
+  // untyped element, which is how ifa/135 turned an FA imprecision on
+  // sudoku3 into a compiler crash (c_type(s=0x0), cg.cc:1083) instead of
+  // a diagnostic.
+  if (!s || !s->type || !cg_get_string(s->type)) return "_CG_void";
   return cg_get_string(s->type);
 }
 

@@ -172,25 +172,63 @@ and all the corpus programs (`chull`, `kanoodle`, `path_tracing`,
 
 Default path untouched: 311/0 on both backends, all six CI gates green.
 
-### The cost: ONE regression mechanism, five instances
+### The cost, and its cause — issue 045's guard was missing from this route
 
-`'X' has no type`, on `builtin_type_factory` and `empty_list_print` in the
-suite and `sudoku2`, `sudoku3`, `sudoku5` on the corpus. All five carry
-the same diagnostic family, so this is one defect rather than five.
+The prototype exclusion initially regressed five cases, all reporting
+`'X' has no type`: `builtin_type_factory`, `empty_list_print`,
+`match_seq_star` in the suite and `sudoku2`, `sudoku3`, `sudoku5` on the
+corpus. One mechanism, and **not the prototype fix's own fault.**
 
-Separating the prototype removes it from a value flow that something was
-relying on — the prototype's own fields ARE seeded normally and are read
-by `ClassName.attr` and by the inherited-field copy loop for subclasses
-(`python_ifa_build_syms.cc:2755-2760`), so a contour it no longer shares
-is a contour those reads no longer see. **Which class's prototype is not
-yet identified.**
+`IFA_DBG_PROTOSPLIT` (added for this: it logs only when the rule actually
+SEPARATES two CreationSets, so it distinguishes "the rule fired here" from
+"the rule is enabled") reports exactly ONE class on `empty_list_print`:
+**`range`** — a `clone_methods_per_cs` class.
 
-*Measured and rejected:* scoping the exclusion to classes with no element
-channel, on the theory that a container's instances come from `make_kind`
-rather than `clone(cls->self)` and its prototype is therefore not in this
-relationship. **Inert** — identical 7 failures — so it was reverted rather
-than kept as dead complexity. The cause is a record class's prototype, not
-a container's.
+[045](closed/045-receiver-cs-method-cloning.md) established that instances
+of such a class **must stay per-contour**: the per-constant contours exist
+exactly to give each constant binding its own instance CreationSet. The
+split-parent route (`Lno_split_parent`) and the mold route both spell that
+exclusion out inline. **The dcpa1 route never had it** — a gap in the
+route, not in the invariant, which had been merging `range`'s
+per-constant instances all along. The prototype fix only changed which
+CreationSet they landed on and made it visible.
+
+Factored out as `is_clone_methods_per_cs` rather than adding a third
+inline copy, and applied to the dcpa1 route:
+
+| | before proto fix | + proto fix | + 045 guard |
+| --- | --- | --- | --- |
+| suite | 9 | 7 | **4** |
+| corpus compile_fail | 12 | 12 | **10** |
+| corpus container CS | 2910 | 2825 | 2812 |
+
+`match_seq_star` cleared as well. Remaining suite failures: `builtins`,
+`test_heapq`, and two `splitter_*` goldens (only
+`splitter_cartesian_product` is a real regression).
+
+### A latent codegen crash, fixed on the way
+
+`sudoku3` went `rc=1` → `rc=139` under the 045 guard: `c_type(s=0x0)` at
+`cg.cc:1083`. Not a new bug — `write_c_prim`'s index-store path computes
+
+```c
+Sym *e = t && t->element ? t->element->type : nullptr;
+cchar *ety = c_type(e);
+```
+
+so the caller passes null DELIBERATELY, meaning "this container has no
+element type", and `c_type` handled `!s->type` but never `!s`. Any untyped
+element reaching that path segfaults the compiler instead of producing a
+diagnostic. Fixed by handling null the same way — `sudoku3` now reports
+`'ll' has no type` and exits 1. The FA imprecision behind it is separate
+and still open.
+
+*Measured and rejected on the way:* scoping the exclusion to classes with
+no element channel, on the theory that a container's instances come from
+`make_kind` rather than `clone(cls->self)`. **Inert** — identical
+failures — so it was reverted rather than kept as dead complexity. The
+first hypothesis, that the prototype's seeded fields were dropping out of
+a value flow, was also wrong; the probe answered it in one run.
 
 ## Superseded fix directions
 
