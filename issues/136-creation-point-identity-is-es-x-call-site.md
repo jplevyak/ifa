@@ -1,9 +1,10 @@
 # 136 — a creation point's identity should be (ES × call site)
 
-**Status:** open, design stated by the author 2026-09-06. Supersedes the
-call-site splitter measured in
-[129](129-plan-demand-driven-creation-set-splitting.md), which is the same
-handle used at the wrong stage.
+**Status:** open. Design stated by the author 2026-09-06, then **partly
+retracted the same day** — see "Correction" below: the identity this file
+asks for already exists, and the real question is about contour count, not
+identity. Kept because the three-way distinction (assignment / identity /
+compatibility) is the durable part and is now also in CLAUDE.md.
 
 ## The statement
 
@@ -20,7 +21,7 @@ Three separate things, and pyc currently conflates the first two:
 | **identity** — which creation point this is | ES × call site | ES only |
 | **compatibility** — may two creation points share a CS | demand | — |
 
-## Why today's identity is too coarse
+## Why today's identity looked too coarse (and is not)
 
 A creation point is an `AVar`, and an `AVar` is `(Var, contour)`. The
 contour is an `EntrySet`, and `find_best_entry_sets` /
@@ -65,18 +66,42 @@ Measured cost on `sudoku3`: passes 38 → 47, `ess` 652 → 797, container CS
 54 → 64, `mixed` 18 → 7, and **no verdict changed**; `plcfrs` and
 `sudoku5` got worse. It is the right handle at the wrong stage.
 
-## What it costs to build
+## Correction — the identity is ALREADY (call site × ES)
 
-`cs->defs` currently holds `AVar *`. Per-call-site identity needs a richer
-def record — an `(AVar, AEdge)` pair, or an equivalent — and every place
-that reads `defs` as "the creation points" has to agree on the new
-granularity: `creation_point`'s `cs->defs.set_add(v)`, `split_css`'s
-re-point, `CS_DEF_PARTITION`, `P_prim_len`'s `!cs->defs.n`, and the
-`IFA_DBG_*` probes. The re-point itself (`v->cs_map->put(sym, new_cs)`) is
-keyed on the AVar, so a partition that separates two identities sharing
-one AVar cannot be expressed until step 5 splits the ES — which is the
-ordering above, and is why identity and realization must stay distinct.
+An earlier revision of this file claimed `cs->defs` needs a richer record
+(an `(AVar, AEdge)` pair) to carry per-call-site identity. **Wrong**, and
+the author said so directly: *"an AVar cs->defs element is the result var
+of a call and an es context (as are all AVars) so it has per call site and
+per es identity."*
 
-**Not started.** The measurement that motivates it is in
-[129](129-plan-demand-driven-creation-set-splitting.md)'s "call-site
-splitting" section; the shape of the fix is this file.
+Verified in the source: every creation point is registered as
+`AVar *result = make_AVar(p->lvals[0], es)` — the allocating node's **lval
+Var**, in the current ES. Each call expression has its own result Var, so
+an AVar already IS (call site × ES). Nothing needs building for identity.
+
+## So the remaining question is sharper, and it is NOT identity
+
+For `__pyc_getslice__` the allocating node inside it is one syntactic
+site, and `__pyc_getslice__` has one contour — so `defs=1` is **correct**.
+There genuinely is one creation point. Its seven callers are not seven
+creation points; they are seven users of one.
+
+That relocates the problem entirely:
+
+- It is **not** that identity is too coarse — it is exactly as fine as the
+  program is.
+- It is that **one creation point serves seven callers**, and separating
+  them is a question about how many CONTOURS `__pyc_getslice__` has, not
+  about how creation points are identified.
+
+And contour count is compatibility, which by the rule at the top of this
+file is decided by demand — so the open question is: *what demand, and
+what mechanism, gives `__pyc_getslice__` a second contour when its callers
+agree on every formal's types?* CPA cannot (types agree). ifa/129's
+`PYC_CSCALLSITE` can, and made things worse, because it did it as a
+trigger rather than to realize a demanded partition.
+
+**Nothing here is buildable until that question has an answer.** The three
+mechanisms tried so far (`PYC_ESFORCS`, the type-side third clause,
+`PYC_CSCALLSITE`) all attacked it from the splitter side and all came back
+inert on the verdict.
