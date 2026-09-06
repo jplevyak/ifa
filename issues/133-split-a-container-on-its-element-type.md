@@ -653,13 +653,68 @@ Also settled by the reduction: **the arity guard never fires here**
 no static arity absorbs any" is not the mechanism, and the merged
 `cs=983 defs=6` is a different CreationSet from the broken one.
 
-**Next step, and it is now small:** read `__pyc_setslice__`'s body and
-`es=56`'s three write sites on this four-line program. Either the contour
-legitimately serves both calls and must be split per receiver — in which
-case the receiver being monomorphic on `list#981` is the thing to explain
-— or its source-sequence formal carries both types, in which case the
-merge is upstream in whatever supplies it. The program is small enough to
-answer that by reading rather than probing.
+## Root cause: the library's own `[]` is shared with the user's
+
+Reading `__pyc__/04_sequence.py` and the contours of the four-line case
+finishes it.
+
+```python
+def __delitem__(self, key):
+    return self.__pyc_setslice__(key, key + 1, 1, [])   # <-- an empty list LITERAL
+```
+
+`__pyc_setslice__`'s first act is
+`__pyc_primitive__(__pyc_symbol__("merge_in"), self, v)` — it merges the
+source sequence `v` into the receiver. Under `PYC_CSDCPA1` (one
+CreationSet per sym) that internal `[]` is **the same CreationSet as every
+empty list the user writes**.
+
+The contours say so directly:
+
+```
+pop    es=44  args=[pop#580 list#981]                       ret=int64#6|str#939
+insert es=45  args=[insert#828 list#983 int64#933 str#939]  ret=None
+```
+
+`a` is `cs=981` and `b` is `cs=983` — **already separate**, so
+[132](132-arity-is-representation-not-provenance.md)'s arity keying did
+its job. And `cs=983` is the CreationSet carrying **6 creation points**:
+the user's `b = []` together with every `[]` inside `__pyc__`.
+
+So the leak is:
+
+1. `b.insert(0, "x")` writes `str` into `cs=983`'s element.
+2. `a.pop()` → `__delitem__(a, …)` → `__pyc_setslice__(self=a, v=cs983)`.
+3. `merge_in(self, v)` merges `cs=983`'s element into `a` — `cs=981` now
+   holds `{int64, str}`.
+4. `pop` returns an element of `a`, and that return is
+   `int64#6|str#939`, which has no representation.
+
+**Any element any user ever puts in an empty list leaks into every list
+that has an element deleted.**
+
+That also explains the bisection exactly, including the case that looked
+contradictory: `del a[0]` is **clean** not because the merge does not
+happen but because `del` discards the result, so nothing ever reads the
+union as a basic value. `b = ["z"]` is clean because arity 1 is a
+different CreationSet from arity 0. `b.append("x")` reproduces, like
+`insert`, because both write the shared contour.
+
+### What this means for the fix
+
+The target is **`cs=983`, not `cs=981`** — the merged CreationSet with 6
+creation points, not the victim it leaks into. This corrects the earlier
+conclusion in this issue that "the container has a single creation point,
+so `split_css` has nothing to partition": that measured `cs=981`, the
+list that *receives* the bad element, rather than the one that is merged.
+
+`cs=983` has 6 defs, so `split_css` **does** have something to partition,
+and this issue's original action applies unchanged: partition those
+creation points by the element type each contributes. The library's `[]`
+in `__delitem__` contributes nothing and must not absorb the user's `str`.
+
+*Reproducer:* four lines, above. `del`/`append`/arity variants recorded
+here are the discriminating cases for whatever lands.
 
 *What is kept:* `IFA_DBG_TCDROP`, which names every confluence the stage
 discards. That is the measurement this issue turned on, and nothing else
