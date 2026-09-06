@@ -1933,3 +1933,60 @@ on one `fa-converge` fixture. Reporting it in `record_fa_event` would
 change what all 15 `fa-converge` goldens MEAN rather than correct them,
 which is a separate design decision. Those goldens' `ess=A→B` is a
 within-pass tautology and worth revisiting on its own terms.
+
+### Step 4 — flag arm after ifa/133's per-candidate gate (2026-09-06)
+
+`check__PYC_CSDCPA1_2__c81a7b1a+f3cb2d55` against
+`check__PYC_CSDCPA1_2__88c773c9+f3cb2d55` (same flag, one change apart):
+
+| | before | after |
+| --- | --- | --- |
+| compile_fail | 16 | **12** |
+| run_fail / stdout_differs | 34 / 20 | 35 / 23 |
+| with_warnings | 38 | 37 |
+| container CS / shapes | 2764 / 591 = 4.68 | 2955 / 604 = **4.89** |
+| `pratio` | 3.04 | 3.20 |
+
+**Six compile failures fixed** — `chull`, `msp_ss`, `pisang`, `sha`,
+`sudoku3`, `sudoku5` — and one of them, **`msp_ss`, is a complete win**:
+it compiles, runs, and its stdout MATCHES CPython. Two more programs stop
+aborting at runtime (`ant`, `sudoku2` go `rc=134` → `rc=0`), though both
+still print the wrong answer.
+
+**Two new compile failures, and they are this change's:**
+
+- **`chaos` 0 → `rc=124`**, a 400 s compile timeout at `passes=37`. A
+  convergence blowup: more splits, more passes. This is
+  [111](111-FA-selective-invalidation-per-pass.md)'s `IFA_SELECTIVE`
+  earning its keep, and the first corpus program to time out purely from
+  splitting the analysis asked for.
+- **`pystone` 0 → `rc=1`**, and its diagnostic is self-contradicting:
+
+  ```
+  fail: a variable holding 'int64' has no representation: '__add__'
+  resolved to the CONTAINER method, whose receiver may be a scalar.
+  ```
+
+  A variable holding ONE type cannot lack a representation. This is not a
+  `{container, scalar}` union at all — it is `__add__` resolving to the
+  container method for a receiver that is only `int64`, i.e. a
+  CALL-RESOLUTION defect wearing a representation message. It is the same
+  diagnostic family as `linalg` and `msp_ss`, and `msp_ss` was FIXED by
+  this change, which is direct evidence for CLAUDE.md's rule that boxing
+  is never the answer for a corpus program: the message blamed
+  representation and the actual defect was inference. **The message itself
+  should be fixed** — it names a single type while asserting a union.
+
+**And the contour count moved the wrong way: +191 (+6.9%), ratio 4.68 →
+4.89.** That is the honest cost. This stage SPLITS, so every case it fixes
+is bought with contours, and the goal number (626 shapes) recedes. Six
+compile failures for 191 CreationSets is a defensible trade only because
+the alternative was refusing to compile the programs at all — but it is
+not progress toward minimal creation sets, and should not be reported as
+such.
+
+*Harness note:* the first attempt at this sweep was OOM-killed at the
+default `-j 32`. Re-run at `-j 8 -J 4` with a memory monitor: **no memory
+warnings at all**, so the cause was concurrency, not a per-process
+blowup. Nothing partial was cached — checked before re-running, since a
+killed sweep can leave a result that looks real.
