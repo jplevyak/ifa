@@ -11723,8 +11723,17 @@ static void report_creation_attribution() {
             // the walk's roots have NO cs_map, are not in cs->defs, and are
             // neither the lvalue nor a forward neighbour of a def. That gap
             // is what a real routes-1/3 implementation has to bridge.
-            fprintf(stderr, "           csmap=%d maps_to_this=%d\n", a->cs_map ? 1 : 0,
-                    (a->cs_map && a->cs_map->get(cs->sym) == cs) ? 1 : 0);
+            // Is this an ABSOLUTE root (no backward edges at all) or only a
+            // root within the filtered subgraph (edges exist but none carry
+            // this CreationSet)? The two have very different consequences:
+            // an absolute root cannot be in any def's forward closure, so a
+            // forward-closure bridge from defs to roots is impossible for it.
+            int bw_all = a->backward.n, bw_carrying = 0, is_seed = groups.v[i]->set_in(a) ? 1 : 0;
+            for (AVar *x : a->backward)
+              if (x && x->out && x->out->type && x->out->type->set_in(cs)) ++bw_carrying;
+            fprintf(stderr, "           csmap=%d seed=%d backward_all=%d backward_carrying_cs=%d carries_cs=%d\n",
+                    a->cs_map ? 1 : 0, is_seed, bw_all, bw_carrying,
+                    (a->out && a->out->type && a->out->type->set_in(cs)) ? 1 : 0);
           }
         if (i == 0)
           for (AVar *d : cs->defs)

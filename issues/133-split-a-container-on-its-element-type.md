@@ -660,11 +660,20 @@ change. It is one function beside `split_css_by_defs`.
 
 ### Steps
 
-1. **Bridge roots to defs.** Forward closure per def; map each root to its
-   def. *Verify:* on the reproducer, `{int64}` maps to one def and
-   `{str}` to a different one. If a root maps to zero or several defs,
-   stop and record that — it is the same class of finding as the `0 of 6`
-   and must not be worked around.
+1. ~~**Bridge roots to defs.** Forward closure per def.~~ **IMPOSSIBLE AS
+   WRITTEN — the stop condition below fired immediately, 2026-09-06.**
+   A forward closure reaches a node only through that node's incoming
+   edges, and the walk's roots have **no incoming edges at all**. Measured:
+
+   ```
+   root av=785  csmap=0 seed=0 backward_all=0 backward_carrying_cs=0 carries_cs=1
+   root av=794  csmap=0 seed=0 backward_all=0 backward_carrying_cs=0 carries_cs=1
+   ```
+
+   `backward_all=0` is the absolute in-degree, not the filtered one, so
+   these are graph roots, not roots-within-the-filter. Nothing flows into
+   them, so no def's forward closure can contain them. See the blocking
+   finding below before attempting any other bridge.
 2. **Build `ifa_flow_graph`'s outputs** as locals: `assignsets`, `paths`,
    `creation_points` per assign set, `csites`, `emptycsites`
    (`cs->defs - csites`), and `n.paths` per node. Nothing splits yet.
@@ -682,6 +691,34 @@ change. It is one function beside `split_css_by_defs`.
    *Verify:* the +191 corpus contours from route 4 fall, the six compile
    fixes hold, `pratio` improves.
 6. **Route 1's contour reuse**, if step 3's precision cost shows up.
+
+### The blocking finding: the CreationSet enters the graph at non-creation-points
+
+Putting the three measurements together:
+
+- `reached_defs=0/6` — the container's backward chain never passes through
+  **any** creation point;
+- the chain terminates at AVars with `backward_all=0` and `carries_cs=1`;
+- those AVars have no `cs_map`.
+
+So `cs=983` is present in the constraint graph at nodes that (a) have no
+incoming flow, (b) were never handed the CreationSet by `creation_point`,
+and (c) are not reachable from any def. **The CreationSet is being
+introduced at more than one place, and only one of them is a creation
+point.** An AVar can acquire a type with no incoming edge only by a direct
+`update_gen`, so something other than `creation_point` is seeding this CS.
+
+That is upstream of routes 1-3 and probably upstream of this whole issue:
+if the container's flow does not connect to its allocation site, then
+*any* backward attribution will land on these seeds instead, which is
+exactly what both probes did. It may also be a defect in its own right —
+`cs->defs` claims to be the creation points, and here it is not the set of
+places the CreationSet enters the graph.
+
+**Next measurement, before any more planning:** find what sets the type on
+`av=785` / `av=794`. Instrument `update_gen` for a CS of interest and
+print the call site. Until that is known, steps 2-6 rest on an attribution
+that has no handle, and the plan above should not be built.
 
 ### The stop condition
 
