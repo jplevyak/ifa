@@ -79,28 +79,88 @@ Confirmed downstream: the emitted C has **1 field store under the flag and
 2 at the default** (`->e13 = ...`), casting to one struct type instead of
 two.
 
-**And the irony is the finding.** `PYC_CSDCPA1` exists to give ONE
-CreationSet per sym. On this program it produces **two per class where the
-default produces one**, and the extra one is empty. Why a second CS is
-minted at all — `creation_point`'s dcpa1 route should return
-`s->creators`' first non-abstract entry — is **not yet established** and is
-the first thing to chase. `IFA_DBG_CSROUTE=S1` shows both reached "via
-cs_map", so the decision was taken earlier than the route.
+## Why the second CreationSet exists — the class PROTOTYPE
+
+Chased 2026-09-06 with `IFA_DBG_CSROUTE=S1`, and the answer is upstream of
+everything above.
+
+```
+DEFAULT                                   FLAG
+p=0 es=1  -> cs=1013 via MINT             p=0 es=1  -> cs=1013 via MINT
+p=0 es=63 -> cs=1098 via MINT             p=0 es=63 -> cs=1013 via dcpa1
+                                          p=3 es=63 -> cs=1038 via cs_map
+```
+
+`es=1` is module scope; `es=63` is `S1.___init___`. **They are not two
+allocation sites of one object — they are the class PROTOTYPE and the
+INSTANCE.** `S1(11)` lowers to the `__new__`-synthesized
+`clone(proto, t)`, whose source operand is `cls->self`, the class's own
+prototype object (issue 078); `P_prim_clone` then calls
+`creation_point(result, cs->sym)` for the instance.
+
+**`PYC_CSDCPA1`'s route cannot tell them apart, and the code already says
+why.** The route is `for (CreationSet *x : s->creators)`, keyed on the
+class Sym — and `structural_assignment`'s own comment
+(`fa.cc:2834-2836`) states the trap exactly:
+
+> *checking `cs->sym` here instead would be wrong, since **`cs->sym` is
+> the CLASS Sym, identical for the prototype and for every other instance
+> of the same class***
+
+So the flag hands instances the PROTOTYPE's CreationSet. The route already
+excludes `s->abstract_type->v[0]` for a comparable reason; the prototype
+is the same kind of case and is not excluded.
+
+Then, at p=3, `split_css` separates them again on setter equivalence —
+the prototype receives no field writes and the instance does:
+
+```
+[scss] cs 1013 (sym S1) starter_set=2 defs=2
+SPLIT CS 1013 S1 -> 1038
+```
+
+leaving `cs=1013` as a LIVE prototype contour holding a def and a
+promoted-but-unwritten `a`. **At the default that contour simply dies** —
+`cs=1013` is minted at p=0 and is absent from `fa->css` at convergence,
+which is why the default's `IFA_DBG_CSVARS` lists only the instance CS.
+
+### The chain, end to end
+
+1. `S1(11)` → `clone(cls->self, t)`; prototype and instance both need a
+   CreationSet, and both carry the class Sym.
+2. The dcpa1 route, keyed on that Sym, gives the instance the
+   **prototype's** CreationSet.
+3. `split_css` splits them back apart on setter equivalence.
+4. The prototype contour survives with `a` promoted-but-unwritten, where
+   at the default it would have died.
+5. `determine_basic_clones` sees same sym, same `vars.n` (the empty var
+   counts) → equivalent → merges → the merged clone takes ONE of two
+   disagreeing member types.
+6. S2 draws the empty one → `char e13[0]` → blind-cast width violation.
+
+**The fix is at step 2, and it is not provenance.** A prototype and an
+instance are different objects — the prototype is never reachable from
+Python source, per the comment above — so refusing to share a contour
+between them is a distinction about what the values ARE, not about where
+they came from. Steps 3-5 are then unremarkable: they only bite because a
+contour that should not exist does.
 
 ## Fix directions, none yet attempted
 
-1. **Make equivalence compare member TYPES, not just `vars.n`.** Narrow
-   and local, but it splits clones rather than fixing the empty CS, so it
-   trades a wrong layout for more contours.
-2. **Do not let a promoted-but-unwritten var count toward `vars.n`**, or
-   union the member types when merging equivalent CSs. A merge that picks
-   one of two disagreeing types is wrong however the CSs arose.
-3. **Stop minting the second CreationSet** — the upstream fix, and the one
-   the flag's own premise asks for. Needs the "why two" question answered
-   first.
-
-3 is the real one; 1 is the retreat CLAUDE.md names, since it makes the
-symptom go away by adding contours.
+1. **Exclude the class prototype from the dcpa1 route** — the root fix,
+   at step 2. Needs a structural test for "this CreationSet is a
+   prototype": the clone-source Sym is available at `P_prim_clone`
+   (`p->rvals[o]->sym`, issue 078's `clone_source_sym`) and
+   `clone_elides_fields` is documented as non-empty only for it, so the
+   handle exists. **Not by name.**
+2. **Union the member types when merging equivalent CreationSets**, rather
+   than picking one. A merge that silently drops one of two disagreeing
+   types is wrong however the CSs arose, and this is worth doing on its
+   own merits — it would have made this a precision bug rather than a
+   miscompile.
+3. ~~Make equivalence compare member TYPES, not just `vars.n`.~~ The
+   retreat CLAUDE.md names: it makes the symptom go away by adding
+   contours, and leaves a contour that should not exist.
 
 ## Probes added for this
 
