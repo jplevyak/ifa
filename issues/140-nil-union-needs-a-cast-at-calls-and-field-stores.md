@@ -70,3 +70,47 @@ pre-existing wrong answer. Parity with the default is what the flip needs.
 It fails with `FA flow analysis made no EntrySet progress for 120s` on
 **both** arms, identically. It is one of the DEFAULT's own two compile
 failures, and had been miscounted as part of the flag arm's gap.
+
+## `softrender` — the same shape at a third site (fixed 2026-09-07)
+
+```
+softrender.py.c:2361:8: error: cast from pointer to smaller type '_CG_bool'
+                               (aka 'unsigned char') loses information
+```
+
+```c
+_CG_bool _CG_f_6601_7/*__coerce__*/(_CG_list a1) {
+  t1 = _CG_prim_coerce(_CG_bool, t2);   // t2 is _CG_list
+```
+
+`_CG_prim_coerce(_t, _v)` expands to `((_t)_v)`, so a pointer narrowed to
+`unsigned char` is a hard C error.
+
+**A fix for this already existed and did not fire.** ifa/055 added a
+`(uintptr_t)` route at exactly this site, and its comment even names
+softrender — *"softrender's `__coerce__(_CG_any) -> _CG_bool`"*. But it
+tested three literal spellings:
+
+```c
+bool v_ptr = vt && (!strcmp(vt, "_CG_any") || !strcmp(vt, "_CG_void") || !strcmp(vt, "_CG_nil_type"));
+```
+
+Under `PYC_CSDCPA1=2` the contour is `__coerce__(_CG_list)`, which is not
+one of those names — so the guard missed it, for the same program it was
+written for.
+
+Broadened to *"not a scalar spelling, and 8 bytes wide"*, reusing
+`cg_ctype_width`'s own table rather than adding a second list of names to
+drift from. The meaning is unchanged and still correct: for a pointer
+operand the coercion IS the null test, so `(bool)(uintptr_t)p` is `p != 0`
+— exactly Python's truthiness for a container.
+
+*Result:* `softrender` compiles under the flag, matching the default's
+compile status. It still aborts at run time (`rc=134`) — **identically at
+the default**, so that is a separate pre-existing failure, not a flag
+regression. `make test` 311/0, LLVM backend 311/0, dparse green.
+
+**The pattern worth noting:** three of the four sites fixed in this issue
+were *name-based* type tests that missed a spelling the flag introduced.
+That is CLAUDE.md's "never decide by name" rule applying to C type
+spellings, not just Python identifiers.

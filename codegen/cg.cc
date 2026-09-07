@@ -2033,7 +2033,22 @@ class CBackendEmitter : public VirtualCGEmitter {
         if (pn->prim->index == P_prim_coerce && i == pn->rvals.n - 1 && i > start) {
           cchar *vt = c_type(pn->rvals[i]);
           cchar *tt = cg_get_string(pn->rvals[i - 1]->sym);
-          bool v_ptr = vt && (!strcmp(vt, "_CG_any") || !strcmp(vt, "_CG_void") || !strcmp(vt, "_CG_nil_type"));
+          // ifa/140: the operand does not have to be one of the three
+          // VOIDISH spellings -- any pointer-like C type narrowed to a
+          // small scalar is the same hard C error. softrender under
+          // PYC_CSDCPA1=2 has `__coerce__(_CG_list) -> _CG_bool`, and the
+          // original three-name test did not fire for `_CG_list`:
+          //
+          //   error: cast from pointer to smaller type '_CG_bool' loses
+          //          information
+          //
+          // "Not a scalar spelling, and 8 bytes wide" is the pointer-like
+          // test, reusing cg_ctype_width's own table rather than a second
+          // list of names to drift from. The meaning is unchanged and still
+          // right: for a pointer operand the coercion IS the null test, so
+          // `(bool)(uintptr_t)p` is `p != 0` -- which is exactly Python's
+          // truthiness for a container.
+          bool v_ptr = vt && !scalar_ct(vt) && cg_ctype_width(vt) == 8;
           if (v_ptr && scalar_ct(tt)) fputs("(uintptr_t)", fp);
         }
         fputs(s, fp);
