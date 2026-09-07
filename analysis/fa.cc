@@ -8617,6 +8617,22 @@ static void report_cs_vars() {
     } else
       fprintf(stderr, "(none)");
     fprintf(stderr, "\n");
+    // Who WRITES into the element channel, and from which contour. For a
+    // list-layout container this is the only place its content arrives, so
+    // an unexpected type here names the function that put it there.
+    if (cs->sym->element && cs->sym->element->var && cs->added_element_var) {
+      AVar *e = unique_AVar(cs->sym->element->var, cs);
+      if (e)
+        for (AVar *b : e->backward) {
+          if (!b || !b->out || !b->out->type) continue;
+          EntrySet *bes = b->contour_is_entry_set ? (EntrySet *)b->contour : nullptr;
+          fprintf(stderr, "  ELEMWRITER es=%d fun=%s type=", bes ? bes->id : -1,
+                  (bes && bes->fun && bes->fun->sym && bes->fun->sym->name) ? bes->fun->sym->name : "(cs)");
+          for (CreationSet *c : b->out->type->sorted)
+            if (c && c->sym) fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+          fprintf(stderr, "\n");
+        }
+    }
     for (AVar *d : cs->defs) {
       if (!d) continue;
       EntrySet *des = d->contour_is_entry_set ? (EntrySet *)d->contour : nullptr;

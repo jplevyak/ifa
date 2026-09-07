@@ -889,3 +889,59 @@ regression, not an irrepresentable-union one, and it needs `aas` and `bbs`
 separated for precision rather than for correctness. Every remaining list
 CreationSet there already has `defs=1`, so partitioning by creation point
 cannot do it.
+
+## The predicted case turned up in `pyc_lib/heapq.py` (fixed 2026-09-06)
+
+When `__delitem__`'s false `merge_in` was fixed above, this issue recorded
+the exact boundary the fix would NOT cover:
+
+> **It does not fix the class, and the boundary is exact.** A user writing
+> the slice assignment by hand still reproduces, because there the
+> `merge_in` is real:
+>
+> ```python
+> a = [1, 2]
+> a[0:1] = []      # genuine setslice
+> ```
+
+`pyc_lib/heapq.py:40` was that line, verbatim:
+
+```python
+def heappop(heap):
+    n = len(heap)
+    lastelt = heap[n - 1]
+    heap[n - 1:n] = []      # <-- shrink by slice-assigning an empty list
+```
+
+and it is what made `tests/test_heapq.py` fail under `PYC_CSDCPA1=2`.
+
+**Found by probe, not by guessing.** `IFA_DBG_CSVARS` (extended here to
+print the element channel and its writers) on the offending CreationSet:
+
+```
+CSVARS cs=1014 sym=list vars=10 defs=1 arity=10 elem= int64 tuple tuple tuple
+  ELEMWRITER es=207 fun=__pyc_setslice__ type= tuple#1057 tuple#1069 tuple#1072
+```
+
+`data = [9, 4, 7, 1, 6, 2, 8, 3, 5, 0]` — ten `int64` positional vars —
+with `tuple` in its element channel, written by `__pyc_setslice__`. Under
+one CreationSet per sym the `[]` in `heappop` shares a contour with every
+other empty list in the program, including the tuple-holding heaps in
+`fringe`, and `merge_in(self, v)` carries their elements into `data`.
+Codegen then emitted `((_CG_void*)(_CG_list_ptr(t10)))[6] = 8` — an int
+stored through a pointer-typed element.
+
+**The file's own header explained the workaround and was stale:** *"list
+shrinking uses slice-assignment to an empty list since pyc's list has no
+pop()."* `list.pop()` was added by issues/025 R1. Replaced with
+`lastelt = heap.pop()`, which is what CPython's `heapq` does.
+
+*Result:* `test_heapq` compiles on both arms, runs, and its stdout
+**matches CPython**. Flag-arm suite **3 → 2**. Default 311/0 on both
+backends, all six gates green.
+
+**Worth keeping in view:** this was a latent correctness bug in a shim,
+sitting behind a comment that justified it. The start-merged flag did not
+create it — it removed the per-site contour that had been hiding it. That
+is the second such case (after `__delitem__`), and both were found only
+because the flag exposed them.
