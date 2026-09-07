@@ -686,7 +686,18 @@ CreationSet *creation_point(AVar *v, Sym *s, int arity) {
         // The reverse direction stays as ifa/132 wrote it: a candidate that
         // has ALREADY lost its static arity is on list layout and reads its
         // length at run time, so merging any arity into it is representable.
-        if (x->static_arity >= 0 && !x->no_static_arity && (arity < 0 || x->static_arity != arity)) continue;
+        // PYC_ARITYSTRICT=0 restores the pre-ifa/139 form, for attributing
+        // a regression to this clause rather than guessing at it.
+        static int aritystrict = -1;
+        if (aritystrict < 0) {
+          cchar *av = getenv("PYC_ARITYSTRICT");
+          aritystrict = av ? atoi(av) : 1;
+        }
+        if (aritystrict) {
+          if (x->static_arity >= 0 && !x->no_static_arity && (arity < 0 || x->static_arity != arity)) continue;
+        } else {
+          if (arity >= 0 && x->static_arity >= 0 && x->static_arity != arity && !x->no_static_arity) continue;
+        }
         cs = x;
         dbg_cs_route = "dcpa1";
         goto Lfound;

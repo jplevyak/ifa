@@ -82,3 +82,29 @@ Three probes were needed and the first two misled:
 The general lesson matches [104](closed/104-unify-list-and-tuple-in-analysis.md):
 a container has TWO content channels, and a probe that reads one of them
 can report a clean CreationSet that is not clean.
+
+## Corpus ledger — net +1, and the two it breaks are latent defects
+
+Measured with `PYC_ARITYSTRICT` (default 1; `=0` restores the pre-139
+form, kept so this attribution can be re-run):
+
+| | |
+| --- | --- |
+| **fixed** | `builtins` (suite), `pystone`, `othello2` (corpus) |
+| **broken** | `softrender`, `voronoi2` |
+
+Corpus `compile_fail` 10 → 9. Both new failures are for reasons the merge
+was masking, not for arity:
+
+- `voronoi2` — `receiver 'str' is not a container but '__add__' resolved
+  to the CONTAINER method`, i.e.
+  [137](137-scalar-receiver-resolves-to-container-method.md)'s resolution
+  defect on a second program. Notably this guard FIXED 137's first
+  instance (`pystone`) and exposed another.
+- `softrender` — `cast from pointer to smaller type '_CG_bool' loses
+  information`, a layout/representation defect.
+
+Neither is an argument against the guard: merging an unknown-arity
+container into a fixed-arity CreationSet is unrepresentable regardless of
+what the merge happened to be hiding. Recorded so the two are triaged as
+their own defects rather than read as a reason to revert.
