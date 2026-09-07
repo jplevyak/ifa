@@ -945,3 +945,58 @@ sitting behind a comment that justified it. The start-merged flag did not
 create it — it removed the per-site contour that had been hiding it. That
 is the second such case (after `__delitem__`), and both were found only
 because the flag exposed them.
+
+## `kCsDefSplitMax` is the blocker for four corpus programs — and uncapping is a bad trade
+
+Root-causing `voronoi2` and `linalg` (2026-09-07) put both in THIS issue's
+family rather than
+[137](137-scalar-receiver-resolves-to-container-method.md)'s, where
+ifa/129 had classified them. The `'__add__' resolved to the CONTAINER
+method` diagnostic is downstream in both:
+
+- **`voronoi2`** — `cs=1702`, ONE creation point inside `list.__mul__`,
+  element takes `str` from `__mul__` and `Halfedge` from `__setitem__`.
+  Two different `[x] * n` results sharing a CreationSet.
+- **`linalg`** — `cs=1011`, **`defs=44`**, `elem= int64 list x8`.
+  Forty-four `[]` literals in one CreationSet.
+
+`linalg`'s 44 defs are far past `kCsDefSplitMax` (10), so
+`CS_DEF_PARTITION` declines on the cap. Measured directly
+(`PYC_CSDEFSPLIT=2` ignores it):
+
+| | capped | uncapped |
+| --- | --- | --- |
+| `linalg`, `voronoi2`, `sudoku3`, `quameon` | fail | **compile** |
+| `sudoku5` | compiles | **fails** |
+| `plcfrs`, `rdb` | fail | fail |
+| suite | 2 | 2 |
+
+Corpus totals (both at HEAD — the only `fa.cc` change since the capped
+sweep is `PYC_ARITYSTRICT`'s env gate, which defaults to identical
+behaviour, so FA metrics are directly comparable):
+
+| | capped | uncapped |
+| --- | --- | --- |
+| compile_fail | 7 | **4** |
+| container CS | 2835 | **3273** (+15%) |
+| ratio | 4.76 | 5.22 |
+
+**The compile count overstates it badly.** Of the four programs uncapping
+makes compile, `linalg`, `quameon` and `sudoku3` all **abort at run
+time** (`rc=134`) and `voronoi2` runs but prints the wrong answer. So
+uncapping yields **zero additional programs that produce correct
+output** — it converts refusals into
+[102](102-corpus-programs-compile-then-abort-at-runtime.md)'s
+compiles-then-fails-later, which that issue exists to warn about.
+
+And it costs 15% of the contour advantage the flag is FOR: 4.76 → 5.22
+against the default's 5.93, giving back about half the win.
+
+**Recommendation: leave the cap.** Not because 10 is the right number —
+it was copied from shedskin's route 4, where contours start at one per
+class and the finer rungs carry most of the load, and a 44-way merge is
+normal under `PYC_CSDCPA1` in a way it never is there. But raising it
+buys compile-status cosmetics at a real cost in the goal metric, and the
+programs it "fixes" still do not work. If the cap is revisited, the case
+has to be made on programs that RUN correctly afterwards, not on
+`compile_fail`.

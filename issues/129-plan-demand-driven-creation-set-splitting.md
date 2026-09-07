@@ -2181,7 +2181,7 @@ Not one family. Measured under `PYC_CSDCPA1=2 PYC_CSLADDER=3`:
 
 | group | n | programs | first diagnostic |
 | --- | --- | --- | --- |
-| **A. non-container reached a container method** | 2 | `pystone`, `linalg` | `'__add__' resolved to the CONTAINER method` |
+| **A. non-container reached a container method** | 2 → **0** | `pystone` fixed ([139](139-unknown-arity-creation-point-joins-a-fixed-arity-cs.md)); `linalg` RECLASSIFIED to group B — see [133](133-split-a-container-on-its-element-type.md), its `cs=1011` has `defs=44` and an `{int64, list}` element | |
 | **(suite) compiler assert** | 1 | `test_heapq` | fixed — [138](138-argless-entryset-trips-a-compatibility-assert.md) |
 | **(suite) `builtins`** | 1 | `builtins` | fixed — [139](139-unknown-arity-creation-point-joins-a-fixed-arity-cs.md) |
 | **B. mixed basic types** | 4 | `othello2`, `rdb`, `sudoku5`, `plcfrs` | `'x' has mixed basic types` |
