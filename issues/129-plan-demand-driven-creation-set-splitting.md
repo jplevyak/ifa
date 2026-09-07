@@ -2174,3 +2174,55 @@ does, turns identity into incompatibility, which is why it cost `ess` and
 contours and made `plcfrs` and `sudoku5` worse. The ES split belongs at
 the END of the chain, as the way to REALIZE a partition demand has already
 asked for.
+
+### Step 4 — the remaining 10 are FOUR defects, triaged 2026-09-06
+
+Not one family. Measured under `PYC_CSDCPA1=2 PYC_CSLADDER=3`:
+
+| group | n | programs | first diagnostic |
+| --- | --- | --- | --- |
+| **A. non-container reached a container method** | 2 | `pystone`, `linalg` | `'__add__' resolved to the CONTAINER method` |
+| **B. mixed basic types** | 4 | `othello2`, `rdb`, `sudoku5`, `plcfrs` | `'x' has mixed basic types` |
+| **C. non-convergence** | 1 | `othello3` | `no EntrySet progress for 120s` |
+| **D. C codegen errors** | 1 | `richards` | `incompatible integer to pointer conversion`, `no matching function` |
+| addressable by ifa/136's mechanism | 2 | `sudoku2`, `sudoku3` | — |
+
+**Group A was one message hiding two defects.** The check is `!t->element`
+(`cg.cc:1432`) — a receiver with no element channel reached
+`sizeof_element` — and the text asserted a `{container, scalar}` union
+regardless. On `pystone` the receiver is a bare `int64`, so the message
+read *"a variable holding 'int64' has no representation"*, which is
+self-contradicting. Split at `codegen_common.cc:115`:
+
+- `linalg` — receiver really is `{int64, list}`: the union case, issues/018
+  wording retained.
+- `pystone` — receiver is a single `int64`: **a call-resolution defect**,
+  now filed as [137](137-scalar-receiver-resolves-to-container-method.md)
+  and reported as one.
+
+**Group B is where the volume is**, and the four are not equal: `othello2`
+and `rdb` carry a 2-way `{int64, str}`, `sudoku5` a 5-way, `plcfrs` a
+~10-way `{list tuple bool int64 float64 str dict ChartItem Edge …}`.
+`plcfrs`'s mega-union reads as total collapse rather than a specific
+merge, so it should not be treated as one of four equivalent cases.
+
+**Groups C and D have never been looked at.** `othello3` is
+[111](111-FA-selective-invalidation-per-pass.md) / [074](074-FA-cross-pass-oscillation-plan.md)
+territory. `richards`'s two C errors are concrete and may be the smallest
+item in the whole set.
+
+**What corpus-wide payoff needs, in order of cost:**
+
+1. **A metric that predicts the verdict.** The `DEMAND` census's `mixed`
+   does not — `sudoku3` reaches `mixed=0` and still fails. Everything
+   aggregate reported here is steering by a proxy that is known not to
+   track the goal. Cheapest item, and it makes every later measurement
+   trustworthy.
+2. **`richards` and `othello3`** — 2 programs, both untouched, neither in
+   the splitting family. Likely cheaper than anything in group B.
+3. **[137](137-scalar-receiver-resolves-to-container-method.md)** —
+   1 program, a genuine resolution bug with a clear starting point (the
+   three `slice` warnings at the same site, one step earlier).
+4. **Group B's 2-way cases** (`othello2`, `rdb`) before its wide ones.
+5. **ifa/136's mechanism** is capped at ~3 programs and currently nets
+   +1/−1; it is not where corpus payoff comes from.

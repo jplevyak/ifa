@@ -134,16 +134,45 @@ void cg_fail_unrepresentable_container_union(Sym *outer, Sym *fn_sym, cchar *pat
   // 'x'"), so no location beats a misleading one.
   bool in_builtin = path && strstr(path, "__pyc__");
   cchar *fname = fn_sym && fn_sym->name ? fn_sym->name : "?";
-  if (in_builtin || !path)
-    fail("a variable holding %s has no representation: '%s' resolved to the CONTAINER method, whose receiver "
-         "may be a scalar. pyc does not box, so a {container, scalar} union cannot be represented "
-         "(issues/018)",
-         un, fname);
-  else
-    fail("%s:%d: a variable holding %s has no representation: '%s' resolved to the CONTAINER method, whose "
-         "receiver may be a scalar. pyc does not box, so a {container, scalar} union cannot be represented "
-         "(issues/018)",
-         path, line, un, fname);
+  // The condition here is `!t->element`: a receiver with NO element channel
+  // reached a container method's `sizeof_element`. That is not necessarily a
+  // {container, scalar} union, and saying so misdirects the reader --
+  // measured on pystone, where the receiver is a bare `int64` and the old
+  // text asserted a union that does not exist ("a variable holding 'int64'
+  // has no representation", which is self-contradicting: one type always has
+  // a representation). Report what is actually known, and separate the two
+  // cases, because they have different causes:
+  //
+  //   union of container and scalar -> genuinely unrepresentable (issues/018)
+  //   single non-container          -> a RESOLUTION defect; the receiver is
+  //                                    not a container and should never have
+  //                                    reached this method
+  bool is_union = outer && outer->type_kind == Type_SUM && outer->has.n;
+  cchar *loc_pfx = (in_builtin || !path) ? "" : "%s:%d: ";
+  (void)loc_pfx;
+  if (is_union) {
+    if (in_builtin || !path)
+      fail("a variable holding %s has no representation: '%s' resolved to the CONTAINER method, whose receiver "
+           "may be a scalar. pyc does not box, so a {container, scalar} union cannot be represented "
+           "(issues/018)",
+           un, fname);
+    else
+      fail("%s:%d: a variable holding %s has no representation: '%s' resolved to the CONTAINER method, whose "
+           "receiver may be a scalar. pyc does not box, so a {container, scalar} union cannot be represented "
+           "(issues/018)",
+           path, line, un, fname);
+  } else {
+    if (in_builtin || !path)
+      fail("receiver %s is not a container but '%s' resolved to the CONTAINER method (it has no element "
+           "channel, so sizeof_element has nothing to read). This is a call-resolution defect, not a "
+           "representation gap -- see ifa/issues/137",
+           un, fname);
+    else
+      fail("%s:%d: receiver %s is not a container but '%s' resolved to the CONTAINER method (it has no "
+           "element channel, so sizeof_element has nothing to read). This is a call-resolution defect, not a "
+           "representation gap -- see ifa/issues/137",
+           path, line, un, fname);
+  }
 }
 
 int cg_field_live(Sym *s, int i) {
