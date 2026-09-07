@@ -694,7 +694,26 @@ CreationSet *creation_point(AVar *v, Sym *s, int arity) {
           aritystrict = av ? atoi(av) : 1;
         }
         if (aritystrict) {
-          if (x->static_arity >= 0 && !x->no_static_arity && (arity < 0 || x->static_arity != arity)) continue;
+          // ifa/141: `static_arity == -1` means "no arity recorded YET",
+          // NOT "known to vary". Only `no_static_arity` means the latter,
+          // and only it justifies absorbing any arity (ifa/132: such a CS
+          // is on list layout and reads its length at run time).
+          //
+          // ifa/139 declined a mismatch only when the CANDIDATE already had
+          // a fixed arity, so a CreationSet minted with -1 still accepted
+          // anything -- and `make_kind` then fixed its arity from whichever
+          // joiner arrived first. Measured on rdb:
+          //
+          //   p=0 es=68  -> cs=1260 via MINT    (getslice's merge, arity -1)
+          //   p=0 es=87  -> cs=1260 via dcpa1   (an arity-3 literal joins)
+          //
+          // leaving `cs=1260 vars=3 arity=3 elem= str` -- a three-int list
+          // literal carrying a `str` element, which surfaces as
+          // `'v' has mixed basic types:( int64 str )` at rdb.py:244.
+          //
+          // So the test is simply "arities agree", with `no_static_arity`
+          // the one exemption.
+          if (!x->no_static_arity && x->static_arity != arity) continue;
         } else {
           if (arity >= 0 && x->static_arity >= 0 && x->static_arity != arity && !x->no_static_arity) continue;
         }
