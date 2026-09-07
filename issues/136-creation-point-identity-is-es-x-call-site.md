@@ -105,3 +105,57 @@ trigger rather than to realize a demanded partition.
 mechanisms tried so far (`PYC_ESFORCS`, the type-side third clause,
 `PYC_CSCALLSITE`) all attacked it from the splitter side and all came back
 inert on the verdict.
+
+## Demand-driven caller partition — `PYC_CSCALLSITE=2`, built 2026-09-06
+
+The author's answer to the question above: *demand propagates backward* —
+the irrepresentable element at the use site asks the PRODUCING contour to
+duplicate, with the call site only naming the parts.
+
+Implemented as mode 2 of `split_es_by_call_site`. Mode 1 made one contour
+per caller, so the partition size was the CALLER COUNT — a fan-out. Mode 2
+groups the EntrySet's in-edges by **which assign set their returned
+container reaches** (`AEdge::rets` tested against the `CSFlowGraph`'s
+filtered backflow paths), so the partition size is the number of distinct
+ELEMENT TYPES. Two types give two contours however many callers there are,
+and callers that agree stay together.
+
+**Per program it is decisively better than the fan-out, and `ess` goes
+DOWN — below even the arm with the mechanism off:**
+
+| | off | mode 1 (fan-out) | mode 2 (demand) |
+| --- | --- | --- | --- |
+| `sudoku3` | mixed 18, ess 652 | mixed 7, ess **797** | **mixed 0, ess 531** |
+| `quameon` | rc=1, mixed 15 | rc=1, mixed 14 | **rc=0**, mixed 7 |
+| `sudoku5` | ess 768 | ess 951 | ess 720 |
+| `plcfrs` | ess 1767 | ess 1720 | ess 1715 |
+
+`ess` falling is the signature the author uses for a working inversion;
+every earlier mechanism in this family drove it up.
+
+**Corpus-wide it is a wash, and the per-program numbers did not predict
+that:**
+
+| | baseline | mode 2 |
+| --- | --- | --- |
+| compile_fail | 10 | 10 |
+| `ess` | 31639 | 31743 (+104) |
+| container CS | 2812 | 2838 (+26) |
+
+`quameon` 1 → 0 (though it then aborts at runtime, `rc=134`), `sudoku2`
+0 → 1. Suite unchanged at 4; default 311/0 both backends.
+
+**Two things not to read past.**
+
+- `sudoku3` reaches `mixed=0` and **still fails**, with
+  `'x' has mixed basic types:( int64 str )`. So the `DEMAND` census's
+  `mixed` and the diagnostic measure different things — the census counts
+  container-element mixes, and `x` is `list.pop`'s local carrying a union
+  the census does not see. Do not treat `mixed` as the goal number.
+- `sudoku5` and `plcfrs` still get WORSE on `mixed` (22 → 31, 30 → 38)
+  while their `ess` improves. Same mechanism, opposite signs, unexplained.
+
+*Default off.* The mechanism is right in shape — it is the first in this
+family to reduce `ess` and the first to fix one of the eight — but it does
+not yet pay corpus-wide, and the two programs it worsens are not
+understood.

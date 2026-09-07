@@ -8487,14 +8487,25 @@ static int cscallsite_enabled() {
   return e;
 }
 
-[[nodiscard]] static int split_es_by_call_site(EntrySet *es, AVar *demand_av, bool dbg) {
+// Mode 1 (superseded, kept as the measurement): one contour per caller.
+// A FAN-OUT, not a separation -- the partition size is the caller count
+// rather than the number of distinct element types, which is why it cost
+// contours and made plcfrs and sudoku5 worse. Mode 2 below is the
+// demand-driven form.
+//
+// Mode 2: partition the callers BY WHICH ELEMENT TYPE THEY CONTRIBUTE.
+// The demand is the irrepresentable union; the assign sets of the
+// CSFlowGraph are its parts; and each in-edge is placed by which assign
+// set its returned container (`AEdge::rets`, the caller-side result AVars)
+// lands on. Two element types give two contours however many callers there
+// are, and callers agreeing on the type stay together. That is the call
+// site naming the parts of a partition demand already asked for, rather
+// than deciding on its own that the parts exist.
+[[nodiscard]] static int split_es_by_call_site(EntrySet *es, AVar *demand_av, bool dbg, CSFlowGraph *g = nullptr) {
   if (!es || es->split) return 0;
   Vec<AEdge *> all_edges;
   for (AEdge *ee : es->edges) if (ee && ee->args.n) all_edges.add(ee);
   qsort_by_id(all_edges);
-  // One caller is not a partition, and the route-4 cap applies for the same
-  // reason it does there: past a handful, per-caller contours are a fan-out,
-  // not a separation.
   if (all_edges.n < 2 || all_edges.n >= kCsDefSplitMax) {
     if (dbg)
       fprintf(stderr, "[cscallsite] p=%d es=%d fun=%s DECLINED edges=%d\n", analysis_pass, es->id,
@@ -8508,17 +8519,46 @@ static int cscallsite_enabled() {
   dec->fsetters = SPLIT_TYPE;
   dec->fmark = SPLIT_VALUE;
   dec->all_edges.copy(all_edges);
-  // edges[0] stays on the original contour; every other caller peels off
-  // into its own. Deterministic because all_edges is id-sorted.
-  for (int i = 1; i < all_edges.n; i++) {
-    Vec<AEdge *> *g = new Vec<AEdge *>;
-    g->add(all_edges.v[i]);
-    dec->groups.add(g);
+  if (cscallsite_enabled() >= 2 && g && g->keys.n > 1) {
+    // Signature per edge: the set of assign sets its returned container
+    // reaches. Edges with equal signatures share a contour.
+    Vec<AEdge *> reps;
+    Vec<Vec<AEdge *> *> groups;
+    Vec<int> sigs;  // bitmask over assign sets, parallel to reps
+    for (AEdge *e : all_edges) {
+      int sig = 0;
+      for (int i = 0; i < g->keys.n && i < 31; i++)
+        for (AVar *r : e->rets)
+          if (r && g->paths.v[i]->set_in(r)) { sig |= (1 << i); break; }
+      int gi = -1;
+      for (int k = 0; k < sigs.n; k++) if (sigs.v[k] == sig) { gi = k; break; }
+      if (gi < 0) { sigs.add(sig); reps.add(e); groups.add(new Vec<AEdge *>); gi = sigs.n - 1; }
+      groups.v[gi]->add(e);
+    }
+    if (groups.n < 2) {
+      if (dbg)
+        fprintf(stderr, "[cscallsite] p=%d es=%d fun=%s DECLINED demand: all %d edge(s) one signature\n",
+                analysis_pass, es->id, (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?",
+                all_edges.n);
+      return 0;
+    }
+    // groups[0] keeps the original contour; the rest peel off.
+    for (int i = 1; i < groups.n; i++) dec->groups.add(groups.v[i]);
+    if (dbg)
+      fprintf(stderr, "[cscallsite] p=%d es=%d fun=%s DEMAND-SPLIT edges=%d assignsets=%d -> %d group(s)\n",
+              analysis_pass, es->id, (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?",
+              all_edges.n, g->keys.n, groups.n);
+  } else {
+    for (int i = 1; i < all_edges.n; i++) {
+      Vec<AEdge *> *grp = new Vec<AEdge *>;
+      grp->add(all_edges.v[i]);
+      dec->groups.add(grp);
+    }
+    if (dbg)
+      fprintf(stderr, "[cscallsite] p=%d es=%d fun=%s SPLIT edges=%d -> %d group(s)\n", analysis_pass, es->id,
+              (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?", all_edges.n,
+              dec->groups.n);
   }
-  if (dbg)
-    fprintf(stderr, "[cscallsite] p=%d es=%d fun=%s SPLIT edges=%d -> %d group(s)\n", analysis_pass, es->id,
-            (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?", all_edges.n,
-            dec->groups.n);
   log(LOG_SPLITTING, "SPLIT ES BY CALL SITE es %d edges %d groups %d\n", es->id, all_edges.n, dec->groups.n);
   return apply_entry_set_split(dec);
 }
@@ -8677,7 +8717,7 @@ static void report_cs_flow_graphs() {
                        ? unique_AVar(cs->sym->element->var, cs)
                        : nullptr;
       if (d && d->contour_is_entry_set && elem && mixed_basics(elem)) {
-        if (split_es_by_call_site((EntrySet *)d->contour, elem, dbg)) {
+        if (split_es_by_call_site((EntrySet *)d->contour, elem, dbg, build_cs_flow_graph(cs))) {
           analyze_again = 1;
           continue;
         }
