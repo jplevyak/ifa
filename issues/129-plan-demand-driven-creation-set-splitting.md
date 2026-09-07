@@ -2228,3 +2228,75 @@ item in the whole set.
 4. **Group B's 2-way cases** (`othello2`, `rdb`) before its wide ones.
 5. **ifa/136's mechanism** is capped at ~3 programs and currently nets
    +1/−1; it is not where corpus payoff comes from.
+
+### Step 4 — the last two suite failures are PRECISION, not correctness (2026-09-06)
+
+After ifa/138 (`test_heapq`'s assert), ifa/139 (`builtins`) and ifa/133's
+`heapq` fix, the flag arm's suite is **2**: `splitter_mark_type` and
+`splitter_cartesian_product`.
+
+**Both compile, run, and their stdout MATCHES CPython.** They fail only
+on a spurious diagnostic — `warning: illegal call argument type expression
+illegal: B` at `self.aas[-1].ay()` — which their goldens do not have.
+There is no wrong answer and no refusal; this is lost precision.
+
+#### The mechanism
+
+```python
+class Holder:
+    def __init__(self):
+        self.aas = []
+        self.bbs = []
+    def fill(self):
+        self.aas.append(A()); self.bbs.append(B())
+    def prune(self):
+        self.bbs = [x for x in self.bbs]
+        self.aas = [y for y in self.aas]
+    def use(self):
+        return self.aas[-1].ay()
+```
+
+`IFA_DBG_FUNES=append`:
+
+```
+es=60  self={list#1051, list#1052}        x={A, B}
+es=77  self={list#1049, 1051, 1052}       x=A
+es=78  self={list#1050, 1051, 1052}       x=B
+```
+
+`append` **is** split by its argument (es=77 carries only `A`, es=78 only
+`B`), and `CS_DEF_PARTITION` **does** separate the two `[]` literals in
+`__init__` into `1051` and `1052`. Neither of those is the problem.
+
+**The receiver is a union of three CreationSets in every contour.** Each
+field is assigned twice — once in `__init__` and once in `prune` — so
+`self.aas` legitimately holds `{original [], comprehension result}`, and
+the analysis has no per-assignment view of a field to keep those apart.
+With the originals and the comprehension results each merged across the
+two fields, `self.aas`'s union reaches `B`.
+
+`es=60` is the un-split remainder, still carrying `{A, B}` on both
+channels after 77 and 78 peeled off.
+
+#### What it is NOT
+
+- Not a missing CreationSet split: `defs` are already separated.
+- Not a missing EntrySet split: `append` already has one contour per
+  argument type.
+- Not an irrepresentable union: `{A, B}` is two pointers, which is why it
+  compiles and runs correctly.
+
+Splitting harder cannot fix it. **A fifth splitter is the wrong response**
+— this needs a field to be able to hold different CreationSets at
+different program points, which is an SSA/liveness question about member
+variables, not a contour-identity one.
+
+#### Status for the flip
+
+These two are the only remaining suite failures and they are precision
+regressions with correct output. They should NOT be re-blessed: the
+warning is spurious and re-blessing would bake it in. They also should not
+carry `.known_issue`, which would retire the coverage at the DEFAULT arm
+where both pass cleanly. They are flag-arm-only, tracked here, and they
+need either the field-precision work above or an accepted, documented
+diagnostic delta at flip time.
