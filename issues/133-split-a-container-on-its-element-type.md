@@ -946,7 +946,7 @@ create it — it removed the per-site contour that had been hiding it. That
 is the second such case (after `__delitem__`), and both were found only
 because the flag exposed them.
 
-## `kCsDefSplitMax` is the blocker for four corpus programs — and uncapping is a bad trade
+## `kCsDefSplitMax` was the blocker for four corpus programs — REMOVED 2026-09-07
 
 Root-causing `voronoi2` and `linalg` (2026-09-07) put both in THIS issue's
 family rather than
@@ -961,45 +961,107 @@ method` diagnostic is downstream in both:
   Forty-four `[]` literals in one CreationSet.
 
 `linalg`'s 44 defs are far past `kCsDefSplitMax` (10), so
-`CS_DEF_PARTITION` declines on the cap. Measured directly
-(`PYC_CSDEFSPLIT=2` ignores it):
+`CS_DEF_PARTITION` declined on the cap and the program did not compile.
+
+### The recommendation recorded here on 2026-09-07 was WRONG
+
+It said *"uncapping yields zero additional programs that produce correct
+output... raising it buys compile-status cosmetics at a real cost in the
+goal metric"*, and **recommended keeping the cap**. Both halves fail.
+
+**The correctness half compared the uncapped arm against a standard the
+DEFAULT does not meet.** It is true that `linalg`, `quameon` and
+`sudoku3` abort at run time after uncapping — but they abort at run time
+*at the default too* (`run_rc=134` for all three), and `voronoi2` prints
+the wrong answer at the default too. Uncapping does not convert working
+programs into [102](102-corpus-programs-compile-then-abort-at-runtime.md)
+cases; it brings four programs to **exact parity with the default**,
+which is what the flip needs. Nothing was made worse than the baseline
+the flag has to match.
+
+**The contour half quoted a flag-vs-flag number as if it were the cost.**
+`2835 → 3273` is `+15%` measured against the capped flag arm — but the
+baseline that matters is the DEFAULT's `3713`, and against that the
+uncapped arm is **−11.9%**. Uncapping gives back about half the contour
+win; it does not spend a real budget.
+
+**And the design half was backwards.** The old text said `linalg` "needs
+the collapse prevented rather than partitioned afterwards — the 44
+literals should not have become one contour in the first place." That
+argues for per-creation-point identity, which is precisely what this flag
+exists to remove. Under demand splitting, 44 arity-0 `[]` literals
+starting as ONE CreationSet is the CORRECT initial state — it is what
+"one CreationSet per sym" means — and the goal is minimal contours
+**subject to demand**, not minimal contours. Forty-four literals whose
+element types genuinely differ *demand* separation, and those contours
+are not structural waste. The defect was never the merge; it was that no
+mechanism was allowed to undo it.
+
+Route 4 is the only mechanism that can. ifa/142 measured why: the element
+union reaches a **fixed point where every writer carries the whole
+union**, so `etype == stype` on every edge and no type-based partition
+(routes 1 and 3, TYPE_CONFLUENCE, the element-CS stages) can tell the
+contributors apart. Only separation BY CREATION POINT breaks it. The cap
+refused that one mechanism on exactly the programs that most needed it,
+because 10 was copied from shedskin, where contours start at one per
+CLASS and a 44-way merge never arises.
+
+### Measured, capped vs uncapped, both at HEAD
+
+Verdict parity against the default, per program (77 programs):
 
 | | capped | uncapped |
 | --- | --- | --- |
-| `linalg`, `voronoi2`, `sudoku3`, `quameon` | fail | **compile** |
-| `sudoku5` | compiles | **fails** |
-| `plcfrs`, `rdb` | fail | fail |
-| suite | 2 | 2 |
+| programs whose verdict DIFFERS from the default | 11 | **4** |
+| ... of those, regressed to `COMPILE-FAIL` | 8 | **2** (`plcfrs`, `rdb`) |
+| compile_fail | 9 | **4** |
+| container CS (default = 3713) | 2835 (−23.6%) | **3273 (−11.9%)** |
+| suite failures | 2 | 2 |
 
-Corpus totals (both at HEAD — the only `fa.cc` change since the capped
-sweep is `PYC_ARITYSTRICT`'s env gate, which defaults to identical
-behaviour, so FA metrics are directly comparable):
+The 11 → 4 is the headline. The capped arm diverged from the default on
+`linalg`, `plcfrs`, `quameon`, `rdb`, `richards`, `softrender`,
+`sudoku3`, `voronoi2`, `sudoku5`, `bh`, `kanoodle`; the uncapped arm
+diverges on **`plcfrs`, `rdb`, `bh`, `kanoodle`** only. `sudoku5` is the
+single program the cap helped (it compiled capped, and is `COMPILE-FAIL`
+both uncapped and at the default — so uncapping returns it to parity too,
+having been the one place the cap accidentally did better than baseline).
 
-| | capped | uncapped |
-| --- | --- | --- |
-| compile_fail | 7 | **4** |
-| container CS | 2835 | **3273** (+15%) |
-| ratio | 4.76 | 5.22 |
+`bh` and `kanoodle` are NOT cap-related: both arms regress them
+identically, so they are separate flag defects that the cap discussion
+had been masking. Isolated for the first time 2026-09-07:
 
-**The compile count overstates it badly.** Of the four programs uncapping
-makes compile, `linalg`, `quameon` and `sudoku3` all **abort at run
-time** (`rc=134`) and `voronoi2` runs but prints the wrong answer. So
-uncapping yields **zero additional programs that produce correct
-output** — it converts refusals into
-[102](102-corpus-programs-compile-then-abort-at-runtime.md)'s
-compiles-then-fails-later, which that issue exists to warn about.
+| program | default | flag (both arms) | diagnostic |
+| --- | --- | --- | --- |
+| `bh` | `run_rc=0` | `run_rc=134` | `bh.py.c:7520 ... Assertion '!"runtime error: getter not resolved"'` |
+| `kanoodle` | `run_rc=0`, stdout `NO` | `run_rc=139` (SIGSEGV) | — |
 
-And it costs 15% of the contour advantage the flag is FOR: 4.76 → 5.22
-against the default's 5.93, giving back about half the win.
+`bh` is the more serious of the two: it is the only program in the corpus
+that RAN cleanly at the default and aborts under the flag. Its shape is
+[123](123-CGEN-union-receiver-field-access-has-no-discrimination.md)'s
+exactly — a field read whose receiver is a union codegen cannot
+discriminate, so the getter falls through to the assert. That is the
+predictable cost of merging first: a read that was monomorphic per
+CreationSet at the default becomes polymorphic when the CreationSets
+merge, and the demand splitter has to separate them again before codegen
+sees it. If it does not, 123's missing discrimination is what catches the
+program.
 
-**Recommendation: leave the cap.** Not because 10 is the right number —
-it was copied from shedskin's route 4, where contours start at one per
-class and the finer rungs carry most of the load, and a 44-way merge is
-normal under `PYC_CSDCPA1` in a way it never is there. But raising it
-buys compile-status cosmetics at a real cost in the goal metric, and the
-programs it "fixes" still do not work. If the cap is revisited, the case
-has to be made on programs that RUN correctly afterwards, not on
-`compile_fail`.
+**So the flip blocker list is now exactly four**, in priority order:
+`bh` (ran → abort), `rdb` and `plcfrs` (compile failures), `kanoodle`
+(wrong output → segfault).
+
+**Status: cap removed** from `split_css_by_defs`. `PYC_CSDEFSPLIT=2` now
+means only "ignore the ripeness wait". All six CI gates pass at the
+default (16/16 `test-ir` phases, 0 failed), and the default arm is
+unaffected in principle — at `PYC_CSDCPA1=0` each site already has its
+own CreationSet, so `defs.n > 1` rarely holds.
+
+`kCsDefSplitMax` survives as a symbol because `split_es_by_call_site`
+still uses it — and there it is wrong for a DIFFERENT reason worth its
+own measurement: it caps on the CALLER count, while mode 2's partition
+size is the number of distinct element types, so a 12-caller function
+contributing 2 element types is declined for a fan-out it would never
+have produced.
 
 ## `rdb` — as far as it goes (2026-09-07)
 

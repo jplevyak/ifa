@@ -157,6 +157,66 @@ Either name equality means "same class, dedup it" or it means "distinct
 classes, bail" — it cannot mean both in one function. Settling this is
 cheap and the answer is needed either way.
 
+### Settled 2026-09-04: the two readings agree, and the defect is one level down
+
+The claim just above — *"One of the two readings is wrong"* — is
+**withdrawn**. Both sites read the same true fact about the emitted
+runtime, and the fact itself is the defect.
+
+**The classtag equivalence class IS `Sym::name` equality, by
+construction:**
+
+| | site |
+|---|---|
+| the tag object is emitted once per NAME | `cg.cc:3467`, guarded by `std::set<std::string> emitted_types` keyed on `s->name`: `_CG_TypeObject _CG_type_<name> = { PYC_TAG_OBJECT, "<name>" };` |
+| every instance is stamped with the NAME's tag | `cg.cc:1236`, `->__pyc_tag = &_CG_type_<t->name>` on the class prototype, which `_CG_prim_clone_dst`'s memcpy copies into every instance |
+| the dispatch branch compares against the NAME's tag | `cg.cc:2409` |
+| LLVM does the same | `get_classtag_global(cchar *name)` (`cg_emit_llvm.cc:129`) interns one internal global per name; `cg_emit_llvm.cc:3264` passes `classes[ci]->name` |
+
+Given that, both readings are correct:
+
+- the **dedup** (`cg.cc:2278`) is right — two same-named classes have ONE
+  tag, so a second `if (tag == &_CG_type_X)` branch would be unreachable;
+- the **collide-bail** (`cg.cc:2247`) is right — two distinct
+  implementations under one tag cannot be told apart at runtime, so
+  degrading to the "no branch matched" assert is the only safe answer.
+
+**The real defect is the tag.** `_CG_type_<name>` was chosen so that
+CLONES of one class share a tag — which the comment says and which it
+does deliver — but it also fuses classes that are *not* clones of each
+other and merely share a name (two modules, issues/113). The alternative
+sits in the same file: struct type names are `_CG_ps<id>`, per `Sym`.
+
+**The two compare sites are therefore not independently fixable.**
+Replacing either `strcmp` with a pointer compare while the tag stays
+name-keyed makes it strictly worse: the dedup would emit two branches
+testing the same address, the second dead — which is exactly the
+mis-dispatch the collide-bail exists to refuse. Fix the tag, or leave
+both compares alone.
+
+**What fixing the tag needs.** The identity the comment intends is the
+clone FAMILY, and pyc records no handle for it:
+
+- `Sym::ast` is not it — `clone.cc:1388` overwrites a record clone's
+  `ast` with the *allocation-site* AST when its CSs agree on one.
+- There is no lineage field. `Sym::clone()` → `copy()` → `copy_values`
+  (`sym.cc:124-141`) copies every field and preserves only `id`; nothing
+  points back at the original. This is the same gap
+  [129](129-plan-demand-driven-creation-set-splitting.md) names on the FA
+  side — shedskin has `cl.splits`, pyc has no lineage.
+- So the fix is to record one where clones are minted, in
+  `determine_types` (`clone.cc`, the `sym->clone()` / `sym->copy()` calls
+  at 1364, 1392 and 1403): `s->tag_family = sym->tag_family ? sym->tag_family
+  : sym->id`, then key the tag global and both compares on that. It is a
+  `Sym` layout change, so `make clean` (CLAUDE.md).
+
+**Severity, stated honestly.** This is a latent hazard with no observed
+failure in the corpus or the suite: the collide-bail already refuses the
+one shape that would mis-dispatch a carrier, and a same-named pair that
+is not a clone family has not been observed reaching a dispatch table. It
+is worth fixing because it is silent when it does bite — not because
+something is broken today. That drops A3 below A1 in the order below.
+
 Related and already closed, same family:
 [083](closed/083-CGEN-print-println-name-collision-risk.md),
 [084](closed/084-CGEN-LLVM-bool-constant-name-matching-workaround.md).

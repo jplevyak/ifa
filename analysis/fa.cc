@@ -8191,10 +8191,32 @@ static int csdefsplit_enabled() {
   return e;
 }
 
-// shedskin's route-4 fan-out cap (`infer.py:1576`: `1 < len(csites) < 10`).
-// A container merging ten or more creation points is not a case wholesale
-// separation should answer -- past this the right response is a finer
-// demand test, not ten contours.
+// shedskin's route-4 fan-out cap (`infer.py:1576`: `1 < len(csites) < 10`)
+// was copied here and REMOVED again 2026-09-07. Kept as a symbol because
+// `PYC_CSDEFSPLIT=2` still uses it to mean "ignore the ripeness wait too".
+//
+// Why it was wrong here. shedskin caps route 4 because it is the coarsest
+// rung and its finer ones usually carry the load; a ten-way merge is
+// unusual there because contours start at one per CLASS and split early.
+// Under PYC_CSDCPA1 a 26-way merge of arity-0 `[]` literals is the NORMAL
+// starting state -- that is what "pass 1 has one creation set per sym"
+// means -- and ifa/142 measured the finer rungs unable to separate it: the
+// element union reaches a fixed point where every writer carries the whole
+// union, so no type-based partition can tell the contributors apart. Only
+// separation BY CREATION POINT breaks that, which is exactly route 4.
+//
+// So the cap refused the one mechanism that could act, on the programs it
+// most needed to act for. The goal is minimal contours SUBJECT TO DEMAND,
+// not minimal contours: 26 literals whose elements genuinely differ demand
+// 26 contours, and those are not structural waste.
+//
+// The argument previously recorded FOR keeping it was faulty. It said the
+// programs uncapping fixes "still abort at run time, so this buys compile
+// status not working programs" -- but `linalg`, `quameon` and `sudoku3`
+// abort at run time AT THE DEFAULT TOO (`run_rc=134`), and `voronoi2`
+// prints the wrong answer at the default too. Uncapping brings all four to
+// exact PARITY with the default, which is what the flip needs. The
+// comparison had been against a standard the default does not meet.
 static const int kCsDefSplitMax = 10;
 
 // ifa/133: how many CONSECUTIVE passes a CreationSet must carry the same
@@ -8822,10 +8844,10 @@ static void report_cs_flow_graphs() {
         }
       }
     }
-    if (defs.n < 2 || (!force && defs.n >= kCsDefSplitMax)) {
+    if (defs.n < 2) {
       if (dbg)
-        fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d DECLINED (%s)\n", analysis_pass, cs->id,
-                cs->sym->name ? cs->sym->name : "?", defs.n, defs.n < 2 ? "single creation point" : "over cap");
+        fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d DECLINED (single creation point)\n", analysis_pass,
+                cs->id, cs->sym->name ? cs->sym->name : "?", defs.n);
       continue;
     }
     // Ripeness: consecutive passes this candidate has been offered here

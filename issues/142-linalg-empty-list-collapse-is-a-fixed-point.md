@@ -58,9 +58,10 @@ CSFLOW cs=1011 defs=26 sets=6 csites=20 (in_defs=19) empty=7
   set[2] type= int64           targets=1   path=48   cps=3
 ```
 
-- **Route 4 (wholesale) declines on the cap**, from pass 0 onward:
+- **Route 4 (wholesale) declined on the cap**, from pass 0 onward:
   `[csdefsplit] p=0 cs=1011 defs=17 DECLINED (over cap)`. It is already
-  17 defs before the first split stage runs, and grows to 32.
+  17 defs before the first split stage runs, and grows to 32. (The cap
+  was removed 2026-09-07 — see below; this trace is the pre-fix state.)
 - **Routes 1 and 3 cannot separate it.** `set[0]` carries the FULL union
   and covers 17 of the 20 targets and all 20 creation points. A
   no-confusion split needs sites on exactly one assign set; a path
@@ -75,19 +76,51 @@ etype == stype and TYPE_CONFLUENCE has nothing left to see."* Here it is
 a CreationSet's element channel: once the union forms, every writer
 carries it, so no type-based partition can tell the contributors apart.
 
-## What would fix it, and what it costs
+## What fixes it: route 4, uncapped (landed 2026-09-07)
 
 Only separation by creation point can break a fixed point that every
 type-based test sees as uniform — and that is exactly route 4, which the
-cap refuses. Measured (`PYC_CSDEFSPLIT=2`): `linalg` compiles with the cap
-removed, **and then aborts at run time** (`rc=134`), while corpus
-container CreationSets go 2835 → 3273 (+15%).
+cap refused. **The cap has been removed** and `linalg` compiles.
 
-So the honest position is the one recorded in
-[133](133-split-a-container-on-its-element-type.md): raising the cap buys
-compile status, not working programs. `linalg` needs the collapse
-prevented rather than partitioned afterwards — the 26 arity-0 `[]`
-literals should not have become one contour in the first place.
+### Correcting what this section said first
+
+It said: *"`linalg` compiles with the cap removed, and then aborts at run
+time (`rc=134`)... raising the cap buys compile status, not working
+programs. `linalg` needs the collapse PREVENTED rather than partitioned
+afterwards — the 26 arity-0 `[]` literals should not have become one
+contour in the first place."*
+
+Every clause of that is wrong, and the second one is wrong about the
+design rather than about a measurement:
+
+- **The run-time abort is not a regression.** `linalg` aborts with
+  `run_rc=134` **at the default too**, as do `quameon` and `sudoku3`;
+  `voronoi2` prints the wrong answer at the default too. Uncapping brings
+  all four to *parity* with the baseline the flag has to match. The
+  comparison had been against a standard the default does not meet.
+- **`+15%` was flag-vs-flag.** `2835 → 3273` measures the uncapped arm
+  against the *capped* arm. Against the DEFAULT's `3713` — the only
+  baseline that means anything — the uncapped arm is **−11.9%**.
+- **"the 26 literals should not have become one contour" inverts the
+  design.** Preventing the collapse means keeping per-creation-point
+  identity, which is exactly what `PYC_CSDCPA1` exists to remove. Twenty-six
+  arity-0 `[]` literals starting as ONE CreationSet is the CORRECT initial
+  state; the goal is minimal contours **subject to demand**. The demand
+  here is real — those 26 literals hold genuinely different element types —
+  so 26 contours is the right answer and route 4 is the mechanism that
+  reaches it. The defect was never the merge. It was that the cap
+  forbade the only mechanism able to undo it.
+
+That last point is what makes this issue's fixed-point finding matter
+rather than damning: a fixed point that no type-based test can see is
+precisely the case where separation by creation point is not a fallback
+but the *only* correct instrument. Capping it at 10 disabled it on the
+programs whose merges were widest — i.e. wherever it was most needed.
+
+Corpus effect of the removal: programs whose verdict differs from the
+default drop from **11 to 4** (`plcfrs`, `rdb`, `bh`, `kanoodle`), with
+`bh`/`kanoodle` unrelated to the cap. See
+[133](133-split-a-container-on-its-element-type.md) for the full table.
 
 ## What is NOT the cause
 
