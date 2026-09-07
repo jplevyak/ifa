@@ -852,3 +852,40 @@ in practice — not for want of the mechanism, which now exists and runs,
 but because no host contour has the wanted element type. That is a
 statement about pyc's contour population, not about the reuse rule, and
 it is the thing to attack next.
+
+## The ripeness counter was on the wrong object (fixed 2026-09-06)
+
+`CS_DEF_PARTITION`'s ripeness gate counted consecutive offers on the
+**CreationSet object**. Under `PYC_CSDCPA1` the CS population churns every
+pass, so a candidate never survives long enough as the same CS and the
+counter resets before reaching the threshold. Measured on
+`tests/splitter_mark_type.py`:
+
+```
+p=2  cs=1015 defs=4  WAIT (offers=1 < 3, pass not quiescent)
+p=3  cs=1049 defs=1  DECLINED
+p=3  cs=1051 defs=2  WAIT (offers=1 < 3, pass not quiescent)
+```
+
+A different CreationSet each pass. **That is the same failure as the
+quiescence gate this replaced, reached from the other direction** — a gate
+that structurally never opens.
+
+Fixed by counting on the LINEAGE ROOT: `cs->split_origin` is durable
+(ifa/066) and already collapsed to the root at construction, so the count
+survives the churn.
+
+*Result:* `splitter_mark_type` and `splitter_cartesian_product` go from
+hard failure to **rc=0** — they compile — and drop to one warning each.
+Both still fail their goldens, but on a warning rather than a refusal.
+Default 311/0, flag suite still 4.
+
+**And the two `splitter_*` tests are NOT this issue's family.** `MIXELEM`
+reports nothing for them: `{A, B}` is a union of two *pointers*, which is
+perfectly representable. They compile and run; they fail because
+`self.aas` holds `{A, B}` and `.ay()` exists only on `A`, so the call
+takes an `illegal call argument type` warning. That is a **precision**
+regression, not an irrepresentable-union one, and it needs `aas` and `bbs`
+separated for precision rather than for correctness. Every remaining list
+CreationSet there already has `defs=1`, so partitioning by creation point
+cannot do it.

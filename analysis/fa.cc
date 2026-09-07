@@ -8747,19 +8747,29 @@ static void report_cs_flow_graphs() {
                 cs->sym->name ? cs->sym->name : "?", defs.n, defs.n < 2 ? "single creation point" : "over cap");
       continue;
     }
-    // Ripeness: consecutive passes this CreationSet has been offered here
+    // Ripeness: consecutive passes this candidate has been offered here
     // without being acted on. Counted for EVERY viable candidate, whether
     // or not this pass will act, because the count is the history.
-    if (cs->defsplit_last_pass == analysis_pass - 1)
-      ++cs->defsplit_offers;
-    else if (cs->defsplit_last_pass != analysis_pass)
-      cs->defsplit_offers = 1;
-    cs->defsplit_last_pass = analysis_pass;
-    if (!quiescent && !force && cs->defsplit_offers < kCsDefSplitRipe) {
+    //
+    // Counted on the LINEAGE ROOT (`split_origin`, durable and already
+    // collapsed to the root at construction) rather than on the
+    // CreationSet object. Under PYC_CSDCPA1 the CS population churns every
+    // pass -- measured on `tests/splitter_mark_type.py`, the same offending
+    // list is cs=1015 on pass 2 and cs=1049/1050/1051 on pass 3 -- so a
+    // per-object counter resets before it can ever reach the threshold and
+    // the gate never opens. That is the same failure as the quiescence gate
+    // it replaced, arrived at from the other direction.
+    CreationSet *ripe_key = cs->split_origin ? cs->split_origin : cs;
+    if (ripe_key->defsplit_last_pass == analysis_pass - 1)
+      ++ripe_key->defsplit_offers;
+    else if (ripe_key->defsplit_last_pass != analysis_pass)
+      ripe_key->defsplit_offers = 1;
+    ripe_key->defsplit_last_pass = analysis_pass;
+    if (!quiescent && !force && ripe_key->defsplit_offers < kCsDefSplitRipe) {
       if (dbg)
-        fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d WAIT (offers=%d < %d, pass not quiescent)\n",
-                analysis_pass, cs->id, cs->sym->name ? cs->sym->name : "?", defs.n, cs->defsplit_offers,
-                kCsDefSplitRipe);
+        fprintf(stderr, "[csdefsplit] p=%d cs=%d root=%d sym=%s defs=%d WAIT (offers=%d < %d, not quiescent)\n",
+                analysis_pass, cs->id, ripe_key->id, cs->sym->name ? cs->sym->name : "?", defs.n,
+                ripe_key->defsplit_offers, kCsDefSplitRipe);
       continue;
     }
     // ifa/133 step 5: the finer rungs first. Wholesale is shedskin's route
