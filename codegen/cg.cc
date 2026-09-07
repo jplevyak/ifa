@@ -295,6 +295,35 @@ static void cg_note_blind_cast(Sym *cast_to, Sym *actual, int slot) {
   cg_note_blind_cast_1(cast_to, actual, slot);
 }
 
+// issues/048: a union CONTAINING nil -- `{None, int64}` -- is represented
+// as its scalar member and round-trips bit-for-bit. Where such a value
+// flows into a VOIDISH slot (a `void*` / `_CG_any` / `_CG_nil_type`
+// formal or struct member) the C source needs an explicit cast; FA has
+// already proved the value is what the destination expects, and codegen
+// already casts it this way at plain assignments (`t1 = (_CG_nil_type)g1`).
+//
+// It did NOT at call arguments or at record-field stores, which is how
+// richards emitted `f(..., g1, ...)` for a `_CG_nil_type` formal and
+// `t4->e0 = g1` for a `_CG_void` member -- both rejected by clang.
+//
+// Deliberately narrow: only a union that ACTUALLY CONTAINS nil. A bare
+// scalar into a pointer slot stays refused by write_c_pnode's
+// arg_mismatch guard, which is a different and genuinely unsound case.
+static bool cg_is_nil_union(Sym *t) {
+  if (!t || t->type_kind != Type_SUM) return false;
+  for (Sym *m : t->has)
+    if (m == sym_nil_type) return true;
+  return false;
+}
+
+static bool cg_needs_nil_union_cast(cchar *dst_t, Var *src) {
+  if (!dst_t || !src || !cg_is_nil_union(src->type)) return false;
+  bool dst_voidish =
+      !strcmp(dst_t, "_CG_any") || !strcmp(dst_t, "_CG_void") || !strcmp(dst_t, "_CG_nil_type");
+  cchar *src_t = c_type(src);
+  return dst_voidish && src_t && strcmp(dst_t, src_t);
+}
+
 // The C type of `s`'s emitted member `i` -- exactly what the struct
 // emitter writes. nullptr means the member is not emitted at all.
 static cchar *cg_member_ctype(Sym *s, int i) {
@@ -713,7 +742,12 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         for (int i = 3; i < n->rvals.n; i++) {
           if (rec_fields && !cg_field_live(rec, i - 3)) continue;
           cg_note_slot_use(rec, i - 3, 0);
-          fprintf(fp, "  %s->e%d = %s;\n", cg_get_string(n->lvals[0]), i - 3, cg_get_string(n->rvals.v[i]));
+          cchar *mt = rec_fields ? cg_member_ctype(rec, i - 3) : nullptr;
+          if (cg_needs_nil_union_cast(mt, n->rvals.v[i]))
+            fprintf(fp, "  %s->e%d = (%s)%s;\n", cg_get_string(n->lvals[0]), i - 3, mt,
+                    cg_get_string(n->rvals.v[i]));
+          else
+            fprintf(fp, "  %s->e%d = %s;\n", cg_get_string(n->lvals[0]), i - 3, cg_get_string(n->rvals.v[i]));
         }
       } else if (sym_list->specializers.set_in(n->rvals[2]->sym) || n->rvals[2]->sym->is_vector) {
         if (lt && lt->type_kind == Type_RECORD) goto Ltuple;
@@ -1683,7 +1717,22 @@ static void write_send_arg(FILE *fp, Fun *f, PNode *n, MPosition *p, int &wrote_
     bool formal_is_voidish = formal_t && (!strcmp(formal_t, "_CG_any") ||
                                           !strcmp(formal_t, "_CG_void") ||
                                           !strcmp(formal_t, "_CG_nil_type"));
+    // issues/048: a union CONTAINING nil -- `{None, int64}` -- is
+    // represented as its scalar member and round-trips bit-for-bit, and
+    // codegen already casts it that way at non-call sites (`t1 =
+    // (_CG_nil_type)g1`). At call arguments it did not, so the opposite
+    // direction from the cast just above emitted invalid C: richards
+    // passed a `_CG_int64`-spelled `{None, int64}` global to a
+    // `_CG_nil_type` formal and clang refused with "no known conversion".
+    //
+    // Scoped to a union that actually contains nil. A BARE scalar into a
+    // pointer slot stays refused by write_c_pnode's arg_mismatch guard
+    // (`actual->type->num_kind`), which is a different and genuinely
+    // unsound case -- casting a real integer's bit pattern into a pointer
+    // would be silently wrong, and that guard's comment says so.
     if (arg_is_voidish && !formal_is_voidish) {
+      fprintf(fp, "(%s)%s", formal_t, arg_cg);
+    } else if (cg_needs_nil_union_cast(formal_t, v)) {
       fprintf(fp, "(%s)%s", formal_t, arg_cg);
     } else {
       fputs(arg_cg, fp);
