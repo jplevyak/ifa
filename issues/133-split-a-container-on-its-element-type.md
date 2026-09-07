@@ -1000,3 +1000,70 @@ buys compile-status cosmetics at a real cost in the goal metric, and the
 programs it "fixes" still do not work. If the cap is revisited, the case
 has to be made on programs that RUN correctly afterwards, not on
 `compile_fail`.
+
+## `rdb` — as far as it goes (2026-09-07)
+
+The union surfaces at `rdb.py:244`:
+
+```python
+iTunesSD.write(entry[:555] + bytes([int(props['shuffle']), int(props['bookmark']), entry[557]]))
+```
+
+as `'v' has mixed basic types:( int64 str )`, `v` being the loop variable
+in `__pyc__`'s `__pyc_tobytes__`.
+
+Traced with `IFA_DBG_CSVARS`:
+
+```
+CSVARS cs=1260 sym=list vars=3 defs=1 arity=3 elem= str
+  ELEMWRITER es=68 fun=__pyc_getslice__ type= str#8
+  DEF        av=4254 es=68 fun=__pyc_getslice__
+```
+
+An **arity-3 list whose element channel holds `str`** — the same
+positional/element disagreement ifa/139 fixed for `builtins`, but by a
+different route: here both the creation point and the writer are
+`list.__pyc_getslice__`'s `merge(self, self)`.
+
+**What is NOT the cause:** `__pyc_getslice__` has exactly **one contour in
+both arms**, so this is not a contour-count difference and not ifa/136's
+shape.
+
+**What differs:** the default has **218** list CreationSets and no arity-3
+list with a `str` element at all; the flag has **114** and does. So the
+merge that puts `str` into a three-int list is UPSTREAM of `getslice` —
+`self` already carries it — and the flag's coarser CreationSet population
+is what lets it.
+
+**Not root-caused further.** The remaining step is to find which list
+merge gives `getslice`'s `self` a `str` element when the caller's `entry`
+should be `bytes`. That is a fifth distinct instance of the family and it
+has resisted the same machinery as the rest.
+
+## Status of the element-union family
+
+`plcfrs`, `rdb` (flag-only), and `linalg`, `voronoi2`, `sudoku3`,
+`quameon` (which uncapping would convert into runtime aborts, see above).
+
+**Five mechanisms have been built and measured against this family this
+session, and none reaches it:**
+
+| | result |
+| --- | --- |
+| `CS_DEF_PARTITION` (route 4) | splits, but these are `defs=1` or over-cap |
+| ladder routes 1 and 3 | −45 contours corpus-wide, no verdicts |
+| contour reuse (step 6) | fires on 2 of 9 programs, no totals change |
+| `PYC_ESFORCS` / type-side third clause | 427 of 428 decline `no_groups` |
+| `PYC_CSCALLSITE` demand partition | fixed 1 program, 0 net |
+
+The common shape is a container with ONE creation point whose element
+receives two types through paths that agree on argument types and on call
+site. Neither CS-side partitioning (nothing to partition) nor ES-side
+splitting (nothing to split on) can separate that, and this issue's
+conclusion stands: **the next attempt should not be a sixth splitter.**
+
+What has actually moved this family, all session, is finding the specific
+upstream merge and fixing it — `__delitem__`'s false `merge_in`,
+`heapq`'s `[n-1:n] = []`, ifa/139's arity hole. Each was a single wrong
+edge, found with a probe, not a new mechanism. `rdb`'s remaining step is
+of that kind.
