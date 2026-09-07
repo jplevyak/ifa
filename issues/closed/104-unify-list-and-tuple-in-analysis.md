@@ -1155,3 +1155,28 @@ anything about arity.
 So this issue's finding stands as originally written — pyc handles
 mixed-arity homogeneous tuples, and the six reproducer shapes built here
 all run correctly.
+
+## `PYC_RECVFAN` was REMOVED from the code, 2026-09-07
+
+The flag this section measures no longer exists. It was deleted on the
+author's directive — *"ifa is demand splitting, never arbitrary
+splitting. if RECVFAN is arbitrary remove the option entirely from the
+code"* — because it fanned a method EntrySet once per receiver
+CreationSet whenever the receiver's CSs were all containers, with no
+demand test in the path: the partition size was the RECEIVER COUNT, the
+same defect this tree already names for `split_es_by_call_site` mode 1
+("a FAN-OUT, not a separation"). Modes `>= 2` also lifted the
+PER_CS_RECEIVER quiescence gate, so the fan preempted the finer stages
+that exist to make it unnecessary.
+
+Deleting rather than defaulting it off is deliberate: an off-by-default
+arbitrary lever still gets reached for the moment a program resists, and
+it reads as sanctioned because it is in the tree. Measurements above that
+cite it stand as history; they are not a route to a fix.
+
+The demand it was groping at is real and still open — a union receiver
+whose SUM has no element channel reaching a method needing
+`sizeof_element`. That is a REPRESENTATION demand and belongs behind
+`IFACallbacks` as a test ON the receiver, not a fan OVER receivers. See
+[143](../143-shared-container-method-contours-refuse-cs-splits.md) for the
+same coupling seen from the CreationSet side.

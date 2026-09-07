@@ -1036,15 +1036,16 @@ had been masking. Isolated for the first time 2026-09-07:
 | `kanoodle` | `run_rc=0`, stdout `NO` | `run_rc=139` (SIGSEGV) | — |
 
 `bh` is the more serious of the two: it is the only program in the corpus
-that RAN cleanly at the default and aborts under the flag. Its shape is
-[123](123-CGEN-union-receiver-field-access-has-no-discrimination.md)'s
-exactly — a field read whose receiver is a union codegen cannot
-discriminate, so the getter falls through to the assert. That is the
-predictable cost of merging first: a read that was monomorphic per
-CreationSet at the default becomes polymorphic when the CreationSets
-merge, and the demand splitter has to separate them again before codegen
-sees it. If it does not, 123's missing discrimination is what catches the
-program.
+that RAN cleanly at the default and aborts under the flag. **Root-caused
+2026-09-07 — see [143](143-shared-container-method-contours-refuse-cs-splits.md).**
+The `getter not resolved` assert is downstream of three `__slots__` string
+literals merging into the node lists; what makes it unfixable by THIS
+issue's mechanisms is that `list.append` and `list.__setitem__` each have
+ONE EntrySet program-wide, and they write the whole element union back
+into every receiver CreationSet. Forcing route 4 to partition the merged
+CS into one contour per creation point leaves all of them irrepresentable.
+Separating containers is pointless while a shared method contour re-fuses
+their element channels.
 
 **So the flip blocker list is now exactly four**, in priority order:
 `bh` (ran → abort), `rdb` and `plcfrs` (compile failures), `kanoodle`
@@ -1129,3 +1130,52 @@ upstream merge and fixing it — `__delitem__`'s false `merge_in`,
 `heapq`'s `[n-1:n] = []`, ifa/139's arity hole. Each was a single wrong
 edge, found with a probe, not a new mechanism. `rdb`'s remaining step is
 of that kind.
+## The ripeness wait went with the cap (2026-09-07)
+
+`kCsDefSplitRipe = 3` — "wait three consecutive passes before partitioning
+on a non-quiescent pass" — was removed, along with `defsplit_offers` /
+`defsplit_last_pass` on `CreationSet` and the `PYC_CSDEFSPLIT=2` arm.
+
+**Its recorded justification was explicitly paired to the cap.** From this
+issue, above: *"`sha`'s `cs=1054` carries `defs=18` at pass 1 — over the
+cap — but only `defs=6` by the time it ripens. Waiting does not merely
+find a safe moment; it lets the def count settle into the cap's range. The
+cap and the wait are complementary."* With no cap there is no range to
+settle into, so the stated purpose is void by construction.
+
+**It was also actively harmful, because a finer rung firing RESET the
+count.** On `bh`, `cs=1180` (defs=8, element union `{Body, str}`) reached
+`offers=1` then `2`, the ladder split it, and the counter restarted —
+twice, at p=0–2 and again at p=27–29 — so the rung never acted on the
+CreationSet that needed it. On `sudoku4` the wait is the entire difference
+between compiling and failing with `'str' is blind-cast to 'set'`
+(ifa/123): that program compiled in the capped arm, the force arm and at
+the default, and failed ONLY with cap-removed-plus-wait.
+
+**Finer-rungs-first is not lost.** The ladder (routes 1 and 3) runs inside
+`split_css_by_defs` *before* the wholesale partition, so every candidate
+still gets finer refusal on every pass. What is gone is only the
+three-pass DEFERRAL, which asked the coarsest rung to wait on a clock
+rather than on the finer rungs actually declining.
+
+| flag arm, all at this tree | differs from default | container CS |
+| --- | --- | --- |
+| wait present | 5 (`bh`, `kanoodle`, `plcfrs`, `rdb`, `sudoku4`) | 3269 |
+| wait skipped via `PYC_CSDEFSPLIT=2` | 4 (`bh`, `kanoodle`, `plcfrs`, `rdb`) | 3260 |
+| wait REMOVED from the code | 4 (`bh`, `kanoodle`, `quameon`, `rdb`) | 3281 |
+
+### A caution the last two rows earn: the flag arm is layout-sensitive
+
+Rows 2 and 3 are **semantically identical builds** — `force` gated nothing
+but the wait, and the counter update around it was pure bookkeeping — yet
+they disagree on which program diverges (`plcfrs` vs `quameon`) and on the
+contour total (3260 vs 3281). The only difference between them is that row
+3 deleted two `int`s from `CreationSet`.
+
+So some part of the analysis still depends on memory layout — allocation
+or iteration order that `qsort_by_id` does not cover. That is a real
+defect worth its own investigation, and until it is found, **A/B
+comparisons on this arm carry roughly ±1 program of noise**; a
+one-program difference is not by itself evidence. The aggregate (5 → 4)
+is reproduced by both no-wait builds and is the finding; the identity of
+the fourth program is not.

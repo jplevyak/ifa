@@ -8192,8 +8192,13 @@ static int csdefsplit_enabled() {
 }
 
 // shedskin's route-4 fan-out cap (`infer.py:1576`: `1 < len(csites) < 10`)
-// was copied here and REMOVED again 2026-09-07. Kept as a symbol because
-// `PYC_CSDEFSPLIT=2` still uses it to mean "ignore the ripeness wait too".
+// was copied here and REMOVED again 2026-09-07. The symbol survives only
+// because `split_es_by_call_site` still reads it -- and there it is wrong
+// for a different reason, capping on the CALLER count when mode 2's
+// partition size is the number of distinct element types.
+//
+// PYC_CSDEFSPLIT is 0/1 now: 2 used to mean "ignore the cap and the
+// ripeness wait", and neither exists any more.
 //
 // Why it was wrong here. shedskin caps route 4 because it is the coarsest
 // rung and its finer ones usually carry the load; a ten-way merge is
@@ -8219,28 +8224,12 @@ static int csdefsplit_enabled() {
 // comparison had been against a standard the default does not meet.
 static const int kCsDefSplitMax = 10;
 
-// ifa/133: how many CONSECUTIVE passes a CreationSet must carry the same
-// unactioned confluence before this stage will partition it on a pass that
-// is not quiescent.
-//
-// This replaces the global `if (!analyze_again)` gate for long-standing
-// candidates, and the reason is measured. That gate asks a GLOBAL question
-// -- "did anything anywhere in the program find work this pass?" -- to
-// answer a LOCAL one, which per the CSM_ELEMENT_CS placement comment is
-// "could a finer route separate THIS conflict with more precision?".
-// Program-wide quiescence is a bad proxy: on `sha` under PYC_CSDCPA1=2,
-// cs=1054 was dropped as a candidate on 26 of 28 passes and the gate
-// opened on ZERO of them, purely because unrelated functions were still
-// splitting. `builtins` reaches the stage twice on a comparable program.
-// The two differ only in how noisy the rest of the program is, which is
-// not a property either CreationSet has anything to do with.
-//
-// Consecutive recurrence is the local form of the same protection: a
-// candidate that is still here after N passes has been offered to every
-// finer stage N times and none of them took it. Precision-first is
-// preserved -- a conflict a finer route CAN separate stops recurring, so
-// it never ripens.
-static const int kCsDefSplitRipe = 3;
+// The ripeness threshold that used to live here (kCsDefSplitRipe = 3) was
+// removed 2026-09-07 with the cap it was paired to. See the note at its
+// use site in split_css_by_defs: a finer rung firing RESET the count, so
+// on `bh` the rung never acted on the CreationSet that needed it, and on
+// `sudoku4` the wait was the difference between compiling and failing.
+// Finer-rungs-first survives as the ladder's in-pass ordering.
 
 // ifa/133 steps 3-6: shedskin's finer ladder rungs, tried BEFORE the
 // wholesale partition. Default 0 while being measured. A BITMASK, because
@@ -8761,6 +8750,66 @@ static void report_cs_flow_graphs() {
   }
 }
 
+// ifa/143: the demand for a CreationSet split lives ON THE CREATION SET.
+//
+// Route 4's candidate list used to be `tc_cs_dropped` and nothing else --
+// and that Vec is populated in exactly one place, the `else` branch of
+// stage 1's TYPE_CONFLUENCE handler, where a confluence turns out to sit
+// on a CreationSet contour rather than an EntrySet. So the coarsest rung
+// was reachable ONLY through a finer rung's detection.
+//
+// ifa/142 proved that is precisely backwards for the case route 4 exists
+// to answer. Once an element union forms, every writer carries the whole
+// union, so `etype == stype` on every edge and TYPE_CONFLUENCE HAS
+// NOTHING TO SEE -- the CreationSet is never dropped, never becomes a
+// candidate, and the one mechanism able to separate it is never told.
+// Measured on `bh`: cs=1180 holds 8 creation points and an element union
+// of {Body, str} (three `__slots__` string literals merged with the node
+// lists), and appears as a candidate in only 4 of 30 passes -- in each of
+// which a finer ladder rung had already fired that pass.
+//
+// So detect the demand where it lives. An element channel whose types
+// cannot share a representation is a demand by itself, whether or not any
+// confluence fired. This is not provenance and not structure: it asks what
+// the deduced types ARE.
+//
+// Two unions are NOT a demand and must not be flagged:
+//   - anything with `nil_type` in it -- {None, Cell} is representable, and
+//     `bh`'s `subp` legitimately holds it. Nil is skipped entirely.
+//   - a pure-numeric mix -- {int64, float64} is resolved by
+//     `coerce_annotate`, so flagging it would split what coercion fixes.
+//
+// `mixed_basics` is NOT this test and cannot stand in for it: it counts
+// only BASIC types, so a {Body, str} union has one basic and reads as
+// uniform. Measured on `bh`, that is exactly why the third clause below
+// declined on cs=1606 -- the union it exists to separate was invisible to
+// the predicate guarding it.
+static bool elem_irrepresentable(AVar *elem) {
+  if (!elem || !elem->out) return false;
+  Vec<Sym *> basics;
+  int nonbasics = 0, all_num = 1;
+  for (CreationSet *e : *elem->out) {
+    if (!e || !e->sym || e->sym == sym_nil_type) continue;
+    if (Sym *b = to_basic_type(e->sym->type)) {
+      basics.set_add(b);
+      if (!b->num_kind) all_num = 0;
+    } else
+      ++nonbasics;
+  }
+  const int nb = basics.set_count();
+  // A {container-or-class, scalar} union: pyc does not box, so it has no
+  // representation (issues/018, and the message
+  // `cg_fail_unrepresentable_container_union` emits downstream).
+  if (nb >= 1 && nonbasics > 0) return true;
+  // Two distinct non-numeric basics, e.g. {int64, str}.
+  return nb > 1 && !all_num;
+}
+
+static bool cs_elem_irrepresentable(CreationSet *cs) {
+  if (!cs || !cs->sym || !cs->sym->element || !cs->sym->element->var || !cs->added_element_var) return false;
+  return elem_irrepresentable(unique_AVar(cs->sym->element->var, cs));
+}
+
 [[nodiscard]] static int split_css_by_defs(int quiescent) {
   if (!csdefsplit_enabled()) return 0;
   const bool dbg = getenv("IFA_DBG_CSDEFSPLIT") != nullptr;
@@ -8769,12 +8818,32 @@ static void report_cs_flow_graphs() {
   // reached with an empty candidate list, or every candidate was filtered
   // as dead -- and they are not the same finding. Print on entry so the
   // three can be told apart.
-  if (dbg) fprintf(stderr, "[csdefsplit] p=%d ENTER candidates=%d\n", analysis_pass, tc_cs_dropped.n);
-  if (!tc_cs_dropped.n) return 0;
   int analyze_again = 0;
   Vec<CreationSet *> css;
   for (CreationSet *cs : tc_cs_dropped)
     if (cs && fa->css_set.set_in(cs)) css.set_add(cs);
+  const int from_confluence = css.set_count();
+  // ifa/143: add every live CreationSet carrying its own demand, so the
+  // rung does not depend on TYPE_CONFLUENCE having seen it. PYC_CSDEMAND=0
+  // restores the confluence-only candidate set, for attributing a change
+  // to this clause rather than guessing at it.
+  static int csdemand = -1;
+  if (csdemand < 0) {
+    cchar *dv = getenv("PYC_CSDEMAND");
+    csdemand = dv ? atoi(dv) : 1;
+  }
+  if (csdemand)
+    for (CreationSet *cs : fa->css)
+      if (cs && cs->sym && !css.set_in(cs) && cs_elem_irrepresentable(cs)) {
+        css.set_add(cs);
+        if (dbg)
+          fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s DEMAND-ADDED defs=%d\n", analysis_pass, cs->id,
+                  cs->sym->name ? cs->sym->name : "?", cs->defs.set_count());
+      }
+  if (dbg)
+    fprintf(stderr, "[csdefsplit] p=%d ENTER candidates=%d (confluence=%d demand=%d)\n", analysis_pass,
+            css.set_count(), from_confluence, css.set_count() - from_confluence);
+  if (!css.n) return 0;
   css.set_to_vec();
   qsort_by_id(css);
   for (CreationSet *cs : css) {
@@ -8785,11 +8854,6 @@ static void report_cs_flow_graphs() {
     Vec<AVar *> defs;
     for (AVar *d : cs->defs)
       if (d && d->cs_map && d->cs_map->get(cs->sym) == cs) defs.add(d);
-    // PYC_CSDEFSPLIT=2 is the EXPERIMENT arm (ifa/133): ignore the cap
-    // and the ripeness wait, to establish what this mechanism can reach
-    // at all. Not a shipping mode. Measured 2026-09-06: it fixes 4 of
-    // ifa/129's 9 group-A corpus programs.
-    const bool force = csdefsplit_enabled() >= 2;
     // ifa/129 third clause, FEASIBILITY PROBE. A CreationSet with ONE
     // creation point and an irrepresentable element cannot be split by
     // creation point -- there is nothing to partition. The separation has
@@ -8837,7 +8901,7 @@ static void report_cs_flow_graphs() {
       AVar *elem = cs->sym->element && cs->sym->element->var && cs->added_element_var
                        ? unique_AVar(cs->sym->element->var, cs)
                        : nullptr;
-      if (d && d->contour_is_entry_set && elem && mixed_basics(elem)) {
+      if (d && d->contour_is_entry_set && elem && elem_irrepresentable(elem)) {
         if (split_es_by_call_site((EntrySet *)d->contour, elem, dbg, build_cs_flow_graph(cs))) {
           analyze_again = 1;
           continue;
@@ -8850,31 +8914,32 @@ static void report_cs_flow_graphs() {
                 cs->id, cs->sym->name ? cs->sym->name : "?", defs.n);
       continue;
     }
-    // Ripeness: consecutive passes this candidate has been offered here
-    // without being acted on. Counted for EVERY viable candidate, whether
-    // or not this pass will act, because the count is the history.
+    // The RIPENESS WAIT was removed 2026-09-07, with the cap that
+    // justified it. Its recorded rationale in ifa/133 was explicitly
+    // paired to the cap -- "`sha`'s cs=1054 carries defs=18 at pass 1 --
+    // over the cap -- but only defs=6 by the time it ripens. Waiting does
+    // not merely find a safe moment; it lets the def count settle into the
+    // cap's range. The cap and the wait are complementary." With no cap
+    // there is no range to settle into, so the stated purpose is void by
+    // construction.
     //
-    // Counted on the LINEAGE ROOT (`split_origin`, durable and already
-    // collapsed to the root at construction) rather than on the
-    // CreationSet object. Under PYC_CSDCPA1 the CS population churns every
-    // pass -- measured on `tests/splitter_mark_type.py`, the same offending
-    // list is cs=1015 on pass 2 and cs=1049/1050/1051 on pass 3 -- so a
-    // per-object counter resets before it can ever reach the threshold and
-    // the gate never opens. That is the same failure as the quiescence gate
-    // it replaced, arrived at from the other direction.
-    CreationSet *ripe_key = cs->split_origin ? cs->split_origin : cs;
-    if (ripe_key->defsplit_last_pass == analysis_pass - 1)
-      ++ripe_key->defsplit_offers;
-    else if (ripe_key->defsplit_last_pass != analysis_pass)
-      ripe_key->defsplit_offers = 1;
-    ripe_key->defsplit_last_pass = analysis_pass;
-    if (!quiescent && !force && ripe_key->defsplit_offers < kCsDefSplitRipe) {
-      if (dbg)
-        fprintf(stderr, "[csdefsplit] p=%d cs=%d root=%d sym=%s defs=%d WAIT (offers=%d < %d, not quiescent)\n",
-                analysis_pass, cs->id, ripe_key->id, cs->sym->name ? cs->sym->name : "?", defs.n,
-                ripe_key->defsplit_offers, kCsDefSplitRipe);
-      continue;
-    }
+    // It was also actively harmful, because a finer rung firing RESET the
+    // count. Measured on `bh`: cs=1180 (defs=8, element union {Body, str})
+    // reached offers=1 and 2, then the ladder split it and the counter
+    // restarted -- twice, at p=0-2 and again at p=27-29 -- so the rung
+    // never acted on the CreationSet that needed it. On `sudoku4` the wait
+    // is the whole difference between compiling and failing with
+    // `'str' is blind-cast to 'set'` (ifa/123).
+    //
+    // Corpus, flag arm, both at this tree: WITH the wait, 5 programs
+    // diverge from the default (adding sudoku4) at 3269 container CSs;
+    // WITHOUT it, 4 diverge at 3260. Strictly better on both metrics.
+    //
+    // "Finer rungs first" is NOT lost: the ladder below runs before
+    // wholesale separation in this very function, so routes 1 and 3 still
+    // get first refusal on every candidate, every pass. What is gone is
+    // only the three-pass DEFERRAL, which asked the coarsest rung to wait
+    // on a clock rather than on the finer rungs actually declining.
     // ifa/133 step 5: the finer rungs first. Wholesale is shedskin's route
     // 4 and belongs LAST -- it gives every creation point its own contour
     // where routes 1 and 3 separate the same conflict into two, which is
@@ -9395,29 +9460,36 @@ static void clear_splits() {
 // every stage above found nothing, and reuses split_edges'
 // find_or_make_filtered_entry_set routing, so products are re-FOUND
 // (not re-minted) across passes -- the issue 033 stability rule.
-// ifa/issues/104 option 1: fan a receiver position per CreationSet even
-// when the CSs are of DIFFERENT container classes. The stage below
-// otherwise bails on a mixed-class receiver ("one class per split"), and
-// `{list, tuple}` is exactly that case -- which is why the union survives
-// into the shared accessors. Measured on plcfrs: 61 of the mixed
-// partitions are `__getitem__`, plus __eq__/len/__len__/__iter__/__lt__.
+// PYC_RECVFAN (ifa/issues/104 option 1) was REMOVED 2026-09-07, on the
+// author's directive: IFA is demand splitting, never arbitrary splitting.
 //
-// This is what shedskin gets for free: list<T>::__getitem__ and
-// tuple2<A,B>::__getitem__ are separate template instantiations, so no
-// single __getitem__ ever sees a union.
-static int recvfan_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_RECVFAN");
-    e = v ? atoi(v) : 0;
-  }
-  return e;
-}
-
-// A container CreationSet: has an element, i.e. list/tuple/dict/set.
-static bool cs_is_container(CreationSet *cs) {
-  return cs && cs->sym && cs->sym->element;
-}
+// It set `mixed_container = true` for ANY receiver whose CreationSets were
+// all containers -- its own comment said "deliberately NOT requiring the
+// classes to DIFFER" -- and then fanned the EntrySet once per receiver
+// CreationSet. There was no demand test anywhere in that path. The
+// partition size was the RECEIVER COUNT, which is the same defect this
+// file already names for `split_es_by_call_site` mode 1: "a FAN-OUT, not a
+// separation -- the partition size is the caller count rather than the
+// number of distinct element types". Modes >= 2 additionally lifted the
+// quiescence gate, so the fan preempted the finer stages that exist to
+// make it unnecessary.
+//
+// Measured on `bh` before removal, and the numbers are the tell: =2 left 1
+// warning, =3 left 5 (MORE splitting, WORSE result), and =2 combined with
+// a forced route 4 cleared the element union but introduced new
+// `unresolved call '__init__'` and `matching function not found` failures.
+// Splitting past what demand justifies multiplies contours until dispatch
+// can no longer resolve them.
+//
+// The demand it was groping at is real and still open: a union receiver
+// whose SUM has NO element channel reaching a method that needs
+// `sizeof_element` (ifa/104's `{list, tuple}`, ifa/109's sunfish
+// `tuple | tuple` slice). That is a representation demand and belongs
+// behind IFACallbacks as a test on the receiver, not as a fan over
+// receivers. Re-adding a fan is not the fix.
+//
+// Removal is behaviour-preserving: the lever defaulted to 0, so
+// `mixed_container` was always false and `per_cs_forced` always 0.
 
 static bool cs_is_per_cs_method_class(CreationSet *cs) {
   if (!cs || !cs->sym) return false;
@@ -9425,13 +9497,6 @@ static bool cs_is_per_cs_method_class(CreationSet *cs) {
   Sym *t = cs->sym->type ? unalias_type(cs->sym->type) : 0;
   return t && t->clone_methods_per_cs;
 }
-
-// ifa/issues/104: when true, this stage is running OUTSIDE its usual
-// quiescence gate and must restrict itself to the mixed-container
-// receivers it was lifted for -- fanning the ordinary
-// per-cs-method-class receivers early perturbs stages 1-5, which is what
-// the gate exists to prevent (measured: 19 suite failures).
-static int per_cs_forced = 0;
 
 [[nodiscard]] static int split_for_per_cs_method_receivers() {
   int analyze_again = 0;
@@ -9454,38 +9519,12 @@ static int per_cs_forced = 0;
       if (!av || !av->out || !av->out->type || av->out->type->sorted.n < 2) continue;
       bool all_flagged = true;
       Sym *cls = 0;
-      // ifa/issues/104: a receiver that is a MIXED-CLASS set of
-      // containers (the `{list, tuple}` case) is fanned per CS when
-      // PYC_RECVFAN is on, bypassing both the per-cs-method-class gate
-      // and the one-class-per-split rule below.
-      bool mixed_container = false;
-      if (recvfan_enabled()) {
-        mixed_container = true;
-        Sym *c0 = 0;
-        for (CreationSet *cs : av->out->type->sorted) {
-          if (!cs_is_container(cs)) { mixed_container = false; break; }
-          if (!c0) c0 = cs->sym;
-          else if (c0 != cs->sym) c0 = (Sym *)-1;
-        }
-        // NOTE deliberately NOT requiring the classes to DIFFER. sunfish
-        // slices a receiver whose type is `tuple | tuple` -- two distinct
-        // CONCRETE tuple types, same class. Each has an element; their
-        // SUM does not, so __pyc_getslice__'s `sizeof_element(self)`
-        // fails at codegen with "non-container type". Fanning the
-        // receiver per CreationSet gives each clone a monomorphic
-        // receiver, which is what dispatch is for -- ifa/issues/109.
-        (void)c0;
-      }
-      if (!mixed_container)
       for (CreationSet *cs : av->out->type->sorted) {
         if (!cs_is_per_cs_method_class(cs)) { all_flagged = false; break; }
         Sym *t = cs->sym->clone_methods_per_cs ? cs->sym : unalias_type(cs->sym->type);
         if (!cls) cls = t;
         else if (cls != t) { all_flagged = false; break; }  // one class per split
       }
-      if (mixed_container) all_flagged = true;
-      // Outside the quiescence gate, do the mixed-container fan only.
-      if (per_cs_forced == 1 && !mixed_container) continue;
       if (!all_flagged) continue;
       if (split_edges(av, 0, 0)) {
         analyze_again = 1;
@@ -9966,8 +10005,8 @@ static int cpa_enabled() {
   log(LOG_SPLITTING, "split_ess_for_mark_type %d\n", analyze_again);
   // 3) split based on setters of type
   // ifa/issues/055: PYC_SETTERGATE=1 lifts the quiescence gate on the
-  // SETTER stage, the same way PYC_RECVFAN=2 lifts it on
-  // PER_CS_RECEIVER. Measured on the plcfrs 9-line repro: the field
+  // SETTER stage, the way PYC_RECVFAN=2 used to on PER_CS_RECEIVER
+  // (removed 2026-09-07 as arbitrary splitting). Measured on the plcfrs 9-line repro: the field
   // whose union needs splitting IS collected as a type confluence (30
   // times), but split_ess_for_type finds work on every one of those
   // passes, so `!analyze_again` is false and compute_setters is never
@@ -10143,21 +10182,19 @@ static int cpa_enabled() {
   // clone_methods_per_cs classes (ifa/issues/045). Only on full
   // quiescence of stages 1-5 so it cannot perturb their
   // trajectories within a pass.
-  // ifa/issues/104: PYC_RECVFAN=2 also lifts the quiescence gate. The
-  // stage is otherwise STARVED on the programs this is aimed at --
-  // TYPE_CONFLUENCE fires every pass on plcfrs/rdb/sudoku5, so
-  // `!analyze_again` is never true and the receiver fan never runs at
-  // all. That is why RECVFAN=1 measured byte-identical to baseline.
-  if (!analyze_again || recvfan_enabled() >= 2) {
+  // The stage IS starved on plcfrs/rdb/sudoku5 -- TYPE_CONFLUENCE fires
+  // every pass there, so `!analyze_again` is never true and this never
+  // runs. PYC_RECVFAN=2 used to lift the gate for that reason and was
+  // removed 2026-09-07 (see the note at split_for_per_cs_method_receivers):
+  // lifting a quiescence gate to let an ARBITRARY fan run earlier answers
+  // starvation with more splitting rather than with a demand test. The
+  // starvation is real and still open; the answer has to be a reason this
+  // stage may act, not permission to act without one.
+  if (!analyze_again) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
     stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::PER_CS_RECEIVER;
-    // 2 = lifted gate, mixed-container receivers only (measured INERT --
-    // the {list,tuple} fan never fires). 3 = lifted gate, fan everything
-    // the stage already handles, which is where the win actually is.
-    per_cs_forced = analyze_again ? (recvfan_enabled() >= 3 ? 2 : 1) : 0;
     analyze_again = split_for_per_cs_method_receivers() || analyze_again;
-    per_cs_forced = 0;
     fa->stage_time[(int)FAPassStage::PER_CS_RECEIVER] += stage_timer.lap();
     if (analyze_again) {
       record_fa_event(FAPassStage::PER_CS_RECEIVER, analyze_again, ess0, css0, viol0);
