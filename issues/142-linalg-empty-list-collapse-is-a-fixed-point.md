@@ -1,0 +1,99 @@
+# 142 — linalg: the empty-list collapse reaches a self-referential fixed point
+
+**Status:** root-caused 2026-09-07, not fixed. `linalg` under
+`PYC_CSDCPA1=2`. The cleanest instance of
+[133](133-split-a-container-on-its-element-type.md)'s family, and the one
+that shows why every mechanism built for it declines.
+
+## Symptom
+
+```
+linalg.py:148:2498: warning: illegal call argument type 'n' illegal: list
+        m=n//2
+fail: a variable holding {int64, list, list, list, list, list, list, list, list, list}
+      has no representation: '__add__' resolved to the CONTAINER method
+```
+
+`binary(n)` is a plain recursive int function with two call sites —
+`binary(t)` where `t` iterates `reversed(range(1025))`, and `binary(m)`
+where `m = n//2`. `n` should be `int64` and holds `{int64, list x9}`.
+
+## The chain
+
+`reversed` (`__pyc__/05_builtins.py:306`) is
+
+```python
+def reversed(seq):
+    r = []
+    ...
+    r.append(seq[i])
+    return r
+```
+
+so its result carries whatever `r`'s CreationSet holds. Under one
+CreationSet per sym, that `[]` is one of **26** arity-0 creation points
+sharing `cs=1011`:
+
+```
+CSVARS cs=1011 sym=list vars=0 defs=26 arity=0 elem= int64 list x9
+  ELEMWRITER es=89  fun=__setitem__      type= int64 list#1011 list#1505 ...
+  ELEMWRITER es=356 fun=__add__          type= int64 list#1011 list#1505 ...
+  ELEMWRITER es=207 fun=append           type= int64 list#1011 list#1505 ...
+  ...
+```
+
+**The element contains the CreationSet itself** (`list#1011`) — linalg
+builds lists of lists, and the inner `[]` and the outer `[]` are both
+arity 0, so they are the same contour. And **every writer carries the
+identical full union**.
+
+## Why nothing separates it
+
+`IFA_DBG_CSFLOW`:
+
+```
+CSFLOW cs=1011 defs=26 sets=6 csites=20 (in_defs=19) empty=7
+  set[0] type= int64 list x9   targets=17  path=497  cps=20
+  set[1] type= list int64 list targets=1   path=29   cps=2
+  set[2] type= int64           targets=1   path=48   cps=3
+```
+
+- **Route 4 (wholesale) declines on the cap**, from pass 0 onward:
+  `[csdefsplit] p=0 cs=1011 defs=17 DECLINED (over cap)`. It is already
+  17 defs before the first split stage runs, and grows to 32.
+- **Routes 1 and 3 cannot separate it.** `set[0]` carries the FULL union
+  and covers 17 of the 20 targets and all 20 creation points. A
+  no-confusion split needs sites on exactly one assign set; a path
+  partition groups by the union of types on a site's paths — and
+  `set[0]`'s union subsumes every other set, so nearly every site shares
+  one signature.
+
+**This is the same fixed point `tests/splitter_mark_type.py`'s header
+describes, one level down.** There it is a formal: *"once {A,B} forms at
+append's value formal it is a fixed point — every edge carries {A,B}, so
+etype == stype and TYPE_CONFLUENCE has nothing left to see."* Here it is
+a CreationSet's element channel: once the union forms, every writer
+carries it, so no type-based partition can tell the contributors apart.
+
+## What would fix it, and what it costs
+
+Only separation by creation point can break a fixed point that every
+type-based test sees as uniform — and that is exactly route 4, which the
+cap refuses. Measured (`PYC_CSDEFSPLIT=2`): `linalg` compiles with the cap
+removed, **and then aborts at run time** (`rc=134`), while corpus
+container CreationSets go 2835 → 3273 (+15%).
+
+So the honest position is the one recorded in
+[133](133-split-a-container-on-its-element-type.md): raising the cap buys
+compile status, not working programs. `linalg` needs the collapse
+prevented rather than partitioned afterwards — the 26 arity-0 `[]`
+literals should not have become one contour in the first place.
+
+## What is NOT the cause
+
+- Not `reversed` — it has ONE contour here, called only with `range`.
+  Its `r = []` is a victim of the shared contour, not the source.
+- Not `binary` — one contour, two call sites, both legitimately `int`.
+- Not an arity bug: `cs=1011` is arity 0 throughout, and
+  [141](141-unrecorded-arity-is-not-varying-arity.md)'s tightening does
+  not touch it.
