@@ -2182,6 +2182,7 @@ Not one family. Measured under `PYC_CSDCPA1=2 PYC_CSLADDER=3`:
 | group | n | programs | first diagnostic |
 | --- | --- | --- | --- |
 | **A. non-container reached a container method** | 2 | `pystone`, `linalg` | `'__add__' resolved to the CONTAINER method` |
+| **(suite) compiler assert** | 1 | `test_heapq` | fixed — [138](138-argless-entryset-trips-a-compatibility-assert.md) |
 | **B. mixed basic types** | 4 | `othello2`, `rdb`, `sudoku5`, `plcfrs` | `'x' has mixed basic types` |
 | **C. non-convergence** | 1 | `othello3` | `no EntrySet progress for 120s` |
 | **D. C codegen errors** | 1 | `richards` | `incompatible integer to pointer conversion`, `no matching function` |

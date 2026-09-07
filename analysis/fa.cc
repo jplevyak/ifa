@@ -1462,7 +1462,25 @@ static int typekey_enabled();
 static int canon_enabled();
 
 static int edge_type_compatible_with_entry_set(AEdge *e, EntrySet *es, int fmark = 0) {
-  assert(e->args.n && es->args.n);
+  // ifa/138: this used to `assert(e->args.n && es->args.n)`, and the
+  // invariant does not hold. `set_entry_set` registers a new EntrySet in
+  // `fun->ess` (fa.cc:1665) and only THEN fills `es->args`, from
+  // `e->match->fun->positional_arg_positions` -- so an ES created by an edge
+  // whose match has no positional arguments stays permanently argless while
+  // still being a candidate in `find_best_entry_sets`. A later edge to the
+  // same Fun WITH arguments then compares against it and trips the assert.
+  // Measured on `tests/test_heapq.py` under PYC_CSDCPA1=2: `es=380
+  // fun=__lt__ es->args.n=0` against an edge with `e->args.n=3`.
+  //
+  // Returning -1 (reject) rather than 0 is deliberate: `entry_set_compatibility`
+  // treats 0 as merely "less compatible" (`val -= 4`) and would still be free
+  // to pick this contour on score, binding a 3-argument edge to a contour
+  // that never bound its formals. -1 is its only hard reject.
+  if (!e->args.n || !es->args.n) {
+    // Both empty is a genuine zero-argument shape with nothing to compare.
+    if (!e->args.n && !es->args.n) return 1;
+    return ++ic_arg, -1;
+  }
   if (!es->split) {
     for (MPosition *p : e->match->fun->positional_arg_positions) {
       AVar *es_arg = es->args.get(p), *e_arg = e->args.get(p);
