@@ -669,7 +669,24 @@ CreationSet *creation_point(AVar *v, Sym *s, int arity) {
         // it is on list layout and reads its length at runtime -- the
         // unknown-arity case, and the only one where merging arities is
         // representable.
-        if (arity >= 0 && x->static_arity >= 0 && x->static_arity != arity && !x->no_static_arity) continue;
+        // ifa/139: the guard has to reject an UNKNOWN incoming arity too.
+        // Written as `arity >= 0 && ...` it only fired when the new creation
+        // point had a known arity, so a runtime-length container joined a
+        // fixed-arity CreationSet unchecked -- and that merge is exactly as
+        // unrepresentable as a 2-vs-3 one, because the CS keeps its record
+        // layout (`vars.n` fixed) while now also holding a list whose length
+        // is not known until run time.
+        //
+        // Measured on `tests/builtins.py`: `[' '] * len("foobar")` produces a
+        // str list in `list.__mul__` with arity -1, which joined cs=996 --
+        // the arity-3 CreationSet of `[1,2,3]`, `[1,0,3]`, `[0,2,0]`,
+        // `[0,0,0]`. The result carries `vars=3 (int64)` AND `elem=str`, so
+        // `all(iterable)`'s loop variable unions int64 and str.
+        //
+        // The reverse direction stays as ifa/132 wrote it: a candidate that
+        // has ALREADY lost its static arity is on list layout and reads its
+        // length at run time, so merging any arity into it is representable.
+        if (x->static_arity >= 0 && !x->no_static_arity && (arity < 0 || x->static_arity != arity)) continue;
         cs = x;
         dbg_cs_route = "dcpa1";
         goto Lfound;
@@ -8586,8 +8603,26 @@ static void report_cs_vars() {
   if (!want) return;
   for (CreationSet *cs : fa->css) {
     if (!cs || !cs->sym || !cs->sym->name || strcmp(cs->sym->name, want)) continue;
-    fprintf(stderr, "CSVARS cs=%d sym=%s vars=%d defs=%d\n", cs->id, cs->sym->name, cs->vars.n,
-            cs->defs.set_count());
+    fprintf(stderr, "CSVARS cs=%d sym=%s vars=%d defs=%d arity=%d no_arity=%d elem=", cs->id, cs->sym->name,
+            cs->vars.n, cs->defs.set_count(), cs->static_arity, cs->no_static_arity ? 1 : 0);
+    // The ELEMENT channel, which is where a list-layout container's content
+    // lives -- `vars` is the positional/record channel and is empty for it.
+    // Printed read-only: only when the element AVar already exists, so this
+    // never calls the accessor that creates one.
+    if (cs->sym->element && cs->sym->element->var && cs->added_element_var) {
+      AVar *e = unique_AVar(cs->sym->element->var, cs);
+      if (e && e->out && e->out->type)
+        for (CreationSet *c : e->out->type->sorted)
+          if (c && c->sym) fprintf(stderr, " %s", c->sym->name ? c->sym->name : "?");
+    } else
+      fprintf(stderr, "(none)");
+    fprintf(stderr, "\n");
+    for (AVar *d : cs->defs) {
+      if (!d) continue;
+      EntrySet *des = d->contour_is_entry_set ? (EntrySet *)d->contour : nullptr;
+      fprintf(stderr, "  DEF av=%d es=%d fun=%s\n", d->id, des ? des->id : -1,
+              (des && des->fun && des->fun->sym && des->fun->sym->name) ? des->fun->sym->name : "(cs)");
+    }
     for (AVar *v : cs->vars) {
       if (!v) continue;
       fprintf(stderr, "  var=%s type=", (v->var && v->var->sym && v->var->sym->name) ? v->var->sym->name : "?");
