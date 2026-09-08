@@ -8289,24 +8289,53 @@ struct CSFlowGraph : public gc {
   }
 };
 
+// ifa/146 C: the CONTENT channel(s) this CreationSet's writers feed.
+//
+// A container's content is its generic ELEMENT; a plain class's content is
+// its MEMBERS (`cs->vars`). ifa/104 calls these the two content channels,
+// and this function used to read only the first -- so it returned null for
+// every non-container CreationSet, and `split_css_by_defs` had nothing to
+// group on and fell back to a per-creation-point FAN.
+//
+// Measured before this: on `bh`, 16 of 24 route-4 mints were `Vec3` and all
+// 16 came through that fan, leaving 18 of 20 `Vec3` contours byte-identical
+// across all 29 members. The fan is the arbitrary mechanism ifa/146 exists
+// to retire; giving the rung a real grouping key for plain classes is what
+// lets it go.
+//
+// Containers are UNCHANGED: when an element channel exists it is used
+// alone, exactly as before, so no container result moves.
+static void cs_content_avars(CreationSet *cs, Vec<AVar *> &out) {
+  if (cs->sym->element && cs->sym->element->var && cs->added_element_var) {
+    if (AVar *e = unique_AVar(cs->sym->element->var, cs)) out.add(e);
+    return;
+  }
+  for (AVar *v : cs->vars)
+    if (v && v->out) out.add(v);
+}
+
 static CSFlowGraph *build_cs_flow_graph(CreationSet *cs) {
-  if (!cs || !cs->sym || !cs->sym->element || !cs->sym->element->var || !cs->added_element_var) return nullptr;
-  AVar *elem = unique_AVar(cs->sym->element->var, cs);
-  if (!elem || !elem->out) return nullptr;
+  if (!cs || !cs->sym) return nullptr;
+  Vec<AVar *> content;
+  cs_content_avars(cs, content);
+  if (!content.n) return nullptr;
   CSFlowGraph *g = new CSFlowGraph;
   g->cs = cs;
-  // --- assign sets: incoming edges of the element, grouped by assigned type
-  for (AVar *b : elem->backward) {
-    if (!b || !b->container || !b->out || !b->out->type) continue;
-    int gi = -1;
-    for (int i = 0; i < g->keys.n; i++)
-      if (g->keys.v[i] == b->out->type) { gi = i; break; }
-    if (gi < 0) {
-      g->keys.add(b->out->type);
-      g->targets.add(new Vec<AVar *>);
-      gi = g->keys.n - 1;
+  // --- assign sets: incoming edges of the content, grouped by assigned type
+  for (AVar *cv : content) {
+    if (!cv || !cv->out) continue;
+    for (AVar *b : cv->backward) {
+      if (!b || !b->container || !b->out || !b->out->type) continue;
+      int gi = -1;
+      for (int i = 0; i < g->keys.n; i++)
+        if (g->keys.v[i] == b->out->type) { gi = i; break; }
+      if (gi < 0) {
+        g->keys.add(b->out->type);
+        g->targets.add(new Vec<AVar *>);
+        gi = g->keys.n - 1;
+      }
+      g->targets.v[gi]->set_add(b->container);
     }
-    g->targets.v[gi]->set_add(b->container);
   }
   if (!g->keys.n) return nullptr;
   // --- per assign set: backflow path, and its creation points
@@ -9032,15 +9061,23 @@ static bool cs_elem_irrepresentable(CreationSet *cs) {
     // `sudoku5` compile and run where the DEFAULT cannot compile it at all,
     // and takes three times the contours off.
     //
-    // PYC_CSDEFPART: 0 = the old fan, 1 = partition and decline when
-    // nothing names a partition, 2 = partition with the fan as fallback.
-    static int defpart = -1;
-    if (defpart < 0) {
-      cchar *pv = getenv("PYC_CSDEFPART");
-      defpart = pv ? atoi(pv) : 2;
-    }
+    // ifa/146 C, 2026-09-08: `PYC_CSDEFPART` and its fan REMOVED. The
+    // partition is now the only behaviour.
+    //
+    // The flag existed because the partition had no grouping key for a
+    // NON-container CreationSet -- `build_cs_flow_graph` read only the
+    // element channel, so it returned null for every plain class and mode 2
+    // fell back to the per-creation-point fan. Mode 1 (decline instead) was
+    // measured and cost five corpus programs, which is why the fan was kept.
+    //
+    // `cs_content_avars` fixes the cause instead: a plain class's content is
+    // its MEMBERS, so the graph is built over `cs->vars` when there is no
+    // element channel. With a real key the fan is never reached -- measured
+    // on `bh`, route-4 mints 24 -> 7 with ZERO fan splits, and `Vec3` lands
+    // on the same 6 contours the fan produced, by a demand-driven partition
+    // rather than an arbitrary one.
     Vec<AVar *> moved;
-    if (defpart) {
+    {
       // The signature is only meaningful for a def the graph actually
       // covers. `g->csites` (path nodes with no incoming edge) and
       // `cs->defs` are DIFFERENT AVar sets and can be disjoint -- the
@@ -9072,8 +9109,8 @@ static bool cs_elem_irrepresentable(CreationSet *cs) {
           }
       if (!informative) {
         // No def is on any path: the graph names no partition of THESE
-        // defs, which is the same situation as having no graph at all.
-        if (defpart >= 2) goto Lfan;
+        // defs, so there is nothing to act on. Declining is correct --
+        // fanning here is what ifa/146 C removed.
         if (dbg)
           fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d DECLINED (flow graph covers none of the defs)\n",
                   analysis_pass, cs->id, cs->sym->name ? cs->sym->name : "?", defs.n);
@@ -9088,13 +9125,6 @@ static bool cs_elem_irrepresentable(CreationSet *cs) {
         if (gid[(size_t)i] < 0) gid[(size_t)i] = ngroups++;
       }
       if (ngroups < 2) {
-        // PYC_CSDEFPART=2: partition where a flow graph names the groups,
-        // but FALL BACK to the fan where none exists. Splits the change in
-        // two so the container fix and the non-container decline can be
-        // attributed separately -- 15 of bh's 17 declines are "no flow
-        // graph", i.e. every plain class, where the decline turns the fan
-        // into nothing at all.
-        if (defpart >= 2 && !g) goto Lfan;
         if (dbg)
           fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d DECLINED (1 group: %s)\n", analysis_pass, cs->id,
                   cs->sym->name ? cs->sym->name : "?", defs.n,
@@ -9122,21 +9152,6 @@ static bool cs_elem_irrepresentable(CreationSet *cs) {
                   sig[(size_t)i].c_str());
         log(LOG_SPLITTING, "SPLIT CS BY DEF %d %s -> %d (av %d group %d)\n", cs->id,
             cs->sym->name ? cs->sym->name : "", ncs->id, defs.v[i]->id, gid[(size_t)i]);
-      }
-    } else {
-    Lfan:
-      for (int i = 1; i < defs.n; i++) {
-        AVar *v = defs.v[i];
-        CreationSet *new_cs = new CreationSet(cs);
-        new_cs->split = cs;
-        if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
-        v->cs_map->put(cs->sym, new_cs);
-        moved.set_add(v);
-        if (dbg)
-          fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s def av=%d -> cs=%d\n", analysis_pass, cs->id,
-                  cs->sym->name ? cs->sym->name : "?", v->id, new_cs->id);
-        log(LOG_SPLITTING, "SPLIT CS BY DEF %d %s -> %d (av %d)\n", cs->id, cs->sym->name ? cs->sym->name : "",
-            new_cs->id, v->id);
       }
     }
     if (moved.n) {

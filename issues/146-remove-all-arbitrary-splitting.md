@@ -108,7 +108,42 @@ demand at all — test 1 above fails outright. `PYC_CSDCPA1` is the
 experiment that removes it (start merged, one CreationSet per sym); the
 whole 129/133/144 line of work is what it takes to make that flippable.
 
-### C. `PYC_CSDEFPART=2`'s fan fallback — mine, shipped 2026-09-07
+### C. `PYC_CSDEFPART=2`'s fan fallback — DONE 2026-09-08
+
+**Removed**, along with the flag. The partition is now the only behaviour.
+
+The fan existed because the partition had no grouping key for a
+NON-container CreationSet: `build_cs_flow_graph` read only the ELEMENT
+channel, so it returned null for every plain class. Declining instead
+(mode 1) was measured and cost five corpus programs, which is why the fan
+was kept — treating the symptom.
+
+Fixed at the cause. `cs_content_avars` gives the graph the right content
+channel for each shape — ifa/104's two channels — using `cs->vars` when
+there is no element:
+
+```c
+static void cs_content_avars(CreationSet *cs, Vec<AVar *> &out) {
+  if (cs->sym->element && cs->sym->element->var && cs->added_element_var) {
+    if (AVar *e = unique_AVar(cs->sym->element->var, cs)) out.add(e);
+    return;                       // containers unchanged
+  }
+  for (AVar *v : cs->vars) if (v && v->out) out.add(v);
+}
+```
+
+Containers are untouched by construction, so no container result moves.
+
+Measured on `bh`: route-4 mints **24 → 7 with ZERO fan splits**, and `Vec3`
+lands on the **same 6 contours the fan produced** — the same precision, by a
+demand-driven partition instead of an arbitrary one. That is the outcome
+this issue wants: not a trade, a replacement.
+
+Corpus, default arm: **0 verdict changes**, container CreationSets
+2762 → 2736. Flag arm at this tree: 2153, −22% against the default. All six
+gates pass.
+
+### C (original statement, kept for the record). `PYC_CSDEFPART=2`'s fan fallback — mine, shipped 2026-09-07
 
 `split_css_by_defs` partitions by assign-set signature, but when
 `build_cs_flow_graph` returns null — which it does for EVERY non-container
@@ -153,8 +188,8 @@ B is the goal (it is what `PYC_CSDCPA1` exists to retire) but depends on
 independent of the flag. C is the smallest and is a regression I introduced.
 D and E are deletions of dead-but-sanctioned code.
 
-**A is DONE** (2026-09-08). Remaining: **C**, then **D**/**E**, with **B**
-landing as the flag flip.
+**A and C are DONE** (2026-09-08). Remaining: **D**/**E**, then **F**'s
+audit, with **B** landing as the flag flip.
 
 ## Verification
 
