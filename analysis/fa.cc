@@ -8582,13 +8582,13 @@ static int cscallsite_enabled() {
   return e;
 }
 
-// Mode 1 (superseded, kept as the measurement): one contour per caller.
-// A FAN-OUT, not a separation -- the partition size is the caller count
-// rather than the number of distinct element types, which is why it cost
-// contours and made plcfrs and sudoku5 worse. Mode 2 below is the
-// demand-driven form.
+// Mode 1 -- one contour per caller -- was DELETED 2026-09-08 on the
+// author's imperative ("no arbitrary splitting, only demand splitting").
+// It was a FAN-OUT, not a separation: partition size = caller count rather
+// than the number of distinct element types, which is why it cost contours
+// and made plcfrs and sudoku5 worse. `PYC_CSCALLSITE` is now off/on.
 //
-// Mode 2: partition the callers BY WHICH ELEMENT TYPE THEY CONTRIBUTE.
+// What remains: partition the callers BY WHICH ELEMENT TYPE THEY CONTRIBUTE.
 // The demand is the irrepresentable union; the assign sets of the
 // CSFlowGraph are its parts; and each in-edge is placed by which assign
 // set its returned container (`AEdge::rets`, the caller-side result AVars)
@@ -8601,7 +8601,14 @@ static int cscallsite_enabled() {
   Vec<AEdge *> all_edges;
   for (AEdge *ee : es->edges) if (ee && ee->args.n) all_edges.add(ee);
   qsort_by_id(all_edges);
-  if (all_edges.n < 2 || all_edges.n >= kCsDefSplitMax) {
+  // ifa/143: the cap here USED to be `all_edges.n >= kCsDefSplitMax`, a
+  // CALLER-COUNT cap on a partition whose size is the number of distinct
+  // assign-set signatures, not the number of callers. A twelve-caller
+  // function contributing two element types was refused for a fan-out it
+  // would never have produced. Measured on `bh`: 152 of 182 refusals at
+  // PYC_CSCALLSITE=2 were this cap. Only "fewer than two edges" is a real
+  // reason to decline -- there is then nothing to partition.
+  if (all_edges.n < 2) {
     if (dbg)
       fprintf(stderr, "[cscallsite] p=%d es=%d fun=%s DECLINED edges=%d\n", analysis_pass, es->id,
               (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?", all_edges.n);
@@ -8614,7 +8621,31 @@ static int cscallsite_enabled() {
   dec->fsetters = SPLIT_TYPE;
   dec->fmark = SPLIT_VALUE;
   dec->all_edges.copy(all_edges);
-  if (cscallsite_enabled() >= 2 && g && g->keys.n > 1) {
+  // ifa/143, author's imperative: no arbitrary splitting, only demand
+  // splitting. What follows is the ONLY path -- group the in-edges by which
+  // assign sets of the demand their returned container reaches, so the
+  // demand names the parts and the call site only says which edge belongs
+  // to which. Partition size is the number of distinct signatures.
+  //
+  // The `else` that used to sit below this was a per-caller FAN: one group
+  // per edge, partition size = CALLER COUNT. That is the same defect as the
+  // deleted PYC_RECVFAN, and this file's own comment on it already said so
+  // ("A FAN-OUT, not a separation ... which is why it cost contours and
+  // made plcfrs and sudoku5 worse"). It was reachable two ways -- as
+  // PYC_CSCALLSITE=1, and, less obviously, as the FALLBACK whenever mode 2
+  // had no usable flow graph. Measured on `bh` at mode 2: of three splits,
+  // one still came through the fan (`p=3 es=128 fun=reversed`). Deleted.
+  //
+  // With no fan, PYC_CSCALLSITE collapses to off/on: any nonzero value
+  // means demand-driven.
+  if (!g || g->keys.n < 2) {
+    if (dbg)
+      fprintf(stderr, "[cscallsite] p=%d es=%d fun=%s DECLINED: demand names no parts (%s)\n", analysis_pass,
+              es->id, (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?",
+              g ? "one assign set" : "no flow graph");
+    return 0;
+  }
+  {
     // Signature per edge: the set of assign sets its returned container
     // reaches. Edges with equal signatures share a contour.
     Vec<AEdge *> reps;
@@ -8643,12 +8674,8 @@ static int cscallsite_enabled() {
       fprintf(stderr, "[cscallsite] p=%d es=%d fun=%s DEMAND-SPLIT edges=%d assignsets=%d -> %d group(s)\n",
               analysis_pass, es->id, (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?",
               all_edges.n, g->keys.n, groups.n);
-  } else {
-    for (int i = 1; i < all_edges.n; i++) {
-      Vec<AEdge *> *grp = new Vec<AEdge *>;
-      grp->add(all_edges.v[i]);
-      dec->groups.add(grp);
-    }
+  }
+  {
     if (dbg)
       fprintf(stderr, "[cscallsite] p=%d es=%d fun=%s SPLIT edges=%d -> %d group(s)\n", analysis_pass, es->id,
               (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?", all_edges.n,
