@@ -197,7 +197,73 @@ now pins that the shape costs nothing to resolve without marks:
 `CALLS: direct=69 dynamic=0`, byte-identical to what MARK_TYPE produced.
 The STAGES line lost `MARK_TYPE` and gained nothing.
 
-### E. `PYC_CPA` — NOT arbitrary; this entry was wrong
+### E. `PYC_CPA` — ARBITRARY after all. My "cleared" verdict was wrong.
+
+**Corrected 2026-09-08 on the author's objection:** *"CPA isn't pure demand
+imo. pure demand and dispatch aware filtering e.g. of the receiver for
+single dispatch oop should subsume blind CPA, right?"* Yes, on both halves.
+
+I cleared it by reasoning "the union is the demand and its members are the
+parts". **That is the error.** A union's EXISTENCE is not a demand. A demand
+is an observed distinction that REQUIRES separation — a type violation, an
+irrepresentable union, a dispatch that cannot resolve. CPA asks for none of
+them:
+
+```c
+for (MPosition *p : es->fun->positional_arg_positions) {
+  AVar *av = es->args.get(p);
+  int n = av->out->type->sorted.n;
+  if (n < 2 || n > limit) continue;      // ANY formal with 2..N CreationSets
+```
+
+The whole function contains **zero** references to `violation`,
+`irrepresentable`, `mixed_basics`, `dispatch` or `unresolved` — it fans
+every positional formal whose type has 2..N CreationSets and has reached a
+fixpoint, whether or not anything downstream is harmed by the union. So
+question 1 answers itself: *would this split happen if the demand were
+absent?* Yes, always.
+
+**What should subsume it.** CPA is groping at dispatch precision. In
+single-dispatch OOP the position that determines dispatch is the RECEIVER,
+and it only needs separating where dispatch actually fails to resolve. So
+demand (an unresolved dispatch, or an irrepresentable union) plus
+dispatch-aware filtering of the receiver reaches every case CPA reaches,
+and:
+
+- fires only where resolution is actually blocked, not on every union;
+- acts on the ONE position that determines dispatch, not on all positional
+  formals;
+- therefore produces a strictly smaller partition for the same resolution.
+
+The cases CPA "fixes" that this would not touch are the ones nothing
+needed fixed.
+
+**Status: arbitrary, to be removed.** It is `PYC_CPA=0` by default, so it
+is dead weight rather than a live violation, and by the
+delete-don't-default rule it should go. Removing it is cheap; the
+replacement — receiver filtering keyed on unresolved dispatch — is the real
+work and is what should land first if anything currently depends on CPA
+being reachable. `tests/splitter_cartesian_product.py` pins it and would
+need the same treatment `splitter_mark_type.py` got.
+
+### The refinement this correction forces on the test itself
+
+Question 1 in the test above — *would this split happen if the demand were
+absent?* — is only as good as one's willingness to ask what the demand IS.
+Twice now I have accepted a fact about the program as though it were a
+demand:
+
+- here, "the formal's type is a union" (a fact) read as "the union must be
+  separated" (a demand);
+- earlier, in ifa/144, "the CreationSet has several creation points" (a
+  fact) read as licence to give each its own contour.
+
+**A demand is something OBSERVING a distinction and being unable to
+proceed.** A union, a multiplicity, a difference in provenance — these are
+all facts about the program. None of them is a demand until something reads
+one and fails.
+
+### E (superseded reading, kept for the record). `PYC_CPA` — NOT arbitrary; this entry was wrong
 
 **Audited 2026-09-08 and cleared.** The original entry here called it a fan
 on the strength of its test header's phrase *"fanning the contour into one
@@ -377,7 +443,8 @@ B is the goal (it is what `PYC_CSDCPA1` exists to retire) but depends on
 independent of the flag. C is the smallest and is a regression I introduced.
 D and E are deletions of dead-but-sanctioned code.
 
-**A and C are DONE**; **E** and **F** audited and cleared. **D is PARTIAL**
+**A and C are DONE**; **F** audited and cleared. **E is arbitrary** (my
+first verdict on it was wrong) and awaits removal plus its replacement. **D is PARTIAL**
 — three of four mark splitters removed, the fourth (MARK_SETTER) load-bearing
 for `voronoi2` and left in place with a measurement. Remaining: finish D,
 then **B** as the flag flip.
