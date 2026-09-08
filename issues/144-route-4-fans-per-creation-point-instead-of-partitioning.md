@@ -270,6 +270,69 @@ a demand by separating maximally" fully explains the excess.** That is true
 of the `list` half and of the mechanism, and it is NOT the whole story for
 the `Vec3` half, which is 16 of the 24 mints.
 
+## How shedskin handles it, and what the fix must respect (2026-09-08)
+
+**In `bh`, shedskin never creates the mix — because its `floor` is wrong.**
+
+```cpp
+inline __ss_float floor(__ss_float x) {   // shedskin/lib/math/__init__.hpp:36
+    return std::floor(x);
+}
+```
+
+shedskin's `math.floor` returns a **double**; CPython 3's returns an
+**int**, and pyc matches CPython (`pyc_lib/math.py:32`). So shedskin's
+`xp[0] = floor(...)` writes a float into a float member and the confluence
+never arises. **pyc is correct here and shedskin is not** — which qualifies
+ifa/143's comparison: shedskin's clean typing of `bh` is bought partly by a
+semantic deviation, and is not available to pyc without breaking
+`math.floor`.
+
+**When a mix genuinely occurs, shedskin widens and inserts a conversion.**
+On a runtime int-into-float member write it emits one member type, one
+method, and an explicit cast — no contour splitting anywhere:
+
+```cpp
+__ss_float d;
+void *_set(__ss_float v);
+b->_set( ((__ss_float)(len(__sys__::argv))) );
+```
+
+That is exactly the work `coerce_annotate` declines for runtime values.
+
+### Confirmed by inserting the conversion in the source
+
+Six `float(floor(...))` edits to a scratch copy of `bh.py`, flag arm:
+
+| | as-is | with `float()` |
+| --- | --- | --- |
+| `Vec3` `{int64,float64}` confluences | 150 | **0** |
+| route-4 mints | 24 | **7** |
+| `Vec3` contours | 20 (18 identical) | **6** (4 identical) |
+| `ess` / `css` | 412 / 1164 | 366 / 1134 |
+
+The whole `Vec3` waste, gone. The `str` warnings and `run_rc=134` are
+UNCHANGED by it, which is the cleanest demonstration that this issue and
+ifa/143 are independent; fixing the `__slots__` merge as well gives a clean
+compile and a correct run.
+
+This is a diagnosis, not a patch: `float(floor(x))` is not what the program
+says, and the corpus is the benchmark. The fix belongs in pyc.
+
+### The constraint on that fix
+
+**Author's directive: any automatic coercion must be PERMISSIVE ONLY.**
+pyc's `--strict` promises *"hard compile errors on type violations, no
+permissive-Python fallbacks"*, and silently widening an int member to
+float is such a fallback.
+
+The existing coercion already violates this — it consults no mode flag and
+fires in `--strict`, printing `1.5 1.0` where CPython prints `1.5 1`. Filed
+as [145](145-numeric-coercion-is-not-gated-on-permissive-mode.md). Whatever
+retires this issue's contour waste has to be gated the same way, or it
+compounds 145 rather than fixing it: in strict mode the mix must be
+REPORTED, not widened.
+
 ## Reproducer
 
 ```sh
