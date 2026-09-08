@@ -407,6 +407,60 @@ misscoped: `type_coerce_numeric_constants` ALREADY handles runtime
 in its `else` branch. Nothing needs extending there. What is missing is the
 question "may this value be widened at all?".
 
+## Attempted fix 3: defer the numeric demand to quiescence (2026-09-08)
+
+Author's suggestion: *"what if we wait for quiescence of the other splitter
+passes?"* — i.e. do not DROP a pure-numeric confluence, offer it LAST, so
+that while other demands exist the contour population settles first and the
+mix is answered once rather than per pass.
+
+Sound hypothesis, and it does not escape the dilemma. **Implemented with
+two different release conditions, measured, reverted.**
+
+| release condition | `bh` flag compile | mints | `css` |
+| --- | --- | --- | --- |
+| never (outright drop) | **1 — FAILS** | 15 | 1157 |
+| when no other confluence exists | **1 — FAILS** | 15 | 1157 |
+| when the previous pass split nothing | **1 — FAILS** | 15 | 1157 |
+| baseline (no deferral) | 0 | 24 | 1164 |
+
+Byte-identical across all three, which is the tell. Instrumented
+(`IFA_DBG_NUMDEFER`), on `bh`:
+
+```
+[numdefer] p=0  deferred=127 other=509 last_split=1 -> HELD
+...
+[numdefer] p=54 deferred=7   other=509 last_split=1 -> HELD
+     54 HELD, 1 RELEASED
+```
+
+**Two reasons it degenerates to the drop, and the second is structural.**
+
+1. `bh` carries **509 non-numeric confluences that never go away** — the
+   permanent `{Body, str}` union of ifa/143 among them. Quiescence in the
+   "nothing else to answer" sense never arrives.
+2. More fundamentally: **the coercion runs at exactly the moment the
+   deferral would release.** `analyze_to_convergence` calls
+   `extend_analysis()` and only if it returns 0 runs the coercion
+   (`ifa_reanalyze_phase == 2`). So "release the numeric demand once
+   splitting has quiesced" and "run the coercion once splitting has
+   quiesced" are the same instant, and the code reaches the coercion first.
+   Deferring the demand to quiescence therefore always hands it to
+   coercion — which is the wrong resolver wherever a use requires the
+   narrow type, and the broken `>>` on a double comes straight back.
+
+Making the deferral bite would mean releasing the numeric demand INSIDE
+`extend_analysis` before it returns 0, so splitting always beats coercion
+for a numeric mix. That is not obviously right either: it would regress the
+cases coercion currently handles well (the promote_first note records 11
+numeric EXEC tests that break when coercion is moved off its current slot).
+
+**So neither ordering is correct, which is the point.** Coercion first is
+wrong for int-only uses; splitting first is wrong for float-only uses. `bh`
+contains both. The resolver cannot be chosen by WHEN it runs — only by
+asking what the value's uses permit, which is the criterion recorded above
+and still the only way out.
+
 ## Reproducer
 
 ```sh
