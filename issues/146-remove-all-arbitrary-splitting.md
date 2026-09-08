@@ -41,7 +41,41 @@ resists, and it reads as sanctioned because it is in the tree.
 
 ## Still present — the work this issue tracks
 
-### A. `PYC_CSSPLIT=1` — a CreationSet follows an EntrySet split, BY DEFAULT
+### A. `PYC_CSSPLIT=1` — DONE 2026-09-08
+
+**Removed.** The flag and both of its behaviours are gone; a split EntrySet
+now always inherits its parent's instance CreationSet.
+
+Measured on removal, corpus default arm, clean sweep:
+
+| | before | after |
+| --- | --- | --- |
+| container CreationSets | 3713 | **2762 (−26%)** |
+| `linalg` ess / css / container | 1593 / 4433 / 210 | **617 / 1551 / 49** |
+| `chess` ess / css / container | 1591 / 6433 / 169 | **686 / 2301 / 62** |
+| `sudoku5` | COMPILE-FAIL | **runs** |
+| `rdb` | run:1 | COMPILE-FAIL *(the one regression)* |
+| `chull` | run:1 | run:139 *(broken either way)* |
+| pyc suite | 313 / 0 | 313 / 0 |
+
+Three `fa-converge` goldens gained `total-passes 2 → 3`, `events 2 → 3`
+and **`splits[setter]: 1`** — which is the change working: the SETTER stage
+now does on demand, one pass later, what the structural pre-split was doing
+for free. Re-blessed, every changed line belonging to this change.
+
+`rdb` is the honest cost and is recorded rather than explained away; it was
+already failing at run time, so nothing that worked was lost.
+
+A methodology note, because it nearly produced a fabricated result: an
+earlier run of this measurement showed **20+ programs flipping abort →
+success** and a −951 contour delta. That was an artifact — I had recompiled
+corpus programs directly while a sweep was running in the same directories,
+and we overwrote each other's binaries. Re-measured alone, `linalg`,
+`plcfrs` and `sudoku3` abort at BOTH settings. Only the contour numbers
+survived, because they came from a compile phase that finished before the
+interference. Never touch a corpus directory while a sweep is live.
+
+### A (original statement, kept for the record). `PYC_CSSPLIT=1` — a CreationSet follows an EntrySet split, BY DEFAULT
 
 The most significant one, and CLAUDE.md already names it: *"`PYC_CSSPLIT=1`
 makes a CreationSet follow an EntrySet split by construction — the inverted
@@ -119,8 +153,8 @@ B is the goal (it is what `PYC_CSDCPA1` exists to retire) but depends on
 independent of the flag. C is the smallest and is a regression I introduced.
 D and E are deletions of dead-but-sanctioned code.
 
-Suggested: **A**, then **C**, then **D**/**E**, with **B** landing as the
-flag flip.
+**A is DONE** (2026-09-08). Remaining: **C**, then **D**/**E**, with **B**
+landing as the flag flip.
 
 ## Verification
 

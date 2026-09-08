@@ -736,55 +736,57 @@ CreationSet *creation_point(AVar *v, Sym *s, int arity) {
     Sym *cmc = s->clone_methods_per_cs ? s : (s->type ? unalias_type(s->type) : 0);
     if (cmc && cmc->clone_methods_per_cs) goto Lno_split_parent;
   }
-  // ifa/issues/055: the CreationSet follows the EntrySet split.
+  // ifa/issues/055 HISTORY. What used to live here was the reverse of what
+  // lives here now, and the reversal is the point.
   //
-  // PYC_CSSPLIT=0 restores the old behaviour: a split child INHERITS its
-  // parent's instance CS, so every contour of a function shares the one
-  // CreationSet its allocation site produced. That is what made
-  // set.difference's `r = set()` a single CS across all three of its
-  // contours -- the int one, the str one, and the chained one -- which
-  // forced that CS's element type to int64|str and, because the chained
-  // contour takes it as receiver AND returns it, fed the shared site
-  // from itself. The splitter then chased the symptom forever: 146 <->
-  // 149 EntrySets, period 2, to the pass cap.
+  // The old default made "the CreationSet follow the EntrySet split": a
+  // split child did NOT inherit its parent's instance CS but minted a fresh
+  // one. It was introduced because inheritance made `set.difference`'s
+  // `r = set()` a single CreationSet across all three of that function's
+  // contours -- the int one, the str one, and the chained one -- forcing
+  // that CS's element to `int64|str`; since the chained contour takes it as
+  // receiver AND returns it, the CS fed itself, and the splitter chased the
+  // symptom to the pass cap (146 <-> 149 EntrySets, period 2).
   //
-  // The exemption for this already existed but was reachable only via
-  // `clone_methods_per_cs` (the `goto Lno_split_parent` above), and that flag
-  // is set in exactly one place -- python_ifa_build_syms.cc, when a
-  // class's __init__ has a __pyc_clone_constants__ parameter. `set`
-  // and `dict` take no ctor arguments at all, so they could never
-  // qualify, even though their instances need separating by ELEMENT
-  // type rather than by constant. Splitting with the ES instead makes
-  // the exemption unnecessary: the other stages (TYPE_CONFLUENCE,
-  // SETTER, SETTER_OF_SETTER on this repro) already split the contour
-  // that contains the creation point, and the CS now follows.
+  // That demand is real. Multiplying CreationSets with every EntrySet split
+  // is not the way to serve it -- it is structural splitting, forbidden by
+  // the opening rule -- and the finer stages now present separate those
+  // contours on demand instead. `tests/dict_pair_swap_setdiff_nonconvergence.py`
+  // covers the original repro and passes without it.
+  // ifa/146 A, 2026-09-08: `PYC_CSSPLIT` REMOVED, and with it the default
+  // it selected.
   //
-  // Bounded, not a new growth source: split products are found durably
-  // across passes (find_or_make_filtered_entry_set searches fun->ess)
-  // and `cs_map` persists across clear_avar, so a split child mints its
-  // instance once and memoizes it.
-  // DEFAULT 1. Measured against PYC_CSSPLIT=0 after the three defects it
-  // first exposed were fixed (all on the default path, all latent before
-  // this): optimize/dead.cc's fa->funs rebuild, analysis/clone.cc's
-  // per-CreationSet field layout, and codegen/cg.cc's uncast container
-  // subscript.
+  // The flag chose between two behaviours here, and the guard reads
+  // backwards on a first pass, so state it plainly: this block REUSES the
+  // split parent's CreationSet. At the old default (`cssplit = 1`) it was
+  // SKIPPED, so a split EntrySet fell through and MINTED A FRESH
+  // CreationSet -- i.e. the CreationSet followed the EntrySet split, by
+  // construction, on the default path. That is precisely what the project's
+  // opening rule forbids: "a contour is NEVER split because a surrounding
+  // contour was split." CLAUDE.md has named it as a live violation
+  // throughout.
   //
-  //   corpus     67 of 77 compile either way, program for program,
-  //              and sunfish improves (400s timeout -> clean failure)
-  //   pyc suite  296 passed / 14 known  ->  297 passed / 0 failed /
-  //              13 known (the 055 repro flips KNOWN -> PASS)
-  //   ifa/055    6-line repro: 52 passes pass_limit_hit CONVERGED=0
-  //              -> 28 passes CONVERGED=1, 0 violations, right answer
-  //   plcfrs     still does not converge, but 4378 -> 2451 violations
-  //              and ess 1246 -> 850
+  // The demand it served was real -- it fixed ifa/055's non-convergence by
+  // letting `set`/`dict` instances separate where `clone_methods_per_cs`
+  // could not reach them -- but a structural multiplication is the wrong
+  // mechanism for it, and the finer stages now present (TYPE_CONFLUENCE,
+  // SETTER, CS_DEF_PARTITION and the ladder) separate those contours on
+  // demand instead.
   //
-  // Set to 0 to restore split-parent inheritance.
-  static int cssplit = -1;
-  if (cssplit < 0) {
-    cchar *cv = getenv("PYC_CSSPLIT");
-    cssplit = cv ? atoi(cv) : 1;
-  }
-  if (es && es->split && !cssplit) {
+  // Measured on removal (i.e. always reusing the parent), corpus, default
+  // arm:
+  //
+  //   container CreationSets   3713 -> 2762   (-26%)
+  //   linalg  ess 1593 -> 617, css 4433 -> 1551, container 210 -> 49
+  //   chess   ess 1591 -> 686, css 6433 -> 2301, container 169 ->  62
+  //   sudoku5 COMPILE-FAIL -> runs
+  //   rdb     run:1 -> COMPILE-FAIL          (the one regression)
+  //   chull   run:1 -> run:139               (broken either way)
+  //   pyc suite 313 passed / 0 failed, unchanged
+  //
+  // Three `fa-converge` goldens gain one pass each; that is the cost of not
+  // pre-splitting and is what the change is about, so they are re-blessed.
+  if (es && es->split) {
     AVar *oldv = make_AVar(v->var, es->split);
     cs = oldv->cs_map ? oldv->cs_map->get(s) : 0;
     if (cs) {
@@ -8210,38 +8212,12 @@ static int csdefsplit_enabled() {
   return e;
 }
 
-// shedskin's route-4 fan-out cap (`infer.py:1576`: `1 < len(csites) < 10`)
-// was copied here and REMOVED again 2026-09-07. The symbol survives only
-// because `split_es_by_call_site` still reads it -- and there it is wrong
-// for a different reason, capping on the CALLER count when mode 2's
-// partition size is the number of distinct element types.
-//
-// PYC_CSDEFSPLIT is 0/1 now: 2 used to mean "ignore the cap and the
-// ripeness wait", and neither exists any more.
-//
-// Why it was wrong here. shedskin caps route 4 because it is the coarsest
-// rung and its finer ones usually carry the load; a ten-way merge is
-// unusual there because contours start at one per CLASS and split early.
-// Under PYC_CSDCPA1 a 26-way merge of arity-0 `[]` literals is the NORMAL
-// starting state -- that is what "pass 1 has one creation set per sym"
-// means -- and ifa/142 measured the finer rungs unable to separate it: the
-// element union reaches a fixed point where every writer carries the whole
-// union, so no type-based partition can tell the contributors apart. Only
-// separation BY CREATION POINT breaks that, which is exactly route 4.
-//
-// So the cap refused the one mechanism that could act, on the programs it
-// most needed to act for. The goal is minimal contours SUBJECT TO DEMAND,
-// not minimal contours: 26 literals whose elements genuinely differ demand
-// 26 contours, and those are not structural waste.
-//
-// The argument previously recorded FOR keeping it was faulty. It said the
-// programs uncapping fixes "still abort at run time, so this buys compile
-// status not working programs" -- but `linalg`, `quameon` and `sudoku3`
-// abort at run time AT THE DEFAULT TOO (`run_rc=134`), and `voronoi2`
-// prints the wrong answer at the default too. Uncapping brings all four to
-// exact PARITY with the default, which is what the flip needs. The
-// comparison had been against a standard the default does not meet.
-static const int kCsDefSplitMax = 10;
+// shedskin's route-4 fan-out cap (`infer.py:1576`) was copied here, removed
+// from `split_css_by_defs` on 2026-09-07 (ifa/133) and from
+// `split_es_by_call_site` on 2026-09-08 (ifa/143) -- in the second case it
+// was capping on the CALLER count while the partition's size is the number
+// of distinct assign-set signatures. With no user left, the constant is
+// gone too; see ifa/146 for why a count-based cap is the wrong shape.
 
 // The ripeness threshold that used to live here (kCsDefSplitRipe = 3) was
 // removed 2026-09-07 with the cap it was paired to. See the note at its
