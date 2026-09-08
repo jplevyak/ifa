@@ -234,7 +234,46 @@ delete-don't-default rule this should go, and the test's claim be updated.
 the contour into one per single CreationSet"*. That is a fan by the
 definition above. Off by default; audit and delete or justify.
 
-### F. Not yet audited
+### F. AUDITED 2026-09-08 — no further arbitrary splitting found
+
+Each lever put to the two questions. **None is a fan; three are not
+splitting mechanisms at all**, which is why they read as suspicious from
+their names alone.
+
+| lever | what it actually does | verdict |
+| --- | --- | --- |
+| `PYC_SELFPROD` (6) | validity/eviction test for an ALREADY-RECORDED split decision — "evict only the disjoint complement". Decides whether a past split is still valid; creates no partition. | not a splitter |
+| `PYC_HARDREUSE` (5) | detach-route contour REUSE. Reuses an existing contour instead of minting one, so it REDUCES contours. The opposite of a fan. | not a splitter |
+| `PYC_SETTERGATE` (0) | lifts the SETTER stage's quiescence gate. Its comment draws the analogy to `PYC_RECVFAN=2`, but the cases differ in the way that matters: RECVFAN lifted a gate so a FAN could run earlier, this lifts one so a DEMAND-DRIVEN stage can. | not arbitrary (dead lever) |
+| `SETTER` / `SETTER_OF_SETTER` | `split_css` groups starters by `same_eq_classes(v->setters, av->setters)`. Demand = the setter confluence; parts = the distinct setter equivalence classes. | demand-driven |
+
+**Whole-file sweep for the fan shape**, to catch what the lever-by-lever
+pass might miss. Every surviving `new CreationSet(...)` inside a
+per-item loop, and every `dec->groups.add`, is keyed:
+
+| site | key |
+| --- | --- |
+| `split_css` | setter equivalence class (+ ledger route for cross-pass stability) |
+| `cs_peel_group` (ladder routes 1/3) | the assign-set analysis; declines unless a PROPER subset moves |
+| `cselem_shape_canon` | element SHAPE, with canonical reuse |
+| `decide_entry_set_split` | edge type-compatibility groups |
+| `split_es_by_call_site` | assign-set signature |
+
+**So the audit is complete for everything except B.** Every arbitrary
+mechanism found has been removed; what remains partitions on something the
+demand names.
+
+### One follow-up this audit turned up
+
+`PYC_HARDREUSE`'s mode 5 exists because *"a setter- or MARK-driven split
+can produce two contours with identical argument types on purpose"*. Marks
+are gone as of D, so half that rationale is stale and mode 5's extra
+condition may now be over-conservative — i.e. it may be refusing reuse that
+is no longer ambiguous. Worth re-measuring modes 4 and 5 against each other
+now. It is a REUSE question (possibly too FEW merges), not an arbitrary-
+splitting one, so it does not block this issue.
+
+### F (original list, kept for the record). Not yet audited
 
 `PYC_SELFPROD` (default 6), `PYC_HARDREUSE` (default 5), `PYC_SETTERGATE`,
 and the `SETTER` / `SETTER_OF_SETTER` stages' partitioning. Each needs the
@@ -247,8 +286,9 @@ B is the goal (it is what `PYC_CSDCPA1` exists to retire) but depends on
 independent of the flag. C is the smallest and is a regression I introduced.
 D and E are deletions of dead-but-sanctioned code.
 
-**A, C and D are DONE**; **E** audited and cleared (not arbitrary).
-Remaining: **F**'s audit, with **B** landing as the flag flip.
+**A, C and D are DONE**; **E** and **F** audited and cleared. Every
+arbitrary mechanism found has been removed. **B** is all that remains, and
+it lands as the flag flip.
 
 ## Verification
 
