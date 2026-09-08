@@ -8944,37 +8944,144 @@ static bool cs_elem_irrepresentable(CreationSet *cs) {
     // 4 and belongs LAST -- it gives every creation point its own contour
     // where routes 1 and 3 separate the same conflict into two, which is
     // where the corpus-wide +191 CreationSets came from.
-    if (csladder_enabled()) {
+    // Hoisted out of the ladder gate below: the wholesale partition needs
+    // the same graph to group creation points (ifa/144), so build it once.
+    CSFlowGraph *g = build_cs_flow_graph(cs);
+    if (csladder_enabled() && g) {
       // Bit-selectable while measuring: 1 = route 1 only, 2 = route 3 only,
       // 3 = both. Lets a regression be attributed to a rung.
-      if (CSFlowGraph *g = build_cs_flow_graph(cs)) {
-        // shedskin's demand test, and the point of the whole ladder
-        // (infer.py:1526): `if len(csites) + len(emptycsites) == 1: continue`.
-        // One creation site means nothing MERGED here, so there is nothing to
-        // separate and no split is justified at any rung.
-        if (g->csites.set_count() + g->emptycsites.set_count() > 1) {
-          if ((csladder_enabled() & 1) && cs_ladder_no_confusion(g, dbg)) { analyze_again = 1; continue; }
-          if ((csladder_enabled() & 2) && cs_ladder_path_partition(g, dbg)) { analyze_again = 1; continue; }
-        }
+      //
+      // shedskin's demand test, and the point of the whole ladder
+      // (infer.py:1526): `if len(csites) + len(emptycsites) == 1: continue`.
+      // One creation site means nothing MERGED here, so there is nothing to
+      // separate and no split is justified at any rung.
+      if (g->csites.set_count() + g->emptycsites.set_count() > 1) {
+        if ((csladder_enabled() & 1) && cs_ladder_no_confusion(g, dbg)) { analyze_again = 1; continue; }
+        if ((csladder_enabled() & 2) && cs_ladder_path_partition(g, dbg)) { analyze_again = 1; continue; }
       }
     }
     qsort_by_id(defs);  // determinism: the harness asserts identical output
-    // The first creation point keeps the CreationSet; every other one
-    // gets its own. Which one stays is arbitrary and must be STABLE,
-    // hence the id sort above.
+    // ifa/144: PARTITION by the distinction the demand names. Do not FAN.
+    //
+    // This used to read "the first creation point keeps the CreationSet;
+    // every other one gets its own" -- one contour per creation point,
+    // unconditionally. But the demand that reaches this rung says only
+    // "these must be separated". It never says "all N are mutually
+    // distinct", and answering it that way is a fan whose partition size is
+    // a COUNT OF CREATION POINTS rather than the distinction demanded --
+    // the same defect as the deleted `PYC_RECVFAN`, inside a rung whose
+    // gate is legitimate.
+    //
+    // Measured on `bh` before this change: 25 mints from two parents (16
+    // `Vec3` from cs=1244, 9 `list` from cs=1180), leaving 18 of 20 `Vec3`
+    // contours byte-identical across all 29 members and four `list`
+    // contours identically `[str Body]`. They differed only in their DEF
+    // line -- which creation point made them, i.e. provenance.
+    //
+    // The grouping key is a creation point's ASSIGN-SET SIGNATURE: which of
+    // the CSFlowGraph's assign sets its backflow path lies on. Two creation
+    // points on exactly the same assign sets cannot be told apart by any
+    // element-type test that reaches here, so separating them is
+    // unjustified. That is demand deciding COMPATIBILITY, not provenance
+    // deciding identity.
+    //
+    // With no flow graph the signature is empty for every def, so they form
+    // ONE group and the rung declines. That is deliberate: a non-container
+    // CreationSet has no element channel, `build_cs_flow_graph` returns
+    // null, and the old code fanned it with no information at all. Refusing
+    // to partition when nothing names a partition is the rule this stage
+    // exists to serve.
+    //
+    // Where NO flow graph exists there is no signature, every def lands in
+    // one group, and the rung would decline. That was measured and it is a
+    // RETREAT, not a fix: a non-container CreationSet has no element
+    // channel, so `build_cs_flow_graph` returns null for every plain class,
+    // and declining turns the fan into nothing at all. On `bh`, 15 of 17
+    // declines were "no flow graph". Corpus, flag arm, vs the default:
+    //
+    //   fan (old)               4 programs differ   3281 container CS (-12%)
+    //   partition everywhere    8 programs differ   2375 (-37%)
+    //   partition + fan (=2)    5 programs differ   2328 (-38%)
+    //
+    // So mode 2 is the default: partition where the demand names groups,
+    // fall back to the fan where nothing does. It carries the SAME number
+    // of regressions as the old fan (bh, chull, kanoodle, rdb vs bh,
+    // kanoodle, quameon, rdb), returns `quameon` to parity, makes
+    // `sudoku5` compile and run where the DEFAULT cannot compile it at all,
+    // and takes three times the contours off.
+    //
+    // PYC_CSDEFPART: 0 = the old fan, 1 = partition and decline when
+    // nothing names a partition, 2 = partition with the fan as fallback.
+    static int defpart = -1;
+    if (defpart < 0) {
+      cchar *pv = getenv("PYC_CSDEFPART");
+      defpart = pv ? atoi(pv) : 2;
+    }
     Vec<AVar *> moved;
-    for (int i = 1; i < defs.n; i++) {
-      AVar *v = defs.v[i];
-      CreationSet *new_cs = new CreationSet(cs);
-      new_cs->split = cs;
-      if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
-      v->cs_map->put(cs->sym, new_cs);
-      moved.set_add(v);
-      if (dbg)
-        fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s def av=%d -> cs=%d\n", analysis_pass, cs->id,
-                cs->sym->name ? cs->sym->name : "?", v->id, new_cs->id);
-      log(LOG_SPLITTING, "SPLIT CS BY DEF %d %s -> %d (av %d)\n", cs->id, cs->sym->name ? cs->sym->name : "",
-          new_cs->id, v->id);
+    if (defpart) {
+      std::vector<std::string> sig((size_t)defs.n);
+      for (int i = 0; i < defs.n; i++)
+        if (g)
+          for (int k = 0; k < g->keys.n; k++) sig[(size_t)i] += g->paths.v[k]->set_in(defs.v[i]) ? '1' : '0';
+      // Group id per def, assigned in id order so the partition is stable.
+      std::vector<int> gid((size_t)defs.n, -1);
+      int ngroups = 0;
+      for (int i = 0; i < defs.n; i++) {
+        for (int j = 0; j < i; j++)
+          if (sig[(size_t)j] == sig[(size_t)i]) { gid[(size_t)i] = gid[(size_t)j]; break; }
+        if (gid[(size_t)i] < 0) gid[(size_t)i] = ngroups++;
+      }
+      if (ngroups < 2) {
+        // PYC_CSDEFPART=2: partition where a flow graph names the groups,
+        // but FALL BACK to the fan where none exists. Splits the change in
+        // two so the container fix and the non-container decline can be
+        // attributed separately -- 15 of bh's 17 declines are "no flow
+        // graph", i.e. every plain class, where the decline turns the fan
+        // into nothing at all.
+        if (defpart >= 2 && !g) goto Lfan;
+        if (dbg)
+          fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d DECLINED (1 group: %s)\n", analysis_pass, cs->id,
+                  cs->sym->name ? cs->sym->name : "?", defs.n,
+                  g ? "every creation point on the same assign sets" : "no flow graph, nothing names a partition");
+        continue;
+      }
+      // The group holding the first def keeps the CreationSet; each other
+      // group gets ONE new contour shared by all its creation points.
+      std::vector<CreationSet *> gcs((size_t)ngroups, nullptr);
+      gcs[(size_t)gid[0]] = cs;
+      for (int i = 0; i < defs.n; i++) {
+        if (gcs[(size_t)gid[(size_t)i]] == cs) continue;  // stays with the parent
+        if (!gcs[(size_t)gid[(size_t)i]]) {
+          CreationSet *ncs = new CreationSet(cs);
+          ncs->split = cs;
+          if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
+          gcs[(size_t)gid[(size_t)i]] = ncs;
+        }
+        CreationSet *ncs = gcs[(size_t)gid[(size_t)i]];
+        defs.v[i]->cs_map->put(cs->sym, ncs);
+        moved.set_add(defs.v[i]);
+        if (dbg)
+          fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s def av=%d -> cs=%d (group %d/%d sig=%s)\n", analysis_pass,
+                  cs->id, cs->sym->name ? cs->sym->name : "?", defs.v[i]->id, ncs->id, gid[(size_t)i], ngroups,
+                  sig[(size_t)i].c_str());
+        log(LOG_SPLITTING, "SPLIT CS BY DEF %d %s -> %d (av %d group %d)\n", cs->id,
+            cs->sym->name ? cs->sym->name : "", ncs->id, defs.v[i]->id, gid[(size_t)i]);
+      }
+    } else {
+    Lfan:
+      for (int i = 1; i < defs.n; i++) {
+        AVar *v = defs.v[i];
+        CreationSet *new_cs = new CreationSet(cs);
+        new_cs->split = cs;
+        if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
+        v->cs_map->put(cs->sym, new_cs);
+        moved.set_add(v);
+        if (dbg)
+          fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s def av=%d -> cs=%d\n", analysis_pass, cs->id,
+                  cs->sym->name ? cs->sym->name : "?", v->id, new_cs->id);
+        log(LOG_SPLITTING, "SPLIT CS BY DEF %d %s -> %d (av %d)\n", cs->id, cs->sym->name ? cs->sym->name : "",
+            new_cs->id, v->id);
+      }
     }
     if (moved.n) {
       Vec<AVar *> new_defs;

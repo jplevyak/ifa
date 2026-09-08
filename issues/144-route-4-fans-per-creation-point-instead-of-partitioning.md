@@ -125,6 +125,66 @@ after-the-fact, needs no change to how the rung decides, and its
 correctness argument is exactly the compatibility leg of the three-way
 rule. (1) is the better end state, because it never creates the waste.
 
+## Fix 1 landed 2026-09-07: partition where the demand names groups
+
+`split_css_by_defs` now groups `cs->defs` by **assign-set signature** —
+which of the `CSFlowGraph`'s assign sets a creation point's backflow path
+lies on — and mints one contour per GROUP rather than one per creation
+point. Two creation points on exactly the same assign sets cannot be told
+apart by any element-type test that reaches this rung, so separating them
+is unjustified: demand deciding compatibility, not provenance deciding
+identity.
+
+`PYC_CSDEFPART`: `0` = the old fan, `1` = partition and decline when
+nothing names a partition, `2` = partition with the fan as fallback
+(**default**).
+
+**Mode 1 was measured first and is a RETREAT.** With no flow graph there
+is no signature, every def lands in one group, and the rung declines — and
+`build_cs_flow_graph` returns null for every NON-CONTAINER CreationSet,
+because it needs an element channel. On `bh`, 15 of 17 declines were "no
+flow graph". Declining there turns the fan into nothing at all, and it
+cost five programs.
+
+Corpus, flag arm (`PYC_CSDCPA1=2 PYC_CSLADDER=3`), against the default:
+
+| | programs differing from default | container CS |
+| --- | --- | --- |
+| fan (old) | 4 — `bh`, `kanoodle`, `quameon`, `rdb` | 3281 (−12%) |
+| partition everywhere (`=1`) | 8 — adds `chull`, `richards`, `sudoku2`, `sudoku3`, `sudoku4` | 2375 (−37%) |
+| **partition + fan fallback (`=2`)** | **5** — `bh`, `chull`, `kanoodle`, `rdb`, `sudoku5` | **2328 (−38%)** |
+| default | 0 | 3713 |
+
+Mode 2 carries the SAME number of regressions as the old fan (four, with
+`chull` replacing `quameon`), and its fifth difference is an IMPROVEMENT:
+
+| program | default | flag + fan | flag + partition |
+| --- | --- | --- | --- |
+| `quameon` | `run:134` | COMPILE-FAIL | `run:134` — back to parity |
+| `sudoku5` | **COMPILE-FAIL** | COMPILE-FAIL | **WRONG-OUT** — compiles and runs where the default cannot compile it |
+| `chull` | `run:1` | `run:1` | COMPILE-FAIL — the one new regression |
+
+Contours drop from −12% to **−38%** against the default, the largest
+reduction measured in this effort. Default arm byte-identical on all 77
+programs; all six CI gates pass.
+
+On `bh` specifically, route-4 mints go 25 → 8 and container contours 20 →
+17, at a cost of 33 → 45 passes.
+
+### Still open after fix 1
+
+- **`chull`** — new regression, `run:1` → COMPILE-FAIL. Not yet
+  investigated.
+- **Fix 2, the compatibility re-join, is still needed.** The partition only
+  avoids creating duplicates where a flow graph names the groups; it cannot
+  collapse duplicates that converge later, and it does nothing for the
+  non-container fan that mode 2 retains. `Vec3` on `bh` still ends at 21
+  contours.
+- The grouping key is the coarsest one the flow graph offers. A finer key —
+  the actual element types a site contributes, rather than which assign
+  sets it lies on — would partition more precisely and might recover
+  `chull`.
+
 ## Reproducer
 
 ```sh
