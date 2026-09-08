@@ -101,7 +101,50 @@ real and the mechanism is wrong.** Replacing it means finding what
 legitimately separates those instances — element type — and asking for it
 directly.
 
-### B. `creation_point`'s `(allocation site × contour)` identity
+### B. `creation_point`'s `(allocation site × contour)` identity — STATUS 2026-09-08
+
+Measured at this tree, with A/C/D/E all landed:
+
+| | default | flag (`PYC_CSDCPA1=2 PYC_CSLADDER=3`) |
+| --- | --- | --- |
+| compile failures | 2 | 7 |
+| container CreationSets | 2736 | **2151 (−22%)** |
+| programs differing | — | **8** |
+
+The 8 split two ways, and only the first group blocks a flip:
+
+- **regressions from working**: `bh` (ran-ok → 134), `kanoodle` (→ 139),
+  `richards` (→ 139), `sudoku5` (→ COMPILE-FAIL);
+- **already broken, failure mode changes**: `chull`, `plcfrs`, `quameon`,
+  `sudoku3` (all `run:134/139` → COMPILE-FAIL).
+
+**The known blocker is intra-class receiver sharing** (ifa/143): with every
+list on one CreationSet, ONE `append` contour writes into all of them, and
+no ES-side mechanism separates them — established exhaustively in the
+receiver-filtering entry above. What is needed is shedskin's `dcpa`:
+method contour identity that includes the receiver's data contour.
+
+**Attempted as a compatibility rule, 2026-09-08, and reverted.**
+`PYC_RECVEXACT` made `edge_type_compatible_with_entry_set` hard-reject an
+edge whose receiver type differs from a method contour's, so receiver
+identity would be decided at contour SELECTION rather than repaired later.
+Measured: **48 suite failures**, `chess` segfaults, `plcfrs` times out, `bh`
+stops compiling, and even on the acceptance fixture it makes call
+resolution WORSE (65 direct against 69).
+
+Why it fails is instructive and worth not repeating: a compatibility
+predicate can only reject an edge from an EXISTING contour, so it forces
+new contours without ever breaking up a receiver that arrives already
+unioned. shedskin does not do it this way — `create_template` MAKES the
+contour for a `(dcpa, cartesian product)` pair when a call with that pair
+occurs, so the union never forms. Retrofitting the same identity onto
+selection is not the same change and does not work.
+
+**So B needs contour CREATION keyed on the receiver's data contour, with
+reachability**, not a compatibility tweak. That is the remaining work and it
+is substantial; nothing shipped.
+
+### B (original statement). `creation_point`'s `(allocation site × contour)` identity
 
 ifa/128. The allocation site is the REASON here, and it splits with no
 demand at all — test 1 above fails outright. `PYC_CSDCPA1` is the
