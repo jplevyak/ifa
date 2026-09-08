@@ -270,6 +270,51 @@ work and is what should land first if anything currently depends on CPA
 being reachable. `tests/splitter_cartesian_product.py` pins it and would
 need the same treatment `splitter_mark_type.py` got.
 
+### Receiver filtering ATTEMPTED 2026-09-08 — it does not subsume CPA, and the reason is structural
+
+Built as specified: CPA's own mechanism (`decide_csm_split` /
+`apply_csm_split` — filter a formal into one contour per single
+CreationSet), with CPA's arbitrary trigger replaced by a real demand (a
+`SEND_ARGUMENT` or `DISPATCH_AMBIGUITY` violation), receiver position first
+(`fun->sym->self` marks a method). Two demand scopings, both measured, both
+reverted:
+
+| demand scoping | result |
+| --- | --- |
+| a violation anywhere in the contour | fires (plcfrs 13 splits, rdb 1) and **makes things worse**: `plcfrs` compile 0 → **1**, ess 1088 → 1118, css 2549 → 2597 |
+| the violation is ON the formal being split | **never fires** — 0 splits on every program tried |
+
+**Why neither can work, and it is not a tuning problem.** The two ends do
+not meet:
+
+- the DEMAND is recorded on the AVar where the call FAILS — a call
+  argument, or, as on this very fixture, a **CreationSet-contoured** AVar.
+  Probed: the fixture's only violation is `kind=SEND_ARGUMENT av=3294
+  contour_is_es=0` — the list ELEMENT, not any formal;
+- the MECHANISM can only filter an EntrySet **formal** —
+  `decide_csm_split` searches `es->args` for the AVar and returns null
+  otherwise.
+
+Those are rarely the same AVar, and joining them means walking backward
+from the failing use to the formal whose union produced it — which is
+`backflow_path` / the CSFlowGraph, i.e. the CS-side machinery, not
+something an ES-side filter has.
+
+**So the fixture's demand is CS-side, and CPA was not answering it.** CPA
+fanned ES formals blindly and the separation propagated downstream by
+accident; that is why removing it costs the element separation while
+IMPROVING call resolution (direct 69/0 against 68/1). The right home for
+this fixture is the CreationSet machinery — ifa/143's problem, element
+writers separated — not a receiver filter.
+
+**What the receiver filter would still be right for** is the case it was
+named for: a genuine single-dispatch receiver whose union blocks
+resolution, where the violation IS on a formal. Nothing in the corpus
+exercised that shape in this measurement, so it has no evidence behind it
+yet and no code was shipped. `tests/splitter_cartesian_product.py`'s
+`.known_issue` stays as the acceptance test, but should now be read as
+pointing at the CS-side fix rather than at receiver filtering.
+
 ### The refinement this correction forces on the test itself
 
 Question 1 in the test above — *would this split happen if the demand were
