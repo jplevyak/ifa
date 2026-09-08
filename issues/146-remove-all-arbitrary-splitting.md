@@ -175,6 +175,26 @@ the bug ifa/144's "informative" check detects and then declines on — a
 concrete, fixable problem in the plumbing between the demand and the
 mechanism, not a reason to abandon demand splitting.
 
+**MINIMAL REPRO: `tests/two_list_element_separation.py`**, five lines:
+
+```python
+a = []
+a.append(1)
+b = []
+b.append("x")
+print(a[0], b[0])
+```
+
+Passes at the default; **fails on the flag arm**. Its flow graph is the gap
+in miniature — `defs=6 sets=3 csites=2 (in_defs=0)`: three assign sets, so
+the demand names its parts perfectly, and not one creation point reachable
+from `cs->defs` to apply them to.
+
+It passed on the flag arm until **C** removed route 4's fan, which had been
+covering the decline. The gates did not catch that, because they run at the
+DEFAULT only — a flag-arm change cannot be judged by the suite alone, and
+that is worth remembering for the flip itself.
+
 **B's next step is therefore to close that gap** — make the demand's
 partition applicable to the creation points it is about — not to key
 contour creation on the receiver. Nothing shipped.
