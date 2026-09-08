@@ -238,7 +238,31 @@ and:
 The cases CPA "fixes" that this would not touch are the ones nothing
 needed fixed.
 
-**Status: arbitrary, to be removed.** It is `PYC_CPA=0` by default, so it
+**REMOVED 2026-09-08** — the stage, `split_ess_cartesian_product` and
+`cpa_enabled`, 102 lines. `decide_csm_split` / `apply_csm_split` are shared
+with the CSM stage and stay.
+
+Corpus-neutral by construction and by measurement: `PYC_CPA` defaulted to 0
+and was set by exactly one `.env` in the tree, and a confirming sweep is
+verdict-identical on all 77 with container CreationSets unchanged at 2736.
+All six gates pass.
+
+`tests/splitter_cartesian_product.py` is kept and converted into the
+ACCEPTANCE TEST for the replacement. On that fixture CPA was doing real
+work, and the trade is not one-sided:
+
+| | with CPA | without |
+| --- | --- | --- |
+| calls | direct=68 dynamic=1 | **direct=69 dynamic=0** |
+| element separation | held | lost — `.ay()` on a `B` warns |
+
+Call resolution is BETTER without it; what is lost is the element
+separation. So the `.check` records the state with **no** warning — what the
+replacement must reach — and a `.known_issue` explains the gap, per
+CLAUDE.md's rule against baking a regression into a golden. The test reports
+KNOWN today and flips to PASS when demand-driven receiver filtering lands.
+
+**Original status line:** arbitrary, to be removed. It is `PYC_CPA=0` by default, so it
 is dead weight rather than a live violation, and by the
 delete-don't-default rule it should go. Removing it is cheap; the
 replacement — receiver filtering keyed on unresolved dispatch — is the real

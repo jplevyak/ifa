@@ -9605,94 +9605,7 @@ static CSMSplitDecision *decide_csm_split(AVar *av) {
   return again;
 }
 
-// ifa/issues/074: CARTESIAN-PRODUCT contour naming (PYC_CPA), pyc's
-// analog of shedskin's dcpa -- the fix the mark investigation converged
-// on. `PYC_CPAMARK` established that no *comparison* can help once a
-// union exists (inside it the CreationSet sets are equal by
-// construction, so only depth discriminates -- which is what MARK_TYPE
-// was doing and why it both over-splits and is load-bearing). The union
-// has to be prevented from becoming a contour NAME at all: when a
-// positional formal's live type is a union of >= 2 CreationSets, fan the
-// contour into one filtered contour per single CS and re-dispatch every
-// edge across them. Each product is pinned to one CS at that position,
-// so it cannot re-fire there.
-//
-// The decide/apply pair is 075's, unchanged -- `decide_csm_split` and
-// `apply_csm_split` are already generic (record av/es/position/type,
-// then `find_or_make_filtered_entry_set` per CS and fan the edges with
-// `copy_AEdge`). ONLY the demand signal differs: 075 additionally
-// requires the union to be same-container-with-divergent-elements,
-// which is one special case of this.
-//
-// PYC_CPA=N caps the union size fanned (N is the cap, so PYC_CPA=4 fans
-// unions of 2..4 CSs); 0 is off. The cap is the analog of shedskin's own
-// dcpa limit -- the product multiplies across argument positions, and
-// only one position per contour is fanned per pass so that growth is
-// paced rather than taken all at once.
-static int cpa_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_CPA");
-    e = v ? atoi(v) : 0;
-  }
-  return e;
-}
 
-[[nodiscard]] static int split_ess_cartesian_product() {
-  int limit = cpa_enabled();
-  if (limit < 2) return 0;
-  int n_ess = fa->ess.n;
-  Vec<CSMSplitDecision *> decisions;
-  for (int i = 0; i < n_ess; i++) {
-    EntrySet *es = fa->ess[i];
-    if (!es || !es->fun || !es->fun->sym) continue;
-    if (es->fun->split_unique) continue;
-    bool has_edges = false;
-    for (AEdge *ee : es->edges) if (ee) { has_edges = true; break; }
-    if (!has_edges) continue;
-    for (MPosition *p : es->fun->positional_arg_positions) {
-      AVar *av = es->args.get(p);
-      if (!av || !av->out || !av->out->type) continue;
-      int n = av->out->type->sorted.n;
-      if (n < 2 || n > limit) continue;
-      // Already pinned to a single CS here by an earlier fan (or by any
-      // other filtered split): the product exists, do not re-derive it.
-      AType *f = es->filters.get(p);
-      if (f && f->sorted.n == 1) continue;
-      // Fan ONLY a union that is a fixed point -- one where every
-      // incoming edge carries the whole union, so `etype == stype` and
-      // TYPE_CONFLUENCE has nothing to see. If some edge carries a
-      // strict subset, stage 1 can separate it on types alone and will;
-      // fanning there is the over-approximation that costs contours for
-      // nothing (measured: without this, the listcomp repro's
-      // `list.append` went to 13 contours for 4 type combinations).
-      bool fixpoint = true;
-      for (AEdge *ee : es->edges) if (ee && ee->args.n && ee->match) {
-        AVar *ea = ee->args.get(p);
-        if (!ea) continue;
-        AType *et = type_intersection(ea->out->type, ee->match->formal_filters.get(p));
-        if (et->n && et != av->out->type) { fixpoint = false; break; }
-      }
-      if (!fixpoint) continue;
-      CSMSplitDecision *dec = decide_csm_split(av);
-      if (dec) {
-        decisions.add(dec);
-        break;  // one position per contour per pass -- pace the product
-      }
-    }
-  }
-  Vec<EntrySet *> applied;
-  int analyze_again = 0;
-  for (CSMSplitDecision *dec : decisions) {
-    if (applied.set_in(dec->es)) continue;
-    applied.set_add(dec->es);
-    int r = apply_csm_split(dec);
-    log(LOG_SPLITTING, "[cpa] av %d es %d fun %s %d apply -> %d\n", dec->av->id, dec->es->id,
-        dec->es->fun->sym->name ? dec->es->fun->sym->name : "", dec->es->fun->sym->id, r);
-    if (r) analyze_again = 1;
-  }
-  return analyze_again;
-}
 
 // ifa/issues/075: element-CS container-method separation -- pyc's
 // analog of shedskin's func_copy-per-dcpa (063's 2026-07-31 update,
@@ -9899,21 +9812,27 @@ static int cpa_enabled() {
   // there is nothing for a type test to see). Fanning here also puts it
   // where MARK_TYPE used to act, which is the point: it replaces the
   // depth proxy with the name.
-  if (!analyze_again) {
-    ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-    stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
-    cur_split_stage = (int)FAPassStage::CARTESIAN_PRODUCT;
-    analyze_again = split_ess_cartesian_product();
-    fa->stage_time[(int)FAPassStage::CARTESIAN_PRODUCT] += stage_timer.lap();
-    if (analyze_again) {
-      record_fa_event(FAPassStage::CARTESIAN_PRODUCT, analyze_again, ess0, css0, viol0);
-      if (getenv("PYC_DBG_STAGEDELTA"))
-        fprintf(stderr, "STAGEDELTA p=%d CARTESIAN_PRODUCT returned=%d d_ess=%d d_css=%d viol=%d\\n", analysis_pass,
-                analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0, fa->type_violations.set_count());
-      ++fa->stage_progress_count[(int)FAPassStage::CARTESIAN_PRODUCT];
-    }
-    log(LOG_SPLITTING, "split_ess_cartesian_product %d\n", analyze_again);
-  }
+
+  // ifa/146 E, 2026-09-08: the CARTESIAN_PRODUCT stage (PYC_CPA) was REMOVED
+  // as arbitrary splitting, on the author's objection that it "isn't pure
+  // demand".
+  //
+  // It fanned a contour into one filtered contour per single CreationSet
+  // whenever a positional formal's live type held 2..N CreationSets. That
+  // trigger asks for no demand at all -- the function contained zero
+  // references to violation, irrepresentable, dispatch or unresolved -- so
+  // it fired whether or not anything downstream was harmed by the union.
+  // A union's EXISTENCE is a fact about the program, not a demand; a demand
+  // is something OBSERVING a distinction and being unable to proceed.
+  // (I first cleared CPA by mistaking the one for the other; see ifa/146 E.)
+  //
+  // What subsumes it: CPA gropes at dispatch precision, and in
+  // single-dispatch OOP the position that determines dispatch is the
+  // RECEIVER, needing separation only where dispatch fails to resolve.
+  // Demand plus dispatch-aware receiver filtering reaches every case this
+  // reached, fires only where resolution is blocked, and acts on the one
+  // position that decides it -- a strictly smaller partition for the same
+  // answer.
   // 2) split EntrySets based on type using marks
   // Issue 033 S5 M2: REVERTED to the original short-circuit
   // (`if (!analyze_again)`) 2026-07-11. The "unlock stage 2
