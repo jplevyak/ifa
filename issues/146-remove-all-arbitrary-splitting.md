@@ -321,6 +321,65 @@ This makes it **B-shaped work**, not a separate task: it belongs with
 No code shipped — the mechanism is proven on the fixture but has no
 correct trigger as an after-the-fact repair.
 
+### Dispatch-gated, group-wise filtering — ALREADY IMPLEMENTED (2026-09-08)
+
+**Author's refinement:** *"it should only be used if the call requires a
+dispatch. that shouldn't cause a problem because the filtered values can't
+pass through to the dispatch target in any real execution trace. not a
+single receiver, just all compatible receivers."*
+
+The soundness argument is right, and the design is right — filter to the
+receivers COMPATIBLE with each target rather than to one receiver, so the
+partition size is the number of dispatch targets rather than the number of
+CreationSets. That is what makes it safe where my unconditional version
+(one contour per receiver CS) broke 23 suite tests.
+
+**And pyc already does it.** Measured on a genuine polymorphic call:
+
+```python
+class A:
+    def go(self): return 1
+class B:
+    def go(self): return 2
+def call(o): return o.go()
+```
+
+```
+FUNES fun=go    es=57 [go#936] [A#1075]      <- receiver narrowed to A
+                es=58 [go#936] [B#1077]      <- receiver narrowed to B
+FUNES fun=call  es=55 [call#940] [A#1075]
+                es=66 [call#940] [B#1077]
+```
+
+Each target's `self` holds exactly the class that selects it. This is not a
+special dispatch filter — it falls out of ordinary contour identity,
+because **`self` is an argument** and contour compatibility already keys on
+argument types. Which is the author's own earlier point about static
+dispatch: pyc's `c` subsumes shedskin's `dcpa` wherever the receiver
+appears as an argument.
+
+**So the fixture is NOT a dispatch case, and that is why nothing here
+reaches it.** Its three receivers are all `list` — one class, one `append`
+body, no target to choose between:
+
+```
+es=77 [list#1070 list#1077 list#1111] [A]
+```
+
+The receiver is a UNION WITHIN ONE CLASS. There is no dispatch to gate on,
+no set of compatible-per-target groups to filter into, and the union itself
+IS the contour's argument type, so argument-type identity cannot break it
+up either.
+
+**Which pins the remaining gap precisely.** What the fixture needs is per-
+CreationSet method contours *within* a single class — several data contours
+of `list` not sharing one `append`. That is not dispatch and not a demand-
+driven split; it is data-contour identity, shedskin's `dcpa` dimension, and
+it belongs to **B**. Every ES-side avenue is now measured and closed:
+dispatch filtering already exists, violation-gated filtering never fires,
+element-difference gating is hidden by the fixed point, and unconditional
+filtering breaks the suite.
+
 ### Superseded first attempt, kept for the record
 
 Built as specified: CPA's own mechanism (`decide_csm_split` /
