@@ -9019,10 +9019,44 @@ static bool cs_elem_irrepresentable(CreationSet *cs) {
     }
     Vec<AVar *> moved;
     if (defpart) {
+      // The signature is only meaningful for a def the graph actually
+      // covers. `g->csites` (path nodes with no incoming edge) and
+      // `cs->defs` are DIFFERENT AVar sets and can be disjoint -- the
+      // CSFLOW probe prints that as `in_defs=0`. When they are, every def
+      // scores an empty signature, they all collapse into one group, and
+      // the rung declines having learned nothing. That is not "these are
+      // indistinguishable", it is "this graph does not describe these
+      // defs", and the two must not produce the same answer.
+      //
+      // Caught by a 5-line repro that the old fan compiles and the first
+      // version of this partition did not:
+      //
+      //     a = []; a.append(1)
+      //     b = []; b.append("x")
+      //     print(a[0], b[0])
+      //
+      // `cs=983 defs=6 sets=3 csites=2 (in_defs=0)` -- three assign sets
+      // that plainly separate `int64` from `str`, and not one of the six
+      // defs on any path. Declining there merged two lists the program
+      // keeps apart.
       std::vector<std::string> sig((size_t)defs.n);
+      int informative = 0;
       for (int i = 0; i < defs.n; i++)
         if (g)
-          for (int k = 0; k < g->keys.n; k++) sig[(size_t)i] += g->paths.v[k]->set_in(defs.v[i]) ? '1' : '0';
+          for (int k = 0; k < g->keys.n; k++) {
+            bool on = g->paths.v[k]->set_in(defs.v[i]);
+            sig[(size_t)i] += on ? '1' : '0';
+            if (on) informative = 1;
+          }
+      if (!informative) {
+        // No def is on any path: the graph names no partition of THESE
+        // defs, which is the same situation as having no graph at all.
+        if (defpart >= 2) goto Lfan;
+        if (dbg)
+          fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d DECLINED (flow graph covers none of the defs)\n",
+                  analysis_pass, cs->id, cs->sym->name ? cs->sym->name : "?", defs.n);
+        continue;
+      }
       // Group id per def, assigned in id order so the partition is stable.
       std::vector<int> gid((size_t)defs.n, -1);
       int ngroups = 0;

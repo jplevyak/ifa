@@ -191,7 +191,69 @@ Codegen then gets the separation for free: `list<str*>::append` and
 `list<Node*>::append` are distinct C++ template instantiations, so no
 representation question arises either.
 
-## What the fix has to be
+## CORRECTION 2026-09-07: keying on the receiver contour is NOT required here
+
+The author's objection, and it is right: *"keying on the receiver data
+contour is a unique solution if there is a dynamic dispatch. if the
+dispatch is static as it is here then it isn't required afaict."*
+
+Measured, and it holds. `list.append` **already gets one contour per
+argument-type combination by ordinary CPA**, receiver included — the
+receiver is just an argument, and an `AVar`'s type IS a set of
+CreationSets, so `edge_type_compatible_with_entry_set` already compares
+them. A five-line program shows both halves:
+
+```python
+a = []; a.append(1)
+b = []; b.append("x")
+print(a[0], b[0])
+```
+
+```
+default:  FUNES fun=append contours=2
+            es=44 args=[append][list#983][int64]
+            es=50 args=[append][list#985][str]     <- DIFFERENT receiver CSs
+flag:     FUNES fun=append contours=2
+            es=44 args=[append][list#983][int64]
+            es=50 args=[append][list#983][str]     <- SAME receiver CS
+```
+
+`append` splits either way. In the default arm the two contours already
+carry different receiver CreationSets — **without any `dcpa` dimension**,
+purely because the `self` argument's type differs. So shedskin's
+`func.cp[dcpa][c]` indexing is how shedskin spells it, not a mechanism pyc
+is missing: pyc's `c` already subsumes shedskin's `dcpa` for a statically
+dispatched call, because the receiver is in the cartesian product.
+
+What differs in the flag arm is only that **the CreationSet did not
+split** — both contours share `list#983`, so both write into one element
+channel. The fix is therefore to make the CreationSet split; the method
+contours follow on their own.
+
+**So the "what the fix has to be" section below is wrong as written** and
+is kept for the record rather than as a plan. Splitting container method
+contours per receiver CS is not the missing mechanism. Where the receiver
+contour would still be the only handle is DYNAMIC dispatch — several
+classes reachable at one call site — which is not this case.
+
+### What that leaves for `bh`
+
+`bh` is not explained by the corrected story yet, and the earlier
+measurement stands unexplained: forcing route 4 to give all eight of
+`bh`'s creation points their own contour left every one of them still
+carrying `{Body, str}`. If splitting the CreationSet were sufficient, that
+should have cleaned them.
+
+The likely reason is the fixed point one level up rather than any
+contour rule: `q` comes from `reversed(self.bodies)`, whose element is
+already `{Body, str}`, so every `append`/`__setitem__` call SITE passes the
+union as its value argument. CPA cannot separate contours whose argument
+types are already identical unions — the same `etype == stype` fixed point
+ifa/142 describes, reached at the call rather than at the element. That
+makes `bh` a question about breaking the cycle upstream, not about method
+contour identity, and it is not yet root-caused.
+
+## What the fix has to be (SUPERSEDED -- see the correction above)
 
 `list`'s methods must be able to split per receiver CreationSet, **on
 demand** — the demand being an irrepresentable element union on a receiver
