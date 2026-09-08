@@ -270,7 +270,58 @@ work and is what should land first if anything currently depends on CPA
 being reachable. `tests/splitter_cartesian_product.py` pins it and would
 need the same treatment `splitter_mark_type.py` got.
 
-### Receiver filtering ATTEMPTED 2026-09-08 — it does not subsume CPA, and the reason is structural
+### Receiver filtering: the MECHANISM is right, and it cannot be retrofitted as a repair
+
+**Author's clarification:** *"the filter is for oop dispatch so that the
+correct class values flow to the methods for that class."* That is the
+right frame, and it located the problem exactly. On the fixture, where
+`self.aas` holds only `A` and `self.bbs` only `B`:
+
+```
+es=60 [list#1077 list#1111]           [A B]
+es=77 [list#1070 list#1077 list#1111] [A]   <- writes A into THREE lists
+es=78 [list#1071 list#1077 list#1111] [B]   <- writes B into THREE lists
+```
+
+`append` is contoured by its VALUE but its RECEIVER is a union, so A and B
+both land in `list#1077` and `list#1111`. The element type then unions two
+classes the program never mixes, and `self.aas[-1].ay()` draws a spurious
+`illegal: B`. **The warning is pyc's imprecision, not the program's error.**
+
+**Filtering the receiver fixes it, exactly.** Restricted to the receiver
+position — note position 0 is the SELECTOR symbol and position 1 is the
+receiver, which cost one wrong iteration — every `append` contour gets a
+single receiver, the warning goes, and the result matches what CPA achieved
+(`direct=68 dynamic=1`, no warning) by a principled mechanism instead of a
+blind fan.
+
+**But it cannot be applied as a demand-driven repair.** Three gatings, all
+measured:
+
+| gating | result |
+| --- | --- |
+| none — filter every method receiver | **fixes the fixture**, and breaks everything else: 23 suite failures, `chess` and `plcfrs` stop compiling, plcfrs ess 1088 → 1277 |
+| receiver CreationSets' element types differ | **never fires** — by the time the stage runs they have converged to the same `{A, B}` union |
+| a `SEND_ARGUMENT` violation on the formal | never fires; the violation sits on a CS-contoured AVar, not a formal |
+
+The middle row is the finding. **The demand is unobservable at repair time
+because the merge has already destroyed the evidence** — ifa/142's fixed
+point for the third time, now at the receiver. Once `list#1077` holds
+`{A,B}`, nothing can see that it was ever meant to hold only one.
+
+**So receiver-keyed method contours have to be IDENTITY, not repair.** That
+is precisely what shedskin does — `func.cp[dcpa][c]` indexes every function
+contour by the receiver's data contour from the start, so the union never
+forms and there is nothing to detect later. Under CLAUDE.md's three-way
+rule that is legitimate: identity may be as fine as it likes, and it is not
+a split.
+
+This makes it **B-shaped work**, not a separate task: it belongs with
+`creation_point`'s identity change rather than as another splitting stage.
+No code shipped — the mechanism is proven on the fixture but has no
+correct trigger as an after-the-fact repair.
+
+### Superseded first attempt, kept for the record
 
 Built as specified: CPA's own mechanism (`decide_csm_split` /
 `apply_csm_split` — filter a formal into one contour per single
