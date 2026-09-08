@@ -177,12 +177,91 @@ The `r = []` / `r.append(self[k])` shape those contours belong to is
 helper whose `self[k]` is the receiver's element. `bh` reaches it through
 `from copy import copy` — `copy(p)`, `copy(b.new_acc)`, `copy(dvel)`.
 
-**Open, and the next thing to measure:** which receiver makes `self[k]` a
-`{str, Body}` union — i.e. where the FIRST pollution enters, before any
-copy. Removing `__slots__` from the source eliminates it entirely, so the
-`str` side originates there; what is not yet established is how a
-`__slots__` list and a node list come to share a value flow at all, given
-their CreationSets are separate.
+## ROOT CAUSE, traced end to end (2026-09-08)
+
+**1. The union forms at pass 0, and that is CORRECT.** `PYC_LOG=s`, line 44
+of the splitting log — the first `str`-with-class confluence in the run:
+
+```
+[confluence] av 3797 x [ES/formal] str __pyc_None_type__ Body tuple Cell
+```
+
+`av 3797` is `append(self, x)`'s value formal. Under `PYC_CSDCPA1` every
+list starts on one CreationSet, so every `append` targets it and the formal
+sees every appended type. Start-merged working as designed.
+
+**2. Splitting then works, partially.** `IFA_DBG_FUNES=append` ends with
+FOUR contours, correctly keyed on (receiver, value):
+
+```
+es=62  [list#1596] [str#8 Body#1306]    <- union
+es=211 [list#1588] [str#8]              <- clean
+es=212 [list#1597] [tuple#1359]         <- clean
+es=367 [list#1630] [str#8 Body#1306]    <- union
+```
+
+**3. The two survivors have a SINGLE receiver and a union value.** No
+EntrySet split repairs that shape: two call sites write different types
+into the SAME CreationSet, so splitting the method by value type gives two
+contours sharing one receiver and the element channel still takes both.
+**The receiver has to split.**
+
+**4. But those receivers have ONE creation point.** `IFA_DBG_CSDEFSPLIT`:
+
+```
+p=3 cs=1596 sym=list DEMAND-ADDED defs=1
+p=3 cs=1596 sym=list defs=1 DECLINED (single creation point)
+```
+
+**104 such declines.** ifa/144's demand-driven candidate path correctly
+OFFERS them; route 4 partitions by creation point and there is only one.
+
+**5. The mechanism for exactly this exists and is OFF BY DEFAULT.**
+ifa/129's third clause — *"a CreationSet with ONE creation point and an
+irrepresentable element... the separation has to come from splitting the
+EntrySet that OWNS the creation point, so the site duplicates and gives the
+next pass two defs"* — is gated on `cscallsite_enabled()`, and
+`PYC_CSCALLSITE` **defaults to 0**.
+
+**6. Turning it on does not fix `bh` either, and the reason is terminal.**
+`=1` and `=2` both leave the 11 warnings and the abort (`ess` 366 →
+384/379, `css` 1134 → 1149, so it does fire). `IFA_DBG_THIRD`: 253
+attempts, 251 refusals.
+
+| owning EntrySet | attempts | outcome |
+| --- | --- | --- |
+| `__mul__` | 102 | `splittable=0 why=no_groups` |
+| `reversed` | 78 | `splittable=0 why=no_groups` |
+| `__new__` | 71 | `splittable=0 why=no_groups` |
+| `__mul__` | 2 | `splittable=3` (succeeded) |
+
+`no_groups` means `decide_entry_set_split` could not partition the callers
+at all: every in-edge is mutually compatible under
+`edge_type_compatible_with_edge`, because they all pass the SAME union
+type. **ifa/142's fixed point, one level up** — at the call rather than at
+the element.
+
+### The statement
+
+The creation point that needs separating lives inside a library function
+(`list.__mul__`, `reversed`, `__new__`) whose callers are
+**indistinguishable by type**, because the value they pass has already
+converged to the union. So the CreationSet cannot split (one creation
+point), its owning EntrySet cannot split (one type-group of callers), and
+every finer rung has already declined by construction.
+
+No partition key reaches this. What is missing is a way to tell those
+callers apart that is **not their argument type** — the call site, which is
+what the third clause reaches for and what `PYC_CSCALLSITE=2`'s
+demand-driven mode is meant to supply. Its `no_groups` refusal is the
+precise thing to fix: the demand names the parts (`{str}` vs `{Body}`), but
+`decide_entry_set_split` is asked to find them by type compatibility, which
+cannot see them.
+
+**This supersedes everything above in this issue.** The shared-method-
+contour story, the arity story and the `__pyc_copy__` attribution were all
+wrong — `list.__pyc_copy__` is not even reached in `bh` (`IFA_DBG_FUNES`
+shows `__pyc_copy__` only on `Vec3` receivers).
 
 ## SUPERSEDED — Root cause: the element channel has ONE writer per method, program-wide
 
