@@ -140,9 +140,44 @@ contour for a `(dcpa, cartesian product)` pair when a call with that pair
 occurs, so the union never forms. Retrofitting the same identity onto
 selection is not the same change and does not work.
 
-**So B needs contour CREATION keyed on the receiver's data contour, with
-reachability**, not a compatibility tweak. That is the remaining work and it
-is substantial; nothing shipped.
+**CORRECTED, on the author's objection: "why does B need contour creation
+keyed on receiver data contour? shouldn't it be demand driven?"** It should,
+and the conclusion above was wrong in exactly the way this issue exists to
+catch.
+
+Keying contour creation on the receiver's data contour is STRUCTURAL: it
+multiplies contours whether or not anything demands it. The three-way rule
+already covers the temptation — identity may be as fine as it likes, but
+*"turning a finer identity directly into more contours is the same error as
+splitting on structure, wearing different clothes."* shedskin doing it that
+way is not an argument for pyc doing it; shedskin has no demand-splitting
+rule to keep.
+
+**Why I was pushed there, and what is actually wrong.** Every demand-driven
+avenue I measured died on the same wall: by the time the splitting stages
+run, the union has formed, every writer carries it, and the demand can no
+longer name its parts. I read that as "demand cannot reach this" and reached
+for structure. But it is a statement about **WHEN I looked**, not about
+whether the information exists:
+
+- On the acceptance fixture the writers ARE distinguishable — `append`'s
+  contours carry `[A]` and `[B]` as their VALUE types (`es=77`, `es=78`).
+  The union is on the RECEIVER, not the value. So an element-side flow graph
+  has two assign sets and the partition is nameable.
+- `Vec3` in `bh` shows the same: `CSFLOW ... sets=28 csites=4 (in_defs=4)` —
+  28 assign sets over 4 creation points, all of them in `defs`.
+
+**So the demand is available; what fails is applying it.** The measured
+mechanical gap is `in_defs=0` on the list CreationSets: the CSFlowGraph's
+creation points and `cs->defs` are DISJOINT AVar sets, so a partition the
+demand names cannot be applied to the defs that need re-pointing. That is
+the bug ifa/144's "informative" check detects and then declines on — a
+concrete, fixable problem in the plumbing between the demand and the
+mechanism, not a reason to abandon demand splitting.
+
+**B's next step is therefore to close that gap** — make the demand's
+partition applicable to the creation points it is about — not to key
+contour creation on the receiver. Nothing shipped.
 
 ### B (original statement). `creation_point`'s `(allocation site × contour)` identity
 
