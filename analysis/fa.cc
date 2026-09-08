@@ -7598,6 +7598,25 @@ static void clear_results() {
 // Annotate `av` if its converged out is a pure-numeric mix.
 // Returns 1 when newly annotated (or retargeted wider).
 static int coerce_annotate(AVar *av) {
+  // ifa/145, author's directive 2026-09-08: "pyc has a strict and
+  // permissive mode, and any automatic coercion should be permissive
+  // only", and "strict mode should error on anything which would require
+  // boxing."
+  //
+  // This coercion is automatic and OBSERVABLE -- it widens an int member
+  // to float, so the program prints `1.0` where CPython prints `1`. That
+  // is a permissive-Python fallback, and `--strict` promises none ("hard
+  // compile errors on type violations, no permissive-Python fallbacks",
+  // pyc.cc:101). It used to run in strict mode anyway, because it asked
+  // no mode question at all.
+  //
+  // Declining here is what makes strict mode correct rather than merely
+  // quieter: a `{int64, float64}` mix left standing is caught by the
+  // BOXING violation on `cs->vars` (`mixed_basics`, collect_var_type_
+  // violations), and with `fruntime_errors` false a type violation is a
+  // hard compile error. So strict now errors on exactly the case that
+  // would need boxing, which is the rule.
+  if (!fruntime_errors) return 0;
   Sym *w = nullptr;
   Vec<Sym *> basics;
   for (CreationSet *cs : av->out->sorted) {
