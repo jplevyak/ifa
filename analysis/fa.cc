@@ -6381,26 +6381,6 @@ static int selfprod_enabled() {
   return e;
 }
 
-//
-// **On by default from 2026-08-14.** Same design rule the lexical display
-// got in issue 100: a contour merge may be prevented by types or CS
-// partitioning, never by provenance -- and mark distance IS provenance
-// (depth from a generating AVar), which is why no type tuple can name
-// what it separates. This is NOT widening (issue 057's prohibition): it
-// merges no type-distinct contours; it refuses exactly the redundant
-// split 057 itself names, contours "type-identical to existing ones" --
-// hq2x's monomorphic PIXELxx_yy helpers get setkey=1, cpakey=1 and 36
-// contours, one per call site. The VIOLATION stage still calls
-// split_with_type_marks(SPLIT_DYNAMIC), so marks stay available as
-// demand-driven repair where a type violation actually appears.
-static int nomark_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_NOMARK");
-    e = v ? atoi(v) : 1;
-  }
-  return e;
-}
 
 
 // Issue 033 M2b: decide-then-apply. The grouping DECISION (which
@@ -7254,27 +7234,6 @@ static void build_setter_mark(AVar *av, AVar *x, int mark = 1) {
   for (AVar *y : av->backward) if (y) build_setter_mark(y, x, mark + 1);
 }
 
-// this is a backward problem, so search forward then back
-// to find all the contributors and what they effect
-static void build_setter_marks(AVar *av, Accum<AVar *> &acc) {
-  // collect all contributing nodes — index-based so elements
-  // appended during iteration are visited (transitive closure).
-  // A range-for here both capped the closure at one hop AND
-  // iterated a Vec whose backing store can be reallocated by
-  // add() — the same defect fixed in build_type_marks (see the
-  // comment there); survey finding B3.
-  acc.add(av);
-  for (int i = 0; i < acc.asvec.n; i++) {
-    AVar *x = acc.asvec.v[i];
-    for (AVar *y : x->forward) if (y && y->setters && y->setters->some_intersection(*av->setters)) acc.add(y);
-  }
-  for (int i = 0; i < acc.asvec.n; i++) {
-    AVar *x = acc.asvec.v[i];
-    for (AVar *y : x->backward) if (y && y->setters && y->setters->some_intersection(*av->setters)) acc.add(y);
-  }
-  // mark them (no additions here — plain iteration is safe)
-  for (AVar *x : acc.asvec) if (x->setters) for (AVar *y : *x->setters) if (x == y->container) build_setter_mark(x, y);
-}
 
 static void clear_marks(Accum<AVar *> &acc) { for (AVar *x : acc.asvec) x->mark_map = 0; }
 
@@ -7863,32 +7822,7 @@ static void collect_setter_confluences(Accum<AVar *> &avs, Vec<AVar *> &setter_c
   }
 }
 
-[[nodiscard]] static int split_with_setter_marks(AVar *av) {
-  Accum<AVar *> acc;
-  build_setter_marks(av, acc);
-  Vec<AVar *> confluences;
-  collect_es_marked_confluences(confluences, acc, SPLIT_SETTER);
-  int analyze_again = 0;
-  for (AVar *av : confluences) {
-    if (av->contour_is_entry_set) {
-      if (!av->is_lvalue) {
-        AVar *aav = unique_AVar(av->var, av->contour);
-        if (is_return_value(aav)) analyze_again |= split_entry_set(aav, SPLIT_SETTER, SPLIT_MARK, SPLIT_EDGES);
-      } else if (av->var->is_formal)
-        analyze_again |= split_entry_set(av, SPLIT_SETTER, SPLIT_MARK, SPLIT_EDGES);
-    }
-  }
-  clear_marks(acc);
-  return analyze_again;
-}
 
-[[nodiscard]] static int split_ess_setters_marks(Vec<AVar *> &confluences) {
-  int analyze_again = 0;
-  for (AVar *av : confluences) if (av->contour_is_entry_set) analyze_again |= split_with_setter_marks(av);
-  if (!analyze_again)
-    for (AVar *av : confluences) if (!av->contour_is_entry_set) analyze_again |= split_with_setter_marks(av);
-  return analyze_again;
-}
 
 [[nodiscard]] static int split_ess_setters(Vec<AVar *> &confluences) {
   int analyze_again = 0;
@@ -9172,10 +9106,17 @@ static bool cs_elem_irrepresentable(CreationSet *cs) {
     if (dbg) fprintf(stderr, "[sfs] p=%d ess_setters WON (split_css not reached)\n", analysis_pass);
     return 1;
   }
-  if (nomark_enabled() < 2 && split_ess_setters_marks(setter_confluences)) {
-    if (dbg) fprintf(stderr, "[sfs] p=%d ess_setters_marks WON (split_css not reached)\n", analysis_pass);
-    return 1;
-  }
+  // ifa/146 D: `split_ess_setters_marks` used to run here, and unlike
+  // MARK_TYPE it was still LIVE on the default path -- its gate was
+  // `nomark_enabled() < 2`, and the default is 1. So mark-based (i.e.
+  // provenance-based) splitting was never actually off, which the flag's
+  // name and CLAUDE.md's "mark-based splitting was retired" both implied it
+  // was. Removed.
+  //
+  // Measured: corpus verdicts byte-identical on all 77 programs, container
+  // CreationSets unchanged at 2736, pyc suite 313 passed / 0 failed on both
+  // backends. It fired on one program (`plcfrs`, ess 1102 -> 1094) and cost
+  // contours where it did.
   if (analyze_again) {
     if (dbg) fprintf(stderr, "[sfs] p=%d analyze_again preempts split_css\n", analysis_pass);
     return 1;
@@ -9393,107 +9334,7 @@ static void collect_cs_setter_confluences(Vec<AVar *> &setters_confluences) {
   return analyze_again;
 }
 
-// Issue 033 M5-prelude: split the jointly-marked ES confluences via
-// the M2b decide-then-apply machinery — every decision computed
-// against the same converged, jointly-marked state, first decision
-// per EntrySet wins, later ones defer to the next pass (same
-// arbitration as stage 1).
-[[nodiscard]] static int split_marked_es_confluences(Vec<AVar *> &marked) {
-  Vec<ESSplitDecision *> decisions;
-  for (AVar *cav : marked) {
-    if (!cav->contour_is_entry_set) {
-      log(LOG_SPLITTING, "[stage2-marks]   marked-conf av %d CS-contour skipped\n", cav->id);
-      continue;
-    }
-    AVar *target = nullptr;
-    if (!cav->is_lvalue) {
-      if (cav->var->is_formal)
-        target = cav;
-      else
-        log(LOG_SPLITTING, "[stage2-marks]   marked-conf av %d ES/non-formal-rval skipped\n", cav->id);
-    } else {
-      AVar *aav = unique_AVar(cav->var, cav->contour);
-      if (is_return_value(aav))
-        target = aav;
-      else
-        log(LOG_SPLITTING, "[stage2-marks]   marked-conf av %d ES/lval-non-return skipped\n", cav->id);
-    }
-    if (!target) continue;
-    ESSplitDecision *dec = decide_entry_set_split(target, SPLIT_TYPE, SPLIT_MARK);
-    log(LOG_SPLITTING, "[stage2-marks]   marked-conf av %d decide -> %d groups\n", cav->id,
-        dec ? dec->groups.n : 0);
-    if (dec) decisions.add(dec);
-  }
-  int analyze_again = 0;
-  Vec<EntrySet *> applied;
-  for (ESSplitDecision *dec : decisions) {
-    if (applied.set_in(dec->es)) {
-      log(LOG_SPLITTING, "[stage2-marks] av %d es %d DEFERRED: es already split this pass\n", dec->av->id,
-          dec->es->id);
-      continue;
-    }
-    applied.set_add(dec->es);
-    int r = apply_entry_set_split(dec);
-    log(LOG_SPLITTING, "[stage2-marks] av %d es %d apply -> %d\n", dec->av->id, dec->es->id, r);
-    analyze_again |= r;
-  }
-  return analyze_again;
-}
 
-[[nodiscard]] static int split_ess_for_mark_type(Vec<AVar *> &confluences) {
-  // Issue 033 M5-prelude: the old shape called split_with_type_marks
-  // per confluence — each call rebuilt the full backward+forward
-  // transitive closure, re-ran the global marked-confluence collect,
-  // and re-attempted splits, making stage 2 O(confluences x
-  // universe): 81-87% of pygasus's extend time for progress on 5
-  // passes (M0 measurement). Joint seeding (the landed stage-4
-  // B4/P3 shape) computes the identical union closure once, marks
-  // once (min distances over all seeds' gens — see
-  // build_joint_type_marks for why this is the same-or-more-defined
-  // semantics), collects once, and splits the marked set through
-  // M2b decide-then-apply. The a)/b) priority (ES-contour
-  // confluences first, CS-contour ones only if a) found nothing) is
-  // preserved.
-  int analyze_again = 0;
-  Timer s2_timer;
-  // a) first those where the confluence is NOT at an instance variable
-  {
-    Vec<AVar *> seeds;
-    for (AVar *av : confluences) if (av->contour_is_entry_set) seeds.add(av);
-    if (seeds.n) {
-      Accum<AVar *> acc;
-      build_joint_type_marks(seeds, acc);
-      stage2_closure_time += s2_timer.lap();
-      Vec<AVar *> marked;
-      collect_es_marked_confluences(marked, acc, SPLIT_TYPE);
-      stage2_collect_time += s2_timer.lap();
-      log(LOG_SPLITTING, "[stage2-marks] (ES-contour) seeds=%d closure=%d marked=%d\n", seeds.n, acc.asvec.n,
-          marked.n);
-      analyze_again = split_marked_es_confluences(marked);
-      clear_marks(acc);
-      stage2_split_time += s2_timer.lap();
-    }
-  }
-  // b) then those where the confluence is at an instance variable
-  if (!analyze_again) {
-    Vec<AVar *> seeds;
-    for (AVar *av : confluences) if (!av->contour_is_entry_set) seeds.add(av);
-    if (seeds.n) {
-      Accum<AVar *> acc;
-      build_joint_type_marks(seeds, acc);
-      stage2_closure_time += s2_timer.lap();
-      Vec<AVar *> marked;
-      collect_es_marked_confluences(marked, acc, SPLIT_TYPE);
-      stage2_collect_time += s2_timer.lap();
-      log(LOG_SPLITTING, "[stage2-marks] (CS-contour) seeds=%d closure=%d marked=%d\n", seeds.n, acc.asvec.n,
-          marked.n);
-      analyze_again = split_marked_es_confluences(marked);
-      clear_marks(acc);
-      stage2_split_time += s2_timer.lap();
-    }
-  }
-  return analyze_again;
-}
 
 static bool back_reaching(AVar *av, Vec<AVar *> &reached) {
   if (reached.set_in(av)) return true;
@@ -10170,7 +10011,12 @@ static int cpa_enabled() {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
     stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::MARK_TYPE;
-    analyze_again = nomark_enabled() >= 1 ? 0 : split_ess_for_mark_type(confluences);
+    // ifa/146 D, 2026-09-08: MARK_TYPE removed. Mark distance is
+    // depth-from-a-generating-AVar -- provenance, so no type tuple can name
+    // what it separates (CLAUDE.md, "Provenance is never the answer"). It
+    // had been switched OFF by `PYC_NOMARK`'s default since 2026-08-15;
+    // under ifa/146's delete-don't-default rule the stage goes too.
+    analyze_again = 0;
     fa->stage_time[(int)FAPassStage::MARK_TYPE] += stage_timer.lap();
     if (analyze_again) {
       record_fa_event(FAPassStage::MARK_TYPE, analyze_again, ess0, css0, viol0);

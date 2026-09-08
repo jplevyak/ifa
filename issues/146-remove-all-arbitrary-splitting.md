@@ -160,7 +160,66 @@ shipped as the default, and it is where `bh`'s 16 `Vec3` mints come from.
 Retiring it needs a grouping key for non-container CreationSets — the
 CSFlowGraph generalised from the element channel to `cs->vars`.
 
-### D. `MARK_TYPE` — provenance by construction
+### D. `MARK_TYPE` and the marks-based setter splitter — DONE 2026-09-08
+
+**Removed**, 171 lines of `fa.cc`, together with `PYC_NOMARK`.
+
+**The finding that mattered: mark splitting was never actually off.** The
+flag had three states and two consumers with DIFFERENT thresholds:
+
+```c
+analyze_again = nomark_enabled() >= 1 ? 0 : split_ess_for_mark_type(...);   // 1 >= 1 -> off
+if (nomark_enabled() < 2 && split_ess_setters_marks(...)) {                 // 1 <  2 -> RUNS
+```
+
+At the default `PYC_NOMARK=1`, MARK_TYPE was off but
+**`split_ess_setters_marks` was still live on the default path** — so
+provenance-based splitting was running, while the flag's name and
+CLAUDE.md's "mark-based splitting was retired (`PYC_NOMARK` defaults to 1)"
+both read as though it were not. A flag with two thresholds hid it.
+
+Measured before removal (`PYC_NOMARK=2`, i.e. marks fully off):
+
+- corpus verdicts **byte-identical on all 77 programs**;
+- container CreationSets unchanged at 2736;
+- pyc suite 313 passed / 0 failed on both backends;
+- it fired on exactly one program, `plcfrs`, where it COST contours
+  (ess 1102 → 1094 with it off).
+
+Deleting the two entry points left a cascade of dead helpers
+(`split_with_setter_marks`, `split_marked_es_confluences`,
+`build_setter_marks`), removed by following the compiler's
+unused-function warnings to a fixed point.
+
+`tests/splitter_mark_type.py` is KEPT and repurposed rather than deleted —
+the shape it builds is the valuable part and ifa/142 cites its header. It
+now pins that the shape costs nothing to resolve without marks:
+`CALLS: direct=69 dynamic=0`, byte-identical to what MARK_TYPE produced.
+The STAGES line lost `MARK_TYPE` and gained nothing.
+
+### E. `PYC_CPA` — NOT arbitrary; this entry was wrong
+
+**Audited 2026-09-08 and cleared.** The original entry here called it a fan
+on the strength of its test header's phrase *"fanning the contour into one
+per single CreationSet"*. Reading the implementation, that is not the
+arbitrary shape:
+
+> when a positional formal's live type is a union of >= 2 CreationSets, fan
+> the contour into one filtered contour per single CS and re-dispatch every
+> edge across them.
+
+The **union is the demand** and its **members are the parts**, so the
+partition size equals the number of distinct things the demand
+distinguishes. Both questions pass: it cannot fire without a union, and the
+union alone decides both whether and which. It is the same legitimate shape
+as `split_es_by_call_site`'s surviving demand-driven branch.
+
+It stays. Two notes for whoever revisits it: its `PYC_CPA=N` cap is
+count-based, which is the shape this issue distrusts elsewhere, though here
+it bounds a resource rather than deciding a partition; and it is default
+0, so it is dead weight rather than a live violation.
+
+### D (original statement, kept for the record). `MARK_TYPE` — provenance by construction
 
 Mark distance is depth-from-a-generating-AVar, so no type tuple can name
 what it separates. `PYC_NOMARK` defaults to 1, so it is OFF — but the code,
@@ -169,7 +228,7 @@ still asserts it is *"the only stage that can break that symmetry"*. That
 claim is now false: `CS_DEF_PART` fires on the same fixture. Under the
 delete-don't-default rule this should go, and the test's claim be updated.
 
-### E. `PYC_CPA` — cartesian-product fan, default 0
+### E (original statement, kept for the record). `PYC_CPA` — cartesian-product fan, default 0
 
 `tests/splitter_cartesian_product.py`'s own header describes it as *"fanning
 the contour into one per single CreationSet"*. That is a fan by the
@@ -188,8 +247,8 @@ B is the goal (it is what `PYC_CSDCPA1` exists to retire) but depends on
 independent of the flag. C is the smallest and is a regression I introduced.
 D and E are deletions of dead-but-sanctioned code.
 
-**A and C are DONE** (2026-09-08). Remaining: **D**/**E**, then **F**'s
-audit, with **B** landing as the flag flip.
+**A, C and D are DONE**; **E** audited and cleared (not arbitrary).
+Remaining: **F**'s audit, with **B** landing as the flag flip.
 
 ## Verification
 
