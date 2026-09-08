@@ -39,7 +39,80 @@ Under `PYC_CSDCPA1=2` every `list` starts on ONE CreationSet, so these
 merge with `self.bodies` and `Cell.subp`. **That merge is correct** — it is
 what "one CreationSet per sym" means. The defect is downstream.
 
-## Root cause: the element channel has ONE writer per method, program-wide
+## RETRACTED ROOT CAUSE, and the real one (2026-09-08)
+
+**The section below is wrong and is kept only as the record.** It said
+`list.append` and `list.__setitem__` each have ONE EntrySet program-wide,
+concluding that CreationSet splitting could never help. That was
+generalised from a single CreationSet's two backward edges (`nback=2` on
+`cs=1180`) and is false: a full `IFA_DBG_ELEMSETTER` dump of the last pass
+shows **`append` on `es=62, 219, 220, 457, 462`** and **`__setitem__` on
+`es=66, 226, 227, 228, 229, 326, 327, 427, 440, 441, 459, 464`**. The
+methods are heavily contoured, per receiver, exactly as ordinary
+argument-type CPA should do — which is also what the author pointed out
+about static dispatch, and what `tests/two_list_element_separation.py`
+pins.
+
+### What `bh` actually contains
+
+`bh.py` has **no `.append(` calls at all**. `append` appears as an element
+writer because a list LITERAL is lowered to `sym_append` calls
+(`python_ifa_build_if1.cc:1238`). The complete inventory of list
+construction in the file:
+
+| site | how built | element | arity |
+| --- | --- | --- | --- |
+| `__slots__ = ["seed"]` | `append` | `str` | **1 (static)** |
+| `__slots__ = ["d0","d1","d2"]` | `append` | `str` | **3 (static)** |
+| `__slots__ = ["pskip",…]` (4) | `append` | `str` | **4 (static)** |
+| `self.subp = [None] * Cell.NSUB` | `__mul__` | `Cell`/`Body`/`None` | **none (runtime)** |
+| `self.bodies = [None] * nbody` | `__mul__` | `Body`/`None` | **none (runtime)** |
+| `self.bodies = []` | — | — | 0 |
+
+So `append` in this program only ever writes `str`, and every `Body`/`Cell`
+element arrives through `__setitem__` or `__mul__`. The `{str, Body}` union
+is therefore precisely **a static-arity string literal sharing a
+CreationSet with a runtime-length node list** — and the partial separation
+in the dumps (`cs=1549` is a clean `[str]`, `cs=1550` a clean `[Body]`,
+while `cs=1606`/`1709`/`1710` stay `[str Body]`) is consistent with that.
+
+### The suspect: the arity guard exempts a varying-length candidate
+
+`creation_point`'s dcpa1 route, under the default `PYC_ARITYSTRICT=1`:
+
+```c
+if (!x->no_static_arity && x->static_arity != arity) continue;
+```
+
+A candidate `x` that has ALREADY lost its static arity is exempt from the
+check entirely, so an arity-1/3/4 literal may join the runtime-length
+`[None] * n` contour. The comment says why, and says it in the revealing
+word:
+
+> a candidate that has ALREADY lost its static arity is on list layout and
+> reads its length at run time, so merging any arity into it **is
+> representable**.
+
+Representable is not compatible. Under the three-way rule in CLAUDE.md
+representability is a NECESSARY condition for sharing a contour, never a
+sufficient one — compatibility is decided by demand, and nothing here
+demanded that a three-element string literal share a contour with a
+tree-node array. Arity is the one type-shaped fact that separates these two
+families (ifa/132's title is exactly "arity is representation, not
+provenance"), and the guard discards it in the one direction that matters.
+
+**Status: hypothesis, NOT yet verified.** The candidate tightening is
+
+```c
+if (x->no_static_arity ? (arity >= 0) : (x->static_arity != arity)) continue;
+```
+
+— a fixed-arity literal never joins a varying-length CreationSet. It has
+not been built or measured (a corpus sweep was occupying the machine), and
+the obvious risk is that it costs contours everywhere a fixed-arity list
+legitimately flows into a variable-length one. Measure before believing it.
+
+## SUPERSEDED — Root cause: the element channel has ONE writer per method, program-wide
 
 `IFA_DBG_ELEMTYPE=1 IFA_DBG_ELEMSETTER=1` on the merged CreationSet:
 
