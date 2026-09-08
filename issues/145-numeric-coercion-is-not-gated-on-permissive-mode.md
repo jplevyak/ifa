@@ -71,14 +71,38 @@ Two independent pieces:
 1. **Gate the existing coercion.** `coerce_annotate` returns 0 unless
    `fruntime_errors`. In strict mode a `{int64, float64}` confluence is a
    type violation and is reported as one.
-2. **Extend it to runtime values, permissive only.** Insert an explicit
-   conversion at the narrow write instead of leaving the violation
-   standing. shedskin does exactly this and emits the cast:
-   `b->_set( ((__ss_float)(len(__sys__::argv))) )`. Note shedskin has no
-   strict mode to answer to, so its behaviour is the permissive arm only.
+2. ~~**Extend it to runtime values, permissive only.**~~ **MISSCOPED — see
+   below.**
 
-Piece 1 is small and is the one the directive names. Piece 2 is what
-retires ifa/144's contour waste.
+Piece 1 is the one the directive names. **It landed 2026-09-08**
+(`coerce_annotate` returns 0 unless `fruntime_errors`; strict then reports
+the BOXING violation as a hard error). Verified corpus-neutral: a `check`
+sweep is byte-identical on all 77 programs, since the corpus builds
+permissive. Pinned by `tests/strict_rejects_numeric_boxing.py`.
+
+### Piece 2 was misscoped, and the real question is different
+
+"Extend it to runtime values" describes work that already exists:
+`type_coerce_numeric_constants`'s `else` branch replaces a NON-constant
+narrow CreationSet with the wide one. Runtime values are handled. shedskin's
+`((__ss_float)(...))` cast has a pyc equivalent already.
+
+What is actually missing was found by withdrawing ifa/144's split demand and
+reading the emitted C. Coercion reaches the value and types it WRONGLY:
+
+```c
+t74 = _CG_prim_add(t70, "+", 1);      // k + 1, widened to double
+t73 = _CG_prim_rsh(8, ">>", t74);     // Cell.NSUB >> (k + 1)  -- not C
+```
+
+`>>` on a double is invalid. So a pure-numeric mix is resolvable by
+coercion only where **nothing requires the narrow type**; where the value
+feeds an integer-only operation, widening is wrong and splitting is right.
+
+The missing question is **"may this value be widened at all?"** — a
+property of the USES, which neither the confluence collectors nor
+`coerce_annotate` ask. Until that exists, neither withdrawing the demand nor
+widening coverage is safe, and ifa/144's residual waste stays.
 
 ## Verification plan
 

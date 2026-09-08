@@ -363,23 +363,49 @@ bh.py.c:3724:9: error: invalid operands to binary expression
                        ('int' and '_CG_float64' (aka 'double'))
 ```
 
-**Splitting and coercion do not cover the same AVars.** Removing the
-demand leaves AVars that neither mechanism types, and codegen then emits a
-raw `int` where a `double` is required. `fa_coerce_numeric_confluences`
-scans ES-contour vars, `sym_closure` / `Type_RECORD` CS vars and container
-elements; the confluence machinery reaches more than that. Whatever the
-splitting was doing for the remainder, it was load-bearing.
+**Diagnosed properly 2026-09-08 by reading the emitted C**, and the first
+reading of it here ("splitting and coercion do not cover the same AVars")
+was WRONG. Coercion does reach this value. It types it, and it types it
+INCORRECTLY:
 
-So the ordering is the opposite of what it looks like: **coercion's
-coverage has to be extended FIRST**, and only then can the demand be
-withdrawn. Withdrawing it first is not a conservative step, it is a
-correctness regression. The guard reached less than half the benefit of the
-source-level fix even before it broke the build, which is the other tell
-that it is not the mechanism doing the work.
+```c
+t74 = _CG_prim_add(t70, "+", 1);      // k + 1   -- t74 is a double
+t73 = _CG_prim_rsh(8, ">>", t74);     // Cell.NSUB >> (k + 1)
+```
 
-That extension is [145](145-numeric-coercion-is-not-gated-on-permissive-mode.md)
-piece 2 (insert the conversion at the narrow write, permissive only). This
-issue's remaining waste is blocked on it, not on anything in the splitter.
+from `Node.old_sub_index`:
+
+```python
+for k in range(Vec3.NDIM):
+    if (int(ic[k]) & l) != 0:
+        i += Cell.NSUB >> (k + 1)
+```
+
+With the demand withdrawn the contours merge, coercion widens the shift
+operand to `float64`, and `>>` on a double is not C. **The split was doing
+real work: it separated a contour where the value is int-only from one
+where it is float, and coercion is the wrong answer for the int-only one.**
+
+So the premise behind this whole line of attack is false. A pure-numeric
+mix is NOT uniformly "resolvable by coercion" — it is resolvable by
+coercion only where nothing requires the narrow type. Where the value feeds
+an integer-only operation (`>>`, `&`, an index), widening is invalid and
+SPLITTING is the correct response. `bh` contains both cases at once:
+`Vec3`'s members (float-only uses, 18 identical contours of pure waste) and
+`old_sub_index`'s `k` (int-only use, a legitimate split).
+
+The discriminator is therefore not "is this mix pure-numeric" but **"does
+any use of this value forbid widening"** — a question about the uses, which
+neither the confluence collectors nor `coerce_annotate` currently ask.
+That is a real and principled criterion, and a substantially larger change
+than either piece attempted here.
+
+So this issue's remaining waste is blocked on a use-sensitive criterion,
+not on ifa/145 piece 2 as that was scoped — and 145 piece 2 was itself
+misscoped: `type_coerce_numeric_constants` ALREADY handles runtime
+(non-constant) values, replacing the narrow CreationSet with the wide one
+in its `else` branch. Nothing needs extending there. What is missing is the
+question "may this value be widened at all?".
 
 ## Reproducer
 
