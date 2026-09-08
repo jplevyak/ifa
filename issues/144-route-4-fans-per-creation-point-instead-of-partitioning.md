@@ -185,6 +185,91 @@ On `bh` specifically, route-4 mints go 25 → 8 and container contours 20 →
   sets it lies on — would partition more precisely and might recover
   `chull`.
 
+## ROOT CAUSE of the excess, traced 2026-09-08
+
+The question "what is splitting them?" has a stage answer and a real
+answer, and the stage answer is a decoy.
+
+### The stage answer, and why it is a decoy
+
+`IFA_DBG_STAGE` on `bh`, every CreationSet mint attributed:
+
+```
+CS_DEF_PART        csmint=23
+SETTER_OF_SETTER   csmint=3
+MARK_SETTER        csmint=1
+```
+
+24 of route 4's mints break down as **16 `Vec3`, all through the FAN
+fallback** (a plain class has no element channel, `build_cs_flow_graph`
+returns null, so fix 1's partition has no signature to group on) and 8
+`list`, all through the partition. `Vec3` ends at 20 contours with **3
+distinct member signatures, 18 of them byte-identical**.
+
+That looks like route 4 is the culprit. It is not. Suppressing the
+confluence that feeds it moves the work rather than removing it:
+
+```
+                     CS_DEF_PART   SETTER
+  as shipped            23           0
+  numeric mix withheld   7          15
+```
+
+`Vec3` then ends at **21** contours, one MORE, still 3 signatures. **The
+SETTER stage answers the same demand the same way.** Route 4 is not "the"
+splitter; it is whichever stage reaches the demand first, and they all
+fan. A guard on any one of them is a retreat that relocates the split —
+it was written, measured, and reverted for exactly that reason.
+
+### The real cause: a permanent numeric confluence that splitting cannot resolve
+
+`IFA_DBG_TCDROP` on `bh`: **150 of `Vec3`'s 156 confluence deferrals carry
+`type= int64 float64`.** The source is in the program:
+
+```python
+class Vec3:
+    def __init__(self):
+        self.d0 = 0.0            # float
+    def __setitem__(self, i, v):
+        self.d0 = v              # whatever the caller passes
+...
+    xp[0] = floor(Node.IMAX * xsc)   # int
+```
+
+So the members genuinely hold `{int64, float64}`. `coerce_annotate` exists
+for exactly this and **does fire** on `d0`, `d1` and `d2` — but it only
+reaches *constants*. Its own comment says so:
+
+> Runtime (non-constant) narrow members are left alone -- they would need
+> an inserted conversion -- so their violations persist and are reported
+> honestly.
+
+`floor(...)` is a runtime value. So the mix never coerces, the confluence
+is **permanent**, and it re-fires every pass for the life of the analysis.
+Every splitting stage treats a permanent confluence as a permanent demand
+and answers it by separating creation points — and every one of the 18
+resulting contours converges to `d0 d1 d2 = float64` regardless. **The
+splits answer a demand that splitting cannot resolve.**
+
+### What follows
+
+- The excess is not a defect of route 4's action alone. Fix 1 (partition
+  instead of fan) is still right and still needed, but it cannot reach
+  this: there is no flow graph for a plain class, and no grouping key
+  short of one.
+- The demand itself is the thing to fix. A `{int64, float64}` member mix
+  needs an INSERTED CONVERSION at the narrow write, which is the work
+  `coerce_annotate` explicitly declines for runtime values. Until that
+  exists, no contour partition can retire the confluence, because both
+  creation points really do see both types.
+- Until then, any stage-level guard just hands the fan to the next stage.
+  Measured; do not re-attempt without fixing the demand.
+
+**This supersedes the earlier reading in this issue that "route 4 answers
+a demand by separating maximally" fully explains the excess.** That is true
+of the `list` half and of the mechanism, and it is NOT the whole story for
+the `Vec3` half, which is 16 of the 24 mints.
+
 ## Reproducer
 
 ```sh
