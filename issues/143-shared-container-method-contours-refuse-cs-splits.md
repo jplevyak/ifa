@@ -117,6 +117,73 @@ With both, the third clause now fires on `bh` and reports
 EntrySet, so there is nothing to partition. Correct refusal: `reversed`
 merely inherits the pollution.
 
+## How shedskin handles it (measured 2026-09-07)
+
+shedskin compiles this program, from a `bh.py` carrying **the same three
+`__slots__` lines**, and it has **no `__slots__` handling anywhere in its
+source** (`grep -rn __slots__ shedskin/*.py` matches only its own
+`infer.py:181`). It simply infers the right types. Generated C++:
+
+```cpp
+static list<str *> *__slots__;   // x3, one per class
+list<Node *> *subp;
+list<Body *> *bodies;
+```
+
+Three list instantiations, three element types, cleanly separated. Against
+pyc on the same program:
+
+| | list contours | element types |
+| --- | --- | --- |
+| shedskin | **3** | 3 (`str*`, `Node*`, `Body*`) |
+| pyc, default | 21 | 6 |
+| pyc, flag arm | 16 | 7 (one is the bad `{Body, str}`) |
+
+**pyc makes five to seven times as many list contours as shedskin and
+still gets the wrong answer.** That is the finding: the contours are not
+merely excessive, they are excessive in the wrong places while merging in
+the one place that decides the outcome.
+
+### Why shedskin cannot hit this bug
+
+Not because it starts unmerged — it does not. All shedskin lists begin at
+`dcpa=0`, exactly like `PYC_CSDCPA1`, and its ifa ladder separates them
+(that ladder is already ported here: ifa/133 routes 1 and 3).
+
+The difference is one line of its call machinery. shedskin indexes every
+function contour **first by the receiver's data contour**:
+
+```python
+func.cp[dcpa][c] = cpa = len(func.cp[dcpa])       # infer.py:1401
+if dcpa not in func.cp or c not in func.cp[dcpa]: # infer.py:1314
+    create_template(gx, func, dcpa, c, worklist)
+```
+
+`(func, dcpa, objtype)` is unpacked from the call's function type
+(`infer.py:1279`), so `list.append` reached through data contour 1 and
+through data contour 2 are **different templates with different `value`
+formals**. A shared `append` that unions element types cannot exist, by
+construction. When the ladder splits a data contour, that contour's
+methods come with it automatically — which is why shedskin's finer rungs
+are sufficient there and insufficient here.
+
+Two properties worth keeping when copying this:
+
+- **It is identity, not a fan.** `(func, dcpa)` is what that method contour
+  IS, not a split triggered by the receiver splitting. Under the rule
+  recorded in CLAUDE.md — assignment by types, identity as ES x call site,
+  compatibility by demand — a container method's identity legitimately
+  includes which data contour it operates on. "Identity may be as fine as
+  it likes; that is not a split."
+- **It is reachability-driven.** `create_template` fires only when a call
+  with that `(dcpa, c)` actually occurs, so contours follow real calls
+  rather than being fanned out per receiver speculatively. That is the
+  distinction between this and the deleted `PYC_RECVFAN`.
+
+Codegen then gets the separation for free: `list<str*>::append` and
+`list<Node*>::append` are distinct C++ template instantiations, so no
+representation question arises either.
+
 ## What the fix has to be
 
 `list`'s methods must be able to split per receiver CreationSet, **on
