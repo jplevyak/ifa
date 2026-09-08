@@ -8285,7 +8285,11 @@ static CSFlowGraph *build_cs_flow_graph(CreationSet *cs) {
 // which is legal on these nodes because a creation point IS the AVar whose
 // cs_map names the CreationSet -- `creation_point` writes both from the same
 // variable. A group member without such a cs_map is skipped rather than
-// forced: at module scope the walk's roots have none (uncharacterized, see
+// forced: at module scope the walk's roots have none -- CHARACTERIZED
+// 2026-09-08, see ifa/146 B: a module-level global's allocation and its
+// uses are connected through the global SLOT, not through AVar
+// forward/backward edges, so the backflow walk's roots are the LOADS
+// (cs_map=0) and never the allocations (cs_map=1). Was (see
 // the issue), and inventing a handle for them is exactly the move the issue
 // warns against.
 // ifa/133 step 6: shedskin's contour REUSE (`classes_nr`, infer.py:1617-1624).

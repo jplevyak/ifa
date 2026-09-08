@@ -226,7 +226,40 @@ apply it. `split_css_by_defs` detects the mismatch ("informative") and
 declines; `cs_peel_group` independently skips any group member without a
 `cs_map`, for the same underlying reason.
 
-**The open question is why the backward link is missing** between the
+**ANSWERED 2026-09-08: it is module-level GLOBALS.** A contrast pair
+settles it — the same five lines, once at module scope and once inside a
+function:
+
+| version | `in_defs` | flag-arm compile |
+| --- | --- | --- |
+| module scope (the test) | **0** | **fails** |
+| wrapped in `def f(): ...` | no CSFLOW at all — resolved before route 4 is asked | **succeeds** |
+
+A module-level global's allocation and its uses are connected through the
+global SLOT, not through AVar forward/backward edges. Measured: every def's
+forward closure is 2–4 AVars and reaches **no** csite —
+`def av=783 var#11141 reaches NO csite (visited 2)`. The allocation flows
+one hop and stops.
+
+So the backflow walk's roots are the **loads** of the global (`cs_map=0`),
+never the allocations (`cs_map=1`), and `cs->defs ∩ g->csites = ∅` **by
+construction for any global**. That is not a tuning problem and not a
+missing edge to add casually — it is the global slot being a different
+transport from the flow edges the walk follows.
+
+`cs_peel_group` already half-knew this: *"at module scope the walk's roots
+have none [no `cs_map`] (uncharacterized)"*. It is now characterized, and
+that comment updated.
+
+**What it means for B.** The blocker is narrower than it looked. Demand
+splitting works where values flow through edges — the function-local
+version needs no route 4 at all, the ordinary machinery separates the two
+lists. What fails is specifically containers **held in module-level
+globals**. The fix is to make the walk able to relate a global's loads back
+to its allocations, which is a question about how globals are modelled, not
+about splitting policy.
+
+**Superseded question, kept for the record: why the backward link is missing** between the
 allocation result (`var#11141`) and the temporary the walk stops at
 (`var#11142`). That is the next thing to establish — whether the edge is
 absent by construction in the lowering, or present but not followed by the
