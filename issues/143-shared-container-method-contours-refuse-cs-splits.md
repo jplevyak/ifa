@@ -144,6 +144,13 @@ still gets the wrong answer.** That is the finding: the contours are not
 merely excessive, they are excessive in the wrong places while merging in
 the one place that decides the outcome.
 
+The excess half is root-caused separately in
+[144](144-route-4-fans-per-creation-point-instead-of-partitioning.md):
+route 4 answers a demand to separate by giving EVERY creation point its own
+contour, and nothing re-joins the ones that converge. On `bh` that leaves
+18 of 20 `Vec3` contours byte-identical across all 29 members, differing
+only in which creation point made them.
+
 ### Why shedskin cannot hit this bug
 
 Not because it starts unmerged — it does not. All shedskin lists begin at
