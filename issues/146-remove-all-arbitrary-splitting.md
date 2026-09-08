@@ -195,6 +195,44 @@ covering the decline. The gates did not catch that, because they run at the
 DEFAULT only — a flag-arm change cannot be judged by the suite alone, and
 that is worth remembering for the flip itself.
 
+**ROOT CAUSE of the 5-line failure, traced 2026-09-08.** `in_defs=0` is not
+an accident of counting — the two sets are built from different things and
+never meet:
+
+```
+DEF    av=783  var#11141  cs_map=1     <- the allocation site
+CSITE  av=785  var#11142  cs_map=0     <- where the backflow walk stops
+DEF    av=792  var#11145  cs_map=1
+CSITE  av=794  var#11146  cs_map=0
+```
+
+- **`cs->defs`** holds the AVars whose `cs_map` NAMES this CreationSet —
+  the allocation sites, and the only nodes `split_css` can re-point, since
+  re-pointing IS `v->cs_map->put(cs->sym, new_cs)`.
+- **`g->csites`** holds the roots of the backflow walk — AVars with no
+  backward edge, found by walking back from the writers through nodes whose
+  type contains `cs`.
+
+On this repro those are **different Vars** (`11142` vs `11141`, consecutive
+temporaries from the same lowering), and the walk's roots carry
+**`cs_map=0`**. All six defs have `backward=0`, so they would be recorded
+if the walk reached them — it never does. The walk stops one node short,
+at a temporary that has no backward edge linking it to the allocation
+result.
+
+**So the demand's partition is expressed over nodes that cannot be
+re-pointed.** Three assign sets, a perfectly good partition, and no way to
+apply it. `split_css_by_defs` detects the mismatch ("informative") and
+declines; `cs_peel_group` independently skips any group member without a
+`cs_map`, for the same underlying reason.
+
+**The open question is why the backward link is missing** between the
+allocation result (`var#11141`) and the temporary the walk stops at
+(`var#11142`). That is the next thing to establish — whether the edge is
+absent by construction in the lowering, or present but not followed by the
+walk's `x->out->type->set_in(cs)` test. Until it is answered, "map csites
+onto defs" would be guesswork about which node stands for which.
+
 **B's next step is therefore to close that gap** — make the demand's
 partition applicable to the creation points it is about — not to key
 contour creation on the receiver. Nothing shipped.
