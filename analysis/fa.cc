@@ -5461,7 +5461,6 @@ int is_es_cs_recursive(CreationSet *cs) {
 #define SPLIT_SETTER 1
 
 #define SPLIT_VALUE 0
-#define SPLIT_MARK 1
 
 #define SPLIT_EDGES 0
 #define SPLIT_DYNAMIC 1
@@ -5591,22 +5590,6 @@ static void collect_type_confluences(Vec<AVar *> &confluences) {
   }
 }
 
-static void collect_es_marked_confluences(Vec<AVar *> &confluences, Accum<AVar *> &acc, int fsetters) {
-  confluences.clear();
-  for (AVar *xav : acc.asvec) {
-    for (AVar *av = xav; av; av = av->lvalue) {
-      Vec<AVar *> &dir = fsetters ? av->forward : av->backward;
-      for (AVar *x : dir) if (x && x->mark_map) {
-        if (different_marked_args(x, av, 1)) {
-          confluences.set_add(av);
-          break;
-        }
-      }
-    }
-  }
-  confluences.set_to_vec();
-  qsort_by_id(confluences);
-}
 
 // Issue 035: canonical order for pending-map iteration. The map
 // buckets by RAW pointers (PendingMapHash over fun/pnode/from), so
@@ -7065,7 +7048,11 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
       }
       for (AEdge *x : these_edges) {
         Vec<AEdge *> new_edges;
-        cur_split_type_only = (!fsetters && !fmark) ? 1 : 0;
+        // ifa/146 F: `&& !fmark` dropped -- with the mark stages gone (D)
+        // no caller passes SPLIT_MARK, so fmark is always 0. What remains
+        // is "this split's discriminator was argument TYPES, not setters",
+        // which is the half of HARDREUSE mode 5's rationale still live.
+        cur_split_type_only = !fsetters ? 1 : 0;
         make_entry_set(x, new_edges, es, e->to);
         cur_split_type_only = 0;
         if (getenv("IFA_DBG_CHURN"))
@@ -7211,11 +7198,6 @@ static void build_joint_type_marks(Vec<AVar *> &seeds, Accum<AVar *> &acc) {
   }
 }
 
-static void build_type_marks(AVar *av, Accum<AVar *> &acc) {
-  Vec<AVar *> seeds;
-  seeds.add(av);
-  build_joint_type_marks(seeds, acc);
-}
 
 static void build_setter_mark(AVar *av, AVar *x, int mark = 1) {
   int m = av->mark_map ? av->mark_map->get(x) : 0;
@@ -9137,71 +9119,6 @@ static double stage2_closure_time = 0, stage2_diag_time = 0, stage2_collect_time
 // two-snapshot note in run_split_stages.
 static int stage_aes0 = 0, stage_acs0 = 0;
 
-[[nodiscard]] static int split_with_type_marks(AVar *av, int fdynamic) {
-  Timer s2_timer;
-  Accum<AVar *> acc;
-  build_type_marks(av, acc);
-  stage2_closure_time += s2_timer.lap();
-  // Diagnostic: count closure size, mark-seed candidates (gen != null), and
-  // how many AVars actually got a mark_map populated.
-  // Guarded: log() is a FUNCTION, so its arguments (set_count()
-  // walks, per closure member) evaluate even with logging off —
-  // unguarded, these diagnostics are O(closure) per confluence on
-  // the hot path.
-  if (logging(LOG_SPLITTING)) {
-  int closure_marked = 0, closure_with_gen = 0, closure_gen_nonempty = 0;
-  for (AVar *x : acc.asvec) if (x) {
-    if (x->mark_map) closure_marked++;
-    if (x->gen) {
-      closure_with_gen++;
-      if (x->gen->n) closure_gen_nonempty++;
-    }
-  }
-  log(LOG_SPLITTING, "[stage2-marks] av %d closure=%d with_gen=%d gen_nonempty=%d marked=%d\n",
-      av->id, acc.asvec.n, closure_with_gen, closure_gen_nonempty, closure_marked);
-  for (AVar *x : acc.asvec) if (x) {
-    log(LOG_SPLITTING, "[stage2-marks]   closure-member av %d %s gen=%d out-type=%d\n",
-        x->id, x->var && x->var->sym && x->var->sym->name ? x->var->sym->name : "(anon)",
-        x->gen ? x->gen->set_count() : -1,
-        x->out && x->out->type ? x->out->type->set_count() : -1);
-  }
-  }
-  stage2_diag_time += s2_timer.lap();
-  Vec<AVar *> confluences;
-  collect_es_marked_confluences(confluences, acc, SPLIT_TYPE);
-  stage2_collect_time += s2_timer.lap();
-  if (logging(LOG_SPLITTING))
-    log(LOG_SPLITTING, "[stage2-marks] av %d marked-confluences=%d\n",
-        av->id, confluences.set_count());
-  int analyze_again = 0;
-  for (AVar *cav : confluences) {
-    if (cav->contour_is_entry_set) {
-      if (!cav->is_lvalue) {
-        if (cav->var->is_formal) {
-          int r = split_entry_set(cav, SPLIT_TYPE, SPLIT_MARK, fdynamic);
-          log(LOG_SPLITTING, "[stage2-marks]   marked-conf av %d ES/formal split_entry_set -> %d\n", cav->id, r);
-          if (r) analyze_again = 1;
-        } else {
-          log(LOG_SPLITTING, "[stage2-marks]   marked-conf av %d ES/non-formal-rval skipped\n", cav->id);
-        }
-      } else {
-        AVar *aav = unique_AVar(cav->var, cav->contour);
-        if (is_return_value(aav)) {
-          int r = split_entry_set(aav, SPLIT_TYPE, SPLIT_MARK, fdynamic);
-          log(LOG_SPLITTING, "[stage2-marks]   marked-conf av %d ES/return split_entry_set -> %d\n", cav->id, r);
-          if (r) analyze_again = 1;
-        } else {
-          log(LOG_SPLITTING, "[stage2-marks]   marked-conf av %d ES/lval-non-return skipped\n", cav->id);
-        }
-      }
-    } else {
-      log(LOG_SPLITTING, "[stage2-marks]   marked-conf av %d CS-contour skipped\n", cav->id);
-    }
-  }
-  clear_marks(acc);
-  stage2_split_time += s2_timer.lap();
-  return analyze_again;
-}
 
 static void collect_cs_setter_confluences(Vec<AVar *> &setters_confluences) {
   setters_confluences.clear();
@@ -9430,7 +9347,17 @@ static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Ve
     refinable.add(av);
   }
   int analyze_again = split_ess_for_type(refinable, SPLIT_DYNAMIC);
-  if (!analyze_again) for (AVar *av : refinable) analyze_again |= split_with_type_marks(av, SPLIT_DYNAMIC);
+  // ifa/146 D, second pass: `split_with_type_marks` used to run here as the
+  // VIOLATION stage's fallback when type splitting found nothing. It was
+  // mark-based -- provenance -- and D's first pass missed it because,
+  // unlike the other two, it was never gated by `PYC_NOMARK`; deleting that
+  // flag did not touch it. Found by auditing which callers still pass
+  // `SPLIT_MARK` (ifa/146 F).
+  //
+  // Measured before removal: pyc suite 313 passed / 0 failed, corpus
+  // verdicts identical on all 77 with container CreationSets unchanged at
+  // 2736. Like the other two it fired on exactly one program, `plcfrs`,
+  // where turning it off REMOVED contours (ess 1094 -> 1088).
   return analyze_again;
 }
 

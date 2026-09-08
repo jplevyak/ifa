@@ -263,7 +263,54 @@ per-item loop, and every `dec->groups.add`, is keyed:
 mechanism found has been removed; what remains partitions on something the
 demand names.
 
-### One follow-up this audit turned up
+### D, second pass: the audit found a mark path D had missed
+
+`split_with_type_marks` ran as the VIOLATION stage's fallback when type
+splitting found nothing. It is mark-based — provenance — and D's first pass
+missed it because, unlike the other two, **it was never gated by
+`PYC_NOMARK`**, so deleting that flag did not touch it. Found by asking
+which callers still pass `SPLIT_MARK`.
+
+Removed (86 more lines, with `collect_es_marked_confluences` and
+`build_type_marks` following it). Measured first: pyc suite 313 / 0, corpus
+verdicts identical on all 77, container CreationSets unchanged at 2736. Like
+the other two it fired on exactly one program, `plcfrs`, where turning it
+off REMOVED contours (ess 1094 → 1088).
+
+`SPLIT_MARK` is now passed nowhere, so `fmark` is always 0 and
+`cur_split_type_only = (!fsetters && !fmark)` simplifies to `!fsetters`.
+The `#define` is gone.
+
+**The lesson:** "off by default" was never the right thing to check. Three
+mark splitters existed; one was gated and off, one was gated and *on* (the
+`< 2` threshold), and one was not gated at all. Only auditing the call sites
+found all three.
+
+### The HARDREUSE follow-up — hypothesis REFUTED, mode 5 stays
+
+The suspicion was that mode 5's extra condition had gone stale, since its
+rationale cites *"a setter- or MARK-driven split"* and marks are now gone.
+Half of it is indeed dead — that is what the `!fmark` simplification above
+records. **The other half is load-bearing, and measurably so.**
+
+Corpus, mode 5 (default) vs mode 4:
+
+| | mode 5 | mode 4 |
+| --- | --- | --- |
+| compile failures | 2 | **7** |
+| total ess | 27952 | 27689 (−263) |
+| total css | 98064 | 97685 (−379) |
+
+Mode 4 loses **`chaos`, `dijkstra2`, `plcfrs`, `sudoku5`, `webserver`** to
+compile failure — and `chaos` and `sudoku5` currently WORK — to save about
+1% of contours. Per-program it is a genuine trade rather than a uniform
+one: mode 5 is better on `plcfrs` (ess 1088 vs 1123) and mode 4 better on
+`go` (454 vs 622), with `chess`, `linalg` and `sunfish` identical.
+
+So mode 5 keeps its default. The follow-up is CLOSED, not deferred: the
+question was asked, measured, and answered against the hypothesis.
+
+### The original follow-up note
 
 `PYC_HARDREUSE`'s mode 5 exists because *"a setter- or MARK-driven split
 can produce two contours with identical argument types on purpose"*. Marks
