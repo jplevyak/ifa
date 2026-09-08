@@ -55,26 +55,48 @@ pins.
 
 ### What `bh` actually contains
 
-`bh.py` has **no `.append(` calls at all**. `append` appears as an element
-writer because a list LITERAL is lowered to `sym_append` calls
-(`python_ifa_build_if1.cc:1238`). The complete inventory of list
-construction in the file:
+`bh.py` has **no `.append(` calls at all**, and no list comprehensions
+either. The complete inventory of list construction in the file:
 
-| site | how built | element | arity |
+| site | how built | content | arity |
 | --- | --- | --- | --- |
-| `__slots__ = ["seed"]` | `append` | `str` | **1 (static)** |
-| `__slots__ = ["d0","d1","d2"]` | `append` | `str` | **3 (static)** |
-| `__slots__ = ["pskip",…]` (4) | `append` | `str` | **4 (static)** |
-| `self.subp = [None] * Cell.NSUB` | `__mul__` | `Cell`/`Body`/`None` | **none (runtime)** |
-| `self.bodies = [None] * nbody` | `__mul__` | `Body`/`None` | **none (runtime)** |
-| `self.bodies = []` | — | — | 0 |
+| `__slots__ = ["seed"]` | `primitive make list` | `str` | **1 (static)** |
+| `__slots__ = ["d0","d1","d2"]` | `primitive make list` | `str` | **3 (static)** |
+| `__slots__ = ["pskip",…]` (4) | `primitive make list` | `str` | **4 (static)** |
+| `self.subp = [None] * Cell.NSUB` | `__mul__` (a C call) | `Cell`/`Body`/`None` | **none (runtime)** |
+| `self.bodies = [None] * nbody` | `__mul__` (a C call) | `Body`/`None` | **none (runtime)** |
+| `self.bodies = []` | `primitive make list` | — | 0 |
 
-So `append` in this program only ever writes `str`, and every `Body`/`Cell`
-element arrives through `__setitem__` or `__mul__`. The `{str, Body}` union
-is therefore precisely **a static-arity string literal sharing a
-CreationSet with a runtime-length node list** — and the partial separation
-in the dumps (`cs=1549` is a clean `[str]`, `cs=1550` a clean `[Body]`,
-while `cs=1606`/`1709`/`1710` stay `[str Body]`) is consistent with that.
+**Corrected 2026-09-08, on the author's objection** — *"pyc supports
+heterogeneous lists converted to tuples, so how can list literals use
+append? doesn't that conflict?"* It does conflict, and the earlier claim
+here that "a list LITERAL is lowered to `sym_append`" was wrong.
+`python_ifa_build_if1.cc:1238` is `build_list_comp_pyda`, the list
+COMPREHENSION accumulator; a literal goes through the `PY_list` case at
+`:4160`, which emits `primitive make list` with the elements as POSITIONAL
+arguments. That positional path is exactly what makes a heterogeneous
+literal representable as a tuple-like record, so it could not have been
+`append`.
+
+So the `append` contours seen in `bh`'s element writers come from `__pyc__`
+library code — e.g. `__pyc_tolist__`'s `r = []; for x in self: r.append(x)`
+(`__pyc__/04_sequence.py:97`) — not from `bh` source. **Which library path
+carries `str` into a node list's element channel is NOT yet established**,
+and is the next thing to measure.
+
+What the correction does NOT change is the shape of the union: a
+static-arity string literal sharing a CreationSet with a runtime-length
+node list, which the partial separation in the dumps fits (`cs=1549` a
+clean `[str]`, `cs=1550` a clean `[Body]`, `cs=1606`/`1709`/`1710` still
+`[str Body]`).
+
+If anything it STRENGTHENS the arity suspicion below, because the two
+families do not even use the same content channel. ifa/104's two channels:
+a `make list` literal fills POSITIONAL `cs->vars`, while `__mul__` /
+`__setitem__` fill the generic ELEMENT. A fixed-arity positional record and
+a runtime-length element-channel list are different shapes in the one way
+the type system can actually see, and the guard below discards precisely
+that distinction.
 
 ### The suspect: the arity guard exempts a varying-length candidate
 
