@@ -333,6 +333,54 @@ retires this issue's contour waste has to be gated the same way, or it
 compounds 145 rather than fixing it: in strict mode the mix must be
 REPORTED, not widened.
 
+## Attempted fix 2, and why it does not work as stated (2026-09-08)
+
+The obvious reading of the root cause is: *a pure-numeric mix is not a
+demand for a contour split, so make the splitters skip it and let the
+coercion phase resolve it.* **Implemented, measured, reverted.**
+
+The guard was `av_pure_numeric_mix(av)` applied at both confluence
+collectors — `collect_type_confluence` (stage 1) and
+`collect_setter_confluences` (SETTER) — permissive-gated on
+`fruntime_errors` per the directive in
+[145](145-numeric-coercion-is-not-gated-on-permissive-mode.md), since the
+guard asserts that coercion WILL resolve the mix and that is only true
+where coercion runs.
+
+Guarding one collector alone was already known to be useless: with
+`CS_DEF_PART` blocked, `SETTER` picked the same demand up and minted 15
+CreationSets for it (`bh`: `CS_DEF_PART 23 -> 7`, `SETTER 0 -> 15`).
+Guarding both does stop the relocation, and it is still wrong:
+
+| | baseline | both collectors guarded | source-level `float()` |
+| --- | --- | --- | --- |
+| `bh` flag-arm compile | 0 | **1 — FAILS** | 0 |
+| route-4 mints | 24 | 15 | **7** |
+| `css` | 1164 | 1157 | **1134** |
+
+```
+bh.py.c:3724:9: error: invalid operands to binary expression
+                       ('int' and '_CG_float64' (aka 'double'))
+```
+
+**Splitting and coercion do not cover the same AVars.** Removing the
+demand leaves AVars that neither mechanism types, and codegen then emits a
+raw `int` where a `double` is required. `fa_coerce_numeric_confluences`
+scans ES-contour vars, `sym_closure` / `Type_RECORD` CS vars and container
+elements; the confluence machinery reaches more than that. Whatever the
+splitting was doing for the remainder, it was load-bearing.
+
+So the ordering is the opposite of what it looks like: **coercion's
+coverage has to be extended FIRST**, and only then can the demand be
+withdrawn. Withdrawing it first is not a conservative step, it is a
+correctness regression. The guard reached less than half the benefit of the
+source-level fix even before it broke the build, which is the other tell
+that it is not the mechanism doing the work.
+
+That extension is [145](145-numeric-coercion-is-not-gated-on-permissive-mode.md)
+piece 2 (insert the conversion at the narrow write, permissive only). This
+issue's remaining waste is blocked on it, not on anything in the splitter.
+
 ## Reproducer
 
 ```sh
