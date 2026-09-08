@@ -10063,6 +10063,23 @@ static int cpa_enabled() {
     // marked over the full union), but the cost was O(confluences x
     // union): 21 of pygasus's 23.8 extend seconds after the stage-2
     // joint rework exposed it as the next term.
+    // ifa/146 D, still OPEN: this is the MARK_SETTER stage, and it is
+    // mark-driven -- `collect_cs_marked_confluences` finds its confluences
+    // by comparing `mark_map`s, and `compute_setters(..., AKIND_MARK)`
+    // keys the setters on marks. Marks are provenance, so by the rule this
+    // should go the way the other three mark splitters did.
+    //
+    // It does NOT go, because unlike them it is load-bearing. Measured
+    // 2026-09-08 with the stage's marked confluences suppressed: pyc suite
+    // 313 / 0 and corpus verdicts identical EXCEPT `voronoi2`, which stops
+    // compiling (`no matching function for call to '_CG_f_...'`) --
+    // verified alone, not a sweep artifact. It also fires on `plcfrs`,
+    // where suppressing it REMOVES contours (ess 1088 -> 1075).
+    //
+    // So retiring it needs the demand-driven separation `voronoi2` is
+    // getting from marks here to be supplied some other way, which is real
+    // work rather than a deletion. Left in place with this note rather
+    // than removed on a hope.
     build_joint_type_marks(confluences, acc);
     Vec<AVar *> marked_confluences;
     collect_cs_marked_confluences(marked_confluences);

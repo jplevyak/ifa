@@ -263,7 +263,51 @@ per-item loop, and every `dec->groups.add`, is keyed:
 mechanism found has been removed; what remains partitions on something the
 demand names.
 
-### D, second pass: the audit found a mark path D had missed
+### D is NOT complete — corrected 2026-09-08
+
+**"D done" was claimed twice and was wrong both times.** The accounting:
+
+| mark splitter | gated by `PYC_NOMARK`? | status |
+| --- | --- | --- |
+| `split_ess_for_mark_type` (MARK_TYPE) | yes, and off at the default | **removed** |
+| `split_ess_setters_marks` | yes, but its threshold was `< 2` so it was **ON** | **removed** |
+| `split_with_type_marks` (VIOLATION fallback) | **not gated at all** | **removed** |
+| **MARK_SETTER / MARK_SETTER_OF_SETTER** | **not gated at all** | **STILL LIVE** |
+
+Nine functions and 260 lines went; what remains is the fourth splitter,
+plus scaffolding.
+
+**Why the fourth stays.** `collect_cs_marked_confluences` finds confluences
+by comparing `mark_map`s and `compute_setters(..., AKIND_MARK)` keys the
+setters on marks, so it is provenance-driven and by the rule it should go.
+Measured with its marked confluences suppressed: pyc suite 313 / 0, corpus
+verdicts identical **except `voronoi2`, which stops compiling** (`no
+matching function for call to '_CG_f_...'`) — verified alone, not a sweep
+artifact. It also fires on `plcfrs`, where suppressing it REMOVES contours
+(ess 1088 → 1075).
+
+So it is load-bearing on exactly one program, and retiring it means
+supplying `voronoi2`'s separation some other way. That is real work, not a
+deletion, and it is left in place with a note at the site rather than
+removed on a hope.
+
+**Also still there, and merely dead rather than live:**
+
+- the MARK_TYPE stage block, now a hollow shell that sets `cur_split_stage`,
+  does `analyze_again = 0` and records timing;
+- `different_marked_args` and `cpa_mark_enabled` (`PYC_CPAMARK`), reachable
+  only under `fmark`, which is now always 0 — except for the one live
+  caller inside `collect_cs_marked_confluences`;
+- `AVar::mark_map`, `MarkMap`/`MarkElem`, and the `MARK_*` stage enum
+  entries.
+
+**The lesson, and it is the same one twice:** "is it off by default" is the
+wrong question. Four mark splitters existed — one gated and off, one gated
+and on, two not gated at all. Only auditing CALL SITES found them, and I
+declared victory after the first two because the flag's name implied it
+covered everything.
+
+### D, first and second passes: what was removed
 
 `split_with_type_marks` ran as the VIOLATION stage's fallback when type
 splitting found nothing. It is mark-based — provenance — and D's first pass
@@ -333,9 +377,10 @@ B is the goal (it is what `PYC_CSDCPA1` exists to retire) but depends on
 independent of the flag. C is the smallest and is a regression I introduced.
 D and E are deletions of dead-but-sanctioned code.
 
-**A, C and D are DONE**; **E** and **F** audited and cleared. Every
-arbitrary mechanism found has been removed. **B** is all that remains, and
-it lands as the flag flip.
+**A and C are DONE**; **E** and **F** audited and cleared. **D is PARTIAL**
+— three of four mark splitters removed, the fourth (MARK_SETTER) load-bearing
+for `voronoi2` and left in place with a measurement. Remaining: finish D,
+then **B** as the flag flip.
 
 ## Verification
 
