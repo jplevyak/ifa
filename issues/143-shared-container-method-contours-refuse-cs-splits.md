@@ -123,16 +123,66 @@ tree-node array. Arity is the one type-shaped fact that separates these two
 families (ifa/132's title is exactly "arity is representation, not
 provenance"), and the guard discards it in the one direction that matters.
 
-**Status: hypothesis, NOT yet verified.** The candidate tightening is
+**REFUTED 2026-09-08.** The tightening
 
 ```c
 if (x->no_static_arity ? (arity >= 0) : (x->static_arity != arity)) continue;
 ```
 
-— a fixed-arity literal never joins a varying-length CreationSet. It has
-not been built or measured (a corpus sweep was occupying the machine), and
-the obvious risk is that it costs contours everywhere a fixed-arity list
-legitimately flows into a variable-length one. Measure before believing it.
+was implemented behind `PYC_ARITYSTRICT=2`, measured, and reverted. On `bh`
+it is **byte-identical** to the default: same 11 `illegal: str` warnings,
+same `ess=366 css=1134 container_cs=16`. It was reverted rather than left
+in as a dead lever.
+
+It is inert because the premise was also wrong. `IFA_DBG_CSVARS=list` shows
+the three `__slots__` literals **already hold their own contours, with the
+right arities and EMPTY element channels**:
+
+```
+cs=1191 vars=1 arity=1  elem=          ["seed"]
+cs=1195 vars=3 arity=3  elem=(none)    ["d0","d1","d2"]
+cs=1200 vars=4 arity=4  elem=(none)    ["pskip", ...]
+```
+
+So the union was never "a string literal sharing a CreationSet with a node
+list". `creation_point` separates them correctly. Clean separated contours
+exist for the element channel too — `cs=1588 arity=0 elem= str` and
+`cs=1546 arity=0 elem= Body`.
+
+## Where the union actually enters (2026-09-08)
+
+`IFA_DBG_FUNES=append` is decisive. `append` has **four** contours,
+correctly split by (receiver, value) exactly as argument-type CPA should:
+
+```
+es=62  args= [append] [list#1596] [str#8 Body#1306]    <- value ALREADY a union
+es=211 args= [append] [list#1588] [str#8]              <- clean
+es=212 args= [append] [list#1597] [tuple#1359]         <- clean
+es=367 args= [append] [list#1630] [str#8 Body#1306]    <- value ALREADY a union
+```
+
+**The union pre-exists the call.** Two contours receive a value argument
+that is already `{str, Body}`, so no argument-type split can separate them
+— there is only one argument type to split on. This is ifa/142's fixed
+point again, reached at the CALL rather than at the element.
+
+So the defect is **upstream of the container entirely**, and every
+container-side mechanism examined in this issue — method contours, arity,
+the element channel — is downstream of it. That is why splitting the
+CreationSet 8 ways left all 8 polluted: the contours were fine; the value
+flowing in was already mixed.
+
+The `r = []` / `r.append(self[k])` shape those contours belong to is
+`list.__pyc_copy__` (`__pyc__/04_sequence.py:360`), a shared library
+helper whose `self[k]` is the receiver's element. `bh` reaches it through
+`from copy import copy` — `copy(p)`, `copy(b.new_acc)`, `copy(dvel)`.
+
+**Open, and the next thing to measure:** which receiver makes `self[k]` a
+`{str, Body}` union — i.e. where the FIRST pollution enters, before any
+copy. Removing `__slots__` from the source eliminates it entirely, so the
+`str` side originates there; what is not yet established is how a
+`__slots__` list and a node list come to share a value flow at all, given
+their CreationSets are separate.
 
 ## SUPERSEDED — Root cause: the element channel has ONE writer per method, program-wide
 
