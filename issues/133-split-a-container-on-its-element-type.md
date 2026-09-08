@@ -1158,24 +1158,58 @@ still gets finer refusal on every pass. What is gone is only the
 three-pass DEFERRAL, which asked the coarsest rung to wait on a clock
 rather than on the finer rungs actually declining.
 
-| flag arm, all at this tree | differs from default | container CS |
+| flag arm | differs from default | container CS |
 | --- | --- | --- |
 | wait present | 5 (`bh`, `kanoodle`, `plcfrs`, `rdb`, `sudoku4`) | 3269 |
-| wait skipped via `PYC_CSDEFSPLIT=2` | 4 (`bh`, `kanoodle`, `plcfrs`, `rdb`) | 3260 |
-| wait REMOVED from the code | 4 (`bh`, `kanoodle`, `quameon`, `rdb`) | 3281 |
+| wait REMOVED | 4 (`bh`, `kanoodle`, `quameon`, `rdb`) | 3281 |
 
-### A caution the last two rows earn: the flag arm is layout-sensitive
+### A retracted claim, and the measurement error behind it
 
-Rows 2 and 3 are **semantically identical builds** — `force` gated nothing
-but the wait, and the counter update around it was pure bookkeeping — yet
-they disagree on which program diverges (`plcfrs` vs `quameon`) and on the
-contour total (3260 vs 3281). The only difference between them is that row
-3 deleted two `int`s from `CreationSet`.
+An earlier version of this section reported a THIRD row — "wait skipped via
+`PYC_CSDEFSPLIT=2`", 4 divergences at 3260 CSs — and concluded from its
+disagreement with the row below it that **the flag arm was
+layout-sensitive**, since the two builds were supposedly semantically
+identical and differed only by two `int`s on `CreationSet`. It advised
+treating A/B on this arm as carrying ±1 program of noise.
 
-So some part of the analysis still depends on memory layout — allocation
-or iteration order that `qsort_by_id` does not cover. That is a real
-defect worth its own investigation, and until it is found, **A/B
-comparisons on this arm carry roughly ±1 program of noise**; a
-one-program difference is not by itself evidence. The aggregate (5 → 4)
-is reproduced by both no-wait builds and is the finding; the identity of
-the fourth program is not.
+**That is withdrawn. There is no layout sensitivity, and the third row was
+measured on the wrong binary.**
+
+The sweep was launched immediately after a `git stash pop` that restored
+uncommitted `fa.cc` changes, **without an intervening rebuild**. The `pyc`
+binary was still the one built from stashed HEAD (20f76f27) during the
+bisection minutes earlier, so the run measured 20f76f27's code — cap
+removed, wait present, `PYC_RECVFAN` still in, no demand-driven candidate
+set — while `corpus_sweep.sh` filed it under the *source tree's* key.
+
+Root-caused two ways, both conclusive:
+
+- **Padding.** Adding two dummy `int`s back to `CreationSet`, rebuilding,
+  and re-running gave results IDENTICAL to the unpadded build
+  (`quameon` fail, `plcfrs` and `sudoku4` clean). Layout does not move
+  this needle.
+- **Reconstruction.** Rebuilding 20f76f27 and running with
+  `PYC_CSDEFSPLIT=2` reproduces the retracted row exactly — `plcfrs`
+  `compile_rc=1`, `quameon` `compile_rc=0`. Rebuilding HEAD reproduces the
+  "wait REMOVED" row exactly — `plcfrs` `compile_rc=0`, `quameon`
+  `compile_rc=1`. The two rows are two different compilers, not two
+  layouts.
+
+The `plcfrs` contour gap that made the claim look substantial —
+`css=3839` vs `2553` — was the tell and I read it backwards: 1286
+CreationSets is far too large for a layout perturbation and should have
+been treated as proof of a code difference from the start, not as
+evidence of one.
+
+**The conclusion this section reaches is unaffected.** Both surviving rows
+were measured on correctly-built binaries, and 5 → 4 (plus `sudoku4`
+recovering) is the finding. Only the retracted row and the noise caveat
+were wrong; the mislabelled `.tsv` has been deleted rather than kept,
+because a sweep filed under the wrong tree is worse than no sweep.
+
+**The trap, stated generally:** `corpus_sweep.sh` keys its filename on the
+SOURCE tree but can only measure the BINARY. Any path that changes sources
+without rebuilding — `git stash`/`pop`, `git checkout <commit> -- <file>`,
+a failed compile leaving the old binary in place — silently produces a
+sweep whose label and content disagree. `make` before every sweep, always.
+
