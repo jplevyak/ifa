@@ -7048,9 +7048,9 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
     } else {
       for (AEdge *x : these_edges) {
         if (getenv("IFA_DBG_CHURN"))
-          fprintf(stderr, "[churn-mint] p=%d stage=%d fun=%s es=%d edge_to=%d gsig=%u\n", analysis_pass,
-                  cur_split_stage, es->fun->sym->name ? es->fun->sym->name : "?", es->id, x->to ? x->to->id : -1,
-                  gsig);
+          fprintf(stderr, "[churn-mint] p=%d stage=%d fun=%s es=%d edge=%d edge_to=%d gsig=%u\n", analysis_pass,
+                  cur_split_stage, es->fun->sym->name ? es->fun->sym->name : "?", es->id, x->id,
+                  x->to ? x->to->id : -1, gsig);
         x->to = 0;
         if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_detach[cur_split_stage];
         x->filtered_args.clear();
@@ -7066,7 +7066,8 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
         make_entry_set(x, new_edges, es, e->to);
         cur_split_type_only = 0;
         if (getenv("IFA_DBG_CHURN"))
-          fprintf(stderr, "[churn-mint-to] p=%d es=%d -> %d\n", analysis_pass, es->id, x->to ? x->to->id : -1);
+          fprintf(stderr, "[churn-mint-to] p=%d es=%d edge=%d -> %d\n", analysis_pass, es->id, x->id,
+                  x->to ? x->to->id : -1);
         if (x->to != es) {
           record_backedges(x, es, pending_es_backedge_map);
           split = 1;

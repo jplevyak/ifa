@@ -1829,14 +1829,12 @@ actively destroy the result.
 
 **Two separable pieces of work, in priority order.**
 
-1. *The analysis should not end on a spike.* `best_violations` is already
-   computed; nothing consumes it. Even without curing the oscillation,
-   ending at the best pass rather than the last is a strict improvement for
-   every oscillating program. It needs a state snapshot/restore, which is
-   the real cost. **Do not fix this by lowering `IFA_STALL_LIMIT`**: that
-   is a global convergence tunable, the measurement above is one program,
-   and the standing rule is to gate splitter validity on per-contour
-   durable-key stability, never on a global violation count.
+1. ~~*The analysis should not end on a spike.*~~ **WITHDRAWN** (author,
+   2026-09-09: *"'end at best pass' is the wrong direction. analysis should
+   quiesce when it cannot make progress."*) Ending at a best-so-far
+   snapshot treats a symptom and enshrines the oscillation as acceptable.
+   The analysis has to actually converge. See "The decision table" below
+   for the direction that replaces this.
 
 2. *The oscillation itself* -- big TYPE_CONFLUENCE batches on shared
    container methods, re-derived every pass. This is 143's mechanism, and
@@ -1928,3 +1926,108 @@ rebuild contours from the decision table each pass. The second is a large
 change and would collide with 111; it should not be started without
 measuring what fraction of `rederive_churn` the ledger could close on its
 own.
+
+## The decision table -- what `sudoku5` actually needs (author, 2026-09-09)
+
+> *"fa should record the decisions like shedskin. that is what the call
+> site to es mapping should be along with the creation point to CS mapping.
+> on a split we should prepopulate or store in a side table the es an es
+> was split from so we can keep the same mappings for the new call points"*
+
+Measured against the code, this is right, and the measurements below say
+why the present design cannot converge on `sudoku5`.
+
+### First, a correction to the section above
+
+I wrote that `sudoku5`'s 722 re-derivations were "722 minted duplicates".
+That is **wrong**. Splitting `REDERIVE` by kind:
+
+| | count | what it is |
+| --- | --- | --- |
+| `ROUTE` | **596** | the ledger successfully routed a re-derived group to its recorded product |
+| `GROUP` | **126** | minted a product the ledger already named -- the real miss |
+
+82% of it is the ledger WORKING. And per-edge, call sites are not
+flip-flopping either -- of 2080 edges rebound across the run, 1398 rebind
+once, 35 always to the same target, **627 monotonically to ever-new
+targets**, and only **20 edges / 24 events** ever return to a target they
+previously had. So the failure is not ping-pong. It is **unbounded
+subdivision**.
+
+### Why it subdivides for ever: the ledger key is derived from types
+
+`apply_entry_set_split` keys its decision on
+`(fun, stage, avpos, part, gsig)`, where `part` is the group's type
+partition and `gsig` is a signature over it -- both computed from THIS
+pass's mid-pass types. Measured on `sudoku5`:
+
+| | |
+| --- | --- |
+| distinct `(fun, es)` contours that mint groups | 415 |
+| **of those, seeing more than one distinct `gsig`** | **221** |
+| most distinct signatures on a single contour | **22** |
+| distinct `(fun, es, gsig)` triples | 1080 |
+
+and the worst offenders are exactly the shared container methods:
+`append` 22, `__setitem__` 22, `__getitem__` 16, `__eq__` 12, `__lt__` 10,
+`len` 10.
+
+That is the loop, stated plainly: a shared container method's callers are
+still moving, so its type partition differs every pass, so every pass's
+group is a NEW ledger key, so the lookup misses and a fresh contour is
+minted, which changes the types, which changes the partition. **The
+decision is keyed on the very thing the decision is supposed to stabilise.**
+
+### The gap the author names, confirmed in the code
+
+| mapping | pyc today |
+| --- | --- |
+| creation point -> CreationSet | `av->cs_map`, persists across passes -- **exists** |
+| CreationSet split lineage | `CreationSet::split_origin`, durable -- **exists** |
+| call site -> EntrySet | `AEdge::to`, and `clear_edge` does NOT clear it -- **exists, but destroyed at every split** |
+| EntrySet split lineage | `EntrySet::split` -- **transient**, `clear_splits()` zeroes it every pass |
+
+So the CS side already has the durable pair and the ES side does not. At a
+split, `apply_entry_set_split` does
+
+```c
+for (AEdge *x : these_edges) { x->to = 0; ... }        // destroy the binding
+for (AEdge *x : these_edges) { make_entry_set(x, ...); } // re-bind BY SEARCH
+```
+
+and `make_entry_set` resolves by SCORING `fun->ess`
+(`find_best_entry_sets`, `entry_set_compatibility`,
+`edge_type_identical_to_entry_set`, five `HARDREUSE` modes). shedskin does
+a dictionary lookup, `func.cp[dcpa][cart]`. `EntrySet::canon_key`'s own
+comment already states the target -- *"the type tuple NAMES the contour --
+shedskin's model -- and a routing decision becomes a lookup with no
+symmetric choice to alternate between"* -- and `canon` reads 0 on
+`sudoku5`, so it is not doing that today.
+
+### The change
+
+1. Give `EntrySet` a durable `split_origin`, the exact analogue of
+   `CreationSet::split_origin`. `product->split = es` already records the
+   parent; it is simply thrown away every pass by `clear_splits()`.
+2. Make the decision table **call-site keyed**, not type-keyed: record, per
+   call site (the `AEdge`, i.e. `(from ES, pnode)`), which product it was
+   routed to. A call site is a fixed source-level identity and cannot
+   drift, so the 221 contours that currently present up to 22 signatures
+   each present exactly one key.
+3. At a split, prepopulate the new product's call-site entries from the
+   parent's, rather than detaching every edge and re-searching. Re-deriving
+   the same split then re-finds the same product by construction --
+   shedskin's property -- and `make_entry_set`'s scoring becomes the
+   fallback for genuinely new call sites only.
+
+This subsumes the ledger rather than adding to it: `SplitDecision`,
+`cs_group_signature`, the `HARDREUSE` modes, `route_adj` / `route_last` and
+the cycle-pinning at `routecycle_enabled() >= 3` all exist to make a
+type-derived key behave like a stable one. A call-site key is stable to
+begin with.
+
+**Sequencing note.** Do not start this by deleting the scoring path. The
+measurement to take first is how many of the 3128 mint-path groups on
+`sudoku5` have a call-site set identical to one already recorded -- that is
+the fraction a call-site key would collapse, and it is cheap to instrument
+now that `[churn-mint]` carries the edge id.
