@@ -116,11 +116,38 @@ the other way and produced four rows of garbage (`kanoodle` reading
 | quameon | 0/69/0 | 0/69/0 | 0/69/0 | **1**/104/8 |
 | sudoku3 | 0/36/0 | **1**/145/213 | 0/36/0 | **1**/134/195 |
 
-**`PYC_CSLADDER=3` alone is byte-identical to the default on all six**, and
-on `sudoku5` too. Every divergence on the list is `PYC_CSDCPA1`'s, with one
-exception: `quameon` is clean under EITHER flag alone and fails only under
-both -- the single genuine flag interaction, and the only reason to keep
-measuring the two together rather than separately.
+**`PYC_CSLADDER=3` alone produces identical compiler output on all six**,
+and on `sudoku5` too. Every divergence on the list is `PYC_CSDCPA1`'s, with
+one exception: `quameon` is clean under EITHER flag alone and fails only
+under both -- the single genuine flag interaction, and the only reason to
+keep measuring the two together rather than separately.
+
+**Confirmed corpus-wide** (`run` sweeps, both at `c9d75201`:
+`run__default__c9d75201+3e48560d` and
+`run__PYC_CSLADDER_3__c9d75201+3e48560d`):
+
+| | default | `PYC_CSLADDER=3` |
+| --- | --- | --- |
+| compile_fail | 2 (`othello3`, `rdb`) | 2 (same two) |
+| run_fail | 38 | 38 (same list) |
+| with_warnings | 43 | 43 |
+| container CS / shapes | 2740 / 625 = 4.38 | 2740 / 625 = 4.38 |
+| pratio | 2.97 | 2.97 |
+
+**Every verdict on all 77 programs is identical** -- compile status,
+warning count and run status alike. The rung is not entirely inert,
+though: seven programs (`amaze`, `chess`, `chull`, `neural2`, `plcfrs`,
+`quameon`, `sudoku2`) shift by a handful of contours in BOTH directions,
+which cancel to the same aggregate. So the ladder does fire at the
+default; it just never changes an answer there.
+
+Two things follow, and they pull in opposite directions. Flipping
+`PYC_CSLADDER` on by itself is **risk-free but worthless** -- it buys
+nothing measurable at the default, so it is not an independent win to
+bank. Its value is entirely as `PYC_CSDCPA1`'s separation mechanism. What
+the measurement IS good for is removing a variable: the flag arm can now
+be treated as `PYC_CSDCPA1` alone plus one known interaction, rather than
+as two entangled flags.
 
 **Default-arm baseline -- what a flip would actually cost.** Three of the
 seven compile at the default and then abort, so they are not working

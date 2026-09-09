@@ -857,11 +857,38 @@ B is the goal (it is what `PYC_CSDCPA1` exists to retire) but depends on
 independent of the flag. C is the smallest and is a regression I introduced.
 D and E are deletions of dead-but-sanctioned code.
 
-**A and C are DONE**; **F** audited and cleared. **E is arbitrary** (my
-first verdict on it was wrong) and awaits removal plus its replacement. **D is PARTIAL**
-— three of four mark splitters removed, the fourth (MARK_SETTER) load-bearing
-for `voronoi2` and left in place with a measurement. Remaining: finish D,
-then **B** as the flag flip.
+**A, C and E are DONE**; **F** audited and cleared. (E's verdict was
+corrected — it IS arbitrary — and the CARTESIAN_PRODUCT splitter was then
+removed; only `PYC_CPAMARK`, ifa/074's unrelated naming mechanism, still
+carries the letters. Its replacement — demand plus dispatch-aware receiver
+filtering — is still owed, and `tests/splitter_cartesian_product.py`
+carries the `.known_issue` that flips to PASS when it lands.) **D is
+PARTIAL** — three of four mark splitters removed, the fourth (MARK_SETTER)
+load-bearing for `voronoi2` and left in place with a measurement.
+Remaining: finish D, then **B** as the flag flip.
+
+**What B actually needs, measured 2026-09-09**
+([129](129-plan-demand-driven-creation-set-splitting.md) has the tables).
+The flag arm's seven divergences are three blockers and four
+already-broken-at-the-default programs, and **all three blockers are one
+defect** — a merged `list` CreationSet whose element channel unions types
+the program keeps apart, which cannot be separated afterwards because the
+merge destroyed the attribution ([133](133-split-a-container-on-its-element-type.md),
+[142](142-linalg-empty-list-collapse-is-a-fixed-point.md)). They differ
+only in the creation route into the shared CS:
+
+| blocker | route into the shared `list` CS | how it fails |
+| --- | --- | --- |
+| `bh` | three `__slots__` string-literal lists | aborts, `getter not resolved` |
+| `richards` | `[0]*n` merged with `[None]*n` | SIGSEGV, an int64 dereferenced as a pointer |
+| `sudoku5` | comprehensions and `append` | 364 compile errors |
+
+So B is not seven problems gated behind D; it is 133, and `tests/` now
+carries one reduced repro per route. Two further facts narrow it:
+`PYC_CSLADDER=3` alone is byte-identical to the default on all seven, so
+the flag arm is really `PYC_CSDCPA1` alone plus one interaction
+(`quameon`, which needs both); and un-starving the VIOLATION stage is NOT
+the lever — measured, it makes `sudoku5` worse (364 → 660 errors).
 
 ## Verification
 
