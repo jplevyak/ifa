@@ -2498,3 +2498,77 @@ costs a third of the suite as things stand.
 
 `PYC_CONFDEMAND` kept at default 0 (inert) with all three modes, since it
 is the apparatus for re-running this argument.
+
+## "int + str is a violation so it would be split -- why isn't it?" (2026-09-09)
+
+It IS. The `{int64, str}` confluence is kept by the gate and split. The one
+the gate drops is upstream, and it is a third kind of thing that the
+criterion does not name.
+
+**First, a correction to my own correction.** I thought
+`collect_type_confluence` fires AS the union forms, so the gate should test
+the prospective union `type_union(av->in->type, writer->out->type)` rather
+than the accumulated `av->in->type`. Implemented it and measured
+`prospective_differs=0` -- the writer's type is ALWAYS already in
+`av->in->type`. The test is `type_diff(av->in->type, x->out->type)`, which
+is non-bottom when a writer supplies only PART of the accumulated union, so
+the union has already formed and the original test was correct. The suite
+numbers did not move, which is the tell I should have led with.
+
+**What the gate actually drops**, on `tests/list_pop_insert.py`
+(`IFA_DBG_CONFDROP`):
+
+```
+[confdrop] fun=pop         var=self  type= list#997 list#1018
+[confdrop] fun=insert      var=self  type= list#1005 list#1018
+[confdrop] fun=__getitem__ var=self  type= list#997 list#1005 list#1018
+[confdrop] fun=len         var=x     type= list#997 list#1005 list#1018
+```
+
+Several CreationSets of ONE sym. Every property the criterion tests says
+"no demand":
+
+- **representable** -- they are all `list`, one C layout, so no BOXING
+  violation on the receiver itself;
+- **not a dynamic dispatch** -- `list.pop`, `list.insert`,
+  `list.__getitem__` each resolve to a single target Fun;
+- **no violation recorded** on those AVars, in the ungated build, ever --
+  because the split prevents the only violation that would arise.
+
+And that is the split that keeps `l1`/`l2` (int lists) apart from `l3` (a
+str list) as they pass through the SHARED container method. Merge the
+receiver contours and `pop`'s element channel unions `{int64, str}`; the
+violation then surfaces DOWNSTREAM, on `value` in `insert` and `x` in
+`pop`, which is exactly the two errors the gated build reports.
+
+### The missing category
+
+So the author's criterion needs a third member, and it is not an
+afterthought -- it is [143](143-shared-container-method-contours-refuse-cs-splits.md)'s
+whole subject:
+
+> **a receiver whose type spans several CreationSets of one container
+> class, entering a method that reads or writes its element channel.**
+
+That is codegen-visible for the same reason the other two are -- merging
+those contours unions their elements, and an element union decides the
+container's layout. But unlike a violation or a stuck dispatch it is
+observable BEFORE the damage, because it does not require the union to have
+formed: it is a property of the receiver's contour set at the call, not of
+the element type that would result.
+
+This also explains why mode 3's backward closure did not rescue it. The
+closure seeds from violations present in the CURRENT pass, and in a
+correctly-split build there are none -- the splits are why. Seeding from a
+consequence that the seeding is supposed to prevent is empty by
+construction. Seeding from the receiver-contour property above is not.
+
+### Status of the question
+
+"Violations and dynamic dispatch" is not sufficient, and the missing piece
+is exactly what 143 is already about and what 146 E's receiver-filtering
+replacement is aimed at. The conflict is narrower than I said two sections
+ago: it is not that stage 1 splits on facts, it is that ONE of its
+justifications -- keeping container receiver contours apart inside shared
+methods -- has never been written down as a demand, so stage 1 carries it
+implicitly by splitting on all type disagreement.

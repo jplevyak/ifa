@@ -511,7 +511,7 @@ static int route_saw_split = -3, route_saw_origin = -3;
 static int mint_report = 0;
 static int grp_total = 0, grp_scattered = 0;
 static int ck_single = 0, ck_irrep = 0, ck_samesym = 0, ck_repr = 0;
-static int cd_kept = 0, cd_dropped = 0;
+static int cd_kept = 0, cd_dropped = 0, cd_prospective_differs = 0, cd_no_trigger = 0;
 static int confdemand_enabled() {
   static int e = -1;
   if (e < 0) { cchar *v = getenv("PYC_CONFDEMAND"); e = v ? atoi(v) : 0; }
@@ -5700,16 +5700,19 @@ static void dbg_confluence_probe(AVar *av, bool added) {
 }
 
 static void collect_type_confluence(AVar *av, Vec<AVar *> &confluences) {
+  AVar *trigger = nullptr;  // ifa/133: the writer that made this a confluence
   for (AVar *x : av->backward) if (x) {
     if (!x->out->type->n) continue;
     if (av->var->sym->clone_for_constants) {
       if (type_diff(av->in, x->out) != fa->type_world.bottom_type) {
         confluences.set_add(av);
+        trigger = x;
         break;
       }
     } else {
       if (x->out->type->n && type_diff(av->in->type, x->out->type) != fa->type_world.bottom_type) {
         confluences.set_add(av);
+        trigger = x;
         break;
       }
     }
@@ -5719,7 +5722,18 @@ static void collect_type_confluence(AVar *av, Vec<AVar *> &confluences) {
   // A probe of "is stage 1 demand-driven?", NOT a proposed change: it also
   // discards dispatch-driven and precision-driven splits, which are real.
   if (confdemand_enabled() && confluences.set_in(av)) {
+    // ifa/133, corrected: a confluence fires AS the union forms, so
+    // `av->in->type` is still the OLD type and does not yet contain the
+    // writer's contribution. Test the union that WOULD result -- which for
+    // `{int64} <- str` is `{int64, str}`, irrepresentable, and a demand.
+    // Testing the accumulated type instead dropped exactly those, which is
+    // what made this gate look circular.
     AType *t = av->in ? av->in->type : nullptr;
+    AType *acc = t;
+    if (t && trigger && trigger->out && trigger->out->type)
+      t = type_union(t, trigger->out->type);
+    if (t != acc) ++cd_prospective_differs;
+    if (!trigger) ++cd_no_trigger;
     int nnonbasic = 0; Vec<Sym *> basics;
     if (t) for (CreationSet *c : t->sorted) {
       if (!c || !c->sym || c->sym == sym_nil_type) continue;
@@ -5728,7 +5742,19 @@ static void collect_type_confluence(AVar *av, Vec<AVar *> &confluences) {
     const int nb = basics.set_count();
     bool irrep = (nb >= 1 && nnonbasic > 0) || nb > 1;
     bool keep = (confdemand_enabled() >= 2) ? (irrep || confluence_is_demanded(av)) : irrep;
-    if (!keep) { confluences.set_remove(av); ++cd_dropped; } else ++cd_kept;
+    if (!keep) {
+      confluences.set_remove(av); ++cd_dropped;
+      if (getenv("IFA_DBG_CONFDROP") && cd_dropped < 40) {
+        fprintf(stderr, "[confdrop] p=%d fun=%s var=%s type=", analysis_pass,
+                (av->contour_is_entry_set && ((EntrySet *)av->contour)->fun &&
+                 ((EntrySet *)av->contour)->fun->sym && ((EntrySet *)av->contour)->fun->sym->name)
+                    ? ((EntrySet *)av->contour)->fun->sym->name : "?",
+                (av->var && av->var->sym && av->var->sym->name) ? av->var->sym->name : "(anon)");
+        if (t) for (CreationSet *c : t->sorted) if (c && c->sym)
+          fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+        fprintf(stderr, "\n");
+      }
+    } else ++cd_kept;
   }
   // ifa/133: classify each confluence -- is the union it fires on one that
   // something could not PROCEED on (a demand), or merely one that exists
@@ -10021,7 +10047,7 @@ static void dbg_es_per_fun() {
     if (e->value > 1) ++multi;
     if (e->value > mx) { mx = e->value; worst = e->key; }
   }
-  if (cd_kept + cd_dropped) fprintf(stderr, "CONFDEMAND kept=%d dropped=%d\n", cd_kept, cd_dropped);
+  if (cd_kept + cd_dropped) fprintf(stderr, "CONFDEMAND kept=%d dropped=%d prospective_differs=%d no_trigger=%d\n", cd_kept, cd_dropped, cd_prospective_differs, cd_no_trigger);
   if (ck_single + ck_irrep + ck_samesym + ck_repr)
     fprintf(stderr, "CONFKIND single=%d IRREPRESENTABLE=%d same_sym=%d representable_union=%d\n", ck_single, ck_irrep, ck_samesym, ck_repr);
   if (grp_total) fprintf(stderr, "GROUPSPLIT total=%d scattered=%d\n", grp_total, grp_scattered);
@@ -12939,7 +12965,7 @@ static void report_demand_ratio() {
       if (e->value > 1) ++multi;
       if (e->value > mx) { mx = e->value; worst = e->key; }
     }
-    if (cd_kept + cd_dropped) fprintf(stderr, "CONFDEMAND kept=%d dropped=%d\n", cd_kept, cd_dropped);
+    if (cd_kept + cd_dropped) fprintf(stderr, "CONFDEMAND kept=%d dropped=%d prospective_differs=%d no_trigger=%d\n", cd_kept, cd_dropped, cd_prospective_differs, cd_no_trigger);
   if (ck_single + ck_irrep + ck_samesym + ck_repr)
     fprintf(stderr, "CONFKIND single=%d IRREPRESENTABLE=%d same_sym=%d representable_union=%d\n", ck_single, ck_irrep, ck_samesym, ck_repr);
   if (grp_total) fprintf(stderr, "GROUPSPLIT total=%d scattered=%d\n", grp_total, grp_scattered);
