@@ -4877,9 +4877,19 @@ static void show_violations(FA *fa, FILE *fp) {
       show_call_tree(memfp, v->send->var->def, (EntrySet *)v->send->contour);
     else if (v->av->contour_is_entry_set)
       show_avar_call_tree(memfp, v->av);
-    else if (v->av->contour != GLOBAL_CONTOUR)
-      show_call_tree(memfp, ((CreationSet *)v->av->contour)->defs.first()->var->def,
-                     (EntrySet *)((CreationSet *)v->av->contour)->defs.first()->contour, 1);
+    else if (v->av->contour != GLOBAL_CONTOUR) {
+      // cs->defs is a SET (`cs->defs.set_add(v)`), and a Vec in set mode
+      // is an open hash table: past SET_LINEAR_SIZE (4) `n` is the table
+      // CAPACITY and empty slots are NULL.  `.first()` is a raw `v[0]`,
+      // so it reads a hole as soon as a CreationSet has 4+ creation
+      // points -- sudoku5's merged `list` CS has 13, and this segfaulted
+      // the compiler from a diagnostic path.  Every other reader of
+      // `defs` already guards (`for (AVar *av : cs->defs) if (av)`) or
+      // uses first_in_set(); this was the one that did not.
+      AVar *d = ((CreationSet *)v->av->contour)->defs.first_in_set();
+      if (d && d->var && d->var->def && d->contour_is_entry_set)
+        show_call_tree(memfp, d->var->def, (EntrySet *)d->contour, 1);
+    }
 
     if (memfp != fp) {
       fclose(memfp);
