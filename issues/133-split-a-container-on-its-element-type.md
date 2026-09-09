@@ -1562,11 +1562,91 @@ default, and takes the flag arm's blockers from three to two. `bh`
 (`__slots__` string lists) and `sudoku5` (comprehensions/append) reach the
 shared CreationSet by other routes and are untouched by it.
 
-**Not landed.** Two things are owed first. A corpus `check` sweep on both
-arms, per this repo's rule for any splitter change. And an answer to the
-deeper question the probe raises: *why does a `None` store have an empty
-AType at all?* Special-casing the gate treats the symptom; if nil were
-carried as `__pyc_None_type__` on the store the way it is on the slot, the
-gate would never fire and defect 2 would not exist. The gate fix is correct
-as far as it goes -- an AVar with a container IS a store site, whatever its
-type -- but the empty AType is the thing to explain.
+**Not landed** -- a corpus `check` sweep on both arms is owed first, per
+this repo's rule for any splitter change. But the "why is it empty"
+question is answered below, and it replaces the `!x->container` guard above
+with a better one.
+
+## Why a `None` store has an empty AType -- and the right fix (2026-09-09)
+
+It is not an accident and not a bug in isolation: `->type` is a
+PROJECTION, documented at fa.h:105 as *"not including values
+(constants)"*, and `make_AType` computes it as
+
+```c
+  // compute "type" (without constants)
+  if (nonconsts.n) { ... } else
+    tt->type = fa->type_world.bottom_type;      // <- pure-nil lands here
+```
+
+`nil` is a `is_unique_type` unique OBJECT, so it is a VALUE, not a
+non-constant type. A lone `{None}` therefore has `nonconsts.n == 0` and its
+projection is bottom -- `->type->n == 0` -- while the raw `out` still holds
+the nil CreationSet.
+
+**This also explains the contradiction the probe showed.** issue/060 put a
+carve-out in `make_AType`:
+
+```c
+  if (nil_cs) {
+    bool has_scalar = false;
+    for (CreationSet *c : nonconsts)
+      if (c && c->sym->type && c->sym->type->num_kind) { has_scalar = true; break; }
+    if (has_scalar) nonconsts.set_add(nil_cs);   // KEEP nil in ->type
+    else            nulls = 1;                   // strip it
+  }
+```
+
+So nil survives the projection only when the same AType also carries a
+numeric scalar. In the repro the *slot* holds `{int64, nil}` -- has a
+scalar, nil KEPT, which is why `av=3021` printed
+`int64#6 __pyc_None_type__#13`. The *store* holds a lone `{nil}` -- no
+scalar, nil STRIPPED, `n=0`. Same value, two ATypes, opposite answers.
+
+**And this exact trap is already known here.** ifa/124 hit it in the ES
+splitter and its note sits a few lines above `split_type_view`:
+
+> `->type` strips a pure-nil AType to bottom (make_AType's `is_unique_type`
+> branch; the 060 carve-out that KEEPS nil only fires when the same AType
+> also carries a num_kind scalar, which a lone `{None}` does not). The
+> partitioner below guards every comparison with `->n &&`, so an edge
+> passing only None reads as **"nothing known yet" and is compatible with
+> everything**.
+
+That is the same sentence as defect 2, in a different consumer. ifa/124's
+remedy was `split_type_view`, which gives the SPLITTER a view separating
+*not analyzed* (raw empty too) from *carries only nil* (raw non-empty),
+deliberately without touching the `->type` projection every other consumer
+reads -- narrowing, defaulted params and the recursion-separability gate
+all need nil transparent there, and `is_not_none_narrow` / `minmax_3arg` /
+`expr_evaluator` regress if `->type` itself is changed.
+
+**So defect 2 is ifa/124's bug, at a site ifa/124 did not fix**, and the
+right patch is its remedy applied here rather than the `!x->container`
+special case:
+
+```c
+// compute_setters
+if (akind == AKIND_TYPE && !x->out->type->n && !x->out->n) continue;
+```
+
+Skip only when the RAW type is also empty -- i.e. genuinely not analyzed.
+A store carrying only `None` is a real store and keeps its `setter_class`.
+
+Measured, identical outcome to the `!x->container` prototype and better
+grounded:
+
+| | as shipped | `!x->out->n` |
+| --- | --- | --- |
+| the 25-line repro under `PYC_CSDCPA1=2` | 1 diagnostic | **0** |
+| `richards` under `PYC_CSDCPA1=2` | w=7, **run=139 (SIGSEGV)** | w=4, **run=0** |
+| pyc suite at the default | 313 passed / 0 failed | **313 passed / 0 failed** |
+| `bh`, `sudoku5` under the flag | unchanged | unchanged |
+
+Both prototypes reverted; `fa.cc` is unchanged in the tree.
+
+**Worth checking when this lands:** whether other `->type->n` guards have
+the same latent bug. `split_type_view` exists precisely because a bare
+`->type->n` test conflates "unanalyzed" with "only None", and it is
+currently used at one site. A sweep of `->type->n` / `->type->n &&` tests
+in the splitters would say whether defect 2 has more siblings.
