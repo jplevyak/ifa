@@ -91,6 +91,72 @@ it); `PYC_CSSITELESS` (made contours *worse*, 4 of 5 programs);
 [131](131-demand-driven-constant-splitting.md)'s cap-strip premise is
 falsified.
 
+## The remaining divergences, attributed (2026-09-09)
+
+The flag arm's seven divergences were being carried as one list. Compiling
+each on FOUR arms -- default, `PYC_CSDCPA1=2` alone, `PYC_CSLADDER=3`
+alone, and both -- and then RUNNING the default-arm binary against CPython
+splits the list into two groups that want completely different treatment.
+
+*Method note, because it bit this measurement first time round:* `pyc`
+writes `<name>.c` and links `<name>` inside the program's own directory,
+so two arms of the SAME program must not compile concurrently. Parallelise
+across programs, serially within one. The first run of this table did it
+the other way and produced four rows of garbage (`kanoodle` reading
+`1/6/2`, `bh` reading `1/1/2`) that looked plausible enough to report.
+
+**Compile, all four arms** (exit / warnings / errors):
+
+| program | default | `CSDCPA1=2` | `CSLADDER=3` | both |
+| --- | --- | --- | --- | --- |
+| kanoodle | 0/6/0 | 0/6/0 | 0/6/0 | 0/6/0 |
+| richards | 0/4/0 | 0/7/0 | 0/4/0 | 0/7/0 |
+| bh | 0/1/0 | 0/11/0 | 0/1/0 | 0/11/0 |
+| plcfrs | 0/129/0 | **1**/457/599 | 0/129/0 | **1**/342/247 |
+| quameon | 0/69/0 | 0/69/0 | 0/69/0 | **1**/104/8 |
+| sudoku3 | 0/36/0 | **1**/145/213 | 0/36/0 | **1**/134/195 |
+
+**`PYC_CSLADDER=3` alone is byte-identical to the default on all six**, and
+on `sudoku5` too. Every divergence on the list is `PYC_CSDCPA1`'s, with one
+exception: `quameon` is clean under EITHER flag alone and fails only under
+both -- the single genuine flag interaction, and the only reason to keep
+measuring the two together rather than separately.
+
+**Default-arm baseline -- what a flip would actually cost.** Three of the
+seven compile at the default and then abort, so they are not working
+programs that the flag breaks:
+
+| program | default compile | default run | default stdout vs CPython |
+| --- | --- | --- | --- |
+| bh | 0 | 0 | **identical** |
+| richards | 0 | 0 | identical but the `TIME` line |
+| sudoku5 | 0 (24 warnings) | — | — |
+| kanoodle | 0 | 0 | **wrong**: 1 of CPython's 10 solutions, 441 of 4421 bytes |
+| plcfrs | 0 | **134** | no output |
+| quameon | 0 | **134** | no output |
+| sudoku3 | 0 | **134** | no output |
+
+So the seven are really **three blockers and four non-blockers**:
+
+- **Blocks a flip** (works at the default, the flag breaks it): `bh`
+  (aborts 134 under the flag), `richards` (segfaults 139),
+  `sudoku5` (stops compiling -- and it is
+  [133](133-split-a-container-on-its-element-type.md), see that issue).
+- **Costs nothing to flip** (already broken at the default): `kanoodle`,
+  `plcfrs`, `quameon`, `sudoku3`. The flag changes their failure MODE --
+  wrong output becomes a crash, an aborting binary becomes a compile
+  error -- but nothing that works is lost.
+
+**`kanoodle` in particular is not a flag problem.** Its six warnings are
+byte-identical on both arms, all six on `kanoodle.py:37` --
+`udates[level] += 1`, where `udates` and `level` are module-level globals
+assigned inside a top-level `for` loop. pyc cannot type that on EITHER arm
+(`expression has no type`, `unresolved call '__iadd__'`), which is why the
+default-arm binary silently prints one solution instead of ten. The flag
+arm turns the same untyped global into a null receiver and a SIGSEGV
+(`_CG_f_11485_149(a1=0x0)`). Fixing the global-cell typing fixes both arms;
+chasing the segfault alone would fix neither.
+
 ## Part 1 — audit: how shedskin does it
 
 All line numbers are `shedskin/infer.py` at `~/projects/shedskin` **7aef6e02**
