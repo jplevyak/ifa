@@ -2130,3 +2130,74 @@ is chaotically sensitive -- three decisions moved it 51% -- so the only
 honest evaluation of `PYC_CANON=1` is a corpus `check` sweep on both arms.
 That is the next step, and it is a knob flip plus a sweep rather than new
 machinery.
+
+## Prepopulation: NOT tried yet, and it IS the plan (2026-09-09)
+
+Author: *"what about the idea: on a split we should prepopulate or store in
+a side table the es an es was split from so we can keep the same mappings
+for the new call points? did you try that?"*
+
+**No.** What I built was the LAZY form -- consult the parent at lookup time
+-- and the two are not equivalent, because of route order in
+`creation_point`:
+
+```c
+cs = v->cs_map->get(s);  if (cs) goto Lfound;   // checked FIRST (734k hits)
+if (csdcpa1_enabled() ...) { dcpa1 }            // second
+if (es && es->split)      { split_parent }      // THIRD  <- the lazy form
+... MINT
+```
+
+Prepopulation writes the parent's binding **into `cs_map`**, which is
+consulted first, so it preempts `dcpa1` and `MINT`. The lazy form runs
+third and only gets asked after another route has already answered. That
+distinction is the whole point of the author's phrasing and I collapsed it.
+
+### There is a large, measured target
+
+`IFA_DBG_CSROUTES`, DEFAULT arm (where `dcpa1` is off, and which is the arm
+CLAUDE.md's "an ES split MULTIPLIES CreationSets" complaint is about):
+
+| program | `cs_map` | `split_parent` | `MINT` | mints inside a SPLIT-CHILD contour | of those, parent had NO binding | of those, `clone_methods_per_cs` |
+| --- | --- | --- | --- | --- | --- | --- |
+| chess | 545063 | 896 | 3469 | **2302** | **0** | 14 |
+| sudoku1 | 30820 | 142 | 676 | 152 | **0** | 0 |
+| richards | 14615 | 51 | 393 | 32 | **0** | 0 |
+
+So on `chess`, **2288 CreationSets are minted inside a contour whose parent
+already holds a binding for that very sym**, with issue/045's
+`clone_methods_per_cs` exclusion accounting for only 14. That is the
+multiplication, quantified, and it is what prepopulation would collapse.
+
+### Why the lazy form did not collect them -- open
+
+Instrumented: `esl_reached=896`, `esl_decline=0` on `chess`. The route is
+reached exactly as often as it hits and **never declines**. So those 2302
+mints never reach it: `es->split` and `es->split_origin` are both null when
+the route runs, and non-null a few lines later when the mint probe fires,
+inside the SAME `creation_point` call. Something between the two sets the
+parent. Not yet found, and it has to be found first -- prepopulating at
+split time is pointless if the contour does not yet know its parent at the
+moment its creation points are resolved.
+
+### Landed on the way: a real type error
+
+`creation_point` did `EntrySet *es = (EntrySet *)v->contour;` with no
+guard, while `Lfound` twelve lines below carefully tests
+`v->contour_is_entry_set` before the same cast. So on a CS-contoured AVar
+every `es->...` read below was a `CreationSet` read through an `EntrySet`
+pointer -- latent, and made reachable by the split-parent route now reading
+a second field. Guarded. Corpus route counts are byte-identical, so nothing
+depended on the old behaviour; six gates green.
+
+### The plan, restated
+
+1. Find why a split product's creation points are resolved before
+   `split_origin` is set on it. **This is the blocker.**
+2. Then prepopulate at split time: seed the product's `cs_map` from the
+   parent's, so the FIRST route answers and `dcpa1`/`MINT` never see it.
+   Note `Lfound` already writes every resolution into `cs_map`, so the
+   caching half exists -- what is missing is doing it eagerly, at the split,
+   for the whole contour.
+3. `clone_methods_per_cs` must stay excluded (issue 045), which the
+   measurement says costs 14 of 2302 on `chess`.

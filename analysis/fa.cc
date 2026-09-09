@@ -505,6 +505,8 @@ static int csdcpa1_enabled();     // ifa/128: one CreationSet per sym, ditto
 static int csmold_enabled();  // ifa/issues/101, ditto
 static int eslineage_enabled();   // ifa/133: durable ES split lineage, ditto
 static int esl_hit = 0, esl_walk = 0;  // ifa/133: split-parent route hits / chain walks
+static int mint_in_child = 0, mint_child_novar = 0, mint_child_cmc = 0;
+static int esl_reached = 0, esl_decline = 0;  // ifa/133: mints inside a SPLIT-CHILD contour
 // ifa/133 probe: where do CreationSets actually come from? One counter per
 // creation_point route, dumped by IFA_DBG_CSROUTES at convergence.
 enum CsRoute { kR_cs_map, kR_dcpa1, kR_split_parent, kR_cselem, kR_csshape, kR_csmold, kR_MINT, kR_count };
@@ -592,7 +594,13 @@ static bool is_clone_methods_per_cs(Sym *s) {
 CreationSet *creation_point(AVar *v, Sym *s, int arity) {
   dbg_cs_route = nullptr;
   CreationSet *cs = v->cs_map ? v->cs_map->get(s) : 0;
-  EntrySet *es = (EntrySet *)v->contour;
+  // ifa/133: `v->contour` is an EntrySet OR a CreationSet -- `Lfound` below
+  // checks `v->contour_is_entry_set` before casting and this did not, so on
+  // a CS-contoured AVar every `es->...` read below read a CreationSet
+  // through an EntrySet pointer. The split-parent route now reads a second
+  // field (`split_origin`), which makes the type error reachable rather
+  // than merely latent.
+  EntrySet *es = v->contour_is_entry_set ? (EntrySet *)v->contour : nullptr;
   if (cs) {
     assert(cs->sym == s);
     dbg_cs_route = "cs_map"; ++cs_route_count[kR_cs_map];
@@ -811,13 +819,15 @@ CreationSet *creation_point(AVar *v, Sym *s, int arity) {
   {
     EntrySet *parent = es ? (es->split ? es->split : nullptr) : nullptr;
     if (!parent && es && eslineage_enabled()) parent = es->split_origin;
+    if (parent) ++esl_reached;
+    bool found_here = false;
     for (int hops = 0; parent && hops < 32; ++hops) {
       AVar *oldv = make_AVar(v->var, parent);
       cs = oldv->cs_map ? oldv->cs_map->get(s) : 0;
       if (cs) {
         assert(cs->sym == s);
         dbg_cs_route = "split_parent"; ++cs_route_count[kR_split_parent];
-        ++esl_hit;
+        ++esl_hit; found_here = true;
         if (hops) ++esl_walk;
         goto Lfound;
       }
@@ -826,6 +836,7 @@ CreationSet *creation_point(AVar *v, Sym *s, int arity) {
       if (next == parent) break;
       parent = next;
     }
+    if (!found_here && es && (es->split || es->split_origin)) ++esl_decline;
   }
   // ifa/issues/129 step 2: a `creators` reuse route stood here and was
   // DEAD -- `if (nvars != -1 || x->vars.n != nvars) continue;` continues
@@ -975,6 +986,16 @@ Lunique:
             es ? es->id : -1, (es && es->split) ? es->split->id : -1,
             (es && es->split) ? (make_AVar(v->var, es->split)->cs_map ? 1 : 0) : -1, s == sym_closure ? 1 : 0,
             (s->clone_methods_per_cs || (s->type && unalias_type(s->type)->clone_methods_per_cs)) ? 1 : 0);
+  // ifa/133 probe: a MINT inside a contour that HAS a parent is the
+  // "an ES split multiplies CreationSets" case -- the creation point could
+  // have inherited the parent's binding and did not.
+  if (es && (es->split || es->split_origin)) {
+    ++mint_in_child;
+    EntrySet *par = es->split ? es->split : es->split_origin;
+    AVar *ov = make_AVar(v->var, par);
+    if (!ov->cs_map || !ov->cs_map->get(s)) ++mint_child_novar;
+    if (is_clone_methods_per_cs(s)) ++mint_child_cmc;
+  }
   dbg_cs_route = "MINT"; ++cs_route_count[kR_MINT];
   cs = new CreationSet(s);
   cs->creation_var = v->var;  // ifa/issues/101: for the per-site element key
@@ -12755,7 +12776,7 @@ static void report_demand_ratio() {
   if (getenv("IFA_DBG_CSROUTES")) {
     fprintf(stderr, "CSROUTES");
     for (int i = 0; i < kR_count; i++) fprintf(stderr, " %s=%d", cs_route_name[i], cs_route_count[i]);
-    fprintf(stderr, " esl_hit=%d esl_walk=%d\n", esl_hit, esl_walk);
+    fprintf(stderr, " esl_hit=%d esl_walk=%d mint_in_child=%d mint_child_noparentbinding=%d mint_child_cmc=%d esl_reached=%d esl_decline=%d\n", esl_hit, esl_walk, mint_in_child, mint_child_novar, mint_child_cmc, esl_reached, esl_decline);
   }
 }
 
