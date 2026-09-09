@@ -1369,18 +1369,126 @@ only READ has all of its evidence in the channel the partition does not
 consult.
 
 So setter splitting is the right SHAPE of mechanism -- demand-driven,
-partitioning creation points by what is observably different about them --
-pointed at an evidence source that is empty for this case. The fix is to
-let the same partition see the construction arguments: group a
-CreationSet's defs by the types of `cs->vars` (and the element) as
-CONSTRUCTED, not only by setters accumulated afterwards. That is the same
-correction [146](146-remove-all-arbitrary-splitting.md) C already made
-once, where `cs_content_avars` gave the CS flow graph a key for plain
-classes by falling back to `cs->vars` when there is no element channel;
-this is the setter path needing the same fallback.
+partitioning creation points by what is observably different about them.
+
+**The "key on construction arguments" fix proposed here is WITHDRAWN**
+(author, 2026-09-09: *"the constructor argument solution doesn't
+generalize"*). It does not: a container built empty and filled later has no
+distinguishing construction arguments at all, which is the majority case
+and is exactly what `two_list_element_separation.py` covers. The split has
+to come from the SETTERS. The section below re-does the root cause on that
+basis and finds the real break.
 
 Note what this does NOT need: no provenance, no call-site key, no fan. The
 two creation points differ in the deduced TYPE of their construction
 arguments -- `int64` against `__pyc_None_type__` -- which is exactly what
 contour identity is allowed to key on.
+
+## Why the setters do not reach the creation point (2026-09-09)
+
+Re-done on the author's direction that the split must come from setters.
+Measured with a temporary container-graph probe in `split_css`, on
+`[0] * 4` against `[None] * 4`.
+
+**The split, when it works, is driven by the literals' OWN construction
+setters.** `make_kind` does `set_container(atv, container)` for each
+positional argument, so a literal's construction store is itself a setter
+whose container is that literal. Two literals then carry two DIFFERENT
+setter AVars, `same_eq_classes` is false, and `split_css` separates them.
+Measured on `[0] * 4` against `["s"] * 4`:
+
+```
+[chain] cs=1020 starters=2 defs=2 vars=1
+   DEF av=2980 fun=__init__  setters=1   setter av=2982 container_av=2980
+   DEF av=2994 fun=__init__  setters=1   setter av=2995 container_av=2994
+```
+
+Two starters, it splits at p=2, the program is clean. The failing case has
+one side missing that setter entirely:
+
+```
+[chain] cs=1021 starters=1 defs=2 vars=1
+   DEF av=3020 fun=__init__  setters=1   setter av=3022 container_av=3020
+   DEF av=3033 fun=__init__  setters=0        <- no construction setter
+```
+
+**Three-cell matrix. The failure needs BOTH nil and the multiply:**
+
+| `Buf.data` | `Area.taskTab` | literal CS | outcome |
+| --- | --- | --- | --- |
+| `[0]` | `[None]` | starters=2 | splits, clean |
+| `[0] * 4` | `["s"] * 4` | starters=2 | splits, clean |
+| `[0] * 4` | `[None] * 4` | **starters=1** | never splits, FAILS |
+
+So the multiply alone is survivable and nil alone is survivable. What the
+multiply does is remove the SECOND route to the evidence, so that when nil
+independently costs the construction setter there is nothing left.
+
+**What the multiply does, exactly.** `list.__mul__` is a
+`__pyc_c_call__` to native `_CG_list_mult` whose FA model is
+`__pyc_primitive__("merge", self, self)`, i.e. `P_prim_merge`:
+
+```c
+case P_prim_merge: {
+  ...
+  CreationSet *new_cs = creation_point(result, cs->sym);   // a FRESH CreationSet
+  structural_assignment(new_cs, cs, p, es, true);          // copies CONTENTS only
+  break;                                                   // no flow_vars(thing1, result)
+}
+case P_prim_merge_in: {
+  ...
+  flow_vars(thing1, result);                               // the sibling DOES connect it
+}
+```
+
+`structural_assignment` wires the operand to the result by contents --
+`flow_vars(cs->vars[i], tval)`, `set_container(tval, result)`,
+`flow_vars(tval, get_element_avar(new_cs))` -- and `tval`'s container is
+the NEW list. Nothing makes the result an alias of `self`, and nothing
+should: `l * 4` genuinely is not `l`.
+
+But `update_setter` propagates strictly along `av->backward` starting from
+`x->container`:
+
+```c
+for (AVar *x : *dir) if (x && x->setter_class) update_setter(x->container, x, avs);
+...
+Ldone:
+  av->setters = new_setters;
+  for (AVar *x : av->backward) if (x) (void)update_setter(x, s, avs);
+```
+
+That is a walk over the CONTAINER graph, and `P_prim_merge` leaves no
+backward container edge across itself. Measured: every `__mul__` result def
+has `back_closure=1` -- an empty backward set. So the `__setitem__` on the
+multiplied list DOES register on the result (`setter av=3113 in
+fun=__setitem__ container_av=3102`), walks backward, reaches the merge's
+creation point, and stops. The literal is connected only along the VALUE
+chain, which `update_setter` never traverses.
+
+**Stated in one line:** *types flow forward through the merge; setter
+attribution does not flow backward through it.* The merge is transparent to
+the value graph and opaque to the container graph, so the pollution reaches
+the result while the evidence that would separate the operands stays
+trapped behind it.
+
+**The fix follows the shape of [146](146-remove-all-arbitrary-splitting.md)
+B**, which taught `build_cs_flow_graph`'s backward walk to CROSS a folded
+global load rather than changing the type flow. The same applies here: do
+not add `flow_vars(thing1, result)` to `P_prim_merge` -- that would be
+wrong, the result is a new list -- but teach the setter backward walk to
+cross a merge, using the operand relationship `structural_assignment`
+already knows. A setter on `new_cs` is attributable to the creation points
+of `cs`, because `structural_assignment` recorded that `cs`'s contents flow
+into `new_cs`'s.
+
+**Still open:** why nil costs the construction setter under a multiply.
+`[None]` as a plain literal HAS its construction setter (the first row of
+the matrix), and `["s"] * 4` keeps its setter under the multiply, so it is
+the combination that loses it. `make_kind` calls `set_container`
+identically for both, so the loss is downstream -- most likely `atv` never
+acquiring a `setter_class`, since `update_setter` is gated on that. Not yet
+traced; it is the second half of this fix, and the first half (crossing the
+merge) would make the split reachable regardless of which side keeps its
+construction setter.
 
