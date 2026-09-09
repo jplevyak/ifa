@@ -1213,3 +1213,76 @@ without rebuilding — `git stash`/`pop`, `git checkout <commit> -- <file>`,
 a failed compile leaving the old binary in place — silently produces a
 sweep whose label and content disagree. `make` before every sweep, always.
 
+## `sudoku5` is this issue, and only this issue (2026-09-09)
+
+`sudoku5` was on the flag arm's divergence list as an independent item,
+and it is not: it is 133 with one separable compiler bug sitting on top.
+
+**The compiler bug, fixed.** `pyc` did not fail to type `sudoku5` on the
+flag arm, it SIGSEGV'd (exit 139) while printing the diagnostic. Root
+cause was unrelated to inference: `show_violations` reached for the call
+tree via `cs->defs.first()`, but `defs` is a set-Vec, and past
+SET_LINEAR_SIZE (4) a set-Vec is an open hash table whose `n` is the table
+CAPACITY and whose empty slots are NULL. `.first()` is a raw `v[0]`, so it
+read a hole. `sudoku5`'s merged `list` CS carries 13 creation points.
+Fixed (`first_in_set()` plus guards); the crash is latent in ANY arm --
+merging only supplies the 4+ defs that expose it.
+
+**Attribution, once it stopped crashing.** The two flag-arm flags are not
+jointly responsible; one of them is the whole story:
+
+| arm | exit | warnings | errors |
+| --- | --- | --- | --- |
+| default | 0 | 24 | 0 |
+| `PYC_CSLADDER=3` | 0 | 24 | 0 |
+| `PYC_CSDCPA1=2` | 1 | 249 | 364 |
+| both | 1 | 249 | 364 |
+
+`PYC_CSLADDER=3` alone is byte-identical to the default. `PYC_CSDCPA1=2`
+alone reproduces the full flag arm exactly. So `sudoku5` needs no separate
+tracking: fix 133 and it goes.
+
+**It is the LIST merge, not the tuples.** The reported union reads `( list
+tuple int64 str )`, which invites the theory that arity-2 tuples
+`("rc", (r, c))` and `(len(X[c]), c)` merged and unioned slot 0 to
+`{int64, str}`. They did not. `PYC_CSDCPA1=2` deliberately EXCLUDES
+`sym_tuple` from the merge (fa.cc:619, and the reason is written there:
+arity and position are part of a tuple's type, not provenance), so tuple
+contours are identical on both arms. Every `DEMAND-ADDED` candidate in the
+`IFA_DBG_CSDEFSPLIT` trace is a `list`; the tuples only appear inside the
+merged list's element union.
+
+**Where it stops, in this issue's own terms.** Of 1271 declines in the
+trace, the two that matter are `DECLINED (single creation point)` (1092)
+and **`DECLINED (1 group: every creation point on the same assign sets)`
+(81)**. The second is this issue's wall stated as a measurement: the flow
+graph key puts every creation point in ONE group, because once the element
+union has formed every writer carries all of it. That is the same fixed
+point as [142](142-linalg-empty-list-collapse-is-a-fixed-point.md), and
+the same thing "merging destroys the attribution" (ca11b67f, 9af32e64)
+already concluded from the 5-line reproducer.
+
+## Negative result: stage 5 starvation is NOT the lever (2026-09-09)
+
+Worth recording so it is not retried. `fa.cc` says the VIOLATION stage is
+starved on `plcfrs`/`rdb`/`sudoku5` -- TYPE_CONFLUENCE fires every pass so
+`!analyze_again` is never true -- and the splitting log confirms it
+exactly: **22749 `[stage1]` lines and 0 `[stage5]` lines**. Since stage 5
+is the only DEMAND-driven stage in the cascade, lifting its gate looks
+like it should follow directly from "splitting is only ever on demand".
+
+Measured, via the existing `PYC_SIZEOF_VIOL=2` lever, on `sudoku5` at the
+flag arm:
+
+| | passes | ess | css | mixed | warnings | errors |
+| --- | --- | --- | --- | --- | --- | --- |
+| stage 5 starved (as shipped) | 37 | 1104 | 2634 | 10 | 249 | 364 |
+| stage 5 RUNS (16 times) | 17 | 1461 | 2581 | 29 | 299 | **660** |
+
+Errors nearly double and `mixed` triples. This is the non-monotone
+diagnostic again -- more splitting, worse result -- so the starvation is
+real but it is not what is holding `sudoku5` back, and un-starving stage 5
+is not a fix waiting to be applied. The demand stage cannot help while the
+demand it would act on names a partition that no longer exists in the
+graph; attribution has to be recoverable FIRST.
+
