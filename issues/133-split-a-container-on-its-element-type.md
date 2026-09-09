@@ -2031,3 +2031,102 @@ measurement to take first is how many of the 3128 mint-path groups on
 `sudoku5` have a call-site set identical to one already recorded -- that is
 the fraction a call-site key would collapse, and it is cheap to instrument
 now that `[churn-mint]` carries the edge id.
+
+## Implementing the decision table: what the measurements said (2026-09-09)
+
+Went straight at the three steps. The result is mostly a NEGATIVE finding,
+and it relocates the work rather than completing it.
+
+### Step 2 (call-site keyed ES table) -- built, measured, REMOVED
+
+Added `Map<AEdge *, EntrySet *> edge_home`, recorded on both the ledger
+route and the mint, consulted before the search in
+`apply_entry_set_split`. On `sudoku5` it looked like a win -- errors
+364 -> 179, `ess` 1104 -> 745, passes 37 -> 22, suite unchanged.
+
+**It is not a win, and the number is not the mechanism.** The consult fired
+**3 times** in the whole run (`[churn-decide]`). Three routing decisions out
+of ~3000 moved the error count by 51%. So the improvement is a chaotic
+perturbation of an unstable analysis, not the table working, and shipping
+it would have banked luck as if it were a fix. Removed.
+
+**Why it cannot work as designed:** a call-site key answers "where did this
+edge go last time", and after a split the edge LEAVES `es` and never comes
+back -- measured earlier, only 20 edges / 24 events ever return to a prior
+target, against 627 that move monotonically to ever-new contours. The
+failure is subdivision, not re-binding, so a per-edge memo has almost
+nothing to answer.
+
+### Step 1/3 (durable ES split lineage) -- built, measured INERT
+
+`EntrySet::split_origin` added as the durable analogue of
+`CreationSet::split_origin`, and the split-parent route in
+`creation_point` now walks it instead of reading only the transient
+`es->split`. This is exactly "keep the same mappings for the new call
+points", and the diagnosis behind it was right -- `clear_splits()` does
+wipe `es->split` every pass.
+
+Measured on `sudoku5`: **byte-identical**, `PYC_ESLINEAGE=0` vs `1`
+(364 errors, ess 1104, css 2634, 37 passes, both). Kept, because it is
+correct and costs nothing, but it buys nothing today and is documented as
+such rather than claimed.
+
+### Why it is inert: the CS-side decision table ALREADY EXISTS
+
+New probe `IFA_DBG_CSROUTES` counts every `creation_point` route.
+`sudoku5`, flag arm:
+
+```
+cs_map=734269  dcpa1=1226  split_parent=6  cselem=0  csshape=0  csmold=0  MINT=2328
+```
+
+`v->cs_map` -- the creation point -> CreationSet mapping -- serves **734k**
+lookups, and **nothing in the file ever clears it** (`grep` for
+`cs_map = 0` / `cs_map->clear`: no matches). It is already durable, already
+authoritative, and already what the author asked the CS half to be. The
+split-parent route fires **6 times**, so making it survive the pass changes
+nothing: by the time a later pass revisits a product's creation point, its
+own `cs_map` already answers.
+
+**So on the CS side pyc already has shedskin's property.** The half that
+does not is the ES side.
+
+### Where the ES-side decision table actually is: `PYC_CANON`, and it is OFF
+
+`EntrySet::canon_key` already states the goal in its own comment -- *"the
+type tuple NAMES the contour -- shedskin's model -- and a routing decision
+becomes a lookup with no symmetric choice to alternate between"* -- which is
+`func.cp[dcpa][cart]`. `canon_enabled()` defaults to **0**.
+
+Turned on, on `sudoku5` (flag arm):
+
+| | passes | ess | css | warnings | errors |
+| --- | --- | --- | --- | --- | --- |
+| `PYC_CANON=0` (default) | 37 | 1104 | 2634 | 249 | **364** |
+| `PYC_CANON=1` | 21 | 690 | 1792 | 82 | **177** |
+| `PYC_CANON=2` | 24 | 697 | 2018 | 118 | 297 |
+
+and it is measurably firing, not coincidence: `CANON p=19 hit=3 miss=6
+conflict=3 conflict_honored=3`, with 52 `CANON-CONFLICT` lines over the
+run. A conflict is the canonical home for an edge's types being the very
+contour the splitter is detaching it from -- "the split is asking for a
+separation the type tuple says does not exist". Mode 1 honours the split
+anyway and beats mode 2, which refuses it.
+
+pyc suite is 313 passed / 0 failed with `PYC_CANON=1`.
+
+### What this means for the direction
+
+The author's design is right and is **half-built already**: the creation
+point -> CS decision is durable and doing the work; the call site -> ES
+decision exists as `canon_key` and is switched off. The missing piece is
+not a new table but making the ES-side one authoritative -- which is the
+same statement as "the ledger is a hack that failed", since `SplitDecision`
+/ `cs_group_signature` / `HARDREUSE` / `route_adj` all exist to make a
+type-partition key behave like the canonical key would.
+
+**Do not read `sudoku5`'s 364 -> 177 as the size of the win.** That program
+is chaotically sensitive -- three decisions moved it 51% -- so the only
+honest evaluation of `PYC_CANON=1` is a corpus `check` sweep on both arms.
+That is the next step, and it is a knob flip plus a sweep rather than new
+machinery.

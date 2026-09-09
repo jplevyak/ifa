@@ -503,6 +503,14 @@ static int cselem_enabled();  // ifa/issues/101, defined with the other flags
 static int cssiteless_enabled();  // ifa/129 step 4, ditto
 static int csdcpa1_enabled();     // ifa/128: one CreationSet per sym, ditto
 static int csmold_enabled();  // ifa/issues/101, ditto
+static int eslineage_enabled();   // ifa/133: durable ES split lineage, ditto
+static int esl_hit = 0, esl_walk = 0;  // ifa/133: split-parent route hits / chain walks
+// ifa/133 probe: where do CreationSets actually come from? One counter per
+// creation_point route, dumped by IFA_DBG_CSROUTES at convergence.
+enum CsRoute { kR_cs_map, kR_dcpa1, kR_split_parent, kR_cselem, kR_csshape, kR_csmold, kR_MINT, kR_count };
+static cchar *cs_route_name[kR_count] = {"cs_map","dcpa1","split_parent","cselem","csshape","csmold","MINT"};
+static int cs_route_count[kR_count];
+// ifa/133 counters live with the flag definition below
 // ifa/issues/074 (PYC_CSELEM=3): re-key container CreationSet identity on
 // the RECEIVER's structural element shape. Defined with capture_elem_keys.
 static bool cselem_shape_key(AVar *v, Sym *s, std::string &out);
@@ -587,7 +595,7 @@ CreationSet *creation_point(AVar *v, Sym *s, int arity) {
   EntrySet *es = (EntrySet *)v->contour;
   if (cs) {
     assert(cs->sym == s);
-    dbg_cs_route = "cs_map";
+    dbg_cs_route = "cs_map"; ++cs_route_count[kR_cs_map];
     goto Lfound;
   }
   if (s == sym_closure) goto Lunique;
@@ -718,7 +726,7 @@ CreationSet *creation_point(AVar *v, Sym *s, int arity) {
           if (arity >= 0 && x->static_arity >= 0 && x->static_arity != arity && !x->no_static_arity) continue;
         }
         cs = x;
-        dbg_cs_route = "dcpa1";
+        dbg_cs_route = "dcpa1"; ++cs_route_count[kR_dcpa1];
         goto Lfound;
       }
   }
@@ -786,13 +794,37 @@ CreationSet *creation_point(AVar *v, Sym *s, int arity) {
   //
   // Three `fa-converge` goldens gain one pass each; that is the cost of not
   // pre-splitting and is what the change is about, so they are re-blessed.
-  if (es && es->split) {
-    AVar *oldv = make_AVar(v->var, es->split);
-    cs = oldv->cs_map ? oldv->cs_map->get(s) : 0;
-    if (cs) {
-      assert(cs->sym == s);
-      dbg_cs_route = "split_parent";
-      goto Lfound;
+  // ifa/133: this route is the answer to "an EntrySet split must not
+  // MULTIPLY CreationSets" (CLAUDE.md names it as a live violation). A
+  // contour split off `parent` inherits `parent`'s creation-point ->
+  // CreationSet mapping, so the same allocation site keeps the same data
+  // contour instead of minting a fresh one per (site x contour).
+  //
+  // It read `es->split`, which `clear_splits()` zeroes at the top of EVERY
+  // pass -- so the inheritance worked only on the pass the split happened,
+  // and from the next pass on every creation point in the product minted
+  // anew. `split_origin` is the same parent recorded durably, so the
+  // mapping now survives, which is what the decision table has to mean on
+  // the CS side. Walk the chain: a product of a product should inherit
+  // from the nearest ancestor that has a mapping, not only its immediate
+  // parent.
+  {
+    EntrySet *parent = es ? (es->split ? es->split : nullptr) : nullptr;
+    if (!parent && es && eslineage_enabled()) parent = es->split_origin;
+    for (int hops = 0; parent && hops < 32; ++hops) {
+      AVar *oldv = make_AVar(v->var, parent);
+      cs = oldv->cs_map ? oldv->cs_map->get(s) : 0;
+      if (cs) {
+        assert(cs->sym == s);
+        dbg_cs_route = "split_parent"; ++cs_route_count[kR_split_parent];
+        ++esl_hit;
+        if (hops) ++esl_walk;
+        goto Lfound;
+      }
+      if (!eslineage_enabled()) break;
+      EntrySet *next = parent->split ? parent->split : parent->split_origin;
+      if (next == parent) break;
+      parent = next;
     }
   }
   // ifa/issues/129 step 2: a `creators` reuse route stood here and was
@@ -857,7 +889,7 @@ Lno_split_parent:;
             fprintf(stderr, "[cselem] p=%d sym=%s var=%s -> reuse cs=%d (elem_key %p)\n", analysis_pass,
                     s->name ? s->name : "?", v->var->sym->name ? v->var->sym->name : "?", x->id, (void *)want);
           cs = x;
-          dbg_cs_route = "cselem";
+          dbg_cs_route = "cselem"; ++cs_route_count[kR_cselem];
           goto Lfound;
         }
     }
@@ -886,7 +918,7 @@ Lno_split_parent:;
     if (CreationSet *x = cselem_shape_reuse(v, s)) {
       if (!(s->abstract_type && x == s->abstract_type->v[0])) {
         cs = x;
-        dbg_cs_route = "csshape";
+        dbg_cs_route = "csshape"; ++cs_route_count[kR_csshape];
         goto Lfound;
       }
     }
@@ -927,7 +959,7 @@ Lno_split_parent:;
                       s->name ? s->name : "?", v->var->sym->name ? v->var->sym->name : "?", es ? es->id : -1,
                       split_child ? es->split->id : -1, x->id);
             cs = x;
-            dbg_cs_route = "csmold";
+            dbg_cs_route = "csmold"; ++cs_route_count[kR_csmold];
             goto Lfound;
           }
       }
@@ -943,7 +975,7 @@ Lunique:
             es ? es->id : -1, (es && es->split) ? es->split->id : -1,
             (es && es->split) ? (make_AVar(v->var, es->split)->cs_map ? 1 : 0) : -1, s == sym_closure ? 1 : 0,
             (s->clone_methods_per_cs || (s->type && unalias_type(s->type)->clone_methods_per_cs)) ? 1 : 0);
-  dbg_cs_route = "MINT";
+  dbg_cs_route = "MINT"; ++cs_route_count[kR_MINT];
   cs = new CreationSet(s);
   cs->creation_var = v->var;  // ifa/issues/101: for the per-site element key
   // ifa/issues/074: claim this (site, receiver-shape) so the next contour
@@ -2081,6 +2113,18 @@ static EntrySet *find_canonical_entry_set(AEdge *e, Map<MPosition *, AType *> &k
 // around the split route's make_entry_set call; 0 outside.
 static int cur_split_type_only = 0;
 
+// ifa/133: make the split-parent route survive the pass it was created in.
+// PYC_ESLINEAGE=0 restores the old `es->split`-only behaviour, for
+// attributing a corpus change to this clause.
+static int eslineage_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_ESLINEAGE");
+    e = v ? atoi(v) : 1;
+  }
+  return e;
+}
+
 static void make_entry_set(AEdge *e, Vec<AEdge *> &edges, EntrySet *split = nullptr, EntrySet *preference = 0) {
   if (e->to) {
     edges.add(e);
@@ -2179,6 +2223,9 @@ static void make_entry_set(AEdge *e, Vec<AEdge *> &edges, EntrySet *split = null
   }
   if (!es) {
     e->to->split = split;
+    // ifa/133: the same parent, recorded durably. `split` is cleared every
+    // pass; `split_origin` is not.
+    if (!e->to->split_origin) e->to->split_origin = split;
     // ifa/issues/075: this is the "leftover group" mint -- an edge
     // being detached FROM `split` that neither the ledger nor a
     // preference could route, so a fresh ES is minted for it (and
@@ -7015,6 +7062,7 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
     }
     if (product) {
       if (!product->split) product->split = es;
+      if (!product->split_origin) product->split_origin = es;
       // ifa/issues/055: is this the same route as last pass?
       bool stable_route = route_d && (route_d->last_route_pass == analysis_pass - 1) &&
                           (route_d->last_route_product == product);
@@ -7029,6 +7077,8 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
         x->filtered_args.clear();
         es->edges.del(x);
         set_entry_set(x, product);
+        // ifa/133: the table learns from this route too, so the next pass
+        // does not have to re-derive the type partition to reproduce it.
         record_backedges(x, es, pending_es_backedge_map);
         if (getenv("IFA_DBG_CHURN"))
           fprintf(stderr, "[churn-ledger] p=%d e=%d es=%d -> %d%s\n", analysis_pass, x->id, es->id,
@@ -12702,6 +12752,11 @@ static void report_demand_ratio() {
           cselem_rejoins, cselem_mint_why[kMintNoSiteCS], cselem_mint_why[kMintMoldSplitChild],
           cselem_mint_why[kMintMoldCMC], cselem_mint_why[kMintMoldIneligible], canon, canon_siteless, cselem_resplits,
           cselem_resplit_mints, nstrip, nmulti, nsame, fa_cap_strips);
+  if (getenv("IFA_DBG_CSROUTES")) {
+    fprintf(stderr, "CSROUTES");
+    for (int i = 0; i < kR_count; i++) fprintf(stderr, " %s=%d", cs_route_name[i], cs_route_count[i]);
+    fprintf(stderr, " esl_hit=%d esl_walk=%d\n", esl_hit, esl_walk);
+  }
 }
 
 static void analyze_to_convergence() {

@@ -218,6 +218,14 @@ class EntrySet : public gc {
   Vec<CreationSet *> cs_backedges;
   Vec<PNode *> live_pnodes;
   EntrySet *split;
+  // ifa/133: the DURABLE split lineage, the exact analogue of
+  // CreationSet::split_origin. `split` above is the transient per-pass
+  // product pointer -- clear_splits() zeroes it at the top of every pass
+  // -- so it cannot answer "which contour was this one split off from?"
+  // across passes, which is what a decision table needs to keep a call
+  // site on the same product when a split is re-derived. Set once, at
+  // mint, and never cleared.
+  EntrySet *split_origin = nullptr;
   PendingAEdgeEntrySetsMap pending_es_backedge_map;
   Vec<EntrySet *> *equiv;  // clone.cpp
 
