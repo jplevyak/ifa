@@ -251,6 +251,39 @@ transport from the flow edges the walk follows.
 have none [no `cs_map`] (uncharacterized)"*. It is now characterized, and
 that comment updated.
 
+**Author's correction to the framing:** *"the two globals are different, the
+only difference from locals is the es now that we have a 'global' yes and
+the dataflow must reach the creation point. all that is required is
+splitting on them."*
+
+Right, and it makes this a DEFICIENCY rather than a constraint. `a` and `b`
+are distinct global Vars with one allocation each — nothing is ambiguous
+about which creation point a use belongs to, and the only structural
+difference from the working function-local version is which EntrySet holds
+them (the distinguished global contour). So there is no reason in principle
+the walk cannot reach the creation point; it simply does not.
+
+**Where it stops, measured.** From the allocation the forward closure is
+`{783, 784}` — `784` has NO forward edges. The value flows one hop out of
+the `make list` and stops. Globals are modelled as CELLS in this analysis
+(`fa.cc`: "mutable global cell", "a global cell that NOTHING READS"), so a
+store writes the cell and a load reads it; the walk's forward/backward
+edges stop AT the cell instead of traversing it, and the load side is left
+rootless (`bwd=0`, `cs_map=0`).
+
+**So the fix is to make the walk traverse the global cell** — relate a
+global's loads back to its stores — after which `cs->defs` and `g->csites`
+coincide and ordinary route-4 partitioning applies with no new policy at
+all. "All that is required is splitting on them" is then literally true:
+the demand already names three assign sets on this repro; it just cannot
+reach the nodes it is about.
+
+NOT yet verified: the precise cell mechanism, i.e. whether the load takes
+its type by a snapshot (`update_gen`) rather than a durable flow edge. That
+distinction matters for the fix and this project has been bitten by it
+before — see the `snapshot vs durable edge` note — so it should be
+established before any edge is added.
+
 **What it means for B.** The blocker is narrower than it looked. Demand
 splitting works where values flow through edges — the function-local
 version needs no route 4 at all, the ordinary machinery separates the two
