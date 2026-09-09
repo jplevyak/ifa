@@ -2201,3 +2201,93 @@ depended on the old behaviour; six gates green.
    for the whole contour.
 3. `clone_methods_per_cs` must stay excluded (issue 045), which the
    measurement says costs 14 of 2302 on `chess`.
+
+## Both halves of the invariant already hold -- measured (2026-09-09)
+
+Author's spec: *"the first pass should be one es per function and after a
+split there should be zero mints. feel free to just add an assert on any
+mint."* Did that. Both hold, so the CreationSet multiplication is not where
+we were looking.
+
+### "After a split, zero mints" -- true, modulo two deliberate policies
+
+`PYC_ASSERT_MINT=1` reports every `creation_point` MINT taken inside a
+contour that has a parent, with the sym. Broken down:
+
+| program | mints in a split-child contour | `closure` | `clone_methods_per_cs` (`__list_iter__`, `range`) | anything else |
+| --- | --- | --- | --- | --- |
+| richards | 32 | 32 | 0 | **0** |
+| sudoku1 | 152 | 152 | 0 | **0** |
+| chess | 2302 | 2288 | 14 | **0** |
+
+Both exclusions are by design and correct. Closures take
+`if (s == sym_closure) goto Lunique;` at the very top of `creation_point`,
+bypassing every reuse route -- and they must, because a closure CS binds
+that contour's captured AVars, so a product's closure genuinely is not the
+parent's. `clone_methods_per_cs` is issue/045's requirement.
+
+**So there is not a single illegitimate mint after a split.** The
+inheritance the author described is already complete for everything it
+should cover, which is why making it durable (`split_origin`, below)
+measured as a no-op: `es->split` is still set during the pass the split
+happens, the route fires then, and `Lfound` writes the answer into
+`v->cs_map` -- which is never cleared, so later passes hit the fast path
+and never need the lineage.
+
+This also retires my own earlier framing. I read `mint_in_child=2302` on
+chess as "2288 CreationSets minted where inheritance was available". It is
+not: those are closures, and inheritance was not available to them by
+design.
+
+### "First pass, one ES per function" -- true
+
+New probe `IFA_DBG_ESPERFUN`, reported at the top of every pass, before
+splitting:
+
+| | pass 0 | funs with >1 ES | worst |
+| --- | --- | --- | --- |
+| richards | ess=162, funs=158 | **2** | 3 (`__new__`) |
+| sudoku5 (flag arm) | ess=215, funs=203 | **5** | 4 (`__init__`) |
+
+Essentially one contour per function, as intended.
+
+### Where it actually goes wrong: the ES side, after pass 0
+
+Same probe, following `sudoku5` on the flag arm:
+
+```
+pass=0  ess=215  funs=203  funs_with_multiple=5   max=4   worst=__init__
+pass=1  ess=303  funs=188  funs_with_multiple=40  max=16  worst=append
+pass=2  ess=339  funs=188  funs_with_multiple=44  max=17  worst=__getitem__
+pass=3  ess=370  funs=188  funs_with_multiple=49  max=20  worst=__getitem__
+                                    ... to ess=1104
+```
+
+One pass takes `append` from 1 contour to 16 and `__getitem__` to 20. That
+is the whole of the growth, it is EntrySet-side, and it lands on exactly
+the shared container methods whose group signatures were measured drifting
+(221 of 415 minting contours present more than one `gsig`, one presents
+22).
+
+### Consolidated: the decision table is needed in exactly one place
+
+- creation point -> CreationSet: `v->cs_map`, 734k hits, never cleared.
+  **Done.**
+- split lineage -> inherited bindings: no illegitimate mints. **Done.**
+- first pass one ES per function. **Done.**
+- call site -> EntrySet: resolved by SCORING `fun->ess` on every detach
+  (`find_best_entry_sets`, `entry_set_compatibility`, five `HARDREUSE`
+  modes), keyed on a type partition that drifts. **This is the gap**, and
+  the lookup that would close it already exists as `EntrySet::canon_key`
+  -- *"the type tuple NAMES the contour -- shedskin's model -- and a
+  routing decision becomes a lookup"*, i.e. `func.cp[dcpa][cart]` -- with
+  `canon_enabled()` defaulting to **0**.
+
+`PYC_CANON=1` on `sudoku5`: 21 passes / ess 690 / 82 warnings / 177 errors,
+against 37 / 1104 / 249 / 364. Suite 313/0. Needs a corpus sweep on both
+arms before it means anything, but it is a knob flip, not new machinery.
+
+`EntrySet::split_origin` is kept, and honestly labelled: it is the durable
+form the author asked for and it is correct, but it never decides anything
+today because the transient `es->split` already covers the only pass in
+which the question is asked.

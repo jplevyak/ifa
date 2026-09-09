@@ -506,7 +506,10 @@ static int csmold_enabled();  // ifa/issues/101, ditto
 static int eslineage_enabled();   // ifa/133: durable ES split lineage, ditto
 static int esl_hit = 0, esl_walk = 0;  // ifa/133: split-parent route hits / chain walks
 static int mint_in_child = 0, mint_child_novar = 0, mint_child_cmc = 0;
-static int esl_reached = 0, esl_decline = 0;  // ifa/133: mints inside a SPLIT-CHILD contour
+static int esl_reached = 0, esl_decline = 0;
+static int route_saw_split = -3, route_saw_origin = -3;
+static int mint_report = 0;
+typedef MapElem<Fun *, int> MapElemFunPint;  // ifa/133: mints inside a SPLIT-CHILD contour
 // ifa/133 probe: where do CreationSets actually come from? One counter per
 // creation_point route, dumped by IFA_DBG_CSROUTES at convergence.
 enum CsRoute { kR_cs_map, kR_dcpa1, kR_split_parent, kR_cselem, kR_csshape, kR_csmold, kR_MINT, kR_count };
@@ -820,6 +823,8 @@ CreationSet *creation_point(AVar *v, Sym *s, int arity) {
     EntrySet *parent = es ? (es->split ? es->split : nullptr) : nullptr;
     if (!parent && es && eslineage_enabled()) parent = es->split_origin;
     if (parent) ++esl_reached;
+    route_saw_split = es ? (es->split ? es->split->id : -1) : -2;
+    route_saw_origin = es ? (es->split_origin ? es->split_origin->id : -1) : -2;
     bool found_here = false;
     for (int hops = 0; parent && hops < 32; ++hops) {
       AVar *oldv = make_AVar(v->var, parent);
@@ -991,6 +996,16 @@ Lunique:
   // have inherited the parent's binding and did not.
   if (es && (es->split || es->split_origin)) {
     ++mint_in_child;
+    if (getenv("PYC_ASSERT_MINT")) {
+      ++mint_report;
+      fprintf(stderr,
+              "[MINT-IN-CHILD] p=%d es=%d fun=%s var=%s sym=%s | AT ROUTE split=%d origin=%d | NOW split=%d origin=%d\n",
+              analysis_pass, es->id,
+              (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?",
+              (v->var && v->var->sym && v->var->sym->name) ? v->var->sym->name : "(anon)",
+              s->name ? s->name : "?", route_saw_split, route_saw_origin,
+              es->split ? es->split->id : -1, es->split_origin ? es->split_origin->id : -1);
+    }
     EntrySet *par = es->split ? es->split : es->split_origin;
     AVar *ov = make_AVar(v->var, par);
     if (!ov->cs_map || !ov->cs_map->get(s)) ++mint_child_novar;
@@ -9874,7 +9889,22 @@ static CSMSplitDecision *decide_csm_split(AVar *av) {
 // The five split stages (extend_analysis minus its stall/pass-cap
 // bookkeeping), extracted so the sticky stall guard in
 // extend_analysis can skip them wholesale once the guard has fired.
+static void dbg_es_per_fun() {
+  if (!getenv("IFA_DBG_ESPERFUN")) return;
+  Map<Fun *, int> per;
+  for (EntrySet *x : fa->ess) if (x && x->fun) per.put(x->fun, per.get(x->fun) + 1);
+  int funs = 0, multi = 0, mx = 0; Fun *worst = nullptr;
+  form_Map(MapElemFunPint, e, per) {
+    ++funs;
+    if (e->value > 1) ++multi;
+    if (e->value > mx) { mx = e->value; worst = e->key; }
+  }
+  fprintf(stderr, "ESPERFUN pass=%d ess=%d funs=%d funs_with_multiple=%d max=%d worst=%s\n", analysis_pass,
+          fa->ess.n, funs, multi, mx, (worst && worst->sym && worst->sym->name) ? worst->sym->name : "?");
+}
+
 [[nodiscard]] static int run_split_stages() {
+  dbg_es_per_fun();
   int analyze_again = 0;
   // Issue 033 M0: per-stage wall-clock measurement. `stage_timer`
   // is lapped at each stage boundary below (whether or not that
@@ -12773,6 +12803,20 @@ static void report_demand_ratio() {
           cselem_rejoins, cselem_mint_why[kMintNoSiteCS], cselem_mint_why[kMintMoldSplitChild],
           cselem_mint_why[kMintMoldCMC], cselem_mint_why[kMintMoldIneligible], canon, canon_siteless, cselem_resplits,
           cselem_resplit_mints, nstrip, nmulti, nsame, fa_cap_strips);
+  if (getenv("IFA_DBG_ESPERFUN")) {
+    // ifa/133: "the first pass should be one ES per function" -- is it?
+    Map<Fun *, int> per;
+    for (EntrySet *x : fa->ess) if (x && x->fun) per.put(x->fun, per.get(x->fun) + 1);
+    int funs = 0, multi = 0, mx = 0; Fun *worst = nullptr;
+    form_Map(MapElemFunPint, e, per) {
+      ++funs;
+      if (e->value > 1) ++multi;
+      if (e->value > mx) { mx = e->value; worst = e->key; }
+    }
+    fprintf(stderr, "ESPERFUN pass=%d ess=%d funs=%d funs_with_multiple=%d max=%d worst=%s\n", analysis_pass,
+            fa->ess.n, funs, multi, mx,
+            (worst && worst->sym && worst->sym->name) ? worst->sym->name : "?");
+  }
   if (getenv("IFA_DBG_CSROUTES")) {
     fprintf(stderr, "CSROUTES");
     for (int i = 0; i < kR_count; i++) fprintf(stderr, " %s=%d", cs_route_name[i], cs_route_count[i]);
