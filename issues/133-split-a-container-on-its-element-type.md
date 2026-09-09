@@ -1762,3 +1762,86 @@ Committed `.tsv`s: `check__PYC_NILSTORE_0__ae16c44e+0e9deefa`,
 **Flag-arm blockers: three -> two.** `bh` (ifa/143, `__slots__` string
 lists) and `sudoku5` (comprehensions/append) are untouched by this and
 remain.
+
+## `sudoku5` dug into: it is NOT `bh`'s problem (2026-09-09)
+
+The two remaining flag-arm blockers were being carried as one family. They
+are not. Measured on the post-`nilstore` build under `PYC_CSDCPA1=2`.
+
+**Only two stages ever run.** `PYC_DBG_STAGEDELTA` shows `TYPE_CONFL`
+returning 1 on EVERY pass, with 445-1136 confluences, plus
+`CS_DEF_PARTITION` (which runs unconditionally). Everything gated on
+`!analyze_again` -- SETTER, MARK_SETTER, VIOLATION, PER_CS_RECEIVER,
+CSM_ELEMENT_CS -- is starved. `split_css` never executes even once:
+`IFA_DBG_STARTERS` prints **zero** `[sfs]` lines for the whole run, so the
+setter-side CreationSet partition that fixed `richards` is not merely
+declining here, it is unreachable.
+
+**The analysis oscillates violently rather than converging:**
+
+```
+p=0  viol=644   p=14 viol=1591   p=22 viol=413   p=28 viol=2042
+p=8  viol=488   p=18 viol=478    p=26 viol=438   p=32 viol=1364
+                                                 p=35 viol=1404  STOP
+```
+
+The spikes track large EntrySet batches (`p=28 ess+74`, `p=32 ess+83`).
+
+**It stops on CHURN, and on a spike.**
+
+```
+STALL LIMIT reached at pass 35, 1404 violations (best 398):
+  8 re-deriving (limit 8), 8 non-improving (limit 32); stopping
+```
+
+722 re-derivations (`IFA_DBG_INCOMPAT`), dominated by SHARED CONTAINER
+METHODS -- `__getitem__` 186, `__eq__` 165, `len` 87, `__lt__` 52,
+`__pyc_to_bool__` 47, `__ge__` 36, `__len__` 28, `__pyc_more__` 22 -- which
+is [143](143-shared-container-method-contours-refuse-cs-splits.md)'s
+subject arriving as a stability problem rather than a precision one.
+
+**`bh` is a different animal.** Same probes, same arm:
+
+| | re-derivations | stalls on | final violations | best |
+| --- | --- | --- | --- | --- |
+| `sudoku5` | **722** | re-deriving (8 >= 8) | **1404** | **398** |
+| `bh` | 10 | non-improving (32 >= 32) | 10 | 9 |
+
+`bh` converges to ~9 violations and cannot resolve the last few: a
+precision wall, and 143 already has it root-caused. `sudoku5` never
+converges at all. Two blockers, two mechanisms.
+
+**A third of `sudoku5`'s errors are manufactured after its best pass.**
+The analysis tracks `best_violations` and never uses it to choose the final
+state -- it reports whatever the LAST pass produced. Stopping earlier is
+measurably better:
+
+| `IFA_STALL_LIMIT` | passes | ess | warnings | errors |
+| --- | --- | --- | --- | --- |
+| 8 (default) | 37 | 1104 | 249 | **364** |
+| 4 | 19 | 708 | 85 | **180** |
+| 2 | 5 | 407 | 65 | 289 |
+| 1 | 4 | 370 | 65 | 287 |
+
+`IFA_STALL_LIMIT=4` halves the errors and cuts contours 36%, on the same
+binary and the same program. So the passes that run after the good region
+actively destroy the result.
+
+**Two separable pieces of work, in priority order.**
+
+1. *The analysis should not end on a spike.* `best_violations` is already
+   computed; nothing consumes it. Even without curing the oscillation,
+   ending at the best pass rather than the last is a strict improvement for
+   every oscillating program. It needs a state snapshot/restore, which is
+   the real cost. **Do not fix this by lowering `IFA_STALL_LIMIT`**: that
+   is a global convergence tunable, the measurement above is one program,
+   and the standing rule is to gate splitter validity on per-contour
+   durable-key stability, never on a global violation count.
+
+2. *The oscillation itself* -- big TYPE_CONFLUENCE batches on shared
+   container methods, re-derived every pass. This is 143's mechanism, and
+   it is why `sudoku5` should be worked WITH 143 rather than as its own
+   item -- but note that fixing `bh`'s precision wall will not by itself
+   stop `sudoku5` churning, and vice versa.
+
+Nothing landed from this; the probes were temporary and are reverted.
