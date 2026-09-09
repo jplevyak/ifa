@@ -1482,13 +1482,91 @@ already knows. A setter on `new_cs` is attributable to the creation points
 of `cs`, because `structural_assignment` recorded that `cs`'s contents flow
 into `new_cs`'s.
 
-**Still open:** why nil costs the construction setter under a multiply.
-`[None]` as a plain literal HAS its construction setter (the first row of
-the matrix), and `["s"] * 4` keeps its setter under the multiply, so it is
-the combination that loses it. `make_kind` calls `set_container`
-identically for both, so the loss is downstream -- most likely `atv` never
-acquiring a `setter_class`, since `update_setter` is gated on that. Not yet
-traced; it is the second half of this fix, and the first half (crossing the
-merge) would make the split reachable regardless of which side keeps its
-construction setter.
+**The nil half is now traced -- see the next section.** It is a second,
+independent defect in the same transfer function, and it is the one that
+actually decides this repro.
 
+## Yes -- the transfer function is wrong, in TWO places (2026-09-09)
+
+Author's question: *"so the problem is the transfer function isn't
+correct?"* Yes, and tracing it that way found the second half. There are
+two independent defects in how the constraint functions build the SETTER
+relation, and the failure needs both.
+
+### Defect 1 -- `P_prim_merge` is opaque to the container graph
+
+`structural_assignment` wires the operand into the result by CONTENTS
+(`flow_vars(cs->vars[i], tval)`, then `flow_vars(tval, elem(new_cs))`) but
+`set_container(tval, result)` points the container relation only at the NEW
+list. `update_setter` walks `av->backward` starting from `x->container` --
+the CONTAINER graph -- so it terminates at the merge. Measured:
+`back_closure=1` on every `__mul__` result def. A `__setitem__` on the
+multiplied list can therefore never be attributed to the literal it was
+built from.
+
+### Defect 2 -- a `None` store is not counted as a store
+
+`compute_setters`:
+
+```c
+if (akind == AKIND_TYPE && !x->out->type->n) continue;
+```
+
+An empty-typed AVar never receives a `setter_class`, and `update_setter` is
+gated on `setter_class`, so it never becomes a setter. **The store of
+`None` into a fresh list presents an EMPTY AType**, and is dropped by this
+gate. Measured directly:
+
+```
+[skip] EMPTY-TYPE gate drops x=3034 (container=3033) as setter of cs=1021 slot av=3021
+       out=0x... n=0 var=(anon)   x->backward=1 x->forward=1
+       slot av=3021 type: int64#6 __pyc_None_type__#13
+```
+
+`container=3033` is exactly the `[None]` creation point that measured
+`setters=0`. Note the contradiction the two lines make: the store's own
+AType is EMPTY, while the slot it writes into carries
+`__pyc_None_type__#13`. The nil reaches the slot; the store that put it
+there does not exist as far as the setter lattice is concerned.
+
+### Why both are needed
+
+| | route to attribution | present? |
+| --- | --- | --- |
+| plain `[None]` | the program writes into the literal directly (`a.taskTab[0] = Task(3)`, non-nil, survives the gate) | yes -> splits |
+| `["s"] * 4` | the literal's own construction store, non-nil, survives the gate | yes -> splits |
+| `[None] * 4` | construction store dropped by defect 2; later write walled off by defect 1 | **none** -> no split |
+
+Objects behave like strings: `[0] * 4` against `[Task(0)] * 4` is clean.
+It is nil specifically.
+
+### Measured candidate fix
+
+Letting an empty-typed AVar that HAS a container through the gate:
+
+```c
+if (akind == AKIND_TYPE && !x->out->type->n && !x->container) continue;
+```
+
+(prototyped behind `PYC_NILSETTER`, then reverted -- not landed)
+
+| | as shipped | gate lifted |
+| --- | --- | --- |
+| the 25-line repro under `PYC_CSDCPA1=2` | 1 diagnostic | **0** |
+| `richards` under `PYC_CSDCPA1=2` | compile w=7, **run=139 (SIGSEGV)** | compile w=4, **run=0**, stdout identical to CPython but the `TIME` line |
+| pyc suite at the default | 313 passed / 0 failed | **313 passed / 0 failed** (identical) |
+| `bh`, `sudoku5` under the flag | unchanged | unchanged |
+
+So defect 2 alone is the whole of `richards`, is suite-neutral at the
+default, and takes the flag arm's blockers from three to two. `bh`
+(`__slots__` string lists) and `sudoku5` (comprehensions/append) reach the
+shared CreationSet by other routes and are untouched by it.
+
+**Not landed.** Two things are owed first. A corpus `check` sweep on both
+arms, per this repo's rule for any splitter change. And an answer to the
+deeper question the probe raises: *why does a `None` store have an empty
+AType at all?* Special-casing the gate treats the symptom; if nil were
+carried as `__pyc_None_type__` on the store the way it is on the slot, the
+gate would never fire and defect 2 would not exist. The gate fix is correct
+as far as it goes -- an AVar with a container IS a store site, whatever its
+type -- but the empty AType is the thing to explain.
