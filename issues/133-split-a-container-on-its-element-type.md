@@ -1286,3 +1286,101 @@ is not a fix waiting to be applied. The demand stage cannot help while the
 demand it would act on names a partition that no longer exists in the
 graph; attribution has to be recoverable FIRST.
 
+## Why SETTER splitting does not solve this (root-caused 2026-09-09)
+
+The author's position is that this is setter splitting's job. It is, and
+the machinery is not broken -- it is looking at the wrong channel, and the
+CreationSet that actually needs splitting is not the one anybody has been
+looking at. Measured on `tests/list_mul_scalar_object_separation.py`
+(`[0] * 4` and `[None] * 4`) with a temporary probe in `split_css`.
+
+**The stage fires and does real work.** `PYC_DBG_STAGEDELTA` shows SETTER
+returning 1 at p=1 (`d_ess=1`) and p=2 (`d_css=1`), and the CS it splits is
+the right one by its own lights: the two `__mul__` result lists, which
+arrive with 2 starters and separate cleanly into cs 1024 / cs 1035.
+
+**And it buys nothing, because both halves are already poisoned:**
+
+```
+[scss] cs=1024 sym=list starters=1 defs=1 elem= int64#6 __pyc_None_type__#13 Task#1019
+[scss] cs=1035 sym=list starters=1 defs=1 elem= int64#6 __pyc_None_type__#13
+```
+
+Each `__mul__` contour is separate and each still carries `{int64, None}`.
+So the pollution is UPSTREAM of `__mul__`, and splitting its result was
+never going to help.
+
+**The real culprit is the LITERAL CreationSet:**
+
+```
+[scss] cs=1021 sym=list starters=1 defs=2  |vars|=1  var[0]= int64#6 __pyc_None_type__#13
+    STARTER var=id11251 es=51 fun=__init__  nsetters=1
+    DEF     var=id11251 es=51 fun=__init__  is_starter=1  nsetters=1
+    DEF     var=id11287 es=52 fun=__init__  is_starter=0  nsetters=-1   <- setters is NULL
+```
+
+`[0]` and `[None]` are both `list` of arity 1, and CreationSet identity is
+*(sym x arity)*, so under `PYC_CSDCPA1` they are ONE CreationSet whose
+single positional slot unions `{int64, __pyc_None_type__}`. `__mul__` then
+copies that slot into the element channel of every list it builds. That is
+the whole defect; everything downstream is a consequence.
+
+Confirmed by making the arities differ -- `[0] * 4` against
+`[None, None] * 2`. The merged arity-1 literal CS never forms, and the
+program compiles **clean** under the flag.
+
+**Why setter splitting cannot touch it.** `split_css` is:
+
+```c
+while (starter_set.n > 1) {
+  ... same_eq_classes(v->setters, av->setters) ...
+```
+
+cs 1021 has **2 creation points but 1 starter**, so `starter_set.n > 1` is
+false on entry and the loop body never executes once. A creation point
+becomes a *starter* only via `collect_setter_confluences`, which requires
+`av->setters` to be non-empty -- i.e. requires something to have WRITTEN
+THROUGH that container. The `[None]` literal is never written through: it
+is consumed as `__mul__`'s operand and discarded, so it accumulates no
+setters, is not a starter, and is invisible to the partition.
+
+**That the starter count is the operative constraint, not the union, is
+directly measured.** Replace both multiplications with plain literals and
+the SAME merged CreationSet appears with the SAME union -- but with two
+starters:
+
+```
+[scss] cs=1020 sym=list starters=2 defs=2  var[0]= int64#6 __pyc_None_type__#13 Task#1019
+    STARTER var=id11249 es=51 nsetters=2
+    STARTER var=id11283 es=52 nsetters=1
+```
+
+Two starters, the loop runs, the CS splits, and the program is clean. Same
+defect, same union, different starter count, opposite outcome. (The
+starter is not created by the element writes either: deleting
+`b.data[0] = 7` or changing `a.taskTab[0]` leaves the count at 1.)
+
+**The one-line statement.** The distinction between `[0]` and `[None]` is
+made at CONSTRUCTION -- it lives in `cs->vars[0]`, written by `make_kind`'s
+`flow_vars(atv, iv)`. `split_css` partitions by equivalence over
+`av->setters`, which records only writes made THROUGH the container after
+it exists. A container that is built with distinguishing contents and then
+only READ has all of its evidence in the channel the partition does not
+consult.
+
+So setter splitting is the right SHAPE of mechanism -- demand-driven,
+partitioning creation points by what is observably different about them --
+pointed at an evidence source that is empty for this case. The fix is to
+let the same partition see the construction arguments: group a
+CreationSet's defs by the types of `cs->vars` (and the element) as
+CONSTRUCTED, not only by setters accumulated afterwards. That is the same
+correction [146](146-remove-all-arbitrary-splitting.md) C already made
+once, where `cs_content_avars` gave the CS flow graph a key for plain
+classes by falling back to `cs->vars` when there is no element channel;
+this is the setter path needing the same fallback.
+
+Note what this does NOT need: no provenance, no call-site key, no fan. The
+two creation points differ in the deduced TYPE of their construction
+arguments -- `int64` against `__pyc_None_type__` -- which is exactly what
+contour identity is allowed to key on.
+
