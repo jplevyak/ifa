@@ -1,8 +1,33 @@
 # 143 — a shared container-method EntrySet re-fuses every CreationSet the splitter separates
 
-**Status: open.** Root-caused 2026-09-07 on `bh`, the only
-`shedskin_examples` program that RUNS CORRECTLY at the default and aborts
-under `PYC_CSDCPA1=2`.
+**Status: open.** Root-caused 2026-09-07 on `bh`.
+
+**Corrected 2026-09-09:** this used to say `bh` is *the only*
+`shedskin_examples` program that runs correctly at the default and fails
+under `PYC_CSDCPA1=2`. It is not the only one -- `richards` does too, and
+`sudoku5` stops compiling. Attributing all seven flag-arm divergences
+across four arms ([129](129-plan-demand-driven-creation-set-splitting.md))
+gives **three** blockers, not one and not seven:
+
+| program | default | under the flag | element union |
+| --- | --- | --- | --- |
+| `bh` | correct, 0 pyc warnings | aborts 134, getter not resolved | `{Body, str}` from three `__slots__` lists |
+| `richards` | correct but the `TIME` line | **SIGSEGV**, an int64 dereferenced as a task pointer | `{int64, None, Packet}` from `[0]*n` merged with `[None]*n` |
+| `sudoku5` | compiles, 24 warnings | 364 compile errors | `{list, tuple, int64, str}` |
+
+The other four -- `kanoodle`, `plcfrs`, `quameon`, `sudoku3` -- already
+fail at the default, so the flag costs nothing there.
+
+**All three blockers are one defect**: a merged `list` CreationSet whose
+element channel unions types the program keeps apart, and which the
+splitter can no longer separate because the merge destroyed the
+attribution ([133](133-split-a-container-on-its-element-type.md), and
+[142](142-linalg-empty-list-collapse-is-a-fixed-point.md) for the fixed
+point). They differ only in the CREATION ROUTE into the shared CS --
+string-literal lists here, sequence multiplication in `richards`,
+comprehensions and `append` in `sudoku5` -- and in whether the resulting
+union is caught at compile time or miscompiled. `tests/` now carries one
+reduced repro per route.
 
 ## Symptom
 
