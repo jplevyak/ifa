@@ -1696,3 +1696,69 @@ this audit narrowed the work rather than expanding it: `compute_setters` is
 the fix, and it is worth landing on its own.
 
 Nothing from this audit is in the tree; `fa.cc` is unchanged.
+
+## LANDED 2026-09-09 -- the `compute_setters` fix, with its corpus sweeps
+
+```c
+// compute_setters
+if (akind == AKIND_TYPE && !x->out->type->n && !(nilstore_enabled() && x->out->n)) continue;
+```
+
+Default ON; `PYC_NILSTORE=0` restores the previous behaviour so a corpus
+change can be attributed to this clause rather than guessed at.
+
+**Six gates green** on the build that was swept: `make test` 313 passed /
+0 failed, `test_pyc.py -b` 313 / 0, `ifa test_llvm`, `test_dparse`,
+`test_links` (1774 links, 0 dangling).
+
+**Default arm: all 77 rows byte-identical.** Two full `check` sweeps from
+ONE binary, the arms separated only by `PYC_NILSTORE`:
+
+| | compile_fail | run_fail | stdout_differs | warnings | container CS / shapes |
+| --- | --- | --- | --- | --- | --- |
+| `PYC_NILSTORE=0` | 2 | 38 | 24 | 43 | 2740 / 625 = 4.38 |
+| fix ON | 2 | 38 | 24 | 43 | 2740 / 625 = 4.38 |
+
+`diff` of the two `.tsv` bodies is empty. So the shipped compiler is
+unchanged by this, which is what makes it safe to land ahead of the flag.
+
+**Flag arm (`PYC_CSDCPA1=2 PYC_CSLADDER=3`): exactly 3 of 77 programs are
+affected**, and that is established rather than assumed -- the per-program
+`DEMAND` line (`ess css container_cs shapes pshapes`) is byte-identical for
+the other 74, so their analysis, generated code and run status cannot move.
+
+| program | baseline | with the fix | reading |
+| --- | --- | --- | --- |
+| `richards` | compile 0, w=7, **run 139 (SIGSEGV)** | compile 0, w=4, **run 0**, stdout identical to CPython but the `TIME` line | **fixed** |
+| `pygasus` | compile 0, **w=53**, run 134 | compile 0, **w=3**, run 134 | diagnostics much better, verdict unchanged |
+| `chull` | compile 0, w=0, **run 139 (SIGSEGV)** | **compile 1**, `object layout: 'Edge' is blind-cast to 'Vertex' ... member width differs (_CG_bool vs _CG_void)` | failure MODE improved |
+
+`chull` is the one that looks like a regression and is not. It segfaults at
+runtime on EVERY arm today -- default included -- while compiling with ZERO
+warnings, which is precisely the case
+[ifa/102](102-corpus-programs-compile-then-abort-at-runtime.md) exists to
+name. The fix does not break it; it makes ifa/123's layout contract SEE it,
+turning a silently-shipped crashing binary into a compile-time diagnostic
+that names the two classes and the member. Nothing that worked is lost, and
+there is now a real latent layout bug on the record.
+
+Contours, flag arm: container CS 2080 -> 2091 (+11, +0.5%), all of it in
+those three programs.
+
+**Measurement caveat, recorded because it shaped the method.** This machine
+is a shared host and its other services keep it near the free-memory floor;
+the sweeps were repeatedly killed mid-run. `-j 4 -J 1` is what completes.
+Three of the four sweeps ran to a `.tsv`; the fourth (flag arm, fix ON) had
+its compile phase complete 77/77 four separate times but never finished the
+run phase, so the flag-arm run column above comes from the completed
+compile phase plus the `DEMAND` equality argument plus running the three
+changed programs by hand. That is weaker than a `.tsv` and is flagged as
+such -- but the 74-program equality is exact, not a sample.
+
+Committed `.tsv`s: `check__PYC_NILSTORE_0__ae16c44e+0e9deefa`,
+`check__default__ae16c44e+0e9deefa`,
+`check__PYC_CSDCPA1_2_PYC_CSLADDER_3_PYC_NILSTORE_0__ae16c44e+0e9deefa`.
+
+**Flag-arm blockers: three -> two.** `bh` (ifa/143, `__slots__` string
+lists) and `sudoku5` (comprehensions/append) are untouched by this and
+remain.

@@ -7748,6 +7748,17 @@ static void recompute_eq_classes(Vec<Setters *> &ss) {
 
 enum AKind { AKIND_TYPE, AKIND_SETTER, AKIND_MARK };
 
+// ifa/133: PYC_NILSTORE=0 restores the pre-fix behaviour, for attributing
+// a corpus change to this clause rather than guessing at it.
+static int nilstore_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_NILSTORE");
+    e = v ? atoi(v) : 1;
+  }
+  return e;
+}
+
 [[nodiscard]] static int compute_setters(AVar *av, Accum<AVar *> &avs, int akind = AKIND_TYPE) {
   if (av->contour_is_entry_set || av->contour == GLOBAL_CONTOUR) return 0;
   int setters_changed = 0;
@@ -7755,7 +7766,20 @@ enum AKind { AKIND_TYPE, AKIND_SETTER, AKIND_MARK };
   Vec<AVar *> *dir = akind == AKIND_SETTER ? &av->forward : &av->backward;
   for (AVar *x : *dir) if (x) {
     assert(x->contour_is_entry_set);
-    if (akind == AKIND_TYPE && !x->out->type->n) continue;
+    // ifa/133: `->type` is a PROJECTION that strips a pure-nil AType to
+    // bottom (make_AType: `nonconsts.n == 0` -> bottom_type; nil is an
+    // is_unique_type unique OBJECT, so a lone {None} has no non-constants,
+    // and issue/060's carve-out keeps nil only when the union also carries
+    // a num_kind scalar). A bare `!->type->n` therefore reads a store of
+    // None as "not analyzed" and drops it: no setter_class, so
+    // update_setter never records it, so the container it writes into
+    // never becomes a `split_css` starter and the CreationSet cannot be
+    // partitioned. This is ifa/124's conflation at a site ifa/124 did not
+    // reach; its remedy (split_type_view) is the same one -- separate "not
+    // analyzed" (raw empty too) from "carries only nil" (raw non-empty).
+    // Cannot be fixed in `->type` itself: narrowing, defaulted params and
+    // the recursion-separability gate all need nil transparent there.
+    if (akind == AKIND_TYPE && !x->out->type->n && !(nilstore_enabled() && x->out->n)) continue;
     if (akind == AKIND_MARK && !x->mark_map) continue;
     ss.add(new Setters);
     ss[ss.n - 1]->set_add(x);
