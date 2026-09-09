@@ -2572,3 +2572,66 @@ ago: it is not that stage 1 splits on facts, it is that ONE of its
 justifications -- keeping container receiver contours apart inside shared
 methods -- has never been written down as a demand, so stage 1 carries it
 implicitly by splitting on all type disagreement.
+
+## The demand transfer has TWO targets, not one (2026-09-09)
+
+Author: *"the demand comes from the instance variable or elements having a
+demand which is then transferred to a demand to split the cs via setter
+splitting."* That is CLAUDE.md's stated dependency -- *"an EntrySet is
+split SO THAT a CreationSet split becomes possible"* -- and it is right,
+but `tests/list_pop_insert.py` shows it is only half the story, because on
+that program **there is no CreationSet to split**.
+
+With stage 1 gated off, route 4 reports:
+
+```
+[csdefsplit] cs=997  sym=list defs=1 DECLINED (single creation point)
+[csdefsplit] cs=1005 sym=list defs=1 DECLINED (single creation point)
+[csdefsplit] cs=1018 sym=list defs=1 DECLINED (single creation point)
+```
+
+The three lists are ALREADY on three separate CreationSets, one creation
+point each. The data contours are as fine as they can be, and setter
+splitting has nothing to partition -- `split_css` is reached with
+`starters=0`, `1`, `2` and returns 0 every time.
+
+The merge is on the CONTROL side: `list.pop`, `list.insert` and
+`list.__getitem__` each have ONE EntrySet whose `self` sees all three CSs,
+so reading `self[i]` inside that one body unions the three element types
+and the violation lands on the method's own local (`value` in `insert`,
+`x` in `pop`) -- an ES-contoured AVar, not any CreationSet's.
+
+**So the demand transfers to whichever side is merged:**
+
+| where the merge is | the split the demand asks for | machinery |
+| --- | --- | --- |
+| one CreationSet, several creation points | split the CS by its setters | `split_css` / route 4 -- `richards`, `sudoku5` |
+| several CreationSets, one shared method contour | split the ES by its receiver | stage 5 VIOLATION -- `list_pop_insert`, and [143](143-shared-container-method-contours-refuse-cs-splits.md) |
+
+Both are "a demand observed on an element or instance variable, transferred
+to a contour split". The second is not a different KIND of demand -- which
+is what I called it in the previous section, and that was wrong -- it is
+the same demand with the other contour as its target.
+
+### And the second path already exists, fires, and is throttled
+
+Measured on `list_pop_insert` with stage 1 gated:
+
+| pass | stage 5 (VIOLATION) | violations |
+| --- | --- | --- |
+| 0-2 | **starved** (`analyze_again=1` from the confluences stage 1 still keeps) | 26, 31, 36 |
+| 3 | **RUNS**, `d_ess=3` | 33 -> **23** |
+| 4, 5 | RUNS, splits nothing | 23, 23 |
+
+It does exactly the right thing -- three EntrySet splits, violations cut by
+a third -- and then stops, because `split_for_violations` excludes a Var
+after **two** stage-5 attempts (issue 033 D6, "not refinable by contour
+splitting"). Three passes of stage 5 is where that bites.
+
+So the honest position on the whole thread: the demand-driven path for this
+case is not missing, it is (a) starved for the first three passes and (b)
+capped at two attempts per Var. Stage 1 hides both by splitting
+speculatively before any violation exists. That is a much more tractable
+statement than "stage 1 is arbitrary" or "a third demand category is
+missing", and it is what the earlier `sudoku5` starvation finding was
+pointing at from the other end.
