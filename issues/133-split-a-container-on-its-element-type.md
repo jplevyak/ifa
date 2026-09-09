@@ -2375,3 +2375,54 @@ actual demand.
 That is the real item behind `sudoku5`, and it is a much larger question
 than a knob: does stage 1 stay, gated on a demand, or go? Not something to
 decide from one program's numbers.
+
+## CORRECTION: stage 1 is NOT the arbitrary splitter I called it (2026-09-09)
+
+Author: *"but int + str is a boxing violation so it is demand, right?"*
+Correct, and my example was wrong -- `{int64, str}` is `mixed_basics`, it
+raises a BOXING violation, and a contour split to separate it is
+demand-driven by any reading. Worse, the implication I drew from the bad
+example does not survive measurement either.
+
+**What stage 1 actually fires on** (`IFA_DBG_CONFKIND`, classifying each
+collected confluence by its union):
+
+| | irrepresentable (BOXING demand) | representable union | several CSs of ONE sym | union still forming |
+| --- | --- | --- | --- | --- |
+| `richards` (default) | 22 (1.7%) | 882 | 9 | 382 |
+| `chess` (default) | 1999 (22%) | 3775 | 396 | 2975 |
+| `sudoku5` (flag arm) | 5575 (26%) | 7699 | 1409 | 6615 |
+
+So a real minority are irrepresentable. That is the half of my claim that
+held, and on its own it would suggest the rest are splitting on a fact.
+
+**They are not.** `PYC_CONFDEMAND=1` drops every confluence whose union is
+representable, keeping only the ones something could not proceed on:
+
+| | errors | warnings | ess | css | pyc suite |
+| --- | --- | --- | --- | --- | --- |
+| stage 1 as shipped | 364 | 249 | 1104 | 2634 | **313 / 0 failed** |
+| irrepresentable-only | 348 | 106 | 619 | 1611 | **214 / 106 FAILED** |
+
+Contours fall 44%, `sudoku5` barely moves (364 -> 348), and **106 of 313
+tests break**. The representable-union confluences are load-bearing: they
+are what resolves dispatch and what feeds the precision later stages
+depend on. A `{Dog, Cat}` union is perfectly representable AND is exactly
+what a receiver split has to separate for a method call to resolve.
+
+**So the "conflict" is a wording tension in CLAUDE.md, not a defect in
+stage 1.** "Splitting is only ever on demand" and "splitting to increase
+precision -- by types" do read as pulling against each other, and 146's
+fact-vs-demand refinement does not cleanly classify a type confluence. But
+the measurement says stage 1 is not doing arbitrary work that could simply
+be removed -- the cost of removing the non-BOXING half is 106 tests, and
+the benefit on the program that motivated the question is 16 errors.
+
+What remains true from the earlier section: stage 1 fires on every pass of
+`sudoku5`, that IS what starves VIOLATION under first-stage-wins, and
+`ess` 215 -> 1104 is stage 1's growth. Those are facts about scheduling and
+volume, and they stand. What does not stand is the inference that the
+splits themselves are unjustified. The starvation is the thing to fix, not
+the stage.
+
+`PYC_CONFDEMAND` kept, default 0 (inert), as the probe that produced this.

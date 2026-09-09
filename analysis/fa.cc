@@ -510,6 +510,12 @@ static int esl_reached = 0, esl_decline = 0;
 static int route_saw_split = -3, route_saw_origin = -3;
 static int mint_report = 0;
 static int grp_total = 0, grp_scattered = 0;
+static int ck_single = 0, ck_irrep = 0, ck_samesym = 0, ck_repr = 0;
+static int confdemand_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_CONFDEMAND"); e = v ? atoi(v) : 0; }
+  return e;
+}
 typedef MapElem<Fun *, int> MapElemFunPint;  // ifa/133: mints inside a SPLIT-CHILD contour
 // ifa/133 probe: where do CreationSets actually come from? One counter per
 // creation_point route, dumped by IFA_DBG_CSROUTES at convergence.
@@ -5646,6 +5652,43 @@ static void collect_type_confluence(AVar *av, Vec<AVar *> &confluences) {
       }
     }
   }
+  // ifa/133 EXPERIMENT (PYC_CONFDEMAND=1): drop confluences whose union is
+  // representable -- i.e. keep only the ones something could not proceed on.
+  // A probe of "is stage 1 demand-driven?", NOT a proposed change: it also
+  // discards dispatch-driven and precision-driven splits, which are real.
+  if (confdemand_enabled() && confluences.set_in(av)) {
+    AType *t = av->in ? av->in->type : nullptr;
+    int nnonbasic = 0; Vec<Sym *> basics;
+    if (t) for (CreationSet *c : t->sorted) {
+      if (!c || !c->sym || c->sym == sym_nil_type) continue;
+      if (Sym *b = to_basic_type(c->sym->type)) basics.set_add(b); else ++nnonbasic;
+    }
+    const int nb = basics.set_count();
+    bool irrep = (nb >= 1 && nnonbasic > 0) || nb > 1;
+    if (!irrep) confluences.set_remove(av);
+  }
+  // ifa/133: classify each confluence -- is the union it fires on one that
+  // something could not PROCEED on (a demand), or merely one that exists
+  // (a fact)? Buckets are disjoint and tested in that order.
+  if (getenv("IFA_DBG_CONFKIND") && confluences.set_in(av)) {
+    AType *t = av->in ? av->in->type : nullptr;
+    int nsym = 0, nnil = 0, nbasic = 0, nnonbasic = 0;
+    Vec<Sym *> syms, basics;
+    if (t) for (CreationSet *c : t->sorted) {
+      if (!c || !c->sym) continue;
+      if (c->sym == sym_nil_type) { ++nnil; continue; }
+      syms.set_add(c->sym);
+      if (Sym *b = to_basic_type(c->sym->type)) basics.set_add(b), ++nbasic;
+      else ++nnonbasic;
+    }
+    nsym = syms.set_count();
+    const int nb = basics.set_count();
+    if (t && t->sorted.n < 2) ++ck_single;             // not even a union
+    else if (nb >= 1 && nnonbasic > 0) ++ck_irrep;     // scalar + object: no representation
+    else if (nb > 1) ++ck_irrep;                       // two distinct basics, e.g. {int64, str}
+    else if (nsym <= 1) ++ck_samesym;                  // several CSs of ONE class
+    else ++ck_repr;                                    // distinct classes, all pointer-shaped
+  }
   dbg_confluence_probe(av, confluences.set_in(av) != 0);
 }
 
@@ -9913,6 +9956,8 @@ static void dbg_es_per_fun() {
     if (e->value > 1) ++multi;
     if (e->value > mx) { mx = e->value; worst = e->key; }
   }
+  if (ck_single + ck_irrep + ck_samesym + ck_repr)
+    fprintf(stderr, "CONFKIND single=%d IRREPRESENTABLE=%d same_sym=%d representable_union=%d\n", ck_single, ck_irrep, ck_samesym, ck_repr);
   if (grp_total) fprintf(stderr, "GROUPSPLIT total=%d scattered=%d\n", grp_total, grp_scattered);
   fprintf(stderr, "ESPERFUN pass=%d ess=%d funs=%d funs_with_multiple=%d max=%d worst=%s\n", analysis_pass,
           fa->ess.n, funs, multi, mx, (worst && worst->sym && worst->sym->name) ? worst->sym->name : "?");
@@ -12828,7 +12873,9 @@ static void report_demand_ratio() {
       if (e->value > 1) ++multi;
       if (e->value > mx) { mx = e->value; worst = e->key; }
     }
-    if (grp_total) fprintf(stderr, "GROUPSPLIT total=%d scattered=%d\n", grp_total, grp_scattered);
+    if (ck_single + ck_irrep + ck_samesym + ck_repr)
+    fprintf(stderr, "CONFKIND single=%d IRREPRESENTABLE=%d same_sym=%d representable_union=%d\n", ck_single, ck_irrep, ck_samesym, ck_repr);
+  if (grp_total) fprintf(stderr, "GROUPSPLIT total=%d scattered=%d\n", grp_total, grp_scattered);
   fprintf(stderr, "ESPERFUN pass=%d ess=%d funs=%d funs_with_multiple=%d max=%d worst=%s\n", analysis_pass,
             fa->ess.n, funs, multi, mx,
             (worst && worst->sym && worst->sym->name) ? worst->sym->name : "?");
