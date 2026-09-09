@@ -2426,3 +2426,75 @@ splits themselves are unjustified. The starvation is the thing to fix, not
 the stage.
 
 `PYC_CONFDEMAND` kept, default 0 (inert), as the probe that produced this.
+
+## "Violations and dynamic dispatch as the demand" -- measured: no, and why
+
+Author: *"there should be no conflict if violations and dynamic dispatch
+are the demand. that is the precision which matters because it affects
+codegen. does that work?"* Implemented as a gate on stage 1 in three
+increasingly generous forms. It does not work, and the reason is
+interesting rather than incidental.
+
+| `PYC_CONFDEMAND` | gate on a type confluence | pyc suite |
+| --- | --- | --- |
+| 0 | none (as shipped) | **313 / 0 failed** |
+| 1 | union is irrepresentable | 214 / **106 failed** |
+| 2 | + AVar is an arg of a send with >1 target Fun (dynamic dispatch) | 215 / **105 failed** |
+| 3 | + BACKWARD CLOSURE of both, so a confluence upstream of a demand counts | 217 / **103 failed** |
+
+Mode 3 is the fair version -- the demand is observed at the USE, so the
+split has to be allowed at the confluence upstream of it, which is the
+same shape as stage 5's `collect_violation_imprecisions` / `back_reaching`.
+It recovers 3 tests out of 106.
+
+### Why: violations are a LAGGING indicator
+
+The first failure inspected says it exactly. `tests/list_pop_insert.py` --
+**this issue's own former reproducer**, fixed by the `__delitem__`
+`merge_in` change and kept as the regression test -- fails under the gate
+with
+
+```
+error: 'value' has mixed basic types:( int64 str )
+error: 'x' has mixed basic types:( int64 str )
+```
+
+That violation **does not exist in the ungated build**. The split is what
+prevents it. Gating the split on the violation means the split never
+happens, so the violation appears -- and then the gate would allow the
+split, one pass too late and against a union that has already merged.
+
+So the criterion is circular for two of its three signals. A violation is
+evidence that precision was ALREADY LOST; a dispatch that fails to resolve
+is evidence that precision was already lost. Neither can authorise the
+split that would have prevented the loss. Only the third form of
+codegen-visible precision -- irrepresentability of a union that has ALREADY
+formed -- is observable in time, and that is the 26% bucket which on its
+own is not enough (mode 1).
+
+### What is right about the criterion
+
+The half that holds is dynamic dispatch, and it is not the expensive half:
+adding it recovered 1 test locally and 3 with closure, so it is nearly
+free but also nearly inert as a GATE. As a positive REASON to split -- the
+thing ifa/146 wants stages to have -- it is exactly right, and it is what
+the receiver-filtering work (146 E's replacement) is already aimed at.
+
+### The conclusion for the wording conflict
+
+There is no formulation of "demand" here that both (a) authorises the
+splits stage 1 currently makes and (b) excludes the ones it makes on
+representable unions -- because the justification for a stage-1 split is
+usually a violation that will NOT happen if the split is made. That is a
+counterfactual, and no local predicate on the current state can test it.
+
+Which means CLAUDE.md's two sentences are not reconcilable by finding a
+better demand test at stage 1. Either splitting by types stays as a
+first-class mechanism (and "only ever on demand" is understood to govern
+the *other* stages -- the ones that key on setters, marks, call sites,
+creation points), or stage 1 goes and something has to replace the
+precision it creates speculatively. The measurements say the second option
+costs a third of the suite as things stand.
+
+`PYC_CONFDEMAND` kept at default 0 (inert) with all three modes, since it
+is the apparatus for re-running this argument.

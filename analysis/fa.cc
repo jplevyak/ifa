@@ -511,10 +511,72 @@ static int route_saw_split = -3, route_saw_origin = -3;
 static int mint_report = 0;
 static int grp_total = 0, grp_scattered = 0;
 static int ck_single = 0, ck_irrep = 0, ck_samesym = 0, ck_repr = 0;
+static int cd_kept = 0, cd_dropped = 0;
 static int confdemand_enabled() {
   static int e = -1;
   if (e < 0) { cchar *v = getenv("PYC_CONFDEMAND"); e = v ? atoi(v) : 0; }
   return e;
+}
+
+// ifa/133 (author, 2026-09-09): "there should be no conflict if violations
+// and dynamic dispatch are the demand. that is the precision which matters
+// because it affects codegen."  Mode 2 is exactly that test.
+//
+// (a) VIOLATION -- this AVar carries a recorded type violation. Rebuilt
+//     once per pass from fa->type_violations rather than scanned per
+//     confluence.
+// (b) DYNAMIC DISPATCH -- this AVar is an argument of a send whose edges
+//     reach more than one target Fun, so the receiver distinction is what
+//     decides which body runs. That is codegen-visible by definition.
+static Vec<AVar *> cd_viol_avars;
+static void cd_rebuild_violation_set() {
+  cd_viol_avars.clear();
+  for (ATypeViolation *v : fa->type_violations)
+    if (v && v->av) cd_viol_avars.set_add(v->av);
+}
+// Mode 3: the demand is observed at the USE, but the split has to happen
+// at the confluence UPSTREAM of it -- keeping types apart from where they
+// diverge down to where codegen cares. So seed with every demanded AVar
+// (violation, or an argument of a send with >1 target) and take the
+// BACKWARD closure: everything that flows into one. Same shape as stage
+// 5's collect_violation_imprecisions/back_reaching, applied to stage 1.
+static Vec<AVar *> cd_reach;
+static bool cd_is_dispatch_arg(AVar *av);
+static void cd_build_reach() {
+  cd_reach.clear();
+  Vec<AVar *> work;
+  for (ATypeViolation *v : fa->type_violations)
+    if (v && v->av && cd_reach.set_add(v->av)) work.add(v->av);
+  for (EntrySet *es : fa->ess)
+    for (Var *var : es->fun->fa_all_Vars) {
+      AVar *a = make_AVar(var, es);
+      if (a && cd_is_dispatch_arg(a) && cd_reach.set_add(a)) work.add(a);
+    }
+  for (int i = 0; i < work.n && i < 4000000; i++)
+    for (AVar *b : work.v[i]->backward)
+      if (b && cd_reach.set_add(b)) work.add(b);
+}
+
+static bool confluence_is_demanded(AVar *av) {
+  if (confdemand_enabled() >= 3) return cd_reach.set_in(av) != 0;
+  if (cd_viol_avars.set_in(av)) return true;
+  return cd_is_dispatch_arg(av);
+}
+
+static bool cd_is_dispatch_arg(AVar *av) {
+  for (AVar *r : av->arg_of_send.asvec) {
+    if (!r || !r->contour_is_entry_set || !r->var) continue;
+    PNode *pn = r->var->def;
+    if (!pn) continue;
+    Vec<AEdge *> *ve = ((EntrySet *)r->contour)->out_edge_map.get(pn);
+    if (!ve) continue;
+    Fun *f0 = nullptr;
+    for (AEdge *e : *ve) if (e && e->to && e->to->fun) {
+      if (!f0) f0 = e->to->fun;
+      else if (f0 != e->to->fun) return true;  // >1 target: dynamic dispatch
+    }
+  }
+  return false;
 }
 typedef MapElem<Fun *, int> MapElemFunPint;  // ifa/133: mints inside a SPLIT-CHILD contour
 // ifa/133 probe: where do CreationSets actually come from? One counter per
@@ -5665,7 +5727,8 @@ static void collect_type_confluence(AVar *av, Vec<AVar *> &confluences) {
     }
     const int nb = basics.set_count();
     bool irrep = (nb >= 1 && nnonbasic > 0) || nb > 1;
-    if (!irrep) confluences.set_remove(av);
+    bool keep = (confdemand_enabled() >= 2) ? (irrep || confluence_is_demanded(av)) : irrep;
+    if (!keep) { confluences.set_remove(av); ++cd_dropped; } else ++cd_kept;
   }
   // ifa/133: classify each confluence -- is the union it fires on one that
   // something could not PROCEED on (a demand), or merely one that exists
@@ -5694,6 +5757,8 @@ static void collect_type_confluence(AVar *av, Vec<AVar *> &confluences) {
 
 static void collect_type_confluences(Vec<AVar *> &confluences) {
   confluences.clear();
+  if (confdemand_enabled() >= 2) cd_rebuild_violation_set();
+  if (confdemand_enabled() >= 3) cd_build_reach();
   for (EntrySet *es : fa->ess) {
     for (Var *v : es->fun->fa_all_Vars) {
       AVar *xav = make_AVar(v, es);
@@ -9956,6 +10021,7 @@ static void dbg_es_per_fun() {
     if (e->value > 1) ++multi;
     if (e->value > mx) { mx = e->value; worst = e->key; }
   }
+  if (cd_kept + cd_dropped) fprintf(stderr, "CONFDEMAND kept=%d dropped=%d\n", cd_kept, cd_dropped);
   if (ck_single + ck_irrep + ck_samesym + ck_repr)
     fprintf(stderr, "CONFKIND single=%d IRREPRESENTABLE=%d same_sym=%d representable_union=%d\n", ck_single, ck_irrep, ck_samesym, ck_repr);
   if (grp_total) fprintf(stderr, "GROUPSPLIT total=%d scattered=%d\n", grp_total, grp_scattered);
@@ -12873,7 +12939,8 @@ static void report_demand_ratio() {
       if (e->value > 1) ++multi;
       if (e->value > mx) { mx = e->value; worst = e->key; }
     }
-    if (ck_single + ck_irrep + ck_samesym + ck_repr)
+    if (cd_kept + cd_dropped) fprintf(stderr, "CONFDEMAND kept=%d dropped=%d\n", cd_kept, cd_dropped);
+  if (ck_single + ck_irrep + ck_samesym + ck_repr)
     fprintf(stderr, "CONFKIND single=%d IRREPRESENTABLE=%d same_sym=%d representable_union=%d\n", ck_single, ck_irrep, ck_samesym, ck_repr);
   if (grp_total) fprintf(stderr, "GROUPSPLIT total=%d scattered=%d\n", grp_total, grp_scattered);
   fprintf(stderr, "ESPERFUN pass=%d ess=%d funs=%d funs_with_multiple=%d max=%d worst=%s\n", analysis_pass,
