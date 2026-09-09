@@ -9641,7 +9641,14 @@ static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Ve
   Vec<AVar *> refinable;
   for (AVar *av : imprecisions) {
     int attempts = fa->violation_split_attempts.get(av->var);
-    if (attempts >= 2) {
+    // ifa/133: PYC_VIOLATTEMPTS caps stage-5 attempts per Var; 0 = no cap.
+    // Default stays 2 (issue 033 D6) until this is measured.
+    static int violattempts = -1;
+    if (violattempts < 0) {
+      cchar *vv = getenv("PYC_VIOLATTEMPTS");
+      violattempts = vv ? atoi(vv) : 2;
+    }
+    if (violattempts && attempts >= violattempts) {
       log(LOG_SPLITTING, "[nonrefinable] var %d %s: %d stage-5 split attempts, excluding\n", av->var->sym->id,
           av->var->sym->name ? av->var->sym->name : "", attempts);
       continue;

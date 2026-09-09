@@ -2635,3 +2635,62 @@ speculatively before any violation exists. That is a much more tractable
 statement than "stage 1 is arbitrary" or "a third demand category is
 missing", and it is what the earlier `sudoku5` starvation finding was
 pointing at from the other end.
+
+## Tried removing the stage-5 cap: it is load-bearing, and it was never the throttle
+
+Author: *"try removing the cap."* Made it tunable (`PYC_VIOLATTEMPTS`,
+default 2, `0` = no cap) and measured. Two results, and the first corrects
+me.
+
+### The cap was NOT what stops stage 5 on `list_pop_insert`
+
+I said stage 5 "stops because `split_for_violations` excludes a Var after
+two attempts". Wrong, and I had already measured the disproof earlier in
+this session and not connected it. With stage 1 gated:
+
+```
+cap fired (nonrefinable): 0
+stage5 attempts:          3
+[stage5] 61 violations -> 1 imprecisions
+```
+
+**The cap never fires.** Removing it changes nothing -- suite with stage 1
+gated is 214/106 with the cap and 214/106 without; mode 3 is 217/103 both
+ways; `sudoku5`, `bh`, `richards`, `chess` and `sudoku1` are byte-identical
+on both arms (same rc, warnings, `ess`, `css`).
+
+**The actual throttle is `collect_violation_imprecisions`: 61 violations
+yield ONE splittable AVar.** Its filter is
+
+```c
+if (v->av->container && v->av->container->out->n > 1) imprecisions.set_add(v->av->container);
+```
+
+so a violation only becomes a split candidate when the violating AVar has a
+CONTAINER whose type spans several CreationSets. Everything else is
+dropped. That, not the cap, is why the demand stage cannot finish the job
+stage 1 was doing speculatively -- and it is a much more specific target.
+
+### And the cap must stay
+
+It is not dead code. It fires **68 times on `fysphun`**, the program
+issue 033 D6 cites, and removing it breaks that program on both arms:
+
+| | default arm | flag arm |
+| --- | --- | --- |
+| `PYC_VIOLATTEMPTS=2` | rc=0, 13 passes, ess=238 css=821 | rc=0, 18 passes, ess=247 css=700 |
+| `PYC_VIOLATTEMPTS=0` | **rc=1** | **rc=1** |
+
+```
+fail: FA flow analysis made no EntrySet progress for 120s
+      (180000 edges processed) -- non-convergent input
+```
+
+So without the cap `fysphun` does not converge at all -- exactly the
+"manufacturing contours every pass" that D6 describes. Note the pyc suite
+stays 313/0 throughout, because `fysphun` is a corpus program and not a
+suite test; the suite alone would have said "safe to remove".
+
+**`PYC_VIOLATTEMPTS` kept, default 2 (unchanged behaviour), as the
+apparatus.** The next thing to look at is
+`collect_violation_imprecisions`'s container filter, not the cap.
