@@ -2291,3 +2291,87 @@ arms before it means anything, but it is a knob flip, not new machinery.
 form the author asked for and it is correct, but it never decides anything
 today because the transient `es->split` already covers the only pass in
 which the question is asked.
+
+## "When do we consult canon_key?" -- it should not be the decision (2026-09-09)
+
+Author, on the recommendation to flip `PYC_CANON`: *"we are demand
+splitting from a single es per function now, so when do we consult the
+canon_key?"* The question is the answer, and my recommendation was wrong.
+
+### Where it is consulted
+
+`make_entry_set`, one place, and only after everything else has declined:
+`check_split`, then `find_best_entry_sets` (non-split path) or the five
+`HARDREUSE` modes (split path), then `preference`, and only then
+`if (have_key && !es) find_canonical_entry_set(e, ckey)`. Per split group
+that is effectively the group's FIRST edge. Measured on `sudoku5`:
+`hit=3 miss=6 conflict=3` per pass.
+
+### What it keys on
+
+`edge_canon_key` is the tuple of the edge's ARGUMENT TYPES at each
+positional formal, intersected with the formal filters, and
+`find_canonical_entry_set` scans `fun->ess` for a contour with the same
+tuple. That is CPA's key -- `func.cp[cart]` -- i.e. contour identity keyed
+on a FACT about types.
+
+**Which is what [146](146-remove-all-arbitrary-splitting.md)'s refinement
+forbids as a REASON**: *"a FACT about the program is not a demand... A
+demand is something OBSERVING a distinction and being unable to proceed."*
+So flipping `PYC_CANON` on would re-introduce the thing 146 has been
+removing, and its `sudoku5` win (364 -> 177) is it CAPPING a runaway by
+merging contours the demand never distinguished, not it being the right
+authority. Its own conflict case says so: `CANON-CONFLICT` is the type
+tuple disagreeing with a demanded split, 52 times on `sudoku5`, and mode 2
+(obey canon, drop the split) measures WORSE than mode 1 (honour the split).
+A mechanism that is only safe when overridden is not the decision table.
+
+**Recommendation retracted.** `PYC_CANON` is a join heuristic. Do not flip
+it as "the ES-side decision table".
+
+### The split machinery is behaving -- three things checked
+
+- **The demanded group stays together.** `IFA_DBG_GROUPSPLIT`: of 1154
+  groups on `sudoku5`, **9** scatter across more than one contour. So the
+  detach-and-research shape does reconstruct the partition (via
+  `preference`), 99.2% of the time. My reading that it discards the group
+  was wrong.
+- **Creation-point inheritance is complete** -- zero illegitimate mints
+  after a split (previous section).
+- **Pass 0 is one ES per function** -- `richards` 162 ess / 158 funs.
+
+### So where does `ess` 215 -> 1104 come from? The NUMBER of groups
+
+Not from scattering and not from minting; from TYPE_CONFLUENCE forming
+445-1136 confluences per pass, each partitioning an ES. And
+`collect_type_confluence` is:
+
+```c
+if (x->out->type->n && type_diff(av->in->type, x->out->type) != bottom) {
+  confluences.set_add(av);
+```
+
+A writer contributes a type the accumulated value does not already have.
+No violation, no irrepresentable union, no unresolved dispatch -- **"this
+variable's type is a union", which is 146's own example of a FACT that is
+not a demand.**
+
+### The tension this exposes, for the author to settle
+
+CLAUDE.md says both of these:
+
+> "...proceeds in passes, splitting them to increase precision -- **by
+> types**, by setters, and so on."
+
+> "A contour is NEVER split because a surrounding contour was split.
+> **Splitting is only ever on demand.**"
+
+TYPE_CONFLUENCE is the first sentence and, under 146's refinement, is
+disallowed by the second. It is stage 1, it fires every pass on `sudoku5`,
+it is the entire source of the contour growth, and because the cascade is
+first-stage-wins it starves VIOLATION -- the only stage that acts on an
+actual demand.
+
+That is the real item behind `sudoku5`, and it is a much larger question
+than a knob: does stage 1 stay, gated on a demand, or go? Not something to
+decide from one program's numbers.

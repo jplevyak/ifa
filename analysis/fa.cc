@@ -509,6 +509,7 @@ static int mint_in_child = 0, mint_child_novar = 0, mint_child_cmc = 0;
 static int esl_reached = 0, esl_decline = 0;
 static int route_saw_split = -3, route_saw_origin = -3;
 static int mint_report = 0;
+static int grp_total = 0, grp_scattered = 0;
 typedef MapElem<Fun *, int> MapElemFunPint;  // ifa/133: mints inside a SPLIT-CHILD contour
 // ifa/133 probe: where do CreationSets actually come from? One counter per
 // creation_point route, dumped by IFA_DBG_CSROUTES at convergence.
@@ -7162,6 +7163,19 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
               x->pnode->lvals[0]->sym->id, x->to->id);
         }
       }
+      // ifa/133 probe: did the demanded GROUP stay together? `these_edges`
+      // is one partition of the demand; if its members end up in different
+      // contours, the split did not apply the partition it computed.
+      if (getenv("IFA_DBG_GROUPSPLIT")) {
+        Vec<EntrySet *> homes;
+        for (AEdge *x : these_edges) if (x->to) homes.set_add(x->to);
+        ++grp_total;
+        if (homes.set_count() > 1) {
+          ++grp_scattered;
+          fprintf(stderr, "[groupsplit] p=%d fun=%s es=%d group_of=%d -> %d distinct contours\n", analysis_pass,
+                  es->fun->sym->name ? es->fun->sym->name : "?", es->id, these_edges.n, homes.set_count());
+        }
+      }
       // Issue 033 stage A: record the group's product for cross-pass
       // routing. `gsig` was computed above for the right stage (type ->
       // group_signature, setter/mark -> setter_site_signature); a
@@ -9899,6 +9913,7 @@ static void dbg_es_per_fun() {
     if (e->value > 1) ++multi;
     if (e->value > mx) { mx = e->value; worst = e->key; }
   }
+  if (grp_total) fprintf(stderr, "GROUPSPLIT total=%d scattered=%d\n", grp_total, grp_scattered);
   fprintf(stderr, "ESPERFUN pass=%d ess=%d funs=%d funs_with_multiple=%d max=%d worst=%s\n", analysis_pass,
           fa->ess.n, funs, multi, mx, (worst && worst->sym && worst->sym->name) ? worst->sym->name : "?");
 }
@@ -12813,7 +12828,8 @@ static void report_demand_ratio() {
       if (e->value > 1) ++multi;
       if (e->value > mx) { mx = e->value; worst = e->key; }
     }
-    fprintf(stderr, "ESPERFUN pass=%d ess=%d funs=%d funs_with_multiple=%d max=%d worst=%s\n", analysis_pass,
+    if (grp_total) fprintf(stderr, "GROUPSPLIT total=%d scattered=%d\n", grp_total, grp_scattered);
+  fprintf(stderr, "ESPERFUN pass=%d ess=%d funs=%d funs_with_multiple=%d max=%d worst=%s\n", analysis_pass,
             fa->ess.n, funs, multi, mx,
             (worst && worst->sym && worst->sym->name) ? worst->sym->name : "?");
   }
