@@ -138,7 +138,12 @@ class IFACallbacks : public gc {
   // reflows for free. The contract that buys that is STABILITY: the
   // answer must not sharpen across passes, because update_gen() unions
   // rather than replaces, so an early imprecise answer is permanent.
-  virtual AType *provably_constant_load(AVar *src_av, EntrySet *es, PNode *move_pnode) { return nullptr; }
+  // ifa/146 B: `out_src`, when non-null, receives the AVar the folded value
+  // comes FROM, so the caller can make a durable flow edge instead of a
+  // snapshot. See the MOVE case in add_constraints_pnode.
+  virtual AType *provably_constant_load(AVar *src_av, EntrySet *es, PNode *move_pnode, AVar **out_src = nullptr) {
+    return nullptr;
+  }
   // ifa/issues/039: what a frontend wants done when a POSSIBLY-unbound
   // local is actually read at runtime. ifa computes the fact (a
   // language-neutral definite-assignment dataflow, optimize/ssu.cc) but

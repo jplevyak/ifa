@@ -284,6 +284,39 @@ distinction matters for the fix and this project has been bitten by it
 before — see the `snapshot vs durable edge` note — so it should be
 established before any edge is added.
 
+### FIXED 2026-09-08 — the walk now crosses the folded global load
+
+`ifa/050` stage 1 resolves a load from a module-level cell to the store that
+dominates it and applies the result with `update_gen` — a SNAPSHOT,
+deliberately: it is flow-SENSITIVE (the load sees the value at that point),
+and leaving the cell without a consumer is what keeps a write-only cell
+unobservable to the BOXING check. Confirmed firing on the repro:
+`[gload] a FOLD`, `[gload] b FOLD`.
+
+The cost landed on the backflow walk: the load then has no backward edge, so
+the walk stops there, `cs->defs` and `csites` are disjoint for every global,
+and route 4 can never apply a partition the demand has already named.
+
+**The two purposes are separable — but not where I first cut.** Turning the
+snapshot into a flow edge was tried and REVERTED: it restores the dataflow
+but loses the flow-sensitivity, and `tests/listcomp_element_separation.py`
+regresses (its warning comes back). What the WALK needs is REACHABILITY, not
+type flow. So the walk now asks the same callback where the folded value came
+from and continues from there, leaving type propagation exactly as it was.
+
+Measured:
+
+| | before | after |
+| --- | --- | --- |
+| `tests/two_list_element_separation.py`, flag arm | **fails** | **compiles** |
+| `tests/listcomp_element_separation.py` warnings | 0 | 0 (unchanged) |
+| flag arm differing from default | 8 | **7** — `chull` fixed |
+| flag arm container CreationSets | 2151 | **2080** |
+| default arm | — | unchanged (one cap-straddler flake) |
+
+All six gates pass. Remaining flag-arm divergences: `bh`, `kanoodle`,
+`plcfrs`, `quameon`, `richards`, `sudoku3`, `sudoku5`.
+
 **What it means for B.** The blocker is narrower than it looked. Demand
 splitting works where values flow through edges — the function-local
 version needs no route 4 at all, the ordinary machinery separates the two

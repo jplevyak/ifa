@@ -8265,6 +8265,38 @@ static CSFlowGraph *build_cs_flow_graph(CreationSet *cs) {
     while (h < work.n && steps < 200000) {
       AVar *a = work.v[h++];
       ++steps;
+      // ifa/146 B: cross a folded global-cell load.
+      //
+      // ifa/050 stage 1 resolves a load from a module-level cell to the
+      // store that dominates it and applies the result with `update_gen` --
+      // a SNAPSHOT, deliberately, because it is flow-SENSITIVE (the load
+      // sees the value at that point) and because leaving the cell without
+      // a consumer is what keeps a write-only cell unobservable to BOXING.
+      //
+      // The cost was paid here: the load then has no backward edge, so this
+      // walk stops at it, `cs->defs` and `csites` are disjoint for every
+      // global, and route 4 can never apply a partition the demand has
+      // already named (tests/two_list_element_separation.py, in_defs=0 with
+      // three assign sets).
+      //
+      // The two are separable, but NOT by turning the snapshot into a flow
+      // edge -- that was measured and it loses the flow-sensitivity, which
+      // regresses tests/listcomp_element_separation.py. What the WALK needs
+      // is REACHABILITY, not type flow. So ask the same callback where the
+      // folded value came from and continue from there, leaving type
+      // propagation exactly as it was.
+      if (!a->backward.n && if1->callback && a->var && a->var->def && a->contour_is_entry_set) {
+        PNode *mp = a->var->def;
+        if (mp->code && mp->code->kind == Code_MOVE && mp->rvals.n) {
+          AVar *cell = make_AVar(mp->rvals.v[0], (EntrySet *)a->contour);
+          AVar *src = nullptr;
+          if (cell) (void)if1->callback->provably_constant_load(cell, (EntrySet *)a->contour, mp, &src);
+          if (src && src->out && src->out->type && src->out->type->set_in(cs) && path->set_add(src)) {
+            work.add(src);
+            continue;  // `a` is not a creation point; the store's value is upstream
+          }
+        }
+      }
       if (!a->backward.n) cps->set_add(a);
       for (AVar *x : a->backward)
         if (x && x->out && x->out->type && x->out->type->set_in(cs) && path->set_add(x)) work.add(x);
