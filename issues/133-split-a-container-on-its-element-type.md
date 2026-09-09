@@ -1645,8 +1645,54 @@ grounded:
 
 Both prototypes reverted; `fa.cc` is unchanged in the tree.
 
-**Worth checking when this lands:** whether other `->type->n` guards have
-the same latent bug. `split_type_view` exists precisely because a bare
-`->type->n` test conflates "unanalyzed" with "only None", and it is
-currently used at one site. A sweep of `->type->n` / `->type->n &&` tests
-in the splitters would say whether defect 2 has more siblings.
+The audit of the other `->type->n` guards is below.
+
+## Audit: every other bare `->type->n` guard (2026-09-09)
+
+`split_type_view` exists because a bare `->type->n` test conflates *not
+analyzed* with *carries only None*, and it was applied at exactly one site.
+This is the sweep for siblings. 34 textual `->type->n` matches; most are
+`Sym::type` (a different field). Nine are the AType projection on an
+`AVar::out`:
+
+| site | function | role | verdict |
+| --- | --- | --- | --- |
+| fa.cc:7758 | `compute_setters` | setter attribution | **LOAD-BEARING** — this is defect 2 |
+| fa.cc:5552, 5559 | `collect_type_confluence` | the stage-1 TYPE_CONFLUENCE collector | same conflation, **measured inert** |
+| fa.cc:1498 / 1552 | `edge_type_compatible_with_edge` / `_with_entry_set`, RETURN comparison | ES compatibility | same conflation, **measured inert** |
+| fa.cc:7898 | `cs_group_signature` | ledger identity | nil setter zeroes the signature, disabling ledger routing → re-mint churn rather than a missed split. Untested. |
+| fa.cc:9334 | `result_is_different` | violation-imprecision collection | conflates unanalyzed with None-only (both project to bottom, compare equal). Low. |
+| clone.cc:832 | clone donor selection | layout | skips a None-only member as a type donor. Low. |
+| fa.cc:6684, 6709 | `IFA_DBG_TUPARITY` / `IFA_DBG_TUPHOMO` | diagnostics only | not load-bearing |
+
+**The most interesting entry is 1498/1552, for what it says about how this
+bug spreads.** Those are the RETURN comparisons in the two functions whose
+ARGUMENT comparison ifa/124 already fixed — line 1544 reads
+`if (etype->n && stype->n && etype != stype)` on `split_type_view` output,
+and eight lines later the return comparison reads the same shape on raw
+`->out->type`. The fix was applied to one half of a function and not the
+other.
+
+**Measured, all three prototyped behind env flags and then reverted:**
+
+| | pyc suite (default) | contours, 6 programs (default) | `richards` under `PYC_CSDCPA1=2` |
+| --- | --- | --- | --- |
+| shipped | 313 / 0 failed | baseline | w=7, **run=139 (SIGSEGV)** |
+| `compute_setters` fix | 313 / 0 | identical | w=4, **run=0** |
+| `collect_type_confluence` fix | 313 / 0 | identical | unchanged |
+| return-comparison fix | 313 / 0 | identical | unchanged |
+| all three | 313 / 0 | — | w=4, run=0 |
+
+Contours checked on `richards`, `sudoku1`, `sieve`, `nbody`, `chess`,
+`dijkstra`: `ess`, `css` and `container_cs` are byte-identical for all
+three fixes. None of them moves `bh` or `sudoku5`.
+
+**Conclusion.** The conflation is systemic -- six live sites, one of them a
+half-fixed function pair -- but only ONE is currently load-bearing, and it
+is the one already identified. The other two high-suspicion sites are real
+by construction and inert by measurement, so they are cleanup to land WITH
+a corpus sweep, not fixes to claim a win for. The honest summary is that
+this audit narrowed the work rather than expanding it: `compute_setters` is
+the fix, and it is worth landing on its own.
+
+Nothing from this audit is in the tree; `fa.cc` is unchanged.
