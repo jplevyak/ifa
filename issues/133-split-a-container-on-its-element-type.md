@@ -1845,3 +1845,86 @@ actively destroy the result.
    stop `sudoku5` churning, and vice versa.
 
 Nothing landed from this; the probes were temporary and are reverted.
+
+## How shedskin avoids the oscillation (read from source, 2026-09-09)
+
+Author's question, on `sudoku5`'s 722 re-derivations: *these programs are
+typed by shedskin, how does it prevent the oscillation?* Answer: **it makes
+the oscillation structurally impossible, by REBUILDING the contour set
+every iteration instead of patching it.** Read from
+`shedskin/infer.py:1800` (`iterative_dataflow_analysis`).
+
+```python
+backup = backup_network(gx)            # snapshot the network ONCE, before iteration 1
+while True:
+    propagate(gx)                      # CPA to fixpoint
+    split = ifa(gx)                    # detect conflicts, decide splits
+    if not split: return               # done -- the ONLY normal exit
+    for cl, dcpa, nodes, newnr in split:
+        gx.alloc_info[parent.ident, cart, n.thing] = (cl, newnr)   # record the DECISION
+    restore_network(gx, backup)        # put the graph back to pristine
+```
+
+`restore_network` (`infer.py:2090`) is far more than a type reset. It
+restores `gx.types`, `gx.constraints` (the constraint SET), `gx.cnode` (the
+node table) and every node's `in_`/`out` EDGES -- and then:
+
+```python
+    for func in gx.allfuncs:
+        func.cp = {}                   # EVERY function contour destroyed
+```
+
+So iteration N runs against the ORIGINAL program plus the accumulated
+decision table `gx.alloc_info`, keyed on
+`(function identity, cartesian argument tuple, allocation node)`. Contours
+are a PURE FUNCTION of that decision set. Re-deriving the same decision
+reproduces the identical contour by construction; there is no accumulated
+graph for a split to drift against, so "re-derivation churn" is not a
+failure mode that can exist.
+
+Two supporting details. Allocation nodes inside functions have their types
+cleared on restore (`beforetypes[node] = set()` for `List`/`Dict`/`Tuple`/
+`ListComp`/`Call` under a function), so creation points are re-seeded per
+contour from `alloc_info` rather than carried over. And when shedskin runs
+out of budget it RESTARTS cleanly rather than stopping mid-flight: on a
+no-split iteration that was `cpa_limited`, it doubles `cpa_limit` and sets
+`iterations = 0`; `MAXITERS` is a hard cap that it will hit three times
+(`maxhits == 3`) before giving up.
+
+**pyc does the opposite, deliberately.** `analyze_to_convergence` resets
+derived VALUES but not STRUCTURE -- `clear_results()` iterates
+`fa->all_entry_sets` / `fa->all_creation_sets` and clears each one, so the
+contour OBJECTS survive every pass and their identity is carried forward.
+Splits are applied as edits to that persistent graph. To make a re-derived
+split land back on the same contour, pyc runs a whole compensating
+subsystem: `SplitDecision`, `ledger_find` / `ledger_add`,
+`cs_group_signature`, `fa_pass_retargeted`, `dup_split_attempts` -- and
+`rederive_churn`, which is **literally the count of times that compensation
+failed**.
+
+That is the connection to the measurement above. `sudoku5`'s 722
+re-derivations are 722 occasions on which the ledger could not re-find a
+contour and minted a duplicate instead; each duplicate changes the graph,
+which changes the next pass's confluences, which is the oscillation. On
+`bh` the same counter reads 10, which is why `bh` sits still at 9-10
+violations while `sudoku5` swings between 413 and 2042.
+
+**The honest framing of the trade.** pyc's persistence is a performance
+choice -- rebuilding every pass is what
+[111](111-FA-selective-invalidation-per-pass.md) exists to AVOID, and
+CLAUDE.md already records that 111 is "a performance lever for the extra
+passes, not a precondition". shedskin pays the rebuild unconditionally and
+buys determinism with it. So this is not "shedskin has an algorithm pyc
+lacks"; it is pyc having optimised away the property that makes
+re-derivation trivially stable, and then trying to recover that property
+with bookkeeping. `sudoku5` is where the bookkeeping loses.
+
+**What this implies for the two open items above.** Ending at the best pass
+rather than the last (item 1) is a patch on the symptom -- worth having,
+since `IFA_STALL_LIMIT=4` halves `sudoku5`'s errors, but it does not touch
+the cause. The cause-level options are to make re-derivation actually
+stable (finish what the ledger was for) or to adopt shedskin's posture and
+rebuild contours from the decision table each pass. The second is a large
+change and would collide with 111; it should not be started without
+measuring what fraction of `rederive_churn` the ledger could close on its
+own.
