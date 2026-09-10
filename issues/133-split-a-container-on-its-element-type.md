@@ -2759,3 +2759,79 @@ there even though their union is representable.
 
 That is a question about REPRESENTATION, not about demand, which is why it
 sidesteps the lag entirely.
+
+## "The illegal call should be the demand" -- built, and it is (2026-09-10)
+
+Author, on `tests/arity1_literal_shares_contour.py` emitting `illegal call
+argument type 'b' illegal: str` under the flag: *"the illegal call should be
+the demand"*. It should, and it was being dropped. Traced with a new
+`IFA_DBG_VIOL` probe:
+
+```
+[viol] kind=1 av=3564 var=b in=(cs) type= str#8 Body#1031
+       | container=NULL is_call_result=0
+```
+
+`in=(cs)` -- the violating AVar is CreationSet-contoured. And
+`collect_violation_imprecisions` has exactly two routes, **both
+EntrySet-oriented**: `v->av->container && container->out->n > 1` (the
+container is NULL here) and `is_call_result()`, which itself requires
+`contour_is_entry_set`. So a violation on a CS-contoured AVar has no route
+at all and stage 5 reports `1 violations -> 0 imprecisions`. Stage 1 at
+least DEFERS its CS-contoured confluences to route 4 (`tc_cs_dropped`);
+stage 5 simply drops them.
+
+### And the violation names the wrong CreationSet
+
+Handing the violating CS straight to route 4 (`PYC_VIOLCS=1`) changes
+nothing, because the violation is observed DOWNSTREAM of the merge:
+
+```
+cs=1051 defs=1  in=reversed   <- where the violation IS      (nothing to partition)
+cs=1027 defs=1  in=__mul__
+cs=1019 defs=2  vars=1 var[0]=str#8
+                | def in=___init___   <- __slots__ = ["seed"]
+                | def in=__init__     <- [None]              <- where the merge IS
+```
+
+`cs=1019` is the arity-1 literal contour holding BOTH literals, and it has
+two creation points, so it is partitionable. `PYC_VIOLCS=2` walks the
+violation backward and offers every CreationSet on the way; `cs=1019` then
+reaches route 4 -- and declines with *"flow graph covers none of the
+defs"*, which is precisely the case the MEMBER key
+([143](143-shared-container-method-contours-refuse-cs-splits.md)) exists
+for.
+
+### Together they close it
+
+| | diagnostics on the repro (flag arm) |
+| --- | --- |
+| neither | 1 |
+| `PYC_VIOLCS=2` alone | 1 |
+| `PYC_CSMEMBER=1` alone | 1 |
+| **both** | **0** |
+
+pyc suite 314 passed / 0 failed either way. So the chain the author has been
+describing is real and now demonstrated end to end: **the illegal call is
+the demand; it must be transferred BACK to the CreationSet that actually
+merged; and that CreationSet needs a partition key the content graph cannot
+supply.**
+
+### It does NOT fix `bh`
+
+Honest limit. On `bh` the member key fires on `cs=1180` (8 defs -> 7
+groups), but its remaining two-def merges decline:
+
+```
+cs=1551 defs=2 DECLINED (1 group: every creation point on the same assign sets)
+cs=1633 defs=2 DECLINED (1 group: every creation point on the same assign sets)
+```
+
+`bh` stays at 10 pyc warnings. So `arity1_literal_shares_contour.py`
+reproduces `bh`'s SIGNATURE but not its instance -- corrected in that file's
+header, which claimed to be "bh reduced".
+
+Both mechanisms are committed at default 0 (`PYC_VIOLCS`, `PYC_CSMEMBER`).
+Between them they close the repro and, separately, `PYC_CSMEMBER=1` alone
+takes `sudoku5` from 364 errors to 0 -- so the pieces are worth keeping
+whatever happens to `bh`.

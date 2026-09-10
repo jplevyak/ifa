@@ -9810,9 +9810,69 @@ static bool result_is_different(AVar *result, AEdge *e) {
   return false;
 }
 
+// ifa/133: route a CS-contoured violation to route 4. PYC_VIOLCS=0 restores
+// the old behaviour (drop it) for attribution.
+static int violcs_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_VIOLCS"); e = v ? atoi(v) : 0; }
+  return e;
+}
+static int viol_cs_deferred = 0;
+
 static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Vec<AVar *> &imprecisions) {
   for (ATypeViolation *v : violations) if (v) {
+    // ifa/133 probe: why does a violation NOT become a split candidate?
+    if (getenv("IFA_DBG_VIOL")) {
+      AVar *a = v->av;
+      fprintf(stderr, "[viol] kind=%d av=%d var=%s in=%s type=", (int)v->kind, a->id,
+              (a->var && a->var->sym && a->var->sym->name) ? a->var->sym->name : "(anon)",
+              (a->contour_is_entry_set && ((EntrySet *)a->contour)->fun &&
+               ((EntrySet *)a->contour)->fun->sym && ((EntrySet *)a->contour)->fun->sym->name)
+                  ? ((EntrySet *)a->contour)->fun->sym->name : "(cs)");
+      if (a->out && a->out->type)
+        for (CreationSet *c : a->out->type->sorted) if (c && c->sym)
+          fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+      fprintf(stderr, " | container=%s", a->container ? "yes" : "NULL");
+      if (a->container)
+        fprintf(stderr, " container_out_n=%d container_var=%s", a->container->out ? a->container->out->n : -1,
+                (a->container->var && a->container->var->sym && a->container->var->sym->name)
+                    ? a->container->var->sym->name : "(anon)");
+      fprintf(stderr, " is_call_result=%d\n", is_call_result(a) ? 1 : 0);
+    }
     if (v->av->container && v->av->container->out->n > 1) imprecisions.set_add(v->av->container);
+    // ifa/133: a violation on a CS-CONTOURED AVar has no route here. Both
+    // paths in this function are EntrySet-oriented -- the `container` test
+    // wants an ES-contoured value with a container, and `is_call_result`
+    // requires `contour_is_entry_set` outright -- so an irrepresentable
+    // element or member simply falls through and stage 5 reports "N
+    // violations -> 0 imprecisions". Stage 1 already handles the same case
+    // by handing it to route 4 (`tc_cs_dropped`, split_ess_for_type's else
+    // branch); do the same, so the demand reaches the rung that partitions
+    // CreationSets instead of being dropped.
+    if (violcs_enabled() && !v->av->contour_is_entry_set && v->av->contour != GLOBAL_CONTOUR)
+      if (CreationSet *vcs = (CreationSet *)v->av->contour)
+        if (fa->css_set.set_in(vcs)) { tc_cs_dropped.set_add(vcs); ++viol_cs_deferred; }
+    // Mode 2: the violation names the CS where the union is OBSERVED, which
+    // is generally downstream of the CS where it was MADE. On the `bh`
+    // reproducer the violation sits on `reversed`'s result (one creation
+    // point, nothing to partition) while the merge is two hops back, in the
+    // arity-1 literal contour that holds BOTH `["seed"]` and `[None]` and
+    // has two creation points. Walk the demand backward and offer every
+    // CreationSet on the way, so the rung that can partition actually gets
+    // the one that needs it.
+    if (violcs_enabled() >= 2) {
+      Vec<AVar *> seen, work;
+      seen.set_add(v->av);
+      work.add(v->av);
+      for (int i = 0; i < work.n && i < 20000; i++)
+        for (AVar *b : work.v[i]->backward)
+          if (b && seen.set_add(b)) {
+            work.add(b);
+            if (!b->contour_is_entry_set && b->contour != GLOBAL_CONTOUR)
+              if (CreationSet *bcs = (CreationSet *)b->contour)
+                if (fa->css_set.set_in(bcs) && tc_cs_dropped.set_add(bcs)) ++viol_cs_deferred;
+          }
+    }
 
     if (is_call_result(v->av)) {
       Vec<AVar *> dispatched;
@@ -13179,13 +13239,33 @@ static void report_demand_ratio() {
           cselem_resplit_mints, nstrip, nmulti, nsame, fa_cap_strips);
   if (getenv("PYC_ELEMSETTER") && (es_added + es_seeded))
     fprintf(stderr, "ELEMSETTER demand_added=%d starters_seeded=%d\n", es_added, es_seeded);
-  // ifa/133: IFA_DBG_CSELEM=<csid> -- dump that CreationSet's element AVar
+  // ifa/133: IFA_DBG_CSDUMP=<csid>, or -1 for every list CS -- dump the
   // and every backward writer, with the writer's function and contribution.
-  if (cchar *cw = getenv("IFA_DBG_CSELEM")) {
+  if (cchar *cw = getenv("IFA_DBG_CSDUMP")) {
     int want = atoi(cw);
     for (CreationSet *cs : fa->css) {
-      if (!cs || cs->id != want || !cs->sym || !cs->sym->element || !cs->sym->element->var ||
-          !cs->added_element_var) continue;
+      if (!cs || !cs->sym) continue;
+      if (want >= 0 && cs->id != want) continue;
+      if (want < 0 && (!cs->sym->name || strcmp(cs->sym->name, "list"))) continue;
+      if (want < 0) {
+        fprintf(stderr, "[cs] id=%d sym=%s defs=%d vars=%d elem_var=%d", cs->id, cs->sym->name, cs->defs.set_count(),
+                cs->vars.n, cs->added_element_var ? 1 : 0);
+        for (int vi = 0; vi < cs->vars.n; vi++) {
+          fprintf(stderr, "  var[%d]=", vi);
+          AVar *pv = cs->vars.v[vi];
+          if (pv && pv->out && pv->out->type)
+            for (CreationSet *c : pv->out->type->sorted) if (c && c->sym)
+              fprintf(stderr, "%s#%d ", c->sym->name ? c->sym->name : "?", c->id);
+        }
+        for (AVar *d : cs->defs) if (d)
+          fprintf(stderr, " | def in=%s",
+                  (d->contour_is_entry_set && ((EntrySet *)d->contour)->fun &&
+                   ((EntrySet *)d->contour)->fun->sym && ((EntrySet *)d->contour)->fun->sym->name)
+                      ? ((EntrySet *)d->contour)->fun->sym->name : "(cs)");
+        fprintf(stderr, "\n");
+        continue;
+      }
+      if (!cs->sym->element || !cs->sym->element->var || !cs->added_element_var) continue;
       AVar *e = unique_AVar(cs->sym->element->var, cs);
       fprintf(stderr, "[cselem] cs=%d sym=%s defs=%d elem=", cs->id,
               cs->sym->name ? cs->sym->name : "?", cs->defs.set_count());
