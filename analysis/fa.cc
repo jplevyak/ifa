@@ -672,6 +672,16 @@ static bool is_clone_methods_per_cs(Sym *s) {
   return cmc && cmc->clone_methods_per_cs;
 }
 
+// ifa/133 probe: IFA_DBG_CSNEW=<symname> reports every CreationSet minted
+// for that sym, and WHICH of the five mint sites made it. Answers "why does
+// this contour exist" without reading ids across runs, which drift.
+static void dbg_cs_new(cchar *site, CreationSet *ncs, CreationSet *from) {
+  static cchar *want = getenv("IFA_DBG_CSNEW");
+  if (!want || !ncs || !ncs->sym || !ncs->sym->name || strcmp(ncs->sym->name, want)) return;
+  fprintf(stderr, "[csnew] p=%d %-14s cs=%d sym=%s from=%d\n", analysis_pass, site, ncs->id, ncs->sym->name,
+          from ? from->id : -1);
+}
+
 CreationSet *creation_point(AVar *v, Sym *s, int arity) {
   dbg_cs_route = nullptr;
   CreationSet *cs = v->cs_map ? v->cs_map->get(s) : 0;
@@ -1091,6 +1101,7 @@ Lunique:
   }
   dbg_cs_route = "MINT"; ++cs_route_count[kR_MINT];
   cs = new CreationSet(s);
+  dbg_cs_new("creation_point", cs, nullptr);
   cs->creation_var = v->var;  // ifa/issues/101: for the per-site element key
   // ifa/issues/074: claim this (site, receiver-shape) so the next contour
   // with the same receiver shape reuses it instead of minting again.
@@ -6895,6 +6906,14 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
     form_Map(MapElemAEdgeEntrySets, x, ee->from->pending_es_backedge_map) if (x->key)
         map_set_add(pending_es_backedge_map, x->key, x->value);
   }
+  // ifa/133 probe: IFA_DBG_ESSPLIT=<funname> reports every EntrySet split
+  // of that function, with the stage that asked for it. Answers "why does
+  // this contour exist" for the ES side, the way IFA_DBG_CSNEW does for CSs.
+  if (cchar *want = getenv("IFA_DBG_ESSPLIT"))
+    if (es->fun && es->fun->sym && es->fun->sym->name && !strcmp(es->fun->sym->name, want))
+      fprintf(stderr, "[essplit] p=%d es=%d fun=%s groups=%d stage=%d av=%d\n", analysis_pass, es->id,
+              es->fun->sym->name, dec->groups.n,
+              cur_split_stage, av ? av->id : -1);
   int split = 0;
   SplitDecision *route_d = nullptr;  // ifa/issues/055: the ledger decision that routed, if any
   bool stay_evicted = false;  // issue 074: self-product complement eviction, once per apply
@@ -8392,6 +8411,7 @@ static int es_added = 0, es_seeded = 0;
               cs->id, cs->sym->name ? cs->sym->name : "", cs->sym->id, csig, new_cs->id, d->pass_made);
         } else {
           new_cs = new CreationSet(cs);
+          dbg_cs_new("split_css", new_cs, cs);
           if (getenv("IFA_DBG_CSSPLIT"))
             fprintf(stderr, "[cssplit] p=%d sym=%s cs=%d -> %d\n", analysis_pass,
                     cs->sym && cs->sym->name ? cs->sym->name : "?", cs->id, new_cs->id);
@@ -8881,6 +8901,7 @@ static CreationSet *cs_peel_group(CreationSet *cs, Vec<AVar *> &group, cchar *ro
   CreationSet *new_cs = join_to;
   if (!new_cs) {
     new_cs = new CreationSet(cs);
+    dbg_cs_new("split_group", new_cs, cs);
     new_cs->split = cs;
     if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
   }
@@ -9172,8 +9193,10 @@ static void report_cs_vars() {
     for (AVar *d : cs->defs) {
       if (!d) continue;
       EntrySet *des = d->contour_is_entry_set ? (EntrySet *)d->contour : nullptr;
-      fprintf(stderr, "  DEF av=%d es=%d fun=%s\n", d->id, des ? des->id : -1,
-              (des && des->fun && des->fun->sym && des->fun->sym->name) ? des->fun->sym->name : "(cs)");
+      int nin = 0;
+      if (des) for (AEdge *ee : des->edges) if (ee && ee->args.n) ++nin;
+      fprintf(stderr, "  DEF av=%d es=%d fun=%s in_edges=%d\n", d->id, des ? des->id : -1,
+              (des && des->fun && des->fun->sym && des->fun->sym->name) ? des->fun->sym->name : "(cs)", nin);
     }
     for (AVar *v : cs->vars) {
       if (!v) continue;
@@ -9959,6 +9982,7 @@ static void cs_member_signature(AVar *d, std::string &out) {
         if (gcs[(size_t)gid[(size_t)i]] == cs) continue;  // stays with the parent
         if (!gcs[(size_t)gid[(size_t)i]]) {
           CreationSet *ncs = new CreationSet(cs);
+          dbg_cs_new("route4", ncs, cs);
           ncs->split = cs;
           if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
           gcs[(size_t)gid[(size_t)i]] = ncs;
@@ -12269,6 +12293,7 @@ static int cselem_resplit_diverged() {
         dest = it->second;
       if (!dest) {
         dest = new CreationSet(cs);
+        dbg_cs_new("clone", dest, cs);
         dest->split = cs;
         cselem_shape_claim(g.first, dest);
         ++cselem_resplit_mints;

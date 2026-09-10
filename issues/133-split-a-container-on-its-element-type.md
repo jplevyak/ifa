@@ -3105,3 +3105,137 @@ ability to answer it. Kept opt-in, unmeasured on the corpus.
 `listcomp_element_separation` -- the blocker this work started on -- is
 fixed on both arms. `sudoku5` at the flag arm is a new, characterized
 cost with `PYC_WALKCTX=1`, and the flag arm without it is unchanged.
+
+## 2026-09-10: sudoku5 ROOT CAUSED — the separation was an accident at pass 27
+
+The section above left this open. It is now closed, and the answer is that
+`PYC_WALKCTX=1` did not break sudoku5. It removed the churn that sudoku5's
+compile had been resting on.
+
+### The program
+
+```python
+def exact_cover(X1, Y):
+    X = dict((j, set()) for j in X1)   # values are SETS
+    ...
+def solve_sudoku(size, grid):
+    Y = dict()
+    Y[(r, c, n)] = [ ("rc", ...), ... ]  # values are LISTS
+```
+
+`select` does `cols.append(X.pop(j))`, `deselect` does `X[j] = cols.pop()`
+then `X[k].add(i)`. The reported failure is
+`illegal call argument type expression illegal: list` at that `.add`.
+
+### The chain, measured
+
+1. Under `PYC_CSDCPA1=2`, `X` and `Y` share ONE `dict` CreationSet
+   (`cs=1129`). Both `dict()` calls reach the single allocation site
+   `av=5756` inside `dict.__new__` (`es=102`), and start-merged gives that
+   site one contour.
+
+2. **`dict.__new__` cannot be split by type.** Its only formal is the class
+   object:
+
+   ```
+   FUNES fun=__new__ contours=1
+     es=102 args= [dict#672 ]
+   ```
+
+   The constructor argument (`dict(gen)` vs `dict()`) goes to `__init__`,
+   not `__new__`, so the two call sites are type-IDENTICAL there and
+   TYPE_CONFLUENCE has nothing to see. This is the same deadlock as the
+   `append` contour above, one level further down.
+
+3. `dict` stores its content in ordinary list members. `IFA_DBG_CSVARS`:
+
+   ```
+   var=_keys type= list#1673
+   var=_vals type= list#1751
+   var=_len  type= int64#6
+   ```
+
+   Sharing `cs=1129` means sharing `_vals`, so `cs=1751`'s element becomes
+   `{list, set}`.
+
+4. `cols.append(X.pop(j))` therefore gives `cols` the element `{list, set}`,
+   `X[j] = cols.pop()` puts a list back into `X`, and `.add` reports it.
+
+5. **Both CreationSets have exactly one creation point** -- `cs=1129`:
+   `av=5756`; `cs=1751`: `av=5811` -- so route 4 declines "single creation
+   point" on every pass, on BOTH arms. There is nothing to partition.
+
+6. The only thing that ever separates them is `dict.__new__` acquiring a
+   SECOND contour, which gives the site a second AVar. `IFA_DBG_ESSPLIT`
+   says exactly when, and by what:
+
+   ```
+   WALKCTX=0:  [essplit] p=27 es=102 fun=__new__ groups=1 stage=3 av=5753
+   WALKCTX=1:  (absent)
+   ```
+
+   `stage=3` is **SETTER_OF_SETTER**, and it is the ONLY stage-3 split in
+   the entire run. Every other `__new__` split is stage 0. `IFA_DBG_CSNEW`
+   then shows route 4 acting one pass later:
+
+   ```
+   [csnew] p=28 route4  cs=2960 sym=dict from=1129
+   [csdefsplit] p=28 cs=1129 sym=dict defs=2 MEMBER-KEY -> 2 groups
+   ```
+
+7. `PYC_WALKCTX=1` removes unrealizable paths, so route 4 finds fewer
+   splits (82 vs 93) and the analysis quiesces at pass 17 -- ten passes
+   before the stage-3 split would have fired.
+
+### The finding
+
+**sudoku5 never separated `X` from `Y` on demand.** It separated them as a
+side effect of an unrelated splitter stage still firing at pass 27, after
+27 passes of churn. Nothing asked for that split; the demand
+(`{list, set}` in `_vals`) is present from pass 0 and routes to nothing
+that can act on it.
+
+This is ifa/146's non-monotone diagnostic, in its exact form: a result that
+gets WORSE when splitting is made more disciplined was resting on
+arbitrary splitting. Reading it as "WALKCTX broke sudoku5" inverts cause
+and effect.
+
+### Why the demand-driven mechanism does not fire
+
+ifa/129's third clause in `split_css_by_defs` is the right mechanism --
+"one creation point means the separation must come from duplicating the
+SITE, which means splitting the EntrySet that owns it". And the split is
+genuinely available where it is needed:
+
+| EntrySet | in-edges |
+| --- | --- |
+| `es=102` `dict.__new__` (owns `av=5756`) | **2** — the two user-level `dict()` calls |
+| `es=103` `list.__init__` (owns `av=5811`, i.e. `_vals`) | 1 — reachable only through `dict.__new__` |
+
+So the one correct action is "split `dict.__new__` by call site", and four
+separate things stop the demand reaching it:
+
+1. `PYC_CSCALLSITE` defaults to 0.
+2. The clause's demand test reads only the ELEMENT channel. A dict has
+   none; its content is in members. `cs_elem_irrepresentable` already has
+   the two-channel fallback (`PYC_CSSLOTDEMAND`); this clause does not use
+   it.
+3. Even reading `cs->vars`, `_vals`' own type is `list#1751` -- one sym,
+   representable. The irrepresentability is one level DOWN, on that list's
+   element. Nothing propagates a member's demand up to its container.
+4. The clause only considers the ES that OWNS the creation point
+   (`es=103`, one in-edge, nothing to partition). It never climbs to the
+   caller that actually has the choice (`es=102`, two in-edges).
+
+Item 4 is the cheapest and most general: when the owning contour has fewer
+than two in-edges, the demand cannot be answered there, and the unique
+caller is the only place it can be. Items 2 and 3 are the same missing
+piece stated twice -- a container's demand has to be visible through the
+member that holds it.
+
+### Status
+
+`PYC_WALKCTX` stays opt-in, but NOT because of sudoku5: the sudoku5 delta
+is a pre-existing gap that WALKCTX exposes rather than causes. What is
+owed before it can default on is the demand path above, so the separation
+stops depending on when the analysis happens to stop.
