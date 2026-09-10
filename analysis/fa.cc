@@ -9109,8 +9109,22 @@ static bool cs_elem_irrepresentable(CreationSet *cs) {
       if (cs && cs->sym && !css.set_in(cs) && cs_elem_irrepresentable(cs)) {
         css.set_add(cs);
         if (dbg)
-          fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s DEMAND-ADDED defs=%d\n", analysis_pass, cs->id,
+        {
+          fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s DEMAND-ADDED defs=%d", analysis_pass, cs->id,
                   cs->sym->name ? cs->sym->name : "?", cs->defs.set_count());
+          for (AVar *d : cs->defs) if (d) {
+            EntrySet *de = d->contour_is_entry_set ? (EntrySet *)d->contour : nullptr;
+            fprintf(stderr, " | def var=%s in=%s",
+                    (d->var && d->var->sym && d->var->sym->name) ? d->var->sym->name : "(anon)",
+                    (de && de->fun && de->fun->sym && de->fun->sym->name) ? de->fun->sym->name : "?");
+          }
+          AVar *pe = unique_AVar(cs->sym->element->var, cs);
+          fprintf(stderr, " elem=");
+          if (pe && pe->out && pe->out->type)
+            for (CreationSet *c : pe->out->type->sorted)
+              if (c && c->sym) fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+          fprintf(stderr, "\n");
+        }
       }
   if (dbg)
     fprintf(stderr, "[csdefsplit] p=%d ENTER candidates=%d (confluence=%d demand=%d)\n", analysis_pass,

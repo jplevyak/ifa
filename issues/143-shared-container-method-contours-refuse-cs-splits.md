@@ -541,3 +541,74 @@ PYC_CSDCPA1=2 PYC_CSLADDER=3 IFA_DBG_ELEMTYPE=1 IFA_DBG_ELEMSETTER=1 \
 `report_element_setters()` is reached only via `report_element_types()`,
 so **both** `IFA_DBG_ELEMTYPE` and `IFA_DBG_ELEMSETTER` are required —
 setting only the latter prints nothing, which reads as "no writers".
+
+## Why `bh` does not split correctly -- traced to the partition, not the gate (2026-09-09)
+
+Step 5 above says the mechanism for the single-def case exists and is off
+by default (`PYC_CSCALLSITE`). Measured: **turning it on does not fix
+`bh`**, and the reason closes step 5.
+
+```
+PYC_CSCALLSITE=0  compile=0 warns=11  ess=372 css=1136
+PYC_CSCALLSITE=1  compile=0 warns=11  ess=375 css=1140
+PYC_CSCALLSITE=2  compile=0 warns=11  ess=375 css=1140
+```
+
+**It cannot work here.** `IFA_DBG_THIRD` probes every single-def candidate
+and reports the owning EntrySet's in-edges:
+
+| | count |
+| --- | --- |
+| single-def candidates probed | 216 |
+| **owning ES has exactly ONE in-edge** | **215** |
+| `splittable=0 why=no_groups` | 207 |
+
+One caller means one call site, and one call site cannot be partitioned.
+So "split the EntrySet that owns the creation point, so the site duplicates
+and gives the next pass two defs" is structurally inapplicable to 215 of
+216 of `bh`'s demanded CreationSets, whatever the flag says.
+
+### Where it actually stops: the partition is made, along the wrong line
+
+The demand is detected -- 65 `list` CreationSets DEMAND-ADDED with
+irrepresentable elements. And route 4 DOES partition the merged root:
+
+```
+p=0   cs=1180 def av=3013  -> cs=1546 (group 1/2 sig=1)
+p=0   cs=1180 def av=4123  -> cs=1546 (group 1/2 sig=1)
+p=25  cs=1180 def av=16622 -> cs=1631 (group 1/2 sig=1)
+```
+
+but the products still carry the union:
+
+```
+cs=1180 defs=8 | in=___init___ | in=__init__ | in=enumerate | in=_get_argv
+               | in=reversed   elem= str#8 Body#1306 tuple#1359 Cell#1442
+cs=1596 defs=1 | in=reversed   elem= str#8 Body#1306
+cs=1631 defs=2 | in=reversed   elem= str#8 Body#1306
+```
+
+**So the split happens and does not separate the demanded distinction.**
+Route 4 groups creation points by their assign-set signature; on `bh` that
+signature yields 2 groups and neither corresponds to "str elements" vs
+"Body elements". After the split each product has `defs=1` -- which is
+where the 62 of 65 `DECLINED (single creation point)` come from -- and
+there is nothing left to partition.
+
+That is [133](133-split-a-container-on-its-element-type.md)'s "merging
+destroys the attribution" in its sharpest form: by the time the demand is
+observable on the CreationSet, every creation point carries the whole
+union, so no signature computed from the current graph can name which
+creation point contributed the `str`.
+
+### The specific shape
+
+The lists that carry `{str, Body}` are built inside **`reversed`** (a
+`__pyc__` builtin), and its callers pass the SAME merged list CreationSet,
+so `reversed`'s formal has ONE type and stage 1 sees no confluence on it.
+The distinction is one level down -- in the ELEMENT of the argument, not in
+the argument's type -- and no stage keys on that.
+
+So `bh` needs a split keyed on a formal's ELEMENT type, not its type. That
+is a different key from anything in the file today, and it is the concrete
+thing this issue has been circling.
