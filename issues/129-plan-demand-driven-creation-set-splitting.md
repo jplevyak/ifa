@@ -2463,3 +2463,59 @@ strictly better on contours. The remaining judgement calls are the
 mechanisms (+86 container CreationSets, and 6 warnings on `chull`, which
 segfaults either way) -- which is why they should be flipped WITH
 `PYC_CSDCPA1`, never before it.
+
+## The flip was ATTEMPTED and REVERTED (2026-09-10)
+
+Flipped all five defaults -- `PYC_CSDCPA1=2`, `PYC_CSLADDER=3`,
+`PYC_VIOLCS=3`, `PYC_CSMEMBER=1`, `PYC_CSCONTENT=1` -- rebuilt, and ran the
+gates. **They fail.** Reverted; the tree is back to green.
+
+```
+make test / test-ir     17 passed  12 FAILED   (all .fa-init goldens)
+test_pyc.py            311 passed   3 FAILED
+```
+
+### The three suite failures are the FLAG's, not the new mechanisms'
+
+| suite run | result |
+| --- | --- |
+| `PYC_VIOLCS=3 PYC_CSMEMBER=1 PYC_CSCONTENT=1` | **314 / 0** |
+| `PYC_CSDCPA1=2 PYC_CSLADDER=3` | **311 / 3** |
+| all five | 311 / 3 |
+
+**This is a gap in my own verification and it should be recorded as one.**
+Every "suite 314 / 0 with the flags on" in this work measured only the
+mechanisms being ADDED, always on the DEFAULT arm. The pyc suite was never
+run with `PYC_CSDCPA1=2` set, on any tree, at any point in this
+investigation -- the flag arm was only ever exercised through the corpus.
+The corpus said parity; the suite says three failures, and both are true.
+
+### What actually fails
+
+- **`listcomp_element_separation.py`** -- the substantive one. Its `.check`
+  is EMPTY and the flag arm reintroduces
+  `illegal call argument type 'a' illegal: B`. The test's own header records
+  that this warning "is GONE as of ifa/issues/050 stage 1", so this is a
+  real precision LOSS, not a stale golden: `h` is a module-level cell whose
+  constant-load resolution keeps `aas`'s element at `A`, and under the flag
+  that no longer holds.
+- **`splitter_mark_type.py`** -- expects `STAGES: TYPE_CONFL` and
+  `CALLS: direct=69 dynamic=0`; under the flag neither line is emitted.
+- **`match_seq.py`** -- warning-set differs.
+- **12 `.fa-init.expected` goldens** -- the INITIAL contour state, which
+  `PYC_CSDCPA1` changes by construction. These are the re-blessable kind,
+  but only after diffing each and confirming every changed line belongs to
+  the change.
+
+### So the flip needs, before it can land
+
+1. `listcomp_element_separation` -- a genuine precision regression to
+   root-cause, not a golden to re-bless.
+2. `splitter_mark_type` and `match_seq` -- diagnose, then fix or re-bless
+   with the diff justified.
+3. The 12 `fa-init` goldens -- re-bless, per-file diffed.
+
+The corpus evidence stands unchanged and is good: compile parity (2 vs 2,
+same programs), stdout parity (59 vs 59), one run difference (`kanoodle`,
+already wrong at the default), and 12% fewer container CreationSets. What
+was missing was the suite, and it is now measured.
