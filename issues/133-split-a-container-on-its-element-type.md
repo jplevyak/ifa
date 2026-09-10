@@ -2694,3 +2694,68 @@ suite test; the suite alone would have said "safe to remove".
 **`PYC_VIOLATTEMPTS` kept, default 2 (unchanged behaviour), as the
 apparatus.** The next thing to look at is
 `collect_violation_imprecisions`'s container filter, not the cap.
+
+## The demand is UNOBSERVABLE at the moment of the merge (2026-09-10)
+
+This is the sharpest statement of why "split only on demand" cannot, on
+its own, be the whole story for container literals. It came out of asking
+why `bh`'s two literals share a contour at all.
+
+**The identity rule is a joiner and a separator, and they exist for
+different reasons.**
+
+- **Joiner** -- one CreationSet per sym (`PYC_CSDCPA1`,
+  [128](128-cs-identity-over-discriminates-vs-element-type.md)). Deliberate:
+  CLAUDE.md's opening premise is to start from the MINIMUM data contours
+  and split only on demand.
+- **Separator** -- arity
+  ([132](132-arity-is-representation-not-provenance.md)). Carved back out
+  because merging different arities is UNREPRESENTABLE: `b = [2,3]` and
+  `k = []` sharing a CS made codegen emit a record, `len()` fold to the
+  static field count, and `print(k)` produce `[0, 0]`.
+
+Arity is in the key not to distinguish provenance but because the target
+language cannot represent the merge -- CLAUDE.md's explicitly legitimate
+third category, *"what the target language can REPRESENT"*.
+
+### Which reframes the `bh` probe
+
+Changing `Random.__slots__ = ["seed"]` to arity 2 did not expose a bug in
+the rule. It made the SEPARATOR FIRE. `["seed"]` and `[None]` are both
+arity 1, so arity correctly says nothing about them -- and nothing else
+separates them either. **Arity is currently the only working separator for
+list literals.**
+
+### And here is the trap
+
+The natural sibling of arity would be the literal's SLOT TYPE: `["seed"]`
+holds `str`, `[None]` holds nil. But at the literal, slot 0 is
+`{str, None}`, and that IS representable -- `elem_irrepresentable` skips
+nil and finds a single basic, so **no demand is raised at the merge**.
+
+The union only becomes irrepresentable much later and somewhere else:
+`list.__mul__` (`P_prim_merge`) pours slot 0 into the RESULT's element,
+`__setitem__` adds `Body`, and `{str, Body}` is finally a demand -- on a
+different CreationSet, several contours downstream, by which time the two
+literals are long since merged and every creation point carries the whole
+union.
+
+**So the demand is unobservable at the moment the merge happens, and the
+merge is unrecoverable at the moment the demand appears.** That is the same
+lag that defeated every violation-gated experiment earlier in this issue
+(the `PYC_CONFDEMAND` modes, and the "end at best pass" idea before them),
+arriving here from the literal side rather than the splitter side.
+
+### What follows
+
+It is not an argument for splitting literals eagerly -- that is the fan
+[146](146-remove-all-arbitrary-splitting.md) exists to remove. It is an
+argument that the *separator* set is too small: arity is one
+representation property, and it is doing all the work alone. The question
+worth asking is which OTHER representation properties of a literal are
+knowable at construction and would have kept these apart -- the slot's
+basic-type kind being the obvious candidate, since `str` and nil differ
+there even though their union is representable.
+
+That is a question about REPRESENTATION, not about demand, which is why it
+sidesteps the lag entirely.
