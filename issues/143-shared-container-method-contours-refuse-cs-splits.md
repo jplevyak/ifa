@@ -973,3 +973,27 @@ it is not really about shared container-method contours at all -- those are
 downstream. It is arity-1 list literals sharing a contour, which is
 [133](133-split-a-container-on-its-element-type.md), and the test for it is
 already in the tree.
+
+### CORRECTION (2026-09-10): the richards repro no longer reproduces this
+
+The section above ends "bh is the same defect as
+`tests/list_mul_scalar_object_separation.py`". Same SHAPE, but not the same
+instance, and the distinction matters because that test now **passes on
+both arms**:
+
+```
+default                        diagnostics=0
+PYC_CSDCPA1=2                  diagnostics=0
+PYC_CSDCPA1=2 PYC_CSLADDER=3   diagnostics=0
+PYC_CSDCPA1=2 PYC_NILSTORE=0   diagnostics=1     <- the fix that closed it
+```
+
+ifa/133's `nilstore` fix resolved it, so it is a regression guard for that
+fix now, not a pin on `bh`. Its header said "fails under PYC_CSDCPA1=2" and
+was stale; fixed.
+
+`bh`'s instance survives because its far side is a `str` in an UNMULTIPLIED
+literal (`__slots__ = ["seed"]`), not a nil store that had lost its setter.
+**New minimal repro: `tests/arity1_literal_shares_contour.py`** -- 35 lines,
+clean at the default, and under `PYC_CSDCPA1=2` emits `illegal call
+argument type 'b' illegal: str`, which is `bh`'s exact signature.
