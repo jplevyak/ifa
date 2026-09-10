@@ -1119,3 +1119,66 @@ and it is safe:
 
 Both mechanisms remain at default 0. A corpus `check` sweep on both arms is
 owed before flipping them, per this repo's rule for a splitter change.
+
+## CORPUS SWEEPS for `PYC_VIOLCS=3 PYC_CSMEMBER=1` (2026-09-10)
+
+Four arms from ONE binary (both mechanisms are env-gated), so the arms are
+exactly comparable. `check` mode could not complete -- this shared host kept
+killing the RUN phase for memory -- so the sweeps are `compile` mode, which
+completes reliably in ~6 minutes, and the run side was taken by hand for
+every program whose compile output changed.
+
+### Compile, all four arms
+
+| arm | compile_fail | with_warnings | container CS / shapes |
+| --- | --- | --- | --- |
+| default | 2 (`othello3`, `rdb`) | 43 | 2740 / 625 = 4.38 |
+| default + mechanisms | 2 (same two) | 44 | 2816 / 625 = 4.51 |
+| flag (`PYC_CSDCPA1=2 PYC_CSLADDER=3`) | **7** | 39 | 2091 / 626 = 3.34 |
+| flag + mechanisms | **3** | 44 | 2505 / 624 = 4.01 |
+
+**Flag-arm compile failures 7 -> 3**: `chull`, `plcfrs`, `quameon` and
+`sudoku5` all start compiling. What remains is `othello3`, `rdb`,
+`sudoku3` -- and the DEFAULT arm fails `othello3` and `rdb` too, so the flag
+arm is **one program (`sudoku3`) away from compile parity with the
+default**.
+
+### Run side, every program whose flag-arm compile output changed
+
+| program | flag BASE | flag + mechanisms | |
+| --- | --- | --- | --- |
+| `bh` | rc=134, output differs | **rc=0, output IDENTICAL to CPython** | **fixed** |
+| `sudoku5` | compile-fail | **rc=0**, only the `TIME` line differs | **fixed** |
+| `chull` | compile-fail | rc=139 | = its DEFAULT-arm behaviour |
+| `plcfrs` | compile-fail | rc=134 | = its DEFAULT-arm behaviour |
+| `quameon` | compile-fail | rc=134 | = its DEFAULT-arm behaviour |
+| `linalg`, `mastermind2`, `sudoku4`, `sunfish`, `tarsalzp`, `tictactoe`, `webserver` | | unchanged | |
+
+**No regressions.** Warning counts also fall sharply where they change:
+`linalg` 112 -> 46, `plcfrs` 342 -> 162, `sudoku5` 249 -> 24, `sudoku4`
+45 -> 21, `webserver` 14 -> 6, `tarsalzp` 231 -> 213. Three go the other
+way and are small: `mastermind2` 42 -> 54, `sunfish` 51 -> 55, `tictactoe`
+0 -> 6.
+
+### Cost on the default arm
+
++76 container CreationSets (2740 -> 2816, +2.8%), and one program gains
+warnings: `chull`, 0 -> 6. `chull` **segfaults at runtime on the default arm
+either way** (`run=139` with and without), so those six warnings surface
+diagnostics on a binary that was already failing silently -- ifa/102's case,
+and an improvement in failure mode rather than a regression.
+
+pyc suite is 314 passed / 0 failed on both backends with the mechanisms on
+and off; six gates green.
+
+### Where that leaves the flip
+
+The flag arm now has **no known blocker**: `bh` and `sudoku5` are fixed,
+and the three remaining compile failures are `othello3` and `rdb` (which
+the default fails too) plus `sudoku3`. Container CS on the flag arm is 2505
+against the default's 2740 -- still 8.6% fewer contours than the default,
+with one more compile failure.
+
+Both mechanisms remain at default 0. The recommendation is to flip them
+WITH `PYC_CSDCPA1`, not before it: on the default arm alone they buy
+nothing and cost 76 contours.
