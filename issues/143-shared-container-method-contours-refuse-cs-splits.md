@@ -612,3 +612,69 @@ the argument's type -- and no stage keys on that.
 So `bh` needs a split keyed on a formal's ELEMENT type, not its type. That
 is a different key from anything in the file today, and it is the concrete
 thing this issue has been circling.
+
+## The element demand now DOES reach setter splitting -- and bh still fails
+
+Author: *"so the demand to split the elements must be turned into a demand
+to split the cs, right? we discussed this before?"* Yes, and the missing
+half was specific: there are TWO CreationSet-splitting mechanisms and the
+element demand only ever reached one of them.
+
+| mechanism | partitions by | fed from |
+| --- | --- | --- |
+| route 4, `split_css_by_defs` | assign-set signature (the CS flow graph) | the element demand (`cs_elem_irrepresentable`) -- ifa/144 |
+| setter splitting, `split_css` | `same_eq_classes(v->setters, ...)` -- WHO WRITES | setter confluences only |
+
+A `str` writer and a `Body` writer are different setters, so setter
+splitting is the partition that can express `bh`'s distinction, and route 4's
+is not. Measured before the change: of the 101 `list` CreationSets
+`split_css` sees on `bh`, **98 have `starter_set=1 defs=1`**, and **cs=1180
+-- the merged root, 8 defs, element `{str, Body, tuple, Cell}` -- appears
+ZERO times**. The demand never arrived.
+
+**Wired** (`PYC_ELEMSETTER`, default 0): `collect_cs_setter_confluences`
+now offers a CreationSet's element unconditionally when
+`cs_elem_irrepresentable(cs)`, rather than only when its setters already
+disagree with a consumer's -- a test that presumes the separation it is
+trying to create.
+
+It works, and it is safe:
+
+| | pyc suite | `bh` (flag) | `sudoku5` (flag) |
+| --- | --- | --- | --- |
+| `PYC_ELEMSETTER=0` | 313 / 0 | w=11, ess=372 css=1136 | 364 errors, ess=1104 |
+| `PYC_ELEMSETTER=1` | **313 / 0** | w=11, ess=**369** css=**1133** | 364 errors, ess=1104 |
+
+The demand reaches the rung and produces a split. **It does not fix `bh`.**
+
+### Why -- the writers are themselves merged
+
+Step 2 above has the answer, and this measurement confirms it end to end.
+`append`'s surviving contours are
+
+```
+es=62  [list#1596] [str#8 Body#1306]   <- ONE receiver, union VALUE
+es=367 [list#1630] [str#8 Body#1306]
+```
+
+so the element of `cs=1596` has **one setter carrying both types**, not two
+setters carrying one each. Setter equivalence cannot partition what a
+single setter merged. To get two setters you must split `append` by value
+type, which step 3 already records as giving "two contours sharing one
+receiver, and the element channel still takes both".
+
+So `bh` is circular in its own terms: the receiver CreationSet cannot split
+because its writers are merged, and its writers are merged because the
+receiver CreationSet is one. Route 4 cannot break it (wrong partition key),
+setter splitting cannot break it (one setter), and the single-def fallback
+cannot break it (215 of 216 owning EntrySets have one in-edge).
+
+**What would**: a split keyed on a formal's ELEMENT type -- `append(self,
+x)` separated by the element type of `self`, not by the type of `self` --
+which is the one key nothing in the file has. That is the same conclusion
+the previous section reached from the `reversed` side, now reached from the
+setter side as well.
+
+`PYC_ELEMSETTER` kept at default 0. It is correct and suite-neutral, but it
+buys nothing measurable yet, so it is apparatus rather than a landed
+improvement.

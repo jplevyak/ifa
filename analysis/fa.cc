@@ -503,6 +503,13 @@ static int cselem_enabled();  // ifa/issues/101, defined with the other flags
 static int cssiteless_enabled();  // ifa/129 step 4, ditto
 static int csdcpa1_enabled();     // ifa/128: one CreationSet per sym, ditto
 static int csmold_enabled();  // ifa/issues/101, ditto
+static bool cs_elem_irrepresentable(CreationSet *cs);  // ifa/133: defined with route 4
+// ifa/133: turn an ELEMENT demand into a demand to split the CreationSet by
+// SETTERS. Route 4 already takes the element demand but partitions by
+// assign-set signature; split_css partitions by who WRITES, which is the
+// distinction an irrepresentable element names. Its candidates came only
+// from setter confluences, so the demand never reached it.
+static int elemsetter_enabled();
 static int eslineage_enabled();   // ifa/133: durable ES split lineage, ditto
 static int esl_hit = 0, esl_walk = 0;  // ifa/133: split-parent route hits / chain walks
 static int mint_in_child = 0, mint_child_novar = 0, mint_child_cmc = 0;
@@ -8231,15 +8238,44 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
   return h ? h : 1;  // 0 is reserved for "no identity"
 }
 
+static int elemsetter_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_ELEMSETTER"); e = v ? atoi(v) : 0; }
+  return e;
+}
+static int es_added = 0, es_seeded = 0;
+
 [[nodiscard]] static int split_css(Vec<AVar *> &starters) {
   int analyze_again = 0;
   Vec<CreationSet *> css;
   for (AVar *av : starters) form_Map(CSMapElem, x, *av->cs_map) if (fa->css_set.set_in(x->value)) css.set_add(x->value);
+  // ifa/133: a CreationSet whose element cannot be represented is a demand to
+  // SPLIT THAT CreationSet, and setter equivalence is the partition that can
+  // express it -- a `str` writer and a `Body` writer are different setters.
+  // Candidates were derived only from `starters`, i.e. only from setter
+  // confluences, so a CS carrying the demand was never offered here at all.
+  // Measured on `bh`: cs=1180 (8 defs, elem {str, Body, tuple, Cell}) appears
+  // ZERO times in this function.
+  if (elemsetter_enabled())
+    for (CreationSet *cs : fa->css)
+      if (cs && cs->sym && fa->css_set.set_in(cs) && !css.set_in(cs) && cs_elem_irrepresentable(cs)) {
+        css.set_add(cs);
+        ++es_added;
+      }
   css.set_to_vec();
   qsort_by_id(css);
   for (CreationSet *cs : css) {
     Vec<AVar *> starter_set, save;
     for (AVar *av : starters) if (av->cs_map->get(cs->sym) == cs) starter_set.add(av);
+    // ifa/133: a demand-added CS has no starters by construction (they come
+    // from setter confluences). Seed from its OWN creation points that carry
+    // setters -- those are exactly the AVars this partition is over.
+    if (elemsetter_enabled() && starter_set.n < 2)
+      for (AVar *d : cs->defs)
+        if (d && d->setters && d->cs_map && d->cs_map->get(cs->sym) == cs && !starter_set.in(d)) {
+          starter_set.add(d);
+          ++es_seeded;
+        }
     log(LOG_SPLITTING, "[scss] cs %d (sym %s) starter_set=%d defs=%d\n", cs->id,
         cs->sym && cs->sym->name ? cs->sym->name : "(anon)", starter_set.n, cs->defs.set_count());
     while (starter_set.n > 1) {
@@ -9454,6 +9490,18 @@ static void collect_cs_setter_confluences(Vec<AVar *> &setters_confluences) {
     }
     if (cs->added_element_var) {
       AVar *av = get_element_avar(cs);
+      // ifa/133: an element that cannot be REPRESENTED is a demand to split
+      // the CreationSet, and setter equivalence is the partition that can
+      // express it -- a `str` writer and a `Body` writer are different
+      // setters. Offer it unconditionally, not only when its setters already
+      // disagree with a consumer's: that test presumes the separation this
+      // is trying to create. Measured on `bh`, cs=1180 (8 defs, element
+      // {str, Body, tuple, Cell}) never reached split_css at all.
+      if (elemsetter_enabled() && av && !av->contour_is_entry_set &&
+          av->contour != GLOBAL_CONTOUR && cs_elem_irrepresentable(cs)) {
+        setters_confluences.set_add(av);
+        ++es_added;
+      }
       for (AVar *x : av->forward) if (x) {
         if (!av->contour_is_entry_set && av->contour != GLOBAL_CONTOUR) {
           if (!same_eq_classes(av->setters, x->setters)) {
@@ -12976,6 +13024,8 @@ static void report_demand_ratio() {
           cselem_rejoins, cselem_mint_why[kMintNoSiteCS], cselem_mint_why[kMintMoldSplitChild],
           cselem_mint_why[kMintMoldCMC], cselem_mint_why[kMintMoldIneligible], canon, canon_siteless, cselem_resplits,
           cselem_resplit_mints, nstrip, nmulti, nsame, fa_cap_strips);
+  if (getenv("PYC_ELEMSETTER") && (es_added + es_seeded))
+    fprintf(stderr, "ELEMSETTER demand_added=%d starters_seeded=%d\n", es_added, es_seeded);
   if (getenv("IFA_DBG_ESPERFUN")) {
     // ifa/133: "the first pass should be one ES per function" -- is it?
     Map<Fun *, int> per;
