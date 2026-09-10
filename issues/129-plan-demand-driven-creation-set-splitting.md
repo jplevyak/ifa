@@ -2393,3 +2393,73 @@ carry `.known_issue`, which would retire the coverage at the DEFAULT arm
 where both pass cleanly. They are flag-arm-only, tracked here, and they
 need either the field-precision work above or an accepted, documented
 diagnostic delta at flip time.
+
+## CHECK-mode comparison, both arms (2026-09-10)
+
+The evidence the flip actually needs: compile status, RUN status and stdout
+vs CPython, for all 77 programs, on both arms. `corpus_sweep.sh -m check`
+could not complete on this host -- it kills the parallel run phase for
+memory -- so this was done by hand: compile and run every program with
+concurrency 3, serial within each program, both arms against the SAME
+CPython references and the same method, so the arms are comparable to each
+other even though the absolute `stdout_differs` runs higher than
+corpus_sweep's (a 120 s CPython cap and benchmark `TIME` lines).
+
+Arms: `default`, and `PYC_CSDCPA1=2 PYC_CSLADDER=3 PYC_VIOLCS=3
+PYC_CSMEMBER=1 PYC_CSCONTENT=1`.
+
+| | compile_fail | run_fail | stdout_differs |
+| --- | --- | --- | --- |
+| default | 2 (`othello3`, `rdb`) | 37 | 59 |
+| flag + the three mechanisms | 2 (same two) | 38 | 59 |
+
+Four programs differed on the first pass; three were measurement artefacts
+and were re-taken ALONE, per this file's own rule that `rc=124` is the one
+verdict a parallel pass can fabricate:
+
+| program | default | flag | verdict |
+| --- | --- | --- | --- |
+| `tonyjpegdecoder` | rc=0, **145 s** | rc=0, **119 s** | NOT a regression -- fabricated timeout under load, and the flag arm is FASTER |
+| `webserver` | rc=124 | rc=124 | a server; times out by design on both |
+| `yopyra` | rc=0 | rc=0 | resume artefact, no difference |
+| **`kanoodle`** | **rc=0** | **rc=139** | **the one real difference** |
+
+### The single regression, and what it is
+
+`kanoodle` segfaults on the flag arm where it exits 0 on the default. But
+it does not WORK on the default either:
+
+```
+CPython : 4421 bytes, 10 solutions
+default : 441 bytes,   1 solution
+```
+
+Its stdout DIFFERS from CPython on both arms. The cause was root-caused
+earlier in this work and is not a contour problem at all: all six of its
+warnings are on `kanoodle.py:37`, `udates[level] += 1`, where `udates` and
+`level` are module-level globals assigned inside a top-level `for` loop and
+pyc cannot type them (`expression has no type`, `unresolved call
+'__iadd__'`). The warnings are byte-identical on both arms. The flag turns a
+silently wrong answer into a visible crash.
+
+**So nothing that WORKS at the default breaks on the flag arm.** The one
+behavioural difference is a program that is already producing the wrong
+output, changing failure mode from silent to loud.
+
+### Where that leaves the flip
+
+| | |
+| --- | --- |
+| compile failures | 2 vs 2, the same two programs |
+| stdout differs | 59 vs 59 |
+| run failures | 37 vs 38, the extra one already wrong at the default |
+| container CreationSets | **2406 vs 2740 -- 12% fewer** |
+| pyc suite | 314 / 0, both backends, flags on and off |
+| six CI gates | green |
+
+On this evidence the flag arm is at behavioural parity with the default and
+strictly better on contours. The remaining judgement calls are the
+`kanoodle` failure-mode change, and the default-arm cost of the three
+mechanisms (+86 container CreationSets, and 6 warnings on `chull`, which
+segfaults either way) -- which is why they should be flipped WITH
+`PYC_CSDCPA1`, never before it.
