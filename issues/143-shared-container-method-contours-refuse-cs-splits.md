@@ -804,3 +804,86 @@ reach from both sides: a formal's ELEMENT type, which nothing keys on.
 
 **Not landed on** (`PYC_CSMEMBER` defaults to 0): a corpus `check` sweep on
 both arms is owed first, per this repo's rule for a splitter change.
+
+## WHERE the confluence is in `bh` -- traced to a member (2026-09-10)
+
+Followed it end to end with `IFA_DBG_AV` (dump an AVar and every backward
+writer with the type it contributes) and `IFA_DBG_FUNES` (a function's
+contours and their argument keys).
+
+**1. The first confluence carrying `str` with a class** is line 44 of the
+splitting log -- `append(self, x)`'s VALUE formal:
+
+```
+[av] 3797 var=x in=append  type= str#8 Body#1306 tuple#1359 Cell#1442
+    <- av=3799  var=x in=append  contributes: str#8
+    <- av=7831  var=x in=append  contributes: tuple#1359
+    <- av=7968  var=x in=append  contributes: str#8 Body#1306 tuple#1359 Cell#1442
+```
+
+**2. The receiver split is already exhausted.** `append` has FIVE contours,
+correctly keyed on (receiver CreationSet, value type):
+
+```
+es=211 [list#1546] [str]          <- clean
+es=212 [list#1597] [tuple]        <- clean
+es=62  [list#1596] [str Body]     <- union, SINGLE receiver
+es=373 [list#1634] [str Body]     <- union, SINGLE receiver
+es=377 [list#1631] [str Body]     <- union, SINGLE receiver
+```
+
+Three contours each have ONE receiver CreationSet taking both `str` and
+`Body`. No further receiver split exists to make -- this is step 3 of the
+2026-09-08 trace, now with the contour table behind it.
+
+**3. Those three receivers are all created in `reversed`** (measured
+earlier: `def var=(anon) in=reversed`).
+
+**4. `reversed` cannot be split, because its formal's TYPE is identical in
+every contour:**
+
+```
+FUNES fun=reversed contours=3
+  es=128 args= [reversed#416] [list#1588 list#1606]
+  es=371 args= [reversed#416] [list#1588 list#1606]
+  es=372 args= [reversed#416] [list#1588 list#1606]
+```
+
+Three contours, one argument key. Stage 1 keys on the formal's type and
+every contour has the same two-CreationSet union, so there is nothing for
+it to separate.
+
+**5. And `bh` only ever calls `reversed` on Body lists:**
+
+```
+573:        for b in reversed(self.bodies):
+582:        for q in reversed(self.bodies):
+625:        for b in reversed(bodies):
+```
+
+**So the `str` is already inside the member before `reversed` sees it.**
+
+### The confluence is `Tree.bodies`
+
+The member holds a union of TWO list CreationSets, `list#1588` and
+`list#1606`, and one of them carries `str`. Everything downstream is a
+consequence: `reversed`'s formal inherits the union, its result list takes
+elements from both, and `append` into that result then has a single
+receiver and a `{str, Body}` value.
+
+That also explains why every rung tried so far fails, in one sentence
+each. Route 4 partitions creation points -- the receivers already have one
+each. Setter splitting partitions writers -- there is one writer carrying
+both. The single-def fallback splits the owning ES -- it has one in-edge.
+The MEMBER key partitions by which member a creation point reaches --
+`Tree.bodies` is reached by exactly one of the eight. **Every one of them
+is asking about the container. The distinction is in the member's TYPE: one
+field holding two list CreationSets.**
+
+### What that makes the fix
+
+Splitting a MEMBER by the CreationSets its type spans -- `Tree.bodies` into
+the `list#1588` part and the `list#1606` part -- is the shape nothing in
+the file does. It is the same conclusion the `append` side and the
+`reversed` side reached independently, stated on the object that actually
+holds the union.

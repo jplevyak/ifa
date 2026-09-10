@@ -5706,7 +5706,38 @@ static void dbg_confluence_probe(AVar *av, bool added) {
   fprintf(stderr, "\n");
 }
 
+// ifa/133 probe: IFA_DBG_AV=<id> dumps one AVar's identity and every
+// backward writer, with the writer's function and the type it contributes.
+static void dbg_dump_av(AVar *av) {
+  static int want = -2;
+  if (want == -2) { cchar *v = getenv("IFA_DBG_AV"); want = v ? atoi(v) : -1; }
+  if (want < 0 || !av || av->id != want) return;
+  static int done = 0;
+  if (done++) return;
+  fprintf(stderr, "[av] %d var=%s in=%s type=", av->id,
+          (av->var && av->var->sym && av->var->sym->name) ? av->var->sym->name : "(anon)",
+          (av->contour_is_entry_set && ((EntrySet *)av->contour)->fun &&
+           ((EntrySet *)av->contour)->fun->sym && ((EntrySet *)av->contour)->fun->sym->name)
+              ? ((EntrySet *)av->contour)->fun->sym->name : "(cs)");
+  if (av->in && av->in->type)
+    for (CreationSet *c : av->in->type->sorted) if (c && c->sym)
+      fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+  fprintf(stderr, "\n");
+  for (AVar *b : av->backward) if (b) {
+    fprintf(stderr, "    <- av=%-6d var=%-14s in=%-18s contributes:", b->id,
+            (b->var && b->var->sym && b->var->sym->name) ? b->var->sym->name : "(anon)",
+            (b->contour_is_entry_set && ((EntrySet *)b->contour)->fun &&
+             ((EntrySet *)b->contour)->fun->sym && ((EntrySet *)b->contour)->fun->sym->name)
+                ? ((EntrySet *)b->contour)->fun->sym->name : "(cs)");
+    if (b->out && b->out->type)
+      for (CreationSet *c : b->out->type->sorted) if (c && c->sym)
+        fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+    fprintf(stderr, "\n");
+  }
+}
+
 static void collect_type_confluence(AVar *av, Vec<AVar *> &confluences) {
+  dbg_dump_av(av);
   AVar *trigger = nullptr;  // ifa/133: the writer that made this a confluence
   for (AVar *x : av->backward) if (x) {
     if (!x->out->type->n) continue;
@@ -13148,6 +13179,11 @@ static void report_demand_ratio() {
           cselem_resplit_mints, nstrip, nmulti, nsame, fa_cap_strips);
   if (getenv("PYC_ELEMSETTER") && (es_added + es_seeded))
     fprintf(stderr, "ELEMSETTER demand_added=%d starters_seeded=%d\n", es_added, es_seeded);
+  if (getenv("IFA_DBG_AV")) {
+    for (EntrySet *es : fa->ess)
+      for (Var *v : es->fun->fa_all_Vars) dbg_dump_av(make_AVar(v, es));
+    for (CreationSet *cs : fa->css) for (AVar *a : cs->vars) dbg_dump_av(a);
+  }
   if (getenv("IFA_DBG_ESPERFUN")) {
     // ifa/133: "the first pass should be one ES per function" -- is it?
     Map<Fun *, int> per;
