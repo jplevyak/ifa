@@ -9190,6 +9190,42 @@ static int csmember_enabled() {
 }
 static int csm_used = 0, csm_split = 0;
 
+// ifa/133/143: the CONSTRUCTION-TIME SLOT key. What types was this creation
+// point built with? For a literal that is `make_kind`'s operands, read in
+// the def's own contour -- so `[0,1,2]` (int slots), the outer
+// `[[0,1,2],[3,4,5],[6,7,8]]` (list slots) and a same-arity tuple literal
+// all get different signatures even though they share a CreationSet.
+//
+// This is the key ifa/133's "what other representation properties are
+// knowable AT CONSTRUCTION" asks for. It is type-side and legitimate --
+// CLAUDE.md allows identity to key on deduced TYPES -- and unlike an
+// element union it is observable at the moment of the merge, so it does not
+// have the lag that defeats demand-driven tests. Keyed on Sym::id, never a
+// name.
+//
+// Needed because the MEMBER key is empty for a container that never reaches
+// an instance variable: `sudoku3`'s TRIPLETS is a module-level global, so
+// all five of its creation points have the same (empty) member signature.
+static void cs_slot_signature(AVar *d, std::string &out) {
+  out.clear();
+  if (!d || !d->var || !d->var->def || !d->contour_is_entry_set) return;
+  PNode *pn = d->var->def;
+  EntrySet *des = (EntrySet *)d->contour;
+  char buf[32];
+  for (int i = 0; i < pn->rvals.n; i++) {
+    AVar *a = make_AVar(pn->rvals.v[i], des);
+    out += "|";
+    if (!a || !a->out || !a->out->type) continue;
+    Vec<int> ids;
+    for (CreationSet *c : a->out->type->sorted)
+      if (c && c->sym) ids.set_add(c->sym->type ? c->sym->type->id : c->sym->id);
+    ids.set_to_vec();
+    qsort(ids.v, ids.n, sizeof(ids[0]),
+          [](const void *x, const void *y) { return *(const int *)x - *(const int *)y; });
+    for (int id : ids) { snprintf(buf, sizeof(buf), "%d,", id); out += buf; }
+  }
+}
+
 // Members reachable forward from `d`, as a canonical string of Sym ids.
 static void cs_member_signature(AVar *d, std::string &out) {
   out.clear();
@@ -9559,6 +9595,15 @@ static void cs_member_signature(AVar *d, std::string &out) {
         for (int i = 0; i < defs.n; i++) {
           cs_member_signature(defs.v[i], msig[(size_t)i]);
           if (!msig[(size_t)i].empty()) m_informative = 1;
+        }
+        // ifa/133: if the member key names nothing (a container that never
+        // reaches an instance variable), fall back to the construction-time
+        // slot key, which does not depend on reaching one.
+        if (!m_informative && csmember_enabled() >= 2) {
+          for (int i = 0; i < defs.n; i++) {
+            cs_slot_signature(defs.v[i], msig[(size_t)i]);
+            if (!msig[(size_t)i].empty()) m_informative = 1;
+          }
         }
         if (m_informative) {
           int content_groups = ngroups;

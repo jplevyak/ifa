@@ -1182,3 +1182,75 @@ with one more compile failure.
 Both mechanisms remain at default 0. The recommendation is to flip them
 WITH `PYC_CSDCPA1`, not before it: on the default arm alone they buy
 nothing and cost 76 contours.
+
+## `sudoku3` root-caused: bh's defect at arity 3 -- not yet fixed (2026-09-10)
+
+`sudoku3` is the last flag-arm compile failure the default arm does not
+share. Root cause found; a fix is not.
+
+### The merge point
+
+```
+[cs] id=1022 sym=list defs=5 vars=3
+     var[0]= int64#6  list#1023  tuple#2290
+     var[1]= int64#6  list#1826  tuple#2291
+     var[2]= int64#6  list#1827  tuple#2292
+     | check_for_last_in_row_col_3x3 | __main__ | check_for_single_occurances
+     | __main__ | __main__
+```
+
+An **arity-3 list literal contour with five creation points**, every slot
+unioning `{int64, list, tuple}`. The source is one line:
+
+```python
+TRIPLETS = [[0,1,2],[3,4,5],[6,7,8]]
+```
+
+The OUTER list is `list` of arity 3. So are the three INNER lists. CS
+identity is (sym x arity), so all four land on one contour, and slot 0 then
+holds `int64` (from `[0,1,2]`) and `list` (from `TRIPLETS`) and `tuple`
+(from a same-arity tuple literal elsewhere).
+
+**This is exactly `bh`'s defect at a different arity** -- same-arity
+literals sharing a contour -- and here it needs no `__slots__` or `__mul__`
+at all: a nested literal whose outer and inner lists happen to agree on
+length is enough.
+
+### Why the mechanisms that fixed `bh` do not fix this
+
+`cs=1022` declines **35 times** with *"flow graph covers none of the
+defs"*. The MEMBER key was built for exactly that decline -- and it is
+empty here: `TRIPLETS` is a MODULE-LEVEL GLOBAL, so its creation points
+reach no instance variable at all and all five member signatures are the
+same (empty) string. The key that saved `bh` depends on the container
+reaching a member, and this one never does.
+
+### The construction-time slot key -- tried, measured WORSE
+
+The obvious next key, and the one ifa/133's closing question named: group
+creation points by the TYPES THEY WERE BUILT WITH, read from the make
+primitive's operands in each def's own contour. That is type-side,
+legitimate under CLAUDE.md, and observable at construction rather than
+after the union forms. Implemented as `PYC_CSMEMBER=2`.
+
+It splits, and not as a fan -- `defs=5 -> 2 groups`, `defs=21 -> 6`,
+`defs=17 -> 4`, `defs=2 -> 2`. But `sudoku3` gets **worse**: warnings
+121 -> 147, errors 157 -> 165. And the tell is in the numbers: `cs=1022`
+has THREE distinct slot shapes and the key finds only **two** groups --
+because by the time route 4 runs, the construction OPERANDS have themselves
+been polluted. The same lag, one level further in than where it was last
+found.
+
+Kept at `PYC_CSMEMBER=2` (opt-in; suite is 314/0 either way) as the record
+of the attempt, and labelled measured-worse. `PYC_CSMEMBER=1` -- member key
+only -- is the setting the `bh` and `sudoku5` results were measured with.
+
+### What is actually needed
+
+A key that separates same-arity literals **at the moment they are created**,
+before any operand can be polluted. `creation_point` has the operand types
+right there in `make_kind`, at the mint, and that is the one place in the
+pipeline where `[0,1,2]` is unambiguously int-slotted. Doing it there is a
+change to CS IDENTITY rather than to a splitting rung, which is a different
+and larger kind of change than anything tried in this issue so far -- and
+it is what ifa/132 did for arity.
