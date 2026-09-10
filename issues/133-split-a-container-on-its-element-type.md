@@ -2835,3 +2835,76 @@ Both mechanisms are committed at default 0 (`PYC_VIOLCS`, `PYC_CSMEMBER`).
 Between them they close the repro and, separately, `PYC_CSMEMBER=1` alone
 takes `sudoku5` from 364 errors to 0 -- so the pieces are worth keeping
 whatever happens to `bh`.
+
+## `listcomp_element_separation` under the flag -- root cause (2026-09-10)
+
+The one substantive suite failure blocking the flip. Root-caused; the fix
+needs a key none of the three mechanisms provides.
+
+**It is NOT the `[]` literals.** The obvious reading -- `self.aas = []` and
+`self.bbs = []` are both `list` of arity 0, so they share a contour -- is
+wrong here. They separate:
+
+```
+[cs] id=1055 defs=1 | def in=__init__
+[cs] id=1059 defs=1 | def in=__init__
+```
+
+**It is the two COMPREHENSIONS in `prune()`:**
+
+```python
+self.bbs = [x for x in self.bbs if not x.dead]
+self.aas = [y for y in self.aas if not y.dead]
+```
+
+```
+[cs] id=1060 defs=2 | def in=prune | def in=prune
+```
+
+Two structurally identical comprehensions, one CreationSet, and its element
+unions `{A, B}`. Exactly what the test's own header predicted in 2026-08:
+*"once {A,B} forms at append's value formal it is a fixed point -- every
+edge carries {A,B}, so etype == stype and TYPE_CONFLUENCE has nothing to
+split."*
+
+### Why the MEMBER key cannot separate them
+
+It fires, and it puts them together:
+
+```
+cs=1055 def av=2999 -> cs=1060 (group 2/3 sig=2475,12062,12063,)
+cs=1055 def av=3130 -> cs=1060 (group 2/3 sig=2475,12062,12063,)
+cs=1060 defs=2 DECLINED (1 group: every creation point on the same assign sets)  x7
+```
+
+Both defs carry the SAME member signature, so they land in one group and
+then cannot be partitioned. And they must: `prune()` assigns the shared
+result back into BOTH members, so each creation point's forward closure
+reaches both `aas` and `bbs`. The member key asks "what does this container
+end up in", and the answer is "both", identically, for both of them.
+
+**This is the feedback shape.** The two comprehensions merge; the merged
+contour is stored into both members; both members then reach both
+comprehensions; and every key computed from the current graph sees the
+symmetry rather than the distinction.
+
+### What WOULD separate them
+
+Not what the container ends up in, but **what its content comes FROM**:
+`[x for x in self.bbs]` draws from `bbs`, `[y for y in self.aas]` from
+`aas`, and on the first pass those are still the separate contours
+`cs=1059` and `cs=1055`. That is the BACKWARD analogue of the member key --
+source members rather than destination members -- and it is the one
+direction not yet tried.
+
+It is also the one place the feedback loop is not yet closed: the
+distinction exists at pass 0 and is destroyed later, so a key that reads it
+early would hold, where every key measured so far reads it after the merge.
+
+### Status
+
+Unfixed, and it blocks the flip. `two_list_element_separation.py` -- the
+same shape without the feedback, `a=[]; a.append(1); b=[]; b.append("x")`
+-- IS fixed by the three mechanisms (0 diagnostics under the flag), which
+is what makes this one's remaining failure specifically about the
+comprehension feedback rather than about literals sharing a contour.
