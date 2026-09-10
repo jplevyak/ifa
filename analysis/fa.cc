@@ -13179,6 +13179,38 @@ static void report_demand_ratio() {
           cselem_resplit_mints, nstrip, nmulti, nsame, fa_cap_strips);
   if (getenv("PYC_ELEMSETTER") && (es_added + es_seeded))
     fprintf(stderr, "ELEMSETTER demand_added=%d starters_seeded=%d\n", es_added, es_seeded);
+  // ifa/133: IFA_DBG_CSELEM=<csid> -- dump that CreationSet's element AVar
+  // and every backward writer, with the writer's function and contribution.
+  if (cchar *cw = getenv("IFA_DBG_CSELEM")) {
+    int want = atoi(cw);
+    for (CreationSet *cs : fa->css) {
+      if (!cs || cs->id != want || !cs->sym || !cs->sym->element || !cs->sym->element->var ||
+          !cs->added_element_var) continue;
+      AVar *e = unique_AVar(cs->sym->element->var, cs);
+      fprintf(stderr, "[cselem] cs=%d sym=%s defs=%d elem=", cs->id,
+              cs->sym->name ? cs->sym->name : "?", cs->defs.set_count());
+      if (e && e->out && e->out->type)
+        for (CreationSet *c : e->out->type->sorted) if (c && c->sym)
+          fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+      fprintf(stderr, "\n");
+      for (AVar *d : cs->defs) if (d)
+        fprintf(stderr, "    DEF av=%d in=%s\n", d->id,
+                (d->contour_is_entry_set && ((EntrySet *)d->contour)->fun &&
+                 ((EntrySet *)d->contour)->fun->sym && ((EntrySet *)d->contour)->fun->sym->name)
+                    ? ((EntrySet *)d->contour)->fun->sym->name : "(cs)");
+      if (e) for (AVar *b : e->backward) if (b) {
+        fprintf(stderr, "    <- av=%-6d var=%-12s in=%-20s gives:", b->id,
+                (b->var && b->var->sym && b->var->sym->name) ? b->var->sym->name : "(anon)",
+                (b->contour_is_entry_set && ((EntrySet *)b->contour)->fun &&
+                 ((EntrySet *)b->contour)->fun->sym && ((EntrySet *)b->contour)->fun->sym->name)
+                    ? ((EntrySet *)b->contour)->fun->sym->name : "(cs)");
+        if (b->out && b->out->type)
+          for (CreationSet *c : b->out->type->sorted) if (c && c->sym)
+            fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+        fprintf(stderr, "\n");
+      }
+    }
+  }
   if (getenv("IFA_DBG_AV")) {
     for (EntrySet *es : fa->ess)
       for (Var *v : es->fun->fa_all_Vars) dbg_dump_av(make_AVar(v, es));

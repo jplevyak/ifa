@@ -887,3 +887,89 @@ the `list#1588` part and the `list#1606` part -- is the shape nothing in
 the file does. It is the same conclusion the `append` side and the
 `reversed` side reached independently, stated on the object that actually
 holds the union.
+
+## THE PATH, end to end -- `bh` is `list_mul_scalar_object_separation` (2026-09-10)
+
+Author: *"so the cs coming from the non union append is fed to reverse via
+what path?"* Traced it with `IFA_DBG_CSELEM=<csid>` (dump a CreationSet's
+element AVar and every backward writer with its contribution). The two
+CreationSets `reversed`'s formal spans:
+
+```
+[cselem] cs=1588 defs=1 elem= Body#1306              <- CLEAN
+    DEF av=4123 in=__init__
+    <- av=13596 in=__setitem__  gives: Body#1306
+
+[cselem] cs=1606 defs=1 elem= str#8 Body#1306        <- POLLUTED
+    DEF av=4512 in=__mul__
+    <- av=4516  in=__mul__      gives: str#8         <- the str enters HERE
+    <- av=13596 in=__setitem__  gives: Body#1306
+```
+
+The `str` enters through **`list.__mul__`**, which is `P_prim_merge`, whose
+`structural_assignment(..., merge=true)` pours the OPERAND's positional
+slots into the RESULT's element:
+
+```c
+for (int i = cs->sym->has.n; i < cs->vars.n; i++) {
+  flow_vars(cs->vars[i], tval);
+  ... flow_vars(tval, get_element_avar(new_cs));   // operand slot -> result ELEMENT
+}
+```
+
+And `bh` multiplies only `[None]`:
+
+```
+418:        self.subp   = [None] * Cell.NSUB
+518:        self.bodies = [None] * nbody
+```
+
+**So the operand is `[None]` -- an ARITY-1 list literal. And so is
+`Random.__slots__ = ["seed"]`.** CreationSet identity is (sym x arity)
+(ifa/132), so those two literals share one CreationSet, its slot 0 unions
+`{None, str}`, and `__mul__` pours that into `self.bodies`'s element.
+
+### Proved by changing one arity
+
+```
+baseline                                        11 warnings
+__slots__ = ["seed"]  ->  ["seed", "_pad"]       1 warning
+```
+
+Changing ONLY `Random.__slots__` from arity 1 to arity 2 -- so it no longer
+shares the arity-1 literal contour -- takes `bh` from 11 pyc warnings to
+zero (the remaining 1 is clang's `long`->`double` note). The other two
+`__slots__` are arity 3 and arity 4 and were never involved. (Corpus file
+restored; this was a probe, not an edit -- see
+[PYC_CHANGES.md](../../shedskin_examples/PYC_CHANGES.md).)
+
+### The full chain
+
+1. `["seed"]` and `[None]` are both arity-1 `list` literals -> ONE
+   CreationSet under `PYC_CSDCPA1`.
+2. Its positional slot 0 unions `{str, None}`.
+3. `[None] * nbody` -> `list.__mul__` -> `P_prim_merge` pours slot 0 into
+   the result's ELEMENT -> `{str, None}`.
+4. That result is `self.bodies` (cs=1606); `__setitem__` adds `Body` ->
+   `{str, Body}`.
+5. `reversed(self.bodies)` -- all three contours share the argument key
+   `[list#1588 list#1606]`, so no split separates them.
+6. `reversed`'s result list takes both, so `append` into it has a SINGLE
+   receiver and a `{str, Body}` value -- the confluence at `av 3797`.
+7. `str` reaches `rt` / `root`, the getter cannot resolve, the binary
+   aborts.
+
+### What this means
+
+**`bh` is the same defect as `tests/list_mul_scalar_object_separation.py`**
+-- the repro built for `richards`, `[0] * 4` against `[None] * 4`. Same
+mechanism exactly, with `["seed"]` in place of `[0]`. The `nilstore` fix
+happened to resolve `richards`'s instance (there the nil store had lost its
+setter and could not become a `split_css` starter); `bh`'s instance has a
+`str` on the other side, so that fix does not reach it.
+
+So `bh` is NOT a separate problem from the flag arm's other blockers, and
+it is not really about shared container-method contours at all -- those are
+downstream. It is arity-1 list literals sharing a contour, which is
+[133](133-split-a-container-on-its-element-type.md), and the test for it is
+already in the tree.
