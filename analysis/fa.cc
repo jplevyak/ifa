@@ -511,6 +511,8 @@ static bool cs_elem_irrepresentable(CreationSet *cs);  // ifa/133: defined with 
 // from setter confluences, so the demand never reached it.
 static int elemsetter_enabled();
 static int eslineage_enabled();   // ifa/133: durable ES split lineage, ditto
+static int violcs_enabled();      // ifa/133: route a violation's CSs to route 4
+extern int viol_cs_deferred;
 static int esl_hit = 0, esl_walk = 0;  // ifa/133: split-parent route hits / chain walks
 static int mint_in_child = 0, mint_child_novar = 0, mint_child_cmc = 0;
 static int esl_reached = 0, esl_decline = 0;
@@ -9235,6 +9237,29 @@ static void cs_member_signature(AVar *d, std::string &out) {
   // as dead -- and they are not the same finding. Print on entry so the
   // three can be told apart.
   int analyze_again = 0;
+  // ifa/133: bring the VIOLATION demand here directly, instead of via stage
+  // 5. On `bh` stage 5 is starved on all 40 passes (`analyze_again=1 ->
+  // starved`), so a violation is never consulted -- and un-starving it by
+  // lifting the quiescence gate costs 16 suite tests, which is the retreat
+  // CLAUDE.md warns about. But the deferral does not need the STAGE: route 4
+  // runs on EVERY pass regardless, and all the demand has to do is name a
+  // CreationSet. So walk each violation backward and offer every CreationSet
+  // on the path -- the one that MERGED is generally upstream of the one where
+  // the union is observed.
+  if (violcs_enabled() >= 3)
+    for (ATypeViolation *v : fa->type_violations) if (v && v->av) {
+      Vec<AVar *> seen, work;
+      seen.set_add(v->av);
+      work.add(v->av);
+      for (int i = 0; i < work.n && i < 20000; i++)
+        for (AVar *b : work.v[i]->backward)
+          if (b && seen.set_add(b)) {
+            work.add(b);
+            if (!b->contour_is_entry_set && b->contour != GLOBAL_CONTOUR)
+              if (CreationSet *bcs = (CreationSet *)b->contour)
+                if (fa->css_set.set_in(bcs) && tc_cs_dropped.set_add(bcs)) ++viol_cs_deferred;
+          }
+    }
   Vec<CreationSet *> css;
   for (CreationSet *cs : tc_cs_dropped)
     if (cs && fa->css_set.set_in(cs)) css.set_add(cs);
@@ -9831,7 +9856,7 @@ static int violcs_enabled() {
   if (e < 0) { cchar *v = getenv("PYC_VIOLCS"); e = v ? atoi(v) : 0; }
   return e;
 }
-static int viol_cs_deferred = 0;
+int viol_cs_deferred = 0;
 
 static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Vec<AVar *> &imprecisions) {
   for (ATypeViolation *v : violations) if (v) {
@@ -9876,16 +9901,30 @@ static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Ve
     // the one that needs it.
     if (violcs_enabled() >= 2) {
       Vec<AVar *> seen, work;
+      Vec<CreationSet *> reached;
       seen.set_add(v->av);
       work.add(v->av);
-      for (int i = 0; i < work.n && i < 20000; i++)
+      int leaves = 0;
+      for (int i = 0; i < work.n && i < 20000; i++) {
+        if (!work.v[i]->backward.n) ++leaves;
         for (AVar *b : work.v[i]->backward)
           if (b && seen.set_add(b)) {
             work.add(b);
             if (!b->contour_is_entry_set && b->contour != GLOBAL_CONTOUR)
-              if (CreationSet *bcs = (CreationSet *)b->contour)
+              if (CreationSet *bcs = (CreationSet *)b->contour) {
+                reached.set_add(bcs);
                 if (fa->css_set.set_in(bcs) && tc_cs_dropped.set_add(bcs)) ++viol_cs_deferred;
+              }
           }
+      }
+      if (getenv("IFA_DBG_VIOLWALK")) {
+        fprintf(stderr, "[violwalk] av=%d var=%s closure=%d leaves=%d CSs_reached=%d:", v->av->id,
+                (v->av->var && v->av->var->sym && v->av->var->sym->name) ? v->av->var->sym->name : "(anon)",
+                seen.set_count(), leaves, reached.set_count());
+        for (CreationSet *c : reached)
+          if (c && c->sym) fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+        fprintf(stderr, "\n");
+      }
     }
 
     if (is_call_result(v->av)) {

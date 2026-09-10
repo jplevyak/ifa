@@ -1052,3 +1052,70 @@ gate in `collect_type_confluence` (`PYC_CONFNIL=1`, measured inert on `bh`).
 
 `tests/arity1_literal_shares_contour.py` stays as the SIGNATURE guard, with
 its header saying so. The faithful repro has to wait on the answer above.
+
+## WHERE `bh` FAILS THE DEMAND -- stage 5 never runs, and the fix (2026-09-10)
+
+Author: *"keep digging, find where bh fails the demand"*. Found it, and it
+is upstream of everything the previous sections were probing.
+
+**The demand is never consulted.** `IFA_DBG_VIOLWALK` produced no output on
+`bh` at all -- because `collect_violation_imprecisions` is never called.
+`IFA_DBG_STAGE5` says why:
+
+```
+[stage5] p=4  analyze_again=1 -> starved
+[stage5] p=5  analyze_again=1 -> starved
+   ... every pass ...
+[stage5] p=39 analyze_again=1 -> starved
+```
+
+Stage 5 is starved on **all 40 passes**. The stages above it always claim
+progress -- TYPE_CONFL 40 times, SETTER 18, SETTER_OF_SETTER 10,
+MARK_SETTER 4 -- so under the first-stage-wins cascade the VIOLATION stage
+never executes once. `bh`'s `illegal call argument type ... illegal: str`
+is recorded and then never looked at.
+
+**The obvious fix is the wrong one.** Lifting the quiescence gate
+(`PYC_SIZEOF_VIOL=2`) does let stage 5 run, and with the demand-transfer
+machinery it takes `bh` from 11 warnings to 1 -- but it costs **16 suite
+tests** on its own. That is exactly the retreat CLAUDE.md names: answering
+starvation with more splitting rather than with a demand test.
+
+**The deferral does not need the STAGE.** All the demand has to do is name
+a CreationSet, and route 4 (`split_css_by_defs`) runs on EVERY pass
+regardless of quiescence. So walk each violation backward and offer every
+CreationSet on the path directly to route 4 -- `PYC_VIOLCS=3`. No gate is
+lifted and no stage ordering changes.
+
+### Result: both remaining flag-arm blockers are fixed
+
+With `PYC_VIOLCS=3 PYC_CSMEMBER=1`, on `PYC_CSDCPA1=2 PYC_CSLADDER=3`:
+
+| | compile | pyc warnings | run | stdout |
+| --- | --- | --- | --- | --- |
+| `bh` | 0 | **0** | **rc=0** | **identical to CPython** |
+| `sudoku5` | 0 | 24 (same as the default arm) | **rc=0** | identical but the `TIME` line |
+
+and it is safe:
+
+| | |
+| --- | --- |
+| pyc suite | **314 passed / 0 failed**, both backends, on and off |
+| default arm contours | **identical** on `chess`, `richards`, `sudoku1`, `nbody`, `dijkstra` |
+| six gates | green |
+
+### Why all three pieces were needed, and why one was dropped
+
+- **`PYC_VIOLCS=3`** -- the violation names the CreationSet where the union
+  is OBSERVED; the one that MERGED is upstream, so the demand must be walked
+  back. Alone: `bh` 11 -> 10 warnings.
+- **`PYC_CSMEMBER=1`** -- the merged contour then declines with "flow graph
+  covers none of the defs", because the content key asks what is IN the
+  container; the member key asks what the container is IN. Alone: no effect
+  on `bh`. Together: **0**.
+- **`PYC_SIZEOF_VIOL=2`** -- needed only while the deferral lived inside
+  stage 5. Once it is handed to route 4 directly it is unnecessary, which is
+  fortunate, because it is the piece that broke 16 tests.
+
+Both mechanisms remain at default 0. A corpus `check` sweep on both arms is
+owed before flipping them, per this repo's rule for a splitter change.
