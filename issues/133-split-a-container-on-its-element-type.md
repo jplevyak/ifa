@@ -2908,3 +2908,200 @@ same shape without the feedback, `a=[]; a.append(1); b=[]; b.append("x")`
 -- IS fixed by the three mechanisms (0 diagnostics under the flag), which
 is what makes this one's remaining failure specifically about the
 comprehension feedback rather than about literals sharing a contour.
+
+## 2026-09-10: ROOT CAUSED. The demand is lost at a shared `append` contour
+
+The section above is superseded. "Every key computed from the current graph
+sees the symmetry" was the right observation and the wrong conclusion: the
+graph is not symmetric, it only *looks* symmetric after one specific
+unrealizable path is walked. The distinction is present the whole time.
+
+### The measurement
+
+`IFA_DBG_CSKEYS=<csid>` (new, in `split_css_by_defs`) prints a
+CreationSet's assign-set key TYPES, its per-set targets and creation
+points, and each def's signature. `IFA_DBG_CSPATH=<setidx>` adds a BFS
+re-walk of one assign set printing the parent chain to every creation
+point, and every JOIN on the way.
+
+```
+[cskeys] p=8 cs=1060 defs=2 sets=3
+  set 0 key= B#1027         path=41 targets=1  tgt: av3667(self)
+  set 1 key= A#1026 B#1027  path=48 targets=4
+  set 2 key= A#1026         path=41 targets=1  tgt: av3662(self)
+  def[0] av=2999 in=prune sig=111
+  def[1] av=3130 in=prune sig=111
+```
+
+**The demand's own distinction is in the graph.** Set 0 is pure `{B}`, set
+2 is pure `{A}`, each with a single target. The violation says
+`illegal: B`. Nothing is missing at the top.
+
+What is wrong is the def signatures: `111` for both. Three JOINs explain
+it, and only one is illegitimate:
+
+```
+JOIN av3002/es50 (anon)@prune  <- av2999(DEF)  av3003        # comp 1 accumulator phi
+JOIN av3133/es50 (anon)@prune  <- av3130(DEF)  av3151        # comp 2 accumulator phi
+JOIN av3242/es60 self@append   <- av3578/es60 av3581/es60    # <-- THIS ONE
+```
+
+Cutting that single node -- and only that one -- scores the defs `110` and
+`011`, exactly the partition the demand named, and the program compiles
+with no warnings and prints the right answer.
+
+### Why that node joins them
+
+```
+$ IFA_DBG_FUNES=append
+FUNES fun=append contours=3
+  es=60  args= [append#41] [list#1060]              [A#1026 B#1027]
+  es=78  args= [append#41] [list#1055 list#1060]    [A#1026]
+  es=79  args= [append#41] [list#1059 list#1060]    [B#1027]
+```
+
+`es=60` is ONE `append` contour serving BOTH comprehensions' appends,
+because both accumulators are `list#1060` -- the very CreationSet route 4
+is trying to split. Its `x` formal is `{A, B}`: **the union is formed
+there**, and it is written into `cs=1060`'s element channel from there.
+
+The backflow walk then descends into `es=60` from comprehension 1's append
+call and ascends out of `self` into comprehension 2's receiver. `self`'s
+backward edges are the actuals over EVERY in-edge, so following all of
+them leaves through a call the walk did not enter by. That path is
+unrealizable -- unmatched call and return -- and it is the only thing
+putting both creation points on all three assign sets.
+
+### The general finding: a CS merge propagates into an ES merge
+
+This is the deadlock a start-merged analysis creates for itself, and it is
+worth stating on its own because it is not specific to this fixture:
+
+> Two call sites whose receivers differ only in WHICH creation point they
+> hold are TYPE-IDENTICAL, so they share one EntrySet. That contour then
+> hides the partition needed to undo the CreationSet merge. Type-based ES
+> splitting cannot break it — the types are equal by construction.
+
+So `PYC_CSDCPA1=2` does not merely need route 4; it needs route 4 to be
+given a graph that has not been flattened by the ES merge its own initial
+merge caused.
+
+### The fix: match call and return (`PYC_WALKCTX=1`)
+
+In `build_cs_flow_graph`'s backflow walk, carry a CONTEXT per node: the
+call edge the walk descended through and has not yet returned through.
+
+- Descending (a step from a call result to that callee's return) records
+  the edge, when the call site names exactly one; with several candidates
+  there is nothing to match, so the context is left free rather than
+  guessed.
+- Ascending out of a formal of that contour is allowed only for the actual
+  that edge supplies, and returning clears the context.
+- With no edge recorded, every ascent is free. This matters: the walk's
+  roots sit INSIDE callees (`self` in `__setitem__`, in `append`), so
+  their first ascent has no call to match.
+
+The blocked node is NOT recorded as a creation point -- nothing is
+allocated there. Recording it feeds routes 1 and 3 a creation point that
+does not exist.
+
+This is a soundness fix to a reachability walk, not a heuristic: the path
+removed is one no execution takes.
+
+### Two weaker rules were measured first, and both are retreats
+
+Worth recording because each looked adequate on the fixture that motivated
+it and each failed somewhere else.
+
+| rule | what breaks |
+| --- | --- |
+| refuse every ascent out of a multi-caller formal | `tests/match_map_star.py` loses `x`'s type entirely -- the only route from the write to the creation points runs through one |
+| carry a sticky "have descended" bit | never pops, so after ONE call every later ascent is refused; corpus `plcfrs` stops compiling, with a seven-way `mixed basic types: (list tuple int64 str ChartItem Edge Entry)` |
+
+The sticky bit is the instructive one. It fixed `listcomp` and
+`match_map_star` and passed `make test` 314/0, and it was still wrong --
+"stop after the first call" is not matching. Only the corpus caught it
+(compile_fail 2 -> 3 at the default arm). A suite pass is not evidence
+that a reachability restriction is the right shape.
+
+### Result
+
+`tests/listcomp_element_separation.py` compiles clean and prints `1` on
+BOTH arms. `make test` is 314/0 with `PYC_WALKCTX=1` on the default arm.
+
+The dependency now runs the way CLAUDE.md states it should: the
+CreationSet splits on demand, and `append` separates BY TYPE on the
+following pass as a consequence. No EntrySet is split in order to create
+data contours.
+
+`tests/splitter_cartesian_product.py` is NOT fixed by this -- its extra
+`illegal: B` comes from the receiver/dispatch side, which is ifa/146 E's
+outstanding debt, not this walk.
+
+
+## 2026-09-10: `PYC_WALKCTX` measured on the corpus
+
+`corpus_sweep.sh -m compile`, four arms, same tree (`b847e122`), same
+binary, run serially.
+
+| arm | cfail | warns | container CS |
+| --- | --- | --- | --- |
+| default | 2 (othello3, rdb) | 43 | 2740 |
+| default + `PYC_WALKCTX=1` | 2 (othello3, rdb) | 43 | 2749 |
+| flag | 2 (othello3, rdb) | 45 | 2406 |
+| flag + `PYC_WALKCTX=1` | **3** (+ sudoku5) | 44 | 2403 |
+
+**Neutral at the default arm** -- same compile set, same warning count,
++9 CreationSets out of 2740. Together with `make test` 314/0 with the
+flag on, that is enough to say the walk restriction costs nothing where
+it is not needed.
+
+**At the flag arm it costs `sudoku5`**, which is not yet understood and
+is the reason this stays opt-in.
+
+### What sudoku5 is, and what it is not
+
+`select()` builds `cols = []` and appends sets into it; `deselect()` does
+`X[j] = cols.pop()` and then `X[k].add(i)`. The failure is
+`illegal call argument type expression illegal: list` at that `.add` --
+`cols`' element has become `{list, set}`, so a list reaches `X[j]`.
+
+The CreationSet holding it has **one creation point** (`av` for the `[]`
+inside `list.__init__`), so route 4 declines "single creation point" on
+every pass, on BOTH arms. The arms differ only in how long the analysis
+keeps moving: 41 passes / 93 splits without the restriction, 17 / 82 with
+it.
+
+Two theories were tested and BOTH are wrong:
+
+- *"fewer `__init__` contours cascade into fewer per-site CreationSets"* --
+  `IFA_DBG_FUNES=__init__` reports `contours=2` on both arms.
+- *"the demand is simply absent"* -- see below; adding it does not fix the
+  program.
+
+Comparing the two runs by CreationSet id does not work: the ids drift
+(`cs=1751` holds `av=5811` on one arm and `av=10800` on the other), so a
+lineage read off the log is not evidence. That is how far this got.
+
+### A real adjacent gap, found on the way (`PYC_CONTAINERUNION`)
+
+`elem_irrepresentable` did not classify `{list, set}` as irrepresentable.
+Both syms are non-basic, so `nb` stays 0, and neither the
+`{container, scalar}` clause nor the `{two basics}` clause fires. pyc has
+no runtime tag, so a union of two container LAYOUTS genuinely has no
+representation -- that is exactly what `tests/list_tuple_union_method.py`
+(ifa/030) records and what `cg_fail_unrepresentable_container_union`
+reports downstream.
+
+`PYC_CONTAINERUNION=1` adds the clause: two distinct container SYMS (not
+CreationSets -- two contours of one sym share a layout, and classes are
+excluded because a class union dispatches). It is correct on its own
+terms and it does **not** fix sudoku5: the CreationSet still has one
+creation point, so raising the demand changes nothing about route 4's
+ability to answer it. Kept opt-in, unmeasured on the corpus.
+
+### Where this leaves the flip
+
+`listcomp_element_separation` -- the blocker this work started on -- is
+fixed on both arms. `sudoku5` at the flag arm is a new, characterized
+cost with `PYC_WALKCTX=1`, and the flag arm without it is unchanged.
