@@ -678,3 +678,70 @@ setter side as well.
 `PYC_ELEMSETTER` kept at default 0. It is correct and suite-neutral, but it
 buys nothing measurable yet, so it is apparatus rather than a landed
 improvement.
+
+## THE CONVERGENCE, located -- and the member IS the partition (2026-09-09)
+
+Author: *"look, there is a convergence. that is the key. focus on that.
+where is it. how can we move it to the instance variable or member?"*
+
+**Where it is.** Only NINE distinct sites in the whole of `bh` mix `str`
+with a class (`[confluence]` lines, `PYC_LOG=s`):
+
+```
+av 3797 x     [ES/formal]  str None Body tuple Cell    <- append(self, x)'s VALUE
+av 3894 value [ES/formal]  str None Body tuple Cell    <- __setitem__'s value
+av 4515 (anon)[CS/other]   str None Body tuple Cell    <- a MEMBER
+av 7362 root  [CS/other]   str None Body tuple Cell    <- a MEMBER (Tree.root)
+av 7641 x     [ES/formal]  str Body
+```
+
+The first is the cause; the rest are downstream of reading a polluted
+element. And two of the nine are ALREADY on instance variables --
+`[CS/other]` means the AVar's contour is a CreationSet, i.e. it is a
+member -- which stage 1 detects and then DROPS (`tc_skip_cs`, "deferred to
+CS_DEF_PARTITION").
+
+**Moving it to the member works, and here is the measurement.** For the
+merged root `cs=1180` (8 creation points, element
+`{str, Body, tuple, Cell}`), walking each creation point's FORWARD closure
+and recording which MEMBERS it reaches:
+
+```
+av=2847  __set_iter__._items
+av=4123  Tree.bodies  closure.seq  closure.x  __list_iter__.thelist
+av=1434  __dict_items_iter__._keys
+av=1437  __dict_items_iter__._vals
+av=1399  __dict_iter__._keys
+av=7676  closure.r closure.tmp __list_iter__.thelist closure.x
+av=7602  closure.r closure.tmp __list_iter__.thelist closure.x
+av=3013  closure.result closure.tmp closure.args closure.x
+```
+
+**The creation points reach DIFFERENT members**, and `Tree.bodies` -- the
+`Body` list -- is reached by exactly ONE of them. Partitioning `cs->defs`
+by the SET OF MEMBERS each reaches yields about **7 groups from 8 defs**,
+against route 4's **2**. The distinction the demand needs is right there,
+and no rung looks at it.
+
+**Why this is the right key, not provenance.** A member is part of a
+class's declared structure (`Sym::has`) -- "which field holds this
+container" is a structural fact about the program's TYPES, in the same
+family as arity ([132](132-arity-is-representation-not-provenance.md)). It
+is not "where did this value come from". And unlike a violation or a stuck
+dispatch it is observable BEFORE the union forms, so it does not have the
+circularity that defeated the violation-gated experiments in
+[133](133-split-a-container-on-its-element-type.md).
+
+**Why the existing rungs miss it.** Route 4's `build_cs_flow_graph` keys on
+the CONTENT channel (`cs_content_avars` -- the element, or the positional
+vars), i.e. on what is IN the container. The members are what the container
+is IN. Those are different graphs, and only the second separates `bh`'s
+lists: every one of these creation points has the same polluted content by
+the time the demand is visible, which is why the content key collapses them
+to 2 groups.
+
+**So the concrete next step is a new partition key for route 4**: group a
+CreationSet's creation points by the set of member AVars their forward
+closure reaches. Everything needed is already in the graph -- this section's
+numbers were produced by a 12-line probe (`IFA_DBG_MEMBER`) over
+`av->forward`.

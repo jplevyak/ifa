@@ -9154,6 +9154,25 @@ static bool cs_elem_irrepresentable(CreationSet *cs) {
                     (d->var && d->var->sym && d->var->sym->name) ? d->var->sym->name : "(anon)",
                     (de && de->fun && de->fun->sym && de->fun->sym->name) ? de->fun->sym->name : "?");
           }
+          // ifa/133: which MEMBERS does each creation point flow into?
+          // If the demanded CS's defs reach DIFFERENT members, the member is
+          // a partition the demand can be moved to.
+          if (getenv("IFA_DBG_MEMBER")) {
+            for (AVar *d : cs->defs) if (d) {
+              Vec<AVar *> seen, work; seen.set_add(d); work.add(d);
+              fprintf(stderr, "\n      def av=%d reaches members:", d->id);
+              for (int i = 0; i < work.n && i < 20000; i++)
+                for (AVar *f : work.v[i]->forward) if (f && seen.set_add(f)) {
+                  work.add(f);
+                  if (!f->contour_is_entry_set && f->contour != GLOBAL_CONTOUR && f->var &&
+                      f->var->sym && f->var->sym->name) {
+                    CreationSet *oc = (CreationSet *)f->contour;
+                    fprintf(stderr, " %s.%s",
+                            (oc && oc->sym && oc->sym->name) ? oc->sym->name : "?", f->var->sym->name);
+                  }
+                }
+            }
+          }
           AVar *pe = unique_AVar(cs->sym->element->var, cs);
           fprintf(stderr, " elem=");
           if (pe && pe->out && pe->out->type)
