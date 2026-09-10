@@ -997,3 +997,58 @@ literal (`__slots__ = ["seed"]`), not a nil store that had lost its setter.
 **New minimal repro: `tests/arity1_literal_shares_contour.py`** -- 35 lines,
 clean at the default, and under `PYC_CSDCPA1=2` emits `illegal call
 argument type 'b' illegal: str`, which is `bh`'s exact signature.
+
+## A faithful minimal repro for `bh` -- NOT YET (2026-09-10)
+
+Author: *"so we need a minimal repo for bh"*. Agreed, and I do not have one.
+What I have reproduces the signature and even the CreationSet shapes, but
+not the blocking behaviour, and the gap is now located precisely enough to
+be the next thing to chase.
+
+**`bh`'s merge point, found.** `IFA_DBG_CSDUMP=-1` dumps every `list`
+CreationSet with its positional slots and creation points:
+
+```
+[cs] id=1180 defs=4 vars=0 elem_var=1  | 4x ___init___
+[cs] id=1191 defs=5 vars=1 var[0]=str#8
+     | def in=__init__ | def in=___init___ | def in=__init__
+     | def in=create_test_data | def in=__init__
+```
+
+`cs=1191` is the arity-1 literal contour holding BOTH
+`__slots__ = ["seed"]` (in `___init___`, the class body) and four `[None]`
+literals. Five creation points, so it is partitionable.
+
+**A structurally identical repro does NOT reproduce the blockage.** Built
+one with the same shape -- a `__slots__ = ["seed"]`, three classes each
+doing `[None] * n`, and a module-level `[None] * n` -- and its contours come
+out the same:
+
+| | 4-def CS | 5-def literal CS |
+| --- | --- | --- |
+| repro | `defs=4`, 4x `___init___` | `defs=5 vars=1 var[0]=str#8` |
+| `bh` | `defs=4`, 4x `___init___` | `defs=5 vars=1 var[0]=str#8` |
+
+But with `PYC_VIOLCS=2 PYC_CSMEMBER=1` the repro goes to **0 diagnostics**
+and `bh` stays at **10**. The trace says why:
+
+```
+repro:  cs=1036 def av=3220 -> cs=1081 (group 1/2)      <- SPLITS
+        cs=1030 defs=5 MEMBER-KEY -> 5 groups           <- SPLITS
+bh:     cs=1191  (no csdefsplit lines at all)           <- NEVER A CANDIDATE
+```
+
+**So the open question is sharp:** why does `bh`'s `cs=1191` never become a
+route-4 candidate, when the structurally identical `cs=1036` in the repro
+does? The backward demand walk (`PYC_VIOLCS=2`) reaches the repro's merge
+and not `bh`'s, so something on `bh`'s path from the observed violation back
+to the literal contour is not traversable by `av->backward` -- one hop more
+than the repro has, or a primitive that copies content without leaving a
+backward edge.
+
+Ruled out along the way: it is not the number of creation points (both 5),
+not the class-body `__slots__` shape (both have it), and not the nil-writer
+gate in `collect_type_confluence` (`PYC_CONFNIL=1`, measured inert on `bh`).
+
+`tests/arity1_literal_shares_contour.py` stays as the SIGNATURE guard, with
+its header saying so. The faithful repro has to wait on the answer above.

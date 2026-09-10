@@ -5736,11 +5736,25 @@ static void dbg_dump_av(AVar *av) {
   }
 }
 
+// ifa/133: the same conflation the `nilstore` fix closed in
+// compute_setters, at the site this issue's audit measured as "inert". It
+// is NOT inert on `bh`: cs=1191 is the arity-1 literal contour holding both
+// `__slots__ = ["seed"]` and four `[None]` literals, its var[0] is
+// {str, nil}, and the NIL writer is skipped here -- so no confluence is
+// detected, the CreationSet never reaches `tc_cs_dropped`, and route 4
+// never sees the merge at all. `->type` projects a lone nil to bottom, so
+// skip only when the RAW type is empty too, i.e. genuinely not analyzed.
+static int confnil_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_CONFNIL"); e = v ? atoi(v) : 0; }
+  return e;
+}
+
 static void collect_type_confluence(AVar *av, Vec<AVar *> &confluences) {
   dbg_dump_av(av);
   AVar *trigger = nullptr;  // ifa/133: the writer that made this a confluence
   for (AVar *x : av->backward) if (x) {
-    if (!x->out->type->n) continue;
+    if (!x->out->type->n && !(confnil_enabled() && x->out->n)) continue;
     if (av->var->sym->clone_for_constants) {
       if (type_diff(av->in, x->out) != fa->type_world.bottom_type) {
         confluences.set_add(av);
