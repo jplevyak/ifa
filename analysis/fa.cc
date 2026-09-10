@@ -9118,6 +9118,69 @@ static bool cs_elem_irrepresentable(CreationSet *cs) {
   return elem_irrepresentable(unique_AVar(cs->sym->element->var, cs));
 }
 
+// ifa/133: the MEMBER partition key.
+//
+// The content key above (`build_cs_flow_graph` over `cs_content_avars`)
+// asks what is IN a container. This asks what the container is IN: the set
+// of instance variables / members its creation point can reach. Those are
+// different graphs, and on `bh` only the second separates the lists --
+// by the time an element union is observable EVERY creation point carries
+// the whole union, so the content key collapses them (measured: 2 groups
+// from 8 creation points, both still `{str, Body}`), while the members they
+// reach are distinct (`Tree.bodies` reached by exactly one of the eight).
+//
+// This is a TYPE-side key, not provenance: a member is part of a class's
+// declared structure (`Sym::has`), so "which field holds this container" is
+// a structural fact about the program's types, the same family as arity
+// (ifa/132). It is keyed on `Sym::id`, never on the name (CLAUDE.md).
+//
+// It is also observable BEFORE the union forms, which is what the
+// violation-gated experiments in ifa/133 could not manage.
+static int csmember_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_CSMEMBER"); e = v ? atoi(v) : 0; }
+  return e;
+}
+static int csm_used = 0, csm_split = 0;
+
+// Members reachable forward from `d`, as a canonical string of Sym ids.
+static void cs_member_signature(AVar *d, std::string &out) {
+  out.clear();
+  if (!d) return;
+  Vec<AVar *> seen, work;
+  seen.set_add(d);
+  work.add(d);
+  Vec<int> ids;
+  const int cap = 20000;  // bounded: this runs per def, per candidate, per pass
+  for (int i = 0; i < work.n && i < cap; i++)
+    for (AVar *f : work.v[i]->forward)
+      if (f && seen.set_add(f)) {
+        work.add(f);
+        // A CreationSet-contoured AVar with a named Var IS a member -- but
+        // only members of REAL objects name a distinction worth splitting
+        // on. A closure's captured slots are per-contour by construction
+        // (creation_point mints closures unique per site x contour), so
+        // counting them makes the signature nearly unique per creation
+        // point, which is a FAN wearing a type key -- measured: defs=8 ->
+        // 8 groups, defs=4 -> 4 groups. Structural test on `sym_closure`,
+        // never on the name (CLAUDE.md).
+        if (!f->contour_is_entry_set && f->contour != GLOBAL_CONTOUR && f->var && f->var->sym &&
+            f->var->sym->name) {
+          CreationSet *oc = (CreationSet *)f->contour;
+          if (oc && oc->sym && oc->sym != sym_closure) ids.set_add(f->var->sym->id);
+        }
+      }
+  ids.set_to_vec();
+  qsort(ids.v, ids.n, sizeof(ids[0]), [](const void *a, const void *b) {
+    return *(const int *)a - *(const int *)b;
+  });
+  char buf[24];
+  for (int id : ids) {
+    snprintf(buf, sizeof(buf), "%d,", id);
+    out += buf;
+  }
+}
+
 [[nodiscard]] static int split_css_by_defs(int quiescent) {
   if (!csdefsplit_enabled()) return 0;
   const bool dbg = getenv("IFA_DBG_CSDEFSPLIT") != nullptr;
@@ -9397,6 +9460,54 @@ static bool cs_elem_irrepresentable(CreationSet *cs) {
             sig[(size_t)i] += on ? '1' : '0';
             if (on) informative = 1;
           }
+      // Group id per def, assigned in id order so the partition is stable.
+      std::vector<int> gid((size_t)defs.n, -1);
+      int ngroups = 0;
+      auto regroup = [&]() {
+        for (size_t i = 0; i < gid.size(); i++) gid[i] = -1;
+        ngroups = 0;
+        for (int i = 0; i < defs.n; i++) {
+          for (int j = 0; j < i; j++)
+            if (sig[(size_t)j] == sig[(size_t)i]) { gid[(size_t)i] = gid[(size_t)j]; break; }
+          if (gid[(size_t)i] < 0) gid[(size_t)i] = ngroups++;
+        }
+      };
+      regroup();
+      // ifa/133: the MEMBER key, tried when the CONTENT key names no
+      // partition -- either it covers none of the defs, or every def landed
+      // in one group. That is exactly the state `bh` is stuck in.
+      bool by_member = false;
+      // Tried whenever the member key could name a FINER partition than the
+      // content key, not only when the content key fails outright. On `bh`
+      // the content key does not fail -- it returns 2 groups and both still
+      // carry `{str, Body}` -- so a failure-only fallback never fires. The
+      // demand is unsatisfied either way; the finer partition is the one
+      // that can answer it.
+      if (csmember_enabled()) {
+        std::vector<std::string> msig((size_t)defs.n);
+        int m_informative = 0;
+        for (int i = 0; i < defs.n; i++) {
+          cs_member_signature(defs.v[i], msig[(size_t)i]);
+          if (!msig[(size_t)i].empty()) m_informative = 1;
+        }
+        if (m_informative) {
+          int content_groups = ngroups;
+          sig.swap(msig);
+          regroup();
+          if (ngroups >= 2 && ngroups > content_groups) {
+            by_member = true;
+            informative = 1;
+            ++csm_used;
+            if (dbg)
+              fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d MEMBER-KEY -> %d groups\n", analysis_pass,
+                      cs->id, cs->sym->name ? cs->sym->name : "?", defs.n, ngroups);
+          } else {
+            sig.swap(msig);  // put the content signature back for the log below
+            regroup();
+          }
+        }
+      }
+      (void)by_member;
       if (!informative) {
         // No def is on any path: the graph names no partition of THESE
         // defs, so there is nothing to act on. Declining is correct --
@@ -9405,14 +9516,6 @@ static bool cs_elem_irrepresentable(CreationSet *cs) {
           fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d DECLINED (flow graph covers none of the defs)\n",
                   analysis_pass, cs->id, cs->sym->name ? cs->sym->name : "?", defs.n);
         continue;
-      }
-      // Group id per def, assigned in id order so the partition is stable.
-      std::vector<int> gid((size_t)defs.n, -1);
-      int ngroups = 0;
-      for (int i = 0; i < defs.n; i++) {
-        for (int j = 0; j < i; j++)
-          if (sig[(size_t)j] == sig[(size_t)i]) { gid[(size_t)i] = gid[(size_t)j]; break; }
-        if (gid[(size_t)i] < 0) gid[(size_t)i] = ngroups++;
       }
       if (ngroups < 2) {
         if (dbg)

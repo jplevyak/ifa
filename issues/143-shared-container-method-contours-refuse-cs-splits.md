@@ -745,3 +745,62 @@ CreationSet's creation points by the set of member AVars their forward
 closure reaches. Everything needed is already in the graph -- this section's
 numbers were produced by a 12-line probe (`IFA_DBG_MEMBER`) over
 `av->forward`.
+
+## The MEMBER key, implemented -- `sudoku5` FIXED on the flag arm (2026-09-09)
+
+Built the key the previous section called for: group a CreationSet's
+creation points by the set of MEMBERS their forward closure reaches, used
+in `split_css_by_defs` whenever it names a FINER partition than the content
+key. `PYC_CSMEMBER`, default 0.
+
+**Two failed iterations first, and the second is the whole point.**
+
+1. *Fallback only when the content key fails.* Never fired. Route 4's
+   dominant decline is `defs.n < 2`, which short-circuits before any
+   signature, and on `cs=1180` the content key does not fail -- it returns
+   2 groups, both still `{str, Body}`. Changed to "use the member key
+   whenever it is strictly finer".
+2. *Counting every member.* Fired, and produced a FAN: `defs=8 -> 8
+   groups`, `defs=4 -> 4 groups`, `defs=31 -> 20 groups`. `sudoku5` got
+   WORSE (364 -> 375 errors). The probe output said why -- the members
+   being counted were `closure.r`, `closure.tmp`, `__list_iter__.thelist`:
+   internal plumbing, not user structure. A closure's slots are per-contour
+   by construction (`creation_point` mints closures unique per site x
+   contour), so counting them makes the signature nearly unique per
+   creation point. **That is a fan wearing a type key, and `defs=8 -> 8
+   groups` is exactly the ifa/144 signature I have been flagging all
+   session.**
+
+**Excluding closure-contoured members (structural test on `sym_closure`,
+never on a name) is what makes it work:**
+
+| | `sudoku5` (flag arm) | `bh` (flag arm) | pyc suite | default arm |
+| --- | --- | --- | --- | --- |
+| `PYC_CSMEMBER=0` | **364 errors**, ess=1104 css=2634 | w=11, ess=372 | 313 / 0 | baseline |
+| `PYC_CSMEMBER=1` | **0 errors**, ess=**629** css=**1476** | w=11, ess=372 | 313 / 0 | **contour-identical** |
+
+`sudoku5` now compiles on the flag arm with **24 warnings -- the same count
+as the default arm -- runs `rc=0`, and prints output matching CPython but
+for the `TIME` benchmark line.** ess falls 43%, css 44%.
+
+Default arm measured contour-identical on `chess`, `richards`, `sudoku1`,
+`bh`, `nbody`, `dijkstra`; suite 313 passed / 0 failed on both backends.
+
+**Why this is a type-side key and not provenance.** A member is part of a
+class's declared structure (`Sym::has`); "which field holds this container"
+is a fact about the program's types, the same family as arity
+([132](132-arity-is-representation-not-provenance.md)). It is keyed on
+`Sym::id`. And it is observable BEFORE the element union forms, which is
+what every violation-gated experiment in
+[133](133-split-a-container-on-its-element-type.md) could not manage. The
+closure exclusion is what keeps it a partition rather than a fan: closure
+slots are per-contour by construction, so they carry no information about
+which USER structure a container belongs to.
+
+**`bh` is unchanged** and remains the last blocker -- its lists reach only
+ONE user member (`Tree.bodies`) out of eight creation points, so there is
+no member partition to make. Its problem is the one the previous sections
+reach from both sides: a formal's ELEMENT type, which nothing keys on.
+
+**Not landed on** (`PYC_CSMEMBER` defaults to 0): a corpus `check` sweep on
+both arms is owed first, per this repo's rule for a splitter change.
