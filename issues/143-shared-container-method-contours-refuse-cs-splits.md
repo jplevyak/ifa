@@ -1254,3 +1254,82 @@ pipeline where `[0,1,2]` is unambiguously int-slotted. Doing it there is a
 change to CS IDENTITY rather than to a splitting rung, which is a different
 and larger kind of change than anything tried in this issue so far -- and
 it is what ifa/132 did for arity.
+
+## Where the demand was failing for `sudoku3` -- and the fix (2026-09-10)
+
+Author: *"the solution must be demand not at mint. figure out where demand
+is failing"*. Right on both counts. The mint-side key was the wrong
+instinct, and the demand was failing in a specific, small place.
+
+**First, a wrong turn worth recording.** I thought the demand test itself
+was blind -- `cs_elem_irrepresentable` inspects only the generic ELEMENT
+channel, and `cs=1022`'s content is entirely in its positional slots. Wired
+the test to the slots as well (`PYC_CSSLOTDEMAND`) and it changed nothing,
+because `cs=1022` was ALREADY a candidate: it arrives via confluence, and
+the demand-add loop skips anything already in the candidate set
+(`!css.set_in(cs)`), which is why it shows `DEMAND-ADDED` zero times. The
+demand reaches the rung.
+
+**Where it actually fails is one line further in.** `cs_content_avars`
+decides which AVars the partition graph is built over:
+
+```c
+if (cs->sym->element && cs->sym->element->var && cs->added_element_var) {
+  if (AVar *e = unique_AVar(cs->sym->element->var, cs)) out.add(e);
+  return;                       // <- returns on the EXISTENCE of the element
+}
+for (AVar *v : cs->vars) if (v && v->out) out.add(v);
+```
+
+A container has TWO content channels (ifa/104), and HAVING an element
+channel does not mean the content is IN it. A literal fills `cs->vars` and
+leaves the element bottom -- deliberately, because that is what
+`tuple_able()` tests. This returned on the mere existence of the element
+var, so for `cs=1022` the graph was built over an EMPTY AVar, produced no
+paths, and route 4 declined **35 times** with *"flow graph covers none of
+the defs"*.
+
+So the demand arrived, named the right CreationSet, and the rung looked in
+the wrong channel. **Fall through to the positional vars when the element
+carries nothing** (`PYC_CSCONTENT=1`):
+
+```c
+if (!cscontent_enabled() || (e && e->out && e->out->n)) return;
+```
+
+### Result: the flag arm reaches COMPILE PARITY with the default
+
+| arm | compile_fail | with_warnings | container CS / shapes |
+| --- | --- | --- | --- |
+| default | 2 (`othello3`, `rdb`) | 43 | 2740 / 625 = 4.38 |
+| default + all three | 2 (same) | 44 | 2826 / 625 = 4.52 |
+| flag | **7** | 39 | 2091 / 626 = 3.34 |
+| **flag + all three** | **2 (`othello3`, `rdb`)** | 45 | **2406 / 617 = 3.90** |
+
+**The flag arm now fails to compile exactly the two programs the default
+arm fails, with 12% FEWER container CreationSets than the default.**
+
+`PYC_CSCONTENT=1` changes only three programs on the flag arm, and none
+regresses at runtime:
+
+| | | run |
+| --- | --- | --- |
+| `sudoku3` | compile-fail -> compiles, warns 121 -> 48 | 134, = its default-arm behaviour |
+| `quameon` | warns 76 -> 69 | 134 both ways |
+| `pygasus` | warns 3 -> 53 | 134 both ways -- extra warnings on an already-aborting binary |
+
+Suite 314 passed / 0 failed on both backends with the mechanisms on and
+off; six gates green.
+
+### The three mechanisms, and what each is for
+
+- **`PYC_VIOLCS=3`** -- a violation is a demand, and stage 5 is starved on
+  every pass of both `bh` and `sudoku3`, so hand the demand to route 4
+  directly (which runs unconditionally) rather than lifting a quiescence
+  gate, which costs 16 suite tests.
+- **`PYC_CSMEMBER=1`** -- partition a CreationSet by the MEMBERS its
+  creation points reach, when the content graph names nothing. Fixes `bh`.
+- **`PYC_CSCONTENT=1`** -- build that content graph over the positional
+  slots when the element channel exists but is empty. Fixes `sudoku3`.
+
+All three default 0.

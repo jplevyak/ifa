@@ -8573,10 +8573,33 @@ struct CSFlowGraph : public gc {
 //
 // Containers are UNCHANGED: when an element channel exists it is used
 // alone, exactly as before, so no container result moves.
+// ifa/133: PYC_CSCONTENT=0 restores the element-or-vars form.
+static int cscontent_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_CSCONTENT"); e = v ? atoi(v) : 0; }
+  return e;
+}
+
 static void cs_content_avars(CreationSet *cs, Vec<AVar *> &out) {
   if (cs->sym->element && cs->sym->element->var && cs->added_element_var) {
-    if (AVar *e = unique_AVar(cs->sym->element->var, cs)) out.add(e);
-    return;
+    AVar *e = unique_AVar(cs->sym->element->var, cs);
+    if (e) out.add(e);
+    // ifa/133: a container has TWO content channels (ifa/104) and HAVING an
+    // element channel does not mean the content is IN it. A literal fills
+    // `cs->vars` and leaves the element bottom -- deliberately, since that is
+    // what `tuple_able()` tests. This returned on the mere EXISTENCE of the
+    // element var, so for such a CreationSet the flow graph was built over an
+    // empty AVar, produced no paths, and route 4 declined with "flow graph
+    // covers none of the defs".
+    //
+    // Measured on `sudoku3`: cs=1022 is the arity-3 literal contour holding
+    // `TRIPLETS` and its three inner lists, its slots are
+    // {int64, list, tuple}, its ELEMENT is empty -- and it declines exactly
+    // that way 35 times. The demand reaches the rung; the rung looks in the
+    // wrong channel.
+    //
+    // Fall through to the positional vars when the element carries nothing.
+    if (!cscontent_enabled() || (e && e->out && e->out->n)) return;
   }
   for (AVar *v : cs->vars)
     if (v && v->out) out.add(v);
@@ -9160,9 +9183,36 @@ static bool elem_irrepresentable(AVar *elem) {
   return nb > 1 && !all_num;
 }
 
+// ifa/133: PYC_CSSLOTDEMAND=0 restores the element-only demand test.
+static int csslotdemand_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_CSSLOTDEMAND"); e = v ? atoi(v) : 0; }
+  return e;
+}
+
 static bool cs_elem_irrepresentable(CreationSet *cs) {
-  if (!cs || !cs->sym || !cs->sym->element || !cs->sym->element->var || !cs->added_element_var) return false;
-  return elem_irrepresentable(unique_AVar(cs->sym->element->var, cs));
+  if (!cs || !cs->sym) return false;
+  if (cs->sym->element && cs->sym->element->var && cs->added_element_var)
+    if (elem_irrepresentable(unique_AVar(cs->sym->element->var, cs))) return true;
+  // ifa/133: a container has TWO content channels (ifa/104) -- the generic
+  // element, and the per-index positional `cs->vars` a literal fills. This
+  // test only ever looked at the first, so a CreationSet whose POSITIONAL
+  // SLOT is irrepresentable raised no demand at all.
+  //
+  // `sudoku3`: `TRIPLETS = [[0,1,2],[3,4,5],[6,7,8]]` puts the outer arity-3
+  // list and its three inner arity-3 lists on ONE contour (identity is
+  // sym x arity), so cs=1022's slots hold {int64, list, tuple} -- one basic
+  // and two non-basics, which `elem_irrepresentable` already calls
+  // irrepresentable -- while its element channel is EMPTY. Measured: cs=1022
+  // is DEMAND-ADDED zero times. The demand exists; nothing was looking at
+  // the channel holding it.
+  //
+  // Same fallback shape `cs_content_avars` already uses for the CS flow
+  // graph (ifa/146 C): element if there is one, positional vars otherwise.
+  if (csslotdemand_enabled())
+    for (AVar *v : cs->vars)
+      if (v && v->out && elem_irrepresentable(v)) return true;
+  return false;
 }
 
 // ifa/133: the MEMBER partition key.
