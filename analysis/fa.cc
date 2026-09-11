@@ -6065,7 +6065,7 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
   // nobody looked.
   //
   // What it costs, measured on `sudoku5` at the flag arm with the
-  // starvation removed (`PYC_NOOPSPLIT=1`): stage 5 fans two
+  // starvation removed: stage 5 fans two
   // `__getitem__` formals spanning 5 CreationSets into 5 contours, and the
   // next pass goes from 361 confluences / 108 violations to 1039 / 1216.
   // Five splits, a tenfold violation explosion. That is why un-starving
@@ -6981,15 +6981,13 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
   return dec;
 }
 
-// ifa/055 probe: an apply that reports "split" while creating no EntrySet
-// is a RE-DERIVATION of a split already made -- the ledger routes the edges
-// to the recorded product. It changes nothing relative to the previous
-// pass, but it sets `analyze_again`, which keeps the first-stage-wins
-// cascade alive and starves every later stage.
+// ifa/148: applies that report a split while creating no EntrySet. They
+// are NOT no-ops: every one re-points edges onto existing contours
+// (measured on sudoku5, 501 of 501, 1512 edges). Counted here because the
+// opposite was assumed once, and acting on that assumption truncated the
+// analysis.
 static long aes_apply_split = 0, aes_apply_split_nogrowth = 0;
 
-// ifa/055: PYC_NOOPSPLIT=1 -- an apply that creates no EntrySet reports no
-// progress. See the comment at the use.
 // ifa/148: PYC_TYPEMOVE=1 -- run another pass while the derived types are
 // still changing, instead of only while a stage split. See the use.
 static int typemove_enabled() {
@@ -6998,15 +6996,16 @@ static int typemove_enabled() {
   return e;
 }
 
-static int noopsplit_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_NOOPSPLIT"); e = v ? atoi(v) : 0; }
-  return e;
-}
-
 [[nodiscard]] static int apply_entry_set_split(ESSplitDecision *dec) {
   const int aes_before = fa->all_entry_sets.n;
   EntrySet *es = dec->es;
+  // ifa/148: does a "no-op" apply actually MOVE any edge? Snapshot each
+  // in-edge's target before, compare after. This is the test that decides
+  // whether a re-derived split is a state change or genuinely nothing.
+  Vec<AEdge *> snap_e;
+  Vec<EntrySet *> snap_to;
+  if (getenv("IFA_DBG_REPARK"))
+    for (AEdge *ee : es->edges) if (ee) { snap_e.add(ee); snap_to.add(ee->to); }
   AVar *av = dec->av;
   MPosition *avpos = dec->avpos;
   int fsetters = dec->fsetters, fmark = dec->fmark;
@@ -7543,6 +7542,13 @@ static int noopsplit_enabled() {
       }
     }
   }
+  if (split && getenv("IFA_DBG_REPARK")) {
+    int moved = 0;
+    for (int i = 0; i < snap_e.n; i++)
+      if (snap_e.v[i]->to != snap_to.v[i]) ++moved;
+    fprintf(stderr, "[repark] p=%d es=%d new_ess=%d edges=%d moved=%d\n", analysis_pass, es->id,
+            fa->all_entry_sets.n - aes_before, snap_e.n, moved);
+  }
   if (split) {
     ++aes_apply_split;
     if (fa->all_entry_sets.n == aes_before) {
@@ -7550,24 +7556,6 @@ static int noopsplit_enabled() {
       if (getenv("IFA_DBG_REDERIVE"))
         fprintf(stderr, "[rederive] p=%d stage=%d es=%d fun=%s split=1 but created NO EntrySet\n", analysis_pass,
                 cur_split_stage, es->id, (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?");
-      // ifa/055: A RE-DERIVATION IS NOT PROGRESS.
-      //
-      // `analyze_again` means "the state changed in a way that needs
-      // another pass". When this apply creates no EntrySet, every group
-      // was ROUTED by the ledger to a product recorded on an earlier pass
-      // -- the edges land exactly where they landed last pass. Reporting
-      // that as progress keeps the first-stage-wins cascade alive forever
-      // and starves every later stage.
-      //
-      // Measured on `sudoku5` at the flag arm: TYPE_CONFLUENCE claims all
-      // 41 passes, with `d_ess=0` from pass 24 onward -- 17 consecutive
-      // passes of reported-but-absent progress -- and stage 5 is
-      // `analyze_again=1 -> starved` on every one of them, with 573-750
-      // violations never acted on. 501 of 1145 applies (44%) are this.
-      //
-      // The re-park itself still has to happen (contours are rebuilt each
-      // pass); what is wrong is only the CLAIM.
-      if (noopsplit_enabled()) return 0;
     }
   }
   return split;
@@ -11484,7 +11472,8 @@ static void dbg_es_per_fun() {
     // `analyze_again` is used for two different things: "a stage split
     // something" and "run another pass". They are not the same condition,
     // and conflating them is why removing the false-progress claim
-    // (PYC_NOOPSPLIT) made results WORSE rather than neutral.
+    // (the deleted PYC_NOOPSPLIT) made results WORSE rather than neutral --
+    // and the reason is below: those applies are not no-ops at all.
     //
     // A pass does NOT reach a type fixed point. `analyze_to_convergence`
     // resets and re-derives, but decisions persist across passes
@@ -11518,6 +11507,40 @@ static void dbg_es_per_fun() {
         }
       static unsigned long prev_state_hash = 0;
       static int prev_state_pass = -1;
+      // ifa/148: WHICH positions moved, on a pass where nothing split.
+      if (getenv("IFA_DBG_TYPEWHAT")) {
+        static Map<AVar *, AType *> prevt;
+        static int prevt_pass = -1;
+        int changed = 0, shown = 0;
+        for (EntrySet *es : fa->ess)
+          if (es && es->fun) {
+            form_MPositionAVar(x, es->args) {
+              if (!x->key->is_positional() || !x->value || !x->value->out) continue;
+              AType *now = x->value->out->type;
+              AType *was = prevt.get(x->value);
+              if (prevt_pass == analysis_pass - 1 && was && was != now) {
+                ++changed;
+                if (shown++ < 6) {
+                  fprintf(stderr, "[typewhat] p=%d es=%d fun=%s var=%s was:", analysis_pass, es->id,
+                          (es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?",
+                          (x->value->var && x->value->var->sym && x->value->var->sym->name)
+                              ? x->value->var->sym->name : "(anon)");
+                  for (CreationSet *c : was->sorted)
+                    if (c && c->sym) fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+                  fprintf(stderr, "  now:");
+                  for (CreationSet *c : now->sorted)
+                    if (c && c->sym) fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+                  fprintf(stderr, "\n");
+                }
+              }
+              prevt.put(x->value, now);
+            }
+          }
+        prevt_pass = analysis_pass;
+        if (changed)
+          fprintf(stderr, "[typewhat] p=%d positions_changed=%d (stages aa=%d)\n", analysis_pass, changed,
+                  analyze_again);
+      }
       if (getenv("IFA_DBG_TYPEMOVE"))
         fprintf(stderr, "[typemove] p=%d ess=%d positions=%d hash=%lu prev=%lu prevpass=%d moved=%d aa=%d\n",
                 analysis_pass, fa->ess.n, i, h, prev_state_hash, prev_state_pass,

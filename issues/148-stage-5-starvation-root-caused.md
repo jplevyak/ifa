@@ -7,37 +7,29 @@ The premise: a stage blocks stage 5 by reporting progress, and progress
 must be finite if the stage works. Measured, it is *almost* finite, and
 part of it is not progress at all.
 
-## Part 1 — 44% of applies report a split they did not make
+## Part 1 — RETRACTED: those applies are not no-ops
 
-`apply_entry_set_split` returns "split" while creating **no EntrySet**:
+The original Part 1 said 44% of applies "report a split they did not
+make" — 501 of 1145 create no EntrySet, so the claim was that the ledger
+routes the edges to an already-recorded product and nothing changes.
 
-```
-[rederive] TOTAL applies-reporting-split=1145 of which created NO EntrySet=501
-```
-
-Those are RE-DERIVATIONS. Contours are rebuilt every pass, so the split
-made on an earlier pass is decided again; the ledger routes each group to
-the product it already recorded (`d->product`), and the edges land exactly
-where they landed last pass. Nothing changed — but `analyze_again` is set,
-which keeps the first-stage-wins cascade alive and starves everything
-below.
-
-On `sudoku5` that is **6 passes of outright false progress**:
+**Measured, and false.** `IFA_DBG_REPARK` snapshots every in-edge's target
+before an apply and compares after:
 
 ```
-                       passes  claimed-with-zero-new-ES
-  PYC_NOOPSPLIT=0        41              6
-  PYC_NOOPSPLIT=1        42              0
+sudoku5:        applies with NO new EntrySet = 501, of which moved >=1 edge = 501
+                total edges moved = 1512
+tuple_compare:  41 of 41, likewise
 ```
 
-`PYC_NOOPSPLIT=1` makes an apply that creates no EntrySet report no
-progress. It eliminates the false claim exactly. The re-park itself still
-happens; only the CLAIM changes.
+**Every single one re-points edges.** Creating no EntrySet means the split
+REUSED existing contours, not that it did nothing. `d_ess == 0` is simply
+the wrong test for "nothing changed", and `analyze_again` is correct on
+those applies.
 
-The hazard was already named at the probe site, and never checked:
-*"ifa/issues/055: a stage that returns 'made progress' while the contour
-counts do not move keeps the whole cascade alive and starves every later
-stage. Report the claim next to the effect."*
+`PYC_NOOPSPLIT` — which returned 0 from them — is deleted. It was a wrong
+mechanism built on this wrong premise, and it truncated the analysis
+(Part 5).
 
 ## Part 2 — the other ~35 passes are real, slow, oscillating progress
 
@@ -147,13 +139,27 @@ That is the real defect, and it is one line of concept:
 > **`analyze_again` means two different things — "a stage split something"
 > and "run another pass" — and they are not the same condition.**
 
-A pass does NOT reach a type fixed point. `analyze_to_convergence` resets
-and re-derives, but the DECISIONS persist (`av->cs_map`, the split
-ledger), so successive passes derive different types even when nothing
-splits. The loop needs to run while the state is moving; what it actually
-tests is whether a stage split. The false-progress claim of Part 1 was
-accidentally standing in for the missing condition, which is why removing
-it truncated the analysis.
+### Why the types move with no new contours — no decision is lost
+
+Nothing fails to persist. Two facts, both measured:
+
+1. **The splitter runs AFTER the analysis in each pass.** A structural
+   change made in pass N is therefore only reflected in pass N+1's derived
+   types — a one-pass lag by construction. After the last change you still
+   need one pass to observe it and one more to confirm nothing moved.
+2. **An apply that creates no contour still re-points edges** (Part 1:
+   501 of 501 on sudoku5, 1512 edges). It is a genuine change to the call
+   graph, so it genuinely needs another pass.
+
+`analyze_to_convergence` DOES iterate its worklist to exhaustion, so the
+dataflow reaches a fixed point within a pass. What does not converge in one
+pass is the STRUCTURE, because only the splitter changes it and it runs
+once per pass.
+
+So `analyze_again` is right to be set by a structural change. What is
+missing is the converse: nothing tests whether the state has stopped
+moving, so the loop cannot tell "no stage acted, and we are done" from "no
+stage acted, but last pass's change has not been observed yet".
 
 ### The fix: terminate on a fixed point, not on a split
 
