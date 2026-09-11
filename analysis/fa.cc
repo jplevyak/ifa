@@ -6901,7 +6901,23 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
   return dec;
 }
 
+// ifa/055 probe: an apply that reports "split" while creating no EntrySet
+// is a RE-DERIVATION of a split already made -- the ledger routes the edges
+// to the recorded product. It changes nothing relative to the previous
+// pass, but it sets `analyze_again`, which keeps the first-stage-wins
+// cascade alive and starves every later stage.
+static long aes_apply_split = 0, aes_apply_split_nogrowth = 0;
+
+// ifa/055: PYC_NOOPSPLIT=1 -- an apply that creates no EntrySet reports no
+// progress. See the comment at the use.
+static int noopsplit_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_NOOPSPLIT"); e = v ? atoi(v) : 0; }
+  return e;
+}
+
 [[nodiscard]] static int apply_entry_set_split(ESSplitDecision *dec) {
+  const int aes_before = fa->all_entry_sets.n;
   EntrySet *es = dec->es;
   AVar *av = dec->av;
   MPosition *avpos = dec->avpos;
@@ -7437,6 +7453,33 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
           }
         }
       }
+    }
+  }
+  if (split) {
+    ++aes_apply_split;
+    if (fa->all_entry_sets.n == aes_before) {
+      ++aes_apply_split_nogrowth;
+      if (getenv("IFA_DBG_REDERIVE"))
+        fprintf(stderr, "[rederive] p=%d stage=%d es=%d fun=%s split=1 but created NO EntrySet\n", analysis_pass,
+                cur_split_stage, es->id, (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?");
+      // ifa/055: A RE-DERIVATION IS NOT PROGRESS.
+      //
+      // `analyze_again` means "the state changed in a way that needs
+      // another pass". When this apply creates no EntrySet, every group
+      // was ROUTED by the ledger to a product recorded on an earlier pass
+      // -- the edges land exactly where they landed last pass. Reporting
+      // that as progress keeps the first-stage-wins cascade alive forever
+      // and starves every later stage.
+      //
+      // Measured on `sudoku5` at the flag arm: TYPE_CONFLUENCE claims all
+      // 41 passes, with `d_ess=0` from pass 24 onward -- 17 consecutive
+      // passes of reported-but-absent progress -- and stage 5 is
+      // `analyze_again=1 -> starved` on every one of them, with 573-750
+      // violations never acted on. 501 of 1145 applies (44%) are this.
+      //
+      // The re-park itself still has to happen (contours are rebuilt each
+      // pass); what is wrong is only the CLAIM.
+      if (noopsplit_enabled()) return 0;
     }
   }
   return split;
@@ -13900,6 +13943,9 @@ static void report_demand_ratio() {
             fa->ess.n, funs, multi, mx,
             (worst && worst->sym && worst->sym->name) ? worst->sym->name : "?");
   }
+  if (getenv("IFA_DBG_REDERIVE"))
+    fprintf(stderr, "[rederive] TOTAL applies-reporting-split=%ld of which created NO EntrySet=%ld\n",
+            aes_apply_split, aes_apply_split_nogrowth);
   if (getenv("IFA_DBG_CSROUTES")) {
     fprintf(stderr, "CSROUTES");
     for (int i = 0; i < kR_count; i++) fprintf(stderr, " %s=%d", cs_route_name[i], cs_route_count[i]);
