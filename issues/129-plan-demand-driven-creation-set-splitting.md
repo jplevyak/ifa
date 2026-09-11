@@ -2675,3 +2675,59 @@ separate", it is "the separation has to happen one level up", and which
 level differs per case.** Naming that level correctly — rather than
 climbing to it, fanning at it, or filtering it by type — is the single
 remaining piece between the arms.
+
+### If all warnings count as failures, the flag arm is WORSE — not at parity
+
+The table above measures `compile_rc`. That is the forgiving metric, and
+on it the flag arm looks level. Counting a warning as a failure inverts
+the verdict:
+
+| arm | cfail | **clean / 77** | warned | **total warnings** |
+| --- | --- | --- | --- | --- |
+| default | 2 | **32** | 43 | **1827** |
+| flag | 2 | **30** | 45 | **1976** |
+| flag + ESBLOCK | 4 | 31 | 42 | **1784** |
+| flag + ESBLOCK + ESRECV | 4 | 31 | 42 | 1800 |
+| default + ESPATH | 5 | 32 | 40 | **1588** |
+| flag + ESPATH | 5 | 30 | 42 | 1774 |
+
+The flag arm loses two clean programs AND adds **149 warnings, +8%**. So
+"corpus compile parity with 12% fewer contours" was the right number for
+the wrong question.
+
+**No configuration dominates, and the two metrics disagree outright.**
+`flag + ESBLOCK` has FEWER total warnings than the DEFAULT (1784 vs 1827)
+while having two more compile failures. `default + ESPATH` has the fewest
+warnings of any arm measured (1588, −13%) and the most compile failures
+(5). Any claim that one arm is "better" has to say which metric it means.
+
+Where the +149 sits (default -> flag):
+
+```
+pygasus     3 -> 53   +50      tarsalzp  231 -> 213  -18
+plcfrs    129 -> 162  +33      rdb       120 -> 113   -7
+msp_ss    235 -> 264  +29      sudoku1    15 ->   9   -6
+voronoi2   27 ->  49  +22
+sudoku3    36 ->  48  +12
+linalg     38 ->  46   +8
+rubik     176 -> 183   +7
+chull       0 ->   6   +6
+tictactoe   0 ->   6   +6
+```
+
+**`pygasus` alone is a third of the regression**, and it is a NEW shape,
+not the shared-method-contour family of item 4. Every one of its added
+warnings is a FUNCTION-VALUE union from an indirect call through a
+dispatch table — a 6502 emulator, so:
+
+```
+illegal: ( mmc0Write mmc0Read mmc1Read mmc1Write mmc2Write )
+illegal: ( pAdc pAnd pAsl pAsla pBcc ... pTsb pTrb )     -- 80-way
+```
+
+Start-merging the table's entries into one CreationSet leaves the indirect
+call with nothing to resolve. `creation_point` already excludes
+`sym_closure` from the start-merged route for exactly this reason; the
+obvious analogue, excluding `s->is_fun`, was tried and is INERT (pygasus
+53 either way), so those CreationSets are minted by a different path and
+finding it is the next step for this item.
