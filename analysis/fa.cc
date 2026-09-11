@@ -6990,6 +6990,14 @@ static long aes_apply_split = 0, aes_apply_split_nogrowth = 0;
 
 // ifa/055: PYC_NOOPSPLIT=1 -- an apply that creates no EntrySet reports no
 // progress. See the comment at the use.
+// ifa/148: PYC_TYPEMOVE=1 -- run another pass while the derived types are
+// still changing, instead of only while a stage split. See the use.
+static int typemove_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_TYPEMOVE"); e = v ? atoi(v) : 0; }
+  return e;
+}
+
 static int noopsplit_enabled() {
   static int e = -1;
   if (e < 0) { cchar *v = getenv("PYC_NOOPSPLIT"); e = v ? atoi(v) : 0; }
@@ -11471,6 +11479,53 @@ static void dbg_es_per_fun() {
     // ifa/146 E: unconditional, for the same reason route 4 is -- the
     // stage that would carry it is starved on the programs that need it.
     if (split_ess_for_boxing_receivers()) analyze_again = 1;
+    // ifa/148: THE LOOP MUST RUN WHILE THE STATE IS STILL MOVING.
+    //
+    // `analyze_again` is used for two different things: "a stage split
+    // something" and "run another pass". They are not the same condition,
+    // and conflating them is why removing the false-progress claim
+    // (PYC_NOOPSPLIT) made results WORSE rather than neutral.
+    //
+    // A pass does NOT reach a type fixed point. `analyze_to_convergence`
+    // resets and re-derives, but decisions persist across passes
+    // (`av->cs_map`, the split ledger), so successive passes derive
+    // DIFFERENT types even when nothing splits. Measured on
+    // `tests/tuple_compare.py`:
+    //
+    //   p=7  confl=41 d_ess=0 viol=7
+    //   p=9  confl=40 d_ess=0 viol=7     <- no split, yet confl moved
+    //   p=10 confl=44 d_ess=4 viol=7     <- 4 new EntrySets
+    //   p=11 confl=36 d_ess=2 viol=0     <- 2 more, violations reach ZERO
+    //
+    // The passes that split nothing are not wasted: they carry the
+    // analysis across a plateau to the work at p=10-11. Stopping at the
+    // plateau (which is what a correct "no stage split" test does) ends
+    // four passes early with 4 warnings instead of 0.
+    //
+    // So test the right thing: keep going while the derived types differ
+    // from the previous pass. ATypes are hash-consed for the life of the
+    // FA, so pointer identity is a sound cross-pass comparison (the same
+    // property `es->type_key` relies on).
+    if (typemove_enabled()) {
+      unsigned long h = 0;
+      int i = 0;
+      for (EntrySet *es : fa->ess)
+        if (es && es->fun) {
+          form_MPositionAVar(x, es->args) {
+            if (!x->key->is_positional() || !x->value || !x->value->out) continue;
+            h += (unsigned long)(uintptr_t)x->value->out->type * open_hash_primes[i++ % 256];
+          }
+        }
+      static unsigned long prev_state_hash = 0;
+      static int prev_state_pass = -1;
+      if (getenv("IFA_DBG_TYPEMOVE"))
+        fprintf(stderr, "[typemove] p=%d ess=%d positions=%d hash=%lu prev=%lu prevpass=%d moved=%d aa=%d\n",
+                analysis_pass, fa->ess.n, i, h, prev_state_hash, prev_state_pass,
+                (prev_state_pass == analysis_pass - 1 && h != prev_state_hash) ? 1 : 0, analyze_again);
+      if (prev_state_pass == analysis_pass - 1 && h != prev_state_hash) analyze_again = 1;
+      prev_state_hash = h;
+      prev_state_pass = analysis_pass;
+    }
     int cs_def_r = split_css_by_defs(!analyze_again);
     fa->stage_time[(int)FAPassStage::CS_DEF_PARTITION] += stage_timer.lap();
     if (cs_def_r) {
