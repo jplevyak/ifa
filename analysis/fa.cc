@@ -4720,8 +4720,26 @@ static void show_illegal_type(FILE *fp, ATypeViolation *v) {
       show_type(*av->out, fp);
     }
   }
+  // ifa/149: say "no type" instead of printing nothing.
+  //
+  // 416 of the corpus's 747 `illegal call argument type expression`
+  // warnings -- 55%, across 14+ programs (tarsalzp 51, msp_ss 49, rubik 42,
+  // doom 38, plcfrs 31) -- render as `illegal: ` with nothing after the
+  // colon, because the offending type is BOTTOM: the analysis never typed
+  // the argument at all. That is a real and specific condition, and the
+  // single largest diagnostic class in the corpus was communicating it as
+  // a blank.
+  //
+  // Printing the unprojected type first, since `AType::type` also drops
+  // constants and a constants-only type projects to bottom for a different
+  // reason; only when BOTH are empty is it genuinely untyped.
   fprintf(fp, "illegal: ");
-  show_type(*v->type->type, fp);
+  if (v->type->type && v->type->type->sorted.n)
+    show_type(*v->type->type, fp);
+  else if (v->type->sorted.n)
+    show_type(*v->type, fp);
+  else
+    fprintf(fp, "(no type)");
   fprintf(fp, "\n");
 }
 
