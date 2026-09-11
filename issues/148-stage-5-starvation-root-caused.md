@@ -59,42 +59,81 @@ So the cascade is finite. It is just so nearly-always-busy at stage 1 that
 stage 5 is effectively unreachable, which is why both ifa/133 (route 4)
 and ifa/146 E had to be wired to run unconditionally instead.
 
-## Part 3 — and removing the false progress makes things WORSE
+## Part 3 — CORRECTED 2026-09-11: the damage is the FIX, not stage 5
 
-This is the part that matters for anyone tempted to fix Part 1 and stop.
+The first version of this section said "removing the false progress lets
+stage 5 run, and stage 5's action is what regresses things". That is
+wrong, and the correction matters more than the original claim.
 
-With `PYC_NOOPSPLIT=1`, stage 1 does fall silent (p=33: `TYPE_CONFL
-returned=0`, `SETTER returned=0`) and **stage 5 finally runs**. What it
-then does:
+`PYC_NOOPSPLIT=1` costs 4 suite tests (`deepcopy_copy_of_copy_chain`,
+`format_string_int_float_mismatch`, `set_ops_chained_mixed_elem_types`,
+`tuple_compare`). On `tuple_compare` stage 5 DOES run — and splits
+nothing:
 
 ```
-STAGEDELTA p=33 VIOLATION returned=1 d_ess=5 viol=108
-STAGEDELTA p=34 TYPE_CONFL confluences=1039 d_ess=75 viol=1216
+[stage5] p=7 analyze_again=0 -> RUNS (violations=7)
+[stage5] p=9 analyze_again=0 -> RUNS (violations=7)
 ```
 
-Five EntrySet splits take violations from **108 to 1216** and confluences
-from 361 to 1039. Whole-run cost at the default arm:
+no `[stage5in]` lines at all, so `refinable` is empty. Stage 5 is not the
+cause. The cause is the fix:
 
-| | suite | corpus |
-| --- | --- | --- |
-| default | 315 passed / 0 failed | 2 cfail |
-| `PYC_NOOPSPLIT=1` | **311 / 4** | **3 cfail** (+ sudoku5) |
+```
+                  passes   result
+  default            14    0 warnings
+  PYC_NOOPSPLIT=1    10    4 warnings  (illegal ... 'x' illegal: tuple, in <tuple_cmp>)
+```
 
-**The starvation is load-bearing.** It is not protecting a correct stage 5
-from a scheduling accident; it is hiding a stage 5 whose ACTION is wrong.
-That also explains the long-standing note that lifting the quiescence gate
-"costs 16 suite tests" — the gate was never the problem.
+**The premise "nothing changed" was too strong.** A re-derived split
+creates no EntrySet, but it DOES re-point edges onto the recorded
+products, and the types downstream of that re-park have not re-flowed yet.
+Reporting no progress ends the pass loop four passes early, before the
+re-park settles. Both runs print `CONVERGED=1`, which means only "did not
+hit the pass limit" — not "reached a fixed point".
+
+So the correct condition is not "created no EntrySet" but **"the edge ->
+EntrySet assignment is identical to the previous pass's"**, which is a
+durable per-edge comparison, not a counter. `PYC_NOOPSPLIT` as written is
+the right diagnosis with the wrong test, and stays opt-in.
+
+## Part 4 — stage 5's action IS a per-CS fan, and fixing that is not enough
+
+Separately, and confirmed: `split_edges` — the `fdynamic` path stage 5
+uses — builds one filtered EntrySet per CreationSet in the receiver's
+type:
+
+```c
+for (CreationSet *cs : av->out->type->sorted) {
+  filters.put(p, make_AType(cs));
+  EntrySet *tes = find_or_make_filtered_entry_set(es, filters);
+```
+
+Partition size = the CreationSet count: ifa/144's signature, and exactly
+what ifa/146 E deleted from CARTESIAN_PRODUCT. It survived here because
+stage 5 is starved and nobody looked. `PYC_SPLITEDGES2=1` bounds it to two
+groups, as ifa/133's ES-block split and ifa/146 E both do.
+
+It works as a bound (`sudoku5`: `d_ess=5` -> `d_ess=2`) and it changes
+nothing else: the violation transient after the split is identical (1216
+either way), and the same 4 suite tests fail. So the fan is real but is
+not what makes stage 5 expensive.
+
+Also tested and EXONERATED: `find_or_make_filtered_entry_set` reuses a
+contour whose filters are merely NOT DISJOINT rather than matching, which
+looked like it would merge the outer and inner invocations of a recursive
+`<tuple_cmp>`. `PYC_FILTEREQ=1` requires them to match and changes nothing
+(4 warnings either way).
 
 ## What to do
 
-1. **Fix stage 5's action, not the gate.** The next question is why
-   `split_ess_for_type(refinable, SPLIT_DYNAMIC)` on a violation's
-   imprecisions multiplies violations tenfold. Until that is answered,
-   un-starving stage 5 is a regression by construction.
-2. **Keep `PYC_NOOPSPLIT` opt-in.** It is a correct fix to a real defect
-   (Part 1) whose benefit is blocked by a second defect (Part 3). Landing
-   it alone trades a measured 4 suite tests and a corpus program for a
-   scheduling nicety.
-3. Note that ifa/133's route 4 and ifa/146 E's receiver split both already
-   run unconditionally precisely because of this. Neither needs the gate
-   lifted; they are the pattern to follow while stage 5 is broken.
+1. **Make the no-op test durable.** Compare the edge -> EntrySet
+   assignment against the previous pass instead of counting EntrySets.
+   That is the fix Part 1 deserves, and it is what would let the pass loop
+   stop for the right reason.
+2. **`CONVERGED=1` is not a fixed-point claim.** It reports only that the
+   pass limit was not hit. A program can "converge" four passes before its
+   types settle, and `tuple_compare` does.
+3. The per-CS fan in `split_edges` (Part 4) should land whatever happens to
+   the rest — it is the same arbitrary partition the project has removed
+   twice elsewhere — but it needs its own measurement, since on the
+   evidence here it is behaviour-neutral.

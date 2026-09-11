@@ -511,6 +511,22 @@ static bool cs_elem_irrepresentable(CreationSet *cs);  // ifa/133: defined with 
 // from setter confluences, so the demand never reached it.
 static int elemsetter_enabled();
 static int eslineage_enabled();   // ifa/133: durable ES split lineage, ditto
+// ifa/148: PYC_SPLITEDGES2=1 -- stage 5's per-CreationSet fan becomes a
+// two-group split. See the comment at the use.
+static int splitedges2_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_SPLITEDGES2"); e = v ? atoi(v) : 0; }
+  return e;
+}
+
+// ifa/148: PYC_FILTEREQ=1 -- filtered-contour reuse requires matching
+// filters. See the comment at the use.
+static int filtereq_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_FILTEREQ"); e = v ? atoi(v) : 0; }
+  return e;
+}
+
 static int violcs_enabled();      // ifa/133: route a violation's CSs to route 4
 // ifa/146 E: PYC_ESRECV=1 -- a violation inside a contour makes that
 // contour's RECEIVER an imprecision. See the comment at the use.
@@ -5955,13 +5971,37 @@ static void record_backedges(AEdge *e, EntrySet *es, PendingAEdgeEntrySetsMap &u
   }
 }
 
+typedef MapElem<MPosition *, AType *> MapElemMPositionAType;
+
+// ifa/148: do two filter maps agree everywhere they are both defined AND
+// cover the same positions?
+static bool filters_equal(Map<MPosition *, AType *> &a, Map<MPosition *, AType *> &b) {
+  form_Map(MapElemMPositionAType, x, a) if (x->key && x->value && b.get(x->key) != x->value) return false;
+  form_Map(MapElemMPositionAType, y, b) if (y->key && y->value && a.get(y->key) != y->value) return false;
+  return true;
+}
+
 static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPosition *, AType *> &filters) {
   Fun *f = orig_es->fun;
   EntrySet *res = nullptr;
-  for (EntrySet *es : f->ess) if (!es->filters.some_disjunction(filters)) {
-    res = es;
-    break;
-  }
+  // ifa/148: REUSE REQUIRES THE FILTERS TO MATCH, not merely to be
+  // non-disjoint.
+  //
+  // `some_disjunction` is false whenever the two filter sets do not
+  // actively contradict each other -- so a product created for one filter
+  // set is handed back for a DIFFERENT, merely-compatible one, silently
+  // merging the two contexts. In a recursive function that merges the
+  // outer and inner invocations.
+  //
+  // Measured on `tests/tuple_compare.py` (nested tuples, so `<tuple_cmp>`
+  // recurses) with stage 5 un-starved: `illegal primitive argument type
+  // 'x' illegal: tuple` -- a nested tuple reaching a slot comparison that
+  // should only see scalars. PYC_FILTEREQ=0 restores the old test.
+  for (EntrySet *es : f->ess)
+    if (filtereq_enabled() ? filters_equal(es->filters, filters) : !es->filters.some_disjunction(filters)) {
+      res = es;
+      break;
+    }
   if (!res) {
     res = new EntrySet(f);
     f->ess.add(res);
@@ -6016,12 +6056,52 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
   // receivers this was unreachable, which is why it was an assert.)
   if (!p) return 0;
   Map<CreationSet *, EntrySet *> cs_es_map;
-  for (CreationSet *cs : av->out->type->sorted) {
-    Map<MPosition *, AType *> filters;
-    filters.copy(es->filters);
-    filters.put(p, make_AType(cs));
-    EntrySet *tes = find_or_make_filtered_entry_set(es, filters);
-    cs_es_map.put(cs, tes);
+  // ifa/148: ONE CONTOUR PER CreationSet IS THE FAN.
+  //
+  // This loop is stage 5's action, and its partition size is the number of
+  // CreationSets in the receiver's type -- ifa/144's signature verbatim,
+  // and exactly what ifa/146 E deleted from the CARTESIAN_PRODUCT
+  // splitter. It survived here because stage 5 is starved (ifa/148), so
+  // nobody looked.
+  //
+  // What it costs, measured on `sudoku5` at the flag arm with the
+  // starvation removed (`PYC_NOOPSPLIT=1`): stage 5 fans two
+  // `__getitem__` formals spanning 5 CreationSets into 5 contours, and the
+  // next pass goes from 361 confluences / 108 violations to 1039 / 1216.
+  // Five splits, a tenfold violation explosion. That is why un-starving
+  // stage 5 "costs 16 suite tests" -- not the gate, the action.
+  //
+  // The bound is the one ifa/133's ES-block split and ifa/146 E both use:
+  // TWO groups. Separate the first CreationSet from the rest, let the
+  // analysis re-derive, and if the demand survives, split again next pass.
+  // Partition size is 2 by construction and cannot track the CreationSet
+  // count.
+  Vec<CreationSet *> &rcs = av->out->type->sorted;
+  if (splitedges2_enabled() && rcs.n > 2) {
+    AType *rest = fa->type_world.bottom_type;
+    for (int i = 1; i < rcs.n; i++)
+      if (rcs.v[i]) rest = type_union(rest, make_AType(rcs.v[i]));
+    Map<MPosition *, AType *> fa0, fa1;
+    fa0.copy(es->filters);
+    fa0.put(p, make_AType(rcs.v[0]));
+    fa1.copy(es->filters);
+    fa1.put(p, rest);
+    EntrySet *tes0 = find_or_make_filtered_entry_set(es, fa0);
+    EntrySet *tes1 = find_or_make_filtered_entry_set(es, fa1);
+    cs_es_map.put(rcs.v[0], tes0);
+    for (int i = 1; i < rcs.n; i++)
+      if (rcs.v[i]) cs_es_map.put(rcs.v[i], tes1);
+    if (getenv("IFA_DBG_SPLITEDGES"))
+      fprintf(stderr, "[splitedges] p=%d es=%d fun=%s recv spans=%d -> 2 group(s)\n", analysis_pass, es->id,
+              (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?", rcs.n);
+  } else {
+    for (CreationSet *cs : av->out->type->sorted) {
+      Map<MPosition *, AType *> filters;
+      filters.copy(es->filters);
+      filters.put(p, make_AType(cs));
+      EntrySet *tes = find_or_make_filtered_entry_set(es, filters);
+      cs_es_map.put(cs, tes);
+    }
   }
   // Re-pointing an edge at a different ES must go through the full
   // re-entry recipe apply_entry_set_split uses (null `to`, clear the
@@ -10559,6 +10639,16 @@ static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Ve
         av->var->sym->name ? av->var->sym->name : "", attempts + 1, av->id);
     refinable.add(av);
   }
+  if (getenv("IFA_DBG_STAGE5DETAIL"))
+    for (AVar *av : refinable)
+      fprintf(stderr, "[stage5in] p=%d av=%d var=%s in=%s es=%d lvalue=%d formal=%d spans=%d\n", analysis_pass,
+              av->id, (av->var && av->var->sym && av->var->sym->name) ? av->var->sym->name : "(anon)",
+              (av->contour_is_entry_set && ((EntrySet *)av->contour)->fun && ((EntrySet *)av->contour)->fun->sym &&
+               ((EntrySet *)av->contour)->fun->sym->name)
+                  ? ((EntrySet *)av->contour)->fun->sym->name : "(cs)",
+              av->contour_is_entry_set ? ((EntrySet *)av->contour)->id : -1, av->is_lvalue ? 1 : 0,
+              (av->var && av->var->is_formal) ? 1 : 0,
+              (av->out && av->out->type) ? av->out->type->sorted.n : -1);
   int analyze_again = split_ess_for_type(refinable, SPLIT_DYNAMIC);
   // ifa/146 D, second pass: `split_with_type_marks` used to run here as the
   // VIOLATION stage's fallback when type splitting found nothing. It was
