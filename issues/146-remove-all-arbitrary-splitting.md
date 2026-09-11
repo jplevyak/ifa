@@ -897,3 +897,83 @@ Each removal: the six CI gates, plus a corpus `check` sweep on BOTH arms
 programs-differing-from-default and container CreationSets. A removal that
 loses corpus programs is not automatically wrong — see C, where declining
 cost five — but the trade must be measured and recorded, not assumed.
+
+## 2026-09-11: E's replacement, built and measured (`PYC_ESRECV=1`)
+
+The removed CARTESIAN_PRODUCT splitter's replacement, to the spec
+`tests/splitter_cartesian_product.py` already carried: *"demand (an
+unresolved dispatch or an irrepresentable union) plus dispatch-aware
+filtering of the RECEIVER, which in single-dispatch OOP is the position
+that determines dispatch."*
+
+### What it is
+
+A violation-driven split of the contour the violation is IN, at its
+receiver position:
+
+- **Demand**: a `BOXING` violation — "an irrepresentable union". A union
+  that merely EXISTS is a fact and is not enough; that is exactly what got
+  CARTESIAN_PRODUCT removed.
+- **Position**: `positional_arg_positions[1]` — position 0 is the function
+  symbol. Verified empirically rather than assumed: the probe reports
+  `recv=self` on every method it fires on.
+- **Parts**: the in-edges grouped by WHICH OF THE OFFENDING BASIC TYPES
+  each caller's receiver brings, then coalesced to **two** (the minimum
+  that separates; re-derive and ask again), exactly as ifa/133's ES-block
+  split does.
+
+The bound is the point. Splitting one contour per receiver CreationSet IS
+the cartesian product: on `sudoku5` the receiver spans 19-27 CreationSets,
+and that version **did not finish inside a 900 s timeout**, against well
+under a minute at the default. Bounding by the demand's union instead
+gives `basics=2`, and the measured profile is **626 declines to 19
+splits** — it refuses wherever the callers bring the same basics, which is
+almost everywhere.
+
+### It runs unconditionally, because stage 5 is starved
+
+Stage 5 (VIOLATION) is where this belongs and it NEVER RUNS on the
+programs that need it: gated on `!analyze_again`, and a finer stage claims
+every pass. Measured on `sudoku5`, every pass is
+`analyze_again=1 -> starved` with 573-750 violations unacted on — the same
+starvation ifa/133 recorded for `bh`. Lifting that gate is not available:
+it was measured at 16 suite tests. So this runs unconditionally next to
+CS_DEF_PARTITION, gated only on the demand — ifa/133's answer to the same
+wall.
+
+### Measured, one binary, env toggled
+
+| arm | cfail | warns | container CS |
+| --- | --- | --- | --- |
+| default | 2 (othello3, rdb) | 43 | 2740 |
+| default + ESRECV | **4** (+ plcfrs, sudoku5) | 41 | 2726 |
+| flag + ESBLOCK | 4 (othello3, plcfrs, rdb, sudoku5) | 42 | 2393 |
+| flag + ESBLOCK + ESRECV | **3** (othello3, plcfrs, rdb) | 43 | 2401 |
+
+**It does what E is for**: the splits land on exactly the contours ifa/128
+identified —
+
+```
+[esrecv] es=180 fun=__lt__ recv=self spans=15 basics=2 edges=8 -> 2 groups
+[esrecv] es=324 fun=__eq__ recv=self spans=14 basics=2 edges=6 -> 2 groups
+```
+
+— and `sudoku5` goes from failing to compiling on the flag arm.
+
+**And it is not safe standalone.** At the default arm it COSTS plcfrs and
+sudoku5. It only pays in combination with ifa/133's ES-block split. Opt-in
+until that is understood: a mechanism that helps only in one combination
+is not yet understood, whatever its trace looks like.
+
+It also is not inert at the default arm — `mark_recursive_single_site`
+gains a third `%walk` contour — so the fa-init goldens move even without
+the flag.
+
+### What it does NOT fix
+
+`plcfrs`. Its union is `{list, tuple, int64, str, ChartItem, Edge, Entry}`
+— it spans CLASSES as well as basics, and this partitions only on the
+basics, so the callers all score the same signature and it declines. That
+is the remaining blocker for the flip: with ESBLOCK + ESRECV the flag arm
+is 3 compile failures against the default's 2, and the difference is
+exactly `plcfrs`.

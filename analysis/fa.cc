@@ -512,6 +512,13 @@ static bool cs_elem_irrepresentable(CreationSet *cs);  // ifa/133: defined with 
 static int elemsetter_enabled();
 static int eslineage_enabled();   // ifa/133: durable ES split lineage, ditto
 static int violcs_enabled();      // ifa/133: route a violation's CSs to route 4
+// ifa/146 E: PYC_ESRECV=1 -- a violation inside a contour makes that
+// contour's RECEIVER an imprecision. See the comment at the use.
+static int esrecv_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_ESRECV"); e = v ? atoi(v) : 0; }
+  return e;
+}
 extern int viol_cs_deferred;
 static int esl_hit = 0, esl_walk = 0;  // ifa/133: split-parent route hits / chain walks
 static int mint_in_child = 0, mint_child_novar = 0, mint_child_cmc = 0;
@@ -10290,6 +10297,52 @@ static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Ve
       }
     }
 
+    // ifa/146 E: THE RECEIVER OF THE CONTOUR THE VIOLATION IS IN.
+    //
+    // The CARTESIAN_PRODUCT splitter was removed for asking no demand at
+    // all -- it fanned a contour into one per CreationSet whenever a
+    // positional formal's type held 2..N of them, and "a union exists" is a
+    // fact, not a demand. `tests/splitter_cartesian_product.py` states what
+    // the replacement must be: "demand (an unresolved dispatch or an
+    // irrepresentable union) plus dispatch-aware filtering of the RECEIVER,
+    // which in single-dispatch OOP is the position that determines
+    // dispatch."
+    //
+    // This is that. The demand is a VIOLATION -- we are inside
+    // collect_violation_imprecisions, reached only from stage 5 with a real
+    // violation in hand. The action is one position, the receiver, so it
+    // cannot be a cartesian product over the formals. And the split itself
+    // is the ordinary type-shaped one: the AVar goes into `imprecisions`
+    // and `split_ess_for_type` partitions it by TYPE COMPATIBILITY, not one
+    // contour per CreationSet.
+    //
+    // The case it is for (ifa/128, ifa/133): `tuple.__eq__` / `__lt__` are
+    // generated UNROLLED, so each slot comparison has its own temporary. One
+    // contour serving many tuple shapes merges every shape's slot types
+    // into that temporary -- measured on `sudoku5`, 22 tuple CreationSets at
+    // one comparison contour and `x` holding {int64, str}, which is a
+    // BOXING violation at every use. Nothing downstream can separate it:
+    // `x` is an ES-contoured temporary, so there is no CreationSet to
+    // partition, and its writers are other `x` AVars in the SAME contour,
+    // so splitting on them duplicates the blob intact. The receiver is the
+    // only handle, and it is a type-shaped one.
+    if (esrecv_enabled() && v->av->contour_is_entry_set && v->av->contour != GLOBAL_CONTOUR) {
+      EntrySet *ves = (EntrySet *)v->av->contour;
+      // Position 0 is the function symbol; 1 is the receiver.
+      if (ves->fun && ves->fun->positional_arg_positions.n > 1) {
+        AVar *rav = ves->args.get(ves->fun->positional_arg_positions.v[1]);
+        if (rav && rav->out && rav->out->type && rav->out->type->sorted.n > 1) {
+          imprecisions.set_add(rav);
+          if (getenv("IFA_DBG_ESRECV"))
+            fprintf(stderr, "[esrecv] p=%d es=%d fun=%s recv=%s spans=%d (violation on %s)\n", analysis_pass,
+                    ves->id, (ves->fun->sym && ves->fun->sym->name) ? ves->fun->sym->name : "?",
+                    (rav->var && rav->var->sym && rav->var->sym->name) ? rav->var->sym->name : "(anon)",
+                    rav->out->type->sorted.n,
+                    (v->av->var && v->av->var->sym && v->av->var->sym->name) ? v->av->var->sym->name : "(anon)");
+        }
+      }
+    }
+
     if (is_call_result(v->av)) {
       Vec<AVar *> dispatched;
       PNode *p = v->av->var->def;
@@ -10317,6 +10370,120 @@ static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Ve
   // without a stable order, which AVar "drives" a given ES's split
   // this pass depends on open-addressed hash-bucket layout.
   qsort_by_id(imprecisions);
+}
+
+// ifa/146 E: the receiver split, run on EVERY pass rather than behind
+// stage 5.
+//
+// Stage 5 (VIOLATION) is where a violation-driven split naturally belongs,
+// and on the programs that need this it NEVER RUNS: it is gated on
+// `!analyze_again` and a finer stage claims every pass. Measured on
+// `sudoku5`, every pass is `analyze_again=1 -> starved` with 573-750
+// violations sitting unacted on -- the same starvation ifa/133 recorded
+// for `bh`. Lifting that gate is not the answer; it was measured at a cost
+// of 16 suite tests.
+//
+// ifa/133 hit this exact wall for route 4 and solved it the same way: the
+// deferral does not need the STAGE. This runs unconditionally, like
+// CS_DEF_PARTITION, and is gated only on the demand.
+//
+// The demand is BOXING specifically -- "an irrepresentable union", which
+// is what `tests/splitter_cartesian_product.py` names. A union that merely
+// EXISTS is a fact and is not enough; that is what got the
+// CARTESIAN_PRODUCT splitter removed. And the action is one position, the
+// receiver, so it cannot be a cartesian product over the formals.
+[[nodiscard]] static int split_ess_for_boxing_receivers() {
+  if (!esrecv_enabled()) return 0;
+  int analyze_again = 0;
+  Vec<AVar *> recvs;
+  Vec<EntrySet *> done;
+  const bool dbg = getenv("IFA_DBG_ESRECV") != nullptr;
+  for (ATypeViolation *v : fa->type_violations) {
+    if (!v || v->kind != ATypeViolation_kind::BOXING || !v->type) continue;
+    AVar *a = v->av;
+    if (!a || !a->contour_is_entry_set || a->contour == GLOBAL_CONTOUR) continue;
+    EntrySet *es = (EntrySet *)a->contour;
+    if (es->split || !done.set_add(es)) continue;
+    // Position 0 is the function symbol; 1 is the receiver.
+    if (!es->fun || es->fun->positional_arg_positions.n < 2) continue;
+    MPosition *rp = es->fun->positional_arg_positions.v[1];
+    AVar *rav = es->args.get(rp);
+    if (!rav || !rav->out || !rav->out->type || rav->out->type->sorted.n < 2) continue;
+
+    // THE DEMAND'S OWN PARTS: the basic types this union cannot represent
+    // together. Partitioning the receiver by which of THOSE each caller
+    // brings is bounded by the union, not by the receiver -- the receiver
+    // spans 19-27 CreationSets on `sudoku5` and one contour per CS is the
+    // cartesian product this issue removed. (Measured: it does not finish
+    // inside a 900 s timeout, against well under a minute at the default.)
+    Vec<Sym *> bad;
+    for (CreationSet *c : v->type->sorted)
+      if (c && c->sym)
+        if (Sym *b = to_basic_type(c->sym->type)) bad.set_add(b);
+    if (bad.set_count() < 2) continue;
+
+    Vec<AEdge *> all_edges;
+    for (AEdge *e : es->edges) if (e && e->args.n) all_edges.add(e);
+    qsort_by_id(all_edges);
+    if (all_edges.n < 2) continue;
+
+    Vec<Vec<AEdge *> *> groups;
+    std::vector<std::string> sigs;
+    for (AEdge *e : all_edges) {
+      AVar *act = e->filtered_args.get(rp);
+      if (!act) act = e->args.get(rp);
+      std::string sig;
+      if (act && act->out && act->out->type)
+        for (Sym *b : bad) {
+          bool has = false;
+          for (CreationSet *rc : act->out->type->sorted) {
+            if (!rc) continue;
+            Vec<AVar *> content;
+            cs_content_avars(rc, content);
+            for (AVar *cv : content)
+              if (cv && cv->out && cv->out->type)
+                for (CreationSet *ic : cv->out->type->sorted)
+                  if (ic && ic->sym && to_basic_type(ic->sym->type) == b) { has = true; break; }
+            if (has) break;
+          }
+          sig += has ? '1' : '0';
+        }
+      int gi = -1;
+      for (size_t k = 0; k < sigs.size(); k++) if (sigs[k] == sig) { gi = (int)k; break; }
+      if (gi < 0) { sigs.push_back(sig); groups.add(new Vec<AEdge *>); gi = (int)sigs.size() - 1; }
+      groups.v[gi]->add(e);
+    }
+    if (groups.n < 2) {
+      if (dbg)
+        fprintf(stderr, "[esrecv] p=%d es=%d fun=%s DECLINED: all %d edge(s) bring the same basics\n", analysis_pass,
+                es->id, (es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?", all_edges.n);
+      continue;
+    }
+    // Two groups, for the reason ifa/133's ES-block split takes two: the
+    // minimum that separates, then re-derive and ask again. Partition size
+    // can never track the receiver's CreationSet count.
+    if (groups.n > 2) {
+      for (int i = 2; i < groups.n; i++)
+        for (AEdge *e : *groups.v[i]) groups.v[1]->add(e);
+      groups.n = 2;
+    }
+    ESSplitDecision *dec = new ESSplitDecision;
+    dec->av = rav;
+    dec->es = es;
+    dec->avpos = rp;
+    dec->fsetters = SPLIT_TYPE;
+    dec->fmark = SPLIT_VALUE;
+    dec->all_edges.copy(all_edges);
+    dec->groups.add(groups.v[1]);
+    if (dbg)
+      fprintf(stderr, "[esrecv] p=%d es=%d fun=%s recv=%s spans=%d basics=%d edges=%d -> 2 groups\n", analysis_pass,
+              es->id, (es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?",
+              (rav->var && rav->var->sym && rav->var->sym->name) ? rav->var->sym->name : "(anon)",
+              rav->out->type->sorted.n, bad.set_count(), all_edges.n);
+    if (apply_entry_set_split(dec)) analyze_again = 1;
+  }
+  (void)recvs;
+  return analyze_again;
 }
 
 [[nodiscard]] static int split_for_violations(Vec<ATypeViolation *> &violations) {
@@ -11168,6 +11335,9 @@ static void dbg_es_per_fun() {
     // found work". This one runs on EVERY pass, so that test attributes
     // stage 1's progress to this stage -- which it did, and the
     // fa-converge goldens caught it as a phantom `pass 1 ? splits=1`.
+    // ifa/146 E: unconditional, for the same reason route 4 is -- the
+    // stage that would carry it is starved on the programs that need it.
+    if (split_ess_for_boxing_receivers()) analyze_again = 1;
     int cs_def_r = split_css_by_defs(!analyze_again);
     fa->stage_time[(int)FAPassStage::CS_DEF_PARTITION] += stage_timer.lap();
     if (cs_def_r) {
