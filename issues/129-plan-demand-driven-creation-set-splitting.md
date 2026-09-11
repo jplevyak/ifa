@@ -2731,3 +2731,32 @@ call with nothing to resolve. `creation_point` already excludes
 obvious analogue, excluding `s->is_fun`, was tried and is INERT (pygasus
 53 either way), so those CreationSets are minted by a different path and
 finding it is the next step for this item.
+
+### Shared vs arm-unique failures (warn-as-failure)
+
+| | count | |
+| --- | --- | --- |
+| shared (fail on BOTH arms) | **45** | incl. `othello3` + `rdb`, compile failures on both |
+| flag-arm only | 2 | `chull` 0->6, `tictactoe` 0->6 |
+| default only | **0** | — |
+
+**The default's failing set is a strict SUBSET of the flag arm's.** At
+program granularity the flag arm fixes NOTHING: no program moves from
+failing to clean. Its wins are quantitative only.
+
+Breaking the 45 shared down by what the flag arm does to them:
+
+| | count | |
+| --- | --- | --- |
+| identical | **36** | the flag changes nothing at all |
+| better | 2 | `sudoku1` 15->9, `tarsalzp` 231->213 |
+| worse | 7 | `pygasus` 3->53, `plcfrs` 129->162, `msp_ss` 235->264, `voronoi2` 27->49, `sudoku3` 36->48, `linalg` 38->46, `rubik` 176->183 |
+
+So the flag arm's whole effect on the corpus is **36 untouched, 2 better,
+9 worse** (7 shared + 2 new). That is a much narrower target than "the
+corpus regresses": nine named programs, of which `pygasus` (+50, function
+-value unions) and `plcfrs` (+33) are half the total damage.
+
+It also sets the bar for the flip honestly. Compile parity was never the
+right test — the flag arm has to stop making those nine worse, and the two
+it improves do not offset them.
