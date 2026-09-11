@@ -2715,8 +2715,10 @@ chull       0 ->   6   +6
 tictactoe   0 ->   6   +6
 ```
 
-**`pygasus` alone is a third of the regression**, and it is a NEW shape,
-not the shared-method-contour family of item 4. Every one of its added
+**`pygasus` alone is a third of the regression.** It first read as a NEW
+shape -- "function-value unions" -- and that was wrong twice over,
+corrected below: the names are CLASSES, and it is the same group as
+everything else. Every one of its added
 warnings is a FUNCTION-VALUE union from an indirect call through a
 dispatch table — a 6502 emulator, so:
 
@@ -2760,3 +2762,58 @@ corpus regresses": nine named programs, of which `pygasus` (+50, function
 It also sets the bar for the flip honestly. Compile parity was never the
 right test — the flag arm has to stop making those nine worse, and the two
 it improves do not offset them.
+
+
+### `pygasus` is the same group, and it is the cleanest instance of it
+
+The names in those unions (`mmc0Write`, `pAdc`, `mImplied`) are CLASSES,
+not functions, and the sites are `adrmode[opcode]._exec()` and
+`mmcRead[mMapper]._exec(adr-0x8000)` -- lists of handler OBJECTS, indexed
+at run time. The tell is that the 88-way union at `mmcRead`'s call
+contains `pAdc...pTrb`, which belong to the *opcode* table: the two tables
+share a list contour.
+
+`IFA_DBG_CSVARS=list` settles it. **Default arm — four contours, one per
+table:**
+
+```
+cs=4664 elem= mImplied mIndx mZp mImmediate mAbs mRelative ...      (14 addressing modes)
+cs=4665 elem= pBrk pOra pNop pTsb pAsl pPhp pAsla pBpl ...          (~70 opcodes)
+cs=4667 elem= mmc0Load mmc1Load
+cs=4668 elem= mmc0Write mmc1Write mmc2Write
+```
+
+**Flag arm — ONE contour, `cs=4312`, holding all 88**, with `defs=1`.
+
+So it is item 4's shape exactly: all four table literals lower to the same
+allocation site inside `list.__init__`, so the merged contour has a SINGLE
+creation point and route 4 declines "single creation point". `PYC_ESBLOCK`
+cannot help -- it hooks the `defs >= 2, one group` decline -- and neither
+can `PYC_ESRECV` (53 warnings with either, and the merged contour count
+stays at 1). **The `defs == 1` case has no mechanism at all.**
+
+That consolidates the whole flag-arm regression into ONE shape rather than
+two, and `pygasus` is its cleanest instance: four tables, four correct
+contours, one creation point.
+
+### The tension this exposes, which is worth stating plainly
+
+The default arm gets the RIGHT answer here -- four contours -- purely
+because `creation_point` mints one CreationSet per *(allocation site x
+contour)*. That is the behaviour ifa/128 calls over-discrimination and
+CLAUDE.md calls provenance, and on this program it is exactly correct: the
+four tables are four distinct objects with four distinct element types,
+and the allocation site is what distinguishes them.
+
+The start-merged arm replaces that with a principled rule -- merge, then
+separate on demand -- and then cannot separate, because the demand
+(`_exec` cannot dispatch over 88 classes) has nowhere to act: one creation
+point, and an element union of CLASSES which `elem_irrepresentable`
+correctly calls representable.
+
+So on this program the "provenance" heuristic is right and the demand-
+driven replacement is not yet able to reach the same answer. That is not
+an argument against the rule, but it is the concrete bill for it, and it
+says what the missing mechanism must do: **turn a demand on a `defs == 1`
+CreationSet into a split of whatever contour gives its allocation site
+more than one creation point.**
