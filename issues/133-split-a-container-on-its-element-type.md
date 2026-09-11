@@ -2985,3 +2985,118 @@ contour is shared. The dependency CLAUDE.md states is still the right one
 is still unbuilt. What is now known is that it cannot be built out of a
 per-caller fan, and it cannot be faked by hiding the shared contour from
 the walk.
+
+## 2026-09-11: the EntrySet split, done in the direction CLAUDE.md states
+
+`PYC_ESBLOCK=1`. Opt-in, measured below.
+
+CLAUDE.md: *"an EntrySet is split SO THAT a CreationSet split becomes
+possible, when a demand test has asked for one. An ES split is a means to
+separate creation points, never a reason to create data contours."*
+
+### The shape
+
+Route 4 declines `"1 group: every creation point on the same assign sets"`
+on `cs=1060`. That decline has two very different causes and the rung
+could not tell them apart: *these creation points are alike*, or *a
+contour they all pass through is SHARED, so the walk cannot tell them
+apart*. On this fixture it is the second:
+
+```
+FUNES fun=append contours=3
+  es=60 args= [append] [list#1060] [A#1026 B#1027]
+    <- edge=87 from=prune es=50 args= [append] [list#1060] [A B]
+    <- edge=86 from=prune es=50 args= [append] [list#1060] [A B]
+```
+
+Both comprehensions' appends share `es=60` because both accumulators ARE
+`list#1060`, the CreationSet being split.
+
+**The dump also settles why every previous attempt failed.** The two
+in-edges come from the SAME caller contour with IDENTICAL actual types at
+every position. There is nothing type-shaped to split `es=60` on, so any
+key over the call sites degenerates to one group per edge — ifa/144's fan.
+
+### What it does
+
+1. **Find the blocker BY TEST.** Candidates are only AVars on the walk
+   that are FORMALS of a contour with more than one in-edge. For each, hold
+   its formals terminal and recompute the per-def signatures: if the
+   creation points then separate, that contour is the blocker. This is a
+   direct test of the property that matters — not a climb up an ancestor
+   chain to whatever has two callers, which is what the reverted
+   `PYC_CSCALLSITE=2/3` did.
+2. **Partition its in-edges by WHICH CREATION POINTS each reaches**, with
+   that contour's formals held terminal so the walk cannot re-enter through
+   another caller. The parts are the demand's own objects.
+3. **Take exactly TWO groups.** ifa/144's complaint is "a demand to
+   separate two groups is answered with N contours", and bounding by
+   `defs.n` does not fix it: a CreationSet with six creation points
+   licenses six groups and the grouping hands back one per edge —
+   measured on `plcfrs`, `es=59 append edges=7 -> 6 groups`. The minimum
+   that makes route 4's partition possible is two, so the first signature
+   keeps the contour and everything else peels onto one product. If more
+   separation is needed the demand survives the re-derivation and the next
+   pass splits again. Partition size is 2 by construction and can never
+   track the caller count.
+
+### It works, and route 4 does the CreationSet split itself
+
+```
+[esblock]    p=2 cs=1060 BLOCKER es=60 fun=append
+[esblock]    p=2 cs=1060 SPLIT es=60 edges=2 -> 2 group(s) by creation point
+[csdefsplit] p=3 cs=1060 def av=3130 -> cs=1062 (group 1/2 sig=110)
+```
+
+The ES split is the MEANS; on the very next pass route 4's own content key
+names the partition and splits the CreationSet. End state:
+
+```
+es=60 [list#1060]          [B#1027]   <- comp 1's append, pure B
+es=85 [list#1062]          [A#1026]   <- comp 2's append, pure A
+es=78 [list#1055 list#1062][A#1026]
+es=79 [list#1059 list#1060][B#1027]
+```
+
+Every `append` contour has a single-type value formal; the `{A, B}` union
+is gone. `tests/listcomp_element_separation_startmerged.py` pins it, and
+is load-bearing: 0 warnings with `PYC_ESBLOCK`, 1 without.
+
+### Corpus: neutral at the default arm, −2 at the flag arm
+
+One binary, env toggled, so this is a real A/B and not the cross-binary
+comparison ifa/147 invalidates.
+
+| arm | cfail | warns | container CS |
+| --- | --- | --- | --- |
+| default | 2 (othello3, rdb) | 43 | 2740 |
+| default + ESBLOCK | 2 (othello3, rdb) | 42 | 2748 |
+| flag | 2 (othello3, rdb) | 45 | 2406 |
+| flag + ESBLOCK | 4 (+ plcfrs, sudoku5) | 42 | 2392 |
+
+Fewer warnings on both arms and fewer contours at the flag arm. The two
+lost programs are attributable (same binary, env only) and the cost is
+**traced, not guessed**:
+
+```
+sudoku5, tuple shapes at the worst __eq__/__lt__ contour:
+  ESBLOCK off   8
+  ESBLOCK on   22
+```
+
+Splitting a contour multiplies CreationSets — `creation_point` mints one
+per *(allocation site x contour)*, which is **ifa/128**'s complaint
+verbatim ("an EntrySet split MULTIPLIES CreationSets as a side effect.
+Nothing asked for those contours"). Those extra tuple shapes then land on
+ONE shared `tuple.__eq__`/`__lt__` contour, whose UNROLLED body has a
+single `x` per slot position, so slot types across shapes merge into
+`{int64, str}` and every use is a BOXING violation. That merge is
+**ifa/146 E**'s debt: separating a formal that holds N tuple
+CreationSets is exactly what the removed CARTESIAN_PRODUCT splitter did,
+and `tests/splitter_cartesian_product.py` already specifies the
+replacement.
+
+So the mechanism is blocked by two named pre-existing defects rather than
+by anything in its own design, and it stays opt-in until they are dealt
+with. Landing ifa/128's reuse (so an ES split stops multiplying
+CreationSets) is the one that would most directly unblock it.

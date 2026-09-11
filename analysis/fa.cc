@@ -8686,6 +8686,223 @@ static CSFlowGraph *build_cs_flow_graph(CreationSet *cs) {
   return g;
 }
 
+typedef MapElem<MPosition *, AVar *> MapElemMPositionAVarPair;
+
+// ifa/133: PYC_ESBLOCK=1 -- when route 4's key declines because a SHARED
+// contour hides the partition, split that contour so the CreationSet split
+// becomes possible. Off by default until measured.
+static int esblock_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_ESBLOCK"); e = v ? atoi(v) : 0; }
+  return e;
+}
+
+// The AVar that carries this CreationSet's demand, for the split ledger.
+static AVar *elem_av_for_demand(CreationSet *cs) {
+  if (cs && cs->sym && cs->sym->element && cs->sym->element->var && cs->added_element_var)
+    return unique_AVar(cs->sym->element->var, cs);
+  return cs && cs->vars.n ? cs->vars.v[0] : nullptr;
+}
+
+// ifa/133: SPLIT THE ENTRYSET SO THE CREATIONSET SPLIT BECOMES POSSIBLE.
+//
+// CLAUDE.md states the dependency: "an EntrySet is split SO THAT a
+// CreationSet split becomes possible, when a demand test has asked for
+// one. An ES split is a means to separate creation points, never a reason
+// to create data contours."
+//
+// This is the case it is for. On `tests/listcomp_element_separation.py`
+// under `PYC_CSDCPA1=2`, `cs=1060` holds both comprehension results and
+// route 4 declines "1 group: every creation point on the same assign
+// sets". The reason is one contour:
+//
+//     FUNES fun=append contours=3
+//       es=60 args= [append#41] [list#1060] [A#1026 B#1027]
+//         <- edge=87 from=prune es=50 args= [append#41] [list#1060] [A B]
+//         <- edge=86 from=prune es=50 args= [append#41] [list#1060] [A B]
+//
+// Both comprehensions' appends share `es=60`, because both accumulators
+// ARE `list#1060` -- the CreationSet route 4 is trying to split. The
+// backflow walk crosses that shared `self`, so every creation point lands
+// on every assign set and no key can partition them.
+//
+// Note what the dump also settles: the two in-edges come from the SAME
+// caller contour with IDENTICAL actual types at every position. There is
+// nothing type-shaped to split `es=60` on. That is why every attempt that
+// keyed on the call site collapsed into a fan (ifa/144's signature,
+// partition size = caller count) -- see ifa/133's 2026-09-10 entry.
+//
+// So the parts are named by the DEMAND'S OWN OBJECTS: the creation points
+// of `cs` that each in-edge can reach. Edges reaching the same set of
+// creation points share a contour. Partition size is at most the number
+// of creation points being separated, never the number of callers, and
+// when every edge reaches the same set there is nothing to separate and
+// the split is refused.
+
+// Is `a` a formal of `es`?
+static bool es_is_formal(EntrySet *es, AVar *a) {
+  if (!es || !a) return false;
+  form_Map(MapElemMPositionAVarPair, mp, es->args) if (mp->value == a) return true;
+  return false;
+}
+
+// Backward closure over AVars holding `cs`, optionally treating `stop_es`'s
+// FORMALS as terminal. Stopping there is what breaks the circularity: a
+// shared contour's formal is reachable from every caller, so crossing it
+// while asking "which creation points are upstream" answers "all of them".
+static void cs_backflow(CreationSet *cs, Vec<AVar *> &roots, EntrySet *stop_es, Vec<AVar *> &path) {
+  Vec<AVar *> work;
+  for (AVar *t : roots) if (t && path.set_add(t)) work.add(t);
+  for (int h = 0; h < work.n && h < 100000; h++) {
+    AVar *a = work.v[h];
+    if (stop_es && a->contour_is_entry_set && (EntrySet *)a->contour == stop_es && es_is_formal(stop_es, a)) continue;
+    for (AVar *x : a->backward)
+      if (x && x->out && x->out->type && x->out->type->set_in(cs) && path.set_add(x)) work.add(x);
+  }
+}
+
+// The per-def signature over `g`'s assign sets, computed with `stop_es`
+// held terminal. Returns the number of distinct signatures.
+static int cs_def_groups(CreationSet *cs, CSFlowGraph *g, Vec<AVar *> &defs, EntrySet *stop_es,
+                         std::vector<std::string> *out_sig) {
+  std::vector<std::string> sig((size_t)defs.n);
+  for (int k = 0; k < g->keys.n; k++) {
+    Vec<AVar *> path;
+    cs_backflow(cs, *g->targets.v[k], stop_es, path);
+    for (int i = 0; i < defs.n; i++) sig[(size_t)i] += path.set_in(defs.v[i]) ? '1' : '0';
+  }
+  Vec<const char *> distinct;
+  int n = 0;
+  for (int i = 0; i < defs.n; i++) {
+    bool seen = false;
+    for (int j = 0; j < i; j++) if (sig[(size_t)j] == sig[(size_t)i]) { seen = true; break; }
+    if (!seen) ++n;
+  }
+  if (out_sig) *out_sig = sig;
+  return n;
+}
+
+// The contour whose sharing hides the partition: hold its formals terminal
+// and the creation points separate. Candidates are only contours that are
+// actually ON the walk and actually shared (more than one in-edge), and
+// the test is the one that matters -- does removing this contour's sharing
+// make the demanded partition visible?
+static EntrySet *find_blocking_es(CreationSet *cs, CSFlowGraph *g, Vec<AVar *> &defs, bool dbg) {
+  Vec<EntrySet *> cands;
+  for (int k = 0; k < g->keys.n; k++)
+    for (AVar *a : *g->paths.v[k]) {
+      if (!a || !a->contour_is_entry_set) continue;
+      EntrySet *aes = (EntrySet *)a->contour;
+      if (cands.set_in(aes) || !es_is_formal(aes, a)) continue;
+      int nin = 0;
+      for (AEdge *e : aes->edges) if (e && e->args.n && ++nin > 1) break;
+      if (nin > 1) cands.set_add(aes);
+    }
+  Vec<EntrySet *> ordered;
+  for (EntrySet *e : cands) if (e) ordered.add(e);
+  if (ordered.n > 1)
+    qsort(ordered.v, ordered.n, sizeof(ordered[0]), [](const void *x, const void *y) {
+      int a = (*(EntrySet *const *)x)->id, b = (*(EntrySet *const *)y)->id;
+      return a > b ? 1 : (a < b ? -1 : 0);
+    });
+  for (EntrySet *e : ordered) {
+    if (cs_def_groups(cs, g, defs, e, nullptr) < 2) continue;
+    if (dbg)
+      fprintf(stderr, "[esblock] p=%d cs=%d BLOCKER es=%d fun=%s\n", analysis_pass, cs->id, e->id,
+              (e->fun && e->fun->sym && e->fun->sym->name) ? e->fun->sym->name : "?");
+    return e;
+  }
+  return nullptr;
+}
+
+// ifa/133: split the blocking contour, grouping its in-edges by WHICH
+// CREATION POINTS of `cs` each one can reach.
+//
+// Demand decides whether (route 4 was reached on a demand and its key just
+// declined); the creation points -- the demand's own objects, the things
+// being separated -- name the parts. The partition is bounded by the
+// number of creation points, not by the number of callers, so it cannot
+// become ifa/144's fan: when every edge reaches the same set there is
+// nothing to separate and this refuses.
+[[nodiscard]] static int split_blocking_es(CreationSet *cs, EntrySet *bes, Vec<AVar *> &defs, AVar *demand_av,
+                                           bool dbg) {
+  if (!bes || bes->split) return 0;
+  Vec<AEdge *> all_edges;
+  for (AEdge *e : bes->edges) if (e && e->args.n) all_edges.add(e);
+  qsort_by_id(all_edges);
+  if (all_edges.n < 2) return 0;
+
+  // Per edge: the creation points reachable from its actuals, with this
+  // contour's formals held terminal so the walk cannot come back in
+  // through another caller.
+  Vec<Vec<AEdge *> *> groups;
+  std::vector<std::string> sigs;
+  for (AEdge *e : all_edges) {
+    Vec<AVar *> roots;
+    form_Map(MapElemMPositionAVarPair, mp, e->args) {
+      AVar *f = e->filtered_args.get(mp->key);
+      AVar *a = f ? f : mp->value;
+      if (a && a->out && a->out->type && a->out->type->set_in(cs)) roots.add(a);
+    }
+    Vec<AVar *> path;
+    if (roots.n) cs_backflow(cs, roots, bes, path);
+    std::string sig;
+    char buf[16];
+    for (int i = 0; i < defs.n; i++)
+      if (path.set_in(defs.v[i])) { snprintf(buf, sizeof(buf), "%d,", defs.v[i]->id); sig += buf; }
+    int gi = -1;
+    for (size_t k = 0; k < sigs.size(); k++) if (sigs[k] == sig) { gi = (int)k; break; }
+    if (gi < 0) { sigs.push_back(sig); groups.add(new Vec<AEdge *>); gi = (int)sigs.size() - 1; }
+    groups.v[gi]->add(e);
+  }
+  if (groups.n < 2) {
+    if (dbg)
+      fprintf(stderr, "[esblock] p=%d cs=%d es=%d DECLINED: all %d edge(s) reach the same creation points\n",
+              analysis_pass, cs->id, bes->id, all_edges.n);
+    return 0;
+  }
+  // ifa/144's bound: TWO groups, always.
+  //
+  // "A demand to separate two groups is answered with N contours" is
+  // ifa/144's complaint, and a bound of `defs.n` does not fix it -- a
+  // CreationSet with six creation points licenses six groups, and the
+  // grouping below then hands back one per edge. Measured on `plcfrs`:
+  // `es=59 append edges=7 -> 6 groups`, `es=338 append edges=6 -> 6`.
+  // That is the fan, with a larger licence.
+  //
+  // This split exists ONLY to make route 4's partition possible, and the
+  // minimum that achieves that is separating the creation points into TWO
+  // groups. So take exactly two: the first signature keeps the contour,
+  // everything else peels onto one product. If more separation is needed
+  // the demand survives the re-derivation and the next pass splits again,
+  // which is "separate minimally, re-derive, ask again" rather than
+  // "assume all N are mutually distinct".
+  //
+  // Partition size is 2 by construction and can never track the caller
+  // count, which is the property ifa/144 asks for.
+  if (groups.n > 2) {
+    for (int i = 2; i < groups.n; i++)
+      for (AEdge *e : *groups.v[i]) groups.v[1]->add(e);
+    groups.n = 2;
+    if (dbg)
+      fprintf(stderr, "[esblock] p=%d cs=%d es=%d coalesced to 2 group(s)\n", analysis_pass, cs->id, bes->id);
+  }
+  ESSplitDecision *dec = new ESSplitDecision;
+  dec->av = demand_av;
+  dec->es = bes;
+  dec->avpos = nullptr;
+  dec->fsetters = SPLIT_TYPE;
+  dec->fmark = SPLIT_VALUE;
+  dec->all_edges.copy(all_edges);
+  for (int i = 1; i < groups.n; i++) dec->groups.add(groups.v[i]);
+  if (dbg)
+    fprintf(stderr, "[esblock] p=%d cs=%d SPLIT es=%d fun=%s edges=%d -> %d group(s) by creation point\n",
+            analysis_pass, cs->id, bes->id, (bes->fun && bes->fun->sym && bes->fun->sym->name) ? bes->fun->sym->name : "?",
+            all_edges.n, groups.n);
+  log(LOG_SPLITTING, "SPLIT BLOCKING ES es %d edges %d groups %d\n", bes->id, all_edges.n, groups.n);
+  return apply_entry_set_split(dec);
+}
+
 // ifa/133 steps 3-4: peel one group of creation points off a CreationSet.
 //
 // The re-point is `split_css`'s (fa.cc, `v->cs_map->put(cs->sym, new_cs)`),
@@ -9092,6 +9309,26 @@ static void report_fun_entry_sets() {
         fprintf(stderr, "]");
       }
       fprintf(stderr, "\n");
+      // ifa/133: per IN-EDGE, the caller and the ACTUAL TYPES at each
+      // position. "Do these call sites differ in anything type-shaped?" is
+      // the first question a demand-driven ES split has to answer, and it
+      // must be answered with data, not assumed.
+      for (AEdge *ee : es->edges) {
+        if (!ee || !ee->args.n) continue;
+        fprintf(stderr, "    <- edge=%d from=%s es=%d args=", ee->id,
+                (ee->from && ee->from->fun && ee->from->fun->sym && ee->from->fun->sym->name)
+                    ? ee->from->fun->sym->name : "(root)",
+                ee->from ? ee->from->id : -1);
+        form_Map(MapElemMPositionAVarPair, mq, ee->args) {
+          AVar *aa = mq->value;
+          fprintf(stderr, " [");
+          if (aa && aa->out && aa->out->type)
+            for (CreationSet *c : aa->out->type->sorted)
+              if (c && c->sym) fprintf(stderr, "%s#%d ", c->sym->name ? c->sym->name : "?", c->id);
+          fprintf(stderr, "]");
+        }
+        fprintf(stderr, "\n");
+      }
     }
   }
 }
@@ -9683,6 +9920,19 @@ static void cs_member_signature(AVar *d, std::string &out) {
         continue;
       }
       if (ngroups < 2) {
+        // ifa/133: "every creation point on the same assign sets" is not
+        // "these are indistinguishable" -- it is frequently "a contour they
+        // all pass through is SHARED, so the walk cannot tell them apart".
+        // Split that contour, so this partition becomes possible on the
+        // next pass. CLAUDE.md's dependency, in the direction it states it:
+        // the ES split is a MEANS to separate creation points.
+        if (esblock_enabled() && g && defs.n > 1) {
+          if (EntrySet *bes = find_blocking_es(cs, g, defs, dbg))
+            if (split_blocking_es(cs, bes, defs, elem_av_for_demand(cs), dbg)) {
+              analyze_again = 1;
+              continue;
+            }
+        }
         if (dbg)
           fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d DECLINED (1 group: %s)\n", analysis_pass, cs->id,
                   cs->sym->name ? cs->sym->name : "?", defs.n,
