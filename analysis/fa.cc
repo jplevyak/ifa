@@ -9066,7 +9066,73 @@ static int cscallsite_enabled() {
 // are, and callers agreeing on the type stay together. That is the call
 // site naming the parts of a partition demand already asked for, rather
 // than deciding on its own that the parts exist.
-[[nodiscard]] static int split_es_by_call_site(EntrySet *es, AVar *demand_av, bool dbg, CSFlowGraph *g = nullptr) {
+// ifa/133: how many of an EntrySet's in-edges actually carry arguments,
+// and the sole one when there is exactly one.
+// ifa/133: what the demand-driven call-site path actually did, reported
+// once at convergence under PYC_DBG_STAGES so a test can pin it. Counts,
+// not ids: ids drift between runs, the shape of the answer does not.
+// ifa/133: CreationSets whose element was already irrepresentable on an
+// earlier pass. Types are re-derived from bottom before every pass, so a
+// demand still present after one is a property of the program rather than
+// of a half-widened intermediate state. Never cleared.
+static Vec<CreationSet *> csd_demand_first;
+
+static int csd_climbs = 0;     // demands whose owning contour had no choice
+static int csd_hops = 0;       // total contours walked up
+static int csd_named = 0;      // splits the demand had to name itself
+static int csd_split = 0;      // call-site splits applied
+
+static int es_in_edges(EntrySet *es, AEdge **only = nullptr) {
+  int n = 0;
+  AEdge *first = nullptr;
+  if (es)
+    for (AEdge *ee : es->edges)
+      if (ee && ee->args.n) {
+        if (!n) first = ee;
+        if (++n > 1) break;
+      }
+  if (only) *only = (n == 1) ? first : nullptr;
+  return n;
+}
+
+// ifa/133: CLIMB to the nearest contour that has a choice.
+//
+// ifa/129's third clause splits "the EntrySet that owns the creation
+// point". That contour frequently has a SINGLE in-edge, and then there is
+// nothing there to partition -- the demand is real, the mechanism is
+// right, and it is being pointed at the wrong contour.
+//
+// Measured on `sudoku5` (ifa/133, 2026-09-10). Its dict-of-sets and
+// dict-of-lists share one contour, so their `_vals` lists share one too,
+// whose element becomes {list, set}:
+//
+//     es=103  list.__init__   (owns the `_vals` creation point)  in_edges=1
+//     es=102  dict.__new__    (its only caller)                  in_edges=2
+//       <- edge=212 from solve_sudoku                 -- `Y = dict()`
+//       <- edge=256 from __pyc_dict_from_iterable__   -- `X = dict(gen)`
+//
+// The owning contour cannot answer the demand; its unique caller can, and
+// the two callers there are exactly the program's two dicts. So walk up
+// the chain of single-caller contours and stop at the first with a real
+// choice.
+//
+// This is not "split the callers too". Nothing is split on the way up --
+// the climb only chooses WHICH contour the one split is applied to, and
+// the demand that justifies it is unchanged.
+static EntrySet *es_climb_to_choice(EntrySet *es, int *hops) {
+  *hops = 0;
+  for (int i = 0; es && i < 16; i++) {
+    AEdge *only = nullptr;
+    const int nin = es_in_edges(es, &only);
+    if (nin != 1 || !only->from || only->from == es) return es;
+    es = only->from;
+    ++*hops;
+  }
+  return es;
+}
+
+[[nodiscard]] static int split_es_by_call_site(EntrySet *es, AVar *demand_av, bool dbg, CSFlowGraph *g = nullptr,
+                                              int demand_parts = 0) {
   if (!es || es->split) return 0;
   Vec<AEdge *> all_edges;
   for (AEdge *ee : es->edges) if (ee && ee->args.n) all_edges.add(ee);
@@ -9131,11 +9197,62 @@ static int cscallsite_enabled() {
       if (gi < 0) { sigs.add(sig); reps.add(e); groups.add(new Vec<AEdge *>); gi = sigs.n - 1; }
       groups.v[gi]->add(e);
     }
+    if (groups.n < 2 && demand_parts >= 2 && all_edges.n <= demand_parts) {
+      // ifa/133: THE DEMAND NAMES THE PARTS, THE CALL SITE ONLY LABELS THEM.
+      //
+      // The signature above asks which assign sets of the demand each
+      // edge's RETURNED container reaches. That question is unanswerable
+      // in exactly the case this clause exists for: the CreationSet has
+      // ONE creation point, so every edge's result is the same contour and
+      // every signature is equal. The types cannot say which contributor
+      // is which -- and CLAUDE.md's refinement is explicit that the call
+      // site may, when a demand has already decided that a split must
+      // happen:
+      //
+      //   "If the types of the contributors are identical at every formal,
+      //    the analysis has no type-shaped way to say WHICH contributor is
+      //    which -- but the call site does. Using it there is a mechanism,
+      //    not a reason."
+      //
+      // Apply the two-question test. Would this split happen if the demand
+      // were absent? No: the only caller is the `defs.n == 1` clause, and
+      // only after `elem_irrepresentable` on this CreationSet's element.
+      // Does the demand alone decide WHETHER, with the handle deciding
+      // only WHICH parts? Yes.
+      //
+      // This is NOT the fan deleted by ifa/146 C. That one was reachable
+      // as a blanket FALLBACK "whenever mode 2 had no usable flow graph",
+      // for any candidate, demand or no demand -- partition size = caller
+      // count, asked for by nothing. Here the gate is a specific
+      // irrepresentable element on a specific single-creation-point
+      // contour, and the finer key is tried first and must fail.
+      // Replace the single useless group, do not append to it: every edge
+      // must land in exactly one group, or an edge is both kept on the
+      // parent contour and peeled onto a product.
+      reps.clear();
+      groups.clear();
+      sigs.clear();
+      for (AEdge *e : all_edges) {
+        Vec<AEdge *> *gp = new Vec<AEdge *>;
+        gp->add(e);
+        reps.add(e);
+        sigs.add(groups.n);
+        groups.add(gp);
+      }
+      ++csd_named;
+      if (dbg)
+        fprintf(stderr, "[cscallsite] p=%d es=%d fun=%s DEMAND-NAMED edges=%d parts=%d union=%d -> %d group(s)\n",
+                analysis_pass, es->id, (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?",
+                all_edges.n, demand_parts,
+                (demand_av && demand_av->out) ? demand_av->out->set_count() : -1, groups.n);
+    }
     if (groups.n < 2) {
       if (dbg)
-        fprintf(stderr, "[cscallsite] p=%d es=%d fun=%s DECLINED demand: all %d edge(s) one signature\n",
+        fprintf(stderr, "[cscallsite] p=%d es=%d fun=%s DECLINED demand: all %d edge(s) one signature%s\n",
                 analysis_pass, es->id, (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?",
-                all_edges.n);
+                all_edges.n,
+                (demand_parts >= 2 && all_edges.n > demand_parts) ? " (more call sites than the demand has parts)"
+                                                                  : "");
       return 0;
     }
     // groups[0] keeps the original contour; the rest peel off.
@@ -9152,6 +9269,7 @@ static int cscallsite_enabled() {
               dec->groups.n);
   }
   log(LOG_SPLITTING, "SPLIT ES BY CALL SITE es %d edges %d groups %d\n", es->id, all_edges.n, dec->groups.n);
+  ++csd_split;
   return apply_entry_set_split(dec);
 }
 
@@ -9232,6 +9350,14 @@ static void report_fun_entry_sets() {
         fprintf(stderr, "]");
       }
       fprintf(stderr, "\n");
+      // ifa/133: the CALLERS of this contour. "in_edges > 1" is what makes
+      // a demand-driven call-site split possible at all, so name them.
+      for (AEdge *ee : es->edges) {
+        if (!ee || !ee->args.n) continue;
+        fprintf(stderr, "    <- edge=%d from_es=%d from_fun=%s\n", ee->id, ee->from ? ee->from->id : -1,
+                (ee->from && ee->from->fun && ee->from->fun->sym && ee->from->fun->sym->name)
+                    ? ee->from->fun->sym->name : "(root)");
+      }
     }
   }
 }
@@ -9308,6 +9434,37 @@ static int containerunion_enabled() {
   static int e = -1;
   if (e < 0) { cchar *v = getenv("PYC_CONTAINERUNION"); e = v ? atoi(v) : 0; }
   return e;
+}
+
+// ifa/133: HOW MANY PARTS DOES THE DEMAND NAME?
+//
+// An irrepresentable element union has to be separated into groups that
+// CAN share a representation. That count is the demand's own answer to
+// "how many contours are needed", and it is the bound a call-site split
+// must respect: if there are more call sites than parts, the call site is
+// not naming the demand's parts, it is fanning -- ifa/144's signature,
+// "partition size = a COUNT OF THINGS rather than the demanded
+// distinction".
+//
+// Grouping mirrors `elem_irrepresentable` below: all numeric basics count
+// as one (they coerce), each other basic sym is its own, each container
+// sym is its own (no runtime tag, so two layouts cannot share), and every
+// class counts as one (a class union dispatches).
+static int elem_representable_classes(AVar *elem) {
+  if (!elem || !elem->out) return 0;
+  Vec<Sym *> basics, containers;
+  int have_num = 0, have_class = 0;
+  for (CreationSet *e : *elem->out) {
+    if (!e || !e->sym || e->sym == sym_nil_type) continue;
+    if (Sym *b = to_basic_type(e->sym->type)) {
+      if (b->num_kind) have_num = 1;
+      else basics.set_add(b);
+    } else if (e->sym->element)
+      containers.set_add(e->sym);
+    else
+      have_class = 1;
+  }
+  return have_num + basics.set_count() + containers.set_count() + have_class;
 }
 
 static bool elem_irrepresentable(AVar *elem) {
@@ -9636,7 +9793,56 @@ static void cs_member_signature(AVar *d, std::string &out) {
                        ? unique_AVar(cs->sym->element->var, cs)
                        : nullptr;
       if (d && d->contour_is_entry_set && elem && elem_irrepresentable(elem)) {
-        if (split_es_by_call_site((EntrySet *)d->contour, elem, dbg, build_cs_flow_graph(cs))) {
+        EntrySet *target = (EntrySet *)d->contour;
+        int hops = 0;
+        // ifa/133 mode 2: the owning contour may have a single in-edge and
+        // so nothing to partition. Climb to the nearest caller that has a
+        // choice; see `es_climb_to_choice`.
+        if (cscallsite_enabled() >= 2) {
+          target = es_climb_to_choice(target, &hops);
+          // Count only a climb that ARRIVED somewhere with a choice. A
+          // climb that runs out at `__main__` is a demand this mechanism
+          // cannot answer, not a use of it, and counting those makes the
+          // number track program size instead of the property under test.
+          if (hops && es_in_edges(target) > 1) { ++csd_climbs; csd_hops += hops; }
+        }
+        if (dbg && hops)
+          fprintf(stderr, "[cscallsite] p=%d cs=%d CLIMB %d -> es=%d fun=%s hops=%d in_edges=%d\n", analysis_pass,
+                  cs->id, ((EntrySet *)d->contour)->id, target->id,
+                  (target->fun && target->fun->sym && target->fun->sym->name) ? target->fun->sym->name : "?", hops,
+                  es_in_edges(target));
+        // ifa/133 mode 3: let the demand name the parts when no type-shaped
+        // key can. See the comment in `split_es_by_call_site`.
+        // ifa/133: THE DEMAND MUST HAVE SURVIVED A RE-DERIVATION.
+        //
+        // The demand-named partition uses NO type information, so it is the
+        // coarsest action available and must never preempt a finer one.
+        // Without a gate it fires at PASS 1, while types are still
+        // widening, on unions that resolve by themselves: measured on
+        // `plcfrs`, 13 such splits at pass 1, and the program stops
+        // compiling.
+        //
+        // `quiescent` is the wrong gate -- it is the ladder's "every finer
+        // stage declined THIS pass", and on `sudoku5` that pass never
+        // comes (the same starvation ifa/133 recorded for stage 5, which
+        // is starved on all 40 passes there). Gating on it costs sudoku5
+        // its compile, which is the program this mechanism exists for.
+        //
+        // The right gate is the one that distinguishes a TRANSIENT union
+        // from a settled one: `analyze_to_convergence` resets types before
+        // every pass, so a union still present on a LATER pass has been
+        // re-derived from bottom and is a property of the program, not of
+        // where the analysis happens to be. Require the demand to have
+        // been seen on an earlier pass.
+        //
+        // This is not the removed RIPENESS WAIT. That waited a fixed three
+        // passes so a def count could settle into a cap's range, and a
+        // finer rung firing RESET its counter -- so the CreationSet that
+        // needed the rung never reached it. This is one bit, set the first
+        // time the demand is seen and never cleared.
+        bool settled = !csd_demand_first.set_add(cs);
+        const int parts = (cscallsite_enabled() >= 3 && settled) ? elem_representable_classes(elem) : 0;
+        if (split_es_by_call_site(target, elem, dbg, build_cs_flow_graph(cs), parts)) {
           analyze_again = 1;
           continue;
         }
@@ -13985,6 +14191,14 @@ int FA::analyze(Fun *top) {
   // not, and is the actual property under test. See
   // tests/deepcopy_recursive_nested_growth.py.
   if (getenv("PYC_DBG_CONVERGED")) fprintf(stderr, "CONVERGED=%d\n", pass_limit_hit ? 0 : 1);
+  // ifa/133: the demand-driven call-site path, in the same spirit as
+  // STAGES -- a stable property of the program ("did this program need the
+  // climb, and did the demand have to name the parts itself"), not a count
+  // that moves with every FA change. Its OWN env var, deliberately: the
+  // four `tests/splitter_*.py` goldens pin the STAGES line and an unrelated
+  // extra line there is noise in a fixture that is not about this.
+  if (getenv("PYC_DBG_CSDEMAND"))
+    fprintf(stderr, "CSDEMAND: climbs=%d hops=%d named=%d split=%d\n", csd_climbs, csd_hops, csd_named, csd_split);
   if (getenv("PYC_DBG_STAGES")) {
     fprintf(stderr, "STAGES:");
     for (int i = 0; i < kNumFAPassStages; i++)

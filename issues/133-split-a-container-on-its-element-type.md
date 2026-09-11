@@ -3239,3 +3239,199 @@ member that holds it.
 is a pre-existing gap that WALKCTX exposes rather than causes. What is
 owed before it can default on is the demand path above, so the separation
 stops depending on when the analysis happens to stop.
+
+## 2026-09-10: the demand-driven mechanism, made to work
+
+The section above named four things blocking ifa/129's third clause. Three
+are now fixed and the fourth turned out not to be needed.
+
+### The option
+
+| env | meaning |
+| --- | --- |
+| `PYC_CSCALLSITE=1` | as before: split the contour that OWNS the creation point, by assign-set signature |
+| `PYC_CSCALLSITE=2` | + CLIMB to the nearest caller that has a choice |
+| `PYC_CSCALLSITE=3` | + let the demand name the parts when no type-shaped key can |
+| `PYC_CONTAINERUNION=1` | a union of two distinct container syms is irrepresentable |
+| `PYC_DBG_CSDEMAND=1` | print the `CSDEMAND:` summary line |
+
+### 1. The climb (`es_climb_to_choice`)
+
+The contour that owns a creation point often has ONE in-edge, and then
+there is nothing there to partition. The demand is real and the mechanism
+is right; it was pointed at the wrong contour. Walk up the chain of
+single-caller contours and stop at the first with a real choice. Nothing
+is split on the way up -- the climb only chooses WHICH contour the one
+split is applied to.
+
+On sudoku5 that is one hop, and it lands exactly where the two dicts are:
+
+```
+[cscallsite] p=3 cs=1751 CLIMB 103 -> es=102 fun=__new__ hops=1 in_edges=2
+```
+
+A climb that runs out at `__main__` is a demand this mechanism cannot
+answer; those are not counted, or the number tracks program size instead
+of the property under test.
+
+### 2. The demand names the parts
+
+The existing signature asks which assign sets each edge's RETURNED
+container reaches. That is unanswerable in exactly the case this clause
+exists for -- the CreationSet has ONE creation point, so every edge's
+result is the same contour and every signature is equal. CLAUDE.md's
+refinement covers it:
+
+> If the types of the contributors are identical at every formal, the
+> analysis has no type-shaped way to say WHICH contributor is which -- but
+> the call site does. Using it there is a mechanism, not a reason.
+
+### 3. ...but BOUNDED by the demand, or it is just the fan
+
+The first version of (2) was one group per edge, and that is the fan
+ifa/146 C deleted. It looked fine on sudoku5 (`edges=2 -> 2 groups`) and
+was caught immediately on `tests/match_map_star.py`:
+
+```
+[cscallsite] p=2 es=44 fun=__new__ DEMAND-NAMED edges=19 -> 19 group(s)
+```
+
+19 callers, 19 contours, partition size = caller count. ifa/144's exact
+signature, and it cost that test its clean compile (22 `has no type`
+warnings).
+
+The fix is to ask the demand how many parts it has.
+`elem_representable_classes` counts the groups an irrepresentable element
+union must be separated into -- all numeric basics as one (they coerce),
+each other basic sym its own, each container sym its own (no runtime tag,
+so two layouts cannot share), every class as one (a class union
+dispatches). **If there are more call sites than parts, the call site is
+not naming the demand's parts, it is fanning, and the split is refused.**
+
+    fixture   {int64, str}  2 parts,   2 edges  -> allowed
+    sudoku5                 5 parts,   2 edges  -> allowed
+    match_map_star          2 parts,  19 edges  -> REFUSED
+
+(The element unions on a real program are much larger than the two types
+the demand is about -- `sudoku5`'s is 23 CreationSets across 5 classes, so
+the bound there is 5, not 2. It still refuses `match_map_star`'s 19, which
+is the fan it exists to stop.)
+
+That single bound is what makes the difference between a demand-driven
+mechanism and 1-CFA by the back door, and it is checkable: the partition
+size now comes from the demand, never from a count of callers.
+
+### 3b. And the demand must have SURVIVED A RE-DERIVATION
+
+Unbounded in time, the split fires at PASS 1, while types are still
+widening, on unions that resolve by themselves. Measured on `plcfrs`: 13
+such splits at pass 1, and the program stops compiling.
+
+`quiescent` -- the ladder's own "every finer stage declined this pass" --
+is the wrong gate. On `sudoku5` that pass never comes (the same starvation
+this issue recorded for stage 5, starved on all 40 passes there), and
+gating on it costs sudoku5 its compile, which is the program the mechanism
+exists for.
+
+The right gate distinguishes a TRANSIENT union from a settled one.
+`analyze_to_convergence` resets types before every pass, so a union still
+present on a LATER pass has been re-derived from bottom and is a property
+of the program rather than of a half-widened intermediate state. So:
+require the demand to have been seen on an earlier pass.
+
+This is NOT the removed ripeness wait. That waited a fixed three passes so
+a def count could settle into a cap's range, and a finer rung firing RESET
+its counter, so the CreationSet that needed the rung never reached it.
+This is one bit, set the first time the demand is seen and never cleared.
+
+It recovers `plcfrs` at `PYC_CSCALLSITE=3` alone and `linalg` at the flag
+arm, and keeps sudoku5.
+
+### 4. Not needed after all
+
+The earlier note said the demand also had to be made visible through the
+MEMBER that holds it (a dict's content is in `_vals`, not in an element
+channel), and propagated up one level. Neither is needed: the demand is
+already raised directly on `_vals`' own list CreationSet, whose element IS
+`{list, set}`. What was missing was only the ability to ACT on it, which
+is the climb. `PYC_CONTAINERUNION=1` is still required, to see
+`{list, set}` as irrepresentable at all.
+
+### Result on sudoku5
+
+The separation now happens **at pass 3, on demand**, where it previously
+depended on a SETTER_OF_SETTER split arriving at pass 27:
+
+```
+[cscallsite] p=3 cs=1751 CLIMB 103 -> es=102 fun=__new__ hops=1 in_edges=2
+[cscallsite] p=3 es=102 fun=__new__ DEMAND-NAMED edges=2 -> 2 group(s)
+```
+
+`sudoku5` compiles at the flag arm WITH `PYC_WALKCTX=1`, runs, and its
+stdout is byte-identical to CPython's apart from the program's own
+self-reported `TIME` line.
+
+### The test
+
+`tests/demand_split_shared_allocator.py` is the mechanism in five lines:
+
+```python
+a = set([1, 2])
+b = set(["x", "y"])
+```
+
+`set(...)` allocates its backing list inside `set.__init__` (one in-edge),
+both `set()` calls reach ONE `set.__new__` contour (two in-edges), and
+under `PYC_CSDCPA1=2` the two backing lists are one CreationSet with one
+creation point whose element unions `int64` with `str`. Its `.py.env`
+turns on the flag arm plus the mechanism and its `.check` pins
+
+```
+CSDEMAND: climbs=1 hops=1 named=3 split=3
+```
+
+`climbs=1 hops=1` says the owning contour had no choice and its caller
+did; `named` says the demand had to name the parts itself. Deterministic
+across runs.
+
+The fixture pins that the mechanism ENGAGES and the program stays correct;
+this program also reaches the right answer without it, by later splitting.
+sudoku5 is the case where that later splitting is not guaranteed to
+arrive, which is the whole point, and it is covered by the sweep rather
+than by a fixture -- the ES merge it depends on could not be reproduced in
+a small program (`fresh()` called from two sites gets two contours; only
+`__pyc__`-level allocators merge, and only in a large enough program).
+
+### Corpus: it works, and it is a net negative by one program
+
+`corpus_sweep.sh -m compile`, four arms, same tree, same binary, serial.
+
+| arm | cfail | warns | container CS |
+| --- | --- | --- | --- |
+| default | 2 (othello3, rdb) | 43 | 2740 |
+| default + mechanism | 3 (+ **plcfrs**) | 42 | 2723 |
+| flag + `PYC_WALKCTX=1` | 3 (+ sudoku5) | 44 | 2403 |
+| flag + WALKCTX + mechanism | 4 (+ **go**, **plcfrs**, − sudoku5) | 43 | 2449 |
+
+**It does what it was built to do**: `sudoku5` is off the failure list,
+separated on demand at pass 3 rather than by accident at pass 27. It costs
+`plcfrs` at both arms and `go` at the flag arm, so the flag arm goes 3 → 4.
+
+`plcfrs` was investigated and no type-shaped discriminator separates it
+from `sudoku5`. Both demands look identical on every metric measured:
+
+```
+plcfrs   es=93  __new__  edges=3 parts=5 union=70 -> 3 groups
+sudoku5  es=102 __new__  edges=2 parts=5 union=23 -> 2 groups
+```
+
+Same `parts`, same kind of union, same shape of split. The only visible
+difference is the size of the union (60-70 CreationSets vs 23), and a
+threshold on that would be an arbitrary lever, not a demand.
+
+So the mechanism stays **opt-in**. It is correct in design -- every guard
+on it is stated in terms of the demand, and the fan it could have become
+is measured and refused -- but "it fixes the program it was built for and
+costs one other" is not evidence that it should be on by default. What is
+owed before it can be is an account of why splitting helps `sudoku5`'s
+union and hurts `plcfrs`'s.
