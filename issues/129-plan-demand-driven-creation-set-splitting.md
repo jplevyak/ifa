@@ -2591,8 +2591,24 @@ UNROLLED `tuple.__eq__`/`__lt__` contour, and its single `x` per slot
 merges them into `{int64, str}`. Measured on `sudoku5`: 8 tuple shapes at
 that contour with ESBLOCK off, 22 with it on.
 
-**So the blocker is ifa/128.** With CreationSet reuse landed — so that an
-EntrySet split stops multiplying data contours — ESBLOCK's cost
-disappears, and the flip is: change the defaults, re-bless the 14 goldens
-listed above, done. That is the single remaining precondition, and it is
-no longer a guess: it is the thing both lost programs fail on.
+**RETRACTED 2026-09-11 — the blocker is ifa/146 E, not ifa/128.** The
+paragraph that stood here said "with CreationSet reuse landed... ESBLOCK's
+cost disappears". Both halves are wrong; ifa/128 now carries the
+measurements:
+
+- `creation_point` mints FEWER CreationSets with the ES split, not more
+  (MINT 2342 -> 2134, splitter `csmint` 57 -> 42), so the multiplication
+  is not through the route ifa/128 is about. Its three reuse routes
+  (`cselem`, `csshape`, `csmold`) are inert — 0 hits — even at the flag
+  arm.
+- Extending `dcpa1` reuse to tuples cuts contours 25% (2406 -> 1806) and
+  costs **ten** corpus programs, while making the failing structure WORSE:
+  22 -> 32 tuple shapes at the shared comparison contour, because fewer
+  CreationSets means fewer comparison contours each serving more shapes.
+
+The two issues pull against each other. **The blocker is ifa/146 E**: both
+lost programs fail on one shared, UNROLLED `tuple.__eq__`/`__lt__` contour
+serving many tuple shapes, whose single `x` per slot merges their types
+into `{int64, str}`. Its demand-driven replacement is already specified in
+`tests/splitter_cartesian_product.py`. Everything else for the flip is
+ready — the 14 goldens above are inspected and benign.

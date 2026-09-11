@@ -713,6 +713,24 @@ CreationSet *creation_point(AVar *v, Sym *s, int arity) {
   // merged `range`'s per-constant instances and `empty_list_print` lost the
   // types on its empty list's `__str__` loop -- the exact failure issue 040
   // filed and 045 fixed.
+  // ifa/128, RE-TESTED 2026-09-11 and the exclusion CONFIRMED. The stated
+  // reason predates ifa/132/139/141's arity guard below, so it looked
+  // obsolete -- the guard already refuses to merge a 2-tuple with a
+  // 3-tuple or with an unknown-arity container, leaving only POSITION.
+  // Dropping the exclusion was measured on one binary, env toggled:
+  //
+  //   flag arm                 cfail  2   container CS 2406
+  //   flag arm + tuple merge   cfail 12   container CS 1806
+  //
+  // -25% contours for TEN corpus programs (dijkstra2 kmeanspp msp_ss
+  // othello pygmy quameon sudoku4 sudoku5 plcfrs voronoi2). Position is
+  // real: two arity-2 tuples `(int, str)` and `(str, int)` merge their
+  // positional slots and no demand test separates them again.
+  //
+  // The pyc suite is NEUTRAL across that change -- identical failures with
+  // and without -- so it has NO coverage for tuple positional merging.
+  // Anyone re-testing this will get a green suite and a corpus that loses
+  // ten programs.
   if (csdcpa1_enabled() && !(csdcpa1_enabled() == 2 && s == sym_tuple) && !is_clone_methods_per_cs(s)) {
     // ifa/135: a class's PROTOTYPE is not an instance of it, and must not
     // share its contour.

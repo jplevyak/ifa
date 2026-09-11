@@ -249,3 +249,75 @@ before flipping the default — `./corpus_sweep.sh -m check -e "PYC_CSELEM=3"`.
 > This is why the work moved to the start-merged posture above rather than
 > to a better key: keying cannot get ahead of a decision taken before the
 > evidence exists.
+
+## 2026-09-11: measured against the flip, and it is NOT the flip's blocker
+
+ifa/129 recorded "the blocker is ifa/128 — with CreationSet reuse landed,
+so an EntrySet split stops multiplying data contours, ESBLOCK's cost
+disappears". **Both halves of that are wrong, and the measurements are
+below so the claim is not made a third time.**
+
+### 1. An ES split is not multiplying contours through `creation_point`
+
+`PYC_ESBLOCK=1` on `sudoku5` costs two corpus programs, and the cost was
+attributed to `creation_point` minting one CreationSet per *(allocation
+site x contour)*. The route histogram says otherwise:
+
+```
+                 MINT   dcpa1   cselem  csshape  csmold  split_parent
+ESBLOCK off      2342    1077        0        0       0             6
+ESBLOCK on       2134     931        0        0       0             6
+```
+
+`creation_point` mints FEWER with the split, not more, and the splitter
+stages also mint fewer (57 -> 42 `csmint`, 94 -> 86 route-4 moves). The
+contour totals DO grow at matched passes (p=13: ess 610 -> 661, css
+1572 -> 1989), but not through the route this issue is about.
+
+The three reuse routes this issue exists to land — `cselem`, `csshape`,
+`csmold` — are **inert (0 hits) even at the flag arm**. `dcpa1` is the
+only live reuse route.
+
+### 2. Fewer CreationSets makes the failure WORSE, not better
+
+The only obvious way to extend `dcpa1` reuse is to drop its `tuple`
+exclusion, whose stated reason predates ifa/132/139/141's arity guard and
+so looked obsolete. It is not:
+
+| arm (one binary, env toggled) | cfail | warns | container CS |
+| --- | --- | --- | --- |
+| flag | 2 (othello3, rdb) | 45 | 2406 |
+| flag + tuple merge | **12** | 35 | 1806 |
+| flag + ESBLOCK | 4 | 42 | 2393 |
+| flag + ESBLOCK + tuple merge | **12** | 34 | 1848 |
+
+−25% contours for **ten** corpus programs: dijkstra2, kmeanspp, msp_ss,
+othello, pygmy, quameon, sudoku4, sudoku5, plcfrs, voronoi2. Position is
+real — two arity-2 tuples `(int, str)` and `(str, int)` merge their
+positional slots and nothing separates them again.
+
+And it does not even help the thing it was supposed to help: on `sudoku5`
+the worst `tuple.__eq__`/`__lt__` contour goes from 22 tuple shapes to
+**32** with tuples merged, because fewer CreationSets means fewer
+comparison contours and each serves more shapes. `sudoku5` still fails.
+
+**The pyc suite is NEUTRAL across the tuple-merge change** — identical
+failures with and without it, on both arms. So the suite has no coverage
+for tuple positional merging, and anyone re-testing this will see a green
+suite over a corpus that has lost ten programs. That gap is worth a
+fixture on its own.
+
+### What the flip's blocker actually is
+
+ifa/146 E. `sudoku5` and `plcfrs` fail under `PYC_ESBLOCK` because ONE
+shared, UNROLLED `tuple.__eq__`/`__lt__` contour serves many tuple shapes
+of differing arity, and its single `x` per slot position merges their slot
+types into `{int64, str}` — a BOXING violation at every use. Separating a
+formal that holds N tuple CreationSets is exactly what the removed
+CARTESIAN_PRODUCT splitter did, and `tests/splitter_cartesian_product.py`
+already specifies what its demand-driven replacement must be.
+
+Reducing the number of tuple CreationSets (this issue) pushes in the
+WRONG direction for that: it concentrates more shapes onto each
+comparison contour. The two issues are not a chain — they pull against
+each other, and ifa/146 E is the one the flip needs.
