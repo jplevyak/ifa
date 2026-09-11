@@ -324,6 +324,34 @@ Two selectors were tried and both admit the same set:
   numbers on `sudoku5` (ess=719, css=1903), because the confluence union
   is itself large, so most of the program is a subset of it.
 
+### The flag arm behaves identically
+
+| arm | suite | corpus cfail | warns | container CS |
+| --- | --- | --- | --- | --- |
+| default | 315 / 0 | 2 (othello3, rdb) | 43 | 2740 |
+| default + ESPATH | 315 / 0 | **5** (+ plcfrs, softrender, sudoku5) | 40 | 2725 |
+| flag | 312 / 3 | 2 (othello3, rdb) | 45 | 2406 |
+| flag + ESPATH | 312 / 3 (the SAME three) | **5** (+ plcfrs, sudoku4, sudoku5) | 42 | 2375 |
+
+Two things worth keeping from that table.
+
+**The failure is arm-independent.** Both arms lose exactly three programs
+and `plcfrs` + `sudoku5` are common to both, so this is not an interaction
+with start-merged CreationSets — it is the selector, on any arm.
+
+**The suite is blind on BOTH arms.** Identical pass/fail either way, down
+to the same three flag-arm failures. Whatever fans here, no fixture
+covers it; only the corpus sees it. That is the second time in this
+session the suite has been neutral across a change that costs the corpus
+three or more programs (the first was ifa/128's tuple merge, at ten), and
+it is a coverage gap worth a fixture of its own.
+
+The secondary numbers move the RIGHT way throughout -- fewer contours
+(2740 -> 2725, 2406 -> 2375) and fewer warnings (43 -> 40, 45 -> 42) --
+which is consistent with "the same splits, sooner" being true in the main
+and the losses coming from a tail of contours that should not have been
+on the path at all.
+
 ### What is actually missing
 
 Both selectors are type tests against the confluence, and when the
