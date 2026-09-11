@@ -535,6 +535,15 @@ static int espath_enabled() {
   return e;
 }
 
+// ifa/129: PYC_ESDEFS1=1 -- a violation on a single-creation-point
+// CreationSet splits the contour that makes its site occur once. See the
+// comment at the use.
+static int esdefs1_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_ESDEFS1"); e = v ? atoi(v) : 0; }
+  return e;
+}
+
 static int violcs_enabled();      // ifa/133: route a violation's CSs to route 4
 // ifa/146 E: PYC_ESRECV=1 -- a violation inside a contour makes that
 // contour's RECEIVER an imprecision. See the comment at the use.
@@ -8909,6 +8918,37 @@ static AVar *elem_av_for_demand(CreationSet *cs) {
 // the split is refused.
 
 // Is `a` a formal of `es`?
+// ifa/129: how many of an EntrySet's in-edges carry arguments, and the sole
+// one when there is exactly one.
+static int es_in_edges(EntrySet *es, AEdge **only = nullptr) {
+  int n = 0;
+  AEdge *first = nullptr;
+  if (es)
+    for (AEdge *ee : es->edges)
+      if (ee && ee->args.n) {
+        if (!n) first = ee;
+        if (++n > 1) break;
+      }
+  if (only) *only = (n == 1) ? first : nullptr;
+  return n;
+}
+
+// ifa/129: walk up the chain of single-caller contours to the first with a
+// real choice. A contour with one in-edge cannot be partitioned, so a
+// demand that needs its site duplicated has to be answered at the nearest
+// caller that actually has alternatives. Nothing is split on the way up --
+// the climb only chooses WHICH contour the one split applies to.
+static EntrySet *es_climb_to_choice(EntrySet *es, int *hops) {
+  *hops = 0;
+  for (int i = 0; es && i < 16; i++) {
+    AEdge *only = nullptr;
+    if (es_in_edges(es, &only) != 1 || !only->from || only->from == es) return es;
+    es = only->from;
+    ++*hops;
+  }
+  return es;
+}
+
 static bool es_is_formal(EntrySet *es, AVar *a) {
   if (!es || !a) return false;
   form_Map(MapElemMPositionAVarPair, mp, es->args) if (mp->value == a) return true;
@@ -8982,6 +9022,75 @@ static EntrySet *find_blocking_es(CreationSet *cs, CSFlowGraph *g, Vec<AVar *> &
     return e;
   }
   return nullptr;
+}
+
+// ifa/129: split a contour by the TYPES its callers pass, so a shared
+// allocation site becomes more than one creation point. See the use in
+// split_css_by_defs' defs==1 rung.
+[[nodiscard]] static int split_es_by_arg_types(CreationSet *cs, EntrySet *bes, AVar *demand_av, bool dbg) {
+  if (!bes || bes->split) return 0;
+  Vec<AEdge *> all_edges;
+  for (AEdge *e : bes->edges) if (e && e->args.n) all_edges.add(e);
+  qsort_by_id(all_edges);
+  if (all_edges.n < 2) {
+    if (dbg)
+      fprintf(stderr, "[esdefs1] p=%d cs=%d es=%d fun=%s DECLINED: %d arg-carrying in-edge(s)\n", analysis_pass,
+              cs->id, bes->id, (bes->fun && bes->fun->sym && bes->fun->sym->name) ? bes->fun->sym->name : "?",
+              all_edges.n);
+    return 0;
+  }
+
+  Vec<Vec<AEdge *> *> groups;
+  std::vector<std::string> sigs;
+  for (AEdge *e : all_edges) {
+    // Signature: the canonical AType pointers this edge passes, at every
+    // position except the receiver. ATypes are hash-consed, so identity is
+    // a sound key. Position 0 is the function symbol, 1 the receiver.
+    Vec<int> ids;
+    int i = 0;
+    form_Map(MapElemMPositionAVarPair, mp, e->args) {
+      AVar *a = mp->value;
+      if (i++ < 2 || !a || !a->out || !a->out->type) continue;
+      for (CreationSet *c : a->out->type->sorted)
+        if (c && c->sym) ids.set_add(c->sym->type ? c->sym->type->id : c->sym->id);
+    }
+    ids.set_to_vec();
+    qsort(ids.v, ids.n, sizeof(ids[0]), [](const void *x, const void *y) {
+      return *(const int *)x - *(const int *)y;
+    });
+    std::string sig;
+    char buf[24];
+    for (int id : ids) { snprintf(buf, sizeof(buf), "%d,", id); sig += buf; }
+    int gi = -1;
+    for (size_t k = 0; k < sigs.size(); k++) if (sigs[k] == sig) { gi = (int)k; break; }
+    if (gi < 0) { sigs.push_back(sig); groups.add(new Vec<AEdge *>); gi = (int)sigs.size() - 1; }
+    groups.v[gi]->add(e);
+  }
+  if (groups.n < 2) {
+    if (dbg)
+      fprintf(stderr, "[esdefs1] p=%d cs=%d es=%d DECLINED: all %d edge(s) pass the same types\n", analysis_pass,
+              cs->id, bes->id, all_edges.n);
+    return 0;
+  }
+  if (groups.n > 2) {
+    for (int i = 2; i < groups.n; i++)
+      for (AEdge *e : *groups.v[i]) groups.v[1]->add(e);
+    groups.n = 2;
+  }
+  ESSplitDecision *dec = new ESSplitDecision;
+  dec->av = demand_av;
+  dec->es = bes;
+  dec->avpos = nullptr;
+  dec->fsetters = SPLIT_TYPE;
+  dec->fmark = SPLIT_VALUE;
+  dec->all_edges.copy(all_edges);
+  dec->groups.add(groups.v[1]);
+  if (dbg)
+    fprintf(stderr, "[esdefs1] p=%d cs=%d SPLIT es=%d fun=%s edges=%d -> 2 group(s) by argument types\n",
+            analysis_pass, cs->id, bes->id,
+            (bes->fun && bes->fun->sym && bes->fun->sym->name) ? bes->fun->sym->name : "?", all_edges.n);
+  log(LOG_SPLITTING, "SPLIT ES BY ARG TYPES es %d edges %d\n", bes->id, all_edges.n);
+  return apply_entry_set_split(dec);
 }
 
 // ifa/133: split the blocking contour, grouping its in-edges by WHICH
@@ -9738,6 +9847,10 @@ static void cs_member_signature(AVar *d, std::string &out) {
   // CreationSet. So walk each violation backward and offer every CreationSet
   // on the path -- the one that MERGED is generally upstream of the one where
   // the union is observed.
+  // ifa/129: which CreationSets a VIOLATION named, kept apart from the ones
+  // a mere type confluence named. The defs==1 rung below needs a demand,
+  // and "this CreationSet has a union" is a fact, not one.
+  Vec<CreationSet *> viol_named;
   if (violcs_enabled() >= 3)
     for (ATypeViolation *v : fa->type_violations) if (v && v->av) {
       Vec<AVar *> seen, work;
@@ -9749,7 +9862,10 @@ static void cs_member_signature(AVar *d, std::string &out) {
             work.add(b);
             if (!b->contour_is_entry_set && b->contour != GLOBAL_CONTOUR)
               if (CreationSet *bcs = (CreationSet *)b->contour)
-                if (fa->css_set.set_in(bcs) && tc_cs_dropped.set_add(bcs)) ++viol_cs_deferred;
+                if (fa->css_set.set_in(bcs)) {
+                  viol_named.set_add(bcs);
+                  if (tc_cs_dropped.set_add(bcs)) ++viol_cs_deferred;
+                }
           }
     }
   Vec<CreationSet *> css;
@@ -9869,6 +9985,51 @@ static void cs_member_signature(AVar *d, std::string &out) {
                        : nullptr;
       if (d && d->contour_is_entry_set && elem && elem_irrepresentable(elem)) {
         if (split_es_by_call_site((EntrySet *)d->contour, elem, dbg, build_cs_flow_graph(cs))) {
+          analyze_again = 1;
+          continue;
+        }
+      }
+    }
+    // ifa/129: A DEMAND ON A defs==1 CreationSet IS A DEMAND TO GIVE ITS
+    // ALLOCATION SITE MORE THAN ONE CREATION POINT.
+    //
+    // "Single creation point" has been read as "nothing to separate" since
+    // route 4 was written. It is not: it means the separation has to happen
+    // one level UP, at whichever contour makes the site occur more than
+    // once.
+    //
+    // `pygasus` is the clean instance. Its four handler tables -- 14
+    // addressing modes, ~70 opcodes, `mmc*Load`, `mmc*Write` -- all lower
+    // to the same `list` allocation site, so start-merged gives ONE contour
+    // holding all 88 classes with `defs=1`, and `adrmode[opcode]._exec()`
+    // cannot dispatch over it. The default arm gets four contours purely
+    // from `creation_point` minting per (site x contour); this rung is how
+    // the demand-driven arm reaches the same answer.
+    //
+    // Demand: a VIOLATION named this CreationSet (`viol_named`), not merely
+    // a type confluence. A union that exists is a fact.
+    // Parts: the in-edges of the climbed contour, grouped by the TYPES they
+    // pass -- the four table constructions carry four different element
+    // types, so the key is type-shaped, not a caller count. Coalesced to
+    // two, as ifa/133's ES-block split and ifa/146 E both do: separate
+    // minimally, re-derive, ask again.
+    if (esdefs1_enabled() && defs.n == 1 && getenv("IFA_DBG_ESDEFS1"))
+      fprintf(stderr, "[esdefs1?] p=%d cs=%d sym=%s viol_named=%d es_contour=%d elem_n=%d\n", analysis_pass, cs->id,
+              cs->sym->name ? cs->sym->name : "?", viol_named.set_in(cs) ? 1 : 0,
+              (defs.v[0] && defs.v[0]->contour_is_entry_set) ? 1 : 0,
+              (cs->sym->element && cs->sym->element->var && cs->added_element_var &&
+               unique_AVar(cs->sym->element->var, cs) && unique_AVar(cs->sym->element->var, cs)->out &&
+               unique_AVar(cs->sym->element->var, cs)->out->type)
+                  ? unique_AVar(cs->sym->element->var, cs)->out->type->sorted.n : -1);
+    if (esdefs1_enabled() && defs.n == 1 && viol_named.set_in(cs) && defs.v[0] &&
+        defs.v[0]->contour_is_entry_set && defs.v[0]->contour != GLOBAL_CONTOUR) {
+      AVar *elem = cs->sym->element && cs->sym->element->var && cs->added_element_var
+                       ? unique_AVar(cs->sym->element->var, cs)
+                       : nullptr;
+      if (elem && elem->out && elem->out->type && elem->out->type->sorted.n > 1) {
+        int hops = 0;
+        EntrySet *target = es_climb_to_choice((EntrySet *)defs.v[0]->contour, &hops);
+        if (split_es_by_arg_types(cs, target, elem, dbg)) {
           analyze_again = 1;
           continue;
         }

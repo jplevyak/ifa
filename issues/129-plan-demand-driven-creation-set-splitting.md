@@ -2817,3 +2817,61 @@ an argument against the rule, but it is the concrete bill for it, and it
 says what the missing mechanism must do: **turn a demand on a `defs == 1`
 CreationSet into a split of whatever contour gives its allocation site
 more than one creation point.**
+
+### The defs==1 rung, implemented (`PYC_ESDEFS1=1`) — and where it stalls
+
+Built to the statement above: *turn a demand on a `defs == 1` CreationSet
+into a split of whatever contour gives its allocation site more than one
+creation point.*
+
+- **Demand**: a VIOLATION named this CreationSet. Tracked in a new
+  `viol_named` set, kept apart from the type-confluence candidates,
+  because "this CreationSet has a union" is a fact and not a demand. (On
+  `pygasus`, 203 of 1580 `defs==1` candidate-passes are violation-named,
+  so the gate is doing real filtering.)
+- **Level**: climb the chain of single-caller contours from the one that
+  owns the creation point to the nearest with more than one in-edge
+  (`es_climb_to_choice`). A contour with one in-edge cannot be partitioned,
+  so the demand has to be answered at the nearest caller with alternatives.
+- **Parts**: that contour's in-edges grouped by the TYPES they pass at
+  every position but the receiver — type-shaped, and for `pygasus`'s four
+  tables the four constructions pass four different element types.
+  Coalesced to two, as ifa/133's ES-block split and ifa/146 E both do.
+
+**The guard fires correctly and the split never applies.** On `pygasus`'s
+merged contour (`cs=4312`, 88 classes, `defs=1`) all three conditions hold
+on seven passes -- `viol_named=1 es_contour=1 elem_n=91` -- and the
+outcome is unchanged: 53 warnings, one merged contour. The reasons, from
+`[esdefs1]`:
+
+```
+cs=4312               (no line)   -- bailed on bes->split: the climbed contour
+                                     was ALREADY SPLIT in that pass
+cs=3637  es=2 __main__ 1 in-edge  -- the climb ran out at __main__
+cs=3641  es=476        11 edges, all passing the same types
+cs=1964  es=45          3 edges, all passing the same types
+```
+
+So the three failure modes are now named, and they are all about WHICH
+LEVEL the climb lands on, not about the demand or the parts:
+
+1. **Already claimed this pass.** `es->split` is the per-pass "already
+   split" marker (`clear_splits()` zeroes it each pass), so another
+   decision got there first and this rung defers -- for ever, on
+   `cs=4312`.
+2. **Ran out at `__main__`.** Every contour on the chain had one in-edge,
+   so there was never a choice to make; the four tables are distinguished
+   somewhere the caller chain does not pass through.
+3. **Callers type-identical.** The same wall as ifa/133's: nothing
+   type-shaped separates the in-edges.
+
+Mode 1 is the interesting one, because it is a scheduling conflict rather
+than a missing distinction: the level this demand needs is being split for
+a different reason in the same pass. That suggests the rung should
+participate in stage 1's decide-then-apply batch (where "first decision per
+ES wins, later ones deferred" is already the rule and is re-decided next
+pass) rather than acting on its own after the fact.
+
+Suite 315/0 with the flag off and on. Corpus unmeasured -- it changes
+nothing on the program it was built for, so there is nothing yet to
+measure.
