@@ -279,3 +279,61 @@ work on ~35 of 41 passes. That is not false progress and cannot be
 suppressed; it is answered either by making stage 1 converge faster or by
 not using first-stage-wins to schedule stage 5. Both ifa/133's route 4 and
 ifa/146 E's receiver split already sidestep it by running unconditionally.
+
+## Part 7 — split the whole ES path at once (`PYC_ESPATH`): right idea, wrong selector
+
+The author's proposal, and it targets Part 2 directly. A filtered contour
+narrows its formal; for that narrowing to reach the next callee, THAT
+callee needs its own filtered product — which only the splitter makes, and
+it runs once per pass. So a separation propagates **one contour per pass**,
+which is why stage 1 claims ~35 of 41 passes on `sudoku5` doing real work.
+
+Taking the whole path at once is a SCHEDULING change, not a policy one:
+every contour it adds is one the existing rung would have split later
+anyway, by the same type-shaped test, and `decide_entry_set_split` still
+decides each partition. Only the timing changes.
+
+`PYC_ESPATH=1` walks backward from each confluence and offers the formals
+feeding it as imprecisions in the same pass.
+
+### On a small program it is exactly what was hoped for
+
+`tests/tuple_compare.py`:
+
+| | passes | new EntrySets (total) | applies | warnings |
+| --- | --- | --- | --- | --- |
+| default | 13 | 343 | 184 | 0 |
+| `PYC_ESPATH=1` | **10** | **336** | **175** | 0 |
+
+Fewer passes AND slightly fewer splits, same answer. Pure scheduling, as
+predicted.
+
+### On a large program the selector fans
+
+`sudoku5` at the flag arm: passes 39 -> 20 (the intended halving), but
+ess 631 -> 719, css 1478 -> 1903, and it stops compiling. Corpus at the
+DEFAULT arm: `compile_fail` 2 -> 5 (+ plcfrs, softrender, sudoku5), while
+the suite is **315/0 either way** — so the suite does not see this at all.
+
+Two selectors were tried and both admit the same set:
+
+- *"the formal shares a CreationSet with the confluence"* — too weak by
+  construction: on a program where one big union is everywhere, every
+  upstream formal overlaps it.
+- *"the formal's union is a SUBSET of the confluence's"* — identical
+  numbers on `sudoku5` (ess=719, css=1903), because the confluence union
+  is itself large, so most of the program is a subset of it.
+
+### What is actually missing
+
+Both selectors are type tests against the confluence, and when the
+confluence is a big union no type test can distinguish "on the path to
+THIS merge" from "upstream and overlapping". The path is a REACHABILITY
+property — which contours the conflicting values actually flowed
+through — and it wants the same treatment ifa/133 gave the CreationSet
+backflow: walk the specific edges the conflict came in on, not every
+formal whose type intersects.
+
+Kept opt-in with the measurements above. The prototype establishes that
+the scheduling win is real (13 -> 10 passes, fewer splits, same answer)
+and isolates the open problem to selecting the path.

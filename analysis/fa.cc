@@ -527,6 +527,14 @@ static int filtereq_enabled() {
   return e;
 }
 
+// ifa/148: PYC_ESPATH=1 -- split the whole EntrySet path to a confluence
+// in one pass, instead of one contour per pass. See the comment at the use.
+static int espath_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_ESPATH"); e = v ? atoi(v) : 0; }
+  return e;
+}
+
 static int violcs_enabled();      // ifa/133: route a violation's CSs to route 4
 // ifa/146 E: PYC_ESRECV=1 -- a violation inside a contour makes that
 // contour's RECEIVER an imprecision. See the comment at the use.
@@ -10223,8 +10231,79 @@ static void collect_cs_setter_confluences(Vec<AVar *> &setters_confluences) {
   qsort_by_id(setters_confluences);
 }
 
+// ifa/148: SPLIT THE WHOLE ES PATH TO THE CONVERGENCE, NOT ONE LEVEL PER
+// PASS.
+//
+// A filtered contour narrows its formal; for that narrowing to reach the
+// next callee, THAT callee needs its own filtered product -- which only
+// the splitter makes, and it runs once per pass. So a separation
+// propagates exactly one contour per pass. Measured on
+// `tests/tuple_compare.py`, the same narrowing walks `len` and
+// `__getitem__` at p=11 and `__len__` at p=12, with the types moving on a
+// pass that split nothing.
+//
+// That is why stage 1 claims ~35 of 41 passes on `sudoku5` and starves
+// everything below it (ifa/148 Part 2): it is doing real work, one hop at
+// a time, for as many passes as the path is long.
+//
+// So take the whole path at once. From a confluence, walk BACKWARD to the
+// formals that carry a union feeding it, and offer them as imprecisions in
+// the SAME pass. This is a scheduling change, not a policy one: every
+// contour added here is one the existing rung would have split on a later
+// pass anyway, by the same type-shaped test, and the partition at each is
+// unchanged (decide_entry_set_split still decides it). What changes is
+// only WHEN.
+static void add_es_path_to_convergence(AVar *av, Vec<AVar *> &out) {
+  if (!espath_enabled() || !av || !av->out || !av->out->type) return;
+  AType *want = av->out->type;
+  Vec<AVar *> seen, work;
+  seen.set_add(av);
+  work.add(av);
+  for (int h = 0; h < work.n && h < 20000; h++)
+    for (AVar *b : work.v[h]->backward) {
+      if (!b || !seen.set_add(b)) continue;
+      work.add(b);
+      if (!b->out || !b->out->type || b->out->type->sorted.n < 2) continue;
+      if (!b->contour_is_entry_set || b->contour == GLOBAL_CONTOUR) continue;
+      if (!b->var || !b->var->is_formal || b->is_lvalue) continue;
+      // The formal must carry THE SAME MERGE, not merely touch it.
+      //
+      // "Shares a CreationSet with the confluence" is too weak: on a
+      // program where one big union is everywhere, every upstream formal
+      // overlaps it and the walk becomes a fan by reachability. Measured
+      // on `sudoku5`: ess 631 -> 719, css 1478 -> 1903, and it stops
+      // compiling.
+      //
+      // The right test is CONTAINMENT. A formal is on the path iff its
+      // union is a SUBSET of the confluence's -- i.e. it holds part of the
+      // same merge and nothing else. A formal carrying types the
+      // confluence does not have is a different merge and is not ours to
+      // split; a formal already down to one CreationSet is separated
+      // already and ends the path.
+      bool subset = true;
+      for (CreationSet *c : b->out->type->sorted)
+        if (c && !want->set_in(c)) { subset = false; break; }
+      if (subset) out.set_add(b);
+    }
+}
+
 [[nodiscard]] static int split_ess_for_type(Vec<AVar *> &imprecisions, int fdynamic) {
   int analyze_again = 0;
+  // ifa/148: expand each confluence to the whole contour path feeding it.
+  Vec<AVar *> expanded;
+  if (espath_enabled() && !fdynamic) {
+    for (AVar *av : imprecisions) if (av) expanded.set_add(av);
+    for (AVar *av : imprecisions) if (av) add_es_path_to_convergence(av, expanded);
+    if (expanded.set_count() > imprecisions.set_count()) {
+      Vec<AVar *> ord;
+      for (AVar *a : expanded) if (a) ord.add(a);
+      qsort_by_id(ord);
+      if (getenv("IFA_DBG_ESPATH"))
+        fprintf(stderr, "[espath] p=%d confluences=%d -> %d with the path\n", analysis_pass, imprecisions.n, ord.n);
+      imprecisions.clear();
+      imprecisions.copy(ord);
+    }
+  }
   // Issue 033 M2b: for the plain (non-dynamic) stage-1 path, DECIDE
   // every confluence's split against the same unmutated, converged
   // state, then APPLY. The old shape decided each confluence against
