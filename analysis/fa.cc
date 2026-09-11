@@ -6720,8 +6720,25 @@ static int routecycle_enabled() {
 static int routestable_enabled() {
   static int e = -1;
   if (e < 0) {
+    // ifa/148, DEFAULTED ON 2026-09-11. Re-routing an unchanged group to
+    // the same home as last pass is not new information, and claiming it
+    // is keeps the first-stage-wins cascade alive and starves every later
+    // stage. The field and the test were added with that comment
+    // (`SplitDecision::last_route_pass`) and never switched on. Measured,
+    // one binary, env toggled:
+    //
+    //   suite   315/0 both ways
+    //   corpus  identical -- 2 cfail (othello3, rdb), 43 warns, 2740 CS
+    //   sudoku5 two fewer starved passes
+    //
+    // Free, so it is the default. Note what it does NOT claim: a recorded
+    // decision applied to a NEWLY-APPEARED contour is real work (a ledger
+    // entry is keyed on (fun, stage, position, partition), so it can only
+    // fire once the types have propagated far enough for a contour to
+    // carry that partition). This suppresses only the repeat of last
+    // pass's routing of the SAME group to the SAME product.
     cchar *v = getenv("PYC_ROUTESTABLE");
-    e = v ? atoi(v) : 0;
+    e = v ? atoi(v) : 1;
   }
   return e;
 }

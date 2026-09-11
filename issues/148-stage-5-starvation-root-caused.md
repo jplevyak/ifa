@@ -210,3 +210,72 @@ splitting condition.**
    the rest — it is the same arbitrary partition the project has removed
    twice elsewhere — but it needs its own measurement, since on the
    evidence here it is behaviour-neutral.
+
+## Part 6 — the right test already existed, unused (`PYC_ROUTESTABLE`, now default)
+
+Prompted by the author's question: *"no pass should need to split, since
+all decisions are stored in the table, right?"*
+
+Half right, and the half that is right was already implemented.
+
+### The decisions ARE in the table, and they ARE re-derived
+
+`IFA_DBG_INCOMPAT` on `tuple_compare`:
+
+```
+LEDGER p=2 dup_es=6   p=4 dup_es=7   p=5 dup_es=14   p=6 dup_es=14   p=10 dup_es=1
+REDERIVE p=10 ROUTE fun=__getitem__ es=210 -> product=118 first_pass=0
+```
+
+A decision first recorded at **pass 0** is still being applied at **pass
+10**, and on the late passes every split is a recorded decision, not a new
+one (`p=10: dec=2 split=1`).
+
+### But "no pass should split" does not follow
+
+A `SplitDecision` is keyed on `(fun, stage, position, partition AType)`. It
+can only fire once a contour of that fun actually CARRIES that partition at
+that position — which requires the types to have propagated that far. New
+contours keep appearing (from other splits) and keep matching old
+decisions, so the replay is spread across passes by construction. That is
+the `first_pass=0` applied at `p=10` line. Finite — 13 passes, activity
+decaying — but not collapsible into one pass.
+
+So two things must be told apart, and my deleted `PYC_NOOPSPLIT`
+conflated them:
+
+| | new information? |
+| --- | --- |
+| applying a recorded decision to a NEWLY-APPEARED contour | **yes** — real work, needs the pass |
+| re-routing an UNCHANGED group to the SAME product as last pass | **no** |
+
+### The second test already existed and was never switched on
+
+`SplitDecision::last_route_pass` / `last_route_product`, `stable_route`,
+and `PYC_ROUTESTABLE` — added with a comment stating this exact
+starvation:
+
+> *"With the full per-pass reset the edges are rebuilt every pass, so a
+> stable group is re-derived and re-routed to the same home for ever —
+> correct behaviour, but it was being reported as progress, which keeps
+> analyze_again true and starves every later stage. Repeating last pass's
+> routing is not new information."*
+
+Defaulted to 0 and, as far as this issue can tell, never measured.
+Measured now, one binary, env toggled:
+
+| | suite | corpus | sudoku5 |
+| --- | --- | --- | --- |
+| off | 315 / 0 | 2 cfail, 43 warns, 2740 CS | 39 starved |
+| on | 315 / 0 | **identical** — 2 cfail, 43 warns, 2740 CS | 37 starved |
+
+Free. **Defaulted ON.** It removes the part of the starvation that is
+genuinely false progress, without touching the part that is real work.
+
+### What is left
+
+The remaining starvation is Part 2: stage 1 doing real, slow, oscillating
+work on ~35 of 41 passes. That is not false progress and cannot be
+suppressed; it is answered either by making stage 1 converge faster or by
+not using first-stage-wins to schedule stage 5. Both ifa/133's route 4 and
+ifa/146 E's receiver split already sidestep it by running unconditionally.
