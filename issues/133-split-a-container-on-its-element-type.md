@@ -3435,3 +3435,107 @@ is measured and refused -- but "it fixes the program it was built for and
 costs one other" is not evidence that it should be on by default. What is
 owed before it can be is an account of why splitting helps `sudoku5`'s
 union and hurts `plcfrs`'s.
+
+## 2026-09-10: where plcfrs thwarts the demand — it doesn't, it relocates it
+
+The previous section said no type-shaped discriminator separates `plcfrs`
+from `sudoku5`. That was right, and it was the wrong place to look: the
+demand `plcfrs` fails on is **not the one the mechanism acts on**. The
+mechanism answers its demand correctly and creates a different, irreparable
+one somewhere else.
+
+### Bisect
+
+`PYC_CSDEMANDMAX=<n>` (new) allows only the first n demand-named splits.
+
+```
+max=0..5  rc=0      max=6+  rc=1
+[cscallsite] p=1 es=224 fun=parse DEMAND-NAMED edges=2 parts=5 union=70 -> 2 group(s)
+```
+
+The 6th split, on `parse`, is the one. It converges either way (37 vs 55
+route-4 entries), so this is a worse fixed point, not a divergence.
+
+### What actually fails
+
+`IFA_DBG_VIOLSUM` (new) reports what the REPORTER holds -- the only set
+that decides the exit status:
+
+```
+mechanism off      total=180   kind1=80   kind5=100
+PYC_CSCALLSITE=2   total=180   kind1=80   kind5=100
+PYC_CSCALLSITE=3   total=2240  kind0=27  kind1=866  kind5=670  kind6=677
+```
+
+**677 BOXING violations, against zero.** `IFA_DBG_BOXSRC` (new) names them:
+
+```
+[boxsrc] av=31115 var=x in=__eq__ es=320  writers=13
+   <- av=44576 x in=__eq__ es=320 : int64 str tuple#1315 ... list#2254 Edge Entry ChartItem
+   <- av=121980 x in=__eq__ es=320 : (the same union)
+   ... 13 of them, ALL `x` in es=320
+[boxsrc] av=60848 var=x in=__lt__ es=1054 writers=127
+```
+
+`x` is the per-slot temporary of `tuple.__eq__` / `tuple.__lt__`, which are
+generated UNROLLED. Every writer of `x` is another `x` **in the same
+EntrySet**.
+
+### The mechanism
+
+One comparison contour serves many tuple CreationSets, of differing arity:
+
+| | tuple shapes at the worst `__eq__`/`__lt__` contour | arities | BOXING |
+| --- | --- | --- | --- |
+| mechanism off | 7 | 2, 3, 4 | 0 |
+| `PYC_CSCALLSITE=3` | **16** | 2, 3, 4 | **677** |
+
+The arity mixing is PRE-EXISTING -- 2, 3 and 4 share that contour either
+way. What the mechanism changes is how many shapes pile into it, and
+somewhere between 7 and 16 the merged slot types cross from compatible to
+`{int64, str, ...}`, which has no representation.
+
+So the split answers its own demand and, as an unasked-for side effect,
+funnels twice as many tuple shapes into one unrolled comparison.
+
+### And that demand has nowhere to go
+
+This is the part that matters. The merge is **not repairable by any contour
+split**:
+
+- There is no CreationSet to partition -- `x` is an EntrySet-contoured
+  temporary, not a container.
+- Splitting the EntrySet does not help: `x`'s 13 (and 127) writers are
+  other `x` AVars *inside that same contour*, so a split duplicates the
+  whole blob with its self-merging intact.
+- The call site names nothing: every caller supplies the same union.
+
+The one thing that WOULD fix it is separating the contour by the receiver's
+CreationSets -- a formal holding 16 tuple CSs of three arities wants three
+contours, by ifa/132's rule that arity is representation. That is exactly
+the **CARTESIAN_PRODUCT splitter (`PYC_CPA`) removed by ifa/146 E**, and
+`tests/splitter_cartesian_product.py` already records what its replacement
+must be: "demand (an unresolved dispatch or an irrepresentable union) plus
+dispatch-aware filtering of the RECEIVER".
+
+`plcfrs` is that debt, observed from the other side. It is not an argument
+against the demand-driven split; it is an argument that ifa/146 E's
+replacement is a precondition for turning it on.
+
+### Why this took so long to see, recorded so it is not repeated
+
+Three measurements looked conclusive and were not:
+
+- `min`'s formals, the list CS feeding it, and its element type are
+  IDENTICAL in both arms. The union does not arrive through the argument.
+- The `(fun, var)` set of mixed-basics AVars is identical in both arms
+  (497 triples). The difference is in the COUNT and in which survive.
+- `collect_var_type_violations`'s final-pass set contains neither `__eq__`
+  nor `__lt__`. There are THREE BOXING raisers (`IFA_DBG_BOXRAISE` tags
+  them), and `show_violations` runs on an analysis whose violation set is
+  not the one a per-pass probe sees -- pyc re-analyses
+  (`PycCompiler::reanalyze`).
+
+The only probe that answered the question was the one placed at the
+REPORTER (`IFA_DBG_VIOLSUM`) rather than at any producer. When a program's
+verdict is in question, measure the set that decides the verdict first.

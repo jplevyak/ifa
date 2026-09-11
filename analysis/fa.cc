@@ -2527,6 +2527,8 @@ static void make_kind(PNode *p, EntrySet *es, Sym *kind, AVar *container, Vec<Va
 
 // ifa/issues/109: record a violation when sizeof_element's receiver spans
 // CreationSets that cannot share one concrete container type.
+static void dbg_box_raise(int src, AVar *av);  // ifa/133 probe, defined with mixed_basics
+
 static int sizeof_viol_enabled() {
   static int e = -1;
   if (e < 0) {
@@ -3786,7 +3788,7 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
             if (!sym0) { sym0 = cs->sym; arity0 = cs->vars.n; }
             else if (sym0 != cs->sym || arity0 != cs->vars.n) { uniform = false; break; }
           }
-          if (!uniform) type_violation(ATypeViolation_kind::BOXING, t, t->out, nullptr, nullptr);
+          if (!uniform) { dbg_box_raise(1, t); type_violation(ATypeViolation_kind::BOXING, t, t->out, nullptr, nullptr); }
         }
         for (CreationSet *cs : t->out->sorted) {
           AVar *elem = get_element_avar(cs);
@@ -4894,6 +4896,15 @@ void fa_sorted_type_violations(Vec<ATypeViolation *> &src, Vec<ATypeViolation *>
 static void show_violations(FA *fa, FILE *fp) {
   Vec<ATypeViolation *> vv;
   for (ATypeViolation *v : fa->type_violations) if (v) vv.add(v);
+  // ifa/133 probe: what the REPORTER actually has, by kind. The set that
+  // reaches here is the only one that decides the exit status.
+  if (getenv("IFA_DBG_VIOLSUM")) {
+    int k[8] = {0};
+    for (ATypeViolation *v : vv) if (v && (int)v->kind < 8) ++k[(int)v->kind];
+    fprintf(stderr, "[violsum] total=%d", vv.n);
+    for (int i = 0; i < 8; i++) if (k[i]) fprintf(stderr, " kind%d=%d", i, k[i]);
+    fprintf(stderr, "\n");
+  }
   qsort(vv.v, vv.n, sizeof(vv[0]), compar_tv);
   Vec<cchar *> printed;
   for (ATypeViolation *v : vv) if (v) {
@@ -5022,6 +5033,31 @@ static void show_violations(FA *fa, FILE *fp) {
         fprintf(memfp, "has mixed basic types:");
         show_type(*v->type, memfp);
         fprintf(memfp, "\n");
+        // ifa/133 probe: IFA_DBG_BOXSRC=1 names the AVar, its contour, and
+        // every writer that contributes to the union. A `mixed basic types`
+        // on a corpus program is a merge pyc invented (CLAUDE.md), and this
+        // says which edge invented it.
+        if (getenv("IFA_DBG_BOXSRC")) {
+          AVar *a = v->av;
+          fprintf(stderr, "[boxsrc] av=%d var=%s in=%s es=%d writers=%d\n", a->id,
+                  (a->var && a->var->sym && a->var->sym->name) ? a->var->sym->name : "(anon)",
+                  (a->contour_is_entry_set && ((EntrySet *)a->contour)->fun &&
+                   ((EntrySet *)a->contour)->fun->sym && ((EntrySet *)a->contour)->fun->sym->name)
+                      ? ((EntrySet *)a->contour)->fun->sym->name : "(cs)",
+                  a->contour_is_entry_set ? ((EntrySet *)a->contour)->id : -1, a->backward.n);
+          for (AVar *b : a->backward) if (b) {
+            fprintf(stderr, "   <- av=%d %s in=%s es=%d :", b->id,
+                    (b->var && b->var->sym && b->var->sym->name) ? b->var->sym->name : "(anon)",
+                    (b->contour_is_entry_set && ((EntrySet *)b->contour)->fun &&
+                     ((EntrySet *)b->contour)->fun->sym && ((EntrySet *)b->contour)->fun->sym->name)
+                        ? ((EntrySet *)b->contour)->fun->sym->name : "(cs)",
+                    b->contour_is_entry_set ? ((EntrySet *)b->contour)->id : -1);
+            if (b->out && b->out->type)
+              for (CreationSet *c : b->out->type->sorted)
+                if (c && c->sym) fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+            fprintf(stderr, "\n");
+          }
+        }
         break;
       case ATypeViolation_kind::MAYBE_UNBOUND:
         show_name(memfp, v->av);
@@ -5265,6 +5301,20 @@ static void collect_argument_type_violations() {
   }
 }
 
+// ifa/133 probe: IFA_DBG_BOXRAISE=1 tags every BOXING violation with WHICH
+// of the three raisers produced it and on which pass. The final pass's set
+// is what gets reported, so this is how a fatal one is told from a
+// transient.
+static void dbg_box_raise(int src, AVar *av) {
+  if (!getenv("IFA_DBG_BOXRAISE") || !av) return;
+  fprintf(stderr, "[boxraise] p=%d src=%d av=%d var=%s in=%s es=%d\n", analysis_pass, src, av->id,
+          (av->var && av->var->sym && av->var->sym->name) ? av->var->sym->name : "(anon)",
+          (av->contour_is_entry_set && ((EntrySet *)av->contour)->fun && ((EntrySet *)av->contour)->fun->sym &&
+           ((EntrySet *)av->contour)->fun->sym->name)
+              ? ((EntrySet *)av->contour)->fun->sym->name : "(cs)",
+          av->contour_is_entry_set ? ((EntrySet *)av->contour)->id : -1);
+}
+
 static bool mixed_basics(AVar *av) {
   Vec<Sym *> basics;
   for (CreationSet *cs : *av->out) if (cs) {
@@ -5350,8 +5400,19 @@ static void collect_var_type_violations() {
             fprintf(stderr, "[gcell] %s readers=%d mixed=%d\n", av->var->sym->name, readers, mixed_basics(av) ? 1 : 0);
           if (!readers) continue;
         }
-        if (!is_only_used_by_phy_or_phi(av->var) && mixed_basics(av))
+        // ifa/133 probe: IFA_DBG_MIXED=1 lists every AVar whose type mixes
+        // basic types, by FUNCTION and VARIABLE NAME rather than by id, so
+        // two runs can be diffed. `phi=1` marks the ones the check below
+        // skips as plumbing.
+        if (getenv("IFA_DBG_MIXED") && mixed_basics(av))
+          fprintf(stderr, "[mixed] p=%d fun=%s var=%s phi=%d\n", analysis_pass,
+                  (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?",
+                  (av->var && av->var->sym && av->var->sym->name) ? av->var->sym->name : "(anon)",
+                  is_only_used_by_phy_or_phi(av->var) ? 1 : 0);
+        if (!is_only_used_by_phy_or_phi(av->var) && mixed_basics(av)) {
+          dbg_box_raise(2, av);
           type_violation(ATypeViolation_kind::BOXING, av, av->out, nullptr, nullptr);
+        }
       }
     }
     // ifa/issues/039: report the definite-assignment fact computed by
@@ -5387,7 +5448,7 @@ static void collect_var_type_violations() {
     for (CreationSet *cs : fa->css) {
       for (AVar *av : cs->vars) {
         if (!av->var || !is_only_used_by_phy_or_phi(av->var)) {
-          if (mixed_basics(av)) type_violation(ATypeViolation_kind::BOXING, av, av->out, nullptr, nullptr);
+          if (mixed_basics(av)) { dbg_box_raise(3, av); type_violation(ATypeViolation_kind::BOXING, av, av->out, nullptr, nullptr); }
         }
       }
     }
@@ -9239,7 +9300,19 @@ static EntrySet *es_climb_to_choice(EntrySet *es, int *hops) {
         sigs.add(groups.n);
         groups.add(gp);
       }
-      ++csd_named;
+      // ifa/133 bisect knob: PYC_CSDEMANDMAX=<n> allows only the first n
+      // demand-named splits, so "which one thwarts the demand" is a
+      // bisection rather than a guess.
+      {
+        static int cap = -2;
+        if (cap == -2) { cchar *cv = getenv("PYC_CSDEMANDMAX"); cap = cv ? atoi(cv) : -1; }
+        if (cap >= 0 && csd_named >= cap) {
+          reps.clear();
+          groups.clear();
+          sigs.clear();
+        }
+      }
+      if (groups.n) ++csd_named;
       if (dbg)
         fprintf(stderr, "[cscallsite] p=%d es=%d fun=%s DEMAND-NAMED edges=%d parts=%d union=%d -> %d group(s)\n",
                 analysis_pass, es->id, (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?",
