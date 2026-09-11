@@ -2519,3 +2519,80 @@ The corpus evidence stands unchanged and is good: compile parity (2 vs 2,
 same programs), stdout parity (59 vs 59), one run difference (`kanoodle`,
 already wrong at the default), and 12% fewer container CreationSets. What
 was missing was the suite, and it is now measured.
+
+## 2026-09-11: the flip, measured properly for the first time
+
+The 2026-09-10 attempt failed because **the pyc suite was never run with
+`PYC_CSDCPA1=2`** — every "314/0 with the flags on" had measured the new
+mechanism on the DEFAULT arm. Run properly this time.
+
+Arm: `PYC_CSDCPA1=2 PYC_CSLADDER=3 PYC_VIOLCS=3 PYC_CSMEMBER=1
+PYC_CSCONTENT=1`, one binary, env toggled.
+
+### `make test` stops at fa-init, so run the suite directly
+
+`make test` exits 2 at `fa-init` (12 golden diffs) and `set -e`s out, so
+**test-e2e never runs and its absence reads as "fine"** — the same trap as
+last time. `./test_pyc.py` with the env is the measurement that matters:
+
+| | passed | failed | known |
+| --- | --- | --- | --- |
+| default | 315 | 0 | 19 |
+| flag | 312 | 3 | 19 |
+| flag + `PYC_ESBLOCK=1` | 313 | 2 | 19 |
+
+Same known-issue set on every arm. `PYC_ESBLOCK` removes
+`listcomp_element_separation` from the failures, as designed.
+
+### Every golden diff was inspected; all are benign
+
+**12 `fa-init` goldens** differ by EXACTLY ONE LINE each — `creation-sets`,
+always fewer. `rc`, `entry-sets`, `funs`, `basic-types`, the entry-set list
+and the closures list are byte-identical in all twelve:
+
+```
+iterator_copy 33->31   iterator_missing_field 35->33   nested_iterator 29->24
+mark_recursive_single_site 19->18   missing_field_dispatch 20->19
+polymorphic_formal_2types 14->13   polymorphic_formal_3types_2each 23->22
+same_type_dispatch_2 20->19   setter_chain_2types 22->21
+stored_fn_dispatch_2 26->23   vector_iterator 31->29
+vector_polymorphic_writes_2 21->19
+```
+
+That is precisely what start-merged is for. `mark_distance_skew` and
+`mark_setter_skew` correctly report KNOWN and are untouched.
+
+**`splitter_mark_type`** is BETTER on the flag arm: the
+`illegal call argument type expression illegal: B` warning is GONE, and
+`STAGES` gains `CS_DEF_PART` (route 4 resolving the same two-comprehension
+shape). `CALLS: direct=69 dynamic=0` is unchanged — identical call
+resolution, one fewer diagnostic.
+
+**`match_seq`**: the set of DISTINCT warning messages is identical; only
+the count differs, 39 -> 33. Fewer contours means fewer repetitions of the
+same message at different `called from` sites. Nothing new, nothing lost
+in kind.
+
+### So the flip is one trade away, and the trade is named
+
+| | suite | corpus (compile) |
+| --- | --- | --- |
+| flip WITHOUT `PYC_ESBLOCK` | 3 failures — `listcomp_element_separation` regresses | parity: 2 cfail, same programs, −12% container CS |
+| flip WITH `PYC_ESBLOCK` | 2 failures, both verified benign goldens | 4 cfail: + `plcfrs`, `sudoku5` |
+
+Without ESBLOCK the regression is real and its golden holds the RIGHT
+answer, so re-blessing it would bake in a precision loss — the case
+CLAUDE.md's golden rule explicitly forbids.
+
+With ESBLOCK the cost is two corpus programs, and ifa/133 traces it: the
+ES split multiplies CreationSets (`creation_point` mints one per
+*(allocation site x contour)*), the extra tuple shapes land on one shared
+UNROLLED `tuple.__eq__`/`__lt__` contour, and its single `x` per slot
+merges them into `{int64, str}`. Measured on `sudoku5`: 8 tuple shapes at
+that contour with ESBLOCK off, 22 with it on.
+
+**So the blocker is ifa/128.** With CreationSet reuse landed — so that an
+EntrySet split stops multiplying data contours — ESBLOCK's cost
+disappears, and the flip is: change the defaults, re-bless the 14 goldens
+listed above, done. That is the single remaining precondition, and it is
+no longer a guess: it is the thing both lost programs fail on.
