@@ -10614,7 +10614,17 @@ static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Ve
   Vec<EntrySet *> done;
   const bool dbg = getenv("IFA_DBG_ESRECV") != nullptr;
   for (ATypeViolation *v : fa->type_violations) {
-    if (!v || v->kind != ATypeViolation_kind::BOXING || !v->type) continue;
+    // ifa/146 E's spec names TWO demands: "an unresolved dispatch OR an
+    // irrepresentable union". Only the second (BOXING) was implemented.
+    // The first is an argument violation -- `illegal call argument type
+    // ... illegal: list` -- and it is what `chull` and `tictactoe` hit on
+    // the flag arm, where `set.add`'s `item` unions the element types of
+    // every `set` contour sharing that method.
+    if (!v || !v->type) continue;
+    if (v->kind != ATypeViolation_kind::BOXING &&
+        !(esrecv_enabled() >= 2 && (v->kind == ATypeViolation_kind::PRIMITIVE_ARGUMENT ||
+                                    v->kind == ATypeViolation_kind::SEND_ARGUMENT)))
+      continue;
     AVar *a = v->av;
     if (!a || !a->contour_is_entry_set || a->contour == GLOBAL_CONTOUR) continue;
     EntrySet *es = (EntrySet *)a->contour;
@@ -10631,11 +10641,23 @@ static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Ve
     // spans 19-27 CreationSets on `sudoku5` and one contour per CS is the
     // cartesian product this issue removed. (Measured: it does not finish
     // inside a 900 s timeout, against well under a minute at the default.)
+    // The demand's own parts. For BOXING that is the basic types the union
+    // cannot represent together (two or more, by construction). For an
+    // argument violation it is the SYMS the callee refused -- one is
+    // enough, since "brings it" vs "does not" is already a two-way split.
     Vec<Sym *> bad;
     for (CreationSet *c : v->type->sorted)
       if (c && c->sym)
         if (Sym *b = to_basic_type(c->sym->type)) bad.set_add(b);
-    if (bad.set_count() < 2) continue;
+    const bool boxing = v->kind == ATypeViolation_kind::BOXING;
+    if (boxing) {
+      if (bad.set_count() < 2) continue;
+    } else {
+      bad.clear();
+      for (CreationSet *c : v->type->sorted)
+        if (c && c->sym) bad.set_add(c->sym->type ? unalias_type(c->sym->type) : c->sym);
+      if (!bad.set_count()) continue;
+    }
 
     Vec<AEdge *> all_edges;
     for (AEdge *e : es->edges) if (e && e->args.n) all_edges.add(e);
@@ -10657,8 +10679,12 @@ static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Ve
             cs_content_avars(rc, content);
             for (AVar *cv : content)
               if (cv && cv->out && cv->out->type)
-                for (CreationSet *ic : cv->out->type->sorted)
-                  if (ic && ic->sym && to_basic_type(ic->sym->type) == b) { has = true; break; }
+                for (CreationSet *ic : cv->out->type->sorted) {
+                  if (!ic || !ic->sym) continue;
+                  Sym *got = boxing ? to_basic_type(ic->sym->type)
+                                    : (ic->sym->type ? unalias_type(ic->sym->type) : ic->sym);
+                  if (got == b) { has = true; break; }
+                }
             if (has) break;
           }
           sig += has ? '1' : '0';

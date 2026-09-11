@@ -2612,3 +2612,66 @@ serving many tuple shapes, whose single `x` per slot merges their types
 into `{int64, str}`. Its demand-driven replacement is already specified in
 `tests/splitter_cartesian_product.py`. Everything else for the flip is
 ready — the 14 goldens above are inspected and benign.
+
+## 2026-09-11: the gap between the arms, measured to the item
+
+One binary, env toggled. `PYC_ROUTESTABLE` is now default-on.
+
+| | suite | corpus cfail | warns | container CS |
+| --- | --- | --- | --- | --- |
+| default | 315 / 0 | 2 (othello3, rdb) | 43 | 2740 |
+| flag | 312 / 3 | **2 (the SAME two)** | 45 | **2406** |
+| flag + ESBLOCK | 313 / 2 | 4 (+ plcfrs, sudoku5) | 42 | 2393 |
+| flag + ESBLOCK + ESRECV | 313 / 2 | 4 (+ plcfrs, sudoku5) | 42 | 2401 |
+
+**The flag arm alone is already at corpus compile parity** — the same two
+failures, with 12% fewer contours. The gap is not "the corpus"; it is four
+specific items.
+
+### The four items
+
+1. **`match_seq`** — benign. The set of DISTINCT warning messages is
+   identical; only the count differs, 39 -> 33, because fewer contours
+   means fewer repetitions at different call sites. Re-bless.
+2. **`splitter_mark_type`** — BETTER on the flag arm. The
+   `illegal: B` warning is GONE, `STAGES` gains `CS_DEF_PART`, and
+   `CALLS: direct=69 dynamic=0` is unchanged. Re-bless.
+3. **12 `fa-init` goldens** — one line each, `creation-sets`, always
+   fewer, everything else byte-identical. Re-bless.
+4. **`listcomp_element_separation`, and `chull` + `tictactoe` on the
+   corpus** — the only real regressions. `chull` and `tictactoe` are the
+   two programs that go from clean to 6 warnings each, and they are the
+   whole of the `with_warnings` 43 -> 45 difference. (`rdb`, `sudoku1` and
+   `tarsalzp` all get FEWER warnings on the flag arm.)
+
+### Item 4 is one structural problem in four places
+
+```
+chull / tictactoe   illegal: list at set.add's `item`      set.add shared by 7 `set` contours
+listcomp            illegal: B   at the comprehensions     append es=60 shared by both
+sudoku5             {list,set}   in dict's _vals           dict.__new__ shared by both dicts
+plcfrs / sudoku5    {int64,str}  in tuple_cmp's `x`        __eq__/__lt__ shared by 22 shapes
+```
+
+Every one is: **a shared method contour whose formal unions the content of
+several receiver CreationSets, where each receiver has `defs=1` so route 4
+declines "single creation point" and has nothing to partition.**
+
+Three mechanisms have been built against it and none closes it:
+
+- ifa/133's `PYC_ESBLOCK` (split the blocking contour, parts named by
+  creation point) — fixes `listcomp`, costs plcfrs + sudoku5.
+- ifa/146 E's `PYC_ESRECV=1` (split the receiver, parts named by the
+  irrepresentable union's basic types) — fixes sudoku5 in one
+  configuration, harmful standalone.
+- `PYC_ESRECV=2`, extending the demand to the *unresolved dispatch* half
+  of ifa/146 E's spec (argument violations, parts named by the refused
+  syms) — makes `chull` 6 -> 10 and `tictactoe` 6 -> 13.
+
+That all three make some programs better and others worse, on the same
+structural shape, says the shape is not yet correctly characterised. The
+common thread the mechanisms miss: **`defs=1` is not "nothing to
+separate", it is "the separation has to happen one level up", and which
+level differs per case.** Naming that level correctly — rather than
+climbing to it, fanning at it, or filtering it by type — is the single
+remaining piece between the arms.
