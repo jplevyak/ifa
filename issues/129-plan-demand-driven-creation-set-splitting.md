@@ -71,6 +71,34 @@ flag-only failures are two groups:**
 
 So **two mechanisms stand between here and the flip**, not a long list.
 
+### Corrected 2026-09-12: it is SEVEN programs, not five
+
+The table above was measured with a **compile** sweep at the flag arm. The
+flip is now staged on branch `stage-csdcpa1-default` and swept in **check**
+mode, which shows two regressions a compile sweep cannot see:
+
+| program | main | flip |
+| --- | --- | --- |
+| `bh` | run 0 | **run 134** — compiles CLEAN, then aborts |
+| `kanoodle` | run 0 | **run 139** — compiles CLEAN, then SIGSEGVs |
+
+These are the [102](102-corpus-programs-compile-then-abort-at-runtime.md)
+class — the worst outcome this project names — and they were invisible in
+every flag-arm measurement taken before, because all of them were
+compile-mode. **Measure the flag arm in `check` mode from now on.**
+
+It also changes how the five compile regressions read. Three of them
+(`chull`, `plcfrs`, `sudoku4`) were ALREADY aborting or segfaulting at the
+default, so the flip changes their failure MODE rather than losing working
+behaviour — arguably an improvement, since a compile-time refusal beats a
+silent crash. Only `sudoku3` and `sudoku5` were running correctly
+(`sudoku3`'s sole stdout difference from CPython is the wall-clock line it
+prints itself) and are genuine losses.
+
+So the honest ledger for the flip is: **−23% container CreationSets, 3 fewer
+warning programs, 3 fewer stdout mismatches, against 2 programs that stop
+working, 2 that start crashing silently, and 3 that change how they fail.**
+
 ## The work, in order
 
 **1. 146 E — separate a formal that holds N tuple CreationSets.** The
@@ -106,8 +134,13 @@ close (93 `__pyc_clone_constants__` annotations across 8 files, plus the 20
 `fa.cc` sites they gate). Its acceptance test is that `bool.__not__`'s
 annotation can be removed with ifa/150's corpus result intact.
 
-**5. The flip itself.** Re-bless `splitter_mark_type`, flip the default,
-and keep `PYC_CSDCPA1=0` as the escape hatch for one release.
+**5. The flip itself — STAGED on `stage-csdcpa1-default`.** The branch
+carries the one-line default change, the two `.known_issue` sidecars, and
+49 re-blessed goldens (12 synthetic fixtures x 4 phases, plus
+`04_setter_split.ir`), each diffed rather than blanket-re-blessed: `ess` and
+`funs` are unchanged in all 12 and `css` is down in all 12. Merge it when
+steps 1 and 2 land and the seven regressions above are gone; keep
+`PYC_CSDCPA1=0` as the escape hatch for one release.
 
 **6. [111](111-FA-selective-invalidation-per-pass.md) — convergence cost.**
 A performance lever for the extra passes start-merged costs. NOT a
