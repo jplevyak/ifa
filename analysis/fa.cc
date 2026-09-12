@@ -4956,12 +4956,52 @@ void fa_sorted_type_violations(Vec<ATypeViolation *> &src, Vec<ATypeViolation *>
   if (out.n > 1) qsort(out.v, out.n, sizeof(out[0]), compar_tv);
 }
 
+// ifa/149: is this violation the SELECTOR rval of its send? That branch
+// of SEND_ARGUMENT prints `unresolved call 'name'` plus the candidate list
+// and never reaches show_illegal_type, so it must never be suppressed as
+// "uninformative" however untyped the selector happens to be.
+static bool is_selector_violation(ATypeViolation *v) {
+  return v->av && v->av->var && v->av->var->sym && v->av->var->sym->is_symbol && v->send && v->send->var &&
+         v->send->var->def && v->send->var->def->rvals.n && v->send->var->def->rvals[0] == v->av->var;
+}
+
+// ifa/149: a SEND_ARGUMENT whose offending type is BOTTOM is a duplicate.
+//
+// `collect_argument_type_violations` reports a COMPLETELY FAILED dispatch
+// by raising one SEND_ARGUMENT per rval of the send (`for (Var *v :
+// p->rvals)`), for every live EntrySet of the enclosing function. Every
+// argument is named, not the guilty one -- so one failure at one call site
+// becomes (arguments x contours) warnings. On `sudoku3:54` that is fifteen
+// lines at a single column, 5 EntrySets x 3 rvals.
+//
+// The members of that fan whose type is bottom carry no information at
+// all: they say "this value has no type", which is exactly what the NOTYPE
+// violation for the same AVar says, in the same place, with the value's
+// name. Measured over the whole corpus: of 482 such blanks, 479 (99.4%)
+// have a `has no type` warning on the SAME SOURCE LINE -- 429 at the same
+// column -- and the other 3 sit beside a typed `illegal:` naming a real
+// mismatch at the same send. Blanks with no sibling at all: ZERO. So
+// nothing is lost by not printing them, and 482 of the corpus's 1947
+// warning lines (25%) go away.
+//
+// This suppresses the REPORT only. The violation still exists and still
+// feeds the splitter -- though a bottom type routes nothing there either,
+// having no CreationSets to partition.
+static bool is_uninformative_violation(ATypeViolation *v) {
+  if (v->kind != ATypeViolation_kind::SEND_ARGUMENT) return false;
+  if (is_selector_violation(v)) return false;
+  if (!v->type) return true;
+  if (v->type->type && v->type->type->sorted.n) return false;
+  return !v->type->sorted.n;
+}
+
 static void show_violations(FA *fa, FILE *fp) {
   Vec<ATypeViolation *> vv;
   for (ATypeViolation *v : fa->type_violations) if (v) vv.add(v);
   qsort(vv.v, vv.n, sizeof(vv[0]), compar_tv);
   Vec<cchar *> printed;
   for (ATypeViolation *v : vv) if (v) {
+    if (is_uninformative_violation(v)) continue;  // ifa/149
     char *buf = nullptr;
     size_t size = 0;
     FILE *memfp = open_memstream(&buf, &size);
