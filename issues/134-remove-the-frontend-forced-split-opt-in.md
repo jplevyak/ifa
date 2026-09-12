@@ -1,5 +1,9 @@
 # 134 — Remove the frontend's forced-split opt-in
 
+*Sequenced as [129](129-plan-demand-driven-creation-set-splitting.md) step 4
+(with [151](151-split-an-entryset-on-a-constant-argument-on-demand.md), which
+is the mechanism that lets this close). 129 is the single integrated plan.*
+
 **Status:** open, measured. The gating mechanism behind
 [131](131-demand-driven-constant-splitting.md),
 [133](133-split-a-container-on-its-element-type.md) and closed issue

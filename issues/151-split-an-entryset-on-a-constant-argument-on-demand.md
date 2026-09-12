@@ -1,6 +1,8 @@
 # ifa/151 — split an EntrySet on a constant argument, on demand
 
-**Status:** open, root-caused, not built. Filed 2026-09-12 out of
+**Status:** open, root-caused, not built. Sequenced as
+[129](129-plan-demand-driven-creation-set-splitting.md) step 4 — 129 is the
+single integrated plan. Filed 2026-09-12 out of
 [150](150-is-not-none-never-folds.md), whose fix needed a per-constant
 contour and could only get one by hand-annotating `__pyc__`.
 

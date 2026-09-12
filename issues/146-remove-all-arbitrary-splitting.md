@@ -850,7 +850,10 @@ splitting one, so it does not block this issue.
 and the `SETTER` / `SETTER_OF_SETTER` stages' partitioning. Each needs the
 two-question test applied and the answer recorded here.
 
-## Order of work
+## Order of work — within THIS audit (A–F)
+
+*The flag flip's ordering is [129](129-plan-demand-driven-creation-set-splitting.md), the single integrated plan. This section sequences only this issue's own A–F removals.*
+
 
 B is the goal (it is what `PYC_CSDCPA1` exists to retire) but depends on
 143/144/145. A is the largest live violation on the DEFAULT path and is
@@ -867,28 +870,26 @@ PARTIAL** — three of four mark splitters removed, the fourth (MARK_SETTER)
 load-bearing for `voronoi2` and left in place with a measurement.
 Remaining: finish D, then **B** as the flag flip.
 
-**What B actually needs, measured 2026-09-09**
-([129](129-plan-demand-driven-creation-set-splitting.md) has the tables).
-The flag arm's seven divergences are three blockers and four
-already-broken-at-the-default programs, and **all three blockers are one
-defect** — a merged `list` CreationSet whose element channel unions types
-the program keeps apart, which cannot be separated afterwards because the
-merge destroyed the attribution ([133](133-split-a-container-on-its-element-type.md),
-[142](142-linalg-empty-list-collapse-is-a-fixed-point.md)). They differ
-only in the creation route into the shared CS:
+**What B actually needs — see [129](129-plan-demand-driven-creation-set-splitting.md),
+which is the single integrated plan and owns the ordering.** The table that
+stood here was measured 2026-09-09 and is stale: it named `bh`, `richards`
+and `sudoku5` as the three blockers, and `bh` and `richards` no longer fail
+under the flag at all.
 
-| blocker | route into the shared `list` CS | how it fails |
+Re-measured 2026-09-12, `PYC_CSDCPA1=2`: suite 315/3 (one of the three is a
+benign `STAGES`-line re-bless), corpus 7 compile failures of which 2 fail at
+the default too. The **5 flag-only failures are two mechanisms**:
+
+| group | programs | owner |
 | --- | --- | --- |
-| `bh` | three `__slots__` string-literal lists | aborts, `getter not resolved` |
-| `richards` | `[0]*n` merged with `[None]*n` | SIGSEGV, an int64 dereferenced as a pointer |
-| `sudoku5` | comprehensions and `append` | 364 compile errors |
+| element/slot union with no representation | plcfrs, sudoku3, sudoku5 | **E, below** |
+| layout / blind cast | chull, sudoku4 | [135](135-empty-sibling-contour-wins-the-clone-merge.md) |
 
-So B is not seven problems gated behind D; it is 133, and `tests/` now
-carries one reduced repro per route. Two further facts narrow it:
-`PYC_CSLADDER=3` alone is byte-identical to the default on all seven, so
-the flag arm is really `PYC_CSDCPA1` alone plus one interaction
-(`quameon`, which needs both); and un-starving the VIOLATION stage is NOT
-the lever — measured, it makes `sudoku5` worse (364 → 660 errors).
+So **E is the critical path for the flag flip**, and it is this issue's own
+remaining debt: separating a formal that holds N tuple CreationSets, with
+demand plus dispatch-aware receiver filtering rather than a fan.
+`tests/splitter_cartesian_product.py` carries the `.known_issue` that flips
+to PASS when it lands.
 
 ## Verification
 

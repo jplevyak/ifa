@@ -8,6 +8,14 @@ constant for both — is
 [151](151-split-an-entryset-on-a-constant-argument-on-demand.md), filed
 with its own demand signal because step 1 below falsified this one's.
 
+**Status:** open. **Its premise below is FALSIFIED by its own step 1** —
+the cap-strip measured `cstrip 0/0/0` on the very program it was designed
+for, so "the cap-strip is the demand signal" is dead and steps 2-4 must not
+be built on it. The plan and the ordering are
+[129](129-plan-demand-driven-creation-set-splitting.md) step 4; the
+EntrySet half, which has a working demand signal, is
+[151](151-split-an-entryset-on-a-constant-argument-on-demand.md).
+
 **Status:** open, planned. Blocks
 [128](128-cs-identity-over-discriminates-vs-element-type.md)'s
 start-merged posture (`PYC_CSDCPA1`) and therefore
@@ -125,7 +133,10 @@ constant; a list built by `append` in a loop has no constant to want, and
 demanding one fans out a contour per iteration count. The decision has to
 be per *CreationSet*, and it has to be driven by evidence.
 
-## The plan
+## The plan — SUPERSEDED, built on the falsified premise above
+
+*Kept for the shape of steps 2-4, which is still roughly right, and for the stop conditions. The demand signal it names (the cap-strip) is dead. Sequencing is [129](129-plan-demand-driven-creation-set-splitting.md) step 4; the working demand signal is in [151](151-split-an-entryset-on-a-constant-argument-on-demand.md).*
+
 
 ### The demand signal is the cap-strip itself
 

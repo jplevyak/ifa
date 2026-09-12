@@ -238,13 +238,21 @@ way. See 128's closing section.
   provably dead, `getenv`-gated code to `fa.cc` moves `linalg` and `sudoku5`
   at the default arm — see 147. Only same-binary, env-toggled A/B counts.
 
-## Open
+## Open — and the ordering lives in 129
 
-1. The representation question above: which other properties of a literal,
-   knowable at construction, belong in the separator set beside arity.
-2. 146 E's receiver separation, which unblocks `PYC_ESBLOCK` and with it the
-   flag flip.
+[129](129-plan-demand-driven-creation-set-splitting.md) is the single
+integrated plan and sequences this against everything else. What this issue
+owns in it:
+
+1. **The representation question** (129 step 3): which other properties of
+   a literal, knowable at construction, belong in the separator set beside
+   arity. This is the one that clears
+   `tests/arity1_literal_shares_contour.py`.
+2. `PYC_ESBLOCK` stays opt-in until **146 E** lands (129 step 1); that is
+   not this issue's work, and it is what `listcomp_element_separation`
+   waits on.
 3. `builtins` under the flag — the offending `list` CreationSet never
    reaches `CS_DEF_PARTITION` because an earlier stage claims progress every
    pass, so the last rung is never gated in. A scheduling question, not a
-   partitioning one.
+   partitioning one. (Not currently in the flag's bill; re-check before
+   spending time on it.)
