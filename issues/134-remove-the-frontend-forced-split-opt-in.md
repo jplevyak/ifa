@@ -33,10 +33,18 @@ from there:
    the split-parent CS reuse exclusion, the `csmold` exclusion, and the
    `PER_CS_RECEIVER` method-cloning stage (issue 045).
 
-The whole program-wide list of annotated sites is four: `range.__init__`
-(both overloads), `isinstance`, `issubclass`, and one in
-`__pyc__/00_runtime.py`. **A user class with exactly the same shape gets
-none of it.**
+**Corrected 2026-09-12:** this used to say "the whole program-wide list of
+annotated sites is four". It is **93 call sites across 8 files** —
+`02_numeric.py` 39, `04_sequence.py` 8, `05_builtins.py` 6, `07_dict.py` 3,
+`01_str.py` 2, `00_runtime.py` 2, `06_bytearray.py` 1, `08_set.py` 1 — so
+the annotation is not a handful of special cases but the mechanism most of
+the builtin library's precision rests on. `PYC_NO_FORCED_SPLIT=1` makes the
+single line `print(min(2, 9))`, clean at the default, emit 10 warnings.
+
+**A user class with exactly the same shape gets none of it.** The
+demand-driven replacement for the EntrySet half is
+[151](151-split-an-entryset-on-a-constant-argument-on-demand.md); closing
+this issue means closing that one first.
 
 ## Why it should go
 
@@ -48,7 +56,8 @@ running into from other directions:
 
 | mechanism | gated on today | wants |
 | --- | --- | --- |
-| per-constant contours | `__pyc_clone_constants__` | [131](131-demand-driven-constant-splitting.md) |
+| per-constant contours, CreationSet side | `__pyc_clone_constants__` | [131](131-demand-driven-constant-splitting.md) |
+| per-constant contours, EntrySet side | `__pyc_clone_constants__` | [151](151-split-an-entryset-on-a-constant-argument-on-demand.md) |
 | method contours per receiver CS | `clone_methods_per_cs` | issue 045, demand-driven |
 | element-type separation | per-site CS identity, incidentally | [133](133-split-a-container-on-its-element-type.md) |
 

@@ -1,4 +1,12 @@
-# 131 — Demand-driven constant splitting
+# 131 — Demand-driven constant splitting (CreationSet side)
+
+**Scoped 2026-09-12.** This issue is about the **CreationSet** side: a
+constant held in a data contour's field, i.e. a container's arity (`[]`
+against `[2, 3]`). The **EntrySet** side — two call sites passing different
+constants to one function, whose contours then merge and destroy the
+constant for both — is
+[151](151-split-an-entryset-on-a-constant-argument-on-demand.md), filed
+with its own demand signal because step 1 below falsified this one's.
 
 **Status:** open, planned. Blocks
 [128](128-cs-identity-over-discriminates-vs-element-type.md)'s
