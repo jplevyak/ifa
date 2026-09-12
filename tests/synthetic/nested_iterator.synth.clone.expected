@@ -1,6 +1,6 @@
 ;; phase: clone
 
-(summary fa_rc=-1 clone_rc=0 funs=9 css=29 ess=11)
+(summary fa_rc=-1 clone_rc=0 funs=9 css=24 ess=11)
 
 (cs-equiv
   class[(anon)] members=1 type=int32
@@ -18,7 +18,7 @@
   class[__setitem__] members=1 type=symbol
   class[consume_outer] members=1 type=consume_outer
   class[consume_outer] members=1 type=symbol
-  class[continuation] members=7 type=continuation
+  class[continuation] members=1 type=continuation
   class[float64] members=1 type=float64
   class[index_object] members=1 type=symbol
   class[int32] members=1 type=int32

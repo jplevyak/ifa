@@ -1,6 +1,6 @@
 ;; phase: dce
 
-(summary fa_rc=-1 clone_rc=0 funs=1 css=23 ess=7)
+(summary fa_rc=-1 clone_rc=0 funs=1 css=22 ess=7)
 
 (per-fun-live
   fun __main__ live=1/1 pnodes=0/8 vars=0/26

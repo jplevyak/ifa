@@ -6735,11 +6735,26 @@ static int cssiteless_enabled() {
 // Independent of PYC_CSELEM -- this is not a keying question. The shape
 // canon exists to canonicalize per-site contours, and with one contour per
 // sym there is nothing for it to canonicalize.
+// ifa/129: START MERGED -- one CreationSet per sym -- is the DEFAULT.
+//
+// CLAUDE.md's premise is that IFA starts from the MINIMUM data contours and
+// splits only on demand. Without this, `creation_point` keys identity on
+// (allocation site x contour), so data contours start MAXIMALLY split and
+// never merge: `multidef=0` corpus-wide means every CreationSet has exactly
+// one creation point. Mode 2 is that premise implemented; mode 0 is the old
+// maximal start and remains available as `PYC_CSDCPA1=0` for one release,
+// for bisecting anything this moves.
+//
+// Mode 2 rather than 1: 1 includes `tuple`, and a tuple's ARITY and
+// POSITION are part of its type, not provenance -- merging them costs ten
+// corpus programs (ifa/128). The exclusion is measured, not a concession.
+//
+// The cost of the flip, and what is still owed for it, is ifa/129.
 static int csdcpa1_enabled() {
   static int e = -1;
   if (e < 0) {
     cchar *v = getenv("PYC_CSDCPA1");
-    e = v ? atoi(v) : 0;
+    e = v ? atoi(v) : 2;
   }
   return e;
 }
