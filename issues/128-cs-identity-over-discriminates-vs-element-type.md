@@ -1,6 +1,8 @@
 # 128 — CreationSet identity over-discriminates 16× against the element type it stands for
 
-**Status:** open as a MEASUREMENT and a set of negative results. **Not the
+**Status:** open as a MEASUREMENT and a set of negative results. Its
+*measurement* motivates the start-merged posture; its *fix direction*
+(CreationSet reuse at mint time) is dead — see "Where reuse fits". **Not the
 active direction** — see the closing section: reducing the container
 CreationSet count pulls against what the flag flip actually needs
 ([146](146-remove-all-arbitrary-splitting.md) E), so this is not a
@@ -71,6 +73,52 @@ calls: 26728    cs_map 26581    MINT 147    (every other route: 0)
 | `csmold` | mode 3 excludes split children |
 
 The `creators` bug is the one concrete, actionable item here.
+
+## Where "reuse" fits in the design: it does not, and `creation_point` says so
+
+The inert routes invite the wrong conclusion — *make them fire*. Three
+different things get called reuse here and only two are live.
+
+**1. Disambiguating among a site's multiple contours** — `split_parent`,
+`cselem`, `csshape`, `csmold`. These are this issue's reuse routes, and
+`creation_point`'s own comment on the route ordering states why they are a
+dead frame:
+
+> *"ifa/128 start-merged route. Deliberately BEFORE the split-parent,
+> cselem, and mold routes: those all answer 'which of this site's contours
+> should this be', a question that does not arise when a sym has one
+> contour."*
+
+That question exists **only because identity is *(site × contour)***. Under
+the start-merged posture a sym has ONE contour, so it is void — which is
+exactly why all four measure 0 hits even at the flag arm. Nor can they be
+rescued as a better key: `PYC_CSELEM=3`'s key is evaluated at MINT time,
+when the element is unfilled by construction (402 of 795 such mints never
+acquire a shape). **Keying cannot get ahead of a decision taken before the
+evidence exists**, and that argument applies to every mint-time route, not
+just that one.
+
+**2. Coarse identity by construction** — the `dcpa1` route,
+`PYC_CSDCPA1`. This IS the answer to this issue's measurement, and it is
+not reuse: it is one contour per sym, needs no evidence at all, and is
+placed first precisely so the question above never arises. `split_css` then
+moves a def off the root when a demand asks. The comment's own words:
+*"start merged, separate on evidence."*
+
+**3. Re-attaching a re-derived decision across passes** — the split ledger
+(`FA::ledger_find_cs` / `ledger_add_cs` over `cs_group_signature`) and its
+EntrySet analogue `find_or_make_filtered_entry_set`. Live, necessary, and a
+different kind of thing: it reuses a DECISION, not a merge of unrelated
+creation points. Every pass re-derives from bottom, so a split that is
+re-derived must re-attach to the contour it first made rather than minting
+a fresh one, or the analysis churns instead of converging (the issue 033
+stability rule). **The start-merged posture needs MORE of this, not less** —
+the coarser you start, the more splits are re-derived every pass.
+
+So the design's shape is **coarse identity → demand-driven separation →
+ledger so the separation survives the next pass.** There is no reuse step in
+it, and the four routes in (1) are not a missing feature but a consequence
+of the identity this issue is complaining about.
 
 ## Settled: a merge CAN be taken back
 
