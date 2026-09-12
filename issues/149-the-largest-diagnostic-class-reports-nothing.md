@@ -255,3 +255,92 @@ lowering (`emit_in_pyda`) dispatches `__contains__` directly with no
 fallback to the iterable protocol, which is the same gap
 `__pyc_generator__.__contains__` and `__pyc_iterator__.__contains__` were
 each added to plug by hand.
+
+---
+
+# Part 3 — the receiver-type census, re-run: the missing-method era is over
+
+**2026-09-12**, after [150](150-is-not-none-never-folds.md),
+[125](../../issues/125-in-has-no-iterable-fallback.md) and
+[126](../../issues/126-bool-lacks-int-subtype-arithmetic.md) closed three
+root causes. Re-run because the operator NAME had already proven a poor
+proxy for the cause twice: `unresolved call '__not__'` in `othello` was
+really `range.__contains__`, and `'__lt__'` in a dozen programs was really
+`bool.__not__` failing to fold.
+
+Method: Part 2 established that a completely failed dispatch raises one
+violation per rval of the send, so the `illegal: T` siblings at the same
+`file:line:col` ARE the argument types of the failed send. For each of the
+**108** remaining unresolved-call sites, ask whether the operator actually
+exists on each named type.
+
+## Two false starts worth recording
+
+**The first cut grouped by type and got 44 sites on `int64` alone** — which
+would mean `int` lacks `__floordiv__`, `__ne__`, `__lshift__`. It does not;
+all of them are in `__pyc__/02_numeric.py`.
+
+**The second cut tested "is some rval at this position bottom?" and got
+108 of 108 — which is circular.** A failed dispatch's own result is bottom,
+so a `has no type` warning at that position is a CONSEQUENCE of the failure,
+never evidence of its cause. The test could not have returned anything else.
+
+The discriminator that works is non-circular and needs no probe: **if the
+operator exists on every named operand type, that type cannot be why
+dispatch failed**, so the receiver must be something else — and the only
+something else available is an untyped value.
+
+## The result
+
+| | sites |
+| --- | --- |
+| a genuinely MISSING method on a named type | **5** |
+| receiver is a `closure` / function value, or a user class | 10 |
+| every named type HAS the operator — **cascade from an untyped value** | **93** |
+
+**86% of what is left is a cascade.** The missing-method work is finished:
+the whole remaining list is
+
+```
+4  list.__lt__     linalg mastermind2    `list1.sort()`
+1  bool.__iand__   rdb                   `basis &= MatchRule(props, rule)`
+```
+
+`list.__lt__` is already filed as [issues/122](../../issues/122-list-ordering-comparisons-missing.md)
+with a fixture. `bool.__iand__` wants a CLASS INSTANCE as its argument,
+which is a `TypeError` in CPython unless `MatchRule` defines `__rand__`
+(see [126](../../issues/126-bool-lacks-int-subtype-arithmetic.md)); rdb is
+also one of the two programs that do not compile at all.
+
+The 10 `closure` receivers are their own shape — an indirect call, or a
+comprehension's function value appearing where its RESULT should be
+(`sat`'s `nrofvars = [int(n[2]) for n in cnf if n[0] == 'p'][0]`,
+`sunfish`'s `sum((padrow(...) for i in ...))`). Worth a look on its own;
+it is not an operator gap.
+
+## So the work list is now "why is this value untyped"
+
+The `NOTYPE` population, which is what every cascade terminates in:
+
+```
+named   ('X' has no type)          92
+anonymous (expression has no type) 558
+```
+
+The 92 NAMED ones are the actionable roots, because they identify a
+variable. Ranked:
+
+| sites | root |
+| --- | --- |
+| 12 | **doom `data`** — `data = self.entry_data[b'VERTEXES']`, a dict indexed by a bytes literal whose value channel never types. Drives ALL 20 of doom's unresolved calls. |
+| 6 | msp_ss `dataOut` |
+| 4 | plcfrs `rule`, msp_ss `blkin` |
+| 3 | othello2 `value`, msp_ss `l` |
+| 2 | tarsalzp `norm`/`ilog`, rdb `l3`, msp_ss `startaddr`/`rxFrame`/`bslVerLo`/`bslVerHi` |
+
+doom's is the highest-leverage single root in the corpus and it is a
+CONTAINER ELEMENT question — the value type of a dict — which puts the next
+step in [133](133-split-a-container-on-its-element-type.md)'s and
+[128](128-cs-identity-over-discriminates-vs-element-type.md)'s territory
+rather than in the builtin library. That is a different kind of work from
+the last three fixes, and it is where the corpus now points.
