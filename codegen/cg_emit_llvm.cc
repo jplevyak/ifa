@@ -287,6 +287,36 @@ static llvm::StructType *gen_state_struct_type() {
 
 enum GenStateField { GenState_CoroHdl = 0, GenState_Value = 1, GenState_Sent = 2, GenState_Done = 3, GenState_RetVal = 4 };
 
+// Adjust an integer value to `want`'s width. Widening FROM i1 ZERO-extends;
+// everything else keeps the signed behaviour it had.
+//
+// i1 is only ever `bool` in this codegen, and it is an unsigned 0/1 value, so
+// sign-extending True (i1 1) yields all-ones = -1. emit_convert already
+// documented that rule and applied it at ITS site -- but six other places
+// adjust integer width with a bare CreateSExt/CreateSExtOrTrunc, and a bool
+// reaching any of them came out as -1. The visible symptom was that bool
+// arithmetic was wrong on this backend and right on the C one:
+//
+//     def gt(a, b): return a > b
+//     def add2(p, q): return p + q
+//     print(add2(gt(3, 2), gt(3, 2)))   # C and CPython: 2.  LLVM: 0
+//     print(add2(gt(2, 3), gt(3, 2)))   # C and CPython: 1.  LLVM: -1
+//
+// which is `1 + (-1)` and `0 + (-1)`: the binary-op operand promotion below
+// sign-extended the i1. It only surfaced once bool gained its int-subtype
+// arithmetic (__pyc__/00_runtime.py) and made the path reachable; with a
+// constant receiver the branch folds and no runtime bool is ever widened,
+// which is why the small repros all passed.
+//
+// This exists as one helper so those sites cannot drift apart again.
+static llvm::Value *int_width_cast(llvm::Value *v, llvm::Type *want) {
+  if (!v || !want || v->getType() == want) return v;
+  if (!v->getType()->isIntegerTy() || !want->isIntegerTy()) return v;
+  if (v->getType()->isIntegerTy(1) && want->getIntegerBitWidth() > 1)
+    return Builder->CreateZExtOrTrunc(v, want);
+  return Builder->CreateSExtOrTrunc(v, want);
+}
+
 static llvm::Value *gen_state_field(EmitCtx &ctx, GenStateField field) {
   return Builder->CreateStructGEP(gen_state_struct_type(), ctx.gen_state, (unsigned)field);
 }
@@ -584,7 +614,7 @@ void put_result(EmitCtx &ctx, Var *v, llvm::Value *value) {
       if (value->getType()->isPointerTy() && want->isPointerTy()) {
         // opaque-ptr no-op.
       } else if (value->getType()->isIntegerTy() && want->isIntegerTy()) {
-        value = Builder->CreateSExtOrTrunc(value, want);
+        value = int_width_cast(value, want);
       } else if (value->getType()->isPointerTy() && want->isIntegerTy()) {
         value = Builder->CreatePtrToInt(value, want);
       } else if (value->getType()->isIntegerTy() && want->isPointerTy()) {
@@ -604,7 +634,7 @@ void put_result(EmitCtx &ctx, Var *v, llvm::Value *value) {
       if (sv->getType()->isPointerTy() && gv_ty->isPointerTy()) {
         // opaque-ptr no-op
       } else if (sv->getType()->isIntegerTy() && gv_ty->isIntegerTy()) {
-        sv = Builder->CreateSExtOrTrunc(sv, gv_ty);
+        sv = int_width_cast(sv, gv_ty);
       }
     }
     Builder->CreateStore(sv, gv);
@@ -870,7 +900,7 @@ bool emit_send_period(EmitCtx &ctx, PNode *pn) {
     if (loaded->getType()->isPointerTy() && dst_ty->isPointerTy()) {
       // opaque ptrs.
     } else if (loaded->getType()->isIntegerTy() && dst_ty->isIntegerTy()) {
-      loaded = Builder->CreateSExtOrTrunc(loaded, dst_ty);
+      loaded = int_width_cast(loaded, dst_ty);
     } else if (loaded->getType()->isPointerTy() && dst_ty->isIntegerTy()) {
       loaded = Builder->CreatePtrToInt(loaded, dst_ty);
     } else if (loaded->getType()->isIntegerTy() && dst_ty->isPointerTy()) {
@@ -941,7 +971,7 @@ bool emit_send_setter(EmitCtx &ctx, PNode *pn) {
       } else if (val->getType()->isPointerTy() && field_ty->isIntegerTy()) {
         val = Builder->CreatePtrToInt(val, field_ty);
       } else if (val->getType()->isIntegerTy() && field_ty->isIntegerTy()) {
-        val = Builder->CreateSExtOrTrunc(val, field_ty);
+        val = int_width_cast(val, field_ty);
       }
     }
     Builder->CreateStore(val, gep);
@@ -1097,9 +1127,9 @@ bool emit_send_binop(EmitCtx &ctx, PNode *pn) {
       lhs = Builder->CreateSIToFP(lhs, rhs->getType());
     } else if (lhs->getType()->isIntegerTy() && rhs->getType()->isIntegerTy()) {
       if (lhs->getType()->getIntegerBitWidth() < rhs->getType()->getIntegerBitWidth()) {
-        lhs = Builder->CreateSExt(lhs, rhs->getType());
+        lhs = int_width_cast(lhs, rhs->getType());
       } else {
-        rhs = Builder->CreateSExt(rhs, lhs->getType());
+        rhs = int_width_cast(rhs, lhs->getType());
       }
     }
   }
@@ -1537,7 +1567,7 @@ static bool emit_send_coerce(EmitCtx &ctx, PNode *pn) {
         if (to_float)
           res = dst_ty->isFloatingPointTy() ? Builder->CreateFPCast(res, dst_ty) : Builder->CreateFPToSI(res, dst_ty);
         else
-          res = dst_ty->isIntegerTy() ? Builder->CreateSExtOrTrunc(res, dst_ty) : Builder->CreateSIToFP(res, dst_ty);
+          res = dst_ty->isIntegerTy() ? int_width_cast(res, dst_ty) : Builder->CreateSIToFP(res, dst_ty);
       }
       put_result(ctx, dst_var, res);
       return true;
