@@ -153,6 +153,18 @@ IS a deduced type-lattice value, which is the legitimate first column of
 [136](136-creation-point-identity-is-es-x-call-site.md)'s table. The
 handle naming the parts is the constant itself, not the call site.
 
+### A second corpus instance: `life`
+
+`shedskin_examples/life` constructs `collections.defaultdict` at two sites
+with different factories — `defaultdict(int, board)` and
+`defaultdict(None, board)` — so the shared contour's `self.factory` unions
+`{None, int}`. `__getitem__` guards it (`if self.factory:`) and the guard
+cannot fold across the merge, so the None arm is type-checked and
+`self.factory()` fails. Same shape as the `min`/`max` case in
+[150](150-is-not-none-never-folds.md), reached through truthiness rather
+than `is None`. Surfaced by [125](../../issues/125-in-has-no-iterable-fallback.md)'s
+`list()` fallback, which let the analysis get that far.
+
 ## Plan
 
 1. **Measure the ceiling first.** Probe, at each violation, whether the
