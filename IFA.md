@@ -51,17 +51,35 @@ direction is easy to invert by accident:
   `CreationSet` split becomes possible. That is the ES split serving the
   CS split, not causing it.
 
-**Two live violations in this tree**, named because they are what the rule
-is usually being forgotten in favour of:
+**The rule holds on the EntrySet side and not on the CreationSet side**,
+and the asymmetry is measurable rather than a matter of opinion:
 
-1. `creation_point` mints one CreationSet per *(allocation site ×
-   contour)*. CS identity is therefore decided by structure before any
-   demand test runs, and every ES split multiplies CreationSets as a side
-   effect. `ifa/issues/128` is this; `ifa/issues/129` is the plan and
-   `PYC_CSDCPA1` (start merged, one CS per sym) is the lever.
-2. `PYC_CSSPLIT=1` makes a CreationSet follow an EntrySet split by
-   construction — the inverted dependency stated directly as a mechanism.
-   It should be a fallback that fires only where a demand test also asks.
+- **EntrySets DO start minimal** — one per function on the first pass —
+  and split on demand. A program calling `f(1)` and `f(2.5)` gives `f`
+  exactly two contours, which is what its argument types asked for.
+- **CreationSets do not.** `creation_point` mints one per *(allocation
+  site × contour)*, so CS identity is decided by structure before any
+  demand test runs. `multidef=0` corpus-wide over 127 522 CreationSets
+  means every CreationSet has exactly one creation point: the data
+  contours start MAXIMALLY split and never merge. `ifa/issues/128` is
+  this; `ifa/issues/129` is the plan; `PYC_CSDCPA1=2` (start merged, one
+  CS per sym) is the lever and is **opt-in, not the default**.
+
+Two cautions on the second point, both learned by measurement:
+
+- "every ES split multiplies CreationSets as a side effect" is the general
+  shape of the identity rule, but it is NOT reliable per-change: the one
+  ES-split mechanism built to serve a CS split (`PYC_ESBLOCK`) mints
+  *fewer* CreationSets through `creation_point`, not more. See 128's route
+  histogram before repeating the claim about a specific change.
+- Reducing the CreationSet count is not automatically progress. Merging
+  tuple CreationSets costs ten corpus programs and makes the contour it
+  was meant to help WORSE. 128 and `ifa/issues/133` pull against each
+  other; `ifa/issues/146` E is what the start-merged flip actually needs.
+
+*(`PYC_CSSPLIT=1` — a CreationSet following an ES split by construction —
+was listed here as a second live violation. It was REMOVED 2026-09-08,
+ifa/146 A.)*
 
 **How to tell the difference when reviewing a change.** Ask what OBSERVED
 the distinction. A type violation at a use site, a setter confluence, an
@@ -322,11 +340,12 @@ sufficient, later ones target rarer imprecision sources:
    that argument. Existing edges are re-targeted via `split_edges`.
    See paper §5.3 "Function Splitting".
 
-2. **Mark-based ES splitting** — `split_ess_for_mark_type`. Uses
-   `build_type_marks` to compute distance-from-source marks on AVars; two
-   contributors that share a type but differ in their *origin* (different
-   `mark_map` entries) still split. This is how IFA handles the
-   recursion-meets-polymorphism case without falling back to k-CFA.
+2. **~~Mark-based ES splitting~~ — REMOVED.** `split_ess_for_mark_type` no
+   longer exists (ifa/146 D). Mark distance is depth-from-a-generating-AVar,
+   so no type tuple can name what it separates — it is provenance, and the
+   paper's answer to recursion-meets-polymorphism is one pyc does not use.
+   Removing it took guard trips 18 → 10, analysis time −55%, contours
+   −12.3%.
 
 3. **Setter-based splitting (data splitting on AssignSets)** —
    `compute_setters` builds `Setters` (canonical sets of "AVars that wrote
@@ -336,18 +355,53 @@ sufficient, later ones target rarer imprecision sources:
    Paper §5.4 "Data Splitting" — implemented as a backward problem over
    `AVar::backward`, with `update_setter` propagating set growth.
 
-4. **Setter+marks splitting** — same as (3) but combined with mark-based
-   confluence detection.
+4. **~~Setter+marks splitting~~ — off by default** with the marks
+   (`PYC_NOMARK` defaults to 1). `MARK_SETTER` / `MARK_SETTER_OF_SETTER`
+   remain in `FAPassStage` but do not run.
 
 5. **Violation-driven splitting** — `split_for_violations`. Any
    `type_violations` recorded during the pass become drivers:
    `collect_violation_imprecisions` traces back from the failure site to
-   the responsible AVars, then re-runs (1) and (2) with `SPLIT_DYNAMIC`
-   on those. This is the part that resolves real dispatch ambiguities.
+   the responsible AVars, then re-runs (1) with `SPLIT_DYNAMIC` on those.
+   This is the part that resolves real dispatch ambiguities. It is
+   **first-stage-wins**: gated on `!analyze_again`, so any earlier stage
+   claiming progress starves it for that pass (ifa/issues/148).
 
-If none of the five steps produced a split (`analyze_again == 0`), the
-analysis is at a fixed point: `clear_results()` is NOT called, the outer
-loop exits, and we move to cloning.
+**Three stages this list used to omit, and one of them is the only
+CreationSet-side splitter there is:**
+
+6. **`CSM_ELEMENT_CS`** — `split_container_methods_per_element_cs`
+   (`PYC_CSM`, ifa/issues/075). Container-method split for list/dict
+   receivers with divergent element types. Runs every pass, BEFORE
+   `TYPE_CONFLUENCE`.
+
+7. **`PER_CS_RECEIVER`** — `split_for_per_cs_method_receivers`
+   (ifa/issues/045). Method contours per receiver CreationSet, for classes
+   the frontend marked `clone_methods_per_cs` via
+   `__pyc_clone_constants__`. Runs only on quiescence of every stage above.
+   Violation-driven stages never separate same-class receiver CSs — no
+   violation arises in the merged method itself — which is why this exists;
+   `ifa/issues/134` tracks removing the annotation that gates it.
+
+8. **`CS_DEF_PARTITION`** — `split_css_by_defs` (ifa/issues/133),
+   `PYC_CSDEFSPLIT` default 1. **The CreationSet-side separator**, and the
+   mechanism §1.1's rule actually calls for: when a type confluence lands on
+   a CreationSet contour, stage 1 can only drop it (it knows how to split an
+   EntrySet, not a CreationSet), so this partitions that CreationSet's own
+   creation points (`cs->defs`). shedskin's ladder route 4, and like it the
+   **last rung**, gated on quiescence so anything a finer route can separate
+   is separated first. At the default it declines everything, because
+   `multidef=0` means no CreationSet has more than one creation point — it
+   exists for the start-merged posture.
+
+`CARTESIAN_PRODUCT` is also still in the enum and is **removed**
+(ifa/146 E): it fanned a formal into one contour per single CreationSet
+whenever a positional formal's type held ≥2, which asked for no demand at
+all.
+
+If no stage produced a split (`analyze_again == 0`), the analysis is at a
+fixed point: `clear_results()` is NOT called, the outer loop exits, and we
+move to cloning.
 
 A hard stop exists at `IFA_PASS_LIMIT = 100` (in `fa.h:11`) to keep
 pathological inputs bounded. When tripped, the analysis just stops and

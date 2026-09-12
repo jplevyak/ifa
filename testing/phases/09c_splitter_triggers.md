@@ -1,5 +1,24 @@
 # Phase 09 — Phase A.3: Splitter-stage trigger preconditions
 
+> **STALE, corrected 2026-09-12 — read this before building fixtures from
+> the cascade below.** Three of the seven stages it targets no longer run,
+> and three stages that DO run are missing:
+>
+> - **Stage 2 MARK-TYPE is gone.** `split_ess_for_mark_type` has no
+>   definition and no callers (ifa/146 D) — mark distance is provenance.
+> - **Stages 5 and 6 (MARK-SETTER, MARK-SETTER-OF-SETTER) do not run**;
+>   `PYC_NOMARK` defaults to 1. The enum entries remain.
+> - **Missing: `CSM_ELEMENT_CS`** (runs every pass, BEFORE stage 1),
+>   **`PER_CS_RECEIVER`** (on quiescence), and **`CS_DEF_PARTITION`** —
+>   the only CreationSet-side splitter, `split_css_by_defs`, ifa/133,
+>   default on, the last rung.
+> - `CARTESIAN_PRODUCT` is in `FAPassStage` and is also removed (ifa/146 E).
+>
+> The current list with what each one does is [IFA.md §6](../../IFA.md).
+> Everything below is still accurate for the four stages that DO run
+> (TYPE, SETTER, SETTER-OF-SETTER, VIOLATION); the per-stage preconditions
+> for the removed three were never re-verified and should not be built on.
+
 For each of the 7 splitter stages (one already triggered by pyc
 tests, six gaps), what IF1 shape causes it to fire. Sources:
 `ifa/analysis/fa.cc:extend_analysis` (the cascade) +
