@@ -1505,6 +1505,15 @@ So the next thing to attack is the *(site × contour)* product itself —
 key it is looked up by. That is ifa/128 as filed, and it is upstream of
 everything in this step.
 
+> **Corrected 2026-09-12.** "128 is upstream of everything in this step" is
+> retracted, along with "the blocker is 128" elsewhere in this file.
+> Measured: an ES split mints FEWER CreationSets through `creation_point`,
+> not more, and reducing the tuple CreationSet count costs TEN corpus
+> programs while making `sudoku5`'s comparison contour worse. 128 and 133
+> pull against each other; the flip's blocker is
+> [146](146-remove-all-arbitrary-splitting.md) E. See 128's closing section
+> for the route histogram and the tuple-merge A/B.
+
 *Kept, not reverted:* both flags stay, default off, with this result
 recorded at their definitions. They are the reproduction of the
 experiment; deleting them would lose the ability to re-run it, and the
