@@ -1003,6 +1003,26 @@ CreationSet *creation_point(AVar *v, Sym *s, int arity) {
   // keyed on the converged CONTENT, not on arity, and it is 129 step 3
   // route 6. `cselem_shape_reuse` below is its per-site approximation.
 Lno_split_parent:;
+  // ifa/128, 2026-09-12: the three routes below -- cselem, csshape, csmold
+  // -- are 0 hits at BOTH the default and the start-merged arm, and that is
+  // NOT a bug to fix. They all answer "which of this site's CONTOURS should
+  // this be", a question that only exists because identity is
+  // (allocation site x contour). The dcpa1 route above makes it void: when a
+  // sym has one contour there is nothing to choose between, which is why it
+  // is deliberately ordered first.
+  //
+  // Nor can they be rescued as a better key. Each decides at MINT time,
+  // when the receiver's element is unfilled by construction -- measured,
+  // 402 of 795 such mints never acquire a shape at all. Keying cannot get
+  // ahead of a decision taken before the evidence exists, which is why
+  // PYC_CSELEM=3 is suite-clean and still regresses `rdb` on the corpus.
+  //
+  // They are kept as the reproduction of that experiment (ifa/129), not as
+  // a mechanism awaiting repair. The design is: coarse identity (dcpa1) ->
+  // demand-driven separation (split_css / CS_DEF_PARTITION) -> the split
+  // ledger so a re-derived separation re-attaches. There is no reuse step
+  // in it. A `creators` route that stood here was deleted for the same
+  // reason (see above).
   // ifa/issues/101 (PYC_CSELEM): before minting another container CS for
   // this site, ask what element type the site converged to on the
   // PREVIOUS pass, and reuse an existing CS of the same sym that

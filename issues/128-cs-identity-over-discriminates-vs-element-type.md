@@ -52,7 +52,7 @@ and [101](101-FA-first-time-forever-splitting.md) cover CSs being minted
 *repeatedly*. This is how many distinct CSs are *justified at all* once
 minting is stable — 95 for 6 is the steady state, not churn.
 
-## Root cause: the memo cannot merge, and every reuse route is inert
+## Root cause: the memo cannot merge
 
 `creation_point` memoizes on `v->cs_map` where `v` is an AVar — a
 (variable × contour) pair — so the memo yields **exactly one CS per
@@ -63,16 +63,22 @@ allocation site per contour** and never asks whether two could be the same.
 calls: 26728    cs_map 26581    MINT 147    (every other route: 0)
 ```
 
-**Not one of the five reuse routes fires**, each for its own reason:
+### The routes, classified — three are the dead frame, one is the rule
 
-| route | why |
+**Corrected 2026-09-12.** This section used to call all of them "reuse
+routes" and name a `creators` bug as the one actionable item. Both were
+wrong; the accurate split is:
+
+| route | what it is |
 | --- | --- |
-| `creators` | **dead code.** `if (nvars != -1 \|\| x->vars.n != nvars) continue;` — if `nvars != -1` it continues; if `nvars == -1` then `x->vars.n != -1` is always true, so it continues. Always. Almost certainly a `\|\|` that should be `&&`. |
-| `split_parent` | needs `PYC_CSSPLIT=0`; that flag has since been removed entirely (146 A) |
-| `cselem` / `csshape` | need `PYC_CSELEM != 0`; default 0 |
-| `csmold` | mode 3 excludes split children |
+| `cs_map` | the memo. Not reuse — "this site in this contour already has its CS". |
+| `dcpa1` | **coarse identity by construction** (`PYC_CSDCPA1`). The design's answer to this issue's measurement. Placed FIRST on purpose. |
+| `split_parent` | **the ENFORCEMENT of "an ES split must not MULTIPLY CreationSets"** — a contour split off a parent inherits the parent's creation-point→CS mapping, so the site keeps its data contour instead of minting one per *(site × contour)*. Live and default-on (`PYC_ESLINEAGE=1`). It had a real bug: it read `es->split`, which `clear_splits()` zeroes every pass, so the inheritance held only on the pass of the split; it now reads `split_origin` durably and walks the ancestor chain. **Not a dead frame — this is the rule working.** |
+| `cselem` / `csshape` / `csmold` | mint-time content/shape keying. **This is the dead frame** (see "Where reuse fits"): 0 hits at BOTH arms, and mint-time keying cannot work in principle. |
+| `creators` | **already DELETED**, and deletion was right. It was dead since IFA 0.6 (`if (nvars != -1 \|\| x->vars.n != nvars) continue;` continues on every iteration), so it never selected a CreationSet in the history of the code. Both repairs are whole-program merges: `&&` takes the first creator of the sym unconditionally — one CS per class program-wide — and `==` fuses every record CS of one sym and arity, destroying the per-position precision ifa/104 depends on. `nvars` had no other consumer and went with it. |
 
-The `creators` bug is the one concrete, actionable item here.
+So there is **no dead-code bug left here**, and "make the inert routes fire"
+is not the work — it is the frame the next section retires.
 
 ## Where "reuse" fits in the design: it does not, and `creation_point` says so
 
@@ -212,13 +218,85 @@ way for that: it concentrates more shapes onto each comparison contour.
 **The two are not a chain; they pull against each other, and 146 E is the
 one the flip needs.**
 
-## If it is picked up again
+## The plan, following the design
 
-1. Fix the `creators` dead code (the `||`/`&&` above) — independently
-   correct regardless of direction.
-2. `IFA_DBG_ELEMTYPE`'s gap closing on chess (95 → nearer 6) and
-   `list.append`'s clone count falling toward the element-type count.
-3. `./corpus_sweep.sh -m check` for exit-code and stdout neutrality: this
-   must be behaviour-preserving.
-4. Watch for [123](123-CGEN-union-receiver-field-access-has-no-discrimination.md)'s
-   failure mode — merging CSs that codegen then blind-casts between.
+The design is **coarse identity → demand-driven separation → ledger so the
+separation survives the next pass.** This issue's *measurement* is the
+motivation for the first step; it owns no mechanism of its own beyond that.
+So the plan is not "land reuse" — it is "make the start-merged posture the
+default", and the steps are the things that must be true first.
+
+**Step 1 — coarse identity. Built (`dcpa1`), keep its one exclusion.**
+`PYC_CSDCPA1=2` gives −32% container CreationSets with `ess` going DOWN. Its
+`tuple` exclusion stays: dropping it was measured on one binary, env
+toggled, and costs **ten** corpus programs, because two arity-2 tuples
+`(int, str)` and `(str, int)` merge their positional slots and no demand
+test can separate them again. Arity and position are part of a tuple's TYPE,
+not provenance.
+
+**Step 2 — separation strong enough to give the precision back on demand.**
+This is the whole bill, and it is not in this issue:
+
+| mechanism | issue | state |
+| --- | --- | --- |
+| arity in identity | [132](132-arity-is-representation-not-provenance.md) | landed |
+| `CS_DEF_PARTITION` — partition a CreationSet's own creation points | [133](133-split-a-container-on-its-element-type.md) | landed, default 1 |
+| ES split as a MEANS to a CS split (`PYC_ESBLOCK`) | 133 | built, opt-in |
+| receiver separation for a formal holding N tuple CSs | [146](146-remove-all-arbitrary-splitting.md) E | **open — the actual blocker** |
+| constants separated on demand, not by annotation | [151](151-split-an-entryset-on-a-constant-argument-on-demand.md) | open |
+| more representation properties in the literal separator set | 133 | open |
+
+`PYC_ESBLOCK` is the honest test of whether step 2 is finished: it is
+correct by its own design and still costs `sudoku5` and `plcfrs`, because
+one shared unrolled `tuple.__eq__`/`__lt__` contour merges slot types across
+shapes. That is 146 E, and **reducing the CreationSet count pushes the wrong
+way on it** — fewer contours means more shapes per comparison contour. Which
+is why this issue is not on the critical path and 146 E is.
+
+**Step 3 — the ledger, so a re-derived split re-attaches.** Exists
+(`ledger_find_cs`/`ledger_add_cs` over `cs_group_signature`, and
+`find_or_make_filtered_entry_set` on the ES side). The coarser the start,
+the more splits are re-derived every pass, so this matters MORE under
+start-merged, not less. Known gap: the existing signature is deliberately
+constant-stripped, so a constant split needs a new key (151 step 4).
+
+**Step 4 — the dead frame: mark it, and let the author settle deletion.**
+`cselem`, `csshape` and `csmold` are 0 hits at both arms and answer a
+question start-merged makes void. Note `csmold` is **default 3, i.e. ON**,
+and still never fires (mode 3 excludes split children) — a default-on route
+contributing nothing.
+
+Deleting them is arguable both ways and this issue should not decide it
+alone:
+
+- **For:** 146's corollary — *an off-by-default lever still gets reached the
+  moment a program resists, and it reads as sanctioned because it is in the
+  tree.* `creators` was removed on exactly this reasoning.
+- **Against:** that corollary targets *splitting* levers, whose failure mode
+  is being reached for precision when a program resists. A *merge* lever has
+  no such pull — nobody turns on `PYC_CSELEM` to make a program compile.
+  And [129](129-plan-demand-driven-creation-set-splitting.md) recorded a
+  deliberate decision to keep these: *"both flags stay, default off, with
+  this result recorded at their definitions. They are the reproduction of
+  the experiment; deleting them would lose the ability to re-run it."*
+  This issue's own `PYC_CSELEM=3` and `PYC_CSMOLD=1` numbers are exactly
+  that experiment.
+
+The change that is right either way, and costs nothing: **say at each
+route's definition that it answers "which of this site's contours should
+this be", which start-merged makes void** — so the next reader does not
+read 0 hits as a bug to fix. Making them fire is not the work.
+
+### Verification, when it is picked up
+
+- `IFA_DBG_ELEMTYPE`'s gap closing on chess (95 → nearer 6) and
+  `list.append`'s clone count falling toward the element-type count.
+- **`ess`/`css` must not GROW at the default.** This exists so contours can
+  merge safely; if it adds contours where nothing merged it is doing the
+  opposite of its purpose.
+- `./corpus_sweep.sh -m check`, compared per program: `compile_rc`,
+  `run_rc`, `cpy_rc` and `stdout_match` unchanged. The headline totals are
+  not enough — two programs can swap and net to zero.
+- Watch for [123](123-CGEN-union-receiver-field-access-has-no-discrimination.md)'s
+  failure mode — merging CSs that codegen then blind-casts between — and for
+  ifa/147's rule that a 1–2 program movement is never attributable.
