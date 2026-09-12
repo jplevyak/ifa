@@ -262,7 +262,7 @@ each added to plug by hand.
 
 **2026-09-12**, after [150](150-is-not-none-never-folds.md),
 [125](../../issues/125-in-has-no-iterable-fallback.md) and
-[126](../../issues/126-bool-lacks-int-subtype-arithmetic.md) closed three
+[126](../../issues/closed/126-bool-lacks-int-subtype-arithmetic.md) closed three
 root causes. Re-run because the operator NAME had already proven a poor
 proxy for the cause twice: `unresolved call '__not__'` in `othello` was
 really `range.__contains__`, and `'__lt__'` in a dozen programs was really
@@ -309,7 +309,7 @@ the whole remaining list is
 `list.__lt__` is already filed as [issues/122](../../issues/122-list-ordering-comparisons-missing.md)
 with a fixture. `bool.__iand__` wants a CLASS INSTANCE as its argument,
 which is a `TypeError` in CPython unless `MatchRule` defines `__rand__`
-(see [126](../../issues/126-bool-lacks-int-subtype-arithmetic.md)); rdb is
+(see [126](../../issues/closed/126-bool-lacks-int-subtype-arithmetic.md)); rdb is
 also one of the two programs that do not compile at all.
 
 The 10 `closure` receivers are their own shape — an indirect call, or a
