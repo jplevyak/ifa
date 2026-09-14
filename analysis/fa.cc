@@ -771,7 +771,14 @@ CreationSet *creation_point(AVar *v, Sym *s, int arity) {
   // and without -- so it has NO coverage for tuple positional merging.
   // Anyone re-testing this will get a green suite and a corpus that loses
   // ten programs.
-  if (csdcpa1_enabled() && !(csdcpa1_enabled() == 2 && s == sym_tuple) && !is_clone_methods_per_cs(s)) {
+  // `>= 2`, not `== 2`: with exact equality any nonzero value that is not
+  // precisely 2 -- PYC_CSDCPA1=3, or a typo -- fell through to mode 1's
+  // tuple merging, the configuration measured directly above at TEN lost
+  // corpus programs. Nothing documents a mode 3, so the failure would have
+  // been silent and would have looked like "more merging" rather than like
+  // a regression. Mode 1 is the only one that merges tuples, so the test
+  // belongs on it.
+  if (csdcpa1_enabled() && !(csdcpa1_enabled() >= 2 && s == sym_tuple) && !is_clone_methods_per_cs(s)) {
     // ifa/135: a class's PROTOTYPE is not an instance of it, and must not
     // share its contour.
     //

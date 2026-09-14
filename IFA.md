@@ -57,13 +57,17 @@ and the asymmetry is measurable rather than a matter of opinion:
 - **EntrySets DO start minimal** — one per function on the first pass —
   and split on demand. A program calling `f(1)` and `f(2.5)` gives `f`
   exactly two contours, which is what its argument types asked for.
-- **CreationSets do not.** `creation_point` mints one per *(allocation
-  site × contour)*, so CS identity is decided by structure before any
-  demand test runs. `multidef=0` corpus-wide over 127 522 CreationSets
-  means every CreationSet has exactly one creation point: the data
-  contours start MAXIMALLY split and never merge. `ifa/issues/128` is
-  this; `ifa/issues/129` is the plan; `PYC_CSDCPA1=2` (start merged, one
-  CS per sym) is the lever and is **opt-in, not the default**.
+- **CreationSets did not.** `creation_point` memoizes on `v->cs_map` where
+  `v` is an AVar — a *(variable × contour)* pair — so it mints one
+  CreationSet per *(allocation site × contour)* and never asks whether two
+  could be the same. CS identity is therefore decided by structure before
+  any demand test runs. That is true by construction; it needs no
+  measurement to see. `ifa/issues/128` is this.
+
+  **`PYC_CSDCPA1=2` — start merged, one CreationSet per sym — is now the
+  DEFAULT.** `PYC_CSDCPA1=0` restores the old maximal start.
+  `ifa/issues/129` is the plan, and carries what the flip costs and what is
+  still owed for it.
 
 Two cautions on the second point, both learned by measurement:
 
@@ -391,8 +395,9 @@ CreationSet-side splitter there is:**
    creation points (`cs->defs`). shedskin's ladder route 4, and like it the
    **last rung**, gated on quiescence so anything a finer route can separate
    is separated first. At the default it declines everything, because
-   `multidef=0` means no CreationSet has more than one creation point — it
-   exists for the start-merged posture.
+   it declines wherever a CreationSet has only one creation point, which is
+   most of them — it exists for the start-merged posture, which is now the
+   default.
 
 `CARTESIAN_PRODUCT` is also still in the enum and is **removed**
 (ifa/146 E): it fanned a formal into one contour per single CreationSet
