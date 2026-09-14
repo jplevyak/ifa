@@ -9696,6 +9696,48 @@ static int cscallsite_enabled() {
 //
 // `defs` is reported with each because route 4 declines at defs=1, which is
 // why this family survives today: chull's are defs=1.
+// issues/128 step 3 precondition: the RECEIVER CARDINALITY measurement.
+//
+// The proposed split is on the receiver formal of a shared container-method
+// contour. The risk is ifa/144's fan: if a contour's receiver holds N
+// containers, splitting by receiver can hand back N groups, and
+// extend/append/__setitem__ are the most-shared functions in the program --
+// the most expensive place to get that wrong.
+//
+// So measure it FIRST. For every EntrySet, how many distinct CreationSets
+// does its receiver (positional argument 1) hold? A distribution dominated
+// by 1 means a receiver split is cheap and precise; a long tail means it
+// fans and must peel one group at a time.
+static void report_recv_cardinality() {
+  if (!getenv("IFA_DBG_RECVCARD")) return;
+  int hist[9] = {0};  // index 8 = "8 or more"
+  int total = 0, over1 = 0, maxn = 0;
+  cchar *maxfun = "?";
+  for (EntrySet *es : fa->ess) {
+    if (!es || !es->fun || !es->fun->sym) continue;
+    // positional_arg_positions is the ordered list; [0] is the SELECTOR and
+    // [1] is the receiver -- the FUNES dump shows the same shape,
+    // `args= [__setitem__#44] [list#1848 list#1887] [int64#6] [Edge#1896]`.
+    // (Selecting by comparing MPosition POINTERS, as a first cut did, picks
+    // an arbitrary formal and reported every receiver as cardinality 1.)
+    Vec<MPosition *> &pp = es->fun->positional_arg_positions;
+    if (pp.n < 2) continue;
+    AVar *recv = es->args.get(pp.v[1]);
+    if (!recv || !recv->out || !recv->out->type) continue;
+    Vec<CreationSet *> cs;
+    for (CreationSet *c : recv->out->type->sorted) if (c) cs.set_add(c);
+    int n = cs.set_count();
+    if (!n) continue;
+    ++total;
+    if (n > 1) ++over1;
+    hist[n < 8 ? n : 8]++;
+    if (n > maxn) { maxn = n; maxfun = es->fun->sym->name ? es->fun->sym->name : "?"; }
+  }
+  fprintf(stderr, "RECVCARD total=%d over1=%d max=%d(%s) hist:", total, over1, maxn, maxfun);
+  for (int i = 1; i < 9; i++) fprintf(stderr, " %d=%d", i, hist[i]);
+  fprintf(stderr, "\n");
+}
+
 static void report_elem_confluence() {
   if (!getenv("IFA_DBG_ELEMCONF")) return;
   int n_conf = 0, n_sep = 0, n_fused = 0, n_sep_rel = 0, n_sep_unrel = 0;
@@ -14568,6 +14610,7 @@ static void report_demand_ratio() {
   report_fun_entry_sets();
   report_cs_vars();
   report_elem_confluence();
+  report_recv_cardinality();
   if (!getenv("IFA_DBG_DEMAND")) return;
   ElemCensus c;
   element_census(c);
