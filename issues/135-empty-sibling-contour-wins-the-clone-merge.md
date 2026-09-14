@@ -104,6 +104,63 @@ Two consequences:
 same time as `chull` and on the same evidence, so **re-verify them before
 trusting their attribution too.**
 
+## How shedskin handles it — read from source and verified on `chull`
+
+shedskin compiles `chull` cleanly (`python3 -m shedskin translate chull.py`,
+rc=0), and its emitted C++ answers the question directly:
+
+```cpp
+class Vertex : public pyobj {
+    __ss_bool mark;  Vector *v;  __ss_int vnum;
+    __ss_bool onhull;  Edge *duplicate;
+};
+class Edge : public pyobj {
+    list<Vertex *> *endpts;  list<Face *> *adjface;
+    __ss_int __ss_enum;  Face *newface;  __ss_bool __ss_delete;
+};
+```
+
+**Each class carries exactly its own five fields. There is no cross-class
+promotion anywhere** — `Vertex` never receives `delete`/`newface`, `Edge`
+never receives `duplicate`/`mark`/`onhull`. `class_variables`
+(`shedskin/cpp.py:1041`) emits `for var in cl.vars.values()` and nothing
+else.
+
+It gets there two ways, and pyc has neither:
+
+**1. The union never forms.** `Edge::endpts` is `list<Vertex *> *` and
+`Edge::adjface` is `list<Face *> *` — distinct parameterised types, so no
+`.field` read ever has a `{Vertex, Edge}` receiver and there is nothing to
+promote. Note the constructor signature keeps the DEFAULT-ARGUMENT list
+apart from the member's: `Edge(list<void *> *adjface, list<Vertex *> *endpts,
+…)`. The all-`None` default `[None, None]` is `list<void *>`, a different
+type from the member it is extended into. That is exactly the distinction
+pyc's merged empty-list contours lose.
+
+**2. When a union legitimately DOES form, it hoists rather than casts.**
+`analyze_virtuals` (`shedskin/virtual.py:125`) takes the receiver's classes,
+computes `lowest_common_parents`, and calls `upgrade_cl` to register the
+member on that common ancestor — as a virtual method, or for attribute
+access as a `virtualvars` entry. C++ inheritance then guarantees ONE slot at
+ONE offset for every subclass. For unrelated classes there is no common
+parent and nothing is hoisted, which is sound precisely because of (1).
+
+**The contrast is the lesson.** Faced with a union receiver, pyc's
+`promote_field` adds the field to EVERY class in the union, at whatever
+index that class's `has` happens to have reached — then tries to make the
+resulting layouts line up by name-sorting each batch
+([issues/121](../../issues/closed/121-sibling-subclass-field-layout.md)).
+That is synthesising a shared layout by COINCIDENCE, and it cannot work in
+general: two classes with different pre-promotion field counts can never
+agree, whatever order the promotions are applied in. shedskin makes the
+shared layout by CONSTRUCTION (a real base class) or does not need one.
+
+So the fix direction for this family is not a better sort. It is either to
+stop the union forming (the element-channel precision in (1), which is
+ifa/133's and ifa/129's territory) or to hoist a polymorphically-accessed
+member to a real shared base, which is a representation property and
+therefore legitimate ground under CLAUDE.md.
+
 ## Root cause
 
 `IFA_DBG_CSVARS` on each class, under the flag:
