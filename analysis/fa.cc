@@ -1679,6 +1679,22 @@ static long tc_seen = 0, tc_skip_rval = 0, tc_skip_lval = 0, tc_skip_cs = 0, tc_
 // drained by `split_css_by_defs` as the pass's last rung. Reset per pass
 // in `run_split_stages`.
 static Vec<CreationSet *> tc_cs_dropped;
+// issues/128: receivers of a MIXED field write -- some CreationSets in the
+// union already have the field, some do not. That is a DEMAND: something
+// observed a distinction (this class has it, that one does not) and could
+// not proceed without inventing the field on the ones that do not.
+//
+// The write STILL PROMOTES, deliberately. Dropping it was measured and is
+// not sound: it fixes `chull` and breaks `richards`, whose union is real and
+// whose field is legitimately attested only by such a write. The demand is
+// additive -- separate the receiver so the write lands on the right class --
+// and the spurious promotions then stop being re-derived once `has` is
+// recomputed per pass.
+//
+// Per-pass, like tc_cs_dropped: an imprecise early pass must not leave a
+// standing demand behind.
+static Vec<AVar *> fieldsplit_demands;
+static long fs_demands = 0, fs_split = 0;
 
 // ifa/issues/124: `->type` strips a pure-nil AType to bottom (make_AType's
 // is_unique_type branch; the 060 carve-out that KEEPS nil only fires when
@@ -3635,6 +3651,23 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
             fprintf(stderr, "[fieldsplit] %s n=%d have=%d miss=%d '%s'\n",
                     (have && miss) ? "MIXED" : (have ? "ALL-HAVE" : "ALL-MISS"),
                     obj->out->sorted.n, have, miss, symbol);
+          }
+          // issues/128: MIXED (some members have the field, some do not) was
+          // TRIED as "do not record, it is a demand not evidence". It fixes
+          // `chull` completely -- each class ends with exactly its own five
+          // fields, matching shedskin -- and STILL BREAKS `richards` with
+          // `no matching function for call`. So a MIXED write can be the
+          // legitimate first write of a field onto a class that really has
+          // it, and dropping it is never sound.
+          //
+          // That is the measurement that makes the SPLIT mandatory rather
+          // than an optimisation: the receiver has to be separated so the
+          // write lands on the right class. Reverted; the classification
+          // survives only as the IFA_DBG_FIELDSPLIT diagnostic above.
+          if (obj->out->sorted.n > 1 && obj->contour_is_entry_set) {
+            int fh = 0, fm = 0;
+            for (CreationSet *c2 : obj->out->sorted) { if (c2->var_map.get(symbol)) fh++; else fm++; }
+            if (fh && fm && fieldsplit_demands.set_add(obj)) ++fs_demands;
           }
           for (CreationSet *cs : obj->out->sorted) {
             AVar *iv = cs->var_map.get(symbol);
@@ -11476,6 +11509,7 @@ static void dbg_es_per_fun() {
   // for stage 1, once for stage 5's refinable violations) -- clearing per
   // call would drop stage 1's findings before the last rung sees them.
   tc_cs_dropped.clear();
+  fieldsplit_demands.clear();
   // Snapshots taken before each split_* call so the sidecar can record
   // the delta this stage produced. See fa_events_storage / record_fa_event.
   //
@@ -11958,6 +11992,32 @@ static void dbg_es_per_fun() {
       if (prev_state_pass == analysis_pass - 1 && h != prev_state_hash) analyze_again = 1;
       prev_state_hash = h;
       prev_state_pass = analysis_pass;
+    }
+    // issues/128: act on the MIXED field-write demands this pass recorded.
+    // Runs BEFORE the CreationSet last rung and only on quiescence, so any
+    // finer route separates the receiver first -- the same placement rule
+    // ifa/133 uses for route 4.
+    //
+    // The action is the existing type split on the RECEIVER. That is the
+    // honest first cut, not the final shape: the demand names a partition of
+    // exactly TWO ({have} vs {miss}) and this splits by type, so on a wide
+    // union it can hand back more groups than the demand asked for --
+    // ifa/144's signature. Gated OFF by default until that is measured.
+    static int fsplit = -1;
+    if (fsplit < 0) { cchar *fv = getenv("PYC_FIELDSPLIT"); fsplit = fv ? atoi(fv) : 0; }
+    if (fsplit && !analyze_again) {
+      for (AVar *av : fieldsplit_demands) {
+        if (!av || !av->contour_is_entry_set) continue;
+        if (!av->var->is_formal) continue;   // split_entry_set's precondition
+        int r = split_entry_set(av, SPLIT_TYPE, SPLIT_VALUE, SPLIT_EDGES);
+        if (r) {
+          ++fs_split;
+          if (getenv("IFA_DBG_FIELDSPLIT"))
+            fprintf(stderr, "[fieldsplit] p=%d SPLIT av=%d es=%d\n", analysis_pass, av->id,
+                    ((EntrySet *)av->contour)->id);
+          analyze_again = 1;
+        }
+      }
     }
     int cs_def_r = split_css_by_defs(!analyze_again);
     fa->stage_time[(int)FAPassStage::CS_DEF_PARTITION] += stage_timer.lap();
