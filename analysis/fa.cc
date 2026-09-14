@@ -3625,6 +3625,17 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
           if (!symbol) symbol = sel->sym->constant;
           if (!symbol) symbol = sel->sym->imm.v_string;
           assert(symbol);
+          // issues/128: is a union-receiver write SEPARABLE? Count members
+          // that already have the field against those that do not. MIXED is a
+          // demand whose partition is exactly 2 and is named by the demand
+          // itself; ALL-MISS is not separable this way. Measured first.
+          if (getenv("IFA_DBG_FIELDSPLIT") && obj->out->sorted.n > 1) {
+            int have = 0, miss = 0;
+            for (CreationSet *c2 : obj->out->sorted) { if (c2->var_map.get(symbol)) have++; else miss++; }
+            fprintf(stderr, "[fieldsplit] %s n=%d have=%d miss=%d '%s'\n",
+                    (have && miss) ? "MIXED" : (have ? "ALL-HAVE" : "ALL-MISS"),
+                    obj->out->sorted.n, have, miss, symbol);
+          }
           for (CreationSet *cs : obj->out->sorted) {
             AVar *iv = cs->var_map.get(symbol);
             if (iv)
