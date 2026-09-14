@@ -67,7 +67,7 @@ flag-only failures are two groups:**
 | group | programs | first error | owner |
 | --- | --- | --- | --- |
 | element/slot union with no representation | plcfrs, sudoku3, sudoku5 | `'x' has mixed basic types: (…)`, two of them naming `tuple` | [146](146-remove-all-arbitrary-splitting.md) E |
-| layout / blind cast | chull, sudoku4 | `object layout: 'Edge' is blind-cast to 'Vertex' … member width differs` | [135](135-empty-sibling-contour-wins-the-clone-merge.md) |
+| layout / blind cast | chull, sudoku4 | `object layout: 'Edge' is blind-cast to 'Vertex' … member width differs` | **not 135** — see below |
 
 So **two mechanisms stand between here and the flip**, not a long list.
 
@@ -87,9 +87,29 @@ receivers.
 Clears plcfrs, sudoku3, sudoku5, and unblocks `PYC_ESBLOCK`, which clears
 `listcomp_element_separation`.
 
-**2. 135 — the empty sibling contour wins the clone merge.** Clears chull
-and sudoku4. Layout is a REPRESENTATION property, so this is legitimate
-territory, not provenance.
+**2. The layout pair — and `chull` is NOT a flip regression.**
+
+Re-measured 2026-09-14: `chull`'s promoted-field layout is **byte-identical
+at the default and under the flip** — same cross-class promotion, same
+conflicting slots (`Edge.onhull → 22`, `Vertex.newface → 22`). The layout
+defect is pre-existing and latent on main, which is why chull compiles there
+and then SEGFAULTS (`run 139`). The flip only creates a union receiver that
+makes the latent conflict reachable, so ifa/123's contract catches at
+compile time what main corrupts at runtime.
+
+So this row is not a cost of the flip; it is a pre-existing bug the flip
+exposes. It was attributed to
+[135](135-empty-sibling-contour-wins-the-clone-merge.md) and that is wrong —
+`Edge` and `Vertex` are unrelated classes, so neither the prototype route
+nor the empty-sibling clone merge applies. The real mechanism is
+[issues/121](../../issues/closed/121-sibling-subclass-field-layout.md)'s,
+incompletely fixed: `sorted_unknown_vars` name-sorts each promotion BATCH,
+which does not align classes whose batches differ across `reanalyze` passes,
+nor classes whose pre-promotion `has` counts already differ (15 vs 16 here).
+Evidence and the layout dump are in 135.
+
+`sudoku4`, `kanoodle`, `path_tracing` and `pygmy` were attributed on the
+same evidence at the same time — **re-verify before trusting them.**
 
 **3. 133's separator question.** Arity is currently the ONLY working
 separator for list literals, and it is doing all the work alone. The

@@ -45,6 +45,65 @@ subclass method instead of reading the field is clean.
 - **Not the ifa/133 ladder or CS_DEF_PARTITION.** Reproduces with
   `PYC_CSLADDER=0 PYC_CSDEFSPLIT=0`.
 
+## `chull` is NOT this mechanism — measured 2026-09-14
+
+This issue claims `chull` in its status line as one of the four corpus
+cases. That is **wrong**, and the evidence is cheap to re-take.
+
+`chull`'s failure under the flip is
+
+```
+error: object layout: 'Edge' is blind-cast to 'Vertex' and read at e23,
+       but member width differs at e22 (_CG_bool vs _CG_void)
+```
+
+`Edge` and `Vertex` are UNRELATED classes — not two contours of one sym,
+and not sibling subclasses — so neither the prototype route nor the
+empty-sibling clone merge above is in play. `IFA_DBG_LAYOUT`:
+
+```
+Edge:    adjface 15  delete 16  endpts 17  enum 18  mark 19  newface 20
+         duplicate 21  onhull 22  visible 23
+Vertex:  duplicate 16  mark 17  onhull 18  v 19  vnum 20
+         delete 21  newface 22  visible 23
+```
+
+Every class is promoted the OTHER classes' fields — `Edge` gets Vertex's
+`duplicate`/`mark`/`onhull`, `Vertex` gets Edge's `delete`/`newface`, both
+get Face's `visible` — and the same name lands at a different index in each.
+Slot 22 is `onhull` on `Edge` and `newface` on `Vertex`.
+
+**The mechanism is issues/121's, incompletely fixed.**
+`sorted_unknown_vars` (`python_ifa_sym.cc`) promotes each batch of pending
+fields name-sorted, which aligns two classes that acquire the same set in
+the same pass. It does not align them when (a) promotion happens over
+SEVERAL `reanalyze` passes, so each class's batches differ — visible above
+as two sorted runs per class, `15-20` then `21-23` — or (b) the classes'
+pre-promotion `has` counts already differ, which they do here (15 vs 16).
+Global name-sorting would not fix (b) on its own; the base offsets differ.
+
+**And the layouts are BYTE-IDENTICAL at the default and under the flip.**
+Re-measured both arms: same promotions, same indices, same conflict. So the
+layout defect is PRE-EXISTING and latent on main — which is why `chull`
+compiles there and then segfaults (`run 139`). What the flip changes is that
+some read now goes through a `{Vertex, Edge}` union, making the latent
+conflict reachable, so ifa/123's contract catches at compile time what main
+corrupts at runtime.
+
+Two consequences:
+
+1. **`chull` is not a flip regression.** Listing it as one overstates the
+   flip's cost; the honest statement is that the flip surfaces a
+   pre-existing layout bug. ifa/129's bill is annotated accordingly.
+2. **Fixing `chull` is not fixing this issue.** It needs either a layout
+   rule that makes union-co-occurring classes agree on the slot of every
+   shared promoted field, or the union not to form. Neither is the
+   empty-sibling clone merge below.
+
+`kanoodle`, `path_tracing` and `pygmy` were attributed to this issue at the
+same time as `chull` and on the same evidence, so **re-verify them before
+trusting their attribution too.**
+
 ## Root cause
 
 `IFA_DBG_CSVARS` on each class, under the flag:
