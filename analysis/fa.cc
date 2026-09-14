@@ -9672,6 +9672,110 @@ static int cscallsite_enabled() {
   return apply_entry_set_split(dec);
 }
 
+// issues/128 step 1: the ELEMENT CONFLUENCE census.
+//
+// The demand is not the MIXED field write -- that is three steps downstream,
+// and acting on it failed because its receiver is a loop local with nothing
+// to filter on. The demand is an element channel that receives two DIFFERENT
+// CLASSES, which is what makes the loop variable a union in the first place.
+// On `chull`: Hull.edges' element is `Vertex Edge Edge Edge Edge`, while
+// vertices and faces are clean.
+//
+// The census classifies each such channel by whether its WRITERS are already
+// separated, because that decides whether anything can act:
+//
+//   SEPARABLE    two writers carry disjoint class sets -- e.g. chull's
+//                `es=680 __setitem__ Vertex` against `es=497 __setitem__
+//                Edge`. The value path is already split and only the
+//                RECEIVER is shared, so splitting the contour that shares it
+//                gives the site two contours, defs becomes 2, and route 4
+//                can partition. This is the actionable population.
+//   FUSED        every writer already carries the whole union. Nothing
+//                distinguishes them, so an ES split has no key and this
+//                needs a different answer.
+//
+// `defs` is reported with each because route 4 declines at defs=1, which is
+// why this family survives today: chull's are defs=1.
+static void report_elem_confluence() {
+  if (!getenv("IFA_DBG_ELEMCONF")) return;
+  int n_conf = 0, n_sep = 0, n_fused = 0, n_sep_rel = 0, n_sep_unrel = 0;
+  // how many distinct classes exist at all -- the yardstick for "universal root"
+  Vec<Sym *> all_classes;
+  for (CreationSet *c : fa->css) if (c && c->sym) all_classes.set_add(c->sym);
+  (void)all_classes;
+  for (CreationSet *cs : fa->css) {
+    if (!cs || !cs->sym || !cs->sym->element || !cs->sym->element->var || !cs->added_element_var) continue;
+    AVar *e = unique_AVar(cs->sym->element->var, cs);
+    if (!e || !e->out || !e->out->type) continue;
+    // distinct CLASSES in the element, not distinct CreationSets: four Edge
+    // contours are one class and are not a confluence.
+    Vec<Sym *> classes;
+    for (CreationSet *c : e->out->type->sorted) if (c && c->sym) classes.set_add(c->sym);
+    if (classes.set_count() < 2) continue;
+    ++n_conf;
+    // are two writers' class sets disjoint?
+    bool separable = false;
+    for (AVar *b1 : e->backward) {
+      if (!b1 || !b1->out || !b1->out->type) continue;
+      Vec<Sym *> s1;
+      for (CreationSet *c : b1->out->type->sorted) if (c && c->sym) s1.set_add(c->sym);
+      if (!s1.set_count()) continue;
+      for (AVar *b2 : e->backward) {
+        if (!b2 || b2 == b1 || !b2->out || !b2->out->type) continue;
+        bool overlap = false; int n2 = 0;
+        for (CreationSet *c : b2->out->type->sorted)
+          if (c && c->sym) { ++n2; if (s1.set_in(c->sym)) { overlap = true; break; } }
+        if (n2 && !overlap) { separable = true; break; }
+      }
+      if (separable) break;
+    }
+    // Do the classes share an ancestor? This is shedskin's
+    // `lowest_common_parents` test and it decides SPLIT vs HOIST:
+    //
+    //   RELATED   richards' DeviceTask/HandlerTask/IdleTask/WorkTask all
+    //             derive from Task. The union is legitimate polymorphism and
+    //             must NOT be split -- dropping such a write is what broke
+    //             richards. shedskin hoists the shared field to the common
+    //             ancestor (virtual.py's virtualvars) so one slot serves all.
+    //   UNRELATED chull's Vertex/Edge/Face have no bases at all. The union is
+    //             a precision failure and is what should be split away.
+    // RELATED = the classes share an ancestor that is not a UNIVERSAL root.
+    //
+    // Every pyc class specializes `object` and `__pyc_any_type__`, so "shares
+    // an ancestor" is trivially true and useless. The informative test is
+    // structural and needs no names: an ancestor shared by EVERY class in the
+    // program tells you nothing, so require one whose implementor count is
+    // smaller than the program's class count.
+    //
+    //   chull:    Vertex -> object __pyc_any_type__
+    //             Edge   -> object __pyc_any_type__      shared: roots only
+    //   richards: WorkTask -> Task __pyc_any_type__
+    //             IdleTask -> Task __pyc_any_type__      shared: Task
+    bool related = false;
+    for (Sym *a : classes) if (a && !related)
+      for (Sym *b : classes) if (b && b != a && !related) {
+        if (a->specializes.in(b) || b->specializes.in(a)) { related = true; break; }
+        for (Sym *pa : a->specializes) {
+          if (!pa || !b->specializes.in(pa)) continue;
+          // The shared ancestor must be USER code. `object` and
+          // `__pyc_any_type__` live in `__pyc__` and are ancestors of
+          // everything, so a shared BUILTIN ancestor says nothing; a shared
+          // user-defined one is a real hierarchy. Structural, not by name.
+          if (!pa->is_builtin) { related = true; break; }
+        }
+      }
+    separable ? ++n_sep : ++n_fused;
+    if (separable) (related ? ++n_sep_rel : ++n_sep_unrel);
+    fprintf(stderr, "ELEMCONF %s%s cs=%d sym=%s defs=%d classes=%d:", separable ? "SEPARABLE" : "FUSED",
+            separable ? (related ? "-RELATED" : "-UNRELATED") : "", cs->id,
+            cs->sym->name ? cs->sym->name : "?", cs->defs.set_count(), classes.set_count());
+    for (Sym *sy : classes) if (sy) fprintf(stderr, " %s", sy->name ? sy->name : "?");
+    fprintf(stderr, "\n");
+  }
+  fprintf(stderr, "ELEMCONF-TOTAL confluences=%d separable=%d (related=%d unrelated=%d) fused=%d\n",
+          n_conf, n_sep, n_sep_rel, n_sep_unrel, n_fused);
+}
+
 static void report_cs_vars() {
   cchar *want = getenv("IFA_DBG_CSVARS");
   if (!want) return;
@@ -14463,6 +14567,7 @@ static void report_demand_ratio() {
   report_cs_flow_graphs();
   report_fun_entry_sets();
   report_cs_vars();
+  report_elem_confluence();
   if (!getenv("IFA_DBG_DEMAND")) return;
   ElemCensus c;
   element_census(c);
