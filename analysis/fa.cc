@@ -3629,8 +3629,24 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
             AVar *iv = cs->var_map.get(symbol);
             if (iv)
               flow_vars(tval, iv);
-            else
+            else {
+              // ifa/135: WHICH write promotes a field onto WHICH classes.
+              // `obj->out` holding more than one class here is the whole
+              // cross-class-promotion problem: every class in the union
+              // acquires every other's fields, at whatever slot each has
+              // reached, and a later union read blind-casts across the
+              // mismatched layouts. This names the write, so the union can
+              // be traced to its source instead of guessed at.
+              if (getenv("IFA_DBG_PROMOTE") && obj->out->sorted.n > 1) {
+                fprintf(stderr, "[promote] p=%d fun=%s write '%s' onto %d classes:", analysis_pass,
+                        (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?", symbol,
+                        obj->out->sorted.n);
+                for (CreationSet *c2 : obj->out->sorted)
+                  if (c2 && c2->sym) fprintf(stderr, " %s#%d", c2->sym->name ? c2->sym->name : "?", c2->id);
+                fprintf(stderr, "\n");
+              }
               cs->unknown_vars.add(symbol);
+            }
           }
         }
         flow_vars(val, result);
