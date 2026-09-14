@@ -75,10 +75,21 @@ assigning a literal into a pointer-typed backing store.
   It was a small change because `cs->defs` is *exactly* the set of AVars
   whose `cs_map` names `cs` (`fa.cc:868-869`), so `split_css`'s existing
   re-point applies unchanged — no new state, no new invariant, no
-  attribution. Default-safe by measurement, not assumption: at the default
-  no CreationSet has more than one creation point (`multidef=0` over
-  127 522 CreationSets), so the `defs > 1` test declines everything.
-  Took ifa/129's suite bill 16 → 11.
+  attribution. Default-safe because the `defs > 1` test declines wherever a
+  CreationSet has only one creation point, which at the default is the
+  overwhelming majority; measured inert on chess, rubik2, sieve and go
+  (`IFA_DBG_CSDEFSPLIT` records zero splits there). Took ifa/129's suite
+  bill 16 → 11.
+
+  **Corrected 2026-09-14:** this used to say "`multidef=0` over 127 522
+  CreationSets", i.e. that NO CreationSet at the default has more than one
+  creation point. That is false, and it propagated into CLAUDE.md and
+  ifa/IFA.md before being caught. Measured at the default, corpus-wide:
+  container `multidef=315`, all-CreationSets `multidefall=3265`. Note also
+  that `multidef` on the `DEMAND` line counts CONTAINER CreationSets only;
+  `multidefall` is the all-CreationSets figure. The stage's default-safety
+  does not rest on the claim — it rests on the per-CreationSet `defs > 1`
+  test and the measured zero splits above.
 - **`compute_setters` counted a `None` store as no store** and
   `P_prim_merge` was opaque to the container graph. Fixed, `PYC_NILSTORE=0`
   restores the old behaviour for attribution. Default arm: all 77 corpus
