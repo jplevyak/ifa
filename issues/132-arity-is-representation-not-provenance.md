@@ -263,25 +263,73 @@ With all three, `quameon` compiles clean and runs; **but no program's verdict
 changes.** The honest status: this mechanism is correct and conservative, it
 found the CS → CS bug above, and it does not yet pay.
 
-### Why — and it sequences behind [152](152-FA-backtrack-the-demand-to-the-merged-creation-set.md)
+### Why it does not pay — `amaze`'s union is REAL, not a merge
 
-`amaze`'s 393 conflicts are all one CreationSet: `tuple#1611`, **arity 0**,
-held in `MazeSolver._current` alongside a dozen 2-tuples. The source never
-writes an empty tuple — `self._current = (0,0)` — so `tuple#1611` is a
-MERGED arity-0 contour, and because it conflicts with everything, the
-transitive group chains in a 4-tuple and an 8-tuple too. The group is then
-genuinely not homogeneous and is correctly skipped.
+**Corrected 2026-09-14.** The commit that landed this (`33d84dd3`) says
+`tuple#1611` is a MERGED arity-0 contour that ifa/152 should split. **That is
+wrong, and the measurement falsifies it:**
 
-`_current` alone only ever holds `()`-shaped and `(int, int)` values, which
-IS homogeneous. **So the demotion is blocked until that merged arity-0
-contour is SPLIT** — the same shape as `chull`'s `cs=1112`, one step further
-out: `tuple#1611` is representable on its own, raises no demand, and
-152's nomination therefore does not reach it either.
+```
+CSVARS cs=1611 sym=tuple vars=0 defs=1 arity=0
+  DEF av=12213 es=194 fun=sortPoints
+```
 
-The order is fixed by this: split the merged arity-0 contour first, then
-demote per group. A candidate for 152's next rung is a CreationSet that some
-slot cannot REPRESENT alongside its neighbours — an arity disagreement is
-exactly such a demand, and it is one 152 does not currently take.
+**One creation point.** Nothing is merged, so there is nothing for route 4 or
+for [152](152-FA-backtrack-the-demand-to-the-merged-creation-set.md) to
+partition, and the sequencing claim in that commit message does not hold.
+
+The source writes the empty tuple itself, `amaze.py:314`:
+
+```python
+def sortPoints(self, points):
+    points2 = [()]*len(points)   # SS
+    ...
+    points2[count] = point       # a 2-tuple
+```
+
+So `points2`' element genuinely holds `{(), (int, int)}` — arity 0 and arity
+2 — and `_current` inherits it. That is a **placeholder idiom**: every `()`
+is overwritten before any is read. It is also not pyc's to blame or to edit:
+the `# SS` marker is upstream shedskin's own change to this file, and `amaze`
+appears nowhere in
+[PYC_CHANGES.md](../../shedskin_examples/PYC_CHANGES.md).
+
+`amaze`'s 393 conflicts all pair `tuple#1611` with one of a dozen 2-tuples,
+and because it conflicts with every one of them the transitive group also
+chains in a 4-tuple and an 8-tuple. The group is then genuinely
+heterogeneous and is correctly skipped.
+
+### What the representable answers actually are
+
+Neither of the two mechanisms in play reaches this:
+
+- **Demote to list layout** — the group is heterogeneous, so the element
+  would be `{int64, ...}` mixed. Refused, correctly.
+- **Split a merged contour** — there is nothing merged. `defs=1`.
+
+A third answer fits the shape and is worth measuring: **widen the arity-0
+container to the arity of its neighbours.** An empty tuple carries no data,
+so a zero-filled 2-field record loses nothing structurally, and the
+placeholder is exactly what the idiom wants.
+
+**But it is not sound in general, and CPython semantics decide it**:
+`len(())` must be 0 and `() == (0,0)` must be False. Representing `()` as a
+zero-filled 2-tuple breaks both. It is only valid where the analysis can
+prove the arity-0 values are never READ — a liveness question, not a contour
+question, and therefore outside demand splitting entirely.
+
+So `amaze` is a candidate second counterexample to "every corpus program is
+statically typeable as written", alongside `bh` (see CLAUDE.md's
+qualification). Two things must be measured before that is claimed:
+
+1. **What does shedskin actually emit for `points2`?** Its tuples are
+   per-arity template classes (`tuple2<A,B>`), so `()` and `(int,int)` are
+   different instantiations and it must be unifying them somehow. shedskin is
+   not installed here, so this is unverified — do not assume it deviates, and
+   do not assume it does not.
+2. **Is the `()` provably dead?** If a liveness pass can show every slot is
+   written before read, widening is sound for this program without any
+   semantic deviation.
 
 ## What is still wrong
 
