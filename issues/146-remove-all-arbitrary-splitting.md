@@ -1224,6 +1224,41 @@ pure/mixed boundary, and a split there — with the usual caution that the
 partition must be bounded by the demand (two numeric kinds) and never by a
 count of contributors.
 
+#### "We already split on type — how is this different?"
+
+Two reasons, and the code states both itself.
+
+**1. The existing type split is a LOCAL comparison, and the union blinds it.**
+`TYPE_CONFLUENCE` splits when an EDGE's type differs from the CONTOUR's
+(fa.cc, `if (etype->n && stype->n && etype != stype) return ++ic_arg, 0;`).
+Once the union has propagated back to the callers, every edge equals the
+formal and there is nothing to compare — recorded a few hundred lines below,
+for the element-channel case:
+
+> Once an element union forms, every writer carries the whole union, so
+> `etype == stype` on every edge and TYPE_CONFLUENCE HAS NOTHING TO SEE.
+
+That is not a missing key; it is self-blinding. The union that needs splitting
+is the thing that makes the edges agree. Measured above: all ten of `es=791`'s
+in-edges are byte-identical at both numeric positions.
+
+**2. And the demand test that would otherwise nominate it SKIPS numerics on
+purpose.** `elem_irrepresentable` ends `return nb > 1 && !all_num;`, and the
+comment says why:
+
+> a pure-numeric mix — `{int64, float64}` is resolved by `coerce_annotate`, so
+> flagging it would split what coercion fixes.
+
+So `{int64, float64}` is **not a demand anywhere in the ladder, by design** —
+the whole system delegates it to coercion.
+
+**That assumption is the gap, and it is what the proposal closes.** Nothing
+watches the case where coercion is delegated the mix and cannot repair it.
+Making coercion's FAILURE the demand is not a second type-split: it supplies
+the one signal the ladder deliberately does without, and it must be asked
+where the paths are still pure rather than where the union is observed —
+because at the observation point, by construction, there is nothing to see.
+
 **Also measured, so it is not re-tried:** `PYC_ESRECV=1` is NOT the answer,
 despite compiling `softrender` on its own. The four arms are exactly
 anti-symmetric, and ESRECV is orthogonal to the ESBLOCK trade:
