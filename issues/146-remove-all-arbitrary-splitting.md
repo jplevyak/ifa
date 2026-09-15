@@ -1171,6 +1171,70 @@ With the operator discarded it computes the result KIND over the cross product
 of operand types and never the VALUES. Folding `{0,1} + {0,1}` to `{0,1,2}`
 would need the operator kept, plus a cap large enough to hold the result.
 
+### Coercion as a DEMAND SOURCE — feasibility measured 2026-09-15
+
+**Author's suggestion: let the coercion failure feed a demand, and demand-split
+to separate the constants.** It fits this architecture exactly — a demand is
+"something OBSERVING a distinction and being unable to proceed", and coercion
+meeting a mix it cannot repair is precisely that. It also gives the partition a
+TYPE-shaped key rather than a provenance one: the demand names the widest type
+(`float64`) and the offending member (`int64`).
+
+Two measurements, one negative and one positive.
+
+**It cannot be keyed at the point of observation.** Every in-edge of every
+mixed contour already carries the union — the fixed point is total, exactly as
+for `append`/`{A, B}`:
+
+```
+es=791  arg2: int64#6 float64#86   <-- mixes
+  <- edge=6327 from=transform es=1312 args= [..] [int64#6 float64#86 ] [int64#6 float64#86 ]
+  <- edge=1003 from=mul       es=180  args= [..] [int64#6 float64#86 ] [int64#6 float64#86 ]
+  ... 10 edges, every one identical
+```
+
+"Can this contributor carry `int64`?" answers YES for all of them, so the
+demand's own type names no partition. That is the wall `PYC_CSPEEL2` hit, and
+it is why a split AT the observation point cannot work. (Note these are
+NUMERIC `__add__` contours — `arg1: int64`, `arg2: int64|float64` — fed by
+`transform`, `mul` and `length`, i.e. arithmetic operands, not a Vector4
+receiver union.)
+
+**But the distinction survives upstream, and there is a lot of it.** Walking
+the full backward closure from each violating AVar (`PYC_DBG_BOXPURE`, new)
+and classifying every AVar as pure-int, pure-float or mixed:
+
+```
+BOXPURE av#12170: upstream pure-int=665  pure-float=5693  mixed=728
+BOXPURE av#12716: upstream pure-int=641  pure-float=5663  mixed=639
+```
+
+**~641 pure-int and ~5663 pure-float AVars sit above ~639 mixed ones.** The
+mix is NOT born at a single site; it forms at joins, and above those joins the
+two sides are cleanly distinct. So the proposal is implementable: the demand
+is coercion's failure, and it has to be BACKTRACKED (ifa/152's walk) to the
+boundary — the nearest mixed AVar whose backward sources include both a
+pure-int and a pure-float source. That boundary is the confluence in this
+issue's own sense, and the key there IS type-shaped.
+
+That is a feasibility result and a design, not an implementation. What it
+needs: a new demand source in `coerce_annotate` for the case it currently
+abandons (a narrow member that is not an immediate), the backtrack to the
+pure/mixed boundary, and a split there — with the usual caution that the
+partition must be bounded by the demand (two numeric kinds) and never by a
+count of contributors.
+
+**Also measured, so it is not re-tried:** `PYC_ESRECV=1` is NOT the answer,
+despite compiling `softrender` on its own. The four arms are exactly
+anti-symmetric, and ESRECV is orthogonal to the ESBLOCK trade:
+
+| | `softrender` | `sudoku4` |
+| --- | --- | --- |
+| default | compiles | **fails** |
+| `ESRECV` | compiles | **fails** |
+| `ESBLOCK` | **fails** | compiles |
+| `ESBLOCK ESRECV` | **fails** | compiles |
+
 ### What a fix would have to be
 
 Not "make coercion run more". The candidates, none cheap:

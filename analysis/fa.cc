@@ -5264,6 +5264,41 @@ static void show_violations(FA *fa, FILE *fp) {
                     oc ? oc->id : -1, (oc && oc->sym && oc->sym->type) ? (int)oc->sym->type->type_kind : -1);
           }
           fprintf(stderr, "\n");
+          // ifa/146: walk the WHOLE backward closure and report the nearest
+          // AVars that are still PURE in one numeric basic -- the points
+          // where the int and the float have not yet met. If none exist the
+          // mix is born at a single site and no split can separate it; if
+          // they do, a coercion-fed demand could be backtracked to them.
+          if (getenv("PYC_DBG_BOXPURE")) {
+            Vec<AVar *> seen, work;
+            int npure_int = 0, npure_flt = 0, nmixed = 0;
+            seen.set_add(bv);
+            work.add(bv);
+            for (int i = 0; i < work.n && i < 20000; i++)
+              for (AVar *x : work.v[i]->backward)
+                if (x && seen.set_add(x)) {
+                  work.add(x);
+                  if (!x->out) continue;
+                  int ni = 0, nf = 0;
+                  for (CreationSet *c : x->out->sorted)
+                    if (Sym *bt = to_basic_type(c->sym->type)) {
+                      if (bt == sym_float64) ++nf;
+                      else if (bt->num_kind) ++ni;
+                    }
+                  if (ni && nf) { ++nmixed; continue; }
+                  if (ni && !nf) {
+                    if (++npure_int <= 3)
+                      fprintf(stderr, "   PURE-INT av#%d '%s' in %s\n", x->id,
+                              (x->var && x->var->sym && x->var->sym->name) ? x->var->sym->name : "?",
+                              (x->contour_is_entry_set && ((EntrySet *)x->contour)->fun &&
+                               ((EntrySet *)x->contour)->fun->sym->name)
+                                  ? ((EntrySet *)x->contour)->fun->sym->name : "(cs)");
+                  } else if (nf && !ni)
+                    ++npure_flt;
+                }
+            fprintf(stderr, "   BOXPURE av#%d: upstream pure-int=%d pure-float=%d mixed=%d\n", bv->id, npure_int,
+                    npure_flt, nmixed);
+          }
           for (AVar *b : bv->backward) {
             if (!b || !b->out) continue;
             bool has_int = false;
