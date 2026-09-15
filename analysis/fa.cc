@@ -10489,12 +10489,22 @@ static void cs_member_signature(AVar *d, std::string &out) {
       // reports it: on chull, p=0 groups 20 defs on `sets=1`, p=1 repeats it,
       // and `sets=6` first appears at p=2.
       //
-      // Requiring `keys.n >= 2` was TRIED (PYC_CSKEYSETS, removed). It works
-      // -- p=0 and p=1 then report `groups=1 informative=0` and no longer
-      // partition -- and it does NOT fix chull: `Hull.edges` still ends with
-      // `Vertex Edge Edge Edge Edge` and the same blind cast. So the
-      // uninformative early key is real but is not what puts the Vertex
-      // there. Left as a diagnostic, not a lever.
+      // A one-bit key (`sets=1`) looks arbitrary -- it fires whenever any def
+      // is on the single set's path, with no content information in it -- and
+      // requiring `keys.n >= 2` before using the content key was TRIED and
+      // REMOVED (`PYC_CSKEYSETS`, issues/128). It suppresses the behaviour
+      // exactly as intended (p=0/p=1 then report `groups=1 informative=0`)
+      // and the corpus says do not:
+      //
+      //   flip          compile_fail 7  warns 33  container CS 2138/629 = 3.40
+      //   flip + gate   compile_fail 7  warns 33  container CS 2267/617 = 3.67
+      //
+      // +129 CreationSets and a worse ratio for no compensating change -- same
+      // failures, same programs, same warning count -- and chull still fails
+      // identically. So the early coarse partition is doing real work even
+      // though its key carries no element information: it pre-splits cheaply
+      // and the later informative passes then have less to separate. Do not
+      // "fix" this without re-measuring those two rows.
       for (int i = 0; i < defs.n; i++)
         if (g)
           for (int k = 0; k < g->keys.n; k++) {
