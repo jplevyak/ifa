@@ -5225,6 +5225,40 @@ static void show_violations(FA *fa, FILE *fp) {
         fprintf(memfp, "has mixed basic types:");
         show_type(*v->type, memfp);
         fprintf(memfp, "\n");
+        if (getenv("PYC_DBG_BOXWHY")) {
+          AVar *bv = v->av;
+          fprintf(stderr, "[boxwhy] av#%d '%s' contour=%s num_coerce=%s members:", bv->id,
+                  (bv->var && bv->var->sym && bv->var->sym->name) ? bv->var->sym->name : "?",
+                  bv->contour_is_entry_set ? "ES" : "CS",
+                  bv->num_coerce ? (bv->num_coerce->name ? bv->num_coerce->name : "?") : "(none)");
+          for (CreationSet *c : bv->out->sorted)
+            fprintf(stderr, " %s%s", c->sym->name ? c->sym->name : "?",
+                    c->sym->constant ? "[const]" : "[runtime]");
+          if (!bv->contour_is_entry_set && bv->contour != GLOBAL_CONTOUR) {
+            CreationSet *oc = (CreationSet *)bv->contour;
+            fprintf(stderr, "  owner=%s#%d kind=%d", (oc && oc->sym && oc->sym->name) ? oc->sym->name : "?",
+                    oc ? oc->id : -1, (oc && oc->sym && oc->sym->type) ? (int)oc->sym->type->type_kind : -1);
+          }
+          fprintf(stderr, "\n");
+          for (AVar *b : bv->backward) {
+            if (!b || !b->out) continue;
+            bool has_int = false;
+            for (CreationSet *c : b->out->sorted)
+              if (c->sym->type && to_basic_type(c->sym->type) && to_basic_type(c->sym->type)->num_kind &&
+                  to_basic_type(c->sym->type) != sym_float64)
+                has_int = true;
+            if (!has_int) continue;
+            EntrySet *be = b->contour_is_entry_set ? (EntrySet *)b->contour : nullptr;
+            fprintf(stderr, "   <- av#%d '%s' in %s coerce=%s :", b->id,
+                    (b->var && b->var->sym && b->var->sym->name) ? b->var->sym->name : "?",
+                    (be && be->fun && be->fun->sym && be->fun->sym->name) ? be->fun->sym->name : "(cs)",
+                    b->num_coerce ? "yes" : "no");
+            for (CreationSet *c : b->out->sorted)
+              fprintf(stderr, " %s%s", c->sym->name ? c->sym->name : "?",
+                      c->sym->constant ? "[const]" : "[runtime]");
+            fprintf(stderr, "\n");
+          }
+        }
         break;
       case ATypeViolation_kind::MAYBE_UNBOUND:
         show_name(memfp, v->av);
@@ -8208,12 +8242,23 @@ static int coerce_annotate(AVar *av) {
   // hard compile error. So strict now errors on exactly the case that
   // would need boxing, which is the rule.
   if (!fruntime_errors) return 0;
+  // Cached: coerce_annotate runs per AVar per pass, so a raw getenv here is
+  // on a hot path.
+  static int dbgwhy_e = -1;
+  if (dbgwhy_e < 0) dbgwhy_e = getenv("PYC_DBG_NUMCWHY") ? 1 : 0;
+  const bool dbgwhy = dbgwhy_e != 0;
   Sym *w = nullptr;
   Vec<Sym *> basics;
   for (CreationSet *cs : av->out->sorted) {
     Sym *bt = to_basic_type(cs->sym->type);
     if (!bt) continue;  // non-basics don't block (mirrors mixed_basics)
-    if (!bt->num_kind) return 0;
+    if (!bt->num_kind) {
+      if (dbgwhy && av->out->sorted.n > 1)
+        fprintf(stderr, "[numcwhy] av#%d '%s' DECLINED non-numeric basic %s\n", av->id,
+                (av->var && av->var->sym && av->var->sym->name) ? av->var->sym->name : "?",
+                bt->name ? bt->name : "?");
+      return 0;
+    }
     basics.set_add(bt);
     w = w ? coerce_num(w, bt) : bt;
   }
@@ -8221,9 +8266,15 @@ static int coerce_annotate(AVar *av) {
   if (!w || basics.set_count() < 2) return 0;
   if (av->num_coerce == w) return 0;
   av->num_coerce = w;
-  if (getenv("PYC_DBG_NUMC"))
-    fprintf(stderr, "[numc] annotate av#%d '%s' -> %s\n", av->id,
+  static int dbgnumc_e = -1;
+  if (dbgnumc_e < 0) dbgnumc_e = getenv("PYC_DBG_NUMC") ? 1 : 0;
+  if (dbgnumc_e) {
+    fprintf(stderr, "[numc] annotate av#%d '%s' -> %s members:", av->id,
             av->var && av->var->sym && av->var->sym->name ? av->var->sym->name : "?", w->name ? w->name : "?");
+    for (CreationSet *c : av->out->sorted)
+      fprintf(stderr, " %s%s", c->sym->name ? c->sym->name : "?", c->sym->constant ? "[const]" : "[runtime]");
+    fprintf(stderr, "\n");
+  }
   return 1;
 }
 
@@ -8261,6 +8312,18 @@ int fa_coerce_numeric_confluences(Vec<ATypeViolation *> &violations) {
   for (CreationSet *cs : fa->css) {
     if (!cs || !cs->sym) continue;
     bool eligible = cs->sym == sym_closure || (cs->sym->type && cs->sym->type->type_kind == Type_RECORD);
+    if (getenv("PYC_DBG_NUMCWHY") && !eligible)
+      for (AVar *av : cs->vars)
+        if (av && av->out && av->out->sorted.n > 1) {
+          int nnum = 0, nbasic = 0;
+          for (CreationSet *c : av->out->sorted)
+            if (Sym *bt = to_basic_type(c->sym->type)) { ++nbasic; if (bt->num_kind) ++nnum; }
+          if (nbasic > 1 && nbasic == nnum)
+            fprintf(stderr, "[numcwhy] cs=%d sym=%s var='%s' INELIGIBLE (kind=%d) but holds %d numeric basics\n",
+                    cs->id, cs->sym->name ? cs->sym->name : "?",
+                    (av->var && av->var->sym && av->var->sym->name) ? av->var->sym->name : "?",
+                    cs->sym->type ? (int)cs->sym->type->type_kind : -1, nbasic);
+        }
     if (eligible)
       for (AVar *av : cs->vars) annotated += coerce_annotate(av);
     // issues/035: a container's ELEMENT gets the same treatment --
