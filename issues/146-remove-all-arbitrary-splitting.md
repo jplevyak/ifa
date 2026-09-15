@@ -1039,14 +1039,34 @@ What actually happens, each step measured:
 
 1. **ESBLOCK's split criterion cuts across the numeric distinction.** It
    splits on the blocker it finds BY TEST, which has nothing to do with
-   argument basic types. On `softrender` that repartitions
-   `Vector4.__init__` into slightly MORE contours but with far more
-   int/float mixing:
+   argument basic types. On `softrender`:
 
-   | | `__init__` contours | of those, args mixing int64+float64 |
+   | | `__init__` contours | of those, ONE FORMAL mixing int64+float64 |
    | --- | --- | --- |
-   | ESBLOCK=0 | 142 | 10 |
-   | ESBLOCK=1 | 144 | **14** |
+   | ESBLOCK=0 | 71 | **0** |
+   | ESBLOCK=1 | 72 | **3** |
+
+   *(Corrected 2026-09-15. This table first read "142 → 144, 10 → 14",
+   which was wrong twice: `IFA_DBG_FUNES` prints its dump twice so every
+   count was doubled, and "mixing" was grepped as "the line mentions both
+   types", which also matches a contour whose DIFFERENT arguments are int
+   and float. Asked per formal, the real figure is 0 → 3 — a sharper
+   result, and in the same direction.)*
+
+   **And precision does not go DOWN: there is one MORE contour, not fewer.**
+   Each of the three mixed contours has exactly ONE in-edge, already
+   carrying `[int64 float64]`:
+
+   ```
+   es=638  arg0: int64#6 float64#86   <-- mixes
+     <- edge=2737 from=__new__ es=313 args= [int64#6 float64#86 ] ...
+   ```
+
+   So nothing was coalesced into them — the mix arrives pre-formed from the
+   caller. (ESBLOCK's "coalesce to 2 groups" step DOES fire on `softrender`,
+   measured `cs=1304 es=666 edges=3 -> 2 group(s)`, but it is not what
+   produces these three: a coalesced contour would show two in-edges with
+   different actual types, and these have one each.)
 
 2. **A previously-clean creation point acquires the mix.** `cs=2670`'s field
    `x` is `float64` at ESBLOCK=0 and `int64 float64` under ESBLOCK — same
@@ -1076,6 +1096,15 @@ point where the constants were still visible** — the int gets consumed by
 arithmetic into a runtime value first, and arrives at the confluence
 uncoercible. Splitting and constant-based coercion are order-dependent in a
 way neither mechanism knows about.
+
+So the apparent paradox — "ESBLOCK adds precision, yet `softrender` ends up
+with MORE mixed formals" — is not a paradox and not a precision loss. The
+contours are not coarser; there is one more of them, and no mixed contour was
+formed by merging differently-typed callers. What moves is WHERE the int and
+the float meet, relative to where the int was still a constant. At
+`ESBLOCK=0` they meet while it is a constant and coercion rewrites it, so no
+formal is left mixed. Under ESBLOCK they meet after arithmetic has turned it
+into a runtime value, and coercion has nothing to rewrite.
 
 That also explains why more analysis room does not help: measured with
 `IFA_STALL_LIMIT=60 IFA_NONIMPROVE_LIMIT=60`, `softrender` is
