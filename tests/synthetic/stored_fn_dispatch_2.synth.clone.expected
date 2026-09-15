@@ -8,7 +8,8 @@
   class[.] members=1 type=symbol
   class[.=] members=1 type=symbol
   class[T] members=1 type=T
-  class[T] members=2 type=T
+  class[T] members=1 type=T
+  class[T] members=1 type=T
   class[__main__] members=1 type=__main__
   class[__operator] members=1 type=symbol
   class[__primitive] members=1 type=symbol

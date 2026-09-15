@@ -161,6 +161,38 @@ static int classeq_enabled() {
   return e;
 }
 
+// ifa/153: PYC_CSCLASSEQ -- the CreationSet half of ifa/126's class-aware
+// equivalence. `determine_basic_clones` compares two CreationSets' members
+// with `basic_type`, which maps EVERY non-basic type to nullptr, so `Vector`
+// and `Vertex` compare EQUAL and the two CreationSets are merged into one
+// layout class. `compute_member_types` then has to give that member ONE type
+// and cannot: `concrete_type_set_to_type({Vector, Vertex})` builds a nameless
+// Type_SUM (`make_LUB_type` is a default no-op), codegen renders it
+// `_CG_void`, and the STORE INTO IT IS SILENTLY DROPPED.
+//
+// That is `chull`'s segfault. `enumerate` is called once over Vectors and
+// once over Vertices; its `(i, x)` tuple gets one CreationSet per contour,
+// correctly typed by FA --
+//
+//   cs=1177 vars[0]=i:int64 vars[1]=x:Vector#1805   (enumerate es=292)
+//   cs=1887 vars[0]=i:int64 vars[1]=x:Vertex#1191   (enumerate es=86)
+//
+// -- and clone merges them, so the emitted tuple is
+// `{_CG_int64 e0; _CG_void e1;}` and `enumerate` emits `t17->e0 = t9;` with
+// NO store for the element. Every Vertex in `Hull.vertices` is then built
+// from a null `v`, and `Collinear` dereferences it.
+//
+// The rule: a merge must not ENLARGE any member's concrete type set. Split
+// when the two members' class sets differ and their union holds more than
+// one class -- exactly the case where neither CreationSet had a union and
+// the merge manufactures one. A member that was ALREADY a union is not made
+// worse by the merge and is not this rule's business.
+static int csclasseq_enabled() {
+  static int e = -1;
+  if (e < 0) e = getenv("PYC_CSCLASSEQ") ? atoi(getenv("PYC_CSCLASSEQ")) : 1;
+  return e;
+}
+
 // ifa/issues/123: prefix layout, ON BY DEFAULT since 2026-09-03, same
 // A/B. `PYC_PREFIX_LAYOUT=0` disables.
 static int prefix_layout_enabled() {
@@ -620,6 +652,38 @@ static void report_slot_representation_conflicts() {
   fprintf(stderr, "SLOTREP-TOTAL conflicts=%d\n", nconf);
 }
 
+// ifa/153: would merging these two members force either one to hold classes
+// it does not hold today? Uses the same concrete type as
+// `compute_member_types` (`to_concrete_type(cs->type ? cs->type : cs->sym)`;
+// `cs->type` is null this early, so it is the sym) so that the question asked
+// here is the question answered there. Plain vectors with linear dedup --
+// plib's set-mode Vec carries NULL holes and mixing the two modes has bitten
+// this work repeatedly.
+static bool cs_member_merge_enlarges(AVar *av1, AVar *av2) {
+  if (!av1 || !av2 || !av1->out || !av2->out) return false;
+  Vec<Sym *> ca, cb, un;
+  auto gather = [](AVar *av, Vec<Sym *> &out) {
+    for (CreationSet *cs : *av->out) if (cs && cs->sym) {
+      Sym *c = to_concrete_type(cs->type ? cs->type : cs->sym);
+      bool dup = false;
+      for (Sym *x : out) if (x == c) { dup = true; break; }
+      if (!dup) out.add(c);
+    }
+  };
+  gather(av1, ca);
+  gather(av2, cb);
+  for (Sym *x : ca) un.add(x);
+  for (Sym *y : cb) {
+    bool dup = false;
+    for (Sym *x : un) if (x == y) { dup = true; break; }
+    if (!dup) un.add(y);
+  }
+  // The union holds one class (or none): nothing is manufactured.
+  if (un.n < 2) return false;
+  // Both members already hold exactly the union: the merge adds nothing.
+  return un.n != ca.n || un.n != cb.n;
+}
+
 static void determine_basic_clones(Vec<Vec<CreationSet *> *> &css_sets_by_sym) {
   Vec<Vec<CreationSet *> *> xx;
   sets_by_f_transitive<CreationSet, CS_SYM_FN>(fa->css, css_sets_by_sym);
@@ -655,6 +719,15 @@ static void determine_basic_clones(Vec<Vec<CreationSet *> *> &css_sets_by_sym) {
           if (MERGE_UNIONS && cs1->sym->is_union_type && (av1->out->n == 0 || av2->out->n == 0)) continue;
           // if the boxing or basic type is different
           if (basic_type(fa, av1->out, (Sym *)-1) != basic_type(fa, av2->out, (Sym *)-2)) {
+            make_not_equiv(cs1, cs2);
+            continue;
+          }
+          // ifa/153: and if merging would ENLARGE this member's concrete
+          // type set. See `csclasseq_enabled`.
+          if (csclasseq_enabled() && cs_member_merge_enlarges(av1, av2)) {
+            if (getenv("IFA_DBG_CSCLASSEQ"))
+              fprintf(stderr, "CSCLASSEQ-SPLIT %s#%d vs #%d at member %d\n",
+                      cs1->sym->name ? cs1->sym->name : "?", cs1->id, cs2->id, v);
             make_not_equiv(cs1, cs2);
             continue;
           }
@@ -1257,13 +1330,72 @@ static int compute_member_types(Vec<CreationSet *> *eqcss) {
   int start = orig_sym->element ? -1 : 0;
   for (int i = start; i < n; i++) {
     Sym *&ss = (i < 0 ? sym->element : sym->has[i]);
-    ss = ss ? ss->clone() : new_Sym();
+    // ifa/153: the inherited member Sym must actually DESCRIBE slot i.
+    //
+    // For a CLASS it does: measured on `chull`, `Vertex`'s `has[k]->var` is
+    // the same Var as `cs->vars[k]->var` at every one of its 24 slots. For a
+    // POSITIONAL record it need not, because `sym_tuple->has` carries
+    // whatever cross-class field promotion (issues/128) put on `tuple` --
+    // here `[mark, delete, duplicate, newface, onhull, visible]` from
+    // Vertex/Edge/Face -- while `cs->vars` is `[i, x, mark, delete, ...]`.
+    // The two are then misaligned by two, and cloning `sym->has[i]` gives
+    // slot 1 the name AND THE VAR of `Edge.delete`.
+    //
+    // That var is dead, so `cg_field_live` reports slot 1 dead and cg.cc's
+    // record-construction loop SKIPS THE STORE -- for every 2-tuple in the
+    // program, silently. `enumerate` emitted `t17->e0 = t9;` and no store
+    // for the element, so `[Vertex(vc,i) for i,vc in enumerate(v)]` built
+    // every Vertex from a null `v` and `chull` segfaulted in `Collinear`.
+    // The member TYPE was right throughout (it comes from `cs->vars[i]`);
+    // only the identity was borrowed.
+    //
+    // Structural test, on Var pointer identity -- never on names.
+    Var *slot_var = nullptr;
+    bool slot_agree = true;
+    if (i >= 0) {
+      bool first = true;
+      for (CreationSet *cs : *eqcss) if (cs) {
+        AVar *av = (i < cs->vars.n) ? cs->vars[i] : nullptr;
+        Var *v = (av && av->var) ? av->var : nullptr;
+        if (first) {
+          slot_var = v;
+          first = false;
+        } else if (slot_var != v)
+          slot_agree = false;
+      }
+    }
+    const bool foreign = i >= 0 && ss && (!slot_agree || ss->var != slot_var);
+    ss = (ss && !foreign) ? ss->clone() : new_Sym();
+    if (foreign && slot_agree && slot_var) {
+      // Adopt the slot's own identity, so liveness is asked of the variable
+      // this member actually holds.
+      ss->var = slot_var;
+      if (slot_var->sym && slot_var->sym->name) ss->name = slot_var->sym->name;
+    }
     Vec<Sym *> t;
     for (CreationSet *cs : *eqcss) if (cs) {
       AVar *av = i < 0 ? get_element_avar(cs) : cs->vars[i];
       for (CreationSet *x : *av->out->type) if (x) t.set_add(to_concrete_type(x->type ? x->type : x->sym));
     }
     if (!(ss->type = concrete_type_set_to_type(t))) return -1;
+  }
+  if (getenv("IFA_DBG_MEMBERTYPES")) {
+    fprintf(stderr, "MEMBERTYPES sym=%s#%d orig=%s n=%d has.n=%d eqcss=%d cs:", sym->name ? sym->name : "?",
+            sym->id, orig_sym->name ? orig_sym->name : "?", n, sym->has.n, eqcss->n);
+    for (CreationSet *cs : *eqcss)
+      if (cs) fprintf(stderr, " #%d(vars=%d)", cs->id, cs->vars.n);
+    fprintf(stderr, "\n");
+    CreationSet *c0 = canonical_cs(eqcss);
+    for (int i = 0; i < sym->has.n; i++)
+      fprintf(stderr, "   has[%d] sym=%p name=%s type=%s hasvar=%p csvar=%p csname=%s\n", i, (void *)sym->has[i],
+              (sym->has[i] && sym->has[i]->name) ? sym->has[i]->name : "(anon)",
+              (sym->has[i] && sym->has[i]->type && sym->has[i]->type->name) ? sym->has[i]->type->name : "(none)",
+              (void *)(sym->has[i] ? sym->has[i]->var : nullptr),
+              (void *)((i < c0->vars.n && c0->vars[i]) ? c0->vars[i]->var : nullptr),
+              (i < c0->vars.n && c0->vars[i] && c0->vars[i]->var && c0->vars[i]->var->sym &&
+               c0->vars[i]->var->sym->name)
+                  ? c0->vars[i]->var->sym->name
+                  : "(anon)");
   }
   return 0;
 }

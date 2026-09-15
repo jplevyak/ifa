@@ -316,6 +316,56 @@ static bool cg_is_nil_union(Sym *t) {
   return false;
 }
 
+// ifa/153: is this C type pointer-shaped? Anything that is a pointer under
+// the hood can be cast to any other such type; a scalar cannot, and a scalar
+// mismatch is a real representation error that must keep surfacing as one
+// rather than being papered over with a cast.
+// ifa/153: a RECORD's elements start after its classtag header, when it has
+// one. `cg_has_classtag` decides that, and the struct emitter writes the tag
+// as exactly one leading `_CG_TypeObject *`, so the elements begin
+// `sizeof(void *)` in. Indexing the record pointer directly therefore makes
+// element 0 the TAG POINTER and shifts every element by one.
+//
+// `chull`: `for i in (0,1)` iterated the tuple `(0,1)` whose struct is
+// `{__pyc_tag, e0, e1}`, so `__tuple_iter__::__next__` returned the tag and
+// then 0 instead of 0 and 1. `MakeConeFace`'s
+// `for i in (0,1): for j in (0,1): ... new_edge[i].adjface[j] = new_face`
+// then only ever touched `new_edge[0].adjface[0]`, every cone edge was left
+// with one adjacent face instead of two, and `AddOne` dereferenced the null
+// `e.adjface[1]`.
+//
+// A record with no tag is unchanged, which is why this went unnoticed: the
+// same expression is correct for every untagged tuple.
+static void cg_emit_record_index_base(FILE *fp, Sym *t, cchar *rec) {
+  if (cg_has_classtag(t))
+    fprintf(fp, ")((char *)(%s) + sizeof(void *)))", rec);
+  else
+    fprintf(fp, ")(%s))", rec);
+}
+
+static bool cg_ptrish_ct(cchar *t) {
+  if (!t) return false;
+  if (strchr(t, '*')) return true;
+  if (!strncmp(t, "_CG_ps", 6) || !strncmp(t, "_CG_pf", 6)) return true;
+  return !strcmp(t, "_CG_any") || !strcmp(t, "_CG_void") || !strcmp(t, "_CG_nil_type") ||
+         !strcmp(t, "_CG_list") || !strcmp(t, "_CG_string") || !strcmp(t, "_CG_bytes") ||
+         !strcmp(t, "_CG_function");
+}
+
+// ifa/153: a list literal's element store needs the same cast the RECORD path
+// above and the field-store path below already emit. `MakeConeFace`'s
+// `[None, None]`, later filled with Edges, has element type `_CG_ps16972`
+// while `None` is `_CG_any`, and C refuses
+// `((_CG_ps16972*)(_CG_list_ptr(t)))[0] = g1`. This went unnoticed while the
+// element type was `_CG_void` for unrelated reasons -- see
+// `csclasseq_enabled` in clone.cc.
+static bool cg_needs_elem_cast(cchar *dst_t, Var *src) {
+  if (!dst_t || !src) return false;
+  cchar *src_t = c_type(src);
+  if (!src_t || !strcmp(dst_t, src_t)) return false;
+  return cg_ptrish_ct(dst_t) && cg_ptrish_ct(src_t);
+}
+
 static bool cg_needs_nil_union_cast(cchar *dst_t, Var *src) {
   if (!dst_t || !src || !cg_is_nil_union(src->type)) return false;
   bool dst_voidish =
@@ -740,6 +790,13 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         Sym *rec = n->lvals[0]->type;
         bool rec_fields = rec && rec->type_kind == Type_RECORD && rec->has.n;
         for (int i = 3; i < n->rvals.n; i++) {
+          if (getenv("IFA_DBG_MAKEELIDE") && rec_fields && !cg_field_live(rec, i - 3)) {
+            Sym *m = (i - 3) < rec->has.n ? rec->has[i - 3] : nullptr;
+            fprintf(stderr, "MAKEELIDE rec=%s#%d slot=%d has.n=%d sym=%p name=%s type=%s var=%p live=%d\n",
+                    rec->name ? rec->name : "?", rec->id, i - 3, rec->has.n, (void *)m,
+                    (m && m->name) ? m->name : "(anon)", (m && m->type && m->type->name) ? m->type->name : "(none)",
+                    (void *)(m ? m->var : nullptr), (m && m->var) ? (int)m->var->live : -1);
+          }
           if (rec_fields && !cg_field_live(rec, i - 3)) continue;
           cg_note_slot_use(rec, i - 3, 0);
           cchar *mt = rec_fields ? cg_member_ctype(rec, i - 3) : nullptr;
@@ -766,6 +823,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         (void)lt;
         for (int i = 3; i < n->rvals.n; i++) {
           fprintf(fp, "  ((%s*)(_CG_list_ptr(%s)))[%d] = ", ety, cg_get_string(n->lvals[0]), i - 3);
+          if (cg_needs_elem_cast(ety, n->rvals.v[i])) fprintf(fp, "(%s)", ety);
           fputs(cg_get_string(n->rvals[i]), fp);
           fprintf(fp, ";\n");
         }
@@ -984,7 +1042,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
           fprintf(fp, "((%s", ety);
           for (int i = o + 1; i < n->rvals.n; i++) fprintf(fp, "*");
           if (t->type_kind == Type_RECORD)
-            fprintf(fp, ")(%s))", cg_get_string(n->rvals[o]));
+            cg_emit_record_index_base(fp, t, cg_get_string(n->rvals[o]));
           else
             fprintf(fp, ")(_CG_list_ptr(%s)))", cg_get_string(n->rvals[o]));
           for (int i = o + 1; i < n->rvals.n; i++) {
@@ -1146,7 +1204,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
           fprintf(fp, "((%s", ety);
           for (int i = o + 1; i < n->rvals.n - 1; i++) fprintf(fp, "*");
           if (t->type_kind == Type_RECORD)
-            fprintf(fp, ")(%s))", cg_get_string(n->rvals[o]));
+            cg_emit_record_index_base(fp, t, cg_get_string(n->rvals[o]));
           else
             fprintf(fp, ")(_CG_list_ptr(%s)))", cg_get_string(n->rvals[o]));
           for (int i = o + 1; i < n->rvals.n - 1; i++) {
@@ -3086,6 +3144,38 @@ static void cg_compute_slot_reads(FA *fa) {
         Sym *rec = pn->lvals[0]->type;
         if (rec->type_kind == Type_RECORD && rec->has.n)
           for (int i = 3; i < pn->rvals.n; i++) cg_note_slot_use(rec, i - 3, 0);
+      }
+      // ifa/153: and a record is also READ POSITIONALLY. The comment above
+      // this scan claims "both sides are computed structurally above", but
+      // only NAMED access was: the getter's `resolve_union_receiver` needs a
+      // symbol, and a tuple has none. `x, y, z = a, b, c` lowers to a
+      // P_prim_index_object per element with a CONSTANT index, and none of
+      // them was ever counted as a read.
+      //
+      // That is not a missed optimisation, it is a wrong answer. Elision
+      // groups on `cs->sym`, which is `sym_tuple` for EVERY tuple in the
+      // program, so one verdict per slot index covers all of them: a
+      // 2-tuple's leftover `has[2]` is bottom, nothing recorded a read, and
+      // slot 2 was elided on every tuple -- including `chull`'s
+      // `x,y,z = 2*random()-1, ...`, whose z then stayed 0 so every sphere
+      // point was coplanar and the program raised
+      // "DoubleTriangle: All points are coplanar!".
+      //
+      // A NON-constant index can reach any slot, so it marks them all.
+      if (pn->prim && pn->prim->index == P_prim_index_object) {
+        int o = (pn->rvals.n && pn->rvals.v[0]->sym == sym_primitive) ? 2 : 1;
+        if (pn->rvals.n > o) {
+          Sym *t = pn->rvals[o]->type;
+          if (t && t->type_kind == Type_RECORD && t->has.n) {
+            cchar *k = (pn->rvals.n > o + 1 && pn->rvals[o + 1]->sym) ? pn->rvals[o + 1]->sym->constant : nullptr;
+            if (k) {
+              int fidx = atoi(k);
+              if (fidx < 0) fidx += t->has.n;
+              if (fidx >= 0 && fidx < t->has.n) cg_note_slot_use(t, fidx, 1);
+            } else
+              for (int i = 0; i < t->has.n; i++) cg_note_slot_use(t, i, 1);
+          }
+        }
       }
       Vec<Fun *> *fns = f->calls.get(pn);
       if (fns && fns->n > 1) {
