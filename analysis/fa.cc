@@ -9857,8 +9857,11 @@ static void report_cs_vars() {
         for (AVar *b : e->backward) {
           if (!b || !b->out || !b->out->type) continue;
           EntrySet *bes = b->contour_is_entry_set ? (EntrySet *)b->contour : nullptr;
-          fprintf(stderr, "  ELEMWRITER es=%d fun=%s type=", bes ? bes->id : -1,
-                  (bes && bes->fun && bes->fun->sym && bes->fun->sym->name) ? bes->fun->sym->name : "(cs)");
+          fprintf(stderr, "  ELEMWRITER es=%d fun=%s var=%s type=", bes ? bes->id : -1,
+                  (bes && bes->fun && bes->fun->sym && bes->fun->sym->name) ? bes->fun->sym->name : "(cs)",
+                  (b->var && b->var->sym && b->var->sym->name)
+                      ? b->var->sym->name
+                      : ((b->var && b->var->sym && b->var->sym->constant) ? b->var->sym->constant : "(anon)"));
           for (CreationSet *c : b->out->type->sorted)
             if (c && c->sym) fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
           fprintf(stderr, "\n");
@@ -10051,6 +10054,31 @@ static int csbacktrack_enabled() {
   if (e < 0) { cchar *v = getenv("PYC_CSBACKTRACK"); e = v ? atoi(v) : 0; }
   return e;
 }
+// ifa/154: BOTH content channels, ungated. A container has two (ifa/104):
+// the generic element, and the per-index positional slots a literal fills.
+// `cs_content_avars` returns the element and only falls through to the slots
+// when `PYC_CSCONTENT` is on -- which defaults to 0, so for an arity-N
+// literal with an empty element it yields NOTHING.
+//
+// ifa/152's backtrack asks "does this CreationSet SUPPLY one of the offending
+// types", and that question has to see whichever channel actually holds the
+// content. Measured on `bh`: the walk reached `cs=1197` (an arity-1 literal,
+// 5 creation points, slot holding `str`) 256 times and rejected it every time
+// as "supplies none", because its str sits in `vars[0]` and the element is
+// empty. That `str` is what reaches `Body`'s list and produces the 17
+// blind casts.
+//
+// Deliberately NOT a change to `cs_content_avars`: its gate governs the CS
+// FLOW GRAPH's content key, which is a different question with its own
+// measured default.
+static void cs_content_avars_both(CreationSet *cs, Vec<AVar *> &out) {
+  if (!cs || !cs->sym) return;
+  if (cs->sym->element && cs->sym->element->var && cs->added_element_var)
+    if (AVar *e = unique_AVar(cs->sym->element->var, cs)) out.add(e);
+  for (AVar *v : cs->vars)
+    if (v && v->out) out.add(v);
+}
+
 // ifa/152: how many CreationSets the backtrack nominated this pass, and the
 // previous pass's count. A nominated split re-derives types from bottom, so
 // the violation count RISES before it falls and the NEXT pass looks
@@ -10301,7 +10329,7 @@ static void cs_member_signature(AVar *d, std::string &out) {
     for (CreationSet *cs : declining) {
       if (!cs) continue;
       Vec<AVar *> content;
-      cs_content_avars(cs, content);
+      cs_content_avars_both(cs, content);
       // The OFFENDING TYPES: what the demanded content actually holds. An
       // upstream CreationSet is only nominated if it SUPPLIES one of them.
       // Without this the backward walk nominates whatever the value flow
@@ -10326,9 +10354,12 @@ static void cs_member_signature(AVar *d, std::string &out) {
             CreationSet *bcs = (CreationSet *)b->contour;
             if (!bcs || !bcs->sym || bcs == cs) continue;
             if (!fa->css_set.set_in(bcs) || css.set_in(bcs)) continue;
+            if (getenv("IFA_DBG_BACKTRACK") && cs_live_defs(bcs) >= 2)
+              fprintf(stderr, "  BTREACH p=%d from cs=%d -> cs=%d sym=%s defs=%d\n", analysis_pass, cs->id, bcs->id,
+                      bcs->sym->name ? bcs->sym->name : "?", cs_live_defs(bcs));
             if (cs_live_defs(bcs) < 2) continue;
             Vec<AVar *> bcontent;
-            cs_content_avars(bcs, bcontent);
+            cs_content_avars_both(bcs, bcontent);
             bool supplies = false;
             for (AVar *bc : bcontent)
               if (bc && bc->out && bc->out->type) {
@@ -10336,7 +10367,12 @@ static void cs_member_signature(AVar *d, std::string &out) {
                   if (w && want.set_in(w)) { supplies = true; break; }
                 if (supplies) break;
               }
-            if (!supplies) continue;
+            if (!supplies) {
+              if (getenv("IFA_DBG_BACKTRACK"))
+                fprintf(stderr, "  BTREJECT p=%d from cs=%d -> cs=%d sym=%s (supplies none)\n", analysis_pass,
+                        cs->id, bcs->id, bcs->sym->name ? bcs->sym->name : "?");
+              continue;
+            }
             css.set_add(bcs);
             ++bt_noms_this_pass;
             if (dbg)
