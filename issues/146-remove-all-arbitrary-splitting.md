@@ -1097,9 +1097,62 @@ Not "make coercion run more". The candidates, none cheap:
   point is to split on the blocker, so this is really "find a narrower
   mechanism", which is (b).
 
-So the next step for `sudoku4` is (b): a mechanism narrower than ESBLOCK for
-the "every creation point on the same assign sets" decline — the demand's own
-type naming the partition, rather than an ES split found by test.
+### (b) TRIED AND REJECTED 2026-09-15 — `PYC_CSPEEL2`, a negative result
+
+The narrower mechanism was built and measured. **It does not work, and the
+reason is this issue's own diagnostic.**
+
+The idea: ifa/144 removed the unconditional fan because the demand says
+"these must be separated", never "all N are mutually distinct", so one
+contour per creation point makes the partition size a COUNT. That objection
+is exact — and it does not apply at **N == 2**, where "separate them"
+determines the partition uniquely and there is no grouping left to get wrong.
+So: when the content key gives one group, there are exactly two creation
+points, and a real demand names the CreationSet, peel them apart.
+
+The demand had to be widened to get there. `listcomp_element_separation`'s
+element is `{A, B}` — two unrelated CLASSES, which ARE representable as a
+tagged pointer — so `cs_elem_irrepresentable` is false and the demand for
+that shape is the type VIOLATION (`viol_named`) instead.
+
+**It fixes the minimal fixture**: `listcomp_element_separation` goes 1 warning
+→ 0, with PEEL2 firing exactly once. That confirms the diagnosis — the two
+`prune` accumulators really are two creation points of one CreationSet in one
+contour, and nothing type-shaped separates them (measured: every `append`
+in-edge carries `[A B]`, because the union is a fixed point).
+
+**And it fails everything else:**
+
+| corpus `-m check` | default | + `PYC_CSPEEL2` |
+| --- | --- | --- |
+| compile failures | **3** (othello3, rdb, sudoku4) | 4 (+ **pylife**) |
+| container CS / shapes | **2051 / 614 = 3.34** | 2245 / 618 = 3.63 |
+| `pratio` | **2.26** | 2.45 |
+
+It adds a compile failure, adds **9.5% more contours**, and does not fix
+`sudoku4` — which instead trades its blind cast for
+`'x' has mixed basic types: ( list tuple int64 str set )`, a worse union than
+the one it started with.
+
+**By this issue's non-monotone diagnostic that makes PEEL2 arbitrary.** It
+passes the two-question test on paper — the demand decides whether, and at
+N == 2 the handle has no freedom — but removing it SAVES 194 contours and a
+compile failure, so it is not earning its keep. Per CLAUDE.md the lever is
+deleted rather than defaulted off; it is recorded here instead so the next
+attempt does not rebuild it.
+
+**What the negative result teaches.** "Nothing type-shaped separates these two
+creation points" is true here and is NOT sufficient justification to peel
+them. The fixed point that makes the types identical at every formal is a
+symptom of a shared WRITER contour, and peeling the reader does not unshare
+the writer — it just mints a contour whose element is still the union, and
+the extra contour propagates. ESBLOCK attacks the writer, which is the right
+target, and its own cost (`softrender`, above) is a separate defect in how
+its split criterion interacts with numeric coercion.
+
+So `sudoku4` remains open, and the next attempt should be at the WRITER: an
+EntrySet split keyed on something narrower than ESBLOCK's found-by-test
+blocker, without disturbing contours whose distinction is numeric.
 
 ### What it does NOT fix
 
