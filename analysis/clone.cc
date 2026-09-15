@@ -576,6 +576,50 @@ static inline void make_not_equiv(CreationSet *a, CreationSet *b) {
   b->not_equiv.set_add(a);
 }
 
+// ifa/132 PROBE (IFA_DBG_SLOTREP): which AVars must hold two CreationSets of
+// ONE sym that `determine_basic_clones` has put in DIFFERENT layout
+// equivalence classes because their `vars.n` disagrees? One is then a RECORD
+// and the other a LIST, and a single slot cannot be both -- so `c_type()`
+// names the slot `_CG_void` and every access on it resolves from the FA type
+// instead of the C type.
+//
+// `get_sym_tup`'s `tup = false` path is designed for exactly this
+// disagreement, but it only sees WITHIN one class; the `vars.n` split at
+// clone.cc puts these in separate classes before it ever runs.
+//
+// quameon's `coulomb_pot.charges` is the case: `self.charges = charges`
+// stores an arity-1 record (`[atom[1][0]]`) while `self.charges = []` plus
+// `append` stores an element-channel list.
+static void report_slot_representation_conflicts() {
+  if (!getenv("IFA_DBG_SLOTREP")) return;
+  int nconf = 0;
+  for (CreationSet *cs : fa->css) {
+    if (!cs || !cs->sym) continue;
+    for (AVar *v : cs->vars) {
+      if (!v || !v->out || !v->out->type) continue;
+      // Group this slot's contents by sym and look for a vars.n disagreement.
+      for (CreationSet *a : v->out->type->sorted) {
+        if (!a || !a->sym) continue;
+        for (CreationSet *b : v->out->type->sorted) {
+          if (!b || b == a || b->sym != a->sym) continue;
+          if (a->vars.n == b->vars.n) continue;
+          if (a->id > b->id) continue;  // report each pair once
+          ++nconf;
+          fprintf(stderr,
+                  "SLOTREP %s.%s holds %s#%d(vars=%d arity=%d noar=%d) + "
+                  "#%d(vars=%d arity=%d noar=%d) equiv_same=%d\n",
+                  cs->sym->name ? cs->sym->name : "?",
+                  (v->var && v->var->sym && v->var->sym->name) ? v->var->sym->name : "?",
+                  a->sym->name ? a->sym->name : "?", a->id, a->vars.n, a->static_arity,
+                  a->no_static_arity ? 1 : 0, b->id, b->vars.n, b->static_arity, b->no_static_arity ? 1 : 0,
+                  a->equiv == b->equiv ? 1 : 0);
+        }
+      }
+    }
+  }
+  fprintf(stderr, "SLOTREP-TOTAL conflicts=%d\n", nconf);
+}
+
 static void determine_basic_clones(Vec<Vec<CreationSet *> *> &css_sets_by_sym) {
   Vec<Vec<CreationSet *> *> xx;
   sets_by_f_transitive<CreationSet, CS_SYM_FN>(fa->css, css_sets_by_sym);
@@ -1058,6 +1102,7 @@ static void determine_clones() {
 
   Vec<Vec<CreationSet *> *> css_sets_by_sym;
   determine_basic_clones(css_sets_by_sym);
+  report_slot_representation_conflicts();
 
   // find fixed point
   while (changed_css.n) {

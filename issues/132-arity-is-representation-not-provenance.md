@@ -171,6 +171,118 @@ All six gates green, and the default is untouched: `make test` rc=0,
 `PYC_FLAGS=-b ./test_pyc.py` 311/0. Note `fa.h` changed, so this needs
 `make clean` (CLAUDE.md).
 
+## The cross-CreationSet case — census, and one bug fixed (2026-09-14)
+
+The landed fix puts arity in CreationSet identity, which is right and keeps
+different arities apart. What it does not cover is the case where **one AVar
+must hold two CreationSets of one sym whose arities disagree.** Identity
+correctly keeps them apart; `determine_basic_clones` then splits them into
+different layout equivalence classes on `cs1->vars.n != cs2->vars.n`
+(clone.cc), so one is a RECORD and the other a LIST — and the slot holding
+both has no type at all. `c_type()` names it `_CG_void`, every read of it is
+`(_CG_any)`, and each access is resolved from the FA type instead of the C
+type.
+
+`get_sym_tup`'s `tup = false` path is designed for exactly this disagreement,
+but it only sees WITHIN one class, and the `vars.n` split happens first.
+
+### Census — `IFA_DBG_SLOTREP`, 84 corpus programs
+
+**976 conflicts in 13 programs. Every one of the 13 COMPILES and then fails
+or prints the wrong answer.**
+
+| program | conflicts | outcome (default sweep) |
+| --- | --- | --- |
+| `amaze` | 393 | `run 134` "getter not resolved" |
+| `pylife` | 330 | `run 124` (CPython finishes) |
+| `chess` | 88 | `run 124` (CPython also 124) |
+| `chaos` | 45 | runs; CPython timed out, undetermined |
+| `neural2` | 36 | **wrong stdout** |
+| `quameon` | 26 | **wrong stdout** |
+| `rubik2` | 21 | `run 124` (CPython also 124) |
+| `sha` | 18 | **wrong stdout** |
+| `ant` | 7 | **wrong stdout** |
+| `pygasus` | 4 | `run 134` |
+| `dijkstra2` | 3 | `run 124` (CPython finishes) |
+| `loop` | 3 | `run 124` (CPython finishes) |
+| `linalg` | 2 | `run 134` "list element type mismatch" |
+
+The other **71 programs have zero conflicts**, so this is not a proxy for
+program size. And three of the aborts name the untyped value directly, which
+is causation rather than correlation:
+
+```
+amaze    Assertion `!"runtime error: getter not resolved"'
+linalg   _CG_f_2935_307(_CG_any, _CG_int64): `!"runtime error: list element type mismatch"'
+quameon  _CG_f_15731_653(_CG_ps26965, _CG_any): `!"runtime error: matching function not found"'
+```
+
+Nine of the thirteen emit **zero warnings**. An unresolved dispatch reaching
+codegen as an `assert(!"runtime error: ...")` with nothing said about it is
+[149](149-the-largest-diagnostic-class-reports-nothing.md)'s family.
+
+### A real bug, found and FIXED
+
+`make_kind`'s element seeding was
+
+```c
+if (cs->no_static_arity)
+  if (AVar *gelem = get_element_avar(cs)) flow_vars(iv, gelem);
+```
+
+`iv` is CS-contoured and so is `gelem`, so this is a **raw CS → CS flow
+edge** — which `compute_setters` asserts against
+(`assert(x->contour_is_entry_set)` over an AVar's backward list), and which
+`vector_elems` builds a trampoline by hand to avoid. Latent until something
+walked that element's setters; `PYC_SLOTARITY` below sets `no_static_arity`
+on far more CreationSets and aborted `quameon` inside `compute_setters`.
+
+Fixed by seeding from `atv` instead of `iv` — the same value (the chain is
+`av -> atv -> iv`), but `atv` is the ES-contoured temp the loop already
+makes and already calls `set_container` on. All six gates green.
+
+### `PYC_SLOTARITY=1` — the demotion, and why it does not pay yet
+
+Default 0. Each pass, group every conflicting pair transitively and demote a
+group to list layout only if it is **jointly homogeneous**. Three conditions,
+each of which cost a measurement to find:
+
+1. **Settled slots.** `basic_type` maps an EMPTY AType and a non-basic one to
+   the same `nullptr`, so an undecided record reads as homogeneous. At pass 0
+   on `quameon` that demoted 45 CreationSets, 40 of them `tuple`.
+2. **Homogeneous.** A list has ONE element type; demoting a heterogeneous
+   record collapses its fields into an element union — the hazard ifa/104's
+   comment in `make_kind` already records. 24 errors of
+   `expression has mixed basic types: ( int64 str )`.
+3. **Jointly, over the whole group.** Per-CreationSet is not enough: sixteen
+   2-tuples whose slots each agreed internally — `(str, str)` here,
+   `(int64, int64)` there — still union to `{int64, str}` once they share one
+   element channel. Same 24 errors.
+
+With all three, `quameon` compiles clean and runs; **but no program's verdict
+changes.** The honest status: this mechanism is correct and conservative, it
+found the CS → CS bug above, and it does not yet pay.
+
+### Why — and it sequences behind [152](152-FA-backtrack-the-demand-to-the-merged-creation-set.md)
+
+`amaze`'s 393 conflicts are all one CreationSet: `tuple#1611`, **arity 0**,
+held in `MazeSolver._current` alongside a dozen 2-tuples. The source never
+writes an empty tuple — `self._current = (0,0)` — so `tuple#1611` is a
+MERGED arity-0 contour, and because it conflicts with everything, the
+transitive group chains in a 4-tuple and an 8-tuple too. The group is then
+genuinely not homogeneous and is correctly skipped.
+
+`_current` alone only ever holds `()`-shaped and `(int, int)` values, which
+IS homogeneous. **So the demotion is blocked until that merged arity-0
+contour is SPLIT** — the same shape as `chull`'s `cs=1112`, one step further
+out: `tuple#1611` is representable on its own, raises no demand, and
+152's nomination therefore does not reach it either.
+
+The order is fixed by this: split the merged arity-0 contour first, then
+demote per group. A candidate for 152's next rung is a CreationSet that some
+slot cannot REPRESENT alongside its neighbours — an arity disagreement is
+exactly such a demand, and it is one 152 does not currently take.
+
 ## What is still wrong
 
 The residue is a **precision** problem, not a

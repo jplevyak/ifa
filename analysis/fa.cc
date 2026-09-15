@@ -2610,8 +2610,19 @@ static void make_kind(PNode *p, EntrySet *es, Sym *kind, AVar *container, Vec<Va
     // ("incompatible integer to pointer conversion ... from 'int'"). Seed
     // it from the per-index vars, exactly as fa.cc's prim_make path seeds
     // its dynamic-length containers from the source element.
+    //
+    // Seeded from `atv`, NOT from `iv`. Both carry the same value -- the
+    // chain is av -> atv -> iv -- but `iv` is CS-contoured and `gelem` is
+    // too, so `flow_vars(iv, gelem)` is a raw CS -> CS flow edge, which
+    // `compute_setters` asserts against ("assert(x->contour_is_entry_set)"
+    // over an AVar's backward list). `atv` is the ES-contoured temp this
+    // loop already makes and already calls set_container on, so it is the
+    // trampoline `vector_elems` builds by hand for exactly this reason.
+    // Latent until something walked the element's setters: surfaced by
+    // ifa/132's PYC_SLOTARITY, which sets no_static_arity on far more
+    // CreationSets and aborted `quameon` inside compute_setters.
     if (cs->no_static_arity)
-      if (AVar *gelem = get_element_avar(cs)) flow_vars(iv, gelem);
+      if (AVar *gelem = get_element_avar(cs)) flow_vars(atv, gelem);
   }
 }
 
@@ -12397,6 +12408,177 @@ static void probe_invalidation_closure() {
   fa_selective_armed = true;
 }
 
+// ifa/132: PYC_SLOTARITY=1 -- when one AVar must hold two CreationSets of ONE
+// sym whose arities DISAGREE, neither can keep a record layout, because the
+// value has a single C type and a record and a list are not the same type.
+// Drop the static arity on all of them; `make_kind` then seeds the generic
+// element from the per-index vars (see its `no_static_arity` clause) and
+// clone gives the whole family list layout.
+//
+// This is the same rule ifa/132 already applies WITHIN a CreationSet ("two
+// creation points of different arity means it has no static arity") and that
+// `get_sym_tup` applies WITHIN a layout equivalence class (`if (n !=
+// cs->vars.n) tup = false`). What was missing is the case where the
+// disagreement is ACROSS two CreationSets that identity correctly keeps
+// apart: `determine_basic_clones` splits them on `cs1->vars.n != cs2->vars.n`
+// before `get_sym_tup` can see it, so one stays a record and the other is a
+// list, and the slot holding both gets no type at all -- emitted `_CG_void`,
+// read as `_CG_any`, with every access resolved from the FA type instead.
+//
+// Census, 84 corpus programs (IFA_DBG_SLOTREP): 976 such conflicts in 13
+// programs. Every one of the 13 COMPILES and then fails or prints the wrong
+// answer, and three of the aborts name the untyped value directly --
+// `amaze` "getter not resolved", `linalg` `(_CG_any, _CG_int64)` "list
+// element type mismatch", `quameon` `(_CG_ps26965, _CG_any)` "matching
+// function not found". Nine have zero warnings.
+static int slotarity_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_SLOTARITY"); e = v ? atoi(v) : 0; }
+  return e;
+}
+
+// ifa/132: the basic type all of `cs`'s settled slots agree on, or the
+// `fail` sentinel if they disagree, or nullptr when nothing is settled yet.
+// `basic_type` maps an EMPTY AType and a non-basic one to the same nullptr,
+// so "settled" has to be asked separately: an undecided record otherwise
+// reads as homogeneous and gets demoted before its types are known.
+static Sym *cs_slot_basic_type(CreationSet *cs, bool *settled) {
+  *settled = true;
+  Sym *res = nullptr;
+  bool first = true;
+  for (AVar *v : cs->vars) {
+    if (!v || !v->out || !v->out->n) {
+      *settled = false;
+      return nullptr;
+    }
+    Sym *b = basic_type(fa, v->out, (Sym *)-1);
+    if (first) {
+      res = b;
+      first = false;
+    } else if (b != res)
+      return (Sym *)-1;
+  }
+  return res;
+}
+
+static int demote_mixed_arity_slots() {
+  const bool dbg = getenv("IFA_DBG_SLOTARITY") != nullptr;
+  // Every pair of CreationSets of ONE sym that some AVar must hold and whose
+  // arities disagree.
+  Vec<CreationSet *> lhs, rhs;
+  auto scan = [&](AVar *av) {
+    if (!av || !av->out || !av->out->type) return;
+    AType *t = av->out->type;
+    if (t->sorted.n < 2) return;
+    for (CreationSet *a : t->sorted) {
+      if (!a || !a->sym) continue;
+      for (CreationSet *b : t->sorted) {
+        if (!b || !b->sym || b->sym != a->sym) continue;
+        if (a->id >= b->id) continue;  // each pair once
+        if (a->vars.n == b->vars.n) continue;
+        if (a->no_static_arity && b->no_static_arity) continue;
+        lhs.add(a);
+        rhs.add(b);
+      }
+    }
+  };
+  auto collect = [&](Var *v) {
+    for (int i = 0; i < v->avars.n; i++)
+      if (v->avars[i].key) scan(v->avars[i].value);
+  };
+  for (Sym *sy : fa->pdb->if1->allsyms) if (sy->var) collect(sy->var);
+  for (Fun *f : fa->pdb->funs) for (Var *v : f->fa_all_Vars) collect(v);
+  // A CreationSet's own field AVars live on the CS, not on a Var.
+  for (CreationSet *cs : fa->css) {
+    if (!cs) continue;
+    for (AVar *av : cs->vars) scan(av);
+    if (cs->sym && cs->sym->element && cs->sym->element->var && cs->added_element_var)
+      scan(unique_AVar(cs->sym->element->var, cs));
+  }
+  if (!lhs.n) return 0;
+
+  // GROUP the pairs transitively. Demoting is not a per-CreationSet decision:
+  // every member of a connected group ends up sharing one element channel, so
+  // the union of ALL their slot types has to be representable. Asking it per
+  // CreationSet is what let `quameon` demote sixteen 2-tuples whose slots each
+  // agreed internally -- `(str, str)` here and `(int64, int64)` there -- and
+  // the class element then came out {int64, str}: 24 errors of
+  // `expression has mixed basic types: ( int64 str )`.
+  Vec<CreationSet *> members;
+  for (int i = 0; i < lhs.n; i++) {
+    members.set_add(lhs.v[i]);
+    members.set_add(rhs.v[i]);
+  }
+  Map<CreationSet *, CreationSet *> rep;  // member -> group representative
+  for (CreationSet *cs : members) if (cs) rep.put(cs, cs);
+  auto find = [&](CreationSet *cs) {
+    while (rep.get(cs) != cs) cs = rep.get(cs);
+    return cs;
+  };
+  for (int i = 0; i < lhs.n; i++) {
+    CreationSet *ra = find(lhs.v[i]), *rb = find(rhs.v[i]);
+    if (ra != rb) rep.put(ra, rb);
+  }
+
+  int n = 0;
+  Vec<CreationSet *> seen_reps;
+  for (CreationSet *m : members) {
+    if (!m) continue;
+    CreationSet *r = find(m);
+    if (!seen_reps.set_add(r)) continue;  // group already decided
+    Vec<CreationSet *> group;
+    for (CreationSet *g : members) if (g && find(g) == r) group.add(g);
+    // The group is demotable iff every member's slots are settled and every
+    // member agrees on ONE basic type. A member already on list layout
+    // contributes its element instead.
+    bool ok = true;
+    Sym *want = nullptr;
+    bool have_want = false;
+    for (CreationSet *g : group) {
+      Sym *b = nullptr;
+      if (g->no_static_arity) {
+        AVar *e = (g->sym && g->sym->element && g->sym->element->var && g->added_element_var)
+                      ? unique_AVar(g->sym->element->var, g)
+                      : nullptr;
+        if (!e || !e->out || !e->out->n) continue;  // nothing to say yet
+        b = basic_type(fa, e->out, (Sym *)-1);
+      } else {
+        bool settled = false;
+        b = cs_slot_basic_type(g, &settled);
+        if (!settled) { ok = false; break; }
+      }
+      if (b == (Sym *)-1) { ok = false; break; }
+      if (!have_want) {
+        want = b;
+        have_want = true;
+      } else if (b != want) {
+        ok = false;
+        break;
+      }
+    }
+    if (!ok) {
+      if (dbg) {
+        fprintf(stderr, "[slotarity] p=%d SKIP group of %d (not jointly homogeneous):", analysis_pass, group.n);
+        for (CreationSet *g : group)
+          fprintf(stderr, " %s#%d(vars=%d)", g->sym && g->sym->name ? g->sym->name : "?", g->id, g->vars.n);
+        fprintf(stderr, "\n");
+      }
+      continue;
+    }
+    for (CreationSet *g : group)
+      if (!g->no_static_arity) {
+        g->no_static_arity = 1;
+        ++n;
+        if (dbg)
+          fprintf(stderr, "[slotarity] p=%d DEMOTE cs=%d sym=%s vars=%d arity=%d (group %d, basic=%s)\n",
+                  analysis_pass, g->id, g->sym && g->sym->name ? g->sym->name : "?", g->vars.n, g->static_arity,
+                  group.n, want && want->name ? want->name : "(non-basic)");
+      }
+  }
+  if (n && dbg) fprintf(stderr, "[slotarity] p=%d demoted=%d\n", analysis_pass, n);
+  return n;
+}
+
 [[nodiscard]] static int extend_analysis() {
   int analyze_again = 0;
   extend_timer.restart();
@@ -12434,6 +12616,8 @@ static void probe_invalidation_closure() {
     }
   }
   if (!fa->pass_limit_hit) analyze_again = run_split_stages();
+  // ifa/132: a slot that must hold two arities cannot keep a record layout.
+  if (slotarity_enabled() && demote_mixed_arity_slots()) analyze_again = 1;
   probe_invalidation_closure();  // ifa/issues/111 M1 (IFA_DBG_CLOSURE)
   extend_timer.stop();
   if (analyze_again) {
