@@ -10482,6 +10482,19 @@ static void cs_member_signature(AVar *d, std::string &out) {
       // keeps apart.
       std::vector<std::string> sig((size_t)defs.n);
       int informative = 0;
+      // issues/128: the content key needs at least TWO assign sets to say
+      // anything about content. With one set the signature is a single bit --
+      // "is this def on the path of the only set" -- and the partition it
+      // names is path membership, not element type. The KEY line below
+      // reports it: on chull, p=0 groups 20 defs on `sets=1`, p=1 repeats it,
+      // and `sets=6` first appears at p=2.
+      //
+      // Requiring `keys.n >= 2` was TRIED (PYC_CSKEYSETS, removed). It works
+      // -- p=0 and p=1 then report `groups=1 informative=0` and no longer
+      // partition -- and it does NOT fix chull: `Hull.edges` still ends with
+      // `Vertex Edge Edge Edge Edge` and the same blind cast. So the
+      // uninformative early key is real but is not what puts the Vertex
+      // there. Left as a diagnostic, not a lever.
       for (int i = 0; i < defs.n; i++)
         if (g)
           for (int k = 0; k < g->keys.n; k++) {
@@ -10502,6 +10515,17 @@ static void cs_member_signature(AVar *d, std::string &out) {
         }
       };
       regroup();
+      // issues/128: how many ASSIGN SETS the signature is built from. The
+      // signature is one bit per set ("is this def on a path contributing to
+      // set k"), so with ONE set the key is a single bit and the partition it
+      // names is "on the path" vs "not" -- which has nothing to do with the
+      // element types the defs will eventually hold. At pass 0 under
+      // start-merged that is the usual state, and a grouping made there fuses
+      // defs that later turn out to differ, unrecoverably.
+      if (dbg)
+        fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s KEY sets=%d defs=%d groups=%d informative=%d\n",
+                analysis_pass, cs->id, cs->sym->name ? cs->sym->name : "?", g ? g->keys.n : 0, defs.n, ngroups,
+                informative);
       // ifa/133: the MEMBER key, tried when the CONTENT key names no
       // partition -- either it covers none of the defs, or every def landed
       // in one group. That is exactly the state `bh` is stuck in.
