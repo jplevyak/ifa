@@ -1374,7 +1374,15 @@ AType *type_cannonicalize(AType *t) {
     else
       nulls = 1;  // pointer / other: strip nil as before
   }
-  if (consts > fa->num_constants_per_variable) {
+  // PROBE (PYC_CONSTCAP): raise the per-variable constant cap. Default is
+  // fa->num_constants_per_variable (1), i.e. an AType holding two constants
+  // is rebuilt from their BASE types and the constants are gone -- which is
+  // also what stops `type_num_fold`'s constant fold, since that needs each
+  // operand to be a SINGLE CreationSet carrying an immediate.
+  static int constcap = -2;
+  if (constcap == -2) { cchar *v = getenv("PYC_CONSTCAP"); constcap = v ? atoi(v) : -1; }
+  const int cap = constcap >= 0 ? constcap : fa->num_constants_per_variable;
+  if (consts > cap) {
     rebuild = 1;
     ++fa_cap_strips;  // ifa/131 step 1: does the cap-strip fire at all?
   }
@@ -3353,6 +3361,22 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
         flow_vars(b, t);
         flow_vars(t, res);
         // can we fold this?
+        static int dbgfold = -1;
+        if (dbgfold < 0) dbgfold = getenv("PYC_DBG_FOLD") ? 1 : 0;
+        if (dbgfold && a->out && b->out && a->out->n && b->out->n &&
+            (a->out->n != 1 || b->out->n != 1 || !a->out->v[0]->sym->imm.const_kind ||
+             !b->out->v[0]->sym->imm.const_kind)) {
+          cchar *why = (a->out->n != 1 || b->out->n != 1)
+                           ? "operand holds >1 CreationSet"
+                           : "operand is not an immediate constant";
+          fprintf(stderr, "[fold] NO prim=%s in %s: %s  a.n=%d[%s%s] b.n=%d[%s%s]\n",
+                  p->prim->name ? p->prim->name : "?",
+                  (es && es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?", why, a->out->n,
+                  a->out->n ? (a->out->v[0]->sym->name ? a->out->v[0]->sym->name : "?") : "",
+                  (a->out->n == 1 && a->out->v[0]->sym->imm.const_kind) ? " const" : " abstract", b->out->n,
+                  b->out->n ? (b->out->v[0]->sym->name ? b->out->v[0]->sym->name : "?") : "",
+                  (b->out->n == 1 && b->out->v[0]->sym->imm.const_kind) ? " const" : " abstract");
+        }
         if (a->out && b->out && a->out->n && b->out->n) {
           AType *nt = p->prim->ret_types[i] == PRIM_TYPE_BOOL ? fa->type_world.bool_type : type_num_fold(p->prim, a->out, b->out);
           if (a->out->n == 1 && b->out->n == 1 && a->out->v[0]->sym->imm.const_kind &&

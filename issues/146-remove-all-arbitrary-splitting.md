@@ -1111,6 +1111,66 @@ That also explains why more analysis room does not help: measured with
 **bit-identical** — `final_pass=101 pass_limit_hit=0 violations=483`, same 4
 errors. It is a converged answer, not a truncated one.
 
+### Why FA does not constant-fold `self.x + r.x` — measured
+
+The obvious objection is that FA *should* fold `const + const`, which would
+keep the int a constant and let coercion rewrite it. **FA does fold.** The
+site is in the numeric primitive's transfer function:
+
+```c
+if (a->out->n == 1 && b->out->n == 1 && a->out->v[0]->sym->imm.const_kind &&
+    b->out->v[0]->sym->imm.const_kind)
+  ... fold_constant(p->prim->index, &a..imm, &b..imm, &imm) -> make_constant(...)
+```
+
+**The fold requires each operand to be exactly ONE CreationSet carrying an
+immediate.** `PYC_DBG_FOLD` (new) reports why each decline happens, and on
+`softrender` the relevant one is:
+
+```
+[fold] NO prim=prim_add in __add__: operand is not an immediate constant
+       a.n=1[int64 abstract]   b.n=1[? const]
+```
+
+So `r.x` IS a constant; `self.x` is a single **abstract** `int64`. One
+abstract operand is enough to decline.
+
+**It is NOT the per-variable constant cap**, which was the obvious suspect
+(`num_constants_per_variable = 1`: `type_cannonicalize` rebuilds any type
+holding two or more constants from their BASE types, silently). Measured with
+a `PYC_CONSTCAP` probe:
+
+| | mixed-basic errors | fold decline reason |
+| --- | --- | --- |
+| `ESBLOCK=1` | 260 | operand is not an immediate constant |
+| `ESBLOCK=1 PYC_CONSTCAP=4` | 289 | *unchanged* |
+| `ESBLOCK=1 PYC_CONSTCAP=16` | 289 | *unchanged* |
+
+Raising the cap makes it slightly WORSE and does not change the decline, so
+the constants are not being stripped at this operand — it is abstract for
+another reason, upstream. **That link is not yet identified** and is the next
+thing to chase for `softrender`.
+
+Worth recording even so: had the cap been the cause, raising it would not have
+helped either, because the two barriers are mutually exclusive. At cap 1 the
+constants collapse and `imm.const_kind` fails; above it they survive and
+`a->out->n == 1` fails instead. **A field legitimately holding several
+different constants can never fold**, whichever way the cap goes — the fold is
+defined only for a single immediate per operand.
+
+The general capability that is missing is the one `type_num_fold` stubs out in
+its first line:
+
+```c
+AType *type_num_fold(Prim *p, AType *a, AType *b) {
+  (void)p;
+  p = 0;  // for now
+```
+
+With the operator discarded it computes the result KIND over the cross product
+of operand types and never the VALUES. Folding `{0,1} + {0,1}` to `{0,1,2}`
+would need the operator kept, plus a cap large enough to hold the result.
+
 ### What a fix would have to be
 
 Not "make coercion run more". The candidates, none cheap:
