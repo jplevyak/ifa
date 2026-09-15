@@ -1,8 +1,8 @@
 # ifa/154 — a container has TWO content channels, and half the ladder looks at one
 
-**Status:** `bh` fixed 2026-09-15 by `PYC_CSBACKTRACK=1 PYC_CSCONTENT=1`.
-The filter bug below is fixed unconditionally; both flags stay default 0 on
-one named blocker.
+**Status:** closed 2026-09-15. `bh` is fixed, and **both flags are now ON BY
+DEFAULT** (`PYC_CSBACKTRACK=0` / `PYC_CSCONTENT=0` disable). The filter bug
+below is fixed unconditionally.
 
 ## The symptom
 
@@ -108,9 +108,29 @@ in 152: `coulomb_pot.charges` holds an arity-1 record AND an appended
 element-channel list, so the slot has no representation and is emitted
 `_CG_void`. It was already printing the wrong answer.
 
-**Both flags therefore stay default 0 on the same blocker as 152** — land
-132's arity drop at a member confluence, then flip the pair together. The
-suite is 316/0 at the defaults.
+### Why they are ON, having first been left off
+
+They were staged default-0 "on the same blocker as 152". **That reasoning did
+not survive inspection and was withdrawn.** ifa/132 makes ONE already-broken
+program fail *differently*; it does not make these flags wrong. The test that
+matters is whether anything that WORKED broke, and it did not:
+
+```
+programs whose stdout matched CPython at the default: 4
+  astar, fysphun, msp_ss, stereo   -- all four still match with the flags on
+```
+
+`quameon` was already printing the wrong answer (`m=NO`); it now aborts with a
+diagnostic, which CLAUDE.md treats as the better state, not a regression
+("the alternative to failing here is emitting a program that lies"). The
+`match_seq` suite failure was **three fewer spurious warnings**, i.e. a stale
+golden. Against that: compile failures 8 → 3 and warnings −31%. Holding the
+flags off was the retreat CLAUDE.md names — "the new rule is described as
+conservative or safe".
+
+Corpus `-m check` at the NEW default reproduces the flag-on arm exactly:
+`compile_fail=3 run_fail=35 stdout_differs=25 with_warnings=35
+cs/shapes=2051/614=3.34`.
 
 ## A cleanup found on the way
 
@@ -126,13 +146,24 @@ generated C verified byte-identical. It was NOT the source of the `str`
 - [x] `bh` compiles, runs, stdout matches CPython
 - [x] six CI gates green at the defaults; suite 316/0
 - [x] corpus `-m check` three-arm A/B above
-- [ ] **to default the pair on:** land
-      [132](132-arity-is-representation-not-provenance.md)'s arity drop, then
-      re-measure `quameon`
-- [ ] `PYC_CSCONTENT=1` removes 3 SPURIOUS warnings from
-      `tests/match_seq.py` (a `case [[a, b], c]` pattern complaining about an
-      `int64` that simply does not match). Its golden needs re-blessing at
-      the flip, not before.
+- [x] both flags defaulted ON; corpus at the new default reproduces the
+      flag-on arm exactly; suite **317 / 0** on both backends
+- [x] `tests/match_seq.py.check` re-blessed — 12 lines, ALL removals, four
+      spurious `case [[a, b], c]` warnings about an `int64` that simply does
+      not match. Runtime output unchanged and still equal to `.exec.check`.
+- [x] **`tests/arity1_literal_shares_contour.py` flipped KNOWN -> PASS.** Its
+      known-issue note described this exact bug — "two arity-1 list literals
+      share a CreationSet ... their slot types differ (str vs nil) ... it only
+      becomes irrepresentable several contours downstream, by which time the
+      literals are long merged" — which is `cs=1197`. The marker file is
+      removed so the fixture is now a real regression guard. Note the fix was
+      NOT what that note predicted (a new construction-time separator); it was
+      backtracking the demand to the merged contour and looking in the right
+      content channel.
+- [ ] `quameon`'s abort still wants
+      [132](132-arity-is-representation-not-provenance.md)'s arity drop at a
+      member confluence — it was printing the wrong answer before and aborts
+      now, so this is a diagnostic improvement awaiting a real fix.
 
 ## What this unblocks
 

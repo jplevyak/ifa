@@ -8923,9 +8923,14 @@ struct CSFlowGraph : public gc {
 // Containers are UNCHANGED: when an element channel exists it is used
 // alone, exactly as before, so no container result moves.
 // ifa/133: PYC_CSCONTENT=0 restores the element-or-vars form.
+// ifa/133's fix for "the rung looks in the wrong channel", ON BY DEFAULT since
+// 2026-09-15 (ifa/154). A container has TWO content channels (ifa/104) and an
+// arity-N literal leaves the element bottom, so without this the CS flow graph
+// is built over an empty AVar and route 4 declines `sets=0` on every such
+// CreationSet. Measured with PYC_CSBACKTRACK above. `PYC_CSCONTENT=0` disables.
 static int cscontent_enabled() {
   static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_CSCONTENT"); e = v ? atoi(v) : 0; }
+  if (e < 0) { cchar *v = getenv("PYC_CSCONTENT"); e = v ? atoi(v) : 1; }
   return e;
 }
 
@@ -10049,9 +10054,15 @@ static int csslotdemand_enabled() {
 // from a CreationSet that has already declined. And the handle is not
 // provenance: "the offending element flows from here" is a statement about
 // value flow and deduced types, not about where a value was born.
+// ON BY DEFAULT since 2026-09-15 (ifa/154), with PYC_CSCONTENT which supplies
+// the other half. Corpus `-m check`, one binary: compile failures 8 -> 3,
+// total warnings 1973 -> 1364 (-31%). `bh` compiles and matches CPython;
+// `sudoku3` goes from compile-fail with 121 warnings to clean and running.
+// NOTHING THAT WORKED REGRESSED -- all four programs whose stdout matched
+// CPython still match. `PYC_CSBACKTRACK=0` disables.
 static int csbacktrack_enabled() {
   static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_CSBACKTRACK"); e = v ? atoi(v) : 0; }
+  if (e < 0) { cchar *v = getenv("PYC_CSBACKTRACK"); e = v ? atoi(v) : 1; }
   return e;
 }
 // ifa/154: BOTH content channels, ungated. A container has two (ifa/104):

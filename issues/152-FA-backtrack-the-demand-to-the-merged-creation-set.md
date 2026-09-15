@@ -1,7 +1,10 @@
 # ifa/152 — backtrack the demand to the CreationSet that actually merged
 
-**Status:** in-progress. Mechanism built behind `PYC_CSBACKTRACK`
-(default 0), measured on `chull`. Part of
+**Status:** landed. `PYC_CSBACKTRACK` is **ON BY DEFAULT** since 2026-09-15
+(`=0` disables) — see
+[154](154-FA-a-container-has-two-content-channels.md), which found the filter
+bug that was blinding it to a container's positional slots and measured the
+pair to a default. Measured on `chull`. Part of
 [129](129-plan-demand-driven-creation-set-splitting.md)'s ladder.
 
 ## The defect, in one sentence
