@@ -41,9 +41,9 @@ measured that moves the number, and it takes `ess` DOWN rather than up.
    start (`ledger_find_cs`/`ledger_add_cs`,
    `find_or_make_filtered_entry_set`).
 
-## Where it stands — measured 2026-09-12, not inherited
+## Where it stands — SUPERSEDED, see the 2026-09-15 line below
 
-| | default | `PYC_CSDCPA1=2` |
+| | old default | `PYC_CSDCPA1=2` |
 | --- | --- | --- |
 | suite | **318 / 0** | 315 / **3** |
 | corpus compile failures | **2** (othello3, rdb) | **7** |
@@ -51,10 +51,38 @@ measured that moves the number, and it takes `ess` DOWN rather than up.
 | container CS / shapes | 2768 / 627 = **4.41** | 2138 / 629 = **3.40** |
 | `pratio` | 2.98 | **2.31** |
 
-**−23% container CreationSets, and FEWER warning programs than the
-default.** This is much closer than the record suggested: the bill was 16
-suite failures and ~20 corpus failures when this plan was written, and it
-is now 3 and 7.
+*(Measured 2026-09-12, when the flip was opt-in. Kept because the −23%
+container-CreationSet result is what justified pursuing it.)*
+
+### Measured 2026-09-15 — the bill is THREE, and the suite is clean
+
+The flip is the default, and so are
+[152](152-FA-backtrack-the-demand-to-the-merged-creation-set.md)'s backtrack
+and [154](154-FA-a-container-has-two-content-channels.md)'s two-channel
+content fix. The "seven programs" bill below was paid by
+[153](153-FA-positional-record-slots-lose-identity-and-reads.md) and 154, not
+by the steps this plan predicted:
+
+| | pre-flip default | **today's default** |
+| --- | --- | --- |
+| suite | 318 / 0 | **317 / 0** |
+| corpus compile failures | 2 (othello3, rdb) | **3** (othello3, rdb, sudoku4) |
+| total corpus warnings | — | **1364** (from 1973 at the flip alone, −31%) |
+| container CS / shapes | 2768 / 627 = 4.41 | **2051 / 614 = 3.34** |
+| `pratio` | 2.98 | **2.26** |
+
+**−26% container CreationSets against the pre-flip default, with one more
+compile failure instead of five more.** `bh` and `sudoku3` went from failing
+to compiling AND matching CPython; `chull`, `plcfrs` and `sudoku5` compile;
+`linalg` 108 → 33 warnings. The suite is 318 → 317 only because one test was
+added and one `known_issue` was retired
+(`arity1_literal_shares_contour` flipped to PASS — it pinned exactly the
+merged arity-1 literal 154 fixed).
+
+`sudoku4` is the one remaining regression, and it is understood:
+[146](146-remove-all-arbitrary-splitting.md) E's "1 group: every creation
+point on the same assign sets" decline. `PYC_ESBLOCK=1` fixes it and costs
+`softrender` instead, so the count stays 3 — measured in 146.
 
 ## The remaining bill, attributed
 
@@ -75,6 +103,37 @@ flag-only failures are two groups:**
 | layout / blind cast | chull, sudoku4 | `object layout: 'Edge' is blind-cast to 'Vertex' … member width differs` | **not 135** — see below |
 
 So **two mechanisms stand between here and the flip**, not a long list.
+
+### Corrected 2026-09-12: it is SEVEN programs, not five
+
+*(Historical. Paid down to ONE — `sudoku4` — by 2026-09-15; see the table
+above.)*
+
+The table above was measured with a **compile** sweep at the flag arm. The
+flip is now staged on branch `stage-csdcpa1-default` and swept in **check**
+mode, which shows two regressions a compile sweep cannot see:
+
+| program | main | flip |
+| --- | --- | --- |
+| `bh` | run 0 | **run 134** — compiles CLEAN, then aborts |
+| `kanoodle` | run 0 | **run 139** — compiles CLEAN, then SIGSEGVs |
+
+These are the [102](102-corpus-programs-compile-then-abort-at-runtime.md)
+class — the worst outcome this project names — and they were invisible in
+every flag-arm measurement taken before, because all of them were
+compile-mode. **Measure the flag arm in `check` mode from now on.**
+
+It also changes how the five compile regressions read. Three of them
+(`chull`, `plcfrs`, `sudoku4`) were ALREADY aborting or segfaulting at the
+default, so the flip changes their failure MODE rather than losing working
+behaviour — arguably an improvement, since a compile-time refusal beats a
+silent crash. Only `sudoku3` and `sudoku5` were running correctly
+(`sudoku3`'s sole stdout difference from CPython is the wall-clock line it
+prints itself) and are genuine losses.
+
+So the honest ledger for the flip is: **−23% container CreationSets, 3 fewer
+warning programs, 3 fewer stdout mismatches, against 2 programs that stop
+working, 2 that start crashing silently, and 3 that change how they fail.**
 
 ## The work, in order
 
@@ -131,8 +190,13 @@ close (93 `__pyc_clone_constants__` annotations across 8 files, plus the 20
 `fa.cc` sites they gate). Its acceptance test is that `bool.__not__`'s
 annotation can be removed with ifa/150's corpus result intact.
 
-**5. The flip itself.** Re-bless `splitter_mark_type`, flip the default,
-and keep `PYC_CSDCPA1=0` as the escape hatch for one release.
+**5. The flip itself — STAGED on `stage-csdcpa1-default`.** The branch
+carries the one-line default change, the two `.known_issue` sidecars, and
+49 re-blessed goldens (12 synthetic fixtures x 4 phases, plus
+`04_setter_split.ir`), each diffed rather than blanket-re-blessed: `ess` and
+`funs` are unchanged in all 12 and `css` is down in all 12. Merge it when
+steps 1 and 2 land and the seven regressions above are gone; keep
+`PYC_CSDCPA1=0` as the escape hatch for one release.
 
 **6. [111](111-FA-selective-invalidation-per-pass.md) — convergence cost.**
 A performance lever for the extra passes start-merged costs. NOT a
