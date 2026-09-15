@@ -10011,6 +10011,56 @@ static int csslotdemand_enabled() {
   return e;
 }
 
+// ifa/152: PYC_CSBACKTRACK=1 -- when a demanded CreationSet cannot be
+// partitioned because it has ONE creation point, backtrack the demand along
+// the value flow to the nearest CreationSet that HAS several, and offer that
+// one instead.
+//
+// This is the step the ladder was missing. The demand is observed where the
+// union is USED, and that is generally not where the merge HAPPENED: the
+// merged CreationSet is upstream and is usually representable on its own, so
+// `cs_elem_irrepresentable` never nominates it and it is not a candidate at
+// all. chull measures it exactly: five lists (`Hull.edges` and friends) carry
+// element {Vertex, Edge} with defs=1 and decline "single creation point" on
+// every pass, while the walk backward from each of the five names ONE
+// CreationSet with defs>=2 -- cs=1112, element {Vertex}, nine creation points
+// spanning `InitEdges`'s `newedges = []` and `Edge.__init__`'s
+// `self.endpts = []`. `extend` fills the second with Vertex; `InitEdges`
+// returns the first unwritten; they are the same contour, so `Hull.edges`
+// inherits a Vertex.
+//
+// Under ifa/146's two-question test this is a MECHANISM, not a reason. The
+// reason is the demand -- an irrepresentable element with nothing to
+// partition. Take it away and nothing is nominated: the walk only ever runs
+// from a CreationSet that has already declined. And the handle is not
+// provenance: "the offending element flows from here" is a statement about
+// value flow and deduced types, not about where a value was born.
+static int csbacktrack_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_CSBACKTRACK"); e = v ? atoi(v) : 0; }
+  return e;
+}
+// ifa/152: how many CreationSets the backtrack nominated this pass, and the
+// previous pass's count. A nominated split re-derives types from bottom, so
+// the violation count RISES before it falls and the NEXT pass looks
+// non-improving to the stall guard -- which then stops the analysis while
+// the repair is still progressing. Measured on `quameon`: the guard trips at
+// pass 40 with 34 violations where the baseline runs to 80 and reaches 0;
+// raising IFA_STALL_LIMIT alone makes the flag arm reach 0 violations at the
+// same pass count. This is the shape `PYC_STALL_REANALYZE` already names for
+// frontend-requested passes ("the violation count rises before it falls,
+// measured 44 -> 325 -> 52"), so it gets the same treatment.
+static int bt_noms_this_pass = 0;
+static int bt_noms_last_pass = 0;
+// The number of creation points that still MAP to `cs`. `cs->defs` keeps
+// entries a finer rung has since routed elsewhere, so its raw count overstates
+// what route 4 has to partition -- the same filter route 4's own loop applies.
+static int cs_live_defs(CreationSet *cs) {
+  int n = 0;
+  for (AVar *d : cs->defs)
+    if (d && d->cs_map && cs->sym && d->cs_map->get(cs->sym) == cs) ++n;
+  return n;
+}
 static bool cs_elem_irrepresentable(CreationSet *cs) {
   if (!cs || !cs->sym) return false;
   if (cs->sym->element && cs->sym->element->var && cs->added_element_var)
@@ -10228,6 +10278,62 @@ static void cs_member_signature(AVar *d, std::string &out) {
           fprintf(stderr, "\n");
         }
       }
+  // ifa/152: BACKTRACK THE DEMAND. Every candidate gathered above was
+  // nominated because the union is observed AT it; a candidate with one
+  // creation point has nothing to partition and declines below. Walk the
+  // value flow backward from its content and nominate the nearest
+  // CreationSet that has several. See `csbacktrack_enabled`.
+  if (csbacktrack_enabled()) {
+    Vec<CreationSet *> declining;
+    for (CreationSet *cs : css)
+      if (cs && cs->sym && cs_live_defs(cs) < 2) declining.set_add(cs);
+    for (CreationSet *cs : declining) {
+      if (!cs) continue;
+      Vec<AVar *> content;
+      cs_content_avars(cs, content);
+      // The OFFENDING TYPES: what the demanded content actually holds. An
+      // upstream CreationSet is only nominated if it SUPPLIES one of them.
+      // Without this the backward walk nominates whatever the value flow
+      // happens to pass through -- on chull it offered 49 CreationSets
+      // including `Vector` and `__tuple_iter__`, which have no bearing on the
+      // {Vertex, Edge} union at all. "Backtrack the demand" means follow the
+      // demand's OWN types; a walk that ignores them is splitting by reach,
+      // which is arbitrary however well it converges.
+      Vec<CreationSet *> want;
+      for (AVar *c : content)
+        if (c && c->out && c->out->type)
+          for (CreationSet *w : c->out->type->sorted)
+            if (w) want.set_add(w);
+      Vec<AVar *> seen, work;
+      for (AVar *c : content)
+        if (c && seen.set_add(c)) work.add(c);
+      for (int i = 0; i < work.n && i < 20000; i++)
+        for (AVar *b : work.v[i]->backward)
+          if (b && seen.set_add(b)) {
+            work.add(b);
+            if (b->contour_is_entry_set || b->contour == GLOBAL_CONTOUR) continue;
+            CreationSet *bcs = (CreationSet *)b->contour;
+            if (!bcs || !bcs->sym || bcs == cs) continue;
+            if (!fa->css_set.set_in(bcs) || css.set_in(bcs)) continue;
+            if (cs_live_defs(bcs) < 2) continue;
+            Vec<AVar *> bcontent;
+            cs_content_avars(bcs, bcontent);
+            bool supplies = false;
+            for (AVar *bc : bcontent)
+              if (bc && bc->out && bc->out->type) {
+                for (CreationSet *w : bc->out->type->sorted)
+                  if (w && want.set_in(w)) { supplies = true; break; }
+                if (supplies) break;
+              }
+            if (!supplies) continue;
+            css.set_add(bcs);
+            ++bt_noms_this_pass;
+            if (dbg)
+              fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s BACKTRACKED from cs=%d defs=%d\n", analysis_pass,
+                      bcs->id, bcs->sym->name ? bcs->sym->name : "?", cs->id, cs_live_defs(bcs));
+          }
+    }
+  }
   if (dbg)
     fprintf(stderr, "[csdefsplit] p=%d ENTER candidates=%d (confluence=%d demand=%d)\n", analysis_pass,
             css.set_count(), from_confluence, css.set_count() - from_confluence);
@@ -12376,7 +12482,10 @@ static void probe_invalidation_closure() {
         static int stall_reanalyze = -1;
         if (stall_reanalyze < 0)
           stall_reanalyze = getenv("PYC_STALL_REANALYZE") ? atoi(getenv("PYC_STALL_REANALYZE")) : 0;
-        if (!(stall_reanalyze && fa->last_pass_reanalyze)) {
+        // ifa/152: ditto for a pass following a BACKTRACK nomination -- the
+        // split it made is still settling, so a worse count here is the
+        // expected transient and not divergence.
+        if (!(stall_reanalyze && fa->last_pass_reanalyze) && !bt_noms_last_pass) {
           if (rederived) ++fa->stall_passes;
           ++fa->nonimprove_passes;
         }
@@ -12539,6 +12648,11 @@ static void probe_invalidation_closure() {
       printf("    mark_type sub-phases: closure %f s, diag %f s, collect %f s, split+clear %f s\n",
              stage2_closure_time, stage2_diag_time, stage2_collect_time, stage2_split_time);
   }
+  // ifa/152: roll the per-pass nomination counter over. `extend_analysis`
+  // runs exactly once per pass, so this is the one place that sees each pass
+  // boundary.
+  bt_noms_last_pass = bt_noms_this_pass;
+  bt_noms_this_pass = 0;
   return analyze_again;
 }
 

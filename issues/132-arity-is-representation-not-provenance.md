@@ -1,7 +1,31 @@
 # 132 — Arity is representation, not provenance
 
 **Status:** open. Guard landed (inert at the default); the real fix is
-below. Root-caused while investigating
+below.
+
+**2026-09-14 — this issue is now the blocker for
+[152](152-FA-backtrack-the-demand-to-the-merged-creation-set.md)'s default.**
+A second shape of the same defect, measured on `quameon`: one member holding
+BOTH an arity-recorded literal and an appended element-channel list has no
+slot representation, so codegen emits `_CG_void e19; /* charges */` and reads
+it as `_CG_any` at nine sites, resolving each index from the FA type instead.
+
+```python
+def __init__(self, npos=[], charges=None):
+    if charges == None:
+      self.charges = []                 # element-channel list
+      for ...: self.charges.append(1.0)
+    else:
+      self.charges = charges            # [atom[1][0]] -- an ARITY-1 RECORD
+```
+
+`cs=2912` keeps `no_static_arity=0` right through that confluence. The needed
+rule: **when an arity-recorded literal and a non-arity list meet at a member,
+drop the static arity** — the member is the confluence, and arity is exactly
+the representation property that cannot survive it. Present at the default as
+well as under `PYC_CSBACKTRACK=1`, so this is latent today and only becomes
+fatal when finer contours leave one of those nine reads without a single
+dispatch target. Root-caused while investigating
 [131](131-demand-driven-constant-splitting.md)'s falsified premise, in
 service of [128](128-cs-identity-over-discriminates-vs-element-type.md)'s
 start-merged posture (`PYC_CSDCPA1`).

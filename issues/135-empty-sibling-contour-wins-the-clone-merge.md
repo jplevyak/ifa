@@ -1,10 +1,15 @@
 # 135 — an empty sibling CreationSet wins the clone merge and blanks a field
 
 **Status:** open, root-caused 2026-09-06. Group B of
-[129](129-plan-demand-driven-creation-set-splitting.md)'s bill — **6 cases
-from one mechanism**, 4 corpus (`chull`, `kanoodle`, `path_tracing`,
-`pygmy`) and 2 suite (`poly_dispatch_shared_method_extra_args`,
+[129](129-plan-demand-driven-creation-set-splitting.md)'s bill — **5 cases
+from one mechanism**, 3 corpus (`kanoodle`, `path_tracing`, `pygmy`) and 2
+suite (`poly_dispatch_shared_method_extra_args`,
 `sibling_subclass_field_layout`) under `PYC_CSDCPA1=2`.
+
+**`chull` was removed from that list 2026-09-14** — it is a different
+mechanism, and it is now fixed by
+[152](152-FA-backtrack-the-demand-to-the-merged-creation-set.md). See
+"`chull` is NOT this mechanism" below.
 
 This is the question CLAUDE.md's "be aggressive" section says was never
 asked: *why do two clones of one class have divergent member types, and
@@ -99,6 +104,25 @@ Two consequences:
    rule that makes union-co-occurring classes agree on the slot of every
    shared promoted field, or the union not to form. Neither is the
    empty-sibling clone merge below.
+
+**Resolved 2026-09-14 by the second branch — the union does not form.**
+[152](152-FA-backtrack-the-demand-to-the-merged-creation-set.md) traced it:
+`InitEdges`'s `newedges = []` shares a CreationSet with `Edge.__init__`'s
+`self.endpts = []` (cs=1112, nine creation points), `extend` fills that
+contour with `Vertex`, and `InitEdges` returns it into `Hull.edges`. The
+five lists carrying the `{Vertex, Edge}` union all have ONE creation point,
+so route 4 declined "single creation point" on all 50 passes while the
+splittable merge sat one backward walk upstream, representable on its own
+and therefore never a candidate. With `PYC_CSBACKTRACK=1` `chull` compiles
+with **0 errors and 0 warnings** and every list element channel holds
+`Vertex` or `Edge`, never both.
+
+**The layout defect this section describes is still real and still
+unfixed** — the promotions remain byte-identical and conflicting. 152 only
+removes the union that made it *reachable*. `chull` still segfaults at
+runtime for the separate reason recorded below (`run 139` on main), so the
+`sorted_unknown_vars` alignment rule above remains worth doing on its own
+merits.
 
 `kanoodle`, `path_tracing` and `pygmy` were attributed to this issue at the
 same time as `chull` and on the same evidence, so **re-verify them before

@@ -4,8 +4,9 @@
 [131](131-demand-driven-constant-splitting.md),
 [133](133-split-a-container-on-its-element-type.md),
 [134](134-remove-the-frontend-forced-split-opt-in.md),
-[146](146-remove-all-arbitrary-splitting.md) and
-[151](151-split-an-entryset-on-a-constant-argument-on-demand.md) are steps
+[146](146-remove-all-arbitrary-splitting.md),
+[151](151-split-an-entryset-on-a-constant-argument-on-demand.md) and
+[152](152-FA-backtrack-the-demand-to-the-merged-creation-set.md) are steps
 or constraints inside it; none of them carries a competing plan. If one
 seems to, this file wins and the other should be corrected.
 
@@ -30,7 +31,11 @@ measured that moves the number, and it takes `ess` DOWN rather than up.
    per sym, needing no evidence. (Why mint-time reuse keying is a dead
    frame: 128, "Where reuse fits".)
 2. **Demand-driven separation** — give the precision back only where
-   something observed a distinction and could not proceed.
+   something observed a distinction and could not proceed. And the demand
+   is observed where the union is USED, which is almost never where the
+   merge happened — so step 2 is incomplete without
+   [152](152-FA-backtrack-the-demand-to-the-merged-creation-set.md),
+   which walks the demand back to the CreationSet that actually merged.
 3. **A ledger** so a re-derived separation re-attaches to the contour it
    first made instead of minting a fresh one. Matters MORE the coarser you
    start (`ledger_find_cs`/`ledger_add_cs`,
