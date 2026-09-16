@@ -112,9 +112,72 @@ table above).
 
 So "split on mixed primitive formals" is not a switch that is off — it is a
 detector that has already stopped looking by the time the mix is observable,
-over a fixed point that leaves nothing local to key on. Which is why the
-demand has to come from somewhere that is still watching (coercion's failure)
-and be carried back to where the paths are still pure.
+over a fixed point that leaves nothing local to key on. The fix is not a
+different demand SOURCE but a different TIME: see the correction below.
+
+## CORRECTION, and the real defect: quiescence is never reached
+
+I wrote that "the demand cannot come from a confluence". **That is wrong and
+is withdrawn.** The confluence IS FA's demand mechanism — that is the core of
+the design, not a detail. The defect measured above is not that confluences
+cannot carry this demand; it is that **detection is edge-triggered instead of
+being evaluated at quiescence**.
+
+**Author's directive, 2026-09-15: ALL demand should be evaluated after
+quiescence. All.**
+
+That is the correct architecture and it is what "start minimal, split only on
+demand" actually requires: let types reach a fixed point, then ask — on
+CONVERGED types, level-triggered — which AVars hold a union something cannot
+proceed on. An opportunistic test that fires while a union is FORMING sees a
+transient and then goes blind, which is exactly the 1184-vs-47 result above.
+
+**And the pipeline already believes this.** Stages 6+ are gated on
+`!analyze_again`, i.e. quiescence of stages 1-5, with the reasoning written
+out at `PER_CS_RECEIVER`. The file even records the failure:
+
+> The stage IS starved on plcfrs/rdb/sudoku5 — TYPE_CONFLUENCE fires every
+> pass there, so `!analyze_again` is never true and this never runs. […] The
+> answer has to be a reason this stage may act, not permission to act without
+> one.
+
+**Measured (`PYC_DBG_QUIESCE`, new) — it is far worse than "starved on three
+programs":**
+
+| program | passes reaching quiescence |
+| --- | --- |
+| `softrender` | **3 of 56** |
+| `fysphun` | **3 of 18** |
+| `sudoku4` | **0 of 19** |
+
+On `sudoku4` — the program this whole line of work is about — the gate stages
+6+ hang on is reached **zero times**. Stage counts agree: `TYPE_CONFL` fires
+on nearly every pass (56 on softrender, 19 on sudoku4) while
+`PER_CS_RECEIVER` and `CSM_ELEMENT_CS` fire **never**.
+
+Route 4 escapes only because it takes quiescence as a PARAMETER
+(`split_css_by_defs(int quiescent)`) rather than being gated out — which is
+why ifa/143's level-triggered `csdemand` works at all, and is the one place
+the architecture the directive describes is already implemented.
+
+**So the ordering is right on paper and inoperative in practice.** An
+edge-triggered stage 1 keeps finding transient work, quiescence never arrives,
+and every demand test that waits for it never runs. That is upstream of the
+int/float question, of `sudoku4`, and of ifa/146's ESBLOCK trade — all three
+are downstream symptoms of demand being evaluated at the wrong time.
+
+### What that implies for the work
+
+Not "find another demand source". The restructure is:
+
+1. **Make stage 1 level-triggered at quiescence.** Ask "does this AVar hold a
+   union?" on converged types, not "did a writer just bring something new?".
+   The edge-triggered form should not be what drives splitting.
+2. **Then the numeric case needs no special demand source at all** — a formal
+   holding `{int64, float64}` is visible at quiescence, every pass, instead of
+   for one transient window.
+3. **Coercion keeps its place as the last resort**, in reanalyze phase 2,
+   applying only to what no split could separate.
 
 ## What the directive actually needs
 

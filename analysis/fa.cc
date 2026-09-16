@@ -12318,6 +12318,11 @@ static void dbg_es_per_fun() {
   // starvation with more splitting rather than with a demand test. The
   // starvation is real and still open; the answer has to be a reason this
   // stage may act, not permission to act without one.
+  // ifa/156 PROBE (PYC_DBG_QUIESCE): how often is the quiescence gate that
+  // stages 6+ hang on actually REACHED? "All demand after quiescence" is only
+  // implementable if quiescence happens.
+  if (getenv("PYC_DBG_QUIESCE"))
+    fprintf(stderr, "[quiesce] p=%d reached=%d\n", analysis_pass, analyze_again ? 0 : 1);
   if (!analyze_again) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
     stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
