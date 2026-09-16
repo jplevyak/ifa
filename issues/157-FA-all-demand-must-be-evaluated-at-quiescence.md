@@ -677,7 +677,14 @@ groups than pyc already produces. It cannot split anything pyc does not.
 So neither is the answer. But the criterion in the question is, and it points
 at code that already exists.
 
-### `split_css(setter_starters)` is the CS-by-setter split, and it is unreachable
+### `split_css(setter_starters)` is the CS-by-setter split, and it is starved exactly where it is needed
+
+**Scope correction.** It is not unreachable in general — measured at the
+default, `split_css` runs 31 times on `bh`, 38 on `go`, 8 on `richards`, 4 on
+`chess`. It runs **zero** times on `sudoku4`. The stage works on the programs
+whose stage 1 converges and is starved on the ones whose stage 1 never does,
+which is this issue's thesis stated per-program: the cascade gate starves the
+lower stages precisely on the programs that need them.
 
 `split_for_setters` ends in `split_css(setter_starters)` — partition a
 CreationSet by setter equivalence classes. That IS "for cs it is by setters".
@@ -737,6 +744,73 @@ That is `PYC_SETTERGATE=3`, and it is **worse than no filter at all**:
 Partitioning only the demanded containers while their siblings stay merged is
 *less* stable than partitioning all of them or none — the split CreationSets
 and the unsplit ones disagree about the same element channel. Mode 3 removed.
+
+### The modes, and which is sound
+
+Two priority gates and one candidate-set switch, all independent:
+
+| | axis | effect |
+| --- | --- | --- |
+| `PYC_SETTERGATE=0` | — | SETTER stage runs only when stages 1-2 found nothing this pass; `split_css` then runs. Starved to zero on `sudoku4`, fine on `bh`/`go`. |
+| `=1` | outer gate off | stage runs every pass, but the inner `if (analyze_again) return 1` still preempts `split_css`. Only the ES-side `split_ess_setters` gains. |
+| `=2` | both gates off | `split_css` runs every pass over all starters. |
+| ~~`=3`~~ | + demand filter on candidates | **removed** — partial application is unstable. |
+| `PYC_ELEMSETTER=1` | candidate set | adds CreationSets with an irrepresentable element and seeds their starters from `cs->defs`. Orthogonal to the gates. |
+
+And one thing that is **not** a mode, which is where the problem is:
+`split_css` always partitions to the **finest** grouping setter equivalence
+induces — it peels `same_eq_classes` groups until none remain — with no
+reference to whether any demand required that distinction.
+
+Scored against *principled, general, minimal*:
+
+| | principled (gated by demand, not by priority) | general (uniform) | minimal (only demanded contours) |
+| --- | --- | --- | --- |
+| `=0` | **no** — gated on "did another stage act", a scheduling artifact, not a property of the program | yes | no — finest partition where it runs |
+| `=1` | no | yes | n/a — `split_css` never reached |
+| `=2` | **yes** | **yes** | **no** — maximal partition, universally. +31% contours |
+| `=3` | yes | **no** — and that is what broke it | no |
+
+**`=2` is the most principled and most general, and the least minimal.** No
+existing mode is sound, and the failure is on the axis the project cares most
+about.
+
+### The sound mode does not exist, and the measurements say what it is
+
+Every pass, no priority gate (`=2`'s axis). Uniformly over all CreationSets
+(`=2`'s and `=0`'s generality — `=3` measured that partial application is
+unsound). But partitioning to the **COARSEST setter-induced grouping that
+discharges the demand**, not the finest:
+
+- **setters supply the vocabulary** — the handle naming the parts;
+- **demand supplies the trigger AND the stopping criterion** — keep separating
+  setter classes only while some group's content is still irrepresentable, and
+  stop the moment every group is representable.
+
+Minimal by construction: no contour is minted that no demand asked for.
+
+This is CLAUDE.md's reason/mechanism refinement applied to **granularity**
+rather than to existence, and that is the step every attempt in this issue has
+missed. `=3` applied demand to *which containers to split*; the sound version
+applies it to *how far to split each one*.
+
+It also explains all four measurements as one story:
+
+| | demand consulted? | result |
+| --- | --- | --- |
+| `=0` on `sudoku4` | never — stage starved | no contours, fails to compile |
+| `=1` | never | ES-side split only |
+| `=2` | never — setters consulted, demand not | maximal partition, +31% contours |
+| `=3` | as a container filter, not a depth limit | partial, siblings disagree, unstable |
+
+Implementation is cheap and local to `split_css`: compute the setter classes as
+now, then start from ONE group and separate a class only while the group's
+content channel is irrepresentable — or equivalently compute the finest
+partition and greedily merge back while each merged group stays representable.
+`n` is small. The verification is the same three-arm corpus comparison used
+above, with the stop condition written first: **if the coarsest-that-discharges
+partition still costs contours corpus-wide, the setter vocabulary is not
+expressive enough to name this demand, and the answer is not in this rung.**
 
 ### Where this leaves it
 
