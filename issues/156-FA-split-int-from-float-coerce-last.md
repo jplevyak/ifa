@@ -63,6 +63,59 @@ And the ENTIRE demand ladder is about CreationSets: `elem_irrepresentable`,
 lever measures as a no-op. It was removed rather than left off
 (CLAUDE.md: delete an inert lever, do not default it away).
 
+## "We should be splitting EntrySets on mixed primitive formals" — why that does not fire
+
+It should, and nothing excludes basic types from the machinery. Three
+independent things stop it, and all three are measured on `softrender`.
+
+**1. The confluence detector is EDGE-triggered, not level-triggered.**
+`collect_type_confluence` flags an AVar only when some writer contributes a
+type it does not already have:
+
+```c
+if (x->out->type->n && type_diff(av->in->type, x->out->type) != bottom_type) {
+  confluences.set_add(av); ...
+}
+```
+
+So a formal is a confluence only on the pass the union is FORMING. Once
+`{int64, float64}` has settled, every writer is a subset, `type_diff` is
+bottom, and the AVar is never reported again. Counting `IFA_DBG_CONFLUENCE`
+reports for formals whose type is exactly `{int64, float64}`:
+
+| | count |
+| --- | --- |
+| `added=0` (present, not flagged) | **1184** |
+| `added=1` (flagged) | 47 |
+
+**96% of the time the mix is sitting right there and no confluence is
+raised.** A concrete one:
+
+```
+CONFL p=2 es=548 formal=x added=0  in: int64#6 float64#86  out: int64#6 float64#86
+  | writers(1): {av=43886 __add__/es548: int64#6 float64#86 RAW: int64#6 float64#86}
+```
+
+Note the writer is `__add__/es548` — the SAME contour. The formal's writer is
+inside its own contour: a self-loop, which is the fixed point made concrete,
+and with ONE writer there is nothing to separate at that point even in
+principle.
+
+**2. In the 47 where it does fire, there is nothing to partition.** Every
+in-edge already carries the union, so `etype == stype` and
+`edge_type_compatible_with_entry_set` sees no disagreement — the same
+self-blinding recorded in [146](146-remove-all-arbitrary-splitting.md).
+
+**3. And the demand ladder could not consume it anyway**, because ~96% of
+these AVars are EntrySet-contoured while the ladder is CreationSet-only (the
+table above).
+
+So "split on mixed primitive formals" is not a switch that is off — it is a
+detector that has already stopped looking by the time the mix is observable,
+over a fixed point that leaves nothing local to key on. Which is why the
+demand has to come from somewhere that is still watching (coercion's failure)
+and be carried back to where the paths are still pure.
+
 ## What the directive actually needs
 
 An **EntrySet-side demand rung**, which does not exist today:
