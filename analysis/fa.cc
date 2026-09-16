@@ -11098,6 +11098,12 @@ static void cs_member_signature(AVar *d, std::string &out) {
   return analyze_again;
 }
 
+static int settergate_level() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_SETTERGATE"); e = v ? atoi(v) : 0; }
+  return e;
+}
+
 [[nodiscard]] static int split_for_setters(Accum<AVar *> &avs, int analyze_again) {
   Vec<AVar *> setter_confluences, setter_starters;
   collect_setter_confluences(avs, setter_confluences, setter_starters);
@@ -11117,10 +11123,39 @@ static void cs_member_signature(AVar *d, std::string &out) {
   // CreationSets unchanged at 2736, pyc suite 313 passed / 0 failed on both
   // backends. It fired on one program (`plcfrs`, ess 1102 -> 1094) and cost
   // contours where it did.
-  if (analyze_again) {
+  // ifa/157: the SECOND gate on the CS-by-setter split. `split_css` is the
+  // author's stated criterion -- "splitting must be by demand, for cs it is by
+  // setters" -- and it is preempted here whenever any earlier stage acted this
+  // pass, on top of the outer `!analyze_again` gate in run_split_stages. Both
+  // must be lifted for it to run at all: measured on `sudoku4`,
+  // PYC_SETTERGATE=1 lifts the outer one and `split_css REACHED` still prints
+  // ZERO times while this preemption prints 17. PYC_SETTERGATE=2 lifts both.
+  if (analyze_again && settergate_level() < 2) {
     if (dbg) fprintf(stderr, "[sfs] p=%d analyze_again preempts split_css\n", analysis_pass);
     return 1;
   }
+  // ifa/157: AND A DEMAND FILTER HERE WAS TRIED AND IS DEAD.
+  //
+  // `setter_starters` carries NO demand test -- it is every AVar whose setters
+  // write a CreationSet it allocates, i.e. essentially every container
+  // allocation in the program. So `split_css` on it is a wholesale setter
+  // partition of everything, and the `analyze_again` preemption above is
+  // standing in for a demand gate rather than being one.
+  //
+  // The obvious repair -- keep the setter criterion, offer only starters that
+  // allocate a CreationSet something cannot proceed on (`cs_elem_irrepresentable`,
+  // route 4's own `csdemand` predicate) -- makes it WORSE, not better:
+  //
+  //             gate=0        gate=2 (no filter)   gate=3 (demand-filtered)
+  //   sudoku4   fails, 39w    compiles, 15w        fails, 36w
+  //   sudoku5   runs,  19w    fails,    20w        fails, 61w
+  //   linalg    runs,  33w    runs,    137w        FAILS, 182w
+  //   plcfrs    runs, 122w    runs,    183w        FAILS, 378w
+  //
+  // Partitioning only the demanded containers while their siblings stay merged
+  // is less stable than partitioning all of them or none: the split
+  // CreationSets and the unsplit ones disagree about the same element channel.
+  // So the demand filter is not the missing gate, and mode 3 was removed.
   int r = split_css(setter_starters);
   if (dbg) fprintf(stderr, "[sfs] p=%d split_css REACHED starters=%d -> %d\n", analysis_pass, setter_starters.n, r);
   if (r) return 1;

@@ -657,6 +657,99 @@ doubt: **demand IS evaluated on converged types.** The defect is the cascade.
 - [133](133-split-a-container-on-its-element-type.md) — `PYC_CONFDEMAND`, the
   probe whose predicate step 1 reuses
 
+## "For CS it is by setters" — that mechanism exists and has never run
+
+**Author:** *"Splitting must be by demand, for cs it is by setters. So no
+arbitrary fans. Are the cheaper absences demand, principled and testable?"*
+
+### The two shedskin absences, against that test
+
+| | demand? | principled? | testable? | verdict |
+| --- | --- | --- | --- | --- |
+| rung 3 (`prt`) | **no** — a partition KEY, not a demand | yes (deduced types, no provenance) | yes | **provably useless** |
+| `ifa_confluence_point` | **no** — a locator; "a creation point appears in two assign sets" is a FACT, the same shape as "this formal's type is a union" | yes | yes | not the mechanism |
+
+`prt` is *dominated*: pyc's key is one bit per assign set; `prt`'s is the
+flattened union of the types of the sets a csite lies on. Same bitstring ⇒ same
+union, so its equivalence is coarser-or-equal and it can never produce more
+groups than pyc already produces. It cannot split anything pyc does not.
+
+So neither is the answer. But the criterion in the question is, and it points
+at code that already exists.
+
+### `split_css(setter_starters)` is the CS-by-setter split, and it is unreachable
+
+`split_for_setters` ends in `split_css(setter_starters)` — partition a
+CreationSet by setter equivalence classes. That IS "for cs it is by setters".
+It sits behind **two** gates: the outer `!analyze_again` in `run_split_stages`,
+and an inner `if (analyze_again) return 1` that preempts it whenever any
+earlier stage acted this pass. `PYC_SETTERGATE=1` lifts only the outer one.
+
+Measured on `sudoku4`:
+
+| | `split_css` reached | preempted | warnings | compiles |
+| --- | --- | --- | --- | --- |
+| default | **0** | 0 (stage never runs) | 39 | no |
+| `PYC_SETTERGATE=1` | **0** | 17 | 36 | yes |
+| `PYC_SETTERGATE=2` (new, both gates) | **22** | 0 | **15** | yes |
+
+`=1`'s compile fix comes from the *EntrySet*-side setter split
+(`split_ess_setters`, 2 wins) — `split_css` still ran zero times. **The CS
+criterion had never executed on this program at all.**
+
+### Lifting the gate is not the fix — the gate was standing in for a demand test
+
+`collect_setter_confluences` builds `setter_starters` with **no demand test**:
+every AVar whose setters write a CreationSet it allocates, i.e. essentially
+every container allocation in the program. So `split_css` on it is a wholesale
+setter partition of everything, and `analyze_again` was throttling it rather
+than qualifying it.
+
+Corpus `-m check`, all three arms on `f13e1b2e`, fresh builds:
+
+| | default | `=1` | `=2` |
+| --- | --- | --- | --- |
+| compile_fail | 3 | **2** | 3 |
+| run_fail | 35 | 36 | 36 |
+| stdout_differs | 25 | 25 | **24** |
+| container CS / shapes | 2051/614 = 3.34 | 2110/617 = 3.42 | **2694/616 = 4.37** |
+
+`=2` is **+31% container CreationSets**, and its two verdict changes trade
+against each other: `sudoku4` compile-fail → compiles, `sudoku5` runs →
+**compile-fail**. No program that matched CPython moved (same four in every
+arm). Warnings: `pygasus` 52 → 2 and `sudoku4` 39 → 15, against `linalg`
+33 → 137 and `plcfrs` 122 → 183. Non-monotone, so not a default.
+
+### And the obvious repair is dead too
+
+Keep the setter criterion, supply the missing reason: offer only starters that
+allocate a CreationSet something cannot proceed on — `cs_elem_irrepresentable`,
+route 4's own `csdemand` predicate, so the two rungs agree on what a demand is.
+That is `PYC_SETTERGATE=3`, and it is **worse than no filter at all**:
+
+| | gate=0 | gate=2 (no filter) | gate=3 (demand-filtered) |
+| --- | --- | --- | --- |
+| `sudoku4` | fails, 39w | compiles, 15w | fails, 36w |
+| `sudoku5` | runs, 19w | fails, 20w | fails, 61w |
+| `linalg` | runs, 33w | runs, 137w | **FAILS**, 182w |
+| `plcfrs` | runs, 122w | runs, 183w | **FAILS**, 378w |
+
+Partitioning only the demanded containers while their siblings stay merged is
+*less* stable than partitioning all of them or none — the split CreationSets
+and the unsplit ones disagree about the same element channel. Mode 3 removed.
+
+### Where this leaves it
+
+The directive is right and the mechanism is present; what is missing is a
+qualification of `setter_starters` that is neither "everything" nor
+"only the irrepresentable ones". Both extremes are now measured. The middle —
+what makes a setter partition of THIS container safe when its siblings are not
+partitioned — is the open question, and it is a sharper one than "how do we
+make the CS split".
+
+`PYC_SETTERGATE=2` is kept at default 0, as the only way to exercise the CS
+criterion at all; its cost is the table above.
+
 ## How shedskin handles it
 
 **Author:** *"How does shedskin handle it?"* CLAUDE.md treats shedskin as the
