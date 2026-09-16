@@ -839,39 +839,97 @@ worse.** With both priority gates also lifted it helps exactly one program
 (`linalg` 137 → 54) and costs the rest (`sudoku4` 15 → 36, `plcfrs` 183 → 290
 and stops compiling).
 
-#### The lesson: minimality against ONE demand is not minimality
+#### RETRACTED: "the over-split is justified"
 
-The setter partition was discharging more than irrepresentability. **Dispatch
-resolution and recorded type violations ride on the same distinction**, and
-coarsening against representability alone throws those away — after which the
-pipeline compensates by splitting EntrySets instead (+25% `ess` on `plcfrs`)
-and still fails.
+The first write-up of this measurement concluded that the finest setter
+partition was *"a conservative over-approximation"* whose extra contours were
+*"the price of over-approximating a conjunction that cannot be evaluated
+locally"*, and scored `PYC_SETTERGATE=2`'s non-minimality as **justified**.
 
-Two of the three demands the pipeline can observe — an unresolved dispatch, a
-recorded type violation — are **not local properties of a candidate group**, so
-no local key can evaluate the conjunction. The finest setter partition is a
-conservative **over-approximation** of "the coarsest partition discharging every
-demand", and that is why it works.
+**That is a retreat and it is withdrawn.** It is the exact failure CLAUDE.md
+names: *"the numbers get much worse and the change still passes; the new rule is
+described as conservative or safe; the underlying disagreement is worked around
+rather than explained."* It even used the word.
 
-And ifa/146's own diagnostic confirms it from the other side. The diagnostic
-says an arbitrary lever is non-monotone — *more* splitting, worse results. This
-lever splits **less** and measures worse, so the splitting it removed was
-earning its keep. The finest setter partition is not the defect it looked like.
+**Author, 2026-09-16:** *"The overriding principle is minimal contours, all
+demand driven splits. If some random arbitrary split happens to cause a program
+to compile then it was hiding another bug, which should be root caused rather
+than accepting any arbitrary split."*
 
-#### What that does to the scoring above
+So the finest partition is not justified by `SETTERMIN` breaking `plcfrs` and
+`sudoku5`. It was HIDING what `SETTERMIN` surfaces. `PYC_SETTERMIN` is kept at
+default 0 **as the instrument that exposes the defect**, explicitly not as a
+lever to be judged on its corpus numbers.
 
-The "sound mode" row has to be withdrawn. Against *principled, general,
-minimal*, `PYC_SETTERGATE=2` remains the most principled and most general, and
-its non-minimality is now **justified rather than merely tolerated**: the extra
-contours are the price of over-approximating a conjunction that cannot be
-evaluated locally.
+#### Root-causing what it surfaces — `sudoku5`
 
-So the remaining lever on contour count is not the partition's granularity. It
-is the **candidate set** — `setter_starters` is every container allocation in
-the program, with no demand test — and that is where the +31% comes from, not
-from splitting each candidate too finely. `=3` tried the obvious filter there
-and destabilised siblings; the open question is a qualification of the
-candidate set that does not.
+Under `SETTERMIN`, `sudoku5` gains **118 `has mixed basic types` errors**, which
+is the very demand this partition is built to discharge. Tracing it:
+
+- The key is **not** unstable across passes (`IFA_DBG_REPRKEY`: new=13, same=102,
+  **changed=0**), so a decision recorded from moving types is not the cause.
+- `IFA_DBG_ELEMCONF`: default has **0** element confluences, `SETTERMIN` has 3,
+  the largest being `cs=1033 sym=list defs=9 classes={int64, str, tuple}`.
+- `IFA_DBG_CSDEFS=1033`: its nine creation points are **the nine rows of the
+  sudoku grid literal**, `sudoku5.py:77-85`, all `list[int64]`.
+
+**Merging those nine is CORRECT.** They are nine identical `list[int64]`
+literals; no demand distinguishes them, and CLAUDE.md's premise says they should
+share one contour. The default arm separates them only as a side effect of
+setter-equivalence over-splitting — which is precisely the arbitrary split the
+directive forbids.
+
+The union does not come from the creation points. `cs=1033`'s element channel
+has exactly **one** writer:
+
+```
+<- av=4253 in=__setitem__ es=80 : int64 str tuple#1087 tuple#1144 tuple#1146 tuple#1148 tuple#1150
+```
+
+and `es=80` has exactly one in-edge, from `solve_sudoku`:
+
+```
+es=80 args= [__setitem__] [list#1033] [int64 str tuple...] [int64 str tuple...]
+  <- edge=1114 from=solve_sudoku es=65
+```
+
+That is `grid[r][c] = n` (`sudoku5.py:33`). **Both the index and the value
+formal hold `{int64, str, tuple x5}`** — and a list index that can be a `str` is
+already wrong on its own, independent of any contour question.
+
+Upstream is tuple destructuring:
+
+```python
+for (r, c, n) in solution:      # solution holds (r,c,n) 3-tuples
+    grid[r][c] = n
+c = min([(len(X[c]), c) for c in X])[1]   # 2-tuples (int, X-key)
+X1 = [("rc", rc) for rc in product(...)]  # 2-tuples (str, tuple)
+```
+
+Several distinct tuple shapes reach one variable, so unpacking hands every
+position the union of all of them. The five separate `tuple#…` contours in the
+union show arity separation (ifa/132) is working; what fails is that a
+*variable* ends up holding all five plus two scalars.
+
+**So the hidden bug is upstream of the container partition entirely**, in how a
+destructured tuple's positions are typed — not in `split_css`'s granularity.
+The finest setter partition scatters the grid rows across contours so the
+pollution lands on one of them and the rest stay clean, which is why the default
+compiles.
+
+#### What is established, and what is next
+
+- The retreat is withdrawn; non-minimality is **not** justified.
+- `SETTERMIN`'s partition is correct where it was blamed: merging nine identical
+  `list[int64]` literals is the minimal demanded answer.
+- The defect it exposes is real and independent: a list `__setitem__` whose
+  **index** formal admits `str` and `tuple`.
+- Next step is to root cause that — which tuple contour feeds `c` and `n` at
+  `sudoku5.py:33`, and why `min([...])[1]` and the `(r,c,n)` unpack reach the
+  same variable. **Stop condition:** if the positions turn out to be genuinely
+  separate contours and the union is formed at a confluence with a demand that
+  no test nominates, this rejoins the main thread of this issue rather than
+  being a tuple bug.
 
 ### Where this leaves it
 

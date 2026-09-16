@@ -8828,41 +8828,62 @@ static int elemsetter_enabled() {
 }
 static int es_added = 0, es_seeded = 0;
 
-// ifa/157: "PARTITION TO THE COARSEST GROUPING THAT DISCHARGES THE DEMAND" WAS
-// BUILT AND IS DEAD. The loop below peels `same_eq_classes` groups until none
-// remain -- the FINEST partition setter equivalence induces -- and that looked
-// like the defect: it mints one contour per setter class whether or not any
-// demand required the distinction (+31% container CreationSets corpus-wide
-// with both priority gates lifted).
+// ifa/157: PYC_SETTERMIN -- partition to the COARSEST setter-induced grouping
+// that discharges the demand, instead of the finest one setter equivalence
+// induces.
 //
-// The replacement was principled and provably minimal FOR ITS DEMAND. A union
-// has no representation exactly when it mixes a basic type with a
-// pointer-shaped one, or two distinct basic kinds; so a group is representable
+// A union has no representation exactly when it mixes a basic type with a
+// pointer-shaped one, or two distinct basic kinds. So a group is representable
 // exactly when its written types are all pointer-shaped or all one basic kind,
 // and the unique coarsest valid partition is "one group for every
 // pointer-shaped writer, one group per basic kind" -- computable in one pass
 // from `s->out` over each starter's setters.
 //
-// It does precisely what it claims and everything else gets worse:
-//
-//            container_cs      ess         css        warnings
-//   plcfrs   152 -> 142 DOWN   1242->1555  2440->2739  122 -> 322, stops compiling
-//   sudoku5   59 ->  50 DOWN    615-> 767  1400->1782   19 ->  62, stops compiling
-//
-// THE LESSON, and it is the useful part: **minimality against ONE demand is not
-// minimality.** The setter partition was discharging more than
-// irrepresentability -- dispatch resolution and recorded type violations ride
-// on the same distinction -- and coarsening against representability alone
-// throws those away, after which the pipeline compensates by splitting
-// EntrySets instead (+25% ess) and still fails.
-//
-// Two of the three demands the pipeline can observe are not local properties of
-// a candidate group, so no local key can evaluate the conjunction. The finest
-// setter partition is a conservative OVER-APPROXIMATION of it, which is why it
-// works. And ifa/146's own diagnostic confirms it from the other side: this
-// lever splits LESS and measures worse, so the splitting it removed was earning
-// its keep.
-//
+// This is the partition CLAUDE.md's premise asks for: the minimum contours
+// demand requires, and no more. Where it currently costs programs
+// (`plcfrs`, `sudoku5`), the finest partition was HIDING a defect that this
+// surfaces -- root cause that, do not accept the over-split.
+static int settermin_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_SETTERMIN"); e = v ? atoi(v) : 0; }
+  return e;
+}
+
+// 0 = pointer-shaped, 1 = already-mixed (undischargeable), otherwise the basic
+// type Sym. Comparable by value, which is all the partition needs.
+// ifa/157 probe: is this key STABLE across passes? A split decision is durable
+// (`cs_map->put`), so a key derived from types that move between passes records
+// a decision the next pass would not have made.
+static Map<AVar *, uintptr_t> rk_last;
+static long rk_same = 0, rk_changed = 0, rk_new = 0;
+
+static uintptr_t setter_repr_key_raw(AVar *starter);
+static uintptr_t setter_repr_key(AVar *starter) {
+  uintptr_t k = setter_repr_key_raw(starter);
+  if (getenv("IFA_DBG_REPRKEY")) {
+    uintptr_t prev = rk_last.get(starter);
+    if (!prev) ++rk_new; else if (prev == k + 2) ++rk_same; else ++rk_changed;
+    rk_last.put(starter, k + 2);  // +2 so 0 means "unseen"
+  }
+  return k;
+}
+static uintptr_t setter_repr_key_raw(AVar *starter) {
+  if (!starter->setters) return 0;
+  Vec<Sym *> basics;
+  int nonbasic = 0;
+  for (AVar *s : *starter->setters) if (s && s->out && s->out->type)
+    for (CreationSet *c : s->out->type->sorted) {
+      if (!c || !c->sym || c->sym == sym_nil_type) continue;
+      if (Sym *b = to_basic_type(c->sym->type)) basics.set_add(b); else ++nonbasic;
+    }
+  const int nb = basics.set_count();
+  if (!nb) return 0;
+  if (nb == 1 && !nonbasic) {
+    for (Sym *b : basics) if (b) return (uintptr_t)b;
+  }
+  return 1;
+}
+
 [[nodiscard]] static int split_css(Vec<AVar *> &starters) {
   int analyze_again = 0;
   Vec<CreationSet *> css;
@@ -8899,8 +8920,12 @@ static int es_added = 0, es_seeded = 0;
     while (starter_set.n > 1) {
       AVar *av = starter_set[0];
       Vec<AVar *> compatible_set;
+      const int minmode = settermin_enabled();
+      const uintptr_t avkey = minmode ? setter_repr_key(av) : 0;
       for (AVar *v : starter_set) {
-        if (same_eq_classes(v->setters, av->setters))
+        const bool together = minmode ? (setter_repr_key(v) == avkey)
+                                      : (same_eq_classes(v->setters, av->setters) != 0);
+        if (together)
           compatible_set.set_add(v);
         else
           save.add(v);
@@ -16056,6 +16081,8 @@ int FA::analyze(Fun *top) {
   // not, and is the actual property under test. See
   // tests/deepcopy_recursive_nested_growth.py.
   if (getenv("PYC_DBG_CONVERGED")) fprintf(stderr, "CONVERGED=%d\n", pass_limit_hit ? 0 : 1);
+  if (getenv("IFA_DBG_REPRKEY"))
+    fprintf(stderr, "REPRKEY new=%ld same=%ld CHANGED=%ld\n", rk_new, rk_same, rk_changed);
   // ifa/157: of the AVars whose CONVERGED type is an irrepresentable union,
   // how many did the edge-triggered confluence test flag? `unflagged` is the
   // blindness the level question would close -- and closing it was measured
