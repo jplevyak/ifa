@@ -9941,6 +9941,30 @@ static void report_recv_cardinality() {
   fprintf(stderr, "\n");
 }
 
+// SPLIT vs HOIST, shedskin's `lowest_common_parents` test. Extracted from
+// report_elem_confluence (ifa/152) so the splitter can apply it too, per
+// CLAUDE.md: "Classify the confluence before splitting it."
+//
+//   RELATED   richards' DeviceTask/HandlerTask/IdleTask/WorkTask all derive
+//             from Task. Legitimate polymorphism -- the field is HOISTED to
+//             the common ancestor (shedskin's virtualvars), never split.
+//             Splitting these is what broke richards.
+//   UNRELATED chull's Vertex/Edge/Face have no bases at all. A precision
+//             failure, and what should be split away.
+//
+// Every pyc class specializes `object` and `__pyc_any_type__`, so "shares an
+// ancestor" is trivially true; the shared ancestor must be USER code.
+// Structural, not by name.
+static bool classes_are_related(Vec<Sym *> &classes) {
+  for (Sym *a : classes) if (a)
+    for (Sym *b : classes) if (b && b != a) {
+      if (a->specializes.in(b) || b->specializes.in(a)) return true;
+      for (Sym *pa : a->specializes)
+        if (pa && b->specializes.in(pa) && !pa->is_builtin) return true;
+    }
+  return false;
+}
+
 static void report_elem_confluence() {
   if (!getenv("IFA_DBG_ELEMCONF")) return;
   int n_conf = 0, n_sep = 0, n_fused = 0, n_sep_rel = 0, n_sep_unrel = 0;
@@ -9996,19 +10020,7 @@ static void report_elem_confluence() {
     //             Edge   -> object __pyc_any_type__      shared: roots only
     //   richards: WorkTask -> Task __pyc_any_type__
     //             IdleTask -> Task __pyc_any_type__      shared: Task
-    bool related = false;
-    for (Sym *a : classes) if (a && !related)
-      for (Sym *b : classes) if (b && b != a && !related) {
-        if (a->specializes.in(b) || b->specializes.in(a)) { related = true; break; }
-        for (Sym *pa : a->specializes) {
-          if (!pa || !b->specializes.in(pa)) continue;
-          // The shared ancestor must be USER code. `object` and
-          // `__pyc_any_type__` live in `__pyc__` and are ancestors of
-          // everything, so a shared BUILTIN ancestor says nothing; a shared
-          // user-defined one is a real hierarchy. Structural, not by name.
-          if (!pa->is_builtin) { related = true; break; }
-        }
-      }
+    bool related = classes_are_related(classes);
     separable ? ++n_sep : ++n_fused;
     if (separable) (related ? ++n_sep_rel : ++n_sep_unrel);
     fprintf(stderr, "ELEMCONF %s%s cs=%d sym=%s defs=%d classes=%d:", separable ? "SEPARABLE" : "FUSED",
@@ -11151,6 +11163,248 @@ static void add_es_path_to_convergence(AVar *av, Vec<AVar *> &out) {
     }
 }
 
+// ifa/157 PROBE (IFA_DBG_RETCONF): a confluence does NOT come from nowhere.
+//
+// Stage 1 drops 83-87% of its confluences at `tc_skip_rval` -- an ES-contoured
+// value that is not a formal and not a return, so the one actuator it has
+// ("split an EntrySet on a formal") does not apply. That describes where the
+// demand is OBSERVED. It says nothing about where the union came FROM, and a
+// union at `r = f(x)` has exactly one source: the callee contours that
+// returned into it (`flow_vars(ee->to->rets[i], ee->rets.v[i])`, fa.cc:4523).
+//
+// So classify every skipped rvalue by its writers, and in particular ask
+// whether the callee returns DISAGREE. If two callee contours return int and
+// float, the union is separable by acting at the call. If every callee
+// already returns the union, the demand backtracks further in and acting here
+// would be acting at the symptom.
+static long rc_ret_differ = 0, rc_ret_same = 0, rc_ret_one = 0, rc_local = 0, rc_other = 0;
+static long rc_differ_1fun = 0, rc_differ_nfun = 0;
+
+// ifa/157: and the demand's ACTUATOR. A return confluence from several Funs is
+// an unresolved dispatch, and in single-dispatch OOP exactly one argument
+// position decides which Fun runs. Find the position whose type is a union of
+// several class syms and ask what KIND of AVar holds it -- because that is
+// what says whether stage 1 could already act.
+static long rv_formal = 0, rv_local = 0, rv_cs = 0, rv_none = 0, rv_noedge = 0;
+
+// ifa/157: the union at a dispatch receiver came from somewhere too. Walk the
+// writers back -- following only those that still CARRY a union, the way
+// ifa/152 walks the CreationSet side -- and report where the walk lands.
+// There are exactly two actuators in the analysis: split an EntrySet on a
+// FORMAL (stage 1), or partition a CreationSet (route 4). If the walk reaches
+// neither, no mechanism in pyc can act on this demand at all.
+static long wk_formal = 0, wk_cs = 0, wk_join = 0, wk_cap = 0;
+static long wk_hops_formal = 0, wk_hops_cs = 0;
+
+static int avar_is_union(AVar *a) {
+  if (!a || !a->out) return 0;
+  Vec<Sym *> syms;
+  for (CreationSet *c : a->out->type->sorted)
+    if (c && c->sym && c->sym != sym_nil_type) syms.set_add(c->sym);
+  return syms.set_count() >= 2;
+}
+
+static AVar *walk_to_actuator(AVar *start, int count) {
+  Vec<AVar *> seen, work;
+  work.add(start);
+  seen.set_add(start);
+  int hops = 0;
+  while (work.n && hops < 32) {
+    Vec<AVar *> next;
+    ++hops;
+    for (AVar *a : work) {
+      for (AVar *x : a->backward) if (x) {
+        if (!avar_is_union(x)) continue;          // this writer is not responsible
+        if (!seen.set_add(x)) continue;           // already walked
+        if (!x->contour_is_entry_set) {           // route 4's actuator
+          if (count) ++wk_cs, wk_hops_cs += hops;
+          return x;
+        }
+        if (x->var && x->var->is_formal) {        // stage 1's actuator
+          if (count) ++wk_formal, wk_hops_formal += hops;
+          return x;
+        }
+        next.add(x);
+      }
+    }
+    work.clear();
+    work.move(next);
+  }
+  // Exhausted rather than capped: no writer upstream still carries a union, so
+  // the union is CREATED at the frontier -- several single-typed writers
+  // meeting. That is the classic confluence and it is actionable in its own
+  // right; capped is the walk giving up.
+  if (count) { if (work.n) ++wk_cap; else ++wk_join; }
+  return nullptr;
+}
+
+static void classify_dispatch_receiver(AVar *av) {
+  if (!av->contour_is_entry_set) return;
+  EntrySet *caller = (EntrySet *)av->contour;
+  Vec<AEdge *> mine;
+  for (AEdge *e : caller->out_edges)
+    if (e && e->rets.in(av)) mine.add(e);
+  if (!mine.n) { ++rv_noedge; return; }
+  // The discriminating position: one whose actual holds several distinct
+  // class syms. Report the FIRST such, which in single dispatch is the
+  // receiver.
+  for (AEdge *e : mine) {
+    if (!e->match || !e->match->fun) continue;
+    for (MPosition *pos : e->match->fun->positional_arg_positions) {
+      AVar *a = e->args.get(pos);
+      if (!a || !a->out) continue;
+      Vec<Sym *> syms;
+      for (CreationSet *c : a->out->type->sorted)
+        if (c && c->sym && c->sym != sym_nil_type) syms.set_add(c->sym);
+      if (syms.set_count() < 2) continue;
+      if (!a->contour_is_entry_set)
+        ++rv_cs;
+      else if (a->var && a->var->is_formal)
+        ++rv_formal;
+      else {
+        ++rv_local;
+        (void)walk_to_actuator(a, 1);
+      }
+      if (getenv("IFA_DBG_RETCONF_V") && rv_formal + rv_local + rv_cs < 24) {
+        fprintf(stderr, "  [recv] av=%d edges=%d kind=%s var=%s in=%s syms=%d\n", av->id, mine.n,
+                !a->contour_is_entry_set ? "CS" : ((a->var && a->var->is_formal) ? "FORMAL" : "local"),
+                (a->var && a->var->sym && a->var->sym->name) ? a->var->sym->name : "(anon)",
+                (a->contour_is_entry_set && ((EntrySet *)a->contour)->fun && ((EntrySet *)a->contour)->fun->sym &&
+                 ((EntrySet *)a->contour)->fun->sym->name)
+                    ? ((EntrySet *)a->contour)->fun->sym->name : "(cs)",
+                syms.set_count());
+      }
+      return;
+    }
+  }
+  ++rv_none;
+}
+
+static void classify_rval_confluence(AVar *av) {
+  Vec<AVar *> rets;      // writers that are a callee's return value
+  Vec<EntrySet *> ess;   // the contours those returns live in
+  Vec<Fun *> funs;
+  int local = 0, other = 0;
+  for (AVar *x : av->backward) if (x) {
+    if (!x->out->type->n) continue;
+    if (x->contour_is_entry_set && x->contour != av->contour && is_return_value(x)) {
+      rets.add(x);
+      EntrySet *xes = (EntrySet *)x->contour;
+      ess.set_add(xes);
+      if (xes->fun) funs.set_add(xes->fun);
+    } else if (x->contour == av->contour)
+      ++local;
+    else
+      ++other;
+  }
+  if (!rets.n) { if (local && !other) ++rc_local; else ++rc_other; return; }
+  if (ess.set_count() < 2) { ++rc_ret_one; return; }
+  AType *first = nullptr;
+  int differ = 0;
+  for (AVar *r : rets) {
+    if (!first) { first = r->out->type; continue; }
+    if (r->out->type != first) { differ = 1; break; }
+  }
+  if (!differ) { ++rc_ret_same; return; }
+  ++rc_ret_differ;
+  if (funs.set_count() > 1) ++rc_differ_nfun; else ++rc_differ_1fun;
+  classify_dispatch_receiver(av);
+  if (getenv("IFA_DBG_RETCONF_V") && rc_ret_differ < 30) {
+    fprintf(stderr, "[retconf] p=%d av=%d var=%s in=%s ess=%d funs=%d\n", analysis_pass, av->id,
+            (av->var && av->var->sym && av->var->sym->name) ? av->var->sym->name : "(anon)",
+            (av->contour_is_entry_set && ((EntrySet *)av->contour)->fun && ((EntrySet *)av->contour)->fun->sym &&
+             ((EntrySet *)av->contour)->fun->sym->name)
+                ? ((EntrySet *)av->contour)->fun->sym->name : "?",
+            ess.set_count(), funs.set_count());
+    for (AVar *r : rets) {
+      EntrySet *xes = (EntrySet *)r->contour;
+      fprintf(stderr, "    <- %s/es%d:", (xes->fun && xes->fun->sym && xes->fun->sym->name) ? xes->fun->sym->name : "?",
+              xes->id);
+      for (CreationSet *c : r->out->type->sorted) if (c && c->sym)
+        fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+      fprintf(stderr, "\n");
+    }
+  }
+}
+
+// ifa/157 THE LINK (PYC_RETDEMAND). Stage 1 observes a demand on a value it
+// has no actuator for and drops it (`tc_skip_rval`, 769 of 923 per pass on
+// softrender). Both halves of the answer already exist: a CS-contoured
+// confluence is handed to route 4 (`tc_cs_dropped`), and ifa/152 built the
+// backtrack that finds the merged CreationSet upstream. Only the link is
+// missing.
+//
+// Return null unless this really is a demand:
+//   - the callee returns must DISAGREE -- an unresolved dispatch, something
+//     observing a distinction and unable to proceed, not "the type is a union"
+//   - the dispatched-on classes must be UNRELATED. Classes sharing a
+//     user-defined ancestor are legitimate polymorphism and must be HOISTED,
+//     not split; splitting richards' four Task subclasses is what broke it.
+static int retdemand_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_RETDEMAND"); e = v ? atoi(v) : 0; }
+  return e;
+}
+static long rd_formal = 0, rd_cs = 0, rd_declined_related = 0, rd_none = 0;
+static long rd_cs_1def = 0, rd_cs_ndef = 0;
+
+static AVar *rval_demand_actuator(AVar *av) {
+  if (!av->contour_is_entry_set) return nullptr;
+  // 1. Is this a dispatch whose callees' returns disagree?
+  Vec<EntrySet *> ess;
+  Vec<Fun *> funs;
+  AType *first = nullptr;
+  int differ = 0;
+  for (AVar *x : av->backward) if (x) {
+    if (!x->out->type->n) continue;
+    if (!x->contour_is_entry_set || x->contour == av->contour || !is_return_value(x)) continue;
+    EntrySet *xes = (EntrySet *)x->contour;
+    ess.set_add(xes);
+    if (xes->fun) funs.set_add(xes->fun);
+    if (!first) first = x->out->type;
+    else if (x->out->type != first) differ = 1;
+  }
+  if (ess.set_count() < 2 || !differ) return nullptr;
+  // 2. Find the position that decides the dispatch, and classify it.
+  EntrySet *caller = (EntrySet *)av->contour;
+  for (AEdge *e : caller->out_edges) {
+    if (!e || !e->rets.in(av) || !e->match || !e->match->fun) continue;
+    for (MPosition *pos : e->match->fun->positional_arg_positions) {
+      AVar *a = e->args.get(pos);
+      if (!a || !a->out) continue;
+      Vec<Sym *> syms;
+      for (CreationSet *c : a->out->type->sorted)
+        if (c && c->sym && c->sym != sym_nil_type) syms.set_add(c->sym);
+      if (syms.set_count() < 2) continue;
+      if (classes_are_related(syms)) { ++rd_declined_related; return nullptr; }
+      if (!a->contour_is_entry_set) return a;               // route 4's actuator
+      if (a->var && a->var->is_formal) return a;             // stage 1's actuator
+      return walk_to_actuator(a, 0);                         // backtrack, ifa/152's walk
+    }
+  }
+  return nullptr;
+}
+
+static void report_retconf() {
+  if (!getenv("IFA_DBG_RETCONF")) return;
+  fprintf(stderr,
+          "RETCONF p=%d skipped_rvals: ret_differ=%ld (1fun=%ld nfun=%ld) ret_same=%ld ret_one=%ld local=%ld other=%ld"
+          " | receiver: FORMAL=%ld local=%ld CS=%ld none=%ld noedge=%ld"
+          " | walk from local: ->FORMAL=%ld (avg hops %.1f) ->CS=%ld (avg hops %.1f) ->join=%ld capped=%ld"
+          " | ROUTED formal=%ld cs=%ld (1def=%ld ndef=%ld) declined_related=%ld none=%ld\n",
+          analysis_pass, rc_ret_differ, rc_differ_1fun, rc_differ_nfun, rc_ret_same, rc_ret_one, rc_local, rc_other,
+          rv_formal, rv_local, rv_cs, rv_none, rv_noedge,
+          wk_formal, wk_formal ? (double)wk_hops_formal / wk_formal : 0.0,
+          wk_cs, wk_cs ? (double)wk_hops_cs / wk_cs : 0.0, wk_join, wk_cap,
+          rd_formal, rd_cs, rd_cs_1def, rd_cs_ndef, rd_declined_related, rd_none);
+  rc_ret_differ = rc_ret_same = rc_ret_one = rc_local = rc_other = 0;
+  rc_differ_1fun = rc_differ_nfun = 0;
+  rv_formal = rv_local = rv_cs = rv_none = rv_noedge = 0;
+  wk_formal = wk_cs = wk_join = wk_cap = wk_hops_formal = wk_hops_cs = 0;
+  rd_formal = rd_cs = rd_declined_related = rd_none = 0;
+  rd_cs_1def = rd_cs_ndef = 0;
+}
+
 [[nodiscard]] static int split_ess_for_type(Vec<AVar *> &imprecisions, int fdynamic) {
   int analyze_again = 0;
   // ifa/148: expand each confluence to the whole contour path feeding it.
@@ -11203,8 +11457,26 @@ static void add_es_path_to_convergence(AVar *av, Vec<AVar *> &out) {
       if (!av->is_lvalue) {
         if (av->var->is_formal)
           target = av;
-        else
+        else {
           ++tc_skip_rval, log(LOG_SPLITTING, "[stage1] av %d ES/non-formal-rval skipped\n", av->id);
+          if (getenv("IFA_DBG_RETCONF")) classify_rval_confluence(av);  // ifa/157
+          // ifa/157: do not drop it -- backtrack the demand to an actuator.
+          if (retdemand_enabled()) {
+            if (AVar *act = rval_demand_actuator(av)) {
+              if (act->contour_is_entry_set) {
+                target = act, ++rd_formal;
+                log(LOG_SPLITTING, "[stage1] av %d rval demand -> formal av %d\n", av->id, act->id);
+              } else if (CreationSet *acs = (CreationSet *)act->contour) {
+                // A CreationSet with ONE creation point has nothing to
+                // partition -- ifa/152's backtrack exists for exactly that.
+                (acs->defs.set_count() > 1 ? rd_cs_ndef : rd_cs_1def)++;
+                if (tc_cs_dropped.set_add(acs)) ++rd_cs;
+                log(LOG_SPLITTING, "[stage1] av %d rval demand -> cs %d (route 4)\n", av->id, acs->id);
+              }
+            } else
+              ++rd_none;
+          }
+        }
       } else {
         AVar *aav = unique_AVar(av->var, av->contour);
         if (is_return_value(aav))
@@ -14325,6 +14597,7 @@ static void complete_pass() {
   report_keydrift();
   report_markwhy();
   report_incompat();
+  report_retconf();  // ifa/157
   audit_edge_arg_values();
   collect_results();
   collect_argument_type_violations();
