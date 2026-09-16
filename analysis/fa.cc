@@ -11238,6 +11238,78 @@ static AVar *walk_to_actuator(AVar *start, int count) {
   return nullptr;
 }
 
+// ifa/157: WHICH KIND OF DISPATCH is ambiguous? Python has three, and they
+// have different fixes, so "N candidate Funs" is not yet a diagnosis.
+//
+// The model is `find_visible_functions` (if1/pattern.cc:1477). `args[0]` --
+// MPosition 1, the first of `positional_arg_positions` -- is the CALLEE
+// position, and its content decides which mechanism resolved the call:
+//
+//   `cs->sym->fun` SET    a function VALUE. One such CS is a static call;
+//                         several is dispatch through a function variable or
+//                         closure, and the fix is separating that variable.
+//   `cs->sym->fun` UNSET  a NAME. `visible_functions(cs->sym)` gives the
+//                         candidate set and the remaining positions narrow it
+//                         by type -- class-based dispatch. The fix is
+//                         separating whichever position does the narrowing.
+//
+// And for the name case, WHICH position narrows matters. Position 2 is the
+// receiver, which is Python's single dispatch. A later position narrowing
+// means pyc resolved on a non-receiver argument -- multi-method dispatch,
+// which Python does not have, so that would be a modelling artifact and not
+// a property of the program.
+static long dk_static = 0, dk_funvar = 0, dk_recv = 0, dk_arg = 0, dk_nonarrow = 0, dk_noedge = 0;
+static long dk_funvar_syms = 0, dk_recv_syms = 0, dk_recv_related = 0;
+static Vec<AType *> dk_recv_types;  // DISTINCT receiver unions: one merge, or many?
+
+static void classify_dispatch_kind(AVar *av) {
+  if (!av->contour_is_entry_set) return;
+  EntrySet *caller = (EntrySet *)av->contour;
+  for (AEdge *e : caller->out_edges) {
+    if (!e || !e->rets.in(av) || !e->match || !e->match->fun) continue;
+    Vec<MPosition *> &pp = e->match->fun->positional_arg_positions;
+    if (!pp.n) continue;
+    AVar *a0 = e->args.get(pp.v[0]);
+    if (!a0 || !a0->out) continue;
+    int fnvals = 0, names = 0;
+    for (CreationSet *c : a0->out->type->sorted)
+      if (c && c->sym) (c->sym->fun ? fnvals : names)++;
+    if (fnvals && !names) {
+      if (fnvals < 2)
+        ++dk_static;
+      else
+        ++dk_funvar, dk_funvar_syms += fnvals;
+      return;
+    }
+    // A NAME at the callee position: class-based. Which position narrows?
+    for (int i = 1; i < pp.n; i++) {
+      AVar *a = e->args.get(pp.v[i]);
+      if (!a || !a->out) continue;
+      Vec<Sym *> syms;
+      for (CreationSet *c : a->out->type->sorted)
+        if (c && c->sym && c->sym != sym_nil_type) syms.set_add(c->sym);
+      if (syms.set_count() < 2) continue;
+      if (i == 1) {
+        ++dk_recv, dk_recv_syms += syms.set_count();
+        dk_recv_types.set_add(a->out->type);
+        if (classes_are_related(syms)) ++dk_recv_related;
+        if (getenv("IFA_DBG_RETCONF_V") && dk_recv < 16) {
+          fprintf(stderr, "  [kind] recv of %s: %s classes:",
+                  (e->fun && e->fun->sym && e->fun->sym->name) ? e->fun->sym->name : "?",
+                  classes_are_related(syms) ? "RELATED(hoist)" : "UNRELATED(split)");
+          for (Sym *sy : syms) if (sy) fprintf(stderr, " %s", sy->name ? sy->name : "?");
+          fprintf(stderr, "\n");
+        }
+      } else
+        ++dk_arg;
+      return;
+    }
+    ++dk_nonarrow;
+    return;
+  }
+  ++dk_noedge;
+}
+
 static void classify_dispatch_receiver(AVar *av) {
   if (!av->contour_is_entry_set) return;
   EntrySet *caller = (EntrySet *)av->contour;
@@ -11309,6 +11381,7 @@ static void classify_rval_confluence(AVar *av) {
   ++rc_ret_differ;
   if (funs.set_count() > 1) ++rc_differ_nfun; else ++rc_differ_1fun;
   classify_dispatch_receiver(av);
+  classify_dispatch_kind(av);
   if (getenv("IFA_DBG_RETCONF_V") && rc_ret_differ < 30) {
     fprintf(stderr, "[retconf] p=%d av=%d var=%s in=%s ess=%d funs=%d\n", analysis_pass, av->id,
             (av->var && av->var->sym && av->var->sym->name) ? av->var->sym->name : "(anon)",
@@ -11391,18 +11464,25 @@ static void report_retconf() {
           "RETCONF p=%d skipped_rvals: ret_differ=%ld (1fun=%ld nfun=%ld) ret_same=%ld ret_one=%ld local=%ld other=%ld"
           " | receiver: FORMAL=%ld local=%ld CS=%ld none=%ld noedge=%ld"
           " | walk from local: ->FORMAL=%ld (avg hops %.1f) ->CS=%ld (avg hops %.1f) ->join=%ld capped=%ld"
-          " | ROUTED formal=%ld cs=%ld (1def=%ld ndef=%ld) declined_related=%ld none=%ld\n",
+          " | ROUTED formal=%ld cs=%ld (1def=%ld ndef=%ld) declined_related=%ld none=%ld"
+          " | KIND static=%ld funvar=%ld (avg %.1f fns) class/recv=%ld (avg %.1f classes) related=%ld distinct_unions=%d"
+          " class/arg=%ld nonarrow=%ld noedge=%ld\n",
           analysis_pass, rc_ret_differ, rc_differ_1fun, rc_differ_nfun, rc_ret_same, rc_ret_one, rc_local, rc_other,
           rv_formal, rv_local, rv_cs, rv_none, rv_noedge,
           wk_formal, wk_formal ? (double)wk_hops_formal / wk_formal : 0.0,
           wk_cs, wk_cs ? (double)wk_hops_cs / wk_cs : 0.0, wk_join, wk_cap,
-          rd_formal, rd_cs, rd_cs_1def, rd_cs_ndef, rd_declined_related, rd_none);
+          rd_formal, rd_cs, rd_cs_1def, rd_cs_ndef, rd_declined_related, rd_none,
+          dk_static, dk_funvar, dk_funvar ? (double)dk_funvar_syms / dk_funvar : 0.0,
+          dk_recv, dk_recv ? (double)dk_recv_syms / dk_recv : 0.0, dk_recv_related, dk_recv_types.set_count(), dk_arg, dk_nonarrow, dk_noedge);
   rc_ret_differ = rc_ret_same = rc_ret_one = rc_local = rc_other = 0;
   rc_differ_1fun = rc_differ_nfun = 0;
   rv_formal = rv_local = rv_cs = rv_none = rv_noedge = 0;
   wk_formal = wk_cs = wk_join = wk_cap = wk_hops_formal = wk_hops_cs = 0;
   rd_formal = rd_cs = rd_declined_related = rd_none = 0;
   rd_cs_1def = rd_cs_ndef = 0;
+  dk_static = dk_funvar = dk_recv = dk_arg = dk_nonarrow = dk_noedge = 0;
+  dk_funvar_syms = dk_recv_syms = dk_recv_related = 0;
+  dk_recv_types.clear();
 }
 
 [[nodiscard]] static int split_ess_for_type(Vec<AVar *> &imprecisions, int fdynamic) {

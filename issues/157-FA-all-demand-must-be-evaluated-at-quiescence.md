@@ -276,6 +276,75 @@ That is CLAUDE.md's own rule, unimplemented on one side:
   filtering of the RECEIVER, which in single-dispatch OOP is the position
   that determines dispatch."*
 
+## WHICH dispatch is ambiguous? All of it is class-based, on the receiver
+
+**Author:** *"Python has static dispatch, class based dispatch and
+closure/function variables. Which is the source?"*
+
+"N candidate Funs" is not yet a diagnosis — the three have different fixes.
+The discriminator is structural and is in `find_visible_functions`
+(`if1/pattern.cc:1477`). `args[0]` — MPosition 1, the first of
+`positional_arg_positions` — is the CALLEE position:
+
+| `args[0]` holds | resolved by | means |
+| --- | --- | --- |
+| one CS with `sym->fun` set | directly | **static** |
+| several CSs with `sym->fun` set | `function_values` | **function variable / closure** |
+| CSs with `sym->fun` UNSET (a name) | `visible_functions(sym)`, then the other positions narrow by type | **class-based** |
+
+`IFA_DBG_RETCONF`'s `KIND` line classifies every ambiguous call that way. The
+answer is not mixed:
+
+| | `sudoku4` | `softrender` |
+| --- | --- | --- |
+| static | **0** | **0** |
+| function variable / closure | **0** | **0** |
+| class-based, narrowed by the **receiver** (position 2) | **102** | **363** |
+| class-based, narrowed by a LATER position | **0** | **0** |
+| classes in the receiver, mean | 6.7 | 5.9 → 2.0 |
+| `related` (share a user-defined ancestor) | **0** | **0** |
+| **DISTINCT receiver unions** | **5** | **9** |
+
+**Three things fall out of that.**
+
+**1. Closures and function variables contribute nothing.** Neither program
+dispatches through a function value at an ambiguous site. Every one is
+`x.m()` with a union receiver, which is Python's single dispatch — and
+`class/arg=0` says pyc never resolved on a non-receiver argument either, so
+there is no multi-method modelling artifact to chase.
+
+**2. It is not polymorphism.** `related=0` everywhere: no receiver union
+shares a user-defined ancestor, so `classes_are_related` says SPLIT, not
+HOIST. And the union itself is the whole world —
+
+```
+[kind] recv of __iter__:     UNRELATED(split) classes: dict bool list tuple set int64 str
+[kind] recv of __getitem__:  UNRELATED(split) classes: dict bool list tuple set int64 str
+[kind] recv of __eq__:       UNRELATED(split) classes: dict bool list tuple set int64 str
+```
+
+Seven types, four containers and three scalars, in one variable. No `sudoku4`
+variable holds that. By CLAUDE.md's directive this is a `{scalar, container}`
+union pyc INVENTED, not a property of the program.
+
+**3. And there are only FIVE of them.** `distinct_unions=5` accounts for all
+102 ambiguous sites on `sudoku4`; 9 for softrender's 363. The ambiguity is not
+distributed — it is a handful of merged contours broadcast through every
+container operation in the program, because once a variable holds all seven
+types, every `for`, every `[]`, every `==` on it becomes an unresolved
+dispatch.
+
+**So the dispatch ambiguity is a SYMPTOM, not the disease.** Routing these ~100
+demands is treating the broadcast; the disease is the 5 merges upstream, which
+is `sudoku4`'s `cs=1849` — the comprehension accumulator whose element unions
+`{str, set, list}` from `dict([(s, …) for s in squares])`, already named as
+[146](146-remove-all-arbitrary-splitting.md) E's blocker. Fixing 5 merges
+fixes 102 dispatch sites.
+
+That also explains why the link below delivers and buys nothing: it aims
+correctly at the receiver, and the receiver's union has one creation point 72%
+of the time, because it was merged somewhere else entirely.
+
 ## THE LINK, BUILT (`PYC_RETDEMAND`, default 0)
 
 At `tc_skip_rval`, instead of dropping: if the callee returns disagree, find
