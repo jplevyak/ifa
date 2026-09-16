@@ -10100,8 +10100,17 @@ static void report_cs_defs() {
   cchar *want = getenv("IFA_DBG_CSDEFS");
   if (!want) return;
   int id = atoi(want);
+  // id < 0: scan for every CreationSet with an irrepresentable POSITIONAL slot.
   for (CreationSet *cs : fa->css) {
-    if (!cs || cs->id != id) continue;
+    if (!cs) continue;
+    if (id >= 0) {
+      if (cs->id != id) continue;
+    } else {
+      bool bad = false;
+      for (AVar *v : cs->vars)
+        if (v && v->out && atype_irrepresentable(v->out->type)) { bad = true; break; }
+      if (!bad) continue;
+    }
     fprintf(stderr, "CSDEFS p=%d cs=%d sym=%s defs=%d\n", analysis_pass, cs->id,
             (cs->sym && cs->sym->name) ? cs->sym->name : "?", cs->defs.set_count());
     for (AVar *d : cs->defs) if (d) {
@@ -10115,6 +10124,27 @@ static void report_cs_defs() {
         for (CreationSet *c : d->out->type->sorted) if (c && c->sym)
           fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
       fprintf(stderr, "\n");
+    }
+    // ifa/157: the POSITIONAL channel too (ifa/104's second content channel).
+    // A tuple's content lives here, not in the element, so a merged tuple is
+    // invisible without it.
+    for (int i = 0; i < cs->vars.n; i++) {
+      AVar *v = cs->vars.v[i];
+      if (!v || !v->out) continue;
+      fprintf(stderr, "  slot[%d] =", i);
+      for (CreationSet *c : v->out->type->sorted) if (c && c->sym)
+        fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+      fprintf(stderr, "\n");
+      for (AVar *w : v->backward) if (w && w->out && w->out->type->n) {
+        EntrySet *we = w->contour_is_entry_set ? (EntrySet *)w->contour : nullptr;
+        fprintf(stderr, "      <- av=%d var=%s in=%s es=%d :", w->id,
+                (w->var && w->var->sym && w->var->sym->name) ? w->var->sym->name : "(anon)",
+                (we && we->fun && we->fun->sym && we->fun->sym->name) ? we->fun->sym->name : "(cs)",
+                we ? we->id : -1);
+        for (CreationSet *c : w->out->type->sorted) if (c && c->sym)
+          fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+        fprintf(stderr, "\n");
+      }
     }
     // And who WRITES the element channel -- the union's actual contributors,
     // which are generally not the creation points.

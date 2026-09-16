@@ -917,7 +917,72 @@ The finest setter partition scatters the grid rows across contours so the
 pollution lands on one of them and the rest stay clean, which is why the default
 compiles.
 
+#### The next hop: it is a CYCLE, and the default breaks it by accident
+
+`IFA_DBG_CSDEFS` now prints the POSITIONAL channel and takes `-1` to scan for
+every CreationSet with an irrepresentable slot. Under `SETTERMIN`, `sudoku5`
+has **56** of them; **55 are `defs=1`** — unsplittable by any CS partition —
+and the only multi-creation-point one is `cs=1033`, the nine grid rows.
+
+The two that name the path:
+
+```
+cs=1196 sym=tuple defs=1   in=solve_sudoku line=30      <- select(X, Y, (i, j, n))
+  slot[0] = int64                                        i   clean
+  slot[1] = int64                                        j   clean
+  slot[2] = int64 str tuple#1087 #1144 #1146 #1148 #1150  n   POLLUTED
+
+cs=1165 sym=tuple defs=1   in=enumerate line=1926       <- enumerate's (index, value)
+  slot[0] = int64                                        index clean
+  slot[1] = int64 str tuple#1087 #1144 #1146 #1148 #1150  value POLLUTED
+```
+
+`n` at line 30 comes from `for j, n in enumerate(row)` at line 28, i.e. from
+`cs=1033`'s element. And `cs=1033`'s element is written by
+`grid[r][c] = n` at line 33, whose `n` comes from unpacking `solution`. So:
+
+```
+cs=1033.element --enumerate(row)--> n --> cs=1196.slot[2] --> X/Y --> solution
+                --> grid[r][c] = n --> cs=1033.element
+```
+
+**A cycle.** Once anything irrepresentable enters it, every contour on it
+carries the union, and 55 of the 56 have one creation point so nothing can be
+partitioned.
+
+**And the default arm breaks the cycle by accident.** Both arms have exactly
+**two** `enumerate` contours; the difference is the receiver:
+
+```
+default      es=107 args= [enumerate] [list#1033 #3069 #3070 #3071 #3072 ...]
+SETTERMIN    es=107 args= [enumerate] [list#1033]
+```
+
+Under the default the nine rows are scattered across contours by
+setter-equivalence over-splitting, so `enumerate`'s receiver is a union of
+per-row contours whose elements are individually clean `int64`, and the cycle
+never closes. That is the arbitrary split doing load-bearing work, exactly as
+the directive says.
+
 #### What is established, and what is next
+
+- The retreat is withdrawn; non-minimality is **not** justified.
+- `SETTERMIN`'s partition is correct where it was blamed: merging nine
+  identical `list[int64]` literals is the minimal demanded answer.
+- The defect it exposes is a **self-sustaining cycle** through `solve_sudoku`,
+  with 55 of its 56 contours at `defs=1`.
+- `enumerate`'s result tuple (`cs=1165`, one creation point for the whole
+  program) is on that cycle and cannot be separated by any CreationSet
+  partition — it needs its EntrySet split per element type so each contour
+  mints its own tuple. That is ifa/129's third clause / `PYC_ESFORCS`
+  territory, and it is a demand: the tuple slot is irrepresentable.
+- **Still open: what SEEDS the cycle.** A cycle cannot manufacture a `str`;
+  something injects one. The candidates are `X1`'s `("rc", rc)` labels
+  reaching a slot they should not, and `min([(len(X[c]), c) for c in X])[1]`
+  returning a merged tuple's slot. **Stop condition:** if the seed turns out to
+  be a genuine `{str, int}` union in the source rather than a merged contour,
+  `sudoku5` is not a contour bug and this line closes.
+
 
 - The retreat is withdrawn; non-minimality is **not** justified.
 - `SETTERMIN`'s partition is correct where it was blamed: merging nine identical
