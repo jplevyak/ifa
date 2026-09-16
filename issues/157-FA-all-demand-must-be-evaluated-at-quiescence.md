@@ -420,9 +420,13 @@ creation point flow into*. All six carry the identical signature:
 [csdefsplit] cs=1849 defs=6 DECLINED (1 group: every creation point on the same assign sets)
 ```
 
-**The key says where the container GOES. The demand is about what it HOLDS.**
-Those are different questions, and the second one is never asked — which is
-[133](133-split-a-container-on-its-element-type.md)'s title.
+~~**The key says where the container GOES. The demand is about what it
+HOLDS.**~~ **Withdrawn** — see the shedskin comparison below.
+`CSFlowGraph::keys` is a `Vec<AType *>`, one AType per assign set, exactly
+shedskin's `assignsets.setdefault(merge_simple_types(types), …)`. pyc's assign
+sets ARE type-keyed, so each signature bit already means *this creation point
+reaches an assignment of type T*. The key is not blind to type. What is missing
+is a rung BELOW it.
 
 ### And the contours that would name the partition already exist
 
@@ -652,3 +656,106 @@ doubt: **demand IS evaluated on converged types.** The defect is the cascade.
   level-triggered `csdemand` that already works
 - [133](133-split-a-container-on-its-element-type.md) — `PYC_CONFDEMAND`, the
   probe whose predicate step 1 reuses
+
+## How shedskin handles it
+
+**Author:** *"How does shedskin handle it?"* CLAUDE.md treats shedskin as the
+reference for MECHANISM, so this is read from
+`/home/jplevyak/projects/shedskin/shedskin/infer.py`, not recalled.
+
+### The data structure is the same one
+
+`ifa_flow_graph` builds assign sets, backflow paths, creation points, csites
+and emptycsites — and pyc's `CSFlowGraph` is a faithful port of it, field for
+field. In particular shedskin keys assign sets BY TYPE:
+
+```python
+assignsets.setdefault(merge_simple_types(gx, types), []).append(target)
+```
+
+and so does pyc (`Vec<AType *> keys`). **That is why the correction above was
+needed**: the signature bit already carries type information.
+
+### The ladder has four rungs. pyc's has two.
+
+`ifa_split_vars`, in order:
+
+| | shedskin | pyc |
+| --- | --- | --- |
+| 1 | `ifa_split_no_confusion` — >1 type AND >1 assign set | route 1 |
+| 2 | split at a confluence point (`ifa_determine_split`), formal args / class attrs only, `2 <= remaining < 10` | route 4's signature partition |
+| 3 | partition csites by `frozenset(union of types along the csite's paths)` | **absent** |
+| 4 | **"if all else fails, perform wholesale splitting"** | **absent — DECLINES** |
+
+Rung 4 verbatim:
+
+```python
+# --- if all else fails, perform wholesale splitting
+elif len(paths) > 1 and 1 < len(csites) < 10:
+    for csite in csites[1:]:
+        ifa_split_class(cl, dcpa, [csite], split)
+    return split
+```
+
+**One contour per creation site — the fan.** It is shedskin's answer to
+exactly the case `cs=1849` is in: a graph exists, several creation points, and
+no earlier rung names a partition.
+
+### pyc deleted a fan, but not this one
+
+[146](146-remove-all-arbitrary-splitting.md) C removed `if (defpart >= 2 && !g)
+goto Lfan` — the fan that fired when there was **no flow graph at all**. That
+removal was right, and the replacement (giving non-container CreationSets a
+content channel) was a real fix: `bh` 24 → 7 mints, same precision.
+
+shedskin's rung 4 is a different position: the graph EXISTS, `len(paths) > 1`,
+and the earlier rungs came up empty. **pyc has no rung there.** It prints
+`DECLINED (1 group: every creation point on the same assign sets)` and stops.
+That is where `cs=1849` dies, every pass, on every program in this family.
+
+### And shedskin's fan is bounded three ways mine was not
+
+This reframes `PYC_CSFAN`'s negative result above. The idea was not the
+problem; the engineering was.
+
+| | shedskin | `PYC_CSFAN` as built |
+| --- | --- | --- |
+| creation-point bound | `1 < len(csites) < 10` | none |
+| requires ≥2 assign sets | `len(paths) > 1` | not checked |
+| how many per round | ONE variable's csites, then `return split` | every candidate, in one pass |
+| between splits | **full re-propagation** — `iterative_dataflow_analysis` loops `propagate(gx)` → `ifa(gx)` | next pass, after every other stage also acted |
+| global cap | `MAXITERS = 30`, `CPA_LIMIT = 10` | — |
+
+`cs=1849` has **6** creation points: inside shedskin's bound, it would fan.
+`cs=1010` has **26**: outside it, shedskin would refuse. **`PYC_CSFAN` fired on
+`cs=1010` at p=1** — the contour shedskin would have declined — and never
+reached the one it would have split, because route 4 only produces `cs=1849` at
+p=2. The measured 39 → 61 warnings is that, not a verdict on the rung.
+
+### What this does and does not say
+
+It does **not** say "add the fan back". CLAUDE.md's directive is that splitting
+is only ever on demand, and 146 calls the fan *"the arbitrary mechanism ifa/146
+exists to retire"*. Reinstating it unguarded would be that mechanism again.
+
+What it does say, and it is a fact about the reference implementation:
+**shedskin's ladder terminates in a bounded, last-resort wholesale fan, and the
+programs pyc cannot type are the ones that reach it.** The two positions can be
+reconciled or one of them is wrong, and that is the author's call. The material
+difference worth weighing is that shedskin's fan is not a blind fan: it is
+bounded to under ten creation points, requires at least two type-keyed assign
+sets, splits one variable per round, and re-propagates the entire network
+before deciding anything else — so a split that buys nothing is observed and
+not compounded.
+
+Two smaller mechanisms are also absent and are cheaper to evaluate:
+
+- **Rung 3** (`prt`): partition csites by the flattened union of types along
+  their paths. Strictly coarser than pyc's per-assign-set bitstring, so on its
+  own it cannot separate what the bitstring cannot — but it is what shedskin
+  tries before resorting to rung 4, and it is nearly free to add.
+- **`ifa_confluence_point`** is level-triggered on converged types — *does some
+  creation point of this node appear in more than one assign set's creation
+  points* — which is the shape [157](157-FA-all-demand-must-be-evaluated-at-quiescence.md)
+  opens by asking for, implemented.
+
