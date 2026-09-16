@@ -812,6 +812,67 @@ above, with the stop condition written first: **if the coarsest-that-discharges
 partition still costs contours corpus-wide, the setter vocabulary is not
 expressive enough to name this demand, and the answer is not in this rung.**
 
+### BUILT (`PYC_SETTERMIN`) — and the sound-in-theory mode is dead in practice
+
+The design above was implemented and measured. **It is principled, general and
+provably minimal for its demand, and it makes things worse.** Removed.
+
+The construction: a union has no representation exactly when it mixes a basic
+type with a pointer-shaped one, or two distinct basic kinds. So a group is
+representable exactly when its written types are **all pointer-shaped** or
+**all one basic kind**, and the unique coarsest valid partition is *one group
+for every pointer-shaped writer, one group per basic kind*. Computable in one
+pass from `s->out` over each starter's setters — no search, no heuristic, and
+provably the coarsest partition that discharges the demand.
+
+It does exactly what it claims:
+
+| | container_cs | ess | css | warnings | compiles |
+| --- | --- | --- | --- | --- | --- |
+| `plcfrs` default | 152 | 1242 | 2440 | 122 | yes |
+| `plcfrs` `SETTERMIN=1` | **142** ↓ | 1555 ↑ | 2739 ↑ | **322** | **no** |
+| `sudoku5` default | 59 | 615 | 1400 | 19 | yes |
+| `sudoku5` `SETTERMIN=1` | **50** ↓ | 767 ↑ | 1782 ↑ | **62** | **no** |
+
+**Container CreationSets go DOWN, which is the goal, and everything else gets
+worse.** With both priority gates also lifted it helps exactly one program
+(`linalg` 137 → 54) and costs the rest (`sudoku4` 15 → 36, `plcfrs` 183 → 290
+and stops compiling).
+
+#### The lesson: minimality against ONE demand is not minimality
+
+The setter partition was discharging more than irrepresentability. **Dispatch
+resolution and recorded type violations ride on the same distinction**, and
+coarsening against representability alone throws those away — after which the
+pipeline compensates by splitting EntrySets instead (+25% `ess` on `plcfrs`)
+and still fails.
+
+Two of the three demands the pipeline can observe — an unresolved dispatch, a
+recorded type violation — are **not local properties of a candidate group**, so
+no local key can evaluate the conjunction. The finest setter partition is a
+conservative **over-approximation** of "the coarsest partition discharging every
+demand", and that is why it works.
+
+And ifa/146's own diagnostic confirms it from the other side. The diagnostic
+says an arbitrary lever is non-monotone — *more* splitting, worse results. This
+lever splits **less** and measures worse, so the splitting it removed was
+earning its keep. The finest setter partition is not the defect it looked like.
+
+#### What that does to the scoring above
+
+The "sound mode" row has to be withdrawn. Against *principled, general,
+minimal*, `PYC_SETTERGATE=2` remains the most principled and most general, and
+its non-minimality is now **justified rather than merely tolerated**: the extra
+contours are the price of over-approximating a conjunction that cannot be
+evaluated locally.
+
+So the remaining lever on contour count is not the partition's granularity. It
+is the **candidate set** — `setter_starters` is every container allocation in
+the program, with no demand test — and that is where the +31% comes from, not
+from splitting each candidate too finely. `=3` tried the obvious filter there
+and destabilised siblings; the open question is a qualification of the
+candidate set that does not.
+
 ### Where this leaves it
 
 The directive is right and the mechanism is present; what is missing is a
