@@ -6117,8 +6117,57 @@ static bool atype_irrepresentable(AType *t) {
   return nb > 1;
 }
 
+// ifa/157 probe (IFA_DBG_SEED): where is a mixed-basic union CREATED?
+//
+// A cycle cannot manufacture a type. If an AVar's type mixes basic kinds but
+// NO single writer of it does, then the mix is born here -- several
+// single-typed writers meeting. That is the seed, by construction, and it is
+// the only place worth fixing: every other contour on the cycle is carrying
+// what this one made.
+static int seed_reported = 0;
+static void seed_probe(AVar *av) {
+  cchar *sv = getenv("IFA_DBG_SEED");
+  if (!sv || seed_reported > 40) return;
+  if (analysis_pass < atoi(sv)) return;   // report only from this pass on
+  if (!av->in || !av->in->type) return;
+  Vec<Sym *> basics;
+  for (CreationSet *c : av->in->type->sorted)
+    if (c && c->sym && c->sym != sym_nil_type)
+      if (Sym *b = to_basic_type(c->sym->type)) basics.set_add(b);
+  if (basics.set_count() < 2) return;
+  // Does any single writer already carry the mix? Then it is not born here.
+  for (AVar *x : av->backward) if (x && x->out && x->out->type) {
+    Vec<Sym *> wb;
+    for (CreationSet *c : x->out->type->sorted)
+      if (c && c->sym && c->sym != sym_nil_type)
+        if (Sym *b = to_basic_type(c->sym->type)) wb.set_add(b);
+    if (wb.set_count() >= 2) return;
+  }
+  ++seed_reported;
+  EntrySet *es = av->contour_is_entry_set ? (EntrySet *)av->contour : nullptr;
+  fprintf(stderr, "[SEED] p=%d av=%d var=%s in=%s es=%d line=%d type=", analysis_pass, av->id,
+          (av->var && av->var->sym && av->var->sym->name) ? av->var->sym->name : "(anon)",
+          (es && es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "(cs)",
+          es ? es->id : -1,
+          (av->var && av->var->sym && av->var->sym->ast) ? av->var->sym->ast->line() : -1);
+  for (CreationSet *c : av->in->type->sorted) if (c && c->sym)
+    fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+  fprintf(stderr, "\n");
+  for (AVar *x : av->backward) if (x && x->out && x->out->type->n) {
+    EntrySet *xe = x->contour_is_entry_set ? (EntrySet *)x->contour : nullptr;
+    fprintf(stderr, "    <- av=%d var=%s in=%s line=%d :", x->id,
+            (x->var && x->var->sym && x->var->sym->name) ? x->var->sym->name : "(anon)",
+            (xe && xe->fun && xe->fun->sym && xe->fun->sym->name) ? xe->fun->sym->name : "(cs)",
+            (x->var && x->var->sym && x->var->sym->ast) ? x->var->sym->ast->line() : -1);
+    for (CreationSet *c : x->out->type->sorted) if (c && c->sym)
+      fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+    fprintf(stderr, "\n");
+  }
+}
+
 static void collect_type_confluence(AVar *av, Vec<AVar *> &confluences) {
   dbg_dump_av(av);
+  seed_probe(av);
   AVar *trigger = nullptr;  // ifa/133: the writer that made this a confluence
   for (AVar *x : av->backward) if (x) {
     if (!x->out->type->n && !(confnil_enabled() && x->out->n)) continue;

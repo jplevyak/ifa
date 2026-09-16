@@ -964,7 +964,69 @@ per-row contours whose elements are individually clean `int64`, and the cycle
 never closes. That is the arbitrary split doing load-bearing work, exactly as
 the directive says.
 
+#### THE SEED: a shared unrolled tuple `__lt__`, in `__pyc__`
+
+`IFA_DBG_SEED=<pass>` reports any AVar whose type mixes basic kinds while **no
+single writer of it does** — by construction, the place the mix is BORN, not a
+contour carrying what something else made.
+
+At p=0 every seed is dispatch that has not converged yet (`solve_sudoku` lines
+14-20, with `int`/`str`/`list` `__add__` all reaching one AVar — the `X1 = [...]
++ [...] + [...]` concatenation). That is noise; pass 0 resolves nothing.
+
+Asking from p=8, **41 seeds survive in BOTH arms, identically.** They cluster in
+`__eq__ es=636`, `__lt__ es=605`, and four `__getitem__` contours — the tuple
+comparison methods `inject_tuple_methods` generates UNROLLED per arity. The
+decisive one:
+
+```
+[SEED] p=9 av=31093 in=__lt__ es=605 type= int64 str tuple#1087 #1091 #1108 #1126 #1133 #1153
+    <- av=28301 in=__getitem__ line=1616 : int64 tuple#1087 #1091 #1108 #1126 #1133 #1153
+    <- av=15507 in=__getitem__ line=547  : str#8
+```
+
+Two writers, and they are two DIFFERENT `__getitem__` implementations:
+`__pyc__` line 1616 is **tuple**'s, line 547 is **str**'s. One slot-comparison
+variable inside one unrolled tuple `__lt__` contour receives the result of
+indexing a tuple *and* the result of indexing a string. `{int64, str}` is born
+there.
+
+It is reached from `min([(len(X[c]), c) for c in X])` (`sudoku5.py:48`): `min`
+compares 2-tuples whose slot 1 is an X-key, and an X-key is itself a
+`("rc", rc)` pair — so the comparison recurses into comparing a `str` slot
+against an `int` slot.
+
+**Root cause: `__eq__`/`__lt__` are unrolled per ARITY but not per CONTENT.**
+One contour therefore compares tuples with different slot types, and its
+per-slot comparison variable unions them. The tuple class comment in
+`__pyc__/04_sequence.py` says `__str__`/`__hash__` were moved to unrolled
+generation for exactly this reason — *"both dispatch a method on an ELEMENT, so
+a loop index (whose type is the union of every field) leaves the dispatch
+unresolvable for a heterogeneous tuple"* — and `__eq__`/`__lt__` have the same
+problem one level in: unrolling fixed the index, not the contour sharing.
+
+**This is not in the splitter and not in sudoku5.** It is a `__pyc__` modelling
+defect, it is present in both arms, and the default arm merely prevents it from
+reaching the grid rows.
+
 #### What is established, and what is next
+
+- The retreat is withdrawn; non-minimality is **not** justified.
+- `SETTERMIN`'s partition is correct where it was blamed: merging nine
+  identical `list[int64]` literals is the minimal demanded answer.
+- The defect it exposes is a **self-sustaining cycle** through `solve_sudoku`,
+  55 of whose 56 contours are `defs=1`.
+- **The cycle's seed is upstream of all of it**: a shared unrolled tuple
+  `__lt__` contour whose slot comparison mixes a tuple index with a string
+  index. Fixing that is a `__pyc__` / `inject_tuple_methods` change — unroll
+  (or split) the comparison per slot-type signature, not only per arity — and
+  it is independent of every splitter question in this issue.
+- Next: make tuple `__eq__`/`__lt__` not share a contour across tuples with
+  different slot types, then re-measure `SETTERMIN`. **Stop condition:** if the
+  seed closes and `SETTERMIN` still costs `plcfrs`/`sudoku5`, there is a second
+  seed and this procedure repeats; if it costs nothing, the minimal partition
+  was right all along and the finest one can go.
+
 
 - The retreat is withdrawn; non-minimality is **not** justified.
 - `SETTERMIN`'s partition is correct where it was blamed: merging nine
