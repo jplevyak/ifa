@@ -11022,6 +11022,43 @@ static void cs_member_signature(AVar *d, std::string &out) {
               continue;
             }
         }
+        // ifa/157: "SPLIT COARSER AND LET THE ANALYSIS RE-DERIVE" WAS TRIED
+        // HERE AND IS DEAD. Keep the result, not the lever.
+        //
+        // The demand at this point is real -- an element union with no
+        // representation, on a contour that HAS several creation points, with
+        // every key the partitioner owns saying "one group". Measured on
+        // `sudoku4` cs=1849: 6 creation points (4 contours of `cross`'s
+        // `[a+b for a in A for b in B]` plus two __pyc__ builtins), identical
+        // assign-set signature `0100000000010`, element {str, set, list},
+        // ELEMCONF SEPARABLE-UNRELATED. CLAUDE.md's corollary says a merge you
+        // cannot undo is a reason to split coarser and let the analysis
+        // re-derive, so PYC_CSFAN gave each creation point its own contour.
+        //
+        // It fires once, at p=1, on the start-merged parent (defs=26) and
+        // yields 26 contours that EVERY ONE still carries the whole union --
+        // turning one splittable defs=6 contour into 26 unsplittable defs=1
+        // ones, which is ifa/133's residual family, manufactured. sudoku4:
+        // warnings 39 -> 61, errors 0 -> 1.
+        //
+        // The reason is visible in `append`'s contours. Without the fan,
+        // `append/es=560` has self=[list#1849] and writes `set` while
+        // `es=561` has self=[list#1849] and writes `str` -- two contours, one
+        // receiver CS, so both land in one element channel. With the fan,
+        // `append/es=630` has self=[list#1010,#1656,#1678,#1679,#1680,#2392]:
+        // ONE method contour over SIX receiver CreationSets, re-merging on the
+        // next pass exactly what the fan just separated.
+        //
+        // And splitting THOSE per receiver CS does not rescue it either.
+        // `CSM_ELEMENT_CS` (PYC_CSM=2) never runs on sudoku4 -- the cascade
+        // gate, ifa/157 -- and forcing it to run with the gate lifted leaves
+        // the element confluences BYTE-IDENTICAL (6 confluences, 1 separable,
+        // 5 fused, both arms) while errors go 0 -> 9. So the shared
+        // container-method receiver union is not the whole re-merge either.
+        //
+        // Both levers were deleted rather than defaulted off (ifa/146's
+        // non-monotone diagnostic). What is still true is that the CS has to
+        // split; what is not yet known is a key that names the partition.
         if (dbg)
           fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d DECLINED (1 group: %s)\n", analysis_pass, cs->id,
                   cs->sym->name ? cs->sym->name : "?", defs.n,

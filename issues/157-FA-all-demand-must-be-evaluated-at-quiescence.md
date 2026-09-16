@@ -276,6 +276,87 @@ That is CLAUDE.md's own rule, unimplemented on one side:
   filtering of the RECEIVER, which in single-dispatch OOP is the position
   that determines dispatch."*
 
+## "So the CS has to split" — yes, and BOTH ways of forcing it are dead
+
+Agreed, and that was tested two ways. Both levers were built, measured, and
+**deleted** (ifa/146's non-monotone diagnostic). The results are the
+deliverable.
+
+### Attempt 1 — split coarser and let the analysis re-derive (`PYC_CSFAN`)
+
+CLAUDE.md's corollary: *"a merge you cannot undo is not a reason to record
+provenance. It is a reason to split coarser and let the analysis re-derive."*
+Every pass re-derives from bottom, so give each creation point its own contour
+and let the next pass attribute the element writes by flowing them.
+
+| `sudoku4` | off | on |
+| --- | --- | --- |
+| warnings | 39 | **61** |
+| errors | 0 | **1** |
+
+It fires once, at p=1, on the start-merged parent (`defs=26`), and yields 26
+contours of which **every one still carries the whole union** — turning one
+splittable `defs=6` contour into 26 unsplittable `defs=1` ones, which is
+ifa/133's residual family, manufactured.
+
+**Why**, and this is the useful part. `append`'s contours, without the fan:
+
+```
+es=560 args= [append] [list#1849] [set#1400]     <- two contours,
+es=561 args= [append] [list#1849] [str#8]           ONE receiver CS
+```
+
+Two method contours already separated by element type, writing into one
+element channel because the receiver is one CreationSet. And *with* the fan:
+
+```
+es=630 args= [append] [list#1010 list#1656 list#1678 list#1679 list#1680 list#2392] [str#8]
+```
+
+**One method contour over SIX receiver CreationSets.** The shared container
+method re-merges on the next pass exactly what the fan just separated.
+
+### Attempt 2 — then split the container methods per receiver CS
+
+That is `CSM_ELEMENT_CS` (ifa/075, `PYC_CSM=2`), and it is precisely
+[143](143-shared-container-method-contours-refuse-cs-splits.md)'s title. It
+**never runs** on `sudoku4` — the cascade gate this issue opened with:
+
+```
+PYC_CSM=2                   STAGES: TYPE_CONFL CS_DEF_PART          39 warnings
+PYC_CSM=2 + gate lifted     STAGES: TYPE_CONFL CSM_ELEM_CS CS_DEF_PART   53 warnings, 9 errors
+PYC_CSM=2 + gate + CSFAN    STAGES: TYPE_CONFL CSM_ELEM_CS CS_DEF_PART  268 warnings, 570 errors
+```
+
+**The prediction failed.** I expected the starved stage to be the enabler. With
+the gate lifted the stage runs and the element confluences are
+**byte-identical** — 6 confluences, 1 separable, 5 fused, in both arms — while
+errors go 0 → 9. So splitting container methods per receiver CS does not
+separate these channels, and the shared-receiver union is not the whole
+re-merge.
+
+*(The gate lift was an experiment, not a proposal. Lifting a quiescence gate so
+a stage may act without a reason is `PYC_RECVFAN=2`, removed 2026-09-07.)*
+
+### What stands
+
+- **The CS does have to split.** The union is an element channel of a merged
+  CreationSet and nothing downstream can repair it.
+- **No key currently names the partition.** Route 4's says where the container
+  FLOWS; the demand is about what it HOLDS.
+- **And forcing the split without a key is self-defeating**, in a way that is
+  now measured rather than argued: creation-point fanning manufactures
+  `defs=1` contours, and the shared method contour re-merges them.
+
+So the open question is narrower than when this section started, and it is not
+"how do we make it split" but **what names the partition**. The evidence points
+at the element writers — `__setitem__/es=289 → str`, `es=562 → list`,
+`es=563 → set` are already distinct contours carrying exactly the distinction
+the demand is about — and at getting that information into a key, which is
+[133](133-split-a-container-on-its-element-type.md) and the `MEMBER-KEY` path
+in `split_css_by_defs`. Attempt 2 shows that splitting the method contours is
+not by itself that key.
+
 ## "Split the list comprehension" — it is already split
 
 **Author:** *"So the key is splitting the list comprehension. That should be
