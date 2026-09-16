@@ -276,6 +276,111 @@ That is CLAUDE.md's own rule, unimplemented on one side:
   filtering of the RECEIVER, which in single-dispatch OOP is the position
   that determines dispatch."*
 
+## "Split the list comprehension" — it is already split
+
+**Author:** *"So the key is splitting the list comprehension. That should be
+easy, just unzipper it top down."*
+
+Measured, and the unzipping has already happened. The merge is one level below
+it, and it is not where the comprehension is.
+
+### The dict comprehensions are already separate
+
+`sudoku4` builds three dicts from three comprehensions whose values are a
+`list`, a `set` and a `str`:
+
+```python
+units  = dict([(s, [u for u in unitlist if s in u]) for s in squares])
+peers  = dict([(s, set([s2 for u in units[s] for s2 in u if s2 != s])) for s in squares])
+values = dict([(s, digits) for s in squares])
+```
+
+`IFA_DBG_FUNES=__pyc_dict_from_iterable__` — **three contours, one per call
+site, each taking a different accumulator list**:
+
+```
+es=75  args= [__pyc_dict_from_iterable__#479] [list#1850]
+es=388 args= [__pyc_dict_from_iterable__#479] [list#1852]
+es=389 args= [__pyc_dict_from_iterable__#479] [list#1856]
+```
+
+### The blocking contour is a different comprehension, and it is also split
+
+`cs=1849` is the `SEPARABLE-UNRELATED` element confluence (`defs=6`, elements
+`{str, set, list}`), and it is a product of an earlier route-4 split — group 1
+of 12 from the start-merged `list` contour `cs=1010`. `IFA_DBG_CSDEFS=1849`:
+
+```
+CSDEFS cs=1849 sym=list defs=6
+  def av=2847  in=cross  es=44   line=17     <- [a+b for a in A for b in B]
+  def av=12852 in=cross  es=185  line=17
+  def av=12947 in=cross  es=186  line=17
+  def av=12975 in=cross  es=187  line=17
+  def av=3643  in=__init__ es=77 line=2273   <- __pyc__ builtin
+  def av=5769  in=split  es=120  line=738    <- __pyc__ builtin
+```
+
+**`cross` already has four EntrySets and four separate creation points.** The
+comprehension is unzipped top-down exactly as proposed. All four creation
+points, plus two from unrelated `__pyc__` builtins, still land in **one
+CreationSet**.
+
+### Why route 4 cannot separate them
+
+Its partition key is one bit per assign set — *which assign sets does this
+creation point flow into*. All six carry the identical signature:
+
+```
+[csdefsplit] cs=1010 def av=2847  -> cs=1849 (group 1/12 sig=0100000000010)
+[csdefsplit] cs=1010 def av=12852 -> cs=1849 (group 1/12 sig=0100000000010)
+[csdefsplit] cs=1010 def av=12947 -> cs=1849 (group 1/12 sig=0100000000010)
+...
+[csdefsplit] cs=1849 KEY sets=4 defs=6 groups=1 informative=1
+[csdefsplit] cs=1849 defs=6 DECLINED (1 group: every creation point on the same assign sets)
+```
+
+**The key says where the container GOES. The demand is about what it HOLDS.**
+Those are different questions, and the second one is never asked — which is
+[133](133-split-a-container-on-its-element-type.md)'s title.
+
+### And the contours that would name the partition already exist
+
+`cs=1849`'s element channel writers, from `IFA_DBG_CSDEFS`:
+
+```
+  <- __setitem__/es=289 : str
+  <- __setitem__/es=562 : list          <- already one contour per element type
+  <- __setitem__/es=563 : set
+  <- __setitem__/es=529 : list
+  <- append/es=210      : str set list  <- these have absorbed the union
+  <- append/es=560      : str set list
+```
+
+**`__setitem__` is already split per element type.** One contour writes only
+`str`, another only `list`, another only `set`. The analysis has done the hard
+part; the three of them write into one element channel because the list they
+write into is one CreationSet.
+
+So this is CLAUDE.md's rule with the pieces visible: *the confluence is a
+CONTOUR, not a program point*. The writers are separable and separated. What is
+missing is a partition of the CONTAINER, and the only key route 4 has is blind
+to the element type that the demand is entirely about.
+
+**So splitting the comprehension is not the lever.** The levers are, in order
+of how close they are to the evidence:
+
+1. **Give route 4 an element-type key** — partition creation points by the
+   element types their downstream writers contribute, alongside the assign-set
+   key. The `MEMBER-KEY` path (`m_informative`/`msig`) in `split_css_by_defs`
+   is the place this plugs in; it already tries a second key and keeps it when
+   it yields more groups. This is [133](133-split-a-container-on-its-element-type.md).
+2. **Or partition by SETTER**, which is the same information reached from the
+   other side: `__setitem__/es=562` and `es=563` are distinct setters and the
+   setter machinery (`same_eq_classes`, `elemsetter_enabled`) already exists.
+3. Note neither is an ES split. `cross` splitting further cannot help — all
+   four of its contours produce `list[str]`, so no partition of ITS creation
+   points separates `str` from `set` and `list`.
+
 ## WHICH dispatch is ambiguous? All of it is class-based, on the receiver
 
 **Author:** *"Python has static dispatch, class based dispatch and

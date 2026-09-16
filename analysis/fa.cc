@@ -10033,6 +10033,50 @@ static void report_elem_confluence() {
           n_conf, n_sep, n_sep_rel, n_sep_unrel, n_fused);
 }
 
+// ifa/157: IFA_DBG_CSDEFS=<cs id> -- where a CreationSet's creation points
+// actually are. "Which contour do several creation points share, and does one
+// of them supply the offending type" (CLAUDE.md) is unanswerable without this.
+static void report_cs_defs() {
+  cchar *want = getenv("IFA_DBG_CSDEFS");
+  if (!want) return;
+  int id = atoi(want);
+  for (CreationSet *cs : fa->css) {
+    if (!cs || cs->id != id) continue;
+    fprintf(stderr, "CSDEFS p=%d cs=%d sym=%s defs=%d\n", analysis_pass, cs->id,
+            (cs->sym && cs->sym->name) ? cs->sym->name : "?", cs->defs.set_count());
+    for (AVar *d : cs->defs) if (d) {
+      EntrySet *de = d->contour_is_entry_set ? (EntrySet *)d->contour : nullptr;
+      fprintf(stderr, "  def av=%d var=%s in=%s es=%d line=%d elem=", d->id,
+              (d->var && d->var->sym && d->var->sym->name) ? d->var->sym->name : "(anon)",
+              (de && de->fun && de->fun->sym && de->fun->sym->name) ? de->fun->sym->name : "(cs)",
+              de ? de->id : -1,
+              (d->var && d->var->sym && d->var->sym->ast) ? d->var->sym->ast->line() : -1);
+      if (d->out && d->out->type)
+        for (CreationSet *c : d->out->type->sorted) if (c && c->sym)
+          fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+      fprintf(stderr, "\n");
+    }
+    // And who WRITES the element channel -- the union's actual contributors,
+    // which are generally not the creation points.
+    if (cs->sym && cs->sym->element && cs->sym->element->var && cs->added_element_var) {
+      AVar *e = unique_AVar(cs->sym->element->var, cs);
+      if (e) {
+        fprintf(stderr, "  element writers:\n");
+        for (AVar *w : e->backward) if (w && w->out && w->out->type->n) {
+          EntrySet *we = w->contour_is_entry_set ? (EntrySet *)w->contour : nullptr;
+          fprintf(stderr, "    <- av=%d var=%s in=%s es=%d :", w->id,
+                  (w->var && w->var->sym && w->var->sym->name) ? w->var->sym->name : "(anon)",
+                  (we && we->fun && we->fun->sym && we->fun->sym->name) ? we->fun->sym->name : "(cs)",
+                  we ? we->id : -1);
+          for (CreationSet *c : w->out->type->sorted) if (c && c->sym)
+            fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+          fprintf(stderr, "\n");
+        }
+      }
+    }
+  }
+}
+
 static void report_cs_vars() {
   cchar *want = getenv("IFA_DBG_CSVARS");
   if (!want) return;
@@ -15544,6 +15588,7 @@ static void report_demand_ratio() {
   report_mixed_element_owners();
   report_cs_flow_graphs();
   report_fun_entry_sets();
+  report_cs_defs();
   report_cs_vars();
   report_elem_confluence();
   report_recv_cardinality();
