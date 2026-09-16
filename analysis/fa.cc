@@ -8328,7 +8328,8 @@ static int coerce_annotate(AVar *av) {
   static int dbgnumc_e = -1;
   if (dbgnumc_e < 0) dbgnumc_e = getenv("PYC_DBG_NUMC") ? 1 : 0;
   if (dbgnumc_e) {
-    fprintf(stderr, "[numc] annotate av#%d '%s' -> %s members:", av->id,
+    fprintf(stderr, "[numc] annotate %s av#%d '%s' -> %s members:",
+            av->contour_is_entry_set ? "ES" : (av->contour == GLOBAL_CONTOUR ? "GLOBAL" : "CS"), av->id,
             av->var && av->var->sym && av->var->sym->name ? av->var->sym->name : "?", w->name ? w->name : "?");
     for (CreationSet *c : av->out->sorted)
       fprintf(stderr, " %s%s", c->sym->name ? c->sym->name : "?", c->sym->constant ? "[const]" : "[runtime]");
@@ -10142,6 +10143,18 @@ static bool elem_irrepresentable(AVar *elem) {
   // `cg_fail_unrepresentable_container_union` emits downstream).
   if (nb >= 1 && nonbasics > 0) return true;
   // Two distinct non-numeric basics, e.g. {int64, str}.
+  //
+  // ifa/156, author's directive 2026-09-15: SPLIT int FROM float WHERE
+  // POSSIBLE, COERCE ONLY AS A LAST RESORT -- because coercion is a semantic
+  // deviation (pyc prints `1.0` where CPython prints `1`), so splitting is
+  // the CORRECT answer and coercion the lossy fallback.
+  //
+  // `!all_num` is the exclusion that stands in the way, and dropping it was
+  // TRIED and is not enough: measured on `fysphun` and `softrender`, offering
+  // a pure numeric mix here changes nothing, because ~96% of coercion's
+  // targets are ENTRYSET-contoured locals and formals (fysphun 283 ES / 15
+  // CS, softrender 513 ES / 15 CS) and this predicate only ever sees
+  // CreationSets. See ifa/156 for what the directive actually needs.
   return nb > 1 && !all_num;
 }
 
