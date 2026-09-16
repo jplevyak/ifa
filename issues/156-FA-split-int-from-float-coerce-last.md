@@ -124,7 +124,10 @@ cannot carry this demand; it is that **detection is edge-triggered instead of
 being evaluated at quiescence**.
 
 **Author's directive, 2026-09-15: ALL demand should be evaluated after
-quiescence. All.**
+quiescence. All.** That directive is now
+[157](157-FA-all-demand-must-be-evaluated-at-quiescence.md), which carries the
+restructure; everything from here to the end of this section is its origin
+and is kept for the trail.
 
 That is the correct architecture and it is what "start minimal, split only on
 demand" actually requires: let types reach a fixed point, then ask — on
@@ -143,6 +146,15 @@ out at `PER_CS_RECEIVER`. The file even records the failure:
 
 **Measured (`PYC_DBG_QUIESCE`, new) — it is far worse than "starved on three
 programs":**
+
+> **Corrected in [157](157-FA-all-demand-must-be-evaluated-at-quiescence.md),
+> 2026-09-15.** These numbers are real but the label is wrong. Types are
+> ALREADY converged every time the split stages run — `analyze_to_convergence`
+> drains its worklists first — so `!analyze_again` is not a quiescence gate,
+> and this table measures how often stage 1 ran out of work, not how often the
+> analysis converged. It converged every pass. The starvation below is a
+> cascade-priority problem, and level-triggering the detector was built,
+> measured and deleted.
 
 | program | passes reaching quiescence |
 | --- | --- |

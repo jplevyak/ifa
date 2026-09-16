@@ -6059,6 +6059,64 @@ static int confnil_enabled() {
   return e;
 }
 
+// ifa/157 PROBE (IFA_DBG_CONFLEVEL) -- NOT a lever. It counts; it changes
+// nothing.
+//
+// The detector below is EDGE-triggered: it flags an AVar only on the pass
+// some writer contributes a type the AVar does not already have. So a union
+// is visible for exactly the window in which it FORMS and then the detector
+// goes blind -- once `{int64, float64}` has settled every writer is a subset,
+// `type_diff` is bottom, and the demand now plainly sitting there is never
+// reported again. This probe measures that blindness over ALL irrepresentable
+// unions, not just ifa/156's numeric ones: `softrender` flagged=11890
+// unflagged=34878 (75% blind), `sudoku4` 1327 / 12662 (90%).
+//
+// **Closing it buys nothing, and that is measured, not assumed.** The level
+// question -- "does this AVar HOLD an irrepresentable union?", asked of the
+// converged type, in three formulations including one gated on
+// `confluence_is_demanded` -- was built as PYC_CONFLEVEL, measured, and
+// DELETED (2026-09-15). On `softrender` it took stage 1 from 923 candidates
+// per pass to 3295 and `d_ess` from 347 to 348; on `sudoku4` it took warnings
+// from 39 to 206, which is ifa/146's non-monotone diagnostic. Two reasons,
+// both from IFA_DBG_INCOMPAT:
+//
+//   - 83-87% of confluences never reach a partitioner. Stage 1's only
+//     actuator is "split an EntrySet on a FORMAL"; a union on a non-formal
+//     rvalue is counted and dropped (`tc_skip_rval` = 769 of 923).
+//   - In the rest there is nothing to partition -- every in-edge already
+//     carries the union, so `etype == stype` (ifa/146's self-blinding).
+//
+// And the framing was wrong besides: `analyze_to_convergence` drains its
+// worklists BEFORE calling `extend_analysis`, so the types every split stage
+// reads are ALREADY at a fixed point. This detector was never reading stale
+// types, and the `!analyze_again` gate the comments below call quiescence is
+// not one -- it tests whether a higher-priority stage acted. See ifa/157.
+static int conflevel_probe() {
+  static int e = -1;
+  if (e < 0) e = getenv("IFA_DBG_CONFLEVEL") ? 1 : 0;
+  return e;
+}
+static int cl_unflagged = 0, cl_flagged = 0;
+
+// The level question, over a CONVERGED AType. Same shape as
+// `elem_irrepresentable`, which asks it of a container's element channel;
+// this asks it of any AVar.
+static bool atype_irrepresentable(AType *t) {
+  if (!t) return false;
+  Vec<Sym *> basics;
+  int nonbasics = 0;
+  for (CreationSet *c : t->sorted) {
+    if (!c || !c->sym || c->sym == sym_nil_type) continue;
+    if (Sym *b = to_basic_type(c->sym->type))
+      basics.set_add(b);
+    else
+      ++nonbasics;
+  }
+  const int nb = basics.set_count();
+  if (nb >= 1 && nonbasics > 0) return true;  // scalar + object: no representation
+  return nb > 1;
+}
+
 static void collect_type_confluence(AVar *av, Vec<AVar *> &confluences) {
   dbg_dump_av(av);
   AVar *trigger = nullptr;  // ifa/133: the writer that made this a confluence
@@ -6077,6 +6135,12 @@ static void collect_type_confluence(AVar *av, Vec<AVar *> &confluences) {
         break;
       }
     }
+  }
+  // ifa/157 probe: how much of the irrepresentability sitting in the
+  // CONVERGED types does the edge-triggered test above not see? Counted
+  // only; nothing is added to `confluences`.
+  if (conflevel_probe() && av->in && atype_irrepresentable(av->in->type)) {
+    if (confluences.set_in(av)) ++cl_flagged; else ++cl_unflagged;
   }
   // ifa/133 EXPERIMENT (PYC_CONFDEMAND=1): drop confluences whose union is
   // representable -- i.e. keep only the ones something could not proceed on.
@@ -15487,6 +15551,12 @@ int FA::analyze(Fun *top) {
   // not, and is the actual property under test. See
   // tests/deepcopy_recursive_nested_growth.py.
   if (getenv("PYC_DBG_CONVERGED")) fprintf(stderr, "CONVERGED=%d\n", pass_limit_hit ? 0 : 1);
+  // ifa/157: of the AVars whose CONVERGED type is an irrepresentable union,
+  // how many did the edge-triggered confluence test flag? `unflagged` is the
+  // blindness the level question would close -- and closing it was measured
+  // to buy nothing; see the note at conflevel_probe.
+  if (conflevel_probe())
+    fprintf(stderr, "CONFLEVEL flagged=%d unflagged=%d\n", cl_flagged, cl_unflagged);
   if (getenv("PYC_DBG_STAGES")) {
     fprintf(stderr, "STAGES:");
     for (int i = 0; i < kNumFAPassStages; i++)
