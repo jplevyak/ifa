@@ -1009,7 +1009,99 @@ problem one level in: unrolling fixed the index, not the contour sharing.
 defect, it is present in both arms, and the default arm merely prevents it from
 reaching the grid rows.
 
+#### The seed is PERMANENT, and it is a shared receiver, not an unrolling gap
+
+Asking `IFA_DBG_SEED` from p=8, p=20 and p=30 gives seeds at **every** one, in
+both arms — it does not heal. Its converged form:
+
+```
+[SEED] p=30 av=21913 in=__getitem__ es=379 line=1617 type= int64 str
+    <- av=6196 var=r  (cs) : int64     <- a slot of an INNER (r, c) tuple
+    <- av=4656 (cs)        : str       <- a slot of an OUTER ("rc", ...) tuple
+```
+
+So the first diagnosis — *"unrolled per arity but not per content"* — names the
+symptom, not the mechanism. The tuple contours themselves are already separate
+(`#1145` vs `#1087`, both arity 2). What is shared is the **`__getitem__`
+EntrySet**: one contour whose receiver formal unions tuple CreationSets with
+different slot types, so indexing returns the union of the corresponding slots
+across all of them. `{int64, str}` is born there.
+
+The final `__lt__` contours confirm the same shape:
+
+```
+es=703 [__lt__] [tuple#1087]                                  uniform
+es=772 [__lt__] [tuple#1251]                                  uniform
+es=998 [__lt__] [tuple#1091 #1108 #1126 #1133]                UNION receiver
+  <- edge=4725 from=__lt__ es=772 [tuple#1091 #1108 #1126 #1133]   already the union
+```
+
+`es=998`'s only in-edge already carries the union, so
+`edge_type_compatible_with_entry_set` sees `etype == stype` — ifa/146's
+self-blinding. No type test can separate it from where it sits.
+
+#### THE PLAN: a demand-gated receiver split
+
+**Not** "unroll `__eq__`/`__lt__` per content" — that is splitting by structure,
+which is what this issue exists to remove. The demand-driven form:
+
+| | |
+| --- | --- |
+| **Demand** | at quiescence, an ES-contoured AVar whose CONVERGED type is irrepresentable (two basic kinds, or basic + pointer), or an unresolved dispatch. **Not** "this formal's type is a union" — that is the FACT that made `PYC_CPA` arbitrary. |
+| **Locate** | backtrack from the demanded AVar through writers *within the same contour* to the formal(s) it derives from. One hop here: the `__getitem__` result derives from `self`. Measured to terminate in 2-5 hops with **zero** cap hits. |
+| **Partition** | split that contour on that formal, grouping its CreationSets so each group's DERIVED value is representable — and only as far as that requires. |
+| **Guard** | `classes_are_related` → HOIST, never split (richards). Bounded group count. |
+| **Reason vs mechanism** | the demand alone decides WHETHER; the formal's CreationSet identity decides WHICH. Take the demand away and nothing fires. |
+
+**This is what the project has already specified as `PYC_CPA`'s replacement**, in
+`tests/splitter_cartesian_product.py`'s own known-issue text:
+
+> what the replacement must reach: demand (an unresolved dispatch or an
+> irrepresentable union) plus dispatch-aware filtering of the RECEIVER, which in
+> single-dispatch OOP is the position that determines dispatch. That fires only
+> where resolution is blocked and acts on the one position that decides it, so
+> it should subsume this fixture and flip this test to PASS.
+
+That fixture is the acceptance test, and it is already checked in as
+`COMPILE-OUT` / `known_issue`.
+
+**Order of work, each step with its stop condition written first:**
+
+1. **Nominate the demand.** Extend stage 1 so an irrepresentable ES-contoured
+   AVar is backtracked to its contour's formal rather than dropped at
+   `tc_skip_rval`. *Stop: if the walk does not reach a formal of the same
+   contour for the `__getitem__`/`__lt__` seeds, the demand is not
+   ES-actionable and this is the wrong rung.*
+2. **Partition past the self-blinding.** The receiver formal holds the union on
+   every in-edge, so the partition must be over the formal's CreationSet
+   membership, not over edge disagreement. *Stop: if grouping the receiver's
+   CSs so each group's derived value is representable is not possible, the
+   union is real and `sudoku5` needs a source change.*
+3. **Verify demand-gating before measuring anything else.** A homogeneous-tuple
+   program must produce ZERO splits from this rung. *Stop: if it splits, the
+   trigger is a fact and the rung is `PYC_CPA` again — delete it.*
+4. **Acceptance.** `tests/splitter_cartesian_product.py` flips `KNOWN` → `PASS`;
+   `IFA_DBG_SEED` count at p=30 drops on `sudoku5`; six gates; corpus `-m check`
+   A/B with `container_cs` **not** rising.
+5. **Then re-measure `PYC_SETTERMIN`.** *This is the whole point:* if the seed
+   closes and the minimal container partition now costs nothing, the finest
+   setter partition can be deleted and CLAUDE.md's premise holds on both sides.
+   *Stop: if `SETTERMIN` still costs `plcfrs`/`sudoku5`, there is a second seed
+   — re-run `IFA_DBG_SEED` and repeat, do not accept the over-split.*
+
 #### What is established, and what is next
+
+- The retreat is withdrawn; non-minimality is **not** justified.
+- `SETTERMIN`'s partition is correct where it was blamed: merging nine
+  identical `list[int64]` literals is the minimal demanded answer.
+- The defect it exposes is a **self-sustaining cycle** through `solve_sudoku`,
+  55 of whose 56 contours are `defs=1`.
+- **The seed is a shared `__getitem__`/`__lt__` EntrySet over a receiver union
+  of differently-typed tuples** — permanent, in both arms, and self-blind to
+  every type test from where it sits.
+- The fix is step 1-5 above: a demand-gated receiver split, which the repo has
+  already specified and already has an acceptance fixture for.
+
 
 - The retreat is withdrawn; non-minimality is **not** justified.
 - `SETTERMIN`'s partition is correct where it was blamed: merging nine
