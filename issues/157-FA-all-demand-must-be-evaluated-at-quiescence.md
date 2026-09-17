@@ -1089,7 +1089,77 @@ That fixture is the acceptance test, and it is already checked in as
    *Stop: if `SETTERMIN` still costs `plcfrs`/`sudoku5`, there is a second seed
    — re-run `IFA_DBG_SEED` and repeat, do not accept the over-split.*
 
+#### STEPS 1 AND 2 BUILT — the stop condition fired: the EntrySet is the wrong rung
+
+Both were implemented as `PYC_ESDEMAND=1/2` and both are now probes
+(`IFA_DBG_ESDEMAND`), not levers.
+
+**Step 1 — nominate the demand instead of dropping it.** An irrepresentable
+ES-contoured rvalue at `tc_skip_rval` is backtracked through writers *inside its
+own contour* to the formal it derives from. It does not reach one:
+
+| program | demanded | → formal | no formal | *of those, the contour HAD formals* |
+| --- | --- | --- | --- | --- |
+| `sudoku5` | 3317 | **43** | 3274 | 3268 |
+| `sudoku4` | 1005 | 48 | 957 | 919 |
+| `softrender` | 8003 | 69 | 7934 | **7934 (100%)** |
+
+**~99% of ES-side demands do not derive from any formal of their own contour**,
+and it is not because the contour lacks formals — on `softrender` every single
+failure is in a contour that has them. The value comes from OUTSIDE: a
+CreationSet member/element read, or a callee return, which the walk stops at by
+design.
+
+**Step 2 — partition past the self-blinding.** For the 43 that do reach a
+formal, the formal holds the union on **every** in-edge, so
+`decide_entry_set_split` sees `etype == stype` and declines: 29 nominations,
+`dec` unchanged at 1, `split(formal)` **0**. Routing them instead to
+`split_edges` — which partitions by CreationSet membership, bounded to two
+groups by ifa/146 E — fires **3** times on `sudoku5` and changes nothing
+(warnings 19 → 19).
+
+`split_edges`' own comment had already recorded the unbounded version of this
+being measured on **these exact formals**: *"stage 5 fans two `__getitem__`
+formals spanning 5 CreationSets into 5 contours, and the next pass goes from 361
+confluences / 108 violations to 1039 / 1216."* The bound is why mode 2 is inert
+rather than explosive.
+
+**So the plan's step-1 stop condition fires as written**, and it closes the
+whole ES branch: *"if the walk does not reach a formal of the same contour, the
+demand is not ES-actionable and this is the wrong rung."* It is not.
+
+This agrees with every other measurement in this issue rather than adding a new
+puzzle: the first round found 99 of 102 dispatch demands landing on a
+CreationSet, not a formal; `sudoku5` has 56 polluted contours of which **55 are
+`defs=1`**. The demand lives at CreationSet CONTENT, on contours with one
+creation point.
+
+**Which is ifa/133's residual family, and it is now the only thing left.** Not
+the granularity of the setter partition (measured, dead), not the candidate set
+(measured, dead), not an ES receiver split (measured here, dead). The open
+question is the one ifa/133 states and ifa/152 half-answers: **how to separate a
+CreationSet whose content is irrepresentable and which has ONE creation point.**
+ifa/152's backtrack walks to an upstream CS that has several — and on `sudoku5`
+it reaches 135 and rejects 123 of them on "supplies none". That rejection rate
+is the next measurement, not another splitter.
+
 #### What is established, and what is next
+
+- The retreat is withdrawn; non-minimality is **not** justified.
+- `SETTERMIN`'s partition is correct where it was blamed: merging nine
+  identical `list[int64]` literals is the minimal demanded answer.
+- The seed is a shared `__getitem__`/`__lt__` EntrySet over a receiver union of
+  differently-typed tuples — permanent, in both arms, self-blind to every type
+  test from where it sits.
+- **The ES rung cannot carry it** (1.3% reachability, and the reachable ones
+  self-blind). The demand is CS-content-side, on `defs=1` contours.
+- Next: ifa/152's backtrack rejection rate — 123 of 135 reaches rejected as
+  "supplies none" on `sudoku5`. Either that predicate is too strict, or the
+  upstream CS genuinely does not supply the offending type and the union is
+  formed at a join with no upstream owner at all. **Stop condition:** if the
+  rejected candidates genuinely do not supply it, no backtrack can help and the
+  answer is a representation change, not a contour one.
+
 
 - The retreat is withdrawn; non-minimality is **not** justified.
 - `SETTERMIN`'s partition is correct where it was blamed: merging nine

@@ -11740,6 +11740,44 @@ static void report_retconf() {
   dk_recv_types.clear();
 }
 
+// ifa/157 step 1 (PYC_ESDEMAND): NOMINATE THE DEMAND INSTEAD OF DROPPING IT.
+//
+// Stage 1 drops 83-87% of its confluences at `tc_skip_rval` -- an ES-contoured
+// value that is neither a formal nor a return, so its one actuator ("split an
+// EntrySet on a formal") does not apply. But the value did not come from
+// nowhere: if it is irrepresentable and it derives from a FORMAL of the same
+// contour, then splitting that contour on that formal is the actuator, and the
+// demand is what says so.
+//
+// Measured target, `sudoku5` at p=30: `__getitem__ es=379` returns
+// `{int64, str}` because its receiver formal unions tuple CreationSets with
+// different slot types (one contributes a `str` slot, another an `int64`). The
+// demanded value is one hop from `self`.
+//
+// The walk stays INSIDE the contour on purpose. Crossing out of it lands on a
+// caller's local or a CreationSet, which are ifa/152's backtrack and route 4's
+// territory -- both already measured here -- and mixing them in would make this
+// step's stop condition unreadable.
+//
+// The demand is an IRREPRESENTABLE CONVERGED TYPE and nothing weaker. "This
+// formal's type is a union" is the FACT that made PYC_CPA arbitrary.
+static long ed_seen = 0, ed_formal = 0, ed_no_formal = 0, ed_not_demanded = 0;
+static long ed_had_formals = 0;
+
+static AVar *backtrack_to_own_formal(AVar *av) {
+  Vec<AVar *> seen, work;
+  seen.set_add(av);
+  work.add(av);
+  for (int i = 0; i < work.n && i < 4000; i++)
+    for (AVar *x : work.v[i]->backward) if (x) {
+      if (x->contour != av->contour) continue;   // stay inside this contour
+      if (!seen.set_add(x)) continue;
+      if (x->var && x->var->is_formal && !x->is_lvalue) return x;
+      work.add(x);
+    }
+  return nullptr;
+}
+
 [[nodiscard]] static int split_ess_for_type(Vec<AVar *> &imprecisions, int fdynamic) {
   int analyze_again = 0;
   // ifa/148: expand each confluence to the whole contour path feeding it.
@@ -11810,6 +11848,54 @@ static void report_retconf() {
               }
             } else
               ++rd_none;
+          }
+          // ifa/157 steps 1-2 PROBE (IFA_DBG_ESDEMAND) -- NOT a lever. Both
+          // were built as PYC_ESDEMAND=1/2 and the stop condition fired.
+          //
+          // Step 1 was: do not drop an irrepresentable ES-contoured rvalue at
+          // `tc_skip_rval`; backtrack it through writers INSIDE its own contour
+          // to the formal it derives from, and split the contour on that
+          // formal. The demand is an irrepresentable CONVERGED type and nothing
+          // weaker ("this formal's type is a union" is the fact that made
+          // PYC_CPA arbitrary).
+          //
+          // It does not reach:
+          //
+          //   program      demanded  ->formal  no formal (contour HAD formals)
+          //   sudoku5          3317        43       3274   (3268)
+          //   sudoku4          1005        48        957    (919)
+          //   softrender       8003        69       7934   (7934, 100%)
+          //
+          // ~99% of ES-side demands do not derive from any formal of their own
+          // contour, and it is not because the contour lacks formals -- on
+          // softrender every single failure is in a contour that has them. The
+          // value comes from OUTSIDE: a CreationSet member/element read, or a
+          // callee return, which the walk stops at by design.
+          //
+          // Step 2 confirmed the other half. For the 43 that do reach a formal,
+          // the formal holds the union on EVERY in-edge, so
+          // `decide_entry_set_split` sees `etype == stype` and declines (29
+          // nominations, `dec` unchanged at 1, `split(formal)` 0 -- ifa/146's
+          // self-blinding). Routing them to `split_edges` instead, which
+          // partitions by CreationSet membership bounded to two groups, fires 3
+          // times on `sudoku5` and changes nothing.
+          //
+          // So the EntrySet is the wrong rung for this demand. It lives at
+          // CreationSet content -- which agrees with this issue's first
+          // measurement (99 of 102 dispatch demands landed on a CreationSet)
+          // and with `sudoku5`'s 56 polluted contours, 55 of them `defs=1`.
+          if (getenv("IFA_DBG_ESDEMAND") && av->out) {
+            if (atype_irrepresentable(av->out->type)) {
+              ++ed_seen;
+              if (backtrack_to_own_formal(av))
+                ++ed_formal;
+              else {
+                ++ed_no_formal;
+                EntrySet *aes = (EntrySet *)av->contour;
+                if (aes->fun && aes->fun->positional_arg_positions.n > 1) ++ed_had_formals;
+              }
+            } else
+              ++ed_not_demanded;
           }
         }
       } else {
@@ -16160,6 +16246,9 @@ int FA::analyze(Fun *top) {
   // not, and is the actual property under test. See
   // tests/deepcopy_recursive_nested_growth.py.
   if (getenv("PYC_DBG_CONVERGED")) fprintf(stderr, "CONVERGED=%d\n", pass_limit_hit ? 0 : 1);
+  if (getenv("IFA_DBG_ESDEMAND"))  // ifa/157 step 1/2
+    fprintf(stderr, "ESDEMAND demanded=%ld ->formal=%ld no_formal=%ld (of which the contour HAD formals: %ld) not_demanded=%ld\n",
+            ed_seen, ed_formal, ed_no_formal, ed_had_formals, ed_not_demanded);
   if (getenv("IFA_DBG_REPRKEY"))
     fprintf(stderr, "REPRKEY new=%ld same=%ld CHANGED=%ld\n", rk_new, rk_same, rk_changed);
   // ifa/157: of the AVars whose CONVERGED type is an irrepresentable union,
