@@ -197,3 +197,54 @@ difference from the repro and the next thing to reduce.
 Left at default 0. Suite 312/0 with it off; it has had no corpus measurement,
 which it needs before it could be anything else — merging arity-0 containers
 broadly is a real precision change, not a free one.
+
+## The real repro is dict-mediated — `PYC_EMPTYJOIN` does NOT fix it
+
+The six-line repro above was not `dijkstra2`'s shape. Reducing from the program
+instead of from the idiom gives seven lines,
+`tests/empty_list_compare_via_dict.py`:
+
+```python
+def f(xs):
+    d = {}
+    p = []
+    for x in xs:
+        d[0] = [x]
+        p = d[0]
+    return p == []
+```
+
+The list reaches `p` through a **dict element channel**. That is the difference,
+and it is what `dijkstra2` does (`paths[dir][w]`).
+
+| | EMPTYJOIN=0 | EMPTYJOIN=1 |
+| --- | --- | --- |
+| `p = []; p = [x]` (no dict) | 4 errors | **0** |
+| `[x] + p`, `[x][:]`, the 9-line slice/reverse chain | 4 errors | **0** |
+| **via a dict** (`p = d[0]`, `d[0] + [x]`, `[x] + d[0]`, `list(d[0])`) | 4 errors | **4 errors** |
+| `dijkstra2` | 4 errors | **4 errors** |
+
+**And the contours say why the join is the wrong mechanism.** Under
+EMPTYJOIN=1 on the dict repro:
+
+```
+cs=1035 vars=1 defs=6 no_arity=1 elem=           <- the six [] literals went HERE
+cs=987  vars=1 defs=1 no_arity=1 elem= float64   <- the list they are compared against
+```
+
+Six empty literals merged into a contour whose element is **still bottom**,
+while the one carrying `float64` sits beside it. The join picks whichever
+creator is arity-compatible and comes first; it is not unification. shedskin's
+is TYPE-driven — the empty literal's `T` comes from the context it is compared
+with — and no amount of merging by arity reproduces that, because an empty
+literal has no element for the merge to find.
+
+So `PYC_EMPTYJOIN` was **removed**, and the account kept at
+`creation_point`. Two mechanisms are now measured dead on this issue:
+suppressing the violations (re-raised in other contours) and joining arity-0
+containers (merges into an arbitrary contour).
+
+What remains is still the same statement, now with a fixture pinning it: an
+index into an **arity-0** contour is statically out of bounds, and the honest
+fix is to treat that PNode as the dead code it is — not to give the read a
+type, and not to hide its diagnostics after the fact.

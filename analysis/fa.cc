@@ -503,7 +503,6 @@ static int cselem_enabled();  // ifa/issues/101, defined with the other flags
 static int cssiteless_enabled();  // ifa/129 step 4, ditto
 static int csdcpa1_enabled();     // ifa/128: one CreationSet per sym, ditto
 static int csmold_enabled();  // ifa/issues/101, ditto
-static int emptyjoin_enabled();  // ifa/160
 static bool cs_elem_irrepresentable(CreationSet *cs);  // ifa/133: defined with route 4
 // ifa/133: turn an ELEMENT demand into a demand to split the CreationSet by
 // SETTERS. Route 4 already takes the element demand but partitions by
@@ -876,32 +875,29 @@ CreationSet *creation_point(AVar *v, Sym *s, int arity) {
           //
           // So the test is simply "arities agree", with `no_static_arity`
           // the one exemption.
-          // ifa/160: AN ARITY-ZERO CONTAINER CARRIES NO ARITY INFORMATION.
+          // ifa/160: LETTING AN ARITY-ZERO CONTAINER JOIN WAS TRIED AND IS
+          // WRONG. shedskin has no arity in its list type -- for `p = []`,
+          // `p = [x]`, `p == []` it gives BOTH literals `list<__ss_float>` --
+          // so the obvious move is to let arity 0 join another arity here and
+          // let `make_kind`'s existing `no_static_arity` net drop the result
+          // to LIST layout.
           //
-          // shedskin gives `[]` and `[x]` the SAME type -- for `p = []` then
-          // `p = [x]` then `p == []` it emits `list<__ss_float>` for BOTH
-          // literals, because its list type has no arity in it at all. pyc
-          // keys CreationSet identity on arity (ifa/132), so the empty literal
-          // gets its own contour with no positional slots AND no element
-          // writes: `cs=991 sym=list vars=0 defs=6 arity=0 elem=`. Reading
-          // from it can only give bottom -- not a failure to infer, there is
-          // nothing there to infer -- and that bottom is what poisons
-          // `list.__eq__` (ifa/160).
+          // It fixes the shapes with one other list (a 6-line `p == []` repro,
+          // `[x] + p`, `[x][:]`) and does NOT fix the real case, because the
+          // join is by arity-compatibility and picks whichever creator comes
+          // first -- not the list the empty literal is compared against.
+          // Measured on the minimal dict-mediated repro
+          // (`tests/empty_list_compare_via_dict.py`):
           //
-          // ifa/132's own safety net already says what should happen when
-          // arities disagree: `make_kind` sets `no_static_arity`, the CS drops
-          // to LIST layout and reads its length at run time. The identity key
-          // above prevents the two from ever meeting so that net never fires.
+          //   cs=1035 vars=1 defs=6 no_arity=1 elem=           <- the six []s went HERE
+          //   cs=987  vars=1 defs=1 no_arity=1 elem= float64   <- the list they meet
           //
-          // An arity of ZERO is the case where separating buys nothing: there
-          // are no slots to lay out and no `len` constant worth keeping that
-          // the runtime read cannot supply. Let it join, and let the existing
-          // net do the rest. Tuples are excluded -- a 0-tuple is a distinct
-          // type with its own representation, which is ifa/132's whole point.
-          // PYC_EMPTYJOIN=0 restores the strict form.
-          const bool empty_join = emptyjoin_enabled() && s->element && s != sym_tuple &&
-                                  (arity == 0 || x->static_arity == 0);
-          if (!x->no_static_arity && x->static_arity != arity && !empty_join) continue;
+          // Six empty literals merged into a contour whose element is still
+          // bottom, while the one carrying `float64` sits beside it. shedskin's
+          // unification is TYPE-driven; joining by arity is not unification,
+          // and an empty literal has no element for any amount of merging to
+          // find. See ifa/160.
+          if (!x->no_static_arity && x->static_arity != arity) continue;
         } else {
           if (arity >= 0 && x->static_arity >= 0 && x->static_arity != arity && !x->no_static_arity) continue;
         }
@@ -6105,15 +6101,6 @@ static void dbg_dump_av(AVar *av) {
 // detected, the CreationSet never reaches `tc_cs_dropped`, and route 4
 // never sees the merge at all. `->type` projects a lone nil to bottom, so
 // skip only when the RAW type is empty too, i.e. genuinely not analyzed.
-// ifa/160: PYC_EMPTYJOIN -- an arity-zero container may join a CreationSet of
-// another arity, which then drops to list layout via make_kind's existing
-// no_static_arity net. See the note at the use in creation_point.
-static int emptyjoin_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_EMPTYJOIN"); e = v ? atoi(v) : 0; }
-  return e;
-}
-
 static int confnil_enabled() {
   static int e = -1;
   if (e < 0) { cchar *v = getenv("PYC_CONFNIL"); e = v ? atoi(v) : 0; }
