@@ -1143,7 +1143,109 @@ ifa/152's backtrack walks to an upstream CS that has several — and on `sudoku5
 it reaches 135 and rejects 123 of them on "supplies none". That rejection rate
 is the next measurement, not another splitter.
 
+#### GROUND TRUTH FIRST: shedskin compiles `sudoku5`, so no representation change is required
+
+Run directly, not recalled — `python3 -m shedskin translate sudoku5.py`, **rc=0**.
+Its inferred signatures:
+
+```cpp
+solve_sudoku(tuple<__ss_int> *size, list<list<__ss_int> *> *grid)
+solve(dict<tuple2<str *, tuple<__ss_int> *> *, set<tuple<__ss_int> *> *> *X,
+      dict<tuple<__ss_int> *, list<tuple2<str *, tuple<__ss_int> *> *> *> *Y,
+      list<tuple<__ss_int> *> *solution)
+```
+
+Two facts settle two open questions.
+
+**`grid` is `list<list<__ss_int> *>`.** The nine rows are ONE type with element
+`int`. `SETTERMIN`'s merge of them is right, and pyc's `{int64, str, tuple x5}`
+on that element is **pure inference loss**, not a property of the program. Any
+stop condition that offered "a representation change" for this program was
+wrong and is **withdrawn** — CLAUDE.md's directive holds and is now verified by
+execution, not by premise.
+
+**shedskin has TWO tuple types.** `tuple<__ss_int>` is homogeneous — arity-free,
+element type `int`, indexable by a variable. `tuple2<str *, tuple<...> *>` is
+heterogeneous — exactly two slots of distinct types, indexable by a constant.
+They are different C++ types, so `__getitem__` is a different instantiation for
+each and one can never serve both.
+
+#### pyc's defect, pinned exactly
+
+`IFA_DBG_SEED` now prints the contour's own formals next to the writers. At
+p=30 on `sudoku5`:
+
+```
+[SEED] av=17032 in=__getitem__ es=248 type= int64 str tuple#1087 #1144 #1146 #1148 #1150
+    FORMAL self : tuple#1087 #1091 #1108 #1126 #1133 #1144 #1145 #1146 #1147
+                  #1148 #1149 #1150 #1151 #1153
+    FORMAL key  : int64
+    <- av=5718 (cs) : str        <- slot 0 of a HETEROGENEOUS (str, tuple)
+    <- av=4612 var=a (cs) : int64 <- slot 0 of a HOMOGENEOUS (int, int)
+```
+
+**One `tuple.__getitem__` contour whose receiver unions FOURTEEN tuple
+CreationSets of two different shapes.** Indexing that union returns the union of
+every slot of all fourteen. The tuple contours themselves are already precise —
+`#1145` is exactly `(str, tuple#1144)`, `#1087` exactly `(int, int)`. Nothing is
+merged. What is shared is the METHOD contour.
+
+shedskin never forms that receiver, because there the two shapes are different
+types and no variable can hold both.
+
+#### Two corrections to my own earlier claims
+
+- **"1.3% of ES-side demands reach a formal" was WRONG.** The walk skipped
+  CS-contoured writers, and a value read out of a container flows from the
+  container's SLOT (a CreationSet AVar), not from the formal. Linking the slot
+  back to the formal whose type holds that CreationSet:
+  `sudoku5` 43 → **1481** of 3317 (45%), `sudoku4` 48 → **192** (19%),
+  `softrender` 69 → **1746** (22%). The old number measured my walk's bug.
+- **But the actuator still fails.** Routing those formals to `split_edges`
+  (partition by CreationSet membership, two groups) drives `sudoku5`
+  **non-convergent** — *"no EntrySet progress for 120s"* — and adding stage 1's
+  own one-split-per-contour-per-pass rule does not help, so it is not volume.
+  Peeling a 14-way union two at a time never discharges the demand: the
+  remaining 13-way union is still irrepresentable and it re-fires forever.
+
+#### What this establishes
+
+**The union must not FORM.** It cannot be split apart afterwards — measured,
+twice. And the reason it forms in pyc and not in shedskin is a missing
+**type-level** distinction, not a missing splitter:
+
+> pyc has ONE `tuple` type. shedskin has two.
+
+pyc already computes the same distinction — `tuple_able()` / `PYC_TUPLE_AS_LIST`
+decide RECORD layout versus "unknown arity, known element type" LIST layout —
+but it computes it in `clone.cc`, **after** the analysis, far too late to keep
+the contours apart. During inference both shapes are `sym_tuple`, so dispatch
+cannot separate them and one `__getitem__` serves all fourteen.
+
+This is CLAUDE.md's licensed third category, not provenance and not boxing:
+*"what the target language can REPRESENT (arity, member width, `None` in a
+union)"*. pyc already separates tuples by **arity**
+([132](132-arity-is-representation-not-provenance.md), landed). **Slot
+homogeneity is the same kind of property and the same argument applies** — it
+decides the layout, it is a function of the deduced types, and it is what
+shedskin keys on.
+
 #### What is established, and what is next
+
+- shedskin compiles `sudoku5` (**verified by running it**): no representation
+  change is required, and the `{int64, str, tuple}` union is pyc's alone.
+- The seed is ONE `tuple.__getitem__` contour over a 14-way receiver union
+  mixing homogeneous and heterogeneous tuples.
+- The union **cannot be split apart afterwards** — ES receiver splitting is
+  non-convergent, CS partitioning is dead (measured earlier).
+- Next: make slot homogeneity a tuple CreationSet identity component, the way
+  ifa/132 made arity one, so a homogeneous and a heterogeneous tuple are never
+  the same type during inference. **Stop condition:** if separating them still
+  leaves one `__getitem__` contour over a union — because the union is of two
+  heterogeneous tuples with different slot types — then homogeneity is too
+  coarse and the key must be the slot-type signature itself, which is what
+  `tuple2<A,B>` literally is.
+
 
 - The retreat is withdrawn; non-minimality is **not** justified.
 - `SETTERMIN`'s partition is correct where it was blamed: merging nine

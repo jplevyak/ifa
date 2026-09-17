@@ -6153,6 +6153,18 @@ static void seed_probe(AVar *av) {
   for (CreationSet *c : av->in->type->sorted) if (c && c->sym)
     fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
   fprintf(stderr, "\n");
+  // ifa/157: the contour's own formals, so receiver and writers are legible in
+  // one report instead of correlated across runs (ids move between passes).
+  if (es && es->fun)
+    for (MPosition *pp : es->fun->positional_arg_positions) {
+      AVar *fa2 = es->args.get(pp);
+      if (!fa2 || !fa2->out) continue;
+      fprintf(stderr, "    FORMAL av=%d var=%s :", fa2->id,
+              (fa2->var && fa2->var->sym && fa2->var->sym->name) ? fa2->var->sym->name : "(anon)");
+      for (CreationSet *c : fa2->out->type->sorted) if (c && c->sym)
+        fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+      fprintf(stderr, "\n");
+    }
   for (AVar *x : av->backward) if (x && x->out && x->out->type->n) {
     EntrySet *xe = x->contour_is_entry_set ? (EntrySet *)x->contour : nullptr;
     fprintf(stderr, "    <- av=%d var=%s in=%s line=%d :", x->id,
@@ -11765,16 +11777,39 @@ static long ed_seen = 0, ed_formal = 0, ed_no_formal = 0, ed_not_demanded = 0;
 static long ed_had_formals = 0;
 
 static AVar *backtrack_to_own_formal(AVar *av) {
-  Vec<AVar *> seen, work;
+  EntrySet *es = av->contour_is_entry_set ? (EntrySet *)av->contour : nullptr;
+  Vec<AVar *> seen, work, viacs;
   seen.set_add(av);
   work.add(av);
   for (int i = 0; i < work.n && i < 4000; i++)
     for (AVar *x : work.v[i]->backward) if (x) {
-      if (x->contour != av->contour) continue;   // stay inside this contour
       if (!seen.set_add(x)) continue;
+      if (x->contour != av->contour) {
+        // ifa/157, corrected: a value READ OUT OF A CONTAINER does not flow
+        // from the formal that carries the container -- it flows from the
+        // container's SLOT, which lives in the CreationSet contour. The first
+        // version of this walk skipped those and so reported 1.3%
+        // reachability, which measured the dataflow shape, not the demand.
+        //
+        // `tuple.__getitem__` is the case: its result's writers are the slot
+        // AVars of fourteen tuple CreationSets, and `self` is the formal whose
+        // type holds all fourteen. Link the slot back to that formal.
+        if (!x->contour_is_entry_set) viacs.set_add(x);
+        continue;
+      }
       if (x->var && x->var->is_formal && !x->is_lvalue) return x;
       work.add(x);
     }
+  if (!es || !es->fun) return nullptr;
+  for (AVar *x : viacs) if (x) {
+    CreationSet *xcs = (CreationSet *)x->contour;
+    if (!xcs) continue;
+    for (MPosition *pp : es->fun->positional_arg_positions) {
+      AVar *f = es->args.get(pp);
+      if (!f || !f->out || !f->out->type) continue;
+      if (f->var && f->var->is_formal && f->out->type->sorted.set_in(xcs)) return f;
+    }
+  }
   return nullptr;
 }
 
@@ -11887,9 +11922,26 @@ static AVar *backtrack_to_own_formal(AVar *av) {
           if (getenv("IFA_DBG_ESDEMAND") && av->out) {
             if (atype_irrepresentable(av->out->type)) {
               ++ed_seen;
-              if (backtrack_to_own_formal(av))
+              if (AVar *f = backtrack_to_own_formal(av)) {
                 ++ed_formal;
-              else {
+                // ifa/157 step 2: the formal holds the union on every in-edge,
+                // so the edge-disagreement test declines. Partition by the
+                // formal's CreationSet membership instead -- `split_edges`,
+                // bounded to TWO groups by ifa/146 E.
+                // ifa/157 step 2, MEASURED DEAD. Routing the nominated
+                // formal to `split_edges` -- partition by the formal's
+                // CreationSet membership, bounded to two groups by ifa/146 E --
+                // drives `sudoku5` NON-CONVERGENT: "FA flow analysis made no
+                // EntrySet progress for 120s". Adding stage 1's own
+                // one-split-per-contour-per-pass rule does not help, so it is
+                // not volume. Peeling a 14-way receiver union two groups at a
+                // time never discharges the demand: the remaining 13-way union
+                // is still irrepresentable, so it re-fires every pass forever.
+                //
+                // The union has to not FORM. See the issue: shedskin gives
+                // homogeneous and heterogeneous tuples different TYPES, so the
+                // receiver that holds both cannot exist there.
+              } else {
                 ++ed_no_formal;
                 EntrySet *aes = (EntrySet *)av->contour;
                 if (aes->fun && aes->fun->positional_arg_positions.n > 1) ++ed_had_formals;
