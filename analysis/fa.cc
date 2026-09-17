@@ -3325,6 +3325,52 @@ static void structural_assignment(CreationSet *new_cs, CreationSet *cs, PNode *p
   }
 }
 
+// ifa/164: a `{None, T}` union at a primitive ARGUMENT is a nullable
+// pointer, not an illegal type.
+//
+// `type_cannonicalize` already strips `nil_type` from the `->type`
+// projection whenever the rest of the union is pointer-shaped -- that is
+// issue 060's settled decision, "Optional[pointer] still single-clone
+// (frontend-sanctioned merge preserved)" -- and it is the model shedskin
+// compiles the same programs under, where `None` is simply `NULL` inside
+// `str *`. Dispatch, narrowing and defaulted parameters all read that
+// projection, so none of them ever sees the None.
+//
+// This check read the RAW `out`, which made it the ONE consumer that
+// rejected a member the rest of the compiler had already agreed to
+// represent. The inconsistency showed up as OPPOSITE errors on the two
+// operand positions of one operator:
+//
+//   a[1] + "y"      None in the RECEIVER   -- compiled silently
+//   "".join(a)      None in an ARGUMENT    -- fatal, via `r + x`
+//
+// so `cipher = [None] * len(txt)` followed by a full overwrite -- a
+// correct CPython program, and the standard preallocation idiom
+// (shedskin_examples/solitaire) -- was rejected. The union is TEMPORAL
+// (the list holds None at t0 and str at t1, in one object from one
+// creation point), so no contour split separates it and none should be
+// asked for; the answer is the representation, which pyc already has.
+//
+// The `{None, scalar}` case is NOT this, and condition (3) below keeps it
+// out: 060 deliberately KEEPS nil in `->type` when the union carries a
+// num_kind scalar, because None and 0 share a bit pattern unboxed. That
+// is `genetic2` (an implicit fall-through `return None` unioned with
+// int64) and it stays an error -- see ../../issues/048.
+//
+// Deliberately NOT suppressed: an argument whose whole type is `None`.
+// A nullable pointer needs a pointee, so `"" + None` stays an error --
+// only the *mixed* union is sanctioned, and only when the non-nil part
+// is itself legal for the primitive.
+static bool nil_member_is_representable(AVar *arg, AType *diff, AType *legal) {
+  for (CreationSet *c : diff->sorted)  // the rejected part must be nil, and nothing else
+    if (!c || !c->sym || c->sym->type != sym_nil_type) return false;
+  AType *t = arg->out->type;
+  if (!t || !t->n) return false;  // a pure `None` argument is still an error
+  for (CreationSet *c : t->sorted)  // canonicalization must have STRIPPED the nil
+    if (c && c->sym && c->sym->type == sym_nil_type) return false;
+  return type_diff(t, legal) == fa->type_world.bottom_type;  // ... and the pointee is legal
+}
+
 // for send nodes, add call edges and more complex constraints
 // which depend on the computed types (compare to add_send_constraints)
 static void add_send_edges_pnode(PNode *p, EntrySet *es) {
@@ -3348,9 +3394,10 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
       if (i - 1 == p->prim->pos) continue;
       AVar *arg = make_AVar(p->rvals[i], es);
       // record violations
-      if (type_diff(arg->out, p->prim->args[iarg]) != fa->type_world.bottom_type)
-        type_violation(ATypeViolation_kind::PRIMITIVE_ARGUMENT, arg, type_diff(arg->out, p->prim->args[iarg]),
-                       make_AVar(p->lvals[0], es));
+      AType *argdiff = type_diff(arg->out, p->prim->args[iarg]);
+      if (argdiff != fa->type_world.bottom_type &&
+          !nil_member_is_representable(arg, argdiff, p->prim->args[iarg]))  // ifa/164
+        type_violation(ATypeViolation_kind::PRIMITIVE_ARGUMENT, arg, argdiff, make_AVar(p->lvals[0], es));
       switch (p->prim->arg_types[iarg]) {
         default:
           break;
