@@ -1,7 +1,7 @@
 # ifa/160 — `list.__eq__` indexes an empty-list literal
 
-**Status:** open, root-caused 2026-09-17. `shedskin_examples/dijkstra2`'s only
-4 errors.
+**Status:** FIXED 2026-09-17, one word in `__pyc__/04_sequence.py`.
+`shedskin_examples/dijkstra2` compiles.
 
 ## Repro — six lines
 
@@ -360,3 +360,57 @@ the empty literal, and no amount of post-hoc suppression substitutes for knowing
 that. That is the narrowing described earlier in this issue -- propagate the
 equality on the fall-through edge so `range(lself)` has a bound of 0 -- and it
 is the only candidate left that removes the path instead of hiding it.
+
+## FIXED — iterate the other operand's length
+
+The four suppression/identity mechanisms above all failed because they tried to
+hide an unreachable path's diagnostics. The path can simply be made
+unreachable, and **pyc already has the mechanism**.
+
+**pyc kills a zero-trip loop body when the bound folds to constant 0.** All of
+these are clean today, each with a bottom-valued `p[i]` in the body:
+
+```python
+for i in range(0):        ...   # literal
+n = 0; for i in range(n): ...   # folded local
+for i in range(len(p)):   ...   # len([]) folds to 0
+```
+
+`len` folds because `list.__len__` is `__pyc_clone_constants__(len(self))`.
+
+`list.__eq__` iterated `range(lself)` — **self's** length — which does not fold
+when the empty operand is the OTHER one. Changing the bound to `ll` is the
+whole fix:
+
+```python
+    if lself != ll:
+      return False
+    for i in range(ll):        # was range(lself)
+      if l[i] != self[i]:
+```
+
+Past the guard `lself == ll`, so it is the same loop — but `ll` is the length
+that folds to 0 for `x == []`, the body goes dead, and `l[i]` is never analysed
+on a container with no element to give.
+
+Isolated before changing anything: the identical 13-line function with only the
+bound switched goes from **5 errors to 0**.
+
+| | before | after |
+| --- | --- | --- |
+| 6-line `p == []` | 4 errors | **0**, runs, `False` = CPython |
+| dict repro (`tests/empty_list_compare_via_dict.py`) | 4 errors | **0**, `False` |
+| `p = d[0] + [x]` variant | 4 errors | **0**, `False` |
+| **`dijkstra2`** | 4 errors | **compiles, 0 errors** |
+
+Corpus `-m check`: **compile_fail 36 → 35**, `dijkstra2` leaving; `run_fail`
+11 → 12, `dijkstra2` arriving; every other program, and the contour counts
+(2054/616), unchanged. Suite 312/0 on both backends.
+
+### Left open: `dijkstra2` now times out
+
+It compiles and the binary produces no output in 300 s, where CPython finishes
+in 38 s. That is a separate defect from this one — this issue was about the
+analysis refusing a valid program — and it is now visible for the first time
+because the program finally builds. Filed as the next thing to look at, not as
+part of this fix.
