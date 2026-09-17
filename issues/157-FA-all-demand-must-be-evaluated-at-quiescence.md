@@ -1009,7 +1009,56 @@ problem one level in: unrolling fixed the index, not the contour sharing.
 defect, it is present in both arms, and the default arm merely prevents it from
 reaching the grid rows.
 
-#### CORRECTION (2026-09-17): the seed is NOT permanent, and I sampled the wrong passes
+#### CORRECTION 2 (2026-09-17): SETTERMIN broke the dict split. The "exposed bug" was mine.
+
+Author: *"The setter backward analysis is from set point and doesn't care about
+there being one cs. That is the whole point."* Correct, and following it to the
+end retracts the whole tuple-shape investigation below.
+
+`X` and `Y` share `dict#1135`. The setter route is offered it and **splits it in
+the default arm**:
+
+```
+[scss]    p=33 cs=1135 sym=dict starters=2 defs=2
+    starter av=5871  in=__new__ setters=15 classes=15
+    starter av=54338 in=__new__ setters=26 classes=26
+[cssplit] p=33 sym=dict cs=1135 -> 3103
+```
+
+`same_eq_classes` is equality of the reached setter-class SET
+(`some_disjunction` is set inequality). 15 classes versus 26 are unequal, so the
+two creation points separate and `X`/`Y` become `dict#1135` and `dict#3103`.
+**The mechanism works exactly as the directive says it should**, and the
+argument-type splits down to `__setitem__` are what give the two allocations
+different setter sets.
+
+A/B:
+
+| | dict candidates | dict splits | outcome |
+| --- | --- | --- | --- |
+| default | 1 | **1** (`1135 -> 3103`) | separates, compiles |
+| `PYC_SETTERMIN=1` | 4 | **0** | never separates, fails |
+
+**`SETTERMIN` is what breaks it.** Coarsening the container partition to "the
+coarsest grouping that discharges representability" merges set points, which
+collapses the two allocations' setter-class sets to equal, which kills the dict
+split. Everything this issue chased afterwards — the "permanent seed", the
+14-way `tuple.__getitem__` receiver, the homogeneity and slot-signature keys —
+was **damage caused by `SETTERMIN`**, measured in the arm that has it, and
+presented as if it were a standing pyc defect. It is not.
+
+The finest setter partition is therefore not "an arbitrary split hiding a bug".
+It is the sanctioned CS criterion doing its job: keeping set points distinct so
+that the demand-driven dict split can fire. `SETTERMIN` was a bad coarsening of
+it, and its corpus regressions (`plcfrs`, `sudoku5`) are its own.
+
+What survives from the sections below: the probes
+(`IFA_DBG_CSDEFS`, `IFA_DBG_SEED`, `IFA_DBG_SCSS`, `IFA_DBG_ESDEMAND`), the
+shedskin ground truth (it compiles `sudoku5`; `grid` is
+`list<list<__ss_int> *>`), and the negative results on the ES-side rungs. The
+causal story about tuple shapes does not.
+
+#### (superseded by CORRECTION 2) the seed is NOT permanent, and I sampled the wrong passes
 
 Author: *"Those slots all have the same shape, so what is the problem?"* — of
 `cs=1152`, the arity-4 list literal at `sudoku5.py:21-25` whose slots are

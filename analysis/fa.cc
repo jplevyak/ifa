@@ -9105,6 +9105,34 @@ static uintptr_t setter_repr_key_raw(AVar *starter) {
           starter_set.add(d);
           ++es_seeded;
         }
+    if (getenv("IFA_DBG_SCSS")) {
+      fprintf(stderr, "[scss] p=%d cs=%d sym=%s starters=%d defs=%d\n", analysis_pass, cs->id,
+              (cs->sym && cs->sym->name) ? cs->sym->name : "?", starter_set.n, cs->defs.set_count());
+      // ifa/157: WHY do two creation points compare equal? Print each starter's
+      // setter set and the setter CLASSES it reaches -- `same_eq_classes` is
+      // equality of the class set, so this is the whole criterion, visible.
+      for (AVar *st : starter_set) if (st) {
+        Vec<Setters *> cls;
+        int nset = 0;
+        if (st->setters) for (AVar *x : *st->setters) if (x) { ++nset; if (x->setter_class) cls.set_add(x->setter_class); }
+        fprintf(stderr, "    starter av=%d in=%s setters=%d classes=%d :", st->id,
+                (st->contour_is_entry_set && ((EntrySet *)st->contour)->fun && ((EntrySet *)st->contour)->fun->sym &&
+                 ((EntrySet *)st->contour)->fun->sym->name)
+                    ? ((EntrySet *)st->contour)->fun->sym->name : "(cs)",
+                nset, cls.set_count());
+        if (st->setters) for (AVar *x : *st->setters) if (x) {
+          EntrySet *xe = x->contour_is_entry_set ? (EntrySet *)x->contour : nullptr;
+          fprintf(stderr, " [av%d %s/es%d cls=%p", x->id,
+                  (xe && xe->fun && xe->fun->sym && xe->fun->sym->name) ? xe->fun->sym->name : "(cs)",
+                  xe ? xe->id : -1, (void *)x->setter_class);
+          if (x->out && x->out->type)
+            for (CreationSet *c : x->out->type->sorted) if (c && c->sym)
+              fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+          fprintf(stderr, "]");
+        }
+        fprintf(stderr, "\n");
+      }
+    }
     log(LOG_SPLITTING, "[scss] cs %d (sym %s) starter_set=%d defs=%d\n", cs->id,
         cs->sym && cs->sym->name ? cs->sym->name : "(anon)", starter_set.n, cs->defs.set_count());
     while (starter_set.n > 1) {
