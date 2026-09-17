@@ -5117,6 +5117,14 @@ static bool is_uninformative_violation(ATypeViolation *v) {
   return !v->type->sorted.n;
 }
 
+// ifa/158: every type violation except MAYBE_UNBOUND is fatal, in every mode.
+// PYC_STRICTVIOL=0 restores the pre-2026-09-17 severity.
+static int strictviol_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_STRICTVIOL"); e = v ? atoi(v) : 1; }
+  return e;
+}
+
 static void show_violations(FA *fa, FILE *fp) {
   Vec<ATypeViolation *> vv;
   for (ATypeViolation *v : fa->type_violations) if (v) vv.add(v);
@@ -5169,8 +5177,26 @@ static void show_violations(FA *fa, FILE *fp) {
     // warning and otherwise a runtime check, because a "possibly
     // unbound" read can be perfectly valid (a short-circuit guard --
     // see the issue), and erroring on it would reject correct programs.
-    bool always_fatal = v->kind == ATypeViolation_kind::BOXING ||
-                        v->kind == ATypeViolation_kind::DEFINITELY_UNBOUND;
+    // ifa/158, author 2026-09-17: EVERY TYPE VIOLATION IS FATAL, not only
+    // BOXING and DEFINITELY_UNBOUND.
+    //
+    // A violation means the analysis could not type something. Emitting a
+    // binary anyway is CLAUDE.md's "the alternative to failing here is emitting
+    // a program that lies", and `sudoku5` is the worked example: it compiles
+    // with 19 warnings, `solution` is inferred as `{tuple, int64}` where
+    // shedskin gives `list<tuple<__ss_int> *>`, and NOTHING catches it -- the
+    // program's only output is a `TIME %.2f` line, so the corpus stdout check
+    // compares two wall clocks and reports a match.
+    //
+    // MAYBE_UNBOUND stays advisory, for the reason below: a possibly-unbound
+    // read can be perfectly correct, so erroring on it rejects valid programs.
+    //
+    // PYC_STRICTVIOL=0 restores the old severity, for attributing a change to
+    // this rather than guessing at it.
+    bool always_fatal = strictviol_enabled()
+                            ? v->kind != ATypeViolation_kind::MAYBE_UNBOUND
+                            : (v->kind == ATypeViolation_kind::BOXING ||
+                               v->kind == ATypeViolation_kind::DEFINITELY_UNBOUND);
     // ifa/issues/039: MAYBE_UNBOUND is a WARNING even under --strict,
     // and deliberately so. A "possibly unbound" read can be perfectly
     // correct -- `if first or d < bd:` short-circuits the read away
@@ -16503,9 +16529,10 @@ int FA::analyze(Fun *top) {
   // only honest answer.
   int n_fatal = 0;
   for (ATypeViolation *v : type_violations)
-    if (v && (v->kind == ATypeViolation_kind::BOXING ||
-              v->kind == ATypeViolation_kind::DEFINITELY_UNBOUND))
-      ++n_fatal;
+    if (v && (strictviol_enabled() ? v->kind != ATypeViolation_kind::MAYBE_UNBOUND
+                                   : (v->kind == ATypeViolation_kind::BOXING ||
+                                      v->kind == ATypeViolation_kind::DEFINITELY_UNBOUND)))
+      ++n_fatal;  // ifa/158
   int n_advisory = 0;
   for (ATypeViolation *v : type_violations)
     if (v && v->kind == ATypeViolation_kind::MAYBE_UNBOUND) ++n_advisory;
