@@ -1009,7 +1009,41 @@ problem one level in: unrolling fixed the index, not the contour sharing.
 defect, it is present in both arms, and the default arm merely prevents it from
 reaching the grid rows.
 
-#### The seed is PERMANENT, and it is a shared receiver, not an unrolling gap
+#### CORRECTION (2026-09-17): the seed is NOT permanent, and I sampled the wrong passes
+
+Author: *"Those slots all have the same shape, so what is the problem?"* — of
+`cs=1152`, the arity-4 list literal at `sudoku5.py:21-25` whose slots are
+`tuple#1145/#1147/#1149/#1151`. **Correct: there is no problem there.** All four
+are `(str, tuple)`, so unioning them into the element gives `(str, tuple)`. That
+union is benign and chasing it was wasted.
+
+Checking the tail of the analysis corrects a larger claim. Below I wrote that
+the seed is permanent "in both arms", from samples at p=8, p=20 and p=30. I
+never sampled near the end:
+
+| | seeds at the tail | passes |
+| --- | --- | --- |
+| default | **gone at p=41** | 43 |
+| `SETTERMIN` | **still present at p=37** | 38 |
+
+**In the default arm the mixed-shape receiver union RESOLVES in the last few
+passes** — which is why `sudoku5` compiles there. It is not a standing defect.
+
+Two consequences, and they matter for everything below:
+
+- "The seed is permanent" is **withdrawn**. So is the framing that a shared
+  `tuple.__getitem__` contour is a standing defect: at the final pass `es=248`'s
+  receiver is a single CreationSet, `tuple#1153 = (int64, int64, int64)`, clean.
+  The 14-to-23-way receivers were mid-analysis state.
+- The real question is the **asymmetry**: what lets the default arm converge
+  these unions away by p=41 and stops `SETTERMIN` from ever doing it. That is a
+  question about the last passes, not about tuple shapes, and none of the
+  splitting keys tried below address it.
+
+Everything from here to the end of this section was written under the
+"permanent seed" reading and is kept for the trail, not as a live diagnosis.
+
+#### (superseded) The seed at p=30, and the shared-receiver reading
 
 Asking `IFA_DBG_SEED` from p=8, p=20 and p=30 gives seeds at **every** one, in
 both arms — it does not heal. Its converged form:
