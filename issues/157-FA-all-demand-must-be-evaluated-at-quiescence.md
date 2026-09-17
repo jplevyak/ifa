@@ -1299,11 +1299,22 @@ the predicate; it computes it in `clone.cc`, after the analysis.
 - **Three splitting keys have now been falsified on it**: homogeneity (too
   coarse), slot signature (not a fixed point), and receiver-CS peeling
   (non-convergent). The union cannot be taken apart after it forms.
-- Next: record the shape distinction at the **allocation site** in `make_kind`,
-  beside `static_arity`, so it is structural and survives splitting — or give
-  pyc two tuple types and let dispatch do it. **Stop condition:** if an
-  allocation-site key still lets one `__getitem__` contour span both shapes,
-  then dispatch, not identity, is the only place left.
+- **The allocation-site route is falsified too** (author, 2026-09-17: *"how do
+  you know what the tuple shapes are?"*). The shapes are read from
+  `cs->vars[i]->out->type` — **inferred, not structural**. `static_arity` works
+  because arity is a COUNT of the literal's elements, available at `make_kind`
+  and stable forever; a slot's TYPE is not known there. Measured: the first
+  classifier fired at p=0 on underived slots and produced garbage, which is why
+  `UNKNOWN` had to become a third answer. Recording the shape in `make_kind`
+  would be the same type-derived, non-fixed-point key, just read earlier.
+- **So only dispatch is left**, which is shedskin's own answer: two tuple Syms,
+  so `pattern_match` resolves `__getitem__` to different Funs and the union
+  never forms. The predicate already exists (`tuple_able()`); what is missing is
+  that it runs in `clone.cc`, after the analysis. **Stop condition:** if a
+  homogeneous tuple cannot be given its own Sym because the shape is only known
+  after inference — the same circularity as above — then pyc needs the shape
+  decided by a REPRESENTATION callback during analysis (`IFACallbacks`, where
+  CLAUDE.md puts the third category), not by either identity or dispatch.
 
 
 - shedskin compiles `sudoku5` (**verified by running it**): no representation
