@@ -248,3 +248,56 @@ What remains is still the same statement, now with a fixture pinning it: an
 index into an **arity-0** contour is statically out of bounds, and the honest
 fix is to treat that PNode as the dead code it is — not to give the read a
 type, and not to hide its diagnostics after the fact.
+
+## Does it generalize? Measured — the union case already works
+
+**Author: "What if a 0-arity list mixes with a non-zero then under a len test
+dereferences? Does your proposal generalize?"**
+
+It does, and that case needs nothing — it already works today:
+
+| | errors | pyc | CPython |
+| --- | --- | --- | --- |
+| union {arity-0, arity-1}, `if len(p) > 0: return p[0]` | 0 | `3.0` | `3.0` |
+| union, unguarded `return p[0]` | 0 | `3.0` | `3.0` |
+| **pure** arity-0, `if len(p) > 0: return p[0]` | 0 | `0.0` | `0.0` |
+| pure arity-0, `p[0] != 1.0` (method dispatch on a bottom receiver) | 0 | `False` | `False` |
+| pure arity-0, `for i in range(len(p)): if p[i] != 1.0` — `list.__eq__`'s own shape | 0 | `False` | `False` |
+
+The proposal is per-CreationSet, so it composes the right way: for a UNION
+receiver the arity-0 member contributes bottom, which unions away against the
+other member's element, and the read is typed from the non-empty member. Only a
+receiver that is *purely* arity-0 yields bottom overall. Nothing has to reason
+about the `len` test at all.
+
+### The failing case is narrower than "index into arity-0"
+
+Even a pure arity-0 receiver is fine in user code (rows 3-5 above). The failure
+needs the empty container to arrive as a **formal**, i.e. across a call into a
+shared function that indexes it. `list.__eq__`'s shape written out in pure user
+code, 13 lines, reproduces it exactly:
+
+```python
+def eq(s, l):
+    if len(s) != len(l):
+        return False
+    for i in range(len(s)):
+        if l[i] != s[i]:
+            return False
+    return True
+def f(xs):
+    p = []
+    for x in xs:
+        p = [x]
+    return eq(p, [])
+```
+
+5 errors — `expression has no type` x3, `illegal call argument type ... float64`,
+`unresolved call '__ne__'` — while the same loop with a literal operand
+(`p[i] != 1.0`) is clean. The NOTYPE check requires `av->live_arg`, which is
+what a formal's derived value has and a local's does not.
+
+**So the blast radius of the fix is small**: not every index into an empty
+container, but one reached through a formal bound to a purely arity-0 argument.
+That is `list.__eq__`, `list.__ne__` and their relatives in `__pyc__`, and it is
+why the idiom `x == []` is what surfaces it.
