@@ -6425,6 +6425,76 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
 }
 
 
+// ifa/157: SLOT HOMOGENEITY IS A REPRESENTATION PROPERTY, LIKE ARITY.
+//
+// shedskin has TWO tuple types and pyc has one. `tuple<__ss_int>` is
+// homogeneous -- arity-free, element type `int`, indexable by a variable;
+// `tuple2<str *, tuple<...> *>` is heterogeneous -- distinct slots, indexed by
+// a constant. They are different C++ types there, so `__getitem__` is a
+// different instantiation for each and one can never serve both. Verified by
+// running shedskin on `sudoku5`.
+//
+// pyc has one `sym_tuple`, so every tuple dispatches to the same
+// `tuple.__getitem__`, and on `sudoku5` that contour's receiver unions
+// FOURTEEN tuple CreationSets of both shapes -- indexing returns the union of
+// every slot of all fourteen, which is where `{int64, str}` is born.
+//
+// This is CLAUDE.md's licensed third category, not provenance and not boxing:
+// "what the target language can REPRESENT (arity, member width, None in a
+// union)". pyc already separates tuples by ARITY (ifa/132); homogeneity
+// decides the same layout question (`tuple_able` -> RECORD vs "unknown arity,
+// known element type" LIST), is a function of the deduced types, and is what
+// shedskin keys on. The only difference is that pyc computes it in clone.cc,
+// AFTER the analysis, far too late to keep the contours apart.
+// Two record-shaped CreationSets have the same slot signature when they have
+// the same arity and each slot's converged AType is identical. ATypes are
+// hash-consed for the life of the FA, so pointer equality is the comparison
+// (the same property `es->type_key` relies on).
+static bool cs_slot_sig_equal(CreationSet *a, CreationSet *b) {
+  if (!a || !b) return false;
+  if (a->vars.n != b->vars.n) return false;
+  for (int i = 0; i < a->vars.n; i++) {
+    AVar *x = a->vars.v[i], *y = b->vars.v[i];
+    if (!x || !y || !x->out || !y->out) return false;
+    if (x->out->type != y->out->type) return false;
+  }
+  return true;
+}
+
+static int splithomo_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_SPLITHOMO"); e = v ? atoi(v) : 0; }
+  return e;
+}
+
+// All slots the same representation class: all pointer-shaped, or all one
+// basic kind. One slot or none is trivially homogeneous.
+// -1 = UNKNOWN (not record-shaped, or a slot whose type is not derived yet),
+//  1 = homogeneous, 0 = heterogeneous.
+//
+// UNKNOWN is a separate answer and not adefault, because both ways of
+// collapsing it were measured wrong. Treating a non-record container as
+// homogeneous put every `list` and `dict` receiver in the homogeneous group --
+// `__getitem__` is shared across all container types, and its receiver spans 23
+// CreationSets on `sudoku5`. Treating an underived slot as homogeneous made the
+// partition fire at p=0, recording a durable decision from types that did not
+// exist yet, which is the very defect this issue opens with.
+static int cs_slots_homogeneous(CreationSet *cs) {
+  if (!cs || !cs->vars.n) return -1;            // element-channel container
+  Vec<Sym *> basics;
+  int nonbasic = 0;
+  for (AVar *v : cs->vars) {
+    if (!v || !v->out || !v->out->type || !v->out->type->n) return -1;  // not derived yet
+    for (CreationSet *c : v->out->type->sorted) {
+      if (!c || !c->sym || c->sym == sym_nil_type) continue;
+      if (Sym *b = to_basic_type(c->sym->type)) basics.set_add(b); else ++nonbasic;
+    }
+  }
+  const int nb = basics.set_count();
+  if (nb && nonbasic) return 0;   // basic + pointer in one tuple
+  return nb <= 1 ? 1 : 0;         // >=2 distinct basic kinds is heterogeneous
+}
+
 [[nodiscard]] static int split_edges(AVar *av, int fsetters, int fmark) {
   int again = 0;
   EntrySet *es = (EntrySet *)av->contour;
@@ -6468,7 +6538,66 @@ static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPositio
   // Partition size is 2 by construction and cannot track the CreationSet
   // count.
   Vec<CreationSet *> &rcs = av->out->type->sorted;
+  // ifa/157: partition the receiver by SLOT HOMOGENEITY when both shapes are
+  // present. Two groups by construction, and unlike `splitedges2`'s
+  // first-vs-rest it DISCHARGES: the homogeneous group's slots are all one
+  // representation class, so indexing it is representable immediately, and the
+  // heterogeneous group is what `__pyc_clone_constants__(key)` already handles
+  // per constant index.
+  int homo = 0, hetero = 0, unknown = 0;
+  if (splithomo_enabled())
+    for (CreationSet *c : rcs) if (c) {
+      int k = cs_slots_homogeneous(c);
+      if (k < 0) ++unknown; else if (k) ++homo; else ++hetero;
+    }
+  // If the key has nothing to say -- every receiver is the same shape -- then
+  // DECLINE. Falling through to the per-CreationSet fan below is what made the
+  // first attempt non-terminating: the all-heterogeneous group re-demanded
+  // every pass and got fanned N ways each time. Split only on the
+  // representation distinction, never arbitrarily.
+  // ifa/157: SLOT HOMOGENEITY AND SLOT SIGNATURE, BOTH BUILT, BOTH DEAD AS
+  // SPLITTING KEYS. Probe only (IFA_DBG_SPLITHOMO); it counts and splits
+  // nothing.
+  //
+  // The goal was shedskin's distinction: `tuple<__ss_int>` (homogeneous,
+  // element-typed, variable-indexable) versus `tuple2<str *, tuple<...> *>`
+  // (heterogeneous, constant-indexable). Different C++ types there, so
+  // `__getitem__` is a different instantiation for each. pyc has one
+  // `sym_tuple`, so on `sudoku5` ONE `tuple.__getitem__` contour has a receiver
+  // spanning 23 CreationSets of both shapes and indexing returns the union of
+  // every slot of all of them -- where `{int64, str}` is born.
+  //
+  // Attempt 1, homogeneity as a two-group key: measured `homo=2 hetero=21`.
+  // Lumping 21 different slot signatures together leaves the union
+  // irrepresentable, so the contour re-demands every pass -- stall guard at
+  // p=4. Too coarse, exactly as the issue's stop condition predicted.
+  //
+  // Attempt 2, the slot-type SIGNATURE (arity plus each slot's converged
+  // AType, pointer-compared since ATypes are hash-consed). As a CLASSIFIER it
+  // is right and matches shedskin: 23 CreationSets collapse to 5 signatures,
+  // 7 to 3. As a SPLITTING key it does not terminate.
+  //
+  // The reason is worth keeping, because it is why arity works and this does
+  // not. **Arity is structural: splitting a contour does not change it.** A
+  // slot-type signature is derived from the very types the split perturbs, so
+  // the key reads one signature, splits, the types move, the signature changes,
+  // and it splits again -- a key that is not a fixed point of its own decision.
+  // Any future attempt has to make the distinction at the ALLOCATION SITE, from
+  // the literal's shape, the way `static_arity` is recorded in `make_kind` --
+  // not from converged types at split time.
+  if (splithomo_enabled() && getenv("IFA_DBG_SPLITHOMO") && !unknown && rcs.n > 1) {
+    Vec<CreationSet *> reps;
+    for (CreationSet *c : rcs) if (c) {
+      bool seen = false;
+      for (CreationSet *r : reps) if (r && cs_slot_sig_equal(r, c)) { seen = true; break; }
+      if (!seen) reps.add(c);
+    }
+    fprintf(stderr, "[splitsig] p=%d es=%d fun=%s recv spans=%d -> %d signature(s) (homo=%d hetero=%d)\n",
+            analysis_pass, es->id, (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?",
+            rcs.n, reps.n, homo, hetero);
+  }
   if (splitedges2_enabled() && rcs.n > 2) {
+
     AType *rest = fa->type_world.bottom_type;
     for (int i = 1; i < rcs.n; i++)
       if (rcs.v[i]) rest = type_union(rest, make_AType(rcs.v[i]));
@@ -11773,7 +11902,9 @@ static void report_retconf() {
 //
 // The demand is an IRREPRESENTABLE CONVERGED TYPE and nothing weaker. "This
 // formal's type is a union" is the FACT that made PYC_CPA arbitrary.
-static long ed_seen = 0, ed_formal = 0, ed_no_formal = 0, ed_not_demanded = 0;
+static int splithomo_enabled();
+static long ed_seen = 0, ed_formal = 0, ed_no_formal = 0, ed_not_demanded = 0, ed_split = 0;
+static Vec<EntrySet *> ed_applied;  // one split per contour per pass
 static long ed_had_formals = 0;
 
 static AVar *backtrack_to_own_formal(AVar *av) {
@@ -11919,7 +12050,7 @@ static AVar *backtrack_to_own_formal(AVar *av) {
           // CreationSet content -- which agrees with this issue's first
           // measurement (99 of 102 dispatch demands landed on a CreationSet)
           // and with `sudoku5`'s 56 polluted contours, 55 of them `defs=1`.
-          if (getenv("IFA_DBG_ESDEMAND") && av->out) {
+          if ((getenv("IFA_DBG_ESDEMAND") || splithomo_enabled()) && av->out) {
             if (atype_irrepresentable(av->out->type)) {
               ++ed_seen;
               if (AVar *f = backtrack_to_own_formal(av)) {
@@ -12798,6 +12929,7 @@ static void dbg_es_per_fun() {
   // call would drop stage 1's findings before the last rung sees them.
   tc_cs_dropped.clear();
   fieldsplit_demands.clear();
+  ed_applied.clear();  // ifa/157
   // Snapshots taken before each split_* call so the sidecar can record
   // the delta this stage produced. See fa_events_storage / record_fa_event.
   //
@@ -16299,8 +16431,8 @@ int FA::analyze(Fun *top) {
   // tests/deepcopy_recursive_nested_growth.py.
   if (getenv("PYC_DBG_CONVERGED")) fprintf(stderr, "CONVERGED=%d\n", pass_limit_hit ? 0 : 1);
   if (getenv("IFA_DBG_ESDEMAND"))  // ifa/157 step 1/2
-    fprintf(stderr, "ESDEMAND demanded=%ld ->formal=%ld no_formal=%ld (of which the contour HAD formals: %ld) not_demanded=%ld\n",
-            ed_seen, ed_formal, ed_no_formal, ed_had_formals, ed_not_demanded);
+    fprintf(stderr, "ESDEMAND demanded=%ld ->formal=%ld no_formal=%ld (of which the contour HAD formals: %ld) not_demanded=%ld split=%ld\n",
+            ed_seen, ed_formal, ed_no_formal, ed_had_formals, ed_not_demanded, ed_split);
   if (getenv("IFA_DBG_REPRKEY"))
     fprintf(stderr, "REPRKEY new=%ld same=%ld CHANGED=%ld\n", rk_new, rk_same, rk_changed);
   // ifa/157: of the AVars whose CONVERGED type is an irrepresentable union,

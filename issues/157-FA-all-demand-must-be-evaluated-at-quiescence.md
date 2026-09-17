@@ -1230,7 +1230,81 @@ homogeneity is the same kind of property and the same argument applies** — it
 decides the layout, it is a function of the deduced types, and it is what
 shedskin keys on.
 
+#### TRIED IT: homogeneity, then the slot signature — right classifier, wrong kind of key
+
+Both were built as `PYC_SPLITHOMO=1/2`, driving `split_edges`' filtered-EntrySet
+machinery (`find_or_make_filtered_entry_set`, which already builds one contour
+per receiver filter). Both are now probe-only.
+
+**Attempt 1 — homogeneity as a two-group key.** Partition the receiver into
+{all slots one representation class} and {the rest}. Measured on `sudoku5`:
+
+```
+[splithomo] p=0 es=68 fun=__getitem__ recv spans=23 -> homo=2 hetero=21
+```
+
+Two of twenty-three. Lumping 21 different slot signatures into one group leaves
+that group's union irrepresentable, so the contour re-demands every pass — stall
+guard at p=4. **Too coarse, exactly as this issue's stop condition predicted.**
+
+Two of my own bugs were found and fixed on the way, both worth keeping:
+
+- `__getitem__` is shared across `list`/`dict`/`tuple`, and the first predicate
+  called an element-channel container "homogeneous" because `cs->vars` is empty —
+  putting every list and dict receiver in the homogeneous group.
+- It fired at **p=0**, recording a durable decision from types that did not
+  exist yet. `UNKNOWN` had to become a third answer rather than a default,
+  which is this issue's own thesis applied to my own code.
+
+**Attempt 2 — the slot-type SIGNATURE**, which is what `tuple2<A,B>` literally
+is: arity plus each slot's converged AType, pointer-compared (ATypes are
+hash-consed). **As a classifier it is right and it matches shedskin:**
+
+```
+[splitsig] es=68 __getitem__ recv spans=23 -> 5 signature(s)
+[splitsig] es=50 __pyc_more__ recv spans=7 -> 3 signature(s)
+```
+
+23 CreationSets collapse to 5 types — the same compression shedskin's template
+instantiation produces. **As a splitting key it does not terminate** (900 s
+timeout, 69 fires).
+
+#### Why it does not work, and it is the useful part
+
+**Arity is structural: splitting a contour does not change it.** That is why
+ifa/132 works and this does not. A slot-type signature is derived from the very
+types the split perturbs — read a signature, split, the types move, the
+signature changes, split again. **It is a key that is not a fixed point of its
+own decision.**
+
+So "make it a CreationSet identity component the way ifa/132 did for arity"
+cannot be done from converged types at split time. If it is to be done at all it
+has to be recorded at the **allocation site**, from the literal's shape, the way
+`static_arity` is recorded in `make_kind` (`fa.cc:2578`) — a property of the
+creation point, not of the fixed point. That is a frontend/`make_kind` change,
+and it is the one remaining shape of this fix that has not been falsified.
+
+A second, independent route is the one shedskin actually takes: give pyc **two
+tuple Syms** so dispatch itself separates them, rather than asking the splitter
+to undo a union that should never have formed. `tuple_able()` already computes
+the predicate; it computes it in `clone.cc`, after the analysis.
+
 #### What is established, and what is next
+
+- shedskin compiles `sudoku5` (**verified by running it**): no representation
+  change is required, and `grid` is `list<list<__ss_int> *>` — the pollution is
+  pyc's alone.
+- The seed is ONE `tuple.__getitem__` contour over a 14-to-23-way receiver union
+  mixing tuple shapes.
+- **Three splitting keys have now been falsified on it**: homogeneity (too
+  coarse), slot signature (not a fixed point), and receiver-CS peeling
+  (non-convergent). The union cannot be taken apart after it forms.
+- Next: record the shape distinction at the **allocation site** in `make_kind`,
+  beside `static_arity`, so it is structural and survives splitting — or give
+  pyc two tuple types and let dispatch do it. **Stop condition:** if an
+  allocation-site key still lets one `__getitem__` contour span both shapes,
+  then dispatch, not identity, is the only place left.
+
 
 - shedskin compiles `sudoku5` (**verified by running it**): no representation
   change is required, and the `{int64, str, tuple}` union is pyc's alone.
