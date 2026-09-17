@@ -301,3 +301,62 @@ what a formal's derived value has and a local's does not.
 container, but one reached through a formal bound to a purely arity-0 argument.
 That is `list.__eq__`, `list.__ne__` and their relatives in `__pyc__`, and it is
 why the idiom `x == []` is what surfaces it.
+
+## The fix attempted properly — and why "make it dead" cannot be local
+
+`PYC_OOBEMPTY`: treat an index into a container whose every CreationSet has
+arity 0 as statically out of bounds, and suppress the violations on everything
+computed from it.
+
+**First, the diagnosis that the three earlier attempts lacked.**
+`IFA_DBG_VIOLSUBJ` prints the subject of each reported violation. On the
+13-line repro they sit on a CHAIN, not on the read:
+
+```
+kind=5 av=3381 def_prim=prim_index_object   <- the read itself
+kind=5 av=3272 def_prim=prim_period         <- the `__ne__` lookup on it
+kind=5 av=3382 def_prim=(send)              <- the call
+kind=1 av=825  var=__ne__  def_prim=(none)  <- and the selector
+```
+
+That is why suppressing at the read, or one hop from it, reached none of them.
+
+**With a proper forward closure** — start at the out-of-bounds reads, add any
+value whose definition consumes one, iterate to a fixed point inside the
+contour — it does connect, and the errors drop by exactly one each:
+
+| | off | on |
+| --- | --- | --- |
+| 13-line `eq(p, [])` | 5 | 4 |
+| dict repro (`tests/empty_list_compare_via_dict.py`) | 4 | 3 |
+| 6-line `p == []` | 4 | 3 |
+
+**One, not four. The deadness is INTER-contour and the closure is not.** Two
+reasons, both visible above:
+
+- the chain continues into the CALLEE's contour — `__ne__`'s own EntrySet is
+  entered (or fails to be), and violations raised there are on AVars a
+  per-contour closure never sees;
+- `av=825` is the **selector symbol's** AVar (`var=__ne__`, `def_prim=(none)`):
+  global, defined by no PNode, shared by every `__ne__` in the program.
+  Suppressing it would silence every unresolved `__ne__` everywhere, which is
+  not a trade worth making for this.
+
+So it was reverted rather than shipped. A partial suppression is worse than
+none: it hides some diagnostics from an unreachable path while leaving the
+program rejected anyway.
+
+### What this establishes
+
+Four mechanisms are now measured dead on this issue: suppressing the NOTYPE at
+the read; a one-hop filter on the violation's subject; joining arity-0
+containers at `creation_point`; and a per-contour dead closure. The first three
+missed the chain entirely; the fourth found it and could not follow it out of
+the contour.
+
+**The remaining shape is a real unreachability analysis**, not a filter: the
+guard `if lself != ll: return False` makes the loop body unreachable when `l` is
+the empty literal, and no amount of post-hoc suppression substitutes for knowing
+that. That is the narrowing described earlier in this issue -- propagate the
+equality on the fall-through edge so `range(lself)` has a bound of 0 -- and it
+is the only candidate left that removes the path instead of hiding it.
