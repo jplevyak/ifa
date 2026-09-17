@@ -142,3 +142,58 @@ about hiding its diagnostics:
 
 Neither is a splitter question, which is why this issue is filed apart from
 the ifa/157 thread.
+
+## WHY the type is bottom, and what shedskin does
+
+**Author, 2026-09-17: "Why in that mini example is any type bottom?"** Because
+pyc's own arity-keyed identity puts the empty literal in a contour that is empty
+by construction:
+
+```
+cs=987 sym=list vars=1 defs=2 arity=1   <- the [x] literals, element float
+cs=991 sym=list vars=0 defs=6 arity=0   <- the [] literals: no slots, no element
+```
+
+`[]` and `[x]` have different arity, so [132](132-arity-is-representation-not-provenance.md)
+keeps them apart. `cs=991` has no positional slots and nothing ever written to
+its element channel, so `l[i]` can only be bottom. **It is not a failure to
+infer — there is nothing there to infer**, and the read is statically out of
+bounds.
+
+**shedskin does not have this problem because its list type has no arity.**
+Compiled on the same repro it emits, for both literals:
+
+```cpp
+p = (__ss_list<__ss_float>());
+return ___bool(__eq(p, (__ss_list<__ss_float>())));
+```
+
+`list<__ss_float>` for the empty literal too — unified with `p`, length left to
+run time. There is no arity-0 type to be empty.
+
+## `PYC_EMPTYJOIN` — fixes the repro, not `dijkstra2`
+
+ifa/132's own safety net already says what should happen when arities disagree:
+`make_kind` sets `no_static_arity`, the CS drops to LIST layout and reads its
+length at run time. The identity key prevents the two from ever meeting, so the
+net never fires. `PYC_EMPTYJOIN=1` lets an arity-ZERO container join a CS of
+another arity (tuples excluded — a 0-tuple is a distinct representation, which
+is ifa/132's point) and lets the net do the rest.
+
+| | result |
+| --- | --- |
+| the six-line repro, off | 4 errors |
+| the six-line repro, on | **compiles, runs, prints `False` = CPython** |
+| `dijkstra2`, off | 4 errors |
+| `dijkstra2`, on | **4 errors, identical** |
+
+It does change `dijkstra2`'s contours — 21 list CreationSets become 20, and 19
+of them drop to list layout — but not its diagnostics. **So the repro is not
+`dijkstra2`'s shape**, and the reduction has to be redone from the program
+rather than from the idiom. `finalpath` is built by `paths[0][w] + revpath[1:]`,
+a `list.__add__` result with UNKNOWN arity (-1), not a literal; that is the
+difference from the repro and the next thing to reduce.
+
+Left at default 0. Suite 312/0 with it off; it has had no corpus measurement,
+which it needs before it could be anything else — merging arity-0 containers
+broadly is a real precision change, not a free one.
