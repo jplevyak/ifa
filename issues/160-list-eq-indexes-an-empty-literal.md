@@ -90,6 +90,55 @@ severity it was four warnings and a compiled binary.
    statically a list, but it is a peephole on one idiom and leaves `l[i]`
    reachable from every other path into `__eq__`.
 
-(1) is the one that matches what the repo has already concluded about this
-family; it should be measured first, against the `empty_container_elem`
-fixture and this one.
+## (1) TRIED AND REVERTED, 2026-09-17 — and (3) is unsound
+
+**Option 1, the codegen-trap route, does not close it.** Implemented as
+`PYC_EMPTYREAD`: suppress the NOTYPE when the value is defined by a SEND one of
+whose arguments resolves to containers that are ALL provably empty
+(`cs->sym->element` present, `static_arity == 0`, `!no_static_arity`,
+`!vars.n` — so a container that might be non-empty, or whose length varies at
+run time, still reports).
+
+It fires — `EMPTYREAD suppressed=4` on the repro — and the error count does not
+move:
+
+| | errors |
+| --- | --- |
+| off | 4 |
+| on, suppressing NOTYPE at the read | 4 (`suppressed=4`) |
+| on, also dropping violations whose subject IS the read (one hop) | 4 |
+
+The four that remain are `expression has no type` x2,
+`illegal call argument type ... float64`, and `unresolved call '__ne__'` — and
+they are raised in **other contours**, so neither the read-site check nor a
+one-hop filter on the violation's subject reaches them. Closing it this way
+means chasing the same dead path through every contour it touches, in several
+violation kinds. That is the symptom in several places, not the cause, so it
+was reverted rather than extended.
+
+**Option 3 is unsound and is withdrawn.** Lowering `x == []` to `len(x) == 0`
+is only correct when `x` is statically a `list` — `{} == []` and `set() == []`
+are `False` in CPython, not length tests — and the frontend does not know `x`'s
+type. That is FA's job, and by the time FA knows, the lowering has happened.
+
+## Where that leaves it
+
+The obstacle is a **correlation** FA does not do: past `if lself != ll: return
+False`, `lself == ll`, so when `l` is the empty literal (`ll` folds to 0) the
+loop `range(lself)` has zero iterations. FA analyses the body anyway, indexes
+`l`, and every violation downstream follows from that one unreachable read.
+
+So the candidates that remain are about making the path actually dead, not
+about hiding its diagnostics:
+
+- **Propagate the guard.** After `lself != ll` returns, narrow `lself` to
+  `ll`'s value on the fall-through edge. With `ll` a folded 0 the loop bound is
+  0. This is ordinary comparison-narrowing (the `is_not_none_narrow` family)
+  extended to integer equality against a constant, and it would close the whole
+  shape rather than the `==` case.
+- **Give `range(0)` an empty element**, so `for i in range(lself)` with a
+  folded 0 yields no iterations and the body is unreachable. Narrower, and it
+  depends on the first one to know the bound is 0.
+
+Neither is a splitter question, which is why this issue is filed apart from
+the ifa/157 thread.
