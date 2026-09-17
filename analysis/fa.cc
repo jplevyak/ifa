@@ -8759,6 +8759,27 @@ static void recompute_eq_classes(Vec<Setters *> &ss) {
       }
     }
   }
+  // ifa/157: MAKING THE WRITTEN TYPE AN INPUT HERE IS VACUOUS, and the reason
+  // is worth recording because the contract above invites the change.
+  //
+  // The doc comment says a setter class is "the smallest set of setter AVars
+  // which are equivalent (have the same ->out and equivalent ->setters)", and
+  // the loop above implements only the second half -- it partitions by
+  // CO-OCCURRENCE and never reads `v->out`. So it looks like the written type
+  // is a missing input to `same_eq_classes`, and therefore to `split_css`.
+  //
+  // It is not, because the classes are already SINGLETONS. Measured on
+  // `plcfrs` with PYC_SETTERWKEY: 911 calls, 3704 classes, **0 with more than
+  // one member**, 0 splits. `starter av=5871 setters=15 classes=15` is the
+  // same fact seen from split_css. With singleton classes `same_eq_classes` is
+  // setter-set IDENTITY, which is maximal resolution: two creation points
+  // separate whenever their setter sets differ at all, and identical setters
+  // write identical values by definition.
+  //
+  // So the eq-class test is not where a shape demand goes missing. On
+  // `sudoku5` it does the right thing unaided -- `cs=1135` (X and Y sharing one
+  // dict) has starters reaching 15 and 26 classes, compares unequal, and splits
+  // to `cs=3103`.
 }
 
 enum AKind { AKIND_TYPE, AKIND_SETTER, AKIND_MARK };
