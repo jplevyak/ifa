@@ -3361,7 +3361,16 @@ static void structural_assignment(CreationSet *new_cs, CreationSet *cs, PNode *p
 // A nullable pointer needs a pointee, so `"" + None` stays an error --
 // only the *mixed* union is sanctioned, and only when the non-nil part
 // is itself legal for the primitive.
+// PYC_NILARG=0 restores the old raw-`out` check, for attributing a change
+// to this rather than guessing at it (same role as PYC_STRICTVIOL).
+static int nilarg_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_NILARG"); e = v ? atoi(v) : 1; }
+  return e;
+}
+
 static bool nil_member_is_representable(AVar *arg, AType *diff, AType *legal) {
+  if (!nilarg_enabled()) return false;
   for (CreationSet *c : diff->sorted)  // the rejected part must be nil, and nothing else
     if (!c || !c->sym || c->sym->type != sym_nil_type) return false;
   AType *t = arg->out->type;

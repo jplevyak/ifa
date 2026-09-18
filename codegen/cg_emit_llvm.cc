@@ -1781,11 +1781,38 @@ static bool emit_send_len(EmitCtx &ctx, PNode *pn) {
         cg_get_string(dst_var) ? cg_get_string(dst_var) : "len");
   } else {
     // List: u32 `len` field at offset -12; zero-extend to i64.
+    //
+    // ifa/166: NULL is a legal `_CG_list` and means EMPTY. The C
+    // backend has always said so -- `_CG_prim_len` is
+    // `((_l) ? _CG_list_len(_l) : 0)` -- and pyc produces one routinely:
+    // `_CG_list_mult_internal` returns 0 for a zero repeat count
+    // (`[1] * 0`), and GC_MALLOC zeroing leaves a never-assigned list
+    // field NULL. This path loaded the header unconditionally, so
+    //
+    //   a = [1] * 0
+    //   print(len(a))
+    //
+    // segfaulted under -b while the C backend printed 0. Guard the load
+    // the way the C macro does, and let the optimiser fold it away
+    // wherever the pointer is known non-null.
     llvm::Type *i32 = llvm::Type::getInt32Ty(*TheContext);
+    llvm::Function *fn = Builder->GetInsertBlock()->getParent();
+    llvm::Value *is_null = Builder->CreateIsNull(obj, "list_is_null");
+    llvm::BasicBlock *load_bb = llvm::BasicBlock::Create(*TheContext, "len.load", fn);
+    llvm::BasicBlock *cont_bb = llvm::BasicBlock::Create(*TheContext, "len.cont", fn);
+    llvm::BasicBlock *entry_bb = Builder->GetInsertBlock();
+    Builder->CreateCondBr(is_null, cont_bb, load_bb);
+    Builder->SetInsertPoint(load_bb);
     llvm::Value *off = llvm::ConstantInt::get(i64, -12);
     llvm::Value *len_addr = Builder->CreateGEP(i8, obj, off, "len_addr");
     llvm::Value *len32 = Builder->CreateLoad(i32, len_addr, "len32");
-    len = Builder->CreateZExt(len32, i64, "len");
+    llvm::Value *len_loaded = Builder->CreateZExt(len32, i64, "len");
+    Builder->CreateBr(cont_bb);
+    Builder->SetInsertPoint(cont_bb);
+    llvm::PHINode *phi = Builder->CreatePHI(i64, 2, "len");
+    phi->addIncoming(llvm::ConstantInt::get(i64, 0), entry_bb);
+    phi->addIncoming(len_loaded, load_bb);
+    len = phi;
   }
   // Coerce to dst type.
   llvm::Type *dst_ty = sym_to_llvm_type(dst_var->type);
@@ -2441,13 +2468,44 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
         if (*p) convs.add(*p);
       }
     }
+    // issues/165: _CG_widen_int_convs (pyc_c_runtime.h) rewrites a Python
+    // `%d` to `%lld`, so an integer argument must really be 64 bits --
+    // `_CG_bool` (i8) and a 32-bit int are not. Widen them here, the way
+    // format_string_codegen does for the C backend. `%c` still consumes
+    // an `int`, and the rewrite leaves it alone, so that one narrows to
+    // i32 instead. conv == 0 means the format string is not a constant:
+    // widen an integer anyway and leave a float alone.
+    auto is_num = [&](Sym *t) {
+      return t && (t->num_kind == IF1_NUM_KIND_INT || t->num_kind == IF1_NUM_KIND_UINT ||
+                   t->num_kind == IF1_NUM_KIND_FLOAT || t == sym_bool);
+    };
     auto coerce = [&](llvm::Value *v, Sym *val_ty, char conv) -> llvm::Value * {
-      if (!v || !val_ty) return v;
-      if (strchr("diouxXc", conv) && val_ty->num_kind == IF1_NUM_KIND_FLOAT)
-        return Builder->CreateFPToSI(v, llvm::Type::getInt64Ty(*TheContext));
-      if (strchr("feEgGF", conv) &&
-          (val_ty->num_kind == IF1_NUM_KIND_INT || val_ty->num_kind == IF1_NUM_KIND_UINT))
-        return Builder->CreateSIToFP(v, llvm::Type::getDoubleTy(*TheContext));
+      if (!v || !is_num(val_ty)) return v;
+      llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+      llvm::Type *i32 = llvm::Type::getInt32Ty(*TheContext);
+      llvm::Type *f64 = llvm::Type::getDoubleTy(*TheContext);
+      bool is_float = val_ty->num_kind == IF1_NUM_KIND_FLOAT;
+      bool is_unsigned = val_ty->num_kind == IF1_NUM_KIND_UINT || val_ty == sym_bool;
+      if (!conv) {
+        if (!is_float && v->getType() != i64)
+          return is_unsigned ? Builder->CreateZExt(v, i64) : Builder->CreateSExt(v, i64);
+        return v;
+      }
+      if (strchr("diouxX", conv)) {
+        if (is_float) return Builder->CreateFPToSI(v, i64);
+        if (v->getType() == i64) return v;
+        return is_unsigned ? Builder->CreateZExt(v, i64) : Builder->CreateSExt(v, i64);
+      }
+      if (conv == 'c') {
+        if (is_float) return Builder->CreateFPToSI(v, i32);
+        if (v->getType() == i32) return v;
+        unsigned bits = v->getType()->getIntegerBitWidth();
+        if (bits > 32) return Builder->CreateTrunc(v, i32);
+        if (bits < 32) return is_unsigned ? Builder->CreateZExt(v, i32) : Builder->CreateSExt(v, i32);
+        return v;
+      }
+      if (strchr("feEgGF", conv) && !is_float)
+        return is_unsigned ? Builder->CreateUIToFP(v, f64) : Builder->CreateSIToFP(v, f64);
       return v;
     };
     // Collect args: fmt + expanded tuple fields (or single arg).
@@ -2462,14 +2520,14 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
         llvm::Type *ft = rec_ty->getElementType(fi);
         llvm::Value *gep = Builder->CreateStructGEP(rec_ty, rec, fi);
         llvm::Value *fv = Builder->CreateLoad(ft, gep);
-        if (fi < convs.n && fi < arg_var->type->has.n)
-          fv = coerce(fv, arg_var->type->has[fi]->type, convs[fi]);
+        if (fi < arg_var->type->has.n)
+          fv = coerce(fv, arg_var->type->has[fi]->type, fi < convs.n ? convs[fi] : 0);
         args.push_back(fv);
       }
     } else {
       llvm::Value *av = value_for_var(ctx, arg_var);
       if (!av) return false;
-      if (convs.n == 1) av = coerce(av, arg_var->type, convs[0]);
+      av = coerce(av, arg_var->type, convs.n == 1 ? convs[0] : 0);
       args.push_back(av);
     }
     // Declare as varargs: ptr (char *str, ...)
