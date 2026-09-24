@@ -184,7 +184,7 @@ pieces above land.
 ## See also
 
 - [../IFA.md](../IFA.md) §11.7 — short inline note.
-- [../analysis/CLEANUP.md](../analysis/CLEANUP.md) tier-2 item 2 —
+- [../analysis/NOTES.md](../analysis/NOTES.md) —
   the cleanup record.
 - The V paper (Plevyak), §5 — discussion of meta-type application
   in the generic dispatch framework.

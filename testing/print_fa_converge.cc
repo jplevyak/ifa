@@ -27,12 +27,13 @@
 static cchar *stage_name(FAPassStage s) {
   switch (s) {
     case FAPassStage::TYPE_CONFLUENCE: return "type";
-    case FAPassStage::MARK_TYPE: return "mark-type";
     case FAPassStage::SETTER: return "setter";
     case FAPassStage::SETTER_OF_SETTER: return "setter-of-setter";
-    case FAPassStage::MARK_SETTER: return "mark-setter";
-    case FAPassStage::MARK_SETTER_OF_SETTER: return "mark-setter-of-setter";
     case FAPassStage::VIOLATION: return "violation";
+    case FAPassStage::PER_CS_RECEIVER: return "per-cs-receiver";
+    case FAPassStage::CSM_ELEMENT_CS: return "csm-element-cs";
+    case FAPassStage::CARTESIAN_PRODUCT: return "cartesian-product";
+    case FAPassStage::CS_DEF_PARTITION: return "cs-def-partition";
   }
   return "?";
 }
@@ -82,7 +83,7 @@ void print_fa_converge_normalized(FILE *fp, IF1 *p) {
   for (FAPassEvent *e : events) if (e->pass > max_pass) max_pass = e->pass;
 
   // Per-stage totals.
-  constexpr int num_stages = (int)FAPassStage::VIOLATION + 1;
+  constexpr int num_stages = FA::kNumFAPassStages;
   int total_by_stage[num_stages] = {0};
   for (FAPassEvent *e : events) total_by_stage[(int)e->stage] += e->splits;
 

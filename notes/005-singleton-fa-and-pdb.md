@@ -149,27 +149,13 @@ files already accept `FA*`; ~380 references remain implicit.
 
 ## Related cleanup items
 
-- `ifa/analysis/CLEANUP.md` "Move `graph.cc` globals into a config
-  object" — naturally piggybacks on this, per AUDIT §2.4.
-- `ifa/analysis/AUDIT.md` §2.3 "The `fa_reset()` band-aid" — fa_reset
-  still exists post step 1-4 to clear `analysis_pass`, the timers,
-  and the type_violation_hash (the last is still file-static
-  because it's accessed before FA exists in some test paths).
-  Eliminating `fa_reset()` entirely needs step 5 + a rethink of
-  the `ifa_init`/`ifa_reset` lifecycle.
+- `ifa/analysis/NOTES.md` — notes on moving `graph.cc` globals and `fa_reset()`.
+- `ifa/analysis/NOTES.md` — fa_reset lifecycle post reentrancy steps 1-4.
 
 ## See also
 
-- [../analysis/AUDIT.md §2.1](../analysis/AUDIT.md) — the
-  original non-reentrant inventory.
-- [../analysis/AUDIT.md §2.2](../analysis/AUDIT.md) — the
-  refactor sequence (steps 1-5).
-- [../analysis/AUDIT.md §2.3](../analysis/AUDIT.md) — the
-  `fa_reset()` band-aid.
-- [../analysis/AUDIT.md §2.4](../analysis/AUDIT.md) — `clone.cc`
-  and `graph.cc` reaching into the globals.
-- [../analysis/CLEANUP.md](../analysis/CLEANUP.md) — the tier-3
-  reentrancy entries.
+- [../analysis/NOTES.md](../analysis/NOTES.md) — the
+  consolidated architecture and reentrancy notes.
 
 ## History
 

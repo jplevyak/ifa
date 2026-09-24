@@ -1769,9 +1769,10 @@ static void write_send_arg(FILE *fp, Fun *f, PNode *n, MPosition *p, int &wrote_
     cchar *formal_t = formal ? c_type(formal) : nullptr;
     cchar *arg_cg = c_rhs(v);
     cchar *arg_t = c_type(v);
-    bool arg_is_voidish = arg_t && (!strcmp(arg_t, "_CG_any") ||
-                                    !strcmp(arg_t, "_CG_void") ||
-                                    !strcmp(arg_t, "_CG_nil_type"));
+    bool arg_is_voidish = (v->sym == sym_nil) ||
+                          (arg_t && (!strcmp(arg_t, "_CG_any") ||
+                                     !strcmp(arg_t, "_CG_void") ||
+                                     !strcmp(arg_t, "_CG_nil_type")));
     bool formal_is_voidish = formal_t && (!strcmp(formal_t, "_CG_any") ||
                                           !strcmp(formal_t, "_CG_void") ||
                                           !strcmp(formal_t, "_CG_nil_type"));
@@ -2461,8 +2462,21 @@ class CBackendEmitter : public VirtualCGEmitter {
           }
           ok = false;
         }
-        // Two untagged candidates can't be told apart at runtime.
-        if (directs.n > 1) ok = false;
+        // Two untagged candidates can't be told apart at runtime unless
+        // they are indistinguishable clones of the same function.
+        if (directs.n > 1) {
+          bool all_same = true;
+          for (int i = 1; i < directs.n; i++) {
+            if (!identical_c_signature(directs[0], directs[i])) {
+              all_same = false;
+              break;
+            }
+          }
+          if (all_same)
+            directs.n = 1;
+          else
+            ok = false;
+        }
         // A nil test on a SCALAR-typed operand can't distinguish
         // None from 0/0.0/False: if the shared dispatch operand's
         // C type is scalar and a nil branch exists, bail rather
@@ -2674,11 +2688,16 @@ class CBackendEmitter : public VirtualCGEmitter {
         fprintf(stderr, "DISPATCH FAIL in %s: fns=%d rvals=%d |", f->sym->name ? f->sym->name : "?",
                 fns ? fns->n : -1, pn->rvals.n);
         if (fns)
-          for (Fun *fv : *fns)
-            fprintf(stderr, " cand=%s", fv && fv->sym && fv->sym->name ? fv->sym->name : "?");
+          for (Fun *fv : *fns) {
+            cchar *cls = (fv && fv->sym->has.n > 1 && fv->sym->has[1]->must_specialize) ? fv->sym->has[1]->must_specialize->name : "?";
+            cchar *fstr = fv ? cg_get_string(fv) : "?";
+            fprintf(stderr, " cand=%s::%s(sym=%d, %s)", cls, fv && fv->sym ? fv->sym->name : "?", fv ? fv->sym->id : -1, fstr ? fstr : "?");
+          }
         for (int i = 0; i < pn->rvals.n; i++)
-          fprintf(stderr, " r%d=%s:%s", i, pn->rvals[i]->sym->name ? pn->rvals[i]->sym->name : "_",
-                  pn->rvals[i]->type && pn->rvals[i]->type->name ? pn->rvals[i]->type->name : "?");
+          fprintf(stderr, " r%d=%s:%s(kind=%d,id=%d)", i, pn->rvals[i]->sym->name ? pn->rvals[i]->sym->name : "_",
+                  pn->rvals[i]->type && pn->rvals[i]->type->name ? pn->rvals[i]->type->name : "?",
+                  pn->rvals[i]->type ? pn->rvals[i]->type->type_kind : -1,
+                  pn->rvals[i]->type ? pn->rvals[i]->type->id : -1);
         fprintf(stderr, "\n");
       }
       fputs("  assert(!\"runtime error: matching function not found\");\n", fp);
@@ -3651,7 +3670,7 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
   for (Var *v : globals) {
     Sym *s = unalias_type(v->sym);
     if (!v->live) continue;
-    if (v->type == sym_nil_type) {
+    if (v->sym == sym_nil || v->type == sym_nil_type) {
       cg_set_string(v, "NULL");
       continue;
     }

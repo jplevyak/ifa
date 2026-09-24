@@ -489,19 +489,57 @@ int is_closure_var(Var *v) { return closure_fun_type(v) != nullptr; }
 // a genuine polymorphic call and still fall through to the dispatch
 // machinery (and, failing that, the "matching function not found"
 // assert), so this cannot paper over a real ambiguity.
-static bool identical_c_signature(Fun *a, Fun *b) {
-  if (!a || !b || a->sym != b->sym) return false;
-  if (a->args.n != b->args.n) return false;
-  if (a->sym->ret != b->sym->ret) return false;
-  if (a->rets.n != b->rets.n) return false;
-  for (int i = 0; i < a->rets.n; i++)
-    if ((a->rets[i] ? a->rets[i]->type : nullptr) != (b->rets[i] ? b->rets[i]->type : nullptr)) return false;
+bool identical_c_signature(Fun *a, Fun *b) {
+  if (!a || !b) return false;
+  if (a->sym != b->sym) {
+    if (getenv("PYC_DBG_DISPATCH")) fprintf(stderr, "IDENT: sym mismatch %s vs %s\n", a->sym->name, b->sym->name);
+    return false;
+  }
+  if (a->args.n != b->args.n) {
+    if (getenv("PYC_DBG_DISPATCH")) fprintf(stderr, "IDENT %s: args.n %d vs %d\n", a->sym->name, a->args.n, b->args.n);
+    return false;
+  }
+  if (a->sym->ret != b->sym->ret) {
+    if (getenv("PYC_DBG_DISPATCH")) fprintf(stderr, "IDENT %s: sym->ret mismatch\n", a->sym->name);
+    return false;
+  }
+  if (a->rets.n != b->rets.n) {
+    if (getenv("PYC_DBG_DISPATCH")) fprintf(stderr, "IDENT %s: rets.n %d vs %d\n", a->sym->name, a->rets.n, b->rets.n);
+    return false;
+  }
+  for (int i = 0; i < a->rets.n; i++) {
+    Sym *ta = a->rets[i] ? a->rets[i]->type : nullptr;
+    Sym *tb = b->rets[i] ? b->rets[i]->type : nullptr;
+    if (ta != tb) {
+      cchar *ca = a->rets[i] ? c_type(a->rets[i]) : "_CG_void";
+      cchar *cb = b->rets[i] ? c_type(b->rets[i]) : "_CG_void";
+      if (strcmp(ca, cb) != 0) {
+        if (getenv("PYC_DBG_DISPATCH")) fprintf(stderr, "IDENT %s: ret[%d] type %s vs %s\n", a->sym->name, i, ca, cb);
+        return false;
+      }
+    }
+  }
   for (int i = 0; i < a->args.n; i++) {
     if (!a->args[i].key) continue;
     Var *va = a->args[i].value;
     Var *vb = b->args.get(a->args[i].key);
-    if (!va || !vb) return false;
-    if (va->type != vb->type) return false;
+    if (!va || !vb) {
+      if (getenv("PYC_DBG_DISPATCH")) fprintf(stderr, "IDENT %s: arg[%d] null va=%p vb=%p\n", a->sym->name, i, va, vb);
+      return false;
+    }
+    if (va->live != vb->live) {
+      if (getenv("PYC_DBG_DISPATCH")) fprintf(stderr, "IDENT %s: arg[%d] live %d vs %d\n", a->sym->name, i, va->live, vb->live);
+      return false;
+    }
+    if (!va->live) continue;
+    if (va->type != vb->type) {
+      cchar *ca = c_type(va);
+      cchar *cb = c_type(vb);
+      if (strcmp(ca, cb) != 0) {
+        if (getenv("PYC_DBG_DISPATCH")) fprintf(stderr, "IDENT %s: arg[%d] type %s vs %s\n", a->sym->name, i, ca, cb);
+        return false;
+      }
+    }
   }
   return true;
 }

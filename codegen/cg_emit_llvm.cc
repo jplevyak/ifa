@@ -533,6 +533,11 @@ llvm::Value *value_for_var(EmitCtx &ctx, Var *v) {
     return loaded;
   }
   if (llvm::Value *cached = ctx.var_map.get(v)) return cached;
+  if ((v->type && v->type == sym_nil_type) || (v->sym && (v->sym == sym_nil || v->sym == sym_nil_type))) {
+    llvm::Type *t = sym_to_llvm_type(v->type);
+    if (!t || !t->isPointerTy()) t = llvm::PointerType::getUnqual(*TheContext);
+    return llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(t));
+  }
   // Constant Sym: materialize the LLVM constant directly.
   Sym *s = get_constant(v);
   if (!s) s = v->sym;
@@ -2209,7 +2214,6 @@ void emit_move(EmitCtx &ctx, PNode *pn) {
     if (lhs->sym && lhs->sym->type_kind) continue;
     if (rhs->sym && rhs->sym->type_kind) continue;
     if (rhs->type == sym_void || lhs->type == sym_void) continue;
-    if (lhs->type == sym_nil_type) continue;
     if (get_constant(lhs)) continue;
     // Alloca consolidation is handled exclusively by
     // discover_phi_targets's union-find pre-pass.  Doing
@@ -2487,32 +2491,40 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
       bool is_float = val_ty->num_kind == IF1_NUM_KIND_FLOAT;
       bool is_unsigned = val_ty->num_kind == IF1_NUM_KIND_UINT || val_ty == sym_bool;
       if (!conv) {
-        if (!is_float && v->getType() != i64)
+        if (!is_float && v->getType()->isIntegerTy() && v->getType() != i64)
           return is_unsigned ? Builder->CreateZExt(v, i64) : Builder->CreateSExt(v, i64);
         return v;
       }
       if (strchr("diouxX", conv)) {
-        if (is_float) return Builder->CreateFPToSI(v, i64);
+        if (is_float || v->getType()->isFloatingPointTy()) return Builder->CreateFPToSI(v, i64);
         if (v->getType() == i64) return v;
-        return is_unsigned ? Builder->CreateZExt(v, i64) : Builder->CreateSExt(v, i64);
-      }
-      if (conv == 'c') {
-        if (is_float) return Builder->CreateFPToSI(v, i32);
-        if (v->getType() == i32) return v;
-        unsigned bits = v->getType()->getIntegerBitWidth();
-        if (bits > 32) return Builder->CreateTrunc(v, i32);
-        if (bits < 32) return is_unsigned ? Builder->CreateZExt(v, i32) : Builder->CreateSExt(v, i32);
+        if (v->getType()->isIntegerTy())
+          return is_unsigned ? Builder->CreateZExt(v, i64) : Builder->CreateSExt(v, i64);
         return v;
       }
-      if (strchr("feEgGF", conv) && !is_float)
-        return is_unsigned ? Builder->CreateUIToFP(v, f64) : Builder->CreateSIToFP(v, f64);
+      if (conv == 'c') {
+        if (is_float || v->getType()->isFloatingPointTy()) return Builder->CreateFPToSI(v, i32);
+        if (v->getType() == i32) return v;
+        if (v->getType()->isIntegerTy()) {
+          unsigned bits = v->getType()->getIntegerBitWidth();
+          if (bits > 32) return Builder->CreateTrunc(v, i32);
+          if (bits < 32) return is_unsigned ? Builder->CreateZExt(v, i32) : Builder->CreateSExt(v, i32);
+        }
+        return v;
+      }
+      if (strchr("feEgGF", conv)) {
+        if (v->getType()->isFloatingPointTy()) return v;
+        if (v->getType()->isIntegerTy())
+          return is_unsigned ? Builder->CreateUIToFP(v, f64) : Builder->CreateSIToFP(v, f64);
+      }
       return v;
     };
     // Collect args: fmt + expanded tuple fields (or single arg).
     std::vector<llvm::Value *> args;
     args.push_back(fmt);
-    if (arg_var->type && arg_var->type->type_kind == Type_RECORD &&
-        arg_var->type->has.n > 0) {
+    bool is_tuple = arg_var->type && arg_var->type->type_kind == Type_RECORD &&
+                    !cg_has_classtag(arg_var->type) && arg_var->type->has.n > 0;
+    if (is_tuple) {
       llvm::StructType *rec_ty = sym_to_llvm_struct(arg_var->type);
       llvm::Value *rec = value_for_var(ctx, arg_var);
       if (!rec || !rec_ty) return false;
@@ -2940,8 +2952,9 @@ void emit_send(EmitCtx &ctx, PNode *pn) {
 void emit_send_call(EmitCtx &ctx, PNode *pn) {
   if (!pn || !ctx.fn) return;
   Vec<Fun *> *callees = ctx.fn->calls.get(pn);
-  if (!callees) return;
-  if (callees->n > 1) {
+  if (!callees || !callees->n) return;
+  Fun *single_target = get_target_fun_core(pn, ctx.fn);
+  if (!single_target && callees->n > 1) {
     // ifa/issues/030 classtag dispatch (mirrors cg.cc's
     // emit_send_call polymorphic branch). Group candidates by
     // receiver class; branch on the instance's classtag (slot 0);
@@ -3146,28 +3159,32 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
       // integer -- the same coercions emit_direct_call itself
       // performs; anything else, e.g. float vs pointer, is a genuine
       // signature mismatch, not a representable argument).
-      if (!default_fn && fun_val->cg_string && TheModule->getFunction(fun_val->cg_string)) {
-        bool compat = true;
-        MPosition dcargp;
-        dcargp.push(1);
-        for (int dpi = 0; dpi < fun_val->sym->has.n + 2 && compat; dpi++) {
-          MPosition *dcp = cannonicalize_mposition(dcargp);
-          dcargp.inc();
-          Var *dav = fun_val->args.get(dcp);
-          if (!dav || !dav->live) continue;
-          if (dav->type && dav->type->is_fun) continue;
-          int di = (int)Position2int(dcp->pos[0]) - 1;
-          if (di < 0 || di >= pn->rvals.n || !pn->rvals.v[di] || !pn->rvals.v[di]->type) { compat = false; break; }
-          llvm::Type *dft = sym_to_llvm_type(dav->type);
-          llvm::Type *dat = sym_to_llvm_type(pn->rvals.v[di]->type);
-          if (!dft || !dat) { compat = false; break; }
-          if (dft == dat) continue;
-          bool both_int = dft->isIntegerTy() && dat->isIntegerTy();
-          bool int_ptr = (dft->isIntegerTy() && dat->isPointerTy()) || (dft->isPointerTy() && dat->isIntegerTy());
-          if (!both_int && !int_ptr) { compat = false; break; }
-        }
-        if (compat) {
-          default_fn = fun_val;
+      if (fun_val->cg_string && TheModule->getFunction(fun_val->cg_string)) {
+        if (!default_fn) {
+          bool compat = true;
+          MPosition dcargp;
+          dcargp.push(1);
+          for (int dpi = 0; dpi < fun_val->sym->has.n + 2 && compat; dpi++) {
+            MPosition *dcp = cannonicalize_mposition(dcargp);
+            dcargp.inc();
+            Var *dav = fun_val->args.get(dcp);
+            if (!dav || !dav->live) continue;
+            if (dav->type && dav->type->is_fun) continue;
+            int di = (int)Position2int(dcp->pos[0]) - 1;
+            if (di < 0 || di >= pn->rvals.n || !pn->rvals.v[di] || !pn->rvals.v[di]->type) { compat = false; break; }
+            llvm::Type *dft = sym_to_llvm_type(dav->type);
+            llvm::Type *dat = sym_to_llvm_type(pn->rvals.v[di]->type);
+            if (!dft || !dat) { compat = false; break; }
+            if (dft == dat) continue;
+            bool both_int = dft->isIntegerTy() && dat->isIntegerTy();
+            bool int_ptr = (dft->isIntegerTy() && dat->isPointerTy()) || (dft->isPointerTy() && dat->isIntegerTy());
+            if (!both_int && !int_ptr) { compat = false; break; }
+          }
+          if (compat) {
+            default_fn = fun_val;
+            continue;
+          }
+        } else if (identical_c_signature(default_fn, fun_val)) {
           continue;
         }
       }
@@ -3230,6 +3247,7 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
       if (res_ty) {
         llvm::IRBuilder<> tmp(&cur_fn->getEntryBlock(), cur_fn->getEntryBlock().begin());
         res_slot = tmp.CreateAlloca(res_ty, nullptr, "poly.res");
+        tmp.CreateStore(llvm::Constant::getNullValue(res_ty), res_slot);
       }
       // ifa/issues/030(a): shared emission for a candidate that's
       // statically known once its branch is selected -- a
@@ -3489,6 +3507,7 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
     if (res_ty) {
       llvm::IRBuilder<> tmp(&cur_fn->getEntryBlock(), cur_fn->getEntryBlock().begin());
       fres_slot = tmp.CreateAlloca(res_ty, nullptr, "fnid.res");
+      tmp.CreateStore(llvm::Constant::getNullValue(res_ty), fres_slot);
     }
     for (int fi = 0; fi < callees->n; fi++) {
       Fun *fv = (*callees)[fi];
@@ -3559,7 +3578,7 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
     }
     return;
   }
-  Fun *target = callees->v[0];
+  Fun *target = single_target ? single_target : callees->v[0];
   if (!target || !target->cg_string) return;
   llvm::Function *target_fn =
       TheModule->getFunction(target->cg_string);
@@ -4054,10 +4073,10 @@ void discover_phi_targets(EmitCtx &ctx, Fun *f) {
   while (stack.n) {
     PNode *cur = stack.pop();
     auto allocable = [](Var *v) -> bool {
-      if (!v || !v->sym) return false;
-      if (v->sym->is_constant) return false;
-      if (v->sym->is_fun) return false;
-      if (v->sym->is_symbol) return false;
+      if (!v) return false;
+      if (v->sym && v->sym->is_constant) return false;
+      if (v->sym && v->sym->is_fun) return false;
+      if (v->sym && v->sym->is_symbol) return false;
       if (g_var_to_global.get(v)) return false;
       return true;
     };
@@ -4105,14 +4124,37 @@ void discover_phi_targets(EmitCtx &ctx, Fun *f) {
   } else {
     Builder->SetInsertPoint(&entry_bb->front());
   }
+  Vec<Var *> all_vars;
+  uf.parent.get_keys(all_vars);
+
+  auto get_concrete_type = [](Var *u) -> Sym * {
+    if (u->type && u->type != sym_void && u->type != sym_void_type)
+      return u->type;
+    if (u->sym && u->sym->type && u->sym->type != sym_void && u->sym->type != sym_void_type)
+      return u->sym->type;
+    return nullptr;
+  };
+
   Map<Var *, llvm::AllocaInst *> class_slot;  // root → alloca
   for (Var *v : phi_targets) {
     Var *root = uf.find(v);
     llvm::AllocaInst *slot = class_slot.get(root);
     if (!slot) {
-      if (!v->type) continue;
-      llvm::Type *t = sym_to_llvm_type(v->type);
-      if (!t || t->isVoidTy()) continue;
+      Sym *ty = get_concrete_type(v);
+      if (!ty) {
+        for (Var *u : phi_targets) {
+          if (uf.find(u) == root && (ty = get_concrete_type(u)))
+            break;
+        }
+      }
+      if (!ty) {
+        for (Var *u : all_vars) {
+          if (uf.find(u) == root && (ty = get_concrete_type(u)))
+            break;
+        }
+      }
+      llvm::Type *t = sym_to_llvm_type(ty);
+      if (!t || t->isVoidTy()) t = llvm::PointerType::getUnqual(*TheContext);
       cchar *name = cg_get_string(v);
       slot = Builder->CreateAlloca(t, nullptr, name ? name : "");
       class_slot.put(root, slot);
@@ -4122,8 +4164,6 @@ void discover_phi_targets(EmitCtx &ctx, Fun *f) {
   // Pass C: also map every Var in any allocated class to
   // the shared slot.  Walk the union-find's parent map and
   // assign.
-  Vec<Var *> all_vars;
-  uf.parent.get_keys(all_vars);
   for (Var *v : all_vars) {
     if (ctx.alloca_map.get(v)) continue;
     Var *root = uf.find(v);

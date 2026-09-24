@@ -99,7 +99,7 @@ flag-only failures are two groups:**
 
 | group | programs | first error | owner |
 | --- | --- | --- | --- |
-| element/slot union with no representation | plcfrs, sudoku3, sudoku5 | `'x' has mixed basic types: (…)`, two of them naming `tuple` | [146](146-remove-all-arbitrary-splitting.md) E |
+| element/slot union with no representation | sudoku3, sudoku5 (`plcfrs` resolved 2026-09-24) | `'x' has mixed basic types: (…)`, two of them naming `tuple` | [146](146-remove-all-arbitrary-splitting.md) E |
 | layout / blind cast | chull, sudoku4 | `object layout: 'Edge' is blind-cast to 'Vertex' … member width differs` | **not 135** — see below |
 
 So **two mechanisms stand between here and the flip**, not a long list.

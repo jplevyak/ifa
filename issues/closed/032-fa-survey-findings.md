@@ -7,7 +7,7 @@ consumed-by backlink from call sites to closure CSs that doesn't
 exist today) and isn't worth a standalone issue on its own; revisit
 inline here if that backlink ever gets built for an unrelated
 reason. Full analysis and rationale
-in [../analysis/FA_SEMANTIC_SURVEY.md](../../analysis/FA_SEMANTIC_SURVEY.md)
+in [../analysis/NOTES.md](../../analysis/NOTES.md)
 (labels B1–B5, S1–S9, P1–P4 refer to that document). This issue
 tracks only the items concrete enough to land as individual fixes;
 check them off here with the closing commit.

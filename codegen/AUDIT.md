@@ -378,5 +378,5 @@ largest dividend.
 - [Issue 011](../issues/closed/011-setter-codegen-vs-analyzer-mismatch.md)
   — the P_prim_setter analyzer/codegen alignment that recently
   landed.
-- `ifa/analysis/AUDIT.md` — companion review of the analysis
-  subsystem (same format).
+- [../analysis/NOTES.md](../analysis/NOTES.md) — companion review of the analysis
+  subsystem.

@@ -315,7 +315,8 @@ Measured:
 | default arm | — | unchanged (one cap-straddler flake) |
 
 All six gates pass. Remaining flag-arm divergences: `bh`, `kanoodle`,
-`plcfrs`, `quameon`, `richards`, `sudoku3`, `sudoku5`.
+`richards`, `sudoku3`, `sudoku5` (`quameon` resolved 2026-09-21 in (c);
+`plcfrs` resolved 2026-09-24 in (d)).
 
 **What it means for B.** The blocker is narrower than it looked. Demand
 splitting works where values flow through edges — the function-local
@@ -743,43 +744,38 @@ per-item loop, and every `dec->groups.add`, is keyed:
 mechanism found has been removed; what remains partitions on something the
 demand names.
 
-### D is NOT complete — corrected 2026-09-08
+### D. Mark-based splitting — DONE 2026-09-21
 
-**"D done" was claimed twice and was wrong both times.** The accounting:
+**All four mark splitters and all mark scaffolding removed.** The accounting:
 
 | mark splitter | gated by `PYC_NOMARK`? | status |
 | --- | --- | --- |
 | `split_ess_for_mark_type` (MARK_TYPE) | yes, and off at the default | **removed** |
 | `split_ess_setters_marks` | yes, but its threshold was `< 2` so it was **ON** | **removed** |
 | `split_with_type_marks` (VIOLATION fallback) | **not gated at all** | **removed** |
-| **MARK_SETTER / MARK_SETTER_OF_SETTER** | **not gated at all** | **STILL LIVE** |
+| `MARK_SETTER / MARK_SETTER_OF_SETTER` | **not gated at all** | **removed** |
 
-Nine functions and 260 lines went; what remains is the fourth splitter,
-plus scaffolding.
+**Unblocking `voronoi2` without marks.** `MARK_SETTER` had previously been kept
+because disabling it caused `voronoi2` to fail with C++ compilation errors:
+`error: no matching function for call to '_CG_f_16314_135'` (`t1 = _CG_f_16314_135(__new__)(/* None 101 */ g1, 0)`:
+no conversion from `_CG_ps18546` (`Site*`) to `_CG_ps18563` (`Edge*`)).
+Root cause: `sym_nil->var` (the singleton global `None`) was having its inferred type polluted with `{None, Site}`
+(because `make_kind` attached `sym_nil->var` to container slots `cs->vars[0]` initialized with `None`, and writes
+into those list slots flowed into `sym_nil->var`'s AVars). Because `sym_nil->var->type != sym_nil_type`,
+`cg.cc:3654` failed to emit `"NULL"` and instead emitted `_CG_ps18546 /* None 101 */ g1;`.
+`MARK_SETTER` had merely masked this by splitting `Halfedge.__new__` so `default_wrapper` called a clone taking
+`_CG_nil_type`.
+Fixed surgically in `ifa/codegen/cg.cc`:
+- Line 3654: `if (v->sym == sym_nil || v->type == sym_nil_type) { cg_set_string(v, "NULL"); continue; }`
+- Line 1772: in `write_send_arg`, `bool arg_is_voidish = (v->sym == sym_nil) || ...`
+With this fix, `voronoi2` compiles and runs cleanly without `MARK_SETTER`.
 
-**Why the fourth stays.** `collect_cs_marked_confluences` finds confluences
-by comparing `mark_map`s and `compute_setters(..., AKIND_MARK)` keys the
-setters on marks, so it is provenance-driven and by the rule it should go.
-Measured with its marked confluences suppressed: pyc suite 313 / 0, corpus
-verdicts identical **except `voronoi2`, which stops compiling** (`no
-matching function for call to '_CG_f_...'`) — verified alone, not a sweep
-artifact. It also fires on `plcfrs`, where suppressing it REMOVES contours
-(ess 1088 → 1075).
-
-So it is load-bearing on exactly one program, and retiring it means
-supplying `voronoi2`'s separation some other way. That is real work, not a
-deletion, and it is left in place with a note at the site rather than
-removed on a hope.
-
-**Also still there, and merely dead rather than live:**
-
-- the MARK_TYPE stage block, now a hollow shell that sets `cur_split_stage`,
-  does `analyze_again = 0` and records timing;
-- `different_marked_args` and `cpa_mark_enabled` (`PYC_CPAMARK`), reachable
-  only under `fmark`, which is now always 0 — except for the one live
-  caller inside `collect_cs_marked_confluences`;
-- `AVar::mark_map`, `MarkMap`/`MarkElem`, and the `MARK_*` stage enum
-  entries.
+**All remaining mark scaffolding deleted:**
+- `MARK_TYPE`, `MARK_SETTER`, `MARK_SETTER_OF_SETTER` stages removed from `FAPassStage` (`kNumFAPassStages = 8`), and their execution blocks removed from `extend_analysis`.
+- Mark helper functions deleted: `build_type_mark`, `build_joint_type_marks`, `build_setter_mark`, `clear_marks`, `collect_cs_marked_confluences`, `different_marked_args`, `cpa_mark_enabled`, `mark_why_enabled`, `report_markwhy`.
+- Mark data structures deleted: `AVar::mark_map`, `MarkMap`/`MarkElem`, `AKIND_MARK`, `SPLIT_VALUE`, `fmark`.
+- Verified clean build (`make clean && make test`: 58/0 unit tests, 16 IR phases clean, pyc C and LLVM e2e 0 failed, dparse and links clean).
+- Sweep verified: `cs/shapes` dropped from 2118/625 (3.39) to 2104/625 (3.37). `voronoi2` no longer fails C++ compilation.
 
 **The lesson, and it is the same one twice:** "is it off by default" is the
 wrong question. Four mark splitters existed — one gated and off, one gated
@@ -860,15 +856,15 @@ B is the goal (it is what `PYC_CSDCPA1` exists to retire) but depends on
 independent of the flag. C is the smallest and is a regression I introduced.
 D and E are deletions of dead-but-sanctioned code.
 
-**A, C and E are DONE**; **F** audited and cleared. (E's verdict was
+**A, C, D and E are DONE**; **F** audited and cleared. (E's verdict was
 corrected — it IS arbitrary — and the CARTESIAN_PRODUCT splitter was then
 removed; only `PYC_CPAMARK`, ifa/074's unrelated naming mechanism, still
 carries the letters. Its replacement — demand plus dispatch-aware receiver
 filtering — is still owed, and `tests/splitter_cartesian_product.py`
-carries the `.known_issue` that flips to PASS when it lands.) **D is
-PARTIAL** — three of four mark splitters removed, the fourth (MARK_SETTER)
-load-bearing for `voronoi2` and left in place with a measurement.
-Remaining: finish D, then **B** as the flag flip.
+carries the `.known_issue` that flips to PASS when it lands. D completed
+2026-09-21: all four mark splitters and mark scaffolding deleted after
+root-causing and fixing `voronoi2`'s `None` codegen defect without marks.)
+Remaining: **B** as the flag flip.
 
 **What B actually needs — see [129](129-plan-demand-driven-creation-set-splitting.md),
 which is the single integrated plan and owns the ordering.** The table that
@@ -882,7 +878,7 @@ the default too. The **5 flag-only failures are two mechanisms**:
 
 | group | programs | owner |
 | --- | --- | --- |
-| element/slot union with no representation | plcfrs, sudoku3, sudoku5 | **E, below** |
+| element/slot union with no representation | sudoku3, sudoku5 (`plcfrs` resolved 2026-09-24 in (d)) | **E, below** |
 | layout / blind cast | chull, sudoku4 | [135](135-empty-sibling-contour-wins-the-clone-merge.md) |
 
 So **E is the critical path for the flag flip**, and it is this issue's own
@@ -1342,11 +1338,57 @@ So `sudoku4` remains open, and the next attempt should be at the WRITER: an
 EntrySet split keyed on something narrower than ESBLOCK's found-by-test
 blocker, without disturbing contours whose distinction is numeric.
 
-### What it does NOT fix
+### (c) RESOLVED 2026-09-21 — Scoped `ESBLOCK` to container element writers; defaulted ON
 
-`plcfrs`. Its union is `{list, tuple, int64, str, ChartItem, Edge, Entry}`
-— it spans CLASSES as well as basics, and this partitions only on the
-basics, so the callers all score the same signature and it declines. That
-is the remaining blocker for the flip: with ESBLOCK + ESRECV the flag arm
-is 3 compile failures against the default's 2, and the difference is
-exactly `plcfrs`.
+**The trade between `sudoku4` and `softrender` is resolved.**
+
+1. **Root cause of `softrender`'s breakdown under `PYC_ESBLOCK=1`:**
+   `find_blocking_es` searched for any EntrySet on `g->paths` with `nin > 1`.
+   On `softrender`, non-container CreationSets (`Vector4`, `Matrix`, `Gradients`)
+   had flow graphs built over member variables (`cs->vars`).
+   `find_blocking_es` nominated `Vector4.__init__` as a "blocker" and split it.
+   Splitting `Vector4.__init__` separated int-initialized `Vector4(0, 0, 0, 0)`
+   from float-initialized instances, pushing the constant int `0` through runtime
+   arithmetic (`Vector4.__add__`'s `self.x + r.x`), turning it into a runtime `int64`.
+   Because numeric coercion only rewrites constants, runtime `int64` mixed with
+   `float64` could not be coerced, exploding violations 60 → 483.
+
+2. **The fix:**
+   Scope `find_blocking_es` strictly to non-numeric container element writers:
+   - Candidate `cs` must be a container CreationSet (`cs->sym && cs->sym->element && cs->added_element_var`).
+   - Candidate `cs` element must not be pure-numeric (`!cs_elem_is_pure_numeric(cs)`), ensuring numeric coercion handles `{int64, float64}` without splitting them into runtime values (which also unblocks `quameon`).
+   - Candidate `aes` must not be a constructor (`__init__` or `__new__`).
+   - Enabled `PYC_ESBLOCK=1` by default in `esblock_enabled()`.
+
+3. **Measured results:**
+   - `softrender`: compiles with 0 errors and identical warnings (exit 0).
+   - `sudoku4`: compiles without the blind cast layout violation under `PYC_ESBLOCK=1`.
+   - `quameon`: compiles with 0 warnings (exit 0).
+   - `make test`: All gates green (58/0 unit tests, 16 IR phases clean with 2 known, pyc C backend e2e 0 failed, pyc LLVM backend e2e 0 failed, V-language LLVM smoke passed, dparse passed, links clean).
+   - `corpus_sweep.sh -m check` (`check__default__e1ba7f10+2943c25f`): compile failures drop 34 → 33 (`quameon` now compiles and runs, `webserver` now compiles and runs).
+
+### What it does NOT fix (historical)
+
+`plcfrs` was the remaining blocker: its union spanned classes and basics across dictionary lookups and comprehensions, failing compilation and runtime.
+
+### (d) RESOLVED 2026-09-24 — `plcfrs` compiled and verified on C and LLVM backends
+
+`plcfrs` compiles cleanly under default `PYC_CSDCPA1=2` and executes byte-for-byte identical to CPython 3 on both backends.
+
+1. **Frontend scope & expression typing**:
+   - `python_ifa_build_syms.cc`: `build_comprehension_body_syms` marks comprehension iteration variables as `is_local = 1` and `nesting_depth = LOCALLY_NESTED`, isolating them across list/dict comprehensions.
+   - `python_ifa_build_if1.cc`: conditional branches with already-boolean expressions (`is_boolean_expr`) bypass redundant `__pyc_to_bool__` calls, preventing spurious union generation.
+
+2. **Builtin module completeness (`__pyc__`)**:
+   - `01_str.py`: Added standard `splitlines`, `rjust`, `ljust`, and `center` implementations.
+   - `07_dict.py`: Added `__delitem__` and `setdefault` support.
+
+3. **Codegen clone deduplication & LLVM type safety**:
+   - `codegen_common.cc` & `cg.cc`: `identical_c_signature` compares C types across parameters and return values when types differ only structurally; untagged candidates collapse identical clones to direct dispatch.
+   - `cg_emit_llvm.cc`: `discover_phi_targets` skips `sym_void` and `sym_void_type` in `get_concrete_type` when searching phi equivalence classes, preventing void arms from corrupting integer index allocas to `ptr` (which triggered `@llvm.trap` / `ud2` in `list::pop`). Added `ConstantPointerNull` materialization for `sym_nil` / `sym_nil_type` and preserved nil moves.
+
+4. **Measured results**:
+   - `shedskin_examples/plcfrs/plcfrs.py` compiles under `./pyc` and `./pyc -b` with default `PYC_CSDCPA1=2`.
+   - Runs cleanly in both interactive demo and batch CLI modes (`grammar lexicon sentences`), matching CPython 3 byte-for-byte.
+   - All 6 CI test gates (`make test`) pass with zero regressions.
+

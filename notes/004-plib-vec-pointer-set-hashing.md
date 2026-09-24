@@ -201,7 +201,7 @@ two roles separately.
   `set_add`-populated `Vec` and makes decisions based on
   iteration order can produce non-deterministic output. The
   `qsort_by_id` convention is the load-bearing workaround.
-- **Tier 3 reentrancy work** (CLEANUP.md tier 3 items 2-7). If
+- **Tier 3 reentrancy work** (NOTES.md §2.1). If
   multiple FA instances run concurrently, their per-instance
   `Vec`-as-set tables will diverge in capacity and iteration
   order; the deeper fix removes that variable.
@@ -213,10 +213,8 @@ two roles separately.
 
 ## See also
 
-- [../analysis/AUDIT.md §3.4](../analysis/AUDIT.md) — the
-  original "deeper fix" sketch.
-- [../analysis/AUDIT.md §3.3](../analysis/AUDIT.md) — the
-  "sort by id before iterating" convention.
+- [../analysis/NOTES.md](../analysis/NOTES.md) — the
+  consolidated analysis notes and determinism discussion.
 - [../issues/009-fa-violations-nondeterminism.md](../issues/closed/009-fa-violations-nondeterminism.md)
   — the investigation that surfaced the capacity-reporting
   effect but not the iteration-order effect.

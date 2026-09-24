@@ -821,5 +821,5 @@ verifiable. The minimum viable subset is phases 0 + 1.
   Phase 1.3 / 2.3 / 3 all touch this.
 - [Issue 011](../issues/closed/011-setter-codegen-vs-analyzer-mismatch.md)
   — the analyzer/codegen alignment that landed June 2026.
-- `ifa/analysis/AUDIT.md` and `ifa/analysis/CLEANUP.md` —
-  precedent for the AUDIT + plan pattern.
+- [../analysis/NOTES.md](../analysis/NOTES.md) —
+  consolidated analysis notes and architectural reference.

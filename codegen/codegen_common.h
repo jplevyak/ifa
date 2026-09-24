@@ -94,6 +94,7 @@ void cg_build_new_to_val_map(FA *fa);
 // "search by sym, then by name" fallback over a global function
 // list. `get_target_fun_core` is the shared core; the LLVM
 // wrapper lives in `llvm_primitives.cc` and adds the fallback.
+bool identical_c_signature(Fun *a, Fun *b);
 Fun *get_target_fun_core(PNode *n, Fun *f);
 // ifa/129: direct-vs-polymorphic call census, under PYC_DBG_CALLS.
 void report_call_resolution(FA *fa);
