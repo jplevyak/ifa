@@ -9632,12 +9632,37 @@ static CSFlowGraph *build_cs_flow_graph(CreationSet *cs) {
 
 typedef MapElem<MPosition *, AVar *> MapElemMPositionAVarPair;
 
-// ifa/133: PYC_ESBLOCK=1 -- when route 4's key declines because a SHARED
-// contour hides the partition, split that contour so the CreationSet split
-// becomes possible. Off by default until measured.
+// ifa/133: when route 4's key declines because a SHARED contour hides the
+// partition, split that contour so the CreationSet split becomes possible.
+// `PYC_ESBLOCK=0` restores the old opt-in behaviour.
+//
+// ON BY DEFAULT since 2026-09-24, on a measured corpus A/B (`check`, 77
+// programs, one binary, env the only difference). It used to be opt-in
+// because it "moves the set, it does not shrink it" and cost `softrender`;
+// `softrender` no longer compiles at either arm, so that trade is gone,
+// and the current one is favourable:
+//
+//   compile_fail 32 -> 32, run_fail 14 -> 13, container CS/shapes
+//   2730/641 = 4.26 -> 2461/662 = 3.72
+//
+//   gained:  sudoku2 (now compiles, runs, and MATCHES CPython -- the only
+//            stdout_match=yes anywhere in the diff), webserver (compiles)
+//   lost:    dijkstra2, quameon -- both of which already compiled and then
+//            died at RUN (rc=124 / rc=134), so neither was a working program
+//   sunfish: compiler timeout (124) -> clean diagnostic (1)
+//
+// Fewer contours AND better outcomes is ifa/146's non-monotone diagnostic
+// pointing the right way, so this is the lever earning its keep rather
+// than a preference.
+//
+// It is what makes the comprehension accumulator's result-move in
+// `build_list_comp_inner_pyda` safe to keep: that move round-trips
+// through `list.append`'s return, and without this split every
+// comprehension in the program shares one `append` EntrySet, so the
+// round-trip becomes a program-wide element-union channel (`plcfrs`).
 static int esblock_enabled() {
   static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_ESBLOCK"); e = v ? atoi(v) : 0; }
+  if (e < 0) { cchar *v = getenv("PYC_ESBLOCK"); e = v ? atoi(v) : 1; }
   return e;
 }
 

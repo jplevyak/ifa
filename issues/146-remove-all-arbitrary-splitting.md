@@ -1007,6 +1007,42 @@ softrender  ESBLOCK=1   final_pass=101  violations=483
 more splitting, worse results — so ESBLOCK stays opt-in on its own evidence,
 not on a preference for caution.
 
+#### Superseded 2026-09-24 — `PYC_ESBLOCK=1` is now the DEFAULT
+
+The paragraph above is kept for the reasoning, but its verdict no longer
+holds, for two reasons measured on `983ac5a4`:
+
+- **The `softrender` trade is gone.** `softrender` does not compile at
+  EITHER arm on this tree, so ESBLOCK no longer costs it anything.
+- **The current trade is favourable.** `check`, 77 programs, one binary,
+  env the only difference:
+
+  | | default (ESBLOCK=0) | ESBLOCK=1 |
+  | --- | --- | --- |
+  | compile_fail | 32 | 32 |
+  | run_fail | 14 | **13** |
+  | container CS / shapes | 2730/641 = 4.26 | **2461/662 = 3.72** |
+
+  Five rows move. **Gained:** `sudoku2` — compiles, runs, and MATCHES
+  CPython, the only `stdout_match=yes` anywhere in the diff — and
+  `webserver` (compiles). **Lost:** `dijkstra2` and `quameon`, both of
+  which already compiled and then died at RUN (`rc=124` / `rc=134`), so
+  neither was a working program. `sunfish` goes from a compiler TIMEOUT to
+  a clean diagnostic.
+
+  Fewer contours AND better outcomes is this issue's non-monotone
+  diagnostic pointing the right way.
+
+It is also what makes the comprehension accumulator's result-move in
+`build_list_comp_inner_pyda` safe. That move round-trips through
+`list.append`'s return (`P_prim_merge_in`'s `flow_vars`), and without this
+split every comprehension in a program shares ONE `append` EntrySet — the
+"1 group: every creation point on the same assign sets" decline below — so
+the round-trip becomes a program-wide element-union channel. `983ac5a4`
+deleted the move instead, which silenced `plcfrs` by cutting the edge
+rather than splitting the contour, and cost `sudoku2`. Splitting the
+contour keeps both.
+
 Ruled out by measurement, so they are not re-tried:
 
 - **`PYC_ESRECV=1` does not rescue it.** `softrender` needs ESBLOCK off
