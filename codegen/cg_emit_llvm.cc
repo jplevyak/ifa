@@ -2542,12 +2542,39 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
       av = coerce(av, arg_var->type, convs.n == 1 ? convs[0] : 0);
       args.push_back(av);
     }
-    // Declare as varargs: ptr (char *str, ...)
-    llvm::FunctionType *ft = llvm::FunctionType::get(
-        ptr_ty, {ptr_ty}, /*isVarArg=*/true);
-    llvm::FunctionCallee fn = TheModule->getOrInsertFunction(
-        "_CG_format_string", ft);
-    llvm::Value *res = Builder->CreateCall(ft, fn.getCallee(), args);
+    // issues/165, the half left open: with a NON-constant format there is
+    // no conversion to match each argument against, so `coerce` above sees
+    // conv == 0 -- it widens an integer and leaves a FLOAT alone, and that
+    // double then meets `%d` in the wrong register class. Neither end can
+    // fix it alone: the emitter cannot see the format, the runtime cannot
+    // see the types. So pass the TYPES as a tag string and let
+    // _CG_format_string_tagged pair them up. Mirrors format_string_codegen
+    // in python_ifa_main.cc, kept in sync the way the rest of this
+    // primitive's logic already is.
+    llvm::FunctionType *ft;
+    llvm::FunctionCallee fn;
+    llvm::Value *res;
+    if (!cfmt) {
+      std::string tags;
+      auto tag_of = [&](Sym *t) -> char {
+        if (!is_num(t)) return 's';
+        return t->num_kind == IF1_NUM_KIND_FLOAT ? 'f' : 'i';
+      };
+      if (is_tuple)
+        for (int i = 0; i < arg_var->type->has.n; i++) tags += tag_of(arg_var->type->has[i]->type);
+      else
+        tags += tag_of(arg_var->type);
+      llvm::Value *tagv = Builder->CreateGlobalStringPtr(tags);
+      args.insert(args.begin() + 1, tagv);
+      ft = llvm::FunctionType::get(ptr_ty, {ptr_ty, ptr_ty}, /*isVarArg=*/true);
+      fn = TheModule->getOrInsertFunction("_CG_format_string_tagged", ft);
+      res = Builder->CreateCall(ft, fn.getCallee(), args);
+    } else {
+      // Declare as varargs: ptr (char *str, ...)
+      ft = llvm::FunctionType::get(ptr_ty, {ptr_ty}, /*isVarArg=*/true);
+      fn = TheModule->getOrInsertFunction("_CG_format_string", ft);
+      res = Builder->CreateCall(ft, fn.getCallee(), args);
+    }
     if (pn->lvals.n > 0 && pn->lvals.v[0])
       put_result(ctx, pn->lvals.v[0], res);
     return true;
