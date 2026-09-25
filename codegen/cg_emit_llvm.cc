@@ -2558,6 +2558,7 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
       std::string tags;
       auto tag_of = [&](Sym *t) -> char {
         if (!is_num(t)) return 's';
+        if (t == sym_bool) return 'b';  // "%s" % True is "True", not "1"
         return t->num_kind == IF1_NUM_KIND_FLOAT ? 'f' : 'i';
       };
       if (is_tuple)
