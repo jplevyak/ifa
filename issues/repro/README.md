@@ -31,7 +31,7 @@ degenerate "reproducer":
 
 | oracle | result | how it was defeated |
 |---|---|---|
-| v1 target error only | 93 lines | **invalid Python** — CPython raises `IndentationError`; pyc's parser accepts an empty `if:` body ([issues/106](../../../issues/106-empty-if-body-silently-accepted.md)) |
+| v1 target error only | 93 lines | **invalid Python** — CPython raises `IndentationError`; pyc's parser accepts an empty `if:` body ([issues/106](../../../issues/closed/106-empty-if-body-silently-accepted.md)) |
 | v2 + `ast.parse` | 94 lines | **executed nothing** — 0 bytes stdout vs the original's 3456 |
 | v3 + non-empty stdout | 182 lines | printed 7 bytes, then **died of `NameError`** |
 | v4 + CPython `rc == 0` | 187 lines | exited 0, but **10 undefined names** survived in never-executed paths |

@@ -271,7 +271,7 @@ That is a methodology error (the oracle checked only for the error
 string, never that the candidate was a legal program), and it surfaced a
 real pyc bug on the way: **pyc accepts an `if:` with no body inside a
 function and silently drops the branch** —
-[issues/106](../../issues/106-empty-if-body-silently-accepted.md),
+[issues/106](../../issues/closed/106-empty-if-body-silently-accepted.md),
 reproduced in five lines. The same shape at module level *is* rejected.
 
 Oracle v2 validates with `ast.parse` before consulting pyc, and correctly
@@ -316,7 +316,7 @@ program's meaning.
 ### Standing rules for reduction in this repo
 
 1. **Validate with `ast.parse`** — pyc's parser is not a proxy for
-   Python's ([106](../../issues/106-empty-if-body-silently-accepted.md)).
+   Python's ([106](../../issues/closed/106-empty-if-body-silently-accepted.md)).
 2. **Require the program to still run and produce output** — otherwise
    the reducer deletes the execution and leaves dead code that pyc
    analyses in a vacuum.
@@ -336,7 +336,7 @@ The oracle chain existed only because pyc accepted degenerate programs:
 | oracle | guarded against | still needed? |
 |---|---|---|
 | v1 target error | — | yes |
-| v2 `ast.parse` | invalid Python (pyc accepts an empty `if:` body) | **yes** — [106](../../issues/106-empty-if-body-silently-accepted.md) is still open |
+| v2 `ast.parse` | invalid Python (pyc accepts an empty `if:` body) | **yes** — [106](../../issues/closed/106-empty-if-body-silently-accepted.md) is still open |
 | v3 non-empty stdout | reducer deleting all execution | yes |
 | v4 CPython `rc == 0` | program crashing after partial output | yes |
 | v5/v6 `nameck.py` | **undefined names** | **NO — pyc now rejects these itself** |
