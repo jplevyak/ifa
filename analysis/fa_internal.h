@@ -71,14 +71,29 @@ struct CSFlowGraph : public gc {
 };
 
 typedef MapElem<Fun *, int> MapElemFunPint;  // ifa/133: mints inside a SPLIT-CHILD contour
+// ---- fa_lattice.cc ------------------------------------------------------
+AType *type_coerce_numeric_constants(AType *t, Sym *w);
+AType *type_num_fold(Prim *p, AType *a, AType *b);
+
+// ---- fa.cc helpers fa_prims.cc calls ------------------------------------
+int all_applications(PNode *p, EntrySet *es, AVar *a0, Vec<AVar *> &args, Vec<cchar *> &names, int is_closure, Partial_kind partial, PNode *visibility_point = nullptr, Vec<CreationSet *> *closures = 0);
+Var **destruct(Var **lvals, int nlvals, AVar *r, Sym *t, AVar *result, int &tvars);
+bool get_obj_index(AVar *index, int *i, int n);
+void make_closure(AVar *result);
+void make_period_closure(AVar *result, AVar *a, Vec<AVar *> &args);
+void prim_make_vector_constraints(PNode *p, EntrySet *es);
+void structural_assignment(CreationSet *new_cs, CreationSet *cs, PNode *p, EntrySet *es, bool merge = false, bool mix = false, Sym *elide_source = nullptr);
+extern Vec<AVar *> fieldsplit_demands;
+
+// ---- fa_prims.cc --------------------------------------------------------
+void add_prim_send_constraints(PNode *p, EntrySet *es, AVar *result, int o);
+
 // ---- fa.cc internals the diagnostics read ------------------------------
 void keyspace_cpa(AEdge *e, Vec<MPosition *> &pos, int i, std::string &tup, std::set<std::string> &out, int &budget);
 void constant_strip_census(int &nstrip, int &nmulti, int &nsame);
 void cselem_unknown_mint_census(int &minted, int &resolved, int &joinable, int &still_unfilled);
 void element_census(ElemCensus &c);
 bool mixed_basics(AVar *av);
-int canon_enabled();
-int cssiteless_enabled();
 extern std::map<std::string, CreationSet *> cselem_shape_canon;
 
 template <class F>
@@ -97,14 +112,12 @@ inline void foreach_avar(F f) {
     form_MPositionAVar(x, e->filtered_args) if (x->value) f(x->value);
 }
 CSFlowGraph *build_cs_flow_graph(CreationSet *cs);
-int mark_why_enabled();
 extern Vec<AType *> dk_recv_types;
 extern Vec<Fun *> kd_flip_funs;
 int compar_edge_id(const void *aa, const void *bb);
 int compar_tv(const void *aa, const void *bb);
 bool find_violation_user_loc(ATypeViolation *v, cchar **out_filename, int *out_line, int *out_col);
 bool is_uninformative_violation(ATypeViolation *v);
-int strictviol_enabled();
 bool atype_irrepresentable(AType *t);
 bool classes_are_related(Vec<Sym *> &classes);
 extern Vec<EntrySet *> ed_applied;

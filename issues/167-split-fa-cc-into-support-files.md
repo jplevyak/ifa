@@ -1,7 +1,9 @@
 # 167 — fa.cc is 16.8k lines; split the stable parts out and leave the algorithm
 
-**Status: steps 1 and 2 LANDED** (2026-09-25). Steps 3-5 are still open.
-`fa.cc` is **14,605 lines**, down from 16,832 when this was written.
+**Status: DONE.** All five steps landed 2026-09-25. `fa.cc` is **12,789
+lines**, down from 16,832 when this was written -- a 24% reduction, with
+the algorithm intact and every diagnostic stream and every line of emitted
+C byte-identical.
 
 **Related:** [146](146-remove-all-arbitrary-splitting.md) (the audit whose
 levers dominate the file), [129](129-plan-demand-driven-creation-set-splitting.md)
@@ -83,7 +85,7 @@ programs.
 smaller ones. Verify: same as step 1, plus the existing
 `ifa/testing/print_*.cc` helpers keep building.
 
-**3. `fa_flags.{h,cc}` — the levers.** All 45 `*_enabled()` accessors and,
+**3. `fa_flags.{h,cc}` — the levers. DONE.** All 45 `*_enabled()` accessors and,
 more importantly, the measured rationale attached to each. That prose is
 the most valuable documentation in the tree and it is currently scattered
 through 16k lines at the point of first use. One file, alphabetical, is
@@ -91,13 +93,13 @@ strictly easier to audit against [146](146-remove-all-arbitrary-splitting.md)'s
 running list of what has been removed and what is left. Verify: `git diff`
 shows only moves.
 
-**4. `fa_lattice.cc` — the type algebra.** `type_union`, `type_diff`,
+**4. `fa_lattice.cc` — the type algebra. DONE.** `type_union`, `type_diff`,
 `type_intersection`, `type_cannonicalize`, `type_num_fold`, `coerce_num`,
 `subsumed_by`, `qsort_pointers` (347 lines). Already covered by
 `ifa/testing/lattice_test.cc`, so this one has a real safety net and
 should go first if a smaller proof-of-concept is wanted before step 1.
 
-**5. `fa_prims.cc` — the primitive constraint semantics.** The
+**5. `fa_prims.cc` — the primitive constraint semantics. DONE.** The
 `P_prim_*` switch: what `merge_in`, `len`, `index_object`, `coerce`,
 `isinstance` do to types. ~1,300 lines, stable, and a per-primitive
 table is far easier to check against the runtime's own behaviour when it
@@ -197,3 +199,75 @@ throughout: 318 passed / 0 failed on both backends.
 | `fa_debug.cc` | 2,196 |
 | `fa_internal.h` | 159 |
 | `fa_census.h` | 87 |
+
+
+## Steps 3-5 as landed (2026-09-25)
+
+**Step 3 — `fa_flags.{h,cc}`, 46 accessors, 974 lines.** All 46 turned out
+to be pure `getenv` with no dependency on anything in fa.cc, so this was
+the clean move the plan expected; it compiled first try. The value is not
+the five lines each but the measured rationale attached to each, which is
+now readable as a set instead of scattered through 14k lines at each
+lever's first use. ifa/146's audit is a list about this file.
+
+**Step 4 — `fa_lattice.cc`, 9 functions, 371 lines.** union, difference,
+intersection, canonicalisation, the numeric coercion ladder, the pointer
+sort. Already declared in `fa.h` and already covered by
+`ifa/testing/lattice_test.cc`, so it was a relocation rather than a
+refactor.
+
+`make_AType` and `make_abstract_type` did NOT move, though they read like
+lattice constructors. They MINT CreationSets, which is contour identity --
+the thing 128 and 129 are still rewriting -- and `make_abstract_type`
+reads `cur_split_stage`. The line: fa_lattice.cc operates on ATypes that
+already exist; creating the CreationSets an AType is made of stays in
+fa.cc.
+
+**Step 5 — `fa_prims.cc`, 615 lines. This one was an extraction, not a
+move**, and the plan understated it. The `P_prim_*` switch was not a
+function; it was the back half of `add_send_edges_pnode`, sharing a body
+with that routine's other job -- building call edges for a NON-primitive
+send. Two unrelated jobs in one function, and only one of them is still
+changing.
+
+The 560-line switch came out as
+`add_prim_send_constraints(p, es, result, o)`. Its capture set really was
+just those four, confirmed by the compiler rather than by reading. What
+stayed is the call-graph half: `all_applications`, closure construction,
+and the argument/return constraint loop that runs before the switch.
+
+**The honest caveat on step 5:** the separation is not total. The prim
+switch still calls back into `make_closure`, `make_period_closure`,
+`all_applications` and `structural_assignment`, so eight fa.cc helpers are
+exposed through the seam for it. That is a real coupling and it is
+recorded here rather than papered over -- `P_prim_period` and
+`P_prim_make` genuinely construct closures and CreationSets, so a
+primitive table that never touches contour construction is not achievable
+by moving code. It would need those primitives to stop doing two things.
+
+### Where it ended up
+
+| file | lines | |
+| --- | ---: | --- |
+| `fa.cc` | 12,789 | contour identity, the split ladder, demand/confluence, representation, the pass driver |
+| `fa_debug.cc` | 2,197 | the diagnostics |
+| `fa_flags.cc` | 974 | the levers and their measurements |
+| `fa_prims.cc` | 615 | what each primitive does to types |
+| `fa_lattice.cc` | 371 | the AType algebra |
+| `fa_internal.h` | 172 | the seam |
+| `fa_census.h` | 87 | the counters |
+| `fa_census.cc` | 10 | |
+
+### Verification, all five steps
+
+Nothing here may change behaviour, and it did not:
+
+- **30 diagnostic streams byte-identical** to the pre-split binary --
+  ten `IFA_DBG_*` flags across `sieve`, `chess` and `dijkstra`.
+- **Emitted C byte-identical** on `sieve`, `chess`, `dijkstra`, `sha`,
+  `othello` and `nbody` -- 51,578 lines of generated code, differing only
+  in the `#include` path of the runtime header, which is the tree root.
+  This is the check that matters for step 5, since the prim transfer
+  functions decide types and types decide codegen.
+- `make test` green after every step: 58/0 unit, 16 IR phases 0 failed
+  with the 2 known, 318 passed / 0 failed on both backends.

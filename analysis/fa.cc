@@ -5,6 +5,7 @@
 #include <set>
 #include <vector>
 #include "fa.h"
+#include "fa_flags.h"
 #include "fa_census.h"
 #include "ast.h"
 #include "builtin.h"
@@ -317,45 +318,7 @@ static void propagate_out_change(AVar *v) {
   for (AVar *vv : fwd) update_in(vv, v->out);
 }
 
-// Issue 025 numeric unification: map every numeric CS of a type
-// other than `w` to `w` -- constants to the coerced constant of `w`
-// (0 -> 0.0, value-preserving, free at compile time), non-constant
-// numerics to abstract `w` (the runtime value converts at the
-// assignment: C's conversion-on-assignment; verified for the LLVM
-// path by the regression tests). Applied to an AVar's out when
-// av->num_coerce is set (see fa.h). Element-wise, so it is
-// monotone: as `t` grows the result only grows -- required for use
-// inside the fixpoint. Mapping the abstract narrows too (not just
-// constants) matters even for constant-only programs: `in` keeps
-// the original int constant, and once the loop's folded constants
-// exceed num_constants_per_variable, type_cannonicalize's cap-strip
-// rebuilds `in` with every constant's BASE type -- resurrecting an
-// abstract int64 from the already-coerced-away constant.
-static AType *type_coerce_numeric_constants(AType *t, Sym *w) {
-  AType *r = t->coerce_map.get(w);
-  if (r) return r;
-  Vec<CreationSet *> css;
-  int changed = 0;
-  for (CreationSet *cs : t->sorted) {
-    Sym *ct = cs->sym->type;
-    if (ct && ct->num_kind && ct != w) {
-      if (cs->sym->is_constant) {
-        Immediate to;
-        to.const_kind = w->num_kind;
-        to.num_index = w->num_index;
-        Immediate from = cs->sym->imm;
-        coerce_immediate(&from, &to);
-        css.set_add(make_abstract_type(imm_constant(to, w))->v[0]);
-      } else
-        css.set_add(make_abstract_type(w)->v[0]);
-      changed = 1;
-    } else
-      css.set_add(cs);
-  }
-  r = changed ? make_AType(css) : t;
-  t->coerce_map.put(w, r);
-  return r;
-}
+
 
 void update_in(AVar *v, AType *t) {
   AType *tt = type_union(v->in, t);
@@ -428,65 +391,24 @@ void flow_vars_assign(AVar *rhs, AVar *lhs) {
   if (lhs->lvalue) flow_var_to_var(rhs, lhs->lvalue);
 }
 
-static int cselem_enabled();  // ifa/issues/101, defined with the other flags
 
-static int csdcpa1_enabled();     // ifa/128: one CreationSet per sym, ditto
-static int csmold_enabled();  // ifa/issues/101, ditto
 static bool cs_elem_irrepresentable(CreationSet *cs);  // ifa/133: defined with route 4
 // ifa/133: turn an ELEMENT demand into a demand to split the CreationSet by
 // SETTERS. Route 4 already takes the element demand but partitions by
 // assign-set signature; split_css partitions by who WRITES, which is the
 // distinction an irrepresentable element names. Its candidates came only
 // from setter confluences, so the demand never reached it.
-static int elemsetter_enabled();
-static int eslineage_enabled();   // ifa/133: durable ES split lineage, ditto
-// ifa/148: PYC_SPLITEDGES2=1 -- stage 5's per-CreationSet fan becomes a
-// two-group split. See the comment at the use.
-static int splitedges2_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_SPLITEDGES2"); e = v ? atoi(v) : 0; }
-  return e;
-}
 
-// ifa/148: PYC_FILTEREQ=1 -- filtered-contour reuse requires matching
-// filters. See the comment at the use.
-static int filtereq_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_FILTEREQ"); e = v ? atoi(v) : 0; }
-  return e;
-}
 
-// ifa/148: PYC_ESPATH=1 -- split the whole EntrySet path to a confluence
-// in one pass, instead of one contour per pass. See the comment at the use.
-static int espath_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_ESPATH"); e = v ? atoi(v) : 0; }
-  return e;
-}
 
-// ifa/129: PYC_ESDEFS1=1 -- a violation on a single-creation-point
-// CreationSet splits the contour that makes its site occur once. See the
-// comment at the use.
-static int esdefs1_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_ESDEFS1"); e = v ? atoi(v) : 0; }
-  return e;
-}
 
-static int violcs_enabled();      // ifa/133: route a violation's CSs to route 4
-// ifa/146 E: PYC_ESRECV=1 -- a violation inside a contour makes that
-// contour's RECEIVER an imprecision. See the comment at the use.
-static int esrecv_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_ESRECV"); e = v ? atoi(v) : 0; }
-  return e;
-}
+
+
+
+
+
 extern int viol_cs_deferred;
-static int confdemand_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_CONFDEMAND"); e = v ? atoi(v) : 0; }
-  return e;
-}
+
 
 // ifa/133 (author, 2026-09-09): "there should be no conflict if violations
 // and dynamic dispatch are the demand. that is the precision which matters
@@ -1140,315 +1062,22 @@ Lfound:
   return cs;
 }
 
-//  all float combos become doubles
-//  all signed/unsigned combos become signed
-//  all int combos below 32 bits become signed 32 bits, above become signed 64
-//  bits
-Sym *coerce_num(Sym *a, Sym *b) {
-  if (a == b) return a;
-  if (a == sym_string || b == sym_string) return sym_string;
-  if (a->num_kind == b->num_kind) {
-    if (a->num_index > b->num_index)
-      return a;
-    else
-      return b;
-  }
-  if (b->num_kind == IF1_NUM_KIND_FLOAT) {
-    Sym *t = b;
-    b = a;
-    a = t;
-  }
-  if (b->num_kind == IF1_NUM_KIND_COMPLEX) {
-    Sym *t = b;
-    b = a;
-    a = t;
-  }
-  // Survey B2: these lookups used to index the precision tables by
-  // num_kind (the KIND enum, 0..4) instead of num_index, which made
-  // every int operand read a precision of 8 or 16 -- so the
-  // "does the int fit the float?" test always said yes, the widening
-  // branches were dead, and (had they been reachable) the wide-int
-  // case returned the NARROW float. Now: index by num_index, and a
-  // >=32-bit int that doesn't fit widens to the 64-bit float/complex.
-  if (a->num_kind == IF1_NUM_KIND_COMPLEX) {
-    if (b->num_kind == IF1_NUM_KIND_FLOAT) {
-      if (a->num_index > b->num_index) return a;
-      return if1->complex_types[b->num_index];
-    }
-    if (int_type_precision[b->num_index] <= float_type_precision[a->num_index]) return a;
-    if (int_type_precision[b->num_index] >= 32) return sym_complex64;
-    return sym_complex32;
-  }
-  if (a->num_kind == IF1_NUM_KIND_FLOAT) {
-    if (int_type_precision[b->num_index] <= float_type_precision[a->num_index]) return a;
-    if (int_type_precision[b->num_index] >= 32) return sym_float64;
-    return sym_float32;
-  }
-  // mixed signed and unsigned
-  if (a->num_index >= IF1_INT_TYPE_64 || b->num_index >= IF1_INT_TYPE_64)
-    return sym_int64;
-  else if (a->num_index >= IF1_INT_TYPE_32 || b->num_index >= IF1_INT_TYPE_32)
-    return sym_int32;
-  else if (a->num_index >= IF1_INT_TYPE_16 || b->num_index >= IF1_INT_TYPE_16)
-    return sym_int16;
-  else if (a->num_index >= IF1_INT_TYPE_8 || b->num_index >= IF1_INT_TYPE_8)
-    return sym_int8;
-  return sym_bool;
-}
-
-AType *type_num_fold(Prim *p, AType *a, AType *b) {
-  (void)p;
-  p = 0;  // for now
-  a = type_intersection(a, fa->type_world.anynum_kind);
-  b = type_intersection(b, fa->type_world.anynum_kind);
-  ATypeFold f(p, a, b), *ff;
-  if ((ff = fa->type_world.type_fold_cache.get(&f))) return ff->result;
-  AType *r = new AType();
-  for (CreationSet *acs : a->sorted) {
-    Sym *atype = acs->sym->type;
-    for (CreationSet *bcs : b->sorted) {
-      Sym *btype = bcs->sym->type;
-      r->set_add(coerce_num(atype, btype)->abstract_type->v[0]);
-    }
-  }
-  r = type_cannonicalize(r);
-  fa->type_world.type_fold_cache.put(new ATypeFold(p, a, b, r));
-  return r;
-}
-
-void qsort_pointers(void **left, void **right) {
-Lagain:
-  if (right - left < 5) {
-    for (void **y = right - 1; y > left; y--) {
-      for (void **x = left; x < y; x++) {
-        if (x[0] > x[1]) {
-          void *t = x[0];
-          x[0] = x[1];
-          x[1] = t;
-        }
-      }
-    }
-  } else {
-    void **i = left + 1, **j = right - 1, *x = *left;
-    for (;;) {
-      while (x < *j) j--;
-      while (i < j && *i < x) i++;
-      if (i >= j) break;
-      void *t = *i;
-      *i = *j;
-      *j = t;
-      i++;
-      j--;
-    }
-    if (j == right - 1) {
-      *left = *(right - 1);
-      *(right - 1) = x;
-      right--;
-      goto Lagain;
-    }
-    if (left < j) qsort_pointers(left, j + 1);
-    if (j + 2 < right) qsort_pointers(j + 1, right);
-  }
-}
 
 
-AType *type_cannonicalize(AType *t) {
-  assert(!t->sorted.n);
-  assert(!t->union_map.n);
-  assert(!t->intersection_map.n);
-  int consts = 0, rebuild = 0, nulls = 0;
-  Vec<CreationSet *> nonconsts;
-  CreationSet *nil_cs = nullptr;  // issue 060 -- decided after the loop
-  for (CreationSet *cs : *t) if (cs) {
-    // strip out constants if the base type is included
-    CreationSet *base_cs = nullptr;
-    if (cs->sym->is_constant || (cs->sym->type->num_kind && cs->sym != cs->sym->type))
-      base_cs = cs->sym->type->abstract_type->v[0];
-    else if (cs->sym->type_kind == Type_TAGGED)
-      base_cs = cs->sym->type->specializes[0]->abstract_type->v[0];
-    if (base_cs) {
-      if (t->set_in(base_cs)) {
-        rebuild = 1;
-        continue;
-      }
-      consts++;
-      nonconsts.set_add(base_cs);
-    } else {
-      if (!cs->sym->is_unique_type)  // e.g. nil, void, or unknown
-        nonconsts.set_add(cs);
-      else if (cs->sym->type == sym_nil_type)
-        nil_cs = cs;  // issue 060: keep-or-strip decided after the loop
-      else
-        nulls = 1;  // void / unknown: always stripped from ->type
-    }
-    t->sorted.add(cs);
-  }
-  // issue 060: nil_type (None) is normally stripped from the ->type
-  // projection (is_unique_type), so a pointer-shaped `T | None` union
-  // stays a single clone -- None is a null pointer there, unambiguous,
-  // and a frontend may sanction that merge (pyc does). But IFA's core
-  // discipline is to split incompatible types, and None IS
-  // incompatible with a raw scalar (int/bool/float): under the unboxed
-  // representation they share the zero bit pattern, so a shared clone
-  // literally cannot tell `None` from `0`/`False` (issue 060). Keep nil
-  // in ->type whenever the union also carries a num_kind scalar, so the
-  // type-splitter puts the None value in its own contour instead of
-  // coercing it to `(scalar)NULL`.
-  if (nil_cs) {
-    bool has_scalar = false;
-    for (CreationSet *c : nonconsts)
-      if (c && c->sym->type && c->sym->type->num_kind) { has_scalar = true; break; }
-    if (has_scalar)
-      nonconsts.set_add(nil_cs);  // keep nil in ->type (no nulls: it is not stripped)
-    else
-      nulls = 1;  // pointer / other: strip nil as before
-  }
-  // PROBE (PYC_CONSTCAP): raise the per-variable constant cap. Default is
-  // fa->num_constants_per_variable (1), i.e. an AType holding two constants
-  // is rebuilt from their BASE types and the constants are gone -- which is
-  // also what stops `type_num_fold`'s constant fold, since that needs each
-  // operand to be a SINGLE CreationSet carrying an immediate.
-  static int constcap = -2;
-  if (constcap == -2) { cchar *v = getenv("PYC_CONSTCAP"); constcap = v ? atoi(v) : -1; }
-  const int cap = constcap >= 0 ? constcap : fa->num_constants_per_variable;
-  if (consts > cap) {
-    rebuild = 1;
-    ++census.fa_cap_strips;  // ifa/131 step 1: does the cap-strip fire at all?
-  }
-  if (rebuild) {
-    t->sorted.clear();
-    t->sorted.append(nonconsts);
-    t->clear();
-    t->set_union(t->sorted);
-  }
-  if (t->sorted.n > 1) qsort_by_id(t->sorted);
-  unsigned int h = 0;
-  // Accumulate (survey B1): `h =` here discarded all but the last
-  // element, collapsing the hash-cons table's distribution to
-  // last-element groups. Position sensitivity comes from the
-  // per-index prime.
-  for (int i = 0; i < t->sorted.n; i++) h += (uint)(intptr_t)t->sorted[i] * open_hash_primes[i % 256];
-  t->hash = h ? h : h + 1;  // 0 is empty
-  AType *tt = fa->type_world.cannonical_atypes.put(t);
-  if (!tt) tt = t;
-  // compute "type" (without constants)
-  if (nonconsts.n) {
-    if (nulls || consts)
-      tt->type = make_AType(nonconsts);
-    else
-      tt->type = tt;
-  } else
-    tt->type = fa->type_world.bottom_type;
-  return tt;
-}
 
-AType *type_union(AType *a, AType *b) {
-  AType *r;
-  if ((r = a->union_map.get(b))) return r;
-  if (a == b || b == fa->type_world.bottom_type) {
-    r = a;
-    goto Ldone;
-  }
-  if (a == fa->type_world.bottom_type) {
-    r = b;
-    goto Ldone;
-  }
-  {
-    AType *ab = type_diff(a, b);
-    AType *ba = type_diff(b, a);
-    r = new AType(*ab);
-    for (CreationSet *x : ba->sorted) r->set_add(x);
-    for (CreationSet *x : a->sorted) if (b->in(x)) r->set_add(x);
-    r = type_cannonicalize(r);
-  }
-Ldone:
-  a->union_map.put(b, r);
-  return r;
-}
 
-static inline int subsumed_by(Sym *a, Sym *b) {
-  return (a == b) || a->type == b || b->specializers.set_in(a->type);
-}
 
-AType *type_diff(AType *a, AType *b) {
-  AType *r;
-  if ((r = a->diff_map.get(b))) return r;
-  if (b == fa->type_world.bottom_type) {
-    r = a;
-    goto Ldone;
-  }
-  r = new AType();
-  for (CreationSet *aa : a->sorted) {
-    if (aa->defs.n && b->set_in(aa)) continue;
-    for (CreationSet *bb : b->sorted) if (!bb->defs.n) {
-      if (subsumed_by(aa->sym, bb->sym)) goto Lnext;
-    }
-    r->set_add(aa);
-  Lnext:;
-  }
-  r = type_cannonicalize(r);
-Ldone:
-  a->diff_map.put(b, r);
-  return r;
-}
 
-AType *type_intersection(AType *a, AType *b) {
-  // Issue 033: a null filter (a Map<MPosition*,AType*>::get() miss)
-  // means "no constraint" -- analyze_edge already treats a missing
-  // formal_filters entry this way (fa.cc, the `if (filter) {...}
-  // else filter = es_filter;` / `if (filter && ...)` guards around
-  // its own type_intersection calls). Some other callers passed a
-  // possibly-null filter straight through without that guard,
-  // crashing here on `b->sorted`/`a->sorted` when a position simply
-  // has no recorded filter yet. Treat null as the intersection
-  // identity (return the other operand) to match the established
-  // semantic instead of requiring every caller to null-check first.
-  if (!b) return a;
-  if (!a) return b;
-  AType *r;
-  if ((r = a->intersection_map.get(b))) return r;
-  if (a == b || a == fa->type_world.bottom_type || b == fa->type_world.top_type) {
-    r = a;
-    goto Ldone;
-  }
-  if (a == fa->type_world.top_type || b == fa->type_world.bottom_type) {
-    r = b;
-    goto Ldone;
-  }
-  r = new AType();
-  for (CreationSet *aa : a->sorted) {
-    for (CreationSet *bb : b->sorted) {
-      if (aa->defs.n) {
-        if (bb->defs.n) {
-          if (aa == bb) {
-            r->set_add(aa);
-            goto Lnexta;
-          }
-        } else {
-          if (subsumed_by(aa->sym, bb->sym)) {
-            r->set_add(aa);
-            goto Lnexta;
-          }
-        }
-      } else {
-        if (bb->defs.n) {
-          if (subsumed_by(bb->sym, aa->sym)) r->set_add(bb);
-        } else {
-          if (subsumed_by(aa->sym, bb->sym)) {
-            r->set_add(aa);
-            goto Lnexta;
-          } else if (subsumed_by(bb->sym, aa->sym))
-            r->set_add(bb);
-        }
-      }
-    }
-  Lnexta:;
-  }
-  r = type_cannonicalize(r);
-Ldone:
-  a->intersection_map.put(b, r);
-  return r;
-}
+
+
+
+
+
+
+
+
+
+
 
 static void fill_rets(EntrySet *es, int n) {
   es->fun->rets.fill(n);
@@ -1519,27 +1148,8 @@ static bool same_eq_classes(Setters *s, Setters *ss) {
 }
 
 
-// ifa/issues/074 (PYC_CPAMARK): swap the cartesian-product name in for the
-// mark. different_marked_args already compares two sets of CreationSets --
-// the CPA question -- but only over CSs admitted by the distance filter
-// `m - offset == x->value`. With this on, the filter is dropped and the CS
-// sets are compared directly, so the split rule becomes "which CreationSet
-// is here", with no depth term. IFA_DBG_MARKWHY predicts the effect: it is
-// exactly the `cs_same` verdicts (98% of hq2x's, 2% of the listcomp
-// repro's) that stop firing.
-static int cpa_mark_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_CPAMARK");
-    e = v ? atoi(v) : 0;
-  }
-  return e;
-}
-int mark_why_enabled() {
-  static int e = -1;
-  if (e < 0) e = getenv("IFA_DBG_MARKWHY") ? 1 : 0;
-  return e;
-}
+
+
 
 static int different_marked_args(AVar *a1, AVar *a2, int offset, AVar *basis = 0) {
   Vec<void *> marks1, marks2;
@@ -1625,7 +1235,7 @@ static Vec<CreationSet *> tc_cs_dropped;
 //
 // Per-pass, like tc_cs_dropped: an imprecise early pass must not leave a
 // standing demand behind.
-static Vec<AVar *> fieldsplit_demands;
+Vec<AVar *> fieldsplit_demands;
 
 // ifa/issues/124: `->type` strips a pure-nil AType to bottom (make_AType's
 // is_unique_type branch; the 060 carve-out that KEEPS nil only fires when
@@ -1685,7 +1295,6 @@ static int edge_type_compatible_with_edge(AEdge *e, AEdge *ee, EntrySet *es, int
   return 1;
 }
 
-static int typekey_enabled();
 
 
 static int edge_type_compatible_with_entry_set(AEdge *e, EntrySet *es, int fmark = 0) {
@@ -1831,8 +1440,6 @@ static bool edge_constant_compatible_with_entry_set(AEdge *e, EntrySet *es) {
   return true;
 }
 
-static int csm_enabled();
-static int hard_reuse_enabled();
 
 // Build `es`'s lexical display from the first edge that reaches it.
 //
@@ -2229,17 +1836,7 @@ static EntrySet *find_canonical_entry_set(AEdge *e, Map<MPosition *, AType *> &k
 // around the split route's make_entry_set call; 0 outside.
 static int cur_split_type_only = 0;
 
-// ifa/133: make the split-parent route survive the pass it was created in.
-// PYC_ESLINEAGE=0 restores the old `es->split`-only behaviour, for
-// attributing a corpus change to this clause.
-static int eslineage_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_ESLINEAGE");
-    e = v ? atoi(v) : 1;
-  }
-  return e;
-}
+
 
 static void make_entry_set(AEdge *e, Vec<AEdge *> &edges, EntrySet *split = nullptr, EntrySet *preference = 0) {
   if (e->to) {
@@ -2527,16 +2124,7 @@ static void make_kind(PNode *p, EntrySet *es, Sym *kind, AVar *container, Vec<Va
   }
 }
 
-// ifa/issues/109: record a violation when sizeof_element's receiver spans
-// CreationSets that cannot share one concrete container type.
-static int sizeof_viol_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_SIZEOF_VIOL");
-    e = v ? atoi(v) : 0;
-  }
-  return e;
-}
+
 
 void prim_make_constraints(PNode *p, EntrySet *es) {
   AVar *container = make_AVar(p->lvals[0], es);
@@ -2582,7 +2170,7 @@ static void vector_elems(int rank, PNode *p, AVar *ae, AVar *elem, AVar *contain
     flow_vars(e, elem);
 }
 
-static void prim_make_vector_constraints(PNode *p, EntrySet *es) {
+void prim_make_vector_constraints(PNode *p, EntrySet *es) {
   int base = p->rvals[0]->sym == sym_primitive ? 4 : 3;
   AVar *container = make_AVar(p->lvals[0], es);
   AVar *vector = make_AVar(p->rvals[base - 2], es);
@@ -2638,7 +2226,7 @@ static void make_closure_var(Var *v, EntrySet *es, CreationSet *cs, AVar *result
   make_closure_var(make_AVar(v, es), es, cs, result, add, i);
 }
 
-static void make_closure(AVar *result) {
+void make_closure(AVar *result) {
   assert(result->contour_is_entry_set);
   PNode *pn = result->var->def;
   CreationSet *cs = creation_point(result, sym_closure);
@@ -2648,7 +2236,7 @@ static void make_closure(AVar *result) {
   for (int i = 0; i < pn->rvals.n; i++) make_closure_var(pn->rvals[i], es, cs, result, add, i);
 }
 
-static void make_period_closure(AVar *result, AVar *a, Vec<AVar *> &args) {
+void make_period_closure(AVar *result, AVar *a, Vec<AVar *> &args) {
   assert(result->contour_is_entry_set);
   PNode *pn = result->var->def;
   CreationSet *cs = creation_point(result, sym_closure);
@@ -2906,8 +2494,7 @@ static void make_AEdges(Match *m, PNode *p, EntrySet *from, Vec<AVar *> &args) {
 }
 
 // returns 1 if any are partial, 0 if some matched and -1 if none matched
-static int all_applications(PNode *p, EntrySet *es, AVar *a0, Vec<AVar *> &args, Vec<cchar *> &names, int is_closure,
-                            Partial_kind partial, PNode *visibility_point = nullptr, Vec<CreationSet *> *closures = 0) {
+int all_applications(PNode *p, EntrySet *es, AVar *a0, Vec<AVar *> &args, Vec<cchar *> &names, int is_closure, Partial_kind partial, PNode *visibility_point, Vec<CreationSet *> *closures) {
   if (!visibility_point) visibility_point = p;
   int incomplete = -2;
   a0->arg_of_send.add(make_AVar(p->lvals[0], es));
@@ -3033,7 +2620,7 @@ static int make_rest_tuple(EntrySet *es, PNode *p, AVar *to, Vec<AVar *> &v, int
   return tvals;
 }
 
-static Var **destruct(Var **lvals, int nlvals, AVar *r, Sym *t, AVar *result, int &tvars) {
+Var **destruct(Var **lvals, int nlvals, AVar *r, Sym *t, AVar *result, int &tvars) {
   Var **lend = lvals + nlvals;
   int nlend = nlvals - t->has.n;
   EntrySet *es = (EntrySet *)result->contour;
@@ -3089,7 +2676,7 @@ static Var **destruct(Var **lvals, int nlvals, AVar *r, Sym *t, AVar *result, in
   return lend;
 }
 
-static bool get_obj_index(AVar *index, int *i, int n) {
+bool get_obj_index(AVar *index, int *i, int n) {
   if (index->var->sym->type && index->var->sym->imm_int(i) == 0) {
     *i -= fa->tuple_index_base;
     if (*i >= 0 && *i < n) return true;
@@ -3129,8 +2716,7 @@ AType *make_constant(Immediate &imm, Sym *t) {
 // cs->sym here instead would be wrong, since cs->sym is the CLASS Sym,
 // identical for the prototype and for every other instance of the same
 // class.
-static void structural_assignment(CreationSet *new_cs, CreationSet *cs, PNode *p, EntrySet *es, bool merge = false,
-                                  bool mix = false, Sym *elide_source = nullptr) {
+void structural_assignment(CreationSet *new_cs, CreationSet *cs, PNode *p, EntrySet *es, bool merge, bool mix, Sym *elide_source) {
   AVar *result = p->lvals.n ? make_AVar(p->lvals[0], es) : 0;
   AVar *elem = get_element_avar(cs);
   int o = elem ? 1 : 0;
@@ -3193,49 +2779,7 @@ static void structural_assignment(CreationSet *new_cs, CreationSet *cs, PNode *p
   }
 }
 
-// ifa/164: a `{None, T}` union at a primitive ARGUMENT is a nullable
-// pointer, not an illegal type.
-//
-// `type_cannonicalize` already strips `nil_type` from the `->type`
-// projection whenever the rest of the union is pointer-shaped -- that is
-// issue 060's settled decision, "Optional[pointer] still single-clone
-// (frontend-sanctioned merge preserved)" -- and it is the model shedskin
-// compiles the same programs under, where `None` is simply `NULL` inside
-// `str *`. Dispatch, narrowing and defaulted parameters all read that
-// projection, so none of them ever sees the None.
-//
-// This check read the RAW `out`, which made it the ONE consumer that
-// rejected a member the rest of the compiler had already agreed to
-// represent. The inconsistency showed up as OPPOSITE errors on the two
-// operand positions of one operator:
-//
-//   a[1] + "y"      None in the RECEIVER   -- compiled silently
-//   "".join(a)      None in an ARGUMENT    -- fatal, via `r + x`
-//
-// so `cipher = [None] * len(txt)` followed by a full overwrite -- a
-// correct CPython program, and the standard preallocation idiom
-// (shedskin_examples/solitaire) -- was rejected. The union is TEMPORAL
-// (the list holds None at t0 and str at t1, in one object from one
-// creation point), so no contour split separates it and none should be
-// asked for; the answer is the representation, which pyc already has.
-//
-// The `{None, scalar}` case is NOT this, and condition (3) below keeps it
-// out: 060 deliberately KEEPS nil in `->type` when the union carries a
-// num_kind scalar, because None and 0 share a bit pattern unboxed. That
-// is `genetic2` (an implicit fall-through `return None` unioned with
-// int64) and it stays an error -- see ../../issues/048.
-//
-// Deliberately NOT suppressed: an argument whose whole type is `None`.
-// A nullable pointer needs a pointee, so `"" + None` stays an error --
-// only the *mixed* union is sanctioned, and only when the non-nil part
-// is itself legal for the primitive.
-// PYC_NILARG=0 restores the old raw-`out` check, for attributing a change
-// to this rather than guessing at it (same role as PYC_STRICTVIOL).
-static int nilarg_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_NILARG"); e = v ? atoi(v) : 1; }
-  return e;
-}
+
 
 static bool nil_member_is_representable(AVar *arg, AType *diff, AType *legal) {
   if (!nilarg_enabled()) return false;
@@ -3383,567 +2927,7 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
       for (int i = 0; i < p->rvals.n; i++) make_AVar(p->rvals[i], es)->arg_of_send.add(result);
     int o = p->rvals.v[0]->sym == sym_primitive ? 2 : 1;
     // specifics
-    switch (p->prim->index) {
-      default:
-        break;
-      case P_prim_await: {
-        AVar *a = make_AVar(p->rvals[o], es);
-        flow_vars(a, result);
-        break;
-      }
-      case P_prim_yield: {
-        // issues/014: unlike P_prim_await just above (whose result
-        // flows from a real, call-graph-visible callee return value),
-        // a yield expression's result (`x` in `x = yield foo`) is
-        // whatever a *later*, call-graph-invisible `.send(v)` call
-        // delivers -- no IF1 edge connects __pyc_generator__.send()'s
-        // `value` formal to this primitive; the transfer happens only
-        // through the C++ promise's `sent` field at runtime (see
-        // pyc_c_runtime.h's yield_awaiter). Flowing the yielded
-        // value's own type into the result here (the original,
-        // `.send()`-less design, matching P_prim_await's shape) is
-        // unsound whenever a generator's yielded expression depends
-        // on its own previously-received values (`total += x; yield
-        // total`): with FA seeing no other source, the fixed point
-        // legitimately-but-uselessly collapses the whole loop to a
-        // compile-time constant seeded by the first yield, which
-        // then gets constant-folded away entirely -- silently
-        // breaking .send() (observed: co_yield of a hardcoded literal
-        // instead of the real running value). Anchor to the generic
-        // int64 type instead, the same "opaque, non-constant" trick
-        // as the coroutine-handle placeholder
-        // (_CG_generator_placeholder_return, see gen_fun_pyda) --
-        // correct for today's only supported payload shape (v1
-        // scope: int64 smuggled through void*, same as the yielded-
-        // out value itself). `a` (the yielded value) is already
-        // registered as reachable/used by the generic per-rval
-        // make_AVar/arg_of_send loop above this switch -- no need to
-        // touch it again here, unlike P_prim_await's case, since it
-        // does not feed the result's type.
-        update_gen(result, sym_int64->abstract_type);
-        break;
-      }
-      case P_prim_id: {
-        // id(x): the operand's address (or value bits for unboxed
-        // scalars) as a plain int64 -- the result's type never
-        // depends on the operand's.
-        update_gen(result, sym_int64->abstract_type);
-        break;
-      }
-      case P_prim_primitive: {
-        cchar *name = p->rvals[1]->sym->name;
-        RegisteredPrim *rp = prim_get(name);
-        if (!rp) fail("undefined primitive transfer function '%s'", name);
-        rp->tfn(p, es);
-        break;
-      }
-      case P_prim_meta_apply: {
-        cchar *file = p->code && p->code->filename() ? p->code->filename() : "<unknown>";
-        int line = p->code ? p->code->line() : 0;
-        fail("P_prim_meta_apply transfer function not implemented at %s:%d; "
-             "no live frontend emits this prim — see ifa/notes/003-cast-and-meta-apply-prims.md",
-             file, line);
-        break;
-      }
-      case P_prim_destruct: {
-        assert(p->rvals.n - o == 2);
-        int tvars = 0;
-        destruct(p->lvals.v, p->lvals.n, make_AVar(p->rvals.v[o], es), p->rvals[o + 1]->sym, result, tvars);
-        break;
-      }
-      case P_prim_vector:
-        prim_make_vector_constraints(p, es);
-        break;
-      case P_prim_index_object: {
-        AVar *vec = make_AVar(p->rvals[o], es);
-        AVar *index = make_AVar(p->rvals[o + 1], es);
-        set_container(result, vec);
-        for (CreationSet *cs : vec->out->sorted) {
-          if (sym_string->specializers.set_in(cs->sym))
-            update_gen(result, sym_char->abstract_type);
-          else if (sym_bytes->specializers.set_in(cs->sym))
-            // bytes shares str's exact char* buffer layout (see
-            // sym_bytes registration) but indexes/iterates to plain int,
-            // matching CPython's `bytes[i]` -- unlike sym_char, which is
-            // aliased to sym_string (python_ifa_sym.cc), sym_int is
-            // aliased to sym_int64, a genuine scalar.
-            update_gen(result, sym_int->abstract_type);
-          else {
-            int i;
-            bool is_const = get_obj_index(index, &i, cs->vars.n);
-            if (cs->sym->element) flow_vars(get_element_avar(cs), result);
-            if (!cs->sym->is_vector) {
-              if (is_const)
-                flow_vars(cs->vars[i], result);
-              else
-                for (AVar *av : cs->vars) flow_vars(av, result);
-            }
-          }
-        }
-        break;
-      }
-      case P_prim_set_index_object: {
-        AVar *vec = make_AVar(p->rvals[o], es);
-        AVar *index = make_AVar(p->rvals[o + 1], es);
-        AVar *val = make_AVar(p->rvals[o + 2], es);
-        fill_tvals(es->fun, p, 1);
-        AVar *tval = make_AVar(p->tvals[0], es);
-        flow_vars(val, tval);
-        set_container(tval, vec);
-        for (CreationSet *cs : vec->out->sorted) {
-          if (sym_string->specializers.set_in(cs->sym)) {
-            AType *d = type_diff(sym_char->abstract_type, val->out);
-            if (d != fa->type_world.bottom_type) type_violation(ATypeViolation_kind::MATCH, val, d, result);
-          } else {
-            int i;
-            bool is_const = get_obj_index(index, &i, cs->vars.n);
-            if (cs->sym->is_vector) {
-              if (cs->sym->element) flow_vars(tval, get_element_avar(cs));
-            } else if (is_const)
-              flow_vars(tval, cs->vars[i]);
-            else {
-              if (cs->sym->element) flow_vars(tval, get_element_avar(cs));
-              for (int i = 0; i < cs->vars.n; i++) flow_vars(tval, cs->vars[i]);
-            }
-          }
-        }
-        flow_vars(val, result);
-        break;
-      }
-      case P_prim_apply: {
-        assert(p->lvals.n == 1);
-        Vec<AVar *> args;
-        Vec<cchar *> names;
-        names.add(0);
-        names.add(0);
-        AVar *fun = make_AVar(p->rvals[1], es);
-        AVar *a1 = make_AVar(p->rvals[3], es);
-        args.add(a1);
-        if (all_applications(p, es, fun, args, names, 0, (Partial_kind)p->code->partial) > 0) make_closure(result);
-        break;
-      }
-      case P_prim_period: {
-        AVar *obj = make_AVar(p->rvals[1], es);
-        AVar *selector = make_AVar(p->rvals[3], es);
-        Vec<AVar *> methods;
-        set_container(result, obj);
-        bool partial = p->code->partial != Partial_NEVER;
-        for (CreationSet *sel : selector->out->sorted) {
-          cchar *symbol = sel->sym->name;
-          if (!symbol) symbol = sel->sym->constant;
-          if (!symbol) symbol = sel->sym->imm.v_string;
-          assert(symbol);
-          for (CreationSet *cs : obj->out->sorted) {
-            AVar *iv = cs->var_map.get(symbol);
-            if (iv) {
-              iv->arg_of_send.add(result);
-              if (partial) {
-                // Function-valued fields split two ways, following
-                // Python's actual rule -- a function found on the
-                // CLASS binds as a method, a function stored as an
-                // INSTANCE attribute does not (issue 025
-                // first-class-function-in-field):
-                //  - METHOD-like values keep the historical behavior
-                //    (filtered out of the direct flow, re-routed
-                //    through a method-binding partial application):
-                //    real methods and capturing-def carriers
-                //    (Fun->sym->self set), and class-body lambdas /
-                //    defs (Sym::in is a class, i.e. non-fun) -- pyc
-                //    stores class attributes as prototype fields, so
-                //    definition scope is the FA-visible equivalent of
-                //    "found on the class".
-                //  - BARE function values (a module- or
-                //    function-level def stored in an instance
-                //    attribute: fun set, no self, in absent or a
-                //    function) flow through UNBOUND --
-                //    `self.cf(3, 1)` calls cf(3, 1), not
-                //    cf(self, 3, 1). Previously they were bound too,
-                //    so any call through such a field dispatched with
-                //    the object inserted as the first argument and
-                //    matched nothing (timsort's self.comparefn).
-                // Mixed fields (both kinds) conservatively flow both
-                // forms; permits and bindings only ever grow, so the
-                // fixpoint stays monotone.
-                AType *fnpart = type_intersection(iv->out, fa->type_world.function_type);
-                bool all_bare = fnpart != fa->type_world.bottom_type;
-                for (CreationSet *fcs : fnpart->sorted) {
-                  Fun *ff = fcs->sym->fun;
-                  if (!ff) { all_bare = false; break; }
-                  // issue 027 feature: @staticmethod lives in a class
-                  // scope like a method but takes NO receiver -- reads
-                  // through an instance must flow the raw function
-                  // value unbound, overriding the class-scope test.
-                  if (ff->sym->is_static_method) continue;
-                  if (ff->sym->self || (ff->sym->in && !ff->sym->in->is_fun)) { all_bare = false; break; }
-                }
-                if (all_bare) {
-                  flow_var_type_permit(result, iv->out);
-                  flow_vars(iv, result);
-                } else {
-                  flow_var_type_permit(result, type_diff(iv->out, fa->type_world.function_type));
-                  flow_vars(iv, result);
-                  if (fnpart != fa->type_world.bottom_type) methods.add(iv);
-                }
-              } else
-                flow_vars(iv, result);
-            }
-          }
-        }
-        for (AVar *x : methods) {
-          Vec<AVar *> args;
-          Vec<cchar *> names;
-          names.add(0);
-          names.add(0);
-          args.add(obj);
-          if (all_applications(p, es, x, args, names, 0, (Partial_kind)p->code->partial) > 0)
-            make_period_closure(result, x, args);
-        }
-        {
-          Vec<AVar *> args;
-          Vec<cchar *> names;
-          names.add(0);
-          names.add(0);
-          args.add(obj);
-          if (all_applications(p, es, selector, args, names, 0, (Partial_kind)p->code->partial) > 0)
-            make_period_closure(result, selector, args);
-        }
-        break;
-      }
-      case P_prim_setter: {
-        AVar *obj = make_AVar(p->rvals[1], es);
-        AVar *selector = make_AVar(p->rvals[3], es);
-        AVar *val = make_AVar(p->rvals[4], es);
-        fill_tvals(es->fun, p, 1);
-        AVar *tval = make_AVar(p->tvals[0], es);
-        flow_vars(val, tval);
-        set_container(tval, obj);
-        for (CreationSet *sel : selector->out->sorted) {
-          cchar *symbol = sel->sym->name;
-          if (!symbol) symbol = sel->sym->constant;
-          if (!symbol) symbol = sel->sym->imm.v_string;
-          assert(symbol);
-          // issues/128: is a union-receiver write SEPARABLE? Count members
-          // that already have the field against those that do not. MIXED is a
-          // demand whose partition is exactly 2 and is named by the demand
-          // itself; ALL-MISS is not separable this way. Measured first.
-          if (getenv("IFA_DBG_FIELDSPLIT") && obj->out->sorted.n > 1) {
-            int have = 0, miss = 0;
-            for (CreationSet *c2 : obj->out->sorted) { if (c2->var_map.get(symbol)) have++; else miss++; }
-            fprintf(stderr, "[fieldsplit] %s n=%d have=%d miss=%d '%s'\n",
-                    (have && miss) ? "MIXED" : (have ? "ALL-HAVE" : "ALL-MISS"),
-                    obj->out->sorted.n, have, miss, symbol);
-          }
-          // issues/128: MIXED (some members have the field, some do not) was
-          // TRIED as "do not record, it is a demand not evidence". It fixes
-          // `chull` completely -- each class ends with exactly its own five
-          // fields, matching shedskin -- and STILL BREAKS `richards` with
-          // `no matching function for call`. So a MIXED write can be the
-          // legitimate first write of a field onto a class that really has
-          // it, and dropping it is never sound.
-          //
-          // That is the measurement that makes the SPLIT mandatory rather
-          // than an optimisation: the receiver has to be separated so the
-          // write lands on the right class. Reverted; the classification
-          // survives only as the IFA_DBG_FIELDSPLIT diagnostic above.
-          if (obj->out->sorted.n > 1 && obj->contour_is_entry_set) {
-            int fh = 0, fm = 0;
-            for (CreationSet *c2 : obj->out->sorted) { if (c2->var_map.get(symbol)) fh++; else fm++; }
-            if (fh && fm) fieldsplit_demands.set_add(obj);
-          }
-          for (CreationSet *cs : obj->out->sorted) {
-            AVar *iv = cs->var_map.get(symbol);
-            if (iv)
-              flow_vars(tval, iv);
-            else {
-              // ifa/135: WHICH write promotes a field onto WHICH classes.
-              // `obj->out` holding more than one class here is the whole
-              // cross-class-promotion problem: every class in the union
-              // acquires every other's fields, at whatever slot each has
-              // reached, and a later union read blind-casts across the
-              // mismatched layouts. This names the write, so the union can
-              // be traced to its source instead of guessed at.
-              if (getenv("IFA_DBG_PROMOTE") && obj->out->sorted.n > 1) {
-                fprintf(stderr, "[promote] p=%d fun=%s write '%s' onto %d classes:", analysis_pass,
-                        (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?", symbol,
-                        obj->out->sorted.n);
-                for (CreationSet *c2 : obj->out->sorted)
-                  if (c2 && c2->sym) fprintf(stderr, " %s#%d", c2->sym->name ? c2->sym->name : "?", c2->id);
-                fprintf(stderr, "\n");
-              }
-              cs->unknown_vars.add(symbol);
-            }
-          }
-        }
-        flow_vars(val, result);
-        break;
-      }
-      case P_prim_assign: {
-        AVar *lhs = make_AVar(p->rvals[1], es);
-        AVar *rhs = make_AVar(p->rvals[3], es);
-        for (CreationSet *cs : lhs->out->sorted) {
-          if (cs->sym == sym_ref) {
-            assert(cs->vars.n);
-            AVar *av = cs->vars[0];
-            flow_vars(rhs, av);
-            flow_vars(rhs, result);
-          } else {
-            if (sym_anynum->specializers.set_in(cs->sym->type))
-              update_in(result, cs->sym->type->abstract_type);
-            else
-              type_violation(ATypeViolation_kind::MATCH, lhs, make_AType(cs), result);
-          }
-        }
-        break;
-      }
-      case P_prim_deref: {
-        AVar *ref = make_AVar(p->rvals[2], es);
-        set_container(result, ref);
-        for (CreationSet *cs : ref->out->sorted) {
-          AVar *av = cs->vars[0];
-          flow_vars(av, result);
-        }
-        break;
-      }
-      case P_prim_new: {
-        AVar *thing = make_AVar(p->rvals[p->rvals.n - 1], es);
-        for (CreationSet *cs : thing->out->sorted) creation_point(result, cs->sym->meta_type);  // recover original type
-        break;
-      }
-      // NB P_prim_copy result CSs must stay FRESH (creation_point),
-      // not shared with the source: an experiment sharing them
-      // (update_gen(result, thing->out)) created a within-pass
-      // divergence for self-referential deepcopy -- each copy
-      // contour's result list unioned back into the SOURCE CS's
-      // field, which re-widened the copier's own input and spawned
-      // another contour, unboundedly (genetic2's TreeNode). The
-      // same-class layout agreement the sharing was after is
-      // guaranteed by determine_layouts' canonical field ordering
-      // instead (clone.cc).
-      case P_prim_copy:
-      case P_prim_clone_vector:
-      case P_prim_clone: {
-        AVar *thing = make_AVar(p->rvals[o], es);
-        // issue 078 (Option D): the literal Sym referenced at the
-        // clone-source operand -- for the __new__-synthesized
-        // clone(proto, t), this is always cls->self, the class's own
-        // prototype; for any other clone() call it's whatever Sym the
-        // source expression resolves to (never a class prototype, per
-        // structural_assignment's comment above). Passed through so
-        // the per-field copy can consult its clone_elides_fields.
-        Sym *clone_source_sym = p->rvals[o]->sym;
-        for (CreationSet *cs : thing->out->sorted) {
-          CreationSet *new_cs = creation_point(result, cs->sym);
-          structural_assignment(new_cs, cs, p, es, false, false, clone_source_sym);
-        }
-        break;
-      }
-      case P_prim_is: {
-        // Real identity comparison.  Lattice: if the two
-        // operand AVars' CS-sets are disjoint, the result
-        // is statically False.  Otherwise it's polymorphic
-        // bool — we can't prove True or False at compile
-        // time (two AVars sharing a CS might or might not
-        // hold the same instance at runtime).
-        AVar *thing1 = make_AVar(p->rvals[p->rvals.n - 2], es);
-        AVar *thing2 = make_AVar(p->rvals[p->rvals.n - 1], es);
-        bool overlap = false;
-        for (CreationSet *cs1 : thing1->out->sorted) {
-          for (CreationSet *cs2 : thing2->out->sorted) {
-            if (cs1 == cs2) { overlap = true; break; }
-          }
-          if (overlap) break;
-        }
-        AType *rtype = overlap ? fa->type_world.bool_type : fa->type_world.false_type;
-        update_gen(result, rtype);
-        break;
-      }
-      case P_prim_isinstance: {
-        AVar *thing1 = make_AVar(p->rvals[p->rvals.n - 2], es);  // instance
-        AVar *thing2 = make_AVar(p->rvals[p->rvals.n - 1], es);  // type
-        // Give the frontend first refusal: it may recognize this
-        // specific check as foldable via language/runtime-specific
-        // knowledge FA structurally can't derive on its own (see
-        // IFACallbacks::provably_constant_isinstance, ifa.h, for the
-        // full rationale and the conservatism contract). Default
-        // (nullptr) falls straight through to the normal
-        // CreationSet-intersection logic below, unchanged.
-        if (AType *forced = if1->callback->provably_constant_isinstance(thing1, es, p)) {
-          update_gen(result, forced);
-          break;
-        }
-        AType *rtype = fa->type_world.bottom_type;
-        for (CreationSet *cs1 : thing1->out->sorted) {
-          for (CreationSet *cs2 : thing2->out->sorted) {
-            if (cs2->sym->meta_type && cs2->sym->meta_type->implementors.in(cs1->sym->type))
-              rtype = type_union(rtype, fa->type_world.true_type);
-            else
-              rtype = type_union(rtype, fa->type_world.false_type);
-          }
-        }
-        update_gen(result, rtype);
-        break;
-      }
-      case P_prim_issubclass: {
-        AVar *thing1 = make_AVar(p->rvals[p->rvals.n - 2], es);
-        AVar *thing2 = make_AVar(p->rvals[p->rvals.n - 1], es);
-        AType *rtype = fa->type_world.bottom_type;
-        for (CreationSet *cs1 : thing1->out->sorted) {
-          for (CreationSet *cs2 : thing2->out->sorted) {
-            if (cs2->sym->type->implementors.in(cs1->sym->type))
-              rtype = type_union(rtype, fa->type_world.true_type);
-            else
-              rtype = type_union(rtype, fa->type_world.false_type);
-          }
-        }
-        update_gen(result, rtype);
-        break;
-      }
-      case P_prim_merge: {
-        AVar *thing1 = make_AVar(p->rvals[p->rvals.n - 2], es);
-        AVar *thing2 = make_AVar(p->rvals[p->rvals.n - 1], es);
-        for (CreationSet *cs : thing1->out->sorted) {
-          CreationSet *new_cs = creation_point(result, cs->sym);
-          structural_assignment(new_cs, cs, p, es, true);
-          for (CreationSet *cs2 : thing2->out->sorted) {
-            if (cs->sym == cs2->sym) structural_assignment(new_cs, cs2, p, es, true);
-          }
-        }
-        break;
-      }
-      case P_prim_merge_in: {
-        AVar *thing1 = make_AVar(p->rvals[p->rvals.n - 2], es);
-        AVar *thing2 = make_AVar(p->rvals[p->rvals.n - 1], es);
-        for (CreationSet *cs : thing1->out->sorted) {
-          for (CreationSet *cs2 : thing2->out->sorted) {
-            if (cs->sym == cs2->sym) structural_assignment(cs, cs2, p, es, true, true);
-          }
-        }
-        flow_vars(thing1, result);
-        break;
-      }
-      case P_prim_coerce: {
-        Sym *s = unalias_type(p->rvals[p->rvals.n - 2]->sym);
-        assert(s->abstract_type);
-        AVar *rhs = make_AVar(p->rvals[p->rvals.n - 1], es);
-        Vec<CreationSet *> css;
-        // Compare against the type operand at its positional slot
-        // (n-2), not rvals[1] -- in the @primitive-prefixed form
-        // rvals[1] is the prim-name symbol and the filter could
-        // never match (survey S5).
-        for (CreationSet *cs : rhs->out->sorted) if (cs->sym->type == p->rvals[p->rvals.n - 2]->sym) css.set_add(cs);
-        if (css.n)
-          update_gen(result, make_AType(css));
-        else if (s->type->num_kind || s->type == sym_string || s->type->is_symbol)
-          update_gen(result, s->abstract_type);
-        break;
-      }
-      case P_prim_len: {
-        AVar *t = make_AVar(p->rvals[2], es);
-        AType *rtype = fa->type_world.bottom_type;
-        for (CreationSet *cs : t->out->sorted) {
-          AVar *elem = get_element_avar(cs);
-          if (elem) elem->arg_of_send.add(result);
-          // issues/114: a CreationSet with NO DEFS was not built by any
-          // creation site in this program -- it is abstract, or
-          // synthesised for the result of an opaque `__pyc_c_call__`
-          // (a generator's value channel is exactly that). Its
-          // `vars.n` is 0 because nothing ever filled it, NOT because
-          // the container is empty, so folding len() to 0 is simply
-          // wrong. Measured: a tuple arriving through a generator had
-          // correct contents -- `len(x)` and `x[0]` were right at the
-          // use site -- but inside tuple::__eq__, whose formal carries
-          // the synthesised CS, `len(self)` folded to 0, so the very
-          // first `n != len(t)` check returned False and `x == (1, 2)`
-          // was silently False for a tuple that WAS (1, 2).
-          if (cs->no_static_arity || !cs->defs.n || (elem && elem->out != fa->type_world.bottom_type) ||
-              sym_string->specializers.set_in(cs->sym) || sym_bytes->specializers.set_in(cs->sym))
-            rtype = type_union(rtype, fa->type_world.size_type);
-          else
-            rtype = type_union(rtype, make_size_constant_type(cs->vars.n));
-        }
-        update_gen(result, rtype);
-        break;
-      }
-      case P_prim_sizeof: {
-        AVar *t = make_AVar(p->rvals[2], es);
-        AType *rtype = fa->type_world.bottom_type;
-        for (CreationSet *cs : t->out->sorted) {
-          if (cs->sym->size)
-            rtype = type_union(rtype, make_size_constant_type(cs->sym->size));
-          else
-            rtype = type_union(rtype, fa->type_world.size_type);
-        }
-        update_gen(result, rtype);
-        break;
-      }
-      case P_prim_sizeof_element: {
-        AVar *t = make_AVar(p->rvals[2], es);
-        AType *rtype = fa->type_world.bottom_type;
-        // ifa/issues/109: sizeof_element needs ONE container layout. If
-        // the receiver spans CreationSets that will become distinct
-        // concrete types -- different sym, or different arity, which for
-        // a record-shaped tuple means a different type -- their sum has
-        // no `element` and codegen fails with "sizeof_element of
-        // non-container type". FA used to just union the sizes and say
-        // nothing, so the splitter had no reason to separate them.
-        //
-        // Recording a violation here is what makes the EXISTING backward
-        // machinery do the work: split_for_violations (stage 5) splits
-        // the offending AVar, and that split propagates back to the
-        // caller's contour automatically. No annotation, no special case
-        // in codegen -- FA simply has to know the constraint.
-        if (sizeof_viol_enabled() && t->out->sorted.n > 1) {
-          Sym *sym0 = nullptr;
-          int arity0 = -1;
-          bool uniform = true;
-          for (CreationSet *cs : t->out->sorted) {
-            if (!cs->sym) continue;
-            if (!sym0) { sym0 = cs->sym; arity0 = cs->vars.n; }
-            else if (sym0 != cs->sym || arity0 != cs->vars.n) { uniform = false; break; }
-          }
-          if (!uniform) type_violation(ATypeViolation_kind::BOXING, t, t->out, nullptr, nullptr);
-        }
-        for (CreationSet *cs : t->out->sorted) {
-          AVar *elem = get_element_avar(cs);
-          if (elem) {
-            for (CreationSet *cs2 : elem->out->sorted) {
-              if (cs2->sym->size)
-                rtype = type_union(rtype, make_size_constant_type(cs2->sym->size));
-              else
-                rtype = type_union(rtype, fa->type_world.size_type);
-            }
-          }
-        }
-        update_gen(result, rtype);
-        break;
-      }
-      case P_prim_typeof: {
-        AVar *t = make_AVar(p->rvals[2], es);
-        AType *rtype = fa->type_world.bottom_type;
-        for (CreationSet *cs : t->out->sorted) rtype = type_union(rtype, make_abstract_type(cs->sym->meta_type));
-        update_gen(result, rtype);
-        break;
-      }
-      case P_prim_typeof_element: {
-        AVar *t = make_AVar(p->rvals[2], es);
-        AType *rtype = fa->type_world.bottom_type;
-        for (CreationSet *cs : t->out->sorted) {
-          AVar *elem = get_element_avar(cs);
-          if (elem)
-            for (CreationSet *cs2 : elem->out->sorted) rtype = type_union(rtype, make_abstract_type(cs2->sym->meta_type));
-        }
-        update_gen(result, rtype);
-        break;
-      }
-      case P_prim_cast: {
-        cchar *file = p->code && p->code->filename() ? p->code->filename() : "<unknown>";
-        int line = p->code ? p->code->line() : 0;
-        fail("P_prim_cast transfer function not implemented at %s:%d; "
-             "no live frontend emits this prim — see ifa/notes/003-cast-and-meta-apply-prims.md",
-             file, line);
-        break;
-      }
-    }
+    add_prim_send_constraints(p, es, result, o);
   }
 }
 
@@ -4887,13 +3871,7 @@ bool is_uninformative_violation(ATypeViolation *v) {
   return !v->type->sorted.n;
 }
 
-// ifa/158: every type violation except MAYBE_UNBOUND is fatal, in every mode.
-// PYC_STRICTVIOL=0 restores the pre-2026-09-17 severity.
-int strictviol_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_STRICTVIOL"); e = v ? atoi(v) : 1; }
-  return e;
-}
+
 
 
 static cchar *fn(cchar *s) {
@@ -5497,11 +4475,7 @@ SplitDecision *FA::ledger_add_cs(uint sig, CreationSet *product) {
   return existing ? existing : d;
 }
 
-static int confnil_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_CONFNIL"); e = v ? atoi(v) : 0; }
-  return e;
-}
+
 
 // ifa/157 PROBE (IFA_DBG_CONFLEVEL) -- NOT a lever. It counts; it changes
 // nothing.
@@ -5903,11 +4877,7 @@ static bool cs_slot_sig_equal(CreationSet *a, CreationSet *b) {
   return true;
 }
 
-static int splithomo_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_SPLITHOMO"); e = v ? atoi(v) : 0; }
-  return e;
-}
+
 
 // All slots the same representation class: all pointer-shaped, or all one
 // basic kind. One slot or none is trivially homogeneous.
@@ -6261,26 +5231,7 @@ static uint setter_site_signature(Vec<AEdge *> &these_edges, Fun *f) {
   return h ? h : 1;
 }
 
-// ifa/issues/101: include the return types in group_signature. 1 is the
-// historical behaviour and stays the DEFAULT; 0 drops the term.
-//
-// Dropping it was the obvious repair for the ledger cycle described at
-// the use site, and it measured EXACTLY INERT -- byte-identical
-// final_pass/violations/ess/css on go, linalg, plcfrs and sudoku5. So the
-// two cycling signatures do NOT differ in their return term, and the
-// hypothesis behind this flag is wrong: the difference is in the argument
-// term, which means linalg's 792/692 pair is most likely two distinct
-// groups SWAPPING contours rather than one group cycling. Kept as a
-// measured negative result, defaulted to the historical behaviour since
-// it buys nothing and has not been swept.
-static int gsigret_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_GSIGRET");
-    e = v ? atoi(v) : 1;
-  }
-  return e;
-}
+
 
 static uint group_signature(Vec<AEdge *> &these_edges, Fun *f) {
   uint h = 0;
@@ -6347,284 +5298,21 @@ static uint group_signature(Vec<AEdge *> &these_edges, Fun *f) {
 // display slots + non-asserting inert slots in update_display). Behind a
 // flag for the prototype/measurement.
 
-// ifa/issues/075: element-CS container-method separation (pyc's analog
-// of shedskin's func_copy-per-dcpa). 0 off (default, byte-identical to
-// baseline), 2 split (fans split_edges per (CS x display), Piece 1; the
-// demand-driven stage itself is split_container_methods_per_element_cs
-// below). 1 is reserved for a future side-effect-free dump/probe mode
-// (see 075 Piece 1) -- not yet built, treated as off.
-static int csm_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_CSM");
-    e = v ? atoi(v) : 0;
-  }
-  return e;
-}
 
-// ifa/issues/074 (detach-route growth): on the DETACH route
-// (`make_entry_set` with a non-null `split`), offer the edge an existing
-// contour when that contour is a HARD match -- `entry_set_compatibility`
-// == INT_MAX, i.e. no penalty of any kind: type-compatible, sset-
-// compatible, constant-compatible, filters admit it. `split` itself is
-// vetoed.
-//
-// Motivation: skipping the scoring path entirely on this route means a
-// detached edge is never offered an existing contour -- it takes the
-// pending/lineage route or gets a BRAND-NEW one. With the display out of
-// contour identity (issues/100) that is now the dominant growth source:
-// sudoku4/genetic2 leak an exactly steady `split-fresh=2` plus ~134/42
-// new edges for the fresh contours' bodies every pass, to the pass cap;
-// hq2x re-manufactures ~250 edges a pass the same way.
-//
-// OFF by default: it regresses 6 tests (see issues/074's 2026-08-13
-// census). Using the *soft* score here is far worse (59 failures) -- it
-// re-merges what the split just separated, 073's match_seq hazard -- so
-// only the hard match is worth carrying as an experiment. The 6 include
-// recursive_polymorphic and match_map_star, i.e. exact type identity is
-// NOT sufficient evidence that a contour is not what the split is
-// separating; the flag exists to keep investigating that.
-// 0 off (default); 1 = entry_set_compatibility == INT_MAX; 2 = that AND
-// a POSITIVE type-level match; 3 = that AND a positive CreationSet-level
-// match (see edge_type_identical_to_entry_set); 4 = LOOKUP BY DURABLE
-// TYPE KEY -- shedskin's model, where the type tuple names the contour
-// rather than being a property compatibility-tested against it. Requires
-// PYC_TYPEKEY.
-// ifa/issues/074: match compatibility against EntrySet::type_key (the
-// previous pass's CONVERGED formal types) rather than the contour's
-// momentary mid-pass accumulation. The point is durability: shedskin
-// binds a contour to a fixed type tuple and keeps that binding across
-// passes, so routing is a lookup rather than a race. Off by default.
-static int typekey_enabled() {
-  static int e = -1;
-  if (e < 0) e = getenv("PYC_TYPEKEY") ? 1 : 0;
-  return e;
-}
 
-// ifa/issues/074: canonicalize contour creation on the durable type key
-// -- at most one contour per (fun, type tuple), found by lookup and
-// created on miss, the way find_or_make_filtered_entry_set already works
-// for CS partitions. Durable keys alone (PYC_TYPEKEY) proved necessary
-// but not sufficient: they make matching stable in TIME but not unique
-// in SPACE, so two same-keyed contours still let the `x != split` veto
-// alternate. Canonicalization removes the duplicates, so there is
-// nothing to alternate between.
-//   1 = canonicalize, but never hand an edge back to the contour the
-//       splitter is detaching it FROM (conflicts logged, split honored)
-//   2 = full canonicalization: reuse even then, so a split that
-//       disagrees with the canonical key becomes a no-op
-// IFA_DBG_CANON=1 logs every conflict and prints per-pass stats.
-int canon_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_CANON");
-    e = v ? atoi(v) : 0;
-  }
-  return e;
-}
 
-// Defaults to 5 as of 2026-08-16 (was 0 -- off). Mode 5 is mode 4's
-// durable-type-key reuse on the detach route, RESTRICTED to splits whose
-// own discriminator was argument types (see cur_split_type_only).
-//
-// ifa/issues/101: the detach route (`if (!split) find_best_entry_sets`)
-// never offers a detached edge an existing contour, so every caller split
-// cascades into fresh callee contours. Measured on linalg: half its 1290
-// contours share an argument-type tuple with another, and the total
-// EXCEEDS full cartesian-product specialization (957) by 35% --
-// `__pyc_to_bool__` alone had 14 live contours with one type tuple
-// between them.
-//
-// Mode 4 (types alone) was measured and is NOT safe: it breaks sudoku5's
-// convergence outright (26 -> 273 violations) and worsens go and plcfrs,
-// because a setter- or mark-driven split can produce two contours with
-// identical argument types on purpose. Mode 5 adds exactly that
-// condition and every one of those regressions disappears.
-//
-// Corpus, 77 programs: zero exit-code changes, zero pass_limit_hit
-// changes, corpus violations 7435 -> 6399 (-13.9%), ess lower on 41
-// programs (-2.3% overall), +1.5% analysis time.
-static int hard_reuse_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_HARDREUSE");
-    e = v ? atoi(v) : 5;
-  }
-  return e;
-}
 
-// ifa/issues/074: disable mark-based splitting stages, as an
-// investigable option.
-//   0 = mark-based splitting on (pre-2026-08-14 behaviour)
-//   1 = skip MARK_TYPE (stage 2)  -- THE DEFAULT
-//   2 = also skip MARK_SETTER / MARK_SETTER_OF_SETTER (stage 4)
-// Marks exist to separate two contours that carry the SAME argument
-// types but different value origins (IFA.md §6.2, "recursion-meets-
-// polymorphism without k-CFA"). That is by construction a
-// distinction no type-tuple contour name can express -- so if
-// contours are canonicalized on their type key, mark splits are
-// unnameable. IFA_DBG_KEYSPACE=1 measures the gap they open.
-// ifa/issues/074: extend the self-product complement eviction to the
-// `v > 0` case (residual violations). See the comment at the eviction
-// site for what each mode tests.
-//
-//   0 = off: eviction only at whole-program convergence (pre-074 shape)
-//   1 = evict only the type-disjoint complement          (unsound)
-//   2 = keep the group, evict nothing                    (unsound)
-//   3,4 = durable key == the recorded partition          (never fires)
-//   5 = durable key stable across two passes: per-contour convergence
-//
-// **5 is the default.** The eviction's real precondition is that THIS
-// CONTOUR has stopped moving, which `nviol_this_pass == 0` only ever
-// approximated whole-program-wide.
-// ifa/issues/074: gate the ES ledger ROUTE on the recorded product still
-// being a compatible home for the group; =2 also refreshes an entry
-// proven stale. OFF by default, and kept only as a measured control:
-// both modes do stop the churn, but by declining a route you only mint
-// instead, so the growth comes straight back (repro ess 144 -> 279 for
-// mode 1, 257 for mode 2). PYC_SELFPROD=6 fixes the same oscillation
-// from the other end without that cost.
-// ifa/issues/101: canonicalize CONTAINER CreationSet identity on the
-// durable element type instead of the creation site x contour. Off by
-// default. See capture_elem_keys() and creation_point's Lcanon.
-//
-// 3 = ifa/issues/074: key on the RECEIVER's structural element SHAPE
-// instead (`list<list<float64>>`), which is what shedskin gets free from
-// `list<T>` being keyed on T. Off by default, and MEASURED:
-//
-//   deepcopy_recursive_nested_growth.py, guards off, ess/css by pass
-//     mode 0   0:77/599  20:175/782  40:280/997  60:385/1212
-//              80:490/1427  100:595/1642      -- dead linear, +5.25/pass
-//     mode 3   0:77/599  20:159/749  40:157/740  60:211/852
-//              80:223/877  100:207/850        -- bounded, band ~210
-//
-// That is 074's headline defect gone: the growth is UNBOUNDED at the
-// default and BOUNDED here (-62% ess, -46% css at pass 101). What is
-// left is an oscillation inside the band, which is a different and much
-// smaller problem than divergence -- but CONVERGED is still 0, and the
-// repro still does not compile.
-//
-// Not the default because of the cost: pyc suite is identical
-// (301/0/14), corpus goes from 5 failing to 9 -- kanoodle, plcfrs and
-// rdb time out and quameon fails to compile. The likely reason is in
-// cselem_shape_key: the canon map is MONOTONE and global, and the shape
-// it keys on is read LIVE on the pass the contour is created, because
-// that is the only moment creation_point is ever consulted (`cs_map`
-// answers ever after). A merge decided from an incomplete shape can
-// never be revisited, and the splitter then has to work around it. That
-// is ifa/issues/066 -- the decision is keyed per pass, not per creation
-// site -- and making the canonicalization revisitable is the next step,
-// not a wider or narrower key.
-static int cselem_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_CSELEM");
-    e = v ? atoi(v) : 0;
-  }
-  return e;
-}
 
-// ifa/issues/101: shedskin's MOLD FALLBACK. When a contour has no live
-// split parent to inherit an allocation instance from, shedskin does not
-// mint -- ifa_seed_template falls back to `gx.orig_types[node]`, the
-// allocation's instance in the dcpa=0/cpa=0 mold, i.e. the one every
-// other contour of that function uses. It therefore keeps ONE container
-// instance per allocation SITE, shared across contours, and lets `ifa()`
-// split it later when it finds a concrete imprecision -- by which time
-// the element types are known.
-//
-// pyc has no such fallback: `creation_point` mints unconditionally, so a
-// site allocates once per (site x contour) from pass 0 onward. That is
-// what makes `stereo` create 185 container CreationSets covering 2
-// element shapes on pass 0 alone.
-//
-// 1 = containers only (s->element), the DEFAULT from 2026-08-16.
-// 2 = every eligible sym; measured and rejected -- it costs plcfrs
-// dearly (violations 2232 -> 4353, ess 850 -> 1213) for a few css on
-// other programs. 0 restores the old mint-unconditionally behaviour.
-// 3 = containers only AND never for a SPLIT CHILD contour, the DEFAULT
-// from 2026-08-28 (ifa/105); see the mode-3 note at the fallback itself.
-// Measured against mode 1: pyc suite identical (300 passed / 0 failed /
-// 15 known), corpus identical program for program (the same five fail:
-// chess, go, linalg, othello3, sudoku5), and the whole bounded
-// copy-of-copy family -- four or more nested copy.deepcopy calls --
-// goes from a BOXING refusal to compiling and running correctly.
-//
-// Corpus at mode 1, 77 programs: zero exit-code changes, zero
-// pass_limit_hit changes, violations 6399 -> 4276 (-33.2%, plcfrs alone
-// 4355 -> 2232), ess and css lower on 3 and 4 programs and HIGHER ON
-// NONE, analysis time -2.8%.
-static int csmold_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_CSMOLD");
-    e = v ? atoi(v) : 3;
-  }
-  return e;
-}
 
-// ifa/129 step 4: drop the PER-SITE component from the mode-3 shape key.
-//
-// cselem_shape_key composes `v<id>|class#id|shape`. The leading `v<id>` is
-// `v->var->id` -- WHERE the value was allocated -- so the canon is keyed per
-// allocation site and the fewest contours it can ever name is the number of
-// distinct (site, class, shape) triples rather than of (class, shape) pairs.
-// Measured on the corpus: 1670 against 660, a 2.53x fragmentation, and the
-// 660 lands within 5% of `shapes` (626), the independent content census.
-// Contour identity is supposed to key on types and CS partitioning, never on
-// provenance, and `v->var->id` is provenance.
-//
-// OFF by default: it merges contours of UNRELATED allocation sites, which is
-// a bigger merge than anything mode 3 does today, and it is only safe with
-// cselem_resplit_diverged armed to take the merge back. Turn both on
-// together (PYC_CSSITELESS=1 PYC_CSRESPLIT=1) or neither.
-int cssiteless_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_CSSITELESS");
-    e = v ? atoi(v) : 0;
-  }
-  return e;
-}
 
-// ifa/128, and the architecture CLAUDE.md's goal statement describes:
-// START MERGED. One CreationSet per sym, program-wide, and it multiplies
-// ONLY by demand splitting -- `split_css` peeling off a setter-equivalence
-// group. This is shedskin's `Class.dcpa = 1` posture.
-//
-// It inverts today's dependency. Today `creation_point` mints one CS per
-// *(allocation site x contour)*, so an EntrySet split MULTIPLIES
-// CreationSets as a side effect and CS identity is decided by structure
-// before any demand test runs. Under this flag nothing about the structure
-// makes a contour: an ES split separates creation points so that a CS
-// split BECOMES POSSIBLE, which is the opposite direction of service.
-//
-// Independent of PYC_CSELEM -- this is not a keying question. The shape
-// canon exists to canonicalize per-site contours, and with one contour per
-// sym there is nothing for it to canonicalize.
-// ifa/129: START MERGED -- one CreationSet per sym -- is the DEFAULT.
-//
-// CLAUDE.md's premise is that IFA starts from the MINIMUM data contours and
-// splits only on demand. Without this, `creation_point` keys identity on
-// (allocation site x contour), so data contours start MAXIMALLY split and
-// never merge: `multidef=0` corpus-wide means every CreationSet has exactly
-// one creation point. Mode 2 is that premise implemented; mode 0 is the old
-// maximal start and remains available as `PYC_CSDCPA1=0` for one release,
-// for bisecting anything this moves.
-//
-// Mode 2 rather than 1: 1 includes `tuple`, and a tuple's ARITY and
-// POSITION are part of its type, not provenance -- merging them costs ten
-// corpus programs (ifa/128). The exclusion is measured, not a concession.
-//
-// The cost of the flip, and what is still owed for it, is ifa/129.
-static int csdcpa1_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_CSDCPA1");
-    e = v ? atoi(v) : 2;
-  }
-  return e;
-}
+
+
+
+
+
+
+
+
 
 // ifa/issues/101: detect and break 2-cycles in the ES split ledger.
 //
@@ -6663,87 +5351,13 @@ static bool route_reaches(EntrySet *from, EntrySet *to, Vec<EntrySet *> &path, V
   return false;
 }
 
-// DEFAULT 3 -- the GENERAL form (ifa/issues/055). A 2-cycle is not the
-// only shape the ledger can hold: A->B->C->A is the same disease with
-// three signatures, and route_last's one-step memory cannot see it.
-// Mode 3 records the whole route relation (FA::route_adj) and refuses
-// any route that would close a cycle of ANY length, so the relation is
-// acyclic by construction rather than by pattern-matching one shape.
-// Measured strictly >= mode 1: repro 32 -> 31 passes, suite identical
-// (298 passed / 0 failed / 13 known), corpus identical program for
-// program (67 of 77), plcfrs improves (5353 -> 4993 violations, ess
-// 1524 -> 1420). On everything measured only 2-cycles actually occur,
-// so the extra reach is insurance, not yet a demonstrated win.
-//
-// Mode 4 -- "never re-assign to ANY previously routed EntrySet" -- is
-// the tempting stronger rule and it is WRONG, measurably: 6 suite
-// failures, two of them hard compile failures (test_heapq,
-// tuple_compare). Repeating the SAME route every pass is the ledger
-// WORKING, a re-derived group landing in its established home; only a
-// return to an ABANDONED home is pathological. "Closes a cycle" is
-// exactly that distinction, "never revisit" conflates the two. Kept
-// only so the difference stays measurable.
-static int routecycle_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_ROUTECYCLE");
-    e = v ? atoi(v) : 3;
-  }
-  return e;
-}
 
-// ifa/issues/055: treat "routed the same group to the same home as last
-// pass" as NOT progress. Default 0 while it is measured.
-static int routestable_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    // ifa/148, DEFAULTED ON 2026-09-11. Re-routing an unchanged group to
-    // the same home as last pass is not new information, and claiming it
-    // is keeps the first-stage-wins cascade alive and starves every later
-    // stage. The field and the test were added with that comment
-    // (`SplitDecision::last_route_pass`) and never switched on. Measured,
-    // one binary, env toggled:
-    //
-    //   suite   315/0 both ways
-    //   corpus  identical -- 2 cfail (othello3, rdb), 43 warns, 2740 CS
-    //   sudoku5 two fewer starved passes
-    //
-    // Free, so it is the default. Note what it does NOT claim: a recorded
-    // decision applied to a NEWLY-APPEARED contour is real work (a ledger
-    // entry is keyed on (fun, stage, position, partition), so it can only
-    // fire once the types have propagated far enough for a contour to
-    // carry that partition). This suppresses only the repeat of last
-    // pass's routing of the SAME group to the SAME product.
-    cchar *v = getenv("PYC_ROUTESTABLE");
-    e = v ? atoi(v) : 1;
-  }
-  return e;
-}
 
-static int routegate_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_ROUTEGATE");
-    e = v ? atoi(v) : 0;
-  }
-  return e;
-}
 
-// Defaults to 6 as of 2026-08-16 (was 5): accept a period-2 flip-flop as
-// a settled contour, not just a constant one. Measured over the whole
-// shedskin corpus as EXACTLY inert -- 77 programs, zero changes to
-// rc/violations/ess/css/final_pass/pass_limit_hit, -0.3% time -- while
-// making tests/deepcopy_recursive_nested_growth.py converge outright
-// (pass 46, pass_limit_hit=0, 0 violations, against mode 5's pass 102
-// with 4 violations). See the mode-6 comment at the use site.
-static int selfprod_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_SELFPROD");
-    e = v ? atoi(v) : 6;
-  }
-  return e;
-}
+
+
+
+
 
 
 
@@ -6981,13 +5595,7 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
 // opposite was assumed once, and acting on that assumption truncated the
 // analysis.
 
-// ifa/148: PYC_TYPEMOVE=1 -- run another pass while the derived types are
-// still changing, instead of only while a stage split. See the use.
-static int typemove_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_TYPEMOVE"); e = v ? atoi(v) : 0; }
-  return e;
-}
+
 
 [[nodiscard]] static int apply_entry_set_split(ESSplitDecision *dec) {
   const int aes_before = fa->all_entry_sets.n;
@@ -8193,16 +6801,7 @@ static void recompute_eq_classes(Vec<Setters *> &ss) {
 
 enum AKind { AKIND_TYPE, AKIND_SETTER, AKIND_MARK };
 
-// ifa/133: PYC_NILSTORE=0 restores the pre-fix behaviour, for attributing
-// a corpus change to this clause rather than guessing at it.
-static int nilstore_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_NILSTORE");
-    e = v ? atoi(v) : 1;
-  }
-  return e;
-}
+
 
 [[nodiscard]] static int compute_setters(AVar *av, Accum<AVar *> &avs, int akind = AKIND_TYPE) {
   if (av->contour_is_entry_set || av->contour == GLOBAL_CONTOUR) return 0;
@@ -8305,53 +6904,7 @@ static void collect_setter_confluences(Accum<AVar *> &avs, Vec<AVar *> &setter_c
   return analyze_again;
 }
 
-// Issue 033 D5: cross-pass identity for a split_css decision. The
-// partition split_css applies is "these defs share setter
-// equivalence classes" — but Setters/setter_class pointers are
-// hash-consed in cannonical_setters, which clear_results() CLEARS,
-// so they cannot appear in a cross-pass key (issue 033 D0). The
-// stable proxy: the CreationSet's sym, the sorted def-Var sym ids
-// of the compatible group (Var/Sym are interned for the life of
-// the FA), and the CONTENT of the group's setters — each setter
-// AVar's Var sym id paired with its canonical constant-stripped
-// value type (canonical ATypes are never cleared). The value types
-// keep two same-Var-set groups distinct (an int-writing and a
-// float-writing instance of the same creation point must not share
-// a key — the ES ledger learned this as the builtins_batch
-// int/float poisoning; D5's own note says value types alone are
-// too weak and def ids alone can't discriminate either, so the key
-// carries both). Same wildcard rule as the ES group_signature: an
-// unflowed setter value (empty ->type) means the group has NO
-// stable identity this pass — return 0, caller must neither record
-// nor count. Setter contributions accumulate commutatively (sum),
-// so Vec-set iteration order cannot perturb the hash.
-// ifa/issues/066: drop the per-pass term from the CS split signature so
-// the ledger can recognise a re-derived split. See the use below.
-// Defaults to 3 (the durable setter type: canonical SET of split-chain
-// roots) as of 2026-08-16. Measured over the whole shedskin corpus at
-// ZERO exit-code changes and zero changes to violations/ess/css/
-// final_pass on all 77 programs, +1.1% analysis time, with the full test
-// suite unchanged -- while cutting
-// tests/deepcopy_recursive_nested_growth.py's runaway contour growth to
-// the best figure any mode reaches (ess 272 -> 144 at pass 102, CS mints
-// 20 -> 4).
-//
-// The other modes are kept as controls, and the pair of them is the
-// argument for 3: mode 1 (drop the setter type outright) reaches the
-// same 144 but pays for it in precision -- linalg 27 -> 74 violations,
-// plcfrs losing 173 contours' worth -- while mode 0 keeps the precision
-// and none of the convergence. Mode 3 is the first to get both, which is
-// what makes it defaultable. Mode 2 is superseded: same idea, but hashed
-// over the raw `sorted` sequence, so it was order- and
-// multiplicity-sensitive and only got half way (164).
-static int cskey_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_CSKEY");
-    e = v ? atoi(v) : 3;
-  }
-  return e;
-}
+
 
 static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
   Vec<int> def_ids;
@@ -8441,32 +6994,9 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
   return h ? h : 1;  // 0 is reserved for "no identity"
 }
 
-static int elemsetter_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_ELEMSETTER"); e = v ? atoi(v) : 0; }
-  return e;
-}
 
-// ifa/157: PYC_SETTERMIN -- partition to the COARSEST setter-induced grouping
-// that discharges the demand, instead of the finest one setter equivalence
-// induces.
-//
-// A union has no representation exactly when it mixes a basic type with a
-// pointer-shaped one, or two distinct basic kinds. So a group is representable
-// exactly when its written types are all pointer-shaped or all one basic kind,
-// and the unique coarsest valid partition is "one group for every
-// pointer-shaped writer, one group per basic kind" -- computable in one pass
-// from `s->out` over each starter's setters.
-//
-// This is the partition CLAUDE.md's premise asks for: the minimum contours
-// demand requires, and no more. Where it currently costs programs
-// (`plcfrs`, `sudoku5`), the finest partition was HIDING a defect that this
-// surfaces -- root cause that, do not accept the over-split.
-static int settermin_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_SETTERMIN"); e = v ? atoi(v) : 0; }
-  return e;
-}
+
+
 
 // 0 = pointer-shaped, 1 = already-mixed (undischargeable), otherwise the basic
 // type Sym. Comparable by value, which is all the partition needs.
@@ -8673,54 +7203,7 @@ static uintptr_t setter_repr_key_raw(AVar *starter) {
   return analyze_again;
 }
 
-// ifa/issues/133: partition a CreationSet by its CREATION POINTS.
-//
-// The gap this closes. A type confluence on a container's element is
-// collected (`collect_type_confluences` covers `cs->vars` and the element
-// AVar) and then discarded, because `split_ess_for_type` can only split an
-// EntrySet and this confluence sits on a CreationSet contour. Measured on
-// ifa/133's five-line reproducer: the confluence arrives with everything
-// needed -- `cs=983 sym=list defs=6 type= int64 str` -- and nothing
-// consumes it. `split_css`, the only other CS splitter, is fed
-// `setter_starters` and never sees this CreationSet at all (its element
-// has no setters, so no starter's `cs_map` names it).
-//
-// Why partitioning `defs` is legal and needs no new state.
-// `creation_point` writes both halves from the same variable, back to
-// back (`v->cs_map->put(s, cs); cs->defs.set_add(v);`), so `cs->defs` IS
-// the set of AVars whose `cs_map` names `cs`, and `split_css`'s re-point
-// -- `v->cs_map->put(cs->sym, new_cs)` -- applies to them unchanged.
-//
-// Why WHOLESALE rather than a minimal partition. Which creation point
-// contributed which element type is exactly what the merge destroys;
-// ifa/133 measured two attempts to recover it and neither works. Wholesale
-// does not ask. It gives each creation point its own contour and lets the
-// next pass re-derive every element from the writers that actually reach
-// it -- sound because `analyze_to_convergence` resets before every pass,
-// so derived ATypes come back from bottom and only the DECISION persists.
-// Recovering the attribution instead would be provenance, which is never
-// the answer (CLAUDE.md).
-//
-// Why it is the LAST rung. This is shedskin's ladder route 4
-// (`infer.py:1576`), and there too it is tried only after no-confusion,
-// confluence-partition and path-partition have failed. It is the coarsest
-// separation available, so it must not preempt a finer one: the call site
-// is gated on quiescence of every stage above, exactly as PER_CS_RECEIVER
-// and CSM_ELEMENT_CS are.
-//
-// Termination is structural, not a cap. After the re-point `cs_map` names
-// the new CreationSet, and `creation_point` is memo-first, so the next
-// pass routes that site to its own contour and it is no longer among
-// `cs->defs`. A CreationSet that has been partitioned down to one creation
-// point fails the `defs > 1` test forever after.
-static int csdefsplit_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_CSDEFSPLIT");
-    e = v ? atoi(v) : 1;
-  }
-  return e;
-}
+
 
 // shedskin's route-4 fan-out cap (`infer.py:1576`) was copied here, removed
 // from `split_css_by_defs` on 2026-09-07 (ifa/133) and from
@@ -8736,30 +7219,7 @@ static int csdefsplit_enabled() {
 // `sudoku4` the wait was the difference between compiling and failing.
 // Finer-rungs-first survives as the ladder's in-pass ordering.
 
-// ifa/133 steps 3-6: shedskin's finer ladder rungs, tried BEFORE the
-// wholesale partition. Default 0 while being measured. A BITMASK, because
-// the pieces had to be attributed separately once they started disagreeing:
-//
-//   1  route 1, ifa_split_no_confusion  (infer.py:1585)
-//   2  route 3, partition csites across paths (infer.py:1571)
-//   4  step 6, contour REUSE -- join an existing contour instead of minting
-//   8  key the emptycsites group on the BOTTOM AType rather than "no key",
-//      which is what makes the reuse lookup reachable for it
-//  16  peel EVERY group in route 1, as shedskin does, not just the first
-//
-// **3 is the measured-good configuration**: suite 9 under PYC_CSDCPA1=2,
-// -45 container CreationSets corpus-wide, and every verdict on all 77
-// programs identical. 27 and 31 both regress `deepcopy_copy_of_copy_chain`
-// -- ifa/105's acceptance test -- to 10. See the issue for why 4/8/16 do
-// not pay yet.
-static int csladder_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_CSLADDER");
-    e = v ? atoi(v) : 0;
-  }
-  return e;
-}
+
 
 // ifa/133 step 2: shedskin's `ifa_flow_graph` (infer.py:1715) for one
 // container CreationSet.
@@ -8782,33 +7242,7 @@ static int csladder_enabled() {
 // characterized (they are not GLOBAL_CONTOUR AVars -- measured); the
 // `in_defs` counts below exist to keep that visible.
 
-// ifa/146 C: the CONTENT channel(s) this CreationSet's writers feed.
-//
-// A container's content is its generic ELEMENT; a plain class's content is
-// its MEMBERS (`cs->vars`). ifa/104 calls these the two content channels,
-// and this function used to read only the first -- so it returned null for
-// every non-container CreationSet, and `split_css_by_defs` had nothing to
-// group on and fell back to a per-creation-point FAN.
-//
-// Measured before this: on `bh`, 16 of 24 route-4 mints were `Vec3` and all
-// 16 came through that fan, leaving 18 of 20 `Vec3` contours byte-identical
-// across all 29 members. The fan is the arbitrary mechanism ifa/146 exists
-// to retire; giving the rung a real grouping key for plain classes is what
-// lets it go.
-//
-// Containers are UNCHANGED: when an element channel exists it is used
-// alone, exactly as before, so no container result moves.
-// ifa/133: PYC_CSCONTENT=0 restores the element-or-vars form.
-// ifa/133's fix for "the rung looks in the wrong channel", ON BY DEFAULT since
-// 2026-09-15 (ifa/154). A container has TWO content channels (ifa/104) and an
-// arity-N literal leaves the element bottom, so without this the CS flow graph
-// is built over an empty AVar and route 4 declines `sets=0` on every such
-// CreationSet. Measured with PYC_CSBACKTRACK above. `PYC_CSCONTENT=0` disables.
-static int cscontent_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_CSCONTENT"); e = v ? atoi(v) : 1; }
-  return e;
-}
+
 
 static void cs_content_avars(CreationSet *cs, Vec<AVar *> &out) {
   if (cs->sym->element && cs->sym->element->var && cs->added_element_var) {
@@ -8917,39 +7351,7 @@ CSFlowGraph *build_cs_flow_graph(CreationSet *cs) {
 }
 
 
-// ifa/133: when route 4's key declines because a SHARED contour hides the
-// partition, split that contour so the CreationSet split becomes possible.
-// `PYC_ESBLOCK=0` restores the old opt-in behaviour.
-//
-// ON BY DEFAULT since 2026-09-24, on a measured corpus A/B (`check`, 77
-// programs, one binary, env the only difference). It used to be opt-in
-// because it "moves the set, it does not shrink it" and cost `softrender`;
-// `softrender` no longer compiles at either arm, so that trade is gone,
-// and the current one is favourable:
-//
-//   compile_fail 32 -> 32, run_fail 14 -> 13, container CS/shapes
-//   2730/641 = 4.26 -> 2461/662 = 3.72
-//
-//   gained:  sudoku2 (now compiles, runs, and MATCHES CPython -- the only
-//            stdout_match=yes anywhere in the diff), webserver (compiles)
-//   lost:    dijkstra2, quameon -- both of which already compiled and then
-//            died at RUN (rc=124 / rc=134), so neither was a working program
-//   sunfish: compiler timeout (124) -> clean diagnostic (1)
-//
-// Fewer contours AND better outcomes is ifa/146's non-monotone diagnostic
-// pointing the right way, so this is the lever earning its keep rather
-// than a preference.
-//
-// It is what makes the comprehension accumulator's result-move in
-// `build_list_comp_inner_pyda` safe to keep: that move round-trips
-// through `list.append`'s return, and without this split every
-// comprehension in the program shares one `append` EntrySet, so the
-// round-trip becomes a program-wide element-union channel (`plcfrs`).
-static int esblock_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_ESBLOCK"); e = v ? atoi(v) : 1; }
-  return e;
-}
+
 
 // The AVar that carries this CreationSet's demand, for the split ledger.
 static AVar *elem_av_for_demand(CreationSet *cs) {
@@ -9446,44 +7848,7 @@ static CreationSet *cs_peel_group(CreationSet *cs, Vec<AVar *> &group, cchar *ro
   return cs_peel_group(cs, *groups.v[0], "path_partition", dbg, join) ? 1 : 0;
 }
 
-// How many contours does a given function have, and what is each one's
-// receiver? IFA_DBG_FUNES=<name> prints it at convergence. Added for ifa/133
-// group B: "two clones of one class disagree on a slot" is usually a question
-// about how many contours the WRITER got, and nothing printed that.
-// IFA_DBG_CSVARS=<sym name>: every CreationSet of that class with its
-// member AVars and their types, as FA leaves them. ifa/133 group B needs
-// exactly this: a `<placeholder>` member in the emitted C means
-// `has[i]->type` is null, and that is set from these AVars -- so this says
-// whether the analysis or the cloning lost the field.
-// ifa/129 third clause: split an EntrySet BY CALL SITE, because a container
-// it allocates has an irrepresentable element and nothing type-shaped can
-// name the contributors.
-//
-// The reason/mechanism distinction matters here and is the only thing that
-// makes this legal under CLAUDE.md's provenance rule. The REASON is demand:
-// an element union with no representation, on a CreationSet that CS-side
-// partitioning cannot touch (one creation point) and that type-side
-// splitting has already declined (`no_groups` -- every formal's callers
-// agree). The call site is only the HANDLE that says which caller goes
-// where. Take the demand away and nothing splits: this never fires on a
-// contour whose containers are representable, so it is not 1-CFA by the
-// back door.
-//
-// Measured on sudoku3 before building (IFA_DBG_THIRD): of 428 single-def
-// candidates, 427 decline type-side with `no_groups`, and 361 of those have
-// a single in-edge so there is no call site to split on either. This route
-// is aimed at the remaining 67 -- `__pyc_getslice__` (1 contour, 7 callers)
-// and `__pyc_tolist__` -- where the flag has FEWER contours than the
-// default (getslice: 2 -> 1), because dcpa1 merged the receiver
-// CreationSets that gave CPA its distinction.
-static int cscallsite_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_CSCALLSITE");
-    e = v ? atoi(v) : 0;
-  }
-  return e;
-}
+
 
 // Mode 1 -- one contour per caller -- was DELETED 2026-09-08 on the
 // author's imperative ("no arbitrary splitting, only demand splitting").
@@ -9633,48 +7998,9 @@ static bool elem_irrepresentable(AVar *elem) {
   return nb > 1 && !all_num;
 }
 
-// ifa/133: PYC_CSSLOTDEMAND=0 restores the element-only demand test.
-static int csslotdemand_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_CSSLOTDEMAND"); e = v ? atoi(v) : 0; }
-  return e;
-}
 
-// ifa/152: PYC_CSBACKTRACK=1 -- when a demanded CreationSet cannot be
-// partitioned because it has ONE creation point, backtrack the demand along
-// the value flow to the nearest CreationSet that HAS several, and offer that
-// one instead.
-//
-// This is the step the ladder was missing. The demand is observed where the
-// union is USED, and that is generally not where the merge HAPPENED: the
-// merged CreationSet is upstream and is usually representable on its own, so
-// `cs_elem_irrepresentable` never nominates it and it is not a candidate at
-// all. chull measures it exactly: five lists (`Hull.edges` and friends) carry
-// element {Vertex, Edge} with defs=1 and decline "single creation point" on
-// every pass, while the walk backward from each of the five names ONE
-// CreationSet with defs>=2 -- cs=1112, element {Vertex}, nine creation points
-// spanning `InitEdges`'s `newedges = []` and `Edge.__init__`'s
-// `self.endpts = []`. `extend` fills the second with Vertex; `InitEdges`
-// returns the first unwritten; they are the same contour, so `Hull.edges`
-// inherits a Vertex.
-//
-// Under ifa/146's two-question test this is a MECHANISM, not a reason. The
-// reason is the demand -- an irrepresentable element with nothing to
-// partition. Take it away and nothing is nominated: the walk only ever runs
-// from a CreationSet that has already declined. And the handle is not
-// provenance: "the offending element flows from here" is a statement about
-// value flow and deduced types, not about where a value was born.
-// ON BY DEFAULT since 2026-09-15 (ifa/154), with PYC_CSCONTENT which supplies
-// the other half. Corpus `-m check`, one binary: compile failures 8 -> 3,
-// total warnings 1973 -> 1364 (-31%). `bh` compiles and matches CPython;
-// `sudoku3` goes from compile-fail with 121 warnings to clean and running.
-// NOTHING THAT WORKED REGRESSED -- all four programs whose stdout matched
-// CPython still match. `PYC_CSBACKTRACK=0` disables.
-static int csbacktrack_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_CSBACKTRACK"); e = v ? atoi(v) : 1; }
-  return e;
-}
+
+
 // ifa/154: BOTH content channels, ungated. A container has two (ifa/104):
 // the generic element, and the per-index positional slots a literal fills.
 // `cs_content_avars` returns the element and only falls through to the slots
@@ -9746,29 +8072,7 @@ static bool cs_elem_irrepresentable(CreationSet *cs) {
   return false;
 }
 
-// ifa/133: the MEMBER partition key.
-//
-// The content key above (`build_cs_flow_graph` over `cs_content_avars`)
-// asks what is IN a container. This asks what the container is IN: the set
-// of instance variables / members its creation point can reach. Those are
-// different graphs, and on `bh` only the second separates the lists --
-// by the time an element union is observable EVERY creation point carries
-// the whole union, so the content key collapses them (measured: 2 groups
-// from 8 creation points, both still `{str, Body}`), while the members they
-// reach are distinct (`Tree.bodies` reached by exactly one of the eight).
-//
-// This is a TYPE-side key, not provenance: a member is part of a class's
-// declared structure (`Sym::has`), so "which field holds this container" is
-// a structural fact about the program's types, the same family as arity
-// (ifa/132). It is keyed on `Sym::id`, never on the name (CLAUDE.md).
-//
-// It is also observable BEFORE the union forms, which is what the
-// violation-gated experiments in ifa/133 could not manage.
-static int csmember_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_CSMEMBER"); e = v ? atoi(v) : 0; }
-  return e;
-}
+
 
 // ifa/133/143: the CONSTRUCTION-TIME SLOT key. What types was this creation
 // point built with? For a literal that is `make_kind`'s operands, read in
@@ -10451,11 +8755,7 @@ static void cs_member_signature(AVar *d, std::string &out) {
   return analyze_again;
 }
 
-static int settergate_level() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_SETTERGATE"); e = v ? atoi(v) : 0; }
-  return e;
-}
+
 
 [[nodiscard]] static int split_for_setters(Accum<AVar *> &avs, int analyze_again) {
   Vec<AVar *> setter_confluences, setter_starters;
@@ -10855,24 +9155,7 @@ static void classify_rval_confluence(AVar *av) {
   }
 }
 
-// ifa/157 THE LINK (PYC_RETDEMAND). Stage 1 observes a demand on a value it
-// has no actuator for and drops it (`census.tc_skip_rval`, 769 of 923 per pass on
-// softrender). Both halves of the answer already exist: a CS-contoured
-// confluence is handed to route 4 (`tc_cs_dropped`), and ifa/152 built the
-// backtrack that finds the merged CreationSet upstream. Only the link is
-// missing.
-//
-// Return null unless this really is a demand:
-//   - the callee returns must DISAGREE -- an unresolved dispatch, something
-//     observing a distinction and unable to proceed, not "the type is a union"
-//   - the dispatched-on classes must be UNRELATED. Classes sharing a
-//     user-defined ancestor are legitimate polymorphism and must be HOISTED,
-//     not split; splitting richards' four Task subclasses is what broke it.
-static int retdemand_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_RETDEMAND"); e = v ? atoi(v) : 0; }
-  return e;
-}
+
 
 static AVar *rval_demand_actuator(AVar *av) {
   if (!av->contour_is_entry_set) return nullptr;
@@ -11175,13 +9458,7 @@ static bool result_is_different(AVar *result, AEdge *e) {
   return false;
 }
 
-// ifa/133: route a CS-contoured violation to route 4. PYC_VIOLCS=0 restores
-// the old behaviour (drop it) for attribution.
-static int violcs_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_VIOLCS"); e = v ? atoi(v) : 0; }
-  return e;
-}
+
 int viol_cs_deferred = 0;
 
 static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Vec<AVar *> &imprecisions) {
@@ -12536,34 +10813,7 @@ static void probe_invalidation_closure() {
   fa_selective_armed = true;
 }
 
-// ifa/132: PYC_SLOTARITY=1 -- when one AVar must hold two CreationSets of ONE
-// sym whose arities DISAGREE, neither can keep a record layout, because the
-// value has a single C type and a record and a list are not the same type.
-// Drop the static arity on all of them; `make_kind` then seeds the generic
-// element from the per-index vars (see its `no_static_arity` clause) and
-// clone gives the whole family list layout.
-//
-// This is the same rule ifa/132 already applies WITHIN a CreationSet ("two
-// creation points of different arity means it has no static arity") and that
-// `get_sym_tup` applies WITHIN a layout equivalence class (`if (n !=
-// cs->vars.n) tup = false`). What was missing is the case where the
-// disagreement is ACROSS two CreationSets that identity correctly keeps
-// apart: `determine_basic_clones` splits them on `cs1->vars.n != cs2->vars.n`
-// before `get_sym_tup` can see it, so one stays a record and the other is a
-// list, and the slot holding both gets no type at all -- emitted `_CG_void`,
-// read as `_CG_any`, with every access resolved from the FA type instead.
-//
-// Census, 84 corpus programs (IFA_DBG_SLOTREP): 976 such conflicts in 13
-// programs. Every one of the 13 COMPILES and then fails or prints the wrong
-// answer, and three of the aborts name the untyped value directly --
-// `amaze` "getter not resolved", `linalg` `(_CG_any, _CG_int64)` "list
-// element type mismatch", `quameon` `(_CG_ps26965, _CG_any)` "matching
-// function not found". Nine have zero warnings.
-static int slotarity_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_SLOTARITY"); e = v ? atoi(v) : 0; }
-  return e;
-}
+
 
 // ifa/132: the basic type all of `cs`'s settled slots agree on, or the
 // `fail` sentinel if they disagree, or nullptr when nothing is settled yet.
@@ -13489,46 +11739,7 @@ static void cselem_shape_claim(const std::string &key, CreationSet *cs) {
   }
 }
 
-// ifa/129 STEP 4, first increment: RE-DECIDE a CreationSet that was minted
-// while the receiver shape was unknown.
-//
-// This is the first place in pyc where a site->CreationSet decision is taken
-// back. Everything it needs already existed:
-//
-//   - Flow state is not the obstacle. analyze_to_convergence resets BEFORE
-//     each pass, not after, so every pass re-derives from bottom already.
-//     The one thing that survives and is in the way is the DECISION,
-//     av->cs_map (see clear_results's header).
-//   - Re-pointing cs_map is a shipped primitive: split_css does exactly
-//     `v->cs_map->put(cs->sym, new_cs)`, and its ledger `route` path aims a
-//     group at a CreationSet that ALREADY EXISTS. It has simply never had a
-//     caller that runs in the joining direction. This is that caller.
-//   - The invariant the cs_map pin cites (issue 030 / make_closure_var: a
-//     CS's positional vars[i] must be fed by every pass that feeds the CS)
-//     is about a CS LOSING a feeder, not about a site being re-aimed. The
-//     CS joined here keeps every feeder it had and gains one; the CS
-//     abandoned here stops being fed at all, so it leaves `fa->css` and no
-//     consumer sees it.
-//
-// WHEN: only once the pass has otherwise settled (see the call site). The
-// question being answered is "would this decision have been reusable had it
-// waited", so waiting is the point, and running it against a half-derived
-// pass would just re-ask it on worse information. It is also the ifa/055
-// lesson -- interleaving a decision change with the splitter re-perturbs
-// contours the splitter had just settled.
-//
-// TERMINATION: each entry is re-decided at most once, because after the
-// re-point `cs_map` names the joined CS and the `!= u.cs` test below skips
-// it forever. The batch is done in one call, so this costs a bounded few
-// extra passes, not one per join.
-static int cselem_rejoin_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_CSREJOIN");
-    e = v ? atoi(v) : 1;  // on whenever mode 3 is; mode 3 is itself opt-in
-  }
-  return e;
-}
+
 
 
 static int cselem_rejoin_unknown_mints() {
@@ -13566,34 +11777,7 @@ static int cselem_rejoin_unknown_mints() {
   return joined ? 1 : 0;
 }
 
-// ifa/129 STEP 4, the SPLIT-BACK direction.
-//
-// cselem_rejoin_unknown_mints widens: it moves a site onto a CreationSet
-// that already exists. This narrows, and narrowing is the direction a
-// growing fixed point does NOT absorb for free -- which is exactly why it
-// has to exist before the merge is widened. Without it, a merge that later
-// turns out to be wrong is permanent, and that is ifa/105's measured
-// failure: a split child handed its parent's container came back with
-// element type {list<itself>, int64, int64, list, int64}, self-referential
-// and container/scalar mixed.
-//
-// The test is symmetric with the join's, and it is a DEMAND test: the join
-// merges two sites whose shapes are known and EQUAL; this separates the
-// defs of one CreationSet whose shapes are known and DIFFER. Divergence is
-// an observed distinction, so acting on it is demand splitting rather than
-// structural splitting.
-//
-// A def whose key is not known does not move and does not vote. Separating
-// on an unknown is the mint-side error running in the other direction, and
-// the whole point of this issue is not to make contours out of ignorance.
-static int csresplit_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_CSRESPLIT");
-    e = v ? atoi(v) : 0;  // see cssiteless_enabled: arm the two together
-  }
-  return e;
-}
+
 
 
 static int cselem_resplit_diverged() {

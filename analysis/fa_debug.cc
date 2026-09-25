@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "fa.h"
+#include "fa_flags.h"
 #include "fa_census.h"
 #include "fa_internal.h"
 #include "ast.h"
