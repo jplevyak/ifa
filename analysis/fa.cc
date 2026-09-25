@@ -5,6 +5,7 @@
 #include <set>
 #include <vector>
 #include "fa.h"
+#include "fa_census.h"
 #include "ast.h"
 #include "builtin.h"
 #include "clone.h"
@@ -36,7 +37,6 @@ static Timer pass_timer, match_timer, extend_timer;
 // ifa/111 probe: the units the propagation worklists actually process.
 // `examined_avar_count` counts the SPLITTER's exhaustive sweep, not this,
 // so per-unit cost cannot be derived from it. PYC_DBG_WORK=1 to print.
-static long work_edges, work_sends, work_escons;
 // ifa/issues/111: selective (closure-scoped) per-pass invalidation
 // instead of clear_results()'s full from-bottom reset. Default OFF --
 // M2 landed this switch and the differential harness BEFORE any
@@ -553,13 +553,6 @@ static int esrecv_enabled() {
   return e;
 }
 extern int viol_cs_deferred;
-static int esl_hit = 0, esl_walk = 0;  // ifa/133: split-parent route hits / chain walks
-static int mint_in_child = 0, mint_child_novar = 0, mint_child_cmc = 0;
-static int esl_reached = 0, esl_decline = 0;
-static int route_saw_split = -3, route_saw_origin = -3;
-static int grp_total = 0, grp_scattered = 0;
-static int ck_single = 0, ck_irrep = 0, ck_samesym = 0, ck_repr = 0;
-static int cd_kept = 0, cd_dropped = 0, cd_prospective_differs = 0, cd_no_trigger = 0;
 static int confdemand_enabled() {
   static int e = -1;
   if (e < 0) { cchar *v = getenv("PYC_CONFDEMAND"); e = v ? atoi(v) : 0; }
@@ -629,9 +622,6 @@ static bool cd_is_dispatch_arg(AVar *av) {
 typedef MapElem<Fun *, int> MapElemFunPint;  // ifa/133: mints inside a SPLIT-CHILD contour
 // ifa/133 probe: where do CreationSets actually come from? One counter per
 // creation_point route, dumped by IFA_DBG_CSROUTES at convergence.
-enum CsRoute { kR_cs_map, kR_dcpa1, kR_split_parent, kR_cselem, kR_csshape, kR_csmold, kR_MINT, kR_count };
-static cchar *cs_route_name[kR_count] = {"cs_map","dcpa1","split_parent","cselem","csshape","csmold","MINT"};
-static int cs_route_count[kR_count];
 // ifa/133 counters live with the flag definition below
 // ifa/issues/074 (PYC_CSELEM=3): re-key container CreationSet identity on
 // the RECEIVER's structural element shape. Defined with capture_elem_keys.
@@ -664,14 +654,6 @@ static CselemDecline cselem_last_decline = kCselemOther;
 // Measured, not guessed -- if most unknown mints are kMintNoSiteCS there
 // is nothing to join to at this site and relaxing a guard is the wrong
 // answer. Probe only.
-enum CselemMintWhy {
-  kMintNoSiteCS = 0,   // no CreationSet of this class exists for this site yet
-  kMintMoldSplitChild, // one exists; ifa/105's `mold == 3 && split_child` refused it
-  kMintMoldCMC,        // one exists; issue 045's clone_methods_per_cs refused it
-  kMintMoldIneligible, // one exists; the mold is off or not eligible otherwise
-  kMintWhyCount
-};
-static int cselem_mint_why[kMintWhyCount];  // reported as mintwhy=a/b/c/d, in enum order
 
 // Classify at the mint site, recomputing the mold predicates (they are
 // block-scoped there, and this must not perturb them).
@@ -723,7 +705,7 @@ CreationSet *creation_point(AVar *v, Sym *s, int arity) {
   EntrySet *es = v->contour_is_entry_set ? (EntrySet *)v->contour : nullptr;
   if (cs) {
     assert(cs->sym == s);
-    dbg_cs_route = "cs_map"; ++cs_route_count[kR_cs_map];
+    dbg_cs_route = "cs_map"; ++census.cs_route_count[kR_cs_map];
     goto Lfound;
   }
   if (s == sym_closure) goto Lunique;
@@ -901,7 +883,7 @@ CreationSet *creation_point(AVar *v, Sym *s, int arity) {
           if (arity >= 0 && x->static_arity >= 0 && x->static_arity != arity && !x->no_static_arity) continue;
         }
         cs = x;
-        dbg_cs_route = "dcpa1"; ++cs_route_count[kR_dcpa1];
+        dbg_cs_route = "dcpa1"; ++census.cs_route_count[kR_dcpa1];
         goto Lfound;
       }
   }
@@ -986,18 +968,18 @@ CreationSet *creation_point(AVar *v, Sym *s, int arity) {
   {
     EntrySet *parent = es ? (es->split ? es->split : nullptr) : nullptr;
     if (!parent && es && eslineage_enabled()) parent = es->split_origin;
-    if (parent) ++esl_reached;
-    route_saw_split = es ? (es->split ? es->split->id : -1) : -2;
-    route_saw_origin = es ? (es->split_origin ? es->split_origin->id : -1) : -2;
+    if (parent) ++census.esl_reached;
+    census.route_saw_split = es ? (es->split ? es->split->id : -1) : -2;
+    census.route_saw_origin = es ? (es->split_origin ? es->split_origin->id : -1) : -2;
     bool found_here = false;
     for (int hops = 0; parent && hops < 32; ++hops) {
       AVar *oldv = make_AVar(v->var, parent);
       cs = oldv->cs_map ? oldv->cs_map->get(s) : 0;
       if (cs) {
         assert(cs->sym == s);
-        dbg_cs_route = "split_parent"; ++cs_route_count[kR_split_parent];
-        ++esl_hit; found_here = true;
-        if (hops) ++esl_walk;
+        dbg_cs_route = "split_parent"; ++census.cs_route_count[kR_split_parent];
+        ++census.esl_hit; found_here = true;
+        if (hops) ++census.esl_walk;
         goto Lfound;
       }
       if (!eslineage_enabled()) break;
@@ -1005,7 +987,7 @@ CreationSet *creation_point(AVar *v, Sym *s, int arity) {
       if (next == parent) break;
       parent = next;
     }
-    if (!found_here && es && (es->split || es->split_origin)) ++esl_decline;
+    if (!found_here && es && (es->split || es->split_origin)) ++census.esl_decline;
   }
   // ifa/issues/129 step 2: a `creators` reuse route stood here and was
   // DEAD -- `if (nvars != -1 || x->vars.n != nvars) continue;` continues
@@ -1089,7 +1071,7 @@ Lno_split_parent:;
             fprintf(stderr, "[cselem] p=%d sym=%s var=%s -> reuse cs=%d (elem_key %p)\n", analysis_pass,
                     s->name ? s->name : "?", v->var->sym->name ? v->var->sym->name : "?", x->id, (void *)want);
           cs = x;
-          dbg_cs_route = "cselem"; ++cs_route_count[kR_cselem];
+          dbg_cs_route = "cselem"; ++census.cs_route_count[kR_cselem];
           goto Lfound;
         }
     }
@@ -1118,7 +1100,7 @@ Lno_split_parent:;
     if (CreationSet *x = cselem_shape_reuse(v, s)) {
       if (!(s->abstract_type && x == s->abstract_type->v[0])) {
         cs = x;
-        dbg_cs_route = "csshape"; ++cs_route_count[kR_csshape];
+        dbg_cs_route = "csshape"; ++census.cs_route_count[kR_csshape];
         goto Lfound;
       }
     }
@@ -1159,7 +1141,7 @@ Lno_split_parent:;
                       s->name ? s->name : "?", v->var->sym->name ? v->var->sym->name : "?", es ? es->id : -1,
                       split_child ? es->split->id : -1, x->id);
             cs = x;
-            dbg_cs_route = "csmold"; ++cs_route_count[kR_csmold];
+            dbg_cs_route = "csmold"; ++census.cs_route_count[kR_csmold];
             goto Lfound;
           }
       }
@@ -1179,22 +1161,22 @@ Lunique:
   // "an ES split multiplies CreationSets" case -- the creation point could
   // have inherited the parent's binding and did not.
   if (es && (es->split || es->split_origin)) {
-    ++mint_in_child;
+    ++census.mint_in_child;
     if (getenv("PYC_ASSERT_MINT")) {
       fprintf(stderr,
               "[MINT-IN-CHILD] p=%d es=%d fun=%s var=%s sym=%s | AT ROUTE split=%d origin=%d | NOW split=%d origin=%d\n",
               analysis_pass, es->id,
               (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?",
               (v->var && v->var->sym && v->var->sym->name) ? v->var->sym->name : "(anon)",
-              s->name ? s->name : "?", route_saw_split, route_saw_origin,
+              s->name ? s->name : "?", census.route_saw_split, census.route_saw_origin,
               es->split ? es->split->id : -1, es->split_origin ? es->split_origin->id : -1);
     }
     EntrySet *par = es->split ? es->split : es->split_origin;
     AVar *ov = make_AVar(v->var, par);
-    if (!ov->cs_map || !ov->cs_map->get(s)) ++mint_child_novar;
-    if (is_clone_methods_per_cs(s)) ++mint_child_cmc;
+    if (!ov->cs_map || !ov->cs_map->get(s)) ++census.mint_child_novar;
+    if (is_clone_methods_per_cs(s)) ++census.mint_child_cmc;
   }
-  dbg_cs_route = "MINT"; ++cs_route_count[kR_MINT];
+  dbg_cs_route = "MINT"; ++census.cs_route_count[kR_MINT];
   cs = new CreationSet(s);
   cs->creation_var = v->var;  // ifa/issues/101: for the per-site element key
   // ifa/issues/074: claim this (site, receiver-shape) so the next contour
@@ -1205,7 +1187,7 @@ Lunique:
       cselem_shape_claim(shape_key, cs);
     else if (cselem_last_decline == kCselemUnfilled) {
       cselem_unknown_mints.push_back({v, s, cs});  // minted on an unknown (ifa/129 2c)
-      ++cselem_mint_why[cselem_classify_mint(v, s, es)];  // ...and why it had to (step 4)
+      ++census.cselem_mint_why[cselem_classify_mint(v, s, es)];  // ...and why it had to (step 4)
     }
   }
   if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
@@ -1341,7 +1323,6 @@ Lagain:
   }
 }
 
-static long fa_cap_strips = 0;  // ifa/131 step 1, probe only
 
 AType *type_cannonicalize(AType *t) {
   assert(!t->sorted.n);
@@ -1404,7 +1385,7 @@ AType *type_cannonicalize(AType *t) {
   const int cap = constcap >= 0 ? constcap : fa->num_constants_per_variable;
   if (consts > cap) {
     rebuild = 1;
-    ++fa_cap_strips;  // ifa/131 step 1: does the cap-strip fire at all?
+    ++census.fa_cap_strips;  // ifa/131 step 1: does the cap-strip fire at all?
   }
   if (rebuild) {
     t->sorted.clear();
@@ -1609,7 +1590,6 @@ static bool same_eq_classes(Setters *s, Setters *ss) {
   return true;
 }
 
-static long mark_cs_differ = 0, mark_cs_same = 0;
 
 // ifa/issues/074 (PYC_CPAMARK): swap the cartesian-product name in for the
 // mark. different_marked_args already compares two sets of CreationSets --
@@ -1681,7 +1661,7 @@ static int different_marked_args(AVar *a1, AVar *a2, int offset, AVar *basis = 0
         if (!basis) all2.set_add(x->key);
         else if (basis->mark_map && basis->mark_map->get(x->key)) all2.set_add(x->key);
       }
-    if (all1.some_disjunction(all2)) ++mark_cs_differ; else ++mark_cs_same;
+    if (all1.some_disjunction(all2)) ++census.mark_cs_differ; else ++census.mark_cs_same;
   }
   return diff;
 }
@@ -1692,12 +1672,8 @@ static int different_marked_args(AVar *a1, AVar *a2, int offset, AVar *basis = 0
 // very contour returns, so a contour's identity partly depends on its own
 // result. If that clause is doing the work, the naming is circular by
 // construction.
-static long ic_arg = 0, ic_ret = 0, ic_retn = 0;
 // ifa/issues/074: of the stage-1 splits that actually fire, how many were
 // triggered by a FORMAL confluence versus a RETURN-VALUE confluence.
-static long tc_formal = 0, tc_return = 0;
-static int ld_dup_es = 0, ld_dup_cs = 0, ld_churn = 0;
-static long tc_seen = 0, tc_skip_rval = 0, tc_skip_lval = 0, tc_skip_cs = 0, tc_dec = 0, tc_defer = 0;
 // ifa/issues/133: CreationSets whose contour carried a type confluence
 // that stage 1 cannot act on -- `split_ess_for_type` only knows how to
 // split an ENTRYSET, so a confluence sitting on a CreationSet contour hit
@@ -1759,22 +1735,22 @@ static int edge_type_compatible_with_edge(AEdge *e, AEdge *ee, EntrySet *es, int
     AType *etype = split_type_view(e_arg, e->match->formal_filters.get(p));
     AType *eetype = split_type_view(ee_arg, ee->match->formal_filters.get(p));
     if (!fmark) {
-      if (etype->n && eetype->n && etype != eetype) return ++ic_arg, 0;
+      if (etype->n && eetype->n && etype != eetype) return ++census.ic_arg, 0;
     } else {
       AVar *es_arg = es->args.get(p);
-      if (different_marked_args(ee_arg, e_arg, 2, es_arg)) return ++ic_arg, 0;
+      if (different_marked_args(ee_arg, e_arg, 2, es_arg)) return ++census.ic_arg, 0;
     }
   }
-  if (e->rets.n != ee->rets.n) return ++ic_retn, 0;
+  if (e->rets.n != ee->rets.n) return ++census.ic_retn, 0;
   for (int i = 0; i < e->rets.n; i++) {
     if (ee->rets[i]->lvalue && e->rets.v[i]->lvalue) {
       if (!fmark) {
         if (ee->rets[i]->lvalue->out->type->n && e->rets.v[i]->lvalue->out->type->n &&
             ee->rets[i]->lvalue->out->type != e->rets.v[i]->lvalue->out->type)
-          return ++ic_ret, 0;
+          return ++census.ic_ret, 0;
       } else {
         if (different_marked_args(ee->rets[i]->lvalue, e->rets.v[i]->lvalue, 1, es->rets[i]->lvalue))
-          return ++ic_ret, 0;
+          return ++census.ic_ret, 0;
       }
     }
   }
@@ -1802,7 +1778,7 @@ static int edge_type_compatible_with_entry_set(AEdge *e, EntrySet *es, int fmark
   if (!e->args.n || !es->args.n) {
     // Both empty is a genuine zero-argument shape with nothing to compare.
     if (!e->args.n && !es->args.n) return 1;
-    return ++ic_arg, -1;
+    return ++census.ic_arg, -1;
   }
   if (!es->split) {
     for (MPosition *p : e->match->fun->positional_arg_positions) {
@@ -1815,19 +1791,19 @@ static int edge_type_compatible_with_entry_set(AEdge *e, EntrySet *es, int fmark
           AType *k = es->type_key.get(p);
           if (k) stype = k;  // durable key wins over the mid-pass value
         }
-        if (etype->n && stype->n && etype != stype) return ++ic_arg, 0;
+        if (etype->n && stype->n && etype != stype) return ++census.ic_arg, 0;
       } else if (different_marked_args(e_arg, es_arg, 2))
-        return ++ic_arg, 0;
+        return ++census.ic_arg, 0;
     }
-    if (es->rets.n != e->rets.n) return ++ic_retn, 0;
+    if (es->rets.n != e->rets.n) return ++census.ic_retn, 0;
     for (int i = 0; i < e->rets.n; i++) {
       if (es->rets[i]->lvalue && e->rets.v[i]->lvalue) {
         if (!fmark) {
           if (es->rets[i]->lvalue->out->type->n && e->rets.v[i]->lvalue->out->type->n &&
               es->rets[i]->lvalue->out->type != e->rets.v[i]->lvalue->out->type)
-            return ++ic_ret, 0;
+            return ++census.ic_ret, 0;
         } else if (different_marked_args(es->rets[i]->lvalue, e->rets.v[i]->lvalue, 1))
-          return ++ic_ret, 0;
+          return ++census.ic_ret, 0;
       }
     }
   } else {
@@ -2309,7 +2285,6 @@ static int check_split(AEdge *e, Vec<AEdge *> &ees, EntrySet *avoid = nullptr) {
 }
 
 // ifa/issues/074 canonicalization stats (IFA_DBG_CANON).
-static long canon_hit = 0, canon_miss = 0, canon_conflict = 0, canon_conflict_honored = 0;
 
 // This edge's type tuple: the filtered actual type at each positional
 // argument. Canonical ATypes are hash-consed for the life of the FA, so
@@ -2446,17 +2421,17 @@ static void make_entry_set(AEdge *e, Vec<AEdge *> &edges, EntrySet *split = null
       // splitter is detaching it from: the split is asking for a
       // separation the type tuple says does not exist. This is the
       // measurement the canonicalization exists to produce.
-      ++canon_conflict;
+      ++census.canon_conflict;
       if (getenv("IFA_DBG_CANON"))
         fprintf(stderr, "CANON-CONFLICT p=%d fun=%s#%d e=%d split=es%d (fun has %d ess)\n", analysis_pass,
                 e->match->fun->sym && e->match->fun->sym->name ? e->match->fun->sym->name : "?",
                 e->match->fun->sym ? e->match->fun->sym->id : -1, e->id, split->id, e->match->fun->ess.n);
-      if (canon_enabled() >= 2) es = canon; else ++canon_conflict_honored;
+      if (canon_enabled() >= 2) es = canon; else ++census.canon_conflict_honored;
     } else if (canon) {
-      ++canon_hit;
+      ++census.canon_hit;
       es = canon;
     } else
-      ++canon_miss;
+      ++census.canon_miss;
   }
   set_entry_set(e, es);
   if (have_key && !e->to->canon_key_set) {
@@ -5906,7 +5881,7 @@ static void initialize() {
   initialize_global(sym_empty_tuple);
   initialize_global(sym_unknown);
   initialize_global(sym_void);
-  work_edges = work_sends = work_escons = 0;  // ifa/111 probe
+  census.work_edges = census.work_sends = census.work_escons = 0;  // ifa/111 probe
   fa->edge_worklist.clear();
   fa->send_worklist.clear();
   initialize_symbols();
@@ -5926,9 +5901,9 @@ static void initialize_pass() {
   // ifa/issues/074 (IFA_DBG_INCOMPAT): these are incremented by
   // extend_analysis, which runs AFTER complete_pass, so shadow them here
   // for the probe before the reset wipes the previous pass's tally.
-  ld_dup_es = fa->dup_split_attempts;
-  ld_dup_cs = fa->cs_dup_split_attempts;
-  ld_churn = fa->rederive_churn;
+  census.ld_dup_es = fa->dup_split_attempts;
+  census.ld_dup_cs = fa->cs_dup_split_attempts;
+  census.ld_churn = fa->rederive_churn;
   fa->dup_split_attempts = 0;  // issue 033 stage A per-pass counter
   fa->cs_dup_split_attempts = 0;  // issue 033 D5 per-pass counter
   fa->rederive_churn = 0;         // issue 074: the guard's real input
@@ -6180,7 +6155,7 @@ static int confnil_enabled() {
 //
 //   - 83-87% of confluences never reach a partitioner. Stage 1's only
 //     actuator is "split an EntrySet on a FORMAL"; a union on a non-formal
-//     rvalue is counted and dropped (`tc_skip_rval` = 769 of 923).
+//     rvalue is counted and dropped (`census.tc_skip_rval` = 769 of 923).
 //   - In the rest there is nothing to partition -- every in-edge already
 //     carries the union, so `etype == stype` (ifa/146's self-blinding).
 //
@@ -6194,7 +6169,6 @@ static int conflevel_probe() {
   if (e < 0) e = getenv("IFA_DBG_CONFLEVEL") ? 1 : 0;
   return e;
 }
-static int cl_unflagged = 0, cl_flagged = 0;
 
 // The level question, over a CONVERGED AType. Same shape as
 // `elem_irrepresentable`, which asks it of a container's element channel;
@@ -6222,10 +6196,9 @@ static bool atype_irrepresentable(AType *t) {
 // single-typed writers meeting. That is the seed, by construction, and it is
 // the only place worth fixing: every other contour on the cycle is carrying
 // what this one made.
-static int seed_reported = 0;
 static void seed_probe(AVar *av) {
   cchar *sv = getenv("IFA_DBG_SEED");
-  if (!sv || seed_reported > 40) return;
+  if (!sv || census.seed_reported > 40) return;
   if (analysis_pass < atoi(sv)) return;   // report only from this pass on
   if (!av->in || !av->in->type) return;
   Vec<Sym *> basics;
@@ -6241,7 +6214,7 @@ static void seed_probe(AVar *av) {
         if (Sym *b = to_basic_type(c->sym->type)) wb.set_add(b);
     if (wb.set_count() >= 2) return;
   }
-  ++seed_reported;
+  ++census.seed_reported;
   EntrySet *es = av->contour_is_entry_set ? (EntrySet *)av->contour : nullptr;
   fprintf(stderr, "[SEED] p=%d av=%d var=%s in=%s es=%d line=%d type=", analysis_pass, av->id,
           (av->var && av->var->sym && av->var->sym->name) ? av->var->sym->name : "(anon)",
@@ -6299,7 +6272,7 @@ static void collect_type_confluence(AVar *av, Vec<AVar *> &confluences) {
   // CONVERGED types does the edge-triggered test above not see? Counted
   // only; nothing is added to `confluences`.
   if (conflevel_probe() && av->in && atype_irrepresentable(av->in->type)) {
-    if (confluences.set_in(av)) ++cl_flagged; else ++cl_unflagged;
+    if (confluences.set_in(av)) ++census.cl_flagged; else ++census.cl_unflagged;
   }
   // ifa/133 EXPERIMENT (PYC_CONFDEMAND=1): drop confluences whose union is
   // representable -- i.e. keep only the ones something could not proceed on.
@@ -6316,8 +6289,8 @@ static void collect_type_confluence(AVar *av, Vec<AVar *> &confluences) {
     AType *acc = t;
     if (t && trigger && trigger->out && trigger->out->type)
       t = type_union(t, trigger->out->type);
-    if (t != acc) ++cd_prospective_differs;
-    if (!trigger) ++cd_no_trigger;
+    if (t != acc) ++census.cd_prospective_differs;
+    if (!trigger) ++census.cd_no_trigger;
     int nnonbasic = 0; Vec<Sym *> basics;
     if (t) for (CreationSet *c : t->sorted) {
       if (!c || !c->sym || c->sym == sym_nil_type) continue;
@@ -6327,8 +6300,8 @@ static void collect_type_confluence(AVar *av, Vec<AVar *> &confluences) {
     bool irrep = (nb >= 1 && nnonbasic > 0) || nb > 1;
     bool keep = (confdemand_enabled() >= 2) ? (irrep || confluence_is_demanded(av)) : irrep;
     if (!keep) {
-      confluences.set_remove(av); ++cd_dropped;
-      if (getenv("IFA_DBG_CONFDROP") && cd_dropped < 40) {
+      confluences.set_remove(av); ++census.cd_dropped;
+      if (getenv("IFA_DBG_CONFDROP") && census.cd_dropped < 40) {
         fprintf(stderr, "[confdrop] p=%d fun=%s var=%s type=", analysis_pass,
                 (av->contour_is_entry_set && ((EntrySet *)av->contour)->fun &&
                  ((EntrySet *)av->contour)->fun->sym && ((EntrySet *)av->contour)->fun->sym->name)
@@ -6338,7 +6311,7 @@ static void collect_type_confluence(AVar *av, Vec<AVar *> &confluences) {
           fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
         fprintf(stderr, "\n");
       }
-    } else ++cd_kept;
+    } else ++census.cd_kept;
   }
   // ifa/133: classify each confluence -- is the union it fires on one that
   // something could not PROCEED on (a demand), or merely one that exists
@@ -6356,11 +6329,11 @@ static void collect_type_confluence(AVar *av, Vec<AVar *> &confluences) {
     }
     nsym = syms.set_count();
     const int nb = basics.set_count();
-    if (t && t->sorted.n < 2) ++ck_single;             // not even a union
-    else if (nb >= 1 && nnonbasic > 0) ++ck_irrep;     // scalar + object: no representation
-    else if (nb > 1) ++ck_irrep;                       // two distinct basics, e.g. {int64, str}
-    else if (nsym <= 1) ++ck_samesym;                  // several CSs of ONE class
-    else ++ck_repr;                                    // distinct classes, all pointer-shaped
+    if (t && t->sorted.n < 2) ++census.ck_single;             // not even a union
+    else if (nb >= 1 && nnonbasic > 0) ++census.ck_irrep;     // scalar + object: no representation
+    else if (nb > 1) ++census.ck_irrep;                       // two distinct basics, e.g. {int64, str}
+    else if (nsym <= 1) ++census.ck_samesym;                  // several CSs of ONE class
+    else ++census.ck_repr;                                    // distinct classes, all pointer-shaped
   }
   dbg_confluence_probe(av, confluences.set_in(av) != 0);
 }
@@ -7636,7 +7609,6 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
 // (measured on sudoku5, 501 of 501, 1512 edges). Counted here because the
 // opposite was assumed once, and acting on that assumption truncated the
 // analysis.
-static long aes_apply_split = 0, aes_apply_split_nogrowth = 0;
 
 // ifa/148: PYC_TYPEMOVE=1 -- run another pass while the derived types are
 // still changing, instead of only while a stage split. See the use.
@@ -7885,7 +7857,7 @@ static int typemove_enabled() {
             // contour has two states and alternates. That is exactly the
             // "stable flip-flop rather than a union still widening"
             // the mode-5 comment above describes, and capture_type_keys
-            // already computes the predicate for its own `kd_flip`
+            // already computes the predicate for its own `census.kd_flip`
             // counter.
             ok = es->type_key_pass == analysis_pass && es->key_hash[0] &&
                  (es->key_hash[0] == es->key_hash[1] ||
@@ -8135,9 +8107,9 @@ static int typemove_enabled() {
       if (getenv("IFA_DBG_GROUPSPLIT")) {
         Vec<EntrySet *> homes;
         for (AEdge *x : these_edges) if (x->to) homes.set_add(x->to);
-        ++grp_total;
+        ++census.grp_total;
         if (homes.set_count() > 1) {
-          ++grp_scattered;
+          ++census.grp_scattered;
           fprintf(stderr, "[groupsplit] p=%d fun=%s es=%d group_of=%d -> %d distinct contours\n", analysis_pass,
                   es->fun->sym->name ? es->fun->sym->name : "?", es->id, these_edges.n, homes.set_count());
         }
@@ -8200,9 +8172,9 @@ static int typemove_enabled() {
             fa->all_entry_sets.n - aes_before, snap_e.n, moved);
   }
   if (split) {
-    ++aes_apply_split;
+    ++census.aes_apply_split;
     if (fa->all_entry_sets.n == aes_before) {
-      ++aes_apply_split_nogrowth;
+      ++census.aes_apply_split_nogrowth;
       if (getenv("IFA_DBG_REDERIVE"))
         fprintf(stderr, "[rederive] p=%d stage=%d es=%d fun=%s split=1 but created NO EntrySet\n", analysis_pass,
                 cur_split_stage, es->id, (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?");
@@ -9118,7 +9090,6 @@ static int elemsetter_enabled() {
   if (e < 0) { cchar *v = getenv("PYC_ELEMSETTER"); e = v ? atoi(v) : 0; }
   return e;
 }
-static int es_added = 0, es_seeded = 0;
 
 // ifa/157: PYC_SETTERMIN -- partition to the COARSEST setter-induced grouping
 // that discharges the demand, instead of the finest one setter equivalence
@@ -9147,14 +9118,13 @@ static int settermin_enabled() {
 // (`cs_map->put`), so a key derived from types that move between passes records
 // a decision the next pass would not have made.
 static Map<AVar *, uintptr_t> rk_last;
-static long rk_same = 0, rk_changed = 0, rk_new = 0;
 
 static uintptr_t setter_repr_key_raw(AVar *starter);
 static uintptr_t setter_repr_key(AVar *starter) {
   uintptr_t k = setter_repr_key_raw(starter);
   if (getenv("IFA_DBG_REPRKEY")) {
     uintptr_t prev = rk_last.get(starter);
-    if (!prev) ++rk_new; else if (prev == k + 2) ++rk_same; else ++rk_changed;
+    if (!prev) ++census.rk_new; else if (prev == k + 2) ++census.rk_same; else ++census.rk_changed;
     rk_last.put(starter, k + 2);  // +2 so 0 means "unseen"
   }
   return k;
@@ -9191,7 +9161,7 @@ static uintptr_t setter_repr_key_raw(AVar *starter) {
     for (CreationSet *cs : fa->css)
       if (cs && cs->sym && fa->css_set.set_in(cs) && !css.set_in(cs) && cs_elem_irrepresentable(cs)) {
         css.set_add(cs);
-        ++es_added;
+        ++census.es_added;
       }
   css.set_to_vec();
   qsort_by_id(css);
@@ -9205,7 +9175,7 @@ static uintptr_t setter_repr_key_raw(AVar *starter) {
       for (AVar *d : cs->defs)
         if (d && d->setters && d->cs_map && d->cs_map->get(cs->sym) == cs && !starter_set.in(d)) {
           starter_set.add(d);
-          ++es_seeded;
+          ++census.es_seeded;
         }
     if (getenv("IFA_DBG_SCSS")) {
       fprintf(stderr, "[scss] p=%d cs=%d sym=%s starters=%d defs=%d\n", analysis_pass, cs->id,
@@ -11597,7 +11567,6 @@ static int settergate_level() {
 
 // ifa/133: allocation-counter snapshots for PYC_DBG_STAGEDELTA. See the
 // two-snapshot note in run_split_stages.
-static int stage_aes0 = 0, stage_acs0 = 0;
 
 
 static void collect_cs_setter_confluences(Vec<AVar *> &setters_confluences) {
@@ -11625,7 +11594,7 @@ static void collect_cs_setter_confluences(Vec<AVar *> &setters_confluences) {
       if (elemsetter_enabled() && av && !av->contour_is_entry_set &&
           av->contour != GLOBAL_CONTOUR && cs_elem_irrepresentable(cs)) {
         setters_confluences.set_add(av);
-        ++es_added;
+        ++census.es_added;
       }
       for (AVar *x : av->forward) if (x) {
         if (!av->contour_is_entry_set && av->contour != GLOBAL_CONTOUR) {
@@ -11708,7 +11677,7 @@ static void add_es_path_to_convergence(AVar *av, Vec<AVar *> &out) {
 
 // ifa/157 PROBE (IFA_DBG_RETCONF): a confluence does NOT come from nowhere.
 //
-// Stage 1 drops 83-87% of its confluences at `tc_skip_rval` -- an ES-contoured
+// Stage 1 drops 83-87% of its confluences at `census.tc_skip_rval` -- an ES-contoured
 // value that is not a formal and not a return, so the one actuator it has
 // ("split an EntrySet on a formal") does not apply. That describes where the
 // demand is OBSERVED. It says nothing about where the union came FROM, and a
@@ -11720,15 +11689,12 @@ static void add_es_path_to_convergence(AVar *av, Vec<AVar *> &out) {
 // float, the union is separable by acting at the call. If every callee
 // already returns the union, the demand backtracks further in and acting here
 // would be acting at the symptom.
-static long rc_ret_differ = 0, rc_ret_same = 0, rc_ret_one = 0, rc_local = 0, rc_other = 0;
-static long rc_differ_1fun = 0, rc_differ_nfun = 0;
 
 // ifa/157: and the demand's ACTUATOR. A return confluence from several Funs is
 // an unresolved dispatch, and in single-dispatch OOP exactly one argument
 // position decides which Fun runs. Find the position whose type is a union of
 // several class syms and ask what KIND of AVar holds it -- because that is
 // what says whether stage 1 could already act.
-static long rv_formal = 0, rv_local = 0, rv_cs = 0, rv_none = 0, rv_noedge = 0;
 
 // ifa/157: the union at a dispatch receiver came from somewhere too. Walk the
 // writers back -- following only those that still CARRY a union, the way
@@ -11736,8 +11702,6 @@ static long rv_formal = 0, rv_local = 0, rv_cs = 0, rv_none = 0, rv_noedge = 0;
 // There are exactly two actuators in the analysis: split an EntrySet on a
 // FORMAL (stage 1), or partition a CreationSet (route 4). If the walk reaches
 // neither, no mechanism in pyc can act on this demand at all.
-static long wk_formal = 0, wk_cs = 0, wk_join = 0, wk_cap = 0;
-static long wk_hops_formal = 0, wk_hops_cs = 0;
 
 static int avar_is_union(AVar *a) {
   if (!a || !a->out) return 0;
@@ -11760,11 +11724,11 @@ static AVar *walk_to_actuator(AVar *start, int count) {
         if (!avar_is_union(x)) continue;          // this writer is not responsible
         if (!seen.set_add(x)) continue;           // already walked
         if (!x->contour_is_entry_set) {           // route 4's actuator
-          if (count) ++wk_cs, wk_hops_cs += hops;
+          if (count) ++census.wk_cs, census.wk_hops_cs += hops;
           return x;
         }
         if (x->var && x->var->is_formal) {        // stage 1's actuator
-          if (count) ++wk_formal, wk_hops_formal += hops;
+          if (count) ++census.wk_formal, census.wk_hops_formal += hops;
           return x;
         }
         next.add(x);
@@ -11777,7 +11741,7 @@ static AVar *walk_to_actuator(AVar *start, int count) {
   // the union is CREATED at the frontier -- several single-typed writers
   // meeting. That is the classic confluence and it is actionable in its own
   // right; capped is the walk giving up.
-  if (count) { if (work.n) ++wk_cap; else ++wk_join; }
+  if (count) { if (work.n) ++census.wk_cap; else ++census.wk_join; }
   return nullptr;
 }
 
@@ -11801,8 +11765,6 @@ static AVar *walk_to_actuator(AVar *start, int count) {
 // means pyc resolved on a non-receiver argument -- multi-method dispatch,
 // which Python does not have, so that would be a modelling artifact and not
 // a property of the program.
-static long dk_static = 0, dk_funvar = 0, dk_recv = 0, dk_arg = 0, dk_nonarrow = 0, dk_noedge = 0;
-static long dk_funvar_syms = 0, dk_recv_syms = 0, dk_recv_related = 0;
 static Vec<AType *> dk_recv_types;  // DISTINCT receiver unions: one merge, or many?
 
 static void classify_dispatch_kind(AVar *av) {
@@ -11819,9 +11781,9 @@ static void classify_dispatch_kind(AVar *av) {
       if (c && c->sym) (c->sym->fun ? fnvals : names)++;
     if (fnvals && !names) {
       if (fnvals < 2)
-        ++dk_static;
+        ++census.dk_static;
       else
-        ++dk_funvar, dk_funvar_syms += fnvals;
+        ++census.dk_funvar, census.dk_funvar_syms += fnvals;
       return;
     }
     // A NAME at the callee position: class-based. Which position narrows?
@@ -11833,10 +11795,10 @@ static void classify_dispatch_kind(AVar *av) {
         if (c && c->sym && c->sym != sym_nil_type) syms.set_add(c->sym);
       if (syms.set_count() < 2) continue;
       if (i == 1) {
-        ++dk_recv, dk_recv_syms += syms.set_count();
+        ++census.dk_recv, census.dk_recv_syms += syms.set_count();
         dk_recv_types.set_add(a->out->type);
-        if (classes_are_related(syms)) ++dk_recv_related;
-        if (getenv("IFA_DBG_RETCONF_V") && dk_recv < 16) {
+        if (classes_are_related(syms)) ++census.dk_recv_related;
+        if (getenv("IFA_DBG_RETCONF_V") && census.dk_recv < 16) {
           fprintf(stderr, "  [kind] recv of %s: %s classes:",
                   (e->fun && e->fun->sym && e->fun->sym->name) ? e->fun->sym->name : "?",
                   classes_are_related(syms) ? "RELATED(hoist)" : "UNRELATED(split)");
@@ -11844,13 +11806,13 @@ static void classify_dispatch_kind(AVar *av) {
           fprintf(stderr, "\n");
         }
       } else
-        ++dk_arg;
+        ++census.dk_arg;
       return;
     }
-    ++dk_nonarrow;
+    ++census.dk_nonarrow;
     return;
   }
-  ++dk_noedge;
+  ++census.dk_noedge;
 }
 
 static void classify_dispatch_receiver(AVar *av) {
@@ -11859,7 +11821,7 @@ static void classify_dispatch_receiver(AVar *av) {
   Vec<AEdge *> mine;
   for (AEdge *e : caller->out_edges)
     if (e && e->rets.in(av)) mine.add(e);
-  if (!mine.n) { ++rv_noedge; return; }
+  if (!mine.n) { ++census.rv_noedge; return; }
   // The discriminating position: one whose actual holds several distinct
   // class syms. Report the FIRST such, which in single dispatch is the
   // receiver.
@@ -11873,14 +11835,14 @@ static void classify_dispatch_receiver(AVar *av) {
         if (c && c->sym && c->sym != sym_nil_type) syms.set_add(c->sym);
       if (syms.set_count() < 2) continue;
       if (!a->contour_is_entry_set)
-        ++rv_cs;
+        ++census.rv_cs;
       else if (a->var && a->var->is_formal)
-        ++rv_formal;
+        ++census.rv_formal;
       else {
-        ++rv_local;
+        ++census.rv_local;
         (void)walk_to_actuator(a, 1);
       }
-      if (getenv("IFA_DBG_RETCONF_V") && rv_formal + rv_local + rv_cs < 24) {
+      if (getenv("IFA_DBG_RETCONF_V") && census.rv_formal + census.rv_local + census.rv_cs < 24) {
         fprintf(stderr, "  [recv] av=%d edges=%d kind=%s var=%s in=%s syms=%d\n", av->id, mine.n,
                 !a->contour_is_entry_set ? "CS" : ((a->var && a->var->is_formal) ? "FORMAL" : "local"),
                 (a->var && a->var->sym && a->var->sym->name) ? a->var->sym->name : "(anon)",
@@ -11892,7 +11854,7 @@ static void classify_dispatch_receiver(AVar *av) {
       return;
     }
   }
-  ++rv_none;
+  ++census.rv_none;
 }
 
 static void classify_rval_confluence(AVar *av) {
@@ -11912,20 +11874,20 @@ static void classify_rval_confluence(AVar *av) {
     else
       ++other;
   }
-  if (!rets.n) { if (local && !other) ++rc_local; else ++rc_other; return; }
-  if (ess.set_count() < 2) { ++rc_ret_one; return; }
+  if (!rets.n) { if (local && !other) ++census.rc_local; else ++census.rc_other; return; }
+  if (ess.set_count() < 2) { ++census.rc_ret_one; return; }
   AType *first = nullptr;
   int differ = 0;
   for (AVar *r : rets) {
     if (!first) { first = r->out->type; continue; }
     if (r->out->type != first) { differ = 1; break; }
   }
-  if (!differ) { ++rc_ret_same; return; }
-  ++rc_ret_differ;
-  if (funs.set_count() > 1) ++rc_differ_nfun; else ++rc_differ_1fun;
+  if (!differ) { ++census.rc_ret_same; return; }
+  ++census.rc_ret_differ;
+  if (funs.set_count() > 1) ++census.rc_differ_nfun; else ++census.rc_differ_1fun;
   classify_dispatch_receiver(av);
   classify_dispatch_kind(av);
-  if (getenv("IFA_DBG_RETCONF_V") && rc_ret_differ < 30) {
+  if (getenv("IFA_DBG_RETCONF_V") && census.rc_ret_differ < 30) {
     fprintf(stderr, "[retconf] p=%d av=%d var=%s in=%s ess=%d funs=%d\n", analysis_pass, av->id,
             (av->var && av->var->sym && av->var->sym->name) ? av->var->sym->name : "(anon)",
             (av->contour_is_entry_set && ((EntrySet *)av->contour)->fun && ((EntrySet *)av->contour)->fun->sym &&
@@ -11944,7 +11906,7 @@ static void classify_rval_confluence(AVar *av) {
 }
 
 // ifa/157 THE LINK (PYC_RETDEMAND). Stage 1 observes a demand on a value it
-// has no actuator for and drops it (`tc_skip_rval`, 769 of 923 per pass on
+// has no actuator for and drops it (`census.tc_skip_rval`, 769 of 923 per pass on
 // softrender). Both halves of the answer already exist: a CS-contoured
 // confluence is handed to route 4 (`tc_cs_dropped`), and ifa/152 built the
 // backtrack that finds the merged CreationSet upstream. Only the link is
@@ -11961,8 +11923,6 @@ static int retdemand_enabled() {
   if (e < 0) { cchar *v = getenv("PYC_RETDEMAND"); e = v ? atoi(v) : 0; }
   return e;
 }
-static long rd_formal = 0, rd_cs = 0, rd_declined_related = 0, rd_none = 0;
-static long rd_cs_1def = 0, rd_cs_ndef = 0;
 
 static AVar *rval_demand_actuator(AVar *av) {
   if (!av->contour_is_entry_set) return nullptr;
@@ -11992,7 +11952,7 @@ static AVar *rval_demand_actuator(AVar *av) {
       for (CreationSet *c : a->out->type->sorted)
         if (c && c->sym && c->sym != sym_nil_type) syms.set_add(c->sym);
       if (syms.set_count() < 2) continue;
-      if (classes_are_related(syms)) { ++rd_declined_related; return nullptr; }
+      if (classes_are_related(syms)) { ++census.rd_declined_related; return nullptr; }
       if (!a->contour_is_entry_set) return a;               // route 4's actuator
       if (a->var && a->var->is_formal) return a;             // stage 1's actuator
       return walk_to_actuator(a, 0);                         // backtrack, ifa/152's walk
@@ -12010,27 +11970,27 @@ static void report_retconf() {
           " | ROUTED formal=%ld cs=%ld (1def=%ld ndef=%ld) declined_related=%ld none=%ld"
           " | KIND static=%ld funvar=%ld (avg %.1f fns) class/recv=%ld (avg %.1f classes) related=%ld distinct_unions=%d"
           " class/arg=%ld nonarrow=%ld noedge=%ld\n",
-          analysis_pass, rc_ret_differ, rc_differ_1fun, rc_differ_nfun, rc_ret_same, rc_ret_one, rc_local, rc_other,
-          rv_formal, rv_local, rv_cs, rv_none, rv_noedge,
-          wk_formal, wk_formal ? (double)wk_hops_formal / wk_formal : 0.0,
-          wk_cs, wk_cs ? (double)wk_hops_cs / wk_cs : 0.0, wk_join, wk_cap,
-          rd_formal, rd_cs, rd_cs_1def, rd_cs_ndef, rd_declined_related, rd_none,
-          dk_static, dk_funvar, dk_funvar ? (double)dk_funvar_syms / dk_funvar : 0.0,
-          dk_recv, dk_recv ? (double)dk_recv_syms / dk_recv : 0.0, dk_recv_related, dk_recv_types.set_count(), dk_arg, dk_nonarrow, dk_noedge);
-  rc_ret_differ = rc_ret_same = rc_ret_one = rc_local = rc_other = 0;
-  rc_differ_1fun = rc_differ_nfun = 0;
-  rv_formal = rv_local = rv_cs = rv_none = rv_noedge = 0;
-  wk_formal = wk_cs = wk_join = wk_cap = wk_hops_formal = wk_hops_cs = 0;
-  rd_formal = rd_cs = rd_declined_related = rd_none = 0;
-  rd_cs_1def = rd_cs_ndef = 0;
-  dk_static = dk_funvar = dk_recv = dk_arg = dk_nonarrow = dk_noedge = 0;
-  dk_funvar_syms = dk_recv_syms = dk_recv_related = 0;
+          analysis_pass, census.rc_ret_differ, census.rc_differ_1fun, census.rc_differ_nfun, census.rc_ret_same, census.rc_ret_one, census.rc_local, census.rc_other,
+          census.rv_formal, census.rv_local, census.rv_cs, census.rv_none, census.rv_noedge,
+          census.wk_formal, census.wk_formal ? (double)census.wk_hops_formal / census.wk_formal : 0.0,
+          census.wk_cs, census.wk_cs ? (double)census.wk_hops_cs / census.wk_cs : 0.0, census.wk_join, census.wk_cap,
+          census.rd_formal, census.rd_cs, census.rd_cs_1def, census.rd_cs_ndef, census.rd_declined_related, census.rd_none,
+          census.dk_static, census.dk_funvar, census.dk_funvar ? (double)census.dk_funvar_syms / census.dk_funvar : 0.0,
+          census.dk_recv, census.dk_recv ? (double)census.dk_recv_syms / census.dk_recv : 0.0, census.dk_recv_related, dk_recv_types.set_count(), census.dk_arg, census.dk_nonarrow, census.dk_noedge);
+  census.rc_ret_differ = census.rc_ret_same = census.rc_ret_one = census.rc_local = census.rc_other = 0;
+  census.rc_differ_1fun = census.rc_differ_nfun = 0;
+  census.rv_formal = census.rv_local = census.rv_cs = census.rv_none = census.rv_noedge = 0;
+  census.wk_formal = census.wk_cs = census.wk_join = census.wk_cap = census.wk_hops_formal = census.wk_hops_cs = 0;
+  census.rd_formal = census.rd_cs = census.rd_declined_related = census.rd_none = 0;
+  census.rd_cs_1def = census.rd_cs_ndef = 0;
+  census.dk_static = census.dk_funvar = census.dk_recv = census.dk_arg = census.dk_nonarrow = census.dk_noedge = 0;
+  census.dk_funvar_syms = census.dk_recv_syms = census.dk_recv_related = 0;
   dk_recv_types.clear();
 }
 
 // ifa/157 step 1 (PYC_ESDEMAND): NOMINATE THE DEMAND INSTEAD OF DROPPING IT.
 //
-// Stage 1 drops 83-87% of its confluences at `tc_skip_rval` -- an ES-contoured
+// Stage 1 drops 83-87% of its confluences at `census.tc_skip_rval` -- an ES-contoured
 // value that is neither a formal nor a return, so its one actuator ("split an
 // EntrySet on a formal") does not apply. But the value did not come from
 // nowhere: if it is irrepresentable and it derives from a FORMAL of the same
@@ -12050,9 +12010,7 @@ static void report_retconf() {
 // The demand is an IRREPRESENTABLE CONVERGED TYPE and nothing weaker. "This
 // formal's type is a union" is the FACT that made PYC_CPA arbitrary.
 static int splithomo_enabled();
-static long ed_seen = 0, ed_formal = 0, ed_no_formal = 0, ed_not_demanded = 0;
 static Vec<EntrySet *> ed_applied;  // one split per contour per pass
-static long ed_had_formals = 0;
 
 static AVar *backtrack_to_own_formal(AVar *av) {
   EntrySet *es = av->contour_is_entry_set ? (EntrySet *)av->contour : nullptr;
@@ -12127,7 +12085,7 @@ static AVar *backtrack_to_own_formal(AVar *av) {
   // mutations, the exact thing M2b exists to prevent.
   Vec<ESSplitDecision *> decisions;
   for (AVar *av : imprecisions) {
-    ++tc_seen;
+    ++census.tc_seen;
     if (!av->contour_is_entry_set && getenv("IFA_DBG_TCDROP")) {
       CreationSet *ccs = (CreationSet *)av->contour;
       fprintf(stderr, "[tcdrop] p=%d confluence on CS cs=%d sym=%s defs=%d type=", analysis_pass,
@@ -12144,29 +12102,29 @@ static AVar *backtrack_to_own_formal(AVar *av) {
         if (av->var->is_formal)
           target = av;
         else {
-          ++tc_skip_rval, log(LOG_SPLITTING, "[stage1] av %d ES/non-formal-rval skipped\n", av->id);
+          ++census.tc_skip_rval, log(LOG_SPLITTING, "[stage1] av %d ES/non-formal-rval skipped\n", av->id);
           if (getenv("IFA_DBG_RETCONF")) classify_rval_confluence(av);  // ifa/157
           // ifa/157: do not drop it -- backtrack the demand to an actuator.
           if (retdemand_enabled()) {
             if (AVar *act = rval_demand_actuator(av)) {
               if (act->contour_is_entry_set) {
-                target = act, ++rd_formal;
+                target = act, ++census.rd_formal;
                 log(LOG_SPLITTING, "[stage1] av %d rval demand -> formal av %d\n", av->id, act->id);
               } else if (CreationSet *acs = (CreationSet *)act->contour) {
                 // A CreationSet with ONE creation point has nothing to
                 // partition -- ifa/152's backtrack exists for exactly that.
-                (acs->defs.set_count() > 1 ? rd_cs_ndef : rd_cs_1def)++;
-                if (tc_cs_dropped.set_add(acs)) ++rd_cs;
+                (acs->defs.set_count() > 1 ? census.rd_cs_ndef : census.rd_cs_1def)++;
+                if (tc_cs_dropped.set_add(acs)) ++census.rd_cs;
                 log(LOG_SPLITTING, "[stage1] av %d rval demand -> cs %d (route 4)\n", av->id, acs->id);
               }
             } else
-              ++rd_none;
+              ++census.rd_none;
           }
           // ifa/157 steps 1-2 PROBE (IFA_DBG_ESDEMAND) -- NOT a lever. Both
           // were built as PYC_ESDEMAND=1/2 and the stop condition fired.
           //
           // Step 1 was: do not drop an irrepresentable ES-contoured rvalue at
-          // `tc_skip_rval`; backtrack it through writers INSIDE its own contour
+          // `census.tc_skip_rval`; backtrack it through writers INSIDE its own contour
           // to the formal it derives from, and split the contour on that
           // formal. The demand is an irrepresentable CONVERGED type and nothing
           // weaker ("this formal's type is a union" is the fact that made
@@ -12199,9 +12157,9 @@ static AVar *backtrack_to_own_formal(AVar *av) {
           // and with `sudoku5`'s 56 polluted contours, 55 of them `defs=1`.
           if ((getenv("IFA_DBG_ESDEMAND") || splithomo_enabled()) && av->out) {
             if (atype_irrepresentable(av->out->type)) {
-              ++ed_seen;
+              ++census.ed_seen;
               if (backtrack_to_own_formal(av)) {
-                ++ed_formal;
+                ++census.ed_formal;
                 // ifa/157 step 2, MEASURED DEAD. Routing the nominated
                 // formal to `split_edges` -- partition by the formal's
                 // CreationSet membership, bounded to two groups by ifa/146 E --
@@ -12216,12 +12174,12 @@ static AVar *backtrack_to_own_formal(AVar *av) {
                 // homogeneous and heterogeneous tuples different TYPES, so the
                 // receiver that holds both cannot exist there.
               } else {
-                ++ed_no_formal;
+                ++census.ed_no_formal;
                 EntrySet *aes = (EntrySet *)av->contour;
-                if (aes->fun && aes->fun->positional_arg_positions.n > 1) ++ed_had_formals;
+                if (aes->fun && aes->fun->positional_arg_positions.n > 1) ++census.ed_had_formals;
               }
             } else
-              ++ed_not_demanded;
+              ++census.ed_not_demanded;
           }
         }
       } else {
@@ -12229,7 +12187,7 @@ static AVar *backtrack_to_own_formal(AVar *av) {
         if (is_return_value(aav))
           target = aav;
         else
-          ++tc_skip_lval, log(LOG_SPLITTING, "[stage1] av %d ES/lval-non-return skipped\n", av->id);
+          ++census.tc_skip_lval, log(LOG_SPLITTING, "[stage1] av %d ES/lval-non-return skipped\n", av->id);
       }
       if (!target) continue;
       if (fdynamic) {
@@ -12241,10 +12199,10 @@ static AVar *backtrack_to_own_formal(AVar *av) {
         ESSplitDecision *dec = decide_entry_set_split(target, SPLIT_TYPE, SPLIT_VALUE);
         log(LOG_SPLITTING, "[stage1] av %d ES/%s decide -> %d groups\n", av->id, av->is_lvalue ? "return" : "formal",
             dec ? dec->groups.n : 0);
-        if (dec) ++tc_dec, decisions.add(dec);
+        if (dec) ++census.tc_dec, decisions.add(dec);
       }
     } else {
-      ++tc_skip_cs;
+      ++census.tc_skip_cs;
       // ifa/133: hand it to the pass's last rung rather than dropping it.
       // `av->contour` is the CreationSet whose element (or positional var)
       // holds the irreconcilable union; its creation points are `defs`.
@@ -12257,7 +12215,7 @@ static AVar *backtrack_to_own_formal(AVar *av) {
   Vec<EntrySet *> applied;
   for (ESSplitDecision *dec : decisions) {
     if (applied.set_in(dec->es)) {
-      ++tc_defer;
+      ++census.tc_defer;
       log(LOG_SPLITTING, "[stage1] av %d es %d DEFERRED: es already split this pass (next pass re-decides)\n",
           dec->av->id, dec->es->id);
       continue;
@@ -12272,7 +12230,7 @@ static AVar *backtrack_to_own_formal(AVar *av) {
       if (dec->es->fun && dec->es->fun->sym && dec->es->fun->sym->name && !strcmp(dec->es->fun->sym->name, dn))
         fprintf(stderr, "APPLY p=%d es=%d av=%d -> %d\n", analysis_pass, dec->es->id, dec->av->id, r);
     log(LOG_SPLITTING, "[stage1] av %d es %d apply -> %d\n", dec->av->id, dec->es->id, r);
-    if (r) (dec->av->is_lvalue ? tc_return : tc_formal)++;
+    if (r) (dec->av->is_lvalue ? census.tc_return : census.tc_formal)++;
     analyze_again |= r;
   }
   return analyze_again;
@@ -13046,10 +13004,10 @@ static void dbg_es_per_fun() {
     if (e->value > 1) ++multi;
     if (e->value > mx) { mx = e->value; worst = e->key; }
   }
-  if (cd_kept + cd_dropped) fprintf(stderr, "CONFDEMAND kept=%d dropped=%d prospective_differs=%d no_trigger=%d\n", cd_kept, cd_dropped, cd_prospective_differs, cd_no_trigger);
-  if (ck_single + ck_irrep + ck_samesym + ck_repr)
-    fprintf(stderr, "CONFKIND single=%d IRREPRESENTABLE=%d same_sym=%d representable_union=%d\n", ck_single, ck_irrep, ck_samesym, ck_repr);
-  if (grp_total) fprintf(stderr, "GROUPSPLIT total=%d scattered=%d\n", grp_total, grp_scattered);
+  if (census.cd_kept + census.cd_dropped) fprintf(stderr, "CONFDEMAND kept=%d dropped=%d prospective_differs=%d no_trigger=%d\n", census.cd_kept, census.cd_dropped, census.cd_prospective_differs, census.cd_no_trigger);
+  if (census.ck_single + census.ck_irrep + census.ck_samesym + census.ck_repr)
+    fprintf(stderr, "CONFKIND single=%d IRREPRESENTABLE=%d same_sym=%d representable_union=%d\n", census.ck_single, census.ck_irrep, census.ck_samesym, census.ck_repr);
+  if (census.grp_total) fprintf(stderr, "GROUPSPLIT total=%d scattered=%d\n", census.grp_total, census.grp_scattered);
   fprintf(stderr, "ESPERFUN pass=%d ess=%d funs=%d funs_with_multiple=%d max=%d worst=%s\n", analysis_pass,
           fa->ess.n, funs, multi, mx, (worst && worst->sym && worst->sym->name) ? worst->sym->name : "?");
 }
@@ -13087,7 +13045,7 @@ static void dbg_es_per_fun() {
   // structurally zero WITHIN a pass -- before == after, always.
   //
   // So `PYC_DBG_STAGEDELTA`'s `d_ess`/`d_css` are computed off
-  // `stage_aes0`/`stage_acs0` instead, snapshots of `all_entry_sets` /
+  // `census.stage_aes0`/`census.stage_acs0` instead, snapshots of `all_entry_sets` /
   // `all_creation_sets`. Those are appended by the EntrySet and CreationSet
   // constructors themselves, so they move the moment a stage creates a
   // contour, which is the question the probe exists to answer.
@@ -13106,12 +13064,12 @@ static void dbg_es_per_fun() {
   // change. The goldens' own `ess=A→B` is a within-pass tautology and worth
   // revisiting on its own terms.
   int ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-      stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
+      census.stage_aes0 = fa->all_entry_sets.n, census.stage_acs0 = fa->all_creation_sets.n;
   Vec<AVar *> confluences;
   // 1) split EntrySets based on type using AVar::out
   if (!analyze_again) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-      stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
+      census.stage_aes0 = fa->all_entry_sets.n, census.stage_acs0 = fa->all_creation_sets.n;
     collect_type_confluences(confluences);
     cur_split_stage = (int)FAPassStage::TYPE_CONFLUENCE;
     analyze_again = split_ess_for_type(confluences, SPLIT_EDGES);
@@ -13121,7 +13079,7 @@ static void dbg_es_per_fun() {
     // starves every later stage. Report the claim next to the effect.
     if (getenv("PYC_DBG_STAGEDELTA"))
       fprintf(stderr, "STAGEDELTA p=%d TYPE_CONFL returned=%d confluences=%d d_ess=%d d_css=%d viol=%d\n",
-              analysis_pass, analyze_again, confluences.n, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0,
+              analysis_pass, analyze_again, confluences.n, fa->all_entry_sets.n - census.stage_aes0, fa->all_creation_sets.n - census.stage_acs0,
               fa->type_violations.set_count());
     log(LOG_SPLITTING, "split_ess_for_type %d\n", analyze_again);
     if (analyze_again) {
@@ -13180,7 +13138,7 @@ static void dbg_es_per_fun() {
   // program.
   if (!analyze_again) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-      stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
+      census.stage_aes0 = fa->all_entry_sets.n, census.stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::MARK_TYPE;
     // ifa/146 D, 2026-09-08: MARK_TYPE removed. Mark distance is
     // depth-from-a-generating-AVar -- provenance, so no type tuple can name
@@ -13193,7 +13151,7 @@ static void dbg_es_per_fun() {
       record_fa_event(FAPassStage::MARK_TYPE, analyze_again, ess0, css0, viol0);
         if (getenv("PYC_DBG_STAGEDELTA"))
           fprintf(stderr, "STAGEDELTA p=%d MARK_TYPE    returned=%d d_ess=%d d_css=%d viol=%d\n", analysis_pass,
-                analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0, fa->type_violations.set_count());
+                analyze_again, fa->all_entry_sets.n - census.stage_aes0, fa->all_creation_sets.n - census.stage_acs0, fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::MARK_TYPE];
     }
   }
@@ -13253,13 +13211,13 @@ static void dbg_es_per_fun() {
       for (AVar *av : confluences) (void)compute_setters(av, avs, AKIND_TYPE);
     }
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-      stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
+      census.stage_aes0 = fa->all_entry_sets.n, census.stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::SETTER;
     int viol_before_setter = fa->type_violations.set_count();
     if (split_for_setters(avs, analyze_again)) analyze_again = 1;
     if (getenv("PYC_DBG_STAGEDELTA"))
       fprintf(stderr, "STAGEDELTA p=%d SETTER      returned=%d d_ess=%d d_css=%d viol=%d (was %d)\n",
-              analysis_pass, analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0,
+              analysis_pass, analyze_again, fa->all_entry_sets.n - census.stage_aes0, fa->all_creation_sets.n - census.stage_acs0,
               fa->type_violations.set_count(), viol_before_setter);
     fa->stage_time[(int)FAPassStage::SETTER] += stage_timer.lap();
     if (analyze_again) {
@@ -13269,7 +13227,7 @@ static void dbg_es_per_fun() {
     log(LOG_SPLITTING, "split_for_setters %d\n", analyze_again);
     if (!analyze_again) {
       ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-      stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
+      census.stage_aes0 = fa->all_entry_sets.n, census.stage_acs0 = fa->all_creation_sets.n;
       cur_split_stage = (int)FAPassStage::SETTER_OF_SETTER;
       analyze_again = split_for_setters_of_setters();
       fa->stage_time[(int)FAPassStage::SETTER_OF_SETTER] += stage_timer.lap();
@@ -13277,7 +13235,7 @@ static void dbg_es_per_fun() {
         record_fa_event(FAPassStage::SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
         if (getenv("PYC_DBG_STAGEDELTA"))
           fprintf(stderr, "STAGEDELTA p=%d SETTER_OF_SETTER returned=%d d_ess=%d d_css=%d viol=%d\n", analysis_pass,
-                analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0, fa->type_violations.set_count());
+                analyze_again, fa->all_entry_sets.n - census.stage_aes0, fa->all_creation_sets.n - census.stage_acs0, fa->type_violations.set_count());
         ++fa->stage_progress_count[(int)FAPassStage::SETTER_OF_SETTER];
       }
     }
@@ -13334,7 +13292,7 @@ static void dbg_es_per_fun() {
           av->var && av->var->sym && av->var->sym->name ? av->var->sym->name : "(anon)", r);
     }
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-      stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
+      census.stage_aes0 = fa->all_entry_sets.n, census.stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::MARK_SETTER;
     if (split_for_setters(avs, analyze_again)) analyze_again = 1;
     fa->stage_time[(int)FAPassStage::MARK_SETTER] += stage_timer.lap();
@@ -13342,13 +13300,13 @@ static void dbg_es_per_fun() {
       record_fa_event(FAPassStage::MARK_SETTER, analyze_again, ess0, css0, viol0);
         if (getenv("PYC_DBG_STAGEDELTA"))
           fprintf(stderr, "STAGEDELTA p=%d MARK_SETTER  returned=%d d_ess=%d d_css=%d viol=%d\n", analysis_pass,
-                analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0, fa->type_violations.set_count());
+                analyze_again, fa->all_entry_sets.n - census.stage_aes0, fa->all_creation_sets.n - census.stage_acs0, fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::MARK_SETTER];
     }
     log(LOG_SPLITTING, "split_for_setters with marks %d\n", analyze_again);
     if (!analyze_again) {
       ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-      stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
+      census.stage_aes0 = fa->all_entry_sets.n, census.stage_acs0 = fa->all_creation_sets.n;
       cur_split_stage = (int)FAPassStage::MARK_SETTER_OF_SETTER;
       analyze_again = split_for_setters_of_setters();
       fa->stage_time[(int)FAPassStage::MARK_SETTER_OF_SETTER] += stage_timer.lap();
@@ -13356,7 +13314,7 @@ static void dbg_es_per_fun() {
         record_fa_event(FAPassStage::MARK_SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
         if (getenv("PYC_DBG_STAGEDELTA"))
           fprintf(stderr, "STAGEDELTA p=%d MARK_SETTER_OF_SETTER returned=%d d_ess=%d d_css=%d viol=%d\n", analysis_pass,
-                analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0, fa->type_violations.set_count());
+                analyze_again, fa->all_entry_sets.n - census.stage_aes0, fa->all_creation_sets.n - census.stage_acs0, fa->type_violations.set_count());
         ++fa->stage_progress_count[(int)FAPassStage::MARK_SETTER_OF_SETTER];
       }
     }
@@ -13377,7 +13335,7 @@ static void dbg_es_per_fun() {
     // 5) split AEdges(s) and EntrySet(s) for violations based on type using
     // dynamic dispatch
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-      stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
+      census.stage_aes0 = fa->all_entry_sets.n, census.stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::VIOLATION;
     analyze_again = split_for_violations(fa->type_violations) || analyze_again;
     fa->stage_time[(int)FAPassStage::VIOLATION] += stage_timer.lap();
@@ -13385,7 +13343,7 @@ static void dbg_es_per_fun() {
       record_fa_event(FAPassStage::VIOLATION, analyze_again, ess0, css0, viol0);
         if (getenv("PYC_DBG_STAGEDELTA"))
           fprintf(stderr, "STAGEDELTA p=%d VIOLATION    returned=%d d_ess=%d d_css=%d viol=%d\n", analysis_pass,
-                analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0, fa->type_violations.set_count());
+                analyze_again, fa->all_entry_sets.n - census.stage_aes0, fa->all_creation_sets.n - census.stage_acs0, fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::VIOLATION];
     }
   }
@@ -13409,7 +13367,7 @@ static void dbg_es_per_fun() {
     fprintf(stderr, "[quiesce] p=%d reached=%d\n", analysis_pass, analyze_again ? 0 : 1);
   if (!analyze_again) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-      stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
+      census.stage_aes0 = fa->all_entry_sets.n, census.stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::PER_CS_RECEIVER;
     analyze_again = split_for_per_cs_method_receivers() || analyze_again;
     fa->stage_time[(int)FAPassStage::PER_CS_RECEIVER] += stage_timer.lap();
@@ -13417,7 +13375,7 @@ static void dbg_es_per_fun() {
       record_fa_event(FAPassStage::PER_CS_RECEIVER, analyze_again, ess0, css0, viol0);
         if (getenv("PYC_DBG_STAGEDELTA"))
           fprintf(stderr, "STAGEDELTA p=%d PER_CS_RECEIVER returned=%d d_ess=%d d_css=%d viol=%d\n", analysis_pass,
-                analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0, fa->type_violations.set_count());
+                analyze_again, fa->all_entry_sets.n - census.stage_aes0, fa->all_creation_sets.n - census.stage_acs0, fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::PER_CS_RECEIVER];
     }
   }
@@ -13444,7 +13402,7 @@ static void dbg_es_per_fun() {
   // placement.
   if (!analyze_again) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-      stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
+      census.stage_aes0 = fa->all_entry_sets.n, census.stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::CSM_ELEMENT_CS;
     analyze_again = split_container_methods_per_element_cs();
     fa->stage_time[(int)FAPassStage::CSM_ELEMENT_CS] += stage_timer.lap();
@@ -13452,7 +13410,7 @@ static void dbg_es_per_fun() {
       record_fa_event(FAPassStage::CSM_ELEMENT_CS, analyze_again, ess0, css0, viol0);
         if (getenv("PYC_DBG_STAGEDELTA"))
           fprintf(stderr, "STAGEDELTA p=%d CSM_ELEMENT_CS returned=%d d_ess=%d d_css=%d viol=%d\n", analysis_pass,
-                analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0, fa->type_violations.set_count());
+                analyze_again, fa->all_entry_sets.n - census.stage_aes0, fa->all_creation_sets.n - census.stage_acs0, fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::CSM_ELEMENT_CS];
     }
   }
@@ -13468,7 +13426,7 @@ static void dbg_es_per_fun() {
   // may be acted on. A quiescent pass behaves exactly as before.
   {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-      stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
+      census.stage_aes0 = fa->all_entry_sets.n, census.stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::CS_DEF_PARTITION;
     // THIS stage's own result, kept separate from the running
     // `analyze_again`. Every other stage here is gated on `!analyze_again`,
@@ -13592,7 +13550,7 @@ static void dbg_es_per_fun() {
       record_fa_event(FAPassStage::CS_DEF_PARTITION, cs_def_r, ess0, css0, viol0);
         if (getenv("PYC_DBG_STAGEDELTA"))
           fprintf(stderr, "STAGEDELTA p=%d CS_DEF_PARTITION returned=%d d_ess=%d d_css=%d viol=%d\n", analysis_pass,
-                cs_def_r, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0,
+                cs_def_r, fa->all_entry_sets.n - census.stage_aes0, fa->all_creation_sets.n - census.stage_acs0,
                 fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::CS_DEF_PARTITION];
     }
@@ -14065,8 +14023,8 @@ static int demote_mixed_arity_slots() {
         fa->examined_avar_count);
   }
   if (getenv("PYC_DBG_WORK"))  // ifa/111 probe
-    fprintf(stderr, "WORK pass=%d edges=%ld sends=%ld es_constraints=%ld pass_time=%f\n", analysis_pass, work_edges,
-            work_sends, work_escons, pass_timer.time);
+    fprintf(stderr, "WORK pass=%d edges=%ld sends=%ld es_constraints=%ld pass_time=%f\n", analysis_pass, census.work_edges,
+            census.work_sends, census.work_escons, pass_timer.time);
   if (write_code_exit == analysis_pass) {
     if1_simple_dead_code_elimination(fa->pdb->if1);
     ifa_code("if1");
@@ -14392,7 +14350,6 @@ static void audit_edge_arg_values() {
 // non-monotonically -- the contour lost a CreationSet it held last pass
 // -- the naming itself is oscillating, and no amount of extra passes
 // converges it. IFA_DBG_KEYDRIFT=1 separates the two.
-static long kd_stable = 0, kd_grew = 0, kd_shrank = 0, kd_new = 0, kd_flip = 0;
 static Vec<Fun *> kd_flip_funs;
 
 // ifa/issues/101: stamp each container CreationSet with its converged
@@ -14753,7 +14710,6 @@ static int cselem_rejoin_enabled() {
   return e;
 }
 
-static int cselem_rejoins = 0;  // cumulative, for the DEMAND line
 
 static int cselem_rejoin_unknown_mints() {
   if (cselem_enabled() != 3 || !cselem_rejoin_enabled()) return 0;
@@ -14784,9 +14740,9 @@ static int cselem_rejoin_unknown_mints() {
               other->id, cselem_key_shape_text(key),
               (u.v->var && u.v->var->sym && u.v->var->sym->name) ? u.v->var->sym->name : "?");
   }
-  cselem_rejoins += joined;
+  census.cselem_rejoins += joined;
   if (joined && getenv("IFA_DBG_DEMAND"))
-    fprintf(stderr, "REJOIN p=%d joined=%d total=%d\n", analysis_pass, joined, cselem_rejoins);
+    fprintf(stderr, "REJOIN p=%d joined=%d total=%d\n", analysis_pass, joined, census.cselem_rejoins);
   return joined ? 1 : 0;
 }
 
@@ -14819,8 +14775,6 @@ static int csresplit_enabled() {
   return e;
 }
 
-static int cselem_resplits = 0;   // defs moved off a diverged CS, cumulative
-static int cselem_resplit_mints = 0;  // of those, how many needed a NEW CS
 
 static int cselem_resplit_diverged() {
   if (cselem_enabled() != 3 || !csresplit_enabled()) return 0;
@@ -14872,7 +14826,7 @@ static int cselem_resplit_diverged() {
         dest = new CreationSet(cs);
         dest->split = cs;
         cselem_shape_claim(g.first, dest);
-        ++cselem_resplit_mints;
+        ++census.cselem_resplit_mints;
       }
       Vec<AVar *> rest;
       cs->defs.set_difference(g.second, rest);
@@ -14885,10 +14839,10 @@ static int cselem_resplit_diverged() {
                 g.second.n, cselem_key_shape_text(g.first), dest->split == cs ? " (new)" : " (joined)");
     }
   }
-  cselem_resplits += moved;
+  census.cselem_resplits += moved;
   if (moved && getenv("IFA_DBG_DEMAND"))
-    fprintf(stderr, "RESPLIT p=%d moved=%d total=%d mints=%d\n", analysis_pass, moved, cselem_resplits,
-            cselem_resplit_mints);
+    fprintf(stderr, "RESPLIT p=%d moved=%d total=%d mints=%d\n", analysis_pass, moved, census.cselem_resplits,
+            census.cselem_resplit_mints);
   return moved ? 1 : 0;
 }
 
@@ -14951,16 +14905,16 @@ static void capture_type_keys() {
     es->key_hash[1] = es->key_hash[0];
     es->key_hash[0] = h;
     if (!drift) continue;
-    if (fresh) ++kd_new;
+    if (fresh) ++census.kd_new;
     else if (flip) {
-      ++kd_flip;
+      ++census.kd_flip;
       kd_flip_funs.set_add(es->fun);
     } else if (shrank)
-      ++kd_shrank;
+      ++census.kd_shrank;
     else if (grew)
-      ++kd_grew;
+      ++census.kd_grew;
     else
-      ++kd_stable;
+      ++census.kd_stable;
   }
 }
 
@@ -14969,24 +14923,24 @@ static void report_incompat() {
   fprintf(stderr,
           "INCOMPAT p=%d arg=%ld ret=%ld retn=%ld | stage1 seen=%ld skip(rval=%ld lval=%ld cs=%ld) dec=%ld "
           "defer=%ld split(formal=%ld return=%ld)\n",
-          analysis_pass, ic_arg, ic_ret, ic_retn, tc_seen, tc_skip_rval, tc_skip_lval, tc_skip_cs, tc_dec, tc_defer,
-          tc_formal, tc_return);
-  fprintf(stderr, "LEDGER p=%d dup_es=%d dup_cs=%d churn=%d\n", analysis_pass, ld_dup_es, ld_dup_cs, ld_churn);
-  ic_arg = ic_ret = ic_retn = tc_formal = tc_return = 0;
-  tc_seen = tc_skip_rval = tc_skip_lval = tc_skip_cs = tc_dec = tc_defer = 0;
+          analysis_pass, census.ic_arg, census.ic_ret, census.ic_retn, census.tc_seen, census.tc_skip_rval, census.tc_skip_lval, census.tc_skip_cs, census.tc_dec, census.tc_defer,
+          census.tc_formal, census.tc_return);
+  fprintf(stderr, "LEDGER p=%d dup_es=%d dup_cs=%d churn=%d\n", analysis_pass, census.ld_dup_es, census.ld_dup_cs, census.ld_churn);
+  census.ic_arg = census.ic_ret = census.ic_retn = census.tc_formal = census.tc_return = 0;
+  census.tc_seen = census.tc_skip_rval = census.tc_skip_lval = census.tc_skip_cs = census.tc_dec = census.tc_defer = 0;
 }
 
 static void report_markwhy() {
   if (!mark_why_enabled()) return;
-  fprintf(stderr, "MARKWHY p=%d cs_differ=%ld cs_same=%ld\n", analysis_pass, mark_cs_differ, mark_cs_same);
-  mark_cs_differ = mark_cs_same = 0;
+  fprintf(stderr, "MARKWHY p=%d cs_differ=%ld cs_same=%ld\n", analysis_pass, census.mark_cs_differ, census.mark_cs_same);
+  census.mark_cs_differ = census.mark_cs_same = 0;
 }
 
 static void report_keydrift() {
   if (!getenv("IFA_DBG_KEYDRIFT")) return;
-  fprintf(stderr, "KEYDRIFT p=%d stable=%ld grew=%ld shrank=%ld flip=%ld new=%ld", analysis_pass, kd_stable, kd_grew,
-          kd_shrank, kd_flip, kd_new);
-  if (kd_flip) {
+  fprintf(stderr, "KEYDRIFT p=%d stable=%ld grew=%ld shrank=%ld flip=%ld new=%ld", analysis_pass, census.kd_stable, census.kd_grew,
+          census.kd_shrank, census.kd_flip, census.kd_new);
+  if (census.kd_flip) {
     kd_flip_funs.set_to_vec();  // set_add leaves null holes
     qsort_by_id(kd_flip_funs);
     fprintf(stderr, " flip_funs=");
@@ -14994,15 +14948,15 @@ static void report_keydrift() {
       if (f && f->sym) fprintf(stderr, "%s#%d,", f->sym->name ? f->sym->name : "?", f->sym->id);
   }
   fprintf(stderr, "\n");
-  kd_stable = kd_grew = kd_shrank = kd_new = kd_flip = 0;
+  census.kd_stable = census.kd_grew = census.kd_shrank = census.kd_new = census.kd_flip = 0;
   kd_flip_funs.clear();
 }
 
 static void report_canon_stats() {
   if (!canon_enabled() || !getenv("IFA_DBG_CANON")) return;
-  fprintf(stderr, "CANON p=%d hit=%ld miss=%ld conflict=%ld conflict_honored=%ld\n", analysis_pass, canon_hit,
-          canon_miss, canon_conflict, canon_conflict_honored);
-  canon_hit = canon_miss = canon_conflict = canon_conflict_honored = 0;
+  fprintf(stderr, "CANON p=%d hit=%ld miss=%ld conflict=%ld conflict_honored=%ld\n", analysis_pass, census.canon_hit,
+          census.canon_miss, census.canon_conflict, census.canon_conflict_honored);
+  census.canon_hit = census.canon_miss = census.canon_conflict = census.canon_conflict_honored = 0;
 }
 
 // ifa/issues/074: how many contours would each NAMING scheme give this
@@ -16249,11 +16203,11 @@ static void report_demand_ratio() {
           analysis_pass, fa->ess.n, fa->css.n, c.n_cs, shapes, pshapes,
           shapes ? (double)c.n_cs / shapes : 0.0, pshapes ? (double)c.n_cs / pshapes : 0.0, c.total_types(),
           c.n_empty, c.n_mixed, c.n_novar, unkmint, unkres, unkjoin, unkstill, c.n_multidef, multidef_all,
-          cselem_rejoins, cselem_mint_why[kMintNoSiteCS], cselem_mint_why[kMintMoldSplitChild],
-          cselem_mint_why[kMintMoldCMC], cselem_mint_why[kMintMoldIneligible], canon, canon_siteless, cselem_resplits,
-          cselem_resplit_mints, nstrip, nmulti, nsame, fa_cap_strips);
-  if (getenv("PYC_ELEMSETTER") && (es_added + es_seeded))
-    fprintf(stderr, "ELEMSETTER demand_added=%d starters_seeded=%d\n", es_added, es_seeded);
+          census.cselem_rejoins, census.cselem_mint_why[kMintNoSiteCS], census.cselem_mint_why[kMintMoldSplitChild],
+          census.cselem_mint_why[kMintMoldCMC], census.cselem_mint_why[kMintMoldIneligible], canon, canon_siteless, census.cselem_resplits,
+          census.cselem_resplit_mints, nstrip, nmulti, nsame, census.fa_cap_strips);
+  if (getenv("PYC_ELEMSETTER") && (census.es_added + census.es_seeded))
+    fprintf(stderr, "ELEMSETTER demand_added=%d starters_seeded=%d\n", census.es_added, census.es_seeded);
   // ifa/133: IFA_DBG_CSDUMP=<csid>, or -1 for every list CS -- dump the
   // and every backward writer, with the writer's function and contribution.
   if (cchar *cw = getenv("IFA_DBG_CSDUMP")) {
@@ -16321,21 +16275,21 @@ static void report_demand_ratio() {
       if (e->value > 1) ++multi;
       if (e->value > mx) { mx = e->value; worst = e->key; }
     }
-    if (cd_kept + cd_dropped) fprintf(stderr, "CONFDEMAND kept=%d dropped=%d prospective_differs=%d no_trigger=%d\n", cd_kept, cd_dropped, cd_prospective_differs, cd_no_trigger);
-  if (ck_single + ck_irrep + ck_samesym + ck_repr)
-    fprintf(stderr, "CONFKIND single=%d IRREPRESENTABLE=%d same_sym=%d representable_union=%d\n", ck_single, ck_irrep, ck_samesym, ck_repr);
-  if (grp_total) fprintf(stderr, "GROUPSPLIT total=%d scattered=%d\n", grp_total, grp_scattered);
+    if (census.cd_kept + census.cd_dropped) fprintf(stderr, "CONFDEMAND kept=%d dropped=%d prospective_differs=%d no_trigger=%d\n", census.cd_kept, census.cd_dropped, census.cd_prospective_differs, census.cd_no_trigger);
+  if (census.ck_single + census.ck_irrep + census.ck_samesym + census.ck_repr)
+    fprintf(stderr, "CONFKIND single=%d IRREPRESENTABLE=%d same_sym=%d representable_union=%d\n", census.ck_single, census.ck_irrep, census.ck_samesym, census.ck_repr);
+  if (census.grp_total) fprintf(stderr, "GROUPSPLIT total=%d scattered=%d\n", census.grp_total, census.grp_scattered);
   fprintf(stderr, "ESPERFUN pass=%d ess=%d funs=%d funs_with_multiple=%d max=%d worst=%s\n", analysis_pass,
             fa->ess.n, funs, multi, mx,
             (worst && worst->sym && worst->sym->name) ? worst->sym->name : "?");
   }
   if (getenv("IFA_DBG_REDERIVE"))
     fprintf(stderr, "[rederive] TOTAL applies-reporting-split=%ld of which created NO EntrySet=%ld\n",
-            aes_apply_split, aes_apply_split_nogrowth);
+            census.aes_apply_split, census.aes_apply_split_nogrowth);
   if (getenv("IFA_DBG_CSROUTES")) {
     fprintf(stderr, "CSROUTES");
-    for (int i = 0; i < kR_count; i++) fprintf(stderr, " %s=%d", cs_route_name[i], cs_route_count[i]);
-    fprintf(stderr, " esl_hit=%d esl_walk=%d mint_in_child=%d mint_child_noparentbinding=%d mint_child_cmc=%d esl_reached=%d esl_decline=%d\n", esl_hit, esl_walk, mint_in_child, mint_child_novar, mint_child_cmc, esl_reached, esl_decline);
+    for (int i = 0; i < kR_count; i++) fprintf(stderr, " %s=%d", cs_route_name[i], census.cs_route_count[i]);
+    fprintf(stderr, " census.esl_hit=%d census.esl_walk=%d census.mint_in_child=%d mint_child_noparentbinding=%d census.mint_child_cmc=%d census.esl_reached=%d census.esl_decline=%d\n", census.esl_hit, census.esl_walk, census.mint_in_child, census.mint_child_novar, census.mint_child_cmc, census.esl_reached, census.esl_decline);
   }
 }
 
@@ -16382,7 +16336,7 @@ static void analyze_to_convergence() {
     while (fa->edge_worklist.head || fa->send_worklist.head) {
       while (AEdge *e = fa->edge_worklist.pop()) {
         e->in_edge_worklist = 0;
-        ++work_edges;  // ifa/111 probe
+        ++census.work_edges;  // ifa/111 probe
         analyze_edge(e);
         if ((++edge_count % STALL_CHECK_INTERVAL) == 0) {
           if (fa->ess.n > last_ess_check) {
@@ -16399,12 +16353,12 @@ static void analyze_to_convergence() {
       }
       while (AVar *send = fa->send_worklist.pop()) {
         send->in_send_worklist = 0;
-        ++work_sends;  // ifa/111 probe
+        ++census.work_sends;  // ifa/111 probe
         add_send_edges_pnode(send->var->def, (EntrySet *)send->contour);
       }
       while (EntrySet *es = fa->es_worklist.pop()) {
         es->in_es_worklist = 0;
-        ++work_escons;  // ifa/111 probe
+        ++census.work_escons;  // ifa/111 probe
         add_es_constraints(es);
       }
     }
@@ -16566,15 +16520,15 @@ int FA::analyze(Fun *top) {
   if (getenv("PYC_DBG_CONVERGED")) fprintf(stderr, "CONVERGED=%d\n", pass_limit_hit ? 0 : 1);
   if (getenv("IFA_DBG_ESDEMAND"))  // ifa/157 step 1/2
     fprintf(stderr, "ESDEMAND demanded=%ld ->formal=%ld no_formal=%ld (of which the contour HAD formals: %ld) not_demanded=%ld\n",
-            ed_seen, ed_formal, ed_no_formal, ed_had_formals, ed_not_demanded);
+            census.ed_seen, census.ed_formal, census.ed_no_formal, census.ed_had_formals, census.ed_not_demanded);
   if (getenv("IFA_DBG_REPRKEY"))
-    fprintf(stderr, "REPRKEY new=%ld same=%ld CHANGED=%ld\n", rk_new, rk_same, rk_changed);
+    fprintf(stderr, "REPRKEY new=%ld same=%ld CHANGED=%ld\n", census.rk_new, census.rk_same, census.rk_changed);
   // ifa/157: of the AVars whose CONVERGED type is an irrepresentable union,
   // how many did the edge-triggered confluence test flag? `unflagged` is the
   // blindness the level question would close -- and closing it was measured
   // to buy nothing; see the note at conflevel_probe.
   if (conflevel_probe())
-    fprintf(stderr, "CONFLEVEL flagged=%d unflagged=%d\n", cl_flagged, cl_unflagged);
+    fprintf(stderr, "CONFLEVEL flagged=%d unflagged=%d\n", census.cl_flagged, census.cl_unflagged);
   if (getenv("PYC_DBG_STAGES")) {
     fprintf(stderr, "STAGES:");
     for (int i = 0; i < kNumFAPassStages; i++)
