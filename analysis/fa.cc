@@ -557,7 +557,6 @@ static int esl_hit = 0, esl_walk = 0;  // ifa/133: split-parent route hits / cha
 static int mint_in_child = 0, mint_child_novar = 0, mint_child_cmc = 0;
 static int esl_reached = 0, esl_decline = 0;
 static int route_saw_split = -3, route_saw_origin = -3;
-static int mint_report = 0;
 static int grp_total = 0, grp_scattered = 0;
 static int ck_single = 0, ck_irrep = 0, ck_samesym = 0, ck_repr = 0;
 static int cd_kept = 0, cd_dropped = 0, cd_prospective_differs = 0, cd_no_trigger = 0;
@@ -1182,7 +1181,6 @@ Lunique:
   if (es && (es->split || es->split_origin)) {
     ++mint_in_child;
     if (getenv("PYC_ASSERT_MINT")) {
-      ++mint_report;
       fprintf(stderr,
               "[MINT-IN-CHILD] p=%d es=%d fun=%s var=%s sym=%s | AT ROUTE split=%d origin=%d | NOW split=%d origin=%d\n",
               analysis_pass, es->id,
@@ -1724,7 +1722,6 @@ static Vec<CreationSet *> tc_cs_dropped;
 // Per-pass, like tc_cs_dropped: an imprecise early pass must not leave a
 // standing demand behind.
 static Vec<AVar *> fieldsplit_demands;
-static long fs_demands = 0, fs_split = 0;
 
 // ifa/issues/124: `->type` strips a pure-nil AType to bottom (make_AType's
 // is_unique_type branch; the 060 carve-out that KEEPS nil only fires when
@@ -2770,19 +2767,16 @@ static void make_closure_var(Var *v, EntrySet *es, CreationSet *cs, AVar *result
 static void make_closure(AVar *result) {
   assert(result->contour_is_entry_set);
   PNode *pn = result->var->def;
-  PNode *partial_application = result->var->def;
   CreationSet *cs = creation_point(result, sym_closure);
   int add = !cs->vars.n;
   EntrySet *es = (EntrySet *)result->contour;
-  pn->tvals.fill(partial_application->rvals.n);
-  for (int i = 0; i < partial_application->rvals.n; i++)
-    make_closure_var(partial_application->rvals[i], es, cs, result, add, i);
+  pn->tvals.fill(pn->rvals.n);
+  for (int i = 0; i < pn->rvals.n; i++) make_closure_var(pn->rvals[i], es, cs, result, add, i);
 }
 
 static void make_period_closure(AVar *result, AVar *a, Vec<AVar *> &args) {
   assert(result->contour_is_entry_set);
   PNode *pn = result->var->def;
-  PNode *partial_application = result->var->def;
   CreationSet *cs = creation_point(result, sym_closure);
   flow_var_type_permit(result, make_AType(cs));
   EntrySet *es = (EntrySet *)result->contour;
@@ -3780,7 +3774,7 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
           if (obj->out->sorted.n > 1 && obj->contour_is_entry_set) {
             int fh = 0, fm = 0;
             for (CreationSet *c2 : obj->out->sorted) { if (c2->var_map.get(symbol)) fh++; else fm++; }
-            if (fh && fm && fieldsplit_demands.set_add(obj)) ++fs_demands;
+            if (fh && fm) fieldsplit_demands.set_add(obj);
           }
           for (CreationSet *cs : obj->out->sorted) {
             AVar *iv = cs->var_map.get(symbol);
@@ -6351,11 +6345,11 @@ static void collect_type_confluence(AVar *av, Vec<AVar *> &confluences) {
   // (a fact)? Buckets are disjoint and tested in that order.
   if (getenv("IFA_DBG_CONFKIND") && confluences.set_in(av)) {
     AType *t = av->in ? av->in->type : nullptr;
-    int nsym = 0, nnil = 0, nbasic = 0, nnonbasic = 0;
+    int nsym = 0, nbasic = 0, nnonbasic = 0;
     Vec<Sym *> syms, basics;
     if (t) for (CreationSet *c : t->sorted) {
       if (!c || !c->sym) continue;
-      if (c->sym == sym_nil_type) { ++nnil; continue; }
+      if (c->sym == sym_nil_type) continue;
       syms.set_add(c->sym);
       if (Sym *b = to_basic_type(c->sym->type)) basics.set_add(b), ++nbasic;
       else ++nnonbasic;
@@ -8297,23 +8291,6 @@ static void build_joint_type_marks(Vec<AVar *> &seeds, Accum<AVar *> &acc) {
   }
 }
 
-
-static void build_setter_mark(AVar *av, AVar *x, int mark = 1) {
-  int m = av->mark_map ? av->mark_map->get(x) : 0;
-  if (!m) {
-    // The backward recursion below reaches arbitrary AVars; null
-    // setters means "empty" (same guard as build_setter_marks'
-    // loops). Unguarded, this was an ASLR-dependent crash: pylife
-    // segfaulted here on ~4 of 5 runs (null this in Vec::set_in).
-    if (!av->setters || !av->setters->set_in(x)) return;
-    if (!av->mark_map) av->mark_map = new MarkMap;
-    av->mark_map->put(x, mark);
-  } else if (m > mark)
-    av->mark_map->put(x, mark);
-  else if (m <= mark)
-    return;
-  for (AVar *y : av->backward) if (y) build_setter_mark(y, x, mark + 1);
-}
 
 
 static void clear_marks(Accum<AVar *> &acc) { for (AVar *x : acc.asvec) x->mark_map = 0; }
@@ -10872,7 +10849,6 @@ static int csmember_enabled() {
   if (e < 0) { cchar *v = getenv("PYC_CSMEMBER"); e = v ? atoi(v) : 0; }
   return e;
 }
-static int csm_used = 0, csm_split = 0;
 
 // ifa/133/143: the CONSTRUCTION-TIME SLOT key. What types was this creation
 // point built with? For a literal that is `make_kind`'s operands, read in
@@ -11446,7 +11422,6 @@ static void cs_member_signature(AVar *d, std::string &out) {
           if (ngroups >= 2 && ngroups > content_groups) {
             by_member = true;
             informative = 1;
-            ++csm_used;
             if (dbg)
               fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d MEMBER-KEY -> %d groups\n", analysis_pass,
                       cs->id, cs->sym->name ? cs->sym->name : "?", defs.n, ngroups);
@@ -11620,12 +11595,6 @@ static int settergate_level() {
   return analyze_again;
 }
 
-// Issue 033 M5 prelude: stage-2 sub-phase cost accumulators, printed
-// with the -v stage breakdown at convergence. mark_type dominates
-// extend cost at pygasus scale (M0 finding: 81-87% of extend); these
-// attribute that cost to closure-building vs diagnostics vs collect
-// vs the split machinery so the fix targets the real term.
-static double stage2_closure_time = 0, stage2_diag_time = 0, stage2_collect_time = 0, stage2_split_time = 0;
 // ifa/133: allocation-counter snapshots for PYC_DBG_STAGEDELTA. See the
 // two-snapshot note in run_split_stages.
 static int stage_aes0 = 0, stage_acs0 = 0;
@@ -12081,7 +12050,7 @@ static void report_retconf() {
 // The demand is an IRREPRESENTABLE CONVERGED TYPE and nothing weaker. "This
 // formal's type is a union" is the FACT that made PYC_CPA arbitrary.
 static int splithomo_enabled();
-static long ed_seen = 0, ed_formal = 0, ed_no_formal = 0, ed_not_demanded = 0, ed_split = 0;
+static long ed_seen = 0, ed_formal = 0, ed_no_formal = 0, ed_not_demanded = 0;
 static Vec<EntrySet *> ed_applied;  // one split per contour per pass
 static long ed_had_formals = 0;
 
@@ -12231,12 +12200,8 @@ static AVar *backtrack_to_own_formal(AVar *av) {
           if ((getenv("IFA_DBG_ESDEMAND") || splithomo_enabled()) && av->out) {
             if (atype_irrepresentable(av->out->type)) {
               ++ed_seen;
-              if (AVar *f = backtrack_to_own_formal(av)) {
+              if (backtrack_to_own_formal(av)) {
                 ++ed_formal;
-                // ifa/157 step 2: the formal holds the union on every in-edge,
-                // so the edge-disagreement test declines. Partition by the
-                // formal's CreationSet membership instead -- `split_edges`,
-                // bounded to TWO groups by ifa/146 E.
                 // ifa/157 step 2, MEASURED DEAD. Routing the nominated
                 // formal to `split_edges` -- partition by the formal's
                 // CreationSet membership, bounded to two groups by ifa/146 E --
@@ -13141,12 +13106,12 @@ static void dbg_es_per_fun() {
   // change. The goldens' own `ess=A→B` is a within-pass tautology and worth
   // revisiting on its own terms.
   int ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-    stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
+      stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
   Vec<AVar *> confluences;
   // 1) split EntrySets based on type using AVar::out
   if (!analyze_again) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-    stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
+      stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
     collect_type_confluences(confluences);
     cur_split_stage = (int)FAPassStage::TYPE_CONFLUENCE;
     analyze_again = split_ess_for_type(confluences, SPLIT_EDGES);
@@ -13215,7 +13180,7 @@ static void dbg_es_per_fun() {
   // program.
   if (!analyze_again) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-    stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
+      stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::MARK_TYPE;
     // ifa/146 D, 2026-09-08: MARK_TYPE removed. Mark distance is
     // depth-from-a-generating-AVar -- provenance, so no type tuple can name
@@ -13226,8 +13191,8 @@ static void dbg_es_per_fun() {
     fa->stage_time[(int)FAPassStage::MARK_TYPE] += stage_timer.lap();
     if (analyze_again) {
       record_fa_event(FAPassStage::MARK_TYPE, analyze_again, ess0, css0, viol0);
-      if (getenv("PYC_DBG_STAGEDELTA"))
-        fprintf(stderr, "STAGEDELTA p=%d MARK_TYPE    returned=%d d_ess=%d d_css=%d viol=%d\\n", analysis_pass,
+        if (getenv("PYC_DBG_STAGEDELTA"))
+          fprintf(stderr, "STAGEDELTA p=%d MARK_TYPE    returned=%d d_ess=%d d_css=%d viol=%d\n", analysis_pass,
                 analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0, fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::MARK_TYPE];
     }
@@ -13288,7 +13253,7 @@ static void dbg_es_per_fun() {
       for (AVar *av : confluences) (void)compute_setters(av, avs, AKIND_TYPE);
     }
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-    stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
+      stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::SETTER;
     int viol_before_setter = fa->type_violations.set_count();
     if (split_for_setters(avs, analyze_again)) analyze_again = 1;
@@ -13304,14 +13269,14 @@ static void dbg_es_per_fun() {
     log(LOG_SPLITTING, "split_for_setters %d\n", analyze_again);
     if (!analyze_again) {
       ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-    stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
+      stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
       cur_split_stage = (int)FAPassStage::SETTER_OF_SETTER;
       analyze_again = split_for_setters_of_setters();
       fa->stage_time[(int)FAPassStage::SETTER_OF_SETTER] += stage_timer.lap();
       if (analyze_again) {
         record_fa_event(FAPassStage::SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
-      if (getenv("PYC_DBG_STAGEDELTA"))
-        fprintf(stderr, "STAGEDELTA p=%d SETTER_OF_SETTER returned=%d d_ess=%d d_css=%d viol=%d\\n", analysis_pass,
+        if (getenv("PYC_DBG_STAGEDELTA"))
+          fprintf(stderr, "STAGEDELTA p=%d SETTER_OF_SETTER returned=%d d_ess=%d d_css=%d viol=%d\n", analysis_pass,
                 analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0, fa->type_violations.set_count());
         ++fa->stage_progress_count[(int)FAPassStage::SETTER_OF_SETTER];
       }
@@ -13369,28 +13334,28 @@ static void dbg_es_per_fun() {
           av->var && av->var->sym && av->var->sym->name ? av->var->sym->name : "(anon)", r);
     }
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-    stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
+      stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::MARK_SETTER;
     if (split_for_setters(avs, analyze_again)) analyze_again = 1;
     fa->stage_time[(int)FAPassStage::MARK_SETTER] += stage_timer.lap();
     if (analyze_again) {
       record_fa_event(FAPassStage::MARK_SETTER, analyze_again, ess0, css0, viol0);
-      if (getenv("PYC_DBG_STAGEDELTA"))
-        fprintf(stderr, "STAGEDELTA p=%d MARK_SETTER  returned=%d d_ess=%d d_css=%d viol=%d\\n", analysis_pass,
+        if (getenv("PYC_DBG_STAGEDELTA"))
+          fprintf(stderr, "STAGEDELTA p=%d MARK_SETTER  returned=%d d_ess=%d d_css=%d viol=%d\n", analysis_pass,
                 analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0, fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::MARK_SETTER];
     }
     log(LOG_SPLITTING, "split_for_setters with marks %d\n", analyze_again);
     if (!analyze_again) {
       ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-    stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
+      stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
       cur_split_stage = (int)FAPassStage::MARK_SETTER_OF_SETTER;
       analyze_again = split_for_setters_of_setters();
       fa->stage_time[(int)FAPassStage::MARK_SETTER_OF_SETTER] += stage_timer.lap();
       if (analyze_again) {
         record_fa_event(FAPassStage::MARK_SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
-      if (getenv("PYC_DBG_STAGEDELTA"))
-        fprintf(stderr, "STAGEDELTA p=%d MARK_SETTER_OF_SETTER returned=%d d_ess=%d d_css=%d viol=%d\\n", analysis_pass,
+        if (getenv("PYC_DBG_STAGEDELTA"))
+          fprintf(stderr, "STAGEDELTA p=%d MARK_SETTER_OF_SETTER returned=%d d_ess=%d d_css=%d viol=%d\n", analysis_pass,
                 analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0, fa->type_violations.set_count());
         ++fa->stage_progress_count[(int)FAPassStage::MARK_SETTER_OF_SETTER];
       }
@@ -13412,14 +13377,14 @@ static void dbg_es_per_fun() {
     // 5) split AEdges(s) and EntrySet(s) for violations based on type using
     // dynamic dispatch
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-    stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
+      stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::VIOLATION;
     analyze_again = split_for_violations(fa->type_violations) || analyze_again;
     fa->stage_time[(int)FAPassStage::VIOLATION] += stage_timer.lap();
     if (analyze_again) {
       record_fa_event(FAPassStage::VIOLATION, analyze_again, ess0, css0, viol0);
-      if (getenv("PYC_DBG_STAGEDELTA"))
-        fprintf(stderr, "STAGEDELTA p=%d VIOLATION    returned=%d d_ess=%d d_css=%d viol=%d\\n", analysis_pass,
+        if (getenv("PYC_DBG_STAGEDELTA"))
+          fprintf(stderr, "STAGEDELTA p=%d VIOLATION    returned=%d d_ess=%d d_css=%d viol=%d\n", analysis_pass,
                 analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0, fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::VIOLATION];
     }
@@ -13444,14 +13409,14 @@ static void dbg_es_per_fun() {
     fprintf(stderr, "[quiesce] p=%d reached=%d\n", analysis_pass, analyze_again ? 0 : 1);
   if (!analyze_again) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-    stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
+      stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::PER_CS_RECEIVER;
     analyze_again = split_for_per_cs_method_receivers() || analyze_again;
     fa->stage_time[(int)FAPassStage::PER_CS_RECEIVER] += stage_timer.lap();
     if (analyze_again) {
       record_fa_event(FAPassStage::PER_CS_RECEIVER, analyze_again, ess0, css0, viol0);
-      if (getenv("PYC_DBG_STAGEDELTA"))
-        fprintf(stderr, "STAGEDELTA p=%d PER_CS_RECEIVER returned=%d d_ess=%d d_css=%d viol=%d\\n", analysis_pass,
+        if (getenv("PYC_DBG_STAGEDELTA"))
+          fprintf(stderr, "STAGEDELTA p=%d PER_CS_RECEIVER returned=%d d_ess=%d d_css=%d viol=%d\n", analysis_pass,
                 analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0, fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::PER_CS_RECEIVER];
     }
@@ -13479,14 +13444,14 @@ static void dbg_es_per_fun() {
   // placement.
   if (!analyze_again) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-    stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
+      stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::CSM_ELEMENT_CS;
     analyze_again = split_container_methods_per_element_cs();
     fa->stage_time[(int)FAPassStage::CSM_ELEMENT_CS] += stage_timer.lap();
     if (analyze_again) {
       record_fa_event(FAPassStage::CSM_ELEMENT_CS, analyze_again, ess0, css0, viol0);
-      if (getenv("PYC_DBG_STAGEDELTA"))
-        fprintf(stderr, "STAGEDELTA p=%d CSM_ELEMENT_CS returned=%d d_ess=%d d_css=%d viol=%d\\n", analysis_pass,
+        if (getenv("PYC_DBG_STAGEDELTA"))
+          fprintf(stderr, "STAGEDELTA p=%d CSM_ELEMENT_CS returned=%d d_ess=%d d_css=%d viol=%d\n", analysis_pass,
                 analyze_again, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0, fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::CSM_ELEMENT_CS];
     }
@@ -13503,7 +13468,7 @@ static void dbg_es_per_fun() {
   // may be acted on. A quiescent pass behaves exactly as before.
   {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-    stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
+      stage_aes0 = fa->all_entry_sets.n, stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::CS_DEF_PARTITION;
     // THIS stage's own result, kept separate from the running
     // `analyze_again`. Every other stage here is gated on `!analyze_again`,
@@ -13614,7 +13579,6 @@ static void dbg_es_per_fun() {
         if (!av->var->is_formal) continue;   // split_entry_set's precondition
         int r = split_entry_set(av, SPLIT_TYPE, SPLIT_VALUE, SPLIT_EDGES);
         if (r) {
-          ++fs_split;
           if (getenv("IFA_DBG_FIELDSPLIT"))
             fprintf(stderr, "[fieldsplit] p=%d SPLIT av=%d es=%d\n", analysis_pass, av->id,
                     ((EntrySet *)av->contour)->id);
@@ -13626,8 +13590,8 @@ static void dbg_es_per_fun() {
     fa->stage_time[(int)FAPassStage::CS_DEF_PARTITION] += stage_timer.lap();
     if (cs_def_r) {
       record_fa_event(FAPassStage::CS_DEF_PARTITION, cs_def_r, ess0, css0, viol0);
-      if (getenv("PYC_DBG_STAGEDELTA"))
-        fprintf(stderr, "STAGEDELTA p=%d CS_DEF_PARTITION returned=%d d_ess=%d d_css=%d viol=%d\n", analysis_pass,
+        if (getenv("PYC_DBG_STAGEDELTA"))
+          fprintf(stderr, "STAGEDELTA p=%d CS_DEF_PARTITION returned=%d d_ess=%d d_css=%d viol=%d\n", analysis_pass,
                 cs_def_r, fa->all_entry_sets.n - stage_aes0, fa->all_creation_sets.n - stage_acs0,
                 fa->type_violations.set_count());
       ++fa->stage_progress_count[(int)FAPassStage::CS_DEF_PARTITION];
@@ -14133,10 +14097,6 @@ static int demote_mixed_arity_slots() {
              fa->stage_time[i], stage_total > 0 ? (int)(fa->stage_time[i] * 100.0 / stage_total) : 0,
              fa->stage_progress_count[i], fa->stage_progress_count[i] == 1 ? "" : "es");
     }
-    // Issue 033 M5 prelude: attribute mark_type's dominant cost.
-    if (stage2_closure_time + stage2_diag_time + stage2_collect_time + stage2_split_time > 0)
-      printf("    mark_type sub-phases: closure %f s, diag %f s, collect %f s, split+clear %f s\n",
-             stage2_closure_time, stage2_diag_time, stage2_collect_time, stage2_split_time);
   }
   // ifa/152: roll the per-pass nomination counter over. `extend_analysis`
   // runs exactly once per pass, so this is the one place that sees each pass
@@ -16397,11 +16357,7 @@ static void analyze_to_convergence() {
     // invalidated, when that is armed and enabled. Falls back to the
     // full reset whenever it declines -- including the first pass,
     // which has no predecessor state to preserve.
-    bool first_pass_full_reset = true;
-    if (!first_pass && clear_results_selective())
-      first_pass_full_reset = false;
-    else if (!first_pass)
-      clear_results();
+    if (!first_pass && !clear_results_selective()) clear_results();
     first_pass = false;
     compute_es_can_raise();
     initialize_pass();
@@ -16609,8 +16565,8 @@ int FA::analyze(Fun *top) {
   // tests/deepcopy_recursive_nested_growth.py.
   if (getenv("PYC_DBG_CONVERGED")) fprintf(stderr, "CONVERGED=%d\n", pass_limit_hit ? 0 : 1);
   if (getenv("IFA_DBG_ESDEMAND"))  // ifa/157 step 1/2
-    fprintf(stderr, "ESDEMAND demanded=%ld ->formal=%ld no_formal=%ld (of which the contour HAD formals: %ld) not_demanded=%ld split=%ld\n",
-            ed_seen, ed_formal, ed_no_formal, ed_had_formals, ed_not_demanded, ed_split);
+    fprintf(stderr, "ESDEMAND demanded=%ld ->formal=%ld no_formal=%ld (of which the contour HAD formals: %ld) not_demanded=%ld\n",
+            ed_seen, ed_formal, ed_no_formal, ed_had_formals, ed_not_demanded);
   if (getenv("IFA_DBG_REPRKEY"))
     fprintf(stderr, "REPRKEY new=%ld same=%ld CHANGED=%ld\n", rk_new, rk_same, rk_changed);
   // ifa/157: of the AVars whose CONVERGED type is an irrepresentable union,
