@@ -484,11 +484,29 @@ int is_closure_var(Var *v) { return closure_fun_type(v) != nullptr; }
 // drew two clones of tuple::__getitem__ whose receivers were both
 // `tuple` with element `T` at the same addresses.
 //
-// Deliberately strict: same Sym, same arity, same type pointer at every
-// position, same return type. Candidates that differ anywhere are still
-// a genuine polymorphic call and still fall through to the dispatch
-// machinery (and, failing that, the "matching function not found"
-// assert), so this cannot paper over a real ambiguity.
+// The test is on the EMITTED C SIGNATURE, not on `type` pointers.
+// 983ac5a4 widened it and this comment kept describing the old rule, so
+// state what it actually does now:
+//
+//   - same Sym and same arity, as before;
+//   - a parameter or return whose `type` POINTER differs still matches
+//     when `c_type()` gives the same string, because two Syms that print
+//     as one C type ARE one C type to the caller -- that is the whole
+//     question being asked here;
+//   - a DEAD parameter is skipped, and both sides must agree on which
+//     ones are dead. `write_c_fun_proto` (cg.cc) emits no parameter for
+//     a `!live` formal, so a dead argument is not part of the signature
+//     it would be compared against.
+//
+// What it therefore does NOT establish is that the two funs BEHAVE the
+// same -- only that C cannot tell their signatures apart, so a caller
+// can be emitted against either. That is the right question for
+// `get_target_fun_core` and for cg.cc's untagged-direct route, which use
+// it to collapse indistinguishable clones of ONE source function;
+// it would be the wrong question for anything choosing between different
+// functions. Candidates that differ anywhere are still a genuine
+// polymorphic call and still fall through to the dispatch machinery
+// (and, failing that, the "matching function not found" assert).
 bool identical_c_signature(Fun *a, Fun *b) {
   if (!a || !b) return false;
   if (a->sym != b->sym) {
