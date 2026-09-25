@@ -469,9 +469,9 @@ void show_violations(FA *fa, FILE *fp) {
           for (CreationSet *selector : v->av->out->sorted) fprintf(memfp, "  selector '%s'\n", selector->sym->name);
         }
         if (v->type->n == 1)
-          fprintf(memfp, "  class '%s'\n", v->type->v[0]->sym->name ? v->type->v[0]->sym->name : "<anonymous>");
+          fprintf(memfp, " of class '%s'\n", v->type->v[0]->sym->name ? v->type->v[0]->sym->name : "<anonymous>");
         else {
-          fprintf(memfp, "  classes\n");
+          fprintf(memfp, " of classes\n");
           for (CreationSet *cs : v->type->sorted) fprintf(memfp, "  class '%s'\n", cs->sym->name);
         }
         break;

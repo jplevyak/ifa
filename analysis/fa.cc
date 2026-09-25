@@ -4055,6 +4055,34 @@ static void collect_argument_type_violations() {
   }
 }
 
+// issues/170: a member lookup that found NOTHING. `o.m` is a
+// P_prim_period, and when no CreationSet of `o` has `m` its result is
+// simply left bottom -- nothing reported it, so the failure surfaced only
+// downstream, as an untyped value or as "illegal call argument" on the
+// arguments of the call that followed (`with` on a non-context-manager
+// reported its `__exit__(None, None, None)` Nones). Asked on the converged
+// types: the receiver is typed and the lookup still produced nothing. A
+// union receiver with the member on SOME of its classes has a typed result
+// and is not reported here.
+static void collect_member_violations() {
+  for (Fun *f : fa->funs) {
+    for (PNode *p : f->fa_send_PNodes) {
+      if (!p->prim || p->prim->index != P_prim_period) continue;
+      Vec<EntrySet *> ess;
+      f->ess.set_intersection(fa->ess_set, ess);
+      for (EntrySet *from : ess) if (from) {
+        if (!from->live_pnodes.set_in(p)) continue;
+        AVar *result = make_AVar(p->lvals[0], from);
+        AVar *obj = make_AVar(p->rvals[1], from);
+        AVar *selector = make_AVar(p->rvals[3], from);
+        if (result->out != fa->type_world.bottom_type) continue;
+        if (obj->out == fa->type_world.bottom_type || selector->out == fa->type_world.bottom_type) continue;
+        type_violation(ATypeViolation_kind::MEMBER, selector, obj->out, result);
+      }
+    }
+  }
+}
+
 bool mixed_basics(AVar *av) {
   Vec<Sym *> basics;
   for (CreationSet *cs : *av->out) if (cs) {
@@ -12010,6 +12038,7 @@ static void complete_pass() {
   audit_edge_arg_values();
   collect_results();
   collect_argument_type_violations();
+  collect_member_violations();
   if (getenv("IFA_DBG_DISPATCHFAIL"))
     fprintf(stderr, "DISPATCHFAIL pass=%d total=%ld sites=%ld reported=%ld\n", analysis_pass,
             fa->dbg_dispatch_total_sites, fa->dbg_dispatch_fail_sites, fa->dbg_dispatch_fail_reported);
