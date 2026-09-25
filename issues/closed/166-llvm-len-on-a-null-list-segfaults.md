@@ -3,7 +3,7 @@
 **Status: FIXED** 2026-09-18 (`ifa/codegen/cg_emit_llvm.cc`
 `emit_send_len`). Regression test `tests/list_mul_zero_null_list.py`.
 
-**Related:** [../../issues/039](../../issues/039-list-mul-shared-element-type-cross-contamination.md)
+**Related:** [../../issues/039](../../../issues/039-list-mul-shared-element-type-cross-contamination.md)
 (the other `[None] * n` defect), [164](164-nil-union-at-a-primitive-argument-is-a-nullable-pointer.md)
 (whose regression test surfaced this).
 

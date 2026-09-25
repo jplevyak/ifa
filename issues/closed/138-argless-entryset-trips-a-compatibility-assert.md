@@ -1,7 +1,7 @@
 # 138 — an argless EntrySet trips a compatibility assert
 
 **Status:** fixed 2026-09-06. Found while triaging
-[129](129-plan-demand-driven-creation-set-splitting.md)'s flag arm, where
+[129](../129-plan-demand-driven-creation-set-splitting.md)'s flag arm, where
 `tests/test_heapq.py` **aborted the compiler** under `PYC_CSDCPA1=2`.
 
 ```

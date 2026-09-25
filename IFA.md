@@ -421,7 +421,7 @@ recursion SCC" so the splitter doesn't try to split inside a cycle (paper
 
 `update_display` keeps the lexical display correct as ESes get cloned
 for nested functions. Since
-[issues/100](issues/100-FA-display-removed-from-contour-identity.md) that
+[issues/100](issues/closed/100-FA-display-removed-from-contour-identity.md) that
 is *all* it does: the display is built from the first edge to reach a
 contour and consumed only by `make_AVar`'s enclosing-scope resolution
 (and `clone.cc`'s equivalence). It is deliberately **not** part of

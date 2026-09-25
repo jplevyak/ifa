@@ -152,7 +152,7 @@ changes are four commits; everything else is measurement.
    exactly the one just vacated. `pylife`'s entire non-convergence was
    **one edge**. Fixed the asymmetry; `loop` converges. Still open: the
    churn *relocated* into slow growth for bh/pylife/linalg.
-3. **[100](100-FA-display-removed-from-contour-identity.md) — the
+3. **[100](closed/100-FA-display-removed-from-contour-identity.md) — the
    lexical display is no longer contour identity.** Design decision. The
    display now serves only `make_AVar`'s enclosing-scope resolution (and
    clone's equivalence). `edge_nest_compatible_with_entry_set`,
@@ -312,7 +312,7 @@ type, and split decisions aren't stably keyed across passes), per
 the [033](closed/033-splitter-non-idempotent-divergence.md) →
 [063](closed/063-no-type-bucket-triage.md) investigation lineage.
 
-- [100-FA-display-removed-from-contour-identity.md](100-FA-display-removed-from-contour-identity.md)
+- [100-FA-display-removed-from-contour-identity.md](closed/100-FA-display-removed-from-contour-identity.md)
   — the lexical display is now used ONLY for what it is for: `make_AVar`
   resolving an enclosing-scope Var (nested functions), plus clone's
   equivalence. Every use of it as *contour identity* is gone
@@ -354,7 +354,7 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   — the master plan, **substantially re-measured 2026-08-12/13** (see the
   dated session section above). Target set re-based from 17 programs to
   8 by disabling the stall guards; growth mechanism re-censused after
-  [100](100-FA-display-removed-from-contour-identity.md); Stage 0 and
+  [100](closed/100-FA-display-removed-from-contour-identity.md); Stage 0 and
   Stage 4 retired, and the basis for ruling out Stage 2 invalidated.
   **The churn is now stage-attributed: only `TYPE_CONFLUENCE` and
   `MARK_TYPE` produce it** — nothing measurable from the other seven

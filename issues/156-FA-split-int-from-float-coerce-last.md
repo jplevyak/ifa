@@ -58,7 +58,7 @@ then the closure/record CS vars and container elements.
 
 And the ENTIRE demand ladder is about CreationSets: `elem_irrepresentable`,
 `cs_elem_irrepresentable`, route 4's candidate set,
-[152](152-FA-backtrack-the-demand-to-the-merged-creation-set.md)'s backtrack.
+[152](closed/152-FA-backtrack-the-demand-to-the-merged-creation-set.md)'s backtrack.
 **So opening the numeric case reaches roughly 4% of it**, which is why the
 lever measures as a no-op. It was removed rather than left off
 (CLAUDE.md: delete an inert lever, do not default it away).

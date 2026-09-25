@@ -2,7 +2,7 @@
 
 **Status:** fixed 2026-09-07. Root cause of `richards`'s compile failure
 under `PYC_CSDCPA1=2`, one of the two corpus programs in
-[129](129-plan-demand-driven-creation-set-splitting.md)'s bill that had
+[129](../129-plan-demand-driven-creation-set-splitting.md)'s bill that had
 never been triaged.
 
 ## Symptom
@@ -20,7 +20,7 @@ Four errors, two shapes: a call argument and a record-field store.
 
 Under the flag a `None` global is materialised — `_CG_int64 /* None 101 */
 g1;` — where the default emits none at all. That declaration is *correct*:
-[048](../../issues/048-none-int-field-pair-runtime-abort.md) records that
+[048](../../../issues/048-none-int-field-pair-runtime-abort.md) records that
 `{None, int64}` IS representable, stored as the scalar and round-tripped
 bit-for-bit, and codegen already casts it that way at plain assignments:
 
@@ -60,7 +60,7 @@ a third would have drifted.
 
 `richards` compiles under the flag. Its output still differs from CPython
 — but **identically to the default arm**, which is
-[issues/120](../../issues/120-richards-silent-wrong-answer.md), a
+[issues/120](../../../issues/120-richards-silent-wrong-answer.md), a
 pre-existing wrong answer. Parity with the default is what the flip needs.
 
 `make test` 311/0, LLVM backend 311/0.

@@ -1,7 +1,7 @@
 # 165 — `None` reaching an operation is silently accepted and read as the zero value
 
 **Status: OPEN.** Pre-existing; found while measuring
-[164](164-nil-union-at-a-primitive-argument-is-a-nullable-pointer.md),
+[164](closed/164-nil-union-at-a-primitive-argument-is-a-nullable-pointer.md),
 which did not introduce it and does not widen it.
 
 ## Symptom
@@ -23,7 +23,7 @@ No warning, no error, no runtime check. The `None` is represented as a
 null pointer and the string primitive reads it as `""`.
 
 This reproduces on today's `main` **and on every build before
-[164](164-nil-union-at-a-primitive-argument-is-a-nullable-pointer.md)** —
+[164](closed/164-nil-union-at-a-primitive-argument-is-a-nullable-pointer.md)** —
 it goes through the RECEIVER position, which has always read the
 nil-stripped `->type` projection. 164 made the ARGUMENT position agree
 with the receiver; the residual wrongness is that the position they now

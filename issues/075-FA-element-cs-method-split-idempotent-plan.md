@@ -1,7 +1,7 @@
 # 075 — Escaping the local maximum: idempotent element-CS container-method separation (the shedskin `dcpa` model)
 
 > **PIECE 3 NO LONGER EXISTS (2026-08-13).**
-> [100](100-FA-display-removed-from-contour-identity.md) removed the
+> [100](closed/100-FA-display-removed-from-contour-identity.md) removed the
 > display from contour identity, which deleted this plan's Piece-3
 > machinery outright: `find_or_make_display_variant`,
 > `EntrySet::display_variants` and `edge_display_compatible` are all

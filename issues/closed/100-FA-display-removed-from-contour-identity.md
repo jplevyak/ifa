@@ -6,7 +6,7 @@ The two runtime regressions it caused were **root-caused and fixed the
 same day** (see "The two crashes" below — the real cause was a
 pre-existing dropped-value bug in `flow_var_to_var`, not the display
 removal itself); the suite is back to its full 265/14/0/4. Supersedes
-[074](074-FA-cross-pass-oscillation-plan.md)'s Stage 0 and Stage 4, which
+[074](../074-FA-cross-pass-oscillation-plan.md)'s Stage 0 and Stage 4, which
 prototyped this behind flags and concluded the display could not be
 dropped; that conclusion is now overridden as a policy choice rather than
 refuted as a measurement.
@@ -47,7 +47,7 @@ variables union instead of staying separate.
 
 ## Why: the display was a major driver of contour growth
 
-Per [074](074-FA-cross-pass-oscillation-plan.md)'s growth census,
+Per [074](../074-FA-cross-pass-oscillation-plan.md)'s growth census,
 `check_split`'s lineage branch rejected the split parent's target on
 `!edge_nest_compatible_with_entry_set` for 71-142 candidates per pass on
 `yopyra`, and then minted a fresh contour linked by `e->to->split =
@@ -114,7 +114,7 @@ failed / 4 skipped** — the full pre-change baseline.
    by far the highest duplicate-contour rate in the corpus (**58%** of
    its keyed mints find an existing same-keyed contour, versus 2-12%
    elsewhere, `PYC_CANON`). One stage, one disease, no growth to
-   confound it. See [074](074-FA-cross-pass-oscillation-plan.md).
+   confound it. See [074](../074-FA-cross-pass-oscillation-plan.md).
 4. **`Sym::nesting_depth` for methods.** The deeper fix is that pyc's
    `def_fun_pyda` gives methods a nesting depth they do not need
    (`python_ifa_build_syms.cc:1917`, `:2030`, `:2154`). With the display

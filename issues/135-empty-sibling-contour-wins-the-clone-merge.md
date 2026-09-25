@@ -8,7 +8,7 @@ suite (`poly_dispatch_shared_method_extra_args`,
 
 **`chull` was removed from that list 2026-09-14** — it is a different
 mechanism, and it is now fixed by
-[152](152-FA-backtrack-the-demand-to-the-merged-creation-set.md). See
+[152](closed/152-FA-backtrack-the-demand-to-the-merged-creation-set.md). See
 "`chull` is NOT this mechanism" below.
 
 This is the question CLAUDE.md's "be aggressive" section says was never
@@ -106,7 +106,7 @@ Two consequences:
    empty-sibling clone merge below.
 
 **Resolved 2026-09-14 by the second branch — the union does not form.**
-[152](152-FA-backtrack-the-demand-to-the-merged-creation-set.md) traced it:
+[152](closed/152-FA-backtrack-the-demand-to-the-merged-creation-set.md) traced it:
 `InitEdges`'s `newedges = []` shares a CreationSet with `Edge.__init__`'s
 `self.endpts = []` (cs=1112, nine creation points), `extend` fills that
 contour with `Vertex`, and `InitEdges` returns it into `Hull.edges`. The

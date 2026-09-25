@@ -103,7 +103,7 @@ against the default:
 
 `quameon` aborts in `coulomb_pot::compute_en_value` with
 `"matching function not found"` — the SAME
-[132](132-arity-is-representation-not-provenance.md) defect already recorded
+[132](../132-arity-is-representation-not-provenance.md) defect already recorded
 in 152: `coulomb_pot.charges` holds an arity-1 record AND an appended
 element-channel list, so the slot has no representation and is emitted
 `_CG_void`. It was already printing the wrong answer.
@@ -161,7 +161,7 @@ generated C verified byte-identical. It was NOT the source of the `str`
       backtracking the demand to the merged contour and looking in the right
       content channel.
 - [ ] `quameon`'s abort still wants
-      [132](132-arity-is-representation-not-provenance.md)'s arity drop at a
+      [132](../132-arity-is-representation-not-provenance.md)'s arity drop at a
       member confluence — it was printing the wrong answer before and aborts
       now, so this is a diagnostic improvement awaiting a real fix.
 

@@ -208,7 +208,7 @@ Unification has to keep a **provenance bit on the CreationSet** —
 "specialize at implementation" framing exactly: the bit is an
 implementation detail, not part of the type, and so must not enter
 contour identity (see
-[100](../100-FA-display-removed-from-contour-identity.md)'s rule).
+[100](100-FA-display-removed-from-contour-identity.md)'s rule).
 
 Two consequences to design around:
 

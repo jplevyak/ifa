@@ -129,5 +129,5 @@ itself (133's blow-by-blow of the cap was compacted away 2026-09-12).
   Its `r = []` is a victim of the shared contour, not the source.
 - Not `binary` — one contour, two call sites, both legitimately `int`.
 - Not an arity bug: `cs=1011` is arity 0 throughout, and
-  [141](141-unrecorded-arity-is-not-varying-arity.md)'s tightening does
+  [141](closed/141-unrecorded-arity-is-not-varying-arity.md)'s tightening does
   not touch it.

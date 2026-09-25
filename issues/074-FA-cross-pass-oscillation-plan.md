@@ -1,7 +1,7 @@
 # 074 — Plan: solve the FA cross-pass splitter oscillation (033/063/065/066 master plan)
 
 **Status:** plan, 2026-07-30. **OVERTAKEN IN PART 2026-08-13 by
-[100](100-FA-display-removed-from-contour-identity.md)**: the lexical
+[100](closed/100-FA-display-removed-from-contour-identity.md)**: the lexical
 display has been removed from contour identity by design decision, which
 retires this plan's Stage 0 and Stage 4 (both prototyped exactly that and
 concluded it could not be done) and invalidates the measurements Stage 2
@@ -1020,7 +1020,7 @@ with this plan's history on this surface: the display is load-bearing in
 ways a uniform substitution does not capture, and any fix for (2) has to
 distinguish the cases rather than treat them alike.
 
-## GROWTH RE-CENSUSED 2026-08-13, post-[100](100-FA-display-removed-from-contour-identity.md)
+## GROWTH RE-CENSUSED 2026-08-13, post-[100](closed/100-FA-display-removed-from-contour-identity.md)
 
 The display is out of contour identity, so the mechanism the previous
 census found (`check_split`'s lineage-mint, blocked from reuse by
@@ -2402,7 +2402,7 @@ re-open an already-decided ES split. The `e->to` durability already nearly
 gives this for ESs; the missing half is not re-deriving a decided ES split
 from a CS change.
 
-### Stage 4 — demote the display from the ES-split ROUTE gate — RETIRED 2026-08-13 by [100](100-FA-display-removed-from-contour-identity.md)
+### Stage 4 — demote the display from the ES-split ROUTE gate — RETIRED 2026-08-13 by [100](closed/100-FA-display-removed-from-contour-identity.md)
 > **Superseded, and more than this stage asked for.** 100 removed the
 > display from contour identity outright, so `group_display_ok`,
 > `fun_max_live_display_slot`, `stage4_enabled` and `PYC_STAGE4` no

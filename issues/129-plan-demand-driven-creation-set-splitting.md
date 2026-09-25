@@ -6,7 +6,7 @@
 [134](134-remove-the-frontend-forced-split-opt-in.md),
 [146](146-remove-all-arbitrary-splitting.md),
 [151](151-split-an-entryset-on-a-constant-argument-on-demand.md) and
-[152](152-FA-backtrack-the-demand-to-the-merged-creation-set.md) are steps
+[152](closed/152-FA-backtrack-the-demand-to-the-merged-creation-set.md) are steps
 or constraints inside it; none of them carries a competing plan. If one
 seems to, this file wins and the other should be corrected.
 
@@ -34,7 +34,7 @@ measured that moves the number, and it takes `ess` DOWN rather than up.
    something observed a distinction and could not proceed. And the demand
    is observed where the union is USED, which is almost never where the
    merge happened — so step 2 is incomplete without
-   [152](152-FA-backtrack-the-demand-to-the-merged-creation-set.md),
+   [152](closed/152-FA-backtrack-the-demand-to-the-merged-creation-set.md),
    which walks the demand back to the CreationSet that actually merged.
 3. **A ledger** so a re-derived separation re-attaches to the contour it
    first made instead of minting a fresh one. Matters MORE the coarser you
@@ -57,10 +57,10 @@ container-CreationSet result is what justified pursuing it.)*
 ### Measured 2026-09-15 — the bill is THREE, and the suite is clean
 
 The flip is the default, and so are
-[152](152-FA-backtrack-the-demand-to-the-merged-creation-set.md)'s backtrack
-and [154](154-FA-a-container-has-two-content-channels.md)'s two-channel
+[152](closed/152-FA-backtrack-the-demand-to-the-merged-creation-set.md)'s backtrack
+and [154](closed/154-FA-a-container-has-two-content-channels.md)'s two-channel
 content fix. The "seven programs" bill below was paid by
-[153](153-FA-positional-record-slots-lose-identity-and-reads.md) and 154, not
+[153](closed/153-FA-positional-record-slots-lose-identity-and-reads.md) and 154, not
 by the steps this plan predicted:
 
 | | pre-flip default | **today's default** |

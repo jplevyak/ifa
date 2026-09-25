@@ -23,7 +23,7 @@
 **Status:** open, but **the oscillation is not its use case** — measured
 twice (2026-07-30's dup-category scoping, and again in
 [074](074-FA-cross-pass-oscillation-plan.md)'s 2026-08-13 census, both
-before and after [100](100-FA-display-removed-from-contour-identity.md)):
+before and after [100](closed/100-FA-display-removed-from-contour-identity.md)):
 CreationSet *splitting* is ~0 across the whole oscillating corpus
 (`csSplit` 0-2 per run, `copy_AEdge` 0 everywhere), and every CS mint
 tracks a new contour rather than driving one. So this issue stands on its

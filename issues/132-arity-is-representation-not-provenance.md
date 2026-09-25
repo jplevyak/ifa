@@ -4,7 +4,7 @@
 below.
 
 **2026-09-14 — this issue is now the blocker for
-[152](152-FA-backtrack-the-demand-to-the-merged-creation-set.md)'s default.**
+[152](closed/152-FA-backtrack-the-demand-to-the-merged-creation-set.md)'s default.**
 A second shape of the same defect, measured on `quameon`: one member holding
 BOTH an arity-recorded literal and an appended element-channel list has no
 slot representation, so codegen emits `_CG_void e19; /* charges */` and reads
@@ -275,7 +275,7 @@ CSVARS cs=1611 sym=tuple vars=0 defs=1 arity=0
 ```
 
 **One creation point.** Nothing is merged, so there is nothing for route 4 or
-for [152](152-FA-backtrack-the-demand-to-the-merged-creation-set.md) to
+for [152](closed/152-FA-backtrack-the-demand-to-the-merged-creation-set.md) to
 partition, and the sequencing claim in that commit message does not hold.
 
 The source writes the empty tuple itself, `amaze.py:314`:

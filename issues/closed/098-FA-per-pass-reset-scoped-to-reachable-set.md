@@ -281,7 +281,7 @@ pre-fix tree:
 defer/force patch. Its regression should be gone if this was the
 load-bearing assumption it broke, but the retest is that issue's own
 fix, and 097 has changed underneath in the meantime
-([100](../100-FA-display-removed-from-contour-identity.md) removed
+([100](100-FA-display-removed-from-contour-identity.md) removed
 `entry_set_compatibility`'s nest gate, so its trace wants re-taking
 first). Recorded in 097's status; nothing in 098 depends on it.
 

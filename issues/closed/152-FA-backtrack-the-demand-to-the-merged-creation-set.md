@@ -5,7 +5,7 @@
 [154](154-FA-a-container-has-two-content-channels.md), which found the filter
 bug that was blinding it to a container's positional slots and measured the
 pair to a default. Measured on `chull`. Part of
-[129](129-plan-demand-driven-creation-set-splitting.md)'s ladder.
+[129](../129-plan-demand-driven-creation-set-splitting.md)'s ladder.
 
 ## The defect, in one sentence
 
@@ -124,7 +124,7 @@ Two filters, and both matter:
 
 ### Why this is a mechanism and not provenance
 
-[146](146-remove-all-arbitrary-splitting.md)'s two-question test:
+[146](../146-remove-all-arbitrary-splitting.md)'s two-question test:
 
 - **Would this split happen if the demand were absent?** No. The walk
   runs only from a candidate that was nominated by a demand and then
@@ -217,7 +217,7 @@ rc=0. `chull` still compiles with 0 errors and 0 warnings.
 **A note for whoever reads `cs=1561` later.** That an arity-1 list literal's
 correctness depends on the analysis running 78 passes, with route 4
 declining on it every one of them, is its own latent fragility — the
-[147](147-analysis-result-depends-on-the-binary-not-the-inputs.md) family.
+[147](../147-analysis-result-depends-on-the-binary-not-the-inputs.md) family.
 This issue does not fix it; it stops tripping over it. Whatever is grinding
 `cs=1561` down one def per pass is not identified.
 
@@ -281,7 +281,7 @@ CSVARS charges (both arms): one cs vars=1 arity=1 + two cs arity=0 elem=float64
 ```
 
 So **the untyped slot is not caused by this change** — it is
-[132](132-arity-is-representation-not-provenance.md)'s defect, latent and
+[132](../132-arity-is-representation-not-provenance.md)'s defect, latent and
 pre-existing. pyc compiles it anyway and resolves each `charges[j]` from
 the FA type rather than the C type; at `bt=0` all nine reads resolve, and
 under the finer contours one of them has no single target, so codegen emits
@@ -290,13 +290,13 @@ the runtime abort. `quameon` was **already printing the wrong answer** at
 
 Two separate follow-ups fall out, neither belonging to this issue:
 
-- **[132](132-arity-is-representation-not-provenance.md)**: when an
+- **[132](../132-arity-is-representation-not-provenance.md)**: when an
   arity-recorded literal and an appended list meet at one member, the
   static arity must be dropped so the slot has a representation. `cs=2912`
   keeps `no_static_arity=0` through that confluence.
 - **A reporting gap.** An emitted
   `assert(!"runtime error: matching function not found")` — 11 sites — with
-  **zero warnings** is [149](149-the-largest-diagnostic-class-reports-nothing.md)'s
+  **zero warnings** is [149](../149-the-largest-diagnostic-class-reports-nothing.md)'s
   family: codegen knows the dispatch is unresolved and nothing says so.
 
 **This is why the flag stays default 0.** The mechanism is justified and
@@ -329,7 +329,7 @@ evidence:
    chain, same argument addresses.
 2. `sweeps/check__PYC_NILSTORE_0__ae16c44e+0e9deefa.tsv` already records
    `chull compile_rc=0 warns=0 run_rc=139`.
-3. [135](135-empty-sibling-contour-wins-the-clone-merge.md) independently
+3. [135](../135-empty-sibling-contour-wins-the-clone-merge.md) independently
    notes it: "`chull` compiles there and then segfaults (`run 139`)".
 
 ### Where the trail stops, for whoever picks it up
@@ -379,7 +379,7 @@ this issue's change is verified not to cause the second.
       growth**, so 146's non-monotone diagnostic is satisfied
 - [x] corpus `-m check` A/B, second round after the stall fix — above
 - [ ] **to default this on:** land
-      [132](132-arity-is-representation-not-provenance.md)'s arity drop at a
+      [132](../132-arity-is-representation-not-provenance.md)'s arity drop at a
       member confluence, then re-measure `quameon`
 - [ ] the `Vertex` uninitialized-field crash (below), as its own issue
 

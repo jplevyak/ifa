@@ -3,7 +3,7 @@
 **Status: PARTIAL, guard landed 2026-08-11, root cause found and
 confirmed 2026-08-11. NOTE 2026-08-13: `entry_set_compatibility` has
 changed under this issue —
-[100](100-FA-display-removed-from-contour-identity.md) removed its
+[100](closed/100-FA-display-removed-from-contour-identity.md) removed its
 `edge_nest_compatible_with_entry_set` gate, so the candidate set it
 scores is strictly wider now, and its soft `val -= 4` type score is
 correspondingly more load-bearing. That is this issue's exact mechanism,
@@ -42,7 +42,7 @@ so this resequencing attempt is now worth repeating — its regression
 should be gone. 098 explicitly hands the retest here and no longer
 waits on it; re-take the trace first, per the 2026-08-13 NOTE at the
 top of this file about
-[100](100-FA-display-removed-from-contour-identity.md) widening
+[100](closed/100-FA-display-removed-from-contour-identity.md) widening
 `entry_set_compatibility`'s candidate set.) Left open (not moved to `closed/`) since this issue's
 own fix has not landed.
 

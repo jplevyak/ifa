@@ -154,7 +154,7 @@ cs=987 sym=list vars=1 defs=2 arity=1   <- the [x] literals, element float
 cs=991 sym=list vars=0 defs=6 arity=0   <- the [] literals: no slots, no element
 ```
 
-`[]` and `[x]` have different arity, so [132](132-arity-is-representation-not-provenance.md)
+`[]` and `[x]` have different arity, so [132](../132-arity-is-representation-not-provenance.md)
 keeps them apart. `cs=991` has no positional slots and nothing ever written to
 its element channel, so `l[i]` can only be bottom. **It is not a failure to
 infer — there is nothing there to infer**, and the read is statically out of

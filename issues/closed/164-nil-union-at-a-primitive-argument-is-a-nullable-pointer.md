@@ -5,12 +5,12 @@
 `tests/nil_union_prealloc.py` (the idiom) and
 `tests/nil_only_arg_rejected.py` (the half that must stay an error).
 
-**Related:** [060](closed/060-none-branch-dropped-mixed-with-literal-bool-sequence.md)
+**Related:** [060](060-none-branch-dropped-mixed-with-literal-bool-sequence.md)
 (the settled model this restores consistency with),
 [140](140-nil-union-needs-a-cast-at-calls-and-field-stores.md) (the
-codegen half, already fixed), [165](165-none-reaching-an-operation-is-silently-accepted.md)
+codegen half, already fixed), [165](../165-none-reaching-an-operation-is-silently-accepted.md)
 (the residual deviation this exposes, still open),
-[../../issues/048](../../issues/048-none-int-field-pair-runtime-abort.md)
+[../../issues/048](../../../issues/048-none-int-field-pair-runtime-abort.md)
 (the `{None, scalar}` case, deliberately NOT covered here).
 
 ## Symptom

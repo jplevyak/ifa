@@ -2,7 +2,7 @@
 
 **Status:** fixed 2026-09-06. Root cause of `tests/builtins.py` under
 `PYC_CSDCPA1=2`, the last element-union failure in
-[129](129-plan-demand-driven-creation-set-splitting.md)'s suite bill.
+[129](../129-plan-demand-driven-creation-set-splitting.md)'s suite bill.
 
 ## Symptom
 
@@ -42,7 +42,7 @@ if (arity >= 0 && x->static_arity >= 0 && x->static_arity != arity && !x->no_sta
 `arity == -1`, so the check was skipped entirely and it joined a
 fixed-arity CreationSet unchecked.
 
-[132](132-arity-is-representation-not-provenance.md) established that
+[132](../132-arity-is-representation-not-provenance.md) established that
 arity is a representation property CreationSet identity must respect, and
 its comment covers one direction — a CS that has *already* lost its static
 arity is on list layout, reads its length at run time, and can absorb any
@@ -79,7 +79,7 @@ Three probes were needed and the first two misled:
   visibly wrong looked ordinary. The element channel and the def list were
   added to that probe here, and the answer was immediate.
 
-The general lesson matches [104](closed/104-unify-list-and-tuple-in-analysis.md):
+The general lesson matches [104](104-unify-list-and-tuple-in-analysis.md):
 a container has TWO content channels, and a probe that reads one of them
 can report a clean CreationSet that is not clean.
 
@@ -98,7 +98,7 @@ was masking, not for arity:
 
 - `voronoi2` — `receiver 'str' is not a container but '__add__' resolved
   to the CONTAINER method`, i.e.
-  [137](137-scalar-receiver-resolves-to-container-method.md)'s resolution
+  [137](../137-scalar-receiver-resolves-to-container-method.md)'s resolution
   defect on a second program. Notably this guard FIXED 137's first
   instance (`pystone`) and exposed another.
 - `softrender` — `cast from pointer to smaller type '_CG_bool' loses

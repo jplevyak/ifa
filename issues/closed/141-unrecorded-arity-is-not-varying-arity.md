@@ -1,7 +1,7 @@
 # 141 — `static_arity == -1` means "not known yet", not "known to vary"
 
 **Status:** fixed 2026-09-07. Found by hunting the specific bad edge in
-`rdb`, per [133](133-split-a-container-on-its-element-type.md)'s
+`rdb`, per [133](../133-split-a-container-on-its-element-type.md)'s
 conclusion that this family yields to individual wrong edges rather than
 to another splitter.
 
