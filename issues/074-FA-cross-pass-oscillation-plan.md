@@ -253,6 +253,34 @@ pass counts or contour totals, which move with every FA change. The test's
 `.check` holds `CONVERGED=1`; pyc prints `CONVERGED=0` today, which is
 what its `.known_issue` tag records.
 
+**Re-measured 2026-09-25 (HEAD `aebda045`): the tables above are stale.**
+The reproducer still does not converge, but it now fails differently:
+
+- **Growth is not linear.** Guards off, ess at passes 20/40/60/80/100 is
+  157 / 240 / 356 / **196** / 521 (css 597 / 686 / 825 / 639 / 1010), and
+  it ends at the cap (p101, ess 533). Every pass before the last records
+  0 violations and still extends.
+- **It no longer types.** The final pass has 24 violations, starting with
+  `illegal primitive argument type 'x' illegal: list` at `M[0][0]`: the
+  inner list's element picks up `list`. At the default guards the stall
+  guard stops it at p31 with 5 violations. Since ifa/158 made violations
+  fatal, it no longer compiles either way.
+- **Stages:** `TYPE_CONFL CS_DEF_PART`; SETTER no longer fires.
+- **Variants** (guards off), recorded this time as the programs measured:
+
+  | variant | now |
+  |---|---|
+  | as written | p101 cap, 24 violations |
+  | manual copy, `M1 = [list(r) for r in M]` | **p101 cap**, 0 violations, prints `6.0` |
+  | `deepcopy`, no recursion (`while len(M) > 0: s += M[0][0]; M = shrink(M)`) | converges p3, 2 violations (same `list` at `M[0][0]`) |
+  | `deepcopy` + recursion, flat list (`M[0] + total(shrink(M))` over `[1.0, 2.0, 3.0]`) | converges p9, prints `6.0` |
+
+  So `deepcopy` is no longer part of the trigger; recursion over a nested
+  list is enough.
+
+The test header was rewritten to the durable claims and no longer pins
+pass counts. Its `.env` (guards off, `PYC_DBG_CONVERGED=1`) is unchanged.
+
 ## STATUS 2026-08-16 — the current numbers
 
 Re-measured on HEAD. Supersedes the 08-14 section below, which was taken
