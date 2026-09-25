@@ -860,8 +860,9 @@ D and E are deletions of dead-but-sanctioned code.
 corrected — it IS arbitrary — and the CARTESIAN_PRODUCT splitter was then
 removed; only `PYC_CPAMARK`, ifa/074's unrelated naming mechanism, still
 carries the letters. Its replacement — demand plus dispatch-aware receiver
-filtering — is still owed, and `tests/splitter_cartesian_product.py`
-carries the `.known_issue` that flips to PASS when it lands. D completed
+filtering — is still owed. `tests/splitter_cartesian_product.py` passes
+since 2026-09-25 by another route, so it no longer tests it; see the
+correction under B below. D completed
 2026-09-21: all four mark splitters and mark scaffolding deleted after
 root-causing and fixing `voronoi2`'s `None` codegen defect without marks.)
 Remaining: **B** as the flag flip.
@@ -886,6 +887,18 @@ remaining debt: separating a formal that holds N tuple CreationSets, with
 demand plus dispatch-aware receiver filtering rather than a fan.
 `tests/splitter_cartesian_product.py` carries the `.known_issue` that flips
 to PASS when it lands.
+
+**Corrected 2026-09-25: the fixture flipped, and E did NOT land.**
+`tests/splitter_cartesian_product.py` compiles with no violation and
+`CALLS: direct=69 dynamic=0` since a09df260 made `PYC_ESBLOCK=1` the
+default: the shared `list.append` EntrySet splits and `CS_DEF_PART`
+separates the elements (`STAGES: TYPE_CONFL SETTER CS_DEF_PART`;
+`PYC_ESBLOCK=0` restores the violation). Its `.known_issue` is removed and
+its golden re-blessed. So the fixture no longer tests E. Receiver filtering
+for a formal holding N tuple CreationSets is still owed, and sudoku3/sudoku5
+are its test now, not this fixture. The fixture's program was byte-identical
+to `tests/splitter_mark_type.py`, so it was then DELETED; that test carries
+the same shape and the same golden.
 
 ## Verification
 

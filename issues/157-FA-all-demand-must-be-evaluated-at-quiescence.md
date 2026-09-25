@@ -1166,6 +1166,9 @@ That fixture is the acceptance test, and it is already checked in as
 4. **Acceptance.** `tests/splitter_cartesian_product.py` flips `KNOWN` → `PASS`;
    `IFA_DBG_SEED` count at p=30 drops on `sudoku5`; six gates; corpus `-m check`
    A/B with `container_cs` **not** rising.
+   *(2026-09-25: that fixture now passes via a09df260's `PYC_ESBLOCK=1`
+   default, not via this rung, so its flip is no longer evidence for it. The
+   `sudoku5` criterion is the one that still discriminates. See ifa/146 E.)*
 5. **Then re-measure `PYC_SETTERMIN`.** *This is the whole point:* if the seed
    closes and the minimal container partition now costs nothing, the finest
    setter partition can be deleted and CLAUDE.md's premise holds on both sides.

@@ -69,8 +69,8 @@ CSFLOW cs=1011 defs=26 sets=6 csites=20 (in_defs=19) empty=7
   `set[0]`'s union subsumes every other set, so nearly every site shares
   one signature.
 
-**This is the same fixed point `tests/splitter_mark_type.py`'s header
-describes, one level down.** There it is a formal: *"once {A,B} forms at
+**This is the same fixed point `tests/splitter_mark_type.py` builds,
+one level down.** There it is a formal, as its header used to say: *"once {A,B} forms at
 append's value formal it is a fixed point — every edge carries {A,B}, so
 etype == stype and TYPE_CONFLUENCE has nothing left to see."* Here it is
 a CreationSet's element channel: once the union forms, every writer

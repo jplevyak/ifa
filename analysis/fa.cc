@@ -9535,11 +9535,10 @@ static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Ve
     // The CARTESIAN_PRODUCT splitter was removed for asking no demand at
     // all -- it fanned a contour into one per CreationSet whenever a
     // positional formal's type held 2..N of them, and "a union exists" is a
-    // fact, not a demand. `tests/splitter_cartesian_product.py` states what
-    // the replacement must be: "demand (an unresolved dispatch or an
-    // irrepresentable union) plus dispatch-aware filtering of the RECEIVER,
-    // which in single-dispatch OOP is the position that determines
-    // dispatch."
+    // fact, not a demand. ifa/146 E states what the replacement must be:
+    // "demand (an unresolved dispatch or an irrepresentable union) plus
+    // dispatch-aware filtering of the RECEIVER, which in single-dispatch OOP
+    // is the position that determines dispatch."
     //
     // This is that. The demand is a VIOLATION -- we are inside
     // collect_violation_imprecisions, reached only from stage 5 with a real
@@ -9621,10 +9620,10 @@ static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Ve
 // CS_DEF_PARTITION, and is gated only on the demand.
 //
 // The demand is BOXING specifically -- "an irrepresentable union", which
-// is what `tests/splitter_cartesian_product.py` names. A union that merely
-// EXISTS is a fact and is not enough; that is what got the
-// CARTESIAN_PRODUCT splitter removed. And the action is one position, the
-// receiver, so it cannot be a cartesian product over the formals.
+// is what ifa/146 E names. A union that merely EXISTS is a fact and is
+// not enough; that is what got the CARTESIAN_PRODUCT splitter removed.
+// And the action is one position, the receiver, so it cannot be a
+// cartesian product over the formals.
 [[nodiscard]] static int split_ess_for_boxing_receivers() {
   if (!esrecv_enabled()) return 0;
   int analyze_again = 0;

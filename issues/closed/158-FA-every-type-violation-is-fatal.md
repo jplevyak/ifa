@@ -60,6 +60,15 @@ Suite: **312 passed / 0 failed** on both backends. Seven fixtures moved:
   carry `.known_issue` markers rather than baked-in wrong output. Each flips to
   PASS by itself when the inference behind its violation lands.
 
+  **Corrected 2026-09-25: they could not flip.** This commit also re-blessed
+  those five `.check` files from `warning:` to `error:`, which baked the
+  failure in: once fixed, pyc prints no diagnostics, the stale golden diffs,
+  and `.known_issue` reports the pass as KNOWN. `splitter_mark_type` had
+  already been fixed this way unnoticed (`CS_DEF_PART` now separates it,
+  no violation). Its marker is removed and its golden re-blessed. The other
+  four still fail, and their `.check` files are deleted, since correct
+  compile output for them is empty.
+
 One diagnostic regressed and it is inherent: `container_scalar_union_add`'s
 specific message (*"a variable holding {float64, list} has no representation …
 issues/018"*) comes from `codegen_common.cc`, i.e. from CODEGEN, which no longer
