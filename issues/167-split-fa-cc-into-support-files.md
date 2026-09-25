@@ -1,7 +1,7 @@
 # 167 — fa.cc is 16.8k lines; split the stable parts out and leave the algorithm
 
-**Status: PLAN.** No moves made yet. The dead-code removal this plan was
-written alongside has landed (see "Already done" below); the file split has not.
+**Status: steps 1 and 2 LANDED** (2026-09-25). Steps 3-5 are still open.
+`fa.cc` is **14,605 lines**, down from 16,832 when this was written.
 
 **Related:** [146](146-remove-all-arbitrary-splitting.md) (the audit whose
 levers dominate the file), [129](129-plan-demand-driven-creation-set-splitting.md)
@@ -72,12 +72,12 @@ Each step is independently landable, each ends with `make test` green and
 a `check` corpus sweep showing an unchanged status column. **No step may
 change behaviour**; a step that does has gone wrong.
 
-**1. `fa_census.{h,cc}` — the counters.** ~70 statics into one struct.
+**1. `fa_census.{h,cc}` — the counters. DONE.** ~70 statics into one struct.
 Mechanical, no logic moves, and it is what unblocks step 2. Verify: the
 `IFA_DBG_*` outputs are byte-identical before and after on two corpus
 programs.
 
-**2. `fa_debug.cc` — the printers.** ~2,765 lines: `dbg_es_per_fun` (592),
+**2. `fa_debug.cc` — the printers. DONE.** ~2,765 lines: `dbg_es_per_fun` (592),
 `show_violations` (281), `dbg_dump_contours` (158), `report_demand_ratio`,
 `report_mixed_element_owners`, `report_creation_attribution`, and the 40
 smaller ones. Verify: same as step 1, plus the existing
@@ -153,3 +153,47 @@ WAS TRIED HERE AND IS DEAD", 146 C's removed fan, the deleted
 stale comments; they are the record that stops the next person repeating
 a measured failure, and AGENTS.md is explicit that a negative result is
 the deliverable. They stay, and they should move with their code.
+
+
+## Steps 1-2 as landed (2026-09-25)
+
+**Step 1 — `fa_census.{h,cc}`, 101 counters.** The classification was
+mechanical rather than by eye: a counter moves only when EVERY read of it
+is a printf argument or a guard on a printf. Seven statics failed that
+test because they are read to DECIDE something, and stayed —
+`cur_split_stage`, `ifa_selective`, `cur_split_type_only`,
+`fa_selective_armed`, `cselem_shape_memo_pass`, and the two
+`bt_noms_*_pass` that gate reanalysis.
+
+**Step 2 — `fa_debug.cc`, 41 of the 42 printers, 2,196 lines.**
+`dbg_es_per_fun` (591 lines) is the one that stayed, and the reason is
+the useful part: it calls `clear_splits`, `build_joint_type_marks`,
+`collect_type_confluences` and `clear_marks`. It does not report on the
+analysis, it RE-RUNS stage machinery to report on it — an instrumented
+pass wearing a diagnostic's name. Moving it would have dragged the
+splitter into the diagnostics file, which is the thing this plan exists
+to prevent.
+
+**The seam is `fa_internal.h`, and its size is the number to watch.** It
+is 159 lines: the 41 diagnostic entry points, plus **26 fa.cc internals**
+the diagnostics read (`foreach_avar`, `element_census`, `mixed_basics`,
+`atype_irrepresentable`, `CSFlowGraph`, `compar_tv`, …). `fa.h` — the
+public header — did not change at all, which was the actual constraint
+behind this plan's "if a move needs ten new declarations" rule; the rule
+was about the PUBLIC surface, and an internal seam is the right vehicle
+for the rest. If that 26 grows, the thing being reported on has probably
+been put in the wrong file.
+
+**Verification, both steps.** Every `IFA_DBG_*` stream compared
+BYTE-FOR-BYTE against a binary built from the parent commit: nine
+diagnostics (`CSROUTES`, `DEMAND`, `ESDEMAND`, `CSMINT`, `RETCONF`,
+`KEYDRIFT`, `ELEMCONF`, `CSVARS`, `CONTOURS`) on `sieve` and `chess`,
+eighteen comparisons, all identical. `make test` green and unchanged
+throughout: 318 passed / 0 failed on both backends.
+
+| file | lines |
+| --- | ---: |
+| `fa.cc` | 14,605 |
+| `fa_debug.cc` | 2,196 |
+| `fa_internal.h` | 159 |
+| `fa_census.h` | 87 |
