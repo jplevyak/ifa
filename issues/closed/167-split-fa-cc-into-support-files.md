@@ -1,13 +1,17 @@
 # 167 — fa.cc is 16.8k lines; split the stable parts out and leave the algorithm
 
-**Status: DONE.** All five steps landed 2026-09-25. `fa.cc` is **12,789
+**Status: CLOSED** 2026-09-25 — `72589db6` (survey + plan), `30b09fe4`
+(step 1), `be6bd8ad` (step 2), `60eca346` (steps 3-5). No single commit
+captures it, so all four are cited.
+
+All five steps landed 2026-09-25. `fa.cc` is **12,789
 lines**, down from 16,832 when this was written -- a 24% reduction, with
 the algorithm intact and every diagnostic stream and every line of emitted
 C byte-identical.
 
-**Related:** [146](146-remove-all-arbitrary-splitting.md) (the audit whose
-levers dominate the file), [129](129-plan-demand-driven-creation-set-splitting.md)
-and [128](128-cs-identity-over-discriminates-vs-element-type.md) (the CS
+**Related:** [146](../146-remove-all-arbitrary-splitting.md) (the audit whose
+levers dominate the file), [129](../129-plan-demand-driven-creation-set-splitting.md)
+and [128](../128-cs-identity-over-discriminates-vs-element-type.md) (the CS
 identity work that must stay in fa.cc because it is still moving).
 
 ## The measurement
@@ -89,7 +93,7 @@ smaller ones. Verify: same as step 1, plus the existing
 more importantly, the measured rationale attached to each. That prose is
 the most valuable documentation in the tree and it is currently scattered
 through 16k lines at the point of first use. One file, alphabetical, is
-strictly easier to audit against [146](146-remove-all-arbitrary-splitting.md)'s
+strictly easier to audit against [146](../146-remove-all-arbitrary-splitting.md)'s
 running list of what has been removed and what is left. Verify: `git diff`
 shows only moves.
 
