@@ -146,7 +146,50 @@ matched CPython), four programs to the compile cap, and 48% compile time.
 | `range.__init__` x4 (`05_builtins.py`) | `empty_list_print`, `match_seq_star`, `builtin_type_factory` | the constant is a CreationSet FIELD (`range.j`): `range(0)` and `range(2)` build into one `range` CreationSet. Separating them splits a CreationSet by content -- [131](131-demand-driven-constant-splitting.md)'s side, with no demand mechanism yet |
 | `__list_iter__.__init__` (`04_sequence.py:21`) | `sudoku2` (33 errors; matches CPython with it) | not constants at all: the annotation makes the iterator class `clone_methods_per_cs`, so each list gets its own iterator contours. Without it iterators over different lists share an element channel. A per-receiver-CreationSet demand ([133](133-split-a-container-on-its-element-type.md)) is what should replace it |
 | `int.__ne__` (`02_numeric.py:94`) | `itertools_module` aborts at run time | `product`'s `if repeat != 1:` merged over 1 / 3 makes `p` a `{list, tuple}` union with no runtime tag; codegen emits "matching function not found" and NOTHING reports it, so there is no demand. The fix is to make an untagged container union a violation |
-| `tuple.__getitem__` key (`04_sequence.py:454`) | `test_heapq`, `tuple_arity_union_slice` | FA fans `item[1]` across per-tuple-CreationSet `__getitem__` contours, each folding field 1 to its own literal; codegen (issue [121](121-CGEN-dead-clones-emitted.md)'s narrowing) calls ONE same-signature clone, so every item prints one contour's constant. The fix is in the narrowing |
+| `tuple.__getitem__` key (`04_sequence.py:454`) | `sudoku3`, `plcfrs` (corpus); was also `test_heapq` | **The narrowing half is FIXED (2026-09-26, see below)**; what still needs the annotation is that CONST_DEMAND cannot yet reach every merged key. See "tuple.__getitem__: the narrowing fix" |
+
+### tuple.__getitem__: the narrowing fix, and what the annotation still buys
+
+**Root cause of `test_heapq`'s wrong output (fixed).** With the key merged,
+the `{int, str}` result of `item[1]` is a violation, and stage 5
+(`split_edges`) answered it by fanning `__getitem__` across its receiver's
+CreationSets -- three `(prio, name)` literals. Those three are identical BY
+TYPE (one class, one arity, every slot the same constant-stripped type); they
+differ only in the literals their slots hold. So the fan separated nothing a
+type names and nothing the runtime can tell apart: they share one C layout
+and carry no tag. Each contour folded slot 1 to its own string, and the call
+site -- which codegen can bind to one clone only (issue
+[121](121-CGEN-dead-clones-emitted.md)'s narrowing) -- printed "medium" for
+every item. `split_edges` now DECLINES when every receiver CreationSet is
+identical by type (`cs_slot_sig_equal`, constants stripped). It only
+declines; it never splits on the signature, so ifa/157's non-terminating
+signature key is not reintroduced. With the annotation removed, `test_heapq`
+passes on the decline alone.
+
+With the annotation KEPT the decline is corpus-neutral:
+`sweeps/check__default__5c7bdd94+a790d1bb.tsv` against the 134 commit's
+sweep -- contours identical on every program but `fysphun` (218 -> 208),
+verdicts identical (`tonyjpegdecoder` sits on the 120 s run cap).
+
+**Why the annotation still stays.** Removing it also needs CONST_DEMAND to
+reach every merged key, and three reach gaps were found and fixed
+experimentally, then NOT landed:
+
+| gap | case | fix tried |
+| --- | --- | --- |
+| a merged value reaches the violation only through container storage (tuple fields, list elements) | `tuple_arity_union_slice` | pass through CreationSet-contoured AVars to their writers |
+| ... or through a module-level variable (GLOBAL_CONTOUR), including an actual a formal climbs to | same | pass through globals; hand a global actual to the walk |
+| `index_object`'s RECEIVER, not just its key, carries the merge | same | follow both operands of `index_object` |
+| TYPE_CONFLUENCE never goes quiet, so the last rung never runs | `pygmy` (stall guard at p35) | on the stall guard's stop, give CONST_DEMAND one quiet pass (rescue terminates: each needs a new bit) |
+
+With all four and the annotation removed: `test_heapq`,
+`tuple_arity_union_slice` and `pygmy` (image identical to CPython) pass --
+but the corpus loses `sudoku3` and `plcfrs` (whose keys are merged along
+paths the walk still misses; `sudoku3` nominates at p30 and keeps `key` =
+`{int64, str}`), and compile time rises 21%. With the annotation KEPT the
+four cost +5.5% contours in programs that already fail to compile and buy
+nothing. So they are recorded here, not landed; the next attempt starts from
+them and from `sudoku3`.
 
 `PYC_NO_FORCED_SPLIT=1` is therefore not a no-op; it fails the tests above
 and slows the corpus.

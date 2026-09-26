@@ -1,5 +1,13 @@
 # 121 — codegen emits function clones nothing references: liveness is computed over FA's candidate set, codegen narrows each call site to one target, and nobody reconciles the two
 
+*2026-09-26 ([134](134-remove-the-frontend-forced-split-opt-in.md)): the
+narrowing described here -- one clone per call site when the candidates'
+C signatures agree -- is also a SOUNDNESS hazard when the candidates are not
+equivalent. FA's stage 5 produced exactly that for tuple receivers identical
+by type (per-CreationSet contours folding different literals); it now
+declines to, which removes the source found. The narrowing itself still
+picks `fns->v[0]` without checking the candidates are interchangeable.*
+
 **Status:** **C backend FIXED 2026-09-01**; the LLVM backend still emits
 them. Open on that half. Found while auditing whether `pygmy`'s final
 contour set is minimal (it is not — see "What this does NOT fix").

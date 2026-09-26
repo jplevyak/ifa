@@ -5153,6 +5153,32 @@ static int cs_slots_homogeneous(CreationSet *cs) {
             analysis_pass, es->id, (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?",
             rcs.n, reps.n, homo, hetero);
   }
+  // DECLINE when the receiver's CreationSets are identical BY TYPE: one
+  // class, one arity, and every slot the same constant-stripped type. They
+  // then differ only in which constants their slots hold (or in identity),
+  // so a per-CreationSet split separates nothing a type names and nothing
+  // the runtime can tell apart -- they share one C layout and carry no tag.
+  // Measured on tests/test_heapq once `tuple.__getitem__`'s key lost its
+  // annotation (ifa/134): three `(prio, name)` literals fanned `item[1]`
+  // across three contours, each folding slot 1 to its own string; the call
+  // site can name only one clone, so every item printed "medium". The union
+  // those receivers produce comes from a merged KEY, and CONST_DEMAND
+  // splits that once this stage stays quiet. Only a decline: nothing here
+  // splits on the signature, so ifa/157's non-terminating signature key is
+  // not reintroduced.
+  if (rcs.n > 1) {
+    bool same = true;
+    CreationSet *c0 = rcs.v[0];
+    for (CreationSet *c : rcs)
+      if (!c || !c0 || c->sym != c0->sym || !c->vars.n || !cs_slot_sig_equal(c0, c)) { same = false; break; }
+    if (same) {
+      if (getenv("IFA_DBG_SPLITEDGES"))
+        fprintf(stderr, "[splitedges] p=%d es=%d fun=%s recv spans=%d DECLINED (identical by type)\n",
+                analysis_pass, es->id, (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?",
+                rcs.n);
+      return 0;
+    }
+  }
   if (splitedges2_enabled() && rcs.n > 2) {
 
     AType *rest = fa->type_world.bottom_type;
