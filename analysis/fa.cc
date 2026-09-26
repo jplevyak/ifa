@@ -4278,6 +4278,53 @@ static void collect_var_type_violations() {
         }
       }
     }
+    // ifa/134: a RECORD (fixed-arity, field-per-position -- a tuple) whose
+    // fields differ in type, indexed by a key that is not a single constant.
+    // `index_object` then flows EVERY field into the result, and the record
+    // has no runtime-indexable layout: the program compiled clean and died
+    // in the emitted code with "list element type mismatch" once
+    // `tuple.__getitem__` stopped cloning its key per constant
+    // (tests/nested_tuple_repr, tuple_unpack_target_arity_union,
+    // test_heapq). A genuinely runtime key is an error; a key that is a
+    // MERGE of constants is exactly the demand ifa/151's CONST_DEMAND
+    // answers, by backtracking from this violation to the merged formal.
+    for (EntrySet *es : fa->ess) {
+      for (PNode *pn : es->fun->fa_send_PNodes) {
+        if (!pn || !pn->prim || pn->prim->index != P_prim_index_object) continue;
+        int o = pn->rvals.v[0]->sym == sym_primitive ? 2 : 1;
+        if (pn->rvals.n < o + 2) continue;
+        AVar *vec = make_AVar(pn->rvals[o], es);
+        AVar *index = make_AVar(pn->rvals[o + 1], es);
+        if (!vec->out || !index->out || !index->out->n) continue;
+        for (CreationSet *cs : vec->out->sorted) {
+          if (!cs || !cs->sym || cs->sym->is_vector || cs->vars.n < 2) continue;
+          // Sequences only. The frontend also lowers other record accesses
+          // (closures, instances) through index_object; those are not user
+          // indexing and have their own layout rules.
+          if (cs->sym != sym_tuple && cs->sym != sym_list) continue;
+          int i;
+          if (get_obj_index(index, &i, cs->vars.n)) continue;
+          // Only when the fields' UNION has no representation: a NUMERIC
+          // scalar mixed with anything else (`(2, "medium")`, `(1, (2, 3))`).
+          // Pointers of any kind -- instances, strings, containers -- share
+          // one pointer-sized slot and index fine: `[[1, 2], "hello"]`
+          // iterated by `for` is correct today (tests/isinstance_dynamic).
+          Vec<Sym *> nums;
+          int others = 0;
+          for (AVar *fv : cs->vars)
+            if (fv && fv->out)
+              for (CreationSet *c : fv->out->type->sorted) {
+                if (!c || !c->sym || c->sym == sym_nil_type) continue;
+                Sym *ty = c->sym->type ? c->sym->type : c->sym;
+                if (ty->num_kind) nums.set_add(ty); else ++others;
+              }
+          if (nums.set_count() && (others || nums.set_count() > 1)) {
+            type_violation(ATypeViolation_kind::PRIMITIVE_ARGUMENT, index, index->out, nullptr, nullptr);
+            break;
+          }
+        }
+      }
+    }
   }
   if (fa->no_unused_instance_variables) {
     for (CreationSet *cs : fa->css) {
@@ -10530,6 +10577,19 @@ static void controlling_ifs(PNode *site, Vec<PNode *> &out) {
       // A call's result reaches its caller through the result AVar's
       // `lvalue` (collect_type_confluences walks the same chain).
       if (a->lvalue) descend(a->lvalue);
+      // An operand that SELECTS rather than flows: `index_object(self, key)`
+      // returns one of the record's fields, so its backward links reach the
+      // fields and never `key` -- and `key`'s callers passing 0 and 1 is
+      // exactly the disagreement a heterogeneous `t[0]` / `t[1]` needs split
+      // (tests/tuple_list_mix without the annotation on list.__getitem__).
+      // Only the key: following every primitive operand widened the walk
+      // enough to cost `rubik` 15.6 s -> 34 s in extra nominations.
+      if (a->var && a->var->def && a->var->def->prim && a->var->def->prim->index == P_prim_index_object &&
+          X->fun->fa_all_PNodes.in(a->var->def)) {
+        PNode *d = a->var->def;
+        int o = d->rvals.v[0]->sym == sym_primitive ? 2 : 1;
+        if (d->rvals.n > o + 1) push(make_AVar(d->rvals[o + 1], X));
+      }
     }
     if (dbg && getenv("IFA_DBG_CONSTDEMAND")[0] >= '2')
       fprintf(stderr, "  [constdemand-walk] viol av=%d kind=%d es=%d fun=%s reached=%d\n", v->av->id, (int)v->kind,

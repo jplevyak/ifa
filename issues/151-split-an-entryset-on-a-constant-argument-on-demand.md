@@ -123,11 +123,11 @@ record argument to a layout-compatible sibling formal (ifa/126's
 
 ### What is left
 
-- 32 annotated lines remain (62 before): `int` comparisons and truthiness,
-  `range`, `isinstance`/`issubclass`, container `__getitem__` keys, and the
-  rest listed in [134](134-remove-the-frontend-forced-split-opt-in.md).
-  Each is a fold consumer; removing them is the same exercise as the
-  arithmetic -- measure, and let the demand stage carry what breaks.
+- *Updated same day:* [134](134-remove-the-frontend-forced-split-opt-in.md)
+  took the annotated lines from 32 to **9**, each kept for a named reason
+  (a fold no demand can ask for, the CreationSet side, or a codegen gap).
+  It also added an `index_object`-key step to this walk and a violation
+  for a heterogeneous tuple indexed by a merged key.
 - A demand the split answers without resolving still costs passes: on
   `msp_ss` (fails to compile either way) the stage folds `bslTxRx`'s
   `if cmd == ...` branches and the violations stay. Nothing that compiled is

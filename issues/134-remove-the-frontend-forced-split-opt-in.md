@@ -4,7 +4,9 @@
 (with [151](151-split-an-entryset-on-a-constant-argument-on-demand.md), which
 is the mechanism that lets this close). 129 is the single integrated plan.*
 
-**Status:** open, measured. **Progress 2026-09-26:** with
+**Status: 53 of 62 annotated lines removed 2026-09-26; 9 remain, each
+with a named reason** -- see "DONE 2026-09-26" below. Earlier progress,
+same day: with
 [151](151-split-an-entryset-on-a-constant-argument-on-demand.md)'s demand
 stage built, the 30 annotated lines in `int`'s arithmetic, bitwise, in-place
 and formatting methods (`02_numeric.py`, 39 -> 9) are gone; 32 annotated
@@ -101,6 +103,68 @@ header stops folding and its dead body gets type-checked, which is issue
 0 → 69. So this cannot be waited out: [128](128-cs-identity-over-discriminates-vs-element-type.md)'s
 architecture does not subsume it, and the two are independent pieces of
 work.
+
+## DONE 2026-09-26 -- 53 of 62 lines gone, and why each of the 9 stays
+
+Built on [151](151-split-an-entryset-on-a-constant-argument-on-demand.md)'s
+CONST_DEMAND stage. Removed: every annotation on `int`'s comparisons and
+`__bool__`/`__pyc_to_bool__`/`__not__`, `str.__str__`/`__repr__`,
+`isinstance`/`issubclass`, `bytearray`, `list.__getitem__`/`__setitem__`
+keys, `list.__add__`'s lengths, `tuple.__setitem__`/`__len__`, and the
+constructor fields of `dict` and `set`.
+
+**What the demand stage needed to carry them:**
+
+| gap | found by | fix |
+| --- | --- | --- |
+| a SELECTING operand is not on the data path: `index_object(self, key)` returns a field, never `key` | `tuple_list_mix` (`t[0]`/`t[1]` on `(int, str)`) | follow `index_object`'s key from its result |
+| no violation at all: a heterogeneous tuple indexed by a merged key compiled clean and died at run time ("list element type mismatch") | `nested_tuple_repr`, `tuple_unpack_target_arity_union`, `match_map_star` | post-convergence check: a `tuple`/`list` record whose fields mix a NUMERIC scalar with anything else, indexed by a key that is not one constant, is a `PRIMITIVE_ARGUMENT` violation, which the demand stage answers. A genuinely runtime key is now a compile error instead of a crash |
+
+The check was narrowed twice, each time on a measurement: to sequences (the
+frontend lowers closure and instance access through `index_object` too),
+then from `atype_irrepresentable` to "numeric scalar mixed with anything",
+because `[[1, 2], "hello"]` iterated by `for` is two pointers and works
+(`isinstance_dynamic`).
+
+**Two walk extensions were built, measured, and removed.** Following EVERY
+primitive operand cost `rubik` 15.6 s -> 34 s in extra nominations; only
+`index_object`'s key is followed. Seeding the conditions each visited
+definition is control-dependent on (so the walk sees a value CHOSEN by a
+branch, `bool.__not__`'s `if self: return False`) fixed `minmax_3arg` but
+took `rubik` past 150 s and `ac_encode` from 8 s to the 400 s cap. It was
+needed only to remove `bool`'s lines, which stay for the reason below.
+
+**The pyc suite is not enough evidence for this change.** With 56 lines
+removed it was green, and the corpus lost `hq2x` and `sudoku2` (both
+matched CPython), four programs to the compile cap, and 48% compile time.
+
+**The 9 that stay:**
+
+| line | without it | why |
+| --- | --- | --- |
+| `bool.__not__`, `bool.__pyc_to_bool__` (`00_runtime.py`) | `hq2x` 38 s -> over 150 s, corpus-wide slowdown | Every `if` goes through `__pyc_to_bool__`; one shared contour makes its `self` `{True, False}`, so every condition folded upstream stops folding downstream. What is lost is a FOLD, not a demand -- dead code that types fine raises no violation -- so no demand can ask for it back. This is the stop condition in "The work" below, met. The cost is bounded: `bool` has two values |
+| `range.__init__` x4 (`05_builtins.py`) | `empty_list_print`, `match_seq_star`, `builtin_type_factory` | the constant is a CreationSet FIELD (`range.j`): `range(0)` and `range(2)` build into one `range` CreationSet. Separating them splits a CreationSet by content -- [131](131-demand-driven-constant-splitting.md)'s side, with no demand mechanism yet |
+| `__list_iter__.__init__` (`04_sequence.py:21`) | `sudoku2` (33 errors; matches CPython with it) | not constants at all: the annotation makes the iterator class `clone_methods_per_cs`, so each list gets its own iterator contours. Without it iterators over different lists share an element channel. A per-receiver-CreationSet demand ([133](133-split-a-container-on-its-element-type.md)) is what should replace it |
+| `int.__ne__` (`02_numeric.py:94`) | `itertools_module` aborts at run time | `product`'s `if repeat != 1:` merged over 1 / 3 makes `p` a `{list, tuple}` union with no runtime tag; codegen emits "matching function not found" and NOTHING reports it, so there is no demand. The fix is to make an untagged container union a violation |
+| `tuple.__getitem__` key (`04_sequence.py:454`) | `test_heapq`, `tuple_arity_union_slice` | FA fans `item[1]` across per-tuple-CreationSet `__getitem__` contours, each folding field 1 to its own literal; codegen (issue [121](121-CGEN-dead-clones-emitted.md)'s narrowing) calls ONE same-signature clone, so every item prints one contour's constant. The fix is in the narrowing |
+
+`PYC_NO_FORCED_SPLIT=1` is therefore not a no-op; it fails the tests above
+and slows the corpus.
+
+**Corpus `-m check`** (`sweeps/check__default__233b9ee4+e9dc9c65.tsv`):
+
+| | pre-151 (`63888fd6+7e402769`) | 151 alone (`e70bcffa+eb5931f5`) | now |
+| --- | --- | --- | --- |
+| contours, all 77 | 32503 | 29983 | **27685 (-14.8%)** |
+| compile s, all 77 | 1734 | 1650 | **1669 (-3.7%)** |
+| contours / compile s, 44 compiling in both | 16088 / 528 | -- | **13924 / 496** (-13.5% / -6.1%) |
+| stdout matching CPython | 14 | 14 | 14 |
+
+Verdict moves against 151 alone: `chull` run-crash -> compile error, `life`
+compile error -> compiles and aborts, `quameon` back to a compile error,
+`tonyjpegdecoder` now finishes inside the run cap. `chaos` reads as a run
+timeout; its binary takes 112 s alone under both trees against a 120 s cap,
+so that is the cap, not this change.
 
 ## The work
 
