@@ -119,7 +119,7 @@ reason to keep the leak:
 - **`hq2x`**: compiles in 61 s and matches CPython -> compiles in **383 s**
   (re-taken alone, rc=0), hitting the 101-pass cap with 0 violations.
 
-### `pylife` -- the leak was supplying 151's demand by accident
+### `pylife` -- the leak was hiding a fatal bottom on a path CPython raises on
 
 ```python
 def __init__(self, board, id, children):
@@ -128,15 +128,38 @@ def __init__(self, board, id, children):
 E = LifeNode(self, 0, None); X = LifeNode(self, 1, None)
 ```
 
-At the default, `0` and `1` leak into separate contours, so `id <= 1`
-folds and the `else` arm is dead where `children` is `None`. With the leak
-closed the two `None` calls correctly share a contour, `id` is `{0, 1}`,
-the one-constant cap widens it to `int64` (`PYC_CONSTCAP=2` does not help
--- the fold needs a single constant CreationSet), and `None` reaches the
-unpack. That IS a demand -- a violation on a branch guarded by a
-comparison on a constant formal -- and it is exactly
-[151](151-split-an-entryset-on-a-constant-argument-on-demand.md)'s. So
-this fix is sequenced after 151, not blocked by it being wrong.
+At the default, `0` and `1` leak into separate contours (pyc has **4**
+contours of `LifeNode.__init__`), so `id <= 1` folds and the `else` arm is
+dead where `children` is `None`. With the leak closed the two `None` calls
+correctly share a contour, `id` is `{0, 1}`, the one-constant cap widens it
+to `int64` (`PYC_CONSTCAP=2` does not help -- the fold needs a single
+constant CreationSet), and the unpack of `None` is reported as a fatal
+`expression has no type`.
+
+**shedskin shows the constant split is NOT the answer** (measured
+2026-09-25, `func.cp` of `LifeNode.__init__`):
+
+```
+CART [('LifeBoard', 1), ('int_', 0), ('none', 0)]
+CART [('LifeBoard', 1), ('int_', 0), ('list', 5)]
+```
+
+**2 contours, split on `children` alone; `id` is plain `int` and
+`id <= 1` never folds.** It emits one C++ function,
+`__init__(LifeBoard*, __ss_int id, list<LifeNode*>* children)`, with
+`None` as a null `list*`; the `else` arm is compiled for both, and the
+`None` contour's unpack contributes no types, which is harmless because the
+variables are typed from the union over contours. The arm is dead at run
+time.
+
+So the minimum is 2 and pyc's gap is not a missing split. In the merged
+`None` contour, unpacking `None` is a guaranteed CPython `TypeError`: the
+faithful lowering is a raise, after which the path is dead and a bottom
+type on it is not an error. pyc instead makes that bottom fatal. This is
+the mirror image of issues/165 (a `None` reaching an operation is silently
+read as zero instead of raising). An earlier draft of this section said
+`pylife` needed [151](151-split-an-entryset-on-a-constant-argument-on-demand.md)'s
+per-constant split; that would buy 4 contours where 2 suffice.
 
 ### `hq2x` -- an ESBLOCK split the binding test cannot see
 
@@ -164,8 +187,10 @@ every stage behind it (ifa/055, 157).
 1. Make ESBLOCK's separation durable -- the binding must see what the split
    decided -- or stop reporting progress on a reuse that re-merges
    (`hq2x`).
-2. Land [151](151-split-an-entryset-on-a-constant-argument-on-demand.md)'s
-   demand-driven constant split (`pylife`).
+2. Lower an operation whose operand is exactly `None` (here: unpacking
+   it) as the `TypeError` CPython raises, so the bottom that follows is dead
+   code rather than a fatal "no type" (`pylife`; minimum 2 contours, as
+   shedskin).
 3. Strip constants in the split view at unannotated formals (the probe).
 
 ## Verification plan
@@ -174,12 +199,12 @@ every stage behind it (ifa/055, 157).
   `fa->ess` (the probe used was `IFA_DBG_ESHIST`, printing
   `count name file:line` per Fun from `report_fun_entry_sets`).
 - `./test_pyc.py` unchanged on both backends.
-- Corpus `-m check`: ess and compile time down as above; `pylife` and
-  `hq2x` keep their default verdicts and `hq2x` its 61 s compile.
+- Corpus `-m check`: ess and compile time down as above; `pylife` compiles with 2 contours of `LifeNode.__init__`, and `hq2x`
+  keeps its default verdict and 61 s compile.
 
 ## What this unblocks
 
 About 4.5% of all contours corpus-wide, and the 1-CFA-by-literal fan on
 every function called with constants. It also removes a precision source
 that masks real defects -- the two regressions above are both bugs the
-leak was hiding, each with its own owner.
+leak was hiding.
