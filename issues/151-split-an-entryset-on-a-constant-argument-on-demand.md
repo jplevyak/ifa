@@ -1,6 +1,10 @@
 # ifa/151 — split an EntrySet on a constant argument, on demand
 
-**Status:** open, root-caused, not built. Sequenced as
+**Status:** BUILT 2026-09-26 (the EntrySet half). `int`'s arithmetic,
+bitwise, in-place and formatting methods no longer carry
+`__pyc_clone_constants__`; their constants are split only on demand. The
+rest of the annotations remain -- see "What is left" below. Previously:
+open, root-caused, not built. Sequenced as
 [129](129-plan-demand-driven-creation-set-splitting.md) step 4 — 129 is the
 single integrated plan. Filed 2026-09-12 out of
 [150](150-is-not-none-never-folds.md), whose fix needed a per-constant
@@ -14,6 +18,123 @@ one function, the contours merge, and the constant is destroyed for both.
 `0/0/0` on the program it was designed for — so the demand signal below is
 not a restatement of that one, and the two issues do not overlap in
 mechanism.
+
+## LANDED 2026-09-26 -- what was built, and what it measured
+
+### The mechanism
+
+- **The per-contour bit.** `EntrySet::const_positions` (fa.h): formal
+  positions at which a contour keeps constants apart. Set only by the new
+  **CONST_DEMAND** stage, inherited by every product through the durable
+  `split_origin` lineage, and consulted -- through `es_wants_constants` --
+  everywhere `Sym::clone_for_constants` used to be: confluence collection
+  (unstripped comparison), edge grouping (`split_type_view`'s
+  `keep_consts`), ES compatibility (a demanded mismatch is a HARD
+  incompatibility, an annotated one stays the old soft preference), and the
+  clone phase's contour equivalence.
+- **The demand.** `split_for_constant_demand` runs as the LAST rung, only
+  when every other stage found nothing this pass. From each violation it
+  walks backward through the value it complains about and through the
+  conditions of the branches the violating statement is CONTROL-DEPENDENT
+  on (`controlling_ifs`: a branch one of whose arms cannot reach the
+  statement). It goes down into callees through call results and up into
+  callers through formals -- but a callee entered from a call result may
+  only be left back into that caller (`__pyc_to_bool__` has hundreds of
+  callers). A formal whose in-edges disagree on a constant is nominated.
+- **ifa/169's leak is closed.** `split_type_view` strips constants unless the
+  formal wants them, so a split no longer fans per literal.
+
+Each of those rules was forced by a measurement, recorded at the code:
+running while other stages act split `g(a, k)` per literal on a transient
+pass-0 BOXING violation; not climbing missed `pylife`'s `LifeNode(self, 0,
+None)` / `(self, 1, None)`, which meet at the `__new__` wrapper; climbing
+freely walked every `if` in the program; seeding every unfolded condition
+nominated `msp_ss`'s `bslTxRx(cmd, addr, length)` (errors 213 -> 263).
+
+### What it fixes on its own
+
+| | HEAD | now |
+| --- | --- | --- |
+| `tests/match_seq_star.py` with `int.__sub__` unannotated | -- | passes: demand splits `__sub__` (`len(()) - 0`) and a boolean `__or__` |
+| `tests/match_none.py`, `tests/match_seq.py` (known issues since ifa/158) | 4 / 33 errors | **pass**; `.known_issue` retired. `PYC_CONSTDEMAND=0` fails them again |
+| `ifa/tests/synthetic/polymorphic_formal_3types_2each` | 6 contours of `f` | **3**, one per type (goldens re-blessed: 5 phases, this fixture only) |
+
+### Small programs (contours; minimum by shape, ifa/169's census)
+
+| | HEAD | now | minimum |
+| --- | --- | --- | --- |
+| `g(a, k)` x6 | 53 | **49** | 49 |
+| `(int, int)` tuples | 84 | 78 | 69 (+ tuple sites, C) |
+| `voronoi` | 213 | **171** | 120 |
+
+### Corpus `-m check`
+
+`sweeps/check__default__63888fd6+7e402769.tsv` (HEAD's analysis) vs
+`sweeps/check__default__e70bcffa+eb5931f5.tsv` (this change):
+
+| | HEAD | now |
+| --- | --- | --- |
+| contours, 45 programs compiling in both | 16688 | **15416 (-7.6%)** -- 41 down, 2 up (`plcfrs` +34, `pygmy` +74; pygmy runs to the pass cap in both) |
+| compile seconds, same 45 | 544 | **494 (-9.2%)** |
+| contours / compile seconds, all 77 | 32503 / 1734 | **29983 / 1650** (-7.8% / -4.8%) |
+| compile_fail / run_fail / stdout_differs | 32 / 13 / 6 | 31 / 14 / 6 -- `quameon` now compiles (and aborts at run, as it did under `PYC_ESBLOCK=0` before) |
+| stdout matching CPython | 14 | 14 |
+
+The metric was speed with unnecessary contours as its measure, and the two
+move together here. On the way there the change was briefly SLOWER (+12-19%
+compile time) with fewer contours: a violation-reach walk run once per
+violation (hq2x: 4434 transient violations on pass 1, split stages 0.015 s
+-> 1-4 s a pass) and ESBLOCK's self-undoing split (softrender to the cap).
+Both are fixed above; neither was a cost of splitting on demand.
+
+### Latent defects the change exposed, all fixed with it
+
+Removing the accidental per-literal separation surfaced three bugs that
+the extra contours had been hiding. None is a reason to keep the
+annotations:
+
+1. **`pygmy` rendered one shader class's objects with the base method --
+   at HEAD too.** `cg_build_new_to_val_map` (codegen_common.cc) fills an
+   object's method slot with "one winner per (constructor, slot)", and on a
+   specificity tie kept whichever registered first. `everythingshader.shade`
+   calls `shader.shade(self, ...)`, so a `shader.shade` clone has `self =
+   everythingshader` and ties with the override. HEAD gave spotshader's slot
+   to `shader.shade`; after this change the order flipped and
+   everythingshader lost instead. Now an override (a declared owner that
+   `specializes` the other's) always wins -- and pygmy's image is
+   **byte-identical to CPython's**, which it was not at HEAD. The corpus
+   sweep marks pygmy "unverifiable", which is why this went unseen.
+2. **ESBLOCK's EntrySet split undid itself every pass.** It separates edges
+   by CREATION POINT, but passed the type-split flag, so HARDREUSE's
+   route-by-type-key bound the peeled group into its type-identical sibling
+   -- the one holding last pass's complement. At HEAD the edges also
+   differed in literals, which kept the type keys apart by accident.
+   `ESSplitDecision::type_only = false` for ESBLOCK. `softrender`: 101 passes
+   to the cap and 301 errors at HEAD -> **50 passes, 8 errors**.
+3. **ESBLOCK fired on facts.** A CS_DEF_PART candidate that only had a type
+   confluence (or was backtracked from one) could split an EntrySet; `hq2x`
+   ran to the cap on it with no violations at all. ESBLOCK now requires a
+   demand: an irrepresentable element or a violation's backward reach.
+
+Two smaller ones: `_CG_mod_impl` is one template (a bare `20000 % 2` was an
+ambiguous overload once it stopped folding in FA), and the C backend casts a
+record argument to a layout-compatible sibling formal (ifa/126's
+`PYC_CLASSEQ=2` merge), recorded with the blind-cast contract.
+
+### What is left
+
+- 32 annotated lines remain (62 before): `int` comparisons and truthiness,
+  `range`, `isinstance`/`issubclass`, container `__getitem__` keys, and the
+  rest listed in [134](134-remove-the-frontend-forced-split-opt-in.md).
+  Each is a fold consumer; removing them is the same exercise as the
+  arithmetic -- measure, and let the demand stage carry what breaks.
+- A demand the split answers without resolving still costs passes: on
+  `msp_ss` (fails to compile either way) the stage folds `bslTxRx`'s
+  `if cmd == ...` branches and the violations stay. Nothing that compiled is
+  slowed by it.
+- `pylife` compiles again but with 4 contours of `LifeNode.__init__`;
+  shedskin's 2 needs the TypeError lowering in
+  [169](closed/169-FA-constants-leak-into-split-grouping-through-the-dispatch-filter.md).
 
 ## Symptom — five lines
 

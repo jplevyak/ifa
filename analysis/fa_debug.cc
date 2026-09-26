@@ -983,6 +983,84 @@ void report_cs_vars() {
 
 
 void report_fun_entry_sets() {
+  // IFA_DBG_ESHIST: contours per Fun at the end of the analysis, against
+  // how many DISTINCT formal signatures those contours have, at three
+  // levels -- the unnecessary-contour metric of ifa/169 and ifa/170:
+  //   exact:   CreationSet ids (constants stripped via ->type)
+  //   bysym:   classes only
+  //   byshape: class + element classes (containers), + per-position
+  //            classes (tuples) -- the minimum a type-shaped identity needs
+  // Keys are Sym / CreationSet ids, never names (names are not unique).
+  // One line per Fun: `ESHIST <contours> <name> fid=<id> <file>:<line>
+  // exact=<n> bysym=<n> byshape=<n>`. IFA_DBG_ESHIST_SIGS adds each
+  // contour's raw formal types for Funs with more than one.
+  if (getenv("IFA_DBG_ESHIST")) {
+    auto sym_key = [](CreationSet *c) { return std::to_string(c->sym ? c->sym->id : -1); };
+    auto shape = [&](CreationSet *c) -> std::string {
+      std::string r = sym_key(c);
+      std::set<std::string> el;
+      if (c->sym && c->sym->element && c->added_element_var) {
+        AVar *ea = unique_AVar(c->sym->element->var, c);
+        if (ea && ea->out)
+          for (CreationSet *q : ea->out->type->sorted) if (q) el.insert(sym_key(q));
+      }
+      if (!el.empty()) {
+        r += "[";
+        for (auto &x : el) r += x + ";";
+        r += "]";
+      }
+      if (c->sym == sym_tuple)
+        for (AVar *v : c->vars) if (v && v->out) {
+          std::set<std::string> one;
+          for (CreationSet *q : v->out->type->sorted) if (q) one.insert(sym_key(q));
+          r += "(";
+          for (auto &x : one) r += x + ";";
+          r += ")";
+        }
+      return r;
+    };
+    Map<Fun *, int> per;
+    for (EntrySet *x : fa->ess) if (x && x->fun) per.put(x->fun, per.get(x->fun) + 1);
+    form_Map(MapElemFunPint, e, per) {
+      Fun *fn = e->key;
+      std::set<std::string> ex, bysym, byshape;
+      for (EntrySet *x : fa->ess) if (x && x->fun == fn) {
+        std::string a, b, c3;
+        for (MPosition *p : fn->positional_arg_positions) {
+          AVar *av = x->args.get(p);
+          a += "|"; b += "|"; c3 += "|";
+          if (!av || !av->out) continue;
+          std::set<std::string> bs, ss;
+          for (CreationSet *c : av->out->type->sorted) if (c) {
+            a += std::to_string(c->id) + ",";
+            bs.insert(sym_key(c));
+            ss.insert(shape(c));
+          }
+          for (auto &q : bs) b += q + ",";
+          for (auto &q : ss) c3 += q + ",";
+        }
+        ex.insert(a); bysym.insert(b); byshape.insert(c3);
+      }
+      fprintf(stderr, "ESHIST %d %s fid=%d %s:%d exact=%zu bysym=%zu byshape=%zu\n", e->value,
+              fn->sym && fn->sym->name ? fn->sym->name : "?", fn->sym ? fn->sym->id : -1,
+              fn->sym ? fn->sym->filename() : "?", fn->sym ? fn->sym->line() : 0, ex.size(), bysym.size(),
+              byshape.size());
+      if (getenv("IFA_DBG_ESHIST_SIGS") && e->value > 1)
+        for (EntrySet *x : fa->ess) if (x && x->fun == fn) {
+          fprintf(stderr, "  SIG %s es=%d", fn->sym && fn->sym->name ? fn->sym->name : "?", x->id);
+          for (MPosition *p : fn->positional_arg_positions) {
+            AVar *av = x->args.get(p);
+            fprintf(stderr, " [");
+            if (av && av->out)
+              for (CreationSet *c : av->out->sorted) if (c)
+                fprintf(stderr, " %s#%d%s", c->sym && c->sym->name ? c->sym->name : "?", c->id,
+                        c->sym && c->sym->constant ? "c" : "");
+            fprintf(stderr, " ]");
+          }
+          fprintf(stderr, "\n");
+        }
+    }
+  }
   cchar *want = getenv("IFA_DBG_FUNES");
   if (!want) return;
   for (Fun *f : fa->funs) {

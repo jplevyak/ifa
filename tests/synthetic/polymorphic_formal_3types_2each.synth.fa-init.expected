@@ -2,7 +2,7 @@
 
 (summary
   rc:              -1
-  entry-sets:      7
+  entry-sets:      4
   creation-sets:   22
   global-avars:    0
   funs:            2
@@ -12,9 +12,6 @@
 (entry-sets
   @__main__ args=1 rets=1 edges=4 creates=0
   %f args=3 rets=1 edges=12 creates=0
-  %f args=3 rets=1 edges=4 creates=0
-  %f args=3 rets=1 edges=4 creates=0
-  %f args=3 rets=1 edges=4 creates=0
   %f args=3 rets=1 edges=4 creates=0
   %f args=3 rets=1 edges=4 creates=0
 )

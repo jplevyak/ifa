@@ -409,11 +409,14 @@ inline int ES_FN::equivalent(EntrySet *a, EntrySet *b) {
         bparents.add(b->display[nesting_depth - 1]->equiv);
     if (aparents.some_disjunction(bparents)) return 0;
   }
-  if (a->fun->clone_for_constants) {
+  // ifa/151: a formal kept apart by constants -- annotated, or demanded on
+  // either contour -- must not be re-merged here.
+  if (es_wants_any_constants(a) || es_wants_any_constants(b)) {
     for (MPosition *p : a->fun->positional_arg_positions) {
-      AVar *av = a->args.get(p);
-      if (av->var->sym->clone_for_constants)
-        if (av->out->constants() != b->args.get(p)->out->constants()) return 0;
+      AVar *av = a->args.get(p), *bv = b->args.get(p);
+      if (!av || !bv) continue;
+      if (es_wants_constants(a, p) || es_wants_constants(b, p))
+        if (av->out->constants() != bv->out->constants()) return 0;
     }
   }
   // ESCAPE_PLAN.md Phase 4: escape divergence trigger.

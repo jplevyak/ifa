@@ -1,6 +1,6 @@
 ;; phase: clone
 
-(summary fa_rc=-1 clone_rc=0 funs=4 css=22 ess=7)
+(summary fa_rc=-1 clone_rc=0 funs=4 css=22 ess=4)
 
 (cs-equiv
   class[(anon)] members=1 type=int32
@@ -29,9 +29,9 @@
 
 (es-equiv
   fun __main__ ess=1 equiv-classes=1
-  fun f ess=2 equiv-classes=1
-  fun f ess=2 equiv-classes=1
-  fun f ess=2 equiv-classes=1
+  fun f ess=1 equiv-classes=1
+  fun f ess=1 equiv-classes=1
+  fun f ess=1 equiv-classes=1
 )
 
 (call-graph

@@ -34,6 +34,7 @@ static cchar *stage_name(FAPassStage s) {
     case FAPassStage::CSM_ELEMENT_CS: return "csm-element-cs";
     case FAPassStage::CARTESIAN_PRODUCT: return "cartesian-product";
     case FAPassStage::CS_DEF_PARTITION: return "cs-def-partition";
+    case FAPassStage::CONST_DEMAND: return "const-demand";
   }
   return "?";
 }

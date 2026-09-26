@@ -1,25 +1,25 @@
 ;; phase: dispatch
 
-(summary rc=-1 ess=7 edges=36)
+(summary rc=-1 ess=4 edges=24)
 
 (es @__main__#0
   send f (imm) (imm) => ?
     → %f#0
       args→ [1]:{f} [2]:{int32} [3]:{int32}
   send f (imm) (imm) => ?
-    → %f#1
+    → %f#0
       args→ [1]:{f} [2]:{int32} [3]:{int32}
   send f (imm) (imm) => ?
+    → %f#1
+      args→ [1]:{f} [2]:{float64} [3]:{float64}
+  send f (imm) (imm) => ?
+    → %f#1
+      args→ [1]:{f} [2]:{float64} [3]:{float64}
+  send f (imm) (imm) => ?
     → %f#2
-      args→ [1]:{f} [2]:{float64} [3]:{float64}
-  send f (imm) (imm) => ?
-    → %f#3
-      args→ [1]:{f} [2]:{float64} [3]:{float64}
-  send f (imm) (imm) => ?
-    → %f#4
       args→ [1]:{f} [2]:{int64} [3]:{int64}
   send f (imm) (imm) => ?
-    → %f#5
+    → %f#2
       args→ [1]:{f} [2]:{int64} [3]:{int64}
 )
 
@@ -32,18 +32,6 @@
 )
 
 (es %f#2
-  (no out edges)
-)
-
-(es %f#3
-  (no out edges)
-)
-
-(es %f#4
-  (no out edges)
-)
-
-(es %f#5
   (no out edges)
 )
 

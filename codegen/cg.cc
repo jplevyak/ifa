@@ -366,6 +366,28 @@ static bool cg_needs_elem_cast(cchar *dst_t, Var *src) {
   return cg_ptrish_ct(dst_t) && cg_ptrish_ct(src_t);
 }
 
+// ifa/126 (PYC_CLASSEQ=2) merges two contours whose formals hold
+// LAYOUT-COMPATIBLE sibling classes into one clone, typed by one of them --
+// `pygmy`'s `shader.shade` over `everythingshader` and `spotshader`. A call
+// that passes the other class then hands a `_CG_ps<A>` to a `_CG_ps<B>`
+// formal, which C++ refuses. The merge already proved the layouts agree, so
+// the cast is exact; it is recorded with the blind-cast contract over the
+// WHOLE layout (every member, not one read slot) so a merge that stops
+// being layout-safe fails the build instead of reading the wrong field.
+//
+// Latent until ifa/151: while `int`'s arithmetic was cloned per constant,
+// the two `shade` contours reached different arithmetic callees and
+// `equivalent_es_pnode` kept them apart.
+static bool cg_needs_sibling_record_cast(Var *formal, Var *src) {
+  if (!formal || !src) return false;
+  Sym *ft = formal->type, *at = src->type;
+  if (!ft || !at || ft == at) return false;
+  if (ft->type_kind != Type_RECORD || at->type_kind != Type_RECORD) return false;
+  int last = (ft->has.n > at->has.n ? ft->has.n : at->has.n) - 1;
+  if (last >= 0) cg_note_blind_cast_1(ft, at, last);
+  return true;
+}
+
 static bool cg_needs_nil_union_cast(cchar *dst_t, Var *src) {
   if (!dst_t || !src || !cg_is_nil_union(src->type)) return false;
   bool dst_voidish =
@@ -1792,6 +1814,8 @@ static void write_send_arg(FILE *fp, Fun *f, PNode *n, MPosition *p, int &wrote_
     if (arg_is_voidish && !formal_is_voidish) {
       fprintf(fp, "(%s)%s", formal_t, arg_cg);
     } else if (cg_needs_nil_union_cast(formal_t, v)) {
+      fprintf(fp, "(%s)%s", formal_t, arg_cg);
+    } else if (cg_needs_sibling_record_cast(formal, v)) {
       fprintf(fp, "(%s)%s", formal_t, arg_cg);
     } else {
       fputs(arg_cg, fp);

@@ -2,8 +2,14 @@
 
 **Status: open.** Root-caused 2026-09-25 while counting unnecessary
 contours on `voronoi` against a hand-derived minimum and shedskin (see
-[169](169-FA-constants-leak-into-split-grouping-through-the-dispatch-filter.md)'s
+[169](closed/169-FA-constants-leak-into-split-grouping-through-the-dispatch-filter.md)'s
 census). Analysis time is the cost: every contour is re-analysed every pass.
+
+*2026-09-26: 169's constant-strip is now the default, and `int`'s arithmetic
+is no longer annotated (151), so `voronoi`'s default is now 171 contours
+for 142 exact signatures. That gap still includes the remaining annotated
+constants (`range`, tuple keys); the 16 duplicates measured below, with
+every constant mechanism off, are this issue's own share.*
 
 ## Symptom
 

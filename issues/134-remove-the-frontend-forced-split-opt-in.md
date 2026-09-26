@@ -4,7 +4,13 @@
 (with [151](151-split-an-entryset-on-a-constant-argument-on-demand.md), which
 is the mechanism that lets this close). 129 is the single integrated plan.*
 
-**Status:** open, measured. The gating mechanism behind
+**Status:** open, measured. **Progress 2026-09-26:** with
+[151](151-split-an-entryset-on-a-constant-argument-on-demand.md)'s demand
+stage built, the 30 annotated lines in `int`'s arithmetic, bitwise, in-place
+and formatting methods (`02_numeric.py`, 39 -> 9) are gone; 32 annotated
+lines remain program-wide (62 before), all on fold consumers --
+comparisons, truthiness, `range`, `isinstance`/`issubclass`, container
+keys. Corpus neutral to better; see 151's "LANDED" section. The gating mechanism behind
 [131](131-demand-driven-constant-splitting.md),
 [133](133-split-a-container-on-its-element-type.md) and closed issue
 [045](closed/045-receiver-cs-method-cloning.md), and the clearest

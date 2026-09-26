@@ -33,9 +33,10 @@ std::vector<std::string> cselem_shape_by_id;  // id -> text, diagnostics
 const char *kStageName[FA::kNumFAPassStages] = {
     "TYPE_CONFL",  "MARK_TYPE",   "SETTER",      "SETTER_OF_SETTER", "MARK_SETTER",
     "MARK_SET_OF_SET", "VIOLATION", "PER_CS_RECV", "CSM_ELEM_CS",  "CPA",
-    "CS_DEF_PART"};
+    "CS_DEF_PART", "CONST_DEMAND"};
 
 
+#include <functional>
 #include <set>
 #include <string>
 
@@ -116,7 +117,7 @@ static const char *fa_pass_stage_name(FAPassStage stage) {
   static const char *names[FA::kNumFAPassStages] = {
       "type_confluence", "mark_type",   "setter",         "setter_of_setter", "mark_setter",
       "mark_setter_of_setter", "violation", "per_cs_receiver", "csm_element_cs",
-      "cartesian_product",     "cs_def_partition",
+      "cartesian_product",     "cs_def_partition", "const_demand",
   };
   int i = (int)stage;
   return (i >= 0 && i < FA::kNumFAPassStages) ? names[i] : "?";
@@ -1257,8 +1258,62 @@ Vec<AVar *> fieldsplit_demands;
 // Constants are deliberately NOT unstripped here: a raw single-element
 // out can be a constant CS ("3" rather than int64) and partitioning on
 // that is clone-per-constant (survey B5).
-static AType *split_type_view(AVar *a, AType *filter) {
+// How many (contour, formal) positions a demand has ever set. Zero on most
+// programs, and these predicates sit in the edge-grouping inner loops, so the
+// lineage walk is skipped entirely until the first nomination.
+static int const_demand_positions = 0;
+// ifa/151: does contour `es` keep constants apart at formal `p`? Yes when
+// the formal carries the frontend annotation (`__pyc_clone_constants__`),
+// or when a demand set the position on this contour or on any contour it
+// was split from -- the bit rides the durable `split_origin` lineage so a
+// product keeps what its parent was asked for.
+bool es_wants_constants(EntrySet *es, MPosition *p) {
+  if (!es || !p) return false;
+  AVar *av = es->args.get(p);
+  if (av && av->var && av->var->sym && av->var->sym->clone_for_constants) return true;
+  if (!const_demand_positions) return false;
+  int depth = 0;
+  for (EntrySet *x = es; x && depth < 10000; x = x->split_origin, depth++) {
+    if (x->const_positions.in(p)) return true;
+    if (x->split_origin == x) break;
+  }
+  return false;
+}
+bool es_wants_any_constants(EntrySet *es) {
+  if (!es) return false;
+  if (es->fun && es->fun->clone_for_constants) return true;
+  if (!const_demand_positions) return false;
+  int depth = 0;
+  for (EntrySet *x = es; x && depth < 10000; x = x->split_origin, depth++) {
+    if (x->const_positions.n) return true;
+    if (x->split_origin == x) break;
+  }
+  return false;
+}
+// The formal a value is bound to, if `av` is one of its contour's formals.
+static MPosition *formal_position(AVar *av) {
+  if (!av || !av->contour_is_entry_set || av->contour == GLOBAL_CONTOUR || !av->var) return nullptr;
+  EntrySet *es = (EntrySet *)av->contour;
+  form_MPositionAVar(x, es->args) if (x->value == av) return x->key;
+  return nullptr;
+}
+// Only a DEMANDED position can make this true beyond the annotation, which
+// callers test first; with no demand anywhere it is free.
+static bool es_wants_constants_at(AVar *av) {
+  if (!const_demand_positions) return false;
+  MPosition *p = formal_position(av);
+  return p && es_wants_constants((EntrySet *)av->contour, p);
+}
+
+// `keep_consts`: whether constants may partition at this position. Only a
+// formal whose contour wants constants (es_wants_constants) passes true.
+// ifa/169: this used to keep them everywhere, because the formal filter is
+// the Matcher's dispatch filter, built from the RAW actuals -- so
+// `{int64} ∩ {const 5}` handed back `{const 5}` and every split fanned per
+// literal, with no demand for it.
+static AType *split_type_view(AVar *a, AType *filter, bool keep_consts = true) {
   AType *t = type_intersection(a->out->type, filter);
+  if (!keep_consts) t = t->type;
   if (t->n || !a->out->n) return t;
   for (CreationSet *c : a->out->sorted)
     if (!c->sym || c->sym->type != sym_nil_type) return t;  // constants etc: unchanged
@@ -1270,8 +1325,9 @@ static int edge_type_compatible_with_edge(AEdge *e, AEdge *ee, EntrySet *es, int
   for (MPosition *p : e->match->fun->positional_arg_positions) {
     AVar *e_arg = e->args.get(p), *ee_arg = ee->args.get(p);
     if (!e_arg || !ee_arg) continue;
-    AType *etype = split_type_view(e_arg, e->match->formal_filters.get(p));
-    AType *eetype = split_type_view(ee_arg, ee->match->formal_filters.get(p));
+    bool kc = es_wants_constants(es, p);
+    AType *etype = split_type_view(e_arg, e->match->formal_filters.get(p), kc);
+    AType *eetype = split_type_view(ee_arg, ee->match->formal_filters.get(p), kc);
     if (!fmark) {
       if (etype->n && eetype->n && etype != eetype) return ++census.ic_arg, 0;
     } else {
@@ -1321,7 +1377,7 @@ static int edge_type_compatible_with_entry_set(AEdge *e, EntrySet *es, int fmark
     for (MPosition *p : e->match->fun->positional_arg_positions) {
       AVar *es_arg = es->args.get(p), *e_arg = e->args.get(p);
       if (!e_arg) continue;
-      AType *etype = split_type_view(e_arg, e->match->formal_filters.get(p));
+      AType *etype = split_type_view(e_arg, e->match->formal_filters.get(p), es_wants_constants(es, p));
       if (!fmark) {
         AType *stype = split_type_view(es_arg, nullptr);
         if (typekey_enabled() && es->type_key_pass >= 0) {
@@ -1428,16 +1484,27 @@ static bool edge_sset_compatible_with_entry_set(AEdge *e, EntrySet *es) {
   return true;
 }
 
-static bool edge_constant_compatible_with_entry_set(AEdge *e, EntrySet *es) {
+// 0: compatible. 1: a constant differs at an ANNOTATED formal (a
+// preference, see entry_set_compatibility). 2: it differs at a formal a
+// DEMAND asked to keep apart (ifa/151) -- hard, or the next pass's
+// re-binding would merge exactly what the demand separated.
+static int edge_constant_incompatibility(AEdge *e, EntrySet *es) {
+  int r = 0;
   for (MPosition *p : e->match->fun->positional_arg_positions) {
     AVar *av = es->args.get(p);
-    if (av->var->sym->clone_for_constants) {
-      AType css;
-      av->out->set_disjunction(*e->args.get(p)->out, css);
-      for (CreationSet *cs : css) if (cs) if (cs->sym->constant) return false;
-    }
+    AVar *ea = e->args.get(p);
+    if (!av || !ea) continue;
+    bool annotated = av->var->sym->clone_for_constants;
+    if (!annotated && !es_wants_constants(es, p)) continue;
+    AType css;
+    av->out->set_disjunction(*ea->out, css);
+    bool differs = false;
+    for (CreationSet *cs : css) if (cs) if (cs->sym->constant) { differs = true; break; }
+    if (!differs) continue;
+    if (!annotated) return 2;
+    r = 1;
   }
-  return true;
+  return r;
 }
 
 
@@ -1579,8 +1646,10 @@ static int entry_set_compatibility(AEdge *e, EntrySet *es) {
       return 0;
   }
   if (!edge_sset_compatible_with_entry_set(e, es)) val -= 2;
-  if (e->match->fun->clone_for_constants) {
-    if (!edge_constant_compatible_with_entry_set(e, es)) {
+  if (es_wants_any_constants(es)) {
+    int ci = edge_constant_incompatibility(e, es);
+    if (ci == 2) return 0;
+    if (ci) {
       // ifa/issues/045: for clone_methods_per_cs classes' functions
       // (ctor wrappers with clone_for_constants formals), differing
       // constants are a HARD incompatibility, not a preference --
@@ -4625,9 +4694,10 @@ static void collect_type_confluence(AVar *av, Vec<AVar *> &confluences) {
   dbg_dump_av(av);
   seed_probe(av);
   AVar *trigger = nullptr;  // ifa/133: the writer that made this a confluence
+  const bool keep_consts = av->var->sym->clone_for_constants || es_wants_constants_at(av);
   for (AVar *x : av->backward) if (x) {
     if (!x->out->type->n && !(confnil_enabled() && x->out->n)) continue;
-    if (av->var->sym->clone_for_constants) {
+    if (keep_consts) {
       if (type_diff(av->in, x->out) != fa->type_world.bottom_type) {
         confluences.set_add(av);
         trigger = x;
@@ -5419,6 +5489,12 @@ struct ESSplitDecision : public gc {
   // Issue 074 Stage 1: the type-compatible "stay" set (edges that keep
   // es). Carried so the self-product complement eviction can re-home it.
   Vec<AEdge *> stay_edges;
+  // Whether the groups differ in ARGUMENT TYPES. False for a partition
+  // named by something types cannot see (ESBLOCK's creation points): its
+  // groups are type-identical by construction, so HARDREUSE's
+  // route-by-type-key would bind a peeled group straight into its
+  // type-identical sibling -- see apply_entry_set_split.
+  bool type_only = true;
 };
 
 static cchar *dec_why = "?";  // ifa/133 probe: which decline path fired
@@ -6094,7 +6170,15 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
         // no caller passes SPLIT_MARK, so fmark is always 0. What remains
         // is "this split's discriminator was argument TYPES, not setters",
         // which is the half of HARDREUSE mode 5's rationale still live.
-        cur_split_type_only = !fsetters ? 1 : 0;
+        //
+        // `dec->type_only`: ESBLOCK's groups are type-IDENTICAL (it splits
+        // by creation point), so a type-keyed reuse finds the sibling that
+        // holds last pass's complement and re-mixes the two. Measured on
+        // `softrender`: `__init__` es=909 -> es=71 -> es=909 ... with all 8
+        // edges back in one contour every pass, 101 passes to the cap. At
+        // HEAD the edges also differed in literals (ifa/169), which kept
+        // the type keys apart by accident.
+        cur_split_type_only = (!fsetters && dec->type_only) ? 1 : 0;
         make_entry_set(x, new_edges, es, e->to);
         cur_split_type_only = 0;
         if (getenv("IFA_DBG_CHURN"))
@@ -7677,6 +7761,7 @@ static EntrySet *find_blocking_es(CreationSet *cs, CSFlowGraph *g, Vec<AVar *> &
   dec->avpos = nullptr;
   dec->fsetters = SPLIT_TYPE;
   dec->fmark = SPLIT_VALUE;
+  dec->type_only = false;  // groups differ by creation point, not by type
   dec->all_edges.copy(all_edges);
   for (int i = 1; i < groups.n; i++) dec->groups.add(groups.v[i]);
   if (dbg)
@@ -8269,6 +8354,38 @@ static void cs_member_signature(AVar *d, std::string &out) {
           fprintf(stderr, "\n");
         }
       }
+  // Which candidates carry a DEMAND, as opposed to a fact. A type confluence
+  // on a CreationSet is a fact; an irrepresentable element or a violation
+  // that names it is a demand. Only a demand may split an EntrySet below
+  // (ESBLOCK) -- see the gate there. Grown by the backtrack: an upstream
+  // CreationSet nominated from a demanded one carries its demand.
+  //
+  // "Named by a violation" is the violation's backward reach, the walk the
+  // PYC_VIOLCS clause above does -- computed here regardless of that flag,
+  // which decides whether those CreationSets become CANDIDATES; this only
+  // decides whether a candidate that is already here carries a demand.
+  //
+  // ONE walk seeded by every violation, not one per violation: only the
+  // union of what they reach is used, and early passes carry thousands of
+  // transient violations (hq2x: 4434 on pass 1). Per-violation walks made
+  // the split stages 100x slower there (0.015 s -> 1-4 s a pass).
+  Vec<CreationSet *> viol_reach;
+  {
+    Vec<AVar *> seen, work;
+    for (ATypeViolation *v : fa->type_violations)
+      if (v && v->av && seen.set_add(v->av)) work.add(v->av);
+    for (int i = 0; i < work.n; i++)
+      for (AVar *b : work.v[i]->backward)
+        if (b && seen.set_add(b)) {
+          work.add(b);
+          if (!b->contour_is_entry_set && b->contour != GLOBAL_CONTOUR)
+            if (CreationSet *bcs = (CreationSet *)b->contour) viol_reach.set_add(bcs);
+        }
+  }
+  Vec<CreationSet *> demanded;
+  for (CreationSet *cs : css)
+    if (cs && cs->sym && (viol_reach.set_in(cs) || viol_named.set_in(cs) || cs_elem_irrepresentable(cs)))
+      demanded.set_add(cs);
   // ifa/152: BACKTRACK THE DEMAND. Every candidate gathered above was
   // nominated because the union is observed AT it; a candidate with one
   // creation point has nothing to partition and declines below. Walk the
@@ -8326,6 +8443,7 @@ static void cs_member_signature(AVar *d, std::string &out) {
               continue;
             }
             css.set_add(bcs);
+            if (demanded.set_in(cs)) demanded.set_add(bcs);
             ++bt_noms_this_pass;
             if (dbg)
               fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s BACKTRACKED from cs=%d defs=%d\n", analysis_pass,
@@ -8700,7 +8818,17 @@ static void cs_member_signature(AVar *d, std::string &out) {
         // Split that contour, so this partition becomes possible on the
         // next pass. CLAUDE.md's dependency, in the direction it states it:
         // the ES split is a MEANS to separate creation points.
-        if (esblock_enabled() && g && defs.n > 1) {
+        // Only on a DEMAND. Splitting an EntrySet to make a partition
+        // possible is justified by something unable to proceed, never by a
+        // union merely existing. Measured on `hq2x`: a backtrack from
+        // `range`/`PPM` CreationSets that had only type confluences reached a
+        // list, and this rung split its `append` contour every pass forever
+        // (es=531 <-> es=578) in a program with no violations and no element
+        // confluence at all -- 101 passes, 383 s, where the partition was
+        // never needed (output byte-identical to CPython with it off). At
+        // HEAD the two `append` edges also carried different literals, and
+        // the constant leak (ifa/169) kept them apart by accident.
+        if (esblock_enabled() && g && defs.n > 1 && demanded.set_in(cs)) {
           if (EntrySet *bes = find_blocking_es(cs, g, defs, dbg))
             if (split_blocking_es(cs, bes, defs, elem_av_for_demand(cs), dbg)) {
               analyze_again = 1;
@@ -10216,6 +10344,200 @@ static void dbg_es_per_fun() {
           fa->ess.n, funs, multi, mx, (worst && worst->sym && worst->sym->name) ? worst->sym->name : "?");
 }
 
+// ifa/151: CONST_DEMAND -- split a contour on a constant argument, on demand.
+//
+// A constant union is a FACT; the DEMAND is something observing it and
+// being unable to proceed. Here that is a violation: at this pass's fixed
+// point, some operation in contour E cannot proceed. Walk backward from it
+// -- through the value it complains about, and through the condition of
+// every branch in E the violation is control-dependent on that did not fold
+// (a live arm that should be dead is
+// the commonest way a merged constant surfaces: `isinstance(x, list)` over
+// a merged class argument, `0 < len(()) - 0` over a merged `__sub__`) --
+// and, following call results down into their callees, look for a formal
+// whose in-edges DISAGREE on a constant. That formal starts keeping
+// constants apart (EntrySet::const_positions); TYPE_CONFLUENCE partitions
+// it on the next pass exactly as it does an annotated one.
+//
+// ifa/146's two questions: the demand alone decides WHETHER (no violation,
+// no walk, no split); the constants only decide WHICH parts. A formal whose
+// callers all pass the same constant, or none, is never nominated.
+//
+// The walk follows value flow backward: down into callees (a call result's
+// backward link reaches the callee's return) and up into callers (a
+// formal's in-edges), because the confluence where two constants meet can
+// be on either side of the contour that consumes them. It is seeded only by
+// violations, and it nominates only formals whose callers disagree on a
+// constant, so reach alone never splits anything.
+static int constdemand_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_CONSTDEMAND"); e = v ? atoi(v) : 1; }
+  return e;
+}
+static bool is_constant_cs(CreationSet *cs) { return cs && cs->sym && cs->sym->constant; }
+
+// The branches `site` is CONTROL-DEPENDENT on: Code_IF nodes that can reach
+// it, one of whose successors cannot. A branch both of whose arms lead to
+// the site decides nothing about whether it runs, and seeding it would split
+// on constants the violation does not depend on -- measured on `msp_ss`,
+// where seeding every unfolded condition in the contour nominated `bslTxRx`'s
+// `cmd`/`addr`/`length` and `SetRTS`'s `level`: errors 213 -> 263, passes
+// 21 -> 36.
+static void controlling_ifs(PNode *site, Vec<PNode *> &out) {
+  if (!site) return;
+  Vec<PNode *> seen, work;
+  seen.set_add(site);
+  work.add(site);
+  for (int i = 0; i < work.n && i < 20000; i++)
+    for (PNode *p : work.v[i]->cfg_pred)
+      if (p && seen.set_add(p)) work.add(p);
+  auto reaches = [&](PNode *from) {
+    Vec<PNode *> s2, w2;
+    s2.set_add(from);
+    w2.add(from);
+    for (int i = 0; i < w2.n && i < 20000; i++) {
+      if (w2.v[i] == site) return true;
+      for (PNode *q : w2.v[i]->cfg_succ)
+        if (q && s2.set_add(q)) w2.add(q);
+    }
+    return false;
+  };
+  for (PNode *p : work)
+    if (p && p != site && p->code && p->code->kind == Code_IF && p->rvals.n && p->cfg_succ.n >= 2) {
+      bool all = true;
+      for (PNode *q : p->cfg_succ)
+        if (q && !reaches(q)) { all = false; break; }
+      if (!all) out.set_add(p);
+    }
+}
+
+[[nodiscard]] static int split_for_constant_demand() {
+  if (!constdemand_enabled()) return 0;
+  const bool dbg = getenv("IFA_DBG_CONSTDEMAND") != nullptr;
+  Vec<ATypeViolation *> viols;
+  for (ATypeViolation *v : fa->type_violations)
+    if (v && v->av && v->av->contour_is_entry_set && v->av->contour != GLOBAL_CONTOUR) viols.add(v);
+  qsort(viols.v, viols.n, sizeof(viols[0]), [](const void *a, const void *b) {
+    ATypeViolation *x = *(ATypeViolation **)a, *y = *(ATypeViolation **)b;
+    if (x->av->id != y->av->id) return x->av->id < y->av->id ? -1 : 1;
+    return (int)x->kind - (int)y->kind;
+  });
+  if (dbg) fprintf(stderr, "[constdemand] p=%d ENTER violations=%d in-contour=%d\n", analysis_pass,
+                   fa->type_violations.set_count(), viols.n);
+  int added = 0;
+  auto nominate = [&](EntrySet *X, MPosition *p, ATypeViolation *why) {
+    if (es_wants_constants(X, p)) return;
+    Vec<CreationSet *> keys;
+    bool nonconst = false;
+    for (AEdge *e : X->edges) if (e && e->args.n) {
+      AVar *ac = e->args.get(p);
+      if (!ac || !ac->out || !ac->out->sorted.n) continue;
+      if (ac->out->sorted.n == 1 && is_constant_cs(ac->out->sorted[0]))
+        keys.set_add(ac->out->sorted[0]);
+      else
+        nonconst = true;
+    }
+    int nkeys = keys.set_count();
+    if (dbg && getenv("IFA_DBG_CONSTDEMAND")[0] == '2') {
+      AVar *fav = X->args.get(p);
+      fprintf(stderr, "  [constdemand-check] es=%d fun=%s formal=%s edges=%d constants=%d nonconst=%d\n", X->id,
+              X->fun->sym && X->fun->sym->name ? X->fun->sym->name : "?",
+              fav && fav->var && fav->var->sym && fav->var->sym->name ? fav->var->sym->name : "?", X->edges.n,
+              nkeys, nonconst ? 1 : 0);
+    }
+    if (!nkeys || nkeys + (nonconst ? 1 : 0) < 2) return;
+    X->const_positions.add(p);
+    ++const_demand_positions;
+    ++added;
+    if (dbg) {
+      AVar *fav = X->args.get(p);
+      fprintf(stderr, "[constdemand] p=%d es=%d fun=%s formal=%s constants=%d%s <- viol av=%d kind=%d\n", analysis_pass,
+              X->id, X->fun->sym && X->fun->sym->name ? X->fun->sym->name : "?",
+              fav && fav->var && fav->var->sym && fav->var->sym->name ? fav->var->sym->name : "?", nkeys,
+              nonconst ? "+nonconst" : "", why->av->id, (int)why->kind);
+    }
+  };
+  for (ATypeViolation *v : viols) {
+    EntrySet *E = (EntrySet *)v->av->contour;
+    Vec<AVar *> seen, work;
+    // Each contour on the walk remembers how it was entered. One entered
+    // DOWNWARD (through a call result, from caller C) may only be left back
+    // up into C: a shared callee like `__pyc_to_bool__` has hundreds of
+    // callers, and climbing to all of them would walk every branch in the
+    // program. A contour entered UPWARD (the violating one, or a caller of
+    // one already free) may climb to all its callers -- that is where two
+    // constants meet.
+    Map<EntrySet *, EntrySet *> entered_from;  // absent: not yet on the walk
+    Vec<EntrySet *> free_es;                   // entered upward: climb freely
+    auto push = [&](AVar *a) {
+      if (a && a->contour_is_entry_set && a->contour != GLOBAL_CONTOUR && seen.set_add(a)) work.add(a);
+    };
+    free_es.set_add(E);
+    push(v->av);
+    if (v->send && v->send->contour == E) push(v->send);
+    {
+      PNode *site = (v->send && v->send->var) ? v->send->var->def : (v->av->var ? v->av->var->def : nullptr);
+      // The site must be a statement of E's own function: a violation's
+      // Var can be defined in another (a closure's captured variable), and
+      // resolving that function's condition Var against E crashed make_AVar
+      // on `sudoku4`.
+      if (site && !E->fun->fa_all_PNodes.in(site)) site = nullptr;
+      Vec<PNode *> ifs;
+      controlling_ifs(site, ifs);
+      for (PNode *pn : ifs) if (pn && E->fun->fa_if_PNodes.in(pn)) {
+        AVar *c = make_AVar(pn->rvals.v[0], E);
+        if (c && c->out && !(c->out->sorted.n == 1 && is_constant_cs(c->out->sorted[0]))) push(c);
+      }
+    }
+    for (int i = 0; i < work.n && i < 20000; i++) {
+      AVar *a = work.v[i];
+      EntrySet *X = (EntrySet *)a->contour;
+      if (MPosition *p = formal_position(a)) {
+        nominate(X, p, v);
+        // Up into the callers: a constant is often merged one level above
+        // where it is consumed -- pylife's `LifeNode(self, 0, None)` and
+        // `LifeNode(self, 1, None)` meet at the `__new__` wrapper's formal,
+        // and `__init__`, which branches on it, has a single in-edge. A
+        // formal's backward links ARE its callers' actuals.
+        bool free = free_es.set_in(X);
+        EntrySet *back_to = free ? nullptr : entered_from.get(X);
+        // The formal's backward links are usually the per-edge filtered
+        // copies of the argument, still in X, and a method call's receiver
+        // arrives through the bound-method closure the frontend builds for
+        // `recv.method` -- a CreationSet field. The caller's value is behind
+        // those; look through them (a few links) to the first contour.
+        std::function<void(AVar *, int)> climb = [&](AVar *c, int depth) {
+          if (!c || c->contour == GLOBAL_CONTOUR || depth > 4) return;
+          if (!c->contour_is_entry_set || c->contour == X) {
+            for (AVar *d : c->backward) climb(d, depth + 1);
+            return;
+          }
+          EntrySet *Y = (EntrySet *)c->contour;
+          if (!free && Y != back_to) return;
+          if (free && !entered_from.get(Y) && Y != E) free_es.set_add(Y);
+          push(c);
+        };
+        for (AVar *b : a->backward) climb(b, 0);
+        continue;
+      }
+      auto descend = [&](AVar *b) {
+        if (!b || !b->contour_is_entry_set || b->contour == GLOBAL_CONTOUR) return;
+        EntrySet *Y = (EntrySet *)b->contour;
+        if (Y != X && !free_es.set_in(Y) && !entered_from.get(Y)) entered_from.put(Y, X);
+        push(b);
+      };
+      for (AVar *b : a->backward) descend(b);
+      // A call's result reaches its caller through the result AVar's
+      // `lvalue` (collect_type_confluences walks the same chain).
+      if (a->lvalue) descend(a->lvalue);
+    }
+    if (dbg && getenv("IFA_DBG_CONSTDEMAND")[0] >= '2')
+      fprintf(stderr, "  [constdemand-walk] viol av=%d kind=%d es=%d fun=%s reached=%d\n", v->av->id, (int)v->kind,
+              E->id, E->fun->sym && E->fun->sym->name ? E->fun->sym->name : "?", work.n);
+  }
+  return added ? 1 : 0;
+}
+
 [[nodiscard]] static int run_split_stages() {
   dbg_es_per_fun();
   int analyze_again = 0;
@@ -10761,6 +11083,25 @@ static void dbg_es_per_fun() {
     analyze_again = cs_def_r || analyze_again;
   }
   log(LOG_SPLITTING, "split_css_by_defs %d\n", analyze_again);
+  // ifa/151: the LAST rung, and only when every stage above found nothing.
+  // A constant split answers a violation the type ladder cannot; running it
+  // while the ladder is still acting splits on violations the ladder is
+  // about to resolve -- measured on `g(a, k)` called with int and float `a`:
+  // pass 0's `{int64, float64}` product is a BOXING violation that
+  // TYPE_CONFLUENCE removes one pass later, and answering it with constants
+  // fanned `g` per literal (4 contours -> 6 where 2 suffice).
+  if (!analyze_again) {
+    ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    census.stage_aes0 = fa->all_entry_sets.n, census.stage_acs0 = fa->all_creation_sets.n;
+    cur_split_stage = (int)FAPassStage::CONST_DEMAND;
+    int cd = split_for_constant_demand();
+    fa->stage_time[(int)FAPassStage::CONST_DEMAND] += stage_timer.lap();
+    if (cd) {
+      record_fa_event(FAPassStage::CONST_DEMAND, cd, ess0, css0, viol0);
+      ++fa->stage_progress_count[(int)FAPassStage::CONST_DEMAND];
+    }
+    analyze_again = cd || analyze_again;
+  }
   // ifa/issues/074: back to "no stage running". Without this, every
   // contour/CreationSet the NEXT pass's flow creates was attributed to
   // whichever stage happened to run last -- which is what made the

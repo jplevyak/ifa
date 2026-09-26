@@ -4,5 +4,5 @@
 
 (escape
   fun __main__ ess=1 escape-sig=[N]
-  fun f ess=6 escape-sig=[N N N]
+  fun f ess=3 escape-sig=[N N N]
 )

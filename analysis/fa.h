@@ -226,6 +226,13 @@ class EntrySet : public gc {
   // site on the same product when a split is re-derived. Set once, at
   // mint, and never cleared.
   EntrySet *split_origin = nullptr;
+  // ifa/151: formal positions at which this contour -- and every product
+  // split from it (found through `split_origin`) -- keeps constants apart.
+  // The per-contour, demand-set counterpart of `Sym::clone_for_constants`:
+  // set only by the CONST_DEMAND stage, when a violation backtracks to a
+  // formal whose in-edges disagree on a constant. Durable across passes;
+  // see es_wants_constants.
+  Vec<MPosition *> const_positions;
   PendingAEdgeEntrySetsMap pending_es_backedge_map;
   Vec<EntrySet *> *equiv;  // clone.cpp
 
@@ -816,7 +823,7 @@ class FA : public gc {
   // one may have found work too, on a batched extend (see issue 033
   // S5 M2). Sized to FAPassStage's cardinality (kept as a plain
   // constant since FAPassStage is declared after this class).
-  static constexpr int kNumFAPassStages = 11;
+  static constexpr int kNumFAPassStages = 12;
   // TEMP probe: per-splitter-stage attribution of the per-pass churn.
   long dbg_stage_detach[kNumFAPassStages] = {};   // edges this stage detached (x->to = 0)
   long dbg_stage_mint[kNumFAPassStages] = {};     // contours this stage minted fresh
@@ -901,6 +908,10 @@ enum class FAPassStage {
                           // runs only on quiescence of every stage above,
                           // so anything a finer route can separate is
                           // separated first.
+  CONST_DEMAND,           // split_for_constant_demand (ifa/151): a
+                          // violation backtracks to a contour whose
+                          // in-edges disagree on a constant at a formal;
+                          // that formal starts keeping constants apart.
 };
 
 struct FAPassEvent {
@@ -1046,6 +1057,10 @@ extern FA *fa;
 
 extern int analysis_pass;
 
+// ifa/151: does `es` (or a contour it was split from) keep constants apart
+// at formal `p`, either by the frontend annotation or by demand?
+bool es_wants_constants(EntrySet *es, MPosition *p);
+bool es_wants_any_constants(EntrySet *es);
 void pp(AVar *);
 void pp(AType *);
 void pp(CreationSet *);

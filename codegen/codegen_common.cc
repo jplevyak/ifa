@@ -432,6 +432,30 @@ void cg_build_new_to_val_map(FA *fa) {
             }
           if (existing >= 0) {
             if ((*slots)[existing].fun_val == fun_val) continue;  // exact dup
+            // An OVERRIDE beats what it overrides, whatever order the two
+            // register in. Both candidates passed the ancestor filter above,
+            // so each is declared on `cs->sym` or an ancestor of it; Python
+            // resolves the slot to the MOST-DERIVED of those. Before this, a
+            // tie on specificity kept whichever registered first -- measured
+            // on pygmy: `everythingshader.shade` calls `shader.shade(self, ..)`,
+            // so a `shader.shade` clone has self = everythingshader too, and
+            // it took everythingshader's slot at HEAD for spotshader and,
+            // after ifa/151 reordered the clones, for everythingshader --
+            // rendering one class's objects with the base shader either way.
+            // Structural: declared owners and `specializers`, never names.
+            {
+              Fun *prev = (*slots)[existing].fun_val;
+              Sym *po = (prev && prev->sym && prev->sym->has.n > 1) ? prev->sym->has[1]->must_specialize : nullptr;
+              Sym *no = (fun_val->sym->has.n > 1) ? fun_val->sym->has[1]->must_specialize : nullptr;
+              if (po && no && po != no) {
+                if (po->specializers.set_in(no)) {  // new owner is more derived
+                  (*slots)[existing].fun_val = fun_val;
+                  (*slots)[existing].specificity = specificity;
+                  continue;
+                }
+                if (no->specializers.set_in(po)) continue;  // existing is more derived
+              }
+            }
             if (specificity < (*slots)[existing].specificity) {
               // More specific: replace existing registration.
               (*slots)[existing].fun_val = fun_val;
