@@ -182,6 +182,47 @@ compatibility, and 074's "a re-derived separation must re-attach". A
 split stage that returns progress while nothing changes also starves
 every stage behind it (ifa/055, 157).
 
+## Second census: `voronoi` (2026-09-25)
+
+`shedskin_examples/voronoi`: 57 lines, compiles, matches CPython, no
+`None` mixed with scalars. Counted with a per-Fun histogram of `fa->ess`
+that also counts each Fun's DISTINCT argument signatures at three levels:
+exact (CreationSet ids, constants stripped), by class, and by SHAPE
+(container = class + element types, tuple = per-position types). The
+shape count is the minimum -- slightly low for objects with fields, such
+as list iterators over different element types.
+
+| | contours |
+| --- | --- |
+| pyc default | **213** (104 Funs) |
+| distinct exact signatures | 152 |
+| **minimum (by shape)** | **120** |
+
+shedskin agrees where comparable: 3 live `list` contours (`list[str]`,
+`list[tuple]`, `list[int]`), `list.append` 2, `float.__mul__` 1,
+`int.__mul__` 1 (pyc: 5 element-bearing list CreationSets, `append` 6,
+`float.__mul__` 4, `int.__mul__` 6). Its `random` and `int` operators are
+native C++, so its total (45) is not comparable.
+
+The 93 excess, by mechanism:
+
+| mechanism | contours | example |
+| --- | --- | --- |
+| A, forced constants ([134](134-remove-the-frontend-forced-split-opt-in.md)) | ~37 | `int.__rshift__` 7 (one per shift amount in `random`), `int.__mul__` 6 (one per multiplier); each `range(10/40/80/500)` its own CreationSet, so the range iterator methods have 5 contours each |
+| **B, this issue** | **17** | `append(s)` vs `append("\n")` are separate contours, so the SETTER stage gives `screen` its own `list[str]` apart from `line` -- a DATA contour caused by the leak |
+| C, one tuple CreationSet per literal site | several | `tuple.__getitem__` 8 = 4 tuple CSs x 2 index constants |
+| D, pass-0 contours never re-merged ([170](170-FA-contours-minted-on-transient-types-are-never-remerged.md)) | 16 | `int.__add__` es=124 and es=125 both `[int64][int64]` |
+
+| arm | contours | diagnostics |
+| --- | --- | --- |
+| default | 213 | 0 |
+| constant-strip probe (B fixed) | **196** | 0 -- output matches CPython, run time unchanged (100 s) |
+| `PYC_NO_FORCED_SPLIT=1` (A off) | 176 | 15 |
+| both | 156 | 9 |
+
+With B fixed, `line` and `screen` share one `list[str]` CreationSet (2
+creation points).
+
 ## Fix, in order
 
 1. Make ESBLOCK's separation durable -- the binding must see what the split
