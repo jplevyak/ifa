@@ -278,6 +278,15 @@ The reproducer still does not converge, but it now fails differently:
   So `deepcopy` is no longer part of the trigger; recursion over a nested
   list is enough.
 
+  **The mistyping is a separate defect,
+  [168](168-FA-recursive-overlap-gate-refuses-its-own-split.md)** (root-caused
+  the same day): the `list` at `M[0][0]` needs no recursion in the user
+  program -- `M = copy.deepcopy(M); print(M[0][0])` fails the same way --
+  and comes from `decide_entry_set_split`'s recursive-edge overlap gate
+  keeping `list.__deepcopy__` in one contour. Relaxing that gate makes this
+  reproducer type and print `6.0` while it still runs to the cap, so what
+  is left here is the growth alone.
+
 The test header was rewritten to the durable claims and no longer pins
 pass counts. Its `.env` (guards off, `PYC_DBG_CONVERGED=1`) is unchanged.
 
