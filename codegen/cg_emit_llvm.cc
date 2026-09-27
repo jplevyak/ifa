@@ -1007,7 +1007,12 @@ bool emit_send_setter(EmitCtx &ctx, PNode *pn) {
 bool emit_send_unaryop(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim) return false;
   int op = pn->prim->index;
-  if (op != P_prim_lnot && op != P_prim_minus) return false;
+  // P_prim_not is Python's bitwise `~` (int.__invert__). It was not
+  // claimed here, and the fallback emitted nothing usable: every value
+  // computed from `~x` was silently dropped, so SHA-1's `(~B) & D` round
+  // function vanished from shedskin_examples/sha and every digest was
+  // wrong on LLVM (the C backend has _CG_prim_not).
+  if (op != P_prim_lnot && op != P_prim_minus && op != P_prim_not) return false;
 
   // Return true (claimed) even when operands are missing — these are
   // dead/pruned nodes; falling through to emit_send_default_prim would
@@ -1034,6 +1039,8 @@ bool emit_send_unaryop(EmitCtx &ctx, PNode *pn) {
     } else {
       res = Builder->CreateNot(val);
     }
+  } else if (op == P_prim_not) {
+    if (val->getType()->isIntegerTy()) res = Builder->CreateNot(val);
   } else if (op == P_prim_minus) {
     if (val->getType()->isFloatTy() || val->getType()->isDoubleTy()) {
       res = Builder->CreateFNeg(val);

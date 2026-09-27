@@ -114,11 +114,14 @@ static void log_dispatch_matches(Matcher &matcher, Vec<PMatch *> &matches);
 static void log_dispatch_funs(Matcher &matcher, Vec<Fun *> &funs);
 
 static ChainHash<MPosition *, MPositionHashFuns> cannonical_mposition;
+// ROADMAP 6.1: every `*args` Fun, collected in build_arg_positions.
+static Vec<Fun *> varargs_funs;
 static Map<Sym *, Map<MPosition *, Vec<Fun *> *> *> sym_match_cache;
 
 // Reset pattern.cc module-level state. Called by ifa_reset().
 void pattern_reset() {
   cannonical_mposition.clear();
+  varargs_funs.clear();
   sym_match_cache.clear();
   pattern_match_hits = 0;
   pattern_match_complete = 0;
@@ -743,6 +746,48 @@ Fun *Matcher::build(PMatch *m, Vec<Fun *> &done_matches) {
     m->generic_substitutions.clear();
     m = build_PMatch(f, m);
   }
+  // ROADMAP 6.1: a `*args` function. Route the call through a wrapper that
+  // packs the surplus positionals into a tuple, unless this IS the
+  // wrapper's own call (its rest-position actual is the wrapper's tuple,
+  // marked Sym::is_rest). Keyword actuals with *args are not supported.
+  if (f->is_varargs && f->sym->has.n) {
+    int nrest = f->sym->has.n, nactuals = 0;
+    bool named = false;
+    AVar *at_rest = nullptr;
+    form_MPositionAVar(x, m->actuals) {
+      MPosition *p = x->key;
+      if (!p || p->pos.n != 1) continue;
+      if (!p->last_is_positional()) { named = true; continue; }
+      int i = (int)Position2int(p->pos[0]);
+      if (i > nactuals) nactuals = i;
+      if (i == nrest) at_rest = x->value;
+    }
+    bool direct = nactuals == nrest && at_rest && at_rest->var && at_rest->var->sym && at_rest->var->sym->is_rest;
+    if (!direct && !named && nactuals >= nrest - 1) {
+      static Map<Fun *, Map<int, Fun *> *> rest_cache;
+      Map<int, Fun *> *c = rest_cache.get(f);
+      if (!c) rest_cache.put(f, (c = new Map<int, Fun *>));
+      Fun *w = c->get(nactuals);
+      if (!w) {
+        w = if1->callback->rest_wrapper(f, nactuals);
+        if (w) c->put(nactuals, w);
+      }
+      if (!w || done_matches.set_in(w)) return 0;
+      done_matches.set_add(w);
+      m = build_PMatch(w, m);
+      // The wrapper's formals are exactly the actuals, in order.
+      m->actual_to_formal_position.clear();
+      m->formal_to_actual_position.clear();
+      form_MPositionAVar(x, m->actuals) {
+        MPosition *p = x->key;
+        if (!p || p->pos.n != 1 || !p->last_is_positional()) continue;
+        m->actual_to_formal_position.put(p, p);
+        m->formal_to_actual_position.put(p, p);
+      }
+      m->default_args.clear();
+      f = w;
+    }
+  }
   if (m->default_args.n) {
     // issues/103: which actual positions ended up mapped to which
     // formals, and which formals are being defaulted. Probe-only.
@@ -846,7 +891,14 @@ void Matcher::instantiation_wrappers_and_partial_application(Vec<Fun *> &matches
 }
 
 int Matcher::covers_formals(Fun *f, Vec<CreationSet *> &csargs, MPosition &p, int top_level) {
-  if (f->is_varargs) return 1;
+  // ROADMAP 6.1: a `*args` function (is_varargs) is covered like any other
+  // -- every fixed formal needs an actual -- except that its rest formal
+  // (the last positional) may be absent. Returning 1 outright here made the
+  // bound-method reference `c.show` (callee + self only) a COMPLETE call:
+  // show(self) was invoked on the spot and the later `c.show("b", 1, 2)`
+  // had no closure to apply. It also skipped the `x.y` -> closure rule
+  // below.
+  int rest_pos = f->is_varargs ? f->sym->has.n : 0;
   int result = 1;
   PMatch *m = match_map.get(f);
   Vec<MPosition *> formals;
@@ -861,6 +913,7 @@ int Matcher::covers_formals(Fun *f, Vec<CreationSet *> &csargs, MPosition &p, in
     MPosition *pp = f->arg_positions[i];
     if (pp->prefix_to_last(p) && pp->last_is_positional()) {
       if (formals.set_in(pp)) continue;
+      if (rest_pos && pp->pos.n == 1 && (int)Position2int(pp->last()) == rest_pos) continue;
       if (f->default_args.get(pp)) {
         m->default_args.add(pp);
         continue;
@@ -1518,6 +1571,15 @@ static void find_visible_functions(Vec<AVar *> &args, PNode *visibility_point, V
       else
         (*visible_functions)->set_add(f);
     }
+    // ROADMAP 6.1: when EVERY function is visible (`*visible_functions`
+    // null), candidates come from the per-position dispatch tables, which
+    // have no entry past a function's last formal -- so a `*args` METHOD
+    // (dispatched by selector, not by function value) was never a candidate
+    // for a call with surplus arguments. Offer the variadic functions as
+    // function values too; pattern_match_arg still type-checks every
+    // position they do have, starting with the selector.
+    if (!*visible_functions)
+      for (Fun *f : varargs_funs) if (f) function_values.set_add(f);
   }
 }
 
@@ -1818,7 +1880,12 @@ MPosition *build_arg_positions(Fun *f, MPosition *up) {
   return cp;
 }
 
-void build_arg_positions(FA *fa) { for (Fun *f : fa->pdb->funs) build_arg_positions(f); }
+void build_arg_positions(FA *fa) {
+  for (Fun *f : fa->pdb->funs) {
+    build_arg_positions(f);
+    if (f->is_varargs) varargs_funs.set_add(f);
+  }
+}
 
 void log_dispatch_cs_match(Matcher &matcher, Vec<CreationSet *> &csargs, MPosition &app, Vec<Fun *> &local_matches) {
   if (!logging(LOG_DISPATCH)) return;

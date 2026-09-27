@@ -104,6 +104,13 @@ class IFACallbacks : public gc {
   virtual Sym *coerce(Sym *actual, Sym *formal) { return NULL; }
   virtual Fun *coercion_wrapper(Fun *, Map<MPosition *, Sym *> &substitutions) { return 0; }
   virtual Fun *default_wrapper(Fun *, Vec<MPosition *> &defaults) { return 0; }
+  // A call of a `*args` function (Fun::is_varargs, its last formal the rest
+  // parameter) with `nactuals` top-level positional actuals: a wrapper
+  // taking exactly those actuals that packs the surplus into a tuple (the
+  // tuple's sym marked Sym::is_rest) and calls the function with it. The
+  // matcher binds a call whose rest-position actual is such a tuple
+  // directly, so the wrapper's own call does not wrap again.
+  virtual Fun *rest_wrapper(Fun *, int nactuals) { return 0; }
   virtual Fun *instantiate_generic(Fun *, Map<Sym *, Sym *> &substitutions) { return 0; }
   virtual bool reanalyze(Vec<ATypeViolation *> &type_violations) { return false; }
   // Called by FA's own P_prim_isinstance transfer function

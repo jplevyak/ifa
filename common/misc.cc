@@ -161,10 +161,15 @@ char *escape_string(cchar *s, int len) {
         if (isprint((unsigned char)*s)) {
           *ss++ = *s;
         } else {
+          // Three-digit OCTAL, not \xNN: a C hex escape consumes EVERY
+          // following hex digit, so b'\x12\x34' ("\x12" then '4') came out
+          // as "\x124" -- "hex escape sequence out of range", and a silent
+          // wrong byte where the value happens to fit. Octal stops at three.
+          unsigned char c = (unsigned char)*s;
           *ss++ = '\\';
-          *ss++ = 'x';
-          *ss++ = tohex2(*s);
-          *ss++ = tohex1(*s);
+          *ss++ = (char)('0' + ((c >> 6) & 7));
+          *ss++ = (char)('0' + ((c >> 3) & 7));
+          *ss++ = (char)('0' + (c & 7));
         }
         break;
     }
