@@ -344,7 +344,7 @@ mastermind2.py:127:2384: warning: unresolved call '__lt__'
 `(float, list)` tuples, which falls through to comparing the `list`
 halves on a tie, and `__pyc__` has no `list.__lt__`. That missing
 builtin is the other half of this example's symptom and is now filed
-separately as [issues/122](../../../issues/122-list-ordering-comparisons-missing.md),
+separately as [issues/122](../../../issues/closed/122-list-ordering-comparisons-missing.md),
 with `tests/list_ordering.py` as its `.known_issue` repro. Warnings on
 the example go 45 → 54; it still compiles `rc=0`, because pyc is permissive
 by default and a `SEND_ARGUMENT` violation is a warning plus a runtime

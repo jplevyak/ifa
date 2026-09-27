@@ -2360,6 +2360,29 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
       if (!v) continue;
       llvm::Value *val = value_for_var(ctx, v);
       if (!val) return false;
+      // Convert a NUMERIC argument to the declared NUMERIC type, as the C
+      // backend's prototype does implicitly. The extern is declared from
+      // each argument's own type, so `math.sqrt(4)` declared `sqrt(i64)`
+      // and handed libm the integer's bits as a double: 2.2e-162, silently
+      // (and math.pow(2, 10) gave 1.0). Only numeric -> numeric: declared
+      // types are sometimes placeholders a C macro reinterprets (`int, l`
+      // for a whole list in list.__add__), and pointers pass unchanged.
+      Var *tv = pn->rvals.v[i - 1];
+      Sym *decl = (tv && tv->sym) ? unalias_type(tv->sym) : nullptr;
+      if (decl && decl->num_kind && (val->getType()->isIntegerTy() || val->getType()->isFloatingPointTy())) {
+        llvm::Type *want = sym_to_llvm_type(decl);
+        if (want && want != val->getType() && (want->isIntegerTy() || want->isFloatingPointTy())) {
+          llvm::Type *have = val->getType();
+          if (have->isIntegerTy() && want->isFloatingPointTy())
+            val = have->isIntegerTy(1) ? Builder->CreateUIToFP(val, want) : Builder->CreateSIToFP(val, want);
+          else if (have->isFloatingPointTy() && want->isIntegerTy())
+            val = Builder->CreateFPToSI(val, want);
+          else if (have->isIntegerTy() && want->isIntegerTy())
+            val = have->isIntegerTy(1) ? Builder->CreateZExtOrTrunc(val, want) : Builder->CreateSExtOrTrunc(val, want);
+          else if (have->isFloatingPointTy() && want->isFloatingPointTy())
+            val = Builder->CreateFPCast(val, want);
+        }
+      }
       args.push_back(val);
       param_tys.push_back(val->getType());
     }

@@ -306,7 +306,7 @@ the whole remaining list is
 1  bool.__iand__   rdb                   `basis &= MatchRule(props, rule)`
 ```
 
-`list.__lt__` is already filed as [issues/122](../../issues/122-list-ordering-comparisons-missing.md)
+`list.__lt__` is already filed as [issues/122](../../issues/closed/122-list-ordering-comparisons-missing.md)
 with a fixture. `bool.__iand__` wants a CLASS INSTANCE as its argument,
 which is a `TypeError` in CPython unless `MatchRule` defines `__rand__`
 (see [126](../../issues/closed/126-bool-lacks-int-subtype-arithmetic.md)); rdb is
