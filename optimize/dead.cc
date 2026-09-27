@@ -101,10 +101,36 @@ static void mark_live_avars(FA *fa) {
         // orphaned coroutine construction to work with and the
         // suspend/resume never happened at all.
         bool is_await = p->code && p->code->kind == Code_SEND && p->prim && p->prim->index == P_prim_await;
+        // An OPAQUE primitive (a registered non-functional one, i.e.
+        // __pyc_c_call__) reads its arguments' CONTENTS where FA cannot
+        // see it. A list's element store is live only if something
+        // downstream reads the element (`forward_live` on the store's
+        // tval), so a list whose only reader is a C helper had every
+        // store deleted: bytes.join collected its pieces into a list,
+        // handed it to _CG_string_join, and joined N empty strings
+        // (minpng). Keep the contents of every opaque call's arguments.
+        bool opaque = false;
+        if (p->code && p->code->kind == Code_SEND && p->prim && p->prim->index == P_prim_primitive &&
+            p->code->rvals.n > 1) {
+          RegisteredPrim *rp = prim_get(p->code->rvals[1]->name);
+          opaque = rp && rp->is_visible && !rp->is_functional;
+        }
         for (Var *v : p->rvals) if (is_await || !v->constant) {
           form_AVarMapElem(x, v->avars) {
             AVar *av = x->value;
             if (!av->live) mark_live_avar(av);
+            // Containers only (a sym with an element channel): marking a
+            // CLASS value's or closure's fields live materialized a type
+            // as an expression -- `defaultdict(int)` emitted `f(int64)`
+            // (shedskin_examples/life).
+            if (opaque && av->out)
+              for (CreationSet *cs : av->out->sorted) if (cs && cs->sym && cs->sym->element) {
+                if (cs->added_element_var) {
+                  AVar *e = get_element_avar(cs);
+                  if (e && !e->live) mark_live_avar(e);
+                }
+                for (AVar *iv : cs->vars) if (iv && !iv->live) mark_live_avar(iv);
+              }
           }
         }
       }

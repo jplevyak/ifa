@@ -468,11 +468,23 @@ void show_violations(FA *fa, FILE *fp) {
           fprintf(memfp, "unresolved member\n");
           for (CreationSet *selector : v->av->out->sorted) fprintf(memfp, "  selector '%s'\n", selector->sym->name);
         }
-        if (v->type->n == 1)
-          fprintf(memfp, " of class '%s'\n", v->type->v[0]->sym->name ? v->type->v[0]->sym->name : "<anonymous>");
-        else {
-          fprintf(memfp, " of classes\n");
-          for (CreationSet *cs : v->type->sorted) fprintf(memfp, "  class '%s'\n", cs->sym->name);
+        // A constant's CreationSet has an UNNAMED sym (the literal) whose
+        // `type` is the class: `b"".join(...)` used to report "of class
+        // '<anonymous>'" for plain bytes. Name the class, not the literal.
+        {
+          auto cls_name = [](CreationSet *cs) -> cchar * {
+            Sym *s = cs ? cs->sym : nullptr;
+            if (!s) return "<anonymous>";
+            if (s->name) return s->name;
+            if (s->type && s->type->name) return s->type->name;
+            return "<anonymous>";
+          };
+          if (v->type->n == 1)
+            fprintf(memfp, " of class '%s'\n", cls_name(v->type->v[0]));
+          else {
+            fprintf(memfp, " of classes\n");
+            for (CreationSet *cs : v->type->sorted) if (cs) fprintf(memfp, "  class '%s'\n", cls_name(cs));
+          }
         }
         break;
       case ATypeViolation_kind::MATCH:
