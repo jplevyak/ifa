@@ -196,3 +196,51 @@ measure 074's contour growth on a program that types; any corpus program
 that deep-copies (or rebuilds through a recursive container method) a
 nested container and feeds the copy back in -- `linalg`'s
 `determinant`/`Minor` pair is where the reproducer was distilled from.
+
+## Re-measured 2026-09-27 (tree `c0327b84`): the blockers moved, and 074 is now the wall
+
+`shedskin_examples/linalg`'s whole failure is this issue: replacing
+`Minor`'s `copy.deepcopy(M)` with `[[x for x in v] for v in M]` takes it
+from 46 errors to **0**. (It had 186 before list ordering landed,
+issues/122.)
+
+**The blunt probe no longer regresses sudoku5 or softrender.** Admitting
+every partially overlapping recursive edge (`PYC_RECOVERLAP=1`), with the
+programs that ruled it out re-taken on today's tree:
+
+| program | as shipped | probe |
+|---|---|---|
+| 4-line reproducer | 1 error | types, prints `1.0` |
+| `sudoku5` | 0 errors, 9.9 s | 0 errors, 10.3 s |
+| `softrender` | 8 errors, 13.6 s | 8 errors, 13.4 s |
+| `pylife` | compiles, 9.8 s | compiles, 19.6 s |
+| `linalg` | **46** errors | **106** errors |
+
+sudoku5's regression came from its recursive generator binding its own
+coroutine body; that was fixed at `752544ed`. But the probe now splits
+linalg's other recursions (`binary`, `determinant`, `sign`), the fan-out
+the gate exists for.
+
+**The targeted version was built and measured:** admit the overlap only
+when the contour being decided owns the single creation point of a
+CreationSet whose element is irrepresentable. It fires for
+`__deepcopy__` and nothing else. The reproducer types; sudoku5 (0 errors,
+10.2 s) and softrender (8 errors, 13.6 s) are unchanged, and pylife
+compiles in 12.8 s. **linalg goes 46 -> 88 errors, and the cause is
+[074](074-FA-cross-pass-oscillation-plan.md)'s growth, not a mis-split:**
+`list.__deepcopy__` reaches **109 contours**, still splitting at pass 74 of
+76. Each `__deepcopy__` contour mints its own `r = []`; `Minor` returns
+that copy, `determinant` passes it back into `Minor`, `Minor` deep-copies
+it again, and the copy is a new CreationSet with the SAME shape
+(`list[list[float]]`) that type splitting, keyed on CreationSet identity,
+separates from the original. Every pass adds a level.
+
+The right fixed point is two contours separated by SHAPE (outer
+list-of-lists vs inner list-of-floats), and nothing in the edge types as
+compared today can express it. **So this issue's fix is not landable on
+its own:** it types the reproducer and exposes 074's unbounded growth on
+the corpus program. The next step is 074's: a compatibility notion under
+which a copy minted inside the contour and the value it was copied from
+are the same contour when their shapes agree -- the identity-vs-shape
+question 146 frames -- measured on linalg with this gate change applied.
+The gate change is reverted; the one-liner is recorded above.
