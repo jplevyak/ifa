@@ -209,6 +209,38 @@ compile error -> compiles and aborts, `quameon` back to a compile error,
 timeout; its binary takes 112 s alone under both trees against a 120 s cap,
 so that is the cap, not this change.
 
+### sudoku5: generated code depended on a fold through `int.__ge__` (fixed 2026-09-26)
+
+151 dropped the forced constant split on `int`'s comparisons. The generated
+tuple methods (`__pyc_tuple_cmp__`, `python_ifa_main.cc`) guard every
+unrolled `self[k]` with `n >= k+1` and the runtime tail with
+`n > max_arity`, and they relied on those guards folding. After 151 they
+went through ONE `int.__ge__` contour and two `int.__gt__` contours for the
+whole program. `sudoku5` compares 2-tuples and 3-tuples, so the shared
+`__ge__` returned `bool`, `self[2]` on a 2-tuple and the runtime tail were
+both live, and `t[i]` unioned every field. TYPE_CONFLUENCE then acted on
+all 50 passes, so CONST_DEMAND, which is the last rung and could have split
+`__ge__` on 2-vs-3, never ran. That is
+[157](157-FA-all-demand-must-be-evaluated-at-quiescence.md)'s cascade.
+
+Restoring the annotation on `__gt__`/`__ge__` took `sudoku5` from 115
+errors to 1. That is the retreat, so it was reverted. The fix is at the
+source: the guards are now the operator PRIMITIVE, inline, so they fold in
+the tuple method's own contour, where `n` is already a constant per
+receiver arity. No callee split is needed. A fold is not a demand, and
+generated code must not make one depend on a split.
+
+`sudoku5` now compiles clean and runs. It converges at pass 47 with 0
+violations; its output is `TIME` only, and its 32-48 s run against
+CPython's 0.7 s is [issues/118](../../issues/118-set-and-dict-are-linear-scans.md).
+Contours: 552 for 431 exact signatures and 231 by shape (hand-derived
+minimum about 220). Every user function has at most 2 contours and is
+1 by shape. shedskin has 366 function contours with `solve`/`select` at 6
+each. The excess is in the builtins that still carry this issue's
+annotations: `tuple.__getitem__` has 66 contours for 8 shapes (the key
+annotation) and `__list_iter__`'s methods have 17 each for 1 shape (the
+ctor annotation).
+
 ## The work
 
 1. **Classify the 60 COMPILE-OUT failures.** They are the bill, and the

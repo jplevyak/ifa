@@ -666,9 +666,7 @@ void dbg_dump_av(AVar *av) {
   static int want = -2;
   if (want == -2) { cchar *v = getenv("IFA_DBG_AV"); want = v ? atoi(v) : -1; }
   if (want < 0 || !av || av->id != want) return;
-  static int done = 0;
-  if (done++) return;
-  fprintf(stderr, "[av] %d var=%s in=%s type=", av->id,
+  fprintf(stderr, "[av] p=%d %d var=%s in=%s type=", analysis_pass, av->id,
           (av->var && av->var->sym && av->var->sym->name) ? av->var->sym->name : "(anon)",
           (av->contour_is_entry_set && ((EntrySet *)av->contour)->fun &&
            ((EntrySet *)av->contour)->fun->sym && ((EntrySet *)av->contour)->fun->sym->name)
@@ -972,7 +970,7 @@ void report_cs_vars() {
     }
     for (AVar *v : cs->vars) {
       if (!v) continue;
-      fprintf(stderr, "  var=%s type=", (v->var && v->var->sym && v->var->sym->name) ? v->var->sym->name : "?");
+      fprintf(stderr, "  var=%s av=%d type=", (v->var && v->var->sym && v->var->sym->name) ? v->var->sym->name : "?", v->id);
       if (v->out && v->out->type)
         for (CreationSet *c : v->out->type->sorted)
           if (c && c->sym) fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
