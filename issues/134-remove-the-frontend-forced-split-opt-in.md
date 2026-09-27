@@ -231,8 +231,9 @@ receiver arity. No callee split is needed. A fold is not a demand, and
 generated code must not make one depend on a split.
 
 `sudoku5` now compiles clean and runs. It converges at pass 47 with 0
-violations; its output is `TIME` only, and its 32-48 s run against
-CPython's 0.7 s is [issues/118](../../issues/118-set-and-dict-are-linear-scans.md).
+violations; its output is `TIME` only. Its 32-48 s run was
+[issues/118](../../issues/closed/118-set-and-dict-are-linear-scans.md)'s
+linear-scan dict and set; with those hashed it runs in 15 s.
 Contours: 552 for 431 exact signatures and 231 by shape (hand-derived
 minimum about 220). Every user function has at most 2 contours and is
 1 by shape. shedskin has 366 function contours with `solve`/`select` at 6

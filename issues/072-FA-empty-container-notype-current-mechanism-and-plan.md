@@ -325,7 +325,7 @@ ifa round; pyc's fixpoint is incremental, so the pass must only **widen**:
 This issue's residual is described throughout as "a read that returns
 the element as a value" (`x[0]` on a never-written `[]`), and
 `tests/empty_container_elem.py` pins exactly that. Work on
-[issues/118](../../issues/118-set-and-dict-are-linear-scans.md) found a
+[issues/118](../../issues/closed/118-set-and-dict-are-linear-scans.md) found a
 second shape the write-up does not cover, and it is the one that blocks
 hashed `set`/`dict`:
 

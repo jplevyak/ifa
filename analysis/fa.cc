@@ -6883,6 +6883,25 @@ static Setters *setters_cannonicalize(Setters *s) {
   return ss;
 }
 
+// ifa/146 B / ifa/172: the source of a folded global-cell load.
+//
+// ifa/050 stage 1 resolves a load from a module-level cell to the store
+// that dominates it and applies the value with `update_gen` -- a SNAPSHOT,
+// deliberately (it is flow-sensitive, and a write-only cell must stay
+// unobservable to BOXING). The load therefore has NO backward edge, and any
+// walk that asks "where did this value come from" stops at it. Returns the
+// store's value when `a` is such a load, so a REACHABILITY walk can cross
+// it; type propagation is unchanged. nullptr otherwise.
+static AVar *folded_load_source(AVar *a) {
+  if (!a || a->backward.n || !if1->callback || !a->var || !a->var->def || !a->contour_is_entry_set) return nullptr;
+  PNode *mp = a->var->def;
+  if (!mp->code || mp->code->kind != Code_MOVE || !mp->rvals.n) return nullptr;
+  AVar *cell = make_AVar(mp->rvals.v[0], (EntrySet *)a->contour);
+  AVar *src = nullptr;
+  if (cell) (void)if1->callback->provably_constant_load(cell, (EntrySet *)a->contour, mp, &src);
+  return src;
+}
+
 [[nodiscard]] static int update_setter(AVar *av, AVar *s, Accum<AVar *> &avs) {
   Setters *new_setters = nullptr;
   avs.add(av);
@@ -6899,6 +6918,16 @@ static Setters *setters_cannonicalize(Setters *s) {
 Ldone:
   av->setters = new_setters;
   for (AVar *x : av->backward) if (x) (void)update_setter(x, s, avs);
+  // ifa/172: a setter recorded on a container AVar must reach the
+  // container's ALLOCATION SITE (the AVar carrying `cs_map`) or split_css
+  // has no starter to partition. At module scope the container is a global,
+  // every read of it is a folded load with no backward edge, and the walk
+  // stopped there: `d = {}; d[3] = 1` next to `num = {}; num[b] = 2` left
+  // both dicts on one CreationSet with starters=0, while the same program
+  // inside a function split them. Cross the fold as ifa/146 B does for the
+  // CS flow graph.
+  if (!av->backward.n)
+    if (AVar *src = folded_load_source(av)) (void)update_setter(src, s, avs);
   return 1;
 }
 
@@ -7509,18 +7538,11 @@ CSFlowGraph *build_cs_flow_graph(CreationSet *cs) {
       // is REACHABILITY, not type flow. So ask the same callback where the
       // folded value came from and continue from there, leaving type
       // propagation exactly as it was.
-      if (!a->backward.n && if1->callback && a->var && a->var->def && a->contour_is_entry_set) {
-        PNode *mp = a->var->def;
-        if (mp->code && mp->code->kind == Code_MOVE && mp->rvals.n) {
-          AVar *cell = make_AVar(mp->rvals.v[0], (EntrySet *)a->contour);
-          AVar *src = nullptr;
-          if (cell) (void)if1->callback->provably_constant_load(cell, (EntrySet *)a->contour, mp, &src);
-          if (src && src->out && src->out->type && src->out->type->set_in(cs) && path->set_add(src)) {
-            work.add(src);
-            continue;  // `a` is not a creation point; the store's value is upstream
-          }
+      if (AVar *src = folded_load_source(a))
+        if (src->out && src->out->type && src->out->type->set_in(cs) && path->set_add(src)) {
+          work.add(src);
+          continue;  // `a` is not a creation point; the store's value is upstream
         }
-      }
       if (!a->backward.n) cps->set_add(a);
       for (AVar *x : a->backward)
         if (x && x->out && x->out->type && x->out->type->set_in(cs) && path->set_add(x)) work.add(x);
