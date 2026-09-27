@@ -739,6 +739,14 @@ int cscontent_enabled() {
 // through `list.append`'s return, and without this split every
 // comprehension in the program shares one `append` EntrySet, so the
 // round-trip becomes a program-wide element-union channel (`plcfrs`).
+// ifa/174: collect_violation_imprecisions backtracks a violation along its
+// value flow to the first load over a union receiver, and offers that
+// receiver to the type splitter. PYC_LOADBT=0 turns it off.
+int loadbt_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_LOADBT"); e = v ? atoi(v) : 1; }
+  return e;
+}
 int esblock_enabled() {
   static int e = -1;
   if (e < 0) { cchar *v = getenv("PYC_ESBLOCK"); e = v ? atoi(v) : 1; }

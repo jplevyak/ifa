@@ -54,6 +54,7 @@ int csdefsplit_enabled();
 int csladder_enabled();
 int cscontent_enabled();
 int esblock_enabled();
+int loadbt_enabled();
 int cscallsite_enabled();
 int csslotdemand_enabled();
 int csbacktrack_enabled();

@@ -9746,6 +9746,60 @@ static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Ve
       fprintf(stderr, " is_call_result=%d\n", is_call_result(a) ? 1 : 0);
     }
     if (v->av->container && v->av->container->out->n > 1) imprecisions.set_add(v->av->container);
+    // ifa/174: BACKTRACK TO THE LOAD THAT MADE THE UNION. The test above
+    // asks only whether the violating AVar is itself a load over a union
+    // receiver. The union is usually made upstream and carried here:
+    // richards' `Task.runTask` does `self.fn(msg, self.handle)` with `self`
+    // any of four Task classes, each holding its own TaskRec -- so the load
+    // `self.handle` is the union of four records, it becomes
+    // `HandlerTask.fn`'s formal `r`, then `h`, then the self captured by
+    // `h.workInAdd`'s bound-method closure, which is where the dispatch
+    // fails and the violation lands (on a CS-contoured AVar that stage 5
+    // cannot use). Walk back along the value flow while it still carries a
+    // union, and hand the receiver of the first union-receiver LOAD to the
+    // type splitter. That splits `runTask` by the class of `self` --
+    // shedskin's analysis does the same and then emits one C++ method with
+    // a cast (`HandlerTaskRec *r = (HandlerTaskRec *)__r`).
+    else if (loadbt_enabled()) {
+      Vec<AVar *> seen, work;
+      seen.set_add(v->av);
+      work.add(v->av);
+      for (int i = 0; i < work.n && i < 2000; i++) {
+        AVar *a = work.v[i];
+        if (a != v->av && a->container && a->container->contour_is_entry_set && a->container->out &&
+            a->container->out->n > 1 && a->var && a->var->def && a->var->def->prim &&
+            a->var->def->prim->index == P_prim_period) {
+          // The load's receiver is the in-body (SSU-renamed) `self`; the
+          // type splitter acts on the FORMAL it flows from, in the same
+          // contour.
+          AVar *recv = a->container;
+          {
+            Vec<AVar *> s2, w2;
+            s2.set_add(recv);
+            w2.add(recv);
+            for (int j = 0; j < w2.n && j < 200; j++) {
+              AVar *r = w2.v[j];
+              if (r->var && r->var->is_formal) { recv = r; break; }
+              for (AVar *b : r->backward)
+                if (b && b->contour == a->contour && s2.set_add(b)) w2.add(b);
+            }
+          }
+          imprecisions.set_add(recv);
+          if (getenv("IFA_DBG_VIOL"))
+            fprintf(stderr, "[viol-loadbt] av=%d -> receiver av=%d of load av=%d in es=%d\n", v->av->id,
+                    a->container->id, a->id, ((EntrySet *)a->contour)->id);
+          break;
+        }
+        // Follow every writer that CONTRIBUTES to the offending union, not
+        // only writers that are unions themselves: a join of narrowed arms
+        // (`assert isinstance(h, ARec)` rejoining its failing arm) has
+        // single-typed inputs whose sources upstream are the union again.
+        for (AVar *b : a->backward)
+          if (b && b->out && b->out->type && v->av->out && v->av->out->type &&
+              b->out->type->some_intersection(v->av->out->type->sorted) && seen.set_add(b))
+            work.add(b);
+      }
+    }
     // ifa/133: a violation on a CS-CONTOURED AVar has no route here. Both
     // paths in this function are EntrySet-oriented -- the `container` test
     // wants an ES-contoured value with a container, and `is_call_result`
