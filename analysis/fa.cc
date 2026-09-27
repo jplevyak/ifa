@@ -2594,10 +2594,23 @@ static int partial_application(PNode *p, EntrySet *es, CreationSet *cs, Vec<AVar
     cs->vars[i]->arg_of_send.add(result);
     a.add(cs->vars[i]);
   }
+  // Names line up with the argument vector function_dispatch builds from
+  // `a`: [fun, captured values..., call args...]. The closure captured
+  // `cs->vars.n` values (fun included), so the call's i-th argument sits at
+  // `cs->vars.n + i - 1`. This used `def->rvals.n`, the arity of the PNode
+  // that MADE the closure, which equals `cs->vars.n` for a partial
+  // application but not for a bound method: there `def` is the `obj.f`
+  // period send, rvals [__operator, obj, ., f] = 4 against the closure's
+  // [fun, self] = 2. Every keyword argument to a METHOD therefore bound two
+  // slots late, and pattern matching resolved it to the previous formal:
+  // `s.f(1, reason_txt="x")` with `def f(self, lit, reason=None,
+  // reason_txt=None)` put "x" in `reason` and left `reason_txt` None --
+  // silently (shedskin_examples/sat, where a str reached `cause.cacl_reason`).
   Vec<cchar *> n;
-  n.fill(args.n + def->rvals.n);
-  for (int i = 0; i < def->code->names.n; i++) n[i] = def->code->names.v[i];
-  for (int i = 1; i < names.n; i++) n[def->rvals.n + i - 1] = names.v[i];
+  n.fill(args.n + cs->vars.n);
+  if (def->rvals.n == cs->vars.n)
+    for (int i = 0; i < def->code->names.n; i++) n[i] = def->code->names.v[i];
+  for (int i = 1; i < names.n; i++) n[cs->vars.n + i - 1] = names.v[i];
   assert(!names.n || !names[0]);
   assert(cs->defs.n == 1);
   Vec<CreationSet *> c;

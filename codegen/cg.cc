@@ -1902,7 +1902,17 @@ class CBackendEmitter : public VirtualCGEmitter {
         if (!lhs) lhs = cg_get_string(pn->rvals[2]->sym);
         cchar *rhs = cg_get_string(pn->rvals[3]);
         if (!rhs) rhs = cg_get_string(pn->rvals[3]->sym);
-        fprintf(fp, "  %s = ((void *)%s == (void *)%s);\n", cg_get_string(pn->lvals[0]), lhs ? lhs : "NULL", rhs ? rhs : "NULL");
+        // A numeric operand (bool/int/float) is a value, not a pointer:
+        // compare it as one. Casting a `_CG_bool` or `_CG_int64` to
+        // `void *` draws -Wint-to-void-pointer-cast, and a double cannot
+        // be cast to a pointer at all. Reached since `x is True` over a
+        // runtime bool stopped folding to False (fa_prims.cc P_prim_is).
+        Sym *t2 = pn->rvals[2]->type, *t3 = pn->rvals[3]->type;
+        if (t2 && t3 && t2->num_kind && t3->num_kind)
+          fprintf(fp, "  %s = (%s == %s);\n", cg_get_string(pn->lvals[0]), lhs ? lhs : "0", rhs ? rhs : "0");
+        else
+          fprintf(fp, "  %s = ((void *)%s == (void *)%s);\n", cg_get_string(pn->lvals[0]), lhs ? lhs : "NULL",
+                  rhs ? rhs : "NULL");
       } else {
         fputs("  ;\n", fp);
       }

@@ -412,12 +412,30 @@ switch (p->prim->index) {
         // bool — we can't prove True or False at compile
         // time (two AVars sharing a CS might or might not
         // hold the same instance at runtime).
+        //
+        // A CONSTANT is not a contour of its own: the constant `True` and
+        // the runtime `bool` are different CreationSets, but a runtime bool
+        // can be True. So a constant overlaps the non-constant contour of
+        // its own type, and only two DIFFERENT constants are disjoint.
+        // Testing CreationSet identity alone folded `r is True` to False
+        // whenever r's constants had been stripped (a function returning
+        // True on one path and False on another) -- silently, and
+        // shedskin_examples/sat's `assert r is True` failed on a True.
         AVar *thing1 = make_AVar(p->rvals[p->rvals.n - 2], es);
         AVar *thing2 = make_AVar(p->rvals[p->rvals.n - 1], es);
+        auto may_be_same = [](CreationSet *a, CreationSet *b) {
+          if (a == b) return true;
+          if (!a->sym || !b->sym) return false;
+          bool ka = a->sym->constant != nullptr, kb = b->sym->constant != nullptr;
+          if (ka == kb) return false;  // two distinct constants, or two contours
+          Sym *ta = a->sym->type ? a->sym->type : a->sym;
+          Sym *tb = b->sym->type ? b->sym->type : b->sym;
+          return ta == tb;
+        };
         bool overlap = false;
         for (CreationSet *cs1 : thing1->out->sorted) {
           for (CreationSet *cs2 : thing2->out->sorted) {
-            if (cs1 == cs2) { overlap = true; break; }
+            if (may_be_same(cs1, cs2)) { overlap = true; break; }
           }
           if (overlap) break;
         }
