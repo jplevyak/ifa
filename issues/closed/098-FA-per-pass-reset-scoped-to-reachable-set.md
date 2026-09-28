@@ -427,7 +427,7 @@ splitter's compatibility tests
 (`edge_type_compatible_with_edge`/`_entry_set`), `check_split`'s routing,
 and the violation collectors all do — and now reads only this pass's.
 That puts this upstream of
-[closed/033](033-splitter-non-idempotent-divergence.md)/[074](../074-FA-cross-pass-oscillation-plan.md)'s
+[closed/033](033-splitter-non-idempotent-divergence.md)/[074](074-FA-cross-pass-oscillation-plan.md)'s
 cross-pass split oscillation: a split decision keyed on a stale edge's
 types was not evidence about the pass making it, so those
 investigations' measurements are worth re-taking on top of this fix

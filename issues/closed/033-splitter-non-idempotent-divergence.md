@@ -10,7 +10,7 @@ general match-phase performance (S4-E follow-on) remain, and both
 are lower-priority than when filed. Rather than leave a
 mostly-resolved epic open, its forward scope — the broader FA
 cross-pass convergence question — now lives under
-[074](../074-FA-cross-pass-oscillation-plan.md), which is explicitly
+[074](074-FA-cross-pass-oscillation-plan.md), which is explicitly
 titled as this issue's sequel/master plan and re-measures against
 current main. Kept here as the historical derivation trail,
 including a since-repudiated framing (§D/§M6 widening/CPA_LIMIT,

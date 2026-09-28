@@ -1,6 +1,6 @@
 # 074 — FA contour growth on a recursively rebuilt nested container
 
-**Status:** open. Rewritten 2026-09-27. The long record this replaces
+**Status:** closed 2026-09-28 (see *RESOLVED* at the end). Rewritten 2026-09-27. The long record this replaces
 (2026-07-30 → 2026-09-25, ~2900 lines) is in git:
 `git show 9dfbf0fc:ifa/issues/074-FA-cross-pass-oscillation-plan.md`.
 
@@ -64,7 +64,7 @@ CreationSet identity, which is decided by structure (which contour
 allocated it). A copy minted inside a contour, with the same shape as its
 source, should not count as a distinction that justifies a new contour.
 This is the identity-vs-shape question in
-[146](146-remove-all-arbitrary-splitting.md), and a demand-splitting
+[146](../146-remove-all-arbitrary-splitting.md), and a demand-splitting
 defect: nothing asked for the new level.
 
 ## Forward options
@@ -218,7 +218,7 @@ Edge `cs=1370` → owner Face `cs=1362`, and list `cs=1671` → owner Edge
 `cs=1370`. The guard refuses every 2-def owner, so it switches the lift off
 wherever chull used it. chull's numbers under the guard are identical to
 the baseline. The earlier "closure bug" story was wrong. The real cause
-was [175](closed/175-FA-loop-over-a-never-written-list-is-live-and-its-element-is-bottom.md),
+was [175](175-FA-loop-over-a-never-written-list-is-live-and-its-element-is-bottom.md),
 a pre-existing defect the lift only exposed: a loop over a never-written
 `[]` stayed live because its `0 < 0` shared an `int.__lt__` contour with
 a non-constant caller. **175 is fixed and the guard is removed
@@ -277,7 +277,7 @@ every ES that reaches it, and `cs_map` keeps the answer permanently. The
 fix is to re-decide at quiescence on every pass. `analyze_to_convergence`
 already re-derives types from bottom, and taking back a `cs_map` decision
 has been measured to work (AGENTS.md, 2026-09-05). That is
-[066](066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md).
+[066](../066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md).
 
 - **Stop:** if the re-decided canon still oscillates inside a band on the
   reproducer, the band is a second defect (canon vs. splitter disagreeing).
@@ -287,7 +287,7 @@ has been measured to work (AGENTS.md, 2026-09-05). That is
 
 Give the copy a fresh CS whose element is constrained to the source's
 (`elem(result) = elem(source)`) instead of being accumulated from appends.
-This is not [048](048-FA-deepcopy-flow-divergence-genetic2.md)'s CS
+This is not [048](../048-FA-deepcopy-flow-divergence-genetic2.md)'s CS
 sharing, which fed the copy's writes back into the source. Because a manual
 copy also grows (see above), this alone cannot close the issue. Build it
 only if 1 and 2 leave `deepcopy` as a special case.
@@ -300,13 +300,13 @@ only if 1 and 2 leave `deepcopy` as a special case.
 | `PYC_CSKEY=3` (includes 2's `split_origin` canonicalization) | Durable setter type in the CS ledger signature. Stopped the ledger missing repeats because of drifting `s->out->type`. |
 | `FA::rederive_churn` | The divergence guard counts "mint anyway", not ledger routes (recovery). `pass_limit_hit` went 10 → 4 programs. |
 | `PYC_CSMOLD=3` | The mold fallback is limited to containers and never used for a split child. Fixed the bounded sibling `tests/deepcopy_copy_of_copy_chain.py`. |
-| display out of identity ([100](closed/100-FA-display-removed-from-contour-identity.md)); marks retired ([146](146-remove-all-arbitrary-splitting.md)) | ess −40-80% corpus-wide; retired this plan's old Stages 0 and 4. |
+| display out of identity ([100](100-FA-display-removed-from-contour-identity.md)); marks retired ([146](../146-remove-all-arbitrary-splitting.md)) | ess −40-80% corpus-wide; retired this plan's old Stages 0 and 4. |
 
 The rest of the corpus's non-convergence is a different disease,
-characterized in [101](101-FA-first-time-forever-splitting.md): 95-98% of
+characterized in [101](../101-FA-first-time-forever-splitting.md): 95-98% of
 split decisions are first-time signatures, so nothing that keys on a repeat
 can help. The first-stage-wins cascade that starves later stages is
-[157](157-FA-all-demand-must-be-evaluated-at-quiescence.md).
+[157](../157-FA-all-demand-must-be-evaluated-at-quiescence.md).
 
 ## Dead ends (measured; do not repeat)
 
@@ -366,3 +366,52 @@ Traps worth remembering:
    rise in `cs/shapes`.
 4. When the reproducer passes, remove its `.known_issue` and close this
    issue together with 168.
+
+## RESOLVED 2026-09-28 — together with 168
+
+**What closed it:** three changes that landed in sequence, and none of
+them was option 1.
+
+1. **Parent-first CS routing** (section 0 above). An ES split no longer
+   splits a CS.
+2. **The owner lift** (section 0b), now on by default.
+3. **168's targeted gate** (`PYC_RECGATE`, default 1, `decide_entry_set_split`).
+   A partially overlapping recursive edge joins the type grouping only when
+   the contour being decided owns the single live creation point of a
+   CreationSet whose element is irrepresentable.
+
+On `c0327b84` that gate alone took linalg from 46 to 88 errors, because 074's
+growth was the wall. With 1 and 2 in place, the growth never starts.
+
+**Measured (tree `4ab070d7` + this change):**
+
+| | before | after |
+|---|---|---|
+| `tests/deepcopy_recursive_nested_growth.py` | 2 errors, `CONVERGED=0` at the p=101 cap, ess 347 | **passes**, `CONVERGED=1` at p=16, ess 120 |
+| same, `[[1.0]]*3` / `*8` / `*20` | — | p=16, ess 120, css 586 at **every** depth |
+| `linalg` | 11 errors, `CONVERGED=0` | **0 errors, runs, matches CPython** (200 lines, `TIME` excluded) |
+
+Corpus `-m check`, `check__default__73f273b7+d585e8c2` →
+`check__default__4ab070d7+a0ef1f9f`: compile_fail 25 → 24 and stdout
+matches 19 → 20, both linalg. No regressions. Container CSs go up by 6,
+all of them linalg's (49 → 55). sudoku5, softrender and pylife, the
+programs 168's blunt probe once regressed, compile in the same time (15 s,
+22 s, 19 s). The only other verdict moves are chull and tonyjpegdecoder
+trading places on the 120 s run cap. `make test` is green: 357/0 on both
+backends, 16 ir phases, and the reproducer's `.known_issue` is removed.
+
+**Option 1 (shape-equivalent compatibility) was not needed and was not
+built.** Option 2 (066) and option 3 are moot for this issue.
+
+**Found on the way:** once linalg compiled, it ran about 60x slower than
+CPython. The cause was `list.sort`: it was an insertion sort, quadratic on
+iterate_sort's "sorted prefix + appended batch" (2.8 s vs 7 ms). It is now
+an in-place stable SymMerge sort (O(n log^2 n), no buffer, only `<`). It
+was checked against CPython on 192 randomized cases covering stability,
+`key` and `reverse`. It must stay in place: a buffer list allocated inside
+`sort` is one creation point shared by every element type, and both
+allocation variants tried failed to type (`index_object` refused the
+slice; the comprehension buffer fused `{int64, float64, str, P}`).
+
+**Residual:** the 4-line self-cycle `M = copy.deepcopy(M)` still fails.
+That is [176](../176-FA-self-feeding-deepcopy-fusion-has-one-assign-set.md).

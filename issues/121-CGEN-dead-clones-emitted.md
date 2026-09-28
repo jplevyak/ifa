@@ -139,7 +139,7 @@ functions for 83 source functions, and of the survivors **72 have a body
 byte-identical to a sibling** (105 once callee clone indices are
 stripped). Ten identical contours for `parallellight::light` is a
 splitter question — the `TYPE_CONFLUENCE` detach-and-mint growth that
-[074](074-FA-cross-pass-oscillation-plan.md) censuses, on a two-level
+[074](closed/074-FA-cross-pass-oscillation-plan.md) censuses, on a two-level
 class hierarchy — not a codegen one. Fixing that would make this DCE
 mostly redundant; until then this keeps the excess out of the output.
 
@@ -433,5 +433,5 @@ Smaller, faster-compiling output everywhere, and one corpus program that
 now compiles. More usefully, it makes "is the contour set minimal?" a
 question you can ask of the emitted C without 16% noise: what remains
 after this is genuine over-cloning, which is
-[074](074-FA-cross-pass-oscillation-plan.md)'s and
+[074](closed/074-FA-cross-pass-oscillation-plan.md)'s and
 [030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md)'s territory.

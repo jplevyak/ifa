@@ -4,7 +4,7 @@
 three programs it was blocking still do not converge, because their churn
 relocated rather than stopped. Root-caused 2026-08-13 while answering "why
 is the system oscillating?" for
-[074](074-FA-cross-pass-oscillation-plan.md). The mechanism is
+[074](closed/074-FA-cross-pass-oscillation-plan.md). The mechanism is
 *structural* — not a heuristic misfiring, not a timing race.
 
 **Affects:** `ifa/analysis/fa.cc` — `check_split`'s pending-backedge
@@ -14,7 +14,7 @@ branch (~1231), `record_backedges` (~4333),
 
 ## Symptom
 
-Three of [074](074-FA-cross-pass-oscillation-plan.md)'s eight genuinely
+Three of [074](closed/074-FA-cross-pass-oscillation-plan.md)'s eight genuinely
 non-convergent programs — its "stable residual" group, **bh**, **pylife**
 and **linalg** — never converge, yet **nothing grows**. Measured per pass
 over the last ten passes of each: zero new AEdges, zero new EntrySets,
@@ -103,7 +103,7 @@ larger cycle.
 
 It is the entire non-convergence of three programs, it is *provably*
 non-terminating rather than merely slow, and — unlike the rest of
-[074](074-FA-cross-pass-oscillation-plan.md)'s territory — it has a
+[074](closed/074-FA-cross-pass-oscillation-plan.md)'s territory — it has a
 single, small, well-localized cause. It also explains why these three are
 074's "stable residual" shape (identical violation counts and
 byte-identical program output with and without the stall guards): the
@@ -183,7 +183,7 @@ below (the splitter re-deciding every pass), i.e. 074's territory.
 ## Stage attribution of the relocated churn (2026-08-13)
 
 After the fix, this issue's three subjects still churn — and
-`IFA_DBG_STAGE` (see [074](074-FA-cross-pass-oscillation-plan.md)) now
+`IFA_DBG_STAGE` (see [074](closed/074-FA-cross-pass-oscillation-plan.md)) now
 says which splitter stage does it. Detaches over the last 10 passes:
 
 | program | attribution |

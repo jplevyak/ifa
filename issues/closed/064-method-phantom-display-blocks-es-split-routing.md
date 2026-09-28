@@ -8,7 +8,7 @@ generator is `check_split`'s split-lineage routing (root-caused and
 fixed in [073](073-teach-splitter-productive-vs-inert-context.md)).
 The closing "Consequence for the plan" section explicitly calls this
 issue's proposed fix "a dead end." Superseded by
-[074](../074-FA-cross-pass-oscillation-plan.md) (Stage 0 re-runs this
+[074](074-FA-cross-pass-oscillation-plan.md) (Stage 0 re-runs this
 exact experiment; Stage 4 is framed as what retires this issue).
 
 Original status line, superseded: open, root-caused 2026-07-23 (pursuing the dijkstra2 /

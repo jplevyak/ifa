@@ -82,7 +82,7 @@ cross-referencing.
 2. **Closed as superseded/subsumed** (remaining scope, if any, now
    lives entirely in a surviving doc):
    [033](closed/033-splitter-non-idempotent-divergence.md) → forward
-   work continues under [074](074-FA-cross-pass-oscillation-plan.md);
+   work continues under [074](closed/074-FA-cross-pass-oscillation-plan.md);
    [063](closed/063-no-type-bucket-triage.md) → forked into
    [075](075-FA-element-cs-method-split-idempotent-plan.md) (build
    plan), [067](closed/067-dijkstra2-heap-tuple-precision-and-use-before-def.md)
@@ -173,7 +173,7 @@ changes are four commits; everything else is measurement.
 **Premises this invalidated.** Several long-standing conclusions rested
 on things that turned out not to hold:
 
-- **[074](074-FA-cross-pass-oscillation-plan.md)'s headline metric was
+- **[074](closed/074-FA-cross-pass-oscillation-plan.md)'s headline metric was
   partly measuring the stall guard.** Re-basing with
   `IFA_STALL_LIMIT`/`IFA_NONIMPROVE_LIMIT` disabled cut the genuine
   target set from 17 programs to **8**, and showed the guard is *causing
@@ -350,7 +350,7 @@ the [033](closed/033-splitter-non-idempotent-divergence.md) →
   converge: their churn RELOCATED into slow contour growth (074's other
   shape) rather than stopping, so the issue stays open on its second
   condition — the splitter re-deciding every pass.
-- [074-FA-cross-pass-oscillation-plan.md](074-FA-cross-pass-oscillation-plan.md)
+- [074-FA-cross-pass-oscillation-plan.md](closed/074-FA-cross-pass-oscillation-plan.md)
   — the master plan, **substantially re-measured 2026-08-12/13** (see the
   dated session section above). Target set re-based from 17 programs to
   8 by disabling the stall guards; growth mechanism re-censused after

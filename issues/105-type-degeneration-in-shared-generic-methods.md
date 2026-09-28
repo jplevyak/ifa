@@ -360,7 +360,7 @@ the standing rules above.
 The reduction landed on a 10-line program -- `copy.deepcopy` of a
 list-of-lists consumed by a self-recursive function -- which is
 **already** `tests/deepcopy_recursive_nested_growth.py`, filed under
-[074](074-FA-cross-pass-oscillation-plan.md) and itself described there
+[074](closed/074-FA-cross-pass-oscillation-plan.md) and itself described there
 as "distilled from linalg.py's determinant/Minor pair". Same shape, same
 three-ingredient control table (deepcopy + recursion + nested container,
 remove any one and it converges), same conclusion -- "the defect is

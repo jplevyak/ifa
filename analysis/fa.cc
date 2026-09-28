@@ -394,6 +394,7 @@ void flow_vars_assign(AVar *rhs, AVar *lhs) {
 
 
 static bool cs_elem_irrepresentable(CreationSet *cs);  // ifa/133: defined with route 4
+static int cs_live_defs(CreationSet *cs);  // ifa/168: defined with route 4
 // ifa/133: turn an ELEMENT demand into a demand to split the CreationSet by
 // SETTERS. Route 4 already takes the element demand but partitions by
 // assign-set signature; split_css partitions by who WRITES, which is the
@@ -5620,6 +5621,11 @@ struct ESSplitDecision : public gc {
 };
 
 static cchar *dec_why = "?";  // ifa/133 probe: which decline path fired
+static int recgate_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_RECGATE"); e = v ? atoi(v) : 1; }
+  return e;
+}
 
 static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark) {
   EntrySet *es = (EntrySet *)av->contour;
@@ -5703,6 +5709,19 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
   bool have_nonrec = false;
   if (!fsetters)
     for (AEdge *ee : all_edges) if (ee && ee->from && !is_es_recursive(ee)) { have_nonrec = true; break; }
+  // ifa/168: a partial overlap is a consequence of not splitting, not
+  // evidence against it, when this contour owns the single creation point of
+  // a CreationSet whose element is irrepresentable (list.__deepcopy__'s
+  // `r = []` holding both the outer and inner copies). The demand -- the
+  // irrepresentable element -- decides WHETHER; the edge types decide WHICH.
+  bool owns_demanded_cs = false;
+  if (!fsetters && recgate_enabled())
+    for (CreationSet *c : es->creates)
+      if (c && cs_live_defs(c) == 1 && cs_elem_irrepresentable(c)) {
+        for (AVar *d : c->defs)
+          if (d && d->cs_map && d->cs_map->get(c->sym) == c && d->contour == es) { owns_demanded_cs = true; break; }
+        if (owns_demanded_cs) break;
+      }
   int nedges = 0, non_rec_edges = 0;
   for (AEdge *ee : all_edges) if (ee) {
     if (!ee->from) continue;
@@ -5719,7 +5738,7 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
       if (separable) for (AEdge *oe : all_edges) if (oe && oe != ee && oe->from) {
         AType *oty = ety_at(oe);
         if (!oty->n || oty == ety) continue;
-        if (type_intersection(ety, oty) != fa->type_world.bottom_type) {
+        if (type_intersection(ety, oty) != fa->type_world.bottom_type && !owns_demanded_cs) {
           separable = false;
           break;
         }

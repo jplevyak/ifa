@@ -110,7 +110,7 @@ premise ifa/111 set out to remove.
   Its M1 measurement, `foreach_avar`, the predicate-threaded
   `clear_results` and `ifa/tests/selective_diff.sh` all survive and are
   reusable here.
-- [074](074-FA-cross-pass-oscillation-plan.md),
+- [074](closed/074-FA-cross-pass-oscillation-plan.md),
   [101](101-FA-first-time-forever-splitting.md) — convergence work that
   also lives in the splitter, and would interact with any reworking of
   the classes.

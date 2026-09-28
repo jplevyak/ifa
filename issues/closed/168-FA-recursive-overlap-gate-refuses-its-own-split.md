@@ -1,6 +1,11 @@
 # 168 — the recursive-edge overlap gate refuses the split that would remove its own overlap
 
-**Status: open.** Root-caused 2026-09-25. Owns the TYPING half of
+**Status: closed 2026-09-28.** The targeted gate landed as `PYC_RECGATE`
+(default 1). See *RESOLVED* at the end, and
+[074](074-FA-cross-pass-oscillation-plan.md)'s resolution for the numbers.
+The 4-line self-cycle residual moved to
+[176](../176-FA-self-feeding-deepcopy-fusion-has-one-assign-set.md).
+Root-caused 2026-09-25. Owns the TYPING half of
 `tests/deepcopy_recursive_nested_growth.py`; the non-convergence half
 stays with [074](074-FA-cross-pass-oscillation-plan.md).
 
@@ -78,7 +83,7 @@ Measured with `IFA_DBG_FUNES=__deepcopy__`, `IFA_DBG_DECIDE=__deepcopy__`,
    when turned on. `IFA_DBG_THIRD` reports es=46 `splittable=1` -- the
    type split exists, only the gate stands in front of it.
 
-This is [142](142-linalg-empty-list-collapse-is-a-fixed-point.md)'s shape
+This is [142](../142-linalg-empty-list-collapse-is-a-fixed-point.md)'s shape
 (a CreationSet whose element contains itself) reached through an
 EntrySet instead of through many creation points.
 
@@ -244,3 +249,30 @@ which a copy minted inside the contour and the value it was copied from
 are the same contour when their shapes agree -- the identity-vs-shape
 question 146 frames -- measured on linalg with this gate change applied.
 The gate change is reverted; the one-liner is recorded above.
+
+## RESOLVED 2026-09-28
+
+The targeted version, specified in the 2026-09-27 section, is now the
+default. `decide_entry_set_split` admits a partially overlapping recursive
+edge only when the contour being decided owns the single live creation
+point of a CreationSet whose element is irrepresentable. It never fires on
+a recursion whose contours carry no such demand. On today's tree it types
+the reproducer and linalg, where on `c0327b84` it hit 074's growth.
+Parent-first routing and the owner lift removed that growth.
+
+**Measured against this issue's own verification plan:**
+
+- `tests/deepcopy_recursive_nested_growth.py`: passes, and its
+  `.known_issue` is removed.
+- `tests/expr_evaluator.py` and `make test`: green.
+- Corpus: no program that matched CPython stops matching. sudoku5 and
+  softrender do not regress.
+
+**The 4-line program still fails, by a different mechanism.** Under
+parent-first, the outer and inner `r = []` share one CreationSet with TWO
+creation points, so the "single creation point" test does not hold. The
+CreationSet cannot be partitioned either, because both levels' writes
+carry the same fused type: one assign-set key. That is
+[176](../176-FA-self-feeding-deepcopy-fusion-has-one-assign-set.md), not
+this gate.
+

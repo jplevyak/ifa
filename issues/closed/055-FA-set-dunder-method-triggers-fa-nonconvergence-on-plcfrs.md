@@ -336,7 +336,7 @@ counts and the ess/css totals. Run against
 created and destroyed on alternate passes, forever. This is a **period-2
 limit cycle**, not unbounded growth — the shape
 [099](../099-FA-pending-backedge-avoid-veto-forces-period-2.md) and
-[074](../074-FA-cross-pass-oscillation-plan.md) describe.
+[074](074-FA-cross-pass-oscillation-plan.md) describe.
 
 ### What flips
 

@@ -531,7 +531,7 @@ stops being expensive.
 ## Related
 
 - [113](113-FA-setter-equivalence-is-a-global-batch-partition.md) — **the blocker**, extracted from M3.
-- [074](074-FA-cross-pass-oscillation-plan.md), [101](101-FA-first-time-forever-splitting.md)
+- [074](closed/074-FA-cross-pass-oscillation-plan.md), [101](101-FA-first-time-forever-splitting.md)
   — non-convergence. Distinct problem: `amaze`'s profile is 43 CHEAP
   passes that never converge, which selective invalidation does not
   help. This issue is about the cost of a pass, not the number of them.

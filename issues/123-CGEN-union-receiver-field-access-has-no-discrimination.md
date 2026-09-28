@@ -149,7 +149,7 @@ variable that genuinely holds either.
    field access uniform.
 4. **Stop FA producing the union.** The receiver is only a union because
    some call site is shared; more precision there
-   ([074](074-FA-cross-pass-oscillation-plan.md)/
+   ([074](closed/074-FA-cross-pass-oscillation-plan.md)/
    [030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md)) removes the
    need — but cannot be relied on in general.
 

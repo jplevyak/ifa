@@ -11,7 +11,7 @@ the dijkstra2 repro-attribution correction →
 (also closed, folded into
 [068](../068-FA-derive-structural-ops-record-field-fold.md)), and the
 oscillation-vs-genuine-no-type distinction →
-[074](../074-FA-cross-pass-oscillation-plan.md). Kept here as the
+[074](074-FA-cross-pass-oscillation-plan.md). Kept here as the
 historical diagnosis/derivation trail (including a since-corrected
 "oscillation" framing in the pre-07-31 sections — see 074 for the
 correction).
@@ -340,9 +340,9 @@ residual setter-stage splits. (a) is gated on cleanly separating methods
 from closure-carriers; both are real but bounded follow-ups. All
 experiments reverted; suite 227/0.
 
-## Update 2026-07-31: why shedskin types the genuine no-type, and the corrected fix (from [074](../074-FA-cross-pass-oscillation-plan.md)'s measurements)
+## Update 2026-07-31: why shedskin types the genuine no-type, and the corrected fix (from [074](074-FA-cross-pass-oscillation-plan.md)'s measurements)
 
-[074](../074-FA-cross-pass-oscillation-plan.md) measured the cross-pass
+[074](074-FA-cross-pass-oscillation-plan.md) measured the cross-pass
 oscillation and **decoupled two things this issue had run together**: the
 *oscillation* (hits the pass cap) and the *genuine no-type violations* (the
 residual). They are NOT the same problem and do NOT share a fix:
@@ -437,7 +437,7 @@ quiescence circularity) rather than only on quiescence, keyed for
 idempotence on the stable creation site (066). This is **not** the
 oscillation lever (074 measured that away); it is the container-element
 separation this issue has pointed at since the 040/043/052 family. Prototype
-+ measurement tracked in the follow-up below / [074](../074-FA-cross-pass-oscillation-plan.md).
++ measurement tracked in the follow-up below / [074](074-FA-cross-pass-oscillation-plan.md).
 
 ### Prototype 2026-07-31: the mechanism is VALIDATED (dijkstra2 FAIL→COMPILED), the naive application is NOT landable
 

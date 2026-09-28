@@ -22,7 +22,7 @@
 
 **Status:** open, but **the oscillation is not its use case** — measured
 twice (2026-07-30's dup-category scoping, and again in
-[074](074-FA-cross-pass-oscillation-plan.md)'s 2026-08-13 census, both
+[074](closed/074-FA-cross-pass-oscillation-plan.md)'s 2026-08-13 census, both
 before and after [100](closed/100-FA-display-removed-from-contour-identity.md)):
 CreationSet *splitting* is ~0 across the whole oscillating corpus
 (`csSplit` 0-2 per run, `copy_AEdge` 0 everywhere), and every CS mint
@@ -166,7 +166,7 @@ The reproducer's contour count is flat, but it still trips the guard at
 pass 36 with `pass_limit_hit=1`, so **something else** is keeping the
 analysis from settling — assignment churn between a fixed set of
 contours, not growth. That is the other half of
-[074](074-FA-cross-pass-oscillation-plan.md), and this fix does not
+[074](closed/074-FA-cross-pass-oscillation-plan.md), and this fix does not
 address it.
 
 Two residual split decisions survive on the reproducer, both visible in

@@ -8,7 +8,7 @@
 > converge, so the issue stays open — see "What the fix does not do".
 
 **Status:** open, characterized 2026-08-16 after
-[074](074-FA-cross-pass-oscillation-plan.md)'s two fixes
+[074](closed/074-FA-cross-pass-oscillation-plan.md)'s two fixes
 ([066](066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md)'s
 durable setter type and `PYC_SELFPROD=6`) cleared the reproducer. This
 issue names what is left on the corpus, and why neither of those fixes

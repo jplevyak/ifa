@@ -61,7 +61,7 @@ plan for the genuine "no type" root
 ([063](closed/063-no-type-bucket-triage.md)), synthesizing
 [066](066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md)
 (durable keying), [073](closed/073-teach-splitter-productive-vs-inert-context.md)
-(the display-is-bounded theorem), and [074](074-FA-cross-pass-oscillation-plan.md)
+(the display-is-bounded theorem), and [074](closed/074-FA-cross-pass-oscillation-plan.md)
 (this session's measurements), and grounded on a **validated prototype**
 (dijkstra2 FAIL→COMPILED — see 063's 2026-07-31 update).
 **Affects:** `ifa/analysis/fa.cc` — `split_edges` (4199),

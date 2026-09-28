@@ -117,7 +117,7 @@ A)**, which is the NOTYPE family
 Every measurement used on this project reads the **compiler's** exit
 status:
 
-- the corpus sweeps in [074](074-FA-cross-pass-oscillation-plan.md) and
+- the corpus sweeps in [074](closed/074-FA-cross-pass-oscillation-plan.md) and
   101 record `rc` from `pyc`, which is 0 for all 27;
 - `violations` / `ess` / `css` / `pass_limit_hit` are FA-internal and say
   nothing about whether the emitted binary works;

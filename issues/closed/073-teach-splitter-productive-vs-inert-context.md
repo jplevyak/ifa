@@ -257,7 +257,7 @@ fall-through`:
   need 066's source-site CS keying even after the `check_split` fix;
   adatron/057/plcfrs do not (their cross-pass state is stable). Sequence
   the two independently. **The build plan for that distinct cross-pass
-  oscillation is [074](../074-FA-cross-pass-oscillation-plan.md)** (measured
+  oscillation is [074](074-FA-cross-pass-oscillation-plan.md)** (measured
   2026-07-30: 17 of ~77 corpus programs still hit the pass cap).
 
 ## The question

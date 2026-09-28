@@ -58,7 +58,7 @@ to its recorded group, but the split machinery currently detaches the
 recorded group instead.
 
 **Confirmed stable instance — pygmy (2026-07-30, see
-[074](../074-FA-cross-pass-oscillation-plan.md) Stage-1 root finding).**
+[074](074-FA-cross-pass-oscillation-plan.md) Stage-1 root finding).**
 pygmy hits this gap in its *non-growing* form: instrumenting the two
 ES-type dup sites shows its cap-hitting oscillation (0 violations,
 frozen `ess`/`css`) is 3 dups/pass on `shade`/`getreflected` at a
