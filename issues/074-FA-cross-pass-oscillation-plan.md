@@ -200,9 +200,17 @@ Against `check__default__9dfbf0fc+4690daca` (parent-first, no lift):
 | compile_fail / stdout NO | 26 / 4 | 26 / 5 | 25 / 5 |
 | container CSs / shapes | 1931 / 639 | 2090 / 667 | 2082 / 667 |
 
-plcfrs now compiles in ~141 s but its output does NOT match CPython, so it
-moves from compile failure to stdout mismatch. That is the +1 in the
-stdout-NO column. Container CSs rise by ~8%.
+plcfrs now compiles in ~141 s. Container CSs rise by ~8%.
+
+**The plcfrs "stdout differs" was a harness artifact, not a
+miscompile (2026-09-28).** The only differing line is the usage message,
+which prints `sys.argv[0]`. The sweep ran CPython as `python3 plcfrs.py`
+and the binary as `./plcfrs`, so argv[0] genuinely differed. pyc passes
+the real process argv through, which is correct. `corpus_sweep.sh` now
+runs the binary with argv[0] set to `NAME.py`. Invoked that way, the lift
+build's output is byte-identical to CPython on all 182 lines. The +1 in
+the stdout-NO column above is this line, so under the lift plcfrs is
+**correct**, not merely compiling.
 
 **The `defs.n < 3` guard (abe8b309) is not a fix. It is a retreat.** On
 chull the lift makes exactly two splits, and both owners have 2 defs:
@@ -219,9 +227,9 @@ lift splits applied (ess 416 → 488), and no program changes verdict
 against `0536d85c`.
 
 `make test` is green with the guard removed. The lift is still off by
-default: under it plcfrs compiles but its stdout differs, and container
-CreationSets rise by about 8%. Both need an answer before it becomes the
-default.
+default. Under it plcfrs compiles and matches CPython (see the argv[0]
+note above), but container CreationSets rise by about 8%. That rise needs
+an answer before the lift becomes the default.
 
 ### 1. Shape-equivalent compatibility in type splitting (the 168 follow-on)
 
