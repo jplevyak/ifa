@@ -8405,6 +8405,158 @@ static void cs_member_signature(AVar *d, std::string &out) {
   }
 }
 
+// ifa/074 option 0b: THE OWNER LIFT -- setter splitting through a
+// container's own containers.
+//
+// A demanded CS `I` (irrepresentable content) whose own creation points
+// cannot be partitioned may be merged because its OWNER is: a dict keeps
+// its content in `_keys` / `_vals` lists, and when every dict shares one
+// CS, `dict.__init__` has one contour, each list literal one creation
+// point, and every writer reaches every def. The dict itself never sees a
+// demand -- its fields each hold one (representable) list CS.
+//
+// So lift the partition: walk each assign set of `I` backward from the
+// written container, and where the walk meets the RESULT of a member load
+// (`self._vals`), continue from the load's RECEIVER rather than through
+// the member AVar, which is one node shared by every owner. Follow the
+// receiver back to the owner's creation points, and partition the owner's
+// defs by which assign sets reach them.
+//
+// The demand on `I` decides WHETHER to split; ownership only decides
+// WHICH contour (ifa/146's two-question test). ifa/152's backtrack follows
+// value flow to SUPPLIERS; this follows containment to OWNERS.
+static int csowner_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_CSOWNER"); e = v ? atoi(v) : 0; }
+  return e;
+}
+// A READ out of another object: a member load (`self._vals`) or an element
+// read (`self._vals[i]`). Both record the object read from as `container`.
+static bool is_load_result(AVar *a) {
+  return a && a->container && a->contour_is_entry_set && a->var && a->var->def && a->var->def->prim &&
+         (a->var->def->prim->index == P_prim_period || a->var->def->prim->index == P_prim_index_object);
+}
+static int split_owner_of_demanded(CreationSet *I, bool dbg) {
+  if (!I || !I->sym) return 0;
+  Vec<AVar *> content;
+  cs_content_avars(I, content);
+  if (!content.n) return 0;
+  // Assign sets of I: keyed by assigned type, targets = written containers.
+  Vec<AType *> keys;
+  Vec<Vec<AVar *> *> targets;
+  for (AVar *cv : content) {
+    if (!cv) continue;
+    for (AVar *b : cv->backward) {
+      if (!b || !b->container || !b->out || !b->out->type) continue;
+      int gi = -1;
+      for (int i = 0; i < keys.n; i++)
+        if (keys.v[i] == b->out->type) { gi = i; break; }
+      if (gi < 0) { keys.add(b->out->type); targets.add(new Vec<AVar *>); gi = keys.n - 1; }
+      targets.v[gi]->set_add(b->container);
+    }
+  }
+  if (keys.n < 2) {
+    if (dbg) fprintf(stderr, "[csowner] p=%d cs=%d sym=%s keys=%d (need 2)\n", analysis_pass, I->id,
+                     I->sym->name ? I->sym->name : "?", keys.n);
+    return 0;
+  }
+  // Per assign set, walk backward carrying the CS being tracked. Values of
+  // the tracked CS are followed; at a READ out of another object the walk
+  // crosses to that object and tracks ITS CreationSets instead -- never
+  // through the shared member/element AVar. A def of a tracked owner is
+  // recorded as reached. At most kMaxLift crossings: owner of owner of ...
+  const int kMaxLift = 4;
+  std::vector<std::map<CreationSet *, std::set<AVar *>>> reach((size_t)keys.n);
+  std::map<CreationSet *, int> owner_depth;
+  for (int k = 0; k < keys.n; k++) {
+    struct Item { AVar *a; CreationSet *track; int depth; };
+    std::vector<Item> work;
+    std::set<std::pair<AVar *, CreationSet *>> seen;
+    for (AVar *t : *targets.v[k])
+      if (t && seen.insert({t, I}).second) work.push_back({t, I, 0});
+    for (size_t h = 0; h < work.size() && h < 400000; h++) {
+      Item it = work[h];
+      AVar *a = it.a;
+      CreationSet *tr = it.track;
+      if (tr != I && a->cs_map && a->cs_map->get(tr->sym) == tr && tr->defs.set_in(a)) {
+        reach[(size_t)k][tr].insert(a);
+        auto od = owner_depth.find(tr);
+        if (od == owner_depth.end() || od->second > it.depth) owner_depth[tr] = it.depth;
+      }
+      if (is_load_result(a)) {
+        if (it.depth < kMaxLift && a->container->out && a->container->out->type)
+          for (CreationSet *O : a->container->out->type->sorted)
+            if (O && O->sym && O != I && fa->css_set.set_in(O) && seen.insert({a->container, O}).second)
+              work.push_back({a->container, O, it.depth + 1});
+        continue;  // never through the shared member / element AVar
+      }
+      for (AVar *x : a->backward)
+        if (x && x->out && x->out->type && x->out->type->set_in(tr) && seen.insert({x, tr}).second)
+          work.push_back({x, tr, it.depth});
+    }
+  }
+  // Choose the NEAREST owner whose defs the assign sets actually separate.
+  std::vector<std::pair<int, CreationSet *>> cands;
+  for (auto &od : owner_depth)
+    if (cs_live_defs(od.first) >= 2) cands.push_back({od.second, od.first});
+  std::sort(cands.begin(), cands.end(), [](const std::pair<int, CreationSet *> &x, const std::pair<int, CreationSet *> &y) {
+    return x.first != y.first ? x.first < y.first : x.second->id < y.second->id;
+  });
+  for (auto &c : cands) {
+    CreationSet *O = c.second;
+    Vec<AVar *> defs;
+    for (AVar *d : O->defs)
+      if (d && d->cs_map && d->cs_map->get(O->sym) == O) defs.add(d);
+    qsort_by_id(defs);
+    std::vector<std::string> sig((size_t)defs.n);
+    for (int i = 0; i < defs.n; i++)
+      for (int k = 0; k < keys.n; k++) {
+        auto rit = reach[(size_t)k].find(O);
+        sig[(size_t)i] += (rit != reach[(size_t)k].end() && rit->second.count(defs.v[i])) ? '1' : '0';
+      }
+    std::vector<int> gid((size_t)defs.n, -1);
+    int ngroups = 0;
+    for (int i = 0; i < defs.n; i++) {
+      for (int j = 0; j < i; j++)
+        if (sig[(size_t)j] == sig[(size_t)i]) { gid[(size_t)i] = gid[(size_t)j]; break; }
+      if (gid[(size_t)i] < 0) gid[(size_t)i] = ngroups++;
+    }
+    if (dbg) {
+      fprintf(stderr, "[csowner] p=%d cs=%d sym=%s keys=%d -> owner cs=%d sym=%s depth=%d defs=%d groups=%d |",
+              analysis_pass, I->id, I->sym->name ? I->sym->name : "?", keys.n, O->id,
+              O->sym->name ? O->sym->name : "?", c.first, defs.n, ngroups);
+      for (int i = 0; i < defs.n; i++) fprintf(stderr, " %s", sig[(size_t)i].c_str());
+      fprintf(stderr, "\n");
+    }
+    if (ngroups < 2) continue;
+    std::vector<CreationSet *> gcs((size_t)ngroups, nullptr);
+    gcs[(size_t)gid[0]] = O;
+    Vec<AVar *> moved;
+    for (int i = 0; i < defs.n; i++) {
+      if (gcs[(size_t)gid[(size_t)i]] == O) continue;
+      if (!gcs[(size_t)gid[(size_t)i]]) {
+        CreationSet *ncs = new CreationSet(O);
+        ncs->split = O;
+        if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
+        gcs[(size_t)gid[(size_t)i]] = ncs;
+      }
+      defs.v[i]->cs_map->put(O->sym, gcs[(size_t)gid[(size_t)i]]);
+      moved.set_add(defs.v[i]);
+      log(LOG_SPLITTING, "SPLIT CS BY OWNER %d %s -> %d (for demanded cs %d)\n", O->id,
+          O->sym->name ? O->sym->name : "", gcs[(size_t)gid[(size_t)i]]->id, I->id);
+    }
+    if (!moved.n) continue;
+    Vec<AVar *> new_defs;
+    O->defs.set_difference(moved, new_defs);
+    O->defs.move(new_defs);
+    return 1;
+  }
+  if (dbg && cands.empty())
+    fprintf(stderr, "[csowner] p=%d cs=%d sym=%s keys=%d NO OWNER reached\n", analysis_pass, I->id,
+            I->sym->name ? I->sym->name : "?", keys.n);
+  return 0;
+}
+
 [[nodiscard]] static int split_css_by_defs(int quiescent) {
   if (!csdefsplit_enabled()) return 0;
   const bool dbg = getenv("IFA_DBG_CSDEFSPLIT") != nullptr;
@@ -8709,6 +8861,11 @@ static void cs_member_signature(AVar *d, std::string &out) {
       }
     }
     if (defs.n < 2) {
+      if (csowner_enabled() && (demanded.set_in(cs) || cs_elem_irrepresentable(cs)) &&
+          split_owner_of_demanded(cs, dbg || getenv("IFA_DBG_CSOWNER"))) {
+        analyze_again = 1;
+        continue;
+      }
       if (dbg)
         fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d DECLINED (single creation point)\n", analysis_pass,
                 cs->id, cs->sym->name ? cs->sym->name : "?", defs.n);
@@ -8956,6 +9113,11 @@ static void cs_member_signature(AVar *d, std::string &out) {
         continue;
       }
       if (ngroups < 2) {
+        if (csowner_enabled() && (demanded.set_in(cs) || cs_elem_irrepresentable(cs)) &&
+            split_owner_of_demanded(cs, dbg || getenv("IFA_DBG_CSOWNER"))) {
+          analyze_again = 1;
+          continue;
+        }
         // ifa/133: "every creation point on the same assign sets" is not
         // "these are indistinguishable" -- it is frequently "a contour they
         // all pass through is SHARED, so the walk cannot tell them apart".

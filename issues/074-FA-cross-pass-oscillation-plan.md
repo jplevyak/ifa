@@ -182,16 +182,24 @@ So the receiver walk has distinct call sites to separate. One contour
 (es=1495) already carries the full union as its value type; that is a
 consequence of the merge and should fall away once it is broken.
 
-**Stop conditions:**
-- If the owner walk reaches every `O` def from every assign set, the
-  distinction is not in the receivers. Record which edge merges them, and
-  do not widen the walk.
-- If splitting `O` does not make `I` separable on the next pass (same
-  1-2 groups), the inner creation points are still shared through
-  something other than the owner. Find it before adding a second lift.
-- Measure `plcfrs` (convergence and time against 131 s at parent-first
-  off), the reproducer, linalg, and `tests/deepcopy_*`, then a full
-  `check` sweep.
+**Measured 2026-09-27** (PYC_CSOWNER, enabled). Implementation: trace I's
+writes backward; at a member/element read (field load), jump to the object
+loaded rather than through the shared AVar; climb up to 4 levels of
+ownership; pick the nearest owner whose defs separate into 2+ groups per
+assign set; split it.
+
+| | plcfrs | reproducer | chull | linalg |
+|---|---|---|---|---|
+| parent-first off | compile timeout | doesn't converge | compiles | 19 errors |
+| owner-lift on | **141 s, 0 err, match** | unchanged | **BROKE (type errors)** | 11 errors |
+
+The owner-lift fixed the major timeout and improved linalg, but broke
+chull (closure type errors), making the net corpus result worse: compile
+failures stay at 26, but stdout differences rose from 4 to 5. CS count
+went up (1931→2090, 3.02→3.13 ratio). **Decision: keep owner-lift OFF by
+default** for now. The closure bug is in the walk—chasing member loads
+through object loads must skip certain paths, likely closures and other
+per-contour objects. Option 0b (as written) is measured incomplete.
 
 ### 1. Shape-equivalent compatibility in type splitting (the 168 follow-on)
 
