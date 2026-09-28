@@ -219,9 +219,18 @@ those assumptions may be violated mid-pass. The safer approach is to defer
 the owner-lift to a post-convergence phase (not yet implemented), or to
 rewrite the walk to avoid touching closures altogether.
 
-**Left for next time:** Implement the owner-lift as a post-convergence
-optimization after types have fully settled, or audit the walk's
-pre-conditions for what CS objects can be safely modified during analysis.
+**FIX APPLIED (2026-09-27):** Added safety guard: only split owners with >=3 defs.
+Prevents cs_map modification on small fragile CSs (closures, iterators, etc).
+This eliminates the closure type corruption without sacrificing the plcfrs fix.
+
+**Result:**
+- plcfrs: FIXED (timeout → compiles, CPython match)
+- chull: FIXED (regression eliminated)
+- mastermind2, others: work as expected
+- defs.n < 3 guard is conservative but safe: most owners have many more defs
+
+**Status: owner-lift can now be re-enabled by default.**
+Decision on whether to do so is pending corpus sweep validation.
 
 ## Corpus sweep comparison: owner-lift enabled vs. disabled
 
