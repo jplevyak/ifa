@@ -201,6 +201,28 @@ default** for now. The closure bug is in the walk—chasing member loads
 through object loads must skip certain paths, likely closures and other
 per-contour objects. Option 0b (as written) is measured incomplete.
 
+**Closure bug investigation (2026-09-27).** The owner-lift caused chull to
+fail at the `InitEdges` call with "illegal call argument type expression
+illegal: closure" — a parameter `f0` was being typed as a closure when it
+should not be. Attempted fixes:
+1. Added `O->sym != sym_closure` check to exclude closures as owners.
+2. Added early skip if the receiver CS contains a closure, to avoid
+   traversing into closures.
+3. Both changes compiled and reduced pass count (38 → 17), but chull still
+   failed with the same error.
+
+The error persists because the walk modifies CS mappings during analysis,
+which may corrupt state in ways not fully understood. The walk reaches
+backward from values to find owners, modifying the cs_map for creation
+points. If the analysis has assumptions about CS identity or consistency,
+those assumptions may be violated mid-pass. The safer approach is to defer
+the owner-lift to a post-convergence phase (not yet implemented), or to
+rewrite the walk to avoid touching closures altogether.
+
+**Left for next time:** Implement the owner-lift as a post-convergence
+optimization after types have fully settled, or audit the walk's
+pre-conditions for what CS objects can be safely modified during analysis.
+
 ### 1. Shape-equivalent compatibility in type splitting (the 168 follow-on)
 
 When `decide_entry_set_split` compares the argument types of two edges,

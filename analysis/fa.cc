@@ -8484,10 +8484,19 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
         if (od == owner_depth.end() || od->second > it.depth) owner_depth[tr] = it.depth;
       }
       if (is_load_result(a)) {
-        if (it.depth < kMaxLift && a->container->out && a->container->out->type)
-          for (CreationSet *O : a->container->out->type->sorted)
-            if (O && O->sym && O != I && fa->css_set.set_in(O) && seen.insert({a->container, O}).second)
-              work.push_back({a->container, O, it.depth + 1});
+        // Skip closures entirely -- they have internal structure that shouldn't
+        // be crossed when lifting demands through containment.
+        if (a->container && a->container->out && a->container->out->type) {
+          bool has_closure = false;
+          for (CreationSet *cs : a->container->out->type->sorted)
+            if (cs && cs->sym == sym_closure) { has_closure = true; break; }
+          if (!has_closure && it.depth < kMaxLift) {
+            for (CreationSet *O : a->container->out->type->sorted)
+              if (O && O->sym && O != I && O->sym != sym_closure && fa->css_set.set_in(O) &&
+                  seen.insert({a->container, O}).second)
+                work.push_back({a->container, O, it.depth + 1});
+          }
+        }
         continue;  // never through the shared member / element AVar
       }
       for (AVar *x : a->backward)
@@ -8861,11 +8870,12 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
       }
     }
     if (defs.n < 2) {
-      if (csowner_enabled() && (demanded.set_in(cs) || cs_elem_irrepresentable(cs)) &&
-          split_owner_of_demanded(cs, dbg || getenv("IFA_DBG_CSOWNER"))) {
-        analyze_again = 1;
-        continue;
-      }
+      // ifa/074: owner-lift (option 0b) disabled pending closure handling.
+      // if (csowner_enabled() && (demanded.set_in(cs) || cs_elem_irrepresentable(cs)) &&
+      //     split_owner_of_demanded(cs, dbg || getenv("IFA_DBG_CSOWNER"))) {
+      //   analyze_again = 1;
+      //   continue;
+      // }
       if (dbg)
         fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d DECLINED (single creation point)\n", analysis_pass,
                 cs->id, cs->sym->name ? cs->sym->name : "?", defs.n);
@@ -9113,11 +9123,12 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
         continue;
       }
       if (ngroups < 2) {
-        if (csowner_enabled() && (demanded.set_in(cs) || cs_elem_irrepresentable(cs)) &&
-            split_owner_of_demanded(cs, dbg || getenv("IFA_DBG_CSOWNER"))) {
-          analyze_again = 1;
-          continue;
-        }
+        // ifa/074: owner-lift (option 0b) disabled pending closure handling.
+        // if (csowner_enabled() && (demanded.set_in(cs) || cs_elem_irrepresentable(cs)) &&
+        //     split_owner_of_demanded(cs, dbg || getenv("IFA_DBG_CSOWNER"))) {
+        //   analyze_again = 1;
+        //   continue;
+        // }
         // ifa/133: "every creation point on the same assign sets" is not
         // "these are indistinguishable" -- it is frequently "a contour they
         // all pass through is SHARED, so the walk cannot tell them apart".
