@@ -8516,6 +8516,13 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
     Vec<AVar *> defs;
     for (AVar *d : O->defs)
       if (d && d->cs_map && d->cs_map->get(O->sym) == O) defs.add(d);
+    // Safety: only split owners with many defs to avoid fragmenting small,
+    // fragile CSs that may have special type-handling invariants (closures, etc).
+    if (defs.n < 3) {
+      if (dbg) fprintf(stderr, "[csowner] p=%d cs=%d sym=%s -> owner cs=%d defs=%d (need 3), skipping\n",
+                       analysis_pass, I->id, I->sym->name ? I->sym->name : "?", O->id, defs.n);
+      continue;
+    }
     qsort_by_id(defs);
     std::vector<std::string> sig((size_t)defs.n);
     for (int i = 0; i < defs.n; i++)
@@ -8870,12 +8877,11 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
       }
     }
     if (defs.n < 2) {
-      // ifa/074: owner-lift (option 0b) disabled pending closure handling.
-      // if (csowner_enabled() && (demanded.set_in(cs) || cs_elem_irrepresentable(cs)) &&
-      //     split_owner_of_demanded(cs, dbg || getenv("IFA_DBG_CSOWNER"))) {
-      //   analyze_again = 1;
-      //   continue;
-      // }
+      if (csowner_enabled() && (demanded.set_in(cs) || cs_elem_irrepresentable(cs)) &&
+          split_owner_of_demanded(cs, dbg || getenv("IFA_DBG_CSOWNER"))) {
+        analyze_again = 1;
+        continue;
+      }
       if (dbg)
         fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d DECLINED (single creation point)\n", analysis_pass,
                 cs->id, cs->sym->name ? cs->sym->name : "?", defs.n);
@@ -9123,12 +9129,11 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
         continue;
       }
       if (ngroups < 2) {
-        // ifa/074: owner-lift (option 0b) disabled pending closure handling.
-        // if (csowner_enabled() && (demanded.set_in(cs) || cs_elem_irrepresentable(cs)) &&
-        //     split_owner_of_demanded(cs, dbg || getenv("IFA_DBG_CSOWNER"))) {
-        //   analyze_again = 1;
-        //   continue;
-        // }
+        if (csowner_enabled() && (demanded.set_in(cs) || cs_elem_irrepresentable(cs)) &&
+            split_owner_of_demanded(cs, dbg || getenv("IFA_DBG_CSOWNER"))) {
+          analyze_again = 1;
+          continue;
+        }
         // ifa/133: "every creation point on the same assign sets" is not
         // "these are indistinguishable" -- it is frequently "a contour they
         // all pass through is SHARED, so the walk cannot tell them apart".
