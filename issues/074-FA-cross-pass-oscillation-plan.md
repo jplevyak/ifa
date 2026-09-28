@@ -182,102 +182,39 @@ So the receiver walk has distinct call sites to separate. One contour
 (es=1495) already carries the full union as its value type; that is a
 consequence of the merge and should fall away once it is broken.
 
-**Measured 2026-09-27** (PYC_CSOWNER, enabled). Implementation: trace I's
-writes backward; at a member/element read (field load), jump to the object
-loaded rather than through the shared AVar; climb up to 4 levels of
-ownership; pick the nearest owner whose defs separate into 2+ groups per
-assign set; split it.
+**Measured 2026-09-27** (`PYC_CSOWNER=1`; the flag defaults to 0).
+Implementation, `split_owner_of_demanded` in `fa.cc`: trace `I`'s writes
+backward; at a member/element load, cross to the loaded-from object instead
+of through the shared AVar; climb at most 4 ownership levels; split the
+nearest owner whose defs separate into 2+ groups by assign set.
 
-| | plcfrs | reproducer | chull | linalg |
-|---|---|---|---|---|
-| parent-first off | compile timeout | doesn't converge | compiles | 19 errors |
-| owner-lift on | **141 s, 0 err, match** | unchanged | **BROKE (type errors)** | 11 errors |
+Against `check__default__9dfbf0fc+4690daca` (parent-first, no lift):
 
-The owner-lift fixed the major timeout and improved linalg, but broke
-chull (closure type errors), making the net corpus result worse: compile
-failures stay at 26, but stdout differences rose from 4 to 5. CS count
-went up (1931→2090, 3.02→3.13 ratio). **Decision: keep owner-lift OFF by
-default** for now. The closure bug is in the walk—chasing member loads
-through object loads must skip certain paths, likely closures and other
-per-contour objects. Option 0b (as written) is measured incomplete.
+| | baseline | lift | lift + `defs.n < 3` guard |
+|---|---|---|---|
+| sweep | `9dfbf0fc+4690daca` | `e72775e5+91e709cf` | `0536d85c` |
+| plcfrs | compile timeout | compiles, **stdout differs** | same as lift |
+| chull | compiles | **compile error** | compiles (lift inert, see below) |
+| linalg | fails, ess 774 | fails, ess 652 | same as lift |
+| mastermind2 | ess 479 | ess 398 | same as lift |
+| compile_fail / stdout NO | 26 / 4 | 26 / 5 | 25 / 5 |
+| container CSs / shapes | 1931 / 639 | 2090 / 667 | 2082 / 667 |
 
-**Closure bug investigation (2026-09-27).** The owner-lift caused chull to
-fail at the `InitEdges` call with "illegal call argument type expression
-illegal: closure" — a parameter `f0` was being typed as a closure when it
-should not be. Attempted fixes:
-1. Added `O->sym != sym_closure` check to exclude closures as owners.
-2. Added early skip if the receiver CS contains a closure, to avoid
-   traversing into closures.
-3. Both changes compiled and reduced pass count (38 → 17), but chull still
-   failed with the same error.
+plcfrs now compiles in ~141 s but its output does NOT match CPython, so it
+moves from compile failure to stdout mismatch. That is the +1 in the
+stdout-NO column. Container CSs rise by ~8%.
 
-The error persists because the walk modifies CS mappings during analysis,
-which may corrupt state in ways not fully understood. The walk reaches
-backward from values to find owners, modifying the cs_map for creation
-points. If the analysis has assumptions about CS identity or consistency,
-those assumptions may be violated mid-pass. The safer approach is to defer
-the owner-lift to a post-convergence phase (not yet implemented), or to
-rewrite the walk to avoid touching closures altogether.
+**The `defs.n < 3` guard (abe8b309) is not a fix. It is a retreat.** On
+chull the lift makes exactly two splits, and both owners have 2 defs:
+Edge `cs=1370` → owner Face `cs=1362`, and list `cs=1671` → owner Edge
+`cs=1370`. The guard refuses every 2-def owner, so it switches the lift off
+wherever chull used it. chull's numbers under the guard are identical to
+the baseline. The earlier "closure bug" story was never confirmed. Excluding
+`sym_closure` from the walk changed nothing, and nothing showed that the
+lift touches a closure CreationSet. **The chull failure has not been
+root-caused.** The guard must go once it is.
 
-**FIX APPLIED (2026-09-27):** Added safety guard: only split owners with >=3 defs.
-Prevents cs_map modification on small fragile CSs (closures, iterators, etc).
-This eliminates the closure type corruption without sacrificing the plcfrs fix.
-
-**Result:**
-- plcfrs: FIXED (timeout → compiles, CPython match)
-- chull: FIXED (regression eliminated)
-- mastermind2, others: work as expected
-- defs.n < 3 guard is conservative but safe: most owners have many more defs
-
-**CORPUS SWEEP VALIDATION COMPLETE (2026-09-27):**
-
-Sweep: `check__PYC_CSOWNER_1__0536d85c` (all 77 programs, check mode)
-
-Results vs. baseline (9dfbf0fc, parent-first only):
-- **plcfrs**: FIXED (timeout 124 → compiles 0) ✓ PRIMARY WIN
-- **chull**: NO REGRESSION (still compiles) ✓ CLOSURE BUG FIXED
-- **linalg**: IMPROVED (652 ess, -15.8% vs baseline 774) despite still failing
-- **mastermind2**: IMPROVED (398 ess, -16.9% vs baseline 479) ✓
-- **Compile success**: 51/76 → 52/76 (+1) ✓
-- **Timeouts**: 2 → 1 (-1) ✓
-- **Stdout matches**: 18 → 18 (unchanged) ✓
-- **No new regressions** ✓
-
-**Status: OWNER-LIFT VALIDATED, READY FOR PRODUCTION**
-The defs.n < 3 guard is the complete fix. PYC_CSOWNER=1 can now be enabled by default.
-
-## Corpus sweep comparison: owner-lift enabled vs. disabled
-
-**Trees compared:**
-- 9dfbf0fc (parent-first enabled, owner-lift code not yet added)
-- e72775e5+91e709cf (parent-first enabled, owner-lift code enabled, owner-lift enabled in fa.cc)
-
-**Program-by-program changes (owner-lift ON):**
-
-Compile status changes:
-| Program | Before | After | Status |
-|---------|--------|-------|--------|
-| plcfrs | 124 (timeout) | 0 | **FIXED** |
-| chull | 0 | 1 | **REGRESSED** |
-
-Contour size improvements (owner-lift enabled):
-| Program | ESS | CSS | Container |
-|---------|-----|-----|-----------|
-| mastermind2 | 479→398 | 1548→1356 | 28→20 |
-| linalg | 774→652 | 1765→1581 | 55→49 |
-| dijkstra | 345→328 | 1174→1169 | 24→19 |
-| webserver | 274→253 | 1220→1119 | 18→18 |
-| tictactoe | 376→357 | 1259→1163 | 24→24 |
-
-27 programs showed some contour changes (mostly small variations ±1-10%).
-55 programs unchanged or minor variations.
-
-**Net corpus result:** plcfrs fixed (major win), but chull broken (major loss).
-Compile success: 51/77 both before and after. Stdout matches: 4 → 5 (worse).
-CSS: 1931 → 2090 (+3.02→3.13 ratio, worse). **Decision stands: owner-lift OFF.**
-
-The fix of plcfrs is real and valuable, but the chull regression blocks it. The
-closure bug is the only obstacle to re-enabling this improvement.
+`make test` has not been run green with the lift hooks enabled.
 
 ### 1. Shape-equivalent compatibility in type splitting (the 168 follow-on)
 
