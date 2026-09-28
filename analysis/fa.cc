@@ -8516,13 +8516,6 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
     Vec<AVar *> defs;
     for (AVar *d : O->defs)
       if (d && d->cs_map && d->cs_map->get(O->sym) == O) defs.add(d);
-    // Safety: only split owners with many defs to avoid fragmenting small,
-    // fragile CSs that may have special type-handling invariants (closures, etc).
-    if (defs.n < 3) {
-      if (dbg) fprintf(stderr, "[csowner] p=%d cs=%d sym=%s -> owner cs=%d defs=%d (need 3), skipping\n",
-                       analysis_pass, I->id, I->sym->name ? I->sym->name : "?", O->id, defs.n);
-      continue;
-    }
     qsort_by_id(defs);
     std::vector<std::string> sig((size_t)defs.n);
     for (int i = 0; i < defs.n; i++)

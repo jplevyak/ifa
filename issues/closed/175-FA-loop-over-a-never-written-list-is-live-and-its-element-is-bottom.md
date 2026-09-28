@@ -1,8 +1,9 @@
 # 175 — a loop over a never-written list is live, and its element is bottom
 
-**Status: open.** Root-caused 2026-09-28 while chasing why the ifa/074
-owner lift broke `shedskin_examples/chull`. The lift did not cause it. It
-split contours correctly and exposed this pre-existing defect.
+**Status: closed 2026-09-28** — fixed in `__pyc__/04_sequence.py` (see
+*Fix*). Root-caused the same day while chasing why the ifa/074 owner lift
+broke `shedskin_examples/chull`. The lift did not cause it. It split
+contours correctly and exposed this pre-existing defect.
 
 ## Symptom
 
@@ -68,23 +69,59 @@ elsewhere sharing the `__lt__` contour.
 The `defs.n < 3` guard in `split_owner_of_demanded` (abe8b309) only hides
 this by refusing the Face split. It should be removed when this is fixed.
 
-## Fix directions (undecided)
+## Fix
 
-- **An empty element channel is a type fact.** A container CreationSet
-  whose element channel is bottom has never held an element. A loop over it
-  cannot iterate, and a read from it cannot execute. Deriving "this loop is
-  dead" from the element type decides it on what the type IS, instead of
-  hoping `0 < 0` folds through a contour shared with unrelated callers.
-  Check that every insertion path writes the element AVar before relying
-  on it.
-- **Or:** report a NOTYPE whose only source is a read of a bottom element
-  channel as unreachable (ifa/043 option 1, a codegen trap) rather than as
-  a type violation. This is weaker: it gives up the precision above, and
-  `tests/empty_container_elem.py` (an unguarded `x[0]` on `[]`) must stay
-  an error.
-- Splitting `int.__lt__` on constant vs non-constant `self` would also
-  make it pass, but that would only move the dependence on contour
-  sharing somewhere else.
+**The iterator tests emptiness with a comparison that keeps constants
+apart.**
+
+```python
+  def __pyc_more__(self):          # __list_iter__, and __tuple_iter__ alike
+    n = len(self.thelist)
+    return n != 0 and self.position < n
+```
+
+`len` of a never-written list already folds to the constant 0. `int.__ne__`
+wraps both operands in `__pyc_clone_constants__`, so `0 != 0` folds to
+`False` in a contour of its own, however many other comparisons exist. The
+`and` short-circuits, the loop body is dead, and the bottom element is
+never read. This is the mechanism ifa/160 used: pyc already kills a
+zero-trip loop whose bound folds to 0. The iterator's own test was just the
+one comparison that could not fold.
+
+`position` cannot be what carries the fact. Once the body is live,
+`position += 1` (a shared `int.__iadd__`) widens it to `int64` for good. So
+even demand-driven constant splitting (ifa/151 CONST_DEMAND) finds no
+constant left to separate: both callers of `__lt__` pass `int64`. The loop
+feeds itself, the same shape as ifa/171.
+
+**Measured:**
+
+- `make test` is green: 356 passed, 0 failed on both backends. The
+  reproducer now passes and its `.known_issue` is removed.
+- Corpus `-m check`, default arm, `9dfbf0fc+4690daca` →
+  `cf0961f3+678941ba`: no verdict changes except plcfrs, which goes from a
+  compile timeout to a fast compile error (the ifa/074 dict merge). `ess`
+  rises by 1–2 on most programs, from the extra constant-cloned `__ne__`
+  contours.
+- `PYC_CSOWNER=1` with the ifa/074 `defs.n < 3` guard removed, `0536d85c`
+  → `cf0961f3+678941ba`: no verdict changes. chull compiles, and its lift
+  splits now apply (ess 416 → 488).
+
+**Dead ends, measured:**
+
+- Gating the continuation of every call on a non-bottom result, so that
+  code after a call that yields no value is dead. It is sound in principle.
+  But it needs codegen to terminate the dead tail: 12 tests failed with
+  C functions falling off the end, e.g. `list.__str__` on `[]`. It also
+  still leaves a raise-only exit, `__next__`'s return, typed bottom (the
+  ifa/049 shape). That is three changes, not one.
+- Gating only non-primitive calls: the `index_object` primitive read then
+  still reports.
+
+**Not covered:** iterators whose bound is a field rather than a folded
+`len`: `__set_iter__`'s `_pos < _len`, `dict.__str__`'s
+`while i < self._len`, `__str_iter__`'s `slen`. That is why
+`tests/dict_empty_next_to_populated.py` stays KNOWN (ifa/160 family).
 
 ## Side finding
 
