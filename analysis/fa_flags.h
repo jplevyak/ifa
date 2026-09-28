@@ -27,6 +27,8 @@ int confdemand_enabled();
 int cpa_mark_enabled();
 int mark_why_enabled();
 int eslineage_enabled();
+int csparentfirst_enabled();
+int csdefreuse_enabled();
 int sizeof_viol_enabled();
 int nilarg_enabled();
 int strictviol_enabled();

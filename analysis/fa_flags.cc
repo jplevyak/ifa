@@ -73,6 +73,33 @@ int mark_why_enabled() {
   if (e < 0) e = getenv("IFA_DBG_MARKWHY") ? 1 : 0;
   return e;
 }
+// ifa/074: a creation point in a split-child EntrySet joins the CreationSet
+// its split parent's creation point is in, BEFORE the start-merged (dcpa1)
+// route sends it to the sym's root. An ES split must not split -- or
+// re-merge -- a CS; only a demand on the CS itself does. PYC_CSPARENTFIRST=0
+// restores the old order (dcpa1 first), for A/B attribution.
+int csparentfirst_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_CSPARENTFIRST");
+    e = v ? atoi(v) : 1;
+  }
+  return e;
+}
+// ifa/074: CS_DEF_PART's partition JOINS an existing CreationSet whose
+// element type equals the group's, instead of always minting (shedskin's
+// "reuse contour"). OFF: on top of PYC_CSPARENTFIRST it regresses sudoku5
+// (compile fails) and sunfish (compile timeout) and fixes nothing parent-
+// first does not -- the wanted element type names a CS whose identity is
+// still moving, so exact equality rarely matches (sweep 9dfbf0fc+71fbd58a).
+int csdefreuse_enabled() {
+  static int e = -1;
+  if (e < 0) {
+    cchar *v = getenv("PYC_CSDEFREUSE");
+    e = v ? atoi(v) : 0;
+  }
+  return e;
+}
 // ifa/133: make the split-parent route survive the pass it was created in.
 // PYC_ESLINEAGE=0 restores the old `es->split`-only behaviour, for
 // attributing a corpus change to this clause.

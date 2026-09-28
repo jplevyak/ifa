@@ -559,15 +559,49 @@ CreationSet *creation_point(AVar *v, Sym *s, int arity) {
     dbg_cs_route = "cs_map"; ++census.cs_route_count[kR_cs_map];
     goto Lfound;
   }
+  // Closures stay per creation point: partial_application assumes a
+  // closure CreationSet has exactly one def (fa.cc `cs->defs.n == 1`).
   if (s == sym_closure) goto Lunique;
-  // ifa/128 start-merged route. Deliberately BEFORE the split-parent,
-  // cselem, and mold routes: those all answer "which of this site's
-  // contours should this be", a question that does not arise when a sym
-  // has one contour. Takes the FIRST creator, which is the unsplit root --
-  // `new CreationSet(cs)` appends, so splits never displace it. A site
-  // that belongs with a split child arrives on the root and is moved off
-  // by `split_css`, which is the whole point: start merged, separate on
-  // evidence.
+  // ifa/074: an EntrySet split must not split a CreationSet. A creation
+  // point in a split child is the same site as its parent's, so it joins
+  // the CS the parent's creation point is in -- which is not the sym's
+  // root once a demand has split that CS off. Sending it to the root
+  // (the dcpa1 route below, which used to run first) re-raised the demand
+  // that had already separated it, and `CS_DEF_PART` answered with a FRESH
+  // CS, a new type, and another ES split: one contour level per pass on
+  // tests/deepcopy_recursive_nested_growth.py. The CS keeps the new
+  // creation point until a demand on the CS itself separates it.
+  if (csparentfirst_enabled() && es && v->var && (es->split || es->split_origin)) {
+    static bool dbg_pf = getenv("IFA_DBG_PARENTFIRST") != nullptr;
+    Sym *cmc = s->clone_methods_per_cs ? s : (s->type ? unalias_type(s->type) : 0);
+    if (!(cmc && cmc->clone_methods_per_cs)) {
+      EntrySet *parent = es->split ? es->split : (eslineage_enabled() ? es->split_origin : nullptr);
+      for (int hops = 0; parent && hops < 32; ++hops) {
+        AVar *oldv = make_AVar(v->var, parent);
+        cs = oldv->cs_map ? oldv->cs_map->get(s) : 0;
+        if (cs) {
+          assert(cs->sym == s);
+          dbg_cs_route = "split_parent"; ++census.cs_route_count[kR_split_parent];
+          if (dbg_pf)
+            fprintf(stderr, "[parentfirst] p=%d fun=%s sym=%s es=%d -> cs=%d\n", analysis_pass,
+                    (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?",
+                    s->name ? s->name : "?", es->id, cs->id);
+          goto Lfound;
+        }
+        if (!eslineage_enabled()) break;
+        EntrySet *next = parent->split ? parent->split : parent->split_origin;
+        if (next == parent) break;
+        parent = next;
+      }
+    }
+  }
+  // ifa/128 start-merged route, for a creation point with no split parent
+  // (the ifa/074 route above answers first when there is one). BEFORE the
+  // cselem and mold routes: those answer "which of this site's contours
+  // should this be", a question that does not arise when a sym has one
+  // contour. Takes the FIRST creator, which is the unsplit root --
+  // `new CreationSet(cs)` appends, so splits never displace it. Start
+  // merged, separate on evidence.
   // Mode 2 excludes `tuple`. Not a concession to make a suite pass: a
   // tuple's ARITY is observable (len, unpacking, indexing) and its content
   // is per-INDEX in `cs->vars` with the element channel deliberately left
@@ -1052,8 +1086,10 @@ Lunique:
   }
 Lfound:
   if (dbg_cs_route_want && s->name && !strcmp(s->name, dbg_cs_route_want))
-    fprintf(stderr, "CSROUTE p=%d sym=%s var=%s es=%d split=%d -> cs=%d via %s\n", analysis_pass, s->name,
-            v->var && v->var->sym && v->var->sym->name ? v->var->sym->name : "?", es ? es->id : -1,
+    fprintf(stderr, "CSROUTE p=%d sym=%s var=%s varid=%d fun=%s fid=%d es=%d split=%d -> cs=%d via %s\n", analysis_pass, s->name,
+            v->var && v->var->sym && v->var->sym->name ? v->var->sym->name : "?", v->var ? v->var->id : -1,
+            (es && es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?",
+            (es && es->fun) ? es->fun->sym->id : -1, es ? es->id : -1,
             (es && es->split) ? es->split->id : -1, cs ? cs->id : -1, dbg_cs_route ? dbg_cs_route : "?");
   if (!v->cs_map) v->cs_map = new CSMap;
   v->cs_map->put(s, cs);
@@ -8993,10 +9029,30 @@ static void cs_member_signature(AVar *d, std::string &out) {
       for (int i = 0; i < defs.n; i++) {
         if (gcs[(size_t)gid[(size_t)i]] == cs) continue;  // stays with the parent
         if (!gcs[(size_t)gid[(size_t)i]]) {
-          CreationSet *ncs = new CreationSet(cs);
-          ncs->split = cs;
-          if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
-          gcs[(size_t)gid[(size_t)i]] = ncs;
+          // ifa/074: shedskin's "reuse contour" (ifa_split_no_confusion,
+          // infer.py:1585). The group's element type is the union of the
+          // assign sets it lies on; if a live CreationSet of this sym
+          // already has exactly that element, the group JOINS it. Minting
+          // unconditionally gave every re-derivation of the same partition
+          // a fresh CS -- a new type, so a new ES split, so another
+          // creation point to partition: one level per pass on
+          // tests/deepcopy_recursive_nested_growth.py.
+          CreationSet *join = nullptr;
+          if (csdefreuse_enabled() && g) {
+            AType *want = nullptr;
+            const std::string &gs = sig[(size_t)i];
+            for (int k = 0; k < g->keys.n && k < (int)gs.size(); k++)
+              if (gs[(size_t)k] == '1' && g->keys.v[k]) want = want ? type_union(want, g->keys.v[k]) : g->keys.v[k];
+            if (want) join = cs_reuse_contour(cs, want, dbg);
+          }
+          if (join) {
+            gcs[(size_t)gid[(size_t)i]] = join;
+          } else {
+            CreationSet *ncs = new CreationSet(cs);
+            ncs->split = cs;
+            if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
+            gcs[(size_t)gid[(size_t)i]] = ncs;
+          }
         }
         CreationSet *ncs = gcs[(size_t)gid[(size_t)i]];
         defs.v[i]->cs_map->put(cs->sym, ncs);
@@ -9083,10 +9139,20 @@ static void cs_member_signature(AVar *d, std::string &out) {
 // two-snapshot note in run_split_stages.
 
 
+// ifa/074 (probe, PYC_SOSDEMAND=1): a member whose type is a single
+// CreationSet has no conflict for a setter split to resolve -- differing
+// setter classes there are a fact, not a demand.
+static bool sos_type_conflict(AVar *av) {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_SOSDEMAND"); e = v ? atoi(v) : 0; }
+  if (!e) return true;
+  return av && av->out && av->out->type && av->out->type->sorted.n > 1;
+}
 static void collect_cs_setter_confluences(Vec<AVar *> &setters_confluences) {
   setters_confluences.clear();
   for (CreationSet *cs : fa->css) {
     for (AVar *av : cs->vars) {
+      if (!sos_type_conflict(av)) continue;
       for (AVar *x : av->forward) if (x) {
         if (!av->contour_is_entry_set && av->contour != GLOBAL_CONTOUR) {
           if (!same_eq_classes(av->setters, x->setters)) {
@@ -9110,6 +9176,7 @@ static void collect_cs_setter_confluences(Vec<AVar *> &setters_confluences) {
         setters_confluences.set_add(av);
         ++census.es_added;
       }
+      if (sos_type_conflict(av))
       for (AVar *x : av->forward) if (x) {
         if (!av->contour_is_entry_set && av->contour != GLOBAL_CONTOUR) {
           if (!same_eq_classes(av->setters, x->setters)) {
@@ -10139,7 +10206,23 @@ static void clear_splits() {
     collect_cs_setter_confluences(confluences);
     Accum<AVar *> avs;
     int progress = 0;
-    for (AVar *av : confluences) progress |= compute_setters(av, avs, AKIND_SETTER);
+    static bool dbg_sos = getenv("IFA_DBG_SOS") != nullptr;
+    for (AVar *av : confluences) {
+      int pr = compute_setters(av, avs, AKIND_SETTER);
+      progress |= pr;
+      // ifa/074 probe: which member confluence drives this stage.
+      if (dbg_sos && pr && av && !av->contour_is_entry_set && av->contour != GLOBAL_CONTOUR) {
+        CreationSet *c = (CreationSet *)av->contour;
+        fprintf(stderr, "[sos] p=%d cs=%d %s.%s setters=%d type=", analysis_pass, c->id,
+                (c->sym && c->sym->name) ? c->sym->name : "?",
+                (av->var && av->var->sym && av->var->sym->name) ? av->var->sym->name : "?",
+                av->setters ? av->setters->n : 0);
+        if (av->out && av->out->type)
+          for (CreationSet *t : av->out->type->sorted)
+            if (t && t->sym) fprintf(stderr, " %s#%d", t->sym->name ? t->sym->name : "?", t->id);
+        fprintf(stderr, "\n");
+      }
+    }
     // b) stop if no progress
     if (!progress) break;
     // c) split EntrySet(s) and CreationSet(s) for setter confluences
@@ -13054,6 +13137,8 @@ int FA::analyze(Fun *top) {
   if (cchar *sv = getenv("IFA_SELECTIVE")) ifa_selective = atoi(sv);
   if (cchar *sl = getenv("IFA_STALL_LIMIT")) stall_limit = atoi(sl);
   if (cchar *nl = getenv("IFA_NONIMPROVE_LIMIT")) nonimprove_limit = atoi(nl);
+  // Probe: cap the outer loop lower, to inspect a run that never ends.
+  if (cchar *pl = getenv("IFA_PASS_LIMIT")) pass_limit = atoi(pl);
   if (!global_es) {
     // The distinguished global contour (see GLOBAL_CONTOUR in
     // fa.h). A real EntrySet so `(EntrySet *)contour` derefs on

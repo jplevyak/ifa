@@ -613,9 +613,12 @@ void report_call_resolution(FA *fa) {
       if (n->code->kind != Code_SEND) continue;
       Vec<Fun *> *fns = f->calls.get(n);
       if (!fns || !fns->n) continue;  // no candidates: a primitive, not a call
-      if (get_target_fun_core(n, f))
+      if (Fun *t = get_target_fun_core(n, f)) {
         ++direct;
-      else
+        // PYC_DBG_CALLS=2 names each direct call, to attribute a count change.
+        if (atoi(getenv("PYC_DBG_CALLS")) >= 2)
+          fprintf(stderr, "CALL %s -> %s\n", f->sym->name ? f->sym->name : "?", t->sym->name ? t->sym->name : "?");
+      } else
         ++dynamic;
     }
   }
