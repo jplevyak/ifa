@@ -137,6 +137,62 @@ separate `_keys` and `_vals`, and `label` is `int64`.
 **Next step:** split the dict CS by the setters of what it holds. See
 option 0b below.
 
+### 0b. Owner lift: setter splitting through a container's own containers
+
+**Why setter splitting misses dicts.** In shedskin a dict's key and value
+types are fields ON the dict (`unit`, `value`), so `ifa_split_vars`
+partitions dict allocation sites by the assign sets that reach those
+fields. In pyc the content lives one level down, in the `_keys` / `_vals`
+LISTS. The dict's own fields are written exactly once, in `__init__`, by
+the same setter for every dict. So member-level setter splitting sees no
+difference between dicts, and the inner list's partition fails because,
+with every dict sharing it, every writer reaches every creation point.
+Each merge keeps the other in place, and nothing asks to break either.
+Sets (`_keys` / `_index`) and every user class that wraps a list have the
+same shape.
+
+**The mechanism.** When a demanded CS `I` (irrepresentable content) finds
+fewer than two groups, lift the partition to its OWNER:
+
+1. Build `I`'s flow graph as `build_cs_flow_graph` does: assign sets
+   keyed by assigned type, targets = the `I`-typed container of each
+   write.
+2. Walk each target backward. Where the walk reaches the RESULT of a
+   member load (`self._vals`) whose receiver's type holds an owner CS
+   `O`, continue from the RECEIVER instead of the member AVar. The member
+   AVar is one node shared by every dict; the receiver in the writing
+   contour is not.
+3. Follow the receiver backward, through `self` formals and their
+   in-edges (including a method's calls to itself, e.g. the rehash path),
+   to `O`'s creation points.
+4. Partition `O`'s defs by which assign sets reach them, and split `O`
+   (route 4's apply). After that, `dict.__init__` splits by receiver, and
+   `I`'s creation points become separable by its own partition.
+
+**Why this is demand splitting, not provenance.** `I`'s irrepresentable
+content decides WHETHER to split; ownership only decides WHICH contour.
+It is ifa/152's backtrack (which follows value flow to SUPPLIERS)
+extended to OWNERS. It would never fire without the demand.
+
+**Premise, measured on plcfrs at pass 42.** `dict.__setitem__` is
+already split by key and value type (96 contours, each with receiver
+`dict#1707`), and those contours are called from distinct user sites
+(`add`, `__pyc_dict_from_iterable__`), plus their own recursive self-edges.
+So the receiver walk has distinct call sites to separate. One contour
+(es=1495) already carries the full union as its value type; that is a
+consequence of the merge and should fall away once it is broken.
+
+**Stop conditions:**
+- If the owner walk reaches every `O` def from every assign set, the
+  distinction is not in the receivers. Record which edge merges them, and
+  do not widen the walk.
+- If splitting `O` does not make `I` separable on the next pass (same
+  1-2 groups), the inner creation points are still shared through
+  something other than the owner. Find it before adding a second lift.
+- Measure `plcfrs` (convergence and time against 131 s at parent-first
+  off), the reproducer, linalg, and `tests/deepcopy_*`, then a full
+  `check` sweep.
+
 ### 1. Shape-equivalent compatibility in type splitting (the 168 follow-on)
 
 When `decide_entry_set_split` compares the argument types of two edges,
