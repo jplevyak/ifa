@@ -223,6 +223,39 @@ rewrite the walk to avoid touching closures altogether.
 optimization after types have fully settled, or audit the walk's
 pre-conditions for what CS objects can be safely modified during analysis.
 
+## Corpus sweep comparison: owner-lift enabled vs. disabled
+
+**Trees compared:**
+- 9dfbf0fc (parent-first enabled, owner-lift code not yet added)
+- e72775e5+91e709cf (parent-first enabled, owner-lift code enabled, owner-lift enabled in fa.cc)
+
+**Program-by-program changes (owner-lift ON):**
+
+Compile status changes:
+| Program | Before | After | Status |
+|---------|--------|-------|--------|
+| plcfrs | 124 (timeout) | 0 | **FIXED** |
+| chull | 0 | 1 | **REGRESSED** |
+
+Contour size improvements (owner-lift enabled):
+| Program | ESS | CSS | Container |
+|---------|-----|-----|-----------|
+| mastermind2 | 479→398 | 1548→1356 | 28→20 |
+| linalg | 774→652 | 1765→1581 | 55→49 |
+| dijkstra | 345→328 | 1174→1169 | 24→19 |
+| webserver | 274→253 | 1220→1119 | 18→18 |
+| tictactoe | 376→357 | 1259→1163 | 24→24 |
+
+27 programs showed some contour changes (mostly small variations ±1-10%).
+55 programs unchanged or minor variations.
+
+**Net corpus result:** plcfrs fixed (major win), but chull broken (major loss).
+Compile success: 51/77 both before and after. Stdout matches: 4 → 5 (worse).
+CSS: 1931 → 2090 (+3.02→3.13 ratio, worse). **Decision stands: owner-lift OFF.**
+
+The fix of plcfrs is real and valuable, but the chull regression blocks it. The
+closure bug is the only obstacle to re-enabling this improvement.
+
 ### 1. Shape-equivalent compatibility in type splitting (the 168 follow-on)
 
 When `decide_entry_set_split` compares the argument types of two edges,
