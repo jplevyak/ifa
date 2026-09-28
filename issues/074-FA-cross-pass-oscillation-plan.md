@@ -229,8 +229,22 @@ This eliminates the closure type corruption without sacrificing the plcfrs fix.
 - mastermind2, others: work as expected
 - defs.n < 3 guard is conservative but safe: most owners have many more defs
 
-**Status: owner-lift can now be re-enabled by default.**
-Decision on whether to do so is pending corpus sweep validation.
+**CORPUS SWEEP VALIDATION COMPLETE (2026-09-27):**
+
+Sweep: `check__PYC_CSOWNER_1__0536d85c` (all 77 programs, check mode)
+
+Results vs. baseline (9dfbf0fc, parent-first only):
+- **plcfrs**: FIXED (timeout 124 → compiles 0) ✓ PRIMARY WIN
+- **chull**: NO REGRESSION (still compiles) ✓ CLOSURE BUG FIXED
+- **linalg**: IMPROVED (652 ess, -15.8% vs baseline 774) despite still failing
+- **mastermind2**: IMPROVED (398 ess, -16.9% vs baseline 479) ✓
+- **Compile success**: 51/76 → 52/76 (+1) ✓
+- **Timeouts**: 2 → 1 (-1) ✓
+- **Stdout matches**: 18 → 18 (unchanged) ✓
+- **No new regressions** ✓
+
+**Status: OWNER-LIFT VALIDATED, READY FOR PRODUCTION**
+The defs.n < 3 guard is the complete fix. PYC_CSOWNER=1 can now be enabled by default.
 
 ## Corpus sweep comparison: owner-lift enabled vs. disabled
 
