@@ -5621,6 +5621,11 @@ struct ESSplitDecision : public gc {
 };
 
 static cchar *dec_why = "?";  // ifa/133 probe: which decline path fired
+static int csjoinsplit_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_CSJOINSPLIT"); e = v ? atoi(v) : 1; }
+  return e;
+}
 static int recgate_enabled() {
   static int e = -1;
   if (e < 0) { cchar *v = getenv("PYC_RECGATE"); e = v ? atoi(v) : 1; }
@@ -9168,6 +9173,41 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
               analyze_again = 1;
               continue;
             }
+        }
+        // ifa/176: undo a parent-first JOIN on demand. When every creation
+        // point is the SAME allocation site (one Var) in different contours of
+        // one function, the CreationSet is shared only because parent-first
+        // routed a split child's allocation into its parent's contour. The
+        // demand on the CS itself (an irrepresentable element) is what that
+        // rule waits for; the assign-set partition cannot see it when the
+        // fusion makes every level write the same union (one key). The
+        // demand decides WHETHER; the contour only names WHICH part.
+        if (csjoinsplit_enabled() && defs.n > 1 && cs_elem_irrepresentable(cs)) {
+          bool one_site = true;
+          Vec<void *> ctrs;
+          for (AVar *d : defs) {
+            if (d->var != defs.v[0]->var || !d->contour_is_entry_set) { one_site = false; break; }
+            ctrs.set_add(d->contour);
+          }
+          if (one_site && ctrs.set_count() == defs.n) {
+            Vec<AVar *> moved;
+            for (int i = 1; i < defs.n; i++) {
+              CreationSet *ncs = new CreationSet(cs);
+              ncs->split = cs;
+              if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
+              defs.v[i]->cs_map->put(cs->sym, ncs);
+              moved.set_add(defs.v[i]);
+              if (dbg)
+                fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s JOINSPLIT def av=%d es=%d -> cs=%d\n", analysis_pass,
+                        cs->id, cs->sym->name ? cs->sym->name : "?", defs.v[i]->id, ((EntrySet *)defs.v[i]->contour)->id,
+                        ncs->id);
+            }
+            Vec<AVar *> new_defs;
+            cs->defs.set_difference(moved, new_defs);
+            cs->defs.move(new_defs);
+            analyze_again = 1;
+            continue;
+          }
         }
         // ifa/157: "SPLIT COARSER AND LET THE ANALYSIS RE-DERIVE" WAS TRIED
         // HERE AND IS DEAD. Keep the result, not the lever.

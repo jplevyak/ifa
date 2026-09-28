@@ -4,7 +4,7 @@
 (default 1). See *RESOLVED* at the end, and
 [074](074-FA-cross-pass-oscillation-plan.md)'s resolution for the numbers.
 The 4-line self-cycle residual moved to
-[176](../176-FA-self-feeding-deepcopy-fusion-has-one-assign-set.md).
+[176](176-FA-self-feeding-deepcopy-fusion-has-one-assign-set.md).
 Root-caused 2026-09-25. Owns the TYPING half of
 `tests/deepcopy_recursive_nested_growth.py`; the non-convergence half
 stays with [074](074-FA-cross-pass-oscillation-plan.md).
@@ -273,6 +273,6 @@ parent-first, the outer and inner `r = []` share one CreationSet with TWO
 creation points, so the "single creation point" test does not hold. The
 CreationSet cannot be partitioned either, because both levels' writes
 carry the same fused type: one assign-set key. That is
-[176](../176-FA-self-feeding-deepcopy-fusion-has-one-assign-set.md), not
+[176](176-FA-self-feeding-deepcopy-fusion-has-one-assign-set.md), not
 this gate.
 

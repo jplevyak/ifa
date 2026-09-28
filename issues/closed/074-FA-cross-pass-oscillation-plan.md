@@ -414,4 +414,4 @@ allocation variants tried failed to type (`index_object` refused the
 slice; the comprehension buffer fused `{int64, float64, str, P}`).
 
 **Residual:** the 4-line self-cycle `M = copy.deepcopy(M)` still fails.
-That is [176](../176-FA-self-feeding-deepcopy-fusion-has-one-assign-set.md).
+That is [176](176-FA-self-feeding-deepcopy-fusion-has-one-assign-set.md).
