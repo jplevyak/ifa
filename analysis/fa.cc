@@ -8427,7 +8427,7 @@ static void cs_member_signature(AVar *d, std::string &out) {
 // value flow to SUPPLIERS; this follows containment to OWNERS.
 static int csowner_enabled() {
   static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_CSOWNER"); e = v ? atoi(v) : 0; }
+  if (e < 0) { cchar *v = getenv("PYC_CSOWNER"); e = v ? atoi(v) : 1; }
   return e;
 }
 // A READ out of another object: a member load (`self._vals`) or an element

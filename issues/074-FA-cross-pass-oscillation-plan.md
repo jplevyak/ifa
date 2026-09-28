@@ -226,10 +226,24 @@ a non-constant caller. **175 is fixed and the guard is removed
 lift splits applied (ess 416 → 488), and no program changes verdict
 against `0536d85c`.
 
-`make test` is green with the guard removed. The lift is still off by
-default. Under it plcfrs compiles and matches CPython (see the argv[0]
-note above), but container CreationSets rise by about 8%. That rise needs
-an answer before the lift becomes the default.
+**`PYC_CSOWNER=1` is the DEFAULT as of 2026-09-28.** `PYC_CSOWNER=0`
+restores the old behaviour. The "~8% more container CreationSets" was an
+artifact: that comparison's baseline had plcfrs timing out, so plcfrs's
+contours were counted on one side only. On the same tree (cf0961f3),
+lift off → on, excluding plcfrs: ess −0.5%, css −0.2%, container CSs
++0.4% (1931 → 1938). It shrinks mastermind2 (28 → 20), linalg (55 → 49)
+and dijkstra (24 → 19). It grows chull (43 → 50, the Face/Edge
+separation it exists for), pylife, quameon and rdb slightly.
+
+Gate at the flip: `make test` green (356/0 both backends; 16 ir phases, 2
+KNOWN ifa/007). Sweep `check__default__73f273b7+d585e8c2`: contour counts
+identical to the `PYC_CSOWNER=1` arm on all 77 programs. compile_fail
+26 → 25 against lift off: plcfrs now compiles AND matches CPython. Two
+run-time verdicts moved on programs that straddle the 120 s cap. chull
+(116 s → 120 s) now times out, and tonyjpegdecoder (120 s → 109 s) now
+finishes; its only diff is a file object's repr (`<instance>` vs
+`<_io.BufferedReader ...>`), a pre-existing runtime gap the timeout had
+hidden.
 
 ### 1. Shape-equivalent compatibility in type splitting (the 168 follow-on)
 
