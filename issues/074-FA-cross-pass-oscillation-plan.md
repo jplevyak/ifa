@@ -209,10 +209,14 @@ chull the lift makes exactly two splits, and both owners have 2 defs:
 Edge `cs=1370` → owner Face `cs=1362`, and list `cs=1671` → owner Edge
 `cs=1370`. The guard refuses every 2-def owner, so it switches the lift off
 wherever chull used it. chull's numbers under the guard are identical to
-the baseline. The earlier "closure bug" story was never confirmed. Excluding
-`sym_closure` from the walk changed nothing, and nothing showed that the
-lift touches a closure CreationSet. **The chull failure has not been
-root-caused.** The guard must go once it is.
+the baseline. The earlier "closure bug" story was wrong. **Root-caused
+2026-09-28: it is
+[175](175-FA-loop-over-a-never-written-list-is-live-and-its-element-is-bottom.md),
+a pre-existing defect the lift only exposes.** The Face split leads to a
+`list.extend` contour whose only argument is a never-written `[]`. Its loop
+stays live because `0 < 0` shares an `int.__lt__` contour with a
+non-constant caller, and the bottom element is fatal. It reproduces in 11
+lines with no lift at all. Remove the guard when 175 is fixed.
 
 `make test` has not been run green with the lift hooks enabled.
 
