@@ -17,7 +17,7 @@ in sunfish's compile output and nothing is reported at line 448 at all,
 and reproducing exactly that construct on the real `Position` compiles
 with zero diagnostics. sunfish's actual residual failure is a runtime
 `getter not resolved` in a degenerate `dict::__setitem__` clone, filed as
-[125](../125-sunfish-degenerate-dict-setitem-clones.md), which supersedes
+[125](125-sunfish-degenerate-dict-setitem-clones.md), which supersedes
 this issue as the holder of that scope.
 
 **BOTH REPROS FIXED 2026-08-20 (`370c8806`, `2756884d`).

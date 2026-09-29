@@ -1,0 +1,162 @@
+# 127 — audit: `0` used for both "nothing known" and a real answer
+
+> **CLOSED 2026-09-28 (audit complete).** Done 2026-09-04. The rule it established: a zero size is never a correct answer for something about to be allocated, indexed or resized. Use a sentinel, or floor at pointer size.
+>
+> *Archived during the 2026-09-28 issue consolidation. The text below is the historical record and is not maintained.*
+
+**Status:** open, filed 2026-09-04. An audit, not a defect report — the
+two instances below are already fixed, and the question is how many more
+there are.
+**Affects:** size/width computation in `ifa/codegen/cg.cc`,
+`ifa/analysis/clone.cc`, and the `->type` projection in
+`ifa/analysis/fa.cc`.
+
+## The pattern
+
+A quantity that can be *unknown* is represented by `0` (or by an empty
+set), and the same `0` is also a legitimate value. Every consumer then
+has to guess which it meant, and the ones that guess wrong fail
+**silently** — the value is plausible, so nothing asserts.
+
+Two instances have bitten this repo, found weeks apart and by completely
+different routes:
+
+**1. `AType::type` maps a pure-nil type to bottom**
+([124](../124-FA-refuse-imprecise-inference.md)). `make_AType` strips
+`nil_type` from the `->type` projection, so an AType of exactly
+`{None}` projects to `bottom` — the same value that means "nothing
+inferred yet". Every splitter comparison is guarded by `->n &&`, so an
+edge carrying only `None` read as "no information" and was compatible
+with everything. The confluence was DETECTED and could never be split;
+`list.append` stayed a shared contour forever, which is what untyped
+`go`'s list elements and produced ifa/123's blind casts.
+
+**2. A pointer-shaped element type has `size == 0`**
+([118](../118-union-field-representation-and-polymorphic-field-offset.md),
+fixed 2026-09-04). `void` and `Type_SUM` element types are emitted as
+`void *` but carry `size == 0`, and `_CG_list_mult_internal` computes
+`size * s1 * l + SIZEOF_LIST_HEADER`. A zero size therefore allocated
+*only the header* and produced a list with ZERO capacity, into which the
+next `__setitem__` wrote. `[None] * 0x80` emitted
+`_CG_list_mult(t2, 128, 0)` — a 16-byte block, then an 8-byte write past
+it. Under Boehm this only ever surfaced as a corrupted free list inside
+`GC_clear_fl_marks`, naming nobody; it took `PYC_NO_GC` + valgrind to
+see.
+
+Both are the same mistake: `0`/`bottom` overloaded to mean "unknown"
+*and* "genuinely zero", with no way for a consumer to tell.
+
+## What to audit
+
+Every place a size, width, offset, count or type-set is computed and a
+zero/empty result is then USED rather than rejected. Starting points:
+
+- `determine_layouts` (clone.cc) — `size`, `alignment`, and the
+  `field_size` fallback that exists precisely because "this contour
+  observed nothing" and "this field is zero-sized" were confused
+  (issues/055 already documents that one).
+- `cg_ctype_width` (cg.cc) — already distinguishes `-1` unknown from
+  `-2` absent, which is the RIGHT pattern and worth copying.
+- `prim_period_offset` — uses `-1` for "no offset" and `kOffsetAmbiguous`
+  (`-2`) for "more than one", again the right pattern.
+- `basic_type` (clone.cc) — returns `nullptr` for BOTH "all basic, no
+  disagreement" and "non-basic", which ifa/126 found makes every record
+  class interchangeable for cloning.
+- `concrete_type_set_to_type` — an empty set returns `sym_void`, which
+  is then indistinguishable from a genuine `void`.
+- `sizeof_element` / `_CG_prim_new`'s `sizeof(*((_c)0))` on a
+  zero-field record — issues/055 already records that an incomplete type
+  will not compile there.
+
+## The fix shape
+
+Where the distinction matters, use a sentinel that cannot be a real
+answer — `cg_ctype_width`'s `-1`/`-2` and `prim_period_offset`'s
+`kOffsetAmbiguous` are both in-tree precedents. Where a sentinel is
+impractical, the consumer must REFUSE rather than proceed: a zero-size
+allocation is never a correct answer for a container that is about to be
+written.
+
+## Verification plan
+
+1. Enumerate the sites; for each, say whether a zero/empty result is
+   possible and what the consumer does with it.
+2. For any that proceed on it, add either a sentinel or a refusal, and a
+   test that reaches it.
+3. The two known instances have tests already —
+   `tests/comprehension_index_untypes_list.py` (124) and chess's
+   `[None] * 0x80` (118, corpus-only). A reduced repro for the second
+   would be worth having in `tests/`.
+
+## What this unblocks
+
+Nothing directly; it is a class of silent wrong answers rather than a
+blocker. But both known instances were expensive to find — 124 took a
+delta-reduction and a five-stage measurement, 118 needed a new
+debugging mode — and both were invisible to `make test`. Finding the
+rest by audit is much cheaper than finding them one crash at a time.
+
+## Audit done (2026-09-04)
+
+Walked every site where a size/width/offset/type-set is computed and a
+zero or empty result is then USED. Findings, with verdicts.
+
+### The pattern has now bitten FIVE times, not two
+
+`cg_emit_llvm.cc`'s own comments record two more instances that predate
+this issue, both with the same wording — *"Emitting 0 made
+`list::append` resize with element size 0, so the storage never grew and
+reads returned null/corrupted at runtime with a clean compile"*:
+
+- issue 025's tuple-list soundness bug;
+- rubik2, list-of-list vs list-of-record — which recurred because the
+  original guard was record-only and `list` is `Type_PRIMITIVE`.
+
+Plus [124](../124-FA-refuse-imprecise-inference.md)'s nil-projects-to-bottom,
+and [118](../118-union-field-representation-and-polymorphic-field-offset.md)'s
+zero element size on chess. Five occurrences, four of them silent.
+
+### Fixed here
+
+| site | was | now |
+|---|---|---|
+| `cg.cc` `P_prim_sizeof_element` | 0 for a `void`/`Type_SUM` element | floored at `if1->pointer_size` (fixed in 118) |
+| `cg_emit_llvm.cc` sizeof fallthroughs | **two** paths emitting literal `0` | pointer size when it is `sizeof_element` |
+| `cg.cc` `P_prim_sizeof` | `t->size` verbatim, 0 for a SUM | `resolve_uniform_size`, then pointer size if not numeric |
+
+The LLVM one matters even though its comments show the author knew the
+hazard: the guard covered the SUM-of-uniform case and then fell through
+to `ConstantInt::get(dst_ty, 0)` for an unresolved or unsized type,
+which is the same bug one branch over.
+
+### Audited, no change needed
+
+- **`cg_ctype_width`** (`-1` unknown, `-2` absent) and
+  **`prim_period_offset`** (`-1`, `kOffsetAmbiguous`) already use
+  sentinels that cannot be real answers. **These are the model** — the
+  fixes above are the cases that should have followed them.
+- **`determine_layouts`** — a zero size is now DELIBERATE: the slot
+  elision (123) creates zero-width placeholders on purpose, and the
+  `field_size` fallback already exists for the "this contour observed
+  nothing" case (issues/055). Both meanings are represented and
+  distinguished.
+- **`basic_type`** — returns `nullptr` for both "all basic, agreeing"
+  and "non-basic", which made every record class interchangeable for
+  cloning. Already addressed by [126](126-assess-residual-method-slot-reads.md)'s
+  class-aware equivalence, default-on since 2026-09-03.
+- **`concrete_type_set_to_type`** — an empty set returns `sym_void`,
+  indistinguishable from a genuine `void`. Left as is: every consumer
+  that could allocate on it is now floored at pointer size, and
+  `sym_void` IS pointer-shaped in the emitted C, so the conflation is
+  now harmless rather than merely unlikely.
+
+### The rule this establishes
+
+**A zero size is never a correct answer for something about to be
+allocated, indexed or resized.** Where the distinction between "unknown"
+and "genuinely zero" matters, use a sentinel that cannot be a real
+answer; where it does not, floor at the pointer size, because every
+unresolved value in pyc's representation occupies a pointer slot.
+
+`make test` 310/18/0 and `PYC_FLAGS=-b ./test_pyc.py` 310/0 with all
+three fixes.

@@ -1,7 +1,7 @@
 # 065 — ES-split product routing: mark-stage exclusion, and self-product re-minting on a growing union
 
 **Status: CLOSED — superseded by 066 (archived 2026-08-06).**
-[066](../066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md)
+[066](066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md)
 explicitly reframes and corrects this issue's premise (pyc's split
 loop already IS decide-then-durable; the real bug is CS-identity
 re-derivation, not architecture), and this file's own later dated

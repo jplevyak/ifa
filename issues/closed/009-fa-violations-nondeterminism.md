@@ -16,7 +16,7 @@ to be the case — see the Step 4 surprise section for the
 observation that 008 stopped reproducing after the 009 fix
 (reason unclear, separate investigation needed).
 **Related:** [008-fa-crash-on-nested-iterator-shape.md](008-fa-crash-on-nested-iterator-shape.md),
-[007-FA-mark-type-stage-coverage.md](../007-FA-mark-type-stage-coverage.md),
+[007-FA-mark-type-stage-coverage.md](007-FA-mark-type-stage-coverage.md),
 [../../notes/004-plib-vec-pointer-set-hashing.md](../../notes/004-plib-vec-pointer-set-hashing.md)
 (deeper plib follow-up).
 

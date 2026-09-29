@@ -277,7 +277,7 @@ every ES that reaches it, and `cs_map` keeps the answer permanently. The
 fix is to re-decide at quiescence on every pass. `analyze_to_convergence`
 already re-derives types from bottom, and taking back a `cs_map` decision
 has been measured to work (AGENTS.md, 2026-09-05). That is
-[066](../066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md).
+[066](066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md).
 
 - **Stop:** if the re-decided canon still oscillates inside a band on the
   reproducer, the band is a second defect (canon vs. splitter disagreeing).
@@ -287,7 +287,7 @@ has been measured to work (AGENTS.md, 2026-09-05). That is
 
 Give the copy a fresh CS whose element is constrained to the source's
 (`elem(result) = elem(source)`) instead of being accumulated from appends.
-This is not [048](../048-FA-deepcopy-flow-divergence-genetic2.md)'s CS
+This is not [048](048-FA-deepcopy-flow-divergence-genetic2.md)'s CS
 sharing, which fed the copy's writes back into the source. Because a manual
 copy also grows (see above), this alone cannot close the issue. Build it
 only if 1 and 2 leave `deepcopy` as a special case.
@@ -303,7 +303,7 @@ only if 1 and 2 leave `deepcopy` as a special case.
 | display out of identity ([100](100-FA-display-removed-from-contour-identity.md)); marks retired ([146](../146-remove-all-arbitrary-splitting.md)) | ess −40-80% corpus-wide; retired this plan's old Stages 0 and 4. |
 
 The rest of the corpus's non-convergence is a different disease,
-characterized in [101](../101-FA-first-time-forever-splitting.md): 95-98% of
+characterized in [101](101-FA-first-time-forever-splitting.md): 95-98% of
 split decisions are first-time signatures, so nothing that keys on a repeat
 can help. The first-stage-wins cascade that starves later stages is
 [157](../157-FA-all-demand-must-be-evaluated-at-quiescence.md).

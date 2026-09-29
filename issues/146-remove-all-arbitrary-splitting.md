@@ -1,1443 +1,185 @@
 # 146 — remove every arbitrary split; only demand splitting
 
-**Status: open. Umbrella issue.**
+**Status: open. Umbrella / audit.** Rewritten 2026-09-28. The full
+chronological record, 2026-09-08 → 09-25, is in git:
+`git show 3f36072b:ifa/issues/146-remove-all-arbitrary-splitting.md`.
 
-**Author's imperative, restated 2026-09-08:** *"no arbitrary splitting, only
-demand splitting."* This issue tracks the audit to completion, because the
-rule has been applied case-by-case and each application found another one.
+**Author's imperative:** *"no arbitrary splitting, only demand splitting."*
+This issue owns the audit. It lists what has been removed, what is still in
+the tree, and the rules that decide which is which. The positive plan (how
+demand separates what start-merged identity merges) is
+[129](129-plan-demand-driven-creation-set-splitting.md). When a split fires
+is [157](157-FA-all-demand-must-be-evaluated-at-quiescence.md).
 
 ## The test
 
-A splitting mechanism is **arbitrary** when its partition size is a COUNT
-OF THINGS rather than the number of distinct things the demand
-distinguishes. Concretely, ask:
+A splitting mechanism is **arbitrary** when its partition size is a COUNT OF
+THINGS (callers, creation points, receiver CreationSets) rather than the
+number of distinct things the demand distinguishes. Ask:
 
 1. **Would this split happen if the demand were absent?** If yes, it is
    arbitrary.
 2. **Does the demand alone decide WHETHER, with the handle deciding only
    WHICH parts?** If yes, it is a mechanism, and allowed.
 
-(CLAUDE.md, "Provenance is never the answer" — the REASON/MECHANISM
-refinement.)
-
-**The diagnostic, learned the hard way:** an arbitrary lever is
-non-monotone. More splitting makes results WORSE. On `bh`, `PYC_RECVFAN=2`
-left 1 warning and `=3` left 5; that inversion is the tell, and it is what
-finally identified the lever after it had been read as progress.
-
-**Corollary the author drew:** such a lever is DELETED, not defaulted off.
-An off-by-default arbitrary lever still gets reached the moment a program
-resists, and it reads as sanctioned because it is in the tree.
-
-## Removed so far
-
-| mechanism | what it did | commit |
-| --- | --- | --- |
-| `PYC_RECVFAN` | fanned a method ES per receiver CreationSet whenever the receiver's CSs were all containers — no demand test in the path, partition size = receiver count. Modes ≥2 also lifted PER_CS_RECEIVER's quiescence gate. | `ede0210f` |
-| route 4's fan | `split_css_by_defs` gave EVERY creation point its own contour once any demand reached it. Now partitions by assign-set signature. −37% container contours. | `3e8dcb10` |
-| the ripeness wait | `kCsDefSplitRipe` made the coarsest rung wait on a CLOCK (3 passes) rather than on the finer rungs actually declining; a finer rung firing reset the count, so on `bh` it never acted. | `ede0210f` |
-| `split_es_by_call_site`'s fan | one group per in-edge, partition size = caller count. Reachable as `PYC_CSCALLSITE=1` AND as the fallback whenever the demand-driven branch had no usable flow graph. | `e4edc2c3` |
-| two caller-count caps | `kCsDefSplitMax` refused on the number of callers/creation points, not on the partition the demand asks for. 152 of 182 refusals on `bh` were the second one. | `20f76f27`, `e4edc2c3` |
-
-## Still present — the work this issue tracks
-
-### A. `PYC_CSSPLIT=1` — DONE 2026-09-08
-
-**Removed.** The flag and both of its behaviours are gone; a split EntrySet
-now always inherits its parent's instance CreationSet.
-
-Measured on removal, corpus default arm, clean sweep:
-
-| | before | after |
-| --- | --- | --- |
-| container CreationSets | 3713 | **2762 (−26%)** |
-| `linalg` ess / css / container | 1593 / 4433 / 210 | **617 / 1551 / 49** |
-| `chess` ess / css / container | 1591 / 6433 / 169 | **686 / 2301 / 62** |
-| `sudoku5` | COMPILE-FAIL | **runs** |
-| `rdb` | run:1 | COMPILE-FAIL *(the one regression)* |
-| `chull` | run:1 | run:139 *(broken either way)* |
-| pyc suite | 313 / 0 | 313 / 0 |
-
-Three `fa-converge` goldens gained `total-passes 2 → 3`, `events 2 → 3`
-and **`splits[setter]: 1`** — which is the change working: the SETTER stage
-now does on demand, one pass later, what the structural pre-split was doing
-for free. Re-blessed, every changed line belonging to this change.
-
-`rdb` is the honest cost and is recorded rather than explained away; it was
-already failing at run time, so nothing that worked was lost.
-
-A methodology note, because it nearly produced a fabricated result: an
-earlier run of this measurement showed **20+ programs flipping abort →
-success** and a −951 contour delta. That was an artifact — I had recompiled
-corpus programs directly while a sweep was running in the same directories,
-and we overwrote each other's binaries. Re-measured alone, `linalg`,
-`plcfrs` and `sudoku3` abort at BOTH settings. Only the contour numbers
-survived, because they came from a compile phase that finished before the
-interference. Never touch a corpus directory while a sweep is live.
-
-### A (original statement, kept for the record). `PYC_CSSPLIT=1` — a CreationSet follows an EntrySet split, BY DEFAULT
-
-The most significant one, and CLAUDE.md already names it: *"`PYC_CSSPLIT=1`
-makes a CreationSet follow an EntrySet split by construction — the inverted
-dependency as a mechanism."*
-
-Read the guard carefully, because it is easy to invert:
-
-```c
-if (es && es->split && !cssplit) {   // reuse the SPLIT PARENT's CreationSet
-```
-
-At the default `cssplit = 1` this block is SKIPPED, so a split EntrySet
-falls through and MINTS A FRESH CreationSet. `=0` restores parent
-inheritance. So the default multiplies CreationSets with every ES split —
-exactly "a contour split because a surrounding contour was split", which
-the project's opening rule forbids.
-
-It is not gratuitous: the comment records that it fixed a real
-non-convergence (ifa/055's repro, 52 passes at the cap → 28 converged) by
-letting `set`/`dict` instances separate by element type where
-`clone_methods_per_cs` could not reach them. **So the demand it serves is
-real and the mechanism is wrong.** Replacing it means finding what
-legitimately separates those instances — element type — and asking for it
-directly.
-
-### B. `creation_point`'s `(allocation site × contour)` identity — STATUS 2026-09-08
-
-Measured at this tree, with A/C/D/E all landed:
-
-| | default | flag (`PYC_CSDCPA1=2 PYC_CSLADDER=3`) |
-| --- | --- | --- |
-| compile failures | 2 | 7 |
-| container CreationSets | 2736 | **2151 (−22%)** |
-| programs differing | — | **8** |
-
-The 8 split two ways, and only the first group blocks a flip:
-
-- **regressions from working**: `bh` (ran-ok → 134), `kanoodle` (→ 139),
-  `richards` (→ 139), `sudoku5` (→ COMPILE-FAIL);
-- **already broken, failure mode changes**: `chull`, `plcfrs`, `quameon`,
-  `sudoku3` (all `run:134/139` → COMPILE-FAIL).
-
-**The known blocker is intra-class receiver sharing** (ifa/143): with every
-list on one CreationSet, ONE `append` contour writes into all of them, and
-no ES-side mechanism separates them — established exhaustively in the
-receiver-filtering entry above. What is needed is shedskin's `dcpa`:
-method contour identity that includes the receiver's data contour.
-
-**Attempted as a compatibility rule, 2026-09-08, and reverted.**
-`PYC_RECVEXACT` made `edge_type_compatible_with_entry_set` hard-reject an
-edge whose receiver type differs from a method contour's, so receiver
-identity would be decided at contour SELECTION rather than repaired later.
-Measured: **48 suite failures**, `chess` segfaults, `plcfrs` times out, `bh`
-stops compiling, and even on the acceptance fixture it makes call
-resolution WORSE (65 direct against 69).
-
-Why it fails is instructive and worth not repeating: a compatibility
-predicate can only reject an edge from an EXISTING contour, so it forces
-new contours without ever breaking up a receiver that arrives already
-unioned. shedskin does not do it this way — `create_template` MAKES the
-contour for a `(dcpa, cartesian product)` pair when a call with that pair
-occurs, so the union never forms. Retrofitting the same identity onto
-selection is not the same change and does not work.
-
-**CORRECTED, on the author's objection: "why does B need contour creation
-keyed on receiver data contour? shouldn't it be demand driven?"** It should,
-and the conclusion above was wrong in exactly the way this issue exists to
-catch.
-
-Keying contour creation on the receiver's data contour is STRUCTURAL: it
-multiplies contours whether or not anything demands it. The three-way rule
-already covers the temptation — identity may be as fine as it likes, but
-*"turning a finer identity directly into more contours is the same error as
-splitting on structure, wearing different clothes."* shedskin doing it that
-way is not an argument for pyc doing it; shedskin has no demand-splitting
-rule to keep.
-
-**Why I was pushed there, and what is actually wrong.** Every demand-driven
-avenue I measured died on the same wall: by the time the splitting stages
-run, the union has formed, every writer carries it, and the demand can no
-longer name its parts. I read that as "demand cannot reach this" and reached
-for structure. But it is a statement about **WHEN I looked**, not about
-whether the information exists:
-
-- On the acceptance fixture the writers ARE distinguishable — `append`'s
-  contours carry `[A]` and `[B]` as their VALUE types (`es=77`, `es=78`).
-  The union is on the RECEIVER, not the value. So an element-side flow graph
-  has two assign sets and the partition is nameable.
-- `Vec3` in `bh` shows the same: `CSFLOW ... sets=28 csites=4 (in_defs=4)` —
-  28 assign sets over 4 creation points, all of them in `defs`.
-
-**So the demand is available; what fails is applying it.** The measured
-mechanical gap is `in_defs=0` on the list CreationSets: the CSFlowGraph's
-creation points and `cs->defs` are DISJOINT AVar sets, so a partition the
-demand names cannot be applied to the defs that need re-pointing. That is
-the bug ifa/144's "informative" check detects and then declines on — a
-concrete, fixable problem in the plumbing between the demand and the
-mechanism, not a reason to abandon demand splitting.
-
-**MINIMAL REPRO: `tests/two_list_element_separation.py`**, five lines:
-
-```python
-a = []
-a.append(1)
-b = []
-b.append("x")
-print(a[0], b[0])
-```
-
-Passes at the default; **fails on the flag arm**. Its flow graph is the gap
-in miniature — `defs=6 sets=3 csites=2 (in_defs=0)`: three assign sets, so
-the demand names its parts perfectly, and not one creation point reachable
-from `cs->defs` to apply them to.
-
-It passed on the flag arm until **C** removed route 4's fan, which had been
-covering the decline. The gates did not catch that, because they run at the
-DEFAULT only — a flag-arm change cannot be judged by the suite alone, and
-that is worth remembering for the flip itself.
-
-**ROOT CAUSE of the 5-line failure, traced 2026-09-08.** `in_defs=0` is not
-an accident of counting — the two sets are built from different things and
-never meet:
-
-```
-DEF    av=783  var#11141  cs_map=1     <- the allocation site
-CSITE  av=785  var#11142  cs_map=0     <- where the backflow walk stops
-DEF    av=792  var#11145  cs_map=1
-CSITE  av=794  var#11146  cs_map=0
-```
-
-- **`cs->defs`** holds the AVars whose `cs_map` NAMES this CreationSet —
-  the allocation sites, and the only nodes `split_css` can re-point, since
-  re-pointing IS `v->cs_map->put(cs->sym, new_cs)`.
-- **`g->csites`** holds the roots of the backflow walk — AVars with no
-  backward edge, found by walking back from the writers through nodes whose
-  type contains `cs`.
-
-On this repro those are **different Vars** (`11142` vs `11141`, consecutive
-temporaries from the same lowering), and the walk's roots carry
-**`cs_map=0`**. All six defs have `backward=0`, so they would be recorded
-if the walk reached them — it never does. The walk stops one node short,
-at a temporary that has no backward edge linking it to the allocation
-result.
-
-**So the demand's partition is expressed over nodes that cannot be
-re-pointed.** Three assign sets, a perfectly good partition, and no way to
-apply it. `split_css_by_defs` detects the mismatch ("informative") and
-declines; `cs_peel_group` independently skips any group member without a
-`cs_map`, for the same underlying reason.
-
-**ANSWERED 2026-09-08: it is module-level GLOBALS.** A contrast pair
-settles it — the same five lines, once at module scope and once inside a
-function:
-
-| version | `in_defs` | flag-arm compile |
-| --- | --- | --- |
-| module scope (the test) | **0** | **fails** |
-| wrapped in `def f(): ...` | no CSFLOW at all — resolved before route 4 is asked | **succeeds** |
-
-A module-level global's allocation and its uses are connected through the
-global SLOT, not through AVar forward/backward edges. Measured: every def's
-forward closure is 2–4 AVars and reaches **no** csite —
-`def av=783 var#11141 reaches NO csite (visited 2)`. The allocation flows
-one hop and stops.
-
-So the backflow walk's roots are the **loads** of the global (`cs_map=0`),
-never the allocations (`cs_map=1`), and `cs->defs ∩ g->csites = ∅` **by
-construction for any global**. That is not a tuning problem and not a
-missing edge to add casually — it is the global slot being a different
-transport from the flow edges the walk follows.
-
-`cs_peel_group` already half-knew this: *"at module scope the walk's roots
-have none [no `cs_map`] (uncharacterized)"*. It is now characterized, and
-that comment updated.
-
-**Author's correction to the framing:** *"the two globals are different, the
-only difference from locals is the es now that we have a 'global' yes and
-the dataflow must reach the creation point. all that is required is
-splitting on them."*
-
-Right, and it makes this a DEFICIENCY rather than a constraint. `a` and `b`
-are distinct global Vars with one allocation each — nothing is ambiguous
-about which creation point a use belongs to, and the only structural
-difference from the working function-local version is which EntrySet holds
-them (the distinguished global contour). So there is no reason in principle
-the walk cannot reach the creation point; it simply does not.
-
-**Where it stops, measured.** From the allocation the forward closure is
-`{783, 784}` — `784` has NO forward edges. The value flows one hop out of
-the `make list` and stops. Globals are modelled as CELLS in this analysis
-(`fa.cc`: "mutable global cell", "a global cell that NOTHING READS"), so a
-store writes the cell and a load reads it; the walk's forward/backward
-edges stop AT the cell instead of traversing it, and the load side is left
-rootless (`bwd=0`, `cs_map=0`).
-
-**So the fix is to make the walk traverse the global cell** — relate a
-global's loads back to its stores — after which `cs->defs` and `g->csites`
-coincide and ordinary route-4 partitioning applies with no new policy at
-all. "All that is required is splitting on them" is then literally true:
-the demand already names three assign sets on this repro; it just cannot
-reach the nodes it is about.
-
-NOT yet verified: the precise cell mechanism, i.e. whether the load takes
-its type by a snapshot (`update_gen`) rather than a durable flow edge. That
-distinction matters for the fix and this project has been bitten by it
-before — see the `snapshot vs durable edge` note — so it should be
-established before any edge is added.
-
-### FIXED 2026-09-08 — the walk now crosses the folded global load
-
-`ifa/050` stage 1 resolves a load from a module-level cell to the store that
-dominates it and applies the result with `update_gen` — a SNAPSHOT,
-deliberately: it is flow-SENSITIVE (the load sees the value at that point),
-and leaving the cell without a consumer is what keeps a write-only cell
-unobservable to the BOXING check. Confirmed firing on the repro:
-`[gload] a FOLD`, `[gload] b FOLD`.
-
-The cost landed on the backflow walk: the load then has no backward edge, so
-the walk stops there, `cs->defs` and `csites` are disjoint for every global,
-and route 4 can never apply a partition the demand has already named.
-
-**The two purposes are separable — but not where I first cut.** Turning the
-snapshot into a flow edge was tried and REVERTED: it restores the dataflow
-but loses the flow-sensitivity, and `tests/listcomp_element_separation.py`
-regresses (its warning comes back). What the WALK needs is REACHABILITY, not
-type flow. So the walk now asks the same callback where the folded value came
-from and continues from there, leaving type propagation exactly as it was.
-
-Measured:
-
-| | before | after |
-| --- | --- | --- |
-| `tests/two_list_element_separation.py`, flag arm | **fails** | **compiles** |
-| `tests/listcomp_element_separation.py` warnings | 0 | 0 (unchanged) |
-| flag arm differing from default | 8 | **7** — `chull` fixed |
-| flag arm container CreationSets | 2151 | **2080** |
-| default arm | — | unchanged (one cap-straddler flake) |
-
-All six gates pass. Remaining flag-arm divergences: `bh`, `kanoodle`,
-`richards`, `sudoku3`, `sudoku5` (`quameon` resolved 2026-09-21 in (c);
-`plcfrs` resolved 2026-09-24 in (d)).
-
-**What it means for B.** The blocker is narrower than it looked. Demand
-splitting works where values flow through edges — the function-local
-version needs no route 4 at all, the ordinary machinery separates the two
-lists. What fails is specifically containers **held in module-level
-globals**. The fix is to make the walk able to relate a global's loads back
-to its allocations, which is a question about how globals are modelled, not
-about splitting policy.
-
-**Superseded question, kept for the record: why the backward link is missing** between the
-allocation result (`var#11141`) and the temporary the walk stops at
-(`var#11142`). That is the next thing to establish — whether the edge is
-absent by construction in the lowering, or present but not followed by the
-walk's `x->out->type->set_in(cs)` test. Until it is answered, "map csites
-onto defs" would be guesswork about which node stands for which.
-
-**B's next step is therefore to close that gap** — make the demand's
-partition applicable to the creation points it is about — not to key
-contour creation on the receiver. Nothing shipped.
-
-### B (original statement). `creation_point`'s `(allocation site × contour)` identity
-
-ifa/128. The allocation site is the REASON here, and it splits with no
-demand at all — test 1 above fails outright. `PYC_CSDCPA1` is the
-experiment that removes it (start merged, one CreationSet per sym); the
-whole 129/133/144 line of work is what it takes to make that flippable.
-
-### C. `PYC_CSDEFPART=2`'s fan fallback — DONE 2026-09-08
-
-**Removed**, along with the flag. The partition is now the only behaviour.
-
-The fan existed because the partition had no grouping key for a
-NON-container CreationSet: `build_cs_flow_graph` read only the ELEMENT
-channel, so it returned null for every plain class. Declining instead
-(mode 1) was measured and cost five corpus programs, which is why the fan
-was kept — treating the symptom.
-
-Fixed at the cause. `cs_content_avars` gives the graph the right content
-channel for each shape — ifa/104's two channels — using `cs->vars` when
-there is no element:
-
-```c
-static void cs_content_avars(CreationSet *cs, Vec<AVar *> &out) {
-  if (cs->sym->element && cs->sym->element->var && cs->added_element_var) {
-    if (AVar *e = unique_AVar(cs->sym->element->var, cs)) out.add(e);
-    return;                       // containers unchanged
-  }
-  for (AVar *v : cs->vars) if (v && v->out) out.add(v);
-}
-```
-
-Containers are untouched by construction, so no container result moves.
-
-Measured on `bh`: route-4 mints **24 → 7 with ZERO fan splits**, and `Vec3`
-lands on the **same 6 contours the fan produced** — the same precision, by a
-demand-driven partition instead of an arbitrary one. That is the outcome
-this issue wants: not a trade, a replacement.
-
-Corpus, default arm: **0 verdict changes**, container CreationSets
-2762 → 2736. Flag arm at this tree: 2153, −22% against the default. All six
-gates pass.
-
-### C (original statement, kept for the record). `PYC_CSDEFPART=2`'s fan fallback — mine, shipped 2026-09-07
-
-`split_css_by_defs` partitions by assign-set signature, but when
-`build_cs_flow_graph` returns null — which it does for EVERY non-container
-CreationSet, since it needs an element channel — mode 2 falls back to the
-per-creation-point FAN:
-
-```c
-if (defpart >= 2 && !g) goto Lfan;
-```
-
-This was a deliberate, measured choice: mode 1 (decline instead of fan)
-cost five corpus programs. But it is the same defect as the levers above,
-shipped as the default, and it is where `bh`'s 16 `Vec3` mints come from.
-Retiring it needs a grouping key for non-container CreationSets — the
-CSFlowGraph generalised from the element channel to `cs->vars`.
-
-### D. `MARK_TYPE` and the marks-based setter splitter — DONE 2026-09-08
-
-**Removed**, 171 lines of `fa.cc`, together with `PYC_NOMARK`.
-
-**The finding that mattered: mark splitting was never actually off.** The
-flag had three states and two consumers with DIFFERENT thresholds:
-
-```c
-analyze_again = nomark_enabled() >= 1 ? 0 : split_ess_for_mark_type(...);   // 1 >= 1 -> off
-if (nomark_enabled() < 2 && split_ess_setters_marks(...)) {                 // 1 <  2 -> RUNS
-```
-
-At the default `PYC_NOMARK=1`, MARK_TYPE was off but
-**`split_ess_setters_marks` was still live on the default path** — so
-provenance-based splitting was running, while the flag's name and
-CLAUDE.md's "mark-based splitting was retired (`PYC_NOMARK` defaults to 1)"
-both read as though it were not. A flag with two thresholds hid it.
-
-Measured before removal (`PYC_NOMARK=2`, i.e. marks fully off):
-
-- corpus verdicts **byte-identical on all 77 programs**;
-- container CreationSets unchanged at 2736;
-- pyc suite 313 passed / 0 failed on both backends;
-- it fired on exactly one program, `plcfrs`, where it COST contours
-  (ess 1102 → 1094 with it off).
-
-Deleting the two entry points left a cascade of dead helpers
-(`split_with_setter_marks`, `split_marked_es_confluences`,
-`build_setter_marks`), removed by following the compiler's
-unused-function warnings to a fixed point.
-
-`tests/splitter_mark_type.py` is KEPT and repurposed rather than deleted —
-the shape it builds is the valuable part and ifa/142 cites its header. It
-now pins that the shape costs nothing to resolve without marks:
-`CALLS: direct=69 dynamic=0`, byte-identical to what MARK_TYPE produced.
-The STAGES line lost `MARK_TYPE` and gained nothing.
-
-### E. `PYC_CPA` — ARBITRARY after all. My "cleared" verdict was wrong.
-
-**Corrected 2026-09-08 on the author's objection:** *"CPA isn't pure demand
-imo. pure demand and dispatch aware filtering e.g. of the receiver for
-single dispatch oop should subsume blind CPA, right?"* Yes, on both halves.
-
-I cleared it by reasoning "the union is the demand and its members are the
-parts". **That is the error.** A union's EXISTENCE is not a demand. A demand
-is an observed distinction that REQUIRES separation — a type violation, an
-irrepresentable union, a dispatch that cannot resolve. CPA asks for none of
-them:
-
-```c
-for (MPosition *p : es->fun->positional_arg_positions) {
-  AVar *av = es->args.get(p);
-  int n = av->out->type->sorted.n;
-  if (n < 2 || n > limit) continue;      // ANY formal with 2..N CreationSets
-```
-
-The whole function contains **zero** references to `violation`,
-`irrepresentable`, `mixed_basics`, `dispatch` or `unresolved` — it fans
-every positional formal whose type has 2..N CreationSets and has reached a
-fixpoint, whether or not anything downstream is harmed by the union. So
-question 1 answers itself: *would this split happen if the demand were
-absent?* Yes, always.
-
-**What should subsume it.** CPA is groping at dispatch precision. In
-single-dispatch OOP the position that determines dispatch is the RECEIVER,
-and it only needs separating where dispatch actually fails to resolve. So
-demand (an unresolved dispatch, or an irrepresentable union) plus
-dispatch-aware filtering of the receiver reaches every case CPA reaches,
-and:
-
-- fires only where resolution is actually blocked, not on every union;
-- acts on the ONE position that determines dispatch, not on all positional
-  formals;
-- therefore produces a strictly smaller partition for the same resolution.
-
-The cases CPA "fixes" that this would not touch are the ones nothing
-needed fixed.
-
-**REMOVED 2026-09-08** — the stage, `split_ess_cartesian_product` and
-`cpa_enabled`, 102 lines. `decide_csm_split` / `apply_csm_split` are shared
-with the CSM stage and stay.
-
-Corpus-neutral by construction and by measurement: `PYC_CPA` defaulted to 0
-and was set by exactly one `.env` in the tree, and a confirming sweep is
-verdict-identical on all 77 with container CreationSets unchanged at 2736.
-All six gates pass.
-
-`tests/splitter_cartesian_product.py` is kept and converted into the
-ACCEPTANCE TEST for the replacement. On that fixture CPA was doing real
-work, and the trade is not one-sided:
-
-| | with CPA | without |
-| --- | --- | --- |
-| calls | direct=68 dynamic=1 | **direct=69 dynamic=0** |
-| element separation | held | lost — `.ay()` on a `B` warns |
-
-Call resolution is BETTER without it; what is lost is the element
-separation. So the `.check` records the state with **no** warning — what the
-replacement must reach — and a `.known_issue` explains the gap, per
-CLAUDE.md's rule against baking a regression into a golden. The test reports
-KNOWN today and flips to PASS when demand-driven receiver filtering lands.
-
-**Original status line:** arbitrary, to be removed. It is `PYC_CPA=0` by default, so it
-is dead weight rather than a live violation, and by the
-delete-don't-default rule it should go. Removing it is cheap; the
-replacement — receiver filtering keyed on unresolved dispatch — is the real
-work and is what should land first if anything currently depends on CPA
-being reachable. `tests/splitter_cartesian_product.py` pins it and would
-need the same treatment `splitter_mark_type.py` got.
-
-### Receiver filtering: the MECHANISM is right, and it cannot be retrofitted as a repair
-
-**Author's clarification:** *"the filter is for oop dispatch so that the
-correct class values flow to the methods for that class."* That is the
-right frame, and it located the problem exactly. On the fixture, where
-`self.aas` holds only `A` and `self.bbs` only `B`:
-
-```
-es=60 [list#1077 list#1111]           [A B]
-es=77 [list#1070 list#1077 list#1111] [A]   <- writes A into THREE lists
-es=78 [list#1071 list#1077 list#1111] [B]   <- writes B into THREE lists
-```
-
-`append` is contoured by its VALUE but its RECEIVER is a union, so A and B
-both land in `list#1077` and `list#1111`. The element type then unions two
-classes the program never mixes, and `self.aas[-1].ay()` draws a spurious
-`illegal: B`. **The warning is pyc's imprecision, not the program's error.**
-
-**Filtering the receiver fixes it, exactly.** Restricted to the receiver
-position — note position 0 is the SELECTOR symbol and position 1 is the
-receiver, which cost one wrong iteration — every `append` contour gets a
-single receiver, the warning goes, and the result matches what CPA achieved
-(`direct=68 dynamic=1`, no warning) by a principled mechanism instead of a
-blind fan.
-
-**But it cannot be applied as a demand-driven repair.** Three gatings, all
-measured:
-
-| gating | result |
-| --- | --- |
-| none — filter every method receiver | **fixes the fixture**, and breaks everything else: 23 suite failures, `chess` and `plcfrs` stop compiling, plcfrs ess 1088 → 1277 |
-| receiver CreationSets' element types differ | **never fires** — by the time the stage runs they have converged to the same `{A, B}` union |
-| a `SEND_ARGUMENT` violation on the formal | never fires; the violation sits on a CS-contoured AVar, not a formal |
-
-The middle row is the finding. **The demand is unobservable at repair time
-because the merge has already destroyed the evidence** — ifa/142's fixed
-point for the third time, now at the receiver. Once `list#1077` holds
-`{A,B}`, nothing can see that it was ever meant to hold only one.
-
-**So receiver-keyed method contours have to be IDENTITY, not repair.** That
-is precisely what shedskin does — `func.cp[dcpa][c]` indexes every function
-contour by the receiver's data contour from the start, so the union never
-forms and there is nothing to detect later. Under CLAUDE.md's three-way
-rule that is legitimate: identity may be as fine as it likes, and it is not
-a split.
-
-This makes it **B-shaped work**, not a separate task: it belongs with
-`creation_point`'s identity change rather than as another splitting stage.
-No code shipped — the mechanism is proven on the fixture but has no
-correct trigger as an after-the-fact repair.
-
-### Dispatch-gated, group-wise filtering — ALREADY IMPLEMENTED (2026-09-08)
-
-**Author's refinement:** *"it should only be used if the call requires a
-dispatch. that shouldn't cause a problem because the filtered values can't
-pass through to the dispatch target in any real execution trace. not a
-single receiver, just all compatible receivers."*
-
-The soundness argument is right, and the design is right — filter to the
-receivers COMPATIBLE with each target rather than to one receiver, so the
-partition size is the number of dispatch targets rather than the number of
-CreationSets. That is what makes it safe where my unconditional version
-(one contour per receiver CS) broke 23 suite tests.
-
-**And pyc already does it.** Measured on a genuine polymorphic call:
-
-```python
-class A:
-    def go(self): return 1
-class B:
-    def go(self): return 2
-def call(o): return o.go()
-```
-
-```
-FUNES fun=go    es=57 [go#936] [A#1075]      <- receiver narrowed to A
-                es=58 [go#936] [B#1077]      <- receiver narrowed to B
-FUNES fun=call  es=55 [call#940] [A#1075]
-                es=66 [call#940] [B#1077]
-```
-
-Each target's `self` holds exactly the class that selects it. This is not a
-special dispatch filter — it falls out of ordinary contour identity,
-because **`self` is an argument** and contour compatibility already keys on
-argument types. Which is the author's own earlier point about static
-dispatch: pyc's `c` subsumes shedskin's `dcpa` wherever the receiver
-appears as an argument.
-
-**So the fixture is NOT a dispatch case, and that is why nothing here
-reaches it.** Its three receivers are all `list` — one class, one `append`
-body, no target to choose between:
-
-```
-es=77 [list#1070 list#1077 list#1111] [A]
-```
-
-The receiver is a UNION WITHIN ONE CLASS. There is no dispatch to gate on,
-no set of compatible-per-target groups to filter into, and the union itself
-IS the contour's argument type, so argument-type identity cannot break it
-up either.
-
-**Which pins the remaining gap precisely.** What the fixture needs is per-
-CreationSet method contours *within* a single class — several data contours
-of `list` not sharing one `append`. That is not dispatch and not a demand-
-driven split; it is data-contour identity, shedskin's `dcpa` dimension, and
-it belongs to **B**. Every ES-side avenue is now measured and closed:
-dispatch filtering already exists, violation-gated filtering never fires,
-element-difference gating is hidden by the fixed point, and unconditional
-filtering breaks the suite.
-
-### Superseded first attempt, kept for the record
-
-Built as specified: CPA's own mechanism (`decide_csm_split` /
-`apply_csm_split` — filter a formal into one contour per single
-CreationSet), with CPA's arbitrary trigger replaced by a real demand (a
-`SEND_ARGUMENT` or `DISPATCH_AMBIGUITY` violation), receiver position first
-(`fun->sym->self` marks a method). Two demand scopings, both measured, both
-reverted:
-
-| demand scoping | result |
-| --- | --- |
-| a violation anywhere in the contour | fires (plcfrs 13 splits, rdb 1) and **makes things worse**: `plcfrs` compile 0 → **1**, ess 1088 → 1118, css 2549 → 2597 |
-| the violation is ON the formal being split | **never fires** — 0 splits on every program tried |
-
-**Why neither can work, and it is not a tuning problem.** The two ends do
-not meet:
-
-- the DEMAND is recorded on the AVar where the call FAILS — a call
-  argument, or, as on this very fixture, a **CreationSet-contoured** AVar.
-  Probed: the fixture's only violation is `kind=SEND_ARGUMENT av=3294
-  contour_is_es=0` — the list ELEMENT, not any formal;
-- the MECHANISM can only filter an EntrySet **formal** —
-  `decide_csm_split` searches `es->args` for the AVar and returns null
-  otherwise.
-
-Those are rarely the same AVar, and joining them means walking backward
-from the failing use to the formal whose union produced it — which is
-`backflow_path` / the CSFlowGraph, i.e. the CS-side machinery, not
-something an ES-side filter has.
-
-**So the fixture's demand is CS-side, and CPA was not answering it.** CPA
-fanned ES formals blindly and the separation propagated downstream by
-accident; that is why removing it costs the element separation while
-IMPROVING call resolution (direct 69/0 against 68/1). The right home for
-this fixture is the CreationSet machinery — ifa/143's problem, element
-writers separated — not a receiver filter.
-
-**What the receiver filter would still be right for** is the case it was
-named for: a genuine single-dispatch receiver whose union blocks
-resolution, where the violation IS on a formal. Nothing in the corpus
-exercised that shape in this measurement, so it has no evidence behind it
-yet and no code was shipped. `tests/splitter_cartesian_product.py`'s
-`.known_issue` stays as the acceptance test, but should now be read as
-pointing at the CS-side fix rather than at receiver filtering.
-
-### The refinement this correction forces on the test itself
-
-Question 1 in the test above — *would this split happen if the demand were
-absent?* — is only as good as one's willingness to ask what the demand IS.
-Twice now I have accepted a fact about the program as though it were a
-demand:
-
-- here, "the formal's type is a union" (a fact) read as "the union must be
-  separated" (a demand);
-- earlier, in ifa/144, "the CreationSet has several creation points" (a
-  fact) read as licence to give each its own contour.
-
 **A demand is something OBSERVING a distinction and being unable to
-proceed.** A union, a multiplicity, a difference in provenance — these are
-all facts about the program. None of them is a demand until something reads
-one and fails.
+proceed**: a type violation, an irrepresentable union, a dispatch that cannot
+resolve. *"This formal's type is a union"*, *"this CreationSet has several
+creation points"* and *"these values came from different places"* are FACTS.
+Reading a fact as a demand is how an arbitrary splitter passes the test.
+That has happened twice here (`PYC_CPA`, and route 4's per-creation-point
+fan).
 
-### E (superseded reading, kept for the record). `PYC_CPA` — NOT arbitrary; this entry was wrong
+**The diagnostic: an arbitrary lever is NON-MONOTONE.** More splitting
+makes the results worse. Examples: `PYC_RECVFAN=2` left 1 warning on `bh`
+and `=3` left 5; `PYC_CSPEEL2` added 9.5% contours and a compile failure.
+Conversely, a lever whose removal COSTS contours and programs is earning
+its keep.
 
-**Audited 2026-09-08 and cleared.** The original entry here called it a fan
-on the strength of its test header's phrase *"fanning the contour into one
-per single CreationSet"*. Reading the implementation, that is not the
-arbitrary shape:
+**Delete, don't default off.** An off-by-default arbitrary lever gets
+reached the moment a program resists, and it reads as sanctioned because it
+is in the tree. And "is it off by default?" is the wrong audit question.
+The mark splitters were found by auditing CALL SITES, not flags: one flag
+had two consumers with different thresholds, and two splitters were never
+gated at all.
 
-> when a positional formal's live type is a union of >= 2 CreationSets, fan
-> the contour into one filtered contour per single CS and re-dispatch every
-> edge across them.
+## Removed
 
-The **union is the demand** and its **members are the parts**, so the
-partition size equals the number of distinct things the demand
-distinguishes. Both questions pass: it cannot fire without a union, and the
-union alone decides both whether and which. It is the same legitimate shape
-as `split_es_by_call_site`'s surviving demand-driven branch.
-
-It stays. Two notes for whoever revisits it: its `PYC_CPA=N` cap is
-count-based, which is the shape this issue distrusts elsewhere, though here
-it bounds a resource rather than deciding a partition; and it is default
-0, so it is dead weight rather than a live violation.
-
-### D (original statement, kept for the record). `MARK_TYPE` — provenance by construction
-
-Mark distance is depth-from-a-generating-AVar, so no type tuple can name
-what it separates. `PYC_NOMARK` defaults to 1, so it is OFF — but the code,
-the stage, and two `splitter_*` tests remain, and `tests/splitter_mark_type.py`
-still asserts it is *"the only stage that can break that symmetry"*. That
-claim is now false: `CS_DEF_PART` fires on the same fixture. Under the
-delete-don't-default rule this should go, and the test's claim be updated.
-
-### E (original statement, kept for the record). `PYC_CPA` — cartesian-product fan, default 0
-
-`tests/splitter_cartesian_product.py`'s own header describes it as *"fanning
-the contour into one per single CreationSet"*. That is a fan by the
-definition above. Off by default; audit and delete or justify.
-
-### F. AUDITED 2026-09-08 — no further arbitrary splitting found
-
-Each lever put to the two questions. **None is a fan; three are not
-splitting mechanisms at all**, which is why they read as suspicious from
-their names alone.
-
-| lever | what it actually does | verdict |
+| mechanism | what it did | when |
 | --- | --- | --- |
-| `PYC_SELFPROD` (6) | validity/eviction test for an ALREADY-RECORDED split decision — "evict only the disjoint complement". Decides whether a past split is still valid; creates no partition. | not a splitter |
-| `PYC_HARDREUSE` (5) | detach-route contour REUSE. Reuses an existing contour instead of minting one, so it REDUCES contours. The opposite of a fan. | not a splitter |
-| `PYC_SETTERGATE` (0) | lifts the SETTER stage's quiescence gate. Its comment draws the analogy to `PYC_RECVFAN=2`, but the cases differ in the way that matters: RECVFAN lifted a gate so a FAN could run earlier, this lifts one so a DEMAND-DRIVEN stage can. | not arbitrary (dead lever) |
-| `SETTER` / `SETTER_OF_SETTER` | `split_css` groups starters by `same_eq_classes(v->setters, av->setters)`. Demand = the setter confluence; parts = the distinct setter equivalence classes. | demand-driven |
+| `PYC_RECVFAN` | one method ES per receiver CreationSet, no demand test; modes ≥2 also lifted a stage gate | `ede0210f` |
+| route 4's per-creation-point fan | every creation point got its own contour once any demand reached it; now partitions by assign-set signature (−37% container CSs) | `3e8dcb10` |
+| `kCsDefSplitRipe` | the coarsest rung waited on a clock (3 passes), not on the finer rungs declining | `ede0210f` |
+| `split_es_by_call_site`'s fan | one group per in-edge | `e4edc2c3` |
+| `kCsDefSplitMax` and the caller caps | refused on a count, not on the partition the demand names | `20f76f27`, `e4edc2c3` |
+| `PYC_CSSPLIT=1` | a split EntrySet minted a fresh CreationSet: a contour split because its surrounding contour split (−26% container CSs on removal) | 2026-09-08 |
+| `PYC_CSDEFPART=2` fan fallback | fanned when a non-container CS had no flow graph; replaced by giving plain classes a content channel (`cs_content_avars`) | 2026-09-08 |
+| `MARK_TYPE`, `split_ess_setters_marks`, `split_with_type_marks` | mark distance is depth-from-a-generating-AVar: provenance | 2026-09-08 |
+| `CARTESIAN_PRODUCT` (`PYC_CPA`) | fanned every positional formal with 2..N CSs; zero references to any violation | 2026-09-08 |
+| `PYC_CSPEEL2`, `PYC_CSFAN`, `PYC_CONFLEVEL`, `PYC_NOOPSPLIT`, `PYC_NUMSPLIT`, `PYC_SETTERGATE=3`, `PYC_ESDEMAND` | built, measured non-monotone or inert, deleted (see "Dead ends") | 2026-09-15..17 |
 
-**Whole-file sweep for the fan shape**, to catch what the lever-by-lever
-pass might miss. Every surviving `new CreationSet(...)` inside a
-per-item loop, and every `dec->groups.add`, is keyed:
+## Still in the tree
 
-| site | key |
-| --- | --- |
-| `split_css` | setter equivalence class (+ ledger route for cross-pass stability) |
-| `cs_peel_group` (ladder routes 1/3) | the assign-set analysis; declines unless a PROPER subset moves |
-| `cselem_shape_canon` | element SHAPE, with canonical reuse |
-| `decide_entry_set_split` | edge type-compatibility groups |
-| `split_es_by_call_site` | assign-set signature |
+### D. `MARK_SETTER` / `MARK_SETTER_OF_SETTER` are LIVE — the "done" claim was false
 
-**So the audit is complete for everything except B.** Every arbitrary
-mechanism found has been removed; what remains partitions on something the
-demand names.
+A 2026-09-21 entry here said all four mark splitters and the mark
+scaffolding were deleted, with `kNumFAPassStages = 8`. **That never
+landed.** At `3f36072b`, `fa.cc:11268-11337` still runs
+`build_joint_type_marks` → `collect_cs_marked_confluences` →
+`compute_setters(..., AKIND_MARK)` → `split_for_setters`, and `AVar::mark_map`,
+`MarkMap` and all 12 `FAPassStage` values are still in `fa.h`.
 
-### D. Mark-based splitting — DONE 2026-09-21
+What DID land is its stated prerequisite. `voronoi2` failed without
+MARK_SETTER because `sym_nil->var` picked up `{None, Site}` from container
+slots and codegen stopped emitting `NULL` for it. That codegen fix is at
+`cg.cc:3707` (`v->sym == sym_nil || v->type == sym_nil_type`).
 
-**All four mark splitters and all mark scaffolding removed.** The accounting:
+**Next:** delete the stage and the mark scaffolding. Measure `voronoi2`
+(compile_rc=1 today, for other reasons) and `plcfrs` (the only program
+where it fired, and where it removed contours). Retire the
+`mark_distance_skew` / `mark_setter_skew` `.known_issue` sidecars and
+`cpa_mark_enabled` / `mark_why_enabled` with it. *Stop condition:* if a
+program that works today regresses, find the demand the mark split was
+standing in for; do not keep the mark stage.
 
-| mark splitter | gated by `PYC_NOMARK`? | status |
+### Stage 5's per-CreationSet fan in `split_edges`
+
+`split_edges` (the `fdynamic` path) builds one filtered EntrySet per
+CreationSet in the receiver's type, so its partition size is the CS count.
+It survived because stage 5 is starved (157). `PYC_SPLITEDGES2=1` bounds it
+to two groups and measured behaviour-neutral (148 Part 4). Since
+2026-09-26 it also DECLINES when every receiver CS is identical by type
+(`cs_slot_sig_equal`; see [134](134-remove-the-frontend-forced-split-opt-in.md)).
+**Land the two-group bound as the only behaviour and delete the flag.**
+
+### `SETTER_OF_SETTER`'s confluence test has no type condition
+
+Found in [074](closed/074-FA-cross-pass-oscillation-plan.md): before the
+parent-first gate, its main target was `__list_iter__.position`, always
+`int64`, with a setter count growing every pass (348 → 1212). Nothing there
+observes a distinction. `PYC_SOSDEMAND=1` (acting only on members whose
+type is a union) exists and is default 0. Decide it with the two-question
+test.
+
+### Off-by-default levers — inventory at `3f36072b`
+
+Every one below is a `getenv` in `fa_flags.cc` or `fa.cc` that alters
+splitting or routing. **DELETE** means measured dead, measured
+non-monotone, or arbitrary by the test above. **MEASURE** means untested
+since `PYC_CSDCPA1=2` became the default, so decide by a same-binary corpus
+`check` A/B. **PENDING** means it is a correct mechanism waiting on a named
+issue.
+
+| lever | origin | verdict |
 | --- | --- | --- |
-| `split_ess_for_mark_type` (MARK_TYPE) | yes, and off at the default | **removed** |
-| `split_ess_setters_marks` | yes, but its threshold was `< 2` so it was **ON** | **removed** |
-| `split_with_type_marks` (VIOLATION fallback) | **not gated at all** | **removed** |
-| `MARK_SETTER / MARK_SETTER_OF_SETTER` | **not gated at all** | **removed** |
-
-**Unblocking `voronoi2` without marks.** `MARK_SETTER` had previously been kept
-because disabling it caused `voronoi2` to fail with C++ compilation errors:
-`error: no matching function for call to '_CG_f_16314_135'` (`t1 = _CG_f_16314_135(__new__)(/* None 101 */ g1, 0)`:
-no conversion from `_CG_ps18546` (`Site*`) to `_CG_ps18563` (`Edge*`)).
-Root cause: `sym_nil->var` (the singleton global `None`) was having its inferred type polluted with `{None, Site}`
-(because `make_kind` attached `sym_nil->var` to container slots `cs->vars[0]` initialized with `None`, and writes
-into those list slots flowed into `sym_nil->var`'s AVars). Because `sym_nil->var->type != sym_nil_type`,
-`cg.cc:3654` failed to emit `"NULL"` and instead emitted `_CG_ps18546 /* None 101 */ g1;`.
-`MARK_SETTER` had merely masked this by splitting `Halfedge.__new__` so `default_wrapper` called a clone taking
-`_CG_nil_type`.
-Fixed surgically in `ifa/codegen/cg.cc`:
-- Line 3654: `if (v->sym == sym_nil || v->type == sym_nil_type) { cg_set_string(v, "NULL"); continue; }`
-- Line 1772: in `write_send_arg`, `bool arg_is_voidish = (v->sym == sym_nil) || ...`
-With this fix, `voronoi2` compiles and runs cleanly without `MARK_SETTER`.
-
-**All remaining mark scaffolding deleted:**
-- `MARK_TYPE`, `MARK_SETTER`, `MARK_SETTER_OF_SETTER` stages removed from `FAPassStage` (`kNumFAPassStages = 8`), and their execution blocks removed from `extend_analysis`.
-- Mark helper functions deleted: `build_type_mark`, `build_joint_type_marks`, `build_setter_mark`, `clear_marks`, `collect_cs_marked_confluences`, `different_marked_args`, `cpa_mark_enabled`, `mark_why_enabled`, `report_markwhy`.
-- Mark data structures deleted: `AVar::mark_map`, `MarkMap`/`MarkElem`, `AKIND_MARK`, `SPLIT_VALUE`, `fmark`.
-- Verified clean build (`make clean && make test`: 58/0 unit tests, 16 IR phases clean, pyc C and LLVM e2e 0 failed, dparse and links clean).
-- Sweep verified: `cs/shapes` dropped from 2118/625 (3.39) to 2104/625 (3.37). `voronoi2` no longer fails C++ compilation.
-
-**The lesson, and it is the same one twice:** "is it off by default" is the
-wrong question. Four mark splitters existed — one gated and off, one gated
-and on, two not gated at all. Only auditing CALL SITES found them, and I
-declared victory after the first two because the flag's name implied it
-covered everything.
-
-### D, first and second passes: what was removed
-
-`split_with_type_marks` ran as the VIOLATION stage's fallback when type
-splitting found nothing. It is mark-based — provenance — and D's first pass
-missed it because, unlike the other two, **it was never gated by
-`PYC_NOMARK`**, so deleting that flag did not touch it. Found by asking
-which callers still pass `SPLIT_MARK`.
-
-Removed (86 more lines, with `collect_es_marked_confluences` and
-`build_type_marks` following it). Measured first: pyc suite 313 / 0, corpus
-verdicts identical on all 77, container CreationSets unchanged at 2736. Like
-the other two it fired on exactly one program, `plcfrs`, where turning it
-off REMOVED contours (ess 1094 → 1088).
-
-`SPLIT_MARK` is now passed nowhere, so `fmark` is always 0 and
-`cur_split_type_only = (!fsetters && !fmark)` simplifies to `!fsetters`.
-The `#define` is gone.
-
-**The lesson:** "off by default" was never the right thing to check. Three
-mark splitters existed; one was gated and off, one was gated and *on* (the
-`< 2` threshold), and one was not gated at all. Only auditing the call sites
-found all three.
-
-### The HARDREUSE follow-up — hypothesis REFUTED, mode 5 stays
-
-The suspicion was that mode 5's extra condition had gone stale, since its
-rationale cites *"a setter- or MARK-driven split"* and marks are now gone.
-Half of it is indeed dead — that is what the `!fmark` simplification above
-records. **The other half is load-bearing, and measurably so.**
-
-Corpus, mode 5 (default) vs mode 4:
-
-| | mode 5 | mode 4 |
-| --- | --- | --- |
-| compile failures | 2 | **7** |
-| total ess | 27952 | 27689 (−263) |
-| total css | 98064 | 97685 (−379) |
-
-Mode 4 loses **`chaos`, `dijkstra2`, `plcfrs`, `sudoku5`, `webserver`** to
-compile failure — and `chaos` and `sudoku5` currently WORK — to save about
-1% of contours. Per-program it is a genuine trade rather than a uniform
-one: mode 5 is better on `plcfrs` (ess 1088 vs 1123) and mode 4 better on
-`go` (454 vs 622), with `chess`, `linalg` and `sunfish` identical.
-
-So mode 5 keeps its default. The follow-up is CLOSED, not deferred: the
-question was asked, measured, and answered against the hypothesis.
-
-### The original follow-up note
-
-`PYC_HARDREUSE`'s mode 5 exists because *"a setter- or MARK-driven split
-can produce two contours with identical argument types on purpose"*. Marks
-are gone as of D, so half that rationale is stale and mode 5's extra
-condition may now be over-conservative — i.e. it may be refusing reuse that
-is no longer ambiguous. Worth re-measuring modes 4 and 5 against each other
-now. It is a REUSE question (possibly too FEW merges), not an arbitrary-
-splitting one, so it does not block this issue.
-
-### F (original list, kept for the record). Not yet audited
-
-`PYC_SELFPROD` (default 6), `PYC_HARDREUSE` (default 5), `PYC_SETTERGATE`,
-and the `SETTER` / `SETTER_OF_SETTER` stages' partitioning. Each needs the
-two-question test applied and the answer recorded here.
-
-## Order of work — within THIS audit (A–F)
-
-*The flag flip's ordering is [129](129-plan-demand-driven-creation-set-splitting.md), the single integrated plan. This section sequences only this issue's own A–F removals.*
-
-
-B is the goal (it is what `PYC_CSDCPA1` exists to retire) but depends on
-143/144/145. A is the largest live violation on the DEFAULT path and is
-independent of the flag. C is the smallest and is a regression I introduced.
-D and E are deletions of dead-but-sanctioned code.
-
-**A, C, D and E are DONE**; **F** audited and cleared. (E's verdict was
-corrected — it IS arbitrary — and the CARTESIAN_PRODUCT splitter was then
-removed; only `PYC_CPAMARK`, ifa/074's unrelated naming mechanism, still
-carries the letters. Its replacement — demand plus dispatch-aware receiver
-filtering — is still owed. `tests/splitter_cartesian_product.py` passes
-since 2026-09-25 by another route, so it no longer tests it; see the
-correction under B below. D completed
-2026-09-21: all four mark splitters and mark scaffolding deleted after
-root-causing and fixing `voronoi2`'s `None` codegen defect without marks.)
-Remaining: **B** as the flag flip.
-
-**What B actually needs — see [129](129-plan-demand-driven-creation-set-splitting.md),
-which is the single integrated plan and owns the ordering.** The table that
-stood here was measured 2026-09-09 and is stale: it named `bh`, `richards`
-and `sudoku5` as the three blockers, and `bh` and `richards` no longer fail
-under the flag at all.
-
-Re-measured 2026-09-12, `PYC_CSDCPA1=2`: suite 315/3 (one of the three is a
-benign `STAGES`-line re-bless), corpus 7 compile failures of which 2 fail at
-the default too. The **5 flag-only failures are two mechanisms**:
-
-| group | programs | owner |
-| --- | --- | --- |
-| element/slot union with no representation | sudoku3, sudoku5 (`plcfrs` resolved 2026-09-24 in (d)) | **E, below** |
-| layout / blind cast | chull, sudoku4 | [135](135-empty-sibling-contour-wins-the-clone-merge.md) |
-
-So **E is the critical path for the flag flip**, and it is this issue's own
-remaining debt: separating a formal that holds N tuple CreationSets, with
-demand plus dispatch-aware receiver filtering rather than a fan.
-`tests/splitter_cartesian_product.py` carries the `.known_issue` that flips
-to PASS when it lands.
-
-**Corrected 2026-09-25: the fixture flipped, and E did NOT land.**
-`tests/splitter_cartesian_product.py` compiles with no violation and
-`CALLS: direct=69 dynamic=0` since a09df260 made `PYC_ESBLOCK=1` the
-default: the shared `list.append` EntrySet splits and `CS_DEF_PART`
-separates the elements (`STAGES: TYPE_CONFL SETTER CS_DEF_PART`;
-`PYC_ESBLOCK=0` restores the violation). Its `.known_issue` is removed and
-its golden re-blessed. So the fixture no longer tests E. Receiver filtering
-for a formal holding N tuple CreationSets is still owed, and sudoku3/sudoku5
-are its test now, not this fixture. The fixture's program was byte-identical
-to `tests/splitter_mark_type.py`, so it was then DELETED; that test carries
-the same shape and the same golden.
-
-## Verification
-
-Each removal: the six CI gates, plus a corpus `check` sweep on BOTH arms
-(default and `PYC_CSDCPA1=2 PYC_CSLADDER=3`), reported as
-programs-differing-from-default and container CreationSets. A removal that
-loses corpus programs is not automatically wrong — see C, where declining
-cost five — but the trade must be measured and recorded, not assumed.
-
-## 2026-09-11: E's replacement, built and measured (`PYC_ESRECV=1`)
-
-The removed CARTESIAN_PRODUCT splitter's replacement, to the spec
-`tests/splitter_cartesian_product.py` already carried: *"demand (an
-unresolved dispatch or an irrepresentable union) plus dispatch-aware
-filtering of the RECEIVER, which in single-dispatch OOP is the position
-that determines dispatch."*
-
-### What it is
-
-A violation-driven split of the contour the violation is IN, at its
-receiver position:
-
-- **Demand**: a `BOXING` violation — "an irrepresentable union". A union
-  that merely EXISTS is a fact and is not enough; that is exactly what got
-  CARTESIAN_PRODUCT removed.
-- **Position**: `positional_arg_positions[1]` — position 0 is the function
-  symbol. Verified empirically rather than assumed: the probe reports
-  `recv=self` on every method it fires on.
-- **Parts**: the in-edges grouped by WHICH OF THE OFFENDING BASIC TYPES
-  each caller's receiver brings, then coalesced to **two** (the minimum
-  that separates; re-derive and ask again), exactly as ifa/133's ES-block
-  split does.
-
-The bound is the point. Splitting one contour per receiver CreationSet IS
-the cartesian product: on `sudoku5` the receiver spans 19-27 CreationSets,
-and that version **did not finish inside a 900 s timeout**, against well
-under a minute at the default. Bounding by the demand's union instead
-gives `basics=2`, and the measured profile is **626 declines to 19
-splits** — it refuses wherever the callers bring the same basics, which is
-almost everywhere.
-
-### It runs unconditionally, because stage 5 is starved
-
-Stage 5 (VIOLATION) is where this belongs and it NEVER RUNS on the
-programs that need it: gated on `!analyze_again`, and a finer stage claims
-every pass. Measured on `sudoku5`, every pass is
-`analyze_again=1 -> starved` with 573-750 violations unacted on — the same
-starvation ifa/133 recorded for `bh`. Lifting that gate is not available:
-it was measured at 16 suite tests. So this runs unconditionally next to
-CS_DEF_PARTITION, gated only on the demand — ifa/133's answer to the same
-wall.
-
-### Measured, one binary, env toggled
-
-| arm | cfail | warns | container CS |
-| --- | --- | --- | --- |
-| default | 2 (othello3, rdb) | 43 | 2740 |
-| default + ESRECV | **4** (+ plcfrs, sudoku5) | 41 | 2726 |
-| flag + ESBLOCK | 4 (othello3, plcfrs, rdb, sudoku5) | 42 | 2393 |
-| flag + ESBLOCK + ESRECV | **3** (othello3, plcfrs, rdb) | 43 | 2401 |
-
-**It does what E is for**: the splits land on exactly the contours ifa/128
-identified —
-
-```
-[esrecv] es=180 fun=__lt__ recv=self spans=15 basics=2 edges=8 -> 2 groups
-[esrecv] es=324 fun=__eq__ recv=self spans=14 basics=2 edges=6 -> 2 groups
-```
-
-— and `sudoku5` goes from failing to compiling on the flag arm.
-
-**And it is not safe standalone.** At the default arm it COSTS plcfrs and
-sudoku5. It only pays in combination with ifa/133's ES-block split. Opt-in
-until that is understood: a mechanism that helps only in one combination
-is not yet understood, whatever its trace looks like.
-
-It also is not inert at the default arm — `mark_recursive_single_site`
-gains a third `%walk` contour — so the fa-init goldens move even without
-the flag.
-
-### Re-measured 2026-09-15, after ifa/152 + ifa/154 — the blocker MOVED
-
-The table above predates `PYC_CSDCPA1=2`, `PYC_CSBACKTRACK` and
-`PYC_CSCONTENT` all becoming the default. `plcfrs` and `sudoku5` — the two
-programs ESBLOCK used to cost — **now compile without it**, so the stated
-reason for keeping it opt-in is gone. A new one took its place.
-
-Current default is 3 compile failures (`othello3`, `rdb`, `sudoku4`).
-`PYC_ESBLOCK=1` moves the set, it does not shrink it:
-
-| arm | compile failures | total warnings | container CS / shapes |
-| --- | --- | --- | --- |
-| default | 3 (othello3, rdb, **sudoku4**) | 1364 | 2051/614 = 3.34 |
-| + ESBLOCK | 3 (othello3, rdb, **softrender**) | 1341 | 2073/613 = 3.38 |
-
-**`sudoku4` is exactly what ESBLOCK is for.** Its `cs=1849` is a merged
-comprehension accumulator (6-9 creation points) whose element unions
-`{str, set, list}` — the three dicts' value types, `values`→str,
-`peers`→set, `units`→list, all built by
-`dict([(s, ...) for s in squares])`. Route 4 declines it on every pass with
-**"1 group: every creation point on the same assign sets"**, which is E's
-blocker verbatim, because the accumulators share one `append` EntrySet.
-With ESBLOCK: blind casts 1 → 0, `ELEMCONF` confluences 6 → **0**,
-unresolved calls 32 → 8, `_CG_any` declarations 1062 → 675.
-
-**But it costs `softrender`**, which is rejected with
-`'x'/'y'/'z'/'w' has mixed basic types: ( int64 float64 )`. That program
-really does mix them — `Vector4(0, 0, 0, 0)` at line 279 and
-`Vector4(tu, tv, 0, 0)` at 255 against a `w=1.0` default — and pyc's
-numeric coercion smooths it at the default. Under ESBLOCK it does not, and
-the analysis gets **much worse rather than merely different**:
-
-```
-softrender  ESBLOCK=0   final_pass=55   violations=60
-softrender  ESBLOCK=1   final_pass=101  violations=483
-```
-
-8x the violations. That is this issue's own **non-monotone diagnostic** —
-more splitting, worse results — so ESBLOCK stays opt-in on its own evidence,
-not on a preference for caution.
-
-#### Superseded 2026-09-24 — `PYC_ESBLOCK=1` is now the DEFAULT
-
-The paragraph above is kept for the reasoning, but its verdict no longer
-holds, for two reasons measured on `983ac5a4`:
-
-- **The `softrender` trade is gone.** `softrender` does not compile at
-  EITHER arm on this tree, so ESBLOCK no longer costs it anything.
-- **The current trade is favourable.** `check`, 77 programs, one binary,
-  env the only difference:
-
-  | | default (ESBLOCK=0) | ESBLOCK=1 |
-  | --- | --- | --- |
-  | compile_fail | 32 | 32 |
-  | run_fail | 14 | **13** |
-  | container CS / shapes | 2730/641 = 4.26 | **2461/662 = 3.72** |
-
-  Five rows move. **Gained:** `sudoku2` — compiles, runs, and MATCHES
-  CPython, the only `stdout_match=yes` anywhere in the diff — and
-  `webserver` (compiles). **Lost:** `dijkstra2` and `quameon`, both of
-  which already compiled and then died at RUN (`rc=124` / `rc=134`), so
-  neither was a working program. `sunfish` goes from a compiler TIMEOUT to
-  a clean diagnostic.
-
-  Fewer contours AND better outcomes is this issue's non-monotone
-  diagnostic pointing the right way.
-
-It is also what makes the comprehension accumulator's result-move in
-`build_list_comp_inner_pyda` safe. That move round-trips through
-`list.append`'s return (`P_prim_merge_in`'s `flow_vars`), and without this
-split every comprehension in a program shares ONE `append` EntrySet — the
-"1 group: every creation point on the same assign sets" decline below — so
-the round-trip becomes a program-wide element-union channel. `983ac5a4`
-deleted the move instead, which silenced `plcfrs` by cutting the edge
-rather than splitting the contour, and cost `sudoku2`. Splitting the
-contour keeps both.
-
-Ruled out by measurement, so they are not re-tried:
-
-- **`PYC_ESRECV=1` does not rescue it.** `softrender` needs ESBLOCK off
-  (`ESRECV` alone compiles it); `sudoku4` needs ESBLOCK on. The two
-  requirements are symmetric and ESRECV changes neither.
-- **The stall guard is not starving `sudoku4`.** It does trip
-  (`pass_limit_hit=1` at pass 19, 60 violations), but
-  `IFA_STALL_LIMIT=40 IFA_NONIMPROVE_LIMIT=40` makes it WORSE — pass 50, 82
-  violations, same blind cast. This is not the truncation ifa/152 hit on
-  `quameon`.
-
-**And ESBLOCK alone would not finish `sudoku4` anyway**: it compiles and then
-aborts with `"runtime error: matching function not found"` on
-`for s2 in u` in `peers`' comprehension, where `u` comes back `_CG_any` from
-a polymorphic `__list_iter__`/`__base_iter__` dispatch. Eight unresolved
-calls survive.
-
-### (a) ROOT-CAUSED 2026-09-15 — it is not a coercion bug
-
-**Numeric coercion behaves IDENTICALLY in both arms.** Measured with
-`PYC_DBG_NUMC`: **528** annotations either way, the same variable names, the
-same **405** of them whose narrow member is already a runtime value. So
-"ESBLOCK breaks coercion" — the framing above — is wrong and is withdrawn.
-
-What actually happens, each step measured:
-
-1. **ESBLOCK's split criterion cuts across the numeric distinction.** It
-   splits on the blocker it finds BY TEST, which has nothing to do with
-   argument basic types. On `softrender`:
-
-   | | `__init__` contours | of those, ONE FORMAL mixing int64+float64 |
-   | --- | --- | --- |
-   | ESBLOCK=0 | 71 | **0** |
-   | ESBLOCK=1 | 72 | **3** |
-
-   *(Corrected 2026-09-15. This table first read "142 → 144, 10 → 14",
-   which was wrong twice: `IFA_DBG_FUNES` prints its dump twice so every
-   count was doubled, and "mixing" was grepped as "the line mentions both
-   types", which also matches a contour whose DIFFERENT arguments are int
-   and float. Asked per formal, the real figure is 0 → 3 — a sharper
-   result, and in the same direction.)*
-
-   **And precision does not go DOWN: there is one MORE contour, not fewer.**
-   Each of the three mixed contours has exactly ONE in-edge, already
-   carrying `[int64 float64]`:
-
-   ```
-   es=638  arg0: int64#6 float64#86   <-- mixes
-     <- edge=2737 from=__new__ es=313 args= [int64#6 float64#86 ] ...
-   ```
-
-   So nothing was coalesced into them — the mix arrives pre-formed from the
-   caller. (ESBLOCK's "coalesce to 2 groups" step DOES fire on `softrender`,
-   measured `cs=1304 es=666 edges=3 -> 2 group(s)`, but it is not what
-   produces these three: a coalesced contour would show two in-edges with
-   different actual types, and these have one each.)
-
-2. **A previously-clean creation point acquires the mix.** `cs=2670`'s field
-   `x` is `float64` at ESBLOCK=0 and `int64 float64` under ESBLOCK — same
-   single creation point, different argument types reaching it.
-
-3. **The int is no longer a CONSTANT by then.** A pure-int `Vector4`
-   contour (`cs=2669`, `x: int64`) exists in BOTH arms — the program really
-   writes `Vector4(0, 0, 0, 0)` (line 279) and `a = b = c = 0` (252). FA does
-   not constant-fold `+`, so `Vector4.__add__`'s `self.x + r.x` yields a
-   **runtime** int64. `PYC_DBG_BOXWHY` names the sources exactly:
-
-   ```
-   [boxwhy] av#26520 'x' contour=ES num_coerce=float64 members: int64[runtime] float64[runtime]
-      <- av#77175 'x' in __add__ coerce=no : int64[runtime] float64[runtime]
-   ```
-
-4. **So coercion cannot repair it, by design.** The violating AVar IS
-   annotated (`num_coerce=float64`); `type_coerce_numeric_constants` rewrites
-   CONSTANTS only, and its own comment says so: *"Runtime (non-constant)
-   narrow members are left alone -- they would need an inserted conversion --
-   so their violations persist and are reported honestly."*
-
-**The structural statement.** Numeric coercion is a LOCAL repair: it fires
-where a mix is visible at one AVar, and it works by rewriting the narrow
-CONSTANT at that flow point. **A split can move the mix downstream, past the
-point where the constants were still visible** — the int gets consumed by
-arithmetic into a runtime value first, and arrives at the confluence
-uncoercible. Splitting and constant-based coercion are order-dependent in a
-way neither mechanism knows about.
-
-So the apparent paradox — "ESBLOCK adds precision, yet `softrender` ends up
-with MORE mixed formals" — is not a paradox and not a precision loss. The
-contours are not coarser; there is one more of them, and no mixed contour was
-formed by merging differently-typed callers. What moves is WHERE the int and
-the float meet, relative to where the int was still a constant. At
-`ESBLOCK=0` they meet while it is a constant and coercion rewrites it, so no
-formal is left mixed. Under ESBLOCK they meet after arithmetic has turned it
-into a runtime value, and coercion has nothing to rewrite.
-
-That also explains why more analysis room does not help: measured with
-`IFA_STALL_LIMIT=60 IFA_NONIMPROVE_LIMIT=60`, `softrender` is
-**bit-identical** — `final_pass=101 pass_limit_hit=0 violations=483`, same 4
-errors. It is a converged answer, not a truncated one.
-
-### Why FA does not constant-fold `self.x + r.x` — measured
-
-The obvious objection is that FA *should* fold `const + const`, which would
-keep the int a constant and let coercion rewrite it. **FA does fold.** The
-site is in the numeric primitive's transfer function:
-
-```c
-if (a->out->n == 1 && b->out->n == 1 && a->out->v[0]->sym->imm.const_kind &&
-    b->out->v[0]->sym->imm.const_kind)
-  ... fold_constant(p->prim->index, &a..imm, &b..imm, &imm) -> make_constant(...)
-```
-
-**The fold requires each operand to be exactly ONE CreationSet carrying an
-immediate.** `PYC_DBG_FOLD` (new) reports why each decline happens, and on
-`softrender` the relevant one is:
-
-```
-[fold] NO prim=prim_add in __add__: operand is not an immediate constant
-       a.n=1[int64 abstract]   b.n=1[? const]
-```
-
-So `r.x` IS a constant; `self.x` is a single **abstract** `int64`. One
-abstract operand is enough to decline.
-
-**It is NOT the per-variable constant cap**, which was the obvious suspect
-(`num_constants_per_variable = 1`: `type_cannonicalize` rebuilds any type
-holding two or more constants from their BASE types, silently). Measured with
-a `PYC_CONSTCAP` probe:
-
-| | mixed-basic errors | fold decline reason |
-| --- | --- | --- |
-| `ESBLOCK=1` | 260 | operand is not an immediate constant |
-| `ESBLOCK=1 PYC_CONSTCAP=4` | 289 | *unchanged* |
-| `ESBLOCK=1 PYC_CONSTCAP=16` | 289 | *unchanged* |
-
-Raising the cap makes it slightly WORSE and does not change the decline, so
-the constants are not being stripped at this operand — it is abstract for
-another reason, upstream. **That link is not yet identified** and is the next
-thing to chase for `softrender`.
-
-Worth recording even so: had the cap been the cause, raising it would not have
-helped either, because the two barriers are mutually exclusive. At cap 1 the
-constants collapse and `imm.const_kind` fails; above it they survive and
-`a->out->n == 1` fails instead. **A field legitimately holding several
-different constants can never fold**, whichever way the cap goes — the fold is
-defined only for a single immediate per operand.
-
-The general capability that is missing is the one `type_num_fold` stubs out in
-its first line:
-
-```c
-AType *type_num_fold(Prim *p, AType *a, AType *b) {
-  (void)p;
-  p = 0;  // for now
-```
-
-With the operator discarded it computes the result KIND over the cross product
-of operand types and never the VALUES. Folding `{0,1} + {0,1}` to `{0,1,2}`
-would need the operator kept, plus a cap large enough to hold the result.
-
-### Coercion as a DEMAND SOURCE — feasibility measured 2026-09-15
-
-**Author's suggestion: let the coercion failure feed a demand, and demand-split
-to separate the constants.** It fits this architecture exactly — a demand is
-"something OBSERVING a distinction and being unable to proceed", and coercion
-meeting a mix it cannot repair is precisely that. It also gives the partition a
-TYPE-shaped key rather than a provenance one: the demand names the widest type
-(`float64`) and the offending member (`int64`).
-
-Two measurements, one negative and one positive.
-
-**It cannot be keyed at the point of observation.** Every in-edge of every
-mixed contour already carries the union — the fixed point is total, exactly as
-for `append`/`{A, B}`:
-
-```
-es=791  arg2: int64#6 float64#86   <-- mixes
-  <- edge=6327 from=transform es=1312 args= [..] [int64#6 float64#86 ] [int64#6 float64#86 ]
-  <- edge=1003 from=mul       es=180  args= [..] [int64#6 float64#86 ] [int64#6 float64#86 ]
-  ... 10 edges, every one identical
-```
-
-"Can this contributor carry `int64`?" answers YES for all of them, so the
-demand's own type names no partition. That is the wall `PYC_CSPEEL2` hit, and
-it is why a split AT the observation point cannot work. (Note these are
-NUMERIC `__add__` contours — `arg1: int64`, `arg2: int64|float64` — fed by
-`transform`, `mul` and `length`, i.e. arithmetic operands, not a Vector4
-receiver union.)
-
-**But the distinction survives upstream, and there is a lot of it.** Walking
-the full backward closure from each violating AVar (`PYC_DBG_BOXPURE`, new)
-and classifying every AVar as pure-int, pure-float or mixed:
-
-```
-BOXPURE av#12170: upstream pure-int=665  pure-float=5693  mixed=728
-BOXPURE av#12716: upstream pure-int=641  pure-float=5663  mixed=639
-```
-
-**~641 pure-int and ~5663 pure-float AVars sit above ~639 mixed ones.** The
-mix is NOT born at a single site; it forms at joins, and above those joins the
-two sides are cleanly distinct. So the proposal is implementable: the demand
-is coercion's failure, and it has to be BACKTRACKED (ifa/152's walk) to the
-boundary — the nearest mixed AVar whose backward sources include both a
-pure-int and a pure-float source. That boundary is the confluence in this
-issue's own sense, and the key there IS type-shaped.
-
-That is a feasibility result and a design, not an implementation. What it
-needs: a new demand source in `coerce_annotate` for the case it currently
-abandons (a narrow member that is not an immediate), the backtrack to the
-pure/mixed boundary, and a split there — with the usual caution that the
-partition must be bounded by the demand (two numeric kinds) and never by a
-count of contributors.
-
-#### "We already split on type — how is this different?"
-
-Two reasons, and the code states both itself.
-
-**1. The existing type split is a LOCAL comparison, and the union blinds it.**
-`TYPE_CONFLUENCE` splits when an EDGE's type differs from the CONTOUR's
-(fa.cc, `if (etype->n && stype->n && etype != stype) return ++ic_arg, 0;`).
-Once the union has propagated back to the callers, every edge equals the
-formal and there is nothing to compare — recorded a few hundred lines below,
-for the element-channel case:
-
-> Once an element union forms, every writer carries the whole union, so
-> `etype == stype` on every edge and TYPE_CONFLUENCE HAS NOTHING TO SEE.
-
-That is not a missing key; it is self-blinding. The union that needs splitting
-is the thing that makes the edges agree. Measured above: all ten of `es=791`'s
-in-edges are byte-identical at both numeric positions.
-
-**2. And the demand test that would otherwise nominate it SKIPS numerics on
-purpose.** `elem_irrepresentable` ends `return nb > 1 && !all_num;`, and the
-comment says why:
-
-> a pure-numeric mix — `{int64, float64}` is resolved by `coerce_annotate`, so
-> flagging it would split what coercion fixes.
-
-So `{int64, float64}` is **not a demand anywhere in the ladder, by design** —
-the whole system delegates it to coercion.
-
-**That assumption is the gap, and it is what the proposal closes.** Nothing
-watches the case where coercion is delegated the mix and cannot repair it.
-Making coercion's FAILURE the demand is not a second type-split: it supplies
-the one signal the ladder deliberately does without, and it must be asked
-where the paths are still pure rather than where the union is observed —
-because at the observation point, by construction, there is nothing to see.
-
-**Also measured, so it is not re-tried:** `PYC_ESRECV=1` is NOT the answer,
-despite compiling `softrender` on its own. The four arms are exactly
-anti-symmetric, and ESRECV is orthogonal to the ESBLOCK trade:
-
-| | `softrender` | `sudoku4` |
-| --- | --- | --- |
-| default | compiles | **fails** |
-| `ESRECV` | compiles | **fails** |
-| `ESBLOCK` | **fails** | compiles |
-| `ESBLOCK ESRECV` | **fails** | compiles |
-
-### What a fix would have to be
-
-Not "make coercion run more". The candidates, none cheap:
-
-- **Widen at construction.** Recognise that the pure-int `Vector4` contour
-  will confluence with float ones downstream and widen it there. That is a
-  whole-program decision, not the local one coercion makes.
-- **Insert a conversion for runtime narrow members.** Exactly what the
-  comment declines. It is also a bigger semantic step than the constant
-  rewrite, and [145](145-numeric-coercion-is-not-gated-on-permissive-mode.md)
-  says any automatic coercion is permissive-only.
-- **Make the split respect the numeric distinction** — but ESBLOCK's whole
-  point is to split on the blocker, so this is really "find a narrower
-  mechanism", which is (b).
-
-### (b) TRIED AND REJECTED 2026-09-15 — `PYC_CSPEEL2`, a negative result
-
-The narrower mechanism was built and measured. **It does not work, and the
-reason is this issue's own diagnostic.**
-
-The idea: ifa/144 removed the unconditional fan because the demand says
-"these must be separated", never "all N are mutually distinct", so one
-contour per creation point makes the partition size a COUNT. That objection
-is exact — and it does not apply at **N == 2**, where "separate them"
-determines the partition uniquely and there is no grouping left to get wrong.
-So: when the content key gives one group, there are exactly two creation
-points, and a real demand names the CreationSet, peel them apart.
-
-The demand had to be widened to get there. `listcomp_element_separation`'s
-element is `{A, B}` — two unrelated CLASSES, which ARE representable as a
-tagged pointer — so `cs_elem_irrepresentable` is false and the demand for
-that shape is the type VIOLATION (`viol_named`) instead.
-
-**It fixes the minimal fixture**: `listcomp_element_separation` goes 1 warning
-→ 0, with PEEL2 firing exactly once. That confirms the diagnosis — the two
-`prune` accumulators really are two creation points of one CreationSet in one
-contour, and nothing type-shaped separates them (measured: every `append`
-in-edge carries `[A B]`, because the union is a fixed point).
-
-**And it fails everything else:**
-
-| corpus `-m check` | default | + `PYC_CSPEEL2` |
-| --- | --- | --- |
-| compile failures | **3** (othello3, rdb, sudoku4) | 4 (+ **pylife**) |
-| container CS / shapes | **2051 / 614 = 3.34** | 2245 / 618 = 3.63 |
-| `pratio` | **2.26** | 2.45 |
-
-It adds a compile failure, adds **9.5% more contours**, and does not fix
-`sudoku4` — which instead trades its blind cast for
-`'x' has mixed basic types: ( list tuple int64 str set )`, a worse union than
-the one it started with.
-
-**By this issue's non-monotone diagnostic that makes PEEL2 arbitrary.** It
-passes the two-question test on paper — the demand decides whether, and at
-N == 2 the handle has no freedom — but removing it SAVES 194 contours and a
-compile failure, so it is not earning its keep. Per CLAUDE.md the lever is
-deleted rather than defaulted off; it is recorded here instead so the next
-attempt does not rebuild it.
-
-**What the negative result teaches.** "Nothing type-shaped separates these two
-creation points" is true here and is NOT sufficient justification to peel
-them. The fixed point that makes the types identical at every formal is a
-symptom of a shared WRITER contour, and peeling the reader does not unshare
-the writer — it just mints a contour whose element is still the union, and
-the extra contour propagates. ESBLOCK attacks the writer, which is the right
-target, and its own cost (`softrender`, above) is a separate defect in how
-its split criterion interacts with numeric coercion.
-
-So `sudoku4` remains open, and the next attempt should be at the WRITER: an
-EntrySet split keyed on something narrower than ESBLOCK's found-by-test
-blocker, without disturbing contours whose distinction is numeric.
-
-### (c) RESOLVED 2026-09-21 — Scoped `ESBLOCK` to container element writers; defaulted ON
-
-**The trade between `sudoku4` and `softrender` is resolved.**
-
-1. **Root cause of `softrender`'s breakdown under `PYC_ESBLOCK=1`:**
-   `find_blocking_es` searched for any EntrySet on `g->paths` with `nin > 1`.
-   On `softrender`, non-container CreationSets (`Vector4`, `Matrix`, `Gradients`)
-   had flow graphs built over member variables (`cs->vars`).
-   `find_blocking_es` nominated `Vector4.__init__` as a "blocker" and split it.
-   Splitting `Vector4.__init__` separated int-initialized `Vector4(0, 0, 0, 0)`
-   from float-initialized instances, pushing the constant int `0` through runtime
-   arithmetic (`Vector4.__add__`'s `self.x + r.x`), turning it into a runtime `int64`.
-   Because numeric coercion only rewrites constants, runtime `int64` mixed with
-   `float64` could not be coerced, exploding violations 60 → 483.
-
-2. **The fix:**
-   Scope `find_blocking_es` strictly to non-numeric container element writers:
-   - Candidate `cs` must be a container CreationSet (`cs->sym && cs->sym->element && cs->added_element_var`).
-   - Candidate `cs` element must not be pure-numeric (`!cs_elem_is_pure_numeric(cs)`), ensuring numeric coercion handles `{int64, float64}` without splitting them into runtime values (which also unblocks `quameon`).
-   - Candidate `aes` must not be a constructor (`__init__` or `__new__`).
-   - Enabled `PYC_ESBLOCK=1` by default in `esblock_enabled()`.
-
-3. **Measured results:**
-   - `softrender`: compiles with 0 errors and identical warnings (exit 0).
-   - `sudoku4`: compiles without the blind cast layout violation under `PYC_ESBLOCK=1`.
-   - `quameon`: compiles with 0 warnings (exit 0).
-   - `make test`: All gates green (58/0 unit tests, 16 IR phases clean with 2 known, pyc C backend e2e 0 failed, pyc LLVM backend e2e 0 failed, V-language LLVM smoke passed, dparse passed, links clean).
-   - `corpus_sweep.sh -m check` (`check__default__e1ba7f10+2943c25f`): compile failures drop 34 → 33 (`quameon` now compiles and runs, `webserver` now compiles and runs).
-
-### What it does NOT fix (historical)
-
-`plcfrs` was the remaining blocker: its union spanned classes and basics across dictionary lookups and comprehensions, failing compilation and runtime.
-
-### (d) RESOLVED 2026-09-24 — `plcfrs` compiled and verified on C and LLVM backends
-
-`plcfrs` compiles cleanly under default `PYC_CSDCPA1=2` and executes byte-for-byte identical to CPython 3 on both backends.
-
-1. **Frontend scope & expression typing**:
-   - `python_ifa_build_syms.cc`: `build_comprehension_body_syms` marks comprehension iteration variables as `is_local = 1` and `nesting_depth = LOCALLY_NESTED`, isolating them across list/dict comprehensions.
-   - `python_ifa_build_if1.cc`: conditional branches with already-boolean expressions (`is_boolean_expr`) bypass redundant `__pyc_to_bool__` calls, preventing spurious union generation.
-
-2. **Builtin module completeness (`__pyc__`)**:
-   - `01_str.py`: Added standard `splitlines`, `rjust`, `ljust`, and `center` implementations.
-   - `07_dict.py`: Added `__delitem__` and `setdefault` support.
-
-3. **Codegen clone deduplication & LLVM type safety**:
-   - `codegen_common.cc` & `cg.cc`: `identical_c_signature` compares C types across parameters and return values when types differ only structurally; untagged candidates collapse identical clones to direct dispatch.
-   - `cg_emit_llvm.cc`: `discover_phi_targets` skips `sym_void` and `sym_void_type` in `get_concrete_type` when searching phi equivalence classes, preventing void arms from corrupting integer index allocas to `ptr` (which triggered `@llvm.trap` / `ud2` in `list::pop`). Added `ConstantPointerNull` materialization for `sym_nil` / `sym_nil_type` and preserved nil moves.
-
-4. **Measured results**:
-   - `shedskin_examples/plcfrs/plcfrs.py` compiles under `./pyc` and `./pyc -b` with default `PYC_CSDCPA1=2`.
-   - Runs cleanly in both interactive demo and batch CLI modes (`grammar lexicon sentences`), matching CPython 3 byte-for-byte.
-   - All 6 CI test gates (`make test`) pass with zero regressions.
-
+| `PYC_CSM` | 075 element-CS method fan | DELETE — never runs; forced, errors 0 → 9 (157) |
+| `PYC_SPLITHOMO` | 157 tuple homogeneity / slot-signature key | DELETE — too coarse (1) / not a fixed point of its own decision (2) |
+| `PYC_SETTERMIN` | 157 coarsest setter partition | DELETE — it broke the dict split; its "exposed bug" was its own damage (157 Correction 2) |
+| `PYC_SETTERGATE` | lifts the SETTER stage's gates | DELETE — lifting a gate is permission without a reason; `=2` is +31% CSs, non-monotone |
+| `PYC_CSELEM` | 101 mint-time element canon | DELETE — mint-time keying is a dead frame (closed/128) |
+| `PYC_CSSITELESS`, `PYC_CSRESPLIT` | 129 step 4 | DELETE — worse on 4 of 5 / inert |
+| `PYC_CSDEFREUSE` | 074 join-by-element | DELETE — regresses sudoku5, sunfish |
+| `PYC_CSCALLSITE` | 129 third clause | DELETE mode 1/3 (fans); mode 2 measured a corpus-wide wash |
+| `PYC_ESPATH` | 148 split the whole path in one pass | DELETE the selector (fans; −3 programs). The scheduling idea stays in 157. |
+| `PYC_ESRECV` | 146 E receiver split on BOXING | MEASURE — costed plcfrs/sudoku5 standalone before ESBLOCK was default |
+| `PYC_CANON`, `PYC_TYPEKEY`, `PYC_ROUTEGATE`, `PYC_GSIGRET=0` | 074 routing controls | DELETE — controls for a closed investigation |
+| `PYC_CPAMARK` | 074 mark/CPA naming | DELETE with MARK_SETTER |
+| `PYC_VIOLCS`, `PYC_CSMEMBER` | 143 violation → route 4, member key | MEASURE — they fixed bh pre-flip; bh compiles without them now |
+| `PYC_ELEMSETTER`, `PYC_CSSLOTDEMAND`, `PYC_CONFDEMAND`, `PYC_ESDEFS1`, `PYC_SIZEOF_VIOL`, `PYC_CONFNIL` | 129/133 candidate-set variants | MEASURE, and DELETE any that are inert |
+| `PYC_SLOTARITY` | 132 cross-CS arity demotion | PENDING [132](132-arity-is-representation-not-provenance.md) — correct, does not pay yet |
+| `PYC_RETDEMAND` | 157 ES demand → route 4 link | PENDING [157](157-FA-all-demand-must-be-evaluated-at-quiescence.md) |
+| `PYC_TYPEMOVE` | 148 terminate on a fixed point | PENDING 157 — 2 suite tests |
+| `PYC_SPLITEDGES2`, `PYC_FILTEREQ` | 148 stage-5 bound / exact filter reuse | land SPLITEDGES2 (above); FILTEREQ neutral, DELETE |
+| `PYC_SOSDEMAND` | 074 | decide (above) |
+
+Audited and **not** splitters (keep): `PYC_SELFPROD` (6), `PYC_HARDREUSE`
+(5; mode 4 costs chaos, dijkstra2, plcfrs, sudoku5, webserver), `PYC_CSKEY`
+(3), `PYC_ROUTECYCLE` (3), `PYC_ROUTESTABLE` (1). The demand-driven stages
+`SETTER` and `split_css` are keyed on setter equivalence classes.
+
+## Removal procedure
+
+Six CI gates (`make test`), then a corpus `./corpus_sweep.sh -m check` A/B
+from ONE binary with the env toggled
+([147](147-analysis-result-depends-on-the-binary-not-the-inputs.md): a
+1–2-program delta between two builds is noise). Report per-program
+`compile_rc` / `run_rc` / `stdout_match` and container CS / shapes. A
+removal that loses a working program is not automatically wrong, but the
+trade is recorded, and the lost program is root-caused rather than used as
+a reason to keep the lever: *"if some random arbitrary split happens to
+cause a program to compile then it was hiding another bug"* (author,
+2026-09-16).
+
+## Dead ends — do not rebuild
+
+- **A compatibility rule for receiver identity** (`PYC_RECVEXACT`): 48
+  suite failures. A predicate can only reject an edge from an existing
+  contour. It cannot break up a receiver that arrives already unioned.
+- **Receiver-keyed method contours as identity** (shedskin's `dcpa`
+  dimension, `func.cp[dcpa][c]`): structural. It multiplies contours
+  whether or not anything demands it. pyc's argument-type identity
+  already subsumes dispatch filtering wherever the receiver is an
+  argument: `self` is a formal, and a genuinely polymorphic `o.go()`
+  splits per class (`FUNES go es=57 [A]`, `es=58 [B]`).
+- **Unconditional receiver filtering**: fixes its fixture, costs 23 suite
+  tests.
+- **Demand-gated receiver filtering at repair time**: never fires. By the
+  time the stage runs, the receivers' element types have converged to the
+  same union, so the evidence is gone. The shared WRITER must split
+  instead, which is what `PYC_ESBLOCK=1` (default) does.
+- **Peeling two creation points at N == 2** (`PYC_CSPEEL2`): passes the
+  test on paper and is non-monotone in practice. Peeling the reader does
+  not unshare the writer.
+- **Wholesale fan as a last rung** (shedskin's rung 4, `1 < csites < 10`):
+  a bounded fan is still a fan. It is recorded in 157 as a fact about the
+  reference implementation. It is not a plan.
+
+## Related
+
+- [129](129-plan-demand-driven-creation-set-splitting.md) — the plan.
+- [157](157-FA-all-demand-must-be-evaluated-at-quiescence.md) — when demand
+  is asked, and why lower stages starve.
+- [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) —
+  decisions taken on transient types, and the missing re-merge.
+- [156](156-FA-split-int-from-float-coerce-last.md) — the numeric demand
+  that coercion currently swallows.

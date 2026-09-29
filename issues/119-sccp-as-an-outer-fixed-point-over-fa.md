@@ -8,6 +8,21 @@ is about the part that is genuinely missing and how to build it.
 loop), `ifa/ifa.h` (the fact-provider hooks), `pyc.cc` (`compile()`'s
 pipeline).
 
+> **Correction, 2026-09-28 — Stage 2 does not need a fresh analysis per
+> round.** `analyze_to_convergence` already resets every value to bottom
+> before EVERY pass, and only DECISIONS persist across passes (split
+> contours, the ledger, `apply_unbound_fills`' IF1 rewrites in
+> [039](039-FA-uninitialized-local-reads-silent.md)). So "executability
+> is not retractable" is true *within* a pass, not across passes.
+> `dead_edges` is simply one more between-pass decision table: record
+> the edges this pass proved dead, and have the next pass's
+> `add_pnode_constraints` skip them. Retraction then comes for free,
+> the same way a split re-derives. The one hazard is the same as for
+> any decision: a dead edge recorded from a transient type must be
+> re-checked at convergence
+> ([170](170-FA-contours-minted-on-transient-types-are-never-remerged.md)),
+> so the set must be recomputed each pass, not only grown.
+
 ## What FA already is
 
 Sparse conditional constant propagation, near enough. Measured:

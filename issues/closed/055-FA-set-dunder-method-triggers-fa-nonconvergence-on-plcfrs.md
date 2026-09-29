@@ -223,7 +223,7 @@ and then `+` with a list, at line 299-302.
 
 That is the shape of [057](057-sorted-tolist-fa-nonconvergence.md)
 (generic `sorted()` across differing element types plus `list()`
-materialization) and [105](../105-type-degeneration-in-shared-generic-methods.md),
+materialization) and [105](105-type-degeneration-in-shared-generic-methods.md),
 not generic operator dispatch. 057 is closed and its fix explicitly did
 not resolve this, but the *call shape* it describes is the one plcfrs
 hits here, and it is now reachable through a freshly-constructed set
@@ -303,7 +303,7 @@ reached.
 
 That is the empty/shared-container-CS family --
 [072](../072-FA-empty-container-notype-current-mechanism-and-plan.md),
-[105](../105-type-degeneration-in-shared-generic-methods.md) -- and the
+[105](105-type-degeneration-in-shared-generic-methods.md) -- and the
 non-productive contour creation named in
 [057](057-sorted-tolist-fa-nonconvergence.md)'s fix direction, now
 reachable in six lines instead of five hundred.
@@ -335,7 +335,7 @@ counts and the ess/css totals. Run against
 `total_css` is pinned at 656 from pass 20 on. Three EntrySets are
 created and destroyed on alternate passes, forever. This is a **period-2
 limit cycle**, not unbounded growth — the shape
-[099](../099-FA-pending-backedge-avoid-veto-forces-period-2.md) and
+[099](099-FA-pending-backedge-avoid-veto-forces-period-2.md) and
 [074](074-FA-cross-pass-oscillation-plan.md) describe.
 
 ### What flips
@@ -379,7 +379,7 @@ already exist, *and an existing one must not be re-widened*. The second
 half is what is missing here.
 
 That points at contour reuse/compatibility being scored against a
-per-pass snapshot — [097](../097-CGEN-callsite-vs-clone-formal-type-mismatch.md)'s
+per-pass snapshot — [097](097-CGEN-callsite-vs-clone-formal-type-mismatch.md)'s
 hazard and [098](098-FA-per-pass-reset-scoped-to-reachable-set.md)'s
 per-pass reset — rather than at anything about sets.
 
@@ -483,7 +483,7 @@ involvement at all.
 ### ifa/113 checked, INCONCLUSIVE
 
 The obvious suspect for two instances' fields merging is
-[113](../113-FA-setter-equivalence-is-a-global-batch-partition.md)'s global
+[113](113-FA-setter-equivalence-is-a-global-batch-partition.md)'s global
 setter partition. Dumping `AVar::setter_class` for every `_items` AVar
 gives `nil` on both passes, with 0 distinct classes -- but that dump runs
 after `complete_pass()`, so it cannot distinguish "these AVars never

@@ -1,6 +1,10 @@
 # 165 — `None` reaching an operation is silently accepted and read as the zero value
 
-**Status: OPEN.** Pre-existing; found while measuring
+**Status: OPEN.** (Reviewed 2026-09-28: still accurate. This is the
+permissive/strict pattern [025](025-FA-intra-function-union-narrowing.md)
+and [079](079-DISPATCH-single-candidate-dispatch-unchecked-cast.md) also
+need: a runtime check under `fruntime_errors`, a refusal under
+`--strict`.) Pre-existing; found while measuring
 [164](closed/164-nil-union-at-a-primitive-argument-is-a-nullable-pointer.md),
 which did not introduce it and does not widen it.
 
@@ -58,8 +62,8 @@ CPython does. Under `--strict`, keep a compile-time refusal — CLAUDE.md's
 rule for permissive-only devices: *"an automatic coercion is a
 PERMISSIVE-only device ... `--strict` must error on anything that would
 otherwise require boxing"* (see
-[145](145-numeric-coercion-is-not-gated-on-permissive-mode.md) for the
-same shape).
+[closed/145](closed/145-numeric-coercion-is-not-gated-on-permissive-mode.md)
+for the same shape).
 
 The cost to measure first is how many such checks survive optimisation —
 most nullable unions in the corpus are `self.next = None` linked

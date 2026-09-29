@@ -1,755 +1,184 @@
 # ifa/issues
 
-Open work items for the IFA library — each file documents one
-issue: the symptom, the root cause as far as we've traced it, a
-proposed fix (or a set of options), and what fixing it would
-unblock.
+Open work items for the IFA library. Each file documents one issue: the
+symptom, the root cause as far as it has been traced, the principled fix
+(or the options), the dead ends already measured, and how to verify.
 
-These are *not* GitHub issues; the project doesn't track work
-there. They're checked-in documents that travel with the code so
-that:
+These are not GitHub issues. They are checked-in documents that travel
+with the code, so the next investigator starts from the trail instead of
+re-deriving it.
 
-- a future investigator can pick up the trail without re-doing the
-  debugging,
-- a code-search for the affected file finds the issue alongside,
-- the proposed fix is reviewed alongside the code that has the
-  workaround.
+*Consolidated 2026-09-28: 61 open → 29. Resolved issues were archived,
+overlapping ones merged, and every open issue was rewritten to its
+current state. The previous README, with the 2026-08 triage and
+convergence-session history, is in git:
+`git show 3f36072b:ifa/issues/README.md`.*
+
+## Read first: how splitting work is judged here
+
+IFA is a simultaneous data and control flow analysis over a type-value
+lattice. It starts from the MINIMUM contours and splits only on demand
+(AGENTS.md). Every splitting issue below is held to these rules. Each
+one is a lesson this directory paid for.
+
+1. **A demand is something observing a distinction and being unable to
+   proceed**: a violation, an irrepresentable union, a dispatch that
+   cannot resolve. "This is a union", "this CS has several creation
+   points" and "these came from different places" are facts, not
+   demands. ([146](146-remove-all-arbitrary-splitting.md))
+2. **The two-question test:** would the split happen without the
+   demand (then it is arbitrary)? Does the demand decide WHETHER and the
+   handle only WHICH (then it is a mechanism)? Partition size is what the
+   demand distinguishes, never a count of callers, creation points or
+   receivers.
+3. **Non-monotone means arbitrary.** A lever that makes results worse as
+   it splits more is not earning its keep. **Delete it, don't default it
+   off.**
+4. **Types are already converged when the split stages run.** "When" is
+   not the defect. The cascade-priority gate is (it starves every lower
+   stage). ([157](157-FA-all-demand-must-be-evaluated-at-quiescence.md))
+5. **The confluence is a CONTOUR, and the demand is observed where the
+   union is USED**, usually far from the merge. Backtrack it. Do not act
+   at the symptom. (AGENTS.md; closed/152)
+6. **A merge can be taken back.** Every pass re-derives types from
+   bottom, and only DECISIONS persist. So a decision taken on transient
+   types should be revisited at convergence, not protected.
+   ([170](170-FA-contours-minted-on-transient-types-are-never-remerged.md))
+7. **Never identity by provenance or by name.** Types and CS
+   partitioning are identity. Arity and other representation properties
+   are legitimate (behind `IFACallbacks`). Allocation site, call site and
+   depth are handles at most. ([130](130-FA-identity-keyed-on-sym-name.md),
+   [132](132-arity-is-representation-not-provenance.md))
+8. **Measure on the corpus, same binary, env toggled.** The suite is
+   blind to most of this area, and a 1–2 program delta between two
+   builds is noise. ([147](147-analysis-result-depends-on-the-binary-not-the-inputs.md))
+9. **Check for a missing builtin before blaming FA.** `list.copy`,
+   `dict.copy` and `str.rstrip` were each the first error of a corpus
+   program whose failure was being read as a splitting problem.
+   ([086](086-list-and-dict-have-no-copy-method.md),
+   [124](124-FA-refuse-imprecise-inference.md))
+
+## Open issues
+
+### Demand-driven splitting: principles and plan
+
+| issue | what |
+| --- | --- |
+| [129](129-plan-demand-driven-creation-set-splitting.md) | **the plan**: start-merged CreationSets, demand-driven separation, a ledger. What landed, what is open (the shared-writer decline, the one-creation-point family), what is settled. |
+| [146](146-remove-all-arbitrary-splitting.md) | **the audit**: what was removed, what is still in the tree (MARK_SETTER is LIVE, stage 5's per-CS fan), and a verdict for every off-by-default splitting lever. |
+| [157](157-FA-all-demand-must-be-evaluated-at-quiescence.md) | **when demand is asked**: the gate is a cascade priority, not quiescence. Give each stage route 4's shape; route ES-side demands to an actuator; terminate on a fixed point. |
+| [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) | decisions taken on transient types (pass-0 unions, momentarily empty contours) are never revisited. Re-derive them at convergence. |
+| [156](156-FA-split-int-from-float-coerce-last.md) | numeric: coercion's failure-to-be-exact is the demand. Backtrack to the pure/mixed boundary and split. Coerce last, permissive-only. |
+| [134](134-remove-the-frontend-forced-split-opt-in.md) | constants: 9 `__pyc_clone_constants__` annotations remain, each with a named replacement. |
+| [132](132-arity-is-representation-not-provenance.md) | arity in CS identity (landed); open: one slot holding two same-sym CSs of different arity. |
+
+### FA: typing and precision
+
+| issue | what |
+| --- | --- |
+| [049](049-FA-raise-only-contour-notype.md) | a raise-only contour's bottom return is now a hard error. The exceptional exit must not read `fn->ret`. |
+| [072](072-FA-empty-container-notype-current-mechanism-and-plan.md) | a never-written container's bottom element reaching live code. Derive "zero-trip" and "raises" from it. |
+| [025](025-FA-intra-function-union-narrowing.md) | branch correlation over a class union: now refused. Tail duplication, or a permissive runtime check. |
+| [050](050-FA-general-constant-propagation-unreachable-code.md) | a global slot's value is not call-graph precise. Stages 2-3 (mod-set, per-ES summary). |
+| [119](119-sccp-as-an-outer-fixed-point-over-fa.md) | SCCP: explicit executability, dead edges as a between-pass decision, fact providers. |
+| [039](039-FA-uninitialized-local-reads-silent.md) | unbound locals: analysis done, `--safe` fill done. Open: the runtime check, DEFINITELY-unbound on by default. |
+| [124](124-FA-refuse-imprecise-inference.md) | `--refuse-imprecise`: a nil-only-formal false positive. `go` is blocked on a missing `str.rstrip`. |
+| [165](165-none-reaching-an-operation-is-silently-accepted.md) | a `None` that does arrive at an operation reads as zero. Permissive runtime check, strict refusal. |
+| [147](147-analysis-result-depends-on-the-binary-not-the-inputs.md) | determinism: the result depends on the binary layout. Canonicalise every order that reaches a decision. |
+| [111](111-FA-selective-invalidation-per-pass.md) | performance: pass cost tracks accumulated contours (selective invalidation, blocked on setter classing; or rebuild from decisions). Re-measure first. |
+| [086](086-list-and-dict-have-no-copy-method.md) | `list.copy()` / `dict.copy()` are missing from `__pyc__` (sudoku4's first error). |
+
+### Codegen, dispatch, representation
+
+| issue | what |
+| --- | --- |
+| [102](102-corpus-programs-compile-then-abort-at-runtime.md) | an unresolved call becomes a silent runtime stub. Make it an FA violation. Also the untyped-value work list. |
+| [079](079-DISPATCH-single-candidate-dispatch-unchecked-cast.md) | the single-candidate fast path casts past union members that lack the method. |
+| [118](118-union-field-representation-and-polymorphic-field-offset.md) | `{bool, None}`: a tri-state sentinel representation (bool has spare codes; int64 does not). |
+| [121](121-CGEN-dead-clones-emitted.md) | LLVM still emits dead clones; call-site narrowing assumes candidate equivalence it never checks. |
+| [093](093-CGEN-int-float-union-move-not-coerced.md) | LLVM: an int MOVE into a float64 slot stores raw bits (missing `sitofp`). |
+| [120](120-union-types-are-never-interned.md) | union Syms are never interned; an ownership audit is needed first. |
+| [130](130-FA-identity-keyed-on-sym-name.md) | `var_map` and the classtag are keyed on names. |
+| [030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) | performance: high fan-out dispatch has no table. |
+| [054](054-CGEN-remove-unconditional-tuple-list-header.md) | performance: every tuple carries a 16-byte list header. |
+
+### Tooling / cleanup
+
+| issue | what |
+| --- | --- |
+| [094](094-FA-asan-heisenbug-blocks-sanitizer-diagnostics.md) | an ASAN build crashes intermittently on `hello_world.py`. |
+| [010](010-CLEANUP-vec-set-api-cleanup.md) | split `Vec`'s array and set roles into two types. |
+
+## Closed on 2026-09-28, and where their residuals went
+
+| closed | why | residual now in |
+| --- | --- | --- |
+| [007](closed/007-FA-mark-type-stage-coverage.md) | mark stages being deleted | 146 D, 157 |
+| [048](closed/048-FA-deepcopy-flow-divergence-genetic2.md) | genetic2 no longer diverges | 165 / issues/048 |
+| [061](closed/061-CGEN-multi-tuple-list-null-element-type.md) | fixed | — |
+| [066](closed/066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md) | `PYC_CSKEY=3` landed | 170 |
+| [068](closed/068-FA-derive-structural-ops-record-field-fold.md) | landed via `inject_tuple_methods` | — |
+| [071](closed/071-FA-chess-accumulated-union-notype-cascade.md) | chess matches CPython | — |
+| [075](closed/075-FA-element-cs-method-split-idempotent-plan.md) | rejected: receiver-keyed method identity is structural | 146 (`PYC_CSM`) |
+| [095](closed/095-LLVM-str-or-none-union-wrong-value.md) | fixed | — |
+| [097](closed/097-CGEN-callsite-vs-clone-formal-type-mismatch.md) | merged | 170 |
+| [099](closed/099-FA-pending-backedge-avoid-veto-forces-period-2.md) | fixed; relocated churn gone with 074 | — |
+| [101](closed/101-FA-first-time-forever-splitting.md) | superseded by start-merged identity | 146 (`PYC_CSELEM`) |
+| [105](closed/105-type-degeneration-in-shared-generic-methods.md) | plcfrs matches CPython | — |
+| [113](closed/113-FA-setter-equivalence-is-a-global-batch-partition.md) | merged | 111 |
+| [123](closed/123-CGEN-union-receiver-field-access-has-no-discrimination.md) | layout contract, prefix layout, elision all landed | 124 |
+| [125](closed/125-sunfish-degenerate-dict-setitem-clones.md) | symptom gone | 102 |
+| [126](closed/126-assess-residual-method-slot-reads.md), [127](closed/127-audit-zero-means-unknown-and-a-real-answer.md) | assessments complete | — |
+| [128](closed/128-cs-identity-over-discriminates-vs-element-type.md) | `PYC_CSDCPA1=2` is the default | 129 |
+| [131](closed/131-demand-driven-constant-splitting.md) | premise falsified | 134 |
+| [133](closed/133-split-a-container-on-its-element-type.md) | separator landed | 129 |
+| [135](closed/135-empty-sibling-contour-wins-the-clone-merge.md) | fixed 2026-09-06 | — |
+| [136](closed/136-creation-point-identity-is-es-x-call-site.md) | absorbed into AGENTS.md | 146 (`PYC_CSCALLSITE`) |
+| [137](closed/137-scalar-receiver-resolves-to-container-method.md) | pystone runs | — |
+| [142](closed/142-linalg-empty-list-collapse-is-a-fixed-point.md) | linalg matches CPython | — |
+| [143](closed/143-shared-container-method-contours-refuse-cs-splits.md) | blockers fixed at the default | 146 (`VIOLCS`, `CSMEMBER`) |
+| [144](closed/144-route-4-fans-per-creation-point-instead-of-partitioning.md) | partition landed, fan removed | 170, 156 |
+| [145](closed/145-numeric-coercion-is-not-gated-on-permissive-mode.md) | piece 1 landed | 156 |
+| [148](closed/148-stage-5-starvation-root-caused.md) | merged | 157 |
+| [149](closed/149-the-largest-diagnostic-class-reports-nothing.md) | diagnostic fixes landed | 102 |
+| [150](closed/150-is-not-none-never-folds.md) | fixed | 134 |
+| [151](closed/151-split-an-entryset-on-a-constant-argument-on-demand.md) | CONST_DEMAND landed | 134 |
+| [171](closed/171-FA-numeric-union-sustains-itself-through-a-shared-contour.md) | merged | 156 |
+
+Each archived file starts with a dated closure note. The body below it
+is the historical record and is not maintained.
 
 ## Conventions
 
-- Filenames: `NNN-CAT-short-slug.md`, NNN zero-padded, CAT one of
-  the category tags below. Pick the next number; don't reuse.
-  Closed issues keep their original `NNN-short-slug.md` name (no
-  category tag) — the tag is a navigation aid for the open list,
-  which is where it earns its keep; retrofitting it onto the
-  archive isn't worth the churn.
-- Category tags (see "2026-08-06 triage" below for how these were
-  chosen):
-  - **FA** — core flow-analysis / type-inference / splitter /
-    convergence algorithm (`fa.cc` and friends).
-  - **DISPATCH** — polymorphic method dispatch / classtag /
-    per-CS method cloning.
-  - **CGEN** — C backend codegen specifically (`cg.cc`).
-  - **LLVM** — LLVM backend codegen specifically
-    (`cg_emit_llvm.cc`, `llvm_*.cc`).
-  - **CLEANUP** — non-functional code-quality / API-clarity work.
-  - **SURVEY** — a tracking umbrella aggregating findings that are
-    themselves filed (or foldable) elsewhere; prefer closing a
-    SURVEY once its items land rather than letting it linger.
-- One issue per file. Cross-link with relative paths.
-- Status: `open`, `in-progress`, `partial`, `closed`.  Closed
-  issues move into [`closed/`](closed/) (a flat archive — they
-  stay in the tree as history) with a closing commit ref (or date,
-  if no single commit captures it) in the file's status line.
-- Cite specific files / line numbers / commits where helpful.
-- Include a "Verification plan" so the next person knows how to
-  prove the fix works.
-- Include a "What this unblocks" section — issues with no
-  consequence should not be filed.
-- When one issue's remaining scope turns out to be entirely
-  covered by another (a later doc reframes/corrects/subsumes an
-  earlier one), close the earlier one as **superseded** rather than
-  leaving two open docs describing the same problem. Preserve it in
-  `closed/` as history — don't delete — and add a one-line pointer
-  at the top of the surviving doc so a reader lands on the
-  derivation trail.
-
-## 2026-08-06 triage & reorganization
-
-Full-corpus triage of all 38 then-open issues (via 8 parallel
-survey passes reading every file in full), prompted by the open
-list having drifted badly out of sync with reality: several issues
-were plainly fixed but never moved to `closed/`, a few were
-self-superseded (a later dated section in the same file overturned
-the header), the README's own "Current open issues" list had
-silently stopped being maintained (it indexed only 16 of the 38
-files), and a real cluster of FA-convergence issues (033/063/064/
-065/066/067/072/073/074/075 plus 047/048/052/055/057) had grown
-organically over ~6 weeks with heavy but inconsistently-recorded
-cross-referencing.
-
-**Decisions made:**
-
-1. **Closed as resolved** (fix landed and verified, doc just never
-   archived): [026](closed/026-recursive-self-mutation-struct-collapse.md),
-   [031](closed/031-globals-outside-fa-precision.md),
-   [032](closed/032-fa-survey-findings.md),
-   [035](closed/035-nondeterministic-codegen-clone-order.md),
-   [046](closed/046-optional-none-field-inline-type-sum-assert.md),
-   [057](closed/057-sorted-tolist-fa-nonconvergence.md),
-   [070](closed/070-embedded-nul-literal-truncation.md),
-   [073](closed/073-teach-splitter-productive-vs-inert-context.md).
-2. **Closed as superseded/subsumed** (remaining scope, if any, now
-   lives entirely in a surviving doc):
-   [033](closed/033-splitter-non-idempotent-divergence.md) → forward
-   work continues under [074](closed/074-FA-cross-pass-oscillation-plan.md);
-   [063](closed/063-no-type-bucket-triage.md) → forked into
-   [075](075-FA-element-cs-method-split-idempotent-plan.md) (build
-   plan), [067](closed/067-dijkstra2-heap-tuple-precision-and-use-before-def.md)
-   (dijkstra2 attribution correction), and 074 (oscillation-vs-
-   genuine-no-type distinction);
-   [064](closed/064-method-phantom-display-blocks-es-split-routing.md) →
-   confirmed dead end by its own text, retired by 074;
-   [065](closed/065-mark-stage-es-split-routing-and-growing-product.md) →
-   reframed and corrected by [066](066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md);
-   [067](closed/067-dijkstra2-heap-tuple-precision-and-use-before-def.md) →
-   its landed half (Part B) is done, its open half (Part A) is
-   exactly [068](068-FA-derive-structural-ops-record-field-fold.md)'s
-   unbuilt tuple-side design.
-   This turns a tangled 10-file cluster into 4 surviving open docs
-   (066, 068, 074, 075) each with a clear, non-overlapping remaining
-   scope, plus a preserved derivation trail in `closed/`.
-3. **Not merged**, despite living in the same problem family —
-   each has its own unconfirmed root cause or independent repro and
-   would lose information if folded into a sibling: 047, 048, 052,
-   055 (FA-convergence/container-element family, but each a
-   distinct, still-unresolved mechanism — 055 in particular was
-   *explicitly retested* against 057's fix and confirmed not
-   resolved by it, so it stays a separate doc even though 057 is now
-   closed).
-4. **Renamed with a category prefix** (see Conventions) — the 25
-   issues that remain open after (1)/(2), listed below by category.
-5. **Repo-wide cross-links fixed** for every renamed/moved file:
-   other `ifa/issues/` docs, `ifa/issues/closed/` docs, the
-   top-level `issues/` tree, and prose docs (`CLAUDE.md`,
-   `ifa/CODE_GEN_IR.md`, `ifa/LIVENESS.md`,
-   `ifa/codegen/archive/CG_IR_PLAN.md`, `ifa/notes/005-*.md`,
-   `ifa/testing/phases/09_synthetic_coverage.md`, `tests/PARITY.md`).
-
-Net: 38 open → 25 open (13 closed, 0 net new files), a stale README
-index replaced with one that actually lists every open issue,
-grouped by category and by epic-vs-targeted scope.
-
-## 2026-08-12/13 — the FA convergence session: what changed and what it invalidated
-
-Five days of work in this area landed in two days; because it moved
-several long-standing premises, here is the consolidated trail. Source
-changes are four commits; everything else is measurement.
-
-**What landed (source).**
-
-1. **[098](closed/098-FA-per-pass-reset-scoped-to-reachable-set.md) — the
-   per-pass reset was scoped to the *previous* pass's reachable set.**
-   `clear_results` reset per-edge/contour/CS state by walking `fa->ess`
-   (which is just the last pass's `entry_set_done`) and did not run at
-   all on a `reanalyze()`-driven pass. 19-24% of edges per pass carried
-   an older pass's `args`/`rets`/`formal_filters` into the current one,
-   and a stale `Match::formal_filters` made `analyze_edge`'s gate skip a
-   live edge permanently. Fixed by resetting over authoritative
-   registries (`FA::all_aedges` et al.) before *every* pass. Also fixed a
-   latent null-deref in `check_split` that the new trajectory exposed.
-   An `IFA_DBG_EDGEARGS` audit now guards the invariant. **CLOSED
-   2026-08-31**, when its one follow-on landed: `out_edge_map` is never
-   reset, so `collect_argument_type_violations` read a surviving entry as
-   "dispatched" and a *total* dispatch failure reported nothing; it now
-   tests the per-pass `EntrySet::out_edges` instead. Corpus A/B: warnings
-   1615 → 2040, every other column identical on all 77 programs.
-2. **[099](099-FA-pending-backedge-avoid-veto-forces-period-2.md)
-   (partial) — a structurally forced period-2 flip-flop.**
-   `record_backedges` re-homed an inherited pending entry's KEY onto the
-   split product but copied its VALUE verbatim, so each of two contours
-   kept a route to the other; `check_split`'s `avoid` veto then left
-   exactly the one just vacated. `pylife`'s entire non-convergence was
-   **one edge**. Fixed the asymmetry; `loop` converges. Still open: the
-   churn *relocated* into slow growth for bh/pylife/linalg.
-3. **[100](closed/100-FA-display-removed-from-contour-identity.md) — the
-   lexical display is no longer contour identity.** Design decision. The
-   display now serves only `make_AVar`'s enclosing-scope resolution (and
-   clone's equivalence). `edge_nest_compatible_with_entry_set`,
-   `edge_display_compatible`, `find_or_make_display_variant`,
-   `EntrySet::display_variants`, `group_display_ok`,
-   `fun_max_live_display_slot`, `stage4_enabled`, `PYC_STAGE4`,
-   `Fun::max_live_display_slot` and `update_display`'s consistency assert
-   are all gone. Contour counts drop 40-80% corpus-wide; `yopyra`
-   converges. Cost: precision falls widely and oscillators net 16 → 20.
-4. **`flow_var_to_var` must re-assert `b->in >= a->out`.** A
-   *pre-existing* dropped-value bug the display removal exposed: the
-   early return on an already-established link skipped the re-assert
-   forever, so a value arriving after the link was created was never
-   delivered. 098's own probe had measured this at zero — the display
-   checks were keeping the affected contours apart. This is what fixed
-   100's two exception-path miscompiles.
-
-**Premises this invalidated.** Several long-standing conclusions rested
-on things that turned out not to hold:
-
-- **[074](closed/074-FA-cross-pass-oscillation-plan.md)'s headline metric was
-  partly measuring the stall guard.** Re-basing with
-  `IFA_STALL_LIMIT`/`IFA_NONIMPROVE_LIMIT` disabled cut the genuine
-  target set from 17 programs to **8**, and showed the guard is *causing
-  miscompiles* (`sudoku5`, `msp_ss` compile to crashing binaries and to
-  correct ones when their descent is allowed to finish). Violation counts
-  alone are not a quality metric — `rdb` "converges" to 1 violation by
-  emitting 1% of its former C.
-- **074's Stage 1 "lifecycle facts" argument was false when written**
-  (it assumed `clear_edge` ran on every edge — that is exactly 098).
-- **074's Stage 0 and Stage 4 are retired**, and the basis on which it
-  ruled out Stage 2 is stale.
-- **[075](075-FA-element-cs-method-split-idempotent-plan.md)'s Piece 3 no
-  longer exists** — its machinery was deleted with the display gate it
-  worked around.
-- **[066](066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md)
-  is not the oscillation's lever**: CreationSet *splitting* measures ~0
-  corpus-wide (twice), and `copy_AEdge` is 0 everywhere.
-- **[097](097-CGEN-callsite-vs-clone-formal-type-mismatch.md)'s mechanism
-  got wider**: `entry_set_compatibility` lost its nest gate, so its soft
-  `val -= 4` type score is now more load-bearing, not less.
-
-**Where the oscillation actually stands.** Two distinct diseases, both
-now measured rather than inferred:
-
-- *Assignment churn, no growth* — a fixed edge set swapping between a
-  fixed contour set. 099 explains and fixes the period-2 form; `hq2x` is
-  the current extreme (~250 edges detached and re-parked per pass, ~1 new
-  edge, 102 passes).
-- *Contour growth* — and it has **moved**. The old driver
-  (`check_split`'s lineage-mint, blocked by the display) is gone; the
-  remaining one is the *detach* route: `make_entry_set` skips
-  `find_best_entry_sets` whenever `split` is non-null, so a detached edge
-  is never offered an existing contour. `sudoku4`/`genetic2` show a
-  byte-identical `split-fresh=2` leak every pass to the pass cap.
-  Two repairs measured and rejected (soft reuse: 59 test failures; hard
-  type-identity reuse: 6, including `recursive_polymorphic` and
-  `match_map_star`). **Exact type identity is not sufficient evidence
-  that a contour is not what the split is separating** — the detach route
-  needs a positive grouping reason, which is Stage 1 (ii) with a much
-  sharper target than when it was written.
-
-**Investigation flags landed (all off by default, all measured).** These
-exist so the next attempt starts from evidence rather than a rebuild:
-
-| flag | what it does | result |
-|---|---|---|
-| `PYC_HARDREUSE=1..4` | offer a detached edge an existing contour (progressively stricter tests; 4 = lookup by durable key) | 260-261/265 — every mode manufactures a period-2 flip-flop of its own |
-| `PYC_TYPEKEY=1` | durable per-contour type key, captured converged, matched against instead of the mid-pass value | **265/0** — the only clean one; corpus a wash |
-| `PYC_CANON=1\|2` | canonicalize contour creation on that key (find-by-key-else-create) | 259/7 and 237/32; the conflict log is the real output |
-| `PYC_NOMARK=0\|1\|2` | skip mark-based ES splitting (`1` = `MARK_TYPE`, **the default**; `2` also the setter-mark stages; `0` restores the old behaviour), leaving marks armed only on the `VIOLATION` repair path | **default-on 2026-08-14** — guard trips 18→10, −55% time, −12.3% ess, −6.8% C, mastermind2 starts compiling; 12 programs fewer violations, 5 more |
-| `IFA_DBG_STAGE=1` | attribute every edge detach/mint/reuse **and CreationSet mint** to the splitter stage that caused it | showed the CS-minting stages drive `TYPE_CONFLUENCE` |
-| `IFA_DBG_KEYSPACE=1` | per function per pass: contours built vs. distinct type-set tuples vs. distinct cartesian-product tuples | the measurement that indicted `MARK_TYPE` |
-| `IFA_DBG_KEYDRIFT=1` | per pass: contours whose type key was stable / grew / shrank non-monotonically / flip-flopped | separates "still converging" from "oscillating" |
-| `PYC_SELFPROD=0..5` | self-product complement eviction in the `v>0` case. `0` off (pre-074), `1` evict type-disjoint complement, `2` evict nothing, `3`/`4` durable key == recorded partition, **`5` durable key stable for two passes (per-contour convergence) — NOW THE DEFAULT** | 1/2 break linalg's cycle but damage the corpus; 3/4 never fire; **`5` landed default-on** — sunfish 1200 s timeout → 43 s compile, tictactoe 137 violations → 0, **zero exit-code regressions** |
-| `PYC_CPA=N` | cartesian-product naming: fan a positional formal whose type is a fixed-point union of 2..N CreationSets into one contour per CS (new `CARTESIAN_PRODUCT` stage after `TYPE_CONFLUENCE`) | mechanism works (breaks the union, target violation gone) but **callee-side only is a net loss** — 10 programs newly fail to compile, `chull` 2 → 121 violations; real CPA needs the caller-side fan |
-| `PYC_CPAMARK=1` | drop `different_marked_args`' distance filter, comparing the CreationSet sets directly | **refuted** — identical to `PYC_NOMARK` on hq2x, chull and the repro: 100% of `MARK_TYPE`'s contribution is the depth term |
-| `IFA_DBG_MARKWHY=1` | for every mark verdict of "different", whether the *unfiltered* CreationSet sets differ too, or are identical and separated only by depth | repro 2% pure-distance vs hq2x **98%** — the two populations separate almost perfectly |
-| `IFA_DBG_INCOMPAT=1` | which clause of the compatibility test separates edges (`arg` vs `ret`), stage-1 confluence disposition, and `REDERIVE` ROUTE/GROUP/FILTER | `ret`=0 everywhere; the GROUP quarter is 100% `v>0` self-product |
-| `IFA_STALL_LIMIT`, `IFA_NONIMPROVE_LIMIT` | override the divergence guards (were compile-time constants) | takes the guard out of the measurement |
-| `IFA_DBG_EDGEARGS=1` | 098's invariant audit (bound edges must have values at recorded args) | — |
-| `IFA_DBG_DISPATCHFAIL=1` | 098's second defect: per pass, sends with an `out_edge_map` entry (`total=`) vs. those none of whose edges was analyzed this pass (`sites=`, i.e. dispatch failed and used to be silent) and the `Partial_NEVER` subset now reported (`reported=`) | mastermind2 7, msp_ss 10, rdb 8, sudoku5 8, go 0 — all `Partial_NEVER`; fixed 2026-08-31 |
-
-**Type marks and canonicalization are mutually exclusive.** `MARK_TYPE`
-exists to split two edges that carry the *same* argument types but
-different value origins (IFA.md §6.2, "recursion-meets-polymorphism
-without k-CFA") — a distinction no type-tuple contour name can express,
-which is precisely what `PYC_CANON`'s conflict counter counts. It is the
-price of naming contours by type *sets*: inside a dataflow cycle every
-contributor carries the same union, so plain type splitting goes blind
-and marks restore the ordering the union destroyed. Shedskin needs no
-equivalent because CPA names by singletons.
-
-`IFA_DBG_KEYSPACE` shows marks are not doing that job. On `hq2x`,
-`__setitem__`'s type keyspace is **stationary from pass 7** (8 type-set
-tuples, 17 CPA tuples) while its contour count grows 20 → 287; and the
-~24 monomorphic one-line `PIXELxx_yy` functions (setkey=1, cpakey=1) get
-**one contour per call site, one added per pass**, up to 36. That is
-1-CFA by accretion on a function with a single argument type. Details
-and the corpus numbers in 074.
-
-**Which splits actually oscillate.** Of the nine splitter stages, only
-**`TYPE_CONFLUENCE`** and **`MARK_TYPE`** produce steady-state *edge*
-churn — but that framing turned out to be an artifact of metering only
-edges. `IFA_DBG_STAGE` now also counts **CreationSet** mints, and the two
-halves have completely different causes:
-
-- **`MARK_TYPE` is the cause of its own churn**, building contours no
-  type-tuple can name (see above).
-- **`TYPE_CONFLUENCE` is a responder.** It mints **no CreationSets at
-  all**; `SETTER`, `SETTER_OF_SETTER` and `CSM_ELEMENT_CS` mint them while
-  moving zero edges — which is why they scored ~0 under the old meter. A
-  new CreationSet widens types, which re-opens type confluences, which
-  restarts `TYPE_CONFLUENCE`. Because `run_split_stages` gates every stage
-  on `if (!analyze_again)`, the two can never progress on the same pass —
-  they are forced to **alternate**. `linalg` does this as an exact
-  **period-10 limit cycle**: `SETTER` mints 2 CreationSets, nine passes of
-  `TYPE_CONFLUENCE` re-partitioning add 34 contours and 46 CreationSets,
-  `SETTER` fires again — identical numbers every cycle, zero progress on
-  the residual violations.
-
-Two corrections fell out. The guard's `dup_split_attempts` term is ~75%
-ledger *ROUTE recoveries* (edges re-routed to the product recorded on an
-earlier pass), 0% filter re-derivation, and ~25% **`v>0` self-product** —
-and that last quarter is 100% of it on every program: the ledger's
-recorded product for the key IS the contour being split, the
-`nviol_this_pass == 0` gate closes, and the fallthrough mints a fresh
-contour every pass forever. That is the `TYPE_CONFLUENCE` growth, and `PYC_SELFPROD=5` now suppresses
-it soundly: **1b's `nviol_this_pass == 0` gate was a whole-program proxy
-for a per-CONTOUR property**, and a contour whose durable type key is
-unchanged across two consecutive passes has settled even when the program
-has not. Corpus: zero exit-code regressions, sunfish's 900 s timeout
-becomes a 43 s compile, tictactoe converges naturally at 0 violations.
-**Landed default-on 2026-08-14**; `PYC_SELFPROD=0` restores the old shape.
-Two programs newly converge naturally. Still open, but not blockers:
-msp_ss/softrender lose some precision, and neither newly-compiling program
-*runs* — tictactoe now reaches codegen at 0 violations and trips pyc
-[issues/035](../../issues/035-list-element-cast-salvage-guard-and-set-item-union.md)'s
-int/float list gap (its read path lacks the guard its write path has),
-which the convergence fix exposed rather than caused. And
-`cur_split_stage` was never reset after `run_split_stages`, so the next
-pass's flow-time contours were attributed to whichever stage ran last —
-that is what made `reuse` read in the thousands for stages that re-bind
-nothing. Full tables in 074.
-
-Tree state at the end: `test_pyc.py` 265 passed / 14 expected fails / 0
-failed / 4 skipped (both backends), `ifa --test` 58/0, zero exit-code
-changes across the 84-program shedskin sweep.
-
-## Current open issues
-
-### FA — large, open-ended (the convergence / container-element-precision cluster)
-
-These are intertwined: all trace back to the same underlying gap
-(shared `list`/`dict` method contours don't discriminate by element
-type, and split decisions aren't stably keyed across passes), per
-the [033](closed/033-splitter-non-idempotent-divergence.md) →
-[063](closed/063-no-type-bucket-triage.md) investigation lineage.
-
-- [100-FA-display-removed-from-contour-identity.md](closed/100-FA-display-removed-from-contour-identity.md)
-  — the lexical display is now used ONLY for what it is for: `make_AVar`
-  resolving an enclosing-scope Var (nested functions), plus clone's
-  equivalence. Every use of it as *contour identity* is gone
-  (`edge_nest_compatible_with_entry_set`, `edge_display_compatible`,
-  `find_or_make_display_variant`, `group_display_ok`, Stage 4's
-  live-slot machinery, and `update_display`'s consistency assert).
-  Design decision, taken knowing the cost. Benefit: the display was a
-  major contour-growth driver (074's census: 34-68 fresh contours per
-  pass on yopyra from the lineage-mint alone) — ess drops 40-80%
-  corpus-wide and yopyra converges. Cost: precision falls widely, the
-  oscillator count nets 16 → 20. It also briefly broke two
-  exception-path tests, which turned out to expose a *pre-existing*
-  dropped-value bug in `flow_var_to_var` (an early return on an
-  already-established link skipped the `b->in >= a->out` re-assert, so a
-  value arriving after the link was created was never delivered); fixed
-  the same day, suite back to 265/14/0/4. Retires 074's Stage 0/4 and
-  invalidates the basis on which it ruled out Stage 2.
-- [099-FA-pending-backedge-avoid-veto-forces-period-2.md](099-FA-pending-backedge-avoid-veto-forces-period-2.md)
-  — a *structurally forced* period-2 oscillation, and the entire
-  non-convergence of three programs (bh, pylife, linalg — 074's
-  "stable residual" group). `check_split`'s pending-backedge route
-  binds an edge to the lowest-id recorded contour after vetoing
-  `avoid`, and `avoid` is exactly the contour the splitter is
-  detaching the edge *from*; when the recorded set has two members
-  the veto leaves precisely the one just vacated, so the edge swaps
-  every pass forever with zero growth (0 new edges/EntrySets/
-  CreationSets per pass). pylife's whole non-convergence is **one
-  edge**. **Partially fixed 2026-08-13**: the flip-flop came from
-  `record_backedges` re-homing an inherited entry's KEY onto the split
-  product but copying its VALUE verbatim, so each contour kept a route
-  back to its sibling. Re-homing the value with the key removes it —
-  `loop` now converges (`plh=1` p38/2 viol → `plh=0` p58/0 viol),
-  pylife 90→54 and sudoku4 160→142 violations, oscillators 17→16, zero
-  exit-code changes on the sweep. But bh/pylife/linalg still do not
-  converge: their churn RELOCATED into slow contour growth (074's other
-  shape) rather than stopping, so the issue stays open on its second
-  condition — the splitter re-deciding every pass.
-- [074-FA-cross-pass-oscillation-plan.md](closed/074-FA-cross-pass-oscillation-plan.md)
-  — the master plan, **substantially re-measured 2026-08-12/13** (see the
-  dated session section above). Target set re-based from 17 programs to
-  8 by disabling the stall guards; growth mechanism re-censused after
-  [100](closed/100-FA-display-removed-from-contour-identity.md); Stage 0 and
-  Stage 4 retired, and the basis for ruling out Stage 2 invalidated.
-  **The churn is now stage-attributed: only `TYPE_CONFLUENCE` and
-  `MARK_TYPE` produce it** — nothing measurable from the other seven
-  stages (with the caveat that the first-stage-wins cascade starves
-  them). Investigation flags landed off-by-default: `PYC_HARDREUSE`,
-  `PYC_TYPEKEY`, `PYC_CANON`, `PYC_NOMARK`, `IFA_DBG_STAGE`,
-  `IFA_DBG_KEYSPACE`. **`MARK_TYPE`'s splits are shown unnameable by any
-  type-tuple scheme, and a net loss on this corpus** — `PYC_NOMARK=1`
-  gives −26% analysis time, −12% contours, one more program compiling,
-  and an unchanged test suite, at the cost of precision on five programs.
-- [075-FA-element-cs-method-split-idempotent-plan.md](075-FA-element-cs-method-split-idempotent-plan.md)
-  — concrete build plan (successor to 063) to clone shared
-  `list`/`dict` methods per element-CS, shedskin's `func_copy`-per-
-  `dcpa` model. Prototype gets dijkstra2 + pylife FAIL→COMPILED;
-  landing it idempotently (so it stops backsliding) is the open
-  work. `ant`/`kanoodle` remain unresolved corpus regressions from
-  the naive version.
-- [066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md](066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md)
-  — the corrected framing (absorbing 065): CS identity is
-  re-derived from scratch every pass instead of being keyed
-  per-creation-site, causing oscillation. Part 1 (ROUTE enforcement)
-  landed 2026-07-23, zero regressions, but flagged with an unverified
-  correctness caveat (pygmy render swings 49%, no oracle). Part 2
-  (self-product/phase-ordering) deferred.
-- [072-FA-empty-container-notype-current-mechanism-and-plan.md](072-FA-empty-container-notype-current-mechanism-and-plan.md)
-  — empty/imprecise-container element-type inference (the 043
-  family). A default-seeding prototype was built, measured
-  net-negative, and removed; the surviving design is a narrower
-  write-attribution split (steps 1-3), not yet built.
-- [007-FA-mark-type-stage-coverage.md](007-FA-mark-type-stage-coverage.md)
-  — 5 of 7 splitter stages reached; `setter-of-setter` and
-  `mark-setter-of-setter` remain structurally hard to trigger (the
-  cascade self-defeats: setter-of-setter only runs if setter found
-  nothing in the *same* pass).
-- [025-FA-intra-function-union-narrowing.md](025-FA-intra-function-union-narrowing.md)
-  — IFA's "narrowing" is clone-time specialization, not true
-  flow-sensitive refinement. `is None` on a class-or-None union works
-  end-to-end; `isinstance` picking the right branch over a union of
-  user classes also works, but via an unrelated shared-clone-mis-fold
-  fix, not real narrowing. The other three originally-filed cases
-  (phi-merge re-discrimination, real narrowed-value use, `==`-constant
-  return-type narrowing) all turn out to be
-  [018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md)'s gap
-  in disguise — a raw scalar union has no coherent runtime
-  representation at all, so narrowing (even if built out further)
-  wouldn't fix them; tracked there now, not here.
-- [068-FA-derive-structural-ops-record-field-fold.md](068-FA-derive-structural-ops-record-field-fold.md)
-  — treat classes and tuples uniformly as "records" and derive
-  `__eq__`/`__lt__`/`__hash__`/etc. as field-folds over ordinary
-  sends. Class-side landed 2026-07-24 and verified; the tuple side
-  (which is what closed-067's remaining Part A needs) is designed
-  but unbuilt.
-- [071-FA-chess-accumulated-union-notype-cascade.md](071-FA-chess-accumulated-union-notype-cascade.md)
-  — chess.py's remaining blocker is the issue-018/030 heterogeneous
-  `linePieces` tuple-of-tuples (mixing arities). 2026-08-06 addendum
-  compares shedskin's vector-backed `tuple2<T,T>` (arity not part of
-  the type) to pyc's per-arity struct model and proposes generalizing
-  pyc's existing dynamic-tuple-degrades-to-list compromise to any
-  same-element-type tuple, as a design note for the 018/030 boxing
-  work.
-
-### FA — targeted
-
-- [125-sunfish-degenerate-dict-setitem-clones.md](125-sunfish-degenerate-dict-setitem-clones.md)
-  — **sunfish compiles (rc=0) and aborts at runtime.** Every
-  `dict::__setitem__` clone in the emitted C has lost its key and value
-  formals — 12 of them, all arity 1 — so both `str`-keyed table literals
-  (`pst`, `directions`) collapse to `getter not resolved`. Succeeds 090,
-  whose "generator containment" claim was measured and refuted. No
-  minimal repro yet: four hypotheses tested and recorded so they are not
-  re-tested, and three neighbouring cuts of `main()` each produce a
-  DIFFERENT diagnostic, which is itself the finding.
-- [124-FA-refuse-imprecise-inference.md](124-FA-refuse-imprecise-inference.md)
-  — **option landed 2026-09-01, off by default.** `--refuse-imprecise`
-  reports (or rejects) every container element type and function
-  parameter that inference left untyped — the points where codegen stops
-  having a type and starts guessing a layout. Built because shedskin
-  compiles `go` to `list<UCTNode *>` and a plain `node->losses`, while
-  pyc emits `_CG_prim_list(_CG_void,1)` and then guesses; the difference
-  is that shedskin REFUSES where inference does not resolve. On `go` it
-  names five list literals, including `[Square(self,pos) for pos in ...]`
-  — monomorphic in the source, untyped in pyc — which is what lets a
-  UCTNode reach a Square layout and cause ifa/123's crash.
-
-- [039-FA-uninitialized-local-reads-silent.md](039-FA-uninitialized-local-reads-silent.md)
-  — reading a local unassigned on some CFG path is silent UB, not a
-  diagnostic (`place_phi` is liveness- not definite-assignment-
-  driven). Proposed fix: an 18th canonical `AType`
-  (`uninitialized_type`).
-- [closed/041-FA-verbose-type-dump-intermittent-segfault.md](closed/041-FA-verbose-type-dump-intermittent-segfault.md)
-  — **closed 2026-08-29, not reproducible.** Two segfaults in the `-v`
-  per-pass type dump, July 2026, nothing since. Two of its three
-  hypotheses ruled out; the third was real but was a different defect —
-  the dump allocated AVars and so SHIFTED the analysis it measures
-  (bh: ess 415 vs 414 with `-v`) — now fixed, dump is read-only.
-- [094-FA-asan-heisenbug-blocks-sanitizer-diagnostics.md](094-FA-asan-heisenbug-blocks-sanitizer-diagnostics.md)
-  — found attempting 041's own ASAN soak: an intermittent
-  `PycModule::filename` corruption/segfault on the simplest possible
-  ASAN-built input, which stopped reproducing the moment any
-  debugger or debug print looked at it. Suspected (not confirmed)
-  Boehm GC conservative-scan root miss under ASAN's altered stack
-  layout — the same disease class 041 itself suspects, caught
-  elsewhere. Calls into question whether an ASAN soak is a reliable
-  technique for this codebase's intermittent-segfault bugs at all.
-- [048-FA-deepcopy-flow-divergence-genetic2.md](048-FA-deepcopy-flow-divergence-genetic2.md)
-  — genetic2's repeated-deepcopy-and-graft pattern produces
-  ever-longer copy-of-copy CS chains, each re-matched against a
-  growing candidate product; 033's landed MatchCache retention does
-  *not* help here (confirmed — distinct mechanism, per-chain not
-  per-pass reuse needed).
-- [049-FA-raise-only-contour-notype.md](049-FA-raise-only-contour-notype.md)
-  — a function reached only via its raising branch gets a
-  bottom-typed return. Two fix prototypes (placeholder-move,
-  violation-suppression) were built and reverted 2026-08-06 as
-  unsafe; downgraded to "likely cosmetic warning, not correctness
-  bug" since the baseline already salvages it via
-  `convert_NOTYPE_to_void`.
-- [050-FA-general-constant-propagation-unreachable-code.md](050-FA-general-constant-propagation-unreachable-code.md)
-  — no SCCP-style fixed point; only one ad-hoc point detector exists
-  (`can_raise`). Direction 3a (native can-raise fact in FA's own
-  fixed point) landed 2026-07-18; 1/2/3b remain open, 3b being a
-  large general global-slot-propagation feature.
-- [closed/052-FA-shared-method-branch-reopens-empty-list-fragility.md](closed/052-FA-shared-method-branch-reopens-empty-list-fragility.md)
-  — **closed 2026-08-29, superseded by 072.** Adding *any* branch to a
-  shared `clone_methods_per_cs` method used to reopen closed-040's
-  empty-list fragility; re-measured, it no longer does (`rc=0`, correct
-  output, where it used to be `fail: program does not type`). The two
-  surviving warnings are 072's empty-container residual, not this.
-- [closed/055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md](closed/055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md)
-  — **closed 2026-08-27: plcfrs converges and compiles.** Adding
-  `set.__sub__` used to hang or crash the compiler on plcfrs.py. Fixed
-  by three FA defaults (`PYC_CSSPLIT=1`, `PYC_ROUTECYCLE=3`,
-  `PYC_PROMOTE_FIRST=2`) plus six latent bugs found behind them.
-- [086-FA-self-recursive-copy-arg-notype-cascade.md](086-FA-self-recursive-copy-arg-notype-cascade.md)
-  — a self-recursive function whose recursive call passes
-  `arg.copy()` (not the parameter directly) degrades entirely to
-  NOTYPE and crashes at runtime on its first call, every time.
-  Minimal 3-line repro, not container-specific. Real-world trigger:
-  the classic Norvig sudoku-solver backtracking idiom
-  (`shedskin_examples/sudoku2`, `sudoku4`).
-
-### DISPATCH
-
-- [030-DISPATCH-polymorphic-dispatch-fat-pointers.md](030-DISPATCH-polymorphic-dispatch-fat-pointers.md)
-  — core classtag dispatch implemented on both backends. Mixed
-  plain-function/closure-carrier dispatch **fixed on both backends**
-  2026-08-06 (classtag compare + direct call, no method-pointer-slot
-  infrastructure needed; the LLVM half also required restructuring
-  `emit_send_call`'s per-candidate loop to stop bailing to a wholly
-  separate, uninitialized-alloca-reading bare-callable pass, bringing
-  it to parity with `cg.cc`'s general classtag+plain mixing). Remaining
-  open: high-fan-out table dispatch (vs. if/else chain) was never
-  built (now a perf concern, not correctness — 11-subclass fanout
-  works).
-- [079-DISPATCH-single-candidate-dispatch-unchecked-cast.md](079-DISPATCH-single-candidate-dispatch-unchecked-cast.md)
-  — dispatch's "single candidate" fast path emits an unchecked cast
-  when the receiver's union has *another* member that doesn't
-  implement the method at all (never a dispatch candidate, so
-  silently uncovered). `bh.py` segfaults this way. Not attempted —
-  touches the hottest dispatch path in codegen.
-### CGEN (C backend)
-
-- [123-CGEN-union-receiver-field-access-has-no-discrimination.md](123-CGEN-union-receiver-field-access-has-no-discrimination.md)
-  — **root-caused 2026-09-01**, found by 122 Phase 0's layout check and
-  traced to the faulting line. A method whose receiver FA typed as a
-  union of UNRELATED classes is emitted with an `_CG_any` (`void *`)
-  receiver and blind-casts to ONE member's layout. `go`'s
-  `UCTNode::select` reads `e26` as `unexplored` (a list); on a `Square`
-  that slot is `losses` (an integer), and `_CG_list_ptr` segfaults.
-  Method DISPATCH already solves this with a classtag switch
-  (`poly_dispatch_classtag_targets`); field ACCESS has no equivalent.
-  Explicitly ruled out as ifa/121's clone blindness — `IFA_DBG_VAREQ`
-  reports zero `Square vs UCTNode` pairs.
-
-- [122-CGEN-layout-families.md](closed/122-CGEN-layout-families.md)
-  — **plan.** Field access is by member NAME, but a method shared between
-  a base and its subclasses is emitted once and BLIND-CASTS the receiver
-  to one class's layout, so C takes the offset from the cast-to struct.
-  That is sound only while layouts are prefix-compatible — an invariant
-  nothing states and nothing checks, held today only by the accident of
-  dense layout, and the reason ifa/110 happened. Phase 0 (worth landing
-  alone) records every blind cast the emitter performs and checks prefix
-  agreement on `(index → c_type)`, turning a silent miscompile into a
-  compile error. Phases 1-2 then name LAYOUT FAMILIES by union-find over
-  those casts and elide fields unused across a whole family — 121
-  measured 269 of pygmy's 275 candidate slots as provably dead, and its
-  per-class attempt failed precisely on this invariant. ifa/030's
-  per-class vtable would dissolve phases 1-2 entirely.
-
-- [121-CGEN-dead-clones-emitted.md](121-CGEN-dead-clones-emitted.md)
-  — **C backend fixed 2026-09-01, LLVM half open.** Liveness
-  (`mark_live_funs`) is computed over `Fun::calls`, FA's CANDIDATE set at
-  each call site; codegen then narrows every site to one target
-  (`get_target_fun_core`, or the single winner `cg_build_new_to_val_map`
-  installs per method slot) and nobody recomputes liveness after. Every
-  discarded candidate stayed `live` and was emitted: **39 of pygmy's 244
-  functions named nowhere in the output**. Fixed by buffering each body
-  and emitting only what `init` transitively NAMES, with the reference
-  relation read back out of the emitted bytes — hooking
-  `cg_get_string(Fun*)` instead is NOT sufficient (`c_rhs` goes through
-  `cg_get_string(Var*)`; that attempt dropped 9 functions that were still
-  called). pygmy 244 → 149 functions, C −57%, `.ppm` byte-identical;
-  corpus diff is one line and it is a win — **`linalg` compiles now**,
-  because all six of its C errors were inside dropped functions.
-  **Measured and decided 2026-09-01: do NOT move the pruning earlier.**
-  Corpus-wide only **2.8% of clones are dead** (median 1%, pygmy's 39%
-  an outlier), and pre-clone the information does not exist at all —
-  both narrowings need the concrete C types `concretize_types` produces
-  inside `clone`. The value here is that dead code can be WRONG code,
-  not that there is much of it. The way to stop creating them runs
-  through `ES_FN::equivalent`'s creation-point block, whose
-  unconditional `return 0` LOOKS like the bug and is load-bearing:
-  letting its (dead) `cssyms` loop decide makes pygmy fail with
-  `fail: missmatched offsets`, because merging also needs the field
-  OFFSET compatibility the function's header comment describes.
-
-- [054-CGEN-remove-unconditional-tuple-list-header.md](054-CGEN-remove-unconditional-tuple-list-header.md)
-  — a same-day plcfrs fix made *every* tuple allocate a 16-byte
-  list-header unconditionally, even when never needed. Deliberately
-  deferred (safe but imprecise) — revisit only if profiling shows it
-  matters.
-- [061-CGEN-multi-tuple-list-null-element-type.md](061-CGEN-multi-tuple-list-null-element-type.md)
-  — a list of tuples emits `(null)*` or an incompatible-pointer cast
-  when several distinct tuple record types coexist and get
-  `.sort()`ed together. Same bug *class* as 056 (malformed C instead
-  of a guarded degrade); not a duplicate.
-- [090-CGEN-tuple-arity-cant-vary-across-loop-iterations.md](closed/090-CGEN-tuple-arity-cant-vary-across-loop-iterations.md)
-  **(closed 2026-09-02 — both repros fixed; its sunfish claim refuted,
-  that scope is now [125](125-sunfish-degenerate-dict-setitem-clones.md))**
-  — a loop-carried variable whose tuple arity changes each iteration
-  (`t = t + (i, i+1)`) or whose type spans `None`/tuple (`move = None`
-  then reassigned inside the loop) fails with "unable to resolve to a
-  single function at call site" — a clean compile-time reject, not a
-  crash, but possibly a genuine architectural limit (tuples are
-  fixed-arity types, per closed-069) rather than a bug with a real
-  fix. sunfish's real blocker (past the stale "sizeof_element"
-  claim and the `sum()`-missing-`start`-arg gap, both resolved this
-  session).
-- [093-CGEN-int-float-union-move-not-coerced.md](093-CGEN-int-float-union-move-not-coerced.md)
-  — a plain MOVE (not a binop — see closed-062) storing an int-typed
-  value into a variable FA unified to `float64` isn't coerced. C
-  backend gets the value right but the wrong `__str__` (`1.0` not
-  `1`); LLVM backend stores the raw int bits into the float slot with
-  no `sitofp`, producing a completely wrong value
-  (`4.94...e-324`). Found via `7.py`'s real-argv-triggered branch.
-- [097-CGEN-callsite-vs-clone-formal-type-mismatch.md](097-CGEN-callsite-vs-clone-formal-type-mismatch.md)
-  — **PARTIAL**: an ordinary call site's actual argument type can
-  diverge from the specific callee *clone's* formal parameter type
-  (`emit_send_call` now guards the unsafe scalar-into-voidish-formal
-  direction, same 056/077/096 convention — `msp_ss.py` compiles clean
-  as of this fix). Root cause traced and confirmed **not a duplicate**
-  of 076/030/018/045: `entry_set_compatibility` (`fa.cc:1059`) scores
-  a candidate `EntrySet`'s compatibility against a momentary snapshot
-  of its accumulated formal type, taken *before* the ES's own
-  already-committed callers had their contribution (re-)flowed in that
-  pass — directly confirmed by instrumentation (a `str.__eq__` edge
-  scored fully compatible with exactly 1 of 7 candidate `EntrySet`s:
-  the one whose type happened to be momentarily unpopulated). A
-  resequencing fix was implemented and **reverted** — it regressed 3
-  tests by tripping a more fundamental, pre-existing gap, now filed
-  separately as [098](closed/098-FA-per-pass-reset-scoped-to-reachable-set.md).
-  098 is now CLOSED (2026-08-31) and explicitly hands the retest of that
-  reverted patch here; re-take the trace first, since 100 widened
-  `entry_set_compatibility`'s candidate set underneath it.
-
-### LLVM
-
-- [095-LLVM-str-or-none-union-wrong-value.md](095-LLVM-str-or-none-union-wrong-value.md)
-  — a `str | None` local's `is not None` check misbehaves and reads
-  back a garbage value on the `None` branch, LLVM-only (C backend
-  correct). Found implementing a real `getopt.py`. Not yet traced past
-  a minimal repro; possibly related to 093's union-storage family, not
-  confirmed the same mechanism (no numeric coercion needed here).
-
-### CLEANUP
-
-- [010-CLEANUP-vec-set-api-cleanup.md](010-CLEANUP-vec-set-api-cleanup.md)
-  — started as a small deferred rename (`Vec::n`→`capacity`/`size()`)
-  plus a `qsort_by_id`→`sorted_view()` migration; has grown into a
-  full `BaseVecSet`/`Vec`/`Set` split proposal ("option C revisited")
-  with a 475-site, 27-file migration plan. Non-functional throughout
-  (output must stay byte-identical). Folded in closed-021.
-
-## Closed (archive)
-
-Closed issues live in [`closed/`](closed/) with the closing
-commit ref (or date) recorded in each file's status line.  They
-stay in the tree as history — a code-search for the affected file
-finds the trail of investigation even after the fix has landed.
-
-Currently 76 closed issues (`closed/` also holds
-`033-ledger-design-detail.md`, an archived design document rather
-than an issue, which is why the file count is one higher):
-[001](closed/001-keepalive-vs-explicit-reply.md),
-[002](closed/002-codegen-llvm-normalizer.md),
-[003](closed/003-fa-converge-determinism.md),
-[004](closed/004-find-local-loops-siblings.md),
-[005](closed/005-retire-speculative-sym-level-dce.md),
-[006](closed/006-simple-inlining-multi-send-chain.md),
-[008](closed/008-fa-crash-on-nested-iterator-shape.md),
-[009](closed/009-fa-violations-nondeterminism.md),
-[011](closed/011-setter-codegen-vs-analyzer-mismatch.md),
-[012](closed/012-test-llvm-gc-link.md),
-[013](closed/013-pyc-llvm-default-off.md),
-[014](closed/014-llvm-construction-flow-to-slots.md),
-[016](closed/016-llvm-ssu-formal-arg-binding.md),
-[017](closed/017-iterator-construction-undef-self.md),
-[018](closed/018-v2-loop-after-undef.md),
-[019](closed/019-v2-flat-list-header.md),
-[020](closed/020-v2-list-add-empty-body.md),
-[021](closed/021-v2-call-arg-swap.md),
-[022](closed/022-iterative-inlining.md),
-[023](closed/023-v2-is-value-type-consumer.md),
-[024](closed/024-is-comparison-narrowing.md),
-[026](closed/026-recursive-self-mutation-struct-collapse.md),
-[027](closed/027-v2-llvm-narrowed-loop-loses-struct-type.md),
-[028](closed/028-fibheap-blockers.md),
-[029](closed/029-polymorphic-dispatch.md),
-[031](closed/031-globals-outside-fa-precision.md),
-[032](closed/032-fa-survey-findings.md),
-[033](closed/033-splitter-non-idempotent-divergence.md),
-[034](closed/034-pygasus-update-display-assert.md),
-[035](closed/035-nondeterministic-codegen-clone-order.md),
-[036](closed/036-llvm-phy-lowering-wrong-value.md),
-[037](closed/037-matcher-cartesian-cs-product.md),
-[038](closed/038-LLVM-coro-split-second-suspend-unreachable.md),
-[040](closed/040-empty-list-shared-clone-type-inference.md),
-[041](closed/041-FA-verbose-type-dump-intermittent-segfault.md),
-[042](closed/042-null-meta-type-build-type-hierarchy-segfault.md),
-[043](closed/043-empty-container-inference-options.md),
-[044](closed/044-mixed-length-tuple-list-len-miscompile.md),
-[045](closed/045-receiver-cs-method-cloning.md),
-[046](closed/046-optional-none-field-inline-type-sum-assert.md),
-[047](closed/047-different-arity-tuple-iteration-shared-cs.md),
-[051](closed/051-LLVM-nested-list-index-mixed-union-crash.md),
-[052](closed/052-FA-shared-method-branch-reopens-empty-list-fragility.md),
-[053](closed/053-tuple-unpack-target-heterogeneous-arity-segfault.md),
-[055](closed/055-FA-set-dunder-method-triggers-fa-nonconvergence-on-plcfrs.md),
-[056](closed/056-CGEN-degraded-index-type-raw-c-compile-error.md),
-[057](closed/057-sorted-tolist-fa-nonconvergence.md),
-[058](closed/058-polymorphic-classtag-dispatch-drops-extra-arguments.md),
-[059](closed/059-narrowing-peel-wrapper-boolean-collapse-gap.md),
-[060](closed/060-none-branch-dropped-mixed-with-literal-bool-sequence.md),
-[062](closed/062-LLVM-mixed-int-float-scalar-coercion.md),
-[063](closed/063-no-type-bucket-triage.md),
-[064](closed/064-method-phantom-display-blocks-es-split-routing.md),
-[065](closed/065-mark-stage-es-split-routing-and-growing-product.md),
-[067](closed/067-dijkstra2-heap-tuple-precision-and-use-before-def.md),
-[069](closed/069-per-arity-tuple-types-scope.md),
-[070](closed/070-embedded-nul-literal-truncation.md),
-[073](closed/073-teach-splitter-productive-vs-inert-context.md),
-[076](closed/076-mutation-driven-receiver-divergence-not-cloned.md),
-[077](closed/077-primitive-equality-codegen-missing-salvage-guard.md),
-[078](closed/078-class-body-default-plus-init-override-permanently-unions.md),
-[080](closed/080-LLVM-index-type-mismatch-no-salvage-guard.md),
-[081](closed/081-FA-int-mult-bool-constant-fold-segfault.md),
-[082](closed/082-narrowing-wrapper-names-hardcoded-in-fa.md),
-[083](closed/083-CGEN-print-println-name-collision-risk.md),
-[084](closed/084-CGEN-LLVM-bool-constant-name-matching-workaround.md),
-[085](closed/085-CGEN-dead-if-unresolved-condition-no-guard.md),
-[087](closed/087-DISPATCH-out-of-order-keyword-args.md),
-[088](closed/088-llvm-class-list-field-plus-construct-segfault.md),
-[089](closed/089-DISPATCH-closure-pyc-to-bool-no-candidate.md),
-[091](closed/091-DISPATCH-nonrecord-builtin-constructor-not-first-class.md),
-[092](closed/092-DISPATCH-3arg-minmax-plus-multi-shape-return-crash.md),
-[096](closed/096-extend-c-call-salvage-guard-past-str-comparisons.md),
-[098](closed/098-FA-per-pass-reset-scoped-to-reachable-set.md),
-[104](closed/104-unify-list-and-tuple-in-analysis.md),
-[109](closed/109-mixed-arity-tuple-slice-dispatch.md),
-[090](closed/090-CGEN-tuple-arity-cant-vary-across-loop-iterations.md),
-[110](closed/110-override-duplicates-member-slot.md),
-[122](closed/122-CGEN-layout-families.md),
-[112](closed/112-CGEN-nondeterministic-emitted-c.md).
+- Filenames: `NNN-CAT-short-slug.md`, NNN zero-padded and never reused.
+  CAT is one of **FA** (flow analysis, splitter, convergence), **DISPATCH**,
+  **CGEN** (C backend), **LLVM**, **CLEANUP**. Recent files often omit
+  the tag; that is fine.
+- One issue per file. Cross-link with relative paths. `make test-links`
+  checks every link.
+- Status line at the top: `open`, `partial`, or `closed` with a date or
+  commit. Closed issues move to [`closed/`](closed/) (a flat archive,
+  never deleted) with a closure note saying why and where any residual
+  went.
+- **Keep an open issue current, not chronological.** When a finding
+  supersedes an earlier section, rewrite the section. Put the old text
+  in git (`git show <commit>:<path>`) and cite it. Do not append
+  "CORRECTION" after "CORRECTION". A reader should be able to act on the
+  file as it stands.
+- Every issue carries: the symptom with a runnable repro, the mechanism
+  as far as measured, the principled fix, the dead ends with the
+  measurement that killed each, a stop condition written before the
+  next measurement, and verification.
+- When one issue's remaining scope is covered by another, close it into
+  the survivor and say so in both.
+- A `.known_issue` sidecar (in `tests/` or `ifa/tests/`) names the issue
+  that owns it. When an issue is closed or merged, repoint its sidecars.
 
 ## When to file an issue here vs fix it now
 
-File an issue when:
-- The fix is more than ~1 hour of work *and* doesn't block the
-  current task.
-- The fix needs a design decision (multiple plausible approaches).
-- The fix touches a subsystem the current task isn't auditing.
-- You found a real-but-rare bug that has a clean workaround.
-
-Fix it now when:
-- It blocks the current task.
-- It's a one-line fix and the test you'd write to verify it is the
-  one you're already writing.
-- The current PR is the natural place for it (the reviewer would
-  spot the workaround and ask why).
-
-- [101](101-FA-first-time-forever-splitting.md) — the residual non-convergence (`go`, `linalg`, `plcfrs`) is first-time-forever splitting, not re-derivation.
-- [102](102-corpus-programs-compile-then-abort-at-runtime.md) — 27 of 68 corpus programs compile cleanly and then abort at runtime on unresolved dispatch; no sweep or harness in this repo sees it.
-- [104](closed/104-unify-list-and-tuple-in-analysis.md) **(closed)** — design: unify `list`/`tuple` in analysis and let the existing `tuple_able` decision pick the layout; measured 19%/14%/10% of splits mix the two on plcfrs/rdb/sudoku5, 0% on linalg.
-- [105](105-type-degeneration-in-shared-generic-methods.md) — shared generic container methods (`__add__`, `__lt__`, `__getitem__`) merge every caller's element types into one local; the real cause of plcfrs's 2232 violations.
-- [109](closed/109-mixed-arity-tuple-slice-dispatch.md) **(closed)** — tuple slicing is unimplemented: `t = (1,2,3,4); t[0:2]` aborts. sunfish's crash. Fixed by giving `tuple` a `__pyc_getslice__` and an element sym (`PYC_TUPELEM` on by default); sunfish's *remaining* runtime abort is [030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md)'s `{list, tuple}` union receiver.
-- [111](111-FA-selective-invalidation-per-pass.md) — every FA pass re-derives the whole program from bottom, so a pass that changes nothing costs full price: hq2x spends 48% of its FA time on four passes that produce byte-identical output. Selective (closure-scoped) invalidation instead of `clear_results()`. M1 measures whether the affected closure is small enough to pay.
-- [112](closed/112-CGEN-nondeterministic-emitted-c.md) **(closed)** — two identical pyc invocations emit different C: msp_ss produces three different files from three runs (same 40211 lines, temps renumbered, one getter relocated between functions). FA state is reproducible, so it is downstream of the fixed point. Found by ifa/111's differential harness, which it would otherwise have made useless.
-- [113](113-FA-setter-equivalence-is-a-global-batch-partition.md) — setter equivalence classing is a global, per-pass BATCH partition whose invariant is maintained by the full reset rather than by the machinery, so nothing incremental can be built on FA. Blocks 111; seven approaches there failed for this one reason.
+File an issue when the fix is more than about an hour and does not block
+the current task, needs a design decision, touches a subsystem the
+current task is not auditing, or is a real but rare bug with a clean
+workaround. Fix it now when it blocks the current task, when it is a
+one-line fix whose test you are already writing, or when the current
+change is its natural home.

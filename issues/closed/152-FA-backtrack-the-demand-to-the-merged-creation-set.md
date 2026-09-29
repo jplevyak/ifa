@@ -296,7 +296,7 @@ Two separate follow-ups fall out, neither belonging to this issue:
   keeps `no_static_arity=0` through that confluence.
 - **A reporting gap.** An emitted
   `assert(!"runtime error: matching function not found")` — 11 sites — with
-  **zero warnings** is [149](../149-the-largest-diagnostic-class-reports-nothing.md)'s
+  **zero warnings** is [149](149-the-largest-diagnostic-class-reports-nothing.md)'s
   family: codegen knows the dispatch is unresolved and nothing says so.
 
 **This is why the flag stays default 0.** The mechanism is justified and
@@ -329,7 +329,7 @@ evidence:
    chain, same argument addresses.
 2. `sweeps/check__PYC_NILSTORE_0__ae16c44e+0e9deefa.tsv` already records
    `chull compile_rc=0 warns=0 run_rc=139`.
-3. [135](../135-empty-sibling-contour-wins-the-clone-merge.md) independently
+3. [135](135-empty-sibling-contour-wins-the-clone-merge.md) independently
    notes it: "`chull` compiles there and then segfaults (`run 139`)".
 
 ### Where the trail stops, for whoever picks it up

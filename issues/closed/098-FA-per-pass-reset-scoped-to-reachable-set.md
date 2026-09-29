@@ -5,7 +5,7 @@ the `out_edge_map` / silent-dispatch-failure follow-on 2026-08-31 (see
 "The second defect's fix" below). **CLOSED.** Reproduced on
 **unmodified main** — the original
 2026-08-11 filing believed the only trigger was
-[097](../097-CGEN-callsite-vs-clone-formal-type-mismatch.md)'s reverted
+[097](097-CGEN-callsite-vs-clone-formal-type-mismatch.md)'s reverted
 defer/force patch, and diagnosed the mechanism as *per-pass scheduling
 order-dependence*. Both of those are wrong and are corrected below; the
 old diagnosis is kept at the end for the record, since the prior-art
@@ -419,7 +419,7 @@ full corpus A/B above rather than the test suite alone.
 
 ## What this unblocks
 
-Directly: [097](../097-CGEN-callsite-vs-clone-formal-type-mismatch.md)'s
+Directly: [097](097-CGEN-callsite-vs-clone-formal-type-mismatch.md)'s
 own fix, which was blocked on this. More broadly, every analysis that
 reads `EntrySet::edges`, `AEdge::args` or `AEdge::match->formal_filters`
 was reading a mixture of the current pass and older ones — the

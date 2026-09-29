@@ -24,7 +24,7 @@ actually FIRES is `getter not resolved`, in a degenerate
 `dict::__setitem__` clone; the `matching function not found` assert sits
 on the very next line of the same collapsed function body and is never
 reached. sunfish's residual failure is filed as
-[125](../125-sunfish-degenerate-dict-setitem-clones.md). Closing here
+[125](125-sunfish-degenerate-dict-setitem-clones.md). Closing here
 per the README's rule that remaining scope covered by another issue
 belongs to that issue, not to a second open doc.
 Repro: `tests/tuple_arity_union_slice.py` (`.known_issue`) — and a much
@@ -281,7 +281,7 @@ survived as an assert.
 
 The receiver needs to be monomorphic *at the call site*, which means
 either splitting the **caller's** contour so `self` is one tuple type
-(the [101](../101-FA-first-time-forever-splitting.md) splitting rule), or
+(the [101](101-FA-first-time-forever-splitting.md) splitting rule), or
 giving the two tuple types one representation so the sum never forms —
 shedskin's answer, since its `pst` is `dict<str*, tuple<__ss_int>*>` with
 both lengths as one type.
@@ -335,7 +335,7 @@ first-stage-wins cascade never gets there. So the violation is recorded
 faithfully and nothing ever splits on it: `ess` and `css` are unchanged
 (534 / 1586) and the failure is identical.
 
-This is the same starvation [101](../101-FA-first-time-forever-splitting.md)
+This is the same starvation [101](101-FA-first-time-forever-splitting.md)
 found keeping `PER_CS_RECEIVER` from running, now with a second concrete
 victim.
 
@@ -360,7 +360,7 @@ neither is reachable while the cascade starves the stage that implements
 it — and un-starving it costs convergence.
 
 So this is not a missing mechanism but
-[101](../101-FA-first-time-forever-splitting.md)'s productivity problem:
+[101](101-FA-first-time-forever-splitting.md)'s productivity problem:
 splitting must *earn* its contours, so that a stage can run early without
 diverging. Until that exists, `sizeof_element`'s violation is correct
 information the splitter cannot safely use.
@@ -460,5 +460,5 @@ The demand it was groping at is real and still open — a union receiver
 whose SUM has no element channel reaching a method needing
 `sizeof_element`. That is a REPRESENTATION demand and belongs behind
 `IFACallbacks` as a test ON the receiver, not a fan OVER receivers. See
-[143](../143-shared-container-method-contours-refuse-cs-splits.md) for the
+[143](143-shared-container-method-contours-refuse-cs-splits.md) for the
 same coupling seen from the CreationSet side.

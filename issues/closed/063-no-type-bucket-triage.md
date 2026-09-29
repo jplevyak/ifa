@@ -5,11 +5,11 @@ codegen-robustness fixes below landed directly. The FA-root
 investigation is thorough but was left open-ended here; every
 forward-looking action item it generated has since been forked into
 a still-open issue with a narrower, non-overlapping scope: the
-concrete build plan → [075](../075-FA-element-cs-method-split-idempotent-plan.md),
+concrete build plan → [075](075-FA-element-cs-method-split-idempotent-plan.md),
 the dijkstra2 repro-attribution correction →
 [067](067-dijkstra2-heap-tuple-precision-and-use-before-def.md)
 (also closed, folded into
-[068](../068-FA-derive-structural-ops-record-field-fold.md)), and the
+[068](068-FA-derive-structural-ops-record-field-fold.md)), and the
 oscillation-vs-genuine-no-type distinction →
 [074](074-FA-cross-pass-oscillation-plan.md). Kept here as the
 historical diagnosis/derivation trail (including a since-corrected
@@ -100,7 +100,7 @@ After the three fixes, the remaining "no type" examples fail on:
   root, or a broad "trap when an arithmetic primitive gets a
   void/incompatible operand" codegen guard (higher risk — deferred).
 - **`(null)*` list element type** (chull) — a list whose element type
-  is None/unresolved; this is [061](../061-CGEN-multi-tuple-list-null-element-type.md)'s
+  is None/unresolved; this is [061](061-CGEN-multi-tuple-list-null-element-type.md)'s
   sibling for None elements.
 - **member access on a void value** (rubik: `no member named 'e0'`),
   **invalid C++ cast** (yopyra), **generator returns void**
@@ -501,4 +501,4 @@ own product; no orphan), leaving the display in identity. The full,
 concrete, step-by-step build — CSM fanned per `(CS × display)` +
 decide-then-apply + stable-site keying, with code anchors and a
 combination-sweep fitness function — is
-**[075](../075-FA-element-cs-method-split-idempotent-plan.md)**.
+**[075](075-FA-element-cs-method-split-idempotent-plan.md)**.

@@ -1,368 +1,75 @@
-# 072 — Empty/imprecise-container element inference (the 043 family): shedskin comparison + backward-pass design
+# 072 — a never-written container's bottom element reaches live code
 
-**Status:** design + **negative prototype result** (2026-07-28).
-Re-diagnoses the [043](closed/043-empty-container-inference-options.md)
-family, compares pyc to shedskin (same base algorithm), and records the
-outcome of **prototyping element seeding** — a net negative (see
-"Prototype result" below), re-confirming 043's option-4 finding with
-concrete numbers. The prototype was **removed** (no code in tree, per
-043's own "withdrew the prototype" precedent). Key correction from the
-prototype: shedskin does NOT infer empty-container element types from
-uses (its inference is forward/write-driven), and it does NOT "box
-everything" — scalars are native/unboxable in both compilers;
-`join([])` just works because a container's element is a *pointer* type
-(null-absorbing), not because it's boxed. So the residual is narrow (a
-read that returns the element as a value, `x[0]`) and its honest fix is
-the 043-option-1 codegen trap — **not** element seeding and **not** a
-boxing subsystem. The `ifa()`/shedskin design section below is retained
-as reference for the data-polymorphism splitting (which pyc's
-`split_css` already does), not as a seeding recipe.
+**Status:** open. Rewritten 2026-09-28. It owns three `.known_issue`
+fixtures. The history (shedskin's backward pass, the negative seeding
+prototype, the 043 family) is in git:
+`git show 3f36072b:ifa/issues/072-FA-empty-container-notype-current-mechanism-and-plan.md`.
 
-> **Supersedes [052](closed/052-FA-shared-method-branch-reopens-empty-list-fragility.md)**
-> (closed 2026-08-29). 052 filed the case where adding a no-op branch to a
-> shared `clone_methods_per_cs` method broke an unrelated program; that no
-> longer reproduces, and its surviving two warnings are this issue's
-> residual — a read of an element of a provably-empty container. Its repro
-> is worth re-running as a regression check when this area changes.
+## The principle
 
-## Prototype result (2026-07-28) — read this before re-attempting
+A container that is allocated and never written has a BOTTOM element on
+its contour. That is not missing information. It is a precise fact: there
+are no elements. Every operation that would produce an element either
+never runs (a loop over it iterates zero times) or raises (`x[0]` is an
+`IndexError`). **Code reached only through such an element is dead**, and
+a bottom value in dead code is not a violation. That is the same rule as
+[049](049-FA-raise-only-contour-notype.md): an exit that produces no value
+must not be read as one.
 
-The seeding half of the design was prototyped behind a
-`--empty_elem_split` flag (default off): a
-`fa_seed_empty_container_elements()` in `fa.cc`, called from the
-frontend `reanalyze()` monotone-repair hook, that seeded `nil` into the
-element AVar of every live container CreationSet whose generic element
-was bottom AND whose positional slots carried no value (the
-`[]`/`{}`/never-appended shape — the positional-slot check was required
-to avoid poisoning a `[1,2,3]` literal, whose generic element is *also*
-bottom at quiescence because its elements sit in `cs->vars`, not yet
-flowed to the generic element). Default-off was a true no-op (suite
-234/0 both backends); **the code was then removed** once the on-measured
-result came back negative.
+**Seeding a default element is the wrong answer, and it was measured
+2026-07-28:** a fixed default regresses the operations that already
+handle a bottom element, and shedskin does not do it either (its
+inference is write-driven).
 
-**It measured a net NEGATIVE when on:**
-- Suite: regressed `str_join`, `set_*`, `logical_operators`, … — empty
-  containers flowing into `str.join` / concat / set-ops. Those ops
-  already handle a **bottom** element correctly (join of `[]` → `""`);
-  seeding `nil` makes the element a real `None` that the unboxed typed
-  primitive (`_CG_strcat`, set-add) then rejects.
-- Corpus sweep: **COMPILED 23 → 19, FAIL 25 → 31** (net −4 to −6).
+## What already works
 
-**Root cause of the negative result — and a correction about shedskin.**
-shedskin does **not** "box everything" (an earlier version of this note
-said so — wrong). Verified in `shedskin/typestr.py`: scalars
-(`int`/`float`/`bool`/`complex`) are **native/unboxable** (`__ss_int`,
-`__ss_bool`, …), exactly like pyc. shedskin represents **str/list/dict/
-class as pointers** (`T *`), which are *nullable*, so `None` mixed with a
-pointer type is just a null pointer — free, no separate representation.
-It boxes to a generic `void *`/`pyobj *` **only** for a genuine dynamic
-`scalar | None` (or otherwise-heterogeneous) union — and even then it
-first tries to *avoid* forming such a union (see the chess note below /
-[071](071-FA-chess-accumulated-union-notype-cascade.md)). The real
-pyc↔shedskin differences here are two, and neither is "boxing vs not":
+- Forward, write-driven inference types every valid shape: `if lst:
+  lst[0]`, `for x in lst`, `sum(lst)`, a `len(x) > 0`-guarded read.
+- closed/175: a `for` over a never-written list folds dead, because
+  `__pyc_more__` tests `n != 0 and position < n`, and `len` of it folds
+  to 0. (This depends on `int.__ne__`'s constant annotation,
+  [134](134-remove-the-frontend-forced-split-opt-in.md).)
+- closed/160: `list.__eq__` against an empty literal.
 
-- **Use-site inference: neither does it.** shedskin does **not** infer an
-  empty container's element type from its uses, and its inference does
-  not need `join([])`'s element to be `str`. Its constraint graph is
-  **forward and write-driven** (`in_out(a,b)` is a directed edge; `unit`
-  receives types only from literal elements / `append` / `setitem` /
-  writes through an aliased param; reads flow *out* of `unit`, never back
-  in — `shedskin/infer.py` + `graph.py`). An `x = []` only *read* keeps
-  an empty `unit`; join-of-empty is `""` because the element is a
-  *pointer* type (null-absorbing), not because everything is boxed.
-- **pyc already matches this for the container ops.** pyc, unboxed,
-  *already* handles a **bottom**-element container correctly for
-  join/concat/set/`len` — which is exactly why seeding a concrete `nil`
-  REGRESSED them: it replaced a working "no element" with a poisoning
-  `None`. `void` fared worse.
+## Open fixtures
 
-So the seeding idea is misguided regardless of direction: a fixed
-default poisons the ops pyc already handles, and there is nothing to
-infer "backward from the use site" that shedskin itself infers. The
-genuine residual is narrow — a *read that returns the element as a
-value* (`x[0]` on a never-written `[]`) has no type. pyc's honest analog
-is **043 option 1** (emit a runtime trap for the dead read) — **not**
-element-type seeding, and **not** a boxing subsystem (the residual is a
-scalar read, not a heterogeneous union).
+| fixture | shape |
+| --- | --- |
+| `tests/empty_container_elem.py` | `x = []; x[0]`: a mutual error (CPython raises `IndexError`). Today it is a NOTYPE refusal. |
+| `tests/dict_empty_next_to_populated.py` | `dict([])` beside a populated dict. Once closed/172 separates their CSs, the empty one's `for pair in pairs` and `while i < self._len` are type-checked as live over a bottom element. |
+| `tests/empty_list_compare_via_dict.py` | a list read out of a dict compared to `[]`. `l[i]` on the empty literal is bottom. |
 
-Minimal repro (compile-only warning golden):
-**`tests/empty_container_elem.py`** — `x = []; print(x[0])` NOTYPEs the
-read (and CPython `IndexError`s on the same line — a mutual-error case,
-which is *why* there is no valid program to "fix" here). Every valid
-guarded/iterated shape (`if lst: lst[0]`, `for x in lst`, `sum(lst)`,
-`len(x)>0`-guarded read) already types and runs correctly today. The
-test's `.check` captures the current NOTYPE diagnostics; when the
-residual is addressed (043 option 1), refresh it.
+The last two point at closed/160 in their `.known_issue` text. They
+belong here.
 
-**Mechanics that DID work (salvage, if a DIFFERENT element pass is ever
-built):** the hook point is right — the `reanalyze()` monotone-repair
-path runs at split-stage quiescence and does NOT `clear_results`, so a
-between-pass element change rides the next pass's flow (a
-`run_split_stages` stage instead oscillates: its `update_gen` is wiped by
-`extend_analysis`'s post-split `clear_results` and re-fires forever). And
-the `[1,2,3]`-literal discriminator (generic-element-bottom AND all
-positional `cs->vars` bottom) correctly separates a genuinely-empty
-container from a literal. Neither salvages the *seeding* idea itself.
+Also in this family: **a METHOD DISPATCHED on the element** of a
+never-written container inside the builtin `set`/`dict` (`item.__hash__()`
+in `set.update`). A read-side codegen trap does not cover a dispatch. It
+must be dead, not trapped.
 
-**Affects:** `ifa/analysis/fa.cc` — the CreationSet split machinery
-(`split_css`, `creation_point`, `get_element_avar`, `run_split_stages`,
-the `AVar::backward`/`setters` edges).
-**Related:** [040](closed/040-empty-list-shared-clone-type-inference.md),
-[052](closed/052-FA-shared-method-branch-reopens-empty-list-fragility.md),
-[045](closed/045-receiver-cs-method-cloning.md) (the existing per-CS
-lever), [063](closed/063-no-type-bucket-triage.md) (the corpus "no type"
-bucket), [018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md) /
-[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) (heterogeneous boxing —
-the co-blocker for amaze/dijkstra2), [061](061-CGEN-multi-tuple-list-null-element-type.md)
-(the `(null)*` C-backend sibling).
+## The fix
 
-## Correction: chess.py:314 was NOT this family (mis-attributed here earlier)
+Make "this loop runs zero times" and "this index raises" facts that FA
+DERIVES from a bottom element, instead of relying on each builtin's loop
+test happening to fold:
 
-An earlier draft of this file used chess.py:314's
-`if not [i for i in pseudoLegalCaptures(...) ...]:` as this family's
-"cheap witness," with a mechanism story about a shared `object.__not__`
-branch NOTYPE-ing over an empty list. **That was wrong.** The real cause
-was a plain dispatch gap: containers don't derive from `object` (builtin
-classes are exempt from the implicit `object` base), and
-`__pyc_any_type__` — their actual root — had **no `__not__` at all**, so
-`not <list/tuple/dict/set/str>` dispatched to nothing for *every*
-container, **empty or not** (`not [1,2,3]` failed identically to
-`not []`). Fixed by adding `__not__` to `__pyc_any_type__` (`8644be59`,
-`tests/not_container.py`). This has nothing to do with element inference;
-it is deleted from this issue's scope. The lesson (again, per 043's own
-history) is that "no type near a possibly-empty container" is easy to
-mis-attribute — verify the failure reproduces with a **non-empty**
-container before blaming element inference.
+1. **Loops:** the iterator's `__pyc_more__` over a container whose element
+   AType is bottom folds to `False`. That is 175's mechanism, but keyed on
+   the element being bottom rather than on `len` folding through one
+   annotated comparison. `dict`'s `while i < self._len` needs the same
+   fact through `_len`.
+2. **Reads:** an `index_object` / element load whose container's element
+   is bottom is an exceptional exit. Its result is not a value, so its
+   uses are dead (049's rule), and codegen emits the raise.
 
-## What this family actually is (the real corpus cases)
+The fact is stable across passes only once the container's writers have
+converged. A container that is empty in pass 0 and written later must not
+keep its loops dead. That makes this a decision taken at convergence, like
+[170](170-FA-contours-minted-on-transient-types-are-never-remerged.md): a
+dead edge is recomputed every pass, never only accumulated.
 
-A container's element type is not inferred at its allocation site, so
-element reads elsewhere are NOTYPE. Grounded manifestations:
+## Verification
 
-- **The `retval = []` filled-later shape** — `pseudoLegalCaptures`-style
-  functions that allocate `[]`, `append` in a loop, and return it; a
-  *polymorphic or multi-site* read of the result reads a bottom element.
-- **rubik** (`rubik.py:86` `self.struc[x][y]`) — nested-container element
-  bottom: `struc` is a list-of-lists whose inner element type isn't
-  attributed to the inner allocation.
-- **amaze** (`(tuple __pyc_None_type__ int64 float64 str)`) — element is a
-  genuinely **heterogeneous** union; even with element typing solved, the
-  representation needs boxing ([018](../../issues/closed/018-dict-mixed-key-types-boxing-failure.md) /
-  [030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md)) — a *separate*
-  co-blocker, not solved by element inference alone.
-- **dijkstra2** — dict/heap element cross-product (063's canary).
-
-## How shedskin solves it (the design north star)
-
-shedskin's inference is literally **Plevyak's IFA** (its own docstring)
-— the same algorithm pyc is built on — plus Agesen's CPA. Its
-`shedskin/infer.py` runs, after each forward convergence, a **backward
-phase** `ifa()` → `ifa_flow_graph()`:
-
-1. **`backflow_path()`** (infer.py:2031) — the backward trace. From each
-   *assignment target* (a site that writes a concrete element type into
-   the container), walk incoming (`in_`) edges **backward**, following
-   only edges where the container type flows, collecting the path back to
-   allocation points (`alloc = [n for n in path if not n.in_]`). This
-   attributes "element type X is written into containers allocated at
-   sites S."
-2. **`emptycsites = allcsites - csites`** (infer.py:1766) — the key move:
-   allocation sites that flow to **no** assignment are the never-written
-   containers, identified as a first-class set.
-3. **`ifa_split_no_confusion` / `ifa_split_class`** — partition allocation
-   sites by the assignment-set (element type) reaching them, giving each
-   partition its own class-duplicate (`dcpa`). Empty sites are grouped in
-   the "no confusion" set and **split off into their own contour** — an
-   empty `[]` never shares a contour with a written `[int]`.
-4. **`ifa_seed_template`** distributes the deduced element types across the
-   newly-split allocation points and re-runs the forward phase.
-
-## pyc vs shedskin (architecture map)
-
-| Concept | shedskin | pyc |
-|---|---|---|
-| allocation contour | `dcpa` (class duplicate) | **CreationSet** (`creation_point`) |
-| function duplicate | `cpa` (CPA) | **EntrySet** |
-| container element var | class type-var `var` | `get_element_avar(cs)` |
-| backward edge | `node.in_` | **`AVar::backward`** (`fa.cc:376`) |
-| assignment set | `assignsets` (writes into a slot) | **`AVar::setters`** (append/setitem/merge) |
-| split a contour | `ifa_split_class` | **`split_css`** |
-| CS-split trigger | **proactive** backward pass every round; empty sites separated as `emptycsites` | **reactive**, violation-driven; empty sites are invisible (no setter → not a "starter") |
-| empty container | first-class, split + seeded `→ <class>[nil]` | no concept; empty element stays **bottom** |
-| representation | scalars native/unboxable; str/list/dict/class are **pointers** (nullable → None-absorbing); dynamic `scalar\|None` unions boxed to `void *` | scalars unboxed; None is an 8-byte ptr, so a `scalar\|None` union needs boxing (018/030) |
-
-**pyc already has every building block** — `CreationSet`, `AVar::backward`,
-`AVar::setters`, `get_element_avar`, `split_css`. shedskin's two extra
-steps over pyc are the `emptycsites` separation and the
-`empty → <class>[nil]` default seed — but note (per the Prototype result
-above) the **default seed does not transfer to pyc**: pyc *already*
-handles a bottom-element container correctly for the container ops
-(join/len/concat), so seeding a concrete `nil` only poisons them. The
-transferable half is the `emptycsites`/write-attribution *split*, which
-pyc's `split_css` already largely does.
-
-## Design: a backward element-split pass for pyc
-
-> SUPERSEDED (see "Prototype result" at the top): the seeding step
-> (Step 4) of this design was prototyped and disproved — a fixed default
-> element is net-negative in pyc's unboxed world. This section is kept
-> for the *write-attribution split* (Steps 1–3), which is the part that
-> is actually shedskin-like and useful; ignore Step 4's "seed a
-> default." The genuine residual belongs to 043-option-1 / 018/030.
-
-Add a new stage to `run_split_stages`, run **on quiescence** of the
-violation-driven stages (same slot as `PER_CS_RECEIVER`, so it never
-perturbs their trajectories). Call it `split_element_imprecise_css`.
-It is a focused extension of `split_css`, NOT a from-scratch tracer.
-
-**Step 1 — collect element-imprecise container CSs.** Scan `fa->css` for
-`cs` where `cs->sym->element` (it is a container) and either:
-(a) `get_element_avar(cs)->out->type` is bottom (never-written), or
-(b) `cs->defs` mixes allocation sites some of which are element-written
-    and some not (an empty and a written `[]` sharing one CS).
-
-**Step 2 — backward-partition `cs->defs` by reaching element-writes.**
-For each container def AVar in `cs->defs`, determine which element-write
-setters reach it, by walking `AVar::backward` from the element AVar's
-`setters` (the shedskin `backflow_path`, but pyc already has the reverse
-edges, so it is a bounded BFS over `backward`). Partition:
-  - **written sites**, keyed by the element type(s) that reach them
-    (data polymorphism — same as `split_css`'s setter-equivalence key);
-  - **empty sites** = defs reached by **no** element write (shedskin's
-    `emptycsites`).
-
-**Step 3 — split.** Mint a new CS per partition via the existing
-`split_css` machinery (reusing the issue-033/066 `cs_group_signature`
-ledger for cross-pass identity — mandatory, or this oscillates). Empty
-sites get their own CS, distinct from any written sibling.
-
-**Step 4 — seed the empty CS's element with a DEFAULT** (`nil`) rather
-than leaving it bottom — the analog of shedskin's `empty → <class>[nil]`.
-This is the crux: a concrete default lets every downstream read and
-shared-method branch over the empty container type-check and concretize
-(as `list[nil]`, a never-used buffer — runtime-invisible). Seed via
-`update_gen(get_element_avar(empty_cs), nil_type)`.
-
-**Step 5 — return `analyze_again = 1`** to drive another forward round;
-converge as usual.
-
-### Why this is monotone / fixpoint-safe (the hard part)
-
-shedskin restarts the whole analysis (`restore_network` + re-run) each
-ifa round; pyc's fixpoint is incremental, so the pass must only **widen**:
-- Seeding `nil` into an empty element only adds a type (never removes) →
-  monotone.
-- The split partitions existing defs; it mints no new element types, so
-  re-running finds the same partition (idempotent) — provided the ledger
-  routes a re-derived group back to its first CS (exactly `split_css`'s
-  existing issue-066 discipline; reuse it verbatim).
-- Running only on quiescence keeps it out of the violation stages'
-  trajectories (the PER_CS_RECEIVER precedent, 045).
-
-### Relationship to prior attempts (why this differs)
-
-- 043's **option 4** (confluence seeding) was prototyped and "had nothing
-  to do" because it seeded where empty *meets* non-empty at a flow-
-  connected confluence — the case union flow already handles. This design
-  seeds at the **allocation site** after a **backward** attribution and an
-  explicit **empty-site split**, so it covers the empty site that is read
-  *without* meeting a sibling (through a shared method, a never-written
-  field, a polymorphic multi-site read) — 043's actual failing shapes.
-- It generalizes **045** (`clone_methods_per_cs`, which hard-splits per
-  *constant* for list/range) to the empty-vs-written distinction for
-  *every* container class (dict/set/tuple/str), driven by writes rather
-  than constants.
-
-### What it does NOT solve
-
-- **Heterogeneous element representation** (amaze's `tuple|None|int|float|
-  str`) — element *typing* is only half; the unboxed-scalar union still
-  needs boxing (018/030). This pass makes the element *typed*; a separate
-  effort makes it *representable*.
-- The **`(null)*` C-backend codegen** for a nil/bottom element
-  ([061](061-CGEN-multi-tuple-list-null-element-type.md)) — the C
-  emitter's null-element path should be hardened to trap rather than
-  emit `(null)*` (043 option 1 / the 056/063 convention). This, not
-  seeding, is the honest fix for the `x[0]`-on-`[]` residual.
-
-## Implementation order
-
-> NOTE: **Step 4 (seed a default) was prototyped in isolation and
-> removed** — a fixed `nil`/`void` default is net-negative (see
-> "Prototype result" above), and there is nothing to seed "from the use
-> site" that shedskin itself infers (shedskin is forward/write-driven +
-> boxed). Do not re-attempt element seeding. The only open, useful parts
-> of the design below are Steps 1–3 (the backward *write*-attribution
-> split — which pyc's `split_css` largely already does); the genuine
-> residual (`x[0]` on a never-written `[]`) belongs to 043-option-1
-> (codegen trap) or 018/030 (boxing), not here.
-
-1. **Prereq trace** — instrument `split_css` on rubik / the `retval=[]`
-   multi-site-read repro: confirm the empty/imprecise CS is (a) reachable
-   as a split candidate and (b) currently left with a bottom element.
-   This validates Steps 1–2 against real data before writing the split.
-2. **Step 1–4 behind a flag** (`--empty_elem_split`), measured on the
-   determinism gate + full corpus sweep + `test_pyc.py` both backends.
-3. **Ledger integration** (Step 3) — reuse `cs_group_signature`; verify
-   no new `cs_dup_split` oscillation on dijkstra2/fysphun (063 canaries).
-4. Flip default on once the sweep shows net-positive with zero suite
-   regressions.
-
-## Verification targets
-
-1. The `retval = []` multi-site-read repro (a `[]`-filled function return
-   read polymorphically) — clean, both backends.
-2. `b=[2,3];print(b);k=[];print(k)` (040) and the 052 no-op-branch repro
-   — still clean.
-3. rubik past `struc[x][y]`; dijkstra2 past its dict/heap wall (element
-   half — boxing may still block until 018/030).
-4. `test_pyc.py` 234/0 both backends; determinism gate + sweep buckets
-   net-positive, no regressions; dijkstra2/fysphun pass-count unchanged.
-
-
-## 2026-08-29: a SECOND residual — a DISPATCH on the element, not a read
-
-This issue's residual is described throughout as "a read that returns
-the element as a value" (`x[0]` on a never-written `[]`), and
-`tests/empty_container_elem.py` pins exactly that. Work on
-[issues/118](../../issues/closed/118-set-and-dict-are-linear-scans.md) found a
-second shape the write-up does not cover, and it is the one that blocks
-hashed `set`/`dict`:
-
-    set_from_iterable.py:20: warning: 'item' has no type
-        empty = set([])
-      called from __pyc__.py:2648      <- set.update's `for item in other`
-
-    dict_from_iterable.py:21: warning: 'pair' has no type
-        empty = dict([])
-
-The container is not being READ here. A METHOD IS BEING DISPATCHED on its
-element — `item.__hash__()`, which a hash table cannot avoid and which
-the linear scan it replaces never needed (`==` on an unknown-typed value
-is tolerated; a dispatch is not). So the residual is wider than "a scalar
-read": it is any operation that needs the element to have a type, and a
-codegen trap (043 option 1) does not address the dispatch half.
-
-### It reproduces only through the builtin containers
-
-Four user-level replicas all compile CLEANLY today:
-
-| program | result |
-|---|---|
-| `x = []` then `for v in x: print(v.__hash__())` | clean |
-| the same inside a function called with `[]` and with `[3, 4]` | clean |
-| a class whose `add(item)` does `item.__hash__()`, filled from `[]` | clean |
-| the same reached from a factory with BOTH a typed and an empty source | clean |
-
-So forward inference handles the ordinary cases, exactly as this issue
-says. What does not survive is the same dispatch inside `set`/`dict` —
-classes instantiated by every program, whose methods are one contour
-shared by every container in the program. There is no standalone
-reproducer today; the shape needs a hashed container, which is not in the
-tree (see issues/118 for why, and for the implementation preserved in
-scratch).
-
-That is worth knowing before anyone re-attempts seeding: the negative
-result recorded above was measured against the READ residual. The
-dispatch residual is a different consumer and might respond differently
-— but nothing here has measured that, and it should not be assumed.
+The three fixtures flip to PASS (`empty_container_elem` as a clean
+runtime `IndexError`, matching CPython). Nothing that types today
+regresses. Corpus `check` neutral or better.

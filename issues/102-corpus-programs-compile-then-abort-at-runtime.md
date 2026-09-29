@@ -1,249 +1,90 @@
-# 102 — 27 of 68 corpus programs compile cleanly and then abort at runtime
+# 102 — programs that compile cleanly and then abort: codegen turns an unresolved call into a silent runtime stub
 
-**Status:** open, found 2026-08-16 while root-causing what looked like
-output nondeterminism in the `PYC_CSMOLD` verification
-([101](101-FA-first-time-forever-splitting.md)). **Nothing in the test
-harness or in any sweep used on this project sees these failures.**
+**Status:** open. Rewritten 2026-09-28 against sweep `4b61e721`. It now
+also carries [149](closed/149-the-largest-diagnostic-class-reports-nothing.md)'s
+work list. The history (the 2026-08 census, 37% of compiling programs
+crashing, and the measurement traps) is in git:
+`git show 3f36072b:ifa/issues/102-corpus-programs-compile-then-abort-at-runtime.md`.
 
-## Symptom
+## The defect
 
-Surveying the whole shedskin corpus, recording the compiler's exit status
-**and the binary's** separately:
+When codegen cannot resolve a call, it emits
+`assert(!"runtime error: matching function not found")` (`cg.cc:2737`) or
+a `getter not resolved` / `list element type mismatch` stub, and the
+compile succeeds. A condition the compiler has already detected becomes a
+runtime crash. At `4b61e721` these compile with **zero warnings** and then
+abort on such a stub:
 
-| outcome | 2026-08-16 | **2026-08-18** |
-|---|---|---|
-| compile fails | 8 | **12** |
-| **compile OK, binary crashes** | **27** | **24** |
-| compile OK, 60 s timeout (not classified) | 23 | 23 |
-| compile OK, runs clean | 18 | 18 |
+| program | stub |
+| --- | --- |
+| `adatron` | `matching function not found` in a `_CG_nil_type` function |
+| `life` | `matching function not found`, `(_CG_ps…, _CG_nil_type)` |
+| `quameon` | `matching function not found`, `(_CG_ps…, _CG_list)` (see [132](132-arity-is-representation-not-provenance.md)) |
+| `pisang` | `list element type mismatch`, `(_CG_any, _CG_int64)` |
+| `loop` | SIGSEGV (`run_rc=139`), not yet classified |
 
-**Of the 65 programs that compile, 24 — 37 % — crash when run.**
+`tests/list_tuple_union_method.py` (`.known_issue`) is the minimal shape:
+a `{list, tuple}` union reaching a shared method has two candidates with
+the same C receiver type and no runtime tag.
 
-> **Re-measured 2026-08-18 after
-> [issues/107](../../issues/107-undefined-names-warn-then-segfault.md).**
-> Three programs moved from *crash* to *compile-fail* — `rdb`, `sunfish`
-> and `voronoi2`, which reference CPython builtins pyc does not implement
-> (`EOFError`, `divmod`, `property`). **Nothing newly crashes**, and the
-> clean and timeout sets are unchanged. That is this issue's fix
-> direction #2 working in miniature: a runtime crash became a
-> compile-time diagnostic. (`tarsalzp`, a pre-existing multi-module
-> failure, was missing from the first survey, which is why compile-fail
-> reads +4 rather than +3.)
+## Principle
 
-```
-adatron amaze bh block doom genetic2 kmeanspp life lz2 mastermind2
-mwmatching neural1 othello othello2 path_tracing pisang pygasus
-rsync rubik sat solitaire sudoku3 sudoku4 sudoku5
-```
-(`rdb`, `sunfish` and `voronoi2` left this list on 2026-08-18 — they now
-fail to compile, see above.)
+**An unresolved dispatch that reaches codegen is a demand that FA never
+observed.** It must be a compile-time VIOLATION, not a stub:
 
-Verified as genuine miscompiles rather than environment problems — these
-run to completion under CPython in the same directory and crash under
-pyc:
+- it is fatal-by-default like every other violation (closed/158), so the
+  program is refused rather than miscompiled;
+- once it is a violation, the demand ladder can answer it. For example,
+  CONST_DEMAND can split `int.__ne__` over 1/3 in `itertools.product`,
+  which is what retires one of [134](134-remove-the-frontend-forced-split-opt-in.md)'s
+  annotations.
 
-| program | CPython | pyc |
-|---|---|---|
-| `life` | rc=0 | **SIGABRT** |
-| `othello` | rc=0 | **SIGABRT** |
-| `amaze` | rc=0 | **SIGSEGV** |
-| `mwmatching` | rc=0 | **SIGABRT** |
+Precedent: `issues/107` made undefined names an error instead of a
+warning-then-segfault, and three programs left the crash column with no
+other change.
 
-## Why a "compile-time" issue shows up at runtime
+## Fix
 
-`cg.cc:2055` is the mechanism. When codegen reaches a call site it cannot
-emit, it does **not** fail the build:
+1. In FA's post-convergence checks, report any send whose candidate set
+   codegen will not be able to discriminate: no candidate, or ≥2
+   candidates that share a C receiver type and have no tag. Use the SAME
+   predicate codegen uses (`poly_dispatch_classtag_targets`,
+   `get_target_fun_core`). Call it; do not restate it (AGENTS.md: never
+   decide by name, never reimplement codegen's answer).
+2. Keep the codegen stub only as an internal-error backstop that cannot be
+   reached when FA reported nothing. An `IFA_DBG` count of emitted stubs
+   should read 0 on the whole corpus.
 
-```cpp
-fputs("  assert(!\"runtime error: matching function not found\");\n", fp);
-```
+## The untyped-value work list (from 149)
 
-It writes an abort stub into the generated C. So the program compiles
-cleanly and dies if and when that path executes. The *same message* also
-appears as a hard compile-time `fail()` on other paths (018's own
-reproducers stop at `sizeof_element of non-container type` inside
-`__pyc__.py`), which is why 018 is written up as a compilation issue.
+Ranking the corpus's unresolved calls by cause (2026-09-12): the
+missing-method era is over. 86% of unresolved calls are a **cascade from
+an untyped value**, because every named operand type has the operator.
+So the work is "why is this value untyped". The actionable roots are the
+NAMED `'X' has no type` sites. Re-rank at HEAD. On 2026-09-12 the top was
+doom `data = self.entry_data[b'VERTEXES']` (a dict value channel, driving
+all 20 of doom's unresolved calls), then msp_ss `dataOut` / `blkin`,
+plcfrs `rule` (plcfrs has since been fixed), othello2 `value`.
 
-**The shared string is what makes this misleading, and it misled the
-first version of this issue.** `PYC_DBG_DISPATCH` shows the corpus aborts
-are mostly *not* 018's problem.
+For each root: find the confluence and backtrack the demand (AGENTS.md).
+Never add a missing method to make a cascade go away. A missing method is
+only real when the named receiver type lacks it (then it goes to the
+top-level `issues/`, as `list.copy`/`dict.copy` do, see
+[086](086-list-and-dict-have-no-copy-method.md)).
 
-## Three distinct causes, measured
+## Measurement rules (kept, because each was learned the hard way)
 
-`PYC_DBG_DISPATCH` over 14 crashers, 120 dispatch failures total:
+- `compile_rc=0` is not evidence a change is safe. Use
+  `./corpus_sweep.sh -m check`, which records run status and CPython
+  agreement.
+- `run_rc=1` is not a crash until diffed against CPython (some programs
+  exit 1 by design).
+- The harness stops at the first failing stage, so a COMPILE-OUT diff can
+  hide a runtime crash behind it. Run the binaries.
 
-| class | count | what it is |
-|---|---|---|
-| **A** | **114 (95 %)** | `fns=-1` — **no candidates at all**, operand typed `void_type` (bottom). FA gave the value no type. |
-| **B** | 6 | `fns=2` with two same-named candidates on an identical receiver type, e.g. kmeanspp `cand=append cand=append r1=_:list` — two *clones* of one container method that codegen cannot discriminate. |
+## Verification
 
-Class A dominates and is a **NOTYPE / bottom-typed operand** problem, not
-a union-representation problem. `life` is representative — iterating a
-tuple leaves `__next__`'s result untyped, so every downstream use becomes
-a stub, and the loop *is* entered at runtime:
-
-```c
-t13 = __tuple_iter__::__pyc_more__(t14);
-if (t13) {
-  t15 = t14;
-  __tuple_iter__::__next__(t15);
-  assert(!"runtime error: matching function not found");   /* result untyped */
-  ...
-  assert(!"runtime error: getter not resolved");
-```
-
-Class B *is* the 018/030/[101](101-FA-first-time-forever-splitting.md)
-shape — container methods split per receiver CreationSet into clones with
-the same C-level signature. It is real but rare (kmeanspp 5, adatron 1).
-
-Two further programs crash with **zero** dispatch failures, so they are a
-third cause again:
-
-- `pisang` — `Assertion !"runtime error: list element type mismatch"`
-- `block` — SIGSEGV with no diagnostic
-- `solitaire` — runaway allocation (3.5 GB) then SIGSEGV; CPython
-  finishes in 35 s
-
-## Correction to the first version of this issue
-
-It attributed all 27 crashes to the 018/030 family on the strength of the
-assertion text. That is wrong: **95 % are bottom-typed operands (class
-A)**, which is the NOTYPE family
-([049](049-FA-raise-only-contour-notype.md) territory), and only
-~5 % are the union/clone-discrimination problem 018 and 030 describe.
-
-## Why nothing caught this
-
-Every measurement used on this project reads the **compiler's** exit
-status:
-
-- the corpus sweeps in [074](closed/074-FA-cross-pass-oscillation-plan.md) and
-  101 record `rc` from `pyc`, which is 0 for all 27;
-- `violations` / `ess` / `css` / `pass_limit_hit` are FA-internal and say
-  nothing about whether the emitted binary works;
-- `test_pyc.py` covers its own tests' runtime via `.exec.check`, but the
-  corpus has no such expectations and is not run at all.
-
-This is the third measurement trap recorded in this repo's notes — *"the
-harness stops at the first failing stage, so a COMPILE-OUT diff hides a
-runtime crash behind it; run the binaries directly"* — and it was hit
-again here, during a verification written specifically to avoid the
-first one.
-
-It also means **`rc=0` on a corpus sweep is not evidence a change is
-safe**, which is how it has been used repeatedly, including by me
-earlier in this session.
-
-## Fix direction
-
-Two separable pieces:
-
-1. **Class A — bottom-typed operands — is the bulk of the work** and is
-   NOT 018. **`life`'s nine class-A failures are now root-caused, and the
-   cause is a frontend argument-binding bug, not FA:**
-   [issues/103](../../issues/103-unknown-kwarg-silently-bound-positionally.md).
-   `life` calls `product((0,1), repeat=...)`; `pyc_lib`'s `product` has no
-   `repeat` parameter; pyc silently binds the value to `B` instead of
-   raising `TypeError`; the body then iterates an **int**, which has no
-   `__iter__` candidate, so FA types everything downstream bottom. Worth
-   checking how many other class-A programs have the same upstream cause
-   before assuming FA is at fault anywhere.
-2. **Codegen should not silently emit an abort stub.** Whatever the
-   upstream cause, `cg.cc:2055` turning "I cannot emit this call" into a
-   runtime assert is what converts a diagnosable compile failure into a
-   37 %-of-corpus runtime crash rate. At minimum it should be reportable
-   (a count at end of compilation, or an opt-in hard error).
-
-   **Precedent, 2026-08-18:** `issues/107` did exactly this for undefined
-   names — a condition the compiler had already detected and merely
-   warned about, which then segfaulted. Making it an error moved three
-   programs out of the crash column with no other change. The same
-   argument applies to the abort stubs.
-3. **The measurement gap** is independently worth closing, and is cheap:
-   a corpus runner that records compile status *and* run status, so a
-   change that turns a working binary into a crashing one is visible.
-   Without it, no sweep in this repo can distinguish "compiles" from
-   "works".
-
-## Verification plan
-
-- A corpus runner exists and reports run status per program.
-- The 27 shrink. `life`, `othello`, `amaze` and `mwmatching` are the
-  cheapest starting points: small programs, clean CPython runs, and one
-  of the two assertion messages each.
-- `solitaire`'s runaway allocation is tracked separately from the
-  dispatch aborts — it is not the same failure.
-
-## What this unblocks
-
-An honest baseline. At present the project can report "68 of 76 corpus
-programs compile" while fewer than 18 are known to actually run, and no
-regression in that gap would be detected by any existing check.
-
-
-## Methodology correction: `run_rc=1` is not a crash (2026-08-18)
-
-This issue's survey classified any non-zero run status as a crash. That
-is wrong for **exit code 1**, which is an ordinary Python failure exit —
-an uncaught exception, `sys.exit(1)`, or a program's own error path.
-
-`rdb` is the worked example. It was counted as a crasher on `run_rc=1`;
-measured against CPython it is **fully working**:
-
-```
-CPython rc=1   pyc rc=1   output IDENTICAL
-```
-
-It exits 1 because there is no iPod directory to read — exactly as
-CPython does. (It reached this state via
-[issues/107](../../issues/107-undefined-names-warn-then-segfault.md)'s
-`EOFError` fix; before that it did not compile.)
-
-Re-classifying the current survey:
-
-| | count |
-|---|---|
-| **SIGNAL crashes** (SIGSEGV/SIGABRT — unambiguous) | **23** |
-| `run_rc=1` (ambiguous, must be compared to CPython) | 1 — `sat`, genuinely broken (`Unhandled exception`, where CPython runs on) |
-
-So the headline should be **"23 programs crash with a signal"**, and any
-`rc=1` must be diffed against CPython before being counted. The earlier
-27 and 24 figures both included at least one working program.
-
-This is the same class of error as the `rc=$?`-after-a-pipe bug recorded
-above: a status code was read as more meaningful than it is.
-## 2026-08-28: `block`'s crash was `del` being lowered as `pass`
-
-Hand-testing the "compiles with NO warnings and still fails" subset found
-`shedskin_examples/block` failing on both backends with a completely
-silent compile — one line of compiler output, no warning, no error, and
-not a single character printed before it died (SIGSEGV on the C backend,
-`Unhandled exception:` on LLVM).
-
-`gdb -batch -ex run -ex bt` gave it away immediately: 6800 identical
-frames of `iterate`, same argument each time. `iterate` is
-
-    del c[0]
-    root = iterate(c)
-
-and `python_ifa_build_if1.cc` had `case PY_del_stmt:` sitting next to
-`case PY_pass_stmt: return 0;`. **Every `del` in every program was
-discarded with no diagnostic**, so the list never shrank and the
-recursion never terminated. Now lowered (`__delitem__` / slice-assign of
-an empty list); `tests/del_subscript_and_slice.py` pins it.
-
-`block` no longer crashes and runs to completion. It is **still wrong**,
-for a second and unrelated reason that the crash was hiding: the tuples
-`findprobs` builds come back empty (`p[0]` is `""`, `p[1]` is `0.0`)
-while `len(answer)` is correct, so every Huffman node gets the default
-name and a zero count. Not reproducible in isolation — the same
-`answer.append((s, f**w1 * (1-f)**w0))` shape with the same `dec_to_bin`
-and `weight` compiles and runs correctly as a 25-line program, so it
-needs `block`'s whole-program context. That moves `block` from this
-issue's "crashes" bucket to a **silently wrong output** bucket, which is
-strictly worse and which nothing in the harness or in any sweep sees.
-
-`linalg` also changed: it has `del list1[lasti:n]`, and with `del` now
-real its warning count drops 62 -> 30 and its failure moves from the
-`{list, int64}` BOXING refusal to `no matching function for call to
-'_CG_list_mult_internal'`. Still failing, differently.
+The five programs above either run correctly or are refused at compile
+time with a diagnostic naming the send. `tests/list_tuple_union_method.py`
+is refused with a diagnostic (update its `.check`), and no program that
+matched CPython regresses.

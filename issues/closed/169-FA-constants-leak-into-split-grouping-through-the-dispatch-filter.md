@@ -1,7 +1,7 @@
 # 169 — constants leak into ES split grouping through the dispatch filter: every split fans per literal
 
 **Status: CLOSED 2026-09-26** with
-[151](../151-split-an-entryset-on-a-constant-argument-on-demand.md)'s demand
+[151](151-split-an-entryset-on-a-constant-argument-on-demand.md)'s demand
 stage. `split_type_view` keeps constants only at a formal that wants them
 (annotated, or demanded). The two regressions below were fixed at their
 causes, not by keeping the leak: `hq2x` by making ESBLOCK's split durable
@@ -90,7 +90,7 @@ Every tuple is `(int, int)`; shedskin gives `f` **1** contour and `tuple2`
 | --- | --- | --- |
 | A. `__pyc_clone_constants__` forced per-constant contours on `int.__add__/__mul__/__iadd__/__ge__/__str__`, `__pyc_to_bool__`, and `tuple.__getitem__`'s key | 9, + half of `__getitem__`'s 5 | [134](../134-remove-the-frontend-forced-split-opt-in.md) |
 | B. **this issue** -- the leak above | masked by A here; 4 of 6 in `g` | 169 |
-| C. one tuple CreationSet per literal site (the mode-2 tuple exemption, `fa.cc:570-611`) | `f` +1, `__getitem__` ×3 | [128](../128-cs-identity-over-discriminates-vs-element-type.md) |
+| C. one tuple CreationSet per literal site (the mode-2 tuple exemption, `fa.cc:570-611`) | `f` +1, `__getitem__` ×3 | [128](128-cs-identity-over-discriminates-vs-element-type.md) |
 
 Under `PYC_NO_FORCED_SPLIT=1` (A off) the probe for B takes
 `tuple.__getitem__` 6 -> 3; the remaining 3 are C.
@@ -166,7 +166,7 @@ faithful lowering is a raise, after which the path is dead and a bottom
 type on it is not an error. pyc instead makes that bottom fatal. This is
 the mirror image of issues/165 (a `None` reaching an operation is silently
 read as zero instead of raising). An earlier draft of this section said
-`pylife` needed [151](../151-split-an-entryset-on-a-constant-argument-on-demand.md)'s
+`pylife` needed [151](151-split-an-entryset-on-a-constant-argument-on-demand.md)'s
 per-constant split; that would buy 4 contours where 2 suffice.
 
 ### `hq2x` -- an ESBLOCK split the binding test cannot see

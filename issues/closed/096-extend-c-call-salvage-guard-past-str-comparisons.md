@@ -200,7 +200,7 @@ call site* whose actual argument type diverges from the *specific
 callee clone's* formal parameter type (not a `__pyc_c_call__` or
 generic-primitive argument at all) — outside this issue's own stated
 scope (`python_ifa_main.cc`'s `c_call_codegen`). Filed separately:
-[097](../097-CGEN-callsite-vs-clone-formal-type-mismatch.md).
+[097](097-CGEN-callsite-vs-clone-formal-type-mismatch.md).
 
 **Verified:**
 - `ifa --test`: 58/58.

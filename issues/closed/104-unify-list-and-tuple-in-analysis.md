@@ -22,7 +22,7 @@ passengers. And the prerequisite `PYC_TUPELEM` costs `plcfrs` 2232 → 4353
 violations by pulling tuples into every container-keyed path.
 
 **Successor:** the real problem is type degeneration —
-[105](../105-type-degeneration-in-shared-generic-methods.md).
+[105](105-type-degeneration-in-shared-generic-methods.md).
 
 ## What already exists
 
@@ -102,7 +102,7 @@ This is an *upper bound* on what unification could remove — a mixed
 partition may have other distinguishing content — but for the tuple-heavy
 programs it is a substantial fraction, and `plcfrs` is one of the three
 that still do not converge
-([101](../101-FA-first-time-forever-splitting.md)).
+([101](101-FA-first-time-forever-splitting.md)).
 
 Related, from 101's element-type survey: **~50 % of container
 CreationSets already have no generic element type** (569 with a bottom
@@ -382,7 +382,7 @@ the shared generic accessors:
 pyc clones these and relies on **contour splitting** to give each
 receiver type its own copy. The union appearing inside them means the
 splitting has not separated them — which is
-[101](../101-FA-first-time-forever-splitting.md), not a representation
+[101](101-FA-first-time-forever-splitting.md), not a representation
 problem.
 
 So the union is a **pyc contour-separation artifact**, not an inherent
@@ -524,7 +524,7 @@ runs at all**.
 | `linalg` | pass 51, limit hit, viol **40**, ess 668 | pass 32, limit hit, viol **222** ✗, ess 577, css 1618 |
 
 **`plcfrs` converges** — one of the three programs from
-[101](../101-FA-first-time-forever-splitting.md) — with violations down 97 %
+[101](101-FA-first-time-forever-splitting.md) — with violations down 97 %
 and contours down 61 %. `go` improves. `linalg` gets much worse on
 violations.
 
@@ -1131,7 +1131,7 @@ the causal reading of it was wrong.
 Not arity. plcfrs's real problem is **type degeneration** — how a
 variable comes to hold `{bool, int64, str, float64, list, dict,
 ChartItem, Edge, Rule, Entry, …}` at all. That is the 018/030 boxing
-family compounded by [101](../101-FA-first-time-forever-splitting.md)'s
+family compounded by [101](101-FA-first-time-forever-splitting.md)'s
 contour explosion, and a reproducer for *that* would be worth having.
 
 ### Status of this issue
@@ -1178,5 +1178,5 @@ The demand it was groping at is real and still open — a union receiver
 whose SUM has no element channel reaching a method needing
 `sizeof_element`. That is a REPRESENTATION demand and belongs behind
 `IFACallbacks` as a test ON the receiver, not a fan OVER receivers. See
-[143](../143-shared-container-method-contours-refuse-cs-splits.md) for the
+[143](143-shared-container-method-contours-refuse-cs-splits.md) for the
 same coupling seen from the CreationSet side.

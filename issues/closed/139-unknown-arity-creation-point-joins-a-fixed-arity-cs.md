@@ -98,7 +98,7 @@ was masking, not for arity:
 
 - `voronoi2` — `receiver 'str' is not a container but '__add__' resolved
   to the CONTAINER method`, i.e.
-  [137](../137-scalar-receiver-resolves-to-container-method.md)'s resolution
+  [137](137-scalar-receiver-resolves-to-container-method.md)'s resolution
   defect on a second program. Notably this guard FIXED 137's first
   instance (`pystone`) and exposed another.
 - `softrender` — `cast from pointer to smaller type '_CG_bool' loses

@@ -3,7 +3,7 @@
 **Status: CLOSED 2026-09-03 — all phases landed and default-on.** Phase 0
 2026-09-01 (the contract; see "Phase 0 as built"); Phases 1-3 on
 2026-09-03, built under
-[123](../123-CGEN-union-receiver-field-access-has-no-discrimination.md)
+[123](123-CGEN-union-receiver-field-access-has-no-discrimination.md)
 rather than here, and by a different route than planned — see "How it
 actually landed" at the bottom. Written 2026-09-01 after
 [121](../121-CGEN-dead-clones-emitted.md)'s category 2 measured the prize
@@ -125,7 +125,7 @@ now have a named, located, compile-time cause instead of only a crash.
 under the default (permissive) mode, on the reasoning that seeing the
 problem is a separate decision from failing builds that work today. That
 reasoning does not survive
-[123](../123-CGEN-union-receiver-field-access-has-no-discrimination.md):
+[123](123-CGEN-union-receiver-field-access-has-no-discrimination.md):
 unlike a type violation, a layout violation has **no permissive
 meaning**. `--permissive` accepts a type violation and inserts a runtime
 check; there is no runtime check for reading one class's field through
@@ -258,7 +258,7 @@ passes with zero diagnostics and correct output.
 Phases 1-2 are throwaway if [030](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md)
 lands a per-class vtable soon. That reasoning still holds in principle,
 but the measurement changes the priority rather than the design:
-[126](../126-assess-residual-method-slot-reads.md) found that after this
+[126](126-assess-residual-method-slot-reads.md) found that after this
 elision the surviving vtable is **4-9 slots per program** — one
 `__str__` per exception class (a `__pyc_unhandled_exception__`
 artifact), the genuinely polymorphic sibling dispatches, and one

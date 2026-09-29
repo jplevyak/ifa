@@ -1,91 +1,67 @@
-# ifa/147: the analysis result depends on the BINARY, not only on its inputs
+# ifa/147 — the analysis result depends on the BINARY, not only on its inputs
+
+**Status:** open. Rewritten 2026-09-28. It now also carries the
+reproducibility half of [010](010-CLEANUP-vec-set-api-cleanup.md) (and,
+through it, closed issues/021).
+
+## Symptom
 
 **Adding provably dead, `getenv`-gated diagnostic code to `fa.cc` changes
-which corpus programs compile.** Measured 2026-09-10, at the DEFAULT arm,
-with no flags:
+which corpus programs compile.** Measured 2026-09-10 at the default arm:
+`b847e122` compiles `linalg` and `sudoku5`; the same tree plus probes only
+(`static void dbg_*` helpers whose first statement is a `getenv` check,
+calls to them, and one unused typedef) fails both. Corpus `compile_fail`
+went 2 → 4.
 
-| tree | `linalg` | `sudoku5` |
-| --- | --- | --- |
-| `b847e122` | compiles (rc=0) | compiles (rc=0) |
-| `b847e122` + probes only | **fails (rc=1)** | **fails (rc=1)** |
+Separately (010 / issues/021): `expr_evaluator.py` compiled 8 times gave 8
+distinct `.ll` outputs, traced to unspecialized `set_add`/`set_in` over
+`PNode *`, `Dom *`, `CallPoint *`, `MatchCacheEntry *` and
+`llvm::Value *`, whose iteration order feeds Sym/Var/Fun id assignment
+during cloning.
 
-The "+ probes only" diff contains nothing but `static void dbg_*` helpers
-whose first statement is a `getenv` check, calls to them, and one unused
-typedef. No transfer function, no splitter, no key, no ordering, no
-default changed. Whole-corpus: `compile_fail` 2 -> 4 at the default arm
-and 2 -> 6 at the `PYC_CSDCPA1=2` arm.
+## Why it matters most
 
-## Why this is the most important open issue
+Every conclusion about FA is drawn from `corpus_sweep.sh`, at a resolution
+of one or two programs. If a build perturbation moves two programs:
 
-Every conclusion this project draws about FA is drawn from
-`corpus_sweep.sh`, at a resolution of one or two programs. If a build
-perturbation moves two programs, then:
+- a one- or two-program change between two BUILDS is not evidence about
+  the change under test;
+- a mechanism invented to explain such a movement explains noise. On
+  2026-09-10 that produced four commits, all reverted (`9f321c89`,
+  `39079fd9`, `e3c76a51`, `3f0cb228`).
 
-- a one-program change between two sweeps is **not evidence** about the
-  change under test;
-- "this program passed before and fails now, therefore my change broke
-  it" is invalid, and so is its converse;
-- a mechanism invented to explain such a movement is an explanation of
-  noise.
+**Standing rule until this is fixed:** only a same-binary, env-toggled A/B
+is attributable. `-e` on `corpus_sweep.sh` exists for exactly this.
 
-That happened four times in one session (2026-09-10), and the four
-commits it produced were reverted: `9f321c89`, `39079fd9`, `e3c76a51`,
-`3f0cb228`. Each attributed a single-program corpus movement to the
-change under test and built a root-cause story on it — `sudoku5`'s
-"accident at pass 27", `plcfrs`'s "relocated demand", `go`, `linalg`.
-None of those attributions can stand, because a build with no semantic
-difference at all moves the same programs.
+## Likely mechanism (not proven)
 
-## The likely mechanism, and why it is not yet proven
-
-This codebase hashes on POINTERS in several places
-(`combine_hash((uintptr_t)a, (uintptr_t)b)` over `AVar *`, `AEdge *`,
-`CreationSet *`, `MPosition *`). Bucket order then follows allocation
-addresses, so iteration order over any such map depends on the
-allocator's behaviour, which depends on code size and layout. issue 035
-records this exact family: "bucket order set the AVar id-assignment order
-and made every downstream qsort_by_id canonicalization run-dependent".
-That one was fixed at a single site (`form_MPositionAVar` over an edge's
-arg positions) by imposing a canonical order.
-
-**Not proven**, and the bisection actively resists a simple story:
-
-- a dead `static volatile int` plus a never-taken early return: NO change;
-- an extra per-walk `Map<AVar *, AEdge *>` with `put`/`get` on every node:
-  NO change;
-- a gated-off walk restriction alone: NO change;
-- a gated-off call-site fan alone: NO change;
-- BOTH of the last two together: `deepcopy_recursive_nested_growth` flips
-  from `CONVERGED=0` to `CONVERGED=1`.
-
-So it is not "any perturbation moves it". Some specific layouts are bad.
-That is consistent with an address-order dependence and also with several
-other causes, and it has not been narrowed further.
+Pointer-keyed hashing (`combine_hash((uintptr_t)a, …)` over `AVar *`,
+`AEdge *`, `CreationSet *`, `MPosition *`) makes bucket order follow
+allocation addresses, which follow code size and layout. closed/035
+recorded this exact family ("bucket order set the AVar id-assignment
+order") and fixed one site by imposing a canonical order. The bisection
+resists a simple story: some perturbations move results and some do not,
+which is consistent with a few specific order-dependent decisions.
 
 ## What to do
 
-1. **Find the remaining pointer-ordered iterations that reach a decision.**
-   The rule to apply is the one issue 035 already established: any
-   iteration whose ORDER can affect a split, a key, an id assignment, or a
-   worklist must be canonicalised (sort by a stable id) before use.
-   Auditing for `form_Map` / `form_Vec` over pointer-keyed containers
-   inside `split_*`, `creation_point`, `analyze_*` is the place to start.
-2. **Until then, treat one- and two-program corpus deltas as noise.** A
-   sweep comparison is evidence only at a margin larger than the
-   perturbation floor, and that floor is currently at least two programs
-   at the default arm.
-3. **Establish the floor properly.** Build N trees differing only in dead
-   code, sweep each, and record the spread. That number belongs in
-   `corpus_sweep.sh`'s documentation, next to the existing warnings about
-   concurrent sweeps and stale binaries — it is the same class of trap and
-   currently the only one not written down.
+1. **Canonicalise every order that reaches a decision.** Any iteration
+   whose order can affect a split, a key, an id assignment, or a worklist
+   must go through a stable-id order (`sorted_view`, or a Vec sorted by
+   id) before use. Audit `form_Map` / `form_Vec` / range-for over
+   pointer-keyed containers inside `split_*`, `creation_point`,
+   `analyze_*`, the ledger, and clone's id assignment.
+2. **An oracle that does not need the corpus:** build the same tree twice
+   with different dead padding (or run under different ASLR/malloc
+   perturbation, `MALLOC_PERTURB_`, `GC_` env settings) and diff the
+   `-v` per-pass `ess`/`css`/violation lines on a handful of programs.
+   Any difference names a decision to canonicalise.
+3. **Record the floor.** Sweep N trees differing only in dead code and put
+   the spread in `corpus_sweep.sh`'s documentation, next to the warnings
+   about concurrent sweeps and stale binaries.
 
-## What this does NOT excuse
+## Verification
 
-A mechanism still has to be justified on its own terms. The four reverted
-commits also contained two levers that were arbitrary regardless of any
-measurement, and they are recorded in ifa/133 so they are not tried again:
-a per-call-site fan whose partition size was the CALLER COUNT, and a
-"matched call and return" restriction on the CreationSet backflow walk
-that answers a different question than the walk is asked. Neither needed a
-sweep to be refused; the two-question test refuses both on inspection.
+Two builds differing only in dead code give byte-identical emitted C and
+identical per-program sweep rows. `expr_evaluator.py` compiled 8 times
+gives one `.ll`.

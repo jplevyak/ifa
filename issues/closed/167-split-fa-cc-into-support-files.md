@@ -11,7 +11,7 @@ C byte-identical.
 
 **Related:** [146](../146-remove-all-arbitrary-splitting.md) (the audit whose
 levers dominate the file), [129](../129-plan-demand-driven-creation-set-splitting.md)
-and [128](../128-cs-identity-over-discriminates-vs-element-type.md) (the CS
+and [128](128-cs-identity-over-discriminates-vs-element-type.md) (the CS
 identity work that must stay in fa.cc because it is still moving).
 
 ## The measurement

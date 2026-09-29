@@ -1,109 +1,108 @@
-# 170 — contours minted on a pass's transient types are never re-merged when they converge equal
+# 170 — a contour decision taken on a pass's transient types is never revisited
 
-**Status: open.** Root-caused 2026-09-25 while counting unnecessary
-contours on `voronoi` against a hand-derived minimum and shedskin (see
-[169](closed/169-FA-constants-leak-into-split-grouping-through-the-dispatch-filter.md)'s
-census). Analysis time is the cost: every contour is re-analysed every pass.
-
-*2026-09-26: 169's constant-strip is now the default, and `int`'s arithmetic
-is no longer annotated (151), so `voronoi`'s default is now 171 contours
-for 142 exact signatures. That gap still includes the remaining annotated
-constants (`range`, tuple keys); the 16 duplicates measured below, with
-every constant mechanism off, are this issue's own share.*
-
-## Symptom
-
-`shedskin_examples/voronoi` (57 lines, compiles, matches CPython). With both
-constant mechanisms switched off -- `PYC_NO_FORCED_SPLIT=1` for
-[134](134-remove-the-frontend-forced-split-opt-in.md) and the
-constant-strip probe of 169 -- there are still **156 contours for 140
-distinct argument signatures**: 16 contours are exact duplicates of a
-sibling of the same Fun. `int.__add__` is the clearest (`IFA_DBG_FUNES=__add__`):
-
-```
-es=75  args= [int64] [int64]    <- 1 edge  from _init_by_array
-es=124 args= [int64] [int64]    <- 17 edges from _genrand/_init_by_array/append
-es=125 args= [int64] [int64]    <- 3 edges from _init_genrand/_genrand/_init_by_array
-```
-
-No constants on any of them. `IFA_DBG_INCOMPAT` shows every rejection on the
-argument clause, none on returns.
-
-## Root cause
-
-`PYC_DBG_BIND=__add__` shows when each was minted:
-
-```
-BIND pass=0 __add__ e=99  MINT es=75  from_es=68 line=99 actuals=[int64 int64]
-BIND pass=0 __add__ e=99  MINT es=124 from_es=68 line=99 actuals=[int64|float64 int64]
-BIND pass=0 __add__ e=228 MINT es=125 from_es=90 line=39 actuals=[int64|float64 int64|float64]
-BIND pass=0 __add__ e=199 MINT es=137 from_es=62 line=19 actuals=[int64|float64 int64]
-BIND pass=0 __add__ e=229 MINT es=138 from_es=90 line=39 actuals=[int64|float64 int64|float64]
-```
-
-All in **pass 0**, on `int64|float64` actuals, at `pyc_lib/random.py`
-lines 39 and 99 -- the Mersenne Twister, which is pure `int`. The `float`
-is the analysis's own: pass 0 starts with ONE contour of `int.__add__`
-(IFA's minimal start, correct), `float` inherits `int.__add__`, so
-`voronoi.py:19`'s `xrand + xoff` shares it, its return is `{int, float}`,
-and that flows into `random`'s globals (`_mti`, `_mt`'s element). The
-first split then mints contours keyed on those transient unions. Once the
-split separates `float` from `int`, the actuals of es=124 and es=125 both
-converge to `[int64][int64]` -- and nothing ever merges two contours whose
-converged types agree. They persist, and so do their callees' splits.
-
-This is not the start-merged CreationSet default: `PYC_CSDCPA1=0` gives
-the identical count (156 / 140). The durable-key routing knobs do not
-touch it either -- `PYC_HARDREUSE=0/4/5`, `PYC_TYPEKEY=1` all leave 156 --
-because they choose WHICH existing contour a re-bound edge goes to; they
-never retire one.
-
-The data side has the same shape. In pass 0 `CS_DEF_PART` partitions the
-start-merged `list` CreationSet (8 creation points) on flow keys taken
-while every list's element was `{int64, str, tuple}`, and later stages
-refine from there; `voronoi` ends with two `list[int64]` CreationSets
-(cs=1077, arity -1, and one arity 0) against shedskin's one, and container
-methods are then contoured per receiver CreationSet.
+**Status: open.** Root-caused 2026-09-25 on `voronoi`. Rewritten 2026-09-28
+to also carry [097](closed/097-CGEN-callsite-vs-clone-formal-type-mismatch.md)
+(an edge routed to a contour whose type was momentarily empty) and the
+re-join residual of [144](closed/144-route-4-fans-per-creation-point-instead-of-partitioning.md).
+The common root: **a split or a routing decision is taken on types that
+are not yet the converged ones, and nothing takes it back when the
+converged types no longer justify it.**
 
 ## Why it matters under this project's rule
 
-A contour exists because something observed a distinction that required
-it (AGENTS.md). es=124's distinction from es=75 was observed on a type that
-no longer exists at convergence -- the observation was about pass 0's
-imprecision, not about the program. [157](157-FA-all-demand-must-be-evaluated-at-quiescence.md)
-says every demand is a property of the CONVERGED types; the corollary this
-issue adds is that a contour whose demand has evaporated at convergence is
-unjustified and should go. `analyze_to_convergence` already re-derives
-types from bottom every pass, so retiring a contour costs nothing in
-soundness -- only the DECISION persists, and it is the decision that is
-stale.
+A contour exists because something observed a distinction that required it
+(AGENTS.md). A distinction observed on pass-0 imprecision, or on a
+half-populated contour, is a statement about the analysis, not about the
+program. [157](157-FA-all-demand-must-be-evaluated-at-quiescence.md)'s rule
+is that demand is a property of CONVERGED types. The corollary here: **a
+contour whose demand has evaporated at convergence is unjustified and
+should go.** Retiring one costs nothing in soundness, because
+`analyze_to_convergence` re-derives every type from bottom each pass. Only
+the DECISION persists, and the decision is what is stale.
 
-## Proposed fix
+## Instance 1 — duplicate EntrySets from pass-0 unions (voronoi)
 
-At the end of a pass (types converged), for each Fun, group its EntrySets
-by converged argument types (constants stripped at unannotated formals,
-the same view the splitter should use -- 169). Where two contours agree at
-every formal and neither is kept apart by a still-live demand, re-home the
-younger one's edges onto the older and retire it; the next pass
-re-derives. The same for CreationSets of one sym whose converged content
-agrees (element type, per-position tuple types, arity -- ifa/132).
+With every constant mechanism off (`PYC_NO_FORCED_SPLIT=1` plus 169's
+strip), `voronoi` has **156 contours for 140 distinct argument
+signatures**. `int.__add__` (`IFA_DBG_FUNES=__add__`):
 
-Stop condition, written before building: if the merge re-creates the same
+```
+es=75  args= [int64] [int64]    <- 1 edge  from _init_by_array
+es=124 args= [int64] [int64]    <- 17 edges
+es=125 args= [int64] [int64]    <- 3 edges
+```
+
+`PYC_DBG_BIND=__add__`: all of them were minted in pass 0 on `int64|float64`
+actuals, inside the Mersenne Twister (pure `int`). The float came from IFA's
+minimal start: `float` inherits `int.__add__`, `voronoi.py:19`'s `xrand +
+xoff` shares its one contour, and the `{int, float}` return flows into
+`random`'s globals. Once the split separates float from int, es=124 and
+es=125 both converge to `[int64][int64]`, and nothing merges them. The data
+side has the same shape: `CS_DEF_PART` partitions the start-merged `list`
+CS on pass-0 flow keys, and `voronoi` ends with two `list[int64]` CSs
+against shedskin's one.
+
+Not the start-merged default (`PYC_CSDCPA1=0` gives the same 156 / 140).
+Not the routing knobs (`PYC_HARDREUSE=0/4/5`, `PYC_TYPEKEY=1` all leave 156).
+Those choose WHICH existing contour a re-bound edge goes to. None of them
+ever retires a contour.
+
+## Instance 2 — routing on a momentarily-empty contour (msp_ss, 097)
+
+`entry_set_compatibility` scores an edge against candidate EntrySets using
+each candidate's formal types AS THEY ARE MID-PASS. On `msp_ss`,
+`loadTIText`'s `l[0] == ord('q')` edge was scored against 7 `str.__eq__`
+contours. Six correctly conflicted; ES 607 scored fully compatible because
+its `x` formal had not yet been re-flowed this pass (its real contributors
+are `str.strip`'s string constants). `find_best_entry_sets` took it, the
+formal then grew to `{str, int64}`, and the routing was never revisited.
+The emitted C had an argument type that disagreed with the clone's formal.
+(A codegen guard now turns that into a diagnostic.)
+
+An attempt to defer routing until the worklist drained was reverted in
+2026-08. It changed which contours a pass reached and hit
+[closed/098](closed/098-FA-per-pass-reset-scoped-to-reachable-set.md)'s
+stale-state gap. 098 is fixed, so that blocker is gone.
+
+## Instance 3 — split products that converge equal (144)
+
+Route 4 used to fan one contour per creation point. It now partitions by
+assign-set signature, which no longer MAKES the duplicates. But nothing
+collapses two products that later converge to identical content (`bh`'s
+`Vec3`: 18 of 20 contours byte-identical across all 29 members before the
+fan was removed). `cselem_rejoin_unknown_mints` (`PYC_CSREJOIN=1`) is the
+only re-join in the tree, and it deliberately never touches split products.
+
+## The fix: re-derive decisions at convergence
+
+At the end of a pass (types converged), before the split stages:
+
+1. **EntrySets.** Group each Fun's contours by converged argument types
+   (constants stripped at formals that do not want them; 169, 151). Where
+   two agree at every formal and no live demand keeps them apart, re-home
+   the younger one's edges onto the older and retire it.
+2. **Routing.** An edge whose actual types are incompatible with its
+   contour's CONVERGED formals is re-routed. That is the same comparison
+   step 1 makes, run from the edge's side.
+3. **CreationSets.** Same-sym CSs whose converged content agrees (element
+   type, per-position slot types, arity; 132) are compatible. Collapse
+   them, the split-back direction of `PYC_CSREJOIN`.
+
+The next pass re-derives. This is the compatibility leg of the three-way
+rule: identity may stay fine, but two contours with no demand between them
+are compatible.
+
+**Stop condition, written before building:** if a merge re-creates the same
 split on the next pass (the pair oscillates), the split has a live demand
-this issue misread, and the next step is to find what the demand is -- not
-to add hysteresis.
+this issue misread. Find what the demand is. Do not add hysteresis.
 
-## Verification plan
+## Verification
 
-- `voronoi` under `PYC_NO_FORCED_SPLIT=1` + 169's fix: contours == exact
-  signatures (156 -> 140); `int.__add__` has one `[int64][int64]` contour.
-- At the default: `voronoi` below 196 (169's number) with output unchanged.
-- Corpus `-m check`: no verdict regresses; ess and compile time down.
+- `voronoi` under `PYC_NO_FORCED_SPLIT=1`: contours == exact signatures
+  (156 → 140); `int.__add__` has one `[int64][int64]` contour. At the
+  default, fewer than today's 169 with output unchanged.
+- `msp_ss`: no argument-vs-formal type mismatch at the `ord('q')` site
+  (the program fails for other reasons; check the site, not the verdict).
+- Corpus `-m check`, same binary: no verdict regresses; `ess`, `css` and
+  compile time fall.
 - `make test` green on both backends.
-
-## What this unblocks
-
-The 16-of-93 excess on `voronoi` that neither constant fix reaches, and
-every contour a program inherits from the pass-0 union of a shared numeric
-method -- which is every program whose floats touch `int`'s methods before
-the first split separates them.

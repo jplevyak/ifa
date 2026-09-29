@@ -83,7 +83,7 @@ Measured with `IFA_DBG_FUNES=__deepcopy__`, `IFA_DBG_DECIDE=__deepcopy__`,
    when turned on. `IFA_DBG_THIRD` reports es=46 `splittable=1` -- the
    type split exists, only the gate stands in front of it.
 
-This is [142](../142-linalg-empty-list-collapse-is-a-fixed-point.md)'s shape
+This is [142](142-linalg-empty-list-collapse-is-a-fixed-point.md)'s shape
 (a CreationSet whose element contains itself) reached through an
 EntrySet instead of through many creation points.
 
