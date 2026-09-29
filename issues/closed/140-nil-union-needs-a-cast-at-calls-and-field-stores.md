@@ -60,7 +60,7 @@ a third would have drifted.
 
 `richards` compiles under the flag. Its output still differs from CPython
 — but **identically to the default arm**, which is
-[issues/120](../../../issues/120-richards-silent-wrong-answer.md), a
+[issues/120](../../../issues/closed/120-richards-silent-wrong-answer.md), a
 pre-existing wrong answer. Parity with the default is what the flip needs.
 
 `make test` 311/0, LLVM backend 311/0.

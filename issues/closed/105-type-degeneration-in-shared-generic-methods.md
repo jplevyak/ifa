@@ -330,7 +330,7 @@ program's meaning.
 
 ## Reduction is now much simpler — pyc enforces the invariant itself
 
-[107](../../../issues/107-undefined-names-warn-then-segfault.md) is fixed: an
+[107](../../../issues/closed/107-undefined-names-warn-then-segfault.md) is fixed: an
 undefined name is a **compile error** rather than a silently-minted
 never-assigned global. That removes the loophole every reduction oracle
 here was built to close.

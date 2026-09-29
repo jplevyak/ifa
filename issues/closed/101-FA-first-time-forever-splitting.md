@@ -1020,7 +1020,7 @@ programs and higher on none, and analysis is 2.8 % faster.
 
 ## Note: issues/107 changed three of these programs (2026-08-18)
 
-[107](../../../issues/107-undefined-names-warn-then-segfault.md) made an
+[107](../../../issues/closed/107-undefined-names-warn-then-segfault.md) made an
 undefined name a compile error, and `rdb`, `sunfish` and `voronoi2` all
 reference CPython builtins pyc does not implement (`EOFError`, `divmod`,
 `property`). **They no longer compile at all**, so any generated-C
