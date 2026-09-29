@@ -1,12 +1,27 @@
 # 165 — `None` reaching an operation is silently accepted and read as the zero value
 
-**Status: OPEN.** (Reviewed 2026-09-28: still accurate. This is the
-permissive/strict pattern [025](025-FA-intra-function-union-narrowing.md)
-and [079](079-DISPATCH-single-candidate-dispatch-unchecked-cast.md) also
-need: a runtime check under `fruntime_errors`, a refusal under
-`--strict`.) Pre-existing; found while measuring
-[164](closed/164-nil-union-at-a-primitive-argument-is-a-nullable-pointer.md),
-which did not introduce it and does not widen it.
+**Status: LARGELY FIXED 2026-09-28** (issues/171 #6). Open for the two
+residuals below.
+
+**What landed.** A `{None, T*}` RECEIVER is checked where the call is
+emitted, on both backends. `nil_receiver_rval` (fa.cc) names the rval
+whose actual carries `None` while the callee's `self` excludes it (the
+dispatch filter dropped it). The emitted test calls `_CG_none_receiver`
+(`pyc_c_runtime.h`), which prints CPython's message: `unsupported operand
+type(s) for +: 'NoneType'`, `'NoneType' object is not subscriptable`,
+`... has no attribute 'x'`, and so on. The inliner and DCE keep such a
+call and its receiver read, because otherwise inlining erased the call
+and the constant-folded body printed `xy`. `_CG_strcat` checks its
+operands, which covers the argument position for `str + None`. A
+`{None, scalar}` receiver has no null to test, so FA refuses it as a
+BOXING violation, with one message on both backends.
+`tests/none_receiver_raises.py` is the repro below.
+
+**Residuals.** (1) The check reports and exits: it is CPython's
+*uncaught* `TypeError`, and `except TypeError` cannot catch it. That
+needs the check to raise through `__pyc_exc__`, which means arming
+`pyc_program_has_raise` for every call that has one. (2) The argument
+position of primitives other than string concatenation is unchecked.
 
 ## Symptom
 

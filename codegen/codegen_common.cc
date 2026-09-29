@@ -723,6 +723,44 @@ bool poly_dispatch_is_nil_receiver(Fun *candidate, PNode *pn, int *rval_idx) {
   return false;
 }
 
+// issues/048, issues/171: a send whose receiver is a {None, scalar} union.
+// None is a null pointer and a scalar reaches the same slot bit-for-bit,
+// so a null test cannot tell None from 0/0.0/False: the dispatch has no
+// representation. Returns the scalar member (and the selector name via
+// *sel_out) when a nil-receiver candidate of `pn` meets such a receiver,
+// nullptr otherwise. Truthiness selectors are exempt: there None and zero
+// give the same answer, so the conflation is invisible (genetic2's
+// `if f():` on an implicit-None return).
+//
+// Shared by both backends so they refuse with the same diagnostic; the C
+// backend used to fall through to a generic "unable to resolve" here.
+Sym *poly_dispatch_nil_scalar_receiver(PNode *pn, Vec<Fun *> *cands, Var *recv_var, cchar **sel_out) {
+  if (!pn) return nullptr;
+  if (!recv_var && cands) {
+    for (Fun *c : *cands) {
+      int idx = -1;
+      if (c && poly_dispatch_is_nil_receiver(c, pn, &idx) && idx >= 0 && idx < pn->rvals.n) {
+        recv_var = pn->rvals[idx];
+        break;
+      }
+    }
+  }
+  if (!recv_var || !recv_var->type || recv_var->type->type_kind != Type_SUM) return nullptr;
+  bool has_nil = false;
+  Sym *scalar_member = nullptr;
+  for (Sym *m : recv_var->type->has) {
+    if (!m) continue;
+    if (m == sym_nil_type) has_nil = true;
+    else if (m->num_kind) scalar_member = m;
+  }
+  if (!has_nil || !scalar_member) return nullptr;
+  cchar *sel = (pn->rvals.n && pn->rvals[0]->sym->is_symbol) ? pn->rvals[0]->sym->name : nullptr;
+  if (sel && (!strcmp(sel, "__pyc_to_bool__") || !strcmp(sel, "__bool__") || !strcmp(sel, "__not__")))
+    return nullptr;
+  if (sel_out) *sel_out = sel;
+  return scalar_member;
+}
+
 // -------------------------------------------------------------
 // Process invocation
 // -------------------------------------------------------------

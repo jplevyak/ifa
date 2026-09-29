@@ -2133,6 +2133,17 @@ void set_container(AVar *av, AVar *container) {
   if (av->lvalue) av->lvalue->container = container;
 }
 
+// FA-created internal Vars (a PNode's tvals), registered here as well as
+// in their Fun's fa_all_Vars. That list is REBUILT from the CFG by
+// Fun::collect_Vars, which can drop a tval created earlier, and the
+// per-pass reset (foreach_var) finds Vars only through it and allsyms.
+// A dropped one kept its values across passes: measured (issues/110) as
+// a bound-method closure's receiver tval in __main__ still holding a
+// tuple CreationSet no creation point produced any more, several passes
+// later, which reached tuple.__getitem__ with no element type. Every pass
+// must re-derive from bottom; this makes the reset complete for them.
+Vec<Var *> fa_internal_vars;
+
 void fill_tvals(Fun *fn, PNode *p, int n) {
   p->tvals.fill(n);
   for (int i = 0; i < n; i++) {
@@ -2144,6 +2155,7 @@ void fill_tvals(Fun *fn, PNode *p, int n) {
       p->tvals[i]->is_internal = 1;
       s->var = p->tvals[i];
       fn->fa_all_Vars.add(p->tvals[i]);
+      fa_internal_vars.add(p->tvals[i]);
     }
   }
 }
@@ -2302,6 +2314,7 @@ static void make_closure_var(AVar *av, EntrySet *es, CreationSet *cs, AVar *resu
     pn->tvals[i] = new Var(av->var->sym);
     pn->tvals[i]->is_internal = 1;
     es->fun->fa_all_Vars.add(pn->tvals[i]);
+    fa_internal_vars.add(pn->tvals[i]);
   }
   AVar *cav = make_AVar(pn->tvals[i], es);
   flow_vars(av, cav);
@@ -4326,6 +4339,35 @@ static void collect_var_type_violations() {
         if (!av->var || !is_only_used_by_phy_or_phi(av->var)) {
           if (mixed_basics(av)) type_violation(ATypeViolation_kind::BOXING, av, av->out, nullptr, nullptr);
         }
+      }
+    }
+    // issues/048, issues/171 #7: a {None, scalar} union dispatched on
+    // (other than for truthiness, where None and zero agree) has no
+    // representation -- a null test cannot tell None from 0. Codegen
+    // refuses that dispatch (poly_dispatch_nil_scalar_receiver), but a
+    // codegen refusal is invisible to FA, so a union pyc INVENTED -- two
+    // creation points on one start-merged CreationSet, one writing None
+    // and one an int -- was refused instead of split. Reporting it here
+    // makes it a DEMAND the violation backtrack can take to the merged
+    // CreationSet. Same receiver test and exemption as codegen's.
+    // At FA time a method call is `P_prim_period(obj, sel)` (then a call
+    // of the bound method); obj is rvals[1], the selector rvals[3].
+    for (EntrySet *es : fa->ess) {
+      for (PNode *p : es->fun->fa_all_PNodes) {
+        if (!p->prim || p->prim->index != P_prim_period || p->rvals.n < 4) continue;
+        if (!es->live_pnodes.set_in(p)) continue;
+        Sym *sel = p->rvals[3]->sym;
+        if (!sel || !sel->name) continue;
+        if (!strcmp(sel->name, "__pyc_to_bool__") || !strcmp(sel->name, "__bool__") || !strcmp(sel->name, "__not__"))
+          continue;
+        AVar *recv = make_AVar(p->rvals[1], es);
+        if (!recv->out) continue;
+        bool has_nil = false, has_scalar = false;
+        for (CreationSet *cs : recv->out->sorted) if (cs && cs->sym) {
+          if (cs->sym->type == sym_nil_type) has_nil = true;
+          else if (cs->sym->type && cs->sym->type->num_kind) has_scalar = true;
+        }
+        if (has_nil && has_scalar) type_violation(ATypeViolation_kind::BOXING, recv, recv->out, nullptr, nullptr);
       }
     }
     // ifa/134: a RECORD (fixed-arity, field-per-position -- a tuple) whose
@@ -6653,6 +6695,7 @@ static void clear_cs(CreationSet *cs) {
 static void foreach_var(void (*pfn)(Var *)) {
   for (Sym *s : fa->pdb->if1->allsyms) if (s->var) pfn(s->var);
   for (Fun *f : fa->pdb->funs) for (Var *v : f->fa_all_Vars) pfn(v);
+  for (Var *v : fa_internal_vars) pfn(v);
 }
 
 struct ClearVarFn {
@@ -13529,6 +13572,44 @@ Sym *get_constant(Var *v) {
         c = cc;
     }
   return c;
+}
+
+// ifa/issues/165: the rval index of the receiver of method send `pn` to
+// the single target `fn` when that receiver may be None and `fn`'s `self`
+// cannot be -- i.e. dispatch dropped None from the receiver because None
+// has no such method. At run time a None there is CPython's TypeError /
+// AttributeError, and without a check pyc reads it as the zero value (or,
+// once the callee's `self` folded to a constant, ignores it outright).
+// Returns -1 otherwise. Post-clone: reads Var::type. Only pointer-shaped
+// unions: a {None, scalar} receiver is refused elsewhere (issues/048).
+int nil_receiver_rval(PNode *pn, Fun *fn) {
+  if (!pn || !fn || !fn->sym || !fn->sym->self) return -1;
+  MPosition np;
+  np.push(1);
+  for (int pi = 0; pi < fn->sym->has.n + 2; pi++) {
+    MPosition *cp = cannonicalize_mposition(np);
+    np.inc();
+    Var *formal = fn->args.get(cp);
+    if (!formal || formal->sym != fn->sym->self) continue;
+    int idx = (int)Position2int(cp->pos[0]) - 1;
+    if (idx < 0 || idx >= pn->rvals.n) return -1;
+    Var *actual = pn->rvals[idx];
+    Sym *at = actual ? actual->type : nullptr;
+    if (!at || at->type_kind != Type_SUM) return -1;
+    bool has_nil = false;
+    for (Sym *m : at->has) {
+      if (!m) continue;
+      if (m == sym_nil_type) has_nil = true;
+      else if (m->num_kind) return -1;
+    }
+    if (!has_nil) return -1;
+    Sym *ft = formal->type;
+    if (!ft || ft == sym_nil_type) return -1;
+    if (ft->type_kind == Type_SUM)
+      for (Sym *m : ft->has) if (m == sym_nil_type) return -1;
+    return idx;
+  }
+  return -1;
 }
 
 Sym *get_constant(AVar *av) {

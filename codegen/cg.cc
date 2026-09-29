@@ -1649,6 +1649,14 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
 static Fun *get_target_fun(PNode *n, Fun *f) {
   Fun *target = get_target_fun_core(n, f);
   if (!target) {
+    // issues/171: name the cause when it is a {None, scalar} receiver --
+    // the same diagnostic the LLVM backend gives -- rather than the
+    // generic message below.
+    cchar *sel = nullptr;
+    if (Sym *scalar_member = poly_dispatch_nil_scalar_receiver(n, f->calls.get(n), nullptr, &sel))
+      codegen_fail(n, "'%s' on a {None, %s} union has no representation: a null test cannot "
+                      "distinguish None from 0/0.0/False (issues/048)",
+                   sel ? sel : "call", scalar_member->name ? scalar_member->name : "scalar");
     if (!fruntime_errors) fail("unable to resolve to a single function at call site");
   }
   return target;
@@ -2154,6 +2162,15 @@ class CBackendEmitter : public VirtualCGEmitter {
   void emit_send_call(PNode *pn) override {
     Fun *target = get_target_fun(pn, f);
     if (target) {
+      // ifa/issues/165: the receiver may be None and None has no such
+      // method. CPython raises here; without the check the callee reads
+      // NULL as the zero value.
+      int nri = nil_receiver_rval(pn, target);
+      if (nri >= 0) {
+        cchar *rs = cg_get_string(pn->rvals[nri]);
+        cchar *sel = (pn->rvals.n && pn->rvals[0]->sym->is_symbol) ? pn->rvals[0]->sym->name : nullptr;
+        if (rs) fprintf(fp, "  if (!%s) _CG_none_receiver(\"%s\");\n", rs, sel ? sel : "?");
+      }
       // ifa/issues/097: the resolved target CLONE's own formal
       // parameter type can be coarser (_CG_any) than what THIS
       // specific call edge's actual argument resolves to (a

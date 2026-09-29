@@ -937,6 +937,7 @@ int constant_info(IFAAST *a, Vec<Sym *> &constants, Sym *s);
 int constant_info(Var *v, Vec<Sym *> &constants);
 Sym *get_constant(Var *v);
 Sym *get_constant(AVar *av);
+int nil_receiver_rval(PNode *pn, Fun *fn);  // ifa/issues/165
 int symbol_info(Var *v, Vec<Sym *> &symbols);
 AType *make_AType(CreationSet *cs);
 AType *make_AType(Vec<CreationSet *> &css);

@@ -258,8 +258,7 @@ struct EmitCtx {
 // handle -- {coro_hdl, value, sent, done, retval} -- and that struct's
 // address (not the raw coro.begin handle) is what flows through
 // Python as __pyc_generator__.handle. _CG_generator_advance/_CG_
-// generator_send/_CG_generator_value/_CG_generator_return_value
-// (pyc_runtime.c) read/write this struct directly with ordinary field
+// generator_send/_CG_generator_value (pyc_runtime.c) read/write this struct directly with ordinary field
 // access, then resume the real coroutine via the same raw vtable-call
 // convention _CG_resume_coro already uses for async. GC_malloc
 // zero-initializes, so only coro_hdl needs an explicit store at
@@ -3283,18 +3282,9 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
     // where None and zero give the SAME answer (both falsy) so the
     // conflation is semantically invisible -- `if f():` on a function
     // whose fall-through implicitly returns None is genetic2's shape.
-    if (ok && nil_fn && recv_var && recv_var->type && recv_var->type->type_kind == Type_SUM) {
-      bool has_nil = false;
-      Sym *scalar_member = nullptr;
-      for (Sym *m : recv_var->type->has) {
-        if (!m) continue;
-        if (m == sym_nil_type) has_nil = true;
-        else if (m->num_kind) scalar_member = m;
-      }
-      cchar *sel = (pn->rvals.n && pn->rvals[0]->sym->is_symbol) ? pn->rvals[0]->sym->name : nullptr;
-      bool truthiness = sel && (!strcmp(sel, "__pyc_to_bool__") || !strcmp(sel, "__bool__") ||
-                                !strcmp(sel, "__not__"));
-      if (has_nil && scalar_member && !truthiness)
+    if (ok && nil_fn && recv_var) {
+      cchar *sel = nullptr;
+      if (Sym *scalar_member = poly_dispatch_nil_scalar_receiver(pn, nullptr, recv_var, &sel))
         codegen_fail(pn, "'%s' on a {None, %s} union has no representation: a null test cannot "
                          "distinguish None from 0/0.0/False (issues/048)",
                      sel ? sel : "call", scalar_member->name ? scalar_member->name : "scalar");
@@ -3641,6 +3631,26 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
   llvm::Function *target_fn =
       TheModule->getFunction(target->cg_string);
   if (!target_fn) return;
+
+  // ifa/issues/165: the receiver may be None and None has no such method
+  // -- same check cg.cc emits. Branch to a noreturn report on NULL.
+  if (int nri = nil_receiver_rval(pn, target); nri >= 0) {
+    llvm::Value *rv = value_for_var(ctx, pn->rvals[nri]);
+    if (rv && rv->getType()->isPointerTy()) {
+      llvm::Function *cur = Builder->GetInsertBlock()->getParent();
+      llvm::BasicBlock *null_bb = llvm::BasicBlock::Create(*TheContext, "none.recv", cur);
+      llvm::BasicBlock *ok_bb = llvm::BasicBlock::Create(*TheContext, "none.ok", cur);
+      Builder->CreateCondBr(Builder->CreateIsNull(rv), null_bb, ok_bb);
+      Builder->SetInsertPoint(null_bb);
+      llvm::Type *p_ty = llvm::PointerType::getUnqual(*TheContext);
+      llvm::FunctionType *ft = llvm::FunctionType::get(llvm::Type::getVoidTy(*TheContext), {p_ty}, false);
+      llvm::FunctionCallee fn = TheModule->getOrInsertFunction("_CG_none_receiver", ft);
+      cchar *sel = (pn->rvals.n && pn->rvals[0]->sym->is_symbol) ? pn->rvals[0]->sym->name : nullptr;
+      Builder->CreateCall(ft, fn.getCallee(), {Builder->CreateGlobalString(sel ? sel : "?")});
+      Builder->CreateUnreachable();
+      Builder->SetInsertPoint(ok_bb);
+    }
+  }
 
   // Closure detection: rvals[0] is a closure receiver when
   // its type is Type_FUN with has.n ≥ 2 (closure_fun_type

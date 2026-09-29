@@ -638,6 +638,11 @@ static int inline_single_sends(FA *fa) {
         // inline single send functions
         if (calls && calls->n == 1) {
           Fun *fn = calls->v[0];
+          // ifa/issues/165: a receiver that may be None, where the callee's
+          // `self` cannot be, needs codegen's None check at THIS call site.
+          // Inlining would erase the site (and let the callee's folded
+          // `self` stand in for the runtime value).
+          if (nil_receiver_rval(p, fn) >= 0) continue;
           Vec<PNode *> *chain = chain_send.get(fn);
           if (chain && !prim_chain_substitution_safe(fn, p, chain)) chain = nullptr;  // ifa/issues/046
           if (chain) {
@@ -673,6 +678,7 @@ static int inline_single_sends(FA *fa) {
           record_inline_event(INLINE_CLOSURE, f, p, 0); dbg_note_inline(INLINE_CLOSURE, f, p, 0);
           if (calls && calls->n == 1) {
             Fun *fn = calls->v[0];
+            if (nil_receiver_rval(p, fn) >= 0) continue;  // ifa/issues/165, as above
             Vec<PNode *> *chain = chain_send.get(fn);
             if (chain && !prim_chain_substitution_safe(fn, p, chain)) chain = nullptr;  // ifa/issues/046
             if (chain) {

@@ -96,6 +96,7 @@ void element_census(ElemCensus &c);
 bool mixed_basics(AVar *av);
 extern std::map<std::string, CreationSet *> cselem_shape_canon;
 
+extern Vec<Var *> fa_internal_vars;  // fa.cc: FA-created tvals, see fill_tvals
 template <class F>
 inline void foreach_avar(F f) {
   auto do_var = [&](Var *v) {
@@ -104,6 +105,7 @@ inline void foreach_avar(F f) {
   };
   for (Sym *sy : fa->pdb->if1->allsyms) if (sy->var) do_var(sy->var);
   for (Fun *fn : fa->pdb->funs) for (Var *v : fn->fa_all_Vars) do_var(v);
+  for (Var *v : fa_internal_vars) do_var(v);
   for (CreationSet *cs : fa->all_creation_sets) if (cs) {
     for (AVar *a : cs->vars) if (a) f(a);
     if (cs->added_element_var) { AVar *ev = get_element_avar(cs); if (ev) f(ev); }

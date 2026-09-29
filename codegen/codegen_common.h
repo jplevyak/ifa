@@ -151,6 +151,10 @@ void poly_dispatch_classtag_targets(Fun *candidate, PNode *pn, Vec<cchar *> &dir
 // sym_nil_type? If so, returns true and sets *rval_idx to that
 // formal's call-site operand index.
 bool poly_dispatch_is_nil_receiver(Fun *candidate, PNode *pn, int *rval_idx);
+// issues/048/171: the scalar member when `pn` dispatches on a {None, scalar}
+// union (no representation), else nullptr. `recv_var` may be null, in
+// which case it is found from `cands`' nil-receiver candidate.
+Sym *poly_dispatch_nil_scalar_receiver(PNode *pn, Vec<Fun *> *cands, Var *recv_var, cchar **sel_out);
 
 // -------------------------------------------------------------
 // Type-string assignment pass (cg_string population)

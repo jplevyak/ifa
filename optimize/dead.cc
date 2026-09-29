@@ -152,6 +152,20 @@ static void mark_live_avars(FA *fa) {
           }
         }
       }
+      // ifa/issues/165: a receiver that may be None, sent a method None
+      // does not have, is checked by codegen at the call site -- so it must
+      // stay live even when the callee's `self` formal is a constant (the
+      // dispatch filter dropped None, leaving e.g. `"x"`, and the callee
+      // no longer reads its argument).
+      if (p->live && calls && calls->n == 1) {
+        int nri = nil_receiver_rval(p, calls->v[0]);
+        if (nri >= 0) {
+          form_AVarMapElem(x, p->rvals[nri]->avars) {
+            AVar *av = x->value;
+            if (!av->live) mark_live_avar(av);
+          }
+        }
+      }
     }
     for (Var *v : f->fa_all_Vars) {
       if (!v->constant) {
