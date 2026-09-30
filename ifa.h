@@ -120,6 +120,11 @@ class IFACallbacks : public gc {
   virtual Fun *rest_wrapper(Fun *, int nactuals) { return 0; }
   virtual Fun *instantiate_generic(Fun *, Map<Sym *, Sym *> &substitutions) { return 0; }
   virtual bool reanalyze(Vec<ATypeViolation *> &type_violations) { return false; }
+  // issues/128 step 2: take back frontend decisions that the CONVERGED
+  // types no longer support (pyc: fields a write "discovered" on a
+  // transient union). Called only at a fixed point -- after a pass where
+  // nothing else asked for another one. Returns true to request a pass.
+  virtual bool retract_derived_state() { return false; }
   // Called by FA's own P_prim_isinstance transfer function
   // (analysis/fa.cc), before it falls back to its normal
   // CreationSet-intersection logic, for every isinstance() check FA

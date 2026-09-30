@@ -294,12 +294,21 @@ switch (p->prim->index) {
           // that already have the field against those that do not. MIXED is a
           // demand whose partition is exactly 2 and is named by the demand
           // itself; ALL-MISS is not separable this way. Measured first.
-          if (getenv("IFA_DBG_FIELDSPLIT") && obj->out->sorted.n > 1) {
+          // IFA_DBG_FIELDSPLIT=2 prints EVERY record write with its pass and
+          // receiver classes, single-class ones too, so a class that holds a
+          // field only because a union write reached it can be told apart
+          // from one that has its own writer (issues/128 step 3).
+          static int dbg_fs = getenv("IFA_DBG_FIELDSPLIT") ? atoi(getenv("IFA_DBG_FIELDSPLIT")) : 0;
+          if (dbg_fs && (obj->out->sorted.n > 1 || dbg_fs >= 2)) {
             int have = 0, miss = 0;
             for (CreationSet *c2 : obj->out->sorted) { if (c2->var_map.get(symbol)) have++; else miss++; }
-            fprintf(stderr, "[fieldsplit] %s n=%d have=%d miss=%d '%s'\n",
+            fprintf(stderr, "[fieldsplit] p=%d %s n=%d have=%d miss=%d '%s' fun=%s:", analysis_pass,
                     (have && miss) ? "MIXED" : (have ? "ALL-HAVE" : "ALL-MISS"),
-                    obj->out->sorted.n, have, miss, symbol);
+                    obj->out->sorted.n, have, miss, symbol,
+                    (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?");
+            for (CreationSet *c2 : obj->out->sorted)
+              fprintf(stderr, " %s", (c2->sym && c2->sym->name) ? c2->sym->name : "?");
+            fprintf(stderr, "\n");
           }
           // issues/128: MIXED (some members have the field, some do not) was
           // TRIED as "do not record, it is a demand not evidence". It fixes

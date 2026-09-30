@@ -13456,14 +13456,18 @@ static void analyze_to_convergence() {
       // rather than a concession.
       // Narrowing runs BEFORE widening: a merge that evidence has already
       // contradicted must come apart before another one is proposed.
-      int rsp = 0, rej = 0;
-      if (!ext && !rea && !fil) rsp = cselem_resplit_diverged();
-      if (!ext && !rea && !fil && !rsp) rej = cselem_rejoin_unknown_mints();
+      int rsp = 0, rej = 0, ret = 0;
+      // issues/128: a promoted field that the converged types no longer
+      // write is withdrawn. Narrowing, so it runs with the resplit below:
+      // only at a fixed point.
+      if (!ext && !rea && !fil) ret = if1->callback->retract_derived_state() ? 1 : 0;
+      if (!ext && !rea && !fil && !ret) rsp = cselem_resplit_diverged();
+      if (!ext && !rea && !fil && !ret && !rsp) rej = cselem_rejoin_unknown_mints();
       fa->last_pass_reanalyze = (rea != 0);
       if (getenv("PYC_DBG_STAGEDELTA"))
-        fprintf(stderr, "PASSEND p=%d extend=%d reanalyze=%d fills=%d resplit=%d rejoin=%d viol=%d\n",
-                analysis_pass, ext, rea, fil, rsp, rej, fa->type_violations.set_count());
-      loop_again = (ext || rea || fil || rsp || rej);
+        fprintf(stderr, "PASSEND p=%d extend=%d reanalyze=%d fills=%d retract=%d resplit=%d rejoin=%d viol=%d\n",
+                analysis_pass, ext, rea, fil, ret, rsp, rej, fa->type_violations.set_count());
+      loop_again = (ext || rea || fil || ret || rsp || rej);
     }
   } while (loop_again && analysis_pass <= fa->pass_limit);
   if (getenv("PYC_DBG_OSC"))
