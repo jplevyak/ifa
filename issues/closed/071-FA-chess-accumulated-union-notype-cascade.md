@@ -514,7 +514,7 @@ representation choice matters); how does per-arity tuple `__eq__`/
 `__lt__` (issue 069) work against a variable-length backing store; and
 whether "all element types unify" needs to be decided per-allocation-
 site or per-declared-tuple-type globally (interacting with
-[039](../../../issues/039-list-mul-shared-element-type-cross-contamination.md)'s
+[039](../../../issues/closed/039-list-mul-shared-element-type-cross-contamination.md)'s
 finding that pyc's *list* element-type sharing is already not scoped
 per allocation site — the same question would need a real answer for
 tuples too before this could land safely).

@@ -101,7 +101,7 @@ pyc's union appears at **`__eq__`**: `IFA_DBG_SLOTUSE=1` reports
 inherited by both, so one shared `object.__eq__` clone is receiving both
 callers — the shared-generic-method degeneration of
 [105](105-type-degeneration-in-shared-generic-methods.md), and the same
-family as [issues/039](../../../issues/039-list-mul-shared-element-type-cross-contamination.md).
+family as [issues/039](../../../issues/closed/039-list-mul-shared-element-type-cross-contamination.md).
 shedskin does not have it because `list<Basic_block *>` and
 `list<Union_find_node *>` are separate template instantiations, so the
 `__eq__` each calls is a separate function.
