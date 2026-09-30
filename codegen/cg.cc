@@ -1643,21 +1643,20 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
 }
 
 // C-backend wrapper around get_target_fun_core (codegen_common.{h,cc}).
-// When no single resolution is available, the C backend `fail`s in
-// the absence of `fruntime_errors`; the LLVM backend has its own
-// (search-by-sym, search-by-name) wrapper instead.
+// A null result sends the caller to polymorphic dispatch; --strict
+// refuses only if that fails too (emit_send_call). The LLVM backend has
+// its own (search-by-sym, search-by-name) wrapper instead.
 static Fun *get_target_fun(PNode *n, Fun *f) {
   Fun *target = get_target_fun_core(n, f);
   if (!target) {
     // issues/171: name the cause when it is a {None, scalar} receiver --
     // the same diagnostic the LLVM backend gives -- rather than the
-    // generic message below.
+    // generic dispatch failure.
     cchar *sel = nullptr;
     if (Sym *scalar_member = poly_dispatch_nil_scalar_receiver(n, f->calls.get(n), nullptr, &sel))
       codegen_fail(n, "'%s' on a {None, %s} union has no representation: a null test cannot "
                       "distinguish None from 0/0.0/False (issues/048)",
                    sel ? sel : "call", scalar_member->name ? scalar_member->name : "scalar");
-    if (!fruntime_errors) fail("unable to resolve to a single function at call site");
   }
   return target;
 }
@@ -2751,6 +2750,12 @@ class CBackendEmitter : public VirtualCGEmitter {
                   pn->rvals[i]->type ? pn->rvals[i]->type->id : -1);
         fprintf(stderr, "\n");
       }
+      // issues/171: under --strict, refuse HERE -- where neither a single
+      // target nor the dispatch above resolved the call -- not in
+      // get_target_fun. Failing there refused every legitimate
+      // polymorphic call (a generator's `e.__str__()` on the exception
+      // slot) before dispatch was even tried.
+      if (!fruntime_errors) codegen_fail(pn, "unable to resolve to a single function at call site");
       fputs("  assert(!\"runtime error: matching function not found\");\n", fp);
     }
   }

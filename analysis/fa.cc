@@ -3924,6 +3924,21 @@ static bool extract_contour_user_loc(EntrySet *es, cchar **out_filename, int *ou
   return false;
 }
 
+// The AVar half of find_violation_user_loc, for a diagnostic that has no
+// send (issues/171 #3's numeric-coercion warning).
+bool find_avar_user_loc(AVar *av, cchar **out_filename, int *out_line, int *out_col) {
+  if (av->var && av->var->def && extract_pnode_loc(av->var->def, out_filename, out_line, out_col)) return true;
+  if (av->var && av->var->sym && extract_ast_loc(av->var->sym->ast, out_filename, out_line, out_col)) return true;
+  if (av->contour_is_entry_set && av->contour &&
+      extract_contour_user_loc((EntrySet *)av->contour, out_filename, out_line, out_col))
+    return true;
+  if (!av->contour_is_entry_set && av->contour && av->contour != GLOBAL_CONTOUR) {
+    CreationSet *cs = (CreationSet *)av->contour;
+    if (cs->sym && extract_ast_loc(cs->sym->ast, out_filename, out_line, out_col)) return true;
+  }
+  return false;
+}
+
 bool find_violation_user_loc(ATypeViolation *v, cchar **out_filename, int *out_line, int *out_col) {
   if (v->send && v->send->var && v->send->var->def) {
     if (extract_pnode_loc(v->send->var->def, out_filename, out_line, out_col)) return true;
@@ -12313,6 +12328,64 @@ static void set_void_lub_types_to_void(Var *v) {
 
 static void set_void_lub_types_to_void() { foreach_var(set_void_lub_types_to_void); }
 
+// issues/171 #3: numeric coercion (coerce_annotate) is a permissive-only
+// accommodation that CHANGES what the program prints -- an int value in a
+// slot widened to float prints `1.0` where CPython prints `1`. It used to be
+// silent (only PYC_DBG_NUMC showed it). Warn once per source location, after
+// convergence, naming the variable and the widened type. Sorted, so the
+// output does not move with pointer-hash order.
+static Vec<AVar *> coerced_avars;
+static void collect_coerced(Var *v) {
+  for (int i = 0; i < v->avars.n; i++)
+    if (v->avars[i].key) {
+      AVar *av = v->avars[i].value;
+      if (av && av->num_coerce && av->out && av->out->n) coerced_avars.add(av);
+    }
+}
+
+void show_numeric_coercions(FA *fa, FILE *fp) {
+  coerced_avars.clear();
+  foreach_var(collect_coerced);
+  // One line per (location, name). A compiler temporary ("expression") is
+  // reported only on a line that names no variable -- the temps on a named
+  // variable's line are that variable's own arithmetic, the same fact again.
+  struct Entry { char *loc; cchar *name; cchar *to; };
+  Vec<Entry *> es;
+  for (AVar *av : coerced_avars) {
+    cchar *filename = nullptr;
+    int line = 0, col = 0;
+    if (!find_avar_user_loc(av, &filename, &line, &col) || !filename || line <= 0) continue;
+    char loc[512];
+    snprintf(loc, sizeof(loc), "%s:%d", filename, line);
+    Entry *e = new Entry{dupstr(loc), av->var && av->var->sym ? av->var->sym->name : nullptr,
+                         av->num_coerce->name ? av->num_coerce->name : "?"};
+    es.add(e);
+  }
+  coerced_avars.clear();
+  qsort(es.v, es.n, sizeof(es[0]), [](const void *a, const void *b) {
+    Entry *x = *(Entry *const *)a, *y = *(Entry *const *)b;
+    if (int c = strcmp(x->loc, y->loc)) return c;
+    if (!x->name || !y->name) return (x->name ? 0 : 1) - (y->name ? 0 : 1);
+    return strcmp(x->name, y->name);
+  });
+  for (int i = 0; i < es.n; i++) {
+    Entry *e = es[i];
+    if (i && !strcmp(es[i - 1]->loc, e->loc)) {
+      if (!e->name) continue;  // this line already named a variable
+      if (es[i - 1]->name && !strcmp(es[i - 1]->name, e->name)) continue;
+    }
+    if (e->name)
+      fprintf(fp, "%s: warning: '%s' holds both int and float; widened to %s, so an int value in it prints as "
+                  "a float (CPython keeps the int). Permissive numeric coercion, refused under --strict (issues/171)\n",
+              e->loc, e->name, e->to);
+    else
+      fprintf(fp, "%s: warning: an expression holds both int and float; widened to %s, so an int value in it "
+                  "prints as a float (CPython keeps the int). Permissive numeric coercion, refused under --strict "
+                  "(issues/171)\n",
+              e->loc, e->to);
+  }
+}
+
 // ifa/issues/112: this used to walk `v->avars` by raw slot index. That
 // map is keyed by EntrySet POINTERS, so the walk followed heap layout --
 // and because the body `return`s after the FIRST AVar carrying an
@@ -13455,6 +13528,7 @@ int FA::analyze(Fun *top) {
   remove_unused_closures();
   if1->callback->report_analysis_errors(type_violations);
   if (show_violation_output) show_violations(fa, stderr);
+  if (show_violation_output && fruntime_errors) show_numeric_coercions(fa, stderr);
   if (fruntime_errors) convert_NOTYPE_to_void();
   // ifa/issues/074: WHICH splitter stages this program actually demanded,
   // in cascade order, once for the whole analysis. Deliberately a SET and

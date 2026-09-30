@@ -338,7 +338,10 @@ switch (p->prim->index) {
                   if (c2 && c2->sym) fprintf(stderr, " %s#%d", c2->sym->name ? c2->sym->name : "?", c2->id);
                 fprintf(stderr, "\n");
               }
-              cs->unknown_vars.add(symbol);
+              if (if1->callback->discovers_fields_by_write())
+                cs->unknown_vars.add(symbol);
+              else
+                type_violation(ATypeViolation_kind::MEMBER, selector, make_AType(cs), result);
             }
           }
         }

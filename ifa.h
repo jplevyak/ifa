@@ -81,6 +81,13 @@ class IFACallbacks : public gc {
   // `int` but `True & True` stays `bool`) -- see issue 081 for the
   // current, still-open state of that finer policy.
   virtual bool bool_is_numeric() { return false; }
+  // issues/171 #8, issues/128: does a write to a field the receiver's class
+  // does not have DECLARE that field? Python's answer is yes (`self.f = v`
+  // anywhere creates `f`), so PycCallbacks returns true and FA records the
+  // name in `cs->unknown_vars` for the frontend to promote. A language whose
+  // classes declare their fields keeps the default: such a write is a MEMBER
+  // violation.
+  virtual bool discovers_fields_by_write() { return false; }
   // Called by FA's issue-025 per-branch type-narrowing recognizer
   // (analysis/fa.cc's add_pnode_constraints, the `if cond:` handling)
   // to identify the callee-Sym *names* this frontend's `if cond:`
