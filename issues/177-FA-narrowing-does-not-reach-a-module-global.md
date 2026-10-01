@@ -1,7 +1,7 @@
 # 177 — an `isinstance` / `is None` guard does not narrow a module-level variable
 
 **Status:** open. Filed 2026-09-30 from
-[issues/128](../../issues/128-cross-class-field-promotion.md) step 3, whose
+[issues/128](../../issues/closed/128-cross-class-field-promotion.md) step 3, whose
 converged MIXED writes this is one source of.
 
 ## Symptom

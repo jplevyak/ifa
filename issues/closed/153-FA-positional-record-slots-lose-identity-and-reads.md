@@ -75,7 +75,7 @@ With defect 1 fixed the member TYPES were right (`_CG_ps16987 e1`,
 For a CLASS that is correct — measured on `chull`, `Vertex`'s `has[k]->var`
 is the same `Var` as `cs->vars[k]->var` at all 24 slots. For a POSITIONAL
 record it is not, because `sym_tuple->has` carries whatever cross-class field
-promotion ([issues/128](../../../issues/128-cross-class-field-promotion.md)) put
+promotion ([issues/128](../../../issues/closed/128-cross-class-field-promotion.md)) put
 on `tuple`:
 
 ```
