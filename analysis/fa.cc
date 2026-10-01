@@ -3220,8 +3220,20 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
         // what leaves the cell with no consumer, which is what makes a
         // write-only cell unobservable to the BOXING check.
         if (if1->callback) {
-          if (AType *forced = if1->callback->provably_constant_load(rhs, es, p)) {
-            update_gen(lhs, forced);
+          // Flow from the store the load provably sees, not a snapshot of
+          // its type (ifa/146 B): `update_gen(lhs, forced)` captured
+          // whatever the store held when this MOVE was walked, and a store
+          // fed by a call that returns its arms one at a time (`re.match`:
+          // None first, then Match) left the load with the first arm only.
+          AVar *src = nullptr;
+          if (AType *forced = if1->callback->provably_constant_load(rhs, es, p, &src)) {
+            if (src) {
+              if (lhs->lvalue && src->lvalue)
+                flow_vars(src, lhs);
+              else
+                flow_vars_assign(src, lhs);
+            } else
+              update_gen(lhs, forced);
             continue;
           }
         }
@@ -8736,7 +8748,14 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
     // Once per (receiver, field) for the whole analysis, so a test can pin
     // the lines without depending on the pass count.
     static std::set<std::pair<AVar *, std::string>> reported;
-    for (auto &w : field_writes) {
+    // Recording order is flow order, which any change to the walk moves;
+    // the [fieldmixed] lines a test pins must not. Report by receiver id.
+    std::vector<std::pair<AVar *, cchar *>> fw_sorted(field_writes);
+    std::sort(fw_sorted.begin(), fw_sorted.end(), [](const auto &x, const auto &y) {
+      if (x.first->id != y.first->id) return x.first->id < y.first->id;
+      return strcmp(x.second, y.second) < 0;
+    });
+    for (auto &w : fw_sorted) {
       Vec<Sym *> cls;
       record_classes(w.first, cls);
       if (cls.n < 2) continue;
@@ -11224,6 +11243,7 @@ static void controlling_ifs(PNode *site, Vec<PNode *> &out) {
     // one already free) may climb to all its callers -- that is where two
     // constants meet.
     Map<EntrySet *, EntrySet *> entered_from;  // absent: not yet on the walk
+    Vec<PNode *> seeded_sites;                 // call sites whose controls are seeded
     Vec<EntrySet *> free_es;                   // entered upward: climb freely
     auto push = [&](AVar *a) {
       if (a && a->contour_is_entry_set && a->contour != GLOBAL_CONTOUR && seen.set_add(a)) work.add(a);
@@ -11274,6 +11294,28 @@ static void controlling_ifs(PNode *site, Vec<PNode *> &out) {
           push(c);
         };
         for (AVar *b : a->backward) climb(b, 0);
+        // ifa/049, ifa/178: control, not only data. The violating
+        // statement's controlling conditions are seeded above, but only in
+        // the violating contour. Climbing into a caller through a formal is
+        // also climbing through a CALL SITE, and whether that site runs is
+        // decided by the caller's own conditions -- `list.__lt__`'s
+        // `while i < n` guards `self[i]`, whose `__getitem__` holds the
+        // violation. Seed them by the same rule. Without this the demand
+        // reached them only through cascade violations at the call site
+        // (an untyped `self[i] < l[i]`), so it depended on the cascade.
+        for (AEdge *e : X->edges) if (e && e->from && e->pnode && e->from != X) {
+          EntrySet *Y = e->from;
+          if (!free && Y != back_to) continue;
+          if (!seeded_sites.set_add(e->pnode)) continue;
+          if (!Y->fun->fa_all_PNodes.in(e->pnode)) continue;
+          if (free && !entered_from.get(Y) && Y != E) free_es.set_add(Y);
+          Vec<PNode *> ifs;
+          controlling_ifs(e->pnode, ifs);
+          for (PNode *pn : ifs) if (pn && Y->fun->fa_if_PNodes.in(pn)) {
+            AVar *c = make_AVar(pn->rvals.v[0], Y);
+            if (c && c->out && !(c->out->sorted.n == 1 && is_constant_cs(c->out->sorted[0]))) push(c);
+          }
+        }
         continue;
       }
       auto descend = [&](AVar *b) {

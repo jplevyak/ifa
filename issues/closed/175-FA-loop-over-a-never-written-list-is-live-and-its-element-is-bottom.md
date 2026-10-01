@@ -123,6 +123,15 @@ feeds itself, the same shape as ifa/171.
 `while i < self._len`, `__str_iter__`'s `slen`. That is why
 `tests/dict_empty_next_to_populated.py` stays KNOWN (ifa/160 family).
 
+**Update 2026-10-01.** The same guard now covers `__range_iter__`
+(`i0 != j`, where `i0` is the start, never written after `__init__`),
+`__dict_iter__` and `__set_iter__` (`_len != 0 and ...`). A field-held
+bound needs the guard rather than constant demand: the demand walk stops
+at CreationSet fields, so it cannot reach `_len` the way it reaches
+`n = len(self)`. Still uncovered: `dict.__str__`'s `while i < self._len`,
+`__str_iter__`'s `slen`, and `__pyc_dict_from_iterable__`'s loop, so
+`tests/dict_empty_next_to_populated.py` stays KNOWN.
+
 ## Side finding
 
 `ifa_fa_inline` defaults to 1 (`ifa/common/fail.h:28`), even though the
