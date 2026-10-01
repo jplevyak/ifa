@@ -132,6 +132,24 @@ at CreationSet fields, so it cannot reach `_len` the way it reaches
 `__str_iter__`'s `slen`, and `__pyc_dict_from_iterable__`'s loop, so
 `tests/dict_empty_next_to_populated.py` stays KNOWN.
 
+Measured (`164bad43`, with the call-site constant demand and the
+provable-global-load flow fix from the same commit), corpus `-m check`
+against `e21cc929+d4673d70` (flags off; the `+d4673d70` diff is
+uncommitted probe code that is inert by default):
+
+- `sudoku1` now compiles, runs and matches CPython (compile_rc 1 -> 0).
+- `sieve` stdout NO -> yes. `brainfuck` run timeout -> 0, and matches.
+- `chull` and `tonyjpegdecoder` 124 -> 0 are run-time noise at the
+  120 s cap (both arms measured the same way in the KEEPNIL A/B).
+- No verdict got worse. `ess`/`css` rise by 1-3 on most programs (the
+  extra constant-cloned `__ne__` contours, as with the list-iterator
+  guard). Largest moves: `othello` +37 ES / +102 CS, `go` +26 ES;
+  `sudoku4` -41 CS, `voronoi2` -29 CS.
+- Five programs gain one int/float widening warning (`ac_encode`,
+  `fysphun`, `mastermind2`, `softrender`, `yopyra`). These are mostly
+  already-warned lines reported once more because their contour split.
+  `go` loses 13. No stdout verdict moved with them.
+
 ## Side finding
 
 `ifa_fa_inline` defaults to 1 (`ifa/common/fail.h:28`), even though the
