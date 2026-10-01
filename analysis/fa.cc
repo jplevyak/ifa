@@ -7839,6 +7839,12 @@ static EntrySet *find_blocking_es(CreationSet *cs, CSFlowGraph *g, Vec<AVar *> &
       int a = (*(EntrySet *const *)x)->id, b = (*(EntrySet *const *)y)->id;
       return a > b ? 1 : (a < b ? -1 : 0);
     });
+  if (dbg) {
+    fprintf(stderr, "[esblock] p=%d cs=%d candidates=%d:", analysis_pass, cs->id, ordered.n);
+    for (EntrySet *e : ordered)
+      fprintf(stderr, " es%d/%s", e->id, (e->fun && e->fun->sym && e->fun->sym->name) ? e->fun->sym->name : "?");
+    fprintf(stderr, "\n");
+  }
   for (EntrySet *e : ordered) {
     if (cs_def_groups(cs, g, defs, e, nullptr) < 2) continue;
     if (dbg)

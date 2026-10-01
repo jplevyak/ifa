@@ -62,6 +62,41 @@ ESBLOCK's job (`find_blocking_es`), and here it is not reached. Check
 first whether the CreationSet is in `demanded` at all: the violation's
 backward walk may not reach the member AVar.
 
+## Root cause, measured 2026-09-30
+
+Three facts, each from a probe:
+
+1. **Not a missing demand alone.** Pot is not in `demanded` (only its
+   member lists are). Letting a CreationSet that owns a demanded member
+   inherit the demand does reach the ES-block rung, which finds the shared
+   contour `Pot.__init__` (`[esblock] candidates=1: es52/__init__`). But it
+   still declines, for the reason in 2.
+2. **Route 4's key is blind to the receiver of a store.** It groups creation
+   points by which CONTENT each can reach along value flow. A store
+   `self.labels = X` flows X into the record's member. The receiver's
+   creation point is not on that path, so both creation points reach the
+   same sets. `cs_def_groups` with `__init__`'s formals held terminal finds
+   one group as well, which is why `find_blocking_es` rejects its only
+   candidate.
+3. **`None` is stripped from the type projection by design.** That is issue
+   060 in `type_cannonicalize`: a `{T*, None}` union stays one clone,
+   because None is a null pointer. So CPA does not split `__init__` between
+   the `labels=None` call and the `labels=[...]` call. (A misleading probe
+   on the way: `IFA_DBG_FUNES` prints `av->out->type`, which drops
+   constants, so a None argument prints as `[]`.) Per-site identity
+   (`PYC_CSDCPA1=0`) does not help either: the second `__new__` contour is
+   a split child, and parent-first (`PYC_CSPARENTFIRST`) joins its creation
+   point to the parent's CreationSet.
+
+## Fix needed
+
+A route-4 key that associates a store with its RECEIVER: for each creation
+point, which writer contours it flows into as the receiver of a member
+store, and what those contours write. Plus, when the writer contour is
+shared, an ES split of that contour per receiver creation point (the ES
+split as a MEANS, which AGENTS.md sanctions only under a demand). The
+demand is the member union that the violation backtracks to.
+
 ## Verification
 
 The repro prints `5` and `4` on both backends, with two `Pot`
