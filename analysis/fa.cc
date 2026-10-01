@@ -8770,10 +8770,141 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
       }
     }
   }
+  // ifa/102 / ifa/132: an UNTAGGED DISPATCH AMBIGUITY is a demand. A send
+  // whose receiver holds two CreationSets of one sym that carries no runtime
+  // class tag (a builtin container: `list`, `tuple`, `dict`, ... -- only
+  // Type_RECORD instances carry `__pyc_tag`), dispatched to two contours of
+  // the same function that return DIFFERENT types, cannot be resolved by
+  // codegen: both receivers have one C representation and nothing at run
+  // time says which contour applies. That used to reach codegen as
+  // `matching function not found` -- a demand FA never observed (quameon:
+  // `self.charges[j]` over an int-list and a float-list, two
+  // list.__getitem__ contours returning int64 and float64).
+  //
+  // The two receivers met upstream, so walk the receiver's value flow back
+  // to the CONFLUENCE -- a CreationSet whose content holds both -- and name
+  // it, exactly as the field demand above does; the rungs below then
+  // partition it by creation point or decline. Same quiescence gate, for
+  // the same reason.
+  Vec<CreationSet *> dispatch_named;
+  // When the ambiguous receivers meet not in a CreationSet but in the
+  // CALLING CONTOUR's own formal -- one method contour receiving two
+  // CreationSets of one (tagged) class, so that `self.member` reads both
+  // members' contents -- the confluence is that formal, and the demanded
+  // separation is per receiver CreationSet (split_edges, PER_CS_RECEIVER's
+  // primitive). quameon: es=701 compute_en_value got self = {coulomb_pot
+  // #1960, #3451}, whose `charges` are an int-list and a float-list.
+  Vec<AVar *> per_cs_formals;
+  static int dbg_ut = getenv("IFA_DBG_UNTAGGED") ? atoi(getenv("IFA_DBG_UNTAGGED")) : 0;
+  if (quiescent) {
+    static std::set<std::pair<int, int>> reported_ut;  // (es id, pnode id), once per analysis
+    for (EntrySet *es : fa->ess) {
+      if (!es) continue;
+      for (int mi = 0; mi < es->out_edge_map.n; mi++) {
+        PNode *pn = es->out_edge_map.v[mi].key;
+        Vec<AEdge *> *edges = es->out_edge_map.v[mi].value;
+        if (!pn || !edges || edges->n < 2 || pn->rvals.n < 2) continue;
+        // Two edges to DIFFERENT contours of ONE function with different
+        // return types.
+        bool ambiguous = false;
+        for (int i = 0; i < edges->n && !ambiguous; i++)
+          for (int j = i + 1; j < edges->n && !ambiguous; j++) {
+            AEdge *a = edges->v[i], *b = edges->v[j];
+            if (!a || !b || !a->to || !b->to || a->to == b->to || a->fun != b->fun || !a->fun) continue;
+            if (!a->fun->rets.n) continue;
+            AVar *ra = make_AVar(a->fun->rets[0], a->to), *rb = make_AVar(b->fun->rets[0], b->to);
+            AType *ta = ra->out ? ra->out->type : nullptr, *tb = rb->out ? rb->out->type : nullptr;
+            if (ta && tb && ta != tb && ta->n && tb->n) ambiguous = true;
+          }
+        if (!ambiguous) continue;
+        // The receiver: rvals[1] for a direct send; for a bound-method call
+        // (`x.m(...)` is lowered as `(x.m)(...)`, rvals[0] a closure) it is
+        // the closure's bound value.
+        Vec<AVar *> recvs;
+        recvs.add(make_AVar(pn->rvals[1], es));
+        AVar *callee = make_AVar(pn->rvals[0], es);
+        if (callee->out)
+          for (CreationSet *c : callee->out->sorted)
+            if (c && c->sym == sym_closure)
+              for (AVar *bv : c->vars) if (bv) recvs.add(bv);
+        int named = 0;
+        Sym *amb_sym = nullptr;
+        int amb_n = 0;
+        for (AVar *recv : recvs) {
+          if (!recv || !recv->out) continue;
+          // The receiver's untagged syms holding two or more CreationSets.
+          Vec<Sym *> syms;
+          for (CreationSet *c : recv->out->sorted)
+            if (c && c->sym && c->sym->type_kind != Type_RECORD && c->sym != sym_closure) {
+              int k = 0;
+              for (CreationSet *c2 : recv->out->sorted) if (c2 && c2->sym == c->sym) ++k;
+              if (k > 1) syms.set_add(c->sym);
+            }
+          if (!syms.n) continue;
+          amb_sym = syms.v[0];
+          amb_n = recv->out->sorted.n;
+          // The confluence is a CONTOUR (AGENTS.md): a CreationSet whose
+          // member or element channel holds two of the receiver's
+          // CreationSets of an ambiguous sym. Found directly rather than by
+          // walking `backward`: a bound-method receiver gets its value
+          // through make_period_closure, which leaves no backward link to
+          // the member it was read from.
+          auto holds_both = [&](AVar *av) {
+            if (!av || !av->out) return false;
+            for (Sym *sy : syms) {
+              int k = 0;
+              for (CreationSet *c : av->out->sorted)
+                if (c && c->sym == sy && recv->out->sorted.in(c)) ++k;
+              if (k > 1) return true;
+            }
+            return false;
+          };
+          for (CreationSet *ocs : fa->css) {
+            if (!ocs || !ocs->sym || ocs->sym == sym_closure) continue;
+            bool hit = false;
+            for (AVar *mv : ocs->vars) if (holds_both(mv)) { hit = true; break; }
+            if (!hit && ocs->added_element_var && ocs->sym->element && ocs->sym->element->var)
+              hit = holds_both(unique_AVar(ocs->sym->element->var, ocs));
+            if (hit && dispatch_named.set_add(ocs)) ++named;
+          }
+        }
+        if (!amb_sym) continue;
+        if (!named && es->fun)
+          for (MPosition *mp : es->fun->positional_arg_positions) {
+            AVar *fv = es->args.get(mp);
+            if (!fv || !fv->out || !fv->out->type || fv->out->type->sorted.n < 2) continue;
+            Sym *cls = nullptr;
+            bool one_class = true;
+            for (CreationSet *c : fv->out->type->sorted) {
+              if (!c || !c->sym || c->sym->type_kind != Type_RECORD) { one_class = false; break; }
+              if (!cls) cls = c->sym;
+              else if (cls != c->sym) { one_class = false; break; }
+            }
+            if (one_class && per_cs_formals.set_add(fv)) ++named;
+          }
+        if (dbg_ut && reported_ut.insert({es->id, pn->id}).second)
+          fprintf(stderr, "[untagged] %s: %d contours, receiver %s x%d -> names %d CreationSet(s)\n",
+                  (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?", edges->n,
+                  amb_sym->name ? amb_sym->name : "?", amb_n, named);
+      }
+    }
+  }
+  for (AVar *fv : per_cs_formals)
+    if (fv && split_edges(fv, 0, 0)) {
+      if (dbg_ut)
+        fprintf(stderr, "[untagged] split es=%d fun=%s per receiver CreationSet (%d)\n",
+                ((EntrySet *)fv->contour)->id,
+                (((EntrySet *)fv->contour)->fun && ((EntrySet *)fv->contour)->fun->sym->name)
+                    ? ((EntrySet *)fv->contour)->fun->sym->name : "?",
+                fv->out->type->sorted.n);
+      analyze_again = 1;
+    }
   Vec<CreationSet *> css;
   for (CreationSet *cs : tc_cs_dropped)
     if (cs && fa->css_set.set_in(cs)) css.set_add(cs);
   for (CreationSet *cs : field_named)
+    if (cs && cs->sym) css.set_add(cs);
+  for (CreationSet *cs : dispatch_named)
     if (cs && cs->sym) css.set_add(cs);
   const int from_confluence = css.set_count();
   // ifa/143: add every live CreationSet carrying its own demand, so the
@@ -8857,7 +8988,7 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
   Vec<CreationSet *> demanded;
   for (CreationSet *cs : css)
     if (cs && cs->sym && (viol_reach.set_in(cs) || viol_named.set_in(cs) || field_named.set_in(cs) ||
-                          cs_elem_irrepresentable(cs)))
+                          dispatch_named.set_in(cs) || cs_elem_irrepresentable(cs)))
       demanded.set_add(cs);
   // ifa/152: BACKTRACK THE DEMAND. Every candidate gathered above was
   // nominated because the union is observed AT it; a candidate with one
@@ -9023,7 +9154,7 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
                unique_AVar(cs->sym->element->var, cs) && unique_AVar(cs->sym->element->var, cs)->out &&
                unique_AVar(cs->sym->element->var, cs)->out->type)
                   ? unique_AVar(cs->sym->element->var, cs)->out->type->sorted.n : -1);
-    if (esdefs1_enabled() && defs.n == 1 && (viol_named.set_in(cs) || field_named.set_in(cs)) && defs.v[0] &&
+    if (esdefs1_enabled() && defs.n == 1 && (viol_named.set_in(cs) || field_named.set_in(cs) || dispatch_named.set_in(cs)) && defs.v[0] &&
         defs.v[0]->contour_is_entry_set && defs.v[0]->contour != GLOBAL_CONTOUR) {
       AVar *elem = cs->sym->element && cs->sym->element->var && cs->added_element_var
                        ? unique_AVar(cs->sym->element->var, cs)

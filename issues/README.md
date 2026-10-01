@@ -78,6 +78,7 @@ one is a lesson this directory paid for.
 | --- | --- |
 | [049](049-FA-raise-only-contour-notype.md) | a raise-only contour's bottom return is now a hard error. The exceptional exit must not read `fn->ret`. |
 | [072](072-FA-empty-container-notype-current-mechanism-and-plan.md) | a never-written container's bottom element reaching live code. Derive "zero-trip" and "raises" from it. |
+| [178](178-FA-route4-declines-records-built-through-one-constructor.md) | route 4 cannot separate two creation points of a class built through one constructor; the merged member then contaminates both lists. |
 | [177](177-FA-narrowing-does-not-reach-a-module-global.md) | an `isinstance` / `is None` guard does not narrow a module-level variable: each read is a fresh load of the cell. |
 | [025](025-FA-intra-function-union-narrowing.md) | branch correlation over a class union: now refused. Tail duplication, or a permissive runtime check. |
 | [050](050-FA-general-constant-propagation-unreachable-code.md) | a global slot's value is not call-graph precise. Stages 2-3 (mod-set, per-ES summary). |
@@ -93,6 +94,7 @@ one is a lesson this directory paid for.
 
 | issue | what |
 | --- | --- |
+| [179](179-LLVM-quameon-computes-nan.md) | LLVM: quameon runs but computes `nan` (C matches CPython); latent, independent of 132. |
 | [102](102-corpus-programs-compile-then-abort-at-runtime.md) | an unresolved call becomes a silent runtime stub. Make it an FA violation. Also the untyped-value work list. |
 | [079](079-DISPATCH-single-candidate-dispatch-unchecked-cast.md) | the single-candidate fast path casts past union members that lack the method. |
 | [118](118-union-field-representation-and-polymorphic-field-offset.md) | `{bool, None}`: a tri-state sentinel representation (bool has spare codes; int64 does not). |

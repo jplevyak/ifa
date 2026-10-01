@@ -625,12 +625,57 @@ void report_call_resolution(FA *fa) {
   fprintf(stderr, "CALLS: direct=%ld dynamic=%ld\n", direct, dynamic);
 }
 
+// ifa/132: identical C signatures do not make two clones interchangeable
+// when their RECORD arguments' members hold different contents. Two
+// CreationSets of one class can share a struct (each member has the same
+// C type) while a member holds an int-list in one and a float-list in the
+// other -- `_CG_list` does not say which -- so each clone's body reads its
+// own receiver's elements differently. quameon: after the per-receiver
+// split of `coulomb_pot.compute_en_value`, the collapse called one clone
+// for both receivers and read the int-list `charges` as float64.
+// Refusing the collapse sends the call through the record's own method
+// slot, which each instance stores per creation point. Only RECORD
+// arguments are compared: those carry a tag and a slot to dispatch on.
+static void record_member_contents(Fun *f, MPosition *p, Map<cchar *, Vec<CreationSet *> *> &out) {
+  for (EntrySet *es : f->ess) {
+    if (!es) continue;
+    AVar *av = es->args.get(p);
+    if (!av || !av->out || !av->out->type) continue;
+    for (CreationSet *cs : av->out->type->sorted) {
+      if (!cs || !cs->sym || cs->sym->type_kind != Type_RECORD) continue;
+      for (AVar *iv : cs->vars) {
+        if (!iv || !iv->var || !iv->var->sym || !iv->var->sym->name || !iv->out || !iv->out->type) continue;
+        Vec<CreationSet *> *v = out.get(iv->var->sym->name);
+        if (!v) out.put(iv->var->sym->name, (v = new Vec<CreationSet *>));
+        for (CreationSet *c : iv->out->type->sorted) if (c) v->set_add(c);
+      }
+    }
+  }
+}
+
+static bool clones_see_same_record_contents(Fun *a, Fun *b) {
+  for (MPosition *p : a->positional_arg_positions) {
+    Map<cchar *, Vec<CreationSet *> *> ma, mb;
+    record_member_contents(a, p, ma);
+    record_member_contents(b, p, mb);
+    for (int i = 0; i < ma.n; i++) {
+      if (!ma.v[i].key) continue;
+      Vec<CreationSet *> *va = ma.v[i].value, *vb = mb.get(ma.v[i].key);
+      if (!vb) continue;  // a member only one side reads is not a disagreement
+      if (va->set_count() != vb->set_count()) return false;
+      for (CreationSet *c : *va) if (c && !vb->set_in(c)) return false;
+    }
+  }
+  return true;
+}
+
 Fun *get_target_fun_core(PNode *n, Fun *f) {
   Vec<Fun *> *fns = f->calls.get(n);
   if (!fns || !fns->n) return nullptr;
   if (fns->n == 1) return fns->v[0];
   for (int i = 1; i < fns->n; i++)
-    if (!identical_c_signature(fns->v[0], fns->v[i])) return nullptr;
+    if (!identical_c_signature(fns->v[0], fns->v[i]) || !clones_see_same_record_contents(fns->v[0], fns->v[i]))
+      return nullptr;
   if (getenv("PYC_DBG_DISPATCH"))
     fprintf(stderr, "[dispatch] %d indistinguishable clones of %s collapsed\n", fns->n,
             fns->v[0]->sym->name ? fns->v[0]->sym->name : "?");

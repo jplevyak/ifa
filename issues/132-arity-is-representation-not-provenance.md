@@ -1,7 +1,8 @@
 # 132 — Arity is representation, not provenance
 
-**Status: open on the cross-CreationSet residual.** The principle landed
-2026-09-05. Rewritten 2026-09-28; the full record is in git:
+**Status: open on the residual representation conflicts; quameon resolved
+2026-09-30.** The principle landed 2026-09-05. Rewritten 2026-09-28; the
+full record is in git:
 `git show 3f36072b:ifa/issues/132-arity-is-representation-not-provenance.md`.
 
 ## The principle (landed)
@@ -62,17 +63,77 @@ runs. But no verdict changes, and it found a real bug on the way (a raw
 CS → CS flow edge in `make_kind`'s element seeding, fixed). It is pending
 here: land it once a program's verdict depends on it, or drop it.
 
+## Resolved 2026-09-30: quameon was an untagged dispatch ambiguity, not arity
+
+**Census at HEAD (`IFA_DBG_SLOTREP`, `5b7270b7`): 1900 conflicts in 13
+programs**: ant 7, chaos 35, chess 96, dijkstra2 2, neural2 15, plcfrs 316,
+pylife 550, quameon 28, rubik2 21, sat 18, sha 18, sieve 2, sudoku3 792.
+Almost all are an arity-0 list (`[]`) and an arity-N literal meeting in one
+slot. **A conflict is not a failure.** `sat`, `sha` and `neural2` match
+CPython, and small programs of the same shape run correctly on both
+backends. The 2026-09-14 claim that every one of the 13 fails no longer
+holds.
+
+**quameon's actual mechanism.** One contour of
+`coulomb_pot.compute_en_value` received BOTH `coulomb_pot` CreationSets as
+`self` (`IFA_DBG_FUNES`: es=701, `self = {coulomb_pot#1960, #3451}`). One
+object's `charges` is the literal `[atom[1][0]]` (an int list) and the
+other's is `[]` filled by `append(1.0)` (a float list). So
+`self.charges[j]` had two `list.__getitem__` candidates, returning int64
+and float64 (`PYC_DBG_DISPATCH`: `IDENT ... ret[0] type _CG_int64 vs
+_CG_float64`), and a `list` carries no runtime tag. Codegen emitted
+`matching function not found`.
+
+**Why the planned member-confluence rule was not the fix.** Demoting the
+literal to list layout (`PYC_SLOTARITY`, after fixing two gaps that blocked
+it: an element-filled `[]` read as "non-basic", and `{int64, float64}` read
+as mixed) leaves the two lists with different ELEMENT types behind one C
+type. Making that representable needs widening the int list to float. That
+ran, but printed `nuclear charges = [2.0]` for CPython's `[2]`, i.e.
+shedskin's answer, not CPython's. Dropped.
+
+**The fix (demand splitting, no boxing):**
+
+1. **An untagged dispatch ambiguity is a demand** (`split_css_by_defs`,
+   `IFA_DBG_UNTAGGED`). A send whose receiver holds two CreationSets of one
+   untagged sym is dispatched to two contours of one function that return
+   different types. The receiver for a bound-method call is the closure's
+   bound value. The demand names the confluence. That is a CreationSet whose
+   member or element holds both receivers, found directly, because a
+   bound-method receiver leaves no `backward` link to its member. When no
+   CreationSet holds both, it is the calling contour's formal, holding
+   several CreationSets of one record class; that formal is split per
+   receiver CreationSet (`split_edges`, PER_CS_RECEIVER's primitive), so the
+   partition is bounded by the receivers. Asked only when no higher stage
+   acted this pass.
+2. **Codegen no longer collapses clones whose RECORD arguments' members
+   hold different contents** (`get_target_fun_core`). After the split the
+   two `compute_en_value` clones had identical C signatures, because both
+   records share one struct and `charges` is `_CG_list` either way. The
+   collapse called one clone for both receivers and read the int list as
+   float64. Refused, the call goes through the instance's method slot,
+   which each instance stores per creation point.
+
+**Measured.** quameon runs and matches CPython on the C backend (run_rc 134
+-> 0). Corpus `check` against the previous sweep: quameon is the ONLY
+program whose contours moved (ess 925 -> 928, css 2594 -> 2617), and no
+other verdict changed. `make test`: 378 passed, 0 failed.
+
+**Open, filed separately:**
+- [178](178-FA-route4-declines-records-built-through-one-constructor.md):
+  a synthetic test of this fix needs two separate records of a class, and
+  in small programs both creation points merge through the constructor.
+  Route 4 declines them ("every creation point on the same assign sets").
+  quameon is the witness until then.
+- [179](179-LLVM-quameon-computes-nan.md): on LLVM quameon computes `nan`,
+  independently of this fix.
+
 ## Next
 
-1. Re-take `IFA_DBG_SLOTREP` at HEAD.
-2. Implement the member-confluence rule for quameon's shape, and measure
-   quameon (run_rc=134 at `4b61e721`, `matching function not found` at an
-   `(_CG_ps…, _CG_list)` signature).
+1. 178, then a synthetic test of the untagged-dispatch demand.
+2. `PYC_SLOTARITY` (default 0): no verdict depends on it. Drop it, or land
+   the two gap fixes recorded above if a program ever needs it.
 3. amaze: shedskin's output first, then the liveness question.
-
-**Stop condition:** a demotion that makes a heterogeneous group's element
-irrepresentable (`mixed basic types`) is wrong. Refuse it. Do not widen
-the union.
 
 ## Verification
 
