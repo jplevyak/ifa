@@ -83,7 +83,9 @@ void make_closure(AVar *result);
 void make_period_closure(AVar *result, AVar *a, Vec<AVar *> &args);
 void prim_make_vector_constraints(PNode *p, EntrySet *es);
 void structural_assignment(CreationSet *new_cs, CreationSet *cs, PNode *p, EntrySet *es, bool merge = false, bool mix = false, Sym *elide_source = nullptr);
-extern Vec<AVar *> fieldsplit_demands;
+// issues/128 step 3: every record field write this pass, as (receiver
+// AVar, field name). Classified at the split stage from CONVERGED types.
+void record_field_write(AVar *obj, cchar *name);
 
 // ---- fa_prims.cc --------------------------------------------------------
 void add_prim_send_constraints(PNode *p, EntrySet *es, AVar *result, int o);

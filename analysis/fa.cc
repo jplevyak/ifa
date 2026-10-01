@@ -1273,7 +1273,14 @@ static Vec<CreationSet *> tc_cs_dropped;
 //
 // Per-pass, like tc_cs_dropped: an imprecise early pass must not leave a
 // standing demand behind.
-Vec<AVar *> fieldsplit_demands;
+// issues/128 step 3. Keyed so a transfer function re-run with growing
+// types records a write once; its classes are read from obj->out later.
+static std::set<std::pair<AVar *, std::string>> field_writes_seen;
+static std::vector<std::pair<AVar *, cchar *>> field_writes;
+void record_field_write(AVar *obj, cchar *name) {
+  if (!obj || !name) return;
+  if (field_writes_seen.insert({obj, name}).second) field_writes.push_back({obj, name});
+}
 
 // ifa/issues/124: `->type` strips a pure-nil AType to bottom (make_AType's
 // is_unique_type branch; the 060 carve-out that KEEPS nil only fires when
@@ -6841,6 +6848,8 @@ static bool clear_results_selective() {
 }
 
 static void clear_results() {
+  field_writes_seen.clear();  // issues/128 step 3: this pass's writes only
+  field_writes.clear();
   foreach_var(clear_var);
   for (CreationSet *cs : fa->all_creation_sets) clear_cs(cs);
   for (EntrySet *es : fa->all_entry_sets) clear_es(es);
@@ -8687,9 +8696,85 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
                 }
           }
     }
+  // issues/128 step 3: a MIXED field write is a demand. Asked on the
+  // CONVERGED types, from this pass's writes: a receiver whose record
+  // classes split into those with their OWN evidence for the field (a write
+  // through a receiver of that one class) and those without, which hold the
+  // field only because this union write promoted it onto them. (The probe
+  // cannot see this at convergence: the promotion itself makes every member
+  // "have" the field.) The union is formed upstream of the write, so walk
+  // the receiver's value flow backward and name every CreationSet on it,
+  // exactly as a violation does (viol_named). The rungs below then
+  // partition the one that merged, or decline when the union is genuine.
+  Vec<CreationSet *> field_named;
+  // Only when no higher stage acted this pass (`quiescent`). Not because
+  // the types are unconverged (ifa/157: they are converged when this runs)
+  // but because a union that a higher stage is still separating is not yet
+  // the program's: plcfrs's pass-0 'count' write spans seven classes, and
+  // acting on it named 93-184 CreationSets and added 306 to the analysis
+  // for no verdict change.
+  if (quiescent) {
+    static int dbg_fm = getenv("IFA_DBG_FIELDMIXED") ? 1 : 0;
+    std::set<std::pair<int, std::string>> native;
+    auto record_classes = [](AVar *obj, Vec<Sym *> &out) {
+      if (!obj->out) return;
+      for (CreationSet *c : obj->out->sorted)
+        if (c && c->sym && c->sym->type_kind == Type_RECORD && c->sym != sym_closure) out.set_add(c->sym);
+      out.set_to_vec();
+    };
+    for (auto &w : field_writes) {
+      Vec<Sym *> cls;
+      record_classes(w.first, cls);
+      if (cls.n == 1) native.insert({cls.v[0]->id, w.second});
+    }
+    // Once per (receiver, field) for the whole analysis, so a test can pin
+    // the lines without depending on the pass count.
+    static std::set<std::pair<AVar *, std::string>> reported;
+    for (auto &w : field_writes) {
+      Vec<Sym *> cls;
+      record_classes(w.first, cls);
+      if (cls.n < 2) continue;
+      int have = 0, miss = 0;
+      for (Sym *c : cls) (native.count({c->id, w.second}) ? have : miss)++;
+      if (!have || !miss) continue;
+      // Name only the CONFLUENCE: a CreationSet whose content (the AVar on
+      // the walk) still carries both sides, a class with its own writer and
+      // one without. Naming every CreationSet on the walk was a fan: one
+      // transient pass-0 union on plcfrs named 184, and the cascade added
+      // 306 CreationSets with no verdict change.
+      Vec<AVar *> seen, work;
+      seen.set_add(w.first);
+      work.add(w.first);
+      int named = 0;
+      for (int i = 0; i < work.n && i < 20000; i++)
+        for (AVar *b : work.v[i]->backward)
+          if (b && seen.set_add(b)) {
+            work.add(b);
+            if (b->contour_is_entry_set || b->contour == GLOBAL_CONTOUR || !b->out) continue;
+            CreationSet *bcs = (CreationSet *)b->contour;
+            if (!bcs || !fa->css_set.set_in(bcs)) continue;
+            int bh = 0, bm = 0;
+            for (CreationSet *c : b->out->sorted)
+              if (c && c->sym && cls.in(c->sym)) (native.count({c->sym->id, w.second}) ? bh : bm)++;
+            if (bh && bm && field_named.set_add(bcs)) ++named;
+          }
+      if (dbg_fm && reported.insert({w.first, w.second}).second) {
+        qsort(cls.v, cls.n, sizeof(cls.v[0]), [](const void *x, const void *y) {
+          return strcmp((*(Sym *const *)x)->name ? (*(Sym *const *)x)->name : "",
+                        (*(Sym *const *)y)->name ? (*(Sym *const *)y)->name : "");
+        });
+        fprintf(stderr, "[fieldmixed] '%s' on", w.second);
+        for (Sym *c : cls)
+          fprintf(stderr, " %s%s", c->name ? c->name : "?", native.count({c->id, w.second}) ? "" : "(no own writer)");
+        fprintf(stderr, " -> names %d CreationSet(s)\n", named);
+      }
+    }
+  }
   Vec<CreationSet *> css;
   for (CreationSet *cs : tc_cs_dropped)
     if (cs && fa->css_set.set_in(cs)) css.set_add(cs);
+  for (CreationSet *cs : field_named)
+    if (cs && cs->sym) css.set_add(cs);
   const int from_confluence = css.set_count();
   // ifa/143: add every live CreationSet carrying its own demand, so the
   // rung does not depend on TYPE_CONFLUENCE having seen it. PYC_CSDEMAND=0
@@ -8771,7 +8856,8 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
   }
   Vec<CreationSet *> demanded;
   for (CreationSet *cs : css)
-    if (cs && cs->sym && (viol_reach.set_in(cs) || viol_named.set_in(cs) || cs_elem_irrepresentable(cs)))
+    if (cs && cs->sym && (viol_reach.set_in(cs) || viol_named.set_in(cs) || field_named.set_in(cs) ||
+                          cs_elem_irrepresentable(cs)))
       demanded.set_add(cs);
   // ifa/152: BACKTRACK THE DEMAND. Every candidate gathered above was
   // nominated because the union is observed AT it; a candidate with one
@@ -8937,7 +9023,7 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
                unique_AVar(cs->sym->element->var, cs) && unique_AVar(cs->sym->element->var, cs)->out &&
                unique_AVar(cs->sym->element->var, cs)->out->type)
                   ? unique_AVar(cs->sym->element->var, cs)->out->type->sorted.n : -1);
-    if (esdefs1_enabled() && defs.n == 1 && viol_named.set_in(cs) && defs.v[0] &&
+    if (esdefs1_enabled() && defs.n == 1 && (viol_named.set_in(cs) || field_named.set_in(cs)) && defs.v[0] &&
         defs.v[0]->contour_is_entry_set && defs.v[0]->contour != GLOBAL_CONTOUR) {
       AVar *elem = cs->sym->element && cs->sym->element->var && cs->added_element_var
                        ? unique_AVar(cs->sym->element->var, cs)
@@ -11101,7 +11187,6 @@ static void controlling_ifs(PNode *site, Vec<PNode *> &out) {
   // for stage 1, once for stage 5's refinable violations) -- clearing per
   // call would drop stage 1's findings before the last rung sees them.
   tc_cs_dropped.clear();
-  fieldsplit_demands.clear();
   ed_applied.clear();  // ifa/157
   // Snapshots taken before each split_* call so the sidecar can record
   // the delta this stage produced. See fa_events_storage / record_fa_event.
@@ -11590,31 +11675,6 @@ static void controlling_ifs(PNode *site, Vec<PNode *> &out) {
       if (prev_state_pass == analysis_pass - 1 && h != prev_state_hash) analyze_again = 1;
       prev_state_hash = h;
       prev_state_pass = analysis_pass;
-    }
-    // issues/128: act on the MIXED field-write demands this pass recorded.
-    // Runs BEFORE the CreationSet last rung and only on quiescence, so any
-    // finer route separates the receiver first -- the same placement rule
-    // ifa/133 uses for route 4.
-    //
-    // The action is the existing type split on the RECEIVER. That is the
-    // honest first cut, not the final shape: the demand names a partition of
-    // exactly TWO ({have} vs {miss}) and this splits by type, so on a wide
-    // union it can hand back more groups than the demand asked for --
-    // ifa/144's signature. Gated OFF by default until that is measured.
-    static int fsplit = -1;
-    if (fsplit < 0) { cchar *fv = getenv("PYC_FIELDSPLIT"); fsplit = fv ? atoi(fv) : 0; }
-    if (fsplit && !analyze_again) {
-      for (AVar *av : fieldsplit_demands) {
-        if (!av || !av->contour_is_entry_set) continue;
-        if (!av->var->is_formal) continue;   // split_entry_set's precondition
-        int r = split_entry_set(av, SPLIT_TYPE, SPLIT_VALUE, SPLIT_EDGES);
-        if (r) {
-          if (getenv("IFA_DBG_FIELDSPLIT"))
-            fprintf(stderr, "[fieldsplit] p=%d SPLIT av=%d es=%d\n", analysis_pass, av->id,
-                    ((EntrySet *)av->contour)->id);
-          analyze_again = 1;
-        }
-      }
     }
     int cs_def_r = split_css_by_defs(!analyze_again);
     fa->stage_time[(int)FAPassStage::CS_DEF_PARTITION] += stage_timer.lap();

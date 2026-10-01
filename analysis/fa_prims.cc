@@ -322,11 +322,7 @@ switch (p->prim->index) {
           // than an optimisation: the receiver has to be separated so the
           // write lands on the right class. Reverted; the classification
           // survives only as the IFA_DBG_FIELDSPLIT diagnostic above.
-          if (obj->out->sorted.n > 1 && obj->contour_is_entry_set) {
-            int fh = 0, fm = 0;
-            for (CreationSet *c2 : obj->out->sorted) { if (c2->var_map.get(symbol)) fh++; else fm++; }
-            if (fh && fm) fieldsplit_demands.set_add(obj);
-          }
+          record_field_write(obj, symbol);  // step 3: classified at the split stage
           for (CreationSet *cs : obj->out->sorted) {
             AVar *iv = cs->var_map.get(symbol);
             if (iv)
