@@ -32,7 +32,8 @@ other becomes a list, and the slot holding both has no C type: emitted
 and every one of the 13 compiles and then fails or prints the wrong
 answer.** Nine of them emit zero warnings. amaze, linalg and quameon abort
 naming the untyped value. Re-take this census before starting: linalg now
-matches CPython, so its two conflicts are gone or harmless.
+matches CPython, so its two conflicts are gone or harmless, and so does
+amaze (2026-10-02, below) with its conflicts still present.
 
 ### The known shapes
 
@@ -50,6 +51,21 @@ matches CPython, so its two conflicts are gone or harmless.
   2-tuple is only sound if the arity-0 values are provably never read
   (`len(())` is 0 and `() == (0, 0)` is False in CPython). That is a
   liveness question. First check what shedskin emits for `points2`.
+
+  **2026-10-02: amaze's failure was never this conflict, it was a missing
+  builtin.** `list.index` took no `start`, so `distances2.index(dist,
+  idx+1)` (amaze.py:322) resolved to nothing and left `idx` untyped: the
+  untyped value amaze aborted on, and a compile error once every
+  violation became fatal (ifa/158). With `list.index(x, start, stop)`
+  added, amaze compiles warning-free and matches CPython on both
+  backends (sweep `check__default__92ac5912+65417f57`). The conflict is
+  still there: `IFA_DBG_SLOTREP` prints 393 lines, e.g.
+  `MazeSolver._current` holding `tuple#1738(arity=2)` + `#1767(arity=0)`.
+  It is LATENT: the arity-0 values are overwritten before any read, which
+  is the liveness argument above, holding dynamically. amaze is
+  therefore no longer a witness for this issue. A program that READS a
+  slot across the arity conflict is still needed, and quameon is the
+  one left.
 
 ### Mechanism in the tree: `PYC_SLOTARITY=1` (default 0)
 
@@ -133,7 +149,9 @@ other verdict changed. `make test`: 378 passed, 0 failed.
 1. 178, then a synthetic test of the untagged-dispatch demand.
 2. `PYC_SLOTARITY` (default 0): no verdict depends on it. Drop it, or land
    the two gap fixes recorded above if a program ever needs it.
-3. amaze: shedskin's output first, then the liveness question.
+3. amaze: done. It runs and matches CPython with the conflict latent
+   (see its shape above). The liveness question matters only if a
+   program reads across the conflict.
 
 ## Verification
 
