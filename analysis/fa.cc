@@ -1296,10 +1296,11 @@ void record_field_write(AVar *obj, cchar *name) {
   if (field_writes_seen.insert({obj, name}).second) field_writes.push_back({obj, name});
 }
 
-// ifa/issues/124: `->type` strips a pure-nil AType to bottom (make_AType's
-// is_unique_type branch; the 060 carve-out that KEEPS nil only fires when
-// the same AType also carries a num_kind scalar, which a lone `{None}`
-// does not). The partitioner below guards every comparison with
+// ifa/issues/124: `->type` used to strip a pure-nil AType to bottom
+// (make_AType's is_unique_type branch; the 060 carve-out kept nil only
+// beside a num_kind scalar). Since ifa/178 it keeps nil, so the view below
+// no longer changes anything for nil; it is kept for the history and for
+// the "not analyzed" vs "None only" distinction it names. The partitioner below guards every comparison with
 // `->n &&`, so an edge passing only None reads as "nothing known yet" and
 // is compatible with everything -- and it costs the split twice: the nil
 // edge stays in the ES, and then the genuinely-differing edges are pulled
@@ -4261,7 +4262,7 @@ static bool dispatched_this_pass(EntrySet *from, Vec<AEdge *> *m) {
 // fanned edge can end up filtered against CreationSets that no longer flow:
 // `analyze_edge` skips each one (no type overlap), nothing reaches the
 // callee, so no demand ever re-fans it, and the call is bottom. That is a
-// stale decision hiding itself (deepcopy_objects under PYC_KEEPNIL: the
+// stale decision hiding itself (deepcopy_objects, once nil stayed in ->type: the
 // bound `node.args.__getitem__` routed to contours filtered on tuples
 // #1138/#1143/#1149 while `node.args` held #1088/#1230/#1231/#1236).
 //
@@ -5483,8 +5484,7 @@ static int cs_slots_homogeneous(CreationSet *cs) {
     // is a nullable pointer, not two values to keep apart, so None rides in
     // each pointer part's filter instead of being fanned off -- which made a
     // `{None}`-only contour where every dereference is bottom (fysphun's
-    // `twopoint(p2={None})`, PYC_KEEPNIL). With nil stripped from `->type`
-    // (the default) there is no nil here and this is the old fan.
+    // `twopoint(p2={None})`).
     CreationSet *nil_cs = nullptr;
     bool scalar = false;
     for (CreationSet *cs : rcs) if (cs && cs->sym) {
@@ -7373,11 +7373,10 @@ enum AKind { AKIND_TYPE, AKIND_SETTER, AKIND_MARK };
   Vec<AVar *> *dir = akind == AKIND_SETTER ? &av->forward : &av->backward;
   for (AVar *x : *dir) if (x) {
     assert(x->contour_is_entry_set);
-    // ifa/133: `->type` is a PROJECTION that strips a pure-nil AType to
-    // bottom (make_AType: `nonconsts.n == 0` -> bottom_type; nil is an
-    // is_unique_type unique OBJECT, so a lone {None} has no non-constants,
-    // and issue/060's carve-out keeps nil only when the union also carries
-    // a num_kind scalar). A bare `!->type->n` therefore reads a store of
+    // ifa/133: `->type` is a PROJECTION that, until ifa/178, stripped a
+    // pure-nil AType to bottom (make_AType: `nonconsts.n == 0` ->
+    // bottom_type; issue/060's carve-out kept nil only beside a num_kind
+    // scalar). It keeps nil now. A bare `!->type->n` therefore reads a store of
     // None as "not analyzed" and drops it: no setter_class, so
     // update_setter never records it, so the container it writes into
     // never becomes a `split_css` starter and the CreationSet cannot be

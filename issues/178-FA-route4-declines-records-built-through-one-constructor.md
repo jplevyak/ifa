@@ -2,7 +2,11 @@
 
 **Status:** open. Filed 2026-09-30 from
 [132](132-arity-is-representation-not-provenance.md), whose synthetic test it
-blocks.
+blocks. **The repro passes by default since 2026-10-02**: None is kept in the
+type projection (see "Flipped" at the end), so `__init__` and `Pot` split on
+`{list}` vs `{None}`. It is `tests/none_default_arg_splits_record.py`.
+Still open: route 4's key is blind to a store's receiver (Root cause, fact 2),
+which the keep-nil split went around, not through.
 
 ## Symptom
 
@@ -395,3 +399,27 @@ Corpus `check`, `220794a9+eced1824`: default and KEEPNIL both 24 / 13 / 5
 tree, no program's contour count moves in either arm, so the reroute
 never fires on the corpus. The only verdict change is `brainfuck`, which
 is back under the 120 s cap (timing, see above).
+
+## Flipped: None stays in the type projection, 2026-10-02
+
+The nil strip is deleted, not defaulted off. `type_cannonicalize` keeps
+`nil_type` in `->type` unconditionally, and `PYC_KEEPNIL` is gone.
+Whether `{T, None}` can be represented as one nullable pointer is still
+decided, but where a representation is chosen: ifa/164's
+`nil_member_is_representable` and stage 5's `nil_rides`. The comments that
+described the strip as current are updated (`fa_flags.cc`'s ifa/164 note,
+and the ifa/124 and ifa/133 notes in `fa.cc`). `split_type_view` (ifa/124)
+now changes nothing for nil. It is left in place, and removing it is its
+own cleanup.
+
+**Measured** on a clean build. `make test`: green, 379/0 on both backends,
+with no golden changes. Corpus `check` `5ca26ec4+36c6dfe7`: 24 / 14 / 5.
+Per program, this is identical to the `PYC_KEEPNIL=1` arm of
+`220794a9+eced1824` in every verdict and every contour count, except
+`brainfuck`. It hit the 120 s cap with identical contours, so that is
+timing: it ran 114 s alone, see above. Against the old default
+(`220794a9+eced1824`), the cost is container CreationSets per shape
+3.26 -> 3.15, CS 2162 -> 2181, and shapes 664 -> 692.
+
+The repro prints `5` and `4` on both backends by default and is now
+`tests/none_default_arg_splits_record.py`.

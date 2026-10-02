@@ -22,7 +22,6 @@
 
 #include "fa.h"
 #include "fa_census.h"
-#include "fa_flags.h"
 #include "builtin.h"
 #include "fail.h"
 #include "if1.h"
@@ -183,7 +182,6 @@ AType *type_cannonicalize(AType *t) {
   assert(!t->intersection_map.n);
   int consts = 0, rebuild = 0, nulls = 0;
   Vec<CreationSet *> nonconsts;
-  CreationSet *nil_cs = nullptr;  // issue 060 -- decided after the loop
   for (CreationSet *cs : *t) if (cs) {
     // strip out constants if the base type is included
     CreationSet *base_cs = nullptr;
@@ -202,36 +200,22 @@ AType *type_cannonicalize(AType *t) {
       if (!cs->sym->is_unique_type)  // e.g. nil, void, or unknown
         nonconsts.set_add(cs);
       else if (cs->sym->type == sym_nil_type)
-        nil_cs = cs;  // issue 060: keep-or-strip decided after the loop
+        nonconsts.set_add(cs);  // None is a type: kept in ->type (see below)
       else
         nulls = 1;  // void / unknown: always stripped from ->type
     }
     t->sorted.add(cs);
   }
-  // issue 060: nil_type (None) is normally stripped from the ->type
-  // projection (is_unique_type), so a pointer-shaped `T | None` union
-  // stays a single clone -- None is a null pointer there, unambiguous,
-  // and a frontend may sanction that merge (pyc does). But IFA's core
-  // discipline is to split incompatible types, and None IS
-  // incompatible with a raw scalar (int/bool/float): under the unboxed
-  // representation they share the zero bit pattern, so a shared clone
-  // literally cannot tell `None` from `0`/`False` (issue 060). Keep nil
-  // in ->type whenever the union also carries a num_kind scalar, so the
-  // type-splitter puts the None value in its own contour instead of
-  // coercing it to `(scalar)NULL`.
-  if (nil_cs) {
-    bool has_scalar = false;
-    for (CreationSet *c : nonconsts)
-      if (c && c->sym->type && c->sym->type->num_kind) { has_scalar = true; break; }
-    // ifa/178 probe (PYC_KEEPNIL=1): keep nil unconditionally. Nullability
-    // is a type: `{list}` and `{None}` arriving at one formal is a type
-    // confluence like any other, and stripping nil hides it from the
-    // splitter (a None-only writer projects to `{}` and is skipped).
-    if (has_scalar || keepnil_enabled())
-      nonconsts.set_add(nil_cs);  // keep nil in ->type (no nulls: it is not stripped)
-    else
-      nulls = 1;  // pointer / other: strip nil as before
-  }
+  // ifa/178: nil_type (None) stays in the ->type projection. Nullability
+  // is a type: `{list}` and `{None}` arriving at one formal is a type
+  // confluence like any other, and stripping nil hid it from the splitter
+  // (a None-only writer projected to `{}` and was skipped). It used to be
+  // stripped whenever the rest of the union was pointer-shaped, so
+  // `T | None` stayed one clone (issue 060 kept it only beside a num_kind
+  // scalar, whose zero bit pattern None shares). Whether `{T, None}` is
+  // REPRESENTABLE as one nullable pointer is a separate question, asked
+  // where a representation is chosen (nil_member_is_representable, ifa/164;
+  // stage 5's nil_rides), not in the type.
   // PROBE (PYC_CONSTCAP): raise the per-variable constant cap. Default is
   // fa->num_constants_per_variable (1), i.e. an AType holding two constants
   // is rebuilt from their BASE types and the constants are gone -- which is

@@ -51,7 +51,11 @@ agree on has no runtime check.
 ## Root cause
 
 `{None, T}` for pointer-shaped `T` is represented as a nullable `T`
-(issue 060), and every consumer of `->type` sees only `T`. That is the
+(issue 060), and every consumer of `->type` sees only `T`. (2026-10-02:
+no longer so. `->type` keeps None since
+[ifa/178](178-FA-route4-declines-records-built-through-one-constructor.md),
+and `tests/none_receiver_raises.py` still passes. The representation is
+unchanged.) That is the
 right *representation* — see 164, and shedskin compiles the same programs
 with `str *` and `NULL`. What is missing is the *check*: nothing tests
 the pointer for null before the operation, so a `None` that really does

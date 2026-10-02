@@ -124,13 +124,13 @@ int sizeof_viol_enabled() {
 // ifa/164: a `{None, T}` union at a primitive ARGUMENT is a nullable
 // pointer, not an illegal type.
 //
-// `type_cannonicalize` already strips `nil_type` from the `->type`
-// projection whenever the rest of the union is pointer-shaped -- that is
-// issue 060's settled decision, "Optional[pointer] still single-clone
-// (frontend-sanctioned merge preserved)" -- and it is the model shedskin
-// compiles the same programs under, where `None` is simply `NULL` inside
-// `str *`. Dispatch, narrowing and defaulted parameters all read that
-// projection, so none of them ever sees the None.
+// A pointer-shaped `{T, None}` is representable as one nullable pointer --
+// the model shedskin compiles the same programs under, where `None` is
+// simply `NULL` inside `str *`. (Until ifa/178, `type_cannonicalize`
+// stripped `nil_type` from the `->type` projection in that case, so most
+// consumers never saw the None. It now keeps it: nullability is a type,
+// and representability is decided where a representation is chosen,
+// which is this check.)
 //
 // This check read the RAW `out`, which made it the ONE consumer that
 // rejected a member the rest of the compiler had already agreed to
@@ -151,8 +151,8 @@ int sizeof_viol_enabled() {
 // unboxed, which is why 060 keeps nil in `->type` beside a num_kind
 // scalar. The check tests for that scalar directly. It used to accept only
 // when canonicalization had stripped the nil from `->type` -- the same
-// rule, read off the projection, and wrong as soon as `->type` keeps nil
-// for another reason (ifa/178's keep-nil experiment keeps it to split on).
+// rule, read off the projection, and wrong once `->type` keeps nil
+// (ifa/178).
 // That is `genetic2` (an implicit fall-through `return None` unioned with
 // int64) and it stays an error -- see ../../issues/048.
 //
@@ -177,14 +177,6 @@ int strictviol_enabled() {
 int confnil_enabled() {
   static int e = -1;
   if (e < 0) { cchar *v = getenv("PYC_CONFNIL"); e = v ? atoi(v) : 0; }
-  return e;
-}
-// ifa/178 probe (PYC_KEEPNIL=1): keep nil_type (None) in every AType's
-// `->type` projection, not only beside a scalar (issue 060). See the
-// comment in type_cannonicalize.
-int keepnil_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_KEEPNIL"); e = v ? atoi(v) : 0; }
   return e;
 }
 int splithomo_enabled() {
