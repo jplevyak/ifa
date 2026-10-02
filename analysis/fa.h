@@ -407,6 +407,10 @@ class AVar : public gc {
   uint live : 1;
   uint live_arg : 1;
   uint is_if_arg : 1;
+  // ifa/178: this is the result of a send that cannot complete (gate_send
+  // in fa.cc), so the walk did not go past it. Lifted, and the contour
+  // re-walked, when the result gets a type or a callee reaches its reply.
+  uint gates_flow : 1;
   // Escape status (Phase 1+: see ESCAPE_PLAN.md).  Stored as
   // uint:1 to fit alongside the existing bit-fields.
   uint escape : 1;

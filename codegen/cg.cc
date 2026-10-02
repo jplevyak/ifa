@@ -2933,6 +2933,13 @@ static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done
           fprintf(fp, "  return %s;\n", c_rhs(n->rvals[3]));
       else
         do_phi_nodes(fp, n, 0);
+      // ifa/178: a send that cannot complete in any contour of this clone
+      // (fa.cc's gate_send): a callee that never returns, or a read on
+      // None. Trap rather than fall off the end of the function.
+      // Whether or not DCE kept the send itself: its result is unused once
+      // nothing after it is reached, but the code after it must not run.
+      if (n->fa_live && n->fa_noreturn)
+        fputs("  assert(!\"runtime error: send does not complete\");\n", fp);
       break;
     default:
       do_phi_nodes(fp, n, 0);

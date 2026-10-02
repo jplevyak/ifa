@@ -179,6 +179,14 @@ int confnil_enabled() {
   if (e < 0) { cchar *v = getenv("PYC_CONFNIL"); e = v ? atoi(v) : 0; }
   return e;
 }
+// ifa/178 probe (PYC_KEEPNIL=1): keep nil_type (None) in every AType's
+// `->type` projection, not only beside a scalar (issue 060). See the
+// comment in type_cannonicalize.
+int keepnil_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_KEEPNIL"); e = v ? atoi(v) : 0; }
+  return e;
+}
 int splithomo_enabled() {
   static int e = -1;
   if (e < 0) { cchar *v = getenv("PYC_SPLITHOMO"); e = v ? atoi(v) : 0; }

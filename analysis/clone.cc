@@ -1893,14 +1893,22 @@ static void fixup_clone_vars(Fun *f, Vec<EntrySet *> *ess) {
 
 static void fixup_clone_ess(Fun *f, Vec<EntrySet *> *ess) {
   f->ess.copy(*ess);
+  // ifa/178: a send gated (gate_send) in EVERY contour of this clone does
+  // not complete, so codegen traps after it. fa_live alone cannot say so:
+  // it is the union over the clone's contours.
+  Vec<PNode *> gated, completes;
   for (EntrySet *es : f->ess) if (es) {
     for (PNode *p : es->live_pnodes) if (p) {
+      bool g = p->code->kind == Code_SEND && p->lvals.n == 1 && make_AVar(p->lvals[0], es)->gates_flow;
       if (f->nmap) p = f->nmap->get(p);
       p->fa_live = 1;
+      (g ? gated : completes).set_add(p);
     }
     for (AEdge *ee : es->edges) if (ee) ee->fun = f;
     es->fun = f;
   }
+  for (PNode *p : gated) if (p) p->fa_noreturn = !completes.set_in(p);
+  for (PNode *p : completes) if (p) p->fa_noreturn = 0;
   f->equiv_sets.clear();
   for (EntrySet *es : f->ess) if (es) f->equiv_sets.set_add(es->equiv);
 }

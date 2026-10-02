@@ -22,6 +22,7 @@
 
 #include "fa.h"
 #include "fa_census.h"
+#include "fa_flags.h"
 #include "builtin.h"
 #include "fail.h"
 #include "if1.h"
@@ -222,7 +223,11 @@ AType *type_cannonicalize(AType *t) {
     bool has_scalar = false;
     for (CreationSet *c : nonconsts)
       if (c && c->sym->type && c->sym->type->num_kind) { has_scalar = true; break; }
-    if (has_scalar)
+    // ifa/178 probe (PYC_KEEPNIL=1): keep nil unconditionally. Nullability
+    // is a type: `{list}` and `{None}` arriving at one formal is a type
+    // confluence like any other, and stripping nil hides it from the
+    // splitter (a None-only writer projects to `{}` and is skipped).
+    if (has_scalar || keepnil_enabled())
       nonconsts.set_add(nil_cs);  // keep nil in ->type (no nulls: it is not stripped)
     else
       nulls = 1;  // pointer / other: strip nil as before

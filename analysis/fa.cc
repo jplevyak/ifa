@@ -277,6 +277,18 @@ static AType *apply_restrict_pred(AVar *v, AType *t) {
   return type_cannonicalize(r);
 }
 
+// A send that does not complete gates the walk past it (gate_send). The
+// gate is on the send's result AVar, in the send's own contour, and it is
+// lifted by re-walking that contour, which re-asks the question.
+static void release_gate(AVar *v) {
+  v->gates_flow = 0;
+  EntrySet *es = (EntrySet *)v->contour;
+  if (!es->in_es_worklist) {
+    es->in_es_worklist = 1;
+    fa->es_worklist.enqueue(es);
+  }
+}
+
 // Shared out-change propagation tail for update_in /
 // flow_var_type_permit / flow_var_permit_pred (survey S1):
 // enqueue dependent sends, resume any IF blocked on this AVar
@@ -295,6 +307,8 @@ static void propagate_out_change(AVar *v) {
       fa->send_worklist.enqueue(vv);
     }
   }
+  // The gated send produced a value: resume the walk past it.
+  if (v->gates_flow && v->out != fa->type_world.bottom_type) release_gate(v);
   if (v->is_if_arg) {
     // A global AVar can be an if-arg too (e.g. the `True`
     // constant conditioning a top-level `while True:` —
@@ -3207,8 +3221,68 @@ static PNode *peel_wrapper_def(Var *v, int max_depth = 6) {
   return p;
 }
 
+// ifa/178: does this contour reach its exit (pyc: the `reply`)? A raise
+// reaches it too (the exceptional exit shares it, ifa/049), so a contour
+// that does not can only fault or never terminate.
+static bool es_reaches_exit(EntrySet *es) {
+  return !es->fun->exit || es->live_pnodes.set_in(es->fun->exit);
+}
+
+// ifa/178: this contour has reached its exit, so a caller gated on it
+// (gate_send) resumes past the call.
+static void release_callers(EntrySet *es) {
+  for (AEdge *ee : es->edges)
+    if (ee && ee->from && ee->pnode && ee->pnode->lvals.n == 1) {
+      AVar *r = make_AVar(ee->pnode->lvals[0], ee->from);
+      if (r->gates_flow) release_gate(r);
+    }
+}
+
+// ifa/178: a send that cannot complete. The code after it is unreachable,
+// not untyped -- the rule Code_IF applies to a bottom condition -- so the
+// walk stops there and the send's result AVar holds the gate. Two cases,
+// each decided by something whose growth lifts the gate:
+//
+// - An attribute read whose receiver is None and nothing else. That is
+//   CPython's AttributeError (codegen emits the fault). Its result becomes
+//   typed only if the receiver gains a class, which is flow from upstream,
+//   never from the code the gate holds back.
+// - A call that dispatched, none of whose callee contours reaches its
+//   exit: the callee never returns, so neither does the call. Decided
+//   from the CALLEE, not from the caller's result being bottom. A bottom
+//   result with no edge is a failed dispatch, which is reported where it
+//   happens; gating it would hold back the very flow that could resolve it
+//   (`ac_encode`, `fysphun`: a loop-carried or later write widens the
+//   operand). A callee reaching its exit re-walks its callers.
+//   Generators and coroutines return a handle whatever the body does.
+static bool gate_send(PNode *p, EntrySet *es) {
+  if (p->lvals.n != 1) return false;
+  AVar *result = make_AVar(p->lvals[0], es);
+  if (result->contour != es || result->out != fa->type_world.bottom_type) return false;
+  bool gate = false;
+  if (p->prim) {
+    if (p->prim->index != P_prim_period) return false;
+    AVar *obj = make_AVar(p->rvals[1], es);
+    if (obj->out == fa->type_world.bottom_type) return false;
+    gate = true;
+    for (CreationSet *cs : obj->out->sorted)
+      if (!cs || !cs->sym || cs->sym->type != sym_nil_type) { gate = false; break; }
+  } else {
+    Vec<AEdge *> *m = es->out_edge_map.get(p);
+    if (!m) return false;
+    for (AEdge *e : *m) {
+      if (!e || !es->out_edges.set_in(e) || !e->to) continue;
+      Sym *f = e->to->fun->sym;
+      if (f->is_generator || f->is_async || es_reaches_exit(e->to)) return false;
+      gate = true;
+    }
+  }
+  if (gate) result->gates_flow = 1;
+  return gate;
+}
+
 static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
-  es->live_pnodes.set_add(p);
+  if (es->live_pnodes.set_add(p) && p == es->fun->exit) release_callers(es);
   for (PNode *n : p->phi) {
     AVar *vv = make_AVar(n->lvals[0], es);
     for (Var *v : n->rvals) flow_vars(make_AVar(v, es), vv);
@@ -3220,6 +3294,7 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
     case Code_SEND:
       add_send_constraints(p, es);
       add_send_edges_pnode(p, es);
+      if (gate_send(p, es)) return;
       break;
     case Code_MOVE:
       for (int i = 0; i < p->rvals.n; i++) {
@@ -4180,6 +4255,66 @@ static bool dispatched_this_pass(EntrySet *from, Vec<AEdge *> *m) {
   return false;
 }
 
+// ifa/178, ifa/170: an edge's binding (`e->to`) is a DECISION, kept across
+// passes, and its target's `filters` name the CreationSets it was made for.
+// When those CreationSets are re-minted by a later split, every copy of a
+// fanned edge can end up filtered against CreationSets that no longer flow:
+// `analyze_edge` skips each one (no type overlap), nothing reaches the
+// callee, so no demand ever re-fans it, and the call is bottom. That is a
+// stale decision hiding itself (deepcopy_objects under PYC_KEEPNIL: the
+// bound `node.args.__getitem__` routed to contours filtered on tuples
+// #1138/#1143/#1149 while `node.args` held #1088/#1230/#1231/#1236).
+//
+// Asked at quiescence: a skipped edge is unbound only when some CreationSet
+// it carries is admitted by NO edge that ran this pass, i.e. the call has
+// actually lost part of its dispatch. A fanned copy idle because another
+// copy covers its CreationSet is left alone. The unbound edge is routed
+// afresh on the next pass by make_entry_set, which is filter-aware.
+static int reroute_uncovered_edges() {
+  int n = 0;
+  for (Fun *f : fa->funs) {
+    for (PNode *p : f->fa_send_PNodes) {
+      if (p->prim) continue;
+      Vec<EntrySet *> ess;
+      f->ess.set_intersection(fa->ess_set, ess);
+      for (EntrySet *from : ess) if (from) {
+        if (!from->live_pnodes.set_in(p)) continue;
+        Vec<AEdge *> *m = from->out_edge_map.get(p);
+        if (!m) continue;
+        Vec<AEdge *> stale;
+        for (AEdge *e : *m)
+          if (e && e->to && e->match && !from->out_edges.set_in(e)) stale.add(e);
+        for (AEdge *e : stale) {
+          bool uncovered = false;
+          form_MPositionAVar(x, e->args) {
+            if (uncovered || !x->key->is_positional() || !x->value) continue;
+            AType *t = x->value->out;
+            if (AType *ff = e->match->formal_filters.get(x->key)) t = type_intersection(t, ff);
+            for (CreationSet *c : t->sorted) {
+              bool covered = false;
+              for (AEdge *g : *m) {
+                if (!g || g->fun != e->fun || !g->to || !from->out_edges.set_in(g)) continue;
+                AType *gf = g->to->filters.get(x->key);
+                if (!gf || gf->set_in(c)) { covered = true; break; }
+              }
+              if (!covered) { uncovered = true; break; }
+            }
+          }
+          if (!uncovered) continue;
+          if (getenv("IFA_DBG_REROUTE"))
+            fprintf(stderr, "[reroute] p=%d from=es%d %s -> %s/es%d\n", analysis_pass, from->id,
+                    f->sym->name ? f->sym->name : "?", e->fun && e->fun->sym->name ? e->fun->sym->name : "?", e->to->id);
+          e->to->edges.del(e);
+          e->to = 0;
+          e->filtered_args.clear();
+          ++n;
+        }
+      }
+    }
+  }
+  return n;
+}
+
 // for each call site, check that all args are covered
 static void collect_argument_type_violations() {
   for (Fun *f : fa->funs) {
@@ -4253,6 +4388,12 @@ static void collect_member_violations() {
         AVar *selector = make_AVar(p->rvals[3], from);
         if (result->out != fa->type_world.bottom_type) continue;
         if (obj->out == fa->type_world.bottom_type || selector->out == fa->type_world.bottom_type) continue;
+        // ifa/178: a read on None alone is CPython's AttributeError at run
+        // time, not a compile error (gate_send). A well-formed program can
+        // hold one on a path that never executes: expr_evaluator's
+        // `evaluate(e.rhs)` under `kind == 1` reaches a unary node's
+        // `rhs = None`, because nothing ties `kind` to the node.
+        if (result->gates_flow) continue;
         type_violation(ATypeViolation_kind::MEMBER, selector, obj->out, result);
       }
     }
@@ -5334,13 +5475,51 @@ static int cs_slots_homogeneous(CreationSet *cs) {
       fprintf(stderr, "[splitedges] p=%d es=%d fun=%s recv spans=%d -> 2 group(s)\n", analysis_pass, es->id,
               (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?", rcs.n);
   } else {
+    // ifa/178: None is a part of its own only when something DISTINGUISHES
+    // it -- an edge that brings `{None}` alone (a real confluence: `{list}`
+    // vs `{None}` on different edges), or a num_kind scalar beside it
+    // (`{None, int}` is not representable unboxed, issue 060). Otherwise
+    // every edge that carries None carries it WITH the pointers: the union
+    // is a nullable pointer, not two values to keep apart, so None rides in
+    // each pointer part's filter instead of being fanned off -- which made a
+    // `{None}`-only contour where every dereference is bottom (fysphun's
+    // `twopoint(p2={None})`, PYC_KEEPNIL). With nil stripped from `->type`
+    // (the default) there is no nil here and this is the old fan.
+    CreationSet *nil_cs = nullptr;
+    bool scalar = false;
+    for (CreationSet *cs : rcs) if (cs && cs->sym) {
+      if (cs->sym->type == sym_nil_type) nil_cs = cs;
+      else if (cs->sym->type && cs->sym->type->num_kind) scalar = true;
+    }
+    bool nil_rides = false;
+    if (nil_cs && !scalar && rcs.n > 1) {
+      nil_rides = true;
+      for (AEdge *ee : all_edges) if (ee) {
+        AVar *a = ee->args.get(p);
+        if (!a || !a->out || !a->out->type) continue;
+        bool only_nil = a->out->type->sorted.n > 0;
+        for (CreationSet *c : a->out->type->sorted)
+          if (c && c->sym && c->sym->type != sym_nil_type) { only_nil = false; break; }
+        if (only_nil) { nil_rides = false; break; }
+      }
+    }
     for (CreationSet *cs : av->out->type->sorted) {
+      if (nil_rides && cs == nil_cs) continue;
       Map<MPosition *, AType *> filters;
       filters.copy(es->filters);
-      filters.put(p, make_AType(cs));
+      if (nil_rides) {
+        Vec<CreationSet *> part;
+        part.add(cs);
+        part.add(nil_cs);
+        filters.put(p, make_AType(part));
+      } else
+        filters.put(p, make_AType(cs));
       EntrySet *tes = find_or_make_filtered_entry_set(es, filters);
       cs_es_map.put(cs, tes);
     }
+    if (nil_rides && getenv("IFA_DBG_SPLITEDGES"))
+      fprintf(stderr, "[splitedges] p=%d es=%d fun=%s None rides in %d pointer part(s)\n", analysis_pass, es->id,
+              (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?", rcs.n - 1);
   }
   // Re-pointing an edge at a different ES must go through the full
   // re-entry recipe apply_entry_set_split uses (null `to`, clear the
@@ -5434,18 +5613,25 @@ static int cs_slots_homogeneous(CreationSet *cs) {
     bool all_compat = true;
     Vec<EntrySet *> targets;
     for (int i = 0; i < ety->sorted.n; i++) {
-      EntrySet *tes = resolve_target(ee, ety->sorted[i]);
+      CreationSet *c = ety->sorted[i];
+      // A None riding in the pointer parts (above) has no part of its own.
+      if (c && c->sym && c->sym->type == sym_nil_type && !cs_es_map.get(c)) {
+        bool rides = false;
+        for (CreationSet *o : ety->sorted) if (o && o != c && cs_es_map.get(o)) { rides = true; break; }
+        if (rides) continue;
+      }
+      EntrySet *tes = resolve_target(ee, c);
       if (!tes) {
         all_compat = false;
         break;
       }
       targets.add(tes);
     }
-    if (!all_compat) continue;
-    if (ety->sorted.n == 1)
+    if (!all_compat || !targets.n) continue;
+    if (targets.n == 1)
       redispatch(ee, targets.v[0]);
     else {
-      for (int i = 0; i < ety->sorted.n; i++) {
+      for (int i = 0; i < targets.n; i++) {
         if (!i)
           redispatch(ee, targets[i]);
         else
@@ -6673,6 +6859,7 @@ static void clear_avar(AVar *av) {
   av->arg_of_send.clear();
   av->mark_map = 0;
   av->live_arg = 0;
+  av->gates_flow = 0;
   av->needs_fat = 0;
   av->dirty = 0;  // issue 033 M4 probe
   if (av->lvalue) clear_avar(av->lvalue);
@@ -11412,6 +11599,9 @@ static void controlling_ifs(PNode *site, Vec<PNode *> &out) {
   int ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
       census.stage_aes0 = fa->all_entry_sets.n, census.stage_acs0 = fa->all_creation_sets.n;
   Vec<AVar *> confluences;
+  // 0) re-take routing decisions that went stale (reroute_uncovered_edges).
+  //    Not a split: it mints nothing, and the next pass re-routes.
+  analyze_again = reroute_uncovered_edges();
   // 1) split EntrySets based on type using AVar::out
   if (!analyze_again) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
@@ -13215,7 +13405,107 @@ void element_census(ElemCensus &c) {
 
 
 
+// ifa/178: IFA_DBG_GATE=<fun>|* -- per contour of <fun>, every call whose
+// result is bottom at the end of the pass, and whether it gates the walk
+// (gate_send).
+static void report_gated_calls() {
+  cchar *want = getenv("IFA_DBG_GATE");
+  if (!want) return;
+  for (EntrySet *es : fa->ess) if (es && es->fun && es->fun->sym && es->fun->sym->name) {
+    const bool all = !strcmp(want, "*");
+    if (!all && strcmp(es->fun->sym->name, want)) continue;
+    for (PNode *p : es->fun->fa_send_PNodes) {
+      if (p->prim || p->lvals.n != 1 || !es->live_pnodes.set_in(p)) continue;
+      AVar *r = make_AVar(p->lvals[0], es);
+      if (r->out != fa->type_world.bottom_type) continue;
+      fprintf(stderr, "[gate] p=%d es=%d %s line=%d gated=%d callee:", analysis_pass, es->id, es->fun->sym->name,
+              p->code ? p->code->line() : -1, r->gates_flow ? 1 : 0);
+      AVar *f = make_AVar(p->rvals[0], es);
+      for (CreationSet *c : f->out->sorted) if (c && c->sym)
+        fprintf(stderr, " %s", c->sym->name ? c->sym->name : "?");
+      fprintf(stderr, " | args:");
+      for (int i = 1; i < p->rvals.n; i++) {
+        AVar *a = make_AVar(p->rvals[i], es);
+        fprintf(stderr, " [");
+        for (CreationSet *c : a->out->sorted) if (c && c->sym)
+          fprintf(stderr, "%s%s ", c->sym->name ? c->sym->name : "?", c->sym->is_constant ? "(k)" : "");
+        fprintf(stderr, "]");
+      }
+      fprintf(stderr, "\n");
+    }
+    if (all) continue;
+    for (int ri = 0; ri < es->rets.n; ri++) if (AVar *r = es->rets.v[ri]) {
+      fprintf(stderr, "[gate-ret] p=%d es=%d ret%d:", analysis_pass, es->id, ri);
+      for (CreationSet *c : r->out->sorted) if (c && c->sym)
+        fprintf(stderr, " %s#%d%s", c->sym->name ? c->sym->name : "?", c->id, c->sym->is_constant ? "(k)" : "");
+      fprintf(stderr, "\n");
+    }
+    for (MPosition *pp : es->fun->positional_arg_positions) {
+      AVar *f = es->args.get(pp);
+      if (!f) continue;
+      fprintf(stderr, "[gate-formal] p=%d es=%d %s in{", analysis_pass, es->id,
+              (f->var && f->var->sym && f->var->sym->name) ? f->var->sym->name : "?");
+      for (CreationSet *c : f->in->sorted) if (c && c->sym)
+        fprintf(stderr, "%s%s ", c->sym->name ? c->sym->name : "?", c->sym->is_constant ? "(k)" : "");
+      fprintf(stderr, "} :");
+      for (AVar *b : f->backward) if (b) {
+        fprintf(stderr, " <-av%d{", b->id);
+        for (CreationSet *c : b->out->sorted) if (c && c->sym)
+          fprintf(stderr, "%s%s ", c->sym->name ? c->sym->name : "?", c->sym->is_constant ? "(k)" : "");
+        fprintf(stderr, "}");
+      }
+      fprintf(stderr, "\n");
+    }
+    for (PNode *p : es->fun->fa_if_PNodes) {
+      AVar *c = make_AVar(p->rvals[0], es);
+      fprintf(stderr, "[gate-if] p=%d es=%d line=%d live=%d succ_live=%d/%d cond:", analysis_pass, es->id,
+              p->code ? p->code->line() : -1, es->live_pnodes.set_in(p) ? 1 : 0,
+              p->cfg_succ.n > 0 && es->live_pnodes.set_in(p->cfg_succ[0]) ? 1 : 0,
+              p->cfg_succ.n > 1 && es->live_pnodes.set_in(p->cfg_succ[1]) ? 1 : 0);
+      for (CreationSet *cs : c->out->sorted) if (cs && cs->sym)
+        fprintf(stderr, " %s%s", cs->sym->name ? cs->sym->name : "?", cs->sym->is_constant ? "(k)" : "");
+      fprintf(stderr, "\n");
+    }
+  }
+}
+
+// ifa/178: liveness at quiescence. A gate (gate_send) is decided during
+// the walk, and liveness only grows within a pass, so code walked BEFORE
+// its gate engaged stays live: `r = evaluate(e.rhs)` was walked while
+// `e.rhs` was still bottom (no edge, so no gate), and its move kept the
+// call's bottom result `live_arg` after `e.rhs` became `{None}` and the
+// call gated. Re-derive each gated contour's live set on the converged
+// state: what the walk reached, cut at every send still gated.
+static void settle_gated_liveness() {
+  for (EntrySet *es : fa->ess) if (es && es->fun && es->fun->entry) {
+    bool gated = false;
+    for (PNode *p : es->fun->fa_send_PNodes)
+      if (p->lvals.n == 1 && es->live_pnodes.set_in(p) && make_AVar(p->lvals[0], es)->gates_flow) { gated = true; break; }
+    if (!gated) continue;
+    Vec<PNode *> keep, stack;
+    if (es->live_pnodes.set_in(es->fun->entry)) { keep.set_add(es->fun->entry); stack.add(es->fun->entry); }
+    while (stack.n) {
+      PNode *p = stack.pop();
+      if (p->code->kind == Code_SEND && p->lvals.n == 1 && make_AVar(p->lvals[0], es)->gates_flow) continue;
+      for (PNode *n : p->cfg_succ)
+        if (es->live_pnodes.set_in(n) && keep.set_add(n)) stack.add(n);
+    }
+    // Over every node, not just the ones dropped here: selective
+    // invalidation (ifa/111 M3) preserves an AVar, live_arg included, across
+    // passes, so a read walked in an EARLIER pass can still be marked.
+    for (PNode *p : es->fun->fa_all_PNodes) if (p && !keep.set_in(p))
+      for (Var *v : p->rvals) make_AVar(v, es)->live_arg = 0;
+    es->live_pnodes.clear();
+    for (PNode *p : keep) if (p) {
+      es->live_pnodes.set_add(p);
+      for (Var *v : p->rvals) make_AVar(v, es)->live_arg = 1;
+    }
+  }
+}
+
 static void complete_pass() {
+  settle_gated_liveness();
+  report_gated_calls();
   report_stage_churn();
   report_cs_population();
   report_element_types();

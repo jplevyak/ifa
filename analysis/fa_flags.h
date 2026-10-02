@@ -33,6 +33,7 @@ int sizeof_viol_enabled();
 int nilarg_enabled();
 int strictviol_enabled();
 int confnil_enabled();
+int keepnil_enabled();
 int splithomo_enabled();
 int gsigret_enabled();
 int csm_enabled();
