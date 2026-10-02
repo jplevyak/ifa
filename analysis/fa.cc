@@ -2925,10 +2925,20 @@ static bool nil_member_is_representable(AVar *arg, AType *diff, AType *legal) {
   for (CreationSet *c : diff->sorted)  // the rejected part must be nil, and nothing else
     if (!c || !c->sym || c->sym->type != sym_nil_type) return false;
   AType *t = arg->out->type;
-  if (!t || !t->n) return false;  // a pure `None` argument is still an error
-  for (CreationSet *c : t->sorted)  // canonicalization must have STRIPPED the nil
-    if (c && c->sym && c->sym->type == sym_nil_type) return false;
-  return type_diff(t, legal) == fa->type_world.bottom_type;  // ... and the pointee is legal
+  if (!t) return false;
+  // Ask the representation question directly: is this a nullable POINTER?
+  // That used to be read off the projection -- "canonicalization stripped
+  // the nil" -- which is true exactly when no num_kind scalar is present
+  // (issue 060). It is the same rule, but stated so it does not depend on
+  // whether `->type` carries nil (ifa/178's keep-nil experiment does).
+  Vec<CreationSet *> pointee;
+  for (CreationSet *c : t->sorted) if (c && c->sym) {
+    if (c->sym->type == sym_nil_type) continue;
+    if (c->sym->type && c->sym->type->num_kind) return false;  // {None, scalar}: 060, stays an error
+    pointee.add(c);
+  }
+  if (!pointee.n) return false;  // a pure `None` argument is still an error
+  return type_diff(make_AType(pointee), legal) == fa->type_world.bottom_type;  // ... and the pointee is legal
 }
 
 // for send nodes, add call edges and more complex constraints

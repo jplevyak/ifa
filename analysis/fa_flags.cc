@@ -147,10 +147,13 @@ int sizeof_viol_enabled() {
 // creation point), so no contour split separates it and none should be
 // asked for; the answer is the representation, which pyc already has.
 //
-// The `{None, scalar}` case is NOT this, and condition (3) below keeps it
-// out: 060 deliberately KEEPS nil in `->type` when the union carries a
-// num_kind scalar, because None and 0 share a bit pattern unboxed. That
-// is `genetic2` (an implicit fall-through `return None` unioned with
+// The `{None, scalar}` case is NOT this: None and 0 share a bit pattern
+// unboxed, which is why 060 keeps nil in `->type` beside a num_kind
+// scalar. The check tests for that scalar directly. It used to accept only
+// when canonicalization had stripped the nil from `->type` -- the same
+// rule, read off the projection, and wrong as soon as `->type` keeps nil
+// for another reason (ifa/178's keep-nil experiment keeps it to split on).
+// That is `genetic2` (an implicit fall-through `return None` unioned with
 // int64) and it stays an error -- see ../../issues/048.
 //
 // Deliberately NOT suppressed: an argument whose whole type is `None`.
