@@ -36,6 +36,12 @@ defaulted `None` parameters and the recursion gate. The general rule
 (closed/127): a value that means both "unknown" and a real answer must
 become a sentinel.
 
+*2026-10-02:* `->type` now keeps `None`
+([178](178-FA-route4-declines-records-built-through-one-constructor.md)),
+after fixing what that exposed. `is_not_none_narrow`, `minmax_3arg` and
+`expr_evaluator` all pass. `split_type_view` no longer changed anything
+and is removed. Its constant rule (closed/169) survives as `edge_arg_type`.
+
 ## Residuals
 
 1. **The check has a false positive on nil-only formals.**

@@ -1296,27 +1296,6 @@ void record_field_write(AVar *obj, cchar *name) {
   if (field_writes_seen.insert({obj, name}).second) field_writes.push_back({obj, name});
 }
 
-// ifa/issues/124: `->type` used to strip a pure-nil AType to bottom
-// (make_AType's is_unique_type branch; the 060 carve-out kept nil only
-// beside a num_kind scalar). Since ifa/178 it keeps nil, so the view below
-// no longer changes anything for nil; it is kept for the history and for
-// the "not analyzed" vs "None only" distinction it names. The partitioner below guards every comparison with
-// `->n &&`, so an edge passing only None reads as "nothing known yet" and
-// is compatible with everything -- and it costs the split twice: the nil
-// edge stays in the ES, and then the genuinely-differing edges are pulled
-// back OUT of do_edges when re-tested against it (measured on
-// ifa/issues/124's repro: do=0 stay=2 groups=0 on every pass, forever).
-//
-// Give the SPLITTER a view that separates "not analyzed" (raw empty too)
-// from "carries only nil" (raw non-empty), without touching the ->type
-// projection every other consumer reads -- narrowing, defaulted params
-// and the recursion-separability gate all rely on nil being transparent
-// there (tests is_not_none_narrow / minmax_3arg / expr_evaluator each
-// regress if ->type itself is changed).
-//
-// Constants are deliberately NOT unstripped here: a raw single-element
-// out can be a constant CS ("3" rather than int64) and partitioning on
-// that is clone-per-constant (survey B5).
 // How many (contour, formal) positions a demand has ever set. Zero on most
 // programs, and these predicates sit in the edge-grouping inner loops, so the
 // lineage walk is skipped entirely until the first nomination.
@@ -1364,19 +1343,15 @@ static bool es_wants_constants_at(AVar *av) {
   return p && es_wants_constants((EntrySet *)av->contour, p);
 }
 
-// `keep_consts`: whether constants may partition at this position. Only a
-// formal whose contour wants constants (es_wants_constants) passes true.
-// ifa/169: this used to keep them everywhere, because the formal filter is
-// the Matcher's dispatch filter, built from the RAW actuals -- so
-// `{int64} ∩ {const 5}` handed back `{const 5}` and every split fanned per
-// literal, with no demand for it.
-static AType *split_type_view(AVar *a, AType *filter, bool keep_consts = true) {
+// The type the splitter compares an edge's actual by: its ->type within the
+// dispatch filter. Constants partition only at a formal whose contour wants
+// them (es_wants_constants). ifa/169: they used to be kept everywhere,
+// because the formal filter is the Matcher's dispatch filter, built from the
+// RAW actuals -- so `{int64} ∩ {const 5}` handed back `{const 5}` and every
+// split fanned per literal, with no demand for it.
+static AType *edge_arg_type(AVar *a, AType *filter, bool keep_consts) {
   AType *t = type_intersection(a->out->type, filter);
-  if (!keep_consts) t = t->type;
-  if (t->n || !a->out->n) return t;
-  for (CreationSet *c : a->out->sorted)
-    if (!c->sym || c->sym->type != sym_nil_type) return t;  // constants etc: unchanged
-  return type_intersection(a->out, filter);
+  return keep_consts ? t : t->type;
 }
 
 static int edge_type_compatible_with_edge(AEdge *e, AEdge *ee, EntrySet *es, int fmark = 0) {
@@ -1385,8 +1360,8 @@ static int edge_type_compatible_with_edge(AEdge *e, AEdge *ee, EntrySet *es, int
     AVar *e_arg = e->args.get(p), *ee_arg = ee->args.get(p);
     if (!e_arg || !ee_arg) continue;
     bool kc = es_wants_constants(es, p);
-    AType *etype = split_type_view(e_arg, e->match->formal_filters.get(p), kc);
-    AType *eetype = split_type_view(ee_arg, ee->match->formal_filters.get(p), kc);
+    AType *etype = edge_arg_type(e_arg, e->match->formal_filters.get(p), kc);
+    AType *eetype = edge_arg_type(ee_arg, ee->match->formal_filters.get(p), kc);
     if (!fmark) {
       if (etype->n && eetype->n && etype != eetype) return ++census.ic_arg, 0;
     } else {
@@ -1436,9 +1411,9 @@ static int edge_type_compatible_with_entry_set(AEdge *e, EntrySet *es, int fmark
     for (MPosition *p : e->match->fun->positional_arg_positions) {
       AVar *es_arg = es->args.get(p), *e_arg = e->args.get(p);
       if (!e_arg) continue;
-      AType *etype = split_type_view(e_arg, e->match->formal_filters.get(p), es_wants_constants(es, p));
+      AType *etype = edge_arg_type(e_arg, e->match->formal_filters.get(p), es_wants_constants(es, p));
       if (!fmark) {
-        AType *stype = split_type_view(es_arg, nullptr);
+        AType *stype = es_arg->out->type;
         if (typekey_enabled() && es->type_key_pass >= 0) {
           AType *k = es->type_key.get(p);
           if (k) stype = k;  // durable key wins over the mid-pass value
@@ -6161,19 +6136,15 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
     AEdge *e = these_edges[0];
     // The group's type partition at the confluence position, on the
     // constant-stripped ->type view (raw ->out re-derives constants
-    // differently under the constant cap — issue 033 D4 note).
-    // ifa/issues/124: via split_type_view, so a group formed BY the
-    // nil distinction gets a filter that actually admits nil. Reading
-    // the bare ->type here made a pure-nil group's partition bottom,
-    // which starves the formal in the product contour (`illegal call
-    // argument type 'c' illegal:` with an empty type — minmax_3arg).
-    // The view unstrips nil only, never constants, so the D4 note
-    // above still holds.
+    // differently under the constant cap — issue 033 D4 note). ->type
+    // keeps nil (ifa/178), so a group formed BY the nil distinction gets a
+    // filter that admits nil (ifa/124: a bottom partition starved the
+    // product's formal -- minmax_3arg).
     AType *part = fa->type_world.bottom_type;
     if (avpos)
       for (AEdge *x : these_edges) {
         AVar *a = x->args.get(avpos);
-        if (a) part = type_union(part, split_type_view(a, nullptr));
+        if (a) part = type_union(part, a->out->type);
       }
     // ifa/issues/101: what KIND of CreationSet is the splitter actually
     // partitioning on? `closure` CSs are minted unique per site x contour
@@ -7376,15 +7347,13 @@ enum AKind { AKIND_TYPE, AKIND_SETTER, AKIND_MARK };
     // ifa/133: `->type` is a PROJECTION that, until ifa/178, stripped a
     // pure-nil AType to bottom (make_AType: `nonconsts.n == 0` ->
     // bottom_type; issue/060's carve-out kept nil only beside a num_kind
-    // scalar). It keeps nil now. A bare `!->type->n` therefore reads a store of
-    // None as "not analyzed" and drops it: no setter_class, so
-    // update_setter never records it, so the container it writes into
-    // never becomes a `split_css` starter and the CreationSet cannot be
-    // partitioned. This is ifa/124's conflation at a site ifa/124 did not
-    // reach; its remedy (split_type_view) is the same one -- separate "not
-    // analyzed" (raw empty too) from "carries only nil" (raw non-empty).
-    // Cannot be fixed in `->type` itself: narrowing, defaulted params and
-    // the recursion-separability gate all need nil transparent there.
+    // scalar), so a bare `!->type->n` read a store of None as "not
+    // analyzed" and dropped it: no setter_class, so update_setter never
+    // recorded it, so the container it wrote into never became a
+    // `split_css` starter and the CreationSet could not be partitioned.
+    // It keeps nil now. This was ifa/124's conflation at a site ifa/124 did not
+    // reach; PYC_NILSTORE separated "not analyzed" (raw empty too) from
+    // "carries only nil" (raw non-empty).
     if (akind == AKIND_TYPE && !x->out->type->n && !(nilstore_enabled() && x->out->n)) continue;
     if (akind == AKIND_MARK && !x->mark_map) continue;
     ss.add(new Setters);
