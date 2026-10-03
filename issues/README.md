@@ -95,7 +95,6 @@ one is a lesson this directory paid for.
 | issue | what |
 | --- | --- |
 | [179](179-LLVM-quameon-computes-nan.md) | LLVM: quameon runs but computes `nan` (C matches CPython); latent, independent of 132. |
-| [182](182-C-list-element-none-or-int-is-a-pointer.md) | C: a `{None, int}` list element is a pointer, so storing an int into it fails (pisang runs on LLVM, not C). |
 | [102](102-corpus-programs-compile-then-abort-at-runtime.md) | an unresolved call becomes a silent runtime stub. Make it an FA violation. Also the untyped-value work list. |
 | [079](079-DISPATCH-single-candidate-dispatch-unchecked-cast.md) | the single-candidate fast path casts past union members that lack the method. |
 | [118](118-union-field-representation-and-polymorphic-field-offset.md) | `{bool, None}`: a tri-state sentinel representation (bool has spare codes; int64 does not). |

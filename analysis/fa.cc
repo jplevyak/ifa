@@ -14274,9 +14274,20 @@ void collect_types_and_globals(FA *fa, Vec<Sym *> &typesyms, Vec<Var *> &globals
     for (int i = 0; i < loopsyms.n; i++)
       if (loopsyms[i] && loopsyms.v[i]->type_kind) {
         for (Sym *s : loopsyms[i]->has) {
+          // A null member is a vacant slot. The types this loop used to
+          // reach never had one; the element types ifa/182 follows can.
+          if (!s) continue;
           again = typesyms.set_add(s) || again;
           if (s->var && s->var->type) again = typesyms.set_add(s->var->type) || again;
         }
+        // ifa/issues/182: a container's ELEMENT type is a type too. Not
+        // following it left an element union no Var happened to carry out
+        // of the type set, so codegen never named it and c_type() rendered
+        // it `_CG_void`: a `{None, int}` list had pointer storage holding
+        // ints (`mods = [3]` did not compile; pisang aborted with "list
+        // element type mismatch").
+        if (Sym *e = loopsyms[i]->element)
+          if (e->type) again = typesyms.set_add(e->type) || again;
       }
   }
   typesyms.set_to_vec();

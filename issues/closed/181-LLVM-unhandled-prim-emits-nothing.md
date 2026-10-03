@@ -1,7 +1,7 @@
 # 181 — codegen: a prim no emitter claims produces no code, and its result reads as 0
 
 **Status:** CLOSED 2026-10-02. Everything below is done, and the C-side
-leftover it exposed is [182](../182-C-list-element-none-or-int-is-a-pointer.md).
+leftover it exposed is [182](182-C-list-element-none-or-int-is-a-pointer.md).
 Filed 2026-10-02, found fixing
 [180](180-LLVM-pow-operator-emitted-nothing.md).
 
@@ -97,7 +97,7 @@ to drop, ON PURPOSE:
   gives `None | T` T's representation. `sym_to_llvm_type` now does the
   same. The diagnostic also names the operand's LLVM type now. pisang
   still fails on the C backend, for a reason of the C backend's own
-  ([182](../182-C-list-element-none-or-int-is-a-pointer.md)).
+  ([182](182-C-list-element-none-or-int-is-a-pointer.md)).
 
 ## Verification
 

@@ -1290,6 +1290,20 @@ static void determine_clones() {
   }
 }
 
+// ifa/issues/182: a union TYPE minted here must be self-typed (`t->type ==
+// t`), as every front-end type is (set_type_and_meta_type, ast.cc). These
+// were not, so c_type(Sym*), which reads `->type`, rendered every
+// clone-made union as `_CG_void` -- even `None | int`, whose C type is
+// int64 everywhere else. A `{None, int}` list element then had pointer
+// storage holding ints: `mods = [3]` did not compile, and pisang aborted
+// with "list element type mismatch".
+static Sym *new_sum_type() {
+  Sym *t = new_Sym();
+  t->type_kind = Type_SUM;
+  t->type = t;
+  return t;
+}
+
 Sym *concrete_type_set_to_type(Vec<Sym *> &t) {
   t.set_to_vec();
   if (!t.n)
@@ -1297,8 +1311,7 @@ Sym *concrete_type_set_to_type(Vec<Sym *> &t) {
   else if (t.n == 1)
     return t[0];
   else {
-    Sym *tt = new_Sym();
-    tt->type_kind = Type_SUM;
+    Sym *tt = new_sum_type();
     tt->has.append(t);
     if (!(tt = if1->callback->make_LUB_type(tt))) return 0;
     return tt;
@@ -1608,8 +1621,7 @@ static int define_concrete_types(CSSS &css_sets) {
       }
     } else {
       // if different sym use sum type
-      sym = new_Sym();
-      sym->type_kind = Type_SUM;
+      sym = new_sum_type();
       for (CreationSet *cs : *eqcss) if (cs) {
         cs->type = sym;
         sym->creators.add(cs);
@@ -1628,8 +1640,7 @@ static int concretize_avar(AVar *av) {
     else {
       if (sym != cs->type) {
         if (!type) {
-          type = new_Sym();
-          type->type_kind = Type_SUM;
+          type = new_sum_type();
           type->has.set_add(sym);
         }
         type->has.set_add(cs->type);
@@ -1726,8 +1737,7 @@ static int concretize_var_list_type(Var *v) {
       // the codegen layer in cg.cc:write_send_arg
       // (issue 028 step 5 follow-up).  Set the element
       // sym instead of clobbering the list type.
-      Sym *t = new_Sym();
-      t->type_kind = Type_SUM;
+      Sym *t = new_sum_type();
       for (CreationSet *cs : *etype) if (cs) t->has.set_add(cs->type);
       Sym *lub = if1->callback->make_LUB_type(t);
       if (!lub) return -1;
@@ -1758,8 +1768,7 @@ static int concretize_var_type(Var *v) {
       else {
         if (sym != cs->type) {
           if (!type) {
-            type = new_Sym();
-            type->type_kind = Type_SUM;
+            type = new_sum_type();
             type->has.set_add(sym);
           }
           type->has.set_add(cs->type);

@@ -80,6 +80,14 @@ static inline bool scalar_ct(cchar *t) {
                !strcmp(t, "_CG_bool"));
 }
 
+// ifa/issues/182: do two TYPES have different C representations, scalar
+// against pointer? The element/field guards below asked this with
+// `num_kind != 0`, which is false for `None | int` even though that union
+// is an int64 in C -- so storing an int into a `{None, int}` list element
+// tripped "list element type mismatch" (pisang). Ask about the emitted C
+// type instead, which is what the cast those guards protect actually sees.
+static inline bool cg_repr_mismatch(Sym *a, Sym *b) { return scalar_ct(c_type(a)) != scalar_ct(c_type(b)); }
+
 // issues/048: a FLOATING-POINT C type. Narrower than scalar_ct on
 // purpose. An integer and a pointer round-trip through each other
 // bit-for-bit -- `(void*)(int64)x` back to `(int64)(void*)y` is legal C
@@ -1167,7 +1175,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
             // express. The pointer-to-pointer reinterpretation the cast
             // exists for stays unaffected.
             bool field_mismatch =
-                field_type && n->lvals[0]->type && ((field_type->num_kind != 0) != (n->lvals[0]->type->num_kind != 0));
+                field_type && n->lvals[0]->type && cg_repr_mismatch(field_type, n->lvals[0]->type);
             if (field_mismatch) {
               if (!fruntime_errors)
                 fail("tuple-list field type mismatch reading a '%s' field into a '%s'", c_type(field_type),
@@ -1210,7 +1218,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         // call site's INDEX argument. Found via
         // shedskin_examples/tictactoe/tictactoe.py.
         Var *val_v = n->rvals[n->rvals.n - 1];
-        bool value_mismatch = e && val_v->type && ((e->num_kind != 0) != (val_v->type->num_kind != 0));
+        bool value_mismatch = e && val_v->type && cg_repr_mismatch(e, val_v->type);
         bool index_mismatch = false;
         for (int i = o + 1; i < n->rvals.n - 1; i++) {
           if (!scalar_ct(c_type(n->rvals[i]))) { index_mismatch = true; break; }
@@ -1255,7 +1263,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         // itself hitting this exact branch, not the one above.
         Var *val_v2 = n->rvals[n->rvals.n - 1];
         Sym *field_ty = (fidx >= 0 && fidx < t->has.n && t->has[fidx]) ? t->has[fidx]->type : nullptr;
-        bool field_mismatch = field_ty && val_v2->type && ((field_ty->num_kind != 0) != (val_v2->type->num_kind != 0));
+        bool field_mismatch = field_ty && val_v2->type && cg_repr_mismatch(field_ty, val_v2->type);
         if (field_mismatch) {
           if (!fruntime_errors)
             fail("tuple-list field type mismatch storing a '%s' into a '%s' field", c_type(val_v2),
