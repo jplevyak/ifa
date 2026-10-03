@@ -3058,9 +3058,11 @@ static void write_c(FILE *fp, FA *fa, Fun *f, Vec<Var *> *globals = 0) {
   // pointer refers to survives indefinitely, exactly like the
   // coroutine frame does. Confirmed via a minimal pyc-independent
   // repro (dangling closure reproduced with a plain stack `auto`,
-  // fixed with `new auto`).
+  // fixed with `new auto`). It is now _CG_gc_new: a closure from plain
+  // `new` is not scanned by the collector, so the GC objects it captures
+  // were freed under it at -O2 (pyc_c_runtime.h, _CG_gc_frame).
   if (f->sym->is_generator) {
-    fputs("  auto *__coro_1014 = new auto([=]() -> _CG_Generator {\n", fp);
+    fputs("  auto *__coro_1014 = _CG_gc_new([=]() -> _CG_Generator {\n", fp);
   }
   for (Var *v : defs) {
     fputs("  ", fp);
@@ -3069,16 +3071,27 @@ static void write_c(FILE *fp, FA *fa, Fun *f, Vec<Var *> *globals = 0) {
     } else {
       write_c_type(fp, v);
     }
-    // ifa/issues/039, the `safe` environment: a local the
-    // definite-assignment analysis flagged as POSSIBLY read before its
-    // first write gets the zero of its own representation rather than
-    // whatever the stack happened to hold. `= {}` is value-init and is
-    // the one form that spells "zero" for every representation the
-    // backend emits -- 0 for a scalar, nullptr for a pointer, all-zero
-    // members for a struct -- so nothing here needs to know which it
-    // got. Coroutine handles are excluded: _CG_Coroutine is not a slot
-    // this analysis reasons about, and it has its own initialization.
-    if (fauto_init_unbound && v->sym->maybe_unbound && !coro_vars.set_in(v))
+    // EVERY temporary is value-initialized. The IR legitimately reads a
+    // Var no path assigned: a raising function's return value on the
+    // raise path, which the caller discards after testing the exception
+    // slot. That is "some unspecified value" (LLVM lowers it to an
+    // undefined load, which is fine), but in C++ reading an
+    // uninitialized local is undefined behavior, and clang marks return
+    // values `noundef`: at -O2 it deleted `risky`'s whole raise path,
+    // `ret` included, and fell through into the next function
+    // (tests/exception_basic.py segfaulted). Zero is the one defined
+    // lowering of "unspecified", and the stores are dead wherever the
+    // Var is assigned first, so -O2 removes them.
+    //
+    // `= {}` is value-init and spells "zero" for every representation
+    // the backend emits -- 0 for a scalar, nullptr for a pointer,
+    // all-zero members for a struct. It also subsumes ifa/issues/039's
+    // `safe` environment, which zeroed only the source locals the
+    // definite-assignment analysis flagged (find_maybe_unbound still
+    // runs: DEFINITELY unbound stays a compile error, and strict mode
+    // still warns). Coroutine handles are excluded: _CG_Coroutine has
+    // its own initialization.
+    if (!coro_vars.set_in(v))
       fprintf(fp, " %s = {};\n", cg_get_string(v));
     else
       fprintf(fp, " %s;\n", cg_get_string(v));
