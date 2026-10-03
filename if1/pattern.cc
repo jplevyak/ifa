@@ -96,6 +96,7 @@ class Matcher {
   void find_best_matches(Vec<AVar *> &, Vec<CreationSet *> &, Vec<Fun *> &, MPosition &, Vec<Fun *> &, int,
                          Vec<Vec<CreationSet *> *> &cls, int iarg = 0);
   int covers_formals(Fun *, Vec<CreationSet *> &, MPosition &, int);
+  void prune_uncoverable(Vec<AVar *> &args, MPosition &app, Vec<Fun *> &matches);
   PMatch *build_PMatch(Fun *, PMatch *);
   void instantiation_wrappers_and_partial_application(Vec<Fun *> &);
   Fun *build(PMatch *m, Vec<Fun *> &matches);
@@ -1316,6 +1317,50 @@ void Matcher::find_best_cs_match(Vec<CreationSet *> &csargs, MPosition &app, Vec
   clear_matches(match_map);
 }
 
+// Drop every candidate that some argument position can never cover: no
+// CreationSet in that actual passes find_best_cs_match's per-position test
+// (in the actual filter, exact-match, not nil for `this`). Such a candidate
+// is never in `covered` for ANY combination, so removing it before
+// find_best_matches cannot change the result -- but leaving it in can make
+// the enumeration exponential. find_arg_matches re-admits a candidate a
+// position rejected (its trailing set_union), and the ROADMAP 6.1 rule
+// offers EVERY varargs function as a function value, so on
+// shedskin_examples/doom `struct.pack(fmt, *args)` stayed a candidate for
+// `BSPNode(...)` although position 0 rejects it. A varargs candidate bails
+// the class collapse below to full enumeration: 13^6 combinations of six
+// 13-wide arguments, 337 of doom's 346 compile seconds.
+void Matcher::prune_uncoverable(Vec<AVar *> &args, MPosition &app, Vec<Fun *> &matches) {
+  Vec<Fun *> keep;
+  for (Fun *f : matches) if (f) {
+    PMatch *m = match_map.get(f);
+    bool coverable = true;
+    if (m) {
+      app.push(1);
+      for (int i = 0; i < args.n && coverable; i++, app.inc()) {
+        MPosition *acpp = cannonicalize_mposition(app);
+        Sym *formal = m->fun->arg_syms.get(to_formal(acpp, m));
+        if (!formal && f->is_varargs) continue;
+        if (formal && formal->is_pattern) continue;  // decided recursively, not by this test
+        AType *t = m->actual_filters.get(acpp);
+        Sym *ft = formal && formal->is_exact_match ? dispatch_type(formal) : nullptr;
+        bool any = false;
+        if (t && formal)
+          for (CreationSet *cs : args[i]->out->sorted) {
+            if (!t->set_in(cs)) continue;
+            if (ft && cs->sym != ft && cs->sym->type != ft && cs->sym->type->meta_type != ft) continue;
+            if (formal->is_this && cs->sym == sym_nil_type) continue;
+            any = true;
+            break;
+          }
+        if (!any) coverable = false;
+      }
+      app.pop();
+    }
+    if (coverable) keep.add(f);
+  }
+  matches.move(keep);
+}
+
 void Matcher::find_best_matches(Vec<AVar *> &args, Vec<CreationSet *> &csargs, Vec<Fun *> &matches, MPosition &app,
                                 Vec<Fun *> &result, int top_level, Vec<Vec<CreationSet *> *> &cls, int iarg) {
   if (iarg >= args.n)
@@ -1749,6 +1794,7 @@ int pattern_match(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_clo
     Vec<CreationSet *> csargs;
     Vec<Vec<CreationSet *> *> csclasses;
     Vec<Fun *> result;
+    matcher.prune_uncoverable(args, app, *partial_matches);
     matcher.find_best_matches(args, csargs, *partial_matches, app, result, 1, csclasses);
     partial_matches->move(result);
     if (!partial_matches->n) return 0;
