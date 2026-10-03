@@ -167,6 +167,17 @@ llvm::Type *sym_to_llvm_type(Sym *s) {
     }
   }
 
+  // `None | T` has T's representation, exactly as in the C backend
+  // (assign_type_cg_strings_pass2 gives the 2-member nil SUM T's C type).
+  // Every SUM used to become `ptr` here, so a {None, int64} argument was a
+  // pointer under -b and an int64 in C, and `-x` in the builtin abs()
+  // refused it ("op 27 unsupported for operand type _CG_int64",
+  // shedskin_examples/pisang).
+  if (!t && s->type_kind == Type_SUM && s->has.n == 2) {
+    Sym *other = s->has[0] == sym_nil_type ? s->has[1] : s->has[1] == sym_nil_type ? s->has[0] : nullptr;
+    if (other && other != s) t = sym_to_llvm_type(other);
+  }
+
   if (!t) {
     if (s == sym_void || s == sym_void_type) {
       // sym_void_type marks FA-unreachable/no-value results (the C
@@ -682,12 +693,16 @@ static Sym *fun_sym_for_var(Var *v) {
   return nullptr;
 }
 
-// The identity of a function value, for id()/hash(): the address of a
-// private one-byte global per function Sym. NOT the llvm::Function -- a
-// function only ever used as a value (hash(f) with f never called) has no
-// body emitted, so there is no address to take. One token per Sym makes
-// id(f) unique per function and stable for the whole run.
+// The identity of a function value, for id()/hash(). It must be the SAME
+// value a function value carries everywhere else -- the function's address,
+// which emit_move stores and value-identity dispatch compares against -- or
+// `h = g; hash(h) == hash(g)` comes out False. Only a function that has no
+// emitted body (used purely as a value, e.g. `hash(f)` with f never called)
+// has no address; it gets a private one-byte global per Sym instead, which
+// is unique and stable, and the C backend does the same (_CG_fnid).
 static llvm::Value *fun_identity_token(Sym *f) {
+  if (f->fun && f->fun->cg_string)
+    if (llvm::Function *fn = TheModule->getFunction(f->fun->cg_string)) return fn;
   char name[64];
   snprintf(name, sizeof(name), "_CG_fnid_%d", f->id);
   if (llvm::GlobalVariable *gv = TheModule->getGlobalVariable(name, true)) return gv;
@@ -1081,8 +1096,13 @@ bool emit_send_unaryop(EmitCtx &ctx, PNode *pn) {
     // Live unaryop with an unsupported operand type — not a dead node,
     // so silently returning true would leave dst uninitialized.
     cchar *src_ty_name = src->type ? cg_get_string(src->type) : "?";
-    codegen_fail(pn, "emit_send_unaryop: op %d unsupported for operand type %s",
-                 op, src_ty_name ? src_ty_name : "?");
+    std::string llvm_ty;
+    llvm::raw_string_ostream os(llvm_ty);
+    val->getType()->print(os);
+    os.flush();
+    codegen_fail(pn, "emit_send_unaryop: op %d unsupported for operand type %s (LLVM value of type %s%s)",
+                 op, src_ty_name ? src_ty_name : "?", llvm_ty.c_str(),
+                 ctx.alloca_map.get(src) ? ", from a phi slot" : "");
   }
 
   // Coerce to dst's expected LLVM type

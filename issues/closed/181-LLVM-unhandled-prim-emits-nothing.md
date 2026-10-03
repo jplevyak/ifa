@@ -1,9 +1,9 @@
 # 181 — codegen: a prim no emitter claims produces no code, and its result reads as 0
 
-**Status:** open: steps 1-3 done 2026-10-02 (see "Done"). What is left
-is the C backend's function identity (below).
+**Status:** CLOSED 2026-10-02. Everything below is done, and the C-side
+leftover it exposed is [182](../182-C-list-element-none-or-int-is-a-pointer.md).
 Filed 2026-10-02, found fixing
-[180](closed/180-LLVM-pow-operator-emitted-nothing.md).
+[180](180-LLVM-pow-operator-emitted-nothing.md).
 
 ## Symptom
 
@@ -81,19 +81,23 @@ to drop, ON PURPOSE:
   `{list, tuple}` truth test. It now carries CPython's output and a
   `.known_issue`.
 
-## Still open
+## Also done (2026-10-02, second pass)
 
-- **C backend function identity.** A function value is
-  `(_CG_function)&tN`, the address of an unused local in the frame that
-  created it. That is distinct per function only by accident, and it
-  changes if the value is created in another call frame. It should be
-  the same per-Sym token.
-- **LLVM corpus sweep (done).** `compile__PYC_LLVM_1__c479bd6d+3cacacf8`:
-  no program is refused by the new error. LLVM fails to compile the C
-  backend's 23 failures plus pisang. pisang hits a separate, explicit
-  `emit_send_unaryop: op 27 unsupported for operand type _CG_int64`
-  (unary minus, `__pyc__.py:1905`). That `codegen_fail` predates this
-  issue and is not yet filed.
+- **Function identity is the same value on both backends.** An emitted
+  function's value is its address, which is what value-identity dispatch
+  compares against. LLVM's `id()` of a function-typed formal used a token
+  even for an emitted function, so `h = g; hash(h) == hash(g)` was False.
+  Now both backends use the address, and only a function with NO emitted
+  body gets a per-Sym token: `_CG_fnid_<id>` on LLVM, and
+  `_CG_fnid<id>::token` on C, which used to take `&tN`, the address of an
+  unused local. tests/hash_of_object_and_function.py covers both cases.
+- **pisang compiles and matches CPython on LLVM.** Its
+  `op 27 unsupported for operand type _CG_int64` (`-x` in the builtin
+  abs) was a representation split: LLVM made every SUM a pointer, while C
+  gives `None | T` T's representation. `sym_to_llvm_type` now does the
+  same. The diagnostic also names the operand's LLVM type now. pisang
+  still fails on the C backend, for a reason of the C backend's own
+  ([182](../182-C-list-element-none-or-int-is-a-pointer.md)).
 
 ## Verification
 

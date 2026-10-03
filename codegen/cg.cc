@@ -1722,7 +1722,15 @@ static void simple_move(FILE *fp, Var *lhs, Var *rhs) {
         fprintf(fp, "  %s = (%s)%s;\n", cg_get_string(lhs), lt, cg_get_string(rhs));
     } else
       fprintf(fp, "  %s = %s;\n", cg_get_string(lhs), cg_get_string(rhs));
-  } else if (cg_get_string(rhs))
+  } else if (!rhs->sym->fun->live)
+    // ifa/issues/181: a function with no emitted body (used only as a
+    // value, e.g. `hash(f)` with f never called) has no address. This
+    // took `&tN` -- the address of an unused LOCAL -- which is unique only
+    // by accident and differs per call frame. Use a per-Sym token, as the
+    // LLVM backend does; an emitted function's value stays its address,
+    // which is what value-identity dispatch compares against.
+    fprintf(fp, "  %s = (_CG_function)&_CG_fnid<%d>::token;\n", cg_get_string(lhs), rhs->sym->id);
+  else if (cg_get_string(rhs))
     fprintf(fp, "  %s = (_CG_function)&%s;\n", cg_get_string(lhs), cg_get_string(rhs));
   else
     fprintf(fp, "  %s = NULL;\n", cg_get_string(lhs));

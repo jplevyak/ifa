@@ -21,7 +21,7 @@ operator symbol, and `value_for_var` has no value for that. Then
 produced no code. Its result Var was never assigned, and a read of it came
 back as a zero constant, so the program compiled and ran. That silent
 fall-through is filed separately as
-[181](../181-LLVM-unhandled-prim-emits-nothing.md).
+[181](181-LLVM-unhandled-prim-emits-nothing.md).
 
 ## Fix
 
