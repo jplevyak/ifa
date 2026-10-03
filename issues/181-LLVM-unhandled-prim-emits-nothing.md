@@ -1,6 +1,8 @@
 # 181 — codegen: a prim no emitter claims produces no code, and its result reads as 0
 
-**Status:** open. Filed 2026-10-02, found fixing
+**Status:** open: steps 1-3 done 2026-10-02 (see "Done"). What is left
+is the C backend's function identity (below).
+Filed 2026-10-02, found fixing
 [180](closed/180-LLVM-pow-operator-emitted-nothing.md).
 
 ## Symptom
@@ -47,6 +49,51 @@ reaches it in four ways:
 3. Then make the fall-through `fail()` on a prim whose result is live, so
    the next missing emitter is a compile error instead of a silent 0.
    Re-run the census first: it must be empty of live results.
+
+## Done (2026-10-02)
+
+The fall-through is now a compile error: `virtual_cg_emit_send` calls the
+backend's `emit_send_unhandled`, and if that declines it `fail()`s naming
+the prim and its source line. The LLVM backend handles each case it used
+to drop, ON PURPOSE:
+
+- **`prim_id` of a function.** `id(f)` is the address of a private
+  one-byte global per function Sym (`_CG_fnid_<id>`). A function is its
+  own singleton type, so the value is known even though function-typed
+  formals have no LLVM value. Not the `llvm::Function`: a function used
+  only as a value has no body emitted. `hash(f) == hash(g)` is False on
+  both backends, and `tests/hash_of_object_and_function.py` asserts it.
+- **Method-slot setters.** The value is a function. Skipped explicitly;
+  the clone-time registry installs dispatch pointers.
+- **Setters of a fake value.** `value = __pyc_declare__` only declares the
+  field. Skipped as the C backend does (fake Vars get no C name).
+  pyc_declare.py was the one test the new error caught.
+- **Unresolvable attribute read.** Traps at run time, matching the C
+  backend's `getter not resolved`.
+- **Calls whose result was never produced.** This was the real source
+  of the `prim_primitive` and genetic2 drops. `emit_send_call` has many
+  exits that give up on an unresolvable dispatch and returned with the
+  result unassigned. It is now wrapped: a live result that no path
+  stored gets `emit_salvage_trap`, the counterpart of the C backend's
+  `matching function not found` assert.
+- **genetic2_idioms** had no check file, so it passed as compile-only
+  while aborting at run time on BOTH backends. It is an ifa/102
+  `{list, tuple}` truth test. It now carries CPython's output and a
+  `.known_issue`.
+
+## Still open
+
+- **C backend function identity.** A function value is
+  `(_CG_function)&tN`, the address of an unused local in the frame that
+  created it. That is distinct per function only by accident, and it
+  changes if the value is created in another call frame. It should be
+  the same per-Sym token.
+- **LLVM corpus sweep (done).** `compile__PYC_LLVM_1__c479bd6d+3cacacf8`:
+  no program is refused by the new error. LLVM fails to compile the C
+  backend's 23 failures plus pisang. pisang hits a separate, explicit
+  `emit_send_unaryop: op 27 unsupported for operand type _CG_int64`
+  (unary minus, `__pyc__.py:1905`). That `codegen_fail` predates this
+  issue and is not yet filed.
 
 ## Verification
 

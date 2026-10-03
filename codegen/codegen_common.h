@@ -302,6 +302,11 @@ class VirtualCGEmitter {
   virtual bool emit_send_index_store(PNode *pn) { return false; }
   virtual bool emit_send_sizeof(PNode *pn) { return false; }
   virtual bool emit_send_primitive(PNode *pn) { return false; }
+  // ifa/issues/181: called when NO emitter above claimed the prim. Return
+  // true only after deliberately handling it (a runtime trap, or a skip
+  // whose reason is written down). Declining is a compile error: a prim
+  // that silently produced no code is how `**` came out as 0 (ifa/180).
+  virtual bool emit_send_unhandled(PNode *pn) { return false; }
 };
 
 // Returns true if the SEND operation's lvalue was fully constant-folded

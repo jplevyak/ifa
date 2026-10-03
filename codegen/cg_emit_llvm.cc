@@ -220,6 +220,10 @@ struct EmitCtx {
   Fun *fn;
   llvm::Function *llvm_fn;
   Map<Var *, llvm::Value *> var_map;
+  // ifa/issues/181: the call result emit_send_call is producing, and
+  // whether put_result ever stored it.
+  Var *watch_result = nullptr;
+  bool watch_result_put = false;
   // Phi-target Vars get an alloca slot in the entry block so
   // cross-edge writes have a stable storage location.  Without
   // this, SSA-bind alone can't carry values across loop back-edges
@@ -611,6 +615,7 @@ llvm::Value *value_for_var(EmitCtx &ctx, Var *v) {
 
 void put_result(EmitCtx &ctx, Var *v, llvm::Value *value) {
   if (!v || !value) return;
+  if (v == ctx.watch_result) ctx.watch_result_put = true;
   llvm::AllocaInst *slot = ctx.alloca_map.get(v);
   if (slot) {
     llvm::Type *want = slot->getAllocatedType();
@@ -665,6 +670,30 @@ llvm::Function *get_runtime_helper(cchar *name, llvm::Type *ret_ty,
   llvm::FunctionType *ft = llvm::FunctionType::get(ret_ty, param_tys, is_va);
   return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                  name, TheModule.get());
+}
+
+// ifa/issues/181: a Var whose value is a function -- the function Sym
+// itself, or a Var typed by one (a function is its own singleton type in
+// IFA, so the type names the value). Null if it is not one.
+static Sym *fun_sym_for_var(Var *v) {
+  if (!v) return nullptr;
+  if (v->sym && v->sym->is_fun) return v->sym;
+  if (v->type && v->type->is_fun) return v->type;
+  return nullptr;
+}
+
+// The identity of a function value, for id()/hash(): the address of a
+// private one-byte global per function Sym. NOT the llvm::Function -- a
+// function only ever used as a value (hash(f) with f never called) has no
+// body emitted, so there is no address to take. One token per Sym makes
+// id(f) unique per function and stable for the whole run.
+static llvm::Value *fun_identity_token(Sym *f) {
+  char name[64];
+  snprintf(name, sizeof(name), "_CG_fnid_%d", f->id);
+  if (llvm::GlobalVariable *gv = TheModule->getGlobalVariable(name, true)) return gv;
+  llvm::Type *i8 = llvm::Type::getInt8Ty(*TheContext);
+  return new llvm::GlobalVariable(*TheModule, i8, true, llvm::GlobalValue::PrivateLinkage,
+                                  llvm::ConstantInt::get(i8, 0), name);
 }
 
 // -------------------------------------------------------------
@@ -2888,6 +2917,31 @@ class LLVMEmitter : public VirtualCGEmitter {
   bool emit_send_sizeof(PNode *pn) override { return ::emit_send_sizeof(ctx, pn); }
   bool emit_send_primitive(PNode *pn) override { return ::emit_send_primitive(ctx, pn); }
   bool emit_send_default_prim(PNode *pn) override { return ::emit_send_default_prim(ctx, pn); }
+  // ifa/issues/181: the prims no emitter above claims, each handled on
+  // purpose. Anything else is a compile error (virtual_cg_emit_send).
+  bool emit_send_unhandled(PNode *pn) override {
+    int idx = pn->prim->index;
+    // A method-slot store (`obj.__len__ = <fun>`) in a builtin-class
+    // prototype. The stored value is a function, which has no LLVM value
+    // here by design (see emit_move: materializing those addresses
+    // pollutes vector prototypes). Method pointers are installed at clone
+    // time from cg_new_to_val_map instead, which is what dispatch reads.
+    if (idx == P_prim_setter && pn->rvals.n >= 5 && fun_sym_for_var(pn->rvals.v[4])) return true;
+    // A store of a FAKE value -- a frontend marker that only declares the
+    // field (pyc's `value = __pyc_declare__` class attribute). The C
+    // backend gives fake Vars no C name and emits no store; same here.
+    if (idx == P_prim_setter && pn->rvals.n >= 5 && pn->rvals.v[4] && pn->rvals.v[4]->sym &&
+        pn->rvals.v[4]->sym->is_fake)
+      return true;
+    // An attribute read the emitter cannot resolve: the C backend's
+    // `assert(!"runtime error: getter not resolved")`. Trap at run time,
+    // as it does, rather than read an unassigned result as zero.
+    if (idx == P_prim_period) {
+      emit_salvage_trap(ctx, pn->lvals.n ? pn->lvals.v[0] : nullptr);
+      return true;
+    }
+    return false;
+  }
   void emit_send_call(PNode *pn) override { ::emit_send_call(ctx, pn); }
   
   bool emit_send_any_prim(PNode *pn) override {
@@ -2898,6 +2952,13 @@ class LLVMEmitter : public VirtualCGEmitter {
       if (pn->lvals.n < 1 || pn->rvals.n < 3) return false;
       Var *dst_var = pn->lvals.v[0];
       llvm::Value *v = value_for_var(ctx, pn->rvals.v[2]);
+      // ifa/issues/181: a function-typed value has no LLVM value -- the
+      // backend drops is_fun formals from signatures -- so `id(f)` (and
+      // hash(f), which is id) declined and was silently emitted as
+      // nothing: hash(f) == hash(g) came out True. In IFA a function is
+      // its own singleton type, so the value IS known.
+      if (!v)
+        if (Sym *f = fun_sym_for_var(pn->rvals.v[2])) v = fun_identity_token(f);
       if (!dst_var || !v) return false;
       llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
       llvm::Value *res;
@@ -3060,10 +3121,45 @@ void emit_send(EmitCtx &ctx, PNode *pn) {
 // cg_normalize_v2.cc:lower_send_call (lines 1565-1672).
 // -------------------------------------------------------------
 
+static void emit_send_call_impl(EmitCtx &ctx, PNode *pn);
+
+// ifa/issues/181: a call whose live result was never produced. The
+// emitter below has many exits that give up on a dispatch it cannot
+// resolve (no candidate, an ambiguous {list, tuple} receiver, a callee
+// with no body) and used to return with the result unassigned, so the
+// next reader saw no value and was silently dropped too. The C backend
+// emits `assert(!"runtime error: matching function not found")` at the
+// same sites. Do the same: trap at run time, and give the result a
+// defined value so the code after it still emits.
 void emit_send_call(EmitCtx &ctx, PNode *pn) {
+  Var *dst = (pn && pn->lvals.n) ? pn->lvals.v[0] : nullptr;
+  llvm::Type *dst_ty = (dst && dst->live && dst->type) ? sym_to_llvm_type(dst->type) : nullptr;
+  bool watch = dst_ty && !dst_ty->isVoidTy() && dst->type != sym_nil_type;
+  Var *saved = ctx.watch_result;
+  bool saved_put = ctx.watch_result_put;
+  ctx.watch_result = watch ? dst : nullptr;
+  ctx.watch_result_put = false;
+  emit_send_call_impl(ctx, pn);
+  bool produced = ctx.watch_result_put;
+  ctx.watch_result = saved;
+  ctx.watch_result_put = saved_put;
+  if (watch && !produced && Builder->GetInsertBlock() && !Builder->GetInsertBlock()->getTerminator())
+    emit_salvage_trap(ctx, dst);
+}
+
+static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
   if (!pn || !ctx.fn) return;
   Vec<Fun *> *callees = ctx.fn->calls.get(pn);
-  if (!callees || !callees->n) return;
+  if (!callees || !callees->n) {
+    // A call FA found no target for: the C backend's
+    // `assert(!"runtime error: matching function not found")`. This
+    // returned silently, leaving the result unassigned, so whatever read
+    // it next declined too (ifa/issues/181: `print(x[0:2])` on a
+    // {list, tuple} union). Trap at run time, and give the result a
+    // defined value so the code after it still emits.
+    emit_salvage_trap(ctx, pn->lvals.n ? pn->lvals.v[0] : nullptr);
+    return;
+  }
   Fun *single_target = get_target_fun_core(pn, ctx.fn);
   if (!single_target && callees->n > 1) {
     // ifa/issues/030 classtag dispatch (mirrors cg.cc's
