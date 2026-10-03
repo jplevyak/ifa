@@ -1116,9 +1116,63 @@ static void emit_salvage_trap(EmitCtx &ctx, Var *dst_v = nullptr) {
   }
 }
 
+// `**`, matching pyc_c_runtime.h's _CG_prim_pow: int ** int is exact
+// (_CG_int_pow), and anything else is libm's pow on doubles. There was
+// no handler at all -- `**` is not in is_binop_family, and the default
+// fallback declined it on the operator-symbol operand -- so every power
+// was silently emitted as nothing and read back as 0 (nbody printed
+// 0.000000000 for every energy; ifa/issues/180). The pow call is
+// `nobuiltin`: LLVM would otherwise fold pow(x, 2.0) to x*x, which
+// differs from glibc's pow (and so from CPython) on ~0.08% of inputs.
+static bool emit_send_pow(EmitCtx &ctx, PNode *pn) {
+  if (pn->rvals.n < 4 || pn->lvals.n < 1) return false;
+  Var *lhs_v = pn->rvals.v[pn->rvals.n - 3];
+  Var *rhs_v = pn->rvals.v[pn->rvals.n - 1];
+  Var *dst_v = pn->lvals.v[0];
+  if (!lhs_v || !rhs_v || !dst_v) return false;
+  llvm::Value *lhs = value_for_var(ctx, lhs_v);
+  llvm::Value *rhs = value_for_var(ctx, rhs_v);
+  if (!lhs || !rhs) return false;
+  llvm::Type *i64 = Builder->getInt64Ty();
+  llvm::Type *f64 = Builder->getDoubleTy();
+  llvm::Value *res;
+  if (lhs->getType()->isIntegerTy() && rhs->getType()->isIntegerTy()) {
+    llvm::Function *fn = get_runtime_helper("_CG_int_pow", i64, {i64, i64});
+    res = Builder->CreateCall(fn, {int_width_cast(lhs, i64), int_width_cast(rhs, i64)});
+  } else {
+    auto to_f64 = [&](llvm::Value *v) -> llvm::Value * {
+      if (v->getType()->isIntegerTy(1)) return Builder->CreateUIToFP(v, f64);
+      if (v->getType()->isIntegerTy()) return Builder->CreateSIToFP(v, f64);
+      if (v->getType()->isFloatingPointTy() && v->getType() != f64) return Builder->CreateFPCast(v, f64);
+      return v;
+    };
+    lhs = to_f64(lhs);
+    rhs = to_f64(rhs);
+    if (!lhs->getType()->isDoubleTy() || !rhs->getType()->isDoubleTy()) return false;
+    llvm::Function *fn = get_runtime_helper("pow", f64, {f64, f64});
+    llvm::CallInst *call = Builder->CreateCall(fn, {lhs, rhs});
+    call->addFnAttr(llvm::Attribute::NoBuiltin);
+    res = call;
+  }
+  llvm::Type *dst_ty = sym_to_llvm_type(dst_v->type);
+  if (dst_ty && dst_ty != res->getType()) {
+    if (dst_ty->isIntegerTy() && res->getType()->isIntegerTy())
+      res = int_width_cast(res, dst_ty);
+    else if (dst_ty->isFloatingPointTy() && res->getType()->isFloatingPointTy())
+      res = Builder->CreateFPCast(res, dst_ty);
+    else if (dst_ty->isFloatingPointTy() && res->getType()->isIntegerTy())
+      res = Builder->CreateSIToFP(res, dst_ty);
+    else if (dst_ty->isIntegerTy() && res->getType()->isFloatingPointTy())
+      res = Builder->CreateFPToSI(res, dst_ty);
+  }
+  put_result(ctx, dst_v, res);
+  return true;
+}
+
 bool emit_send_binop(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim) return false;
   int idx = pn->prim->index;
+  if (idx == P_prim_pow) return emit_send_pow(ctx, pn);
   if (!is_binop_family(idx)) return false;
   if (pn->rvals.n < 4 || pn->lvals.n < 1) return false;
   Var *lhs_v = pn->rvals.v[pn->rvals.n - 3];

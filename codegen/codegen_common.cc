@@ -1005,6 +1005,13 @@ void virtual_cg_emit_send(VirtualCGEmitter *emitter, PNode *pn) {
     if (emitter->emit_send_sizeof(pn)) return;
     if (emitter->emit_send_primitive(pn)) return;
     if (emitter->emit_send_default_prim(pn)) return;
+    // ifa/issues/181: no emitter claimed this prim, so it produces NO
+    // code, and a live result then reads as zero. That is how `**`
+    // printed 0 on the LLVM backend (ifa/180). IFA_DBG_NOEMIT lists
+    // every prim that reaches here.
+    if (getenv("IFA_DBG_NOEMIT"))
+      fprintf(stderr, "NOEMIT prim=%s lvals=%d live=%d\n", pn->prim->name, pn->lvals.n,
+              pn->lvals.n && pn->lvals.v[0] ? (int)pn->lvals.v[0]->live : -1);
     return;
   }
   emitter->emit_send_call(pn);

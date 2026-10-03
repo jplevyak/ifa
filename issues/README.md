@@ -95,7 +95,7 @@ one is a lesson this directory paid for.
 | issue | what |
 | --- | --- |
 | [179](179-LLVM-quameon-computes-nan.md) | LLVM: quameon runs but computes `nan` (C matches CPython); latent, independent of 132. |
-| [180](180-LLVM-nbody-diverges-from-cpython.md) | LLVM: nbody drifts from CPython (C matches since `-fno-builtin-pow`); its `**` lowering emits no `pow`. |
+| [181](181-LLVM-unhandled-prim-emits-nothing.md) | codegen: a prim no emitter claims produces NO code and its result reads as 0; LLVM drops `id(function)` and method-slot setters this way. |
 | [102](102-corpus-programs-compile-then-abort-at-runtime.md) | an unresolved call becomes a silent runtime stub. Make it an FA violation. Also the untyped-value work list. |
 | [079](079-DISPATCH-single-candidate-dispatch-unchecked-cast.md) | the single-candidate fast path casts past union members that lack the method. |
 | [118](118-union-field-representation-and-polymorphic-field-offset.md) | `{bool, None}`: a tri-state sentinel representation (bool has spare codes; int64 does not). |
