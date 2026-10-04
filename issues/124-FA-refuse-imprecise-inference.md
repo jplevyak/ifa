@@ -50,7 +50,9 @@ and is removed. Its constant rule (closed/169) survives as `edge_arg_type`.
    always `None`: precise, merely lacking a C representation. Exempt
    nil-only formals from the check, and the fixture flips to PASS by
    itself.
-2. **`go` does not compile at `4b61e721`, and the cause is not
+2. **FIXED 2026-10-03, `go` compiles.** `str.strip`/`lstrip`/`rstrip`
+   now exist with a `chars` argument. Re-measure `go` under
+   `--refuse-imprecise`. History: **`go` did not compile at `4b61e721`, and the cause was not
    imprecision.** Its first error is `unresolved member 'rstrip' of class
    'str'` (`go.py:514`, `sys.stdin.readline().rstrip('\n')`):
    `__pyc__/01_str.py` defines `strip` but not `rstrip` / `lstrip`. That

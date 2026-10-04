@@ -84,7 +84,7 @@ one is a lesson this directory paid for.
 | [050](050-FA-general-constant-propagation-unreachable-code.md) | a global slot's value is not call-graph precise. Stages 2-3 (mod-set, per-ES summary). |
 | [119](119-sccp-as-an-outer-fixed-point-over-fa.md) | SCCP: explicit executability, dead edges as a between-pass decision, fact providers. |
 | [039](039-FA-uninitialized-local-reads-silent.md) | unbound locals: analysis done, `--safe` fill done. Open: the runtime check, DEFINITELY-unbound on by default. |
-| [124](124-FA-refuse-imprecise-inference.md) | `--refuse-imprecise`: a nil-only-formal false positive. `go` is blocked on a missing `str.rstrip`. |
+| [124](124-FA-refuse-imprecise-inference.md) | `--refuse-imprecise`: a nil-only-formal false positive. `go` compiles now (`str.rstrip` landed); re-measure it. |
 | [165](165-none-reaching-an-operation-is-silently-accepted.md) | a `None` that does arrive at an operation reads as zero. Permissive runtime check, strict refusal. |
 | [147](147-analysis-result-depends-on-the-binary-not-the-inputs.md) | determinism: the result depends on the binary layout. Canonicalise every order that reaches a decision. |
 | [111](111-FA-selective-invalidation-per-pass.md) | performance: pass cost tracks accumulated contours (selective invalidation, blocked on setter classing; or rebuild from decisions). Re-measure first. |
