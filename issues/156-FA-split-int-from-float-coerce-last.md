@@ -1,6 +1,7 @@
 # ifa/156 — split int from float on demand; coerce only as a last resort
 
-**Status:** open. Rewritten 2026-09-28. It now carries
+**Status:** open, with the ES-side split LANDED 2026-10-03 (see "Landed"
+below). Rewritten 2026-09-28. It now carries
 [145](closed/145-numeric-coercion-is-not-gated-on-permissive-mode.md)
 (coercion is permissive-only; the use-sensitive residual) and
 [171](closed/171-FA-numeric-union-sustains-itself-through-a-shared-contour.md)
@@ -56,6 +57,40 @@ test by design (`elem_irrepresentable` ends `return nb > 1 && !all_num`:
 (fysphun 283 ES vs 15 CS, softrender 513 vs 15), while the demand ladder
 is CreationSet-side. So simply dropping the exclusion (`PYC_NUMSPLIT`)
 reached ~4% and measured a no-op. It was deleted.
+
+## Landed (2026-10-03): `fa_split_numeric_confluences`
+
+Steps 1-3 of the plan below, for EntrySets. It runs at quiescence in
+reanalyze phase 2, BEFORE coercion, and coercion runs only on a quiescence
+where nothing more splits (step 4).
+
+- **Demand:** an EntrySet formal holds a pure numeric mix and the contour
+  has 2+ in-edges.
+- **Backtrack:** each in-edge's actual is walked back to its PURE sources
+  (single-numeric-kind AVars): through moves/phis by `backward`, through a
+  primitive by its operands, and through a call by THAT call's actuals, not
+  the shared callee. The contour being split is neutral, which is what
+  breaks the self-blinding loop. One rule took a measurement to find: a
+  call's result is a seed of kind K only if EVERY callee it dispatches to
+  returns pure K. `2*a - HALF` fans out to int.__sub__ AND float.__sub__
+  only because its receiver is the union being broken, and crediting each
+  callee's return separately read the loop's float straight back in.
+- **Split:** in-edges are grouped by seed set (`{int64}`, `{float64,
+  int64}`, ...) and every group but one moves to a fresh contour. The demand
+  decides whether; the call edges only name the parts.
+
+Results: `tests/numeric_union_self_sustaining.py` matches CPython (a, b, w
+are ints; only `u`, which genuinely holds `0` then a float, is still
+coerced, and its warnings are its `.check`). `ac_encode` compiles under
+the perturbation this issue named, and under the one that exposed it
+(open() gaining a raise path shifted pass 1 by one contour and lost the
+accidental split). Corpus check `f7f51e05+80a05d11` against `27b04a0c`:
+coercion warnings 678 -> 572 (ac_encode 206 -> 101), contours +2.5%, no
+verdict regressed. Probe: `IFA_DBG_NUMSPLIT` (1 = splits and candidates,
+2 = seeds, 3 = the full walk).
+
+Still open: the CS-side mix (record fields and container elements, which
+coercion also annotates), and the use-sensitive half below.
 
 ## The plan: coercion's failure-to-be-exact is the demand
 

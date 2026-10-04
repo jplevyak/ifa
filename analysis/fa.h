@@ -959,6 +959,7 @@ void flow_var_type_permit(AVar *v, AType *t);
 // (clear_results) so the re-run re-derives flow with the
 // annotations in force. Call from IFACallbacks::reanalyze.
 int fa_coerce_numeric_confluences(Vec<ATypeViolation *> &violations);
+int fa_split_numeric_confluences();  // ifa/issues/156
 // Set / install a predicate restrict on `v`.  cls is only
 // used for RP_IsInstanceOf / RP_NotInstanceOf.  Idempotent:
 // re-installing the same predicate is a no-op; installing a

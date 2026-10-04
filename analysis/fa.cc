@@ -7114,6 +7114,182 @@ static int coerce_annotate(AVar *av) {
   return 1;
 }
 
+// ifa/issues/156: split int from float on demand; coerce only last.
+//
+// The demand: an EntrySet formal holds a pure numeric mix ({int64,
+// float64}) at quiescence, which coercion would otherwise widen -- printing
+// `1.0` where CPython prints `1`. The confluence is a contour SHARED by call
+// sites that carry different numeric kinds, but once the mix has closed a
+// loop through it (`a = 2*a - HALF`, `u = 2*u - HALF` both reaching one
+// int.__mul__ contour) every in-edge carries the identical union, so no
+// type-keyed split can see the difference (156's "self-blinding").
+//
+// So backtrack each in-edge's actual to its PURE sources -- the seed kinds
+// it would carry if this contour did not feed it back -- and partition the
+// edges by that seed set. The demand alone decides WHETHER to split; the
+// call edges only name the parts (AGENTS.md: reason vs mechanism). After a
+// split every pass re-derives from bottom, so the int-seeded group comes
+// out int. A genuinely temporal mix (`u = 0` then a float) keeps its own
+// seed set {int, float} and is coerced afterwards, as before.
+typedef Vec<Sym *> NumKinds;
+
+static void sort_cstrings(Vec<cchar *> &v) {  // small: insertion sort
+  for (int i = 1; i < v.n; i++)
+    for (int j = i; j > 0 && strcmp(v[j - 1], v[j]) > 0; j--) {
+      cchar *t = v[j - 1];
+      v[j - 1] = v[j];
+      v[j] = t;
+    }
+}
+
+static bool numeric_kinds(AType *t, NumKinds &k) {  // false if a non-numeric basic is present
+  for (CreationSet *cs : t->sorted) {
+    Sym *bt = to_basic_type(cs->sym->type);
+    if (!bt) continue;
+    if (!bt->num_kind) return false;
+    k.set_add(bt);
+  }
+  return true;
+}
+
+static void numeric_seeds(AVar *av, EntrySet *splitting, NumKinds &seeds, Vec<AVar *> &visited, int depth) {
+  if (!av || depth > 64 || !visited.set_add(av)) return;
+  if (av->contour == (void *)splitting) return;  // the loop being broken: neutral
+  NumKinds k;
+  if (!numeric_kinds(av->out, k) || !k.set_count()) return;
+  static int dbgw = -1;
+  if (dbgw < 0) dbgw = getenv("IFA_DBG_NUMSPLIT") && atoi(getenv("IFA_DBG_NUMSPLIT")) > 2 ? 1 : 0;
+  if (dbgw)
+    fprintf(stderr, "%*swalk av#%d '%s' kinds=%d def=%d prim=%s es=%d nback=%d\n", depth * 2, "", av->id,
+            av->var && av->var->sym && av->var->sym->name ? av->var->sym->name : "?", k.set_count(),
+            av->var && av->var->def && av->var->def->code ? (int)av->var->def->code->kind : -1,
+            av->var && av->var->def && av->var->def->prim ? av->var->def->prim->name : "-",
+            av->contour_is_entry_set ? ((EntrySet *)av->contour)->id : -1, av->backward.n);
+  if (k.set_count() == 1) {  // pure: a seed
+    for (Sym *x : k) if (x) seeds.set_add(x);
+    static int dbgp = -1;
+    if (dbgp < 0) dbgp = getenv("IFA_DBG_NUMSPLIT") && atoi(getenv("IFA_DBG_NUMSPLIT")) > 1 ? 1 : 0;
+    if (dbgp)
+      fprintf(stderr, "    seed %s from av#%d '%s' depth=%d def=%d\n", k[0] ? k[0]->name : "?", av->id,
+              av->var && av->var->sym && av->var->sym->name ? av->var->sym->name : "?", depth,
+              av->var && av->var->def && av->var->def->code ? (int)av->var->def->code->kind : -1);
+    return;
+  }
+  PNode *def = av->var ? av->var->def : nullptr;
+  if (def && def->code && def->code->kind == Code_SEND && av->contour_is_entry_set) {
+    if (def->prim) {
+      // a primitive computes from its operands in this same contour
+      for (Var *r : def->rvals) if (r && r->sym && !r->sym->is_symbol)
+        numeric_seeds(make_AVar(r, (EntrySet *)av->contour), splitting, seeds, visited, depth + 1);
+      return;
+    }
+    // A call: follow THIS call's actuals, not the shared callee. Shortcut:
+    // if every callee this call dispatches to returns the SAME pure kind
+    // (`(v - u) / 2` is float whichever __truediv__ runs), that kind is the
+    // seed. Otherwise the result kind follows the actuals: a call can fan
+    // out to int.__sub__ AND float.__sub__ only because its receiver is the
+    // very union being broken (`2*a - HALF`), so crediting each callee's
+    // return separately would read the loop's float back in.
+    Vec<AEdge *> calls;
+    bool any = false;
+    for (AEdge *e : ((EntrySet *)av->contour)->out_edges) {
+      if (!e || e->pnode != def) continue;
+      any = true;
+      if (e->to != splitting) calls.add(e);  // a result of the loop being broken is neutral
+    }
+    if (any) {
+      NumKinds rk;
+      bool pure = calls.n > 0;
+      for (AEdge *e : calls) {
+        if (!e->to || !e->to->rets.n) { pure = false; break; }
+        for (AVar *r : e->to->rets) if (r && !numeric_kinds(r->out, rk)) pure = false;
+      }
+      if (pure && rk.set_count() == 1) {
+        for (Sym *x : rk) if (x) seeds.set_add(x);
+        return;
+      }
+      for (AEdge *e : calls)
+        form_Map(MapMPositionAVarElem, x, e->args) if (x->value)
+          numeric_seeds(x->value, splitting, seeds, visited, depth + 1);
+      return;
+    }
+  }
+  for (AVar *b : av->backward) numeric_seeds(b, splitting, seeds, visited, depth + 1);
+}
+
+static cchar *seed_key(NumKinds &k) {  // order-independent name of a seed set
+  Vec<cchar *> names;
+  for (Sym *x : k) if (x && x->name) names.add(x->name);
+  sort_cstrings(names);
+  cchar *r = "";
+  for (cchar *n : names) r = dupstrs(r, n, ",");
+  return if1_cannonicalize_string(if1, r);
+}
+
+int fa_split_numeric_confluences() {
+  static int dbg = -1;
+  if (dbg < 0) dbg = getenv("IFA_DBG_NUMSPLIT") ? 1 : 0;
+  int nsplit = 0;
+  Vec<EntrySet *> ess;
+  ess.copy(fa->ess);
+  for (EntrySet *es : ess) {
+    if (!es || !es->fun) continue;
+    Vec<AEdge *> in;
+    for (AEdge *e : es->edges) if (e && e->to == es) in.add(e);
+    if (in.n < 2) continue;
+    // the demand: some formal of this contour is a pure numeric mix
+    MPosition *demand_pos = nullptr;
+    form_Map(MapMPositionAVarElem, x, es->args) {
+      if (!x->value) continue;
+      NumKinds k;
+      if (numeric_kinds(x->value->out, k) && k.set_count() > 1) { demand_pos = x->key; break; }
+    }
+    if (!demand_pos) continue;
+    // partition the in-edges by the seed set of their actual at that formal
+    Map<cchar *, Vec<AEdge *> *> groups;
+    Vec<cchar *> keys;
+    bool any_pure = false;
+    for (AEdge *e : in) {
+      AVar *a = e->args.get(demand_pos);
+      NumKinds seeds;
+      Vec<AVar *> visited;
+      if (a) numeric_seeds(a, es, seeds, visited, 0);
+      cchar *key = seed_key(seeds);
+      if (seeds.set_count() == 1) any_pure = true;
+      Vec<AEdge *> *g = groups.get(key);
+      if (!g) { groups.put(key, (g = new Vec<AEdge *>)); keys.add(key); }
+      g->add(e);
+    }
+    if (dbg) {
+      fprintf(stderr, "[numsplit?] p=%d fun=%s es=%d in=%d groups:", analysis_pass,
+              es->fun->sym->name ? es->fun->sym->name : "?", es->id, in.n);
+      for (cchar *k : keys) fprintf(stderr, " {%s}x%d", k, groups.get(k)->n);
+      fprintf(stderr, "\n");
+    }
+    if (keys.n < 2 || !any_pure) continue;
+    // the first group keeps `es`; every other group moves to a fresh contour
+    sort_cstrings(keys);
+    for (int i = 1; i < keys.n; i++) {
+      Vec<AEdge *> *g = groups.get(keys[i]);
+      EntrySet *tes = nullptr;
+      for (AEdge *e : *g) {
+        es->edges.del(e);
+        e->to = nullptr;
+        e->filtered_args.clear();
+        set_entry_set(e, tes);
+        tes = e->to;
+      }
+      if (tes && !tes->split) tes->split = es;
+      ++nsplit;
+      if (dbg)
+        fprintf(stderr, "[numsplit] p=%d fun=%s es=%d keeps {%s} x%d; es=%d takes {%s} x%d\n", analysis_pass,
+                es->fun->sym->name ? es->fun->sym->name : "?", es->id, keys[0], groups.get(keys[0])->n,
+                tes ? tes->id : -1, keys[i], g->n);
+    }
+  }
+  return nsplit;
+}
+
 int fa_coerce_numeric_confluences(Vec<ATypeViolation *> &violations) {
   (void)violations;  // scan directly: see phi-carrier note below
   int annotated = 0;
