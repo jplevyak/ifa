@@ -1459,6 +1459,7 @@ void Matcher::find_best_matches(Vec<AVar *> &args, Vec<CreationSet *> &csargs, V
       Vec<Cand> cands;
       bool bail = false;
       bool dispatch_types_differ = false;
+      bool all_untyped = true;
       Sym *first_fdt = nullptr;
       MPosition lp(app);
       lp.push(1);
@@ -1473,6 +1474,7 @@ void Matcher::find_best_matches(Vec<AVar *> &args, Vec<CreationSet *> &csargs, V
         Sym *fdt = dispatch_type(formal);
         if (!first_fdt) first_fdt = fdt;
         else if (fdt != first_fdt) dispatch_types_differ = true;
+        if (fdt != sym_any) all_untyped = false;
         Cand c;
         c.m = m;
         c.formal = formal;
@@ -1504,7 +1506,23 @@ void Matcher::find_best_matches(Vec<AVar *> &args, Vec<CreationSet *> &csargs, V
           // empty for every candidate) — prune it here rather than
           // recursing into a provably effect-free subtree.
           if (!any_viable) continue;
+          // The type is part of the key because the leaf's coercion,
+          // promotion and verify steps read cs->sym->type. When every live
+          // candidate's formal here is untyped (dispatch type sym_any),
+          // none of them can tell this CS's type from another's:
+          // coercion_uses and promotion_uses ask the callbacks about a
+          // coercion TO sym_any, and verify_arg accepts any type that
+          // sym_any's specializers contain. Then two CSs with the same
+          // votes are interchangeable for the leaf, and keying on the type
+          // only multiplies the enumeration: `a == b` over a 48-way union
+          // at both positions was 12 receiver classes x 12 argument types
+          // = 144 leaves for an 11-way single dispatch (plcfrs). A CS whose
+          // type verify_arg could reject keeps its type in the key, and so
+          // does nil, which verify_arg special-cases.
           Sym *type = cs->sym->type;
+          if (all_untyped && cs->sym != sym_nil_type &&
+              (type == sym_any || sym_any->specializers.set_in(type)))
+            type = nullptr;
           Sym *raw = dispatch_types_differ ? cs->sym : nullptr;
           int found = -1;
           for (int ki = 0; ki < classes.n; ki++)
