@@ -4,7 +4,8 @@ all: defaulttarget
 
 MODULE=ifa
 DEBUG=1
-#OPTIMIZE=1
+# On by default; see the top-level Makefile. `make OPTIMIZE=` turns it off.
+OPTIMIZE=1
 #PROFILE=1
 # Boehm GC is a hard dependency — no non-GC build path.
 #LEAK_DETECT=1
