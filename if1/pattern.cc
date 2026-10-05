@@ -29,7 +29,11 @@ class PMatch : public Match {
   Map<MPosition *, MPosition *> actual_to_formal_position;
   Map<MPosition *, AVar *> actuals;
   Map<MPosition *, Sym *> formal_dispatch_types;
-  Map<MPosition *, AType *> actual_filters;  // actual -> type, point-wise and
+  // actual -> the CreationSets this candidate accepts there, point-wise and
+  // including named arguments. A plain set, not an AType: it is a matching
+  // temporary, never canonicalized, and an AType (sorted copy, four memo
+  // maps) is ~7x the allocation; this was the largest allocator in dispatch.
+  Map<MPosition *, VecCreationSet *> actual_filters;  // actual -> type, point-wise and
                                              // includes named arguments
   Map<MPosition *, MPosition *> actual_named_to_positional;
   Map<MPosition *, MPosition *> formal_to_actual_position;
@@ -38,13 +42,53 @@ class PMatch : public Match {
   Map<Sym *, Sym *> generic_substitutions;
   Map<MPosition *, Sym *> coercion_substitutions;   // formal position -> coercion symbol
   Map<MPosition *, Sym *> promotion_substitutions;  // formal position -> coercion symbol
+  // formal -> the CreationSets the matched combinations put there. The
+  // matching-time form of Match::formal_filters, as plain sets: cache_copy
+  // canonicalizes them into the Match it returns. An AType per position here
+  // was garbage the moment cache_copy replaced it.
+  Map<MPosition *, VecCreationSet *> formal_sets;
 
   Match *cache_copy();
 
   PMatch(Fun *afun) : Match(afun) {}
+  void reset(Fun *afun) {
+    fun = afun;
+    is_partial = 0;
+    formal_filters.clear();
+    visibility_points.clear();
+    actual_to_formal_position.clear();
+    actuals.clear();
+    formal_dispatch_types.clear();
+    actual_filters.clear();
+    actual_named_to_positional.clear();
+    formal_to_actual_position.clear();
+    order_substitutions.clear();
+    default_args.clear();
+    generic_substitutions.clear();
+    coercion_substitutions.clear();
+    promotion_substitutions.clear();
+    formal_sets.clear();
+  }
 };
 
+// PMatches are matching temporaries: one per candidate per match, ~650
+// bytes of maps, and nothing keeps one after the match (cache_copy copies
+// what the result needs; the wrapper caches copy their keys; the wrapper
+// callbacks only read). A Matcher returns its PMatches here when it is
+// destroyed, and new_PMatch reuses them, instead of leaving them for the
+// collector.
+static Vec<PMatch *> pmatch_pool;
+static PMatch *new_PMatch(Fun *f) {
+  if (pmatch_pool.n) {
+    PMatch *m = pmatch_pool.pop();
+    m->reset(f);
+    return m;
+  }
+  return new PMatch(f);
+}
+
 typedef Map<Fun *, PMatch *> PMatchMap;
+typedef MapElem<MPosition *, VecCreationSet *> MapElemMPositionVecCS;
 typedef MapElem<Fun *, PMatch *> PMatchElem;
 
 class MatchCacheEntry : public Vec<Match *> {
@@ -107,6 +151,7 @@ class Matcher {
   void cannonicalize_matches(Vec<Fun *> &, int, Partial_kind, Vec<Match *> &, PNode *, Vec<AVar *> &args);
 
   Matcher(AVar *send, AVar *arg0, int is_closure, Partial_kind partial);
+  ~Matcher();
 };
 
 static void log_dispatch_cs_match(Matcher &matcher, Vec<CreationSet *> &csargs, MPosition &app,
@@ -131,7 +176,7 @@ void pattern_reset() {
 
 Match *PMatch::cache_copy() {
   Match *m = new Match(fun);
-  m->formal_filters.copy(formal_filters);
+  form_Map(MapElemMPositionVecCS, x, formal_sets) m->formal_filters.put(x->key, make_AType(*x->value));
   m->visibility_points.copy(visibility_points);
   m->is_partial = is_partial;
   return m;
@@ -274,16 +319,20 @@ Matcher::Matcher(AVar *asend, AVar *aarg0, int ais_closure, Partial_kind apartia
   ast = asend->var->def->code->ast;
 }
 
+Matcher::~Matcher() {
+  form_Map(PMatchElem, x, match_map) if (x->value) pmatch_pool.add(x->value);
+}
+
 void Matcher::update_match_map(AVar *a, CreationSet *cs, MPosition *acp, MPosition *acpp, Vec<Fun *> &new_matches) {
   for (Fun *f : new_matches) if (f) {
     PMatch *m = match_map.get(f);
     if (!m) {
-      m = new PMatch(f);
+      m = new_PMatch(f);
       match_map.put(f, m);
     }
-    AType *t = m->actual_filters.get(acp);
+    VecCreationSet *t = m->actual_filters.get(acp);
     if (!t) {
-      t = new AType;
+      t = new VecCreationSet;
       m->actual_filters.put(acp, t);
       if (acp != acpp) m->actual_named_to_positional.put(acp, acpp);
     }
@@ -579,10 +628,10 @@ void Matcher::set_filters(Vec<CreationSet *> &csargs, MPosition &app, Vec<Fun *>
     app.push(1);
     for (int i = 0; i < csargs.n; i++) {
       MPosition *fcpp = cannonicalize_to_formal(app, m);
-      AType *t = m->formal_filters.get(fcpp);
+      VecCreationSet *t = m->formal_sets.get(fcpp);
       if (!t) {
-        t = new AType;
-        m->formal_filters.put(fcpp, t);
+        t = new VecCreationSet;
+        m->formal_sets.put(fcpp, t);
       }
       // Issue 037: csargs[i] may be the representative of a
       // dispatch-equivalence class (find_best_matches collapses
@@ -601,7 +650,7 @@ void Matcher::set_filters(Vec<CreationSet *> &csargs, MPosition &app, Vec<Fun *>
 PMatch *Matcher::build_PMatch(Fun *f, PMatch *m) {
   PMatch *mm = match_map.get(f);
   if (!mm) {
-    mm = new PMatch(f);
+    mm = new_PMatch(f);
     match_map.put(f, mm);
   }
   assert(m != mm);
@@ -609,11 +658,11 @@ PMatch *Matcher::build_PMatch(Fun *f, PMatch *m) {
   mm->actuals.copy(m->actuals);
   mm->formal_dispatch_types.copy(m->formal_dispatch_types);
   mm->actual_filters.clear();  // not needed
-  form_MPositionAType(x, m->formal_filters) {
-    if (AType *t = mm->formal_filters.get(x->key))
+  form_Map(MapElemMPositionVecCS, x, m->formal_sets) {
+    if (VecCreationSet *t = mm->formal_sets.get(x->key))
       t->set_union(*x->value);
     else
-      mm->formal_filters.put(x->key, x->value);
+      mm->formal_sets.put(x->key, x->value);
   }
   mm->actual_named_to_positional.clear();  // not needed
   mm->actual_to_formal_position.copy(m->actual_to_formal_position);
@@ -694,10 +743,10 @@ static void fixup_maps(PMatch *m, Map<MPosition *, MPosition *> &formal_to_forma
   form_MPositionMPosition(x, f2a) {
     if (MPosition *y = formal_to_formal.get(x->key)) m->formal_to_actual_position.put(y, x->value);
   }
-  Map<MPosition *, AType *> formal_filters;
-  formal_filters.move(m->formal_filters);
-  form_MPositionAType(x, formal_filters) {
-    if (MPosition *y = formal_to_formal.get(x->key)) m->formal_filters.put(y, x->value);
+  Map<MPosition *, VecCreationSet *> formal_sets;
+  formal_sets.move(m->formal_sets);
+  form_Map(MapElemMPositionVecCS, x, formal_sets) {
+    if (MPosition *y = formal_to_formal.get(x->key)) m->formal_sets.put(y, x->value);
   }
 }
 
@@ -1154,24 +1203,31 @@ void Matcher::reverify_filters(Vec<Fun *> &matches) {
     PMatch *m = match_map.get(f);
     int ok = 1;
     for (MPosition *p : f->positional_arg_positions) {
-      AType *t = m->formal_filters.get(p);
+      VecCreationSet *t = m->formal_sets.get(p);
       if (t) {
         Sym *m_type = dispatch_type(m->fun->arg_syms.get(p));
         Sym *actual = m->actuals.get(to_actual(p, m))->var->sym;
-        Vec<CreationSet *> newt;
+        auto keeps = [&](CreationSet *cs) -> bool {
+          if (cs->sym == sym_nil_type && actual->aspect && sym_object->specializers.set_in(actual->aspect))
+            return m_type->specializers.set_in(actual->aspect);
+          if (m_type == cs->sym || m_type->specializers.set_in(cs->sym->type)) return true;
+          // promotions can add to the dispatch table but do not specialize
+          for (Sym *s : m_type->dispatch_types) if (s->specializers.set_in(cs->sym->type)) return true;
+          return false;
+        };
+        // Rebuild the set only when something is dropped. It almost never
+        // is, and the rebuild per leaf per position was a major allocator.
+        bool drops = false, any = false;
         for (CreationSet *cs : *t) if (cs) {
-          if (cs->sym == sym_nil_type && actual->aspect && sym_object->specializers.set_in(actual->aspect)) {
-            if (m_type->specializers.set_in(actual->aspect)) newt.set_add(cs);
-          } else {
-            if (m_type == cs->sym || m_type->specializers.set_in(cs->sym->type))
-              newt.set_add(cs);
-            else
-              // promotions can add to the dispatch table but do not specialize
-              for (Sym *s : m_type->dispatch_types) if (s->specializers.set_in(cs->sym->type)) newt.set_add(cs);
-          }
+          if (keeps(cs)) any = true;
+          else drops = true;
         }
-        if (!newt.n) ok = 0;
-        t->move(newt);
+        if (!any) ok = 0;
+        if (drops) {
+          Vec<CreationSet *> newt;
+          for (CreationSet *cs : *t) if (cs && keeps(cs)) newt.set_add(cs);
+          t->move(newt);
+        }
       }
     }
     if (ok) matches.add(f);
@@ -1189,7 +1245,7 @@ void Matcher::find_best_cs_match(Vec<CreationSet *> &csargs, MPosition &app, Vec
     for (int i = 0; i < csargs.n; i++) {
       MPosition *acpp = cannonicalize_mposition(app);
       MPosition *fcpp = to_formal(acpp, m);
-      AType *t = m->actual_filters.get(acpp);
+      VecCreationSet *t = m->actual_filters.get(acpp);
       Sym *formal = m->fun->arg_syms.get(fcpp);
       if (!formal && f->is_varargs) goto LnextCoverArg;
       // is each actual handled
@@ -1341,7 +1397,7 @@ void Matcher::prune_uncoverable(Vec<AVar *> &args, MPosition &app, Vec<Fun *> &m
         Sym *formal = m->fun->arg_syms.get(to_formal(acpp, m));
         if (!formal && f->is_varargs) continue;
         if (formal && formal->is_pattern) continue;  // decided recursively, not by this test
-        AType *t = m->actual_filters.get(acpp);
+        VecCreationSet *t = m->actual_filters.get(acpp);
         Sym *ft = formal && formal->is_exact_match ? dispatch_type(formal) : nullptr;
         bool any = false;
         if (t && formal)
@@ -1416,7 +1472,7 @@ void Matcher::find_best_matches(Vec<AVar *> &args, Vec<CreationSet *> &csargs, V
       MPosition *fcpp = m ? to_formal(acpp, m) : nullptr;
       Sym *formal = m ? m->fun->arg_syms.get(fcpp) : nullptr;
       if (m && formal && !formal->is_pattern) {
-        AType *t = m->actual_filters.get(acpp);
+        VecCreationSet *t = m->actual_filters.get(acpp);
         Sym *ft = formal->is_exact_match ? dispatch_type(formal) : nullptr;
         // The single viable class: CSs that pass every per-position
         // coverage test the leaf applies. Any combination containing
@@ -1453,7 +1509,7 @@ void Matcher::find_best_matches(Vec<AVar *> &args, Vec<CreationSet *> &csargs, V
       struct Cand {
         PMatch *m;
         Sym *formal;
-        AType *t;
+        VecCreationSet *t;
         Sym *ft;
       };
       Vec<Cand> cands;
@@ -1563,10 +1619,8 @@ void Matcher::cannonicalize_matches(Vec<Fun *> &partial_matches, int is_closure,
   qsort_by_id(partial_matches);
   for (Fun *f : partial_matches) {
     PMatch *pm = match_map.get(f);
-    Match *m = pm->cache_copy();
+    Match *m = pm->cache_copy();  // canonicalizes the filters
     assert(m->fun == f);
-    for (int i = 0; i < m->formal_filters.n; i++)
-      if (m->formal_filters[i].key) m->formal_filters[i].value = make_AType(*m->formal_filters.v[i].value);
     m->visibility_points.set_add(visibility_point);
     matches.add(m);
   }

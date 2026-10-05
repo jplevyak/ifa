@@ -241,7 +241,11 @@ AType *make_abstract_type(Sym *s) {
   return s->abstract_type = make_AType(cs);
 }
 
+// Look the type up before allocating it: most calls name a type that is
+// already canonical, and the AType built to find that out was garbage. See
+// type_cannonical_find, which never allocates on the collected heap.
 AType *make_AType(Vec<CreationSet *> &css) {
+  if (AType *hit = type_cannonical_find(css)) return hit;
   AType *t = new AType();
   t->set_union(css);
   return type_cannonicalize(t);

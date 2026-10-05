@@ -978,6 +978,7 @@ int type_violations_count();
 // ORDER affects the result, not just the display.
 void fa_sorted_type_violations(Vec<ATypeViolation *> &src, Vec<ATypeViolation *> &out);
 AType *type_cannonicalize(AType *t);
+AType *type_cannonical_find(Vec<CreationSet *> &css);  // never inserts or GC-allocates; see make_AType
 AType *type_diff(AType *, AType *);
 AType *type_intersection(AType *, AType *);
 AType *type_union(AType *a, AType *b);

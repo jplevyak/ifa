@@ -19,6 +19,7 @@
 #include "ifadefs.h"
 
 #include <algorithm>
+#include <vector>
 
 #include "fa.h"
 #include "fa_census.h"
@@ -176,12 +177,19 @@ Lagain:
     if (j + 2 < right) qsort_pointers(j + 1, right);
   }
 }
-AType *type_cannonicalize(AType *t) {
-  assert(!t->sorted.n);
-  assert(!t->union_map.n);
-  assert(!t->intersection_map.n);
-  int consts = 0, rebuild = 0, nulls = 0;
-  Vec<CreationSet *> nonconsts;
+static int canon_const_cap() {
+  static int constcap = -2;
+  if (constcap == -2) { cchar *v = getenv("PYC_CONSTCAP"); constcap = v ? atoi(v) : -1; }
+  return constcap >= 0 ? constcap : fa->num_constants_per_variable;
+}
+
+// The hash-cons key of t: constants stripped where the base type is present
+// or over the per-variable cap, `sorted` filled and ordered, `hash` set.
+// Shared by type_cannonicalize and the allocation-free lookup in
+// make_AType, so both compute exactly the same key.
+static void type_canon_key(AType *t, Vec<CreationSet *> &nonconsts, int &consts, int &nulls, int &cap_stripped) {
+  int rebuild = 0;
+  consts = 0, nulls = 0, cap_stripped = 0;
   for (CreationSet *cs : *t) if (cs) {
     // strip out constants if the base type is included
     CreationSet *base_cs = nullptr;
@@ -221,12 +229,9 @@ AType *type_cannonicalize(AType *t) {
   // is rebuilt from their BASE types and the constants are gone -- which is
   // also what stops `type_num_fold`'s constant fold, since that needs each
   // operand to be a SINGLE CreationSet carrying an immediate.
-  static int constcap = -2;
-  if (constcap == -2) { cchar *v = getenv("PYC_CONSTCAP"); constcap = v ? atoi(v) : -1; }
-  const int cap = constcap >= 0 ? constcap : fa->num_constants_per_variable;
-  if (consts > cap) {
+  if (consts > canon_const_cap()) {
     rebuild = 1;
-    ++census.fa_cap_strips;  // ifa/131 step 1: does the cap-strip fire at all?
+    cap_stripped = 1;
   }
   if (rebuild) {
     t->sorted.clear();
@@ -242,8 +247,87 @@ AType *type_cannonicalize(AType *t) {
   // per-index prime.
   for (int i = 0; i < t->sorted.n; i++) h += (uint)(intptr_t)t->sorted[i] * open_hash_primes[i % 256];
   t->hash = h ? h : h + 1;  // 0 is empty
+}
+
+// The canonical AType for the set `css`, or null; never inserts and never
+// allocates on the collected heap. It computes type_canon_key's key into
+// malloc'd scratch -- the same constant stripping, the same id order, the
+// same hash -- and searches cannonical_atypes by it. A key computed
+// differently could only miss (equal() compares the sorted elements), and a
+// miss falls back to type_cannonicalize, so this can be slower than it needs
+// to be but never wrong. make_AType calls it first: most of its calls name
+// a type that is already canonical, and building an AType to find that out
+// was the bulk of the analysis's garbage.
+AType *type_cannonical_find(Vec<CreationSet *> &css) {
+  static std::vector<CreationSet *> in, keep, nonconsts;
+  in.clear();
+  keep.clear();
+  nonconsts.clear();
+  for (CreationSet *cs : css) if (cs) in.push_back(cs);
+  std::sort(in.begin(), in.end());
+  in.erase(std::unique(in.begin(), in.end()), in.end());
+  auto member = [](std::vector<CreationSet *> &v, CreationSet *c) { return std::binary_search(v.begin(), v.end(), c); };
+  int consts = 0, rebuild = 0;
+  for (CreationSet *cs : in) {
+    CreationSet *base_cs = nullptr;
+    if (cs->sym->is_constant || (cs->sym->type->num_kind && cs->sym != cs->sym->type))
+      base_cs = cs->sym->type->abstract_type->v[0];
+    else if (cs->sym->type_kind == Type_TAGGED)
+      base_cs = cs->sym->type->specializes[0]->abstract_type->v[0];
+    if (base_cs) {
+      if (member(in, base_cs)) {
+        rebuild = 1;
+        continue;
+      }
+      consts++;
+      nonconsts.push_back(base_cs);
+    } else if (!cs->sym->is_unique_type || cs->sym->type == sym_nil_type)
+      nonconsts.push_back(cs);
+    keep.push_back(cs);
+  }
+  int cap_stripped = 0;
+  if (consts > canon_const_cap()) rebuild = cap_stripped = 1;
+  if (rebuild) {
+    std::sort(nonconsts.begin(), nonconsts.end());
+    nonconsts.erase(std::unique(nonconsts.begin(), nonconsts.end()), nonconsts.end());
+    keep.swap(nonconsts);
+  }
+  std::sort(keep.begin(), keep.end(), [](CreationSet *a, CreationSet *b) { return a->id < b->id; });
+  unsigned int h = 0;
+  for (size_t i = 0; i < keep.size(); i++) h += (uint)(intptr_t)keep[i] * open_hash_primes[i % 256];
+  if (!h) h = 1;
+  auto &ch = fa->type_world.cannonical_atypes;
+  List<AType *> empty;
+  MapElem<uintptr_t, List<AType *>> e(h, empty);
+  MapElem<uintptr_t, List<AType *>> *x = ch.set_in(e);
+  if (!x) return nullptr;
+  typedef ChainHash<AType *, ATypeChainHashFns>::ChainCons Cons;
+  forc_List(Cons, y, x->value) {
+    AType *a = y->car;
+    if (a->sorted.n != (int)keep.size()) continue;
+    bool same = true;
+    for (int i = 0; i < a->sorted.n; i++)
+      if (a->sorted[i] != keep[i]) { same = false; break; }
+    if (!same) continue;
+    if (cap_stripped) ++census.fa_cap_strips;
+    return a;
+  }
+  return nullptr;
+}
+
+AType *type_cannonicalize(AType *t) {
+  assert(!t->sorted.n);
+  assert(!t->union_map.n);
+  assert(!t->intersection_map.n);
+  Vec<CreationSet *> nonconsts;
+  int consts, nulls, cap_stripped;
+  type_canon_key(t, nonconsts, consts, nulls, cap_stripped);
+  if (cap_stripped) ++census.fa_cap_strips;  // ifa/131 step 1: does the cap-strip fire at all?
   AType *tt = fa->type_world.cannonical_atypes.put(t);
   if (!tt) tt = t;
+  // A hit: the canonical entry's ->type was computed when it was inserted.
+  // Recomputing it here allocated a fresh AType per hit (make_AType below).
+  if (tt != t && tt->type) return tt;
   // compute "type" (without constants)
   if (nonconsts.n) {
     if (nulls || consts)
