@@ -3218,6 +3218,15 @@ static void release_callers(EntrySet *es) {
     }
 }
 
+// ifa/178: is this receiver None and nothing else? Asked by gate_send
+// mid-walk, and again by collect_member_violations on the converged types.
+static bool receiver_is_only_nil(AVar *obj) {
+  if (obj->out == fa->type_world.bottom_type) return false;
+  for (CreationSet *cs : obj->out->sorted)
+    if (!cs || !cs->sym || cs->sym->type != sym_nil_type) return false;
+  return true;
+}
+
 // ifa/178: a send that cannot complete. The code after it is unreachable,
 // not untyped -- the rule Code_IF applies to a bottom condition -- so the
 // walk stops there and the send's result AVar holds the gate. Two cases,
@@ -3243,10 +3252,7 @@ static bool gate_send(PNode *p, EntrySet *es) {
   if (p->prim) {
     if (p->prim->index != P_prim_period) return false;
     AVar *obj = make_AVar(p->rvals[1], es);
-    if (obj->out == fa->type_world.bottom_type) return false;
-    gate = true;
-    for (CreationSet *cs : obj->out->sorted)
-      if (!cs || !cs->sym || cs->sym->type != sym_nil_type) { gate = false; break; }
+    gate = receiver_is_only_nil(obj);
   } else {
     Vec<AEdge *> *m = es->out_edge_map.get(p);
     if (!m) return false;
@@ -4373,7 +4379,15 @@ static void collect_member_violations() {
         // hold one on a path that never executes: expr_evaluator's
         // `evaluate(e.rhs)` under `kind == 1` reaches a unary node's
         // `rhs = None`, because nothing ties `kind` to the node.
-        if (result->gates_flow) continue;
+        // Ask it of the CONVERGED receiver, not of `gates_flow`: the gate is
+        // set the first time the walk sees the receiver as None-only, which
+        // is a transient (`x = None` reaches `x` before `x = (1, 2)` does),
+        // and it is released only when the result gains a type. A
+        // `{None, tuple}` receiver whose tuple lacks the member keeps the
+        // stale gate, so `x.count(1)` was not reported at all: permissive
+        // compiled it to a "getter not resolved" abort, and --strict crashed
+        // in codegen on the untyped result.
+        if (receiver_is_only_nil(obj)) continue;
         type_violation(ATypeViolation_kind::MEMBER, selector, obj->out, result);
       }
     }

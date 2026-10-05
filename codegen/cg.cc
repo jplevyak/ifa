@@ -874,7 +874,10 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       }
       Sym *obj = n->rvals[1]->type;
       obj = resolve_union_receiver(obj, symbol);
-      if (n->lvals[0]->type->type_kind == Type_FUN && n->creates) {  // creates a closure
+      // An untyped result (NOTYPE survives into codegen under --strict,
+      // which skips convert_NOTYPE_to_void) falls through to the field
+      // walk and its "getter not resolved" refusal, not a null deref.
+      if (n->lvals[0]->type && n->lvals[0]->type->type_kind == Type_FUN && n->creates) {  // creates a closure
         fprintf(fp, "  %s = _CG_prim_closure(%s);\n", cg_get_string(n->lvals[0]), t);
         if (n->prim && n->prim->index == P_prim_period) {
           fprintf(fp, "  %s->e%d = %s;\n", cg_get_string(n->lvals[0]), 0, cg_get_string(n->rvals.v[3]));
