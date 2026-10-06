@@ -492,6 +492,54 @@ switch (p->prim->index) {
         update_gen(result, rtype);
         break;
       }
+      case P_prim_make_seq: {
+        // issues/110: make_seq(kind, src) -- a container of `kind` with
+        // NO fixed arity, whose generic element is seeded from `src`'s
+        // element. This is prim_make's dynamic-length counterpart:
+        // make_kind fills cs->vars one per argument, which names a fixed
+        // arity; here there are no per-index vars at all, only the
+        // element. Populating it is exactly what makes tuple_able()
+        // false, so clone.cc gives the CreationSet LIST LAYOUT.
+        //
+        // It reads `src->out`, so it lives HERE, under the contract at the
+        // top of this file: re-run whenever `src` grows. It used to be a
+        // walk-time constraint in fa.cc, which read `src` once, and it
+        // carried a "last non-empty source" memory on the CreationSet to
+        // survive a pass where that one read came back empty -- the pass
+        // being the post-inlining re-analysis, which started from stale
+        // values and so never saw `src` change. `tuple(genexpr)` was
+        // untyped with mid-FA inlining off.
+        AVar *container = result;
+        Sym *kind = p->rvals[2]->sym;
+        AVar *src = make_AVar(p->rvals[3], es);
+        CreationSet *cs = creation_point(container, kind);
+        cs->no_static_arity = 1;
+        AVar *elem = get_element_avar(cs);
+        if (elem) {
+          // Every element type the source can yield flows into ours, each
+          // through vector_elems: both the source's generic element and
+          // its per-index vars are CS-contoured, and a raw CS -> CS edge
+          // puts a CS-contoured var in elem->backward, which
+          // compute_setters asserts against (genetic2_idioms aborted the
+          // compiler). vector_elems lands each value in a fresh
+          // entry-set-contoured tval of this pnode first.
+          int slot = 0;
+          for (CreationSet *scs : src->out->sorted) {
+            AVar *selem = get_element_avar(scs);
+            if (selem) {
+              selem->arg_of_send.add(result);
+              vector_elems(0, p, selem, elem, container, slot++);
+            }
+            // A LITERAL source has a bottom generic element -- the
+            // tuple_able design: `make` fills per-index vars and leaves
+            // the element unpopulated. `tuple([1,2,3])` must still get an
+            // element type, so take it from the per-index vars too.
+            for (int i = 0; i < scs->vars.n; i++)
+              if (scs->vars[i]) vector_elems(0, p, scs->vars[i], elem, container, slot++);
+          }
+        }
+        break;
+      }
       case P_prim_merge: {
         AVar *thing1 = make_AVar(p->rvals[p->rvals.n - 2], es);
         AVar *thing2 = make_AVar(p->rvals[p->rvals.n - 1], es);

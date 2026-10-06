@@ -10,7 +10,7 @@
 )
 
 (entry-sets
-  @__main__ args=1 rets=1 edges=4 creates=7
+  @__main__ args=1 rets=1 edges=4 creates=4
   %chain args=3 rets=1 edges=4 creates=0
   %chain args=3 rets=1 edges=4 creates=0
 )

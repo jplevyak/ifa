@@ -194,7 +194,6 @@ CreationSet::CreationSet(CreationSet *cs)
   sym = cs->sym;
   no_static_arity = cs->no_static_arity;  // issues/110: durable, so splits inherit it
   static_arity = cs->static_arity;        // ifa/132: ditto -- a split child has its parent's arity
-  seq_src.copy(cs->seq_src);              // issues/110: durable source memory too
   // ifa/issues/066: durable lineage, collapsed to the root as we go.
   split_origin = cs->split_origin ? cs->split_origin : cs;
   id = fa->creation_set_id++;
@@ -347,6 +346,9 @@ void update_in(AVar *v, AType *t) {
     if (v->restrict) tt = type_intersection(v->in, v->restrict);
     if (v->restrict_pred != RP_None) tt = apply_restrict_pred(v, tt);
     if (v->num_coerce) tt = type_coerce_numeric_constants(tt, v->num_coerce);
+    if (v->widen_constants)
+      for (CreationSet *cs : tt->sorted)
+        if (cs->sym->is_constant && cs->sym->type) tt = type_union(tt, make_abstract_type(cs->sym->type));
     if (tt != v->out) {
       assert(tt != fa->type_world.top_type);
       v->out = tt;
@@ -2254,7 +2256,7 @@ void prim_make_constraints(PNode *p, EntrySet *es) {
   make_kind(p, es, kind, container, &p->rvals, 0, start, 0, l);
 }
 
-static void vector_elems(int rank, PNode *p, AVar *ae, AVar *elem, AVar *container, int n = 0) {
+void vector_elems(int rank, PNode *p, AVar *ae, AVar *elem, AVar *container, int n) {
   AVar *e = ae;
   if (!e->contour_is_entry_set) {
     p->tvals.fill(++n);
@@ -2412,6 +2414,7 @@ static void add_send_constraints(PNode *p, EntrySet *es) {
         fill_rets(es, p->rvals.n - 3);
         for (int i = 3; i < p->rvals.n; i++) {
           AVar *r = make_AVar(p->rvals[i], es);
+          if (es->fun->sym->is_generator) es->rets[i - 3]->widen_constants = 1;
           flow_vars(r, es->rets[i - 3]);
           // issues/114: a GENERATOR's return may never be a singleton
           // constant, however certain FA is of the value.
@@ -2439,91 +2442,20 @@ static void add_send_constraints(PNode *p, EntrySet *es) {
           // each later use separate Vars AND separate Syms, so there is
           // no single downstream thing to exempt; the type is.
           //
+          // It is a flow transform on the return AVar (widen_constants,
+          // applied in update_in), not an update_gen of `r->out` here: the
+          // walk can reach this reply before `r` has its value, and that
+          // snapshot then widened nothing. It used to be rescued only by
+          // the post-inlining re-analysis skipping its reset.
+          //
           // Same root as issues/022's P_prim_await liveness exception:
           // a coroutine handle is not a value the optimizer may reason
           // about through its contents.
-          if (es->fun->sym->is_generator)
-            for (CreationSet *cs : r->out->sorted)
-              if (cs->sym->is_constant && cs->sym->type)
-                update_gen(es->rets[i - 3], make_abstract_type(cs->sym->type));
         }
         break;
       case P_prim_make:
         prim_make_constraints(p, es);
         break;
-      case P_prim_make_seq: {
-        // issues/110: make_seq(kind, src) -- a container of `kind` with
-        // NO fixed arity, whose generic element is seeded from `src`'s
-        // element. This is prim_make's dynamic-length counterpart:
-        // make_kind fills cs->vars one per argument, which names a fixed
-        // arity; here there are no per-index vars at all, only the
-        // element. Populating it is exactly what makes tuple_able()
-        // false, so clone.cc gives the CreationSet LIST LAYOUT.
-        AVar *container = make_AVar(p->lvals[0], es);
-        Sym *kind = p->rvals[2]->sym;
-        AVar *src = make_AVar(p->rvals[3], es);
-        CreationSet *cs = creation_point(container, kind);
-        cs->no_static_arity = 1;
-        AVar *elem = get_element_avar(cs);
-        if (elem) {
-          // Every element type the source can yield flows into ours.
-          //
-          // EVERY source AVar goes through vector_elems, including the
-          // source's own generic element: both it and the per-index vars
-          // are CS-contoured, and a raw CS -> CS flow edge puts a
-          // CS-contoured var in elem->backward, which is exactly what
-          // compute_setters asserts against (`x->contour_is_entry_set`;
-          // measured: genetic2_idioms aborts the compiler). vector_elems
-          // lands each value in a fresh entry-set-contoured tval of this
-          // pnode first, so every edge reaching elem starts at an ES var.
-          // src->out is a per-pass snapshot like everything else, and a
-          // single pass where it reads empty would discard every element
-          // edge built below (measured: correct on pass 3, empty on pass
-          // 4 -- the last -- so the element ended bottom). Remember the
-          // last NON-EMPTY set on the CreationSet and drive the loop
-          // from that. Sound over-approximation: the element is a union,
-          // so keeping a source that has genuinely gone away can only
-          // widen it, never drop a type that is still live.
-          if (src->out->sorted.n) {
-            cs->seq_src.clear();
-            for (CreationSet *scs : src->out->sorted) cs->seq_src.add(scs);
-          }
-          int slot = 0;
-          for (CreationSet *scs : cs->seq_src) {
-            AVar *selem = get_element_avar(scs);
-            if (selem) vector_elems(0, p, selem, elem, container, slot++);
-            // A LITERAL source has a bottom generic element -- that is
-            // the tuple_able design: `make` fills per-index vars and
-            // leaves the element unpopulated, so it stays record-shaped
-            // until something uses it generically. `tuple([1,2,3])` must
-            // still get an element type, so take it from the per-index
-            // vars.
-            //
-            // vector_elems, NOT a bare update_gen: these AVars are
-            // CS-contoured, and a flow EDGE straight from one into an
-            // element var trips compute_setters' `contour_is_entry_set`
-            // assertion. vector_elems is the sanctioned trampoline for
-            // exactly that -- it lands the value in a fresh entry-set-
-            // contoured tval of this pnode and flows THAT into elem.
-            //
-            // A durable edge is REQUIRED, not a nicety. update_gen takes
-            // a SNAPSHOT of fv->out, and nothing orders this constraint
-            // after the source literal's own `make` within a pass, nor
-            // re-runs it when the source is repopulated after the
-            // per-pass clear_avar. Measured on a recursive class with a
-            // {None, tuple} field: the source var read SET on pass 3 and
-            // bottom again on pass 4, the LAST pass, so the element
-            // finished bottom, the CS stayed tuple_able, and clone.cc
-            // gave it RECORD layout with ZERO members -- the empty
-            // record cg.cc reports as "runtime error: bad getter".
-            // arg_of_send alone does not fix it: the source var never
-            // changes during the final pass, so nothing re-enqueues.
-            for (int i = 0; i < scs->vars.n; i++)
-              if (scs->vars[i]) vector_elems(0, p, scs->vars[i], elem, container, slot++);
-          }
-        }
-        break;
-      }
       case P_prim_vector:
         prim_make_vector_constraints(p, es);
         break;
@@ -3598,6 +3530,27 @@ static void collect_Vars_PNodes(Fun *f) {
     }
   }
   for (Var *v : f->fa_all_Vars) if (v->sym->clone_for_constants) f->clone_for_constants = 1;
+}
+
+// Mid-FA inlining (FA::analyze) rewrites function bodies, and every list
+// collect_Vars_PNodes built from the old body is then stale: the inlined
+// copy's constants are missing from fa_Vars (so add_var_constraint never
+// seeds them -- the failure 13888's comment describes for a hand-added
+// constant), and its sends from fa_send_PNodes. Rebuild them for every
+// Fun that had them.
+static void recollect_Vars_PNodes() {
+  for (Fun *f : fa->pdb->funs) {
+    if (!f->fa_collected) continue;
+    f->fa_Vars.clear();
+    f->fa_all_Vars.clear();
+    f->fa_all_PNodes.clear();
+    f->fa_move_PNodes.clear();
+    f->fa_if_PNodes.clear();
+    f->fa_phi_PNodes.clear();
+    f->fa_phy_PNodes.clear();
+    f->fa_send_PNodes.clear();
+    collect_Vars_PNodes(f);
+  }
 }
 
 static AVar *get_filtered(AEdge *e, MPosition *p, AVar *av) {
@@ -13631,6 +13584,8 @@ static void report_gated_calls() {
   }
 }
 
+static void settle_gated_contours();
+
 // ifa/178: liveness at quiescence. A gate (gate_send) is decided during
 // the walk, and liveness only grows within a pass, so code walked BEFORE
 // its gate engaged stays live: `r = evaluate(e.rhs)` was walked while
@@ -13638,7 +13593,29 @@ static void report_gated_calls() {
 // call's bottom result `live_arg` after `e.rhs` became `{None}` and the
 // call gated. Re-derive each gated contour's live set on the converged
 // state: what the walk reached, cut at every send still gated.
+//
+// The gate itself is asked again here too. During the walk a call's gate
+// can almost never engage: gate_send needs the call's edge in out_edges
+// and the callee's live set, and the walk has only just ENQUEUED the edge
+// (analyze_edge adds it later) -- so `r = get(None)` walked straight on.
+// It worked only when a pass started from the previous pass's edges,
+// which the post-inlining re-analysis did by skipping its reset. On the
+// converged graph the question has its real answer. Iterated, because
+// cutting a contour's exit out of its live set gates its own callers.
 static void settle_gated_liveness() {
+  settle_gated_contours();
+  for (bool regated = true; regated;) {
+    regated = false;
+    for (EntrySet *es : fa->ess) if (es && es->fun && es->fun->entry)
+      for (PNode *p : es->fun->fa_send_PNodes)
+        if (p->lvals.n == 1 && es->live_pnodes.set_in(p) && !make_AVar(p->lvals[0], es)->gates_flow &&
+            gate_send(p, es))
+          regated = true;
+    if (regated) settle_gated_contours();
+  }
+}
+
+static void settle_gated_contours() {
   for (EntrySet *es : fa->ess) if (es && es->fun && es->fun->entry) {
     bool gated = false;
     for (PNode *p : es->fun->fa_send_PNodes)
@@ -13770,10 +13747,21 @@ static void complete_pass() {
 // separate "did anything change" signal needed to justify another
 // pass (that's already driven by extend_analysis()'s own type-graph
 // convergence criteria, unrelated to and unaffected by this).
-static void compute_es_can_raise() {
+//
+// WHEN it runs matters: out_edges is structural state that clear_results
+// empties at the top of every pass, so a call there sees only the
+// direct_raise seeds. The transitive closure has to be taken on a
+// CONVERGED graph -- analyze_to_convergence does that after each pass and
+// asks for another pass when a bit was added, so the handlers it makes
+// reachable are walked. (It used to happen only by accident: the
+// post-inlining re-analysis skipped its first reset, and that pass was
+// the one place the closure saw real edges. With mid-FA inlining off,
+// `try: a.index(x) except ValueError:` never caught.)
+static bool compute_es_can_raise() {
+  bool any = false;
   for (EntrySet *es : fa->ess) {
     if (es->can_raise) continue;
-    if (es->fun && es->fun->sym && es->fun->sym->direct_raise) es->can_raise = 1;
+    if (es->fun && es->fun->sym && es->fun->sym->direct_raise) es->can_raise = 1, any = true;
   }
   bool changed = true;
   while (changed) {
@@ -13783,12 +13771,13 @@ static void compute_es_can_raise() {
       for (AEdge *e : es->out_edges) {
         if (e && e->to && e->to->can_raise) {
           es->can_raise = 1;
-          changed = true;
+          changed = any = true;
           break;
         }
       }
     }
   }
+  return any;
 }
 
 // ifa/issues/057: the flow-to-fixpoint inner loop below (edge/send/es
@@ -14032,7 +14021,18 @@ static void analyze_to_convergence() {
     // invalidated, when that is armed and enabled. Falls back to the
     // full reset whenever it declines -- including the first pass,
     // which has no predecessor state to preserve.
-    if (!first_pass && !clear_results_selective()) clear_results();
+    //
+    // "First pass" means first of the WHOLE analysis, not of this call.
+    // analyze() calls this a second time after mid-FA inlining
+    // (ifa_fa_inline, on by default in pyc), and that call's first pass
+    // used to skip the reset and start from the previous convergence's
+    // values. Those values were derived before the last pass's splits,
+    // and a monotone pass can only add to them: `bool.__pyc_to_bool__`
+    // shared by True and False callers answered `bool`, the per-constant
+    // split that should have given `False` landed, and the stale `bool`
+    // still kept an `if isinstance(x, bool):` arm live in a contour where
+    // x is a str -- its narrowed `x` then reported "has no type".
+    if ((!first_pass || analysis_pass > 0) && !clear_results_selective()) clear_results();
     first_pass = false;
     compute_es_can_raise();
     initialize_pass();
@@ -14084,6 +14084,7 @@ static void analyze_to_convergence() {
       }
     }
     complete_pass();
+    bool raise_grew = compute_es_can_raise();  // on the converged graph; see its comment
     dbg_dump_contours(analysis_pass);  // ifa/issues/055
     // The pass cap bounds the WHOLE loop, including passes kept
     // alive only by reanalyze() (issue 033): with the splitter
@@ -14168,7 +14169,7 @@ static void analyze_to_convergence() {
       if (getenv("PYC_DBG_STAGEDELTA"))
         fprintf(stderr, "PASSEND p=%d extend=%d reanalyze=%d fills=%d retract=%d resplit=%d rejoin=%d viol=%d\n",
                 analysis_pass, ext, rea, fil, ret, rsp, rej, fa->type_violations.set_count());
-      loop_again = (ext || rea || fil || ret || rsp || rej);
+      loop_again = (ext || rea || fil || ret || rsp || rej || raise_grew);
     }
   } while (loop_again && analysis_pass <= fa->pass_limit);
   if (getenv("PYC_DBG_OSC"))
@@ -14208,8 +14209,9 @@ int FA::analyze(Fun *top) {
   // identity-fun wrappers (e.g. type-specialized
   // __pyc_to_bool__), then reset per-ES live-pnode caches
   // and re-converge so FA's second pass sees the cleaner
-  // IR.  Gated on `ifa_fa_inline`; default off (production
-  // runs simple_inlining post-FA via ifa_optimize()).
+  // IR.  Gated on `ifa_fa_inline`, default ON (common/fail.h;
+  // `pyc --fa-inline=0` turns it off). simple_inlining also runs
+  // post-FA via ifa_optimize() either way.
   if (ifa_fa_inline) {
     mark_live_funs(this);
     simple_inlining(this);
@@ -14222,6 +14224,7 @@ int FA::analyze(Fun *top) {
     // constraints for the new shape and converges from
     // there.
     for (EntrySet *es : ess) es->live_pnodes.clear();
+    recollect_Vars_PNodes();
     type_violations.clear();
     analyze_to_convergence();
   }

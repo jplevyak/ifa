@@ -114,6 +114,7 @@ AVar::AVar(Var *v, void *acontour)
       live_arg(0),
       is_if_arg(0),
       gates_flow(0),
+      widen_constants(0),
       escape(ES_Escape),  // Phase 1: conservative top
       needs_fat(0) {
   id = fa->avar_id++;

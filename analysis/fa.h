@@ -274,15 +274,6 @@ class CreationSet : public gc {
   // record-able container's TYPE -- it fixes the layout -- so it belongs
   // in CreationSet identity, not in the site the value came from.
   int static_arity;
-  // issues/110: the source CreationSets make_seq last saw NON-EMPTY.
-  // `src->out` is a per-pass snapshot like everything else, and a
-  // single pass where it reads empty would otherwise discard every
-  // element edge the constraint had built -- measured: correct on
-  // pass 3, empty on pass 4 (the last), element bottom. Remembering
-  // the last non-empty set is a sound over-approximation: the element
-  // is a union, so keeping a source that has genuinely gone away can
-  // only widen it, never drop a type that is still live.
-  Vec<CreationSet *> seq_src;
   Vec<AVar *> defs;
   AType *atype;  // the type that this creation set belongs to
   Vec<AVar *> vars;
@@ -411,6 +402,11 @@ class AVar : public gc {
   // in fa.cc), so the walk did not go past it. Lifted, and the contour
   // re-walked, when the result gets a type or a callee reaches its reply.
   uint gates_flow : 1;
+  // issues/114: a GENERATOR's return channel. Every constant that reaches
+  // it also brings its abstract type, so the channel is never a singleton
+  // constant (see P_prim_reply in fa.cc). Applied in update_in, on every
+  // arrival, not once when the reply is walked.
+  uint widen_constants : 1;
   // Escape status (Phase 1+: see ESCAPE_PLAN.md).  Stored as
   // uint:1 to fit alongside the existing bit-fields.
   uint escape : 1;

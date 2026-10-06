@@ -64,6 +64,42 @@ An attempt to defer routing until the worklist drained was reverted in
 [closed/098](closed/098-FA-per-pass-reset-scoped-to-reachable-set.md)'s
 stale-state gap. 098 is fixed, so that blocker is gone.
 
+### Instance 2b — the same, with a per-constant formal (2026-10-05)
+
+Measured with `--fa-inline=0`, on `tests/cross_type_eq.py` and
+`tests/minmax_3arg.py` (both pass on the default path). Reduced repro
+(`b = "a"; print(c != b); print(True == b); print(True != b);
+print(False == True); print(True != False); print(c == False)` with
+`c = 2.5`): `bool.__eq__`'s `if isinstance(x, bool):` in a contour where
+`x` is a `str` sends `False` to `bool.__pyc_to_bool__`, whose formal is
+`__pyc_clone_constants__`-annotated. At convergence that edge sits in the
+`False` contour, which is correct. But on the final pass it was first bound
+to the contour that serves `__str__`'s non-constant `bool`. At the top of a
+pass every formal is bottom, so `edge_type_compatible_with_entry_set`
+returns `0` ("less compatible"), not `-1`, and the score can still pick it.
+The `ret -> result` flow `analyze_edge` installs for that first binding
+outlives the rebinding. So the condition reads `bool`, the dead `True` arm
+is walked, and its narrowed `x` is reported `has no type`.
+
+Two fixes are possible, and either would do. A constant-keeping formal could
+hard-reject (`-1`) a contour holding a different constant or the abstract
+type. Or rebinding an edge could retract the return flow of its previous
+binding.
+
+**Why this only shows up now.** Until 2026-10-05 the default path never
+reached it. Mid-FA inlining folds the bool wrappers away, and the
+post-inlining `analyze_to_convergence` skipped its first reset, so it
+started from the previous convergence's values. That skip was itself this
+issue's root at its largest: every value from before the last split was
+carried into the final pass and could only grow. It is fixed (the reset
+keys on `analysis_pass > 0`). Removing it exposed four single-convergence
+bugs that the stale pass had been hiding, all fixed alongside:
+`compute_es_can_raise` ran on cleared `out_edges` (so `except` never caught
+with `--fa-inline=0`), the generator-return widening was a walk-time
+snapshot, `make_seq` read its source once (`tuple(genexpr)` was untyped),
+and a call's ifa/178 gate could only engage through stale edges. With
+`--fa-inline=0` the suite went from 13 failures to these 2.
+
 ## Instance 3 — split products that converge equal (144)
 
 Route 4 used to fan one contour per creation point. It now partitions by

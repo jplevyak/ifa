@@ -82,6 +82,7 @@ bool get_obj_index(AVar *index, int *i, int n);
 void make_closure(AVar *result);
 void make_period_closure(AVar *result, AVar *a, Vec<AVar *> &args);
 void prim_make_vector_constraints(PNode *p, EntrySet *es);
+void vector_elems(int rank, PNode *p, AVar *ae, AVar *elem, AVar *container, int n = 0);
 void structural_assignment(CreationSet *new_cs, CreationSet *cs, PNode *p, EntrySet *es, bool merge = false, bool mix = false, Sym *elide_source = nullptr);
 // issues/128 step 3: every record field write this pass, as (receiver
 // AVar, field name). Classified at the split stage from CONVERGED types.
