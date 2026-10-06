@@ -939,6 +939,7 @@ Sym *get_constant(Var *v);
 Sym *get_constant(AVar *av);
 int nil_receiver_rval(PNode *pn, Fun *fn);  // ifa/issues/165
 Var *nil_receiver_var(PNode *pn, Fun *fn);  // ifa/issues/184: also through a bound-method closure
+Var *nil_period_receiver(PNode *pn, cchar **selector = nullptr);  // ifa/issues/184: `x.name` that can find None
 int symbol_info(Var *v, Vec<Sym *> &symbols);
 AType *make_AType(CreationSet *cs);
 AType *make_AType(Vec<CreationSet *> &css);

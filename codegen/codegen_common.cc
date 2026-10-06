@@ -984,6 +984,10 @@ bool virtual_cg_is_const_folded_send(PNode *pn) {
 
 void virtual_cg_emit_send(VirtualCGEmitter *emitter, PNode *pn) {
   if (!pn) return;
+  // ifa/issues/184: before the constant-fold early-out -- a read whose
+  // value is a known constant still raises when its receiver is None.
+  cchar *nil_sel = nullptr;
+  if (Var *recv = nil_period_receiver(pn, &nil_sel)) emitter->emit_none_check(recv, nil_sel);
   if (virtual_cg_is_const_folded_send(pn)) return;
   if (pn->prim) {
     int idx = pn->prim->index;

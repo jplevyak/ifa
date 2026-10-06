@@ -283,6 +283,11 @@ static void mark_initial_dead_and_alive(FA *fa, int init = 0) {
         // reason the generator's coroutine body exists.
         p->live = 1;
       }
+      // ifa/issues/184: an attribute read that can find None raises there,
+      // so it is never dead even when its result is unused or folded to a
+      // constant (`print(x.f)` with A.f always 3 printed 3). Live, its
+      // receiver stays live too (mark_live_avars), so codegen can test it.
+      if (nil_period_receiver(p)) p->live = 1;
       if (p->code && p->code->kind == Code_SEND && p->prim && p->prim->index == P_prim_primitive) {
         cchar *name = p->code->rvals[1]->name;
         RegisteredPrim *rp = prim_get(name);
@@ -453,6 +458,11 @@ mark_initial_dead_and_alive(FA *fa, int init = 0) {
         // issues/014: see the identical guard above in this file.
         p->live = 1;
       }
+      // ifa/issues/184: an attribute read that can find None raises there,
+      // so it is never dead even when its result is unused or folded to a
+      // constant (`print(x.f)` with A.f always 3 printed 3). Live, its
+      // receiver stays live too (mark_live_avars), so codegen can test it.
+      if (nil_period_receiver(p)) p->live = 1;
       if (p->code && p->code->kind == Code_SEND && p->prim && p->prim->index == P_prim_primitive) {
         cchar *name = p->code->rvals[1]->name;
         RegisteredPrim *rp = pdb->fa->primitive_transfer_functions.get(name);

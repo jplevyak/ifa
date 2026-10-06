@@ -14497,6 +14497,45 @@ Var *nil_receiver_var(PNode *pn, Fun *fn) {
   return idx >= 0 ? direct[idx] : nullptr;
 }
 
+// ifa/issues/184: the receiver of attribute read `pn` (a P_prim_period,
+// `x.name`) when that read can find None: the receiver may be None, it is
+// otherwise an object (not a scalar -- {None, scalar} is refused
+// elsewhere, issues/048), and None itself has no member `name`. CPython
+// raises AttributeError at the read; FA's period transfer function simply
+// finds nothing on the None CreationSet, so nothing in the analysis says
+// so. Asked the same way that transfer function asks it -- the None
+// CreationSet's var_map, per selector -- so None's real members
+// (`__str__`, `__eq__`, ...) are never checked. Returns null otherwise.
+Var *nil_period_receiver(PNode *pn, cchar **selector) {
+  if (selector) *selector = nullptr;
+  if (!pn || !pn->prim || pn->prim->index != P_prim_period || pn->rvals.n < 4) return nullptr;
+  Var *recv = pn->rvals[1], *sel = pn->rvals[3];
+  if (!recv || !sel) return nullptr;
+  Vec<CreationSet *> nils;
+  bool has_obj = false;
+  form_AVarMapElem(x, recv->avars) if (x->value && x->value->out)
+    for (CreationSet *cs : x->value->out->sorted) {
+      if (!cs || !cs->sym) continue;
+      if (cs->sym->type == sym_nil_type) nils.set_add(cs);
+      else if (cs->sym->type && cs->sym->type->num_kind) return nullptr;
+      else has_obj = true;
+    }
+  if (!nils.n || !has_obj) return nullptr;
+  cchar *name = nullptr;
+  form_AVarMapElem(x, sel->avars) if (x->value && x->value->out)
+    for (CreationSet *scs : x->value->out->sorted) {
+      if (!scs || !scs->sym) continue;
+      cchar *nm = scs->sym->name ? scs->sym->name : scs->sym->constant ? scs->sym->constant : scs->sym->imm.v_string;
+      if (!nm) return nullptr;
+      for (CreationSet *n : nils) if (n && n->var_map.get(nm)) return nullptr;
+      name = nm;
+    }
+  if (!name && sel->sym && sel->sym->is_symbol) name = sel->sym->name;
+  if (!name) return nullptr;
+  if (selector) *selector = name;
+  return recv;
+}
+
 Sym *get_constant(AVar *av) {
   Sym *c = nullptr;
   for (CreationSet *cs : *av->out) if (cs) {

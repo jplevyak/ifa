@@ -1,8 +1,11 @@
-# 184 — an attribute read on a `{None, T}` receiver is not checked; a method call through it was not either
+# 184 — an attribute read on a `{None, T}` receiver was not checked
 
-**Status: PARTLY FIXED 2026-10-06.** A method call `x.m(...)` is now
-checked even when `m` never reads `self`. Two shapes are still open: a
-stored bound method and a field read (see Open below).
+**Status: FIXED 2026-10-06**, in two commits: the method call
+(`6db520ba`), then the attribute read itself (this file's "The attribute
+read" section). Every `x.name` on a `{None, T}` receiver whose None has
+no `name` now raises CPython's `AttributeError` message at the read, on
+both backends. The residual is ifa/165's: the report exits, so
+`except AttributeError` cannot catch it.
 
 ## Symptom
 
@@ -30,7 +33,7 @@ skipped.
 
 ## Root cause
 
-[ifa/165](165-none-reaching-an-operation-is-silently-accepted.md)'s check
+[ifa/165](../165-none-reaching-an-operation-is-silently-accepted.md)'s check
 has three users that all call `nil_receiver_rval(pn, fn)`, which maps the
 callee's `self` formal to the send's rval at that position. In pass
 order:
@@ -80,31 +83,49 @@ exit 0 passed.
   `self`, so those calls now keep their receiver load and are checked,
   which is correct.
 
-## Open
+## The attribute read (landed)
 
-The real confluence is the ATTRIBUTE READ, not the call. CPython raises at
-`x.m` and at `x.f`; pyc checks only at a call site whose receiver it can
-see.
+The real confluence is the ATTRIBUTE READ, not the call: CPython raises at
+`x.m` and at `x.f`. After the fix above two shapes were still wrong:
 
-1. **A stored bound method:** `f = x.m` then `f(1)`. CPython raises at the
-   `x.m`, before any later statement runs. pyc runs on and prints `2`.
-   The closure call is not a *simple* one, so the inliner never rewrites
-   it, and no call-site check can see the receiver.
-2. **A field read:** `print(x.f)` with `x` None and `A.f` always `3`
-   prints `3`, exit 0, on both backends. The read appears to be folded
-   to its constant, so nothing reads `x`.
+1. **A stored bound method**, `f = x.m` then `f(1)`: pyc printed the
+   following statement's output and `2`. That closure call is not a
+   *simple* one, so the inliner never rewrites it and no call-site check
+   sees the receiver.
+2. **A field read**, `print(x.f)` with `A.f` always `3`: pyc printed `3`.
+   The read's result folded to a constant, codegen skipped the send
+   (`virtual_cg_is_const_folded_send`), and nothing read `x`.
 
-Both need the check on `period` itself: a `{None, T}` receiver whose
-member None does not have, kept live through DCE and constant folding,
-checked once at the read. The call-site check would then be needed only
-where the inliner has merged the `period` into the send.
+The check now lives on `period` itself:
+
+- `nil_period_receiver(pn, &sel)` (fa.cc): a `period` whose receiver may
+  be None, is otherwise an object (not a scalar), and whose None
+  CreationSet has no `sel` in its `var_map`. That is the lookup FA's
+  `period` transfer function makes, so None's real members (`__str__`,
+  `__eq__`, `__bool__`, ...) are never checked.
+- DCE (`mark_initial_dead_and_alive`): such a read can raise, so it is a
+  root; live, its receiver stays live.
+- `virtual_cg_emit_send` (codegen_common.cc) emits the check BEFORE the
+  constant-fold early-out, through `VirtualCGEmitter::emit_none_check`,
+  which is pure virtual. Both backends implement it and reuse it for the
+  ifa/165 call-site check. `cg.cc`'s closure-building branch skips a read
+  kept live only for its check (the closure itself dead, e.g. when `f(1)`
+  resolved to a direct call), as its field branch already did.
+- `tests/none_attribute_read_raises.py`, `tests/none_bound_method_raises.py`.
+
+Cost: the corpus binaries carry 409 checks (chull 64, quameon 53, pylife
+52). chull built from its own generated C with and without them, pinned to
+one core, 5 alternating runs each: 29.2 s vs 28.5 s mean, inside the
+runs' 23-34 s spread.
 
 ## Verification
 
 - The repro raises CPython's message on both backends; the not-None path
   still prints `2`.
 - `make test`: 402 passed / 0 failed on both backends.
-- Corpus run sweep `run__default__eb4f98c5+8e26e37a`: every compile rc,
-  run rc, warning count and demand column identical to
-  `run__default__7ef9bdfe+8082598e`. No corpus program reaches a None
-  receiver at run time.
+- Corpus run sweep `run__default__eb4f98c5+8e26e37a` (the method call) and
+  `run__default__6db520ba+2b94c76a` (the attribute read): every compile
+  rc, run rc, warning count and demand column identical to the sweep
+  before each. No corpus program reaches a None receiver at run time.
+- `make test`: 404 passed / 0 failed on both backends after the attribute
+  read.

@@ -18,8 +18,9 @@ BOXING violation, with one message on both backends.
 `tests/none_receiver_raises.py` is the repro below.
 
 A method call whose callee ignores `self` skipped the check, and an
-attribute read on a `{None, T}` receiver is not checked at all: see
-[184](184-FA-none-check-misses-a-method-call-through-a-bound-method-closure.md).
+attribute read on a `{None, T}` receiver was not checked at all. Both are
+fixed; the check now lives on the attribute read itself. See
+[184](closed/184-FA-none-check-misses-a-method-call-through-a-bound-method-closure.md).
 
 **Residuals.** (1) The check reports and exits: it is CPython's
 *uncaught* `TypeError`, and `except TypeError` cannot catch it. That

@@ -275,6 +275,10 @@ class VirtualCGEmitter {
   virtual void emit_move(PNode *pn) = 0;
   virtual bool emit_send_default_prim(PNode *pn) = 0;
   virtual void emit_send_call(PNode *pn) = 0;
+  // ifa/issues/165, 184: test `recv` for None and, if it is, report
+  // CPython's error for member `sel` and exit. Pure virtual: a backend
+  // that skipped it would print the wrong answer instead of raising.
+  virtual void emit_none_check(Var *recv, cchar *sel) = 0;
 
   // Catch-all primitive hook, called before the specialized send methods.
   // A backend that routes all primitives through a single switch (e.g. the

@@ -2363,6 +2363,7 @@ void emit_move(EmitCtx &ctx, PNode *pn) {
 
 // emit_send_call is defined after LLVMEmitter (which calls it).
 void emit_send_call(EmitCtx &ctx, PNode *pn);
+void emit_none_check(EmitCtx &ctx, Var *recv, cchar *sel);
 
 // Code_SEND dispatcher — wraps virtual_cg_emit_send with LLVMEmitter.
 // P_prim_reply is short-circuited in virtual_cg_emit_send before
@@ -2963,6 +2964,7 @@ class LLVMEmitter : public VirtualCGEmitter {
     return false;
   }
   void emit_send_call(PNode *pn) override { ::emit_send_call(ctx, pn); }
+  void emit_none_check(Var *recv, cchar *sel) override { ::emit_none_check(ctx, recv, sel); }
   
   bool emit_send_any_prim(PNode *pn) override {
     if (!pn || !pn->prim) return false;
@@ -3151,6 +3153,27 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn);
 // emits `assert(!"runtime error: matching function not found")` at the
 // same sites. Do the same: trap at run time, and give the result a
 // defined value so the code after it still emits.
+// ifa/issues/165, 184: branch to a noreturn `_CG_none_receiver(sel)` when
+// `recv` is NULL (None).
+void emit_none_check(EmitCtx &ctx, Var *recv, cchar *sel) {
+  llvm::Value *rv = value_for_var(ctx, recv);
+  // ifa/issues/184: as in cg.cc, a missing receiver is an error, not a
+  // reason to skip the check.
+  if (!rv) fail("internal error: the None check on the receiver of '%s' has no receiver value (ifa/issues/184)", sel ? sel : "?");
+  if (!rv->getType()->isPointerTy()) return;
+  llvm::Function *cur = Builder->GetInsertBlock()->getParent();
+  llvm::BasicBlock *null_bb = llvm::BasicBlock::Create(*TheContext, "none.recv", cur);
+  llvm::BasicBlock *ok_bb = llvm::BasicBlock::Create(*TheContext, "none.ok", cur);
+  Builder->CreateCondBr(Builder->CreateIsNull(rv), null_bb, ok_bb);
+  Builder->SetInsertPoint(null_bb);
+  llvm::Type *p_ty = llvm::PointerType::getUnqual(*TheContext);
+  llvm::FunctionType *ft = llvm::FunctionType::get(llvm::Type::getVoidTy(*TheContext), {p_ty}, false);
+  llvm::FunctionCallee fn = TheModule->getOrInsertFunction("_CG_none_receiver", ft);
+  Builder->CreateCall(ft, fn.getCallee(), {Builder->CreateGlobalString(sel ? sel : "?")});
+  Builder->CreateUnreachable();
+  Builder->SetInsertPoint(ok_bb);
+}
+
 void emit_send_call(EmitCtx &ctx, PNode *pn) {
   Var *dst = (pn && pn->lvals.n) ? pn->lvals.v[0] : nullptr;
   llvm::Type *dst_ty = (dst && dst->live && dst->type) ? sym_to_llvm_type(dst->type) : nullptr;
@@ -3803,27 +3826,9 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
   if (!target_fn) return;
 
   // ifa/issues/165: the receiver may be None and None has no such method
-  // -- same check cg.cc emits. Branch to a noreturn report on NULL.
-  if (int nri = nil_receiver_rval(pn, target); nri >= 0) {
-    llvm::Value *rv = value_for_var(ctx, pn->rvals[nri]);
-    // ifa/issues/184: as in cg.cc, a missing receiver is an error, not a
-    // reason to skip the check.
-    if (!rv) fail("internal error: the None check on a method receiver has no receiver value (ifa/issues/184)");
-    if (rv->getType()->isPointerTy()) {
-      llvm::Function *cur = Builder->GetInsertBlock()->getParent();
-      llvm::BasicBlock *null_bb = llvm::BasicBlock::Create(*TheContext, "none.recv", cur);
-      llvm::BasicBlock *ok_bb = llvm::BasicBlock::Create(*TheContext, "none.ok", cur);
-      Builder->CreateCondBr(Builder->CreateIsNull(rv), null_bb, ok_bb);
-      Builder->SetInsertPoint(null_bb);
-      llvm::Type *p_ty = llvm::PointerType::getUnqual(*TheContext);
-      llvm::FunctionType *ft = llvm::FunctionType::get(llvm::Type::getVoidTy(*TheContext), {p_ty}, false);
-      llvm::FunctionCallee fn = TheModule->getOrInsertFunction("_CG_none_receiver", ft);
-      cchar *sel = (pn->rvals.n && pn->rvals[0]->sym->is_symbol) ? pn->rvals[0]->sym->name : nullptr;
-      Builder->CreateCall(ft, fn.getCallee(), {Builder->CreateGlobalString(sel ? sel : "?")});
-      Builder->CreateUnreachable();
-      Builder->SetInsertPoint(ok_bb);
-    }
-  }
+  // -- same check cg.cc emits.
+  if (int nri = nil_receiver_rval(pn, target); nri >= 0)
+    emit_none_check(ctx, pn->rvals[nri], (pn->rvals.n && pn->rvals[0]->sym->is_symbol) ? pn->rvals[0]->sym->name : nullptr);
 
   // Closure detection: rvals[0] is a closure receiver when
   // its type is Type_FUN with has.n ≥ 2 (closure_fun_type

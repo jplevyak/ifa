@@ -878,6 +878,11 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       // which skips convert_NOTYPE_to_void) falls through to the field
       // walk and its "getter not resolved" refusal, not a null deref.
       if (n->lvals[0]->type && n->lvals[0]->type->type_kind == Type_FUN && n->creates) {  // creates a closure
+        // ifa/issues/184: a read kept live only for its None check (the
+        // closure itself unused -- `f = x.m; f(1)` where f(1) resolved to
+        // a direct call) has no destination; the check was already
+        // emitted, and building the closure would assign to "(null)".
+        if (!cg_get_string(n->lvals[0])) break;
         fprintf(fp, "  %s = _CG_prim_closure(%s);\n", cg_get_string(n->lvals[0]), t);
         if (n->prim && n->prim->index == P_prim_period) {
           fprintf(fp, "  %s->e%d = %s;\n", cg_get_string(n->lvals[0]), 0, cg_get_string(n->rvals.v[3]));
@@ -2177,6 +2182,15 @@ class CBackendEmitter : public VirtualCGEmitter {
     return true;
   }
 
+  void emit_none_check(Var *recv, cchar *sel) override {
+    cchar *rs = cg_get_string(recv);
+    // ifa/issues/184: never skip the check silently. A receiver with no
+    // value here was deleted by DCE, and skipping printed the method's
+    // result where CPython raises.
+    if (!rs) fail("internal error: the None check on the receiver of '%s' has no receiver value (ifa/issues/184)", sel ? sel : "?");
+    fprintf(fp, "  if (!%s) _CG_none_receiver(\"%s\");\n", rs, sel ? sel : "?");
+  }
+
   void emit_send_call(PNode *pn) override {
     Fun *target = get_target_fun(pn, f);
     if (target) {
@@ -2184,15 +2198,8 @@ class CBackendEmitter : public VirtualCGEmitter {
       // method. CPython raises here; without the check the callee reads
       // NULL as the zero value.
       int nri = nil_receiver_rval(pn, target);
-      if (nri >= 0) {
-        cchar *rs = cg_get_string(pn->rvals[nri]);
-        cchar *sel = (pn->rvals.n && pn->rvals[0]->sym->is_symbol) ? pn->rvals[0]->sym->name : nullptr;
-        // ifa/issues/184: never skip the check silently. A receiver with
-        // no value here was deleted by DCE, and skipping printed the
-        // method's result where CPython raises.
-        if (!rs) fail("internal error: the None check on the receiver of '%s' has no receiver value (ifa/issues/184)", sel ? sel : "?");
-        fprintf(fp, "  if (!%s) _CG_none_receiver(\"%s\");\n", rs, sel ? sel : "?");
-      }
+      if (nri >= 0)
+        emit_none_check(pn->rvals[nri], (pn->rvals.n && pn->rvals[0]->sym->is_symbol) ? pn->rvals[0]->sym->name : nullptr);
       // ifa/issues/097: the resolved target CLONE's own formal
       // parameter type can be coarser (_CG_any) than what THIS
       // specific call edge's actual argument resolves to (a
