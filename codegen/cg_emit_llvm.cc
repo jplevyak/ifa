@@ -3806,7 +3806,10 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
   // -- same check cg.cc emits. Branch to a noreturn report on NULL.
   if (int nri = nil_receiver_rval(pn, target); nri >= 0) {
     llvm::Value *rv = value_for_var(ctx, pn->rvals[nri]);
-    if (rv && rv->getType()->isPointerTy()) {
+    // ifa/issues/184: as in cg.cc, a missing receiver is an error, not a
+    // reason to skip the check.
+    if (!rv) fail("internal error: the None check on a method receiver has no receiver value (ifa/issues/184)");
+    if (rv->getType()->isPointerTy()) {
       llvm::Function *cur = Builder->GetInsertBlock()->getParent();
       llvm::BasicBlock *null_bb = llvm::BasicBlock::Create(*TheContext, "none.recv", cur);
       llvm::BasicBlock *ok_bb = llvm::BasicBlock::Create(*TheContext, "none.ok", cur);

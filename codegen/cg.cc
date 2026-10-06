@@ -2187,7 +2187,11 @@ class CBackendEmitter : public VirtualCGEmitter {
       if (nri >= 0) {
         cchar *rs = cg_get_string(pn->rvals[nri]);
         cchar *sel = (pn->rvals.n && pn->rvals[0]->sym->is_symbol) ? pn->rvals[0]->sym->name : nullptr;
-        if (rs) fprintf(fp, "  if (!%s) _CG_none_receiver(\"%s\");\n", rs, sel ? sel : "?");
+        // ifa/issues/184: never skip the check silently. A receiver with
+        // no value here was deleted by DCE, and skipping printed the
+        // method's result where CPython raises.
+        if (!rs) fail("internal error: the None check on the receiver of '%s' has no receiver value (ifa/issues/184)", sel ? sel : "?");
+        fprintf(fp, "  if (!%s) _CG_none_receiver(\"%s\");\n", rs, sel ? sel : "?");
       }
       // ifa/issues/097: the resolved target CLONE's own formal
       // parameter type can be coarser (_CG_any) than what THIS

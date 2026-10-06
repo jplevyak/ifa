@@ -938,6 +938,7 @@ int constant_info(Var *v, Vec<Sym *> &constants);
 Sym *get_constant(Var *v);
 Sym *get_constant(AVar *av);
 int nil_receiver_rval(PNode *pn, Fun *fn);  // ifa/issues/165
+Var *nil_receiver_var(PNode *pn, Fun *fn);  // ifa/issues/184: also through a bound-method closure
 int symbol_info(Var *v, Vec<Sym *> &symbols);
 AType *make_AType(CreationSet *cs);
 AType *make_AType(Vec<CreationSet *> &css);

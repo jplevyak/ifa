@@ -14435,8 +14435,8 @@ Sym *get_constant(Var *v) {
 // once the callee's `self` folded to a constant, ignores it outright).
 // Returns -1 otherwise. Post-clone: reads Var::type. Only pointer-shaped
 // unions: a {None, scalar} receiver is refused elsewhere (issues/048).
-int nil_receiver_rval(PNode *pn, Fun *fn) {
-  if (!pn || !fn || !fn->sym || !fn->sym->self) return -1;
+static int nil_receiver_index(Vec<Var *> &rvals, Fun *fn) {
+  if (!fn || !fn->sym || !fn->sym->self) return -1;
   MPosition np;
   np.push(1);
   for (int pi = 0; pi < fn->sym->has.n + 2; pi++) {
@@ -14445,8 +14445,8 @@ int nil_receiver_rval(PNode *pn, Fun *fn) {
     Var *formal = fn->args.get(cp);
     if (!formal || formal->sym != fn->sym->self) continue;
     int idx = (int)Position2int(cp->pos[0]) - 1;
-    if (idx < 0 || idx >= pn->rvals.n) return -1;
-    Var *actual = pn->rvals[idx];
+    if (idx < 0 || idx >= rvals.n) return -1;
+    Var *actual = rvals[idx];
     Sym *at = actual ? actual->type : nullptr;
     if (!at || at->type_kind != Type_SUM) return -1;
     bool has_nil = false;
@@ -14463,6 +14463,38 @@ int nil_receiver_rval(PNode *pn, Fun *fn) {
     return idx;
   }
   return -1;
+}
+
+int nil_receiver_rval(PNode *pn, Fun *fn) { return pn ? nil_receiver_index(pn->rvals, fn) : -1; }
+
+// ifa/issues/184: the receiver Var for nil_receiver_rval's check, in
+// either shape the send can have. A method call `x.m(k)` is lowered as a
+// closure call `[closure, k]` whose closure is the `period` prim `x.m`;
+// only the inliner (simple_closure_call) rewrites it to the direct send
+// `[m, x, k]` that nil_receiver_rval reads. DCE runs BEFORE that rewrite,
+// so it saw `k` in self's position, never kept `x` live, and when the
+// callee ignores `self` the receiver load was deleted -- codegen then had
+// no value to test, and `x.m(1)` with `x` None printed the method's
+// result. This looks through the closure to the period's receiver, with
+// the same rvals mapping the inliner's rewrite uses.
+Var *nil_receiver_var(PNode *pn, Fun *fn) {
+  if (!pn) return nullptr;
+  int idx = nil_receiver_index(pn->rvals, fn);
+  if (idx >= 0) return pn->rvals[idx];
+  if (!pn->rvals.n || !pn->rvals[0]) return nullptr;
+  Var *v = pn->rvals[0];
+  PNode *d = v->def;
+  while (d && d->code && d->code->kind == Code_MOVE && d->lvals.n && d->lvals[0] == v && d->rvals.n) {
+    v = d->rvals[0];
+    d = v->def;
+  }
+  if (!d || !d->prim || d->prim->index != P_prim_period || d->rvals.n < 4) return nullptr;
+  Vec<Var *> direct;
+  direct.add(d->rvals[3]);
+  direct.add(d->rvals[1]);
+  for (int i = 1; i < pn->rvals.n; i++) direct.add(pn->rvals[i]);
+  idx = nil_receiver_index(direct, fn);
+  return idx >= 0 ? direct[idx] : nullptr;
 }
 
 Sym *get_constant(AVar *av) {

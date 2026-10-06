@@ -17,6 +17,10 @@ operands, which covers the argument position for `str + None`. A
 BOXING violation, with one message on both backends.
 `tests/none_receiver_raises.py` is the repro below.
 
+A method call whose callee ignores `self` skipped the check, and an
+attribute read on a `{None, T}` receiver is not checked at all: see
+[184](184-FA-none-check-misses-a-method-call-through-a-bound-method-closure.md).
+
 **Residuals.** (1) The check reports and exits: it is CPython's
 *uncaught* `TypeError`, and `except TypeError` cannot catch it. That
 needs the check to raise through `__pyc_exc__`, which means arming

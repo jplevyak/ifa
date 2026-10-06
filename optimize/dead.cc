@@ -157,10 +157,11 @@ static void mark_live_avars(FA *fa) {
       // stay live even when the callee's `self` formal is a constant (the
       // dispatch filter dropped None, leaving e.g. `"x"`, and the callee
       // no longer reads its argument).
+      // ifa/issues/184: and through a bound-method closure (`x.m(k)`), the
+      // shape a method call has HERE, before the inliner rewrites it.
       if (p->live && calls && calls->n == 1) {
-        int nri = nil_receiver_rval(p, calls->v[0]);
-        if (nri >= 0) {
-          form_AVarMapElem(x, p->rvals[nri]->avars) {
+        if (Var *recv = nil_receiver_var(p, calls->v[0])) {
+          form_AVarMapElem(x, recv->avars) {
             AVar *av = x->value;
             if (!av->live) mark_live_avar(av);
           }
