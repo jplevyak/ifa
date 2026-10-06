@@ -7032,6 +7032,12 @@ static void clear_results() {
 // returns 0; targets only widen (coerce_num).
 // Annotate `av` if its converged out is a pure-numeric mix.
 // Returns 1 when newly annotated (or retargeted wider).
+// The numeric basics each coerced AVar held when coerce_annotate widened
+// it, for show_numeric_coercions: by report time the coercion has been
+// applied and the AVar holds only the widened type. A side table rather
+// than an AVar field, since only the warning reads it.
+static Map<AVar *, Vec<Sym *> *> coerce_members;
+
 static int coerce_annotate(AVar *av) {
   // ifa/145, author's directive 2026-09-08: "pyc has a strict and
   // permissive mode, and any automatic coercion should be permissive
@@ -7074,6 +7080,9 @@ static int coerce_annotate(AVar *av) {
   }
   // Need an actual mix: at least two distinct numeric basics.
   if (!w || basics.set_count() < 2) return 0;
+  Vec<Sym *> *seen = coerce_members.get(av);
+  if (!seen) coerce_members.put(av, (seen = new Vec<Sym *>));
+  for (Sym *b : basics) if (b) seen->set_add(b);
   if (av->num_coerce == w) return 0;
   av->num_coerce = w;
   static int dbgnumc_e = -1;
@@ -12901,30 +12910,91 @@ static void collect_coerced(Var *v) {
     }
 }
 
+// The source-level name of a numeric basic type, for the coercion warning:
+// bool is its own type (it prints `True`, not `1`), every integer width is
+// `int`, every float width `float`.
+static cchar *numeric_source_name(Sym *bt) {
+  if (bt == sym_bool) return "bool";
+  switch (bt->num_kind) {
+    case IF1_NUM_KIND_UINT:
+    case IF1_NUM_KIND_INT: return "int";
+    case IF1_NUM_KIND_FLOAT: return "float";
+    case IF1_NUM_KIND_COMPLEX: return "complex";
+    default: return bt->name ? bt->name : "?";
+  }
+}
+
+// "a", "a and b", "a, b and c" -- or with `conj` "or".
+static void join_names(Vec<cchar *> &names, cchar *conj, char *buf, int size) {
+  buf[0] = 0;
+  for (int i = 0; i < names.n; i++) {
+    int n = strlen(buf);
+    snprintf(buf + n, size - n, "%s%s", i == 0 ? "" : i == names.n - 1 ? conj : ", ", names[i]);
+  }
+}
+
+static cchar *a_or_an(cchar *w) { return strchr("aeiou", w[0]) ? "an" : "a"; }
+
 void show_numeric_coercions(FA *fa, FILE *fp) {
   coerced_avars.clear();
   foreach_var(collect_coerced);
   // One line per (location, name). A compiler temporary ("expression") is
   // reported only on a line that names no variable -- the temps on a named
   // variable's line are that variable's own arithmetic, the same fact again.
-  struct Entry { char *loc; cchar *name; cchar *to; };
+  //
+  // The message is built from the coerced union's own members. It used to
+  // say "holds both int and float" whatever they were, so a {bool, int}
+  // mix widened to int64 (minpng's `struct.pack('<BHH', bool(last), ...)`)
+  // was reported as an int/float one.
+  struct Entry { char *loc; cchar *file; int line; cchar *name; char *what; };
   Vec<Entry *> es;
   for (AVar *av : coerced_avars) {
     cchar *filename = nullptr;
     int line = 0, col = 0;
-    if (!find_avar_user_loc(av, &filename, &line, &col) || !filename || line <= 0) continue;
+    bool found = find_avar_user_loc(av, &filename, &line, &col);
+    if (!found || !filename || line <= 0) continue;
     char loc[512];
     snprintf(loc, sizeof(loc), "%s:%d", filename, line);
-    Entry *e = new Entry{dupstr(loc), av->var && av->var->sym ? av->var->sym->name : nullptr,
-                         av->num_coerce->name ? av->num_coerce->name : "?"};
-    es.add(e);
+    // Members in a fixed order (bool, int, float, complex), not hash order.
+    static const int order[] = {-1, IF1_NUM_KIND_UINT, IF1_NUM_KIND_INT, IF1_NUM_KIND_FLOAT, IF1_NUM_KIND_COMPLEX};
+    cchar *to = av->num_coerce->name ? av->num_coerce->name : "?";
+    cchar *to_src = numeric_source_name(av->num_coerce);
+    Vec<cchar *> ordered, narrow;
+    Vec<Sym *> *held_basics = coerce_members.get(av);
+    if (!held_basics) continue;
+    for (int k : order)
+      for (Sym *bt : *held_basics) {
+        if (!bt || !bt->num_kind || (k < 0) != (bt == sym_bool) || (k >= 0 && bt->num_kind != k)) continue;
+        cchar *nm = numeric_source_name(bt);
+        bool seen = false;
+        for (cchar *o : ordered) seen |= !strcmp(o, nm);
+        if (!seen) ordered.add(nm);
+      }
+    for (cchar *nm : ordered)
+      if (strcmp(nm, to_src)) narrow.add(nm);
+    char held[256], nar[256], what[1024];
+    join_names(ordered, " and ", held, sizeof(held));
+    join_names(narrow, " or ", nar, sizeof(nar));
+    if (ordered.n == 2)
+      snprintf(held, sizeof(held), "both %s and %s", ordered[0], ordered[1]);
+    if (narrow.n)
+      snprintf(what, sizeof(what), "holds %s; widened to %s, so %s %s value in it prints as %s %s (CPython keeps the %s)",
+               held, to, a_or_an(narrow[0]), nar, a_or_an(to_src), to_src, nar);
+    else  // only widths of one source type, e.g. int32 and int64: nothing prints differently
+      snprintf(what, sizeof(what), "holds %s values of different widths; widened to %s", held, to);
+    es.add(new Entry{dupstr(loc), filename, line, av->var && av->var->sym ? av->var->sym->name : nullptr, dupstr(what)});
   }
   coerced_avars.clear();
   qsort(es.v, es.n, sizeof(es[0]), [](const void *a, const void *b) {
     Entry *x = *(Entry *const *)a, *y = *(Entry *const *)b;
-    if (int c = strcmp(x->loc, y->loc)) return c;
-    if (!x->name || !y->name) return (x->name ? 0 : 1) - (y->name ? 0 : 1);
-    return strcmp(x->name, y->name);
+    // By file, then by NUMERIC line: "f.py:10" sorts before "f.py:3".
+    if (int c = strcmp(x->file, y->file)) return c;
+    if (int c = (x->line > y->line) - (x->line < y->line)) return c;
+    if (!x->name || !y->name) {
+      if (int c = (x->name ? 0 : 1) - (y->name ? 0 : 1)) return c;
+    } else if (int c = strcmp(x->name, y->name))
+      return c;
+    return strcmp(x->what, y->what);
   });
   for (int i = 0; i < es.n; i++) {
     Entry *e = es[i];
@@ -12933,14 +13003,11 @@ void show_numeric_coercions(FA *fa, FILE *fp) {
       if (es[i - 1]->name && !strcmp(es[i - 1]->name, e->name)) continue;
     }
     if (e->name)
-      fprintf(fp, "%s: warning: '%s' holds both int and float; widened to %s, so an int value in it prints as "
-                  "a float (CPython keeps the int). Permissive numeric coercion, refused under --strict (issues/171)\n",
-              e->loc, e->name, e->to);
+      fprintf(fp, "%s: warning: '%s' %s. Permissive numeric coercion, refused under --strict (issues/171)\n", e->loc,
+              e->name, e->what);
     else
-      fprintf(fp, "%s: warning: an expression holds both int and float; widened to %s, so an int value in it "
-                  "prints as a float (CPython keeps the int). Permissive numeric coercion, refused under --strict "
-                  "(issues/171)\n",
-              e->loc, e->to);
+      fprintf(fp, "%s: warning: an expression %s. Permissive numeric coercion, refused under --strict (issues/171)\n",
+              e->loc, e->what);
   }
 }
 
