@@ -23,12 +23,17 @@ typedef void (*PrimitiveLLVMCGPtr)(PNode *n, Fun *f);
 class RegisteredPrim : public gc {
  public:
   PrimitiveTransferFunctionPtr tfn;
+  // Optional: records type violations for this primitive's arguments.
+  // Called from add_send_edges_pnode, which re-runs whenever an argument's
+  // type changes, so the last call judges the converged types -- the same
+  // place a builtin Prim's declared argument types are checked.
+  PrimitiveTransferFunctionPtr check_fn;
   PrimitiveCGPtr cgfn;
   PrimitiveLLVMCGPtr llvm_cgfn;
   uint is_functional : 1;
   uint is_visible : 1;
   RegisteredPrim(PrimitiveTransferFunctionPtr atfn, PrimitiveCGPtr acgfn, PrimitiveLLVMCGPtr allvm_cgfn = nullptr)
-      : tfn(atfn), cgfn(acgfn), llvm_cgfn(allvm_cgfn), is_functional(1), is_visible(0) {}
+      : tfn(atfn), check_fn(nullptr), cgfn(acgfn), llvm_cgfn(allvm_cgfn), is_functional(1), is_visible(0) {}
 };
 
 class Primitives : public gc {

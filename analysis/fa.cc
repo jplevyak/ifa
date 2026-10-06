@@ -2912,6 +2912,10 @@ static void add_send_edges_pnode(PNode *p, EntrySet *es) {
       }
       if (i - 1 < n - 1) iarg++;
     }
+    if (p->prim->index == P_prim_primitive) {
+      RegisteredPrim *rp = prim_get(p->rvals[1]->sym->name);
+      if (rp && rp->check_fn) rp->check_fn(p, es);
+    }
     for (int i = 0; i < p->lvals.n; i++) {
       // connect the flows, but prevent values from passing
       // so that splitting can attribute causality

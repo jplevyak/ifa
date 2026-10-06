@@ -189,6 +189,7 @@ For frontend-specific primitives:
 ```c
 class RegisteredPrim : public gc {
   PrimitiveTransferFunctionPtr tfn;     // tfn(pn, es): refine result type
+  PrimitiveTransferFunctionPtr check_fn; // optional: record argument type violations
   PrimitiveCGPtr cgfn;                  // cgfn(fp, n, f): emit C
   uint is_functional : 1;               // default true; set false if side-effecting
   uint is_visible : 1;                  // set true for primitives whose name should be exposed
@@ -205,6 +206,13 @@ RegisteredPrim *prim_reg(cchar *name,
 
 Stores into `if1->primitives->registered_prims` keyed by `name` (must
 be interned via `if1_cannonicalize_string` or come from a Sym's `name`).
+
+`check_fn` is set after registration. `add_send_edges_pnode` calls it
+for a `P_prim_primitive` send, so it re-runs whenever an argument's type
+changes and its last call sees the converged types -- the same place a
+builtin `Prim`'s declared argument types are checked. pyc's
+`__pyc_c_call__` uses it to record a `PRIMITIVE_ARGUMENT` violation when
+an argument contradicts its declared type (`c_call_check_function`).
 
 Frontend usage (pyc, `python_ifa_main.cc:108`):
 
