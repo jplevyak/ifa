@@ -55,7 +55,7 @@ one is a lesson this directory paid for.
 9. **Check for a missing builtin before blaming FA.** `list.copy`,
    `dict.copy` and `str.rstrip` were each the first error of a corpus
    program whose failure was being read as a splitting problem.
-   ([086](086-list-and-dict-have-no-copy-method.md),
+   ([086](closed/086-list-and-dict-have-no-copy-method.md),
    [124](124-FA-refuse-imprecise-inference.md))
 
 ## Open issues
@@ -88,7 +88,6 @@ one is a lesson this directory paid for.
 | [165](165-none-reaching-an-operation-is-silently-accepted.md) | a `None` that does arrive at an operation reads as zero. Permissive runtime check, strict refusal. |
 | [147](147-analysis-result-depends-on-the-binary-not-the-inputs.md) | determinism: the result depends on the binary layout. Canonicalise every order that reaches a decision. |
 | [111](111-FA-selective-invalidation-per-pass.md) | performance: pass cost tracks accumulated contours (selective invalidation, blocked on setter classing; or rebuild from decisions). Re-measure first. |
-| [086](086-list-and-dict-have-no-copy-method.md) | `list.copy()` / `dict.copy()` are missing from `__pyc__` (sudoku4's first error). |
 
 ### Codegen, dispatch, representation
 

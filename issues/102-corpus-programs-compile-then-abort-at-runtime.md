@@ -70,7 +70,7 @@ For each root: find the confluence and backtrack the demand (AGENTS.md).
 Never add a missing method to make a cascade go away. A missing method is
 only real when the named receiver type lacks it (then it goes to the
 top-level `issues/`, as `list.copy`/`dict.copy` do, see
-[086](086-list-and-dict-have-no-copy-method.md)).
+[086](closed/086-list-and-dict-have-no-copy-method.md)).
 
 ## Measurement rules (kept, because each was learned the hard way)
 

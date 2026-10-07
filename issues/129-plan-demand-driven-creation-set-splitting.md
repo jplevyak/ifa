@@ -59,7 +59,7 @@ compile.
 ### A. The shared-writer decline on `sudoku4`, and the ES demand link
 
 `sudoku4`'s first error today is a missing builtin (`dict.copy`, see
-[086](086-list-and-dict-have-no-copy-method.md)). Re-measure it
+[086](closed/086-list-and-dict-have-no-copy-method.md)). Re-measure it
 after that is fixed, before attributing anything to this plan. The
 standing mechanism question: route 4 declines *"1 group: every creation
 point on the same assign sets"* when the creation points' paths share a
