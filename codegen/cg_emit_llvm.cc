@@ -18,6 +18,7 @@
 //     (t_edge / f_edge) are inserted as critical-edge splits so
 //     phi/phy moves execute only on the taken branch.
 
+#include <unordered_map>
 #include "ifadefs.h"
 
 #include "codegen/llvm_internal.h"
@@ -414,6 +415,13 @@ void declare_globals(FA *fa) {
   Vec<Sym *> typesyms;
   Vec<Var *> globals;
   collect_types_and_globals(fa, typesyms, globals);
+  // One LLVM global per global SYM. This used to reuse any existing
+  // global with the same NAME, so two modules' `SEARCH` (minilight's
+  // camera, scene and triangle each compile their own pattern) or `VALUE`
+  // became one slot: whichever module initialized last won, and
+  // camera's 3-group pattern parsed with scene's 2 groups. A name is not
+  // identity (AGENTS.md); LLVM uniquifies a repeated name itself.
+  std::unordered_map<Sym *, llvm::GlobalVariable *> sym_global;
   for (Var *v : globals) {
     if (!v || !v->live || !v->sym) continue;
     Sym *s = v->sym;
@@ -437,11 +445,10 @@ void declare_globals(FA *fa) {
     } else {
       final_name = "g" + std::to_string(v->id);
     }
-    // If a global with this name already exists in the
-    // module (declared by some earlier pass), reuse it.
-    if (llvm::GlobalVariable *existing =
-            TheModule->getNamedGlobal(final_name)) {
-      g_var_to_global.put(v, existing);
+    // The same global Sym reached through another Var: same slot.
+    auto existing = sym_global.find(s);
+    if (existing != sym_global.end()) {
+      g_var_to_global.put(v, existing->second);
       continue;
     }
     llvm::Constant *init = nullptr;
@@ -459,6 +466,7 @@ void declare_globals(FA *fa) {
         *TheModule, t, /*isConstant=*/false,
         llvm::GlobalValue::InternalLinkage, init, final_name);
     g_var_to_global.put(v, gv);
+    sym_global[s] = gv;
   }
 }
 
