@@ -2887,17 +2887,27 @@ static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done
           do_phi_nodes(fp, n, 1);
           if (done.set_add(n->cfg_succ[1])) write_c_pnode(fp, fa, f, n->cfg_succ[1], done);
         } else {
+          // ifa/049: after a call that can only raise, FA keeps only the
+          // exception check's pending branch. The other one never runs; emit
+          // a trap there, not its dead body, which would fall off the end of
+          // the function (C++ undefined behaviour, `-Wreturn-type`).
+          bool dead0 = n->code->exc_check && !n->cfg_succ[0]->fa_live;
+          bool dead1 = n->code->exc_check && !n->cfg_succ[1]->fa_live;
           fprintf(fp, "  if (%s) {\n", cg_get_string(n->rvals[0]));
           do_phy_nodes(fp, n, 0);
           do_phi_nodes(fp, n, 0);
-          if (done.set_add(n->cfg_succ[0]))
+          if (dead0)
+            fputs("  assert(!\"runtime error: jump to unreachable block\");\n", fp);
+          else if (done.set_add(n->cfg_succ[0]))
             write_c_pnode(fp, fa, f, n->cfg_succ[0], done);
           else
             emit_goto_or_trap(fp, n->cfg_succ[0], n->code->label[0]->id);
           fprintf(fp, "  } else {\n");
           do_phy_nodes(fp, n, 1);
           do_phi_nodes(fp, n, 1);
-          if (done.set_add(n->cfg_succ[1]))
+          if (dead1)
+            fputs("  assert(!\"runtime error: jump to unreachable block\");\n", fp);
+          else if (done.set_add(n->cfg_succ[1]))
             write_c_pnode(fp, fa, f, n->cfg_succ[1], done);
           else
             emit_goto_or_trap(fp, n->cfg_succ[1], n->code->label[1]->id);
@@ -2968,7 +2978,17 @@ static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done
       // None. Trap rather than fall off the end of the function.
       // Whether or not DCE kept the send itself: its result is unused once
       // nothing after it is reached, but the code after it must not run.
-      if (n->fa_live && n->fa_noreturn)
+      // ifa/049: a call that raises, with no exception check after it,
+      // returns at once: the caller's own check sees the pending exception.
+      if (n->fa_live && n->fa_noreturn && n->fa_noreturn_raises) {
+        cchar *rv = f->exit && f->exit->rvals.n >= 4 ? c_rhs(f->exit->rvals[3]) : nullptr;
+        if (f->sym->is_async || f->sym->is_generator)
+          fprintf(fp, "  co_return %s;\n", rv ? rv : "0");
+        else if (rv)
+          fprintf(fp, "  return %s;\n", rv);
+        else
+          fputs("  return;\n", fp);
+      } else if (n->fa_live && n->fa_noreturn)
         fputs("  assert(!\"runtime error: send does not complete\");\n", fp);
       break;
     default:

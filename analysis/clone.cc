@@ -1905,19 +1905,23 @@ static void fixup_clone_ess(Fun *f, Vec<EntrySet *> *ess) {
   // ifa/178: a send gated (gate_send) in EVERY contour of this clone does
   // not complete, so codegen traps after it. fa_live alone cannot say so:
   // it is the union over the clone's contours.
-  Vec<PNode *> gated, completes;
+  Vec<PNode *> gated, completes, gated_noraise;
   for (EntrySet *es : f->ess) if (es) {
     for (PNode *p : es->live_pnodes) if (p) {
       bool g = p->code->kind == Code_SEND && p->lvals.n == 1 && make_AVar(p->lvals[0], es)->gates_flow;
+      bool gr = g && make_AVar(p->lvals[0], es)->gate_raises;
       if (f->nmap) p = f->nmap->get(p);
       p->fa_live = 1;
       (g ? gated : completes).set_add(p);
+      if (g && !gr) gated_noraise.set_add(p);
     }
     for (AEdge *ee : es->edges) if (ee) ee->fun = f;
     es->fun = f;
   }
   for (PNode *p : gated) if (p) p->fa_noreturn = !completes.set_in(p);
   for (PNode *p : completes) if (p) p->fa_noreturn = 0;
+  // ifa/049: it raises in every contour, so codegen returns rather than traps.
+  for (PNode *p : gated) if (p) p->fa_noreturn_raises = p->fa_noreturn && !gated_noraise.set_in(p);
   f->equiv_sets.clear();
   for (EntrySet *es : f->ess) if (es) f->equiv_sets.set_add(es->equiv);
 }
@@ -2078,7 +2082,13 @@ static int clone_functions() {
         if (m) {
           Vec<Fun *> *vf = f->calls.get(pnode);
           if (!vf) f->calls.put(pnode, (vf = new Vec<Fun *>));
-          for (AEdge *ee : *m) if (used_edges.set_in(ee)) vf->set_add(ee->to->fun);
+          // ifa/049: only edges from a send this contour reaches. An edge
+          // walked before a cut (settle_gated_liveness: code after a call
+          // that can only raise) is not a call: kept, it made DCE keep the
+          // dead send live and handed the inliner a function with no
+          // contour.
+          for (AEdge *ee : *m)
+            if (used_edges.set_in(ee) && es->live_pnodes.set_in(old_pnode)) vf->set_add(ee->to->fun);
           // rebuild out_edge_map
           new_out_edge_map.put(pnode, m);
         }

@@ -21,6 +21,7 @@ class PNode : public gc {
   uint live : 1;
   uint fa_live : 1;
   uint fa_noreturn : 1;  // ifa/178: does not complete in any contour of this clone (gate_send)
+  uint fa_noreturn_raises : 1;  // ifa/049: ...and in every contour it is a call that raises
   Vec<Var *> lvals;  // variables this node assigns
   Vec<Var *> rvals;  // variables this node reads
   Vec<Var *> tvals;  // temporary variables used by this node

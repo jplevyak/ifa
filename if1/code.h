@@ -39,6 +39,14 @@ class Code : public gc {
   unsigned int partial : 2;
   unsigned int live : 1;
   unsigned int flattened : 1;
+  // ifa/issues/049: set by the frontend. `exc_exit` marks a GOTO to the
+  // function's exit taken because an exception is pending (a raise, or a
+  // propagated one): the exceptional exit, which produces no value. The
+  // flow analysis does not follow it to the exit, so "reaches its exit"
+  // means the normal return. `exc_check` marks the IF that tests for a
+  // pending exception right after a call.
+  unsigned int exc_exit : 1;
+  unsigned int exc_check : 1;
   Code *cont;  // used by cfg.cpp
   PNode *pn;   // used by cfg.cpp
 
@@ -59,6 +67,8 @@ class Code : public gc {
     partial = c.partial;
     live = c.live;
     flattened = c.flattened;
+    exc_exit = c.exc_exit;
+    exc_check = c.exc_check;
     cont = c.cont;
     pn = c.pn;
   }

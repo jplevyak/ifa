@@ -165,6 +165,15 @@ class EntrySet : public gc {
   int id;
   uint dfs_color : 2;
   uint in_es_worklist : 1;
+  // ifa/049: this contour RETURNS -- reached its exit along a normal path.
+  // Distinct from `live_pnodes` holding the exit, which the exceptional
+  // exit also makes live (it runs; it produces no value). Reset with
+  // live_pnodes.
+  uint returns : 1;
+  // ifa/049: this contour can leave by its exceptional exit (walked an
+  // `exc_exit` goto). A call to one that raises completes, exceptionally,
+  // so it is never "does not complete". Reset with live_pnodes.
+  uint raises : 1;
   // Precise, per-contour "can this ES's own body, or anything
   // transitively reachable from it via out_edges, raise" fact --
   // seeded from Sym::direct_raise, computed to a fixed point by
@@ -402,6 +411,10 @@ class AVar : public gc {
   // in fa.cc), so the walk did not go past it. Lifted, and the contour
   // re-walked, when the result gets a type or a callee reaches its reply.
   uint gates_flow : 1;
+  // ifa/049: the gate is a call that completes by RAISING (its callee raises and
+  // no exception check follows): codegen returns at once, passing the pending
+  // exception to the caller, instead of trapping.
+  uint gate_raises : 1;
   // issues/114: a GENERATOR's return channel. Every constant that reaches
   // it also brings its abstract type, so the channel is never a singleton
   // constant (see P_prim_reply in fa.cc). Applied in update_in, on every
@@ -939,7 +952,8 @@ Sym *get_constant(Var *v);
 Sym *get_constant(AVar *av);
 int nil_receiver_rval(PNode *pn, Fun *fn);  // ifa/issues/165
 Var *nil_receiver_var(PNode *pn, Fun *fn);  // ifa/issues/184: also through a bound-method closure
-Var *nil_period_receiver(PNode *pn, cchar **selector = nullptr);  // ifa/issues/184: `x.name` that can find None
+Var *nil_period_receiver(PNode *pn, cchar **selector = nullptr);
+bool fun_can_return(Fun *f);  // ifa/issues/049: false for a function that can only raise  // ifa/issues/184: `x.name` that can find None
 int symbol_info(Var *v, Vec<Sym *> &symbols);
 AType *make_AType(CreationSet *cs);
 AType *make_AType(Vec<CreationSet *> &css);

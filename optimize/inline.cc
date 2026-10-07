@@ -377,6 +377,10 @@ static Vec<PNode *> *match_prim_chain(Fun *f) {
       if (!ok) return nullptr;
     }
   }
+  // ifa/issues/049: a function that can only raise is not a chain whose
+  // last value is the result; inlining it would drop the raise. Same rule
+  // as the single_send matcher.
+  if (!fun_can_return(f)) return nullptr;
   // If a reply is present, it must read the last chain element's lval.
   // (Bodies without an explicit reply are accepted; matches the
   // single_send matcher convention — the call site's lval determines
@@ -584,6 +588,11 @@ static int inline_single_sends(FA *fa) {
       Sym *fs = first_var(v)->sym;
       if (!((fs && (f->sym->has.index(fs) >= 0)) || v->sym->is_constant || v->sym->is_symbol)) goto Lskip;
     }
+    // ifa/issues/049: a function that can only raise is not "a function
+    // returning its one send"; inlining that send would drop the raise.
+    // Asked of FA, not of the reply: DCE also kills the reply of a function
+    // whose result is merely unused.
+    if (!fun_can_return(f)) continue;
     if (reply && !reaching_def(reply->rvals[reply->rvals.n - 1], p)) continue;
     single_send.put(f, p);
   Lskip:;

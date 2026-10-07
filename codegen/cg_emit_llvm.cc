@@ -4531,6 +4531,19 @@ void emit_pnode(EmitCtx &ctx, PNode *pn, Vec<PNode *> &done) {
         break;
       case Code_SEND:
         emit_send(ctx, pn);
+        // ifa/049: a call that raises, with no exception check after it,
+        // returns at once (cg.cc does the same): the caller's own check
+        // sees the pending exception. What follows is unreachable.
+        if (pn->fa_noreturn && pn->fa_noreturn_raises && !ctx.fn->sym->is_generator && !ctx.fn->sym->is_async &&
+            Builder->GetInsertBlock() &&
+            !Builder->GetInsertBlock()->getTerminator()) {
+          llvm::Type *ret_ty = ctx.llvm_fn->getReturnType();
+          if (ret_ty->isVoidTy())
+            Builder->CreateRetVoid();
+          else
+            Builder->CreateRet(llvm::Constant::getNullValue(ret_ty));
+          Builder->SetInsertPoint(llvm::BasicBlock::Create(*TheContext, "after.raise", ctx.llvm_fn));
+        }
         break;
       case Code_IF:
       case Code_GOTO:

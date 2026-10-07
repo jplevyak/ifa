@@ -218,7 +218,7 @@ three ways — none of them a new phenomenon:
   `unresolved call`. Same fan, different rendering of its head.
 - **every rval is bottom** (`dijkstra`, `pygasus`) — a pure downstream
   cascade with no local primary. `dijkstra`'s is
-  [ifa/049](../049-FA-raise-only-contour-notype.md): `distance()` is
+  [ifa/049](049-FA-raise-only-contour-notype.md): `distance()` is
   `for ... else: raise AssertionError`, its return types to bottom, and
   `G.distance(s, S)` then feeds bottom into `print` at lines 129 and 133.
   One known bug, six warnings.

@@ -13,7 +13,7 @@ are no elements. Every operation that would produce an element either
 never runs (a loop over it iterates zero times) or raises (`x[0]` is an
 `IndexError`). **Code reached only through such an element is dead**, and
 a bottom value in dead code is not a violation. That is the same rule as
-[049](049-FA-raise-only-contour-notype.md): an exit that produces no value
+[049](closed/049-FA-raise-only-contour-notype.md): an exit that produces no value
 must not be read as one.
 
 **Seeding a default element is the wrong answer, and it was measured

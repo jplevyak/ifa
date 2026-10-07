@@ -3137,12 +3137,56 @@ static PNode *peel_wrapper_def(Var *v, int max_depth = 6) {
   return p;
 }
 
-// ifa/178: does this contour reach its exit (pyc: the `reply`)? A raise
-// reaches it too (the exceptional exit shares it, ifa/049), so a contour
-// that does not can only fault or never terminate.
-static bool es_reaches_exit(EntrySet *es) {
-  return !es->fun->exit || es->live_pnodes.set_in(es->fun->exit);
+// ifa/178: does this contour RETURN -- reach its exit (pyc: the `reply`)
+// along a normal path? Since ifa/049 a raise does not count: the walk does
+// not follow an `exc_exit` goto (add_pnode_constraints), so a contour that
+// does not return can only raise, fault, or never terminate.
+static bool es_reaches_exit(EntrySet *es) { return !es->fun->exit || es->returns; }
+
+// ifa/049: can `f` return normally in any of its contours? False for a
+// function that can only raise (or never terminates). Post-FA consumers
+// (the inliner) ask this rather than whether the reply is live: DCE kills
+// the reply of any function whose result is unused.
+bool fun_can_return(Fun *f) {
+  if (!f || !f->exit || f->sym->is_generator || f->sym->is_async || !f->ess.n) return true;
+  for (EntrySet *es : f->ess)
+    if (es && es->returns) return true;
+  return false;
 }
+
+// ifa/049: does call `p` never return normally -- it dispatched, and none
+// of its callee contours reaches its exit? (gate_send's question.)
+static bool call_never_returns(PNode *p, EntrySet *es) {
+  Vec<AEdge *> *m = es->out_edge_map.get(p);
+  if (!m) return false;
+  bool any = false;
+  for (AEdge *e : *m) {
+    if (!e || !es->out_edges.set_in(e) || !e->to) continue;
+    Sym *f = e->to->fun->sym;
+    if (f->is_generator || f->is_async || es_reaches_exit(e->to)) return false;
+    any = true;
+  }
+  return any;
+}
+
+// ifa/049: the call whose pending exception `if_p` (an `exc_check` IF)
+// tests. The frontend emits `t = <exception slot>; c = isinstance(t,
+// None); if c` directly after the call (emit_exc_check), so it is the
+// MOVE's sole CFG predecessor, reached through the condition's defs.
+static PNode *exc_check_call(PNode *if_p) {
+  if (!if_p->code || !if_p->code->exc_check || !if_p->rvals.n) return nullptr;
+  Var *cond = if_p->rvals[0];
+  PNode *test = cond ? cond->def : nullptr;
+  if (!test) return nullptr;
+  for (Var *v : test->rvals) {
+    PNode *mv = v ? v->def : nullptr;
+    if (!mv || !mv->code || mv->code->kind != Code_MOVE || mv->cfg_pred.n != 1) continue;
+    PNode *call = mv->cfg_pred[0];
+    if (call && call->code && call->code->kind == Code_SEND && !call->prim) return call;
+  }
+  return nullptr;
+}
+
 
 // ifa/178: this contour has reached its exit, so a caller gated on it
 // (gate_send) resumes past the call.
@@ -3150,7 +3194,8 @@ static void release_callers(EntrySet *es) {
   for (AEdge *ee : es->edges)
     if (ee && ee->from && ee->pnode && ee->pnode->lvals.n == 1) {
       AVar *r = make_AVar(ee->pnode->lvals[0], ee->from);
-      if (r->gates_flow) release_gate(r);
+      if (r->gates_flow)
+        release_gate(r);
     }
 }
 
@@ -3161,6 +3206,49 @@ static bool receiver_is_only_nil(AVar *obj) {
   for (CreationSet *cs : obj->out->sorted)
     if (!cs || !cs->sym || cs->sym->type != sym_nil_type) return false;
   return true;
+}
+
+// ifa/049: is call `p` followed by its pending-exception check?
+static bool call_has_exc_check(PNode *p) {
+  PNode *n = p;
+  for (int i = 0; i < 4 && n && n->cfg_succ.n == 1; i++) {
+    n = n->cfg_succ[0];
+    if (n->code && n->code->kind == Code_IF) return exc_check_call(n) == p;
+  }
+  return false;
+}
+
+enum { GATE_NONE = 0, GATE_NORETURN, GATE_RAISES };
+
+// ifa/178, 049: does send `p` complete in contour `es`? GATE_NORETURN: it
+// cannot -- the code after it is unreachable and codegen traps. GATE_RAISES:
+// it completes by raising, with no exception check after it (builtin-module
+// code does not check), so the code after it is unreachable too, and the
+// contour itself raises; codegen returns at once. A call that raises and
+// IS checked is not gated: settle_gated_contours keeps the check's
+// pending-exception branch, so a handler stays reachable.
+static int send_gate_kind(PNode *p, EntrySet *es) {
+  if (p->lvals.n != 1) return GATE_NONE;
+  AVar *result = make_AVar(p->lvals[0], es);
+  if (result->contour != es || result->out != fa->type_world.bottom_type) return GATE_NONE;
+  if (p->prim) {
+    if (p->prim->index != P_prim_period) return GATE_NONE;
+    return receiver_is_only_nil(make_AVar(p->rvals[1], es)) ? GATE_NORETURN : GATE_NONE;
+  }
+  if (!call_never_returns(p, es)) return GATE_NONE;
+  bool raises = false;
+  for (AEdge *e : *es->out_edge_map.get(p))
+    if (e && es->out_edges.set_in(e) && e->to && e->to->raises) raises = true;
+  if (!raises) return GATE_NORETURN;
+  return call_has_exc_check(p) ? GATE_NONE : GATE_RAISES;
+}
+
+// ifa/049: contour `es` can leave by raising; its callers' gates are
+// re-asked, as when it first returns.
+static void note_raises(EntrySet *es) {
+  if (es->raises) return;
+  es->raises = 1;
+  release_callers(es);
 }
 
 // ifa/178: a send that cannot complete. The code after it is unreachable,
@@ -3181,30 +3269,21 @@ static bool receiver_is_only_nil(AVar *obj) {
 //   operand). A callee reaching its exit re-walks its callers.
 //   Generators and coroutines return a handle whatever the body does.
 static bool gate_send(PNode *p, EntrySet *es) {
-  if (p->lvals.n != 1) return false;
+  int k = send_gate_kind(p, es);
+  if (k == GATE_NONE) return false;
   AVar *result = make_AVar(p->lvals[0], es);
-  if (result->contour != es || result->out != fa->type_world.bottom_type) return false;
-  bool gate = false;
-  if (p->prim) {
-    if (p->prim->index != P_prim_period) return false;
-    AVar *obj = make_AVar(p->rvals[1], es);
-    gate = receiver_is_only_nil(obj);
-  } else {
-    Vec<AEdge *> *m = es->out_edge_map.get(p);
-    if (!m) return false;
-    for (AEdge *e : *m) {
-      if (!e || !es->out_edges.set_in(e) || !e->to) continue;
-      Sym *f = e->to->fun->sym;
-      if (f->is_generator || f->is_async || es_reaches_exit(e->to)) return false;
-      gate = true;
-    }
-  }
-  if (gate) result->gates_flow = 1;
-  return gate;
+  result->gates_flow = 1;
+  result->gate_raises = k == GATE_RAISES;
+  if (k == GATE_RAISES) note_raises(es);
+  return true;
 }
 
 static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
-  if (es->live_pnodes.set_add(p) && p == es->fun->exit) release_callers(es);
+  es->live_pnodes.set_add(p);
+  if (p == es->fun->exit && !es->returns) {
+    es->returns = 1;
+    release_callers(es);
+  }
   for (PNode *n : p->phi) {
     AVar *vv = make_AVar(n->lvals[0], es);
     for (Var *v : n->rvals) flow_vars(make_AVar(v, es), vv);
@@ -3212,6 +3291,23 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
   for (Var *v : p->rvals) make_AVar(v, es)->live_arg = 1;
   switch (p->code->kind) {
     default:
+      break;
+    case Code_GOTO:
+      // ifa/049: the exceptional exit runs but produces no value. Its path
+      // to the exit is live (codegen emits it; the function must return so
+      // the caller sees the pending exception), but it is not WALKED: the
+      // exit's `reply` reads the return value, and walking it would make
+      // that read live in a contour that can only raise. Nor does it set
+      // `returns`, so callers stop at their exception check (gate_send).
+      if (p->code->exc_exit) {
+        note_raises(es);
+        for (PNode *n = p->cfg_succ.n == 1 ? p->cfg_succ[0] : nullptr; n;
+             n = n->cfg_succ.n == 1 ? n->cfg_succ[0] : nullptr) {
+          es->live_pnodes.set_add(n);
+          if (n == es->fun->exit) break;
+        }
+        return;
+      }
       break;
     case Code_SEND:
       add_send_constraints(p, es);
@@ -6847,7 +6943,11 @@ static void clear_es(EntrySet *es) {
   // saved. An ES whose AVars were cleared MUST lose it -- clear_avar
   // dropped the flow edges and add_es_constraints is the only thing
   // that rebuilds them.
-  if (!fa_rebuild_only || fa_rebuild_only->set_in(es)) es->live_pnodes.clear();
+  if (!fa_rebuild_only || fa_rebuild_only->set_in(es)) {
+    es->live_pnodes.clear();
+    es->returns = 0;
+    es->raises = 0;
+  }
 }
 
 static void clear_cs(CreationSet *cs) {
@@ -13655,15 +13755,15 @@ static void report_gated_calls() {
   }
 }
 
-static void settle_gated_contours();
+static bool settle_gated_contours();
 
 // ifa/178: liveness at quiescence. A gate (gate_send) is decided during
 // the walk, and liveness only grows within a pass, so code walked BEFORE
 // its gate engaged stays live: `r = evaluate(e.rhs)` was walked while
 // `e.rhs` was still bottom (no edge, so no gate), and its move kept the
 // call's bottom result `live_arg` after `e.rhs` became `{None}` and the
-// call gated. Re-derive each gated contour's live set on the converged
-// state: what the walk reached, cut at every send still gated.
+// call gated. Re-derive each contour's live set on the converged state:
+// what the walk reached, cut at every send still gated.
 //
 // The gate itself is asked again here too. During the walk a call's gate
 // can almost never engage: gate_send needs the call's edge in out_edges
@@ -13673,33 +13773,102 @@ static void settle_gated_contours();
 // which the post-inlining re-analysis did by skipping its reset. On the
 // converged graph the question has its real answer. Iterated, because
 // cutting a contour's exit out of its live set gates its own callers.
+//
+// ifa/049 asks its two questions here for the same reason: whether a
+// contour RETURNS (`returns`), and so whether a call's exception check may
+// take its normal branch. During the walk the check is usually reached
+// before the call's edge exists, so it walked both branches.
 static void settle_gated_liveness() {
-  settle_gated_contours();
-  for (bool regated = true; regated;) {
-    regated = false;
+  for (bool changed = true; changed;) {
+    changed = settle_gated_contours();
     for (EntrySet *es : fa->ess) if (es && es->fun && es->fun->entry)
       for (PNode *p : es->fun->fa_send_PNodes)
         if (p->lvals.n == 1 && es->live_pnodes.set_in(p) && !make_AVar(p->lvals[0], es)->gates_flow &&
             gate_send(p, es))
-          regated = true;
-    if (regated) settle_gated_contours();
+          changed = true;
   }
+  // ifa/049: a contour reached only from a send that is no longer live --
+  // `a, b = header()` destructuring the result of a call that can only
+  // raise, walked before the call's edge existed -- is not reached at all,
+  // and its bottom-typed arguments are not violations. Keep the contours
+  // reachable from the top through live sends.
+  if (!fa->top_edge || !fa->top_edge->to) return;
+  Vec<EntrySet *> reached, stack;
+  reached.set_add(fa->top_edge->to);
+  stack.add(fa->top_edge->to);
+  // Through out_edge_map, keyed by the SENDING node, exactly as clone.cc
+  // builds Fun::calls: an AEdge's own `pnode` is not always that node (a
+  // method call through a bound closure, pygmy's `self.isoccluded(...)`),
+  // and asking it dropped contours that live calls still reach.
+  while (stack.n) {
+    EntrySet *es = stack.pop();
+    for (int i = 0; i < es->out_edge_map.n; i++) {
+      PNode *pn = es->out_edge_map[i].key;
+      Vec<AEdge *> *m = es->out_edge_map[i].value;
+      if (!pn || !m || !es->live_pnodes.set_in(pn)) continue;
+      for (AEdge *e : *m)
+        if (e && e->to && es->out_edges.set_in(e) && reached.set_add(e->to)) stack.add(e->to);
+    }
+  }
+  Vec<EntrySet *> done;
+  for (EntrySet *es : fa->entry_set_done) if (es && reached.set_in(es)) done.set_add(es);
+  fa->entry_set_done.move(done);
 }
 
-static void settle_gated_contours() {
+// Re-derive every contour's live set and `returns`. Returns true if
+// anything changed. A contour is reached from its entry through the nodes
+// the walk made live, except:
+//  - not past a send still gated (ifa/178);
+//  - at an exception check whose call never returns, only into the
+//    pending-exception branch (ifa/049);
+//  - from an `exc_exit` goto, its path to the exit is live but does not
+//    make the contour RETURN, and an exit reached only that way does not
+//    read the return value (ifa/049).
+static bool settle_gated_contours() {
+  bool changed = false;
   for (EntrySet *es : fa->ess) if (es && es->fun && es->fun->entry) {
-    bool gated = false;
-    for (PNode *p : es->fun->fa_send_PNodes)
-      if (p->lvals.n == 1 && es->live_pnodes.set_in(p) && make_AVar(p->lvals[0], es)->gates_flow) { gated = true; break; }
-    if (!gated) continue;
-    Vec<PNode *> keep, stack;
+    Vec<PNode *> keep, stack, exc_only;
+    bool normal_exit = false, raises = false;
     if (es->live_pnodes.set_in(es->fun->entry)) { keep.set_add(es->fun->entry); stack.add(es->fun->entry); }
     while (stack.n) {
       PNode *p = stack.pop();
-      if (p->code->kind == Code_SEND && p->lvals.n == 1 && make_AVar(p->lvals[0], es)->gates_flow) continue;
+      if (p == es->fun->exit) normal_exit = true;
+      if (p->code->kind == Code_SEND && p->lvals.n == 1 && make_AVar(p->lvals[0], es)->gates_flow) {
+        if (make_AVar(p->lvals[0], es)->gate_raises) raises = true;
+        continue;
+      }
+      if (p->code->kind == Code_GOTO && p->code->exc_exit) {
+        raises = true;
+        for (PNode *n = p->cfg_succ.n == 1 ? p->cfg_succ[0] : nullptr; n;
+             n = n->cfg_succ.n == 1 ? n->cfg_succ[0] : nullptr) {
+          if (!es->live_pnodes.set_in(n)) break;
+          if (!keep.set_in(n)) exc_only.set_add(n);
+          if (n == es->fun->exit) break;
+        }
+        continue;
+      }
+      if (p->code->kind == Code_IF && p->cfg_succ.n == 2) {
+        PNode *call = exc_check_call(p);
+        if (call && call_never_returns(call, es)) {
+          PNode *n = p->cfg_succ[1];
+          if (es->live_pnodes.set_in(n) && keep.set_add(n)) stack.add(n);
+          continue;
+        }
+      }
       for (PNode *n : p->cfg_succ)
         if (es->live_pnodes.set_in(n) && keep.set_add(n)) stack.add(n);
     }
+    // An exceptional-path node the normal walk also reached is just live.
+    Vec<PNode *> exc_path;
+    for (PNode *n : exc_only) if (n && !keep.set_in(n)) exc_path.set_add(n);
+    bool returns = !es->fun->exit || normal_exit;
+    bool same = es->returns == returns && es->raises == raises && keep.set_count() + exc_path.set_count() == es->live_pnodes.set_count();
+    if (same)
+      for (PNode *p : es->live_pnodes) if (p && !keep.set_in(p) && !exc_path.set_in(p)) { same = false; break; }
+    if (same) continue;
+    changed = true;
+    es->returns = returns;
+    es->raises = raises;
     // Over every node, not just the ones dropped here: selective
     // invalidation (ifa/111 M3) preserves an AVar, live_arg included, across
     // passes, so a read walked in an EARLIER pass can still be marked.
@@ -13710,7 +13879,9 @@ static void settle_gated_contours() {
       es->live_pnodes.set_add(p);
       for (Var *v : p->rvals) make_AVar(v, es)->live_arg = 1;
     }
+    for (PNode *p : exc_path) if (p) es->live_pnodes.set_add(p);
   }
+  return changed;
 }
 
 static void complete_pass() {
@@ -14294,7 +14465,11 @@ int FA::analyze(Fun *top) {
     // computed isn't lost — the second pass re-derives
     // constraints for the new shape and converges from
     // there.
-    for (EntrySet *es : ess) es->live_pnodes.clear();
+    for (EntrySet *es : ess) {
+      es->live_pnodes.clear();
+      es->returns = 0;
+      es->raises = 0;
+    }
     recollect_Vars_PNodes();
     type_violations.clear();
     analyze_to_convergence();
