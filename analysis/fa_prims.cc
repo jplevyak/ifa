@@ -126,6 +126,15 @@ switch (p->prim->index) {
         AVar *vec = make_AVar(p->rvals[o], es);
         AVar *index = make_AVar(p->rvals[o + 1], es);
         set_container(result, vec);
+        // ifa/185 A: drop the past-the-end receivers only when some receiver
+        // CAN supply this index. When none can, the read is dead in every
+        // receiver -- but FA cannot see the guard that makes it dead (len()
+        // of a union of arities is the abstract int, not a constant), so it
+        // keeps the old union and the dead send still resolves.
+        bool oob_drop = false;
+        if (oobidx_enabled())
+          for (CreationSet *cs : vec->out->sorted)
+            if (!const_index_past_end(index, cs)) { oob_drop = true; break; }
         for (CreationSet *cs : vec->out->sorted) {
           if (sym_string->specializers.set_in(cs->sym))
             update_gen(result, sym_char->abstract_type);
@@ -139,6 +148,14 @@ switch (p->prim->index) {
           else {
             int i;
             bool is_const = get_obj_index(index, &i, cs->vars.n);
+            // ifa/185 A: a CONSTANT index past a fixed-arity tuple's end is
+            // CPython's IndexError -- that read produces no value, so this
+            // receiver contributes nothing. It used to fall into the
+            // non-constant branch and contribute EVERY field: inside the
+            // unrolled tuple methods, a step past a short tuple's arity
+            // (reached because `n >= k` cannot fold while `self` is a union
+            // of arities) manufactured a union of that tuple's fields.
+            if (!is_const && oob_drop && const_index_past_end(index, cs)) continue;
             if (cs->sym->element) flow_vars(get_element_avar(cs), result);
             if (!cs->sym->is_vector) {
               if (is_const)
@@ -154,6 +171,10 @@ switch (p->prim->index) {
         AVar *vec = make_AVar(p->rvals[o], es);
         AVar *index = make_AVar(p->rvals[o + 1], es);
         AVar *val = make_AVar(p->rvals[o + 2], es);
+        bool oob_drop = false;  // ifa/185 A: as for index_object
+        if (oobidx_enabled())
+          for (CreationSet *cs : vec->out->sorted)
+            if (!const_index_past_end(index, cs)) { oob_drop = true; break; }
         fill_tvals(es->fun, p, 1);
         AVar *tval = make_AVar(p->tvals[0], es);
         flow_vars(val, tval);
@@ -165,6 +186,7 @@ switch (p->prim->index) {
           } else {
             int i;
             bool is_const = get_obj_index(index, &i, cs->vars.n);
+            if (!is_const && oob_drop && const_index_past_end(index, cs)) continue;  // ifa/185 A
             if (cs->sym->is_vector) {
               if (cs->sym->element) flow_vars(tval, get_element_avar(cs));
             } else if (is_const)

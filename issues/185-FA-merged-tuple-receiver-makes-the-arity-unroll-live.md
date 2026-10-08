@@ -212,6 +212,50 @@ door. `PYC_CSCALLSITE` mode 2, the existing call-site rung, was measured
 a corpus-wide wash (ifa/146) without a re-merge. This is a design
 decision, not a measurement.
 
+## Containing the unroll: levers A and B (measured 2026-10-08)
+
+Two off-by-default levers attack the unroll's cost directly instead of
+the merge. Both are interim. The arity-dispatch plan below deletes them.
+
+- **A, `PYC_OOBIDX`** (`fa_prims.cc` `index_object` / `set_index_object`,
+  `const_index_past_end` in `fa.cc`). A constant index past a fixed-arity
+  tuple receiver's end contributes nothing, instead of falling into the
+  non-constant branch that flows every field.
+- **B, `PYC_TUPIX`** (`python_ifa_main.cc`). Inline `index_object` for
+  `self[k]` / `t[k]` in the generated tuple methods, so a step does not
+  mint a `tuple.__getitem__` contour per constant key.
+
+| variant | sunfish compile | `make test` |
+| --- | --- | --- |
+| baseline | 537 s | green |
+| A, drops every past-end receiver | 443 s, output same | 5 failures |
+| A + B | 365 s, output same, no warnings | 5 failures |
+| B alone | ifa/057 stall guard in pass 7 | green |
+| A narrowed + B | rc=124 at 900 s (749 s in passes 1–12) | green (committed form) |
+
+A's five failures (`tuple_arity_union`, `nested_tuple_repr`,
+`star_args`, `itertools_module`, `itertools_product_repeat_tuple`) are
+steps past EVERY receiver's arity. The step is dead, but its `n >= k`
+guard cannot fold: `len` over `{1-tuple, 2-tuple}` is the abstract `int`,
+because the constant cap is 1. So the step's comparison runs on bottom
+and is an unresolved call. The narrowed form, which is the one committed,
+keeps the old all-fields union when no receiver has the field. That is
+test-clean, but on sunfish those unions are what B's inlining amplifies.
+
+So the defect is that liveness of a step comes from `n` rather than from
+the receivers' types. Arity is type (ifa/132), and dispatch already
+filters per receiver CreationSet (`set_filters`, `ifa/if1/pattern.cc`).
+**The plan is to dispatch on arity.** It has three parts:
+
+- add an arity constraint on a formal, checked in `find_best_cs_match`
+  and ranked by subsumption above an unconstrained formal;
+- generate one straight-line body per arity the program uses, with no
+  guards;
+- keep a loop fallback for tuples that have no fixed arity.
+
+A merged receiver then reaches one target per arity without being split,
+and A and B are deleted.
+
 ## Directions (none taken)
 
 The step-1 findings narrow these. The first two below target the tuple
