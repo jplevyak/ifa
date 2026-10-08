@@ -12837,6 +12837,53 @@ static int demote_mixed_arity_slots() {
       std::sort(fd.begin(), fd.end());
       for (size_t i = 0; i < fd.size() && i < 30; i++)
         fprintf(stderr, "FEED pass=%d  %5d %s\n", analysis_pass, -fd[i].first, fd[i].second.c_str());
+      // ifa/185 step 1: the containers whose element channel carries the
+      // widest union, with how many creation points share each one. Reads
+      // only (avars.get, no unique_AVar), so it cannot perturb the run.
+      {
+        std::vector<std::tuple<int, int, CreationSet *>> wide;
+        for (CreationSet *c : fa->css) if (c && c->sym && c->sym->element && c->sym->element->var) {
+          AVar *ev = c->sym->element->var->avars.get(c);
+          if (!ev || !ev->out || ev->out->sorted.n < 3) continue;
+          wide.push_back({-ev->out->sorted.n, c->id, c});
+        }
+        std::sort(wide.begin(), wide.end());
+        for (size_t i = 0; i < wide.size() && i < 12; i++) {
+          CreationSet *c = std::get<2>(wide[i]);
+          fprintf(stderr, "WIDEELEM pass=%d cs=%d sym=%s defs=%d elem_css=%d\n", analysis_pass, c->id,
+                  c->sym->name ? c->sym->name : "?", c->defs.n, -std::get<0>(wide[i]));
+        }
+      }
+      // ifa/185 step 1: is there a TYPE partition to split on? For every
+      // contour whose first positional formal holds a >4-CS union, count
+      // its in-edges (self-recursive = the caller runs the same function)
+      // and the distinct converged types those edges' actuals carry at that
+      // formal. One distinct type over many edges means no type split can
+      // separate them; many distinct types means one could.
+      struct EdgeAgg { int es = 0, edges = 0, rec = 0, same_as_formal = 0, single_cs = 0; std::set<AType *> types; };
+      std::map<std::string, EdgeAgg> eagg;
+      for (EntrySet *es : fa->ess) if (es && es->fun && es->fun->positional_arg_positions.n) {
+        MPosition *p0 = es->fun->positional_arg_positions[es->fun->positional_arg_positions.n > 1 ? 1 : 0];
+        AVar *fav = es->args.get(p0);
+        if (!fav || !fav->out || fav->out->sorted.n <= 4) continue;
+        char b[160];
+        snprintf(b, sizeof(b), "%s#%d", es->fun->sym->name ? es->fun->sym->name : "?", es->fun->sym->id);
+        EdgeAgg &g = eagg[b];
+        g.es++;
+        for (AEdge *e : es->edges) if (e) {
+          g.edges++;
+          if (e->from && e->from->fun == es->fun) { g.rec++; continue; }
+          AVar *a = e->args.get(p0);
+          if (!a || !a->out) continue;
+          g.types.insert(a->out);
+          if (a->out == fav->out) g.same_as_formal++;
+          if (a->out->sorted.n == 1) g.single_cs++;
+        }
+      }
+      for (auto &g : eagg)
+        fprintf(stderr, "EDGEPART pass=%d %s es=%d edges=%d rec=%d nonrec_distinct_types=%zu nonrec_same_as_formal=%d nonrec_single_cs=%d\n",
+                analysis_pass, g.first.c_str(), g.second.es, g.second.edges, g.second.rec, g.second.types.size(),
+                g.second.same_as_formal, g.second.single_cs);
       fprintf(stderr, "ESSIG pass=%d distinct=%zu\n", analysis_pass, ts.size());
       for (size_t i = 0; i < ts.size() && i < 25; i++)
         fprintf(stderr, "ESSIG pass=%d  %4d %s\n", analysis_pass, -ts[i].first, ts[i].second.substr(0, 300).c_str());
