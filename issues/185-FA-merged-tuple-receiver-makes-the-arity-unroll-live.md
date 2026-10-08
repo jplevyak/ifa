@@ -156,17 +156,71 @@ So there is no phase-B fix that does not first remove phase A's union.
 The type-keyed split declines because the types really are the same
 there. Phase A is the work.
 
+## Phase A: the merge is circular at pass 0's fixed point (measured 2026-10-08)
+
+Two route-4 changes were tried behind flags and reverted. Both rest on a
+misreading, and the measurements correct it.
+
+**Edge-keyed assign sets (`PYC_CSEDGEKEY`).** Read the assigned type at
+a shared writer contour's in-edges instead of at its merged formal. Result:
+byte-identical to the default (`cs=1489` still `KEY sets=1 groups=2` at
+pass 0). At pass 0 only seven writes reach `cs=1489`'s element, all
+carrying the 49-CS type. Their writer contours' callers already pass that
+same union. `append` (es=78) is called by `set.add`, `list.extend`,
+`print_pos`, and twice by `dict.__setitem__` (once for keys, once for
+values). The callers of the writers are themselves shared builtins, so
+there is no edge where the types differ.
+
+**Joint ES-block (`PYC_ESJOINT`).** Hold every shared contour on the walk
+terminal at once, instead of one at a time. It acts elsewhere (it splits
+`__pyc_rehash__` for `cs=3861` and `append` for `cs=11281`), but never on
+the dict, `cs=1488`. At pass 0 that CS has one shared-contour candidate
+(`clear`), and nothing on any assign set's walk is a merge node (an
+`IFA_DBG_CSHUB`-style probe: no path node has two dict-carrying
+predecessors). Every assign set reaches all six dict creation points
+directly.
+
+**What that means.** The six dicts (`piece`, `pst`, `directions`,
+`tp_score`, `tp_move`, and `print_pos`'s) are indistinguishable by type at
+pass 0, honestly:
+
+- every dict's `__init__` writes the same types into its members
+  (`_len = 0`, `_mask = 0`, `_keys = []`, `_vals = []`);
+- those lists are one CreationSet, `cs=1489`, because each is a single
+  creation point inside the shared `dict.__init__`.
+
+What distinguishes the dicts (`pst` holds tuples, `tp_score` holds
+`Entry`, `piece` holds ints) is only in the lists' contents, and they
+are merged. The list needs the dicts split, and the dicts need the list
+split. Every write into either passes through `dict.__setitem__` (es=55,
+one contour), whose callers see the polluted fixed point: reading
+`pst[k]` returns every dict's values, and those flow on into the other
+dicts. At quiescence the union sustains itself, so no type-keyed
+partition exists anywhere for a demand to act on. The current route 4
+untangles it only through its 1-bit early key (on a path or not), a group
+or two per pass. That is the "does real work though its key carries no
+element information" behaviour issues/128 recorded.
+
+**The handle that remains.** The only place the dicts differ is
+`dict.__setitem__`'s call sites, before the fixed point pollutes them.
+A demand-driven answer therefore has to split a writer contour by call
+site (the demand on `cs=1489` decides whether, the call site decides
+which) and then re-merge at convergence the contours whose re-derived
+types agree (ifa/170). That stays within AGENTS.md's 2026-09-06
+refinement only with the re-merge: without it, it is 1-CFA by the back
+door. `PYC_CSCALLSITE` mode 2, the existing call-site rung, was measured
+a corpus-wide wash (ifa/146) without a re-merge. This is a design
+decision, not a measurement.
+
 ## Directions (none taken)
 
 The step-1 findings narrow these. The first two below target the tuple
 methods and are superseded:
 
 - **Phase B (done, negative).** See "Phase B is phase A's wake" above.
-- **Phase A.** Route 4's key cannot sharpen faster than the writer
-  contours split. Either give it a key that reads the writes' types
-  directly (shedskin's assign sets are per assignment site, not per
-  writer contour), or backtrack the demand from the writer formals to
-  `cs=1489` so the partition and the writer splits happen in one pass.
+- **Phase A (two approaches measured dead).** See "Phase A: the merge is
+  circular" above. The open option is a call-site split of the shared
+  writer, with a re-merge at convergence.
 
 
 - **Fold the guard per receiver, not per contour.** The unroll is
