@@ -1521,6 +1521,8 @@ static llvm::Value *emit_norm_idx_const_len(llvm::Value *idx64, int64_t len) {
   return Builder->CreateSelect(is_neg, normed, idx64, "idx");
 }
 
+static llvm::Value *record_field_gep(Sym *t, llvm::Value *obj, llvm::Value *idx, llvm::Type **field_ty);
+static llvm::Value *coerce_slot_value(llvm::Value *v, llvm::Type *to);
 bool emit_send_index_load(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim || pn->prim->index != P_prim_index_object)
     return false;
@@ -1598,11 +1600,54 @@ bool emit_send_index_load(EmitCtx &ctx, PNode *pn) {
   // it's excluded (still-open gap, issues/025).
   llvm::Value *idx_use = idx;
   if (t && !t->is_vector) idx_use = emit_norm_idx_const_len(idx, t->has.n);
+  llvm::Type *field_ty = nullptr;
+  if (llvm::Value *fgep = record_field_gep(t, obj, idx_use, &field_ty)) {
+    llvm::Value *loaded = coerce_slot_value(Builder->CreateLoad(field_ty, fgep), elem_ty);
+    put_result(ctx, dst_v, loaded);
+    return true;
+  }
   llvm::Value *gep = Builder->CreateGEP(elem_ty, obj, idx_use);
   llvm::Value *loaded = Builder->CreateLoad(
       elem_ty, gep, cg_get_string(dst_v) ? cg_get_string(dst_v) : "");
   put_result(ctx, dst_v, loaded);
   return true;
+}
+
+// A constant index into a RECORD (a tuple's fixed fields) addresses the
+// record's own struct slot. Indexing it as an array of the element's
+// type is right only when every field has the same width: an
+// (int, bool) tuple, `{ i64, i1 }`, read field 1 at byte offset 1 instead
+// of 8, so `mk(True)` built `(2, False)` (sunfish's transposition-table
+// keys `(pos, (depth, root))` never matched). Returns the slot's address
+// and its LLVM type, or null when the index is not a constant in range.
+static llvm::Value *record_field_gep(Sym *t, llvm::Value *obj, llvm::Value *idx, llvm::Type **field_ty) {
+  if (!t || t->is_vector || t->type_kind != Type_RECORD) return nullptr;
+  auto *ci = llvm::dyn_cast<llvm::ConstantInt>(idx);
+  if (!ci) return nullptr;
+  int64_t i = ci->getSExtValue();
+  if (i < 0) i += t->has.n;
+  if (i < 0 || i >= t->has.n) return nullptr;
+  llvm::StructType *st = sym_to_llvm_struct(t);
+  if (!st || st->isOpaque()) return nullptr;
+  unsigned slot = (unsigned)llvm_fld(t, (int)i);
+  if (slot >= st->getNumElements()) return nullptr;
+  *field_ty = st->getElementType(slot);
+  return Builder->CreateStructGEP(st, obj, slot);
+}
+
+// Convert between a record slot's LLVM type and a value's.
+static llvm::Value *coerce_slot_value(llvm::Value *v, llvm::Type *to) {
+  llvm::Type *from = v->getType();
+  if (from == to) return v;
+  if (from->isIntegerTy() && to->isIntegerTy()) {
+    if (from->isIntegerTy(1)) return Builder->CreateZExt(v, to);
+    if (to->isIntegerTy(1)) return Builder->CreateICmpNE(v, llvm::ConstantInt::get(from, 0));
+    return Builder->CreateSExtOrTrunc(v, to);
+  }
+  if (from->isPointerTy() && to->isIntegerTy()) return Builder->CreatePtrToInt(v, to);
+  if (from->isIntegerTy() && to->isPointerTy()) return Builder->CreateIntToPtr(v, to);
+  if (from->isFloatingPointTy() && to->isFloatingPointTy()) return Builder->CreateFPCast(v, to);
+  return Builder->CreateBitCast(v, to);
 }
 
 bool emit_send_index_store(EmitCtx &ctx, PNode *pn) {
@@ -1641,6 +1686,11 @@ bool emit_send_index_store(EmitCtx &ctx, PNode *pn) {
   // exclusion) as emit_send_index_load's fallback above.
   llvm::Value *idx_use = idx;
   if (t && !t->is_vector) idx_use = emit_norm_idx_const_len(idx, t->has.n);
+  llvm::Type *field_ty = nullptr;
+  if (llvm::Value *fgep = record_field_gep(t, obj, idx_use, &field_ty)) {
+    Builder->CreateStore(coerce_slot_value(val, field_ty), fgep);
+    return true;
+  }
   llvm::Value *gep = Builder->CreateGEP(elem_ty, obj, idx_use);
   Builder->CreateStore(val, gep);
   return true;

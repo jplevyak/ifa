@@ -77,7 +77,6 @@ one is a lesson this directory paid for.
 | issue | what |
 | --- | --- |
 | [072](072-FA-empty-container-notype-current-mechanism-and-plan.md) | a never-written container's bottom element reaching live code. Derive "zero-trip" and "raises" from it. |
-| [183](183-FA-subscript-tuple-key-typed-none.md) | a tuple subscript key (`board[row-1, column]` on a defaultdict) is typed `None`: silent run-time abort. `life`'s blocker; predates the 2026-10-05 convergence fixes, which uncovered it. |
 | [178](178-FA-route4-declines-records-built-through-one-constructor.md) | route 4 cannot separate two creation points of a class built through one constructor; the merged member then contaminates both lists. |
 | [177](177-FA-narrowing-does-not-reach-a-module-global.md) | an `isinstance` / `is None` guard does not narrow a module-level variable: each read is a fresh load of the cell. |
 | [025](025-FA-intra-function-union-narrowing.md) | branch correlation over a class union: now refused. Tail duplication, or a permissive runtime check. |

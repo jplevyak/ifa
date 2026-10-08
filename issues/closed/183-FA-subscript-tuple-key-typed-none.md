@@ -1,6 +1,6 @@
 # 183 — a tuple subscript key `board[row-1, column]` is typed `None`
 
-**Status:** open. Found 2026-10-05, when `life` started compiling (its
+**Status: FIXED 2026-10-07** (see "Fixed" below). Found 2026-10-05, when `life` started compiling (its
 earlier refusal, `map(process, generator(...))`, was fixed by the
 `make_seq` and convergence work in the same change). Reproduces on the
 previous HEAD (`5eb61058`) too, so it predates that change, which only
@@ -58,3 +58,19 @@ Where the `None` comes from. Candidates to check first, per AGENTS.md's
 
 The repro prints `2`, and `shedskin_examples/life` matches CPython
 (currently `rc=134`, sweep `check__default__5eb61058+c61232b1`).
+
+## Fixed (2026-10-07)
+
+Not an FA bug. In the frontend, `PY_subscriptlist` (`board[a, b]`) fell
+into `build_if1_pyda`'s default case, which built the children and
+produced no value, so the subscript's index was empty: the key was never
+the tuple `(a, b)` that CPython uses. It now builds that tuple, as a tuple
+display does (`python_ifa_build_if1.cc`). A slice inside the list
+(`a[1:2, 3]`) keeps the old path.
+
+life then hit a second bug. `collections.defaultdict` had no `__eq__`, so
+`board in history` compared by identity and `process()` never returned.
+It now compares equal to an equal defaultdict or dict
+(`tests/defaultdict_eq.py`). life compiles and matches CPython; it runs
+at 74 s against CPython's 42 s. Tests: `tests/subscript_tuple_key.py`.
+The same subscript fix unblocked sunfish's transposition table and rubik.
