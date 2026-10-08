@@ -306,16 +306,24 @@ it, and they mask the bit. Test: `tests/tuple_eq_arity_dispatch.py`.
 
 ## Open after step 2 (2026-10-08)
 
-1. **The other generated tuple operations are still the max-arity
-   unroll.** Only `__eq__` dispatches on arity. These still unroll to
-   `max_arity` behind `n >= k` guards, with the same dead-step problem:
-   `__lt__`, `__str__`, `__hash__`, `__contains__`, `count`, `index`,
-   `__deepcopy__`, `__pyc_bytes_fmtargs__` and `__pyc_toints__`. They are
-   step 4: per-arity bodies, plus a "no fixed arity" body for list-layout
-   tuples. `__lt__` needs both operands, because a prefix compare reads
-   `min(n, m)` elements. Until they are converted, sunfish is not
-   re-measured and levers A and B (`PYC_OOBIDX`, `PYC_TUPIX`) are not
-   deleted.
+1. ~~**The other generated tuple operations are still the max-arity
+   unroll.**~~ **Done in step 4.** `emit_tuple_arity_methods` gives each
+   of them one straight-line body per arity a fixed-arity tuple can have,
+   plus an unconstrained runtime-loop body. The methods are `__lt__`,
+   `__str__`, `__hash__`, `__contains__`, `count`, `index`,
+   `__deepcopy__`, `__pyc_bytes_fmtargs__` and `__pyc_toints__`.
+   - The arity set is every literal's (builtin modules included), every
+     arity a `*args` call can build, and the REPL floor; sunfish's is
+     `{0, 1, 2, 4, 8, 64}` before the builtins add theirs. A missed arity
+     falls to the loop body, so the set bounds precision, not correctness.
+   - `__lt__` dispatches on both operands: a `(k, m)` body for each pair
+     in the set, `(k, dyn)` and `(dyn, k)`, and the loop.
+   - `__eq__` keeps `0..max_arity`, because its unconstrained body answers
+     False.
+
+   **Measured on sunfish: compile 537 s -> 168 s, no warnings, output
+   identical to CPython** (except its own `TIME` line). Levers A and B
+   (`PYC_OOBIDX`, `PYC_TUPIX`) are now unneeded; deleting them is step 6.
 2. **`[1, 2] == (1, 2)` is True** (CPython: False). `list.__eq__` never
    checks that its argument is a list. An `isinstance(l, list)` guard
    untyped `l` in `builtin_zero_arg_ctor` and `list_tuple_eq_ne`
