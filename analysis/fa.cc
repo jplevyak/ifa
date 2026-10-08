@@ -12753,6 +12753,95 @@ static int demote_mixed_arity_slots() {
         fa->type_violations.set_count(), fa->dup_split_attempts, fa->cs_dup_split_attempts, fa->dirty_avar_count,
         fa->examined_avar_count);
   }
+  // Per-pass violation histogram: totals by kind, then the most frequent
+  // (kind, function, variable) groups. Names are for reading only; the
+  // groups are diagnostic, never analysis keys.
+  if (getenv("IFA_DBG_VIOLHIST")) {
+    int by_kind[16] = {0};
+    std::map<std::string, int> groups;
+    for (ATypeViolation *v : fa->type_violations) if (v) {
+      int k = (int)v->kind;
+      if (k >= 0 && k < 16) by_kind[k]++;
+      AVar *a = v->av;
+      cchar *fn = (a && a->contour_is_entry_set && ((EntrySet *)a->contour)->fun &&
+                   ((EntrySet *)a->contour)->fun->sym && ((EntrySet *)a->contour)->fun->sym->name)
+                      ? ((EntrySet *)a->contour)->fun->sym->name
+                      : "(cs)";
+      cchar *vn = (a && a->var && a->var->sym && a->var->sym->name) ? a->var->sym->name : "(anon)";
+      char key[256];
+      snprintf(key, sizeof(key), "k%d %s:%s", k, fn, vn);
+      groups[key]++;
+    }
+    fprintf(stderr, "VIOLHIST pass=%d kinds:", analysis_pass);
+    for (int k = 0; k < 16; k++) if (by_kind[k]) fprintf(stderr, " k%d=%d", k, by_kind[k]);
+    fprintf(stderr, "\n");
+    std::vector<std::pair<int, std::string>> top;
+    for (auto &g : groups) top.push_back({-g.second, g.first});
+    std::sort(top.begin(), top.end());
+    for (size_t i = 0; i < top.size() && i < 15; i++)
+      fprintf(stderr, "VIOLHIST pass=%d  %6d %s\n", analysis_pass, -top[i].first, top[i].second.c_str());
+    std::map<Fun *, int> per_fun;
+    for (EntrySet *es : fa->ess) if (es && es->fun) per_fun[es->fun]++;
+    std::vector<std::pair<int, Fun *>> tf;
+    for (auto &g : per_fun) tf.push_back({-g.second, g.first});
+    std::sort(tf.begin(), tf.end(), [](auto &a, auto &b) { return a.first < b.first || (a.first == b.first && a.second->sym->id < b.second->sym->id); });
+    for (size_t i = 0; i < tf.size() && i < 12; i++)
+      fprintf(stderr, "ESHIST pass=%d  %5d %s#%d\n", analysis_pass, -tf[i].first,
+              tf[i].second->sym && tf[i].second->sym->name ? tf[i].second->sym->name : "?", tf[i].second->sym->id);
+    // The top function's contours, by (receiver CSs, key) signature.
+    if (tf.size()) {
+      Fun *top_fun = tf[0].second;
+      std::map<std::string, int> sigs;
+      for (EntrySet *es : fa->ess) if (es && es->fun == top_fun) {
+        std::string sig;
+        for (MPosition *p : top_fun->positional_arg_positions) {
+          AVar *av = es->args.get(p);
+          sig += "[";
+          if (av && av->out && av->out->sorted.n > 4) {
+            int a64 = 0, lst = 0;
+            for (CreationSet *c : av->out->sorted) if (c) { if (c->static_arity >= 20) a64++; if (c->no_static_arity) lst++; }
+            char b[96];
+            snprintf(b, sizeof(b), "%d CSs (%d arity>=20, %d list-layout)", av->out->sorted.n, a64, lst);
+            sig += b;
+          } else if (av && av->out)
+            for (CreationSet *c : av->out->sorted) if (c) {
+              char b[96];
+              snprintf(b, sizeof(b), "%s%s#%d/a%d%s ", c->sym && c->sym->name ? c->sym->name : "?",
+                       c->sym && c->sym->constant ? c->sym->constant : "", c->id, c->static_arity,
+                       c->no_static_arity ? "L" : "");
+              sig += b;
+            }
+          sig += "]";
+        }
+        sigs[sig]++;
+      }
+      std::vector<std::pair<int, std::string>> ts;
+      for (auto &g : sigs) ts.push_back({-g.second, g.first});
+      std::sort(ts.begin(), ts.end());
+      // Which (callee, caller function : actual variable) hand a >10-CS
+      // union to a positional formal?
+      std::map<std::string, int> feeders;
+      for (EntrySet *es : fa->ess) if (es && es->fun)
+        for (AEdge *e : es->edges) if (e && e->from && e->from->fun)
+          form_MPositionAVar(x, e->args) {
+            AVar *a = x->value;
+            if (!a || !a->out || a->out->sorted.n <= 10) continue;
+            char b[256];
+            snprintf(b, sizeof(b), "%s <- %s:%s (%d CSs)", es->fun->sym->name ? es->fun->sym->name : "?",
+                     e->from->fun->sym->name ? e->from->fun->sym->name : "?",
+                     a->var && a->var->sym && a->var->sym->name ? a->var->sym->name : "(anon)", a->out->sorted.n);
+            feeders[b]++;
+          }
+      std::vector<std::pair<int, std::string>> fd;
+      for (auto &g : feeders) fd.push_back({-g.second, g.first});
+      std::sort(fd.begin(), fd.end());
+      for (size_t i = 0; i < fd.size() && i < 30; i++)
+        fprintf(stderr, "FEED pass=%d  %5d %s\n", analysis_pass, -fd[i].first, fd[i].second.c_str());
+      fprintf(stderr, "ESSIG pass=%d distinct=%zu\n", analysis_pass, ts.size());
+      for (size_t i = 0; i < ts.size() && i < 25; i++)
+        fprintf(stderr, "ESSIG pass=%d  %4d %s\n", analysis_pass, -ts[i].first, ts[i].second.substr(0, 300).c_str());
+    }
+  }
   if (getenv("PYC_DBG_WORK"))  // ifa/111 probe
     fprintf(stderr, "WORK pass=%d edges=%ld sends=%ld es_constraints=%ld pass_time=%f\n", analysis_pass, census.work_edges,
             census.work_sends, census.work_escons, pass_timer.time);
