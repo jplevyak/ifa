@@ -1010,14 +1010,3 @@ int csresplit_enabled() {
   }
   return e;
 }
-// ifa/185 A: PYC_OOBIDX=1 -- a constant index past a fixed-arity tuple's end
-// contributes nothing (CPython's IndexError) instead of every field, when
-// some other receiver of the same read can supply that index.
-int oobidx_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_OOBIDX");
-    e = v ? atoi(v) : 0;
-  }
-  return e;
-}

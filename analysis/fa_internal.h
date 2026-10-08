@@ -79,7 +79,6 @@ AType *type_num_fold(Prim *p, AType *a, AType *b);
 int all_applications(PNode *p, EntrySet *es, AVar *a0, Vec<AVar *> &args, Vec<cchar *> &names, int is_closure, Partial_kind partial, PNode *visibility_point = nullptr, Vec<CreationSet *> *closures = 0);
 Var **destruct(Var **lvals, int nlvals, AVar *r, Sym *t, AVar *result, int &tvars);
 bool get_obj_index(AVar *index, int *i, int n);
-bool const_index_past_end(AVar *index, CreationSet *cs);  // ifa/185 A
 void make_closure(AVar *result);
 void make_period_closure(AVar *result, AVar *a, Vec<AVar *> &args);
 void prim_make_vector_constraints(PNode *p, EntrySet *es);

@@ -215,7 +215,8 @@ decision, not a measurement.
 ## Containing the unroll: levers A and B (measured 2026-10-08)
 
 Two off-by-default levers attack the unroll's cost directly instead of
-the merge. Both are interim. The arity-dispatch plan below deletes them.
+the merge. Both were interim. Step 6 deleted A and made B the
+generator's own lowering, with no flag (see "Open after step 2", item 1).
 
 - **A, `PYC_OOBIDX`** (`fa_prims.cc` `index_object` / `set_index_object`,
   `const_index_past_end` in `fa.cc`). A constant index past a fixed-arity
@@ -322,8 +323,18 @@ it, and they mask the bit. Test: `tests/tuple_eq_arity_dispatch.py`.
      False.
 
    **Measured on sunfish: compile 537 s -> 168 s, no warnings, output
-   identical to CPython** (except its own `TIME` line). Levers A and B
-   (`PYC_OOBIDX`, `PYC_TUPIX`) are now unneeded; deleting them is step 6.
+   identical to CPython** (except its own `TIME` line).
+
+   **Step 6: levers A and B.**
+   - **A (`PYC_OOBIDX`, `const_index_past_end`) is deleted.** With
+     straight-line per-arity bodies, no constant index is ever out of
+     range, so it has nothing left to do.
+   - **B is kept, without its flag.** Re-measured under arity dispatch, it
+     cut sunfish from 168 s to 134 s. The generator now emits the
+     `index_object` primitive with a literal index directly, and the
+     `PYC_TUPIX` text rewrite is gone.
+   - Result: sunfish compiles in **136 s** (537 s at the start), with no
+     warnings and output identical to CPython.
 2. **`[1, 2] == (1, 2)` is True** (CPython: False). `list.__eq__` never
    checks that its argument is a list. An `isinstance(l, list)` guard
    untyped `l` in `builtin_zero_arg_ctor` and `list_tuple_eq_ne`

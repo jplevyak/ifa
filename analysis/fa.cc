@@ -2742,27 +2742,6 @@ Var **destruct(Var **lvals, int nlvals, AVar *r, Sym *t, AVar *result, int &tvar
   return lend;
 }
 
-// ifa/185 A: is `index` a constant at or past the end of `cs`, a tuple whose
-// arity is a compile-time constant? The predicate is P_prim_len's own test
-// for folding len() to a constant -- the one the unrolled tuple methods'
-// `n >= k` guards rely on -- so the two never disagree about the arity.
-// Negative constants are left alone (they index from the end).
-bool const_index_past_end(AVar *index, CreationSet *cs) {
-  if (!cs || !cs->sym || (cs->sym != sym_tuple && cs->sym->type != sym_tuple)) return false;
-  if (cs->no_static_arity || !cs->defs.n || cs->sym->is_vector) return false;
-  AVar *elem = cs->sym->element && cs->sym->element->var && cs->added_element_var
-                   ? cs->sym->element->var->avars.get(cs)
-                   : nullptr;
-  if (elem && elem->out && elem->out != fa->type_world.bottom_type) return false;
-  int i;
-  if (index->var->sym->type && index->var->sym->imm_int(&i) == 0) {
-  } else if (index->out->n == 1 && index->out->v[0]->sym->is_constant && index->out->v[0]->sym->imm_int(&i) == 0) {
-  } else
-    return false;
-  i -= fa->tuple_index_base;
-  return i >= cs->vars.n;
-}
-
 bool get_obj_index(AVar *index, int *i, int n) {
   if (index->var->sym->type && index->var->sym->imm_int(i) == 0) {
     *i -= fa->tuple_index_base;

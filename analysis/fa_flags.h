@@ -54,7 +54,6 @@ int elemsetter_enabled();
 int settermin_enabled();
 int csdefsplit_enabled();
 int csladder_enabled();
-int oobidx_enabled();
 int cscontent_enabled();
 int esblock_enabled();
 int loadbt_enabled();
