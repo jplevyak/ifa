@@ -264,11 +264,78 @@ arity through `dispatch_arity_epoch`. In `tests/ir/dispatch/05_arity_merged.ir`,
 `%m2` and `%m3` with one arity each (rc=0, ess=5). Without the
 constraints the same program is an ambiguous call (rc=-1, ess=7).
 
-Open: a `no_static_arity` flip in `make_kind` happens mid-pass and
-changes no AType, so it does not re-dispatch the sends it affects until
-the next pass. If the flip comes in the last pass, the dispatch is
-stale. This needs checking once the frontend emits constrained bodies
-(step 2).
+**Step 2 landed: `tuple.__eq__` per arity.** `emit_tuple_arity_eq`
+(`python_ifa_main.cc`) emits one straight-line overload per arity, plus
+four general ones:
+
+| `self` | `t` | body |
+| --- | --- | --- |
+| k | tuple k | element by element |
+| k | tuple, no fixed arity | length check, then the same |
+| no fixed arity | any tuple | `t == self` |
+| no fixed arity | tuple, no fixed arity | runtime loop |
+| any | any | `False` |
+
+"No fixed arity" is `DISPATCH_ARITY_DYNAMIC` (-2). Python annotations are
+dropped by the grammar, so the constraints travel in a side table keyed on
+the parameter's PyDAST (`pyc_formal_dispatch`), applied in `gen_fun_pyda`.
+`(1, 2) == [1, 2]` is now False, as in CPython. The mirror,
+`[1, 2] == (1, 2)`, is `list.__eq__`, and is still True: an
+`isinstance(l, list)` guard there untyped `l` in two suite tests.
+
+A call FA resolves to several arities needs a RUNTIME dispatch, and
+tuples have no classtag. `poly_dispatch_arity_plan` (`codegen_common.cc`)
+builds a chain on both backends:
+
+- a null test for a None method;
+- the length header;
+- the new **fixed-arity bit**: the high bit of a tuple header's
+  `total_len`, set where a tuple whose CreationSets all have a static
+  arity is built.
+
+The bit is needed because a record 2-tuple and `tuple([a, b])` are
+otherwise identical at run time (`itertools_product_repeat_tuple`).
+Without it, two attempts were measured dead:
+
+- refusing the dispatch aborted;
+- taking the general body for both re-dispatched on values FA never typed
+  it for.
+
+`total_len` is otherwise a list's capacity. Only the two resize paths read
+it, and they mask the bit. Test: `tests/tuple_eq_arity_dispatch.py`.
+
+## Open after step 2 (2026-10-08)
+
+1. **The other generated tuple operations are still the max-arity
+   unroll.** Only `__eq__` dispatches on arity. These still unroll to
+   `max_arity` behind `n >= k` guards, with the same dead-step problem:
+   `__lt__`, `__str__`, `__hash__`, `__contains__`, `count`, `index`,
+   `__deepcopy__`, `__pyc_bytes_fmtargs__` and `__pyc_toints__`. They are
+   step 4: per-arity bodies, plus a "no fixed arity" body for list-layout
+   tuples. `__lt__` needs both operands, because a prefix compare reads
+   `min(n, m)` elements. Until they are converted, sunfish is not
+   re-measured and levers A and B (`PYC_OOBIDX`, `PYC_TUPIX`) are not
+   deleted.
+2. **`[1, 2] == (1, 2)` is True** (CPython: False). `list.__eq__` never
+   checks that its argument is a list. An `isinstance(l, list)` guard
+   untyped `l` in `builtin_zero_arg_ctor` and `list_tuple_eq_ne`
+   (`'l' has no type`), so it was reverted. Why the guard untypes the
+   operand is unexplained.
+3. **Same-arity tuples with different element types in one list**
+   (`[(1, "a"), ("a", 1)]`) do not compile, at `2f61802c` and after.
+   The arity body's single contour holds both CreationSets, `self[0]` is
+   `{int, str}`, and no stage splits the contour by element type.
+4. **A `no_static_arity` flip is not re-dispatched within its pass.** It
+   happens in `make_kind`, mid-pass, and changes no AType, so the sends it
+   affects keep their old dispatch until the next pass. A flip in the last
+   pass would leave the dispatch stale, and nothing checks for it. The
+   fixed-arity header bit is decided from the converged CreationSets, so
+   such a stale dispatch would show up at run time as "arity dispatch: no
+   branch matched".
+5. **Duplicate method definitions in a user class are an ambiguous call**
+   (`class A: def f..; def f..`); CPython uses the last one. The
+   generated arity overloads rely on every def registering, so a fix must
+   leave arity-constrained defs alone.
 
 ## Directions (none taken)
 

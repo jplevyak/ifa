@@ -151,6 +151,38 @@ void poly_dispatch_classtag_targets(Fun *candidate, PNode *pn, Vec<cchar *> &dir
 // sym_nil_type? If so, returns true and sets *rval_idx to that
 // formal's call-site operand index.
 bool poly_dispatch_is_nil_receiver(Fun *candidate, PNode *pn, int *rval_idx);
+// ifa/185: a runtime dispatch on tuple ARITY. FA dispatched `pn` per
+// operand arity (Sym::dispatch_arity on the candidates' formals), so
+// several candidates reach a call whose operands are unions of tuples (and
+// None). Tuples carry no classtag but do carry a length header, so each
+// candidate becomes a CASE guarded by tests on the operands:
+//   arity >= 0   operand non-null, fixed arity, exactly that length;
+//   arity == -1  operand non-null;
+//   arity == -2  operand non-null with no fixed arity;
+//   arity == -3  operand null: the candidate is a None method.
+// "Fixed arity" is the header bit _CG_tuple_set_fixed writes: a record
+// 2-tuple and tuple([a, b]) have the same length, so the length alone
+// cannot reproduce FA's choice.
+// Cases are ordered most-constrained first, and a case with no tests is
+// the final `else`. Returns false (and the call falls to the classtag
+// machinery) if no candidate has an arity-constrained formal, a tested
+// operand could hold anything other than a tuple or None, or two cases
+// cannot be told apart at run time.
+
+struct ArityDispatchTest {
+  int ridx;   // call-site rval index of the tested operand
+  int arity;  // >= 0: fixed arity, that length; -1: non-null; -2: no fixed arity; -3: null (None)
+};
+// Does a tuple of type `t` have a static arity (every CreationSet it was
+// cloned from has one)? Decides the header's fixed-arity bit at
+// construction (_CG_tuple_set_fixed), so it matches what FA dispatched on.
+bool cg_tuple_type_fixed_arity(Sym *t);
+struct ArityDispatchCase {
+  Fun *fun;
+  Vec<ArityDispatchTest> tests;
+};
+bool poly_dispatch_arity_plan(PNode *pn, Vec<Fun *> *fns, Vec<ArityDispatchCase *> &cases);
+
 // issues/048/171: the scalar member when `pn` dispatches on a {None, scalar}
 // union (no representation), else nullptr. `recv_var` may be null, in
 // which case it is found from `cands`' nil-receiver candidate.

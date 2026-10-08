@@ -836,6 +836,10 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
           else
             fprintf(fp, "  %s->e%d = %s;\n", cg_get_string(n->lvals[0]), i - 3, cg_get_string(n->rvals.v[i]));
         }
+        // ifa/185: a fixed-arity tuple says so in its header, for the arity
+        // dispatch. Not a list that came out record-shaped (`goto Ltuple`).
+        if (sym_tuple->specializers.set_in(n->rvals[2]->sym) && cg_tuple_type_fixed_arity(n->lvals[0]->type))
+          fprintf(fp, "  _CG_tuple_set_fixed(%s);\n", cg_get_string(n->lvals[0]));
       } else if (sym_list->specializers.set_in(n->rvals[2]->sym) || n->rvals[2]->sym->is_vector) {
         if (lt && lt->type_kind == Type_RECORD) goto Ltuple;
         goto Llist;
@@ -857,6 +861,9 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
           fputs(cg_get_string(n->rvals[i]), fp);
           fprintf(fp, ";\n");
         }
+        // ifa/185: a list-layout tuple can still have a static arity.
+        if (sym_tuple->specializers.set_in(n->rvals[2]->sym) && cg_tuple_type_fixed_arity(n->lvals[0]->type))
+          fprintf(fp, "  _CG_tuple_set_fixed(%s);\n", cg_get_string(n->lvals[0]));
       }
       break;
     }
@@ -2285,7 +2292,62 @@ class CBackendEmitter : public VirtualCGEmitter {
       // the method slot in that arg's concrete type, and emit an indirect call
       // through `((recv_type)(void*)recv)->eN`.
       Vec<Fun *> *fns = f->calls.get(pn);
-      if (fns && fns->n > 1 && pn->rvals.n) {
+      Vec<ArityDispatchCase *> arity_cases;
+      if (fns && fns->n > 1 && pn->rvals.n && poly_dispatch_arity_plan(pn, fns, arity_cases)) {
+        // ifa/185: dispatch on the operands' tuple arity
+        // (poly_dispatch_arity_plan). Tuples have no classtag, so each
+        // case tests the length header, after a null test for None.
+        cchar *lhs = (pn->lvals.n && cg_get_string(pn->lvals[0])) ? cg_get_string(pn->lvals[0]) : nullptr;
+        cchar *ret_type_str = (pn->lvals.n && pn->lvals[0]->type) ? c_type(pn->lvals[0]) : "void*";
+        for (int ci = 0; ci < arity_cases.n; ci++) {
+          ArityDispatchCase *c = arity_cases[ci];
+          if (c->tests.n) {
+            fprintf(fp, "  %sif (", ci ? "else " : "");
+            for (int ti = 0; ti < c->tests.n; ti++) {
+              cchar *op = cg_get_string(pn->rvals[c->tests[ti].ridx]);
+              if (ti) fputs(" && ", fp);
+              if (c->tests[ti].arity >= 0)
+                fprintf(fp, "((void*)%s && _CG_tuple_is_fixed(%s) && _CG_list_len(%s) == %d)", op, op, op,
+                        c->tests[ti].arity);
+              else if (c->tests[ti].arity == -2)
+                fprintf(fp, "((void*)%s && !_CG_tuple_is_fixed(%s))", op, op);
+              else if (c->tests[ti].arity == -3)
+                fprintf(fp, "!(void*)%s", op);
+              else
+                fprintf(fp, "(void*)%s", op);
+            }
+            fputs(") {\n", fp);
+          } else
+            fputs(ci ? "  else {\n" : "  {\n", fp);
+          fputs("    ", fp);
+          if (lhs) {
+            if (scalar_ct(ret_type_str))
+              fprintf(fp, "%s = (%s)", lhs, ret_type_str);
+            else
+              fprintf(fp, "%s = (%s)(void*)", lhs, ret_type_str);
+          }
+          fprintf(fp, "%s(", cg_get_string(c->fun));
+          int wrote_one = 0;
+          for (MPosition *p : c->fun->positional_arg_positions) {
+            Var *av = c->fun->args.get(p);
+            if (!av->live) continue;
+            int i = (int)Position2int(p->pos[0]) - 1;
+            cchar *ft = c_type(av), *at = c_type(pn->rvals[i]);
+            if (wrote_one) fputs(", ", fp);
+            wrote_one = 1;
+            if (!strcmp(ft, at))
+              fputs(cg_get_string(pn->rvals[i]), fp);
+            else if (scalar_ct(ft))
+              fprintf(fp, "(%s)%s", ft, cg_get_string(pn->rvals[i]));
+            else
+              fprintf(fp, "(%s)(void*)%s", ft, cg_get_string(pn->rvals[i]));
+          }
+          fputs(");\n  }\n", fp);
+        }
+        if (arity_cases.last()->tests.n)
+          fputs("  else { assert(!\"runtime error: arity dispatch: no branch matched\"); }\n", fp);
+        return;
+      } else if (fns && fns->n > 1 && pn->rvals.n) {
         // ifa/issues/030 dispatch. Candidates are partitioned into
         // two kinds and dispatched in ONE if/else chain over a
         // single operand:

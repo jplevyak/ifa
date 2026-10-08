@@ -85,7 +85,7 @@ static void write_sym_attrs(FILE *fp, Sym *s, NameAssigner &na) {
   }
   if (s->is_external) fputs(" :is-external", fp);
   if (s->is_this) fputs(" :is-this", fp);
-  if (s->dispatch_arity >= 0) fprintf(fp, " :dispatch-arity %d", s->dispatch_arity);
+  if (s->dispatch_arity != -1) fprintf(fp, " :dispatch-arity %d", s->dispatch_arity);
   if (s->is_fake) fputs(" :is-fake", fp);
   if (s->is_pattern) fputs(" :is-pattern", fp);
   if (s->intent) {

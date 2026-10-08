@@ -46,6 +46,7 @@ extern cchar *type_kind_string[];
 #define CLEAR_VARIABLE(_m) memset(&(_m), 0, sizeof(_m))
 
 #define LOCALLY_NESTED -1
+#define DISPATCH_ARITY_DYNAMIC -2  // Sym::dispatch_arity: only a CS with no static arity
 
 class BasicSym : public gc {
  public:
@@ -62,6 +63,8 @@ class BasicSym : public gc {
   // refines must_specialize the way a subclass does: a call whose
   // receiver holds tuples of several arities reaches one target per
   // arity, each seeing only its own, with no contour split.
+  // DISPATCH_ARITY_DYNAMIC instead admits only a CS with NO static arity
+  // (a runtime-length tuple, on list layout).
   int dispatch_arity;
   IFAAST *ast;           // AST node which defined this symbol
   Var *var;              // used by fa.cpp

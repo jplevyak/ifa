@@ -2216,6 +2216,26 @@ static bool emit_send_make_seq(EmitCtx &ctx, PNode *pn) {
   return true;
 }
 
+// ifa/185: the fixed-arity bit of a tuple header, the high bit of its u32
+// total_len at obj-16 (pyc_c_runtime.h _CG_TUPLE_FIXED_ARITY).
+static llvm::Value *tuple_total_len_addr(llvm::Value *obj) {
+  llvm::Type *i8 = llvm::Type::getInt8Ty(*TheContext);
+  llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+  return Builder->CreateGEP(i8, obj, llvm::ConstantInt::get(i64, -16), "total_addr");
+}
+static void emit_tuple_set_fixed(llvm::Value *obj) {
+  llvm::Type *i32 = llvm::Type::getInt32Ty(*TheContext);
+  llvm::Value *addr = tuple_total_len_addr(obj);
+  llvm::Value *tot = Builder->CreateLoad(i32, addr, "total");
+  Builder->CreateStore(Builder->CreateOr(tot, llvm::ConstantInt::get(i32, 0x80000000u)), addr);
+}
+static llvm::Value *emit_tuple_is_fixed(llvm::Value *obj) {
+  llvm::Type *i32 = llvm::Type::getInt32Ty(*TheContext);
+  llvm::Value *tot = Builder->CreateLoad(i32, tuple_total_len_addr(obj), "total");
+  return Builder->CreateICmpNE(Builder->CreateAnd(tot, llvm::ConstantInt::get(i32, 0x80000000u)),
+                               llvm::ConstantInt::get(i32, 0), "fixed");
+}
+
 bool emit_send_make(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim) return false;
   if (pn->prim->index == P_prim_make_seq) return emit_send_make_seq(ctx, pn);
@@ -2315,6 +2335,8 @@ bool emit_send_make(EmitCtx &ctx, PNode *pn) {
       llvm::Value *final = Builder->CreateCall(
           conv, { alloc, size2, n_semantic },
           cg_get_string(dst_var) ? cg_get_string(dst_var) : "dst");
+      // ifa/185: a fixed-arity tuple says so in its header.
+      if (is_tuple && cg_tuple_type_fixed_arity(dst_ty)) emit_tuple_set_fixed(final);
       put_result(ctx, dst_var, final);
     }
     return true;
@@ -3262,6 +3284,104 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
     return;
   }
   Fun *single_target = get_target_fun_core(pn, ctx.fn);
+  Vec<ArityDispatchCase *> arity_cases;
+  if (!single_target && callees->n > 1 && poly_dispatch_arity_plan(pn, callees, arity_cases)) {
+    // ifa/185: dispatch on the operands' tuple arity (mirrors cg.cc;
+    // poly_dispatch_arity_plan). Tuples have no classtag, so each case
+    // tests the length header (u32 at obj-12), after a null test.
+    Var *dst_var = pn->lvals.n ? pn->lvals.v[0] : nullptr;
+    llvm::Type *res_ty = (dst_var && dst_var->live && dst_var->type) ? sym_to_llvm_type(dst_var->type) : nullptr;
+    if (res_ty && res_ty->isVoidTy()) res_ty = nullptr;
+    llvm::Function *cur_fn = ctx.llvm_fn;
+    llvm::Type *i8 = llvm::Type::getInt8Ty(*TheContext);
+    llvm::Type *i32 = llvm::Type::getInt32Ty(*TheContext);
+    llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
+    llvm::AllocaInst *res_slot = nullptr;
+    if (res_ty) {
+      llvm::IRBuilder<> tmp(&cur_fn->getEntryBlock(), cur_fn->getEntryBlock().begin());
+      res_slot = tmp.CreateAlloca(res_ty, nullptr, "arity.res");
+      tmp.CreateStore(llvm::Constant::getNullValue(res_ty), res_slot);
+    }
+    auto coerce = [&](llvm::Value *v, llvm::Type *t) -> llvm::Value * {
+      if (v->getType() == t) return v;
+      if (v->getType()->isIntegerTy() && t->isIntegerTy()) return Builder->CreateSExtOrTrunc(v, t);
+      if (v->getType()->isPointerTy() && t->isIntegerTy()) return Builder->CreatePtrToInt(v, t);
+      if (v->getType()->isIntegerTy() && t->isPointerTy()) return Builder->CreateIntToPtr(v, t);
+      return v;
+    };
+    llvm::BasicBlock *merge_bb = llvm::BasicBlock::Create(*TheContext, "arity.merge", cur_fn);
+    for (ArityDispatchCase *c : arity_cases) {
+      llvm::BasicBlock *next_bb = nullptr;
+      // Each test is its own block, so a length is never read through NULL.
+      for (ArityDispatchTest &t : c->tests) {
+        llvm::Value *op = value_for_var(ctx, pn->rvals[t.ridx]);
+        if (!op || !op->getType()->isPointerTy()) fail("internal error: arity dispatch on a non-pointer operand (ifa/185)");
+        if (!next_bb) next_bb = llvm::BasicBlock::Create(*TheContext, "arity.next", cur_fn);
+        llvm::BasicBlock *nn_bb = llvm::BasicBlock::Create(*TheContext, "arity.nonnull", cur_fn);
+        if (t.arity == -3) {  // a None method: the operand must BE null
+          Builder->CreateCondBr(Builder->CreateIsNull(op), nn_bb, next_bb);
+          Builder->SetInsertPoint(nn_bb);
+          continue;
+        }
+        Builder->CreateCondBr(Builder->CreateIsNull(op), next_bb, nn_bb);
+        Builder->SetInsertPoint(nn_bb);
+        if (t.arity != -1) {
+          // fixed-arity bit: set for arity >= 0, clear for "no fixed arity" (-2)
+          llvm::BasicBlock *bit_bb = llvm::BasicBlock::Create(*TheContext, "arity.bit", cur_fn);
+          llvm::Value *fixed = emit_tuple_is_fixed(op);
+          if (t.arity >= 0)
+            Builder->CreateCondBr(fixed, bit_bb, next_bb);
+          else
+            Builder->CreateCondBr(fixed, next_bb, bit_bb);
+          Builder->SetInsertPoint(bit_bb);
+        }
+        if (t.arity >= 0) {
+          llvm::Value *len_addr = Builder->CreateGEP(i8, op, llvm::ConstantInt::get(i64, -12), "len_addr");
+          llvm::Value *len32 = Builder->CreateLoad(i32, len_addr, "len32");
+          llvm::BasicBlock *ok_bb = llvm::BasicBlock::Create(*TheContext, "arity.len", cur_fn);
+          Builder->CreateCondBr(Builder->CreateICmpEQ(len32, llvm::ConstantInt::get(i32, t.arity)), ok_bb, next_bb);
+          Builder->SetInsertPoint(ok_bb);
+        }
+      }
+      llvm::Function *clf = TheModule->getFunction(c->fun->cg_string);
+      if (!clf) fail("internal error: arity dispatch target has no function (ifa/185)");
+      llvm::FunctionType *clft = clf->getFunctionType();
+      std::vector<llvm::Value *> cargs;
+      unsigned cai = 0;
+      MPosition cargp;
+      cargp.push(1);
+      for (int pi = 0; pi < c->fun->sym->has.n + 2; pi++) {
+        MPosition *cp = cannonicalize_mposition(cargp);
+        cargp.inc();
+        Var *av = c->fun->args.get(cp);
+        if (!av || !av->live) continue;
+        if (av->type && av->type->is_fun) continue;
+        if (cai >= clft->getNumParams()) break;
+        int i = (int)Position2int(cp->pos[0]) - 1;
+        llvm::Value *aval = (i >= 0 && i < pn->rvals.n) ? value_for_var(ctx, pn->rvals[i]) : nullptr;
+        if (!aval) fail("internal error: arity dispatch has no value for an argument (ifa/185)");
+        cargs.push_back(coerce(aval, clft->getParamType(cai++)));
+      }
+      llvm::Value *callv = Builder->CreateCall(clf, cargs);
+      if (res_slot && !callv->getType()->isVoidTy()) {
+        llvm::Value *cres = coerce(callv, res_ty);
+        if (cres->getType() == res_ty) Builder->CreateStore(cres, res_slot);
+      }
+      Builder->CreateBr(merge_bb);
+      if (!next_bb) break;  // an untested case is the last (the planner ensures it)
+      Builder->SetInsertPoint(next_bb);
+    }
+    if (arity_cases.last()->tests.n) {
+      // No case matched: FA proved this unreachable; trap like the C
+      // backend's assert.
+      llvm::Function *trap = get_intrinsic_decl(llvm::Intrinsic::trap);
+      Builder->CreateCall(trap);
+      Builder->CreateUnreachable();
+    }
+    Builder->SetInsertPoint(merge_bb);
+    if (dst_var && res_slot) put_result(ctx, dst_var, Builder->CreateLoad(res_ty, res_slot, "arity.val"));
+    return;
+  }
   if (!single_target && callees->n > 1) {
     // ifa/issues/030 classtag dispatch (mirrors cg.cc's
     // emit_send_call polymorphic branch). Group candidates by

@@ -572,11 +572,14 @@ So:
 type rather than replacing it. `update_match_map` leaves a CreationSet
 out of the candidate's positional filter unless it has a static arity
 equal to N, so a CS that has lost its static arity (`no_static_arity`)
-goes to an unconstrained candidate. `subsumes_arg` ranks a constrained
+goes to an unconstrained candidate; `DISPATCH_ARITY_DYNAMIC` (-2) admits
+exactly those. `subsumes_arg` ranks a constrained
 formal above an unconstrained one, after the type-hierarchy tier. A
 receiver holding tuples of several arities therefore reaches one target
 per arity, each filtered to its own CreationSets, with no contour split.
-Fixtures: `tests/ir/dispatch/04_arity.ir`, `05_arity_merged.ir`.
+Fixtures: `tests/ir/dispatch/04_arity.ir`, `05_arity_merged.ir`. When
+several such targets survive clone, codegen dispatches at run time on the
+tuple header's length and fixed-arity bit (`poly_dispatch_arity_plan`).
 
 This is the **single function** to read when "wrong overload picked"
 is the symptom. The hierarchy walker (`pattern_match_sym_internal`)

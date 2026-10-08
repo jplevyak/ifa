@@ -768,6 +768,147 @@ bool poly_dispatch_is_nil_receiver(Fun *candidate, PNode *pn, int *rval_idx) {
   return false;
 }
 
+// ifa/185: is `t` a tuple type, record or list layout? Tuples have no
+// classtag (cg_has_classtag), so they are recognised by their creators,
+// the way cg_has_classtag recognises a list.
+static bool cg_is_tuple_type(Sym *t) {
+  if (!t || !t->creators.n) return false;
+  Sym *k = t->creators[0]->sym;
+  return k == sym_tuple || (k && k->type == sym_tuple);
+}
+
+// See codegen_common.h.
+bool cg_tuple_type_fixed_arity(Sym *t) {
+  if (!cg_is_tuple_type(t)) return false;
+  for (CreationSet *cs : t->creators)
+    if (cs && (cs->no_static_arity || cs->static_arity < 0)) return false;
+  return true;
+}
+
+// Can a runtime length test discriminate `v`'s values? Every member of its
+// type must be a tuple or None.
+static bool arity_testable_operand(Var *v) {
+  Sym *t = v ? v->type : nullptr;
+  if (!t) return false;
+  if (t->type_kind != Type_SUM) return cg_is_tuple_type(t);
+  for (Sym *m : t->has)
+    if (m && m != sym_nil_type && !cg_is_tuple_type(m)) return false;
+  return true;
+}
+
+static bool operand_may_be_nil(Var *v) {
+  Sym *t = v ? v->type : nullptr;
+  if (!t) return false;
+  if (t == sym_nil_type) return true;
+  if (t->type_kind != Type_SUM) return false;
+  for (Sym *m : t->has)
+    if (m == sym_nil_type) return true;
+  return false;
+}
+
+// See codegen_common.h.
+bool poly_dispatch_arity_plan(PNode *pn, Vec<Fun *> *fns, Vec<ArityDispatchCase *> &cases) {
+  if (!pn || !fns || fns->n < 2) return false;
+  bool any = false;
+  for (Fun *f : *fns) {
+    if (!f) return false;
+    for (MPosition *p : f->positional_arg_positions) {
+      Var *av = f->args.get(p);
+      if (av && av->sym && av->sym->dispatch_arity != -1) any = true;
+    }
+  }
+  if (getenv("PYC_DBG_ARITYDISPATCH")) {
+    fprintf(stderr, "ARITYDISPATCH pn=%d fns=%d any=%d:", pn->id, fns->n, any);
+    for (Fun *f : *fns) {
+      fprintf(stderr, " [%s", f->sym->name ? f->sym->name : "?");
+      for (MPosition *p : f->positional_arg_positions) {
+        Var *av = f->args.get(p);
+        fprintf(stderr, " %d", av && av->sym ? av->sym->dispatch_arity : -9);
+      }
+      fprintf(stderr, "]");
+    }
+    fprintf(stderr, "\n");
+  }
+  if (!any) return false;
+  Vec<int> nlen, ndyn;
+  for (Fun *f : *fns) {
+    ArityDispatchCase *c = new ArityDispatchCase;
+    c->fun = f;
+    int len_tests = 0, dyn_tests = 0;
+    for (MPosition *p : f->positional_arg_positions) {
+      Var *av = f->args.get(p);
+      if (!av || !av->sym || p->pos.n != 1) continue;
+      int ridx = (int)Position2int(p->pos[0]) - 1;
+      if (ridx < 0 || ridx >= pn->rvals.n || !pn->rvals[ridx]) return false;
+      if (pn->rvals[ridx]->sym->is_symbol) continue;  // the selector
+      Sym *fs = av->sym;
+      int a = fs->dispatch_arity;
+      bool typed = fs->must_specialize && !fs->must_specialize->is_symbol;
+      bool nil_formal = av->type == sym_nil_type;  // a None method (poly_dispatch_is_nil_receiver)
+      if (a == -1 && !typed && !nil_formal) continue;
+      if (!arity_testable_operand(pn->rvals[ridx])) {
+        if (getenv("PYC_DBG_ARITYDISPATCH")) {
+          Sym *t = pn->rvals[ridx]->type;
+          fprintf(stderr, "ARITYDISPATCH refuse: operand %d not tuple|None:", ridx);
+          if (t && t->type_kind == Type_SUM) for (Sym *m : t->has) fprintf(stderr, " %s(kind=%d,cr=%d)", m && m->name ? m->name : "?", m ? m->type_kind : -1, m ? m->creators.n : -1);
+          else fprintf(stderr, " %s(kind=%d,cr=%d)", t && t->name ? t->name : "?", t ? t->type_kind : -1, t ? t->creators.n : -1);
+          fprintf(stderr, "\n");
+        }
+        return false;
+      }
+      if (nil_formal) {
+        c->tests.add({ridx, -3});
+        len_tests++;  // as discriminating as a length
+      } else if (a >= 0) {
+        c->tests.add({ridx, a});
+        len_tests++;
+      } else if (a == DISPATCH_ARITY_DYNAMIC) {
+        c->tests.add({ridx, -2});
+        dyn_tests++;
+      } else if (operand_may_be_nil(pn->rvals[ridx]))
+        c->tests.add({ridx, -1});  // a non-null test is vacuous on an operand that cannot be None
+    }
+    // Most constrained first: by length tests, then by "no fixed arity"
+    // tests, then by test count.
+    int at = cases.n;
+    while (at > 0 && (nlen[at - 1] < len_tests ||
+                      (nlen[at - 1] == len_tests && (ndyn[at - 1] < dyn_tests ||
+                                                     (ndyn[at - 1] == dyn_tests &&
+                                                      cases[at - 1]->tests.n < c->tests.n)))))
+      at--;
+    cases.insert(at, c);
+    nlen.insert(at, len_tests);
+    ndyn.insert(at, dyn_tests);
+  }
+  // A case with no tests takes every value that reaches it, so one before
+  // the last would hide the rest: refuse rather than guess. (Taking the
+  // general case for every tuple was tried before the fixed-arity bit and
+  // is unsound -- its body re-dispatches on values FA never typed it for.)
+  for (int i = 0; i + 1 < cases.n; i++)
+    if (!cases[i]->tests.n) {
+      if (getenv("PYC_DBG_ARITYDISPATCH")) fprintf(stderr, "ARITYDISPATCH refuse: untested case %d is not last\n", i);
+      return false;
+    }
+  // Two cases whose tests are identical cannot be told apart at run time.
+  for (int i = 0; i < cases.n; i++)
+    for (int j = i + 1; j < cases.n; j++) {
+      if (cases[i]->tests.n != cases[j]->tests.n) continue;
+      bool same = true;
+      for (int k = 0; k < cases[i]->tests.n && same; k++) {
+        bool found = false;
+        for (int l = 0; l < cases[j]->tests.n; l++)
+          if (cases[i]->tests[k].ridx == cases[j]->tests[l].ridx && cases[i]->tests[k].arity == cases[j]->tests[l].arity)
+            found = true;
+        same = found;
+      }
+      if (same) {
+        if (getenv("PYC_DBG_ARITYDISPATCH")) fprintf(stderr, "ARITYDISPATCH refuse: cases %d and %d indistinguishable\n", i, j);
+        return false;
+      }
+    }
+  return true;
+}
+
 // issues/048, issues/171: a send whose receiver is a {None, scalar} union.
 // None is a null pointer and a scalar reaches the same slot bit-for-bit,
 // so a null test cannot tell None from 0/0.0/False: the dispatch has no

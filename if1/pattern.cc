@@ -327,16 +327,17 @@ Matcher::~Matcher() {
   form_Map(PMatchElem, x, match_map) if (x->value) pmatch_pool.add(x->value);
 }
 
-// ifa/185: does `formal`'s arity constraint admit `cs`? Only a CreationSet
-// with a static arity equal to the constraint is admitted: one that has
-// lost its static arity (no_static_arity, list layout) or has none yet
-// has no arity to dispatch on, and goes to an unconstrained candidate.
+// ifa/185: does `formal`'s arity constraint admit `cs`? A constraint N >= 0
+// admits only a CreationSet whose static arity is N. DISPATCH_ARITY_DYNAMIC
+// admits only one with no static arity: lost (no_static_arity, list
+// layout) or never recorded.
 int dispatch_arity_epoch = 0;
 
 static bool arity_admits(Sym *formal, CreationSet *cs) {
-  if (!formal || formal->dispatch_arity < 0) return true;
-  if (cs->no_static_arity) return false;
-  return cs->static_arity == formal->dispatch_arity;
+  if (!formal || formal->dispatch_arity == -1) return true;
+  bool dynamic = cs->no_static_arity || cs->static_arity < 0;
+  if (formal->dispatch_arity == DISPATCH_ARITY_DYNAMIC) return dynamic;
+  return !dynamic && cs->static_arity == formal->dispatch_arity;
 }
 
 void Matcher::update_match_map(AVar *a, CreationSet *cs, MPosition *acp, MPosition *acpp, Vec<Fun *> &new_matches) {
@@ -354,7 +355,7 @@ void Matcher::update_match_map(AVar *a, CreationSet *cs, MPosition *acp, MPositi
     // (named) visit the positional map is not built yet, so it is checked
     // on the second, when to_formal is correct.
     Sym *formal = acp == acpp ? f->arg_syms.get(to_formal(acpp, m)) : nullptr;
-    if (formal && formal->dispatch_arity >= 0) uses_dispatch_arity = true;
+    if (formal && formal->dispatch_arity != -1) uses_dispatch_arity = true;
     if (formal && !arity_admits(formal, cs)) {
       m->actuals.put(acpp, a);
       continue;
@@ -593,8 +594,8 @@ static int subsumes_arg(PMatch *x, PMatch *y, MPosition *acpp, CreationSet *cs, 
     int xa = xf ? xf->dispatch_arity : -1, ya = yf ? yf->dispatch_arity : -1;
     if (xa != ya) {
       *identical = 0;
-      if (xa >= 0 && ya < 0) return -pri;
-      if (xa < 0 && ya >= 0) return pri;
+      if (xa != -1 && ya == -1) return -pri;
+      if (xa == -1 && ya != -1) return pri;
     }
   }
   // coercion
