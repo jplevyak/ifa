@@ -1,0 +1,61 @@
+;; 05_arity_merged.ir -- ifa/185: a receiver holding tuples of two
+;; arities reaches one target per arity, each seeing only its own.
+;;
+;; %g is called with a 2-tuple and a 3-tuple, so its first contour's %x
+;; holds both and its `m x` send dispatches on arity: %m2 gets only the
+;; arity-2 CreationSet and %m3 only the arity-3 one. Without the
+;; :dispatch-arity constraints the same program is an ambiguous call
+;; (rc=-1, ess=7). %g still splits: stage 1's type confluence on %x
+;; does that on its own, and it is not what this fixture tests. The
+;; %g#0 -> %m3#0 edge is pass 0's, from before that split.
+;;
+;; Expected: rc=0, ess=5.
+
+(sym %k1 :is-constant :immediate (int32 1))
+(sym %k2 :is-constant :immediate (int32 2))
+
+(sym %s2 :is-local :must-specialize @tuple :dispatch-arity 2)
+(sym %r2 :is-local)
+(sym %c2)
+(fun %m2
+  :args (#m %s2)
+  :rets (%r2)
+  :cont %c2
+  :body
+    (move %s2 %r2))
+
+(sym %s3 :is-local :must-specialize @tuple :dispatch-arity 3)
+(sym %r3 :is-local)
+(sym %c3)
+(fun %m3
+  :args (#m %s3)
+  :rets (%r3)
+  :cont %c3
+  :body
+    (move %s3 %r3))
+
+(sym %x :is-local)
+(sym %gr :is-local)
+(sym %gc)
+(fun %g
+  :args (%g %x)
+  :rets (%gr)
+  :cont %gc
+  :body
+    (send #m %x => %gr))
+
+(sym %t2 :is-local)
+(sym %t3 :is-local)
+(sym %u2 :is-local)
+(sym %u3 :is-local)
+(sym %tcont)
+(fun %top
+  :rets (%u2)
+  :cont %tcont
+  :body
+    (send @primitive @make @tuple %k1 %k2 => %t2)
+    (send @primitive @make @tuple %k1 %k2 %k1 => %t3)
+    (send %g %t2 => %u2)
+    (send %g %t3 => %u3))
+
+(entry %top)

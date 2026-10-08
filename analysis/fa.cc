@@ -2192,6 +2192,7 @@ static void make_kind(PNode *p, EntrySet *es, Sym *kind, AVar *container, Vec<Va
     if (!cs->no_static_arity && getenv("IFA_DBG_ARITY"))
       fprintf(stderr, "[arity] p=%d cs=%d sym=%s had=%d now=%d -> no_static_arity\n", analysis_pass, cs->id,
               kind->name ? kind->name : "?", cs->static_arity, l);
+    if (!cs->no_static_arity) dispatch_arity_epoch++;
     cs->no_static_arity = 1;
   }
   cs->vars.fill(l);
@@ -12548,6 +12549,7 @@ static int demote_mixed_arity_slots() {
     for (CreationSet *g : group)
       if (!g->no_static_arity) {
         g->no_static_arity = 1;
+        dispatch_arity_epoch++;
         ++n;
         if (dbg)
           fprintf(stderr, "[slotarity] p=%d DEMOTE cs=%d sym=%s vars=%d arity=%d (group %d, basic=%s)\n",

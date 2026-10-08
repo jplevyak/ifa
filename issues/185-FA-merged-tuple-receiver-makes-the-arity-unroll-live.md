@@ -256,6 +256,20 @@ filters per receiver CreationSet (`set_filters`, `ifa/if1/pattern.cc`).
 A merged receiver then reaches one target per arity without being split,
 and A and B are deleted.
 
+**Step 1 landed: the arity constraint.** `Sym::dispatch_arity` on a
+formal is enforced in `update_match_map` and ranked in `subsumes_arg`
+([DISPATCH.md](../DISPATCH.md) §12). The match cache keys a lost static
+arity through `dispatch_arity_epoch`. In `tests/ir/dispatch/05_arity_merged.ir`,
+`%g`'s receiver holds a 2-tuple and a 3-tuple, and its send reaches
+`%m2` and `%m3` with one arity each (rc=0, ess=5). Without the
+constraints the same program is an ambiguous call (rc=-1, ess=7).
+
+Open: a `no_static_arity` flip in `make_kind` happens mid-pass and
+changes no AType, so it does not re-dispatch the sends it affects until
+the next pass. If the flip comes in the last pass, the dispatch is
+stale. This needs checking once the frontend emits constrained bodies
+(step 2).
+
 ## Directions (none taken)
 
 The step-1 findings narrow these. The first two below target the tuple

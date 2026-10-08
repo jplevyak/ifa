@@ -56,6 +56,13 @@ class BasicSym : public gc {
   Sym *aspect;           // masquarade as type (e.g. superclass)
   Sym *must_specialize;  // dispatch constraints
   Sym *must_implement;   // type checking constraints
+  // ifa/185: a dispatch constraint on a formal's ARITY, -1 for none. A
+  // CreationSet matches only if it has a static arity equal to this one.
+  // Arity is part of a fixed-arity container's type (ifa/132), so this
+  // refines must_specialize the way a subclass does: a call whose
+  // receiver holds tuples of several arities reaches one target per
+  // arity, each seeing only its own, with no contour split.
+  int dispatch_arity;
   IFAAST *ast;           // AST node which defined this symbol
   Var *var;              // used by fa.cpp
   IFASymbol *asymbol;    // front end interface object

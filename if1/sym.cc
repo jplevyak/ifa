@@ -14,6 +14,7 @@ BasicSym::BasicSym(void)
       aspect(NULL),
       must_specialize(NULL),
       must_implement(NULL),
+      dispatch_arity(-1),
       ast(NULL),
       var(NULL),
       asymbol(NULL),

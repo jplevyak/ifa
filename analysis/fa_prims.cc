@@ -535,6 +535,7 @@ switch (p->prim->index) {
         Sym *kind = p->rvals[2]->sym;
         AVar *src = make_AVar(p->rvals[3], es);
         CreationSet *cs = creation_point(container, kind);
+        if (!cs->no_static_arity) dispatch_arity_epoch++;
         cs->no_static_arity = 1;
         AVar *elem = get_element_avar(cs);
         if (elem) {

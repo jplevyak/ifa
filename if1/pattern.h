@@ -148,5 +148,10 @@ MPosition *cannonicalize_mposition(MPosition &p);
 MPosition *build_arg_positions(Fun *f, MPosition *up = 0);
 
 extern int pattern_match_hits, pattern_match_complete, pattern_matches;
+// ifa/185: bumped whenever a CreationSet loses its static arity. A match
+// cache entry is keyed on AType pointers, and that change is invisible to
+// them, so an entry whose candidates dispatch on arity records the epoch
+// it was built at and is a miss once the epoch moves.
+extern int dispatch_arity_epoch;
 
 #endif

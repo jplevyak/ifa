@@ -106,6 +106,9 @@ class MatchCacheEntry : public Vec<Match *> {
   // CS var's type can change under an unchanged top-level AType),
   // which is why the full validation stays.
   Vec<AType *> top_out;
+  // ifa/185: dispatch_arity_epoch when built, or -1 if no candidate had an
+  // arity-constrained formal (then a lost static arity cannot change it).
+  int arity_epoch = -1;
 
   MatchCacheEntry(int ais_closure, Partial_kind apartial, PNode *avp)
       : is_closure(ais_closure), partial(apartial), visibility_point(avp) {}
@@ -125,6 +128,7 @@ class Matcher {
   Vec<Fun *> function_values;  // functions passed in directly and varargs functions
   Map<MPosition *, int> mapped_positions;
   MapMPositionAType all_args;
+  bool uses_dispatch_arity = false;  // ifa/185: some candidate formal had an arity constraint
 
   // C++'s manditory redundant declarations, tedious++
   int pattern_match_sym(Sym *, MPosition *, Vec<Fun *> *, Vec<Fun *> &, int);
@@ -323,12 +327,37 @@ Matcher::~Matcher() {
   form_Map(PMatchElem, x, match_map) if (x->value) pmatch_pool.add(x->value);
 }
 
+// ifa/185: does `formal`'s arity constraint admit `cs`? Only a CreationSet
+// with a static arity equal to the constraint is admitted: one that has
+// lost its static arity (no_static_arity, list layout) or has none yet
+// has no arity to dispatch on, and goes to an unconstrained candidate.
+int dispatch_arity_epoch = 0;
+
+static bool arity_admits(Sym *formal, CreationSet *cs) {
+  if (!formal || formal->dispatch_arity < 0) return true;
+  if (cs->no_static_arity) return false;
+  return cs->static_arity == formal->dispatch_arity;
+}
+
 void Matcher::update_match_map(AVar *a, CreationSet *cs, MPosition *acp, MPosition *acpp, Vec<Fun *> &new_matches) {
   for (Fun *f : new_matches) if (f) {
     PMatch *m = match_map.get(f);
     if (!m) {
       m = new_PMatch(f);
       match_map.put(f, m);
+    }
+    // ifa/185: the arity constraint is applied to the POSITIONAL filter,
+    // which is the one find_best_cs_match, prune_uncoverable and both
+    // dispatch-equivalence collapsers read -- so a CS of the wrong arity
+    // is simply not handled by this candidate, exactly as a CS of the
+    // wrong class is not. A named actual reaches here twice; on its first
+    // (named) visit the positional map is not built yet, so it is checked
+    // on the second, when to_formal is correct.
+    Sym *formal = acp == acpp ? f->arg_syms.get(to_formal(acpp, m)) : nullptr;
+    if (formal && formal->dispatch_arity >= 0) uses_dispatch_arity = true;
+    if (formal && !arity_admits(formal, cs)) {
+      m->actuals.put(acpp, a);
+      continue;
     }
     VecCreationSet *t = m->actual_filters.get(acp);
     if (!t) {
@@ -554,6 +583,19 @@ static int subsumes_arg(PMatch *x, PMatch *y, MPosition *acpp, CreationSet *cs, 
       if (!ytype->specializers.set_in(xtype)) return pri;
     } else if (ytype->specializers.set_in(xtype))
       return -pri;
+  }
+  // ifa/185: arity. A formal constrained to the CS's arity is more
+  // specific than one that is not, as a subclass is than its base: both
+  // admit the CS (arity_admits), and the constrained one must win.
+  pri = pri / 2;
+  {
+    Sym *xf = x->fun->arg_syms.get(xp), *yf = y->fun->arg_syms.get(yp);
+    int xa = xf ? xf->dispatch_arity : -1, ya = yf ? yf->dispatch_arity : -1;
+    if (xa != ya) {
+      *identical = 0;
+      if (xa >= 0 && ya < 0) return -pri;
+      if (xa < 0 && ya >= 0) return pri;
+    }
   }
   // coercion
   pri = pri / 2;
@@ -1632,6 +1674,7 @@ void Matcher::cannonicalize_matches(Vec<Fun *> &partial_matches, int is_closure,
     e->all_args.copy(all_args);
     for (AVar *a : args) e->top_out.add(a->out);
     for (Match *m : matches) e->add(new Match(*m));
+    if (uses_dispatch_arity) e->arity_epoch = dispatch_arity_epoch;
   }
 }
 
@@ -1755,6 +1798,7 @@ static int match_cache_hit(Vec<AVar *> &args, AVar *send, int is_closure, Partia
     if (e->partial != partial) continue;
     if (e->visibility_point != visibility_point) continue;
     if (e->top_out.n != args.n) continue;
+    if (e->arity_epoch >= 0 && e->arity_epoch != dispatch_arity_epoch) continue;
     bool top_ok = true;
     for (int i = 0; i < args.n; i++)
       if (e->top_out.v[i] != args.v[i]->out) {

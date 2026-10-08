@@ -1,0 +1,28 @@
+;; phase: dispatch
+
+(summary rc=0 ess=4 edges=16)
+
+(es @__main__#0
+  send m t2 => u2
+    → %m2#0
+      args→ [1]:{m} [2]:{tuple}
+  send m t3 => u3
+    → %m3#0
+      args→ [1]:{m} [2]:{tuple}
+  send m t1 => u1
+    → %mn#0
+      args→ [1]:{m} [2]:{tuple}
+)
+
+(es %m2#0
+  (no out edges)
+)
+
+(es %m3#0
+  (no out edges)
+)
+
+(es %mn#0
+  (no out edges)
+)
+

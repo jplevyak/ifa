@@ -564,6 +564,9 @@ static void parse_sym_attrs(Lex &L, Sym *s) {
     } else if (!strcmp(kw, "nesting-depth")) {
       if (L.t.kind != TOK_INT) parse_err(L, "expected integer");
       else { s->nesting_depth = (int)L.t.ival; next_token(L); }
+    } else if (!strcmp(kw, "dispatch-arity")) {
+      if (L.t.kind != TOK_INT) parse_err(L, "expected integer");
+      else { s->dispatch_arity = (int)L.t.ival; next_token(L); }
     } else if (!strcmp(kw, "size")) {
       if (L.t.kind != TOK_INT) parse_err(L, "expected integer");
       else { s->size = (unsigned)L.t.ival; next_token(L); }
