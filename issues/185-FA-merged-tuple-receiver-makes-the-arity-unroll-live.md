@@ -305,6 +305,42 @@ Without it, two attempts were measured dead:
 `total_len` is otherwise a list's capacity. Only the two resize paths read
 it, and they mask the bit. Test: `tests/tuple_eq_arity_dispatch.py`.
 
+## Corpus check sweep after step 6 (2026-10-08)
+
+Baseline `check__default__520739fe+66a0b1e8` (the sunfish work before
+ifa/185). After: `check__default__7176ad62+6c65e828`, which is `7176ad62`
+plus the doom codegen fix below. Outcome changes:
+
+| program | before | after |
+| --- | --- | --- |
+| sunfish | compile timeout | compiles, stdout matches CPython |
+| dijkstra2 | run timeout | runs, stdout matches CPython |
+| othello3 | compile timeout (124) | compile fails (1): the ifa/057 within-pass stall guard now stops it first |
+
+Contours: EntrySets 31,376 -> 30,238 (-3.6%) and CreationSets
+118,006 -> 113,919 (-3.5%) over 75 programs, down in nearly every
+program (msp_ss 560 -> 412, sudoku5 680 -> 525, amaze 679 -> 564).
+Warning counts moved by one in doom, tictactoe and mastermind2.
+
+**doom regressed at step 2, and is fixed.** The first sweep at `7176ad62`
+(`check__default__7176ad62+83753197`) had doom aborting at run time
+(`getter not resolved`). Bisected with clean builds: `2f61802c` is clean
+and `1fbddfbb` (step 2) aborts.
+
+- The read was `wallTexture.data` on a `{None, Texture}` receiver
+  (`textures.get`). `render()`'s frame buffer is discarded, so the whole
+  draw chain is dead and liveness correctly kills `Texture.data`.
+- The PNode stays live only for its None check (dead.cc
+  `nil_period_receiver`). Both backends then tried to load the dead field:
+  C emitted the runtime assert, LLVM the trap.
+- Fix: a period whose destination is dead and whose field is dead emits
+  only the None check (`cg.cc`, `cg_emit_llvm.cc`).
+- Step 2 only exposed it: its FA changes left this read without the
+  liveness that some other path used to give it.
+
+doom's LLVM compile fails (`Call parameter type does not match function
+signature`) identically at `682f64b2`, so that one predates ifa/185.
+
 ## Open after step 2 (2026-10-08)
 
 1. ~~**The other generated tuple operations are still the max-arity

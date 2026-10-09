@@ -900,6 +900,14 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         }
       } else {
         for (int i = 0; i < obj->has.n; i++) {
+          // ifa/185 (doom): a read kept live only for its None check
+          // (dead.cc's nil_period_receiver) has a dead result, and the
+          // field may then be dead too -- nothing reads it. The check was
+          // emitted above; there is nothing to load. doom's draw_wall_col
+          // reads `wallTexture.data` on a {None, Texture} receiver, and
+          // render()'s frame buffer is discarded, so the whole read chain
+          // is dead.
+          if (symbol == obj->has[i]->name && !cg_field_live(obj, i) && !n->lvals[0]->live) goto Lgetter_found;
           if (symbol == obj->has[i]->name && cg_field_live(obj, i)) {
             // issues/047: a DEAD destination has no name, and this
             // asserted rather than diagnosing -- pyc aborted (SIGABRT)

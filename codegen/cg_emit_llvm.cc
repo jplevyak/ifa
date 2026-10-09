@@ -3038,6 +3038,10 @@ class LLVMEmitter : public VirtualCGEmitter {
     // `assert(!"runtime error: getter not resolved")`. Trap at run time,
     // as it does, rather than read an unassigned result as zero.
     if (idx == P_prim_period) {
+      // ifa/185 (doom), as in cg.cc: a read kept live only for its None
+      // check (already emitted, codegen_common) has a dead result and
+      // nothing to load.
+      if (pn->lvals.n && pn->lvals.v[0] && !pn->lvals.v[0]->live) return true;
       emit_salvage_trap(ctx, pn->lvals.n ? pn->lvals.v[0] : nullptr);
       return true;
     }
