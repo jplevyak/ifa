@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <math.h>
 #include <set>
 #include <string>
 #include <tuple>
@@ -500,6 +501,22 @@ static void cg_check_layout_contract() {
 // cg_has_classtag / cg_field_live moved to codegen_common.{h,cc}
 // (shared with the LLVM backend).
 
+// A numeric constant's literal text for C. sprint_imm writes a float with
+// %.17g plus ".0", which turns an infinity into `inf.0` and a NaN into
+// `nan.0`, neither of them C: minilight's `float('inf')` folded to a
+// constant once a subscript carried an exception check, and the generated C
+// did not compile (issues/175). The other users of sprint_imm (graphs,
+// symbol names, FA dumps) want the readable text, so this is C's own.
+static void cg_sprint_imm(char *ss, size_t n, Immediate &imm) {
+  if (imm.const_kind == IF1_NUM_KIND_FLOAT &&
+      (imm.num_index == IF1_FLOAT_TYPE_32 || imm.num_index == IF1_FLOAT_TYPE_64)) {
+    double d = imm.num_index == IF1_FLOAT_TYPE_32 ? (double)imm.v_float32 : imm.v_float64;
+    if (isinf(d)) { snprintf(ss, n, "%s__builtin_inf()", d < 0 ? "-" : ""); return; }
+    if (isnan(d)) { snprintf(ss, n, "__builtin_nan(\"\")"); return; }
+  }
+  sprint_imm(ss, n, imm);
+}
+
 static cchar *c_rhs(Var *v) {
   if (!v->sym->is_fun) {
     if (!cg_get_string(v)) {
@@ -516,7 +533,7 @@ static cchar *c_rhs(Var *v) {
         if (s->imm.const_kind != IF1_NUM_KIND_NONE && s->imm.const_kind != IF1_CONST_KIND_STRING &&
             s->imm.const_kind != IF1_CONST_KIND_BYTES) {
           char ss[100];
-          sprint_imm(ss, sizeof(ss), s->imm);
+          cg_sprint_imm(ss, sizeof(ss), s->imm);
           return dupstr(ss);
         }
         if (s->constant && (v->type == sym_string || v->type == sym_bytes)) {
@@ -3923,7 +3940,7 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
     if (s->imm.const_kind != IF1_NUM_KIND_NONE && s->imm.const_kind != IF1_CONST_KIND_STRING &&
         s->imm.const_kind != IF1_CONST_KIND_BYTES) {
       char ss[100];
-      sprint_imm(ss, sizeof(ss), s->imm);
+      cg_sprint_imm(ss, sizeof(ss), s->imm);
       cg_set_string(v, dupstr(ss));
     } else if (s->constant) {
       // bytes shares str's exact length-prefixed char* buffer layout
