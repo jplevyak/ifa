@@ -1,3 +1,7 @@
+#include <algorithm>
+#include <unordered_map>
+#include <vector>
+
 #include "ast.h"
 #include "builtin.h"
 #include "fa.h"
@@ -659,35 +663,44 @@ static void report_slot_representation_conflicts() {
 // it does not hold today? Uses the same concrete type as
 // `compute_member_types` (`to_concrete_type(cs->type ? cs->type : cs->sym)`;
 // `cs->type` is null this early, so it is the sym) so that the question asked
-// here is the question answered there. Plain vectors with linear dedup --
-// plib's set-mode Vec carries NULL holes and mixing the two modes has bitten
-// this work repeatedly.
+// here is the question answered there.
+//
+// The answer depends only on the two `out` ATypes, so each one's concrete
+// class set is computed once, sorted and deduplicated, and equal ATypes
+// answer without looking. Rebuilding both sets with linear dedup at every
+// (pair, member) was quadratic in the union: othello3's members hold ~2,000
+// classes, and this took 300 s of clone (ifa/186).
+static std::unordered_map<AType *, std::vector<Sym *>> cs_member_classes;
+
+static const std::vector<Sym *> &cs_member_class_set(AType *t) {
+  auto it = cs_member_classes.find(t);
+  if (it != cs_member_classes.end()) return it->second;
+  std::vector<Sym *> out;
+  for (CreationSet *cs : *t)
+    if (cs && cs->sym) out.push_back(to_concrete_type(cs->type ? cs->type : cs->sym));
+  std::sort(out.begin(), out.end());
+  out.erase(std::unique(out.begin(), out.end()), out.end());
+  return cs_member_classes.emplace(t, std::move(out)).first->second;
+}
+
 static bool cs_member_merge_enlarges(AVar *av1, AVar *av2) {
   if (!av1 || !av2 || !av1->out || !av2->out) return false;
-  Vec<Sym *> ca, cb, un;
-  auto gather = [](AVar *av, Vec<Sym *> &out) {
-    for (CreationSet *cs : *av->out) if (cs && cs->sym) {
-      Sym *c = to_concrete_type(cs->type ? cs->type : cs->sym);
-      bool dup = false;
-      for (Sym *x : out) if (x == c) { dup = true; break; }
-      if (!dup) out.add(c);
-    }
-  };
-  gather(av1, ca);
-  gather(av2, cb);
-  for (Sym *x : ca) un.add(x);
-  for (Sym *y : cb) {
-    bool dup = false;
-    for (Sym *x : un) if (x == y) { dup = true; break; }
-    if (!dup) un.add(y);
-  }
-  // The union holds one class (or none): nothing is manufactured.
-  if (un.n < 2) return false;
+  if (av1->out == av2->out) return false;
+  const std::vector<Sym *> &ca = cs_member_class_set(av1->out), &cb = cs_member_class_set(av2->out);
   // Both members already hold exactly the union: the merge adds nothing.
-  return un.n != ca.n || un.n != cb.n;
+  if (ca == cb) return false;
+  // The union holds one class (or none): nothing is manufactured.
+  size_t un = ca.size() + cb.size();
+  for (size_t i = 0, j = 0; i < ca.size() && j < cb.size();) {
+    if (ca[i] == cb[j]) { --un; ++i; ++j; }
+    else if (ca[i] < cb[j]) ++i;
+    else ++j;
+  }
+  return un >= 2;
 }
 
 static void determine_basic_clones(Vec<Vec<CreationSet *> *> &css_sets_by_sym) {
+  cs_member_classes.clear();
   Vec<Vec<CreationSet *> *> xx;
   sets_by_f_transitive<CreationSet, CS_SYM_FN>(fa->css, css_sets_by_sym);
   // clone for unboxing of basic types

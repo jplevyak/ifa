@@ -445,30 +445,33 @@ static int cg_ctype_width(cchar *t) {
   return -1;  // unknown
 }
 
+// Why reading `b` through `a`'s layout at `slot` is unsound, or nullptr if
+// it is sound; `*at` is the first disagreeing member.
+static cchar *cg_layout_mismatch(Sym *a, Sym *b, int slot, int *at) {
+  *at = -1;
+  if (cg_has_classtag(a) != cg_has_classtag(b)) return "classtag header present in one and not the other";
+  for (int i = 0; i <= slot; i++) {
+    cchar *ta = cg_member_ctype(a, i), *tb = cg_member_ctype(b, i);
+    int wa = cg_ctype_width(ta), wb = cg_ctype_width(tb);
+    *at = i;
+    if (wa == -2 || wb == -2) return "member absent";
+    if (wa == -1 || wb == -1) {
+      if (strcmp(ta, tb)) return "member type differs (width unknown)";
+    } else if (wa != wb)
+      return "member width differs";
+  }
+  *at = -1;
+  return nullptr;
+}
+
 static void cg_check_layout_contract() {
   int violations = 0;
   bool verbose = getenv("IFA_DBG_LAYOUT") != nullptr;
   for (int k = 0; k < cg_bc_to.n; k++) {
     Sym *a = cg_bc_to.v[k], *b = cg_bc_actual.v[k];
     int slot = cg_bc_slot.v[k];
-    cchar *why = nullptr;
     int at = -1;
-    if (cg_has_classtag(a) != cg_has_classtag(b))
-      why = "classtag header present in one and not the other";
-    else
-      for (int i = 0; i <= slot && !why; i++) {
-        cchar *ta = cg_member_ctype(a, i), *tb = cg_member_ctype(b, i);
-        int wa = cg_ctype_width(ta), wb = cg_ctype_width(tb);
-        if (wa == -2 || wb == -2) {
-          why = "member absent";
-          at = i;
-        } else if (wa == -1 || wb == -1) {
-          if (strcmp(ta, tb)) { why = "member type differs (width unknown)"; at = i; }
-        } else if (wa != wb) {
-          why = "member width differs";
-          at = i;
-        }
-      }
+    cchar *why = cg_layout_mismatch(a, b, slot, &at);
     if (!why) continue;
     violations++;
     char detail[160] = "";
@@ -2697,6 +2700,72 @@ class CBackendEmitter : public VirtualCGEmitter {
             fputs(");\n  }\n", fp);
             nb++;
           }
+          // The function-pointer type and argument list of the slot call in
+          // classtag arm ci, built from that candidate's OWN live formals (see
+          // issues/025 kanoodle at the arm emission below).
+          auto slot_call_args = [&](int ci, std::string &fnptr_args, std::string &call_args) {
+            fnptr_args = "void*";
+            call_args = "(void*)";
+            call_args += recv_str;
+            Fun *cfun = class_funs[ci];
+            for (MPosition *p : cfun->positional_arg_positions) {
+              Var *av = cfun->args.get(p);
+              if (!av->live) continue;
+              int i = (int)Position2int(p->pos[0]) - 1;
+              if (i < 0 || i >= pn->rvals.n || !cg_get_string(pn->rvals[i])) continue;
+              if (!strcmp(cg_get_string(pn->rvals[i]), recv_str)) continue;  // self, already emitted
+              cchar *ft = c_type(av), *at = c_type(pn->rvals[i]);
+              fnptr_args += ", ";
+              fnptr_args += ft;
+              call_args += ", ";
+              if (!strcmp(ft, at)) {
+                call_args += cg_get_string(pn->rvals[i]);
+              } else if (scalar_ct(ft)) {
+                call_args += "(";
+                call_args += ft;
+                call_args += ")";
+                call_args += cg_get_string(pn->rvals[i]);
+              } else {
+                call_args += "(";
+                call_args += ft;
+                call_args += ")(void*)";
+                call_args += cg_get_string(pn->rvals[i]);
+              }
+            }
+          };
+          // ifa/186: when every arm calls the SAME slot with the same
+          // function-pointer type and arguments, the arms differ only in the
+          // struct they cast the receiver to, and the chain is one slot call.
+          // That is sound exactly when every class agrees with the first
+          // class's layout up to the slot: checked here, so a disagreeing
+          // class keeps the chain, and recorded as each class's blind-cast
+          // obligation like any other cast. With othello3's 830 Flip
+          // classes, each `.go()` site was an 830-arm chain, ~10,000 lines
+          // of C per `put_*.go`.
+          bool one_slot_call = classes.n > 1 && !plains.n && !directs.n;
+          std::string fnptr0, call0;
+          for (int ci = 0; ci < classes.n && one_slot_call; ci++) {
+            if (slots[ci] == -1 || slots[ci] != slots[0]) { one_slot_call = false; break; }
+            int at;
+            if (ci && cg_layout_mismatch(classes[0], classes[ci], slots[0], &at)) { one_slot_call = false; break; }
+            std::string fa, ca;
+            slot_call_args(ci, fa, ca);
+            if (!ci) { fnptr0 = fa; call0 = ca; }
+            else if (fa != fnptr0 || ca != call0) one_slot_call = false;
+          }
+          if (one_slot_call) {
+            for (int ci = 0; ci < classes.n; ci++) {
+              cg_note_blind_cast(classes[0], classes[ci], slots[0]);
+              if (ci < recv_types.n) cg_note_blind_cast(classes[0], recv_types[ci], slots[0]);
+              cg_note_slot_use(classes[ci], slots[0], 1);
+            }
+            fputs(nb ? "  else {\n    " : "  {\n    ", fp);
+            if (lhs) fprintf(fp, "%s = ", lhs);
+            fprintf(fp, "((%s(*)(%s))((%s)(void*)%s)->e%d)(%s);\n", ret_type_str, fnptr0.c_str(),
+                    cg_get_string(classes[0]), recv_str, slots[0], call0.c_str());
+            fputs("  }\n", fp);
+            return;
+          }
           for (int ci = 0; ci < classes.n; ci++, nb++) {
             fprintf(fp, "  %sif ((*(_CG_TypeObject**)(void*)%s) == &_CG_type_%s) {\n", nb ? "else " : "", recv_str,
                     classes[ci]->name);
@@ -2751,33 +2820,8 @@ class CBackendEmitter : public VirtualCGEmitter {
             // callee's receiver type varies per branch; that's the
             // whole reason for this cast), every other live formal is
             // cast like an ordinary call argument.
-            std::string fnptr_args = "void*", call_args = "(void*)";
-            call_args += recv_str;
-            Fun *cfun = class_funs[ci];
-            for (MPosition *p : cfun->positional_arg_positions) {
-              Var *av = cfun->args.get(p);
-              if (!av->live) continue;
-              int i = (int)Position2int(p->pos[0]) - 1;
-              if (i < 0 || i >= pn->rvals.n || !cg_get_string(pn->rvals[i])) continue;
-              if (!strcmp(cg_get_string(pn->rvals[i]), recv_str)) continue;  // self, already emitted
-              cchar *ft = c_type(av), *at = c_type(pn->rvals[i]);
-              fnptr_args += ", ";
-              fnptr_args += ft;
-              call_args += ", ";
-              if (!strcmp(ft, at)) {
-                call_args += cg_get_string(pn->rvals[i]);
-              } else if (scalar_ct(ft)) {
-                call_args += "(";
-                call_args += ft;
-                call_args += ")";
-                call_args += cg_get_string(pn->rvals[i]);
-              } else {
-                call_args += "(";
-                call_args += ft;
-                call_args += ")(void*)";
-                call_args += cg_get_string(pn->rvals[i]);
-              }
-            }
+            std::string fnptr_args, call_args;
+            slot_call_args(ci, fnptr_args, call_args);
             if (ci < recv_types.n) cg_note_blind_cast(classes[ci], recv_types[ci], slots[ci]);
             // The classtag dispatch CALLING through the slot -- the read
             // side that makes a method slot necessary at all.

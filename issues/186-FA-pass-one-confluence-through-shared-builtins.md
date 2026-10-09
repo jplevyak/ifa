@@ -1,7 +1,8 @@
 # 186 — pass 1 pushes a whole-program union through the shared builtins (othello3)
 
 **Status:** open. Diagnosed 2026-10-08. othello3 now compiles and matches
-CPython (2026-10-09), in 1,554 s: still over the sweep's 400 s cap. The
+CPython (2026-10-09), in 994 s, nearly all of it FA: still over the
+sweep's 400 s cap. The
 within-pass stall guard that failed it is deleted (see "The stall guard
 was wrong").
 
@@ -145,7 +146,83 @@ count stopped mattering much. It changes the fixed point slightly
 order-sensitive union does (ifa/147).
 
 **The rest of the 1,554 s** is ~690 s after FA: clone, 37 MB of
-emitted C, and the C compile. Not yet profiled.
+emitted C, and the C compile. Profiled below.
+
+## After FA (profiled 2026-10-09)
+
+One run of c5f9d7f6 with temporary phase timers, 1,500 s wall:
+
+| phase | s |
+| --- | --- |
+| FA | 847 |
+| clone | 310 |
+| mark_live_code | 25 |
+| write C | 38 |
+| clang++ | 262 |
+| everything else | < 1 |
+
+**clone: `cs_member_merge_enlarges`** (`clone.cc`, ifa/153), 27 of 28
+stack samples, a third of them in GC. `determine_basic_clones` calls it
+for every pair of same-sym CreationSets and every member. Each call
+builds both members' concrete class sets with linear dedup, so a member
+holding the ~2,000-class union costs O(n^2) per pair and allocates
+throughout. The answer depends only on the two members' `out` ATypes,
+which are hash-consed: equal pointers mean "no enlargement", and a
+per-AType sorted class set makes the rest linear. Not yet done.
+
+**clang++: `-g` at `-O2`.** Timing the same 37 MB `.c` file:
+
+| flags | s | peak RSS |
+| --- | --- | --- |
+| `-g -O2` (what `Makefile.cg` does) | 263 | 23 GB |
+| `-O2 -gline-tables-only` | 122 | 1.6 GB |
+| `-O2` | 119 | 1.2 GB |
+| `-O1` | 80 | 1.2 GB |
+| `-g -O0` | 50 | 1.7 GB |
+
+The compile's 23 GB peak, earlier attributed to pyc, is clang's
+variable-location debug info. The code it is fed is the deeper cost: each
+of the 64 `put_*::go` methods is ~10,160 lines of C, because each
+`.go()` site over the 830 Flip classes is emitted as an 830-arm
+classtag `if` chain (`cg.cc`, the poly-dispatch emitter) whose arms all
+call the same slot `e13` with the same signature, differing only in the
+struct cast. The blind-cast obligations already prove every member
+agrees with each arm's layout up to that slot (692,110 checked, 0
+violations), so when every arm has the same slot and signature the chain
+is one slot call.
+
+### Fixed (2026-10-09)
+
+1. **One slot call.** The poly-dispatch emitter now emits a single slot
+   call when every classtag arm has the same slot, function-pointer type
+   and arguments, and every class agrees with the first class's layout up
+   to that slot (`cg_layout_mismatch`, factored out of
+   `cg_check_layout_contract`, so a disagreeing class keeps the chain).
+   Each class's cast is still recorded as an obligation, and its slot as
+   used.
+2. **`cs_member_merge_enlarges` is linear.** Equal `out` ATypes answer
+   without looking; otherwise each AType's sorted concrete class set is
+   computed once per `determine_basic_clones`. Same answers.
+3. **No `-g` unless asked.** `Makefile.cg` passed `-g` unconditionally,
+   though `pyc -g` (off by default) already adds it through `DEBUG=1`.
+
+othello3, alone, on c5f9d7f6 plus these:
+
+| | before | after |
+| --- | --- | --- |
+| compile | 1,500 s | 994 s |
+| peak RSS | 23 GB | 3.4 GB |
+| emitted C | 37.6 MB | 5.8 MB |
+| binary | 12 MB | 1.0 MB |
+| layout obligations | 692,110 | 896 |
+| `moves/sec` | 1.6M | 80M (CPython 0.77M) |
+
+Output matches CPython except that timing line. FA's ~850 s is now
+almost all of the compile, so the 400 s cap is FA's to meet.
+
+`make test` green. Sweep `check__default__c5f9d7f6+47b658d3` against
+`95f22d8d+5b37a30a`: every verdict, warning count, ESS and CSS identical
+over 77 programs; othello3 still 124 at the cap.
 
 **Sweep** `check__default__95f22d8d+5b37a30a` (the four fixes plus
 deferral, guard unchanged) against `check__default__7176ad62+6c65e828`:
@@ -177,8 +254,8 @@ cross-pass guards (`IFA_STALL_LIMIT`, the pass cap) are unaffected.
 This section predates the prototype. Its premise, that the number of
 updates was the problem and making each one cheaper would not help, was
 wrong: the per-update costs above were most of it, and deferral, which
-attacks the count, was worth 7-19%. What remains is the confluence itself,
-the post-FA ~690 s, and FA's ~860 s against a 400 s cap.
+attacks the count, was worth 7-19%. What remains is the confluence itself
+and FA's ~850 s against a 400 s cap (the post-FA time is fixed above).
 
 - **Remove the confluence.** The list iterator is the most visible one,
   but `len`, `join` and the comparisons show the same pattern, so a
