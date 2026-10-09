@@ -1578,6 +1578,13 @@ static void update_display(AEdge *e, EntrySet *es) {
 
 
 
+// ifa/057 stall guard: EntrySets minted so far, over the whole analysis.
+// The guard used to read fa->ess.n, which collect_results rebuilds only at
+// the END of a pass, so within a pass it never moved: the guard was a flat
+// 120 s cap on any pass. othello3's first pass mints EntrySets throughout
+// and was failed as "non-convergent".
+static long fa_es_minted = 0;
+
 static void set_entry_set(AEdge *e, EntrySet *es = 0) {
   EntrySet *new_es = es;
   if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) {
@@ -1586,6 +1593,7 @@ static void set_entry_set(AEdge *e, EntrySet *es = 0) {
   if (!es) {
     new_es = new EntrySet(e->match->fun);
     e->match->fun->ess.add(new_es);
+    ++fa_es_minted;
   }
   if (e->to && e->to != new_es) fa_pass_retargeted.set_add(e->to);  // ifa/111 M1: old target
   if (new_es) fa_pass_retargeted.set_add(new_es);                   // ifa/111 M1: new target
@@ -14175,9 +14183,13 @@ static bool compute_es_can_raise() {
 // edge-count threshold is unreliable, either too slow to trip (if set
 // high enough to tolerate legitimate large passes) or fires on a
 // slow-but-finite legitimate program. A wall-clock stagnation timeout
-// is robust to this regardless of per-edge cost: as long as fa->ess.n
-// (distinct EntrySets) keeps growing at all, the clock keeps
-// resetting and legitimate large programs are unaffected. Calibrated
+// is robust to this regardless of per-edge cost: as long as EntrySets
+// keep being minted at all, the clock keeps resetting and legitimate
+// large programs are unaffected. (The count is fa_es_minted. It was
+// fa->ess.n, which collect_results rebuilds only at the end of a pass, so
+// within a pass it never moved and the guard failed ANY pass longer than
+// the timeout -- othello3's first pass, minting EntrySets throughout. The
+// pygasus calibration below was therefore never what the guard measured.) Calibrated
 // against the largest known-converging corpus example (pygasus,
 // issue 033's own worst case): its busiest single pass processes
 // ~65K edges while fa->ess.n grows by hundreds *within that same
@@ -14432,7 +14444,7 @@ static void analyze_to_convergence() {
     // in 0.081s.
     fa->edge_worklist.enqueue(fa->top_edge);
     long edge_count = 0;
-    int last_ess_check = fa->ess.n;
+    long last_ess_check = fa_es_minted;
     time_t last_ess_change_time = time(nullptr);
     while (fa->edge_worklist.head || fa->send_worklist.head) {
       while (AEdge *e = fa->edge_worklist.pop()) {
@@ -14440,8 +14452,8 @@ static void analyze_to_convergence() {
         ++census.work_edges;  // ifa/111 probe
         analyze_edge(e);
         if ((++edge_count % STALL_CHECK_INTERVAL) == 0) {
-          if (fa->ess.n > last_ess_check) {
-            last_ess_check = fa->ess.n;
+          if (fa_es_minted > last_ess_check) {
+            last_ess_check = fa_es_minted;
             last_ess_change_time = time(nullptr);
           } else if (time(nullptr) - last_ess_change_time > STALL_TIMEOUT_SECONDS) {
             fail(

@@ -1229,14 +1229,17 @@ static void promotion_uses(PMatch **am, MPosition &app, Vec<CreationSet *> &args
 }
 
 // clear out values needed only while considering a particular csargs
-static void clear_matches(PMatchMap &match_map) {
-  form_Map(PMatchElem, x, match_map) {
-    x->value->order_substitutions.clear();
-    x->value->default_args.clear();
-    x->value->generic_substitutions.clear();
-    x->value->coercion_substitutions.clear();
-    x->value->promotion_substitutions.clear();
-  }
+static void clear_match(PMatch *m) {
+  m->order_substitutions.clear();
+  m->default_args.clear();
+  m->generic_substitutions.clear();
+  m->coercion_substitutions.clear();
+  m->promotion_substitutions.clear();
+}
+
+static void clear_matches(PMatchMap &match_map, Vec<Fun *> &funs) {
+  for (Fun *f : funs) if (f)
+    if (PMatch *m = match_map.get(f)) clear_match(m);
 }
 
 void Matcher::reverify_filters(Vec<Fun *> &matches) {
@@ -1408,12 +1411,22 @@ void Matcher::find_best_cs_match(Vec<CreationSet *> &csargs, MPosition &app, Vec
   }
   if (top_level) instantiation_wrappers_and_partial_application(matches);
   set_filters(csargs, app, matches, cls);
-  if (top_level) reverify_filters(matches);
+  // reverify_filters runs once per dispatch, in pattern_match, after every
+  // leaf: see there.
   log(LOG_DISPATCH, "%d- destructure_level: %d matches: %d\n", send->var->sym->id, app.pos.n, matches.n);
   qsort_by_id(matches);
   log_dispatch_funs(*this, matches);
   result.set_union(matches);
-  clear_matches(match_map);
+  // Only this leaf's candidates were touched (covers_formals sets
+  // default_args on the ones it tests, the *_uses steps substitutions on
+  // the covered ones), so clear those. Sweeping all of match_map made every
+  // leaf O(candidates): with one leaf per receiver class that is O(n^2) a
+  // dispatch, and othello3's 830-way `flip_table[i].go()` spent most of its
+  // pass there.
+  // `matches` too: instantiation_wrappers_and_partial_application may have
+  // replaced a candidate by a wrapper Fun with its own PMatch.
+  clear_matches(match_map, local_matches);
+  clear_matches(match_map, matches);
 }
 
 // Drop every candidate that some argument position can never cover: no
@@ -1548,7 +1561,16 @@ void Matcher::find_best_matches(Vec<AVar *> &args, Vec<CreationSet *> &csargs, V
         return;
       }
     }
-    if (nmat > 1 && args[iarg]->out->sorted.n > 1 && nmat <= 64) {
+    // The votes below are a 64-bit mask, one bit per candidate, so this
+    // collapse needs the REAL candidate count. `nmat` stops counting at 2
+    // (all the single-candidate test needs), which let it run with 800
+    // candidates on othello3: `1ull << ci` past 63 is undefined (x86 wraps
+    // the shift), so CreationSets with different candidate sets could share
+    // a class, and the per-CS candidate scan made each dispatch O(n^2).
+    // Above 64, the indexed enumeration below takes over.
+    int ncand = 0;
+    for (Fun *f : matches) if (f) ncand++;
+    if (nmat > 1 && args[iarg]->out->sorted.n > 1 && ncand <= 64) {
       struct Cand {
         PMatch *m;
         Sym *formal;
@@ -1648,6 +1670,61 @@ void Matcher::find_best_matches(Vec<AVar *> &args, Vec<CreationSet *> &csargs, V
       }
       // bail: any candidate has a pattern/varargs/missing formal, or
       // is generic — fall through to full enumeration below.
+    }
+    // othello3 (shedskin_examples): full enumeration hands EVERY live
+    // candidate to every leaf, and find_best_cs_match then walks all of
+    // them to find the few whose actual filter holds this CS. A receiver
+    // that is a union of n classes, each with its own override, is n
+    // leaves of n candidates: O(n^2) per dispatch. The union grows one
+    // CreationSet at a time and each growth re-dispatches (a new AType
+    // misses the match cache), so the pass costs O(n^3) -- 830 Flip
+    // subclasses ran past the 120 s ifa/057 stall guard in pass 1. (Above
+    // 64 candidates the collapse just above does not run: its votes are a
+    // 64-bit mask.)
+    //
+    // So index the candidates by the CreationSets their filters hold at
+    // this position, once, and give each leaf only those that can cover
+    // its CS -- exactly the ones find_best_cs_match's coverage test keeps:
+    // the filter holds the CS, or the candidate is varargs with no formal
+    // here. Indices keep each leaf's candidates in `matches` order.
+    if (ncand > 8 && args[iarg]->out->sorted.n > 1) {
+      MPosition lp(app);
+      lp.push(1);
+      for (int k = 0; k < iarg; k++) lp.inc();
+      MPosition *acpp = cannonicalize_mposition(lp);
+      Map<CreationSet *, Vec<int> *> by_cs;
+      Vec<int> always;
+      for (int fi = 0; fi < matches.n; fi++) {
+        Fun *f = matches.v[fi];
+        if (!f) continue;
+        PMatch *m = match_map.get(f);
+        if (!m) continue;  // find_best_cs_match skips it too (no PMatch)
+        Sym *formal = f->arg_syms.get(to_formal(acpp, m));
+        if (!formal && f->is_varargs) {
+          always.add(fi);
+          continue;
+        }
+        VecCreationSet *t = m->actual_filters.get(acpp);
+        if (!t) continue;
+        for (CreationSet *fcs : *t) if (fcs) {
+          Vec<int> *v = by_cs.get(fcs);
+          if (!v) by_cs.put(fcs, (v = new Vec<int>));
+          v->add(fi);
+        }
+      }
+      for (CreationSet *cs : args[iarg]->out->sorted) {
+        Vec<int> *v = by_cs.get(cs);
+        Vec<Fun *> sub;
+        int a = 0, b = 0, na = always.n, nb = v ? v->n : 0;
+        while (a < na || b < nb) {
+          int x = (b >= nb || (a < na && always.v[a] < v->v[b])) ? always.v[a++] : v->v[b++];
+          sub.add(matches.v[x]);
+        }
+        if (!sub.n) continue;  // no candidate covers this CS: an effect-free subtree
+        csargs[iarg] = cs;
+        find_best_matches(args, csargs, sub, app, result, top_level, cls, iarg + 1);
+      }
+      return;
     }
     for (CreationSet *cs : args[iarg]->out->sorted) {
       csargs[iarg] = cs;
@@ -1913,6 +1990,15 @@ int pattern_match(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_clo
     Vec<Fun *> result;
     matcher.prune_uncoverable(args, app, *partial_matches);
     matcher.find_best_matches(args, csargs, *partial_matches, app, result, 1, csclasses);
+    // othello3: this ran at every top-level leaf, and rescanned every
+    // CreationSet a candidate's formal_sets had accumulated over all the
+    // leaves so far -- a candidate covering n receivers was rescanned n
+    // times, O(n^2) a dispatch. Its verdict depends only on the FINAL sets
+    // (whether a CS is kept is a function of the CS and the formal, not of
+    // the leaf that added it), and a candidate kept by some leaf is exactly
+    // one whose final sets keep a CS at every position. So once is the same.
+    result.set_to_vec();
+    matcher.reverify_filters(result);
     partial_matches->move(result);
     if (!partial_matches->n) return 0;
   }

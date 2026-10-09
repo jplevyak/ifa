@@ -315,7 +315,7 @@ plus the doom codegen fix below. Outcome changes:
 | --- | --- | --- |
 | sunfish | compile timeout | compiles, stdout matches CPython |
 | dijkstra2 | run timeout | runs, stdout matches CPython |
-| othello3 | compile timeout (124) | compile fails (1): the ifa/057 within-pass stall guard now stops it first |
+| othello3 | compile timeout (124) | compile fails (1): the ifa/057 within-pass stall guard now stops it first. The guard was itself broken; see [186](186-FA-pass-one-confluence-through-shared-builtins.md) |
 
 Contours: EntrySets 31,376 -> 30,238 (-3.6%) and CreationSets
 118,006 -> 113,919 (-3.5%) over 75 programs, down in nearly every
