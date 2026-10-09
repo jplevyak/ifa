@@ -292,6 +292,15 @@ static void release_gate(AVar *v) {
   }
 }
 
+// ifa/186: push v's current `out` to every AVar it flows to.
+void update_in(AVar *v, AType *t);
+static void push_forward(AVar *v) {
+  Vec<AVar *> fwd;
+  for (AVar *vv : v->forward) if (vv) fwd.add(vv);
+  if (fwd.n > 1) qsort_by_id(fwd);
+  for (AVar *vv : fwd) update_in(vv, v->out);
+}
+
 // Shared out-change propagation tail for update_in /
 // flow_var_type_permit / flow_var_permit_pred (survey S1):
 // enqueue dependent sends, resume any IF blocked on this AVar
@@ -330,10 +339,14 @@ static void propagate_out_change(AVar *v) {
   // Issue 035: forward is an open-hash set — cascading update_in
   // in bucket (heap-layout) order lets the constant-cap's
   // order-sensitive union reach different fixpoints run to run.
-  Vec<AVar *> fwd;
-  for (AVar *vv : v->forward) if (vv) fwd.add(vv);
-  if (fwd.n > 1) qsort_by_id(fwd);
-  for (AVar *vv : fwd) update_in(vv, v->out);
+  if (fa->defer_flow) {
+    if (!v->in_flow_worklist) {
+      v->in_flow_worklist = 1;
+      fa->flow_worklist.enqueue(v);
+    }
+    return;
+  }
+  push_forward(v);
 }
 
 
@@ -1578,13 +1591,6 @@ static void update_display(AEdge *e, EntrySet *es) {
 
 
 
-// ifa/057 stall guard: EntrySets minted so far, over the whole analysis.
-// The guard used to read fa->ess.n, which collect_results rebuilds only at
-// the END of a pass, so within a pass it never moved: the guard was a flat
-// 120 s cap on any pass. othello3's first pass mints EntrySets throughout
-// and was failed as "non-convergent".
-static long fa_es_minted = 0;
-
 static void set_entry_set(AEdge *e, EntrySet *es = 0) {
   EntrySet *new_es = es;
   if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) {
@@ -1593,7 +1599,6 @@ static void set_entry_set(AEdge *e, EntrySet *es = 0) {
   if (!es) {
     new_es = new EntrySet(e->match->fun);
     e->match->fun->ess.add(new_es);
-    ++fa_es_minted;
   }
   if (e->to && e->to != new_es) fa_pass_retargeted.set_add(e->to);  // ifa/111 M1: old target
   if (new_es) fa_pass_retargeted.set_add(new_es);                   // ifa/111 M1: new target
@@ -4390,7 +4395,7 @@ static void collect_argument_type_violations() {
             form_MPositionAVar(x, me->args) if (x->key->is_positional()) actuals.set_add(x->value);
           }
           for (AVar *av : actuals) if (av) {
-            AType *t = av->out;
+            Vec<AType *> filters;
             for (AEdge *e : *m) {
               if (!from->out_edges.set_in(e)) continue;
               form_MPositionAVar(x, e->args) {
@@ -4398,11 +4403,10 @@ static void collect_argument_type_violations() {
                 if (!x->key->is_positional()) continue;
                 MPosition *p = x->key;
                 AVar *filtered = e->filtered_args.get(p);
-                if (filtered) {
-                  t = type_diff(t, filtered->out);
-                }
+                if (filtered) filters.add(filtered->out);
               }
             }
+            AType *t = type_diff_all(av->out, filters);
             if (!empty_type_minus_partial_applications(t)) {
               t = type_minus_partial_applications(t);
               type_violation(ATypeViolation_kind::SEND_ARGUMENT, av, t, make_AVar(p->lvals[0], from));
@@ -14168,39 +14172,6 @@ static bool compute_es_can_raise() {
   return any;
 }
 
-// ifa/issues/057: the flow-to-fixpoint inner loop below (edge/send/es
-// worklists) has no bound at all, unlike the outer extend_analysis()
-// splitting loop (pass_limit + the issue-033 stall guard). A
-// non-convergent input -- confirmed via ifa/issues/055 and 057, both
-// FA's polymorphic type union failing to stabilize for some AVar --
-// churns this inner loop forever: hundreds of thousands of edges
-// processed with fa->ess.n (distinct EntrySets) completely flat,
-// consuming unbounded memory (observed >1GB and still climbing after
-// 280s on 057's 4-line repro) with no diagnostic, ever. Worse: the
-// PER-EDGE cost itself grows over time as the stuck AVar's type union
-// keeps accumulating without ever stabilizing (measured: the first
-// ~140K edges took ~15s, the next 200K took over 120s) -- so a raw
-// edge-count threshold is unreliable, either too slow to trip (if set
-// high enough to tolerate legitimate large passes) or fires on a
-// slow-but-finite legitimate program. A wall-clock stagnation timeout
-// is robust to this regardless of per-edge cost: as long as EntrySets
-// keep being minted at all, the clock keeps resetting and legitimate
-// large programs are unaffected. (The count is fa_es_minted. It was
-// fa->ess.n, which collect_results rebuilds only at the end of a pass, so
-// within a pass it never moved and the guard failed ANY pass longer than
-// the timeout -- othello3's first pass, minting EntrySets throughout. The
-// pygasus calibration below was therefore never what the guard measured.) Calibrated
-// against the largest known-converging corpus example (pygasus,
-// issue 033's own worst case): its busiest single pass processes
-// ~65K edges while fa->ess.n grows by hundreds *within that same
-// pass* (973 -> 4832 across passes, never flat for long) -- nowhere
-// close to STALL_TIMEOUT_SECONDS of zero growth. This does not fix
-// *why* convergence fails (that's 055/057's still-open root cause) --
-// it converts an unbounded hang/OOM into a clean, bounded failure
-// with a diagnostic pointing at the actual bug class.
-static const long STALL_CHECK_INTERVAL = 20000;
-static const time_t STALL_TIMEOUT_SECONDS = 120;
-
 // ifa/issues/039, the `safe` environment: substitute a typed zero for
 // the phi operands that mark "control reached this merge without ever
 // assigning the variable" (marked by mark_unbound_phi_operands,
@@ -14443,26 +14414,22 @@ static void analyze_to_convergence() {
     // the cheap part -- hq2x pass 15 walked ~30 000 AVars with 79 dirty
     // in 0.081s.
     fa->edge_worklist.enqueue(fa->top_edge);
-    long edge_count = 0;
-    long last_ess_check = fa_es_minted;
-    time_t last_ess_change_time = time(nullptr);
-    while (fa->edge_worklist.head || fa->send_worklist.head) {
+    // ifa/186: an AVar whose `out` changes is queued, and pushes whatever
+    // `out` is by then to its `forward` set once the edges drain, ahead of
+    // the sends. Pushing every change at once re-walked the whole
+    // downstream graph for each CreationSet a growing union gained:
+    // othello3's pass 1 made 105M out-changes that way and 1.85M this way.
+    fa->defer_flow = true;
+    while (fa->edge_worklist.head || fa->send_worklist.head || fa->flow_worklist.head ||
+           fa->es_worklist.head) {
       while (AEdge *e = fa->edge_worklist.pop()) {
         e->in_edge_worklist = 0;
         ++census.work_edges;  // ifa/111 probe
         analyze_edge(e);
-        if ((++edge_count % STALL_CHECK_INTERVAL) == 0) {
-          if (fa_es_minted > last_ess_check) {
-            last_ess_check = fa_es_minted;
-            last_ess_change_time = time(nullptr);
-          } else if (time(nullptr) - last_ess_change_time > STALL_TIMEOUT_SECONDS) {
-            fail(
-                "FA flow analysis made no EntrySet progress for %lds (%ld "
-                "edges processed) -- non-convergent input (see "
-                "ifa/issues/057-sorted-tolist-fa-nonconvergence.md)",
-                (long)STALL_TIMEOUT_SECONDS, edge_count);
-          }
-        }
+      }
+      while (AVar *v = fa->flow_worklist.pop()) {
+        v->in_flow_worklist = 0;
+        push_forward(v);
       }
       while (AVar *send = fa->send_worklist.pop()) {
         send->in_send_worklist = 0;
@@ -14475,6 +14442,7 @@ static void analyze_to_convergence() {
         add_es_constraints(es);
       }
     }
+    fa->defer_flow = false;
     complete_pass();
     bool raise_grew = compute_es_can_raise();  // on the converged graph; see its comment
     dbg_dump_contours(analysis_pass);  // ifa/issues/055

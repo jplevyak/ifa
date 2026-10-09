@@ -1,6 +1,7 @@
 #include <ctype.h>
 #include <set>
 #include <string>
+#include <tuple>
 
 #include "ifadefs.h"
 
@@ -269,9 +270,14 @@ static Sym *resolve_union_receiver(Sym *obj, cchar *symbol) {
 
 static Vec<Sym *> cg_bc_to, cg_bc_actual;
 static Vec<int> cg_bc_slot;
+// An obligation is a function of (cast_to, actual, slot) alone, so each is
+// recorded once. othello3 emits a cast per member of an 830-class union at
+// thousands of sites, and recording every one ran the heap out (ifa/186).
+static std::set<std::tuple<int, int, int>> cg_bc_seen;
 
 static void cg_note_blind_cast_1(Sym *cast_to, Sym *actual, int slot) {
   if (!cast_to || !actual || slot < 0 || cast_to == actual) return;
+  if (!cg_bc_seen.insert({cast_to->id, actual->id, slot}).second) return;
   cg_bc_to.add(cast_to);
   cg_bc_actual.add(actual);
   cg_bc_slot.add(slot);

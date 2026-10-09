@@ -1837,12 +1837,19 @@ static void get_all_args(AVar *a, MapMPositionAType &all_args, MapMPositionAVar 
   if (!ps.set_in(cp)) return;
   all_avars.put(cp, a);
   add_all_args(all_args, cp, a->out);
-  for (CreationSet *cs : a->out->sorted) {
-    for (int i = 0; i < cs->vars.n; i++) {
-      p.push(i + 1);
-      get_all_args(cs->vars[i], all_args, all_avars, ps, p);
-      p.pop();
-    }
+  // ifa/186: the child position depends only on the member index, not on
+  // the CreationSet, so ask once per index whether it is wanted. Walking
+  // every CS of a wide union and canonicalizing each member's position, to
+  // discard almost all of them, was most of a match-cache lookup. Per key,
+  // CreationSets are still visited in `sorted` order.
+  int nvars = 0;
+  for (CreationSet *cs : a->out->sorted) if (cs->vars.n > nvars) nvars = cs->vars.n;
+  for (int i = 0; i < nvars; i++) {
+    p.push(i + 1);
+    if (ps.set_in(cannonicalize_mposition(p)))
+      for (CreationSet *cs : a->out->sorted)
+        if (i < cs->vars.n) get_all_args(cs->vars[i], all_args, all_avars, ps, p);
+    p.pop();
   }
 }
 

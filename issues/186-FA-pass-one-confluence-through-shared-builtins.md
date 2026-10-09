@@ -1,7 +1,9 @@
 # 186 — pass 1 pushes a whole-program union through the shared builtins (othello3)
 
-**Status:** open. Diagnosed 2026-10-08. Two bugs it exposed are fixed
-(below); the pass-1 cost itself is not.
+**Status:** open. Diagnosed 2026-10-08. othello3 now compiles and matches
+CPython (2026-10-09), in 1,554 s: still over the sweep's 400 s cap. The
+within-pass stall guard that failed it is deleted (see "The stall guard
+was wrong").
 
 ## Symptom
 
@@ -64,10 +66,119 @@ same unions form and pass 1 still stalls.
    noted the reading was misleading). It now counts EntrySets as
    `set_entry_set` mints them (`fa_es_minted`).
 
+## How shedskin handles it
+
+From its source (`~/projects/shedskin/shedskin/infer.py`), not from a run.
+shedskin never forms the union, by three mechanisms:
+
+1. **Eager CPA.** `cpa()` makes a template per tuple of concrete argument
+   types at every call (`create_template`, `func.cp[dcpa][c]`), so `len`,
+   `__eq__` and `__next__` get one template per receiver type. The list
+   iterator follows: `pyiter.__iter__` is `return __iter(self.unit)`,
+   templated per list contour, and its allocation gets a contour per
+   template (`alloc_info` keys on function x cartesian product x node).
+2. **`CPA_LIMIT` defers big unions.** It starts at 10. A call whose
+   functions x argument-type combinations exceed it is **not connected**
+   (`cpa_limited = True; return`); after convergence the limit doubles and
+   the analysis restarts. The 830-receiver `.go()` sites wait for 7
+   doublings.
+3. **Incremental program.** 5 user functions and 1 allocation site per
+   round (`INCREMENTAL_FUNCS`, `INCREMENTAL_ALLOCS`), to a fixed point in
+   between. That, with the restarts, is the hour its README reports.
+
+Only 2 and 3 carry over. 1 splits on a fact, not a demand, and its
+allocation identity is the (site x contour) product `PYC_CSDCPA1=2`
+replaced (ifa/146 already retired `PYC_CPA` on the same ground). 2 and 3
+decide WHEN a value reaches its readers, not what contours exist. In pyc,
+deferring a call still pours the union into one minimal contour once it
+is connected; the gain is that it arrives once, settled, instead of
+~2,000 times.
+
+## The deferral prototype, and what it found (2026-10-09)
+
+Shedskin's mechanisms 2 and 3 are scheduling, so the prototype took the
+scheduling half: **settle a growing union before readers see it.**
+
+Propagation was eager and depth-first: `propagate_out_change` recursed
+through `forward` on every change, so each CreationSet a union gained
+re-walked the whole downstream graph. Now an AVar whose `out` changes is
+queued once (`flow_worklist`, coalescing on `in_flow_worklist`), and
+`analyze_to_convergence` drains the queue after the edges and before the
+sends. Each AVar pushes whatever its `out` is by then, and dispatch sees
+settled unions.
+
+That alone cut out-changes 57x (pass 1: 105M -> 1.85M) and did not finish
+pass 1: the stall guard stopped it after 420k edges. Sampling then found
+the cost in three places, each the size of the union per step:
+
+| where | cost | fix |
+| --- | --- | --- |
+| `type_union` (`fa_lattice.cc`) | a flow edge re-asserted onto an AVar that already holds its source still built two diffs and a result, each ~2,000 wide, and memoized the pair; 8 of 12 samples were full GCs triggered by these | subset fast path: if one canonical operand contains the other, it is the union |
+| `collect_argument_type_violations` | `t = type_diff(t, filtered)` once per dispatch edge (up to 800 per `.go()` site), each step a new canonical AType; ~1,200 s between passes 1 and 2 | `type_diff_all`: one filtering pass, canonicalized once |
+| `get_all_args` (`pattern.cc`), the match-cache lookup | canonicalized the child position of every member of every CS in the union, then discarded nearly all | ask once per member index; recurse only for wanted indices |
+
+Then codegen ran the heap out: `cg_note_blind_cast` recorded one
+layout obligation per union member per site, with no dedup (repeated
+256 MB `Vec` growth, then a wrapped heap-expand size and SIGSEGV). An
+obligation is a function of `(cast_to, actual, slot)`, so it is now
+recorded once: 692,110 obligations, 0 violations.
+
+Measured on othello3 (stall guard disabled for measurement):
+
+| | pass 1 | pass 2 | pass 3 | FA total | compile |
+| --- | --- | --- | --- | --- | --- |
+| before | never finished in 50 min | | | | |
+| deferral only | stall guard at 420k edges | | | | |
+| + subset union | 342 s | | | | |
+| + one-pass diff | 351 s | 276 s | 251 s | | |
+| + per-index `get_all_args` | 184 s | 132 s | 91 s | ~860 s, 13 passes | 1,554 s, rc 0 |
+| all but deferral | 197 s | 152 s | 112 s | | |
+
+FA converges: pass 13 repeats pass 12 (5,096 EntrySets, same edge
+count). The binary's output matches CPython's except the `moves/sec`
+timing line (1.6M vs 0.77M). No warnings.
+
+**Attribution.** Deferral is worth 7-19% of FA time on top of the other
+three, despite the 57x fewer out-changes: once each change was cheap, the
+count stopped mattering much. It changes the fixed point slightly
+(pass 1 EntrySets 3,819 vs 3,821), as any reordering of an
+order-sensitive union does (ifa/147).
+
+**The rest of the 1,554 s** is ~690 s after FA: clone, 37 MB of
+emitted C, and the C compile. Not yet profiled.
+
+**Sweep** `check__default__95f22d8d+5b37a30a` (the four fixes plus
+deferral, guard unchanged) against `check__default__7176ad62+6c65e828`:
+no compile, run or stdout verdict changes, except othello3 1 -> 124,
+because the guard no longer stops it before the 400 s cap. EntrySets
++0.22% (31,166 -> 31,235) and CreationSets +0.24% over 76 programs, both
+directions (pygmy +47 / +269, mastermind2 +20 ESs; sudoku5 -6, life -4),
+consistent with a reordering of an order-sensitive union and not a
+precision change. Warnings -2 in softrender, -1 in tictactoe.
+
+## The stall guard was wrong
+
+closed/057's root cause was UNBOUNDED ENTRYSET MINTING (`Fun::ess`
+growing without limit). The within-pass guard counts minting as progress,
+so it cannot catch that runaway; what it does catch is a long pass that
+mints nothing. othello3's pass 2 reaches its last EntrySet (4,830) at
++2 s and ends at +136 s, so the guard fails a converging pass. It is also
+wall-clock, so its verdict depends on the machine. Its first version read
+`fa->ess.n`, frozen within a pass, so it was a flat 120 s cap: neither
+version ever measured what its comment claims. Nothing in the test suite
+depends on it (`make test` and the IR phases never trip it).
+
+Deleted 2026-10-09, with `fa_es_minted`. A within-pass runaway now runs
+to the caller's timeout instead of failing with a diagnostic; the
+cross-pass guards (`IFA_STALL_LIMIT`, the pass cap) are unaffected.
+
 ## Directions (not chosen)
 
-Making each update cheaper will not bring pass 1 under the sweep's 400 s
-compile cap; the number of updates is the problem.
+This section predates the prototype. Its premise, that the number of
+updates was the problem and making each one cheaper would not help, was
+wrong: the per-update costs above were most of it, and deferral, which
+attacks the count, was worth 7-19%. What remains is the confluence itself,
+the post-FA ~690 s, and FA's ~860 s against a 400 s cap.
 
 - **Remove the confluence.** The list iterator is the most visible one,
   but `len`, `join` and the comparisons show the same pattern, so a

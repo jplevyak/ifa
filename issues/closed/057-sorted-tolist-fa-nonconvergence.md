@@ -409,6 +409,13 @@ has grown since the last check; if it has, reset a stall clock. If
 cleanly with a diagnostic pointing at this issue, instead of
 continuing to churn.
 
+**Deleted 2026-10-09
+([186](../186-FA-pass-one-confluence-through-shared-builtins.md)).** It
+could not catch this issue's runaway, which minted EntrySets without
+bound and so kept resetting the clock. What it did catch was a long pass
+that mints nothing: it failed othello3, which converges. The cross-pass
+guards (`IFA_STALL_LIMIT`, the pass cap) remain.
+
 **Correction (added after root-causing, see above): `fa->ess.n`
 does not actually reflect live progress within a pass** — it's a
 snapshot only refreshed by `complete_pass()`, which can't run until

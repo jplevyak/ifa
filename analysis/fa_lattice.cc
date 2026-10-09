@@ -349,6 +349,20 @@ AType *type_union(AType *a, AType *b) {
     r = b;
     goto Ldone;
   }
+  // ifa/186: one operand contained in the other is the common case (a flow
+  // edge re-asserted onto an AVar that already holds its source), and the
+  // general path below builds two diffs and a result, each the size of the
+  // union, to find that out. Both operands are canonical, so the larger one
+  // is the union, as it is for a == b above.
+  {
+    AType *big = a->sorted.n >= b->sorted.n ? a : b, *small = big == a ? b : a;
+    bool sub = true;
+    for (CreationSet *x : small->sorted) if (!big->set_in(x)) { sub = false; break; }
+    if (sub) {
+      r = big;
+      goto Ldone;
+    }
+  }
   {
     AType *ab = type_diff(a, b);
     AType *ba = type_diff(b, a);
@@ -384,6 +398,36 @@ AType *type_diff(AType *a, AType *b) {
 Ldone:
   a->diff_map.put(b, r);
   return r;
+}
+// ifa/186: type_diff(...type_diff(a, bs[0])..., bs[n-1]) in one pass. A
+// chain of diffs canonicalizes and memoizes every intermediate, each the
+// size of `a`; for a send with hundreds of dispatch edges that was the whole
+// cost of collecting argument violations. Removing members of a canonical
+// type never makes it rebuild, so the chain is a filter: drop each member
+// of `a` that any b covers, by type_diff's own rule.
+AType *type_diff_all(AType *a, Vec<AType *> &bs) {
+  Vec<AType *> live;
+  for (AType *b : bs) if (b && b != fa->type_world.bottom_type) live.set_add(b);
+  if (!live.n) return a;
+  if (live.n == 1) for (AType *b : live) if (b) return type_diff(a, b);
+  Vec<CreationSet *> abstract;  // members of some b with no defs, as type_diff's subsumption test
+  for (AType *b : live) if (b)
+    for (CreationSet *bb : b->sorted) if (!bb->defs.n) abstract.set_add(bb);
+  AType *r = new AType();
+  bool changed = false;
+  for (CreationSet *aa : a->sorted) {
+    bool covered = false;
+    if (aa->defs.n)
+      for (AType *b : live) if (b && b->set_in(aa)) { covered = true; break; }
+    if (!covered)
+      for (CreationSet *bb : abstract) if (bb && subsumed_by(aa->sym, bb->sym)) { covered = true; break; }
+    if (covered)
+      changed = true;
+    else
+      r->set_add(aa);
+  }
+  if (!changed) return a;
+  return type_cannonicalize(r);
 }
 AType *type_intersection(AType *a, AType *b) {
   // Issue 033: a null filter (a Map<MPosition*,AType*>::get() miss)

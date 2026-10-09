@@ -116,7 +116,8 @@ AVar::AVar(Var *v, void *acontour)
       gates_flow(0),
       widen_constants(0),
       escape(ES_Escape),  // Phase 1: conservative top
-      needs_fat(0) {
+      needs_fat(0),
+      in_flow_worklist(0) {
   id = fa->avar_id++;
 }
 

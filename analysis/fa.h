@@ -436,8 +436,11 @@ class AVar : public gc {
   // codegen (in a later step) to choose a fat-pointer
   // representation `{tag, ptr}` for the corresponding Var.
   uint needs_fat : 1;
+  // ifa/186: queued to push its `out` to `forward` (see propagate_out_change).
+  uint in_flow_worklist : 1;
   Accum<AVar *> arg_of_send;
   LINK(AVar, send_worklist_link);
+  LINK(AVar, flow_worklist_link);
 
   AVar(Var *v, void *acontour);
 };
@@ -814,6 +817,10 @@ class FA : public gc {
   Que(AEdge, edge_worklist_link) edge_worklist;
   Que(AVar, send_worklist_link) send_worklist;
   Que(EntrySet, es_worklist_link) es_worklist;
+  // ifa/186: AVars whose `out` changed and has not yet been pushed to
+  // `forward`. Used only while defer_flow is set (analyze_to_convergence).
+  Que(AVar, flow_worklist_link) flow_worklist;
+  bool defer_flow = false;
   Vec<EntrySet *> entry_set_done;
   Vec<ATypeViolation *> type_violations;
 
@@ -992,6 +999,7 @@ void fa_sorted_type_violations(Vec<ATypeViolation *> &src, Vec<ATypeViolation *>
 AType *type_cannonicalize(AType *t);
 AType *type_cannonical_find(Vec<CreationSet *> &css);  // never inserts or GC-allocates; see make_AType
 AType *type_diff(AType *, AType *);
+AType *type_diff_all(AType *, Vec<AType *> &);
 AType *type_intersection(AType *, AType *);
 AType *type_union(AType *a, AType *b);
 void log_var_types(Var *, Fun *);
