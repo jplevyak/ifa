@@ -2031,6 +2031,20 @@ static bool emit_send_clone(EmitCtx &ctx, PNode *pn) {
     return true;
   }
 
+  // A copy whose SOURCE is not one record type -- a union of same-class
+  // CreationSets, original and copies (issues/029) -- has no compile-time
+  // size. Copy the allocation's run-time size, as cg.cc does
+  // (`_CG_prim_copy_any`). Sizing it from the union's struct copied 16 of
+  // TreeNode's 168 bytes in genetic2's __deepcopy__ and left its method
+  // slots NULL, so `__str__` on a copied genome called address 0.
+  if (pn->prim->index == P_prim_copy &&
+      (!src_var->type || src_var->type->type_kind != Type_RECORD)) {
+    llvm::Type *ptr_ty0 = llvm::PointerType::getUnqual(*TheContext);
+    llvm::Function *fn = get_runtime_helper("_CG_prim_copy_any", ptr_ty0, { ptr_ty0 });
+    llvm::Value *res = Builder->CreateCall(fn, { src }, cg_get_string(dst_var) ? cg_get_string(dst_var) : "copy");
+    put_result(ctx, dst_var, res);
+    return true;
+  }
   // Compute size of dst's underlying struct.
   llvm::StructType *dst_struct =
       sym_to_llvm_struct(dst_var->type);
