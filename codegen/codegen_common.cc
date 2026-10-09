@@ -399,9 +399,22 @@ void cg_build_new_to_val_map(FA *fa) {
         // the behaviour the note above records -- recomputing
         // UNCONDITIONALLY (leaving slot = -1) regressed
         // poly_dispatch_low/high, where this lookup misses.
+        //
+        // ifa/187: and after clone() that struct is the CONCRETE type,
+        // `cs->type`, not `cs->sym`. `cs->sym` can be the unspecialized
+        // class, whose method members are never emitted and so are never
+        // live: softrender's Vector4 CreationSets have `cs->sym` =
+        // Vector4 (no live `add`) and `cs->type` = the clone that holds
+        // `add` at e14, so they registered nothing, and their
+        // constructors stored no `add`. The C backend hid it by also
+        // storing the method into the prototype that every instance
+        // copies; the LLVM backend installs slots only from this map, and
+        // the dispatch called through NULL. The ancestry test above stays
+        // on `cs->sym`: it is about the class, not its layout.
+        Sym *ct = cs->type ? cs->type : cs->sym;
         int slot = -1;
-        for (int k = 0; k < cs->sym->has.n; k++)
-          if (cs->sym->has[k] && cs->sym->has[k]->name == method_name && cg_field_live(cs->sym, k)) { slot = k; break; }
+        for (int k = 0; k < ct->has.n; k++)
+          if (ct->has[k] && ct->has[k]->name == method_name && cg_field_live(ct, k)) { slot = k; break; }
         if (slot < 0 && !self_is_union) slot = direct_slot;
         if (slot < 0) {
           if (dbg_slot)
