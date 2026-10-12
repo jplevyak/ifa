@@ -92,6 +92,20 @@ verdict regressed. Probe: `IFA_DBG_NUMSPLIT` (1 = splits and candidates,
 Still open: the CS-side mix (record fields and container elements, which
 coercion also annotates), and the use-sensitive half below.
 
+**A corpus case of the CS-side mix (2026-10-12): tictactoe.** Its board
+rows (`self.__board = [edge * [0] ...]`, written with player ints) and its
+`scores` rows (`[self.edge * [0] ...]` in `makeAImove`, then `+= 15 *
+sig(...)`, floats) are both `[0]` literals repeated by `list.__mul__`,
+which returns a list merged from its receiver's CreationSet. Under
+start-merged identity the two literals share that CreationSet, so the
+board's element is `{int64, float64}` and coercion widens it: the board
+prints `2.0 | 1.0 | ...` where CPython prints `2 | 1 | ...`
+(`tictactoe_check.py`). The scores cells genuinely hold `0` then a float,
+so they must still be coerced; the board must not. Dropping
+`elem_irrepresentable`'s `!all_num` exclusion alone was tried here too and
+changed nothing (51 warnings, same output), so the CS-side demand does not
+reach this CreationSet through that predicate either.
+
 ## The plan: coercion's failure-to-be-exact is the demand
 
 Coercion knowing it is about to change a value's representation IS
