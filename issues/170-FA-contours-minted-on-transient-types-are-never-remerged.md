@@ -186,8 +186,65 @@ first version misread, and none was answered with hysteresis:
 
 **Still open:** step 2's msp_ss check (`reroute_uncovered_edges`, from
 ifa/178's fix 2, already re-takes stale routes at quiescence and may cover
-it), and step 3, which merges equal CreationSets, the analogue of this for
-data.
+it), and step 3, which merges equal CreationSets. Step 3 is blocked; see
+below.
+
+## Step 3 tried (2026-10-13): blocked by two splitters that act on facts
+
+`merge_equivalent_creation_sets` (`PYC_CSMERGE`, **default 0**, fa.cc) is the
+data-side counterpart of step 1. It runs after the EntrySet merge, on a quiet
+pass, and merges two same-class CreationSets when all of these hold:
+
+- every member, the element, and the arity have the same converged type;
+- no member is coerced, and setter classes are the same;
+- neither CreationSet carries a live demand;
+- no ledger decision made or routed into either one this pass.
+
+The younger one's creation points (`defs`) are re-pointed at the older through
+`cs_map`, along with ledger `cs_product`s and the csshape canon.
+`PYC_CSMERGE=2` only counts the pairs, and `IFA_DBG_CSMERGE` logs them.
+
+**Census.** At convergence there are 70 pairs on bh (57 closures, 6 `Vec3`,
+then `range`, `list` and others) and 25 on voronoi (20 closures, 3 `range`).
+Closures are excluded, because `partial_application` needs exactly one
+creation point per closure CreationSet: that def supplies the call's
+argument names. With the first version, bh and voronoi aborted there.
+
+**The stop condition fired twice, and neither time on a demand.**
+
+1. **`split_css`, the default setter split.** Merged pairs were split straight
+   back by SETTER / MARK_SETTER on the next pass, to the pass cap (voronoi
+   11 → 102 passes, bh 36 → 102). Its setter classes are singletons
+   (ifa/157), so it separates two creation points whenever the writes into
+   what they allocate differ at all. The creation points' own `setters`
+   cannot be asked at merge time: they are computed only for the setter
+   stage's starters, so a CreationSet with one creation point has none (the
+   measured value was `-1`). Comparing the members' writers directly, which
+   is what `compute_setters` walks, gives **zero** mergeable pairs on bh and
+   voronoi. Two CreationSets made in different contours are written by
+   different writes, so under this criterion no merge can stand.
+2. **Route 4, under `PYC_SETTERMIN=1`.** That flag's setter key is
+   type-shaped, so the merge tests the same key (`cs_writers_repr_key`). bh
+   then merges 129 times and voronoi 50, and both again run to the pass cap.
+   This time `CS_DEF_PARTITION` re-splits each pair:
+   `[csdefsplit] ENTER candidates=28 (confluence=28 demand=0)` then
+   `cs=1253 sym=StopIteration KEY sets=21 defs=2 groups=2`. The merged
+   CreationSet was nominated by a type CONFLUENCE, not a demand, and route 4
+   partitioned its two creation points by assign set (who writes which
+   member). Its `demanded` set gates only EntrySet splits (`ESBLOCK`), never
+   its own CreationSet partition.
+
+Both re-splitters key on writer identity rather than on what the types are,
+and neither is asked by a demand. That is ifa/146's subject (the setter
+split's missing type condition), and route 4's confluence nomination belongs
+on the same list. A CreationSet merge cannot stand while either one runs, and
+adding a guard against the re-split would be the hysteresis this issue
+forbids. **Prerequisite for step 3:** make both splits demand-only, or give
+them a type condition. The merge code stays off by default until then; it is
+what this measurement ran.
+
+Output was unchanged in every arm measured (bh, voronoi stdout identical
+apart from `TIME`).
 
 ## Verification
 

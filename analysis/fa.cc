@@ -12777,6 +12777,190 @@ static uint es_state_hash(EntrySet *es) {
   return merged ? 1 : 0;
 }
 
+// ifa/170 step 3: the same, for data contours. Two CreationSets of one
+// class whose converged CONTENT agrees -- every member, the element, the
+// arity -- carry no distinction anything could observe, so they are
+// compatible and one is retired. This is the split-back direction of
+// PYC_CSREJOIN (which only re-joins never-split mints). bh's Vec3 was 18 of
+// 20 contours byte-identical across all 29 members before route 4's fan was
+// removed (ifa/144); nothing collapsed them.
+//
+// The content is compared by POINTER, so a container of `Vec3#a` and one of
+// `Vec3#b` differ until the Vec3s themselves merge. That is the intended
+// order: leaves first, and the containers on a later quiet pass.
+//
+// Same conditions as the EntrySet merge, for the same measured reasons: no
+// violation outstanding, no coerced member, same setter classes, no live
+// demand on either (an irrepresentable element, a numeric mix), and not a
+// product a ledger decision made or routed into on this pass.
+//
+// Merging re-points each of the younger's creation points (`defs`, through
+// `cs_map`, the way split_css moves them) at the older; the next pass
+// re-derives the survivor's content from all of them.
+extern std::map<std::string, CreationSet *> cselem_shape_canon;  // defined with the csshape route
+static int csmerge_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_CSMERGE"); e = v ? atoi(v) : 0; }
+  return e;
+}
+static AVar *cs_member(CreationSet *cs, AVar *of) { return of && of->var ? of->var->avars.get(cs) : nullptr; }
+static bool cs_av_equal(AVar *a, AVar *b) {
+  if (!a || !b) return a == b;
+  if (a->out != b->out) return false;
+  if (a->num_coerce || b->num_coerce) return false;
+  if (!a->setters != !b->setters) return false;
+  if (a->setters && !same_eq_classes(a->setters, b->setters)) return false;
+  return true;
+}
+static bool cs_state_equal(CreationSet *x, CreationSet *y) {
+  if (x->sym != y->sym || x->static_arity != y->static_arity || x->no_static_arity != y->no_static_arity) return false;
+  if (x->clone_for_constants != y->clone_for_constants || x->tuple_able != y->tuple_able) return false;
+  if (x->vars.n != y->vars.n) return false;
+  for (AVar *a : x->vars) {
+    AVar *b = cs_member(y, a);
+    if (!b || !y->vars.in(b) || !cs_av_equal(a, b)) return false;
+  }
+  if (x->added_element_var != y->added_element_var) return false;
+  if (x->added_element_var && !cs_av_equal(get_element_avar(x), get_element_avar(y))) return false;
+  return true;
+}
+static uint cs_state_hash(CreationSet *cs) {
+  uint h = cs->vars.n * 7 + (uint)cs->static_arity;
+  for (AVar *a : cs->vars) h = h * 31 + (uint)(a && a->out ? a->out->hash : 0);
+  if (cs->added_element_var) {
+    AVar *e = get_element_avar(cs);
+    h = h * 31 + (uint)(e && e->out ? e->out->hash : 0);
+  }
+  return h;
+}
+// Would split_css separate X's and Y's creation points once merged? It
+// partitions a CreationSet's creation points by SETTER CLASS, and the classes
+// are singletons (ifa/157, measured on plcfrs: 3,704 classes, none with two
+// members), so it separates two creation points whenever the writes into
+// what they allocate differ at all. Those writes are the members' backward
+// sources -- what compute_setters walks. So compare them directly: merge only
+// when the same writes feed every member of both, as one shared constructor
+// contour writing both does.
+//
+// The setters themselves cannot be asked: they are computed only for the
+// setter stage's starters, so a CreationSet with one creation point has none
+// at merge time. Measured on voronoi: a `range` and a `StopIteration` CS were
+// merged on every quiet pass and SETTER / MARK_SETTER split them straight
+// back, to the pass cap (10 -> 101 passes).
+static void cs_writers(AVar *a, Vec<AVar *> &w) {
+  if (!a) return;
+  for (AVar *x : a->backward)
+    if (x && x->contour_is_entry_set && x->out && (x->out->type->n || (nilstore_enabled() && x->out->n))) w.set_add(x);
+}
+static bool cs_same_writers(AVar *a, AVar *b) {
+  Vec<AVar *> wa, wb;
+  cs_writers(a, wa);
+  cs_writers(b, wb);
+  if (wa.set_count() != wb.set_count()) return false;
+  for (AVar *x : wa) if (x && !wb.set_in(x)) return false;
+  return true;
+}
+// PYC_SETTERMIN's key (setter_repr_key) over all of a CreationSet's
+// writers: 0 pointer-shaped, 1 mixed, else the one basic type written.
+static uintptr_t cs_writers_repr_key(CreationSet *cs) {
+  Vec<AVar *> w;
+  for (AVar *a : cs->vars) cs_writers(a, w);
+  if (cs->added_element_var) cs_writers(get_element_avar(cs), w);
+  Vec<Sym *> basics;
+  int nonbasic = 0;
+  for (AVar *s : w)
+    if (s && s->out && s->out->type)
+      for (CreationSet *c : s->out->type->sorted) {
+        if (!c || !c->sym || c->sym == sym_nil_type) continue;
+        if (Sym *b = to_basic_type(c->sym->type)) basics.set_add(b);
+        else ++nonbasic;
+      }
+  if (!basics.set_count()) return 0;
+  if (basics.set_count() == 1 && !nonbasic)
+    for (Sym *b : basics) if (b) return (uintptr_t)b;
+  return 1;
+}
+static bool cs_setter_compatible(CreationSet *x, CreationSet *y) {
+  if (settermin_enabled()) return cs_writers_repr_key(x) == cs_writers_repr_key(y);
+  for (AVar *a : x->vars)
+    if (!cs_same_writers(a, cs_member(y, a))) return false;
+  if (x->added_element_var && !cs_same_writers(get_element_avar(x), get_element_avar(y))) return false;
+  return true;
+}
+static bool cs_demanded(CreationSet *cs) {
+  if (cs_elem_irrepresentable(cs)) return true;
+  Vec<AVar *> mix;
+  cs_numeric_mix_content(cs, mix);
+  return mix.n != 0;
+}
+[[nodiscard]] static int merge_equivalent_creation_sets() {
+  int mode = csmerge_enabled();
+  if (!mode) return 0;
+  if (fa->type_violations.set_count()) return 0;
+  const bool dbg = getenv("IFA_DBG_CSMERGE") != nullptr;
+  std::set<CreationSet *> asserted;
+  for (int b = 0; b < fa->split_ledger.n; b++)
+    for (auto *c = fa->split_ledger.v[b].value.head; c; c = c->cdr) {
+      SplitDecision *d = c->car;
+      if (d && d->cs_product && (d->pass_made == analysis_pass || d->last_route_pass == analysis_pass))
+        asserted.insert(d->cs_product);
+    }
+  // Closures are excluded: a closure CreationSet is a partial application of
+  // its ONE creation point, whose node supplies the call's argument names
+  // (partial_application asserts `cs->defs.n == 1`). Two closures with equal
+  // content but different defs are not the same application.
+  std::map<Sym *, std::vector<CreationSet *>> by_sym;
+  for (CreationSet *cs : fa->css)
+    if (cs && cs->sym && cs->defs.n && cs->sym != sym_closure &&
+        !(cs->sym->abstract_type && cs == cs->sym->abstract_type->v[0]))
+      by_sym[cs->sym].push_back(cs);
+  int merged = 0, pairs = 0;
+  for (auto &sv : by_sym) {
+    std::vector<CreationSet *> &v = sv.second;
+    if (v.size() < 2) continue;
+    std::sort(v.begin(), v.end(), [](CreationSet *a, CreationSet *b) { return a->id < b->id; });
+    std::vector<uint> h(v.size());
+    for (size_t i = 0; i < v.size(); i++) h[i] = cs_state_hash(v[i]);
+    std::vector<bool> gone(v.size(), false);
+    for (size_t i = 0; i < v.size(); i++) {
+      if (gone[i]) continue;
+      CreationSet *X = v[i];
+      if (cs_demanded(X) || asserted.count(X)) continue;
+      for (size_t j = i + 1; j < v.size(); j++) {
+        if (gone[j] || h[j] != h[i]) continue;
+        CreationSet *Y = v[j];
+        if (!cs_state_equal(X, Y) || cs_demanded(Y) || asserted.count(Y)) continue;
+        if (!cs_setter_compatible(X, Y)) continue;
+        ++pairs;
+        gone[j] = true;
+        if (dbg)
+          fprintf(stderr, "[csmerge] p=%d sym=%s cs=%d -> cs=%d defs=%d%s\n", analysis_pass,
+                  X->sym->name ? X->sym->name : "?", Y->id, X->id, Y->defs.n, mode == 2 ? " (census)" : "");
+        if (mode == 2) continue;
+        Vec<AVar *> moving;
+        for (AVar *d : Y->defs) if (d) moving.add(d);
+        for (AVar *d : moving) {
+          if (d->cs_map && d->cs_map->get(Y->sym) == Y) d->cs_map->put(Y->sym, X);
+          X->defs.set_add(d);
+        }
+        Y->defs.clear();
+        for (int b = 0; b < fa->split_ledger.n; b++)
+          for (auto *c = fa->split_ledger.v[b].value.head; c; c = c->cdr)
+            if (c->car && c->car->cs_product == Y) c->car->cs_product = X;
+        // The csshape route reuses its canon's CreationSet for a new site;
+        // left naming Y, it would feed the retired contour again.
+        for (auto &kv : cselem_shape_canon)
+          if (kv.second == Y) kv.second = X;
+        ++merged;
+        log(LOG_SPLITTING, "MERGE CS %d into %d (%s) defs %d\n", Y->id, X->id, X->sym->name ? X->sym->name : "",
+            moving.n);
+      }
+    }
+  }
+  if (dbg && pairs) fprintf(stderr, "[csmerge] p=%d pairs=%d merged=%d\n", analysis_pass, pairs, merged);
+  return merged ? 1 : 0;
+}
+
 [[nodiscard]] static int run_split_stages() {
   dbg_es_per_fun();
   int analyze_again = 0;
@@ -13327,6 +13511,7 @@ static uint es_state_hash(EntrySet *es) {
   // pass every follow-up has happened, so contours still identical then
   // have nothing between them.
   if (!analyze_again) analyze_again = merge_equivalent_entry_sets();
+  if (!analyze_again) analyze_again = merge_equivalent_creation_sets();
   // ifa/issues/074: back to "no stage running". Without this, every
   // contour/CreationSet the NEXT pass's flow creates was attributed to
   // whichever stage happened to run last -- which is what made the
