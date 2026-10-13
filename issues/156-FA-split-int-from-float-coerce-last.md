@@ -106,6 +106,248 @@ so they must still be coerced; the board must not. Dropping
 changed nothing (51 warnings, same output), so the CS-side demand does not
 reach this CreationSet through that predicate either.
 
+**Why route 4 misses it (measured 2026-10-12, `IFA_DBG_CSDEFSPLIT` +
+`IFA_DBG_CSVARS=list` on `tictactoe_check.py`).** Three contours, and the
+blocker is four layers deep:
+
+| cs | what | defs | element |
+| --- | --- | --- | --- |
+| 1320 | the `[0]` literal (+ `set([0])` in doRow) | 6 | `int64` |
+| 1327 | the rows: `edge * [0]`'s result | **1** (`_CG_list_mult` in `list.__mul__` es=78) | `float64` (coerced; writers: `__setitem__` es=246 int, es=244/365 float) |
+| 1812 | the outer lists, board's and `scores` | 2 (`__init__`, `makeAImove`) | `list#1327` |
+
+1. **cs=1327 has one creation point**, because both rows come out of one
+   `list.__mul__` contour. Route 4 declines `single creation point` every
+   pass. The cure is ifa/129's third clause (`split_es_by_call_site`), and
+   three things stop it:
+2. **The demand is excluded twice.** `PYC_CSCALLSITE` is 0 by default, and
+   `elem_irrepresentable`'s `!all_num` rejects `{int64, float64}`. Once
+   `fa_coerce_numeric_confluences` annotates the element (`num_coerce`), it
+   reads `{float64}` and the mix is not visible to any later pass.
+3. **The site is three calls deep with one in-edge each:** `edge * [0]` →
+   `int.__mul__` (es=74, the only contour with two callers) →
+   `list.__rmul__` → `list.__mul__` es=78. With both gates forced open
+   (`PYC_CSCALLSITE=1` and the exclusion dropped), the result is
+   `es=78 fun=__mul__ DECLINED edges=1`. A prototype that climbs with
+   `es_climb_to_choice` reaches es=74 and then fails with
+   `DECLINED demand: all 2 edge(s) one signature`.
+4. **The signatures are the same because every assign set's backflow reaches
+   both callers**, and the owner rung (`split_owner_of_demanded`, which
+   would separate cs=1812 first) is blind for the same reason
+   (`owner cs=1812 defs=2 groups=1 | 1011 1011`). A path trace of the owner
+   walk shows the leak:
+
+   ```
+   board int write: __setitem__ es=246 self <- assign:31 `self.__board[row]`
+     <- list.__getitem__ es=276: LOAD of its `self` formal's element (-> track 1812)
+     <- es=276 `self` formal <- EVERY caller of es=276, including
+        makeAImove's `scores` (av7482..) -> def av7415, scores' outer list
+   ```
+
+   `list.__getitem__` has **one contour for both receivers**, because
+   board and `scores` are both `list#1812`. The walk goes into it through
+   the board call's return and comes out of its formal to every caller.
+   That path cannot happen at run time: the walk is not call-matched. The
+   same walk in `build_cs_flow_graph` then crosses cs=1812's shared
+   element (two `append` writers) on the way to `int.__mul__`'s two
+   results, which is why the call-site signature cannot tell the edges
+   apart either.
+
+So **the first fix is not a demand predicate**. Turning on the demand
+(steps 2–3) is necessary but buys nothing until the owner walk is
+call-matched: a walk that enters a shared callee through edge E's return
+must leave through E's actual. With that fix, the board writer reaches only
+`__init__`'s outer list. The owner rung then splits cs=1812, which is a
+CS-side partition with a type-shaped key (int writes vs float writes). After
+that, the call-site split climbs `int.__mul__` → `__rmul__` → `__mul__` one
+level per pass, and cs=1327 gets two creation points that route 4 can
+partition. `scores`' rows keep `{int, float}` (`0` then floats, a real
+change over time) and are coerced as before. shedskin reaches the same
+answer through `ifa_split_no_confusion`; see its `list_comp_0` /
+`list_comp_2` in `examples/tictactoe/tictactoe.cpp`.
+
+**The call-matched walk landed (2026-10-12): `PYC_CALLMATCH`, default 1.**
+`callctx_step` in `fa.cc` tracks a stack of the calls the walk has
+entered:
+- stepping from a caller's result back to the callee's return pushes that
+  `AEdge`;
+- stepping from a formal back to an edge's `filtered` argument must match
+  the top of the stack;
+- a heap, global or unrecognized cross-contour step forgets the stack.
+
+Results:
+
+- **Bit 1 (owner walk), on: the outer lists separate.** tictactoe's
+  `cs=1812` becomes board-only (`__init__`), scores' outer list becomes
+  `cs=1917` (`makeAImove`), and the coercion warnings go from 51 to 48.
+  `make test` is 439/0 on both backends.
+- **Bit 2 (`build_cs_flow_graph`'s walk), off.** It breaks
+  `tests/listcomp_element_separation{,_startmerged}.py` and
+  `splitter_mark_type.py`, each with `illegal call argument type ... B`.
+  ESBLOCK (`find_blocking_es`) finds the shared contour that the
+  context-insensitive walk cannot see through, and splits it. Once the walk
+  is matched, route 4 partitions the CreationSet first (p=3 rather than
+  p=4), `append` is never split, and its one value formal writes `{A, B}`
+  into both halves. Bit 2 can be turned on once the shared contour is split
+  by its own demand rather than as a side effect of a blind walk. On
+  tictactoe, bit 2 alone changes nothing.
+
+**What still blocks tictactoe's rows (cs=1327).** Steps 2–3 above, measured
+on top of bit 1 with the prototypes (`PYC_CSCALLSITE=1`, the `!all_num`
+exclusion dropped, a climb with `es_climb_to_choice`): the climb reaches
+`int.__mul__` es=74 and still declines with `all 2 edge(s) one signature`.
+The leak is now on the HEAP side. Both outer lists are filled by one
+`list.append` contour (es=233, receiver `{1812, 1917}`). A flow-graph walk
+leaving 1812's element goes into that shared store, which forgets the
+context, and back to every `append` caller, including scores' list
+comprehension. Separating them needs the exit from a heap crossing
+RECEIVER-matched: the edge whose `self` actual holds the CreationSet the
+walk came out of. That is a type-shaped check (CreationSet membership), not
+provenance. It is the next step, together with bit 2.
+
+**Sweep, bit 1 (`check__default__fab67ca1+e1f1f856`, vs `d3499fb2+8fe3c3d2`).**
+No compile, run or stdout regression. hq2x's `NO` is its `TIME` line alone,
+and its CPython run only finished this time. tictactoe goes from 50 to 46
+warnings, ESS 390→371 and CSS 1340→1301. plcfrs drops 39 CSS and dijkstra2
+22. sudoku3 rises to 431 ESS and 2148 CSS (from 413 and 1861), and still
+matches. softrender gains 1 warning. **kmeanspp goes from 8 to 40 warnings**
+(its CPython run times out, so its stdout is unverifiable). That is a real
+precision loss, and it is root-caused as follows:
+
+- Mode 0 ends with three Point contours. The `generate_points` and `lloyd`
+  Points separate when a SETTERS split of `__new__` (`[ses] av 4439 es 84
+  nedges=2 do=1`, then `SPLIT CS 1371 -> 1656` by starter set) follows a p=3
+  owner split of the outer lists. Mode 1 owner-splits the lists at p=2 on
+  different signatures, and that setter confluence never appears. All
+  Points stay in one contour, so `cc.x = 0` (a genuine, temporal int in a
+  cluster centre) widens every point's `x`.
+- Every step bit 1 refuses was traced (`IFA_DBG_CALLMATCH`, 1600 refusals),
+  and every one is a correct refusal. Each exits a shared `append`,
+  `__getitem__` or `__iter__` contour through a call other than the one it
+  entered by; even the `__next__ -> __getitem__` pairs are two different
+  `__next__` contours (es321 vs es340/es341). So mode 0's separation rested
+  on paths no execution takes. It also came through the setter splitter,
+  whose starters carry no demand (`fa.cc`, `split_for_setters`).
+- The demand-driven route does not exist yet. Point `cs=1371` has one
+  creation point (`__new__` es=84). Its demand is a MEMBER `{int, float}`.
+  The third clause only looks at an ELEMENT, behind `elem_irrepresentable`'s
+  `!all_num`, so it never reaches the call-site rung:
+  `PYC_CSCALLSITE=1` on bit 1 still gives 40 warnings and never names
+  Point. This is tictactoe's step 2–3 again: a numeric union on a
+  single-creation-point contour has to climb to the contour whose callers
+  separate it. (That paragraph also guessed that no heap leak stood in
+  kmeanspp's way. Wrong: see below.)
+
+## The numeric-mix rung landed (2026-10-12): tictactoe matches CPython
+
+`split_css_by_defs`, in the `defs.n < 2` branch, after the owner split. It is
+`PYC_CSNUMSPLIT` (default 1) and has four parts. Each one was found by the
+measurement that the previous part failed.
+
+1. **Demand: `cs_numeric_mix_content`.** A content channel (member or
+   element) whose WRITERS carry both an int and a float. It reads the
+   writers, not the channel, because by the time the split stages run,
+   coercion has already widened the channel itself to float64. It is a level
+   question on converged types (ifa/157).
+2. **Parts: a flow graph over the mixed channels ONLY**
+   (`build_cs_flow_graph_over`). The full graph keys every write into every
+   member by type, so an int into `group` beside an int/float `x` puts both
+   callers on the same key. The rung climbs to the nearest contour with a
+   choice (`es_climb_to_choice`) and splits it with `split_es_by_call_site`.
+   That is the third clause's machinery, with a numeric demand instead of an
+   irrepresentable element.
+3. **The walk is call-matched and receiver-matched** (`PYC_CALLMATCH` bit 4,
+   default on; the default is now 5). Three defects in the matcher came out
+   of tracing kmeanspp:
+   - **Receiver frames.** A step from a container's content into the value
+     written there pushes {L, receiver}. The walk may leave the writer's
+     contour only through a call whose argument at the receiver's formal
+     position holds L, and the receiver moves to that actual. Without this,
+     a walk out of one list's element came back through the shared
+     `append -> __setitem__` to every list's comprehension.
+   - **Filtered → actual kept the context.** That step changes contour, so it
+     used to fall into "unrecognized, reset", and every match after the first
+     exit was lost.
+   - **Stale return links are refused.** When an EntrySet is split, its
+     in-edge is re-pointed to the new contour, but the caller result's flow
+     link to the OLD contour's return stays in `backward`. Measured: e641
+     es198→es249 (split from es85), and av9502 still linked es85's return.
+     No execution returns through such a link. The index now also covers
+     `out_edges`, so a re-pointed edge is still found.
+4. **When every caller lands on the same keys, backtrack the receiver union**
+   (`split_es_at_union_origin`). The walk records each read through a
+   receiver holding several containers of one class. kmeanspp: `lloyd`
+   indexes `cluster_centers`, whose type was {points list, centres list},
+   because a comprehension's accumulator is `append`'s return, and one
+   `append` contour served both comprehensions. The union feeds itself, so
+   both callers' actuals already hold both lists. The backtrack therefore
+   signs each caller by the creation points its actual reaches WITH THE
+   CONTOUR HELD TERMINAL, as `split_blocking_es` does, not by its actual's
+   type. Then `append` splits (`[csunion] ... SPLIT es=88 fun=append`), and on
+   the next passes the call-site split separates the constructor and
+   `__new__`.
+
+The parts are type-shaped throughout: numeric kind per key, CreationSet
+membership of arguments, creation points as the objects being separated.
+None of these splits fires without the mix.
+
+**Two gates, both found by the first sweep (`fab67ca1+b0d9c0ba`).**
+- **A PURE mix only**: the writers are int or float and nothing else. That
+  sweep failed to compile `go`: at pass 0, Board's `color` had writers
+  {None, tuple, UCTNode, int, float, str, Square}, which is start-merged
+  imprecision rather than a numeric mix. Splitting Board's `__new__` on it
+  left int/float unions in EntrySet formals, which coercion cannot repair
+  (`'self' has mixed basic types`). plcfrs's ESS 1483→1739 came from the
+  same cause.
+- **Only when no higher stage acted this pass** (`quiescent`), as the
+  field-mix demand already is, and for the same reason. On sunfish at pass
+  0, `__range_iter__.i`, `__dict_items_iter__._len` and a `_ReNode` contour
+  carrying other classes' members all read as int/float mixes. The rung
+  split `_ReNode`'s `__new__` for +21 ESS / +83 CSS and no verdict change.
+  kmeanspp, tictactoe and both tests are unchanged under the gate.
+
+**Sweep with both gates (`check__default__fab67ca1+3bb8922d`, vs
+`fab67ca1+e1f1f856`).** No compile, run or stdout regression. tictactoe's
+stdout now MATCHES CPython (warnings 46→8). kmeanspp is back to 8 warnings.
+softrender loses 1 warning. Contour changes are small and mixed: plcfrs
++22 ESS, sunfish +122 CSS, ant +23 ESS, linalg −25 ESS / −36 CSS, msp_ss
+−63 CSS, go −20 ESS.
+
+**Measured:**
+
+| | before (bit 1 only) | after |
+|---|---|---|
+| tictactoe warnings | 46 | 9 |
+| tictactoe stdout | `2.0` for `2` (NO) | **matches CPython** |
+| kmeanspp warnings | 40 (8 in mode 0) | 8 |
+
+kmeanspp's remaining 8 are genuine: a centre's `x` is reset to the int `0`
+and then accumulates floats, so one object holds both over time (`bh`'s
+case, AGENTS.md). Its points are now float-only, by demand, where mode 0 got
+there through the setter splitter.
+
+**Tests.** Both print CPython's answer with the rung, and the widened
+answer with `PYC_CSNUMSPLIT=0`.
+- `tests/numeric_member_split_by_caller.py`: kmeanspp's shape. Without the
+  rung it prints `0.0 2.0 4.0` for `0 2 4`.
+- `tests/numeric_rows_split_by_caller.py`: tictactoe's shape, `n * [0]`
+  rows. Without the rung it prints `2.0` for `2`. Its one `.check` warning
+  is the scores rows, which genuinely hold 0 and then floats.
+
+`make test`: 441/0 on both backends, all gates green.
+
+**Not reached yet: two lists in ONE CreationSet.** If the same test iterates
+with `for i, p in enumerate(points)` instead of indexing, both lists stay in
+one list contour (`cs=1224`, a creation point in each function, element
+`{Point}`). The owner walk reaches no owner: Point is read out of the
+`enumerate` tuple, and the tuple's def ends the walk. The numeric walk reads
+`cs=1224`'s element and leaves through both functions' `append`s, which is
+correct for that contour. Nothing type-shaped separates the two lists on
+that path, because their types are identical. Separating them needs a walk
+that knows WHICH creation point of `cs=1224` the receiver of a read came
+from: a points-to question on the heap, asked under the call context. That
+is the next step. Until then this shape keeps coercing.
+
 ## The plan: coercion's failure-to-be-exact is the demand
 
 Coercion knowing it is about to change a value's representation IS

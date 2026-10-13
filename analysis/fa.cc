@@ -8073,11 +8073,219 @@ static void cs_content_avars(CreationSet *cs, Vec<AVar *> &out) {
     if (v && v->out) out.add(v);
 }
 
+// CALL-MATCHED BACKWARD WALKS (ifa/156, tictactoe).
+//
+// The backflow walks below (`build_cs_flow_graph`'s paths and
+// `split_owner_of_demanded`'s reach) follow `AVar::backward`, which joins
+// a callee's return to EVERY caller's result and a callee's formal to EVERY
+// caller's actual. A walk that enters a shared contour through one call's
+// return and leaves through its formal therefore reaches the actuals of
+// calls it never came from -- a path no execution takes. On tictactoe the
+// board's int writes reach `scores`' outer list that way, through the one
+// `list.__getitem__` contour both receivers share, so every assign set
+// reaches every creation point and no partition can name the parts.
+//
+// So carry the stack of calls entered. A step from a caller's result back
+// to the callee's return (ENTER) pushes that AEdge; a step from a formal
+// back to an edge's `filtered` argument (EXIT -- filtered AVars are per
+// edge, see get_filtered) must match the top, and pops it. An empty stack
+// matches any edge: the walk started inside the callee, so every caller is
+// a real one. Anything else that changes contour -- a heap step through a
+// CreationSet's member or element, a global, an unrecognized cross-ES link
+// -- forgets the stack (any caller again), which can only over-approximate.
+// Deep stacks saturate the same way.
+//
+// PYC_CALLMATCH is a bit set over the three walks, default 5 (1 and 4):
+//
+//   1  split_owner_of_demanded. tictactoe: the board and `scores` outer
+//      lists (one CreationSet, `owner ... groups=1 | 1011 1011`) separate,
+//      and three of its 51 coercion warnings go.
+//   2  build_cs_flow_graph. NOT on by default, and not because it is wrong:
+//      route 4's ESBLOCK rung (find_blocking_es) exists BECAUSE this walk
+//      cannot see through a shared contour, and it is what splits that
+//      contour. Matched, the walk partitions the CreationSet directly, the
+//      shared contour is never split, and its one value formal keeps
+//      writing both element types into both halves --
+//      tests/listcomp_element_separation{,_startmerged}.py and
+//      splitter_mark_type.py then fail with `illegal call argument type
+//      ... B`, because `append` stays shared. Turning it on needs the
+//      shared contour split some other way first (ifa/156).
+//   4  the numeric-mix rung's flow graph (cs_numeric_mix_content, below),
+//      with RECEIVER matching on top. Default on: that walk is new, so no
+//      rung depends on its blindness.
+//
+// RECEIVER MATCHING. A walk that steps from a container's content back to a
+// value written into it has crossed the heap, and the call stack it carried
+// means nothing on the other side. What it does know is WHICH container: the
+// content AVar's CreationSet, L. The writer stores through a receiver AVar
+// (`x->container`), so a frame {L, receiver} replaces the stack, and an exit
+// from the writer's contour is allowed only through a call whose argument at
+// the receiver's formal position holds L. The receiver then moves to that
+// actual, and the next exit is checked the same way, until the walk reaches
+// the contour where the receiver is not a formal (it was allocated there,
+// and every caller of that contour is a real one). That is a CreationSet
+// membership test on the call's arguments -- type-shaped, not provenance.
+// tictactoe and kmeanspp both need it: their outer lists are filled through
+// one shared `append` -> `__setitem__` chain, and without it a walk out of
+// one list's element returns to every list's comprehension.
+static const int kCallMatchOwner = 1, kCallMatchFlowGraph = 2, kCallMatchNumeric = 4;
+static int callmatch_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_CALLMATCH"); e = v ? atoi(v) : (kCallMatchOwner | kCallMatchNumeric); }
+  return e;
+}
+// A frame is a CALL (e set: the edge entered through its return) or a
+// RECEIVER (e null: the container L the walk came out of, and the AVar
+// that holds it in the current contour).
+struct CallCtx {
+  CallCtx *up;
+  AEdge *e;
+  CreationSet *recv_cs;
+  AVar *recv;
+  int depth;
+};
+static const int kCallCtxMax = 8;
+static CallCtx *callctx_intern(CallCtx *up, AEdge *e, CreationSet *rcs, AVar *r) {
+  static std::map<std::tuple<CallCtx *, AEdge *, CreationSet *, AVar *>, CallCtx *> interned;
+  int d = up ? up->depth + 1 : 1;
+  if (d > kCallCtxMax) return nullptr;
+  CallCtx *&c = interned[{up, e, rcs, r}];
+  if (!c) c = new CallCtx{up, e, rcs, r, d};
+  return c;
+}
+static CallCtx *callctx_push(CallCtx *c, AEdge *e) { return callctx_intern(c, e, nullptr, nullptr); }
+// Edge lookups for the walk, rebuilt when the pass or the contour count
+// changes (a split mints contours, and with them edges).
+struct CallIndex {
+  int pass = -1, ness = -1;
+  std::map<AVar *, AEdge *> filtered;                      // filtered arg -> its edge
+  std::map<std::pair<AVar *, EntrySet *>, AEdge *> ret;  // (caller result, callee) -> edge
+};
+static CallIndex &callindex() {
+  static CallIndex ix;
+  if (ix.pass == analysis_pass && ix.ness == fa->ess.n) return ix;
+  ix.pass = analysis_pass;
+  ix.ness = fa->ess.n;
+  ix.filtered.clear();
+  ix.ret.clear();
+  for (EntrySet *es : fa->ess) {
+    if (!es) continue;
+    auto add = [&](AEdge *e) {
+      if (!e || !e->to) return;
+      form_Map(MapElemMPositionAVarPair, mp, e->filtered_args) if (mp->value) ix.filtered[mp->value] = e;
+      for (AVar *r : e->rets) if (r) ix.ret[{r, e->to}] = e;
+    };
+    for (AEdge *e : es->edges) if (e && e->to == es) add(e);
+    for (AEdge *e : es->out_edges) add(e);
+  }
+  return ix;
+}
+static void callmatch_refused(AVar *a, AVar *x, CallCtx *c, AEdge *here) {
+  if (!getenv("IFA_DBG_CALLMATCH")) return;
+  EntrySet *in = a->contour_is_entry_set ? (EntrySet *)a->contour : nullptr;
+  fprintf(stderr, "[callmatch] REFUSE x=%d a=%d in=%s here=e%d es%d(%s)->es%d", x->id, a->id,
+          in && in->fun && in->fun->sym && in->fun->sym->name ? in->fun->sym->name : "?", here->id, here->from->id,
+          here->from->fun && here->from->fun->sym && here->from->fun->sym->name ? here->from->fun->sym->name : "?",
+          here->to->id);
+  if (c->e)
+    fprintf(stderr, " top=e%d es%d->es%d\n", c->e->id, c->e->from->id, c->e->to->id);
+  else
+    fprintf(stderr, " recv cs=%d\n", c->recv_cs->id);
+}
+// The positions of `es`'s formals that the receiver `r` (an AVar of `es`)
+// is derived from, within `es`: the receiver of a store is often a local
+// computed from `self` (`tmp = merge_in(self, self)` in `list.append`).
+static void recv_formal_positions(EntrySet *es, AVar *r, CreationSet *L, Vec<MPosition *> &out) {
+  Vec<AVar *> seen;
+  Vec<AVar *> work;
+  seen.set_add(r);
+  work.add(r);
+  for (int i = 0; i < work.n && i < 64; i++)
+    for (AVar *y : work.v[i]->backward)
+      if (y && y->contour == es && y->out && y->out->type && y->out->type->set_in(L) && seen.set_add(y)) work.add(y);
+  form_Map(MapElemMPositionAVarPair, mp, es->args) if (mp->value && seen.set_in(mp->value)) out.add(mp->key);
+}
+// The context after stepping backward from `a` to `x` (x in a->backward).
+// Sets `ok` false when the step leaves through the wrong call.
+static CallCtx *callctx_step(AVar *a, AVar *x, CallCtx *c, bool &ok, int walk) {
+  ok = true;
+  if (!(callmatch_enabled() & walk)) return nullptr;
+  auto &filtered = callindex().filtered;
+  if (x->contour == a->contour) {
+    if (x->var && x->var->is_filtered) {
+      auto it = filtered.find(x);
+      if (it != filtered.end()) {
+        AEdge *E = it->second;
+        if (!c) return nullptr;
+        if (c->e) {
+          if (c->e != E) { ok = false; callmatch_refused(a, x, c, E); return nullptr; }
+          return c->up;  // EXIT through the call we entered by
+        }
+        // RECEIVER frame: leave only through a call that passes L where
+        // the receiver came in.
+        Vec<MPosition *> pos;
+        recv_formal_positions(E->to, c->recv, c->recv_cs, pos);
+        if (!pos.n) return nullptr;  // allocated here: every caller is real
+        for (MPosition *p : pos) {
+          AVar *act = E->args.get(p);
+          if (act && act->out && act->out->type && act->out->type->set_in(c->recv_cs))
+            return callctx_intern(nullptr, nullptr, c->recv_cs, act);
+        }
+        ok = false;
+        callmatch_refused(a, x, c, E);
+        return nullptr;
+      }
+    }
+    return c;
+  }
+  // From a filtered argument to the caller's actual: the same call, so the
+  // context carries over. (Treating it as an unrecognized contour change
+  // dropped every match after the first exit.)
+  if (a->var && a->var->is_filtered && filtered.count(a)) return c;
+  if (x->contour_is_entry_set && a->contour_is_entry_set) {
+    auto &r = callindex().ret;
+    EntrySet *to = (EntrySet *)x->contour;
+    bool x_is_ret = false;
+    for (AVar *cr : to->rets) if (cr == x) x_is_ret = true;
+    if (x_is_ret) {
+      auto it = r.find({a, to});
+      if (it != r.end()) return callctx_push(c, it->second);  // ENTER the callee
+      // A return link no current edge backs. Flow links outlive the edge:
+      // when an EntrySet is split, its in-edge is re-pointed at the new
+      // contour, but the caller result's link to the OLD contour's return
+      // stays in `backward` (measured on kmeanspp: e641 es198->es249, split
+      // from es85, and av9502 still links es85's return). No execution
+      // returns through it.
+      auto lo = r.lower_bound({a, nullptr});
+      if (lo != r.end() && lo->first.first == a) { ok = false; return nullptr; }
+    }
+  }
+  // Out of a container's content into the value written there.
+  if ((walk & (kCallMatchFlowGraph | kCallMatchNumeric)) && !a->contour_is_entry_set && a->contour &&
+      a->contour != GLOBAL_CONTOUR && x->contour_is_entry_set && x->container &&
+      x->container->contour == x->contour)
+    return callctx_intern(nullptr, nullptr, (CreationSet *)a->contour, x->container);
+  return nullptr;  // global, or an unrecognized cross-contour step
+}
+
+typedef std::vector<std::pair<AVar *, CreationSet *>> AmbiguousReads;
+static bool is_load_result(AVar *a);
+static CSFlowGraph *build_cs_flow_graph_over(CreationSet *cs, Vec<AVar *> &content, int walk,
+                                             AmbiguousReads *reads = nullptr);
 CSFlowGraph *build_cs_flow_graph(CreationSet *cs) {
   if (!cs || !cs->sym) return nullptr;
   Vec<AVar *> content;
   cs_content_avars(cs, content);
-  if (!content.n) return nullptr;
+  return build_cs_flow_graph_over(cs, content, kCallMatchFlowGraph);
+}
+
+// The flow graph over a chosen subset of `cs`'s content: the assign sets of
+// just the channels a demand names (ifa/156's numeric mix), so a write the
+// demand is not about -- an int into `group` beside an int/float `x` --
+// does not put both callers on the same key.
+static CSFlowGraph *build_cs_flow_graph_over(CreationSet *cs, Vec<AVar *> &content, int walk,
+                                             AmbiguousReads *reads) {
+  if (!cs || !cs->sym || !content.n) return nullptr;
   CSFlowGraph *g = new CSFlowGraph;
   g->cs = cs;
   // --- assign sets: incoming edges of the content, grouped by assigned type
@@ -8097,16 +8305,38 @@ CSFlowGraph *build_cs_flow_graph(CreationSet *cs) {
     }
   }
   if (!g->keys.n) return nullptr;
+  if (walk == kCallMatchNumeric && getenv("IFA_DBG_NUMPATH"))
+    for (int i = 0; i < g->keys.n; i++) {
+      fprintf(stderr, "[numkey] cs=%d k=%d type=", cs->id, i);
+      for (CreationSet *c : g->keys.v[i]->sorted) if (c && c->sym) fprintf(stderr, "%s#%d ", c->sym->name, c->id);
+      fprintf(stderr, "targets:");
+      for (AVar *t : *g->targets.v[i])
+        if (t) {
+          EntrySet *te = t->contour_is_entry_set ? (EntrySet *)t->contour : nullptr;
+          fprintf(stderr, " av%d(%s)@%s%d", t->id, t->var && t->var->sym && t->var->sym->name ? t->var->sym->name : "-",
+                  te && te->fun && te->fun->sym && te->fun->sym->name ? te->fun->sym->name : "?", te ? te->id : -1);
+        }
+      fprintf(stderr, "\n");
+    }
   // --- per assign set: backflow path, and its creation points
   for (int i = 0; i < g->keys.n; i++) {
     Vec<AVar *> *path = new Vec<AVar *>;
     Vec<AVar *> *cps = new Vec<AVar *>;
-    Vec<AVar *> work;
+    // (AVar, call context) pairs: the same AVar reached under two contexts
+    // is two walk states, though `path` records it once.
+    std::vector<std::pair<AVar *, CallCtx *>> work;
+    std::set<std::pair<AVar *, CallCtx *>> seen;
     for (AVar *t : *g->targets.v[i])
-      if (t && path->set_add(t)) work.add(t);
-    int h = 0, steps = 0;
-    while (h < work.n && steps < 200000) {
-      AVar *a = work.v[h++];
+      if (t && seen.insert({t, nullptr}).second) {
+        path->set_add(t);
+        work.push_back({t, nullptr});
+      }
+    size_t h = 0;
+    int steps = 0;
+    while (h < work.size() && steps < 200000) {
+      AVar *a = work[h].first;
+      CallCtx *ctx = work[h].second;
+      ++h;
       ++steps;
       // ifa/146 B: cross a folded global-cell load.
       //
@@ -8129,13 +8359,43 @@ CSFlowGraph *build_cs_flow_graph(CreationSet *cs) {
       // folded value came from and continue from there, leaving type
       // propagation exactly as it was.
       if (AVar *src = folded_load_source(a))
-        if (src->out && src->out->type && src->out->type->set_in(cs) && path->set_add(src)) {
-          work.add(src);
+        if (src->out && src->out->type && src->out->type->set_in(cs)) {
+          if (seen.insert({src, nullptr}).second) {
+            path->set_add(src);
+            work.push_back({src, nullptr});
+          }
           continue;  // `a` is not a creation point; the store's value is upstream
         }
       if (!a->backward.n) cps->set_add(a);
       for (AVar *x : a->backward)
-        if (x && x->out && x->out->type && x->out->type->set_in(cs) && path->set_add(x)) work.add(x);
+        if (x && x->out && x->out->type && x->out->type->set_in(cs)) {
+          bool ok;
+          CallCtx *nc = callctx_step(a, x, ctx, ok, walk);
+          if (ok && walk == kCallMatchNumeric && getenv("IFA_DBG_NUMPATH") &&
+              !seen.count({x, nc})) {
+            EntrySet *xe = x->contour_is_entry_set ? (EntrySet *)x->contour : nullptr;
+            fprintf(stderr, "[numpath] cs=%d k=%d av%d(%s) <- av%d(%s) in %s%d ctx=%s%d\n", cs->id, i, a->id,
+                    a->var && a->var->sym && a->var->sym->name ? a->var->sym->name : "-", x->id,
+                    x->var && x->var->sym && x->var->sym->name ? x->var->sym->name : "-",
+                    xe ? (xe->fun && xe->fun->sym && xe->fun->sym->name ? xe->fun->sym->name : "?") : "cs",
+                    xe ? xe->id : (x->contour && x->contour != GLOBAL_CONTOUR ? ((CreationSet *)x->contour)->id : -1),
+                    !nc ? "-" : nc->e ? "e" : "recv", !nc ? 0 : nc->e ? nc->e->id : nc->recv_cs->id);
+          }
+          if (ok && seen.insert({x, nc}).second) {
+            path->set_add(x);
+            work.push_back({x, nc});
+            // A read out of a receiver that holds several containers of
+            // this class: the walk takes every one of them, and nothing on
+            // this path says which (see split_es_at_union_origin).
+            if (reads && is_load_result(a) && !x->contour_is_entry_set && x->contour &&
+                x->contour != GLOBAL_CONTOUR && a->container->out && a->container->out->type) {
+              CreationSet *L = (CreationSet *)x->contour;
+              int same = 0;
+              for (CreationSet *o : a->container->out->type->sorted) if (o && o->sym == L->sym) ++same;
+              if (same > 1) reads->push_back({a->container, L});
+            }
+          }
+        }
     }
     g->paths.add(path);
     g->creation_points.add(cps);
@@ -8669,7 +8929,13 @@ static CreationSet *cs_peel_group(CreationSet *cs, Vec<AVar *> &group, cchar *ro
 // site naming the parts of a partition demand already asked for, rather
 // than deciding on its own that the parts exist.
 [[nodiscard]] static int split_es_by_call_site(EntrySet *es, AVar *demand_av, bool dbg, CSFlowGraph *g = nullptr) {
-  if (!es || es->split) return 0;
+  if (!es) return 0;
+  if (es->split) {
+    if (dbg)
+      fprintf(stderr, "[cscallsite] p=%d es=%d fun=%s DECLINED: already split this pass (-> es=%d)\n", analysis_pass,
+              es->id, (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?", es->split->id);
+    return 0;
+  }
   Vec<AEdge *> all_edges;
   for (AEdge *ee : es->edges) if (ee && ee->args.n) all_edges.add(ee);
   qsort_by_id(all_edges);
@@ -8728,6 +8994,10 @@ static CreationSet *cs_peel_group(CreationSet *cs, Vec<AVar *> &group, cchar *ro
       for (int i = 0; i < g->keys.n && i < 31; i++)
         for (AVar *r : e->rets)
           if (r && g->paths.v[i]->set_in(r)) { sig |= (1 << i); break; }
+      if (dbg)
+        fprintf(stderr, "[cscallsite]   edge e%d from es%d(%s) sig=%x\n", e->id, e->from ? e->from->id : -1,
+                e->from && e->from->fun && e->from->fun->sym && e->from->fun->sym->name ? e->from->fun->sym->name : "?",
+                sig);
       int gi = -1;
       for (int k = 0; k < sigs.n; k++) if (sigs.v[k] == sig) { gi = k; break; }
       if (gi < 0) { sigs.add(sig); reps.add(e); groups.add(new Vec<AEdge *>); gi = sigs.n - 1; }
@@ -8983,6 +9253,175 @@ static bool is_load_result(AVar *a) {
   return a && a->container && a->contour_is_entry_set && a->var && a->var->def && a->var->def->prim &&
          (a->var->def->prim->index == P_prim_period || a->var->def->prim->index == P_prim_index_object);
 }
+// ifa/156: BACKTRACK A RECEIVER UNION TO WHERE IT FORMS.
+//
+// When the numeric rung's callers all land on the same assign sets, the
+// usual reason is a read through a receiver holding several containers of
+// one class. kmeanspp: `lloyd` loops over both `points` and
+// `cluster_centers`, both loops share one list-iterator contour, so
+// `__next__` hands `__getitem__` a `self` of {points, centres}, and the walk
+// out of `cc.x = 0` reads BOTH lists' elements -- and from the points list
+// back to `generate_points`. The lists themselves are separate contours;
+// what merges them is the receiver.
+//
+// The union is not a demand by itself (two lists of Points are
+// representable). It is on the path of one, which is what makes it the
+// confluence: backtrack from the receiver over AVars still holding at least
+// two of those containers, and stop at the nearest FORMAL whose callers pass
+// different subsets of them. Split that contour by the subset each caller
+// passes. The parts are named by CreationSet membership of the arguments --
+// type-shaped -- and bounded at two, as the other ES rungs are.
+[[nodiscard]] static int split_es_at_union_origin(CreationSet *cs, AmbiguousReads &reads, AVar *demand_av,
+                                                  bool dbg) {
+  for (auto &rd : reads) {
+    AVar *R = rd.first;
+    CreationSet *L = rd.second;
+    Vec<CreationSet *> Ls;
+    for (CreationSet *o : R->out->type->sorted) if (o && o->sym == L->sym) Ls.add(o);
+    auto holds = [&](AVar *y) {
+      if (!y || !y->out || !y->out->type) return 0;
+      int n = 0;
+      for (CreationSet *o : Ls) if (y->out->type->set_in(o)) ++n;
+      return n;
+    };
+    Vec<AVar *> seen, work;
+    seen.set_add(R);
+    work.add(R);
+    for (int i = 0; i < work.n && i < 20000; i++) {
+      AVar *y = work.v[i];
+      if (y->contour_is_entry_set) {
+        EntrySet *es = (EntrySet *)y->contour;
+        MPosition *pos = nullptr;
+        form_Map(MapElemMPositionAVarPair, mp, es->args) if (mp->value == y) { pos = mp->key; break; }
+        if (pos && !es->split) {
+          Vec<AEdge *> all_edges;
+          for (AEdge *e : es->edges) if (e && e->args.n) all_edges.add(e);
+          qsort_by_id(all_edges);
+          Vec<Vec<AEdge *> *> groups;
+          Vec<int> sigs;
+          for (AEdge *e : all_edges) {
+            // Which of the containers this caller can pass on its own: the
+            // creation points its actual reaches with THIS contour held
+            // terminal. Its own return must not count, or a union that
+            // feeds itself -- a comprehension's accumulator is `append`'s
+            // return, so both callers' actuals already hold both lists --
+            // makes every caller look alike.
+            AVar *act = e->args.get(pos);
+            int sig = 0;
+            {
+              Vec<AVar *> s2, w2;
+              if (act) { s2.set_add(act); w2.add(act); }
+              for (int j = 0; j < w2.n && j < 20000; j++) {
+                AVar *z = w2.v[j];
+                for (int k = 0; k < Ls.n && k < 31; k++)
+                  if (Ls.v[k]->defs.set_in(z) && z->cs_map && z->cs_map->get(Ls.v[k]->sym) == Ls.v[k]) sig |= 1 << k;
+                for (AVar *zz : z->backward)
+                  if (zz && zz->contour != es && holds(zz) >= 1 && s2.set_add(zz)) w2.add(zz);
+              }
+            }
+            if (getenv("IFA_DBG_CSUNION"))
+              fprintf(stderr, "[csunion]   formal av%d es%d edge e%d from es%d act=av%d sig=%x\n", y->id, es->id, e->id,
+                      e->from ? e->from->id : -1, act ? act->id : -1, sig);
+            int gi = -1;
+            for (int k = 0; k < sigs.n; k++) if (sigs.v[k] == sig) { gi = k; break; }
+            if (gi < 0) { sigs.add(sig); groups.add(new Vec<AEdge *>); gi = sigs.n - 1; }
+            groups.v[gi]->add(e);
+          }
+          if (groups.n >= 2) {
+            for (int g = 2; g < groups.n; g++)
+              for (AEdge *e : *groups.v[g]) groups.v[1]->add(e);
+            groups.n = 2;
+            ESSplitDecision *dec = new ESSplitDecision;
+            dec->av = demand_av;
+            dec->es = es;
+            dec->avpos = nullptr;
+            dec->fsetters = SPLIT_TYPE;
+            dec->fmark = SPLIT_VALUE;
+            dec->all_edges.copy(all_edges);
+            dec->groups.add(groups.v[1]);
+            if (dbg)
+              fprintf(stderr, "[csunion] p=%d cs=%d receiver av%d holds %d x %s -> SPLIT es=%d fun=%s edges=%d\n",
+                      analysis_pass, cs->id, R->id, Ls.n, L->sym->name ? L->sym->name : "?", es->id,
+                      es->fun && es->fun->sym && es->fun->sym->name ? es->fun->sym->name : "?", all_edges.n);
+            log(LOG_SPLITTING, "SPLIT ES AT UNION ORIGIN es %d edges %d\n", es->id, all_edges.n);
+            if (apply_entry_set_split(dec)) return 1;
+          }
+        }
+      }
+      for (AVar *x : y->backward)
+        if (holds(x) >= 2 && seen.set_add(x)) work.add(x);
+    }
+    if (getenv("IFA_DBG_CSUNION"))
+      for (AVar *y : work) {
+        EntrySet *ye = y->contour_is_entry_set ? (EntrySet *)y->contour : nullptr;
+        bool formal = false;
+        if (ye) form_Map(MapElemMPositionAVarPair, mp, ye->args) if (mp->value == y) formal = true;
+        fprintf(stderr, "[csunion]   av%d(%s) %s%d%s%s back=%d\n", y->id,
+                y->var && y->var->sym && y->var->sym->name ? y->var->sym->name : "-",
+                ye ? (ye->fun && ye->fun->sym && ye->fun->sym->name ? ye->fun->sym->name : "?") : "cs",
+                ye ? ye->id : (y->contour && y->contour != GLOBAL_CONTOUR ? ((CreationSet *)y->contour)->id : -1),
+                formal ? " FORMAL" : "", ye && ye->split ? " (es split)" : "", y->backward.n);
+      }
+    if (dbg)
+      fprintf(stderr, "[csunion] p=%d cs=%d receiver av%d holds %d x %s: no formal separates them (%d visited)\n",
+              analysis_pass, cs->id, R->id, Ls.n, L->sym->name ? L->sym->name : "?", work.n);
+  }
+  return 0;
+}
+
+// ifa/156: SPLIT int FROM float WHERE POSSIBLE, COERCE ONLY AS A LAST RESORT.
+//
+// The content channels of `cs` that are written both an integer and a float.
+// That is the coercion demand: pyc cannot hold both in one slot, so either
+// the contour separates them or numeric coercion widens the int, which
+// deviates from CPython (`1.0` for `1`). It is read off the WRITERS, not
+// the channel: by the time the split stages run, coercion has already
+// widened the channel itself to float64 (fa_coerce_numeric_confluences), so
+// asking the channel's type finds no mix.
+//
+// The writers' types are the converged types of this pass, so this is a
+// level question asked at quiescence, not the event of a union forming.
+static int csnumsplit_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_CSNUMSPLIT"); e = v ? atoi(v) : 1; }
+  return e;
+}
+static void cs_numeric_mix_content(CreationSet *cs, Vec<AVar *> &out) {
+  Vec<AVar *> content;
+  cs_content_avars(cs, content);
+  for (AVar *cv : content) {
+    if (!cv) continue;
+    // Only a PURE numeric mix: writers that are int or float and nothing
+    // else. A channel that also takes a str, a tuple or a class is a
+    // different (and earlier) demand -- measured on go at pass 0, Board's
+    // `color` had writers {None, tuple, UCTNode, int, float, str, Square}
+    // from start-merged imprecision, and splitting Board's `__new__` on it
+    // left int/float unions in ES formals that coercion cannot repair
+    // (`'self' has mixed basic types`).
+    bool has_int = false, has_float = false, other = false;
+    for (AVar *b : cv->backward) {
+      if (!b || !b->out) continue;
+      for (CreationSet *c : *b->out) {
+        if (!c || !c->sym) continue;
+        Sym *bt = c->sym->type ? to_basic_type(c->sym->type) : nullptr;
+        if (bt && bt->num_kind == IF1_NUM_KIND_FLOAT) has_float = true;
+        else if (bt && (bt->num_kind == IF1_NUM_KIND_INT || bt->num_kind == IF1_NUM_KIND_UINT)) has_int = true;
+        else other = true;
+      }
+    }
+    if (has_int && has_float && !other) out.add(cv);
+    if (getenv("IFA_DBG_CSNUMMIX") && cv->var && cv->var->sym) {
+      fprintf(stderr, "[csnummix] cs=%d sym=%s var=%s int=%d float=%d writers:", cs->id,
+              cs->sym->name ? cs->sym->name : "?", cv->var->sym->name ? cv->var->sym->name : "?", has_int, has_float);
+      for (AVar *b : cv->backward)
+        if (b && b->out)
+          for (CreationSet *c : *b->out)
+            if (c && c->sym) fprintf(stderr, " %s%s", c->sym->name ? c->sym->name : "?", b->container ? "" : "(nc)");
+      fprintf(stderr, "\n");
+    }
+  }
+}
+
 static int split_owner_of_demanded(CreationSet *I, bool dbg) {
   if (!I || !I->sym) return 0;
   Vec<AVar *> content;
@@ -9016,11 +9455,11 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
   std::vector<std::map<CreationSet *, std::set<AVar *>>> reach((size_t)keys.n);
   std::map<CreationSet *, int> owner_depth;
   for (int k = 0; k < keys.n; k++) {
-    struct Item { AVar *a; CreationSet *track; int depth; };
+    struct Item { AVar *a; CreationSet *track; int depth; CallCtx *ctx; };
     std::vector<Item> work;
-    std::set<std::pair<AVar *, CreationSet *>> seen;
+    std::set<std::tuple<AVar *, CreationSet *, CallCtx *>> seen;
     for (AVar *t : *targets.v[k])
-      if (t && seen.insert({t, I}).second) work.push_back({t, I, 0});
+      if (t && seen.insert({t, I, nullptr}).second) work.push_back({t, I, 0, nullptr});
     for (size_t h = 0; h < work.size() && h < 400000; h++) {
       Item it = work[h];
       AVar *a = it.a;
@@ -9040,15 +9479,18 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
           if (!has_closure && it.depth < kMaxLift) {
             for (CreationSet *O : a->container->out->type->sorted)
               if (O && O->sym && O != I && O->sym != sym_closure && fa->css_set.set_in(O) &&
-                  seen.insert({a->container, O}).second)
-                work.push_back({a->container, O, it.depth + 1});
+                  seen.insert({a->container, O, it.ctx}).second)
+                work.push_back({a->container, O, it.depth + 1, it.ctx});
           }
         }
         continue;  // never through the shared member / element AVar
       }
       for (AVar *x : a->backward)
-        if (x && x->out && x->out->type && x->out->type->set_in(tr) && seen.insert({x, tr}).second)
-          work.push_back({x, tr, it.depth});
+        if (x && x->out && x->out->type && x->out->type->set_in(tr)) {
+          bool ok;
+          CallCtx *nc = callctx_step(a, x, it.ctx, ok, kCallMatchOwner);
+          if (ok && seen.insert({x, tr, nc}).second) work.push_back({x, tr, it.depth, nc});
+        }
     }
   }
   // Choose the NEAREST owner whose defs the assign sets actually separate.
@@ -9636,6 +10078,47 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
           split_owner_of_demanded(cs, dbg || getenv("IFA_DBG_CSOWNER"))) {
         analyze_again = 1;
         continue;
+      }
+      // ifa/156: a channel written both an int and a float, on a contour
+      // with ONE creation point. As with the third clause above, nothing on
+      // the CreationSet side can be partitioned, so the site itself has to
+      // occur twice: climb to the nearest contour with more than one
+      // caller and split it by which numeric kind each caller's result
+      // carries into the mixed channel. The flow graph is built over the
+      // mixed channels ONLY, so the parts are the int writes and the float
+      // writes, and a caller agreeing with another on both stays with it.
+      //
+      // Only when no higher stage acted this pass, as with the field-mix
+      // demand above and for the same reason: an int/float union that type
+      // splitting is still separating is not yet the program's. Measured on
+      // sunfish at pass 0: `__range_iter__.i`, `__dict_items_iter__._len`
+      // and a `_ReNode` contour carrying members of other classes all read
+      // as int/float mixes, and splitting `_ReNode`'s `__new__` on it cost
+      // 21 EntrySets and 83 CreationSets for no change in any verdict.
+      if (csnumsplit_enabled() && quiescent && defs.n == 1 && defs.v[0] && defs.v[0]->contour_is_entry_set &&
+          defs.v[0]->contour != GLOBAL_CONTOUR) {
+        Vec<AVar *> mix;
+        cs_numeric_mix_content(cs, mix);
+        if (mix.n) {
+          int hops = 0;
+          EntrySet *target = es_climb_to_choice((EntrySet *)defs.v[0]->contour, &hops);
+          if (dbg)
+            fprintf(stderr, "[csnumsplit] p=%d cs=%d sym=%s mixed=%d es=%d -> es=%d (%s, hops=%d)\n", analysis_pass,
+                    cs->id, cs->sym->name ? cs->sym->name : "?", mix.n, ((EntrySet *)defs.v[0]->contour)->id,
+                    target ? target->id : -1,
+                    target && target->fun && target->fun->sym && target->fun->sym->name ? target->fun->sym->name : "?",
+                    hops);
+          AmbiguousReads reads;
+          CSFlowGraph *g = build_cs_flow_graph_over(cs, mix, kCallMatchNumeric, &reads);
+          if (target && split_es_by_call_site(target, mix.v[0], dbg, g)) {
+            analyze_again = 1;
+            continue;
+          }
+          if (split_es_at_union_origin(cs, reads, mix.v[0], dbg)) {
+            analyze_again = 1;
+            continue;
+          }
+        }
       }
       if (dbg)
         fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d DECLINED (single creation point)\n", analysis_pass,
