@@ -18,7 +18,6 @@
 #ifndef _fa_flags_H_
 #define _fa_flags_H_
 
-int splitedges2_enabled();
 int filtereq_enabled();
 int espath_enabled();
 int esdefs1_enabled();

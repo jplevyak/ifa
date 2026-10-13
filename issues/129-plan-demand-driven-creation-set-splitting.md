@@ -85,7 +85,7 @@ point (AGENTS.md).
 
 ### C. Stage 5's fan and the lower rungs
 
-See 146 (land `PYC_SPLITEDGES2`'s bound) and 157 (the route-4 shape for
+See 146 (the two-group bound landed 2026-10-13) and 157 (the route-4 shape for
 `PER_CS_RECEIVER` / `SETTER_OF_SETTER` / VIOLATION).
 
 ### D. Constants

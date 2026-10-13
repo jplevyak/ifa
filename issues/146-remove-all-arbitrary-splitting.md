@@ -58,19 +58,10 @@ gated at all.
 | `CARTESIAN_PRODUCT` (`PYC_CPA`) | fanned every positional formal with 2..N CSs; zero references to any violation | 2026-09-08 |
 | `PYC_CSPEEL2`, `PYC_CSFAN`, `PYC_CONFLEVEL`, `PYC_NOOPSPLIT`, `PYC_NUMSPLIT`, `PYC_SETTERGATE=3`, `PYC_ESDEMAND` | built, measured non-monotone or inert, deleted (see "Dead ends") | 2026-09-15..17 |
 | `MARK_SETTER` / `MARK_SETTER_OF_SETTER` (D) and the mark scaffolding (`build_joint_type_marks`, `collect_cs_marked_confluences`, `AKIND_MARK`, `AVar::mark_map`, `different_marked_args`, `PYC_CPAMARK`, `IFA_DBG_MARKWHY`) | the last mark splitter; it had survived because `voronoi2` needed it until the nil codegen fix. Same-binary corpus A/B (`check__default__7b644df7+0f0a43ce` vs `check__PYC_NOMARKSETTER_1__7b644df7+6900e5ef`): verdicts and warnings identical on all 77; ess 31,094 → 28,921 (−7.0%), css 120,841 → 112,539 (−6.9%), container CSs 2,735 → 2,671, compile wall 2,590 → 2,279 s (−12%). plcfrs 94 → 67 passes, voronoi2 32 → 25. `mark_distance_skew` / `mark_setter_skew` re-blessed at `ess=3` (every changed line is the removed split) and their `.known_issue` sidecars deleted. The `FAPassStage` values stay, unused | 2026-10-13 |
+| stage 5's per-CreationSet fan in `split_edges` (`PYC_SPLITEDGES2` deleted) | one filtered EntrySet per receiver CreationSet; now two groups at most (the first part, the rest), re-derived and asked again. A riding `None` (ifa/178) goes in both groups' filters, which the flag's old two-group path ignored. That alone cost `richards`: its four Task receivers need three two-group attempts, and stage 5's per-Var attempt cap (`PYC_VIOLATTEMPTS`, 2) stopped it one short. The cap now counts only FUTILE attempts, ones that did not narrow the violating value; removing it outright sent softrender's genuine int/float rows to the pass limit. Same-binary `check -R` A/B against the fan (`check__default__9f6150ae+aa1a63cd` vs `check__PYC_SPLITEDGESFAN_1__…`): verdicts and warnings identical on all 77, contours equal (ess 28,919 → 28,921, css 112,539 → 112,538) | 2026-10-13 |
 | route 4's partition of a confluence-only candidate | `split_css_by_defs` partitioned EVERY candidate with two or more creation points, including those a type confluence alone nominated (`tc_cs_dropped`): a fact. Its `demanded` set gated only EntrySet splits (`ESBLOCK`). It now declines a candidate not in `demanded`. Same-binary corpus A/B (`check__default__7b644df7+14447c89` vs `check__PYC_CSDEMANDONLY_1__…`): verdicts and warnings identical on all 77; contours a wash in both directions (ess 31,081 → 31,094, css 120,849 → 120,841). Found because it re-split every pair ifa/170 step 3 merged | 2026-10-13 |
 
 ## Still in the tree
-
-### Stage 5's per-CreationSet fan in `split_edges`
-
-`split_edges` (the `fdynamic` path) builds one filtered EntrySet per
-CreationSet in the receiver's type, so its partition size is the CS count.
-It survived because stage 5 is starved (157). `PYC_SPLITEDGES2=1` bounds it
-to two groups and measured behaviour-neutral (148 Part 4). Since
-2026-09-26 it also DECLINES when every receiver CS is identical by type
-(`cs_slot_sig_equal`; see [134](134-remove-the-frontend-forced-split-opt-in.md)).
-**Land the two-group bound as the only behaviour and delete the flag.**
 
 ### `SETTER_OF_SETTER`'s confluence test has no type condition
 
@@ -108,7 +99,7 @@ issue.
 | `PYC_SLOTARITY` | 132 cross-CS arity demotion | PENDING [132](132-arity-is-representation-not-provenance.md) — correct, does not pay yet |
 | `PYC_RETDEMAND` | 157 ES demand → route 4 link | PENDING [157](157-FA-all-demand-must-be-evaluated-at-quiescence.md) |
 | `PYC_TYPEMOVE` | 148 terminate on a fixed point | PENDING 157 — 2 suite tests |
-| `PYC_SPLITEDGES2`, `PYC_FILTEREQ` | 148 stage-5 bound / exact filter reuse | land SPLITEDGES2 (above); FILTEREQ neutral, DELETE |
+| `PYC_FILTEREQ` | 148 exact filter reuse | neutral, DELETE |
 | `PYC_SOSDEMAND` | 074 | decide (above) |
 
 Audited and **not** splitters (keep): `PYC_SELFPROD` (6), `PYC_HARDREUSE`

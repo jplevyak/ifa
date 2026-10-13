@@ -11,13 +11,6 @@
 #include "fa.h"
 #include "fa_flags.h"
 
-// ifa/148: PYC_SPLITEDGES2=1 -- stage 5's per-CreationSet fan becomes a
-// two-group split. See the comment at the use.
-int splitedges2_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_SPLITEDGES2"); e = v ? atoi(v) : 0; }
-  return e;
-}
 // ifa/148: PYC_FILTEREQ=1 -- filtered-contour reuse requires matching
 // filters. See the comment at the use.
 int filtereq_enabled() {

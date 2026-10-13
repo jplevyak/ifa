@@ -5470,52 +5470,72 @@ static int cs_slots_homogeneous(CreationSet *cs) {
       return 0;
     }
   }
-  if (splitedges2_enabled() && rcs.n > 2) {
-
-    AType *rest = fa->type_world.bottom_type;
-    for (int i = 1; i < rcs.n; i++)
-      if (rcs.v[i]) rest = type_union(rest, make_AType(rcs.v[i]));
+  // ifa/178: None is a part of its own only when something DISTINGUISHES
+  // it -- an edge that brings `{None}` alone (a real confluence: `{list}`
+  // vs `{None}` on different edges), or a num_kind scalar beside it
+  // (`{None, int}` is not representable unboxed, issue 060). Otherwise
+  // every edge that carries None carries it WITH the pointers: the union
+  // is a nullable pointer, not two values to keep apart, so None rides in
+  // each pointer part's filter instead of being fanned off -- which made a
+  // `{None}`-only contour where every dereference is bottom (fysphun's
+  // `twopoint(p2={None})`).
+  CreationSet *nil_cs = nullptr;
+  bool scalar = false;
+  for (CreationSet *cs : rcs) if (cs && cs->sym) {
+    if (cs->sym->type == sym_nil_type) nil_cs = cs;
+    else if (cs->sym->type && cs->sym->type->num_kind) scalar = true;
+  }
+  bool nil_rides = false;
+  if (nil_cs && !scalar && rcs.n > 1) {
+    nil_rides = true;
+    for (AEdge *ee : all_edges) if (ee) {
+      AVar *a = ee->args.get(p);
+      if (!a || !a->out || !a->out->type) continue;
+      bool only_nil = a->out->type->sorted.n > 0;
+      for (CreationSet *c : a->out->type->sorted)
+        if (c && c->sym && c->sym->type != sym_nil_type) { only_nil = false; break; }
+      if (only_nil) { nil_rides = false; break; }
+    }
+  }
+  // ifa/146: TWO groups at most, never one per CreationSet. A fan's partition
+  // size is the receiver's CreationSet count -- ifa/144's signature, and what
+  // ifa/146 E deleted from CARTESIAN_PRODUCT. It survived here only because
+  // stage 5 was starved (ifa/148). Separate minimally and re-derive, as
+  // ifa/133's ES-block split does: the first part keeps its own contour and
+  // the rest share one; if they still conflict, the next pass asks again.
+  // A riding None goes in both parts' filters, as in the fan it replaces.
+  Vec<CreationSet *> parts;
+  for (CreationSet *cs : av->out->type->sorted)
+    if (cs && !(nil_rides && cs == nil_cs)) parts.add(cs);
+  //
+  // Measured 2026-10-13, one binary, corpus `check -R` A/B against the fan
+  // (check__default__9f6150ae+aa1a63cd vs check__PYC_SPLITEDGESFAN_1__...):
+  // verdicts and warnings identical on all 77 programs, contours equal
+  // (EntrySets 28,919 -> 28,921, CreationSets 112,539 -> 112,538). It needs
+  // the futile-attempt count in split_for_violations: richards takes three
+  // two-group attempts where the fan took one.
+  if (parts.n > 2) {
+    Vec<CreationSet *> g0, g1;
+    g0.add(parts.v[0]);
+    for (int i = 1; i < parts.n; i++) g1.add(parts.v[i]);
+    if (nil_rides) {
+      g0.add(nil_cs);
+      g1.add(nil_cs);
+    }
     Map<MPosition *, AType *> fa0, fa1;
     fa0.copy(es->filters);
-    fa0.put(p, make_AType(rcs.v[0]));
+    fa0.put(p, make_AType(g0));
     fa1.copy(es->filters);
-    fa1.put(p, rest);
+    fa1.put(p, make_AType(g1));
     EntrySet *tes0 = find_or_make_filtered_entry_set(es, fa0);
     EntrySet *tes1 = find_or_make_filtered_entry_set(es, fa1);
-    cs_es_map.put(rcs.v[0], tes0);
-    for (int i = 1; i < rcs.n; i++)
-      if (rcs.v[i]) cs_es_map.put(rcs.v[i], tes1);
+    cs_es_map.put(parts.v[0], tes0);
+    for (int i = 1; i < parts.n; i++) cs_es_map.put(parts.v[i], tes1);
     if (getenv("IFA_DBG_SPLITEDGES"))
-      fprintf(stderr, "[splitedges] p=%d es=%d fun=%s recv spans=%d -> 2 group(s)\n", analysis_pass, es->id,
-              (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?", rcs.n);
+      fprintf(stderr, "[splitedges] p=%d es=%d fun=%s recv spans=%d -> 2 group(s)%s\n", analysis_pass, es->id,
+              (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?", rcs.n,
+              nil_rides ? " (None rides in both)" : "");
   } else {
-    // ifa/178: None is a part of its own only when something DISTINGUISHES
-    // it -- an edge that brings `{None}` alone (a real confluence: `{list}`
-    // vs `{None}` on different edges), or a num_kind scalar beside it
-    // (`{None, int}` is not representable unboxed, issue 060). Otherwise
-    // every edge that carries None carries it WITH the pointers: the union
-    // is a nullable pointer, not two values to keep apart, so None rides in
-    // each pointer part's filter instead of being fanned off -- which made a
-    // `{None}`-only contour where every dereference is bottom (fysphun's
-    // `twopoint(p2={None})`).
-    CreationSet *nil_cs = nullptr;
-    bool scalar = false;
-    for (CreationSet *cs : rcs) if (cs && cs->sym) {
-      if (cs->sym->type == sym_nil_type) nil_cs = cs;
-      else if (cs->sym->type && cs->sym->type->num_kind) scalar = true;
-    }
-    bool nil_rides = false;
-    if (nil_cs && !scalar && rcs.n > 1) {
-      nil_rides = true;
-      for (AEdge *ee : all_edges) if (ee) {
-        AVar *a = ee->args.get(p);
-        if (!a || !a->out || !a->out->type) continue;
-        bool only_nil = a->out->type->sorted.n > 0;
-        for (CreationSet *c : a->out->type->sorted)
-          if (c && c->sym && c->sym->type != sym_nil_type) { only_nil = false; break; }
-        if (only_nil) { nil_rides = false; break; }
-      }
-    }
     for (CreationSet *cs : av->out->type->sorted) {
       if (nil_rides && cs == nil_cs) continue;
       Map<MPosition *, AType *> filters;
@@ -11783,7 +11803,22 @@ static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Ve
   // count is per-Var (stable identity) and persistent, so a
   // violation that a split DID resolve never reaches the cutoff.
   Vec<AVar *> refinable;
+  // ifa/146: count only FUTILE attempts. An attempt that narrowed the
+  // violating value since the last one (fewer CreationSets in its type) is
+  // progress, and resets the count. The count was raw, which made the cap a
+  // refusal on a NUMBER of attempts: stage 5's two-group split
+  // (`split_edges`) separates richards' four Task receivers in three
+  // attempts (4 -> 1+3 -> 1+2 -> 1+1), and the cap of 2 stopped it one
+  // short, so `h.workInAdd(pkt)` saw IdleTaskRec and the program was
+  // refused. What the cap is FOR is the violation no split can narrow:
+  // softrender's int/float rows (a genuine merge, ifa/156) re-split every
+  // pass to the pass limit without it, at {int64, float64} each time.
+  static Map<Var *, int> last_span;
   for (AVar *av : imprecisions) {
+    int span = av->out && av->out->type ? av->out->type->sorted.n : 0;
+    int prev = last_span.get(av->var);
+    last_span.put(av->var, span);
+    if (prev && span < prev) fa->violation_split_attempts.put(av->var, 0);
     int attempts = fa->violation_split_attempts.get(av->var);
     // ifa/133: PYC_VIOLATTEMPTS caps stage-5 attempts per Var; 0 = no cap.
     // Default stays 2 (issue 033 D6) until this is measured.
