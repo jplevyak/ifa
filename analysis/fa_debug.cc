@@ -504,7 +504,17 @@ void show_violations(FA *fa, FILE *fp) {
         break;
       case ATypeViolation_kind::BOXING:
         show_name(memfp, v->av);
-        fprintf(memfp, "has mixed basic types:");
+        // ifa/188: a scalar beside an object is not two basics; say what it is.
+        if (v->type && scalar_with_pointer(v->type) && [&] {
+              Vec<Sym *> basics;  // mixed_basics, of the type the violation recorded
+              for (CreationSet *cs : *v->type)
+                if (cs && cs->sym)
+                  if (Sym *b = to_basic_type(cs->sym->type)) basics.set_add(b);
+              return basics.set_count() < 2;
+            }())
+          fprintf(memfp, "holds both a number and an object, which has no representation:");
+        else
+          fprintf(memfp, "has mixed basic types:");
         show_type(*v->type, memfp);
         fprintf(memfp, "\n");
         if (getenv("PYC_DBG_BOXWHY")) {
@@ -677,10 +687,21 @@ void dbg_confluence_probe(AVar *av, bool added) {
 
 // ifa/133 probe: IFA_DBG_AV=<id> dumps one AVar's identity and every
 // backward writer, with the writer's function and the type it contributes.
+// IFA_DBG_AV=<name> (not a number) dumps every AVar of a variable of that
+// name -- a diagnostic convenience, never an analysis key.
 void dbg_dump_av(AVar *av) {
   static int want = -2;
-  if (want == -2) { cchar *v = getenv("IFA_DBG_AV"); want = v ? atoi(v) : -1; }
-  if (want < 0 || !av || av->id != want) return;
+  static cchar *want_name = nullptr;
+  if (want == -2) {
+    cchar *v = getenv("IFA_DBG_AV");
+    want = v && isdigit((unsigned char)v[0]) ? atoi(v) : -1;
+    if (v && !isdigit((unsigned char)v[0])) want_name = v;
+  }
+  if (!av) return;
+  if (want_name) {
+    if (!av->var || !av->var->sym || !av->var->sym->name || strcmp(av->var->sym->name, want_name)) return;
+  } else if (want < 0 || av->id != want)
+    return;
   fprintf(stderr, "[av] p=%d %d var=%s in=%s type=", analysis_pass, av->id,
           (av->var && av->var->sym && av->var->sym->name) ? av->var->sym->name : "(anon)",
           (av->contour_is_entry_set && ((EntrySet *)av->contour)->fun &&

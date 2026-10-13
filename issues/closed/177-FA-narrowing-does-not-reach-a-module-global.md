@@ -44,7 +44,7 @@ both backends.
 
 The false branch is not narrowed this way: `build_if_pyda` builds the else
 chain before the condition. Writing the first test also found
-[188](../188-FA-field-and-method-of-one-name-on-two-classes.md), which is
+[188](188-FA-field-and-method-of-one-name-on-two-classes.md), which is
 unrelated.
 
 The original report is kept below.

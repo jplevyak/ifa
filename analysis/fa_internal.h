@@ -97,6 +97,7 @@ void constant_strip_census(int &nstrip, int &nmulti, int &nsame);
 void cselem_unknown_mint_census(int &minted, int &resolved, int &joinable, int &still_unfilled);
 void element_census(ElemCensus &c);
 bool mixed_basics(AVar *av);
+bool scalar_with_pointer(AType *t);  // ifa/188: a numeric scalar and an object in one union
 extern std::map<std::string, CreationSet *> cselem_shape_canon;
 
 extern Vec<Var *> fa_internal_vars;  // fa.cc: FA-created tvals, see fill_tvals

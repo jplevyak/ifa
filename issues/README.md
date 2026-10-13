@@ -92,7 +92,6 @@ one is a lesson this directory paid for.
 
 | issue | what |
 | --- | --- |
-| [188](188-FA-field-and-method-of-one-name-on-two-classes.md) | a field `f` on one class and a method `f` on another, meeting in one container: C aborts in the call, LLVM fails to verify. |
 | [102](102-corpus-programs-compile-then-abort-at-runtime.md) | an unresolved call becomes a silent runtime stub. Make it an FA violation. Also the untyped-value work list. |
 | [079](079-DISPATCH-single-candidate-dispatch-unchecked-cast.md) | the single-candidate fast path casts past union members that lack the method. |
 | [118](118-union-field-representation-and-polymorphic-field-offset.md) | `{bool, None}`: a tri-state sentinel representation (bool has spare codes; int64 does not). |
@@ -145,6 +144,7 @@ one is a lesson this directory paid for.
 | [150](closed/150-is-not-none-never-folds.md) | fixed | 134 |
 | [151](closed/151-split-an-entryset-on-a-constant-argument-on-demand.md) | CONST_DEMAND landed | 134 |
 | [156](closed/156-FA-split-int-from-float-coerce-last.md) | split side complete: every remaining mix is a genuine flow or temporal merge | 189 |
+| [188](closed/188-FA-field-and-method-of-one-name-on-two-classes.md) | a number and an object in one value had no BOXING check (silent miscompile); now refused | — |
 | [189](closed/189-FA-coercion-warns-per-expression-not-per-origin.md) | one coercion warning per origin, naming its source lines and reach | — |
 | [171](closed/171-FA-numeric-union-sustains-itself-through-a-shared-contour.md) | merged | 156 |
 | [177](closed/177-FA-narrowing-does-not-reach-a-module-global.md) | fixed: a guard's load is reused in its true branch | — |

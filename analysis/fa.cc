@@ -4469,6 +4469,27 @@ bool mixed_basics(AVar *av) {
   return basics.n > 1;
 }
 
+// ifa/188: a numeric scalar in one union with a pointer-shaped value (an
+// instance, a bound method, a list) has no representation either. Codegen
+// puts the union in a pointer-sized `_CG_any` and stores the int AS a pointer,
+// so `0` reads as a null receiver and a class-tag dispatch dereferences it:
+// `x = 0` / `x = A()` / `print(x)` printed `A` for CPython's `0`, and 188's
+// `{int64, B.f bound method}` aborted in `__str__` dispatch. `None` is not
+// pointer-shaped here -- {None, scalar} has its own rule (issues/048), since a
+// null test separates it except at a dispatch.
+bool scalar_with_pointer(AType *t) {
+  bool scalar = false, pointer = false;
+  for (CreationSet *cs : *t) {
+    if (!cs || !cs->sym || !cs->sym->type) continue;
+    Sym *ty = cs->sym->type;
+    if (ty == sym_nil_type || ty == sym_void_type) continue;
+    Sym *b = to_basic_type(ty);
+    if (b) scalar |= b->num_kind != 0;
+    else pointer = true;
+  }
+  return scalar && pointer;
+}
+
 static bool is_only_used_by_phy_or_phi(Var *v) {
   if (!v) return false;
   if (!v->uses.n) return true;
@@ -4545,7 +4566,7 @@ static void collect_var_type_violations() {
             fprintf(stderr, "[gcell] %s readers=%d mixed=%d\n", av->var->sym->name, readers, mixed_basics(av) ? 1 : 0);
           if (!readers) continue;
         }
-        if (!is_only_used_by_phy_or_phi(av->var) && mixed_basics(av))
+        if (!is_only_used_by_phy_or_phi(av->var) && (mixed_basics(av) || scalar_with_pointer(av->out)))
           type_violation(ATypeViolation_kind::BOXING, av, av->out, nullptr, nullptr);
       }
     }
@@ -4582,7 +4603,8 @@ static void collect_var_type_violations() {
     for (CreationSet *cs : fa->css) {
       for (AVar *av : cs->vars) {
         if (!av->var || !is_only_used_by_phy_or_phi(av->var)) {
-          if (mixed_basics(av)) type_violation(ATypeViolation_kind::BOXING, av, av->out, nullptr, nullptr);
+          if (mixed_basics(av) || scalar_with_pointer(av->out))
+            type_violation(ATypeViolation_kind::BOXING, av, av->out, nullptr, nullptr);
         }
       }
     }
