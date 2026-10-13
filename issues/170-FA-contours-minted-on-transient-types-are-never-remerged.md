@@ -132,6 +132,63 @@ are compatible.
 split on the next pass (the pair oscillates), the split has a live demand
 this issue misread. Find what the demand is. Do not add hysteresis.
 
+## Step 1 landed (2026-10-12): `merge_equivalent_entry_sets`
+
+`PYC_ESMERGE`, default 1, in `fa.cc`. It runs as the LAST split stage, and
+only on a pass where no stage acted. Two contours of one function merge when
+all of the following hold:
+
+- **Identical state.** Every AVar of the function has the same converged
+  `out` in both. Every creation point maps to the same CreationSets
+  (`cs_map`). The filters and the lexical display agree.
+- **No coercion.** No AVar in either contour is coerced (`num_coerce`).
+- **Same setter classes** (`same_eq_classes`) for every AVar.
+- **Settled pass.** No type violation is outstanding.
+- **No live demand on what they create.** Nothing either contour creates
+  has an irrepresentable element or a pure int/float mix.
+- **Not asserted this pass.** No ledger decision made or routed a group into
+  either contour on this pass.
+
+The younger contour's in-edges move to the older, with the same calls a
+split uses in reverse (`set_entry_set`, `record_backedges`). Ledger
+products, `route_last` and `route_adj` entries that name the retired contour
+are pointed at the survivor. `IFA_DBG_ESMERGE` logs every merge.
+
+The stop condition fired three times. Each time it named a demand the
+first version misread, and none was answered with hysteresis:
+
+1. **A split made as a MEANS.** First run before the split stages,
+   `tests/splitter_setter.py` oscillated. The setter stage splits `__new__`
+   so two Boxes get two creation points, and the two contours stay identical
+   until the follow-up CreationSet split lands. Fix: merge last, on a quiet
+   pass, when every follow-up has happened.
+2. **Coercion.** An int contour and a float contour both read float64 once
+   one is widened. Merging them put `random.py:135` (neural2) and
+   `sudoku2.py:235` back into int/float unions, one warning each. Fix:
+   never merge a coerced contour.
+3. **The setter criterion.** On minilight a merge created a setter
+   confluence in `__getitem__` es=887. The setter stage split it off
+   (`SPLIT ES 887 setters ... -> 2831`) and the next quiet pass merged it
+   back: 1,969 merges, the pass cap (35 → 102 passes), compile 12.7 s →
+   26.8 s. That criterion is not type-shaped (ifa/146), so the converged
+   types cannot show it. Fix: compare setter classes directly. minilight
+   then runs 36 passes in 12.9 s and drops 767 → 729 EntrySets.
+
+**Measured** (sweep `check__PYC_ESMERGE_1__82e9b98f+880362ce` vs
+`check__default__82e9b98f+ad98a906`, same binary):
+- **Verdicts:** identical on all 77 programs, including warning counts.
+- **EntrySets:** 31,960 → 31,081 (−2.7%). CreationSets 120,904 → 120,849.
+- **Compile time:** 2,747 s → 2,548 s (−7%): pygmy 231 → 164 s, sunfish
+  249 → 184 s, plcfrs 130 → 119 s.
+- **voronoi:** 178 → 172 EntrySets. `int.__add__` has one `[int64][int64]`
+  contour where it had two (es=82 and es=148), and the output is unchanged.
+- **`make test`:** green on both backends.
+
+**Still open:** step 2's msp_ss check (`reroute_uncovered_edges`, from
+ifa/178's fix 2, already re-takes stale routes at quiescence and may cover
+it), and step 3, which merges equal CreationSets, the analogue of this for
+data.
+
 ## Verification
 
 - `voronoi` under `PYC_NO_FORCED_SPLIT=1`: contours == exact signatures

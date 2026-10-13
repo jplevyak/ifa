@@ -12441,6 +12441,184 @@ static void controlling_ifs(PNode *site, Vec<PNode *> &out) {
   return added ? 1 : 0;
 }
 
+// ifa/170: RETIRE A CONTOUR WHOSE DISTINCTION HAS EVAPORATED.
+//
+// A split is decided on the types of the pass it happens in, and pass-0
+// types are imprecise: voronoi's Mersenne Twister got two `int.__add__`
+// contours from an `{int, float}` union that IFA's minimal start put there
+// (`float` inherits `int.__add__`), and once float separated, both converged
+// to `[int64][int64]`. Nothing took the split back. Each pass re-derives
+// every type from bottom, so retiring such a contour costs nothing in
+// soundness; only the DECISION persisted, and it is stale.
+//
+// Two contours of one function are merged only when NOTHING observes a
+// difference between them:
+//   - every AVar of the function has the same converged type in both, every
+//     creation point maps to the same CreationSets, and the filters and the
+//     lexical display agree. Then no demand computed from the state can
+//     separate them;
+//   - no violation is outstanding anywhere this pass, so the types are the
+//     program's, not a widening still in progress;
+//   - no CreationSet either contour creates carries a live demand (an
+//     irrepresentable element, a pure int/float mix). A call-site split
+//     made FOR such a CreationSet leaves two contours whose state is
+//     identical until route 4 acts on the next pass -- the creation point
+//     in the new contour joins its parent's CreationSet -- and merging them
+//     would undo the means before it serves its end.
+// The younger contour's in-edges move to the older, the same calls a split
+// uses in reverse; with no in-edges it is not reached next pass, and its
+// out-edges, cleared every pass, carry nothing. Ledger routes that name it
+// are pointed at the survivor, so a re-derived split cannot route back
+// into the empty contour.
+//
+// Stop condition (ifa/170): if a merged pair is split again on the next
+// pass, the split had a live demand this test misread -- find it, do not
+// add hysteresis. IFA_DBG_ESMERGE logs every merge so that is visible.
+static int esmerge_enabled() {
+  static int e = -1;
+  if (e < 0) { cchar *v = getenv("PYC_ESMERGE"); e = v ? atoi(v) : 1; }
+  return e;
+}
+static bool es_state_equal(EntrySet *x, EntrySet *y) {
+  if (x->display.n != y->display.n) return false;
+  for (int i = 0; i < x->display.n; i++) if (x->display[i] != y->display[i]) return false;
+  {
+    Vec<MPosition *> keys;
+    form_Map(MapElemMPositionAType, m, x->filters) if (m->key) keys.set_add(m->key);
+    form_Map(MapElemMPositionAType, m, y->filters) if (m->key) keys.set_add(m->key);
+    for (MPosition *k : keys) if (k && x->filters.get(k) != y->filters.get(k)) return false;
+  }
+  for (Var *v : x->fun->fa_all_Vars) {
+    if (!v) continue;
+    AVar *a = make_AVar(v, x), *b = make_AVar(v, y);
+    if (a == b) continue;  // resolved outside both (an enclosing scope, a global)
+    if (!a || !b || a->out != b->out) return false;
+    // A coerced AVar's type is the coercion's, not the program's: an int
+    // contour and a float contour both read float64 once one is widened.
+    // Measured: merging those put `random.py:135` and `sudoku2.py:235`
+    // back into int/float unions (neural2 and sudoku2 +1 warning each).
+    if (a->num_coerce || b->num_coerce || (a->lvalue && a->lvalue->num_coerce) ||
+        (b->lvalue && b->lvalue->num_coerce))
+      return false;
+    // Different setter classes: merged, the contour would hold a setter
+    // confluence, and the setter stage would split it straight back. That
+    // stage's criterion is not type-shaped (ifa/146), so the converged types
+    // cannot show it; ask it directly. Measured on minilight: without this,
+    // `__getitem__` es=887 alternated split / merge to the pass cap.
+    if (a->setters && b->setters && !same_eq_classes(a->setters, b->setters)) return false;
+    if (!a->setters != !b->setters) return false;
+    if (!a->cs_map != !b->cs_map) return false;
+    if (a->cs_map) {
+      form_Map(CSMapElem, m, *a->cs_map) if (m->key && b->cs_map->get(m->key) != m->value) return false;
+      form_Map(CSMapElem, m, *b->cs_map) if (m->key && a->cs_map->get(m->key) != m->value) return false;
+    }
+  }
+  return true;
+}
+static bool es_creates_demanded(EntrySet *es) {
+  for (CreationSet *cs : es->creates) {
+    if (!cs || !cs->sym) continue;
+    if (cs_elem_irrepresentable(cs)) return true;
+    Vec<AVar *> mix;
+    cs_numeric_mix_content(cs, mix);
+    if (mix.n) return true;
+  }
+  return false;
+}
+static uint es_state_hash(EntrySet *es) {
+  uint h = es->display.n;
+  for (Var *v : es->fun->fa_all_Vars)
+    if (v) {
+      AVar *a = make_AVar(v, es);
+      h = h * 31 + (uint)(a && a->out ? a->out->hash : 0);
+    }
+  return h;
+}
+[[nodiscard]] static int merge_equivalent_entry_sets() {
+  if (!esmerge_enabled()) return 0;
+  if (fa->type_violations.set_count()) return 0;
+  const bool dbg = getenv("IFA_DBG_ESMERGE") != nullptr;
+  int merged = 0;
+  // Contours a split stage made or routed a group into THIS pass: that
+  // stage still asserts the distinction, by its own definition, so it is a
+  // live demand even when the converged state shows none. Measured on
+  // minilight: merges created a setter confluence in `__getitem__`
+  // es=887, the setter stage split it off every pass (`SPLIT ES 887
+  // setters ... -> 2831`), and the merge folded it back -- 1,969 merges
+  // and the pass cap (35 passes -> 102). The setter criterion carries no
+  // type condition (ifa/146), which is why the state cannot see it.
+  std::set<EntrySet *> asserted;
+  for (int b = 0; b < fa->split_ledger.n; b++)
+    for (auto *c = fa->split_ledger.v[b].value.head; c; c = c->cdr) {
+      SplitDecision *d = c->car;
+      if (!d) continue;
+      if (d->last_route_pass == analysis_pass && d->last_route_product) asserted.insert(d->last_route_product);
+      if (d->pass_made == analysis_pass && d->product) asserted.insert(d->product);
+    }
+  std::map<Fun *, std::vector<EntrySet *>> by_fun;
+  for (EntrySet *es : fa->ess)
+    if (es && es->fun && !es->split) {
+      int n = 0;
+      for (AEdge *e : es->edges) if (e && e->args.n) ++n;
+      if (n) by_fun[es->fun].push_back(es);
+    }
+  for (auto &fv : by_fun) {
+    std::vector<EntrySet *> &v = fv.second;
+    if (v.size() < 2) continue;
+    std::sort(v.begin(), v.end(), [](EntrySet *a, EntrySet *b) { return a->id < b->id; });
+    std::vector<uint> h(v.size());
+    for (size_t i = 0; i < v.size(); i++) h[i] = es_state_hash(v[i]);
+    std::vector<bool> gone(v.size(), false);
+    for (size_t i = 0; i < v.size(); i++) {
+      if (gone[i]) continue;
+      EntrySet *X = v[i];
+      for (size_t j = i + 1; j < v.size(); j++) {
+        if (gone[j] || h[j] != h[i]) continue;
+        EntrySet *Y = v[j];
+        if (!es_state_equal(X, Y)) continue;
+        if (es_creates_demanded(X) || es_creates_demanded(Y)) continue;
+        if (asserted.count(X) || asserted.count(Y)) continue;
+        Vec<AEdge *> moving;
+        for (AEdge *e : Y->edges) if (e) moving.add(e);
+        qsort_by_id(moving);
+        PendingAEdgeEntrySetsMap pending;
+        for (AEdge *e : moving)
+          if (e->from)
+            form_Map(MapElemAEdgeEntrySets, m, e->from->pending_es_backedge_map) if (m->key)
+                map_set_add(pending, m->key, m->value);
+        for (AEdge *e : moving) {
+          e->to = 0;
+          e->filtered_args.clear();
+          Y->edges.del(e);
+          set_entry_set(e, X);
+          record_backedges(e, Y, pending);
+        }
+        for (int b = 0; b < fa->split_ledger.n; b++)
+          for (auto *c = fa->split_ledger.v[b].value.head; c; c = c->cdr) {
+            SplitDecision *d = c->car;
+            if (!d) continue;
+            if (d->product == Y) d->product = X;
+            if (d->last_route_product == Y) d->last_route_product = X;
+          }
+        typedef MapElem<EntrySet *, EntrySet *> RouteLastElem;
+        typedef MapElem<EntrySet *, Vec<EntrySet *> *> RouteAdjElem;
+        form_Map(RouteLastElem, m, fa->route_last) if (m->value == Y) m->value = X;
+        form_Map(RouteAdjElem, m, fa->route_adj) if (m->value)
+            for (int k = 0; k < m->value->n; k++) if (m->value->v[k] == Y) m->value->v[k] = X;
+        Y->split = X;
+        gone[j] = true;
+        ++merged;
+        log(LOG_SPLITTING, "MERGE ES %d into %d (%s) edges %d\n", Y->id, X->id,
+            X->fun->sym->name ? X->fun->sym->name : "", moving.n);
+        if (dbg)
+          fprintf(stderr, "[esmerge] p=%d fun=%s es=%d -> es=%d edges=%d\n", analysis_pass,
+                  X->fun->sym && X->fun->sym->name ? X->fun->sym->name : "?", Y->id, X->id, moving.n);
+      }
+    }
+  }
+  return merged ? 1 : 0;
+}
+
 [[nodiscard]] static int run_split_stages() {
   dbg_es_per_fun();
   int analyze_again = 0;
@@ -12982,6 +13160,15 @@ static void controlling_ifs(PNode *site, Vec<PNode *> &out) {
     }
     analyze_again = cd || analyze_again;
   }
+  // ifa/170: retire contours whose distinction has evaporated -- last, on a
+  // pass where no stage acted. A split made as a MEANS (the setter stage
+  // splitting `__new__` so two Boxes get two creation points, a call-site
+  // split for route 4) leaves two contours whose state is identical until
+  // its follow-up CreationSet split lands; run first, this merge undid
+  // tests/splitter_setter.py's split every second pass, forever. On a quiet
+  // pass every follow-up has happened, so contours still identical then
+  // have nothing between them.
+  if (!analyze_again) analyze_again = merge_equivalent_entry_sets();
   // ifa/issues/074: back to "no stage running". Without this, every
   // contour/CreationSet the NEXT pass's flow creates was attributed to
   // whichever stage happened to run last -- which is what made the
