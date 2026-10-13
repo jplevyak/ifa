@@ -94,7 +94,6 @@ one is a lesson this directory paid for.
 
 | issue | what |
 | --- | --- |
-| [179](179-LLVM-quameon-computes-nan.md) | LLVM: quameon runs but computes `nan` (C matches CPython); latent, independent of 132. |
 | [102](102-corpus-programs-compile-then-abort-at-runtime.md) | an unresolved call becomes a silent runtime stub. Make it an FA violation. Also the untyped-value work list. |
 | [079](079-DISPATCH-single-candidate-dispatch-unchecked-cast.md) | the single-candidate fast path casts past union members that lack the method. |
 | [118](118-union-field-representation-and-polymorphic-field-offset.md) | `{bool, None}`: a tri-state sentinel representation (bool has spare codes; int64 does not). |
@@ -147,6 +146,7 @@ one is a lesson this directory paid for.
 | [150](closed/150-is-not-none-never-folds.md) | fixed | 134 |
 | [151](closed/151-split-an-entryset-on-a-constant-argument-on-demand.md) | CONST_DEMAND landed | 134 |
 | [171](closed/171-FA-numeric-union-sustains-itself-through-a-shared-contour.md) | merged | 156 |
+| [179](closed/179-LLVM-quameon-computes-nan.md) | fixed by 180 (`**` had no LLVM emitter) | — |
 
 Each archived file starts with a dated closure note. The body below it
 is the historical record and is not maintained.

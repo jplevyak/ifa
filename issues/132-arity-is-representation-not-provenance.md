@@ -141,7 +141,7 @@ other verdict changed. `make test`: 378 passed, 0 failed.
   in small programs both creation points merge through the constructor.
   Route 4 declines them ("every creation point on the same assign sets").
   quameon is the witness until then.
-- [179](179-LLVM-quameon-computes-nan.md): on LLVM quameon computes `nan`,
+- [179](closed/179-LLVM-quameon-computes-nan.md) (closed: fixed by 180): on LLVM quameon computed `nan`,
   independently of this fix.
 
 ## Next
