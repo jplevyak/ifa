@@ -8134,30 +8134,42 @@ static int callmatch_enabled() {
   if (e < 0) { cchar *v = getenv("PYC_CALLMATCH"); e = v ? atoi(v) : (kCallMatchOwner | kCallMatchNumeric); }
   return e;
 }
-// A frame is a CALL (e set: the edge entered through its return) or a
-// RECEIVER (e null: the container L the walk came out of, and the AVar
-// that holds it in the current contour).
+// A frame is a CALL (e set: the edge entered through its return), a
+// RECEIVER (e null, recv set: the container L the walk came out of, and the
+// AVar that holds it in the current contour), or a CONTENT frame (e and recv
+// null: the walk is inside L's content, having read it). RECEIVER and
+// CONTENT frames may carry `objs`, the objects of L the walk is about --
+// see heap_pts.
+struct CallCtx;
+typedef std::vector<std::pair<AVar *, CallCtx *>> ObjVec;  // (creation point, its allocation context)
 struct CallCtx {
   CallCtx *up;
   AEdge *e;
   CreationSet *recv_cs;
   AVar *recv;
+  const ObjVec *objs;
   int depth;
 };
 static const int kCallCtxMax = 8;
-static CallCtx *callctx_intern(CallCtx *up, AEdge *e, CreationSet *rcs, AVar *r) {
-  static std::map<std::tuple<CallCtx *, AEdge *, CreationSet *, AVar *>, CallCtx *> interned;
+static CallCtx *callctx_intern(CallCtx *up, AEdge *e, CreationSet *rcs, AVar *r, const ObjVec *objs = nullptr) {
+  static std::map<std::tuple<CallCtx *, AEdge *, CreationSet *, AVar *, const ObjVec *>, CallCtx *> interned;
   int d = up ? up->depth + 1 : 1;
   if (d > kCallCtxMax) return nullptr;
-  CallCtx *&c = interned[{up, e, rcs, r}];
-  if (!c) c = new CallCtx{up, e, rcs, r, d};
+  CallCtx *&c = interned[{up, e, rcs, r, objs}];
+  if (!c) c = new CallCtx{up, e, rcs, r, objs, d};
   return c;
 }
 static CallCtx *callctx_push(CallCtx *c, AEdge *e) { return callctx_intern(c, e, nullptr, nullptr); }
+static const ObjVec *objvec_intern(ObjVec v) {
+  static std::set<ObjVec> interned;
+  std::sort(v.begin(), v.end());
+  v.erase(std::unique(v.begin(), v.end()), v.end());
+  return &*interned.insert(std::move(v)).first;
+}
 // Edge lookups for the walk, rebuilt when the pass or the contour count
 // changes (a split mints contours, and with them edges).
 struct CallIndex {
-  int pass = -1, ness = -1;
+  int pass = -1, ness = -1, gen = 0;
   std::map<AVar *, AEdge *> filtered;                      // filtered arg -> its edge
   std::map<std::pair<AVar *, EntrySet *>, AEdge *> ret;  // (caller result, callee) -> edge
 };
@@ -8166,6 +8178,7 @@ static CallIndex &callindex() {
   if (ix.pass == analysis_pass && ix.ness == fa->ess.n) return ix;
   ix.pass = analysis_pass;
   ix.ness = fa->ess.n;
+  ++ix.gen;
   ix.filtered.clear();
   ix.ret.clear();
   for (EntrySet *es : fa->ess) {
@@ -8205,6 +8218,85 @@ static void recv_formal_positions(EntrySet *es, AVar *r, CreationSet *L, Vec<MPo
       if (y && y->contour == es && y->out && y->out->type && y->out->type->set_in(L) && seen.set_add(y)) work.add(y);
   form_Map(MapElemMPositionAVarPair, mp, es->args) if (mp->value && seen.set_in(mp->value)) out.add(mp->key);
 }
+// OBJECTS ON THE HEAP (ifa/156, the enumerate shape).
+//
+// A receiver frame says WHICH CONTAINER (CreationSet L) the walk came out of,
+// and that is not enough when one CreationSet holds the objects of several
+// creation points: two functions' `[Point() for ...]` lists in one list
+// contour, iterated through `enumerate`. The walk out of one list's element
+// then leaves through every list's `append`, which is right for the
+// CreationSet and wrong for the object.
+//
+// So ask the object question: which creation points of L can this receiver
+// hold, each with the call context it was allocated under? heap_pts answers
+// it with the same matched walk, run backward from the receiver to L's
+// defs. A read pushes a CONTENT frame carrying that set; the step into a
+// writer then either
+//   - resumes the ALLOCATION context, when the writer's receiver is an
+//     object allocated in that very contour (enumerate's `(n, x)` tuple is
+//     built in a shared `__next__`; which call built THIS tuple is in the
+//     set, so the walk leaves `__next__` only through that call), or
+//   - carries the set on its receiver frame, and an exit is allowed only
+//     into a caller whose receiver can hold one of those objects.
+// A creation point is the object's IDENTITY here, which the identity /
+// assignment / compatibility table in AGENTS.md allows. The reason to
+// split is still only the numeric demand.
+//
+// Bounded: three levels of nested query, 4000 walk states and 64 objects
+// per query, memoized per pass. Past a bound the answer is "any object",
+// which can only over-approximate.
+static const int kHeapDepth = 3, kHeapStates = 4000, kHeapObjs = 64;
+static CallCtx *callctx_step(AVar *a, AVar *x, CallCtx *c, bool &ok, int walk);
+static bool is_load_result(AVar *a);
+static bool av_holds(AVar *y, CreationSet *L) { return y && y->out && y->out->type && y->out->type->set_in(L); }
+static bool av_is_def_of(AVar *y, CreationSet *L) {
+  return L->defs.set_in(y) && y->cs_map && y->cs_map->get(L->sym) == L;
+}
+static const ObjVec *heap_pts(AVar *R, CallCtx *C, CreationSet *L) {
+  static int depth = 0, gen = -1;
+  static std::map<std::tuple<AVar *, CallCtx *, CreationSet *>, const ObjVec *> memo;
+  CallIndex &ix = callindex();
+  if (gen != ix.gen) { memo.clear(); gen = ix.gen; }
+  if (!R || !L || depth >= kHeapDepth) return nullptr;
+  auto key = std::make_tuple(R, C, L);
+  auto m = memo.find(key);
+  if (m != memo.end()) return m->second;
+  memo[key] = nullptr;  // a query reached from itself: any object
+  ++depth;
+  ObjVec out;
+  bool overflow = false;
+  std::set<std::pair<AVar *, CallCtx *>> seen;
+  std::vector<std::pair<AVar *, CallCtx *>> work;
+  seen.insert({R, C});
+  work.push_back({R, C});
+  for (size_t h = 0; h < work.size(); h++) {
+    if (work.size() > (size_t)kHeapStates) { overflow = true; break; }
+    AVar *y = work[h].first;
+    CallCtx *c = work[h].second;
+    if (av_is_def_of(y, L)) {
+      out.push_back({y, c});
+      if (out.size() > (size_t)kHeapObjs) { overflow = true; break; }
+    }
+    for (AVar *x : y->backward)
+      if (av_holds(x, L)) {
+        bool ok;
+        CallCtx *nc = callctx_step(y, x, c, ok, kCallMatchNumeric);
+        if (ok && seen.insert({x, nc}).second) work.push_back({x, nc});
+      }
+  }
+  --depth;
+  const ObjVec *r = overflow ? nullptr : objvec_intern(out);
+  memo[key] = r;
+  return r;
+}
+static bool objs_share_def(const ObjVec *a, const ObjVec *b) {
+  if (!a || !b) return true;
+  for (auto &x : *a)
+    for (auto &y : *b)
+      if (x.first == y.first) return true;
+  return false;
+}
+
 // The context after stepping backward from `a` to `x` (x in a->backward).
 // Sets `ok` false when the step leaves through the wrong call.
 static CallCtx *callctx_step(AVar *a, AVar *x, CallCtx *c, bool &ok, int walk) {
@@ -8228,8 +8320,12 @@ static CallCtx *callctx_step(AVar *a, AVar *x, CallCtx *c, bool &ok, int walk) {
         if (!pos.n) return nullptr;  // allocated here: every caller is real
         for (MPosition *p : pos) {
           AVar *act = E->args.get(p);
-          if (act && act->out && act->out->type && act->out->type->set_in(c->recv_cs))
-            return callctx_intern(nullptr, nullptr, c->recv_cs, act);
+          if (!av_holds(act, c->recv_cs)) continue;
+          // ...and, when the walk knows which objects, a receiver that can
+          // hold one of them.
+          if (c->objs && (walk & kCallMatchNumeric) && !objs_share_def(heap_pts(act, nullptr, c->recv_cs), c->objs))
+            continue;
+          return callctx_intern(nullptr, nullptr, c->recv_cs, act, c->objs);
         }
         ok = false;
         callmatch_refused(a, x, c, E);
@@ -8260,11 +8356,51 @@ static CallCtx *callctx_step(AVar *a, AVar *x, CallCtx *c, bool &ok, int walk) {
       if (lo != r.end() && lo->first.first == a) { ok = false; return nullptr; }
     }
   }
+  // A read: from a load's result into the content it read. Which objects
+  // of L the receiver can hold, under the context the walk is in.
+  if ((walk & kCallMatchNumeric) && is_load_result(a) && !x->contour_is_entry_set && x->contour &&
+      x->contour != GLOBAL_CONTOUR) {
+    CreationSet *L = (CreationSet *)x->contour;
+    return callctx_intern(nullptr, nullptr, L, nullptr, heap_pts(a->container, c, L));
+  }
+  // Any other step into L's content from inside a frame on L -- `append`'s
+  // `merge_in(self, self)` reads the list's content through a primitive,
+  // not a load -- is about the same objects.
+  if ((walk & kCallMatchNumeric) && c && !c->e && c->objs && a->contour_is_entry_set &&
+      !x->contour_is_entry_set && x->contour == c->recv_cs)
+    return callctx_intern(nullptr, nullptr, c->recv_cs, nullptr, c->objs);
   // Out of a container's content into the value written there.
   if ((walk & (kCallMatchFlowGraph | kCallMatchNumeric)) && !a->contour_is_entry_set && a->contour &&
       a->contour != GLOBAL_CONTOUR && x->contour_is_entry_set && x->container &&
-      x->container->contour == x->contour)
-    return callctx_intern(nullptr, nullptr, (CreationSet *)a->contour, x->container);
+      x->container->contour == x->contour) {
+    CreationSet *L = (CreationSet *)a->contour;
+    const ObjVec *objs = ((walk & kCallMatchNumeric) && c && !c->e && !c->recv && c->recv_cs == L) ? c->objs : nullptr;
+    if (objs) {
+      // Where does the writer's receiver come from inside its own contour:
+      // an object allocated here, or a formal?
+      EntrySet *X = (EntrySet *)x->contour;
+      Vec<AVar *> sn, wk;
+      sn.set_add(x->container);
+      wk.add(x->container);
+      bool formal = false;
+      std::set<CallCtx *> ctxs;
+      bool local_def = false;
+      for (int i = 0; i < wk.n && i < 256; i++) {
+        AVar *y = wk.v[i];
+        if (av_is_def_of(y, L)) {
+          local_def = true;
+          for (auto &o : *objs) if (o.first == y) ctxs.insert(o.second);
+        }
+        form_Map(MapElemMPositionAVarPair, mp, X->args) if (mp->value == y) formal = true;
+        for (AVar *z : y->backward)
+          if (z && z->contour == X && av_holds(z, L) && sn.set_add(z)) wk.add(z);
+      }
+      if (ctxs.size() == 1) return *ctxs.begin();  // resume the allocation context
+      if (ctxs.size() > 1) return nullptr;
+      if (local_def && !formal) { ok = false; return nullptr; }  // allocated here, but not one of ours
+    }
+    return callctx_intern(nullptr, nullptr, L, x->container, objs);
+  }
   return nullptr;  // global, or an unrecognized cross-contour step
 }
 
@@ -8379,7 +8515,13 @@ static CSFlowGraph *build_cs_flow_graph_over(CreationSet *cs, Vec<AVar *> &conte
                     x->var && x->var->sym && x->var->sym->name ? x->var->sym->name : "-",
                     xe ? (xe->fun && xe->fun->sym && xe->fun->sym->name ? xe->fun->sym->name : "?") : "cs",
                     xe ? xe->id : (x->contour && x->contour != GLOBAL_CONTOUR ? ((CreationSet *)x->contour)->id : -1),
-                    !nc ? "-" : nc->e ? "e" : "recv", !nc ? 0 : nc->e ? nc->e->id : nc->recv_cs->id);
+                    !nc ? "-" : nc->e ? "e" : nc->recv ? "recv" : "content", !nc ? 0 : nc->e ? nc->e->id : nc->recv_cs->id);
+            if (nc && !nc->e && nc->objs) {
+              fprintf(stderr, "[numpath]     objs:");
+              for (auto &o : *nc->objs) fprintf(stderr, " av%d@ctx%s", o.first->id, o.second ? (o.second->e ? "E" : "R") : "-");
+              fprintf(stderr, "\n");
+            } else if (nc && !nc->e)
+              fprintf(stderr, "[numpath]     objs: ANY\n");
           }
           if (ok && seen.insert({x, nc}).second) {
             path->set_add(x);
@@ -10357,6 +10499,35 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
         }
       }
       (void)by_member;
+      // ifa/156: the NUMERIC key, when the content key names one group and
+      // a channel is written both an int and a float. Built over the mixed
+      // channels only, with the call-, receiver- and object-matched walk, so
+      // a creation point is on a key's path only if that numeric kind can
+      // actually reach ITS objects. The blind content walk cannot say that:
+      // on the enumerate shape both Point creation points sit behind one
+      // list contour and every path reaches both.
+      if (ngroups < 2 && csnumsplit_enabled() && quiescent) {
+        Vec<AVar *> mix;
+        cs_numeric_mix_content(cs, mix);
+        CSFlowGraph *gn = mix.n ? build_cs_flow_graph_over(cs, mix, kCallMatchNumeric) : nullptr;
+        if (gn && gn->keys.n >= 2) {
+          std::vector<std::string> nsig((size_t)defs.n);
+          for (int i = 0; i < defs.n; i++)
+            for (int k = 0; k < gn->keys.n; k++) nsig[(size_t)i] += gn->paths.v[k]->set_in(defs.v[i]) ? '1' : '0';
+          sig.swap(nsig);
+          regroup();
+          if (ngroups >= 2) {
+            g = gn;
+            informative = 1;
+            if (dbg)
+              fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d NUMERIC-KEY -> %d groups\n", analysis_pass,
+                      cs->id, cs->sym->name ? cs->sym->name : "?", defs.n, ngroups);
+          } else {
+            sig.swap(nsig);
+            regroup();
+          }
+        }
+      }
       if (!informative) {
         // No def is on any path: the graph names no partition of THESE
         // defs, so there is nothing to act on. Declining is correct --

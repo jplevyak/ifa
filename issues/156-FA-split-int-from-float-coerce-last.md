@@ -336,17 +336,48 @@ answer with `PYC_CSNUMSPLIT=0`.
 
 `make test`: 441/0 on both backends, all gates green.
 
-**Not reached yet: two lists in ONE CreationSet.** If the same test iterates
-with `for i, p in enumerate(points)` instead of indexing, both lists stay in
-one list contour (`cs=1224`, a creation point in each function, element
-`{Point}`). The owner walk reaches no owner: Point is read out of the
-`enumerate` tuple, and the tuple's def ends the walk. The numeric walk reads
-`cs=1224`'s element and leaves through both functions' `append`s, which is
-correct for that contour. Nothing type-shaped separates the two lists on
-that path, because their types are identical. Separating them needs a walk
-that knows WHICH creation point of `cs=1224` the receiver of a read came
-from: a points-to question on the heap, asked under the call context. That
-is the next step. Until then this shape keeps coercing.
+**Two lists in ONE CreationSet: the enumerate shape (landed 2026-10-12).**
+If the test iterates with `for i, p in enumerate(points)` instead of
+indexing, both lists stay in one list contour (`cs=1288`, a creation point in
+each function, element `{Point}`). The owner walk reaches no owner, because
+Point is read out of the `enumerate` tuple and the tuple's def ends the walk.
+A receiver frame knows only the CreationSet, so the numeric walk read
+`cs=1288`'s element and left through both functions' `append`s.
+
+The fix is to ask the OBJECT question on the heap (`heap_pts`, in the walk's
+context code):
+- **A read** (load result → content of L) asks which creation points of L the
+  receiver can hold, each with its allocation context. It runs the same
+  matched walk backward from the receiver, and the answer rides on a CONTENT
+  frame.
+- **Content → writer** either RESUMES THE ALLOCATION CONTEXT, when the
+  writer's receiver is an object allocated in that contour, or carries the
+  object set on its receiver frame. The first case is enumerate's `(n, x)`:
+  the tuple is built in a shared `__next__`, and the set records which call
+  built this one.
+- **An exit under a receiver frame** is allowed only into a caller whose
+  receiver can hold one of those objects. A primitive read of the content
+  inside a frame on the same L (`append`'s `merge_in(self, self)`) keeps
+  the frame's objects; that read was the last `ANY` leak.
+- **Bounds:** three nested levels, 4000 states and 64 objects per query,
+  memoized per pass. Past a bound the answer is "any object", which only
+  over-approximates.
+
+The creation point is the object's identity here, which the identity /
+assignment / compatibility table allows. The reason to split remains the
+numeric demand.
+
+With that, the int path's read of `cs=1288` yields only `make_centres`' def
+and the float path's only `make_points`'. The rung splits `__new__` by
+caller. The next pass then has two Point creation points, which the
+ordinary content key still puts in one group, so route 4's multi-def branch
+gained a **NUMERIC KEY**. When the content key names one group and a channel
+is a pure int/float mix, the defs are signed by the numeric flow graph's
+paths (`NUMERIC-KEY -> 2 groups`). `tests/numeric_member_split_enumerate.py`
+now prints CPython's `0 2 4` (was `0.0 2.0 4.0`), with no warnings. Sweep `check__default__a941b8ba+84ddb2b5` against `fab67ca1+3bb8922d`:
+verdicts are identical on all 77 programs, and the only change is softrender
+ESS/CSS +1/+1. The corpus has no instance of this shape. `make test`: 442/0
+on both backends.
 
 ## The plan: coercion's failure-to-be-exact is the demand
 
