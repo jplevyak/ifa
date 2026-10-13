@@ -1,11 +1,65 @@
 # ifa/156 — split int from float on demand; coerce only as a last resort
 
-**Status:** open, with the ES-side split LANDED 2026-10-03 (see "Landed"
-below). Rewritten 2026-09-28. It now carries
-[145](closed/145-numeric-coercion-is-not-gated-on-permissive-mode.md)
-(coercion is permissive-only; the use-sensitive residual) and
-[171](closed/171-FA-numeric-union-sustains-itself-through-a-shared-contour.md)
-(the concrete mechanism and its fixture).
+**Status: CLOSED 2026-10-12.** The split side is complete for the corpus:
+no remaining int/float mix originates where a contour split could separate
+it. What is still coerced is a genuine flow or temporal mix, which is the
+last resort this issue's directive allows. The warning noise that remains is
+[189](../189-FA-coercion-warns-per-expression-not-per-origin.md).
+Rewritten 2026-09-28; it carries
+[145](145-numeric-coercion-is-not-gated-on-permissive-mode.md) and
+[171](171-FA-numeric-union-sustains-itself-through-a-shared-contour.md).
+
+## Closure (2026-10-12)
+
+What landed, in order:
+- **EntrySet split** (2026-10-03, `fa_split_numeric_confluences`). A formal
+  holding a pure mix, whose in-edges' seeds differ, splits by seed set.
+- **CreationSet rung** (2026-10-12, `a941b8ba`, `9e3fb17f`). A member or
+  element written only ints and floats, on a contour with one creation
+  point, climbs and splits by caller. It uses a call-, receiver- and
+  object-matched walk. tictactoe now matches CPython.
+- **Contour merge** ([170](../170-FA-contours-minted-on-transient-types-are-never-remerged.md),
+  `455fd925`). It never merges a coerced contour, so it cannot undo a split.
+
+**Measured at closure** with two probes in `fa.cc`, off unless set:
+`IFA_DBG_NUMCLASS` says where a mix enters its contour, and
+`IFA_DBG_NUMORIGIN` follows each mix back across contours to where it first
+forms.
+
+| program | mixed AVars | origins |
+| --- | --- | --- |
+| doom | 763 | 11 local |
+| ac_encode | 963 | 12 local |
+| softrender | 800 | 17 local, 6 field |
+| fysphun | 310 | 1 local, 8 field |
+
+No origin is at a formal, so every caller-side confluence is already split.
+The origins read as genuine:
+- **doom:** `textureX0` is `seg.offset + offset_x` (int), then
+  `textureX1 + p * (...)` (float) on the `za <= 0.1` path. The `scrY*`,
+  `backFloor` and `*TextureY` locals in `draw_seg` merge the same way.
+- **ac_encode:** `decode`'s `u` and `v` are `0` and then `halfway`. This is
+  the fixture's own shape, where `u` genuinely holds 0 and then a float.
+- **softrender:** the projection matrix's rows hold `0` beside
+  `1.0 / tanHalfFOV` in one list, so everything `transform` computes from
+  them inherits the mix. `xStep` is `0` on one branch and `xDist / yDist`
+  on the other.
+- **fysphun:** the `x` / `y` / `dist` fields are written 0 and then floats.
+
+None of these can be separated by contours. They need either path
+duplication after the branch, or nothing at all: most uses are float
+arithmetic, which CPython would produce anyway.
+
+Verification, as listed below: `tests/numeric_union_self_sustaining.py`
+prints CPython's `(2, 1073741822, ...)`. ac_encode compiles. The two-path
+fixture shapes (`tests/numeric_member_split_by_caller.py`,
+`numeric_rows_split_by_caller.py`, `numeric_member_split_enumerate.py`)
+print CPython's ints. No corpus program's output differs from CPython
+because of coercion: mastermind2 and circle differ by timing and
+`sys.version`. The use-sensitive case (`bh`'s `>>`) no longer coerces at
+all; bh's one warning is the C compiler's.
+
+The record below is historical.
 
 ## The directive
 

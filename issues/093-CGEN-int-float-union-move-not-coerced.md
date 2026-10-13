@@ -37,7 +37,7 @@ the branch away.
    widening a genuine temporal `{int, float}` union. The union is real:
    `x` really is either. CPython keeps the value's own type, so matching
    it means NOT collapsing the union to one storage type (a split, or a
-   tagged scalar). That is [156](156-FA-split-int-from-float-coerce-last.md)'s
+   tagged scalar). That is [156](closed/156-FA-split-int-from-float-coerce-last.md)'s
    business, and coercion is permissive-only (`--strict` refuses this
    program).
 

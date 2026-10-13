@@ -181,5 +181,5 @@ cause a program to compile then it was hiding another bug"* (author,
   is asked, and why lower stages starve.
 - [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) —
   decisions taken on transient types, and the missing re-merge.
-- [156](156-FA-split-int-from-float-coerce-last.md) — the numeric demand
+- [156](closed/156-FA-split-int-from-float-coerce-last.md) — the numeric demand
   that coercion currently swallows.

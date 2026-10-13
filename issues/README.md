@@ -68,7 +68,7 @@ one is a lesson this directory paid for.
 | [146](146-remove-all-arbitrary-splitting.md) | **the audit**: what was removed, what is still in the tree (MARK_SETTER is LIVE, stage 5's per-CS fan), and a verdict for every off-by-default splitting lever. |
 | [157](157-FA-all-demand-must-be-evaluated-at-quiescence.md) | **when demand is asked**: the gate is a cascade priority, not quiescence. Give each stage route 4's shape; route ES-side demands to an actuator; terminate on a fixed point. |
 | [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) | decisions taken on transient types (pass-0 unions, momentarily empty contours) are never revisited. Re-derive them at convergence. |
-| [156](156-FA-split-int-from-float-coerce-last.md) | numeric: coercion's failure-to-be-exact is the demand. Backtrack to the pure/mixed boundary and split. Coerce last, permissive-only. |
+| [189](189-FA-coercion-warns-per-expression-not-per-origin.md) | numeric coercion warns per widened expression (546 in the corpus) rather than at the ~50 origins where an int and a float actually meet. |
 | [134](134-remove-the-frontend-forced-split-opt-in.md) | constants: 9 `__pyc_clone_constants__` annotations remain, each with a named replacement. |
 | [132](132-arity-is-representation-not-provenance.md) | arity in CS identity (landed); open: one slot holding two same-sym CSs of different arity. |
 
@@ -145,6 +145,7 @@ one is a lesson this directory paid for.
 | [149](closed/149-the-largest-diagnostic-class-reports-nothing.md) | diagnostic fixes landed | 102 |
 | [150](closed/150-is-not-none-never-folds.md) | fixed | 134 |
 | [151](closed/151-split-an-entryset-on-a-constant-argument-on-demand.md) | CONST_DEMAND landed | 134 |
+| [156](closed/156-FA-split-int-from-float-coerce-last.md) | split side complete: every remaining mix is a genuine flow or temporal merge | 189 |
 | [171](closed/171-FA-numeric-union-sustains-itself-through-a-shared-contour.md) | merged | 156 |
 | [177](closed/177-FA-narrowing-does-not-reach-a-module-global.md) | fixed: a guard's load is reused in its true branch | — |
 | [179](closed/179-LLVM-quameon-computes-nan.md) | fixed by 180 (`**` had no LLVM emitter) | — |

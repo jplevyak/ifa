@@ -1,6 +1,6 @@
 # 171 — a numeric union closed through a loop sustains itself in one shared contour, and coercion hides it
 
-> **CLOSED 2026-09-28 (merged into 156).** The mechanism and its fixture (`tests/numeric_union_self_sustaining.py`) are the concrete instance of [156](../156-FA-split-int-from-float-coerce-last.md), and the plan is carried there.
+> **CLOSED 2026-09-28 (merged into 156).** The mechanism and its fixture (`tests/numeric_union_self_sustaining.py`) are the concrete instance of [156](156-FA-split-int-from-float-coerce-last.md), and the plan is carried there.
 >
 > *Archived during the 2026-09-28 issue consolidation. The text below is the historical record and is not maintained.*
 

@@ -7387,8 +7387,144 @@ int fa_split_numeric_confluences() {
   return nsplit;
 }
 
+// ifa/156 probe (IFA_DBG_NUMCLASS): where does each remaining int/float mix
+// ENTER its contour? Walk back through the same contour's mixed AVars. A
+// mix that only ever forms there, from pure-int and pure-float sources, is
+// a GENUINE flow merge (one variable holds an int on one path and a float
+// on another; no contour split separates that). A mix that arrives already
+// mixed through a formal, a call's return, a heap read or a global was
+// made somewhere else, and that somewhere is where a split could act.
+static void numclass_probe() {
+  static int e = -1;
+  if (e < 0) e = getenv("IFA_DBG_NUMCLASS") ? 1 : 0;
+  if (!e) return;
+  std::map<std::string, int> counts;
+  for (EntrySet *es : fa->ess) {
+    if (!es || !es->fun) continue;
+    for (Var *v : es->fun->fa_all_Vars) {
+      AVar *av = make_AVar(v, es);
+      NumKinds k;
+      if (!av || !av->out || !numeric_kinds(av->out, k) || k.set_count() < 2) continue;
+      if (av->contour != (void *)es) continue;
+      Vec<AVar *> seen, work;
+      seen.set_add(av);
+      work.add(av);
+      bool pure_int = false, pure_float = false;
+      std::string entry;
+      for (int i = 0; i < work.n && i < 4096; i++) {
+        AVar *y = work.v[i];
+        for (AVar *x : y->backward) {
+          if (!x || !x->out) continue;
+          NumKinds xk;
+          if (!numeric_kinds(x->out, xk)) continue;
+          bool mixed = xk.set_count() >= 2;
+          if (x->contour != y->contour) {
+            if (!mixed) {
+              for (Sym *b : xk) if (b) (b->num_kind == IF1_NUM_KIND_FLOAT ? pure_float : pure_int) = true;
+              continue;
+            }
+            cchar *kind = !x->contour_is_entry_set ? (x->contour == GLOBAL_CONTOUR ? "global" : "heap")
+                          : (y->var && y->var->is_filtered) ? "formal" : "call";
+            if (entry.empty()) entry = kind;
+            continue;
+          }
+          if (!mixed) {
+            for (Sym *b : xk) if (b) (b->num_kind == IF1_NUM_KIND_FLOAT ? pure_float : pure_int) = true;
+            continue;
+          }
+          if (seen.set_add(x)) work.add(x);
+        }
+      }
+      std::string cat = !entry.empty() ? "inherited:" + entry
+                        : (pure_int && pure_float) ? "genuine-merge" : "other";
+      counts[cat]++;
+      if (e && getenv("IFA_DBG_NUMCLASS")[0] == '2')
+        fprintf(stderr, "[numclass] %s fun=%s var=%s\n", cat.c_str(),
+                es->fun->sym && es->fun->sym->name ? es->fun->sym->name : "?",
+                v->sym && v->sym->name ? v->sym->name : "-");
+    }
+  }
+  fprintf(stderr, "[numclass] p=%d", analysis_pass);
+  for (auto &c : counts) fprintf(stderr, " %s=%d", c.first.c_str(), c.second);
+  fprintf(stderr, "\n");
+}
+
+// ifa/156 probe (IFA_DBG_NUMORIGIN): follow every int/float mix back ACROSS
+// contours to where it first forms -- the AVars whose own direct sources are
+// all pure, of both kinds. An origin that is a function-local variable is a
+// genuine flow merge (`u = 0` ... `u = halfway`). An origin at a FORMAL is a
+// contour whose callers pass different pure kinds: an EntrySet split (the
+// 2026-10-03 rung) should have separated it. An origin in a CreationSet's
+// content is a field or element written both kinds: a CreationSet split, or
+// a genuinely temporal field.
+static void numorigin_probe() {
+  static int e = -1;
+  if (e < 0) e = getenv("IFA_DBG_NUMORIGIN") ? atoi(getenv("IFA_DBG_NUMORIGIN")) : 0;
+  if (!e) return;
+  auto mixed_kind = [](AVar *a, bool &pi, bool &pf) {
+    pi = pf = false;
+    NumKinds k;
+    if (!a || !a->out || !numeric_kinds(a->out, k)) return -1;
+    for (Sym *b : k) if (b) (b->num_kind == IF1_NUM_KIND_FLOAT ? pf : pi) = true;
+    return (int)k.set_count();
+  };
+  Vec<AVar *> seen, work;
+  for (EntrySet *es : fa->ess) {
+    if (!es || !es->fun) continue;
+    for (Var *v : es->fun->fa_all_Vars) {
+      AVar *av = make_AVar(v, es);
+      bool pi, pf;
+      if (av && av->contour == (void *)es && mixed_kind(av, pi, pf) >= 2 && seen.set_add(av)) work.add(av);
+    }
+  }
+  std::map<std::string, int> origins;
+  std::set<AVar *> is_origin;
+  for (int i = 0; i < work.n && i < 200000; i++) {
+    AVar *y = work.v[i];
+    bool src_i = false, src_f = false, any_mixed_src = false;
+    for (AVar *x : y->backward) {
+      bool pi, pf;
+      int n = mixed_kind(x, pi, pf);
+      if (n < 1) continue;
+      if (n >= 2) {
+        any_mixed_src = true;
+        if (seen.set_add(x)) work.add(x);
+      } else {
+        src_i |= pi;
+        src_f |= pf;
+      }
+    }
+    if (src_i && src_f) {
+      is_origin.insert(y);
+      std::string cat;
+      if (!y->contour_is_entry_set)
+        cat = y->contour == GLOBAL_CONTOUR ? "global" : "field";
+      else {
+        EntrySet *ye = (EntrySet *)y->contour;
+        bool formal = y->var && y->var->is_filtered;
+        form_Map(MapElemMPositionAVarPair, mp, ye->args) if (mp->value == y) formal = true;
+        cat = formal ? "formal" : "local";
+      }
+      if (any_mixed_src) cat += "+mixed";
+      origins[cat]++;
+      if (e >= 2) {
+        EntrySet *ye = y->contour_is_entry_set ? (EntrySet *)y->contour : nullptr;
+        fprintf(stderr, "[numorigin] %s av%d var=%s in=%s%d\n", cat.c_str(), y->id,
+                y->var && y->var->sym && y->var->sym->name ? y->var->sym->name : "-",
+                ye ? (ye->fun && ye->fun->sym && ye->fun->sym->name ? ye->fun->sym->name : "?") : "cs",
+                ye ? ye->id : (y->contour && y->contour != GLOBAL_CONTOUR ? ((CreationSet *)y->contour)->id : -1));
+      }
+    }
+  }
+  fprintf(stderr, "[numorigin] p=%d mixed=%d", analysis_pass, work.n);
+  for (auto &c : origins) fprintf(stderr, " %s=%d", c.first.c_str(), c.second);
+  fprintf(stderr, "\n");
+}
+
 int fa_coerce_numeric_confluences(Vec<ATypeViolation *> &violations) {
   (void)violations;  // scan directly: see phi-carrier note below
+  numclass_probe();
+  numorigin_probe();
   int annotated = 0;
   // Scan every ES-contour variable rather than the BOXING violations:
   // the violation collector deliberately skips Vars
