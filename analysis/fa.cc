@@ -14162,9 +14162,41 @@ static void join_names(Vec<cchar *> &names, cchar *conj, char *buf, int size) {
 
 static cchar *a_or_an(cchar *w) { return strchr("aeiou", w[0]) ? "an" : "a"; }
 
+// ifa/189: a value widened because something it reads was widened is not a
+// second deviation. The coercion used to warn at every expression downstream
+// of one mix -- doom's 11 int/float merges gave 271 warnings, from line 780 to
+// 850 for one `textureX0`. It now warns at the ORIGIN, the AVar an unwidened
+// narrower value flows into, names the lines the narrow and wide values come
+// from, and counts the expressions the widening reaches from there.
+//
+// What a coerced AVar reads: its flow sources (`backward`) and, for a value
+// computed in an EntrySet, the operands of the node that defines it. Looked
+// up, never made: this runs after analysis and must not mint AVars.
+static void coerce_reads(AVar *y, Vec<AVar *> &out) {
+  for (AVar *x : y->backward)
+    if (x && x != y) out.set_add(x);
+  if (!y->contour_is_entry_set || !y->var || !y->var->def) return;
+  for (Var *rv : y->var->def->rvals) {
+    if (!rv) continue;
+    AVar *x = rv->avars.get(y->contour);
+    if (!x) x = rv->avars.get(GLOBAL_CONTOUR);
+    if (x && x != y) out.set_add(x);
+  }
+}
+
+// The source-level numeric kinds `x` holds, unwidened ("int", "float").
+static void unwidened_kinds(AVar *x, Vec<cchar *> &kinds) {
+  if (!x || x->num_coerce || !x->out) return;
+  for (CreationSet *cs : x->out->sorted) {
+    Sym *bt = cs && cs->sym ? to_basic_type(cs->sym->type) : nullptr;
+    if (bt && bt->num_kind) kinds.set_add(numeric_source_name(bt));
+  }
+}
+
 void show_numeric_coercions(FA *fa, FILE *fp) {
   coerced_avars.clear();
   foreach_var(collect_coerced);
+  if (coerced_avars.n > 1) qsort_by_id(coerced_avars);
   // One line per (location, name). A compiler temporary ("expression") is
   // reported only on a line that names no variable -- the temps on a named
   // variable's line are that variable's own arithmetic, the same fact again.
@@ -14173,13 +14205,139 @@ void show_numeric_coercions(FA *fa, FILE *fp) {
   // say "holds both int and float" whatever they were, so a {bool, int}
   // mix widened to int64 (minpng's `struct.pack('<BHH', bool(last), ...)`)
   // was reported as an int/float one.
-  struct Entry { char *loc; cchar *file; int line; cchar *name; char *what; };
-  Vec<Entry *> es;
-  for (AVar *av : coerced_avars) {
+  static int dbg_e = -1;
+  if (dbg_e < 0) dbg_e = getenv("IFA_DBG_NUMWARN") ? 1 : 0;
+  // Origins: a coerced AVar into which an unwidened NARROWER value flows --
+  // where the int enters the float. The wide side may itself be widened
+  // already (a loop-carried `u = 0` ... `u = halfway`). Every other coerced
+  // AVar is attributed to the origins it reads, through coerced AVars and
+  // through values that hold only the widened type: once a field is widened a
+  // read of it is a plain float64, not annotated itself, while the AVar it
+  // feeds was annotated when it was still mixed. One that reaches no origin is
+  // reported on its own, as before.
+  auto narrow_into = [](AVar *y, AVar *x) {
+    Vec<cchar *> k;
+    unwidened_kinds(x, k);
+    cchar *to_src = numeric_source_name(y->num_coerce);
+    for (cchar *nm : k)
+      if (nm && nm != to_src) return true;  // string literals: pointer compare is exact
+    return false;
+  };
+  Vec<AVar *> origins;
+  for (AVar *y : coerced_avars) {
+    bool narrow = false;
+    for (AVar *x : y->backward) narrow |= x && narrow_into(y, x);
+    if (narrow) origins.set_add(y);
+  }
+  Map<AVar *, Vec<AVar *> *> reaches;  // origin -> the coerced AVars it widens
+  for (AVar *y : coerced_avars) {
+    if (origins.set_in(y)) continue;
+    Vec<AVar *> seen, work, found;
+    seen.set_add(y);
+    work.add(y);
+    for (int i = 0; i < work.n && i < 5000; i++) {  // bounded; a miss only reports `y` on its own
+      Vec<AVar *> rd;
+      coerce_reads(work[i], rd);
+      for (AVar *x : rd) {
+        if (!x || !seen.set_add(x)) continue;
+        if (!x->num_coerce) {
+          bool widened_only = x->out && x->out->n;
+          if (widened_only)
+            for (CreationSet *c : x->out->sorted)
+              widened_only &= c && c->sym && to_basic_type(c->sym->type) == y->num_coerce;
+          if (!widened_only) continue;
+        }
+        if (origins.set_in(x)) found.set_add(x);
+        else work.add(x);
+      }
+    }
+    if (!found.set_count()) {
+      origins.set_add(y);
+      continue;
+    }
+    for (AVar *o : found) {
+      if (!o) continue;
+      Vec<AVar *> *r = reaches.get(o);
+      if (!r) reaches.put(o, (r = new Vec<AVar *>));
+      r->set_add(y);
+    }
+  }
+  struct Entry {
+    char *loc;
+    cchar *file;
+    int line;
+    cchar *name;
+    char *what;
+    char *nar;  // the narrower kinds, "int" or "bool or int"
+    AVar *av;
+    cchar *elem_of;  // an unnamed CreationSet member: its container's type, "list"
+  };
+  // The line of the write that carries `x` into `y`: where `x` is defined,
+  // or for a value with no defining node (a constant, a field write's value)
+  // the node that owns `x` as a temporary, a node that reads `x` and assigns
+  // `y`, or one that reads `x` and a receiver holding `y`'s CreationSet.
+  Map<Var *, Vec<std::pair<PNode *, EntrySet *>> *> readers;
+  bool readers_built = false;
+  auto source_line = [&](AVar *y, AVar *x, cchar **f, int *ln) -> bool {
+    if (!readers_built) {
+      readers_built = true;
+      for (EntrySet *es : fa->ess)
+        if (es && es->fun)
+          for (PNode *pn : es->fun->fa_all_PNodes)
+            for (Vec<Var *> *vs : {&pn->rvals, &pn->tvals})
+              for (Var *rv : *vs) {
+                if (!rv) continue;
+                auto *r = readers.get(rv);
+                if (!r) readers.put(rv, (r = new Vec<std::pair<PNode *, EntrySet *>>));
+                r->add({pn, es});
+              }
+    }
+    int col = 0;
+    // A source with its own defining node (an assignment) is located there,
+    // not at whatever copy carries it into `y`.
+    if (x->var && x->var->def && extract_pnode_loc(x->var->def, f, ln, &col) && *f && *ln > 0) return true;
+    if (x->var)
+      if (auto *r = readers.get(x->var))
+        for (auto &pe : *r) {
+          PNode *pn = pe.first;
+          // A temporary the node owns (a setter's value, fill_tvals) is
+          // that node's own: the node is the write.
+          bool writes = false;
+          for (Var *tv : pn->tvals) writes |= tv == x->var;
+          if (writes)
+            ;
+          else if (y->contour_is_entry_set || y->contour == GLOBAL_CONTOUR)
+            for (Var *lv : pn->lvals) writes |= lv == y->var;
+          else
+            for (Var *rv : pn->rvals) {
+              AVar *ra = rv && rv != x->var ? rv->avars.get(pe.second) : nullptr;
+              if (!ra && rv && rv != x->var) ra = rv->avars.get(GLOBAL_CONTOUR);
+              writes |= ra && ra->out && ra->out->in((CreationSet *)y->contour);
+            }
+          if (writes && extract_pnode_loc(pn, f, ln, &col) && *f && *ln > 0) return true;
+        }
+    return find_avar_user_loc(x, f, ln, &col) && *f && *ln > 0;
+  };
+  auto entry_for = [&](AVar *av) -> Entry * {
     cchar *filename = nullptr;
     int line = 0, col = 0;
     bool found = find_avar_user_loc(av, &filename, &line, &col);
-    if (!found || !filename || line <= 0) continue;
+    // A field or element has no line of its own (find_avar_user_loc gives its
+    // class's): report it at its first write.
+    if (!av->contour_is_entry_set && av->contour != GLOBAL_CONTOUR) found = false, filename = nullptr, line = 0;
+    if ((!found || !filename || line <= 0) && origins.set_in(av))
+      for (AVar *x : av->backward) {
+        Vec<cchar *> k;
+        unwidened_kinds(x, k);
+        cchar *f = nullptr;
+        int ln = 0;
+        if (k.set_count() && source_line(av, x, &f, &ln) && (!filename || (!strcmp(f, filename) && ln < line))) {
+          filename = f;
+          line = ln;
+          found = true;
+        }
+      }
+    if (!found || !filename || line <= 0) return nullptr;
     char loc[512];
     snprintf(loc, sizeof(loc), "%s:%d", filename, line);
     // Members in a fixed order (bool, int, float, complex), not hash order.
@@ -14188,7 +14346,7 @@ void show_numeric_coercions(FA *fa, FILE *fp) {
     cchar *to_src = numeric_source_name(av->num_coerce);
     Vec<cchar *> ordered, narrow;
     Vec<Sym *> *held_basics = coerce_members.get(av);
-    if (!held_basics) continue;
+    if (!held_basics) return nullptr;
     for (int k : order)
       for (Sym *bt : *held_basics) {
         if (!bt || !bt->num_kind || (k < 0) != (bt == sym_bool) || (k >= 0 && bt->num_kind != k)) continue;
@@ -14202,17 +14360,19 @@ void show_numeric_coercions(FA *fa, FILE *fp) {
     char held[256], nar[256], what[1024];
     join_names(ordered, " and ", held, sizeof(held));
     join_names(narrow, " or ", nar, sizeof(nar));
-    if (ordered.n == 2)
-      snprintf(held, sizeof(held), "both %s and %s", ordered[0], ordered[1]);
+    if (ordered.n == 2) snprintf(held, sizeof(held), "both %s and %s", ordered[0], ordered[1]);
     if (narrow.n)
       snprintf(what, sizeof(what), "holds %s; widened to %s, so %s %s value in it prints as %s %s (CPython keeps the %s)",
                held, to, a_or_an(narrow[0]), nar, a_or_an(to_src), to_src, nar);
     else  // only widths of one source type, e.g. int32 and int64: nothing prints differently
       snprintf(what, sizeof(what), "holds %s values of different widths; widened to %s", held, to);
-    es.add(new Entry{dupstr(loc), filename, line, av->var && av->var->sym ? av->var->sym->name : nullptr, dupstr(what)});
-  }
-  coerced_avars.clear();
-  qsort(es.v, es.n, sizeof(es[0]), [](const void *a, const void *b) {
+    return new Entry{dupstr(loc), filename, line, av->var && av->var->sym ? av->var->sym->name : nullptr, dupstr(what),
+                     dupstr(nar), av,
+                     !av->contour_is_entry_set && av->contour != GLOBAL_CONTOUR && !(av->var && av->var->sym && av->var->sym->name)
+                         ? ((CreationSet *)av->contour)->sym->name
+                         : nullptr};
+  };
+  auto by_loc = [](const void *a, const void *b) {
     Entry *x = *(Entry *const *)a, *y = *(Entry *const *)b;
     // By file, then by NUMERIC line: "f.py:10" sorts before "f.py:3".
     if (int c = strcmp(x->file, y->file)) return c;
@@ -14222,20 +14382,131 @@ void show_numeric_coercions(FA *fa, FILE *fp) {
     } else if (int c = strcmp(x->name, y->name))
       return c;
     return strcmp(x->what, y->what);
-  });
-  for (int i = 0; i < es.n; i++) {
-    Entry *e = es[i];
-    if (i && !strcmp(es[i - 1]->loc, e->loc)) {
-      if (!e->name) continue;  // this line already named a variable
-      if (es[i - 1]->name && !strcmp(es[i - 1]->name, e->name)) continue;
+  };
+  // The reported lines of a set of entries, deduplicated as the warnings are.
+  auto kept = [](Vec<Entry *> &es, Vec<Entry *> &out) {
+    for (int i = 0; i < es.n; i++) {
+      Entry *e = es[i];
+      if (i && !strcmp(es[i - 1]->loc, e->loc)) {
+        if (!e->name) continue;  // this line already named a variable
+        if (es[i - 1]->name && !strcmp(es[i - 1]->name, e->name)) continue;
+      }
+      out.add(e);
     }
-    if (e->name)
-      fprintf(fp, "%s: warning: '%s' %s. Permissive numeric coercion, refused under --strict (issues/171)\n", e->loc,
-              e->name, e->what);
-    else
-      fprintf(fp, "%s: warning: an expression %s. Permissive numeric coercion, refused under --strict (issues/171)\n",
-              e->loc, e->what);
+  };
+  Vec<Entry *> es;
+  for (AVar *o : origins) {
+    Entry *e = o ? entry_for(o) : nullptr;
+    if (e) es.add(e);
+    if (dbg_e && o) {
+      Vec<AVar *> *r = reaches.get(o);
+      fprintf(stderr, "[numwarn] origin av%d '%s' %s%d at %s reaches %d\n", o->id,
+              o->var && o->var->sym && o->var->sym->name ? o->var->sym->name : "-",
+              o->contour_is_entry_set ? "es" : o->contour == GLOBAL_CONTOUR ? "global" : "cs",
+              o->contour_is_entry_set ? ((EntrySet *)o->contour)->id
+              : o->contour == GLOBAL_CONTOUR ? 0 : ((CreationSet *)o->contour)->id,
+              e ? e->loc : "(no line)", r ? r->set_count() : 0);
+    }
   }
+  qsort(es.v, es.n, sizeof(es[0]), by_loc);
+  Vec<Entry *> shown;
+  kept(es, shown);
+  for (int i = 0; i < shown.n; i++) {
+    Entry *e = shown[i];
+    // Every origin reported on this line, with its sources and its reach.
+    Vec<AVar *> here, reach;
+    for (Entry *x : es)
+      if (!strcmp(x->loc, e->loc) && (!e->name || (x->name && !strcmp(x->name, e->name)))) here.set_add(x->av);
+    Vec<int> narrow_lines, wide_lines;
+    cchar *to_src = numeric_source_name(e->av->num_coerce);
+    for (AVar *o : here) {
+      if (!o) continue;
+      for (AVar *x : o->backward) {
+        if (!x) continue;
+        // A source already widened (the loop-carried side of `u = 0` ...
+        // `u = halfway`) is the wide side.
+        Vec<cchar *> k;
+        unwidened_kinds(x, k);
+        if (!k.set_count() && x->num_coerce) k.set_add(to_src);
+        if (!k.set_count()) continue;
+        cchar *f = nullptr;
+        int ln = 0;
+        if (!source_line(o, x, &f, &ln) || strcmp(f, e->file)) continue;
+        (narrow_into(o, x) ? narrow_lines : wide_lines).add(ln);
+      }
+      if (Vec<AVar *> *r = reaches.get(o))
+        for (AVar *y : *r) if (y) reach.set_add(y);
+    }
+    char from[512] = "";
+    auto lines_of = [](Vec<int> &v, char *buf, int size) {
+      Vec<int> s;
+      for (int x : v) if (x) s.add(x);
+      std::sort(s.v, s.v + s.n);
+      s.n = std::unique(s.v, s.v + s.n) - s.v;
+      buf[0] = 0;
+      int shown = std::min(s.n, 4);
+      for (int j = 0; j < shown; j++) {
+        int n = strlen(buf);
+        snprintf(buf + n, size - n, "%s%d", j == 0 ? "" : j == s.n - 1 ? " and " : ", ", s[j]);
+      }
+      if (s.n > shown) {
+        int n = strlen(buf);
+        snprintf(buf + n, size - n, " and %d more", s.n - shown);
+      }
+      return s.n;
+    };
+    char nl[128], wl[128];
+    int nn = lines_of(narrow_lines, nl, sizeof(nl)), nw = lines_of(wide_lines, wl, sizeof(wl));
+    // Sources all on the warning's own line (a merge inside a library call,
+    // `sum`'s start) say nothing the location does not.
+    bool elsewhere = false;
+    for (int x : narrow_lines) elsewhere |= x != e->line;
+    for (int x : wide_lines) elsewhere |= x != e->line;
+    if (!elsewhere)
+      ;
+    else if (nn && nw && e->nar[0])
+      snprintf(from, sizeof(from), ". The %s comes from line%s %s, the %s from line%s %s", e->nar, nn > 1 ? "s" : "", nl,
+               to_src, nw > 1 ? "s" : "", wl);
+    else if (nn && e->nar[0])
+      snprintf(from, sizeof(from), ". The %s comes from line%s %s", e->nar, nn > 1 ? "s" : "", nl);
+    // The expressions this origin widens, as they would have been reported.
+    Vec<Entry *> rs, rshown;
+    for (AVar *y : reach)
+      if (Entry *x = y ? entry_for(y) : nullptr)
+        if (strcmp(x->loc, e->loc)) rs.add(x);
+    qsort(rs.v, rs.n, sizeof(rs[0]), by_loc);
+    kept(rs, rshown);
+    char also[256] = "";
+    if (rshown.n) {
+      int lo = rshown[0]->line, hi = rshown[0]->line;
+      bool one_file = true;
+      for (Entry *x : rshown) {
+        lo = std::min(lo, x->line);
+        hi = std::max(hi, x->line);
+        one_file &= !strcmp(x->file, e->file);
+      }
+      if (one_file && lo == hi)
+        snprintf(also, sizeof(also), "%s widens 1 more expression, on line %d", from[0] ? "; it" : ". It", lo);
+      else if (one_file)
+        snprintf(also, sizeof(also), "%s widens %d more expressions, on lines %d-%d", from[0] ? "; it" : ". It",
+                 rshown.n, lo, hi);
+      else
+        snprintf(also, sizeof(also), "%s widens %d more expression%s", from[0] ? "; it" : ". It", rshown.n,
+                 rshown.n > 1 ? "s" : "");
+    }
+    if (dbg_e)
+      for (Entry *x : rshown) fprintf(stderr, "[numwarn] %s <- %s\n", x->loc, e->loc);
+    if (e->name)
+      fprintf(fp, "%s: warning: '%s' %s%s%s. Permissive numeric coercion, refused under --strict (issues/171)\n",
+              e->loc, e->name, e->what, from, also);
+    else if (e->elem_of)
+      fprintf(fp, "%s: warning: the elements of this %s hold%s%s%s. Permissive numeric coercion, refused under --strict (issues/171)\n",
+              e->loc, e->elem_of, e->what + (strncmp(e->what, "holds", 5) ? 0 : 5), from, also);
+    else
+      fprintf(fp, "%s: warning: an expression %s%s%s. Permissive numeric coercion, refused under --strict (issues/171)\n",
+              e->loc, e->what, from, also);
+  }
+  coerced_avars.clear();
 }
 
 // ifa/issues/112: this used to walk `v->avars` by raw slot index. That

@@ -4,7 +4,7 @@
 no remaining int/float mix originates where a contour split could separate
 it. What is still coerced is a genuine flow or temporal mix, which is the
 last resort this issue's directive allows. The warning noise that remains is
-[189](../189-FA-coercion-warns-per-expression-not-per-origin.md).
+[189](189-FA-coercion-warns-per-expression-not-per-origin.md).
 Rewritten 2026-09-28; it carries
 [145](145-numeric-coercion-is-not-gated-on-permissive-mode.md) and
 [171](171-FA-numeric-union-sustains-itself-through-a-shared-contour.md).
