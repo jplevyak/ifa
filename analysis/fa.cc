@@ -1222,58 +1222,6 @@ static bool same_eq_classes(Setters *s, Setters *ss) {
 
 
 
-static int different_marked_args(AVar *a1, AVar *a2, int offset, AVar *basis = 0) {
-  Vec<void *> marks1, marks2;
-  AVar *basis1 = basis ? basis : a2;
-  int found1 = 0, found2 = 0;
-  if (a1->mark_map) {
-    form_Map(MarkElem, x, *a1->mark_map) {
-      if (basis1->mark_map) {
-        int m = basis1->mark_map->get(x->key);
-        if (m) {
-          found1 = 1;
-          if (cpa_mark_enabled() || m - offset == x->value) marks1.set_add(x->key);
-        }
-      }
-    }
-  }
-  if (a2->mark_map) {
-    form_Map(MarkElem, x, *a2->mark_map) {
-      if (basis) {
-        if (basis->mark_map) {
-          int m = basis->mark_map->get(x->key);
-          if (m) {
-            found2 = 1;
-            if (cpa_mark_enabled() || m - offset == x->value) marks2.set_add(x->key);
-          }
-        }
-      } else {
-        found2 = 1;
-        marks2.set_add(x->key);
-      }
-    }
-  }
-  int diff = found1 && found2 && marks1.some_disjunction(marks2);
-  // ifa/issues/074 (IFA_DBG_MARKWHY): mark_map is keyed by CreationSet, so
-  // the test above is a CS-SET comparison -- the same question a
-  // cartesian-product contour name asks -- but taken over only the CSs
-  // that pass the distance filter `m - offset == x->value`. This counts
-  // how often that filter changes the answer: `cs_differ` = the raw CS
-  // sets differ too (a CPA name would separate these as well), `cs_same`
-  // = identical CS sets separated purely by depth-from-generator, i.e.
-  // a split no type-tuple naming would ever make.
-  if (diff && mark_why_enabled()) {
-    Vec<void *> all1, all2;
-    if (a1->mark_map) form_Map(MarkElem, x, *a1->mark_map)
-        if (basis1->mark_map && basis1->mark_map->get(x->key)) all1.set_add(x->key);
-    if (a2->mark_map) form_Map(MarkElem, x, *a2->mark_map) {
-        if (!basis) all2.set_add(x->key);
-        else if (basis->mark_map && basis->mark_map->get(x->key)) all2.set_add(x->key);
-      }
-    if (all1.some_disjunction(all2)) ++census.mark_cs_differ; else ++census.mark_cs_same;
-  }
-  return diff;
-}
 
 // ifa/issues/074 (IFA_DBG_INCOMPAT): which CLAUSE of the compatibility
 // test separates edges from contours. The `rets` clause compares the
@@ -1381,24 +1329,14 @@ static int edge_type_compatible_with_edge(AEdge *e, AEdge *ee, EntrySet *es, int
     bool kc = es_wants_constants(es, p);
     AType *etype = edge_arg_type(e_arg, e->match->formal_filters.get(p), kc);
     AType *eetype = edge_arg_type(ee_arg, ee->match->formal_filters.get(p), kc);
-    if (!fmark) {
-      if (etype->n && eetype->n && etype != eetype) return ++census.ic_arg, 0;
-    } else {
-      AVar *es_arg = es->args.get(p);
-      if (different_marked_args(ee_arg, e_arg, 2, es_arg)) return ++census.ic_arg, 0;
-    }
+    if (etype->n && eetype->n && etype != eetype) return ++census.ic_arg, 0;
   }
   if (e->rets.n != ee->rets.n) return ++census.ic_retn, 0;
   for (int i = 0; i < e->rets.n; i++) {
     if (ee->rets[i]->lvalue && e->rets.v[i]->lvalue) {
-      if (!fmark) {
-        if (ee->rets[i]->lvalue->out->type->n && e->rets.v[i]->lvalue->out->type->n &&
-            ee->rets[i]->lvalue->out->type != e->rets.v[i]->lvalue->out->type)
-          return ++census.ic_ret, 0;
-      } else {
-        if (different_marked_args(ee->rets[i]->lvalue, e->rets.v[i]->lvalue, 1, es->rets[i]->lvalue))
-          return ++census.ic_ret, 0;
-      }
+      if (ee->rets[i]->lvalue->out->type->n && e->rets.v[i]->lvalue->out->type->n &&
+          ee->rets[i]->lvalue->out->type != e->rets.v[i]->lvalue->out->type)
+        return ++census.ic_ret, 0;
     }
   }
   return 1;
@@ -1431,24 +1369,18 @@ static int edge_type_compatible_with_entry_set(AEdge *e, EntrySet *es, int fmark
       AVar *es_arg = es->args.get(p), *e_arg = e->args.get(p);
       if (!e_arg) continue;
       AType *etype = edge_arg_type(e_arg, e->match->formal_filters.get(p), es_wants_constants(es, p));
-      if (!fmark) {
-        AType *stype = es_arg->out->type;
-        if (typekey_enabled() && es->type_key_pass >= 0) {
-          AType *k = es->type_key.get(p);
-          if (k) stype = k;  // durable key wins over the mid-pass value
-        }
-        if (etype->n && stype->n && etype != stype) return ++census.ic_arg, 0;
-      } else if (different_marked_args(e_arg, es_arg, 2))
-        return ++census.ic_arg, 0;
+      AType *stype = es_arg->out->type;
+      if (typekey_enabled() && es->type_key_pass >= 0) {
+        AType *k = es->type_key.get(p);
+        if (k) stype = k;  // durable key wins over the mid-pass value
+      }
+      if (etype->n && stype->n && etype != stype) return ++census.ic_arg, 0;
     }
     if (es->rets.n != e->rets.n) return ++census.ic_retn, 0;
     for (int i = 0; i < e->rets.n; i++) {
       if (es->rets[i]->lvalue && e->rets.v[i]->lvalue) {
-        if (!fmark) {
-          if (es->rets[i]->lvalue->out->type->n && e->rets.v[i]->lvalue->out->type->n &&
-              es->rets[i]->lvalue->out->type != e->rets.v[i]->lvalue->out->type)
-            return ++census.ic_ret, 0;
-        } else if (different_marked_args(es->rets[i]->lvalue, e->rets.v[i]->lvalue, 1))
+        if (es->rets[i]->lvalue->out->type->n && e->rets.v[i]->lvalue->out->type->n &&
+            es->rets[i]->lvalue->out->type != e->rets.v[i]->lvalue->out->type)
           return ++census.ic_ret, 0;
       }
     }
@@ -6787,71 +6719,6 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
   return dec ? apply_entry_set_split(dec) : 0;
 }
 
-static void build_type_mark(AVar *av, CreationSet *cs, int mark = 1) {
-  int m = av->mark_map ? av->mark_map->get(cs) : 0;
-  if (!m) {
-    if (!av->out->type->set_in(cs)) {
-      log(LOG_SPLITTING, "[btm] av %d skip: cs %d (sym %s) not in out->type (size=%d)\n",
-          av->id, cs->id, cs->sym && cs->sym->name ? cs->sym->name : "(anon)",
-          av->out->type->set_count());
-      return;
-    }
-    log(LOG_SPLITTING, "[btm] av %d MARK cs %d (sym %s) dist=%d\n",
-        av->id, cs->id, cs->sym && cs->sym->name ? cs->sym->name : "(anon)", mark);
-    if (!av->mark_map) av->mark_map = new MarkMap;
-    av->mark_map->put(cs, mark);
-  } else if (m > mark)
-    av->mark_map->put(cs, mark);
-  else if (m <= mark)
-    return;
-  for (AVar *y : av->forward) if (y) build_type_mark(y, cs, mark + 1);
-}
-
-// To handle recursion, mark value*AVar distances from the nearest
-// AVar generating the value.  Dataflow is considered to be only
-// from lower to higher distances for the purpose of splitting.
-// Issue 033 M5-prelude: joint form of build_type_marks, seeded from
-// MANY confluences at once (the stage-4 B4/P3 shape). Backward- and
-// forward-closure both distribute over union, so the joint closure
-// is EXACTLY the union of the per-seed closures; marks are
-// per-(AVar, CS) minimum distances from generation points, so joint
-// seeding computes the min over all seeds' gen sets — the same
-// deterministic union semantics the stage-4 rework adopted. One
-// closure + one collect replaces N per-confluence recomputations
-// (measured 47.7s closure + 36.6s collect of pygasus's 85s
-// mark_type cost before this rework).
-static void build_joint_type_marks(Vec<AVar *> &seeds, Accum<AVar *> &acc) {
-  // collect all contributing nodes — index-based so adds appended
-  // to acc.asvec during iteration are visited (transitive closure).
-  // The range-for over `acc.asvec` captures end() at loop entry and
-  // only walks the 1-hop neighborhood — see issue 007 for the
-  // finding that this was a long-standing one-level cap.
-  for (AVar *av : seeds) if (av) acc.add(av);
-  for (int i = 0; i < acc.asvec.n; i++) {
-    AVar *x = acc.asvec.v[i];
-    for (AVar *y : x->backward) if (y) acc.add(y);
-  }
-  for (int i = 0; i < acc.asvec.n; i++) {
-    AVar *x = acc.asvec.v[i];
-    for (AVar *y : x->forward) if (y) acc.add(y);
-  }
-  // mark them
-  for (AVar *x : acc.asvec) {
-    if (x->gen) for (CreationSet *s : *x->gen) if (s && s->sym != sym_nil_type) {
-        CreationSet *orig = s;
-        if (s->sym != s->sym->type) s = s->sym->type->abstract_type->v[0];
-        log(LOG_SPLITTING, "[btm-seed] av %d gen-cs %d (sym %s) -> mark-cs %d (sym %s) %s\n",
-            x->id, orig->id, orig->sym && orig->sym->name ? orig->sym->name : "(anon)",
-            s->id, s->sym && s->sym->name ? s->sym->name : "(anon)",
-            orig == s ? "no-subst" : "SUBST");
-        build_type_mark(x, s);
-      }
-  }
-}
-
-
-
-static void clear_marks(Accum<AVar *> &acc) { for (AVar *x : acc.asvec) x->mark_map = 0; }
 
 // Per-pass reset. NOTE what deliberately SURVIVES a pass (survey
 // S3) -- the analysis re-derives flow state from scratch each
@@ -6934,7 +6801,6 @@ static void clear_avar(AVar *av) {
   av->backward.clear();
   av->forward.clear();
   av->arg_of_send.clear();
-  av->mark_map = 0;
   av->live_arg = 0;
   av->gates_flow = 0;
   av->needs_fat = 0;
@@ -7682,31 +7548,6 @@ Ldone:
   return 1;
 }
 
-static void collect_cs_marked_confluences(Vec<AVar *> &confluences) {
-  confluences.clear();
-  for (CreationSet *cs : fa->css) {
-    for (AVar *av : cs->vars) {
-      int nback_marked = 0, ndiff = 0;
-      for (AVar *x : av->backward) if (x && x->mark_map) {
-        nback_marked++;
-        if (!av->contour_is_entry_set && av->contour != GLOBAL_CONTOUR) {
-          if (different_marked_args(x, av, 1)) {
-            ndiff++;
-            confluences.set_add(av);
-            break;
-          }
-        }
-      }
-      if (av->mark_map || nback_marked)
-        log(LOG_SPLITTING, "[ccmc] cs %d (sym %s) ivar av %d marked=%d back_marked=%d diff=%d\n",
-            cs->id, cs->sym && cs->sym->name ? cs->sym->name : "(anon)", av->id,
-            av->mark_map ? 1 : 0, nback_marked, ndiff);
-    }
-  }
-  confluences.set_to_vec();
-  qsort_by_id(confluences);
-}
-
 static void split_eq_class(Setters *eq_class, Vec<AVar *> &diff) {
   Setters *diff_class = new Setters, *remaining_class = new Setters;
   diff_class->set_union(diff);
@@ -7764,7 +7605,7 @@ static void recompute_eq_classes(Vec<Setters *> &ss) {
   // to `cs=3103`.
 }
 
-enum AKind { AKIND_TYPE, AKIND_SETTER, AKIND_MARK };
+enum AKind { AKIND_TYPE, AKIND_SETTER };
 
 
 
@@ -7786,7 +7627,6 @@ enum AKind { AKIND_TYPE, AKIND_SETTER, AKIND_MARK };
     // reach; PYC_NILSTORE separated "not analyzed" (raw empty too) from
     // "carries only nil" (raw non-empty).
     if (akind == AKIND_TYPE && !x->out->type->n && !(nilstore_enabled() && x->out->n)) continue;
-    if (akind == AKIND_MARK && !x->mark_map) continue;
     ss.add(new Setters);
     ss[ss.n - 1]->set_add(x);
   }
@@ -10423,6 +10263,29 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
       if (dbg)
         fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d DECLINED (single creation point)\n", analysis_pass,
                 cs->id, cs->sym->name ? cs->sym->name : "?", defs.n);
+      continue;
+    }
+    // ifa/146: partition only a candidate that carries a DEMAND. A
+    // candidate nominated by a type CONFLUENCE alone (tc_cs_dropped) says
+    // "this CreationSet holds a union", which is a fact; `demanded` is the
+    // set something observed and could not proceed on (a violation's reach,
+    // a mixed field write, an untagged dispatch, an irrepresentable element,
+    // and whatever the backtrack reached from those). The rungs above for a
+    // single creation point already ask for a demand; this one did not.
+    //
+    // Measured 2026-10-13, one binary, corpus `check` A/B
+    // (check__default__7b644df7+14447c89 vs
+    // check__PYC_CSDEMANDONLY_1__7b644df7+14447c89): verdicts identical on
+    // all 77 programs, warning counts too. Contours a wash, moving in both
+    // directions (EntrySets 31,081 -> 31,094, CreationSets 120,849 ->
+    // 120,841, container CSs 2,732 -> 2,735; rubik2 -35 CSs, plcfrs +45).
+    // So the fact-driven partition was not earning its keep. ifa/170 step 3
+    // also needs it gone: it re-split every merged pair (`confluence=28
+    // demand=0`).
+    if (!demanded.set_in(cs)) {
+      if (dbg)
+        fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d DECLINED (confluence only, no demand)\n",
+                analysis_pass, cs->id, cs->sym->name ? cs->sym->name : "?", defs.n);
       continue;
     }
     // The RIPENESS WAIT was removed 2026-09-07, with the cap that
@@ -13194,84 +13057,22 @@ static bool cs_demanded(CreationSet *cs) {
   }
   // 4) split based on setters of type using marks.
   //
-  // Reworked (survey B4/P3): the previous shape looped over every
-  // type confluence, and per iteration seeded that confluence's
-  // marks, re-ran a GLOBAL collect + the full setter-split
-  // cascade, and never cleared the marks — so iteration k saw the
-  // union of marks from iterations 1..k-1 (an iteration-order
-  // dependence, issue-009/021 flavor), the stage was quadratic,
-  // and when nothing split the stale marks leaked into stage 5
-  // and the converged state. Marks are per-(AVar, CS) minimum
-  // distances from generation points; seeding all confluences
-  // jointly computes the same minima deterministically, and one
-  // collect + one split over the joint marking dominates every
-  // per-confluence run of the old loop.
-  if (!analyze_again) {
-    Accum<AVar *> acc;
-    // Issue 033 M5-prelude: ONE build_joint_type_marks call, not a
-    // per-confluence loop with the shared accumulator. The loop form
-    // re-scanned and re-marked the whole (growing) union closure per
-    // seed — the final mark state is identical (build_type_mark
-    // min-updates are idempotent and the last iteration already
-    // marked over the full union), but the cost was O(confluences x
-    // union): 21 of pygasus's 23.8 extend seconds after the stage-2
-    // joint rework exposed it as the next term.
-    // ifa/146 D, still OPEN: this is the MARK_SETTER stage, and it is
-    // mark-driven -- `collect_cs_marked_confluences` finds its confluences
-    // by comparing `mark_map`s, and `compute_setters(..., AKIND_MARK)`
-    // keys the setters on marks. Marks are provenance, so by the rule this
-    // should go the way the other three mark splitters did.
-    //
-    // It does NOT go, because unlike them it is load-bearing. Measured
-    // 2026-09-08 with the stage's marked confluences suppressed: pyc suite
-    // 313 / 0 and corpus verdicts identical EXCEPT `voronoi2`, which stops
-    // compiling (`no matching function for call to '_CG_f_...'`) --
-    // verified alone, not a sweep artifact. It also fires on `plcfrs`,
-    // where suppressing it REMOVES contours (ess 1088 -> 1075).
-    //
-    // So retiring it needs the demand-driven separation `voronoi2` is
-    // getting from marks here to be supplied some other way, which is real
-    // work rather than a deletion. Left in place with this note rather
-    // than removed on a hope.
-    build_joint_type_marks(confluences, acc);
-    Vec<AVar *> marked_confluences;
-    collect_cs_marked_confluences(marked_confluences);
-    Accum<AVar *> avs;
-    for (AVar *av : marked_confluences) {
-      int r = compute_setters(av, avs, AKIND_MARK);
-      log(LOG_SPLITTING, "[stage4] marked-conf av %d %s compute_setters(MARK) -> %d\n", av->id,
-          av->var && av->var->sym && av->var->sym->name ? av->var->sym->name : "(anon)", r);
-    }
-    ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-      census.stage_aes0 = fa->all_entry_sets.n, census.stage_acs0 = fa->all_creation_sets.n;
-    cur_split_stage = (int)FAPassStage::MARK_SETTER;
-    if (split_for_setters(avs, analyze_again)) analyze_again = 1;
-    fa->stage_time[(int)FAPassStage::MARK_SETTER] += stage_timer.lap();
-    if (analyze_again) {
-      record_fa_event(FAPassStage::MARK_SETTER, analyze_again, ess0, css0, viol0);
-        if (getenv("PYC_DBG_STAGEDELTA"))
-          fprintf(stderr, "STAGEDELTA p=%d MARK_SETTER  returned=%d d_ess=%d d_css=%d viol=%d\n", analysis_pass,
-                analyze_again, fa->all_entry_sets.n - census.stage_aes0, fa->all_creation_sets.n - census.stage_acs0, fa->type_violations.set_count());
-      ++fa->stage_progress_count[(int)FAPassStage::MARK_SETTER];
-    }
-    log(LOG_SPLITTING, "split_for_setters with marks %d\n", analyze_again);
-    if (!analyze_again) {
-      ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-      census.stage_aes0 = fa->all_entry_sets.n, census.stage_acs0 = fa->all_creation_sets.n;
-      cur_split_stage = (int)FAPassStage::MARK_SETTER_OF_SETTER;
-      analyze_again = split_for_setters_of_setters();
-      fa->stage_time[(int)FAPassStage::MARK_SETTER_OF_SETTER] += stage_timer.lap();
-      if (analyze_again) {
-        record_fa_event(FAPassStage::MARK_SETTER_OF_SETTER, analyze_again, ess0, css0, viol0);
-        if (getenv("PYC_DBG_STAGEDELTA"))
-          fprintf(stderr, "STAGEDELTA p=%d MARK_SETTER_OF_SETTER returned=%d d_ess=%d d_css=%d viol=%d\n", analysis_pass,
-                analyze_again, fa->all_entry_sets.n - census.stage_aes0, fa->all_creation_sets.n - census.stage_acs0, fa->type_violations.set_count());
-        ++fa->stage_progress_count[(int)FAPassStage::MARK_SETTER_OF_SETTER];
-      }
-    }
-    log(LOG_SPLITTING, "split_for_setters_of_setters with marks %d\n", analyze_again);
-    clear_marks(acc);
-  }
+  // ifa/146 D, 2026-10-13: the MARK_SETTER / MARK_SETTER_OF_SETTER stage is
+  // REMOVED, with the mark scaffolding (build_joint_type_marks,
+  // collect_cs_marked_confluences, AKIND_MARK, AVar::mark_map,
+  // different_marked_args). Marks are depth-from-a-generating-AVar:
+  // provenance. It had survived because `voronoi2` failed without it; that
+  // was codegen dropping `NULL` for `sym_nil` (fixed at cg.cc, `v->sym ==
+  // sym_nil || v->type == sym_nil_type`), and voronoi2 now compiles without
+  // the stage in fewer passes (32 -> 25).
+  //
+  // Same-binary corpus `check` A/B (check__default__7b644df7+0f0a43ce vs
+  // check__PYC_NOMARKSETTER_1__7b644df7+6900e5ef): verdicts and warning
+  // counts identical on all 77 programs; EntrySets 31,094 -> 28,921 (-7.0%),
+  // CreationSets 120,841 -> 112,539 (-6.9%), container CSs 2,735 -> 2,671,
+  // compile wall 2,590 -> 2,279 s (-12%). plcfrs, the program it was kept
+  // for, goes 94 -> 67 passes. The FAPassStage values stay, unused, so stage
+  // numbering does not move.
   // ifa/issues/109: PYC_SIZEOF_VIOL >= 2 also lifts this stage's
   // quiescence gate. Recording the sizeof_element violation is useless
   // while VIOLATION is STARVED by the first-stage-wins cascade -- measured
@@ -15502,7 +15303,6 @@ static void complete_pass() {
   capture_elem_keys();
   report_degenerate_avars();
   report_keydrift();
-  report_markwhy();
   report_incompat();
   report_retconf();  // ifa/157
   audit_edge_arg_values();

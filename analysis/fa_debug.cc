@@ -101,7 +101,6 @@ AVar::AVar(Var *v, void *acontour)
       container(nullptr),
       setters(nullptr),
       setter_class(nullptr),
-      mark_map(nullptr),
       cs_map(nullptr),
       match_cache(nullptr),
       type(nullptr),
@@ -1344,12 +1343,6 @@ void report_incompat() {
   fprintf(stderr, "LEDGER p=%d dup_es=%d dup_cs=%d churn=%d\n", analysis_pass, census.ld_dup_es, census.ld_dup_cs, census.ld_churn);
   census.ic_arg = census.ic_ret = census.ic_retn = census.tc_formal = census.tc_return = 0;
   census.tc_seen = census.tc_skip_rval = census.tc_skip_lval = census.tc_skip_cs = census.tc_dec = census.tc_defer = 0;
-}
-
-void report_markwhy() {
-  if (!mark_why_enabled()) return;
-  fprintf(stderr, "MARKWHY p=%d cs_differ=%ld cs_same=%ld\n", analysis_pass, census.mark_cs_differ, census.mark_cs_same);
-  census.mark_cs_differ = census.mark_cs_same = 0;
 }
 
 void report_keydrift() {

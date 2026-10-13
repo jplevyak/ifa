@@ -159,7 +159,6 @@ void report_cs_flow_graphs();
 void report_retconf();
 void report_degenerate_avars();
 void report_incompat();
-void report_markwhy();
 void report_keydrift();
 void report_canon_stats();
 void report_keyspace();

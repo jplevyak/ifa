@@ -328,8 +328,6 @@ class Setters : public Vec<AVar *> {
   Setters() : hash(0) {}
 };
 
-typedef MapElem<void *, int> MarkElem;
-typedef Map<void *, int> MarkMap;
 typedef Map<Sym *, CreationSet *> CSMap;
 typedef MapElem<Sym *, CreationSet *> CSMapElem;
 
@@ -383,7 +381,6 @@ class AVar : public gc {
   AVar *container;
   Setters *setters;
   Setters *setter_class;
-  MarkMap *mark_map;
   CSMap *cs_map;
   MatchCache *match_cache;
   Sym *type;

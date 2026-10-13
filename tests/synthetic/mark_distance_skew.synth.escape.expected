@@ -5,5 +5,5 @@
 (escape
   fun __main__ ess=1 escape-sig=[N]
   fun relay ess=1 escape-sig=[N N]
-  fun sink ess=2 escape-sig=[N N]
+  fun sink ess=1 escape-sig=[N N]
 )

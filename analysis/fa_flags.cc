@@ -52,27 +52,6 @@ int confdemand_enabled() {
   if (e < 0) { cchar *v = getenv("PYC_CONFDEMAND"); e = v ? atoi(v) : 0; }
   return e;
 }
-// ifa/issues/074 (PYC_CPAMARK): swap the cartesian-product name in for the
-// mark. different_marked_args already compares two sets of CreationSets --
-// the CPA question -- but only over CSs admitted by the distance filter
-// `m - offset == x->value`. With this on, the filter is dropped and the CS
-// sets are compared directly, so the split rule becomes "which CreationSet
-// is here", with no depth term. IFA_DBG_MARKWHY predicts the effect: it is
-// exactly the `cs_same` verdicts (98% of hq2x's, 2% of the listcomp
-// repro's) that stop firing.
-int cpa_mark_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_CPAMARK");
-    e = v ? atoi(v) : 0;
-  }
-  return e;
-}
-int mark_why_enabled() {
-  static int e = -1;
-  if (e < 0) e = getenv("IFA_DBG_MARKWHY") ? 1 : 0;
-  return e;
-}
 // ifa/074: a creation point in a split-child EntrySet joins the CreationSet
 // its split parent's creation point is in, BEFORE the start-merged (dcpa1)
 // route sends it to the sym's root. An ES split must not split -- or
@@ -306,17 +285,8 @@ int hard_reuse_enabled() {
   }
   return e;
 }
-// ifa/issues/074: disable mark-based splitting stages, as an
-// investigable option.
-//   0 = mark-based splitting on (pre-2026-08-14 behaviour)
-//   1 = skip MARK_TYPE (stage 2)  -- THE DEFAULT
-//   2 = also skip MARK_SETTER / MARK_SETTER_OF_SETTER (stage 4)
-// Marks exist to separate two contours that carry the SAME argument
-// types but different value origins (IFA.md §6.2, "recursion-meets-
-// polymorphism without k-CFA"). That is by construction a
-// distinction no type-tuple contour name can express -- so if
-// contours are canonicalized on their type key, mark splits are
-// unnameable. IFA_DBG_KEYSPACE=1 measures the gap they open.
+// ifa/146 D: every mark-based splitting stage is removed (MARK_TYPE 2026-09-08,
+// MARK_SETTER / MARK_SETTER_OF_SETTER 2026-10-13). Mark distance is provenance.
 // ifa/issues/074: extend the self-product complement eviction to the
 // `v > 0` case (residual violations). See the comment at the eviction
 // site for what each mode tests.

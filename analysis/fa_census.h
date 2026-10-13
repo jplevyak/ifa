@@ -53,7 +53,6 @@ struct FACensus {
   int ck_single = 0, ck_irrep = 0, ck_samesym = 0, ck_repr = 0;
   int cd_kept = 0, cd_dropped = 0, cd_prospective_differs = 0, cd_no_trigger = 0;
   long fa_cap_strips = 0; // ifa/131 step 1, probe only
-  long mark_cs_differ = 0, mark_cs_same = 0;
   long ic_arg = 0, ic_ret = 0, ic_retn = 0;
   long tc_formal = 0, tc_return = 0;
   int ld_dup_es = 0, ld_dup_cs = 0, ld_churn = 0;

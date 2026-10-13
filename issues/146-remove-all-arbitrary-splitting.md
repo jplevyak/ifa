@@ -57,30 +57,10 @@ gated at all.
 | `MARK_TYPE`, `split_ess_setters_marks`, `split_with_type_marks` | mark distance is depth-from-a-generating-AVar: provenance | 2026-09-08 |
 | `CARTESIAN_PRODUCT` (`PYC_CPA`) | fanned every positional formal with 2..N CSs; zero references to any violation | 2026-09-08 |
 | `PYC_CSPEEL2`, `PYC_CSFAN`, `PYC_CONFLEVEL`, `PYC_NOOPSPLIT`, `PYC_NUMSPLIT`, `PYC_SETTERGATE=3`, `PYC_ESDEMAND` | built, measured non-monotone or inert, deleted (see "Dead ends") | 2026-09-15..17 |
+| `MARK_SETTER` / `MARK_SETTER_OF_SETTER` (D) and the mark scaffolding (`build_joint_type_marks`, `collect_cs_marked_confluences`, `AKIND_MARK`, `AVar::mark_map`, `different_marked_args`, `PYC_CPAMARK`, `IFA_DBG_MARKWHY`) | the last mark splitter; it had survived because `voronoi2` needed it until the nil codegen fix. Same-binary corpus A/B (`check__default__7b644df7+0f0a43ce` vs `check__PYC_NOMARKSETTER_1__7b644df7+6900e5ef`): verdicts and warnings identical on all 77; ess 31,094 → 28,921 (−7.0%), css 120,841 → 112,539 (−6.9%), container CSs 2,735 → 2,671, compile wall 2,590 → 2,279 s (−12%). plcfrs 94 → 67 passes, voronoi2 32 → 25. `mark_distance_skew` / `mark_setter_skew` re-blessed at `ess=3` (every changed line is the removed split) and their `.known_issue` sidecars deleted. The `FAPassStage` values stay, unused | 2026-10-13 |
+| route 4's partition of a confluence-only candidate | `split_css_by_defs` partitioned EVERY candidate with two or more creation points, including those a type confluence alone nominated (`tc_cs_dropped`): a fact. Its `demanded` set gated only EntrySet splits (`ESBLOCK`). It now declines a candidate not in `demanded`. Same-binary corpus A/B (`check__default__7b644df7+14447c89` vs `check__PYC_CSDEMANDONLY_1__…`): verdicts and warnings identical on all 77; contours a wash in both directions (ess 31,081 → 31,094, css 120,849 → 120,841). Found because it re-split every pair ifa/170 step 3 merged | 2026-10-13 |
 
 ## Still in the tree
-
-### D. `MARK_SETTER` / `MARK_SETTER_OF_SETTER` are LIVE — the "done" claim was false
-
-A 2026-09-21 entry here said all four mark splitters and the mark
-scaffolding were deleted, with `kNumFAPassStages = 8`. **That never
-landed.** At `3f36072b`, `fa.cc:11268-11337` still runs
-`build_joint_type_marks` → `collect_cs_marked_confluences` →
-`compute_setters(..., AKIND_MARK)` → `split_for_setters`, and `AVar::mark_map`,
-`MarkMap` and all 12 `FAPassStage` values are still in `fa.h`.
-
-What DID land is its stated prerequisite. `voronoi2` failed without
-MARK_SETTER because `sym_nil->var` picked up `{None, Site}` from container
-slots and codegen stopped emitting `NULL` for it. That codegen fix is at
-`cg.cc:3707` (`v->sym == sym_nil || v->type == sym_nil_type`).
-
-**Next:** delete the stage and the mark scaffolding. Measure `voronoi2`
-(compile_rc=1 today, for other reasons) and `plcfrs` (the only program
-where it fired, and where it removed contours). Retire the
-`mark_distance_skew` / `mark_setter_skew` `.known_issue` sidecars and
-`cpa_mark_enabled` / `mark_why_enabled` with it. *Stop condition:* if a
-program that works today regresses, find the demand the mark split was
-standing in for; do not keep the mark stage.
 
 ### Stage 5's per-CreationSet fan in `split_edges`
 
@@ -123,7 +103,6 @@ issue.
 | `PYC_ESPATH` | 148 split the whole path in one pass | DELETE the selector (fans; −3 programs). The scheduling idea stays in 157. |
 | `PYC_ESRECV` | 146 E receiver split on BOXING | MEASURE — costed plcfrs/sudoku5 standalone before ESBLOCK was default |
 | `PYC_CANON`, `PYC_TYPEKEY`, `PYC_ROUTEGATE`, `PYC_GSIGRET=0` | 074 routing controls | DELETE — controls for a closed investigation |
-| `PYC_CPAMARK` | 074 mark/CPA naming | DELETE with MARK_SETTER |
 | `PYC_VIOLCS`, `PYC_CSMEMBER` | 143 violation → route 4, member key | MEASURE — they fixed bh pre-flip; bh compiles without them now |
 | `PYC_ELEMSETTER`, `PYC_CSSLOTDEMAND`, `PYC_CONFDEMAND`, `PYC_ESDEFS1`, `PYC_SIZEOF_VIOL`, `PYC_CONFNIL` | 129/133 candidate-set variants | MEASURE, and DELETE any that are inert |
 | `PYC_SLOTARITY` | 132 cross-CS arity demotion | PENDING [132](132-arity-is-representation-not-provenance.md) — correct, does not pay yet |
