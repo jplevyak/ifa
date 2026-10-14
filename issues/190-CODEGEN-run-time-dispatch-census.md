@@ -66,16 +66,41 @@ This changed only the census: emission is unchanged and no golden moved.
 direct 37,236, **niltest 177, dynamic 95**. Before this issue: niltest 0,
 dynamic 272.
 
-| shape | example | what it is |
+`PYC_DBG_CALLS=3` names each candidate's receiver type and the receivers'
+common user-defined ancestor. The ancestor walk goes through
+`Sym::specializes` from each clone's ORIGINAL class, which is
+`creators[0]->sym`. A clone's `specializes` names the original parents, so
+comparing clones directly reported `Chrome(Material)` as unrelated to
+`Material`.
+
+### The 95, classified (2026-10-13)
+
+| calls | class | programs |
 | --- | --- | --- |
-| user classes, 4+ candidates (40) | pygasus `_exec` over its opcode classes | polymorphism over a hierarchy: hoist (shedskin's virtuals), do not split |
-| user classes, 2–3 candidates (~35) | bh `load_tree` / `walk_sub_tree` (Body, Cell), path_tracing `bounce` | same; check each for a common ancestor |
-| two builtin shapes, no None (~20) | amaze `__str__` over two tuple shapes | builtin receivers with no tag: a real merge to find |
-| runtime library (`list.remove`, `__contains__`, `index`) | `__eq__` over element types | element unions inside a builtin's contour |
-| `__pyc_unhandled_exception__` with several `__str__` overrides | `e.__str__()` | one per program raising two exception classes with their own `__str__` |
-| None plus two or more types | amaze `__eq__` over {tuple, tuple union, None} | the non-None part is itself a dispatch |
+| **71** | **distinct classes with a common user ancestor**: polymorphism, which is legitimate. shedskin emits these as virtual calls; hoist, do not split (AGENTS.md) | pygasus 39 (`_exec` over `AddrMode`, `Instruction`, `MMCread/Write/Load`), quameon 11 (`sto_base`, `base_jastrow`), pygmy 7, bh 7 (`Node`), yopyra 3, tarsalzp 2, richards 1 (`Task`), path_tracing 1 (`Material`) |
+| **4** | **one class, two clones** at one call site | quameon 2 (`coulomb_pot.compute_en_value` / `compute_nn_value`), fysphun 1 (`Link.applyme`), softrender 1 (`Vector4.add`) |
+| **7** | `__pyc_unhandled_exception__`: `e.__str__()` over the exception classes a program raises, plus None | one per program that raises two classes with their own `__str__` |
+| **13** | builtin receivers: tuple shapes (`__eq__` / `__str__`, amaze 8, 4 of them with None), `{bytes, bytearray}.__getitem__` (softrender 4), tuple `__eq__` (sunfish 1) | |
 
-## Next
+**No dynamic call has receivers of unrelated user classes.** Every
+user-class dispatch in the corpus is either a hierarchy or clones of one
+class.
 
-Classify the user-class calls: shared ancestor (hoist) or unrelated (a
-precision failure, so split).
+### What is left to do
+
+1. **The 4 one-class-two-clones calls are a demand.** Two CreationSets of
+   one class, whose member contents differ, meet at one call site, and the
+   slot dispatch picks the clone. quameon's case is the one ifa/132
+   describes, where an int-list `charges` and a float-list `charges` refuse
+   the clone collapse. `dispatch_named`/`per_cs_formals` in fa.cc already
+   splits the calling EntrySet per receiver CreationSet, but only when the
+   ambiguous receiver sym is UNTAGGED (`type_kind != Type_RECORD`), because
+   that case used to be a codegen failure. For a tagged class it is "only" a
+   slot call, so no demand fires. Under the zero-dispatch goal it should.
+2. **The 71 hierarchy calls stay dynamic** unless a call site's receivers
+   come from separable sources. Measuring that is a different question:
+   does an ES split on the receiver's creation points make the site
+   monomorphic?
+3. The exception printer (7): an `isinstance` chain on the raised class,
+   or a direct call per class, would remove it. It runs once, at exit.
+4. The builtin shapes (13), one at a time.

@@ -70,7 +70,7 @@ one is a lesson this directory paid for.
 | [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) | decisions taken on transient types (pass-0 unions, momentarily empty contours) are never revisited. Re-derive them at convergence. |
 | [134](134-remove-the-frontend-forced-split-opt-in.md) | constants: 9 `__pyc_clone_constants__` annotations remain, each with a named replacement. |
 | [132](132-arity-is-representation-not-provenance.md) | arity in CS identity (landed); open: one slot holding two same-sym CSs of different arity. |
-| [190](190-CODEGEN-run-time-dispatch-census.md) | **zero run-time dispatch**: census of the corpus's dynamic calls, 272 → 95. Nullable receivers are null tests (177); the rest are classified. |
+| [190](190-CODEGEN-run-time-dispatch-census.md) | **zero run-time dispatch**: census of the corpus's dynamic calls, 272 → 95. Nullable receivers are null tests (177). Of the 95: 71 class hierarchies (legitimate), 4 clones of one class (a demand), 7 exception printer, 13 builtin shapes; none unrelated. |
 
 ### FA: typing and precision
 

@@ -646,6 +646,42 @@ void report_call_resolution(FA *fa) {
                       c->sym->line(), rt->name ? rt->name : (rt->type_kind == Type_SUM ? "union" : "?"));
             else
               fprintf(stderr, " %s#%d(%s:%d)", c->sym->name ? c->sym->name : "?", c->id, c->sym->pathname(), c->sym->line());
+          // The receivers' common user-defined ancestor, if any:
+          // shared-ancestor polymorphism is hoisted, an unrelated union is
+          // a precision failure (AGENTS.md).
+          Vec<Sym *> recvs;
+          for (Fun *c : *fns)
+            if (Sym *rt = method_receiver_type(c, n)) {
+              if (rt->type_kind == Type_SUM) {
+                for (Sym *m : rt->has) if (m) recvs.set_add(m);
+              } else
+                recvs.set_add(rt);
+            }
+          Vec<Sym *> common;
+          bool first = true;
+          for (Sym *r : recvs) {
+            if (!r || r == sym_nil_type) continue;
+            // A clone's `specializes` names the ORIGINAL parents; compare
+            // originals, which a clone's creators carry.
+            if (r->creators.n && r->creators[0] && r->creators[0]->sym) r = r->creators[0]->sym;
+            Vec<Sym *> anc, work;
+            anc.set_add(r);
+            work.add(r);
+            for (int i = 0; i < work.n; i++)
+              for (Sym *p : work[i]->specializes)
+                if (p && anc.set_add(p)) work.add(p);
+            if (first) {
+              for (Sym *a : anc) if (a) common.set_add(a);
+              first = false;
+            } else {
+              Vec<Sym *> keep;
+              for (Sym *a : common) if (a && anc.set_in(a)) keep.set_add(a);
+              common.move(keep);
+            }
+          }
+          fprintf(stderr, " ancestors:");
+          for (Sym *a : common)
+            if (a && !a->is_builtin && !a->is_system_type) fprintf(stderr, " %s", a->name ? a->name : "?");
           fprintf(stderr, "\n");
         }
       }
