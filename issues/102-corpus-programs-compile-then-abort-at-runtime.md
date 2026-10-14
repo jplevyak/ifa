@@ -100,6 +100,66 @@ programs codegen can compile. The refusal is therefore made where the
 plans are tried, which is exactly the predicate. What is still missing is
 the DEMAND half: a way for FA to learn of the refusal and split instead.
 
+### Getting the refusal to the analysis: inventory (2026-10-14)
+
+The proposal was to extract codegen's "can these candidates be told
+apart?" decision into one function that both the emitters and FA call, so
+FA could raise a demand at quiescence. Stop condition, set before
+measuring: if the decision depends on state FA does not have, or if no
+refusal in the corpus and suite is one a split could answer, the
+extraction moves code without changing an outcome, and it is not built.
+
+**What the C emitter's multi-candidate classification reads**
+(`cg.cc`, the `fns->n > 1` branch of the send emitter; the LLVM emitter
+uses the same `codegen_common` helpers plus its own compat checks):
+
+| input | used for | available to FA? |
+| --- | --- | --- |
+| `f->calls.get(pn)`, the candidate Funs | the candidate set | as the send's edge-target EntrySets; clones are distinct Funs post-clone, distinct ESs pre-clone |
+| each candidate's formal `Var::type` (a Sym, a `Type_SUM` for a union) | which receiver classes a candidate covers (`poly_dispatch_classtag_targets`, `poly_dispatch_is_nil_receiver`) | as the target ES's formal AVar's CreationSets; the union Sym is built by clone |
+| `cg_has_classtag(Sym*)`, nil, `cg_is_tuple_type` | the representation route: tag compare, null test, tuple arity, untagged | yes: predicates on `Sym` |
+| `cg_field_live(cls, k)` | whether a class's method slot exists to call through | **no**: slot liveness is decided after FA |
+| `Var::live` of each formal, `c_type()` / `scalar_ct()` castability, `cg_get_string()` | the per-route `compat` checks, and the nil-on-a-scalar-operand bail | **no**: liveness and C types are post-FA |
+| `identical_c_signature` | merging two untagged candidates that are identical clones | **no**: C signatures are post-clone |
+| the selector's NAME (`__pyc_to_bool__`, `__bool__`, `__not__`) | allowing a null test on a scalar operand for truth tests | yes, but it is a decision by name (AGENTS.md) and should become a property of the selector |
+| `poly_dispatch_arity_plan` | tuple-arity dispatch (ifa/185) | over Var types, so post-clone |
+
+So the decision as written is not computable in FA: four of its inputs
+are post-FA. Its CORE is, though: per receiver class, a representation
+route (nil / tagged / tuple / untagged), and the rule that untagged
+receivers reaching two different candidates have no plan.
+
+**What actually decides the refusals that exist.** A probe of
+`poly_dispatch_classtag_targets` on both:
+
+- `x = b"q" if len(sys.argv) > 5 else bytearray(3); x[0]`: bytearray's
+  `__getitem__` slot is LIVE but the class has no tag
+  (`cg_has_classtag` = 0), so bytearray takes the untagged direct route
+  next to bytes, and two untagged candidates have no plan.
+- `tests/list_tuple_union_method.py`: neither class has a method slot;
+  both untagged.
+
+Both are decided by representation alone, as expected. But **both are
+genuine run-time unions** (each picks its arm from `sys.argv`), so no
+split could answer either, and the corpus has none at all (0 stubs). A
+demand path into FA would change no outcome today: stopped, not built.
+
+**What would change outcomes instead:**
+
+1. **Discriminators, in codegen.** Both refusals are representations
+   with no run-time test. For `{list, tuple}`, the ifa/185 arity plan
+   already emits `_CG_tuple_is_fixed` tests, but it refuses any operand
+   with a non-tuple member (`arity_testable_operand`); whether that test
+   separates a list from a fixed-arity tuple is the thing to check first.
+   `{bytes, bytearray}` would need bytearray to carry a class tag (it is
+   a @vector record without one).
+2. **The soft demand, for zero dispatch.** The 91 dynamic dispatches that
+   DO have a plan are where an analysis-side classifier would have users:
+   each is a demand under the zero-dispatch directive. FA already
+   approximates "this receiver reaches two candidates" (SETTER_OF_SETTER's
+   `sos_poly_recvs`); the representation core above is what would refine
+   it, and it needs no post-FA input.
+
 Corpus check -R `check__default__68c8b0c3+c646815d` against
 `check__default__4e218622+37947902`: every verdict and warning count is
 identical on all 77, and no program is refused by the new rule. The
