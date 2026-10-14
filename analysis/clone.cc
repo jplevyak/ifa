@@ -1,3 +1,6 @@
+#include <map>
+#include <string>
+#include <vector>
 #include <algorithm>
 #include <unordered_map>
 #include <vector>
@@ -1310,6 +1313,121 @@ static void determine_clones() {
 // int64 everywhere else. A `{None, int}` list element then had pointer
 // storage holding ints: `mods = [3]` did not compile, and pisang aborted
 // with "list element type mismatch".
+// ifa/120: THE OWNERSHIP AUDIT. Interning union Syms segfaults because they
+// are mutated after they are handed out, so sharing one corrupts another
+// owner. To find every such write without an accessor on each field, each
+// construction site registers its Sym when it hands it out (the
+// make_LUB_type call), with a fingerprint of every field a type user can
+// observe; sum_audit_check, called at pipeline phase boundaries, reports
+// each field whose fingerprint moved, and which site made the Sym.
+// IFA_DBG_SUMAUDIT=1 prints the per-(phase, site, field) counts,
+// IFA_DBG_SUMAUDIT=2 every change.
+struct SumAuditRec {
+  Sym *s;
+  cchar *site;
+  std::vector<std::string> fp;
+};
+static std::vector<SumAuditRec> sum_audit_recs;
+static int sum_audit_mode() {
+  static int m = -1;
+  if (m < 0) { cchar *e = getenv("IFA_DBG_SUMAUDIT"); m = e ? atoi(e) : 0; }
+  return m;
+}
+static cchar *sum_audit_fields[] = {"has",  "element",     "name",         "creators",  "type",     "type_kind",
+                                     "isa",  "specializes", "specializers", "implementors", "dispatch_types",
+                                     "size", "meta_type",   "temp",         "cg_string", "abstract_type",
+                                     "alias", "llvm_type",  "flags"};
+static std::string sum_ids(Vec<Sym *> &v) {
+  std::string r;
+  for (Sym *x : v) r += std::to_string(x ? x->id : -1) + ",";
+  return r;
+}
+static std::vector<std::string> sum_fingerprint(Sym *s) {
+  char b[64];
+  auto ptr = [&](const void *p) { snprintf(b, sizeof(b), "%p", p); return std::string(b); };
+  std::string cr;
+  for (CreationSet *c : s->creators) cr += std::to_string(c ? c->id : -1) + ",";
+  std::string flags = std::to_string(s->is_constant) + std::to_string(s->is_fun) + std::to_string(s->is_vector) +
+                      std::to_string(s->is_system_type) + std::to_string(s->is_value_type);
+  return {sum_ids(s->has),
+          s->element ? std::to_string(s->element->id) + ":" + ptr(s->element->type) : "-",
+          s->name ? s->name : "-",
+          cr,
+          s->type ? std::to_string(s->type->id) : "-",
+          std::to_string((int)s->type_kind),
+          sum_ids(s->isa),
+          sum_ids(s->specializes),
+          sum_ids(s->specializers),
+          sum_ids(s->implementors),
+          sum_ids(s->dispatch_types),
+          std::to_string(s->size) + "/" + std::to_string(s->alignment),
+          s->meta_type ? std::to_string(s->meta_type->id) : "-",
+          ptr(s->temp),
+          s->cg_string ? s->cg_string : "-",
+          ptr(s->abstract_type),
+          s->alias ? std::to_string(s->alias->id) : "-",
+          ptr(s->llvm_type),
+          flags};
+}
+static void sum_audit_register(Sym *s, cchar *site) {
+  if (!sum_audit_mode() || !s || s->type_kind != Type_SUM) return;
+  for (SumAuditRec &r : sum_audit_recs)
+    if (r.s == s) {  // registered again: re-snapshot, keep the first site
+      r.fp = sum_fingerprint(s);
+      return;
+    }
+  sum_audit_recs.push_back({s, site, sum_fingerprint(s)});
+}
+void sum_audit_check(cchar *phase) {
+  int mode = sum_audit_mode();
+  if (!mode) return;
+  std::map<std::string, int> counts;
+  int changed_syms = 0;
+  for (SumAuditRec &r : sum_audit_recs) {
+    std::vector<std::string> now = sum_fingerprint(r.s);
+    bool any = false;
+    for (size_t i = 0; i < now.size(); i++)
+      if (now[i] != r.fp[i]) {
+        any = true;
+        counts[std::string(r.site) + " " + sum_audit_fields[i]]++;
+        if (mode >= 2)
+          fprintf(stderr, "SUMAUDIT phase=%s site=%s sym=%d field=%s [%s] -> [%s]\n", phase, r.site, r.s->id,
+                  sum_audit_fields[i], r.fp[i].c_str(), now[i].c_str());
+      }
+    if (any) changed_syms++;
+    r.fp = now;
+  }
+  fprintf(stderr, "SUMAUDIT phase=%s syms=%zu changed=%d", phase, sum_audit_recs.size(), changed_syms);
+  for (auto &kv : counts) fprintf(stderr, " [%s]=%d", kv.first.c_str(), kv.second);
+  fprintf(stderr, "\n");
+}
+
+// ifa/120: INTERN a value union. The four sites that build an anonymous
+// union of value types (concrete_type_set_to_type, concretize_avar,
+// concretize_var, the list element) each minted a fresh Sym, so one union
+// had dozens of identities, and type equality by pointer
+// (inline_single_sends, codegen's casts) depended on construction history.
+// The ownership audit above found nothing written to such a Sym after it is
+// handed out except codegen's C name, which is a function of the
+// components. The key is the sorted component ids. A CreationSet group's
+// union (define_concrete_types / resolve_concrete_types) is NOT a value
+// union: it carries `creators` and is the type of those CreationSets, so it
+// is never interned, and never returned for a value union.
+// PYC_INTERN_SUMS=0 turns it off.
+static std::map<std::string, Sym *> sum_intern_table;
+static Sym *intern_sum(Sym *t) {
+  static int on = -1;
+  if (on < 0) { cchar *e = getenv("PYC_INTERN_SUMS"); on = e ? atoi(e) : 1; }
+  if (!on || !t || t->type_kind != Type_SUM || t->creators.n) return t;
+  if (t->has.n > 1) qsort(t->has.v, t->has.n, sizeof(t->has[0]), compar_syms);
+  std::string key;
+  for (Sym *m : t->has) key += std::to_string(m ? m->id : -1) + ",";
+  auto it = sum_intern_table.find(key);
+  if (it != sum_intern_table.end()) return it->second;
+  sum_intern_table[key] = t;
+  return t;
+}
+
 static Sym *new_sum_type() {
   Sym *t = new_Sym();
   t->type_kind = Type_SUM;
@@ -1327,6 +1445,8 @@ Sym *concrete_type_set_to_type(Vec<Sym *> &t) {
     Sym *tt = new_sum_type();
     tt->has.append(t);
     if (!(tt = if1->callback->make_LUB_type(tt))) return 0;
+    tt = intern_sum(tt);
+    sum_audit_register(tt, "type_set");
     return tt;
   }
 }
@@ -1676,6 +1796,10 @@ static int concretize_avar(AVar *av) {
       av->type = type->has[0];
     else if (!(av->type = if1->callback->make_LUB_type(type)))
       return -1;
+    else {
+      av->type = intern_sum(av->type);
+      sum_audit_register(av->type, "concretize_avar");
+    }
   }
   return 0;
 }
@@ -1752,8 +1876,11 @@ static int concretize_var_list_type(Var *v) {
       // sym instead of clobbering the list type.
       Sym *t = new_sum_type();
       for (CreationSet *cs : *etype) if (cs) t->has.set_add(cs->type);
+      t->has.set_to_vec();  // built with set_add; intern_sum sorts it
       Sym *lub = if1->callback->make_LUB_type(t);
       if (!lub) return -1;
+      lub = intern_sum(lub);
+      sum_audit_register(lub, "list_element");
       v->type->element->type = lub;
     }
     return 1;
@@ -1805,6 +1932,10 @@ static int concretize_var_type(Var *v) {
       v->type = type->has[0];
     else if (!(v->type = if1->callback->make_LUB_type(type)))
       return -1;
+    else {
+      v->type = intern_sum(v->type);
+      sum_audit_register(v->type, "concretize_var");
+    }
   }
   return 0;
 }
@@ -1830,6 +1961,7 @@ static int resolve_concrete_types(CSSS &css_sets) {
         sym->has.set_to_vec();
         qsort(sym->has.v, sym->has.n, sizeof(sym->has[0]), compar_syms);
         if (!(sym = if1->callback->make_LUB_type(sym))) return -1;
+        sum_audit_register(sym, "cs_group");
         for (CreationSet *cs : *eqcss) if (cs) cs->type = sym;
         break;
       }
@@ -2245,9 +2377,11 @@ int clone(FA *afa) {
     if (prefix_layout_enabled()) apply_prefix_layout(ifa_prefix_groups);
   }
   if (build_concrete_types() < 0) return -1;
+  sum_audit_check("30-concrete-types");
   dbg_clone_stage("30-concrete-types");
   dbg_trace_avar("30-concrete-types");
   if (clone_functions() < 0) return -1;
+  sum_audit_check("40-clone-functions");
   dbg_clone_stage("40-clone-functions");
   dbg_trace_avar("40-clone-functions");
   return 0;

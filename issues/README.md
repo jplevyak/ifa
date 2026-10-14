@@ -98,7 +98,6 @@ one is a lesson this directory paid for.
 | [118](118-union-field-representation-and-polymorphic-field-offset.md) | `{bool, None}`: a tri-state sentinel representation (bool has spare codes; int64 does not). |
 | [121](121-CGEN-dead-clones-emitted.md) | LLVM still emits dead clones; call-site narrowing assumes candidate equivalence it never checks. |
 | [093](093-CGEN-int-float-union-move-not-coerced.md) | LLVM: an int MOVE into a float64 slot stores raw bits (missing `sitofp`). |
-| [120](120-union-types-are-never-interned.md) | union Syms are never interned; an ownership audit is needed first. |
 | [130](130-FA-identity-keyed-on-sym-name.md) | `var_map` and the classtag are keyed on names. |
 | [030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) | performance: high fan-out dispatch has no table. |
 | [054](054-CGEN-remove-unconditional-tuple-list-header.md) | performance: every tuple carries a 16-byte list header. |
@@ -150,6 +149,7 @@ one is a lesson this directory paid for.
 | [171](closed/171-FA-numeric-union-sustains-itself-through-a-shared-contour.md) | merged | 156 |
 | [177](closed/177-FA-narrowing-does-not-reach-a-module-global.md) | fixed: a guard's load is reused in its true branch | — |
 | [179](closed/179-LLVM-quameon-computes-nan.md) | fixed by 180 (`**` had no LLVM emitter) | — |
+| [120](closed/120-union-types-are-never-interned.md) | value unions interned; the audit found no post-handout write but codegen's C name, and the segfault no longer reproduces | — |
 
 Each archived file starts with a dated closure note. The body below it
 is the historical record and is not maintained.
