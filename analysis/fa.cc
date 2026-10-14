@@ -10802,17 +10802,103 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
 // two-snapshot note in run_split_stages.
 
 
-// ifa/074 (probe, PYC_SOSDEMAND=1): a member whose type is a single
-// CreationSet has no conflict for a setter split to resolve -- differing
-// setter classes there are a fact, not a demand.
+// ifa/146: SETTER_OF_SETTER SPLITS ONLY ON A DEMAND BACKTRACKED TO THE
+// MEMBER. Its confluence test -- a member whose setters differ from a
+// consumer's -- is a fact, and it used to be the whole test, so every member
+// written from two places was a candidate. A member is now nominated only
+// when a demand reaches it:
+//
+//   - its own union cannot be represented (`elem_irrepresentable`);
+//   - it lies on the backward flow reach of an outstanding type violation
+//     (ifa/152: the demand is observed where the union is USED);
+//   - it holds two or more receivers of one send that dispatches to two or
+//     more functions -- a dispatch that cannot resolve statically, since the
+//     goal is zero run-time dispatch;
+//   - or a CreationSet it holds carries one of these, to any depth, through
+//     its content channels. A member holding `{Box}` is representable; the
+//     demand is on what is inside the Box (tests/splitter_setter_of_setter:
+//     `Holder.b` is the split, `Box.v` the dispatch). plcfrs has five `{list}`
+//     members none of which is on the violation's flow reach;
+//     numeric_member_split_enumerate's demand is three CreationSets away.
+//
+// Measured against the ungated test (ifa/146): every corpus verdict
+// unchanged, ess -1.3%. Requiring only "the member is a union" (a fact) or
+// only `elem_irrepresentable` each lost dijkstra2, plcfrs, pylife and sunfish.
+static bool cs_demanded(CreationSet *cs);  // with the CreationSet merge (ifa/170)
+// Rebuilt once per call of collect_cs_setter_confluences.
+static Vec<AVar *> sos_viol_reach;
+static std::vector<Vec<CreationSet *>> sos_poly_recvs;
+static void sos_build_demand() {
+  sos_viol_reach.clear();
+  Vec<AVar *> work;
+  for (ATypeViolation *v : fa->type_violations)
+    if (v && v->av && sos_viol_reach.set_add(v->av)) work.add(v->av);
+  for (int i = 0; i < work.n && i < 200000; i++)
+    for (AVar *b : work.v[i]->backward)
+      if (b && sos_viol_reach.set_add(b)) work.add(b);
+  // The receiver CreationSets of every send whose edges reach two or more
+  // FUNCTIONS. The receiver is rvals[1], or for a bound-method call the
+  // closure's bound value -- which make_period_closure leaves with no
+  // backward link to the member it was read from, so a member is matched by
+  // the receivers it HOLDS (the confluence is a contour, as for route 4's
+  // dispatch demand), not by flow.
+  sos_poly_recvs.clear();
+  for (EntrySet *es : fa->ess) {
+    if (!es) continue;
+    for (int mi = 0; mi < es->out_edge_map.n; mi++) {
+      PNode *pn = es->out_edge_map.v[mi].key;
+      Vec<AEdge *> *edges = es->out_edge_map.v[mi].value;
+      if (!pn || !edges || edges->n < 2 || !pn->rvals.n) continue;
+      Vec<Fun *> funs;
+      for (AEdge *e : *edges) if (e && e->fun) funs.set_add(e->fun);
+      if (funs.set_count() < 2) continue;
+      Vec<AVar *> recvs;
+      if (pn->rvals.n > 1) recvs.add(make_AVar(pn->rvals[1], es));
+      AVar *callee = make_AVar(pn->rvals[0], es);
+      if (callee->out)
+        for (CreationSet *c : callee->out->sorted)
+          if (c && c->sym == sym_closure)
+            for (AVar *bv : c->vars) if (bv) recvs.add(bv);
+      for (AVar *r : recvs) {
+        if (!r || !r->out || r->out->sorted.n < 2) continue;
+        Vec<CreationSet *> rs;
+        for (CreationSet *c : r->out->sorted) if (c && c->sym && c->sym != sym_closure) rs.set_add(c);
+        if (rs.set_count() > 1) sos_poly_recvs.push_back(rs);
+      }
+    }
+  }
+}
+static bool sos_member_demanded(AVar *av) {
+  if (!av || !av->out) return false;
+  if (elem_irrepresentable(av) || sos_viol_reach.set_in(av)) return true;
+  for (Vec<CreationSet *> &rs : sos_poly_recvs) {
+    int k = 0;
+    for (CreationSet *c : av->out->sorted)
+      if (c && rs.set_in(c) && ++k > 1) return true;
+  }
+  return false;
+}
 static bool sos_type_conflict(AVar *av) {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_SOSDEMAND"); e = v ? atoi(v) : 0; }
-  if (!e) return true;
-  return av && av->out && av->out->type && av->out->type->sorted.n > 1;
+  if (!av) return false;
+  if (sos_member_demanded(av)) return true;
+  Vec<CreationSet *> seen, work;
+  if (av->out) for (CreationSet *c : av->out->sorted) if (c && c->sym && seen.set_add(c)) work.add(c);
+  for (int i = 0; i < work.n; i++) {
+    CreationSet *c = work.v[i];
+    if (cs_demanded(c)) return true;
+    Vec<AVar *> content;
+    cs_content_avars_both(c, content);
+    for (AVar *ca : content) {
+      if (!ca) continue;
+      if (sos_member_demanded(ca)) return true;
+      if (ca->out) for (CreationSet *d : ca->out->sorted) if (d && d->sym && seen.set_add(d)) work.add(d);
+    }
+  }
+  return false;
 }
 static void collect_cs_setter_confluences(Vec<AVar *> &setters_confluences) {
   setters_confluences.clear();
+  sos_build_demand();
   for (CreationSet *cs : fa->css) {
     for (AVar *av : cs->vars) {
       if (!sos_type_conflict(av)) continue;

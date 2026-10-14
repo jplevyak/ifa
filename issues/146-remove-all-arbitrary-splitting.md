@@ -60,17 +60,9 @@ gated at all.
 | `MARK_SETTER` / `MARK_SETTER_OF_SETTER` (D) and the mark scaffolding (`build_joint_type_marks`, `collect_cs_marked_confluences`, `AKIND_MARK`, `AVar::mark_map`, `different_marked_args`, `PYC_CPAMARK`, `IFA_DBG_MARKWHY`) | the last mark splitter; it had survived because `voronoi2` needed it until the nil codegen fix. Same-binary corpus A/B (`check__default__7b644df7+0f0a43ce` vs `check__PYC_NOMARKSETTER_1__7b644df7+6900e5ef`): verdicts and warnings identical on all 77; ess 31,094 → 28,921 (−7.0%), css 120,841 → 112,539 (−6.9%), container CSs 2,735 → 2,671, compile wall 2,590 → 2,279 s (−12%). plcfrs 94 → 67 passes, voronoi2 32 → 25. `mark_distance_skew` / `mark_setter_skew` re-blessed at `ess=3` (every changed line is the removed split) and their `.known_issue` sidecars deleted. The `FAPassStage` values stay, unused | 2026-10-13 |
 | stage 5's per-CreationSet fan in `split_edges` (`PYC_SPLITEDGES2` deleted) | one filtered EntrySet per receiver CreationSet; now two groups at most (the first part, the rest), re-derived and asked again. A riding `None` (ifa/178) goes in both groups' filters, which the flag's old two-group path ignored. That alone cost `richards`: its four Task receivers need three two-group attempts, and stage 5's per-Var attempt cap (`PYC_VIOLATTEMPTS`, 2) stopped it one short. The cap now counts only FUTILE attempts, ones that did not narrow the violating value; removing it outright sent softrender's genuine int/float rows to the pass limit. Same-binary `check -R` A/B against the fan (`check__default__9f6150ae+aa1a63cd` vs `check__PYC_SPLITEDGESFAN_1__…`): verdicts and warnings identical on all 77, contours equal (ess 28,919 → 28,921, css 112,539 → 112,538) | 2026-10-13 |
 | route 4's partition of a confluence-only candidate | `split_css_by_defs` partitioned EVERY candidate with two or more creation points, including those a type confluence alone nominated (`tc_cs_dropped`): a fact. Its `demanded` set gated only EntrySet splits (`ESBLOCK`). It now declines a candidate not in `demanded`. Same-binary corpus A/B (`check__default__7b644df7+14447c89` vs `check__PYC_CSDEMANDONLY_1__…`): verdicts and warnings identical on all 77; contours a wash in both directions (ess 31,081 → 31,094, css 120,849 → 120,841). Found because it re-split every pair ifa/170 step 3 merged | 2026-10-13 |
+| `SETTER_OF_SETTER`'s ungated confluence test (`PYC_SOSDEMAND` deleted) | a member was a candidate whenever its setters differed from a consumer's: a fact. Found in [074](closed/074-FA-cross-pass-oscillation-plan.md), where its main target was `__list_iter__.position`, always `int64`. A member is now nominated only on a demand backtracked to it: its union is irrepresentable, it lies on the backward flow reach of a type violation, it holds two or more receivers of a send that dispatches to two or more functions, or a CreationSet it holds carries one of these to any depth through its content (`sos_type_conflict`). Two weaker tests, "the member is a union" and "the member is irrepresentable", each lost dijkstra2, plcfrs, pylife and sunfish (`check__PYC_SOSDEMAND_{1,2}__185a9936+927e6d63`). Without the dispatch clause, `splitter_setter_of_setter` went from `dynamic=0` to `dynamic=2`, so author's directive: zero run-time dispatch is the goal, and an unresolved dispatch is a demand. Corpus `check -R` (`check__default__185a9936+aac86e9b` → `check__default__185a9936+3981dab9`): verdicts and warnings identical on all 77; ess 28,921 → 28,893, css 112,538 → 112,518, container CSs 2,671 → 2,669. Without the dispatch clause (`check__PYC_SOSDEMAND_3__185a9936+aac86e9b`), ess was 28,542. That clause's 351 EntrySets change dynamic calls on one program of the 12 it touches: genetic2 22 → 15. The other 11 stay as they were (chull 15, bh 8, loop 8), so the dispatch they observe is not one a setter split resolves | 2026-10-13 |
 
 ## Still in the tree
-
-### `SETTER_OF_SETTER`'s confluence test has no type condition
-
-Found in [074](closed/074-FA-cross-pass-oscillation-plan.md): before the
-parent-first gate, its main target was `__list_iter__.position`, always
-`int64`, with a setter count growing every pass (348 → 1212). Nothing there
-observes a distinction. `PYC_SOSDEMAND=1` (acting only on members whose
-type is a union) exists and is default 0. Decide it with the two-question
-test.
 
 ### Off-by-default levers — inventory at `3f36072b`
 
@@ -100,7 +92,7 @@ issue.
 | `PYC_RETDEMAND` | 157 ES demand → route 4 link | PENDING [157](157-FA-all-demand-must-be-evaluated-at-quiescence.md) |
 | `PYC_TYPEMOVE` | 148 terminate on a fixed point | PENDING 157 — 2 suite tests |
 | `PYC_FILTEREQ` | 148 exact filter reuse | neutral, DELETE |
-| `PYC_SOSDEMAND` | 074 | decide (above) |
+| `PYC_SOSDEMAND` | 074 | decided: deleted, its demand test is the default (see Removed) |
 
 Audited and **not** splitters (keep): `PYC_SELFPROD` (6), `PYC_HARDREUSE`
 (5; mode 4 costs chaos, dijkstra2, plcfrs, sudoku5, webserver), `PYC_CSKEY`
