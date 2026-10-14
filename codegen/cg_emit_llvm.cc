@@ -2226,6 +2226,15 @@ static bool emit_send_make_seq(EmitCtx &ctx, PNode *pn) {
                                               llvm::ConstantInt::get(i64, INT32_MIN),
                                               llvm::ConstantInt::get(i64, INT32_MAX),
                                               llvm::ConstantInt::get(i64, 1)});
+  // ifa/102: a make_seq tuple has no static arity, and says so in its
+  // header (pyc_c_runtime.h _CG_TUPLE_DYNAMIC).
+  if (pn->rvals.v[2] && sym_tuple->specializers.set_in(pn->rvals.v[2]->sym)) {
+    llvm::Type *i8 = llvm::Type::getInt8Ty(*TheContext);
+    llvm::Type *i32 = llvm::Type::getInt32Ty(*TheContext);
+    llvm::Value *addr = Builder->CreateGEP(i8, res, llvm::ConstantInt::get(i64, -16), "total_addr");
+    llvm::Value *tot = Builder->CreateLoad(i32, addr, "total");
+    Builder->CreateStore(Builder->CreateOr(tot, llvm::ConstantInt::get(i32, 0x40000000u)), addr);
+  }
   put_result(ctx, dst_var, res);
   return true;
 }
@@ -2248,6 +2257,15 @@ static llvm::Value *emit_tuple_is_fixed(llvm::Value *obj) {
   llvm::Value *tot = Builder->CreateLoad(i32, tuple_total_len_addr(obj), "total");
   return Builder->CreateICmpNE(Builder->CreateAnd(tot, llvm::ConstantInt::get(i32, 0x80000000u)),
                                llvm::ConstantInt::get(i32, 0), "fixed");
+}
+// ifa/102: the layout dispatch's header tests. `mask` is the bits read,
+// `want` what they must equal: fixed 0x80000000, dynamic 0x40000000, or a
+// plain list, neither.
+static llvm::Value *emit_tuple_bits_are(llvm::Value *obj, uint32_t mask, uint32_t want) {
+  llvm::Type *i32 = llvm::Type::getInt32Ty(*TheContext);
+  llvm::Value *tot = Builder->CreateLoad(i32, tuple_total_len_addr(obj), "total");
+  return Builder->CreateICmpEQ(Builder->CreateAnd(tot, llvm::ConstantInt::get(i32, mask)),
+                               llvm::ConstantInt::get(i32, want), "layout");
 }
 
 bool emit_send_make(EmitCtx &ctx, PNode *pn) {
@@ -3346,7 +3364,17 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
         }
         Builder->CreateCondBr(Builder->CreateIsNull(op), next_bb, nn_bb);
         Builder->SetInsertPoint(nn_bb);
-        if (t.arity != -1) {
+        if (int m = layout_mask(t.arity)) {
+          // ifa/102: the header names one of the kinds in the mask
+          llvm::BasicBlock *bit_bb = llvm::BasicBlock::Create(*TheContext, "layout.bit", cur_fn);
+          llvm::Value *ok = nullptr;
+          auto any = [&](llvm::Value *v) { ok = ok ? Builder->CreateOr(ok, v) : v; };
+          if (m & LAYOUT_FIXED_TUPLE) any(emit_tuple_bits_are(op, 0x80000000u, 0x80000000u));
+          if (m & LAYOUT_DYNAMIC_TUPLE) any(emit_tuple_bits_are(op, 0x40000000u, 0x40000000u));
+          if (m & LAYOUT_LIST) any(emit_tuple_bits_are(op, 0xC0000000u, 0));
+          Builder->CreateCondBr(ok, bit_bb, next_bb);
+          Builder->SetInsertPoint(bit_bb);
+        } else if (t.arity != -1) {
           // fixed-arity bit: set for arity >= 0, clear for "no fixed arity" (-2)
           llvm::BasicBlock *bit_bb = llvm::BasicBlock::Create(*TheContext, "arity.bit", cur_fn);
           llvm::Value *fixed = emit_tuple_is_fixed(op);

@@ -770,6 +770,10 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       fprintf(fp, "  %s = (_CG_list)_CG_list_getslice(%s, sizeof(%s), 0, _CG_prim_len(0,%s), 1);\n",
               cg_get_string(n->lvals[0]), cg_get_string(n->rvals[3]), ety ? ety : "void*",
               cg_get_string(n->rvals[3]));
+      // ifa/102: a make_seq tuple has no static arity, and says so in its
+      // header, for the layout dispatch (poly_dispatch_arity_plan).
+      if (sym_tuple->specializers.set_in(n->rvals[2]->sym))
+        fprintf(fp, "  _CG_tuple_set_dynamic(%s);\n", cg_get_string(n->lvals[0]));
       break;
     }
     case P_prim_make: {
@@ -2353,6 +2357,14 @@ class CBackendEmitter : public VirtualCGEmitter {
                 fprintf(fp, "((void*)%s && !_CG_tuple_is_fixed(%s))", op, op);
               else if (c->tests[ti].arity == -3)
                 fprintf(fp, "!(void*)%s", op);
+              else if (int m = layout_mask(c->tests[ti].arity)) {
+                fprintf(fp, "((void*)%s && (", op);
+                cchar *sep = "";
+                if (m & LAYOUT_FIXED_TUPLE) { fprintf(fp, "%s_CG_tuple_is_fixed(%s)", sep, op); sep = " || "; }
+                if (m & LAYOUT_DYNAMIC_TUPLE) { fprintf(fp, "%s_CG_tuple_is_dynamic(%s)", sep, op); sep = " || "; }
+                if (m & LAYOUT_LIST) fprintf(fp, "%s_CG_is_plain_list(%s)", sep, op);
+                fputs("))", fp);
+              }
               else
                 fprintf(fp, "(void*)%s", op);
             }
@@ -2924,7 +2936,7 @@ class CBackendEmitter : public VirtualCGEmitter {
         }
       }
       if (getenv("PYC_DBG_DISPATCH")) {
-        fprintf(stderr, "DISPATCH FAIL in %s: fns=%d rvals=%d |", f->sym->name ? f->sym->name : "?",
+        fprintf(stderr, "DISPATCH FAIL pn=%d in %s: fns=%d rvals=%d |", pn->id, f->sym->name ? f->sym->name : "?",
                 fns ? fns->n : -1, pn->rvals.n);
         if (fns)
           for (Fun *fv : *fns) {

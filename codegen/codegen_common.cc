@@ -951,6 +951,103 @@ static bool operand_may_be_nil(Var *v) {
   return false;
 }
 
+// A list's layout: the shared header a tuple also has (pyc_c_runtime.h).
+static bool cg_is_list_type(Sym *t) { return t && t->creators.n && t->creators[0]->sym == sym_list; }
+
+// Every member of `v`'s type a list, a tuple or None: its header can be
+// tested (ifa/102).
+static bool layout_testable_operand(Var *v) {
+  Sym *t = v ? v->type : nullptr;
+  if (!t) return false;
+  if (t->type_kind != Type_SUM) return cg_is_tuple_type(t) || cg_is_list_type(t);
+  for (Sym *m : t->has)
+    if (!m || (m != sym_nil_type && !cg_is_tuple_type(m) && !cg_is_list_type(m))) return false;
+  return true;
+}
+
+// The header kinds a formal covers (LAYOUT_* bits), or -1 when it covers
+// something that is not a list or a tuple.
+static int formal_layout_mask(Var *av) {
+  if (!av || !av->type) return -1;
+  Vec<Sym *> ms;
+  if (av->type->type_kind == Type_SUM) for (Sym *m : av->type->has) ms.add(m);
+  else ms.add(av->type);
+  int mask = 0;
+  for (Sym *m : ms) {
+    if (!m || m == sym_nil_type) return -1;
+    if (cg_tuple_type_fixed_arity(m)) mask |= LAYOUT_FIXED_TUPLE;
+    else if (cg_is_tuple_type(m)) mask |= LAYOUT_DYNAMIC_TUPLE;
+    else if (cg_is_list_type(m)) mask |= LAYOUT_LIST;
+    else return -1;
+  }
+  return mask;
+}
+
+// ifa/102: the layout plan (see codegen_common.h). Each candidate's
+// receiver formal decides its case: a None method, or every member a
+// set of the three header kinds (fixed-arity tuple, dynamic tuple, list).
+// Every case is tested positively, so a value whose header carries no
+// expected mark falls to the "no branch matched" assert instead of a
+// wrong arm. Refuses
+// when the receiver can hold anything else, when the candidates disagree
+// on which operand is the receiver, or when two cases share a test.
+static bool poly_dispatch_layout_plan(PNode *pn, Vec<Fun *> *fns, Vec<ArityDispatchCase *> &cases) {
+  const bool dbg = getenv("PYC_DBG_ARITYDISPATCH") != nullptr;
+  auto refuse = [&](cchar *why) {
+    if (dbg) fprintf(stderr, "ARITYDISPATCH layout refuse pn=%d: %s\n", pn->id, why);
+    return false;
+  };
+  int recv = -1, covered = 0;
+  bool nil_case = false;
+  Vec<ArityDispatchCase *> out;
+  for (Fun *f : *fns) {
+    if (!f) return false;
+    Var *av = nullptr;
+    int ridx = -1;
+    for (MPosition *p : f->positional_arg_positions) {
+      Var *a = f->args.get(p);
+      if (!a || !a->sym || p->pos.n != 1) continue;
+      int i = (int)Position2int(p->pos[0]) - 1;
+      if (i < 0 || i >= pn->rvals.n || !pn->rvals[i]) return false;
+      if (pn->rvals[i]->sym->is_symbol) continue;  // the selector
+      av = a;
+      ridx = i;
+      break;
+    }
+    if (!av || !av->type) return false;
+    if (recv < 0) {
+      recv = ridx;
+      if (!layout_testable_operand(pn->rvals[recv])) return refuse("receiver is not lists, tuples and None");
+    } else if (ridx != recv)
+      return false;
+    int test;
+    if (av->type == sym_nil_type) {
+      if (nil_case) return false;
+      nil_case = true;
+      test = -3;
+    } else {
+      // The kinds this candidate's receiver formal covers.
+      int mask = formal_layout_mask(av);
+      if (mask < 0) return refuse("formal member is not a list or tuple");
+      if (!mask || (mask & covered)) return refuse("two candidates cover one kind");  // two candidates for one kind: no test separates them
+      covered |= mask;
+      test = layout_test(mask);
+    }
+    ArityDispatchCase *c = new ArityDispatchCase;
+    c->fun = f;
+    c->tests.add({ridx, test});
+    out.add(c);
+  }
+  // One non-None candidate needs no header test: a null test and a direct
+  // call decide it (the classtag machinery's nil-tested route).
+  if (out.n - (nil_case ? 1 : 0) < 2) return refuse("fewer than two non-None candidates");
+  // The null test first, so the header reads after it are null-safe.
+  for (ArityDispatchCase *c : out) if (c->tests[0].arity == -3) cases.add(c);
+  for (ArityDispatchCase *c : out) if (c->tests[0].arity != -3) cases.add(c);
+  if (getenv("PYC_DBG_ARITYDISPATCH")) fprintf(stderr, "ARITYDISPATCH layout plan pn=%d cases=%d\n", pn->id, cases.n);
+  return true;
+}
+
 // See codegen_common.h.
 bool poly_dispatch_arity_plan(PNode *pn, Vec<Fun *> *fns, Vec<ArityDispatchCase *> &cases) {
   if (!pn || !fns || fns->n < 2) return false;
@@ -974,7 +1071,7 @@ bool poly_dispatch_arity_plan(PNode *pn, Vec<Fun *> *fns, Vec<ArityDispatchCase 
     }
     fprintf(stderr, "\n");
   }
-  if (!any) return false;
+  if (!any) return poly_dispatch_layout_plan(pn, fns, cases);
   Vec<int> nlen, ndyn;
   for (Fun *f : *fns) {
     ArityDispatchCase *c = new ArityDispatchCase;
@@ -991,7 +1088,14 @@ bool poly_dispatch_arity_plan(PNode *pn, Vec<Fun *> *fns, Vec<ArityDispatchCase 
       bool typed = fs->must_specialize && !fs->must_specialize->is_symbol;
       bool nil_formal = av->type == sym_nil_type;  // a None method (poly_dispatch_is_nil_receiver)
       if (a == -1 && !typed && !nil_formal) continue;
-      if (!arity_testable_operand(pn->rvals[ridx])) {
+      // ifa/102: an operand that may also hold a LIST. A length test still
+      // separates a fixed-arity tuple (it requires the fixed bit, which a
+      // list never has), but "non-null", "no fixed arity" and an untested
+      // case would each take a list too, so those become layout tests on
+      // what this candidate's formal covers.
+      bool lists = false;
+      if (!arity_testable_operand(pn->rvals[ridx]) && layout_testable_operand(pn->rvals[ridx])) lists = true;
+      else if (!arity_testable_operand(pn->rvals[ridx])) {
         if (getenv("PYC_DBG_ARITYDISPATCH")) {
           Sym *t = pn->rvals[ridx]->type;
           fprintf(stderr, "ARITYDISPATCH refuse: operand %d not tuple|None:", ridx);
@@ -1007,6 +1111,11 @@ bool poly_dispatch_arity_plan(PNode *pn, Vec<Fun *> *fns, Vec<ArityDispatchCase 
       } else if (a >= 0) {
         c->tests.add({ridx, a});
         len_tests++;
+      } else if (lists) {
+        int m = formal_layout_mask(av);
+        if (m <= 0) return false;
+        c->tests.add({ridx, layout_test(m)});
+        dyn_tests++;
       } else if (a == DISPATCH_ARITY_DYNAMIC) {
         c->tests.add({ridx, -2});
         dyn_tests++;

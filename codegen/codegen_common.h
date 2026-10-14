@@ -162,7 +162,9 @@ bool poly_dispatch_is_nil_receiver(Fun *candidate, PNode *pn, int *rval_idx);
 //   arity >= 0   operand non-null, fixed arity, exactly that length;
 //   arity == -1  operand non-null;
 //   arity == -2  operand non-null with no fixed arity;
-//   arity == -3  operand null: the candidate is a None method.
+//   arity == -3  operand null: the candidate is a None method;
+//   arity <= -16 operand non-null, and its header names one of the kinds
+//                in layout_mask(arity) (ifa/102's layout plan).
 // "Fixed arity" is the header bit _CG_tuple_set_fixed writes: a record
 // 2-tuple and tuple([a, b]) have the same length, so the length alone
 // cannot reproduce FA's choice.
@@ -171,15 +173,27 @@ bool poly_dispatch_is_nil_receiver(Fun *candidate, PNode *pn, int *rval_idx);
 // machinery) if no candidate has an arity-constrained formal, a tested
 // operand could hold anything other than a tuple or None, or two cases
 // cannot be told apart at run time.
+// With no arity-constrained formal, it tries the LAYOUT plan instead
+// (ifa/102): a receiver whose members are lists and tuples (and None)
+// shares one header, and the fixed-arity bit is set on every fixed-arity
+// tuple and on nothing else, and the dynamic bit on every make_seq tuple
+// and tuple slice, so the header names one of three kinds. Each candidate
+// covers a set of kinds; the sets must be disjoint.
 
 struct ArityDispatchTest {
   int ridx;   // call-site rval index of the tested operand
-  int arity;  // >= 0: fixed arity, that length; -1: non-null; -2: no fixed arity; -3: null (None)
+  int arity;  // >= 0: fixed arity, that length; -1: non-null; -2: no fixed arity; -3: null (None);
+              // <= -16: a layout test, see layout_mask
 };
 // Does a tuple of type `t` have a static arity (every CreationSet it was
 // cloned from has one)? Decides the header's fixed-arity bit at
 // construction (_CG_tuple_set_fixed), so it matches what FA dispatched on.
 bool cg_tuple_type_fixed_arity(Sym *t);
+// ifa/102: the header kinds of the layout plan, as a mask, and its
+// encoding in ArityDispatchTest::arity.
+enum { LAYOUT_FIXED_TUPLE = 1, LAYOUT_DYNAMIC_TUPLE = 2, LAYOUT_LIST = 4 };
+inline int layout_test(int mask) { return -16 - mask; }
+inline int layout_mask(int arity) { return arity <= -16 ? -16 - arity : 0; }
 struct ArityDispatchCase {
   Fun *fun;
   Vec<ArityDispatchTest> tests;

@@ -145,3 +145,51 @@ class.
      identical on all 77; CreationSets -3 on every program (-228), and one
      EntrySet fewer on each of the 7 printer programs.
 4. The builtin shapes (13), one at a time.
+
+### Can a split remove any of them? The soft-demand inventory (2026-10-14)
+
+The next step after [102](102-corpus-programs-compile-then-abort-at-runtime.md)'s
+refusal work was a SOFT dispatch demand: treat every dispatch that has a
+plan as a demand, so the splitter tries to make the site monomorphic.
+Stop condition, set before measuring: if no dispatching send's receiver
+union forms at a point a contour split can separate, the demand has no
+beneficiary and is not built.
+
+`IFA_DBG_DISPATCHORIGIN` (`report_dispatch_origin`, `fa_debug.cc`) walks
+back from the receiver of every send whose non-None receivers reach two or
+more target EntrySets, to the points where its classes first meet, and
+classifies each: an ES formal (an ES split could separate), a CreationSet
+member/element with two or more creation points (a CS split could), the
+same with ONE creation point (one container: none can), a merge inside one
+contour, or a module global. A send is separable only if EVERY meeting
+point is. Two details mattered: a call result reaches the callee through
+`lvalue`, not `backward`; and a predecessor on a cycle back through the
+node (a list extended from its own contents) does not "carry" the union.
+
+| program | codegen dynamic | sends | meeting points | separable |
+| --- | --- | --- | --- | --- |
+| pygasus | 39 | 44 | one container (every one) | 0 |
+| quameon | 13 | 17 | one container | 0 |
+| pygmy | 7 | 12 | one container, local merges | 0 |
+| bh | 7 | 8 | one container (`Cell.subp`); 3 also meet at a recursive formal | 0 |
+| yopyra | 3 | 4 | one container, local | 0 |
+| tarsalzp | 2 | 2 | local | 0 |
+| richards | 1 | 1 | one container | 0 |
+| path_tracing | 1 | 1 | local | 0 |
+| voronoi2, rdb, msp_ss | 1 each | 1 each | local + the `__pyc_exc__` global | 0 |
+
+(fysphun, softrender, amaze and sunfish have dynamic calls the probe does
+not count: one class with two clones, or builtin tuples, both measured
+unseparable above.)
+
+**0 of 92.** Every dispatching receiver's union forms in a single container
+(the instruction table, the scene's object list, a tree node's children),
+in a merge inside one function, or in the exception slot. No EntrySet or
+CreationSet split can make any of these sites monomorphic, so a soft
+dispatch demand would only add contours. Not built. These dispatches are
+the program's polymorphism, as shedskin's virtual calls are.
+
+Found on the way: SETTER_OF_SETTER's dispatch clause (`sos_poly_recvs`,
+ifa/146) counts target FUNCTIONS. richards' `t.runTask()` reaches four
+EntrySets of the one `Task.runTask`, which it does not see. Counting
+EntrySets would widen it, but by the table above to no effect.

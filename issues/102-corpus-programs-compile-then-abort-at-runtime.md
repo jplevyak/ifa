@@ -87,8 +87,8 @@ stub (ifa/102)
 Before, the C binary aborted on that call, and the LLVM binary printed `0`
 for one arm (a salvaged null) and trapped on the other.
 `PYC_DISPATCH_STUB=1` restores the stub, for debugging only.
-`tests/list_tuple_union_method.py` is now refused at compile time the
-same way (still `.known_issue`: its goal is CPython's output).
+`tests/list_tuple_union_method.py` was refused at compile time the same
+way, until the layout dispatch below.
 
 **Why the check lives in codegen, not FA.** Step 1 asks for an FA
 violation, so the demand ladder could answer it. Whether codegen can
@@ -144,13 +144,50 @@ genuine run-time unions** (each picks its arm from `sys.argv`), so no
 split could answer either, and the corpus has none at all (0 stubs). A
 demand path into FA would change no outcome today: stopped, not built.
 
+### `{list, tuple}`: the layout dispatch (2026-10-14)
+
+Done; `tests/list_tuple_union_method.py` passes and its `.known_issue` is
+gone. Lists and tuples share one header, and its capacity word
+(`total_len`) has bits a tuple never uses as capacity:
+
+| header | set by | means |
+| --- | --- | --- |
+| `_CG_TUPLE_FIXED_ARITY` (0x80000000) | `P_prim_make` of a fixed-arity tuple, both layouts (ifa/185) | a fixed-arity tuple |
+| `_CG_TUPLE_DYNAMIC` (0x40000000), new | `make_seq` of a tuple (`tuple(xs)`, tuple `+`), and `_CG_tuple_getslice` (a tuple slice, which used the list slicer) | a tuple with no static arity |
+| neither | every list | a list |
+
+The capacity mask in `_CG_list_resize_internal` clears both. Tuples are
+never mutated, so the bits written at construction stay.
+
+`poly_dispatch_arity_plan` (`codegen_common.cc`) uses them two ways:
+
+- **The layout plan**, when no candidate has an arity-annotated formal:
+  every member of the receiver is a list, a tuple or None, and each
+  candidate's receiver formal covers a set of the three kinds
+  (`formal_layout_mask`). The sets must be disjoint, and each case is
+  tested POSITIVELY (`layout_test(mask)`), so a value whose header names
+  no expected kind (a construction site that does not set its bit) falls
+  to the `no branch matched` assert, never to a wrong arm.
+- **Inside the annotated arity plan**, when a tested operand may also hold
+  a list: a length test is kept (it requires the fixed bit, which a list
+  never has), and the weaker tests (non-null, "no fixed arity", none)
+  become layout tests of what the candidate's formal covers. This is
+  `tuple.__str__`, which is unrolled per arity (`inject_tuple_methods`).
+
+Tests: `tests/list_tuple_layout_dispatch.py` (tuple arms) and
+`tests/list_tuple_layout_dispatch_lists.py` (the same program taking the
+list arms): fixed tuples, a slice, `tuple(...)`, `len`, indexing, slicing
+and iteration, all matching CPython on both backends.
+The plan declines a send with fewer than two non-None candidates: a null
+test and a direct call already decide it (genetic2 and mwmatching took a
+needless header test before this). Corpus check -R
+`check__default__b908709e+a70a805b`: every column identical on all 77; no
+corpus program has a `{list, tuple}` send.
+
 **What would change outcomes instead:**
 
-1. **Discriminators, in codegen.** Both refusals are representations
-   with no run-time test. For `{list, tuple}`, the ifa/185 arity plan
-   already emits `_CG_tuple_is_fixed` tests, but it refuses any operand
-   with a non-tuple member (`arity_testable_operand`); whether that test
-   separates a list from a fixed-arity tuple is the thing to check first.
+1. **Discriminators, in codegen.** Both refusals were representations
+   with no run-time test. `{list, tuple}` now has one (above).
    `{bytes, bytearray}` would need bytearray to carry a class tag (it is
    a @vector record without one).
 2. **The soft demand, for zero dispatch.** The 91 dynamic dispatches that

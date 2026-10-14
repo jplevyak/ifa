@@ -798,6 +798,178 @@ void report_recv_cardinality() {
   fprintf(stderr, "\n");
 }
 
+// ifa/102 / ifa/190: WHERE does a dispatching receiver's union form? The
+// inventory for the soft dispatch demand. For every send whose non-None
+// receivers reach two or more functions, walk back from the receiver to the
+// points where its classes first meet -- an AVar holding two or more of
+// them none of whose backward links holds them all -- and classify each:
+//
+//   FORMAL    an EntrySet formal: its callers pass different classes, so an
+//             ES split could separate them;
+//   CS_MULTI  a CreationSet member or element with two or more creation
+//             points: a CS split could;
+//   CS_SINGLE the same with one creation point -- one container: no
+//             contour split separates what is inside it;
+//   LOCAL     a merge inside one contour (a phi): no contour split can;
+//   GLOBAL    a module-level variable.
+//
+// A send is SEPARABLE when EVERY meeting point is FORMAL or CS_MULTI.
+// "Reaches two or more" counts target EntrySets: a dispatch between
+// contours of ONE function (a method inherited by several subclasses) is a
+// dispatch too.
+void report_dispatch_origin() {
+  if (!getenv("IFA_DBG_DISPATCHORIGIN")) return;
+  int sends = 0, sep = 0, kinds[5] = {0};
+  static cchar *kname[5] = {"formal", "cs_multi", "cs_single", "local", "global"};
+  for (EntrySet *es : fa->ess) {
+    if (!es || !es->fun) continue;
+    for (int mi = 0; mi < es->out_edge_map.n; mi++) {
+      PNode *pn = es->out_edge_map.v[mi].key;
+      Vec<AEdge *> *edges = es->out_edge_map.v[mi].value;
+      if (!pn || !edges || edges->n < 2 || !pn->rvals.n) continue;
+      // The receiver: rvals[1] on a selector send, or the bound value of the
+      // bound-method closure a `recv.method(...)` call goes through (as
+      // SETTER_OF_SETTER's dispatch demand reads it).
+      AVar *r = nullptr;
+      if (pn->rvals[0]->sym && pn->rvals[0]->sym->is_symbol) {
+        if (pn->rvals.n > 1) r = make_AVar(pn->rvals[1], es);
+      } else {
+        AVar *callee = make_AVar(pn->rvals[0], es);
+        if (callee && callee->out)
+          for (CreationSet *c : callee->out->sorted)
+            if (c && c->sym == sym_closure && c->vars.n > 1 && c->vars[1]) { r = c->vars[1]; break; }  // [0] is the function
+      }
+      bool dbg2 = getenv("IFA_DBG_DISPATCHORIGIN")[0] == '2';
+      if (dbg2) {
+        Vec<Fun *> fs;
+        for (AEdge *e : *edges) if (e && e->fun) fs.set_add(e->fun);
+        if (edges->n > 1) {
+          fprintf(stderr, "DISPORIGIN-send %s:%d r=%d rv0=%s funs:", pn->code ? pn->code->pathname() : "?", pn->code ? pn->code->line() : 0,
+                  r ? r->id : -1, pn->rvals[0]->sym && pn->rvals[0]->sym->name ? pn->rvals[0]->sym->name : "?");
+          for (Fun *f : fs) fprintf(stderr, " %s", f->sym && f->sym->name ? f->sym->name : "?");
+          if (r && r->out) for (CreationSet *c : r->out->sorted) fprintf(stderr, " [%s]", c && c->sym && c->sym->name ? c->sym->name : "?");
+          fprintf(stderr, "\n");
+        }
+      }
+      if (!r || !r->out) continue;
+      // The receiver's non-None classes, and the functions they reach.
+      Vec<Sym *> R;
+      for (CreationSet *c : r->out->sorted)
+        if (c && c->sym && c->sym != sym_nil_type && c->sym != sym_closure) R.set_add(c->sym);
+      // The target CONTOURS, not functions: richards' `t.runTask()` reaches
+      // four EntrySets of the one `Task.runTask`, one per subclass, and that
+      // is the dispatch codegen emits.
+      Vec<EntrySet *> funs;
+      for (AEdge *e : *edges) {
+        if (!e || !e->fun || !e->to) continue;
+        Vec<MPosition *> &pp = e->fun->positional_arg_positions;
+        AVar *f = pp.n > 1 ? e->to->args.get(pp.v[1]) : nullptr;
+        bool nil_only = f && f->out && f->out->sorted.n == 1 && f->out->sorted[0]->sym == sym_nil_type;
+        if (!nil_only) funs.set_add(e->to);
+      }
+      if (funs.set_count() < 2 || R.set_count() < 2) continue;
+      ++sends;
+      auto classes_of = [&](AVar *a) {
+        int k = 0;
+        Vec<Sym *> seen;
+        if (a && a->out)
+          for (CreationSet *c : a->out->sorted)
+            if (c && c->sym && R.set_in(c->sym) && seen.set_add(c->sym)) k++;
+        return k;
+      };
+      int found[5] = {0};
+      Vec<AVar *> seen, work;
+      seen.set_add(r);
+      work.add(r);
+      for (int i = 0; i < work.n && i < 20000; i++) {
+        AVar *a = work.v[i];
+        int ka = classes_of(a);
+        if (ka < 2) continue;
+        // Follow every predecessor still holding two or more of the classes,
+        // carried or not: in a loop (`x = x.next`) a predecessor on the cycle
+        // carries the whole union, and stopping there never reaches where the
+        // classes enter.
+        // A call's result reaches the callee's return through `lvalue`, not
+        // `backward` (as CONST_DEMAND's walk follows it).
+        bool carried = false;
+        Vec<AVar *> preds;
+        for (AVar *b : a->backward) if (b) preds.add(b);
+        if (a->lvalue) preds.add(a->lvalue);
+        if (getenv("IFA_DBG_DISPATCHORIGIN")[0] == '3' && es->fun->sym && es->fun->sym->name &&
+            !strcmp(es->fun->sym->name, getenv("IFA_DBG_DISPATCHORIGIN") + 1)) {
+          fprintf(stderr, "  walk av=%d %s ka=%d var=%s preds:", a->id,
+                  a->contour == GLOBAL_CONTOUR ? "G" : a->contour_is_entry_set ? "ES" : "CS", ka,
+                  a->var && a->var->sym && a->var->sym->name ? a->var->sym->name : "_");
+          for (AVar *b : preds) fprintf(stderr, " %d(%s,%d)", b->id, b->contour_is_entry_set ? "ES" : "CS", classes_of(b));
+          fprintf(stderr, "\n");
+        }
+        // A predecessor on a cycle back through `a` (a list extended from its
+        // own contents) carries the union only because `a` does; it is not
+        // where the classes come from.
+        auto depends_on_a = [&](AVar *b) {
+          Vec<AVar *> sn, wk;
+          sn.set_add(b);
+          wk.add(b);
+          for (int j = 0; j < wk.n && j < 4000; j++) {
+            if (wk.v[j] == a) return true;
+            for (AVar *c : wk.v[j]->backward)
+              if (c && sn.set_add(c)) wk.add(c);
+            if (wk.v[j]->lvalue && sn.set_add(wk.v[j]->lvalue)) wk.add(wk.v[j]->lvalue);
+          }
+          return false;
+        };
+        for (AVar *b : preds) {
+          int kb = classes_of(b);
+          if (kb >= ka && !depends_on_a(b)) carried = true;
+          if (kb >= 2 && seen.set_add(b)) work.add(b);
+        }
+        if (carried) continue;
+        int k;
+        if (a->contour == GLOBAL_CONTOUR)
+          k = 4;
+        else if (!a->contour_is_entry_set) {
+          CreationSet *cs = (CreationSet *)a->contour;
+          k = cs && cs->defs.n >= 2 ? 1 : 2;
+        } else {
+          EntrySet *x = (EntrySet *)a->contour;
+          bool formal = false;
+          for (int ai = 0; ai < x->args.n && !formal; ai++)
+            if (x->args.v[ai].key && x->args.v[ai].value == a) formal = true;
+          k = formal ? 0 : 3;
+        }
+        found[k]++;
+      }
+      // Separable only if EVERY meeting point is: each contributes to the
+      // union, so one unsplittable point keeps it (bh's `self.subp[i]`, one
+      // Cell's list holding Cell and Body, also meets at a recursive formal).
+      bool s_ok = (found[0] || found[1]) && !found[2] && !found[3] && !found[4];
+      bool none = !found[0] && !found[1] && !found[2] && !found[3] && !found[4];
+      if (s_ok) ++sep;
+      for (int k = 0; k < 5; k++) if (found[k]) kinds[k]++;
+      fprintf(stderr, "DISPORIGIN %s:%d in %s classes=%d funs=%d formal=%d cs_multi=%d cs_single=%d local=%d global=%d -> %s\n",
+              pn->code ? pn->code->pathname() : "?", pn->code ? pn->code->line() : 0,
+              es->fun->sym && es->fun->sym->name ? es->fun->sym->name : "?", R.set_count(), funs.set_count(),
+              found[0], found[1], found[2], found[3], found[4], s_ok ? "SEPARABLE" : none ? "none-found" : "unseparable");
+    }
+  }
+  if (getenv("IFA_DBG_DISPATCHORIGIN")[0] == '2') {
+    int pns = 0, multi = 0;
+    for (EntrySet *es : fa->ess) if (es)
+      for (int mi = 0; mi < es->out_edge_map.n; mi++) {
+        Vec<AEdge *> *edges = es->out_edge_map.v[mi].value;
+        if (!edges) continue;
+        pns++;
+        Vec<Fun *> fs;
+        for (AEdge *e : *edges) if (e && e->fun) fs.set_add(e->fun);
+        if (fs.set_count() > 1) multi++;
+      }
+    fprintf(stderr, "DISPORIGIN-dbg ess=%d sends-with-edges=%d multi-fun=%d\n", fa->ess.n, pns, multi);
+  }
+  fprintf(stderr, "DISPORIGIN sends=%d separable=%d", sends, sep);
+  for (int k = 0; k < 5; k++) fprintf(stderr, " %s=%d", kname[k], kinds[k]);
+  fprintf(stderr, "\n");
+}
+
 // SPLIT vs HOIST, shedskin's `lowest_common_parents` test. Extracted from
 // report_elem_confluence (ifa/152) so the splitter can apply it too, per
 // CLAUDE.md: "Classify the confluence before splitting it."
@@ -2173,6 +2345,7 @@ void report_demand_ratio() {
   report_cs_vars();
   report_elem_confluence();
   report_recv_cardinality();
+  report_dispatch_origin();
   if (!getenv("IFA_DBG_DEMAND")) return;
   ElemCensus c;
   element_census(c);
