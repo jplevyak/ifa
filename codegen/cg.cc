@@ -514,6 +514,12 @@ static void cg_sprint_imm(char *ss, size_t n, Immediate &imm) {
     if (isinf(d)) { snprintf(ss, n, "%s__builtin_inf()", d < 0 ? "-" : ""); return; }
     if (isnan(d)) { snprintf(ss, n, "__builtin_nan(\"\")"); return; }
   }
+  // INT64_MIN has no C literal: `-9223372036854775808` is unary minus on a
+  // literal too large for int64, which C reads as unsigned.
+  if (imm.const_kind == IF1_NUM_KIND_INT && imm.num_index == IF1_INT_TYPE_64 && imm.v_int64 == INT64_MIN) {
+    snprintf(ss, n, "(-9223372036854775807LL - 1)");
+    return;
+  }
   sprint_imm(ss, n, imm);
 }
 

@@ -138,6 +138,8 @@ class.
      only what can ESCAPE uncaught, which is a change to the exception
      model (threading the pending exception along the propagation path
      instead of through one flow-insensitive global), not to splitting.
+     It is the same confluence as
+     [issues/172](../../issues/172-generator-send-channel-and-stopiteration-value.md).
    - Corpus check -R `check__default__c3ea9eb3+3c8fdc66` against
      `check__default__4697b7c4+a77008dd`: every verdict and warning count
      identical on all 77; CreationSets -3 on every program (-228), and one
