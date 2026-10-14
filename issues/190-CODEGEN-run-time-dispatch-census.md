@@ -1,7 +1,7 @@
 # 190 — CODEGEN: run-time dispatch census, toward zero
 
-**Status:** open. Nullable receivers fixed (2026-10-13). What remains is
-classified below.
+**Status:** open. Nullable receivers fixed, both tagged and untagged
+(2026-10-13). What remains is classified below.
 
 ## Goal
 
@@ -41,22 +41,41 @@ chull: `dynamic=15` → `dynamic=0 niltest=15`. Corpus `check -R`
 (`check__default__4697b7c4+a77008dd` against `+3981dab9`): verdicts,
 warnings and contours identical on all 77.
 
-## Corpus census after the fix (76 programs; othello3 does not compile)
+## Fixed: None plus an untagged builtin
 
-direct 37,236, niltest 130, **dynamic 142** (it was 272 before the fix).
+28 more call sites in user code were None plus a `str`, `bytes`, `list`,
+`tuple` or function value. The emitter already decided each of these with
+a null test and a direct call, through its untagged-direct route or the
+arity plan, but `nil_tested_target` required a classtag, so the census
+counted them as dynamic. Counting with the same predicate in the runtime
+library added 19 more. The predicate now accepts any receiver whose
+members are all pointers: all tagged or all untagged, and none `None` or
+a number. A scalar shares 0 with None, so a null test cannot decide it.
 
-| count | shape | example | what it is |
-| --- | --- | --- | --- |
-| 40 | user classes, 4+ candidates | pygasus `_exec` over its opcode classes | polymorphism over a hierarchy: hoist (shedskin's virtuals), do not split |
-| 35 | user classes, 2–3 candidates | bh `load_tree` / `walk_sub_tree` (Body, Cell), path_tracing `bounce` | same; check each for a common ancestor |
-| 28 | None plus one UNTAGGED builtin | amaze `__str__` over {tuple, None} | emitted as a null test plus a direct call already (the untagged-direct route), but `nil_tested_target` requires a classtag, so it is still counted dynamic. Extend the predicate to match the emitter, minding the scalar exclusion (None and 0 share a representation) |
-| 20 | two builtins, no None | amaze `__str__` over two tuple shapes | builtin receivers with no tag: a real merge to find |
-| 12 | runtime library (`list.remove`, `__contains__`, `index`) | `__eq__` over element types | element unions inside a builtin's contour |
-| 7 | `__pyc_unhandled_exception__` | `e.__str__()` over several exception classes and None | one per program that raises two exception classes with their own `__str__` |
+A temporary probe in the C emitter checked that every site the census
+calls `niltest` is emitted as a null test plus one direct call. It found no
+mismatches on 76 programs. One shape reaches that result by another
+route: `{2-tuple, None}` goes through the arity plan, which keeps its
+`len == 2` check after the null test. That check is a guard, not a choice
+between functions, because only one candidate is left.
+
+This changed only the census: emission is unchanged and no golden moved.
+
+## Corpus census (76 programs; othello3 does not compile)
+
+direct 37,236, **niltest 177, dynamic 95**. Before this issue: niltest 0,
+dynamic 272.
+
+| shape | example | what it is |
+| --- | --- | --- |
+| user classes, 4+ candidates (40) | pygasus `_exec` over its opcode classes | polymorphism over a hierarchy: hoist (shedskin's virtuals), do not split |
+| user classes, 2–3 candidates (~35) | bh `load_tree` / `walk_sub_tree` (Body, Cell), path_tracing `bounce` | same; check each for a common ancestor |
+| two builtin shapes, no None (~20) | amaze `__str__` over two tuple shapes | builtin receivers with no tag: a real merge to find |
+| runtime library (`list.remove`, `__contains__`, `index`) | `__eq__` over element types | element unions inside a builtin's contour |
+| `__pyc_unhandled_exception__` with several `__str__` overrides | `e.__str__()` | one per program raising two exception classes with their own `__str__` |
+| None plus two or more types | amaze `__eq__` over {tuple, tuple union, None} | the non-None part is itself a dispatch |
 
 ## Next
 
-1. Count the 28 None-plus-untagged-builtin calls as `niltest` where the
-   emitter already decides them with a null test.
-2. Classify the 75 user-class calls: shared ancestor (hoist) or unrelated
-   (a precision failure, so split).
+Classify the user-class calls: shared ancestor (hoist) or unrelated (a
+precision failure, so split).

@@ -615,6 +615,7 @@ bool identical_c_signature(Fun *a, Fun *b) {
 // golden is shared by both. The resolver is what both consult, and
 // resolvability is a fact about the analysis result rather than about who
 // prints it.
+static Sym *method_receiver_type(Fun *cand, PNode *pn);
 void report_call_resolution(FA *fa) {
   if (!getenv("PYC_DBG_CALLS")) return;
   long direct = 0, dynamic = 0, niltest = 0;
@@ -640,7 +641,11 @@ void report_call_resolution(FA *fa) {
           fprintf(stderr, "DYNCALL %s:%d in %s ->", n->code->pathname(), n->code->line(),
                   f->sym->name ? f->sym->name : "?");
           for (Fun *c : *fns)
-            fprintf(stderr, " %s#%d(%s:%d)", c->sym->name ? c->sym->name : "?", c->id, c->sym->pathname(), c->sym->line());
+            if (Sym *rt = method_receiver_type(c, n))
+              fprintf(stderr, " %s#%d(%s:%d)[%s]", c->sym->name ? c->sym->name : "?", c->id, c->sym->pathname(),
+                      c->sym->line(), rt->name ? rt->name : (rt->type_kind == Type_SUM ? "union" : "?"));
+            else
+              fprintf(stderr, " %s#%d(%s:%d)", c->sym->name ? c->sym->name : "?", c->id, c->sym->pathname(), c->sym->line());
           fprintf(stderr, "\n");
         }
       }
@@ -718,7 +723,7 @@ static Sym *method_receiver_type(Fun *cand, PNode *pn) {
   return nullptr;
 }
 
-// A method send on a NULLABLE receiver -- tagged classes sharing one method, or
+// A method send on a NULLABLE receiver -- pointer types sharing one method, or
 // None -- is not a
 // dispatch: the null test decides it, and each arm calls one known function.
 // Returns the non-None target (and the None class's method in `*nil_fn`) when
@@ -735,14 +740,26 @@ Fun *nil_tested_target(PNode *n, Fun *f, Fun **nil_fn) {
       if (nil) return nullptr;
       nil = c;
     } else {
-      // A union receiver is several classes sharing ONE inherited method,
-      // which is what a single candidate with a union `self` already is.
+      // A union receiver is several types sharing ONE method, which is what
+      // a single candidate with a union `self` already is. Every member must
+      // be a pointer, so that NULL means None and nothing else: a scalar
+      // shares 0 with None. And the members must be all tagged (the emitter's
+      // classtag arms, all calling this one candidate) or all untagged (its
+      // untagged-direct arm), not a mix.
       if (other) return nullptr;
+      int tagged = 0, untagged = 0;
+      auto member = [&](Sym *m) {
+        if (!m || m == sym_nil_type || m->num_kind) return false;
+        if (cg_has_classtag(m)) ++tagged;
+        else ++untagged;
+        return true;
+      };
       if (rt->type_kind == Type_SUM) {
         for (Sym *m : rt->has)
-          if (!m || m == sym_nil_type || !cg_has_classtag(m)) return nullptr;
-      } else if (!cg_has_classtag(rt))
+          if (!member(m)) return nullptr;
+      } else if (!member(rt))
         return nullptr;
+      if (tagged && untagged) return nullptr;
       other = c;
     }
   }
