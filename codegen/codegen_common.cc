@@ -617,7 +617,7 @@ bool identical_c_signature(Fun *a, Fun *b) {
 // prints it.
 void report_call_resolution(FA *fa) {
   if (!getenv("PYC_DBG_CALLS")) return;
-  long direct = 0, dynamic = 0;
+  long direct = 0, dynamic = 0, niltest = 0;
   for (Fun *f : fa->pdb->funs) {
     if (!f->live) continue;
     Vec<PNode *> nodes;
@@ -631,11 +631,28 @@ void report_call_resolution(FA *fa) {
         // PYC_DBG_CALLS=2 names each direct call, to attribute a count change.
         if (atoi(getenv("PYC_DBG_CALLS")) >= 2)
           fprintf(stderr, "CALL %s -> %s\n", f->sym->name ? f->sym->name : "?", t->sym->name ? t->sym->name : "?");
-      } else
+      } else if (nil_tested_target(n, f, nullptr)) {
+        ++niltest;
+      } else {
         ++dynamic;
+        // PYC_DBG_CALLS=3 names each dynamic call and its candidates.
+        if (atoi(getenv("PYC_DBG_CALLS")) >= 3) {
+          fprintf(stderr, "DYNCALL %s:%d in %s ->", n->code->pathname(), n->code->line(),
+                  f->sym->name ? f->sym->name : "?");
+          for (Fun *c : *fns)
+            fprintf(stderr, " %s#%d(%s:%d)", c->sym->name ? c->sym->name : "?", c->id, c->sym->pathname(), c->sym->line());
+          fprintf(stderr, "\n");
+        }
+      }
     }
   }
-  fprintf(stderr, "CALLS: direct=%ld dynamic=%ld\n", direct, dynamic);
+  // A nullable receiver decided by a null test (nil_tested_target) is not a
+  // dispatch; it is reported apart, and only when there is one, so a program
+  // without one keeps its line.
+  if (niltest)
+    fprintf(stderr, "CALLS: direct=%ld dynamic=%ld niltest=%ld\n", direct, dynamic, niltest);
+  else
+    fprintf(stderr, "CALLS: direct=%ld dynamic=%ld\n", direct, dynamic);
 }
 
 // ifa/132: identical C signatures do not make two clones interchangeable
@@ -680,6 +697,58 @@ static bool clones_see_same_record_contents(Fun *a, Fun *b) {
     }
   }
   return true;
+}
+
+// The type of a method candidate's RECEIVER formal: on a method send, the
+// first formal after the selector.
+static Sym *method_receiver_type(Fun *cand, PNode *pn) {
+  if (!cand || !cand->sym || !pn || !pn->rvals.n || !pn->rvals[0] || !pn->rvals[0]->sym ||
+      !pn->rvals[0]->sym->is_symbol)
+    return nullptr;
+  MPosition p;
+  p.push(1);
+  for (int pi = 0; pi < cand->sym->has.n + 2; pi++) {
+    MPosition *cp = cannonicalize_mposition(p);
+    p.inc();
+    Var *av = cand->args.get(cp);
+    if (!av || !av->type) continue;
+    if (av->type == sym_symbol) continue;
+    return av->type;
+  }
+  return nullptr;
+}
+
+// A method send on a NULLABLE receiver -- tagged classes sharing one method, or
+// None -- is not a
+// dispatch: the null test decides it, and each arm calls one known function.
+// Returns the non-None target (and the None class's method in `*nil_fn`) when
+// the candidates are exactly that pair. Shared by the C emitter and the call
+// census so the two agree.
+Fun *nil_tested_target(PNode *n, Fun *f, Fun **nil_fn) {
+  Vec<Fun *> *fns = f ? f->calls.get(n) : nullptr;
+  if (!fns || fns->n != 2) return nullptr;
+  Fun *nil = nullptr, *other = nullptr;
+  for (Fun *c : *fns) {
+    Sym *rt = method_receiver_type(c, n);
+    if (!rt) return nullptr;
+    if (rt == sym_nil_type) {
+      if (nil) return nullptr;
+      nil = c;
+    } else {
+      // A union receiver is several classes sharing ONE inherited method,
+      // which is what a single candidate with a union `self` already is.
+      if (other) return nullptr;
+      if (rt->type_kind == Type_SUM) {
+        for (Sym *m : rt->has)
+          if (!m || m == sym_nil_type || !cg_has_classtag(m)) return nullptr;
+      } else if (!cg_has_classtag(rt))
+        return nullptr;
+      other = c;
+    }
+  }
+  if (!nil || !other) return nullptr;
+  if (nil_fn) *nil_fn = nil;
+  return other;
 }
 
 Fun *get_target_fun_core(PNode *n, Fun *f) {
@@ -733,12 +802,20 @@ void poly_dispatch_classtag_targets(Fun *candidate, PNode *pn, Vec<cchar *> &dir
   MPosition argp;
   argp.push(1);
   bool found = false;
+  // On a METHOD send the receiver is the first formal after the selector,
+  // and only it is asked. Scanning on past it found `__pyc_None_type__
+  // .__eq__(self, x)`'s `x : V` when `self` (None) carries no `__eq__`, so
+  // the None method was taken for a V-tag candidate, its nil branch was
+  // never emitted, and `None == v` on a {V, None} receiver read a tag
+  // through NULL (chull's `fv.vertex[i] != e.endpts[0]`).
+  const bool method_send = pn->rvals.n && pn->rvals[0] && pn->rvals[0]->sym && pn->rvals[0]->sym->is_symbol;
   for (int pi = 0; pi < candidate->sym->has.n + 2 && !found; pi++) {
     MPosition *cp = cannonicalize_mposition(argp);
     argp.inc();
     Var *argv = candidate->args.get(cp);
     if (!argv || !argv->type) continue;
     Sym *csym = argv->type;
+    if (method_send && csym == sym_symbol) continue;  // the selector
     Vec<Sym *> members;  // classes to search: the type itself, or its union members
     bool from_union = csym->type_kind == Type_SUM;
     if (from_union) {
@@ -761,6 +838,7 @@ void poly_dispatch_classtag_targets(Fun *candidate, PNode *pn, Vec<cchar *> &dir
         }
       }
     }
+    if (method_send) break;
   }
 }
 

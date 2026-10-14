@@ -2676,6 +2676,22 @@ class CBackendEmitter : public VirtualCGEmitter {
             }
           }
         }
+        // A nullable receiver: after the null test every remaining receiver
+        // calls the one non-None candidate, so its arm is a direct call, not a tag compare and a slot
+        // call -- the untagged-direct `else` arm below, which is exactly that.
+        bool nil_tested = ok && nil_fn && classes.n && !plains.n && !directs.n;
+        if (nil_tested) {
+          Fun *t = nil_tested_target(pn, f, nullptr);
+          for (int ci = 0; ci < classes.n && nil_tested; ci++)
+            if (slots[ci] == -1 || class_funs[ci] != t) nil_tested = false;
+        }
+        if (nil_tested) {
+          directs.add(class_funs[0]);
+          classes.clear();
+          slots.clear();
+          recv_types.clear();
+          class_funs.clear();
+        }
         if (ok && recv_str && (classes.n || plains.n || nil_fn)) {
           cchar *lhs = (pn->lvals.n && cg_get_string(pn->lvals[0])) ? cg_get_string(pn->lvals[0]) : nullptr;
           cchar *ret_type_str = (pn->lvals.n && pn->lvals[0]->type) ? c_type(pn->lvals[0]) : "void*";
