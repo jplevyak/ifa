@@ -79,7 +79,7 @@ comparing clones directly reported `Chrome(Material)` as unrelated to
 | --- | --- | --- |
 | **71** | **distinct classes with a common user ancestor**: polymorphism, which is legitimate. shedskin emits these as virtual calls; hoist, do not split (AGENTS.md) | pygasus 39 (`_exec` over `AddrMode`, `Instruction`, `MMCread/Write/Load`), quameon 11 (`sto_base`, `base_jastrow`), pygmy 7, bh 7 (`Node`), yopyra 3, tarsalzp 2, richards 1 (`Task`), path_tracing 1 (`Material`) |
 | **4** | **one class, two clones** at one call site: each is a value merge no contour split can separate (see below) | quameon 2 (`coulomb_pot.compute_en_value` / `compute_nn_value`), fysphun 1 (`Link.applyme`), softrender 1 (`Vector4.add`) |
-| **7** | `__pyc_unhandled_exception__`: `e.__str__()` over the exception classes a program raises, plus None | one per program that raises two classes with their own `__str__` |
+| **7** | `__pyc_unhandled_exception__`: `e.__str__()` over the exception classes a program raises, plus None | one per program; 4 removed 2026-10-14 (item 3) |
 | **13** | builtin receivers: tuple shapes (`__eq__` / `__str__`, amaze 8, 4 of them with None), `{bytes, bytearray}.__getitem__` (softrender 4), tuple `__eq__` (sunfish 1) | |
 
 **No dynamic call has receivers of unrelated user classes.** Every
@@ -115,6 +115,31 @@ class.
    come from separable sources. Measuring that is a different question:
    does an ES split on the receiver's creation points make the site
    monomorphic?
-3. The exception printer (7): an `isinstance` chain on the raised class,
-   or a direct call per class, would remove it. It runs once, at exit.
+3. **The exception printer (7): 4 removed, 3 left (2026-10-14).** The
+   candidates were None's `__str__` plus two IDENTICAL bodies,
+   `Exception.__str__` and `BaseException.__str__`. They were two because
+   `__pyc__/08_exception.py` derived `Exception` from `object` with its own
+   copy of both methods, so the builtin hierarchy was flat. That was also a
+   CPython bug: `except BaseException` did not catch a `ValueError`, and
+   the program died with "Unhandled exception". `Exception` now derives
+   from `BaseException` and inherits both methods, so a program whose
+   exceptions all use the builtin `__str__` has one non-None target, and
+   the call is a null test plus a direct call. Test:
+   `tests/exception_hierarchy_base.py` (which fails on the old tree).
+   - bh 8 → 7, neural1 1 → 0, pygasus 40 → 39, kanoodle 1 → 0.
+   - **Left: voronoi2, rdb and msp_ss, 1 each.** The extra candidate is
+     `GetoptError.__str__` (`pyc_lib/getopt.py`), a real override that
+     CPython's getopt also has, with `BaseException` as the common
+     ancestor. All three programs catch `GetoptError` around the
+     `getopt` call, so it never reaches the printer. The analysis sees it
+     anyway because the pending slot `__pyc_exc__` is one global: every
+     raise stores to it, and the printer reads the union of every class
+     ever raised, caught or not. Removing these 3 needs the printer to see
+     only what can ESCAPE uncaught, which is a change to the exception
+     model (threading the pending exception along the propagation path
+     instead of through one flow-insensitive global), not to splitting.
+   - Corpus check -R `check__default__c3ea9eb3+3c8fdc66` against
+     `check__default__4697b7c4+a77008dd`: every verdict and warning count
+     identical on all 77; CreationSets -3 on every program (-228), and one
+     EntrySet fewer on each of the 7 printer programs.
 4. The builtin shapes (13), one at a time.
