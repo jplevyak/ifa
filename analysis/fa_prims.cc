@@ -598,7 +598,14 @@ switch (p->prim->index) {
           // the synthesised CS, `len(self)` folded to 0, so the very
           // first `n != len(t)` check returned False and `x == (1, 2)`
           // was silently False for a tuple that WAS (1, 2).
-          if (cs->no_static_arity || !cs->defs.n || (elem && elem->out != fa->type_world.bottom_type) ||
+          // A str/bytes CONSTANT has a known length, so len() of it is a
+          // constant too, and so is its truth (`self.__len__() != 0`). Not
+          // folding it left `b'' or bytearray(n)` typed {bytes, bytearray},
+          // a union with no run-time discriminator (ifa/102, softrender).
+          int ck = cs->sym->is_constant ? cs->sym->imm.const_kind : 0;
+          if (ck == IF1_CONST_KIND_STRING || ck == IF1_CONST_KIND_BYTES)
+            rtype = type_union(rtype, make_size_constant_type(cs->sym->imm.v_len));
+          else if (cs->no_static_arity || !cs->defs.n || (elem && elem->out != fa->type_world.bottom_type) ||
               sym_string->specializers.set_in(cs->sym) || sym_bytes->specializers.set_in(cs->sym))
             rtype = type_union(rtype, fa->type_world.size_type);
           else

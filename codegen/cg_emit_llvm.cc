@@ -3284,8 +3284,10 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
   bool produced = ctx.watch_result_put;
   ctx.watch_result = saved;
   ctx.watch_result_put = saved_put;
-  if (watch && !produced && Builder->GetInsertBlock() && !Builder->GetInsertBlock()->getTerminator())
+  if (watch && !produced && Builder->GetInsertBlock() && !Builder->GetInsertBlock()->getTerminator()) {
+    codegen_unresolved_send(pn, ctx.fn ? ctx.fn->calls.get(pn) : nullptr, "no dispatch plan produced its result");
     emit_salvage_trap(ctx, dst);
+  }
 }
 
 static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
@@ -3298,6 +3300,7 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
     // it next declined too (ifa/issues/181: `print(x[0:2])` on a
     // {list, tuple} union). Trap at run time, and give the result a
     // defined value so the code after it still emits.
+    codegen_unresolved_send(pn, callees, "the analysis found no target");
     emit_salvage_trap(ctx, pn->lvals.n ? pn->lvals.v[0] : nullptr);
     return;
   }

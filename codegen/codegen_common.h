@@ -268,6 +268,13 @@ void codegen_fail(PNode *n, cchar *fmt, ...) __attribute__((noreturn, format(pri
 
 // Same for Var-level errors (variable's source line if available).
 void codegen_fail(Var *v, cchar *fmt, ...) __attribute__((noreturn, format(printf, 2, 3)));
+// ifa/102: a send codegen cannot resolve to code -- no candidate, or
+// candidates it has no run-time way to tell apart. It used to become a
+// run-time stub (`matching function not found`, an LLVM trap) and the
+// compile succeeded, so a condition the compiler had detected became a
+// crash. It is refused, in every mode; PYC_DISPATCH_STUB=1 restores the
+// stub, for debugging only. Returns only in that case.
+void codegen_unresolved_send(PNode *pn, Vec<Fun *> *candidates, cchar *why);
 
 // -------------------------------------------------------------
 // Primitive emission contract (phase 2.3 stub)

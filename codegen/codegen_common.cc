@@ -1,3 +1,4 @@
+#include <string>
 // SPDX-License-Identifier: BSD-3-Clause
 //
 // See `codegen_common.h` for the header-level contract.
@@ -1174,6 +1175,31 @@ void assign_type_cg_strings_pass1(Vec<Sym *> &allsyms, FILE *fp) {
 // -------------------------------------------------------------
 // Failure reporting with PNode / Var context (phase 5.3)
 // -------------------------------------------------------------
+
+void codegen_unresolved_send(PNode *pn, Vec<Fun *> *candidates, cchar *why) {
+  static int stub = -1;
+  if (stub < 0) {
+    cchar *e = getenv("PYC_DISPATCH_STUB");
+    stub = e && atoi(e);
+  }
+  if (stub) return;
+  // Names are for the human reading the diagnostic only.
+  cchar *sel = "?";
+  if (pn && pn->rvals.n && pn->rvals[0] && pn->rvals[0]->sym && pn->rvals[0]->sym->is_symbol && pn->rvals[0]->sym->name)
+    sel = pn->rvals[0]->sym->name;
+  std::string cands;
+  if (candidates)
+    for (Fun *f : *candidates) {
+      if (!f || !f->sym) continue;
+      Sym *cls = f->sym->has.n > 1 && f->sym->has[1] ? f->sym->has[1]->must_specialize : nullptr;
+      if (!cands.empty()) cands += ", ";
+      if (cls && cls->name) cands += std::string(cls->name) + ".";
+      cands += f->sym->name ? f->sym->name : "?";
+    }
+  if (cands.empty()) cands = "none";
+  codegen_fail(pn, "cannot resolve the call to '%s' (candidates: %s): %s. pyc refuses it rather than emit a run-time "
+               "stub (ifa/102)", sel, cands.c_str(), why);
+}
 
 void codegen_fail(PNode *n, cchar *fmt, ...) {
   fflush(stdout);

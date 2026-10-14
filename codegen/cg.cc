@@ -2944,7 +2944,8 @@ class CBackendEmitter : public VirtualCGEmitter {
       // get_target_fun. Failing there refused every legitimate
       // polymorphic call (a generator's `e.__str__()` on the exception
       // slot) before dispatch was even tried.
-      if (!fruntime_errors) codegen_fail(pn, "unable to resolve to a single function at call site");
+      codegen_unresolved_send(pn, fns, fns && fns->n ? "no dispatch plan can tell the candidates apart at run time"
+                                                     : "the analysis found no target");
       fputs("  assert(!\"runtime error: matching function not found\");\n", fp);
     }
   }
