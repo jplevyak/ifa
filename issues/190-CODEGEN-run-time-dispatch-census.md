@@ -78,7 +78,7 @@ comparing clones directly reported `Chrome(Material)` as unrelated to
 | calls | class | programs |
 | --- | --- | --- |
 | **71** | **distinct classes with a common user ancestor**: polymorphism, which is legitimate. shedskin emits these as virtual calls; hoist, do not split (AGENTS.md) | pygasus 39 (`_exec` over `AddrMode`, `Instruction`, `MMCread/Write/Load`), quameon 11 (`sto_base`, `base_jastrow`), pygmy 7, bh 7 (`Node`), yopyra 3, tarsalzp 2, richards 1 (`Task`), path_tracing 1 (`Material`) |
-| **4** | **one class, two clones** at one call site | quameon 2 (`coulomb_pot.compute_en_value` / `compute_nn_value`), fysphun 1 (`Link.applyme`), softrender 1 (`Vector4.add`) |
+| **4** | **one class, two clones** at one call site: each is a value merge no contour split can separate (see below) | quameon 2 (`coulomb_pot.compute_en_value` / `compute_nn_value`), fysphun 1 (`Link.applyme`), softrender 1 (`Vector4.add`) |
 | **7** | `__pyc_unhandled_exception__`: `e.__str__()` over the exception classes a program raises, plus None | one per program that raises two classes with their own `__str__` |
 | **13** | builtin receivers: tuple shapes (`__eq__` / `__str__`, amaze 8, 4 of them with None), `{bytes, bytearray}.__getitem__` (softrender 4), tuple `__eq__` (sunfish 1) | |
 
@@ -88,15 +88,29 @@ class.
 
 ### What is left to do
 
-1. **The 4 one-class-two-clones calls are a demand.** Two CreationSets of
-   one class, whose member contents differ, meet at one call site, and the
-   slot dispatch picks the clone. quameon's case is the one ifa/132
-   describes, where an int-list `charges` and a float-list `charges` refuse
-   the clone collapse. `dispatch_named`/`per_cs_formals` in fa.cc already
-   splits the calling EntrySet per receiver CreationSet, but only when the
-   ambiguous receiver sym is UNTAGGED (`type_kind != Type_RECORD`), because
-   that case used to be a codegen failure. For a tagged class it is "only" a
-   slot call, so no demand fires. Under the zero-dispatch goal it should.
+1. **The 4 one-class-two-clones calls: none can be separated by a contour.**
+   Planned: widen the receiver split (`per_cs_formals`, which fires only for
+   untagged receivers) to tagged classes. Stop condition, set before
+   measuring: if the two receiver CreationSets meet in one value that no
+   contour split can separate, the split cannot make the site monomorphic,
+   and widening it only adds contours. All four meet that condition:
+   - **fysphun `Link.applyme`: one container.** `addlinki` stores an int
+     `dist` and `addlinkrr` a float from `hypot`, and both go into the one
+     global `links`, so `links[0]` may be either.
+   - **softrender `Vector4.add`: a flow merge inside one contour.**
+     `havenormal` is `pos_normal[key]` (a float Vector4) or
+     `Vector4(0, 0, 0, 0)` (ints). The two meet at one variable inside one
+     function.
+   - **quameon `coulomb_pot` (2 calls): one field over time.**
+     `wave_func.__init__` writes `self.pot = coulomb_pot(npos)`, whose
+     default charges are float; quameon.py then overwrites `wavef.pot`
+     with `coulomb_pot(npos, charges)`, whose charges are int. This is
+     temporal, the same shape as bh's (AGENTS.md).
+
+   In each, two value types legitimately reach one call, because CPython
+   keeps the int an int. Only coercing to float would remove the dispatch,
+   and that is a semantic deviation. The dispatch is the correct code, and
+   the widening was not built.
 2. **The 71 hierarchy calls stay dynamic** unless a call site's receivers
    come from separable sources. Measuring that is a different question:
    does an ES split on the receiver's creation points make the site
