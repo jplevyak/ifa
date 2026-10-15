@@ -1,7 +1,8 @@
 # 132 — Arity is representation, not provenance
 
-**Status: open on the residual representation conflicts; quameon resolved
-2026-09-30.** The principle landed 2026-09-05. Rewritten 2026-09-28; the
+**Status: open only on the untagged-dispatch test (via 178).** The
+one-slot arity conflict was shown sound and `PYC_SLOTARITY` deleted on
+2026-10-15 (below). quameon resolved 2026-09-30. The principle landed 2026-09-05. Rewritten 2026-09-28; the
 full record is in git:
 `git show 3f36072b:ifa/issues/132-arity-is-representation-not-provenance.md`.
 
@@ -19,7 +20,7 @@ length) absorbs any arity. Result at the time: every `pyc` crash and hang
 under the flag disappeared (plcfrs, softrender, pygasus, quameon,
 othello3), and container CSs stayed 27.5% below the old default.
 
-## What is open: two CreationSets of one sym, different arity, one slot
+## Two CreationSets of one sym, different arity, one slot (resolved 2026-10-15, below)
 
 Identity correctly keeps `(1,2)` and `(1,2,3)` apart. But when ONE AVar
 must hold both, `determine_basic_clones` puts them in different layout
@@ -67,17 +68,43 @@ amaze (2026-10-02, below) with its conflicts still present.
   slot across the arity conflict is still needed, and quameon is the
   one left.
 
-### Mechanism in the tree: `PYC_SLOTARITY=1` (default 0)
+### Resolved 2026-10-15: the untyped slot is sound; `PYC_SLOTARITY` deleted
 
-Each pass, it groups conflicting CSs transitively and demotes a group to
-list layout only if the group is **jointly homogeneous** over **settled**
-slots. Each of those conditions cost a measurement to find: an empty AType
-and a non-basic one both map to `nullptr` in `basic_type`, and
-per-CS homogeneity is not enough once 16 differently-typed 2-tuples share
-an element. It is correct and conservative: `quameon` compiles clean and
-runs. But no verdict changes, and it found a real bug on the way (a raw
-CS → CS flow edge in `make_kind`'s element seeding, fixed). It is pending
-here: land it once a program's verdict depends on it, or drop it.
+`PYC_SLOTARITY=1` grouped the conflicting CreationSets each pass and
+demoted a group to list layout when its settled slots agreed on one basic
+type. It never changed a verdict. Retaken from one binary
+(`check__default__e254f017+34ca222e` against
+`check__PYC_SLOTARITY_1__93084d1d+83753197`), it now LOSES two programs
+and gains none. `chull` fails to compile (`'x' has no type`). `loop`
+compiles and silently prints garbage (`Found 124719980874960 loops` for
+CPython's 76002).
+
+**The premise was wrong.** The `_CG_void` slot was read above as "has no
+C type", hence broken. It is not broken:
+
+- a record list is a real list in memory. `_CG_prim_tuple_list` and
+  `_CG_TUPLE_TO_LIST_FUN` (`pyc_c_runtime.h`) allocate it with a normal
+  list header and its elements inline, so list operations work on either
+  kind;
+- `_CG_void` and `_CG_any` are both `void *`, and every access through the
+  slot is resolved from the FA types, not from the slot's C type;
+- PYC_SLOTARITY did not even type the slot. On a two-arity member, `Box.v`
+  was `_CG_void` with it on as well; only the literals' construction
+  changed.
+
+Five probes that create the conflict (6-19 `IFA_DBG_SLOTREP` lines each)
+match CPython on both backends with the flag off. They cover a function
+returning either arity, a member set to either arity then iterated, rows of
+different length plus a tuple of two arities, a float member that is a
+literal or an `append`-filled `[]`, and mutation through the shared slot
+(`append`, item store, slice, `==`, `in`, `+`).
+[`tests/slot_arity_conflict.py`](../../tests/slot_arity_conflict.py) keeps
+the member, mutation and return cases, so a layout change that breaks
+this fails visibly.
+
+What remains of this issue is not arity. It is quameon's case below: two
+lists of one class with different ELEMENT types behind one receiver, an
+untagged dispatch.
 
 ## Resolved 2026-09-30: quameon was an untagged dispatch ambiguity, not arity
 
@@ -146,15 +173,17 @@ other verdict changed. `make test`: 378 passed, 0 failed.
 
 ## Next
 
-1. 178, then a synthetic test of the untagged-dispatch demand.
-2. `PYC_SLOTARITY` (default 0): no verdict depends on it. Drop it, or land
-   the two gap fixes recorded above if a program ever needs it.
+1. 178, then a synthetic test of the untagged-dispatch demand. When it
+   lands, close this issue.
+2. `PYC_SLOTARITY`: deleted 2026-10-15 (above).
 3. amaze: done. It runs and matches CPython with the conflict latent
    (see its shape above). The liveness question matters only if a
    program reads across the conflict.
 
 ## Verification
 
-Six gates; `IFA_DBG_SLOTREP` conflicts fall; `quameon` runs; a
+Six gates; `quameon` runs; `tests/slot_arity_conflict.py` matches CPython
+on both backends (the conflicts `IFA_DBG_SLOTREP` counts need not fall,
+since they are sound); a
 genuinely dynamic list built by `append` in a loop still gets ONE contour
 with list layout.

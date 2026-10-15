@@ -106,6 +106,22 @@ ATypes). It stops for the right reason and costs 2 suite tests
 Finish it. This is a correctness property of the whole analysis, not a
 splitter detail.
 
+**Resolved 2026-10-15: the loop already stops at a fixed point; lever
+deleted.** The two suite failures were measured with `PYC_NOOPSPLIT=1`
+(ifa/148), since deleted; with TYPEMOVE alone the suite passes on both
+modes. Mode 1 also set `analyze_again` before route 4, which told route 4,
+CONST_DEMAND and the ifa/170 merges that a stage had acted; a mode 2 asked
+the same test after every stage and used it only to keep the loop going.
+Same-binary corpus `check -R` (`check__PYC_TYPEMOVE_{1,2}__93084d1d+db3ef0c6`
+against `check__default__93084d1d+7369cc63`): contours, warnings and
+verdicts identical on all 76 that compile (tonyjpegdecoder's mode-2 run
+timeout is load: its C is byte-identical and it runs in 96 s alone against
+the 120 s cap). Mode 2 adds exactly one pass after the last split, on which
+no formal type moves (tuple_compare p=5, sha p=14, richards p=17), for +6.7%
+compile time; mode 1 +1.6%. So this was neither the stop condition's
+period-2 oscillation nor a termination bug: the plateau tuple_compare
+showed no longer occurs. The test stays as the `IFA_DBG_TYPEMOVE` probe.
+
 ## Stop conditions, written before measuring
 
 - If a stage given the route-4 shape fires on every pass forever, the gate
@@ -117,7 +133,8 @@ splitter detail.
 - For (4): if `TYPEMOVE` increases passes without changing any result, the
   moving types are a period-2 oscillation, which is
   [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md)'s
-  business and not a termination problem.
+  business and not a termination problem. (Hit 2026-10-15, but not as an
+  oscillation: the one added pass moves nothing. See (4).)
 
 ## Dead ends — each built, measured, deleted
 

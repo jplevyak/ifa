@@ -304,13 +304,6 @@ int selfprod_enabled() {
   }
   return e;
 }
-// ifa/148: PYC_TYPEMOVE=1 -- run another pass while the derived types are
-// still changing, instead of only while a stage split. See the use.
-int typemove_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_TYPEMOVE"); e = v ? atoi(v) : 0; }
-  return e;
-}
 // ifa/133: PYC_NILSTORE=0 restores the pre-fix behaviour, for attributing
 // a corpus change to this clause rather than guessing at it.
 int nilstore_enabled() {
@@ -568,33 +561,5 @@ int csbacktrack_enabled() {
 int retdemand_enabled() {
   static int e = -1;
   if (e < 0) { cchar *v = getenv("PYC_RETDEMAND"); e = v ? atoi(v) : 0; }
-  return e;
-}
-// ifa/132: PYC_SLOTARITY=1 -- when one AVar must hold two CreationSets of ONE
-// sym whose arities DISAGREE, neither can keep a record layout, because the
-// value has a single C type and a record and a list are not the same type.
-// Drop the static arity on all of them; `make_kind` then seeds the generic
-// element from the per-index vars (see its `no_static_arity` clause) and
-// clone gives the whole family list layout.
-//
-// This is the same rule ifa/132 already applies WITHIN a CreationSet ("two
-// creation points of different arity means it has no static arity") and that
-// `get_sym_tup` applies WITHIN a layout equivalence class (`if (n !=
-// cs->vars.n) tup = false`). What was missing is the case where the
-// disagreement is ACROSS two CreationSets that identity correctly keeps
-// apart: `determine_basic_clones` splits them on `cs1->vars.n != cs2->vars.n`
-// before `get_sym_tup` can see it, so one stays a record and the other is a
-// list, and the slot holding both gets no type at all -- emitted `_CG_void`,
-// read as `_CG_any`, with every access resolved from the FA type instead.
-//
-// Census, 84 corpus programs (IFA_DBG_SLOTREP): 976 such conflicts in 13
-// programs. Every one of the 13 COMPILES and then fails or prints the wrong
-// answer, and three of the aborts name the untyped value directly --
-// `amaze` "getter not resolved", `linalg` `(_CG_any, _CG_int64)` "list
-// element type mismatch", `quameon` `(_CG_ps26965, _CG_any)` "matching
-// function not found". Nine have zero warnings.
-int slotarity_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_SLOTARITY"); e = v ? atoi(v) : 0; }
   return e;
 }

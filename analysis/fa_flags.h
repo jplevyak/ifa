@@ -28,7 +28,6 @@ int csdcpa1_enabled();
 int routecycle_enabled();
 int routestable_enabled();
 int selfprod_enabled();
-int typemove_enabled();
 int nilstore_enabled();
 int cskey_enabled();
 int csdefsplit_enabled();
@@ -38,6 +37,5 @@ int esblock_enabled();
 int loadbt_enabled();
 int csbacktrack_enabled();
 int retdemand_enabled();
-int slotarity_enabled();
 
 #endif
