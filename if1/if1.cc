@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "ifadefs.h"
 
 #include "if1.h"
@@ -630,11 +631,24 @@ void if1_finalize_dce(IF1 *p) {
 void if1_finalize_flatten_and_fixup_nesting(IF1 *p) {
   for (int i = 0; i < p->allclosures.n; i++) {
     Sym *f = p->allclosures[i];
-    if (f->code) {
-      if1_flatten_code(f->code, Code_CONC, NULL);
-      if1_fixup_nesting(f->code, f);
-    }
+    if (f->code) if1_flatten_code(f->code, Code_CONC, NULL);
   }
+  // issues/169: a LOCALLY_NESTED Sym takes the depth of the first closure
+  // that uses it, so the OWNER must come first. Closures are registered
+  // innermost first, which is fine while only the owner touches its locals
+  // (a capturing lambda or nested def reads them through a carrier,
+  // issues/001), but a local class's body reads its function's locals
+  // directly: the class-body closure claimed `x` at its own depth, the
+  // function's own formal then resolved through a display slot that does
+  // not exist, and the analysis asserted. A local is used only by its owner
+  // and by closures nested inside it, so outermost first (stable, by
+  // nesting depth) always lets the owner claim it.
+  Vec<Sym *> order;
+  for (int i = 0; i < p->allclosures.n; i++) order.add(p->allclosures[i]);
+  std::stable_sort(order.v, order.v + order.n,
+                   [](Sym *a, Sym *b) { return a->nesting_depth < b->nesting_depth; });
+  for (Sym *f : order)
+    if (f->code) if1_fixup_nesting(f->code, f);
 }
 
 // Default: run every step (matches historical behavior).
