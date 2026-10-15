@@ -1602,14 +1602,6 @@ void report_keyspace() {
 }
 
 
-// TEMP probe: which splitter STAGE is producing the per-pass churn.
-// ifa/issues/101: per-pass CreationSet population, grouped by the SYM of
-// the allocation site. Tests whether contour growth is feeding CS growth
-// -- creation_point mints one CS per (site x contour), so a self-
-// amplifying loop would show a handful of syms with CS counts tracking
-// the contour count. Probe-only.
-
-// TEMP probe: which splitter STAGE is producing the per-pass churn.
 // ifa/issues/101: per-pass CreationSet population, grouped by the SYM of
 // the allocation site. Tests whether contour growth is feeding CS growth
 // -- creation_point mints one CS per (site x contour), so a self-
@@ -1617,13 +1609,20 @@ void report_keyspace() {
 // the contour count. Probe-only.
 void report_cs_population() {
   if (!getenv("IFA_DBG_CSPOP")) return;
-  std::map<std::string, int> by_sym;
-  for (CreationSet *cs : fa->css) if (cs)
-    by_sym[cs->sym && cs->sym->name ? cs->sym->name : "(anon)"]++;
-  std::vector<std::pair<std::string, int>> v(by_sym.begin(), by_sym.end());
-  std::sort(v.begin(), v.end(), [](auto &a, auto &b) { return a.second > b.second; });
+  // Keyed on the Sym, not its name: two classes can share a name, and a
+  // name bucket would report them as one (ifa/130 C). The name is display.
+  std::map<Sym *, int> by_sym;
+  for (CreationSet *cs : fa->css) if (cs) by_sym[cs->sym]++;
+  std::vector<std::pair<Sym *, int>> v(by_sym.begin(), by_sym.end());
+  std::sort(v.begin(), v.end(), [](auto &a, auto &b) {
+    if (a.second != b.second) return a.second > b.second;
+    return (a.first ? a.first->id : -1) < (b.first ? b.first->id : -1);
+  });
   fprintf(stderr, "CSPOP p=%d css=%d syms=%d |", analysis_pass, fa->css.n, (int)v.size());
-  for (int i = 0; i < 8 && i < (int)v.size(); i++) fprintf(stderr, " %s:%d", v[i].first.c_str(), v[i].second);
+  for (int i = 0; i < 8 && i < (int)v.size(); i++) {
+    Sym *s = v[i].first;
+    fprintf(stderr, " %s#%d:%d", s && s->name ? s->name : "(anon)", s ? s->id : -1, v[i].second);
+  }
   fprintf(stderr, "\n");
 }
 

@@ -853,7 +853,7 @@ static void collect_prefix_groups(Vec<Vec<Sym *> *> &groups) {
           if (b == a) continue;
           for (int j = 0; j < b->has.n; j++) {
             Sym *o = b->has[j];
-            if (o && o->name && !strcmp(o->name, m->name) && i != j) {
+            if (o && o->name == m->name && i != j) {
               if (getenv("IFA_DBG_PREFIX"))
                 fprintf(stderr, "PREFIX conflict: '%s' at %s[%d] vs %s[%d]\n", m->name,
                         a->name ? a->name : "?", i, b->name ? b->name : "?", j);
@@ -949,7 +949,7 @@ static void apply_prefix_layout(Vec<Vec<Sym *> *> &groups) {
     for (int i = 0; i < all.n; i++)
       for (Sym *c : *g) {
         for (Sym *h : c->has)
-          if (h && h->name && !strcmp(h->name, all[i]) && h->var) { donor.v[i] = h; break; }
+          if (h && h->name == all[i] && h->var) { donor.v[i] = h; break; }
         if (donor.v[i]) break;
       }
     // A TYPE donor too: the ivar of some CS in the group that really has
@@ -986,7 +986,7 @@ static void apply_prefix_layout(Vec<Vec<Sym *> *> &groups) {
       Vec<Sym *> *nh = new Vec<Sym *>;
       for (int i = 0; i < all.n; i++) {
         Sym *m = nullptr;
-        for (Sym *h : c->has) if (h && h->name && !strcmp(h->name, all[i])) { m = h; break; }
+        for (Sym *h : c->has) if (h && h->name == all[i]) { m = h; break; }
         if (!m) m = donor.v[i];  // donor names the slot when this class lacks it
         if (!m) group_ok = false;
         nh->add(m);
@@ -1008,17 +1008,13 @@ static void apply_prefix_layout(Vec<Vec<Sym *> *> &groups) {
       if (!cs || !g->in(cs->sym)) continue;
       Vec<AVar *> *ord = new Vec<AVar *>;
       for (int i = 0; i < all.n; i++) {
-        AVar *found = nullptr;
-        // By NAME, not `cs->var_map.get()`: the map is keyed by pointer,
-        // so an equal-but-distinct string misses and the CS's REAL ivar
-        // is replaced by a pad, silently losing its type (bh: `EPS`
-        // `_CG_float64` became `_CG_void`).
-        for (AVar *iv : cs->vars)
-          if (iv && iv->var && iv->var->sym && iv->var->sym->name && !strcmp(iv->var->sym->name, all[i])) {
-            found = iv;
-            break;
-          }
-        if (found) { ord->add(found); continue; }
+        // Member names are interned (if1_cannonicalize_string, at Sym
+        // creation) and unique per class (ifa/130 A1), so the pointer-keyed
+        // map is exact. Measured 2026-10-15: no member name is stored or
+        // queried un-interned on any suite test, bh, chull, richards or
+        // pygmy, and bh's `EPS` stays `_CG_float64` (the case that once
+        // lost its type to a pad and motivated a strcmp scan here).
+        if (AVar *found = cs->var_map.get(all[i])) { ord->add(found); continue; }
         if (!donor.v[i] || !donor.v[i]->var) { group_ok = false; break; }
         // Pad. FA has converged (this runs inside clone(), after
         // fa->analyze() returned), so no constraint is added and no

@@ -1,9 +1,10 @@
 # 130 — identity is keyed on `Sym::name` in load-bearing places, and names are not unique
 
-**Status:** open, narrowed 2026-10-14. A3 and the behaviour of A1 are
-fixed (see "A3" and "A1, fixed" below). Left: A1's representation
-cleanup (key `var_map` on the member `Sym *`, delete `clone.cc`'s
-`strcmp` scans), C (one line), and A2 with `PYC_CSELEM`. Rewritten 2026-09-28; the full site census is in git:
+**Status:** closed 2026-10-15. A3 and A1 are fixed (see "A3" and "A1,
+fixed" below), A1's `strcmp` scans are gone, C is fixed, and A2 was
+already fixed in the tree (both keys of the shape canon spell `name#id`).
+Deleting `PYC_CSELEM` itself is [146](../146-remove-all-arbitrary-splitting.md)'s
+verdict, not this issue's. Rewritten 2026-09-28; the full site census is in git:
 `git show 3f36072b:ifa/issues/130-FA-identity-keyed-on-sym-name.md`.
 
 **The rule** (AGENTS.md, "Never analyse or decide by NAME"): interning
@@ -96,12 +97,35 @@ class and re-keying would change no answer. It is worth doing for the
 `strcmp` scans (the "miss" half: a distinct-but-equal string), not as a
 fix.
 
+**Done 2026-10-15, and re-keying on `Sym *` was the wrong half.** A
+lookup arrives as a selector STRING (`P_prim_period`'s symbol), and Python
+resolves it by name along the MRO, so a `Sym *`-keyed map would still need
+a name-to-member step per class, which is the map we have. What the
+`strcmp` scans guarded against was a lapse in interning, so that was
+measured: a probe at every `var_map` put (the CS constructor,
+`creation_point`, the tuple fill, `promote_field_one`) and at the
+`P_prim_period` query reported **zero** un-interned names over all 459
+suite tests plus bh, chull, richards and pygmy. Member names are interned
+at Sym creation (`if1_cannonicalize_string`), so pointer identity on the
+name is exact. `apply_prefix_layout` and the conflict scan in
+`clone.cc` now compare name pointers and use `cs->var_map.get`. bh's
+`EPS` stays `_CG_float64` (this section's verification criterion). The
+four `strcmp`s left in `clone.cc` are sort comparators, which order
+the emitted layout and decide no identity. `make test` green (465 on each backend); corpus check -R
+`check__default__4f0de62f+913fcfe1` identical to `5fbbab3f+50288b47`
+on every column for all 77 programs, ess and css included.
+
 ## A2 — the `PYC_CSELEM=3` shape key is built out of names
 
 `atype_shape` emits `cs->sym->name` into a monotone, never-cleared canon,
 so a collision is a permanent merge. **Moot if `PYC_CSELEM` is deleted**,
-which [146](146-remove-all-arbitrary-splitting.md)'s inventory
+which [146](../146-remove-all-arbitrary-splitting.md)'s inventory
 recommends. If it is kept, use `name#id`.
+
+**Already fixed (found 2026-10-15).** `atype_shape_id` emits each
+member class as `name#id`, and `cselem_shape_key` keys the allocated
+class the same way. Both carry comments citing this section, so no
+collision can merge two classes in the canon.
 
 ## A3 — the classtag is keyed on the class NAME
 
@@ -141,14 +165,17 @@ in a measurement people reason from. Key it on `Sym *` and print
 `name#id` (the model: `element_census`, and the `ELEMTYPE` sort by name
 then id).
 
+**Fixed 2026-10-15.** CSPOP buckets on `Sym *`, prints `name#id`, and
+breaks ties by id. (richards: `closure#59:160 list#62:6 ...`.)
+
 (B, pyc builtin names baked into generic ifa such as `__pyc_exc__`,
 `print` and `__closure__`, belongs to the `IFACallbacks` line of work,
 closed/082-084.)
 
 ## Order
 
-A3 (done), A1's behaviour (done), then C (one line) and A1's re-key with
-the `strcmp` scans. A2 only if `PYC_CSELEM` survives.
+A3, A1 (behaviour, then the `strcmp` scans), and C are all done. A2 was
+already done.
 
 ## Verification
 

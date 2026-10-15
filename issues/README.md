@@ -47,7 +47,7 @@ one is a lesson this directory paid for.
 7. **Never identity by provenance or by name.** Types and CS
    partitioning are identity. Arity and other representation properties
    are legitimate (behind `IFACallbacks`). Allocation site, call site and
-   depth are handles at most. ([130](130-FA-identity-keyed-on-sym-name.md),
+   depth are handles at most. ([130](closed/130-FA-identity-keyed-on-sym-name.md),
    [132](132-arity-is-representation-not-provenance.md))
 8. **Measure on the corpus, same binary, env toggled.** The suite is
    blind to most of this area, and a 1–2 program delta between two
@@ -97,7 +97,6 @@ one is a lesson this directory paid for.
 | [079](079-DISPATCH-single-candidate-dispatch-unchecked-cast.md) | the single-candidate fast path casts past union members that lack the method. |
 | [118](118-union-field-representation-and-polymorphic-field-offset.md) | `{bool, None}`: a tri-state sentinel representation (bool has spare codes; int64 does not). |
 | [093](093-CGEN-int-float-union-move-not-coerced.md) | LLVM: an int MOVE into a float64 slot stores raw bits (missing `sitofp`). |
-| [130](130-FA-identity-keyed-on-sym-name.md) | names as identity: attribute resolution by the C3 MRO and same-named class tags fixed 2026-10-14; left: `var_map` re-key / `strcmp` scans, a probe, `PYC_CSELEM`. |
 | [030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) | performance: high fan-out dispatch has no table. |
 | [054](054-CGEN-remove-unconditional-tuple-list-header.md) | performance: every tuple carries a 16-byte list header. |
 
@@ -129,6 +128,7 @@ one is a lesson this directory paid for.
 | [125](closed/125-sunfish-degenerate-dict-setitem-clones.md) | symptom gone | 102 |
 | [126](closed/126-assess-residual-method-slot-reads.md), [127](closed/127-audit-zero-means-unknown-and-a-real-answer.md) | assessments complete | — |
 | [128](closed/128-cs-identity-over-discriminates-vs-element-type.md) | `PYC_CSDCPA1=2` is the default | 129 |
+| [130](closed/130-FA-identity-keyed-on-sym-name.md) | C3 MRO resolution, class tags per family, name-pointer member lookup | 146 (`PYC_CSELEM`) |
 | [131](closed/131-demand-driven-constant-splitting.md) | premise falsified | 134 |
 | [133](closed/133-split-a-container-on-its-element-type.md) | separator landed | 129 |
 | [135](closed/135-empty-sibling-contour-wins-the-clone-merge.md) | fixed 2026-09-06 | — |
