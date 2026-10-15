@@ -1388,22 +1388,18 @@ void report_retconf() {
           "RETCONF p=%d skipped_rvals: ret_differ=%ld (1fun=%ld nfun=%ld) ret_same=%ld ret_one=%ld local=%ld other=%ld"
           " | receiver: FORMAL=%ld local=%ld CS=%ld none=%ld noedge=%ld"
           " | walk from local: ->FORMAL=%ld (avg hops %.1f) ->CS=%ld (avg hops %.1f) ->join=%ld capped=%ld"
-          " | ROUTED formal=%ld cs=%ld (1def=%ld ndef=%ld) declined_related=%ld none=%ld"
           " | KIND static=%ld funvar=%ld (avg %.1f fns) class/recv=%ld (avg %.1f classes) related=%ld distinct_unions=%d"
           " class/arg=%ld nonarrow=%ld noedge=%ld\n",
           analysis_pass, census.rc_ret_differ, census.rc_differ_1fun, census.rc_differ_nfun, census.rc_ret_same, census.rc_ret_one, census.rc_local, census.rc_other,
           census.rv_formal, census.rv_local, census.rv_cs, census.rv_none, census.rv_noedge,
           census.wk_formal, census.wk_formal ? (double)census.wk_hops_formal / census.wk_formal : 0.0,
           census.wk_cs, census.wk_cs ? (double)census.wk_hops_cs / census.wk_cs : 0.0, census.wk_join, census.wk_cap,
-          census.rd_formal, census.rd_cs, census.rd_cs_1def, census.rd_cs_ndef, census.rd_declined_related, census.rd_none,
           census.dk_static, census.dk_funvar, census.dk_funvar ? (double)census.dk_funvar_syms / census.dk_funvar : 0.0,
           census.dk_recv, census.dk_recv ? (double)census.dk_recv_syms / census.dk_recv : 0.0, census.dk_recv_related, dk_recv_types.set_count(), census.dk_arg, census.dk_nonarrow, census.dk_noedge);
   census.rc_ret_differ = census.rc_ret_same = census.rc_ret_one = census.rc_local = census.rc_other = 0;
   census.rc_differ_1fun = census.rc_differ_nfun = 0;
   census.rv_formal = census.rv_local = census.rv_cs = census.rv_none = census.rv_noedge = 0;
   census.wk_formal = census.wk_cs = census.wk_join = census.wk_cap = census.wk_hops_formal = census.wk_hops_cs = 0;
-  census.rd_formal = census.rd_cs = census.rd_declined_related = census.rd_none = 0;
-  census.rd_cs_1def = census.rd_cs_ndef = 0;
   census.dk_static = census.dk_funvar = census.dk_recv = census.dk_arg = census.dk_nonarrow = census.dk_noedge = 0;
   census.dk_funvar_syms = census.dk_recv_syms = census.dk_recv_related = 0;
   dk_recv_types.clear();

@@ -10362,42 +10362,6 @@ static void classify_rval_confluence(AVar *av) {
 
 
 
-static AVar *rval_demand_actuator(AVar *av) {
-  if (!av->contour_is_entry_set) return nullptr;
-  // 1. Is this a dispatch whose callees' returns disagree?
-  Vec<EntrySet *> ess;
-  Vec<Fun *> funs;
-  AType *first = nullptr;
-  int differ = 0;
-  for (AVar *x : av->backward) if (x) {
-    if (!x->out->type->n) continue;
-    if (!x->contour_is_entry_set || x->contour == av->contour || !is_return_value(x)) continue;
-    EntrySet *xes = (EntrySet *)x->contour;
-    ess.set_add(xes);
-    if (xes->fun) funs.set_add(xes->fun);
-    if (!first) first = x->out->type;
-    else if (x->out->type != first) differ = 1;
-  }
-  if (ess.set_count() < 2 || !differ) return nullptr;
-  // 2. Find the position that decides the dispatch, and classify it.
-  EntrySet *caller = (EntrySet *)av->contour;
-  for (AEdge *e : caller->out_edges) {
-    if (!e || !e->rets.in(av) || !e->match || !e->match->fun) continue;
-    for (MPosition *pos : e->match->fun->positional_arg_positions) {
-      AVar *a = e->args.get(pos);
-      if (!a || !a->out) continue;
-      Vec<Sym *> syms;
-      for (CreationSet *c : a->out->type->sorted)
-        if (c && c->sym && c->sym != sym_nil_type) syms.set_add(c->sym);
-      if (syms.set_count() < 2) continue;
-      if (classes_are_related(syms)) { ++census.rd_declined_related; return nullptr; }
-      if (!a->contour_is_entry_set) return a;               // route 4's actuator
-      if (a->var && a->var->is_formal) return a;             // stage 1's actuator
-      return walk_to_actuator(a, 0);                         // backtrack, ifa/152's walk
-    }
-  }
-  return nullptr;
-}
 
 
 static AVar *backtrack_to_own_formal(AVar *av) {
@@ -10477,22 +10441,12 @@ static AVar *backtrack_to_own_formal(AVar *av) {
         else {
           ++census.tc_skip_rval, log(LOG_SPLITTING, "[stage1] av %d ES/non-formal-rval skipped\n", av->id);
           if (getenv("IFA_DBG_RETCONF")) classify_rval_confluence(av);  // ifa/157
-          // ifa/157: do not drop it -- backtrack the demand to an actuator.
-          if (retdemand_enabled()) {
-            if (AVar *act = rval_demand_actuator(av)) {
-              if (act->contour_is_entry_set) {
-                target = act, ++census.rd_formal;
-                log(LOG_SPLITTING, "[stage1] av %d rval demand -> formal av %d\n", av->id, act->id);
-              } else if (CreationSet *acs = (CreationSet *)act->contour) {
-                // A CreationSet with ONE creation point has nothing to
-                // partition -- ifa/152's backtrack exists for exactly that.
-                (acs->defs.set_count() > 1 ? census.rd_cs_ndef : census.rd_cs_1def)++;
-                if (tc_cs_dropped.set_add(acs)) ++census.rd_cs;
-                log(LOG_SPLITTING, "[stage1] av %d rval demand -> cs %d (route 4)\n", av->id, acs->id);
-              }
-            } else
-              ++census.rd_none;
-          }
+          // ifa/157: PYC_RETDEMAND backtracked an unresolved dispatch here to
+          // an actuator (a formal, or a CreationSet for route 4). The dispatch
+          // is transient (sudoku4: 143 on pass 1, 0 from pass 15), its
+          // CreationSets went into the confluence-only set route 4 declines,
+          // and it changed no corpus verdict
+          // (check__PYC_RETDEMAND_1__e5e16b23+83753197). Deleted (ifa/146).
           // ifa/157 steps 1-2 PROBE (IFA_DBG_ESDEMAND) -- NOT a lever. Both
           // were built as PYC_ESDEMAND=1/2 and the stop condition fired.
           //

@@ -101,6 +101,18 @@ shared, an ES split of that contour per receiver creation point (the ES
 split as a MEANS, which AGENTS.md sanctions only under a demand). The
 demand is the member union that the violation backtracks to.
 
+## Targeted test without the None (2026-10-15)
+
+`tests/record_member_shared_constructor.py` (`.known_issue`) is the repro
+with `labels=None` replaced by a str list, so both calls pass identical
+argument types and nothing splits `__init__` on a formal. It fails at the
+default with `expression has mixed basic types:( int64 str )`, CPython
+prints `5 4`. `IFA_DBG_CSDEFSPLIT`: while Pot has both creation points it is
+declined as "confluence only, no demand" (fact 1), and the owner lift from
+the demanded member lists reaches it with one group, `11 11` (fact 2).
+`PYC_RETDEMAND=1` does not change it (no unresolved dispatch). This is the
+writer-split case 129 A names.
+
 ## Verification
 
 The repro prints `5` and `4` on both backends, with two `Pot`

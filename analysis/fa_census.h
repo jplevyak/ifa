@@ -55,8 +55,6 @@ struct FACensus {
   long wk_hops_formal = 0, wk_hops_cs = 0;
   long dk_static = 0, dk_funvar = 0, dk_recv = 0, dk_arg = 0, dk_nonarrow = 0, dk_noedge = 0;
   long dk_funvar_syms = 0, dk_recv_syms = 0, dk_recv_related = 0;
-  long rd_formal = 0, rd_cs = 0, rd_declined_related = 0, rd_none = 0;
-  long rd_cs_1def = 0, rd_cs_ndef = 0;
   long ed_seen = 0, ed_formal = 0, ed_no_formal = 0, ed_not_demanded = 0;
   long ed_had_formals = 0;
   long kd_stable = 0, kd_grew = 0, kd_shrank = 0, kd_new = 0, kd_flip = 0;

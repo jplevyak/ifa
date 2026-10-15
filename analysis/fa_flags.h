@@ -36,6 +36,5 @@ int cscontent_enabled();
 int esblock_enabled();
 int loadbt_enabled();
 int csbacktrack_enabled();
-int retdemand_enabled();
 
 #endif

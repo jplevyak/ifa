@@ -545,21 +545,3 @@ int csbacktrack_enabled() {
   if (e < 0) { cchar *v = getenv("PYC_CSBACKTRACK"); e = v ? atoi(v) : 1; }
   return e;
 }
-// ifa/157 THE LINK (PYC_RETDEMAND). Stage 1 observes a demand on a value it
-// has no actuator for and drops it (`census.tc_skip_rval`, 769 of 923 per pass on
-// softrender). Both halves of the answer already exist: a CS-contoured
-// confluence is handed to route 4 (`tc_cs_dropped`), and ifa/152 built the
-// backtrack that finds the merged CreationSet upstream. Only the link is
-// missing.
-//
-// Return null unless this really is a demand:
-//   - the callee returns must DISAGREE -- an unresolved dispatch, something
-//     observing a distinction and unable to proceed, not "the type is a union"
-//   - the dispatched-on classes must be UNRELATED. Classes sharing a
-//     user-defined ancestor are legitimate polymorphism and must be HOISTED,
-//     not split; splitting richards' four Task subclasses is what broke it.
-int retdemand_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_RETDEMAND"); e = v ? atoi(v) : 0; }
-  return e;
-}

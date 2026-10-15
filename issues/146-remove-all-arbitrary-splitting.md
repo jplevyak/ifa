@@ -65,6 +65,7 @@ gated at all.
 | the MEASURE batch: `PYC_ESRECV`, `PYC_VIOLCS`, `PYC_CSMEMBER`, `PYC_ELEMSETTER`, `PYC_CSSLOTDEMAND`, `PYC_CONFDEMAND`, `PYC_ESDEFS1`, `PYC_SIZEOF_VIOL`, `PYC_CONFNIL` (and `split_es_by_arg_types`, `cs_member_signature`, `cs_slot_signature`, which only they called) | every mode measured by a same-binary `check -R` against `check__default__e254f017+3d4e01a4` (sweeps `check__PYC_<FLAG>_<mode>__e254f017+dcb2b1b0`). **No arm makes a program compile, run or match CPython that does not already.** Inert on every column of all 77: `CONFNIL=1`, `ELEMSETTER=1`, `ESDEFS1=1`, `VIOLCS=1`. Contours only, no verdict change: `VIOLCS=2` +5 ess/+5 css; `VIOLCS=3` +369/+1,038 and +4 warnings; `CSMEMBER=1` and `=2` (identical) +828/+2,899, +444 container CSs, +5 warnings. Lost programs: `ESRECV=1,2` fysphun (+339 ess); `CSSLOTDEMAND=1` plcfrs times out (+575/+2,804 on the rest, +4 warnings on softrender); `SIZEOF_VIOL=1` ant, rdb, rsync, sha, sudoku3, sunfish; `SIZEOF_VIOL=2` 48; `CONFDEMAND=1,2,3` all 75 that compile, because stage 1's confluences also carry the dispatch and precision splits the probe dropped (its own comment said it was a probe). Each loss reproduces on the pre-deletion binary (`e254f017`), so the batch above did not cause them. bh, which `VIOLCS` / `CSMEMBER` were built for, compiles at the default. After deletion `make test` is green and `check__default__e254f017+34ca222e` is identical to `check__default__e254f017+3d4e01a4` on every column of all 77 | 2026-10-15 |
 | `PYC_SLOTARITY` (`demote_mixed_arity_slots`) | demoted record-layout literals to list layout when one slot held two arities of a sym. Its premise, that such a slot is unrepresentable, was wrong: a record list is a real list in memory and the `void *` slot is resolved from FA types ([132](132-arity-is-representation-not-provenance.md)). Same-binary `check -R` (`check__PYC_SLOTARITY_1__93084d1d+83753197` vs `check__default__e254f017+34ca222e`): no program gained; chull failed to compile and loop silently printed garbage. `tests/slot_arity_conflict.py` pins the conflict down as sound. After deletion `check__default__93084d1d+7369cc63` is identical to `34ca222e` | 2026-10-15 |
 | `PYC_TYPEMOVE` | ran extra passes while formal types still moved. Both modes inert on every column of the corpus (`check__PYC_TYPEMOVE_{1,2}__93084d1d+db3ef0c6`); the loop already stops at a fixed point, the extra pass moves nothing, +6.7% compile time. Kept as the `IFA_DBG_TYPEMOVE` probe ([157](157-FA-all-demand-must-be-evaluated-at-quiescence.md) item 4) | 2026-10-15 |
+| `PYC_RETDEMAND` (`rval_demand_actuator`) | backtracked a stage-1 unresolved dispatch to a formal or to route 4. The dispatch is transient (sudoku4: 143 on pass 1, 0 from pass 15; all 378 demands found no actuator), its CreationSets went into `tc_cs_dropped`, the confluence-only set route 4 has declined since 2026-10-13, and the corpus A/B (`check__PYC_RETDEMAND_1__e5e16b23+83753197` vs `check__default__93084d1d+5b174598`) gained no program, +227 ess on plcfrs. A dispatch demand that must reach route 4 has a channel already, `dispatch_named`. Independent of the writer split ([178](178-FA-route4-declines-records-built-through-one-constructor.md), `tests/record_member_shared_constructor.py`), which needs no dispatch demand | 2026-10-15 |
 
 ## Still in the tree
 
@@ -78,12 +79,11 @@ since `PYC_CSDCPA1=2` became the default, so decide by a same-binary corpus
 issue.
 
 **As of 2026-10-15 every DELETE and MEASURE row is gone** (see the last
-rows of Removed), and so are `PYC_SLOTARITY` and `PYC_TYPEMOVE`. The one
-lever left is `PYC_RETDEMAND`, waiting on 129's writer split.
+rows of Removed), and so are `PYC_SLOTARITY`, `PYC_TYPEMOVE` and
+`PYC_RETDEMAND`. **The off-by-default inventory is empty.**
 
 | lever | origin | verdict |
 | --- | --- | --- |
-| `PYC_RETDEMAND` | 157 ES demand → route 4 link | PENDING [157](157-FA-all-demand-must-be-evaluated-at-quiescence.md) |
 | `PYC_SOSDEMAND` | 074 | decided: deleted, its demand test is the default (see Removed) |
 
 Audited and **not** splitters (keep): `PYC_SELFPROD` (6), `PYC_HARDREUSE`

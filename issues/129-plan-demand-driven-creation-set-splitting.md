@@ -71,6 +71,28 @@ re-run `IFA_DBG_CSDEFSPLIT` on sudoku4 and check whether the "1 group"
 declines remain. If they do, find the shared writer by `IFA_DBG_ELEMCONF`
 before building anything.
 
+**Measured 2026-10-15.** sudoku4 now compiles warning-free and matches
+CPython. With `IFA_DBG_RETCONF` / `IFA_DBG_CSDEFSPLIT` its unresolved
+dispatches (`ret_differ`) are TRANSIENT: 143 on pass 1, falling to 0 from
+pass 15 on, and its last "1 group" decline is on pass 13. The default
+ladder resolves them before convergence. Under `PYC_RETDEMAND=1` all 378
+rvalue demands find no actuator (`ROUTED ... none=378`) and contours are
+identical. Corpus `check -R` from one binary
+(`check__PYC_RETDEMAND_1__e5e16b23+83753197` against
+`check__default__93084d1d+5b174598`): no verdict gained, warnings
+identical, plcfrs +227 EntrySets / +506 CreationSets, ±1-3 contours on 9
+others; chaos's run timeout is load (77 s vs 78 s alone, cap 120).
+
+So sudoku4 no longer needs the writer split. The case that still does is
+[178](178-FA-route4-declines-records-built-through-one-constructor.md)'s,
+now a targeted test: `tests/record_member_shared_constructor.py` (known
+issue). Two `Pot` records built with identical argument types through one
+constructor contour; one member is an `append`-filled int list, the other
+a passed-in str list. Route 4 declines Pot as "confluence only, no demand",
+and the owner lift from the demanded lists finds one group because the key
+never follows a store's receiver. RETDEMAND does not reach it, and was
+deleted (ifa/146).
+
 ### B. A container with ONE creation point whose element takes two types
 
 The residual family: the element receives two types through paths that

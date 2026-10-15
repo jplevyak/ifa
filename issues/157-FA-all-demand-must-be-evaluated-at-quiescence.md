@@ -91,6 +91,25 @@ tuple, set, int64, str}` union the program never makes. Fix the few merges
 upstream, not the broadcast. This is [129](129-plan-demand-driven-creation-set-splitting.md)'s
 open item (the shared-writer decline).
 
+**Measured 2026-10-15.** sudoku4 now compiles warning-free and matches
+CPython. With `IFA_DBG_RETCONF` / `IFA_DBG_CSDEFSPLIT` its unresolved
+dispatches (`ret_differ`) are TRANSIENT: 143 on pass 1, falling to 0 from
+pass 15 on, and its last "1 group" decline is on pass 13. The default
+ladder resolves them before convergence. Under `PYC_RETDEMAND=1` all 378
+rvalue demands find no actuator (`ROUTED ... none=378`) and contours are
+identical. Corpus `check -R` from one binary
+(`check__PYC_RETDEMAND_1__e5e16b23+83753197` against
+`check__default__93084d1d+5b174598`): no verdict gained, warnings
+identical, plcfrs +227 EntrySets / +506 CreationSets, ±1-3 contours on 9
+others; chaos's run timeout is load (77 s vs 78 s alone, cap 120).
+
+The demand this link was built to carry is gone at convergence on the
+program it was measured on, and the link changes no verdict anywhere. The
+open writer-split case (129 A, 178) involves no dispatch demand at all.
+And its CreationSets went into `tc_cs_dropped`, the confluence-only set that
+route 4 has declined since 2026-10-13, so a multi-creation-point target was
+never partitioned. **Deleted 2026-10-15** (ifa/146).
+
 ### 4. Terminate on a fixed point, not on "a stage split"
 
 `analyze_again` means two things: *a stage split something* and *run
