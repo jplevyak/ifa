@@ -37,10 +37,12 @@ inference is write-driven).
 | --- | --- |
 | `tests/empty_container_elem.py` | `x = []; x[0]`: a mutual error (CPython raises `IndexError`). Today it is a NOTYPE refusal. |
 | `tests/dict_empty_next_to_populated.py` | `dict([])` beside a populated dict. Once closed/172 separates their CSs, the empty one's `for pair in pairs` and `while i < self._len` are type-checked as live over a bottom element. |
-| `tests/empty_list_compare_via_dict.py` | a list read out of a dict compared to `[]`. `l[i]` on the empty literal is bottom. |
 
-The last two point at closed/160 in their `.known_issue` text. They
-belong here.
+The last points at closed/160 in its `.known_issue` text. It belongs
+here. (`tests/empty_list_compare_via_dict.py`, a list read out of a dict
+compared to `[]`, was the third fixture; it compiles and matches CPython
+on both backends as of 2026-10-14, not bisected, and its `.known_issue` is
+gone.)
 
 Also in this family: **a METHOD DISPATCHED on the element** of a
 never-written container inside the builtin `set`/`dict` (`item.__hash__()`

@@ -174,7 +174,9 @@ never mutated, so the bits written at construction stay.
   become layout tests of what the candidate's formal covers. This is
   `tuple.__str__`, which is unrolled per arity (`inject_tuple_methods`).
 
-Tests: `tests/list_tuple_layout_dispatch.py` (tuple arms) and
+`tests/genetic2_idioms.py` (`if root.parts:` on a `{list, tuple}` field,
+which aborted on C and segfaulted on LLVM) passes too; its
+`.known_issue` is gone. Tests: `tests/list_tuple_layout_dispatch.py` (tuple arms) and
 `tests/list_tuple_layout_dispatch_lists.py` (the same program taking the
 list arms): fixed tuples, a slice, `tuple(...)`, `len`, indexing, slicing
 and iteration, all matching CPython on both backends.

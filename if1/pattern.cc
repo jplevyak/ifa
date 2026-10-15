@@ -1821,6 +1821,11 @@ static void find_visible_functions(Vec<AVar *> &args, PNode *visibility_point, V
   }
 }
 
+static Map<PNode *, UnexpectedKeyword *> unexpected_keywords;
+UnexpectedKeyword *unexpected_keyword_at(PNode *send_pnode) {
+  return send_pnode ? unexpected_keywords.get(send_pnode) : nullptr;
+}
+
 static int incomplete_call(Vec<AVar *> &args, AVar *send) {
   for (AVar *av : args) {
     if (!av->out->n) {
@@ -1970,6 +1975,8 @@ int pattern_match(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_clo
   // issues/103.
   if (getenv("PYC_KWSTRICT") ? atoi(getenv("PYC_KWSTRICT")) : 1) if (partial_matches && partial_matches->n) {
     Vec<Fun *> keep;
+    Fun *rejected = nullptr;
+    cchar *bad = nullptr;
     for (Fun *f : *partial_matches) if (f) {
       bool ok = true;
       for (int i = 0; i < names.n; i++) {
@@ -1980,11 +1987,20 @@ int pattern_match(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_clo
           if (getenv("PYC_DBG_BADKW"))
             fprintf(stderr, "[kwstrict] reject %s: no formal named '%s'\n",
                     f->sym && f->sym->name ? f->sym->name : "?", names[i]);
+          if (!rejected) { rejected = f; bad = names[i]; }
           ok = false;
           break;
         }
       }
       if (ok) keep.add(f);
+    }
+    // Every candidate rejected for a keyword: remember it, so the
+    // violation this call becomes can name the keyword (issues/103).
+    if (!keep.n && rejected && send && send->var && send->var->def) {
+      UnexpectedKeyword *u = new UnexpectedKeyword;
+      u->fun_name = rejected->sym && rejected->sym->name ? rejected->sym->name : "?";
+      u->keyword = bad;
+      unexpected_keywords.put(send->var->def, u);
     }
     partial_matches->move(keep);
   }

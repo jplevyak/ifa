@@ -448,6 +448,10 @@ void show_violations(FA *fa, FILE *fp) {
           if (ifa_verbose) fprintf(memfp, " send:%d", v->send->var->sym->id);
           fprintf(memfp, "\n");
           show_candidates(memfp, v->send->var->def, v->av->var->sym);
+        } else if (UnexpectedKeyword *u =
+                       v->send && v->send->var ? unexpected_keyword_at(v->send->var->def) : nullptr) {
+          // issues/103: CPython's TypeError, as a compile error.
+          fprintf(memfp, "%s() got an unexpected keyword argument '%s'\n", u->fun_name, u->keyword);
         } else {
           fprintf(memfp, "illegal call argument type ");
           show_illegal_type(memfp, v);
