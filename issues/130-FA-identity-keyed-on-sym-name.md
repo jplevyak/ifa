@@ -1,9 +1,9 @@
 # 130 — identity is keyed on `Sym::name` in load-bearing places, and names are not unique
 
-**Status:** open. A3 fixed 2026-10-14 (see its section). Re-verified the
-same day that A1, A2 and C are still in the tree, and that A1 is not
-latent: see "A1, measured" below. Next: A1, by one attribute-resolution
-table per class. Rewritten 2026-09-28; the full site census is in git:
+**Status:** open, narrowed 2026-10-14. A3 and the behaviour of A1 are
+fixed (see "A3" and "A1, fixed" below). Left: A1's representation
+cleanup (key `var_map` on the member `Sym *`, delete `clone.cc`'s
+`strcmp` scans), C (one line), and A2 with `PYC_CSELEM`. Rewritten 2026-09-28; the full site census is in git:
 `git show 3f36072b:ifa/issues/130-FA-identity-keyed-on-sym-name.md`.
 
 **The rule** (AGENTS.md, "Never analyse or decide by NAME"): interning
@@ -52,6 +52,49 @@ Sym *`. The name is the query (Python lookup is by name along the MRO);
 the Sym is the answer and the identity. Prototype construction copies
 only what the table resolves to a base, method lookup consults it,
 `var_map` keys on the resolved Sym, and `clone.cc`'s `strcmp` scans go.
+
+### A1, fixed (2026-10-14): resolution by the MRO, in both places a class answers a name
+
+Two places answer "what does `x.name` mean on this class", and both
+disagreed with CPython:
+
+1. **Prototype construction** (`gen_class_pyda`). It now copies each
+   inherited attribute ONCE, from the first class in the class's C3 MRO
+   that defines it, and not at all if the class defines it itself. A
+   class's OWN members are those whose `in` is the class (its `has` can
+   already hold inherited ones, which must not count as shadowing). The
+   MRO comes from `c3_mro` (`if1/ast.cc`), the linearization ifa's
+   dispatch already computes, split out of `c3_linearization` so it can
+   run before the type hierarchy is final without freezing its cache.
+2. **Selector dispatch** (`P_prim_period`, `fa_prims.cc`). A receiver whose
+   member of the name holds only DATA is answered by that member and left
+   out of the selector dispatch: data on a class shadows an inherited
+   method. A receiver whose member is a method keeps the selector dispatch
+   (`super()` reaches the base method that way; leaving method receivers
+   out broke ten suite tests). And where two candidates' formals are
+   unrelated types -- both bases of the argument's class -- `subsumes_arg`
+   (`if1/pattern.cc`) now prefers the one earlier in the ARGUMENT's C3
+   linearization (`dispatch_types`), which is what C3 is for; it was an
+   ambiguous call.
+
+`tests/inheritance_resolution_mro.py`: the three override rows, a data
+attribute under two bases and through a diamond, a method under two
+bases and through a diamond, and an inherited method reading an
+overridden attribute -- all match CPython on both backends. Before:
+three refusals, one silent wrong value (`B(C, D)` read D's `x`), and two
+ambiguous calls.
+
+The name stays the query throughout (Python's lookup is by name along the
+MRO); what answers it is a member `Sym *` and a class order. `make test` green (465 on each backend); corpus check -R
+`check__default__5fbbab3f+50288b47` identical on all 77.
+
+**What is left of A1** is representation, not behaviour. `var_map` is
+still keyed on the member's name and `clone.cc` still resolves by
+`strcmp`. Since `collect_include_vars` replaces an override in place, a
+class's members have unique names, so name -> member is one-to-one per
+class and re-keying would change no answer. It is worth doing for the
+`strcmp` scans (the "miss" half: a distinct-but-equal string), not as a
+fix.
 
 ## A2 — the `PYC_CSELEM=3` shape key is built out of names
 
@@ -104,7 +147,8 @@ closed/082-084.)
 
 ## Order
 
-A3 (done), then A1, then C (one line). A2 only if `PYC_CSELEM` survives.
+A3 (done), A1's behaviour (done), then C (one line) and A1's re-key with
+the `strcmp` scans. A2 only if `PYC_CSELEM` survives.
 
 ## Verification
 

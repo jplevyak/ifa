@@ -266,14 +266,50 @@ switch (p->prim->index) {
           if (all_applications(p, es, x, args, names, 0, (Partial_kind)p->code->partial) > 0)
             make_period_closure(result, x, args);
         }
+        // ifa/130 A1: a receiver whose member of this name holds DATA (no
+        // function value) was answered above, by that member: its class's
+        // prototype holds the attribute as the MRO resolves it
+        // (gen_class_pyda), and data defined on a class SHADOWS any method
+        // of that name it inherits. Dispatching on the selector matched the
+        // inherited method anyway, so `class B(A): f = 5` over a method
+        // `A.f` read B().f as {method, int} and was refused. Such receivers
+        // are left out of the selector dispatch; a receiver whose member is
+        // a method keeps it (super() calls, among others, reach the base
+        // method that way).
         {
-          Vec<AVar *> args;
-          Vec<cchar *> names;
-          names.add(0);
-          names.add(0);
-          args.add(obj);
-          if (all_applications(p, es, selector, args, names, 0, (Partial_kind)p->code->partial) > 0)
-            make_period_closure(result, selector, args);
+          Vec<CreationSet *> dispatch;
+          int data_only = 0;
+          for (CreationSet *cs : obj->out->sorted) {
+            if (!cs) continue;
+            bool data = false;
+            for (CreationSet *sel : selector->out->sorted) {
+              cchar *symbol = sel->sym->name;
+              if (!symbol) symbol = sel->sym->constant;
+              if (!symbol) symbol = sel->sym->imm.v_string;
+              AVar *iv = symbol ? cs->var_map.get(symbol) : nullptr;
+              if (iv && iv->out && iv->out->n &&
+                  type_intersection(iv->out, fa->type_world.function_type) == fa->type_world.bottom_type)
+                data = true;
+            }
+            if (data) data_only++;
+            else dispatch.add(cs);
+          }
+          AVar *recv = obj;
+          if (data_only && dispatch.n) {
+            fill_tvals(es->fun, p, 3);
+            recv = make_AVar(p->tvals[2], es);
+            flow_var_type_permit(recv, make_AType(dispatch));
+            flow_vars(obj, recv);
+          }
+          if (!data_only || dispatch.n) {
+            Vec<AVar *> args;
+            Vec<cchar *> names;
+            names.add(0);
+            names.add(0);
+            args.add(recv);
+            if (all_applications(p, es, selector, args, names, 0, (Partial_kind)p->code->partial) > 0)
+              make_period_closure(result, selector, args);
+          }
         }
         break;
       }

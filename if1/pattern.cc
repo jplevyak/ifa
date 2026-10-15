@@ -584,6 +584,17 @@ static int subsumes_arg(PMatch *x, PMatch *y, MPosition *acpp, CreationSet *cs, 
       if (!ytype->specializers.set_in(xtype)) return pri;
     } else if (ytype->specializers.set_in(xtype))
       return -pri;
+    // ifa/130 A1: neither specializes the other -- two bases of the
+    // argument's class, `class B(C, D)` reaching both `C.f` and `D.f`. That
+    // is what the class's C3 linearization (`dispatch_types`, the method
+    // resolution order) orders: the one earlier in the ARGUMENT's MRO is
+    // the more specific, as Python resolves `B().f` to `C.f`. It was
+    // reported as an ambiguous call.
+    else {
+      Sym *k = cs->sym;
+      int xi = k ? k->dispatch_types.index(xtype) : -1, yi = k ? k->dispatch_types.index(ytype) : -1;
+      if (xi >= 0 && yi >= 0 && xi != yi) return xi < yi ? -pri : pri;
+    }
   }
   // ifa/185: arity. A formal constrained to the CS's arity is more
   // specific than one that is not, as a subclass is than its base: both
