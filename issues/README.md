@@ -64,7 +64,7 @@ one is a lesson this directory paid for.
 
 | issue | what |
 | --- | --- |
-| [129](129-plan-demand-driven-creation-set-splitting.md) | **the plan**: start-merged CreationSets, demand-driven separation, a ledger. What landed, what is open (the shared-writer decline, the one-creation-point family), what is settled. |
+| [129](129-plan-demand-driven-creation-set-splitting.md) | **the plan**: start-merged CreationSets, demand-driven separation, a ledger. Landed; open only on the one-creation-point family (no current corpus case); the shared-writer decline moved to 178. What is settled. |
 | [146](146-remove-all-arbitrary-splitting.md) | **the audit**: what was removed, what is still in the tree (no default-path violation is known as of 2026-10-13), and a verdict for every off-by-default splitting lever. Every DELETE and MEASURE lever was deleted 2026-10-15, then SLOTARITY, TYPEMOVE and RETDEMAND; the inventory is empty. |
 | [157](157-FA-all-demand-must-be-evaluated-at-quiescence.md) | **when demand is asked**: the gate is a cascade priority, not quiescence. Give each stage route 4's shape; route ES-side demands to an actuator; terminate on a fixed point. |
 | [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) | decisions taken on transient types (pass-0 unions, momentarily empty contours) are never revisited. Re-derive them at convergence. |
@@ -77,7 +77,7 @@ one is a lesson this directory paid for.
 | issue | what |
 | --- | --- |
 | [072](072-FA-empty-container-notype-current-mechanism-and-plan.md) | a never-written container's bottom element reaching live code. Derive "zero-trip" and "raises" from it. |
-| [178](178-FA-route4-declines-records-built-through-one-constructor.md) | route 4 cannot separate two creation points of a class built through one constructor; the merged member then contaminates both lists. |
+| [178](178-FA-route4-declines-records-built-through-one-constructor.md) | route 4 cannot separate two creation points of a class built through one constructor; also the general writer split (moved from 129). No known program needs either (2026-10-15). |
 | [025](025-FA-intra-function-union-narrowing.md) | branch correlation over a class union: now refused. Tail duplication, or a permissive runtime check. |
 | [050](050-FA-general-constant-propagation-unreachable-code.md) | a global slot's value is not call-graph precise. Stages 2-3 (mod-set, per-ES summary). |
 | [119](119-sccp-as-an-outer-fixed-point-over-fa.md) | SCCP: explicit executability, dead edges as a between-pass decision, fact providers. |

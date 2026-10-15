@@ -6,7 +6,9 @@ blocks. **The repro passes by default since 2026-10-02**: None is kept in the
 type projection (see "Flipped" at the end), so `__init__` and `Pot` split on
 `{list}` vs `{None}`. It is `tests/none_default_arg_splits_record.py`.
 Still open: route 4's key is blind to a store's receiver (Root cause, fact 2),
-which the keep-nil split went around, not through.
+which the keep-nil split went around, not through. **No known program needs
+it** (2026-10-15, below). This issue also carries the general form, moved
+from 129 (its former section A): the *writer split*.
 
 ## Symptom
 
@@ -100,6 +102,26 @@ store, and what those contours write. Plus, when the writer contour is
 shared, an ES split of that contour per receiver creation point (the ES
 split as a MEANS, which AGENTS.md sanctions only under a demand). The
 demand is the member union that the violation backtracks to.
+
+## The writer split, in general (moved from 129, 2026-10-15)
+
+Route 4 partitions a CreationSet's creation points by which flow paths
+into its content each lies on. When every creation point's values pass
+through ONE shared writer contour (an `append` contour, a constructor),
+the signatures are identical and route 4 declines: *"1 group: every
+creation point on the same assign sets"*. The writer split is splitting
+that shared EntrySet as a MEANS, under the demand, so the creation points
+become separable. `PYC_ESBLOCK` (default on) already does this for
+container element writers; fact 2 above is the record-member case.
+
+Its witness was `sudoku4`, and it is gone. Measured 2026-10-15
+(`IFA_DBG_CSDEFSPLIT`, `IFA_DBG_RETCONF`): sudoku4 compiles warning-free and
+matches CPython, its "1 group" declines occur only up to pass 13, and its
+unresolved dispatches fall from 143 on pass 1 to 0 from pass 15. The
+default ladder resolves them before convergence. The ES-demand link that
+was meant to feed this decline (`PYC_RETDEMAND`) was measured inert and
+deleted ([157](157-FA-all-demand-must-be-evaluated-at-quiescence.md)
+item 3, [146](146-remove-all-arbitrary-splitting.md)).
 
 ## A test without the None is NOT this issue (2026-10-15)
 

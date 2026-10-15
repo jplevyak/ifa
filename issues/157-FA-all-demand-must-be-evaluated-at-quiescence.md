@@ -88,8 +88,8 @@ sets"*.
 So the dispatch ambiguity is a SYMPTOM. On `sudoku4` 102 ambiguous sites
 come from **5** distinct receiver unions, each a `{dict, bool, list,
 tuple, set, int64, str}` union the program never makes. Fix the few merges
-upstream, not the broadcast. This is [129](129-plan-demand-driven-creation-set-splitting.md)'s
-open item (the shared-writer decline).
+upstream, not the broadcast. That was the shared-writer decline, now
+[178](178-FA-route4-declines-records-built-through-one-constructor.md)'s.
 
 **Measured 2026-10-15.** sudoku4 now compiles warning-free and matches
 CPython. With `IFA_DBG_RETCONF` / `IFA_DBG_CSDEFSPLIT` its unresolved
@@ -105,7 +105,7 @@ others; chaos's run timeout is load (77 s vs 78 s alone, cap 120).
 
 The demand this link was built to carry is gone at convergence on the
 program it was measured on, and the link changes no verdict anywhere. The
-test case written for the writer split (129 A, 178) involves no dispatch
+test case written for the writer split (178) involves no dispatch
 demand, and turned out not to need a writer split either.
 And its CreationSets went into `tc_cs_dropped`, the confluence-only set that
 route 4 has declined since 2026-10-13, so a multi-creation-point target was
@@ -148,8 +148,9 @@ showed no longer occurs. The test stays as the `IFA_DBG_TYPEMOVE` probe.
   was load-bearing for termination and the stage needs a demand test
   before it needs permission.
 - For (3): if the routed demands land on CreationSets whose creation points
-  all share one assign-set signature, the blocker is 129's writer split,
-  not the link. That is today's state.
+  all share one assign-set signature, the blocker is the writer split
+  (178), not the link. (Hit, then moot: the demands were transient; see
+  (3).)
 - For (4): if `TYPEMOVE` increases passes without changing any result, the
   moving types are a period-2 oscillation, which is
   [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md)'s
