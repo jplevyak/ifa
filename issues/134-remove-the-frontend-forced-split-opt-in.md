@@ -46,6 +46,31 @@ relied on `int.__ge__` folding per arity. The fix was to emit the guards as
 inline primitives that fold in the tuple method's own contour, not to
 restore the annotation.
 
+**Through content to the writers (2026-10-15).** The walk followed only
+values in function contours, so a violation on a read from a container's
+element or a record's member stopped there: the stores that filled it,
+and the conditions guarding them, were never seeded.
+`tests/record_member_shared_constructor.py` is the case (first misfiled as
+178's writer split). `Pot.__init__`'s `if n > 2:` decides whether ints are
+appended through `self.labels`. `n > 2` runs in one `int.__gt__` contour
+shared by `Pot(3, ...)` and `Pot(1, ...)`, so it folds in neither, and the
+second object's str list gets the ints. Now, reaching a CreationSet-
+contoured AVar, the walk continues to its function-contour writers, whose
+contours may climb to all their callers (the sites storing into that
+content). From `list.append`'s caller the existing call-site clause seeds
+`n > 2`, the walk descends into `int.__gt__`, and its `self` is nominated
+with constants 1 and 3. The test now passes on both backends.
+
+Not for a pure int/float violation. Those have their own demand (ifa/156's
+numeric split), and under `--permissive` coercion answers them and they
+stay recorded, so the content step re-split on constants that cannot
+separate an int from a float: +323 EntrySets / +397 CreationSets on 12
+programs with every warning unchanged
+(`check__PYC_CONSTCS_1__ea9a60bc+1db79c33`). With that excluded, the step
+is identical to the old walk on every column of all 77
+(`check__PYC_CONSTCS_1__ea9a60bc+4d3e2e96` vs
+`check__default__ea9a60bc+4d3e2e96`). The A/B flag is deleted.
+
 ## The 9 that stay
 
 | line | without it | what would retire it |

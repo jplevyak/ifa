@@ -101,17 +101,29 @@ shared, an ES split of that contour per receiver creation point (the ES
 split as a MEANS, which AGENTS.md sanctions only under a demand). The
 demand is the member union that the violation backtracks to.
 
-## Targeted test without the None (2026-10-15)
+## A test without the None is NOT this issue (2026-10-15)
 
-`tests/record_member_shared_constructor.py` (`.known_issue`) is the repro
-with `labels=None` replaced by a str list, so both calls pass identical
-argument types and nothing splits `__init__` on a formal. It fails at the
-default with `expression has mixed basic types:( int64 str )`, CPython
-prints `5 4`. `IFA_DBG_CSDEFSPLIT`: while Pot has both creation points it is
-declined as "confluence only, no demand" (fact 1), and the owner lift from
-the demanded member lists reaches it with one group, `11 11` (fact 2).
-`PYC_RETDEMAND=1` does not change it (no unresolved dispatch). This is the
-writer-split case 129 A names.
+`tests/record_member_shared_constructor.py` is the repro with `labels=None`
+replaced by a str list, so both calls pass identical argument types. It was
+first filed here as the receiver-key gap (fact 2). That was wrong. Traced
+(`IFA_DBG_CSVARS`, `IFA_DBG_FUNES`): Pot already gets one CreationSet per
+object, and `__init__` one contour per call with separate list
+CreationSets. The "1 group" and "confluence only" declines are early-pass
+only. What fails is that `if n > 2:` does not fold in either `__init__`
+contour, because the comparison runs in one shared `int.__gt__` contour
+whose `self` is not a constant; the second object's `__init__` stores both
+lists and appends ints into the str list. Constant-cloning `int.__gt__`
+(a probe, reverted) makes it print CPython's `5 4`. It is a constant demand
+([134](134-remove-the-frontend-forced-split-opt-in.md)), not a writer split,
+and it passes since CONST_DEMAND follows content to its writers (134,
+2026-10-15).
+
+Six shared-constructor variants with identical argument types were tried;
+in each, pyc either already separates the records or the program holds two
+types in one slot over time (`b.replace([...])` after construction: bh's
+temporal shape, which no split separates). **No program is known that
+needs fact 2's receiver-aware key.** It stays open as a description of the
+key, with no witness.
 
 ## Verification
 

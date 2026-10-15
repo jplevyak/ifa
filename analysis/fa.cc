@@ -11062,6 +11062,26 @@ static void controlling_ifs(PNode *site, Vec<PNode *> &out) {
   };
   for (ATypeViolation *v : viols) {
     EntrySet *E = (EntrySet *)v->av->contour;
+    // An int/float mix has its own demand (ifa/156's numeric split) and,
+    // under --permissive, is answered by coercion and stays recorded, so
+    // following it through content to its writers re-splits on constants
+    // that cannot separate an int from a float. Measured: that alone was
+    // +323 EntrySets on 12 corpus programs with every warning unchanged
+    // (check__PYC_CONSTCS_1__ea9a60bc+1db79c33); with this test, the
+    // content step is identical to the old walk on every column of all 77
+    // (check__PYC_CONSTCS_1__ea9a60bc+4d3e2e96).
+    bool numeric_mix_only = false;
+    if (v->type) {
+      Vec<Sym *> kinds;
+      bool other = false;
+      for (CreationSet *c : v->type->sorted) {
+        if (!c || !c->sym || c->sym == sym_nil_type) continue;
+        Sym *bt = to_basic_type(c->sym->type);
+        if (!bt || !bt->num_kind) { other = true; break; }
+        kinds.set_add(bt);
+      }
+      numeric_mix_only = !other && kinds.set_count() >= 2;
+    }
     Vec<AVar *> seen, work;
     // Each contour on the walk remembers how it was entered. One entered
     // DOWNWARD (through a call result, from caller C) may only be left back
@@ -11147,7 +11167,25 @@ static void controlling_ifs(PNode *site, Vec<PNode *> &out) {
         continue;
       }
       auto descend = [&](AVar *b) {
-        if (!b || !b->contour_is_entry_set || b->contour == GLOBAL_CONTOUR) return;
+        if (!b || b->contour == GLOBAL_CONTOUR) return;
+        // ifa/134: through a CreationSet's content to the values WRITTEN into
+        // it. A violation on an element or member read is a demand on what
+        // was stored there, and the stores run in function contours whose own
+        // conditions decide whether they run. `Pot.__init__` appends ints
+        // through `self.labels` only when `n > 2`; if `n` is merged into a
+        // shared `int.__gt__` contour, the branch does not fold and the ints
+        // reach the caller's str list (tests/record_member_shared_constructor).
+        // A writer's contour climbs to all its callers: they are the sites
+        // that store into this content, which is where constants meet.
+        if (!b->contour_is_entry_set) {
+          if (!numeric_mix_only)
+            for (AVar *w : b->backward)
+              if (w && w->contour_is_entry_set && w->contour != GLOBAL_CONTOUR) {
+                free_es.set_add((EntrySet *)w->contour);
+                push(w);
+              }
+          return;
+        }
         EntrySet *Y = (EntrySet *)b->contour;
         if (Y != X && !free_es.set_in(Y) && !entered_from.get(Y)) entered_from.put(Y, X);
         push(b);

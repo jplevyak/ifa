@@ -83,15 +83,14 @@ identical. Corpus `check -R` from one binary
 identical, plcfrs +227 EntrySets / +506 CreationSets, ±1-3 contours on 9
 others; chaos's run timeout is load (77 s vs 78 s alone, cap 120).
 
-So sudoku4 no longer needs the writer split. The case that still does is
-[178](178-FA-route4-declines-records-built-through-one-constructor.md)'s,
-now a targeted test: `tests/record_member_shared_constructor.py` (known
-issue). Two `Pot` records built with identical argument types through one
-constructor contour; one member is an `append`-filled int list, the other
-a passed-in str list. Route 4 declines Pot as "confluence only, no demand",
-and the owner lift from the demanded lists finds one group because the key
-never follows a store's receiver. RETDEMAND does not reach it, and was
-deleted (ifa/146).
+So sudoku4 no longer needs the writer split, and no program is known
+that does. The test written for it, `tests/record_member_shared_constructor.py`,
+turned out to be a constant demand: pyc separates the two records already,
+and what fails is an unfolded `n > 2` in a shared `int.__gt__` contour
+([178](178-FA-route4-declines-records-built-through-one-constructor.md)'s
+2026-10-15 section, [134](134-remove-the-frontend-forced-split-opt-in.md)),
+and passes since CONST_DEMAND follows content to its writers.
+RETDEMAND did not reach it either, and was deleted (ifa/146).
 
 ### B. A container with ONE creation point whose element takes two types
 

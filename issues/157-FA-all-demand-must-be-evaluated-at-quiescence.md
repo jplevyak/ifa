@@ -105,7 +105,8 @@ others; chaos's run timeout is load (77 s vs 78 s alone, cap 120).
 
 The demand this link was built to carry is gone at convergence on the
 program it was measured on, and the link changes no verdict anywhere. The
-open writer-split case (129 A, 178) involves no dispatch demand at all.
+test case written for the writer split (129 A, 178) involves no dispatch
+demand, and turned out not to need a writer split either.
 And its CreationSets went into `tc_cs_dropped`, the confluence-only set that
 route 4 has declined since 2026-10-13, so a multi-creation-point target was
 never partitioned. **Deleted 2026-10-15** (ifa/146).
