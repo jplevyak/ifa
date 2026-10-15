@@ -1,5 +1,6 @@
 #include <ctype.h>
 #include <math.h>
+#include <map>
 #include <set>
 #include <string>
 #include <tuple>
@@ -2656,12 +2657,15 @@ class CBackendEmitter : public VirtualCGEmitter {
           }
           ok = false;
         }
+        // ifa/121: an arm whose slot may hold a different clone than this
+        // site chose calls the site's clone directly.
+        if (ok) apply_dispatch_arm_plans(pn, fns, classes, slots, class_funs);
         // Two untagged candidates can't be told apart at runtime unless
         // they are indistinguishable clones of the same function.
         if (directs.n > 1) {
           bool all_same = true;
           for (int i = 1; i < directs.n; i++) {
-            if (!identical_c_signature(directs[0], directs[i])) {
+            if (!identical_c_signature(directs[0], directs[i]) || !clones_interchangeable(directs[0], directs[i])) {
               all_same = false;
               break;
             }
@@ -3961,6 +3965,7 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
   cg_elide_unread_slots(fa);
   build_type_strings(fp, fa, globals);
   cg_build_new_to_val_map(fa);
+  cg_build_dispatch_arm_plans(fa);  // ifa/121
   if (globals.n) {
     fputs("\n/*\n Global Variables\n*/\n\n", fp);
   }
@@ -4112,6 +4117,42 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
   fwrite(init_buf, 1, init_len, fp);
   if (getenv("PYC_DBG_CGDCE"))
     fprintf(stderr, "CGDCE emitted=%d dropped=%d (named by no emitted body)\n", body_funs.n + 1 - dropped, dropped);
+  // ifa/121: WHY is each dropped body unnamed? For every call site that
+  // lists it as a candidate, in a function that IS emitted, classify the
+  // site; and note whether it is referenced only as a constructor's
+  // method value (no call site at all).
+  if (getenv("PYC_DBG_CGDCE") && getenv("PYC_DBG_CGDCE")[0] == '2') {
+    std::map<std::string, int> why;
+    for (int k = 0; k < by_index.n; k++) {
+      if (keep.v[k] || buf_of.v[k] < 0) continue;
+      Fun *g = by_index.v[k];
+      int sites = 0, dead_site = 0, live_site_multi = 0, live_site_single = 0, from_dropped = 0;
+      for (Fun *h : fa->funs) if (h && h->live) {
+        int hk = -1;
+        for (int j = 0; j < by_index.n; j++) if (by_index.v[j] == h) { hk = j; break; }
+        bool h_emitted = h == init || (hk >= 0 && keep.v[hk]);
+        for (int ci = 0; ci < h->calls.n; ci++) {
+          PNode *pn = h->calls.v[ci].key;
+          Vec<Fun *> *fs = h->calls.v[ci].value;
+          if (!pn || !fs || !fs->set_in(g)) continue;
+          sites++;
+          if (!h_emitted) from_dropped++;
+          else if (!pn->live || !pn->fa_live) dead_site++;
+          else if (fs->n > 1) live_site_multi++;
+          else live_site_single++;
+        }
+      }
+      cchar *w = !sites ? "no-call-site" : live_site_single ? "LIVE-single-site(unexplained)"
+                 : live_site_multi ? "multi-candidate-site" : dead_site ? "dead-site" : "only-from-dropped";
+      why[w]++;
+      if (getenv("PYC_DBG_CGDCE")[1] == 'v')
+        fprintf(stderr, "CGDCE-drop %s %s sites=%d dead=%d multi=%d single=%d fromdropped=%d\n", cg_get_string(g), w,
+                sites, dead_site, live_site_multi, live_site_single, from_dropped);
+    }
+    fprintf(stderr, "CGDCE-why");
+    for (auto &kv : why) fprintf(stderr, " %s=%d", kv.first.c_str(), kv.second);
+    fprintf(stderr, "\n");
+  }
   fprintf(fp,
           "\nint main(int argc, char *argv[]) {\n"
           "  MEM_INIT();\n"

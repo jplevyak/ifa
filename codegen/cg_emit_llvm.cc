@@ -3661,7 +3661,7 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
             default_fn = fun_val;
             continue;
           }
-        } else if (identical_c_signature(default_fn, fun_val)) {
+        } else if (identical_c_signature(default_fn, fun_val) && clones_interchangeable(default_fn, fun_val)) {
           continue;
         }
       }
@@ -3702,6 +3702,9 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
     // where None and zero give the SAME answer (both falsy) so the
     // conflation is semantically invisible -- `if f():` on a function
     // whose fall-through implicitly returns None is genetic2's shape.
+    // ifa/121: an arm whose slot may hold a different clone than this site
+    // chose calls the site's clone directly (mirrors cg.cc).
+    if (ok) apply_dispatch_arm_plans(pn, callees, classes, slots, class_funs);
     if (ok && nil_fn && recv_var) {
       cchar *sel = nullptr;
       if (Sym *scalar_member = poly_dispatch_nil_scalar_receiver(pn, nullptr, recv_var, &sel))
@@ -5138,6 +5141,7 @@ bool cg_emit_llvm(FA *fa, Fun *main_fun) {
   // consumed by emit_send_clone (slot stores) and emit_send_call
   // (classtag dispatch). Shared with the C backend.
   cg_build_new_to_val_map(fa);
+  cg_build_dispatch_arm_plans(fa);  // ifa/121
 
   // Pass 0: declare module-level globals so per-Fun emit can
   // resolve global Var operands.  Without this, loads/stores

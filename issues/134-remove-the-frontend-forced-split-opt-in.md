@@ -61,7 +61,7 @@ restore the annotation.
 - `split_edges` now DECLINES when every receiver CreationSet is identical
   by type (`cs_slot_sig_equal`). Stage 5 used to fan `tuple.__getitem__`
   over three `(prio, name)` literals that share one C layout and no tag,
-  and codegen bound the call site to one clone ([121](121-CGEN-dead-clones-emitted.md)),
+  and codegen bound the call site to one clone ([121](closed/121-CGEN-dead-clones-emitted.md)),
   so `test_heapq` printed "medium" for every item.
 - `pygmy`'s method-slot winner: an override now beats the method it
   overrides on a specificity tie (`cg_build_new_to_val_map`). pygmy's

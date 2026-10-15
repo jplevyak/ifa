@@ -128,7 +128,7 @@ other's field names (`Square` carries `losses`/`wins`/`bestchild`,
 first place.
 
 **Ruled out: this is NOT clone's record-type blindness.**
-[121](../121-CGEN-dead-clones-emitted.md) root-caused `equivalent_es_vars`
+[121](121-CGEN-dead-clones-emitted.md) root-caused `equivalent_es_vars`
 as unable to tell one record type from another, which merges contours of
 different classes. That is a real hole, and it is not this one:
 `IFA_DBG_VAREQ` reports **zero** `Square vs UCTNode` pairs on `go`. The

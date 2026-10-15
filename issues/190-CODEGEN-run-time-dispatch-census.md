@@ -193,3 +193,15 @@ Found on the way: SETTER_OF_SETTER's dispatch clause (`sos_poly_recvs`,
 ifa/146) counts target FUNCTIONS. richards' `t.runTask()` reaches four
 EntrySets of the one `Task.runTask`, which it does not see. Counting
 EntrySets would widen it, but by the table above to no effect.
+
+### The one-class-two-clones calls choose by argument (2026-10-14)
+
+ifa/121's dispatch-arm plans found that these calls are not only
+unseparable but unprovable: one receiver object reaches two clones that
+differ in behaviour, chosen by an ARGUMENT's type, and both share the
+class's tag, so the emitted code calls whatever the object's slot holds.
+That is right only when the argument has the type that clone expects. It
+is now warned at each site (fysphun `Link.applyme`, softrender
+`Vector4.add` twice, `sub`, `transform`) and refused under `--strict`.
+The way out is the same as before: these unions are real under CPython
+(int and float fields), so only coercion would remove them.

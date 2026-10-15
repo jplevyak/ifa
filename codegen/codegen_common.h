@@ -85,6 +85,16 @@ struct PolymorphicSlot {
 };
 extern Map<Fun *, Vec<PolymorphicSlot> *> cg_new_to_val_map;
 void cg_build_new_to_val_map(FA *fa);
+// ifa/121: how each class-tag arm of a dispatch calls its target (see
+// codegen_common.cc). Built after cg_build_new_to_val_map, before emission.
+enum { ARM_SLOT = 0, ARM_DIRECT = 1, ARM_AMBIGUOUS = 2 };
+void cg_build_dispatch_arm_plans(FA *fa);
+int dispatch_arm_plan(PNode *pn, Sym *cls);
+// Rewrite a dispatch's class-tag arms by those plans: an ARM_DIRECT arm
+// becomes a direct call to the site's clone (slot -1, the route a closure
+// carrier already takes); an ARM_AMBIGUOUS one is refused.
+void apply_dispatch_arm_plans(PNode *pn, Vec<Fun *> *fns, Vec<Sym *> &classes, Vec<int> &slots,
+                              Vec<Fun *> &class_funs);
 
 // Resolve a SEND PNode to its single concrete target Fun, or
 // nullptr if the call site has zero or multiple resolutions.
@@ -95,6 +105,13 @@ void cg_build_new_to_val_map(FA *fa);
 // list. `get_target_fun_core` is the shared core; the LLVM
 // wrapper lives in `llvm_primitives.cc` and adds the fallback.
 bool identical_c_signature(Fun *a, Fun *b);
+// ifa/121: partition the live clones into interchangeable classes; run
+// after optimization, before codegen (IFA_DBG_CLONEEQ reports it).
+void compute_clone_equivalence(FA *fa);
+// Are two clones the same function (same class of that partition)? Every
+// point that collapses several candidates onto one clone requires it as
+// well as an identical C signature.
+bool clones_interchangeable(Fun *a, Fun *b);
 Fun *get_target_fun_core(PNode *n, Fun *f);
 // A nullable receiver (one tagged class or None): the non-None target, or
 // null. See codegen_common.cc.
